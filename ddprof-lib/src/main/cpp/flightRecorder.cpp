@@ -1763,6 +1763,9 @@ void Recording::recordWallClockEpoch(Buffer *buf, WallClockEpochEvent *event) {
   buf->putVar64(event->_num_exited_threads);
   buf->putVar64(event->_num_permission_denied);
   buf->putVar64(event->_num_suppressed_sampled_run);
+  buf->putVar64(event->_num_task_block_emitted);
+  buf->putVar64(event->_num_task_block_skipped_span_zero);
+  buf->putVar64(event->_num_task_block_skipped_too_short);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }

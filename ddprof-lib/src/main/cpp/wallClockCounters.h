@@ -19,6 +19,9 @@ struct WallClockCounterSnapshot {
 static_assert(std::atomic<long long>::is_always_lock_free,
               "WallClockCounters fields must be lock-free for signal-handler safety");
 
+// Holds signal-handler-safe atomic counters for wall-clock sampling statistics.
+// Increments use RELAXED ordering (async-signal-safe); drains use ACQUIRE to
+// ensure all increments from the previous epoch are visible to the timer thread.
 class WallClockCounters {
 private:
   inline static std::atomic<long long> _task_block_emitted{0};
@@ -59,6 +62,10 @@ public:
 
   static void incrementSuppressedSampledRun() {
     _suppressed_sampled_run.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  static u64 drainSuppressedSampledRun() {
+    return (u64)_suppressed_sampled_run.exchange(0, std::memory_order_acquire);
   }
 
   static WallClockCounterSnapshot drain() {

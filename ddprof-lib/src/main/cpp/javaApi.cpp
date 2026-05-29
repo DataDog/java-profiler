@@ -325,6 +325,10 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) 
     return;
   }
   current->parkEnter(TSC::ticks());
+  ThreadFilter *tf = Profiler::instance()->threadFilter();
+  if (tf->enabled()) {
+    tf->enterParkRun(current->filterSlotId());
+  }
 }
 
 extern "C" DLLEXPORT void JNICALL
@@ -337,6 +341,10 @@ Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
   u64 start_ticks = 0;
   Context park_context = {};
   current->parkExit(start_ticks, park_context);
+  ThreadFilter *tf = Profiler::instance()->threadFilter();
+  if (tf->enabled()) {
+    tf->exitParkRun(current->filterSlotId());
+  }
 }
 
 extern "C" DLLEXPORT jlong JNICALL

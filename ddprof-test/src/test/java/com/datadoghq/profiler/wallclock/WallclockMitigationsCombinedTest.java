@@ -14,17 +14,12 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Combined wall-clock mitigations integration test:
- * - Approach A (once-per-run signal suppression under {@code wallprecheck=true}): a sleeping thread
- *   should produce roughly one MethodSample (the entry sample of the SLEEPING / CONDVAR_WAIT run)
- *   and {@code wc_signals_suppressed_sampled_run} should be positive.
- * - Approach B ({@code parkEnter}/{@code parkExit}): a runnable thread flagged via the parked API
- *   should emit {@code datadog.TaskBlock} events carrying the run's duration.
- * - Correctness guard: purely runnable thread still produces MethodSample events.
+ * Verifies once-per-run suppression ({@code wallprecheck=true}) with a mix of sleeping,
+ * parked, and runnable threads. TaskBlock assertions are in PR2 (WallclockMitigationsCombinedTest
+ * in the precheck branch).
  */
 public class WallclockMitigationsCombinedTest extends AbstractProfilerTest {
 
-    /** Verifies Approach A and B counters/events can be observed concurrently. */
     @Test
     public void precheckAndParkSuppressionWorkTogether() throws Exception {
         Assumptions.assumeTrue(!Platform.isJ9());
@@ -58,7 +53,7 @@ public class WallclockMitigationsCombinedTest extends AbstractProfilerTest {
                             profiler.parkEnter();
                             long parkedUntil = System.nanoTime() + 280_000_000L;
                             while (System.nanoTime() < parkedUntil) {
-                                // Runnable while flagged parked.
+                                // spin while flagged parked
                             }
                             profiler.parkExit(System.identityHashCode(this), 0L);
                             profiler.clearContext();
@@ -94,16 +89,12 @@ public class WallclockMitigationsCombinedTest extends AbstractProfilerTest {
 
         stopProfiler();
 
-        IItemCollection taskBlocks = verifyEvents("datadog.TaskBlock");
-        assertTrue(
-                taskBlocks.getAggregate(Aggregators.count()).longValue() > 0,
-                "Expected TaskBlock events from parked interval");
+        // Runnable thread must still produce samples (precheck doesn't suppress RUNNABLE).
+        long sampleCount = verifyEvents("datadog.MethodSample", false)
+                .getAggregate(Aggregators.count()).longValue();
+        assertTrue(sampleCount > 0, "Expected MethodSample events from runnable thread");
 
-        IItemCollection methodSamples = verifyEvents("datadog.MethodSample");
-        assertTrue(
-                methodSamples.getAggregate(Aggregators.count()).longValue() > 0,
-                "Expected runnable MethodSample events while mitigations are enabled");
-
+        // Sleeping thread's suppression counter must have incremented.
         Map<String, Long> counters = profiler.getDebugCounters();
         if (counters.containsKey("wc_signals_suppressed_sampled_run")) {
             assertTrue(
@@ -112,8 +103,6 @@ public class WallclockMitigationsCombinedTest extends AbstractProfilerTest {
         }
     }
 
-    /** Enables wall-clock profiling with the OS-state precheck explicitly turned on so both
-     * Approach A (precheck) and Approach B (park flag) are exercised in this combined test. */
     @Override
     protected String getProfilerCommand() {
         return "wall=1ms,filter=0,wallprecheck=true";

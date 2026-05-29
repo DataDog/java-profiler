@@ -56,7 +56,7 @@ public class VtableReceiverFrameTest extends AbstractProfilerTest {
     // is dropped, the receiver class name will not appear next to a vtable stub in JFR.
     @RetryingTest(5)
     public void testVtableReceiverFrameInCpuSamples() throws Exception {
-        Assumptions.assumeFalse(Platform.isZing() || Platform.isJ9());
+        Assumptions.assumeFalse(Platform.isZing() || Platform.isJ9() || Platform.isGraal(), "VtableReceiverFrameTest is not supported on Zing, J9, or Graal");
         waitForProfilerReady(2000);
         int result = profiledWork(new Circle(), new Square(), new Triangle());
         System.err.println(result);

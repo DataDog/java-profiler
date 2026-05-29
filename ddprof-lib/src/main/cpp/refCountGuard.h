@@ -15,17 +15,16 @@
  * Each slot occupies a full cache line (64 bytes) to eliminate false sharing.
  *
  * ACTIVATION PROTOCOL (pointer-first):
- * - Constructor: store active_ptr first, then increment count
- * - Destructor:  decrement count first, then clear active_ptr
- * - Scanner:     check count; if 0, skip slot (treats it as inactive)
+ * - Constructor: store active_ptr (RELEASE) first, then increment count (RELEASE)
+ * - Destructor:  decrement count (RELEASE) first, then clear active_ptr (RELEASE)
+ * - Scanner:     load count (ACQUIRE); if 0, also load active_ptr (ACQUIRE);
+ *                treat the slot as active if either count > 0 or active_ptr != null
  *
- * There is a brief activation window between the store of active_ptr and the
- * increment of count where the scanner sees count=0 and may skip the slot.
- * For signal handlers this window is never observed in practice: handlers
- * complete within microseconds while a buffer can only be cleared after TWO
- * full dump cycles (typically 60+ seconds).  If the window were hit, the caller
- * observes a miss (e.g. 0 or equivalent sentinel) and handles it gracefully
- * — a dropped trace or generic vtable frame, not a crash.
+ * The scanner checks active_ptr even when count==0 to cover the non-reentrant
+ * constructor's activation window (active_ptr stored but count not yet incremented)
+ * and the destructor's deactivation window (count decremented but active_ptr not yet
+ * cleared).  The RELEASE/ACQUIRE pairing on active_ptr itself guarantees the scanner
+ * sees the stored value if it was written before the load in program order.
  *
  * REENTRANT NESTING: when a signal fires inside an outer guard (same thread),
  * the displaced active_ptr is parked in outer_stack[] so the scanner can still
@@ -64,7 +63,7 @@ struct alignas(DEFAULT_CACHE_LINE_SIZE) RefCountSlot {
  * Correctness:
  * - Pointer stored BEFORE count increment (activation)
  * - Count decremented BEFORE pointer cleared (deactivation)
- * - Scanner checks count first, ensuring consistent view
+ * - Scanner checks both count and active_ptr to close the activation window
  *
  * Reentrancy:
  * - A signal handler may create a RefCountGuard while a JNI thread already

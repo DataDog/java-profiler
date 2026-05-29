@@ -307,6 +307,20 @@ void ThreadFilter::resetSlotRunState(SlotID slot_id) {
         // Clear stale suppression state so a new thread in this slot is not
         // silently suppressed due to its predecessor's park state.
         chunk->slots[slot_idx].resetSampledRun(OSThreadState::UNKNOWN);
+        chunk->slots[slot_idx].setInParkRun(false);
+    }
+}
+
+void ThreadFilter::enterParkRun(SlotID slot_id) {
+    Slot* s = slotForId(slot_id);
+    if (s != nullptr) s->setInParkRun(true);
+}
+
+void ThreadFilter::exitParkRun(SlotID slot_id) {
+    Slot* s = slotForId(slot_id);
+    if (s != nullptr) {
+        s->setInParkRun(false);
+        s->resetSampledRun(OSThreadState::RUNNABLE);
     }
 }
 

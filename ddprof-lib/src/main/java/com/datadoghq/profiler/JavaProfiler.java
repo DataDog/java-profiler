@@ -278,15 +278,16 @@ public final class JavaProfiler {
     }
 
     /**
-     * Called before {@code LockSupport.park}; native wall-clock sampling may skip SIGVTALRM for
-     * this interval. Span context is captured natively from the OTEP TLS sidecar.
+     * Called before {@code LockSupport.park}. Sets the parked flag so the wall-clock
+     * sampler can suppress duplicate signals during the blocking interval.
      */
     public void parkEnter() {
         parkEnter0();
     }
 
     /**
-     * Called after {@code LockSupport.park}; clears parked state and may emit {@code datadog.TaskBlock}.
+     * Called after {@code LockSupport.park}. Clears the parked flag.
+     * {@code blocker} and {@code unblockingSpanId} are reserved for future use.
      */
     public void parkExit(long blocker, long unblockingSpanId) {
         parkExit0(blocker, unblockingSpanId);
