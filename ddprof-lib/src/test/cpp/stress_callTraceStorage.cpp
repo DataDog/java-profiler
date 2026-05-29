@@ -2019,12 +2019,28 @@ TEST_F(StressTestSuite, HashTableSpinWaitEdgeCasesTest) {
 // promoted to prev after expansion, threads that loaded the old table
 // pointer before the CAS swap still write into it while new threads call
 // findCallTrace(prev, hash) — the read must be atomic.
+//
+// Memory-ordering races on 8-byte aligned values are benign on x86_64 (the
+// CPU guarantees naturally-atomic loads), so the race is only reliably
+// detectable under ThreadSanitizer.  The test is therefore skipped outside
+// TSan builds to avoid giving false confidence that the regression is covered.
+//
+// The dedup assertion (dedup_mismatches == 0) validates findCallTrace
+// correctness across expansion boundaries independently of memory ordering;
+// it catches logic regressions in all build configurations.
 TEST_F(StressTestSuite, FindCallTraceAtomicReadRaceTest) {
+#if !defined(__SANITIZE_THREAD__)
+    GTEST_SKIP() << "TSan-only race regression: re-run with -fsanitize=thread";
+#endif
+
     // Fill the table to just below the 75% expansion threshold
     // (INITIAL_CAPACITY = 65536; 75% = 49152).
     const int FILL_TARGET = 48800;
     const int NUM_THREADS = 16;
     const int OPS_PER_THREAD = 400;
+    // Number of pre-filled entries to re-insert concurrently as a dedup check.
+    // After expansion these will be looked up via findCallTrace(prev, hash).
+    const int VERIFY_COUNT = 200;
 
     void* aligned_memory = std::aligned_alloc(alignof(CallTraceHashTable), sizeof(CallTraceHashTable));
     ASSERT_NE(aligned_memory, nullptr);
@@ -2038,23 +2054,36 @@ TEST_F(StressTestSuite, FindCallTraceAtomicReadRaceTest) {
     CallTraceHashTable& hash_table = *hash_table_ptr;
     hash_table.setInstanceId(42);
 
-    // Pre-fill single-threaded up to just below the expansion threshold
+    // Pre-fill single-threaded up to just below the expansion threshold,
+    // recording trace_ids for the last VERIFY_COUNT entries.
+    std::vector<u64> expected_ids(VERIFY_COUNT);
+    std::vector<ASGCT_CallFrame> verify_frames(VERIFY_COUNT);
+
     for (int i = 0; i < FILL_TARGET; ++i) {
         ASGCT_CallFrame frame;
         frame.bci = i + 1;
         frame.method_id = reinterpret_cast<jmethodID>(0x10000 + i);
-        hash_table.put(1, &frame, false, 1);
+        u64 id = hash_table.put(1, &frame, false, 1);
+        if (i >= FILL_TARGET - VERIFY_COUNT) {
+            int vi = i - (FILL_TARGET - VERIFY_COUNT);
+            expected_ids[vi] = id;
+            verify_frames[vi] = frame;
+        }
     }
 
-    // Release all threads simultaneously so some cross the 75% threshold,
-    // triggering expansion.  Threads that loaded the old table pointer before
-    // the expansion CAS will continue inserting into the now-prev table while
-    // threads that see the new table call findCallTrace(prev, hash).
     std::atomic<bool> go{false};
     std::atomic<uint64_t> successes{0};
+    // Counts put() calls that returned a trace_id different from the originally
+    // recorded id for a known pre-filled entry.  A non-zero value means
+    // findCallTrace(prev, hash) returned nullptr when it should have returned
+    // the entry — either a logic bug or a memory-ordering failure.
+    std::atomic<uint64_t> dedup_mismatches{0};
     std::vector<std::thread> workers;
 
-    for (int t = 0; t < NUM_THREADS; ++t) {
+    // Half the threads insert new distinct frames to trigger expansion.  They
+    // load the old table pointer before the CAS swap and write keys[] in prev,
+    // creating the concurrent-write side of the race window.
+    for (int t = 0; t < NUM_THREADS / 2; ++t) {
         workers.emplace_back([&, t]() {
             while (!go.load(std::memory_order_acquire)) { /* spin */ }
             for (int i = 0; i < OPS_PER_THREAD; ++i) {
@@ -2069,12 +2098,33 @@ TEST_F(StressTestSuite, FindCallTraceAtomicReadRaceTest) {
         });
     }
 
+    // The other half re-insert pre-filled frames.  After expansion the new
+    // table is empty for those hashes, so put() claims a new slot and calls
+    // findCallTrace(prev, hash) — the read side of the race window.  A correct
+    // findCallTrace must return the original trace so dedup produces the same
+    // trace_id.
+    for (int t = NUM_THREADS / 2; t < NUM_THREADS; ++t) {
+        workers.emplace_back([&, t]() {
+            while (!go.load(std::memory_order_acquire)) { /* spin */ }
+            for (int i = 0; i < VERIFY_COUNT; ++i) {
+                u64 id = hash_table.put(1, &verify_frames[i], false, 1);
+                if (id != 0 && id != CallTraceStorage::DROPPED_TRACE_ID &&
+                    id != expected_ids[i]) {
+                    dedup_mismatches.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+        });
+    }
+
     go.store(true, std::memory_order_release);
     for (auto& w : workers) {
         w.join();
     }
 
     EXPECT_GT(successes.load(), 0u) << "No successful insertions after expansion";
+    EXPECT_EQ(dedup_mismatches.load(), 0u)
+        << "findCallTrace returned wrong trace_id for pre-filled entries after expansion "
+           "(findCallTrace failed to locate entry in prev table)";
 }
 
 // Test 13: Hash Table Memory Allocation Failure Stress Test
