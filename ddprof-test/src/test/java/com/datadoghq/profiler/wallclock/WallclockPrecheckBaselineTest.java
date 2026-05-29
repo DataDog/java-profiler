@@ -25,24 +25,10 @@ import org.openjdk.jmc.flightrecorder.JfrAttributes;
 import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
 /**
- * Cross-recording proof of the gap-fill property.
- *
- * <p>Recording A ({@code wallprecheck=false}): every {@code SIGVTALRM} fires; almost every
- * {@code PARKED MethodSample} on the worker should lie inside some {@code TaskBlock} interval
- * on the worker, because {@code parkEnter}/{@code parkExit} fences exactly the kernel-wait
- * time during which {@code PARKED} state is observable.
- *
- * <p>Recording B ({@code wallprecheck=true}): the same workload produces the same
- * {@code TaskBlock} intervals (parkEnter/parkExit is filter-independent), but those intervals
- * are now empty of {@code PARKED MethodSamples} — the once-per-run filter has suppressed every
- * signal during the runs.
- *
- * <p>Together, the two checks form the gap-fill proof: each {@code TaskBlock} interval contained
- * sample(s) in baseline (recording A) and is empty under the filter (recording B), so the
- * {@code TaskBlock} interval covers the slot left by suppression one-for-one.
- *
- * <p>{@link TaskBlockCoverageTest} is the within-recording counterpart that exercises recording-B
- * containment in isolation.
+ * Cross-recording gap-fill proof: recording A ({@code wallprecheck=false}) shows PARKED
+ * MethodSamples inside TaskBlock intervals; recording B ({@code wallprecheck=true}) shows those
+ * same intervals empty of PARKED samples — the once-per-run filter suppressed them and the
+ * TaskBlock interval covers the gap one-for-one.
  */
 public class WallclockPrecheckBaselineTest extends AbstractProfilerTest {
 
@@ -55,10 +41,8 @@ public class WallclockPrecheckBaselineTest extends AbstractProfilerTest {
     @Test
     public void taskBlocksAccountForSuppressedSamples() throws Exception {
         Assumptions.assumeTrue(!Platform.isJ9());
-        // wallprecheck reads HotSpot OSThreadState; JDK 8 misreports sleep / park states.
         Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
 
-        // Recording A: wallprecheck=false (started by @BeforeEach via getProfilerCommand()).
         runParkWorkload(WORKER_A);
         stopProfiler();
         List<Interval> taskBlocksA =
@@ -66,7 +50,6 @@ public class WallclockPrecheckBaselineTest extends AbstractProfilerTest {
         List<Interval> parkedSamplesA =
                 collectIntervals(verifyEvents("datadog.MethodSample", false), WORKER_A, true);
 
-        // Recording B: wallprecheck=true, same workload, separate JFR file.
         Path recordingB = Files.createTempFile(Paths.get("/tmp/recordings"),
                 "WallclockPrecheckBaselineTest_B_", ".jfr");
         profiler.execute("start,wall=" + SAMPLING_INTERVAL_MS + "ms,wallprecheck=true,filter=0"
@@ -93,42 +76,31 @@ public class WallclockPrecheckBaselineTest extends AbstractProfilerTest {
                 taskBlocksA.size(), parkedSamplesA.size(), coveredA,
                 taskBlocksB.size(), parkedSamplesB.size(), emptyTaskBlocksB);
 
-        // Structural: parkEnter/parkExit must emit in both modes (filter is sample-side only).
         long minTb = PARK_RUNS / 2L;
         assertTrue(taskBlocksA.size() >= minTb,
                 "recording A: expected ≥" + minTb + " TaskBlocks, got " + taskBlocksA.size());
         assertTrue(taskBlocksB.size() >= minTb,
                 "recording B: expected ≥" + minTb + " TaskBlocks, got " + taskBlocksB.size());
 
-        // The baseline must have enough PARKED samples for the coverage ratio to be meaningful.
         assertTrue(parkedSamplesA.size() >= 10,
                 "recording A: expected ≥10 PARKED samples to make coverage check meaningful, got "
                         + parkedSamplesA.size());
 
-        // Baseline containment: ≥80% of PARKED MethodSamples on the worker in recording A lie
-        // inside some TaskBlock interval on the worker. This proves the TaskBlock interval
-        // temporally contains the moments where signals fire on a parked thread — i.e. the
-        // interval physically covers what the filter would later suppress.
+        // Recording A: ≥80% of PARKED samples inside a TaskBlock interval.
         double coverageRatioA = (double) coveredA / parkedSamplesA.size();
         assertTrue(coverageRatioA >= 0.8,
                 "recording A: expected ≥80% of PARKED samples to lie inside TaskBlock intervals, "
                         + "got " + coveredA + " / " + parkedSamplesA.size()
                         + " = " + String.format("%.1f%%", 100.0 * coverageRatioA));
 
-        // Gap-fill under filter: ≥95% of TaskBlock intervals on the worker in recording B
-        // contain zero PARKED samples on the worker. Combined with the recording A check, this
-        // proves the filter created gaps in MethodSample emission that the TaskBlock intervals
-        // cover one-for-one.
+        // Recording B: ≥95% of TaskBlock intervals empty of PARKED samples.
         double gapRatioB = (double) emptyTaskBlocksB / taskBlocksB.size();
         assertTrue(gapRatioB >= 0.95,
                 "recording B: expected ≥95% of TaskBlock intervals to be empty of PARKED samples, "
                         + "got " + emptyTaskBlocksB + " / " + taskBlocksB.size()
                         + " = " + String.format("%.1f%%", 100.0 * gapRatioB));
 
-        // Per-interval strict invariant of the once-per-run filter: a TaskBlock interval is
-        // one CONDVAR_WAIT run by construction, so at most one PARKED MethodSample may fall
-        // inside any single TaskBlock interval — never two. Complements the gap-ratio check
-        // above (which bounds how many intervals carry an entry sample at all).
+        // At most one PARKED sample per TaskBlock interval (one run → one entry sample).
         int maxSamplesInAnyTaskBlockB = 0;
         int worstTaskBlockIdxB = -1;
         for (int i = 0; i < taskBlocksB.size(); i++) {
@@ -153,14 +125,13 @@ public class WallclockPrecheckBaselineTest extends AbstractProfilerTest {
     private void runParkWorkload(String workerName) throws Exception {
         Thread worker = new Thread(() -> {
             registerCurrentThreadForWallClockProfiling();
-            // TaskBlock emission requires a non-zero spanId — taskBlockRecorder skips otherwise.
             long spanId = 0x1234L;
             long rootSpanId = 0x5678L;
             profiler.setContext(rootSpanId, spanId, 0, 0);
             try {
                 for (int i = 0; i < PARK_RUNS; i++) {
                     profiler.parkEnter();
-                    LockSupport.parkNanos(PARK_NANOS);
+                    LockSupport.parkNanos(PARK_NANOS); // SIGVTALRM may interrupt early; TaskBlock still emits
                     profiler.parkExit(System.identityHashCode(this), 0L);
                 }
             } finally {
@@ -237,7 +208,6 @@ public class WallclockPrecheckBaselineTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        // Recording A: wallprecheck explicitly disabled (every signal fires).
         return "wall=" + SAMPLING_INTERVAL_MS + "ms,wallprecheck=false,filter=0";
     }
 }

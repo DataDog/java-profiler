@@ -26,20 +26,9 @@ private:
   inline static std::atomic<long long> _task_block_skipped_too_short{0};
   inline static std::atomic<long long> _suppressed_sampled_run{0};
 
-  /**
-   * Drains one counter to zero. These counters are best-effort diagnostics:
-   * increments use relaxed ordering on the signal-handler hot path. Atomic
-   * read-modify-write operations on the same counter still have a single
-   * modification order, so increments are not lost; a concurrent increment is
-   * simply ordered either before this exchange (counted in this drain) or after
-   * it (counted in the next drain). Values are intended for observability of
-   * trends, not exact interval accounting.
-   *
-   * The acquire tag on the exchange is retained as a cheap one-way fence on the
-   * draining thread so that subsequent reads on this thread are not reordered
-   * before the drain. It does NOT form a release/acquire pair with the relaxed
-   * increments - those carry no ordering of their own.
-   */
+  // Best-effort: increments are RELAXED (signal-handler safe), drain is ACQUIRE
+  // (one-way fence on the timer thread). A concurrent increment lands in either
+  // this drain or the next — no counts are lost, but interval boundaries are fuzzy.
   static u64 drainCounter(std::atomic<long long>& counter) {
     return (u64)counter.exchange(0, std::memory_order_acquire);
   }

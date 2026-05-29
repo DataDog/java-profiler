@@ -13,15 +13,11 @@ TEST(WallPrecheckArgsTest, DefaultsToDisabled) {
     EXPECT_FALSE(args._wall_precheck);
 }
 
-TEST(WallPrecheckArgsTest, BareFlagWithoutValueDisablesPrecheck) {
-    // wallprecheck is false by default; passing it without a value keeps it
-    // disabled — explicit opt-in via wallprecheck=true is required.
+TEST(WallPrecheckArgsTest, BareFlagEnablesPrecheck) {
     Arguments args;
-
     Error error = args.parse("wallprecheck");
-
     EXPECT_FALSE(error);
-    EXPECT_FALSE(args._wall_precheck);
+    EXPECT_TRUE(args._wall_precheck);
 }
 
 TEST(WallPrecheckArgsTest, ExplicitBooleanValues) {

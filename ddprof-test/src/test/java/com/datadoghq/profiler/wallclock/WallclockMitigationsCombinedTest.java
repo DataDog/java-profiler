@@ -14,17 +14,11 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Combined wall-clock mitigations integration test:
- * - Approach A (once-per-run signal suppression under {@code wallprecheck=true}): a sleeping thread
- *   should produce roughly one MethodSample (the entry sample of the SLEEPING / CONDVAR_WAIT run)
- *   and {@code wc_signals_suppressed_sampled_run} should be positive.
- * - Approach B ({@code parkEnter}/{@code parkExit}): a runnable thread flagged via the parked API
- *   should emit {@code datadog.TaskBlock} events carrying the run's duration.
- * - Correctness guard: purely runnable thread still produces MethodSample events.
+ * Verifies that once-per-run suppression ({@code wallprecheck=true}) and the park API
+ * ({@code parkEnter}/{@code parkExit}) work together correctly.
  */
 public class WallclockMitigationsCombinedTest extends AbstractProfilerTest {
 
-    /** Verifies Approach A and B counters/events can be observed concurrently. */
     @Test
     public void precheckAndParkSuppressionWorkTogether() throws Exception {
         Assumptions.assumeTrue(!Platform.isJ9());
@@ -58,7 +52,7 @@ public class WallclockMitigationsCombinedTest extends AbstractProfilerTest {
                             profiler.parkEnter();
                             long parkedUntil = System.nanoTime() + 280_000_000L;
                             while (System.nanoTime() < parkedUntil) {
-                                // Runnable while flagged parked.
+                                // spin while flagged parked
                             }
                             profiler.parkExit(System.identityHashCode(this), 0L);
                             profiler.clearContext();
@@ -112,8 +106,6 @@ public class WallclockMitigationsCombinedTest extends AbstractProfilerTest {
         }
     }
 
-    /** Enables wall-clock profiling with the OS-state precheck explicitly turned on so both
-     * Approach A (precheck) and Approach B (park flag) are exercised in this combined test. */
     @Override
     protected String getProfilerCommand() {
         return "wall=1ms,filter=0,wallprecheck=true";

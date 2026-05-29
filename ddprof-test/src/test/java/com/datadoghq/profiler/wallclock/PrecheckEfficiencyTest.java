@@ -21,23 +21,10 @@ import java.util.concurrent.locks.LockSupport;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Measures theoretical wall-clock signal suppression from sample distributions. Runs with {@code
- * wallprecheck=false} so every state is sampled; percentages estimate the upper bound on how many
- * {@code SIGVTALRM} deliveries {@code wallprecheck=true} would suppress with its once-per-run
- * filter (subsequent signals on the same SLEEPING / CONDVAR_WAIT run after the entry sample). The
- * entry signal of each run still fires under {@code wallprecheck=true}, so the actual suppression
- * is slightly below these percentages.
- *
- * <p><strong>Once-per-run filter (opt-in via {@code wallprecheck=true}; default is {@code false})</strong>
- * emits one MethodSample at the entry signal of a {@code SLEEPING} / {@code CONDVAR_WAIT} run and
- * suppresses subsequent signals on the same thread until the OS state leaves the skip set. That
- * covers {@code Thread.sleep} (legacy {@code SLEEPING}; JDK 21+ sleep uses wait/park), {@code
- * LockSupport.park}, and other condvar waits — not {@code Object.wait} ({@code OBJECT_WAIT}),
- * which the current filter does not skip.
- *
- * <p>Sample classification prefers Java thread name ({@code EVENT_THREAD_NAME}) for the fixed worker
- * threads when present, then JFR thread state, then stack strings — some JVMs (e.g. Graal on aarch64)
- * omit SLEEPING / {@code Thread.sleep} in state or stacks while samples still hit the worker.
+ * Measures the theoretical upper bound on {@code SIGVTALRM} suppression by running with
+ * {@code wallprecheck=false} and classifying sample states. The once-per-run filter
+ * ({@code wallprecheck=true}) suppresses {@code SLEEPING} / {@code CONDVAR_WAIT} after the
+ * entry sample; {@code OBJECT_WAIT} and {@code RUNNABLE} are not skipped.
  */
 public class PrecheckEfficiencyTest extends AbstractProfilerTest {
 
@@ -54,21 +41,21 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
         AtomicBoolean stop = new AtomicBoolean(false);
         Object monitor = new Object();
 
-        // Thread.sleep — typically SLEEPING or (JDK 21+) CONDVAR_WAIT; suppressed by once-per-run filter
+        // SLEEPING / CONDVAR_WAIT — suppressed by once-per-run filter
         Thread sleeping = new Thread(() -> {
             registerCurrentThreadForWallClockProfiling();
             ready.countDown();
             try { Thread.sleep(10_000); } catch (InterruptedException ignored) {}
         }, EFFICIENCY_SLEEPING);
 
-        // LockSupport.parkNanos — CONDVAR_WAIT; suppressed by once-per-run filter (same as JDK 21+ sleep path)
+        // CONDVAR_WAIT — suppressed by once-per-run filter
         Thread parked = new Thread(() -> {
             registerCurrentThreadForWallClockProfiling();
             ready.countDown();
             LockSupport.parkNanos(10_000_000_000L);
         }, EFFICIENCY_PARKED);
 
-        // Object.wait — OBJECT_WAIT; not in the once-per-run filter's skip set today
+        // OBJECT_WAIT — not in the once-per-run filter's skip set
         Thread waiting = new Thread(() -> {
             registerCurrentThreadForWallClockProfiling();
             ready.countDown();
@@ -77,7 +64,7 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
             }
         }, EFFICIENCY_WAITING);
 
-        // CPU spin — RUNNABLE; not skipped by the once-per-run filter
+        // RUNNABLE — not skipped
         Thread working = new Thread(() -> {
             registerCurrentThreadForWallClockProfiling();
             ready.countDown();
@@ -143,9 +130,7 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
                     }
                 }
                 String state = stateAccessor != null ? stateAccessor.getMember(item) : null;
-                // Native OSThreadState is written as jdk.types.ThreadState; CONDVAR_WAIT → "PARKED"
-                // in JFR metadata (flightRecorder.cpp writeThreadStates). Prefer state over stacks:
-                // stacks often omit LockSupport/Unsafe frames after inlining.
+                // CONDVAR_WAIT is written as "PARKED" in JFR metadata.
                 if (state != null && !state.isEmpty()) {
                     switch (state) {
                         case "SLEEPING":
@@ -201,8 +186,6 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
                 "Hypothetical if also suppressing OBJECT_WAIT:    %.1f%% of signals suppressed%n",
                 hypotheticalIfAlsoObjectWait);
 
-        // Sanity: each controlled thread type should produce at least a few samples.
-        // JDK 8 can collapse park/wait into WAITING-only classification depending on runtime/JFR details.
         assertTrue(sleepSamples > 0, "Expected samples from sleeping thread");
         if (Platform.isJavaVersion(8)) {
             assertTrue(parkSamples + objectWaitSamples > 0,
@@ -214,17 +197,7 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
         assertTrue(runnableSamples > 0, "Expected RUNNABLE samples (working thread or unidentified)");
     }
 
-    /**
-     * Simulates a typical Java service: a fixed thread pool that is mostly idle (threads parked
-     * in {@code LinkedBlockingQueue.take()}), plus a scheduler thread doing periodic
-     * {@code Thread.sleep} wakeups, plus a continuously-busy computation thread.
-     *
-     * This workload is representative of real applications where {@code LockSupport.park}
-     * dominates the thread state distribution. The printed suppression estimate uses {@code
-     * pctSleep + pctPark} as an upper bound on the once-per-run filter's effect ({@code SLEEPING}
-     * + {@code CONDVAR_WAIT}); the entry signal of each run still fires under {@code
-     * wallprecheck=true}.
-     */
+    /** Thread pool mostly idle (park), plus a sleep-driven scheduler and a CPU-bound thread. */
     @Test
     public void realisticServiceWorkload() throws Exception {
         Assumptions.assumeTrue(!Platform.isJ9());
@@ -236,8 +209,6 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
         AtomicBoolean stop = new AtomicBoolean(false);
         AtomicInteger threadIndex = new AtomicInteger(0);
 
-        // Thread pool whose threads register themselves with the wall-clock filter.
-        // When idle, pool threads sit in LinkedBlockingQueue.take() → LockSupport.park (CONDVAR_WAIT).
         ExecutorService pool = Executors.newFixedThreadPool(POOL_SIZE, r -> {
             Thread t = new Thread(() -> {
                 registerCurrentThreadForWallClockProfiling();
@@ -248,15 +219,13 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
             return t;
         });
 
-        // Pre-warm: submit N tasks so the executor creates all POOL_SIZE threads before measurement.
         CountDownLatch primed = new CountDownLatch(POOL_SIZE);
         for (int i = 0; i < POOL_SIZE; i++) {
             pool.submit(primed::countDown);
         }
         primed.await();
-        Thread.sleep(50); // let all pool threads return to idle (parked) state
+        Thread.sleep(50);
 
-        // Scheduler: sleeps between submissions. Thread.sleep → SLEEPING or (JDK 21+) CONDVAR_WAIT.
         Thread scheduler = new Thread(() -> {
             registerCurrentThreadForWallClockProfiling();
             while (!stop.get()) {
@@ -265,7 +234,6 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
                 } catch (InterruptedException e) {
                     break;
                 }
-                // Submit a short CPU task to one pool thread
                 pool.submit(() -> {
                     long x = 0;
                     long deadline = System.nanoTime() + TASK_DURATION_MS * 1_000_000L;
@@ -277,7 +245,6 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
         scheduler.setDaemon(true);
         scheduler.start();
 
-        // Always-busy thread: simulates a background aggregation/analytics loop.
         Thread hotThread = new Thread(() -> {
             registerCurrentThreadForWallClockProfiling();
             long x = 0;
@@ -286,7 +253,6 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
         hotThread.setDaemon(true);
         hotThread.start();
 
-        // Measurement window
         Thread.sleep(500);
 
         stop.set(true);
@@ -309,13 +275,10 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
                 if (stack == null) {
                     otherSamples++;
                 } else if (stack.contains("Thread.sleep") || stack.contains("sleep0")) {
-                    // SLEEPING / JDK 21+ sleep-on-condvar — suppressed by once-per-run filter
                     sleepSamples++;
                 } else if (stack.contains("LockSupport.park") || stack.contains("Unsafe.park")) {
-                    // CONDVAR_WAIT — suppressed by once-per-run filter together with sleep buckets above
                     parkSamples++;
                 } else {
-                    // RUNNABLE or other — not skipped by the once-per-run filter
                     otherSamples++;
                 }
             }
@@ -344,10 +307,8 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
                 "Once-per-run filter (SLEEPING + CONDVAR_WAIT): %.1f%% of signals suppressed (upper bound)%n",
                 oncePerRunSuppression);
 
-        // The idle pool threads should dominate: most samples should be parked
         assertTrue(parkSamples > otherSamples,
                 String.format("Expected idle pool threads (park=%d) to dominate active threads (other=%d)", parkSamples, otherSamples));
-        // The scheduler must appear (it sleeps 50ms at a time over 500ms → ~10 cycles)
         assertTrue(sleepSamples > 0, "Expected samples from scheduler's Thread.sleep");
     }
 

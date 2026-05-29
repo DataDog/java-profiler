@@ -21,67 +21,33 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 /**
- * Regression guard for the wall-clock timer-side fast path that <strong>elides</strong>
- * {@code pthread_kill}/{@code SIGVTALRM} delivery (and the cross-CPU IPIs it triggers) when a
- * registered thread is in a {@code SLEEPING} / {@code CONDVAR_WAIT} run and has already produced
- * its one entry {@code MethodSample}.
- *
- * <p>The handler-side once-per-run filter (covered by {@link PrecheckTest} and {@link
- * TaskBlockCoverageTest}) suppresses <em>JFR events</em> after the entry sample, but the signals
- * still fire. The fast path on the timer thread reads the same slot state and skips the syscall
- * entirely — that is the property that actually reduces wakeups/IPIs on the production target.
- *
- * <p>{@link PrecheckTest} and {@link WallclockPrecheckBaselineTest} only assert on emitted JFR
- * events, which are unaffected by whether the signal was elided at the timer or dropped in the
- * handler. So if the timer fast path regresses (e.g. someone takes the slot lookup out, or the
- * memory ordering breaks visibility of the {@code sampled_this_run} flag), those tests still pass
- * and the IPI savings are silently lost. This test fills that gap by comparing the {@code
- * wallclock_signal_own} counter (incremented once per handler invocation == once per delivered
- * signal) between a {@code wallprecheck=false} baseline run and a {@code wallprecheck=true} run.
- *
- * <p>Two complementary workloads:
- * <ul>
- *   <li>{@link #timerElidesIpiForLongParkRuns()} — one worker, long {@code LockSupport.parkNanos}
- *       runs. Maximises the elision ratio (most ticks land inside a single park run); makes the
- *       check tight and easy to diagnose when it fails.</li>
- *   <li>{@link #timerElidesIpiForRealisticServiceWorkload()} — a fixed thread pool whose threads
- *       sit parked in {@code LinkedBlockingQueue.take()} plus a {@code Thread.sleep}-driven
- *       scheduler and a CPU-bound thread. Mirrors a typical Java service profile, where
- *       {@code LockSupport.park} dominates the state distribution.</li>
- * </ul>
- *
- * <p>Both methods register the workload threads with the wall-clock thread filter and run with
- * {@code filter=0} so that only those threads receive signals — keeping the counter math
- * dominated by workload signals rather than JVM-internal threads.
+ * Regression guard for the timer-thread fast path: when a thread is in a {@code SLEEPING} /
+ * {@code CONDVAR_WAIT} run and has already produced its entry sample, the timer elides
+ * {@code pthread_kill} entirely (skipping the cross-CPU IPI). Verified by comparing the
+ * {@code wallclock_signal_own} counter between a {@code wallprecheck=false} baseline run and a
+ * {@code wallprecheck=true} run — the counter must drop by ≥50%.
  */
 public class WallclockTimerFastPathTest extends AbstractProfilerTest {
 
     private static final String COUNTER_KEY = "wallclock_signal_own";
     private static final long SAMPLING_INTERVAL_MS = 10L;
 
-    // Allow up to 50% of the baseline signal volume after the fast path engages. The theoretical
-    // ratio is much lower (entry sample only), but CI noise (boundary jitter when the thread
-    // transitions in/out of park, JVM warmup ticks before the slot is associated, etc.) means a
-    // 50% guard is the right balance between catching regressions and not flaking. With the
-    // fast path working we routinely see ratios well below 25%.
+    // CI noise (boundary jitter, warmup) keeps us at 50%; working fast path routinely sees <25%.
     private static final double MAX_ALLOWED_RATIO = 0.5;
 
     @Test
     public void timerElidesIpiForLongParkRuns() throws Exception {
         Assumptions.assumeTrue(!Platform.isJ9());
-        // wallprecheck reads HotSpot OSThreadState; JDK 8 misreports sleep / park states.
         Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
 
         Map<String, Long> beforeA = profiler.getDebugCounters();
         Assumptions.assumeTrue(beforeA.containsKey(COUNTER_KEY),
                 "wallclock_signal_own counter not available (build without COUNTERS)");
 
-        // Recording A: wallprecheck=false (started by @BeforeEach via getProfilerCommand()).
         runParkWorkload("fastpath-park-A");
         stopProfiler();
         long signalsA = signalDelta(beforeA, profiler.getDebugCounters());
 
-        // Recording B: wallprecheck=true, same workload, separate JFR file.
         Path recordingB = Files.createTempFile(Paths.get("/tmp/recordings"),
                 "WallclockTimerFastPathTest_park_B_", ".jfr");
         profiler.execute("start,wall=" + SAMPLING_INTERVAL_MS + "ms,wallprecheck=true,filter=0"
@@ -110,7 +76,7 @@ public class WallclockTimerFastPathTest extends AbstractProfilerTest {
         long signalsA = signalDelta(beforeA, profiler.getDebugCounters());
 
         Path recordingB = Files.createTempFile(Paths.get("/tmp/recordings"),
-                "WallclockTimerFastPathTest_realistic_B_", ".jfr");
+                "WallclockTimerFastPathTest_realistic_B_", ".jfr"); // recording B: wallprecheck=true
         profiler.execute("start,wall=" + SAMPLING_INTERVAL_MS + "ms,wallprecheck=true,filter=0"
                 + ",attributes=tag1;tag2;tag3,jfr,file=" + recordingB.toAbsolutePath());
         Map<String, Long> beforeB = profiler.getDebugCounters();
@@ -136,17 +102,10 @@ public class WallclockTimerFastPathTest extends AbstractProfilerTest {
                         + "  ratio B/A = %.3f (max allowed %.3f)%n",
                 tag, signalsA, signalsB, ratio, MAX_ALLOWED_RATIO);
 
-        // Sanity: the baseline must actually have produced signals — otherwise the ratio is
-        // meaningless and the test is silently green for the wrong reason. The threshold is
-        // intentionally permissive (a few dozen) since CI runners vary widely; the meaningful
-        // assertion is the ratio check below.
         assertTrue(signalsA > 20,
                 "recording A: baseline produced too few wallclock_signal_own ticks (" + signalsA
                         + "); workload may not be running long enough");
 
-        // Core IPI-elide invariant: the wall-clock timer must skip the syscall for parked
-        // threads after the entry sample. If this regresses, JP6 still suppresses the JFR
-        // events (so PrecheckTest passes) but every tick still wakes the worker CPU.
         assertTrue(signalsB < signalsA * MAX_ALLOWED_RATIO,
                 "timer fast path appears disengaged: recording A delivered " + signalsA
                         + " signals, recording B delivered " + signalsB
@@ -155,20 +114,12 @@ public class WallclockTimerFastPathTest extends AbstractProfilerTest {
     }
 
     private void runParkWorkload(String workerName) throws Exception {
-        // Re-park loop: LockSupport.parkNanos returns early when SIGVTALRM interrupts the
-        // underlying pthread_cond_timedwait, which without re-parking would collapse the
-        // effective parked time to near-zero (one signal per nominal park run). We loop
-        // until the deadline to keep the worker continuously parked for ~PARK_NANOS each
-        // run, which is what the timer fast path is supposed to exploit.
         final int PARK_RUNS = 100;
-        final long PARK_NANOS = 100_000_000L; // 100 ms per run → ~10 s total parked time
+        final long PARK_NANOS = 100_000_000L; // 100 ms per run
         AtomicBoolean stop = new AtomicBoolean(false);
 
         Thread worker = new Thread(() -> {
             registerCurrentThreadForWallClockProfiling();
-            // TaskBlock emission requires a non-zero spanId — keeps the workload aligned with
-            // how parkEnter/parkExit are exercised in the other wall-clock tests. The counter
-            // we check (wallclock_signal_own) is independent of TaskBlock emission.
             profiler.setContext(0x5678L, 0x1234L, 0, 0);
             try {
                 for (int i = 0; i < PARK_RUNS && !stop.get(); i++) {
@@ -190,8 +141,6 @@ public class WallclockTimerFastPathTest extends AbstractProfilerTest {
     }
 
     private void runRealisticWorkload(String tag) throws Exception {
-        // Tuned for ~1s of measurement, mirroring PrecheckEfficiencyTest.realisticServiceWorkload
-        // but scaled up enough to give the counter a clear signal under filter=0.
         final int POOL_SIZE = 8;
         final int TASK_DURATION_MS = 20;
         final int SCHEDULE_INTERVAL_MS = 50;
@@ -200,7 +149,6 @@ public class WallclockTimerFastPathTest extends AbstractProfilerTest {
         AtomicBoolean stop = new AtomicBoolean(false);
         AtomicInteger threadIndex = new AtomicInteger(0);
 
-        // Mostly-idle pool: threads park in LinkedBlockingQueue.take() between submissions.
         ExecutorService pool = Executors.newFixedThreadPool(POOL_SIZE, r -> {
             Thread t = new Thread(() -> {
                 registerCurrentThreadForWallClockProfiling();
@@ -211,7 +159,6 @@ public class WallclockTimerFastPathTest extends AbstractProfilerTest {
             return t;
         });
 
-        // Pre-warm: ensure all POOL_SIZE threads exist and are parked before measurement.
         CountDownLatch primed = new CountDownLatch(POOL_SIZE);
         for (int i = 0; i < POOL_SIZE; i++) {
             pool.submit(primed::countDown);
@@ -258,8 +205,6 @@ public class WallclockTimerFastPathTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        // Recording A baseline: wallprecheck explicitly disabled, filter=0 so only registered
-        // threads are sampled (keeps wallclock_signal_own dominated by workload signals).
         return "wall=" + SAMPLING_INTERVAL_MS + "ms,wallprecheck=false,filter=0";
     }
 }
