@@ -2014,6 +2014,69 @@ TEST_F(StressTestSuite, HashTableSpinWaitEdgeCasesTest) {
     EXPECT_LT(drop_rate, 0.5) << "Excessive trace drop rate: " << drop_rate;
 }
 
+// Regression test: TSan data race in findCallTrace() — keys[] plain reads
+// raced with atomic CAS writes from concurrent put().  When a table is
+// promoted to prev after expansion, threads that loaded the old table
+// pointer before the CAS swap still write into it while new threads call
+// findCallTrace(prev, hash) — the read must be atomic.
+TEST_F(StressTestSuite, FindCallTraceAtomicReadRaceTest) {
+    // Fill the table to just below the 75% expansion threshold
+    // (INITIAL_CAPACITY = 65536; 75% = 49152).
+    const int FILL_TARGET = 48800;
+    const int NUM_THREADS = 16;
+    const int OPS_PER_THREAD = 400;
+
+    void* aligned_memory = std::aligned_alloc(alignof(CallTraceHashTable), sizeof(CallTraceHashTable));
+    ASSERT_NE(aligned_memory, nullptr);
+    auto hash_table_ptr = std::unique_ptr<CallTraceHashTable, void(*)(CallTraceHashTable*)>(
+        new(aligned_memory) CallTraceHashTable(),
+        [](CallTraceHashTable* ptr) {
+            ptr->~CallTraceHashTable();
+            std::free(ptr);
+        }
+    );
+    CallTraceHashTable& hash_table = *hash_table_ptr;
+    hash_table.setInstanceId(42);
+
+    // Pre-fill single-threaded up to just below the expansion threshold
+    for (int i = 0; i < FILL_TARGET; ++i) {
+        ASGCT_CallFrame frame;
+        frame.bci = i + 1;
+        frame.method_id = reinterpret_cast<jmethodID>(0x10000 + i);
+        hash_table.put(1, &frame, false, 1);
+    }
+
+    // Release all threads simultaneously so some cross the 75% threshold,
+    // triggering expansion.  Threads that loaded the old table pointer before
+    // the expansion CAS will continue inserting into the now-prev table while
+    // threads that see the new table call findCallTrace(prev, hash).
+    std::atomic<bool> go{false};
+    std::atomic<uint64_t> successes{0};
+    std::vector<std::thread> workers;
+
+    for (int t = 0; t < NUM_THREADS; ++t) {
+        workers.emplace_back([&, t]() {
+            while (!go.load(std::memory_order_acquire)) { /* spin */ }
+            for (int i = 0; i < OPS_PER_THREAD; ++i) {
+                ASGCT_CallFrame frame;
+                frame.bci = FILL_TARGET + 1 + t * OPS_PER_THREAD + i;
+                frame.method_id = reinterpret_cast<jmethodID>(0x80000 + t * OPS_PER_THREAD + i);
+                u64 id = hash_table.put(1, &frame, false, 1);
+                if (id != 0 && id != CallTraceStorage::DROPPED_TRACE_ID) {
+                    successes.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+        });
+    }
+
+    go.store(true, std::memory_order_release);
+    for (auto& w : workers) {
+        w.join();
+    }
+
+    EXPECT_GT(successes.load(), 0u) << "No successful insertions after expansion";
+}
+
 // Test 13: Hash Table Memory Allocation Failure Stress Test
 TEST_F(StressTestSuite, HashTableAllocationFailureStressTest) {
     const int NUM_THREADS = 8;
