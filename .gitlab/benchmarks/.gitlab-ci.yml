@@ -89,6 +89,8 @@ publish-benchmark-gh-pages:
     - job: benchmarks-candidate-aarch64
       artifacts: true
   rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH || $CI_COMMIT_BRANCH == "main"'
       when: always
   timeout: 10m
