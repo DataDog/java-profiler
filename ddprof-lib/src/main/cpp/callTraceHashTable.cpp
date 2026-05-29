@@ -232,10 +232,19 @@ CallTrace *CallTraceHashTable::findCallTrace(LongHashTable *table, u64 hash) {
 
   u32 slot = probe.slot();
   while (true) {
-    if (keys[slot] == hash) {
-      return table->values()[slot].trace;
+    // Use atomic load: keys[] can be written concurrently via CAS in put()
+    // when a table is promoted to prev but still has in-flight insertions.
+    u64 key = __atomic_load_n(&keys[slot], __ATOMIC_ACQUIRE);
+    if (key == hash) {
+      // Use acquireTrace() to pair with the RELEASE store in setTrace().
+      // If still PREPARING, treat as not found: callers will create a new entry.
+      CallTrace *trace = table->values()[slot].acquireTrace();
+      if (trace == CallTraceSample::PREPARING) {
+        return nullptr;
+      }
+      return trace;
     }
-    if (keys[slot] == 0) {
+    if (key == 0) {
       return nullptr;
     }
     if (!probe.hasNext()) {
