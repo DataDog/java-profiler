@@ -7,15 +7,15 @@ import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.item.Aggregators;
-import org.openjdk.jmc.common.item.IItemCollection;
 
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Verifies that once-per-run suppression ({@code wallprecheck=true}) and the park API
- * ({@code parkEnter}/{@code parkExit}) work together correctly.
+ * Verifies once-per-run suppression ({@code wallprecheck=true}) with a mix of sleeping,
+ * parked, and runnable threads. TaskBlock assertions are in PR2 (WallclockMitigationsCombinedTest
+ * in the precheck branch).
  */
 public class WallclockMitigationsCombinedTest extends AbstractProfilerTest {
 
@@ -88,16 +88,12 @@ public class WallclockMitigationsCombinedTest extends AbstractProfilerTest {
 
         stopProfiler();
 
-        IItemCollection taskBlocks = verifyEvents("datadog.TaskBlock");
-        assertTrue(
-                taskBlocks.getAggregate(Aggregators.count()).longValue() > 0,
-                "Expected TaskBlock events from parked interval");
+        // Runnable thread must still produce samples (precheck doesn't suppress RUNNABLE).
+        long sampleCount = verifyEvents("datadog.MethodSample", false)
+                .getAggregate(Aggregators.count()).longValue();
+        assertTrue(sampleCount > 0, "Expected MethodSample events from runnable thread");
 
-        IItemCollection methodSamples = verifyEvents("datadog.MethodSample");
-        assertTrue(
-                methodSamples.getAggregate(Aggregators.count()).longValue() > 0,
-                "Expected runnable MethodSample events while mitigations are enabled");
-
+        // Sleeping thread's suppression counter must have incremented.
         Map<String, Long> counters = profiler.getDebugCounters();
         if (counters.containsKey("wc_signals_suppressed_sampled_run")) {
             assertTrue(

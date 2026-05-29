@@ -37,20 +37,26 @@ TEST(ProfiledThreadParkStateTest, ParkFlagLifecycle) {
   EXPECT_FALSE(thread->parkExit(start_ticks, park_context)); // idempotent after clear
 }
 
-TEST(ProfiledThreadParkStateTest, ParkedSpanlessWhenNoActiveSpan) {
+TEST(ProfiledThreadParkStateTest, NewThreadStartsNotParked) {
   ProfiledThread *thread = ProfiledThread::forTid(12346);
-  thread->parkEnter(888);
+  u64 start_ticks = 0;
+  Context park_context = {};
+  EXPECT_FALSE(thread->parkExit(start_ticks, park_context));
+  // Out-params must not be touched on failed exit.
+  EXPECT_EQ(0ULL, start_ticks);
+}
+
+TEST(ProfiledThreadParkStateTest, SecondParkEnterOverwritesTicks) {
+  ProfiledThread *thread = ProfiledThread::forTid(12347);
+  thread->parkEnter(100);
+  thread->parkEnter(200); // second enter before exit: overwrites ticks
+
   u64 start_ticks = 0;
   Context park_context = {};
   EXPECT_TRUE(thread->parkExit(start_ticks, park_context));
-  EXPECT_EQ(888ULL, start_ticks);
-  EXPECT_EQ(0ULL, park_context.spanId); // ContextApi::snapshot returns 0 without OTEP TLS
-}
+  EXPECT_EQ(200ULL, start_ticks); // most recent parkEnter wins
 
-TEST(ProfiledThreadParkStateTest, NewThreadStartsNotParked) {
-  ProfiledThread *thread = ProfiledThread::forTid(12347);
-  u64 start_ticks = 0;
-  Context park_context = {};
+  // Flag is now clear; second exit is a no-op.
   EXPECT_FALSE(thread->parkExit(start_ticks, park_context));
 }
 

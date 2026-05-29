@@ -41,6 +41,7 @@ class BaseWallClock : public Engine {
     }
 
     bool isEnabled() const;
+    static bool inSyscall(void* ucontext);
 
     template <typename ThreadType, typename CollectThreadsFunc, typename SampleThreadsFunc, typename CleanThreadFunc>
     void timerLoopCommon(CollectThreadsFunc collectThreads, SampleThreadsFunc sampleThreads, CleanThreadFunc cleanThreads, int reservoirSize, u64 interval) {
@@ -93,11 +94,7 @@ class BaseWallClock : public Engine {
         epoch.updateNumSamplableThreads(threads.size());
         epoch.updateNumFailedSamples(num_failures);
         epoch.updateNumSuccessfulSamples(num_successful_samples);
-        WallClockCounterSnapshot counter_snapshot = WallClockCounters::drain();
-        epoch.addNumSuppressedSampledRun(counter_snapshot.suppressed_sampled_run);
-        epoch.addNumTaskBlockEmitted(counter_snapshot.task_block_emitted);
-        epoch.addNumTaskBlockSkippedSpanZero(counter_snapshot.task_block_skipped_span_zero);
-        epoch.addNumTaskBlockSkippedTooShort(counter_snapshot.task_block_skipped_too_short);
+        epoch.addNumSuppressedSampledRun(WallClockCounters::drainSuppressedSampledRun());
         epoch.updateNumExitedThreads(threads_already_exited);
         epoch.updateNumPermissionDenied(permission_denied);
         u64 endTime = TSC::ticks();
@@ -149,8 +146,6 @@ class WallClockASGCT : public BaseWallClock {
   private:
     bool _collapsing;
     bool _precheck;
-
-    static bool inSyscall(void* ucontext);
 
     static void sharedSignalHandler(int signo, siginfo_t* siginfo, void* ucontext);
     void signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64 last_sample);
