@@ -108,7 +108,7 @@ public final class HiddenClassChurnAntagonist implements Antagonist {
     private static byte[] generateClass(long uid) {
         // Unique internal name per class so each one gets a distinct entry
         // in the profiler's class map / StringDictionary.
-        String internalName = "chaos/hidden/Gen" + uid;
+        String internalName = "com/datadoghq/profiler/chaos/Gen" + uid;
         ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
         cw.visit(Opcodes.V11,
                 Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL,
