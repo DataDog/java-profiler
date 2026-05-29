@@ -56,6 +56,7 @@ public final class ConsumerGroupAntagonist implements Antagonist {
     @Override
     public void stopGracefully(Duration timeout) {
         running = false;
+        long deadline = System.currentTimeMillis() + timeout.toMillis();
         rebalancer.interrupt();
         try {
             rebalancer.join(timeout.toMillis() / 2);
@@ -65,7 +66,9 @@ public final class ConsumerGroupAntagonist implements Antagonist {
         for (Thread t : consumers) {
             if (t != null) {
                 t.interrupt();
-                try { t.join(500L); } catch (InterruptedException e) {
+                long remaining = Math.max(0L, deadline - System.currentTimeMillis());
+                if (remaining == 0L) break;
+                try { t.join(remaining); } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 }
             }

@@ -60,6 +60,7 @@ public final class BoundedThreadPoolAntagonist implements Antagonist {
     @Override
     public void stopGracefully(Duration timeout) {
         running = false;
+        recycler.interrupt();
         try {
             recycler.join(timeout.toMillis());
         } catch (InterruptedException e) {

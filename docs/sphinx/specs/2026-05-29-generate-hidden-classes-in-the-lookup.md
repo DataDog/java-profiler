@@ -1,4 +1,4 @@
-# generate-hidden-classes-in-the-lookup-packag
+# generate-hidden-classes-in-the-lookup-package
 
 ## Finding
 
