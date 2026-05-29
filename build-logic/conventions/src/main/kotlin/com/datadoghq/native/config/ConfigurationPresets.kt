@@ -250,24 +250,38 @@ object ConfigurationPresets {
                 config.compilerArgs.set(tsanCompilerArgs + commonLinuxCompilerArgs(version))
 
                 val libtsan = PlatformUtils.locateLibtsan(compiler)
+                // Use the library name from the resolved path so that clang's own
+                // libclang_rt.tsan-<arch>.so is linked by name (not as -ltsan).
                 val tsanLinkerArgs = if (libtsan != null) {
+                    val tsanLibDir = File(libtsan).parent
+                    val tsanLibName = File(libtsan).nameWithoutExtension.removePrefix("lib")
                     listOf(
-                        "-L${File(libtsan).parent}",
-                        "-ltsan",
+                        "-L$tsanLibDir",
+                        "-l$tsanLibName",
+                        "-Wl,-rpath,$tsanLibDir",
                         "-fsanitize=thread",
                         "-fno-omit-frame-pointer"
                     )
                 } else {
-                    emptyList()
+                    listOf("-fsanitize=thread", "-fno-omit-frame-pointer")
                 }
 
                 config.linkerArgs.set(commonLinuxLinkerArgs() + tsanLinkerArgs)
 
-                if (libtsan != null) {
-                    config.testEnvironment.apply {
+                config.testEnvironment.apply {
+                    if (libtsan != null) {
                         put("LD_PRELOAD", libtsan)
-                        put("TSAN_OPTIONS", "suppressions=$rootDir/gradle/sanitizers/tsan.supp")
+                        // handle_segv=0 / handle_sigbus=0: let the JVM handle these signals
+                        //   (SafeFetch, NullPointerException, memory bus errors).
+                        // use_sigaltstack=0: JVM manages its own alternate signal stack.
+                        // halt_on_error=0: report all races; process exits with code 66 at end.
+                        // abort_on_error=0: use exit() not abort() so Java shutdown hooks run.
+                        // io_sync=0: disable TSan's own FD-tracking, which races internally
+                        //   when the JVM concurrently closes/reads file descriptors.
+                        put("TSAN_OPTIONS", "handle_segv=0:handle_sigbus=0:use_sigaltstack=0:halt_on_error=0:abort_on_error=0:io_sync=0:suppressions=$rootDir/gradle/sanitizers/tsan.supp")
                     }
+                    // fork() is unsupported under TSan; threadsafe style uses execve instead.
+                    put("GTEST_DEATH_TEST_STYLE", "threadsafe")
                 }
             }
             Platform.MACOS -> {

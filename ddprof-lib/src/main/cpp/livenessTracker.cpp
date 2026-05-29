@@ -351,15 +351,16 @@ retry:
         int newcap = std::min(_table_cap * 2, _table_max_cap);
         if (_table_cap != newcap) {
           TrackingEntry *tmp = (TrackingEntry *)realloc(
-              _table, sizeof(TrackingEntry) * (_table_cap = newcap));
+                _table, sizeof(TrackingEntry) * newcap);
           if (tmp != nullptr) {
-            _table = tmp;
-            Log::debug(
-                "Increased size of Liveness tracking table to %d entries",
-                _table_cap);
+              _table = tmp;
+              _table_cap = newcap;
+              Log::debug(
+                 "Increased size of Liveness tracking table to %d entries",
+                  _table_cap);
           } else {
-            Log::debug("Cannot add sampled object to Liveness tracking table, "
-                       "resize attempt failed, the table is overflowing");
+              Log::debug("Cannot add sampled object to Liveness tracking table, "
+                         "resize attempt failed, the table is overflowing");
           }
         }
 
@@ -369,7 +370,10 @@ retry:
       } else {
         Log::debug("Cannot add sampled object to Liveness tracking table, it's "
                    "overflowing");
+        env->DeleteWeakGlobalRef(ref);
       }
+    } else {
+      env->DeleteWeakGlobalRef(ref);
     }
   }
   skipped = 0; // reset the subsampling skipped bytes

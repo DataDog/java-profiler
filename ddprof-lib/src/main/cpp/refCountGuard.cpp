@@ -170,7 +170,14 @@ void RefCountGuard::waitForRefCountToClear(void* table_to_delete) {
         bool all_clear = true;
         for (int i = 0; i < MAX_THREADS; ++i) {
             uint32_t count = __atomic_load_n(&refcount_slots[i].count, __ATOMIC_ACQUIRE);
-            if (count == 0) continue;
+            if (count == 0) {
+                // Check active_ptr to cover the non-reentrant constructor's activation window:
+                // active_ptr is stored (RELEASE) before count++ (RELEASE), so count==0 with
+                // active_ptr set means the thread is in the window and must be waited for.
+                void* aptr = __atomic_load_n(&refcount_slots[i].active_ptr, __ATOMIC_ACQUIRE);
+                if (aptr == table_to_delete) { all_clear = false; break; }
+                continue;
+            }
             if (slotReferences(refcount_slots[i], table_to_delete)) { all_clear = false; break; }
         }
         if (all_clear) return;
@@ -183,7 +190,11 @@ void RefCountGuard::waitForRefCountToClear(void* table_to_delete) {
         bool all_clear = true;
         for (int i = 0; i < MAX_THREADS; ++i) {
             uint32_t count = __atomic_load_n(&refcount_slots[i].count, __ATOMIC_ACQUIRE);
-            if (count == 0) continue;
+            if (count == 0) {
+                void* aptr = __atomic_load_n(&refcount_slots[i].active_ptr, __ATOMIC_ACQUIRE);
+                if (aptr == table_to_delete) { all_clear = false; break; }
+                continue;
+            }
             if (slotReferences(refcount_slots[i], table_to_delete)) { all_clear = false; break; }
         }
         if (all_clear) return;
@@ -208,6 +219,10 @@ void RefCountGuard::waitForAllRefCountsToClear() {
         bool any = false;
         for (int i = 0; i < MAX_THREADS; ++i) {
             if (__atomic_load_n(&refcount_slots[i].count, __ATOMIC_ACQUIRE) > 0) { any = true; break; }
+            // Also check active_ptr: non-reentrant constructor stores it (RELEASE) before
+            // count++ (RELEASE), so count==0 with active_ptr!=null means the thread is in
+            // the activation window and must be waited for.
+            if (__atomic_load_n(&refcount_slots[i].active_ptr, __ATOMIC_ACQUIRE) != nullptr) { any = true; break; }
         }
         if (!any) return;
         spinPause();
@@ -215,11 +230,12 @@ void RefCountGuard::waitForAllRefCountsToClear() {
 
     const int MAX_WAIT_ITERATIONS = 5000;
     struct timespec sleep_time = {0, 100000};
-    int last_nonzero_slot = -1;  // for timeout diagnostic below
+    int last_nonzero_slot = -1;
     for (int wait_count = 0; wait_count < MAX_WAIT_ITERATIONS; ++wait_count) {
         bool any = false;
         for (int i = 0; i < MAX_THREADS; ++i) {
             if (__atomic_load_n(&refcount_slots[i].count, __ATOMIC_ACQUIRE) > 0) { any = true; last_nonzero_slot = i; break; }
+            if (__atomic_load_n(&refcount_slots[i].active_ptr, __ATOMIC_ACQUIRE) != nullptr) { any = true; last_nonzero_slot = i; break; }
         }
         if (!any) return;
         nanosleep(&sleep_time, nullptr);

@@ -97,33 +97,33 @@ TEST_F(RemoteArgsTest, RemoteSymbolicationNoValue) {
 }
 
 TEST_F(RemoteArgsTest, RemoteSymbolicationNumericValues) {
-    Arguments args;
-
-    // Test numeric 1 (should enable)
-    Error error = args.parse("remotesym=1");
-    EXPECT_FALSE(error);
-    EXPECT_TRUE(args._remote_symbolication);
-
-    // Test numeric 0 (should disable)
-    args = Arguments();
-    error = args.parse("remotesym=0");
-    EXPECT_FALSE(error);
-    EXPECT_FALSE(args._remote_symbolication);
+    {
+        Arguments args;
+        Error error = args.parse("remotesym=1");
+        EXPECT_FALSE(error);
+        EXPECT_TRUE(args._remote_symbolication);
+    }
+    {
+        Arguments args;
+        Error error = args.parse("remotesym=0");
+        EXPECT_FALSE(error);
+        EXPECT_FALSE(args._remote_symbolication);
+    }
 }
 
 TEST_F(RemoteArgsTest, RemoteSymbolicationNoVariant) {
-    Arguments args;
-
-    // Test "no" (should disable)
-    Error error = args.parse("remotesym=no");
-    EXPECT_FALSE(error);
-    EXPECT_FALSE(args._remote_symbolication);
-
-    // Test "n" (should disable)
-    args = Arguments();
-    error = args.parse("remotesym=n");
-    EXPECT_FALSE(error);
-    EXPECT_FALSE(args._remote_symbolication);
+    {
+        Arguments args;
+        Error error = args.parse("remotesym=no");
+        EXPECT_FALSE(error);
+        EXPECT_FALSE(args._remote_symbolication);
+    }
+    {
+        Arguments args;
+        Error error = args.parse("remotesym=n");
+        EXPECT_FALSE(error);
+        EXPECT_FALSE(args._remote_symbolication);
+    }
 }
 
 TEST_F(RemoteArgsTest, RemoteSymbolicationInvalidValue) {
