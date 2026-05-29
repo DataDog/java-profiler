@@ -165,4 +165,23 @@ class WallClockASGCT : public BaseWallClock {
     }
 };
 
+// Wall-clock engine that uses BaseWallClock's pthread reservoir sampling loop
+// to signal target threads, but in its signal handler delegates the stack walk
+// to HotSpot's JFR RequestStackTrace JVMTI extension. Requires
+// VM::canRequestStackTrace().
+class WallClockJvmti : public BaseWallClock {
+  private:
+    static void sharedSignalHandler(int signo, siginfo_t* siginfo, void* ucontext);
+    void signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64 last_sample);
+
+    void initialize(Arguments& args) override;
+    void timerLoop() override;
+
+  public:
+    WallClockJvmti() : BaseWallClock() {}
+    const char* name() override {
+        return "WallClock (JVMTI)";
+    }
+};
+
 #endif // _WALLCLOCK_H

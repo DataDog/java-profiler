@@ -94,11 +94,17 @@ public:
   static void release();
 #ifdef UNIT_TEST
   // Simulates the race window inside release() between pthread_setspecific(NULL) and delete.
-  static void clearCurrentThreadTLS() {
+  // Returns the detached pointer so the caller can delete it after assertions.
+  static ProfiledThread* clearCurrentThreadTLS() {
     if (__atomic_load_n(&_tls_key_initialized, __ATOMIC_ACQUIRE)) {
+      ProfiledThread *pt = (ProfiledThread *)pthread_getspecific(_tls_key);
       pthread_setspecific(_tls_key, nullptr);
+      return pt;
     }
+    return nullptr;
   }
+  // Needed because the destructor is private.
+  static void deleteForTest(ProfiledThread *pt) { delete pt; }
 #endif
 
   static ProfiledThread *current();

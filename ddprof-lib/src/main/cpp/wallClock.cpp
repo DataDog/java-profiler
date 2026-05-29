@@ -28,7 +28,7 @@
 
 std::atomic<bool> BaseWallClock::_enabled{false};
 
-bool WallClockASGCT::inSyscall(void *ucontext) {
+bool BaseWallClock::inSyscall(void *ucontext) {
   StackFrame frame(ucontext);
   uintptr_t pc = frame.pc();
 
@@ -89,15 +89,9 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
     current->tickInitWindow();
     return;
   }
-  // Wall-clock once-per-run filter (wallprecheck=true): emit exactly one
-  // MethodSample at the first signal of a SLEEPING / CONDVAR_WAIT run on this
-  // thread, suppress subsequent signals until the OS state leaves the skip set.
-  // State lives on the JVM-process-stable ThreadFilter::Slot (not on ProfiledThread,
-  // which is deleted on thread exit), so the wall-clock timer can safely read these
-  // bits cross-thread for its fast-path skip without a use-after-free hazard.
-  // The osThreadState read is HotSpot-only; on J9/Zing getOSThreadState() returns
-  // UNKNOWN so the filter is a no-op (every signal falls through to emission, same
-  // as wallprecheck=false).
+  // Once-per-run filter (wallprecheck=true): emit one MethodSample at the start of
+  // a SLEEPING/CONDVAR_WAIT run, suppress subsequent signals until state changes.
+  // On J9/Zing getOSThreadState() returns UNKNOWN, so every signal falls through.
   if (current != nullptr && _precheck) {
     ThreadFilter::Slot* slot =
         Profiler::instance()->threadFilter()->slotForId(current->filterSlotId());
@@ -109,15 +103,11 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
         if (slot->sampledThisRun() && precheck_state == slot->lastSampledState()) {
           Counters::increment(WC_SIGNAL_SUPPRESSED_SAMPLED_RUN);
           WallClockCounters::incrementSuppressedSampledRun();
-          return;  // suppress emission — same blocked-state run, already armed
+          return;  // suppress: same blocked-state run, already sampled
         }
-        // First signal of this blocked-state run — arm the filter and emit.
-        // Transitions within the skip set (e.g. SLEEPING → CONDVAR_WAIT) re-arm
-        // because the state-equality check above gates suppression on identity.
-        slot->markSampledThisRun(precheck_state);
+        slot->markSampledThisRun(precheck_state); // arm: first signal of this run
       } else {
-        // Out of the skip set: reset so the next blocked-state entry emits.
-        slot->resetSampledRun(precheck_state);
+        slot->resetSampledRun(precheck_state); // disarm: thread left the skip set
       }
     }
   }
@@ -224,10 +214,7 @@ void WallClockASGCT::timerLoop() {
           // enough; we also want to avoid the kill() round-trip and any
           // pending-signal accumulation).
           if (tid != OS::threadId() && tid != refresher_tid) {
-            // No-filter mode: vm_thread and slot are both nullptr.
-            // The wallprecheck fast path below gates on (vm_thread && slot) so it
-            // simply degrades to "always send the signal" here, matching prior behavior.
-            entries.push_back({tid, nullptr, nullptr});
+            entries.push_back({tid, nullptr, nullptr}); // no-filter: precheck fast path is skipped (null guards)
           }
         }
         delete thread_list;
@@ -236,42 +223,22 @@ void WallClockASGCT::timerLoop() {
 
     auto sampleThreads = [&](ThreadEntry entry, int& num_failures, int& threads_already_exited,
                              int& permission_denied) {
-      // Safety of dereferencing entry.vm_thread / entry.slot here relies on:
-      //   1) collectWithState uses acquire loads when reading the filter slot, so once
-      //      ThreadFilter::setVMThread(slot, nullptr) has been published the timer
-      //      thread observes a null vm_thread for any *future* tick. The same applies
-      //      to the slot pointer (set to nullptr in the no-filter path; never cleared
-      //      in the filtered path because slots are JVM-lifetime stable).
-      //   2) Assumed (HotSpot only): JavaThread objects are not freed when the OS thread
-      //      exits; they remain valid until JVM shutdown. The JVMTI specification makes
-      //      no such guarantee. If this assumption ever breaks, this site would need a
-      //      hazard-pointer or epoch-based reclamation scheme.
-      //   3) ThreadFilter::Slot instances live inside ChunkStorage arrays that are
-      //      allocated on first use and never freed for the JVM-process lifetime, so
-      //      a captured Slot* is dereferenceable forever. This is the lifetime
-      //      guarantee that makes the cross-thread once-per-run read below safe.
-      //      ProfiledThread* is deliberately absent from ThreadEntry — its lifetime
-      //      ends at ProfiledThread::release() and dereferencing it here would be
-      //      a use-after-free.
-      //
-      // Wall-clock once-per-run filter — timer-thread fast path (wallprecheck=true):
-      // elide pthread_kill / kernel IPI when the candidate is already in a blocked-state
-      // run we have armed a sample for. Mirrors the handler-side filter (which still runs
-      // as the authoritative correctness check for any signal that reaches it — covers the
-      // race window where the state read here was stale or the worker's run transitioned
-      // between this peek and signal delivery). The "already armed" bit is written by the
-      // handler on the owning thread with release ordering; the timer reads it with
-      // acquire ordering, fencing the subsequent relaxed read of the paired state.
+      // Timer-thread fast path (wallprecheck=true): skip the kernel IPI entirely when
+      // we already armed a sample for this blocked-state run. The signal handler's filter
+      // is the authoritative check and still runs on any signal that gets through,
+      // covering the race window where this peek was stale.
+      // Assumption (HotSpot only): VMThread objects are not freed on thread exit and
+      // remain valid until JVM shutdown. vm_thread is cleared to nullptr in remove()
+      // before the slot is recycled, so a null check here is sufficient.
       if (_precheck && entry.vm_thread != nullptr && entry.slot != nullptr) {
         OSThreadState peek_state = entry.vm_thread->osThreadState();
         if (peek_state == OSThreadState::SLEEPING || peek_state == OSThreadState::CONDVAR_WAIT) {
-          // Read order matters: sampledThisRun() (acquire) must come first so the
-          // && short-circuit fences the subsequent relaxed load of lastSampledState().
+          // sampledThisRun() uses acquire — must precede the relaxed lastSampledState() read.
           if (entry.slot->sampledThisRun() &&
               peek_state == entry.slot->lastSampledState()) {
             Counters::increment(WC_SIGNAL_SUPPRESSED_SAMPLED_RUN);
             WallClockCounters::incrementSuppressedSampledRun();
-            return false;  // intentional skip: no signal sent, not a failure but not a successful sample either
+            return false;
           }
         }
       }

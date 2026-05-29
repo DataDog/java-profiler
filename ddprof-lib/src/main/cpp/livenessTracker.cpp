@@ -351,9 +351,10 @@ retry:
         int newcap = std::min(_table_cap * 2, _table_max_cap);
         if (_table_cap != newcap) {
           TrackingEntry *tmp = (TrackingEntry *)realloc(
-              _table, sizeof(TrackingEntry) * (_table_cap = newcap));
+              _table, sizeof(TrackingEntry) * newcap);
           if (tmp != nullptr) {
             _table = tmp;
+            _table_cap = newcap;
             Log::debug(
                 "Increased size of Liveness tracking table to %d entries",
                 _table_cap);
