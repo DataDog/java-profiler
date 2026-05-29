@@ -74,12 +74,12 @@ case $CONFIG in
     echo "Running with profiler only"
     ENABLEMENT="-Ddd.profiling.enabled=true -Ddd.trace.enabled=false"
     # @Trace is a no-op without the tracer, so trace-context is excluded here.
-    ANTAGONISTS="thread-churn,alloc-storm,vthread-churn,classloader-churn"
+    ANTAGONISTS="thread-churn,alloc-storm,vthread-churn,classloader-churn,bounded-pool,context-hop,consumer-group,hidden-class-churn,direct-memory,weakref-wave"
     ;;
   profiler+tracer)
     echo "Running with profiler and tracer"
     ENABLEMENT="-Ddd.profiling.enabled=true -Ddd.trace.enabled=true"
-    ANTAGONISTS="thread-churn,alloc-storm,vthread-churn,classloader-churn,trace-context"
+    ANTAGONISTS="thread-churn,alloc-storm,vthread-churn,classloader-churn,trace-context,bounded-pool,context-hop,consumer-group,hidden-class-churn,direct-memory,weakref-wave"
     ;;
   *)
     echo "Unknown configuration: $CONFIG"

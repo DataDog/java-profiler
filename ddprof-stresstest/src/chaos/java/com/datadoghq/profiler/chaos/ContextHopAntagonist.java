@@ -90,7 +90,7 @@ public final class ContextHopAntagonist implements Antagonist {
                 .thenRunAsync(new Runnable() {
                     @Override public void run() { startChain(chainId); }
                 }, poolA)
-                .exceptionally(null);
+                .exceptionally(t -> null);
     }
 
     private void hop(long value) {

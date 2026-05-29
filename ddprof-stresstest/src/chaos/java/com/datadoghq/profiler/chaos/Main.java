@@ -76,6 +76,18 @@ public final class Main {
                 return new ClassLoaderChurnAntagonist();
             case "trace-context":
                 return new TraceContextAntagonist();
+            case "bounded-pool":
+                return new BoundedThreadPoolAntagonist();
+            case "context-hop":
+                return new ContextHopAntagonist();
+            case "consumer-group":
+                return new ConsumerGroupAntagonist();
+            case "hidden-class-churn":
+                return new HiddenClassChurnAntagonist();
+            case "direct-memory":
+                return new DirectMemoryAntagonist();
+            case "weakref-wave":
+                return new WeakRefWaveAntagonist();
             // Deferred: dlopen-churn (needs per-arch dummy .so built in CI prep).
             default:
                 throw new IllegalArgumentException("unknown antagonist: " + name);
