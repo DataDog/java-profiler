@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk11
 
 ## glibc-arm64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-05-29 02:41:27 EDT
+**Date:** 2026-05-29 04:35:01 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-arm64-hotspot-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 54 |
-| CPU Cores (end) | 54 |
+| CPU Cores (start) | 64 |
+| CPU Cores (end) | 64 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-arm64-hotspot-jdk11
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 54-54 cores)</summary>
+<summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
 
 ```
-1780036529 54
-1780036534 54
-1780036539 54
-1780036544 54
-1780036549 54
-1780036554 54
-1780036559 54
-1780036564 54
-1780036569 54
-1780036574 54
-1780036579 54
-1780036584 54
-1780036589 54
-1780036594 54
-1780036599 54
-1780036604 54
-1780036609 54
-1780036614 54
-1780036619 54
-1780036624 54
+1780043509 64
+1780043514 64
+1780043520 64
+1780043525 64
+1780043530 64
+1780043535 64
+1780043540 64
+1780043545 64
+1780043550 64
+1780043555 64
+1780043560 64
+1780043565 64
+1780043570 64
+1780043575 64
+1780043580 64
+1780043585 64
+1780043590 64
+1780043595 64
+1780043600 64
+1780043605 64
 ```
 </details>
 
