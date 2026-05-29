@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk8
 
 ## musl-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-05-29 05:10:48 EDT
+**Date:** 2026-05-29 05:23:38 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-x64-hotspot-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 13 |
-| CPU Cores (end) | 13 |
+| CPU Cores (start) | 59 |
+| CPU Cores (end) | 53 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: musl-x64-hotspot-jdk8
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 13-13 cores)</summary>
+<summary>CPU Timeline (6 unique values: 48-61 cores)</summary>
 
 ```
-1780045537 13
-1780045542 13
-1780045547 13
-1780045552 13
-1780045557 13
-1780045562 13
-1780045567 13
-1780045572 13
-1780045577 13
-1780045582 13
-1780045587 13
-1780045592 13
-1780045597 13
-1780045602 13
-1780045607 13
-1780045612 13
-1780045617 13
-1780045622 13
-1780045627 13
-1780045632 13
+1780046229 59
+1780046234 59
+1780046239 59
+1780046244 54
+1780046249 54
+1780046254 56
+1780046259 56
+1780046264 56
+1780046269 56
+1780046274 56
+1780046279 56
+1780046284 61
+1780046289 61
+1780046294 61
+1780046299 48
+1780046304 48
+1780046309 48
+1780046314 48
+1780046319 48
+1780046324 48
 ```
 </details>
 
