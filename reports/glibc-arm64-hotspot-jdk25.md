@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk25
 
 ## glibc-arm64-hotspot-jdk25 - ✅ PASS
 
-**Date:** 2026-05-29 06:57:56 EDT
+**Date:** 2026-05-29 07:30:40 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-arm64-hotspot-jdk25
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 57 |
-| CPU Cores (end) | 64 |
+| CPU Cores (start) | 44 |
+| CPU Cores (end) | 52 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-arm64-hotspot-jdk25
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (2 unique values: 57-64 cores)</summary>
+<summary>CPU Timeline (3 unique values: 44-57 cores)</summary>
 
 ```
-1780052017 57
-1780052022 57
-1780052027 57
-1780052032 57
-1780052037 57
-1780052042 57
-1780052047 57
-1780052052 64
-1780052057 64
-1780052062 64
-1780052067 64
-1780052072 64
-1780052077 64
-1780052082 64
-1780052087 64
-1780052092 64
-1780052097 64
-1780052102 64
-1780052107 64
-1780052112 64
+1780053906 44
+1780053911 44
+1780053916 44
+1780053921 44
+1780053926 44
+1780053931 44
+1780053936 44
+1780053941 44
+1780053946 44
+1780053951 44
+1780053956 44
+1780053961 57
+1780053966 57
+1780053971 57
+1780053976 57
+1780053981 57
+1780053986 57
+1780053991 52
+1780053996 52
+1780054001 52
 ```
 </details>
 
