@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk25
 
 ## glibc-x64-hotspot-jdk25 - ✅ PASS
 
-**Date:** 2026-05-29 04:35:03 EDT
+**Date:** 2026-05-29 05:05:10 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-hotspot-jdk25
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 90 |
-| CPU Cores (end) | 83 |
+| CPU Cores (start) | 79 |
+| CPU Cores (end) | 86 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-x64-hotspot-jdk25
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (3 unique values: 83-92 cores)</summary>
+<summary>CPU Timeline (5 unique values: 71-84 cores)</summary>
 
 ```
-1780043472 90
-1780043477 90
-1780043482 90
-1780043487 90
-1780043492 90
-1780043497 90
-1780043502 90
-1780043507 90
-1780043512 90
-1780043517 90
-1780043522 90
-1780043527 90
-1780043532 90
-1780043537 90
-1780043542 90
-1780043547 90
-1780043552 92
-1780043557 92
-1780043562 92
-1780043567 92
+1780045260 79
+1780045265 79
+1780045270 79
+1780045275 79
+1780045280 79
+1780045285 71
+1780045290 71
+1780045295 71
+1780045300 71
+1780045305 77
+1780045310 77
+1780045315 77
+1780045320 77
+1780045325 77
+1780045330 75
+1780045335 75
+1780045340 77
+1780045345 77
+1780045350 77
+1780045355 77
 ```
 </details>
 
