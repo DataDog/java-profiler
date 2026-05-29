@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk11
 
 ## glibc-x64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-05-29 05:50:55 EDT
+**Date:** 2026-05-29 06:16:21 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-hotspot-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 28 |
-| CPU Cores (end) | 28 |
+| CPU Cores (start) | 84 |
+| CPU Cores (end) | 85 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-x64-hotspot-jdk11
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 28-28 cores)</summary>
+<summary>CPU Timeline (3 unique values: 84-88 cores)</summary>
 
 ```
-1780048076 28
-1780048081 28
-1780048086 28
-1780048091 28
-1780048096 28
-1780048101 28
-1780048106 28
-1780048111 28
-1780048116 28
-1780048121 28
-1780048126 28
-1780048131 28
-1780048136 28
-1780048141 28
-1780048146 28
-1780048151 28
-1780048156 28
-1780048161 28
-1780048166 28
-1780048171 28
+1780049591 84
+1780049596 84
+1780049601 84
+1780049606 84
+1780049611 84
+1780049616 84
+1780049621 88
+1780049626 88
+1780049631 88
+1780049636 88
+1780049641 88
+1780049646 88
+1780049651 85
+1780049656 85
+1780049661 85
+1780049666 85
+1780049671 85
+1780049676 85
+1780049681 85
+1780049686 85
 ```
 </details>
 
