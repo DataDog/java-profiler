@@ -76,6 +76,8 @@ public final class Main {
                 return new ClassLoaderChurnAntagonist();
             case "trace-context":
                 return new TraceContextAntagonist();
+            case "dump-storm":
+                return new DumpStormAntagonist();
             // Deferred: dlopen-churn (needs per-arch dummy .so built in CI prep).
             default:
                 throw new IllegalArgumentException("unknown antagonist: " + name);
