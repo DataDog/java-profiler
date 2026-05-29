@@ -8,6 +8,7 @@ DRYRUN=$2
 
 BRANCH=$(git branch --show-current)
 RELEASE_BRANCH=
+SKIP_RELEASE_CREATION=false
 
 BASE=$(./gradlew printVersion -Psnapshot=false | grep 'Version:' | cut -f2 -d' ')
 # BASE == 0.0.1
@@ -52,7 +53,12 @@ if [ "$TYPE" == "MINOR" ] || [ "$TYPE" == "MAJOR" ]; then
     # BASE == 1.0.0
   fi
   RELEASE_BRANCH="release/${BASE%.*}._"
-  create_annotated_tag "$BASE" "$TYPE" "$BRANCH"
+  if [ -z "$DRYRUN" ] && git rev-parse "v_${BASE}" >/dev/null 2>&1; then
+    echo "Tag v_${BASE} already exists; skipping tag and release branch creation — will only produce a version-bump PR"
+    SKIP_RELEASE_CREATION=true
+  else
+    create_annotated_tag "$BASE" "$TYPE" "$BRANCH"
+  fi
 fi
 
 if [ "$TYPE" == "PATCH" ]; then
@@ -106,7 +112,7 @@ if [ "$TYPE" == "RETAG" ]; then
   exit 0
 fi
 
-if [ "$BRANCH" != "$RELEASE_BRANCH" ]; then
+if [ "$SKIP_RELEASE_CREATION" == "false" ] && [ "$BRANCH" != "$RELEASE_BRANCH" ]; then
   git checkout -b $RELEASE_BRANCH
   if ! git diff --quiet; then
     git add build.gradle.kts
