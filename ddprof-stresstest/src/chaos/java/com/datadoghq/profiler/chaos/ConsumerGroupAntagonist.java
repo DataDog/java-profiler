@@ -56,6 +56,7 @@ public final class ConsumerGroupAntagonist implements Antagonist {
     @Override
     public void stopGracefully(Duration timeout) {
         running = false;
+        rebalancer.interrupt();
         try {
             rebalancer.join(timeout.toMillis() / 2);
         } catch (InterruptedException e) {
