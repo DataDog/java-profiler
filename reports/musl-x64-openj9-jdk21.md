@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk21
 
 ## musl-x64-openj9-jdk21 - ✅ PASS
 
-**Date:** 2026-05-29 18:10:51 EDT
+**Date:** 2026-05-29 18:42:54 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-x64-openj9-jdk21
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 62 |
-| CPU Cores (end) | 64 |
+| CPU Cores (start) | 9 |
+| CPU Cores (end) | 9 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: musl-x64-openj9-jdk21
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (3 unique values: 60-64 cores)</summary>
+<summary>CPU Timeline (1 unique values: 9-9 cores)</summary>
 
 ```
-1780092439 62
-1780092444 62
-1780092449 62
-1780092454 62
-1780092459 62
-1780092464 62
-1780092469 62
-1780092474 62
-1780092479 62
-1780092484 60
-1780092489 60
-1780092494 62
-1780092499 62
-1780092504 62
-1780092509 62
-1780092514 64
-1780092519 64
-1780092524 64
-1780092529 64
-1780092534 64
+1780094356 9
+1780094361 9
+1780094366 9
+1780094371 9
+1780094376 9
+1780094381 9
+1780094386 9
+1780094391 9
+1780094396 9
+1780094401 9
+1780094406 9
+1780094411 9
+1780094416 9
+1780094421 9
+1780094426 9
+1780094431 9
+1780094436 9
+1780094441 9
+1780094446 9
+1780094451 9
 ```
 </details>
 
