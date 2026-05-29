@@ -104,7 +104,6 @@ private:
   // ASGCT paths) or _total_samples (written by every recording path).
   alignas(DEFAULT_CACHE_LINE_SIZE) volatile u64 _sample_seq;
   alignas(DEFAULT_CACHE_LINE_SIZE) u64 _failures[ASGCT_FAILURE_TYPES];
-  bool _wall_precheck = false;
 
   SpinLock _class_map_lock;
   SpinLock _locks[CONCURRENCY_LEVEL];
@@ -120,6 +119,7 @@ private:
   u32 _num_context_attributes;
   bool _omit_stacktraces;
   bool _remote_symbolication;  // Enable remote symbolication for native frames
+  bool _wall_precheck = false;  // wallprecheck feature flag: gates TaskBlock JVMTI callbacks
 
   // dlopen() hook support
   void **_dlopen_entry;
@@ -385,6 +385,8 @@ public:
   void recordWallClockEpoch(int tid, WallClockEpochEvent *event);
   void recordTraceRoot(int tid, TraceRootEvent *event);
   void recordQueueTime(int tid, QueueTimeEvent *event);
+  void recordTaskBlockLive(int tid, TaskBlockEvent *event);
+  void recordTaskBlockDeferred(int tid, TaskBlockEvent *event);
   void writeLog(LogLevel level, const char *message);
   void writeLog(LogLevel level, const char *message, size_t len);
   void writeDatadogProfilerSetting(int tid, int length, const char *name,

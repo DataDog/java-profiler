@@ -30,6 +30,7 @@
 #include "os.h"
 #include "otel_process_ctx.h"
 #include "profiler.h"
+#include "taskBlockRecorder.h"
 #include "thread.h"
 #include "tsc.h"
 #include "vmEntry.h"
@@ -340,13 +341,61 @@ Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
   }
   u64 start_ticks = 0;
   Context park_context = {};
-  current->parkExit(start_ticks, park_context);
+  if (current->parkExit(start_ticks, park_context)) {
+    int tid = ProfiledThread::currentTid();
+    u64 end_ticks = TSC::ticks();
+    recordTaskBlockLiveIfEligible(tid, start_ticks, end_ticks,
+                                  (u64)blocker, (u64)unblockingSpanId);
+  }
   ThreadFilter *tf = Profiler::instance()->threadFilter();
   if (tf->enabled()) {
     tf->exitParkRun(current->filterSlotId());
   }
 }
 
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_recordTaskBlock0(
+    JNIEnv *env, jclass unused, jlong startTicks, jlong endTicks,
+    jlong blocker, jlong unblockingSpanId) {
+  int tid = ProfiledThread::currentTid();
+  if (tid < 0) {
+    return;
+  }
+  // Context (span ids + tags) is captured from OTEP TLS via ContextApi::snapshot()
+  // inside recordTaskBlockLiveIfEligible, mirroring the recordQueueTime convention.
+  recordTaskBlockLiveIfEligible(tid, (u64)startTicks, (u64)endTicks,
+                                (u64)blocker, (u64)unblockingSpanId);
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_recordTaskBlockWithContext0(
+    JNIEnv *env, jclass unused, jlong startTicks, jlong endTicks,
+    jlong blocker, jlong unblockingSpanId,
+    jlong spanId, jlong rootSpanId) {
+  int tid = ProfiledThread::currentTid();
+  if (tid < 0) {
+    return;
+  }
+  // Virtual-thread path: span/root ids captured at block entry are passed explicitly because
+  // the native OTEP TLS is carrier-scoped and cannot be trusted. Custom attributes not propagated.
+  Context ctx{(u64)spanId, (u64)rootSpanId};
+  recordTaskBlockDeferredIfEligible(tid, (u64)startTicks, (u64)endTicks,
+                                    ctx, (u64)blocker, (u64)unblockingSpanId);
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_recordTaskBlockFromContext0(
+    JNIEnv *env, jclass unused, jint tid, jlong startTicks, jlong endTicks,
+    jlong blocker, jlong unblockingSpanId, jlong spanId, jlong rootSpanId) {
+  // Drain-thread path: called from background drain thread on behalf of the sleeping thread.
+  // tid is the OS tid of the sleeping thread; span context is explicit to bypass OTEP TLS.
+  if ((int)tid < 0) {
+    return;
+  }
+  Context ctx{(u64)spanId, (u64)rootSpanId};
+  recordTaskBlockDeferredIfEligible((int)tid, (u64)startTicks, (u64)endTicks,
+                                    ctx, (u64)blocker, (u64)unblockingSpanId);
+}
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_currentTicks0(JNIEnv *env,
                                                        jclass unused) {

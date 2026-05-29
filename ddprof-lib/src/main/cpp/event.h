@@ -222,4 +222,12 @@ typedef struct QueueTimeEvent {
   u32 _queueLength;
 } QueueTimeEvent;
 
+typedef struct TaskBlockEvent {
+  u64 _start;
+  u64 _end;
+  u64 _blocker;
+  u64 _unblockingSpanId;
+  Context _ctx;
+} TaskBlockEvent;
+
 #endif // _EVENT_H

@@ -64,6 +64,20 @@ public final class JavaProfiler {
     }
 
     /**
+     * Get a {@linkplain JavaProfiler} instance with explicit feature flags.
+     * The boolean parameters are accepted for API compatibility; feature activation
+     * is performed at profiler start time via the command string, not at init time.
+     * @param libLocation the path to the native library, or {@literal null} to use the bundled one
+     * @param scratchDir directory where the bundled library will be exploded before linking
+     * @param delegateMonitorEvents reserved for future use; currently ignored
+     * @param wallPrecheck reserved for future use; currently ignored
+     */
+    public static JavaProfiler getInstance(String libLocation, String scratchDir,
+            boolean delegateMonitorEvents, boolean wallPrecheck) throws IOException {
+        return getInstance(libLocation, scratchDir);
+    }
+
+    /**
      * Get a {@linkplain JavaProfiler} instance backed by the given native library and using
      * the given directory as the scratch where the bundled library will be exploded
      * before linking.
@@ -302,6 +316,48 @@ public final class JavaProfiler {
     }
 
     /**
+     * Returns the OS-level thread ID (tid) of the calling thread, cached in ProfiledThread TLS.
+     * Safe to call from any profiled thread; returns -1 if ProfiledThread is not initialized.
+     */
+    public int getCurrentThreadId() {
+        return getTid0();
+    }
+
+    /**
+     * Returns the TSC frequency in Hz (ticks per second).
+     */
+    public long getTscFrequency() {
+        return tscFrequency0();
+    }
+
+    /**
+     * Records a TaskBlock event for the calling platform thread. Span context is read from
+     * OTEP TLS inside native code (same as the queue-time pattern).
+     */
+    public void recordTaskBlock(long startTicks, long endTicks, long blocker, long unblockingSpanId) {
+        recordTaskBlock0(startTicks, endTicks, blocker, unblockingSpanId);
+    }
+
+    /**
+     * Records a TaskBlock event with an explicit span context. Used for virtual threads where
+     * native OTEP TLS is carrier-scoped and cannot be trusted.
+     */
+    public void recordTaskBlockWithContext(long startTicks, long endTicks, long blocker,
+            long unblockingSpanId, long spanId, long rootSpanId) {
+        recordTaskBlockWithContext0(startTicks, endTicks, blocker, unblockingSpanId, spanId, rootSpanId);
+    }
+
+    /**
+     * Records a TaskBlock event attributed to an explicit thread ID and explicit span context.
+     * Intended for background drain threads that record events on behalf of a different (sleeping)
+     * thread; avoids reading OTEP TLS from the calling thread.
+     */
+    public void recordTaskBlockFromContext(int tid, long startTicks, long endTicks,
+            long blocker, long unblockingSpanId, long spanId, long rootSpanId) {
+        recordTaskBlockFromContext0(tid, startTicks, endTicks, blocker, unblockingSpanId, spanId, rootSpanId);
+    }
+
+    /**
      * If the profiler is built in debug mode, returns counters recorded during profile execution.
      * These are for whitebox testing and not intended for production use.
      * @return a map of counters
@@ -355,6 +411,15 @@ public final class JavaProfiler {
     private static native long currentTicks0();
 
     private static native long tscFrequency0();
+
+    private static native void recordTaskBlock0(long startTicks, long endTicks,
+            long blocker, long unblockingSpanId);
+
+    private static native void recordTaskBlockWithContext0(long startTicks, long endTicks,
+            long blocker, long unblockingSpanId, long spanId, long rootSpanId);
+
+    private static native void recordTaskBlockFromContext0(int tid, long startTicks, long endTicks,
+            long blocker, long unblockingSpanId, long spanId, long rootSpanId);
 
     private static native void mallocArenaMax0(int max);
 
