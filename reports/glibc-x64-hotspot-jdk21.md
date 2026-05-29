@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk21
 
 ## glibc-x64-hotspot-jdk21 - ✅ PASS
 
-**Date:** 2026-05-28 18:30:57 EDT
+**Date:** 2026-05-29 02:41:27 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-hotspot-jdk21
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 27 |
-| CPU Cores (end) | 27 |
+| CPU Cores (start) | 44 |
+| CPU Cores (end) | 44 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-x64-hotspot-jdk21
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (4 unique values: 23-31 cores)</summary>
+<summary>CPU Timeline (1 unique values: 44-44 cores)</summary>
 
 ```
-1780007157 27
-1780007162 27
-1780007167 27
-1780007172 27
-1780007177 27
-1780007182 27
-1780007187 23
-1780007192 23
-1780007197 25
-1780007202 25
-1780007207 27
-1780007212 27
-1780007217 27
-1780007222 27
-1780007227 31
-1780007232 31
-1780007237 31
-1780007242 27
-1780007247 27
-1780007252 27
+1780036600 44
+1780036605 44
+1780036610 44
+1780036615 44
+1780036620 44
+1780036625 44
+1780036630 44
+1780036635 44
+1780036640 44
+1780036645 44
+1780036650 44
+1780036655 44
+1780036660 44
+1780036665 44
+1780036670 44
+1780036675 44
+1780036680 44
+1780036685 44
+1780036690 44
+1780036695 44
 ```
 </details>
 

@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk8
 
 ## glibc-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-05-28 18:30:57 EDT
+**Date:** 2026-05-29 02:41:27 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-arm64-hotspot-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 64 |
-| CPU Cores (end) | 64 |
+| CPU Cores (start) | 54 |
+| CPU Cores (end) | 54 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-arm64-hotspot-jdk8
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
+<summary>CPU Timeline (1 unique values: 54-54 cores)</summary>
 
 ```
-1780007188 64
-1780007193 64
-1780007198 64
-1780007203 64
-1780007208 64
-1780007213 64
-1780007218 64
-1780007223 64
-1780007228 64
-1780007233 64
-1780007238 64
-1780007243 64
-1780007248 64
-1780007253 64
-1780007258 64
-1780007263 64
-1780007268 64
-1780007273 64
-1780007278 64
-1780007283 64
+1780036517 54
+1780036522 54
+1780036527 54
+1780036532 54
+1780036537 54
+1780036542 54
+1780036547 54
+1780036552 54
+1780036557 54
+1780036562 54
+1780036567 54
+1780036572 54
+1780036577 54
+1780036582 54
+1780036587 54
+1780036592 54
+1780036597 54
+1780036602 54
+1780036607 54
+1780036612 54
 ```
 </details>
 

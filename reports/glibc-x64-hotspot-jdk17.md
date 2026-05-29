@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk17
 
 ## glibc-x64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-05-28 18:30:57 EDT
+**Date:** 2026-05-29 02:41:27 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-hotspot-jdk17
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 10 |
-| CPU Cores (end) | 51 |
+| CPU Cores (start) | 67 |
+| CPU Cores (end) | 53 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-x64-hotspot-jdk17
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (3 unique values: 10-51 cores)</summary>
+<summary>CPU Timeline (4 unique values: 53-67 cores)</summary>
 
 ```
-1780007176 10
-1780007181 10
-1780007186 10
-1780007191 10
-1780007196 10
-1780007201 10
-1780007206 10
-1780007211 10
-1780007216 10
-1780007221 10
-1780007226 10
-1780007231 10
-1780007236 10
-1780007241 10
-1780007246 10
-1780007251 10
-1780007256 10
-1780007261 10
-1780007266 31
-1780007271 31
+1780036543 67
+1780036548 67
+1780036553 67
+1780036558 67
+1780036563 67
+1780036568 67
+1780036573 67
+1780036578 63
+1780036583 63
+1780036588 57
+1780036593 57
+1780036598 57
+1780036603 57
+1780036608 57
+1780036613 57
+1780036618 57
+1780036623 57
+1780036628 57
+1780036633 57
+1780036638 57
 ```
 </details>
 
