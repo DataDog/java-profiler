@@ -97,26 +97,31 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
     return;
   }
   // Once-per-run filter (wallprecheck=true): emit one MethodSample at the start of
-  // a SLEEPING/CONDVAR_WAIT run, suppress subsequent signals until state changes.
+  // a blocking run, suppress subsequent signals until state changes.
   // On J9/Zing getOSThreadState() returns UNKNOWN, so every signal falls through.
+  ThreadFilter::Slot* slot_to_arm = nullptr;
+  OSThreadState state_to_arm = OSThreadState::UNKNOWN;
   if (current != nullptr && _precheck) {
     ThreadFilter::Slot* slot =
         Profiler::instance()->threadFilter()->slotForId(current->filterSlotId());
     if (slot != nullptr) {
       OSThreadState precheck_state = getOSThreadState();
-      bool is_blocked_skip_state = (precheck_state == OSThreadState::SLEEPING ||
-                                    precheck_state == OSThreadState::CONDVAR_WAIT);
+      bool is_blocked_skip_state = isPrecheckSuppressionState(precheck_state);
       if (is_blocked_skip_state) {
         if (slot->sampledThisRun() && precheck_state == slot->lastSampledState()) {
           Counters::increment(WC_SIGNAL_SUPPRESSED_SAMPLED_RUN);
           WallClockCounters::incrementSuppressedSampledRun();
           return;  // suppress: same blocked-state run, already sampled
         }
-        slot->markSampledThisRun(precheck_state); // arm: first signal of this run
-      } else if (!slot->inParkRun()) {
-        // Only disarm when the thread is genuinely outside a park run. Transient
-        // RUNNABLE states from SIGVTALRM-driven EINTR re-entry would otherwise
-        // disarm the slot, causing the timer to re-send the next tick.
+        // Arm only after the MethodSample has been successfully recorded. If the
+        // JFR write is skipped due to lock contention, the next signal must retry
+        // instead of losing the only stack for this blocked run.
+        slot_to_arm = slot;
+        state_to_arm = precheck_state;
+      } else if (slot->activeBlockState() == OSThreadState::UNKNOWN) {
+        // Only disarm when no explicit block hook owns the interval. Transient
+        // RUNNABLE states inside a park/monitor wait would otherwise disarm the
+        // slot, causing the timer to re-send the next tick.
         slot->resetSampledRun(precheck_state);
       }
     }
@@ -155,8 +160,11 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   event._thread_state = state;
   event._execution_mode = mode;
   event._weight = 1;
-  Profiler::instance()->recordSample(ucontext, last_sample, tid, BCI_WALL,
-                                     call_trace_id, &event);
+  bool recorded = Profiler::instance()->recordSample(ucontext, last_sample, tid, BCI_WALL,
+                                                     call_trace_id, &event);
+  if (recorded && slot_to_arm != nullptr) {
+    slot_to_arm->markSampledThisRun(state_to_arm);
+  }
   Shims::instance().setSighandlerTid(-1);
 }
 

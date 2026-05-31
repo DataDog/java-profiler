@@ -72,6 +72,59 @@ static ITimerJvmti itimer_jvmti;
 static CTimer ctimer;
 static CTimerJvmti ctimer_jvmti;
 
+void *Profiler::taskBlockDrainLoop(void *arg) {
+  Profiler *self = static_cast<Profiler *>(arg);
+
+  sigset_t mask;
+  sigemptyset(&mask);
+  sigaddset(&mask, SIGPROF);
+  sigaddset(&mask, SIGVTALRM);
+  pthread_sigmask(SIG_BLOCK, &mask, nullptr);
+
+  while (self->_task_block_drain_running.load(std::memory_order_acquire)) {
+    self->drainTaskBlockQueue(true);
+    OS::sleepWhile(1000000ULL, self->_task_block_drain_running);
+  }
+  self->drainTaskBlockQueue(true);
+  return nullptr;
+}
+
+void Profiler::startTaskBlockDrain() {
+  if (!_wall_precheck || !VM::nativeMonitorEventsEnabled()) {
+    return;
+  }
+  if (_task_block_drain_running.exchange(true, std::memory_order_acq_rel)) {
+    return;
+  }
+
+  _task_block_queue.discardAll();
+  _task_block_generation.fetch_add(1, std::memory_order_acq_rel);
+  if (pthread_create(&_task_block_drain_thread, nullptr, taskBlockDrainLoop,
+                     this) != 0) {
+    _task_block_drain_running.store(false, std::memory_order_release);
+    Log::warn("Unable to start TaskBlock drain thread");
+  }
+}
+
+void Profiler::stopTaskBlockDrain() {
+  if (!_task_block_drain_running.exchange(false, std::memory_order_acq_rel)) {
+    return;
+  }
+  pthread_kill(_task_block_drain_thread, WAKEUP_SIGNAL);
+  pthread_join(_task_block_drain_thread, nullptr);
+  drainTaskBlockQueue(true);
+}
+
+void Profiler::drainTaskBlockQueue(bool record) {
+  QueuedTaskBlockEvent queued;
+  u64 generation = _task_block_generation.load(std::memory_order_acquire);
+  while (_task_block_queue.tryPop(queued)) {
+    if (record && queued.generation == generation) {
+      recordTaskBlockLive(queued.tid, &queued.event);
+    }
+  }
+}
+
 void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   ProfiledThread::initCurrentThread();
   ProfiledThread *current = ProfiledThread::current();
@@ -80,7 +133,6 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   if (_thread_filter.enabled()) {
     int slot_id = _thread_filter.registerThread();
     current->setFilterSlotId(slot_id);
-    _thread_filter.setVMThread(slot_id, VM::isHotspot() ? VMThread::current() : nullptr);
     _thread_filter.resetSlotRunState(slot_id);
     _thread_filter.remove(slot_id);  // Remove from filtering initially
   }
@@ -102,7 +154,6 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     tid = current->tid();
     
     if (_thread_filter.enabled()) {
-      _thread_filter.setVMThread(slot_id, nullptr);
       _thread_filter.unregisterThread(slot_id);
       current->setFilterSlotId(-1);
     }
@@ -553,7 +604,7 @@ void Profiler::recordDeferredSample(int tid, u64 call_trace_id, jint event_type,
   _locks[lock_index].unlock();
 }
 
-void Profiler::recordSample(void *ucontext, u64 counter, int tid,
+bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
                             jint event_type, u64 call_trace_id, Event *event) {
   atomicIncRelaxed(_total_samples);
 
@@ -569,7 +620,7 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
       // collected trace
       PerfEvents::resetBuffer(tid);
     }
-    return;
+    return false;
   }
 
   bool truncated = false;
@@ -619,6 +670,7 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
   _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
 
   _locks[lock_index].unlock();
+  return true;
 }
 
 void Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
@@ -705,6 +757,23 @@ void Profiler::recordTaskBlockLive(int tid, TaskBlockEvent *event) {
 
 void Profiler::recordTaskBlockDeferred(int tid, TaskBlockEvent *event) {
   recordTaskBlockLive(tid, event);
+}
+
+bool Profiler::recordTaskBlockAsync(int tid, TaskBlockEvent *event) {
+  if (!_task_block_drain_running.load(std::memory_order_acquire)) {
+    Counters::increment(TASK_BLOCK_QUEUE_DROPPED);
+    return false;
+  }
+
+  QueuedTaskBlockEvent queued;
+  queued.tid = tid;
+  queued.generation = _task_block_generation.load(std::memory_order_acquire);
+  queued.event = *event;
+  if (!_task_block_queue.tryPush(queued)) {
+    Counters::increment(TASK_BLOCK_QUEUE_DROPPED);
+    return false;
+  }
+  return true;
 }
 
 void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
@@ -1384,6 +1453,7 @@ Error Profiler::start(Arguments &args, bool reset) {
     _libs->stopRefresher();
     return error;
   }
+  startTaskBlockDrain();
 
   int activated = 0;
   if ((_event_mask & EM_CPU) && _cpu_engine != &noop_engine) {
@@ -1425,6 +1495,7 @@ Error Profiler::start(Arguments &args, bool reset) {
         disableEngines();
         switchLibraryTrap(false);
         _libs->stopRefresher();
+        stopTaskBlockDrain();
         lockAll();
         _jfr.stop();
         unlockAll();
@@ -1454,6 +1525,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   disableEngines();
   switchLibraryTrap(false);
   _libs->stopRefresher();
+  stopTaskBlockDrain();
 
   lockAll();
   _jfr.stop();
@@ -1488,6 +1560,7 @@ Error Profiler::stop() {
   Libraries::instance()->refresh();
   updateJavaThreadNames();
   updateNativeThreadNames();
+  stopTaskBlockDrain();
 
   // If jvmtistacks delegation was used this recording, surface likely
   // misconfigurations. The JVM returns WRONG_PHASE when JFR is not recording

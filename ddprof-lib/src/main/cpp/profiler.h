@@ -26,11 +26,13 @@
 #include "thread.h"
 #include "threadFilter.h"
 #include "threadInfo.h"
+#include "taskBlockQueue.h"
 #include "trap.h"
 #include "vmEntry.h"
 #include <atomic>
 #include <iostream>
 #include <map>
+#include <pthread.h>
 #include <time.h>
 
 // avoid linking against newer symbols here for wide compatibility
@@ -85,6 +87,7 @@ private:
   StringDictionary _string_label_map{2};
   StringDictionary _context_value_map{3};
   ThreadFilter _thread_filter;
+  TaskBlockQueue _task_block_queue;
   CallTraceStorage _call_trace_storage;
   FlightRecorder _jfr;
   Engine *_cpu_engine;
@@ -120,6 +123,9 @@ private:
   bool _omit_stacktraces;
   bool _remote_symbolication;  // Enable remote symbolication for native frames
   bool _wall_precheck = false;  // wallprecheck feature flag: gates TaskBlock JVMTI callbacks
+  pthread_t _task_block_drain_thread;
+  std::atomic<bool> _task_block_drain_running;
+  std::atomic<u64> _task_block_generation;
 
   // dlopen() hook support
   void **_dlopen_entry;
@@ -132,6 +138,10 @@ private:
 
   void onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
   void onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
+  static void *taskBlockDrainLoop(void *arg);
+  void startTaskBlockDrain();
+  void stopTaskBlockDrain();
+  void drainTaskBlockQueue(bool record);
 
   u32 getLockIndex(int tid);
   int getNativeTrace(void *ucontext, ASGCT_CallFrame *frames, int event_type,
@@ -189,14 +199,17 @@ public:
       : _state_lock(), _state(State::NEW), _class_unload_hook_trap(2),
         _notify_class_unloaded_func(NULL), _thread_info(), _class_map(1),
         _string_label_map(2), _context_value_map(3), _thread_filter(),
-        _call_trace_storage(), _jfr(), _cpu_engine(NULL), _wall_engine(NULL),
+        _task_block_queue(), _call_trace_storage(), _jfr(), _cpu_engine(NULL),
+        _wall_engine(NULL),
         _alloc_engine(NULL), _event_mask(0),
         _start_time(0), _stop_time(0), _epoch(0), _timer_id(NULL),
         _total_samples(0), _sample_seq(0), _failures(), _class_map_lock(),
         _max_stack_depth(0), _features(), _safe_mode(0), _cstack(CSTACK_NO),
         _thread_events_state(JVMTI_DISABLE), _libs(Libraries::instance()),
         _num_context_attributes(0), _omit_stacktraces(false),
-        _remote_symbolication(false), _dlopen_entry(NULL) {
+        _remote_symbolication(false), _task_block_drain_thread(),
+        _task_block_drain_running(false), _task_block_generation(0),
+        _dlopen_entry(NULL) {
 
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
       _calltrace_buffer[i] = NULL;
@@ -368,7 +381,7 @@ public:
   NativeFrameResolution resolveNativeFrameForWalkVM(uintptr_t pc, int lock_index);
   int convertNativeTrace(int native_frames, const void **callchain,
                          ASGCT_CallFrame *frames, int lock_index);
-  void recordSample(void *ucontext, u64 weight, int tid, jint event_type,
+  bool recordSample(void *ucontext, u64 weight, int tid, jint event_type,
                     u64 call_trace_id, Event *event);
   // Delegated sample path: stack-walking is performed by the HotSpot JFR
   // RequestStackTrace extension (the JVM emits the stack trace into its own
@@ -387,6 +400,10 @@ public:
   void recordQueueTime(int tid, QueueTimeEvent *event);
   void recordTaskBlockLive(int tid, TaskBlockEvent *event);
   void recordTaskBlockDeferred(int tid, TaskBlockEvent *event);
+  bool recordTaskBlockAsync(int tid, TaskBlockEvent *event);
+  bool taskBlockAsyncActive() const {
+    return _task_block_drain_running.load(std::memory_order_acquire);
+  }
   void writeLog(LogLevel level, const char *message);
   void writeLog(LogLevel level, const char *message, size_t len);
   void writeDatadogProfilerSetting(int tid, int length, const char *name,

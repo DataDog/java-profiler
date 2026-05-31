@@ -19,11 +19,10 @@ static inline bool exceedsMinTaskBlockDuration(u64 start_ticks, u64 end_ticks) {
   return end_ticks > start_ticks && (end_ticks - start_ticks) >= min_ticks;
 }
 
-// Platform-thread synchronous path. Span context is captured from OTEP TLS at
-// call time via ContextApi::snapshot(). Custom profiling attributes are included.
-static inline void recordTaskBlockLiveIfEligible(int tid, u64 start_ticks, u64 end_ticks,
-                                                  u64 blocker, u64 unblocking_span_id) {
-  Context ctx = ContextApi::snapshot();
+// Synchronous path for callers that captured the context at block entry.
+static inline void recordTaskBlockWithContextIfEligible(int tid, u64 start_ticks, u64 end_ticks,
+                                                         const Context& ctx, u64 blocker,
+                                                         u64 unblocking_span_id) {
   if (ctx.spanId == 0) {
     WallClockCounters::incrementTaskBlockSkippedSpanZero();
     return;
@@ -40,6 +39,15 @@ static inline void recordTaskBlockLiveIfEligible(int tid, u64 start_ticks, u64 e
   event._ctx = ctx;
   Profiler::instance()->recordTaskBlockLive(tid, &event);
   WallClockCounters::incrementTaskBlockEmitted();
+}
+
+// Platform-thread synchronous path. Span context is captured from OTEP TLS at
+// call time via ContextApi::snapshot(). Custom profiling attributes are included.
+static inline void recordTaskBlockLiveIfEligible(int tid, u64 start_ticks, u64 end_ticks,
+                                                  u64 blocker, u64 unblocking_span_id) {
+  Context ctx = ContextApi::snapshot();
+  recordTaskBlockWithContextIfEligible(tid, start_ticks, end_ticks, ctx,
+                                       blocker, unblocking_span_id);
 }
 
 // Virtual-thread / drain-thread path. Span context is passed explicitly because
@@ -64,6 +72,31 @@ static inline void recordTaskBlockDeferredIfEligible(int tid, u64 start_ticks, u
   event._ctx = ctx;
   Profiler::instance()->recordTaskBlockDeferred(tid, &event);
   WallClockCounters::incrementTaskBlockEmitted();
+}
+
+// Async path for native monitor callbacks. The producer side still performs
+// eligibility checks so short/spanless intervals do not pressure the queue.
+static inline void recordTaskBlockAsyncWithContextIfEligible(int tid, u64 start_ticks,
+                                                             u64 end_ticks, const Context& ctx,
+                                                             u64 blocker,
+                                                             u64 unblocking_span_id) {
+  if (ctx.spanId == 0) {
+    WallClockCounters::incrementTaskBlockSkippedSpanZero();
+    return;
+  }
+  if (!exceedsMinTaskBlockDuration(start_ticks, end_ticks)) {
+    WallClockCounters::incrementTaskBlockSkippedTooShort();
+    return;
+  }
+  TaskBlockEvent event{};
+  event._start = start_ticks;
+  event._end = end_ticks;
+  event._blocker = blocker;
+  event._unblockingSpanId = unblocking_span_id;
+  event._ctx = ctx;
+  if (Profiler::instance()->recordTaskBlockAsync(tid, &event)) {
+    WallClockCounters::incrementTaskBlockEmitted();
+  }
 }
 
 #endif // _TASK_BLOCK_RECORDER_H

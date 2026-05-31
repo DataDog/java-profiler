@@ -116,6 +116,7 @@
   X(JVMTI_STACKS_REQUESTED, "jvmti_stacks_requested")                         \
   X(JVMTI_STACKS_FAILED_WRONG_PHASE, "jvmti_stacks_failed_wrong_phase")       \
   X(JVMTI_STACKS_FAILED_OTHER, "jvmti_stacks_failed_other")                  \
+  X(TASK_BLOCK_QUEUE_DROPPED, "task_block_queue_dropped")                    \
   X(JVMTI_STACKS_DROPPED_LOCK, "jvmti_stacks_dropped_lock")
 #define X_ENUM(a, b) a,
 typedef enum CounterId : int {
