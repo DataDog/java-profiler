@@ -77,16 +77,41 @@ TEST(ProfiledThreadMonitorStateTest, MonitorFlagLifecycle) {
   u64 start_ticks = 0;
   Context monitor_context = {};
   u64 blocker = 0;
-  EXPECT_FALSE(thread->monitorExit(start_ticks, monitor_context, blocker));
+  EXPECT_FALSE(thread->monitorExit(OSThreadState::MONITOR_WAIT, start_ticks,
+                                   monitor_context, blocker));
 
-  thread->monitorEnter(999, 42);
+  EXPECT_TRUE(thread->monitorEnter(999, 42, OSThreadState::MONITOR_WAIT));
 
-  EXPECT_TRUE(thread->monitorExit(start_ticks, monitor_context, blocker));
+  EXPECT_TRUE(thread->monitorExit(OSThreadState::MONITOR_WAIT, start_ticks,
+                                  monitor_context, blocker));
   EXPECT_EQ(999ULL, start_ticks);
   EXPECT_EQ(42ULL, blocker);
   EXPECT_EQ(0ULL, monitor_context.spanId);
 
-  EXPECT_FALSE(thread->monitorExit(start_ticks, monitor_context, blocker));
+  EXPECT_FALSE(thread->monitorExit(OSThreadState::MONITOR_WAIT, start_ticks,
+                                   monitor_context, blocker));
+}
+
+TEST(ProfiledThreadMonitorStateTest, ObjectWaitOwnsNestedMonitorContention) {
+  ProfiledThread *thread = ProfiledThread::forTid(12349);
+
+  EXPECT_TRUE(thread->monitorEnter(100, 11, OSThreadState::OBJECT_WAIT));
+
+  // HotSpot's Object.wait path includes monitor reacquisition before MonitorWaited.
+  // A nested MonitorContendedEnter during that interval must not overwrite the
+  // original Object.wait TaskBlock interval or blocker attribution.
+  EXPECT_FALSE(thread->monitorEnter(200, 22, OSThreadState::MONITOR_WAIT));
+
+  u64 start_ticks = 0;
+  Context monitor_context = {};
+  u64 blocker = 0;
+  EXPECT_FALSE(thread->monitorExit(OSThreadState::MONITOR_WAIT, start_ticks,
+                                   monitor_context, blocker));
+
+  EXPECT_TRUE(thread->monitorExit(OSThreadState::OBJECT_WAIT, start_ticks,
+                                  monitor_context, blocker));
+  EXPECT_EQ(100ULL, start_ticks);
+  EXPECT_EQ(11ULL, blocker);
 }
 
 // Once-per-run filter state lives on ThreadFilter::Slot (JVM-process-stable storage), not
@@ -98,8 +123,8 @@ TEST(ProfiledThreadMonitorStateTest, MonitorFlagLifecycle) {
 // - Subsequent signal in the SAME blocked state -> sampledThisRun() && state == lastSampledState();
 //   handler suppresses emission, and the timer can skip sending signals while activeBlockState()
 //   still matches lastSampledState().
-// - Transition within the skip set (SLEEPING -> CONDVAR_WAIT) -> state != lastSampledState();
-//   handler re-arms and emits.
+// - Transition within the skip set (for example SLEEPING -> CONDVAR_WAIT) ->
+//   state != lastSampledState(); handler re-arms and emits.
 // - Explicit block exit -> exitBlockedRun(); next blocked-state entry emits again.
 TEST(WallClockOncePerRunFilterTest, SlotStateTransitions) {
   ThreadFilter::Slot slot;

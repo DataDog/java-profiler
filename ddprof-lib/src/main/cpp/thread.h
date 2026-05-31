@@ -63,6 +63,7 @@ private:
   u64 _monitor_start_ticks;
   Context _monitor_context;
   u64 _monitor_blocker;
+  OSThreadState _monitor_block_state;
   int _filter_slot_id; // Slot ID for thread filtering
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
   uint8_t _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
@@ -86,6 +87,7 @@ private:
         _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0),
         _park_start_ticks(0), _park_context{},
         _monitor_start_ticks(0), _monitor_context{}, _monitor_blocker(0),
+        _monitor_block_state(OSThreadState::UNKNOWN),
         _filter_slot_id(-1), _init_window(0),
         _signal_depth(0),
         _otel_ctx_initialized(false), _crash_protection_active(false),
@@ -291,14 +293,28 @@ public:
     return true;
   }
 
-  inline void monitorEnter(u64 start_ticks, u64 blocker) {
+  // Returns false if a monitor block is already active. In particular, Object.wait
+  // owns the interval until MonitorWaited, including monitor reacquire, so nested
+  // monitor-contention callbacks must not overwrite that TaskBlock.
+  inline bool monitorEnter(u64 start_ticks, u64 blocker, OSThreadState state) {
+    u32 flags = __atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE);
+    if ((flags & FLAG_MONITOR_BLOCKED) != 0) {
+      return false;
+    }
     _monitor_context = ContextApi::snapshot();
     _monitor_start_ticks = start_ticks;
     _monitor_blocker = blocker;
+    _monitor_block_state = state;
     __atomic_fetch_or(&_misc_flags, FLAG_MONITOR_BLOCKED, __ATOMIC_RELEASE);
+    return true;
   }
 
-  inline bool monitorExit(u64 &start_ticks, Context &monitor_context, u64 &blocker) {
+  inline bool monitorExit(OSThreadState expected_state, u64 &start_ticks,
+                          Context &monitor_context, u64 &blocker) {
+    u32 flags = __atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE);
+    if ((flags & FLAG_MONITOR_BLOCKED) == 0 || _monitor_block_state != expected_state) {
+      return false;
+    }
     u32 prev = __atomic_fetch_and(&_misc_flags, ~FLAG_MONITOR_BLOCKED, __ATOMIC_ACQ_REL);
     if ((prev & FLAG_MONITOR_BLOCKED) == 0) {
       return false;
@@ -306,6 +322,7 @@ public:
     start_ticks = _monitor_start_ticks;
     monitor_context = _monitor_context;
     blocker = _monitor_blocker;
+    _monitor_block_state = OSThreadState::UNKNOWN;
     return true;
   }
 

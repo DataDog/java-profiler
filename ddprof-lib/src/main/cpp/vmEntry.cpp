@@ -145,7 +145,7 @@ static void monitorBlockExit(JNIEnv *jni, jthread thread, OSThreadState state) {
   u64 start_ticks = 0;
   Context context = {};
   u64 blocker = 0;
-  bool exited = current->monitorExit(start_ticks, context, blocker);
+  bool exited = current->monitorExit(state, start_ticks, context, blocker);
   if (exited) {
     int tid = ProfiledThread::currentTid();
     recordTaskBlockAsyncWithContextIfEligible(tid, start_ticks, TSC::ticks(),
@@ -159,22 +159,22 @@ static void monitorBlockExit(JNIEnv *jni, jthread thread, OSThreadState state) {
 
 static void JNICALL MonitorContendedEnter(jvmtiEnv *jvmti, JNIEnv *jni,
                                           jthread thread, jobject object) {
-  monitorBlockEnter(jvmti, object, OSThreadState::MONITOR_WAIT);
+  monitorBlockEnter(jvmti, jni, thread, object, OSThreadState::MONITOR_WAIT);
 }
 
 static void JNICALL MonitorContendedEntered(jvmtiEnv *jvmti, JNIEnv *jni,
                                             jthread thread, jobject object) {
-  monitorBlockExit();
+  monitorBlockExit(jni, thread, OSThreadState::MONITOR_WAIT);
 }
 
 static void JNICALL MonitorWait(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                                 jobject object, jlong timeout) {
-  monitorBlockEnter(jvmti, object, OSThreadState::OBJECT_WAIT);
+  monitorBlockEnter(jvmti, jni, thread, object, OSThreadState::OBJECT_WAIT);
 }
 
 static void JNICALL MonitorWaited(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                                   jobject object, jboolean timed_out) {
-  monitorBlockExit();
+  monitorBlockExit(jni, thread, OSThreadState::OBJECT_WAIT);
 }
 
 static bool isVmRuntimeEntry(const char* blob_name) {

@@ -23,8 +23,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Measures the theoretical upper bound on {@code SIGVTALRM} suppression by running with
  * {@code wallprecheck=false} and classifying sample states. The once-per-run filter
- * ({@code wallprecheck=true}) suppresses {@code SLEEPING} / {@code CONDVAR_WAIT} after the
- * entry sample; {@code OBJECT_WAIT} and {@code RUNNABLE} are not skipped.
+ * ({@code wallprecheck=true}) suppresses {@code SLEEPING}, {@code CONDVAR_WAIT}, and
+ * {@code OBJECT_WAIT} after the entry sample; {@code RUNNABLE} is not skipped. Monitor
+ * contention ({@code MONITOR_WAIT}) is also suppressible when JVMTI monitor callbacks identify
+ * the blocked interval.
  */
 public class PrecheckEfficiencyTest extends AbstractProfilerTest {
 
@@ -55,7 +57,9 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
             LockSupport.parkNanos(10_000_000_000L);
         }, EFFICIENCY_PARKED);
 
-        // OBJECT_WAIT — not in the once-per-run filter's skip set
+        // OBJECT_WAIT — suppressed by the once-per-run filter. TaskBlock recording treats the
+        // Object.wait interval as owning monitor reacquire until MonitorWaited, so nested monitor
+        // contention callbacks do not produce a second TaskBlock for the same logical wait.
         Thread waiting = new Thread(() -> {
             registerCurrentThreadForWallClockProfiling();
             ready.countDown();
@@ -171,8 +175,7 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
         double pctObjectWait = 100.0 * objectWaitSamples  / total;
         double pctRunnable   = 100.0 * runnableSamples    / total;
 
-        double oncePerRunSuppression = pctSleep + pctPark;
-        double hypotheticalIfAlsoObjectWait = pctSleep + pctPark + pctObjectWait;
+        double oncePerRunSuppression = pctSleep + pctPark + pctObjectWait;
 
         System.out.printf("%nPrecheck efficiency report (wallprecheck=false baseline, %d total samples):%n", total);
         System.out.printf("  SLEEPING     (Thread.sleep):      %4d samples (%5.1f%%)%n", sleepSamples, pctSleep);
@@ -180,11 +183,8 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
         System.out.printf("  OBJECT_WAIT  (Object.wait):       %4d samples (%5.1f%%)%n", objectWaitSamples, pctObjectWait);
         System.out.printf("  RUNNABLE / other:                 %4d samples (%5.1f%%)%n", runnableSamples, pctRunnable);
         System.out.printf(
-                "Once-per-run filter (SLEEPING + CONDVAR_WAIT):   %.1f%% of signals suppressed (upper bound)%n",
+                "Once-per-run filter (SLEEPING + CONDVAR_WAIT + OBJECT_WAIT): %.1f%% of signals suppressed (upper bound)%n",
                 oncePerRunSuppression);
-        System.out.printf(
-                "Hypothetical if also suppressing OBJECT_WAIT:    %.1f%% of signals suppressed%n",
-                hypotheticalIfAlsoObjectWait);
 
         assertTrue(sleepSamples > 0, "Expected samples from sleeping thread");
         if (Platform.isJavaVersion(8)) {
