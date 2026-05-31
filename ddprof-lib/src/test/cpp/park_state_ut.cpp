@@ -62,30 +62,45 @@ TEST(ProfiledThreadParkStateTest, ParkedSpanlessWhenNoActiveSpan) {
   EXPECT_EQ(0ULL, park_context.spanId);
 }
 
-TEST(ProfiledThreadParkStateTest, NewThreadStartsWithoutParkOrMonitorState) {
+TEST(ProfiledThreadParkStateTest, NewThreadStartsWithoutParkState) {
   ProfiledThread *thread = ProfiledThread::forTid(12347);
 
   // A freshly constructed thread must not be parked.
   u64 start_ticks = 0;
   Context park_context = {};
   EXPECT_FALSE(thread->parkExit(start_ticks, park_context));
+}
 
-  // objectWait state must also be clear.
+TEST(ProfiledThreadMonitorStateTest, MonitorFlagLifecycle) {
+  ProfiledThread *thread = ProfiledThread::forTid(12348);
+
+  u64 start_ticks = 0;
+  Context monitor_context = {};
   u64 blocker = 0;
-  Context out_ctx = {};
-  EXPECT_FALSE(thread->objectWaitExit(start_ticks, out_ctx, blocker));
+  EXPECT_FALSE(thread->monitorExit(start_ticks, monitor_context, blocker));
+
+  thread->monitorEnter(999, 42);
+
+  EXPECT_TRUE(thread->monitorExit(start_ticks, monitor_context, blocker));
+  EXPECT_EQ(999ULL, start_ticks);
+  EXPECT_EQ(42ULL, blocker);
+  EXPECT_EQ(0ULL, monitor_context.spanId);
+
+  EXPECT_FALSE(thread->monitorExit(start_ticks, monitor_context, blocker));
 }
 
 // Once-per-run filter state lives on ThreadFilter::Slot (JVM-process-stable storage), not
 // on ProfiledThread (per-thread heap, freed on exit). Both the SIGVTALRM handler (writer +
 // reader on the owning thread) and the wall-clock timer thread (reader, fast-path skip)
 // reach it through the slot. Behaviour invariants under wallprecheck=true:
-// - First signal of a blocked-state run -> markSampledThisRun(state); handler emits MethodSample.
+// - Explicit block enter -> enterBlockedRun(state); timer can reason about the interval.
+// - First signal of that blocked-state run -> markSampledThisRun(state); handler emits MethodSample.
 // - Subsequent signal in the SAME blocked state -> sampledThisRun() && state == lastSampledState();
-//   handler suppresses emission.
+//   handler suppresses emission, and the timer can skip sending signals while activeBlockState()
+//   still matches lastSampledState().
 // - Transition within the skip set (SLEEPING -> CONDVAR_WAIT) -> state != lastSampledState();
 //   handler re-arms and emits.
-// - Transition out of the skip set -> resetSampledRun(state); next blocked-state entry emits again.
+// - Explicit block exit -> exitBlockedRun(); next blocked-state entry emits again.
 TEST(WallClockOncePerRunFilterTest, SlotStateTransitions) {
   ThreadFilter::Slot slot;
 

@@ -17,6 +17,7 @@
 #include "os.h"
 #include "profiler.h"
 #include "safeAccess.h"
+#include "taskBlockRecorder.h"
 #include "hotspot/vmStructs.h"
 #include "hotspot/jitCodeCache.h"
 #include <atomic>
@@ -43,6 +44,8 @@ bool VM::_hotspot = false;
 bool VM::_zing = false;
 bool VM::_can_sample_objects = false;
 bool VM::_can_intercept_binding = false;
+bool VM::_monitor_events_delegated = false;
+bool VM::_native_monitor_events_enabled = false;
 bool VM::_is_adaptive_gc_boundary_flag_set = false;
 
 jvmtiExtensionFunction VM::_request_stack_trace = nullptr;
@@ -60,6 +63,73 @@ JVM_GetManagement VM::_getManagement;
 static void wakeupHandler(int signo) {
   SIGNAL_HANDLER_GUARD();
   // Dummy handler for interrupting syscalls
+}
+
+static u64 monitorBlockerHash(jvmtiEnv *jvmti, jobject object) {
+  if (object == NULL) {
+    return 0;
+  }
+  jint hash = 0;
+  if (jvmti->GetObjectHashCode(object, &hash) != JVMTI_ERROR_NONE) {
+    return 0;
+  }
+  return static_cast<u64>(static_cast<uint32_t>(hash));
+}
+
+static void monitorBlockEnter(jvmtiEnv *jvmti, jobject object, OSThreadState state) {
+  Profiler *profiler = Profiler::instance();
+  if (!profiler->taskBlockAsyncActive()) {
+    return;
+  }
+  ProfiledThread *current = ProfiledThread::current();
+  if (current == nullptr) {
+    return;
+  }
+  current->monitorEnter(TSC::ticks(), monitorBlockerHash(jvmti, object));
+  ThreadFilter *tf = profiler->threadFilter();
+  if (tf->enabled()) {
+    tf->enterBlockedRun(current->filterSlotId(), state);
+  }
+}
+
+static void monitorBlockExit() {
+  ProfiledThread *current = ProfiledThread::current();
+  if (current == nullptr) {
+    return;
+  }
+  u64 start_ticks = 0;
+  Context context = {};
+  u64 blocker = 0;
+  bool exited = current->monitorExit(start_ticks, context, blocker);
+  if (exited) {
+    int tid = ProfiledThread::currentTid();
+    recordTaskBlockAsyncWithContextIfEligible(tid, start_ticks, TSC::ticks(),
+                                              context, blocker, 0);
+  }
+  ThreadFilter *tf = Profiler::instance()->threadFilter();
+  if (exited && tf->enabled()) {
+    tf->exitBlockedRun(current->filterSlotId());
+  }
+}
+
+static void JNICALL MonitorContendedEnter(jvmtiEnv *jvmti, JNIEnv *jni,
+                                          jthread thread, jobject object) {
+  monitorBlockEnter(jvmti, object, OSThreadState::MONITOR_WAIT);
+}
+
+static void JNICALL MonitorContendedEntered(jvmtiEnv *jvmti, JNIEnv *jni,
+                                            jthread thread, jobject object) {
+  monitorBlockExit();
+}
+
+static void JNICALL MonitorWait(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+                                jobject object, jlong timeout) {
+  monitorBlockEnter(jvmti, object, OSThreadState::OBJECT_WAIT);
+}
+
+static void JNICALL MonitorWaited(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+                                  jobject object, jboolean timed_out) {
+  monitorBlockExit();
 }
 
 static bool isVmRuntimeEntry(const char* blob_name) {
@@ -432,7 +502,9 @@ bool VM::initializeRequestStackTrace() {
   return false;
 }
 
-bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
+bool VM::initProfilerBridge(JavaVM *vm, bool attach,
+                            bool delegateMonitorEvents, bool wallPrecheck) {
+  (void)delegateMonitorEvents;
   TEST_LOG("VM::initProfilerBridge");
   if (!initShared(vm)) {
     return false;
@@ -462,6 +534,9 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   _can_intercept_binding =
       potential_capabilities.can_generate_native_method_bind_events &&
       HeapUsage::needsNativeBindingInterception();
+  _monitor_events_delegated = false;
+  _native_monitor_events_enabled =
+      wallPrecheck && potential_capabilities.can_generate_monitor_events;
 
   jvmtiCapabilities capabilities = {0};
   capabilities.can_generate_all_class_hook_events = 1;
@@ -478,7 +553,8 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   capabilities.can_get_source_file_name = 1;
   capabilities.can_get_line_numbers = 1;
   capabilities.can_generate_compiled_method_load_events = 1;
-  capabilities.can_generate_monitor_events = 1;
+  capabilities.can_generate_monitor_events =
+      _native_monitor_events_enabled ? 1 : 0;
   capabilities.can_tag_objects = 1;
 
   _jvmti->AddCapabilities(&capabilities);
@@ -499,6 +575,12 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   callbacks.SampledObjectAlloc = ObjectSampler::SampledObjectAlloc;
   callbacks.GarbageCollectionFinish = LivenessTracker::GarbageCollectionFinish;
   callbacks.NativeMethodBind = VMStructs::NativeMethodBind;
+  if (_native_monitor_events_enabled) {
+    callbacks.MonitorContendedEnter = MonitorContendedEnter;
+    callbacks.MonitorContendedEntered = MonitorContendedEntered;
+    callbacks.MonitorWait = MonitorWait;
+    callbacks.MonitorWaited = MonitorWaited;
+  }
   _jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
 
   _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_DEATH, NULL);
@@ -509,6 +591,16 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
                                    JVMTI_EVENT_DYNAMIC_CODE_GENERATED, NULL);
   _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_NATIVE_METHOD_BIND,
                                    NULL);
+  if (_native_monitor_events_enabled) {
+    _jvmti->SetEventNotificationMode(
+        JVMTI_ENABLE, JVMTI_EVENT_MONITOR_CONTENDED_ENTER, NULL);
+    _jvmti->SetEventNotificationMode(
+        JVMTI_ENABLE, JVMTI_EVENT_MONITOR_CONTENDED_ENTERED, NULL);
+    _jvmti->SetEventNotificationMode(
+        JVMTI_ENABLE, JVMTI_EVENT_MONITOR_WAIT, NULL);
+    _jvmti->SetEventNotificationMode(
+        JVMTI_ENABLE, JVMTI_EVENT_MONITOR_WAITED, NULL);
+  }
 
   if (hotspot_version() == 0 || !CodeHeap::available()) {
     // Workaround for JDK-8173361: avoid CompiledMethodLoad events when possible

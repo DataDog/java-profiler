@@ -30,7 +30,8 @@ public:
     TYPE_MASK = TYPE_JAVA_THREAD | TYPE_NOT_JAVA_THREAD
   };
 
-  static constexpr u32 FLAG_PARKED = 0x4u; // next free bit after TYPE_MASK (0x1|0x2)
+  static constexpr u32 FLAG_PARKED = 0x4u;
+  static constexpr u32 FLAG_MONITOR_BLOCKED = 0x8u;
 
 private:
   // We are allowing several levels of nesting because we can be
@@ -59,6 +60,9 @@ private:
   u32 _misc_flags;
   u64 _park_start_ticks;
   Context _park_context;
+  u64 _monitor_start_ticks;
+  Context _monitor_context;
+  u64 _monitor_blocker;
   int _filter_slot_id; // Slot ID for thread filtering
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
   uint8_t _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
@@ -81,6 +85,7 @@ private:
       : ThreadLocalData(), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _tid(tid), _cpu_epoch(0),
         _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0),
         _park_start_ticks(0), _park_context{},
+        _monitor_start_ticks(0), _monitor_context{}, _monitor_blocker(0),
         _filter_slot_id(-1), _init_window(0),
         _signal_depth(0),
         _otel_ctx_initialized(false), _crash_protection_active(false),
@@ -236,8 +241,7 @@ public:
     return &_otel_ctx_record;
   }
 
-  // CAS RMW to update only TYPE_MASK bits without clobbering FLAG_PARKED set concurrently
-  // by parkEnter/parkExit running in signal-handler context on the same thread.
+  // CAS RMW to update only TYPE_MASK bits without clobbering profiler state flags.
   inline void setJavaThread(bool is_java) {
     const u32 type_bits = is_java ? static_cast<u32>(TYPE_JAVA_THREAD) : static_cast<u32>(TYPE_NOT_JAVA_THREAD);
     u32 cur = __atomic_load_n(&_misc_flags, __ATOMIC_RELAXED);
@@ -284,6 +288,24 @@ public:
     }
     start_ticks = _park_start_ticks;
     park_context = _park_context;
+    return true;
+  }
+
+  inline void monitorEnter(u64 start_ticks, u64 blocker) {
+    _monitor_context = ContextApi::snapshot();
+    _monitor_start_ticks = start_ticks;
+    _monitor_blocker = blocker;
+    __atomic_fetch_or(&_misc_flags, FLAG_MONITOR_BLOCKED, __ATOMIC_RELEASE);
+  }
+
+  inline bool monitorExit(u64 &start_ticks, Context &monitor_context, u64 &blocker) {
+    u32 prev = __atomic_fetch_and(&_misc_flags, ~FLAG_MONITOR_BLOCKED, __ATOMIC_ACQ_REL);
+    if ((prev & FLAG_MONITOR_BLOCKED) == 0) {
+      return false;
+    }
+    start_ticks = _monitor_start_ticks;
+    monitor_context = _monitor_context;
+    blocker = _monitor_blocker;
     return true;
   }
 

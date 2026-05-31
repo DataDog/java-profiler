@@ -68,9 +68,10 @@ public:
 };
 
 extern "C" DLLEXPORT jboolean JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_init0(JNIEnv *env, jclass unused) {
+Java_com_datadoghq_profiler_JavaProfiler_init0(
+    JNIEnv *env, jclass unused, jboolean delegateMonitorEvents, jboolean wallPrecheck) {
   // JavaVM* has already been stored when the native library was loaded so we can pass nullptr here
-  return VM::initProfilerBridge(nullptr, true);
+  return VM::initProfilerBridge(nullptr, true, delegateMonitorEvents, wallPrecheck);
 }
 
 extern "C" DLLEXPORT void JNICALL
@@ -85,6 +86,11 @@ Java_com_datadoghq_profiler_JavaProfiler_stop0(JNIEnv *env, jobject unused) {
 extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getTid0(JNIEnv *env, jclass unused) {
   return OS::threadId();
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_monitorEventsDelegated0(JNIEnv *env, jclass unused) {
+  return VM::monitorEventsDelegated();
 }
 
 extern "C" DLLEXPORT jstring JNICALL

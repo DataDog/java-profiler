@@ -64,27 +64,25 @@ public final class JavaProfiler {
     }
 
     /**
-     * Get a {@linkplain JavaProfiler} instance with explicit feature flags.
-     * The boolean parameters are accepted for API compatibility; feature activation
-     * is performed at profiler start time via the command string, not at init time.
-     * @param libLocation the path to the native library, or {@literal null} to use the bundled one
-     * @param scratchDir directory where the bundled library will be exploded before linking
-     * @param delegateMonitorEvents reserved for future use; currently ignored
-     * @param wallPrecheck reserved for future use; currently ignored
-     */
-    public static JavaProfiler getInstance(String libLocation, String scratchDir,
-            boolean delegateMonitorEvents, boolean wallPrecheck) throws IOException {
-        return getInstance(libLocation, scratchDir);
-    }
-
-    /**
      * Get a {@linkplain JavaProfiler} instance backed by the given native library and using
      * the given directory as the scratch where the bundled library will be exploded
      * before linking.
      * @param libLocation the path to the native library to be used instead of the bundled one
      * @param scratchDir directory where the bundled library will be exploded before linking; ignored when 'libLocation' is {@literal null}
      */
-    public static synchronized JavaProfiler getInstance(String libLocation, String scratchDir) throws IOException {
+    public static JavaProfiler getInstance(String libLocation, String scratchDir) throws IOException {
+        return getInstance(libLocation, scratchDir, false, false);
+    }
+
+    /**
+     * Get a {@linkplain JavaProfiler} instance with explicit feature flags.
+     * @param libLocation the path to the native library, or {@literal null} to use the bundled one
+     * @param scratchDir directory where the bundled library will be exploded before linking
+     * @param delegateMonitorEvents ignored; monitor TaskBlock events are native-owned
+     * @param wallPrecheck whether wall-clock precheck support is enabled for this profiler instance
+     */
+    public static synchronized JavaProfiler getInstance(String libLocation, String scratchDir,
+            boolean delegateMonitorEvents, boolean wallPrecheck) throws IOException {
         if (instance != null) {
             return instance;
         }
@@ -94,7 +92,7 @@ public final class JavaProfiler {
         if (!result.succeeded) {
             throw new IOException("Failed to load Datadog Java profiler library", result.error);
         }
-        init0();
+        init0(delegateMonitorEvents, wallPrecheck);
 
         instance = profiler;
 
@@ -324,6 +322,15 @@ public final class JavaProfiler {
     }
 
     /**
+     * Reports whether native monitor TaskBlock callbacks were disabled in favor of Java
+     * instrumentation. Java monitor instrumentation has been removed, so this is kept only for
+     * compatibility and currently always returns {@code false}.
+     */
+    public boolean isMonitorEventsDelegated() {
+        return monitorEventsDelegated0();
+    }
+
+    /**
      * Returns the TSC frequency in Hz (ticks per second).
      */
     public long getTscFrequency() {
@@ -383,7 +390,7 @@ public final class JavaProfiler {
         return new ThreadContext(buffer, metadata);
     }
 
-    private static native boolean init0();
+    private static native boolean init0(boolean delegateMonitorEvents, boolean wallPrecheck);
     private native void stop0() throws IllegalStateException;
     private native String execute0(String command) throws IllegalArgumentException, IllegalStateException, IOException;
 
@@ -391,6 +398,7 @@ public final class JavaProfiler {
     private static native void filterThreadRemove0();
 
     private static native int getTid0();
+    private static native boolean monitorEventsDelegated0();
 
     private static native boolean recordTrace0(long rootSpanId, String endpoint, String operation, int sizeLimit);
 
