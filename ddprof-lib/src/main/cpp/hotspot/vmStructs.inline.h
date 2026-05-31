@@ -157,7 +157,7 @@ VMSymbol* VMConstMethod::signature() const {
     VMConstantPool* cpool = constants_or_null();
     if (cpool == nullptr) return nullptr;
 
-    u16 sig_index = nameIndex();
+    u16 sig_index = signatureIndex();
     return cpool->symbolAt(sig_index);
 }
 

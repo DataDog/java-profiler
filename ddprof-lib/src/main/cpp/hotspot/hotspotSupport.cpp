@@ -1238,48 +1238,41 @@ bool HotspotSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klas
 jmethodID HotspotSupport::resolve(const void* method) {
   assert(VM::isHotspot());
   assert(method != nullptr);
-  TEST_LOG("Resolve method");
   VMMethod* vm_method = VMMethod::cast_or_null(method);
   if (vm_method == nullptr) {
-  TEST_LOG("Resolve method nullptr");
     return nullptr;
   }
 
   // May have been populated by following code or JMETHODID_NOT_WALKABLE
   jmethodID method_id = vm_method->validatedId();
   if (method_id != nullptr && method_id != JMETHODID_NOT_WALKABLE) {
-  TEST_LOG("Resolve method methodId = 0x%zu", (unsigned long)method_id);
     return method_id;
   }
 
   VMConstMethod* const_method = vm_method->constMethod_or_null();
   if (const_method == nullptr) {
-  TEST_LOG("Resolve constMethod");
-    return JMETHODID_NOT_WALKABLE;
+    return nullptr;
   }
 
   VMConstantPool* const_pool = const_method->constants_or_null();
   if (const_pool == nullptr) {
-  TEST_LOG("Resolve ConstantPool");
-    return JMETHODID_NOT_WALKABLE;
+    return nullptr;
   }
 
   VMSymbol* name_sym = const_method->name();
   VMSymbol* sig_sym = const_method->signature();
   VMKlass* klass = const_pool->holder_or_null();
   if (klass == nullptr) {
-    TEST_LOG("Resolve constant pool");
-    return JMETHODID_NOT_WALKABLE;
+    return nullptr;
   }
 
   if (name_sym == nullptr || sig_sym == nullptr || klass == nullptr) {
-TEST_LOG("Resolve method symbols");
-    return JMETHODID_NOT_WALKABLE;
+    return nullptr;
   }
 
   VMSymbol* klass_sym = klass->name();
   if (klass_sym == nullptr) {
-    return JMETHODID_NOT_WALKABLE;
+    return nullptr;
   }
 
   char* method_name = (char*)malloc(name_sym->length() + 1);
@@ -1309,12 +1302,10 @@ TEST_LOG("Resolve method symbols");
         }
       }
   }
-  TEST_LOG("Resolved: %s: %s %s", klass_name, method_name, method_signature);
 
   free(method_name);
   free(method_signature);
   free(klass_name);
-TEST_LOG("Resolved method id = 0x%zu", (unsigned long)method_id);
 
   return method_id;
 }
