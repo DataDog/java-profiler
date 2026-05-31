@@ -93,6 +93,10 @@ TEST(WallClockOncePerRunFilterTest, SlotStateTransitions) {
   // (default-constructed via in-class initializers).
   EXPECT_FALSE(slot.sampledThisRun());
   EXPECT_EQ(OSThreadState::UNKNOWN, slot.lastSampledState());
+  EXPECT_EQ(OSThreadState::UNKNOWN, slot.activeBlockState());
+
+  slot.setActiveBlockState(OSThreadState::SLEEPING);
+  EXPECT_EQ(OSThreadState::SLEEPING, slot.activeBlockState());
 
   // First signal of a SLEEPING run: arm + emit.
   slot.markSampledThisRun(OSThreadState::SLEEPING);
@@ -105,41 +109,78 @@ TEST(WallClockOncePerRunFilterTest, SlotStateTransitions) {
   // a matching state without needing barriers between the two reads.
   EXPECT_TRUE(slot.sampledThisRun() &&
               OSThreadState::SLEEPING == slot.lastSampledState());
+  EXPECT_TRUE(slot.sampledThisRun() &&
+              slot.activeBlockState() == slot.lastSampledState());
 
   // Within-skip-set transition SLEEPING -> CONDVAR_WAIT: identity check fails,
   // so the handler re-arms and emits again. Re-arming overwrites lastSampledState.
+  slot.setActiveBlockState(OSThreadState::CONDVAR_WAIT);
   EXPECT_FALSE(slot.sampledThisRun() &&
                OSThreadState::CONDVAR_WAIT == slot.lastSampledState());
   slot.markSampledThisRun(OSThreadState::CONDVAR_WAIT);
   EXPECT_TRUE(slot.sampledThisRun());
   EXPECT_EQ(OSThreadState::CONDVAR_WAIT, slot.lastSampledState());
+  EXPECT_TRUE(slot.sampledThisRun() &&
+              slot.activeBlockState() == slot.lastSampledState());
 
-  // Transition out of skip set (RUNNABLE): resetSampledRun clears the armed bit so the
-  // next blocked-state entry will emit again.
+  // Explicit block exit clears the active block and sampled marker so the next
+  // blocked-state entry will emit again.
+  slot.setActiveBlockState(OSThreadState::UNKNOWN);
   slot.resetSampledRun(OSThreadState::RUNNABLE);
   EXPECT_FALSE(slot.sampledThisRun());
   EXPECT_EQ(OSThreadState::RUNNABLE, slot.lastSampledState());
+  EXPECT_EQ(OSThreadState::UNKNOWN, slot.activeBlockState());
 
   // Next blocked-state entry after reset: arm + emit again.
+  slot.setActiveBlockState(OSThreadState::SLEEPING);
   slot.markSampledThisRun(OSThreadState::SLEEPING);
   EXPECT_TRUE(slot.sampledThisRun());
   EXPECT_EQ(OSThreadState::SLEEPING, slot.lastSampledState());
+  EXPECT_EQ(OSThreadState::SLEEPING, slot.activeBlockState());
+}
+
+TEST(WallClockOncePerRunFilterTest, FilterHelpersManageActiveBlockState) {
+  ThreadFilter filter;
+  filter.init("1");
+  ThreadFilter::SlotID slot_id = filter.registerThread();
+
+  filter.enterBlockedRun(slot_id, OSThreadState::CONDVAR_WAIT);
+  ThreadFilter::Slot *slot = filter.slotForId(slot_id);
+  ASSERT_NE(nullptr, slot);
+  EXPECT_EQ(OSThreadState::CONDVAR_WAIT, slot->activeBlockState());
+
+  slot->markSampledThisRun(OSThreadState::CONDVAR_WAIT);
+  EXPECT_TRUE(slot->sampledThisRun());
+  EXPECT_TRUE(slot->sampledThisRun() &&
+              slot->activeBlockState() == slot->lastSampledState());
+
+  filter.exitBlockedRun(slot_id);
+  EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
+  EXPECT_FALSE(slot->sampledThisRun());
+  EXPECT_EQ(OSThreadState::RUNNABLE, slot->lastSampledState());
 }
 
 // Regression for the slot-reuse stuck-suppression hazard: a slot whose previous owner
-// exited mid-park ({sampledThisRun=true, lastSampledState=CONDVAR_WAIT}) must be reset
-// before a new thread takes ownership. ThreadFilter::resetSlotRunState(slot_id) does this.
+// exited mid-park ({sampledThisRun=true, lastSampledState=CONDVAR_WAIT,
+// activeBlockState=CONDVAR_WAIT}) must be reset before a new thread takes ownership.
+// ThreadFilter::resetSlotRunState(slot_id) does this.
 TEST(WallClockOncePerRunFilterTest, ResetClearsArmedFlagOnSlotReuse) {
-  ThreadFilter::Slot slot;
-  slot.markSampledThisRun(OSThreadState::CONDVAR_WAIT);
-  EXPECT_TRUE(slot.sampledThisRun());
+  ThreadFilter filter;
+  filter.init("1");
+  ThreadFilter::SlotID slot_id = filter.registerThread();
+  filter.enterBlockedRun(slot_id, OSThreadState::CONDVAR_WAIT);
+  ThreadFilter::Slot *slot = filter.slotForId(slot_id);
+  ASSERT_NE(nullptr, slot);
+  slot->markSampledThisRun(OSThreadState::CONDVAR_WAIT);
+  EXPECT_TRUE(slot->sampledThisRun());
+  EXPECT_EQ(OSThreadState::CONDVAR_WAIT, slot->activeBlockState());
 
-  // Simulate the slot reset that resetSlotRunState(slot_id) issues.
-  slot.resetSampledRun(OSThreadState::UNKNOWN);
+  filter.resetSlotRunState(slot_id);
 
   // Post-conditions a new occupant requires: flag clear AND state distinct from any blocked
   // skip-set value, so the very next signal in any state goes through the handler's
   // is-blocked-skip-state branch as "first of run" rather than a suppress decision.
-  EXPECT_FALSE(slot.sampledThisRun());
-  EXPECT_EQ(OSThreadState::UNKNOWN, slot.lastSampledState());
+  EXPECT_FALSE(slot->sampledThisRun());
+  EXPECT_EQ(OSThreadState::UNKNOWN, slot->lastSampledState());
+  EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
 }

@@ -21,7 +21,6 @@
 
 #include "threadFilter.h"
 #include "arch.h"
-#include "hotspot/vmStructs.h"
 #include "os.h"
 #include "thread.h"
 #include <cassert>
@@ -80,7 +79,7 @@ void ThreadFilter::initializeChunk(int chunk_idx) {
     ChunkStorage* new_chunk = new ChunkStorage();
     for (auto& slot : new_chunk->slots) {
         slot.value.store(-1, std::memory_order_relaxed);
-        slot.vm_thread.store(nullptr, std::memory_order_relaxed);
+        slot.active_block_state.store(OSThreadState::UNKNOWN, std::memory_order_relaxed);
     }
 
     // Try to install it atomically
@@ -200,12 +199,12 @@ void ThreadFilter::remove(SlotID slot_id) {
     }
 
     chunk->slots[slot_idx].value.store(-1, std::memory_order_release);
-    chunk->slots[slot_idx].vm_thread.store(nullptr, std::memory_order_release);
 }
 
 void ThreadFilter::unregisterThread(SlotID slot_id) {
     if (slot_id < 0) return;
     remove(slot_id);
+    resetSlotRunState(slot_id);
     pushToFreeList(slot_id);
 }
 
@@ -288,13 +287,23 @@ void ThreadFilter::collect(std::vector<int>& tids) const {
     }
 }
 
-void ThreadFilter::setVMThread(SlotID slot_id, VMThread* vm_thread) {
-    if (slot_id < 0) return;
-    int chunk_idx = slot_id >> kChunkShift;
-    int slot_idx  = slot_id & kChunkMask;
-    ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
-    if (chunk != nullptr) {
-        chunk->slots[slot_idx].vm_thread.store(vm_thread, std::memory_order_release);
+void ThreadFilter::collect(std::vector<ThreadEntry>& entries) const {
+    entries.clear();
+    entries.reserve(512);
+
+    int num_chunks = _num_chunks.load(std::memory_order_relaxed);
+    for (int chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
+        ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
+        if (chunk == nullptr) {
+            continue;
+        }
+
+        for (const auto& slot : chunk->slots) {
+            int slot_tid = slot.value.load(std::memory_order_acquire);
+            if (slot_tid != -1) {
+                entries.push_back({slot_tid, &slot});
+            }
+        }
     }
 }
 
@@ -304,42 +313,25 @@ void ThreadFilter::resetSlotRunState(SlotID slot_id) {
     int slot_idx  = slot_id & kChunkMask;
     ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
     if (chunk != nullptr) {
-        // Clear stale suppression state so a new thread in this slot is not
-        // silently suppressed due to its predecessor's park state.
+        // Clear stale suppression state so a new thread in this slot cannot inherit
+        // its predecessor's active block or once-per-run sampled marker.
         chunk->slots[slot_idx].resetSampledRun(OSThreadState::UNKNOWN);
-        chunk->slots[slot_idx].setInParkRun(false);
+        chunk->slots[slot_idx].setActiveBlockState(OSThreadState::UNKNOWN);
     }
 }
 
-void ThreadFilter::enterParkRun(SlotID slot_id) {
-    Slot* s = slotForId(slot_id);
-    if (s != nullptr) s->setInParkRun(true);
-}
-
-void ThreadFilter::exitParkRun(SlotID slot_id) {
+void ThreadFilter::enterBlockedRun(SlotID slot_id, OSThreadState state) {
     Slot* s = slotForId(slot_id);
     if (s != nullptr) {
-        s->setInParkRun(false);
-        s->resetSampledRun(OSThreadState::RUNNABLE);
+        s->setActiveBlockState(state);
     }
 }
 
-void ThreadFilter::collectWithState(std::vector<ThreadEntry>& entries) const {
-    entries.clear();
-    entries.reserve(512);
-
-    int num_chunks = _num_chunks.load(std::memory_order_relaxed);
-    for (int chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
-        ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
-        if (chunk == nullptr) continue;
-
-        for (const auto& slot : chunk->slots) {
-            int slot_tid = slot.value.load(std::memory_order_acquire);
-            if (slot_tid != -1) {
-                VMThread* vm = slot.vm_thread.load(std::memory_order_acquire);
-                entries.push_back({slot_tid, vm, &slot});
-            }
-        }
+void ThreadFilter::exitBlockedRun(SlotID slot_id) {
+    Slot* s = slotForId(slot_id);
+    if (s != nullptr) {
+        s->setActiveBlockState(OSThreadState::UNKNOWN);
+        s->resetSampledRun(OSThreadState::RUNNABLE);
     }
 }
 

@@ -25,7 +25,6 @@
 #include "arch.h"
 #include "threadState.h"
 
-class VMThread;
 struct ThreadEntry;  // defined after ThreadFilter; carries a pointer to a ThreadFilter::Slot
 
 class ThreadFilter {
@@ -45,22 +44,20 @@ public:
     // One cache line per slot to avoid false sharing. Slot instances are never freed
     // (ChunkStorage is process-lifetime), so a captured Slot* is always dereferenceable.
     struct alignas(DEFAULT_CACHE_LINE_SIZE) Slot {
-        std::atomic<VMThread*>     vm_thread{nullptr};           // 8 bytes
         std::atomic<int>           value{-1};                    // 4 bytes
         // Wall-clock once-per-run suppression state. Written by the signal handler on the
         // owning thread; read by the timer thread. Release/acquire on sampled_this_run
         // pairs with relaxed last_sampled_state, following the standard flag+payload pattern.
         std::atomic<OSThreadState> last_sampled_state{OSThreadState::UNKNOWN};  // 4 bytes
+        // Set by explicit block enter/exit hooks. It lets the timer skip sending a signal
+        // only while instrumentation still owns a suppressible blocking interval.
+        std::atomic<OSThreadState> active_block_state{OSThreadState::UNKNOWN};   // 4 bytes
         std::atomic<bool>          sampled_this_run{false};                     // 1 byte
-        // Set by parkEnter0/exitParkRun; lets the timer suppress transient RUNNABLE
-        // ticks that occur when SIGVTALRM interrupts pthread_cond_timedwait (EINTR re-entry).
-        std::atomic<bool>          in_park_run{false};                          // 1 byte
         char padding[DEFAULT_CACHE_LINE_SIZE
-                     - sizeof(std::atomic<VMThread*>)
                      - sizeof(std::atomic<int>)
                      - sizeof(std::atomic<OSThreadState>)
-                     - sizeof(std::atomic<bool>) // sampled_this_run
-                     - sizeof(std::atomic<bool>)]; // in_park_run
+                     - sizeof(std::atomic<OSThreadState>)
+                     - sizeof(std::atomic<bool>)]; // sampled_this_run
 
         inline bool sampledThisRun() const {
             return sampled_this_run.load(std::memory_order_acquire);
@@ -76,16 +73,16 @@ public:
             last_sampled_state.store(state, std::memory_order_relaxed);
             sampled_this_run.store(false, std::memory_order_release);
         }
-        inline bool inParkRun() const {
-            return in_park_run.load(std::memory_order_acquire);
+        inline OSThreadState activeBlockState() const {
+            return active_block_state.load(std::memory_order_acquire);
         }
-        inline void setInParkRun(bool value) {
-            in_park_run.store(value, std::memory_order_release);
+        inline void setActiveBlockState(OSThreadState state) {
+            active_block_state.store(state, std::memory_order_release);
         }
     };
     static_assert(sizeof(Slot) == DEFAULT_CACHE_LINE_SIZE, "Slot must be exactly one cache line");
     static_assert(std::atomic<OSThreadState>::is_always_lock_free,
-                  "Slot::last_sampled_state must be lock-free for signal-handler safety");
+                  "Slot OSThreadState fields must be lock-free for signal-handler safety");
     static_assert(std::atomic<bool>::is_always_lock_free,
                   "Slot::sampled_this_run must be lock-free for signal-handler safety");
 
@@ -100,11 +97,10 @@ public:
     void add(int tid, SlotID slot_id);
     void remove(SlotID slot_id);
     void collect(std::vector<int>& tids) const;
-    void setVMThread(SlotID slot_id, VMThread* vm_thread);
+    void collect(std::vector<ThreadEntry>& entries) const;
     void resetSlotRunState(SlotID slot_id);
-    void enterParkRun(SlotID slot_id);
-    void exitParkRun(SlotID slot_id);
-    void collectWithState(std::vector<ThreadEntry>& entries) const;
+    void enterBlockedRun(SlotID slot_id, OSThreadState state);
+    void exitBlockedRun(SlotID slot_id);
 
     // Returns nullptr if slot_id is invalid or its chunk has not been allocated.
     inline Slot* slotForId(SlotID slot_id) const {
@@ -154,10 +150,9 @@ private:
     SlotID popFromFreeList();
 };
 
-// Snapshot entry produced by ThreadFilter::collectWithState for the wall-clock timer.
+// Snapshot entry produced by ThreadFilter::collect for the wall-clock timer.
 struct ThreadEntry {
     int tid;
-    VMThread* vm_thread;
     const ThreadFilter::Slot* slot;
 };
 

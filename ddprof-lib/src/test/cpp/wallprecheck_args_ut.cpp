@@ -12,9 +12,9 @@ TEST(WallPrecheckArgsTest, DefaultsToDisabled) {
     EXPECT_FALSE(args._wall_precheck);
 }
 
-TEST(WallPrecheckArgsTest, BareFlagWithoutValueDisablesPrecheck) {
-    // wallprecheck is false by default; passing it without a value keeps it
-    // disabled — explicit opt-in via wallprecheck=true is required.
+TEST(WallPrecheckArgsTest, BareFlagWithoutValueEnablesPrecheck) {
+    // wallprecheck is false by default; passing it without a value enables it,
+    // matching the profiler's boolean flag parsing convention.
     Arguments args;
 
     Error error = args.parse("wallprecheck");
