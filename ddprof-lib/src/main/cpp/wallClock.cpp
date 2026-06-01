@@ -234,6 +234,16 @@ void WallClockASGCT::timerLoop() {
 void WallClockJvmti::sharedSignalHandler(int signo, siginfo_t *siginfo,
                                          void *ucontext) {
   SIGNAL_HANDLER_GUARD();
+  // Reject any SIGVTALRM that did not originate from our rt_tgsigqueueinfo
+  // send (mirrors WallClockASGCT). Defends against stray in-process tgkill or
+  // external sigqueue driving the JVMTI RequestStackTrace path.
+  if (!OS::shouldProcessSignal(siginfo, SI_QUEUE, SignalCookie::wallclock())) {
+    Counters::increment(WALLCLOCK_SIGNAL_FOREIGN);
+    OS::forwardForeignSignal(signo, siginfo, ucontext);
+    return;
+  }
+  Counters::increment(WALLCLOCK_SIGNAL_OWN);
+
   WallClockJvmti *engine =
       reinterpret_cast<WallClockJvmti *>(Profiler::instance()->wallEngine());
   if (signo == SIGVTALRM) {
@@ -284,6 +294,7 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
 void WallClockJvmti::initialize(Arguments &args) {
   // Caller must have verified VM::canRequestStackTrace() before selecting
   // this engine; see Profiler::selectWallEngine().
+  OS::primeSignalOriginCheck();
   OS::installSignalHandler(SIGVTALRM, sharedSignalHandler);
 }
 
@@ -308,7 +319,7 @@ void WallClockJvmti::timerLoop() {
 
   auto sampleThreads = [&](int tid, int &num_failures,
                            int &threads_already_exited, int &permission_denied) {
-    if (!OS::sendSignalToThread(tid, SIGVTALRM)) {
+    if (!OS::sendSignalWithCookie(tid, SIGVTALRM, SignalCookie::wallclock())) {
       num_failures++;
       if (errno != 0) {
         if (errno == ESRCH) {

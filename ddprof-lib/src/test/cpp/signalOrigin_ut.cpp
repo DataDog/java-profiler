@@ -333,6 +333,32 @@ TEST_F(SignalOriginTest, ResetForTestingClearsOldactionCache) {
     sigaction(SIGUSR1, &saved, nullptr);
 }
 
+// -------- WallclockGuardContract: predicate contract for WallClockJvmti guard --------
+//
+// WallClockJvmti::sharedSignalHandler gates on
+//   OS::shouldProcessSignal(siginfo, SI_QUEUE, SignalCookie::wallclock())
+// These cases cover the three branches the guard must handle: own send,
+// bare tgkill/kill (no cookie), and a queued signal with a foreign cookie.
+
+TEST_F(SignalOriginTest, WallclockGuardContract_OwnSignalAccepted) {
+    siginfo_t si = makeSiginfo(SI_QUEUE, SignalCookie::wallclock());
+    EXPECT_TRUE(OS::shouldProcessSignal(&si, SI_QUEUE, SignalCookie::wallclock()));
+}
+
+TEST_F(SignalOriginTest, WallclockGuardContract_BareKillRejected) {
+    // tgkill/pthread_kill delivers SI_TKILL; kill/raise delivers SI_USER.
+    for (int code : {SI_TKILL, SI_USER}) {
+        siginfo_t si = makeSiginfo(code, nullptr);
+        EXPECT_FALSE(OS::shouldProcessSignal(&si, SI_QUEUE, SignalCookie::wallclock()))
+            << "bare signal with si_code " << code << " must be rejected";
+    }
+}
+
+TEST_F(SignalOriginTest, WallclockGuardContract_ForeignCookieRejected) {
+    siginfo_t si = makeSiginfo(SI_QUEUE, (void*)0xF00D);
+    EXPECT_FALSE(OS::shouldProcessSignal(&si, SI_QUEUE, SignalCookie::wallclock()));
+}
+
 TEST_F(SignalOriginTest, ForwardAppliesSigmaskWhenEnabled) {
     // Verify that the slow path (DDPROF_FORWARD_APPLY_SIGMASK=1) still
     // chains to the previous SA_SIGINFO handler correctly.
