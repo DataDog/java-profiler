@@ -16,6 +16,8 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <cstring>
+#include <cstdlib>
+#include <elf.h>
 #include <chrono>
 #include <thread>
 
@@ -359,4 +361,56 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Range(3, 21) // This will test delays from 5 to 20 milliseconds inclusive
 );
 #endif
+
+namespace {
+
+// Minimal valid ELF64 header; callers set the malformed field afterwards.
+Elf64_Ehdr validEhdr() {
+    Elf64_Ehdr e;
+    memset(&e, 0, sizeof(e));
+    e.e_ident[EI_MAG0] = ELFMAG0;
+    e.e_ident[EI_MAG1] = ELFMAG1;
+    e.e_ident[EI_MAG2] = ELFMAG2;
+    e.e_ident[EI_MAG3] = ELFMAG3;
+    e.e_ident[EI_CLASS] = ELFCLASS64;
+    e.e_ident[EI_DATA] = ELFDATA2LSB;
+    e.e_ident[EI_VERSION] = EV_CURRENT;
+    e.e_type = ET_DYN;
+    e.e_machine = EM_X86_64;
+    e.e_version = EV_CURRENT;
+    e.e_ehsize = sizeof(Elf64_Ehdr);
+    e.e_shstrndx = 1;
+    return e;
+}
+
+}  // namespace
+
+// Regression test for the build-id parser hardening (found by fuzz_elf).
+// extractBuildIdFromMemory()'s `p_offset + p_filesz` bounds check could
+// overflow, letting findBuildIdInNotes() walk a PT_NOTE past the buffer. The
+// buffer is heap-allocated and sized exactly so ASan's redzone catches the
+// over-read deterministically. The hardened parser must return cleanly.
+TEST(ElfBuildId, noteOffsetOverflow) {
+    Elf64_Ehdr e = validEhdr();
+    e.e_phoff = sizeof(Elf64_Ehdr);
+    e.e_phentsize = sizeof(Elf64_Phdr);
+    e.e_phnum = 1;
+
+    Elf64_Phdr p;
+    memset(&p, 0, sizeof(p));
+    p.p_type = PT_NOTE;
+    p.p_offset = 0x70;                            // inside the buffer
+    p.p_filesz = static_cast<uint64_t>(8) - p.p_offset;  // sum wraps to 8 (< size)
+
+    const size_t size = sizeof(e) + sizeof(p);    // 120 bytes
+    char* buf = new char[size];                   // exact size -> redzone right after
+    memcpy(buf, &e, sizeof(e));
+    memcpy(buf + sizeof(e), &p, sizeof(p));
+
+    size_t build_id_len = 0;
+    char* id = SymbolsLinux::extractBuildIdFromMemory(buf, size, &build_id_len);
+    free(id);  // hardened parser returns nullptr; the point is that it must not crash
+    delete[] buf;
+}
+
 #endif //__linux__
