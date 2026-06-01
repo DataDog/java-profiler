@@ -30,7 +30,9 @@ std::atomic<bool> BaseWallClock::_enabled{false};
 
 static inline bool isPrecheckSuppressionState(OSThreadState state) {
   return state == OSThreadState::SLEEPING ||
-         state == OSThreadState::CONDVAR_WAIT;
+         state == OSThreadState::CONDVAR_WAIT ||
+         state == OSThreadState::OBJECT_WAIT ||
+         state == OSThreadState::MONITOR_WAIT;
 }
 
 bool BaseWallClock::inSyscall(void *ucontext) {
@@ -95,7 +97,7 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
     return;
   }
   // Once-per-run filter (wallprecheck=true): emit one MethodSample at the start of
-  // a SLEEPING/CONDVAR_WAIT run, suppress subsequent signals until state changes.
+  // a blocking run, suppress subsequent signals until state changes.
   // On J9/Zing getOSThreadState() returns UNKNOWN, so every signal falls through.
   ThreadFilter::Slot* slot_to_arm = nullptr;
   OSThreadState state_to_arm = OSThreadState::UNKNOWN;
@@ -118,8 +120,8 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
         state_to_arm = precheck_state;
       } else if (slot->activeBlockState() == OSThreadState::UNKNOWN) {
         // Only disarm when no explicit block hook owns the interval. Transient
-        // RUNNABLE states inside a park run would otherwise
-        // disarm the slot, causing the timer to re-send the next tick.
+        // RUNNABLE states inside a park/monitor wait would otherwise disarm the
+        // slot, causing the timer to re-send the next tick.
         slot->resetSampledRun(precheck_state);
       }
     }
