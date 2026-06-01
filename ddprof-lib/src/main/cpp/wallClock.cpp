@@ -28,6 +28,11 @@
 
 std::atomic<bool> BaseWallClock::_enabled{false};
 
+static inline bool isPrecheckSuppressionState(OSThreadState state) {
+  return state == OSThreadState::SLEEPING ||
+         state == OSThreadState::CONDVAR_WAIT;
+}
+
 bool BaseWallClock::inSyscall(void *ucontext) {
   StackFrame frame(ucontext);
   uintptr_t pc = frame.pc();
@@ -97,8 +102,7 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
         Profiler::instance()->threadFilter()->slotForId(current->filterSlotId());
     if (slot != nullptr) {
       OSThreadState precheck_state = getOSThreadState();
-      bool is_blocked_skip_state = (precheck_state == OSThreadState::SLEEPING ||
-                                    precheck_state == OSThreadState::CONDVAR_WAIT);
+      bool is_blocked_skip_state = isPrecheckSuppressionState(precheck_state);
       if (is_blocked_skip_state) {
         if (slot->sampledThisRun() && precheck_state == slot->lastSampledState()) {
           Counters::increment(WC_SIGNAL_SUPPRESSED_SAMPLED_RUN);
@@ -106,9 +110,9 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
           return;  // suppress: same blocked-state run, already sampled
         }
         slot->markSampledThisRun(precheck_state); // arm: first signal of this run
-      } else if (!slot->inParkRun()) {
-        // Only disarm when the thread is genuinely outside a park run. Transient
-        // RUNNABLE states from SIGVTALRM-driven EINTR re-entry would otherwise
+      } else if (slot->activeBlockState() == OSThreadState::UNKNOWN) {
+        // Only disarm when no explicit block hook owns the interval. Transient
+        // RUNNABLE states inside a park run would otherwise
         // disarm the slot, causing the timer to re-send the next tick.
         slot->resetSampledRun(precheck_state);
       }
@@ -206,7 +210,7 @@ void WallClockASGCT::timerLoop() {
       // Get thread IDs from the filter if it's enabled
       // Otherwise list all threads in the system
       if (Profiler::instance()->threadFilter()->enabled()) {
-        Profiler::instance()->threadFilter()->collectWithState(entries);
+        Profiler::instance()->threadFilter()->collect(entries);
       } else {
         const int refresher_tid = Libraries::instance()->refresherTid();
         ThreadList *thread_list = OS::listThreads();
@@ -217,7 +221,7 @@ void WallClockASGCT::timerLoop() {
           // enough; we also want to avoid the kill() round-trip and any
           // pending-signal accumulation).
           if (tid != OS::threadId() && tid != refresher_tid) {
-            entries.push_back({tid, nullptr, nullptr}); // no-filter: precheck fast path is skipped (null guards)
+            entries.push_back({tid, nullptr}); // no-filter: precheck fast path is skipped (null guards)
           }
         }
         delete thread_list;
@@ -227,27 +231,17 @@ void WallClockASGCT::timerLoop() {
     auto sampleThreads = [&](ThreadEntry entry, int& num_failures, int& threads_already_exited,
                              int& permission_denied) {
       // Timer-thread fast path (wallprecheck=true): skip the kernel IPI entirely when
-      // we already armed a sample for this blocked-state run. The signal handler's filter
-      // is the authoritative check and still runs on any signal that gets through,
-      // covering the race window where this peek was stale.
-      // Assumption (HotSpot only): VMThread objects are not freed on thread exit and
-      // remain valid until JVM shutdown. vm_thread is cleared to nullptr in remove()
-      // before the slot is recycled, so a null check here is sufficient.
-      if (_precheck && entry.vm_thread != nullptr && entry.slot != nullptr) {
-        OSThreadState peek_state = entry.vm_thread->osThreadState();
-        bool in_skip_state = (peek_state == OSThreadState::SLEEPING ||
-                              peek_state == OSThreadState::CONDVAR_WAIT);
-        // Also suppress when the thread is transiently RUNNABLE between consecutive
-        // pthread_cond_timedwait calls after SIGVTALRM-driven EINTR re-entry.
-        // inParkRun() is set by parkEnter0 and cleared by parkExit0, so it remains
-        // true for the entire logical park run including the brief RUNNABLE gaps.
-        if ((in_skip_state || entry.slot->inParkRun()) && entry.slot->sampledThisRun()) {
-          // For skip-set states, also verify the state hasn't changed (e.g. SLEEP→CONDVAR).
-          if (!in_skip_state || peek_state == entry.slot->lastSampledState()) {
-            Counters::increment(WC_SIGNAL_SUPPRESSED_SAMPLED_RUN);
-            WallClockCounters::incrementSuppressedSampledRun();
-            return false;
-          }
+      // we already armed a sample for an explicitly instrumented blocked-state run.
+      // The signal handler remains the authoritative check for any signal that gets
+      // through, including block types without an explicit native enter/exit hook.
+      if (_precheck && entry.slot != nullptr) {
+        OSThreadState block_state = entry.slot->activeBlockState();
+        if (isPrecheckSuppressionState(block_state) &&
+            entry.slot->sampledThisRun() &&
+            block_state == entry.slot->lastSampledState()) {
+          Counters::increment(WC_SIGNAL_SUPPRESSED_SAMPLED_RUN);
+          WallClockCounters::incrementSuppressedSampledRun();
+          return false;
         }
       }
       if (!OS::sendSignalWithCookie(entry.tid, SIGVTALRM, SignalCookie::wallclock())) {

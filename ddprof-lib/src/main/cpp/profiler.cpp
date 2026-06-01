@@ -1,6 +1,6 @@
 /*
  * Copyright The async-profiler authors
- * Copyright 2024, 2025 Datadog, Inc
+ * Copyright 2024, 2026 Datadog, Inc
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -80,7 +80,6 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   if (_thread_filter.enabled()) {
     int slot_id = _thread_filter.registerThread();
     current->setFilterSlotId(slot_id);
-    _thread_filter.setVMThread(slot_id, VM::isHotspot() ? VMThread::current() : nullptr);
     _thread_filter.resetSlotRunState(slot_id);
     _thread_filter.remove(slot_id);  // Remove from filtering initially
   }
@@ -102,7 +101,6 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     tid = current->tid();
     
     if (_thread_filter.enabled()) {
-      _thread_filter.setVMThread(slot_id, nullptr);
       _thread_filter.unregisterThread(slot_id);
       current->setFilterSlotId(-1);
     }

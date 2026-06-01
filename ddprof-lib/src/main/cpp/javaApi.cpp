@@ -159,7 +159,6 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
   if (unlikely(slot_id == -1)) {
     return;  // Failed to register thread
   }
-  thread_filter->setVMThread(slot_id, VM::isHotspot() ? VMThread::current() : nullptr);
   // Reset suppression state so a new thread occupying this slot does not inherit
   // stale state from its predecessor. Must happen before add().
   thread_filter->resetSlotRunState(slot_id);
@@ -327,7 +326,7 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) 
   current->parkEnter(TSC::ticks());
   ThreadFilter *tf = Profiler::instance()->threadFilter();
   if (tf->enabled()) {
-    tf->enterParkRun(current->filterSlotId());
+    tf->enterBlockedRun(current->filterSlotId(), OSThreadState::CONDVAR_WAIT);
   }
 }
 
@@ -343,7 +342,7 @@ Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
   current->parkExit(start_ticks, park_context);
   ThreadFilter *tf = Profiler::instance()->threadFilter();
   if (tf->enabled()) {
-    tf->exitParkRun(current->filterSlotId());
+    tf->exitBlockedRun(current->filterSlotId());
   }
 }
 
