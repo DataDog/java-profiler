@@ -127,7 +127,8 @@ VMKlass* VMConstantPool::holder_or_null() const {
 }
 VMSymbol* VMConstantPool::symbolAt(int index) const {
     if (index < 0) return nullptr;
-    return VMSymbol::cast_or_null(*(void**)&base()[index]);
+    void* ptr = SafeAccess::load((void**)&base()[index], nullptr); 
+    return VMSymbol::cast_or_null(ptr);
 }
 
 intptr_t* VMConstantPool::base() const {
