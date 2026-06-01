@@ -60,6 +60,7 @@ void WallClockASGCT::sharedSignalHandler(int signo, siginfo_t *siginfo,
   // would otherwise drive our wallclock sampling path.
   if (!OS::shouldProcessSignal(siginfo, SI_QUEUE, SignalCookie::wallclock())) {
     Counters::increment(WALLCLOCK_SIGNAL_FOREIGN);
+    SIGNAL_HANDLER_GUARD_RELEASE();
     OS::forwardForeignSignal(signo, siginfo, ucontext);
     return;
   }
@@ -239,6 +240,7 @@ void WallClockJvmti::sharedSignalHandler(int signo, siginfo_t *siginfo,
   // external sigqueue driving the JVMTI RequestStackTrace path.
   if (!OS::shouldProcessSignal(siginfo, SI_QUEUE, SignalCookie::wallclock())) {
     Counters::increment(WALLCLOCK_SIGNAL_FOREIGN);
+    SIGNAL_HANDLER_GUARD_RELEASE();
     OS::forwardForeignSignal(signo, siginfo, ucontext);
     return;
   }

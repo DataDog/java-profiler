@@ -12,8 +12,10 @@
 #include <ctime>
 #include <string>
 
+#include "guards.h"
 #include "os.h"
 #include "signalCookie.h"
+#include "thread.h"
 
 #ifdef __linux__
 
@@ -357,6 +359,28 @@ TEST_F(SignalOriginTest, WallclockGuardContract_BareKillRejected) {
 TEST_F(SignalOriginTest, WallclockGuardContract_ForeignCookieRejected) {
     siginfo_t si = makeSiginfo(SI_QUEUE, (void*)0xF00D);
     EXPECT_FALSE(OS::shouldProcessSignal(&si, SI_QUEUE, SignalCookie::wallclock()));
+}
+
+// Regression test for the fix: when a foreign signal is handled,
+// SIGNAL_HANDLER_GUARD_RELEASE() must be called before forwardForeignSignal so
+// that a chained handler escaping via siglongjmp cannot leave _signal_depth
+// permanently incremented.  Verifies the SIGNAL_HANDLER_GUARD / release
+// contract directly: depth is 0 after an early release, and the destructor is
+// a no-op.
+TEST_F(SignalOriginTest, WallclockGuardContract_ForeignSignalReleasesGuard) {
+    ProfiledThread::initCurrentThread();
+    EXPECT_EQ(0, getInSignalDepth());
+    {
+        SIGNAL_HANDLER_GUARD();
+        EXPECT_EQ(1, getInSignalDepth());
+        // Mirrors the fix: release before forwarding so a non-returning
+        // chained handler cannot leave depth > 0.
+        SIGNAL_HANDLER_GUARD_RELEASE();
+        EXPECT_EQ(0, getInSignalDepth());
+        // Destructor runs here; must not double-decrement.
+    }
+    EXPECT_EQ(0, getInSignalDepth());
+    ProfiledThread::release();
 }
 
 TEST_F(SignalOriginTest, ForwardAppliesSigmaskWhenEnabled) {
