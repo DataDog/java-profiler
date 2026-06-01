@@ -15,8 +15,25 @@
  */
 
 #include <gtest/gtest.h>
+#include <memory>
 #include "thread.h"
 #include "threadFilter.h"
+
+namespace {
+
+struct ProfiledThreadDeleter {
+  void operator()(ProfiledThread *thread) const {
+    ProfiledThread::deleteForTest(thread);
+  }
+};
+
+using TestProfiledThread = std::unique_ptr<ProfiledThread, ProfiledThreadDeleter>;
+
+TestProfiledThread testThread(int tid) {
+  return TestProfiledThread(ProfiledThread::forTid(tid));
+}
+
+} // namespace
 
 // ProfiledThread::parkEnter is responsible for two things:
 //  (1) capturing the OTEP TLS context into _park_context via ContextApi::snapshot, and
@@ -30,7 +47,7 @@
 // parkExit's return value and out-params.
 
 TEST(ProfiledThreadParkStateTest, ParkFlagLifecycle) {
-  ProfiledThread *thread = ProfiledThread::forTid(12345);
+  TestProfiledThread thread = testThread(12345);
 
   // Thread starts not parked: parkExit must return false with no side-effects.
   u64 start_ticks = 0;
@@ -51,7 +68,7 @@ TEST(ProfiledThreadParkStateTest, ParkFlagLifecycle) {
 }
 
 TEST(ProfiledThreadParkStateTest, ParkedSpanlessWhenNoActiveSpan) {
-  ProfiledThread *thread = ProfiledThread::forTid(12346);
+  TestProfiledThread thread = testThread(12346);
   thread->parkEnter(888);
   // ContextApi::snapshot() returns spanId=0 outside an initialized OTEP TLS, so the
   // context captured at park entry must have spanId=0 (no active span).
@@ -63,7 +80,7 @@ TEST(ProfiledThreadParkStateTest, ParkedSpanlessWhenNoActiveSpan) {
 }
 
 TEST(ProfiledThreadParkStateTest, NewThreadStartsWithoutParkState) {
-  ProfiledThread *thread = ProfiledThread::forTid(12347);
+  TestProfiledThread thread = testThread(12347);
 
   // A freshly constructed thread must not be parked.
   u64 start_ticks = 0;
@@ -72,7 +89,7 @@ TEST(ProfiledThreadParkStateTest, NewThreadStartsWithoutParkState) {
 }
 
 TEST(ProfiledThreadMonitorStateTest, MonitorFlagLifecycle) {
-  ProfiledThread *thread = ProfiledThread::forTid(12348);
+  TestProfiledThread thread = testThread(12348);
 
   u64 start_ticks = 0;
   Context monitor_context = {};
@@ -93,7 +110,7 @@ TEST(ProfiledThreadMonitorStateTest, MonitorFlagLifecycle) {
 }
 
 TEST(ProfiledThreadMonitorStateTest, ObjectWaitOwnsNestedMonitorContention) {
-  ProfiledThread *thread = ProfiledThread::forTid(12349);
+  TestProfiledThread thread = testThread(12349);
 
   EXPECT_TRUE(thread->monitorEnter(100, 11, OSThreadState::OBJECT_WAIT));
 
