@@ -17,6 +17,7 @@
 #include <sys/mman.h>
 #include <cstring>
 #include <cstdlib>
+#include <vector>
 #include <elf.h>
 #include <chrono>
 #include <thread>
@@ -362,6 +363,20 @@ INSTANTIATE_TEST_SUITE_P(
 );
 #endif
 
+<<<<<<< HEAD
+=======
+// =====================================================================
+// Regression tests for the ELF parser hardening (found by the fuzz_elf
+// harness). Each builds a minimal ELF whose single malformed field made the
+// pre-hardening parser read out of bounds. On the hardened parser they must
+// return cleanly: the global crash handler installed above turns any wild or
+// out-of-bounds access back into a gtest failure, so a regression fails CI.
+//
+// The exact byte layouts were confirmed to crash the pre-fix parser
+// (ASan SEGV / heap-buffer-overflow) and to pass after the fix.
+// =====================================================================
+
+>>>>>>> b9dbe68c (fix: bounds-check ELF section and symbol-table parsing)
 namespace {
 
 // Minimal valid ELF64 header; callers set the malformed field afterwards.
@@ -379,6 +394,7 @@ Elf64_Ehdr validEhdr() {
     e.e_machine = EM_X86_64;
     e.e_version = EV_CURRENT;
     e.e_ehsize = sizeof(Elf64_Ehdr);
+<<<<<<< HEAD
     e.e_shstrndx = 1;
     return e;
 }
@@ -411,6 +427,90 @@ TEST(ElfBuildId, noteOffsetOverflow) {
     char* id = SymbolsLinux::extractBuildIdFromMemory(buf, size, &build_id_len);
     free(id);  // hardened parser returns nullptr; the point is that it must not crash
     delete[] buf;
+=======
+    e.e_shstrndx = 1;  // non-zero so validHeader() accepts the image
+    return e;
+}
+
+// Write the bytes to a unique temp file and run ElfParser::parseFile over it,
+// mirroring how Symbols::parseLibraries() parses an on-disk library.
+void parseElfBytes(const std::vector<char>& bytes) {
+    char path[] = "/tmp/elf_regress_XXXXXX";
+    int fd = mkstemp(path);
+    ASSERT_NE(fd, -1);
+    ASSERT_EQ((ssize_t)bytes.size(), write(fd, bytes.data(), bytes.size()));
+    close(fd);
+    CodeCache cc("regress");
+    ElfParser::parseFile(&cc, nullptr, path, /*use_debug=*/false);
+    unlink(path);
+}
+
+}  // namespace
+
+// e_shoff pointing far outside the image made findSection() dereference a wild
+// section-header pointer (ElfParser::at). 16 TB is reliably unmapped.
+TEST_F(ElfTest, sectionHeaderOffsetOutOfBounds) {
+    Elf64_Ehdr e = validEhdr();
+    e.e_shoff = 0x100000000000ULL;  // 16 TB past a 64-byte file
+    e.e_shentsize = sizeof(Elf64_Shdr);
+    e.e_shnum = 3;
+    e.e_shstrndx = 1;
+    std::vector<char> bytes(reinterpret_cast<char*>(&e),
+                            reinterpret_cast<char*>(&e) + sizeof(e));
+    parseElfBytes(bytes);  // must not crash
+}
+
+// A .symtab whose sh_size claims 256 MB in a tiny file made loadSymbolTable()
+// walk the symbol table off the end of the mapping.
+TEST_F(ElfTest, symbolTableSizeOutOfBounds) {
+    const uint16_t NSEC = 4;
+    const uint64_t shoff = sizeof(Elf64_Ehdr);
+    const uint64_t shstr_off = shoff + NSEC * sizeof(Elf64_Shdr);
+    // Section-header string table: names at offsets 1, 9, 17.
+    const char shstrtab[] = "\0.symtab\0.strtab\0.shstrtab";
+    const uint64_t sym_off = shstr_off + sizeof(shstrtab);
+    Elf64_Sym sym;
+    memset(&sym, 0, sizeof(sym));
+    sym.st_name = 1;
+    sym.st_value = 0x1000;
+    const uint64_t str_off = sym_off + sizeof(sym);
+    const char strtab[] = "\0main";
+
+    Elf64_Ehdr e = validEhdr();
+    e.e_shoff = shoff;
+    e.e_shentsize = sizeof(Elf64_Shdr);
+    e.e_shnum = NSEC;
+    e.e_shstrndx = 3;
+
+    Elf64_Shdr sh[4];
+    memset(sh, 0, sizeof(sh));
+    sh[1].sh_name = 1;  // ".symtab"
+    sh[1].sh_type = SHT_SYMTAB;
+    sh[1].sh_offset = sym_off;
+    sh[1].sh_size = 0x10000000;  // 256 MB: far past the file
+    sh[1].sh_link = 2;
+    sh[1].sh_entsize = sizeof(Elf64_Sym);
+    sh[2].sh_name = 9;  // ".strtab"
+    sh[2].sh_type = SHT_STRTAB;
+    sh[2].sh_offset = str_off;
+    sh[2].sh_size = sizeof(strtab);
+    sh[3].sh_name = 17;  // ".shstrtab"
+    sh[3].sh_type = SHT_STRTAB;
+    sh[3].sh_offset = shstr_off;
+    sh[3].sh_size = sizeof(shstrtab);
+
+    std::vector<char> b;
+    auto app = [&](const void* p, size_t n) {
+        const char* c = static_cast<const char*>(p);
+        b.insert(b.end(), c, c + n);
+    };
+    app(&e, sizeof(e));
+    app(sh, sizeof(sh));
+    app(shstrtab, sizeof(shstrtab));
+    app(&sym, sizeof(sym));
+    app(strtab, sizeof(strtab));
+    parseElfBytes(b);  // must not crash
+>>>>>>> b9dbe68c (fix: bounds-check ELF section and symbol-table parsing)
 }
 
 #endif //__linux__
