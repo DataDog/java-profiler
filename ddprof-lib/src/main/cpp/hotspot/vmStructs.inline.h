@@ -113,17 +113,10 @@ jmethodID VMMethod::validatedId() {
     if (method_id != JMETHODID_NOT_WALKABLE && method_id != nullptr) {
         if (!_can_dereference_jmethod_id ||
             ((goodPtr(method_id) && SafeAccess::loadPtr((void**)method_id, nullptr) == this))) {
-            TEST_LOG("validatedId = 0x%zx", (unsigned long)method_id);
             return method_id;
         } else {
-            TEST_LOG("validatedId = Invalid jmethodID");
             return JMETHODID_NOT_WALKABLE;
         }
-    }
-    if (method_id != nullptr) {
-        TEST_LOG("validatedId = Invalid jmethodID - id");
-    } else {
-        TEST_LOG("validatedId == nullptr");
     }
     return method_id;
 }
