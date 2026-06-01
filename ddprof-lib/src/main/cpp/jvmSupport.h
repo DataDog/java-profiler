@@ -27,6 +27,9 @@ class JVMSupport {
     // J9 and Zing shared implementation
     static bool loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
 public:
+    // Initializing JVM support
+    static void initialize(JNIEnv* jni);
+
     static int walkJavaStack(StackWalkRequest& request);
     static inline bool canUnwind(const StackFrame& frame, const void*& pc);
     static inline bool isJitCode(const void* pc);

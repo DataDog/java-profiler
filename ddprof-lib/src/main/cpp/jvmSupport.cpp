@@ -16,6 +16,12 @@
 
 #include <jni.h>
 
+void JVMSupport::initialize(JNIEnv* jni) {
+    if (VM::isHotspot()) {
+        HotspotSupport::initialize(jni);
+    }
+}
+
 int JVMSupport::walkJavaStack(StackWalkRequest& request) {
     if (VM::isHotspot()) {
         return HotspotSupport::walkJavaStack(request);

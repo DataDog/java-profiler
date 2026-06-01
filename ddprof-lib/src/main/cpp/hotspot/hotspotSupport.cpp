@@ -21,6 +21,46 @@ using StackWalkValidation::aligned;
 using StackWalkValidation::MAX_FRAME_SIZE;
 using StackWalkValidation::sameStack;
 
+static jobject JAVA_PLATFORM_CLASSLOADER = nullptr;
+static jobject JAVA_APPLICATION_CLASSLOADER = nullptr;
+
+void HotspotSupport::initialize(JNIEnv* jni) {
+    if (JAVA_PLATFORM_CLASSLOADER != nullptr || JAVA_APPLICATION_CLASSLOADER != nullptr) {
+        return;
+    }
+
+    jclass classLoaderClass = jni->FindClass("java/lang/ClassLoader");
+    if (classLoaderClass == nullptr) {
+        jni->ExceptionClear();
+        return;
+    }
+
+    jmethodID getSysLoaderMethod = jni->GetStaticMethodID(classLoaderClass,
+                                                          "getSystemClassLoader",
+                                                          "()Ljava/lang/ClassLoader;");
+    jmethodID getPlatformLoaderMethod = jni->GetStaticMethodID(classLoaderClass,
+                                                          "getPlatformClassLoader",
+                                                          "()Ljava/lang/ClassLoader;");
+
+    if (getSysLoaderMethod != nullptr) {
+        jobject ret = jni->CallStaticObjectMethod(classLoaderClass, getSysLoaderMethod);
+        if (ret != nullptr) {
+            JAVA_APPLICATION_CLASSLOADER = jni->NewGlobalRef(ret);
+        }
+    }
+
+    if (getPlatformLoaderMethod != nullptr) {
+        jobject ret = jni->CallStaticObjectMethod(classLoaderClass, getPlatformLoaderMethod);
+        if (ret != nullptr) {
+            JAVA_PLATFORM_CLASSLOADER = jni->NewGlobalRef(ret);
+        }
+    }
+
+    if (jni->ExceptionCheck()) {
+        jni->ExceptionClear();
+    }
+}
+
 static bool isAddressInCode(const void *pc, bool include_stubs = true) {
   if (CodeHeap::contains(pc)) {
     return CodeHeap::findNMethod(pc) != NULL &&
@@ -1210,11 +1250,18 @@ static bool isLambdaClass(const char* signature) {
            strncmp(signature, FFM_PREFIX, strlen(FFM_PREFIX)) == 0;
 }
 
+static inline bool isSystemClassLoaders(jobject cl) {
+    return cl == nullptr ||                         // bootstrap class loader
+           cl == JAVA_PLATFORM_CLASSLOADER ||       // platform class loader
+           cl == JAVA_APPLICATION_CLASSLOADER;      // application class loader (system class loader)
+
+}
+
 bool HotspotSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
     jobject cl;
-    // Hotpsot only: loaded by bootstrap class loader, which is never unloaded,
+    // Hotpsot only: loaded by system class loaders, which are never unloaded,
     // we use Method instead.
-    if (jvmti->GetClassLoader(klass, &cl) == JVMTI_ERROR_NONE && cl == nullptr) {
+    if (jvmti->GetClassLoader(klass, &cl) == JVMTI_ERROR_NONE && isSystemClassLoaders(cl)) {
         char* signature_ptr = nullptr;
         if (jvmti->GetClassSignature(klass, &signature_ptr, nullptr) == JVMTI_ERROR_NONE) {
             // Lambda classes, even loaded by bootstrap class loader, can be unloaded,
