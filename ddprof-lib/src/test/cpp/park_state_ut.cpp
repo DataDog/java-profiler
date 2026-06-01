@@ -15,15 +15,32 @@
  */
 
 #include <gtest/gtest.h>
+#include <memory>
 #include "thread.h"
 #include "threadFilter.h"
+
+namespace {
+
+struct ProfiledThreadDeleter {
+  void operator()(ProfiledThread *thread) const {
+    ProfiledThread::deleteForTest(thread);
+  }
+};
+
+using TestProfiledThread = std::unique_ptr<ProfiledThread, ProfiledThreadDeleter>;
+
+TestProfiledThread testThread(int tid) {
+  return TestProfiledThread(ProfiledThread::forTid(tid));
+}
+
+} // namespace
 
 // Tests cover FLAG_PARKED lifecycle and the once-per-run slot filter state transitions.
 // The slot state lives in ThreadFilter process-lifetime storage so the wall-clock
 // timer can read it without dereferencing per-thread objects from another thread.
 
 TEST(ProfiledThreadParkStateTest, ParkFlagLifecycle) {
-  ProfiledThread *thread = ProfiledThread::forTid(12345);
+  TestProfiledThread thread = testThread(12345);
 
   u64 start_ticks = 0;
   Context park_context = {};
@@ -37,21 +54,19 @@ TEST(ProfiledThreadParkStateTest, ParkFlagLifecycle) {
   EXPECT_EQ(0ULL, park_context.rootSpanId);
 
   EXPECT_FALSE(thread->parkExit(start_ticks, park_context)); // idempotent after clear
-  ProfiledThread::deleteForTest(thread);
 }
 
 TEST(ProfiledThreadParkStateTest, NewThreadStartsNotParked) {
-  ProfiledThread *thread = ProfiledThread::forTid(12346);
+  TestProfiledThread thread = testThread(12346);
   u64 start_ticks = 0;
   Context park_context = {};
   EXPECT_FALSE(thread->parkExit(start_ticks, park_context));
   // Out-params must not be touched on failed exit.
   EXPECT_EQ(0ULL, start_ticks);
-  ProfiledThread::deleteForTest(thread);
 }
 
 TEST(ProfiledThreadParkStateTest, SecondParkEnterOverwritesTicks) {
-  ProfiledThread *thread = ProfiledThread::forTid(12347);
+  TestProfiledThread thread = testThread(12347);
   thread->parkEnter(100);
   thread->parkEnter(200); // second enter before exit: overwrites ticks
 
@@ -62,7 +77,6 @@ TEST(ProfiledThreadParkStateTest, SecondParkEnterOverwritesTicks) {
 
   // Flag is now clear; second exit is a no-op.
   EXPECT_FALSE(thread->parkExit(start_ticks, park_context));
-  ProfiledThread::deleteForTest(thread);
 }
 
 TEST(WallClockOncePerRunFilterTest, SlotStateTransitions) {
