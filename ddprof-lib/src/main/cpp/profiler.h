@@ -1,6 +1,6 @@
 /*
  * Copyright The async-profiler authors
- * Copyright 2025, Datadog, Inc.
+ * Copyright 2025, 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -368,7 +368,7 @@ public:
   NativeFrameResolution resolveNativeFrameForWalkVM(uintptr_t pc, int lock_index);
   int convertNativeTrace(int native_frames, const void **callchain,
                          ASGCT_CallFrame *frames, int lock_index);
-  void recordSample(void *ucontext, u64 weight, int tid, jint event_type,
+  bool recordSample(void *ucontext, u64 weight, int tid, jint event_type,
                     u64 call_trace_id, Event *event);
   // Delegated sample path: stack-walking is performed by the HotSpot JFR
   // RequestStackTrace extension (the JVM emits the stack trace into its own

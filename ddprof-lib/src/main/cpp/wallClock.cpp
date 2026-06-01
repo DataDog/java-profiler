@@ -97,6 +97,8 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   // Once-per-run filter (wallprecheck=true): emit one MethodSample at the start of
   // a SLEEPING/CONDVAR_WAIT run, suppress subsequent signals until state changes.
   // On J9/Zing getOSThreadState() returns UNKNOWN, so every signal falls through.
+  ThreadFilter::Slot* slot_to_arm = nullptr;
+  OSThreadState state_to_arm = OSThreadState::UNKNOWN;
   if (current != nullptr && _precheck) {
     ThreadFilter::Slot* slot =
         Profiler::instance()->threadFilter()->slotForId(current->filterSlotId());
@@ -109,7 +111,11 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
           WallClockCounters::incrementSuppressedSampledRun();
           return;  // suppress: same blocked-state run, already sampled
         }
-        slot->markSampledThisRun(precheck_state); // arm: first signal of this run
+        // Arm only after the MethodSample has been successfully recorded. If the
+        // JFR write is skipped due to lock contention, the next signal must retry
+        // instead of losing the only stack for this blocked run.
+        slot_to_arm = slot;
+        state_to_arm = precheck_state;
       } else if (slot->activeBlockState() == OSThreadState::UNKNOWN) {
         // Only disarm when no explicit block hook owns the interval. Transient
         // RUNNABLE states inside a park run would otherwise
@@ -152,8 +158,12 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   event._thread_state = state;
   event._execution_mode = mode;
   event._weight = 1;
-  Profiler::instance()->recordSample(ucontext, last_sample, tid, BCI_WALL,
-                                     call_trace_id, &event);
+  bool recorded = Profiler::instance()->recordSample(ucontext, last_sample, tid,
+                                                     BCI_WALL, call_trace_id,
+                                                     &event);
+  if (recorded && slot_to_arm != nullptr) {
+    slot_to_arm->markSampledThisRun(state_to_arm);
+  }
   Shims::instance().setSighandlerTid(-1);
 }
 

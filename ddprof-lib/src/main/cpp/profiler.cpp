@@ -551,7 +551,7 @@ void Profiler::recordDeferredSample(int tid, u64 call_trace_id, jint event_type,
   _locks[lock_index].unlock();
 }
 
-void Profiler::recordSample(void *ucontext, u64 counter, int tid,
+bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
                             jint event_type, u64 call_trace_id, Event *event) {
   atomicIncRelaxed(_total_samples);
 
@@ -567,7 +567,7 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
       // collected trace
       PerfEvents::resetBuffer(tid);
     }
-    return;
+    return false;
   }
 
   bool truncated = false;
@@ -617,6 +617,7 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
   _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
 
   _locks[lock_index].unlock();
+  return true;
 }
 
 void Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
