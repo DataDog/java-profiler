@@ -294,6 +294,23 @@ public final class JavaProfiler {
     }
 
     /**
+     * Marks the current platform thread as entering an explicitly instrumented blocked interval.
+     *
+     * @param state native OSThreadState value for the blocked interval
+     * @return an opaque token to pass to {@link #blockExit(long)}, or 0 if no state was armed
+     */
+    public long blockEnter(int state) {
+        return blockEnter0(state);
+    }
+
+    /**
+     * Clears a blocked interval previously armed by {@link #blockEnter(int)}.
+     */
+    public void blockExit(long token) {
+        blockExit0(token);
+    }
+
+    /**
      * Get the ticks for the current thread.
      * @return ticks
      */
@@ -351,6 +368,10 @@ public final class JavaProfiler {
     private static native void parkEnter0();
 
     private static native void parkExit0(long blocker, long unblockingSpanId);
+
+    private static native long blockEnter0(int state);
+
+    private static native void blockExit0(long token);
 
     private static native long currentTicks0();
 
