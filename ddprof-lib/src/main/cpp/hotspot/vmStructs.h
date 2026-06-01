@@ -892,7 +892,7 @@ DECLARE_END
 DECLARE(VMConstantPool)
 public:
     inline VMKlass* holder_or_null() const;
-    inline VMSymbol* symbolAt(u16 index) const;
+    inline VMSymbol* symbolAt(int index) const;
  private:
     inline intptr_t* base() const;
 DECLARE_END

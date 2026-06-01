@@ -125,7 +125,8 @@ VMKlass* VMConstantPool::holder_or_null() const {
     assert(_pool_holder_offset >= 0);
     return VMKlass::load_then_cast(at(_pool_holder_offset));   
 }
-VMSymbol* VMConstantPool::symbolAt(u16 index) const {
+VMSymbol* VMConstantPool::symbolAt(int index) const {
+    if (index < 0) return nullptr;
     return VMSymbol::cast_or_null(*(void**)&base()[index]);
 }
 
