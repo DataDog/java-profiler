@@ -539,9 +539,9 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   functions->RedefineClasses = RedefineClassesHook;
   functions->RetransformClasses = RetransformClassesHook;
 
-  JVMSupport::initialize(jni());
 
   if (attach) {
+    JVMSupport::initialize(jni());
     JVMSupport::loadAllMethodIDs(_jvmti, jni());
     _jvmti->GenerateEvents(JVMTI_EVENT_DYNAMIC_CODE_GENERATED);
     _jvmti->GenerateEvents(JVMTI_EVENT_COMPILED_METHOD_LOAD);
