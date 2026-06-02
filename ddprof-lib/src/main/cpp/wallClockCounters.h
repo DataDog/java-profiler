@@ -13,8 +13,8 @@ static_assert(std::atomic<long long>::is_always_lock_free,
               "WallClockCounters fields must be lock-free for signal-handler safety");
 
 // Holds signal-handler-safe atomic counters for wall-clock sampling statistics.
-// Increments use RELAXED ordering (async-signal-safe); drains use ACQUIRE to
-// ensure all increments from the previous epoch are visible to the timer thread.
+// Increments use relaxed lock-free atomics; drains use atomic exchange, so each
+// increment is counted in either the current drain or a later one.
 class WallClockCounters {
 private:
   inline static std::atomic<long long> _suppressed_sampled_run{0};

@@ -471,4 +471,34 @@ TEST_F(ThreadFilterTest, CollectMixedStates) {
     for (size_t i = 0; i < expected_tids.size(); i++) {
         EXPECT_EQ(collected_tids[i], expected_tids[i]);
     }
-} 
+}
+
+TEST_F(ThreadFilterTest, ClearActiveDropsPreviousRecordingMembership) {
+    int stale_slot = filter->registerThread();
+    int current_slot = filter->registerThread();
+    ASSERT_GE(stale_slot, 0);
+    ASSERT_GE(current_slot, 0);
+
+    filter->add(1111, stale_slot);
+    filter->add(2222, current_slot);
+    filter->enterBlockedRun(stale_slot, OSThreadState::SLEEPING);
+    ThreadFilter::Slot *stale = filter->slotForId(stale_slot);
+    ASSERT_NE(nullptr, stale);
+    stale->markSampledThisRun(OSThreadState::SLEEPING);
+
+    filter->clearActive();
+
+    std::vector<int> collected_tids;
+    filter->collect(collected_tids);
+    EXPECT_TRUE(collected_tids.empty());
+    EXPECT_FALSE(filter->accept(stale_slot));
+    EXPECT_FALSE(filter->accept(current_slot));
+    EXPECT_FALSE(stale->sampledThisRun());
+    EXPECT_EQ(OSThreadState::UNKNOWN, stale->lastSampledState());
+    EXPECT_EQ(OSThreadState::UNKNOWN, stale->activeBlockState());
+
+    filter->add(2222, current_slot);
+    filter->collect(collected_tids);
+    ASSERT_EQ(1u, collected_tids.size());
+    EXPECT_EQ(2222, collected_tids[0]);
+}

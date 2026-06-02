@@ -1304,10 +1304,14 @@ Error Profiler::start(Arguments &args, bool reset) {
   
   // Minor optim: Register the current thread (start thread won't be called)
   if (_thread_filter.enabled()) {
+    _thread_filter.clearActive();
     ProfiledThread *current = ProfiledThread::current();
     assert(current != nullptr);
-    int slot_id = _thread_filter.registerThread();
-    current->setFilterSlotId(slot_id);
+    int slot_id = current->filterSlotId();
+    if (slot_id < 0) {
+      slot_id = _thread_filter.registerThread();
+      current->setFilterSlotId(slot_id);
+    }
     _thread_filter.remove(slot_id);  // Remove from filtering initially (matches onThreadStart behavior)
   }
 

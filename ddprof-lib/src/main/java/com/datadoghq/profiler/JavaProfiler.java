@@ -296,7 +296,8 @@ public final class JavaProfiler {
     /**
      * Marks the current platform thread as entering an explicitly instrumented blocked interval.
      *
-     * @param state native OSThreadState value for the blocked interval
+     * @param state native {@code OSThreadState} value for the blocked interval;
+     *     currently only {@code SLEEPING} is armed
      * @return an opaque token to pass to {@link #blockExit(long)}, or 0 if no state was armed
      */
     public long blockEnter(int state) {

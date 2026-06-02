@@ -45,9 +45,11 @@ public:
     // (ChunkStorage is process-lifetime), so a captured Slot* is always dereferenceable.
     struct alignas(DEFAULT_CACHE_LINE_SIZE) Slot {
         std::atomic<int>           value{-1};                    // 4 bytes
-        // Wall-clock once-per-run suppression state. Written by the signal handler on the
-        // owning thread; read by the timer thread. Release/acquire on sampled_this_run
-        // pairs with relaxed last_sampled_state, following the standard flag+payload pattern.
+        // Wall-clock once-per-run suppression state. The signal handler records the
+        // last sampled blocked state; the signal handler and timer thread read it to
+        // suppress duplicate samples, while lifecycle/block-exit paths reset it.
+        // Release/acquire on sampled_this_run pairs with relaxed last_sampled_state,
+        // following the standard flag+payload pattern.
         std::atomic<OSThreadState> last_sampled_state{OSThreadState::UNKNOWN};  // 4 bytes
         // Set by explicit block enter/exit hooks. It lets the timer skip sending a signal
         // only while instrumentation still owns a suppressible blocking interval.
@@ -98,6 +100,9 @@ public:
     void remove(SlotID slot_id);
     void collect(std::vector<int>& tids) const;
     void collect(std::vector<ThreadEntry>& entries) const;
+    // Clears per-recording membership and suppression state while keeping
+    // process-lifetime slot ownership intact. Threads must opt in again with add().
+    void clearActive();
     void resetSlotRunState(SlotID slot_id);
     void enterBlockedRun(SlotID slot_id, OSThreadState state);
     void exitBlockedRun(SlotID slot_id);
