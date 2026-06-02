@@ -486,7 +486,6 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   static const char* UNKNOWN = "unknown";
   unsigned long key;
   jint bci = frame.bci;
-  FrameTypeId frame_type = FrameType::decode(bci);
   jmethodID method_id = frame.method_id;
 
   // Resolve native method
