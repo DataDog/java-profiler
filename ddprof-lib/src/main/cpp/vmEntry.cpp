@@ -541,8 +541,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
 
 
   if (attach) {
-    JVMSupport::initialize(jni());
-    JVMSupport::loadAllMethodIDs(_jvmti, jni());
+    JVMSupport::initialize(_jvmti, jni());
     _jvmti->GenerateEvents(JVMTI_EVENT_DYNAMIC_CODE_GENERATED);
     _jvmti->GenerateEvents(JVMTI_EVENT_COMPILED_METHOD_LOAD);
   } else {
@@ -598,7 +597,7 @@ void JNICALL VM::ClassPrepare(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
 
 void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
     ready(jvmti, jni);
-    JVMSupport::loadAllMethodIDs(jvmti, jni);
+    JVMSupport::initialize(jvmti, jni);
 
     // initialize the heap usage tracking only after the VM is ready
     HeapUsage::initJMXUsage(VM::jni());

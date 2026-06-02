@@ -16,10 +16,12 @@
 
 #include <jni.h>
 
-void JVMSupport::initialize(JNIEnv* jni) {
+void JVMSupport::initialize(jvmtiEnv* jvmti, JNIEnv* jni) {
     if (VM::isHotspot()) {
         HotspotSupport::initialize(jni);
     }
+
+    loadAllMethodIDs(jvmti, jni);
 }
 
 int JVMSupport::walkJavaStack(StackWalkRequest& request) {
