@@ -38,14 +38,23 @@ void HotspotSupport::initialize(JNIEnv* jni) {
     jmethodID getSysLoaderMethod = jni->GetStaticMethodID(classLoaderClass,
                                                           "getSystemClassLoader",
                                                           "()Ljava/lang/ClassLoader;");
+    if (getSysLoaderMethod == nullptr) {
+        jni->ExceptionClear();
+    }
+
     jmethodID getPlatformLoaderMethod = jni->GetStaticMethodID(classLoaderClass,
                                                           "getPlatformClassLoader",
                                                           "()Ljava/lang/ClassLoader;");
+    // JDK8 does not have platform class loader
+    if (getPlatformLoaderMethod != nullptr) {
+        jni->ExceptionClear();
+    }
 
     if (getSysLoaderMethod != nullptr) {
         jobject ret = jni->CallStaticObjectMethod(classLoaderClass, getSysLoaderMethod);
         if (ret != nullptr) {
             JAVA_APPLICATION_CLASSLOADER = jni->NewGlobalRef(ret);
+            jni->DeleteLocalRef(ret);
         }
     }
 
@@ -53,12 +62,15 @@ void HotspotSupport::initialize(JNIEnv* jni) {
         jobject ret = jni->CallStaticObjectMethod(classLoaderClass, getPlatformLoaderMethod);
         if (ret != nullptr) {
             JAVA_PLATFORM_CLASSLOADER = jni->NewGlobalRef(ret);
+            jni->DeleteLocalRef(ret);
         }
     }
 
     if (jni->ExceptionCheck()) {
         jni->ExceptionClear();
     }
+
+    jni->DeleteLocalRef(classLoaderClass);
 }
 
 static bool isAddressInCode(const void *pc, bool include_stubs = true) {
@@ -1354,6 +1366,8 @@ jmethodID HotspotSupport::resolve(const void* method) {
             jni->ExceptionClear();
           }
         }
+
+        jni->DeleteLocalRef(clz);
       }
   }
 
