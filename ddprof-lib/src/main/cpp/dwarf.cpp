@@ -159,19 +159,18 @@ void DwarfParser::parse(const char *eh_frame_hdr, size_t size) {
     return;
   }
 
-  int fde_count = *(int *)(eh_frame_hdr + 8);
-  int *table = (int *)(eh_frame_hdr + 16);
-  // Each table entry is a pair of 4-byte values (8 bytes) after the 16-byte
-  // header; this loop reads the first value of each pair. Reject a count that
-  // would make the index walk read past the section. A negative count cannot
-  // be valid either.
-  if (fde_count < 0 || (size_t)fde_count > (size - 16) / 8) {
-    Log::warn("Truncated or invalid .eh_frame_hdr (fde_count=%d, size=%lu) in %s",
+  u32 fde_count = *(u32 *)(eh_frame_hdr + 8);
+  u32 *table = (u32 *)(eh_frame_hdr + 16);
+  // Each entry is a (initial_loc, fde_ptr) pair of 4-byte section-relative
+  // offsets (DW_EH_PE_datarel | DW_EH_PE_udata4). Reject a count that would
+  // make the table walk read past the section.
+  if (fde_count > (size - 16) / 8) {
+    Log::warn("Truncated or invalid .eh_frame_hdr (fde_count=%u, size=%lu) in %s",
               fde_count, (unsigned long)size, _name);
     return;
   }
-  for (int i = 0; i < fde_count; i++) {
-    _ptr = eh_frame_hdr + table[i * 2];
+  for (u32 i = 0; i < fde_count; i++) {
+    _ptr = eh_frame_hdr + table[i * 2 + 1];  // [i*2] is initial_loc; [i*2+1] is fde_ptr
     parseFde();
   }
 }
@@ -272,6 +271,7 @@ void DwarfParser::parseCie() {
   }
 
   const char *cie_start = _ptr;
+  if (!canRead(5)) { _ptr = _section_end; return; }
   _ptr += 5;
   while (_ptr < _section_end && *_ptr++) {
   }

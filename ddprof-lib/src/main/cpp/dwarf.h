@@ -178,6 +178,7 @@ class DwarfParser {
     }
 
     u32 getLeb(const char* end) {
+        if (end > _section_end) end = _section_end;
         u32 result = 0;
         for (u32 shift = 0; _ptr < end && shift < 32; shift += 7) {
             u8 b = *_ptr++;
@@ -207,6 +208,7 @@ class DwarfParser {
     }
 
     int getSLeb(const char* end) {
+        if (end > _section_end) end = _section_end;
         int result = 0;
         for (u32 shift = 0; _ptr < end && shift < 32; shift += 7) {
             u8 b = *_ptr++;
