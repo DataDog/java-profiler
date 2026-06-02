@@ -45,6 +45,33 @@ public class PrecheckTest extends AbstractProfilerTest {
     }
 
     @Test
+    public void tracedSleepingThreadIsSampled() throws InterruptedException {
+        Assumptions.assumeTrue(!Platform.isJ9());
+        Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
+        registerCurrentThreadForWallClockProfiling();
+
+        profiler.setContext(0x5100L, 0x5101L, 0L, 0x5101L);
+        try {
+            Thread.sleep(300);
+        } finally {
+            profiler.clearContext();
+        }
+
+        stopProfiler();
+
+        long sampleCount = verifyEvents("datadog.MethodSample", false)
+                .getAggregate(Aggregators.count()).longValue();
+        assertTrue(sampleCount >= 10,
+                "Expected normal MethodSample volume for traced sleep, got: " + sampleCount);
+
+        Map<String, Long> counters = profiler.getDebugCounters();
+        if (counters.containsKey("wc_signals_suppressed_sampled_run")) {
+            assertEquals(0L, counters.get("wc_signals_suppressed_sampled_run"),
+                    "wc_signals_suppressed_sampled_run must not increment for traced sleep");
+        }
+    }
+
+    @Test
     public void suppressionCounterIsZeroWhenPrecheckDisabled() throws Exception {
         Assumptions.assumeTrue(!Platform.isJ9());
         Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));

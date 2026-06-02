@@ -14,6 +14,7 @@
 #include "jvmThread.h"
 #include "libraries.h"
 #include "log.h"
+#include "otel_context.h"
 #include "profiler.h"
 #include "signalCookie.h"
 #include "thread.h"
@@ -33,6 +34,24 @@ static inline bool isPrecheckSuppressionState(OSThreadState state) {
          state == OSThreadState::CONDVAR_WAIT ||
          state == OSThreadState::OBJECT_WAIT ||
          state == OSThreadState::MONITOR_WAIT;
+}
+
+static inline bool hasKnownActiveTraceContext(ProfiledThread* thread) {
+  if (thread == nullptr || !thread->isContextInitialized()) {
+    return false;
+  }
+
+  OtelThreadContextRecord* record = thread->getOtelContextRecord();
+  if (__atomic_load_n(&record->valid, __ATOMIC_ACQUIRE) != 1) {
+    // The context is being updated. Do not assume the thread is untraced.
+    return true;
+  }
+
+  u64 span_id = 0;
+  for (int i = 0; i < 8; i++) {
+    span_id = (span_id << 8) | record->span_id[i];
+  }
+  return span_id != 0;
 }
 
 bool BaseWallClock::inSyscall(void *ucontext) {
@@ -96,12 +115,13 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
     current->tickInitWindow();
     return;
   }
-  // Once-per-run filter (wallprecheck=true): emit one MethodSample at the start of
-  // a blocking run, suppress subsequent signals until state changes.
+  // Once-per-run filter (wallprecheck=true): for untraced threads, emit one
+  // MethodSample at the start of a blocking run and suppress subsequent signals
+  // until state changes. Traced threads keep normal wall-clock sampling.
   // On J9/Zing getOSThreadState() returns UNKNOWN, so every signal falls through.
   ThreadFilter::Slot* slot_to_arm = nullptr;
   OSThreadState state_to_arm = OSThreadState::UNKNOWN;
-  if (current != nullptr && _precheck) {
+  if (current != nullptr && _precheck && !hasKnownActiveTraceContext(current)) {
     ThreadFilter::Slot* slot =
         Profiler::instance()->threadFilter()->slotForId(current->filterSlotId());
     if (slot != nullptr) {
