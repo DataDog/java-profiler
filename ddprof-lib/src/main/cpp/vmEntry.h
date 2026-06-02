@@ -11,6 +11,7 @@
 #include "arch.h"
 
 #include "arch.h"
+#include "arguments.h"
 #include "codeCache.h"
 
 #ifdef __clang__
@@ -219,6 +220,8 @@ public:
   static bool isUseAdaptiveGCBoundarySet() {
     return _is_adaptive_gc_boundary_flag_set;
   }
+
+  static Arguments& arguments();
 
   static bool canRequestStackTrace() {
     return __atomic_load_n(&_request_stack_trace, __ATOMIC_ACQUIRE) != nullptr;

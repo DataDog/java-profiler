@@ -81,7 +81,7 @@ void JVMSupport::loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni) {
 }
 
 bool JVMSupport::loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
-    if (VM::isHotspot()) {
+    if (VM::isHotspot() && !VM::arguments()._force_jmethodID) {
         return HotspotSupport::loadMethodIDsImpl(jvmti, jni, klass);
     } else {
         return loadMethodIDsImpl(jvmti, jni, klass);

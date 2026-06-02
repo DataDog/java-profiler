@@ -193,6 +193,7 @@ public:
   bool _enable_method_cleanup;
   bool _remote_symbolication;  // Enable remote symbolication for native frames
   bool _jvmtistacks;           // Delegate CPU/wall stack walks to HotSpot JFR RequestStackTrace extension
+  bool _force_jmethodID;       // Load all jmethodIDs, true by default
 
   Arguments(bool persistent = false)
       : _buf(NULL),
@@ -229,7 +230,8 @@ public:
         _lightweight(false),
         _enable_method_cleanup(true),
         _remote_symbolication(false),
-        _jvmtistacks(false) {}
+        _jvmtistacks(false),
+        _force_jmethodID(true) {}
 
   ~Arguments();
 

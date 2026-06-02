@@ -1250,18 +1250,17 @@ static bool isLambdaClass(const char* signature) {
            strncmp(signature, FFM_PREFIX, strlen(FFM_PREFIX)) == 0;
 }
 
-static inline bool isSystemClassLoaders(jobject cl) {
+static inline bool isSystemClassLoaders(JNIEnv* jni, jobject cl) {
     return cl == nullptr ||                         // bootstrap class loader
-           cl == JAVA_PLATFORM_CLASSLOADER ||       // platform class loader
-           cl == JAVA_APPLICATION_CLASSLOADER;      // application class loader (system class loader)
-
+           jni->IsSameObject(cl, JAVA_PLATFORM_CLASSLOADER) ||       // platform class loader
+           jni->IsSameObject(cl, JAVA_APPLICATION_CLASSLOADER);      // application class loader (system class loader)
 }
 
 bool HotspotSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
     jobject cl;
-    // Hotpsot only: loaded by system class loaders, which are never unloaded,
+    // Hotspot only: loaded by system class loaders, which are never unloaded,
     // we use Method instead.
-    if (jvmti->GetClassLoader(klass, &cl) == JVMTI_ERROR_NONE && isSystemClassLoaders(cl)) {
+    if (jvmti->GetClassLoader(klass, &cl) == JVMTI_ERROR_NONE && isSystemClassLoaders(jni, cl)) {
         char* signature_ptr = nullptr;
         if (jvmti->GetClassSignature(klass, &signature_ptr, nullptr) == JVMTI_ERROR_NONE) {
             // Lambda classes, even loaded by bootstrap class loader, can be unloaded,
@@ -1322,6 +1321,7 @@ jmethodID HotspotSupport::resolve(const void* method) {
     return nullptr;
   }
 
+  method_id = nullptr;
   char* method_name = (char*)malloc(name_sym->length() + 1);
   char* method_signature = (char*)malloc(sig_sym->length() + 1);
   int klass_name_len = klass_sym->length();

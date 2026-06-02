@@ -610,6 +610,10 @@ void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
     }
 }
 
+Arguments& VM::arguments() {
+  return _agent_args;
+}
+
 void JNICALL VM::VMDeath(jvmtiEnv *jvmti, JNIEnv *jni) {
   Profiler::instance()->shutdown(_agent_args);
 }
