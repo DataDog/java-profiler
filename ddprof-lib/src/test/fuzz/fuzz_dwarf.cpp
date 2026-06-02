@@ -100,7 +100,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     FrameDesc *table = nullptr;
     try {
         DwarfParser parser(name, image_base, eh_frame_hdr, size,
-                           DwarfParser::EhFrameHdrTag{});
+                           DwarfParser::EhFrameHdrTag{}, image_base + size);
         table = parser.table();
     } catch (...) {
         // Expected for malformed input - the parser may throw on invalid data

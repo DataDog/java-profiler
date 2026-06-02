@@ -112,9 +112,9 @@ void DwarfParser::init(const char *name, const char *image_base) {
 
 DwarfParser::DwarfParser(const char *name, const char *image_base,
                          const char *eh_frame_hdr, size_t eh_frame_hdr_size,
-                         EhFrameHdrTag) {
+                         EhFrameHdrTag, const char *image_end) {
   init(name, image_base);
-  parse(eh_frame_hdr, eh_frame_hdr_size);
+  parse(eh_frame_hdr, eh_frame_hdr_size, image_end);
 }
 
 DwarfParser::DwarfParser(const char *name, const char *image_base,
@@ -133,15 +133,18 @@ static constexpr u8 omit_sign_bit_mask_low(u8 value) {
   return value & 0x7;
 }
 
-void DwarfParser::parse(const char *eh_frame_hdr, size_t size) {
+void DwarfParser::parse(const char *eh_frame_hdr, size_t size, const char *image_end) {
   // Fixed .eh_frame_hdr header: version (1) + 3 encoding bytes + eh_frame_ptr (4)
   // + fde_count at offset 8 (4), binary-search table starting at offset 16.
-  // Refuse anything too small. Note: the table entries resolve into the adjacent
-  // .eh_frame section, not into .eh_frame_hdr itself, so we do NOT bound FDE
-  // reads to [eh_frame_hdr, eh_frame_hdr+size).
+  // Refuse anything too small.
   if (eh_frame_hdr == NULL || size < 16) {
     return;
   }
+  // Bound FDE reads to the full ELF image [image_base, image_end) so that
+  // pointers into the adjacent .eh_frame section are validated against mapped
+  // memory, not left unbounded.
+  _section_start = _image_base;
+  _section_end = image_end;
 
   u8 version = eh_frame_hdr[0];
   u8 eh_frame_ptr_enc = eh_frame_hdr[1];
@@ -170,7 +173,9 @@ void DwarfParser::parse(const char *eh_frame_hdr, size_t size) {
     return;
   }
   for (u32 i = 0; i < fde_count; i++) {
-    _ptr = eh_frame_hdr + table[i * 2 + 1];  // [i*2] is initial_loc; [i*2+1] is fde_ptr
+    // table[i*2+1] is the FDE pointer (datarel sdata4); table[i*2] is initial_loc.
+    // Cast to int32_t to correctly handle negative offsets (FDE before the header).
+    _ptr = eh_frame_hdr + (int32_t)table[i * 2 + 1];
     parseFde();
   }
 }
@@ -289,7 +294,7 @@ void DwarfParser::parseFde() {
   const char *fde_start = _ptr;
   u32 cie_offset = get32();
   if (_count == 0) {
-    if (_section_start != NULL && cie_offset > (size_t)(fde_start - _section_start)) {
+    if (cie_offset > (size_t)(fde_start - _section_start)) {
       return;
     }
     _ptr = fde_start - cie_offset;

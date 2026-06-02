@@ -207,7 +207,7 @@ TEST(DwarfEhFrameHdr, FdeCountOverrun) {
     hdr[9] = 0x04;
 
     const char* base = reinterpret_cast<const char*>(hdr.data());
-    DwarfParser dwarf("test", base, base, hdr.size(), DwarfParser::EhFrameHdrTag{});
+    DwarfParser dwarf("test", base, base, hdr.size(), DwarfParser::EhFrameHdrTag{}, base + hdr.size());
     EXPECT_EQ(dwarf.count(), 0);  // rejected: no records, no crash
     free(dwarf.table());
 }

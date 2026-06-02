@@ -107,11 +107,10 @@ class DwarfParser {
     const char* _name;
     const char* _image_base;
     const char* _ptr;
-    // Read window [_section_start, _section_end). Set by parseEhFrame() to the
-    // actual .eh_frame bounds so every helper read is clamped to the section.
-    // When parsing via .eh_frame_hdr (parse()), FDEs live in the adjacent
-    // .eh_frame whose bounds are unknown here, so _section_start stays NULL and
-    // _section_end stays at max-pointer (unbounded mode — same as original).
+    // Read window [_section_start, _section_end). Both paths set this window:
+    // - parseEhFrame(): set to the .eh_frame section bounds.
+    // - parse(): set to the full ELF image bounds [image_base, image_end) so
+    //   that FDE reads into the adjacent .eh_frame are bounded to mapped memory.
     const char* _section_start;
     const char* _section_end;
 
@@ -242,7 +241,7 @@ class DwarfParser {
     }
 
     void init(const char* name, const char* image_base);
-    void parse(const char* eh_frame_hdr, size_t size);
+    void parse(const char* eh_frame_hdr, size_t size, const char* image_end);
     void parseEhFrame(const char* eh_frame, size_t size);
     void parseCie();
     void parseFde();
@@ -257,7 +256,7 @@ class DwarfParser {
     // from the raw .eh_frame constructor below: with a size added, the two
     // would otherwise share a signature.
     struct EhFrameHdrTag {};
-    DwarfParser(const char* name, const char* image_base, const char* eh_frame_hdr, size_t eh_frame_hdr_size, EhFrameHdrTag);
+    DwarfParser(const char* name, const char* image_base, const char* eh_frame_hdr, size_t eh_frame_hdr_size, EhFrameHdrTag, const char* image_end);
     DwarfParser(const char* name, const char* image_base, const char* eh_frame, size_t eh_frame_size);
 
     // Ownership of the returned pointer transfers to the caller.
