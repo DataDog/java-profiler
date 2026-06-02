@@ -259,7 +259,11 @@ class ProfilerTestPlugin : Plugin<Project> {
                     // https://github.com/eclipse-openj9/openj9/issues/23514
                     !PlatformUtils.isTestJvmJ9()
                 }
-                "tsan" -> testTask.onlyIf { PlatformUtils.locateLibtsan() != null }
+                // TSan + JVM integration tests are incompatible: the profiler's signal
+                // handlers (SIGPROF at 1ms) are TSan-instrumented; when a signal fires
+                // while TSan is updating its shadow memory it causes re-entrance and a
+                // SIGSEGV.  TSan coverage is provided by the C++ gtest suite (gtestTsan).
+                "tsan" -> testTask.onlyIf { false }
             }
         }
     }
@@ -347,7 +351,7 @@ class ProfilerTestPlugin : Plugin<Project> {
                     // https://github.com/eclipse-openj9/openj9/issues/23514
                     !PlatformUtils.isTestJvmJ9()
                 }
-                "tsan" -> execTask.onlyIf { PlatformUtils.locateLibtsan() != null }
+                "tsan" -> execTask.onlyIf { false }  // same reason as testTask above
             }
         }
     }

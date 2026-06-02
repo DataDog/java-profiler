@@ -232,10 +232,19 @@ CallTrace *CallTraceHashTable::findCallTrace(LongHashTable *table, u64 hash) {
 
   u32 slot = probe.slot();
   while (true) {
-    if (keys[slot] == hash) {
-      return table->values()[slot].trace;
+    // Use atomic load: keys[] can be written concurrently via CAS in put()
+    // when a table is promoted to prev but still has in-flight insertions.
+    u64 key = __atomic_load_n(&keys[slot], __ATOMIC_ACQUIRE);
+    if (key == hash) {
+      // Use acquireTrace() to pair with the RELEASE store in setTrace().
+      // If still PREPARING, treat as not found: callers will create a new entry.
+      CallTrace *trace = table->values()[slot].acquireTrace();
+      if (trace == CallTraceSample::PREPARING) {
+        return nullptr;
+      }
+      return trace;
     }
-    if (keys[slot] == 0) {
+    if (key == 0) {
       return nullptr;
     }
     if (!probe.hasNext()) {
@@ -251,7 +260,10 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
                           bool truncated, u64 weight) {
   u64 hash = calcHash(num_frames, frames, truncated);
 
-  LongHashTable *table = _table;
+  // ACQUIRE pairs with the ACQ_REL CAS in the expansion path below, ensuring
+  // that if another thread published a new (expanded) table we see its fully
+  // initialised contents.
+  LongHashTable *table = __atomic_load_n(&_table, __ATOMIC_ACQUIRE);
   if (table == nullptr) {
     // Table allocation failed or was cleared - drop sample
     Counters::increment(CALLTRACE_STORAGE_DROPPED);

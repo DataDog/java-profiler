@@ -12,8 +12,10 @@
 #include <ctime>
 #include <string>
 
+#include "guards.h"
 #include "os.h"
 #include "signalCookie.h"
+#include "thread.h"
 
 #ifdef __linux__
 
@@ -331,6 +333,54 @@ TEST_F(SignalOriginTest, ResetForTestingClearsOldactionCache) {
         << "resetSignalHandlersForTesting did not clear installed_oldaction state";
 
     sigaction(SIGUSR1, &saved, nullptr);
+}
+
+// -------- WallclockGuardContract: predicate contract for WallClockJvmti guard --------
+//
+// WallClockJvmti::sharedSignalHandler gates on
+//   OS::shouldProcessSignal(siginfo, SI_QUEUE, SignalCookie::wallclock())
+// These cases cover the three branches the guard must handle: own send,
+// bare tgkill/kill (no cookie), and a queued signal with a foreign cookie.
+
+TEST_F(SignalOriginTest, WallclockGuardContract_OwnSignalAccepted) {
+    siginfo_t si = makeSiginfo(SI_QUEUE, SignalCookie::wallclock());
+    EXPECT_TRUE(OS::shouldProcessSignal(&si, SI_QUEUE, SignalCookie::wallclock()));
+}
+
+TEST_F(SignalOriginTest, WallclockGuardContract_BareKillRejected) {
+    // tgkill/pthread_kill delivers SI_TKILL; kill/raise delivers SI_USER.
+    for (int code : {SI_TKILL, SI_USER}) {
+        siginfo_t si = makeSiginfo(code, nullptr);
+        EXPECT_FALSE(OS::shouldProcessSignal(&si, SI_QUEUE, SignalCookie::wallclock()))
+            << "bare signal with si_code " << code << " must be rejected";
+    }
+}
+
+TEST_F(SignalOriginTest, WallclockGuardContract_ForeignCookieRejected) {
+    siginfo_t si = makeSiginfo(SI_QUEUE, (void*)0xF00D);
+    EXPECT_FALSE(OS::shouldProcessSignal(&si, SI_QUEUE, SignalCookie::wallclock()));
+}
+
+// Regression test for the fix: when a foreign signal is handled,
+// SIGNAL_HANDLER_GUARD_RELEASE() must be called before forwardForeignSignal so
+// that a chained handler escaping via siglongjmp cannot leave _signal_depth
+// permanently incremented.  Verifies the SIGNAL_HANDLER_GUARD / release
+// contract directly: depth is 0 after an early release, and the destructor is
+// a no-op.
+TEST_F(SignalOriginTest, WallclockGuardContract_ForeignSignalReleasesGuard) {
+    ProfiledThread::initCurrentThread();
+    EXPECT_EQ(0, getInSignalDepth());
+    {
+        SIGNAL_HANDLER_GUARD();
+        EXPECT_EQ(1, getInSignalDepth());
+        // Mirrors the fix: release before forwarding so a non-returning
+        // chained handler cannot leave depth > 0.
+        SIGNAL_HANDLER_GUARD_RELEASE();
+        EXPECT_EQ(0, getInSignalDepth());
+        // Destructor runs here; must not double-decrement.
+    }
+    EXPECT_EQ(0, getInSignalDepth());
+    ProfiledThread::release();
 }
 
 TEST_F(SignalOriginTest, ForwardAppliesSigmaskWhenEnabled) {

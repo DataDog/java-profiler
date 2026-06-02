@@ -1,14 +1,9 @@
-# Allow async-profiler-build CI to publish to gh-pages
+# Allow java-profiler GitLab CI to publish reports and manage issues
 issuer: https://gitlab.ddbuild.io
 
 subject_pattern: "project_path:DataDog/java-profiler:ref_type:branch:ref:.*"
 
-claim_pattern:
-  project_path: "DataDog/java-profiler"
-  ref_type: "branch"
-  ref: ".*"
-
 permissions:
-  contents: "write"
-  issues: "write"
-  pull_requests: "read"
+  contents: write
+  issues: write
+  pull_requests: read
