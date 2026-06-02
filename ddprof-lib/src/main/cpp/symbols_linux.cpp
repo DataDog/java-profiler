@@ -357,10 +357,13 @@ class ElfParser {
         _relocate_dyn = relocate_dyn;
         _header = (ElfHeader*)addr;
         _image_end = (const char*)addr + image_size;
-        // e_shoff sits at a fixed offset inside the header; only read it once the
-        // image is at least header-sized, otherwise leave the table pointer unset
-        // so sectionAt() refuses every lookup.
-        _sections = (image_size >= sizeof(ElfHeader)) ? (const char*)addr + _header->e_shoff : NULL;
+        // e_shoff sits at a fixed offset inside the header; only compute the pointer
+        // when the image is at least header-sized AND e_shoff is within the image,
+        // so the addition cannot overflow and sectionAt()/inImage() can reject it
+        // cleanly without UB.
+        _sections = (image_size >= sizeof(ElfHeader) && _header->e_shoff < image_size)
+            ? (const char*)addr + _header->e_shoff
+            : NULL;
     }
 
     bool validHeader() {
@@ -419,6 +422,17 @@ class ElfParser {
             return NULL;
         }
         return strtab + off;
+    }
+
+    // Program-header entry at `index`, or NULL when the index or entry is out of bounds.
+    ElfProgramHeader* phdrAt(int index) {
+        if (index < 0 || index >= _header->e_phnum
+                || _header->e_phentsize < sizeof(ElfProgramHeader)) {
+            return NULL;
+        }
+        ElfProgramHeader* ph = (ElfProgramHeader*)(
+            (const char*)_header + _header->e_phoff + (size_t)index * _header->e_phentsize);
+        return inImage(ph, sizeof(ElfProgramHeader)) ? ph : NULL;
     }
 
     const char* at(ElfProgramHeader* pheader) {
@@ -495,15 +509,12 @@ ElfSection* ElfParser::findSection(uint32_t type, const char* name) {
 }
 
 ElfProgramHeader* ElfParser::findProgramHeader(uint32_t type) {
-    const char* pheaders = (const char*)_header + _header->e_phoff;
-
     for (int i = 0; i < _header->e_phnum; i++) {
-        ElfProgramHeader* pheader = (ElfProgramHeader*)(pheaders + i * _header->e_phentsize);
-        if (pheader->p_type == type) {
+        ElfProgramHeader* pheader = phdrAt(i);
+        if (pheader != NULL && pheader->p_type == type) {
             return pheader;
         }
     }
-
     return NULL;
 }
 
@@ -546,10 +557,9 @@ void ElfParser::calcVirtualLoadAddress() {
         _vaddr_diff = NULL;
         return;
     }
-    const char* pheaders = (const char*)_header + _header->e_phoff;
     for (int i = 0; i < _header->e_phnum; i++) {
-        ElfProgramHeader* pheader = (ElfProgramHeader*)(pheaders + i * _header->e_phentsize);
-        if (pheader->p_type == PT_LOAD) {
+        ElfProgramHeader* pheader = phdrAt(i);
+        if (pheader != NULL && pheader->p_type == PT_LOAD) {
             _vaddr_diff = _base - pheader->p_vaddr;
             return;
         }
@@ -625,10 +635,18 @@ void ElfParser::parseDynamicSection() {
             return;
         }
 
+        // DT_STRSZ is required by the ELF spec whenever DT_STRTAB is present.
+        // When it is absent (strsz == 0) all string lookups via strAt() would
+        // be rejected, silently dropping every symbol. Fall back to unbounded
+        // scans instead — the dynamic section is already in live linker-validated
+        // memory, so NUL-terminated strings are guaranteed.
+        if (strsz == 0) {
+            Log::warn("DT_STRSZ absent from dynamic section in %s; string lookups will be unbounded",
+                      _file_name != NULL ? _file_name : "unknown");
+            strsz = (size_t)-1;
+        }
+
         if (!_cc->hasDebugSymbols() && nsyms > 0) {
-            // strsz (DT_STRSZ) bounds string-table reads. The dynamic symbol
-            // region is virtual-address-relative live memory, so it is iterated
-            // as before rather than clamped to the file image.
             loadSymbolTable(symtab, syment * nsyms, syment, strtab, strsz);
         }
 
@@ -639,7 +657,10 @@ void ElfParser::parseDynamicSection() {
                 ElfRelocation* r = (ElfRelocation*)(jmprel + offs);
                 ElfSymbol* sym = (ElfSymbol*)(symtab + ELF_R_SYM(r->r_info) * syment);
                 if (sym->st_name != 0) {
-                    _cc->addImport((void**)(base + r->r_offset), strtab + sym->st_name);
+                    const char* sym_name = strAt(strtab, strsz, sym->st_name);
+                    if (sym_name != NULL) {
+                        _cc->addImport((void**)(base + r->r_offset), sym_name);
+                    }
                 }
             }
         }
@@ -653,7 +674,10 @@ void ElfParser::parseDynamicSection() {
                 if (ELF_R_TYPE(r->r_info) == R_GLOB_DAT || ELF_R_TYPE(r->r_info) == R_ABS64) {
                     ElfSymbol* sym = (ElfSymbol*)(symtab + ELF_R_SYM(r->r_info) * syment);
                     if (sym->st_name != 0) {
-                        _cc->addImport((void**)(base + r->r_offset), strtab + sym->st_name);
+                        const char* sym_name = strAt(strtab, strsz, sym->st_name);
+                        if (sym_name != NULL) {
+                            _cc->addImport((void**)(base + r->r_offset), sym_name);
+                        }
                     }
                 }
             }

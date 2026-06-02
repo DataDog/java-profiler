@@ -363,8 +363,6 @@ INSTANTIATE_TEST_SUITE_P(
 );
 #endif
 
-<<<<<<< HEAD
-=======
 // =====================================================================
 // Regression tests for the ELF parser hardening (found by the fuzz_elf
 // harness). Each builds a minimal ELF whose single malformed field made the
@@ -376,7 +374,6 @@ INSTANTIATE_TEST_SUITE_P(
 // (ASan SEGV / heap-buffer-overflow) and to pass after the fix.
 // =====================================================================
 
->>>>>>> b9dbe68c (fix: bounds-check ELF section and symbol-table parsing)
 namespace {
 
 // Minimal valid ELF64 header; callers set the malformed field afterwards.
@@ -394,9 +391,26 @@ Elf64_Ehdr validEhdr() {
     e.e_machine = EM_X86_64;
     e.e_version = EV_CURRENT;
     e.e_ehsize = sizeof(Elf64_Ehdr);
-<<<<<<< HEAD
-    e.e_shstrndx = 1;
+    e.e_shstrndx = 1;  // non-zero so validHeader() accepts the image
     return e;
+}
+
+// Write the bytes to a unique temp file and run ElfParser::parseFile over it,
+// mirroring how Symbols::parseLibraries() parses an on-disk library.
+void parseElfBytes(const std::vector<char>& bytes) {
+    char path[] = "/tmp/elf_regress_XXXXXX";
+    int fd = mkstemp(path);
+    ASSERT_NE(fd, -1);
+    ssize_t written = write(fd, bytes.data(), bytes.size());
+    close(fd);
+    if (written != (ssize_t)bytes.size()) {
+        unlink(path);
+        FAIL() << "short write to " << path;
+        return;
+    }
+    CodeCache cc("regress");
+    ElfParser::parseFile(&cc, nullptr, path, /*use_debug=*/false);
+    unlink(path);
 }
 
 }  // namespace
@@ -427,25 +441,7 @@ TEST(ElfBuildId, noteOffsetOverflow) {
     char* id = SymbolsLinux::extractBuildIdFromMemory(buf, size, &build_id_len);
     free(id);  // hardened parser returns nullptr; the point is that it must not crash
     delete[] buf;
-=======
-    e.e_shstrndx = 1;  // non-zero so validHeader() accepts the image
-    return e;
 }
-
-// Write the bytes to a unique temp file and run ElfParser::parseFile over it,
-// mirroring how Symbols::parseLibraries() parses an on-disk library.
-void parseElfBytes(const std::vector<char>& bytes) {
-    char path[] = "/tmp/elf_regress_XXXXXX";
-    int fd = mkstemp(path);
-    ASSERT_NE(fd, -1);
-    ASSERT_EQ((ssize_t)bytes.size(), write(fd, bytes.data(), bytes.size()));
-    close(fd);
-    CodeCache cc("regress");
-    ElfParser::parseFile(&cc, nullptr, path, /*use_debug=*/false);
-    unlink(path);
-}
-
-}  // namespace
 
 // e_shoff pointing far outside the image made findSection() dereference a wild
 // section-header pointer (ElfParser::at). 16 TB is reliably unmapped.
@@ -510,7 +506,6 @@ TEST_F(ElfTest, symbolTableSizeOutOfBounds) {
     app(&sym, sizeof(sym));
     app(strtab, sizeof(strtab));
     parseElfBytes(b);  // must not crash
->>>>>>> b9dbe68c (fix: bounds-check ELF section and symbol-table parsing)
 }
 
 #endif //__linux__
