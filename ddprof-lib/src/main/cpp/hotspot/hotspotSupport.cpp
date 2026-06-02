@@ -1270,6 +1270,9 @@ bool HotspotSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klas
             // Lambda classes, even loaded by bootstrap class loader, can be unloaded,
             // fallback to jmethodID
             if (!isLambdaClass(signature_ptr)) {
+                if (cl != nullptr) {
+                    jni->DeleteLocalRef(cl);
+                }
                 jvmti->Deallocate((unsigned char*)signature_ptr);
                 return false;
             }
