@@ -710,7 +710,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     if (StackWalkValidation::isPlausibleInterpreterFrame(recovery_fp, recovery_sp, bcp_offset)) {
                         VMMethod* method = ((VMMethod**)recovery_fp)[InterpreterFrame::method_offset];
                         jmethodID method_id = getMethodId(method);
-                        if (method_id != NULL) {
+                        if (method_id != JMETHODID_NOT_WALKABLE) {
                             anchor = NULL;
                             prev_native_pc = NULL;
                             if (depth > 0 && depth + 1 < actual_max_depth) {
@@ -720,8 +720,11 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                             const char* bytecode_start = method->bytecode();
                             const char* bcp = ((const char**)recovery_fp)[bcp_offset];
                             int bci = bytecode_start == NULL || bcp < bytecode_start ? 0 : bcp - bytecode_start;
-                            fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id);
-
+                            if (method_id != nullptr) {
+                                fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id);
+                            } else {
+                                fillFrameRaw(frames[depth++], FRAME_INTERPRETED, bci, method);
+                            }
                             sp = ((uintptr_t*)recovery_fp)[InterpreterFrame::sender_sp_offset];
                             pc = stripPointer(((void**)recovery_fp)[FRAME_PC_SLOT]);
                             fp = *(uintptr_t*)recovery_fp;
@@ -868,7 +871,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         if (StackWalkValidation::isPlausibleInterpreterFrame(anchor_fp, anchor_sp, bcp_offset)) {
             VMMethod* method = ((VMMethod**)anchor_fp)[InterpreterFrame::method_offset];
             jmethodID method_id = getMethodId(method);
-            if (method_id != NULL) {
+            if (method_id != JMETHODID_NOT_WALKABLE) {
                 Counters::increment(WALKVM_ANCHOR_FALLBACK);
                 Counters::increment(WALKVM_JAVA_FRAME_OK);
                 anchor = NULL;
@@ -877,7 +880,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     const char* bytecode_start = method->bytecode();
                     const char* bcp = ((const char**)anchor_fp)[bcp_offset];
                     int bci = bytecode_start == NULL || bcp < bytecode_start ? 0 : bcp - bytecode_start;
-                    if (method_id != JMETHODID_NOT_WALKABLE && method_id != nullptr) {
+                    if (method_id != nullptr) {
                         fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id);
                     } else {
                         fillFrameRaw(frames[depth++], FRAME_INTERPRETED, bci, method);
