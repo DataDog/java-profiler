@@ -35,7 +35,7 @@ public:
     static_assert(sizeof(SpinLock) == DEFAULT_CACHE_LINE_SIZE);
   }
 
-  void reset() { _lock = 0; }
+  void reset() { __atomic_store_n(&_lock, 0, __ATOMIC_RELAXED); }
 
   bool tryLock() { return __sync_bool_compare_and_swap(&_lock, 0, 1); }
 
@@ -46,7 +46,7 @@ public:
   }
 
   void unlock() {
-    assert(_lock == 1);
+    assert(__atomic_load_n(&_lock, __ATOMIC_RELAXED) == 1);
     __sync_fetch_and_sub(&_lock, 1);
   }
 
@@ -95,7 +95,7 @@ public:
   }
 
   void unlockShared() {
-    assert(_lock < 0);
+    assert(__atomic_load_n(&_lock, __ATOMIC_RELAXED) < 0);
     __sync_fetch_and_add(&_lock, 1);
   }
 };
