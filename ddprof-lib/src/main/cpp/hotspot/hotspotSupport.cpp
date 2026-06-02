@@ -1272,11 +1272,24 @@ static inline bool isSystemClassLoaders(JNIEnv* jni, jobject cl) {
            jni->IsSameObject(cl, JAVA_APPLICATION_CLASSLOADER);      // application class loader (system class loader)
 }
 
+bool isHiddenClass(jvmtiEnv *jvmti, jclass clazz) {
+    jint modifiers = 0;
+    if (jvmti->GetClassModifiers(clazz, &modifiers) == JVMTI_ERROR_NONE) {
+        // In JVM TI, hidden classes are identified by the 0x00000800 mask
+        // which matches the JVM_ACC_HIDDEN flag.
+        return (modifiers & 0x00000800) != 0;
+    }
+
+    return false;
+}
+
 bool HotspotSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
     jobject cl;
-    // Hotspot only: loaded by system class loaders, which are never unloaded,
+    // Hotspot only: none hidden classes loaded by system class loaders, which are never unloaded,
     // we use Method instead.
-    if (jvmti->GetClassLoader(klass, &cl) == JVMTI_ERROR_NONE && isSystemClassLoaders(jni, cl)) {
+    if (!isHiddenClass(jvmti, klass) &&
+        jvmti->GetClassLoader(klass, &cl) == JVMTI_ERROR_NONE && 
+        isSystemClassLoaders(jni, cl)) {
         char* signature_ptr = nullptr;
         if (jvmti->GetClassSignature(klass, &signature_ptr, nullptr) == JVMTI_ERROR_NONE) {
             // Lambda classes, even loaded by bootstrap class loader, can be unloaded,
