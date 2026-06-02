@@ -61,4 +61,12 @@ public class ContextSetter {
         }
         return false;
     }
+
+    public String readContextValue(int offset) {
+        if (offset < 0) {
+            return null;
+        }
+        ThreadContext ctx = profiler.getThreadContext();
+        return ctx != null ? ctx.readContextAttribute(offset) : null;
+    }
 }
