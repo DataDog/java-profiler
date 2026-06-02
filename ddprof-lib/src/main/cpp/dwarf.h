@@ -106,6 +106,7 @@ class DwarfParser {
   private:
     const char* _name;
     const char* _image_base;
+    const char* _image_end;
     const char* _ptr;
     // Read window [_section_start, _section_end). Both paths set this window:
     // - parseEhFrame(): set to the .eh_frame section bounds.
@@ -229,6 +230,7 @@ class DwarfParser {
     }
 
     const char* getPtr() {
+        if (_ptr + 4 > _image_end) { _ptr = _image_end; return _image_base; }
         const char* ptr = _ptr;
         if (!canRead(4)) {
             _ptr = _section_end;
@@ -240,7 +242,7 @@ class DwarfParser {
         return ptr + offset;
     }
 
-    void init(const char* name, const char* image_base);
+    void init(const char* name, const char* image_base, const char* image_end);
     void parse(const char* eh_frame_hdr, size_t size, const char* image_end);
     void parseEhFrame(const char* eh_frame, size_t size);
     void parseCie();
