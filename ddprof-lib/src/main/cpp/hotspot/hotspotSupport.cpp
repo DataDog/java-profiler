@@ -157,7 +157,8 @@ static void fillFrameTypes(ASGCT_CallFrame *frames, int num_frames, VMNMethod *n
   }
 }
 
-static inline void fillFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci, const VMMethod* method) {
+// Fill the frame with raw method pointer
+static inline void fillFrameRaw(ASGCT_CallFrame& frame, FrameTypeId type, int bci, const VMMethod* method) {
     assert(method != nullptr);
     frame.bci = FrameType::encode(type, bci, true /*raw method pointer*/);
     frame.method = static_cast<const void*>(method);
@@ -463,7 +464,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                         if (method_id != nullptr) {
                             fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id);
                         } else {
-                            fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method);
+                            fillFrameRaw(frames[depth++], FRAME_INTERPRETED, bci, method);
                         }
                         sp = ((uintptr_t*)fp)[InterpreterFrame::sender_sp_offset];
                         pc = stripPointer(((void**)fp)[FRAME_PC_SLOT]);
@@ -480,7 +481,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                         if (method_id != nullptr) {
                             fillFrame(frames[depth++], FRAME_INTERPRETED, 0, method_id);
                         } else {
-                            fillFrame(frames[depth++], FRAME_INTERPRETED, 0, method);
+                            fillFrameRaw(frames[depth++], FRAME_INTERPRETED, 0, method);
                         }
                         if (is_plausible_interpreter_frame) {
                             pc = stripPointer(((void**)fp)[FRAME_PC_SLOT]);
@@ -522,7 +523,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 if (method_id != JMETHODID_NOT_WALKABLE && method_id != nullptr) {
                     fillFrame(frames[depth++], type, 0, nm->method()->id());
                 } else {
-                    fillFrame(frames[depth++], type, 0, method);
+                    fillFrameRaw(frames[depth++], type, 0, method);
                 }
 
                 if (nm->isFrameCompleteAt(pc)) {
@@ -545,7 +546,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                             if (method_id != JMETHODID_NOT_WALKABLE && method_id != nullptr) {
                                 fillFrame(frames[depth++], type, scope.bci(), method_id);
                             } else {
-                                fillFrame(frames[depth++], type, scope.bci(), method);
+                                fillFrameRaw(frames[depth++], type, scope.bci(), method);
                             }
                         } while (scope_offset > 0 && depth < max_depth);
                     }
@@ -879,7 +880,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     if (method_id != JMETHODID_NOT_WALKABLE && method_id != nullptr) {
                         fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id);
                     } else {
-                        fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method);
+                        fillFrameRaw(frames[depth++], FRAME_INTERPRETED, bci, method);
                     }
                     sp = ((uintptr_t*)anchor_fp)[InterpreterFrame::sender_sp_offset];
                     pc = stripPointer(((void**)anchor_fp)[FRAME_PC_SLOT]);
