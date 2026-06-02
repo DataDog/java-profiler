@@ -114,7 +114,10 @@
   X(JVMTI_STACKS_REQUESTED, "jvmti_stacks_requested")                         \
   X(JVMTI_STACKS_FAILED_WRONG_PHASE, "jvmti_stacks_failed_wrong_phase")       \
   X(JVMTI_STACKS_FAILED_OTHER, "jvmti_stacks_failed_other")                  \
-  X(JVMTI_STACKS_DROPPED_LOCK, "jvmti_stacks_dropped_lock")
+  /* Sequential drop layers for delegated stacks: slot-lock first, then         \
+   * rec-lock; both counted against a single JVMTI_STACKS_REQUESTED. */        \
+  X(JVMTI_STACKS_DROPPED_LOCK, "jvmti_stacks_dropped_lock")                   \
+  X(JVMTI_STACKS_DROPPED_REC_LOCK, "jvmti_stacks_dropped_rec_lock")
 #define X_ENUM(a, b) a,
 typedef enum CounterId : int {
   DD_COUNTER_TABLE(X_ENUM) DD_NUM_COUNTERS

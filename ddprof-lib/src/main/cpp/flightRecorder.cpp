@@ -2111,6 +2111,8 @@ void FlightRecorder::recordEventDelegated(int lock_index, int tid,
       rec->flushIfNeeded(buf);
       rec->addThread(lock_index, tid);
     }
+  } else {
+    Counters::increment(JVMTI_STACKS_DROPPED_REC_LOCK);
   }
 }
 
