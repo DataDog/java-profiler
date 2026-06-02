@@ -140,6 +140,11 @@ void DwarfParser::parse(const char *eh_frame_hdr, size_t size, const char *image
   if (eh_frame_hdr == NULL || size < 16) {
     return;
   }
+  // The version/encoding bytes [0..3] and fde_count [8..11] are read directly
+  // (not via canRead), so reject if image_end does not cover the 12-byte prefix.
+  if (image_end < eh_frame_hdr + 12) {
+    return;
+  }
   // Bound FDE reads to the full ELF image [image_base, image_end) so that
   // pointers into the adjacent .eh_frame section are validated against mapped
   // memory, not left unbounded.
@@ -305,7 +310,7 @@ void DwarfParser::parseFde() {
   u32 range_start = getPtr() - _image_base;
   u32 range_len = get32();
   _ptr += getLeb();
-  if (_ptr > _section_end) _ptr = _section_end;
+  if (_ptr > fde_start + fde_len) return;
   parseInstructions(range_start, fde_start + fde_len);
   addRecord(range_start + range_len, DW_REG_FP, LINKED_FRAME_SIZE,
             -LINKED_FRAME_SIZE, -LINKED_FRAME_SIZE + DW_STACK_SLOT);
