@@ -190,4 +190,26 @@ TEST(DwarfEhFrame, FdeAugDataOverrun) {
     delete dwarf;
 }
 
+// Regression test for the .eh_frame_hdr hardening (found by fuzz_dwarf).
+// A hostile .eh_frame_hdr can claim a large fde_count while providing no
+// binary-search table; pre-hardening, parse() walked `table[i*2]` off the end
+// of the section. The bounded parser rejects a fde_count that cannot fit in the
+// section. The header is a heap buffer sized to exactly 16 bytes (header only,
+// no table entries), so ASan's redzone catches any over-read deterministically.
+TEST(DwarfEhFrameHdr, FdeCountOverrun) {
+    std::vector<uint8_t> hdr(16, 0);  // 16-byte header; the table would start at 16
+    hdr[0] = 1;     // version
+    hdr[1] = 0x03;  // eh_frame_ptr_enc = DW_EH_PE_udata4
+    hdr[2] = 0x03;  // fde_count_enc    = DW_EH_PE_udata4
+    hdr[3] = 0x33;  // table_enc        = DW_EH_PE_datarel | DW_EH_PE_udata4
+    // fde_count at offset 8 (little-endian): claim 1024 entries that aren't there.
+    hdr[8] = 0x00;
+    hdr[9] = 0x04;
+
+    const char* base = reinterpret_cast<const char*>(hdr.data());
+    DwarfParser dwarf("test", base, base, hdr.size(), DwarfParser::EhFrameHdrTag{});
+    EXPECT_EQ(dwarf.count(), 0);  // rejected: no records, no crash
+    free(dwarf.table());
+}
+
 #endif  // DWARF_SUPPORTED
