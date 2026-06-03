@@ -408,8 +408,14 @@ class ElfParser {
         if (s == NULL) {
             return NULL;
         }
-        const char* p = (const char*)_header + s->sh_offset;
-        return inImage(p, want) ? p : NULL;
+        // Validate sh_offset in integer space before forming the pointer so that
+        // a large attacker-controlled offset cannot cause pointer-overflow UB
+        // (the project builds with -fsanitize=pointer-overflow -fno-sanitize-recover).
+        size_t img_size = (size_t)(_image_end - (const char*)_header);
+        if (s->sh_offset > img_size || want > img_size - s->sh_offset) {
+            return NULL;
+        }
+        return (const char*)_header + s->sh_offset;
     }
 
     // NUL-terminated string at `off` within a [strtab, strtab+size) string table,
@@ -430,15 +436,16 @@ class ElfParser {
                 || _header->e_phentsize < sizeof(ElfProgramHeader)) {
             return NULL;
         }
-        // Validate e_phoff before forming the pointer, mirroring the e_shoff
-        // pre-check in the constructor: a large e_phoff wraps the addition to a
-        // small address and inImage() would then reject it, but the pointer
-        // formation itself is already UB.
-        if (_header->e_phoff >= (size_t)(_image_end - (const char*)_header)) {
+        // Validate entirely in integer space before forming any pointer.
+        // Both e_phoff and index*e_phentsize are attacker-controlled; either
+        // can be large enough to wrap a pointer under -fsanitize=pointer-overflow.
+        size_t img_size = (size_t)(_image_end - (const char*)_header);
+        size_t phoff = _header->e_phoff;
+        size_t stride = (size_t)index * _header->e_phentsize;
+        if (phoff > img_size || stride > img_size - phoff) {
             return NULL;
         }
-        ElfProgramHeader* ph = (ElfProgramHeader*)(
-            (const char*)_header + _header->e_phoff + (size_t)index * _header->e_phentsize);
+        ElfProgramHeader* ph = (ElfProgramHeader*)((const char*)_header + phoff + stride);
         return inImage(ph, sizeof(ElfProgramHeader)) ? ph : NULL;
     }
 
