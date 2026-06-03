@@ -508,4 +508,69 @@ TEST_F(ElfTest, symbolTableSizeOutOfBounds) {
     parseElfBytes(b);  // must not crash
 }
 
+// A large e_phoff causes phdrAt() to try forming a pointer past the image.
+// The bounds check must reject it before any dereference.
+TEST_F(ElfTest, programHeaderOffsetOutOfBounds) {
+    Elf64_Ehdr e = validEhdr();
+    e.e_phoff = 0x100000000000ULL;  // 16 TB: reliably unmapped
+    e.e_phentsize = sizeof(Elf64_Phdr);
+    e.e_phnum = 1;
+    std::vector<char> bytes(reinterpret_cast<char*>(&e),
+                            reinterpret_cast<char*>(&e) + sizeof(e));
+    parseElfBytes(bytes);  // must not crash
+}
+
+// strAt() bounds check: a symbol whose st_name equals strtab_size (one past
+// the end) must be skipped without reading out of bounds.
+TEST_F(ElfTest, symbolNameOffsetOutOfBounds) {
+    const uint16_t NSEC = 4;
+    const uint64_t shoff = sizeof(Elf64_Ehdr);
+    const uint64_t shstr_off = shoff + NSEC * sizeof(Elf64_Shdr);
+    const char shstrtab[] = "\0.symtab\0.strtab\0.shstrtab";
+    const uint64_t sym_off = shstr_off + sizeof(shstrtab);
+    Elf64_Sym sym;
+    memset(&sym, 0, sizeof(sym));
+    sym.st_name = 6;  // == sizeof(strtab) below: one past the end
+    sym.st_value = 0x1000;
+    sym.st_size = 4;
+    const uint64_t str_off = sym_off + sizeof(sym);
+    const char strtab[] = "\0main\0";  // 6 bytes; index 6 is out of bounds
+
+    Elf64_Ehdr e = validEhdr();
+    e.e_shoff = shoff;
+    e.e_shentsize = sizeof(Elf64_Shdr);
+    e.e_shnum = NSEC;
+    e.e_shstrndx = 3;
+
+    Elf64_Shdr sh[4];
+    memset(sh, 0, sizeof(sh));
+    sh[1].sh_name = 1;   // ".symtab"
+    sh[1].sh_type = SHT_SYMTAB;
+    sh[1].sh_offset = sym_off;
+    sh[1].sh_size = sizeof(sym);  // exactly one entry, within image
+    sh[1].sh_link = 2;
+    sh[1].sh_entsize = sizeof(Elf64_Sym);
+    sh[2].sh_name = 9;   // ".strtab"
+    sh[2].sh_type = SHT_STRTAB;
+    sh[2].sh_offset = str_off;
+    sh[2].sh_size = sizeof(strtab);
+    sh[3].sh_name = 17;  // ".shstrtab"
+    sh[3].sh_type = SHT_STRTAB;
+    sh[3].sh_offset = shstr_off;
+    sh[3].sh_size = sizeof(shstrtab);
+
+    std::vector<char> b;
+    auto app = [&](const void* p, size_t n) {
+        const char* c = static_cast<const char*>(p);
+        b.insert(b.end(), c, c + n);
+    };
+    app(&e, sizeof(e));
+    app(sh, sizeof(sh));
+    app(shstrtab, sizeof(shstrtab));
+    app(&sym, sizeof(sym));
+    app(strtab, sizeof(strtab));
+    // strtab ends at image_size: also exercises inImage() equality case.
+    parseElfBytes(b);  // must not crash: strAt() rejects st_name == strtab_size
+}
+
 #endif //__linux__

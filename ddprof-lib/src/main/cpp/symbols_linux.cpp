@@ -430,6 +430,13 @@ class ElfParser {
                 || _header->e_phentsize < sizeof(ElfProgramHeader)) {
             return NULL;
         }
+        // Validate e_phoff before forming the pointer, mirroring the e_shoff
+        // pre-check in the constructor: a large e_phoff wraps the addition to a
+        // small address and inImage() would then reject it, but the pointer
+        // formation itself is already UB.
+        if (_header->e_phoff >= (size_t)(_image_end - (const char*)_header)) {
+            return NULL;
+        }
         ElfProgramHeader* ph = (ElfProgramHeader*)(
             (const char*)_header + _header->e_phoff + (size_t)index * _header->e_phentsize);
         return inImage(ph, sizeof(ElfProgramHeader)) ? ph : NULL;
@@ -637,13 +644,13 @@ void ElfParser::parseDynamicSection() {
 
         // DT_STRSZ is required by the ELF spec whenever DT_STRTAB is present.
         // When it is absent (strsz == 0) all string lookups via strAt() would
-        // be rejected, silently dropping every symbol. Fall back to unbounded
-        // scans instead — the dynamic section is already in live linker-validated
-        // memory, so NUL-terminated strings are guaranteed.
+        // be rejected, silently dropping every symbol. Cap to 1 MB: real dynamic
+        // string tables are well under that, and live linker memory guarantees
+        // NUL termination, so memchr will always find a terminator before the cap.
         if (strsz == 0) {
-            Log::warn("DT_STRSZ absent from dynamic section in %s; string lookups will be unbounded",
+            Log::warn("DT_STRSZ absent from dynamic section in %s; capping string-table scan to 1 MB",
                       _file_name != NULL ? _file_name : "unknown");
-            strsz = (size_t)-1;
+            strsz = 1u << 20;
         }
 
         if (!_cc->hasDebugSymbols() && nsyms > 0) {
@@ -697,14 +704,11 @@ void ElfParser::parseDwarfInfo() {
             // Compute image_end from the highest end address of all LOAD segments so
             // the DWARF parser can validate FDE pointers against mapped memory.
             const char* image_end = _base;
-            {
-                const char* pheaders = (const char*)_header + _header->e_phoff;
-                for (int i = 0; i < _header->e_phnum; i++) {
-                    ElfProgramHeader* ph = (ElfProgramHeader*)(pheaders + i * _header->e_phentsize);
-                    if (ph->p_type == PT_LOAD) {
-                        const char* seg_end = at(ph) + ph->p_memsz;
-                        if (seg_end > image_end) image_end = seg_end;
-                    }
+            for (int i = 0; i < _header->e_phnum; i++) {
+                ElfProgramHeader* ph = phdrAt(i);
+                if (ph != NULL && ph->p_type == PT_LOAD) {
+                    const char* seg_end = at(ph) + ph->p_memsz;
+                    if (seg_end > image_end) image_end = seg_end;
                 }
             }
             DwarfParser dwarf(_cc->name(), _base, at(eh_frame_hdr), eh_frame_hdr->p_memsz,
