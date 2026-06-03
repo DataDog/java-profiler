@@ -145,7 +145,7 @@ public final class OTelContext {
      * Reads the currently published OpenTelemetry process context, if any.
      * 
      * <p>This method attempts to read back the process context that was previously
-     * published via {@link #setProcessContext(String, String, String, String, String, String)}. This is
+     * published via {@link #setProcessContext(String, String, String, String, String, String, String[])}. This is
      * primarily useful for debugging and testing purposes.
      * 
      * <p><b>Platform Support:</b> Currently only supported on Linux. On other
@@ -193,7 +193,8 @@ public final class OTelContext {
      *     "instance-12345",    // runtime-id
      *     "my-service",        // service
      *     "1.0.0",             // version
-     *     "3.5.0"              // tracer-version
+     *     "3.5.0",             // tracer-version
+     *     new String[] {"http.route", "db.system"}  // thread-context attribute keys
      * );
      * }</pre>
      *
@@ -215,58 +216,30 @@ public final class OTelContext {
      * @param tracerVersion the version of the tracer as defined by OpenTelemetry
      *                      semantic conventions (telemetry.sdk.version). Must not be null.
      *                      Examples: "3.5.0", "4.2.0"
-     *     *
+     * @param attributeKeys the thread-context attribute key names whose per-thread
+     *                      values are recorded in the OTEP thread-local record (e.g.
+     *                      "http.route", "db.system"). Published in the process context's
+     *                      thread_ctx_config as the attribute_key_map, preceded by the
+     *                      reserved datadog.local_root_span_id slot. Must not be null
+     *                      (may be empty); keys beyond capacity are clipped. Order must
+     *                      match the indices used with
+     *                      {@link ThreadContext#setContextAttribute(int, String)}.
+     *
      * @see <a href="https://opentelemetry.io/docs/specs/semconv/registry/attributes/service/">OpenTelemetry Service Attributes</a>
      * @see <a href="https://opentelemetry.io/docs/specs/semconv/registry/attributes/deployment/">OpenTelemetry Deployment Attributes</a>
      */
-    public void setProcessContext(String env, String hostname, String runtimeId, String service, String version, String tracerVersion) {
+    public void setProcessContext(String env, String hostname, String runtimeId, String service, String version, String tracerVersion, String[] attributeKeys) {
         if (!libraryLoadResult.succeeded) {
             return;
         }
         try {
             lock.writeLock().lock();
-            setProcessCtx0(env, hostname, runtimeId, service, version, tracerVersion);
+            setProcessCtx0(env, hostname, runtimeId, service, version, tracerVersion, attributeKeys);
         } finally {
             lock.writeLock().unlock();
         }
     }
 
-    /**
-     * Registers attribute key names for the thread context.
-     *
-     * <p>These keys define the attribute_key_map in the process context's
-     * thread_ctx_config. In OTEL mode, attribute values set via
-     * {@link ThreadContext#setContextAttribute(int, String)} are encoded
-     * with the key index corresponding to position in this array.
-     *
-     * <p>Calling this method explicitly is <b>optional</b> when the profiler
-     * is started with the {@code attributes=...} argument (e.g.
-     * {@code execute("start,attributes=http.route;db.system,...")}); the
-     * native start path auto-registers those keys.
-     *
-     * <p>This method reads the currently published process context and
-     * republishes it with thread_ctx_config attached. It must therefore be
-     * called <b>after</b>
-     * {@link #setProcessContext(String, String, String, String, String, String)};
-     * if no process context has been published yet, the registration is a
-     * no-op for the process-level attribute_key_map (per-thread
-     * setContextAttribute writes still work). Conversely, calling
-     * setProcessContext after this method drops the previously published
-     * thread_ctx_config — re-register the keys after each setProcessContext
-     * if you need them to persist.
-     *
-     * <p>Must be called before any calls to setContextAttribute.
-     *
-     * @param keys Attribute key names (e.g. "http.route", "db.system")
-     */
-    public void registerAttributeKeys(String... keys) {
-        if (!libraryLoadResult.succeeded) {
-            return;
-        }
-        registerAttributeKeys0(keys);
-    }
-
-    private static native void setProcessCtx0(String env, String hostname, String runtimeId, String service, String version, String tracerVersion);
+    private static native void setProcessCtx0(String env, String hostname, String runtimeId, String service, String version, String tracerVersion, String[] attributeKeys);
     private static native ProcessContext readProcessCtx0();
-    private static native void registerAttributeKeys0(String[] keys);
 }
