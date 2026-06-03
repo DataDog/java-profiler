@@ -135,7 +135,7 @@ static constexpr u8 omit_sign_bit_mask_low(u8 value) {
 
 void DwarfParser::parse(const char *eh_frame_hdr, size_t size, const char *image_end) {
   // Fixed .eh_frame_hdr header: version (1) + 3 encoding bytes + eh_frame_ptr (4)
-  // + fde_count at offset 8 (4), binary-search table starting at offset 16.
+  // + fde_count at offset 8 (4), binary-search table starting at offset 12.
   // Refuse anything too small.
   if (eh_frame_hdr == NULL || size < 16) {
     return;
@@ -168,19 +168,20 @@ void DwarfParser::parse(const char *eh_frame_hdr, size_t size, const char *image
   }
 
   u32 fde_count = *(u32 *)(eh_frame_hdr + 8);
-  u32 *table = (u32 *)(eh_frame_hdr + 16);
+  // Table starts at offset 12 (4-byte header + 4-byte eh_frame_ptr + 4-byte fde_count).
   // Each entry is a (initial_loc, fde_ptr) pair of 4-byte section-relative
   // offsets (DW_EH_PE_datarel | DW_EH_PE_udata4). Reject a count that would
   // make the table walk read past the section.
-  if (fde_count > (size - 16) / 8) {
+  u32 *table = (u32 *)(eh_frame_hdr + 12);
+  if (fde_count > (size - 12) / 8) {
     Log::warn("Truncated or invalid .eh_frame_hdr (fde_count=%u, size=%lu) in %s",
               fde_count, (unsigned long)size, _name);
     return;
   }
   for (u32 i = 0; i < fde_count; i++) {
-    // table[i*2+1] is the FDE pointer (datarel sdata4); table[i*2] is initial_loc.
-    // Cast to int32_t to correctly handle negative offsets (FDE before the header).
-    _ptr = eh_frame_hdr + (int32_t)table[i * 2 + 1];
+    // table[i*2] is initial_loc; table[i*2+1] is the FDE pointer (datarel sdata4).
+    // Cast to int to correctly handle negative offsets (FDE before the header).
+    _ptr = eh_frame_hdr + (int)table[i * 2 + 1];
     parseFde();
   }
 }
