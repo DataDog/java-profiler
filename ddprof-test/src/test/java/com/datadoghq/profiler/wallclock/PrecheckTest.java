@@ -25,6 +25,7 @@ public class PrecheckTest extends AbstractProfilerTest {
     public void testSleepingThreadIsNotSampled() throws InterruptedException {
         Assumptions.assumeTrue(!Platform.isJ9());
         Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
+        leaveClearedInitializedContext();
         registerCurrentThreadForWallClockProfiling();
 
         Thread.sleep(300);
@@ -99,6 +100,17 @@ public class PrecheckTest extends AbstractProfilerTest {
 
         assertEquals(suppressedBefore, suppressedAfter,
                 "wc_signals_suppressed_sampled_run must not increment when wallprecheck=false");
+    }
+
+    /**
+     * Recreates the steady state left after a previous test initialized and then removed the Java
+     * ThreadContext: the native ProfiledThread still owns an initialized OTEP record, but the
+     * record is cleared and invalid.
+     */
+    private void leaveClearedInitializedContext() {
+        profiler.setContext(0x7700L, 0x7701L, 0L, 0x7701L);
+        profiler.clearContext();
+        profiler.resetThreadContext();
     }
 
     @Override

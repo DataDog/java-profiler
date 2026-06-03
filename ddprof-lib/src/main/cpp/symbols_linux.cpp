@@ -1144,8 +1144,11 @@ char* SymbolsLinux::extractBuildIdFromMemory(const void* elf_base, size_t elf_si
         return nullptr;
     }
 
-    // Verify program header table is within file bounds
-    if (ehdr->e_phoff + ehdr->e_phnum * sizeof(Elf64_Phdr) > elf_size) {
+    // Verify program header table is within file bounds. Written as subtractions
+    // so a huge e_phoff cannot wrap the addition and slip past the check, which
+    // would leave `phdr` pointing outside the mapped image.
+    if (ehdr->e_phoff > elf_size ||
+        ehdr->e_phnum * sizeof(Elf64_Phdr) > elf_size - ehdr->e_phoff) {
         return nullptr;
     }
 
@@ -1160,8 +1163,11 @@ char* SymbolsLinux::extractBuildIdFromMemory(const void* elf_base, size_t elf_si
     // Search for PT_NOTE segments
     for (int i = 0; i < ehdr->e_phnum; i++) {
         if (phdr[i].p_type == PT_NOTE && phdr[i].p_filesz > 0) {
-            // Ensure note segment is within file bounds
-            if (phdr[i].p_offset + phdr[i].p_filesz > elf_size) {
+            // Ensure note segment is within file bounds. Subtraction form avoids
+            // a u64 overflow in p_offset + p_filesz that would otherwise yield a
+            // wild note_data pointer passed to findBuildIdInNotes().
+            if (phdr[i].p_offset > elf_size ||
+                phdr[i].p_filesz > elf_size - phdr[i].p_offset) {
                 continue;
             }
 
@@ -1197,11 +1203,19 @@ const uint8_t* SymbolsLinux::findBuildIdInNotes(const void* note_data, size_t no
             break;
         }
 
-        const Elf64_Nhdr* nhdr = reinterpret_cast<const Elf64_Nhdr*>(data + offset);
+        // Copy the note header into an aligned local: note_data is base +
+        // p_offset and p_offset is attacker-controlled, so dereferencing an
+        // Elf64_Nhdr* in place could be a misaligned load (UB, and a fault on
+        // alignment-strict architectures). The size check above guarantees the
+        // whole header is in bounds.
+        Elf64_Nhdr nhdr;
+        memcpy(&nhdr, data + offset, sizeof(nhdr));
 
-        // Calculate aligned sizes (4-byte alignment as per ELF spec)
-        size_t name_size_aligned = (nhdr->n_namesz + 3) & ~static_cast<size_t>(3);
-        size_t desc_size_aligned = (nhdr->n_descsz + 3) & ~static_cast<size_t>(3);
+        // Calculate aligned sizes (4-byte alignment as per ELF spec). Promote to
+        // size_t before the +3 so a near-UINT32_MAX n_namesz/n_descsz cannot wrap
+        // to a small value and defeat the bounds checks below.
+        size_t name_size_aligned = (static_cast<size_t>(nhdr.n_namesz) + 3) & ~static_cast<size_t>(3);
+        size_t desc_size_aligned = (static_cast<size_t>(nhdr.n_descsz) + 3) & ~static_cast<size_t>(3);
 
         // Check bounds using subtraction to avoid overflow
         size_t remaining = note_size - offset - sizeof(Elf64_Nhdr);
@@ -1214,13 +1228,13 @@ const uint8_t* SymbolsLinux::findBuildIdInNotes(const void* note_data, size_t no
         }
 
         // Check if this is a GNU build-id note
-        if (nhdr->n_type == NT_GNU_BUILD_ID && nhdr->n_namesz > 0 && nhdr->n_descsz > 0) {
+        if (nhdr.n_type == NT_GNU_BUILD_ID && nhdr.n_namesz > 0 && nhdr.n_descsz > 0) {
             const char* name = data + offset + sizeof(Elf64_Nhdr);
 
             // Verify GNU build-id name (including null terminator)
-            if (nhdr->n_namesz == 4 && strncmp(name, GNU_BUILD_ID_NAME, 3) == 0 && name[3] == '\0') {
+            if (nhdr.n_namesz == 4 && strncmp(name, GNU_BUILD_ID_NAME, 3) == 0 && name[3] == '\0') {
                 const uint8_t* desc = reinterpret_cast<const uint8_t*>(data + offset + sizeof(Elf64_Nhdr) + name_size_aligned);
-                *build_id_len = nhdr->n_descsz;
+                *build_id_len = nhdr.n_descsz;
                 return desc;
             }
         }

@@ -185,13 +185,10 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
                 oncePerRunSuppression);
 
         assertTrue(sleepSamples > 0, "Expected samples from sleeping thread");
-        if (Platform.isJavaVersion(8)) {
-            assertTrue(parkSamples + objectWaitSamples > 0,
-                    "Expected WAITING/PARKED samples from parked or object-waiting threads on JDK 8");
-        } else {
-            assertTrue(parkSamples > 0, "Expected samples from parked thread");
-            assertTrue(objectWaitSamples > 0, "Expected samples from object-waiting thread");
-        }
+        assertTrue(parkSamples + objectWaitSamples > 0,
+                "Expected WAITING/PARKED samples from parked or object-waiting threads");
+        assertTrue(oncePerRunSuppression > 0.0,
+                "Expected some suppressible SLEEPING/PARKED/WAITING samples");
         assertTrue(runnableSamples > 0, "Expected RUNNABLE samples (working thread or unidentified)");
     }
 

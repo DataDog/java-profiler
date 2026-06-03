@@ -36,22 +36,25 @@ static inline bool isPrecheckSuppressionState(OSThreadState state) {
          state == OSThreadState::MONITOR_WAIT;
 }
 
+static inline u64 loadSpanId(OtelThreadContextRecord* record) {
+  u64 span_id = 0;
+  for (int i = 0; i < 8; i++) {
+    span_id = (span_id << 8) |
+              __atomic_load_n(&record->span_id[i], __ATOMIC_RELAXED);
+  }
+  return span_id;
+}
+
 static inline bool hasKnownActiveTraceContext(ProfiledThread* thread) {
   if (thread == nullptr || !thread->isContextInitialized()) {
     return false;
   }
 
   OtelThreadContextRecord* record = thread->getOtelContextRecord();
-  if (__atomic_load_n(&record->valid, __ATOMIC_ACQUIRE) != 1) {
-    // The context is being updated. Do not assume the thread is untraced.
-    return true;
-  }
-
-  u64 span_id = 0;
-  for (int i = 0; i < 8; i++) {
-    span_id = (span_id << 8) | record->span_id[i];
-  }
-  return span_id != 0;
+  // record->valid is not a context-presence bit. ThreadContext leaves cleared
+  // records invalid indefinitely, so gating on valid=1 disables wallprecheck for
+  // the common no-context state after a Java ThreadLocal reset.
+  return loadSpanId(record) != 0;
 }
 
 bool BaseWallClock::inSyscall(void *ucontext) {
@@ -87,6 +90,7 @@ void WallClockASGCT::sharedSignalHandler(int signo, siginfo_t *siginfo,
   // would otherwise drive our wallclock sampling path.
   if (!OS::shouldProcessSignal(siginfo, SI_QUEUE, SignalCookie::wallclock())) {
     Counters::increment(WALLCLOCK_SIGNAL_FOREIGN);
+    SIGNAL_HANDLER_GUARD_RELEASE();
     OS::forwardForeignSignal(signo, siginfo, ucontext);
     return;
   }
@@ -309,6 +313,17 @@ void WallClockASGCT::timerLoop() {
 void WallClockJvmti::sharedSignalHandler(int signo, siginfo_t *siginfo,
                                          void *ucontext) {
   SIGNAL_HANDLER_GUARD();
+  // Reject any SIGVTALRM that did not originate from our rt_tgsigqueueinfo
+  // send (mirrors WallClockASGCT). Defends against stray in-process tgkill or
+  // external sigqueue driving the JVMTI RequestStackTrace path.
+  if (!OS::shouldProcessSignal(siginfo, SI_QUEUE, SignalCookie::wallclock())) {
+    Counters::increment(WALLCLOCK_SIGNAL_FOREIGN);
+    SIGNAL_HANDLER_GUARD_RELEASE();
+    OS::forwardForeignSignal(signo, siginfo, ucontext);
+    return;
+  }
+  Counters::increment(WALLCLOCK_SIGNAL_OWN);
+
   WallClockJvmti *engine =
       reinterpret_cast<WallClockJvmti *>(Profiler::instance()->wallEngine());
   if (signo == SIGVTALRM) {
@@ -359,6 +374,7 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
 void WallClockJvmti::initialize(Arguments &args) {
   // Caller must have verified VM::canRequestStackTrace() before selecting
   // this engine; see Profiler::selectWallEngine().
+  OS::primeSignalOriginCheck();
   OS::installSignalHandler(SIGVTALRM, sharedSignalHandler);
 }
 
@@ -383,7 +399,7 @@ void WallClockJvmti::timerLoop() {
 
   auto sampleThreads = [&](int tid, int &num_failures,
                            int &threads_already_exited, int &permission_denied) {
-    if (!OS::sendSignalToThread(tid, SIGVTALRM)) {
+    if (!OS::sendSignalWithCookie(tid, SIGVTALRM, SignalCookie::wallclock())) {
       num_failures++;
       if (errno != 0) {
         if (errno == ESRCH) {
