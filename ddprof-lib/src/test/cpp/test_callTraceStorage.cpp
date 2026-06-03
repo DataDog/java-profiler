@@ -678,7 +678,7 @@ TEST_F(CallTraceStorageTest, ClearTableOnlyDisconnectsFullChain) {
 
     for (int i = 0; i < NUM_TRACES; i++) {
         ASGCT_CallFrame frame;
-        frame.bci = i;
+        frame.bci = i % 1000;  // Reuse BCI values; uniqueness comes from method_id
         frame.method_id = reinterpret_cast<jmethodID>(static_cast<uintptr_t>(i + 1));
         u64 id = storage->put(1, &frame, false, 1);
         EXPECT_GT(id, 0u) << "put() dropped trace at i=" << i;
@@ -711,6 +711,7 @@ TEST_F(CallTraceStorageTest, CollectFindsAllTracesAcrossExpandedChain) {
         frame.bci = i % 1000;  // reuse bci values; uniqueness comes from method_id
         frame.method_id = reinterpret_cast<jmethodID>(static_cast<uintptr_t>(i + 1));
         u64 id = storage->put(1, &frame, false, 1);
+        EXPECT_GT(id, 0u) << "put() dropped trace at i=" << i;
         inserted_ids.insert(id);
     }
 
