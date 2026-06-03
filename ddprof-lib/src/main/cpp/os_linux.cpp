@@ -364,6 +364,7 @@ SigAction OS::replaceCrashHandler(SigAction action) {
     sa.sa_sigaction = action;
     sa.sa_flags |= SA_SIGINFO | SA_RESTART | SA_NODEFER;
     sigaction(SIGSEGV, &sa, NULL);
+    TEST_LOG("[siginterpos] installed SIGSEGV handler=%p replacing=%p", (void*)action, (void*)old_action);
     return old_action;
 }
 
@@ -1084,9 +1085,13 @@ void OS::protectSignalHandlers(SigAction segvHandler, SigAction busHandler) {
         _real_sigaction(SIGSEGV, nullptr, &_orig_segv_sigaction);
         _real_sigaction(SIGBUS, nullptr, &_orig_bus_sigaction);
         __atomic_store_n(&_orig_handlers_saved, true, __ATOMIC_RELEASE);
+        TEST_LOG("[siginterpos] saved original handlers: SIGSEGV=%p (flags=0x%x) SIGBUS=%p (flags=0x%x)",
+            (void*)_orig_segv_sigaction.sa_sigaction, (unsigned)_orig_segv_sigaction.sa_flags,
+            (void*)_orig_bus_sigaction.sa_sigaction, (unsigned)_orig_bus_sigaction.sa_flags);
     }
     _protected_segv_handler = segvHandler;
     _protected_bus_handler = busHandler;
+    TEST_LOG("[siginterpos] protecting SIGSEGV=%p SIGBUS=%p", (void*)segvHandler, (void*)busHandler);
 }
 
 SigAction OS::getSegvChainTarget() {
@@ -1165,6 +1170,15 @@ static int sigaction_hook(int signum, const struct sigaction* act, struct sigact
         return -1;
     }
 
+#ifdef DEBUG
+    // Identify the caller library for diagnostics (not AS-safe, but sigaction_hook is not called from signal context)
+    Dl_info _caller_info;
+    const char* _caller_lib = dladdr(__builtin_return_address(0), &_caller_info) ? _caller_info.dli_fname : "?";
+    TEST_LOG("[siginterpos] sigaction(%d, act=%p flags=0x%x, oldact=%p) from %s",
+        signum, (void*)(act ? act->sa_sigaction : nullptr),
+        (unsigned)(act ? act->sa_flags : 0), (void*)oldact, _caller_lib);
+#endif
+
     // If this is SIGSEGV or SIGBUS and we have protected handlers installed,
     // intercept the call to keep our handler on top.
     // We intercept both install calls (act != nullptr) and query-only calls (act == nullptr)
@@ -1186,15 +1200,22 @@ static int sigaction_hook(int signum, const struct sigaction* act, struct sigact
                         *oldact = _orig_segv_sigaction;
                     }
                     Counters::increment(SIGACTION_INTERCEPTED);
+                    TEST_LOG("[siginterpos] intercepted SIGSEGV install from %s: handler=%p stored as chain target",
+                        _caller_lib, (void*)new_handler);
                     // Don't actually install their handler - keep ours on top
                     return 0;
                 }
+                TEST_LOG("[siginterpos] SIGSEGV install from %s is our own handler, not intercepting", _caller_lib);
+            } else {
+                TEST_LOG("[siginterpos] SIGSEGV install from %s: no SA_SIGINFO (handler=%p flags=0x%x), passing through",
+                    _caller_lib, (void*)act->sa_handler, (unsigned)act->sa_flags);
             }
-            // Let 1-arg handlers (without SA_SIGINFO) pass through - we can't safely chain them
         } else if (oldact != nullptr) {
             // Query-only call: return the JVM's original handler, not ours.
             // Same reason: a caller that stores our handler and later chains to it causes loops.
             *oldact = _orig_segv_sigaction;
+            TEST_LOG("[siginterpos] SIGSEGV query from %s: returning original handler=%p",
+                _caller_lib, (void*)_orig_segv_sigaction.sa_sigaction);
             return 0;
         }
     } else if (signum == SIGBUS && _protected_bus_handler != nullptr) {
@@ -1207,11 +1228,15 @@ static int sigaction_hook(int signum, const struct sigaction* act, struct sigact
                         *oldact = _orig_bus_sigaction;
                     }
                     Counters::increment(SIGACTION_INTERCEPTED);
+                    TEST_LOG("[siginterpos] intercepted SIGBUS install from %s: handler=%p stored as chain target",
+                        _caller_lib, (void*)new_handler);
                     return 0;
                 }
             }
         } else if (oldact != nullptr) {
             *oldact = _orig_bus_sigaction;
+            TEST_LOG("[siginterpos] SIGBUS query from %s: returning original handler=%p",
+                _caller_lib, (void*)_orig_bus_sigaction.sa_sigaction);
             return 0;
         }
     }

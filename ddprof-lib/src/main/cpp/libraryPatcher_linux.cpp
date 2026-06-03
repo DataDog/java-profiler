@@ -368,6 +368,7 @@ void LibraryPatcher::patch_sigaction_in_library(CodeCache* lib) {
   __atomic_store_n(sigaction_location, hook, __ATOMIC_RELAXED);
   _sigaction_size++;
   Counters::increment(SIGACTION_PATCHED_LIBS);
+  TEST_LOG("[siginterpos] patched sigaction GOT in %s", lib->name());
 }
 
 void LibraryPatcher::patch_sigaction() {
