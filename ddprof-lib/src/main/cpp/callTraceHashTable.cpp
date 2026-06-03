@@ -141,8 +141,15 @@ void CallTraceHashTable::decrementCounters() {
 }
 
 ChunkList CallTraceHashTable::clearTableOnly() {
-  // Wait for all refcount guards to clear before detaching chunks
-  RefCountGuard::waitForAllRefCountsToClear();
+  // Wait only for in-flight put() operations that hold a RefCountGuard on THIS
+  // table.  Waiting globally (waitForAllRefCountsToClear) would block on
+  // unrelated puts to the currently-active table, causing 500 ms timeouts under
+  // sustained wall-clock profiling and leaving collect() racing with a still-
+  // running put().  Since standby and scratch tables never appear as the
+  // _active_storage, this wait returns instantly for them; for the active table
+  // (called from clear() -> clearTableOnly()) the caller has already drained puts
+  // via a prior waitForRefCountToClear().
+  RefCountGuard::waitForRefCountToClear(this);
   decrementCounters();
 
   // Clear previous chain pointers to prevent traversal during deallocation
