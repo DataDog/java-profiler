@@ -168,7 +168,10 @@ ChunkList CallTraceHashTable::clearTableOnly() {
   // _tail will be nullptr. LongHashTable::allocate will try to allocate,
   // which will call LinearAllocator::alloc(), which needs to handle nullptr _tail.
   // This is already handled in alloc() by checking _tail before use.
-  _table = LongHashTable::allocate(nullptr, INITIAL_CAPACITY, &_allocator);
+  // Use RELEASE to pair with the ACQUIRE load in collect() and put().
+  __atomic_store_n(&_table,
+      LongHashTable::allocate(nullptr, INITIAL_CAPACITY, &_allocator),
+      __ATOMIC_RELEASE);
   _overflow = 0;
 
   return detached_chunks;
@@ -399,11 +402,13 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
 }
 
 void CallTraceHashTable::collect(std::unordered_set<CallTrace *> &traces, std::function<void(CallTrace*)> trace_hook) {
-  // Lock-free collection for read-only tables
-  // No new put() operations can occur, so no synchronization needed
-  
-  // Collect from all tables in the chain (current and previous tables)
-  for (LongHashTable *table = _table; table != nullptr; table = table->prev()) {
+  // Lock-free collection for read-only tables.
+  // Use ACQUIRE to pair with the ACQ_REL CAS in put()'s expansion path and the
+  // RELEASE store in clearTableOnly(); ensures we see the fully-initialised table
+  // on weakly-ordered architectures (aarch64).
+  for (LongHashTable *table = const_cast<LongHashTable*>(
+           __atomic_load_n(&_table, __ATOMIC_ACQUIRE));
+       table != nullptr; table = table->prev()) {
     u64 *keys = table->keys();
     CallTraceSample *values = table->values();
     u32 capacity = table->capacity();
