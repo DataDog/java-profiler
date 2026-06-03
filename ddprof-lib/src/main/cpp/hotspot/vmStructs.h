@@ -86,7 +86,6 @@ inline T* cast_or_null(const void* ptr) {
         static name * cast_or_null(const void* ptr) { return ::cast_or_null<name>(ptr); } \
         static name * cast_raw(const void* ptr) { return (name *)ptr; } \
         static name * load_then_cast(const void* ptr) { \
-            if (ptr == nullptr) return nullptr; \
             return cast_or_null(*(const void**)ptr); }
 
 #define DECLARE_END  };
@@ -925,7 +924,8 @@ DECLARE(VMMethod)
         if (!_can_dereference_jmethod_id) return false;
 
         VMMethod* vm_method = VMMethod::load_then_cast((const void*)id);
-        return vm_method == NULL || vm_method->id() == NULL;
+        // jmethod ID == nullptr, means the value is not yet populated
+        return vm_method == NULL || vm_method->id() == JMETHODID_NOT_WALKABLE;
     }
 
     const char* bytecode() {
