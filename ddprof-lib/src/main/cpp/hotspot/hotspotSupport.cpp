@@ -73,10 +73,6 @@ void HotspotSupport::initialize(JNIEnv* jni) {
     jni->DeleteLocalRef(classLoaderClass);
 }
 
-static inline bool isValidJMethodID(jmethodID id) {
-    return id != nullptr && id != JMETHODID_NOT_WALKABLE;
-}
-
 static bool isAddressInCode(const void *pc, bool include_stubs = true) {
   if (CodeHeap::contains(pc)) {
     return CodeHeap::findNMethod(pc) != NULL &&
@@ -181,7 +177,7 @@ static inline void fillFrameRaw(ASGCT_CallFrame& frame, FrameTypeId type, int bc
 }
 
 static inline void fillFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci, jmethodID method_id, const VMMethod* method) {
-    if (method_id == nullptr) {
+    if (method_id != nullptr) {
         fillFrame(frame, type, bci, method_id);
     } else {
         assert(method != nullptr);

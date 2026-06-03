@@ -24,6 +24,10 @@
 #define JMETHODID_NOT_WALKABLE  (jmethodID)((uintptr_t)-1)
 #endif // JMETHODID_NOT_WALKABLE
 
+inline bool isValidJMethodID(jmethodID method_id) {
+  return method_id != JMETHODID_NOT_WALKABLE && method_id != nullptr;
+}
+
 // Denotes ASGCT_CallFrame where method_id has special meaning (not jmethodID)
 enum ASGCT_CallFrameType {
   BCI_CPU = 0,                  // cpu time

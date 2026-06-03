@@ -110,7 +110,7 @@ jmethodID VMMethod::id() {
 
 jmethodID VMMethod::validatedId() {
     jmethodID method_id = id();
-    if (method_id != JMETHODID_NOT_WALKABLE && method_id != nullptr) {
+    if (isValidJMethodID(method_id)) {
         if (!_can_dereference_jmethod_id ||
             ((goodPtr(method_id) && SafeAccess::loadPtr((void**)method_id, nullptr) == this))) {
             return method_id;
