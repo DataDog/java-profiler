@@ -152,12 +152,15 @@ ChunkList CallTraceHashTable::clearTableOnly() {
   RefCountGuard::waitForRefCountToClear(this);
   decrementCounters();
 
-  // Clear previous chain pointers to prevent traversal during deallocation
-  for (LongHashTable *table = _table; table != nullptr; table = table->prev()) {
-    LongHashTable *prev_table = table->prev();
-    if (prev_table != nullptr) {
-      table->setPrev(nullptr);  // Clear link before deallocation
-    }
+  // Disconnect the full _prev chain before freeing chunks.  The advance step
+  // must use a pre-saved pointer because setPrev(nullptr) clears the link that
+  // the original loop used for advancement, causing early termination after only
+  // the first node on an expanded (multi-node) table.
+  for (LongHashTable *table = __atomic_load_n(&_table, __ATOMIC_ACQUIRE);
+       table != nullptr; ) {
+    LongHashTable *next = table->prev();
+    table->setPrev(nullptr);
+    table = next;
   }
 
   // Detach chunks for deferred deallocation - keeps trace memory alive
