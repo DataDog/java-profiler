@@ -664,3 +664,66 @@ TEST_F(CallTraceStorageTest, UseAfterFreeInProcessTraces) {
         EXPECT_GE(trace_count, NUM_TRACES) << "Should still find preserved traces";
     });
 }
+
+// Regression for defect C: clearTableOnly() must disconnect the full _prev chain,
+// not only the first node.  Fill the table past the 75 % expansion threshold so
+// it grows to at least two LongHashTable nodes, then call clearTableOnly() and
+// confirm the returned fresh table has no _prev chain.
+TEST_F(CallTraceStorageTest, ClearTableOnlyDisconnectsFullChain) {
+    // 65536 initial capacity; expansion triggers at 75 % = 49152 entries.
+    // Insert 50000 distinct single-frame traces to force at least one expansion.
+    const int NUM_TRACES = 50000;
+    std::vector<u64> ids;
+    ids.reserve(NUM_TRACES);
+
+    for (int i = 0; i < NUM_TRACES; i++) {
+        ASGCT_CallFrame frame;
+        frame.bci = i;
+        frame.method_id = reinterpret_cast<jmethodID>(static_cast<uintptr_t>(i + 1));
+        u64 id = storage->put(1, &frame, false, 1);
+        EXPECT_GT(id, 0u) << "put() dropped trace at i=" << i;
+        ids.push_back(id);
+    }
+
+    // processTraces() performs the rotation including clearTableOnly(); run it once
+    // to expose defect C.
+    int count = 0;
+    storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+        count = static_cast<int>(traces.size());
+    });
+    // At least NUM_TRACES + the static dropped-trace sentinel should be present.
+    EXPECT_GE(count, NUM_TRACES);
+    // Second processTraces() must succeed without crashing or accessing freed memory.
+    // If defect C is present the dangling _prev pointer left in freed memory may
+    // cause a crash or TSan report here.
+    storage->processTraces([&](const std::unordered_set<CallTrace*>&) {});
+}
+
+// Regression for defect B: collect() must see all traces including those in
+// older nodes of an expanded chain.  Fill past expansion threshold, run
+// processTraces(), and assert all inserted trace IDs are present.
+TEST_F(CallTraceStorageTest, CollectFindsAllTracesAcrossExpandedChain) {
+    const int NUM_TRACES = 50000;
+    std::unordered_set<u64> inserted_ids;
+
+    for (int i = 0; i < NUM_TRACES; i++) {
+        ASGCT_CallFrame frame;
+        frame.bci = i % 1000;  // reuse bci values; uniqueness comes from method_id
+        frame.method_id = reinterpret_cast<jmethodID>(static_cast<uintptr_t>(i + 1));
+        u64 id = storage->put(1, &frame, false, 1);
+        inserted_ids.insert(id);
+    }
+
+    std::unordered_set<u64> seen_ids;
+    storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+        for (CallTrace* t : traces) {
+            if (t) seen_ids.insert(t->trace_id);
+        }
+    });
+
+    // Every inserted ID must be visible in the snapshot.
+    for (u64 id : inserted_ids) {
+        EXPECT_TRUE(seen_ids.count(id) > 0)
+            << "Trace ID " << id << " was lost across expansion boundary";
+    }
+}
