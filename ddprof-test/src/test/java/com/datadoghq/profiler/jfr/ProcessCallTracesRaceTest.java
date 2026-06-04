@@ -100,37 +100,50 @@ public class ProcessCallTracesRaceTest extends CStackAwareAbstractProfilerTest {
 
         // Dump threads: repeatedly call dump() while profiling is hot.
         // A SIGSEGV in processCallTraces here aborts the JVM and fails the test.
+        // Each dump thread pre-allocates a single temp file and reuses it across
+        // all iterations to avoid per-dump filesystem churn that can exhaust /tmp
+        // or cause awaitTermination to expire on slow CI.
         ExecutorService dumpers = Executors.newFixedThreadPool(DUMP_THREADS);
         for (int i = 0; i < DUMP_THREADS; i++) {
             dumpers.submit(() -> {
-                while (System.currentTimeMillis() < deadline) {
-                    try {
-                        Path tmp = Files.createTempFile("prof-race-test-", ".jfr");
-                        tmp.toFile().deleteOnExit();
-                        dump(tmp);
-                        dumpCount.incrementAndGet();
-                        Files.deleteIfExists(tmp);
-                        // Brief pause so dump() interleaves with ongoing profiling
-                        // signals rather than running back-to-back in the same
-                        // profiling quiescent window.
-                        Thread.sleep(5);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        return;
-                    } catch (Exception e) {
-                        // dump() failures other than SIGSEGV are logged but do not
-                        // fail the test on their own; the JVM crash is the signal.
-                        System.err.println("dump() threw: " + e);
+                Path tmp;
+                try {
+                    tmp = Files.createTempFile("prof-race-test-", ".jfr");
+                    tmp.toFile().deleteOnExit();
+                } catch (Exception e) {
+                    System.err.println("Failed to create temp file: " + e);
+                    return;
+                }
+                try {
+                    while (System.currentTimeMillis() < deadline) {
+                        try {
+                            dump(tmp);
+                            dumpCount.incrementAndGet();
+                            // Brief pause so dump() interleaves with ongoing profiling
+                            // signals rather than running back-to-back in the same
+                            // profiling quiescent window.
+                            Thread.sleep(5);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            return;
+                        } catch (Exception e) {
+                            // dump() failures other than SIGSEGV are logged but do not
+                            // fail the test on their own; the JVM crash is the signal.
+                            System.err.println("dump() threw: " + e);
+                        }
                     }
+                } finally {
+                    try { Files.deleteIfExists(tmp); } catch (Exception ignored) {}
                 }
             });
         }
 
         workers.shutdown();
         dumpers.shutdown();
-        assertTrue(workers.awaitTermination(TEST_DURATION_SECS + 10L, TimeUnit.SECONDS),
+        // Widen termination budget beyond the deadline to accommodate slow CI I/O.
+        assertTrue(workers.awaitTermination(TEST_DURATION_SECS + 30L, TimeUnit.SECONDS),
                 "Worker threads did not finish");
-        assertTrue(dumpers.awaitTermination(TEST_DURATION_SECS + 10L, TimeUnit.SECONDS),
+        assertTrue(dumpers.awaitTermination(TEST_DURATION_SECS + 30L, TimeUnit.SECONDS),
                 "Dump threads did not finish");
 
         assertTrue(dumpCount.get() > 0,

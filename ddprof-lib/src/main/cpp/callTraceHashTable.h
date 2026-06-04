@@ -64,7 +64,13 @@ private:
   LinearAllocator _allocator;
   
   // Single large pre-allocated table - no expansion needed!
-  LongHashTable* _table;  // Simple pointer, no atomics needed
+  // Accessed with ACQUIRE/RELEASE ordering: ACQ_REL CAS in put() expansion,
+  // RELEASE store in clearTableOnly(), ACQUIRE load in collect() and put().
+  // Required for correct visibility on weakly-ordered architectures (aarch64).
+  // Plain loads in decrementCounters() and putWithExistingId() are safe only
+  // because their callers guarantee no concurrent writer (lockAll()-guarded
+  // clear() path, or the single-threaded scratch/standby contract in processTraces()).
+  LongHashTable* _table;
   
   volatile u64 _overflow;
 

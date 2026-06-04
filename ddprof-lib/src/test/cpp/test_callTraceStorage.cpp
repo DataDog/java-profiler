@@ -693,10 +693,15 @@ TEST_F(CallTraceStorageTest, ClearTableOnlyDisconnectsFullChain) {
     });
     // At least NUM_TRACES + the static dropped-trace sentinel should be present.
     EXPECT_GE(count, NUM_TRACES);
-    // Second processTraces() must succeed without crashing or accessing freed memory.
-    // If defect C is present the dangling _prev pointer left in freed memory may
-    // cause a crash or TSan report here.
-    storage->processTraces([&](const std::unordered_set<CallTrace*>&) {});
+    // Second processTraces() verifies the fresh table is clean: no new puts occurred
+    // after rotation, so only the static dropped-trace sentinel should be present.
+    // This deterministically detects defect C — if clearTableOnly() left stale entries
+    // in freed memory that somehow end up in the new table, count2 would be wrong.
+    int count2 = 0;
+    storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+        count2 = static_cast<int>(traces.size());
+    });
+    EXPECT_EQ(count2, 1);  // only the dropped-trace sentinel; no stale entries
 }
 
 // Regression for defect B: collect() must see all traces including those in

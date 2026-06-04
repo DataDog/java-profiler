@@ -105,8 +105,11 @@ CallTraceHashTable::~CallTraceHashTable() {
 void CallTraceHashTable::decrementCounters() {
 #ifdef COUNTERS
   // Compute and decrement the global counters for everything in this table.
-  // Must only be called after waitForAllRefCountsToClear() so there are no
-  // concurrent writers and plain iteration is safe.
+  // Safe to call when (a) this is a standby/scratch table (never _active_storage,
+  // so no signal-handler put() can target it), or (b) the active-table path is
+  // guarded by lockAll() — both conditions are enforced by the only caller,
+  // clearTableOnly().  The _prev traversal is safe because waitForRefCountToClear(this)
+  // in clearTableOnly() has already drained any in-flight put() operations.
   // Use a set to deduplicate: put() may store the same CallTrace* pointer in
   // both a newer and an older table (when findCallTrace finds it in prev()),
   // but the counter was only incremented once, so we must only count it once.
@@ -147,8 +150,9 @@ ChunkList CallTraceHashTable::clearTableOnly() {
   // sustained wall-clock profiling and leaving collect() racing with a still-
   // running put().  Since standby and scratch tables never appear as the
   // _active_storage, this wait returns instantly for them; for the active table
-  // (called from clear() -> clearTableOnly()) the caller has already drained puts
-  // via a prior waitForRefCountToClear().
+  // (called from clear() -> clearTableOnly()) the protection comes from the caller
+  // holding lockAll() (which blocks signal-handler puts) and from this in-function
+  // targeted wait — there is no prior caller-side drain.
   RefCountGuard::waitForRefCountToClear(this);
   decrementCounters();
 
@@ -171,7 +175,8 @@ ChunkList CallTraceHashTable::clearTableOnly() {
   // _tail will be nullptr. LongHashTable::allocate will try to allocate,
   // which will call LinearAllocator::alloc(), which needs to handle nullptr _tail.
   // This is already handled in alloc() by checking _tail before use.
-  // Use RELEASE to pair with the ACQUIRE load in collect() and put().
+  // RELEASE: pairs with ACQUIRE loads in collect() and put() to ensure the
+  // freshly-initialised table is visible on weakly-ordered architectures (aarch64).
   __atomic_store_n(&_table,
       LongHashTable::allocate(nullptr, INITIAL_CAPACITY, &_allocator),
       __ATOMIC_RELEASE);
@@ -409,8 +414,7 @@ void CallTraceHashTable::collect(std::unordered_set<CallTrace *> &traces, std::f
   // Use ACQUIRE to pair with the ACQ_REL CAS in put()'s expansion path and the
   // RELEASE store in clearTableOnly(); ensures we see the fully-initialised table
   // on weakly-ordered architectures (aarch64).
-  for (LongHashTable *table = const_cast<LongHashTable*>(
-           __atomic_load_n(&_table, __ATOMIC_ACQUIRE));
+  for (LongHashTable *table = __atomic_load_n(&_table, __ATOMIC_ACQUIRE);
        table != nullptr; table = table->prev()) {
     u64 *keys = table->keys();
     CallTraceSample *values = table->values();
@@ -444,16 +448,19 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
   
   u64 hash = calcHash(source_trace->num_frames, source_trace->frames, source_trace->truncated);
   
-  // First check if trace already exists in any table in the chain
-  for (LongHashTable *search_table = _table; search_table != nullptr; search_table = search_table->prev()) {
+  // First check if trace already exists in any table in the chain.
+  // Use ACQUIRE to match the RELEASE store in clearTableOnly(); putWithExistingId()
+  // is only called on scratch/standby tables with no concurrent writers, so the
+  // load is safe, but consistent ordering prevents latent issues if callers change.
+  for (LongHashTable *search_table = __atomic_load_n(&_table, __ATOMIC_ACQUIRE);
+       search_table != nullptr; search_table = search_table->prev()) {
     CallTrace *existing_trace = findCallTrace(search_table, hash);
     if (existing_trace != nullptr) {
-      // Trace already exists in the chain
       return;
     }
   }
-  
-  LongHashTable *table = _table;
+
+  LongHashTable *table = __atomic_load_n(&_table, __ATOMIC_ACQUIRE);
   if (table == nullptr) {
     return; // Table allocation failed
   }
