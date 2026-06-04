@@ -1295,6 +1295,7 @@ bool HotspotSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klas
     return JVMSupport::loadMethodIDsImpl(jvmti, jni, klass);
 }
 
+// This method only resolves methods that are loaded by system class loaders
 jmethodID HotspotSupport::resolve(const void* method) {
   assert(VM::isHotspot());
   assert(method != nullptr);
