@@ -236,6 +236,7 @@ public abstract class AbstractProfilerTest {
     String command = "start," + getAmendedProfilerCommand() + ",jfr,file=" + jfrDump.toAbsolutePath();
     cpuInterval = command.contains("cpu") ? parseInterval(command, "cpu") : (command.contains("interval") ? parseInterval(command, "interval") : Duration.ZERO);
     wallInterval = parseInterval(command, "wall");
+
     // Record sanitizer log sizes before test so we can dump new errors after
     sanitizerLogSizesBefore.clear();
     for (Path logPath : getSanitizerLogPaths()) {
@@ -376,8 +377,64 @@ public abstract class AbstractProfilerTest {
     profiler.addThread();
   }
 
+  /**
+   * Merges two profiler command strings. Options in overrides take precedence
+   * over options in base for matching keys.
+   *
+   * @param base The base profiler command (from test's getProfilerCommand())
+   * @param overrides The override options (from -Pprofiler.options)
+   * @return Merged command string with overrides taking precedence
+   */
+  private static String mergeProfilerOptions(String base, String overrides) {
+    if (overrides == null || overrides.isEmpty()) {
+      return base;
+    }
+
+    // Parse base options into ordered map
+    Map<String, String> options = new java.util.LinkedHashMap<>();
+    for (String part : base.split(",")) {
+      int eq = part.indexOf('=');
+      if (eq > 0) {
+        options.put(part.substring(0, eq), part.substring(eq + 1));
+      } else if (!part.isEmpty()) {
+        options.put(part, "");
+      }
+    }
+
+    // Apply overrides
+    for (String part : overrides.split(",")) {
+      int eq = part.indexOf('=');
+      if (eq > 0) {
+        options.put(part.substring(0, eq), part.substring(eq + 1));
+      } else if (!part.isEmpty()) {
+        options.put(part, "");
+      }
+    }
+
+    // Rebuild command
+    StringBuilder result = new StringBuilder();
+    for (Map.Entry<String, String> entry : options.entrySet()) {
+      if (result.length() > 0) {
+        result.append(",");
+      }
+      result.append(entry.getKey());
+      if (!entry.getValue().isEmpty()) {
+        result.append("=").append(entry.getValue());
+      }
+    }
+    return result.toString();
+  }
+
   private String getAmendedProfilerCommand() {
     String profilerCommand = getProfilerCommand();
+
+    // Apply user-provided options from -Pprofiler.options (override test defaults)
+    String userOptions = System.getProperty("ddprof.test.options");
+    if (userOptions != null && !userOptions.isEmpty()) {
+      profilerCommand = mergeProfilerOptions(profilerCommand, userOptions);
+      System.out.println("[TEST] Applied profiler.options: " + userOptions);
+    }
+
     String testCstack = (String)testParams.get("cstack");
     if (testCstack != null) {
       profilerCommand += ",cstack=" + testCstack;
