@@ -11,7 +11,7 @@
 #include "hotspot/hotspotSupport.h"
 #include "hotspot/jitCodeCache.h"
 #include "hotspot/vmStructs.inline.h"
-#include "jvmSupport.h"
+#include "jvmSupport.inline.h"
 #include "guards.h"
 #include "stackWalker.inline.h"
 #include "frames.h"
@@ -21,6 +21,7 @@ using StackWalkValidation::aligned;
 using StackWalkValidation::MAX_FRAME_SIZE;
 using StackWalkValidation::sameStack;
 
+// Initialize once, they survive on profiler restart
 static jobject JAVA_PLATFORM_CLASSLOADER = nullptr;
 static jobject JAVA_APPLICATION_CLASSLOADER = nullptr;
 
@@ -1258,9 +1259,7 @@ static inline bool isSystemClassLoaders(JNIEnv* jni, jobject cl) {
 bool isHiddenClass(jvmtiEnv *jvmti, jclass clazz) {
     jint modifiers = 0;
     if (jvmti->GetClassModifiers(clazz, &modifiers) == JVMTI_ERROR_NONE) {
-        // In JVM TI, hidden classes are identified by the 0x00000800 mask
-        // which matches the JVM_ACC_HIDDEN flag.
-        return (modifiers & 0x00000800) != 0;
+        return JVMSupport::isHidden(modifiers);
     }
 
     return false;
@@ -1323,9 +1322,6 @@ jmethodID HotspotSupport::resolve(const void* method) {
   VMSymbol* name_sym = const_method->name();
   VMSymbol* sig_sym = const_method->signature();
   VMKlass* klass = const_pool->holder_or_null();
-  if (klass == nullptr) {
-    return nullptr;
-  }
 
   if (name_sym == nullptr || sig_sym == nullptr || klass == nullptr) {
     return nullptr;

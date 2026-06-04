@@ -90,27 +90,8 @@ public:
   std::shared_ptr<SharedLineNumberTable> _line_number_table;
   FrameTypeId _type;
 
-  jint getLineNumber(jint bci) {
-    // if the shared pointer is not pointing to the line number table, consider
-    // size 0
-    if (!_line_number_table || _line_number_table->_size == 0) {
-      return 0;
-    }
-
-    int i = 1;
-    while (i < _line_number_table->_size &&
-           bci >= ((jvmtiLineNumberEntry *)_line_number_table->_ptr)[i]
-                      .start_location) {
-      i++;
-    }
-    return ((jvmtiLineNumberEntry *)_line_number_table->_ptr)[i - 1]
-        .line_number;
-  }
-
-  bool isHidden() {
-    // 0x1400 = ACC_SYNTHETIC(0x1000) | ACC_BRIDGE(0x0040)
-    return _modifiers == 0 || (_modifiers & 0x1040);
-  }
+  jint getLineNumber(jint bci);
+  bool isHidden();
 };
 
 // MethodMap's key can be derived from 3 sources:

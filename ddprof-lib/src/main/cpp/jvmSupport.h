@@ -42,6 +42,9 @@ public:
 
     // Resolve method pointer to jmethodID
     static inline jmethodID resolve(const void* method);
+
+    // If a class is hidden class
+    static inline bool isHidden(jint modifiers);
 };
 
 #endif // _JVMSUPPORT_H

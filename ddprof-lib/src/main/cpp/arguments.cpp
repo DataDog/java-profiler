@@ -261,7 +261,7 @@ Error Arguments::parse(const char *args) {
       }
 
       CASE("fjmethodid")
-      if (value != nullptr && strncasecmp(value, "false", 5) == 0) {
+      if (value != nullptr && strcmp(value, "false") == 0) {
         _force_jmethodID = false;
       }
 

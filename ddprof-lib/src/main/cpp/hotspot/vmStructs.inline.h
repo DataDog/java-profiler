@@ -156,10 +156,6 @@ VMSymbol* VMConstMethod::signature() const {
     return cpool->symbolAt(sig_index);
 }
 
-int16_t VMConstMethod::idnum() const {
-    return (int16_t)SafeAccess::load32((int32_t*)at(_constmethod_idnum_offset), -1);
-}
-
 u16 VMConstMethod::nameIndex() const {
     assert(_constmethod_name_index_offset >= 0 && "Invalid name index");
     return *(u16*)at(_constmethod_name_index_offset);

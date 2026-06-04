@@ -231,7 +231,7 @@ public:
         _enable_method_cleanup(true),
         _remote_symbolication(false),
         _jvmtistacks(false),
-        _force_jmethodID(true) {}
+        _force_jmethodID(false) {}
 
   ~Arguments();
 

@@ -13,7 +13,7 @@
 #include "context_api.h"
 #include "counters.h"
 #include "dictionary.h"
-#include "flightRecorder.h"
+#include "flightRecorder.inline.h"
 #include "incbin.h"
 #include "jfrMetadata.h"
 #include "jniHelper.h"

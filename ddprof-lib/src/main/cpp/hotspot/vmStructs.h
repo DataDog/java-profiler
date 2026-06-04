@@ -901,7 +901,6 @@ public:
     inline VMConstantPool* constants_or_null() const;
     inline VMSymbol* name() const;
     inline VMSymbol* signature() const;
-    inline int16_t idnum() const;
 private:
     inline u16 nameIndex() const;
     inline u16 signatureIndex() const;
