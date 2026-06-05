@@ -4,7 +4,7 @@
  */
 
 #include "gtest/gtest.h"
-#include "callTraceStorage.h"
+#include "../../main/cpp/callTraceStorage.h"
 #include <vector>
 #include <unordered_set>
 #include <thread>
@@ -663,4 +663,145 @@ TEST_F(CallTraceStorageTest, UseAfterFreeInProcessTraces) {
         printf("Third processTraces: %d traces\n", trace_count);
         EXPECT_GE(trace_count, NUM_TRACES) << "Should still find preserved traces";
     });
+}
+
+/**
+ * Regression test for the putWithExistingId infinite-loop bug.
+ *
+ * Before the fix: when all INITIAL_CAPACITY (65536) slots were occupied the
+ * probe loop called probe.next() without checking probe.hasNext(), so the
+ * prime-probe step cycled forever through already-occupied slots.
+ *
+ * After the fix: the hasNext() guard breaks the loop and the call returns,
+ * silently dropping the trace that could not be inserted.
+ *
+ * This test fills a fresh CallTraceHashTable beyond INITIAL_CAPACITY via
+ * putWithExistingId – which unlike put() never triggers table expansion –
+ * and asserts all calls complete within a hard timeout.
+ */
+TEST_F(CallTraceStorageTest, PutWithExistingIdNoInfiniteLoopWhenFull) {
+    static constexpr u32 INITIAL_CAPACITY = 65536;
+
+    std::atomic<bool> completed{false};
+    std::thread worker([&] {
+        void* mem = std::aligned_alloc(alignof(CallTraceHashTable), sizeof(CallTraceHashTable));
+        if (mem == nullptr) {
+            completed = true;  // Let the join path handle this; EXPECT below will report.
+            return;
+        }
+
+        auto tbl = std::unique_ptr<CallTraceHashTable, void(*)(CallTraceHashTable*)>(
+            new (mem) CallTraceHashTable(),
+            [](CallTraceHashTable* p) { p->~CallTraceHashTable(); std::free(p); });
+        tbl->setInstanceId(1);
+
+        // Each iteration uses a distinct (bci, method_id) pair so calcHash produces
+        // a distinct hash, filling INITIAL_CAPACITY unique slots.  Iterations past
+        // that point find no empty slot and must exit the probe via the hasNext()
+        // guard rather than cycling forever.
+        for (u32 i = 0; i < INITIAL_CAPACITY + 128; ++i) {
+            // Stack-allocate source trace; putWithExistingId copies the payload.
+            alignas(alignof(CallTrace)) char buf[sizeof(CallTrace)];
+            CallTrace* src = new (buf) CallTrace(false, 1, static_cast<u64>(i) + 1);
+            src->frames[0].bci       = static_cast<int>(i);
+            src->frames[0].method_id = reinterpret_cast<jmethodID>(static_cast<uintptr_t>(0x10000 + i));
+            tbl->putWithExistingId(src, 1);
+        }
+
+        completed = true;
+    });
+
+    // 10-second deadline; an un-fixed infinite loop would never set `completed`.
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!completed.load() && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    bool ok = completed.load();
+    if (!ok) {
+        worker.detach();
+    } else {
+        worker.join();
+    }
+    EXPECT_TRUE(ok)
+        << "putWithExistingId infinite-loop regression: did not terminate within 10 s "
+           "when the scratch table was full";
+}
+
+/**
+ * Integration test: processTraces preserves live traces across rotation cycles
+ * without hanging.
+ *
+ * Each processTraces() cycle copies preserved traces into the scratch table via
+ * putWithExistingId.  This test verifies:
+ *   1. Every cycle completes promptly (no infinite loop via putWithExistingId).
+ *   2. Every trace flagged by the liveness checker survives to the next cycle.
+ *   3. The trace_id of a preserved trace is unchanged after preservation
+ *      (putWithExistingId must keep the original ID, not generate a new one).
+ *   4. Frame content is intact after copying (detects use-after-free).
+ */
+TEST_F(CallTraceStorageTest, LivenessPreservationAcrossMultipleCycles) {
+    const int N = 200;
+
+    // Insert N unique traces and record their IDs and frame values for later checks.
+    std::vector<u64> ids;
+    std::vector<int> bcis;
+    ids.reserve(N);
+    bcis.reserve(N);
+    for (int i = 0; i < N; i++) {
+        ASGCT_CallFrame frame;
+        frame.bci       = i + 1000;
+        frame.method_id = reinterpret_cast<jmethodID>(static_cast<uintptr_t>(0x30000 + i));
+        u64 id = storage->put(1, &frame, false, 1);
+        ASSERT_NE(id, CallTraceStorage::DROPPED_TRACE_ID) << "put() failed for trace " << i;
+        ids.push_back(id);
+        bcis.push_back(frame.bci);
+    }
+
+    // Liveness checker marks every stored trace as live.
+    storage->registerLivenessChecker([&ids](std::unordered_set<u64>& buf) {
+        for (u64 id : ids) buf.insert(id);
+    });
+
+    const int CYCLES = 5;
+    for (int cycle = 0; cycle < CYCLES; cycle++) {
+        std::atomic<bool> done{false};
+        std::thread t([&] {
+            storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+                // All N preserved traces must be present, plus the dropped sentinel.
+                EXPECT_GE(traces.size(), static_cast<size_t>(N + 1))
+                    << "cycle " << cycle << ": too few traces";
+
+                for (int j = 0; j < N; j++) {
+                    CallTrace* found = findTraceById(traces, ids[j]);
+                    EXPECT_NE(found, nullptr)
+                        << "cycle " << cycle << ": trace_id " << ids[j] << " not preserved";
+                    if (found == nullptr) continue;
+
+                    // Trace ID must be unchanged (putWithExistingId preserves the original ID).
+                    EXPECT_EQ(found->trace_id, ids[j])
+                        << "cycle " << cycle << ": trace_id mutated during preservation";
+
+                    // Frame content must be intact (detects use-after-free of freed chunks).
+                    EXPECT_EQ(found->frames[0].bci, bcis[j])
+                        << "cycle " << cycle << ": frame bci corrupted for trace " << ids[j];
+                }
+            });
+            done = true;
+        });
+
+        auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        while (!done.load() && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+
+        bool ok = done.load();
+        if (!ok) {
+            t.detach();
+            FAIL() << "processTraces hung on cycle " << cycle
+                   << " (possible infinite-loop regression in putWithExistingId)";
+            return;
+        }
+        t.join();
+    }
 }
