@@ -315,12 +315,6 @@ class ProfilerTestPlugin : Plugin<Project> {
                     allArgs.add("-Dtest.filter=$testsFilter")
                 }
 
-                // Profiler options from -Pprofiler.options property
-                val profilerOptions = project.findProperty("profiler.options") as String?
-                if (profilerOptions != null) {
-                    allArgs.add("-Dddprof.test.options=$profilerOptions")
-                }
-
                 // Classpath (includes custom test runner)
                 allArgs.add("-cp")
                 allArgs.add(testConfig.testClasspath.asPath)
