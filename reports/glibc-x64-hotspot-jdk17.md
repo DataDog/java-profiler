@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk17
 
 ## glibc-x64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-06-06 00:55:17 EDT
+**Date:** 2026-06-07 00:51:28 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-hotspot-jdk17
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 76 |
-| CPU Cores (end) | 76 |
+| CPU Cores (start) | 96 |
+| CPU Cores (end) | 96 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-x64-hotspot-jdk17
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 76-76 cores)</summary>
+<summary>CPU Timeline (1 unique values: 96-96 cores)</summary>
 
 ```
-1780721438 76
-1780721443 76
-1780721448 76
-1780721453 76
-1780721458 76
-1780721463 76
-1780721468 76
-1780721473 76
-1780721478 76
-1780721483 76
-1780721488 76
-1780721493 76
-1780721498 76
-1780721503 76
-1780721508 76
-1780721513 76
-1780721518 76
-1780721523 76
-1780721528 76
-1780721533 76
+1780807683 96
+1780807688 96
+1780807693 96
+1780807698 96
+1780807703 96
+1780807708 96
+1780807713 96
+1780807718 96
+1780807723 96
+1780807728 96
+1780807733 96
+1780807738 96
+1780807743 96
+1780807748 96
+1780807753 96
+1780807758 96
+1780807763 96
+1780807768 96
+1780807773 96
+1780807778 96
 ```
 </details>
 
