@@ -152,7 +152,7 @@ the 49152-entry expansion threshold, forcing the multi-node `_prev` chain that e
 - Non-atomic `_table` reads racing with CAS expansion in `put()`
 
 **Expected bugs**: heap-use-after-free (ASan), data race on `_table` (TSan), null-deref in
-`processCallTraces` when `waitForRefCountToClear` times out under sustained `put()` load.
+`processTraces` from use-after-free when `_prev` chain is not fully disconnected.
 
 ## Corpus
 
