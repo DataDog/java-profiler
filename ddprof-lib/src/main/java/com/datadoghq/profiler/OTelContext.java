@@ -1,5 +1,6 @@
 package com.datadoghq.profiler;
 
+import java.util.Objects;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
 
@@ -225,10 +226,13 @@ public final class OTelContext {
      *                      match the indices used with
      *                      {@link ThreadContext#setContextAttribute(int, String)}.
      *
+     * @throws NullPointerException if {@code attributeKeys} is null
+     *
      * @see <a href="https://opentelemetry.io/docs/specs/semconv/registry/attributes/service/">OpenTelemetry Service Attributes</a>
      * @see <a href="https://opentelemetry.io/docs/specs/semconv/registry/attributes/deployment/">OpenTelemetry Deployment Attributes</a>
      */
     public void setProcessContext(String env, String hostname, String runtimeId, String service, String version, String tracerVersion, String[] attributeKeys) {
+        Objects.requireNonNull(attributeKeys, "attributeKeys");
         if (!libraryLoadResult.succeeded) {
             return;
         }
