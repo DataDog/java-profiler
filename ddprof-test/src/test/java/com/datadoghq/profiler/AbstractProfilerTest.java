@@ -236,7 +236,6 @@ public abstract class AbstractProfilerTest {
     String command = "start," + getAmendedProfilerCommand() + ",jfr,file=" + jfrDump.toAbsolutePath();
     cpuInterval = command.contains("cpu") ? parseInterval(command, "cpu") : (command.contains("interval") ? parseInterval(command, "interval") : Duration.ZERO);
     wallInterval = parseInterval(command, "wall");
-
     // Record sanitizer log sizes before test so we can dump new errors after
     sanitizerLogSizesBefore.clear();
     for (Path logPath : getSanitizerLogPaths()) {
@@ -417,8 +416,9 @@ public abstract class AbstractProfilerTest {
       if (result.length() > 0) {
         result.append(",");
       }
-      result.append(entry.getKey());
+      // Skip key with empty value
       if (!entry.getValue().isEmpty()) {
+        result.append(entry.getKey());
         result.append("=").append(entry.getValue());
       }
     }
@@ -436,7 +436,7 @@ public abstract class AbstractProfilerTest {
     }
 
     String testCstack = (String)testParams.get("cstack");
-    if (testCstack != null) {
+    if (testCstack != null && !profilerCommand.contains("cstack=")) {
       profilerCommand += ",cstack=" + testCstack;
     } else if(!(ALLOW_NATIVE_CSTACKS || profilerCommand.contains("cstack="))) {
       profilerCommand += ",cstack=fp";
