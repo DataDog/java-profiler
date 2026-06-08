@@ -16,6 +16,9 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <cstring>
+#include <cstdlib>
+#include <vector>
+#include <elf.h>
 #include <chrono>
 #include <thread>
 
@@ -359,4 +362,215 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Range(3, 21) // This will test delays from 5 to 20 milliseconds inclusive
 );
 #endif
+
+// =====================================================================
+// Regression tests for the ELF parser hardening (found by the fuzz_elf
+// harness). Each builds a minimal ELF whose single malformed field made the
+// pre-hardening parser read out of bounds. On the hardened parser they must
+// return cleanly: the global crash handler installed above turns any wild or
+// out-of-bounds access back into a gtest failure, so a regression fails CI.
+//
+// The exact byte layouts were confirmed to crash the pre-fix parser
+// (ASan SEGV / heap-buffer-overflow) and to pass after the fix.
+// =====================================================================
+
+namespace {
+
+// Minimal valid ELF64 header; callers set the malformed field afterwards.
+Elf64_Ehdr validEhdr() {
+    Elf64_Ehdr e;
+    memset(&e, 0, sizeof(e));
+    e.e_ident[EI_MAG0] = ELFMAG0;
+    e.e_ident[EI_MAG1] = ELFMAG1;
+    e.e_ident[EI_MAG2] = ELFMAG2;
+    e.e_ident[EI_MAG3] = ELFMAG3;
+    e.e_ident[EI_CLASS] = ELFCLASS64;
+    e.e_ident[EI_DATA] = ELFDATA2LSB;
+    e.e_ident[EI_VERSION] = EV_CURRENT;
+    e.e_type = ET_DYN;
+    e.e_machine = EM_X86_64;
+    e.e_version = EV_CURRENT;
+    e.e_ehsize = sizeof(Elf64_Ehdr);
+    e.e_shstrndx = 1;  // non-zero so validHeader() accepts the image
+    return e;
+}
+
+// Write the bytes to a unique temp file and run ElfParser::parseFile over it,
+// mirroring how Symbols::parseLibraries() parses an on-disk library.
+void parseElfBytes(const std::vector<char>& bytes) {
+    char path[] = "/tmp/elf_regress_XXXXXX";
+    int fd = mkstemp(path);
+    ASSERT_NE(fd, -1);
+    ssize_t written = write(fd, bytes.data(), bytes.size());
+    close(fd);
+    if (written != (ssize_t)bytes.size()) {
+        unlink(path);
+        FAIL() << "short write to " << path;
+        return;
+    }
+    CodeCache cc("regress");
+    ElfParser::parseFile(&cc, nullptr, path, /*use_debug=*/false);
+    unlink(path);
+}
+
+}  // namespace
+
+// Regression test for the build-id parser hardening (found by fuzz_elf).
+// extractBuildIdFromMemory()'s `p_offset + p_filesz` bounds check could
+// overflow, letting findBuildIdInNotes() walk a PT_NOTE past the buffer. The
+// buffer is heap-allocated and sized exactly so ASan's redzone catches the
+// over-read deterministically. The hardened parser must return cleanly.
+TEST(ElfBuildId, noteOffsetOverflow) {
+    Elf64_Ehdr e = validEhdr();
+    e.e_phoff = sizeof(Elf64_Ehdr);
+    e.e_phentsize = sizeof(Elf64_Phdr);
+    e.e_phnum = 1;
+
+    Elf64_Phdr p;
+    memset(&p, 0, sizeof(p));
+    p.p_type = PT_NOTE;
+    p.p_offset = 0x70;                            // inside the buffer
+    p.p_filesz = static_cast<uint64_t>(8) - p.p_offset;  // sum wraps to 8 (< size)
+
+    const size_t size = sizeof(e) + sizeof(p);    // 120 bytes
+    char* buf = new char[size];                   // exact size -> redzone right after
+    memcpy(buf, &e, sizeof(e));
+    memcpy(buf + sizeof(e), &p, sizeof(p));
+
+    size_t build_id_len = 0;
+    char* id = SymbolsLinux::extractBuildIdFromMemory(buf, size, &build_id_len);
+    free(id);  // hardened parser returns nullptr; the point is that it must not crash
+    delete[] buf;
+}
+
+// e_shoff pointing far outside the image made findSection() dereference a wild
+// section-header pointer (ElfParser::at). 16 TB is reliably unmapped.
+TEST_F(ElfTest, sectionHeaderOffsetOutOfBounds) {
+    Elf64_Ehdr e = validEhdr();
+    e.e_shoff = 0x100000000000ULL;  // 16 TB past a 64-byte file
+    e.e_shentsize = sizeof(Elf64_Shdr);
+    e.e_shnum = 3;
+    e.e_shstrndx = 1;
+    std::vector<char> bytes(reinterpret_cast<char*>(&e),
+                            reinterpret_cast<char*>(&e) + sizeof(e));
+    parseElfBytes(bytes);  // must not crash
+}
+
+// A .symtab whose sh_size claims 256 MB in a tiny file made loadSymbolTable()
+// walk the symbol table off the end of the mapping.
+TEST_F(ElfTest, symbolTableSizeOutOfBounds) {
+    const uint16_t NSEC = 4;
+    const uint64_t shoff = sizeof(Elf64_Ehdr);
+    const uint64_t shstr_off = shoff + NSEC * sizeof(Elf64_Shdr);
+    // Section-header string table: names at offsets 1, 9, 17.
+    const char shstrtab[] = "\0.symtab\0.strtab\0.shstrtab";
+    const uint64_t sym_off = shstr_off + sizeof(shstrtab);
+    Elf64_Sym sym;
+    memset(&sym, 0, sizeof(sym));
+    sym.st_name = 1;
+    sym.st_value = 0x1000;
+    const uint64_t str_off = sym_off + sizeof(sym);
+    const char strtab[] = "\0main";
+
+    Elf64_Ehdr e = validEhdr();
+    e.e_shoff = shoff;
+    e.e_shentsize = sizeof(Elf64_Shdr);
+    e.e_shnum = NSEC;
+    e.e_shstrndx = 3;
+
+    Elf64_Shdr sh[4];
+    memset(sh, 0, sizeof(sh));
+    sh[1].sh_name = 1;  // ".symtab"
+    sh[1].sh_type = SHT_SYMTAB;
+    sh[1].sh_offset = sym_off;
+    sh[1].sh_size = 0x10000000;  // 256 MB: far past the file
+    sh[1].sh_link = 2;
+    sh[1].sh_entsize = sizeof(Elf64_Sym);
+    sh[2].sh_name = 9;  // ".strtab"
+    sh[2].sh_type = SHT_STRTAB;
+    sh[2].sh_offset = str_off;
+    sh[2].sh_size = sizeof(strtab);
+    sh[3].sh_name = 17;  // ".shstrtab"
+    sh[3].sh_type = SHT_STRTAB;
+    sh[3].sh_offset = shstr_off;
+    sh[3].sh_size = sizeof(shstrtab);
+
+    std::vector<char> b;
+    auto app = [&](const void* p, size_t n) {
+        const char* c = static_cast<const char*>(p);
+        b.insert(b.end(), c, c + n);
+    };
+    app(&e, sizeof(e));
+    app(sh, sizeof(sh));
+    app(shstrtab, sizeof(shstrtab));
+    app(&sym, sizeof(sym));
+    app(strtab, sizeof(strtab));
+    parseElfBytes(b);  // must not crash
+}
+
+// A large e_phoff causes phdrAt() to try forming a pointer past the image.
+// The bounds check must reject it before any dereference.
+TEST_F(ElfTest, programHeaderOffsetOutOfBounds) {
+    Elf64_Ehdr e = validEhdr();
+    e.e_phoff = 0x100000000000ULL;  // 16 TB: reliably unmapped
+    e.e_phentsize = sizeof(Elf64_Phdr);
+    e.e_phnum = 1;
+    std::vector<char> bytes(reinterpret_cast<char*>(&e),
+                            reinterpret_cast<char*>(&e) + sizeof(e));
+    parseElfBytes(bytes);  // must not crash
+}
+
+// strAt() bounds check: a symbol whose st_name equals strtab_size (one past
+// the end) must be skipped without reading out of bounds.
+TEST_F(ElfTest, symbolNameOffsetOutOfBounds) {
+    const uint16_t NSEC = 4;
+    const uint64_t shoff = sizeof(Elf64_Ehdr);
+    const uint64_t shstr_off = shoff + NSEC * sizeof(Elf64_Shdr);
+    const char shstrtab[] = "\0.symtab\0.strtab\0.shstrtab";
+    const uint64_t sym_off = shstr_off + sizeof(shstrtab);
+    Elf64_Sym sym;
+    memset(&sym, 0, sizeof(sym));
+    sym.st_name = 6;  // == sizeof(strtab) below: one past the end
+    sym.st_value = 0x1000;
+    sym.st_size = 4;
+    const uint64_t str_off = sym_off + sizeof(sym);
+    const char strtab[] = "\0main\0";  // 6 bytes; index 6 is out of bounds
+
+    Elf64_Ehdr e = validEhdr();
+    e.e_shoff = shoff;
+    e.e_shentsize = sizeof(Elf64_Shdr);
+    e.e_shnum = NSEC;
+    e.e_shstrndx = 3;
+
+    Elf64_Shdr sh[4];
+    memset(sh, 0, sizeof(sh));
+    sh[1].sh_name = 1;   // ".symtab"
+    sh[1].sh_type = SHT_SYMTAB;
+    sh[1].sh_offset = sym_off;
+    sh[1].sh_size = sizeof(sym);  // exactly one entry, within image
+    sh[1].sh_link = 2;
+    sh[1].sh_entsize = sizeof(Elf64_Sym);
+    sh[2].sh_name = 9;   // ".strtab"
+    sh[2].sh_type = SHT_STRTAB;
+    sh[2].sh_offset = str_off;
+    sh[2].sh_size = sizeof(strtab);
+    sh[3].sh_name = 17;  // ".shstrtab"
+    sh[3].sh_type = SHT_STRTAB;
+    sh[3].sh_offset = shstr_off;
+    sh[3].sh_size = sizeof(shstrtab);
+
+    std::vector<char> b;
+    auto app = [&](const void* p, size_t n) {
+        const char* c = static_cast<const char*>(p);
+        b.insert(b.end(), c, c + n);
+    };
+    app(&e, sizeof(e));
+    app(sh, sizeof(sh));
+    app(shstrtab, sizeof(shstrtab));
+    app(&sym, sizeof(sym));
+    app(strtab, sizeof(strtab));
+    // strtab ends at image_size: also exercises inImage() equality case.
+    parseElfBytes(b);  // must not crash: strAt() rejects st_name == strtab_size
+}
+
 #endif //__linux__
