@@ -1701,12 +1701,14 @@ void Recording::writeCurrentContext(Buffer *buf) {
   u64 rootSpanId = 0;
   // spanId/rootSpanId are initialized to 0 above; ContextApi::get() only updates them
   // on success, so 0s are always written when there is no active span.
-  ContextApi::get(spanId, rootSpanId);
+  // hasContext gates sidecar reads: getOtelTagEncoding() must only be called
+  // when valid=1 (see thread.h read invariant).
+  bool hasContext = ContextApi::get(spanId, rootSpanId);
   buf->putVar64(spanId);
   buf->putVar64(rootSpanId);
 
   size_t numAttrs = Profiler::instance()->numContextAttributes();
-  ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
+  ProfiledThread* thrd = hasContext ? ProfiledThread::currentSignalSafe() : nullptr;
   for (size_t i = 0; i < numAttrs; i++) {
     buf->putVar32(thrd != nullptr ? thrd->getOtelTagEncoding(i) : 0);
   }
