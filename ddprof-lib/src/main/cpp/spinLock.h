@@ -18,6 +18,7 @@
 #define _SPINLOCK_H
 
 #include "arch.h"
+#include <cassert>
 
 // Cannot use regular mutexes inside signal handler.
 // This lock is based on CAS busy loop. GCC atomic builtins imply full barrier.
@@ -34,7 +35,7 @@ public:
     static_assert(sizeof(SpinLock) == DEFAULT_CACHE_LINE_SIZE);
   }
 
-  void reset() { _lock = 0; }
+  void reset() { __atomic_store_n(&_lock, 0, __ATOMIC_RELAXED); }
 
   bool tryLock() { return __sync_bool_compare_and_swap(&_lock, 0, 1); }
 
@@ -44,7 +45,15 @@ public:
     }
   }
 
-  void unlock() { __sync_fetch_and_sub(&_lock, 1); }
+  void unlock() {
+    assert(__atomic_load_n(&_lock, __ATOMIC_RELAXED) == 1);
+    __sync_fetch_and_sub(&_lock, 1);
+  }
+
+  // Spin budget for bounded shared acquisition in signal handlers.
+  // Bounds the number of CAS-retry iterations under reader contention;
+  // does NOT bound wall-clock latency (CAS stall time is hardware-dependent).
+  static constexpr int DEFAULT_SHARED_SPIN_BUDGET = 256;
 
   bool tryLockShared() {
     // Spins while no exclusive lock is held and the CAS to acquire a shared
@@ -60,6 +69,23 @@ public:
     return false;
   }
 
+  // Bounded variant for signal-handler paths. Returns false when an exclusive
+  // lock is observed OR the spin budget is exhausted under reader contention.
+  bool tryLockShared(int max_spins) {
+    int value;
+    int spins = 0;
+    while ((value = __atomic_load_n(&_lock, __ATOMIC_ACQUIRE)) <= 0) {
+      if (__sync_bool_compare_and_swap(&_lock, value, value - 1)) {
+        return true;
+      }
+      if (++spins >= max_spins) {
+        return false;
+      }
+      spinPause();
+    }
+    return false;
+  }
+
   void lockShared() {
     int value;
     while ((value = __atomic_load_n(&_lock, __ATOMIC_ACQUIRE)) > 0 ||
@@ -68,7 +94,10 @@ public:
     }
   }
 
-  void unlockShared() { __sync_fetch_and_add(&_lock, 1); }
+  void unlockShared() {
+    assert(__atomic_load_n(&_lock, __ATOMIC_RELAXED) < 0);
+    __sync_fetch_and_add(&_lock, 1);
+  }
 };
 
 // RAII guard classes for automatic lock management
@@ -89,12 +118,17 @@ public:
   SharedLockGuard& operator=(SharedLockGuard&&) = delete;
 };
 
+// Acquires a shared lock with a bounded CAS-retry budget. Returns without
+// acquiring (ownsLock() == false) when an exclusive lock is observed or
+// the spin budget is exhausted under reader contention. Safe to use in
+// signal-handler paths.
 class OptionalSharedLockGuard {
   SpinLock* _lock;
 public:
-  explicit OptionalSharedLockGuard(SpinLock* lock) : _lock(lock) {
-    if (!_lock->tryLockShared()) {
-      // Exclusive lock is held; no unlock needed. Only fails when an exclusive lock is observed.
+  explicit OptionalSharedLockGuard(
+      SpinLock* lock, int max_spins = SpinLock::DEFAULT_SHARED_SPIN_BUDGET)
+      : _lock(lock) {
+    if (!_lock->tryLockShared(max_spins)) {
       _lock = nullptr;
     }
   }
@@ -103,7 +137,7 @@ public:
       _lock->unlockShared();
     }
   }
-  bool ownsLock() { return _lock != nullptr; }
+  bool ownsLock() const { return _lock != nullptr; }
 
   // Non-copyable and non-movable
   OptionalSharedLockGuard(const OptionalSharedLockGuard&) = delete;
