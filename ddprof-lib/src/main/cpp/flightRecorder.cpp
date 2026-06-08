@@ -2094,6 +2094,8 @@ void FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
         rec->flushIfNeeded(buf);
         rec->addThread(lock_index, tid);
       }
+  } else {
+    Counters::increment(SAMPLES_DROPPED_REC_LOCK);
   }
 }
 
@@ -2121,6 +2123,8 @@ void FlightRecorder::recordEventDelegated(int lock_index, int tid,
       rec->flushIfNeeded(buf);
       rec->addThread(lock_index, tid);
     }
+  } else {
+    Counters::increment(SAMPLES_DROPPED_REC_LOCK);
   }
 }
 
