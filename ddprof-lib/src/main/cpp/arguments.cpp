@@ -56,7 +56,7 @@ static const Multiplier UNIVERSAL[] = {
 
 #define CASE(s)                                                                \
   }                                                                            \
-  else if (arg_hash == HASH(s "            ")) {
+  else if (arg_hash == HASH(s "            ") && strcmp(arg, s) == 0) {
 
 #define DEFAULT()                                                              \
   }                                                                            \
