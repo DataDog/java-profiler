@@ -473,6 +473,14 @@ Java_com_datadoghq_profiler_OTelContext_setProcessCtx0(JNIEnv *env,
       return;
     }
     jni_keys[built] = new JniString(env, jstr);
+    if (jni_keys[built]->c_str() == nullptr) {
+      // GetStringUTFChars failed (e.g. OOM); a NULL key pointer would truncate
+      // the published map mid-array, so abort the publish.
+      delete jni_keys[built];
+      for (int j = 0; j < built; j++) delete jni_keys[j];
+      Log::warn("setProcessContext: failed to read attribute key at index %d; skipping publish", i);
+      return;
+    }
     key_ptrs[i + 1] = jni_keys[built]->c_str();
     built++;
   }
