@@ -456,8 +456,8 @@ Java_com_datadoghq_profiler_OTelContext_setProcessCtx0(JNIEnv *env,
   int count = (attribute_keys != nullptr) ? env->GetArrayLength(attribute_keys) : 0;
   int n = count < (int)DD_TAGS_CAPACITY ? count : (int)DD_TAGS_CAPACITY;
   if (count > n) {
-    LOG_WARN("setProcessContext: %d attribute keys requested but capacity is %d; extra keys will be ignored",
-             count, (int)DD_TAGS_CAPACITY);
+    Log::warn("setProcessContext: %d attribute keys requested but capacity is %d; extra keys will be ignored",
+              count, (int)DD_TAGS_CAPACITY);
   }
 
   const char *key_ptrs[DD_TAGS_CAPACITY + 2]; // +1 reserved slot, +1 NULL terminator
