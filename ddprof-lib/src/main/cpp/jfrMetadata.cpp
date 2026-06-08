@@ -139,6 +139,7 @@ void JfrMetadata::initialize(
                   << field("mode", T_EXECUTION_MODE, "Execution Mode", F_CPOOL)
                   << field("weight", T_LONG, "Sample weight")
                   << field("correlationId", T_LONG, "Async Stack Trace Correlation ID")
+                  << field("sampleId", T_LONG, "Sample ID")
                   << field("spanId", T_LONG, "Span ID")
                   << field("localRootSpanId", T_LONG, "Local Root Span ID") ||
               contextAttributes)
@@ -157,7 +158,13 @@ void JfrMetadata::initialize(
               << field("numPermissionDenied", T_INT,
                        "Number of Permission Denied Errors")
               << field("numSuppressedSampledRun", T_LONG,
-                       "Signals suppressed by the wall-clock once-per-run filter"))
+                       "Signals suppressed by the wall-clock once-per-run filter")
+              << field("numTaskBlockEmitted", T_LONG,
+                       "Task-block events emitted")
+              << field("numTaskBlockSkippedTraceContext", T_LONG,
+                       "Task-block events skipped because trace context was present")
+              << field("numTaskBlockSkippedTooShort", T_LONG,
+                       "Task-block events skipped because duration was too short"))
 
           << (type("datadog.ObjectSample", T_ALLOC, "Allocation sample")
                   << category("Datadog", "Profiling")
@@ -205,6 +212,22 @@ void JfrMetadata::initialize(
                   << field("scheduler", T_CLASS, "Scheduler", F_CPOOL)
                   << field("queueType", T_CLASS, "Queue Type", F_CPOOL)
                   << field("queueLength", T_INT, "Queue Length on Entry")
+                  << field("spanId", T_LONG, "Span ID")
+                  << field("localRootSpanId", T_LONG, "Local Root Span ID") ||
+              contextAttributes)
+
+          << (type("datadog.TaskBlock", T_TASK_BLOCK, "Task Block")
+                  << category("Datadog")
+                  << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
+                  << field("duration", T_LONG, "Duration", F_DURATION_TICKS)
+                  << field("eventThread", T_THREAD, "Event Thread", F_CPOOL)
+                  << field("blocker", T_LONG, "Blocker Identity Hash")
+                  << field("unblockingSpanId", T_LONG, "Unblocking Span ID")
+                  << field("anchorSampleId", T_LONG, "Anchor MethodSample ID")
+                  << field("suppressedSampleCount", T_LONG,
+                           "Suppressed MethodSample Count")
+                  << field("observedBlockingState", T_THREAD_STATE,
+                           "Observed Blocking State", F_CPOOL)
                   << field("spanId", T_LONG, "Span ID")
                   << field("localRootSpanId", T_LONG, "Local Root Span ID") ||
               contextAttributes)

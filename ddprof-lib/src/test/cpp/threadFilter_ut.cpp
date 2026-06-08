@@ -484,7 +484,8 @@ TEST_F(ThreadFilterTest, ClearActiveDropsPreviousRecordingMembership) {
     filter->enterBlockedRun(stale_slot, OSThreadState::SLEEPING);
     ThreadFilter::Slot *stale = filter->slotForId(stale_slot);
     ASSERT_NE(nullptr, stale);
-    stale->markSampledThisRun(OSThreadState::SLEEPING);
+    stale->markSampledThisRun(OSThreadState::SLEEPING, 17);
+    stale->incrementSuppressedSampleCount();
 
     filter->clearActive();
 
@@ -496,6 +497,9 @@ TEST_F(ThreadFilterTest, ClearActiveDropsPreviousRecordingMembership) {
     EXPECT_FALSE(stale->sampledThisRun());
     EXPECT_EQ(OSThreadState::UNKNOWN, stale->lastSampledState());
     EXPECT_EQ(OSThreadState::UNKNOWN, stale->activeBlockState());
+    EXPECT_EQ(BlockRunOwner::NONE, stale->activeBlockOwner());
+    EXPECT_EQ(0ULL, stale->anchorSampleId());
+    EXPECT_EQ(0ULL, stale->suppressedSampleCount());
 
     filter->add(2222, current_slot);
     filter->collect(collected_tids);

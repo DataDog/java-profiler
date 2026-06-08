@@ -120,6 +120,7 @@
   X(JVMTI_STACKS_FAILED_OTHER, "jvmti_stacks_failed_other")                  \
   /* Delegated stacks dropped at slot-lock. Rec-lock drops from all recording  \
    * paths (delegated and direct) go into SAMPLES_DROPPED_REC_LOCK. */         \
+  X(TASK_BLOCK_QUEUE_DROPPED, "task_block_queue_dropped")                    \
   X(JVMTI_STACKS_DROPPED_LOCK, "jvmti_stacks_dropped_lock")                   \
   X(SAMPLES_DROPPED_REC_LOCK, "samples_dropped_rec_lock")
 #define X_ENUM(a, b) a,
