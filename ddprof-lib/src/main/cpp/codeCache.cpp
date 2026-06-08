@@ -310,13 +310,21 @@ void CodeCache::saveImport(ImportId id, void** entry) {
 void CodeCache::addImport(void **entry, const char *name) {
     switch (name[0]) {
       case 'a':
-          if (strcmp(name, "aligned_alloc") == 0) {
+          if (strcmp(name, "accept") == 0) {
+              saveImport(im_accept, entry);
+          } else if (strcmp(name, "accept4") == 0) {
+              saveImport(im_accept4, entry);
+          } else if (strcmp(name, "aligned_alloc") == 0) {
               saveImport(im_aligned_alloc, entry);
           }
           break;
       case 'c':
           if (strcmp(name, "calloc") == 0) {
               saveImport(im_calloc, entry);
+          } else if (strcmp(name, "close") == 0) {
+              saveImport(im_close, entry);
+          } else if (strcmp(name, "connect") == 0) {
+              saveImport(im_connect, entry);
           }
           break;
       case 'd':
@@ -327,6 +335,13 @@ void CodeCache::addImport(void **entry, const char *name) {
       case 'f':
           if (strcmp(name, "free") == 0) {
               saveImport(im_free, entry);
+          }
+          break;
+      case 'e':
+          if (strcmp(name, "epoll_wait") == 0) {
+              saveImport(im_epoll_wait, entry);
+          } else if (strcmp(name, "epoll_pwait") == 0) {
+              saveImport(im_epoll_pwait, entry);
           }
           break;
       case 'm':
@@ -343,6 +358,10 @@ void CodeCache::addImport(void **entry, const char *name) {
               saveImport(im_pthread_setspecific, entry);
           } else if (strcmp(name, "poll") == 0) {
               saveImport(im_poll, entry);
+          } else if (strcmp(name, "ppoll") == 0) {
+              saveImport(im_ppoll, entry);
+          } else if (strcmp(name, "pselect") == 0) {
+              saveImport(im_pselect, entry);
           } else if (strcmp(name, "posix_memalign") == 0) {
               saveImport(im_posix_memalign, entry);
           }
@@ -352,6 +371,10 @@ void CodeCache::addImport(void **entry, const char *name) {
               saveImport(im_realloc, entry);
           } else if (strcmp(name, "recv") == 0) {
               saveImport(im_recv, entry);
+          } else if (strcmp(name, "recvfrom") == 0) {
+              saveImport(im_recvfrom, entry);
+          } else if (strcmp(name, "recvmsg") == 0) {
+              saveImport(im_recvmsg, entry);
           } else if (strcmp(name, "read") == 0) {
               saveImport(im_read, entry);
           }
@@ -361,6 +384,10 @@ void CodeCache::addImport(void **entry, const char *name) {
               saveImport(im_send, entry);
           } else if (strcmp(name, "sigaction") == 0) {
               saveImport(im_sigaction, entry);
+          } else if (strcmp(name, "send") == 0) {
+              saveImport(im_send, entry);
+          } else if (strcmp(name, "select") == 0) {
+              saveImport(im_select, entry);
           }
           break;
       case 'w':
@@ -467,4 +494,3 @@ void CodeCache::setBuildId(const char* build_id, size_t build_id_len) {
     }
   }
 }
-

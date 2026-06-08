@@ -411,6 +411,31 @@ TEST(WallClockOncePerRunFilterTest, BlockRunTokenRejectsStaleExit) {
   EXPECT_EQ(BlockRunOwner::NONE, slot->activeBlockOwner());
 }
 
+TEST(WallClockOncePerRunFilterTest, SnapshotAndExitPreservesIoWaitAnchor) {
+  ThreadFilter filter;
+  filter.init("1");
+  ThreadFilter::SlotID slot_id = filter.registerThread();
+  u64 token = filter.enterBlockedRun(slot_id, OSThreadState::IO_WAIT,
+                                     BlockRunOwner::NATIVE);
+  ASSERT_NE(0ULL, token);
+
+  ThreadFilter::Slot *slot = filter.slotForId(slot_id);
+  ASSERT_NE(nullptr, slot);
+  slot->markSampledThisRun(OSThreadState::IO_WAIT, 42);
+  EXPECT_EQ(1ULL, slot->incrementSuppressedSampleCount());
+
+  BlockRunSnapshot snapshot{};
+  EXPECT_TRUE(filter.snapshotAndExitBlockedRun(
+      slot_id, ThreadFilter::tokenGeneration(token), &snapshot));
+  EXPECT_EQ(OSThreadState::IO_WAIT, snapshot.active_state);
+  EXPECT_EQ(OSThreadState::IO_WAIT, snapshot.sampled_state);
+  EXPECT_EQ(BlockRunOwner::NATIVE, snapshot.owner);
+  EXPECT_TRUE(snapshot.anchored);
+  EXPECT_EQ(42ULL, snapshot.anchor_sample_id);
+  EXPECT_EQ(1ULL, snapshot.suppressed_sample_count);
+  EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
+}
+
 TEST(WallClockOncePerRunFilterTest, FilterHelpersManageActiveBlockState) {
   ThreadFilter filter;
   filter.init("1");

@@ -1440,7 +1440,7 @@ void Recording::writeFrameTypes(Buffer *buf) {
 
 void Recording::writeThreadStates(Buffer *buf) {
   buf->putVar64(T_THREAD_STATE);
-  buf->put8(10);
+  buf->put8(11);
   buf->put8(static_cast<int>(OSThreadState::UNKNOWN));
   buf->putUtf8("UNKNOWN");
   buf->put8(static_cast<int>(OSThreadState::NEW));
@@ -1461,6 +1461,8 @@ void Recording::writeThreadStates(Buffer *buf) {
   buf->putUtf8("TERMINATED");
   buf->put8(static_cast<int>(OSThreadState::SYSCALL));
   buf->putUtf8("SYSCALL");
+  buf->put8(static_cast<int>(OSThreadState::IO_WAIT));
+  buf->putUtf8("IO_WAIT");
   flushIfNeeded(buf);
 }
 

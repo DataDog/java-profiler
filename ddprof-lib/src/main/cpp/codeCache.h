@@ -42,6 +42,17 @@ enum ImportId {
   im_recv,
   im_write,
   im_read,
+  im_close,
+  im_connect,
+  im_accept,
+  im_accept4,
+  im_recvfrom,
+  im_recvmsg,
+  im_epoll_wait,
+  im_epoll_pwait,
+  im_ppoll,
+  im_select,
+  im_pselect,
   NUM_IMPORTS
 };
 

@@ -392,6 +392,7 @@ static OSThreadState decodeTaskBlockObservedState(jint state) {
     case OSThreadState::OBJECT_WAIT:
     case OSThreadState::SLEEPING:
     case OSThreadState::SYSCALL:
+    case OSThreadState::IO_WAIT:
       return static_cast<OSThreadState>(state);
     default:
       return OSThreadState::UNKNOWN;

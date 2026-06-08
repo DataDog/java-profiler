@@ -9,6 +9,7 @@
 #include "asyncSampleMutex.h"
 #include "mallocTracer.h"
 #include "nativeSocketSampler.h"
+#include "nativeSocketInterposer.h"
 #include "context.h"
 #include "guards.h"
 #include "common.h"
@@ -1533,6 +1534,12 @@ Error Profiler::start(Arguments &args, bool reset) {
     return error;
   }
   startTaskBlockDrain();
+  if ((_event_mask & EM_WALL) && args._wall_precheck) {
+    Error native_io_error = NativeSocketInterposer::instance()->start();
+    if (native_io_error) {
+      Log::warn("%s", native_io_error.message());
+    }
+  }
 
   int activated = 0;
   if ((_event_mask & EM_CPU) && _cpu_engine != &noop_engine) {
@@ -1572,6 +1579,7 @@ Error Profiler::start(Arguments &args, bool reset) {
       if (_event_mask == EM_NATIVEMEM) {
         // nativemem is the only requested mode: propagate the real error
         disableEngines();
+        NativeSocketInterposer::instance()->stop();
         switchLibraryTrap(false);
         _libs->stopRefresher();
         stopTaskBlockDrain();
@@ -1611,6 +1619,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   }
   // no engine was activated; perform cleanup
   disableEngines();
+  NativeSocketInterposer::instance()->stop();
   switchLibraryTrap(false);
   _libs->stopRefresher();
   stopTaskBlockDrain();
@@ -1648,6 +1657,7 @@ Error Profiler::stop() {
   if (_event_mask & EM_CPU)
     _cpu_engine->stop();
 
+  NativeSocketInterposer::instance()->stop();
   switchLibraryTrap(false);
   switchThreadEvents(JVMTI_DISABLE);
   Libraries::instance()->refresh();
