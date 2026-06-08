@@ -92,11 +92,17 @@ ChunkList LinearAllocator::detachChunks() {
   // Capture current state before detaching
   ChunkList result(_tail, _chunk_size);
 
-  // Handle reserve chunk: if it's ahead of tail, it needs special handling
-  if (_reserve->prev == _tail) {
-    // Reserve is a separate chunk ahead of tail - it becomes part of detached list
-    // We need to include it in the chain by making it the new head
-    result.head = _reserve;
+  // Handle reserve chunk: if it's ahead of tail, it becomes part of detached list.
+  // Acquire TSan ownership before reading _reserve->prev: the reserve chunk may
+  // have been allocated by another thread via reserveChunk() → allocateChunk(),
+  // which released ownership with __tsan_release after writing chunk->prev.
+  if (_reserve != _tail) {
+    #ifdef __SANITIZE_THREAD__
+    __tsan_acquire(_reserve);
+    #endif
+    if (_reserve->prev == _tail) {
+      result.head = _reserve;
+    }
   }
 
   // Allocate a fresh chunk for new allocations
@@ -124,6 +130,13 @@ void LinearAllocator::freeChunks(ChunkList& chunks) {
 
   Chunk* current = chunks.head;
   while (current != nullptr) {
+    // Acquire TSan ownership before reading chunk->prev: pairs with the
+    // __tsan_release in allocateChunk() that published the initialized chunk.
+    // Without this, TSan cannot connect the writer's (e.g. reserveChunk thread)
+    // initialization of chunk->prev to this read, and reports a false data race.
+    #ifdef __SANITIZE_THREAD__
+    __tsan_acquire(current);
+    #endif
     Chunk* prev = current->prev;
     #ifdef __SANITIZE_THREAD__
     __tsan_release(current);
@@ -194,6 +207,12 @@ Chunk *LinearAllocator::allocateChunk(Chunk *current) {
 
     chunk->prev = current;
     chunk->offs = sizeof(Chunk);
+
+    // Publish the initialized chunk: release TSan ownership so that any thread
+    // which later acquires this chunk (via __tsan_acquire) will see these writes.
+    #ifdef __SANITIZE_THREAD__
+    __tsan_release(chunk);
+    #endif
 
     Counters::increment(LINEAR_ALLOCATOR_BYTES, _chunk_size);
     Counters::increment(LINEAR_ALLOCATOR_CHUNKS);
