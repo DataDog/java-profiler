@@ -107,11 +107,18 @@ void Profiler::startTaskBlockDrain() {
     Log::warn("Unable to start TaskBlock drain thread");
     return;
   }
+  if (VM::nativeMonitorEventsAvailable() &&
+      !VM::setNativeMonitorEventsEnabled(true)) {
+    stopTaskBlockDrain();
+  }
 }
 
 void Profiler::stopTaskBlockDrain() {
   if (!_task_block_drain_running.load(std::memory_order_acquire)) {
     return;
+  }
+  if (VM::nativeMonitorEventsAvailable()) {
+    VM::setNativeMonitorEventsEnabled(false);
   }
   if (!_task_block_drain_running.exchange(false, std::memory_order_acq_rel)) {
     return;

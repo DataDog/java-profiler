@@ -94,7 +94,11 @@ class BaseWallClock : public Engine {
         epoch.updateNumSamplableThreads(threads.size());
         epoch.updateNumFailedSamples(num_failures);
         epoch.updateNumSuccessfulSamples(num_successful_samples);
-        epoch.addNumSuppressedSampledRun(WallClockCounters::drainSuppressedSampledRun());
+        WallClockCounterSnapshot counter_snapshot = WallClockCounters::drain();
+        epoch.addNumSuppressedSampledRun(counter_snapshot.suppressed_sampled_run);
+        epoch.addNumTaskBlockEmitted(counter_snapshot.task_block_emitted);
+        epoch.addNumTaskBlockSkippedTraceContext(counter_snapshot.task_block_skipped_trace_context);
+        epoch.addNumTaskBlockSkippedTooShort(counter_snapshot.task_block_skipped_too_short);
         epoch.updateNumExitedThreads(threads_already_exited);
         epoch.updateNumPermissionDenied(permission_denied);
         u64 endTime = TSC::ticks();

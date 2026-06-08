@@ -25,8 +25,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code wallprecheck=false} and classifying sample states. The once-per-run filter
  * ({@code wallprecheck=true}) suppresses {@code SLEEPING}, {@code CONDVAR_WAIT}, and
  * {@code OBJECT_WAIT} after the entry sample; {@code RUNNABLE} is not skipped. Monitor
- * contention ({@code MONITOR_WAIT}) is also suppressible when monitor hooks identify the blocked
- * interval.
+ * contention ({@code MONITOR_WAIT}) is also suppressible when JVMTI monitor callbacks identify
+ * the blocked interval.
  */
 public class PrecheckEfficiencyTest extends AbstractProfilerTest {
 
@@ -57,7 +57,9 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
             LockSupport.parkNanos(10_000_000_000L);
         }, EFFICIENCY_PARKED);
 
-        // OBJECT_WAIT — suppressed by the once-per-run filter.
+        // OBJECT_WAIT — suppressed by the once-per-run filter. TaskBlock recording treats the
+        // Object.wait interval as owning monitor reacquire until MonitorWaited, so nested monitor
+        // contention callbacks do not produce a second TaskBlock for the same logical wait.
         Thread waiting = new Thread(() -> {
             registerCurrentThreadForWallClockProfiling();
             ready.countDown();
