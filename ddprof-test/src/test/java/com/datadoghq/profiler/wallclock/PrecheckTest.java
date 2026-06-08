@@ -20,9 +20,41 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Requires JDK 11+ — JDK 8 HotSpot reports inconsistent OSThread states for sleep.
  */
 public class PrecheckTest extends AbstractProfilerTest {
+    private static final int OSTHREAD_STATE_SLEEPING = 7;
 
     @Test
     public void testSleepingThreadIsNotSampled() throws InterruptedException {
+        Assumptions.assumeTrue(!Platform.isJ9());
+        Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
+        leaveClearedInitializedContext();
+        registerCurrentThreadForWallClockProfiling();
+
+        long token = profiler.blockEnter(OSTHREAD_STATE_SLEEPING);
+        assertTrue(token != 0, "Expected native blockEnter to arm SLEEPING state");
+        try {
+            Thread.sleep(300);
+        } finally {
+            profiler.blockExit(token);
+        }
+
+        stopProfiler();
+
+        long sampleCount = verifyEvents("datadog.MethodSample", false)
+                .getAggregate(Aggregators.count()).longValue();
+        // Explicitly owned once-per-run filter: entry signal emits, subsequent signals are
+        // suppressed until blockExit clears the owned run.
+        assertTrue(sampleCount < 10,
+                "Expected nearly no MethodSample events for a sleeping thread with wallprecheck=true, got: " + sampleCount);
+
+        Map<String, Long> counters = profiler.getDebugCounters();
+        if (counters.containsKey("wc_signals_suppressed_sampled_run")) {
+            assertTrue(counters.get("wc_signals_suppressed_sampled_run") > 0,
+                    "wc_signals_suppressed_sampled_run should be > 0 for a 300 ms Thread.sleep()");
+        }
+    }
+
+    @Test
+    public void unownedSleepingThreadIsNotExactOncePerRunSuppressed() throws Exception {
         Assumptions.assumeTrue(!Platform.isJ9());
         Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
         leaveClearedInitializedContext();
@@ -34,15 +66,8 @@ public class PrecheckTest extends AbstractProfilerTest {
 
         long sampleCount = verifyEvents("datadog.MethodSample", false)
                 .getAggregate(Aggregators.count()).longValue();
-        // Once-per-run filter: entry signal emits, subsequent signals are suppressed.
-        assertTrue(sampleCount < 10,
-                "Expected nearly no MethodSample events for a sleeping thread with wallprecheck=true, got: " + sampleCount);
-
-        Map<String, Long> counters = profiler.getDebugCounters();
-        if (counters.containsKey("wc_signals_suppressed_sampled_run")) {
-            assertTrue(counters.get("wc_signals_suppressed_sampled_run") > 0,
-                    "wc_signals_suppressed_sampled_run should be > 0 for a 300 ms Thread.sleep()");
-        }
+        assertTrue(sampleCount >= 10,
+                "Unowned Thread.sleep must not be exact once-per-run suppressed; got: " + sampleCount);
     }
 
     @Test

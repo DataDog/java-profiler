@@ -119,34 +119,52 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
     current->tickInitWindow();
     return;
   }
-  // Once-per-run filter (wallprecheck=true): for untraced threads, emit one
-  // MethodSample at the start of a blocking run and suppress subsequent signals
-  // until state changes. Traced threads keep normal wall-clock sampling.
-  // On J9/Zing getOSThreadState() returns UNKNOWN, so every signal falls through.
+  // Once-per-run filter (wallprecheck=true): for untraced threads, exact
+  // suppression is only valid while an explicit lifecycle hook owns the blocked
+  // interval. Raw OS thread state is only an observation; it cannot distinguish
+  // one long sleep from several short sleeps separated by runnable gaps between
+  // signals. Unowned blocked observations therefore use weighted fallback
+  // sampling instead of arming sampled_this_run.
   ThreadFilter::Slot* slot_to_arm = nullptr;
   OSThreadState state_to_arm = OSThreadState::UNKNOWN;
+  OSThreadState observed_precheck_state = OSThreadState::UNKNOWN;
+  bool observed_precheck_state_valid = false;
+  ThreadFilter::Slot* unowned_weight_slot = nullptr;
+  u64 unowned_weight = 1;
   if (current != nullptr && _precheck && !hasKnownActiveTraceContext(current)) {
     ThreadFilter::Slot* slot =
         Profiler::instance()->threadFilter()->slotForId(current->filterSlotId());
     if (slot != nullptr) {
-      OSThreadState precheck_state = getOSThreadState();
-      bool is_blocked_skip_state = isPrecheckSuppressionState(precheck_state);
-      if (is_blocked_skip_state) {
-        if (slot->sampledThisRun() && precheck_state == slot->lastSampledState()) {
+      OSThreadState active_block_state = slot->activeBlockState();
+      BlockRunOwner active_block_owner = slot->activeBlockOwner();
+      bool has_owned_block =
+          active_block_owner != BlockRunOwner::NONE &&
+          isPrecheckSuppressionState(active_block_state);
+      if (has_owned_block) {
+        if (slot->sampledThisRun() && active_block_state == slot->lastSampledState()) {
           Counters::increment(WC_SIGNAL_SUPPRESSED_SAMPLED_RUN);
           WallClockCounters::incrementSuppressedSampledRun();
+          slot->incrementSuppressedSampleCount();
           return;  // suppress: same blocked-state run, already sampled
         }
         // Arm only after the MethodSample has been successfully recorded. If the
         // JFR write is skipped due to lock contention, the next signal must retry
         // instead of losing the only stack for this blocked run.
         slot_to_arm = slot;
-        state_to_arm = precheck_state;
-      } else if (slot->activeBlockState() == OSThreadState::UNKNOWN) {
-        // Only disarm when no explicit block hook owns the interval. Transient
-        // RUNNABLE states inside a park/monitor wait would otherwise disarm the
-        // slot, causing the timer to re-send the next tick.
-        slot->resetSampledRun(precheck_state);
+        state_to_arm = active_block_state;
+      } else {
+        observed_precheck_state = getOSThreadState();
+        observed_precheck_state_valid = true;
+        if (isPrecheckSuppressionState(observed_precheck_state)) {
+          if (!slot->shouldRecordUnownedBlockedSample()) {
+            Counters::increment(WC_UNOWNED_BLOCKED_SUPPRESSED);
+            return;
+          }
+          unowned_weight_slot = slot;
+          unowned_weight = slot->consumeUnownedBlockedWeight();
+        } else {
+          slot->resetUnownedBlockedSampling();
+        }
       }
     }
   }
@@ -171,7 +189,8 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   }
 
   ExecutionEvent event;
-  OSThreadState state = getOSThreadState();
+  OSThreadState state =
+      observed_precheck_state_valid ? observed_precheck_state : getOSThreadState();
   ExecutionMode mode = getThreadExecutionMode();
   if (state == OSThreadState::UNKNOWN) {
     if (inSyscall(ucontext)) {
@@ -183,10 +202,15 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   }
   event._thread_state = state;
   event._execution_mode = mode;
-  event._weight = 1;
+  event._weight = unowned_weight;
   bool recorded = Profiler::instance()->recordSample(ucontext, last_sample, tid,
                                                      BCI_WALL, call_trace_id,
                                                      &event);
+  if (!recorded && unowned_weight_slot != nullptr) {
+    unowned_weight_slot->restoreUnownedBlockedWeight(unowned_weight);
+  } else if (recorded && unowned_weight_slot != nullptr) {
+    Counters::increment(WC_UNOWNED_BLOCKED_RECORDED);
+  }
   if (recorded && slot_to_arm != nullptr) {
     slot_to_arm->markSampledThisRun(state_to_arm);
   }
@@ -266,17 +290,19 @@ void WallClockASGCT::timerLoop() {
 
     auto sampleThreads = [&](ThreadEntry entry, int& num_failures, int& threads_already_exited,
                              int& permission_denied) {
-      // Timer-thread fast path (wallprecheck=true): skip the kernel IPI entirely when
-      // we already armed a sample for an explicitly instrumented blocked-state run.
-      // The signal handler remains the authoritative check for any signal that gets
-      // through, including block types without an explicit native enter/exit hook.
+      // Timer-thread fast path (wallprecheck=true): skip the kernel IPI entirely
+      // only when an explicit lifecycle hook still owns an already-sampled blocked
+      // run. Raw OS thread state is intentionally not used here because the timer
+      // thread cannot prove run boundaries for the target thread.
       if (_precheck && entry.slot != nullptr) {
         OSThreadState block_state = entry.slot->activeBlockState();
-        if (isPrecheckSuppressionState(block_state) &&
+        if (entry.slot->activeBlockOwner() != BlockRunOwner::NONE &&
+            isPrecheckSuppressionState(block_state) &&
             entry.slot->sampledThisRun() &&
             block_state == entry.slot->lastSampledState()) {
           Counters::increment(WC_SIGNAL_SUPPRESSED_SAMPLED_RUN);
           WallClockCounters::incrementSuppressedSampledRun();
+          const_cast<ThreadFilter::Slot*>(entry.slot)->incrementSuppressedSampleCount();
           return false;
         }
       }

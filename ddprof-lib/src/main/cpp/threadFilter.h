@@ -27,6 +27,24 @@
 
 struct ThreadEntry;  // defined after ThreadFilter; carries a pointer to a ThreadFilter::Slot
 
+enum class BlockRunOwner : int {
+    NONE = 0,
+    JAVA = 1,
+    JVMTI = 2,
+    NATIVE = 3,
+};
+
+struct BlockRunSnapshot {
+    OSThreadState active_state;
+    OSThreadState sampled_state;
+    BlockRunOwner owner;
+    u64 anchor_sample_id;
+    u64 suppressed_sample_count;
+    u32 generation;
+    bool active;
+    bool anchored;
+};
+
 class ThreadFilter {
 public:
     using SlotID = int;
@@ -44,7 +62,15 @@ public:
     // One cache line per slot to avoid false sharing. Slot instances are never freed
     // (ChunkStorage is process-lifetime), so a captured Slot* is always dereferenceable.
     struct alignas(DEFAULT_CACHE_LINE_SIZE) Slot {
-        std::atomic<int>           value{-1};                    // 4 bytes
+        static constexpr u64 kUnownedBlockedFallbackRatio = 10;
+
+        std::atomic<u64>           anchor_sample_id{0};
+        std::atomic<u64>           suppressed_sample_count{0};
+        std::atomic<u64>           unowned_blocked_pending_weight{0};
+        std::atomic<u64>           unowned_blocked_decision_count{0};
+        std::atomic<int>           value{-1};
+        std::atomic<int>           active_block_owner{static_cast<int>(BlockRunOwner::NONE)};
+        std::atomic<u32>           block_generation{0};
         // Wall-clock once-per-run suppression state. The signal handler records the
         // last sampled blocked state; the signal handler and timer thread read it to
         // suppress duplicate samples, while lifecycle/block-exit paths reset it.
@@ -53,13 +79,19 @@ public:
         std::atomic<OSThreadState> last_sampled_state{OSThreadState::UNKNOWN};  // 4 bytes
         // Set by explicit block enter/exit hooks. It lets the timer skip sending a signal
         // only while instrumentation still owns a suppressible blocking interval.
-        std::atomic<OSThreadState> active_block_state{OSThreadState::UNKNOWN};   // 4 bytes
-        std::atomic<bool>          sampled_this_run{false};                     // 1 byte
-        char padding[DEFAULT_CACHE_LINE_SIZE
+        std::atomic<OSThreadState> active_block_state{OSThreadState::UNKNOWN};
+        std::atomic<bool>          sampled_this_run{false};
+        char padding[2 * DEFAULT_CACHE_LINE_SIZE
+                     - sizeof(std::atomic<u64>)
+                     - sizeof(std::atomic<u64>)
+                     - sizeof(std::atomic<u64>)
+                     - sizeof(std::atomic<u64>)
                      - sizeof(std::atomic<int>)
+                     - sizeof(std::atomic<int>)
+                     - sizeof(std::atomic<u32>)
                      - sizeof(std::atomic<OSThreadState>)
                      - sizeof(std::atomic<OSThreadState>)
-                     - sizeof(std::atomic<bool>)]; // sampled_this_run
+                     - sizeof(std::atomic<bool>)];
 
         inline bool sampledThisRun() const {
             return sampled_this_run.load(std::memory_order_acquire);
@@ -67,11 +99,17 @@ public:
         inline OSThreadState lastSampledState() const {
             return last_sampled_state.load(std::memory_order_relaxed);
         }
-        inline void markSampledThisRun(OSThreadState state) {
+        inline void markSampledThisRun(OSThreadState state, u64 sample_id = 0) {
+            if (sample_id != 0) {
+                anchor_sample_id.store(sample_id, std::memory_order_relaxed);
+            }
             last_sampled_state.store(state, std::memory_order_relaxed);
             sampled_this_run.store(true, std::memory_order_release);
         }
         inline void resetSampledRun(OSThreadState state) {
+            anchor_sample_id.store(0, std::memory_order_relaxed);
+            suppressed_sample_count.store(0, std::memory_order_relaxed);
+            resetUnownedBlockedSampling();
             last_sampled_state.store(state, std::memory_order_relaxed);
             sampled_this_run.store(false, std::memory_order_release);
         }
@@ -81,12 +119,78 @@ public:
         inline void setActiveBlockState(OSThreadState state) {
             active_block_state.store(state, std::memory_order_release);
         }
+        inline BlockRunOwner activeBlockOwner() const {
+            return static_cast<BlockRunOwner>(active_block_owner.load(std::memory_order_acquire));
+        }
+        inline u32 blockGeneration() const {
+            return block_generation.load(std::memory_order_acquire);
+        }
+        inline u64 anchorSampleId() const {
+            return anchor_sample_id.load(std::memory_order_acquire);
+        }
+        inline u64 suppressedSampleCount() const {
+            return suppressed_sample_count.load(std::memory_order_acquire);
+        }
+        inline u64 incrementSuppressedSampleCount() {
+            return suppressed_sample_count.fetch_add(1, std::memory_order_relaxed) + 1;
+        }
+        inline void resetUnownedBlockedSampling() {
+            unowned_blocked_pending_weight.store(0, std::memory_order_relaxed);
+            unowned_blocked_decision_count.store(0, std::memory_order_relaxed);
+        }
+        inline bool shouldRecordUnownedBlockedSample() {
+            u64 decision = unowned_blocked_decision_count.fetch_add(1, std::memory_order_relaxed) + 1;
+            if ((decision % kUnownedBlockedFallbackRatio) == 1) {
+                return true;
+            }
+            unowned_blocked_pending_weight.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+        inline u64 consumeUnownedBlockedWeight() {
+            return unowned_blocked_pending_weight.exchange(0, std::memory_order_relaxed) + 1;
+        }
+        inline void restoreUnownedBlockedWeight(u64 weight) {
+            if (weight > 1) {
+                unowned_blocked_pending_weight.fetch_add(weight - 1, std::memory_order_relaxed);
+            }
+        }
+        inline u32 setActiveBlockRun(OSThreadState state, BlockRunOwner owner) {
+            u32 generation = block_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+            anchor_sample_id.store(0, std::memory_order_relaxed);
+            suppressed_sample_count.store(0, std::memory_order_relaxed);
+            resetUnownedBlockedSampling();
+            last_sampled_state.store(OSThreadState::UNKNOWN, std::memory_order_relaxed);
+            sampled_this_run.store(false, std::memory_order_relaxed);
+            active_block_owner.store(static_cast<int>(owner), std::memory_order_relaxed);
+            active_block_state.store(state, std::memory_order_release);
+            return generation;
+        }
+        inline void clearActiveBlockRun(OSThreadState state) {
+            active_block_state.store(OSThreadState::UNKNOWN, std::memory_order_release);
+            active_block_owner.store(static_cast<int>(BlockRunOwner::NONE), std::memory_order_release);
+            resetSampledRun(state);
+        }
+        inline BlockRunSnapshot snapshotBlockRun() const {
+            BlockRunSnapshot snapshot{};
+            bool sampled = sampledThisRun();
+            snapshot.active_state = activeBlockState();
+            snapshot.sampled_state = lastSampledState();
+            snapshot.owner = activeBlockOwner();
+            snapshot.anchor_sample_id = anchorSampleId();
+            snapshot.suppressed_sample_count = suppressedSampleCount();
+            snapshot.generation = blockGeneration();
+            snapshot.active = snapshot.active_state != OSThreadState::UNKNOWN;
+            snapshot.anchored = sampled && snapshot.anchor_sample_id != 0;
+            return snapshot;
+        }
     };
-    static_assert(sizeof(Slot) == DEFAULT_CACHE_LINE_SIZE, "Slot must be exactly one cache line");
+    static_assert(sizeof(Slot) == 2 * DEFAULT_CACHE_LINE_SIZE, "Slot must be exactly two cache lines");
     static_assert(std::atomic<OSThreadState>::is_always_lock_free,
                   "Slot OSThreadState fields must be lock-free for signal-handler safety");
     static_assert(std::atomic<bool>::is_always_lock_free,
                   "Slot::sampled_this_run must be lock-free for signal-handler safety");
+    static_assert(std::atomic<u64>::is_always_lock_free,
+                  "Slot sample-id/count fields must be lock-free for signal-handler safety");
 
     ThreadFilter();
     ~ThreadFilter();
@@ -104,8 +208,25 @@ public:
     // process-lifetime slot ownership intact. Threads must opt in again with add().
     void clearActive();
     void resetSlotRunState(SlotID slot_id);
-    void enterBlockedRun(SlotID slot_id, OSThreadState state);
+    u64 enterBlockedRun(SlotID slot_id, OSThreadState state,
+                        BlockRunOwner owner = BlockRunOwner::JAVA);
+    // Unconditional cleanup only. Normal block lifecycles must use the
+    // generation-checked overload so they cannot clear another owner.
     void exitBlockedRun(SlotID slot_id);
+    bool exitBlockedRun(SlotID slot_id, u32 generation);
+    bool snapshotAndExitBlockedRun(SlotID slot_id, u32 generation,
+                                   BlockRunSnapshot* snapshot);
+    BlockRunSnapshot snapshotBlockedRun(SlotID slot_id) const;
+
+    static inline u64 encodeBlockRunToken(SlotID slot_id, u32 generation) {
+        return (static_cast<u64>(generation) << 32) | static_cast<u32>(slot_id + 1);
+    }
+    static inline SlotID tokenSlotId(u64 token) {
+        return static_cast<SlotID>(static_cast<u32>(token) - 1);
+    }
+    static inline u32 tokenGeneration(u64 token) {
+        return static_cast<u32>(token >> 32);
+    }
 
     // Returns nullptr if slot_id is invalid or its chunk has not been allocated.
     inline Slot* slotForId(SlotID slot_id) const {

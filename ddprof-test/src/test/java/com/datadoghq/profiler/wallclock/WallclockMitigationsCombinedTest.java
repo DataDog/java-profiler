@@ -18,6 +18,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * in the precheck branch).
  */
 public class WallclockMitigationsCombinedTest extends AbstractProfilerTest {
+    private static final int OSTHREAD_STATE_SLEEPING = 7;
 
     @Test
     public void precheckAndParkSuppressionWorkTogether() throws Exception {
@@ -34,9 +35,12 @@ public class WallclockMitigationsCombinedTest extends AbstractProfilerTest {
                         () -> {
                             registerCurrentThreadForWallClockProfiling();
                             ready.countDown();
+                            long token = profiler.blockEnter(OSTHREAD_STATE_SLEEPING);
                             try {
                                 Thread.sleep(280);
                             } catch (InterruptedException ignored) {
+                            } finally {
+                                profiler.blockExit(token);
                             }
                         },
                         "combined-sleeping");

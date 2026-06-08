@@ -123,6 +123,28 @@ TEST(WallClockOncePerRunFilterTest, SlotStateTransitions) {
   EXPECT_EQ(OSThreadState::SLEEPING, slot.activeBlockState());
 }
 
+TEST(WallClockOncePerRunFilterTest, UnownedBlockedFallbackCarriesWeight) {
+  ThreadFilter::Slot slot;
+
+  EXPECT_TRUE(slot.shouldRecordUnownedBlockedSample());
+  EXPECT_EQ(1ULL, slot.consumeUnownedBlockedWeight());
+
+  for (u64 i = 1; i < ThreadFilter::Slot::kUnownedBlockedFallbackRatio; i++) {
+    EXPECT_FALSE(slot.shouldRecordUnownedBlockedSample());
+  }
+
+  EXPECT_TRUE(slot.shouldRecordUnownedBlockedSample());
+  EXPECT_EQ(ThreadFilter::Slot::kUnownedBlockedFallbackRatio,
+            slot.consumeUnownedBlockedWeight());
+
+  slot.restoreUnownedBlockedWeight(4);
+  EXPECT_EQ(4ULL, slot.consumeUnownedBlockedWeight());
+
+  slot.resetUnownedBlockedSampling();
+  EXPECT_TRUE(slot.shouldRecordUnownedBlockedSample());
+  EXPECT_EQ(1ULL, slot.consumeUnownedBlockedWeight());
+}
+
 TEST(WallClockOncePerRunFilterTest, FilterHelpersManageActiveBlockState) {
   ThreadFilter filter;
   filter.init("1");

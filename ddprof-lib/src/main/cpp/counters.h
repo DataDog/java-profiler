@@ -66,6 +66,8 @@
   X(AGCT_BLOCKED_IN_VM, "agct_blocked_in_vm")                                  \
   X(SKIPPED_WALLCLOCK_UNWINDS, "skipped_wallclock_unwinds")                    \
   X(WC_SIGNAL_SUPPRESSED_SAMPLED_RUN, "wc_signals_suppressed_sampled_run")     \
+  X(WC_UNOWNED_BLOCKED_SUPPRESSED, "wc_unowned_blocked_suppressed")            \
+  X(WC_UNOWNED_BLOCKED_RECORDED, "wc_unowned_blocked_recorded")                \
   X(WC_SIGNAL_QUEUE_FULL, "wc_signals_queue_full")                             \
   X(UNWINDING_TIME_ASYNC, "unwinding_ticks_async")                             \
   X(UNWINDING_TIME_JVMTI, "unwinding_ticks_jvmti")                             \
