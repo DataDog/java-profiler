@@ -112,4 +112,32 @@ public class ProcessContextTest {
             readContext.attributeKeyMap);
     }
 
+    @Test
+    public void testNullAttributeKeyElementAbortsPublish() {
+        Assumptions.assumeTrue(Platform.isLinux());
+
+        OTelContext context = OTelContext.getInstance();
+
+        // Publish a known-good context first.
+        context.setProcessContext("env-a", "host-a", "rt-a", "svc-a", "1.0.0", "3.5.0",
+            new String[] {"http.route"});
+
+        OTelContext.ProcessContext before = context.readProcessContext();
+        assertNotNull(before);
+        assertEquals("svc-a", before.serviceName);
+
+        // A null element in the keys array aborts the entire publish: the previously
+        // published context must remain untouched, not just have the bad key dropped.
+        context.setProcessContext("env-b", "host-b", "rt-b", "svc-b", "2.0.0", "4.0.0",
+            new String[] {"http.route", null, "db.system"});
+
+        OTelContext.ProcessContext after = context.readProcessContext();
+        assertNotNull(after);
+        assertEquals("svc-a", after.serviceName,
+            "null element must abort the publish, leaving the previous context intact");
+        assertArrayEquals(
+            new String[] {"datadog.local_root_span_id", "http.route"},
+            after.attributeKeyMap);
+    }
+
 }

@@ -222,9 +222,11 @@ public final class OTelContext {
      *                      "http.route", "db.system"). Published in the process context's
      *                      thread_ctx_config as the attribute_key_map, preceded by the
      *                      reserved datadog.local_root_span_id slot. Must not be null
-     *                      (may be empty); keys beyond capacity are clipped. Order must
-     *                      match the indices used with
-     *                      {@link ThreadContext#setContextAttribute(int, String)}.
+     *                      (may be empty); keys beyond capacity are clipped. If any
+     *                      element is null, the entire process context publish is
+     *                      skipped - no context is published (a warning is logged) and
+     *                      no exception is thrown. Order must match the indices used
+     *                      with {@link ThreadContext#setContextAttribute(int, String)}.
      *
      * @throws NullPointerException if {@code attributeKeys} is null
      *
