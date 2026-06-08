@@ -675,9 +675,6 @@ TEST_F(CallTraceStorageTest, UseAfterFreeInProcessTraces) {
  * After the fix: the hasNext() guard breaks the loop and the call returns,
  * silently dropping the trace that could not be inserted.
  *
- * This test fills a fresh CallTraceHashTable beyond INITIAL_CAPACITY via
- * putWithExistingId – which unlike put() never triggers table expansion –
- * and asserts all calls complete within a hard timeout.
  */
 TEST_F(CallTraceStorageTest, PutWithExistingIdNoInfiniteLoopWhenFull) {
     static constexpr u32 INITIAL_CAPACITY = 65536;

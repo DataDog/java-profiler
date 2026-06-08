@@ -256,6 +256,21 @@ CallTrace *CallTraceHashTable::findCallTrace(LongHashTable *table, u64 hash) {
   return nullptr;
 }
 
+void CallTraceHashTable::expandTableIfNeeded(LongHashTable* table) {
+    u32 size = table->size();
+    u32 capacity = table->capacity();
+
+    // EXPANSION LOGIC: Check if 75% capacity reached after incrementing size
+    if (size >= capacity * 3 / 4) {
+      // Allocate new table with double capacity using LinearAllocator
+      LongHashTable* new_table = LongHashTable::allocate(table, capacity * 2, &_allocator);
+      if (new_table != nullptr) {
+        // Atomic table swap - only one thread succeeds
+        __atomic_compare_exchange_n(&_table, &table, new_table, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
+      }
+    }
+}
+
 u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
                           bool truncated, u64 weight) {
   u64 hash = calcHash(num_frames, frames, truncated);
@@ -339,19 +354,10 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
 
       // Increment size counter for statistics and check for expansion
       u32 new_size = table->incSize();
-      u32 capacity = table->capacity();
 
       probe.updateCapacity(new_size);
 
-      // EXPANSION LOGIC: Check if 75% capacity reached after incrementing size
-      if (new_size == capacity * 3 / 4) {
-        // Allocate new table with double capacity using LinearAllocator
-        LongHashTable* new_table = LongHashTable::allocate(table, capacity * 2, &_allocator);
-        if (new_table != nullptr) {
-          // Atomic table swap - only one thread succeeds
-          __atomic_compare_exchange_n(&_table, &table, new_table, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
-        }
-      }
+      expandTableIfNeeded(table);
 
       // Check if trace exists in previous tables to avoid duplication
       CallTrace *trace = nullptr;
@@ -473,6 +479,9 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
 
           // Increment table size
           table->incSize();
+
+          expandTableIfNeeded(table);
+          
         } else {
           // Allocation failure - clear the key we claimed
           __atomic_store_n(&keys[slot], 0, __ATOMIC_RELEASE);

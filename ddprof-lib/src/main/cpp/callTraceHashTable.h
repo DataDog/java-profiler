@@ -74,6 +74,7 @@ private:
   CallTrace *findCallTrace(LongHashTable *table, u64 hash);
   void decrementCounters();
   
+  void expandTableIfNeeded(LongHashTable* table);
 
 public:
   CallTraceHashTable();
