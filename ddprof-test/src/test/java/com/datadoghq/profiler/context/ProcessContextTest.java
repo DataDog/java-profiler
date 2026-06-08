@@ -147,4 +147,34 @@ public class ProcessContextTest {
             after.attributeKeyMap);
     }
 
+    @Test
+    public void testAttributeKeysClippedToCapacity() {
+        Assumptions.assumeTrue(Platform.isLinux());
+
+        // Native DD_TAGS_CAPACITY: at most this many user keys are published, preceded
+        // by the reserved datadog.local_root_span_id slot; any extra keys are clipped.
+        final int capacity = 10;
+
+        String[] keys = new String[capacity + 5];
+        for (int i = 0; i < keys.length; i++) {
+            keys[i] = "key" + i;
+        }
+
+        OTelContext context = OTelContext.getInstance();
+        context.setProcessContext("test-env", "test-hostname", "test-instance-123",
+            "test-service", "1.0.0", "3.5.0", keys);
+
+        OTelContext.ProcessContext readContext = context.readProcessContext();
+        assertNotNull(readContext);
+
+        // Expect the reserved slot followed by exactly the first `capacity` user keys.
+        String[] expected = new String[capacity + 1];
+        expected[0] = "datadog.local_root_span_id";
+        for (int i = 0; i < capacity; i++) {
+            expected[i + 1] = "key" + i;
+        }
+        assertArrayEquals(expected, readContext.attributeKeyMap,
+            "keys beyond DD_TAGS_CAPACITY must be clipped, keeping the first " + capacity);
+    }
+
 }
