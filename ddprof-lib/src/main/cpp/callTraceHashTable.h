@@ -63,13 +63,12 @@ private:
 
   LinearAllocator _allocator;
   
-  // Single large pre-allocated table - no expansion needed!
-  // Accessed with ACQUIRE/RELEASE ordering: ACQ_REL CAS in put() expansion,
-  // RELEASE store in clearTableOnly(), ACQUIRE load in collect() and put().
+  // Expandable hash table; put() doubles capacity when fill reaches 75%.
+  // Memory-ordering protocol:
+  //   - ACQ_REL CAS in put() when installing the expanded table
+  //   - RELEASE store in clearTableOnly() when resetting to a fresh table
+  //   - ACQUIRE loads in collect(), put(), and putWithExistingId()
   // Required for correct visibility on weakly-ordered architectures (aarch64).
-  // Plain loads in decrementCounters() and putWithExistingId() are safe only
-  // because their callers guarantee no concurrent writer (lockAll()-guarded
-  // clear() path, or the single-threaded scratch/standby contract in processTraces()).
   LongHashTable* _table;
   
   volatile u64 _overflow;

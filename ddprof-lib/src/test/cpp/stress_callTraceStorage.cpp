@@ -2349,13 +2349,12 @@ TEST_F(StressTestSuite, ConcurrentExpansionAndCollectStressTest) {
 
     // --- Phase 1: fill past expansion threshold with unique traces ---
     std::atomic<int>  total_inserted{0};
-    std::atomic<bool> fill_failed{false};
     {
         std::vector<std::thread> fillers;
         int per_thread = (TARGET_TRACES / FILL_THREADS) + 1;
         for (int t = 0; t < FILL_THREADS; t++) {
             fillers.emplace_back([&, t]() {
-                for (int i = 0; i < per_thread && !fill_failed.load(); i++) {
+                for (int i = 0; i < per_thread; i++) {
                     ASGCT_CallFrame frame;
                     // Unique (bci, method_id) across all threads: multiply thread
                     // index by a large prime to prevent aliasing between threads.
@@ -2417,6 +2416,5 @@ TEST_F(StressTestSuite, ConcurrentExpansionAndCollectStressTest) {
     running.store(false);
     concurrent_putter.join();
 
-    EXPECT_FALSE(fill_failed.load())   << "Fill phase encountered errors";
     EXPECT_FALSE(phase2_failed.load()) << "collect() missed traces from Phase 1 on first cycle";
 }

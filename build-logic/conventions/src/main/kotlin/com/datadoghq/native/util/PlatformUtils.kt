@@ -181,7 +181,10 @@ object PlatformUtils {
                     outFile.toAbsolutePath().toString()
                 ).redirectErrorStream(true).start()
 
-                process.waitFor()
+                if (!process.waitFor(30, TimeUnit.SECONDS)) {
+                    process.destroyForcibly()
+                    return false
+                }
                 process.exitValue() == 0
             } finally {
                 testFile.deleteIfExists()

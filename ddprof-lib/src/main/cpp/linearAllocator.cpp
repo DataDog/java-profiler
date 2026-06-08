@@ -103,6 +103,9 @@ ChunkList LinearAllocator::detachChunks() {
     if (_reserve->prev == _tail) {
       result.head = _reserve;
     }
+    #ifdef __SANITIZE_THREAD__
+    __tsan_release(_reserve);
+    #endif
   }
 
   // Allocate a fresh chunk for new allocations

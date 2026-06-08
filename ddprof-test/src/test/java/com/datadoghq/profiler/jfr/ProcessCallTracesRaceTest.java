@@ -66,7 +66,7 @@ public class ProcessCallTracesRaceTest extends CStackAwareAbstractProfilerTest {
     @Timeout(value = 90)
     @TestTemplate
     @ValueSource(strings = {"vm"})
-    public void dumpUnderHighLoad(@CStack String cstack) throws Exception {
+    public void dumpUnderHighLoad() throws Exception {
         Assumptions.assumeTrue(!Platform.isZing(), "Zing forces cstack=no, skipping");
 
         AtomicInteger dumpCount = new AtomicInteger(0);
@@ -138,13 +138,18 @@ public class ProcessCallTracesRaceTest extends CStackAwareAbstractProfilerTest {
             });
         }
 
-        workers.shutdown();
-        dumpers.shutdown();
-        // Widen termination budget beyond the deadline to accommodate slow CI I/O.
-        assertTrue(workers.awaitTermination(TEST_DURATION_SECS + 30L, TimeUnit.SECONDS),
-                "Worker threads did not finish");
-        assertTrue(dumpers.awaitTermination(TEST_DURATION_SECS + 30L, TimeUnit.SECONDS),
-                "Dump threads did not finish");
+        try {
+            workers.shutdown();
+            dumpers.shutdown();
+            // Widen termination budget beyond the deadline to accommodate slow CI I/O.
+            assertTrue(workers.awaitTermination(TEST_DURATION_SECS + 30L, TimeUnit.SECONDS),
+                    "Worker threads did not finish");
+            assertTrue(dumpers.awaitTermination(TEST_DURATION_SECS + 30L, TimeUnit.SECONDS),
+                    "Dump threads did not finish");
+        } finally {
+            workers.shutdownNow();
+            dumpers.shutdownNow();
+        }
 
         assertTrue(dumpCount.get() > 0,
                 "No successful dump() calls recorded; test did not exercise the race");

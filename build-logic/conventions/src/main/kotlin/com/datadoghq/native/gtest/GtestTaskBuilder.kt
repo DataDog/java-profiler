@@ -193,7 +193,7 @@ class GtestTaskBuilder(
             config.testEnvironment.get()
                 .filter { (key, _) -> key != "LD_PRELOAD" }
                 .forEach { (key, value) ->
-                    environment(key, strictenSanitizerOptions(key, value))
+                    environment(key, hardenSanitizerOptions(key, value))
                 }
 
             inputs.files(binary)
@@ -264,7 +264,7 @@ class GtestTaskBuilder(
     // to avoid conflicts with JVM signal handlers in Java integration tests) is wrong:
     // it silently swallows ASan/TSan findings and lets the test exit 0 despite errors.
     // Promote both flags to =1 so any sanitizer finding fails the gtest task immediately.
-    private fun strictenSanitizerOptions(key: String, value: String): String {
+    private fun hardenSanitizerOptions(key: String, value: String): String {
         if (key != "ASAN_OPTIONS" && key != "TSAN_OPTIONS" && key != "UBSAN_OPTIONS") {
             return value
         }
