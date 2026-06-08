@@ -34,6 +34,13 @@ public class ProcessContextTest {
         assertNotNull(mapping, "OTEL mapping should exist after setProcessContext");
 
         verifyMappingPermissions(mapping);
+
+        // With no user keys, the published map is exactly the reserved slot.
+        OTelContext.ProcessContext readContext = OTelContext.getInstance().readProcessContext();
+        assertNotNull(readContext);
+        assertArrayEquals(
+            new String[] {"datadog.local_root_span_id"},
+            readContext.attributeKeyMap);
     }
 
     private static class OtelMappingInfo {
