@@ -192,7 +192,9 @@ class GtestTaskBuilder(
             // causes "incompatible ASan runtimes" → immediate abort before any test runs.
             config.testEnvironment.get()
                 .filter { (key, _) -> key != "LD_PRELOAD" }
-                .forEach { (key, value) -> environment(key, value) }
+                .forEach { (key, value) ->
+                    environment(key, strictenSanitizerOptions(key, value))
+                }
 
             inputs.files(binary)
 
@@ -256,5 +258,18 @@ class GtestTaskBuilder(
         args.add("-DUNIT_TEST")
 
         return args
+    }
+
+    // Gtest binaries have no JVM, so halt_on_error=0 / abort_on_error=0 (which exists
+    // to avoid conflicts with JVM signal handlers in Java integration tests) is wrong:
+    // it silently swallows ASan/TSan findings and lets the test exit 0 despite errors.
+    // Promote both flags to =1 so any sanitizer finding fails the gtest task immediately.
+    private fun strictenSanitizerOptions(key: String, value: String): String {
+        if (key != "ASAN_OPTIONS" && key != "TSAN_OPTIONS" && key != "UBSAN_OPTIONS") {
+            return value
+        }
+        return value
+            .replace("halt_on_error=0", "halt_on_error=1")
+            .replace("abort_on_error=0", "abort_on_error=1")
     }
 }
