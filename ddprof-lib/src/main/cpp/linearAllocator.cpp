@@ -36,6 +36,10 @@
   #include <sanitizer/asan_interface.h>
 #endif
 
+#ifdef __SANITIZE_THREAD__
+  #include <sanitizer/tsan_interface.h>
+#endif
+
 LinearAllocator::LinearAllocator(size_t chunk_size) {
   _chunk_size = chunk_size;
   _reserve = _tail = allocateChunk(NULL);
@@ -118,17 +122,18 @@ void LinearAllocator::freeChunks(ChunkList& chunks) {
     return;
   }
 
-  // Walk the chain and free each chunk
   Chunk* current = chunks.head;
   while (current != nullptr) {
     Chunk* prev = current->prev;
+    #ifdef __SANITIZE_THREAD__
+    __tsan_release(current);
+    #endif
     OS::safeFree(current, chunks.chunk_size);
     Counters::decrement(LINEAR_ALLOCATOR_BYTES, chunks.chunk_size);
     Counters::decrement(LINEAR_ALLOCATOR_CHUNKS);
     current = prev;
   }
 
-  // Mark as freed to prevent double-free
   chunks.head = nullptr;
   chunks.chunk_size = 0;
 }
@@ -172,17 +177,23 @@ void *LinearAllocator::alloc(size_t size) {
 Chunk *LinearAllocator::allocateChunk(Chunk *current) {
   Chunk *chunk = (Chunk *)OS::safeAlloc(_chunk_size);
   if (chunk != NULL) {
+    // OS::safeAlloc uses a raw mmap syscall that bypasses ASan and TSan
+    // interceptors by design (to avoid profiling self-instrumentation).
+    // When the OS reuses a VA that had stale sanitizer state from a previous
+    // allocation at that address, writing to the chunk header triggers:
+    //   ASan: use-after-poison (f7 shadow from prior ASAN_POISON_MEMORY_REGION)
+    //   TSan: data-race (prior access history for the same VA not cleared by munmap)
+    // Fix: unpoison the entire chunk and acquire TSan ownership BEFORE the first
+    // write, establishing a clean sanitizer baseline for this logical allocation.
+    #ifdef ASAN_ENABLED
+    ASAN_UNPOISON_MEMORY_REGION(chunk, _chunk_size);
+    #endif
+    #ifdef __SANITIZE_THREAD__
+    __tsan_acquire(chunk);
+    #endif
+
     chunk->prev = current;
     chunk->offs = sizeof(Chunk);
-
-    // ASAN UNPOISONING: New chunks from mmap are clean, unpoison them for use
-    // mmap returns memory that ASan may track as unallocated, so we need to
-    // explicitly unpoison it to allow allocations
-    #ifdef ASAN_ENABLED
-    size_t usable_size = _chunk_size - sizeof(Chunk);
-    void* data_start = (char*)chunk + sizeof(Chunk);
-    ASAN_UNPOISON_MEMORY_REGION(data_start, usable_size);
-    #endif
 
     Counters::increment(LINEAR_ALLOCATOR_BYTES, _chunk_size);
     Counters::increment(LINEAR_ALLOCATOR_CHUNKS);
@@ -191,6 +202,13 @@ Chunk *LinearAllocator::allocateChunk(Chunk *current) {
 }
 
 void LinearAllocator::freeChunk(Chunk *current) {
+  // Release TSan ownership before munmap so the sanitizer knows this thread is
+  // done with the memory.  The paired __tsan_acquire in allocateChunk() ensures
+  // the next thread to receive this VA (after OS VA reuse) starts with a clean
+  // happens-before baseline rather than seeing stale access history.
+  #ifdef __SANITIZE_THREAD__
+  __tsan_release(current);
+  #endif
   OS::safeFree(current, _chunk_size);
   Counters::decrement(LINEAR_ALLOCATOR_BYTES, _chunk_size);
   Counters::decrement(LINEAR_ALLOCATOR_CHUNKS);
