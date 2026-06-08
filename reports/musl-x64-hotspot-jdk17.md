@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk17
 
 ## musl-x64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-06-08 10:56:36 EDT
+**Date:** 2026-06-08 11:42:19 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-x64-hotspot-jdk17
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 4 |
-| CPU Cores (end) | 4 |
+| CPU Cores (start) | 46 |
+| CPU Cores (end) | 46 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: musl-x64-hotspot-jdk17
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 4-4 cores)</summary>
+<summary>CPU Timeline (1 unique values: 46-46 cores)</summary>
 
 ```
-1780930369 4
-1780930374 4
-1780930379 4
-1780930384 4
-1780930389 4
-1780930394 4
-1780930399 4
-1780930404 4
-1780930409 4
-1780930414 4
-1780930419 4
-1780930424 4
-1780930429 4
-1780930434 4
-1780930439 4
-1780930444 4
-1780930449 4
-1780930454 4
-1780930459 4
-1780930464 4
+1780932781 46
+1780932786 46
+1780932791 46
+1780932796 46
+1780932801 46
+1780932806 46
+1780932811 46
+1780932816 46
+1780932821 46
+1780932826 46
+1780932831 46
+1780932836 46
+1780932841 46
+1780932846 46
+1780932851 46
+1780932856 46
+1780932861 46
+1780932866 46
+1780932871 46
+1780932876 46
 ```
 </details>
 
