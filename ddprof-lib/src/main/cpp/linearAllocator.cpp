@@ -51,9 +51,21 @@ LinearAllocator::~LinearAllocator() {
 }
 
 void LinearAllocator::clear() {
+  // OS::safeAlloc/safeFree use raw syscalls not intercepted by TSan, so TSan
+  // never clears shadow memory on munmap.  Add explicit acquire/release around
+  // every plain prev-field read so the happens-before chain from freeChunk's
+  // __tsan_release reaches any thread that later reuses the same VA.
+  #ifdef __SANITIZE_THREAD__
+  __tsan_acquire(_reserve);
+  #endif
   if (_reserve->prev == _tail) {
-    freeChunk(_reserve);
+    freeChunk(_reserve);  // __tsan_release inside
   }
+  #ifdef __SANITIZE_THREAD__
+  else {
+    __tsan_release(_reserve);  // not freed here; release for future VA-reuse acquirers
+  }
+  #endif
 
   // ASAN POISONING: Mark all allocated memory as poisoned BEFORE freeing chunks
   // This catches use-after-free even when memory isn't munmap'd (kept in _tail)
@@ -77,8 +89,12 @@ void LinearAllocator::clear() {
 
   while (_tail->prev != NULL) {
     Chunk *current = _tail;
+    // Acquire before reading current->prev; freeChunk provides the paired release.
+    #ifdef __SANITIZE_THREAD__
+    __tsan_acquire(current);
+    #endif
     _tail = _tail->prev;
-    freeChunk(current);
+    freeChunk(current);  // __tsan_release inside
   }
   _reserve = _tail;
   _tail->offs = sizeof(Chunk);
