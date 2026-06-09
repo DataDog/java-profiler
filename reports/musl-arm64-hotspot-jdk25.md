@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk25
 
 ## musl-arm64-hotspot-jdk25 - ✅ PASS
 
-**Date:** 2026-06-09 03:56:28 EDT
+**Date:** 2026-06-09 04:31:08 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-arm64-hotspot-jdk25
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 64 |
-| CPU Cores (end) | 64 |
+| CPU Cores (start) | 32 |
+| CPU Cores (end) | 32 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: musl-arm64-hotspot-jdk25
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
+<summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1780991487 64
-1780991492 64
-1780991497 64
-1780991502 64
-1780991507 64
-1780991512 64
-1780991517 64
-1780991522 64
-1780991527 64
-1780991532 64
-1780991537 64
-1780991542 64
-1780991547 64
-1780991552 64
-1780991557 64
-1780991562 64
-1780991567 64
-1780991572 64
-1780991577 64
-1780991582 64
+1780993563 32
+1780993568 32
+1780993573 32
+1780993578 32
+1780993583 32
+1780993588 32
+1780993593 32
+1780993598 32
+1780993603 32
+1780993608 32
+1780993613 32
+1780993618 32
+1780993623 32
+1780993628 32
+1780993633 32
+1780993638 32
+1780993643 32
+1780993648 32
+1780993653 32
+1780993658 32
 ```
 </details>
 
