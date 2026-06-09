@@ -48,7 +48,7 @@ static const Multiplier UNIVERSAL[] = {
 
 #define CASE(s)                                                                \
   }                                                                            \
-  else if (strcmp(arg, s) == 0) {
+  else if (strcasecmp(arg, s) == 0) {
 
 #define DEFAULT()                                                              \
   }                                                                            \
