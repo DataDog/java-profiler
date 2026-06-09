@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk17
 
 ## glibc-x64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-06-08 20:26:48 EDT
+**Date:** 2026-06-09 00:58:11 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-openj9-jdk17
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 18 |
-| CPU Cores (end) | 18 |
+| CPU Cores (start) | 8 |
+| CPU Cores (end) | 8 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-x64-openj9-jdk17
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (2 unique values: 13-18 cores)</summary>
+<summary>CPU Timeline (1 unique values: 8-8 cores)</summary>
 
 ```
-1780964606 18
-1780964611 18
-1780964616 18
-1780964621 18
-1780964626 18
-1780964631 18
-1780964636 18
-1780964641 18
-1780964646 18
-1780964651 18
-1780964656 18
-1780964661 18
-1780964666 18
-1780964671 18
-1780964676 18
-1780964681 18
-1780964686 18
-1780964691 18
-1780964696 18
-1780964701 18
+1780980701 8
+1780980706 8
+1780980711 8
+1780980716 8
+1780980721 8
+1780980726 8
+1780980731 8
+1780980736 8
+1780980741 8
+1780980746 8
+1780980751 8
+1780980756 8
+1780980761 8
+1780980766 8
+1780980771 8
+1780980776 8
+1780980781 8
+1780980786 8
+1780980791 8
+1780980796 8
 ```
 </details>
 
