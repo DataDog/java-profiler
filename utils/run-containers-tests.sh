@@ -7,7 +7,7 @@
 #   1. Base image with OS + build tools (java-profiler-base:<libc>-<arch>)
 #   2. JDK-specific image on top (java-profiler-test:<libc>-jdk<version>-<arch>)
 #
-# Usage: ./utils/run-docker-tests.sh [options]
+# Usage: ./utils/run-containers-tests.sh [options]
 #   --libc=glibc|musl        (default: glibc)
 #   --jdk=8|11|17|21|25|8-j9|11-j9|17-j9|21-j9|17-graal|21-graal|25-graal  (default: 21)
 #   --arch=x64|aarch64       (default: auto-detect)
@@ -17,7 +17,7 @@
 #   --gtest-task=Task        (run one C++ gtest task; accepts elfparser_ut or :ddprof-lib:gtestAsan_elfparser_ut)
 #   --shell                  (drop to shell instead of running tests; enables SYS_PTRACE for gdb)
 #   --mount                  (mount local repo instead of cloning - faster but may have stale artifacts)
-#   --rebuild                (force rebuild of Docker images)
+#   --rebuild                (force rebuild of container images)
 #   --rebuild-base           (force rebuild of base image only)
 #   --help                   (show this help)
 
