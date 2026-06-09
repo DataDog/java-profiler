@@ -41,6 +41,16 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BASE_IMAGE_PREFIX="java-profiler-base"
 IMAGE_PREFIX="java-profiler-test"
 
+selinux_enforcing() {
+    if [[ -r /sys/fs/selinux/enforce ]]; then
+        [[ "$(cat /sys/fs/selinux/enforce)" == "1" ]]
+    elif command -v getenforce >/dev/null 2>&1; then
+        [[ "$(getenforce)" == "Enforcing" ]]
+    else
+        false
+    fi
+}
+
 # Auto-detect architecture
 detect_arch() {
     local machine
@@ -529,6 +539,12 @@ fi
 
 # Build container run command base
 CONTAINER_CMD="$CONTAINER_RUNTIME run --rm"
+CONTAINER_VOLUME_RW_OPTIONS=""
+CONTAINER_VOLUME_RO_OPTIONS=":ro"
+if [[ "${CONTAINER_RUNTIME##*/}" == "podman" ]] && selinux_enforcing; then
+    CONTAINER_VOLUME_RW_OPTIONS=":z"
+    CONTAINER_VOLUME_RO_OPTIONS=":ro,z"
+fi
 if $SHELL_MODE; then
     CONTAINER_CMD="$CONTAINER_CMD -it --init --ulimit core=-1 --cap-add=SYS_PTRACE"
 fi
@@ -543,7 +559,7 @@ CONTAINER_CMD="$CONTAINER_CMD -e GRADLE_USER_HOME=/gradle-cache"
 
 if $MOUNT_MODE; then
     # Mount mode: use local repo directly (faster, but may have stale artifacts)
-    CONTAINER_CMD="$CONTAINER_CMD -v \"$PROJECT_ROOT\":/workspace"
+    CONTAINER_CMD="$CONTAINER_CMD -v \"$PROJECT_ROOT\":/workspace${CONTAINER_VOLUME_RW_OPTIONS}"
     CONTAINER_CMD="$CONTAINER_CMD $IMAGE_NAME"
 
     if $SHELL_MODE; then
@@ -559,7 +575,7 @@ if $MOUNT_MODE; then
 else
     # Clone mode: shallow clone from mounted local repo for clean builds (default)
     # Mount the local repo as source, then clone from it to /workspace
-    CONTAINER_CMD="$CONTAINER_CMD -v \"$PROJECT_ROOT\":/source:ro"
+    CONTAINER_CMD="$CONTAINER_CMD -v \"$PROJECT_ROOT\":/source${CONTAINER_VOLUME_RO_OPTIONS}"
     CONTAINER_CMD="$CONTAINER_CMD $IMAGE_NAME"
 
     # Build clone and test command - clone from local mounted source
