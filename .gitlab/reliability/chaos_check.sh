@@ -15,8 +15,14 @@ curl -s "https://get.sdkman.io" | bash
 source "/root/.sdkman/bin/sdkman-init.sh" 1>/dev/null 2>/dev/null
 CHAOS_JDK="${CHAOS_JDK:-21.0.3-tem}"
 timeout 300 sdk install java "${CHAOS_JDK}" 1>/dev/null 2>/dev/null
-# sdk use is unreliable in non-interactive scripts; set PATH/JAVA_HOME directly
-export JAVA_HOME="${HOME}/.sdkman/candidates/java/${CHAOS_JDK}"
+# sdk use is unreliable in non-interactive scripts; use SDKMAN_DIR (set by
+# sdkman-init.sh) rather than $HOME, which may differ from /root in CI.
+SDKMAN_JAVA="${SDKMAN_DIR:-/root/.sdkman}/candidates/java/${CHAOS_JDK}"
+if [ ! -d "${SDKMAN_JAVA}" ]; then
+  echo "FAIL:JDK ${CHAOS_JDK} not installed (expected ${SDKMAN_JAVA})" >&2
+  exit 1
+fi
+export JAVA_HOME="${SDKMAN_JAVA}"
 export PATH="${JAVA_HOME}/bin:${PATH}"
 ACTIVE_JDK=$(java -version 2>&1 | head -1)
 if [[ "$ACTIVE_JDK" != *"${CHAOS_JDK%%-*}"* ]]; then
