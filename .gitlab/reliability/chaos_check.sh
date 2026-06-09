@@ -15,7 +15,9 @@ curl -s "https://get.sdkman.io" | bash
 source "/root/.sdkman/bin/sdkman-init.sh" 1>/dev/null 2>/dev/null
 CHAOS_JDK="${CHAOS_JDK:-21.0.3-tem}"
 timeout 300 sdk install java "${CHAOS_JDK}" 1>/dev/null 2>/dev/null
-sdk use java "${CHAOS_JDK}"
+# sdk use is unreliable in non-interactive scripts; set PATH/JAVA_HOME directly
+export JAVA_HOME="${HOME}/.sdkman/candidates/java/${CHAOS_JDK}"
+export PATH="${JAVA_HOME}/bin:${PATH}"
 ACTIVE_JDK=$(java -version 2>&1 | head -1)
 if [[ "$ACTIVE_JDK" != *"${CHAOS_JDK%%-*}"* ]]; then
   echo "FAIL:wrong JDK active (expected ${CHAOS_JDK}, got: ${ACTIVE_JDK})" >&2
