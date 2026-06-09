@@ -100,8 +100,10 @@ jobs:
       - name: Test
         if: steps.set_enabled.outputs.enabled == 'true'
         run: |
-          sudo sysctl vm.mmap_rnd_bits=28
-      
+          # Reduce ASLR entropy so the JVM doesn't land in ASan's shadow range
+          # [0x00007fff7000-0x10007fff7fff]; 28 (the default) causes random aborts.
+          sudo sysctl vm.mmap_rnd_bits=8
+
           set +e
           export KEEP_JFRS=true
           export TEST_COMMIT=${{ github.sha }}
@@ -373,7 +375,8 @@ jobs:
       - name: Test
         if: steps.set_enabled.outputs.enabled == 'true'
         run: |
-          sudo sysctl vm.mmap_rnd_bits=28
+          # Reduce ASLR entropy so the JVM doesn't land in ASan's shadow range; 28 causes random aborts.
+          sudo sysctl vm.mmap_rnd_bits=8
 
           set +e
           export KEEP_JFRS=true
