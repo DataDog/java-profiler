@@ -679,11 +679,13 @@ TEST_F(CallTraceStorageTest, UseAfterFreeInProcessTraces) {
 TEST_F(CallTraceStorageTest, PutWithExistingIdNoInfiniteLoopWhenFull) {
     static constexpr u32 INITIAL_CAPACITY = 65536;
 
-    std::atomic<bool> completed{false};
-    std::thread worker([&] {
+    // Heap-allocated so the worker's shared_ptr copy keeps it alive if we detach
+    // before the thread writes completed=true (avoids UAF on slow machines).
+    auto completed = std::make_shared<std::atomic<bool>>(false);
+    std::thread worker([completed] {  // capture by value — shared ownership
         void* mem = std::aligned_alloc(alignof(CallTraceHashTable), sizeof(CallTraceHashTable));
         if (mem == nullptr) {
-            completed = true;  // Let the join path handle this; EXPECT below will report.
+            completed->store(true);  // Let the join path handle this; EXPECT below will report.
             return;
         }
 
@@ -705,16 +707,16 @@ TEST_F(CallTraceStorageTest, PutWithExistingIdNoInfiniteLoopWhenFull) {
             tbl->putWithExistingId(src, 1);
         }
 
-        completed = true;
+        completed->store(true);
     });
 
     // 10-second deadline; an un-fixed infinite loop would never set `completed`.
     auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (!completed.load() && std::chrono::steady_clock::now() < deadline) {
+    while (!completed->load() && std::chrono::steady_clock::now() < deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 
-    bool ok = completed.load();
+    bool ok = completed->load();
     if (!ok) {
         worker.detach();
     } else {
