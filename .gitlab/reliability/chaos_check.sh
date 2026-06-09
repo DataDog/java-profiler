@@ -11,22 +11,36 @@ ALLOCATOR=${3:-gmalloc}
 
 echo "Chaos run: runtime=${RUNTIME}s config=${CONFIG} allocator=${ALLOCATOR}"
 
-curl -s "https://get.sdkman.io" | bash
-source "/root/.sdkman/bin/sdkman-init.sh" 1>/dev/null 2>/dev/null
 CHAOS_JDK="${CHAOS_JDK:-21.0.3-tem}"
-timeout 300 sdk install java "${CHAOS_JDK}" 1>/dev/null 2>/dev/null
-# sdk use is unreliable in non-interactive scripts; use SDKMAN_DIR (set by
-# sdkman-init.sh) rather than $HOME, which may differ from /root in CI.
-SDKMAN_JAVA="${SDKMAN_DIR:-/root/.sdkman}/candidates/java/${CHAOS_JDK}"
-if [ ! -d "${SDKMAN_JAVA}" ]; then
-  echo "FAIL:JDK ${CHAOS_JDK} not installed (expected ${SDKMAN_JAVA})" >&2
+# CHAOS_JDK uses sdkman notation (<version>-<dist>); extract major for Adoptium API.
+JDK_MAJOR="${CHAOS_JDK%%.*}"
+JDK_ARCH=$(uname -m | sed 's/x86_64/x64/')
+JDK_INSTALL_DIR="/opt/jdk-${CHAOS_JDK}"
+
+if [ ! -x "${JDK_INSTALL_DIR}/bin/java" ]; then
+  TMP=$(mktemp -d)
+  DL_URL="https://api.adoptium.net/v3/binary/latest/${JDK_MAJOR}/ga/linux/${JDK_ARCH}/jdk/hotspot/normal/eclipse"
+  echo "Downloading JDK ${CHAOS_JDK} (major ${JDK_MAJOR}) from Adoptium..."
+  if ! curl -fsSL --max-time 300 "${DL_URL}" -o "${TMP}/jdk.tar.gz"; then
+    echo "FAIL:JDK ${CHAOS_JDK} download failed" >&2
+    rm -rf "${TMP}"
+    exit 1
+  fi
+  mkdir -p "${JDK_INSTALL_DIR}"
+  tar -xzf "${TMP}/jdk.tar.gz" -C "${JDK_INSTALL_DIR}" --strip-components=1
+  rm -rf "${TMP}"
+fi
+
+if [ ! -x "${JDK_INSTALL_DIR}/bin/java" ]; then
+  echo "FAIL:JDK ${CHAOS_JDK} not available after install" >&2
   exit 1
 fi
-export JAVA_HOME="${SDKMAN_JAVA}"
+export JAVA_HOME="${JDK_INSTALL_DIR}"
 export PATH="${JAVA_HOME}/bin:${PATH}"
 ACTIVE_JDK=$(java -version 2>&1 | head -1)
-if [[ "$ACTIVE_JDK" != *"${CHAOS_JDK%%-*}"* ]]; then
-  echo "FAIL:wrong JDK active (expected ${CHAOS_JDK}, got: ${ACTIVE_JDK})" >&2
+# Check major version only — patch may differ from the Adoptium latest GA.
+if ! echo "${ACTIVE_JDK}" | grep -qE "\"${JDK_MAJOR}\."; then
+  echo "FAIL:wrong JDK active (expected major ${JDK_MAJOR}, got: ${ACTIVE_JDK})" >&2
   exit 1
 fi
 
