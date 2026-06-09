@@ -118,7 +118,10 @@
   X(JVMTI_STACKS_REQUESTED, "jvmti_stacks_requested")                         \
   X(JVMTI_STACKS_FAILED_WRONG_PHASE, "jvmti_stacks_failed_wrong_phase")       \
   X(JVMTI_STACKS_FAILED_OTHER, "jvmti_stacks_failed_other")                  \
-  X(JVMTI_STACKS_DROPPED_LOCK, "jvmti_stacks_dropped_lock")
+  /* Delegated stacks dropped at slot-lock. Rec-lock drops from all recording  \
+   * paths (delegated and direct) go into SAMPLES_DROPPED_REC_LOCK. */         \
+  X(JVMTI_STACKS_DROPPED_LOCK, "jvmti_stacks_dropped_lock")                   \
+  X(SAMPLES_DROPPED_REC_LOCK, "samples_dropped_rec_lock")
 #define X_ENUM(a, b) a,
 typedef enum CounterId : int {
   DD_COUNTER_TABLE(X_ENUM) DD_NUM_COUNTERS
