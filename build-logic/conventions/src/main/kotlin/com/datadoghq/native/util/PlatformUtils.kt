@@ -183,6 +183,7 @@ object PlatformUtils {
 
                 if (!process.waitFor(30, TimeUnit.SECONDS)) {
                     process.destroyForcibly()
+                    process.waitFor(5, TimeUnit.SECONDS)
                     return false
                 }
                 process.exitValue() == 0
@@ -190,6 +191,9 @@ object PlatformUtils {
                 testFile.deleteIfExists()
                 outFile.deleteIfExists()
             }
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
         } catch (e: Exception) {
             false
         }

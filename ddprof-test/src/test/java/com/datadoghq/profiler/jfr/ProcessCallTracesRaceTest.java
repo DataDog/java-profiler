@@ -82,7 +82,7 @@ public class ProcessCallTracesRaceTest extends CStackAwareAbstractProfilerTest {
             workers.submit(() -> {
                 workersReady.countDown();
                 long x = 0;
-                while (System.currentTimeMillis() < deadline) {
+                while (System.currentTimeMillis() < deadline && !Thread.currentThread().isInterrupted()) {
                     // Tight loop: generates identifiable call-stack frames and
                     // keeps the CPU hot so wall-clock signals fire frequently.
                     for (int j = 0; j < 10_000; j++) {
