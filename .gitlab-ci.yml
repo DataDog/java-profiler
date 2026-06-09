@@ -28,6 +28,7 @@ stages:
   - integration-test
   - reliability
   - benchmarks
+  - fuzz
   - notify
 
 # Detects newer images in registry and creates GitHub PR with updates
@@ -162,3 +163,4 @@ include:
   - local: .gitlab/reliability/.gitlab-ci.yml
   - local: .gitlab/dd-trace-integration/.gitlab-ci.yml
   - local: .gitlab/sanitizer-tests/.gitlab-ci.yml
+  - local: .gitlab/fuzzing/.gitlab-ci.yml

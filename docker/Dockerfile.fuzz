@@ -1,0 +1,34 @@
+ARG BUILD_IMAGE
+
+FROM ${BUILD_IMAGE} AS build
+
+ARG FUZZYDOG_VERSION=0.27.1
+
+ENV JAVA_HOME=/root/.sdkman/candidates/java/current
+ENV PATH=$JAVA_HOME/bin:$PATH
+
+WORKDIR /src
+COPY . .
+
+RUN ./gradlew :ddprof-lib:fuzz:linkFuzz_dwarf \
+              :ddprof-lib:fuzz:linkFuzz_arguments \
+              :ddprof-lib:fuzz:linkFuzz_buffer \
+              :ddprof-lib:fuzz:linkFuzz_elf \
+              :ddprof-lib:fuzz:linkFuzz_stringDictionary \
+              --no-daemon
+
+RUN mkdir -p /fuzzer/builds && \
+    find ddprof-lib/fuzz/build/bin/fuzz -maxdepth 2 -type f -executable \
+        -exec cp {} /fuzzer/builds/ \; && \
+    ls /fuzzer/builds/ > /fuzz_binaries.txt
+
+RUN curl -fsSL "https://binaries.ddbuild.io/fuzzing/fuzzydog/${FUZZYDOG_VERSION}/fuzzydog-tar.tar.gz" \
+    | tar -xz -C /usr/local/bin fuzzydog-linux-amd64 && \
+    mv /usr/local/bin/fuzzydog-linux-amd64 /usr/local/bin/fuzzydog
+
+CMD fuzzydog fuzzer run "$FUZZ_APP" "$FUZZ_BUILD_ID" \
+    --type libfuzzer \
+    --team profiling \
+    --build-path /fuzzer/builds/ \
+    --skip-dl-build \
+    --repository-url https://github.com/DataDog/java-profiler
