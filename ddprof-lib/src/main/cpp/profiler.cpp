@@ -1467,6 +1467,12 @@ Error Profiler::stop() {
     _alloc_engine->stop();
   if (_event_mask & EM_NATIVEMEM)
     malloc_tracer.stop();
+  // Stop the refresher BEFORE socket unpatch: the refresher calls
+  // install_socket_hooks() which re-reads _socket_active before acquiring the
+  // patch lock.  If the refresher runs concurrently with unpatch_socket_functions()
+  // it can see _socket_active=true, wait for the lock, then re-patch PLT slots
+  // that unpatch just restored.  Stopping the refresher here closes that window.
+  _libs->stopRefresher();
   if (_event_mask & EM_NATIVESOCKET)
     NativeSocketSampler::instance()->stop();
   if (_event_mask & EM_WALL)
@@ -1475,9 +1481,6 @@ Error Profiler::stop() {
     _cpu_engine->stop();
 
   switchLibraryTrap(false);
-  // Stop the refresher before the final refresh() so it doesn't race the
-  // teardown.  startRefresher/stopRefresher are idempotent.
-  _libs->stopRefresher();
   switchThreadEvents(JVMTI_DISABLE);
   Libraries::instance()->refresh();
   updateJavaThreadNames();

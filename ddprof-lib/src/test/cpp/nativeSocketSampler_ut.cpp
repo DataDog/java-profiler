@@ -349,12 +349,15 @@ TEST(ArgumentsNatsock, NegativeIntervalRejected) {
 }
 
 /**
- * Verifies that natsock with no =value (empty value) is rejected.
+ * Verifies that bare natsock (no =value) enables socket profiling with the
+ * default interval (same as natsock=0).
  */
-TEST(ArgumentsNatsock, EmptyValueRejected) {
+TEST(ArgumentsNatsock, BareNatsockEnables) {
     Arguments args;
     Error e = args.parse("natsock");
-    ASSERT_TRUE(static_cast<bool>(e)) << "Expected error for natsock with no value";
+    ASSERT_FALSE(static_cast<bool>(e)) << "Bare 'natsock' should be accepted";
+    ASSERT_TRUE(args._nativesocket) << "Bare 'natsock' should enable socket profiling";
+    ASSERT_EQ(args._nativesocket_interval, 0L) << "Bare 'natsock' should use default interval";
 }
 
 /**

@@ -126,7 +126,9 @@ bool NativeSocketSampler::isSocket(int fd) {
 }
 
 bool NativeSocketSampler::shouldSample(u64 duration_ticks, int op, float &weight) {
-    PoissonSampler &sampler = (op == 0) ? _send_sampler : _recv_sampler;
+    // op 0 (send) and op 2 (write) are outbound → share _send_sampler.
+    // op 1 (recv) and op 3 (read) are inbound  → share _recv_sampler.
+    PoissonSampler &sampler = (op == 0 || op == 2) ? _send_sampler : _recv_sampler;
     return sampler.sample(duration_ticks,
                           (u64)_rate_limiter.interval(),
                           _rate_limiter.epoch(),
@@ -246,25 +248,17 @@ ssize_t NativeSocketSampler::write_hook(int fd, const void* buf, size_t len) {
     if (fn == nullptr) { errno = ENOSYS; return -1; }
     if (!LibraryPatcher::_socket_active.load(std::memory_order_acquire)) return fn(fd, buf, len);
     NativeSocketSampler* self = _instance;
-    if (!self->isSocket(fd)) {
-#ifdef DEBUG
-        uint64_t n = _write_hook_calls.fetch_add(1, std::memory_order_relaxed);
-        if (n < 3 || (n & 0x3FF) == 0) {
-            TEST_LOG("NativeSocketSampler::write_hook #%llu fd=%d len=%zu is_socket=0",
-                     (unsigned long long)(n + 1), fd, len);
-        }
-#endif
-        return fn(fd, buf, len);
-    }
+    bool is_socket = self->isSocket(fd);
 #ifdef DEBUG
     {
         uint64_t n = _write_hook_calls.fetch_add(1, std::memory_order_relaxed);
         if (n < 3 || (n & 0x3FF) == 0) {
-            TEST_LOG("NativeSocketSampler::write_hook #%llu fd=%d len=%zu is_socket=1",
-                     (unsigned long long)(n + 1), fd, len);
+            TEST_LOG("NativeSocketSampler::write_hook #%llu fd=%d len=%zu is_socket=%d",
+                     (unsigned long long)(n + 1), fd, len, (int)is_socket);
         }
     }
 #endif
+    if (!is_socket) return fn(fd, buf, len);
     u64 t0 = TSC::ticks();
     return record_if_positive(fd, fn(fd, buf, len), t0, TSC::ticks(), 2);
 }
@@ -274,25 +268,17 @@ ssize_t NativeSocketSampler::read_hook(int fd, void* buf, size_t len) {
     if (fn == nullptr) { errno = ENOSYS; return -1; }
     if (!LibraryPatcher::_socket_active.load(std::memory_order_acquire)) return fn(fd, buf, len);
     NativeSocketSampler* self = _instance;
-    if (!self->isSocket(fd)) {
-#ifdef DEBUG
-        uint64_t n = _read_hook_calls.fetch_add(1, std::memory_order_relaxed);
-        if (n < 3 || (n & 0x3FF) == 0) {
-            TEST_LOG("NativeSocketSampler::read_hook #%llu fd=%d len=%zu is_socket=0",
-                     (unsigned long long)(n + 1), fd, len);
-        }
-#endif
-        return fn(fd, buf, len);
-    }
+    bool is_socket = self->isSocket(fd);
 #ifdef DEBUG
     {
         uint64_t n = _read_hook_calls.fetch_add(1, std::memory_order_relaxed);
         if (n < 3 || (n & 0x3FF) == 0) {
-            TEST_LOG("NativeSocketSampler::read_hook #%llu fd=%d len=%zu is_socket=1",
-                     (unsigned long long)(n + 1), fd, len);
+            TEST_LOG("NativeSocketSampler::read_hook #%llu fd=%d len=%zu is_socket=%d",
+                     (unsigned long long)(n + 1), fd, len, (int)is_socket);
         }
     }
 #endif
+    if (!is_socket) return fn(fd, buf, len);
     u64 t0 = TSC::ticks();
     return record_if_positive(fd, fn(fd, buf, len), t0, TSC::ticks(), 3);
 }
@@ -321,11 +307,15 @@ Error NativeSocketSampler::start(Arguments &args) {
         u64 tsc_freq = TSC::frequency();
         u64 secs     = ns / 1000000000ULL;
         u64 sub_ns   = ns % 1000000000ULL;
-        u64 ticks    = secs * tsc_freq + (sub_ns * tsc_freq) / 1000000000ULL;
-        // Clamp to LONG_MAX (the field is `long`).  Anything >2^63 ticks is
-        // effectively "never sample" — we cap at a sentinel that the PID
-        // controller can still drive down.
-        if (ticks > (u64)LONG_MAX) ticks = (u64)LONG_MAX;
+        // Guard secs * tsc_freq against u64 overflow before the LONG_MAX clamp.
+        // At 3 GHz the product wraps at secs ≈ 6.1e9; clamp early to avoid UB.
+        u64 ticks;
+        if (tsc_freq > 0 && secs > (u64)LONG_MAX / tsc_freq) {
+            ticks = (u64)LONG_MAX;
+        } else {
+            ticks = secs * tsc_freq + (sub_ns * tsc_freq) / 1000000000ULL;
+            if (ticks > (u64)LONG_MAX) ticks = (u64)LONG_MAX;
+        }
         init_interval = (long)ticks;
     } else {
         init_interval = (long)(TSC::frequency() / 1000);
@@ -340,12 +330,10 @@ Error NativeSocketSampler::start(Arguments &args) {
     // (which carry no latency signal) are suppressed when the interval is large.
     _rate_limiter.start(init_interval, TARGET_EVENTS_PER_SECOND,
                         PID_WINDOW_SECS, PID_P_GAIN, PID_I_GAIN, PID_D_GAIN, PID_CUTOFF_S);
-    // Reset fd-type cache in O(1): incrementing _fd_cache_gen invalidates all
-    // entries without touching the 65536-entry array (generation mismatch in
-    // isSocket() causes a fresh getsockopt probe on next access).
-    // Release pairs with the acquire in isSocket() so cache cells written after
-    // the bump are observed alongside the new generation on weakly-ordered archs.
-    _fd_cache_gen.fetch_add(1, std::memory_order_release);
+    // Reset fd-type cache (clearFdCache bumps _fd_cache_gen under the mutex so
+    // the clear and the gen bump are atomic with respect to concurrent isSocket()
+    // calls — no stale entries can be inserted between the map clear and the bump).
+    clearFdCache();
 #ifdef DEBUG
     _send_hook_calls.store(0, std::memory_order_relaxed);
     _recv_hook_calls.store(0, std::memory_order_relaxed);
@@ -380,6 +368,10 @@ void NativeSocketSampler::clearFdCache() {
     std::lock_guard<std::mutex> lock(_fd_cache_mutex);
     _fd_cache.clear();
     _fd_cache_full.store(false, std::memory_order_release);
+    // Bump the generation under the lock so the clear and the bump are atomic
+    // with respect to concurrent isSocket() calls: no thread can insert an
+    // entry tagged with the old generation after the map is cleared.
+    _fd_cache_gen.fetch_add(1, std::memory_order_release);
 }
 
 #else // !__linux__

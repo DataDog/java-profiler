@@ -10,6 +10,7 @@
 #include "os.h"
 #include "pidController.h"
 #include <atomic>
+#include <climits>
 
 /**
  * Thread-safe rate limiter based on a PID controller.
@@ -104,8 +105,10 @@ private:
         // of measurement noise without instability.
         long count = _event_count.exchange(0, std::memory_order_relaxed);
         double signal = _pid.compute(static_cast<u64>(count), 1.0);
-        long new_interval = _interval.load(std::memory_order_relaxed)
-                            - static_cast<long>(signal);
+        long delta = (signal > (double)LONG_MAX) ? LONG_MAX
+                   : (signal < (double)LONG_MIN) ? LONG_MIN
+                   : (long)signal;
+        long new_interval = _interval.load(std::memory_order_relaxed) - delta;
         if (new_interval < 1) {
             new_interval = 1;
         }

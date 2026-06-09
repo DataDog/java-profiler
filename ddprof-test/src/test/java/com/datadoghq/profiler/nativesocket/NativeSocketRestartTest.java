@@ -27,6 +27,7 @@ public class NativeSocketRestartTest extends NativeSocketTestBase {
         stopProfiler();
 
         // Second session: start manually with a fresh JFR file.
+        Files.createDirectories(Paths.get("/tmp/recordings"));
         Path jfr2 = Files.createTempFile(Paths.get("/tmp/recordings"), "NativeSocketRestartTest_restart", ".jfr");
         try {
             profiler.execute("start,natsock=100us,jfr,file=" + jfr2.toAbsolutePath());

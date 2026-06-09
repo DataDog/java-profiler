@@ -180,12 +180,13 @@ private:
      * (_rng != 0) is independently required by the recurrence (0 is a fixed point).
      * The magic constant 5.421010862427522e-20 ≈ 1/2^64 converts a u64 to [0, 1].
      *
-     * Use `double` (53 mantissa bits) rather than `float` (24): a 24-bit float
-     * scaled by 2^-64 clamps the smallest representable U to ~5e-21, capping the
-     * longest possible Exp draw at ~47*interval and biasing the inter-arrival
-     * distribution toward shorter gaps under fast traffic. With double, the smallest
-     * representable U is ~5e-20, which permits draws up to ~44*interval — but the
-     * truncation `(u64)(...)` no longer rounds away small Exp values to zero.
+     * Use `double` (53 mantissa bits) rather than `float` (24): with the xorshift64
+     * invariant (_rng != 0), the minimum _rng is 1, giving U_min = 1.5 × 2^-64 ≈
+     * 8.13e-20 for both precisions.  The real advantage of double is quantisation
+     * density: float maps 2^64 rng values to only 2^24 distinct U values near the
+     * high end, clustering inter-arrival draws; double maps them to 2^53 distinct
+     * values, producing a far smoother distribution.  The maximum Exp draw is
+     * -ln(U_min) * interval ≈ 44 * interval for both precisions.
      *
      * ### Why xorshift64 instead of a C++ standard generator?
      *
@@ -226,7 +227,11 @@ private:
         _rng ^= _rng >> 7;
         _rng ^= _rng << 17;
         double u = ((double)_rng + 0.5) * 5.421010862427522e-20;
-        return (u64)(-(double)interval * log(u));
+        double raw = -(double)interval * log(u);
+        // Cap before narrowing cast: raw can exceed UINT64_MAX when interval is
+        // near LONG_MAX (the LONG_MAX sentinel used by start() for huge inputs).
+        // Casting an out-of-range double to u64 is UB in C++ (ISO §8.4 / §7.8).
+        return (raw >= (double)(u64)-1) ? (u64)-1 : (u64)raw;
     }
 };
 

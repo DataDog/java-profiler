@@ -84,8 +84,12 @@ public class NativeSocketEventFieldsTest extends NativeSocketTestBase {
 
                 String remoteAddress = remoteAddressAccessor.getMember(item);
                 assertNotNull(remoteAddress, "remoteAddress must not be null");
-                assertTrue(remoteAddress.contains(":"),
-                        "remoteAddress must be in ip:port format, got: " + remoteAddress);
+                // AF_UNIX SOCK_STREAM sockets produce an empty remoteAddress; skip
+                // the ip:port format check for those events.
+                if (!remoteAddress.isEmpty()) {
+                    assertTrue(remoteAddress.contains(":"),
+                            "remoteAddress must be in ip:port format, got: " + remoteAddress);
+                }
 
                 IQuantity bytes = bytesAccessor.getMember(item);
                 assertNotNull(bytes, "bytesTransferred must not be null");

@@ -186,7 +186,7 @@ private:
     // own Exp-distributed countdown; when it expires the event is sampled and a
     // new countdown is drawn.  weight = 1 / (1 - exp(-duration/interval)).
     // duration_ticks: wall time of the I/O call in TSC ticks.
-    // op: 0 = send, 1 = recv.
+    // op: 0 = send, 1 = recv, 2 = write, 3 = read.
     bool shouldSample(u64 duration_ticks, int op, float &weight);
 
     // Common recording logic shared by all four hooks.

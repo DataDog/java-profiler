@@ -18,6 +18,7 @@
 #include "arguments.h"
 #include "vmEntry.h"
 
+#include <errno.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -508,7 +509,11 @@ const char *Arguments::expandFilePattern(const char *pattern) {
 
 long Arguments::parseUnits(const char *str, const Multiplier *multipliers) {
   char *end;
+  errno = 0;
   long result = strtol(str, &end, 0);
+  if (errno == ERANGE) {
+    return -1;
+  }
 
   char c = *end;
   if (c == 0) {
@@ -520,6 +525,9 @@ long Arguments::parseUnits(const char *str, const Multiplier *multipliers) {
 
   for (const Multiplier *m = multipliers; m->symbol; m++) {
     if (c == m->symbol) {
+      if (m->multiplier != 1 && (result > LONG_MAX / m->multiplier || result < LONG_MIN / m->multiplier)) {
+        return -1;
+      }
       return result * m->multiplier;
     }
   }
