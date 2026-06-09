@@ -1,0 +1,44 @@
+ARG FUZZYDOG_VERSION=0.28.0
+
+FROM registry.ddbuild.io/images/base/gbi-ubuntu_2404:release AS build
+
+USER root
+
+ARG FUZZYDOG_VERSION
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update -qq && apt-get install -y -qq \
+    clang llvm curl git openjdk-17-jdk \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+ENV PATH=$JAVA_HOME/bin:$PATH
+
+WORKDIR /src
+COPY . .
+
+RUN ./gradlew :ddprof-lib:fuzz:linkFuzz_dwarf \
+              :ddprof-lib:fuzz:linkFuzz_arguments \
+              :ddprof-lib:fuzz:linkFuzz_buffer \
+              :ddprof-lib:fuzz:linkFuzz_elf \
+              :ddprof-lib:fuzz:linkFuzz_stringDictionary \
+              --no-daemon
+
+RUN mkdir -p /fuzzer/builds && \
+    find ddprof-lib/fuzz/build/bin/fuzz -maxdepth 2 -type f -executable \
+        -exec cp {} /fuzzer/builds/ \; && \
+    ls /fuzzer/builds/ > /fuzz_binaries.txt
+
+RUN curl -fsSL "https://binaries.ddbuild.io/fuzzing/fuzzydog/${FUZZYDOG_VERSION}/fuzzydog-tar.tar.gz" \
+    | tar -xz -C /usr/local/bin fuzzydog-linux-amd64 && \
+    mv /usr/local/bin/fuzzydog-linux-amd64 /usr/local/bin/fuzzydog
+
+CMD fuzzydog fuzzer run "$FUZZ_APP" "$FUZZ_BUILD_ID" \
+    --type libfuzzer \
+    --team profiling \
+    --build-path /fuzzer/builds/ \
+    --skip-dl-build \
+    --repository-url https://github.com/DataDog/java-profiler
+
+FROM scratch AS manifest
+COPY --from=build /fuzz_binaries.txt /fuzz_binaries.txt
