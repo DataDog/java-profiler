@@ -493,11 +493,12 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     method_id = JVMSupport::resolve(frame.method);
   }
 
+/**
   // Maps JMETHODID_NOT_WAKEABLE back to nullptr
   if (method_id == JMETHODID_NOT_WALKABLE) {
     method_id = nullptr;
   }
-
+*/
   // BCI_VTABLE_RECEIVER: method holds a VMSymbol* (see vmEntry.h). Resolve
   // to a class_id via the per-dump cache once, then key MethodMap by the
   // resolved class_id so two distinct Symbol addresses for the same class

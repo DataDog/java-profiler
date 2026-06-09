@@ -171,14 +171,15 @@ static void fillFrameTypes(ASGCT_CallFrame *frames, int num_frames, VMNMethod *n
 }
 
 // Fill the frame with raw method pointer
-static inline void fillFrameRaw(ASGCT_CallFrame& frame, FrameTypeId type, int bci, const VMMethod* method) {
+static void fillFrameRaw(ASGCT_CallFrame& frame, FrameTypeId type, int bci, const VMMethod* method) {
     assert(method != nullptr);
     frame.bci = FrameType::encode(type, bci, true /*raw method pointer*/);
     frame.method = static_cast<const void*>(method);
 }
 
-static inline void fillFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci, jmethodID method_id, const VMMethod* method) {
-    if (method_id != nullptr) {
+static void fillFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci, jmethodID method_id, const VMMethod* method) {
+    // Pack JMETHODID_NOT_WALKABLE frame as raw pointer frame, so it can not resolved into nullptr to shared code.
+    if (method_id != nullptr && method_id != JMETHODID_NOT_WALKABLE) {
         fillFrame(frame, type, bci, method_id);
     } else {
         assert(method != nullptr);
@@ -1250,7 +1251,7 @@ static bool isLambdaClass(const char* signature) {
            strncmp(signature, FFM_PREFIX, strlen(FFM_PREFIX)) == 0;
 }
 
-static inline bool isSystemClassLoaders(JNIEnv* jni, jobject cl) {
+static bool isSystemClassLoader(JNIEnv* jni, jobject cl) {
     return cl == nullptr ||                         // bootstrap class loader
            jni->IsSameObject(cl, JAVA_PLATFORM_CLASSLOADER) ||       // platform class loader
            jni->IsSameObject(cl, JAVA_APPLICATION_CLASSLOADER);      // application class loader (system class loader)
@@ -1271,7 +1272,7 @@ bool HotspotSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klas
     // we use Method instead.
     if (!isHiddenClass(jvmti, klass) &&
         jvmti->GetClassLoader(klass, &cl) == JVMTI_ERROR_NONE && 
-        isSystemClassLoaders(jni, cl)) {
+        isSystemClassLoader(jni, cl)) {
         char* signature_ptr = nullptr;
         if (jvmti->GetClassSignature(klass, &signature_ptr, nullptr) == JVMTI_ERROR_NONE) {
             // Lambda classes, even loaded by bootstrap class loader, can be unloaded,
@@ -1299,6 +1300,13 @@ bool HotspotSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klas
 jmethodID HotspotSupport::resolve(const void* method) {
   assert(VM::isHotspot());
   assert(method != nullptr);
+  // We packed not walkable method as raw pointer,
+  // map it back to nullptr, as JMETHODID_NOT_WALKABLE is only
+  // known in hotspot.
+  if ((jmethodID)method == JMETHODID_NOT_WALKABLE) {
+    return nullptr;
+  }
+
   VMMethod* vm_method = VMMethod::cast_or_null(method);
   if (vm_method == nullptr) {
     return nullptr;

@@ -90,8 +90,8 @@ public:
   std::shared_ptr<SharedLineNumberTable> _line_number_table;
   FrameTypeId _type;
 
-  jint getLineNumber(jint bci);
-  bool isHidden();
+  inline jint getLineNumber(jint bci);
+  inline bool isHidden();
 };
 
 // MethodMap's key can be derived from 3 sources:

@@ -20,6 +20,11 @@
 #include "threadState.h"
 #include "vmEntry.h"
 
+#define JMETHODID_NOT_WALKABLE  (jmethodID)((uintptr_t)-1)
+inline bool isValidJMethodID(jmethodID method_id) {
+  return method_id != JMETHODID_NOT_WALKABLE && method_id != nullptr;
+}
+
 class GCHeapSummary;
 class HeapUsage;
 class VMNMethod;
@@ -48,7 +53,7 @@ inline T* cast_to(const void* ptr) {
 }
 
 template <typename T>
-inline T* cast_or_null(const void* ptr) {
+T* cast_or_null(const void* ptr) {
     assert(VM::isHotspot()); // This should only be used in HotSpot-specific code
     assert(T::type_size() > 0); // Ensure type size has been initialized
     if(ptr == nullptr || SafeAccess::isReadableRange(ptr, T::type_size())) {
@@ -615,7 +620,6 @@ class VMNMethod;
 class VMMethod;
 
 DECLARE(VMSymbol)
-  public:
     unsigned short length() {
         assert(_symbol_length_offset >= 0);
         return *(unsigned short*) at(_symbol_length_offset);
@@ -654,7 +658,6 @@ DECLARE(VMClassLoaderData)
 DECLARE_END
 
 DECLARE(VMKlass)    
-  public:
     static VMKlass* fromJavaClass(JNIEnv* env, jclass cls) {
         if (sizeof(VMKlass*) == 8) {
             return VMKlass::cast((const void*)(intptr_t)env->GetLongField(cls, _klass));
@@ -754,7 +757,6 @@ DECLARE(VMJavaFrameAnchor)
 DECLARE_END
 
 DECLARE(VMContinuationEntry)
-  public:
     // Address of the enterSpecial frame's {saved_fp, return_addr} pair.
     // Layout above this address: [saved_fp][return_addr_to_carrier][carrier_sp...]
     // The ContinuationEntry struct is embedded on the carrier stack immediately
@@ -795,7 +797,6 @@ enum JVMJavaThreadState {
 
 DECLARE(VMThread)
   friend class JVMThread;
-  public:
     static void* initialize(jthread thread);
 
     static inline VMThread* current();
@@ -889,7 +890,6 @@ private:
 DECLARE_END
 
 DECLARE(VMConstantPool)
-public:
     inline VMKlass* holder_or_null() const;
     inline VMSymbol* symbolAt(int index) const;
  private:
@@ -897,7 +897,6 @@ public:
 DECLARE_END
 
 DECLARE(VMConstMethod)
-public:
     inline VMConstantPool* constants_or_null() const;
     inline VMSymbol* name() const;
     inline VMSymbol* signature() const;
@@ -948,7 +947,6 @@ static inline bool startsWith(const char* s, const char (&pattern)[N]) {
 }
 
 DECLARE(VMNMethod)
-  public:
     int size() {
         assert(_blob_size_offset >= 0);
         return *(int*) at(_blob_size_offset);

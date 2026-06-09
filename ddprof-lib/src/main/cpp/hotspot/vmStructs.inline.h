@@ -110,15 +110,17 @@ jmethodID VMMethod::id() {
 
 jmethodID VMMethod::validatedId() {
     jmethodID method_id = id();
-    if (isValidJMethodID(method_id)) {
-        if (!_can_dereference_jmethod_id ||
-            ((goodPtr(method_id) && SafeAccess::loadPtr((void**)method_id, nullptr) == this))) {
-            return method_id;
-        } else {
-            return JMETHODID_NOT_WALKABLE;
-        }
+    // We are sure about the value, return it
+    if (method_id == JMETHODID_NOT_WALKABLE || method_id == nullptr) {
+        return method_id;
     }
-    return method_id;
+    // Check if the value make sense
+    if (!_can_dereference_jmethod_id ||
+        ((goodPtr(method_id) && SafeAccess::loadPtr((void**)method_id, nullptr) == this))) {
+        return method_id;
+    }
+
+    return JMETHODID_NOT_WALKABLE;
 }
 
 VMKlass* VMConstantPool::holder_or_null() const {
