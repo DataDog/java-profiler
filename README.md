@@ -134,8 +134,8 @@ The project includes both Java and C++ unit tests. You can run them using:
 ### Cross-JDK Testing
 `JAVA_TEST_HOME=<path to test JDK> ./gradlew testDebug`
 
-### Docker-Based Testing (musl/glibc)
-Run tests in Docker containers to test on different libc implementations. Uses two-level Docker image caching for fast subsequent runs:
+### Container-Based Testing (musl/glibc)
+Run tests in containers to test on different libc implementations. The script defaults to Podman; set `CONTAINER_RUNTIME=docker` to use Docker instead. Uses two-level container image caching for fast subsequent runs:
 1. **Base image** (`java-profiler-base:<libc>-<arch>`) - OS with all build tools + sanitizers
 2. **JDK image** (`java-profiler-test:<libc>-jdk<version>-<arch>`) - Adds JDK + Gradle
 
@@ -143,40 +143,47 @@ By default, the script clones the repository at the current commit for clean bui
 
 ```bash
 # Run specific test on musl (Alpine) with JDK 21 (clone mode - clean build)
-./utils/run-docker-tests.sh --libc=musl --jdk=21 --tests="CTimerGCStressTest"
+./utils/run-containers-tests.sh --libc=musl --jdk=21 --tests="CTimerGCStressTest"
 
 # Run all tests on glibc (Ubuntu) with JDK 17
-./utils/run-docker-tests.sh --libc=glibc --jdk=17
+./utils/run-containers-tests.sh --libc=glibc --jdk=17
 
-# Run tests on aarch64 architecture (requires Docker with multi-arch support)
-./utils/run-docker-tests.sh --libc=musl --jdk=21 --arch=aarch64
+# Run tests on aarch64 architecture (requires container runtime with multi-arch support)
+./utils/run-containers-tests.sh --libc=musl --jdk=21 --arch=aarch64
 
 # Mount local repo for faster iteration (may have stale artifacts)
-./utils/run-docker-tests.sh --libc=musl --jdk=21 --mount --tests="MyTest"
+./utils/run-containers-tests.sh --libc=musl --jdk=21 --mount --tests="MyTest"
 
 # Drop to interactive shell in musl container
-./utils/run-docker-tests.sh --libc=musl --jdk=21 --shell
+./utils/run-containers-tests.sh --libc=musl --jdk=21 --shell
 
-# Force rebuild of all cached Docker images
-./utils/run-docker-tests.sh --libc=musl --jdk=21 --rebuild
+# Run one C++ gtest binary only
+./utils/run-containers-tests.sh --libc=glibc --config=asan --gtest-task=elfparser_ut
+
+# Use Docker instead of the default Podman runtime
+CONTAINER_RUNTIME=docker ./utils/run-containers-tests.sh --libc=glibc --jdk=21
+
+# Force rebuild of all cached container images
+./utils/run-containers-tests.sh --libc=musl --jdk=21 --rebuild
 
 # Force rebuild of base image only (useful after Alpine/Ubuntu updates)
-./utils/run-docker-tests.sh --libc=musl --rebuild-base
+./utils/run-containers-tests.sh --libc=musl --rebuild-base
 
 # Show options
-./utils/run-docker-tests.sh --help
+./utils/run-containers-tests.sh --help
 ```
 
 Supported options:
 - `--libc=glibc|musl` (default: glibc)
-- `--jdk=8|11|17|21|25` (default: 21)
+- `--jdk=8|11|17|21|25|8-j9|11-j9|17-j9|21-j9|17-graal|21-graal|25-graal` (default: 21)
 - `--arch=x64|aarch64` (default: auto-detect)
-- `--config=debug|release` (default: debug)
+- `--config=debug|release|asan|tsan` (default: debug)
 - `--tests="TestPattern"`
 - `--gtest` (enable C++ gtests, disabled by default for faster runs)
+- `--gtest-task=Task` (run one C++ gtest task; accepts `elfparser_ut` or a full task path like `:ddprof-lib:gtestAsan_elfparser_ut`)
 - `--shell` (interactive shell instead of running tests)
 - `--mount` (mount local repo instead of cloning - faster but may have stale artifacts)
-- `--rebuild` (force rebuild of all Docker images)
+- `--rebuild` (force rebuild of all container images)
 - `--rebuild-base` (force rebuild of base image only)
 
 ## Unwinding Validation Tool
@@ -442,7 +449,7 @@ The [`utils/`](utils/) directory contains helper scripts for common workflows. S
 | `release.sh` | Trigger a validated release (major/minor/patch) via GitHub Actions |
 | `backport-pr.sh` | Cherry-pick a merged PR onto a release branch and open a backport PR |
 | `patch-dd-java-agent.sh` | Patch `dd-java-agent.jar` with a local ddprof build for quick testing |
-| `run-docker-tests.sh` | Run tests in Docker containers (musl/glibc, multiple JDKs) |
+| `run-containers-tests.sh` | Run tests in containers (musl/glibc, multiple JDKs) |
 | `check_upstream_changes.sh` | Check for upstream async-profiler changes locally |
 | `track_upstream_changes.sh` | Track upstream changes and generate reports |
 | `generate_tracked_files.sh` | Generate the list of files tracked from upstream |

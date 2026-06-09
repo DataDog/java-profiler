@@ -77,22 +77,32 @@ Cherry-picks a merged PR onto a release branch, pushes the backport branch, and 
 
 ## Testing
 
-### `run-docker-tests.sh`
+### `run-containers-tests.sh`
 
-Runs tests in Docker across various OS/libc/JDK combinations, mirroring the CI matrix locally.
+Runs tests in containers across various OS/libc/JDK combinations, mirroring the CI matrix locally. Defaults to Podman; set `CONTAINER_RUNTIME=docker` to use Docker.
 
 **Usage:**
 ```bash
-./utils/run-docker-tests.sh [options]
+./utils/run-containers-tests.sh [options]
   --libc=glibc|musl               (default: glibc)
   --jdk=8|11|17|21|25|8-j9|...   (default: 21)
   --arch=x64|aarch64              (default: auto-detect)
   --config=debug|release|asan|tsan (default: debug)
   --tests="TestPattern"           (optional)
   --gtest                         (enable C++ gtests)
+  --gtest-task=Task               (run one C++ gtest task)
   --shell                         (drop to shell instead of running tests)
   --mount                         (mount local repo instead of cloning)
-  --rebuild                       (force rebuild of Docker images)
+  --rebuild                       (force rebuild of container images)
+```
+
+Examples:
+```bash
+# Run a single C++ gtest binary in ASan mode
+./utils/run-containers-tests.sh --config=asan --gtest-task=elfparser_ut
+
+# Use Docker instead of the default Podman runtime
+CONTAINER_RUNTIME=docker ./utils/run-containers-tests.sh --libc=glibc --jdk=21
 ```
 
 ### `patch-dd-java-agent.sh`
