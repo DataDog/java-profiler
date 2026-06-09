@@ -42,21 +42,13 @@ static const Multiplier UNIVERSAL[] = {
     {'n', 1}, {'u', 1000}, {'m', 1000000},    {'s', 1000000000},
     {'b', 1}, {'k', 1024}, {'g', 1073741824}, {0, 0}};
 
-// Statically compute hash code of a string containing up to 12 [a-z] letters
-#define HASH(s)                                                                \
-  ((s[0] & 31LL) | (s[1] & 31LL) << 5 | (s[2] & 31LL) << 10 |                  \
-   (s[3] & 31LL) << 15 | (s[4] & 31LL) << 20 | (s[5] & 31LL) << 25 |           \
-   (s[6] & 31LL) << 30 | (s[7] & 31LL) << 35 | (s[8] & 31LL) << 40 |           \
-   (s[9] & 31LL) << 45 | (s[10] & 31LL) << 50 | (s[11] & 31LL) << 55)
-
 // Simulate switch statement over string hashes
 #define SWITCH(arg)                                                            \
-  long long arg_hash = hash(arg);                                              \
   if (0)
 
 #define CASE(s)                                                                \
   }                                                                            \
-  else if (arg_hash == HASH(s "            ")) {
+  else if (strcasecmp(arg, s) == 0) {
 
 #define DEFAULT()                                                              \
   }                                                                            \
@@ -435,15 +427,6 @@ const char *Arguments::file() {
     return expandFilePattern(_file);
   }
   return _file;
-}
-
-// Should match statically computed HASH(arg)
-long long Arguments::hash(const char *arg) {
-  long long h = 0;
-  for (int shift = 0; *arg != 0; shift += 5) {
-    h |= (*arg++ & 31LL) << shift;
-  }
-  return h;
 }
 
 // Expands the following patterns:

@@ -152,7 +152,6 @@ private:
   bool _shared;
   bool _persistent;
   const char *expandFilePattern(const char *pattern);
-  static long long hash(const char *arg);
   static long parseUnits(const char *str, const Multiplier *multipliers);
   static bool isCpuEvent(const char *event) {
     // event == NULL will default to EVENT_CPU
