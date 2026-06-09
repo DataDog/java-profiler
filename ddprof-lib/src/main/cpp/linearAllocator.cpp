@@ -87,16 +87,26 @@ void LinearAllocator::clear() {
   }
   #endif
 
-  while (_tail->prev != NULL) {
+  // Walk the chain freeing all chunks except the last (prev==NULL).
+  // Acquire each chunk BEFORE reading its prev field so the TSan happens-before
+  // chain covers the condition check, not just the assignment inside the body.
+  {
     Chunk *current = _tail;
-    // Acquire before reading current->prev; freeChunk provides the paired release.
     #ifdef __SANITIZE_THREAD__
-    __tsan_acquire(current);
+    __tsan_acquire(current);  // before the first current->prev read (loop condition)
     #endif
-    _tail = _tail->prev;
-    freeChunk(current);  // __tsan_release inside
+    while (current->prev != NULL) {
+      Chunk *next = current->prev;
+      freeChunk(current);  // __tsan_release(current) + safeFree inside
+      current = next;
+      #ifdef __SANITIZE_THREAD__
+      __tsan_acquire(current);  // before the next iteration's current->prev read
+      #endif
+    }
+    // current is the last chunk (prev==NULL); keep it as the new allocator base.
+    _reserve = current;
+    _tail = current;
   }
-  _reserve = _tail;
   _tail->offs = sizeof(Chunk);
 
   // DON'T UNPOISON HERE - let alloc() do it on-demand!
@@ -262,7 +272,9 @@ void LinearAllocator::reserveChunk(Chunk *current) {
 }
 
 Chunk *LinearAllocator::getNextChunk(Chunk *current) {
-  Chunk *reserve = _reserve;
+  // _reserve is written via CAS in reserveChunk(); load it atomically so TSan
+  // sees the acquire-release relationship with the CAS store.
+  Chunk *reserve = __atomic_load_n(&_reserve, __ATOMIC_ACQUIRE);
 
   if (reserve == current) {
     // Unlikely case: no reserve yet.
