@@ -19,8 +19,6 @@ class MallocHooker {
     static Mutex _patch_lock;
     static int _patched_libs;
     static bool _initialized;
-    static void* _calloc_hook_fn;
-    static void* _posix_memalign_hook_fn;
 
     static void detectNestedMalloc();
 
