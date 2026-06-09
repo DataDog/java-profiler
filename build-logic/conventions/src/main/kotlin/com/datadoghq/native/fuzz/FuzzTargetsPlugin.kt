@@ -73,6 +73,13 @@ class FuzzTargetsPlugin : Plugin<Project> {
             }
         }
 
+        // Build-only aggregate: compiles and links all targets without running them
+        val buildFuzz = project.tasks.register("buildFuzz") {
+            onlyIf { hasFuzzer && !project.hasProperty("skip-tests") && !project.hasProperty("skip-native") && !project.hasProperty("skip-fuzz") }
+            group = "build"
+            description = "Build all fuzz targets without running them"
+        }
+
         if (!hasFuzzer) {
             createListFuzzTargetsTask(project, extension)
             return
@@ -161,6 +168,7 @@ class FuzzTargetsPlugin : Plugin<Project> {
                 }
 
                 fuzzAll.configure { dependsOn(executeTask) }
+                buildFuzz.configure { dependsOn(linkTask) }
             }
         }
 

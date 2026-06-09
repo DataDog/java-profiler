@@ -8,21 +8,16 @@ ARG FUZZYDOG_VERSION
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update -qq && apt-get install -y -qq \
-    clang llvm curl git openjdk-17-jdk \
+    clang llvm curl git openjdk-21-jdk \
     && rm -rf /var/lib/apt/lists/*
 
-ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+ENV JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64
 ENV PATH=$JAVA_HOME/bin:$PATH
 
 WORKDIR /src
 COPY . .
 
-RUN ./gradlew :ddprof-lib:fuzz:linkFuzz_dwarf \
-              :ddprof-lib:fuzz:linkFuzz_arguments \
-              :ddprof-lib:fuzz:linkFuzz_buffer \
-              :ddprof-lib:fuzz:linkFuzz_elf \
-              :ddprof-lib:fuzz:linkFuzz_stringDictionary \
-              --no-daemon
+RUN ./gradlew :ddprof-lib:fuzz:buildFuzz --no-daemon
 
 RUN mkdir -p /fuzzer/builds && \
     find ddprof-lib/fuzz/build/bin/fuzz -maxdepth 2 -type f -executable \
