@@ -112,7 +112,8 @@ static void churn_worker(ThreadFilter* filter, bool with_dump) {
   for (int i = 0; i < kChurnIterations && g_run.load(std::memory_order_relaxed); i++) {
     ProfiledThread::initCurrentThread();
     ProfiledThread* self = ProfiledThread::current();
-    ASSERT_NE(nullptr, self);
+    EXPECT_NE(nullptr, self);
+    if (!self) return;
 
     ThreadFilter::SlotID slot = filter->registerThread();
     if (slot >= 0) {
@@ -161,6 +162,7 @@ TEST(StressThreadLifecycle, Smoke) {
 
 TEST(StressThreadLifecycle, ChurnOnly) {
   installGtestCrashHandler<STRESS_TEST_NAME>();
+  g_storage.clear();
 
   ThreadFilter filter;
   filter.init("*");
@@ -182,6 +184,7 @@ TEST(StressThreadLifecycle, ChurnOnly) {
 
 TEST(StressThreadLifecycle, ChurnDuringDump) {
   installGtestCrashHandler<STRESS_TEST_NAME>();
+  g_storage.clear();
 
   ThreadFilter filter;
   filter.init("*");

@@ -63,7 +63,8 @@ public final class ConsumerGroupAntagonist implements Antagonist {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
-        for (Thread t : consumers) {
+        Thread[] snapshot = consumers.clone();
+        for (Thread t : snapshot) {
             if (t != null) {
                 t.interrupt();
                 long remaining = Math.max(0L, deadline - System.currentTimeMillis());
