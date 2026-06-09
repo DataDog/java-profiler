@@ -100,16 +100,22 @@ jobs:
       - name: Test
         if: steps.set_enabled.outputs.enabled == 'true'
         run: |
-          # Reduce ASLR entropy so the JVM doesn't land in ASan's shadow range
-          # [0x00007fff7000-0x10007fff7fff]; 28 (the default) causes random aborts.
-          sudo sysctl vm.mmap_rnd_bits=8
-
           set +e
           export KEEP_JFRS=true
           export TEST_COMMIT=${{ github.sha }}
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}-${{ matrix.config }}-amd64
           export LIBC=glibc
           export SANITIZER=${{ matrix.config }}
+
+          GRADLEW_PREFIX=""
+          if [[ "${{ matrix.config }}" == "asan" ]]; then
+            # Reduce ASLR entropy so the JVM doesn't land in ASan's shadow range
+            # [0x00007fff7000-0x10007fff7fff]; 28 (the default) causes random aborts.
+            if ! sudo sysctl -w vm.mmap_rnd_bits=8 2>/dev/null; then
+              echo "::warning::Cannot set vm.mmap_rnd_bits; falling back to setarch --addr-no-randomize"
+              GRADLEW_PREFIX="setarch $(uname -m) --addr-no-randomize"
+            fi
+          fi
 
           MAX_ATTEMPTS=1
           if [[ "${{ matrix.config }}" == "asan" && "${{ matrix.java_version }}" =~ (j9|ibm) ]]; then
@@ -118,7 +124,7 @@ jobs:
 
           for attempt in $(seq 1 $MAX_ATTEMPTS); do
             mkdir -p build/logs
-            ./gradlew -PCI -PkeepJFRs ${{ inputs.skip_gtest == true && '-Pskip-gtest' || '' }} :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
+            ${GRADLEW_PREFIX} ./gradlew -PCI -PkeepJFRs ${{ inputs.skip_gtest == true && '-Pskip-gtest' || '' }} :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
               | tee -a build/test-raw.log \
               | python3 -u .github/scripts/filter_gradle_log.py
             EXIT_CODE=${PIPESTATUS[0]}
@@ -375,9 +381,6 @@ jobs:
       - name: Test
         if: steps.set_enabled.outputs.enabled == 'true'
         run: |
-          # Reduce ASLR entropy so the JVM doesn't land in ASan's shadow range; 28 causes random aborts.
-          sudo sysctl vm.mmap_rnd_bits=8
-
           set +e
           export KEEP_JFRS=true
           export TEST_COMMIT=${{ github.sha }}
@@ -385,9 +388,15 @@ jobs:
           export LIBC=glibc
           export SANITIZER=${{ matrix.config }}
 
+          GRADLEW_PREFIX=""
           # For ASAN: launch a gdb watchdog that dumps all native threads before the
           # 30-minute Gradle timeout kills the JVM, so we can diagnose hangs in native code.
           if [[ "${{ matrix.config }}" == "asan" ]]; then
+            # Reduce ASLR entropy so the JVM doesn't land in ASan's shadow range; 28 causes random aborts.
+            if ! sudo sysctl -w vm.mmap_rnd_bits=8 2>/dev/null; then
+              echo "::warning::Cannot set vm.mmap_rnd_bits; falling back to setarch --addr-no-randomize"
+              GRADLEW_PREFIX="setarch $(uname -m) --addr-no-randomize"
+            fi
             mkdir -p build/logs
             (
               sleep 1500  # 25 minutes — fires before the 30-min Gradle timeout
@@ -407,7 +416,7 @@ jobs:
 
           for attempt in $(seq 1 $MAX_ATTEMPTS); do
             mkdir -p build/logs
-            ./gradlew -PCI -PkeepJFRs ${{ inputs.skip_gtest == true && '-Pskip-gtest' || '' }} :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
+            ${GRADLEW_PREFIX} ./gradlew -PCI -PkeepJFRs ${{ inputs.skip_gtest == true && '-Pskip-gtest' || '' }} :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
               | tee -a build/test-raw.log \
               | python3 -u .github/scripts/filter_gradle_log.py
             EXIT_CODE=${PIPESTATUS[0]}
