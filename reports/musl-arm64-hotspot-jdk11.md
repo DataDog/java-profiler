@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk11
 
 ## musl-arm64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-06-10 05:44:09 EDT
+**Date:** 2026-06-10 06:12:12 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-arm64-hotspot-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 61 |
-| CPU Cores (end) | 59 |
+| CPU Cores (start) | 39 |
+| CPU Cores (end) | 39 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: musl-arm64-hotspot-jdk11
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (2 unique values: 59-61 cores)</summary>
+<summary>CPU Timeline (1 unique values: 39-39 cores)</summary>
 
 ```
-1781084441 61
-1781084446 61
-1781084451 61
-1781084456 61
-1781084461 61
-1781084466 61
-1781084471 61
-1781084476 61
-1781084481 61
-1781084486 61
-1781084491 61
-1781084496 61
-1781084501 61
-1781084506 61
-1781084511 61
-1781084516 61
-1781084521 61
-1781084526 61
-1781084531 61
-1781084536 61
+1781085942 39
+1781085947 39
+1781085952 39
+1781085957 39
+1781085962 39
+1781085967 39
+1781085972 39
+1781085977 39
+1781085982 39
+1781085987 39
+1781085992 39
+1781085997 39
+1781086002 39
+1781086007 39
+1781086012 39
+1781086017 39
+1781086022 39
+1781086027 39
+1781086032 39
+1781086037 39
 ```
 </details>
 
