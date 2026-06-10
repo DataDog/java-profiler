@@ -10,6 +10,7 @@
 #include "common.h"
 #include "flightRecorder.h"
 #include "libraryPatcher.h"
+#include "log.h"
 #include "os.h"
 #include "profiler.h"
 #include "tsc.h"
@@ -39,10 +40,10 @@ static std::atomic<uint64_t> _record_reject_calls{0};
 
 // intentional process-lifetime singleton — matches MallocTracer pattern; no destructor needed
 NativeSocketSampler* const NativeSocketSampler::_instance = new NativeSocketSampler();
-NativeSocketSampler::send_fn  NativeSocketSampler::_orig_send  = nullptr;
-NativeSocketSampler::recv_fn  NativeSocketSampler::_orig_recv  = nullptr;
-NativeSocketSampler::write_fn NativeSocketSampler::_orig_write = nullptr;
-NativeSocketSampler::read_fn  NativeSocketSampler::_orig_read  = nullptr;
+std::atomic<NativeSocketSampler::send_fn>  NativeSocketSampler::_orig_send{nullptr};
+std::atomic<NativeSocketSampler::recv_fn>  NativeSocketSampler::_orig_recv{nullptr};
+std::atomic<NativeSocketSampler::write_fn> NativeSocketSampler::_orig_write{nullptr};
+std::atomic<NativeSocketSampler::read_fn>  NativeSocketSampler::_orig_read{nullptr};
 
 std::string NativeSocketSampler::resolveAddr(int fd) {
     struct sockaddr_storage ss;
@@ -99,8 +100,36 @@ bool NativeSocketSampler::isSocket(int fd) {
     // High nibble encodes generation; entry is valid only when it matches current gen mod 16.
     if ((cached >> 4) == (gen & 0xF)) {
         uint8_t type = cached & 0xF;
-        if (type == FD_TYPE_SOCKET)     return true;
+        // A cached NON_SOCKET verdict is safe to trust: the worst case is that a
+        // newly-socketed fd reuse under-samples until the next gen reset, which is
+        // the documented accepted staleness tradeoff.
         if (type == FD_TYPE_NON_SOCKET) return false;
+        // A cached SOCKET verdict is NOT trusted blindly.  Without close()/dup2()
+        // interception, an fd classified SOCK_STREAM can be closed and reused for a
+        // regular file or pipe; trusting the cache would time ordinary file I/O and
+        // emit it as NativeSocketEvent for the rest of the session.  Re-probe with
+        // getsockopt() so a positive is always backed by the fd's current type; the
+        // re-probe refreshes the cell so a still-live socket pays the syscall only on
+        // the rare flake, and a reused fd is reclassified immediately.
+        if (type == FD_TYPE_SOCKET) {
+            int so_type;
+            socklen_t solen = sizeof(so_type);
+            int rc = getsockopt(fd, SOL_SOCKET, SO_TYPE, &so_type, &solen);
+            if (rc == 0) {
+                bool tcp = (so_type == SOCK_STREAM);
+                _fd_type_cache[fd].store(
+                    (uint8_t)(((gen & 0xF) << 4) | (tcp ? FD_TYPE_SOCKET : FD_TYPE_NON_SOCKET)),
+                    std::memory_order_release);
+                return tcp;
+            }
+            // Transient error (EBADF on a racing close, EINTR, …): do not poison the
+            // cache; treat as not-a-socket for this call without rewriting the cell.
+            if (errno == ENOTSOCK) {
+                _fd_type_cache[fd].store((uint8_t)(((gen & 0xF) << 4) | FD_TYPE_NON_SOCKET),
+                                         std::memory_order_release);
+            }
+            return false;
+        }
     }
 
     int so_type;
@@ -187,6 +216,12 @@ void NativeSocketSampler::recordEvent(int fd, u64 t0, u64 t1, ssize_t bytes, u8 
             _fd_cache.emplace(fd, resolved);
             if ((int)_fd_cache.size() >= MAX_FD_CACHE) {
                 _fd_cache_full.store(true, std::memory_order_release);
+                // Latch trips exactly once (guarded by the size check above, all
+                // under _fd_cache_mutex): emit a diagnostic so the otherwise-silent
+                // transition to blank remoteAddress fields is observable.
+                Log::info("NativeSocketSampler fd->addr cache full at %d entries; "
+                          "remoteAddress will be blank for new fds until restart",
+                          MAX_FD_CACHE);
             }
         }
     }
@@ -205,7 +240,7 @@ ssize_t NativeSocketSampler::send_hook(int fd, const void* buf, size_t len, int 
     // that obtain the static symbol address before LibraryPatcher::patch_socket_functions
     // has run).  Production hooks are unreachable until setOriginalFunctions() has been
     // called under _lock, so this branch is not exercised on the normal path.
-    send_fn fn = _orig_send;
+    send_fn fn = _orig_send.load(std::memory_order_acquire);
     if (fn == nullptr) { errno = ENOSYS; return -1; }
     if (!LibraryPatcher::_socket_active.load(std::memory_order_acquire)) return fn(fd, buf, len, flags);
 #ifdef DEBUG
@@ -222,7 +257,7 @@ ssize_t NativeSocketSampler::send_hook(int fd, const void* buf, size_t len, int 
 }
 
 ssize_t NativeSocketSampler::recv_hook(int fd, void* buf, size_t len, int flags) {
-    recv_fn fn = _orig_recv;
+    recv_fn fn = _orig_recv.load(std::memory_order_acquire);
     if (fn == nullptr) { errno = ENOSYS; return -1; }
     if (!LibraryPatcher::_socket_active.load(std::memory_order_acquire)) return fn(fd, buf, len, flags);
 #ifdef DEBUG
@@ -239,7 +274,7 @@ ssize_t NativeSocketSampler::recv_hook(int fd, void* buf, size_t len, int flags)
 }
 
 ssize_t NativeSocketSampler::write_hook(int fd, const void* buf, size_t len) {
-    write_fn fn = _orig_write;
+    write_fn fn = _orig_write.load(std::memory_order_acquire);
     if (fn == nullptr) { errno = ENOSYS; return -1; }
     if (!LibraryPatcher::_socket_active.load(std::memory_order_acquire)) return fn(fd, buf, len);
     NativeSocketSampler* self = _instance;
@@ -259,7 +294,7 @@ ssize_t NativeSocketSampler::write_hook(int fd, const void* buf, size_t len) {
 }
 
 ssize_t NativeSocketSampler::read_hook(int fd, void* buf, size_t len) {
-    read_fn fn = _orig_read;
+    read_fn fn = _orig_read.load(std::memory_order_acquire);
     if (fn == nullptr) { errno = ENOSYS; return -1; }
     if (!LibraryPatcher::_socket_active.load(std::memory_order_acquire)) return fn(fd, buf, len);
     NativeSocketSampler* self = _instance;
@@ -286,7 +321,6 @@ Error NativeSocketSampler::check(Arguments &args) {
 }
 
 Error NativeSocketSampler::start(Arguments &args) {
-    // clearFdCache() below resets the fd->addr cache and fd-type cache generation for the new session.
     // Initial sampling period: args._nativesocket_interval (ns) when > 0,
     // otherwise 1 ms default.  Converted to TSC ticks (time-weighted sampling).
     //
@@ -323,9 +357,12 @@ Error NativeSocketSampler::start(Arguments &args) {
     // (which carry no latency signal) are suppressed when the interval is large.
     _rate_limiter.start(init_interval, TARGET_EVENTS_PER_SECOND,
                         PID_WINDOW_SECS, PID_P_GAIN, PID_I_GAIN, PID_D_GAIN, PID_CUTOFF_S);
-    // Reset fd-type cache (clearFdCache bumps _fd_cache_gen under the mutex so
-    // the clear and the gen bump are atomic with respect to concurrent isSocket()
-    // calls — no stale entries can be inserted between the map clear and the bump).
+    // Clear the fd->addr cache and reset the fd-type cache generation for the new
+    // session so stale entries from a prior run cannot produce misattributed events
+    // even if stop() was not called.  clearFdCache() bumps _fd_cache_gen under the
+    // mutex so the clear and the gen bump are atomic with respect to concurrent
+    // isSocket() calls.  A single call per start() keeps the mod-16 generation-wrap
+    // budget at the full 16 cycles documented in nativeSocketSampler.h.
     clearFdCache();
 #ifdef DEBUG
     _send_hook_calls.store(0, std::memory_order_relaxed);

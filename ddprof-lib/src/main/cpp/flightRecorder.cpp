@@ -46,6 +46,15 @@
 static const char *const SETTING_RING[] = {NULL, "kernel", "user", "any"};
 static const char *const SETTING_CSTACK[] = {NULL, "no", "fp", "dwarf", "lbr"};
 
+// Compute a non-negative event duration from TSC timestamps.  Unsigned u64
+// subtraction wraps to a near-2^64 value when end < start, which can happen if
+// the thread migrates cores between the two TSC reads and the per-core counters
+// are not perfectly synchronised.  Clamp such inversions to 0 so the emitted
+// duration is never an absurd outlier.
+static inline u64 safeDuration(u64 start_time, u64 end_time) {
+  return end_time >= start_time ? end_time - start_time : 0;
+}
+
 SharedLineNumberTable::~SharedLineNumberTable() {
   // _ptr is a malloc'd copy of the JVMTI line number table (see
   // Lookup::fillJavaMethodInfo). Freeing here is independent of class
@@ -1834,7 +1843,7 @@ void Recording::recordNativeSocketSample(Buffer *buf, int tid, u64 call_trace_id
   buf->putVar64(event->_start_time);
   buf->putVar64(tid);
   buf->putVar64(call_trace_id);
-  buf->putVar64(event->_end_time - event->_start_time);
+  buf->putVar64(safeDuration(event->_start_time, event->_end_time));
   static const char* const kOpNames[] = {"SEND", "RECV", "WRITE", "READ"};
   buf->putUtf8(event->_operation < 4 ? kOpNames[event->_operation] : "UNKNOWN");
   buf->putUtf8(event->_remote_addr);
@@ -1872,7 +1881,7 @@ void Recording::recordMonitorBlocked(Buffer *buf, int tid, u64 call_trace_id,
   int start = buf->skip(1);
   buf->putVar64(T_MONITOR_ENTER);
   buf->putVar64(event->_start_time);
-  buf->putVar64(event->_end_time - event->_start_time);
+  buf->putVar64(safeDuration(event->_start_time, event->_end_time));
   buf->putVar64(tid);
   buf->putVar64(call_trace_id);
   buf->putVar64(event->_id);
@@ -1888,7 +1897,7 @@ void Recording::recordThreadPark(Buffer *buf, int tid, u64 call_trace_id,
   int start = buf->skip(1);
   buf->putVar64(T_THREAD_PARK);
   buf->putVar64(event->_start_time);
-  buf->putVar64(event->_end_time - event->_start_time);
+  buf->putVar64(safeDuration(event->_start_time, event->_end_time));
   buf->putVar64(tid);
   buf->putVar64(call_trace_id);
   buf->putVar64(event->_id);

@@ -34,8 +34,10 @@
  *
  *   1. @p value is added to @c _used.
  *   2. If @c _used < @c _threshold: no sample, return false.
- *   3. Otherwise: the threshold has been crossed.  Advance @c _threshold by
- *      a fresh draw from Exp(@p interval) so the next gap is independent.
+ *   3. Otherwise: the threshold has been crossed.  Set @c _threshold to
+ *      @c _used plus a fresh draw from Exp(@p interval) so the next gap is
+ *      independent and any surplus from a measurement that overshot the old
+ *      threshold is discarded (no burst sampling after a large @p value).
  *      Compute and return the weight (see below), return true.
  *
  * ## Weight formula and estimator invariant
@@ -131,9 +133,14 @@ public:
         if (_used < _threshold) {
             return false;
         }
-        // Threshold crossed: advance by a fresh Exp draw so the next
-        // inter-arrival gap is independent of all previous ones.
-        _threshold += nextExp(interval);
+        // Threshold crossed: rebase the next threshold on the current accumulator
+        // plus a fresh Exp draw.  A single large measurement can push _used far
+        // past _threshold (e.g. one long blocking read/write spanning many
+        // intervals); advancing relative to _threshold (+=) would leave the next
+        // threshold below _used and fire on every subsequent call until the gap is
+        // worked off — a burst-sampling bias.  Rebasing on _used drops the crossed
+        // surplus so the next inter-arrival gap starts fresh and independent.
+        _threshold = _used + nextExp(interval);
         // Float precision: when value >> interval, expf(-value/interval) rounds to 0.0f,
         // so weight = 1.0f / (1.0f - 0.0f) = 1.0f. This is a conservative lower bound —
         // large events count as weight >= 1.0. Intentional; avoids the cost of double arithmetic.

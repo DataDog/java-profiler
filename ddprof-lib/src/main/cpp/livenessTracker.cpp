@@ -211,10 +211,6 @@ void LivenessTracker::stop() {
 
 Error LivenessTracker::initialize(Arguments &args) {
   _enabled = args._gc_generations || args._record_liveness;
-  // Per-call toggles that must reflect the current start's arguments even when
-  // the tracker's table is reused from a prior initialize (_initialized=true).
-  // On musl the test JVM is not forked per test, so the singleton survives.
-  _record_heap_usage = args._record_heap_usage;
 
   if (!_enabled) {
     return Error::OK;

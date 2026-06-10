@@ -38,8 +38,12 @@ class LibraryPatcher;
 // _fd_type_cache        : std::atomic<uint8_t> array, lock-free.  Entry encoding:
 //                         bits [7:4] = generation mod 16, bits [3:0] = type
 //                         (0=unknown, 1=TCP socket, 2=non-TCP).  Valid only when
-//                         high nibble matches _fd_cache_gen mod 16.  Stale entries
-//                         after fd reuse cause at most one extra getsockopt() call.
+//                         high nibble matches _fd_cache_gen mod 16.  A cached SOCKET
+//                         verdict is re-probed with getsockopt() on every call so a
+//                         closed-and-reused fd (e.g. socket→regular file) cannot keep
+//                         misclassifying ordinary I/O as socket I/O.  A cached
+//                         NON_SOCKET verdict is trusted (worst case: a reused fd
+//                         under-samples until the next gen reset).
 // _rate_limiter         : RateLimiter — owns std::atomic interval, epoch, and
 //                         event count.  PID update races are resolved by CAS
 //                         inside RateLimiter::maybeUpdateInterval().
@@ -81,34 +85,33 @@ public:
     // Called once by LibraryPatcher::patch_socket_functions() to install the
     // real libc function pointers before any PLT entries are patched.
     static void setOriginalFunctions(send_fn s, recv_fn r, write_fn w, read_fn rd) {
-        _orig_send = s; _orig_recv = r; _orig_write = w; _orig_read = rd;
+        _orig_send.store(s, std::memory_order_release);
+        _orig_recv.store(r, std::memory_order_release);
+        _orig_write.store(w, std::memory_order_release);
+        _orig_read.store(rd, std::memory_order_release);
     }
 
     // For testing only: retrieve the current original function pointers.
     static void getOriginalFunctions(send_fn& s, recv_fn& r, write_fn& w, read_fn& rd) {
-        s = _orig_send; r = _orig_recv; w = _orig_write; rd = _orig_read;
+        s = _orig_send.load(std::memory_order_acquire);
+        r = _orig_recv.load(std::memory_order_acquire);
+        w = _orig_write.load(std::memory_order_acquire);
+        rd = _orig_read.load(std::memory_order_acquire);
     }
 
 private:
     static NativeSocketSampler* const _instance;
 
-    // Set once by setOriginalFunctions() (called under _lock, before PLT patching) and
-    // never reset to null while hooks are active.  No atomic needed: the __ATOMIC_RELEASE
-    // on each PLT patch provides a store-store barrier that keeps these assignments
-    // visible before the PLT entry becomes observable; the _socket_active release/acquire
-    // pair establishes happens-before for any hook that sees _socket_active=true.
-    //
-    // ASSUMPTION (documented for any future port to a weaker memory model): we do not
-    // restart the profiler in production — start()/stop() are exercised only in tests.
-    // A formal data race would only be observable on a stop()→start() restart cycle when
-    // a stale-epoch hook is still in flight while setOriginalFunctions() rewrites these
-    // pointers.  On x86_64 and aarch64 aligned-pointer stores are atomic by hardware so
-    // no value tearing occurs in practice.  If restart-in-prod ever becomes a supported
-    // mode, declare these as std::atomic<...> with release/acquire pairing.
-    static send_fn  _orig_send;
-    static recv_fn  _orig_recv;
-    static write_fn _orig_write;
-    static read_fn  _orig_read;
+    // Set by setOriginalFunctions() (called under _lock, before PLT patching) and
+    // read by the hooks on arbitrary application threads.  Declared std::atomic with
+    // release/acquire pairing so a stop()→start() restart cycle, which rewrites these
+    // pointers while a stale-epoch hook may still be in flight, has no data race and no
+    // value tearing on any memory model.  The acquire load in each hook also pairs with
+    // the release store here to publish the pointer before the hook observes it.
+    static std::atomic<send_fn>  _orig_send;
+    static std::atomic<recv_fn>  _orig_recv;
+    static std::atomic<write_fn> _orig_write;
+    static std::atomic<read_fn>  _orig_read;
 
     // Target aggregate event rate: ~83 events/s (~5000/min) across all four hooks
     // (send/write and recv/read) combined.
@@ -177,7 +180,9 @@ private:
     std::string resolveAddr(int fd);
 
     // Returns true if fd is a SOCK_STREAM socket (including AF_UNIX).
-    // Uses the fd-type cache; calls getsockopt on first encounter per fd.
+    // Uses the fd-type cache; calls getsockopt on first encounter per fd and on
+    // every cached-SOCKET hit to revalidate against fd reuse (a closed socket fd
+    // reassigned to a regular file/pipe must not keep emitting socket events).
     bool isSocket(int fd);
 
     // Decide whether to sample and compute weight.
