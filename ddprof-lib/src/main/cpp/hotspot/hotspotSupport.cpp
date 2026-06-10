@@ -672,8 +672,12 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 } else if (mark == MARK_COMPILER_ENTRY && features.comp_task && vm_thread != NULL) {
                     // Insert current compile task as a pseudo Java frame
                     VMMethod* method = vm_thread->compiledMethod();
-                    jmethodID method_id = method != NULL ? method->id() : NULL;
-                    fillFrame(frames[depth++], FRAME_JIT_COMPILED, 0, method_id, method);
+                    if (method != nullptr) {
+                        jmethodID method_id = method->id();
+                        if (method_id != JMETHODID_NOT_WALKABLE) {
+                            fillFrame(frames[depth++], FRAME_JIT_COMPILED, 0, method_id, method);
+                        }
+                    }
                 } else if (mark == MARK_THREAD_ENTRY) {
                     // Thread entry point detected via pre-computed mark - this is the root frame
                     // No need for expensive symbol resolution, just stop unwinding
@@ -1268,8 +1272,7 @@ bool isHiddenClass(jvmtiEnv *jvmti, jclass clazz) {
 
 bool HotspotSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
     jobject cl = nullptr;
-    // Hotspot only: no hidden/lambda classes loaded by system class loaders, which are never unloaded,
-    // we use Method instead.
+    // Hidden/lambda classes can not unloaded, fallback to use jmethodIDs, so preload them.
     if (!isHiddenClass(jvmti, klass) &&
         jvmti->GetClassLoader(klass, &cl) == JVMTI_ERROR_NONE && 
         isSystemClassLoader(jni, cl)) {
@@ -1300,7 +1303,7 @@ bool HotspotSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klas
 jmethodID HotspotSupport::resolve(const void* method) {
   assert(VM::isHotspot());
   assert(method != nullptr);
-  // We packed not walkable method as raw pointer,
+  // We packed not walkable method as a raw pointer,
   // map it back to nullptr, as JMETHODID_NOT_WALKABLE is only
   // known in hotspot.
   if ((jmethodID)method == JMETHODID_NOT_WALKABLE) {

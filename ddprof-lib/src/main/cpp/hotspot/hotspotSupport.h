@@ -47,6 +47,13 @@ public:
         return JitCodeCache::isJitCode(p);
     }
 
+    // If 
+    static inline bool shouldPreloadJmethodIDs() {
+        CStack cstack = VM::arguments()._cstack;
+        return VM::arguments()._force_jmethodID ||
+            !(cstack == CSTACK_VM || cstack == CSTACK_DEFAULT); // Can only use Method* when cstack = vm
+    }
+
     static jmethodID resolve(const void* method);
 };
 
