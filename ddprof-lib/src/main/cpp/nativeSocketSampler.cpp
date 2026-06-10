@@ -286,9 +286,7 @@ Error NativeSocketSampler::check(Arguments &args) {
 }
 
 Error NativeSocketSampler::start(Arguments &args) {
-    // Clear the fd cache on start so stale entries from a prior session don't
-    // produce misattributed events even if stop() was not called.
-    clearFdCache();
+    // clearFdCache() below resets the fd->addr cache and fd-type cache generation for the new session.
     // Initial sampling period: args._nativesocket_interval (ns) when > 0,
     // otherwise 1 ms default.  Converted to TSC ticks (time-weighted sampling).
     //
