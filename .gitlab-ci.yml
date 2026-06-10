@@ -152,6 +152,66 @@ jdk-integration-test:
     forward:
       pipeline_variables: true
 
+# Generates a child pipeline YAML for reliability/chaos tests when the PR
+# carries the test:reliability label (RUN_RELIABILITY=true in build.env).
+generate-reliability-child-pipeline:
+  stage: reliability
+  tags: ["arch:amd64"]
+  image: alpine
+  needs:
+    - job: prepare:start
+      artifacts: true
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
+      when: never
+    - when: on_success
+  script:
+    - |
+      if [ "${RUN_RELIABILITY:-}" = "true" ]; then
+        echo "Label test:reliability detected — enabling reliability child pipeline"
+        cp .gitlab/reliability/pr-child.gitlab-ci.yml generated-reliability.yml
+      else
+        cat > generated-reliability.yml << 'NOOP'
+      skip-reliability:
+        image: alpine
+        tags: ["arch:amd64"]
+        script:
+          - echo "Label test:reliability not set — skipping"
+        rules:
+          - when: always
+      NOOP
+      fi
+  artifacts:
+    paths:
+      - generated-reliability.yml
+    expire_in: 1 day
+
+run-reliability-tests:
+  stage: reliability
+  needs:
+    - job: generate-reliability-child-pipeline
+      artifacts: true
+    - job: prepare:start
+      artifacts: true
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
+      when: never
+    - when: on_success
+  trigger:
+    include:
+      - artifact: generated-reliability.yml
+        job: generate-reliability-child-pipeline
+    strategy: depend
+    forward:
+      pipeline_variables: true
+    variables:
+      DDPROF_COMMIT_BRANCH: "$DDPROF_COMMIT_BRANCH"
+      DDPROF_COMMIT_SHA: "$DDPROF_COMMIT_SHA"
+
 include:
   - local: .gitlab/common.yml
   - local: .adms/python/gitlab.yaml

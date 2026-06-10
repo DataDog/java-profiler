@@ -1,0 +1,155 @@
+# Child pipeline for reliability + chaos tests triggered on PRs
+# labelled test:reliability. Runs the same matrix as the scheduled pipeline
+# but with on_success rules and without needing parent-pipeline artifacts
+# (chaos_check.sh rebuilds chaos.jar inline when the artifact is absent).
+
+stages:
+  - prepare
+  - test
+  - notify
+
+include:
+  - local: .gitlab/common.yml
+  - local: .gitlab/benchmarks/images.yml
+
+get-versions:
+  extends: .get-versions
+  needs: []
+
+# ── Reliability (non-chaos) ──────────────────────────────────────────────────
+
+.reliability_pr_job:
+  stage: test
+  timeout: 6h
+  variables:
+    RUNTIME: "${RUNTIME:-120}"
+  needs:
+    - job: get-versions
+      artifacts: true
+  rules:
+    - when: on_success
+  parallel:
+    matrix:
+      - CONFIG: ["profiler", "profiler+tracer"]
+        VARIANT: ["jit", "memory"]
+        ALLOCATOR: ["gmalloc", "jemalloc", "tcmalloc"]
+  script:
+    - set +e
+    - echo "runtime=${RUNTIME}, config=${CONFIG}, variant=${VARIANT}, allocator=${ALLOCATOR}, arch=${ARCH}"
+    - .gitlab/reliability/run.sh "$RUNTIME" "$CONFIG" "$VARIANT" "$ALLOCATOR" "$ARCH" 2>err.log 1>out.log
+    - REASON=$(grep -m1 'FAIL:' err.log | cut -f2- -d':' | tr -d '\n') || true
+    - if [ -n "${REASON}" ]; then _key=$(printf 'REASON_%s_%s_%sX%s' "${CONFIG}" "${ALLOCATOR}" "${ARCH}" "${VARIANT}" | tr '+' '_'); echo "${_key}=${REASON}" >> build.env; exit 1; fi
+  after_script:
+    - |
+      if [[ "$CI_JOB_STATUS" == "failed" ]]; then
+        _key=$(printf 'REASON_%s_%s_%sX%s' "${CONFIG}" "${ALLOCATOR}" "${ARCH}" "${VARIANT}" | tr '+' '_')
+        grep -q "${_key}=" build.env 2>/dev/null || echo "${_key}=Unknown failure, perhaps timeout" >> build.env
+      fi
+  artifacts:
+    name: "results-${ARCH}"
+    when: always
+    paths:
+      - memwatch.log
+      - memwatch-trend.png
+      - hs_err.log
+      - err.log
+      - out.log
+    reports:
+      dotenv: build.env
+    expire_in: 1 day
+
+reliability-amd64:
+  extends: .reliability_pr_job
+  tags: ["arch:amd64"]
+  image: $BENCHMARK_IMAGE_AMD64
+  variables:
+    ARCH: amd64
+
+reliability-aarch64:
+  extends: .reliability_pr_job
+  tags: ["arch:arm64"]
+  image: $BENCHMARK_IMAGE_ARM64
+  variables:
+    ARCH: aarch64
+
+# ── Chaos ────────────────────────────────────────────────────────────────────
+# chaos_check.sh builds chaos.jar inline (via Gradle) when the artifact is
+# absent, and downloads ddprof from Maven snapshots when no local jar exists.
+
+.reliability_chaos_pr_job:
+  stage: test
+  timeout: 6h
+  variables:
+    RUNTIME: "${RUNTIME:-120}"
+  needs:
+    - job: get-versions
+      artifacts: true
+  rules:
+    - when: on_success
+  parallel:
+    matrix:
+      - CONFIG: ["profiler", "profiler+tracer"]
+        ALLOCATOR: ["gmalloc", "jemalloc", "tcmalloc"]
+        CHAOS_JDK: ["21.0.3-tem", "25.0.3-tem"]
+  script:
+    - set +e
+    - echo "runtime=${RUNTIME}, config=${CONFIG}, allocator=${ALLOCATOR}, arch=${ARCH}, jdk=${CHAOS_JDK}"
+    - CHAOS_JDK="${CHAOS_JDK}" .gitlab/reliability/chaos_check.sh "$RUNTIME" "$CONFIG" "$ALLOCATOR" 2>err.log 1>out.log
+    - REASON=$(grep -m1 'FAIL:' err.log | cut -f2- -d':' | tr -d '\n') || true
+    - if [ -n "${REASON}" ]; then _key=$(printf 'REASON_%s_%s_%s_%sXchaos' "${CONFIG}" "${ALLOCATOR}" "${ARCH}" "${CHAOS_JDK//[.-]/_}" | tr '+' '_'); echo "${_key}=${REASON}" >> build.env; exit 1; fi
+  after_script:
+    - |
+      if [[ "$CI_JOB_STATUS" == "failed" ]]; then
+        _key=$(printf 'REASON_%s_%s_%s_%sXchaos' "${CONFIG}" "${ALLOCATOR}" "${ARCH}" "${CHAOS_JDK//[.-]/_}" | tr '+' '_')
+        grep -q "${_key}=" build.env 2>/dev/null || echo "${_key}=Unknown failure, perhaps timeout" >> build.env
+      fi
+  artifacts:
+    name: "chaos-results-${ARCH}"
+    when: always
+    paths:
+      - hs_err.log
+      - err.log
+      - out.log
+    reports:
+      dotenv: build.env
+    expire_in: 1 day
+
+reliability-chaos-amd64:
+  extends: .reliability_chaos_pr_job
+  tags: ["arch:amd64"]
+  image: $BENCHMARK_IMAGE_AMD64
+  variables:
+    ARCH: amd64
+
+reliability-chaos-aarch64:
+  extends: .reliability_chaos_pr_job
+  tags: ["arch:arm64"]
+  image: $BENCHMARK_IMAGE_ARM64
+  variables:
+    ARCH: aarch64
+
+# ── PR comment ───────────────────────────────────────────────────────────────
+
+post-reliability-pr-comment:
+  extends: .retry-config
+  stage: notify
+  tags: ["arch:arm64"]
+  image: registry.ddbuild.io/images/dd-octo-sts-ci-base:2025.06-1
+  id_tokens:
+    DDOCTOSTS_ID_TOKEN:
+      aud: dd-octo-sts
+  needs:
+    - job: reliability-amd64
+      artifacts: true
+    - job: reliability-aarch64
+      artifacts: true
+    - job: reliability-chaos-amd64
+      artifacts: true
+    - job: reliability-chaos-aarch64
+      artifacts: true
+  rules:
+    - when: always
+  timeout: 5m
+  script:
+    - .gitlab/reliability/post-pr-comment.sh
+  allow_failure: true
