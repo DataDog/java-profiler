@@ -73,6 +73,73 @@ static void unregister_and_release(int tid) {
     ProfiledThread::release();
 }
 
+// pthread_cleanup_push callback for thread wrappers.
+// Fires when the wrapped routine calls pthread_exit() or the thread is
+// canceled.  Kept noinline so its stack frame (which may hold a SignalBlocker
+// via unregister_and_release) lives outside the DEOPT-corruption zone of the
+// caller on musl/aarch64, and so that the SignalBlocker's sigset_t does not
+// appear in the caller's frame on platforms with stack-protector canaries.
+__attribute__((noinline))
+static void cleanup_unregister(void*) {
+    unregister_and_release(ProfiledThread::currentTid());
+}
+
+// Thread-cleanup wrapper that avoids the static-libgcc / forced-unwind crash.
+//
+// The crash: on glibc, pthread_cleanup_push in C++ mode expands to
+// __pthread_cleanup_class (RAII), which adds a cleanup entry to the LSDA of
+// this frame.  When libjavaProfiler.so is built with -static-libgcc, the
+// embedded __gxx_personality_v0 is called by the dynamic libgcc_s.so.1's
+// _Unwind_ForcedUnwind.  The two libgcc versions have incompatible
+// _Unwind_Context layouts; calling _Unwind_SetGR (which happens when the
+// personality finds a cleanup action) with a cross-version context triggers
+// the cold/error path, which calls abort().
+//
+// The fix: use __pthread_register_cancel / __pthread_unregister_cancel
+// directly — the same thing the C macro form of pthread_cleanup_push does.
+// This registers cleanup via a setjmp buffer in a runtime linked-list, NOT
+// via an LSDA destructor.  _Unwind_ForcedUnwind's stop function
+// (__pthread_unwind_stop) handles the cleanup without ever calling
+// __gxx_personality_v0 for this frame, so _Unwind_SetGR is never called and
+// the cross-version incompatibility is never triggered.
+//
+// On musl: pthread_cleanup_push already uses the C/setjmp form (no RAII),
+// and pthread_exit does not use _Unwind_ForcedUnwind, so there is no issue.
+// The __GLIBC__ guard keeps the musl path unchanged.
+#ifdef __GLIBC__
+// On glibc, <pthread.h> declares __pthread_register_cancel etc. only inside
+// the C (non-C++) conditional, so they're invisible in C++ code.  Redeclare
+// them with extern "C" so we can call them directly without the header guard.
+extern "C" {
+    extern void __pthread_register_cancel(__pthread_unwind_buf_t*);
+    extern void __pthread_unregister_cancel(__pthread_unwind_buf_t*);
+    [[noreturn]] extern void __pthread_unwind_next(__pthread_unwind_buf_t*);
+}
+#endif
+
+__attribute__((noinline, no_stack_protector))
+static void run_with_cleanup(func_start_routine routine, void* params) {
+#ifdef __GLIBC__
+    __pthread_unwind_buf_t cancel_buf;
+    if (__builtin_expect(
+            __sigsetjmp((struct __jmp_buf_tag*)(void*)cancel_buf.__cancel_jmp_buf, 0), 0)) {
+        // Reached via longjmp from glibc's stop function when pthread_exit
+        // (or cancellation) fires.  Run cleanup and continue unwinding.
+        cleanup_unregister(nullptr);
+        __pthread_unwind_next(&cancel_buf);
+    }
+    __pthread_register_cancel(&cancel_buf);
+    routine(params);
+    __pthread_unregister_cancel(&cancel_buf);
+    cleanup_unregister(nullptr);
+#else
+    // musl / non-glibc: pthread_cleanup_push uses the C/setjmp form, no RAII.
+    pthread_cleanup_push(cleanup_unregister, nullptr);
+    routine(params);
+    pthread_cleanup_pop(1);
+#endif
+}
+
 #ifdef __aarch64__
 // Delete RoutineInfo with profiling signals blocked to prevent ASAN
 // allocator lock reentrancy. Kept noinline so SignalBlocker's sigset_t
@@ -97,29 +164,6 @@ static void init_tls_and_register() {
         pt->startInitWindow();
     }
     Profiler::registerThread(ProfiledThread::currentTid());
-}
-
-// pthread_cleanup_push callback for start_routine_wrapper_spec.
-// Fires when the wrapped routine calls pthread_exit() or the thread is
-// canceled.  Kept noinline so its stack frame (which may hold a SignalBlocker
-// via unregister_and_release) lives outside the DEOPT-corruption zone of
-// start_routine_wrapper_spec.
-__attribute__((noinline))
-static void cleanup_unregister(void*) {
-    unregister_and_release(ProfiledThread::currentTid());
-}
-
-// pthread_cleanup_push declares `struct __ptcb` in the caller's frame.  If that
-// frame is start_routine_wrapper_spec, the structure sits inside the ~224-byte
-// DEOPT-corruption zone and pthread_cleanup_pop(1) would invoke a clobbered
-// function pointer.  This noinline + no_stack_protector helper hoists the
-// cleanup-handler frame out of the corruption zone — its own frame lives
-// safely above start_routine_wrapper_spec's.
-__attribute__((noinline, no_stack_protector))
-static void run_with_musl_cleanup(func_start_routine routine, void* params) {
-    pthread_cleanup_push(cleanup_unregister, nullptr);
-    routine(params);
-    pthread_cleanup_pop(1);
 }
 
 // Wrapper around the real start routine.
@@ -172,9 +216,9 @@ static void* start_routine_wrapper_spec(void* args) {
     delete_routine_info(thr);
     init_tls_and_register();
     // cleanup_unregister fires on pthread_exit() or cancellation from within
-    // routine(params).  The push/pop pair lives inside run_with_musl_cleanup so
+    // routine(params).  The push/pop pair lives inside run_with_cleanup so
     // that `struct __ptcb` does not land in this frame's DEOPT-corruption zone.
-    run_with_musl_cleanup(routine, params);
+    run_with_cleanup(routine, params);
     // pthread_exit instead of 'return': the saved LR in this frame is corrupted
     // by DEOPT PACKING; returning would jump to a garbage address.
     pthread_exit(nullptr);
@@ -227,13 +271,8 @@ static void* start_routine_wrapper(void* args) {
         ProfiledThread::currentSignalSafe()->startInitWindow();
         Profiler::registerThread(ProfiledThread::currentTid());
     }
-    // RAII cleanup: reads tid from TLS in the destructor (same rationale as
-    // start_routine_wrapper_spec: avoids storing state on a potentially corruptible frame).
-    // unregister_and_release() wraps the two calls under SignalBlocker (PROF-14603).
-    struct Cleanup {
-        ~Cleanup() { unregister_and_release(ProfiledThread::currentTid()); }
-    } cleanup;
-    routine(params);
+    // Use POSIX cleanup instead of C++ RAII to handle pthread_exit(): see run_with_cleanup.
+    run_with_cleanup(routine, params);
     return nullptr;
 }
 
