@@ -140,9 +140,8 @@ private:
 
     // fd → "ip:port" LRU cache.  Bounded to MAX_FD_CACHE entries; on overflow
     // the least-recently-used entry is evicted.  All access is under _fd_cache_mutex.
-    // Address staleness on fd reuse is accepted: worst case is one misattributed
-    // event per reuse before the entry is updated.
-    static const int MAX_FD_CACHE = 65536;
+    // Address is always re-probed on sampled events (see recordEvent) so fd reuse
+    // is detected within one sampling interval.
     using FdAddrList = std::list<std::pair<int, std::string>>;
     FdAddrList _fd_lru_list;
     std::unordered_map<int, FdAddrList::iterator> _fd_cache;
@@ -188,6 +187,8 @@ private:
 
 public:
     // Test seams — not part of the production API.
+    static const int MAX_FD_CACHE = 65536;
+
     int  fdAddrCacheSizeForTest() {
         std::lock_guard<std::mutex> lock(_fd_cache_mutex);
         return (int)_fd_cache.size();

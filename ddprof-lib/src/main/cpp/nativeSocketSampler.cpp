@@ -210,25 +210,28 @@ void NativeSocketSampler::recordEvent(int fd, u64 t0, u64 t1, ssize_t bytes, u8 
     event._end_time   = t1;
     event._operation  = op;
     event._remote_addr[0] = '\0';
+    // Always re-probe the peer address on sampled events so that a closed-and-reused
+    // fd (new TCP connection on the same fd number) gets a fresh address rather than
+    // the previous peer's address from the LRU cache.  The cost (one getpeername per
+    // sampled event) is bounded by the sampling rate and acceptable here.
     {
-        std::lock_guard<std::mutex> lock(_fd_cache_mutex);
-        auto it = _fd_cache.find(fd);
-        if (it != _fd_cache.end()) {
-            // Cache hit: promote to MRU and copy address.
-            _fd_lru_list.splice(_fd_lru_list.begin(), _fd_lru_list, it->second);
-            strncpy(event._remote_addr, it->second->second.c_str(), sizeof(event._remote_addr) - 1);
-            event._remote_addr[sizeof(event._remote_addr) - 1] = '\0';
-        }
-    }
-    // Cache miss: resolve outside the lock, then insert under lock.
-    // TOCTOU: a concurrent thread may insert the same fd between the two critical
-    // sections; the second lock re-checks and updates rather than double-inserts.
-    if (event._remote_addr[0] == '\0') {
         std::string resolved = resolveAddr(fd);
-        strncpy(event._remote_addr, resolved.c_str(), sizeof(event._remote_addr) - 1);
-        event._remote_addr[sizeof(event._remote_addr) - 1] = '\0';
-        std::lock_guard<std::mutex> lock(_fd_cache_mutex);
-        insertFdAddrLocked(fd, std::move(resolved));
+        if (!resolved.empty()) {
+            strncpy(event._remote_addr, resolved.c_str(), sizeof(event._remote_addr) - 1);
+            event._remote_addr[sizeof(event._remote_addr) - 1] = '\0';
+            std::lock_guard<std::mutex> lock(_fd_cache_mutex);
+            insertFdAddrLocked(fd, std::move(resolved));
+        } else {
+            // resolveAddr returned empty (AF_UNIX, not yet connected, etc.); fall back
+            // to the cached value if one exists.
+            std::lock_guard<std::mutex> lock(_fd_cache_mutex);
+            auto it = _fd_cache.find(fd);
+            if (it != _fd_cache.end()) {
+                _fd_lru_list.splice(_fd_lru_list.begin(), _fd_lru_list, it->second);
+                strncpy(event._remote_addr, it->second->second.c_str(), sizeof(event._remote_addr) - 1);
+                event._remote_addr[sizeof(event._remote_addr) - 1] = '\0';
+            }
+        }
     }
     // ret > 0 checked above; cast is safe.
     event._bytes  = (u64)bytes;
@@ -248,6 +251,8 @@ ssize_t NativeSocketSampler::send_hook(int fd, const void* buf, size_t len, int 
     send_fn fn = _orig_send.load(std::memory_order_acquire);
     if (fn == nullptr) { errno = ENOSYS; return -1; }
     if (!LibraryPatcher::_socket_active.load(std::memory_order_acquire)) return fn(fd, buf, len, flags);
+    NativeSocketSampler* self = _instance;
+    if (!self->isSocket(fd)) return fn(fd, buf, len, flags);
 #ifdef DEBUG
     {
         uint64_t n = _send_hook_calls.fetch_add(1, std::memory_order_relaxed);
@@ -265,6 +270,8 @@ ssize_t NativeSocketSampler::recv_hook(int fd, void* buf, size_t len, int flags)
     recv_fn fn = _orig_recv.load(std::memory_order_acquire);
     if (fn == nullptr) { errno = ENOSYS; return -1; }
     if (!LibraryPatcher::_socket_active.load(std::memory_order_acquire)) return fn(fd, buf, len, flags);
+    NativeSocketSampler* self = _instance;
+    if (!self->isSocket(fd)) return fn(fd, buf, len, flags);
 #ifdef DEBUG
     {
         uint64_t n = _recv_hook_calls.fetch_add(1, std::memory_order_relaxed);
