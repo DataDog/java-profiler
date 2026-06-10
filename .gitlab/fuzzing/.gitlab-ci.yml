@@ -1,0 +1,31 @@
+variables:
+  FUZZ_IMAGE: registry.ddbuild.io/java-profiler-fuzz
+  FUZZYDOG_VERSION: "0.28.0"
+
+fuzz_infra:
+  needs: []
+  extends: .retry-config
+  image: registry.ddbuild.io/images/docker:27.3.1
+  tags: ["arch:amd64"]
+  stage: fuzz
+  timeout: 30m
+  allow_failure: true
+  id_tokens:
+    DDSIGN_ID_TOKEN:
+      aud: image-integrity
+  rules:
+    - if: $NIGHTLY_BUILD == "true"
+    - when: manual
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq curl unzip jq
+    - >-
+      curl -fsSL "https://binaries.ddbuild.io/fuzzing/fuzzydog/${FUZZYDOG_VERSION}/fuzzydog-tar.tar.gz"
+      | tar -xz -C /usr/local/bin fuzzydog-linux-amd64 &&
+      mv /usr/local/bin/fuzzydog-linux-amd64 /usr/local/bin/fuzzydog
+    - >-
+      curl -fsSL "https://releases.hashicorp.com/vault/1.21.1/vault_1.21.1_linux_amd64.zip"
+      -o /tmp/vault.zip &&
+      unzip -o /tmp/vault.zip -d /usr/local/bin vault &&
+      rm /tmp/vault.zip
+  script:
+    - .gitlab/scripts/fuzz_infra.sh
