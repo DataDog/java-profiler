@@ -38,6 +38,10 @@ enum ImportId {
   im_posix_memalign,
   im_aligned_alloc,
   im_sigaction,
+  im_send,
+  im_recv,
+  im_write,
+  im_read,
   NUM_IMPORTS
 };
 
