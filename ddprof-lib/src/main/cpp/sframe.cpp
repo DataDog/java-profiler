@@ -129,20 +129,7 @@ bool SFrameParser::parseFDE(const SFrameHeader* hdr, const SFrameFDE* fde,
         // Guard: CFA offset must fit in the 24-bit field packed into FrameDesc::cfa
         if (cfa_offset < -8388608 || cfa_offset > 8388607) return false;
 
-        // (g) Read FP offset if tracked
-        int32_t fp_offset = 0;
-        if (fp_tracked) {
-            if (off_size == 1) {
-                fp_offset = *reinterpret_cast<const int8_t*>(fre_ptr);
-            } else if (off_size == 2) {
-                int16_t v; memcpy(&v, fre_ptr, 2); fp_offset = v;
-            } else {
-                memcpy(&fp_offset, fre_ptr, 4);
-            }
-            fre_ptr += off_size;
-        }
-
-        // (h) Read RA offset if present in FRE (always consume to keep fre_ptr aligned)
+        // (g) Read RA offset if tracked
         int32_t ra_offset = 0;
         if (ra_in_fre) {
             if (off_size == 1) {
@@ -151,6 +138,19 @@ bool SFrameParser::parseFDE(const SFrameHeader* hdr, const SFrameFDE* fde,
                 int16_t v; memcpy(&v, fre_ptr, 2); ra_offset = v;
             } else {
                 memcpy(&ra_offset, fre_ptr, 4);
+            }
+            fre_ptr += off_size;
+        }
+
+        // (h) Read FP offset if tracked
+        int32_t fp_offset = 0;
+        if (fp_tracked) {
+            if (off_size == 1) {
+                fp_offset = *reinterpret_cast<const int8_t*>(fre_ptr);
+            } else if (off_size == 2) {
+                int16_t v; memcpy(&v, fre_ptr, 2); fp_offset = v;
+            } else {
+                memcpy(&fp_offset, fre_ptr, 4);
             }
             fre_ptr += off_size;
         }
@@ -282,9 +282,13 @@ bool SFrameParser::parse() {
         const SFrameFDE* fde = &fde_array[i];
         if (SFRAME_FUNC_FDE_TYPE(fde->info) != 0) continue;  // skip PCMASK
         if (fde->fre_num == 0)                    continue;  // empty FDE
+        int saved_count             = _count;
+        int saved_linked_frame_size = _linked_frame_size;
         if (!parseFDE(hdr, fde, fre_section, fre_end)) {
             if (_oom) return false;  // OOM: partial table is not safe to use
-            // else: corrupt FDE, skip and continue
+            // Corrupt FDE: roll back any partially-added records.
+            _count             = saved_count;
+            _linked_frame_size = saved_linked_frame_size;
         }
     }
 
