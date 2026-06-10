@@ -74,6 +74,13 @@ class FuzzTargetsPlugin : Plugin<Project> {
         }
 
         if (!hasFuzzer) {
+            val msg = if (PlatformUtils.currentPlatform == Platform.MACOS) {
+                "WARNING: libFuzzer not available on macOS — skipping fuzz targets. " +
+                "Install LLVM via Homebrew and ensure 'clang' resolves to the Homebrew clang."
+            } else {
+                "WARNING: libFuzzer not available — skipping fuzz targets (requires clang with -fsanitize=fuzzer)."
+            }
+            project.logger.lifecycle(msg)
             createListFuzzTargetsTask(project, extension)
             return
         }
