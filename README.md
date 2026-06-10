@@ -135,7 +135,7 @@ The project includes both Java and C++ unit tests. You can run them using:
 `JAVA_TEST_HOME=<path to test JDK> ./gradlew testDebug`
 
 ### Container-Based Testing (musl/glibc)
-Run tests in containers to test on different libc implementations. The script defaults to Podman; set `CONTAINER_RUNTIME=docker` to use Docker instead. Uses two-level container image caching for fast subsequent runs:
+Run tests in containers to test on different libc implementations. The script defaults to Podman; use `--container=docker` to use Docker instead. Uses two-level container image caching for fast subsequent runs:
 1. **Base image** (`java-profiler-base:<libc>-<arch>`) - OS with all build tools + sanitizers
 2. **JDK image** (`java-profiler-test:<libc>-jdk<version>-<arch>`) - Adds JDK + Gradle
 
@@ -161,7 +161,7 @@ By default, the script clones the repository at the current commit for clean bui
 ./utils/run-containers-tests.sh --libc=glibc --config=asan --gtest-task=elfparser_ut
 
 # Use Docker instead of the default Podman runtime
-CONTAINER_RUNTIME=docker ./utils/run-containers-tests.sh --libc=glibc --jdk=21
+./utils/run-containers-tests.sh --container=docker --libc=glibc --jdk=21
 
 # Force rebuild of all cached container images
 ./utils/run-containers-tests.sh --libc=musl --jdk=21 --rebuild
@@ -178,6 +178,7 @@ Supported options:
 - `--jdk=8|11|17|21|25|8-j9|11-j9|17-j9|21-j9|17-graal|21-graal|25-graal` (default: 21)
 - `--arch=x64|aarch64` (default: auto-detect)
 - `--config=debug|release|asan|tsan` (default: debug)
+- `--container=podman|docker` (default: podman)
 - `--tests="TestPattern"`
 - `--gtest` (enable C++ gtests, disabled by default for faster runs)
 - `--gtest-task=Task` (run one C++ gtest task; accepts `elfparser_ut` or a full task path like `:ddprof-lib:gtestAsan_elfparser_ut`)

@@ -2,7 +2,7 @@
 # Copyright 2026, Datadog, Inc
 #
 # Run tests in containers with various OS/libc/JDK combinations (similar to CI)
-# Defaults to Podman; set CONTAINER_RUNTIME=docker to use Docker.
+# Defaults to Podman; use --container=docker to use Docker.
 # Uses two-level container image caching:
 #   1. Base image with OS + build tools (java-profiler-base:<libc>-<arch>)
 #   2. JDK-specific image on top (java-profiler-test:<libc>-jdk<version>-<arch>)
@@ -12,6 +12,7 @@
 #   --jdk=8|11|17|21|25|8-j9|11-j9|17-j9|21-j9|17-graal|21-graal|25-graal  (default: 21)
 #   --arch=x64|aarch64       (default: auto-detect)
 #   --config=debug|release|asan|tsan   (default: debug)
+#   --container=podman|docker  (default: podman)
 #   --tests="TestPattern"    (optional, specific test to run)
 #   --gtest                  (enable C++ gtests, disabled by default)
 #   --gtest-task=Task        (run one C++ gtest task; accepts elfparser_ut or :ddprof-lib:gtestAsan_elfparser_ut)
@@ -146,7 +147,7 @@ get_j9_jdk_url() {
 }
 
 usage() {
-    head -n 21 "$0" | tail -n 18
+    head -n 23 "$0" | tail -n 20
     exit 0
 }
 
@@ -167,6 +168,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --config=*)
             CONFIG="${1#*=}"
+            shift
+            ;;
+        --container=*)
+            CONTAINER_RUNTIME="${1#*=}"
             shift
             ;;
         --tests=*)
@@ -229,6 +234,11 @@ if [[ "$CONFIG" != "debug" && "$CONFIG" != "release" && "$CONFIG" != "asan" && "
     exit 1
 fi
 
+if [[ "$CONTAINER_RUNTIME" != "podman" && "$CONTAINER_RUNTIME" != "docker" ]]; then
+    echo "Error: --container must be 'podman' or 'docker'"
+    exit 1
+fi
+
 if [[ -n "$GTEST_TASK" && -n "$TESTS" ]]; then
     echo "Error: --tests cannot be combined with --gtest-task"
     exit 1
@@ -236,7 +246,7 @@ fi
 
 if ! command -v "$CONTAINER_RUNTIME" >/dev/null 2>&1; then
     echo "Error: container runtime '$CONTAINER_RUNTIME' not found"
-    echo "Set CONTAINER_RUNTIME to override, e.g. CONTAINER_RUNTIME=docker $0 ..."
+    echo "Use --container to select the runtime, e.g. $0 --container=docker ..."
     exit 1
 fi
 

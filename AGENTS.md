@@ -169,7 +169,7 @@ Release builds automatically extract debug symbols via `NativeLinkTask`, reducin
 
 ### Container-based Testing (Recommended for ASan/Non-Local Environments)
 
-**When to use**: For ASan testing, cross-architecture testing (aarch64), different libc variants (musl), or reproducing CI environment issues. The script defaults to Podman; set `CONTAINER_RUNTIME=docker` to use Docker.
+**When to use**: For ASan testing, cross-architecture testing (aarch64), different libc variants (musl), or reproducing CI environment issues. The script defaults to Podman; use `--container=docker` to use Docker.
 
 ```bash
 # ASan tests on aarch64 Linux
@@ -183,6 +183,9 @@ Release builds automatically extract debug symbols via `NativeLinkTask`, reducin
 
 # Run one C++ gtest binary
 ./utils/run-containers-tests.sh --config=asan --gtest-task=elfparser_ut
+
+# Use Docker instead of the default Podman runtime
+./utils/run-containers-tests.sh --container=docker --libc=glibc --jdk=21
 
 # Drop to shell for debugging
 ./utils/run-containers-tests.sh --arch=aarch64 --shell
