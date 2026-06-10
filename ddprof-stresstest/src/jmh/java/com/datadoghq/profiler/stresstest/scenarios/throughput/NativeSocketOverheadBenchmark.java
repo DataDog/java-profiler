@@ -96,7 +96,7 @@ public class NativeSocketOverheadBenchmark {
         if (profilerActive) {
             JavaProfiler profiler = JavaProfiler.getInstance();
             Path jfr = Files.createTempFile("nativesocket-bench", ".jfr");
-            profiler.execute("start,nativesocket,jfr,file=" + jfr.toAbsolutePath());
+            profiler.execute("start,natsock,jfr,file=" + jfr.toAbsolutePath());
         }
 
         // File I/O: regular file, will be classified non-socket after first write
