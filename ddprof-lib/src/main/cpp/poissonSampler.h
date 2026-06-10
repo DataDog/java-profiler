@@ -10,8 +10,6 @@
 #include <cmath>
 
 /**
- * @file poissonSampler.h
- *
  * Thread-local, dimension-agnostic Poisson-process sampler.
  *
  * ## Concept

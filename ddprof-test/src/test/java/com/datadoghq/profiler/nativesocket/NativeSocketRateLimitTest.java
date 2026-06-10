@@ -100,11 +100,11 @@ public class NativeSocketRateLimitTest extends AbstractProfilerTest {
         System.out.println("Recorded NativeSocketEvent count: " + eventCount);
 
         // Recorded events must be far fewer than raw operations (subsampling is active).
-        // Target rate is ~5000 events/min; for a 10-second window ~833 events is the ceiling.
-        // Using operations/2 (10000) provides a generous upper bound that must still be met.
-        assertTrue(eventCount < operations / 2,
+        // Target rate is ~5000 events/min (~83/s); for a 10-second window ~830 events expected.
+        // Ceiling of operations/5 (~4000) gives ~5x headroom and catches broken rate limiting.
+        assertTrue(eventCount < operations / 5,
                 "Too many events sampled (rate limiting not working): event count (" + eventCount
-                        + ") should be less than operations/2 (" + operations / 2 + ")");
+                        + ") should be less than operations/5 (" + operations / 5 + ")");
 
         // At least some events must have weight > 1, indicating time-weighted sampling
         assertTrue(foundWeightAboveOne,

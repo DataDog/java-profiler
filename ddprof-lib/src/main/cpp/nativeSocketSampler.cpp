@@ -104,32 +104,9 @@ bool NativeSocketSampler::isSocket(int fd) {
         // newly-socketed fd reuse under-samples until the next gen reset, which is
         // the documented accepted staleness tradeoff.
         if (type == FD_TYPE_NON_SOCKET) return false;
-        // A cached SOCKET verdict is NOT trusted blindly.  Without close()/dup2()
-        // interception, an fd classified SOCK_STREAM can be closed and reused for a
-        // regular file or pipe; trusting the cache would time ordinary file I/O and
-        // emit it as NativeSocketEvent for the rest of the session.  Re-probe with
-        // getsockopt() so a positive is always backed by the fd's current type; the
-        // re-probe refreshes the cell so a still-live socket pays the syscall only on
-        // the rare flake, and a reused fd is reclassified immediately.
-        if (type == FD_TYPE_SOCKET) {
-            int so_type;
-            socklen_t solen = sizeof(so_type);
-            int rc = getsockopt(fd, SOL_SOCKET, SO_TYPE, &so_type, &solen);
-            if (rc == 0) {
-                bool tcp = (so_type == SOCK_STREAM);
-                _fd_type_cache[fd].store(
-                    (uint8_t)(((gen & 0xF) << 4) | (tcp ? FD_TYPE_SOCKET : FD_TYPE_NON_SOCKET)),
-                    std::memory_order_release);
-                return tcp;
-            }
-            // Transient error (EBADF on a racing close, EINTR, …): do not poison the
-            // cache; treat as not-a-socket for this call without rewriting the cell.
-            if (errno == ENOTSOCK) {
-                _fd_type_cache[fd].store((uint8_t)(((gen & 0xF) << 4) | FD_TYPE_NON_SOCKET),
-                                         std::memory_order_release);
-            }
-            return false;
-        }
+        // Cached SOCKET: trust the verdict on the hot path; revalidation is deferred
+        // to recordEvent() on sampled write/read events (see revalidateSocket()).
+        if (type == FD_TYPE_SOCKET) return true;
     }
 
     int so_type;
@@ -154,6 +131,36 @@ bool NativeSocketSampler::isSocket(int fd) {
     return false;
 }
 
+void NativeSocketSampler::insertFdAddrLocked(int fd, std::string addr) {
+    auto it = _fd_cache.find(fd);
+    if (it != _fd_cache.end()) {
+        it->second->second = std::move(addr);
+        _fd_lru_list.splice(_fd_lru_list.begin(), _fd_lru_list, it->second);
+    } else {
+        if ((int)_fd_cache.size() >= MAX_FD_CACHE) {
+            _fd_cache.erase(_fd_lru_list.back().first);
+            _fd_lru_list.pop_back();
+        }
+        _fd_lru_list.emplace_front(fd, std::move(addr));
+        _fd_cache.emplace(fd, _fd_lru_list.begin());
+    }
+}
+
+bool NativeSocketSampler::revalidateSocket(int fd) {
+    int so_type;
+    socklen_t solen = sizeof(so_type);
+    int rc = getsockopt(fd, SOL_SOCKET, SO_TYPE, &so_type, &solen);
+    if (rc == 0 && so_type == SOCK_STREAM) return true;
+    // fd was reused for a non-socket or is already closed; update the type cache.
+    if (fd >= 0 && (size_t)fd < (size_t)FD_TYPE_CACHE_SIZE) {
+        uint8_t gen = _fd_cache_gen.load(std::memory_order_acquire);
+        _fd_type_cache[fd].store(
+            (uint8_t)(((gen & 0xF) << 4) | FD_TYPE_NON_SOCKET),
+            std::memory_order_release);
+    }
+    return false;
+}
+
 bool NativeSocketSampler::shouldSample(u64 duration_ticks, int op, float &weight) {
     // op 0 (send) and op 2 (write) are outbound → share _send_sampler.
     // op 1 (recv) and op 3 (read) are inbound  → share _recv_sampler.
@@ -166,26 +173,34 @@ bool NativeSocketSampler::shouldSample(u64 duration_ticks, int op, float &weight
 
 void NativeSocketSampler::recordEvent(int fd, u64 t0, u64 t1, ssize_t bytes, u8 op) {
     if (!Profiler::instance()->isRunning()) return;
+    // Clamp TSC inversion: a thread migrating cores between the two TSC reads can
+    // observe t1 < t0.  Pass 0 to the sampler so the event is not force-sampled,
+    // and record duration 0 in the JFR event (consistent with safeDuration in flightRecorder).
+    u64 dur = t1 >= t0 ? t1 - t0 : 0;
     float weight = 0.0f;
-    bool sampled = shouldSample(t1 - t0, op, weight);
+    bool sampled = shouldSample(dur, op, weight);
     if (!sampled) {
 #ifdef DEBUG
         uint64_t n = _record_reject_calls.fetch_add(1, std::memory_order_relaxed);
         if (n < 3 || (n & 0x3FF) == 0) {
             TEST_LOG("NativeSocketSampler::recordEvent REJECT #%llu fd=%d op=%u bytes=%zd dur_ticks=%llu",
                      (unsigned long long)(n + 1), fd, (unsigned)op, bytes,
-                     (unsigned long long)(t1 - t0));
+                     (unsigned long long)dur);
         }
 #endif
         return;
     }
+    // write/read hooks (op 2/3) call isSocket() which trusts the cached SOCKET verdict
+    // without re-probing, to avoid a getsockopt syscall on every I/O.  Revalidate here,
+    // on sampled events only, so a closed-and-reused fd is caught before we emit an event.
+    if ((op == 2 || op == 3) && !revalidateSocket(fd)) return;
 #ifdef DEBUG
     {
         uint64_t n = _record_accept_calls.fetch_add(1, std::memory_order_relaxed);
         if (n < 3 || (n & 0x3F) == 0) {
             TEST_LOG("NativeSocketSampler::recordEvent ACCEPT #%llu fd=%d op=%u bytes=%zd dur_ticks=%llu weight=%f",
                      (unsigned long long)(n + 1), fd, (unsigned)op, bytes,
-                     (unsigned long long)(t1 - t0), (double)weight);
+                     (unsigned long long)dur, (double)weight);
         }
     }
 #endif
@@ -199,31 +214,21 @@ void NativeSocketSampler::recordEvent(int fd, u64 t0, u64 t1, ssize_t bytes, u8 
         std::lock_guard<std::mutex> lock(_fd_cache_mutex);
         auto it = _fd_cache.find(fd);
         if (it != _fd_cache.end()) {
-            strncpy(event._remote_addr, it->second.c_str(), sizeof(event._remote_addr) - 1);
+            // Cache hit: promote to MRU and copy address.
+            _fd_lru_list.splice(_fd_lru_list.begin(), _fd_lru_list, it->second);
+            strncpy(event._remote_addr, it->second->second.c_str(), sizeof(event._remote_addr) - 1);
             event._remote_addr[sizeof(event._remote_addr) - 1] = '\0';
         }
     }
-    // TOCTOU: resolveAddr runs without the lock; concurrent emplace is safe (first writer wins).
-    // Skip resolveAddr entirely once the cache is full — otherwise the hot path
-    // degrades to per-event getpeername+inet_ntop+std::string for fds that will
-    // never be cached.
-    if (event._remote_addr[0] == '\0' && !_fd_cache_full.load(std::memory_order_acquire)) {
+    // Cache miss: resolve outside the lock, then insert under lock.
+    // TOCTOU: a concurrent thread may insert the same fd between the two critical
+    // sections; the second lock re-checks and updates rather than double-inserts.
+    if (event._remote_addr[0] == '\0') {
         std::string resolved = resolveAddr(fd);
         strncpy(event._remote_addr, resolved.c_str(), sizeof(event._remote_addr) - 1);
         event._remote_addr[sizeof(event._remote_addr) - 1] = '\0';
         std::lock_guard<std::mutex> lock(_fd_cache_mutex);
-        if ((int)_fd_cache.size() < MAX_FD_CACHE) {
-            _fd_cache.emplace(fd, resolved);
-            if ((int)_fd_cache.size() >= MAX_FD_CACHE) {
-                _fd_cache_full.store(true, std::memory_order_release);
-                // Latch trips exactly once (guarded by the size check above, all
-                // under _fd_cache_mutex): emit a diagnostic so the otherwise-silent
-                // transition to blank remoteAddress fields is observable.
-                Log::info("NativeSocketSampler fd->addr cache full at %d entries; "
-                          "remoteAddress will be blank for new fds until restart",
-                          MAX_FD_CACHE);
-            }
-        }
+        insertFdAddrLocked(fd, std::move(resolved));
     }
     // ret > 0 checked above; cast is safe.
     event._bytes  = (u64)bytes;
@@ -397,7 +402,7 @@ void NativeSocketSampler::stop() {
 void NativeSocketSampler::clearFdCache() {
     std::lock_guard<std::mutex> lock(_fd_cache_mutex);
     _fd_cache.clear();
-    _fd_cache_full.store(false, std::memory_order_release);
+    _fd_lru_list.clear();
     // Bump the generation under the lock so the clear and the bump are atomic
     // with respect to concurrent isSocket() calls: no thread can insert an
     // entry tagged with the old generation after the map is cleared.

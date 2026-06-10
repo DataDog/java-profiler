@@ -111,6 +111,8 @@ private:
         long new_interval = _interval.load(std::memory_order_relaxed) - delta;
         if (new_interval < 1) {
             new_interval = 1;
+        } else if (new_interval > (1L << 40)) {
+            new_interval = 1L << 40;
         }
         // Relaxed store: eventual consistency is acceptable. Threads reading _interval
         // with relaxed loads will see the update within at most one additional window.

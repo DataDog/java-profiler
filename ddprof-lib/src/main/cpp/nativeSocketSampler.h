@@ -16,6 +16,7 @@
 #include "poissonSampler.h"
 #include "rateLimiter.h"
 #include <atomic>
+#include <list>
 #include <mutex>
 #include <sys/socket.h>
 #include <unordered_map>
@@ -39,11 +40,11 @@ class LibraryPatcher;
 //                         bits [7:4] = generation mod 16, bits [3:0] = type
 //                         (0=unknown, 1=TCP socket, 2=non-TCP).  Valid only when
 //                         high nibble matches _fd_cache_gen mod 16.  A cached SOCKET
-//                         verdict is re-probed with getsockopt() on every call so a
-//                         closed-and-reused fd (e.g. socket→regular file) cannot keep
-//                         misclassifying ordinary I/O as socket I/O.  A cached
-//                         NON_SOCKET verdict is trusted (worst case: a reused fd
-//                         under-samples until the next gen reset).
+//                         verdict is trusted on the hot path; revalidation via
+//                         getsockopt() is deferred to recordEvent() for sampled
+//                         write/read events (revalidateSocket()).  A cached NON_SOCKET
+//                         verdict is trusted (worst case: a reused fd under-samples
+//                         until the next gen reset).
 // _rate_limiter         : RateLimiter — owns std::atomic interval, epoch, and
 //                         event count.  PID update races are resolved by CAS
 //                         inside RateLimiter::maybeUpdateInterval().
@@ -137,17 +138,15 @@ private:
     // need independent per-thread PoissonSampler state.
     RateLimiter _rate_limiter;
 
-    // fd -> "ip:port" string cache.  Bounded to MAX_FD_CACHE entries; no
-    // eviction is performed (entries for closed/reused fds are stale until
-    // the next stop(), but stale addresses are a known, accepted limitation).
-    // Once the cache fills, _fd_cache_full latches true to skip further
-    // resolveAddr() calls — without this latch the hot path would degrade to
-    // per-event getpeername()+inet_ntop()+std::string allocation that gets
-    // thrown away (since emplace is gated on size).
+    // fd → "ip:port" LRU cache.  Bounded to MAX_FD_CACHE entries; on overflow
+    // the least-recently-used entry is evicted.  All access is under _fd_cache_mutex.
+    // Address staleness on fd reuse is accepted: worst case is one misattributed
+    // event per reuse before the entry is updated.
     static const int MAX_FD_CACHE = 65536;
-    std::unordered_map<int, std::string> _fd_cache;
+    using FdAddrList = std::list<std::pair<int, std::string>>;
+    FdAddrList _fd_lru_list;
+    std::unordered_map<int, FdAddrList::iterator> _fd_cache;
     std::mutex _fd_cache_mutex;
-    std::atomic<bool> _fd_cache_full{false};
 
     // fd-type cache for write/read hooks.  Lock-free: one atomic byte per fd number.
     // Encoding: bits [7:4] = generation mod 16, bits [3:0] = type (0=unknown/invalid
@@ -178,6 +177,27 @@ private:
 
     // Resolve the peer address for fd; returns empty string on failure.
     std::string resolveAddr(int fd);
+
+    // Revalidates that fd is still a SOCK_STREAM socket; updates the type cache on
+    // mismatch.  Called from recordEvent() for write/read ops on sampled events only.
+    bool revalidateSocket(int fd);
+
+    // Inserts or updates fd→addr in the LRU cache, evicting the LRU entry if full.
+    // Must be called with _fd_cache_mutex held.
+    void insertFdAddrLocked(int fd, std::string addr);
+
+public:
+    // Test seams — not part of the production API.
+    int  fdAddrCacheSizeForTest() {
+        std::lock_guard<std::mutex> lock(_fd_cache_mutex);
+        return (int)_fd_cache.size();
+    }
+    void fdAddrCacheInsertForTest(int fd, const std::string& addr) {
+        std::lock_guard<std::mutex> lock(_fd_cache_mutex);
+        insertFdAddrLocked(fd, addr);
+    }
+
+private:
 
     // Returns true if fd is a SOCK_STREAM socket (including AF_UNIX).
     // Uses the fd-type cache; calls getsockopt on first encounter per fd and on

@@ -329,6 +329,65 @@ TEST(NativeSocketSamplerIsSocketTest, UnixSocketPairReturnsFalseAfterClose) {
     close(fds[1]);
 }
 
+// ---------------------------------------------------------------------------
+// LRU fd→addr cache tests.
+// ---------------------------------------------------------------------------
+
+TEST(NativeSocketSamplerLruTest, ClearResetsCache) {
+    NativeSocketSampler* inst = NativeSocketSampler::instance();
+    inst->fdAddrCacheInsertForTest(1, "1.2.3.4:100");
+    inst->fdAddrCacheInsertForTest(2, "1.2.3.4:200");
+    ASSERT_GE(inst->fdAddrCacheSizeForTest(), 2);
+
+    inst->clearFdCache();
+
+    EXPECT_EQ(inst->fdAddrCacheSizeForTest(), 0)
+        << "clearFdCache() must empty both the map and the LRU list";
+}
+
+TEST(NativeSocketSamplerLruTest, InsertAndLookupPreservesEntries) {
+    NativeSocketSampler* inst = NativeSocketSampler::instance();
+    inst->clearFdCache();
+
+    for (int fd = 0; fd < 16; fd++) {
+        inst->fdAddrCacheInsertForTest(fd, "10.0.0.1:" + std::to_string(fd));
+    }
+
+    EXPECT_EQ(inst->fdAddrCacheSizeForTest(), 16)
+        << "All 16 distinct-fd inserts must be stored";
+    inst->clearFdCache();
+}
+
+TEST(NativeSocketSamplerLruTest, UpdateExistingEntryDoesNotGrowCache) {
+    NativeSocketSampler* inst = NativeSocketSampler::instance();
+    inst->clearFdCache();
+
+    inst->fdAddrCacheInsertForTest(42, "1.2.3.4:9000");
+    inst->fdAddrCacheInsertForTest(42, "5.6.7.8:9001");  // update same fd
+
+    EXPECT_EQ(inst->fdAddrCacheSizeForTest(), 1)
+        << "Re-inserting the same fd must update in-place, not add a second entry";
+    inst->clearFdCache();
+}
+
+TEST(NativeSocketSamplerLruTest, EvictsLruEntryAtCapacity) {
+    NativeSocketSampler* inst = NativeSocketSampler::instance();
+    inst->clearFdCache();
+
+    const int CAP = NativeSocketSampler::MAX_FD_CACHE;
+    for (int fd = 0; fd < CAP; fd++) {
+        inst->fdAddrCacheInsertForTest(fd, "x");
+    }
+    ASSERT_EQ(inst->fdAddrCacheSizeForTest(), CAP);
+
+    // Insert one more entry beyond capacity.
+    inst->fdAddrCacheInsertForTest(CAP, "overflow");
+
+    EXPECT_EQ(inst->fdAddrCacheSizeForTest(), CAP)
+        << "Cache size must stay at MAX_FD_CACHE after overflow insert";
+    inst->clearFdCache();
+}
+
 #endif // __linux__ (success-path / isSocket tests)
 
 // ---------------------------------------------------------------------------
