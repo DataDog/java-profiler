@@ -60,7 +60,9 @@ void Libraries::refresh() {
   _dirty.store(false, std::memory_order_release);
   updateSymbols(false);
   LibraryPatcher::patch_sigaction();
-  MallocTracer::installHooks();
+  if (MallocTracer::running()) {
+    MallocTracer::installHooks();
+  }
   if (_remote_symbolication) {
     updateBuildIds();
   }
