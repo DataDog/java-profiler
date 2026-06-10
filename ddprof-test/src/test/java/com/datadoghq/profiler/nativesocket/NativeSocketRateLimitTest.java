@@ -106,10 +106,9 @@ public class NativeSocketRateLimitTest extends AbstractProfilerTest {
                 "Too many events sampled (rate limiting not working): event count (" + eventCount
                         + ") should be less than operations/2 (" + operations / 2 + ")");
 
-        // At least some events must have weight > 1, indicating byte-weighted sampling
+        // At least some events must have weight > 1, indicating inverse-probability weighting is active
         assertTrue(foundWeightAboveOne,
-                "Expected at least one event with weight > 1 (byte-weighted inverse-transform sampling)");
-    }
+                "Expected at least one event with weight > 1 (time-weighted inverse-transform sampling)");
 
     /**
      * Sends {@code iterations} writes of {@code payloadSize} bytes over a single
