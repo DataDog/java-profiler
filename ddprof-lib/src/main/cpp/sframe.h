@@ -42,7 +42,7 @@ const int SFRAME_FRE_TYPE_ADDR1 = 0;
 const int SFRAME_FRE_TYPE_ADDR2 = 1;
 const int SFRAME_FRE_TYPE_ADDR4 = 2;
 
-struct __attribute__((packed)) SFrameHeader {  // 28 bytes
+struct __attribute__((packed, may_alias)) SFrameHeader {  // 28 bytes
     uint16_t magic;
     uint8_t  version;
     uint8_t  flags;
@@ -57,7 +57,7 @@ struct __attribute__((packed)) SFrameHeader {  // 28 bytes
     uint32_t freoff;
 };
 
-struct __attribute__((packed)) SFrameFDE {  // 20 bytes
+struct __attribute__((packed, may_alias)) SFrameFDE {  // 20 bytes
     int32_t  start_addr;   // signed, relative to .sframe section start (V2)
     uint32_t func_size;
     uint32_t fre_off;      // byte offset into FRE sub-section
@@ -78,6 +78,7 @@ class SFrameParser {
     int        _count;
     FrameDesc* _table;
     int        _linked_frame_size;  // for aarch64 GCC vs Clang detection; -1 = undetected
+    bool       _oom;                // set by addRecord on realloc failure
 
     bool       parseFDE(const SFrameHeader* hdr, const SFrameFDE* fde,
                         const char* fre_section, const char* fre_end);

@@ -22,9 +22,9 @@
 #include <linux/limits.h>
 #include <pthread.h>
 #include <sys/auxv.h>
-#include "common.h"
 #include "symbols.h"
 #include "dwarf.h"
+#include "sframe.h"
 #include "fdtransferClient.h"
 #include "log.h"
 #include "os.h"
@@ -348,105 +348,29 @@ class ElfParser {
     ElfHeader* _header;
     const char* _sections;
     const char* _vaddr_diff;
-    const char* _image_end;  // one-past-the-end of the mapped ELF image; bounds file-relative reads
 
-    ElfParser(CodeCache* cc, const char* base, const void* addr, size_t image_size, const char* file_name, bool relocate_dyn) {
+    ElfParser(CodeCache* cc, const char* base, const void* addr, const char* file_name, bool relocate_dyn) {
         _cc = cc;
         _base = base;
         _file_name = file_name;
         _relocate_dyn = relocate_dyn;
         _header = (ElfHeader*)addr;
-        _image_end = (const char*)addr + image_size;
-        // e_shoff sits at a fixed offset inside the header; only compute the pointer
-        // when the image is at least header-sized AND e_shoff is within the image,
-        // so the addition cannot overflow and sectionAt()/inImage() can reject it
-        // cleanly without UB.
-        _sections = (image_size >= sizeof(ElfHeader) && _header->e_shoff < image_size)
-            ? (const char*)addr + _header->e_shoff
-            : NULL;
+        _sections = (const char*)addr + _header->e_shoff;
     }
 
     bool validHeader() {
-        // A valid ELF image is at least a full header; this also makes the
-        // e_ident / e_shstrndx reads below in-bounds for tiny inputs.
-        if (_image_end < (const char*)_header + sizeof(ElfHeader)) {
-            return false;
-        }
         unsigned char* ident = _header->e_ident;
         return ident[0] == 0x7f && ident[1] == 'E' && ident[2] == 'L' && ident[3] == 'F'
             && ident[4] == ELFCLASS_SUPPORTED && ident[5] == ELFDATA2LSB && ident[6] == EV_CURRENT
             && _header->e_shstrndx != SHN_UNDEF;
     }
 
-    // --- Bounds-checked accessors for the file/section path -----------------
-    // These guard parsing of section headers, symbol tables and string tables,
-    // all of which use file-offset-relative pointers that must lie inside the
-    // mapped image [_header, _image_end). The dynamic-section path uses
-    // virtual-address-relative pointers into live memory and is intentionally
-    // NOT routed through inImage().
-
-    // True when [ptr, ptr+len) lies entirely within the mapped image.
-    bool inImage(const void* ptr, size_t len) const {
-        const char* p = (const char*)ptr;
-        return p >= (const char*)_header
-            && p <= _image_end
-            && len <= (size_t)(_image_end - p);
+    ElfSection* section(int index) {
+        return (ElfSection*)(_sections + index * _header->e_shentsize);
     }
 
-    // Section header at `index`, or NULL when the index or entry is out of bounds.
-    ElfSection* sectionAt(int index) {
-        if (_sections == NULL || index < 0 || index >= _header->e_shnum
-                || _header->e_shentsize < sizeof(ElfSection)) {
-            return NULL;
-        }
-        ElfSection* s = (ElfSection*)(_sections + (size_t)index * _header->e_shentsize);
-        return inImage(s, sizeof(ElfSection)) ? s : NULL;
-    }
-
-    // Start of a section's first `want` content bytes, or NULL if not fully mapped.
-    const char* contentAt(ElfSection* s, size_t want) {
-        if (s == NULL) {
-            return NULL;
-        }
-        // Validate sh_offset in integer space before forming the pointer so that
-        // a large attacker-controlled offset cannot cause pointer-overflow UB
-        // (the project builds with -fsanitize=pointer-overflow -fno-sanitize-recover).
-        size_t img_size = (size_t)(_image_end - (const char*)_header);
-        if (s->sh_offset > img_size || want > img_size - s->sh_offset) {
-            return NULL;
-        }
-        return (const char*)_header + s->sh_offset;
-    }
-
-    // NUL-terminated string at `off` within a [strtab, strtab+size) string table,
-    // or NULL if the offset is out of range or the string is not terminated in it.
-    static const char* strAt(const char* strtab, size_t size, uint32_t off) {
-        if (strtab == NULL || off >= size) {
-            return NULL;
-        }
-        if (memchr(strtab + off, '\0', size - off) == NULL) {
-            return NULL;
-        }
-        return strtab + off;
-    }
-
-    // Program-header entry at `index`, or NULL when the index or entry is out of bounds.
-    ElfProgramHeader* phdrAt(int index) {
-        if (index < 0 || index >= _header->e_phnum
-                || _header->e_phentsize < sizeof(ElfProgramHeader)) {
-            return NULL;
-        }
-        // Validate entirely in integer space before forming any pointer.
-        // Both e_phoff and index*e_phentsize are attacker-controlled; either
-        // can be large enough to wrap a pointer under -fsanitize=pointer-overflow.
-        size_t img_size = (size_t)(_image_end - (const char*)_header);
-        size_t phoff = _header->e_phoff;
-        size_t stride = (size_t)index * _header->e_phentsize;
-        if (phoff > img_size || stride > img_size - phoff) {
-            return NULL;
-        }
-        ElfProgramHeader* ph = (ElfProgramHeader*)((const char*)_header + phoff + stride);
-        return inImage(ph, sizeof(ElfProgramHeader)) ? ph : NULL;
+    const char* at(ElfSection* section) {
+        return (const char*)_header + section->sh_offset;
     }
 
     const char* at(ElfProgramHeader* pheader) {
@@ -482,7 +406,7 @@ class ElfParser {
     bool loadSymbolsFromDebuginfodCache(const char* build_id, const int build_id_len);
     bool loadSymbolsUsingBuildId();
     bool loadSymbolsUsingDebugLink();
-    void loadSymbolTable(const char* symbols, size_t total_size, size_t ent_size, const char* strings, size_t strings_size);
+    void loadSymbolTable(const char* symbols, size_t total_size, size_t ent_size, const char* strings);
     void addRelocationSymbols(ElfSection* reltab, const char* plt);
     const char* getDebuginfodCache();
 
@@ -493,27 +417,12 @@ class ElfParser {
 
 
 ElfSection* ElfParser::findSection(uint32_t type, const char* name) {
-    // The section-header string table must be present and fully mapped before
-    // any section name can be resolved. Untrusted e_shoff/e_shentsize/e_shstrndx
-    // and sh_offset values are all validated here.
-    ElfSection* shstr = sectionAt(_header->e_shstrndx);
-    if (shstr == NULL) {
-        return NULL;
-    }
-    size_t strtab_size = shstr->sh_size;
-    const char* strtab = contentAt(shstr, strtab_size);
-    if (strtab == NULL) {
-        return NULL;
-    }
+    const char* strtab = at(section(_header->e_shstrndx));
 
     for (int i = 0; i < _header->e_shnum; i++) {
-        ElfSection* section = sectionAt(i);
-        if (section == NULL) {
-            continue;
-        }
+        ElfSection* section = this->section(i);
         if (section->sh_type == type && section->sh_name != 0) {
-            const char* sname = strAt(strtab, strtab_size, section->sh_name);
-            if (sname != NULL && strcmp(sname, name) == 0) {
+            if (strcmp(strtab + section->sh_name, name) == 0) {
                 return section;
             }
         }
@@ -523,12 +432,15 @@ ElfSection* ElfParser::findSection(uint32_t type, const char* name) {
 }
 
 ElfProgramHeader* ElfParser::findProgramHeader(uint32_t type) {
+    const char* pheaders = (const char*)_header + _header->e_phoff;
+
     for (int i = 0; i < _header->e_phnum; i++) {
-        ElfProgramHeader* pheader = phdrAt(i);
-        if (pheader != NULL && pheader->p_type == type) {
+        ElfProgramHeader* pheader = (ElfProgramHeader*)(pheaders + i * _header->e_phentsize);
+        if (pheader->p_type == type) {
             return pheader;
         }
     }
+
     return NULL;
 }
 
@@ -545,7 +457,7 @@ bool ElfParser::parseFile(CodeCache* cc, const char* base, const char* file_name
     if (addr == MAP_FAILED) {
         Log::warn("Could not parse symbols from %s: %s", file_name, strerror(errno));
     } else {
-        ElfParser elf(cc, base, addr, length, file_name, false);
+        ElfParser elf(cc, base, addr, file_name, false);
         if (elf.validHeader()) {
             elf.calcVirtualLoadAddress();
             elf.loadSymbols(use_debug);
@@ -556,7 +468,7 @@ bool ElfParser::parseFile(CodeCache* cc, const char* base, const char* file_name
 }
 
 void ElfParser::parseProgramHeaders(CodeCache* cc, const char* base, const char* end, bool relocate_dyn) {
-    ElfParser elf(cc, base, base, (size_t)(end - base), NULL, relocate_dyn);
+    ElfParser elf(cc, base, base, NULL, relocate_dyn);
     if (elf.validHeader() && base + elf._header->e_phoff < end) {
         cc->setTextBase(base);
         elf.calcVirtualLoadAddress();
@@ -571,9 +483,10 @@ void ElfParser::calcVirtualLoadAddress() {
         _vaddr_diff = NULL;
         return;
     }
+    const char* pheaders = (const char*)_header + _header->e_phoff;
     for (int i = 0; i < _header->e_phnum; i++) {
-        ElfProgramHeader* pheader = phdrAt(i);
-        if (pheader != NULL && pheader->p_type == PT_LOAD) {
+        ElfProgramHeader* pheader = (ElfProgramHeader*)(pheaders + i * _header->e_phentsize);
+        if (pheader->p_type == PT_LOAD) {
             _vaddr_diff = _base - pheader->p_vaddr;
             return;
         }
@@ -593,7 +506,6 @@ void ElfParser::parseDynamicSection() {
         size_t relent = 0;
         size_t relcount = 0;
         size_t syment = 0;
-        size_t strsz = 0;
         uint32_t nsyms = 0;
 
         const char* dyn_start = at(dynamic);
@@ -608,9 +520,6 @@ void ElfParser::parseDynamicSection() {
                     break;
                 case DT_SYMENT:
                     syment = dyn->d_un.d_val;
-                    break;
-                case DT_STRSZ:
-                    strsz = dyn->d_un.d_val;
                     break;
                 case DT_HASH:
                     nsyms = ((uint32_t*)dyn_ptr(dyn))[1];
@@ -649,19 +558,8 @@ void ElfParser::parseDynamicSection() {
             return;
         }
 
-        // DT_STRSZ is required by the ELF spec whenever DT_STRTAB is present.
-        // When it is absent (strsz == 0) all string lookups via strAt() would
-        // be rejected, silently dropping every symbol. Cap to 1 MB: real dynamic
-        // string tables are well under that, and live linker memory guarantees
-        // NUL termination, so memchr will always find a terminator before the cap.
-        if (strsz == 0) {
-            Log::warn("DT_STRSZ absent from dynamic section in %s; capping string-table scan to 1 MB",
-                      _file_name != NULL ? _file_name : "unknown");
-            strsz = 1u << 20;
-        }
-
         if (!_cc->hasDebugSymbols() && nsyms > 0) {
-            loadSymbolTable(symtab, syment * nsyms, syment, strtab, strsz);
+            loadSymbolTable(symtab, syment * nsyms, syment, strtab);
         }
 
         const char* base = this->base();
@@ -671,10 +569,7 @@ void ElfParser::parseDynamicSection() {
                 ElfRelocation* r = (ElfRelocation*)(jmprel + offs);
                 ElfSymbol* sym = (ElfSymbol*)(symtab + ELF_R_SYM(r->r_info) * syment);
                 if (sym->st_name != 0) {
-                    const char* sym_name = strAt(strtab, strsz, sym->st_name);
-                    if (sym_name != NULL) {
-                        _cc->addImport((void**)(base + r->r_offset), sym_name);
-                    }
+                    _cc->addImport((void**)(base + r->r_offset), strtab + sym->st_name);
                 }
             }
         }
@@ -688,10 +583,7 @@ void ElfParser::parseDynamicSection() {
                 if (ELF_R_TYPE(r->r_info) == R_GLOB_DAT || ELF_R_TYPE(r->r_info) == R_ABS64) {
                     ElfSymbol* sym = (ElfSymbol*)(symtab + ELF_R_SYM(r->r_info) * syment);
                     if (sym->st_name != 0) {
-                        const char* sym_name = strAt(strtab, strsz, sym->st_name);
-                        if (sym_name != NULL) {
-                            _cc->addImport((void**)(base + r->r_offset), sym_name);
-                        }
+                        _cc->addImport((void**)(base + r->r_offset), strtab + sym->st_name);
                     }
                 }
             }
@@ -702,27 +594,33 @@ void ElfParser::parseDynamicSection() {
 void ElfParser::parseDwarfInfo() {
     if (!DWARF_SUPPORTED) return;
 
+    // Try SFrame first (simpler format, faster parsing, no opcode interpretation).
+    ElfProgramHeader* sframe_phdr = findProgramHeader(PT_GNU_SFRAME);
+    if (sframe_phdr != NULL && sframe_phdr->p_vaddr != 0) {
+        const char* section_base = at(sframe_phdr);
+        uintptr_t section_offset_full = static_cast<uintptr_t>(section_base - _base);
+        u32 section_offset = static_cast<u32>(section_offset_full);
+        SFrameParser sframe(_cc->name(), section_base,
+                            static_cast<size_t>(sframe_phdr->p_filesz), section_offset);
+        if (sframe.parse()) {
+            _cc->setDwarfTable(sframe.table(), sframe.count(),
+                               sframe.detectedDefaultFrame());
+            return;
+        }
+        // SFrame parse failed; fall through to DWARF
+    }
+
+    // Existing DWARF path (unchanged).
     ElfProgramHeader* eh_frame_hdr = findProgramHeader(PT_GNU_EH_FRAME);
     if (eh_frame_hdr != NULL) {
         if (eh_frame_hdr->p_vaddr != 0) {
             // Parse per-PC frame descriptions and detect per-library default frame layout.
             // On aarch64 this distinguishes GCC (LINKED_FRAME_SIZE=0) from clang
             // (LINKED_FRAME_CLANG_SIZE=16) conventions for each shared library.
-            // Compute image_end from the highest end address of all LOAD segments so
-            // the DWARF parser can validate FDE pointers against mapped memory.
-            const char* image_end = _base;
-            for (int i = 0; i < _header->e_phnum; i++) {
-                ElfProgramHeader* ph = phdrAt(i);
-                if (ph != NULL && ph->p_type == PT_LOAD) {
-                    const char* seg_end = at(ph) + ph->p_memsz;
-                    if (seg_end > image_end) image_end = seg_end;
-                }
-            }
-            DwarfParser dwarf(_cc->name(), _base, at(eh_frame_hdr), eh_frame_hdr->p_memsz,
-                              DwarfParser::EhFrameHdrTag{}, image_end);
+            DwarfParser dwarf(_cc->name(), _base, at(eh_frame_hdr));
             _cc->setDwarfTable(dwarf.table(), dwarf.count(), dwarf.detectedDefaultFrame());
         } else if (strcmp(_cc->name(), "[vdso]") == 0) {
-            FrameDesc* table = (FrameDesc*)malloc(sizeof(FrameDesc));
+            FrameDesc* table = static_cast<FrameDesc*>(malloc(sizeof(FrameDesc)));
             *table = FrameDesc::empty_frame;
             _cc->setDwarfTable(table, 1);
         }
@@ -748,16 +646,10 @@ uint32_t ElfParser::getSymbolCount(uint32_t* gnu_hash) {
 void ElfParser::loadSymbols(bool use_debug) {
     ElfSection* symtab = findSection(SHT_SYMTAB, ".symtab");
     if (symtab != NULL) {
-        // Parse debug symbols from the original .so. The symbol table and its
-        // linked string table are file-offset-relative, so every range is
-        // validated against the mapped image before it is read.
-        ElfSection* strtab = sectionAt(symtab->sh_link);
-        const char* symbols = contentAt(symtab, symtab->sh_size);
-        const char* strings = strtab != NULL ? contentAt(strtab, strtab->sh_size) : NULL;
-        if (symbols != NULL && strings != NULL) {
-            loadSymbolTable(symbols, symtab->sh_size, symtab->sh_entsize, strings, strtab->sh_size);
-            _cc->setDebugSymbols(true);
-        }
+        // Parse debug symbols from the original .so
+        ElfSection* strtab = section(symtab->sh_link);
+        loadSymbolTable(at(symtab), symtab->sh_size, symtab->sh_entsize, at(strtab));
+        _cc->setDebugSymbols(true);
     } else if (use_debug) {
         // Try to load symbols from an external debuginfo library
         loadSymbolsUsingBuildId() || loadSymbolsUsingDebugLink();
@@ -844,23 +736,12 @@ bool ElfParser::loadSymbolsUsingBuildId() {
         return false;
     }
 
-    // The whole note section must be mapped before reading the note header.
-    const char* note_base = contentAt(section, section->sh_size);
-    if (note_base == NULL || section->sh_size < sizeof(ElfNote)) {
-        return false;
-    }
-    ElfNote* note = (ElfNote*)note_base;
+    ElfNote* note = (ElfNote*)at(section);
     if (note->n_namesz != 4 || note->n_descsz < 2 || note->n_descsz > 64) {
         return false;
     }
 
-    // The descriptor (build-id bytes) follows the header and a 4-byte aligned
-    // "GNU\0" name; ensure it lies inside the note section.
-    size_t desc_off = sizeof(ElfNote) + 4;
-    if (desc_off + note->n_descsz > section->sh_size) {
-        return false;
-    }
-    const char* build_id = note_base + desc_off;
+    const char* build_id = (const char*)note + sizeof(*note) + 4;
     int build_id_len = note->n_descsz;
 
     return loadSymbolsFromDebug(build_id, build_id_len)
@@ -874,13 +755,6 @@ bool ElfParser::loadSymbolsUsingDebugLink() {
         return false;
     }
 
-    // The debuglink is a NUL-terminated filename at the start of the section;
-    // validate it is mapped and terminated before it feeds strcmp()/snprintf().
-    const char* debuglink = contentAt(section, section->sh_size);
-    if (debuglink == NULL || memchr(debuglink, '\0', section->sh_size) == NULL) {
-        return false;
-    }
-
     const char* basename = strrchr(_file_name, '/');
     if (basename == NULL) {
         return false;
@@ -891,6 +765,7 @@ bool ElfParser::loadSymbolsUsingDebugLink() {
         return false;
     }
 
+    const char* debuglink = at(section);
     char path[PATH_MAX];
     bool result = false;
 
@@ -914,29 +789,13 @@ bool ElfParser::loadSymbolsUsingDebugLink() {
     return result;
 }
 
-void ElfParser::loadSymbolTable(const char* symbols, size_t total_size, size_t ent_size, const char* strings, size_t strings_size) {
-    // A stride smaller than one symbol entry would never advance past (or would
-    // re-read) an entry; reject it to avoid an infinite loop / over-read.
-    if (ent_size < sizeof(ElfSymbol)) {
-        return;
-    }
+void ElfParser::loadSymbolTable(const char* symbols, size_t total_size, size_t ent_size, const char* strings) {
     const char* base = this->base();
-    // Iterate by a size_t offset rather than incrementing the pointer: a huge
-    // attacker-controlled ent_size would otherwise overflow `symbols + ent_size`
-    // to a small pointer that still compares <= end, walking off the image. The
-    // `ent_size <= total_size - off` form keeps off <= total_size with no overflow.
-    for (size_t off = 0; ent_size <= total_size - off; off += ent_size) {
-        ElfSymbol* sym = (ElfSymbol*)(symbols + off);
+    for (const char* symbols_end = symbols + total_size; symbols < symbols_end; symbols += ent_size) {
+        ElfSymbol* sym = (ElfSymbol*)symbols;
         if (sym->st_name != 0 && sym->st_value != 0) {
-            // Resolve the name through the bounded string table; a bad st_name
-            // offset (or unterminated string) drops the symbol instead of reading
-            // out of bounds.
-            const char* sym_name = strAt(strings, strings_size, sym->st_name);
-            if (sym_name == NULL) {
-                continue;
-            }
             // Skip special AArch64 mapping symbols: $x and $d
-            if (sym->st_size != 0 || sym->st_info != 0 || sym_name[0] != '$') {
+            if (sym->st_size != 0 || sym->st_info != 0 || strings[sym->st_name] != '$') {
                 const char* addr;
                 if (base != NULL) {
                     // Check for overflow when adding sym->st_value to base
@@ -958,65 +817,36 @@ void ElfParser::loadSymbolTable(const char* symbols, size_t total_size, size_t e
                 } else {
                     addr = (const char*)sym->st_value;
                 }
-                _cc->add(addr, (int)sym->st_size, sym_name);
+                _cc->add(addr, (int)sym->st_size, strings + sym->st_name);
             }
         }
     }
 }
 
 void ElfParser::addRelocationSymbols(ElfSection* reltab, const char* plt) {
-    // Resolve and bounds-check the linked symbol and string tables. Any missing
-    // or out-of-image section aborts relocation naming rather than reading wild
-    // pointers built from attacker-controlled sh_link / r_info / sh_entsize.
-    ElfSection* symtab = sectionAt(reltab->sh_link);
-    ElfSection* strtab = symtab != NULL ? sectionAt(symtab->sh_link) : NULL;
-    if (symtab == NULL || strtab == NULL) {
-        return;
-    }
-    size_t sym_region = symtab->sh_size;
-    size_t strings_size = strtab->sh_size;
-    size_t sym_ent = symtab->sh_entsize;
-    size_t rel_ent = reltab->sh_entsize;
-    const char* symbols = contentAt(symtab, sym_region);
-    const char* strings = contentAt(strtab, strings_size);
-    size_t reltab_size = reltab->sh_size;
-    const char* relocations = contentAt(reltab, reltab_size);
-    if (symbols == NULL || strings == NULL || relocations == NULL
-            || rel_ent < sizeof(ElfRelocation)
-            || sym_ent < sizeof(ElfSymbol)
-            || sym_region < sizeof(ElfSymbol)) {
-        return;
-    }
+    ElfSection* symtab = section(reltab->sh_link);
+    const char* symbols = at(symtab);
 
-    // Largest symbol index whose full ElfSymbol still fits in the table. Written
-    // as a division so the index * sym_ent product can never overflow.
-    size_t max_sym_index = (sym_region - sizeof(ElfSymbol)) / sym_ent;
+    ElfSection* strtab = section(symtab->sh_link);
+    const char* strings = at(strtab);
 
-    // Offset-based iteration (see loadSymbolTable) so a huge rel_ent cannot
-    // overflow the relocation pointer past the section end.
-    for (size_t off = 0; rel_ent <= reltab_size - off; off += rel_ent, plt += PLT_ENTRY_SIZE) {
-        ElfRelocation* r = (ElfRelocation*)(relocations + off);
-        if (ELF_R_SYM(r->r_info) > max_sym_index) {
-            continue;
-        }
-        ElfSymbol* sym = (ElfSymbol*)(symbols + (size_t)ELF_R_SYM(r->r_info) * sym_ent);
+    const char* relocations = at(reltab);
+    const char* relocations_end = relocations + reltab->sh_size;
+    for (; relocations < relocations_end; relocations += reltab->sh_entsize) {
+        ElfRelocation* r = (ElfRelocation*)relocations;
+        ElfSymbol* sym = (ElfSymbol*)(symbols + ELF_R_SYM(r->r_info) * symtab->sh_entsize);
 
         char name[256];
         if (sym->st_name == 0) {
             strcpy(name, "@plt");
         } else {
-            const char* sym_name = strAt(strings, strings_size, sym->st_name);
-            if (sym_name == NULL) {
-                continue;  // plt advances via the for-increment
-            }
-            // sym_name is NUL-terminated within the string table, so sym_name[1]
-            // is safe to read (it is at worst the terminator).
-            char sep = sym_name[0] == '_' && sym_name[1] == 'Z' ? '.' : '@';
-            snprintf(name, sizeof(name), "%s%cplt", sym_name, sep);
+            const char* sym_name = strings + sym->st_name;
+            snprintf(name, sizeof(name), "%s%cplt", sym_name, sym_name[0] == '_' && sym_name[1] == 'Z' ? '.' : '@');
             name[sizeof(name) - 1] = 0;
         }
 
         _cc->add(plt, PLT_ENTRY_SIZE, name);
+        plt += PLT_ENTRY_SIZE;
     }
 }
 
@@ -1165,7 +995,6 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
         } else if (lib.image_base == NULL) {
             // Unlikely case when image base has not been found: not safe to access program headers.
             // Be careful: executable file is not always ELF, e.g. classes.jsa
-            TEST_LOG("parseLibraries: image_base==NULL for %s, skipping program headers", lib.file);
             ElfParser::parseFile(cc, lib.map_start, lib.file, true);
         } else {
             // Parse debug symbols first
@@ -1174,8 +1003,6 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
             UnloadProtection handle(cc);
             if (handle.isValid()) {
                 ElfParser::parseProgramHeaders(cc, lib.image_base, lib.map_end, OS::isMusl());
-            } else {
-                TEST_LOG("parseLibraries: UnloadProtection invalid for %s, skipping program headers", lib.file);
             }
         }
 
@@ -1331,11 +1158,8 @@ char* SymbolsLinux::extractBuildIdFromMemory(const void* elf_base, size_t elf_si
         return nullptr;
     }
 
-    // Verify program header table is within file bounds. Written as subtractions
-    // so a huge e_phoff cannot wrap the addition and slip past the check, which
-    // would leave `phdr` pointing outside the mapped image.
-    if (ehdr->e_phoff > elf_size ||
-        ehdr->e_phnum * sizeof(Elf64_Phdr) > elf_size - ehdr->e_phoff) {
+    // Verify program header table is within file bounds
+    if (ehdr->e_phoff + ehdr->e_phnum * sizeof(Elf64_Phdr) > elf_size) {
         return nullptr;
     }
 
@@ -1350,11 +1174,8 @@ char* SymbolsLinux::extractBuildIdFromMemory(const void* elf_base, size_t elf_si
     // Search for PT_NOTE segments
     for (int i = 0; i < ehdr->e_phnum; i++) {
         if (phdr[i].p_type == PT_NOTE && phdr[i].p_filesz > 0) {
-            // Ensure note segment is within file bounds. Subtraction form avoids
-            // a u64 overflow in p_offset + p_filesz that would otherwise yield a
-            // wild note_data pointer passed to findBuildIdInNotes().
-            if (phdr[i].p_offset > elf_size ||
-                phdr[i].p_filesz > elf_size - phdr[i].p_offset) {
+            // Ensure note segment is within file bounds
+            if (phdr[i].p_offset + phdr[i].p_filesz > elf_size) {
                 continue;
             }
 
@@ -1390,19 +1211,11 @@ const uint8_t* SymbolsLinux::findBuildIdInNotes(const void* note_data, size_t no
             break;
         }
 
-        // Copy the note header into an aligned local: note_data is base +
-        // p_offset and p_offset is attacker-controlled, so dereferencing an
-        // Elf64_Nhdr* in place could be a misaligned load (UB, and a fault on
-        // alignment-strict architectures). The size check above guarantees the
-        // whole header is in bounds.
-        Elf64_Nhdr nhdr;
-        memcpy(&nhdr, data + offset, sizeof(nhdr));
+        const Elf64_Nhdr* nhdr = reinterpret_cast<const Elf64_Nhdr*>(data + offset);
 
-        // Calculate aligned sizes (4-byte alignment as per ELF spec). Promote to
-        // size_t before the +3 so a near-UINT32_MAX n_namesz/n_descsz cannot wrap
-        // to a small value and defeat the bounds checks below.
-        size_t name_size_aligned = (static_cast<size_t>(nhdr.n_namesz) + 3) & ~static_cast<size_t>(3);
-        size_t desc_size_aligned = (static_cast<size_t>(nhdr.n_descsz) + 3) & ~static_cast<size_t>(3);
+        // Calculate aligned sizes (4-byte alignment as per ELF spec)
+        size_t name_size_aligned = (nhdr->n_namesz + 3) & ~static_cast<size_t>(3);
+        size_t desc_size_aligned = (nhdr->n_descsz + 3) & ~static_cast<size_t>(3);
 
         // Check bounds using subtraction to avoid overflow
         size_t remaining = note_size - offset - sizeof(Elf64_Nhdr);
@@ -1415,13 +1228,13 @@ const uint8_t* SymbolsLinux::findBuildIdInNotes(const void* note_data, size_t no
         }
 
         // Check if this is a GNU build-id note
-        if (nhdr.n_type == NT_GNU_BUILD_ID && nhdr.n_namesz > 0 && nhdr.n_descsz > 0) {
+        if (nhdr->n_type == NT_GNU_BUILD_ID && nhdr->n_namesz > 0 && nhdr->n_descsz > 0) {
             const char* name = data + offset + sizeof(Elf64_Nhdr);
 
             // Verify GNU build-id name (including null terminator)
-            if (nhdr.n_namesz == 4 && strncmp(name, GNU_BUILD_ID_NAME, 3) == 0 && name[3] == '\0') {
+            if (nhdr->n_namesz == 4 && strncmp(name, GNU_BUILD_ID_NAME, 3) == 0 && name[3] == '\0') {
                 const uint8_t* desc = reinterpret_cast<const uint8_t*>(data + offset + sizeof(Elf64_Nhdr) + name_size_aligned);
-                *build_id_len = nhdr.n_descsz;
+                *build_id_len = nhdr->n_descsz;
                 return desc;
             }
         }
