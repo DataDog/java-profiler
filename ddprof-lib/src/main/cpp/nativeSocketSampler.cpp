@@ -136,6 +136,7 @@ bool NativeSocketSampler::shouldSample(u64 duration_ticks, int op, float &weight
 }
 
 void NativeSocketSampler::recordEvent(int fd, u64 t0, u64 t1, ssize_t bytes, u8 op) {
+    if (!Profiler::instance()->isRunning()) return;
     float weight = 0.0f;
     bool sampled = shouldSample(t1 - t0, op, weight);
     if (!sampled) {
@@ -193,12 +194,6 @@ void NativeSocketSampler::recordEvent(int fd, u64 t0, u64 t1, ssize_t bytes, u8 
     event._bytes  = (u64)bytes;
     event._weight = weight;
 
-    // Pass NULL ucontext (mirrors MallocTracer): recordSample routes
-    // BCI_NATIVE_SOCKET to walkVM with no signal context, which walks native
-    // frames via DWARF/FP and falls back to JavaFrameAnchor for Java frames.
-    // No isRunning() guard here: hook bodies check _socket_active before calling
-    // recordEvent(), so in-flight calls that slip through during unpatch are
-    // benign — recordSample() will simply fail to acquire a lock slot and return.
     Profiler::instance()->recordSample(NULL, (u64)bytes, OS::threadId(),
                                        BCI_NATIVE_SOCKET, 0, &event);
 

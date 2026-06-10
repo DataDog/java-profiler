@@ -463,10 +463,12 @@ bool LibraryPatcher::patch_socket_functions() {
   }
 
   ExclusiveLockGuard locker(&_lock);
-  // Re-check under the lock: a concurrent unpatch_socket_functions() may have
-  // cleared _socket_active between our acquire-load in install_socket_hooks()
-  // and this lock acquisition.  Bail out to avoid re-patching restored slots.
-  if (!_socket_active.load(std::memory_order_relaxed)) {
+  // Re-check under the lock only on re-entry (when hooks are already installed):
+  // a concurrent unpatch_socket_functions() may have cleared _socket_active
+  // between the acquire-load in install_socket_hooks() and this lock acquisition.
+  // The initial call from NativeSocketSampler::start() always has _socket_size == 0
+  // and must proceed regardless of _socket_active.
+  if (_socket_size > 0 && !_socket_active.load(std::memory_order_relaxed)) {
     return false;
   }
   // Only assign orig pointers on the first call (no hooks installed yet).
