@@ -37,8 +37,9 @@ jmethodID JVMSupport::resolve(const void* method) {
 }
 
 bool JVMSupport::isHidden(jint modifiers) {
-        // 0x1400 = ACC_SYNTHETIC(0x1000) | ACC_BRIDGE(0x0040)
-    return modifiers == 0 || (modifiers & 0x1040);
+    // 0x1040 = ACC_SYNTHETIC(0x1000) | ACC_BRIDGE(0x0040)
+    return modifiers != 0 && // JVMTI GetClassModifiers returns 0 for ordinary package-private classes
+           ((modifiers & 0x1040) != 0);
 }
 
 #endif // _JVMSUPPORT_INLINE_H

@@ -91,6 +91,7 @@ T* cast_or_null(const void* ptr) {
         static name * cast_or_null(const void* ptr) { return ::cast_or_null<name>(ptr); } \
         static name * cast_raw(const void* ptr) { return (name *)ptr; } \
         static name * load_then_cast(const void* ptr) { \
+            assert(ptr != nullptr);                     \
             return cast_or_null(*(const void**)ptr); }
 
 #define DECLARE_END  };
