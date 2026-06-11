@@ -308,10 +308,6 @@ __attribute__((noinline, no_stack_protector)) static void *t07_body(void *) {
     pthread_testcancel();
     usleep(100);
   }
-  __pthread_unregister_cancel(&cancel_buf);
-  sigaction(SIGVTALRM, &old_sa_vtalrm, nullptr);
-  ProfiledThread::release();
-  return nullptr;
 }
 
 #else  // !__GLIBC__ — musl: cancellation runs C cleanup callbacks

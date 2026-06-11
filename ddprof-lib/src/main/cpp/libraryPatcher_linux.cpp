@@ -123,6 +123,12 @@ void run_with_cleanup(func_start_routine routine, void* params,
                       void (*cleanup_fn)(void*), void* cleanup_arg) {
 #ifdef __GLIBC__
     __pthread_unwind_buf_t cancel_buf = {};
+    // With savemask=0, __sigsetjmp only writes __jmp_buf + int __mask_was_saved;
+    // it never touches __saved_mask.  The inner struct of __pthread_unwind_buf_t
+    // must cover exactly that writable prefix of struct __jmp_buf_tag.
+    static_assert(offsetof(__pthread_unwind_buf_t, __cancel_jmp_buf) == 0 &&
+                  sizeof(cancel_buf.__cancel_jmp_buf[0]) == offsetof(struct __jmp_buf_tag, __saved_mask),
+                  "glibc __pthread_unwind_buf_t inner layout incompatible with struct __jmp_buf_tag");
     // Uses __sigsetjmp/longjmp which only intercepts _Unwind_ForcedUnwind, but not
     // regular C++ exception from routine(params), which should be handled by JVM
     if (__builtin_expect(
@@ -145,6 +151,61 @@ void run_with_cleanup(func_start_routine routine, void* params,
     pthread_cleanup_pop(1);
 #endif
 }
+
+#ifdef UNIT_TEST
+// Integration test entry point: exercises the full start_routine_wrapper →
+// run_with_cleanup chain without calling Profiler::registerThread or
+// Profiler::unregisterThread, which dereference _cpu_engine/_wall_engine and
+// crash when the profiler is not started (as in gtest).
+//
+// The caller supplies cleanup_fn/cleanup_arg so the test can verify cleanup
+// fires and observe ProfiledThread::release() without coupling to Profiler state.
+//
+// Thread lifecycle:
+//   pthread_create_wrapped_for_test → start_routine_for_test
+//     → ProfiledThread::initCurrentThread()
+//     → run_with_cleanup(routine, params, cleanup_fn, cleanup_arg)
+//     → pthread_exit(nullptr)
+struct WrapperTestCtx {
+    func_start_routine routine;
+    void* params;
+    void (*cleanup_fn)(void*);
+    void* cleanup_arg;
+};
+
+__attribute__((visibility("hidden"), noinline, no_stack_protector))
+static void* start_routine_for_test(void* raw) {
+    auto* ctx = static_cast<WrapperTestCtx*>(raw);
+    func_start_routine routine = ctx->routine;
+    void* params = ctx->params;
+    void (*cleanup_fn)(void*) = ctx->cleanup_fn;
+    void* cleanup_arg = ctx->cleanup_arg;
+    {
+        SignalBlocker blocker;
+        delete ctx;
+        ProfiledThread::initCurrentThread();
+    }
+    run_with_cleanup(routine, params, cleanup_fn, cleanup_arg);
+    pthread_exit(nullptr);
+    __builtin_unreachable();
+}
+
+int pthread_create_wrapped_for_test(pthread_t* thread,
+                                    func_start_routine routine, void* params,
+                                    void (*cleanup_fn)(void*), void* cleanup_arg) {
+    WrapperTestCtx* ctx;
+    {
+        SignalBlocker blocker;
+        ctx = new WrapperTestCtx{routine, params, cleanup_fn, cleanup_arg};
+    }
+    int ret = pthread_create(thread, nullptr, start_routine_for_test, ctx);
+    if (ret != 0) {
+        SignalBlocker blocker;
+        delete ctx;
+    }
+    return ret;
+}
+#endif  // UNIT_TEST
 
 #ifdef __aarch64__
 // Delete RoutineInfo with profiling signals blocked to prevent ASAN
@@ -283,7 +344,8 @@ static void* start_routine_wrapper(void* args) {
     }
     // Use POSIX cleanup instead of C++ RAII to handle pthread_exit(): see run_with_cleanup.
     run_with_cleanup(routine, params, cleanup_unregister, nullptr);
-    return nullptr;
+    pthread_exit(nullptr); 
+    __builtin_unreachable();
 }
 
 static int pthread_create_hook(pthread_t* thread,
