@@ -2146,6 +2146,7 @@ bool FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
     Recording* rec = _rec;
     if (rec != nullptr) {
       RecordingBuffer *buf = rec->buffer(lock_index);
+      bool recorded = true;
       switch (event_type) {
       case BCI_CPU:
           rec->recordExecutionSample(buf, tid, call_trace_id, 0,
@@ -2175,11 +2176,14 @@ bool FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
           rec->recordNativeSocketSample(buf, tid, call_trace_id, (NativeSocketEvent *)event);
           break;
         default:
-          return false;
+          recorded = false;
+          break;
         }
-        rec->flushIfNeeded(buf);
-        rec->addThread(lock_index, tid);
-        return true;
+        if (recorded) {
+          rec->flushIfNeeded(buf);
+          rec->addThread(lock_index, tid);
+        }
+        return recorded;
       }
   } else {
     Counters::increment(SAMPLES_DROPPED_REC_LOCK);

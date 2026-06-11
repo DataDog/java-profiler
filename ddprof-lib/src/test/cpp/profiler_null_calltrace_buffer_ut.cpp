@@ -41,3 +41,12 @@ TEST(ProfilerNullCalltraceBufferTest, RecordExternalSampleNullBufferDoesNotCrash
         /*weight=*/1, /*tid=*/1, /*num_frames=*/1,
         &frame, /*truncated=*/false, BCI_ALLOC, /*event=*/nullptr);
 }
+
+TEST(ProfilerNullCalltraceBufferTest, RecordSampleReturnsFalseWithoutActiveRecording) {
+    ExecutionEvent event;
+    bool recorded = Profiler::instance()->recordSample(
+        /*ucontext=*/nullptr, /*weight=*/1, /*tid=*/1,
+        BCI_WALL, /*call_trace_id=*/1, &event);
+
+    EXPECT_FALSE(recorded);
+}
