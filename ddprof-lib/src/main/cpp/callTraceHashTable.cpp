@@ -279,7 +279,8 @@ void CallTraceHashTable::expandTableIfNeeded(LongHashTable* table) {
     u32 capacity = table->capacity();
 
     // EXPANSION LOGIC: Check if 75% capacity reached after incrementing size
-    if (size >= capacity * 3 / 4) {
+    if (size >= capacity * 3 / 4 &&
+        table == __atomic_load_n(&_table, __ATOMIC_RELAXED)) { // quick check, if other thread already expanded the table
       // Allocate new table with double capacity using LinearAllocator
       LongHashTable* new_table = LongHashTable::allocate(table, capacity * 2, &_allocator);
       if (new_table != nullptr) {
