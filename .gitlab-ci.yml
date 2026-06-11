@@ -194,6 +194,9 @@ generate-reliability-child-pipeline:
 
 run-reliability-tests:
   stage: reliability
+  variables:
+    DDPROF_COMMIT_BRANCH: "$DDPROF_COMMIT_BRANCH"
+    DDPROF_COMMIT_SHA: "$DDPROF_COMMIT_SHA"
   needs:
     - job: generate-reliability-child-pipeline
       artifacts: true
@@ -212,9 +215,6 @@ run-reliability-tests:
     strategy: depend
     forward:
       pipeline_variables: true
-    variables:
-      DDPROF_COMMIT_BRANCH: "$DDPROF_COMMIT_BRANCH"
-      DDPROF_COMMIT_SHA: "$DDPROF_COMMIT_SHA"
 
 include:
   - local: .gitlab/common.yml
