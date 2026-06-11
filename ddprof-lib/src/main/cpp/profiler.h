@@ -403,6 +403,15 @@ public:
   static int registerThread(int tid);
   static void unregisterThread(int tid);
 
+#ifdef UNIT_TEST
+  // Returns the tid most recently passed to unregisterThread(), or -1 if it
+  // has never been called (or since the last resetUnregisterObservableForTest).
+  // Used by integration tests to assert that cleanup_unregister wired
+  // Profiler::unregisterThread correctly without needing live engine instances.
+  static int  lastUnregisteredTidForTest();
+  static void resetUnregisterObservableForTest();
+#endif
+
 
   static void JNICALL ThreadStart(jvmtiEnv *jvmti, JNIEnv *jni,
                                   jthread thread) {

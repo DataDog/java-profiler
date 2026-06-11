@@ -134,7 +134,25 @@ int Profiler::registerThread(int tid) {
   return _instance->_cpu_engine->registerThread(tid) |
          _instance->_wall_engine->registerThread(tid);
 }
+#ifdef UNIT_TEST
+static std::atomic<int> g_test_last_unregistered_tid{-1};
+
+int Profiler::lastUnregisteredTidForTest() {
+    return g_test_last_unregistered_tid.load(std::memory_order_relaxed);
+}
+void Profiler::resetUnregisterObservableForTest() {
+    g_test_last_unregistered_tid.store(-1, std::memory_order_relaxed);
+}
+#endif
+
 void Profiler::unregisterThread(int tid) {
+#ifdef UNIT_TEST
+    // In gtest, _cpu_engine/_wall_engine are null (profiler not started).
+    // Record the tid so integration tests can verify the call happened without
+    // crashing on the null engine dereference.
+    g_test_last_unregistered_tid.store(tid, std::memory_order_relaxed);
+    return;
+#endif
   _instance->_cpu_engine->unregisterThread(tid);
   _instance->_wall_engine->unregisterThread(tid);
 }

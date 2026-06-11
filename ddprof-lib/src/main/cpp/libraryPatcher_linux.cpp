@@ -205,6 +205,17 @@ int pthread_create_wrapped_for_test(pthread_t* thread,
     }
     return ret;
 }
+
+// Variant that passes the production cleanup_unregister as the cleanup function.
+// Exercises the full chain: start_routine_for_test → run_with_cleanup →
+// cleanup_unregister → Profiler::unregisterThread + ProfiledThread::release.
+// Profiler::unregisterThread is null-safe under UNIT_TEST (see profiler.cpp).
+int pthread_create_with_cleanup_unregister_for_test(pthread_t* thread,
+                                                    func_start_routine routine,
+                                                    void* params) {
+    return pthread_create_wrapped_for_test(thread, routine, params,
+                                           cleanup_unregister, nullptr);
+}
 #endif  // UNIT_TEST
 
 #ifdef __aarch64__

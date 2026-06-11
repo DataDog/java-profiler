@@ -434,9 +434,11 @@ TEST(ForcedUnwindTest, CleanupCalledExactlyOnceOnNormalReturn) {
 // no-op cleanup, would leave the unit tests passing but fail these tests.
 // ===========================================================================
 
-// Test entry point declared in libraryPatcher_linux.cpp under #ifdef UNIT_TEST.
+// Test entry points declared in libraryPatcher_linux.cpp under #ifdef UNIT_TEST.
 extern "C++" int pthread_create_wrapped_for_test(
     pthread_t*, void* (*)(void*), void*, void (*)(void*), void*);
+extern "C++" int pthread_create_with_cleanup_unregister_for_test(
+    pthread_t*, void* (*)(void*), void*);
 
 // ---------------------------------------------------------------------------
 
@@ -512,6 +514,76 @@ TEST(ForcedUnwindTest, WrapperReleasesProfiledThreadOnPthreadExit) {
     EXPECT_TRUE(g_int_exit_released.load())
         << "ProfiledThread::release() must complete inside the wrapper cleanup";
     EXPECT_EQ(reinterpret_cast<void*>(99), retval);
+}
+
+// ---------------------------------------------------------------------------
+// Production-cleanup integration: cleanup_unregister calls
+// Profiler::unregisterThread with the wrapped thread's TID.
+// Replacing unregister_and_release with a bare ProfiledThread::release() would
+// leave WrapperReleasesProfiledThreadOnCancel/PthreadExit passing but fail here.
+
+#include "profiler.h"
+
+static std::atomic<int> g_int_prod_cancel_tid{-1};
+
+static void* int_prod_cancel_spin(void*) {
+    g_int_prod_cancel_tid.store(ProfiledThread::currentTid(),
+                                std::memory_order_relaxed);
+    while (true) {
+        pthread_testcancel();
+        usleep(100);
+    }
+}
+
+// Integration: cleanup_unregister calls Profiler::unregisterThread(tid) on cancel.
+TEST(ForcedUnwindTest, WrapperCallsProfilerUnregisterOnCancel) {
+    g_int_prod_cancel_tid.store(-1, std::memory_order_relaxed);
+    Profiler::resetUnregisterObservableForTest();
+
+    pthread_t t;
+    ASSERT_EQ(0, pthread_create_with_cleanup_unregister_for_test(
+        &t, int_prod_cancel_spin, nullptr));
+
+    while (g_int_prod_cancel_tid.load(std::memory_order_relaxed) == -1) {
+        usleep(100);
+    }
+    const int expected_tid = g_int_prod_cancel_tid.load(std::memory_order_relaxed);
+
+    pthread_cancel(t);
+    void* retval;
+    ASSERT_EQ(0, pthread_join(t, &retval));
+
+    EXPECT_EQ(expected_tid, Profiler::lastUnregisteredTidForTest())
+        << "cleanup_unregister must call Profiler::unregisterThread(tid) on cancel";
+    EXPECT_EQ(PTHREAD_CANCELED, retval);
+}
+
+// ---------------------------------------------------------------------------
+
+static std::atomic<int> g_int_prod_exit_tid{-1};
+
+static void* int_prod_exit_fn(void*) {
+    g_int_prod_exit_tid.store(ProfiledThread::currentTid(),
+                               std::memory_order_relaxed);
+    pthread_exit(reinterpret_cast<void*>(55));
+}
+
+// Integration: cleanup_unregister calls Profiler::unregisterThread(tid) on pthread_exit.
+TEST(ForcedUnwindTest, WrapperCallsProfilerUnregisterOnPthreadExit) {
+    g_int_prod_exit_tid.store(-1, std::memory_order_relaxed);
+    Profiler::resetUnregisterObservableForTest();
+
+    pthread_t t;
+    ASSERT_EQ(0, pthread_create_with_cleanup_unregister_for_test(
+        &t, int_prod_exit_fn, nullptr));
+
+    void* retval;
+    ASSERT_EQ(0, pthread_join(t, &retval));
+
+    EXPECT_EQ(g_int_prod_exit_tid.load(std::memory_order_relaxed),
+              Profiler::lastUnregisteredTidForTest())
+        << "cleanup_unregister must call Profiler::unregisterThread(tid) on pthread_exit";
+    EXPECT_EQ(reinterpret_cast<void*>(55), retval);
 }
 
 #endif  // __linux__
