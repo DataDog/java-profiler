@@ -302,7 +302,7 @@ void WallClockASGCT::timerLoop() {
             block_state == entry.slot->lastSampledState()) {
           Counters::increment(WC_SIGNAL_SUPPRESSED_SAMPLED_RUN);
           WallClockCounters::incrementSuppressedSampledRun();
-          const_cast<ThreadFilter::Slot*>(entry.slot)->incrementSuppressedSampleCount();
+          entry.slot->incrementSuppressedSampleCount();
           return false;
         }
       }

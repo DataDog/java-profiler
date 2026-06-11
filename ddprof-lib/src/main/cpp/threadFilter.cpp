@@ -298,7 +298,7 @@ void ThreadFilter::collect(std::vector<ThreadEntry>& entries) const {
             continue;
         }
 
-        for (const auto& slot : chunk->slots) {
+        for (auto& slot : chunk->slots) {
             int slot_tid = slot.value.load(std::memory_order_acquire);
             if (slot_tid != -1) {
                 entries.push_back({slot_tid, &slot});
@@ -317,7 +317,6 @@ void ThreadFilter::clearActive() {
 
         for (auto& slot : chunk->slots) {
             slot.value.store(-1, std::memory_order_release);
-            slot.resetSampledRun(OSThreadState::UNKNOWN);
             slot.clearActiveBlockRun(OSThreadState::UNKNOWN);
         }
     }
@@ -331,7 +330,6 @@ void ThreadFilter::resetSlotRunState(SlotID slot_id) {
     if (chunk != nullptr) {
         // Clear stale suppression state so a new thread in this slot cannot inherit
         // its predecessor's active block or once-per-run sampled marker.
-        chunk->slots[slot_idx].resetSampledRun(OSThreadState::UNKNOWN);
         chunk->slots[slot_idx].clearActiveBlockRun(OSThreadState::UNKNOWN);
     }
 }

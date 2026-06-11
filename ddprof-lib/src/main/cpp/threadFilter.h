@@ -280,7 +280,7 @@ private:
 // Snapshot entry produced by ThreadFilter::collect for the wall-clock timer.
 struct ThreadEntry {
     int tid;
-    const ThreadFilter::Slot* slot;
+    ThreadFilter::Slot* slot;
 };
 
 #endif // _THREADFILTER_H
