@@ -15,6 +15,7 @@
 #include <dlfcn.h>
 #include <mutex>
 #include <limits.h>
+#include <setjmp.h>
 #include <string.h>
 #include <stdlib.h>
 
