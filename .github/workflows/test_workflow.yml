@@ -117,6 +117,13 @@ jobs:
             fi
           fi
 
+          # GraalVM pre-allocates fixed memory that conflicts with ASan's shadow range
+          # [0x00007fff7000-0x10007fff7fff]; vm.mmap_rnd_bits tuning does not help (google/sanitizers#856).
+          if [[ "${{ matrix.config }}" == "asan" && "${{ matrix.java_version }}" =~ graal ]]; then
+            echo "::notice::Skipping ASan for GraalVM (incompatible shadow memory ranges — google/sanitizers#856)"
+            exit 0
+          fi
+
           MAX_ATTEMPTS=1
           if [[ "${{ matrix.config }}" == "asan" && "${{ matrix.java_version }}" =~ (j9|ibm) ]]; then
             MAX_ATTEMPTS=2
@@ -407,6 +414,13 @@ jobs:
               done
             ) &
             GDB_WATCHDOG_PID=$!
+          fi
+
+          # GraalVM pre-allocates fixed memory that conflicts with ASan's shadow range
+          # [0x00007fff7000-0x10007fff7fff]; vm.mmap_rnd_bits tuning does not help (google/sanitizers#856).
+          if [[ "${{ matrix.config }}" == "asan" && "${{ matrix.java_version }}" =~ graal ]]; then
+            echo "::notice::Skipping ASan for GraalVM (incompatible shadow memory ranges — google/sanitizers#856)"
+            exit 0
           fi
 
           MAX_ATTEMPTS=1
