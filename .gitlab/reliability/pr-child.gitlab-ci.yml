@@ -22,7 +22,7 @@ get-versions:
   stage: test
   timeout: 6h
   variables:
-    RUNTIME: "${RUNTIME:-120}"
+    RUNTIME: "120"
   needs:
     - job: get-versions
       artifacts: true
@@ -80,7 +80,7 @@ reliability-aarch64:
   stage: test
   timeout: 6h
   variables:
-    RUNTIME: "${RUNTIME:-120}"
+    RUNTIME: "120"
   needs:
     - job: get-versions
       artifacts: true
