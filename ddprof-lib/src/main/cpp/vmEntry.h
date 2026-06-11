@@ -33,6 +33,27 @@ enum ASGCT_CallFrameType {
   BCI_THREAD_ID = -17,          // method_id designates a thread
   BCI_ERROR = -18,              // method_id is an error string
   BCI_NATIVE_FRAME_REMOTE = -19, // method_id points to RemoteFrameInfo for remote symbolication
+  BCI_NATIVE_MALLOC = -20,       // native malloc/free sample (size stored in counter)
+  // method_id holds a VMSymbol* (the receiver class's name Symbol),
+  // NOT a jmethodID. The pointer is captured in the signal handler
+  // (hotspotSupport.cpp:walkVM) and resolved at dump time via SafeAccess
+  // in Lookup::resolveVTableReceiver. Same precedent as BCI_NATIVE_FRAME
+  // (const char* in method_id) and BCI_NATIVE_FRAME_REMOTE (packed
+  // 64-bit blob). Any reader iterating frames must check bci BEFORE
+  // dereferencing method_id as a jmethodID.
+  //
+  // Limitation: CallTraceHashTable::calcHash mixes the raw bytes of the
+  // frames array (including method_id) into the trace id. Two samples
+  // of the same logical class whose Symbol* address differs (class
+  // unload + reload within a chunk) produce distinct trace ids; this
+  // is accepted because normalising at sample time would require an
+  // in-signal-handler Symbol read, which the redesign explicitly
+  // avoids. The dump-time MethodMap key is class_id-based (see
+  // MethodMap::makeKey(u32)), so the synthetic <vtable_receiver>
+  // MethodInfo collapses across distinct Symbol* addresses even though
+  // the CallTrace itself does not.
+  BCI_VTABLE_RECEIVER = -21,
+  BCI_NATIVE_SOCKET = -22,       // native socket I/O sample (bytes stored in counter)
 };
 
 // See hotspot/src/share/vm/prims/forte.cpp
@@ -127,6 +148,14 @@ private:
   static bool _can_intercept_binding;
   static bool _is_adaptive_gc_boundary_flag_set;
 
+  // HotSpot JFR async stack-trace extension (optional, JDK 27+).
+  // _request_stack_trace is atomic (RELEASE/ACQUIRE) because canRequestStackTrace()
+  // is called from signal handlers; _init_request_stack_trace is plain because it
+  // is only ever read by initializeRequestStackTrace(), called once from the same
+  // init thread before any signal handlers are installed.
+  static jvmtiExtensionFunction _request_stack_trace;
+  static jvmtiExtensionFunction _init_request_stack_trace;
+
   static jvmtiError(JNICALL *_orig_RedefineClasses)(
       jvmtiEnv *, jint, const jvmtiClassDefinition *);
   static jvmtiError(JNICALL *_orig_RetransformClasses)(jvmtiEnv *, jint,
@@ -139,6 +168,7 @@ private:
   static void loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni);
 
   static bool initShared(JavaVM *vm);
+  static void probeJFRRequestStackTrace();
 
   static CodeCache* openJvmLibrary();
 
@@ -189,6 +219,19 @@ public:
     return _is_adaptive_gc_boundary_flag_set;
   }
 
+  static bool canRequestStackTrace() {
+    return __atomic_load_n(&_request_stack_trace, __ATOMIC_ACQUIRE) != nullptr;
+  }
+
+  // Must not be called from a signal handler — invokes JVMTI which is not async-signal-safe.
+  static bool initializeRequestStackTrace();
+
+  static jvmtiError requestStackTrace(void* ucontext, jlong user_data) {
+    jvmtiExtensionFunction fn = __atomic_load_n(&_request_stack_trace, __ATOMIC_ACQUIRE);
+    if (!fn) return JVMTI_ERROR_NOT_AVAILABLE;
+    return fn(_jvmti, (jthread)nullptr, ucontext, user_data);
+  }
+
   static void JNICALL VMInit(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
   static void JNICALL VMDeath(jvmtiEnv *jvmti, JNIEnv *jni);
 
@@ -197,10 +240,8 @@ public:
     // Needed only for AsyncGetCallTrace support
   }
 
-  static void JNICALL ClassPrepare(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
-                                   jclass klass) {
-    loadMethodIDs(jvmti, jni, klass);
-  }
+  static void JNICALL ClassPrepare(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
+                                   jclass klass);
 
   static jvmtiError JNICALL
   RedefineClassesHook(jvmtiEnv *jvmti, jint class_count,

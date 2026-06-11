@@ -1,5 +1,6 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -34,7 +35,13 @@ enum ImportId {
   im_calloc,
   im_realloc,
   im_free,
+  im_posix_memalign,
+  im_aligned_alloc,
   im_sigaction,
+  im_send,
+  im_recv,
+  im_write,
+  im_read,
   NUM_IMPORTS
 };
 

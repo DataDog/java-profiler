@@ -5,7 +5,11 @@ buildscript {
     classpath("com.dipien:semantic-version-gradle-plugin:2.0.0")
   }
   repositories {
+    val mavenRepositoryProxy = providers.gradleProperty("mavenRepositoryProxy").orNull
     mavenLocal()
+    if (mavenRepositoryProxy != null) {
+      maven { url = uri(mavenRepositoryProxy) }
+    }
     mavenCentral()
     gradlePluginPortal()
   }
@@ -16,7 +20,7 @@ plugins {
   id("com.datadoghq.native-root")
 }
 
-version = "1.42.0"
+version = "1.44.0"
 
 apply(plugin = "com.dipien.semantic-version")
 version = findProperty("ddprof_version") as? String ?: version

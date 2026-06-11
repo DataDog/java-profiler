@@ -13,9 +13,11 @@
 #include "codeCache.h"
 #include "common.h"
 #include "dictionary.h"
+#include "stringDictionary.h"
 #include "engine.h"
 #include "event.h"
 #include "flightRecorder.h"
+#include "guards.h"
 #include "libraries.h"
 #include "log.h"
 #include "mutex.h"
@@ -26,6 +28,7 @@
 #include "threadInfo.h"
 #include "trap.h"
 #include "vmEntry.h"
+#include <atomic>
 #include <iostream>
 #include <map>
 #include <time.h>
@@ -57,9 +60,8 @@ class VM;
 
 enum State { NEW, IDLE, RUNNING, TERMINATED };
 
-// Aligned to satisfy SpinLock member alignment requirement (64 bytes)  
-// Required because this class contains multiple SpinLock members:
-// _class_map_lock and _locks[]
+// Aligned to satisfy SpinLock member alignment requirement (64 bytes)
+// Required because this class contains the _locks[] SpinLock array.
 class alignas(alignof(SpinLock)) Profiler {
   friend VM;
 
@@ -71,7 +73,7 @@ private:
   static volatile bool _need_JDK_8313796_workaround;
 
   Mutex _state_lock;
-  State _state;
+  std::atomic<State> _state;
   // class unload hook
   Trap _class_unload_hook_trap;
   typedef void (*NotifyClassUnloadedFunc)(void *);
@@ -79,9 +81,9 @@ private:
   // --
 
   ThreadInfo _thread_info;
-  Dictionary _class_map;
-  Dictionary _string_label_map;
-  Dictionary _context_value_map;
+  StringDictionary _class_map{1};
+  StringDictionary _string_label_map{2};
+  StringDictionary _context_value_map{3};
   ThreadFilter _thread_filter;
   CallTraceStorage _call_trace_storage;
   FlightRecorder _jfr;
@@ -97,7 +99,11 @@ private:
   void *_timer_id;
 
   volatile u64 _total_samples;
-  u64 _failures[ASGCT_FAILURE_TYPES];
+  // On a separate cache line: incremented from every signal handler via
+  // recordSampleDelegated; must not share a line with _failures (written by
+  // ASGCT paths) or _total_samples (written by every recording path).
+  alignas(DEFAULT_CACHE_LINE_SIZE) volatile u64 _sample_seq;
+  alignas(DEFAULT_CACHE_LINE_SIZE) u64 _failures[ASGCT_FAILURE_TYPES];
 
   SpinLock _class_map_lock;
   SpinLock _locks[CONCURRENCY_LEVEL];
@@ -118,6 +124,7 @@ private:
   void **_dlopen_entry;
   static void *dlopen_hook(const char *filename, int flags);
   void switchLibraryTrap(bool enable);
+  static void prewarmUnwinder();
 
   void enableEngines();
   void disableEngines();
@@ -142,20 +149,49 @@ private:
   void lockAll();
   void unlockAll();
 
+  // Rotate all three dictionaries, then run jfr_op under lockAll().
+  //
+  // rotate() is self-contained: it uses _accepting + RefCountGuard to drain
+  // concurrent JNI readers, and SignalBlocker prevents profiling signals on
+  // this thread from inserting into old_active between Phase 1 and Phase 2.
+  // No external lock is required for rotation.
+  //
+  // lockAll() wraps jfr_op only — to gate call-trace writers (signal handlers
+  // and JNI paths that write to CallTraceStorage) from racing with the dump.
+  // Dictionary writers that bypass lockAll() (e.g. recordTrace0) are handled
+  // by the dictionary's own RefCountGuard protocol, not by lockAll().
+  template<typename F>
+  void rotateDictsAndRun(F jfr_op) {
+    SignalBlocker blocker;
+    _class_map.rotate();
+    _string_label_map.rotate();
+    _context_value_map.rotate();
+    lockAll();
+    jfr_op();
+    unlockAll();
+    _class_map.clearStandby();
+    _string_label_map.clearStandby();
+    _context_value_map.clearStandby();
+  }
+
   static int crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext);
   static void check_JDK_8313796_workaround();
 
   static Profiler *const _instance;
 
+  inline State state() const {
+    return _state.load(std::memory_order_relaxed);
+  }
+
 public:
   Profiler()
-      : _state_lock(), _state(NEW), _class_unload_hook_trap(2),
+      : _state_lock(), _state(State::NEW), _class_unload_hook_trap(2),
         _notify_class_unloaded_func(NULL), _thread_info(), _class_map(1),
         _string_label_map(2), _context_value_map(3), _thread_filter(),
         _call_trace_storage(), _jfr(), _cpu_engine(NULL), _wall_engine(NULL),
         _alloc_engine(NULL), _event_mask(0),
         _start_time(0), _stop_time(0), _epoch(0), _timer_id(NULL),
-        _total_samples(0), _failures(), _class_map_lock(),
+        _total_samples(0), _sample_seq(0), _failures(), _class_map_lock(),
         _max_stack_depth(0), _features(), _safe_mode(0), _cstack(CSTACK_NO),
         _thread_events_state(JVMTI_DISABLE), _libs(Libraries::instance()),
         _num_context_attributes(0), _omit_stacktraces(false),
@@ -197,15 +233,20 @@ public:
     return _features;
   }
 
+  inline bool isRunning() {
+    return _state.load(std::memory_order_acquire) == RUNNING;
+  }
+
   u64 total_samples() { return _total_samples; }
   int max_stack_depth() { return _max_stack_depth; }
   time_t uptime() { return time(NULL) - _start_time; }
   Engine *cpuEngine() { return _cpu_engine; }
   Engine *wallEngine() { return _wall_engine; }
 
-  Dictionary *classMap() { return &_class_map; }
-  Dictionary *stringLabelMap() { return &_string_label_map; }
-  Dictionary *contextValueMap() { return &_context_value_map; }
+  StringDictionary *classMap() { return &_class_map; }
+  SharedLockGuard classMapSharedGuard() { return SharedLockGuard(&_class_map_lock); }
+  StringDictionary *stringLabelMap() { return &_string_label_map; }
+  StringDictionary *contextValueMap() { return &_context_value_map; }
   u32 numContextAttributes() { return _num_context_attributes; }
   ThreadFilter *threadFilter() { return &_thread_filter; }
 
@@ -237,7 +278,6 @@ public:
   Error check(Arguments &args);
   Error start(Arguments &args, bool reset);
   Error stop();
-  Error flushJfr();
   Error dump(const char *path, const int length);
   void logStats();
   void switchThreadEvents(jvmtiEventMode mode);
@@ -329,6 +369,13 @@ public:
                          ASGCT_CallFrame *frames, int lock_index);
   void recordSample(void *ucontext, u64 weight, int tid, jint event_type,
                     u64 call_trace_id, Event *event);
+  // Delegated sample path: stack-walking is performed by the HotSpot JFR
+  // RequestStackTrace extension (the JVM emits the stack trace into its own
+  // JFR recording). We only emit the CPU/wall sample event with no
+  // stack-trace reference, tagged by the correlation ID we passed to
+  // RequestStackTrace as user_data.
+  void recordSampleDelegated(void *ucontext, u64 weight, int tid,
+                             jint event_type, Event *event);
   u64 recordJVMTISample(u64 weight, int tid, jthread thread, jint event_type, Event *event, bool deferred);
   void recordDeferredSample(int tid, u64 call_trace_id, jint event_type, Event *event);
   void recordExternalSample(u64 weight, int tid, int num_frames,

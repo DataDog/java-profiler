@@ -752,7 +752,7 @@ OSThreadState VMThread::getOSThreadState() {
 }
 
 int VMThread::osThreadId() {
-    const char* osthread = *(const char**) at(_thread_osthread_offset);
+    const char* osthread = (const char*) SafeAccess::load((void**) at(_thread_osthread_offset));
     if (osthread != NULL) {
         // Java thread may be in the middle of termination, and its osthread structure just released
         return SafeAccess::load32((int32_t*)(osthread + _osthread_id_offset), -1);
@@ -1012,6 +1012,12 @@ bool VMMethod::check_jmethodID_hotspot(jmethodID id) {
         }
     }
     if (VMStructs::class_loader_data_offset() >= 0) {
+        // Verify the Klass at cpool_holder is readable over the full range we're about to access,
+        // catching freed/reclaimed Klass memory between check_jmethodID and the JVMTI calls (PROF-14003).
+        if (!SafeAccess::isReadableRange(cpool_holder,
+                                         (size_t)VMStructs::class_loader_data_offset() + sizeof(void*))) {
+            return false;
+        }
         cl_data = (const char *)SafeAccess::load(
             (void **)(cpool_holder + VMStructs::class_loader_data_offset()));
         if (cl_data == NULL) {
@@ -1028,7 +1034,7 @@ bool VMMethod::check_jmethodID_J9(jmethodID id) {
 
 OSThreadState VMThread::osThreadState() {
     if (VMStructs::thread_osthread_offset() >= 0 && VMStructs::osthread_state_offset() >= 0) {
-        const char *osthread = *(char **)at(VMStructs::thread_osthread_offset());
+        const char *osthread = (const char*) SafeAccess::load((void**) at(VMStructs::thread_osthread_offset()));
         if (osthread != nullptr) {
             // If the location is not accessible, the thread must have been terminated
             int value = SafeAccess::safeFetch32((int*)(osthread + VMStructs::osthread_state_offset()),

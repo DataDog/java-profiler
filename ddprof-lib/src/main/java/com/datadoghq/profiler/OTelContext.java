@@ -52,8 +52,16 @@ public final class OTelContext {
         public final String telemetrySdkLanguage;
         public final String telemetrySdkVersion;
         public final String telemetrySdkName;
+        /**
+         * The threadlocal.attribute_key_map published in the process context's
+         * thread_ctx_config, or null if no thread context configuration was
+         * published. The first entry is always the reserved
+         * {@code datadog.local_root_span_id} slot; user-registered keys follow
+         * in registration order.
+         */
+        public final String[] attributeKeyMap;
 
-        public ProcessContext(String deploymentEnvironmentName, String hostName, String serviceInstanceId, String serviceName, String serviceVersion, String telemetrySdkLanguage, String telemetrySdkVersion, String telemetrySdkName) {
+        public ProcessContext(String deploymentEnvironmentName, String hostName, String serviceInstanceId, String serviceName, String serviceVersion, String telemetrySdkLanguage, String telemetrySdkVersion, String telemetrySdkName, String[] attributeKeyMap) {
             this.deploymentEnvironmentName = deploymentEnvironmentName;
             this.hostName = hostName;
             this.serviceInstanceId = serviceInstanceId;
@@ -62,12 +70,13 @@ public final class OTelContext {
             this.telemetrySdkLanguage = telemetrySdkLanguage;
             this.telemetrySdkVersion = telemetrySdkVersion;
             this.telemetrySdkName = telemetrySdkName;
+            this.attributeKeyMap = attributeKeyMap;
         }
 
         @Override
         public String toString() {
-            return String.format("ProcessContext{deploymentEnvironmentName='%s', hostName='%s', serviceInstanceId='%s', serviceName='%s', serviceVersion='%s', telemetrySdkLanguage='%s', telemetrySdkVersion='%s', telemetrySdkName='%s'}",
-                deploymentEnvironmentName, hostName, serviceInstanceId, serviceName, serviceVersion, telemetrySdkLanguage, telemetrySdkVersion, telemetrySdkName);
+            return String.format("ProcessContext{deploymentEnvironmentName='%s', hostName='%s', serviceInstanceId='%s', serviceName='%s', serviceVersion='%s', telemetrySdkLanguage='%s', telemetrySdkVersion='%s', telemetrySdkName='%s', attributeKeyMap=%s}",
+                deploymentEnvironmentName, hostName, serviceInstanceId, serviceName, serviceVersion, telemetrySdkLanguage, telemetrySdkVersion, telemetrySdkName, java.util.Arrays.toString(attributeKeyMap));
         }
     }
     
@@ -229,6 +238,22 @@ public final class OTelContext {
      * thread_ctx_config. In OTEL mode, attribute values set via
      * {@link ThreadContext#setContextAttribute(int, String)} are encoded
      * with the key index corresponding to position in this array.
+     *
+     * <p>Calling this method explicitly is <b>optional</b> when the profiler
+     * is started with the {@code attributes=...} argument (e.g.
+     * {@code execute("start,attributes=http.route;db.system,...")}); the
+     * native start path auto-registers those keys.
+     *
+     * <p>This method reads the currently published process context and
+     * republishes it with thread_ctx_config attached. It must therefore be
+     * called <b>after</b>
+     * {@link #setProcessContext(String, String, String, String, String, String)};
+     * if no process context has been published yet, the registration is a
+     * no-op for the process-level attribute_key_map (per-thread
+     * setContextAttribute writes still work). Conversely, calling
+     * setProcessContext after this method drops the previously published
+     * thread_ctx_config — re-register the keys after each setProcessContext
+     * if you need them to persist.
      *
      * <p>Must be called before any calls to setContextAttribute.
      *

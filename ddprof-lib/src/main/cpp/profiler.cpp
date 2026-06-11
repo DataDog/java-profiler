@@ -7,6 +7,8 @@
 #include <cassert>
 #include "profiler.h"
 #include "asyncSampleMutex.h"
+#include "mallocTracer.h"
+#include "nativeSocketSampler.h"
 #include "context.h"
 #include "context_api.h"
 #include "guards.h"
@@ -41,6 +43,8 @@
 #include <fstream>
 #include <memory>
 #include <set>
+#include <string>
+#include <vector>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -59,11 +63,15 @@ static void (*orig_segvHandler)(int signo, siginfo_t *siginfo, void *ucontext);
 static void (*orig_busHandler)(int signo, siginfo_t *siginfo, void *ucontext);
 
 static Engine noop_engine;
+static MallocTracer malloc_tracer;
 static PerfEvents perf_events;
 static WallClockASGCT wall_asgct_engine;
+static WallClockJvmti wall_jvmti_engine;
 static J9WallClock j9_engine;
 static ITimer itimer;
+static ITimerJvmti itimer_jvmti;
 static CTimer ctimer;
+static CTimerJvmti ctimer_jvmti;
 
 void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   ProfiledThread::initCurrentThread();
@@ -84,7 +92,7 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 }
 
 void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = ProfiledThread::currentSignalSafe();
   int tid = -1;
   
   if (current != nullptr) {
@@ -96,19 +104,28 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
       _thread_filter.unregisterThread(slot_id);
       current->setFilterSlotId(-1);
     }
-    
-    ProfiledThread::release();
-  } else {
-    // ProfiledThread already cleaned up - try to get tid from JVMTI as fallback
-    tid = JVMThread::nativeThreadId(jni, thread);
-    if (tid < 0) {
-      // No ProfiledThread AND can't get tid from JVMTI - nothing we can do
-      return;
+
+    updateThreadName(jvmti, jni, thread, false);
+    // Block profiling signals around engine unregistration + TLS release to
+    // close the window where a wall-clock/CPU signal could sample a
+    // partially-torn-down thread (PROF-14674).
+    {
+      SignalBlocker blocker;
+      _cpu_engine->unregisterThread(tid);
+      _wall_engine->unregisterThread(tid);
+      ProfiledThread::release();
     }
+    return;
   }
-  
-  // These can run if we have a valid tid
-  updateThreadName(jvmti, jni, thread, false);  // false = not self
+
+  // ProfiledThread already cleaned up - try to get tid from JVMTI as fallback
+  tid = JVMThread::nativeThreadId(jni, thread);
+  if (tid < 0) {
+    // No ProfiledThread AND can't get tid from JVMTI - nothing we can do
+    return;
+  }
+
+  updateThreadName(jvmti, jni, thread, false);
   _cpu_engine->unregisterThread(tid);
   _wall_engine->unregisterThread(tid);
 }
@@ -453,11 +470,20 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
   }
   u64 call_trace_id = 0;
   if (!_omit_stacktraces) {
+    // Defensive: the buffer slot can be observed as nullptr in pathological
+    // start sequences (e.g. a calloc failure path in Profiler::start before
+    // engines are enabled). Drop the sample rather than dereferencing.
+    CallTraceBuffer *buf = _calltrace_buffer[lock_index];
+    if (buf == nullptr) {
+      atomicIncRelaxed(_failures[-ticks_skipped]);
+      _locks[lock_index].unlock();
+      return 0;
+    }
 #ifdef COUNTERS
     u64 startTime = TSC::ticks();
 #endif // COUNTERS
-    ASGCT_CallFrame *frames = _calltrace_buffer[lock_index]->_asgct_frames;
-    jvmtiFrameInfo *jvmti_frames = _calltrace_buffer[lock_index]->_jvmti_frames;
+    ASGCT_CallFrame *frames = buf->_asgct_frames;
+    jvmtiFrameInfo *jvmti_frames = buf->_jvmti_frames;
 
     int num_frames = 0;
 
@@ -563,10 +589,9 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
     num_frames += getNativeTrace(ucontext, native_stop, event_type, tid,
                                  &java_ctx, &truncated, lock_index);
     assert(num_frames >= 0);
-                                 
+
     int max_remaining = _max_stack_depth - num_frames;
     if (max_remaining > 0) {
-      // Walk Java frames if we have room, but only for mixed mode or CPU/Wall events with cstack enabled. For async events, we want to avoid walking Java frames in the signal handler if possible, since it can lead to deadlocks. Instead, we'll try to get the Java trace asynchronously after the signal handler returns.
       StackWalkRequest request = {event_type, lock_index, ucontext, frames + num_frames, max_remaining, &java_ctx, &truncated};
       num_frames += JVMSupport::walkJavaStack(request);
     }
@@ -591,6 +616,44 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
   }
   _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
 
+  _locks[lock_index].unlock();
+}
+
+void Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
+                                     jint event_type, Event *event) {
+  if (!VM::canRequestStackTrace()) {
+    return;
+  }
+
+  // Reserve the correlation ID up-front so we can pass the same value to the
+  // JVM (as user_data) and to our own event.
+  u64 correlation_id = atomicIncRelaxed(_sample_seq);
+
+  Counters::increment(JVMTI_STACKS_REQUESTED);
+  jvmtiError rc = VM::requestStackTrace(ucontext, (jlong)correlation_id);
+  if (rc != JVMTI_ERROR_NONE) {
+    if (rc == JVMTI_ERROR_WRONG_PHASE) {
+      Counters::increment(JVMTI_STACKS_FAILED_WRONG_PHASE);
+    } else {
+      Counters::increment(JVMTI_STACKS_FAILED_OTHER);
+    }
+    return;
+  }
+
+  atomicIncRelaxed(_total_samples);
+  u32 lock_index = getLockIndex(tid);
+  if (!_locks[lock_index].tryLock() &&
+      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+    atomicIncRelaxed(_failures[-ticks_skipped]);
+    Counters::increment(JVMTI_STACKS_DROPPED_LOCK);
+    // The JVM-side stack trace request is already in flight; we just drop our
+    // sample event. The dangling StackTraceRequest entry in the JVM recording
+    // will simply have no matching datadog event, which is harmless.
+    return;
+  }
+
+  _jfr.recordEventDelegated(lock_index, tid, correlation_id, event_type, event);
   _locks[lock_index].unlock();
 }
 
@@ -634,24 +697,28 @@ void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
   CriticalSection cs;
   atomicIncRelaxed(_total_samples);
 
-  // Convert ASGCT_CallFrame to ASGCT_CallFrame
-  // External samplers (like ObjectSampler) provide standard frames only
   u32 lock_index = getLockIndex(tid);
-  ASGCT_CallFrame *extended_frames = _calltrace_buffer[lock_index]->_asgct_frames;
+  if (!_locks[lock_index].tryLock() &&
+      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+    atomicIncRelaxed(_failures[-ticks_skipped]);
+    return;
+  }
+
+  CallTraceBuffer *buf = _calltrace_buffer[lock_index];
+  if (buf == nullptr) {
+    atomicIncRelaxed(_failures[-ticks_skipped]);
+    _locks[lock_index].unlock();
+    return;
+  }
+  // External samplers (like ObjectSampler) provide standard frames only
+  ASGCT_CallFrame *extended_frames = buf->_asgct_frames;
   for (int i = 0; i < num_frames; i++) {
     extended_frames[i] = frames[i];
   }
 
   u64 call_trace_id =
       _call_trace_storage.put(num_frames, extended_frames, truncated, weight);
-  if (!_locks[lock_index].tryLock() &&
-      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
-      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
-    // Too many concurrent signals already
-    atomicIncRelaxed(_failures[-ticks_skipped]);
-    return;
-  }
-
   _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
 
   _locks[lock_index].unlock();
@@ -693,19 +760,54 @@ void Profiler::writeHeapUsage(long value, bool live) {
   _locks[lock_index].unlock();
 }
 
+void Profiler::prewarmUnwinder() {
+#ifdef __linux__
+  // J9 on aarch64 (and other JVMs) lazily loads libgcc_s.so.1 from its DWARF
+  // unwinder during stack walks. When that happens inside a signal handler
+  // frame, our dlopen_hook fires from signal context and tries to refresh the
+  // library list — Mutex::lock and malloc on a signal stack.  By forcing the
+  // load here, before any signal handler is installed, subsequent calls find
+  // libgcc_s already mapped and the lazy-load path never runs.
+  //
+  // The handle is intentionally leaked: keeping the refcount > 0 prevents the
+  // library from being unmapped for the remainder of the process lifetime.
+  //
+  // SONAME note: "libgcc_s.so.1" is hardcoded deliberately. Referencing
+  // _Unwind_Backtrace from C++ would normally let the linker resolve the
+  // SONAME implicitly, but our release build uses -static-libgcc
+  // (ConfigurationPresets.kt: "-static-libgcc"), which embeds the unwinder
+  // into libjavaProfiler.so and removes libgcc_s.so from our NEEDED entries
+  // — so a symbol reference would not trigger the shared-library load.
+  // dlopen by SONAME is the only mechanism that works under static-libgcc.
+  // libgcc_s.so.1 has been the stable SONAME since 2002; a bump would
+  // constitute a glibc/GCC C++ ABI break and is treated as a fixed contract.
+  (void)dlopen("libgcc_s.so.1", RTLD_LAZY | RTLD_GLOBAL);
+#endif
+}
+
 void *Profiler::dlopen_hook(const char *filename, int flags) {
   void *result = dlopen(filename, flags);
 
   if (result != NULL) {
-    // Static function of Profiler -> can not use the instance variable _libs
-    // Since Libraries is a singleton, this does not matter
-    Libraries::instance()->updateSymbols(false);
-    // Patch sigaction in newly loaded libraries
-    LibraryPatcher::patch_sigaction();
-    // Extract build-ids for newly loaded libraries if remote symbolication is enabled
-    Profiler* profiler = instance();
-    if (profiler != nullptr && profiler->_remote_symbolication) {
-      Libraries::instance()->updateBuildIds();
+    if (!isInTrackedSignalContext()) {
+      // Either confirmed non-signal context, or no ProfiledThread on this
+      // thread (uninstrumented JVM internals — VM Thread, JIT, GC).  We
+      // prefer synchronous refresh for the null-PT case too because (a)
+      // those threads call dlopen synchronously during normal JVM
+      // operation, and (b) wasmtime's broken sigaction patching depends
+      // on switchLibraryTrap running its work inline (the original reason
+      // for the trap).  The residual risk — an uninstrumented thread
+      // calling dlopen from inside a foreign signal handler — is small:
+      // prewarmUnwinder() closes the known libgcc_s lazy-load case, and
+      // mainstream JVM signal handlers are AS-safe by design.
+      Libraries::instance()->refresh();
+    } else {
+      // Confirmed signal context (one of our SignalHandlerScopes is on
+      // the stack).  refresh() must NOT run here — parseLibraries
+      // acquires a Mutex and calls malloc, both AS-unsafe.  Mark the
+      // library set dirty; the Libraries refresher thread picks it up
+      // within REFRESH_INTERVAL_NS (500 ms).
+      Libraries::instance()->markDirty();
     }
   }
 
@@ -745,10 +847,25 @@ void Profiler::disableEngines() {
 }
 
 void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  // J9 installs a SIGSEGV handler that uses siglongjmp() to recover from
+  // null-pointer-check faults during normal Java execution.  When we chain to
+  // it, that longjmp unwinds past our stack frame and skips the RAII
+  // destructor, permanently leaking depth on the thread.  Release the guard
+  // before chaining so depth is correct whether the chained handler returns
+  // or longjmps.
+  //
+  // Sanitizer-coverage note: this also means depth == 0 inside the chained
+  // handler, so DEBUG_ASSERT_NOT_IN_SIGNAL() will NOT fire for AS-unsafe
+  // code reachable from a chained handler that returns normally.  This is
+  // the lesser of two evils — leaking depth on longjmp would silently
+  // break the production deferred-refresh gate, while the sanitizer gap
+  // is bounded to third-party signal handler code we don't own.
+  SIGNAL_HANDLER_GUARD();
   if (crashHandlerInternal(signo, siginfo, ucontext)) {
-    return;  // Handled
+    return;  // Handled — destructor decrements depth
   }
-  // Not handled, chain to next handler
+  SIGNAL_HANDLER_GUARD_RELEASE();
+  // Not handled, chain to next handler (may longjmp; never return through us)
   SigAction chain = OS::getSegvChainTarget();
   if (chain != nullptr) {
     chain(signo, siginfo, ucontext);
@@ -758,9 +875,13 @@ void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 }
 
 void Profiler::busHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  // See segvHandler: release before chaining in case the chained handler
+  // longjmps through us.
+  SIGNAL_HANDLER_GUARD();
   if (crashHandlerInternal(signo, siginfo, ucontext)) {
-    return;  // Handled
+    return;  // Handled — destructor decrements depth
   }
+  SIGNAL_HANDLER_GUARD_RELEASE();
   // Not handled, chain to next handler
   SigAction chain = OS::getBusChainTarget();
   if (chain != nullptr) {
@@ -878,6 +999,9 @@ void Profiler::updateThreadName(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
     assert(native_thread_id != -1);
   } else {
     native_thread_id = JVMThread::nativeThreadId(jni, thread);
+    if (jni->ExceptionCheck()) {
+      jni->ExceptionClear();
+    }
   }
 
   if (native_thread_id >= 0 &&
@@ -898,6 +1022,9 @@ void Profiler::updateJavaThreadNames() {
 
   JNIEnv *jni = VM::jni();
   for (int i = 0; i < thread_count; i++) {
+    if (thread_objects[i] == nullptr) {
+      continue;
+    }
     updateThreadName(jvmti, jni, thread_objects[i]);
     jni->DeleteLocalRef(thread_objects[i]);
   }
@@ -941,6 +1068,21 @@ Engine *Profiler::selectCpuEngine(Arguments &args) {
       }
       TEST_LOG("J9[cpu]=asgct");
     }
+    // Prefer the JVMTI JFR-delegated engine when the HotSpot extension is
+    // available and the user opted into jvmtistacks.  On Linux, CTimerJvmti
+    // uses per-thread CPU timers.  On other platforms (e.g. macOS) it is not
+    // supported, so fall back to ITimerJvmti which uses setitimer(ITIMER_PROF).
+    if (args._jvmtistacks) {
+      if (!ctimer_jvmti.check(args)) {
+        TEST_LOG("HS[cpu]=ctimer_jvmti");
+        return &ctimer_jvmti;
+      }
+      if (!itimer_jvmti.check(args)) {
+        TEST_LOG("HS[cpu]=itimer_jvmti");
+        return &itimer_jvmti;
+      }
+      Log::warn("jvmtistacks requested but no JVMTI CPU engine is available; falling back to ASGCT");
+    }
     return !ctimer.check(args)
                ? (Engine *)&ctimer
                : (!perf_events.check(args) ? (Engine *)&perf_events
@@ -975,6 +1117,11 @@ Engine *Profiler::selectWallEngine(Arguments &args) {
       TEST_LOG("J9[wall]=asgct");
       return (Engine *)&wall_asgct_engine;
     }
+  }
+  // jvmtistacks overrides _wallclock_sampler when the HotSpot extension is available.
+  if (args._jvmtistacks && VM::canRequestStackTrace()) {
+    TEST_LOG("HS[wall]=jvmti");
+    return (Engine *)&wall_jvmti_engine;
   }
   switch (args._wallclock_sampler) {
         case JVMTI:
@@ -1041,9 +1188,13 @@ void Profiler::check_JDK_8313796_workaround() {
 
 Error Profiler::start(Arguments &args, bool reset) {
   MutexLocker ml(_state_lock);
-  if (_state > IDLE) {
+  if (state() > IDLE) {
     return Error("Profiler already started");
   }
+
+  // Force libgcc_s to load now (idempotent dlopen) so the JVM's DWARF
+  // unwinder cannot lazy-load it later from signal context.
+  prewarmUnwinder();
 
   Error error = checkJvmCapabilities();
   if (error) {
@@ -1052,29 +1203,54 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   _omit_stacktraces = args._lightweight;
   _remote_symbolication = args._remote_symbolication;
+  _libs->setRemoteSymbolication(_remote_symbolication);
   _event_mask =
       ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU
                                                                      : 0) |
       (args._cpu >= 0 ? EM_CPU : 0) | (args._wall >= 0 ? EM_WALL : 0) |
       (args._record_allocations || args._record_liveness || args._gc_generations
            ? EM_ALLOC
-           : 0);
+           : 0) |
+      (args._nativemem >= 0 ? EM_NATIVEMEM : 0) |
+      (args._nativesocket ? EM_NATIVESOCKET : 0);
 
   if (_event_mask == 0) {
     return Error("No profiling events specified");
   }
 
+  // Commit _features before the reset block so any signal-handler code that
+  // reads _features.* observes the correct enabled state once profiling
+  // engines start.
+  _features = args._features;
+  if (VM::hotspot_version() < 8) {
+      _features.java_anchor = 0;
+      _features.gc_traces = 0;
+  }
+  if (!VMStructs::hasClassNames()) {
+      _features.vtable_target = 0;
+  }
+  if (!VMStructs::hasCompilerStructs()) {
+      _features.comp_task = 0;
+  }
+
   if (reset || _start_time == 0) {
-    // Reset counters
+    // Reset counters. _sample_seq is intentionally not reset: it is a
+    // monotonically increasing uniqueness generator for correlation IDs and
+    // must not repeat values across recording sessions.
     _total_samples = 0;
     memset(_failures, 0, sizeof(_failures));
 
-    // Reset dictionaries and bitmaps
-    // Reset class map under lock because ObjectSampler may try to use it while
-    // it is being cleaned up
-    _class_map_lock.lock();
-    _class_map.clear();
-    _class_map_lock.unlock();
+    // Reset dictionaries. StringDictionary::clearAll() manages its own
+    // synchronisation (RefCountGuard drain). The exclusive _class_map_lock
+    // additionally fences out shared-lock readers introduced by #527
+    // (deferred vtable receiver resolution) so they cannot observe a
+    // half-cleared class map.
+    {
+      ExclusiveLockGuard guard(&_class_map_lock);
+      _class_map.clearAll();
+    }
+    _string_label_map.clearAll();
+    _context_value_map.clearAll();
 
     // Reset call trace storage
     if (!_omit_stacktraces) {
@@ -1094,30 +1270,29 @@ Error Profiler::start(Arguments &args, bool reset) {
     size_t nelem = _max_stack_depth + RESERVED_FRAMES;
 
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
-      free(_calltrace_buffer[i]);
-      _calltrace_buffer[i] = (CallTraceBuffer*)calloc(nelem, sizeof(CallTraceBuffer));
-      if (_calltrace_buffer[i] == NULL) {
+      // Allocate the replacement before touching the slot so a calloc failure
+      // does not leave the slot pointing at freed memory.
+      CallTraceBuffer *fresh =
+          (CallTraceBuffer*)calloc(nelem, sizeof(CallTraceBuffer));
+      if (fresh == NULL) {
         _max_stack_depth = 0;
         return Error("Not enough memory to allocate stack trace buffers (try "
                      "smaller jstackdepth)");
       }
+      // Swap under the per-shard lock: all readers (recordJVMTISample,
+      // recordExternalSample) acquire this lock via tryLock before reading
+      // _calltrace_buffer, so no reader can observe a freed pointer mid-replacement.
+      _locks[i].lock();
+      CallTraceBuffer *prev = _calltrace_buffer[i];
+      _calltrace_buffer[i] = fresh;
+      _locks[i].unlock();
+      free(prev);
     }
   }
 
   // Remote symbolication is now inline in ASGCT_CallFrame
   // No separate pool allocation needed!
 
-  _features = args._features;
-  if (VM::hotspot_version() < 8) {
-      _features.java_anchor = 0;
-      _features.gc_traces = 0;
-  }
-  if (!VMStructs::hasClassNames()) {
-      _features.vtable_target = 0;
-  }
-  if (!VMStructs::hasCompilerStructs()) {
-      _features.comp_task = 0;
-  }
   _safe_mode = args._safe_mode;
   if (VM::hotspot_version() < 8 || VM::isZing()) {
     _safe_mode |= GC_TRACES | LAST_JAVA_PC;
@@ -1154,8 +1329,8 @@ Error Profiler::start(Arguments &args, bool reset) {
     Log::warn("Branch stack is supported only with PMU events");
   } else if (_cstack == CSTACK_VM) {
     if (!VMStructs::hasStackStructs()) {
-      return Error(
-          "VMStructs stack walking is not supported on this JVM/platform");
+      _cstack = DWARF_SUPPORTED ? CSTACK_DWARF : CSTACK_NO;
+      Log::error("VMStructs stack walking is not supported on this JVM/platform, defaulting to the default native call stack unwinding mode.");
     }
   }
 
@@ -1171,16 +1346,25 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   enableEngines();
 
+  // Refresher must be running before the trap fires: dlopen_hook's
+  // signal-context branch only marks dirty and relies on the refresher
+  // to call refresh() within REFRESH_INTERVAL_NS (500 ms).
+  _libs->startRefresher();
+
   // Always enable library trap to catch wasmtime loading and patch its broken sigaction
   switchLibraryTrap(true);
 
   JfrMetadata::reset();
   JfrMetadata::initialize(args._context_attributes);
   _num_context_attributes = args._context_attributes.size();
+  // Initialize the OTel thread context so external profilers can decode
+  // the per-thread context, including custom attributes
+  ContextApi::registerAttributeKeys(args._context_attributes);
   error = _jfr.start(args, reset);
   if (error) {
     disableEngines();
     switchLibraryTrap(false);
+    _libs->stopRefresher();
     return error;
   }
 
@@ -1215,6 +1399,34 @@ Error Profiler::start(Arguments &args, bool reset) {
       }
     }
   }
+  if (_event_mask & EM_NATIVEMEM) {
+    error = malloc_tracer.start(args);
+    if (error) {
+      Log::warn("%s", error.message());
+      if (_event_mask == EM_NATIVEMEM) {
+        // nativemem is the only requested mode: propagate the real error
+        disableEngines();
+        switchLibraryTrap(false);
+        _libs->stopRefresher();
+        lockAll();
+        _jfr.stop();
+        unlockAll();
+        return error;
+      }
+      error = Error::OK; // recoverable when other modes are also active
+    } else {
+      activated |= EM_NATIVEMEM;
+    }
+  }
+  if (_event_mask & EM_NATIVESOCKET) {
+    error = NativeSocketSampler::instance()->start(args);
+    if (error) {
+      Log::warn("%s", error.message());
+      error = Error::OK; // recoverable
+    } else {
+      activated |= EM_NATIVESOCKET;
+    }
+  }
 
   if (activated) {
     switchThreadEvents(JVMTI_ENABLE);
@@ -1225,15 +1437,15 @@ Error Profiler::start(Arguments &args, bool reset) {
     // TODO: find a better way to resolve the thread name.
     onThreadStart(nullptr, nullptr, nullptr);
 
-    _state = RUNNING;
+    _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
-
     return Error::OK;
   }
   // no engine was activated; perform cleanup
   disableEngines();
   switchLibraryTrap(false);
+  _libs->stopRefresher();
 
   lockAll();
   _jfr.stop();
@@ -1245,7 +1457,7 @@ Error Profiler::start(Arguments &args, bool reset) {
 
 Error Profiler::stop() {
   MutexLocker ml(_state_lock);
-  if (_state != RUNNING) {
+  if (state() != RUNNING) {
     return Error("Profiler is not active");
   }
 
@@ -1253,6 +1465,16 @@ Error Profiler::stop() {
 
   if (_event_mask & EM_ALLOC)
     _alloc_engine->stop();
+  if (_event_mask & EM_NATIVEMEM)
+    malloc_tracer.stop();
+  // Stop the refresher BEFORE socket unpatch: the refresher calls
+  // install_socket_hooks() which re-reads _socket_active before acquiring the
+  // patch lock.  If the refresher runs concurrently with unpatch_socket_functions()
+  // it can see _socket_active=true, wait for the lock, then re-patch PLT slots
+  // that unpatch just restored.  Stopping the refresher here closes that window.
+  _libs->stopRefresher();
+  if (_event_mask & EM_NATIVESOCKET)
+    NativeSocketSampler::instance()->stop();
   if (_event_mask & EM_WALL)
     _wall_engine->stop();
   if (_event_mask & EM_CPU)
@@ -1260,30 +1482,66 @@ Error Profiler::stop() {
 
   switchLibraryTrap(false);
   switchThreadEvents(JVMTI_DISABLE);
+  Libraries::instance()->refresh();
   updateJavaThreadNames();
   updateNativeThreadNames();
+
+  // If jvmtistacks delegation was used this recording, surface likely
+  // misconfigurations. The JVM returns WRONG_PHASE when JFR is not recording
+  // and NOT_AVAILABLE when JFR is recording but the StackTraceRequest event is
+  // disabled. If the request was accepted the JVM will have written the
+  // stack trace, so no warning is needed.
+  if (VM::canRequestStackTrace()) {
+    long long requested =
+        Counters::getCounter(JVMTI_STACKS_REQUESTED);
+    long long wrong_phase =
+        Counters::getCounter(JVMTI_STACKS_FAILED_WRONG_PHASE);
+    long long other =
+        Counters::getCounter(JVMTI_STACKS_FAILED_OTHER);
+    long long dropped_lock =
+        Counters::getCounter(JVMTI_STACKS_DROPPED_LOCK);
+    if (requested > 0 && wrong_phase * 2 >= requested) {
+      fprintf(stderr,
+              "[java-profiler] jvmtistacks: %lld of %lld stack-trace requests "
+              "were rejected with WRONG_PHASE, so no async stack traces were "
+              "emitted by the JVM. Start JFR (e.g. "
+              "-XX:StartFlightRecording=...) before or as the profiler starts.\n",
+              wrong_phase, requested);
+    } else if (requested > 0 && other * 2 >= requested) {
+      fprintf(stderr,
+              "[java-profiler] jvmtistacks: %lld of %lld stack-trace requests "
+              "were rejected with NOT_AVAILABLE. The jdk.StackTraceRequest event "
+              "is likely disabled; enable it in the JFR configuration, e.g. "
+              "-XX:StartFlightRecording=...,+jdk.StackTraceRequest#enabled=true.\n",
+              other, requested);
+    }
+    if (dropped_lock > 0) {
+      fprintf(stderr,
+              "[java-profiler] jvmtistacks: %lld of %lld stack-trace requests "
+              "were dropped due to lock contention; the corresponding "
+              "jdk.StackTraceRequest events will have no matching profiler event.\n",
+              dropped_lock, requested);
+    }
+  }
 
   // writing these out before stopping the JFR recording allows to report the
   // correct counts in the recording
   _thread_info.reportCounters();
 
-  // Acquire all spinlocks to avoid race with remaining signals
-  lockAll();
-  _jfr.stop();  // JFR serialization must complete before unpatching libraries
-  unlockAll();
+  rotateDictsAndRun([&]{ _jfr.stop(); });
 
   // Unpatch libraries AFTER JFR serialization completes
   // Remote symbolication RemoteFrameInfo structs contain pointers to build-ID strings
   // owned by library metadata, so we must keep library patches active until after serialization
   LibraryPatcher::unpatch_libraries();
 
-  _state = IDLE;
+  _state.store(IDLE, std::memory_order_release);
   return Error::OK;
 }
 
 Error Profiler::check(Arguments &args) {
   MutexLocker ml(_state_lock);
-  if (_state > IDLE) {
+  if (state() > IDLE) {
     return Error("Profiler already started");
   }
 
@@ -1301,6 +1559,12 @@ Error Profiler::check(Arguments &args) {
     _alloc_engine = selectAllocEngine(args);
     error = _alloc_engine->check(args);
   }
+  if (!error && args._nativemem >= 0) {
+    error = malloc_tracer.check(args);
+  }
+  if (!error && args._nativesocket) {
+    error = NativeSocketSampler::instance()->check(args);
+  }
   if (!error) {
     if (args._cstack == CSTACK_DWARF && !DWARF_SUPPORTED) {
       return Error("DWARF unwinding is not supported on this platform");
@@ -1315,34 +1579,20 @@ Error Profiler::check(Arguments &args) {
   return error;
 }
 
-Error Profiler::flushJfr() {
-  MutexLocker ml(_state_lock);
-  if (_state != RUNNING) {
-    return Error("Profiler is not active");
-  }
-
-  updateJavaThreadNames();
-  updateNativeThreadNames();
-
-  lockAll();
-  _jfr.flush();
-  unlockAll();
-
-  return Error::OK;
-}
-
 Error Profiler::dump(const char *path, const int length) {
   MutexLocker ml(_state_lock);
-  if (_state != IDLE && _state != RUNNING) {
+  State cur_state = state();
+  if (cur_state != IDLE && cur_state != RUNNING) {
     return Error("Profiler has not started");
   }
 
-  if (_state == RUNNING) {
+  if (cur_state == RUNNING) {
     std::set<int> thread_ids;
     // flush the liveness tracker instance and note all the threads referenced
     // by the live objects
     LivenessTracker::instance()->flush(thread_ids);
 
+    Libraries::instance()->refresh();
     updateJavaThreadNames();
     updateNativeThreadNames();
 
@@ -1352,18 +1602,17 @@ Error Profiler::dump(const char *path, const int length) {
     Counters::set(CODECACHE_RUNTIME_STUBS_SIZE_BYTES,
                   native_libs.memoryUsage());
 
-    lockAll();
-    Error err = _jfr.dump(path, length);
-    __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
-
-    // Note: No need to clear call trace storage here - the double buffering system
-    // in processTraces() already handles clearing old traces while preserving
-    // traces referenced by surviving LivenessTracker objects
-    unlockAll();
-    // Reset classmap
-    _class_map_lock.lock();
-    _class_map.clear();
-    _class_map_lock.unlock();
+    Error err = Error::OK;
+    // rotateDictsAndRun rotates the dictionaries, takes lockAll() around the
+    // dump (fences ASGCT/JNI writers to CallTraceStorage), then clearStandby()s
+    // the rotated buffers.  StringDictionary's RefCountGuard protocol handles
+    // its own writer/reader coordination; #527's classMapSharedGuard readers
+    // (deferred vtable receiver resolution) are coordinated through
+    // _class_map_lock.
+    rotateDictsAndRun([&]{
+      err = _jfr.dump(path, length);
+      __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
+    });
 
     _thread_info.clearAll(thread_ids);
     _thread_info.reportCounters();
@@ -1426,7 +1675,7 @@ Error Profiler::runInternal(Arguments &args, std::ostream &out) {
   }
   case ACTION_STATUS: {
     MutexLocker ml(_state_lock);
-    if (_state == RUNNING) {
+    if (state() == RUNNING) {
       out << "Profiling is running for " << uptime() << " seconds\n";
     } else {
       out << "Profiler is not active\n";
@@ -1482,7 +1731,7 @@ void Profiler::shutdown(Arguments &args) {
   MutexLocker ml(_state_lock);
 
   // The last chance to dump profile before VM terminates
-  if (_state == RUNNING) {
+  if (state() == RUNNING) {
     args._action = ACTION_STOP;
     Error error = run(args);
     if (error) {
@@ -1490,17 +1739,14 @@ void Profiler::shutdown(Arguments &args) {
     }
   }
 
-  _state = TERMINATED;
+  _state.store(TERMINATED, std::memory_order_release);
 }
 
 int Profiler::lookupClass(const char *key, size_t length) {
-  if (_class_map_lock.tryLockShared()) {
-    int ret = _class_map.lookup(key, length);
-    _class_map_lock.unlockShared();
-    return ret;
-  }
-  // unable to lookup the class
-  return -1;
+  // StringDictionary::lookup() is internally thread-safe via _accepting +
+  // RefCountGuard; no external lock required (unlike the old Dictionary).
+  u32 id = _class_map.lookup(key, length);
+  return id != 0 ? static_cast<int>(id) : -1;
 }
 
 int Profiler::status(char* status, int max_len) {
@@ -1510,7 +1756,7 @@ int Profiler::status(char* status, int max_len) {
     " CPU Engine       : %s\n"
     " WallClock Engine : %s\n"
     " Allocations      : %s\n",
-    _state == RUNNING ? "true" : "false",
+    state() == RUNNING ? "true" : "false",
     _cpu_engine != nullptr ? _cpu_engine->name() : "None",
     _wall_engine != nullptr ? _wall_engine->name() : "None",
     _alloc_engine != nullptr ? _alloc_engine->name() : "None");

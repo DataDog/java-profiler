@@ -15,18 +15,12 @@
  */
 package com.datadoghq.profiler.memleak;
 
-import com.datadoghq.profiler.AbstractProfilerTest;
 import org.junit.jupiter.api.Test;
-import org.objectweb.asm.ClassWriter;
-import org.objectweb.asm.Label;
-import org.objectweb.asm.MethodVisitor;
-import org.objectweb.asm.Opcodes;
 
 import java.io.IOException;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 
 /**
  * Test to validate that method_map cleanup prevents unbounded memory growth in continuous profiling.
@@ -55,24 +49,12 @@ import java.nio.file.Paths;
  *   <li>Combined cleanup: method_map cleanup + class unloading</li>
  * </ul>
  */
-public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
+public class GetLineNumberTableLeakTest extends AbstractDynamicClassTest {
 
   @Override
   protected String getProfilerCommand() {
     // Aggressive sampling to maximize method encounters and GetLineNumberTable calls
     return "cpu=1ms,alloc=512k";
-  }
-
-  private int classCounter = 0;
-
-  /**
-   * Custom ClassLoader for each dynamically generated class.
-   * Using a new ClassLoader for each class ensures truly unique Class objects and jmethodIDs.
-   */
-  private static class DynamicClassLoader extends ClassLoader {
-    public Class<?> defineClass(String name, byte[] bytecode) {
-      return defineClass(name, bytecode, 0, bytecode.length);
-    }
   }
 
   /**
@@ -88,10 +70,10 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
 
     for (int i = 0; i < 5; i++) {
       String className = "com/datadoghq/profiler/generated/TestClass" + (classCounter++);
-      byte[] bytecode = generateClassBytecode(className);
+      byte[] bytecode = generateClassBytecode(className, 20);
 
       // Use a fresh ClassLoader to ensure truly unique Class object and jmethodIDs
-      DynamicClassLoader loader = new DynamicClassLoader();
+      IsolatedClassLoader loader = new IsolatedClassLoader();
       Class<?> clazz = loader.defineClass(className.replace('/', '.'), bytecode);
       generatedClasses[i] = clazz;
 
@@ -121,66 +103,6 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
     } catch (Exception ignored) {
       // Ignore invocation errors - class/method loading is what matters for GetLineNumberTable
     }
-  }
-
-  /**
-   * Generates bytecode for a class with multiple methods.
-   * Each method has line number table entries to trigger GetLineNumberTable allocations.
-   */
-  private byte[] generateClassBytecode(String className) {
-    ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
-    cw.visit(
-        Opcodes.V1_8,
-        Opcodes.ACC_PUBLIC,
-        className,
-        null,
-        "java/lang/Object",
-        null);
-
-    // Generate constructor
-    MethodVisitor constructor =
-        cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);
-    constructor.visitCode();
-    constructor.visitVarInsn(Opcodes.ALOAD, 0);
-    constructor.visitMethodInsn(
-        Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
-    constructor.visitInsn(Opcodes.RETURN);
-    constructor.visitMaxs(0, 0);
-    constructor.visitEnd();
-
-    // Generate 20 methods per class, each with line number tables
-    for (int i = 0; i < 20; i++) {
-      MethodVisitor mv =
-          cw.visitMethod(Opcodes.ACC_PUBLIC, "method" + i, "()I", null, null);
-      mv.visitCode();
-
-      // Add multiple line number entries (this is what causes GetLineNumberTable allocations)
-      Label label1 = new Label();
-      mv.visitLabel(label1);
-      mv.visitLineNumber(100 + i, label1);
-      mv.visitInsn(Opcodes.ICONST_0);
-      mv.visitVarInsn(Opcodes.ISTORE, 1);
-
-      Label label2 = new Label();
-      mv.visitLabel(label2);
-      mv.visitLineNumber(101 + i, label2);
-      mv.visitVarInsn(Opcodes.ILOAD, 1);
-      mv.visitInsn(Opcodes.ICONST_1);
-      mv.visitInsn(Opcodes.IADD);
-      mv.visitVarInsn(Opcodes.ISTORE, 1);
-
-      Label label3 = new Label();
-      mv.visitLabel(label3);
-      mv.visitLineNumber(102 + i, label3);
-      mv.visitVarInsn(Opcodes.ILOAD, 1);
-      mv.visitInsn(Opcodes.IRETURN);
-
-      mv.visitMaxs(0, 0);
-      mv.visitEnd();
-    }
-
-    cw.visitEnd();
-    return cw.toByteArray();
   }
 
   /**
@@ -316,9 +238,4 @@ public class GetLineNumberTableLeakTest extends AbstractProfilerTest {
     }
   }
 
-  private Path tempFile(String name) throws IOException {
-    Path dir = Paths.get("/tmp/recordings");
-    Files.createDirectories(dir);
-    return Files.createTempFile(dir, name + "-", ".jfr");
-  }
 }

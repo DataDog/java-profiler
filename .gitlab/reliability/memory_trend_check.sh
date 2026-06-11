@@ -104,8 +104,8 @@ java -javaagent:/var/lib/datadog/dd-java-agent.jar \
      -Ddd.env=java-profiler-stability \
      -Ddd.service=java-profiler-memory-trend \
      -Ddd.profiling.ddprof.debug.lib="${AGENT_LIB}" \
-     -Dddprof.debug.malloc_arena_max=2 \
      -Xmx800m -Xms800m \
+     -XX:MaxMetaspaceSize=384m \
      -Dctl=$CONTROL_FILE \
      -XX:ErrorFile=${HERE}/../../hs_err.log \
      -jar /var/lib/benchmarks/renaissance.jar akka-uct -t ${RUNTIME}

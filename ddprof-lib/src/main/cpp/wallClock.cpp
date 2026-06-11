@@ -6,6 +6,7 @@
 
 #include "wallClock.h"
 
+#include "counters.h"
 #include "stackFrame.h"
 #include "context.h"
 #include "context_api.h"
@@ -14,17 +15,19 @@
 #include "libraries.h"
 #include "log.h"
 #include "profiler.h"
-#include "stackFrame.h"
+#include "signalCookie.h"
 #include "thread.h"
 #include "threadState.inline.h"
 #include "guards.h"
+#include <cerrno>
+#include <string.h>
 #include <math.h>
 #include <random>
 #include <algorithm> // For std::sort and std::binary_search
 
 std::atomic<bool> BaseWallClock::_enabled{false};
 
-bool WallClockASGCT::inSyscall(void *ucontext) {
+bool BaseWallClock::inSyscall(void *ucontext) {
   StackFrame frame(ucontext);
   uintptr_t pc = frame.pc();
 
@@ -51,6 +54,18 @@ bool WallClockASGCT::inSyscall(void *ucontext) {
 
 void WallClockASGCT::sharedSignalHandler(int signo, siginfo_t *siginfo,
                                     void *ucontext) {
+  SIGNAL_HANDLER_GUARD();
+  // Reject any SIGVTALRM that did not originate from our rt_tgsigqueueinfo
+  // send. Defends against stray in-process tgkill / external sigqueue that
+  // would otherwise drive our wallclock sampling path.
+  if (!OS::shouldProcessSignal(siginfo, SI_QUEUE, SignalCookie::wallclock())) {
+    Counters::increment(WALLCLOCK_SIGNAL_FOREIGN);
+    SIGNAL_HANDLER_GUARD_RELEASE();
+    OS::forwardForeignSignal(signo, siginfo, ucontext);
+    return;
+  }
+  Counters::increment(WALLCLOCK_SIGNAL_OWN);
+
   WallClockASGCT *engine = reinterpret_cast<WallClockASGCT *>(Profiler::instance()->wallEngine());
   if (signo == SIGVTALRM) {
     engine->signalHandler(signo, siginfo, ucontext, engine->_interval);
@@ -152,6 +167,10 @@ bool BaseWallClock::isEnabled() const {
 
 void WallClockASGCT::initialize(Arguments& args) {
   _collapsing = args._wall_collapsing;
+  // J9WallClock uses JVMTI GetAllStackTracesExtended polling, not SIGVTALRM
+  // signals — it has no sharedSignalHandler and needs no signal-origin gate.
+  // Engines are started sequentially; this call is idempotent (no-op after first).
+  OS::primeSignalOriginCheck();
   OS::installSignalHandler(SIGVTALRM, sharedSignalHandler);
 }
 
@@ -160,14 +179,18 @@ void WallClockASGCT::timerLoop() {
     auto collectThreads = [&](std::vector<int>& tids) {
       // Get thread IDs from the filter if it's enabled
       // Otherwise list all threads in the system
+      const int refresher_tid = Libraries::instance()->refresherTid();
       if (Profiler::instance()->threadFilter()->enabled()) {
         Profiler::instance()->threadFilter()->collect(tids);
       } else {
         ThreadList *thread_list = OS::listThreads();
         while (thread_list->hasNext()) {
           int tid = thread_list->next();
-          // Don't include the current thread
-          if (tid != OS::threadId()) {
+          // Don't include the current thread, nor the Libraries refresher
+          // thread (profiler-internal — masking SIGVTALRM there is not
+          // enough; we also want to avoid the kill() round-trip and any
+          // pending-signal accumulation).
+          if (tid != OS::threadId() && tid != refresher_tid) {
             tids.push_back(tid);
           }
         }
@@ -176,13 +199,19 @@ void WallClockASGCT::timerLoop() {
     };
 
     auto sampleThreads = [&](int tid, int& num_failures, int& threads_already_exited, int& permission_denied) {
-      if (!OS::sendSignalToThread(tid, SIGVTALRM)) {
+      // Deliver SIGVTALRM with a cookie so our handler can distinguish this
+      // signal from any other in-process sender (see signalCookie.h /
+      // wallClock.cpp sharedSignalHandler).
+      if (!OS::sendSignalWithCookie(tid, SIGVTALRM, SignalCookie::wallclock())) {
         num_failures++;
         if (errno != 0) {
           if (errno == ESRCH) {
               threads_already_exited++;
           } else if (errno == EPERM) {
               permission_denied++;
+          } else if (errno == EAGAIN) {
+              // Signal queue limit (RLIMIT_SIGPENDING) reached; signal was not
+              // delivered — count as missed sample.
           } else {
               Log::debug("unexpected error %s", strerror(errno));
           }
@@ -196,4 +225,122 @@ void WallClockASGCT::timerLoop() {
     };
 
     timerLoopCommon<int>(collectThreads, sampleThreads, doNothing, _reservoir_size, _interval);
+}
+
+// WallClockJvmti: mirrors WallClockASGCT's dispatch, but the signal handler
+// delegates the stack walk to HotSpot's JFR RequestStackTrace JVMTI extension
+// instead of invoking ASGCT. Used only when VM::canRequestStackTrace() is true
+// and the profiler has opted into jvmtistacks.
+
+void WallClockJvmti::sharedSignalHandler(int signo, siginfo_t *siginfo,
+                                         void *ucontext) {
+  SIGNAL_HANDLER_GUARD();
+  // Reject any SIGVTALRM that did not originate from our rt_tgsigqueueinfo
+  // send (mirrors WallClockASGCT). Defends against stray in-process tgkill or
+  // external sigqueue driving the JVMTI RequestStackTrace path.
+  if (!OS::shouldProcessSignal(siginfo, SI_QUEUE, SignalCookie::wallclock())) {
+    Counters::increment(WALLCLOCK_SIGNAL_FOREIGN);
+    SIGNAL_HANDLER_GUARD_RELEASE();
+    OS::forwardForeignSignal(signo, siginfo, ucontext);
+    return;
+  }
+  Counters::increment(WALLCLOCK_SIGNAL_OWN);
+
+  WallClockJvmti *engine =
+      reinterpret_cast<WallClockJvmti *>(Profiler::instance()->wallEngine());
+  if (signo == SIGVTALRM) {
+    engine->signalHandler(signo, siginfo, ucontext, engine->_interval);
+  }
+}
+
+void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
+                                   void *ucontext, u64 last_sample) {
+  CriticalSection cs;
+  if (!cs.entered()) {
+    return;
+  }
+  int saved_errno = errno;
+  ProfiledThread *current = ProfiledThread::currentSignalSafe();
+  if (current != nullptr && JVMThread::isInitialized() && JVMThread::current() == nullptr
+      && current->inInitWindow()) {
+    current->tickInitWindow();
+    errno = saved_errno;
+    return;
+  }
+  int tid = current != NULL ? current->tid() : OS::threadId();
+  Shims::instance().setSighandlerTid(tid);
+
+  ExecutionEvent event;
+  OSThreadState state = getOSThreadState();
+  ExecutionMode mode = getThreadExecutionMode();
+  if (state == OSThreadState::UNKNOWN) {
+    if (inSyscall(ucontext)) {
+      state = OSThreadState::SYSCALL;
+      mode = ExecutionMode::SYSCALL;
+    } else {
+      state = OSThreadState::RUNNABLE;
+    }
+  }
+  event._thread_state = state;
+  event._execution_mode = mode;
+  event._weight = 1;
+  // Pass nullptr ucontext so the JVM uses safepoint-based stack walking.
+  // Passing the signal-frame PC causes the extension to reject samples where
+  // the thread is currently inside JVM-internal (non-Java) code.
+  Profiler::instance()->recordSampleDelegated(nullptr, last_sample, tid,
+                                               BCI_WALL, &event);
+  Shims::instance().setSighandlerTid(-1);
+  errno = saved_errno;
+}
+
+void WallClockJvmti::initialize(Arguments &args) {
+  // Caller must have verified VM::canRequestStackTrace() before selecting
+  // this engine; see Profiler::selectWallEngine().
+  OS::primeSignalOriginCheck();
+  OS::installSignalHandler(SIGVTALRM, sharedSignalHandler);
+}
+
+void WallClockJvmti::timerLoop() {
+  auto collectThreads = [&](std::vector<int> &tids) {
+    const int refresher_tid = Libraries::instance()->refresherTid();
+    if (Profiler::instance()->threadFilter()->enabled()) {
+      Profiler::instance()->threadFilter()->collect(tids);
+    } else {
+      ThreadList *thread_list = OS::listThreads();
+      while (thread_list->hasNext()) {
+        int tid = thread_list->next();
+        // Exclude the wallclock timer thread itself and the Libraries
+        // refresher (profiler-internal).
+        if (tid != OS::threadId() && tid != refresher_tid) {
+          tids.push_back(tid);
+        }
+      }
+      delete thread_list;
+    }
+  };
+
+  auto sampleThreads = [&](int tid, int &num_failures,
+                           int &threads_already_exited, int &permission_denied) {
+    if (!OS::sendSignalWithCookie(tid, SIGVTALRM, SignalCookie::wallclock())) {
+      num_failures++;
+      if (errno != 0) {
+        if (errno == ESRCH) {
+          threads_already_exited++;
+        } else if (errno == EPERM) {
+          permission_denied++;
+        } else if (errno == EAGAIN) {
+          // Signal queue limit (RLIMIT_SIGPENDING) reached — count as missed.
+        } else {
+          Log::debug("unexpected error %s", strerror(errno));
+        }
+      }
+      return false;
+    }
+    return true;
+  };
+
+  auto doNothing = []() {};
+
+  timerLoopCommon<int>(collectThreads, sampleThreads, doNothing,
+                      _reservoir_size, _interval);
 }

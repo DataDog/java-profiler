@@ -24,7 +24,7 @@ runs:
     # 1. Get installation token from DD-Octo-STS
     - name: Obtain Octo-STS token
       id: octo-sts
-      uses: DataDog/dd-octo-sts-action@08f2144903ced3254a3dafec2592563409ba2aa0 # v1.0.1
+      uses: DataDog/dd-octo-sts-action@96a25462dbcb10ebf0bfd6e2ccc917d2ab235b9a # v1.0.4
       with:
         audience: dd-octo-sts
         scope: DataDog/java-profiler

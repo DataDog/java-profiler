@@ -29,7 +29,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
-          python-version: 3.9
+          python-version: 3.14
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
@@ -49,6 +49,7 @@ jobs:
         run: |
           find ddprof-lib/build/reports/scan-build -name 'index.html' | xargs -I {} python .github/scripts/python_utils.py scanbuild_cleanup {} ${HEAD_REF} > comment.html
       - name: Comment on PR
+        if: github.event.pull_request.head.repo.fork == false
         uses: ./.github/actions/upsert-pr-comment
         with:
           body-file: comment.html
@@ -75,7 +76,7 @@ jobs:
 
       # Initializes the CodeQL tools for scanning.
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@95e58e9a2cdfd71adc6e0353d5c52f41a045d225 # v4.35.2
+        uses: github/codeql-action/init@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
         with:
           languages: ${{ matrix.language }}
           # If you wish to specify custom queries, you can do so here or in a config file.
@@ -84,4 +85,4 @@ jobs:
           # queries: ./path/to/local/query, your-org/your-repo/queries@main
       - run: ./gradlew -x test assembleReleaseJar
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@95e58e9a2cdfd71adc6e0353d5c52f41a045d225 # v4.35.2
+        uses: github/codeql-action/analyze@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2

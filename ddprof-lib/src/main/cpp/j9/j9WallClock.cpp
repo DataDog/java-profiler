@@ -57,12 +57,33 @@ void J9WallClock::stop() {
 }
 
 void J9WallClock::timerLoop() {
+  // IBM J9 may cancel this thread via forced unwinding during JVM shutdown.
+  // glibc raises abi::__forced_unwind for pthread_cancel; libc++ does not declare
+  // that type, so we cannot name it in a catch.  An RAII cleanup struct works
+  // under any C++ stdlib because destructors run during forced unwind regardless
+  // of whether the unwind exception type is C++-named.  This also avoids the
+  // libc++ build break on macOS where abi::__forced_unwind is not available.
+  //
+  // PushLocalFrame / PopLocalFrame balance: if the forced unwind fires between
+  // PushLocalFrame and PopLocalFrame, the outstanding JNI local frame is released
+  // by DetachCurrentThread (called via VM::detachThread()), which is specified to
+  // destroy the current stack frame's local references.  The common cancellation
+  // point is OS::sleep() which runs after PopLocalFrame, so no imbalance occurs
+  // in the typical case.
+  struct Cleanup {
+    ASGCT_CallFrame *frames = nullptr;
+    ~Cleanup() {
+      free(frames);            // free(nullptr) is a no-op
+      VM::detachThread();      // DetachCurrentThread releases any outstanding JNI local frames
+    }
+  } cleanup;
+
   JNIEnv *jni = VM::attachThread("java-profiler Sampler");
   jvmtiEnv *jvmti = VM::jvmti();
 
   int max_frames = _max_stack_depth + MAX_NATIVE_FRAMES + RESERVED_FRAMES;
-  ASGCT_CallFrame *frames =
-      (ASGCT_CallFrame *)malloc(max_frames * sizeof(ASGCT_CallFrame));
+  cleanup.frames = (ASGCT_CallFrame *)malloc(max_frames * sizeof(ASGCT_CallFrame));
+  ASGCT_CallFrame *frames = cleanup.frames;
 
   while (_running) {
     if (!_enabled) {
@@ -120,8 +141,7 @@ void J9WallClock::timerLoop() {
 
     OS::sleep(_interval);
   }
-
-  free(frames);
-
-  VM::detachThread();
+  // Cleanup destructor runs here on normal exit; on a forced unwind it runs
+  // automatically as the stack unwinds out of timerLoop, regardless of the
+  // active C++ stdlib.
 }

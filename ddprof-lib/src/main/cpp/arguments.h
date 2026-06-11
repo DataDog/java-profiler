@@ -1,5 +1,6 @@
 /*
  * Copyright 2017 Andrei Pangin
+ * Copyright 2026, Datadog, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -99,9 +100,10 @@ enum EventMask {
     EM_LOCK         = 4,
     EM_WALL         = 8,
     EM_NATIVEMEM    = 16,
-    EM_METHOD_TRACE = 32
+    EM_METHOD_TRACE = 32,
+    EM_NATIVESOCKET = 64
 };
-constexpr int EVENT_MASK_SIZE = 6;
+constexpr int EVENT_MASK_SIZE = 7;
 
 struct StackWalkFeatures {
     // Deprecated stack recovery techniques used to workaround AsyncGetCallTrace flaws
@@ -151,7 +153,6 @@ private:
   bool _shared;
   bool _persistent;
   const char *expandFilePattern(const char *pattern);
-  static long long hash(const char *arg);
   static long parseUnits(const char *str, const Multiplier *multipliers);
   static bool isCpuEvent(const char *event) {
     // event == NULL will default to EVENT_CPU
@@ -175,6 +176,7 @@ public:
   double _live_samples_ratio;
   bool _record_heap_usage;
   bool _gc_generations;
+  long _nativemem;
   int  _jstackdepth;
   int _safe_mode;
   StackWalkFeatures _features;
@@ -190,6 +192,9 @@ public:
   bool _lightweight;
   bool _enable_method_cleanup;
   bool _remote_symbolication;  // Enable remote symbolication for native frames
+  bool _jvmtistacks;           // Delegate CPU/wall stack walks to HotSpot JFR RequestStackTrace extension
+  bool _nativesocket;
+  long _nativesocket_interval;  // initial sampling period in nanoseconds; 0 = engine default
 
   Arguments(bool persistent = false)
       : _buf(NULL),
@@ -210,6 +215,7 @@ public:
         _live_samples_ratio(0.1), // default to liveness-tracking 10% of the allocation samples
         _record_heap_usage(false),
         _gc_generations(false),
+        _nativemem(-1),
         _jstackdepth(DEFAULT_JSTACKDEPTH),
         _safe_mode(0),
         _features{1, 1, 1, 1, 1, 1},
@@ -224,7 +230,10 @@ public:
         _context_attributes({}),
         _lightweight(false),
         _enable_method_cleanup(true),
-        _remote_symbolication(false) {}
+        _remote_symbolication(false),
+        _jvmtistacks(false),
+        _nativesocket(false),
+        _nativesocket_interval(0) {}
 
   ~Arguments();
 

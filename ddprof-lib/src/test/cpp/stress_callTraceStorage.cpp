@@ -34,6 +34,11 @@
 // Test name for crash handler
 static constexpr const char STRESS_TEST_NAME[] = "StressCallTraceStorage";
 
+// Expansion fires when the table reaches 75 % of its initial 65536-slot capacity.
+// Any stress test that exercises the _prev chain (multi-node table) must insert
+// strictly more than this many unique traces between processTraces() calls.
+static constexpr int CALLTRACE_EXPANSION_THRESHOLD = 65536 * 3 / 4;  // 49152
+
 // Helper function to find a CallTrace by trace_id in an unordered_set
 CallTrace* findTraceById(const std::unordered_set<CallTrace*>& traces, u64 trace_id) {
     for (CallTrace* trace : traces) {
@@ -2014,6 +2019,119 @@ TEST_F(StressTestSuite, HashTableSpinWaitEdgeCasesTest) {
     EXPECT_LT(drop_rate, 0.5) << "Excessive trace drop rate: " << drop_rate;
 }
 
+// Regression test: TSan data race in findCallTrace() — keys[] plain reads
+// raced with atomic CAS writes from concurrent put().  When a table is
+// promoted to prev after expansion, threads that loaded the old table
+// pointer before the CAS swap still write into it while new threads call
+// findCallTrace(prev, hash) — the read must be atomic.
+//
+// Memory-ordering races on 8-byte aligned values are benign on x86_64 (the
+// CPU guarantees naturally-atomic loads), so the race is only reliably
+// detectable under ThreadSanitizer.  The test is therefore skipped outside
+// TSan builds to avoid giving false confidence that the regression is covered.
+//
+// The dedup assertion (dedup_mismatches == 0) validates findCallTrace
+// correctness across expansion boundaries independently of memory ordering;
+// it catches logic regressions in all build configurations.
+TEST_F(StressTestSuite, FindCallTraceAtomicReadRaceTest) {
+#if !defined(__SANITIZE_THREAD__) && !(defined(__has_feature) && __has_feature(thread_sanitizer))
+    GTEST_SKIP() << "TSan-only race regression: re-run with -fsanitize=thread";
+#endif
+
+    // Fill the table to just below the 75% expansion threshold
+    // (INITIAL_CAPACITY = 65536; 75% = 49152).
+    const int FILL_TARGET = 48800;
+    const int NUM_THREADS = 16;
+    const int OPS_PER_THREAD = 400;
+    // Number of pre-filled entries to re-insert concurrently as a dedup check.
+    // After expansion these will be looked up via findCallTrace(prev, hash).
+    const int VERIFY_COUNT = 200;
+
+    void* aligned_memory = std::aligned_alloc(alignof(CallTraceHashTable), sizeof(CallTraceHashTable));
+    ASSERT_NE(aligned_memory, nullptr);
+    auto hash_table_ptr = std::unique_ptr<CallTraceHashTable, void(*)(CallTraceHashTable*)>(
+        new(aligned_memory) CallTraceHashTable(),
+        [](CallTraceHashTable* ptr) {
+            ptr->~CallTraceHashTable();
+            std::free(ptr);
+        }
+    );
+    CallTraceHashTable& hash_table = *hash_table_ptr;
+    hash_table.setInstanceId(42);
+
+    // Pre-fill single-threaded up to just below the expansion threshold,
+    // recording trace_ids for the last VERIFY_COUNT entries.
+    std::vector<u64> expected_ids(VERIFY_COUNT);
+    std::vector<ASGCT_CallFrame> verify_frames(VERIFY_COUNT);
+
+    for (int i = 0; i < FILL_TARGET; ++i) {
+        ASGCT_CallFrame frame;
+        frame.bci = i + 1;
+        frame.method_id = reinterpret_cast<jmethodID>(0x10000 + i);
+        u64 id = hash_table.put(1, &frame, false, 1);
+        if (i >= FILL_TARGET - VERIFY_COUNT) {
+            int vi = i - (FILL_TARGET - VERIFY_COUNT);
+            expected_ids[vi] = id;
+            verify_frames[vi] = frame;
+        }
+    }
+
+    std::atomic<bool> go{false};
+    std::atomic<uint64_t> successes{0};
+    // Counts put() calls that returned a trace_id different from the originally
+    // recorded id for a known pre-filled entry.  A non-zero value means
+    // findCallTrace(prev, hash) returned nullptr when it should have returned
+    // the entry — either a logic bug or a memory-ordering failure.
+    std::atomic<uint64_t> dedup_mismatches{0};
+    std::vector<std::thread> workers;
+
+    // Half the threads insert new distinct frames to trigger expansion.  They
+    // load the old table pointer before the CAS swap and write keys[] in prev,
+    // creating the concurrent-write side of the race window.
+    for (int t = 0; t < NUM_THREADS / 2; ++t) {
+        workers.emplace_back([&, t]() {
+            while (!go.load(std::memory_order_acquire)) { /* spin */ }
+            for (int i = 0; i < OPS_PER_THREAD; ++i) {
+                ASGCT_CallFrame frame;
+                frame.bci = FILL_TARGET + 1 + t * OPS_PER_THREAD + i;
+                frame.method_id = reinterpret_cast<jmethodID>(0x80000 + t * OPS_PER_THREAD + i);
+                u64 id = hash_table.put(1, &frame, false, 1);
+                if (id != 0 && id != CallTraceStorage::DROPPED_TRACE_ID) {
+                    successes.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+        });
+    }
+
+    // The other half re-insert pre-filled frames.  After expansion the new
+    // table is empty for those hashes, so put() claims a new slot and calls
+    // findCallTrace(prev, hash) — the read side of the race window.  A correct
+    // findCallTrace must return the original trace so dedup produces the same
+    // trace_id.
+    for (int t = NUM_THREADS / 2; t < NUM_THREADS; ++t) {
+        workers.emplace_back([&, t]() {
+            while (!go.load(std::memory_order_acquire)) { /* spin */ }
+            for (int i = 0; i < VERIFY_COUNT; ++i) {
+                u64 id = hash_table.put(1, &verify_frames[i], false, 1);
+                if (id != 0 && id != CallTraceStorage::DROPPED_TRACE_ID &&
+                    id != expected_ids[i]) {
+                    dedup_mismatches.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+        });
+    }
+
+    go.store(true, std::memory_order_release);
+    for (auto& w : workers) {
+        w.join();
+    }
+
+    EXPECT_GT(successes.load(), 0u) << "No successful insertions after expansion";
+    EXPECT_EQ(dedup_mismatches.load(), 0u)
+        << "findCallTrace returned wrong trace_id for pre-filled entries after expansion "
+           "(findCallTrace failed to locate entry in prev table)";
+}
+
 // Test 13: Hash Table Memory Allocation Failure Stress Test
 TEST_F(StressTestSuite, HashTableAllocationFailureStressTest) {
     const int NUM_THREADS = 8;
@@ -2212,4 +2330,91 @@ TEST_F(StressTestSuite, RealProfilerSignalStressSafe) {
     } else {
         std::cout << "\n🛡️  Signal handling appears robust under all tested stress levels." << std::endl;
     }
+}
+
+// Regression guard for defects B and C in CallTraceHashTable:
+//   Defect B: non-atomic _table read in collect()/clearTableOnly() races with the
+//             ACQ_REL CAS expansion path in put() on aarch64 (weak ordering).
+//   Defect C: chain-clearing loop in clearTableOnly() skips all but the first node
+//             in an expanded (multi-node) _prev chain, leaving dangling pointers.
+//
+// Both defects are only reachable when the table grows past CALLTRACE_EXPANSION_THRESHOLD.
+// No prior stress test crossed that boundary; this test explicitly does so.
+TEST_F(StressTestSuite, ConcurrentExpansionAndCollectStressTest) {
+    static constexpr int TARGET_TRACES = CALLTRACE_EXPANSION_THRESHOLD + 4096;
+    static constexpr int FILL_THREADS  = 8;
+
+    CallTraceStorage* storage = shared_storage.get();
+    storage->clear();
+
+    // --- Phase 1: fill past expansion threshold with unique traces ---
+    std::atomic<int>  total_inserted{0};
+    {
+        std::vector<std::thread> fillers;
+        int per_thread = (TARGET_TRACES / FILL_THREADS) + 1;
+        for (int t = 0; t < FILL_THREADS; t++) {
+            fillers.emplace_back([&, t]() {
+                for (int i = 0; i < per_thread; i++) {
+                    ASGCT_CallFrame frame;
+                    // Unique (bci, method_id) across all threads: multiply thread
+                    // index by a large prime to prevent aliasing between threads.
+                    frame.bci = (t * 100003 + i) % 1000000;
+                    frame.method_id = reinterpret_cast<jmethodID>(
+                        static_cast<uintptr_t>(0x100000ULL + (u64)t * 100003ULL + (u64)i));
+                    u64 id = storage->put(1, &frame, false, 1);
+                    if (id > 0 && id != CallTraceStorage::DROPPED_TRACE_ID) {
+                        total_inserted.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+            });
+        }
+        for (auto& th : fillers) th.join();
+    }
+
+    ASSERT_GT(total_inserted.load(), CALLTRACE_EXPANSION_THRESHOLD)
+        << "Table did not fill past expansion threshold ("
+        << CALLTRACE_EXPANSION_THRESHOLD << "); _prev chain not created. "
+           "Adjust FILL_THREADS or per_thread count.";
+
+    // --- Phase 2: processTraces() while concurrent puts continue ---
+    // The concurrent putter keeps the put() -> CAS expansion path hot so TSan
+    // can observe the racy plain _table load in collect() / clearTableOnly().
+    std::atomic<bool> running{true};
+    std::atomic<bool> phase2_failed{false};
+
+    std::thread concurrent_putter([&]() {
+        int seq = 0;
+        while (running.load()) {
+            ASGCT_CallFrame frame;
+            frame.bci = 999000 + (seq % 1000);
+            frame.method_id = reinterpret_cast<jmethodID>(
+                static_cast<uintptr_t>(0xFFFF0000ULL + (u64)(seq & 0xFFFF)));
+            u64 id = storage->put(1, &frame, false, 1);
+            (void)id;
+            seq++;
+            if (seq % 1000 == 0) std::this_thread::yield();
+        }
+    });
+
+    // Rotate three times so clearTableOnly() runs on an expanded table each time.
+    for (int cycle = 0; cycle < 3 && !phase2_failed.load(); cycle++) {
+        {
+            std::lock_guard<std::mutex> lock(process_traces_mutex);
+            storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+                // Sanity: first cycle must contain all traces from Phase 1.
+                if (cycle == 0 &&
+                    static_cast<int>(traces.size()) < total_inserted.load()) {
+                    phase2_failed.store(true);
+                }
+            });
+        }
+        // Brief pause so the concurrent putter can insert a few more entries
+        // before the next processTraces() call.
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    running.store(false);
+    concurrent_putter.join();
+
+    EXPECT_FALSE(phase2_failed.load()) << "collect() missed traces from Phase 1 on first cycle";
 }

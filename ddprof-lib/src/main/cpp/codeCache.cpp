@@ -1,5 +1,6 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -308,6 +309,11 @@ void CodeCache::saveImport(ImportId id, void** entry) {
 
 void CodeCache::addImport(void **entry, const char *name) {
     switch (name[0]) {
+      case 'a':
+          if (strcmp(name, "aligned_alloc") == 0) {
+              saveImport(im_aligned_alloc, entry);
+          }
+          break;
       case 'c':
           if (strcmp(name, "calloc") == 0) {
               saveImport(im_calloc, entry);
@@ -337,16 +343,29 @@ void CodeCache::addImport(void **entry, const char *name) {
               saveImport(im_pthread_setspecific, entry);
           } else if (strcmp(name, "poll") == 0) {
               saveImport(im_poll, entry);
+          } else if (strcmp(name, "posix_memalign") == 0) {
+              saveImport(im_posix_memalign, entry);
           }
           break;
       case 'r':
           if (strcmp(name, "realloc") == 0) {
               saveImport(im_realloc, entry);
+          } else if (strcmp(name, "recv") == 0) {
+              saveImport(im_recv, entry);
+          } else if (strcmp(name, "read") == 0) {
+              saveImport(im_read, entry);
           }
           break;
       case 's':
-          if (strcmp(name, "sigaction") == 0) {
+          if (strcmp(name, "send") == 0) {
+              saveImport(im_send, entry);
+          } else if (strcmp(name, "sigaction") == 0) {
               saveImport(im_sigaction, entry);
+          }
+          break;
+      case 'w':
+          if (strcmp(name, "write") == 0) {
+              saveImport(im_write, entry);
           }
           break;
     }

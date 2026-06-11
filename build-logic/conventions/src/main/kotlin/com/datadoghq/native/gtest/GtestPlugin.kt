@@ -188,10 +188,44 @@ class GtestPlugin : Plugin<Project> {
         val compiler = findCompiler(project)
         val includeFiles = extension.includes.plus(project.files(getGtestIncludes(extension)))
 
-        // Create per-config aggregation task
+        // Create per-config aggregation task (compile + link + run)
         val gtestConfigTask = project.tasks.register("gtest${config.capitalizedName()}") {
             group = "verification"
             description = "Run all Google Tests for the ${config.name} build of the library"
+        }
+
+        // Per-config build-only aggregation task (compile + link, no run).
+        // Useful in CI where binaries are executed directly without going
+        // through Gradle's logging infrastructure.
+        val buildGtestConfigTask = project.tasks.register("buildGtest${config.capitalizedName()}") {
+            group = "build"
+            description = "Compile and link all Google Tests for the ${config.name} build (no run)"
+        }
+
+        // Compile all library sources ONCE for this config.  Each test
+        // binary only compiles its own test file and links against these
+        // shared objects, reducing compilations from O(n_tests × n_sources)
+        // to O(n_sources + n_tests).
+        val sharedBuilder = GtestTaskBuilder(project, extension, config)
+            .withCompiler(compiler)
+            .withIncludes(includeFiles)
+            .onlyIfGtest(hasGtest)
+        val sharedCompilerArgs = sharedBuilder.sharedCompilerArgs()
+        val sharedLibCompileTask = project.tasks.register(
+            "compileGtestLibrary${config.capitalizedName()}",
+            com.datadoghq.native.tasks.NativeCompileTask::class.java
+        ) {
+            onlyIf { hasGtest && !sharedBuilder.skipConditions() }
+            group = "build"
+            description = "Compile shared library sources for ${config.name} gtest binaries"
+
+            this.compiler.set(compiler)
+            this.compilerArgs.set(sharedCompilerArgs)
+            sources.from(project.fileTree(extension.mainSourceDir.get()) { include("**/*.cpp") })
+            includes.from(includeFiles)
+            objectFileDir.set(project.file(
+                "${project.layout.buildDirectory.get()}/obj/gtest/${config.name}/lib"
+            ))
         }
 
         // Discover and create tasks for each test file using builder
@@ -202,15 +236,20 @@ class GtestPlugin : Plugin<Project> {
         }
 
         testDir.listFiles()?.filter { it.name.endsWith(".cpp") }?.forEach { testFile ->
-            val executeTask = GtestTaskBuilder(project, extension, config)
+            val taskBundle = GtestTaskBuilder(project, extension, config)
                 .forTest(testFile)
                 .withCompiler(compiler)
                 .withIncludes(includeFiles)
+                .withSharedLibObjects(sharedLibCompileTask)
                 .onlyIfGtest(hasGtest)
                 .build()
 
-            gtestConfigTask.configure { dependsOn(executeTask) }
-            gtestAll.configure { dependsOn(executeTask) }
+            gtestConfigTask.configure { dependsOn(taskBundle) }
+            gtestAll.configure { dependsOn(taskBundle) }
+            // buildGtest depends on the link task, not the run task
+            buildGtestConfigTask.configure {
+                dependsOn("linkGtest${config.capitalizedName()}_${testFile.nameWithoutExtension}")
+            }
         }
     }
 

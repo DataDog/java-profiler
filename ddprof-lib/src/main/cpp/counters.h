@@ -37,6 +37,11 @@
   X(DICTIONARY_CLASSES_KEYS_BYTES, "dictionary_classes_keys_bytes")            \
   X(DICTIONARY_ENDPOINTS_KEYS_BYTES, "dictionary_endpoints_keys_bytes")        \
   X(DICTIONARY_CONTEXT_KEYS_BYTES, "dictionary_context_keys_bytes")            \
+  X(DICTIONARY_ARENA_WASTE_BYTES, "dictionary_arena_waste_bytes")              \
+  X(DICTIONARY_CLASSES_ARENA_WASTE_BYTES, "dictionary_classes_arena_waste_bytes")     \
+  X(DICTIONARY_ENDPOINTS_ARENA_WASTE_BYTES, "dictionary_endpoints_arena_waste_bytes") \
+  X(DICTIONARY_CONTEXT_ARENA_WASTE_BYTES, "dictionary_context_arena_waste_bytes")     \
+  X(DICTIONARY_DRAIN_TIMEOUTS, "dictionary_drain_timeouts")                    \
   X(CONTEXT_STORAGE_BYTES, "context_storage_bytes")                            \
   X(CONTEXT_STORAGE_PAGES, "context_storage_pages")                            \
   X(CONTEXT_BOUNDS_MISS_INITS, "context_bounds_miss_inits")                    \
@@ -67,6 +72,7 @@
   X(REMOTE_SYMBOLICATION_FRAMES, "remote_symbolication_frames")                \
   X(REMOTE_SYMBOLICATION_LIBS_WITH_BUILD_ID, "remote_symbolication_libs_with_build_id") \
   X(REMOTE_SYMBOLICATION_BUILD_ID_CACHE_HITS, "remote_symbolication_build_id_cache_hits") \
+  X(VTABLE_RECEIVER_RESOLVE_FAILED, "vtable_receiver_resolve_failed")           \
   X(THREAD_ENTRY_MARK_DETECTIONS, "thread_entry_mark_detections")              \
   X(WALKVM_THREAD_INACCESSIBLE, "walkvm_thread_inaccessible")                  \
   X(WALKVM_ANCHOR_NULL, "walkvm_anchor_null")                                  \
@@ -98,7 +104,20 @@
   X(WALKVM_CONT_ENTRY_NULL,     "walkvm_cont_entry_null")                      \
   X(NATIVE_LIBS_DROPPED, "native_libs_dropped")                                \
   X(SIGACTION_PATCHED_LIBS, "sigaction_patched_libs")                          \
-  X(SIGACTION_INTERCEPTED, "sigaction_intercepted")
+  X(SIGACTION_INTERCEPTED, "sigaction_intercepted")                            \
+  X(CTIMER_SIGNAL_OWN, "ctimer_signal_own")                                    \
+  X(CTIMER_SIGNAL_FOREIGN, "ctimer_signal_foreign")                            \
+  X(WALLCLOCK_SIGNAL_OWN, "wallclock_signal_own")                              \
+  X(WALLCLOCK_SIGNAL_FOREIGN, "wallclock_signal_foreign")                      \
+  X(JVMTI_STACKS_INIT_OK, "jvmti_stacks_init_ok")                             \
+  X(JVMTI_STACKS_INIT_FAILED, "jvmti_stacks_init_failed")                     \
+  X(JVMTI_STACKS_REQUESTED, "jvmti_stacks_requested")                         \
+  X(JVMTI_STACKS_FAILED_WRONG_PHASE, "jvmti_stacks_failed_wrong_phase")       \
+  X(JVMTI_STACKS_FAILED_OTHER, "jvmti_stacks_failed_other")                  \
+  /* Delegated stacks dropped at slot-lock. Rec-lock drops from all recording  \
+   * paths (delegated and direct) go into SAMPLES_DROPPED_REC_LOCK. */         \
+  X(JVMTI_STACKS_DROPPED_LOCK, "jvmti_stacks_dropped_lock")                   \
+  X(SAMPLES_DROPPED_REC_LOCK, "samples_dropped_rec_lock")
 #define X_ENUM(a, b) a,
 typedef enum CounterId : int {
   DD_COUNTER_TABLE(X_ENUM) DD_NUM_COUNTERS

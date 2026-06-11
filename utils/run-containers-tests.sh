@@ -1,32 +1,37 @@
 #!/bin/bash
 # Copyright 2026, Datadog, Inc
 #
-# Run tests in Docker with various OS/libc/JDK combinations (similar to CI)
-# Uses two-level Docker image caching:
+# Run tests in containers with various OS/libc/JDK combinations (similar to CI)
+# Defaults to Podman; use --container=docker to use Docker.
+# Uses two-level container image caching:
 #   1. Base image with OS + build tools (java-profiler-base:<libc>-<arch>)
 #   2. JDK-specific image on top (java-profiler-test:<libc>-jdk<version>-<arch>)
 #
-# Usage: ./utils/run-docker-tests.sh [options]
+# Usage: ./utils/run-containers-tests.sh [options]
 #   --libc=glibc|musl        (default: glibc)
-#   --jdk=8|11|17|21|25|8-j9|11-j9|17-j9|21-j9  (default: 21)
+#   --jdk=8|11|17|21|25|8-j9|11-j9|17-j9|21-j9|17-graal|21-graal|25-graal  (default: 21)
 #   --arch=x64|aarch64       (default: auto-detect)
 #   --config=debug|release|asan|tsan   (default: debug)
+#   --container=podman|docker  (default: podman)
 #   --tests="TestPattern"    (optional, specific test to run)
 #   --gtest                  (enable C++ gtests, disabled by default)
+#   --gtest-task=Task        (run one C++ gtest task; accepts elfparser_ut or :ddprof-lib:gtestAsan_elfparser_ut)
 #   --shell                  (drop to shell instead of running tests; enables SYS_PTRACE for gdb)
 #   --mount                  (mount local repo instead of cloning - faster but may have stale artifacts)
-#   --rebuild                (force rebuild of Docker images)
+#   --rebuild                (force rebuild of container images)
 #   --rebuild-base           (force rebuild of base image only)
 #   --help                   (show this help)
 
 set -e
 
 # Defaults
+CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-podman}"
 LIBC="glibc"
 JDK_VERSION="21"
 ARCH=""
 CONFIG="debug"
 TESTS=""
+GTEST_TASK=""
 SHELL_MODE=false
 MOUNT_MODE=false
 GTEST_ENABLED=false
@@ -36,6 +41,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BASE_IMAGE_PREFIX="java-profiler-base"
 IMAGE_PREFIX="java-profiler-test"
+
+selinux_enforcing() {
+    if [[ -r /sys/fs/selinux/enforce ]]; then
+        [[ "$(cat /sys/fs/selinux/enforce)" == "1" ]]
+    elif command -v getenforce >/dev/null 2>&1; then
+        [[ "$(getenforce)" == "Enforcing" ]]
+    else
+        false
+    fi
+}
 
 # Auto-detect architecture
 detect_arch() {
@@ -94,6 +109,25 @@ get_glibc_jdk_url() {
     esac
 }
 
+# JDK Download URLs (Oracle GraalVM)
+# Versions match the SDKMAN-installed builds used in CI (java_setup.sh +
+# cache_java.yml: JAVA_<v>_GRAAL_VERSION).  Using Oracle's stable archive
+# URLs (not "latest") so the docker images match the CI configuration.
+get_graal_jdk_url() {
+    local version=$1
+    local arch=$2
+    # Oracle GraalVM archive arch labels: x64 / aarch64 (same as our $arch)
+    case "$version-$arch" in
+        17-x64)     echo "https://download.oracle.com/graalvm/17/archive/graalvm-jdk-17.0.12_linux-x64_bin.tar.gz" ;;
+        17-aarch64) echo "https://download.oracle.com/graalvm/17/archive/graalvm-jdk-17.0.12_linux-aarch64_bin.tar.gz" ;;
+        21-x64)     echo "https://download.oracle.com/graalvm/21/archive/graalvm-jdk-21.0.4_linux-x64_bin.tar.gz" ;;
+        21-aarch64) echo "https://download.oracle.com/graalvm/21/archive/graalvm-jdk-21.0.4_linux-aarch64_bin.tar.gz" ;;
+        25-x64)     echo "https://download.oracle.com/graalvm/25/archive/graalvm-jdk-25_linux-x64_bin.tar.gz" ;;
+        25-aarch64) echo "https://download.oracle.com/graalvm/25/archive/graalvm-jdk-25_linux-aarch64_bin.tar.gz" ;;
+        *)          echo "" ;;
+    esac
+}
+
 # JDK Download URLs (IBM Semeru OpenJ9)
 get_j9_jdk_url() {
     local version=$1
@@ -113,7 +147,7 @@ get_j9_jdk_url() {
 }
 
 usage() {
-    head -n 19 "$0" | tail -n 16
+    head -n 23 "$0" | tail -n 20
     exit 0
 }
 
@@ -136,6 +170,10 @@ while [[ $# -gt 0 ]]; do
             CONFIG="${1#*=}"
             shift
             ;;
+        --container=*)
+            CONTAINER_RUNTIME="${1#*=}"
+            shift
+            ;;
         --tests=*)
             TESTS="${1#*=}"
             shift
@@ -149,6 +187,11 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --gtest)
+            GTEST_ENABLED=true
+            shift
+            ;;
+        --gtest-task=*)
+            GTEST_TASK="${1#*=}"
             GTEST_ENABLED=true
             shift
             ;;
@@ -191,6 +234,22 @@ if [[ "$CONFIG" != "debug" && "$CONFIG" != "release" && "$CONFIG" != "asan" && "
     exit 1
 fi
 
+if [[ "$CONTAINER_RUNTIME" != "podman" && "$CONTAINER_RUNTIME" != "docker" ]]; then
+    echo "Error: --container must be 'podman' or 'docker'"
+    exit 1
+fi
+
+if [[ -n "$GTEST_TASK" && -n "$TESTS" ]]; then
+    echo "Error: --tests cannot be combined with --gtest-task"
+    exit 1
+fi
+
+if ! command -v "$CONTAINER_RUNTIME" >/dev/null 2>&1; then
+    echo "Error: container runtime '$CONTAINER_RUNTIME' not found"
+    echo "Use --container to select the runtime, e.g. $0 --container=docker ..."
+    exit 1
+fi
+
 # Parse JDK version and variant (e.g., "21-j9" -> version="21", variant="j9")
 JDK_BASE_VERSION="${JDK_VERSION%%-*}"
 JDK_VARIANT="${JDK_VERSION#*-}"
@@ -205,6 +264,12 @@ if [[ "$JDK_VARIANT" == "j9" ]]; then
         exit 1
     fi
     JDK_URL=$(get_j9_jdk_url "$JDK_BASE_VERSION" "$ARCH")
+elif [[ "$JDK_VARIANT" == "graal" ]]; then
+    if [[ "$LIBC" == "musl" ]]; then
+        echo "Error: GraalVM is not available for musl libc"
+        exit 1
+    fi
+    JDK_URL=$(get_graal_jdk_url "$JDK_BASE_VERSION" "$ARCH")
 elif [[ "$LIBC" == "musl" ]]; then
     JDK_URL=$(get_musl_jdk_url "$JDK_BASE_VERSION" "$ARCH")
 else
@@ -212,7 +277,7 @@ else
 fi
 
 if [[ -z "$JDK_URL" ]]; then
-    echo "Error: --jdk must be one of: 8, 11, 17, 21, 25, 8-j9, 11-j9, 17-j9, 21-j9"
+    echo "Error: --jdk must be one of: 8, 11, 17, 21, 25, 8-j9, 11-j9, 17-j9, 21-j9, 17-graal, 21-graal, 25-graal"
     exit 1
 fi
 
@@ -220,20 +285,24 @@ fi
 BASE_IMAGE_NAME="${BASE_IMAGE_PREFIX}:${LIBC}-${ARCH}"
 IMAGE_NAME="${IMAGE_PREFIX}:${LIBC}-jdk${JDK_VERSION}-${ARCH}"
 
-# Docker platform for cross-architecture support
-DOCKER_PLATFORM=""
+# Container platform for cross-architecture support
+CONTAINER_PLATFORM=""
 if [[ "$ARCH" == "aarch64" ]]; then
-    DOCKER_PLATFORM="--platform linux/arm64"
+    CONTAINER_PLATFORM="--platform linux/arm64"
 elif [[ "$ARCH" == "x64" ]]; then
-    DOCKER_PLATFORM="--platform linux/amd64"
+    CONTAINER_PLATFORM="--platform linux/amd64"
 fi
 
-echo "=== Docker Test Runner ==="
+echo "=== Container Test Runner ==="
 echo "LIBC:       $LIBC"
 echo "Build JDK:  21 (Gradle 9 requirement)"
 echo "Test JDK:   $JDK_VERSION"
 echo "Arch:       $ARCH"
 echo "Config:     $CONFIG"
+echo "Runtime:    $CONTAINER_RUNTIME"
+if [[ -n "$GTEST_TASK" ]]; then
+    echo "GTest task: $GTEST_TASK"
+fi
 echo "Tests:      ${TESTS:-<all>}"
 echo "GTest:      $(if $GTEST_ENABLED; then echo 'enabled'; else echo 'disabled'; fi)"
 echo "Mode:       $(if $SHELL_MODE; then echo 'shell'; else echo 'test'; fi)"
@@ -253,7 +322,7 @@ cp -r "$PROJECT_ROOT/gradle" "$DOCKERFILE_DIR/"
 # ========== Build Base Image (if needed) ==========
 BASE_IMAGE_EXISTS=false
 if [[ "$REBUILD" == "false" && "$REBUILD_BASE" == "false" ]]; then
-    if docker image inspect "$BASE_IMAGE_NAME" >/dev/null 2>&1; then
+    if "$CONTAINER_RUNTIME" image inspect "$BASE_IMAGE_NAME" >/dev/null 2>&1; then
         BASE_IMAGE_EXISTS=true
         echo ">>> Using cached base image: $BASE_IMAGE_NAME"
     fi
@@ -286,9 +355,28 @@ EOF
     else
         # libclang-rt-dev is only available on x64, not arm64
         if [[ "$ARCH" == "x64" ]]; then
-            CLANG_RT_PKG="libclang-rt-dev"
+            CLANG_RT_PKG="libclang-dev"
         else
             CLANG_RT_PKG=""
+        fi
+        # On aarch64, install clang-17 + libclang-rt-17-dev from the LLVM apt repository.
+        # GCC 11's libtsan only knows 39-bit VMA; the linuxkit kernel (Docker Desktop)
+        # uses 48-bit VMA, so GCC 11's TSan crashes with "unexpected memory mapping".
+        # Clang-17's compiler-rt TSan runtime handles both 39-bit and 48-bit VMA.
+        # libclang-rt-17-dev provides libclang_rt.tsan-aarch64.{a,so} that clang-17
+        # needs when linking executables with -fsanitize=thread.
+        if [[ "$ARCH" == "aarch64" ]]; then
+            CLANG17_BLOCK='
+# Install clang-17 + compiler-rt for TSan 48-bit VMA support (aarch64 only)
+RUN wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+        | gpg --dearmor -o /etc/apt/trusted.gpg.d/llvm.gpg \
+    && echo "deb http://apt.llvm.org/jammy/ llvm-toolchain-jammy-17 main" \
+        > /etc/apt/sources.list.d/llvm.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends clang-17 libclang-rt-17-dev \
+    && rm -rf /var/lib/apt/lists/*'
+        else
+            CLANG17_BLOCK=''
         fi
         cat > "$DOCKERFILE_DIR/Dockerfile.base" <<EOF
 FROM ubuntu:22.04
@@ -299,14 +387,16 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Install build dependencies
 # - libasan/libtsan for GCC sanitizers
 # - libclang-rt-dev for clang sanitizers and libFuzzer (x64 only)
+# - gnupg for LLVM apt key import
 # - openssh-client for git clone over SSH
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        curl wget bash make g++ clang git jq cmake \
+        curl wget gnupg bash make g++ clang git jq cmake \
         libgtest-dev libgmock-dev tar binutils libc6-dbg \
         ca-certificates linux-libc-dev \
         libasan6 libtsan0 ${CLANG_RT_PKG} openssh-client build-essential gdb && \
     rm -rf /var/lib/apt/lists/*
+${CLANG17_BLOCK}
 
 # Set up Gradle cache directory
 ENV GRADLE_USER_HOME=/gradle-cache
@@ -316,7 +406,7 @@ WORKDIR /workspace
 EOF
     fi
 
-    docker build $DOCKER_PLATFORM -t "$BASE_IMAGE_NAME" -f "$DOCKERFILE_DIR/Dockerfile.base" "$DOCKERFILE_DIR"
+    "$CONTAINER_RUNTIME" build $CONTAINER_PLATFORM -t "$BASE_IMAGE_NAME" -f "$DOCKERFILE_DIR/Dockerfile.base" "$DOCKERFILE_DIR"
     echo ">>> Base image built: $BASE_IMAGE_NAME"
 fi
 
@@ -332,7 +422,7 @@ fi
 # ========== Build JDK Image (if needed) ==========
 IMAGE_EXISTS=false
 if [[ "$REBUILD" == "false" ]]; then
-    if docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+    if "$CONTAINER_RUNTIME" image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
         IMAGE_EXISTS=true
         echo ">>> Using cached image: $IMAGE_NAME"
     fi
@@ -413,7 +503,7 @@ WORKDIR /workspace
 EOF
     fi
 
-    docker build $DOCKER_PLATFORM -t "$IMAGE_NAME" -f "$DOCKERFILE_DIR/Dockerfile" "$DOCKERFILE_DIR"
+    "$CONTAINER_RUNTIME" build $CONTAINER_PLATFORM -t "$IMAGE_NAME" -f "$DOCKERFILE_DIR/Dockerfile" "$DOCKERFILE_DIR"
     echo ">>> JDK image built: $IMAGE_NAME"
 fi
 
@@ -423,57 +513,90 @@ fi
 # Capitalize first letter for gradle task names (testDebug, testAsan, etc.)
 # Note: -Ptests property works uniformly across all platforms (glibc, musl, macOS)
 CONFIG_CAPITALIZED="$(tr '[:lower:]' '[:upper:]' <<< ${CONFIG:0:1})${CONFIG:1}"
-GRADLE_CMD="./gradlew -PCI -PkeepJFRs :ddprof-test:test${CONFIG_CAPITALIZED}"
-if [[ -n "$TESTS" ]]; then
-    # No need for quotes around $TESTS - Gradle property values don't require quoting
-    GRADLE_CMD="$GRADLE_CMD -Ptests=$TESTS"
+if [[ -n "$GTEST_TASK" ]]; then
+    if [[ "$GTEST_TASK" == :* ]]; then
+        GRADLE_CMD="./gradlew -PCI -PkeepJFRs $GTEST_TASK"
+    else
+        GRADLE_CMD="./gradlew -PCI -PkeepJFRs :ddprof-lib:gtest${CONFIG_CAPITALIZED}_${GTEST_TASK}"
+    fi
+else
+    GRADLE_CMD="./gradlew -PCI -PkeepJFRs :ddprof-test:test${CONFIG_CAPITALIZED}"
+    if [[ -n "$TESTS" ]]; then
+        # No need for quotes around $TESTS - Gradle property values don't require quoting
+        GRADLE_CMD="$GRADLE_CMD -Ptests=$TESTS"
+    fi
+    if ! $GTEST_ENABLED; then
+        GRADLE_CMD="$GRADLE_CMD -Pskip-gtest"
+    fi
 fi
-if ! $GTEST_ENABLED; then
-    GRADLE_CMD="$GRADLE_CMD -Pskip-gtest"
+# On aarch64 glibc, TSan needs clang-17's embedded runtime (supports 48-bit VMA).
+# GCC 11's libtsan is linked by default but only knows 39-bit VMA, causing a crash.
+if [[ "$CONFIG" == "tsan" ]] && [[ "$ARCH" == "aarch64" ]] && [[ "$LIBC" == "glibc" ]]; then
+    GRADLE_CMD="$GRADLE_CMD -Pnative.forceCompiler=clang++-17"
 fi
 GRADLE_CMD="$GRADLE_CMD --no-daemon --parallel --build-cache --no-watch-fs"
 
-# Build Docker run command base
-DOCKER_CMD="docker run --rm"
-if $SHELL_MODE; then
-    DOCKER_CMD="$DOCKER_CMD -it --init --ulimit core=-1 --cap-add=SYS_PTRACE"
+# On aarch64 glibc TSan: reduce ASLR entropy so TSan's shadow doesn't conflict with
+# initial library load addresses. Requires --privileged for sysctl in the container.
+# Do NOT set kernel.randomize_va_space=0: ld-linux-aarch64.so loads at 0x2000000000
+# (TSan's shadow start) with full ASLR off.
+SYSCTL_PREP=""
+NEEDS_PRIVILEGED=false
+if [[ "$CONFIG" == "tsan" ]] && [[ "$ARCH" == "aarch64" ]] && [[ "$LIBC" == "glibc" ]]; then
+    SYSCTL_PREP="sysctl -w vm.mmap_rnd_bits=28 2>/dev/null || true && "
+    NEEDS_PRIVILEGED=true
 fi
-DOCKER_CMD="$DOCKER_CMD $DOCKER_PLATFORM"
-DOCKER_CMD="$DOCKER_CMD -e LIBC=$LIBC"
-DOCKER_CMD="$DOCKER_CMD -e SANITIZER=$CONFIG"
-DOCKER_CMD="$DOCKER_CMD -e TEST_CONFIGURATION=$LIBC/${JDK_VERSION}-$CONFIG-$ARCH"
-DOCKER_CMD="$DOCKER_CMD -e GRADLE_USER_HOME=/gradle-cache"
+
+# Build container run command base
+CONTAINER_CMD="$CONTAINER_RUNTIME run --rm"
+CONTAINER_VOLUME_RW_OPTIONS=""
+CONTAINER_VOLUME_RO_OPTIONS=":ro"
+if [[ "${CONTAINER_RUNTIME##*/}" == "podman" ]] && selinux_enforcing; then
+    CONTAINER_VOLUME_RW_OPTIONS=":z"
+    CONTAINER_VOLUME_RO_OPTIONS=":ro,z"
+fi
+if $SHELL_MODE; then
+    CONTAINER_CMD="$CONTAINER_CMD -it --init --ulimit core=-1 --cap-add=SYS_PTRACE"
+fi
+if $NEEDS_PRIVILEGED; then
+    CONTAINER_CMD="$CONTAINER_CMD --privileged"
+fi
+CONTAINER_CMD="$CONTAINER_CMD $CONTAINER_PLATFORM"
+CONTAINER_CMD="$CONTAINER_CMD -e LIBC=$LIBC"
+CONTAINER_CMD="$CONTAINER_CMD -e SANITIZER=$CONFIG"
+CONTAINER_CMD="$CONTAINER_CMD -e TEST_CONFIGURATION=$LIBC/${JDK_VERSION}-$CONFIG-$ARCH"
+CONTAINER_CMD="$CONTAINER_CMD -e GRADLE_USER_HOME=/gradle-cache"
 
 if $MOUNT_MODE; then
     # Mount mode: use local repo directly (faster, but may have stale artifacts)
-    DOCKER_CMD="$DOCKER_CMD -v \"$PROJECT_ROOT\":/workspace"
-    DOCKER_CMD="$DOCKER_CMD $IMAGE_NAME"
+    CONTAINER_CMD="$CONTAINER_CMD -v \"$PROJECT_ROOT\":/workspace${CONTAINER_VOLUME_RW_OPTIONS}"
+    CONTAINER_CMD="$CONTAINER_CMD $IMAGE_NAME"
 
     if $SHELL_MODE; then
-        CONTAINER_CMD="/bin/bash"
+        SHELL_CMD="/bin/bash"
     else
-        CONTAINER_CMD="$GRADLE_CMD"
+        SHELL_CMD="${SYSCTL_PREP}${GRADLE_CMD}"
     fi
 
     echo ""
     echo ">>> Running in container (mount mode)..."
-    echo ">>> Command: $CONTAINER_CMD"
-    eval "$DOCKER_CMD /bin/bash -c '$CONTAINER_CMD'"
+    echo ">>> Command: $SHELL_CMD"
+    eval "$CONTAINER_CMD /bin/bash -c '$SHELL_CMD'"
 else
     # Clone mode: shallow clone from mounted local repo for clean builds (default)
     # Mount the local repo as source, then clone from it to /workspace
-    DOCKER_CMD="$DOCKER_CMD -v \"$PROJECT_ROOT\":/source:ro"
-    DOCKER_CMD="$DOCKER_CMD $IMAGE_NAME"
+    CONTAINER_CMD="$CONTAINER_CMD -v \"$PROJECT_ROOT\":/source${CONTAINER_VOLUME_RO_OPTIONS}"
+    CONTAINER_CMD="$CONTAINER_CMD $IMAGE_NAME"
 
     # Build clone and test command - clone from local mounted source
     if $SHELL_MODE; then
         CLONE_CMD="git clone --depth 1 file:///source /workspace && cd /workspace && /bin/bash"
     else
-        CLONE_CMD="git clone --depth 1 file:///source /workspace && cd /workspace && $GRADLE_CMD"
+        CLONE_CMD="git clone --depth 1 file:///source /workspace && cd /workspace && ${SYSCTL_PREP}${GRADLE_CMD}"
     fi
 
     echo ""
     echo ">>> Running in container (clone mode)..."
     echo ">>> Cloning from local source to /workspace"
-    eval "$DOCKER_CMD /bin/bash -c '$CLONE_CMD'"
+    eval "$CONTAINER_CMD /bin/bash -c '$CLONE_CMD'"
 fi

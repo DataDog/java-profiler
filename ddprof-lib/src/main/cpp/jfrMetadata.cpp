@@ -1,5 +1,6 @@
 /*
  * Copyright 2020 Andrei Pangin
+ * Copyright 2026, Datadog, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -123,6 +124,7 @@ void JfrMetadata::initialize(
                   << field("state", T_THREAD_STATE, "Thread State", F_CPOOL)
                   << field("mode", T_EXECUTION_MODE, "Execution Mode", F_CPOOL)
                   << field("weight", T_LONG, "Sample weight")
+                  << field("correlationId", T_LONG, "Async Stack Trace Correlation ID")
                   << field("spanId", T_LONG, "Span ID")
                   << field("localRootSpanId", T_LONG, "Local Root Span ID") ||
               contextAttributes)
@@ -136,6 +138,7 @@ void JfrMetadata::initialize(
                   << field("state", T_THREAD_STATE, "Thread State", F_CPOOL)
                   << field("mode", T_EXECUTION_MODE, "Execution Mode", F_CPOOL)
                   << field("weight", T_LONG, "Sample weight")
+                  << field("correlationId", T_LONG, "Async Stack Trace Correlation ID")
                   << field("spanId", T_LONG, "Span ID")
                   << field("localRootSpanId", T_LONG, "Local Root Span ID") ||
               contextAttributes)
@@ -297,6 +300,32 @@ void JfrMetadata::initialize(
               << field("kind", T_STRING, "Kind")
               << field("name", T_STRING, "Name")
               << field("count", T_LONG, "Count"))
+
+          << (type("profiler.Malloc", T_MALLOC, "malloc")
+                  << category("Java Virtual Machine", "Native Memory")
+                  << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
+                  << field("eventThread", T_THREAD, "Event Thread", F_CPOOL)
+                  << field("stackTrace", T_STACK_TRACE, "Stack Trace", F_CPOOL)
+                  << field("address", T_LONG, "Address", F_ADDRESS)
+                  << field("size", T_LONG, "Size", F_BYTES)
+                  << field("weight", T_FLOAT, "Sample weight")
+                  << field("spanId", T_LONG, "Span ID")
+                  << field("localRootSpanId", T_LONG, "Local Root Span ID") ||
+              contextAttributes)
+
+          << (type("datadog.NativeSocketEvent", T_NATIVE_SOCKET, "Native Socket I/O")
+                  << category("Datadog", "Profiling")
+                  << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
+                  << field("eventThread", T_THREAD, "Event Thread", F_CPOOL)
+                  << field("stackTrace", T_STACK_TRACE, "Stack Trace", F_CPOOL)
+                  << field("duration", T_LONG, "Duration", F_DURATION_TICKS)
+                  << field("operation", T_STRING, "Operation")
+                  << field("remoteAddress", T_STRING, "Remote Address")
+                  << field("bytesTransferred", T_LONG, "Bytes Transferred", F_BYTES)
+                  << field("weight", T_FLOAT, "Sample weight")
+                  << field("spanId", T_LONG, "Span ID")
+                  << field("localRootSpanId", T_LONG, "Local Root Span ID") ||
+              contextAttributes)
 
           << (type("jdk.OSInformation", T_OS_INFORMATION, "OS Information")
               << category("Operating System")

@@ -3,23 +3,28 @@
 [versions]
 cpp-standard = "17"
 kotlin = "1.9.22"
-spotless = "8.4.0"
+spotless = "8.6.0"
 
 # Testing
-junit = "5.9.2"
-junit-platform = "1.9.2"  # JUnit Platform version corresponding to JUnit Jupiter 5.9.2
+junit = "5.9.3"
+junit-platform = "1.9.3"  # JUnit Platform version corresponding to JUnit Jupiter 5.9.3
 junit-pioneer = "2.3.0"
-slf4j = "2.0.17"
+slf4j = "2.0.18"
 
 # Profiler runtime
-jmc = "8.1.0"
+jmc = "8.3.1"
 jol = "0.17"
 lz4 = "1.11.0"
 snappy = "1.1.10.8"
-zstd = "1.5.7-7"
+zstd = "1.5.7-10"
 
 # Code analysis
-asm = "9.9.1"
+asm = "9.10.1"
+
+# Datadog tracer (compileOnly for the chaos harness — runtime is provided by dd-java-agent).
+# Dynamic version: always resolve to the latest released dd-trace-api so the chaos harness
+# tracks current annotation/API surface without manual bumps.
+dd-trace-api = "latest.release"
 
 # Benchmarking
 jmh = "1.37"
@@ -46,6 +51,9 @@ zstd = { module = "com.github.luben:zstd-jni", version.ref = "zstd" }
 
 # Bytecode analysis
 asm = { module = "org.ow2.asm:asm", version.ref = "asm" }
+
+# Datadog tracer API (annotations only; intercepted by dd-java-agent at runtime)
+dd-trace-api = { module = "com.datadoghq:dd-trace-api", version.ref = "dd-trace-api" }
 
 # JMH benchmarking
 jmh-core = { module = "org.openjdk.jmh:jmh-core", version.ref = "jmh" }

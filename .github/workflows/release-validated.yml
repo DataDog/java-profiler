@@ -167,9 +167,14 @@ jobs:
           echo "::error::Pre-release tests failed. Cannot proceed with release."
           exit 1
 
-      - uses: webfactory/ssh-agent@e83874834305fe9a4a2997156cb26c5de65a8555 # v0.10.0
-        with:
-          ssh-private-key: ${{ secrets.SSH_PUSH_SECRET }}
+      - name: Setup SSH agent
+        run: |
+          eval $(ssh-agent -s)
+          echo "${{ secrets.SSH_PUSH_SECRET }}" | ssh-add -
+          mkdir -p ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >> $GITHUB_ENV
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >> $GITHUB_ENV
 
       - name: Checkout repository
         run: git clone git@github.com:$GITHUB_REPOSITORY.git java-profiler
@@ -188,6 +193,7 @@ jobs:
           java-version: '21'
 
       - name: Create release
+        id: create-release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -204,6 +210,8 @@ jobs:
 
       - name: Output Release Summary
         if: ${{ inputs.dry_run != true }}
+        env:
+          BUMP_PR_URL: ${{ steps.create-release.outputs.BUMP_PR_URL }}
         run: |
           echo "## ✅ Release Created Successfully" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -211,6 +219,12 @@ jobs:
           echo "- **Tag**: v_${{ needs.validate-inputs.outputs.release_version }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Branch**: ${{ needs.validate-inputs.outputs.release_branch }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -n "$BUMP_PR_URL" ]; then
+            echo "### ⚠ Action Required" >> $GITHUB_STEP_SUMMARY
+            echo "A version bump PR needs review and merge before the next snapshot builds carry the correct version:" >> $GITHUB_STEP_SUMMARY
+            echo "- $BUMP_PR_URL" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
           echo "### Next Steps (Automatic)" >> $GITHUB_STEP_SUMMARY
           echo "1. 🔨 GitLab pipeline will build multi-platform artifacts" >> $GITHUB_STEP_SUMMARY
           echo "2. 📦 GitLab will publish to Maven Central" >> $GITHUB_STEP_SUMMARY

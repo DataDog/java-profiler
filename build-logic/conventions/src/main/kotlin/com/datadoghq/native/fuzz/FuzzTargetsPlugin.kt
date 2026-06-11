@@ -73,7 +73,21 @@ class FuzzTargetsPlugin : Plugin<Project> {
             }
         }
 
+        // Build-only aggregate: compiles and links all targets without running them
+        val buildFuzz = project.tasks.register("buildFuzz") {
+            onlyIf { hasFuzzer && !project.hasProperty("skip-tests") && !project.hasProperty("skip-native") && !project.hasProperty("skip-fuzz") }
+            group = "build"
+            description = "Build all fuzz targets without running them"
+        }
+
         if (!hasFuzzer) {
+            val msg = if (PlatformUtils.currentPlatform == Platform.MACOS) {
+                "WARNING: libFuzzer not available on macOS — skipping fuzz targets. " +
+                "Install LLVM via Homebrew and ensure 'clang' resolves to the Homebrew clang."
+            } else {
+                "WARNING: libFuzzer not available — skipping fuzz targets (requires clang with -fsanitize=fuzzer)."
+            }
+            project.logger.lifecycle(msg)
             createListFuzzTargetsTask(project, extension)
             return
         }
@@ -86,7 +100,7 @@ class FuzzTargetsPlugin : Plugin<Project> {
         val includeFiles = buildIncludePaths(project, extension, homebrewLLVM)
 
         // Build compiler/linker args
-        val compilerArgs = buildFuzzCompilerArgs()
+        val compilerArgs = buildFuzzCompilerArgs(project)
         val linkerArgs = buildFuzzLinkerArgs(homebrewLLVM, clangResourceDir, project.logger)
 
         val fuzzSourceDir = extension.fuzzSourceDir.get().asFile
@@ -161,6 +175,7 @@ class FuzzTargetsPlugin : Plugin<Project> {
                 }
 
                 fuzzAll.configure { dependsOn(executeTask) }
+                buildFuzz.configure { dependsOn(linkTask) }
             }
         }
 
@@ -194,7 +209,8 @@ class FuzzTargetsPlugin : Plugin<Project> {
         return includes
     }
 
-    private fun buildFuzzCompilerArgs(): List<String> {
+    private fun buildFuzzCompilerArgs(project: Project): List<String> {
+        val version = project.version.toString()
         val args = mutableListOf(
             "-O1",
             "-g",
@@ -202,7 +218,8 @@ class FuzzTargetsPlugin : Plugin<Project> {
             "-fsanitize=fuzzer,address,undefined",
             "-fvisibility=hidden",
             "-std=c++17",
-            "-DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION"
+            "-DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION",
+            "-DPROFILER_VERSION=\"$version\""
         )
         if (PlatformUtils.currentPlatform == Platform.LINUX && PlatformUtils.isMusl()) {
             args.add("-D__musl__")

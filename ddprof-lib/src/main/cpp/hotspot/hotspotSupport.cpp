@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <climits>
 #include <cstdlib>
 #include <setjmp.h>
 #include "asyncSampleMutex.h"
@@ -12,6 +13,7 @@
 #include "hotspot/vmStructs.inline.h"
 #include "jvmSupport.h"
 #include "profiler.h"
+#include "guards.h"
 #include "stackWalker.inline.h"
 #include "frames.h"
 
@@ -67,6 +69,8 @@ inline EventType eventTypeFromBCI(jint bci_type) {
             return LOCK_SAMPLE;
         case BCI_PARK:
             return PARK_SAMPLE;
+        case BCI_NATIVE_MALLOC:
+            return MALLOC_SAMPLE;
         default:
             // For unknown or invalid BCI types, default to EXECUTION_SAMPLE
             // This maintains backward compatibility and prevents undefined behavior
@@ -184,6 +188,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             profiled_thread->setCrashProtectionActive(true);
         }
         if (setjmp(crash_protection_ctx) != 0) {
+            // checkFault() does a longjmp from inside segvHandler, bypassing
+            // segvHandler's SignalHandlerScope destructor.  Compensate.
+            SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
             if (profiled_thread != nullptr) {
                 profiled_thread->setCrashProtectionActive(false);
             }
@@ -528,8 +535,17 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     uintptr_t receiver = frame.jarg0();
                     if (receiver != 0) {
                         VMSymbol* symbol = VMKlass::fromOop(receiver)->name();
-                        u32 class_id = profiler->classMap()->lookup(symbol->body(), symbol->length());
-                        fillFrame(frames[depth++], BCI_ALLOC, class_id);
+                        // Store the raw VMSymbol* in the frame's method_id
+                        // slot. BCI_VTABLE_RECEIVER (vmEntry.h) repurposes
+                        // method_id for this pointer — same precedent as
+                        // BCI_NATIVE_FRAME storing const char* and
+                        // BCI_NATIVE_FRAME_REMOTE storing a packed blob.
+                        // Resolution happens at dump time via SafeAccess so
+                        // a concurrent class-unload + Symbol free cannot
+                        // crash the dump thread (see Lookup::resolveVTableReceiver).
+                        if (symbol != nullptr) {
+                            fillFrame(frames[depth++], BCI_VTABLE_RECEIVER, (void*)symbol);
+                        }
                     }
                 }
 
@@ -901,7 +917,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   }
 
   HotspotStackFrame frame(ucontext);
-  uintptr_t saved_pc, saved_sp, saved_fp;
+  uintptr_t saved_pc = 0, saved_sp = 0, saved_fp = 0;
   if (ucontext != NULL) {
     saved_pc = frame.pc();
     saved_sp = frame.sp();
@@ -925,9 +941,13 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
       }
       return 1;
     }
-  } else {
-    return 0;
   }
+  // Ported from upstream async-profiler (Profiler::getJavaTraceAsync in
+  // src/profiler.cpp): when ucontext is NULL — as it is for malloc hooks,
+  // which run outside any signal context — skip the PC-dependent pre-checks
+  // and fall through to ASGCT. ASGCT then resolves the top Java frame from
+  // JavaThread::last_Java_sp / last_Java_pc, which the JVM populates on every
+  // Java → native transition.
 
   JVMJavaThreadState state = vm_thread->state();
   bool in_java = (state == _thread_in_Java || state == _thread_in_Java_trans);
@@ -1100,6 +1120,30 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   int java_frames = 0;
   if (features.mixed) {
     java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
+  } else if (request.event_type == BCI_NATIVE_MALLOC || request.event_type == BCI_NATIVE_SOCKET) {
+    if (cstack >= CSTACK_VM) {
+      java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
+    } else {
+        AsyncSampleMutex mutex(ProfiledThread::currentSignalSafe());
+        if (mutex.acquired()) {
+            java_frames = getJavaTraceAsync(ucontext, frames, max_depth, java_ctx, truncated);
+            if (java_frames > 0 && java_ctx->pc != NULL && VMStructs::hasMethodStructs()) {
+                VMNMethod* nmethod = CodeHeap::findNMethod(java_ctx->pc);
+                if (nmethod != NULL) {
+                    fillFrameTypes(frames, java_frames, nmethod);
+                }
+            }
+        }
+        if (java_frames > 0 && VM::hotspot_version() >= 21 && java_frames < max_depth) {
+            VMThread* carrier = VMThread::current();
+            if (carrier != nullptr && carrier->isCarryingVirtualThread()) {
+                frames[java_frames].bci = BCI_NATIVE_FRAME;
+                frames[java_frames].method_id = (jmethodID) "JVM Continuation";
+                LP64_ONLY(frames[java_frames].padding = 0;)
+                java_frames++;
+            }
+        }
+    }
   } else if (request.event_type == BCI_CPU || request.event_type == BCI_WALL) {
     if (cstack >= CSTACK_VM) {
         java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);

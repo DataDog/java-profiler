@@ -203,7 +203,8 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
   JniString endpoint_str(env, endpoint);
   u32 endpointLabel = Profiler::instance()->stringLabelMap()->bounded_lookup(
       endpoint_str.c_str(), endpoint_str.length(), sizeLimit);
-  bool acceptValue = endpointLabel != INT_MAX;
+  // StringDictionary reserves 0 as "no entry"; valid IDs start at 1.
+  bool acceptValue = endpointLabel != 0;
   if (acceptValue) {
     u32 operationLabel = 0;
     if (operation != NULL) {
@@ -504,6 +505,22 @@ Java_com_datadoghq_profiler_OTelContext_readProcessCtx0(JNIEnv *env, jclass unus
     }
   }
 
+  // Extract attribute_key_map from thread_ctx_config (NULL if no config was published)
+  jobjectArray jAttributeKeyMap = nullptr;
+  if (result.data.thread_ctx_config != NULL && result.data.thread_ctx_config->attribute_key_map != NULL) {
+    int n = 0;
+    while (result.data.thread_ctx_config->attribute_key_map[n] != NULL) n++;
+    jclass stringClass = env->FindClass("java/lang/String");
+    if (stringClass != nullptr) {
+      jAttributeKeyMap = env->NewObjectArray(n, stringClass, nullptr);
+      for (int i = 0; i < n; i++) {
+        jstring jKey = env->NewStringUTF(result.data.thread_ctx_config->attribute_key_map[i]);
+        env->SetObjectArrayElement(jAttributeKeyMap, i, jKey);
+        env->DeleteLocalRef(jKey);
+      }
+    }
+  }
+
   otel_process_ctx_read_drop(&result);
 
   // Find the ProcessContext class
@@ -514,14 +531,14 @@ Java_com_datadoghq_profiler_OTelContext_readProcessCtx0(JNIEnv *env, jclass unus
 
   // Find the constructor
   jmethodID constructor = env->GetMethodID(processContextClass, "<init>",
-    "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V");
+    "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;)V");
   if (!constructor) {
     return nullptr;
   }
 
   // Create the ProcessContext object
   jobject processContext = env->NewObject(processContextClass, constructor,
-    jDeploymentEnvironmentName, jHostName, jServiceInstanceId, jServiceName, jServiceVersion, jTelemetrySdkLanguage, jTelemetrySdkVersion, jTelemetrySdkName);
+    jDeploymentEnvironmentName, jHostName, jServiceInstanceId, jServiceName, jServiceVersion, jTelemetrySdkLanguage, jTelemetrySdkVersion, jTelemetrySdkName, jAttributeKeyMap);
 
   return processContext;
 #else
@@ -530,7 +547,7 @@ Java_com_datadoghq_profiler_OTelContext_readProcessCtx0(JNIEnv *env, jclass unus
 #endif
 }
 
-extern "C" DLLEXPORT jobjectArray JNICALL
+extern "C" DLLEXPORT jobject JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_initializeContextTLS0(JNIEnv* env, jclass unused, jlongArray metadata) {
   ProfiledThread* thrd = ProfiledThread::current();
   assert(thrd != nullptr);
@@ -541,8 +558,21 @@ Java_com_datadoghq_profiler_JavaProfiler_initializeContextTLS0(JNIEnv* env, jcla
 
   OtelThreadContextRecord* record = thrd->getOtelContextRecord();
 
+  // Contiguity of record + tag_encodings + LRS is enforced by alignas(8) on _otel_ctx_record
+  // plus sizeof(OtelThreadContextRecord) being a multiple of 8 (see thread.h).
+  // Compile-time alignment check always runs; runtime pointer-layout check is debug-only.
+  static_assert(DD_TAGS_CAPACITY * sizeof(u32) % alignof(u64) == 0,
+      "tag encodings array size must be aligned to u64 for contiguous sidecar layout");
+#ifdef DEBUG
+  uint8_t* record_start = reinterpret_cast<uint8_t*>(record);
+  uint8_t* sidecar_start = reinterpret_cast<uint8_t*>(thrd->getOtelTagEncodingsPtr());
+  assert(sidecar_start == record_start + OTEL_MAX_RECORD_SIZE
+         && "_otel_ctx_record and _otel_tag_encodings must be contiguous");
+#endif
+
   // Fill metadata[6]: [VALID_OFFSET, TRACE_ID_OFFSET, SPAN_ID_OFFSET,
-  //                    ATTRS_DATA_SIZE_OFFSET, ATTRS_DATA_OFFSET, LRS_SIDECAR_OFFSET]
+  //                    ATTRS_DATA_SIZE_OFFSET, ATTRS_DATA_OFFSET, LRS_OFFSET].
+  // All offsets are absolute within the unified buffer returned below.
   if (metadata != nullptr && env->GetArrayLength(metadata) >= 6) {
     jlong meta[6];
     meta[0] = (jlong)offsetof(OtelThreadContextRecord, valid);
@@ -550,26 +580,15 @@ Java_com_datadoghq_profiler_JavaProfiler_initializeContextTLS0(JNIEnv* env, jcla
     meta[2] = (jlong)offsetof(OtelThreadContextRecord, span_id);
     meta[3] = (jlong)offsetof(OtelThreadContextRecord, attrs_data_size);
     meta[4] = (jlong)offsetof(OtelThreadContextRecord, attrs_data);
-    meta[5] = (jlong)(DD_TAGS_CAPACITY * sizeof(u32)); // LRS sidecar offset in sidecar buffer
+    meta[5] = (jlong)(OTEL_MAX_RECORD_SIZE + DD_TAGS_CAPACITY * sizeof(u32));
     env->SetLongArrayRegion(metadata, 0, 6, meta);
   }
 
-  // Create 2 DirectByteBuffers: [record, sidecar]
-  jclass bbClass = env->FindClass("java/nio/ByteBuffer");
-  jobjectArray result = env->NewObjectArray(2, bbClass, nullptr);
-
-  // recordBuffer: 640 bytes over the OtelThreadContextRecord
-  jobject recordBuf = env->NewDirectByteBuffer((void*)record, (jlong)OTEL_MAX_RECORD_SIZE);
-  env->SetObjectArrayElement(result, 0, recordBuf);
-
-  // sidecarBuffer: covers _otel_tag_encodings[DD_TAGS_CAPACITY] + _otel_local_root_span_id (contiguous)
-  static_assert(DD_TAGS_CAPACITY * sizeof(u32) % alignof(u64) == 0,
-      "tag encodings array size must be aligned to u64 for contiguous sidecar layout");
-  size_t sidecarSize = DD_TAGS_CAPACITY * sizeof(u32) + sizeof(u64);
-  jobject sidecarBuf = env->NewDirectByteBuffer((void*)thrd->getOtelTagEncodingsPtr(), (jlong)sidecarSize);
-  env->SetObjectArrayElement(result, 1, sidecarBuf);
-
-  return result;
+  // Single contiguous view over [record | tag_encodings | LRS] — used for per-field
+  // access and for bulk snapshot/restore. All three regions are in one ProfiledThread
+  // memory block.
+  size_t totalSize = OTEL_MAX_RECORD_SIZE + DD_TAGS_CAPACITY * sizeof(u32) + sizeof(u64);
+  return env->NewDirectByteBuffer((void*)record, (jlong)totalSize);
 }
 
 extern "C" DLLEXPORT jint JNICALL
@@ -577,7 +596,7 @@ Java_com_datadoghq_profiler_ThreadContext_registerConstant0(JNIEnv* env, jclass 
   JniString value_str(env, value);
   u32 encoding = Profiler::instance()->contextValueMap()->bounded_lookup(
       value_str.c_str(), value_str.length(), 1 << 16);
-  return encoding == INT_MAX ? -1 : encoding;
+  return encoding == 0 ? -1 : (jint)encoding;
 }
 
 extern "C" DLLEXPORT void JNICALL

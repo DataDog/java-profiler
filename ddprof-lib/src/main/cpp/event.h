@@ -1,5 +1,6 @@
 /*
  * Copyright 2020 Andrei Pangin
+ * Copyright 2026, Datadog, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -86,6 +87,29 @@ public:
   u64 _start_time;
   u64 _age;
   Context _ctx;
+};
+
+class MallocEvent : public Event {
+public:
+  u64 _start_time;
+  uintptr_t _address;
+  u64 _size;
+  float _weight;
+
+  MallocEvent() : Event(), _start_time(0), _address(0), _size(0), _weight(1.0f) {}
+};
+
+class NativeSocketEvent : public Event {
+public:
+  u64  _start_time;          // TSC ticks at call entry
+  u64  _end_time;            // TSC ticks at call return
+  u8   _operation;           // 0 = SEND, 1 = RECV, 2 = WRITE, 3 = READ
+  char _remote_addr[64];     // "ip:port" null-terminated string
+  u64  _bytes;               // bytes transferred (return value of send/recv/write/read)
+  float _weight;             // inverse-transform sample weight
+
+  NativeSocketEvent() : Event(), _start_time(0), _end_time(0), _operation(0),
+                        _bytes(0), _weight(1.0f) { _remote_addr[0] = '\0'; }
 };
 
 class WallClockEpochEvent {

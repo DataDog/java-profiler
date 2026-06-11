@@ -52,6 +52,37 @@ tasks.named<Jar>("jmhJar") {
   archiveFileName.set("stresstests.jar")
 }
 
+// --- chaos harness ---------------------------------------------------------
+// Long-running antagonist workload driven by the reliability CI cell. NOT a JMH
+// benchmark — runs for a wall-clock budget and exits 0 on clean shutdown; JVM
+// crashes propagate as non-zero exit codes. Black-box w.r.t. the profiler:
+// runs under a dd-java-agent.jar patched with the locally built ddprof.jar.
+
+sourceSets {
+  create("chaos")
+}
+
+dependencies {
+  "chaosImplementation"(libs.asm)
+  // dd-trace-api: annotations only at compile time. The patched dd-java-agent
+  // provides the (relocated) runtime classes and intercepts @Trace.
+  "chaosCompileOnly"(libs.dd.trace.api)
+}
+
+tasks.register<Jar>("chaosJar") {
+  group = "build"
+  description = "Fat jar of the chaos reliability harness"
+  archiveFileName.set("chaos.jar")
+  from(sourceSets["chaos"].output)
+  from({
+    configurations["chaosRuntimeClasspath"].map { if (it.isDirectory) it else zipTree(it) }
+  })
+  duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+  manifest {
+    attributes("Main-Class" to "com.datadoghq.profiler.chaos.Main")
+  }
+}
+
 tasks.register<Exec>("runStressTests") {
   dependsOn(tasks.named("jmhJar"))
 

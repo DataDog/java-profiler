@@ -8,6 +8,7 @@
 #define _FLIGHTRECORDER_H
 
 #include <map>
+#include <unordered_map>
 #include <unordered_set>
 
 #include <limits.h>
@@ -18,6 +19,7 @@
 #include "buffers.h"
 #include "counters.h"
 #include "dictionary.h"
+#include "stringDictionary.h"
 #include "event.h"
 #include "frame.h"
 #include "jfrMetadata.h"
@@ -27,6 +29,8 @@
 #include "threadFilter.h"
 #include "threadIdTable.h"
 #include "vmEntry.h"
+
+class VMSymbol;  // hotspot/vmStructs.h
 
 const u64 MAX_JLONG = 0x7fffffffffffffffULL;
 const u64 MIN_JLONG = 0x8000000000000000ULL;
@@ -59,6 +63,9 @@ struct CpuTimes {
 class SharedLineNumberTable {
 public:
   int _size;
+  // Owned malloc'd buffer holding a copy of the JVMTI line number table.
+  // Owning the memory (instead of holding the JVMTI-allocated pointer
+  // directly) keeps lifetime independent of class unload.
   void *_ptr;
 
   SharedLineNumberTable(int size, void *ptr) : _size(size), _ptr(ptr) {}
@@ -112,13 +119,16 @@ public:
 // 3) Encoded RemoteFrameInfo
 // The values of the keys are potentially overlapping, so we use 
 // the highest 2 bits to distinguish them.
-// 00 - jmethodID
-// 10 - void* address
-// 01 - RemoteFrameInfo
+// Key encoding (top two bits):
+//   00 - jmethodID
+//   10 - void* address (native frame names)
+//   01 - RemoteFrameInfo (packed remote symbolication)
+//   11 - vtable_receiver class_id (BCI_VTABLE_RECEIVER frames)
 class MethodMap : public std::map<unsigned long, MethodInfo> {
 public:
   static constexpr unsigned long ADDRESS_MARK = 0x8000000000000000ULL;
   static constexpr unsigned long REMOTE_FRAME_MARK = 0x4000000000000000ULL;
+  static constexpr unsigned long VTABLE_RECEIVER_MARK = ADDRESS_MARK | REMOTE_FRAME_MARK;
   static constexpr unsigned long KEY_TYPE_MASK = ADDRESS_MARK | REMOTE_FRAME_MARK;
 
   MethodMap() {}
@@ -139,6 +149,15 @@ public:
     unsigned long key = packed_remote_frame;
     assert((key & KEY_TYPE_MASK) == 0);
     return (key | REMOTE_FRAME_MARK);}
+
+  // BCI_VTABLE_RECEIVER frames key by the resolved class_id (not by the
+  // VMSymbol* captured at sample time), so two distinct Symbol addresses
+  // for the same class name collapse to a single MethodInfo row.
+  static unsigned long makeVTableReceiverKey(u32 class_id) {
+    unsigned long key = (unsigned long)class_id;
+    assert((key & KEY_TYPE_MASK) == 0);
+    return (key | VTABLE_RECEIVER_MARK);
+  }
 };
 
 class Recording {
@@ -192,7 +211,7 @@ public:
   void copyTo(int target_fd);
   off_t finishChunk();
 
-  off_t finishChunk(bool end_recording);
+  off_t finishChunk(bool end_recording, bool do_cleanup = false);
   void switchChunk(int fd);
 
   void cpuMonitorCycle();
@@ -262,6 +281,8 @@ public:
 
   void writeConstantPoolSection(Buffer *buf, JfrType type,
                                 Dictionary *dictionary);
+  void writeConstantPoolSection(Buffer *buf, JfrType type,
+                                StringDictionaryBuffer *buffer);
 
   void writeLogLevels(Buffer *buf);
 
@@ -273,14 +294,18 @@ public:
   void writeCurrentContext(Buffer *buf);
 
   void recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
-                             ExecutionEvent *event);
+                             u64 correlation_id, ExecutionEvent *event);
   void recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
-                          ExecutionEvent *event);
+                          u64 correlation_id, ExecutionEvent *event);
   void recordWallClockEpoch(Buffer *buf, WallClockEpochEvent *event);
   void recordTraceRoot(Buffer *buf, int tid, TraceRootEvent *event);
   void recordQueueTime(Buffer *buf, int tid, QueueTimeEvent *event);
   void recordAllocation(RecordingBuffer *buf, int tid, u64 call_trace_id,
                         AllocEvent *event);
+  void recordMallocSample(Buffer *buf, int tid, u64 call_trace_id,
+                          MallocEvent *event);
+  void recordNativeSocketSample(Buffer *buf, int tid, u64 call_trace_id,
+                                NativeSocketEvent *event);
   void recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
                             ObjectLivenessEvent *event);
   void recordMonitorBlocked(Buffer *buf, int tid, u64 call_trace_id,
@@ -300,7 +325,15 @@ class Lookup {
 public:
   Recording *_rec;
   MethodMap *_method_map;
-  Dictionary *_classes;
+  StringDictionary *_classes;
+  std::map<u32, const char*> _class_cache;  // snapshot of _classes->standby() at dump time
+  // Per-dump VMSymbol* -> resolved class_id cache for BCI_VTABLE_RECEIVER
+  // frames. Two purposes: (1) amortise the SafeAccess work to once per
+  // distinct Symbol pointer per dump; (2) the resolved class_id is used
+  // as the MethodMap key, so distinct Symbol* addresses for the same
+  // class name (class unload/reload mid-chunk) collapse to a single
+  // MethodInfo row.
+  std::unordered_map<void*, u32> _vtable_receiver_cache;
   Dictionary _packages;
   Dictionary _symbols;
 
@@ -313,11 +346,42 @@ private:
   bool has_prefix(const char *str, const char *prefix) const {
     return strncmp(str, prefix, strlen(prefix)) == 0;
   }
+  // Length-bounded variant for buffers that may not be NUL-terminated.
+  bool has_prefix_n(const char *buf, size_t buf_len, const char *prefix) const {
+    size_t plen = strlen(prefix);
+    return buf_len >= plen && strncmp(buf, prefix, plen) == 0;
+  }
+
+  // Resolves a VMSymbol* captured at sample time (BCI_VTABLE_RECEIVER) into a
+  // class id in _classes, applying the synthetic-accessor/LambdaForm
+  // normalisation inline. Crash-safe under concurrent class unloading: all
+  // reads of the Symbol go through SafeAccess (safefetch + bounded copy), so
+  // a Symbol freed and its page unmapped between sample and dump cannot
+  // SIGSEGV the dump thread. On success returns true and fills *out_class_id
+  // with the normalised class id. `buf` is a working area used internally;
+  // its contents on return are unspecified.
+  bool resolveVTableReceiver(VMSymbol *sym, char *buf, size_t bufsize,
+                             u32 *out_class_id);
+
+  // Cache wrapper: look up Symbol* in _vtable_receiver_cache; on miss,
+  // resolve via resolveVTableReceiver and cache the result. On any
+  // resolution failure (SafeAccess fault, length out of range, non-printable
+  // bytes) returns the sentinel "<unresolved_vtable_receiver>" class_id and
+  // increments VTABLE_RECEIVER_RESOLVE_FAILED.
+  u32 resolveVTableReceiverCached(void *sym);
 
 public:
-  Lookup(Recording *rec, MethodMap *method_map, Dictionary *classes)
+  Lookup(Recording *rec, MethodMap *method_map, StringDictionary *classes)
       : _rec(rec), _method_map(method_map), _classes(classes), _packages(),
         _symbols() {}
+
+  // Call once before writeStackTraces.  Populates _class_cache from
+  // _classes->standby() under the shared lock.  NOTE: _class_cache is
+  // currently write-only — writeClasses() re-collects from standby() and
+  // resolveMethod() inserts via lookupDuringDump() rather than reading
+  // this cache.  Kept for compatibility with #527's API and as a hook
+  // for future readers; safe to remove if no consumer materialises.
+  void initClassCache();
 
   MethodInfo *resolveMethod(ASGCT_CallFrame &frame);
   u32 getPackage(const char *class_name);
@@ -350,6 +414,13 @@ public:
 
   void recordEvent(int lock_index, int tid, u64 call_trace_id, int event_type,
                    Event *event);
+
+  // Emit a BCI_CPU / BCI_WALL sample with no stack-trace attached to our
+  // recording. `correlation_id` is the same jlong passed to the HotSpot
+  // RequestStackTrace extension so downstream tooling can join our event with
+  // the JVM-emitted jdk.StackTraceRequest.
+  void recordEventDelegated(int lock_index, int tid, u64 correlation_id,
+                            int event_type, Event *event);
 
   void recordLog(LogLevel level, const char *message, size_t len);
 

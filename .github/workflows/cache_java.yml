@@ -203,7 +203,7 @@ jobs:
   cache-amd64-musl:
     runs-on: ubuntu-latest
     container:
-      image: "alpine:3.21"
+      image: "alpine:3.23"
       options: --cpus 2
     strategy:
       fail-fast: true

@@ -8,6 +8,7 @@ DRYRUN=$2
 
 BRANCH=$(git branch --show-current)
 RELEASE_BRANCH=
+SKIP_RELEASE_CREATION=false
 
 BASE=$(./gradlew printVersion -Psnapshot=false | grep 'Version:' | cut -f2 -d' ')
 # BASE == 0.0.1
@@ -52,7 +53,12 @@ if [ "$TYPE" == "MINOR" ] || [ "$TYPE" == "MAJOR" ]; then
     # BASE == 1.0.0
   fi
   RELEASE_BRANCH="release/${BASE%.*}._"
-  create_annotated_tag "$BASE" "$TYPE" "$BRANCH"
+  if [ -z "$DRYRUN" ] && git rev-parse "v_${BASE}" >/dev/null 2>&1; then
+    echo "Tag v_${BASE} already exists; skipping tag and release branch creation — will only produce a version-bump PR"
+    SKIP_RELEASE_CREATION=true
+  else
+    create_annotated_tag "$BASE" "$TYPE" "$BRANCH"
+  fi
 fi
 
 if [ "$TYPE" == "PATCH" ]; then
@@ -106,7 +112,7 @@ if [ "$TYPE" == "RETAG" ]; then
   exit 0
 fi
 
-if [ "$BRANCH" != "$RELEASE_BRANCH" ]; then
+if [ "$SKIP_RELEASE_CREATION" == "false" ] && [ "$BRANCH" != "$RELEASE_BRANCH" ]; then
   git checkout -b $RELEASE_BRANCH
   if ! git diff --quiet; then
     git add build.gradle.kts
@@ -127,7 +133,18 @@ CANDIDATE=$(./gradlew printVersion -Psnapshot=false | grep 'Version:' | cut -f2 
 git add build.gradle.kts
 git commit -m "[Automated] Bump dev version to ${CANDIDATE}"
 
-git push $DRYRUN --atomic --set-upstream origin $BRANCH
+if [ -z "$DRYRUN" ]; then
+  BUMP_BRANCH="automated/bump-${CANDIDATE//./-}"
+  git checkout -b "$BUMP_BRANCH"
+  git push --force-with-lease --set-upstream origin "$BUMP_BRANCH"
+  REPO="${GITHUB_REPOSITORY:-$(git remote get-url origin | sed 's|.*github.com[:/]\(.*\)\.git|\1|')}"
+  BUMP_PR_URL="https://github.com/${REPO}/compare/${BRANCH}...${BUMP_BRANCH}?quick_pull=1&title=%5BAutomated%5D+Bump+dev+version+to+${CANDIDATE}"
+  echo "BUMP_PR_URL=$BUMP_PR_URL" >> "${GITHUB_OUTPUT:-/dev/null}"
+  echo "⚠ Open this URL to create the version bump PR: $BUMP_PR_URL"
+else
+  git push $DRYRUN --atomic --set-upstream origin $BRANCH
+fi
+
 git push $DRYRUN --atomic --tags
 
 echo "==================== RELEASE SUMMARY ===================="

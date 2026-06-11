@@ -226,7 +226,6 @@ public final class JavaProfiler {
     }
 
     /**
-    /**
      * Dumps the JFR recording at the provided path
      * @param recording the path to the recording
      * @throws NullPointerException if recording is null
@@ -305,11 +304,11 @@ public final class JavaProfiler {
 
     private static ThreadContext initializeThreadContext() {
         long[] metadata = new long[6];
-        ByteBuffer[] buffers = initializeContextTLS0(metadata);
-        if (buffers == null) {
+        ByteBuffer buffer = initializeContextTLS0(metadata);
+        if (buffer == null) {
             throw new IllegalStateException("Failed to initialize OTEL TLS — ProfiledThread not available");
         }
-        return new ThreadContext(buffers[0], buffers[1], metadata);
+        return new ThreadContext(buffer, metadata);
     }
 
     private static native boolean init0();
@@ -342,19 +341,20 @@ public final class JavaProfiler {
     private static native String getStatus0();
 
     /**
-     * Initializes context TLS for the current thread and returns 2 DirectByteBuffers.
-     * Sets otel_thread_ctx_v1 permanently to the thread's OtelThreadContextRecord.
+     * Initializes context TLS for the current thread and returns a single DirectByteBuffer
+     * spanning the OTEP record + tag-encoding sidecar + LRS (688 bytes, contiguous in
+     * ProfiledThread). Sets otel_thread_ctx_v1 permanently to the thread's
+     * OtelThreadContextRecord.
      *
-     * @param metadata output array filled with:
-     *   [0] VALID_OFFSET — offset of 'valid' field in the record
-     *   [1] TRACE_ID_OFFSET — offset of 'trace_id' field in the record
-     *   [2] SPAN_ID_OFFSET — offset of 'span_id' field in the record
+     * @param metadata output array filled with absolute offsets into the returned buffer:
+     *   [0] VALID_OFFSET — offset of 'valid' field
+     *   [1] TRACE_ID_OFFSET — offset of 'trace_id' field
+     *   [2] SPAN_ID_OFFSET — offset of 'span_id' field
      *   [3] ATTRS_DATA_SIZE_OFFSET — offset of 'attrs_data_size' field
      *   [4] ATTRS_DATA_OFFSET — offset of 'attrs_data' field
-     *   [5] LRS_SIDECAR_OFFSET — offset of local_root_span_id in sidecar buffer
-     * @return array of 2 ByteBuffers: [recordBuffer, sidecarBuffer]
+     *   [5] LRS_OFFSET — offset of local_root_span_id
      */
-    private static native ByteBuffer[] initializeContextTLS0(long[] metadata);
+    private static native ByteBuffer initializeContextTLS0(long[] metadata);
 
     public ThreadContext getThreadContext() {
         return tlsContextStorage.get();

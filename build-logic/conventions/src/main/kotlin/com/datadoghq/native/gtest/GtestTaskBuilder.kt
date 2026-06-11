@@ -37,6 +37,7 @@ class GtestTaskBuilder(
     private lateinit var compiler: String
     private lateinit var includeFiles: FileCollection
     private var hasGtest: Boolean = true
+    private var sharedLibCompileTask: TaskProvider<NativeCompileTask>? = null
 
     private val configName: String get() = config.capitalizedName()
 
@@ -74,6 +75,23 @@ class GtestTaskBuilder(
     }
 
     /**
+     * Provide the shared library compile task whose objects are linked into
+     * every test binary. Allows the 59 library sources to be compiled once
+     * instead of once per test file.
+     */
+    fun withSharedLibObjects(task: TaskProvider<NativeCompileTask>): GtestTaskBuilder {
+        sharedLibCompileTask = task
+        return this
+    }
+
+    /**
+     * Returns the compiler args used for compiling library and test sources.
+     * Exposed so GtestPlugin can configure the shared library compile task
+     * with identical flags without duplicating the adjustment logic.
+     */
+    fun sharedCompilerArgs(): List<String> = adjustCompilerArgs()
+
+    /**
      * Build all tasks (compile, link, execute) and return the execute task provider.
      */
     fun build(): TaskProvider<Exec> {
@@ -94,17 +112,28 @@ class GtestTaskBuilder(
             this.compiler.set(this@GtestTaskBuilder.compiler)
             this.compilerArgs.set(compilerArgs)
 
-            sources.from(
-                project.fileTree(extension.mainSourceDir.get()) { include("**/*.cpp") },
-                testFile
-            )
+            // When a shared library compile task is provided, library sources are
+            // compiled once there. Only compile the test file itself here.
+            if (sharedLibCompileTask != null) {
+                sources.from(testFile)
+            } else {
+                sources.from(
+                    project.fileTree(extension.mainSourceDir.get()) { include("**/*.cpp") },
+                    testFile
+                )
+            }
             includes.from(includeFiles)
             objectFileDir.set(objDir)
         }
     }
 
     private fun buildLinkTask(compileTask: TaskProvider<NativeCompileTask>): TaskProvider<NativeLinkExecutableTask> {
-        val linkerArgs = config.linkerArgs.get()
+        // Strip explicit sanitizer -l/-L/-rpath flags so the executable relies solely
+        // on clang's automatic static embedding of the sanitizer runtime. Mixing
+        // clang's statically-embedded runtime with an explicit GCC libtsan/libasan
+        // causes "incompatible runtimes" at startup (two __tsan_init/__asan_init calls).
+        val sanitizerLibPattern = Regex("^(-lasan|-lubsan|-ltsan|-lclang_rt\\.asan.*|-lclang_rt\\.ubsan.*|-lclang_rt\\.tsan.*|-L.*/clang.*/|-Wl,-rpath,.*/clang/.*)")
+        val linkerArgs = config.linkerArgs.get().filter { !sanitizerLibPattern.containsMatchIn(it) }
         val objDir = project.file("${project.layout.buildDirectory.get()}/obj/gtest/${config.name}/$testName")
         val binary = project.file("${project.layout.buildDirectory.get()}/bin/gtest/${config.name}_$testName/$testName")
 
@@ -117,6 +146,10 @@ class GtestTaskBuilder(
             linker.set(compiler)
             this.linkerArgs.set(linkerArgs)
             objectFiles.from(project.fileTree(objDir) { include("*.o") })
+            sharedLibCompileTask?.let { sharedTask ->
+                dependsOn(sharedTask)
+                objectFiles.from(sharedTask.map { it.objectFileDir.get().asFileTree.matching { include("*.o") } })
+            }
             outputFile.set(binary)
 
             // Add gtest library paths
@@ -159,9 +192,26 @@ class GtestTaskBuilder(
             // causes "incompatible ASan runtimes" → immediate abort before any test runs.
             config.testEnvironment.get()
                 .filter { (key, _) -> key != "LD_PRELOAD" }
-                .forEach { (key, value) -> environment(key, value) }
+                .forEach { (key, value) ->
+                    environment(key, hardenSanitizerOptions(key, value))
+                }
 
             inputs.files(binary)
+
+            // Gradle's default Exec task buffers child output and discards it on
+            // failure. /dev/std* bypass the logging infrastructure and stream
+            // bytes directly to fd 1/2 of the Gradle JVM so sanitizer reports
+            // are always visible in CI.
+            if (PlatformUtils.currentPlatform == Platform.LINUX) {
+                val devStdout = java.io.FileOutputStream("/dev/stdout")
+                val devStderr = java.io.FileOutputStream("/dev/stderr")
+                standardOutput = devStdout
+                errorOutput = devStderr
+                doLast {
+                    devStdout.flush(); devStdout.close()
+                    devStderr.flush(); devStderr.close()
+                }
+            }
 
             if (extension.alwaysRun.get()) {
                 outputs.upToDateWhen { false }
@@ -171,7 +221,7 @@ class GtestTaskBuilder(
         }
     }
 
-    private fun skipConditions(): Boolean {
+    fun skipConditions(): Boolean {
         return project.hasProperty("skip-tests") ||
                project.hasProperty("skip-native") ||
                project.hasProperty("skip-gtest")
@@ -204,6 +254,22 @@ class GtestTaskBuilder(
             args.add("-D__musl__")
         }
 
+        // Mark unit-test builds so test-only production APIs are compiled in.
+        args.add("-DUNIT_TEST")
+
         return args
+    }
+
+    // Gtest binaries have no JVM, so halt_on_error=0 / abort_on_error=0 (which exists
+    // to avoid conflicts with JVM signal handlers in Java integration tests) is wrong:
+    // it silently swallows ASan/TSan findings and lets the test exit 0 despite errors.
+    // Promote both flags to =1 so any sanitizer finding fails the gtest task immediately.
+    private fun hardenSanitizerOptions(key: String, value: String): String {
+        if (key != "ASAN_OPTIONS" && key != "TSAN_OPTIONS" && key != "UBSAN_OPTIONS") {
+            return value
+        }
+        return value
+            .replace("halt_on_error=0", "halt_on_error=1")
+            .replace("abort_on_error=0", "abort_on_error=1")
     }
 }
