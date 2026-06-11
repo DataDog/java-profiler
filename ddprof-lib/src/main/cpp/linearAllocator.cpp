@@ -220,25 +220,24 @@ Chunk *LinearAllocator::allocateChunk(Chunk *current) {
   Chunk *chunk = (Chunk *)OS::safeAlloc(_chunk_size);
   if (chunk != NULL) {
     // OS::safeAlloc uses a raw mmap syscall that bypasses ASan and TSan
-    // interceptors by design (to avoid profiling self-instrumentation).
-    // When the OS reuses a VA that had stale sanitizer state from a previous
-    // allocation at that address, writing to the chunk header triggers:
-    //   ASan: use-after-poison (f7 shadow from prior ASAN_POISON_MEMORY_REGION)
-    //   TSan: data-race (prior access history for the same VA not cleared by munmap)
-    // Fix: unpoison the entire chunk and acquire TSan ownership BEFORE the first
-    // write, establishing a clean sanitizer baseline for this logical allocation.
+    // interceptors. When the OS reuses a VA from a prior munmap, TSan's shadow
+    // memory for that VA still holds the old access history. __tsan_acquire
+    // only establishes happens-before by pairing with a prior __tsan_release at
+    // the same address; it does NOT clear stale shadow state.
+    // Fix: use __tsan_reset_range to wipe the shadow for the entire chunk before
+    // the first write, giving TSan a clean baseline for this new allocation.
     #ifdef ASAN_ENABLED
     ASAN_UNPOISON_MEMORY_REGION(chunk, _chunk_size);
     #endif
     #ifdef __SANITIZE_THREAD__
-    __tsan_acquire(chunk);
+    __tsan_reset_range(chunk, _chunk_size);
     #endif
 
     chunk->prev = current;
     chunk->offs = sizeof(Chunk);
 
-    // Publish the initialized chunk: release TSan ownership so that any thread
-    // which later acquires this chunk (via __tsan_acquire) will see these writes.
+    // Publish the initialized chunk: any thread that later acquires this chunk
+    // (via __tsan_acquire in freeChunks/detachChunks) will see these writes.
     #ifdef __SANITIZE_THREAD__
     __tsan_release(chunk);
     #endif
