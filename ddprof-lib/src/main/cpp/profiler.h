@@ -413,7 +413,6 @@ public:
   void recordTraceRoot(int tid, TraceRootEvent *event);
   void recordQueueTime(int tid, QueueTimeEvent *event);
   bool recordTaskBlockLive(int tid, TaskBlockEvent *event);
-  bool recordTaskBlockDeferred(int tid, TaskBlockEvent *event);
   bool recordTaskBlockAsync(int tid, TaskBlockEvent *event);
   bool taskBlockAsyncActive() const {
     return _task_block_drain_running.load(std::memory_order_acquire);

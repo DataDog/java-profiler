@@ -13,11 +13,8 @@
 #include "tsc.h"
 #include "wallClockCounters.h"
 
-static inline bool exceedsMinTaskBlockDuration(u64 start_ticks, u64 end_ticks) {
-  static const u64 kMinTaskBlockNanos = 1000000; // 1 ms
-  u64 min_ticks = (TSC::frequency() * kMinTaskBlockNanos) / 1000000000ULL;
-  return end_ticks > start_ticks && (end_ticks - start_ticks) >= min_ticks;
-}
+void initializeTaskBlockDurationThreshold();
+bool exceedsMinTaskBlockDuration(u64 start_ticks, u64 end_ticks);
 
 static inline bool hasTraceContext(const Context& ctx) {
   return ctx.spanId != 0;
@@ -121,7 +118,7 @@ static inline bool recordTaskBlockDeferredIfEligible(int tid, u64 start_ticks, u
   } else {
     attachTaskBlockSuppressionFields(tid, event);
   }
-  if (Profiler::instance()->recordTaskBlockDeferred(tid, &event)) {
+  if (Profiler::instance()->recordTaskBlockLive(tid, &event)) {
     WallClockCounters::incrementTaskBlockEmitted();
     return true;
   }

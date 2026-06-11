@@ -32,6 +32,7 @@
 #include "stackFrame.h"
 #include "stackWalker.h"
 #include "symbols.h"
+#include "taskBlockRecorder.h"
 #include "thread.h"
 #include "tsc.h"
 #include "utils.h"
@@ -812,10 +813,6 @@ bool Profiler::recordTaskBlockLive(int tid, TaskBlockEvent *event) {
   return recorded;
 }
 
-bool Profiler::recordTaskBlockDeferred(int tid, TaskBlockEvent *event) {
-  return recordTaskBlockLive(tid, event);
-}
-
 bool Profiler::recordTaskBlockAsync(int tid, TaskBlockEvent *event) {
   if (!_task_block_drain_running.load(std::memory_order_acquire)) {
     Counters::increment(TASK_BLOCK_QUEUE_DROPPED);
@@ -1533,6 +1530,7 @@ Error Profiler::start(Arguments &args, bool reset) {
     _libs->stopRefresher();
     return error;
   }
+  initializeTaskBlockDurationThreshold();
   startTaskBlockDrain();
   if ((_event_mask & EM_WALL) && args._wall_precheck) {
     Error native_io_error = NativeSocketInterposer::instance()->start();
