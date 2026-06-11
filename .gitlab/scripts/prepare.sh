@@ -22,13 +22,20 @@ if [ "${CI_PIPELINE_SOURCE}" == "push" ] || [ "${CI_PIPELINE_SOURCE}" == "trigge
       echo "CANCELLED=true" >> build.env
       exit 0
     fi
-    # Detect PR labels and export flags for downstream jobs
+    # Always write RUN_RELIABILITY to build.env so the dotenv artifact overrides
+    # the GitLab UI default (value: "true") for automated pipelines.
     if command -v jq >/dev/null 2>&1; then
       if echo "${API_RESPONSE}" | jq -e '[.[0].labels[].name] | any(. == "test:reliability")' >/dev/null 2>&1; then
         echo "RUN_RELIABILITY=true" >> build.env
+      else
+        echo "RUN_RELIABILITY=false" >> build.env
       fi
-    elif echo "${API_RESPONSE}" | grep -q '"test:reliability"'; then
-      echo "RUN_RELIABILITY=true" >> build.env
+    else
+      if echo "${API_RESPONSE}" | grep -q '"test:reliability"'; then
+        echo "RUN_RELIABILITY=true" >> build.env
+      else
+        echo "RUN_RELIABILITY=false" >> build.env
+      fi
     fi
   fi
 fi
