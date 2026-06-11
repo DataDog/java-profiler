@@ -26,8 +26,9 @@ fi
 if ! command -v pr-commenter >/dev/null 2>&1; then
   PLATFORM_DIR=$(mktemp -d)
   trap "rm -rf ${PLATFORM_DIR}" EXIT
-  git -c url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.ddbuild.io/DataDog/".insteadOf="https://github.com/DataDog/" \
-    clone --depth 1 --branch dd-trace-go https://github.com/DataDog/benchmarking-platform "${PLATFORM_DIR}"
+  GH_CLONE_TOKEN=$(dd-octo-sts token --scope DataDog/java-profiler --policy async-profiler-build.ci 2>/dev/null)
+  git clone --depth 1 --branch dd-trace-go \
+    "https://x-access-token:${GH_CLONE_TOKEN}@github.com/DataDog/benchmarking-platform" "${PLATFORM_DIR}"
   export PATH="${PLATFORM_DIR}/tools:${PATH}"
 fi
 
