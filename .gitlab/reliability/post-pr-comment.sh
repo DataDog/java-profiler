@@ -39,11 +39,12 @@ for key in $(compgen -v | grep -E '^REASON_.*X(jit|memory)$' | sort); do
   reason="${!key}"
   label="${key#REASON_}"
   rel_fail=$((rel_fail + 1))
+  detail=$(printf '%s' "${reason//\`/}" | tr ';' '\n')
   rel_failures="${rel_failures}
 <details><summary>❌ ${label//_/ }</summary>
 
 \`\`\`
-${reason//\`/}
+${detail}
 \`\`\`
 
 </details>"
@@ -53,11 +54,12 @@ for key in $(compgen -v | grep -E '^REASON_.*Xchaos$' | sort); do
   reason="${!key}"
   label="${key#REASON_}"
   chaos_fail=$((chaos_fail + 1))
+  detail=$(printf '%s' "${reason//\`/}" | tr ';' '\n')
   chaos_failures="${chaos_failures}
 <details><summary>❌ chaos: ${label//_/ }</summary>
 
 \`\`\`
-${reason//\`/}
+${detail}
 \`\`\`
 
 </details>"

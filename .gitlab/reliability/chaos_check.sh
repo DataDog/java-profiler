@@ -160,6 +160,14 @@ RC=$?
 echo "RC=$RC"
 
 if [ $RC -ne 0 ]; then
-  echo "FAIL:Chaos harness crashed (RC=$RC)" >&2
+  CRASH_MSG="Chaos harness crashed (RC=${RC})"
+  HS_ERR="${HERE}/../../hs_err.log"
+  if [ -f "${HS_ERR}" ]; then
+    SIG=$(grep -m1 '^siginfo:' "${HS_ERR}" 2>/dev/null | tr -d '\n' | cut -c1-120)
+    FRAME=$(grep -m1 'libjavaProfiler\|AsyncProfiler' "${HS_ERR}" 2>/dev/null | sed 's/^[[:space:]]*//' | tr -d '\n' | cut -c1-120)
+    [ -n "${SIG}" ]   && CRASH_MSG="${CRASH_MSG};${SIG}"
+    [ -n "${FRAME}" ] && CRASH_MSG="${CRASH_MSG};${FRAME}"
+  fi
+  echo "FAIL:${CRASH_MSG}" >&2
   exit 1
 fi
