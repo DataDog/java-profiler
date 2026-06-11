@@ -57,7 +57,7 @@ jobs:
               echo "enabled=false" >> $GITHUB_OUTPUT
             fi
           fi
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         if: steps.set_enabled.outputs.enabled == 'true'
       - name: Cache Gradle Wrapper Binaries
         if: steps.set_enabled.outputs.enabled == 'true'
@@ -115,6 +115,13 @@ jobs:
               echo "::warning::Cannot set vm.mmap_rnd_bits; falling back to setarch --addr-no-randomize"
               GRADLEW_PREFIX="setarch $(uname -m) --addr-no-randomize"
             fi
+          fi
+
+          # GraalVM pre-allocates fixed memory that conflicts with ASan's shadow range
+          # [0x00007fff7000-0x10007fff7fff]; vm.mmap_rnd_bits tuning does not help (google/sanitizers#856).
+          if [[ "${{ matrix.config }}" == "asan" && "${{ matrix.java_version }}" =~ graal ]]; then
+            echo "::notice::Skipping ASan for GraalVM (incompatible shadow memory ranges — google/sanitizers#856)"
+            exit 0
           fi
 
           MAX_ATTEMPTS=1
@@ -204,7 +211,7 @@ jobs:
           apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ clang git cppcheck jq cmake gtest-dev gmock tar binutils python3 >/dev/null
           # Install debug symbols for musl libc
           apk add musl-dbg
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - name: Cache Gradle Wrapper Binaries
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
@@ -336,7 +343,7 @@ jobs:
               echo "enabled=false" >> $GITHUB_OUTPUT
             fi
           fi
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         if: steps.set_enabled.outputs.enabled == 'true'
       - name: Cache Gradle Wrapper Binaries
         if: steps.set_enabled.outputs.enabled == 'true'
@@ -407,6 +414,13 @@ jobs:
               done
             ) &
             GDB_WATCHDOG_PID=$!
+          fi
+
+          # GraalVM pre-allocates fixed memory that conflicts with ASan's shadow range
+          # [0x00007fff7000-0x10007fff7fff]; vm.mmap_rnd_bits tuning does not help (google/sanitizers#856).
+          if [[ "${{ matrix.config }}" == "asan" && "${{ matrix.java_version }}" =~ graal ]]; then
+            echo "::notice::Skipping ASan for GraalVM (incompatible shadow memory ranges — google/sanitizers#856)"
+            exit 0
           fi
 
           MAX_ATTEMPTS=1
@@ -495,7 +509,7 @@ jobs:
        labels: arm-4core-linux-ubuntu24.04
      timeout-minutes: 180
      steps:
-       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
        - name: Cache Gradle Wrapper Binaries
          uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
          with:
