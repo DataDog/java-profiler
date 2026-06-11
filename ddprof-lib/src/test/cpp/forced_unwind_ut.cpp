@@ -171,6 +171,60 @@ TEST(ForcedUnwindTest, CleanupCallbackRunsOnPthreadExit) {
     EXPECT_EQ(reinterpret_cast<void*>(42), retval);
 }
 
+// ---------------------------------------------------------------------------
+
+static std::atomic<int> g_nr_cleanup_count{0};
+static std::atomic<bool> g_nr_past_run{false};
+
+static void* nr_routine(void*) { return nullptr; }
+
+static void nr_cleanup(void*) {
+    g_nr_cleanup_count.fetch_add(1, std::memory_order_relaxed);
+}
+
+static void* nr_thread(void*) {
+    g_nr_cleanup_count.store(0, std::memory_order_relaxed);
+    g_nr_past_run.store(false, std::memory_order_relaxed);
+    run_with_cleanup(nr_routine, nullptr, nr_cleanup, nullptr);
+    g_nr_past_run.store(true, std::memory_order_relaxed);
+    // Spin with a cancellation point so the main thread can probe whether
+    // __pthread_unregister_cancel took effect after run_with_cleanup returned.
+    while (true) {
+        pthread_testcancel();
+        usleep(50);
+    }
+}
+
+// Normal-return path (matches start_routine_wrapper on non-aarch64 glibc):
+// cleanup_fn is called once AND __pthread_unregister_cancel removes the buf.
+// Removing either call on this path is detected:
+//   - no cleanup_fn             → g_nr_cleanup_count stays 0
+//   - no __pthread_unregister_cancel → post-return cancel longjmps into the
+//     freed cancel_buf (UB: crash or g_nr_cleanup_count becomes 2)
+TEST(ForcedUnwindTest, CleanupCalledExactlyOnceOnNormalReturn) {
+    pthread_t t;
+    ASSERT_EQ(0, pthread_create(&t, nullptr, nr_thread, nullptr));
+
+    while (!g_nr_past_run.load(std::memory_order_relaxed)) {
+        usleep(100);
+    }
+    EXPECT_EQ(1, g_nr_cleanup_count.load())
+        << "cleanup_fn must be called once on the normal-return path of run_with_cleanup";
+
+    // Cancel the spinning thread.  If __pthread_unregister_cancel was not
+    // called, glibc still holds a pointer to run_with_cleanup's freed
+    // cancel_buf; the cancel would longjmp into garbage and either crash or
+    // fire nr_cleanup a second time (count == 2).
+    pthread_cancel(t);
+    void* retval;
+    ASSERT_EQ(0, pthread_join(t, &retval));
+
+    EXPECT_EQ(1, g_nr_cleanup_count.load())
+        << "__pthread_unregister_cancel must remove the buf so the "
+           "post-return cancel does not re-fire cleanup_fn";
+    EXPECT_EQ(PTHREAD_CANCELED, retval);
+}
+
 #endif  // __GLIBC__
 
 // ===========================================================================
