@@ -18,6 +18,7 @@
 #include "arguments.h"
 #include "vmEntry.h"
 
+#include <errno.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -396,6 +397,18 @@ Error Arguments::parse(const char *args) {
         msg = "nativemem must be >= 0";
       }
 
+      CASE("natsock")
+      if (value != NULL) {
+        _nativesocket_interval = parseUnits(value, NANOS);
+        if (_nativesocket_interval < 0) {
+          msg = "natsock interval must be >= 0";
+        } else {
+          _nativesocket = true;
+        }
+      } else {
+        _nativesocket = true;
+      }
+
       DEFAULT()
       if (_unknown_arg == NULL)
         _unknown_arg = arg;
@@ -479,7 +492,11 @@ const char *Arguments::expandFilePattern(const char *pattern) {
 
 long Arguments::parseUnits(const char *str, const Multiplier *multipliers) {
   char *end;
+  errno = 0;
   long result = strtol(str, &end, 0);
+  if (errno == ERANGE) {
+    return -1;
+  }
 
   char c = *end;
   if (c == 0) {
@@ -491,6 +508,9 @@ long Arguments::parseUnits(const char *str, const Multiplier *multipliers) {
 
   for (const Multiplier *m = multipliers; m->symbol; m++) {
     if (c == m->symbol) {
+      if (m->multiplier != 1 && (result > LONG_MAX / m->multiplier || result < LONG_MIN / m->multiplier)) {
+        return -1;
+      }
       return result * m->multiplier;
     }
   }
