@@ -161,7 +161,7 @@ jdk-integration-test:
 generate-reliability-child-pipeline:
   stage: reliability
   tags: ["arch:amd64"]
-  image: alpine
+  image: $PREPARE_IMAGE
   needs:
     - job: prepare:start
       artifacts: true
@@ -179,7 +179,7 @@ generate-reliability-child-pipeline:
       else
         cat > generated-reliability.yml << 'NOOP'
       skip-reliability:
-        image: alpine
+        image: registry.ddbuild.io/images/benchmarking-platform-tools-ubuntu:latest
         tags: ["arch:amd64"]
         script:
           - echo "Label test:reliability not set — skipping"
