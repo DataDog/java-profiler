@@ -47,6 +47,7 @@
 
 #include <atomic>
 #include <pthread.h>
+#include <setjmp.h>
 #include <unistd.h>
 
 // ===========================================================================

@@ -24,6 +24,7 @@
 #include <atomic>
 #include <pthread.h>
 #include <signal.h>
+#include <setjmp.h>
 #include <unistd.h>
 #include <vector>
 
