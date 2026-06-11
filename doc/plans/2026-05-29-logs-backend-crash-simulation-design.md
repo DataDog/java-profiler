@@ -164,7 +164,7 @@ overflows/UAF for Layer 2, complementing crash-on-signal.
 
 ### Layer 1 — ASan gtest (JDK 25, aarch64/glibc, 2026-05-29)
 
-Command: `./utils/run-docker-tests.sh --config=asan --gtest --jdk=25 --mount`
+Command: `./utils/run-containers-tests.sh --config=asan --gtest --jdk=25 --mount`
 
 Results:
 - `stress_threadLifecycle_ut` compiled and linked under ASan: **PASS**

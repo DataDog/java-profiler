@@ -60,6 +60,7 @@ void Libraries::refresh() {
   _dirty.store(false, std::memory_order_release);
   updateSymbols(false);
   LibraryPatcher::patch_sigaction();
+  LibraryPatcher::install_socket_hooks();
   if (MallocTracer::running()) {
     MallocTracer::installHooks();
   }

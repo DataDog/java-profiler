@@ -16,9 +16,9 @@
 This host is macOS/arm64; the test is `#ifdef __linux__` and the sanitizers are Linux-only.
 ALL build/run steps execute via the repo's Docker runner on **JDK 25**, which gives faithful
 Linux ASan/TSan:
-- Debug build + gtests: `./utils/run-docker-tests.sh --config=debug --gtest --jdk=25 --mount`
-- ASan: `./utils/run-docker-tests.sh --config=asan --gtest --jdk=25 --mount`
-- TSan: `./utils/run-docker-tests.sh --config=tsan --gtest --jdk=25 --mount`
+- Debug build + gtests: `./utils/run-containers-tests.sh --config=debug --gtest --jdk=25 --mount`
+- ASan: `./utils/run-containers-tests.sh --config=asan --gtest --jdk=25 --mount`
+- TSan: `./utils/run-containers-tests.sh --config=tsan --gtest --jdk=25 --mount`
 - Interactive iteration: add `--shell` to drop into the container and run the built
   `*_stress_threadLifecycle_ut*` binary directly with `--gtest_filter=StressThreadLifecycle.*`.
 

@@ -53,6 +53,7 @@ enum ASGCT_CallFrameType {
   // MethodInfo collapses across distinct Symbol* addresses even though
   // the CallTrace itself does not.
   BCI_VTABLE_RECEIVER = -21,
+  BCI_NATIVE_SOCKET = -22,       // native socket I/O sample (bytes stored in counter)
 };
 
 // See hotspot/src/share/vm/prims/forte.cpp
