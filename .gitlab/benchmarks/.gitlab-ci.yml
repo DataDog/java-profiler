@@ -17,7 +17,12 @@ variables:
   rules:
     - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
       when: never
-    - if: '$CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "pipeline"'
+    - if: '$CI_PIPELINE_SOURCE == "trigger" && $RUN_BENCHMARKS == "true"'
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "trigger"'
+      when: manual
+      allow_failure: true
+    - if: '$CI_PIPELINE_SOURCE == "pipeline"'
       when: on_success
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual

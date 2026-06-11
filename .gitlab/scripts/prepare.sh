@@ -27,8 +27,16 @@ if [ "${CI_PIPELINE_SOURCE}" == "push" ] || [ "${CI_PIPELINE_SOURCE}" == "trigge
       if echo "${API_RESPONSE}" | jq -e '[.[0].labels[].name] | any(. == "test:reliability")' >/dev/null 2>&1; then
         echo "RUN_RELIABILITY=true" >> build.env
       fi
-    elif echo "${API_RESPONSE}" | grep -q '"test:reliability"'; then
-      echo "RUN_RELIABILITY=true" >> build.env
+      if echo "${API_RESPONSE}" | jq -e '[.[0].labels[].name] | any(. == "test:benchmark")' >/dev/null 2>&1; then
+        echo "RUN_BENCHMARKS=true" >> build.env
+      fi
+    else
+      if echo "${API_RESPONSE}" | grep -q '"test:reliability"'; then
+        echo "RUN_RELIABILITY=true" >> build.env
+      fi
+      if echo "${API_RESPONSE}" | grep -q '"test:benchmark"'; then
+        echo "RUN_BENCHMARKS=true" >> build.env
+      fi
     fi
   fi
 fi

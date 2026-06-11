@@ -129,6 +129,8 @@ jobs:
     outputs:
       configurations: ${{ steps.compute.outputs.configurations }}
       run_fuzz: ${{ steps.compute.outputs.run_fuzz }}
+      run_reliability: ${{ steps.compute.outputs.run_reliability }}
+      run_benchmark: ${{ steps.compute.outputs.run_benchmark }}
     steps:
       - name: Debounce label events
         if: github.event.action == 'labeled'
@@ -161,8 +163,20 @@ jobs:
             else
               echo "run_fuzz=false" >> $GITHUB_OUTPUT
             fi
+            if echo "$labels" | grep -Fq "test:reliability"; then
+              echo "run_reliability=true" >> $GITHUB_OUTPUT
+            else
+              echo "run_reliability=false" >> $GITHUB_OUTPUT
+            fi
+            if echo "$labels" | grep -Fq "test:benchmark"; then
+              echo "run_benchmark=true" >> $GITHUB_OUTPUT
+            else
+              echo "run_benchmark=false" >> $GITHUB_OUTPUT
+            fi
           else
             echo "run_fuzz=false" >> $GITHUB_OUTPUT
+            echo "run_reliability=false" >> $GITHUB_OUTPUT
+            echo "run_benchmark=false" >> $GITHUB_OUTPUT
           fi
 
           configs="$configs]"
@@ -236,3 +250,75 @@ jobs:
         with:
           name: fuzz-crashes
           path: ddprof-lib/fuzz/build/fuzz-crashes/
+
+  # Triggers the GitLab pipeline when test:reliability or test:benchmark labels
+  # are added. GitLab handles the actual execution and posts results back as PR
+  # comments via post-pr-comment.sh scripts.
+  trigger-gitlab-tests:
+    needs: [check-for-pr, compute-configurations]
+    if: >-
+      needs.check-for-pr.outputs.skip != 'true' &&
+      (needs.compute-configurations.outputs.run_reliability == 'true' || needs.compute-configurations.outputs.run_benchmark == 'true') &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.fork == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: Trigger GitLab pipeline
+        id: trigger
+        env:
+          GITLAB_TRIGGER_TOKEN: ${{ secrets.GITLAB_TRIGGER_TOKEN }}
+          GITLAB_PROJECT_ID: ${{ secrets.GITLAB_PROJECT_ID }}
+        run: |
+          if [[ -z "$GITLAB_TRIGGER_TOKEN" || -z "$GITLAB_PROJECT_ID" ]]; then
+            echo "::warning::GITLAB_TRIGGER_TOKEN or GITLAB_PROJECT_ID not configured; skipping"
+            exit 0
+          fi
+          args=(
+            -F "token=$GITLAB_TRIGGER_TOKEN"
+            -F "ref=${{ github.head_ref }}"
+          )
+          if [[ "${{ needs.compute-configurations.outputs.run_reliability }}" == "true" ]]; then
+            args+=(-F "variables[RUN_RELIABILITY]=true")
+          fi
+          if [[ "${{ needs.compute-configurations.outputs.run_benchmark }}" == "true" ]]; then
+            args+=(-F "variables[RUN_BENCHMARKS]=true")
+          fi
+          response=$(curl --fail -sS \
+            "https://gitlab.ddbuild.io/api/v4/projects/${GITLAB_PROJECT_ID}/trigger/pipeline" \
+            "${args[@]}")
+          echo "pipeline_id=$(echo "$response" | jq -r '.id')" >> "$GITHUB_OUTPUT"
+          echo "pipeline_url=$(echo "$response" | jq -r '.web_url')" >> "$GITHUB_OUTPUT"
+
+      - name: Post trigger confirmation
+        if: steps.trigger.outputs.pipeline_url != ''
+        run: |
+          tests=""
+          if [[ "${{ needs.compute-configurations.outputs.run_reliability }}" == "true" ]]; then
+            tests="${tests:+$tests, }reliability & chaos"
+          fi
+          if [[ "${{ needs.compute-configurations.outputs.run_benchmark }}" == "true" ]]; then
+            tests="${tests:+$tests, }benchmarks"
+          fi
+          {
+            echo "## ⚙️ GitLab Tests Triggered"
+            echo ""
+            echo "Running: **${tests}**"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| **Pipeline** | [View on GitLab](${{ steps.trigger.outputs.pipeline_url }}) |"
+            echo "| **Commit** | \`${{ github.sha }}\` |"
+            echo ""
+            echo "_Results will be posted as a separate comment when complete._"
+          } > gitlab-triggered.md
+      - name: Post PR comment
+        if: steps.trigger.outputs.pipeline_url != ''
+        uses: ./.github/actions/upsert-pr-comment
+        with:
+          body-file: gitlab-triggered.md
+          comment-id: ci-gitlab-trigger
