@@ -118,24 +118,29 @@ extern "C" {
 }
 #endif
 
-__attribute__((noinline, no_stack_protector))
-static void run_with_cleanup(func_start_routine routine, void* params) {
+__attribute__((visibility("hidden"), noinline, no_stack_protector))
+void run_with_cleanup(func_start_routine routine, void* params,
+                      void (*cleanup_fn)(void*), void* cleanup_arg) {
 #ifdef __GLIBC__
-    __pthread_unwind_buf_t cancel_buf;
+    __pthread_unwind_buf_t cancel_buf = {};
+    // Uses __sigsetjmp/longjmp which only intercepts _Unwind_ForcedUnwind, but not
+    // regular C++ exception from routine(params), which should be handled by JVM
     if (__builtin_expect(
-            __sigsetjmp((struct __jmp_buf_tag*)(void*)cancel_buf.__cancel_jmp_buf, 0), 0)) {
+            // set __sigsetjmp's savemask=1 (the second parameter) to match glibc's internal
+            //usage and ensure the signal mask is saved and restored across the setjmp/longjmp pair.
+            __sigsetjmp((struct __jmp_buf_tag*)(void*)cancel_buf.__cancel_jmp_buf, 0), 1)) {
         // Reached via longjmp from glibc's stop function when pthread_exit
         // (or cancellation) fires.  Run cleanup and continue unwinding.
-        cleanup_unregister(nullptr);
+        cleanup_fn(cleanup_arg);
         __pthread_unwind_next(&cancel_buf);
     }
     __pthread_register_cancel(&cancel_buf);
     routine(params);
     __pthread_unregister_cancel(&cancel_buf);
-    cleanup_unregister(nullptr);
+    cleanup_fn(cleanup_arg);
 #else
     // musl / non-glibc: pthread_cleanup_push uses the C/setjmp form, no RAII.
-    pthread_cleanup_push(cleanup_unregister, nullptr);
+    pthread_cleanup_push(cleanup_fn, cleanup_arg);
     routine(params);
     pthread_cleanup_pop(1);
 #endif
@@ -219,7 +224,7 @@ static void* start_routine_wrapper_spec(void* args) {
     // cleanup_unregister fires on pthread_exit() or cancellation from within
     // routine(params).  The push/pop pair lives inside run_with_cleanup so
     // that `struct __ptcb` does not land in this frame's DEOPT-corruption zone.
-    run_with_cleanup(routine, params);
+    run_with_cleanup(routine, params, cleanup_unregister, nullptr);
     // pthread_exit instead of 'return': the saved LR in this frame is corrupted
     // by DEOPT PACKING; returning would jump to a garbage address.
     pthread_exit(nullptr);
@@ -273,7 +278,7 @@ static void* start_routine_wrapper(void* args) {
         Profiler::registerThread(ProfiledThread::currentTid());
     }
     // Use POSIX cleanup instead of C++ RAII to handle pthread_exit(): see run_with_cleanup.
-    run_with_cleanup(routine, params);
+    run_with_cleanup(routine, params, cleanup_unregister, nullptr);
     return nullptr;
 }
 

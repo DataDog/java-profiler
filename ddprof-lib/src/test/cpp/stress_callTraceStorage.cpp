@@ -2034,17 +2034,19 @@ TEST_F(StressTestSuite, HashTableSpinWaitEdgeCasesTest) {
 // correctness across expansion boundaries independently of memory ordering;
 // it catches logic regressions in all build configurations.
 TEST_F(StressTestSuite, FindCallTraceAtomicReadRaceTest) {
+
+#define HAS_ASAN 0
 #if defined(__SANITIZE_THREAD__)
-    #define USE_ASAN 1
-#else
-    #if defined(__has_feature)
-        #if __has_feature(thread_sanitizer)
-            #define USA_ASAN 1
-        #endif
+    #undef HAS_ASAN
+    #define HAS_ASAN 1
+#elif defined(__has_feature)
+    #if __has_feature(thread_sanitizer)
+        #undef HAS_ASAN
+        #define HAS_ASAN 1
     #endif
 #endif
 
-#if !USA_ASAN
+#if !HAS_ASAN
     GTEST_SKIP() << "TSan-only race regression: re-run with -fsanitize=thread";
 #endif
 

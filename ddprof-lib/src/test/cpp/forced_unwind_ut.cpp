@@ -55,30 +55,8 @@
 // ===========================================================================
 #ifdef __GLIBC__
 
-// Redeclare glibc internals (hidden behind #ifndef __cplusplus in <pthread.h>).
-extern "C" {
-    extern void __pthread_register_cancel(__pthread_unwind_buf_t*);
-    extern void __pthread_unregister_cancel(__pthread_unwind_buf_t*);
-    [[noreturn]] extern void __pthread_unwind_next(__pthread_unwind_buf_t*);
-}
-
-// Helper: run `fn(arg)` with a glibc C-form cleanup handler that calls
-// `cleanup(cleanup_arg)` if the thread is canceled or calls pthread_exit
-// before fn returns.  Mirrors run_with_cleanup in libraryPatcher_linux.cpp.
-static void run_with_cancel_handler(
-        void (*fn)(void*), void* arg,
-        void (*cleanup)(void*), void* cleanup_arg) {
-    __pthread_unwind_buf_t cancel_buf;
-    if (__builtin_expect(
-            __sigsetjmp((struct __jmp_buf_tag*)(void*)cancel_buf.__cancel_jmp_buf, 0), 0)) {
-        cleanup(cleanup_arg);
-        __pthread_unwind_next(&cancel_buf);
-    }
-    __pthread_register_cancel(&cancel_buf);
-    fn(arg);
-    __pthread_unregister_cancel(&cancel_buf);
-    cleanup(cleanup_arg);
-}
+// Production function under test — defined in libraryPatcher_linux.cpp.
+extern "C++" void run_with_cleanup(void* (*)(void*), void*, void(*)(void*), void*);
 
 // ---------------------------------------------------------------------------
 
@@ -88,7 +66,7 @@ static void bare_cleanup(void*) {
     g_bare_cleanup_called.store(true, std::memory_order_relaxed);
 }
 
-static void bare_spin(void*) {
+static void* bare_spin(void*) {
     while (true) {
         pthread_testcancel();
         usleep(100);
@@ -97,7 +75,7 @@ static void bare_spin(void*) {
 
 static void* bare_cancel_thread(void*) {
     g_bare_cleanup_called.store(false, std::memory_order_relaxed);
-    run_with_cancel_handler(bare_spin, nullptr, bare_cleanup, nullptr);
+    run_with_cleanup(bare_spin, nullptr, bare_cleanup, nullptr);
     return nullptr;
 }
 
@@ -128,7 +106,7 @@ static void profiled_cleanup(void*) {
     g_pt_release_called.store(true, std::memory_order_relaxed);
 }
 
-static void profiled_spin(void*) {
+static void* profiled_spin(void*) {
     while (true) {
         pthread_testcancel();
         usleep(100);
@@ -139,7 +117,7 @@ static void* profiled_cancel_thread(void*) {
     g_pt_cleanup_called.store(false, std::memory_order_relaxed);
     g_pt_release_called.store(false, std::memory_order_relaxed);
     ProfiledThread::initCurrentThread();
-    run_with_cancel_handler(profiled_spin, nullptr, profiled_cleanup, nullptr);
+    run_with_cleanup(profiled_spin, nullptr, profiled_cleanup, nullptr);
     return nullptr;
 }
 
@@ -170,13 +148,13 @@ static void exit_cleanup(void*) {
     g_exit_cleanup_called.store(true, std::memory_order_relaxed);
 }
 
-static void exit_fn(void*) {
+static void* exit_fn(void*) {
     pthread_exit(reinterpret_cast<void*>(42));
 }
 
 static void* exit_thread(void*) {
     g_exit_cleanup_called.store(false, std::memory_order_relaxed);
-    run_with_cancel_handler(exit_fn, nullptr, exit_cleanup, nullptr);
+    run_with_cleanup(exit_fn, nullptr, exit_cleanup, nullptr);
     return nullptr;
 }
 
