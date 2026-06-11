@@ -7,11 +7,13 @@
 
 #ifdef __linux__
 #include "counters.h"
-#include "profiler.h"
 #include "guards.h"
+#include "nativeSocketSampler.h"
+#include "profiler.h"
 
 #include <cassert>
 #include <dlfcn.h>
+#include <mutex>
 #include <limits.h>
 #include <string.h>
 #include <stdlib.h>
@@ -24,6 +26,9 @@ PatchEntry LibraryPatcher::_patched_entries[MAX_NATIVE_LIBS];
 int        LibraryPatcher::_size = 0;
 PatchEntry LibraryPatcher::_sigaction_entries[MAX_NATIVE_LIBS];
 int        LibraryPatcher::_sigaction_size = 0;
+PatchEntry LibraryPatcher::_socket_entries[4 * MAX_NATIVE_LIBS];
+int        LibraryPatcher::_socket_size = 0;
+std::atomic<bool> LibraryPatcher::_socket_active{false};
 
 void LibraryPatcher::initialize() {
   if (_profiler_name == nullptr) {
@@ -380,6 +385,183 @@ void LibraryPatcher::patch_sigaction() {
       patch_sigaction_in_library(lib);
     }
   }
+}
+
+bool LibraryPatcher::patch_socket_functions() {
+  // Resolve the real libc symbols ONCE at first call and cache them.  On a
+  // restart cycle (stop()→start()) we MUST NOT re-resolve via RTLD_NEXT: if
+  // any GOT slot in another DSO was missed during unpatch (e.g. its CodeCache
+  // disappeared), dlsym(RTLD_NEXT) could now resolve to the still-installed
+  // hook in that other DSO's GOT — the assignment to _orig_* would become
+  // self-referential and the next hook call would infinite-loop.
+  //
+  // RTLD_NEXT finds the first definition after this DSO in load order,
+  // bypassing unresolved lazy-binding stubs that would otherwise trigger
+  // _dl_runtime_resolve and silently overwrite the hook in the GOT.
+  // May resolve to an LD_PRELOAD interposer (e.g. libasan) — intentional.
+  // On musl, RTLD_NEXT returns NULL when libc is loaded before this DSO in the
+  // link map; fall back to RTLD_DEFAULT which finds symbols globally.
+  // The four statics and the `cached` flag are written once and then
+  // read-only.  They live outside the ExclusiveLockGuard intentionally (dlsym
+  // must not be called while holding _lock because dlsym may acquire the
+  // linker lock, which is also acquired during dlopen — inverting the order
+  // would deadlock).  Guard the one-time init with a dedicated once_flag so
+  // that concurrent callers serialise on the dlsym block rather than racing
+  // to write the statics.
+  static NativeSocketSampler::send_fn  cached_send  = nullptr;
+  static NativeSocketSampler::recv_fn  cached_recv  = nullptr;
+  static NativeSocketSampler::write_fn cached_write = nullptr;
+  static NativeSocketSampler::read_fn  cached_read  = nullptr;
+  static std::once_flag dlsym_once;
+  std::call_once(dlsym_once, [&]() {
+    cached_send   = (NativeSocketSampler::send_fn)  dlsym(RTLD_NEXT, "send");
+    if (!cached_send)  cached_send  = (NativeSocketSampler::send_fn)  dlsym(RTLD_DEFAULT, "send");
+    cached_recv   = (NativeSocketSampler::recv_fn)  dlsym(RTLD_NEXT, "recv");
+    if (!cached_recv)  cached_recv  = (NativeSocketSampler::recv_fn)  dlsym(RTLD_DEFAULT, "recv");
+    cached_write  = (NativeSocketSampler::write_fn) dlsym(RTLD_NEXT, "write");
+    if (!cached_write) cached_write = (NativeSocketSampler::write_fn) dlsym(RTLD_DEFAULT, "write");
+    cached_read   = (NativeSocketSampler::read_fn)  dlsym(RTLD_NEXT, "read");
+    if (!cached_read)  cached_read  = (NativeSocketSampler::read_fn)  dlsym(RTLD_DEFAULT, "read");
+    // If dlsym resolves to one of our own hooks the linker is already serving
+    // the patched copy.  Null the pointers so the early-return below fires.
+    if (cached_send  == &NativeSocketSampler::send_hook  ||
+        cached_recv  == &NativeSocketSampler::recv_hook  ||
+        cached_write == &NativeSocketSampler::write_hook ||
+        cached_read  == &NativeSocketSampler::read_hook) {
+      TEST_LOG("patch_socket_functions dlsym returned hook address; refusing to self-reference");
+      cached_send = nullptr; cached_recv = nullptr;
+      cached_write = nullptr; cached_read = nullptr;
+    }
+  });
+  auto pre_send  = cached_send;
+  auto pre_recv  = cached_recv;
+  auto pre_write = cached_write;
+  auto pre_read  = cached_read;
+  TEST_LOG("patch_socket_functions dlsym send=%p recv=%p write=%p read=%p",
+           (void*)pre_send, (void*)pre_recv, (void*)pre_write, (void*)pre_read);
+  if (!pre_send || !pre_recv || !pre_write || !pre_read) {
+    TEST_LOG("patch_socket_functions EARLY RETURN: at least one dlsym returned NULL");
+    return false;
+  }
+
+  const CodeCacheArray& native_libs = Libraries::instance()->native_libs();
+  int num_of_libs = native_libs.count();
+
+  // Pre-resolve all library paths before acquiring the lock: realpath() may
+  // block on I/O and must not be called while holding _lock.
+  // We only need the is-self flag per library, so avoid a huge stack allocation.
+  static_assert(MAX_NATIVE_LIBS > 0, "MAX_NATIVE_LIBS must be positive");
+  bool is_self[MAX_NATIVE_LIBS];
+  int capped = (num_of_libs <= MAX_NATIVE_LIBS) ? num_of_libs : MAX_NATIVE_LIBS;
+  for (int index = 0; index < capped; index++) {
+    CodeCache* lib = native_libs.at(index);
+    is_self[index] = false;
+    if (lib == nullptr || lib->name() == nullptr) continue;
+    char path[PATH_MAX];
+    char* rp = realpath(lib->name(), path);
+    is_self[index] = (rp != nullptr && strcmp(rp, _profiler_name) == 0);
+  }
+
+  ExclusiveLockGuard locker(&_lock);
+  // Re-check under the lock only on re-entry (when hooks are already installed):
+  // a concurrent unpatch_socket_functions() may have cleared _socket_active
+  // between the acquire-load in install_socket_hooks() and this lock acquisition.
+  // The initial call from NativeSocketSampler::start() always has _socket_size == 0
+  // and must proceed regardless of _socket_active.
+  if (_socket_size > 0 && !_socket_active.load(std::memory_order_relaxed)) {
+    return false;
+  }
+  // Only assign orig pointers on the first call (no hooks installed yet).
+  // On re-entry via dlopen, RTLD_NEXT would resolve to the hook itself.
+  if (_socket_size == 0) {
+    NativeSocketSampler::setOriginalFunctions(pre_send, pre_recv, pre_write, pre_read);
+  }
+  // TODO: hook table (name + hook fn) should be owned by NativeSocketSampler;
+  // LibraryPatcher should iterate an externally-provided table rather than
+  // hardcoding the four socket hooks here.
+  auto try_patch_slot = [&](void** location, void* hook_fn, const char* fn_name, CodeCache* lib) {
+    if (location == nullptr) return;
+    for (int i = 0; i < _socket_size; i++) {
+      if (_socket_entries[i]._location == location) return;
+    }
+    if (_socket_size < 4 * MAX_NATIVE_LIBS) {
+      void* orig = (void*)__atomic_load_n(location, __ATOMIC_ACQUIRE);
+      _socket_entries[_socket_size]._lib      = lib;
+      _socket_entries[_socket_size]._location = location;
+      _socket_entries[_socket_size]._func     = orig;
+      __atomic_store_n(location, hook_fn, __ATOMIC_RELEASE);
+      _socket_size++;
+    } else {
+      Log::warn("socket patch table full (%d slots), skipping %s in %s", 4 * MAX_NATIVE_LIBS, fn_name, lib ? lib->name() : "?");
+    }
+  };
+  for (int index = 0; index < capped; index++) {
+    CodeCache* lib = native_libs.at(index);
+    if (lib == nullptr) continue;
+    if (lib->name() == nullptr) continue;
+
+    if (is_self[index]) {
+      continue;
+    }
+
+    void** send_location  = (void**)lib->findImport(im_send);
+    void** recv_location  = (void**)lib->findImport(im_recv);
+    void** write_location = (void**)lib->findImport(im_write);
+    void** read_location  = (void**)lib->findImport(im_read);
+
+    if (send_location == nullptr && recv_location == nullptr
+        && write_location == nullptr && read_location == nullptr) continue;
+
+    TEST_LOG("patch_socket_functions PATCH %s send=%p recv=%p write=%p read=%p",
+             lib->name(), (void*)send_location, (void*)recv_location,
+             (void*)write_location, (void*)read_location);
+
+    // The _lock is held during patching to protect _socket_entries and _socket_size.
+    // Concurrent dlopen_hook calls serialize via the same lock in install_socket_hooks(),
+    // ensuring slot_patched checks and updates are atomic with respect to each other.
+    try_patch_slot(send_location,  (void*)NativeSocketSampler::send_hook,  "send",  lib);
+    try_patch_slot(recv_location,  (void*)NativeSocketSampler::recv_hook,  "recv",  lib);
+    try_patch_slot(write_location, (void*)NativeSocketSampler::write_hook, "write", lib);
+    try_patch_slot(read_location,  (void*)NativeSocketSampler::read_hook,  "read",  lib);
+  }
+
+  TEST_LOG("patch_socket_functions DONE total_slots=%d num_libs_scanned=%d",
+           _socket_size, capped);
+  _socket_active.store(true, std::memory_order_release);
+  return true;
+}
+
+void LibraryPatcher::unpatch_socket_functions() {
+  ExclusiveLockGuard locker(&_lock);
+  // Clear _socket_active FIRST so that any concurrent install_socket_hooks()
+  // thread that already passed the acquire-load on _socket_active (before we
+  // acquired the lock) will see false when it checks again after acquiring the
+  // lock — preventing it from re-patching slots we are about to restore.
+  // Hooks that already entered the hook body before this store are benign: they
+  // hold no lock and will complete normally using the still-valid orig pointers.
+  //
+  // ASSUMPTION (dlclose UAF): we write through _socket_entries[i]._location
+  // without checking that the owning library is still mapped.  If a patched
+  // DSO were actually unmapped between patch and unpatch, this store would
+  // corrupt freed memory or SEGV.  In practice this is benign because (a) the
+  // host JVM does not dlclose libc-importing DSOs, (b) glibc's dlclose
+  // refcounts and only unmaps when the final reference is dropped, and
+  // (c) the same risk is already accepted by unpatch_libraries() and
+  // unpatch_socket_functions has the same trust model.  If a host that
+  // routinely unmaps libc-importing libraries is ever supported, gate each
+  // store on a /proc/self/maps lookup or hold a dlopen handle on each lib
+  // for the patch lifetime.
+  _socket_active.store(false, std::memory_order_release);
+  TEST_LOG("unpatch_socket_functions restoring %d slot(s)", _socket_size);
+  for (int index = 0; index < _socket_size; index++) {
+    __atomic_store_n(_socket_entries[index]._location, _socket_entries[index]._func, __ATOMIC_RELEASE);
+  }
+  _socket_size = 0;
+  // _orig_send/_orig_recv/_orig_write/_orig_read are intentionally NOT nulled.
+  // In-flight hook invocations that entered before PLT entries were restored
+  // above may still be executing and will dereference these pointers.
+  // They remain valid (pointing to the real libc functions) until the next
+  // patch_socket_functions() call.
 }
 
 #endif // __linux__

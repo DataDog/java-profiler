@@ -22,7 +22,8 @@ int JVMSupport::walkJavaStack(StackWalkRequest& request) {
     } else if (VM::isOpenJ9() || VM::isZing()) {
         assert(request.event_type == BCI_CPU ||
                request.event_type == BCI_WALL ||
-               request.event_type == BCI_NATIVE_MALLOC);
+               request.event_type == BCI_NATIVE_MALLOC ||
+               request.event_type == BCI_NATIVE_SOCKET);
         return asyncGetCallTrace(request.frames, request.max_depth, request.ucontext);
     }
     assert(false && "Unsupported JVM");
