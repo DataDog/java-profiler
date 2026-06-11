@@ -279,7 +279,7 @@ static std::atomic<bool> g_t07_release_ran{false};
 //
 // Signal handler save/restore is done manually (plain struct sigaction, no
 // destructor) so there is nothing in the LSDA for this frame.
-static void *t07_body(void *) {
+__attribute__((noinline, no_stack_protector)) static void *t07_body(void *) {
   g_t07_cleanup_ran.store(false, std::memory_order_relaxed);
   g_t07_release_ran.store(false, std::memory_order_relaxed);
 
@@ -291,7 +291,7 @@ static void *t07_body(void *) {
 
   ProfiledThread::initCurrentThread();
 
-  __pthread_unwind_buf_t cancel_buf;
+  __pthread_unwind_buf_t cancel_buf = {};
   if (__builtin_expect(
           __sigsetjmp((struct __jmp_buf_tag*)(void*)cancel_buf.__cancel_jmp_buf, 0), 0)) {
     // Restore handler before continuing forced unwind (no RAII to do it for us).

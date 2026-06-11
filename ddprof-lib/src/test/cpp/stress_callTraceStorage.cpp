@@ -2035,18 +2035,18 @@ TEST_F(StressTestSuite, HashTableSpinWaitEdgeCasesTest) {
 // it catches logic regressions in all build configurations.
 TEST_F(StressTestSuite, FindCallTraceAtomicReadRaceTest) {
 
-#define HAS_ASAN 0
+#define HAS_TSAN 0
 #if defined(__SANITIZE_THREAD__)
-    #undef HAS_ASAN
-    #define HAS_ASAN 1
+    #undef HAS_TSAN
+    #define HAS_TSAN 1
 #elif defined(__has_feature)
     #if __has_feature(thread_sanitizer)
-        #undef HAS_ASAN
-        #define HAS_ASAN 1
+        #undef HAS_TSAN
+        #define HAS_TSAN 1
     #endif
 #endif
 
-#if !HAS_ASAN
+#if !HAS_TSAN
     GTEST_SKIP() << "TSan-only race regression: re-run with -fsanitize=thread";
 #endif
 

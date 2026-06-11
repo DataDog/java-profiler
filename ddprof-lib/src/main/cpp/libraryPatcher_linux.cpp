@@ -126,9 +126,9 @@ void run_with_cleanup(func_start_routine routine, void* params,
     // Uses __sigsetjmp/longjmp which only intercepts _Unwind_ForcedUnwind, but not
     // regular C++ exception from routine(params), which should be handled by JVM
     if (__builtin_expect(
-            // set __sigsetjmp's savemask=1 (the second parameter) to match glibc's internal
-            //usage and ensure the signal mask is saved and restored across the setjmp/longjmp pair.
-            __sigsetjmp((struct __jmp_buf_tag*)(void*)cancel_buf.__cancel_jmp_buf, 0), 1)) {
+            // set __sigsetjmp's savemask=0 (the second parameter, noting that the signal mask is NOT 
+            // saved/restored, which is correct because the cancel mechanism does not depend on signal mask state.
+            __sigsetjmp((struct __jmp_buf_tag*)(void*)cancel_buf.__cancel_jmp_buf, 0), 0)) {
         // Reached via longjmp from glibc's stop function when pthread_exit
         // (or cancellation) fires.  Run cleanup and continue unwinding.
         cleanup_fn(cleanup_arg);
@@ -223,10 +223,14 @@ static void* start_routine_wrapper_spec(void* args) {
     init_tls_and_register();
     // cleanup_unregister fires on pthread_exit() or cancellation from within
     // routine(params).  The push/pop pair lives inside run_with_cleanup so
-    // that `struct __ptcb` does not land in this frame's DEOPT-corruption zone.
+    // that __pthread_unwind_buf_t (glibc) / struct __ptcb (musl) does not land
+    // in this frame's DEOPT-corruption zone.
     run_with_cleanup(routine, params, cleanup_unregister, nullptr);
     // pthread_exit instead of 'return': the saved LR in this frame is corrupted
     // by DEOPT PACKING; returning would jump to a garbage address.
+    // cleanup_unregister has already run via run_with_cleanup’s normal return path;
+    // TLS is cleared. pthread_exit triggers a second unwind with no registered cancel
+    // handler — safe because currentSignalSafe() returns null.
     pthread_exit(nullptr);
     __builtin_unreachable();
 }
