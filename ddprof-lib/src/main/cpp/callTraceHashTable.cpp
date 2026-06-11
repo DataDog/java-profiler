@@ -275,6 +275,7 @@ CallTrace *CallTraceHashTable::findCallTrace(LongHashTable *table, u64 hash) {
 }
 
 void CallTraceHashTable::expandTableIfNeeded(LongHashTable* table) {
+
     u32 size = table->size();
     u32 capacity = table->capacity();
 
