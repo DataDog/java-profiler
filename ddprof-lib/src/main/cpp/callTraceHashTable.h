@@ -8,6 +8,7 @@
 
 #include "arch.h"
 #include "linearAllocator.h"
+#include "spinLock.h"
 #include "vmEntry.h"
 #include <unordered_set>
 #include <atomic>
@@ -53,11 +54,13 @@ struct CallTraceSample {
 // Forward declaration for circular dependency
 class CallTraceStorage;
 
-class CallTraceHashTable {
+class alignas(alignof(SpinLock)) CallTraceHashTable {
 public:
   static CallTrace _overflow_trace;
 
 private:
+  SpinLock _expansionLock;
+
   std::atomic<u64> _instance_id;  // 64-bit instance ID for this hash table - atomic for thread-safe access
   CallTraceStorage* _parent_storage;  // Parent storage for RefCountGuard access
 

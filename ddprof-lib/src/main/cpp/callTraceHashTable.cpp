@@ -275,17 +275,19 @@ CallTrace *CallTraceHashTable::findCallTrace(LongHashTable *table, u64 hash) {
 }
 
 void CallTraceHashTable::expandTableIfNeeded(LongHashTable* table) {
+
     u32 size = table->size();
     u32 capacity = table->capacity();
+    // No need to expand
+    if (size < capacity * 3 / 4) {
+      return;
+    }
 
-    // EXPANSION LOGIC: Check if 75% capacity reached after incrementing size
-    if (size >= capacity * 3 / 4) {
+    ExclusiveLockGuard locker(&_expansionLock);
+    if (table == _table) {
       // Allocate new table with double capacity using LinearAllocator
       LongHashTable* new_table = LongHashTable::allocate(table, capacity * 2, &_allocator);
-      if (new_table != nullptr) {
-        // Atomic table swap - only one thread succeeds
-        __atomic_compare_exchange_n(&_table, &table, new_table, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
-      }
+      __atomic_store_n(&_table, new_table, __ATOMIC_RELEASE);
     }
 }
 
