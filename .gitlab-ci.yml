@@ -1,3 +1,12 @@
+spec:
+  inputs:
+    RUN_RELIABILITY:
+      description: "Run reliability and chaos tests (normally controlled by the test:reliability PR label)"
+      default: "true"
+      options:
+        - "true"
+        - "false"
+
 image: alpine
 
 variables:
@@ -8,9 +17,9 @@ variables:
   FORCE_BUILD:
     value: ""
     description: "Force build even if no new commits (any non-empty value)"
-  RUN_RELIABILITY:
-    value: "true"
-    description: "Run reliability and chaos tests (overridden to false by prepare.sh when test:reliability label is absent)"
+  # Expose the spec.inputs value as a regular env var for job scripts.
+  # prepare.sh (via dotenv artifact) overrides this for automated pipelines.
+  RUN_RELIABILITY: $[[ inputs.RUN_RELIABILITY ]]
   MAVEN_REPOSITORY_PROXY: "https://depot-read-api-java.us1.ddbuild.io/magicmirror/magicmirror/@current/"
 
 default:
