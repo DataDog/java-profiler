@@ -323,10 +323,14 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) 
   if (current == nullptr) {
     return;
   }
-  current->parkEnter(TSC::ticks());
+  bool first_park = current->parkEnter(TSC::ticks());
   ThreadFilter *tf = Profiler::instance()->threadFilter();
-  if (tf->enabled()) {
-    tf->enterBlockedRun(current->filterSlotId(), OSThreadState::CONDVAR_WAIT);
+  if (first_park && tf->enabled()) {
+    ThreadFilter::SlotID slot_id = current->filterSlotId();
+    if (slot_id >= 0) {
+      current->setParkBlockToken(
+          tf->enterBlockedRun(slot_id, OSThreadState::CONDVAR_WAIT));
+    }
   }
 }
 
@@ -338,11 +342,18 @@ Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
     return;
   }
   u64 start_ticks = 0;
+  u64 park_block_token = 0;
   Context park_context = {};
-  current->parkExit(start_ticks, park_context);
+  if (!current->parkExit(start_ticks, park_context, park_block_token) ||
+      park_block_token == 0) {
+    return;
+  }
   ThreadFilter *tf = Profiler::instance()->threadFilter();
   if (tf->enabled()) {
-    tf->exitBlockedRun(current->filterSlotId());
+    ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(park_block_token);
+    if (current->filterSlotId() == slot_id) {
+      tf->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(park_block_token));
+    }
   }
 }
 
@@ -374,27 +385,27 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
   if (slot_id < 0) {
     return 0;
   }
-  tf->enterBlockedRun(slot_id, decoded);
-  return static_cast<jlong>(slot_id) + 1;
+  return static_cast<jlong>(tf->enterBlockedRun(slot_id, decoded));
 }
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
     JNIEnv *env, jclass unused, jlong token) {
-  if (token <= 0) {
+  u64 block_token = static_cast<u64>(token);
+  if (block_token == 0) {
     return;
   }
   ProfiledThread *current = ProfiledThread::current();
   if (current == nullptr) {
     return;
   }
-  ThreadFilter::SlotID slot_id = static_cast<ThreadFilter::SlotID>(token - 1);
+  ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(block_token);
   if (current->filterSlotId() != slot_id) {
     return;
   }
   ThreadFilter *tf = Profiler::instance()->threadFilter();
   if (tf->enabled()) {
-    tf->exitBlockedRun(slot_id);
+    tf->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(block_token));
   }
 }
 

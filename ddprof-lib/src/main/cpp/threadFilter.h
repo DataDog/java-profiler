@@ -210,8 +210,9 @@ public:
     void resetSlotRunState(SlotID slot_id);
     u64 enterBlockedRun(SlotID slot_id, OSThreadState state,
                         BlockRunOwner owner = BlockRunOwner::JAVA);
-    // Unconditional cleanup only. Normal block lifecycles must use the
-    // generation-checked overload so they cannot clear another owner.
+    // Unconditional cleanup for reset/unregister paths only. Normal block
+    // lifecycles must use the generation-checked overload so they cannot clear
+    // another owner.
     void exitBlockedRun(SlotID slot_id);
     bool exitBlockedRun(SlotID slot_id, u32 generation);
     bool snapshotAndExitBlockedRun(SlotID slot_id, u32 generation,
