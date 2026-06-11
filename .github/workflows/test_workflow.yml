@@ -57,7 +57,7 @@ jobs:
               echo "enabled=false" >> $GITHUB_OUTPUT
             fi
           fi
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         if: steps.set_enabled.outputs.enabled == 'true'
       - name: Cache Gradle Wrapper Binaries
         if: steps.set_enabled.outputs.enabled == 'true'
@@ -211,7 +211,7 @@ jobs:
           apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ clang git cppcheck jq cmake gtest-dev gmock tar binutils python3 >/dev/null
           # Install debug symbols for musl libc
           apk add musl-dbg
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - name: Cache Gradle Wrapper Binaries
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
@@ -343,7 +343,7 @@ jobs:
               echo "enabled=false" >> $GITHUB_OUTPUT
             fi
           fi
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         if: steps.set_enabled.outputs.enabled == 'true'
       - name: Cache Gradle Wrapper Binaries
         if: steps.set_enabled.outputs.enabled == 'true'
@@ -509,7 +509,7 @@ jobs:
        labels: arm-4core-linux-ubuntu24.04
      timeout-minutes: 180
      steps:
-       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
        - name: Cache Gradle Wrapper Binaries
          uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
          with:
