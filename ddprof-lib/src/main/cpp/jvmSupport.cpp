@@ -21,7 +21,7 @@ void JVMSupport::initialize(jvmtiEnv* jvmti, JNIEnv* jni) {
         HotspotSupport::initialize(jni);
     }
 
-    loadAllMethodIDs(jvmti, jni);
+    loadAllMethodIDsIfNeeded(jvmti, jni);
 }
 
 int JVMSupport::walkJavaStack(StackWalkRequest& request) {
@@ -66,14 +66,14 @@ int JVMSupport::asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* 
     return makeFrame(frames, BCI_ERROR, err_string);
 }
 
-void JVMSupport::loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni) {
+void JVMSupport::loadAllMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni) {
     jint class_count = 0;
     jclass *classes = nullptr;
     int loaded_count = 0;
 
     if (jvmti->GetLoadedClasses(&class_count, &classes) == JVMTI_ERROR_NONE) {
         for (int i = 0; i < class_count; i++) {
-            if(loadMethodIDs(jvmti, jni, classes[i])) {
+            if(loadMethodIDsIfNeeded(jvmti, jni, classes[i])) {
                 loaded_count++;
             }
         }
@@ -82,9 +82,9 @@ void JVMSupport::loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni) {
     TEST_LOG("Preloaded jmethodIDs for %d/%d classes", loaded_count, class_count);
 }
 
-bool JVMSupport::loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
-    if (VM::isHotspot() && HotspotSupport::shouldPreloadJmethodIDs()) {
-        return HotspotSupport::loadMethodIDsImpl(jvmti, jni, klass);
+bool JVMSupport::loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
+    if (VM::isHotspot() && !HotspotSupport::shouldPreloadJmethodIDs()) {
+        return HotspotSupport::loadMethodIDsIfNeededImpl(jvmti, jni, klass);
     } else {
         return loadMethodIDsImpl(jvmti, jni, klass);
     }

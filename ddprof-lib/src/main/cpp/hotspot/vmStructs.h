@@ -924,7 +924,7 @@ DECLARE(VMMethod)
 
         VMMethod* vm_method = VMMethod::load_then_cast((const void*)id);
         // jmethod ID == nullptr, means the value is not yet populated
-        return vm_method == NULL || vm_method->id() == JMETHODID_NOT_WALKABLE;
+        return vm_method == nullptr || vm_method->id() == JMETHODID_NOT_WALKABLE;
     }
 
     const char* bytecode() {

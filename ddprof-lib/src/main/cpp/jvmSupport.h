@@ -26,9 +26,8 @@ class JVMSupport {
     friend class HotspotSupport;
 
     static int asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* ucontext);
-    // J9 and Zing shared implementation
+    // J9 and Zing shared implementation, load jmethodIDs of the method unconditionally.
     static bool loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
-
 public:
     // Initializing JVM support
     static void initialize(jvmtiEnv* jvmti, JNIEnv* jni);
@@ -37,8 +36,8 @@ public:
     static inline bool canUnwind(const StackFrame& frame, const void*& pc);
     static inline bool isJitCode(const void* pc);
 
-    static void loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni);
-    static bool loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
+    static void loadAllMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni);
+    static bool loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
 
     // Resolve method pointer to jmethodID
     static inline jmethodID resolve(const void* method);

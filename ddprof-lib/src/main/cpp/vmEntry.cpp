@@ -592,7 +592,7 @@ void *VM::getLibraryHandle(const char *name) {
 
 void JNICALL VM::ClassPrepare(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
                                jclass klass) {
-  JVMSupport::loadMethodIDs(jvmti, jni, klass);
+  JVMSupport::loadMethodIDsIfNeeded(jvmti, jni, klass);
 }
 
 void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
@@ -628,7 +628,7 @@ VM::RedefineClassesHook(jvmtiEnv *jvmti, jint class_count,
     JNIEnv *env = jni();
     for (int i = 0; i < class_count; i++) {
       if (class_definitions[i].klass != NULL) {
-        JVMSupport::loadMethodIDs(jvmti, env, class_definitions[i].klass);
+        JVMSupport::loadMethodIDsIfNeeded(jvmti, env, class_definitions[i].klass);
       }
     }
   }
@@ -645,7 +645,7 @@ jvmtiError VM::RetransformClassesHook(jvmtiEnv *jvmti, jint class_count,
     JNIEnv *env = jni();
     for (int i = 0; i < class_count; i++) {
       if (classes[i] != NULL) {
-        JVMSupport::loadMethodIDs(jvmti, env, classes[i]);
+        JVMSupport::loadMethodIDsIfNeeded(jvmti, env, classes[i]);
       }
     }
   }

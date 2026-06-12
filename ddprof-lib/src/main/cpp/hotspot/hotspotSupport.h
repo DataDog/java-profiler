@@ -33,7 +33,7 @@ private:
                                  int max_depth, StackContext *java_ctx,
                                  bool *truncated);
 
-    static bool loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);                             
+    static bool loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
 public:
     static void initialize(JNIEnv* jni);
     
@@ -54,6 +54,7 @@ public:
             !(cstack == CSTACK_VM || cstack == CSTACK_DEFAULT); // Can only use Method* when cstack = vm
     }
 
+    // Resolve a method to a jmethodID at dumping time
     static jmethodID resolve(const void* method);
 };
 
