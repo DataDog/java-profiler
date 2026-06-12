@@ -16,7 +16,6 @@
 package com.datadoghq.profiler.stresstest.scenarios.throughput;
 
 import com.datadoghq.profiler.JavaProfiler;
-import com.datadoghq.profiler.OTelContext;
 import com.datadoghq.profiler.ThreadContext;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -64,7 +63,6 @@ public class ThreadContextBenchmark {
             profiler = JavaProfiler.getInstance();
             Path jfr = Files.createTempFile("bench", ".jfr");
             profiler.execute("start,cpu=10ms,attributes=http.route,jfr,file=" + jfr.toAbsolutePath());
-            OTelContext.getInstance().registerAttributeKeys("http.route");
         }
     }
 

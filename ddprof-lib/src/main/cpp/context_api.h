@@ -20,8 +20,6 @@
 #include "arch.h"
 #include "context.h"
 #include <cstdint>
-#include <string>
-#include <vector>
 
 class ProfiledThread;
 
@@ -69,23 +67,6 @@ public:
      * @return A Context struct representing the current thread's context
      */
     static Context snapshot();
-
-    /**
-     * Register attribute key names and publish them in the process context.
-     * Must be called before setAttribute().
-     * Keys beyond DD_TAGS_CAPACITY are silently clipped.
-     *
-     * @param keys Array of key name strings
-     * @param count Number of keys (clipped to DD_TAGS_CAPACITY)
-     */
-    static void registerAttributeKeys(const char** keys, int count);
-
-    /**
-     * std::vector overload of registerAttributeKeys, used from the C++ start
-     * path so that the attributes=... CLI argument auto-publishes the OTEP
-     * attribute_key_map without requiring an explicit Java-side call.
-     */
-    static void registerAttributeKeys(const std::vector<std::string>& keys);
 };
 
 #endif /* _CONTEXT_API_H */
