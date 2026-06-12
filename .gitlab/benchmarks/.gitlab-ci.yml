@@ -17,16 +17,17 @@ variables:
   rules:
     - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
       when: never
-    - if: '$CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "pipeline"'
-      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: never
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual
       allow_failure: true
-    # codesync mirrors GitHub PR pushes as push-source pipelines; run benchmarks
-    # automatically and non-blocking (allow_failure). The before_script CANCELLED
+    # Run automatically and non-blocking on any other source (push/trigger/api/
+    # etc.) — mirrors the integration-test rules. The before_script CANCELLED
     # gate skips branches with no open PR.
-    - if: '$CI_PIPELINE_SOURCE == "push"'
-      when: on_success
+    - when: on_success
       allow_failure: true
   script: |
     # setup the env
@@ -96,12 +97,13 @@ post-benchmarks-pr-comment:
   rules:
     - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
       when: never
-    - if: '$CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "pipeline"'
-      when: on_success
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-      when: always
-    - if: '$CI_PIPELINE_SOURCE == "push"'
-      when: always
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: never
+    # Always run when the candidate jobs ran, regardless of source, so results
+    # are posted back to the PR.
+    - when: always
   timeout: 5m
   script:
     - .gitlab/benchmarks/post-pr-comment.sh reports

@@ -6,4 +6,7 @@ subject_pattern: "project_path:DataDog/java-profiler:ref_type:branch:ref:.*"
 permissions:
   contents: write
   issues: write
-  pull_requests: read
+  # write (not read) is required to post comments on pull requests via the
+  # issues/comments endpoint — GitLab CI back-reports benchmark & reliability
+  # results to the PR (see .gitlab/scripts/upsert-github-pr-comment.sh).
+  pull_requests: write
