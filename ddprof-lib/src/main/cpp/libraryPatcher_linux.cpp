@@ -129,16 +129,27 @@ void run_with_cleanup(func_start_routine routine, void* params,
     static_assert(offsetof(__pthread_unwind_buf_t, __cancel_jmp_buf) == 0 &&
                   sizeof(cancel_buf.__cancel_jmp_buf[0]) == offsetof(struct __jmp_buf_tag, __saved_mask),
                   "glibc __pthread_unwind_buf_t inner layout incompatible with struct __jmp_buf_tag");
-    // Uses __sigsetjmp/longjmp which only intercepts _Unwind_ForcedUnwind, but not
-    // regular C++ exception from routine(params), which should be handled by JVM
+    // __sigsetjmp/longjmp only intercepts _Unwind_ForcedUnwind (pthread_exit /
+    // cancellation).  routine(params) must NOT throw a regular C++ exception
+    // across this boundary: an escaping exception would skip both
+    // __pthread_unregister_cancel and cleanup_fn below, leaking the thread
+    // registration and leaving cancel_buf linked against this (unwound) frame.
+    // We cannot defend with a try/catch here — a handler frame adds an LSDA
+    // action, which is exactly what triggers the static-libgcc abort this
+    // function exists to avoid.  Production routines are JVM/native start
+    // routines that handle their own exceptions and do not throw across here.
     if (__builtin_expect(
-            // set __sigsetjmp's savemask=0 (the second parameter, noting that the signal mask is NOT 
+            // set __sigsetjmp's savemask=0 (the second parameter, noting that the signal mask is NOT
             // saved/restored, which is correct because the cancel mechanism does not depend on signal mask state.
             __sigsetjmp((struct __jmp_buf_tag*)(void*)cancel_buf.__cancel_jmp_buf, 0), 0)) {
         // Reached via longjmp from glibc's stop function when pthread_exit
         // (or cancellation) fires.  Run cleanup and continue unwinding.
         cleanup_fn(cleanup_arg);
         __pthread_unwind_next(&cancel_buf);
+        // __pthread_unwind_next is [[noreturn]]; this fails loudly rather than
+        // falling through into __pthread_register_cancel on a torn-down frame
+        // should a future/variant glibc ever return from it.
+        __builtin_unreachable();
     }
     __pthread_register_cancel(&cancel_buf);
     routine(params);
@@ -300,9 +311,14 @@ static void* start_routine_wrapper_spec(void* args) {
     run_with_cleanup(routine, params, cleanup_unregister, nullptr);
     // pthread_exit instead of 'return': the saved LR in this frame is corrupted
     // by DEOPT PACKING; returning would jump to a garbage address.
-    // cleanup_unregister has already run via run_with_cleanup’s normal return path;
-    // TLS is cleared. pthread_exit triggers a second unwind with no registered cancel
-    // handler — safe because currentSignalSafe() returns null.
+    // cleanup_unregister has already run via run_with_cleanup's normal return
+    // path, so there is no registered cancel handler left.  The forced unwind
+    // raised by pthread_exit walks this frame, but it is safe because no
+    // destructor-bearing local (and hence no LSDA cleanup/handler action) is
+    // live at this call site: __gxx_personality_v0 returns continue-unwind
+    // without ever calling _Unwind_SetGR, avoiding the static-libgcc abort.
+    // WARNING: adding any RAII local with a destructor between run_with_cleanup
+    // and pthread_exit would reintroduce that crash.
     pthread_exit(nullptr);
     __builtin_unreachable();
 }
@@ -354,8 +370,12 @@ static void* start_routine_wrapper(void* args) {
         Profiler::registerThread(ProfiledThread::currentTid());
     }
     // Use POSIX cleanup instead of C++ RAII to handle pthread_exit(): see run_with_cleanup.
+    // cleanup_unregister has already run on run_with_cleanup's normal return path.
+    // The pthread_exit forced unwind is safe here for the same reason as in
+    // start_routine_wrapper_spec: no destructor-bearing local is live at this
+    // call site, so __gxx_personality_v0 never calls _Unwind_SetGR.
     run_with_cleanup(routine, params, cleanup_unregister, nullptr);
-    pthread_exit(nullptr); 
+    pthread_exit(nullptr);
     __builtin_unreachable();
 }
 

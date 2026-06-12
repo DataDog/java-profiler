@@ -302,6 +302,11 @@ __attribute__((noinline, no_stack_protector)) static void *t07_body(void *) {
     __pthread_unwind_next(&cancel_buf);
   }
   __pthread_register_cancel(&cancel_buf);
+  // No matching __pthread_unregister_cancel: the only legal exit from this body
+  // is the forced unwind raised by pthread_cancel, which longjmps into the
+  // __sigsetjmp branch above and continues via __pthread_unwind_next.  The loop
+  // below never returns normally; if it ever did, cancel_buf would be left
+  // registered against a destroyed frame.
   // Inject a signal before the cancellation point to exercise the combined path.
   pthread_kill(pthread_self(), SIGVTALRM);
   while (true) {

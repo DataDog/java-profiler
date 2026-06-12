@@ -200,12 +200,14 @@ static void* nr_thread(void*) {
 
 // Normal-return path (matches start_routine_wrapper on non-aarch64 glibc):
 // cleanup_fn is called once AND __pthread_unregister_cancel removes the buf.
-// Removing either call on this path is detected:
-//   - no cleanup_fn             → g_nr_cleanup_count stays 0
+//   - no cleanup_fn → g_nr_cleanup_count stays 0 (deterministically detected
+//     by the count==1 assertion below).
 //   - no __pthread_unregister_cancel → post-return cancel longjmps into the
-//     freed cancel_buf (UB: crash or g_nr_cleanup_count becomes 2)
-// Note: under ASAN/MSAN the UAF detection path (count==2) is not guaranteed — 
-// a crash is also acceptable evidence.
+//     freed cancel_buf.  This is best-effort detection only: the resulting UB
+//     may crash, re-fire cleanup (count==2), or — depending on stack contents,
+//     and especially under ASAN/MSAN — do neither and pass.  Do NOT rely on
+//     this as a deterministic mutation detector for the unregister call; the
+//     guaranteed coverage here is the positive count==1 assertion.
 TEST(ForcedUnwindTest, CleanupCalledExactlyOnceOnNormalReturn) {
     pthread_t t;
     ASSERT_EQ(0, pthread_create(&t, nullptr, nr_thread, nullptr));
