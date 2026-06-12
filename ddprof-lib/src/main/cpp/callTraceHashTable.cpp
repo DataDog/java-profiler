@@ -275,20 +275,19 @@ CallTrace *CallTraceHashTable::findCallTrace(LongHashTable *table, u64 hash) {
 }
 
 void CallTraceHashTable::expandTableIfNeeded(LongHashTable* table) {
+  u32 size = table->size();
+  u32 capacity = table->capacity();
 
-    u32 size = table->size();
-    u32 capacity = table->capacity();
-
-    // EXPANSION LOGIC: Check if 75% capacity reached after incrementing size
-    if (size >= capacity * 3 / 4 &&
-        table == __atomic_load_n(&_table, __ATOMIC_RELAXED)) { // quick check, if other thread already expanded the table
-      // Allocate new table with double capacity using LinearAllocator
-      LongHashTable* new_table = LongHashTable::allocate(table, capacity * 2, &_allocator);
-      if (new_table != nullptr) {
-        // Atomic table swap - only one thread succeeds
-        __atomic_compare_exchange_n(&_table, &table, new_table, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
-      }
+  // EXPANSION LOGIC: Check if load ratio reached after incrementing size
+  if (size >= (u32) (capacity * LOAD_RATIO)  &&
+      table == __atomic_load_n(&_table, __ATOMIC_RELAXED)) { // quick check, if other thread already expanded the table
+    // Allocate new table with double capacity using LinearAllocator
+    LongHashTable* new_table = LongHashTable::allocate(table, capacity * 2, &_allocator);
+    if (new_table != nullptr) {
+      // Atomic table swap - only one thread succeeds
+      __atomic_compare_exchange_n(&_table, &table, new_table, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
     }
+  }
 }
 
 u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
@@ -487,7 +486,6 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
       u64 expected = 0;
       if (__atomic_compare_exchange_n(&keys[slot], &expected, hash, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
         // Successfully claimed the slot
-  
         // Create a copy of the source trace preserving its exact ID
         const size_t header_size = sizeof(CallTrace) - sizeof(ASGCT_CallFrame);
         const size_t total_size = header_size + source_trace->num_frames * sizeof(ASGCT_CallFrame);
@@ -503,9 +501,6 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
 
           // Increment table size
           table->incSize();
-
-          expandTableIfNeeded(table);
-          
         } else {
           // Allocation failure - clear the key we claimed
           __atomic_store_n(&keys[slot], 0, __ATOMIC_RELEASE);
