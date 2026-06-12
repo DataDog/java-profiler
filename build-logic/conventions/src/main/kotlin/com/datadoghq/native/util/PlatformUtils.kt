@@ -166,23 +166,34 @@ object PlatformUtils {
     fun checkFuzzerSupport(): Boolean {
         return try {
             val testFile = createTempFile("fuzzer_check", ".cpp")
+            val outFile = createTempFile("fuzzer_check", "")
+            // Remove the pre-created output file so the compiler writes its own binary
+            outFile.deleteIfExists()
             try {
                 testFile.writeText("extern \"C\" int LLVMFuzzerTestOneInput(const char*, long) { return 0; }")
 
+                // Link (not just compile) to catch missing libclang_rt.fuzzer_osx.a on Apple clang
                 val process = ProcessBuilder(
                     "clang++",
                     "-fsanitize=fuzzer",
-                    "-c",
                     testFile.toAbsolutePath().toString(),
                     "-o",
-                    "/dev/null"
+                    outFile.toAbsolutePath().toString()
                 ).redirectErrorStream(true).start()
 
-                process.waitFor()
+                if (!process.waitFor(30, TimeUnit.SECONDS)) {
+                    process.destroyForcibly()
+                    process.waitFor(5, TimeUnit.SECONDS)
+                    return false
+                }
                 process.exitValue() == 0
             } finally {
                 testFile.deleteIfExists()
+                outFile.deleteIfExists()
             }
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
         } catch (e: Exception) {
             false
         }

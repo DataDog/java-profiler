@@ -11,9 +11,38 @@ ALLOCATOR=${3:-gmalloc}
 
 echo "Chaos run: runtime=${RUNTIME}s config=${CONFIG} allocator=${ALLOCATOR}"
 
-curl -s "https://get.sdkman.io" | bash
-source "/root/.sdkman/bin/sdkman-init.sh" 1>/dev/null 2>/dev/null
-timeout 300 sdk install java 21.0.3-tem 1>/dev/null 2>/dev/null
+CHAOS_JDK="${CHAOS_JDK:-21.0.3-tem}"
+# CHAOS_JDK uses sdkman notation (<version>-<dist>); extract major for Adoptium API.
+JDK_MAJOR="${CHAOS_JDK%%.*}"
+JDK_ARCH=$(uname -m | sed 's/x86_64/x64/')
+JDK_INSTALL_DIR="/opt/jdk-${CHAOS_JDK}"
+
+if [ ! -x "${JDK_INSTALL_DIR}/bin/java" ]; then
+  TMP=$(mktemp -d)
+  DL_URL="https://api.adoptium.net/v3/binary/latest/${JDK_MAJOR}/ga/linux/${JDK_ARCH}/jdk/hotspot/normal/eclipse"
+  echo "Downloading JDK ${CHAOS_JDK} (major ${JDK_MAJOR}) from Adoptium..."
+  if ! curl -fsSL --max-time 300 "${DL_URL}" -o "${TMP}/jdk.tar.gz"; then
+    echo "FAIL:JDK ${CHAOS_JDK} download failed" >&2
+    rm -rf "${TMP}"
+    exit 1
+  fi
+  mkdir -p "${JDK_INSTALL_DIR}"
+  tar -xzf "${TMP}/jdk.tar.gz" -C "${JDK_INSTALL_DIR}" --strip-components=1
+  rm -rf "${TMP}"
+fi
+
+if [ ! -x "${JDK_INSTALL_DIR}/bin/java" ]; then
+  echo "FAIL:JDK ${CHAOS_JDK} not available after install" >&2
+  exit 1
+fi
+export JAVA_HOME="${JDK_INSTALL_DIR}"
+export PATH="${JAVA_HOME}/bin:${PATH}"
+ACTIVE_JDK=$(java -version 2>&1 | head -1)
+# Check major version only — patch may differ from the Adoptium latest GA.
+if ! echo "${ACTIVE_JDK}" | grep -qE "\"${JDK_MAJOR}\."; then
+  echo "FAIL:wrong JDK active (expected major ${JDK_MAJOR}, got: ${ACTIVE_JDK})" >&2
+  exit 1
+fi
 
 # Resolve ddprof.jar: prefer local build artifact, fall back to Maven snapshot.
 # Running mvn from /tmp avoids the empty pom.xml at the repo root.
@@ -74,12 +103,12 @@ case $CONFIG in
     echo "Running with profiler only"
     ENABLEMENT="-Ddd.profiling.enabled=true -Ddd.trace.enabled=false"
     # @Trace is a no-op without the tracer, so trace-context is excluded here.
-    ANTAGONISTS="thread-churn,alloc-storm,vthread-churn,classloader-churn"
+    ANTAGONISTS="thread-churn,alloc-storm,vthread-churn,classloader-churn,bounded-pool,context-hop,consumer-group,hidden-class-churn,direct-memory,weakref-wave,dump-storm"
     ;;
   profiler+tracer)
     echo "Running with profiler and tracer"
     ENABLEMENT="-Ddd.profiling.enabled=true -Ddd.trace.enabled=true"
-    ANTAGONISTS="thread-churn,alloc-storm,vthread-churn,classloader-churn,trace-context"
+    ANTAGONISTS="thread-churn,alloc-storm,vthread-churn,classloader-churn,trace-context,bounded-pool,context-hop,consumer-group,hidden-class-churn,direct-memory,weakref-wave,dump-storm"
     ;;
   *)
     echo "Unknown configuration: $CONFIG"

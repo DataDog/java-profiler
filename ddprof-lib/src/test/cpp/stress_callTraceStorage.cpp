@@ -34,6 +34,11 @@
 // Test name for crash handler
 static constexpr const char STRESS_TEST_NAME[] = "StressCallTraceStorage";
 
+// Expansion fires when the table reaches 75 % of its initial 65536-slot capacity.
+// Any stress test that exercises the _prev chain (multi-node table) must insert
+// strictly more than this many unique traces between processTraces() calls.
+static constexpr int CALLTRACE_EXPANSION_THRESHOLD = 65536 * 3 / 4;  // 49152
+
 // Helper function to find a CallTrace by trace_id in an unordered_set
 CallTrace* findTraceById(const std::unordered_set<CallTrace*>& traces, u64 trace_id) {
     for (CallTrace* trace : traces) {
@@ -2325,4 +2330,91 @@ TEST_F(StressTestSuite, RealProfilerSignalStressSafe) {
     } else {
         std::cout << "\n🛡️  Signal handling appears robust under all tested stress levels." << std::endl;
     }
+}
+
+// Regression guard for defects B and C in CallTraceHashTable:
+//   Defect B: non-atomic _table read in collect()/clearTableOnly() races with the
+//             ACQ_REL CAS expansion path in put() on aarch64 (weak ordering).
+//   Defect C: chain-clearing loop in clearTableOnly() skips all but the first node
+//             in an expanded (multi-node) _prev chain, leaving dangling pointers.
+//
+// Both defects are only reachable when the table grows past CALLTRACE_EXPANSION_THRESHOLD.
+// No prior stress test crossed that boundary; this test explicitly does so.
+TEST_F(StressTestSuite, ConcurrentExpansionAndCollectStressTest) {
+    static constexpr int TARGET_TRACES = CALLTRACE_EXPANSION_THRESHOLD + 4096;
+    static constexpr int FILL_THREADS  = 8;
+
+    CallTraceStorage* storage = shared_storage.get();
+    storage->clear();
+
+    // --- Phase 1: fill past expansion threshold with unique traces ---
+    std::atomic<int>  total_inserted{0};
+    {
+        std::vector<std::thread> fillers;
+        int per_thread = (TARGET_TRACES / FILL_THREADS) + 1;
+        for (int t = 0; t < FILL_THREADS; t++) {
+            fillers.emplace_back([&, t]() {
+                for (int i = 0; i < per_thread; i++) {
+                    ASGCT_CallFrame frame;
+                    // Unique (bci, method_id) across all threads: multiply thread
+                    // index by a large prime to prevent aliasing between threads.
+                    frame.bci = (t * 100003 + i) % 1000000;
+                    frame.method_id = reinterpret_cast<jmethodID>(
+                        static_cast<uintptr_t>(0x100000ULL + (u64)t * 100003ULL + (u64)i));
+                    u64 id = storage->put(1, &frame, false, 1);
+                    if (id > 0 && id != CallTraceStorage::DROPPED_TRACE_ID) {
+                        total_inserted.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+            });
+        }
+        for (auto& th : fillers) th.join();
+    }
+
+    ASSERT_GT(total_inserted.load(), CALLTRACE_EXPANSION_THRESHOLD)
+        << "Table did not fill past expansion threshold ("
+        << CALLTRACE_EXPANSION_THRESHOLD << "); _prev chain not created. "
+           "Adjust FILL_THREADS or per_thread count.";
+
+    // --- Phase 2: processTraces() while concurrent puts continue ---
+    // The concurrent putter keeps the put() -> CAS expansion path hot so TSan
+    // can observe the racy plain _table load in collect() / clearTableOnly().
+    std::atomic<bool> running{true};
+    std::atomic<bool> phase2_failed{false};
+
+    std::thread concurrent_putter([&]() {
+        int seq = 0;
+        while (running.load()) {
+            ASGCT_CallFrame frame;
+            frame.bci = 999000 + (seq % 1000);
+            frame.method_id = reinterpret_cast<jmethodID>(
+                static_cast<uintptr_t>(0xFFFF0000ULL + (u64)(seq & 0xFFFF)));
+            u64 id = storage->put(1, &frame, false, 1);
+            (void)id;
+            seq++;
+            if (seq % 1000 == 0) std::this_thread::yield();
+        }
+    });
+
+    // Rotate three times so clearTableOnly() runs on an expanded table each time.
+    for (int cycle = 0; cycle < 3 && !phase2_failed.load(); cycle++) {
+        {
+            std::lock_guard<std::mutex> lock(process_traces_mutex);
+            storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+                // Sanity: first cycle must contain all traces from Phase 1.
+                if (cycle == 0 &&
+                    static_cast<int>(traces.size()) < total_inserted.load()) {
+                    phase2_failed.store(true);
+                }
+            });
+        }
+        // Brief pause so the concurrent putter can insert a few more entries
+        // before the next processTraces() call.
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    running.store(false);
+    concurrent_putter.join();
+
+    EXPECT_FALSE(phase2_failed.load()) << "collect() missed traces from Phase 1 on first cycle";
 }
