@@ -59,7 +59,7 @@ object ConfigurationPresets {
         project.logger.lifecycle("Active configurations: ${activeConfigs.map { it.name }.joinToString(", ")}")
     }
 
-    private fun commonLinuxCompilerArgs(version: String): List<String> {
+    private fun commonCompilerArgs(version: String): List<String> {
         val args = mutableListOf(
             "-fPIC",
             "-fno-omit-frame-pointer",
@@ -78,6 +78,19 @@ object ConfigurationPresets {
         return args
     }
 
+    private fun commonLinuxCompilerArgs(
+        version: String,
+        architecture: Architecture = Architecture.X64
+    ): List<String> {
+        val args = commonCompilerArgs(version).toMutableList()
+        // Use TLS descriptors (GNU2 dialect) for thread-local storage on x86_64.
+        // This is required by thread context (https://github.com/open-telemetry/opentelemetry-specification/pull/4947)
+        if (architecture == Architecture.X64) {
+            args.add("-mtls-dialect=gnu2")
+        }
+        return args
+    }
+
     private fun commonLinuxLinkerArgs(): List<String> = listOf(
         "-ldl",
         "-Wl,-z,defs",
@@ -89,7 +102,7 @@ object ConfigurationPresets {
     )
 
     private fun commonMacosCompilerArgs(version: String): List<String> =
-        commonLinuxCompilerArgs(version) + listOf("-D_XOPEN_SOURCE", "-D_DARWIN_C_SOURCE")
+        commonCompilerArgs(version) + listOf("-D_XOPEN_SOURCE", "-D_DARWIN_C_SOURCE")
 
     fun configureRelease(
         config: BuildConfiguration,
@@ -104,7 +117,7 @@ object ConfigurationPresets {
         when (platform) {
             Platform.LINUX -> {
                 config.compilerArgs.set(
-                    listOf("-O3", "-DNDEBUG", "-g") + commonLinuxCompilerArgs(version)
+                    listOf("-O3", "-DNDEBUG", "-g") + commonLinuxCompilerArgs(version, architecture)
                 )
                 config.linkerArgs.set(
                     commonLinuxLinkerArgs() + listOf(
@@ -138,7 +151,7 @@ object ConfigurationPresets {
         when (platform) {
             Platform.LINUX -> {
                 config.compilerArgs.set(
-                    listOf("-O0", "-g", "-DDEBUG") + commonLinuxCompilerArgs(version)
+                    listOf("-O0", "-g", "-DDEBUG") + commonLinuxCompilerArgs(version, architecture)
                 )
                 config.linkerArgs.set(commonLinuxLinkerArgs())
             }
@@ -184,7 +197,7 @@ object ConfigurationPresets {
 
         when (platform) {
             Platform.LINUX -> {
-                config.compilerArgs.set(asanCompilerArgs + commonLinuxCompilerArgs(version))
+                config.compilerArgs.set(asanCompilerArgs + commonLinuxCompilerArgs(version, architecture))
 
                 val libasan = PlatformUtils.locateLibasan(compiler)
                 // Link against the sanitizer runtime that matches the compiler:
@@ -247,7 +260,7 @@ object ConfigurationPresets {
 
         when (platform) {
             Platform.LINUX -> {
-                config.compilerArgs.set(tsanCompilerArgs + commonLinuxCompilerArgs(version))
+                config.compilerArgs.set(tsanCompilerArgs + commonLinuxCompilerArgs(version, architecture))
 
                 val libtsan = PlatformUtils.locateLibtsan(compiler)
                 // Use the library name from the resolved path so that clang's own
@@ -321,7 +334,7 @@ object ConfigurationPresets {
 
         when (platform) {
             Platform.LINUX -> {
-                config.compilerArgs.set(fuzzerCompilerArgs + commonLinuxCompilerArgs(version))
+                config.compilerArgs.set(fuzzerCompilerArgs + commonLinuxCompilerArgs(version, architecture))
                 config.linkerArgs.set(commonLinuxLinkerArgs() + fuzzerLinkerArgs)
 
                 config.testEnvironment.apply {
