@@ -6,31 +6,13 @@
 #
 # Required env:
 #   DDPROF_COMMIT_BRANCH  – branch name used to locate the open PR
-#   CI_JOB_TOKEN          – used to clone benchmarking-platform if needed
 # Optional env:
 #   CI_PIPELINE_URL, DDPROF_COMMIT_SHA
 
 set -euo pipefail
 
 REPORTS_DIR="${1:-reports}"
-REPO="DataDog/java-profiler"
-
-# Skip for main / unset branches (no PR to comment on)
-if [ -z "${DDPROF_COMMIT_BRANCH:-}" ] || \
-   [ "${DDPROF_COMMIT_BRANCH}" = "main" ] || \
-   [ "${DDPROF_COMMIT_BRANCH}" = "master" ]; then
-  echo "Skipping PR comment for branch: ${DDPROF_COMMIT_BRANCH:-<unset>}"
-  exit 0
-fi
-
-# Acquire pr-commenter from benchmarking-platform if not already on PATH
-if ! command -v pr-commenter >/dev/null 2>&1; then
-  PLATFORM_DIR=$(mktemp -d)
-  trap "rm -rf ${PLATFORM_DIR}" EXIT
-  git clone --depth 1 --branch dd-trace-go \
-    "https://github.com/DataDog/benchmarking-platform" "${PLATFORM_DIR}"
-  export PATH="${PLATFORM_DIR}/tools:${PATH}"
-fi
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Aggregate all per-cell reports into a single comment body
 SECTIONS=""
@@ -51,14 +33,15 @@ if [ -z "${SECTIONS}" ]; then
   exit 0
 fi
 
-COMMENT_BODY="## Benchmark Results
+BODY_FILE=$(mktemp)
+trap 'rm -f "${BODY_FILE}"' EXIT
+cat > "${BODY_FILE}" <<EOF
+## Benchmark Results
 
 Pipeline: ${CI_PIPELINE_URL:-}  Commit: \`${DDPROF_COMMIT_SHA:-unknown}\`
 
-${SECTIONS}"
+${SECTIONS}
+EOF
 
-echo "${COMMENT_BODY}" | pr-commenter \
-  --for-repo="${REPO}" \
-  --for-pr="${DDPROF_COMMIT_BRANCH}" \
-  --header="Benchmarks" \
-  --on-duplicate=replace
+"${HERE}/../scripts/upsert-github-pr-comment.sh" \
+  "benchmark-results" "${DDPROF_COMMIT_BRANCH:-}" "${BODY_FILE}"

@@ -6,30 +6,12 @@
 #
 # Required env:
 #   DDPROF_COMMIT_BRANCH  – branch name used to locate the open PR
-#   CI_JOB_TOKEN          – used to clone benchmarking-platform if needed
 # Optional env:
 #   CI_PIPELINE_URL
 
 set -euo pipefail
 
-REPO="DataDog/java-profiler"
-
-# Skip for main / unset branches
-if [ -z "${DDPROF_COMMIT_BRANCH:-}" ] || \
-   [ "${DDPROF_COMMIT_BRANCH}" = "main" ] || \
-   [ "${DDPROF_COMMIT_BRANCH}" = "master" ]; then
-  echo "Skipping PR comment for branch: ${DDPROF_COMMIT_BRANCH:-<unset>}"
-  exit 0
-fi
-
-# Acquire pr-commenter from benchmarking-platform if not already on PATH
-if ! command -v pr-commenter >/dev/null 2>&1; then
-  PLATFORM_DIR=$(mktemp -d)
-  trap "rm -rf ${PLATFORM_DIR}" EXIT
-  git clone --depth 1 --branch dd-trace-go \
-    "https://github.com/DataDog/benchmarking-platform" "${PLATFORM_DIR}"
-  export PATH="${PLATFORM_DIR}/tools:${PATH}"
-fi
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── Collect failures from REASON_* env vars ────────────────────────────────────
 rel_fail=0; rel_failures=""
@@ -73,13 +55,14 @@ else
   overall="✅ **All reliability & chaos checks passed**"
 fi
 
-COMMENT_BODY="## Reliability & Chaos Results
+BODY_FILE=$(mktemp)
+trap 'rm -f "${BODY_FILE}"' EXIT
+cat > "${BODY_FILE}" <<EOF
+## Reliability & Chaos Results
 
 ${overall}  Pipeline: ${CI_PIPELINE_URL:-}
-${rel_failures}${chaos_failures}"
+${rel_failures}${chaos_failures}
+EOF
 
-echo "${COMMENT_BODY}" | pr-commenter \
-  --for-repo="${REPO}" \
-  --for-pr="${DDPROF_COMMIT_BRANCH}" \
-  --header="Reliability & Chaos" \
-  --on-duplicate=replace
+"${HERE}/../scripts/upsert-github-pr-comment.sh" \
+  "reliability-results" "${DDPROF_COMMIT_BRANCH:-}" "${BODY_FILE}"
