@@ -17,7 +17,9 @@ unless the change does not modify code (e.g. only modifies docs, comments).
 
 **For Datadog employees**:
 - [ ] If this PR touches code that signs or publishes builds or packages, or handles
-  credentials of any kind, I've requested a review from `@DataDog/security-design-and-guidance`.
+  credentials of any kind, I've requested a security review (run the `dd:platform-security-review`
+  skill, or file a request via the [PSEC review form](https://datadoghq.atlassian.net/jira/software/c/projects/PSEC/forms/form/direct/7861446195161534/37715)).
+  `bewaire` also runs automatically on every PR.
 - [ ] This PR doesn't touch any of that.
 - [ ] JIRA: [JIRA-XXXX]
 
