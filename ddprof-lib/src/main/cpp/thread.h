@@ -277,13 +277,17 @@ public:
   }
 
   inline bool parkEnter(u64 start_ticks) {
-    u32 prev = __atomic_fetch_or(&_misc_flags, FLAG_PARKED, __ATOMIC_RELEASE);
-    if ((prev & FLAG_PARKED) != 0) {
-      return false;
+    u32 flags = __atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE);
+    while ((flags & FLAG_PARKED) == 0) {
+      _park_context = ContextApi::snapshot();
+      _park_start_ticks = start_ticks;
+      if (__atomic_compare_exchange_n(&_misc_flags, &flags, flags | FLAG_PARKED,
+                                      /*weak=*/true,
+                                      __ATOMIC_RELEASE, __ATOMIC_ACQUIRE)) {
+        return true;
+      }
     }
-    _park_context = ContextApi::snapshot();
-    _park_start_ticks = start_ticks;
-    return true;
+    return false;
   }
 
   inline void setParkBlockToken(u64 token) {
