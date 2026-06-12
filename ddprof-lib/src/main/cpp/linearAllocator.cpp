@@ -20,6 +20,9 @@
 #include "os.h"
 #include "common.h"
 #include <stdio.h>
+#ifdef __SANITIZE_THREAD__
+  #include <sys/mman.h>
+#endif
 
 // Enable ASan memory poisoning for better use-after-free detection
 #ifdef __has_feature
@@ -220,17 +223,21 @@ Chunk *LinearAllocator::allocateChunk(Chunk *current) {
   Chunk *chunk = (Chunk *)OS::safeAlloc(_chunk_size);
   if (chunk != NULL) {
     // OS::safeAlloc uses a raw mmap syscall that bypasses ASan and TSan
-    // interceptors. When the OS reuses a VA from a prior munmap, TSan's shadow
-    // memory for that VA still holds the old access history. __tsan_acquire
-    // only establishes happens-before by pairing with a prior __tsan_release at
-    // the same address; it does NOT clear stale shadow state.
-    // Fix: use __tsan_reset_range to wipe the shadow for the entire chunk before
-    // the first write, giving TSan a clean baseline for this new allocation.
+    // interceptors by design (to avoid self-instrumentation in the profiler).
+    // When the OS reuses a VA from a prior munmap, TSan's shadow memory for
+    // that VA still holds stale access history from previous chunk users,
+    // causing false-positive data-race reports on user-data addresses.
+    //
+    // Fix: re-map the same VA through the libc mmap() wrapper. TSan intercepts
+    // mmap() and calls MemoryRangeImitateWrite, which sets all 4 shadow slots
+    // for the entire chunk range to the current thread's write — completely
+    // overwriting any stale entries. safeAlloc itself is unchanged.
     #ifdef ASAN_ENABLED
     ASAN_UNPOISON_MEMORY_REGION(chunk, _chunk_size);
     #endif
     #ifdef __SANITIZE_THREAD__
-    __tsan_reset_range(chunk, _chunk_size);
+    mmap(chunk, _chunk_size, PROT_READ | PROT_WRITE,
+         MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
     #endif
 
     chunk->prev = current;
