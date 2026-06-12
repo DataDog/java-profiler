@@ -13,6 +13,24 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 
 <details markdown="1">
 <summary>
+<strong>2026-06-12 09:20</strong> | ❌ | main | Pipeline [#118371451](https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/118371451)
+</summary>
+
+**Version:** unknown
+**Commit:** a31cc4ab
+
+| Metric | Value |
+|--------|-------|
+| Jobs | 40 |
+| Passed | 0 |
+| Failed | 40 |
+
+**Failed Configs:** glibc-arm64-hotspot-jdk11, glibc-arm64-hotspot-jdk17, glibc-arm64-hotspot-jdk21, glibc-arm64-hotspot-jdk25, glibc-arm64-hotspot-jdk8, glibc-arm64-openj9-jdk11, glibc-arm64-openj9-jdk17, glibc-arm64-openj9-jdk21, glibc-arm64-openj9-jdk25, glibc-arm64-openj9-jdk8, glibc-x64-hotspot-jdk11, glibc-x64-hotspot-jdk17, glibc-x64-hotspot-jdk21, glibc-x64-hotspot-jdk25, glibc-x64-hotspot-jdk8, glibc-x64-openj9-jdk11, glibc-x64-openj9-jdk17, glibc-x64-openj9-jdk21, glibc-x64-openj9-jdk25, glibc-x64-openj9-jdk8, musl-arm64-hotspot-jdk11, musl-arm64-hotspot-jdk17, musl-arm64-hotspot-jdk21, musl-arm64-hotspot-jdk25, musl-arm64-hotspot-jdk8, musl-arm64-openj9-jdk11, musl-arm64-openj9-jdk17, musl-arm64-openj9-jdk21, musl-arm64-openj9-jdk25, musl-arm64-openj9-jdk8, musl-x64-hotspot-jdk11, musl-x64-hotspot-jdk17, musl-x64-hotspot-jdk21, musl-x64-hotspot-jdk25, musl-x64-hotspot-jdk8, musl-x64-openj9-jdk11, musl-x64-openj9-jdk17, musl-x64-openj9-jdk21, musl-x64-openj9-jdk25, musl-x64-openj9-jdk8
+
+</details>
+
+<details markdown="1">
+<summary>
 <strong>2026-06-12 08:52</strong> | ❌ | main | Pipeline [#118366427](https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/118366427)
 </summary>
 
@@ -162,24 +180,6 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 
 **Version:** unknown
 **Commit:** 2d69767d
-
-| Metric | Value |
-|--------|-------|
-| Jobs | 40 |
-| Passed | 0 |
-| Failed | 40 |
-
-**Failed Configs:** glibc-arm64-hotspot-jdk11, glibc-arm64-hotspot-jdk17, glibc-arm64-hotspot-jdk21, glibc-arm64-hotspot-jdk25, glibc-arm64-hotspot-jdk8, glibc-arm64-openj9-jdk11, glibc-arm64-openj9-jdk17, glibc-arm64-openj9-jdk21, glibc-arm64-openj9-jdk25, glibc-arm64-openj9-jdk8, glibc-x64-hotspot-jdk11, glibc-x64-hotspot-jdk17, glibc-x64-hotspot-jdk21, glibc-x64-hotspot-jdk25, glibc-x64-hotspot-jdk8, glibc-x64-openj9-jdk11, glibc-x64-openj9-jdk17, glibc-x64-openj9-jdk21, glibc-x64-openj9-jdk25, glibc-x64-openj9-jdk8, musl-arm64-hotspot-jdk11, musl-arm64-hotspot-jdk17, musl-arm64-hotspot-jdk21, musl-arm64-hotspot-jdk25, musl-arm64-hotspot-jdk8, musl-arm64-openj9-jdk11, musl-arm64-openj9-jdk17, musl-arm64-openj9-jdk21, musl-arm64-openj9-jdk25, musl-arm64-openj9-jdk8, musl-x64-hotspot-jdk11, musl-x64-hotspot-jdk17, musl-x64-hotspot-jdk21, musl-x64-hotspot-jdk25, musl-x64-hotspot-jdk8, musl-x64-openj9-jdk11, musl-x64-openj9-jdk17, musl-x64-openj9-jdk21, musl-x64-openj9-jdk25, musl-x64-openj9-jdk8
-
-</details>
-
-<details markdown="1">
-<summary>
-<strong>2026-06-11 14:44</strong> | ❌ | main | Pipeline [#118171776](https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/118171776)
-</summary>
-
-**Version:** unknown
-**Commit:** 0b3a1d73
 
 | Metric | Value |
 |--------|-------|
