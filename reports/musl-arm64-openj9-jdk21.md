@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk21
 
 ## musl-arm64-openj9-jdk21 - ✅ PASS
 
-**Date:** 2026-06-12 13:04:07 EDT
+**Date:** 2026-06-12 13:28:26 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-arm64-openj9-jdk21
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 64 |
-| CPU Cores (end) | 64 |
+| CPU Cores (start) | 44 |
+| CPU Cores (end) | 44 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,22 +45,22 @@ title: musl-arm64-openj9-jdk21
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
+<summary>CPU Timeline (1 unique values: 44-44 cores)</summary>
 
 ```
-1781283573 64
-1781283578 64
-1781283583 64
-1781283588 64
-1781283593 64
-1781283598 64
-1781283603 64
-1781283608 64
-1781283613 64
-1781283618 64
-1781283623 64
-1781283628 64
-1781283633 64
+1781285161 44
+1781285166 44
+1781285171 44
+1781285176 44
+1781285181 44
+1781285186 44
+1781285191 44
+1781285196 44
+1781285202 44
+1781285207 44
+1781285212 44
+1781285217 44
+1781285222 44
 ```
 </details>
 
