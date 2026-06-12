@@ -17,6 +17,9 @@
 const uint16_t SFRAME_MAGIC        = 0xDEE2;
 const uint8_t  SFRAME_VERSION_2    = 2;
 const uint8_t  SFRAME_F_FDE_SORTED = 0x01;
+// SFrame V2 erratum: when set, FDE start_addr is relative to the start_addr
+// field location, not the section start. Unsupported here -> DWARF fallback.
+const uint8_t  SFRAME_F_FDE_FUNC_START_PCREL = 0x04;
 
 // ABI/architecture identifiers
 const uint8_t SFRAME_ABI_AARCH64_ENDIAN_LITTLE = 2;

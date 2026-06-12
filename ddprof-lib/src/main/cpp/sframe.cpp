@@ -234,6 +234,14 @@ bool SFrameParser::parse() {
         return false;
     }
 
+    // SFrame V2 PCREL func-start encoding makes start_addr field-relative, which
+    // our section-relative loc arithmetic (parseFDE) does not implement. Bail so
+    // the caller falls back to DWARF rather than building a scrambled table.
+    if (hdr->flags & SFRAME_F_FDE_FUNC_START_PCREL) {
+        Log::warn("SFrame PCREL func-start encoding unsupported in %s; falling back to DWARF", _name);
+        return false;
+    }
+
     const char* data_start  = _section_base + sizeof(SFrameHeader) + hdr->auxhdr_len;
     const char* section_end = _section_base + _section_size;
 
@@ -286,13 +294,21 @@ bool SFrameParser::parse() {
         int saved_linked_frame_size = _linked_frame_size;
         if (!parseFDE(hdr, fde, fre_section, fre_end)) {
             if (_oom) return false;  // OOM: partial table is not safe to use
-            // Corrupt FDE: roll back any partially-added records.
+            // Intentional divergence from DwarfParser::addRecord, which drops only the
+            // offending record and keeps going. Here a single bad FRE fails the whole
+            // FDE: we conservatively discard all FREs added for this function rather
+            // than ship a partially-decoded function with a coverage gap. Cost: one
+            // out-of-range FRE forfeits unwinding for the entire function.
             _count             = saved_count;
             _linked_frame_size = saved_linked_frame_size;
         }
     }
 
-    // 10. Sort (skip if the section header guarantees sorted order)
+    // 10. Sort, unless the producer asserts sorted order via SFRAME_F_FDE_SORTED.
+    // findFrameDesc binary-searches by loc, so the flattened table must be
+    // globally sorted. We trust the flag here (qsort of a real, large table is
+    // non-trivial). A malformed file that sets SORTED without honoring FDE/FRE
+    // ordering and non-overlap yields silent lookup misses (not memory-unsafe).
     if (_count > 0 && !(hdr->flags & SFRAME_F_FDE_SORTED)) {
         qsort(_table, _count, sizeof(FrameDesc), FrameDesc::comparator);
     }
