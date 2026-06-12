@@ -42,62 +42,48 @@ TestProfiledThread testThread(int tid) {
 TEST(ProfiledThreadParkStateTest, ParkFlagLifecycle) {
   TestProfiledThread thread = testThread(12345);
 
-  u64 start_ticks = 0;
   u64 park_block_token = 0;
-  Context park_context = {};
-  EXPECT_FALSE(thread->parkExit(start_ticks, park_context, park_block_token)); // not parked initially
+  EXPECT_FALSE(thread->parkExit(park_block_token)); // not parked initially
 
-  EXPECT_TRUE(thread->parkEnter(777));
+  EXPECT_TRUE(thread->parkEnter());
   thread->setParkBlockToken(0x123400000001ULL);
 
-  EXPECT_TRUE(thread->parkExit(start_ticks, park_context, park_block_token));
-  EXPECT_EQ(777ULL, start_ticks);
+  EXPECT_TRUE(thread->parkExit(park_block_token));
   EXPECT_EQ(0x123400000001ULL, park_block_token);
-  EXPECT_EQ(0ULL, park_context.spanId);    // no OTEP TLS in unit test
-  EXPECT_EQ(0ULL, park_context.rootSpanId);
 
-  EXPECT_FALSE(thread->parkExit(start_ticks, park_context, park_block_token)); // idempotent after clear
+  EXPECT_FALSE(thread->parkExit(park_block_token)); // idempotent after clear
 }
 
 TEST(ProfiledThreadParkStateTest, NewThreadStartsNotParked) {
   TestProfiledThread thread = testThread(12346);
-  u64 start_ticks = 0;
   u64 park_block_token = 0;
-  Context park_context = {};
-  EXPECT_FALSE(thread->parkExit(start_ticks, park_context, park_block_token));
+  EXPECT_FALSE(thread->parkExit(park_block_token));
   // Out-params must not be touched on failed exit.
-  EXPECT_EQ(0ULL, start_ticks);
   EXPECT_EQ(0ULL, park_block_token);
 }
 
-TEST(ProfiledThreadParkStateTest, SecondParkEnterOverwritesTicksButPreservesToken) {
+TEST(ProfiledThreadParkStateTest, SecondParkEnterPreservesToken) {
   TestProfiledThread thread = testThread(12347);
-  EXPECT_TRUE(thread->parkEnter(100));
+  EXPECT_TRUE(thread->parkEnter());
   thread->setParkBlockToken(0xfeed00000001ULL);
-  EXPECT_FALSE(thread->parkEnter(200)); // second enter before exit: overwrites ticks
+  EXPECT_FALSE(thread->parkEnter());
 
-  u64 start_ticks = 0;
   u64 park_block_token = 0;
-  Context park_context = {};
-  EXPECT_TRUE(thread->parkExit(start_ticks, park_context, park_block_token));
-  EXPECT_EQ(200ULL, start_ticks); // most recent parkEnter wins
+  EXPECT_TRUE(thread->parkExit(park_block_token));
   EXPECT_EQ(0xfeed00000001ULL, park_block_token); // first owner token wins
 
   // Flag is now clear; second exit is a no-op.
-  EXPECT_FALSE(thread->parkExit(start_ticks, park_context, park_block_token));
+  EXPECT_FALSE(thread->parkExit(park_block_token));
   EXPECT_EQ(0xfeed00000001ULL, park_block_token);
 }
 
 TEST(ProfiledThreadParkStateTest, ParkExitReturnsZeroTokenWhenBlockRunWasNotArmed) {
   TestProfiledThread thread = testThread(12348);
-  EXPECT_TRUE(thread->parkEnter(300));
+  EXPECT_TRUE(thread->parkEnter());
   thread->setParkBlockToken(0);
 
-  u64 start_ticks = 0;
   u64 park_block_token = 42;
-  Context park_context = {};
-  EXPECT_TRUE(thread->parkExit(start_ticks, park_context, park_block_token));
-  EXPECT_EQ(300ULL, start_ticks);
+  EXPECT_TRUE(thread->parkExit(park_block_token));
   EXPECT_EQ(0ULL, park_block_token);
 }
 

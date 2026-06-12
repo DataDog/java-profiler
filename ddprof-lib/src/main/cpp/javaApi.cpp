@@ -323,7 +323,7 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) 
   if (current == nullptr) {
     return;
   }
-  bool first_park = current->parkEnter(TSC::ticks());
+  bool first_park = current->parkEnter();
   ThreadFilter *tf = Profiler::instance()->threadFilter();
   if (first_park && tf->enabled()) {
     ThreadFilter::SlotID slot_id = current->filterSlotId();
@@ -341,11 +341,8 @@ Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
   if (current == nullptr) {
     return;
   }
-  u64 start_ticks = 0;
   u64 park_block_token = 0;
-  Context park_context = {};
-  if (!current->parkExit(start_ticks, park_context, park_block_token) ||
-      park_block_token == 0) {
+  if (!current->parkExit(park_block_token) || park_block_token == 0) {
     return;
   }
   ThreadFilter *tf = Profiler::instance()->threadFilter();

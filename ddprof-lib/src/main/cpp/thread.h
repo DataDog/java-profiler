@@ -7,7 +7,6 @@
 #define _THREAD_H
 
 #include "context.h"
-#include "context_api.h"
 #include "otel_context.h"
 #include "os.h"
 #include "threadLocalData.h"
@@ -57,9 +56,7 @@ private:
   u64 _call_trace_id;
   u32 _recording_epoch;
   u32 _misc_flags;
-  u64 _park_start_ticks;
   u64 _park_block_token;
-  Context _park_context;
   int _filter_slot_id; // Slot ID for thread filtering
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
   uint8_t _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
@@ -81,8 +78,7 @@ private:
   ProfiledThread(int tid)
       : ThreadLocalData(), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _tid(tid), _cpu_epoch(0),
         _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0),
-        _park_start_ticks(0), _park_block_token(0), _park_context{},
-        _filter_slot_id(-1), _init_window(0),
+        _park_block_token(0), _filter_slot_id(-1), _init_window(0),
         _signal_depth(0),
         _otel_ctx_initialized(false), _crash_protection_active(false),
         _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0) {};
@@ -270,10 +266,7 @@ public:
     _otel_local_root_span_id = 0;
   }
 
-  inline bool parkEnter(u64 start_ticks) {
-    _park_context = ContextApi::snapshot();
-    _park_start_ticks = start_ticks;
-    // Release ensures _park_start_ticks/_park_context are visible before FLAG_PARKED is set.
+  inline bool parkEnter() {
     u32 prev = __atomic_fetch_or(&_misc_flags, FLAG_PARKED, __ATOMIC_RELEASE);
     return (prev & FLAG_PARKED) == 0;
   }
@@ -283,13 +276,11 @@ public:
   }
 
   // Returns false if the thread was not parked (idempotent).
-  inline bool parkExit(u64 &start_ticks, Context &park_context, u64 &park_block_token) {
+  inline bool parkExit(u64 &park_block_token) {
     u32 prev = __atomic_fetch_and(&_misc_flags, ~FLAG_PARKED, __ATOMIC_ACQ_REL);
     if ((prev & FLAG_PARKED) == 0) {
       return false;
     }
-    start_ticks = _park_start_ticks;
-    park_context = _park_context;
     park_block_token = _park_block_token;
     _park_block_token = 0;
     return true;
