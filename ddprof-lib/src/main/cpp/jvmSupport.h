@@ -23,14 +23,25 @@ enum StackRecovery {
 class HotspotSupport;
 
 class JVMSupport {
+    enum JMethodIDLoadStats {
+        No_loaded,          // Has not yet executed any profiling command, no jmethodIDs are loaded
+        Partial_loaded,     // Patially loaded, see HostspotSupport::shouldPreloadJmethodIDs()
+        Fully_loaded        // All jmethodIDs are loaded
+    };
+
     friend class HotspotSupport;
+
+    static volatile JMethodIDLoadStats jmethodID_load_state;
 
     static int asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* ucontext);
     // J9 and Zing shared implementation, load jmethodIDs of the method unconditionally.
     static bool loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
+
+    static JMethodIDLoadStats getLoadState();
+    static void setLoadState(JMethodIDLoadStats state);
 public:
     // Initializing JVM support
-    static void initialize(jvmtiEnv* jvmti, JNIEnv* jni);
+    static void initExecution(jvmtiEnv* jvmti, JNIEnv* jni);
 
     static int walkJavaStack(StackWalkRequest& request);
     static inline bool canUnwind(const StackFrame& frame, const void*& pc);

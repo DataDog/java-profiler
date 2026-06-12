@@ -35,7 +35,7 @@ private:
 
     static bool loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
 public:
-    static void initialize(JNIEnv* jni);
+    static void initClassloaderInfo(JNIEnv* jni);
     
     static void checkFault(ProfiledThread* thrd = nullptr);
     static int walkJavaStack(StackWalkRequest& request);

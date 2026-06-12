@@ -1296,6 +1296,10 @@ Error Profiler::start(Arguments &args, bool reset) {
     _safe_mode |= GC_TRACES | LAST_JAVA_PC;
   }
 
+ 
+  // Prepare JVMSupport for execution
+  JVMSupport::initExecution(VM::jvmti(), VM::jni());
+
   // TODO: Current way of setting filter is weird with the recent changes
   _thread_filter.init(args._filter ? args._filter : "0");
   

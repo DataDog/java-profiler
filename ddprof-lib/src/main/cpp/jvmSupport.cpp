@@ -16,10 +16,40 @@
 
 #include <jni.h>
 
-void JVMSupport::initialize(jvmtiEnv* jvmti, JNIEnv* jni) {
-    if (VM::isHotspot()) {
-        HotspotSupport::initialize(jni);
+
+volatile JVMSupport::JMethodIDLoadStats JVMSupport::jmethodID_load_state = JVMSupport::No_loaded;
+
+JVMSupport::JMethodIDLoadStats JVMSupport::getLoadState() {
+    // Volatile read
+    return __atomic_load_n(&jmethodID_load_state, __ATOMIC_RELAXED);
+}
+
+void JVMSupport::setLoadState(JMethodIDLoadStats state) {
+    // Volatile store
+    __atomic_store(&jmethodID_load_state, &state, __ATOMIC_RELAXED);
+}
+
+void JVMSupport::initExecution(jvmtiEnv* jvmti, JNIEnv* jni) {
+    JMethodIDLoadStats current_state = getLoadState();
+    // Already setup by previous execution
+    if (current_state == Fully_loaded) {
+        return;
     }
+
+    bool load_all = true;
+    if (VM::isHotspot()) {
+        if (!HotspotSupport::shouldPreloadJmethodIDs()) {
+            HotspotSupport::initClassloaderInfo(jni);
+            load_all = false;
+        }
+    }
+
+    JMethodIDLoadStats state = load_all ? Fully_loaded : Partial_loaded;
+    if (state == current_state) {
+        return;
+    }
+
+    setLoadState(state);
 
     loadAllMethodIDsIfNeeded(jvmti, jni);
 }
@@ -67,6 +97,8 @@ int JVMSupport::asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* 
 }
 
 void JVMSupport::loadAllMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni) {
+    assert(getLoadState() != No_loaded && "Should not call before profiler execution");
+
     jint class_count = 0;
     jclass *classes = nullptr;
     int loaded_count = 0;
@@ -83,7 +115,14 @@ void JVMSupport::loadAllMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni) {
 }
 
 bool JVMSupport::loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
-    if (VM::isHotspot() && !HotspotSupport::shouldPreloadJmethodIDs()) {
+    JMethodIDLoadStats state = getLoadState();
+    // Callback from JVMTI for class loading - We don't have to deal with it before
+    // the first execution - loadAllMethodIDsIfNeeded() will fix it.
+    if (state == No_loaded) {
+        return false;
+    }
+
+    if (VM::isHotspot() && state == Partial_loaded) {
         return HotspotSupport::loadMethodIDsIfNeededImpl(jvmti, jni, klass);
     } else {
         return loadMethodIDsImpl(jvmti, jni, klass);

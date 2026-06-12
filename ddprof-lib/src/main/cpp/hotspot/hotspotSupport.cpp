@@ -25,7 +25,7 @@ using StackWalkValidation::sameStack;
 static jobject JAVA_PLATFORM_CLASSLOADER = nullptr;
 static jobject JAVA_APPLICATION_CLASSLOADER = nullptr;
 
-void HotspotSupport::initialize(JNIEnv* jni) {
+void HotspotSupport::initClassloaderInfo(JNIEnv* jni) {
     if (JAVA_PLATFORM_CLASSLOADER != nullptr || JAVA_APPLICATION_CLASSLOADER != nullptr) {
         return;
     }
