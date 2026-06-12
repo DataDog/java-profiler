@@ -7,6 +7,7 @@
 #include "callTraceStorage.h"
 #include "callTraceHashTable.h"
 #include "guards.h"
+#include "common.h"  // TSAN_ENABLED (toolchain-agnostic sanitizer detection)
 #include <vector>
 #include <unordered_set>
 #include <thread>
@@ -2034,7 +2035,7 @@ TEST_F(StressTestSuite, HashTableSpinWaitEdgeCasesTest) {
 // correctness across expansion boundaries independently of memory ordering;
 // it catches logic regressions in all build configurations.
 TEST_F(StressTestSuite, FindCallTraceAtomicReadRaceTest) {
-#if !defined(__SANITIZE_THREAD__) && !(defined(__has_feature) && __has_feature(thread_sanitizer))
+#if !defined(TSAN_ENABLED)
     GTEST_SKIP() << "TSan-only race regression: re-run with -fsanitize=thread";
 #endif
 
