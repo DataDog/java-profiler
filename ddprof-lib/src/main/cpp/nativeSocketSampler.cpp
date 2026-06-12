@@ -11,6 +11,7 @@
 #include "flightRecorder.h"
 #include "libraryPatcher.h"
 #include "log.h"
+#include "nativeSocketInterposer.h"
 #include "os.h"
 #include "profiler.h"
 #include "tsc.h"
@@ -44,6 +45,7 @@ std::atomic<NativeSocketSampler::send_fn>  NativeSocketSampler::_orig_send{nullp
 std::atomic<NativeSocketSampler::recv_fn>  NativeSocketSampler::_orig_recv{nullptr};
 std::atomic<NativeSocketSampler::write_fn> NativeSocketSampler::_orig_write{nullptr};
 std::atomic<NativeSocketSampler::read_fn>  NativeSocketSampler::_orig_read{nullptr};
+std::atomic<bool> NativeSocketSampler::_active{false};
 
 std::string NativeSocketSampler::resolveAddr(int fd) {
     struct sockaddr_storage ss;
@@ -386,7 +388,9 @@ Error NativeSocketSampler::start(Arguments &args) {
     TEST_LOG("NativeSocketSampler::start interval_ticks=%ld tsc_freq=%llu",
              init_interval, (unsigned long long)TSC::frequency());
 #endif
+    _active.store(true, std::memory_order_release);
     if (!LibraryPatcher::patch_socket_functions()) {
+        _active.store(false, std::memory_order_release);
         return Error("failed to install native socket hooks (dlsym returned NULL)");
     }
     return Error::OK;
@@ -402,7 +406,10 @@ void NativeSocketSampler::stop() {
              (unsigned long long)_record_accept_calls.load(std::memory_order_relaxed),
              (unsigned long long)_record_reject_calls.load(std::memory_order_relaxed));
 #endif
-    LibraryPatcher::unpatch_socket_functions();
+    _active.store(false, std::memory_order_release);
+    if (!NativeSocketInterposer::instance()->active()) {
+        LibraryPatcher::unpatch_socket_functions();
+    }
     clearFdCache();
 }
 

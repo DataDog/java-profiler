@@ -9,6 +9,7 @@
 #include "counters.h"
 #include "guards.h"
 #include "nativeSocketInterposer.h"
+#include "nativeSocketSampler.h"
 #include "profiler.h"
 
 #include <cassert>
@@ -604,6 +605,15 @@ bool LibraryPatcher::patch_socket_functions() {
                                                     cached_originals[hook_index]);
       }
     }
+    NativeSocketSampler::setOriginalFunctions(
+        reinterpret_cast<NativeSocketSampler::send_fn>(
+            cached_originals[NativeSocketInterposer::HOOK_SEND]),
+        reinterpret_cast<NativeSocketSampler::recv_fn>(
+            cached_originals[NativeSocketInterposer::HOOK_RECV]),
+        reinterpret_cast<NativeSocketSampler::write_fn>(
+            cached_originals[NativeSocketInterposer::HOOK_WRITE]),
+        reinterpret_cast<NativeSocketSampler::read_fn>(
+            cached_originals[NativeSocketInterposer::HOOK_READ]));
   }
 
   auto try_patch_slot = [&](void** location, void* hook, const char* name,

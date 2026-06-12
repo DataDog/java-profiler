@@ -8,6 +8,7 @@
 #if defined(__linux__)
 
 #include "libraryPatcher.h"
+#include "nativeSocketSampler.h"
 
 #include <errno.h>
 
@@ -28,7 +29,7 @@ static inline Ret runNativeIoHook(bool eligible, NativeBlockKind kind,
     errno = ENOSYS;
     return static_cast<Ret>(-1);
   }
-  if (!LibraryPatcher::_socket_active.load(std::memory_order_acquire) || !eligible) {
+  if (!NativeSocketInterposer::instance()->active() || !eligible) {
     return call(fn);
   }
 
@@ -170,20 +171,28 @@ void NativeSocketInterposer::clearFdTypeCache() {
 
 Error NativeSocketInterposer::start() {
   clearFdTypeCache();
+  _active.store(true, std::memory_order_release);
   if (!LibraryPatcher::patch_socket_functions()) {
+    _active.store(false, std::memory_order_release);
     return Error("failed to install native I/O hooks");
   }
   return Error::OK;
 }
 
 void NativeSocketInterposer::stop() {
-  LibraryPatcher::unpatch_socket_functions();
+  _active.store(false, std::memory_order_release);
+  if (!NativeSocketSampler::active()) {
+    LibraryPatcher::unpatch_socket_functions();
+  }
   clearFdTypeCache();
 }
 
 ssize_t NativeSocketInterposer::send_hook(int fd, const void* buf, size_t len,
                                           int flags) {
   return runStreamSocketHook<ssize_t>(fd, _orig_send, [&](send_fn fn) {
+    if (NativeSocketSampler::active()) {
+      return NativeSocketSampler::send_hook(fd, buf, len, flags);
+    }
     return fn(fd, buf, len, flags);
   });
 }
@@ -191,18 +200,27 @@ ssize_t NativeSocketInterposer::send_hook(int fd, const void* buf, size_t len,
 ssize_t NativeSocketInterposer::recv_hook(int fd, void* buf, size_t len,
                                           int flags) {
   return runStreamSocketHook<ssize_t>(fd, _orig_recv, [&](recv_fn fn) {
+    if (NativeSocketSampler::active()) {
+      return NativeSocketSampler::recv_hook(fd, buf, len, flags);
+    }
     return fn(fd, buf, len, flags);
   });
 }
 
 ssize_t NativeSocketInterposer::write_hook(int fd, const void* buf, size_t len) {
   return runStreamSocketHook<ssize_t>(fd, _orig_write, [&](write_fn fn) {
+    if (NativeSocketSampler::active()) {
+      return NativeSocketSampler::write_hook(fd, buf, len);
+    }
     return fn(fd, buf, len);
   });
 }
 
 ssize_t NativeSocketInterposer::read_hook(int fd, void* buf, size_t len) {
   return runStreamSocketHook<ssize_t>(fd, _orig_read, [&](read_fn fn) {
+    if (NativeSocketSampler::active()) {
+      return NativeSocketSampler::read_hook(fd, buf, len);
+    }
     return fn(fd, buf, len);
   });
 }

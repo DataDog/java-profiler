@@ -71,6 +71,7 @@ public:
     Error check(Arguments &args) override;
     Error start(Arguments &args) override;
     void  stop()                 override;
+    static bool active() { return _active.load(std::memory_order_acquire); }
 
     // Clears the fd-to-address cache and resets the fd-type cache.
     // Called from both start() (to reset state on restart) and stop().
@@ -113,6 +114,7 @@ private:
     static std::atomic<recv_fn>  _orig_recv;
     static std::atomic<write_fn> _orig_write;
     static std::atomic<read_fn>  _orig_read;
+    static std::atomic<bool>     _active;
 
     // Target aggregate event rate: ~83 events/s (~5000/min) across all four hooks
     // (send/write and recv/read) combined.

@@ -18,6 +18,7 @@
 #include "nativeFdClassifier.h"
 
 #include <poll.h>
+#include <atomic>
 #include <stdint.h>
 #include <signal.h>
 #include <sys/epoll.h>
@@ -75,6 +76,7 @@ public:
 
   Error start();
   void stop();
+  bool active() const { return _active.load(std::memory_order_acquire); }
 
   bool isStreamSocket(int fd);
   bool isDatagramSocket(int fd);
@@ -142,6 +144,7 @@ private:
   static pselect_fn _orig_pselect;
 
   NativeFdClassifier _fd_classifier;
+  std::atomic<bool> _active{false};
 
   NativeSocketInterposer() = default;
 };
