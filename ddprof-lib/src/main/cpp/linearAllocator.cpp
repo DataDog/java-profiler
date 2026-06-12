@@ -22,7 +22,7 @@
 #include <stdio.h>
 #ifdef TSAN_ENABLED
   #include <sys/mman.h>
-  #include <cassert>
+  #include <cstdlib>
 #endif
 
 // ASAN_ENABLED / TSAN_ENABLED are defined in common.h (toolchain-agnostic).
@@ -226,9 +226,13 @@ Chunk *LinearAllocator::allocateChunk(Chunk *current) {
     //
     // This MUST stay TSan-build-only: the libc mmap() wrapper and TSan's
     // interceptor are not async-signal-safe, and allocateChunk() is reachable
-    // from a signal handler in the full profiler. It is safe here only because
-    // TSAN_ENABLED is active solely in the isolated gtest binaries, which never
-    // drive the allocator from a signal handler.
+    // from a signal handler in the full profiler. TSAN_ENABLED is defined for
+    // any TSan-instrumented translation unit (it tracks the compiler's
+    // sanitizer detection in common.h, not the build target), but the build
+    // only applies -fsanitize=thread to the isolated gtest binaries — never to
+    // the shared library the JVM loads. Those gtest binaries never drive the
+    // allocator from a signal handler, so the non-async-signal-safe mmap() call
+    // here is safe in practice.
     #ifdef ASAN_ENABLED
     ASAN_UNPOISON_MEMORY_REGION(chunk, _chunk_size);
     #endif
@@ -236,10 +240,13 @@ Chunk *LinearAllocator::allocateChunk(Chunk *current) {
     void *remap = mmap(chunk, _chunk_size, PROT_READ | PROT_WRITE,
                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
     // MAP_FIXED unmaps before it maps, so a failure would leave a hole at
-    // `chunk`; assert loudly rather than silently leaving stale shadow (or
-    // crashing on the writes below). TSan builds are debug builds (NDEBUG unset).
-    assert(remap == chunk && "TSan shadow re-map (mmap MAP_FIXED) failed");
-    (void)remap;
+    // `chunk` and the writes below would fault. Abort unconditionally rather
+    // than via assert(), which an NDEBUG build would strip — turning a clean,
+    // diagnosable failure into a stale-shadow or use-after-unmap crash.
+    if (remap != chunk) {
+      perror("TSan shadow re-map (mmap MAP_FIXED) failed");
+      abort();
+    }
     #endif
 
     chunk->prev = current;
