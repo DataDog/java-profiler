@@ -1368,6 +1368,25 @@ jmethodID HotspotSupport::resolve(const void* method) {
           method_id = jni->GetStaticMethodID(clz, method_name, method_signature);
           if (method_id == nullptr) {
             jni->ExceptionClear();
+            // JNI GetMethodID/GetStaticMethodID cannot look up <clinit> because
+            // the JVM intentionally hides class initializers from JNI callers.
+            // Fall back to JVMTI GetClassMethods, which covers all methods
+            // including <clinit> and forces jmethodID slot allocation for them.
+            // After the call, re-read the ID directly from VM metadata.
+            if (strcmp(method_name, "<clinit>") == 0) {
+              jvmtiEnv* jvmti = VM::jvmti();
+              if (jvmti != nullptr) {
+                jint count = 0;
+                jmethodID* methods = nullptr;
+                if (jvmti->GetClassMethods(clz, &count, &methods) == JVMTI_ERROR_NONE) {
+                  jvmti->Deallocate((unsigned char*)methods);
+                  jmethodID validated = vm_method->validatedId();
+                  if (isValidJMethodID(validated)) {
+                    method_id = validated;
+                  }
+                }
+              }
+            }
           }
         }
 
