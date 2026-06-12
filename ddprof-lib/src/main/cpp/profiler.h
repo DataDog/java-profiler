@@ -375,7 +375,7 @@ public:
   // JFR recording). We only emit the CPU/wall sample event with no
   // stack-trace reference, tagged by the correlation ID we passed to
   // RequestStackTrace as user_data.
-  void recordSampleDelegated(void *ucontext, u64 weight, int tid,
+  bool recordSampleDelegated(void *ucontext, u64 weight, int tid,
                              jint event_type, Event *event);
   u64 recordJVMTISample(u64 weight, int tid, jthread thread, jint event_type, Event *event, bool deferred);
   void recordDeferredSample(int tid, u64 call_trace_id, jint event_type, Event *event);

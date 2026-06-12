@@ -166,6 +166,8 @@ class WallClockASGCT : public BaseWallClock {
 // VM::canRequestStackTrace().
 class WallClockJvmti : public BaseWallClock {
   private:
+    bool _precheck;
+
     static void sharedSignalHandler(int signo, siginfo_t* siginfo, void* ucontext);
     void signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64 last_sample);
 
@@ -173,7 +175,7 @@ class WallClockJvmti : public BaseWallClock {
     void timerLoop() override;
 
   public:
-    WallClockJvmti() : BaseWallClock() {}
+    WallClockJvmti() : BaseWallClock(), _precheck(false) {}
     const char* name() override {
         return "WallClock (JVMTI)";
     }

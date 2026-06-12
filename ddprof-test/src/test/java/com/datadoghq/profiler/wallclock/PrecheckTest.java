@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler.wallclock;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
@@ -114,7 +119,7 @@ public class PrecheckTest extends AbstractProfilerTest {
 
         Path recordingB = Files.createTempFile(Paths.get("/tmp/recordings"),
                 "PrecheckTest_disabled_", ".jfr");
-        profiler.execute("start,wall=1ms,wallprecheck=false,filter=0"
+        profiler.execute("start," + getPrecheckDisabledProfilerCommand()
                 + ",attributes=tag1;tag2;tag3,jfr,file=" + recordingB.toAbsolutePath());
         Thread.sleep(300);
         profiler.stop();
@@ -141,5 +146,9 @@ public class PrecheckTest extends AbstractProfilerTest {
     @Override
     protected String getProfilerCommand() {
         return "wall=1ms,wallprecheck=true";
+    }
+
+    protected String getPrecheckDisabledProfilerCommand() {
+        return "wall=1ms,wallprecheck=false,filter=0";
     }
 }
