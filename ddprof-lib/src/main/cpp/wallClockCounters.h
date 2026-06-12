@@ -25,7 +25,7 @@ public:
   }
 
   static u64 drainSuppressedSampledRun() {
-    return (u64)_suppressed_sampled_run.exchange(0, std::memory_order_acquire);
+    return (u64)_suppressed_sampled_run.exchange(0, std::memory_order_acq_rel);
   }
 
   static void reset() {
