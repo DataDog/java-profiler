@@ -22,8 +22,11 @@ variables:
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual
       allow_failure: true
+    # codesync mirrors GitHub PR pushes as push-source pipelines; run benchmarks
+    # automatically and non-blocking (allow_failure). The before_script CANCELLED
+    # gate skips branches with no open PR.
     - if: '$CI_PIPELINE_SOURCE == "push"'
-      when: manual
+      when: on_success
       allow_failure: true
   script: |
     # setup the env
