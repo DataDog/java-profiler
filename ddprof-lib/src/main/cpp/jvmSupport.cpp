@@ -122,8 +122,8 @@ bool JVMSupport::loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klas
         return false;
     }
 
-    if (VM::isHotspot() && state == Partial_loaded) {
-        return HotspotSupport::loadMethodIDsIfNeededImpl(jvmti, jni, klass);
+    if (VM::isHotspot()) {
+        return HotspotSupport::loadMethodIDsIfNeededImpl(jvmti, jni, klass, state == Fully_loaded /* load all */);
     } else {
         return loadMethodIDsImpl(jvmti, jni, klass);
     }

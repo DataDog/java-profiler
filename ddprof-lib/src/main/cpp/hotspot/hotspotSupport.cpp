@@ -1270,30 +1270,32 @@ bool isHiddenClass(jvmtiEnv *jvmti, jclass clazz) {
     return false;
 }
 
-bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
-    jobject cl = nullptr;
-    // Hidden/lambda classes can not unloaded, fallback to use jmethodIDs, so preload them.
-    if (!isHiddenClass(jvmti, klass) &&
-        jvmti->GetClassLoader(klass, &cl) == JVMTI_ERROR_NONE && 
-        isSystemClassLoader(jni, cl)) {
-        char* signature_ptr = nullptr;
-        if (jvmti->GetClassSignature(klass, &signature_ptr, nullptr) == JVMTI_ERROR_NONE) {
-            // Lambda classes, even loaded by bootstrap class loader, can be unloaded,
-            // fallback to jmethodID
-            if (!isLambdaClass(signature_ptr)) {
-                if (cl != nullptr) {
-                    jni->DeleteLocalRef(cl);
+bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool load_all) {
+    if (!load_all) {
+        jobject cl = nullptr;
+        // Hidden/lambda classes can not unloaded, fallback to use jmethodIDs, so preload them.
+        if (!isHiddenClass(jvmti, klass) &&
+            jvmti->GetClassLoader(klass, &cl) == JVMTI_ERROR_NONE && 
+            isSystemClassLoader(jni, cl)) {
+            char* signature_ptr = nullptr;
+            if (jvmti->GetClassSignature(klass, &signature_ptr, nullptr) == JVMTI_ERROR_NONE) {
+                // Lambda classes, even loaded by bootstrap class loader, can be unloaded,
+                // fallback to jmethodID
+                if (!isLambdaClass(signature_ptr)) {
+                    if (cl != nullptr) {
+                        jni->DeleteLocalRef(cl);
+                    }
+                    jvmti->Deallocate((unsigned char*)signature_ptr);
+                    return false;
                 }
+            }
+            if (signature_ptr != nullptr) {
                 jvmti->Deallocate((unsigned char*)signature_ptr);
-                return false;
             }
         }
-        if (signature_ptr != nullptr) {
-            jvmti->Deallocate((unsigned char*)signature_ptr);
+        if (cl != nullptr) {
+            jni->DeleteLocalRef(cl);
         }
-    }
-    if (cl != nullptr) {
-        jni->DeleteLocalRef(cl);
     }
     patchClassLoaderData(jni, klass);
     return JVMSupport::loadMethodIDsImpl(jvmti, jni, klass);
