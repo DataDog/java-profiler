@@ -27,7 +27,7 @@ import java.util.function.Consumer;
  * OTelContext context = OTelContext.getInstance();
  * 
  * // Set process context for external discovery
- * context.setProcessContext(...);
+ * context.initializeAllContext(...);
  * }</pre>
  * 
  * <p><b>External Discovery:</b> Once published, the process context can be
@@ -146,7 +146,7 @@ public final class OTelContext {
      * Reads the currently published OpenTelemetry process context, if any.
      * 
      * <p>This method attempts to read back the process context that was previously
-     * published via {@link #setProcessContext(String, String, String, String, String, String, String[])}. This is
+     * published via {@link #initializeAllContext(String, String, String, String, String, String, String[])}. This is
      * primarily useful for debugging and testing purposes.
      * 
      * <p><b>Platform Support:</b> Currently only supported on Linux. On other
@@ -169,7 +169,16 @@ public final class OTelContext {
     }
 
     /**
-     * Sets the OpenTelemetry process context for external discovery and monitoring.
+     * Initializes the OpenTelemetry context shared with external profilers: it publishes the
+     * process-level context and, as part of the same call, sets up the custom thread-context
+     * attribute names ({@code attributeKeys}) as the {@code attribute_key_map}. Callers must
+     * invoke this method for those custom attribute names to be published.
+     *
+     * <p><b>Important:</b> if this method is mistakenly not called, the omission is easy to miss
+     * because nothing visibly breaks; java-profiler keeps working and in-process profiling and
+     * per-thread context capture are unaffected. The only effect is silent and external: readers
+     * implementing the OpenTelemetry context sharing specification will be unable to read
+     * this information (the process context and the thread-context {@code attribute_key_map}).
      * 
      * <p>This method publishes process-level context information following OpenTelemetry
      * semantic conventions. The context is made available to external monitoring tools
@@ -188,7 +197,7 @@ public final class OTelContext {
      * 
      * <p><b>Usage Example:</b>
      * <pre>{@code
-     * OTelContext.getInstance().setProcessContext(
+     * OTelContext.getInstance().initializeAllContext(
      *     "staging",           // env
      *     "my-hostname",       // hostname
      *     "instance-12345",    // runtime-id
@@ -233,7 +242,7 @@ public final class OTelContext {
      * @see <a href="https://opentelemetry.io/docs/specs/semconv/registry/attributes/service/">OpenTelemetry Service Attributes</a>
      * @see <a href="https://opentelemetry.io/docs/specs/semconv/registry/attributes/deployment/">OpenTelemetry Deployment Attributes</a>
      */
-    public void setProcessContext(String env, String hostname, String runtimeId, String service, String version, String tracerVersion, String[] attributeKeys) {
+    public void initializeAllContext(String env, String hostname, String runtimeId, String service, String version, String tracerVersion, String[] attributeKeys) {
         Objects.requireNonNull(attributeKeys, "attributeKeys");
         if (!libraryLoadResult.succeeded) {
             return;

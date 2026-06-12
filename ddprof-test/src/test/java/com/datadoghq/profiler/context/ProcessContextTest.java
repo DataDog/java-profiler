@@ -28,10 +28,10 @@ public class ProcessContextTest {
         String version = "1.0.0";
         String tracerVersion = "3.5.0";
 
-        OTelContext.getInstance().setProcessContext(env, hostname, runtimeId, service, version, tracerVersion, new String[0]);
+        OTelContext.getInstance().initializeAllContext(env, hostname, runtimeId, service, version, tracerVersion, new String[0]);
 
         OtelMappingInfo mapping = findOtelMapping();
-        assertNotNull(mapping, "OTEL mapping should exist after setProcessContext");
+        assertNotNull(mapping, "OTEL mapping should exist after initializeAllContext");
 
         verifyMappingPermissions(mapping);
 
@@ -99,7 +99,7 @@ public class ProcessContextTest {
         String tracerVersion = "3.5.0";
 
         OTelContext context = OTelContext.getInstance();
-        context.setProcessContext(env, hostname, runtimeId, service, version, tracerVersion,
+        context.initializeAllContext(env, hostname, runtimeId, service, version, tracerVersion,
             new String[] {"http.route", "db.system"});
 
         OTelContext.ProcessContext readContext = context.readProcessContext();
@@ -126,7 +126,7 @@ public class ProcessContextTest {
         OTelContext context = OTelContext.getInstance();
 
         // Publish a known-good context first.
-        context.setProcessContext("env-a", "host-a", "rt-a", "svc-a", "1.0.0", "3.5.0",
+        context.initializeAllContext("env-a", "host-a", "rt-a", "svc-a", "1.0.0", "3.5.0",
             new String[] {"http.route"});
 
         OTelContext.ProcessContext before = context.readProcessContext();
@@ -135,7 +135,7 @@ public class ProcessContextTest {
 
         // A null element in the keys array aborts the entire publish: the previously
         // published context must remain untouched, not just have the bad key dropped.
-        context.setProcessContext("env-b", "host-b", "rt-b", "svc-b", "2.0.0", "4.0.0",
+        context.initializeAllContext("env-b", "host-b", "rt-b", "svc-b", "2.0.0", "4.0.0",
             new String[] {"http.route", null, "db.system"});
 
         OTelContext.ProcessContext after = context.readProcessContext();
@@ -161,7 +161,7 @@ public class ProcessContextTest {
         }
 
         OTelContext context = OTelContext.getInstance();
-        context.setProcessContext("test-env", "test-hostname", "test-instance-123",
+        context.initializeAllContext("test-env", "test-hostname", "test-instance-123",
             "test-service", "1.0.0", "3.5.0", keys);
 
         OTelContext.ProcessContext readContext = context.readProcessContext();
