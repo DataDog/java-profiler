@@ -27,6 +27,10 @@ public:
   static u64 drainSuppressedSampledRun() {
     return (u64)_suppressed_sampled_run.exchange(0, std::memory_order_acquire);
   }
+
+  static void reset() {
+    _suppressed_sampled_run.store(0, std::memory_order_relaxed);
+  }
 };
 
 #endif // _WALLCLOCK_COUNTERS_H

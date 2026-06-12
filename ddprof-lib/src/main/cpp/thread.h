@@ -237,8 +237,8 @@ public:
     return &_otel_ctx_record;
   }
 
-  // CAS RMW to update only TYPE_MASK bits without clobbering FLAG_PARKED set concurrently
-  // by parkEnter/parkExit running in signal-handler context on the same thread.
+  // CAS RMW to update only TYPE_MASK bits without clobbering FLAG_PARKED, which
+  // is managed independently by the Java park hooks on the owning thread.
   inline void setJavaThread(bool is_java) {
     const u32 type_bits = is_java ? static_cast<u32>(TYPE_JAVA_THREAD) : static_cast<u32>(TYPE_NOT_JAVA_THREAD);
     u32 cur = __atomic_load_n(&_misc_flags, __ATOMIC_RELAXED);

@@ -35,6 +35,7 @@
 #include "tsc.h"
 #include "utils.h"
 #include "wallClock.h"
+#include "wallClockCounters.h"
 #include "frames.h"
 
 #include <algorithm>
@@ -1261,6 +1262,7 @@ Error Profiler::start(Arguments &args, bool reset) {
       unlockAll();
     }
     Counters::reset();
+    WallClockCounters::reset();
 
     // Reset thread names and IDs
     _thread_info.clearAll();
