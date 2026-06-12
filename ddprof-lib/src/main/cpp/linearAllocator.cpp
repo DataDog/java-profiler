@@ -20,26 +20,17 @@
 #include "os.h"
 #include "common.h"
 #include <stdio.h>
-#ifdef __SANITIZE_THREAD__
+#ifdef TSAN_ENABLED
   #include <sys/mman.h>
+  #include <cassert>
 #endif
 
-// Enable ASan memory poisoning for better use-after-free detection
-#ifdef __has_feature
-  #if __has_feature(address_sanitizer)
-    #define ASAN_ENABLED 1
-  #endif
-#endif
-
-#ifdef __SANITIZE_ADDRESS__
-  #define ASAN_ENABLED 1
-#endif
-
+// ASAN_ENABLED / TSAN_ENABLED are defined in common.h (toolchain-agnostic).
 #ifdef ASAN_ENABLED
   #include <sanitizer/asan_interface.h>
 #endif
 
-#ifdef __SANITIZE_THREAD__
+#ifdef TSAN_ENABLED
   #include <sanitizer/tsan_interface.h>
 #endif
 
@@ -58,13 +49,13 @@ void LinearAllocator::clear() {
   // never clears shadow memory on munmap.  Add explicit acquire/release around
   // every plain prev-field read so the happens-before chain from freeChunk's
   // __tsan_release reaches any thread that later reuses the same VA.
-  #ifdef __SANITIZE_THREAD__
+  #ifdef TSAN_ENABLED
   __tsan_acquire(_reserve);
   #endif
   if (_reserve->prev == _tail) {
     freeChunk(_reserve);  // __tsan_release inside
   }
-  #ifdef __SANITIZE_THREAD__
+  #ifdef TSAN_ENABLED
   else {
     __tsan_release(_reserve);  // not freed here; release for future VA-reuse acquirers
   }
@@ -95,14 +86,14 @@ void LinearAllocator::clear() {
   // chain covers the condition check, not just the assignment inside the body.
   {
     Chunk *current = _tail;
-    #ifdef __SANITIZE_THREAD__
+    #ifdef TSAN_ENABLED
     __tsan_acquire(current);  // before the first current->prev read (loop condition)
     #endif
     while (current->prev != NULL) {
       Chunk *next = current->prev;
       freeChunk(current);  // __tsan_release(current) + safeFree inside
       current = next;
-      #ifdef __SANITIZE_THREAD__
+      #ifdef TSAN_ENABLED
       __tsan_acquire(current);  // before the next iteration's current->prev read
       #endif
     }
@@ -126,13 +117,13 @@ ChunkList LinearAllocator::detachChunks() {
   // have been allocated by another thread via reserveChunk() → allocateChunk(),
   // which released ownership with __tsan_release after writing chunk->prev.
   if (_reserve != _tail) {
-    #ifdef __SANITIZE_THREAD__
+    #ifdef TSAN_ENABLED
     __tsan_acquire(_reserve);
     #endif
     if (_reserve->prev == _tail) {
       result.head = _reserve;
     }
-    #ifdef __SANITIZE_THREAD__
+    #ifdef TSAN_ENABLED
     __tsan_release(_reserve);
     #endif
   }
@@ -166,11 +157,11 @@ void LinearAllocator::freeChunks(ChunkList& chunks) {
     // __tsan_release in allocateChunk() that published the initialized chunk.
     // Without this, TSan cannot connect the writer's (e.g. reserveChunk thread)
     // initialization of chunk->prev to this read, and reports a false data race.
-    #ifdef __SANITIZE_THREAD__
+    #ifdef TSAN_ENABLED
     __tsan_acquire(current);
     #endif
     Chunk* prev = current->prev;
-    #ifdef __SANITIZE_THREAD__
+    #ifdef TSAN_ENABLED
     __tsan_release(current);
     #endif
     OS::safeFree(current, chunks.chunk_size);
@@ -232,12 +223,23 @@ Chunk *LinearAllocator::allocateChunk(Chunk *current) {
     // mmap() and calls MemoryRangeImitateWrite, which sets all 4 shadow slots
     // for the entire chunk range to the current thread's write — completely
     // overwriting any stale entries. safeAlloc itself is unchanged.
+    //
+    // This MUST stay TSan-build-only: the libc mmap() wrapper and TSan's
+    // interceptor are not async-signal-safe, and allocateChunk() is reachable
+    // from a signal handler in the full profiler. It is safe here only because
+    // TSAN_ENABLED is active solely in the isolated gtest binaries, which never
+    // drive the allocator from a signal handler.
     #ifdef ASAN_ENABLED
     ASAN_UNPOISON_MEMORY_REGION(chunk, _chunk_size);
     #endif
-    #ifdef __SANITIZE_THREAD__
-    mmap(chunk, _chunk_size, PROT_READ | PROT_WRITE,
-         MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    #ifdef TSAN_ENABLED
+    void *remap = mmap(chunk, _chunk_size, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    // MAP_FIXED unmaps before it maps, so a failure would leave a hole at
+    // `chunk`; assert loudly rather than silently leaving stale shadow (or
+    // crashing on the writes below). TSan builds are debug builds (NDEBUG unset).
+    assert(remap == chunk && "TSan shadow re-map (mmap MAP_FIXED) failed");
+    (void)remap;
     #endif
 
     chunk->prev = current;
@@ -245,7 +247,7 @@ Chunk *LinearAllocator::allocateChunk(Chunk *current) {
 
     // Publish the initialized chunk: any thread that later acquires this chunk
     // (via __tsan_acquire in freeChunks/detachChunks) will see these writes.
-    #ifdef __SANITIZE_THREAD__
+    #ifdef TSAN_ENABLED
     __tsan_release(chunk);
     #endif
 
@@ -257,10 +259,10 @@ Chunk *LinearAllocator::allocateChunk(Chunk *current) {
 
 void LinearAllocator::freeChunk(Chunk *current) {
   // Release TSan ownership before munmap so the sanitizer knows this thread is
-  // done with the memory.  The paired __tsan_acquire in allocateChunk() ensures
-  // the next thread to receive this VA (after OS VA reuse) starts with a clean
-  // happens-before baseline rather than seeing stale access history.
-  #ifdef __SANITIZE_THREAD__
+  // done with the memory.  The mmap(MAP_FIXED) re-map in allocateChunk() resets
+  // the shadow for whichever thread later reuses this VA (after OS VA reuse), so
+  // it starts from a clean baseline rather than seeing stale access history.
+  #ifdef TSAN_ENABLED
   __tsan_release(current);
   #endif
   OS::safeFree(current, _chunk_size);
