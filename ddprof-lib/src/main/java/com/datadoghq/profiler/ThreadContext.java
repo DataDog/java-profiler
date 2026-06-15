@@ -28,6 +28,7 @@ import java.nio.charset.StandardCharsets;
  * for minimal overhead. Only little-endian platforms are supported.
  */
 public final class ThreadContext {
+    // Must equal ContextSetter.TAGS_STORAGE_LIMIT — both cap the same physical slot range.
     private static final int MAX_CUSTOM_SLOTS = 10;
     // Max UTF-8 byte length for a custom attribute value. Matches the 1-byte length
     // field in the OTEP attrs_data entry header. Enforced up front in setContextAttribute
@@ -313,17 +314,89 @@ public final class ThreadContext {
 
         // Write both sidecar and OTEP attrs_data inside the detach/attach window
         // so a signal handler never sees a new sidecar encoding alongside old attrs_data.
-        int otepKeyIndex = keyIndex + 1;
         detach();
-        ctxBuffer.putInt(TAG_ENCODINGS_OFFSET + keyIndex * Integer.BYTES, encoding);
-        boolean written = replaceOtepAttribute(otepKeyIndex, utf8);
-        if (!written) {
-            // attrs_data overflow: the old entry was compacted out and the new one
-            // couldn't fit. Zero the sidecar so both views agree there is no value.
-            ctxBuffer.putInt(TAG_ENCODINGS_OFFSET + keyIndex * Integer.BYTES, 0);
-        }
+        boolean written = writeSlot(keyIndex, encoding, utf8);
         attach();
         return written;
+    }
+
+    /**
+     * Writes one slot's sidecar encoding and OTEP attrs_data value. The caller must already hold
+     * the detach/attach window. On attrs_data overflow the old entry was compacted out and the new
+     * one couldn't fit, so the sidecar is zeroed to keep both views agreeing there is no value.
+     *
+     * @return true if the value was written; false on attrs_data overflow (sidecar left zeroed)
+     */
+    private boolean writeSlot(int keyIndex, int encoding, byte[] utf8) {
+        ctxBuffer.putInt(TAG_ENCODINGS_OFFSET + keyIndex * Integer.BYTES, encoding);
+        if (!replaceOtepAttribute(keyIndex + 1, utf8)) {
+            ctxBuffer.putInt(TAG_ENCODINGS_OFFSET + keyIndex * Integer.BYTES, 0);
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Re-applies multiple custom attributes from precomputed constant IDs and UTF-8 bytes in a
+     * single detach/attach window, without Dictionary lookups or per-thread cache access.
+     *
+     * <p>Both arrays are indexed by key slot, matching the layout produced by
+     * {@link #copyCustoms(int[])}. For each slot {@code i} with {@code constantIds[i] > 0}, the
+     * sidecar encoding (DD signal handler) and the OTEP attrs_data value (external profilers) are
+     * written together; slots with {@code constantIds[i] <= 0} are left untouched. Performing all
+     * writes inside one detach/attach window means a signal handler never observes a partially
+     * re-applied set.
+     *
+     * <p>Intended for the reapply-app-context hot path: the caller already holds the constant IDs
+     * (from {@link #copyCustoms(int[])}) and the UTF-8 bytes (from the original Strings), so this
+     * does no String allocation, hashing, or cache lookup. The record is re-published only if it
+     * was valid before the call, so a cleared (span-less) record is not resurrected.
+     *
+     * <p><b>Caller contract.</b> {@code constantIds[i]} must be an ID previously returned for the
+     * same value via {@link #copyCustoms(int[])} within the current profiler session, and
+     * {@code utf8[i]} must be that value's UTF-8 bytes. The (id, bytes) pairing is not verifiable
+     * here; a mismatch silently diverges the sidecar and attrs_data views.
+     *
+     * @param constantIds per-slot Dictionary constant IDs; entries {@code <= 0} are skipped
+     * @param utf8        per-slot UTF-8 value bytes; must be non-null and at most
+     *                    {@value #MAX_VALUE_BYTES} bytes for every slot whose constantId {@code > 0}
+     * @return true if every slot with {@code constantId > 0} was written; false on invalid
+     *         arguments (null arrays, length mismatch, or a missing/oversized {@code utf8} entry),
+     *         if the record was not valid before the call (nothing published), or if any slot
+     *         overflowed attrs_data (that slot's sidecar is zeroed)
+     */
+    public boolean setContextAttributesByIdAndBytes(int[] constantIds, byte[][] utf8) {
+        if (constantIds == null || utf8 == null || constantIds.length != utf8.length) {
+            return false;
+        }
+        int len = Math.min(constantIds.length, MAX_CUSTOM_SLOTS);
+        // Validate before mutating so malformed input never leaves a half-written record.
+        for (int i = 0; i < len; i++) {
+            if (constantIds[i] > 0) {
+                byte[] bytes = utf8[i];
+                if (bytes == null || bytes.length > MAX_VALUE_BYTES) {
+                    return false;
+                }
+            }
+        }
+        // Never resurrect a cleared (span-less) record: valid=0 means no reader can observe
+        // what we write, and re-publishing would expose a record with no trace/span context.
+        if (ctxBuffer.get(validOffset) == 0) {
+            return false;
+        }
+        detach();
+        boolean allWritten = true;
+        for (int i = 0; i < len; i++) {
+            int constantId = constantIds[i];
+            if (constantId <= 0) {
+                continue;
+            }
+            if (!writeSlot(i, constantId, utf8[i])) {
+                allWritten = false;
+            }
+        }
+        attach();
+        return allWritten;
     }
 
     /**

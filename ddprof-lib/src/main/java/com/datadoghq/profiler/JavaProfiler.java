@@ -221,6 +221,10 @@ public final class JavaProfiler {
         tlsContextStorage.get().clearContextAttribute(offset);
     }
 
+    public boolean setContextAttributesByIdAndBytes(int[] constantIds, byte[][] utf8) {
+        return tlsContextStorage.get().setContextAttributesByIdAndBytes(constantIds, utf8);
+    }
+
     void copyTags(int[] snapshot) {
         tlsContextStorage.get().copyCustoms(snapshot);
     }

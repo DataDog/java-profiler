@@ -7,6 +7,7 @@ import java.util.Set;
 
 public class ContextSetter {
 
+    // Must equal ThreadContext.MAX_CUSTOM_SLOTS — both cap the same physical slot range.
     private static final int TAGS_STORAGE_LIMIT = 10;
     private final List<String> attributes;
     private final JavaProfiler profiler;
@@ -30,7 +31,7 @@ public class ContextSetter {
     }
 
     public void snapshotTags(int[] snapshot) {
-        if (snapshot.length <= attributes.size()) {
+        if (snapshot.length >= attributes.size()) {
             profiler.copyTags(snapshot);
         }
     }
@@ -48,6 +49,17 @@ public class ContextSetter {
             return profiler.setContextAttribute(offset, value);
         }
         return false;
+    }
+
+    /**
+     * Re-applies attribute values from precomputed constant IDs and UTF-8 bytes, indexed by slot
+     * (as produced by {@link #snapshotTags(int[])}). Restores both the DD sidecar encoding and the
+     * OTEP attrs_data value for every slot whose constantId is {@code > 0}, in a single atomic
+     * publish — no String allocation, hashing, or cache lookup. Intended for re-applying
+     * application-managed context after a {@code setContext} span activation wipes the slots.
+     */
+    public boolean setContextValuesByIdAndBytes(int[] constantIds, byte[][] utf8) {
+        return profiler.setContextAttributesByIdAndBytes(constantIds, utf8);
     }
 
     public boolean clearContextValue(String attribute) {
