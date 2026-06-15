@@ -16,7 +16,6 @@
 package com.datadoghq.profiler.context;
 
 import com.datadoghq.profiler.JavaProfiler;
-import com.datadoghq.profiler.OTelContext;
 import com.datadoghq.profiler.ThreadContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -88,9 +87,6 @@ public class OtelContextStorageModeTest {
         profiler.execute(String.format("start,cpu=1ms,attributes=http.route;db.system,jfr,file=%s", jfrFile.toAbsolutePath()));
         profilerStarted = true;
 
-        // Register attribute keys
-        OTelContext.getInstance().registerAttributeKeys("http.route", "db.system");
-
         long localRootSpanId = 0x1111222233334444L;
         long spanId = 0xAAAABBBBCCCCDDDDL;
         profiler.setContext(localRootSpanId, spanId, 0L, 0x9999L);
@@ -120,8 +116,6 @@ public class OtelContextStorageModeTest {
 
         profiler.execute(String.format("start,cpu=1ms,attributes=k0;k1;k2;k3;k4,jfr,file=%s", jfrFile.toAbsolutePath()));
         profilerStarted = true;
-
-        OTelContext.getInstance().registerAttributeKeys("k0", "k1", "k2", "k3", "k4");
 
         profiler.setContext(0x2L, 0x1L, 0L, 0x3L);
 
@@ -212,8 +206,6 @@ public class OtelContextStorageModeTest {
         profiler.execute(String.format("start,cpu=1ms,attributes=http.route,jfr,file=%s", jfrFile.toAbsolutePath()));
         profilerStarted = true;
 
-        OTelContext.getInstance().registerAttributeKeys("http.route");
-
         // Span A: set a custom attribute
         profiler.setContext(0x1L, 0x1L, 0L, 0x1L);
         ThreadContext ctx = profiler.getThreadContext();
@@ -256,7 +248,6 @@ public class OtelContextStorageModeTest {
         Path jfrFile = Files.createTempFile("otel-attr-cache-iso", ".jfr");
         profiler.execute(String.format("start,cpu=1ms,attributes=attr0,jfr,file=%s", jfrFile.toAbsolutePath()));
         profilerStarted = true;
-        OTelContext.getInstance().registerAttributeKeys("attr0");
 
         final String valueA = "FB"; // hashCode = 2236, slot 188
         final String valueB = "Ea"; // hashCode = 2236, same slot
