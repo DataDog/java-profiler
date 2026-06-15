@@ -368,23 +368,4 @@ object PlatformUtils {
         }
     }
 
-    /**
-     * Returns the major version of the test JVM (e.g. 8, 11, 17, 21, 25).
-     * Returns 0 if the version cannot be determined.
-     */
-    fun testJvmMajorVersion(): Int {
-        val javaHome = testJavaHome()
-        return try {
-            val process = ProcessBuilder("$javaHome/bin/java", "-version")
-                .redirectErrorStream(true)
-                .start()
-            val output = process.inputStream.bufferedReader().readText()
-            process.waitFor(10, TimeUnit.SECONDS)
-            // version line: java version "1.8.0_xxx" or java version "21.0.x" etc.
-            val match = Regex("""version "(?:1\.)?(\d+)""").find(output)
-            match?.groupValues?.get(1)?.toIntOrNull() ?: 0
-        } catch (_: Exception) {
-            0
-        }
-    }
 }
