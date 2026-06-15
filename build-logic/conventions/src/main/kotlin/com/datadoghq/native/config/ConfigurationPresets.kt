@@ -211,9 +211,21 @@ object ConfigurationPresets {
                 if (libasan != null) {
                     config.testEnvironment.apply {
                         put("LD_PRELOAD", libasan)
-                        put("ASAN_OPTIONS", "allocator_may_return_null=1:unwind_abort_on_malloc=1:use_sigaltstack=0:detect_stack_use_after_return=0:handle_segv=0:halt_on_error=0:abort_on_error=0:print_stacktrace=1:symbolize=1:suppressions=$rootDir/gradle/sanitizers/asan.supp")
+                        put("ASAN_OPTIONS", "allocator_may_return_null=1:unwind_abort_on_malloc=1:use_sigaltstack=0:detect_stack_use_after_return=0:handle_segv=0:halt_on_error=0:abort_on_error=0:print_stacktrace=1:symbolize=1:log_path=/tmp/asan.log:suppressions=$rootDir/gradle/sanitizers/asan.supp")
                         put("UBSAN_OPTIONS", "halt_on_error=0:abort_on_error=0:print_stacktrace=1:suppressions=$rootDir/gradle/sanitizers/ubsan.supp")
                         put("LSAN_OPTIONS", "detect_leaks=0")
+                    }
+                    // JDK 25's G1GC reserves heap virtual address space starting just below 2 GB
+                    // (0x7fff7000), which is exactly where ASan needs to mmap its shadow bytes
+                    // [0x7fff7000-0x10007fff7fff].  Force the heap to a very low base address so
+                    // the entire JVM footprint (heap + class space + code cache) stays well below
+                    // the shadow range and the two regions no longer conflict.
+                    if (PlatformUtils.testJvmMajorVersion() >= 25) {
+                        config.testJvmArgs.addAll(listOf(
+                            "-XX:HeapBaseMinAddress=0x4000000",
+                            "-Xmx512m",
+                            "-XX:CompressedClassSpaceSize=256m"
+                        ))
                     }
                 }
             }

@@ -111,6 +111,7 @@ class ProfilerTestPlugin : Plugin<Project> {
         val testClasspath: FileCollection,
         val standardJvmArgs: List<String>,
         val extraJvmArgs: List<String>,
+        val configJvmArgs: List<String>,
         val systemProperties: Map<String, String>,
         val environmentVariables: Map<String, String>
     )
@@ -164,6 +165,7 @@ class ProfilerTestPlugin : Plugin<Project> {
             testClasspath = testClasspath,
             standardJvmArgs = extension.standardJvmArgs.get(),
             extraJvmArgs = extension.extraJvmArgs.get(),
+            configJvmArgs = config.testJvmArgs.get(),
             systemProperties = systemProps,
             environmentVariables = envVars
         )
@@ -247,6 +249,7 @@ class ProfilerTestPlugin : Plugin<Project> {
                 }
 
                 allArgs.addAll(testConfig.extraJvmArgs)
+                allArgs.addAll(testConfig.configJvmArgs)
                 testTask.jvmArgs(allArgs)
             }
 
@@ -303,6 +306,7 @@ class ProfilerTestPlugin : Plugin<Project> {
                     allArgs.add("-Djava.library.path=${extension.nativeLibDir.get().asFile.absolutePath}")
                 }
                 allArgs.addAll(testConfig.extraJvmArgs)
+                allArgs.addAll(testConfig.configJvmArgs)
 
                 // System properties
                 testConfig.systemProperties.forEach { (key, value) ->
