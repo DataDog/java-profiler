@@ -17,6 +17,7 @@ package com.datadoghq.profiler.stresstest.scenarios.throughput;
 
 import com.datadoghq.profiler.JavaProfiler;
 import com.datadoghq.profiler.ThreadContext;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.ThreadLocalRandom;
@@ -81,6 +82,34 @@ public class ThreadContextBenchmark {
         }
     }
 
+    @State(Scope.Thread)
+    public static class ReapplyState {
+        ThreadContext ctx;
+        long spanId;
+        long localRootSpanId;
+        int[] constantIds;
+        byte[][] utf8;
+
+        @Setup(Level.Trial)
+        public void setup(ProfilerState ps) {
+            ctx = ps.profiler.getThreadContext();
+            spanId = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+            localRootSpanId = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+
+            // Prime the normal path to obtain constant IDs, then snapshot for reapply.
+            ctx.put(localRootSpanId, spanId, 0, spanId);
+            for (int i = 0; i < ROUTES.length && i < 10; i++) {
+                ctx.setContextAttribute(i % ROUTES.length, ROUTES[i % ROUTES.length]);
+            }
+            constantIds = new int[10];
+            ctx.copyCustoms(constantIds);
+            utf8 = new byte[10][];
+            for (int i = 0; i < ROUTES.length && i < 10; i++) {
+                utf8[i] = ROUTES[i % ROUTES.length].getBytes(StandardCharsets.UTF_8);
+            }
+        }
+    }
+
     @Benchmark
     public void setContextFull(ThreadState ts) {
         ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.spanId);
@@ -131,5 +160,32 @@ public class ThreadContextBenchmark {
     @Benchmark
     public void clearContext(ThreadState ts) {
         ts.ctx.put(0, 0, 0, 0);
+    }
+
+    /** Bare reapply cost with constant IDs and bytes already in hand — no Dictionary lookup. */
+    @Benchmark
+    public boolean reapplyByIdAndBytes(ReapplyState rs) {
+        return rs.ctx.setContextAttributesByIdAndBytes(rs.constantIds, rs.utf8);
+    }
+
+    /** Full reapply cycle: span activation wipes slots, then reapply restores them. */
+    @Benchmark
+    public boolean reapplyCycle(ReapplyState rs) {
+        rs.ctx.put(rs.localRootSpanId, rs.spanId, 0, rs.spanId);
+        return rs.ctx.setContextAttributesByIdAndBytes(rs.constantIds, rs.utf8);
+    }
+
+    @Benchmark
+    @Threads(2)
+    public boolean reapplyCycle_2t(ReapplyState rs) {
+        rs.ctx.put(rs.localRootSpanId, rs.spanId, 0, rs.spanId);
+        return rs.ctx.setContextAttributesByIdAndBytes(rs.constantIds, rs.utf8);
+    }
+
+    @Benchmark
+    @Threads(4)
+    public boolean reapplyCycle_4t(ReapplyState rs) {
+        rs.ctx.put(rs.localRootSpanId, rs.spanId, 0, rs.spanId);
+        return rs.ctx.setContextAttributesByIdAndBytes(rs.constantIds, rs.utf8);
     }
 }
