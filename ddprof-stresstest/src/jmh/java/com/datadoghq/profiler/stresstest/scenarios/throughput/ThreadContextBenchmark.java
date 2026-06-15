@@ -98,15 +98,26 @@ public class ThreadContextBenchmark {
 
             // Prime the normal path to obtain constant IDs, then snapshot for reapply.
             ctx.put(localRootSpanId, spanId, 0, spanId);
-            for (int i = 0; i < ROUTES.length && i < 10; i++) {
-                ctx.setContextAttribute(i % ROUTES.length, ROUTES[i % ROUTES.length]);
+            for (int i = 0; i < ROUTES.length; i++) {
+                ctx.setContextAttribute(i, ROUTES[i]);
             }
             constantIds = new int[10];
             ctx.copyCustoms(constantIds);
             utf8 = new byte[10][];
-            for (int i = 0; i < ROUTES.length && i < 10; i++) {
-                utf8[i] = ROUTES[i % ROUTES.length].getBytes(StandardCharsets.UTF_8);
+            for (int i = 0; i < ROUTES.length; i++) {
+                utf8[i] = ROUTES[i].getBytes(StandardCharsets.UTF_8);
             }
+        }
+
+        @Setup(Level.Iteration)
+        public void resetToSteadyState() {
+            // Re-establish a live span (valid=1) and pre-populate attrs_data with all slots
+            // before each measurement window. Without this, reapplyByIdAndBytes sees a
+            // different attrs_data state on the first invocation of each iteration (empty
+            // after put() in the previous iteration or after the trial setup), causing a
+            // bimodal distribution across forks due to JIT profile divergence.
+            ctx.put(localRootSpanId, spanId, 0, spanId);
+            ctx.setContextAttributesByIdAndBytes(constantIds, utf8);
         }
     }
 
