@@ -313,6 +313,10 @@ __attribute__((noinline, no_stack_protector)) static void *t07_body(void *) {
     pthread_testcancel();
     usleep(100);
   }
+  // Must only exit via pthread_cancel above.  If control reaches here, the
+  // frame was not cancelled as expected and cancel_buf is now a dangling
+  // registration — abort rather than corrupt glibc's cleanup list.
+  __builtin_unreachable();
 }
 
 #else  // !__GLIBC__ — musl: cancellation runs C cleanup callbacks

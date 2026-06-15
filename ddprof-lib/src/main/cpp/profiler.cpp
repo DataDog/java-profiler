@@ -147,14 +147,12 @@ void Profiler::resetUnregisterObservableForTest() {
 
 void Profiler::unregisterThread(int tid) {
 #ifdef UNIT_TEST
-    // In gtest, _cpu_engine/_wall_engine are null (profiler not started).
-    // Record the tid so integration tests can verify the call happened without
-    // crashing on the null engine dereference.  This bypasses the real engine
-    // unregister path entirely, so that path is covered only by JVM-level tests,
-    // not by these gtests.  UNIT_TEST is defined solely for the gtest binaries
-    // (see GtestTaskBuilder); the shipped library never compiles this branch.
+    // Record the tid so integration tests can observe that unregisterThread
+    // was called with the correct thread id.
     g_test_last_unregistered_tid.store(tid, std::memory_order_relaxed);
-    return;
+    // In gtest, the profiler may not be started (_instance == nullptr).
+    // Skip the engine calls in that case rather than bypassing them entirely.
+    if (_instance == nullptr) return;
 #endif
   _instance->_cpu_engine->unregisterThread(tid);
   _instance->_wall_engine->unregisterThread(tid);

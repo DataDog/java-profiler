@@ -151,6 +151,11 @@ void run_with_cleanup(func_start_routine routine, void* params,
         // should a future/variant glibc ever return from it.
         __builtin_unreachable();
     }
+    // Callers must not have a pending pthread_cancel when they enter
+    // run_with_cleanup: a cancellation arriving between __sigsetjmp returning
+    // and __pthread_register_cancel below would unwind this frame before
+    // cancel_buf is registered, silently skipping cleanup_fn.  All current
+    // callers are JVM/native start routines with no pending cancellation.
     __pthread_register_cancel(&cancel_buf);
     routine(params);
     __pthread_unregister_cancel(&cancel_buf);
@@ -344,7 +349,7 @@ static int pthread_create_hook_spec(pthread_t* thread,
 
 // Wrapper around the real start routine.
 // See comments for start_routine_wrapper_spec() for details
-__attribute__((visibility("hidden")))
+__attribute__((visibility("hidden"), no_stack_protector))
 static void* start_routine_wrapper(void* args) {
     RoutineInfo* thr = (RoutineInfo*)args;
     func_start_routine routine;
