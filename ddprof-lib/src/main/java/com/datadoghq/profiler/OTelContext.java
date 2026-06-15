@@ -242,6 +242,12 @@ public final class OTelContext {
      * @see <a href="https://opentelemetry.io/docs/specs/semconv/registry/attributes/service/">OpenTelemetry Service Attributes</a>
      * @see <a href="https://opentelemetry.io/docs/specs/semconv/registry/attributes/deployment/">OpenTelemetry Deployment Attributes</a>
      */
+    /** @deprecated Use {@link #initializeAllContext(String, String, String, String, String, String, String[])} instead. */
+    @Deprecated
+    public void setProcessContext(String env, String hostname, String runtimeId, String service, String version, String tracerVersion) {
+        initializeAllContext(env, hostname, runtimeId, service, version, tracerVersion, new String[0]);
+    }
+
     public void initializeAllContext(String env, String hostname, String runtimeId, String service, String version, String tracerVersion, String[] attributeKeys) {
         Objects.requireNonNull(attributeKeys, "attributeKeys");
         if (!libraryLoadResult.succeeded) {
