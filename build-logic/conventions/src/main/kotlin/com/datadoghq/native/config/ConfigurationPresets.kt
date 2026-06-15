@@ -223,6 +223,7 @@ object ConfigurationPresets {
                     // footprint (heap + class space + code cache) stays well below the shadow
                     // range and the two regions never conflict.
                     config.testJvmArgs.addAll(listOf(
+                        "-XX:+IgnoreUnrecognizedVMOptions",
                         "-XX:HeapBaseMinAddress=0x4000000",
                         "-Xmx512m",
                         "-XX:CompressedClassSpaceSize=256m"
