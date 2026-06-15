@@ -1246,13 +1246,26 @@ static void patchClassLoaderData(JNIEnv* jni, jclass klass) {
 }
 
 constexpr const char* LAMBDA_PREFIX = "Ljava/lang/invoke/LambdaForm$";
+constexpr const size_t LAMBDA_PREFIX_LEN = sizeof(LAMBDA_PREFIX) - 1;
+
 constexpr const char* FFM_PREFIX = "Ljdk/internal/foreign/abi/";
+constexpr const size_t FFM_PREFIX_LEN = sizeof(FFM_PREFIX) - 1;
+
+constexpr const char* LAMBDA_FORMS[] = {"$$Lambda.", "$$Lambda$", ".lambda$"};
+
 static bool isLambdaClass(const char* signature) {
-    return strncmp(signature, LAMBDA_PREFIX, strlen(LAMBDA_PREFIX)) == 0 ||
-           strstr(signature, "$$Lambda.") != nullptr ||
-           strstr(signature, "$$Lambda$") != nullptr ||
-           strstr(signature, ".lambda$") != nullptr ||
-           strncmp(signature, FFM_PREFIX, strlen(FFM_PREFIX)) == 0;
+    if (strncmp(signature, LAMBDA_PREFIX, LAMBDA_PREFIX_LEN) == 0 ||
+        strncmp(signature, FFM_PREFIX, FFM_PREFIX_LEN) == 0) {
+        return true;
+    }
+
+    size_t count = sizeof(LAMBDA_FORMS) / sizeof(LAMBDA_FORMS[0]);
+    for (size_t index = 0; index < count; index++) {
+        if (strstr(signature, LAMBDA_FORMS[index]) == 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static bool isSystemClassLoader(JNIEnv* jni, jobject cl) {

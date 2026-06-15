@@ -4,10 +4,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
- #include "flightRecorder.h"
-
+#include "flightRecorder.h"
 #include "jvmSupport.inline.h"
-
 
 jint MethodInfo::getLineNumber(jint bci) {
     // if the shared pointer is not pointing to the line number table, consider
