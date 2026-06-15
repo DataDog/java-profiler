@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk8
 
 ## glibc-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-06-15 08:01:05 EDT
+**Date:** 2026-06-15 09:00:08 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-openj9-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 34 |
-| CPU Cores (end) | 34 |
+| CPU Cores (start) | 43 |
+| CPU Cores (end) | 43 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,22 +45,22 @@ title: glibc-x64-openj9-jdk8
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 34-34 cores)</summary>
+<summary>CPU Timeline (1 unique values: 43-43 cores)</summary>
 
 ```
-1781524619 34
-1781524624 34
-1781524629 34
-1781524634 34
-1781524639 34
-1781524644 34
-1781524649 34
-1781524654 34
-1781524659 34
-1781524664 34
-1781524669 34
-1781524674 34
-1781524679 34
+1781528021 43
+1781528026 43
+1781528031 43
+1781528036 43
+1781528041 43
+1781528046 43
+1781528051 43
+1781528056 43
+1781528061 43
+1781528066 43
+1781528071 43
+1781528076 43
+1781528081 43
 ```
 </details>
 
