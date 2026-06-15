@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk25
 
 ## glibc-x64-hotspot-jdk25 - ✅ PASS
 
-**Date:** 2026-06-15 09:00:08 EDT
+**Date:** 2026-06-15 09:09:16 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-hotspot-jdk25
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 16 |
-| CPU Cores (end) | 16 |
+| CPU Cores (start) | 84 |
+| CPU Cores (end) | 84 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,22 +45,22 @@ title: glibc-x64-hotspot-jdk25
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 16-16 cores)</summary>
+<summary>CPU Timeline (1 unique values: 84-84 cores)</summary>
 
 ```
-1781528121 16
-1781528126 16
-1781528131 16
-1781528136 16
-1781528141 16
-1781528146 16
-1781528151 16
-1781528156 16
-1781528161 16
-1781528166 16
-1781528171 16
-1781528176 16
-1781528181 16
+1781528454 84
+1781528459 84
+1781528464 84
+1781528469 84
+1781528474 84
+1781528479 84
+1781528484 84
+1781528489 84
+1781528494 84
+1781528499 84
+1781528504 84
+1781528509 84
+1781528514 84
 ```
 </details>
 
