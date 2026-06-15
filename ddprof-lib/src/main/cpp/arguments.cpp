@@ -261,8 +261,14 @@ Error Arguments::parse(const char *args) {
       }
 
       CASE("fjmethodid")
-      if (value != nullptr && strcmp(value, "false") == 0) {
-        _force_jmethodID = false;
+      if (value != nullptr) {
+        if (strcmp(value, "false") == 0) {
+          _force_jmethodID = false;
+        } else if (strcmp(value, "true") == 0) {
+          _force_jmethodID = true;
+        } else {
+          msg = "Invalid jmethodID creation value";
+        }
       }
 
       CASE("safemode")

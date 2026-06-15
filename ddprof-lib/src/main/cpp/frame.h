@@ -26,6 +26,7 @@ class FrameType {
 public:
   static inline int encode(int type, int bci, bool rawPointer = false) {
     assert((!rawPointer || VM::isHotspot()) && "Raw pointer is only valid for hotspot");
+    assert(type >= FRAME_INTERPRETED && type <= FRAME_TYPE_MAX);
     return ENCODED_MASK | (type << TYPE_SHIFT) | (bci & BCI_MASK) | (rawPointer ? RAW_POINTER_MASK : 0);
   }
 

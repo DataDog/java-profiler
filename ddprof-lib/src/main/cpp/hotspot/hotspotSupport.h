@@ -47,7 +47,7 @@ public:
         return JitCodeCache::isJitCode(p);
     }
 
-    // If 
+    // If should load all jmethodIDs
     static inline bool shouldPreloadJmethodIDs() {
         CStack cstack = VM::arguments()._cstack;
         return VM::arguments()._force_jmethodID ||

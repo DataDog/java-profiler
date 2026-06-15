@@ -4,6 +4,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#ifndef _FLIGHTRECORDER_INLINE_H
+#define _FLIGHTRECORDER_INLINE_H
+
+
 #include "flightRecorder.h"
 #include "jvmSupport.inline.h"
 
@@ -27,3 +31,5 @@ jint MethodInfo::getLineNumber(jint bci) {
 bool MethodInfo::isHidden() {
     return JVMSupport::isHidden(_modifiers);
 }
+
+#endif // _FLIGHTRECORDER_INLINE_H

@@ -90,8 +90,8 @@ T* cast_or_null(const void* ptr) {
         static name * cast(const void* ptr) { return cast_to<name>(ptr); } \
         static name * cast_or_null(const void* ptr) { return ::cast_or_null<name>(ptr); } \
         static name * cast_raw(const void* ptr) { return (name *)ptr; } \
-        static name * load_then_cast(const void* ptr) { \
-            assert(ptr != nullptr);                     \
+        static name * load_then_cast(const void* ptr) {     \
+            if (ptr == nullptr) return nullptr;             \
             return cast_or_null(*(const void**)ptr); }
 
 #define DECLARE_END  };
@@ -917,15 +917,6 @@ DECLARE(VMMethod)
 
     // Performs extra validation when VMMethod comes from incomplete frame
     inline jmethodID validatedId();
-
-    // Workaround for JDK-8313816
-    static bool isStaleMethodId(jmethodID id) {
-        if (!_can_dereference_jmethod_id) return false;
-
-        VMMethod* vm_method = VMMethod::load_then_cast((const void*)id);
-        // jmethod ID == nullptr, means the value is not yet populated
-        return vm_method == nullptr || vm_method->id() == JMETHODID_NOT_WALKABLE;
-    }
 
     const char* bytecode() {
         assert(_method_constmethod_offset >= 0);

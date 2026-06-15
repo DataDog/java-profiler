@@ -1286,7 +1286,7 @@ bool isHiddenClass(jvmtiEnv *jvmti, jclass clazz) {
 bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool load_all) {
     if (!load_all) {
         jobject cl = nullptr;
-        // Hidden/lambda classes can not unloaded, fallback to use jmethodIDs, so preload them.
+        // Hidden/lambda classes can be unloaded, fallback to use jmethodIDs, so preload them.
         if (!isHiddenClass(jvmti, klass) &&
             jvmti->GetClassLoader(klass, &cl) == JVMTI_ERROR_NONE && 
             isSystemClassLoader(jni, cl)) {
