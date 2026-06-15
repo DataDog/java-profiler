@@ -80,6 +80,7 @@ public:
     _data[_offset++] = v;
   }
 
+  __attribute__((no_sanitize("undefined")))
   __attribute__((no_sanitize("bounds")))
   void put16(short v) {
     assert(_offset + 2 < limit());
