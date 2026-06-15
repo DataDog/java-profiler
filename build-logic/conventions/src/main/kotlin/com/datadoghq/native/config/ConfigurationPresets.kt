@@ -217,17 +217,17 @@ object ConfigurationPresets {
                     }
                     // G1GC's heap reservation is placed just below 2 GB (0x7fff7000) by ASLR on
                     // some kernel configurations, which is exactly where ASan needs to mmap its
-                    // shadow bytes [0x7fff7000-0x10007fff7fff].  This is not JDK-version specific
-                    // — it depends on the kernel's mmap base randomisation at the time the process
-                    // starts.  Force the heap to a very low base address so the entire JVM
-                    // footprint (heap + class space + code cache) stays well below the shadow
-                    // range and the two regions never conflict.
-                    config.testJvmArgs.addAll(listOf(
-                        "-XX:+IgnoreUnrecognizedVMOptions",
-                        "-XX:HeapBaseMinAddress=0x4000000",
-                        "-Xmx512m",
-                        "-XX:CompressedClassSpaceSize=256m"
-                    ))
+                    // shadow bytes [0x7fff7000-0x10007fff7fff].  Force the heap to a very low
+                    // base address so the entire JVM footprint stays below the shadow range.
+                    // HeapBaseMinAddress is not accepted by JDK <= 11 (constraint violation);
+                    // those JDKs rely on the vm.mmap_rnd_bits=8 CI-level mitigation instead.
+                    if (PlatformUtils.testJvmMajorVersion() >= 12) {
+                        config.testJvmArgs.addAll(listOf(
+                            "-XX:HeapBaseMinAddress=0x4000000",
+                            "-Xmx512m",
+                            "-XX:CompressedClassSpaceSize=256m"
+                        ))
+                    }
                 }
             }
             Platform.MACOS -> {
