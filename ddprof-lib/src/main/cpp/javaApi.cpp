@@ -642,3 +642,62 @@ Java_com_datadoghq_profiler_JavaProfiler_dumpContext(JNIEnv* env, jclass unused)
   ContextApi::get(spanId, rootSpanId);
   TEST_LOG("===> Context: tid:%lu, spanId=%lu, rootSpanId=%lu", OS::threadId(), spanId, rootSpanId);
 }
+
+extern "C" DLLEXPORT jlongArray JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_getJvmtiLineNumberTable0(JNIEnv* env, jclass, jobject method) {
+  jmethodID id = env->FromReflectedMethod(method);
+  if (id == nullptr) return nullptr;
+
+  jvmtiEnv* jvmti = VM::jvmti();
+  if (jvmti == nullptr) return nullptr;
+
+  jint count = 0;
+  jvmtiLineNumberEntry* table = nullptr;
+  if (jvmti->GetLineNumberTable(id, &count, &table) != JVMTI_ERROR_NONE) {
+    return nullptr;
+  }
+
+  jlongArray result = env->NewLongArray(count * 2);
+  if (result != nullptr) {
+    jlong* buf = env->GetLongArrayElements(result, nullptr);
+    for (int i = 0; i < count; i++) {
+      buf[i * 2]     = (jlong)table[i].start_location;
+      buf[i * 2 + 1] = (jlong)table[i].line_number;
+    }
+    env->ReleaseLongArrayElements(result, buf, 0);
+  }
+  jvmti->Deallocate((unsigned char*)table);
+  return result;
+}
+
+extern "C" DLLEXPORT jlongArray JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_getVMMethodLineNumberTable0(JNIEnv* env, jclass, jobject method) {
+  // jmethodID dereference to VMMethod* is only valid on JDK <= 25 (before JDK-8268406)
+  if (!VMStructs::canDereferenceJmethodId()) {
+    return nullptr;
+  }
+
+  jmethodID id = env->FromReflectedMethod(method);
+  if (id == nullptr) return nullptr;
+
+  VMMethod* vm_method = VMMethod::cast_or_null(*(const void**)id);
+  if (vm_method == nullptr) return nullptr;
+
+  jint count = 0;
+  jvmtiLineNumberEntry* table = nullptr;
+  if (!vm_method->getLinenumberTable(&count, &table)) {
+    return nullptr;
+  }
+
+  jlongArray result = env->NewLongArray(count * 2);
+  if (result != nullptr) {
+    jlong* buf = env->GetLongArrayElements(result, nullptr);
+    for (int i = 0; i < count; i++) {
+      buf[i * 2]     = (jlong)table[i].start_location;
+      buf[i * 2 + 1] = (jlong)table[i].line_number;
+    }
+    env->ReleaseLongArrayElements(result, buf, 0);
+  }
+  free(table);
+  return result;
+}

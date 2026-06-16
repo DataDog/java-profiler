@@ -1318,6 +1318,7 @@ bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jcl
 jmethodID HotspotSupport::resolve(const void* method) {
   assert(VM::isHotspot());
   assert(method != nullptr);
+
   // We packed not walkable method as a raw pointer,
   // map it back to nullptr, as JMETHODID_NOT_WALKABLE is only
   // known in hotspot.
@@ -1329,6 +1330,7 @@ jmethodID HotspotSupport::resolve(const void* method) {
   if (vm_method == nullptr) {
     return nullptr;
   }
+
 
   // May have been populated by following code or JMETHODID_NOT_WALKABLE
   jmethodID method_id = vm_method->validatedId();
@@ -1371,6 +1373,19 @@ jmethodID HotspotSupport::resolve(const void* method) {
       method_signature[sig_sym->length()] = '\0';
       memcpy(klass_name, klass_sym->body(), klass_name_len);
       klass_name[klass_name_len] = '\0';
+
+    jint count;
+    jvmtiLineNumberEntry* entries = nullptr;
+
+    bool ret = vm_method->getLinenumberTable(&count, &entries);
+    if (ret) {
+        TEST_LOG("%s: %s %s", klass_name, method_name, method_signature);
+        for (int index = 0; index < count; index++) {
+            TEST_LOG("\t%d -> %d", entries[index].start_location, entries[index].line_number);
+        }
+
+    }
+
 
       JNIEnv *jni = VM::jni();
       jclass clz = jni->FindClass(klass_name);

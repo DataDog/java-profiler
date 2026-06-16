@@ -77,6 +77,8 @@ public class ContextCpuTest extends CStackAwareAbstractProfilerTest {
                     String state = stateAccessor.getMember(sample);
                     assertDoesNotThrow(() -> Thread.State.valueOf(state));
                     assertEquals(Thread.State.RUNNABLE, Thread.State.valueOf(state));
+ //                   System.out.println("Stacktrace: \n" + stackTrace);
+
                     if (stackTrace.contains("method3Impl")) {
                         // method3 is scheduled after method2, and method1 blocks on it, so spanId == rootSpanId + 2
                         if (spanId > 0) {

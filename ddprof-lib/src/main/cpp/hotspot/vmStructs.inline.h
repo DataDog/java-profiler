@@ -123,6 +123,14 @@ jmethodID VMMethod::validatedId() {
     return JMETHODID_NOT_WALKABLE;
 }
 
+bool VMMethod::hasLinenumberTable() const {
+    VMConstMethod* constMethod = constMethod_or_null();
+    if (constMethod == nullptr) {
+        return false;
+    }
+    return constMethod->hasLinenumberTable();
+}
+
 VMKlass* VMConstantPool::holder_or_null() const {
     assert(_pool_holder_offset >= 0);
     return VMKlass::load_then_cast(at(_pool_holder_offset));   
@@ -156,6 +164,22 @@ VMSymbol* VMConstMethod::signature() const {
 
     u16 sig_index = signatureIndex();
     return cpool->symbolAt(sig_index);
+}
+
+u16 VMConstMethod::codeSize() const {
+    assert(_constmethod_code_size_offset >= 0 && "Invalid code size offset");
+    return *(u16*)at(_constmethod_code_size_offset);
+}
+
+const unsigned char* VMConstMethod::getLinenumberTable() const {
+    return ((unsigned char*)this) + TYPE_SIZE_NAME(VMConstMethod) + codeSize();    
+}
+
+bool VMConstMethod::hasLinenumberTable() const {
+    static constexpr u32 has_linenumber_table = (1 << 0);
+    assert(_constmethod_flags_offset >= 0 && "Invalid flags offset");
+    u32 flags = *(u32*)at(_constmethod_flags_offset);
+    return (flags & has_linenumber_table) != 0;
 }
 
 u16 VMConstMethod::nameIndex() const {

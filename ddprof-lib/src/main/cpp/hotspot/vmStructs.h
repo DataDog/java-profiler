@@ -221,6 +221,8 @@ typedef void* address;
         field(_constmethod_idnum_offset, offset, MATCH_SYMBOLS("_method_idnum"))                                    \
         field(_constmethod_name_index_offset, offset, MATCH_SYMBOLS("_name_index"))                                 \
         field(_constmethod_sig_index_offset, offset, MATCH_SYMBOLS("_signature_index"))                             \
+        field(_constmethod_code_size_offset, offset, MATCH_SYMBOLS("_code_size"))                                   \
+        field(_constmethod_flags_offset, offset, MATCH_SYMBOLS("_flags._flags"))                                    \
     type_end()                                                                                                      \
     type_begin(VMConstantPool, MATCH_SYMBOLS("ConstantPool"))                                                       \
         field(_pool_holder_offset, offset, MATCH_SYMBOLS("_pool_holder"))                                           \
@@ -489,6 +491,10 @@ class VMStructs {
 
     static bool hasMethodStructs() {
         return _has_method_structs;
+    }
+
+    static bool canDereferenceJmethodId() {
+        return _can_dereference_jmethod_id;
     }
 
     static bool hasCompilerStructs() {
@@ -901,6 +907,9 @@ DECLARE(VMConstMethod)
     inline VMConstantPool* constants_or_null() const;
     inline VMSymbol* name() const;
     inline VMSymbol* signature() const;
+    inline u16 codeSize() const;
+    inline bool hasLinenumberTable() const;
+    inline const unsigned char* getLinenumberTable() const;
 private:
     inline u16 nameIndex() const;
     inline u16 signatureIndex() const;
@@ -925,6 +934,10 @@ DECLARE(VMMethod)
 
     inline VMConstMethod* constMethod_or_null() const;
     inline VMNMethod* code();
+
+    inline bool hasLinenumberTable() const;
+
+    bool getLinenumberTable(jint* entry_count_ptr, jvmtiLineNumberEntry** table_ptr) const;
 
     static bool check_jmethodID(jmethodID id);
 DECLARE_END

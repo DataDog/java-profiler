@@ -97,6 +97,7 @@ int JVMSupport::asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* 
 }
 
 void JVMSupport::loadAllMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni) {
+    /**
     assert(getLoadState() != No_loaded && "Should not call before profiler execution");
 
     jint class_count = 0;
@@ -112,9 +113,11 @@ void JVMSupport::loadAllMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni) {
         jvmti->Deallocate((unsigned char *)classes);
     }
     TEST_LOG("Preloaded jmethodIDs for %d/%d classes", loaded_count, class_count);
+    */
 }
 
 bool JVMSupport::loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
+    /**
     JMethodIDLoadStats state = getLoadState();
     // Callback from JVMTI for class loading - We don't have to deal with it before
     // the first execution - loadAllMethodIDsIfNeeded() will fix it.
@@ -123,10 +126,12 @@ bool JVMSupport::loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klas
     }
 
     if (VM::isHotspot()) {
-        return HotspotSupport::loadMethodIDsIfNeededImpl(jvmti, jni, klass, state == Fully_loaded /* load all */);
+        return HotspotSupport::loadMethodIDsIfNeededImpl(jvmti, jni, klass, state == Fully_loaded);
     } else {
         return loadMethodIDsImpl(jvmti, jni, klass);
     }
+    */
+   return false;
 }
 
 bool JVMSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {

@@ -8,6 +8,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdarg.h>
+#include "hotspot/compressedLinenumberStream.h"
 #include "hotspot/vmStructs.inline.h"
 #include "vmEntry.h"
 #include "jniHelper.h"
@@ -998,6 +999,47 @@ bool VMMethod::check_jmethodID_J9(jmethodID id) {
     // the J9 jmethodid check is not working properly, so we just check for NULL
     return id != NULL && *((void **)id) != NULL;
 }
+
+bool VMMethod::getLinenumberTable(jint* entry_count_ptr, jvmtiLineNumberEntry** table_ptr) const {
+    if(!hasLinenumberTable()) {
+        return false;
+    }
+
+    VMConstMethod* constMethod = constMethod_or_null();
+    if (constMethod == nullptr) {
+        return false;
+    }
+
+    const unsigned char* line_number_table = constMethod->getLinenumberTable();
+    assert(line_number_table != nullptr);
+
+    jint num_entries = 0;
+    CompressedLineNumberStream stream(line_number_table);
+    while (stream.read_pair()) {
+        num_entries++;
+    }
+
+    jvmtiLineNumberEntry *jvmti_table =
+            (jvmtiLineNumberEntry *)malloc(num_entries * (sizeof(jvmtiLineNumberEntry)));
+    // Fill jvmti table
+    if (num_entries > 0) {
+        int index = 0;
+        CompressedLineNumberStream stream(line_number_table);
+        while (stream.read_pair()) {
+            jvmti_table[index].start_location = (jlocation) stream.bci();
+            jvmti_table[index].line_number = (jint) stream.line();
+            index++;
+        }
+        assert(index == num_entries);
+    }
+
+    // Set up results
+    (*entry_count_ptr) = num_entries;
+    (*table_ptr) = jvmti_table;
+
+    return true;
+}
+
 
 OSThreadState VMThread::osThreadState() {
     if (VMStructs::thread_osthread_offset() >= 0 && VMStructs::osthread_state_offset() >= 0) {

@@ -1,6 +1,6 @@
 #include "hotspot/compressedLinenumberStream.h"
 
-CompressedLineNumberStream::CompressedLineNumberStream(unsigned char* buffer) :
+CompressedLineNumberStream::CompressedLineNumberStream(const unsigned char* buffer) :
   _buffer(buffer), _position(0), _bci(0), _line(0) {
 };
 

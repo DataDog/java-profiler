@@ -371,6 +371,22 @@ public final class JavaProfiler {
     public static native void dumpContext();
 
     /**
+     * For testing: calls JVMTI GetLineNumberTable on the given method and returns the entries
+     * as a flat {@code long[]} of pairs {@code [bci0, lineNumber0, bci1, lineNumber1, ...]}.
+     * Returns {@code null} if the method has no line number table or the JVMTI call fails.
+     */
+    public static native long[] getJvmtiLineNumberTable0(java.lang.reflect.Method method);
+
+    /**
+     * For testing: calls VMMethod::getLinenumberTable() (the profiler's internal HotSpot parser)
+     * on the given method and returns the entries as a flat {@code long[]} of pairs
+     * {@code [bci0, lineNumber0, bci1, lineNumber1, ...]}.
+     * Returns {@code null} if unsupported (JDK &gt; 25 where jmethodID cannot be dereferenced),
+     * if the method has no line number table, or if the profiler is not loaded.
+     */
+    public static native long[] getVMMethodLineNumberTable0(java.lang.reflect.Method method);
+
+    /**
      * Resets the cached ThreadContext for the current thread.
      * The next call to {@link #getThreadContext()} or any {@code setContext} overload
      * will re-create it with fresh OTEL TLS buffers.
