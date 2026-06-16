@@ -108,9 +108,9 @@ public final class ReapplyContextAntagonist implements Antagonist {
         for (int i = 0; i < ROUTES.length; i++) {
             ctx.setContextAttribute(i, ROUTES[i]);
         }
-        int[] constantIds = new int[10];
+        int[] constantIds = new int[ROUTES.length];
         ctx.copyCustoms(constantIds);
-        byte[][] utf8 = new byte[10][];
+        byte[][] utf8 = new byte[ROUTES.length][];
         for (int i = 0; i < ROUTES.length; i++) {
             utf8[i] = ROUTES[i].getBytes(StandardCharsets.UTF_8);
         }

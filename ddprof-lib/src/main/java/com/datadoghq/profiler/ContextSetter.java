@@ -30,6 +30,10 @@ public class ContextSetter {
         return snapshot;
     }
 
+    /**
+     * Copies current sidecar encodings into {@code snapshot}. The copy only runs when
+     * {@code snapshot.length >= attributes.size()}; callers must size the array accordingly.
+     */
     public void snapshotTags(int[] snapshot) {
         if (snapshot.length >= attributes.size()) {
             profiler.copyTags(snapshot);
@@ -57,6 +61,11 @@ public class ContextSetter {
      * OTEP attrs_data value for every slot whose constantId is {@code > 0}, in a single atomic
      * publish — no String allocation, hashing, or cache lookup. Intended for re-applying
      * application-managed context after a {@code setContext} span activation wipes the slots.
+     *
+     * <p><b>Partial-write on overflow.</b> A {@code false} return does not mean the record is
+     * unchanged: slots that were written before an attrs_data overflow remain published. Overflowed
+     * slots are zeroed in both the sidecar and attrs_data views. Callers must not assume the record
+     * is unmodified when {@code false} is returned.
      */
     public boolean setContextValuesByIdAndBytes(int[] constantIds, byte[][] utf8) {
         return profiler.setContextAttributesByIdAndBytes(constantIds, utf8);
