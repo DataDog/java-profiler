@@ -129,7 +129,6 @@ jobs:
     outputs:
       configurations: ${{ steps.compute.outputs.configurations }}
       run_fuzz: ${{ steps.compute.outputs.run_fuzz }}
-      run_reliability: ${{ steps.compute.outputs.run_reliability }}
     steps:
       - name: Debounce label events
         if: github.event.action == 'labeled'
@@ -162,14 +161,8 @@ jobs:
             else
               echo "run_fuzz=false" >> $GITHUB_OUTPUT
             fi
-            if echo "$labels" | grep -Fq "test:reliability"; then
-              echo "run_reliability=true" >> $GITHUB_OUTPUT
-            else
-              echo "run_reliability=false" >> $GITHUB_OUTPUT
-            fi
           else
             echo "run_fuzz=false" >> $GITHUB_OUTPUT
-            echo "run_reliability=false" >> $GITHUB_OUTPUT
           fi
 
           configs="$configs]"
