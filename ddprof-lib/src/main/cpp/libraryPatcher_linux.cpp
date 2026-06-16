@@ -660,8 +660,7 @@ bool LibraryPatcher::patch_socket_functions() {
   return true;
 }
 
-void LibraryPatcher::unpatch_socket_functions() {
-  ExclusiveLockGuard locker(&_lock);
+void LibraryPatcher::unpatch_socket_functions_unlocked() {
   // Clear _socket_active first so a concurrent install_socket_hooks() that
   // already passed its acquire-load can observe the stop under _lock instead of
   // re-patching slots while this function restores them.
@@ -672,6 +671,23 @@ void LibraryPatcher::unpatch_socket_functions() {
                      __ATOMIC_RELEASE);
   }
   _socket_size = 0;
+}
+
+void LibraryPatcher::unpatch_socket_functions() {
+  ExclusiveLockGuard locker(&_lock);
+  unpatch_socket_functions_unlocked();
+}
+
+bool LibraryPatcher::unpatch_socket_functions_if_inactive() {
+  ExclusiveLockGuard locker(&_lock);
+  if (NativeSocketInterposer::instance()->active() || NativeSocketSampler::active()) {
+    return false;
+  }
+  if (!_socket_active.load(std::memory_order_relaxed) && _socket_size == 0) {
+    return false;
+  }
+  unpatch_socket_functions_unlocked();
+  return true;
 }
 
 #endif // __linux__

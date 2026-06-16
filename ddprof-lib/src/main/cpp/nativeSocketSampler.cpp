@@ -407,9 +407,7 @@ void NativeSocketSampler::stop() {
              (unsigned long long)_record_reject_calls.load(std::memory_order_relaxed));
 #endif
     _active.store(false, std::memory_order_release);
-    if (!NativeSocketInterposer::instance()->active()) {
-        LibraryPatcher::unpatch_socket_functions();
-    }
+    LibraryPatcher::unpatch_socket_functions_if_inactive();
     clearFdCache();
 }
 

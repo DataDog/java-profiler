@@ -40,6 +40,7 @@ private:
   static void patch_pthread_create();
   static void patch_pthread_setspecific();
   static void patch_sigaction_in_library(CodeCache* lib);
+  static void unpatch_socket_functions_unlocked();
 public:
   // True while native I/O hooks are installed; read by dlopen refresh paths
   // before attempting to patch newly loaded libraries.
@@ -50,6 +51,7 @@ public:
   static void patch_sigaction();
   static bool patch_socket_functions();
   static void unpatch_socket_functions();
+  static bool unpatch_socket_functions_if_inactive();
   static inline void install_socket_hooks() {
     if (_socket_active.load(std::memory_order_acquire)) {
       patch_socket_functions();
@@ -67,6 +69,9 @@ public:
   static void patch_sigaction() { }
   static bool patch_socket_functions() { return false; }
   static void unpatch_socket_functions() { }
+  static bool unpatch_socket_functions_if_inactive() {
+    return false;
+  }
   static void install_socket_hooks() { }
 };
 

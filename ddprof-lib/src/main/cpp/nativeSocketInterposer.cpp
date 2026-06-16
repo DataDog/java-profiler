@@ -11,6 +11,8 @@
 #include "nativeSocketSampler.h"
 
 #include <errno.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 
 namespace {
 
@@ -181,9 +183,7 @@ Error NativeSocketInterposer::start() {
 
 void NativeSocketInterposer::stop() {
   _active.store(false, std::memory_order_release);
-  if (!NativeSocketSampler::active()) {
-    LibraryPatcher::unpatch_socket_functions();
-  }
+  LibraryPatcher::unpatch_socket_functions_if_inactive();
   clearFdTypeCache();
 }
 
@@ -226,11 +226,12 @@ ssize_t NativeSocketInterposer::read_hook(int fd, void* buf, size_t len) {
 }
 
 int NativeSocketInterposer::close_hook(int fd) {
+  int ret;
   if (_orig_close == nullptr) {
-    errno = ENOSYS;
-    return -1;
+    ret = static_cast<int>(syscall(SYS_close, fd));
+  } else {
+    ret = _orig_close(fd);
   }
-  int ret = _orig_close(fd);
   int saved_errno = errno;
   if (ret == 0) {
     NativeSocketInterposer::instance()->clearFdType(fd);

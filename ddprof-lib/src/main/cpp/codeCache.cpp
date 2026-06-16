@@ -384,8 +384,6 @@ void CodeCache::addImport(void **entry, const char *name) {
               saveImport(im_send, entry);
           } else if (strcmp(name, "sigaction") == 0) {
               saveImport(im_sigaction, entry);
-          } else if (strcmp(name, "send") == 0) {
-              saveImport(im_send, entry);
           } else if (strcmp(name, "select") == 0) {
               saveImport(im_select, entry);
           }

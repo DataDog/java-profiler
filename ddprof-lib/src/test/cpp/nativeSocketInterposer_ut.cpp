@@ -330,6 +330,32 @@ TEST_F(NativeSocketInterposerHookTest, CloseForwardsAndPreservesErrno) {
   close(fds[1]);
 }
 
+TEST_F(NativeSocketInterposerFdTest, CloseFallsBackToSyscallWhenOriginalIsMissing) {
+  int fds[2];
+  ASSERT_EQ(0, pipe(fds));
+  setOriginalFunction(NativeSocketInterposer::HOOK_CLOSE, nullptr);
+
+  errno = E2BIG;
+  int ret = closeThroughHook(fds[0]);
+
+  EXPECT_EQ(0, ret);
+  EXPECT_EQ(E2BIG, errno);
+  errno = 0;
+  EXPECT_EQ(-1, close(fds[0]));
+  EXPECT_EQ(EBADF, errno);
+  close(fds[1]);
+}
+
+TEST(LibraryPatcherSocketStateTest, ConditionalUnpatchClearsSocketActiveWhenOwnersInactive) {
+  bool saved_active =
+      LibraryPatcher::_socket_active.exchange(true, std::memory_order_acq_rel);
+
+  EXPECT_TRUE(LibraryPatcher::unpatch_socket_functions_if_inactive());
+  EXPECT_FALSE(LibraryPatcher::_socket_active.load(std::memory_order_acquire));
+
+  LibraryPatcher::_socket_active.store(saved_active, std::memory_order_release);
+}
+
 TEST_F(NativeSocketInterposerHookTest, ActiveStreamSocketConnectForwards) {
   int fds[2];
   ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, fds));
