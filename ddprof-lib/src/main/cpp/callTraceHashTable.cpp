@@ -274,8 +274,7 @@ CallTrace *CallTraceHashTable::findCallTrace(LongHashTable *table, u64 hash) {
   return nullptr;
 }
 
-void CallTraceHashTable::expandTableIfNeeded(LongHashTable* table) {
-  u32 size = table->size();
+void CallTraceHashTable::expandTableIfNeeded(LongHashTable* table, u32 size) {
   u32 capacity = table->capacity();
 
   // EXPANSION LOGIC: Check if load ratio reached after incrementing size
@@ -376,7 +375,7 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
 
       probe.updateCapacity(new_size);
 
-      expandTableIfNeeded(table);
+      expandTableIfNeeded(table, new_size);
 
       // Check if trace exists in previous tables to avoid duplication
       CallTrace *trace = nullptr;
