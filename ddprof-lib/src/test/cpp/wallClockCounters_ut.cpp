@@ -34,6 +34,21 @@ TEST_F(WallClockCountersTest, ResetClearsPendingSuppressedSampledRun) {
   EXPECT_EQ(0ULL, WallClockCounters::drainSuppressedSampledRun());
 }
 
+TEST_F(WallClockCountersTest, ResetClearsAllPendingCounters) {
+  WallClockCounters::incrementTaskBlockEmitted();
+  WallClockCounters::incrementTaskBlockSkippedTraceContext();
+  WallClockCounters::incrementTaskBlockSkippedTooShort();
+  WallClockCounters::incrementSuppressedSampledRun();
+
+  WallClockCounters::reset();
+
+  WallClockCounterSnapshot snapshot = WallClockCounters::drain();
+  EXPECT_EQ(0ULL, snapshot.task_block_emitted);
+  EXPECT_EQ(0ULL, snapshot.task_block_skipped_trace_context);
+  EXPECT_EQ(0ULL, snapshot.task_block_skipped_too_short);
+  EXPECT_EQ(0ULL, snapshot.suppressed_sampled_run);
+}
+
 TEST_F(WallClockCountersTest, ResetIsIdempotent) {
   WallClockCounters::reset();
   WallClockCounters::reset();

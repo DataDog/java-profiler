@@ -155,19 +155,22 @@ TEST(ProfiledThreadMonitorStateTest, MonitorFlagLifecycle) {
   u64 start_ticks = 0;
   Context monitor_context = {};
   u64 blocker = 0;
+  u64 monitor_block_token = 0;
   EXPECT_FALSE(thread->monitorExit(OSThreadState::MONITOR_WAIT, start_ticks,
-                                   monitor_context, blocker));
+                                   monitor_context, blocker, monitor_block_token));
 
   EXPECT_TRUE(thread->monitorEnter(999, 42, OSThreadState::MONITOR_WAIT));
+  thread->setMonitorBlockToken(0x123400000001ULL);
 
   EXPECT_TRUE(thread->monitorExit(OSThreadState::MONITOR_WAIT, start_ticks,
-                                  monitor_context, blocker));
+                                  monitor_context, blocker, monitor_block_token));
   EXPECT_EQ(999ULL, start_ticks);
   EXPECT_EQ(42ULL, blocker);
+  EXPECT_EQ(0x123400000001ULL, monitor_block_token);
   EXPECT_EQ(0ULL, monitor_context.spanId);
 
   EXPECT_FALSE(thread->monitorExit(OSThreadState::MONITOR_WAIT, start_ticks,
-                                   monitor_context, blocker));
+                                   monitor_context, blocker, monitor_block_token));
 }
 
 TEST(ProfiledThreadMonitorStateTest, ObjectWaitOwnsNestedMonitorContention) {
@@ -183,13 +186,15 @@ TEST(ProfiledThreadMonitorStateTest, ObjectWaitOwnsNestedMonitorContention) {
   u64 start_ticks = 0;
   Context monitor_context = {};
   u64 blocker = 0;
+  u64 monitor_block_token = 0;
   EXPECT_FALSE(thread->monitorExit(OSThreadState::MONITOR_WAIT, start_ticks,
-                                   monitor_context, blocker));
+                                   monitor_context, blocker, monitor_block_token));
 
   EXPECT_TRUE(thread->monitorExit(OSThreadState::OBJECT_WAIT, start_ticks,
-                                  monitor_context, blocker));
+                                  monitor_context, blocker, monitor_block_token));
   EXPECT_EQ(100ULL, start_ticks);
   EXPECT_EQ(11ULL, blocker);
+  EXPECT_EQ(0ULL, monitor_block_token);
 }
 
 TEST(WallClockOncePerRunFilterTest, SlotStateTransitions) {

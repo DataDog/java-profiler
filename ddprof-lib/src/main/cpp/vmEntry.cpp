@@ -130,7 +130,8 @@ static void monitorBlockEnter(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
   }
   ThreadFilter *tf = profiler->threadFilter();
   if (tf->enabled()) {
-    tf->enterBlockedRun(current->filterSlotId(), state, BlockRunOwner::JVMTI);
+    current->setMonitorBlockToken(
+        tf->enterBlockedRun(current->filterSlotId(), state, BlockRunOwner::JVMTI));
   }
 }
 
@@ -145,15 +146,20 @@ static void monitorBlockExit(JNIEnv *jni, jthread thread, OSThreadState state) {
   u64 start_ticks = 0;
   Context context = {};
   u64 blocker = 0;
-  bool exited = current->monitorExit(state, start_ticks, context, blocker);
+  u64 monitor_block_token = 0;
+  bool exited =
+      current->monitorExit(state, start_ticks, context, blocker, monitor_block_token);
   if (exited) {
     int tid = ProfiledThread::currentTid();
     recordTaskBlockAsyncWithContextIfEligible(tid, start_ticks, TSC::ticks(),
                                               context, blocker, 0);
   }
   ThreadFilter *tf = Profiler::instance()->threadFilter();
-  if (exited && tf->enabled()) {
-    tf->exitBlockedRun(current->filterSlotId());
+  if (exited && tf->enabled() && monitor_block_token != 0) {
+    ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(monitor_block_token);
+    if (current->filterSlotId() == slot_id) {
+      tf->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(monitor_block_token));
+    }
   }
 }
 

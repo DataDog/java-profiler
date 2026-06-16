@@ -69,6 +69,9 @@ public:
   }
 
   static void reset() {
+    _task_block_emitted.store(0, std::memory_order_relaxed);
+    _task_block_skipped_trace_context.store(0, std::memory_order_relaxed);
+    _task_block_skipped_too_short.store(0, std::memory_order_relaxed);
     _suppressed_sampled_run.store(0, std::memory_order_relaxed);
   }
 

@@ -63,6 +63,7 @@ private:
   u64 _monitor_start_ticks;
   Context _monitor_context;
   u64 _monitor_blocker;
+  u64 _monitor_block_token;
   OSThreadState _monitor_block_state;
   int _filter_slot_id; // Slot ID for thread filtering
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
@@ -87,6 +88,7 @@ private:
         _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0),
         _park_start_ticks(0), _park_block_token(0), _park_context{},
         _monitor_start_ticks(0), _monitor_context{}, _monitor_blocker(0),
+        _monitor_block_token(0),
         _monitor_block_state(OSThreadState::UNKNOWN),
         _filter_slot_id(-1), _init_window(0),
         _signal_depth(0),
@@ -318,13 +320,19 @@ public:
     _monitor_context = ContextApi::snapshot();
     _monitor_start_ticks = start_ticks;
     _monitor_blocker = blocker;
+    _monitor_block_token = 0;
     _monitor_block_state = state;
     __atomic_fetch_or(&_misc_flags, FLAG_MONITOR_BLOCKED, __ATOMIC_RELEASE);
     return true;
   }
 
+  inline void setMonitorBlockToken(u64 token) {
+    _monitor_block_token = token;
+  }
+
   inline bool monitorExit(OSThreadState expected_state, u64 &start_ticks,
-                          Context &monitor_context, u64 &blocker) {
+                          Context &monitor_context, u64 &blocker,
+                          u64 &monitor_block_token) {
     u32 flags = __atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE);
     if ((flags & FLAG_MONITOR_BLOCKED) == 0 || _monitor_block_state != expected_state) {
       return false;
@@ -336,6 +344,8 @@ public:
     start_ticks = _monitor_start_ticks;
     monitor_context = _monitor_context;
     blocker = _monitor_blocker;
+    monitor_block_token = _monitor_block_token;
+    _monitor_block_token = 0;
     _monitor_block_state = OSThreadState::UNKNOWN;
     return true;
   }
