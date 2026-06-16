@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk8
 
 ## musl-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-06-16 09:25:09 EDT
+**Date:** 2026-06-16 09:28:28 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-arm64-openj9-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 64 |
-| CPU Cores (end) | 57 |
+| CPU Cores (start) | 47 |
+| CPU Cores (end) | 47 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,22 @@ title: musl-arm64-openj9-jdk8
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (2 unique values: 57-64 cores)</summary>
+<summary>CPU Timeline (1 unique values: 47-47 cores)</summary>
 
 ```
-1781616063 64
-1781616068 64
-1781616073 64
-1781616078 64
-1781616083 64
-1781616088 64
-1781616093 64
-1781616098 64
-1781616103 64
-1781616108 64
-1781616113 64
-1781616118 64
-1781616123 64
-1781616128 64
-1781616133 64
-1781616138 64
-1781616143 64
-1781616148 64
-1781616153 57
-1781616158 57
+1781616092 47
+1781616097 47
+1781616102 47
+1781616107 47
+1781616112 47
+1781616117 47
+1781616122 47
+1781616127 47
+1781616132 47
+1781616137 47
+1781616142 47
+1781616147 47
+1781616152 47
 ```
 </details>
 
