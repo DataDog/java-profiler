@@ -39,10 +39,10 @@ object ConfigurationPresets {
 
         extension.buildConfigurations.apply {
             register("release") {
-                configureRelease(this, currentPlatform, currentArch, version)
+                configureRelease(this, currentPlatform, currentArch, version, compiler)
             }
             register("debug") {
-                configureDebug(this, currentPlatform, currentArch, version)
+                configureDebug(this, currentPlatform, currentArch, version, compiler)
             }
             register("asan") {
                 configureAsan(this, currentPlatform, currentArch, version, rootDir, compiler)
@@ -51,7 +51,7 @@ object ConfigurationPresets {
                 configureTsan(this, currentPlatform, currentArch, version, rootDir, compiler)
             }
             register("fuzzer") {
-                configureFuzzer(this, currentPlatform, currentArch, version, rootDir)
+                configureFuzzer(this, currentPlatform, currentArch, version, rootDir, compiler)
             }
         }
 
@@ -80,12 +80,15 @@ object ConfigurationPresets {
 
     private fun commonLinuxCompilerArgs(
         version: String,
-        architecture: Architecture = Architecture.X64
+        architecture: Architecture = Architecture.X64,
+        compiler: String = "gcc"
     ): List<String> {
         val args = commonCompilerArgs(version).toMutableList()
         // Use TLS descriptors (GNU2 dialect) for thread-local storage on x86_64.
         // This is required by thread context (https://github.com/open-telemetry/opentelemetry-specification/pull/4947)
-        if (architecture == Architecture.X64) {
+        // The dialect is only supported by GCC and clang >= 19, so probe the
+        // compiler before adding the flag rather than relying on its version.
+        if (architecture == Architecture.X64 && PlatformUtils.supportsTlsDialectGnu2(compiler)) {
             args.add("-mtls-dialect=gnu2")
         }
         return args
@@ -108,7 +111,8 @@ object ConfigurationPresets {
         config: BuildConfiguration,
         platform: Platform,
         architecture: Architecture,
-        version: String
+        version: String,
+        compiler: String = "gcc"
     ) {
         config.platform.set(platform)
         config.architecture.set(architecture)
@@ -117,7 +121,7 @@ object ConfigurationPresets {
         when (platform) {
             Platform.LINUX -> {
                 config.compilerArgs.set(
-                    listOf("-O3", "-DNDEBUG", "-g") + commonLinuxCompilerArgs(version, architecture)
+                    listOf("-O3", "-DNDEBUG", "-g") + commonLinuxCompilerArgs(version, architecture, compiler)
                 )
                 config.linkerArgs.set(
                     commonLinuxLinkerArgs() + listOf(
@@ -142,7 +146,8 @@ object ConfigurationPresets {
         config: BuildConfiguration,
         platform: Platform,
         architecture: Architecture,
-        version: String
+        version: String,
+        compiler: String = "gcc"
     ) {
         config.platform.set(platform)
         config.architecture.set(architecture)
@@ -151,7 +156,7 @@ object ConfigurationPresets {
         when (platform) {
             Platform.LINUX -> {
                 config.compilerArgs.set(
-                    listOf("-O0", "-g", "-DDEBUG") + commonLinuxCompilerArgs(version, architecture)
+                    listOf("-O0", "-g", "-DDEBUG") + commonLinuxCompilerArgs(version, architecture, compiler)
                 )
                 config.linkerArgs.set(commonLinuxLinkerArgs())
             }
@@ -197,7 +202,7 @@ object ConfigurationPresets {
 
         when (platform) {
             Platform.LINUX -> {
-                config.compilerArgs.set(asanCompilerArgs + commonLinuxCompilerArgs(version, architecture))
+                config.compilerArgs.set(asanCompilerArgs + commonLinuxCompilerArgs(version, architecture, compiler))
 
                 val libasan = PlatformUtils.locateLibasan(compiler)
                 // Link against the sanitizer runtime that matches the compiler:
@@ -260,7 +265,7 @@ object ConfigurationPresets {
 
         when (platform) {
             Platform.LINUX -> {
-                config.compilerArgs.set(tsanCompilerArgs + commonLinuxCompilerArgs(version, architecture))
+                config.compilerArgs.set(tsanCompilerArgs + commonLinuxCompilerArgs(version, architecture, compiler))
 
                 val libtsan = PlatformUtils.locateLibtsan(compiler)
                 // Use the library name from the resolved path so that clang's own
@@ -309,7 +314,8 @@ object ConfigurationPresets {
         platform: Platform,
         architecture: Architecture,
         version: String,
-        rootDir: File
+        rootDir: File,
+        compiler: String = "gcc"
     ) {
         config.platform.set(platform)
         config.architecture.set(architecture)
@@ -334,7 +340,7 @@ object ConfigurationPresets {
 
         when (platform) {
             Platform.LINUX -> {
-                config.compilerArgs.set(fuzzerCompilerArgs + commonLinuxCompilerArgs(version, architecture))
+                config.compilerArgs.set(fuzzerCompilerArgs + commonLinuxCompilerArgs(version, architecture, compiler))
                 config.linkerArgs.set(commonLinuxLinkerArgs() + fuzzerLinkerArgs)
 
                 config.testEnvironment.apply {

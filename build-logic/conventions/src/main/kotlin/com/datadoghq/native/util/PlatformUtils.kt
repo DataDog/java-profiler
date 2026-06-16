@@ -199,6 +199,45 @@ object PlatformUtils {
         }
     }
 
+    /**
+     * Check whether the given C++ compiler accepts -mtls-dialect=gnu2 on x86_64.
+     * GCC has supported the GNU2 TLS dialect for a long time; clang only gained
+     * x86 support in clang 19. Probing the real compiler is more robust than
+     * parsing version strings (it also handles vendor-patched toolchains).
+     * Always false off x86_64 Linux — the flag is ELF/x86_64 specific.
+     */
+    fun supportsTlsDialectGnu2(compiler: String): Boolean {
+        if (currentPlatform != Platform.LINUX || currentArchitecture != Architecture.X64) {
+            return false
+        }
+        return try {
+            val testFile = createTempFile("tls_dialect_check", ".cpp")
+            try {
+                testFile.writeText("int main() { return 0; }")
+                val process = ProcessBuilder(
+                    compiler,
+                    "-mtls-dialect=gnu2",
+                    "-fsyntax-only",
+                    testFile.toAbsolutePath().toString()
+                ).redirectErrorStream(true).start()
+
+                if (!process.waitFor(10, TimeUnit.SECONDS)) {
+                    process.destroyForcibly()
+                    process.waitFor(5, TimeUnit.SECONDS)
+                    return false
+                }
+                process.exitValue() == 0
+            } finally {
+                testFile.deleteIfExists()
+            }
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     fun hasAsan(compiler: String = "gcc"): Boolean {
         return !isMusl() && locateLibasan(compiler) != null
     }
