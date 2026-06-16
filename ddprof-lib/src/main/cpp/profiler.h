@@ -122,7 +122,7 @@ private:
   u32 _num_context_attributes;
   bool _omit_stacktraces;
   bool _remote_symbolication;  // Enable remote symbolication for native frames
-  bool _wall_precheck = false;  // Gates TaskBlock notifications and ASGCT wall sample IDs
+  bool _wall_precheck = false;  // Gates TaskBlock notifications and wall sample IDs
   pthread_t _task_block_drain_thread;
   std::atomic<bool> _task_block_drain_running;
   std::atomic<u64> _task_block_generation;
@@ -397,6 +397,11 @@ public:
   bool recordSample(void *ucontext, u64 weight, int tid, jint event_type,
                     u64 call_trace_id, Event *event,
                     u64 *recorded_call_trace_id = nullptr);
+  void setWallSampleIdIfNeeded(jint event_type, Event *event) {
+    if (event_type == BCI_WALL && _wall_precheck) {
+      ((ExecutionEvent *)event)->_sample_id = atomicIncRelaxed(_sample_seq);
+    }
+  }
   // Delegated sample path: stack-walking is performed by the HotSpot JFR
   // RequestStackTrace extension (the JVM emits the stack trace into its own
   // JFR recording). We only emit the CPU/wall sample event with no

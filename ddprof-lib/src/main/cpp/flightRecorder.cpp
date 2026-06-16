@@ -2199,6 +2199,7 @@ bool FlightRecorder::recordEventDelegated(int lock_index, int tid,
     Recording* rec = _rec;
     if (rec != nullptr) {
       RecordingBuffer *buf = rec->buffer(lock_index);
+      bool recorded = true;
       switch (event_type) {
         case BCI_CPU:
           rec->recordExecutionSample(buf, tid, 0, correlation_id,
@@ -2210,11 +2211,14 @@ bool FlightRecorder::recordEventDelegated(int lock_index, int tid,
           break;
         default:
           // Delegation is only wired for CPU/wall samples in v1.
-          return false;
+          recorded = false;
+          break;
       }
-      rec->flushIfNeeded(buf);
-      rec->addThread(lock_index, tid);
-      return true;
+      if (recorded) {
+        rec->flushIfNeeded(buf);
+        rec->addThread(lock_index, tid);
+      }
+      return recorded;
     }
   } else {
     Counters::increment(SAMPLES_DROPPED_REC_LOCK);

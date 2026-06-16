@@ -82,8 +82,9 @@ public final class JavaProfiler {
      * @param delegateMonitorEvents when {@code true}, {@code Object.wait} TaskBlock events are
      *        emitted by Java instrumentation and native JVMTI wait callbacks are suppressed;
      *        synchronized monitor contention remains native-owned
-     * @param wallPrecheck compatibility flag; monitor callbacks are enabled when a recording starts
-     *        with {@code wallprecheck=true}
+     * @param wallPrecheck compatibility flag reserved for callers that pass wall-precheck
+     *        capability at initialization time; recording behavior is controlled by the
+     *        profiling command's {@code wallprecheck=true} option
      */
     public static synchronized JavaProfiler getInstance(String libLocation, String scratchDir,
             boolean delegateMonitorEvents, boolean wallPrecheck) throws IOException {

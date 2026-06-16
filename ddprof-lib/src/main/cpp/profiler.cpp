@@ -619,9 +619,7 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
 #endif // COUNTERS
   }
   if (!deferred) {
-    if (event_type == BCI_WALL) {
-      ((ExecutionEvent *)event)->_sample_id = atomicIncRelaxed(_sample_seq);
-    }
+    setWallSampleIdIfNeeded(event_type, event);
     _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
   }
 
@@ -641,9 +639,7 @@ void Profiler::recordDeferredSample(int tid, u64 call_trace_id, jint event_type,
     return;
   }
 
-  if (event_type == BCI_WALL) {
-    ((ExecutionEvent *)event)->_sample_id = atomicIncRelaxed(_sample_seq);
-  }
+  setWallSampleIdIfNeeded(event_type, event);
   _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
 
   _locks[lock_index].unlock();
@@ -713,9 +709,7 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
     }
 #endif // COUNTERS
   }
-  if (event_type == BCI_WALL && _wall_precheck) {
-    ((ExecutionEvent *)event)->_sample_id = atomicIncRelaxed(_sample_seq);
-  }
+  setWallSampleIdIfNeeded(event_type, event);
   bool recorded = _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
   if (recorded && recorded_call_trace_id != nullptr) {
     *recorded_call_trace_id = call_trace_id;
@@ -759,9 +753,7 @@ bool Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
     return false;
   }
 
-  if (event_type == BCI_WALL) {
-    ((ExecutionEvent *)event)->_sample_id = atomicIncRelaxed(_sample_seq);
-  }
+  setWallSampleIdIfNeeded(event_type, event);
   bool recorded =
       _jfr.recordEventDelegated(lock_index, tid, correlation_id, event_type, event);
   _locks[lock_index].unlock();
@@ -859,9 +851,7 @@ void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
 
   u64 call_trace_id =
       _call_trace_storage.put(num_frames, extended_frames, truncated, weight);
-  if (event_type == BCI_WALL) {
-    ((ExecutionEvent *)event)->_sample_id = atomicIncRelaxed(_sample_seq);
-  }
+  setWallSampleIdIfNeeded(event_type, event);
   _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
 
   _locks[lock_index].unlock();
