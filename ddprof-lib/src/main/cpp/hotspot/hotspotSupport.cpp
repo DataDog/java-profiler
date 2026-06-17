@@ -1261,7 +1261,7 @@ static bool isLambdaClass(const char* signature) {
 
     size_t count = sizeof(LAMBDA_FORMS) / sizeof(LAMBDA_FORMS[0]);
     for (size_t index = 0; index < count; index++) {
-        if (strstr(signature, LAMBDA_FORMS[index]) != nullptr) {
+        if (strstr(signature, LAMBDA_FORMS[index]) == 0) {
             return true;
         }
     }

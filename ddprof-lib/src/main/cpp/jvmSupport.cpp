@@ -26,7 +26,7 @@ JVMSupport::JMethodIDLoadStats JVMSupport::getLoadState() {
 
 void JVMSupport::setLoadState(JMethodIDLoadStats state) {
     // Volatile store
-    __atomic_store(&jmethodID_load_state, &state, __ATOMIC_SEQ_CST);
+    __atomic_store(&jmethodID_load_state, &state, __ATOMIC_RELAXED);
 }
 
 void JVMSupport::initExecution(jvmtiEnv* jvmti, JNIEnv* jni) {

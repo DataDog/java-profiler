@@ -10,7 +10,6 @@
 #include "otel_context.h"
 #include "os.h"
 #include "threadLocalData.h"
-#include "tls.h"
 #include "unwindStats.h"
 #include <atomic>
 #include <cstdint>
@@ -37,9 +36,12 @@ private:
   // This means 3 levels but we allow for some wiggling space, just in case.
   // Even with 5 levels cap we will need any highly recursing signal handlers
   static constexpr u32 CRASH_HANDLER_NESTING_LIMIT = 5;
-  static void freeKey(void *key);
-  static inline const char _name[] = "ProfiledThread";
-  static TLS<_name, ProfiledThread*, freeKey> _current;
+  static pthread_key_t _tls_key;
+  static bool _tls_key_initialized;
+
+  static void initTLSKey();
+  static void doInitTLSKey();
+  static inline void freeKey(void *key);
 
   u64 _pc;
   u64 _sp;
@@ -87,10 +89,12 @@ public:
   // before delete — the race window the clearCurrentThreadTLS fix covers.
   // Returns the detached pointer so the caller can delete it after assertions.
   static ProfiledThread* clearCurrentThreadTLS() {
-    ProfiledThread* pt = nullptr;
-    pt = _current.get();
-    _current.set(nullptr);
-    return pt;
+    if (__atomic_load_n(&_tls_key_initialized, __ATOMIC_ACQUIRE)) {
+      ProfiledThread *pt = (ProfiledThread *)pthread_getspecific(_tls_key);
+      pthread_setspecific(_tls_key, nullptr);
+      return pt;
+    }
+    return nullptr;
   }
   // Deletes a ProfiledThread returned by clearCurrentThreadTLS().
   // Needed because the destructor is private.
