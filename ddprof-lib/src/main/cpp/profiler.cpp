@@ -1062,7 +1062,10 @@ void Profiler::updateNativeThreadNames() {
         _thread_info.updateThreadName(
                 tid, [&](int tid) -> std::string {
                     if (OS::threadName(tid, name_buf, buffer_size)) {
-                        return std::string(name_buf, buffer_size);
+                        // name_buf is NUL-terminated by OS::threadName; let
+                        // std::string find the length rather than storing the
+                        // full 64-byte buffer (NUL + trailing garbage).
+                        return std::string(name_buf);
                     }
                     return std::string();
                 });

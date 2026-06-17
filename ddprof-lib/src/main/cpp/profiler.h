@@ -138,7 +138,6 @@ private:
   void updateThreadName(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                         bool self = false);
   void updateJavaThreadNames();
-  void updateNativeThreadNames();
   void mangle(const char *name, char *buf, size_t size);
 
   Engine *selectCpuEngine(Arguments &args);
@@ -205,6 +204,13 @@ public:
   static inline Profiler *instance() {
     return _instance;
   }
+
+  // Resolve names of native (non-Java) threads from /proc. Idempotent and
+  // allocation-light (no-op for already-named tids), so it is safe to call
+  // periodically from the Libraries refresher thread to capture transient
+  // compiler/GC threads before they exit. Must NOT be called from a signal
+  // handler: thread enumeration uses opendir/readdir/malloc.
+  void updateNativeThreadNames();
 
 
   inline void incFailure(int type) {

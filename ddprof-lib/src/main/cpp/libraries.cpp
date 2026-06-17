@@ -7,6 +7,7 @@
 #include "log.h"
 #include "mallocTracer.h"
 #include "os.h"
+#include "profiler.h"
 #include "symbols.h"
 #include "symbols_linux.h"
 #include "vmEntry.h"
@@ -17,6 +18,13 @@
 // 500 ms is short enough that frame resolution gaps are barely observable
 // in typical sampling, and the refresher only wakes once per tick (cheap).
 static constexpr u64 REFRESH_INTERVAL_NS = 500ULL * 1'000'000ULL;
+
+// Cadence for native (non-Java) thread-name resolution piggy-backed on the
+// refresher thread (PROF-15139).  Each pass enumerates /proc/self/task and
+// reads comm for unknown tids, so it is decimated relative to the 500 ms
+// library-refresh tick to bound that cost on high-thread-count processes.
+// 2 s is well under the lifetime of long-lived JIT/GC threads we want to name.
+static constexpr u64 NATIVE_THREAD_NAME_INTERVAL_NS = 2ULL * 1000ULL * 1'000'000ULL;
 
 void Libraries::mangle(const char *name, char *buf, size_t size) {
   char *buf_end = buf + size;
@@ -90,6 +98,11 @@ void *Libraries::refresherLoop(void *arg) {
   // Publish our TID so sampler thread-list enumerations can skip us.
   self->_refresher_tid.store(OS::threadId(), std::memory_order_release);
 
+  // Timestamp of the last native-thread-name pass; 0 makes the first eligible
+  // tick run it.  Tracked with a monotonic clock so it is robust to early
+  // wakeups from stopRefresher()'s SIGIO.
+  u64 last_native_name_ns = 0;
+
   while (self->_refresher_running.load(std::memory_order_acquire)) {
     // Absolute-deadline sleep that resumes across EINTR (SIGCHLD, debugger
     // SIGSTOP/SIGCONT, etc.) and wakes early when stopRefresher() flips
@@ -100,6 +113,18 @@ void *Libraries::refresherLoop(void *arg) {
     }
     if (self->_dirty.load(std::memory_order_acquire)) {
       self->refresh();
+    }
+    // Name native (non-Java) threads while they are still alive. JIT/GC and
+    // other non-Java threads get no JVMTI ThreadStart, so they are otherwise
+    // named only at dump time; transient ones that exit before the dump fall
+    // back to "[tid=N]" (PROF-15139).  Gated on isRunning() so we do no work
+    // before the profiler reaches RUNNING (startRefresher precedes that), and
+    // decimated to NATIVE_THREAD_NAME_INTERVAL_NS to bound the /proc scan cost.
+    u64 now = OS::nanotime();
+    if (Profiler::instance()->isRunning() &&
+        now - last_native_name_ns >= NATIVE_THREAD_NAME_INTERVAL_NS) {
+      last_native_name_ns = now;
+      Profiler::instance()->updateNativeThreadNames();
     }
   }
   return nullptr;
