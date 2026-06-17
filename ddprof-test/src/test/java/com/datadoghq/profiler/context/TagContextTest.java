@@ -1,3 +1,18 @@
+/*
+ * Copyright 2026, Datadog, Inc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package com.datadoghq.profiler.context;
 
 import java.nio.charset.StandardCharsets;
@@ -291,10 +306,14 @@ public class TagContextTest extends AbstractProfilerTest {
                 new int[] {id, 0}, new byte[][] {new byte[256], null}));
 
         // 255 bytes is the boundary and must be accepted.
+        // Register the 255-byte value so its constant ID matches the bytes we pass.
         byte[] ok255 = new byte[255];
         Arrays.fill(ok255, (byte) 'x');
+        assertTrue(contextSetter.setContextValue("tag1", new String(ok255, StandardCharsets.UTF_8)));
+        int id255 = contextSetter.snapshotTags()[slot];
+        assertNotEquals(0, id255);
         assertTrue(contextSetter.setContextValuesByIdAndBytes(
-                new int[] {id, 0}, new byte[][] {ok255, null}));
+                new int[] {id255, 0}, new byte[][] {ok255, null}));
     }
 
     @Test
@@ -404,6 +423,14 @@ public class TagContextTest extends AbstractProfilerTest {
                 "overflowed slot's sidecar must be zeroed");
         assertNull(readTag(contextSetter, "tag10"),
                 "overflowed slot must read null — the entry never landed in attrs_data");
+
+        // Slots processed before the overflow are durably written — false does not mean
+        // the record is unchanged. At least tag1 (slot 0) must retain the new value.
+        int firstSlot = contextSetter.offsetOf("tag1");
+        assertEquals(bigId, contextSetter.snapshotTags()[firstSlot],
+                "slot 0 processed before overflow must have its sidecar durably written");
+        assertEquals(bigValue, readTag(contextSetter, "tag1"),
+                "slot 0 processed before overflow must be readable via attrs_data");
     }
 
     // -----------------------------------------------------------------------

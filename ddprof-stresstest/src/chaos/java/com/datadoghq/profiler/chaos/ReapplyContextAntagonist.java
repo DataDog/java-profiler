@@ -28,7 +28,8 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * <p>The only failure signal is a JVM crash or a reapply returning {@code false} while the record
  * is active — the latter is logged and counted but does not abort the run (false positives from
- * genuine attrs_data overflow are possible with many threads).
+ * genuine attrs_data overflow are possible when the total UTF-8 byte length of this
+ * thread's attribute values exceeds the fixed per-thread attrs_data buffer capacity).
  */
 public final class ReapplyContextAntagonist implements Antagonist {
 

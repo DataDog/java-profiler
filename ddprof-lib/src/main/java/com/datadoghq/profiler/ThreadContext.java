@@ -360,11 +360,13 @@ public final class ThreadContext {
      * @param constantIds per-slot Dictionary constant IDs; entries {@code <= 0} are skipped
      * @param utf8        per-slot UTF-8 value bytes; must be non-null and at most
      *                    {@value #MAX_VALUE_BYTES} bytes for every slot whose constantId {@code > 0}
-     * @return true if every slot with {@code constantId > 0} was written; false on invalid
-     *         arguments (null arrays, length mismatch, a missing/oversized {@code utf8} entry,
-     *         or {@code constantIds.length > MAX_CUSTOM_SLOTS}), if the record was not valid
-     *         before the call (nothing published), or if any slot overflowed attrs_data (that
-     *         slot's sidecar is zeroed)
+     * @return true if every slot with {@code constantId > 0} was written successfully; false on
+     *         invalid arguments (null arrays, length mismatch, a missing/oversized {@code utf8}
+     *         entry, or {@code constantIds.length > MAX_CUSTOM_SLOTS}), if the record was not
+     *         valid before the call (nothing is published), or if any slot overflowed
+     *         {@code attrs_data} (that slot's sidecar is zeroed). Note: a {@code false} return
+     *         due to {@code attrs_data} overflow does <em>not</em> mean the record is unmodified
+     *         — slots processed before the overflowed one are durably written.
      */
     public boolean setContextAttributesByIdAndBytes(int[] constantIds, byte[][] utf8) {
         if (constantIds == null || utf8 == null || constantIds.length != utf8.length) {

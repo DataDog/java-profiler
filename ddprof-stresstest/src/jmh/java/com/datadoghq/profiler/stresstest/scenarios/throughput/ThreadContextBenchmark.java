@@ -117,7 +117,10 @@ public class ThreadContextBenchmark {
             // after put() in the previous iteration or after the trial setup), causing a
             // bimodal distribution across forks due to JIT profile divergence.
             ctx.put(localRootSpanId, spanId, 0, spanId);
-            ctx.setContextAttributesByIdAndBytes(constantIds, utf8);
+            if (!ctx.setContextAttributesByIdAndBytes(constantIds, utf8)) {
+                throw new IllegalStateException(
+                        "resetToSteadyState: setContextAttributesByIdAndBytes failed; benchmark state invalid");
+            }
         }
     }
 
