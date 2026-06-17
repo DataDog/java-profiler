@@ -3,52 +3,62 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef __THREADLOCAL_H
-#define __THREADLOCAL_H
+#ifndef __THREADLOCAL_H__
+#define __THREADLOCAL_H__
 
 #include <cassert>
 #include <cstring>
 #include <pthread.h>
 #include "arch.h"
 
+// The function to create value if it does not exist
+typedef void* (*CREATE_FUNC)(void);
+// Cleanup the value when deleting the key
 typedef void (*CLEAN_FUNC)(void*);
-template <typename T, CLEAN_FUNC F = nullptr>
+template <typename T, CREATE_FUNC C = nullptr, CLEAN_FUNC F = nullptr>
 class ThreadLocal {
 protected:
-    static inline pthread_key_t _key;
-    static inline pthread_once_t _key_once = PTHREAD_ONCE_INIT;
+    pthread_key_t _key;
  
-    static void create_thread_key() {
-        pthread_key_create(&_key, F);
-    }
 public:
     ThreadLocal() {
-        pthread_once(&_key_once, create_thread_key);;
+        // Only support 64-bit platforms
+        static_assert(sizeof(void*) == 8);
+        int err;
+        while ((err = pthread_key_create(&_key, F)) == EAGAIN);
+        // What to do if we can not create a key?
+        assert(err == 0);
     }
+
     ~ThreadLocal() {
         pthread_key_delete(_key);
     }
-    static void set(T value) {
+    void set(T value) {
         pthread_setspecific(_key, (const void*)value);
     }
 
-    static T get() {
-        return (T)pthread_getspecific(_key);
+    T get() {
+        void* p = pthread_getspecific(_key);
+        if (p == nullptr && C != nullptr) {
+            p = C();
+            set((T)p);
+        }
+        return (T)p;
     }
 };
 
 template <>
 class ThreadLocal<double> {
 protected:
-    static inline pthread_key_t _key;
-    static inline pthread_once_t _key_once = PTHREAD_ONCE_INIT;
-
-    static void create_thread_key() {
-        pthread_key_create(&_key, nullptr);
-    }
+    pthread_key_t _key;
 public:
     ThreadLocal() {
-        pthread_once(&_key_once, create_thread_key);
+        // Only support 64-bit platforms
+        static_assert(sizeof(void*) == 8);
+        int err;
+        while ((err = pthread_key_create(&_key, nullptr)) == EAGAIN);
+        // What to do if we can not create a key?
+        assert(err == 0);
     }
 
     ~ThreadLocal() {
@@ -57,18 +67,23 @@ public:
 
     // double <--> u64 cast, preserve bit format
     // Can use std::bit_cast after upgrade C++ version to 20
-    static void set(double value) {
+    void set(double value) {
         u64 val;
         memcpy(&val, &value, sizeof(value));
         pthread_setspecific(_key, (const void*)val);
     }
 
-    static double get() {
-        u64 val = (u64)pthread_getspecific(_key);
+    double get() {
+        void* p = pthread_getspecific(_key);
+        if (p == nullptr) {
+            return 0.0;
+        }
+
+        u64 val = (u64)p;
         double value;
         memcpy(&value, &val, sizeof(val));
         return value;
     }
 };
 
-#endif // __THREADLOCAL_H
+#endif // __THREADLOCAL_H__

@@ -277,6 +277,24 @@ Error LivenessTracker::initialize(Arguments &args) {
   return _stored_error = Error::OK;
 }
 
+static void* create_mt19937() {
+  return (void*)(new std::mt19937(std::random_device{}()));
+}
+
+static void* create_uniform_real_distribution() {
+  return (void*)(new std::uniform_real_distribution<>(0, 1.0));
+}
+
+static void free_mt19937(void* p) {
+  std::mt19937* mt = (std::mt19937*)p;
+  delete mt;
+}
+
+static void free_uniform_real_distribution(void* p) {
+  std::uniform_real_distribution<>* urd = (std::uniform_real_distribution<>*)p;
+  delete urd;
+}
+
 void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
                             jobject object, u64 call_trace_id) {
   if (!_enabled) {
@@ -288,11 +306,13 @@ void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
     return;
   }
 
-  static thread_local std::mt19937 gen(std::random_device{}());
-  static thread_local std::uniform_real_distribution<> dis(0, 1.0);
+  static ThreadLocal<std::mt19937*, create_mt19937, free_mt19937> gen;
+  static ThreadLocal<std::uniform_real_distribution<>*, create_uniform_real_distribution, free_uniform_real_distribution> dis;
   static ThreadLocal<double> skipped;
 
-  if (_subsample_ratio < 1.0 && dis(gen) > _subsample_ratio) {
+  std::mt19937* genp = gen.get();
+  std::uniform_real_distribution<>* disp = dis.get();
+  if (_subsample_ratio < 1.0 && disp->operator()(*genp) > _subsample_ratio) {
     skipped.set(skipped.get() + static_cast<double>(event._weight) * event._size);
     return;
   }
