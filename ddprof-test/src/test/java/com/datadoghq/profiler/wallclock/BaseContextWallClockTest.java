@@ -132,10 +132,11 @@ final class BaseContextWallClockTest {
                 } else if (stackTrace.contains("method1Impl")
                         && !stackTrace.contains("method2") && !stackTrace.contains("method3")
                         && !stackTrace.contains("Object.wait")) {
-                    // Exclude Object.wait frames: when method1Impl is blocked waiting for method3
-                    // to complete (via monitor.wait), those samples reflect method3's runtime, not
-                    // method1's self-time. Counting them inflates method1's weight to ~55% instead
-                    // of the expected ~33%.
+                    // Exclude Object.wait frames: while method1Impl is blocked in monitor.wait(),
+                    // method3 runs concurrently on the executor thread. The wall-clock profiler
+                    // samples all threads, so that same window produces method3Weight samples on
+                    // the executor AND method1Weight samples on the main thread. Counting the
+                    // main-thread double-dip inflates method1's share to ~40-55% instead of ~33%.
                     if (assertContext) {
                         // need to check this after method2 because method1 calls method2
                         // it's the root so spanId == rootSpanId
