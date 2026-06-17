@@ -149,7 +149,7 @@ class NativeBuildPlugin : Plugin<Project> {
         project.logger.debug("Created tasks for configuration: ${config.name}")
     }
 
-    private fun findCompiler(project: Project): String = PlatformUtils.findCompiler(project)
+    private fun findCompiler(project: Project): String = PlatformUtils.findCompiler(project).executable
 
     private fun createAggregationTasks(
         project: Project,

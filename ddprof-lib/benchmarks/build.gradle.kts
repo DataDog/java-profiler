@@ -22,7 +22,7 @@ val shouldBuild = PlatformUtils.currentPlatform == Platform.MACOS ||
   PlatformUtils.currentPlatform == Platform.LINUX
 
 if (shouldBuild) {
-  val compiler = PlatformUtils.findCompiler(project)
+  val compiler = PlatformUtils.findCompiler(project).executable
 
   // Compile task
   val compileTask = tasks.register<NativeCompileTask>("compileBenchmark") {

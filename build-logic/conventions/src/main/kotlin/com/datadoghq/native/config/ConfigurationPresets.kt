@@ -4,8 +4,10 @@ package com.datadoghq.native.config
 import com.datadoghq.native.model.Architecture
 import com.datadoghq.native.model.BuildConfiguration
 import com.datadoghq.native.model.Platform
+import com.datadoghq.native.util.CompilerInfo
 import com.datadoghq.native.util.PlatformUtils
 import java.io.File
+import org.gradle.api.logging.Logger
 
 /**
  * Provides factory methods for creating standard build configurations
@@ -35,23 +37,25 @@ object ConfigurationPresets {
         val compiler = PlatformUtils.findCompiler(project)
 
         project.logger.lifecycle("Setting up standard build configurations for $currentPlatform-$currentArch")
-        project.logger.lifecycle("Using compiler: $compiler")
+        project.logger.lifecycle("Using compiler: ${compiler.executable} (version ${compiler.majorVersion})")
+
+        val commonCompilerArgs = commonCompilerArgs(version, compiler, currentArch, currentPlatform, project.logger)
 
         extension.buildConfigurations.apply {
             register("release") {
-                configureRelease(this, currentPlatform, currentArch, version, compiler)
+                configureRelease(this, currentPlatform, currentArch, commonCompilerArgs)
             }
             register("debug") {
-                configureDebug(this, currentPlatform, currentArch, version, compiler)
+                configureDebug(this, currentPlatform, currentArch, commonCompilerArgs)
             }
             register("asan") {
-                configureAsan(this, currentPlatform, currentArch, version, rootDir, compiler)
+                configureAsan(this, currentPlatform, currentArch, rootDir, compiler, commonCompilerArgs)
             }
             register("tsan") {
-                configureTsan(this, currentPlatform, currentArch, version, rootDir, compiler)
+                configureTsan(this, currentPlatform, currentArch, rootDir, compiler, commonCompilerArgs)
             }
             register("fuzzer") {
-                configureFuzzer(this, currentPlatform, currentArch, version, rootDir, compiler)
+                configureFuzzer(this, currentPlatform, currentArch, rootDir, commonCompilerArgs)
             }
         }
 
@@ -59,7 +63,13 @@ object ConfigurationPresets {
         project.logger.lifecycle("Active configurations: ${activeConfigs.map { it.name }.joinToString(", ")}")
     }
 
-    private fun commonCompilerArgs(version: String): List<String> {
+    private fun commonCompilerArgs(
+        version: String,
+        compiler: CompilerInfo,
+        architecture: Architecture,
+        platform: Platform,
+        logger: Logger
+    ): List<String> {
         val args = mutableListOf(
             "-fPIC",
             "-fno-omit-frame-pointer",
@@ -75,22 +85,26 @@ object ConfigurationPresets {
         if (PlatformUtils.isMusl()) {
             args.add("-D__musl__")
         }
-        return args
-    }
 
-    private fun commonLinuxCompilerArgs(
-        version: String,
-        architecture: Architecture = Architecture.X64,
-        compiler: String = "gcc"
-    ): List<String> {
-        val args = commonCompilerArgs(version).toMutableList()
-        // Use TLS descriptors (GNU2 dialect) for thread-local storage on x86_64.
-        // This is required by thread context (https://github.com/open-telemetry/opentelemetry-specification/pull/4947)
-        // The dialect is only supported by GCC and clang >= 19, so probe the
-        // compiler before adding the flag rather than relying on its version.
-        if (architecture == Architecture.X64 && PlatformUtils.supportsTlsDialectGnu2(compiler)) {
-            args.add("-mtls-dialect=gnu2")
+        // Use TLS descriptors (GNU2 dialect) for thread-local storage on x86_64 Linux,
+        // required by thread context (https://github.com/open-telemetry/opentelemetry-specification/pull/4947).
+        // The `-mtls-dialect=gnu2` spelling is x86-specific, so gate on platform/arch.
+        if (platform == Platform.LINUX && architecture == Architecture.X64) {
+            if (compiler.supportsTlsDialectGnu2()) {
+                args.add("-mtls-dialect=gnu2")
+            } else {
+                // Only clang older than 19 reaches here (gcc/others are always supported).
+                logger.lifecycle(
+                    "GNU2 TLS dialect disabled: -mtls-dialect=gnu2 requires clang >= 19, " +
+                    "but detected clang ${compiler.majorVersion} for ${compiler.executable}."
+                )
+            }
         }
+
+        if (platform == Platform.MACOS) {
+            args += listOf("-D_XOPEN_SOURCE", "-D_DARWIN_C_SOURCE")
+        }
+
         return args
     }
 
@@ -104,15 +118,11 @@ object ConfigurationPresets {
         "-Wl,--build-id"
     )
 
-    private fun commonMacosCompilerArgs(version: String): List<String> =
-        commonCompilerArgs(version) + listOf("-D_XOPEN_SOURCE", "-D_DARWIN_C_SOURCE")
-
     fun configureRelease(
         config: BuildConfiguration,
         platform: Platform,
         architecture: Architecture,
-        version: String,
-        compiler: String = "gcc"
+        commonCompilerArgs: List<String>
     ) {
         config.platform.set(platform)
         config.architecture.set(architecture)
@@ -121,7 +131,7 @@ object ConfigurationPresets {
         when (platform) {
             Platform.LINUX -> {
                 config.compilerArgs.set(
-                    listOf("-O3", "-DNDEBUG", "-g") + commonLinuxCompilerArgs(version, architecture, compiler)
+                    listOf("-O3", "-DNDEBUG", "-g") + commonCompilerArgs
                 )
                 config.linkerArgs.set(
                     commonLinuxLinkerArgs() + listOf(
@@ -135,7 +145,7 @@ object ConfigurationPresets {
             }
             Platform.MACOS -> {
                 config.compilerArgs.set(
-                    commonMacosCompilerArgs(version) + listOf("-O3", "-DNDEBUG", "-g")
+                    commonCompilerArgs + listOf("-O3", "-DNDEBUG", "-g")
                 )
                 config.linkerArgs.set(emptyList())
             }
@@ -146,8 +156,7 @@ object ConfigurationPresets {
         config: BuildConfiguration,
         platform: Platform,
         architecture: Architecture,
-        version: String,
-        compiler: String = "gcc"
+        commonCompilerArgs: List<String>
     ) {
         config.platform.set(platform)
         config.architecture.set(architecture)
@@ -156,13 +165,13 @@ object ConfigurationPresets {
         when (platform) {
             Platform.LINUX -> {
                 config.compilerArgs.set(
-                    listOf("-O0", "-g", "-DDEBUG") + commonLinuxCompilerArgs(version, architecture, compiler)
+                    listOf("-O0", "-g", "-DDEBUG") + commonCompilerArgs
                 )
                 config.linkerArgs.set(commonLinuxLinkerArgs())
             }
             Platform.MACOS -> {
                 config.compilerArgs.set(
-                    commonMacosCompilerArgs(version) + listOf("-O0", "-g", "-DDEBUG")
+                    commonCompilerArgs + listOf("-O0", "-g", "-DDEBUG")
                 )
                 config.linkerArgs.set(emptyList())
             }
@@ -173,13 +182,13 @@ object ConfigurationPresets {
         config: BuildConfiguration,
         platform: Platform,
         architecture: Architecture,
-        version: String,
         rootDir: File,
-        compiler: String = "gcc"
+        compiler: CompilerInfo,
+        commonCompilerArgs: List<String>
     ) {
         config.platform.set(platform)
         config.architecture.set(architecture)
-        config.active.set(PlatformUtils.hasAsan(compiler))
+        config.active.set(PlatformUtils.hasAsan(compiler.executable))
 
         val asanCompilerArgs = listOf(
             "-g",
@@ -202,9 +211,9 @@ object ConfigurationPresets {
 
         when (platform) {
             Platform.LINUX -> {
-                config.compilerArgs.set(asanCompilerArgs + commonLinuxCompilerArgs(version, architecture, compiler))
+                config.compilerArgs.set(asanCompilerArgs + commonCompilerArgs)
 
-                val libasan = PlatformUtils.locateLibasan(compiler)
+                val libasan = PlatformUtils.locateLibasan(compiler.executable)
                 // Link against the sanitizer runtime that matches the compiler:
                 // - clang: locateLibasan returns libclang_rt.asan-<arch>.so, which
                 //   includes UBSan symbols; -lclang_rt.asan-<arch> satisfies -z defs
@@ -246,13 +255,13 @@ object ConfigurationPresets {
         config: BuildConfiguration,
         platform: Platform,
         architecture: Architecture,
-        version: String,
         rootDir: File,
-        compiler: String = "gcc"
+        compiler: CompilerInfo,
+        commonCompilerArgs: List<String>
     ) {
         config.platform.set(platform)
         config.architecture.set(architecture)
-        config.active.set(PlatformUtils.hasTsan(compiler))
+        config.active.set(PlatformUtils.hasTsan(compiler.executable))
 
         val tsanCompilerArgs = listOf(
             "-g",
@@ -265,9 +274,9 @@ object ConfigurationPresets {
 
         when (platform) {
             Platform.LINUX -> {
-                config.compilerArgs.set(tsanCompilerArgs + commonLinuxCompilerArgs(version, architecture, compiler))
+                config.compilerArgs.set(tsanCompilerArgs + commonCompilerArgs)
 
-                val libtsan = PlatformUtils.locateLibtsan(compiler)
+                val libtsan = PlatformUtils.locateLibtsan(compiler.executable)
                 // Use the library name from the resolved path so that clang's own
                 // libclang_rt.tsan-<arch>.so is linked by name (not as -ltsan).
                 val tsanLinkerArgs = if (libtsan != null) {
@@ -313,9 +322,8 @@ object ConfigurationPresets {
         config: BuildConfiguration,
         platform: Platform,
         architecture: Architecture,
-        version: String,
         rootDir: File,
-        compiler: String = "gcc"
+        commonCompilerArgs: List<String>
     ) {
         config.platform.set(platform)
         config.architecture.set(architecture)
@@ -340,7 +348,7 @@ object ConfigurationPresets {
 
         when (platform) {
             Platform.LINUX -> {
-                config.compilerArgs.set(fuzzerCompilerArgs + commonLinuxCompilerArgs(version, architecture, compiler))
+                config.compilerArgs.set(fuzzerCompilerArgs + commonCompilerArgs)
                 config.linkerArgs.set(commonLinuxLinkerArgs() + fuzzerLinkerArgs)
 
                 config.testEnvironment.apply {
@@ -349,7 +357,7 @@ object ConfigurationPresets {
                 }
             }
             Platform.MACOS -> {
-                config.compilerArgs.set(fuzzerCompilerArgs + commonMacosCompilerArgs(version))
+                config.compilerArgs.set(fuzzerCompilerArgs + commonCompilerArgs)
                 config.linkerArgs.set(fuzzerLinkerArgs)
 
                 config.testEnvironment.apply {
