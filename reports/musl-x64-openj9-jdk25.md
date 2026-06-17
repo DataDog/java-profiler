@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk25
 
 ## musl-x64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-06-17 09:36:05 EDT
+**Date:** 2026-06-17 10:21:52 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-x64-openj9-jdk25
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 18 |
-| CPU Cores (end) | 18 |
+| CPU Cores (start) | 90 |
+| CPU Cores (end) | 85 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,22 +45,29 @@ title: musl-x64-openj9-jdk25
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 18-18 cores)</summary>
+<summary>CPU Timeline (4 unique values: 85-92 cores)</summary>
 
 ```
-1781703019 18
-1781703024 18
-1781703029 18
-1781703034 18
-1781703039 18
-1781703044 18
-1781703049 18
-1781703054 18
-1781703059 18
-1781703064 18
-1781703069 18
-1781703074 18
-1781703079 18
+1781705713 90
+1781705718 90
+1781705723 90
+1781705728 92
+1781705733 92
+1781705738 92
+1781705743 92
+1781705748 92
+1781705753 90
+1781705758 90
+1781705763 90
+1781705768 90
+1781705773 90
+1781705778 90
+1781705783 92
+1781705788 92
+1781705793 92
+1781705798 87
+1781705803 87
+1781705809 87
 ```
 </details>
 
