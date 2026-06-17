@@ -11,6 +11,35 @@
 #include <pthread.h>
 #include "arch.h"
 
+/**
+ * This file implements an alternative to C/C++ thread local.
+ * Due to some restrictions of the language implementations, especially, on musl/aarch64,
+ * they cannot be safely used in profiler.
+ * 
+ * How to use?
+ * A ThreadLocal should be declared as a static variable, e.g.
+ * 
+ * static void* create_my_object() {
+ *   return new MyObject();
+ * }
+ * 
+ * static void delete_my_object(void* p) {
+ *   MyObject* obj = (MyObject*)p;
+ *   delete obj; 
+ * }
+ * 
+ * static ThreadLocal<MyObject*, create_my_object, delete_my_object> var;
+ * MyObject* value = var.get();
+ * ...
+ * var.clear();
+ * ... 
+ * MyObject* new_value = new MyObject();
+ * var.set(new_value);
+ * ...
+ * var.clear();
+ * 
+ */
+
 // The function to create value if it does not exist
 typedef void* (*CREATE_FUNC)(void);
 // Cleanup the value when deleting the key
@@ -22,10 +51,7 @@ protected:
  
 public:
     ThreadLocal() {
-        // Only support 64-bit platforms
-        static_assert(sizeof(void*) == 8);
-        int err;
-        while ((err = pthread_key_create(&_key, F)) == EAGAIN);
+        int err = pthread_key_create(&_key, F);
         // What to do if we can not create a key?
         assert(err == 0);
     }
@@ -33,6 +59,7 @@ public:
     ~ThreadLocal() {
         pthread_key_delete(_key);
     }
+
     void set(T value) {
         pthread_setspecific(_key, (const void*)value);
     }
@@ -45,6 +72,15 @@ public:
         }
         return (T)p;
     }
+
+    // Clear the value
+    void clear() {
+        void* p = nullptr;
+        if (F != nullptr && (p = pthread_getspecific(_key)) != nullptr) {
+            pthread_setspecific(_key, nullptr);
+            F(p);
+        }
+    }
 };
 
 template <>
@@ -53,10 +89,10 @@ protected:
     pthread_key_t _key;
 public:
     ThreadLocal() {
-        // Only support 64-bit platforms
+        // Only support 64-bit platforms, double and void* are the same size
         static_assert(sizeof(void*) == 8);
-        int err;
-        while ((err = pthread_key_create(&_key, nullptr)) == EAGAIN);
+        static_assert(sizeof(double) == 8);
+        int err = pthread_key_create(&_key, nullptr);
         // What to do if we can not create a key?
         assert(err == 0);
     }
@@ -83,6 +119,10 @@ public:
         double value;
         memcpy(&value, &val, sizeof(val));
         return value;
+    }
+
+    void clear() {
+        pthread_setspecific(_key, nullptr);
     }
 };
 

@@ -278,10 +278,16 @@ Error LivenessTracker::initialize(Arguments &args) {
 }
 
 static void* create_mt19937() {
+  // std::mt19937 construction does not throw exception.
+  // However, memory allocation can fail. When it happens, application is likely
+  // to crash anyway.
   return (void*)(new std::mt19937(std::random_device{}()));
 }
 
 static void* create_uniform_real_distribution() {
+  // std::uniform_real_distribution construction does not throw exception.
+  // However, memory allocation can fail. When it happens, application is likely
+  // to crash anyway.
   return (void*)(new std::uniform_real_distribution<>(0, 1.0));
 }
 
@@ -310,11 +316,13 @@ void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
   static ThreadLocal<std::uniform_real_distribution<>*, create_uniform_real_distribution, free_uniform_real_distribution> dis;
   static ThreadLocal<double> skipped;
 
-  std::mt19937* genp = gen.get();
-  std::uniform_real_distribution<>* disp = dis.get();
-  if (_subsample_ratio < 1.0 && disp->operator()(*genp) > _subsample_ratio) {
-    skipped.set(skipped.get() + static_cast<double>(event._weight) * event._size);
-    return;
+  if (_subsample_ratio < 1.0) {
+    std::mt19937* genp = gen.get();
+    std::uniform_real_distribution<>* disp = dis.get();
+    if (disp->operator()(*genp) > _subsample_ratio) {
+      skipped.set(skipped.get() + static_cast<double>(event._weight) * event._size);
+      return;
+    }
   }
 
   jweak ref = env->NewWeakGlobalRef(object);
