@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef __TLS_H
-#define __TLS_H
+#ifndef __THREADLOCAL_H
+#define __THREADLOCAL_H
 
 #include <cassert>
 #include <cstring>
@@ -12,7 +12,6 @@
 #include "arch.h"
 
 typedef void (*CLEAN_FUNC)(void*);
-
 template <typename T, CLEAN_FUNC F = nullptr>
 class ThreadLocal {
 protected:
@@ -51,6 +50,7 @@ public:
     ThreadLocal() {
         pthread_once(&_key_once, create_thread_key);
     }
+
     ~ThreadLocal() {
         pthread_key_delete(_key);
     }
@@ -71,4 +71,4 @@ public:
     }
 };
 
-#endif // __TLS_H
+#endif // __THREADLOCAL_H

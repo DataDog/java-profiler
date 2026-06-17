@@ -19,6 +19,7 @@
 #include "os.h"
 #include "profiler.h"
 #include "thread.h"
+#include "threadLocal.h"
 #include "tsc.h"
 #include <jni.h>
 #include <string.h>
@@ -289,10 +290,10 @@ void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
 
   static thread_local std::mt19937 gen(std::random_device{}());
   static thread_local std::uniform_real_distribution<> dis(0, 1.0);
-  static thread_local double skipped = 0;
+  static ThreadLocal<double> skipped;
 
   if (_subsample_ratio < 1.0 && dis(gen) > _subsample_ratio) {
-    skipped += static_cast<double>(event._weight) * event._size;
+    skipped.set(skipped.get() + static_cast<double>(event._weight) * event._size);
     return;
   }
 
@@ -322,7 +323,7 @@ retry:
     _table[idx].time = TSC::ticks();
     _table[idx].ref = ref;
     _table[idx].alloc = event;
-    _table[idx].skipped = skipped;
+    _table[idx].skipped = skipped.get();
     _table[idx].age = 0;
     _table[idx].call_trace_id = call_trace_id;
     _table[idx].ctx = ContextApi::snapshot();
@@ -376,7 +377,7 @@ retry:
       env->DeleteWeakGlobalRef(ref);
     }
   }
-  skipped = 0; // reset the subsampling skipped bytes
+  skipped.set(0); // reset the subsampling skipped bytes
 }
 
 void JNICALL LivenessTracker::GarbageCollectionFinish(jvmtiEnv *jvmti_env) {
