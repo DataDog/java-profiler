@@ -34,6 +34,17 @@ enum class BlockRunOwner : int {
     NATIVE = 3,
 };
 
+struct BlockRunSnapshot {
+    OSThreadState active_state;
+    OSThreadState sampled_state;
+    BlockRunOwner owner;
+    u64 anchor_sample_id;
+    u64 suppressed_sample_count;
+    u32 generation;
+    bool active;
+    bool anchored;
+};
+
 class ThreadFilter {
 public:
     using SlotID = int;
@@ -53,6 +64,8 @@ public:
     struct alignas(DEFAULT_CACHE_LINE_SIZE) Slot {
         static constexpr u64 kUnownedBlockedFallbackRatio = 10;
 
+        std::atomic<u64>           anchor_sample_id{0};
+        std::atomic<u64>           suppressed_sample_count{0};
         std::atomic<u64>           unowned_blocked_pending_weight{0};
         std::atomic<u64>           unowned_blocked_decision_count{0};
         std::atomic<u64>           unowned_blocked_call_trace_id{0};
@@ -74,6 +87,8 @@ public:
                      - sizeof(std::atomic<u64>)
                      - sizeof(std::atomic<u64>)
                      - sizeof(std::atomic<u64>)
+                     - sizeof(std::atomic<u64>)
+                     - sizeof(std::atomic<u64>)
                      - sizeof(std::atomic<OSThreadState>)
                      - sizeof(std::atomic<int>)
                      - sizeof(std::atomic<int>)
@@ -88,11 +103,16 @@ public:
         inline OSThreadState lastSampledState() const {
             return last_sampled_state.load(std::memory_order_relaxed);
         }
-        inline void markSampledThisRun(OSThreadState state) {
+        inline void markSampledThisRun(OSThreadState state, u64 sample_id = 0) {
+            if (sample_id != 0) {
+                anchor_sample_id.store(sample_id, std::memory_order_relaxed);
+            }
             last_sampled_state.store(state, std::memory_order_relaxed);
             sampled_this_run.store(true, std::memory_order_release);
         }
         inline void resetSampledRun(OSThreadState state) {
+            anchor_sample_id.store(0, std::memory_order_relaxed);
+            suppressed_sample_count.store(0, std::memory_order_relaxed);
             resetUnownedBlockedSampling();
             last_sampled_state.store(state, std::memory_order_relaxed);
             sampled_this_run.store(false, std::memory_order_release);
@@ -108,6 +128,15 @@ public:
         }
         inline u32 blockGeneration() const {
             return block_generation.load(std::memory_order_acquire);
+        }
+        inline u64 anchorSampleId() const {
+            return anchor_sample_id.load(std::memory_order_acquire);
+        }
+        inline u64 suppressedSampleCount() const {
+            return suppressed_sample_count.load(std::memory_order_acquire);
+        }
+        inline u64 incrementSuppressedSampleCount() {
+            return suppressed_sample_count.fetch_add(1, std::memory_order_relaxed) + 1;
         }
         inline void resetUnownedBlockedSampling() {
             unowned_blocked_pending_weight.store(0, std::memory_order_relaxed);
@@ -155,6 +184,8 @@ public:
                 return false;
             }
             u32 generation = block_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+            anchor_sample_id.store(0, std::memory_order_relaxed);
+            suppressed_sample_count.store(0, std::memory_order_relaxed);
             resetUnownedBlockedSampling();
             last_sampled_state.store(OSThreadState::UNKNOWN, std::memory_order_relaxed);
             sampled_this_run.store(false, std::memory_order_relaxed);
@@ -167,12 +198,32 @@ public:
             resetSampledRun(state);
             active_block_owner.store(static_cast<int>(BlockRunOwner::NONE), std::memory_order_release);
         }
+        inline BlockRunSnapshot snapshotBlockRun() const {
+            BlockRunSnapshot snapshot{};
+            bool sampled = sampledThisRun();
+            snapshot.active_state = activeBlockState();
+            snapshot.sampled_state = lastSampledState();
+            snapshot.owner = activeBlockOwner();
+            if (sampled) {
+                snapshot.anchor_sample_id = anchorSampleId();
+                snapshot.suppressed_sample_count = suppressedSampleCount();
+            } else {
+                snapshot.anchor_sample_id = 0;
+                snapshot.suppressed_sample_count = 0;
+            }
+            snapshot.generation = blockGeneration();
+            snapshot.active = snapshot.active_state != OSThreadState::UNKNOWN;
+            snapshot.anchored = sampled && snapshot.anchor_sample_id != 0;
+            return snapshot;
+        }
     };
     static_assert(sizeof(Slot) == 2 * DEFAULT_CACHE_LINE_SIZE, "Slot must be exactly two cache lines");
     static_assert(std::atomic<OSThreadState>::is_always_lock_free,
                   "Slot OSThreadState fields must be lock-free for signal-handler safety");
     static_assert(std::atomic<bool>::is_always_lock_free,
                   "Slot::sampled_this_run must be lock-free for signal-handler safety");
+    static_assert(std::atomic<u64>::is_always_lock_free,
+                  "Slot sample-id/count fields must be lock-free for signal-handler safety");
 
     ThreadFilter();
     ~ThreadFilter();
@@ -197,6 +248,9 @@ public:
     // another owner.
     void exitBlockedRun(SlotID slot_id);
     bool exitBlockedRun(SlotID slot_id, u32 generation);
+    bool snapshotAndExitBlockedRun(SlotID slot_id, u32 generation,
+                                   BlockRunSnapshot* snapshot);
+    BlockRunSnapshot snapshotBlockedRun(SlotID slot_id) const;
 
     static inline u64 encodeBlockRunToken(SlotID slot_id, u32 generation) {
         return (static_cast<u64>(generation) << 32) | static_cast<u32>(slot_id + 1);

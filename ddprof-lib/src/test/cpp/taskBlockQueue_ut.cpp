@@ -7,6 +7,56 @@
 
 #include "taskBlockQueue.h"
 
+#include <atomic>
+#include <thread>
+#include <vector>
+
+namespace {
+
+static QueuedTaskBlockEvent eventWithId(int id) {
+  QueuedTaskBlockEvent event{};
+  event.tid = id + 1000;
+  event.generation = static_cast<u64>(id + 2000);
+  event.event._start = static_cast<u64>(id);
+  event.event._end = static_cast<u64>(id + 1);
+  event.event._blocker = static_cast<u64>(id);
+  return event;
+}
+
+static void markSeen(const QueuedTaskBlockEvent& event,
+                     std::vector<std::atomic<int>>& seen,
+                     std::atomic<int>& failures) {
+  int id = static_cast<int>(event.event._blocker);
+  if (id < 0 || static_cast<size_t>(id) >= seen.size()) {
+    failures.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+  int expected = 0;
+  if (!seen[id].compare_exchange_strong(expected, 1, std::memory_order_relaxed)) {
+    failures.fetch_add(1, std::memory_order_relaxed);
+  }
+  if (event.tid != id + 1000 ||
+      event.generation != static_cast<u64>(id + 2000) ||
+      event.event._start != static_cast<u64>(id) ||
+      event.event._end != static_cast<u64>(id + 1)) {
+    failures.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
+static void expectAllSeen(const std::vector<std::atomic<int>>& seen) {
+  for (size_t i = 0; i < seen.size(); i++) {
+    EXPECT_EQ(1, seen[i].load(std::memory_order_relaxed)) << "missing event " << i;
+  }
+}
+
+static void clearSeen(std::vector<std::atomic<int>>& seen) {
+  for (std::atomic<int>& value : seen) {
+    value.store(0, std::memory_order_relaxed);
+  }
+}
+
+} // namespace
+
 TEST(TaskBlockQueueTest, PreservesQueuedEventFields) {
   TaskBlockQueue queue;
   QueuedTaskBlockEvent in{};
@@ -63,4 +113,100 @@ TEST(TaskBlockQueueTest, DiscardAllEmptiesQueue) {
 
   QueuedTaskBlockEvent out{};
   EXPECT_FALSE(queue.tryPop(out));
+}
+
+TEST(TaskBlockQueueTest, ConcurrentMultiProducerSingleConsumerPreservesAllEvents) {
+  TaskBlockQueue queue;
+  static constexpr int kProducers = 4;
+  static constexpr int kEventsPerProducer = 2048;
+  static constexpr int kTotalEvents = kProducers * kEventsPerProducer;
+  std::vector<std::atomic<int>> seen(kTotalEvents);
+  clearSeen(seen);
+  std::atomic<int> consumed{0};
+  std::atomic<int> failures{0};
+
+  std::thread consumer([&]() {
+    QueuedTaskBlockEvent event{};
+    while (consumed.load(std::memory_order_acquire) < kTotalEvents) {
+      if (queue.tryPop(event)) {
+        markSeen(event, seen, failures);
+        consumed.fetch_add(1, std::memory_order_release);
+      } else {
+        std::this_thread::yield();
+      }
+    }
+  });
+
+  std::vector<std::thread> producers;
+  for (int producer = 0; producer < kProducers; producer++) {
+    producers.emplace_back([&, producer]() {
+      int base = producer * kEventsPerProducer;
+      for (int offset = 0; offset < kEventsPerProducer; offset++) {
+        QueuedTaskBlockEvent event = eventWithId(base + offset);
+        while (!queue.tryPush(event)) {
+          std::this_thread::yield();
+        }
+      }
+    });
+  }
+
+  for (std::thread& producer : producers) {
+    producer.join();
+  }
+  consumer.join();
+
+  EXPECT_EQ(0, failures.load(std::memory_order_relaxed));
+  EXPECT_EQ(kTotalEvents, consumed.load(std::memory_order_relaxed));
+  expectAllSeen(seen);
+}
+
+TEST(TaskBlockQueueTest, ConcurrentMultiProducerMultiConsumerPreservesAllEvents) {
+  TaskBlockQueue queue;
+  static constexpr int kProducers = 4;
+  static constexpr int kConsumers = 2;
+  static constexpr int kEventsPerProducer = 2048;
+  static constexpr int kTotalEvents = kProducers * kEventsPerProducer;
+  std::vector<std::atomic<int>> seen(kTotalEvents);
+  clearSeen(seen);
+  std::atomic<int> consumed{0};
+  std::atomic<int> failures{0};
+
+  std::vector<std::thread> consumers;
+  for (int consumer_index = 0; consumer_index < kConsumers; consumer_index++) {
+    consumers.emplace_back([&]() {
+      QueuedTaskBlockEvent event{};
+      while (consumed.load(std::memory_order_acquire) < kTotalEvents) {
+        if (queue.tryPop(event)) {
+          markSeen(event, seen, failures);
+          consumed.fetch_add(1, std::memory_order_release);
+        } else {
+          std::this_thread::yield();
+        }
+      }
+    });
+  }
+
+  std::vector<std::thread> producers;
+  for (int producer = 0; producer < kProducers; producer++) {
+    producers.emplace_back([&, producer]() {
+      int base = producer * kEventsPerProducer;
+      for (int offset = 0; offset < kEventsPerProducer; offset++) {
+        QueuedTaskBlockEvent event = eventWithId(base + offset);
+        while (!queue.tryPush(event)) {
+          std::this_thread::yield();
+        }
+      }
+    });
+  }
+
+  for (std::thread& producer : producers) {
+    producer.join();
+  }
+  for (std::thread& consumer : consumers) {
+    consumer.join();
+  }
+
+  EXPECT_EQ(0, failures.load(std::memory_order_relaxed));
+  EXPECT_EQ(kTotalEvents, consumed.load(std::memory_order_relaxed));
+  expectAllSeen(seen);
 }

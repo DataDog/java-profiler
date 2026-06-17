@@ -416,12 +416,8 @@ static bool snapshotAndExitBlockedRun(jlong token, BlockRunSnapshot *snapshot) {
     return false;
   }
   u32 generation = ThreadFilter::tokenGeneration(static_cast<u64>(token));
-  ThreadFilter::Slot *slot = tf->slotForId(slot_id);
-  if (slot == nullptr || generation == 0 || slot->blockGeneration() != generation) {
-    return false;
-  }
   if (snapshot != nullptr) {
-    *snapshot = slot->snapshotBlockRun();
+    return tf->snapshotAndExitBlockedRun(slot_id, generation, snapshot);
   }
   return tf->exitBlockedRun(slot_id, generation);
 }

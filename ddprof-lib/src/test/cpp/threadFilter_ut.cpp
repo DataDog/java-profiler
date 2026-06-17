@@ -1,5 +1,5 @@
 /*
- * Copyright 2025 Datadog, Inc
+ * Copyright 2025, 2026 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -546,6 +546,44 @@ TEST_F(ThreadFilterTest, NewGenerationRejectsStaleToken) {
     EXPECT_TRUE(filter->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(current_token)));
 }
 
+TEST_F(ThreadFilterTest, UnknownStateCannotEnterBlockedRun) {
+    int slot_id = filter->registerThread();
+    ASSERT_GE(slot_id, 0);
+
+    ThreadFilter::Slot *slot = filter->slotForId(slot_id);
+    ASSERT_NE(nullptr, slot);
+    u32 generation = slot->blockGeneration();
+
+    EXPECT_EQ(0ULL, filter->enterBlockedRun(slot_id, OSThreadState::UNKNOWN,
+                                            BlockRunOwner::JAVA));
+    EXPECT_EQ(BlockRunOwner::NONE, slot->activeBlockOwner());
+    EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
+    EXPECT_EQ(generation, slot->blockGeneration());
+}
+
+TEST_F(ThreadFilterTest, ExitRejectsRunBeforeStateIsPublished) {
+    int slot_id = filter->registerThread();
+    ASSERT_GE(slot_id, 0);
+
+    ThreadFilter::Slot *slot = filter->slotForId(slot_id);
+    ASSERT_NE(nullptr, slot);
+
+    slot->active_block_owner.store(static_cast<int>(BlockRunOwner::JAVA),
+                                   std::memory_order_release);
+    slot->block_generation.store(1, std::memory_order_release);
+    slot->active_block_state.store(OSThreadState::UNKNOWN,
+                                   std::memory_order_release);
+
+    EXPECT_FALSE(filter->exitBlockedRun(slot_id, 1));
+    EXPECT_EQ(BlockRunOwner::JAVA, slot->activeBlockOwner());
+
+    BlockRunSnapshot snapshot{};
+    EXPECT_FALSE(filter->snapshotAndExitBlockedRun(slot_id, 1, &snapshot));
+    EXPECT_EQ(BlockRunOwner::JAVA, slot->activeBlockOwner());
+
+    slot->clearActiveBlockRun(OSThreadState::UNKNOWN);
+}
+
 TEST_F(ThreadFilterTest, TokenRoundTripPreservesHighGenerationBit) {
     ThreadFilter::SlotID slot_id = 7;
     u32 generation = 0x80000001u;
@@ -555,4 +593,139 @@ TEST_F(ThreadFilterTest, TokenRoundTripPreservesHighGenerationBit) {
     EXPECT_LT(java_token, 0);
     EXPECT_EQ(slot_id, ThreadFilter::tokenSlotId(static_cast<u64>(java_token)));
     EXPECT_EQ(generation, ThreadFilter::tokenGeneration(static_cast<u64>(java_token)));
+}
+
+TEST_F(ThreadFilterTest, ConcurrentEnterBlockedRunClaimsOnlyOneOwner) {
+    int slot_id = filter->registerThread();
+    ASSERT_GE(slot_id, 0);
+
+    static constexpr int kThreads = 16;
+    std::atomic<bool> start{false};
+    std::atomic<int> ready{0};
+    std::vector<u64> tokens(kThreads, 0);
+    std::vector<std::thread> threads;
+
+    for (int i = 0; i < kThreads; i++) {
+        threads.emplace_back([&, i]() {
+            ready.fetch_add(1, std::memory_order_release);
+            while (!start.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            tokens[i] = filter->enterBlockedRun(slot_id, OSThreadState::SLEEPING,
+                                                BlockRunOwner::JAVA);
+        });
+    }
+
+    while (ready.load(std::memory_order_acquire) != kThreads) {
+        std::this_thread::yield();
+    }
+    start.store(true, std::memory_order_release);
+    for (std::thread& thread : threads) {
+        thread.join();
+    }
+
+    int winners = 0;
+    u64 winning_token = 0;
+    for (u64 token : tokens) {
+        if (token != 0) {
+            winners++;
+            winning_token = token;
+        }
+    }
+    EXPECT_EQ(1, winners);
+
+    ThreadFilter::Slot *slot = filter->slotForId(slot_id);
+    ASSERT_NE(nullptr, slot);
+    EXPECT_EQ(BlockRunOwner::JAVA, slot->activeBlockOwner());
+    EXPECT_EQ(OSThreadState::SLEEPING, slot->activeBlockState());
+    ASSERT_NE(0ULL, winning_token);
+    EXPECT_TRUE(filter->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(winning_token)));
+    EXPECT_EQ(BlockRunOwner::NONE, slot->activeBlockOwner());
+    EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
+}
+
+TEST_F(ThreadFilterTest, ConcurrentStaleExitCannotClearNewRun) {
+    int slot_id = filter->registerThread();
+    ASSERT_GE(slot_id, 0);
+
+    u64 stale_token = filter->enterBlockedRun(slot_id, OSThreadState::SLEEPING,
+                                              BlockRunOwner::JAVA);
+    ASSERT_NE(0ULL, stale_token);
+    ASSERT_TRUE(filter->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(stale_token)));
+
+    u64 current_token = filter->enterBlockedRun(slot_id, OSThreadState::CONDVAR_WAIT,
+                                                BlockRunOwner::JVMTI);
+    ASSERT_NE(0ULL, current_token);
+    ASSERT_NE(ThreadFilter::tokenGeneration(stale_token),
+              ThreadFilter::tokenGeneration(current_token));
+
+    static constexpr int kThreads = 8;
+    std::atomic<bool> start{false};
+    std::atomic<int> ready{0};
+    std::atomic<int> false_exits{0};
+    std::vector<std::thread> threads;
+    for (int i = 0; i < kThreads; i++) {
+        threads.emplace_back([&]() {
+            ready.fetch_add(1, std::memory_order_release);
+            while (!start.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            if (!filter->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(stale_token))) {
+                false_exits.fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+    }
+    while (ready.load(std::memory_order_acquire) != kThreads) {
+        std::this_thread::yield();
+    }
+    start.store(true, std::memory_order_release);
+    for (std::thread& thread : threads) {
+        thread.join();
+    }
+
+    ThreadFilter::Slot *slot = filter->slotForId(slot_id);
+    ASSERT_NE(nullptr, slot);
+    EXPECT_EQ(kThreads, false_exits.load(std::memory_order_relaxed));
+    EXPECT_EQ(BlockRunOwner::JVMTI, slot->activeBlockOwner());
+    EXPECT_EQ(OSThreadState::CONDVAR_WAIT, slot->activeBlockState());
+    EXPECT_TRUE(filter->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(current_token)));
+}
+
+TEST_F(ThreadFilterTest, SnapshotWhileMarkSampledKeepsAnchorConsistent) {
+    int slot_id = filter->registerThread();
+    ASSERT_GE(slot_id, 0);
+    u64 token = filter->enterBlockedRun(slot_id, OSThreadState::IO_WAIT,
+                                        BlockRunOwner::NATIVE);
+    ASSERT_NE(0ULL, token);
+
+    ThreadFilter::Slot *slot = filter->slotForId(slot_id);
+    ASSERT_NE(nullptr, slot);
+    std::atomic<bool> stop{false};
+    std::atomic<int> failures{0};
+    std::thread marker([&]() {
+        u64 sample_id = 1;
+        while (!stop.load(std::memory_order_acquire)) {
+            slot->markSampledThisRun(OSThreadState::IO_WAIT, sample_id++);
+            slot->incrementSuppressedSampleCount();
+        }
+    });
+
+    for (int i = 0; i < 100000; i++) {
+        BlockRunSnapshot snapshot = filter->snapshotBlockedRun(slot_id);
+        if (!snapshot.anchored && snapshot.anchor_sample_id != 0) {
+            failures.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (snapshot.anchor_sample_id == 0 && snapshot.anchored) {
+            failures.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (snapshot.anchored &&
+            snapshot.sampled_state != OSThreadState::IO_WAIT) {
+            failures.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    stop.store(true, std::memory_order_release);
+    marker.join();
+    EXPECT_EQ(0, failures.load(std::memory_order_relaxed));
+    EXPECT_TRUE(filter->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(token)));
 }
