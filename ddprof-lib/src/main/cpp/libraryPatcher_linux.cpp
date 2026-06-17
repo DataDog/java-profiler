@@ -32,6 +32,9 @@ PatchEntry LibraryPatcher::_socket_entries[MAX_NATIVE_IO_HOOKS * MAX_NATIVE_LIBS
 int        LibraryPatcher::_socket_size = 0;
 std::atomic<bool> LibraryPatcher::_socket_active{false};
 
+static_assert(NativeSocketInterposer::NUM_NATIVE_IO_HOOKS <= MAX_NATIVE_IO_HOOKS,
+              "MAX_NATIVE_IO_HOOKS must cover all native I/O hook specs");
+
 void LibraryPatcher::initialize() {
   if (_profiler_name == nullptr) {
     Dl_info info;
@@ -536,8 +539,13 @@ void LibraryPatcher::patch_sigaction() {
 }
 
 bool LibraryPatcher::patch_socket_functions() {
-  // Resolve the real libc symbols once. dlsym must not run while holding _lock:
-  // it may take the linker lock, which is also taken during dlopen.
+  // Resolve the real libc symbols once. On a restart cycle, re-resolving through
+  // RTLD_NEXT can find a still-installed hook if a DSO was missed during unpatch,
+  // making the original pointer self-referential.
+  //
+  // dlsym must not run while holding _lock: it may take the linker lock, which is
+  // also taken during dlopen. Holding the locks in the opposite order would
+  // deadlock against dlopen refresh.
   static void* cached_originals[NativeSocketInterposer::NUM_NATIVE_IO_HOOKS] = {};
   static std::once_flag dlsym_once;
 
@@ -554,6 +562,8 @@ bool LibraryPatcher::patch_socket_functions() {
       if (original == hooks[hook_index].hook) {
         TEST_LOG("patch_socket_functions dlsym returned hook address for %s",
                  hooks[hook_index].name);
+        // Disable this hook rather than storing a self-reference that would
+        // recurse on the next intercepted call.
         original = nullptr;
       }
       cached_originals[hook_index] = original;
@@ -585,6 +595,7 @@ bool LibraryPatcher::patch_socket_functions() {
     }
     char path[PATH_MAX];
     char* resolved_path = realpath(lib->name(), path);
+    // _profiler_name is null only in uninitialized/gtest paths.
     is_self[index] = _profiler_name != nullptr && resolved_path != nullptr &&
                      strcmp(resolved_path, _profiler_name) == 0;
   }
@@ -598,6 +609,8 @@ bool LibraryPatcher::patch_socket_functions() {
   }
 
   if (_socket_size == 0) {
+    // Only assign original pointers on the first install. On re-entry via dlopen
+    // refresh, RTLD_NEXT may resolve through already-patched libraries.
     for (int hook_index = 0; hook_index < NativeSocketInterposer::NUM_NATIVE_IO_HOOKS;
          hook_index++) {
       if (cached_originals[hook_index] != nullptr) {
@@ -664,6 +677,8 @@ void LibraryPatcher::unpatch_socket_functions_unlocked() {
   // Clear _socket_active first so a concurrent install_socket_hooks() that
   // already passed its acquire-load can observe the stop under _lock instead of
   // re-patching slots while this function restores them.
+  // Original function pointers are intentionally not nulled: hook invocations
+  // that entered before GOT slots were restored may still dereference them.
   _socket_active.store(false, std::memory_order_release);
   TEST_LOG("unpatch_socket_functions restoring %d slot(s)", _socket_size);
   for (int index = 0; index < _socket_size; index++) {

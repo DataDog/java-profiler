@@ -17,7 +17,10 @@ typedef struct _patchEntry {
   void*  _func;
 } PatchEntry;
 
-const int MAX_NATIVE_IO_HOOKS = 16;
+// Reserved upper bound for native I/O hook specs patched per library.
+// Keep this >= NativeSocketInterposer::NUM_NATIVE_IO_HOOKS; the assertion lives
+// in libraryPatcher_linux.cpp to avoid including the interposer from this header.
+const int MAX_NATIVE_IO_HOOKS = 32;
 
 class LibraryPatcher {
 private:
@@ -43,7 +46,8 @@ private:
   static void unpatch_socket_functions_unlocked();
 public:
   // True while native I/O hooks are installed; read by dlopen refresh paths
-  // before attempting to patch newly loaded libraries.
+  // before attempting to patch newly loaded libraries. Libraries loaded after
+  // profiler start are picked up by install_socket_hooks().
   static std::atomic<bool> _socket_active;
   static void initialize();
   static void patch_libraries();
