@@ -130,6 +130,14 @@ inline EventType eventTypeFromBCI(jint bci_type) {
     }
 }
 
+static bool hasTheSameMethod(ASGCT_CallFrame& frame, jmethodID method_id, const VMMethod* method) {
+    if (FrameType::isRawPointer(frame.bci)) {
+        return frame.method == method;
+    } else {
+        return frame.method_id == method_id;
+    }
+}
+
 static void fillFrameTypes(ASGCT_CallFrame *frames, int num_frames, VMNMethod *nmethod) {
   if (nmethod->isNMethod() && nmethod->isAlive()) {
     VMMethod *method = nmethod->method();
@@ -138,17 +146,18 @@ static void fillFrameTypes(ASGCT_CallFrame *frames, int num_frames, VMNMethod *n
     }
 
     jmethodID current_method_id = method->id();
-    if (current_method_id == NULL) {
+    if (!isValidJMethodID(current_method_id)) {
       return;
     }
 
     // Mark current_method as COMPILED and frames above current_method as
     // INLINED
     for (int i = 0; i < num_frames; i++) {
+      // method_id == nullptr, also means method == nullptr
       if (frames[i].method_id == NULL || frames[i].bci <= BCI_NATIVE_FRAME) {
         break;
       }
-      if (frames[i].method_id == current_method_id) {
+      if (hasTheSameMethod(frames[i], current_method_id, method)) {
         int level = nmethod->level();
         frames[i].bci = FrameType::encode(
             level >= 1 && level <= 3 ? FRAME_C1_COMPILED : FRAME_JIT_COMPILED,
@@ -1245,10 +1254,10 @@ static void patchClassLoaderData(JNIEnv* jni, jclass klass) {
   }
 }
 
-constexpr const char* LAMBDA_PREFIX = "Ljava/lang/invoke/LambdaForm$";
+constexpr const char LAMBDA_PREFIX[] = "Ljava/lang/invoke/LambdaForm$";
 constexpr const size_t LAMBDA_PREFIX_LEN = sizeof(LAMBDA_PREFIX) - 1;
 
-constexpr const char* FFM_PREFIX = "Ljdk/internal/foreign/abi/";
+constexpr const char FFM_PREFIX[] = "Ljdk/internal/foreign/abi/";
 constexpr const size_t FFM_PREFIX_LEN = sizeof(FFM_PREFIX) - 1;
 
 constexpr const char* LAMBDA_FORMS[] = {"$$Lambda.", "$$Lambda$", ".lambda$"};
