@@ -4,7 +4,7 @@
  */
 
 #include "gtest/gtest.h"
-#include "../../main/cpp/callTraceStorage.h"
+#include "callTraceStorage.h"
 #include <vector>
 #include <unordered_set>
 #include <thread>
@@ -13,7 +13,7 @@
 #include <condition_variable>
 #include <mutex>
 #include "callTraceHashTable.h"
-#include "../../main/cpp/gtest_crash_handler.h"
+#include "gtest_crash_handler.h"
 #include "arch.h"
 
 // Test name for crash handler

@@ -510,7 +510,7 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
     if (probe.hasNext()) {
       slot = probe.next();
     } else {
-      // No more slot, break out
+      // No more slots, break out
       break;
     }
   }
