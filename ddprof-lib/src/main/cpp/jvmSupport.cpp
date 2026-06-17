@@ -21,12 +21,12 @@ volatile JVMSupport::JMethodIDLoadStats JVMSupport::jmethodID_load_state = JVMSu
 
 JVMSupport::JMethodIDLoadStats JVMSupport::getLoadState() {
     // Volatile read
-    return __atomic_load_n(&jmethodID_load_state, __ATOMIC_RELAXED);
+    return __atomic_load_n(&jmethodID_load_state, __ATOMIC_ACQUIRE);
 }
 
 void JVMSupport::setLoadState(JMethodIDLoadStats state) {
     // Volatile store
-    __atomic_store(&jmethodID_load_state, &state, __ATOMIC_RELAXED);
+    __atomic_store(&jmethodID_load_state, &state, __ATOMIC_RELEASE);
 }
 
 void JVMSupport::initExecution(jvmtiEnv* jvmti, JNIEnv* jni) {
