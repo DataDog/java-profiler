@@ -406,6 +406,179 @@ public class TagContextTest extends AbstractProfilerTest {
                 "overflowed slot must read null — the entry never landed in attrs_data");
     }
 
+    // -----------------------------------------------------------------------
+    // Acceptance tests for the MAX_CUSTOM_SLOTS guard fixes
+    // -----------------------------------------------------------------------
+
+    /**
+     * Test 1: setContextValuesByIdAndBytes must return false immediately when
+     * the arrays are longer than MAX_CUSTOM_SLOTS (10), and must not perform
+     * any partial write before the rejection.
+     */
+    @Test
+    public void testSetContextValuesByIdAndBytesRejectsArraysLongerThanMaxSlots() throws Exception {
+        Assumptions.assumeTrue(!Platform.isJ9());
+        registerCurrentThreadForWallClockProfiling();
+        ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2"));
+        int slot = contextSetter.offsetOf("tag1");
+
+        // Establish a known value and capture its constant ID.
+        assertTrue(contextSetter.setContextValue("tag1", "original"));
+        int savedId = contextSetter.snapshotTags()[slot];
+        assertNotEquals(0, savedId);
+
+        // Build arrays of length 11 (> MAX_CUSTOM_SLOTS = 10).
+        int[] ids = new int[11];
+        byte[][] utf8 = new byte[11][];
+        ids[0] = savedId;
+        utf8[0] = "original".getBytes(StandardCharsets.UTF_8);
+        // All other entries remain 0 / null.
+
+        // The call must be rejected outright.
+        assertFalse(contextSetter.setContextValuesByIdAndBytes(ids, utf8),
+                "setContextValuesByIdAndBytes must return false when array length > MAX_CUSTOM_SLOTS");
+
+        // No partial write: the sidecar for slot 0 must be unchanged.
+        assertEquals(savedId, contextSetter.snapshotTags()[slot],
+                "sidecar must not be modified before the length guard fires");
+    }
+
+    /**
+     * Test 2: setContextValuesByIdAndBytes must accept arrays of exactly
+     * MAX_CUSTOM_SLOTS (10) and return true, restoring all sidecar values.
+     */
+    @Test
+    public void testSetContextValuesByIdAndBytesAcceptsExactlyMaxSlots() throws Exception {
+        Assumptions.assumeTrue(!Platform.isJ9());
+        registerCurrentThreadForWallClockProfiling();
+        List<String> attrs = new ArrayList<>();
+        for (int i = 1; i <= 10; i++) {
+            attrs.add("tag" + i);
+        }
+        ContextSetter contextSetter = new ContextSetter(profiler, attrs);
+
+        // Set all 10 attributes to distinct values and capture constant IDs + bytes.
+        int[] savedIds = new int[10];
+        byte[][] savedBytes = new byte[10][];
+        for (int i = 0; i < 10; i++) {
+            String value = "val" + i;
+            assertTrue(contextSetter.setContextValue("tag" + (i + 1), value));
+            savedBytes[i] = value.getBytes(StandardCharsets.UTF_8);
+        }
+        int[] snapshot = contextSetter.snapshotTags();
+        for (int i = 0; i < 10; i++) {
+            savedIds[i] = snapshot[i];
+            assertNotEquals(0, savedIds[i], "tag" + (i + 1) + " must have a non-zero sidecar ID");
+        }
+
+        // Wipe all slots via setContext (span activation).
+        profiler.setContext(1L, 42L, 0L, 42L);
+
+        // Reapply with exactly-10-element arrays — must succeed.
+        assertTrue(contextSetter.setContextValuesByIdAndBytes(savedIds, savedBytes),
+                "setContextValuesByIdAndBytes must return true for arrays of length == MAX_CUSTOM_SLOTS");
+
+        // All 10 sidecar IDs must be restored.
+        int[] restored = contextSetter.snapshotTags();
+        for (int i = 0; i < 10; i++) {
+            assertEquals(savedIds[i], restored[i],
+                    "sidecar for tag" + (i + 1) + " must be restored after reapply");
+        }
+    }
+
+    /**
+     * Test 3: snapshotTags(int[]) with an oversized buffer (length > attributes.size())
+     * must write the managed indices [0, attributes.size()) with the current sidecar values,
+     * and zero out the extra indices [attributes.size(), snapshot.length).
+     */
+    @Test
+    public void testSnapshotTagsOversizedBufferCopiesAndZerosExtras() throws Exception {
+        Assumptions.assumeTrue(!Platform.isJ9());
+        registerCurrentThreadForWallClockProfiling();
+        ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2"));
+
+        assertTrue(contextSetter.setContextValue("tag1", "v1"));
+        assertTrue(contextSetter.setContextValue("tag2", "v2"));
+
+        // Verify no-arg overload returns valid IDs.
+        int[] canonical = contextSetter.snapshotTags();
+        assertNotEquals(0, canonical[0]);
+        assertNotEquals(0, canonical[1]);
+
+        // Oversized buffer: length 5 > attributes.size() == 2.
+        int[] oversized = new int[5];
+        Arrays.fill(oversized, -1);
+        contextSetter.snapshotTags(oversized);
+
+        // Managed indices [0, attributes.size()) must contain the current sidecar values.
+        assertEquals(canonical[0], oversized[0],
+                "oversized buffer[0] must match no-arg snapshotTags()[0]");
+        assertEquals(canonical[1], oversized[1],
+                "oversized buffer[1] must match no-arg snapshotTags()[1]");
+
+        // Extra indices [attributes.size(), snapshot.length) must be zeroed.
+        for (int i = 2; i < oversized.length; i++) {
+            assertEquals(0, oversized[i],
+                    "oversized buffer element [" + i + "] must be zeroed by snapshotTags");
+        }
+
+        // No-arg overload must still work correctly.
+        int[] check = contextSetter.snapshotTags();
+        assertEquals(canonical[0], check[0]);
+        assertEquals(canonical[1], check[1]);
+    }
+
+    /**
+     * Test 4: snapshotTags(int[]) with an undersized buffer (length < attributes.size())
+     * must be a no-op — existing no-op semantics must be preserved.
+     */
+    @Test
+    public void testSnapshotTagsUndersizedBufferIsNoOp() throws Exception {
+        Assumptions.assumeTrue(!Platform.isJ9());
+        registerCurrentThreadForWallClockProfiling();
+        ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2", "tag3"));
+
+        assertTrue(contextSetter.setContextValue("tag1", "a"));
+        assertTrue(contextSetter.setContextValue("tag2", "b"));
+        assertTrue(contextSetter.setContextValue("tag3", "c"));
+
+        // Undersized buffer: length 1 < attributes.size() == 3.
+        int[] undersized = new int[1];
+        undersized[0] = -1;
+        contextSetter.snapshotTags(undersized);
+
+        assertEquals(-1, undersized[0],
+                "undersized buffer must not be written by snapshotTags");
+    }
+
+    /**
+     * Test 5: snapshotTags(int[]) with an exact-size buffer (length == attributes.size())
+     * must copy the current sidecar values correctly.
+     */
+    @Test
+    public void testSnapshotTagsExactSizeBufferCopiesCorrectly() throws Exception {
+        Assumptions.assumeTrue(!Platform.isJ9());
+        registerCurrentThreadForWallClockProfiling();
+        ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2"));
+
+        assertTrue(contextSetter.setContextValue("tag1", "x"));
+        assertTrue(contextSetter.setContextValue("tag2", "y"));
+
+        // No-arg overload to obtain expected values.
+        int[] canonical = contextSetter.snapshotTags();
+        assertNotEquals(0, canonical[0]);
+        assertNotEquals(0, canonical[1]);
+
+        // Exact-size buffer: length 2 == attributes.size() == 2.
+        int[] exact = new int[2];
+        contextSetter.snapshotTags(exact);
+
+        assertEquals(canonical[0], exact[0],
+                "exact-size buffer[0] must match no-arg snapshotTags()[0]");
+        assertEquals(canonical[1], exact[1],
+                "exact-size buffer[1] must match no-arg snapshotTags()[1]");
+    }
+
     private void work(ContextSetter contextSetter, String contextAttribute, String contextValue)
             throws InterruptedException {
         assertTrue(contextSetter.setContextValue(contextAttribute, contextValue));

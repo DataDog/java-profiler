@@ -1,6 +1,7 @@
 package com.datadoghq.profiler;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -31,12 +32,16 @@ public class ContextSetter {
     }
 
     /**
-     * Copies current sidecar encodings into {@code snapshot}. The copy only runs when
-     * {@code snapshot.length >= attributes.size()}; callers must size the array accordingly.
+     * Copies current sidecar encodings into {@code snapshot}. The array must have at least
+     * {@code attributes.size()} elements; arrays shorter than {@code attributes.size()} are
+     * silently ignored. Indices {@code [attributes.size(), snapshot.length)} are zeroed after
+     * copying to prevent stale data from leaking to the caller.
+     * Use the no-arg {@link #snapshotTags()} overload to obtain a correctly sized array.
      */
     public void snapshotTags(int[] snapshot) {
         if (snapshot.length >= attributes.size()) {
             profiler.copyTags(snapshot);
+            Arrays.fill(snapshot, attributes.size(), snapshot.length, 0);
         }
     }
 

@@ -361,15 +361,19 @@ public final class ThreadContext {
      * @param utf8        per-slot UTF-8 value bytes; must be non-null and at most
      *                    {@value #MAX_VALUE_BYTES} bytes for every slot whose constantId {@code > 0}
      * @return true if every slot with {@code constantId > 0} was written; false on invalid
-     *         arguments (null arrays, length mismatch, or a missing/oversized {@code utf8} entry),
-     *         if the record was not valid before the call (nothing published), or if any slot
-     *         overflowed attrs_data (that slot's sidecar is zeroed)
+     *         arguments (null arrays, length mismatch, a missing/oversized {@code utf8} entry,
+     *         or {@code constantIds.length > MAX_CUSTOM_SLOTS}), if the record was not valid
+     *         before the call (nothing published), or if any slot overflowed attrs_data (that
+     *         slot's sidecar is zeroed)
      */
     public boolean setContextAttributesByIdAndBytes(int[] constantIds, byte[][] utf8) {
         if (constantIds == null || utf8 == null || constantIds.length != utf8.length) {
             return false;
         }
-        int len = Math.min(constantIds.length, MAX_CUSTOM_SLOTS);
+        if (constantIds.length > MAX_CUSTOM_SLOTS) {
+            return false;
+        }
+        int len = constantIds.length;
         // Validate before mutating so malformed input never leaves a half-written record.
         for (int i = 0; i < len; i++) {
             if (constantIds[i] > 0) {
