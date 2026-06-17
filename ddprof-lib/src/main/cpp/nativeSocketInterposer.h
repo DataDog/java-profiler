@@ -33,6 +33,8 @@ public:
   typedef ssize_t (*write_fn)(int, const void*, size_t);
   typedef ssize_t (*read_fn)(int, void*, size_t);
   typedef int (*close_fn)(int);
+  typedef int (*dup2_fn)(int, int);
+  typedef int (*dup3_fn)(int, int, int);
   typedef int (*connect_fn)(int, const struct sockaddr*, socklen_t);
   typedef int (*accept_fn)(int, struct sockaddr*, socklen_t*);
   typedef int (*accept4_fn)(int, struct sockaddr*, socklen_t*, int);
@@ -52,6 +54,8 @@ public:
     HOOK_WRITE,
     HOOK_READ,
     HOOK_CLOSE,
+    HOOK_DUP2,
+    HOOK_DUP3,
     HOOK_CONNECT,
     HOOK_ACCEPT,
     HOOK_ACCEPT4,
@@ -91,6 +95,8 @@ public:
   static ssize_t write_hook(int fd, const void* buf, size_t len);
   static ssize_t read_hook(int fd, void* buf, size_t len);
   static int close_hook(int fd);
+  static int dup2_hook(int oldfd, int newfd);
+  static int dup3_hook(int oldfd, int newfd, int flags);
   static int connect_hook(int fd, const struct sockaddr* addr, socklen_t addrlen);
   static int accept_hook(int fd, struct sockaddr* addr, socklen_t* addrlen);
   static int accept4_hook(int fd, struct sockaddr* addr, socklen_t* addrlen, int flags);
@@ -131,6 +137,8 @@ private:
   static write_fn _orig_write;
   static read_fn _orig_read;
   static close_fn _orig_close;
+  static dup2_fn _orig_dup2;
+  static dup3_fn _orig_dup3;
   static connect_fn _orig_connect;
   static accept_fn _orig_accept;
   static accept4_fn _orig_accept4;

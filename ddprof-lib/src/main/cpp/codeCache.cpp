@@ -330,6 +330,10 @@ void CodeCache::addImport(void **entry, const char *name) {
       case 'd':
           if (strcmp(name, "dlopen") == 0) {
               saveImport(im_dlopen, entry);
+          } else if (strcmp(name, "dup2") == 0) {
+              saveImport(im_dup2, entry);
+          } else if (strcmp(name, "dup3") == 0) {
+              saveImport(im_dup3, entry);
           }
           break;
       case 'f':

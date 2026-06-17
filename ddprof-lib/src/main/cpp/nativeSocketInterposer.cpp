@@ -66,6 +66,8 @@ NativeSocketInterposer::recv_fn NativeSocketInterposer::_orig_recv = nullptr;
 NativeSocketInterposer::write_fn NativeSocketInterposer::_orig_write = nullptr;
 NativeSocketInterposer::read_fn NativeSocketInterposer::_orig_read = nullptr;
 NativeSocketInterposer::close_fn NativeSocketInterposer::_orig_close = nullptr;
+NativeSocketInterposer::dup2_fn NativeSocketInterposer::_orig_dup2 = nullptr;
+NativeSocketInterposer::dup3_fn NativeSocketInterposer::_orig_dup3 = nullptr;
 NativeSocketInterposer::connect_fn NativeSocketInterposer::_orig_connect = nullptr;
 NativeSocketInterposer::accept_fn NativeSocketInterposer::_orig_accept = nullptr;
 NativeSocketInterposer::accept4_fn NativeSocketInterposer::_orig_accept4 = nullptr;
@@ -85,6 +87,8 @@ const NativeSocketInterposer::NativeIoHookSpec* NativeSocketInterposer::hookSpec
       {im_write, "write", reinterpret_cast<void*>(write_hook)},
       {im_read, "read", reinterpret_cast<void*>(read_hook)},
       {im_close, "close", reinterpret_cast<void*>(close_hook)},
+      {im_dup2, "dup2", reinterpret_cast<void*>(dup2_hook)},
+      {im_dup3, "dup3", reinterpret_cast<void*>(dup3_hook)},
       {im_connect, "connect", reinterpret_cast<void*>(connect_hook)},
       {im_accept, "accept", reinterpret_cast<void*>(accept_hook)},
       {im_accept4, "accept4", reinterpret_cast<void*>(accept4_hook)},
@@ -116,6 +120,12 @@ bool NativeSocketInterposer::setOriginalFunction(int hook_index, void* original)
       return true;
     case HOOK_CLOSE:
       _orig_close = reinterpret_cast<close_fn>(original);
+      return true;
+    case HOOK_DUP2:
+      _orig_dup2 = reinterpret_cast<dup2_fn>(original);
+      return true;
+    case HOOK_DUP3:
+      _orig_dup3 = reinterpret_cast<dup3_fn>(original);
       return true;
     case HOOK_CONNECT:
       _orig_connect = reinterpret_cast<connect_fn>(original);
@@ -235,6 +245,46 @@ int NativeSocketInterposer::close_hook(int fd) {
   int saved_errno = errno;
   if (ret == 0) {
     NativeSocketInterposer::instance()->clearFdType(fd);
+  }
+  errno = saved_errno;
+  return ret;
+}
+
+int NativeSocketInterposer::dup2_hook(int oldfd, int newfd) {
+  int ret;
+  if (_orig_dup2 == nullptr) {
+#ifdef SYS_dup2
+    ret = static_cast<int>(syscall(SYS_dup2, oldfd, newfd));
+#else
+    errno = ENOSYS;
+    ret = -1;
+#endif
+  } else {
+    ret = _orig_dup2(oldfd, newfd);
+  }
+  int saved_errno = errno;
+  if (ret >= 0) {
+    NativeSocketInterposer::instance()->clearFdType(newfd);
+  }
+  errno = saved_errno;
+  return ret;
+}
+
+int NativeSocketInterposer::dup3_hook(int oldfd, int newfd, int flags) {
+  int ret;
+  if (_orig_dup3 == nullptr) {
+#ifdef SYS_dup3
+    ret = static_cast<int>(syscall(SYS_dup3, oldfd, newfd, flags));
+#else
+    errno = ENOSYS;
+    ret = -1;
+#endif
+  } else {
+    ret = _orig_dup3(oldfd, newfd, flags);
+  }
+  int saved_errno = errno;
+  if (ret >= 0) {
+    NativeSocketInterposer::instance()->clearFdType(newfd);
   }
   errno = saved_errno;
   return ret;

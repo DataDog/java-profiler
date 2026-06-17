@@ -30,6 +30,7 @@
 #include <sys/epoll.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/syscall.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
@@ -253,16 +254,29 @@ protected:
   void SetUp() override {
     setOriginalFunction(NativeSocketInterposer::HOOK_CLOSE,
                         reinterpret_cast<void*>(::close));
+    setOriginalFunction(NativeSocketInterposer::HOOK_DUP2,
+                        reinterpret_cast<void*>(::dup2));
+    setOriginalFunction(NativeSocketInterposer::HOOK_DUP3, nullptr);
     NativeSocketInterposer::instance()->clearFdTypeCache();
   }
 
   void TearDown() override {
     setOriginalFunction(NativeSocketInterposer::HOOK_CLOSE, nullptr);
+    setOriginalFunction(NativeSocketInterposer::HOOK_DUP2, nullptr);
+    setOriginalFunction(NativeSocketInterposer::HOOK_DUP3, nullptr);
     NativeSocketInterposer::instance()->clearFdTypeCache();
   }
 
   int closeThroughHook(int fd) {
     return NativeSocketInterposer::close_hook(fd);
+  }
+
+  int dup2ThroughHook(int oldfd, int newfd) {
+    return NativeSocketInterposer::dup2_hook(oldfd, newfd);
+  }
+
+  int dup3ThroughHook(int oldfd, int newfd, int flags) {
+    return NativeSocketInterposer::dup3_hook(oldfd, newfd, flags);
   }
 };
 
@@ -585,6 +599,64 @@ TEST_F(NativeSocketInterposerFdTest, RepeatedCacheClearsDoNotResurrectOldFdType)
   ASSERT_EQ(0, closeThroughHook(datagram_fd));
   ASSERT_EQ(0, closeThroughHook(stream_fds[1]));
 }
+
+TEST_F(NativeSocketInterposerFdTest, Dup2InvalidatesTargetFdBeforeReuse) {
+  int stream_fds[2];
+  ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, stream_fds));
+  int pipe_fds[2];
+  ASSERT_EQ(0, pipe(pipe_fds));
+
+  int target_fd = stream_fds[0];
+  EXPECT_TRUE(NativeSocketInterposer::instance()->isStreamSocket(target_fd));
+
+  errno = E2BIG;
+  ASSERT_EQ(target_fd, dup2ThroughHook(pipe_fds[0], target_fd));
+  EXPECT_EQ(E2BIG, errno);
+  EXPECT_FALSE(NativeSocketInterposer::instance()->isStreamSocket(target_fd));
+
+  ASSERT_EQ(0, closeThroughHook(target_fd));
+  ASSERT_EQ(0, closeThroughHook(stream_fds[1]));
+  ASSERT_EQ(0, closeThroughHook(pipe_fds[0]));
+  ASSERT_EQ(0, closeThroughHook(pipe_fds[1]));
+}
+
+TEST_F(NativeSocketInterposerFdTest, FailedDup2DoesNotInvalidateTargetFd) {
+  int stream_fds[2];
+  ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, stream_fds));
+
+  int target_fd = stream_fds[0];
+  EXPECT_TRUE(NativeSocketInterposer::instance()->isStreamSocket(target_fd));
+
+  errno = 0;
+  EXPECT_EQ(-1, dup2ThroughHook(-1, target_fd));
+  EXPECT_EQ(EBADF, errno);
+  EXPECT_TRUE(NativeSocketInterposer::instance()->isStreamSocket(target_fd));
+
+  ASSERT_EQ(0, closeThroughHook(target_fd));
+  ASSERT_EQ(0, closeThroughHook(stream_fds[1]));
+}
+
+#ifdef SYS_dup3
+TEST_F(NativeSocketInterposerFdTest, Dup3InvalidatesTargetFdBeforeReuse) {
+  int stream_fds[2];
+  ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, stream_fds));
+  int pipe_fds[2];
+  ASSERT_EQ(0, pipe(pipe_fds));
+
+  int target_fd = stream_fds[0];
+  EXPECT_TRUE(NativeSocketInterposer::instance()->isStreamSocket(target_fd));
+
+  errno = E2BIG;
+  ASSERT_EQ(target_fd, dup3ThroughHook(pipe_fds[0], target_fd, 0));
+  EXPECT_EQ(E2BIG, errno);
+  EXPECT_FALSE(NativeSocketInterposer::instance()->isStreamSocket(target_fd));
+
+  ASSERT_EQ(0, closeThroughHook(target_fd));
+  ASSERT_EQ(0, closeThroughHook(stream_fds[1]));
+  ASSERT_EQ(0, closeThroughHook(pipe_fds[0]));
+  ASSERT_EQ(0, closeThroughHook(pipe_fds[1]));
+}
+#endif
 
 TEST_F(NativeSocketInterposerFdTest, RejectsNonSockets) {
   int fds[2];
