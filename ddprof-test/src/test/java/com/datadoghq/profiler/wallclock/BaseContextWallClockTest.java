@@ -130,7 +130,12 @@ final class BaseContextWallClockTest {
                     method2Weight += weight;
                     attributed = true;
                 } else if (stackTrace.contains("method1Impl")
-                        && !stackTrace.contains("method2") && !stackTrace.contains("method3")) {
+                        && !stackTrace.contains("method2") && !stackTrace.contains("method3")
+                        && !stackTrace.contains("Object.wait")) {
+                    // Exclude Object.wait frames: when method1Impl is blocked waiting for method3
+                    // to complete (via monitor.wait), those samples reflect method3's runtime, not
+                    // method1's self-time. Counting them inflates method1's weight to ~55% instead
+                    // of the expected ~33%.
                     if (assertContext) {
                         // need to check this after method2 because method1 calls method2
                         // it's the root so spanId == rootSpanId
@@ -170,19 +175,6 @@ final class BaseContextWallClockTest {
         //       it is under investigation but until it gets resolved we will just relax the error margin
         double allowedError = Platform.isAarch64() && "BellSoft".equals(System.getProperty("java.vendor")) ? 0.4d : 0.2d;
 
-        // After async-profiler 4.2.1 integration and wall clock collapsing fixes, weight
-        // distribution changed across all unwinding modes (vm, vmx, fp, dwarf).  All modes now
-        // show ~55% weight for method1Impl instead of expected ~33%. Root causes include:
-        // 1. DWARF: collects 10-20 native frames (vs 2-5 for FP), native frame PCs vary causing
-        //    trace ID fragmentation
-        // 2. FP/VMX: async-profiler integration changed frame collection or attribution behavior
-        // 3. All modes: trace IDs hash all frames including native PCs with slight address variations
-        // Proper fix requires architectural changes (hash only Java frames or normalize native PCs
-        // to function entry points). For now, relax tolerance to acknowledge observed behavior.
-        if (cstack != null && (cstack.equals("vm") || cstack.equals("dwarf") || cstack.equals("fp") || cstack.equals("vmx"))) {
-            allowedError = 0.3d; // Allow up to 30% deviation for affected modes
-        }
-
         // context filtering should prevent these
         assertFalse(states.contains("NEW"));
         assertFalse(states.contains("TERMINATED"));
@@ -190,11 +182,11 @@ final class BaseContextWallClockTest {
         // still useful to run the profiler, though - so just skipping the assertions here
         if (config.equals("release") || config.equals("debug")) {
             double totalWeight = method1Weight + method2Weight + method3Weight + unattributedWeight;
-            // method1 has ~50% self time, 50% calling method2
+            // Each method sleeps for the same duration (10ms), so each should contribute ~33%.
+            // method1Impl's monitor.wait time is excluded from method1Weight (see attribution above)
+            // to measure self-time only, not elapsed time waiting for method3.
             assertWeight("method1Impl", totalWeight, method1Weight, 0.33, allowedError);
-            // method2 has as much self time as method1
             assertWeight("method2Impl", totalWeight, method2Weight, 0.33, allowedError);
-            // method3 has as much self time as method1, and should account for half the executor's thread's time
             assertWeight("method3Impl", totalWeight, method3Weight, 0.33, allowedError);
             // The recording captures counter values before the final cleanup (before processTraces
             // runs and frees all traces). Verify the recording contains meaningful data.
