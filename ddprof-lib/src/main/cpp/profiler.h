@@ -423,6 +423,15 @@ public:
   // Profiler::unregisterThread correctly without needing live engine instances.
   static int  lastUnregisteredTidForTest();
   static void resetUnregisterObservableForTest();
+
+  // Reads back the name recorded for a tid in _thread_info, or an empty string
+  // if none was recorded. Lets integration tests observe the result of
+  // updateNativeThreadNames() (notably the defer_initializing skip) without
+  // exposing the private _thread_info. Compiled only into gtest binaries.
+  std::string threadNameForTest(int tid) {
+    std::pair<std::shared_ptr<std::string>, u64> info = _thread_info.get(tid);
+    return info.first != nullptr ? *info.first : std::string();
+  }
 #endif
 
 
