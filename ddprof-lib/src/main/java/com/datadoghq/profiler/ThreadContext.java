@@ -385,8 +385,10 @@ public final class ThreadContext {
         // the record detached (valid=0) after an exception unwinds past attach().
         for (int i = 0; i < len; i++) {
             if (constantIds[i] > 0) {
-                byte[] bytes = Objects.requireNonNull(utf8[i], "utf8[" + i + "]");
-                if (bytes.length > MAX_VALUE_BYTES) {
+                if (utf8[i] == null) {
+                    throw new NullPointerException("utf8[" + i + "]");
+                }
+                if (utf8[i].length > MAX_VALUE_BYTES) {
                     throw new IllegalArgumentException("utf8[" + i + "].length exceeds MAX_VALUE_BYTES");
                 }
             }
