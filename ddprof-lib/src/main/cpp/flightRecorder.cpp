@@ -2076,7 +2076,7 @@ void FlightRecorder::recordHeapUsage(int lock_index, long value, bool live) {
   }
 }
 
-void FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
+bool FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
                                  int event_type, Event *event) {
   OptionalSharedLockGuard locker(&_rec_lock);
   if (locker.ownsLock()) {
@@ -2111,16 +2111,20 @@ void FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
         case BCI_NATIVE_SOCKET:
           rec->recordNativeSocketSample(buf, tid, call_trace_id, (NativeSocketEvent *)event);
           break;
+        default:
+          return false;
         }
         rec->flushIfNeeded(buf);
         rec->addThread(lock_index, tid);
+        return true;
       }
   } else {
     Counters::increment(SAMPLES_DROPPED_REC_LOCK);
   }
+  return false;
 }
 
-void FlightRecorder::recordEventDelegated(int lock_index, int tid,
+bool FlightRecorder::recordEventDelegated(int lock_index, int tid,
                                           u64 correlation_id, int event_type,
                                           Event *event) {
   OptionalSharedLockGuard locker(&_rec_lock);
@@ -2139,14 +2143,16 @@ void FlightRecorder::recordEventDelegated(int lock_index, int tid,
           break;
         default:
           // Delegation is only wired for CPU/wall samples in v1.
-          break;
+          return false;
       }
       rec->flushIfNeeded(buf);
       rec->addThread(lock_index, tid);
+      return true;
     }
   } else {
     Counters::increment(SAMPLES_DROPPED_REC_LOCK);
   }
+  return false;
 }
 
 void FlightRecorder::recordLog(LogLevel level, const char *message,

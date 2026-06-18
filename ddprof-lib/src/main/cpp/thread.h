@@ -247,7 +247,8 @@ public:
   }
 
   inline enum ThreadType threadType() const {
-    return static_cast<ThreadType>(_misc_flags & TYPE_MASK);
+    u32 flags = __atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE);
+    return static_cast<ThreadType>(flags & TYPE_MASK);
   }
 
   inline bool isCrashProtectionActive() const { return _crash_protection_active; }

@@ -412,14 +412,14 @@ public:
 
   bool active() const { return _rec != NULL; }
 
-  void recordEvent(int lock_index, int tid, u64 call_trace_id, int event_type,
+  bool recordEvent(int lock_index, int tid, u64 call_trace_id, int event_type,
                    Event *event);
 
   // Emit a BCI_CPU / BCI_WALL sample with no stack-trace attached to our
   // recording. `correlation_id` is the same jlong passed to the HotSpot
   // RequestStackTrace extension so downstream tooling can join our event with
   // the JVM-emitted jdk.StackTraceRequest.
-  void recordEventDelegated(int lock_index, int tid, u64 correlation_id,
+  bool recordEventDelegated(int lock_index, int tid, u64 correlation_id,
                             int event_type, Event *event);
 
   void recordLog(LogLevel level, const char *message, size_t len);

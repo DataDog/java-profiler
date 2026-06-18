@@ -15,7 +15,9 @@
  */
 
 #include <gtest/gtest.h>
+#include <atomic>
 #include <memory>
+#include <thread>
 #include "thread.h"
 #include "threadFilter.h"
 
@@ -52,6 +54,52 @@ TEST(ProfiledThreadParkStateTest, ParkFlagLifecycle) {
   EXPECT_EQ(0x123400000001ULL, park_block_token);
 
   EXPECT_FALSE(thread->parkExit(park_block_token)); // idempotent after clear
+}
+
+TEST(ProfiledThreadParkStateTest, JavaThreadTypeSurvivesParkTransitions) {
+  TestProfiledThread thread = testThread(12349);
+
+  thread->setJavaThread(true);
+  EXPECT_EQ(ProfiledThread::TYPE_JAVA_THREAD, thread->threadType());
+
+  EXPECT_TRUE(thread->parkEnter());
+  EXPECT_EQ(ProfiledThread::TYPE_JAVA_THREAD, thread->threadType());
+
+  thread->setJavaThread(false);
+  EXPECT_EQ(ProfiledThread::TYPE_NOT_JAVA_THREAD, thread->threadType());
+
+  u64 park_block_token = 0;
+  EXPECT_TRUE(thread->parkExit(park_block_token));
+  EXPECT_EQ(ProfiledThread::TYPE_NOT_JAVA_THREAD, thread->threadType());
+}
+
+TEST(ProfiledThreadParkStateTest, ConcurrentTypeAndParkUpdatesKeepValidTypeBits) {
+  TestProfiledThread thread = testThread(12350);
+  std::atomic<bool> stop{false};
+
+  std::thread type_toggler([&] {
+    for (int i = 0; i < 10000; i++) {
+      thread->setJavaThread((i & 1) == 0);
+    }
+    stop.store(true, std::memory_order_release);
+  });
+
+  while (!stop.load(std::memory_order_acquire)) {
+    thread->parkEnter();
+    u64 park_block_token = 0;
+    thread->parkExit(park_block_token);
+    ProfiledThread::ThreadType type = thread->threadType();
+    EXPECT_TRUE(type == ProfiledThread::TYPE_JAVA_THREAD ||
+                type == ProfiledThread::TYPE_NOT_JAVA_THREAD ||
+                type == ProfiledThread::TYPE_UNKNOWN);
+  }
+
+  type_toggler.join();
+  u64 park_block_token = 0;
+  thread->parkExit(park_block_token);
+  ProfiledThread::ThreadType type = thread->threadType();
+  EXPECT_TRUE(type == ProfiledThread::TYPE_JAVA_THREAD ||
+              type == ProfiledThread::TYPE_NOT_JAVA_THREAD);
 }
 
 TEST(ProfiledThreadParkStateTest, NewThreadStartsNotParked) {

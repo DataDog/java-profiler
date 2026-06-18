@@ -509,7 +509,8 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
       // isCarryingVirtualThread() works regardless of JDK version.  Append a
       // synthetic "JVM Continuation" root frame to mark the boundary
       // explicitly, matching the behaviour of walkVM without carrier_frames.
-      if (VM::hotspot_version() >= 21 && num_frames < _max_stack_depth) {
+      if (VM::isHotspot() && VM::hotspot_version() >= 21 &&
+          num_frames < _max_stack_depth) {
         VMThread* carrier = VMThread::current();
         if (carrier != nullptr && carrier->isCarryingVirtualThread()) {
           frames[num_frames].bci = BCI_NATIVE_FRAME;
@@ -616,10 +617,10 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
     }
 #endif // COUNTERS
   }
-  _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
+  bool recorded = _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
 
   _locks[lock_index].unlock();
-  return true;
+  return recorded;
 }
 
 bool Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
@@ -656,9 +657,10 @@ bool Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
     return false;
   }
 
-  _jfr.recordEventDelegated(lock_index, tid, correlation_id, event_type, event);
+  bool recorded =
+      _jfr.recordEventDelegated(lock_index, tid, correlation_id, event_type, event);
   _locks[lock_index].unlock();
-  return true;
+  return recorded;
 }
 
 void Profiler::recordWallClockEpoch(int tid, WallClockEpochEvent *event) {
