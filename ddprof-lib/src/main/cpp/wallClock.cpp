@@ -67,10 +67,9 @@ struct WallPrecheckResult {
   u64 unowned_weight = 1;
 };
 
-static inline void incrementSuppressedSampledRun(ThreadFilter::Slot* slot) {
+static inline void incrementSuppressedSampledRun() {
   Counters::increment(WC_SIGNAL_SUPPRESSED_SAMPLED_RUN);
   WallClockCounters::incrementSuppressedSampledRun();
-  slot->incrementSuppressedSampleCount();
 }
 
 static inline bool suppressAlreadySampledBlock(ThreadFilter::Slot* slot) {
@@ -82,7 +81,7 @@ static inline bool suppressAlreadySampledBlock(ThreadFilter::Slot* slot) {
       isPrecheckSuppressionState(block_state) &&
       slot->sampledThisRun() &&
       block_state == slot->lastSampledState()) {
-    incrementSuppressedSampledRun(slot);
+    incrementSuppressedSampledRun();
     return true;
   }
   return false;
@@ -109,7 +108,7 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
   if (has_owned_block) {
     if (slot->sampledThisRun() &&
         active_block_state == slot->lastSampledState()) {
-      incrementSuppressedSampledRun(slot);
+      incrementSuppressedSampledRun();
       result.suppress = true;
       return result;
     }

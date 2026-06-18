@@ -338,10 +338,10 @@ u64 ThreadFilter::enterBlockedRun(SlotID slot_id, OSThreadState state,
                                   BlockRunOwner owner) {
     Slot* s = slotForId(slot_id);
     if (s != nullptr) {
-        if (s->activeBlockState() != OSThreadState::UNKNOWN) {
+        u32 generation = 0;
+        if (!s->trySetActiveBlockRun(state, owner, &generation)) {
             return 0;
         }
-        u32 generation = s->setActiveBlockRun(state, owner);
         return encodeBlockRunToken(slot_id, generation);
     }
     return 0;
@@ -361,31 +361,6 @@ bool ThreadFilter::exitBlockedRun(SlotID slot_id, u32 generation) {
     }
     s->clearActiveBlockRun(OSThreadState::RUNNABLE);
     return true;
-}
-
-bool ThreadFilter::snapshotAndExitBlockedRun(SlotID slot_id, u32 generation,
-                                             BlockRunSnapshot* snapshot) {
-    Slot* s = slotForId(slot_id);
-    if (s == nullptr || generation == 0 || s->blockGeneration() != generation) {
-        return false;
-    }
-    if (snapshot != nullptr) {
-        *snapshot = s->snapshotBlockRun();
-    }
-    s->clearActiveBlockRun(OSThreadState::RUNNABLE);
-    return true;
-}
-
-BlockRunSnapshot ThreadFilter::snapshotBlockedRun(SlotID slot_id) const {
-    Slot* s = slotForId(slot_id);
-    if (s != nullptr) {
-        return s->snapshotBlockRun();
-    }
-    BlockRunSnapshot snapshot{};
-    snapshot.active_state = OSThreadState::UNKNOWN;
-    snapshot.sampled_state = OSThreadState::UNKNOWN;
-    snapshot.owner = BlockRunOwner::NONE;
-    return snapshot;
 }
 
 void ThreadFilter::init(const char* filter) {
