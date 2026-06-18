@@ -29,6 +29,7 @@ import java.util.stream.IntStream;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -438,7 +439,7 @@ public class TagContextTest extends AbstractProfilerTest {
     // -----------------------------------------------------------------------
 
     /**
-     * Test 1: setContextValuesByIdAndBytes must return false immediately when
+     * Test 1: setContextValuesByIdAndBytes must throw IllegalArgumentException immediately when
      * the arrays are longer than MAX_CUSTOM_SLOTS (10), and must not perform
      * any partial write before the rejection.
      */
@@ -461,9 +462,10 @@ public class TagContextTest extends AbstractProfilerTest {
         utf8[0] = "original".getBytes(StandardCharsets.UTF_8);
         // All other entries remain 0 / null.
 
-        // The call must be rejected outright.
-        assertFalse(contextSetter.setContextValuesByIdAndBytes(ids, utf8),
-                "setContextValuesByIdAndBytes must return false when array length > MAX_CUSTOM_SLOTS");
+        // The call must be rejected with an exception before any write.
+        assertThrows(IllegalArgumentException.class,
+                () -> contextSetter.setContextValuesByIdAndBytes(ids, utf8),
+                "setContextValuesByIdAndBytes must throw when array length > MAX_CUSTOM_SLOTS");
 
         // No partial write: the sidecar for slot 0 must be unchanged.
         assertEquals(savedId, contextSetter.snapshotTags()[slot],
