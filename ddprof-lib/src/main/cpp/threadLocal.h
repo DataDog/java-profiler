@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef __THREADLOCAL_H__
-#define __THREADLOCAL_H__
+#ifndef _THREADLOCAL_H
+#define _THREADLOCAL_H
 
 #include <cassert>
 #include <cstring>
