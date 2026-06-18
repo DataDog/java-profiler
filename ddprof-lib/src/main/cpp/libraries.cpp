@@ -124,7 +124,9 @@ void *Libraries::refresherLoop(void *arg) {
     if (Profiler::instance()->isRunning() &&
         now - last_native_name_ns >= NATIVE_THREAD_NAME_INTERVAL_NS) {
       last_native_name_ns = now;
-      Profiler::instance()->updateNativeThreadNames();
+      // Defer threads still showing the inherited process name; the dump-time
+      // pass (which does not defer) records any that never set a real name.
+      Profiler::instance()->updateNativeThreadNames(true);
     }
   }
   return nullptr;

@@ -210,7 +210,14 @@ public:
   // periodically from the Libraries refresher thread to capture transient
   // compiler/GC threads before they exit. Must NOT be called from a signal
   // handler: thread enumeration uses opendir/readdir/malloc.
-  void updateNativeThreadNames();
+  //
+  // When defer_initializing is true (periodic refresher), a thread whose comm
+  // still equals the process's own (inherited) name is skipped: it is most
+  // likely still initializing and has not yet set its final pthread name.
+  // Recording it now would latch that provisional name permanently
+  // (ThreadInfo::updateThreadName is first-writer-wins). A later scan, or the
+  // dump-time pass (which passes false), records the final name instead.
+  void updateNativeThreadNames(bool defer_initializing = false);
 
 
   inline void incFailure(int type) {
