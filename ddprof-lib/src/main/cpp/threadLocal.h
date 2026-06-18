@@ -125,7 +125,8 @@ public:
     }
 
     void clear() {
-        pthread_setspecific(_key, nullptr);
+        int err = pthread_setspecific(_key, nullptr);
+        assert(err == 0);
     }
 };
 
