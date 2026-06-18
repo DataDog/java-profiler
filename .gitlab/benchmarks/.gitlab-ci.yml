@@ -76,8 +76,8 @@ benchmarks-candidate-aarch64:
   tags: ["arch:arm64"]
   image: $BENCHMARK_IMAGE_ARM64
   variables:
-    KUBERNETES_MEMORY_REQUEST: 200Gi
-    KUBERNETES_MEMORY_LIMIT: 200Gi
+    KUBERNETES_MEMORY_REQUEST: 128Gi
+    KUBERNETES_MEMORY_LIMIT: 128Gi
 
 post-benchmarks-pr-comment:
   extends: .retry-config
