@@ -290,7 +290,7 @@ bool SFrameParser::parse() {
         const SFrameFDE* fde = &fde_array[i];
         if (SFRAME_FUNC_FDE_TYPE(fde->info) != 0) continue;  // skip PCMASK
         if (fde->fre_num == 0)                    continue;  // empty FDE
-        int saved_count             = _count;
+        int saved_count             = _count;  // safe: addRecord capacity guard keeps _count <= INT_MAX/2
         int saved_linked_frame_size = _linked_frame_size;
         if (!parseFDE(hdr, fde, fre_section, fre_end)) {
             if (_oom) return false;  // OOM: partial table is not safe to use

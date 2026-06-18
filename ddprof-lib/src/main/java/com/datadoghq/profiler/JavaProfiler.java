@@ -1,5 +1,6 @@
 /*
  * Copyright 2018 Andrei Pangin
+ * Copyright 2026, Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -213,12 +214,56 @@ public final class JavaProfiler {
         tlsContextStorage.get().put(0, 0, 0, 0);
     }
 
+    /**
+     * Sets a custom context attribute at the given slot offset for the current thread.
+     *
+     * @param offset slot index (0-based, in [0, 9]); out-of-range values return {@code false}
+     * @param value  the string value to record; {@code null} returns {@code false} without
+     *               writing; an empty string is written as a zero-length entry (not a clear —
+     *               use {@link #clearContextAttribute(int)} to remove a value)
+     * @return true if the value was recorded; false if {@code offset} is out of range,
+     *         {@code value} is null, the Dictionary is full, or {@code attrs_data} overflows
+     *         for this slot
+     */
     public boolean setContextAttribute(int offset, String value) {
         return tlsContextStorage.get().setContextAttribute(offset, value);
     }
 
+    /**
+     * Clears the custom context attribute at the given slot offset for the current thread.
+     * Zeros the sidecar encoding and removes it from OTEP {@code attrs_data}.
+     *
+     * @param offset slot index (0-based, in [0, 9]); out-of-range values are silently ignored
+     */
     public void clearContextAttribute(int offset) {
         tlsContextStorage.get().clearContextAttribute(offset);
+    }
+
+    /**
+     * Re-applies multiple custom attributes from precomputed constant IDs and UTF-8 bytes for
+     * the current thread in a single detach/attach window.
+     *
+     * <ul>
+     *   <li>Slots with {@code constantIds[i] <= 0} are skipped.</li>
+     *   <li>Returns {@code false} without writing if the thread's record is not currently valid
+     *       (span-less), to avoid resurrecting a cleared record.</li>
+     *   <li>On {@code attrs_data} overflow, the overflowed slot's sidecar is zeroed and
+     *       {@code false} is returned; slots written before the overflow are retained.</li>
+     * </ul>
+     *
+     * @param constantIds per-slot Dictionary constant IDs; entries {@code <= 0} are skipped
+     * @param utf8        per-slot UTF-8 value bytes; must be non-null and at most 255 bytes
+     *                    (the OTEP attrs_data entry length field is one byte) for every slot
+     *                    whose {@code constantId > 0}
+     * @return true if every slot with {@code constantId > 0} was written; false on a cleared
+     *         (span-less) record, or {@code attrs_data} overflow for any slot
+     * @throws NullPointerException     if {@code constantIds}, {@code utf8}, or any active
+     *                                  {@code utf8[i]} is null
+     * @throws IllegalArgumentException if the arrays have different lengths, exceed the slot limit,
+     *                                  or any active {@code utf8[i]} exceeds 255 bytes
+     */
+    public boolean setContextAttributesByIdAndBytes(int[] constantIds, byte[][] utf8) {
+        return tlsContextStorage.get().setContextAttributesByIdAndBytes(constantIds, utf8);
     }
 
     void copyTags(int[] snapshot) {
