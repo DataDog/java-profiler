@@ -18,7 +18,6 @@
 #include "threadLocal.h"
 #include "gtest_crash_handler.h"
 #include <atomic>
-#include <cmath>
 #include <cstdint>
 #include <thread>
 #include <vector>
