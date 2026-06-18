@@ -796,10 +796,12 @@ TEST_F(CallTraceStorageTest, LivenessPreservationAcrossMultipleCycles) {
 
         bool ok = done.load();
         if (!ok) {
-            t.detach();
-            FAIL() << "processTraces hung on cycle " << cycle
-                   << " (possible infinite-loop regression in putWithExistingId)";
-            return;
+            // Cannot safely detach: the lambda captures local stack variables by reference.
+            // If we detach and return, the thread will access destroyed locals (UAF).
+            // Instead, terminate the process immediately to fail the test cleanly.
+            std::cerr << "FATAL: processTraces hung on cycle " << cycle
+                      << " (possible infinite-loop regression in putWithExistingId)" << std::endl;
+            std::abort();
         }
         t.join();
     }
