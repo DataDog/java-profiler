@@ -133,4 +133,4 @@ public:
     }
 };
 
-#endif // __THREADLOCAL_H__
+#endif // _THREADLOCAL_H
