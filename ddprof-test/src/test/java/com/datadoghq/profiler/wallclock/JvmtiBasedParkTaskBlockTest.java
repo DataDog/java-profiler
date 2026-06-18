@@ -7,6 +7,7 @@ package com.datadoghq.profiler.wallclock;
 
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Assumptions;
+import org.openjdk.jmc.common.item.IItemCollection;
 
 import java.util.Map;
 
@@ -35,5 +36,10 @@ public class JvmtiBasedParkTaskBlockTest extends ParkTaskBlockTest {
     @Override
     protected String getProfilerCommand() {
         return "wall=1ms,filter=0,wallprecheck=true,jvmtistacks=true";
+    }
+
+    @Override
+    protected void assertTaskBlockStackReference(IItemCollection taskBlockEvents) {
+        TaskBlockAssertions.assertContainsCorrelationId(taskBlockEvents);
     }
 }

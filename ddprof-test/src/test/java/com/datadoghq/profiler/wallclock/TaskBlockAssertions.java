@@ -1,6 +1,7 @@
 package com.datadoghq.profiler.wallclock;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import org.openjdk.jmc.common.IMCStackTrace;
 import org.openjdk.jmc.common.item.IAttribute;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
@@ -11,6 +12,7 @@ import org.openjdk.jmc.common.unit.IQuantity;
 import java.util.HashSet;
 import java.util.Set;
 
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.openjdk.jmc.common.item.Attribute.attr;
 import static org.openjdk.jmc.common.unit.UnitLookup.NUMBER;
@@ -23,8 +25,10 @@ final class TaskBlockAssertions {
             attr("unblockingSpanId", "unblockingSpanId", "Unblocking Span ID", NUMBER);
     private static final IAttribute<IQuantity> ANCHOR_SAMPLE_ID =
             attr("anchorSampleId", "anchorSampleId", "Anchor MethodSample ID", NUMBER);
-    private static final IAttribute<IQuantity> SAMPLE_ID =
-            attr("sampleId", "sampleId", "Sample ID", NUMBER);
+    private static final IAttribute<IQuantity> SUPPRESSED_SAMPLE_COUNT =
+            attr("suppressedSampleCount", "suppressedSampleCount", "Suppressed Sample Count", NUMBER);
+    private static final IAttribute<IQuantity> CORRELATION_ID =
+            attr("correlationId", "correlationId", "Async Stack Trace Correlation ID", NUMBER);
     private static final IAttribute<String> OBSERVED_BLOCKING_STATE =
             attr("observedBlockingState", "observedBlockingState", "Observed Blocking State", PLAIN_TEXT);
 
@@ -46,20 +50,36 @@ final class TaskBlockAssertions {
                 "Expected TaskBlock with observedBlockingState=" + observedState);
     }
 
-    static void assertAnchorResolvesToMethodSample(
-            IItemCollection taskBlockEvents, IItemCollection methodSampleEvents) {
-        Set<Long> anchorSampleIds = nonZeroValues(taskBlockEvents, ANCHOR_SAMPLE_ID);
-        assertTrue(anchorSampleIds.size() > 0, "Expected at least one non-zero TaskBlock anchorSampleId");
+    static void assertNoAnchorFields(IItemCollection taskBlockEvents) {
+        for (IItemIterable iterable : taskBlockEvents) {
+            assertNull(
+                    ANCHOR_SAMPLE_ID.getAccessor(iterable.getType()),
+                    "TaskBlock must not expose anchorSampleId");
+            assertNull(
+                    SUPPRESSED_SAMPLE_COUNT.getAccessor(iterable.getType()),
+                    "TaskBlock must not expose suppressedSampleCount");
+        }
+    }
 
-        Set<Long> methodSampleIds = nonZeroValues(methodSampleEvents, SAMPLE_ID);
-        for (long anchorSampleId : anchorSampleIds) {
-            if (methodSampleIds.contains(anchorSampleId)) {
-                return;
+    static void assertContainsStackTrace(IItemCollection taskBlockEvents) {
+        int checked = 0;
+        for (IItemIterable iterable : taskBlockEvents) {
+            IMemberAccessor<IMCStackTrace, IItem> stackTraceAccessor =
+                    AbstractProfilerTest.STACK_TRACE.getAccessor(iterable.getType());
+            assertTrue(stackTraceAccessor != null, "TaskBlock must expose stackTrace");
+            for (IItem item : iterable) {
+                checked++;
+                IMCStackTrace stackTrace = stackTraceAccessor.getMember(item);
+                assertTrue(stackTrace != null, "TaskBlock stackTrace must not be null");
+                assertTrue(!stackTrace.getFrames().isEmpty(), "TaskBlock stackTrace must not be empty");
             }
         }
-        throw new AssertionError(
-                "Expected a TaskBlock anchorSampleId to match a MethodSample sampleId; anchors="
-                        + anchorSampleIds + ", samples=" + methodSampleIds);
+        assertTrue(checked > 0, "Expected at least one TaskBlock with a non-empty stackTrace");
+    }
+
+    static void assertContainsCorrelationId(IItemCollection taskBlockEvents) {
+        Set<Long> correlationIds = nonZeroValues(taskBlockEvents, CORRELATION_ID);
+        assertTrue(correlationIds.size() > 0, "Expected at least one non-zero TaskBlock correlationId");
     }
 
     static boolean containsSpan(IItemCollection events, long spanId) {

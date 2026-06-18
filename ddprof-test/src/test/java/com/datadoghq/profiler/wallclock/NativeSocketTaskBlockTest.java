@@ -3,6 +3,7 @@ package com.datadoghq.profiler.wallclock;
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Test;
+import org.openjdk.jmc.common.item.IItemCollection;
 
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -59,8 +60,7 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
         }
 
         stopProfiler();
-        TaskBlockAssertions.assertContainsObservedState(
-                verifyEvents("datadog.TaskBlock"), "IO_WAIT");
+        assertIoWaitTaskBlockSelfContained();
     }
 
     @Test
@@ -92,8 +92,7 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
         }
 
         stopProfiler();
-        TaskBlockAssertions.assertContainsObservedState(
-                verifyEvents("datadog.TaskBlock"), "IO_WAIT");
+        assertIoWaitTaskBlockSelfContained();
     }
 
     @Test
@@ -130,8 +129,7 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
         }
 
         stopProfiler();
-        TaskBlockAssertions.assertContainsObservedState(
-                verifyEvents("datadog.TaskBlock"), "IO_WAIT");
+        assertIoWaitTaskBlockSelfContained();
     }
 
     @Test
@@ -169,8 +167,7 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
         }
 
         stopProfiler();
-        TaskBlockAssertions.assertContainsObservedState(
-                verifyEvents("datadog.TaskBlock"), "IO_WAIT");
+        assertIoWaitTaskBlockSelfContained();
     }
 
     @Test
@@ -236,6 +233,13 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
             selected = selector.select(Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remainingNanos)));
         } while (selected == 0);
         return selected;
+    }
+
+    private void assertIoWaitTaskBlockSelfContained() {
+        IItemCollection taskBlockEvents = verifyEvents("datadog.TaskBlock");
+        TaskBlockAssertions.assertNoAnchorFields(taskBlockEvents);
+        TaskBlockAssertions.assertContainsStackTrace(taskBlockEvents);
+        TaskBlockAssertions.assertContainsObservedState(taskBlockEvents, "IO_WAIT");
     }
 
     private static void assertCompleted(Thread thread, AtomicReference<Throwable> error)

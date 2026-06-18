@@ -3,6 +3,7 @@ package com.datadoghq.profiler.wallclock;
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Test;
+import org.openjdk.jmc.common.item.IItemCollection;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -40,9 +41,11 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
         assertCompleted(thread, error);
         stopProfiler();
 
+        IItemCollection taskBlockEvents = verifyEvents("datadog.TaskBlock");
+        TaskBlockAssertions.assertNoAnchorFields(taskBlockEvents);
+        TaskBlockAssertions.assertContainsStackTrace(taskBlockEvents);
         TaskBlockAssertions.assertContains(
-                verifyEvents("datadog.TaskBlock"),
-                WAIT_ROOT_SPAN_ID, WAIT_SPAN_ID, identityHash(monitor), 0L);
+                taskBlockEvents, WAIT_ROOT_SPAN_ID, WAIT_SPAN_ID, identityHash(monitor), 0L);
     }
 
     @Test
@@ -74,9 +77,12 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
         assertCompleted(thread, error);
         stopProfiler();
 
+        IItemCollection taskBlockEvents = verifyEvents("datadog.TaskBlock");
+        TaskBlockAssertions.assertNoAnchorFields(taskBlockEvents);
+        TaskBlockAssertions.assertContainsStackTrace(taskBlockEvents);
         TaskBlockAssertions.assertContains(
-                verifyEvents("datadog.TaskBlock"),
-                CONTENTION_ROOT_SPAN_ID, CONTENTION_SPAN_ID, identityHash(monitor), 0L);
+                taskBlockEvents, CONTENTION_ROOT_SPAN_ID, CONTENTION_SPAN_ID,
+                identityHash(monitor), 0L);
     }
 
     @Override

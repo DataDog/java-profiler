@@ -20,7 +20,7 @@ public class ParkTaskBlockTest extends AbstractProfilerTest {
         registerCurrentThreadForWallClockProfiling();
         profiler.parkEnter();
         try {
-            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(20));
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(200));
         } finally {
             profiler.parkExit(BLOCKER, UNBLOCKING_SPAN_ID);
         }
@@ -28,8 +28,8 @@ public class ParkTaskBlockTest extends AbstractProfilerTest {
         stopProfiler();
 
         IItemCollection taskBlockEvents = verifyEvents("datadog.TaskBlock");
-        TaskBlockAssertions.assertAnchorResolvesToMethodSample(
-                taskBlockEvents, verifyEvents("datadog.MethodSample"));
+        TaskBlockAssertions.assertNoAnchorFields(taskBlockEvents);
+        assertTaskBlockStackReference(taskBlockEvents);
         TaskBlockAssertions.assertContains(
                 taskBlockEvents, ROOT_SPAN_ID, SPAN_ID, BLOCKER, UNBLOCKING_SPAN_ID);
     }
@@ -41,7 +41,7 @@ public class ParkTaskBlockTest extends AbstractProfilerTest {
         try {
             profiler.parkEnter();
             try {
-                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(20));
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(200));
             } finally {
                 profiler.parkExit(BLOCKER, UNBLOCKING_SPAN_ID);
             }
@@ -59,5 +59,9 @@ public class ParkTaskBlockTest extends AbstractProfilerTest {
     @Override
     protected String getProfilerCommand() {
         return "wall=1ms,filter=0,wallprecheck=true";
+    }
+
+    protected void assertTaskBlockStackReference(IItemCollection taskBlockEvents) {
+        TaskBlockAssertions.assertContainsStackTrace(taskBlockEvents);
     }
 }
