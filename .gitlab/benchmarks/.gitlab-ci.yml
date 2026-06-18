@@ -2,13 +2,11 @@ variables:
   PREPARE_IMAGE: registry.ddbuild.io/images/benchmarking-platform-tools-ubuntu:latest
   DD_OCTO_STS_IMAGE: registry.ddbuild.io/images/dd-octo-sts-ci-base:2025.06-1
 
-.benchmark_job:
-  extends: .deploy-sa
+# Bridge job: triggers the BP pipeline and blocks until it completes.
+# Bridge jobs cannot appear in other jobs' needs: — downstream jobs use
+# stage ordering (post-benchmarks stage runs after benchmarks stage).
+benchmarks-trigger:
   stage: benchmarks
-  timeout: 6h
-  variables:
-    ITERATIONS: "${BENCHMARK_ITERATIONS:-1}"
-    MODES: "${BENCHMARK_MODES:-cpu,wall,alloc,memleak}"
   needs:
     - job: get-versions
       artifacts: true
@@ -24,64 +22,27 @@ variables:
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual
       allow_failure: true
-    # Run automatically and non-blocking on any other source (push/trigger/api/
-    # etc.) — mirrors the integration-test rules. The before_script CANCELLED
-    # gate skips branches with no open PR.
+    # Run automatically and non-blocking on any other source (push/trigger/api/etc.)
     - when: on_success
       allow_failure: true
-  script: |
-    # setup the env
-    export ARTIFACTS_DIR="$(pwd)/reports" && (mkdir "${ARTIFACTS_DIR}" || :)
-    export CANDIDATE_VERSION=${CURRENT_VERSION}
-    export BASELINE_VERSION=${PREVIOUS_VERSION}
-    export PLATFORM_DIR=".benchmarks/platform"
-
-    # check for missing candidate version
-    if [ -z "${CANDIDATE_VERSION}" ]; then echo "Missing candidate version. Skipping."; exit 0; fi
-
-    # fetch the common platform scripts
-    git -c url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.ddbuild.io/DataDog/".insteadOf="https://github.com/DataDog/" \
-      clone --branch dd-trace-go https://github.com/DataDog/benchmarking-platform ${PLATFORM_DIR}
-
-    # apply the specific step scripts
-    cp -r .gitlab/benchmarks/steps/* ${PLATFORM_DIR}/steps/
-    chmod a+x ${PLATFORM_DIR}/steps/*
-
-    # check for mode validity
-    ${PLATFORM_DIR}/steps/check_modes.sh
-    if [ "$(cat .job_status)" == "SKIP" ]; then exit 0; fi
-
-    # run benchmarks
-    ${PLATFORM_DIR}/steps/capture-hardware-software-info.sh
-    ${PLATFORM_DIR}/steps/run-benchmarks.sh
-    ${PLATFORM_DIR}/steps/analyze-results.sh
-    ${PLATFORM_DIR}/steps/upload-results-to-s3.sh
-  parallel:
-    matrix:
-      - RUN_MODE: ["cpu", "wall", "alloc", "memleak", "cpu,wall", "memleak,alloc", "cpu,wall,alloc,memleak"]
-  artifacts:
-    when: always
-    name: "reports"
-    paths:
-      - reports/
-    expire_in: 3 months
-
-benchmarks-candidate-amd64:
-  extends: .benchmark_job
-  tags: ["arch:amd64"]
-  image: $BENCHMARK_IMAGE_AMD64
-
-benchmarks-candidate-aarch64:
-  extends: .benchmark_job
-  tags: ["arch:arm64"]
-  image: $BENCHMARK_IMAGE_ARM64
   variables:
-    KUBERNETES_MEMORY_REQUEST: 200Gi
-    KUBERNETES_MEMORY_LIMIT: 200Gi
+    CANDIDATE_VERSION: "${CURRENT_VERSION}"
+    BASELINE_VERSION: "${PREVIOUS_VERSION}"
+    BENCHMARK_ITERATIONS: "${BENCHMARK_ITERATIONS:-5}"
+    BENCHMARK_MODES: "${BENCHMARK_MODES:-cpu,wall,alloc,memleak}"
+    DDPROF_COMMIT_SHA: "${CI_COMMIT_SHA}"
+    DDPROF_COMMIT_BRANCH: "${CI_COMMIT_BRANCH}"
+    UPSTREAM_PROJECT_NAME: "java-profiler"
+    UPSTREAM_BRANCH: "${CI_PIPELINE_ID}"
+    UPSTREAM_PIPELINE_ID: "${CI_PIPELINE_ID}"
+  trigger:
+    project: DataDog/apm-reliability/benchmarking-platform
+    branch: java-profiler
+    strategy: depend
 
 post-benchmarks-pr-comment:
   extends: .retry-config
-  stage: benchmarks
+  stage: post-benchmarks
   tags: ["arch:arm64"]
   image: registry.ddbuild.io/images/dd-octo-sts-ci-base:2025.06-1
   id_tokens:
@@ -90,10 +51,6 @@ post-benchmarks-pr-comment:
   needs:
     - job: prepare:start
       artifacts: true
-    - job: benchmarks-candidate-amd64
-      artifacts: true
-    - job: benchmarks-candidate-aarch64
-      artifacts: true
   rules:
     - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
       when: never
@@ -101,36 +58,38 @@ post-benchmarks-pr-comment:
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
       when: never
-    # Always run when the candidate jobs ran, regardless of source, so results
-    # are posted back to the PR.
+    # Always run after the benchmarks stage so results are posted back to the PR.
     - when: always
-  timeout: 5m
+  timeout: 10m
   script:
+    - mkdir -p reports
+    - .gitlab/benchmarks/download-s3-reports.sh reports
     - .gitlab/benchmarks/post-pr-comment.sh reports
   allow_failure: true
 
 publish-benchmark-gh-pages:
-  stage: benchmarks
+  stage: post-benchmarks
   tags: ["arch:arm64"]
   image: registry.ddbuild.io/images/dd-octo-sts-ci-base:2025.06-1
   id_tokens:
     DDOCTOSTS_ID_TOKEN:
       aud: dd-octo-sts
-  needs:
-    - job: benchmarks-candidate-amd64
-      artifacts: true
-    - job: benchmarks-candidate-aarch64
-      artifacts: true
+  needs: []
+  # Serialize concurrent GH Pages pushes. publish-gh-pages.sh uses
+  # 'git push --force'; two concurrent pushes race and the slower one
+  # silently discards the faster one's history update.
+  resource_group: gh-pages-publish
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH || $CI_COMMIT_BRANCH == "main"'
       when: always
-  timeout: 10m
+  timeout: 15m
   script:
-    - ./.gitlab/benchmarks/publish-gh-pages.sh
+    - mkdir -p reports
+    - .gitlab/benchmarks/download-s3-reports.sh reports
+    - ./.gitlab/benchmarks/publish-gh-pages.sh reports
   allow_failure: true
 
 include:
   - local: .gitlab/common.yml
-  - local: .gitlab/benchmarks/images.yml
