@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk11
 
 ## glibc-x64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-06-18 09:07:32 EDT
+**Date:** 2026-06-18 09:11:38 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-openj9-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 50 |
-| CPU Cores (end) | 58 |
+| CPU Cores (start) | 60 |
+| CPU Cores (end) | 60 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,22 @@ title: glibc-x64-openj9-jdk11
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (2 unique values: 50-58 cores)</summary>
+<summary>CPU Timeline (1 unique values: 60-60 cores)</summary>
 
 ```
-1781787795 50
-1781787800 50
-1781787805 50
-1781787810 50
-1781787815 50
-1781787820 50
-1781787825 50
-1781787830 50
-1781787835 50
-1781787840 58
-1781787845 58
-1781787850 58
-1781787855 58
-1781787860 58
-1781787865 58
-1781787870 58
-1781787875 58
-1781787880 58
-1781787885 58
-1781787890 58
+1781788070 60
+1781788075 60
+1781788080 60
+1781788085 60
+1781788090 60
+1781788095 60
+1781788100 60
+1781788105 60
+1781788110 60
+1781788115 60
+1781788120 60
+1781788125 60
+1781788130 60
 ```
 </details>
 
