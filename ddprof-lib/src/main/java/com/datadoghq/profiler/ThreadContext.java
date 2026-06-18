@@ -19,6 +19,7 @@ import java.nio.Buffer;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.util.Objects;
 
 /**
  * Thread-local context for trace/span identification.
@@ -28,8 +29,7 @@ import java.nio.charset.StandardCharsets;
  * for minimal overhead. Only little-endian platforms are supported.
  */
 public final class ThreadContext {
-    // Must equal ContextSetter.TAGS_STORAGE_LIMIT — both cap the same physical slot range.
-    private static final int MAX_CUSTOM_SLOTS = 10;
+    static final int MAX_CUSTOM_SLOTS = 10;
     // Max UTF-8 byte length for a custom attribute value. Matches the 1-byte length
     // field in the OTEP attrs_data entry header. Enforced up front in setContextAttribute
     // so replaceOtepAttribute can assume the input always fits.
@@ -360,31 +360,25 @@ public final class ThreadContext {
      * @param constantIds per-slot Dictionary constant IDs; entries {@code <= 0} are skipped
      * @param utf8        per-slot UTF-8 value bytes; must be non-null and at most
      *                    {@value #MAX_VALUE_BYTES} bytes for every slot whose constantId {@code > 0}
-     * @return true if every slot with {@code constantId > 0} was written successfully; false on
-     *         invalid arguments (null arrays, length mismatch, a missing/oversized {@code utf8}
-     *         entry, or {@code constantIds.length > MAX_CUSTOM_SLOTS}), if the record was not
-     *         valid before the call (nothing is published), or if any slot overflowed
-     *         {@code attrs_data} (that slot's sidecar is zeroed). Note: a {@code false} return
-     *         due to {@code attrs_data} overflow does <em>not</em> mean the record is unmodified
-     *         — slots processed before the overflowed one are durably written.
+     * @return true if every slot with {@code constantId > 0} was written successfully; false if
+     *         the record was not valid before the call (nothing is published), or if any slot
+     *         overflowed {@code attrs_data} (that slot's sidecar is zeroed). Note: a {@code false}
+     *         return due to {@code attrs_data} overflow does <em>not</em> mean the record is
+     *         unmodified — slots processed before the overflowed one are durably written.
+     * @throws NullPointerException     if {@code constantIds} or {@code utf8} is null
+     * @throws IllegalArgumentException if the arrays have different lengths, or
+     *                                  {@code constantIds.length > MAX_CUSTOM_SLOTS}
      */
     public boolean setContextAttributesByIdAndBytes(int[] constantIds, byte[][] utf8) {
-        if (constantIds == null || utf8 == null || constantIds.length != utf8.length) {
-            return false;
+        Objects.requireNonNull(constantIds, "constantIds");
+        Objects.requireNonNull(utf8, "utf8");
+        if (constantIds.length != utf8.length) {
+            throw new IllegalArgumentException("constantIds and utf8 must have the same length");
         }
         if (constantIds.length > MAX_CUSTOM_SLOTS) {
-            return false;
+            throw new IllegalArgumentException("constantIds.length exceeds MAX_CUSTOM_SLOTS");
         }
         int len = constantIds.length;
-        // Validate before mutating so malformed input never leaves a half-written record.
-        for (int i = 0; i < len; i++) {
-            if (constantIds[i] > 0) {
-                byte[] bytes = utf8[i];
-                if (bytes == null || bytes.length > MAX_VALUE_BYTES) {
-                    return false;
-                }
-            }
-        }
         // Never resurrect a cleared (span-less) record: valid=0 means no reader can observe
         // what we write, and re-publishing would expose a record with no trace/span context.
         if (ctxBuffer.get(validOffset) == 0) {
@@ -397,7 +391,7 @@ public final class ThreadContext {
             if (constantId <= 0) {
                 continue;
             }
-            if (!writeSlot(i, constantId, utf8[i])) {
+            if (!writeSlot(i, constantId, Objects.requireNonNull(utf8[i], "utf8[" + i + "]"))) {
                 allWritten = false;
             }
         }

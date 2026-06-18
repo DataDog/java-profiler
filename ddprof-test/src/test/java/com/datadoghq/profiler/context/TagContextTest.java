@@ -238,7 +238,7 @@ public class TagContextTest extends AbstractProfilerTest {
 
         // setContext() triggers setContextDirect which resets attrs_data_size to the LRS entry only,
         // dropping all user attribute entries — so scanning attrs_data for tag1 returns null.
-        profiler.setContext(1L, 42L, 0L, 42L);
+        profiler.setContext(1L, 42L, 0L, 43L);
         assertNull(readTag(contextSetter, "tag1"), "tag1 must be null after setContext resets attrs_data");
     }
 
@@ -273,7 +273,7 @@ public class TagContextTest extends AbstractProfilerTest {
         bytes[slot] = value.getBytes(StandardCharsets.UTF_8);
 
         // setContext (span activation) wipes both views.
-        profiler.setContext(1L, 42L, 0L, 42L);
+        profiler.setContext(1L, 42L, 0L, 43L);
         assertNull(readTag(contextSetter, "tag1"), "attrs_data must be wiped by setContext");
         assertEquals(0, contextSetter.snapshotTags()[slot], "sidecar must be wiped by setContext");
 
@@ -372,7 +372,7 @@ public class TagContextTest extends AbstractProfilerTest {
         int slot = contextSetter.offsetOf("tag1");
 
         // Establish a live record with tag1 set.
-        profiler.setContext(1L, 42L, 0L, 42L);
+        profiler.setContext(1L, 42L, 0L, 43L);
         assertTrue(contextSetter.setContextValue("tag1", "will-be-cleared"));
         int[] ids = contextSetter.snapshotTags();
         byte[][] bytes = new byte[ids.length][];
@@ -499,7 +499,7 @@ public class TagContextTest extends AbstractProfilerTest {
         }
 
         // Wipe all slots via setContext (span activation).
-        profiler.setContext(1L, 42L, 0L, 42L);
+        profiler.setContext(1L, 42L, 0L, 43L);
 
         // Reapply with exactly-10-element arrays — must succeed.
         assertTrue(contextSetter.setContextValuesByIdAndBytes(savedIds, savedBytes),
@@ -511,99 +511,6 @@ public class TagContextTest extends AbstractProfilerTest {
             assertEquals(savedIds[i], restored[i],
                     "sidecar for tag" + (i + 1) + " must be restored after reapply");
         }
-    }
-
-    /**
-     * Test 3: snapshotTags(int[]) with an oversized buffer (length > attributes.size())
-     * must write the managed indices [0, attributes.size()) with the current sidecar values,
-     * and zero out the extra indices [attributes.size(), snapshot.length).
-     */
-    @Test
-    public void testSnapshotTagsOversizedBufferCopiesAndZerosExtras() throws Exception {
-        Assumptions.assumeTrue(!Platform.isJ9());
-        registerCurrentThreadForWallClockProfiling();
-        ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2"));
-
-        assertTrue(contextSetter.setContextValue("tag1", "v1"));
-        assertTrue(contextSetter.setContextValue("tag2", "v2"));
-
-        // Verify no-arg overload returns valid IDs.
-        int[] canonical = contextSetter.snapshotTags();
-        assertNotEquals(0, canonical[0]);
-        assertNotEquals(0, canonical[1]);
-
-        // Oversized buffer: length 5 > attributes.size() == 2.
-        int[] oversized = new int[5];
-        Arrays.fill(oversized, -1);
-        contextSetter.snapshotTags(oversized);
-
-        // Managed indices [0, attributes.size()) must contain the current sidecar values.
-        assertEquals(canonical[0], oversized[0],
-                "oversized buffer[0] must match no-arg snapshotTags()[0]");
-        assertEquals(canonical[1], oversized[1],
-                "oversized buffer[1] must match no-arg snapshotTags()[1]");
-
-        // Extra indices [attributes.size(), snapshot.length) must be zeroed.
-        for (int i = 2; i < oversized.length; i++) {
-            assertEquals(0, oversized[i],
-                    "oversized buffer element [" + i + "] must be zeroed by snapshotTags");
-        }
-
-        // No-arg overload must still work correctly.
-        int[] check = contextSetter.snapshotTags();
-        assertEquals(canonical[0], check[0]);
-        assertEquals(canonical[1], check[1]);
-    }
-
-    /**
-     * Test 4: snapshotTags(int[]) with an undersized buffer (length < attributes.size())
-     * must be a no-op — existing no-op semantics must be preserved.
-     */
-    @Test
-    public void testSnapshotTagsUndersizedBufferIsNoOp() throws Exception {
-        Assumptions.assumeTrue(!Platform.isJ9());
-        registerCurrentThreadForWallClockProfiling();
-        ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2", "tag3"));
-
-        assertTrue(contextSetter.setContextValue("tag1", "a"));
-        assertTrue(contextSetter.setContextValue("tag2", "b"));
-        assertTrue(contextSetter.setContextValue("tag3", "c"));
-
-        // Undersized buffer: length 1 < attributes.size() == 3.
-        int[] undersized = new int[1];
-        undersized[0] = -1;
-        contextSetter.snapshotTags(undersized);
-
-        assertEquals(-1, undersized[0],
-                "undersized buffer must not be written by snapshotTags");
-    }
-
-    /**
-     * Test 5: snapshotTags(int[]) with an exact-size buffer (length == attributes.size())
-     * must copy the current sidecar values correctly.
-     */
-    @Test
-    public void testSnapshotTagsExactSizeBufferCopiesCorrectly() throws Exception {
-        Assumptions.assumeTrue(!Platform.isJ9());
-        registerCurrentThreadForWallClockProfiling();
-        ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2"));
-
-        assertTrue(contextSetter.setContextValue("tag1", "x"));
-        assertTrue(contextSetter.setContextValue("tag2", "y"));
-
-        // No-arg overload to obtain expected values.
-        int[] canonical = contextSetter.snapshotTags();
-        assertNotEquals(0, canonical[0]);
-        assertNotEquals(0, canonical[1]);
-
-        // Exact-size buffer: length 2 == attributes.size() == 2.
-        int[] exact = new int[2];
-        contextSetter.snapshotTags(exact);
-
-        assertEquals(canonical[0], exact[0],
-                "exact-size buffer[0] must match no-arg snapshotTags()[0]");
-        assertEquals(canonical[1], exact[1],
-                "exact-size buffer[1] must match no-arg snapshotTags()[1]");
     }
 
     private void work(ContextSetter contextSetter, String contextAttribute, String contextValue)

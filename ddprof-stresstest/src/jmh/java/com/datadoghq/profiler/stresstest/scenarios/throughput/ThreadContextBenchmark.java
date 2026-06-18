@@ -72,6 +72,7 @@ public class ThreadContextBenchmark {
         ThreadContext ctx;
         long spanId;
         long localRootSpanId;
+        long traceIdLow;
         int counter;
 
         @Setup(Level.Trial)
@@ -79,6 +80,7 @@ public class ThreadContextBenchmark {
             ctx = ps.profiler.getThreadContext();
             spanId = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
             localRootSpanId = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+            traceIdLow = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
         }
     }
 
@@ -87,6 +89,7 @@ public class ThreadContextBenchmark {
         ThreadContext ctx;
         long spanId;
         long localRootSpanId;
+        long traceIdLow;
         int[] constantIds;
         byte[][] utf8;
 
@@ -95,9 +98,10 @@ public class ThreadContextBenchmark {
             ctx = ps.profiler.getThreadContext();
             spanId = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
             localRootSpanId = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
+            traceIdLow = ThreadLocalRandom.current().nextLong(1, Long.MAX_VALUE);
 
             // Prime the normal path to obtain constant IDs, then snapshot for reapply.
-            ctx.put(localRootSpanId, spanId, 0, spanId);
+            ctx.put(localRootSpanId, spanId, 0, traceIdLow);
             for (int i = 0; i < ROUTES.length; i++) {
                 ctx.setContextAttribute(i, ROUTES[i]);
             }
@@ -116,7 +120,7 @@ public class ThreadContextBenchmark {
             // different attrs_data state on the first invocation of each iteration (empty
             // after put() in the previous iteration or after the trial setup), causing a
             // bimodal distribution across forks due to JIT profile divergence.
-            ctx.put(localRootSpanId, spanId, 0, spanId);
+            ctx.put(localRootSpanId, spanId, 0, traceIdLow);
             if (!ctx.setContextAttributesByIdAndBytes(constantIds, utf8)) {
                 throw new IllegalStateException(
                         "resetToSteadyState: setContextAttributesByIdAndBytes failed; benchmark state invalid");
@@ -126,7 +130,7 @@ public class ThreadContextBenchmark {
 
     @Benchmark
     public void setContextFull(ThreadState ts) {
-        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.spanId);
+        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.traceIdLow);
     }
 
     @Benchmark
@@ -136,33 +140,33 @@ public class ThreadContextBenchmark {
 
     @Benchmark
     public void spanLifecycle(ThreadState ts) {
-        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.spanId);
+        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.traceIdLow);
         ts.ctx.setContextAttribute(0, ROUTES[ts.counter++ % ROUTES.length]);
     }
 
     @Benchmark
     @Threads(2)
     public void setContextFull_2t(ThreadState ts) {
-        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.spanId);
+        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.traceIdLow);
     }
 
     @Benchmark
     @Threads(4)
     public void setContextFull_4t(ThreadState ts) {
-        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.spanId);
+        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.traceIdLow);
     }
 
     @Benchmark
     @Threads(2)
     public void spanLifecycle_2t(ThreadState ts) {
-        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.spanId);
+        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.traceIdLow);
         ts.ctx.setContextAttribute(0, ROUTES[ts.counter++ % ROUTES.length]);
     }
 
     @Benchmark
     @Threads(4)
     public void spanLifecycle_4t(ThreadState ts) {
-        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.spanId);
+        ts.ctx.put(ts.localRootSpanId, ts.spanId, 0, ts.traceIdLow);
         ts.ctx.setContextAttribute(0, ROUTES[ts.counter++ % ROUTES.length]);
     }
 

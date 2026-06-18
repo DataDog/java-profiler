@@ -217,10 +217,13 @@ public final class JavaProfiler {
     /**
      * Sets a custom context attribute at the given slot offset for the current thread.
      *
-     * @param offset slot index (0-based, must be less than {@code ThreadContext.MAX_CUSTOM_SLOTS})
-     * @param value  the string value to record; null or empty clears the slot
-     * @return true if the value was recorded; false if the slot index is out of range, the
-     *         Dictionary is full, or {@code attrs_data} overflows for this slot
+     * @param offset slot index (0-based, in [0, 9]); out-of-range values return {@code false}
+     * @param value  the string value to record; {@code null} returns {@code false} without
+     *               writing; an empty string is written as a zero-length entry (not a clear —
+     *               use {@link #clearContextAttribute(int)} to remove a value)
+     * @return true if the value was recorded; false if {@code offset} is out of range,
+     *         {@code value} is null, the Dictionary is full, or {@code attrs_data} overflows
+     *         for this slot
      */
     public boolean setContextAttribute(int offset, String value) {
         return tlsContextStorage.get().setContextAttribute(offset, value);
@@ -230,7 +233,7 @@ public final class JavaProfiler {
      * Clears the custom context attribute at the given slot offset for the current thread.
      * Zeros the sidecar encoding and removes it from OTEP {@code attrs_data}.
      *
-     * @param offset slot index (0-based, must be less than {@code ThreadContext.MAX_CUSTOM_SLOTS})
+     * @param offset slot index (0-based, in [0, 9]); out-of-range values are silently ignored
      */
     public void clearContextAttribute(int offset) {
         tlsContextStorage.get().clearContextAttribute(offset);
@@ -240,8 +243,6 @@ public final class JavaProfiler {
      * Re-applies multiple custom attributes from precomputed constant IDs and UTF-8 bytes for
      * the current thread in a single detach/attach window.
      *
-     * <p>Delegates to {@link ThreadContext#setContextAttributesByIdAndBytes(int[], byte[][])}
-     * on the current thread's context. Key contract points:
      * <ul>
      *   <li>Slots with {@code constantIds[i] <= 0} are skipped.</li>
      *   <li>Returns {@code false} without writing if the thread's record is not currently valid
@@ -251,11 +252,13 @@ public final class JavaProfiler {
      * </ul>
      *
      * @param constantIds per-slot Dictionary constant IDs; entries {@code <= 0} are skipped
-     * @param utf8        per-slot UTF-8 value bytes; must be non-null and at most
-     *                    {@code ThreadContext.MAX_VALUE_BYTES} bytes for every slot whose
-     *                    {@code constantId > 0}
-     * @return true if every slot with {@code constantId > 0} was written; false on invalid
-     *         arguments, a cleared (span-less) record, or {@code attrs_data} overflow for any slot
+     * @param utf8        per-slot UTF-8 value bytes; must be non-null and at most 255 bytes
+     *                    (the OTEP attrs_data entry length field is one byte) for every slot
+     *                    whose {@code constantId > 0}
+     * @return true if every slot with {@code constantId > 0} was written; false on a cleared
+     *         (span-less) record, or {@code attrs_data} overflow for any slot
+     * @throws NullPointerException     if {@code constantIds} or {@code utf8} is null
+     * @throws IllegalArgumentException if the arrays have different lengths or exceed the slot limit
      */
     public boolean setContextAttributesByIdAndBytes(int[] constantIds, byte[][] utf8) {
         return tlsContextStorage.get().setContextAttributesByIdAndBytes(constantIds, utf8);

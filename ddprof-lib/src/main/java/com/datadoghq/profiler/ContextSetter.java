@@ -16,15 +16,12 @@
 package com.datadoghq.profiler;
 
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
 public class ContextSetter {
 
-    // Must equal ThreadContext.MAX_CUSTOM_SLOTS — both cap the same physical slot range.
-    private static final int TAGS_STORAGE_LIMIT = 10;
     private final List<String> attributes;
     private final JavaProfiler profiler;
 
@@ -32,7 +29,7 @@ public class ContextSetter {
         this.profiler = profiler;
         Set<String> unique = new HashSet<>(attributes);
         this.attributes = new ArrayList<>(unique.size());
-        for (int i = 0; i < Math.min(attributes.size(), TAGS_STORAGE_LIMIT); i++) {
+        for (int i = 0; i < Math.min(attributes.size(), ThreadContext.MAX_CUSTOM_SLOTS); i++) {
             String attribute = attributes.get(i);
             if (unique.remove(attribute)) {
                 this.attributes.add(attribute);
@@ -42,22 +39,8 @@ public class ContextSetter {
 
     public int[] snapshotTags() {
         int[] snapshot = new int[attributes.size()];
-        snapshotTags(snapshot);
+        profiler.copyTags(snapshot);
         return snapshot;
-    }
-
-    /**
-     * Copies current sidecar encodings into {@code snapshot}. The array must have at least
-     * {@code attributes.size()} elements; arrays shorter than {@code attributes.size()} are
-     * silently ignored. Indices {@code [attributes.size(), snapshot.length)} are zeroed after
-     * copying to prevent stale data from leaking to the caller.
-     * Use the no-arg {@link #snapshotTags()} overload to obtain a correctly sized array.
-     */
-    public void snapshotTags(int[] snapshot) {
-        if (snapshot.length >= attributes.size()) {
-            profiler.copyTags(snapshot);
-            Arrays.fill(snapshot, attributes.size(), snapshot.length, 0);
-        }
     }
 
     public int offsetOf(String attribute) {

@@ -9,10 +9,11 @@
  */
 package com.datadoghq.profiler.chaos;
 
+import com.datadoghq.profiler.ContextSetter;
 import com.datadoghq.profiler.JavaProfiler;
-import com.datadoghq.profiler.ThreadContext;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -32,6 +33,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * thread's attribute values exceeds the fixed per-thread attrs_data buffer capacity).
  */
 public final class ReapplyContextAntagonist implements Antagonist {
+
+    private static final String[] ATTR_NAMES = {
+        "http.route", "http.method", "http.status", "db.operation", "rpc.service"
+    };
 
     private static final String[] ROUTES = {
         "GET /api/users",
@@ -100,17 +105,17 @@ public final class ReapplyContextAntagonist implements Antagonist {
             System.err.println("[chaos] reapply-context: failed to get profiler: " + e);
             return;
         }
-        ThreadContext ctx = profiler.getThreadContext();
+        ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList(ATTR_NAMES));
 
         // Prime the per-thread encoding cache and capture a stable snapshot.
         long spanId = Thread.currentThread().getId() + 1;
         long localRootSpanId = spanId * 31L;
-        ctx.put(localRootSpanId, spanId, 0, spanId);
+        long traceIdLow = spanId * 6364136223846793005L + 1442695040888963407L;
+        profiler.setContext(localRootSpanId, spanId, 0, traceIdLow);
         for (int i = 0; i < ROUTES.length; i++) {
-            ctx.setContextAttribute(i, ROUTES[i]);
+            contextSetter.setContextValue(i, ROUTES[i]);
         }
-        int[] constantIds = new int[ROUTES.length];
-        ctx.copyCustoms(constantIds);
+        int[] constantIds = contextSetter.snapshotTags();
         byte[][] utf8 = new byte[ROUTES.length][];
         for (int i = 0; i < ROUTES.length; i++) {
             utf8[i] = ROUTES[i].getBytes(StandardCharsets.UTF_8);
@@ -119,9 +124,9 @@ public final class ReapplyContextAntagonist implements Antagonist {
         long r = spanId;
         while (running) {
             // Span activation wipes all custom slots.
-            ctx.put(localRootSpanId, spanId, 0, spanId);
+            profiler.setContext(localRootSpanId, spanId, 0, traceIdLow);
             // Reapply restores them — this is the hot path under test.
-            if (!ctx.setContextAttributesByIdAndBytes(constantIds, utf8)) {
+            if (!contextSetter.setContextValuesByIdAndBytes(constantIds, utf8)) {
                 reapplyFailures.incrementAndGet();
             }
             // Burn a little CPU so wall-clock signals have something to sample.
