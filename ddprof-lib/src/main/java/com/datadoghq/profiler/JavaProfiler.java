@@ -257,8 +257,10 @@ public final class JavaProfiler {
      *                    whose {@code constantId > 0}
      * @return true if every slot with {@code constantId > 0} was written; false on a cleared
      *         (span-less) record, or {@code attrs_data} overflow for any slot
-     * @throws NullPointerException     if {@code constantIds} or {@code utf8} is null
-     * @throws IllegalArgumentException if the arrays have different lengths or exceed the slot limit
+     * @throws NullPointerException     if {@code constantIds}, {@code utf8}, or any active
+     *                                  {@code utf8[i]} is null
+     * @throws IllegalArgumentException if the arrays have different lengths, exceed the slot limit,
+     *                                  or any active {@code utf8[i]} exceeds 255 bytes
      */
     public boolean setContextAttributesByIdAndBytes(int[] constantIds, byte[][] utf8) {
         return tlsContextStorage.get().setContextAttributesByIdAndBytes(constantIds, utf8);

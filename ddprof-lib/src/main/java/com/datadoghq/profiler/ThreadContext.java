@@ -365,9 +365,11 @@ public final class ThreadContext {
      *         overflowed {@code attrs_data} (that slot's sidecar is zeroed). Note: a {@code false}
      *         return due to {@code attrs_data} overflow does <em>not</em> mean the record is
      *         unmodified — slots processed before the overflowed one are durably written.
-     * @throws NullPointerException     if {@code constantIds} or {@code utf8} is null
-     * @throws IllegalArgumentException if the arrays have different lengths, or
-     *                                  {@code constantIds.length > MAX_CUSTOM_SLOTS}
+     * @throws NullPointerException     if {@code constantIds}, {@code utf8}, or any active
+     *                                  {@code utf8[i]} (where {@code constantIds[i] > 0}) is null
+     * @throws IllegalArgumentException if the arrays have different lengths,
+     *                                  {@code constantIds.length > MAX_CUSTOM_SLOTS}, or any
+     *                                  active {@code utf8[i].length > MAX_VALUE_BYTES}
      */
     public boolean setContextAttributesByIdAndBytes(int[] constantIds, byte[][] utf8) {
         Objects.requireNonNull(constantIds, "constantIds");
@@ -391,7 +393,11 @@ public final class ThreadContext {
             if (constantId <= 0) {
                 continue;
             }
-            if (!writeSlot(i, constantId, Objects.requireNonNull(utf8[i], "utf8[" + i + "]"))) {
+            byte[] bytes = Objects.requireNonNull(utf8[i], "utf8[" + i + "]");
+            if (bytes.length > MAX_VALUE_BYTES) {
+                throw new IllegalArgumentException("utf8[" + i + "].length exceeds MAX_VALUE_BYTES");
+            }
+            if (!writeSlot(i, constantId, bytes)) {
                 allWritten = false;
             }
         }

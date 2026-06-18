@@ -295,16 +295,21 @@ public class TagContextTest extends AbstractProfilerTest {
         int id = contextSetter.snapshotTags()[slot];
         assertNotEquals(0, id);
 
-        // Null arrays and length mismatch.
-        assertFalse(contextSetter.setContextValuesByIdAndBytes(null, new byte[1][]));
-        assertFalse(contextSetter.setContextValuesByIdAndBytes(new int[1], null));
-        assertFalse(contextSetter.setContextValuesByIdAndBytes(new int[2], new byte[3][]));
+        // Null arrays and length mismatch must throw.
+        assertThrows(NullPointerException.class,
+                () -> contextSetter.setContextValuesByIdAndBytes(null, new byte[1][]));
+        assertThrows(NullPointerException.class,
+                () -> contextSetter.setContextValuesByIdAndBytes(new int[1], null));
+        assertThrows(IllegalArgumentException.class,
+                () -> contextSetter.setContextValuesByIdAndBytes(new int[2], new byte[3][]));
 
         // A slot with constantId > 0 requires non-null bytes within the size limit.
-        assertFalse(contextSetter.setContextValuesByIdAndBytes(
-                new int[] {id, 0}, new byte[][] {null, null}));
-        assertFalse(contextSetter.setContextValuesByIdAndBytes(
-                new int[] {id, 0}, new byte[][] {new byte[256], null}));
+        assertThrows(NullPointerException.class,
+                () -> contextSetter.setContextValuesByIdAndBytes(
+                        new int[] {id, 0}, new byte[][] {null, null}));
+        assertThrows(IllegalArgumentException.class,
+                () -> contextSetter.setContextValuesByIdAndBytes(
+                        new int[] {id, 0}, new byte[][] {new byte[256], null}));
 
         // 255 bytes is the boundary and must be accepted.
         // Register the 255-byte value so its constant ID matches the bytes we pass.
