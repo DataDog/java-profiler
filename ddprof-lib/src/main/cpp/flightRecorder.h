@@ -287,30 +287,36 @@ public:
   void writeJvmInfo(Buffer *buf);
   void writeSystemProperties(Buffer *buf);
   void writeNativeLibraries(Buffer *buf);
-  void writeCpool(Buffer *buf);
+  // Writes the cpool checkpoint. Returns the number of pool sections actually
+  // emitted (empty variable pools are skipped) and reports the byte offset of
+  // the pool-count placeholder within the cpool via *count_offset_in_cpool, so
+  // the caller can back-patch it flush-safe alongside the cpool size field.
+  int writeCpool(Buffer *buf, int *count_offset_in_cpool);
 
   void writeFrameTypes(Buffer *buf);
 
   void writeThreadStates(Buffer *buf);
 
   void writeExecutionModes(Buffer *buf);
-  void writeThreads(Buffer *buf);
+  // The following writers return 1 if a pool section was emitted, 0 if the
+  // pool was empty and therefore skipped (strict JFR readers reject empty pools).
+  int writeThreads(Buffer *buf);
 
-  void writeStackTraces(Buffer *buf, Lookup *lookup);
+  int writeStackTraces(Buffer *buf, Lookup *lookup);
 
-  void writeMethods(Buffer *buf, Lookup *lookup);
+  int writeMethods(Buffer *buf, Lookup *lookup);
 
-  void writeClasses(Buffer *buf, Lookup *lookup);
+  int writeClasses(Buffer *buf, Lookup *lookup);
 
-  void writePackages(Buffer *buf, Lookup *lookup);
+  int writePackages(Buffer *buf, Lookup *lookup);
 
-  void writeConstantPoolSection(Buffer *buf, JfrType type,
-                                std::map<u32, const char *> &constants);
+  int writeConstantPoolSection(Buffer *buf, JfrType type,
+                               std::map<u32, const char *> &constants);
 
-  void writeConstantPoolSection(Buffer *buf, JfrType type,
-                                Dictionary *dictionary);
-  void writeConstantPoolSection(Buffer *buf, JfrType type,
-                                StringDictionaryBuffer *buffer);
+  int writeConstantPoolSection(Buffer *buf, JfrType type,
+                               Dictionary *dictionary);
+  int writeConstantPoolSection(Buffer *buf, JfrType type,
+                               StringDictionaryBuffer *buffer);
 
   void writeLogLevels(Buffer *buf);
 

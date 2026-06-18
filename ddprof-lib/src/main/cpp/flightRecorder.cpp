@@ -761,7 +761,8 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   }
 
   off_t cpool_offset = lseek(_fd, 0, SEEK_CUR);
-  writeCpool(_buf);
+  int count_offset_in_cpool = 0;
+  int pool_count = writeCpool(_buf, &count_offset_in_cpool);
   flush(_buf);
 
   off_t cpool_end = lseek(_fd, 0, SEEK_CUR);
@@ -769,6 +770,13 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   // Patch cpool size field
   _buf->putVar32(0, cpool_end - cpool_offset);
   ssize_t result = pwrite(_fd, _buf->data(), 5, cpool_offset);
+  (void)result;
+
+  // Patch the constant pool count placeholder (written as a 1-byte put8 in
+  // writeCpool). Done flush-safe via pwrite to the FILE offset, mirroring the
+  // size patch above: _buf has been flushed/reset, so _buf->data() is scratch.
+  _buf->put8(0, (char)pool_count);
+  result = pwrite(_fd, _buf->data(), 1, cpool_offset + count_offset_in_cpool);
   (void)result;
 
   off_t chunk_end = lseek(_fd, 0, SEEK_CUR);
@@ -1359,15 +1367,24 @@ void Recording::writeNativeLibraries(Buffer *buf) {
   _recorded_lib_count = native_lib_count;
 }
 
-void Recording::writeCpool(Buffer *buf) {
+int Recording::writeCpool(Buffer *buf, int *count_offset_in_cpool) {
+  // Offset of the cpool start within the buffer. The header below is tiny and
+  // flush-free, so the placeholder offset captured relative to this start is a
+  // stable cpool-relative offset usable for a flush-safe back-patch by the
+  // caller (mirrors the cpool SIZE patch).
+  int cpool_start = buf->offset();
   buf->skip(5); // size will be patched later
   buf->putVar64(T_CPOOL);
   buf->putVar64(_start_ticks);
   buf->put8(0);
   buf->put8(0);
   buf->put8(1);
-  // constant pool count - bump each time a new pool is added
-  buf->put8(12);
+  // Constant pool count. We cannot precompute it: the Method/Class/Package/Symbol
+  // pools are only fully populated as a side effect of writeStackTraces/writeMethods
+  // (fillJavaMethodInfo), and empty variable pools are skipped entirely. Write a
+  // 1-byte placeholder here and back-patch it flush-safe in the caller.
+  *count_offset_in_cpool = buf->offset() - cpool_start;
+  buf->put8(0);
 
   // Profiler::rotateDictsAndRun() rotates the three dictionaries before this
   // path runs, so classMap()->standby() returns an old-active snapshot stable
@@ -1379,21 +1396,25 @@ void Recording::writeCpool(Buffer *buf) {
   // standby() captures the pre-rotation state which writeClasses extends.
   Lookup lookup(this, &_method_map, Profiler::instance()->classMap());
   lookup.initClassCache();
+  // CONSTANT pools: always non-empty, always emitted -> 4 sections.
   writeFrameTypes(buf);
   writeThreadStates(buf);
   writeExecutionModes(buf);
-  writeThreads(buf);
-  writeStackTraces(buf, &lookup);
-  writeMethods(buf, &lookup);
-  writeClasses(buf, &lookup);
-  writePackages(buf, &lookup);
-  writeConstantPoolSection(buf, T_SYMBOL, &lookup._symbols);
-  writeConstantPoolSection(buf, T_STRING,
-                           Profiler::instance()->stringLabelMap()->standby());
-  writeConstantPoolSection(buf, T_ATTRIBUTE_VALUE,
-                           Profiler::instance()->contextValueMap()->standby());
   writeLogLevels(buf);
+  int pool_count = 4;
+  // VARIABLE pools: each returns 1 if emitted, 0 if empty (and thus skipped).
+  pool_count += writeThreads(buf);
+  pool_count += writeStackTraces(buf, &lookup);
+  pool_count += writeMethods(buf, &lookup);
+  pool_count += writeClasses(buf, &lookup);
+  pool_count += writePackages(buf, &lookup);
+  pool_count += writeConstantPoolSection(buf, T_SYMBOL, &lookup._symbols);
+  pool_count += writeConstantPoolSection(
+      buf, T_STRING, Profiler::instance()->stringLabelMap()->standby());
+  pool_count += writeConstantPoolSection(
+      buf, T_ATTRIBUTE_VALUE, Profiler::instance()->contextValueMap()->standby());
   flushIfNeeded(buf);
+  return pool_count;
 }
 
 void Recording::writeFrameTypes(Buffer *buf) {
@@ -1460,7 +1481,7 @@ void Recording::writeExecutionModes(Buffer *buf) {
   flushIfNeeded(buf);
 }
 
-void Recording::writeThreads(Buffer *buf) {
+int Recording::writeThreads(Buffer *buf) {
   int old_index = _active_index.fetch_xor(1, std::memory_order_acq_rel);
   // After flip: new samples go into the new active set
   // We flush from old_index (the previous active set)
@@ -1472,6 +1493,10 @@ void Recording::writeThreads(Buffer *buf) {
     // Collect thread IDs from the fixed-size table into the main set
     _thread_ids[i][old_index].collect(threads);
     _thread_ids[i][old_index].clear();
+  }
+
+  if (threads.empty()) {
+    return 0;
   }
 
   Profiler *profiler = Profiler::instance();
@@ -1510,16 +1535,25 @@ void Recording::writeThreads(Buffer *buf) {
     buf->putVar64(thread_id);
     flushIfNeeded(buf);
   }
+  return 1;
 }
 
-void Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
+int Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
   // Reset all referenced flags before processing
   for (MethodMap::iterator it = _method_map.begin(); it != _method_map.end(); ++it) {
     it->second._referenced = false;
   }
 
+  // Tracks how many traces were written so the empty pool can be skipped.
+  // Note: even with zero traces, the methods marking pass below must still run
+  // via processCallTraces, but no T_STACK_TRACE section is emitted in that case.
+  int trace_count = 0;
   // Use safe trace processing with guaranteed lifetime during callback execution
-  Profiler::instance()->processCallTraces([this, buf, lookup](const std::unordered_set<CallTrace*>& traces) {
+  Profiler::instance()->processCallTraces([this, buf, lookup, &trace_count](const std::unordered_set<CallTrace*>& traces) {
+    if (traces.empty()) {
+      return;
+    }
+    trace_count = (int)traces.size();
     buf->putVar64(T_STACK_TRACE);
     buf->putVar64(traces.size());
     for (std::unordered_set<CallTrace *>::const_iterator it = traces.begin();
@@ -1558,9 +1592,10 @@ void Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
       flushIfNeeded(buf);
     }
   });  // End of processCallTraces lambda
+  return trace_count > 0 ? 1 : 0;
 }
 
-void Recording::writeMethods(Buffer *buf, Lookup *lookup) {
+int Recording::writeMethods(Buffer *buf, Lookup *lookup) {
   MethodMap *method_map = lookup->_method_map;
 
   u32 marked_count = 0;
@@ -1569,6 +1604,10 @@ void Recording::writeMethods(Buffer *buf, Lookup *lookup) {
     if (it->second._mark) {
       marked_count++;
     }
+  }
+
+  if (marked_count == 0) {
+    return 0;
   }
 
   buf->putVar64(T_METHOD);
@@ -1587,9 +1626,10 @@ void Recording::writeMethods(Buffer *buf, Lookup *lookup) {
       flushIfNeeded(buf);
     }
   }
+  return 1;
 }
 
-void Recording::writeClasses(Buffer *buf, Lookup *lookup) {
+int Recording::writeClasses(Buffer *buf, Lookup *lookup) {
   DEBUG_ASSERT_NOT_IN_SIGNAL();
   std::map<u32, const char *> classes;
   // standby() returns the dump buffer — the stable snapshot captured by
@@ -1597,6 +1637,10 @@ void Recording::writeClasses(Buffer *buf, Lookup *lookup) {
   // buffer after rotate() completes: rotate() drained all in-flight
   // cross-thread writers via waitForRefCountToClear() before returning.
   lookup->_classes->standby()->collect(classes);
+
+  if (classes.empty()) {
+    return 0;
+  }
 
   buf->putVar64(T_CLASS);
   buf->putVar64(classes.size());
@@ -1610,11 +1654,16 @@ void Recording::writeClasses(Buffer *buf, Lookup *lookup) {
     buf->putVar64(0); // access flags
     flushIfNeeded(buf);
   }
+  return 1;
 }
 
-void Recording::writePackages(Buffer *buf, Lookup *lookup) {
+int Recording::writePackages(Buffer *buf, Lookup *lookup) {
   std::map<u32, const char *> packages;
   lookup->_packages.collect(packages);
+
+  if (packages.empty()) {
+    return 0;
+  }
 
   buf->putVar32(T_PACKAGE);
   buf->putVar32(packages.size());
@@ -1624,10 +1673,14 @@ void Recording::writePackages(Buffer *buf, Lookup *lookup) {
     buf->putVar64(lookup->getSymbol(it->second));
     flushIfNeeded(buf);
   }
+  return 1;
 }
 
-void Recording::writeConstantPoolSection(
+int Recording::writeConstantPoolSection(
     Buffer *buf, JfrType type, std::map<u32, const char *> &constants) {
+  if (constants.empty()) {
+    return 0;
+  }
   flushIfNeeded(buf);
   buf->putVar64(type);
   buf->putVar64(constants.size());
@@ -1639,20 +1692,21 @@ void Recording::writeConstantPoolSection(
     buf->putVar64(it->first);
     buf->putUtf8(it->second, length);
   }
+  return 1;
 }
 
-void Recording::writeConstantPoolSection(Buffer *buf, JfrType type,
-                                         Dictionary *dictionary) {
+int Recording::writeConstantPoolSection(Buffer *buf, JfrType type,
+                                        Dictionary *dictionary) {
   std::map<u32, const char *> constants;
   dictionary->collect(constants);
-  writeConstantPoolSection(buf, type, constants);
+  return writeConstantPoolSection(buf, type, constants);
 }
 
-void Recording::writeConstantPoolSection(Buffer *buf, JfrType type,
-                                         StringDictionaryBuffer *buffer) {
+int Recording::writeConstantPoolSection(Buffer *buf, JfrType type,
+                                        StringDictionaryBuffer *buffer) {
   std::map<u32, const char *> constants;
   buffer->collect(constants);
-  writeConstantPoolSection(buf, type, constants);
+  return writeConstantPoolSection(buf, type, constants);
 }
 
 void Recording::writeLogLevels(Buffer *buf) {
