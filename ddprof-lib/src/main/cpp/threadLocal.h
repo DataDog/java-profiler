@@ -82,8 +82,11 @@ public:
         void* p = nullptr;
         if (F != nullptr && (p = pthread_getspecific(_key)) != nullptr) {
             int err = pthread_setspecific(_key, nullptr);
-            assert(err == 0);
-            F(p);
+            // Safety: if reset the value failed, get() can see staled value if
+            // it is freed.
+            if (err == 0) {
+              F(p);
+            }
         }
     }
 };
