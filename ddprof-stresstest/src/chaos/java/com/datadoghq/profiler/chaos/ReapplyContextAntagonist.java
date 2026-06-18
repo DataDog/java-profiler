@@ -50,7 +50,6 @@ public final class ReapplyContextAntagonist implements Antagonist {
     private final ExecutorService pool;
     private volatile boolean running;
     private final AtomicLong sink = new AtomicLong();
-    private final AtomicLong reapplyFailures = new AtomicLong();
 
     public ReapplyContextAntagonist() {
         this(8);
@@ -90,11 +89,6 @@ public final class ReapplyContextAntagonist implements Antagonist {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
-        long failures = reapplyFailures.get();
-        if (failures > 0) {
-            System.out.println(
-                    "[chaos] reapply-context: " + failures + " unexpected reapply failures");
-        }
     }
 
     private void workerLoop() {
@@ -127,7 +121,7 @@ public final class ReapplyContextAntagonist implements Antagonist {
             profiler.setContext(localRootSpanId, spanId, 0, traceIdLow);
             // Reapply restores them — this is the hot path under test.
             if (!contextSetter.setContextValuesByIdAndBytes(constantIds, utf8)) {
-                reapplyFailures.incrementAndGet();
+                throw new IllegalStateException("reapply failed unexpectedly — record should be valid after setContext");
             }
             // Burn a little CPU so wall-clock signals have something to sample.
             r = r * 1103515245L + 12345L;

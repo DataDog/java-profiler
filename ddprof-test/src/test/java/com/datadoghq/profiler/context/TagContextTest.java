@@ -34,6 +34,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junitpioneer.jupiter.RetryingTest;
 import org.openjdk.jmc.common.item.IItem;
@@ -51,9 +52,13 @@ import com.datadoghq.profiler.Platform;
 
 public class TagContextTest extends AbstractProfilerTest {
 
+    @BeforeEach
+    void assumeNotJ9() {
+        Assumptions.assumeTrue(!Platform.isJ9());
+    }
+
     @RetryingTest(10)
     public void test() throws InterruptedException {
-        Assumptions.assumeTrue(!Platform.isJ9());
         registerCurrentThreadForWallClockProfiling();
         ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2", "tag1"));
 
@@ -173,7 +178,6 @@ public class TagContextTest extends AbstractProfilerTest {
     @Test
     public void testSnapshotRestore() throws Exception {
         // J9 does not initialize ThreadContext for non-profiled threads; skip.
-        Assumptions.assumeTrue(!Platform.isJ9());
         registerCurrentThreadForWallClockProfiling();
         ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2"));
 
@@ -206,7 +210,6 @@ public class TagContextTest extends AbstractProfilerTest {
 
     @Test
     public void testAttrsDataOverflow() throws Exception {
-        Assumptions.assumeTrue(!Platform.isJ9());
         registerCurrentThreadForWallClockProfiling();
         List<String> attrs = new ArrayList<>();
         for (int i = 1; i <= 10; i++) {
@@ -230,7 +233,6 @@ public class TagContextTest extends AbstractProfilerTest {
 
     @Test
     public void testPutClearsCustomSlots() throws Exception {
-        Assumptions.assumeTrue(!Platform.isJ9());
         registerCurrentThreadForWallClockProfiling();
         ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2"));
 
@@ -245,7 +247,6 @@ public class TagContextTest extends AbstractProfilerTest {
 
     @Test
     public void testCrossSlotIsolation() throws Exception {
-        Assumptions.assumeTrue(!Platform.isJ9());
         registerCurrentThreadForWallClockProfiling();
         ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2"));
 
@@ -258,7 +259,6 @@ public class TagContextTest extends AbstractProfilerTest {
 
     @Test
     public void testReapplyByIdAndBytes() throws Exception {
-        Assumptions.assumeTrue(!Platform.isJ9());
         registerCurrentThreadForWallClockProfiling();
         ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2"));
         int slot = contextSetter.offsetOf("tag1");
@@ -286,7 +286,6 @@ public class TagContextTest extends AbstractProfilerTest {
 
     @Test
     public void testReapplyByIdAndBytesRejectsBadArgs() throws Exception {
-        Assumptions.assumeTrue(!Platform.isJ9());
         registerCurrentThreadForWallClockProfiling();
         ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2"));
         int slot = contextSetter.offsetOf("tag1");
@@ -331,7 +330,6 @@ public class TagContextTest extends AbstractProfilerTest {
 
     @Test
     public void testReapplyByIdAndBytesReplacesExistingValue() throws Exception {
-        Assumptions.assumeTrue(!Platform.isJ9());
         registerCurrentThreadForWallClockProfiling();
         ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2"));
         int slot = contextSetter.offsetOf("tag1");
@@ -355,7 +353,6 @@ public class TagContextTest extends AbstractProfilerTest {
 
     @Test
     public void testReapplyByIdAndBytesAfterClear() throws Exception {
-        Assumptions.assumeTrue(!Platform.isJ9());
         registerCurrentThreadForWallClockProfiling();
         ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2"));
         int slot = contextSetter.offsetOf("tag1");
@@ -379,7 +376,6 @@ public class TagContextTest extends AbstractProfilerTest {
         // Verifies that setContextValuesByIdAndBytes never resurrects a cleared (span-less) record.
         // A cleared record has valid=0 and no trace/span context; re-publishing it would expose
         // attribute values with no associated trace, which is meaningless to the signal handler.
-        Assumptions.assumeTrue(!Platform.isJ9());
         registerCurrentThreadForWallClockProfiling();
         ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2"));
         int slot = contextSetter.offsetOf("tag1");
@@ -405,7 +401,6 @@ public class TagContextTest extends AbstractProfilerTest {
 
     @Test
     public void testReapplyByIdAndBytesOverflowRollback() throws Exception {
-        Assumptions.assumeTrue(!Platform.isJ9());
         registerCurrentThreadForWallClockProfiling();
         List<String> attrs = new ArrayList<>();
         for (int i = 1; i <= 10; i++) {
@@ -457,7 +452,6 @@ public class TagContextTest extends AbstractProfilerTest {
      */
     @Test
     public void testSetContextValuesByIdAndBytesRejectsArraysLongerThanMaxSlots() throws Exception {
-        Assumptions.assumeTrue(!Platform.isJ9());
         registerCurrentThreadForWallClockProfiling();
         ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2"));
         int slot = contextSetter.offsetOf("tag1");
@@ -490,7 +484,6 @@ public class TagContextTest extends AbstractProfilerTest {
      */
     @Test
     public void testSetContextValuesByIdAndBytesAcceptsExactlyMaxSlots() throws Exception {
-        Assumptions.assumeTrue(!Platform.isJ9());
         registerCurrentThreadForWallClockProfiling();
         List<String> attrs = new ArrayList<>();
         for (int i = 1; i <= 10; i++) {
@@ -534,7 +527,6 @@ public class TagContextTest extends AbstractProfilerTest {
      */
     @Test
     public void testSnapshotTagsOversizedBufferCopiesAndZerosExtras() throws Exception {
-        Assumptions.assumeTrue(!Platform.isJ9());
         registerCurrentThreadForWallClockProfiling();
         ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2"));
 
@@ -575,7 +567,6 @@ public class TagContextTest extends AbstractProfilerTest {
      */
     @Test
     public void testSnapshotTagsUndersizedBufferIsNoOp() throws Exception {
-        Assumptions.assumeTrue(!Platform.isJ9());
         registerCurrentThreadForWallClockProfiling();
         ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2", "tag3"));
 
@@ -598,7 +589,6 @@ public class TagContextTest extends AbstractProfilerTest {
      */
     @Test
     public void testSnapshotTagsExactSizeBufferCopiesCorrectly() throws Exception {
-        Assumptions.assumeTrue(!Platform.isJ9());
         registerCurrentThreadForWallClockProfiling();
         ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2"));
 
