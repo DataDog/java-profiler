@@ -202,6 +202,14 @@ run-reliability-tests:
       artifacts: true
     - job: prepare:start
       artifacts: true
+    # Reliability/chaos tests download com.datadoghq:ddprof:<branch>-SNAPSHOT from
+    # Maven snapshots; that artifact is published by deploy-artifact. Without this
+    # gate the child pipeline can start before the snapshot exists (cold branch) or
+    # download a stale snapshot from a previous push. optional: true so release
+    # branches, where deploy-artifact never runs, stay satisfiable.
+    - job: deploy-artifact
+      artifacts: false
+      optional: true
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: never
