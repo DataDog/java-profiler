@@ -95,8 +95,8 @@ void NativeBlockScope::finish(u64 end_ticks) {
                                      : _state;
   recordTaskBlockAsyncWithContextIfEligible(
       _tid, _start_ticks, end_ticks, _context, _blocker, 0,
-      snapshot.anchored ? snapshot.anchor_sample_id : 0,
-      snapshot.anchored ? snapshot.suppressed_sample_count : 0,
+      snapshot.has_stack_reference ? snapshot.call_trace_id : 0,
+      snapshot.has_stack_reference ? snapshot.correlation_id : 0,
       observed_state);
 }
 

@@ -1823,8 +1823,8 @@ void Recording::recordTaskBlock(Buffer *buf, int tid, TaskBlockEvent *event) {
   buf->putVar64(tid);
   buf->putVar64(event->_blocker);
   buf->putVar64(event->_unblockingSpanId);
-  buf->putVar64(event->_anchorSampleId);
-  buf->putVar64(event->_suppressedSampleCount);
+  buf->putVar64(event->_callTraceId);
+  buf->putVar64(event->_correlationId);
   buf->put8(static_cast<int>(event->_observedBlockingState));
   writeContextSnapshot(buf, event->_ctx);
   writeEventSizePrefix(buf, start);

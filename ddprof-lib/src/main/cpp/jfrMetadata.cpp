@@ -223,9 +223,8 @@ void JfrMetadata::initialize(
                   << field("eventThread", T_THREAD, "Event Thread", F_CPOOL)
                   << field("blocker", T_LONG, "Blocker Identity Hash")
                   << field("unblockingSpanId", T_LONG, "Unblocking Span ID")
-                  << field("anchorSampleId", T_LONG, "Anchor MethodSample ID")
-                  << field("suppressedSampleCount", T_LONG,
-                           "Suppressed MethodSample Count")
+                  << field("stackTrace", T_STACK_TRACE, "Stack Trace", F_CPOOL)
+                  << field("correlationId", T_LONG, "Async Stack Trace Correlation ID")
                   << field("observedBlockingState", T_THREAD_STATE,
                            "Observed Blocking State", F_CPOOL)
                   << field("spanId", T_LONG, "Span ID")

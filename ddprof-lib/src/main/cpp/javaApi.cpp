@@ -432,8 +432,8 @@ static void writeBlockRunSnapshot(JNIEnv *env, jlongArray snapshot_array,
     OSThreadState observed_state = snapshot->sampled_state != OSThreadState::UNKNOWN
                                        ? snapshot->sampled_state
                                        : snapshot->active_state;
-    values[0] = snapshot->anchored ? static_cast<jlong>(snapshot->anchor_sample_id) : 0;
-    values[1] = snapshot->anchored ? static_cast<jlong>(snapshot->suppressed_sample_count) : 0;
+    values[0] = snapshot->has_stack_reference ? static_cast<jlong>(snapshot->call_trace_id) : 0;
+    values[1] = snapshot->has_stack_reference ? static_cast<jlong>(snapshot->correlation_id) : 0;
     values[2] = static_cast<jlong>(observed_state);
   }
   env->SetLongArrayRegion(snapshot_array, 0, 3, values);
@@ -527,18 +527,18 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTaskBlockFromContext0(
 }
 
 extern "C" DLLEXPORT void JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_recordTaskBlockFromContextWithSuppression0(
+Java_com_datadoghq_profiler_JavaProfiler_recordTaskBlockFromContextWithStackReference0(
     JNIEnv *env, jclass unused, jint tid, jlong startTicks, jlong endTicks,
     jlong blocker, jlong unblockingSpanId, jlong spanId, jlong rootSpanId,
-    jlong anchorSampleId, jlong suppressedSampleCount, jint observedBlockingState) {
+    jlong callTraceId, jlong correlationId, jint observedBlockingState) {
   if ((int)tid < 0) {
     return;
   }
   Context ctx{(u64)spanId, (u64)rootSpanId};
   recordTaskBlockDeferredIfEligible((int)tid, (u64)startTicks, (u64)endTicks,
                                     ctx, (u64)blocker, (u64)unblockingSpanId,
-                                    (u64)anchorSampleId,
-                                    (u64)suppressedSampleCount,
+                                    (u64)callTraceId,
+                                    (u64)correlationId,
                                     decodeTaskBlockObservedState(observedBlockingState));
 }
 

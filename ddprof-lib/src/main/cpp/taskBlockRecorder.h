@@ -20,7 +20,7 @@ static inline bool hasTraceContext(const Context& ctx) {
   return ctx.spanId != 0;
 }
 
-static inline void attachTaskBlockSuppressionFields(int tid, TaskBlockEvent& event) {
+static inline void attachTaskBlockStackReference(int tid, TaskBlockEvent& event) {
   Profiler* profiler = Profiler::instance();
   ThreadFilter* thread_filter = profiler->threadFilter();
   if (!thread_filter->enabled()) {
@@ -36,20 +36,24 @@ static inline void attachTaskBlockSuppressionFields(int tid, TaskBlockEvent& eve
   event._observedBlockingState =
       snapshot.sampled_state != OSThreadState::UNKNOWN ? snapshot.sampled_state
                                                        : snapshot.active_state;
-  if (!snapshot.anchored) {
+  if (!snapshot.has_stack_reference) {
     return;
   }
-  event._anchorSampleId = snapshot.anchor_sample_id;
-  event._suppressedSampleCount = snapshot.suppressed_sample_count;
+  event._callTraceId = snapshot.call_trace_id;
+  event._correlationId = snapshot.correlation_id;
 }
 
-static inline void setTaskBlockSuppressionFields(TaskBlockEvent& event,
-                                                 u64 anchor_sample_id,
-                                                 u64 suppressed_sample_count,
-                                                 OSThreadState observed_state) {
-  event._anchorSampleId = anchor_sample_id;
-  event._suppressedSampleCount = suppressed_sample_count;
+static inline void setTaskBlockStackReference(TaskBlockEvent& event,
+                                              u64 call_trace_id,
+                                              u64 correlation_id,
+                                              OSThreadState observed_state) {
+  event._callTraceId = call_trace_id;
+  event._correlationId = correlation_id;
   event._observedBlockingState = observed_state;
+}
+
+static inline bool hasTaskBlockStackReference(const TaskBlockEvent& event) {
+  return event._callTraceId != 0 || event._correlationId != 0;
 }
 
 // Synchronous path for callers that captured the context at block entry.
@@ -70,7 +74,10 @@ static inline bool recordTaskBlockWithContextIfEligible(int tid, u64 start_ticks
   event._blocker = blocker;
   event._unblockingSpanId = unblocking_span_id;
   event._ctx = ctx;
-  attachTaskBlockSuppressionFields(tid, event);
+  attachTaskBlockStackReference(tid, event);
+  if (!hasTaskBlockStackReference(event)) {
+    return false;
+  }
   if (Profiler::instance()->recordTaskBlockLive(tid, &event)) {
     WallClockCounters::incrementTaskBlockEmitted();
     return true;
@@ -94,8 +101,8 @@ static inline bool recordTaskBlockLiveIfEligible(int tid, u64 start_ticks, u64 e
 static inline bool recordTaskBlockDeferredIfEligible(int tid, u64 start_ticks, u64 end_ticks,
                                                       const Context& ctx, u64 blocker,
                                                       u64 unblocking_span_id,
-                                                      u64 anchor_sample_id = 0,
-                                                      u64 suppressed_sample_count = 0,
+                                                      u64 call_trace_id = 0,
+                                                      u64 correlation_id = 0,
                                                       OSThreadState observed_state = OSThreadState::UNKNOWN) {
   if (hasTraceContext(ctx)) {
     WallClockCounters::incrementTaskBlockSkippedTraceContext();
@@ -111,12 +118,15 @@ static inline bool recordTaskBlockDeferredIfEligible(int tid, u64 start_ticks, u
   event._blocker = blocker;
   event._unblockingSpanId = unblocking_span_id;
   event._ctx = ctx;
-  if (anchor_sample_id != 0 || suppressed_sample_count != 0 ||
+  if (call_trace_id != 0 || correlation_id != 0 ||
       observed_state != OSThreadState::UNKNOWN) {
-    setTaskBlockSuppressionFields(event, anchor_sample_id, suppressed_sample_count,
-                                  observed_state);
+    setTaskBlockStackReference(event, call_trace_id, correlation_id,
+                               observed_state);
   } else {
-    attachTaskBlockSuppressionFields(tid, event);
+    attachTaskBlockStackReference(tid, event);
+  }
+  if (!hasTaskBlockStackReference(event)) {
+    return false;
   }
   if (Profiler::instance()->recordTaskBlockLive(tid, &event)) {
     WallClockCounters::incrementTaskBlockEmitted();
@@ -131,8 +141,8 @@ static inline bool recordTaskBlockAsyncWithContextIfEligible(int tid, u64 start_
                                                              u64 end_ticks, const Context& ctx,
                                                              u64 blocker,
                                                              u64 unblocking_span_id,
-                                                             u64 anchor_sample_id = 0,
-                                                             u64 suppressed_sample_count = 0,
+                                                             u64 call_trace_id = 0,
+                                                             u64 correlation_id = 0,
                                                              OSThreadState observed_state = OSThreadState::UNKNOWN) {
   if (hasTraceContext(ctx)) {
     WallClockCounters::incrementTaskBlockSkippedTraceContext();
@@ -148,12 +158,15 @@ static inline bool recordTaskBlockAsyncWithContextIfEligible(int tid, u64 start_
   event._blocker = blocker;
   event._unblockingSpanId = unblocking_span_id;
   event._ctx = ctx;
-  if (anchor_sample_id != 0 || suppressed_sample_count != 0 ||
+  if (call_trace_id != 0 || correlation_id != 0 ||
       observed_state != OSThreadState::UNKNOWN) {
-    setTaskBlockSuppressionFields(event, anchor_sample_id, suppressed_sample_count,
-                                  observed_state);
+    setTaskBlockStackReference(event, call_trace_id, correlation_id,
+                               observed_state);
   } else {
-    attachTaskBlockSuppressionFields(tid, event);
+    attachTaskBlockStackReference(tid, event);
+  }
+  if (!hasTaskBlockStackReference(event)) {
+    return false;
   }
   return Profiler::instance()->recordTaskBlockAsync(tid, &event);
 }

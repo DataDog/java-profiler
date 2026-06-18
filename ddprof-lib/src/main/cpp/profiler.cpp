@@ -710,6 +710,9 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
 #endif // COUNTERS
   }
   setWallSampleIdIfNeeded(event_type, event);
+  if (event_type == BCI_WALL) {
+    static_cast<ExecutionEvent *>(event)->_call_trace_id = call_trace_id;
+  }
   bool recorded = _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
   if (recorded && recorded_call_trace_id != nullptr) {
     *recorded_call_trace_id = call_trace_id;
@@ -754,6 +757,9 @@ bool Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
   }
 
   setWallSampleIdIfNeeded(event_type, event);
+  if (event_type == BCI_WALL) {
+    static_cast<ExecutionEvent *>(event)->_correlation_id = correlation_id;
+  }
   bool recorded =
       _jfr.recordEventDelegated(lock_index, tid, correlation_id, event_type, event);
   _locks[lock_index].unlock();

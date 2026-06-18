@@ -149,16 +149,28 @@ static void monitorBlockExit(JNIEnv *jni, jthread thread, OSThreadState state) {
   u64 monitor_block_token = 0;
   bool exited =
       current->monitorExit(state, start_ticks, context, blocker, monitor_block_token);
-  if (exited) {
-    int tid = ProfiledThread::currentTid();
-    recordTaskBlockAsyncWithContextIfEligible(tid, start_ticks, TSC::ticks(),
-                                              context, blocker, 0);
-  }
   ThreadFilter *tf = Profiler::instance()->threadFilter();
   if (exited && tf->enabled() && monitor_block_token != 0) {
     ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(monitor_block_token);
     if (current->filterSlotId() == slot_id) {
-      tf->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(monitor_block_token));
+      BlockRunSnapshot snapshot{};
+      snapshot.active_state = state;
+      snapshot.sampled_state = OSThreadState::UNKNOWN;
+      snapshot.owner = BlockRunOwner::JVMTI;
+      if (tf->snapshotAndExitBlockedRun(
+              slot_id, ThreadFilter::tokenGeneration(monitor_block_token),
+              &snapshot)) {
+        int tid = ProfiledThread::currentTid();
+        OSThreadState observed_state =
+            snapshot.sampled_state != OSThreadState::UNKNOWN
+                ? snapshot.sampled_state
+                : state;
+        recordTaskBlockAsyncWithContextIfEligible(
+            tid, start_ticks, TSC::ticks(), context, blocker, 0,
+            snapshot.has_stack_reference ? snapshot.call_trace_id : 0,
+            snapshot.has_stack_reference ? snapshot.correlation_id : 0,
+            observed_state);
+      }
     }
   }
 }

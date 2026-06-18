@@ -378,7 +378,7 @@ public final class JavaProfiler {
      * Clears a blocked interval and snapshots reconstruction metadata before native state is reset.
      *
      * @param token opaque token returned by {@link #blockEnter(int)}
-     * @param snapshot output array: [anchorSampleId, suppressedSampleCount, observedBlockingState]
+     * @param snapshot output array: [callTraceId, correlationId, observedBlockingState]
      */
     public void blockExit(long token, long[] snapshot) {
         blockExitWithSnapshot0(token, snapshot);
@@ -442,13 +442,13 @@ public final class JavaProfiler {
     }
 
     /**
-     * Records a TaskBlock event with explicit thread, span context, and reconstruction metadata.
+     * Records a TaskBlock event with explicit thread, span context, and stack reference metadata.
      */
     public void recordTaskBlockFromContext(int tid, long startTicks, long endTicks,
             long blocker, long unblockingSpanId, long spanId, long rootSpanId,
-            long anchorSampleId, long suppressedSampleCount, int observedBlockingState) {
-        recordTaskBlockFromContextWithSuppression0(tid, startTicks, endTicks, blocker,
-                unblockingSpanId, spanId, rootSpanId, anchorSampleId, suppressedSampleCount,
+            long callTraceId, long correlationId, int observedBlockingState) {
+        recordTaskBlockFromContextWithStackReference0(tid, startTicks, endTicks, blocker,
+                unblockingSpanId, spanId, rootSpanId, callTraceId, correlationId,
                 observedBlockingState);
     }
 
@@ -523,9 +523,9 @@ public final class JavaProfiler {
     private static native void recordTaskBlockFromContext0(int tid, long startTicks, long endTicks,
             long blocker, long unblockingSpanId, long spanId, long rootSpanId);
 
-    private static native void recordTaskBlockFromContextWithSuppression0(int tid, long startTicks,
+    private static native void recordTaskBlockFromContextWithStackReference0(int tid, long startTicks,
             long endTicks, long blocker, long unblockingSpanId, long spanId, long rootSpanId,
-            long anchorSampleId, long suppressedSampleCount, int observedBlockingState);
+            long callTraceId, long correlationId, int observedBlockingState);
 
     private static native void mallocArenaMax0(int max);
 

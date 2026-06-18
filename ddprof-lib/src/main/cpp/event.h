@@ -57,12 +57,13 @@ public:
   OSThreadState _thread_state;
   ExecutionMode _execution_mode;
   u64 _weight;
-  u32 _call_trace_id;
+  u64 _call_trace_id;
+  u64 _correlation_id;
   u64 _sample_id;
 
   ExecutionEvent()
       : Event(), _thread_state(OSThreadState::RUNNABLE), _execution_mode(ExecutionMode::UNKNOWN),
-        _weight(1), _call_trace_id(0), _sample_id(0) {}
+        _weight(1), _call_trace_id(0), _correlation_id(0), _sample_id(0) {}
 };
 
 class AllocEvent : public Event {
@@ -242,8 +243,8 @@ typedef struct TaskBlockEvent {
   u64 _blocker;
   u64 _unblockingSpanId;
   Context _ctx;
-  u64 _anchorSampleId;
-  u64 _suppressedSampleCount;
+  u64 _callTraceId;
+  u64 _correlationId;
   OSThreadState _observedBlockingState;
 } TaskBlockEvent;
 
