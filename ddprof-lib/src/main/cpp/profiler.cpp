@@ -1052,23 +1052,40 @@ void Profiler::updateJavaThreadNames() {
   jvmti->Deallocate((unsigned char *)thread_objects);
 }
 
-void Profiler::updateNativeThreadNames() {
-    ThreadList *thread_list = OS::listThreads();
-    constexpr size_t buffer_size = 64;
-    char name_buf[buffer_size];  // Stack-allocated buffer
+void Profiler::updateNativeThreadNames(bool defer_initializing) {
+  ThreadList *thread_list = OS::listThreads();
+  constexpr size_t buffer_size = 64;
+  char name_buf[buffer_size];  // Stack-allocated buffer
 
-    while (thread_list->hasNext()) { 
-        int tid = thread_list->next(); 
-        _thread_info.updateThreadName(
-                tid, [&](int tid) -> std::string {
-                    if (OS::threadName(tid, name_buf, buffer_size)) {
-                        return std::string(name_buf, buffer_size);
-                    }
-                    return std::string();
-                });
-    }
+  // A freshly cloned thread inherits the creating thread's comm until it sets
+  // its own name; for the threads we want here that creator is typically the
+  // main thread, so the inherited name is the process name. When deferring, we
+  // skip recording it and let a later pass capture the final name.
+  char proc_name[buffer_size];
+  bool have_proc_name =
+      defer_initializing && OS::threadName(OS::processId(), proc_name, buffer_size);
 
-    delete thread_list;
+  while (thread_list->hasNext()) {
+    int tid = thread_list->next();
+    _thread_info.updateThreadName(
+        tid, [&](int tid) -> std::string {
+          if (OS::threadName(tid, name_buf, buffer_size)) {
+            // Skip a thread still showing the inherited process name: it is
+            // probably mid-initialization. Recording it would latch a
+            // provisional name (updateThreadName is first-writer-wins).
+            if (have_proc_name && strcmp(name_buf, proc_name) == 0) {
+              return std::string();
+            }
+            // name_buf is NUL-terminated by OS::threadName; let
+            // std::string find the length rather than storing the
+            // full 64-byte buffer (NUL + trailing garbage).
+            return std::string(name_buf);
+          }
+          return std::string();
+        });
+  }
+
+  delete thread_list;
 }
 
 Engine *Profiler::selectCpuEngine(Arguments &args) {
