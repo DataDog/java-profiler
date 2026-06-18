@@ -78,7 +78,8 @@ public:
     void clear() {
         void* p = nullptr;
         if (F != nullptr && (p = pthread_getspecific(_key)) != nullptr) {
-            pthread_setspecific(_key, nullptr);
+            int err = pthread_setspecific(_key, nullptr);
+            assert(err == 0);
             F(p);
         }
     }
