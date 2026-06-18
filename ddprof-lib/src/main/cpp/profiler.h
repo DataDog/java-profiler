@@ -138,7 +138,6 @@ private:
   void updateThreadName(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                         bool self = false);
   void updateJavaThreadNames();
-  void updateNativeThreadNames();
   void mangle(const char *name, char *buf, size_t size);
 
   Engine *selectCpuEngine(Arguments &args);
@@ -205,6 +204,20 @@ public:
   static inline Profiler *instance() {
     return _instance;
   }
+
+  // Resolve names of native (non-Java) threads from /proc. Idempotent and
+  // allocation-light (no-op for already-named tids), so it is safe to call
+  // periodically from the Libraries refresher thread to capture transient
+  // compiler/GC threads before they exit. Must NOT be called from a signal
+  // handler: thread enumeration uses opendir/readdir/malloc.
+  //
+  // When defer_initializing is true (periodic refresher), a thread whose comm
+  // still equals the process's own (inherited) name is skipped: it is most
+  // likely still initializing and has not yet set its final pthread name.
+  // Recording it now would latch that provisional name permanently
+  // (ThreadInfo::updateThreadName is first-writer-wins). A later scan, or the
+  // dump-time pass (which passes false), records the final name instead.
+  void updateNativeThreadNames(bool defer_initializing = false);
 
 
   inline void incFailure(int type) {
@@ -410,6 +423,15 @@ public:
   // Profiler::unregisterThread correctly without needing live engine instances.
   static int  lastUnregisteredTidForTest();
   static void resetUnregisterObservableForTest();
+
+  // Reads back the name recorded for a tid in _thread_info, or an empty string
+  // if none was recorded. Lets integration tests observe the result of
+  // updateNativeThreadNames() (notably the defer_initializing skip) without
+  // exposing the private _thread_info. Compiled only into gtest binaries.
+  std::string threadNameForTest(int tid) {
+    std::pair<std::shared_ptr<std::string>, u64> info = _thread_info.get(tid);
+    return info.first != nullptr ? *info.first : std::string();
+  }
 #endif
 
 
