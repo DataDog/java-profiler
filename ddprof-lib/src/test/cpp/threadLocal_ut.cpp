@@ -25,13 +25,10 @@
 static constexpr char THREADLOCAL_TEST_NAME[] = "ThreadLocalTest";
 
 // NOTE on the instances below being namespace-scope `static`:
-// ThreadLocal's destructor calls pthread_key_delete() but never resets
-// _key_once, so destroying an instance and then constructing another of the
-// same type would operate on a deleted key (UB). The production code only ever
-// uses `static ThreadLocal<...>` locals (destroyed at process exit), so the
-// tests mirror that: one long-lived instance per distinct type. Per-thread
-// behaviour is exercised in freshly spawned threads, which start with empty
-// thread-specific storage.
+// Keep the ThreadLocal instances alive for the duration of the test binary so
+// their pthread keys are not repeatedly created/deleted across tests.
+// This mirrors production usage where ThreadLocal instances are typically static
+// and live until process exit.
 
 // ---- generic pointer specialization: plain set/get, no create/clean ----
 static ThreadLocal<intptr_t> g_int_tl;
