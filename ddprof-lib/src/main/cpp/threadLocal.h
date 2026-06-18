@@ -108,7 +108,8 @@ public:
     void set(double value) {
         u64 val;
         memcpy(&val, &value, sizeof(value));
-        pthread_setspecific(_key, (const void*)val);
+        int err = pthread_setspecific(_key, (const void*)val);
+        assert(err == 0);
     }
 
     double get() {
