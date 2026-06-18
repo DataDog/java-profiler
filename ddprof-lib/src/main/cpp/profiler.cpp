@@ -1053,25 +1053,25 @@ void Profiler::updateJavaThreadNames() {
 }
 
 void Profiler::updateNativeThreadNames() {
-    ThreadList *thread_list = OS::listThreads();
-    constexpr size_t buffer_size = 64;
-    char name_buf[buffer_size];  // Stack-allocated buffer
+  ThreadList *thread_list = OS::listThreads();
+  constexpr size_t buffer_size = 64;
+  char name_buf[buffer_size];  // Stack-allocated buffer
 
-    while (thread_list->hasNext()) { 
-        int tid = thread_list->next(); 
-        _thread_info.updateThreadName(
-                tid, [&](int tid) -> std::string {
-                    if (OS::threadName(tid, name_buf, buffer_size)) {
-                        // name_buf is NUL-terminated by OS::threadName; let
-                        // std::string find the length rather than storing the
-                        // full 64-byte buffer (NUL + trailing garbage).
-                        return std::string(name_buf);
-                    }
-                    return std::string();
-                });
-    }
+  while (thread_list->hasNext()) {
+    int tid = thread_list->next();
+    _thread_info.updateThreadName(
+        tid, [&](int tid) -> std::string {
+          if (OS::threadName(tid, name_buf, buffer_size)) {
+            // name_buf is NUL-terminated by OS::threadName; let
+            // std::string find the length rather than storing the
+            // full 64-byte buffer (NUL + trailing garbage).
+            return std::string(name_buf);
+          }
+          return std::string();
+        });
+  }
 
-    delete thread_list;
+  delete thread_list;
 }
 
 Engine *Profiler::selectCpuEngine(Arguments &args) {
