@@ -48,25 +48,52 @@ for path in sorted(glob.glob(f"{reports_dir}/result_*.json")):
 if not results:
     sys.exit(0)
 
+def fmt_avg(r):
+    icon = "💥" if r.get("crashed") else "✅"
+    avg = r.get("avg_ms", 0)
+    cnt = r.get("run_count", 0)
+    return f"{icon} {avg} ms ({cnt} iters)"
+
+def fmt_delta(latest, dev):
+    la, da = latest.get("avg_ms", 0), dev.get("avg_ms", 0)
+    if not la or not da:
+        return "—"
+    pct = (da - la) / la * 100
+    # positive = dev is slower (potential regression)
+    arrow = "🔴 +" if pct > 2 else ("🟢 " if pct < -2 else "")
+    return f"{arrow}{pct:+.1f}%"
+
+def fmt_uploads(r):
+    return str(r.get("upload_count", 0))
+
+def fmt_issues(r):
+    e = r.get("error_count", 0)
+    w = r.get("warn_count", 0)
+    if e == 0 and w == 0:
+        return "—"
+    parts = []
+    if e: parts.append(f"E:{e}")
+    if w: parts.append(f"W:{w}")
+    return "⚠️ " + " ".join(parts)
+
 lines = [
     "### Reliability Benchmarks",
     "",
-    "| Benchmark | JDK | Latest | Dev |",
-    "|-----------|-----|--------|-----|",
+    "| Benchmark | JDK | Latest | Dev | Δ% (dev vs latest) | Uploads L/D | Issues L/D |",
+    "|-----------|-----|--------|-----|-------------------|-------------|------------|",
 ]
 for (bench, jdk) in sorted(results.keys()):
     libs = results[(bench, jdk)]
+    latest = libs.get("latest", {})
+    dev    = libs.get("dev", {})
 
-    def fmt(lib):
-        if lib not in libs:
-            return "—"
-        r = libs[lib]
-        icon = "💥" if r.get("crashed") else "✅"
-        avg = r.get("avg_ms", 0)
-        cnt = r.get("run_count", 0)
-        return f"{icon} {avg} ms ({cnt} iters)"
+    col_latest  = fmt_avg(latest)  if latest else "—"
+    col_dev     = fmt_avg(dev)     if dev    else "—"
+    col_delta   = fmt_delta(latest, dev) if (latest and dev) else "—"
+    col_uploads = f"{fmt_uploads(latest)} / {fmt_uploads(dev)}"
+    col_issues  = f"{fmt_issues(latest)} / {fmt_issues(dev)}"
 
-    lines.append(f"| {bench} | {jdk} | {fmt('latest')} | {fmt('dev')} |")
+    lines.append(f"| {bench} | {jdk} | {col_latest} | {col_dev} | {col_delta} | {col_uploads} | {col_issues} |")
 
 print("\n".join(lines))
 PYEOF
