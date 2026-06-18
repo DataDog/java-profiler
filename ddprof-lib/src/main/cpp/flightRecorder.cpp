@@ -529,7 +529,12 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     mi->_mark = true;
     bool first_time = mi->_key == 0;
     if (first_time) {
-      mi->_key = _method_map->size() + 1; // avoid zero key
+      // Allocate a method-pool id that is unique among live methods. Must not
+      // be derived from the map size: cleanupUnreferencedMethods() erases
+      // entries, so size()+1 would reissue an id still owned by a surviving
+      // method, producing duplicate ids in the chunk's method constant pool
+      // (PROF-15130). The allocator recycles ids freed on erase instead.
+      mi->_key = _method_map->allocId();
     }
     if (method == nullptr) {
       fillNativeMethodInfo(mi, UNKNOWN, nullptr);
@@ -641,7 +646,6 @@ Recording::Recording(int fd, Arguments &args)
   _start_ticks = TSC::ticks();
   _recording_start_time = _start_time;
   _recording_start_ticks = _start_ticks;
-  _base_id = 0;
   _bytes_written = 0;
 
   _tid = OS::threadId();
@@ -813,45 +817,39 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   return chunk_end;
 }
 
+// Finish the current chunk, move it to the external file `fd` (must be a valid
+// open descriptor), then restart the continuous recording file with a fresh
+// chunk header. Callers guarantee fd > -1 (see FlightRecorder::dump).
 void Recording::switchChunk(int fd) {
-  _chunk_start = finishChunk(fd > -1, /*do_cleanup=*/true);
+  _chunk_start = finishChunk(/*end_recording=*/true, /*do_cleanup=*/true);
 
   TEST_LOG("MethodMap: %zu methods after cleanup", _method_map.size());
 
   _start_time = _stop_time;
   _start_ticks = _stop_ticks;
   _bytes_written = 0;
-  if (fd > -1) {
-    // move the chunk to external file and reset the continuous recording file
-    OS::copyFile(_fd, fd, 0, _chunk_start);
-    OS::truncateFile(_fd);
-    // need to reset the file offset here
-    _chunk_start = 0;
-    _base_id = 0;
-  } else {
-    // same file, different logical chunk
-    _base_id += 0x1000000;
-  }
 
+  // move the chunk to the external file and reset the continuous recording file
+  OS::copyFile(_fd, fd, 0, _chunk_start);
+  OS::truncateFile(_fd);
+  _chunk_start = 0;
+
+  // the recording file is restarted, so write out all the info events again
   writeHeader(_buf);
   writeMetadata(_buf);
-  if (fd > -1) {
-    // if the recording file is to be restarted write out all the info events
-    // again
-    writeSettings(_buf, _args);
-    if (!_args.hasOption(NO_SYSTEM_INFO)) {
-      writeOsCpuInfo(_buf);
-      writeJvmInfo(_buf);
-    }
-    if (!_args.hasOption(NO_SYSTEM_PROPS)) {
-      writeSystemProperties(_buf);
-    }
-    if (!_args.hasOption(NO_NATIVE_LIBS)) {
-      _recorded_lib_count = 0;
-      writeNativeLibraries(_buf);
-    } else {
-      _recorded_lib_count = -1;
-    }
+  writeSettings(_buf, _args);
+  if (!_args.hasOption(NO_SYSTEM_INFO)) {
+    writeOsCpuInfo(_buf);
+    writeJvmInfo(_buf);
+  }
+  if (!_args.hasOption(NO_SYSTEM_PROPS)) {
+    writeSystemProperties(_buf);
+  }
+  if (!_args.hasOption(NO_NATIVE_LIBS)) {
+    _recorded_lib_count = 0;
+    writeNativeLibraries(_buf);
+  } else {
+    _recorded_lib_count = -1;
   }
   flush(_buf);
 }
@@ -916,6 +914,9 @@ void Recording::cleanupUnreferencedMethods() {
         if (has_line_table) {
           removed_with_line_tables++;
         }
+        // Recycle the erased method's pool id so a later method can reuse it
+        // without colliding with any still-live method (PROF-15130).
+        _method_map.freeId(mi._key);
         it = _method_map.erase(it);
         removed_count++;
         continue;
@@ -1579,8 +1580,8 @@ void Recording::writeMethods(Buffer *buf, Lookup *lookup) {
       mi._mark = false;
       buf->putVar64(mi._key);
       buf->putVar64(mi._class);
-      buf->putVar64(mi._name | _base_id);
-      buf->putVar64(mi._sig | _base_id);
+      buf->putVar64(mi._name);
+      buf->putVar64(mi._sig);
       buf->putVar64(mi._modifiers);
       buf->putVar64(mi.isHidden());
       flushIfNeeded(buf);
@@ -1604,8 +1605,8 @@ void Recording::writeClasses(Buffer *buf, Lookup *lookup) {
     const char *name = it->second;
     buf->putVar64(it->first);
     buf->putVar64(0); // classLoader
-    buf->putVar64(lookup->getSymbol(name) | _base_id);
-    buf->putVar64(lookup->getPackage(name) | _base_id);
+    buf->putVar64(lookup->getSymbol(name));
+    buf->putVar64(lookup->getPackage(name));
     buf->putVar64(0); // access flags
     flushIfNeeded(buf);
   }
@@ -1619,8 +1620,8 @@ void Recording::writePackages(Buffer *buf, Lookup *lookup) {
   buf->putVar32(packages.size());
   for (std::map<u32, const char *>::const_iterator it = packages.begin();
        it != packages.end(); ++it) {
-    buf->putVar64(it->first | _base_id);
-    buf->putVar64(lookup->getSymbol(it->second) | _base_id);
+    buf->putVar64(it->first);
+    buf->putVar64(lookup->getSymbol(it->second));
     flushIfNeeded(buf);
   }
 }
@@ -1635,7 +1636,7 @@ void Recording::writeConstantPoolSection(
     int length = strlen(it->second);
     // 5 is max varint length
     flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - length - 5);
-    buf->putVar64(it->first | _base_id);
+    buf->putVar64(it->first);
     buf->putUtf8(it->second, length);
   }
 }
@@ -1976,6 +1977,9 @@ Error FlightRecorder::dump(const char *filename, const int length) {
       // if the filename to dump the recording to is specified move the current
       // working file there
       int copy_fd = open(filename, O_CREAT | O_RDWR | O_TRUNC, 0644);
+      if (copy_fd == -1) {
+        return Error("Could not open recording file for dump");
+      }
       rec->switchChunk(copy_fd);
       close(copy_fd);
       return Error::OK;
@@ -1984,33 +1988,6 @@ Error FlightRecorder::dump(const char *filename, const int length) {
       "Can not dump recording to itself. Provide a different file name!");
   }
   return Error("No active recording");
-}
-
-void FlightRecorder::flush() {
-  DEBUG_ASSERT_NOT_IN_SIGNAL();
-  ExclusiveLockGuard locker(&_rec_lock);
-  Recording* rec = _rec;
-  if (rec != nullptr) {
-    jvmtiEnv* jvmti = VM::jvmti();
-    JNIEnv* env = VM::jni();
-
-    jclass* classes = NULL;
-    jint count = 0;
-    // Pin currently-loaded classes for the duration of switchChunk() so that
-    // resolveMethod() can safely call JVMTI methods on jmethodIDs whose classes
-    // might otherwise be concurrently unloaded by the GC.  See the matching
-    // comment in finishChunk() for scope and limitations of this protection.
-    jvmtiError err = jvmti->GetLoadedClasses(&count, &classes);
-    rec->switchChunk(-1);
-    if (!err) {
-      // delete all local references
-      for (int i = 0; i < count; i++) {
-        env->DeleteLocalRef((jobject) classes[i]);
-      }
-      // deallocate the class array
-      jvmti->Deallocate((unsigned char*) classes);
-    }
-  }
 }
 
 void FlightRecorder::wallClockEpoch(int lock_index,

@@ -10,6 +10,7 @@
 #include <map>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include <limits.h>
 #include <string.h>
@@ -158,6 +159,34 @@ public:
     assert((key & KEY_TYPE_MASK) == 0);
     return (key | VTABLE_RECEIVER_MARK);
   }
+
+  // JFR method-pool id allocator. Ids must be unique among the methods written
+  // in a single chunk, but may be recycled once a method is erased by
+  // cleanupUnreferencedMethods() — an erased method is never written again, so
+  // its id is free for reuse. Recycling freed ids bounds the id range to the
+  // peak number of live methods (keeping LEB128 encoding compact) while
+  // guaranteeing no two live methods ever share an id. Id 0 stays reserved as
+  // the "no entry" sentinel. Single-threaded: only touched on the dump thread
+  // (allocId from resolveMethod under lockAll, freeId from
+  // cleanupUnreferencedMethods under the recording lock).
+  u32 allocId() {
+    if (!_free_ids.empty()) {
+      u32 id = _free_ids.back();
+      _free_ids.pop_back();
+      return id;
+    }
+    return ++_id_high_water;
+  }
+
+  void freeId(u32 id) {
+    if (id != 0) {
+      _free_ids.push_back(id);
+    }
+  }
+
+private:
+  u32 _id_high_water = 0;
+  std::vector<u32> _free_ids;
 };
 
 class Recording {
@@ -189,7 +218,6 @@ private:
   u64 _stop_time;
   u64 _stop_ticks;
 
-  u64 _base_id;
   u64 _bytes_written;
 
   int _tid;
@@ -405,7 +433,6 @@ public:
   Error start(Arguments &args, bool reset);
   void stop();
   Error dump(const char *filename, const int length);
-  void flush();
   void wallClockEpoch(int lock_index, WallClockEpochEvent *event);
   void recordTraceRoot(int lock_index, int tid, TraceRootEvent *event);
   void recordQueueTime(int lock_index, int tid, QueueTimeEvent *event);
