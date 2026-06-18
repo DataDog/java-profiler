@@ -307,9 +307,16 @@ public class TagContextTest extends AbstractProfilerTest {
         assertThrows(NullPointerException.class,
                 () -> contextSetter.setContextValuesByIdAndBytes(
                         new int[] {id, 0}, new byte[][] {null, null}));
+        // Record must remain attached (valid=1) after the exception — no detach leak.
+        assertEquals(id, contextSetter.snapshotTags()[slot],
+                "sidecar must be unchanged after NPE on active utf8[i]");
+
         assertThrows(IllegalArgumentException.class,
                 () -> contextSetter.setContextValuesByIdAndBytes(
                         new int[] {id, 0}, new byte[][] {new byte[256], null}));
+        // Record must remain attached (valid=1) after the exception — no detach leak.
+        assertEquals(id, contextSetter.snapshotTags()[slot],
+                "sidecar must be unchanged after IAE on oversized utf8[i]");
 
         // 255 bytes is the boundary and must be accepted.
         // Register the 255-byte value so its constant ID matches the bytes we pass.

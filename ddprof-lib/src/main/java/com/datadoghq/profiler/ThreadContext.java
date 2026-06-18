@@ -381,6 +381,16 @@ public final class ThreadContext {
             throw new IllegalArgumentException("constantIds.length exceeds MAX_CUSTOM_SLOTS");
         }
         int len = constantIds.length;
+        // Validate active slots before touching the buffer so a bad input never leaves
+        // the record detached (valid=0) after an exception unwinds past attach().
+        for (int i = 0; i < len; i++) {
+            if (constantIds[i] > 0) {
+                byte[] bytes = Objects.requireNonNull(utf8[i], "utf8[" + i + "]");
+                if (bytes.length > MAX_VALUE_BYTES) {
+                    throw new IllegalArgumentException("utf8[" + i + "].length exceeds MAX_VALUE_BYTES");
+                }
+            }
+        }
         // Never resurrect a cleared (span-less) record: valid=0 means no reader can observe
         // what we write, and re-publishing would expose a record with no trace/span context.
         if (ctxBuffer.get(validOffset) == 0) {
@@ -393,11 +403,7 @@ public final class ThreadContext {
             if (constantId <= 0) {
                 continue;
             }
-            byte[] bytes = Objects.requireNonNull(utf8[i], "utf8[" + i + "]");
-            if (bytes.length > MAX_VALUE_BYTES) {
-                throw new IllegalArgumentException("utf8[" + i + "].length exceeds MAX_VALUE_BYTES");
-            }
-            if (!writeSlot(i, constantId, bytes)) {
+            if (!writeSlot(i, constantId, utf8[i])) {
                 allWritten = false;
             }
         }
