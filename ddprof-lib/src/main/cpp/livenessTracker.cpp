@@ -285,9 +285,8 @@ static void* create_mt19937() {
 }
 
 static void* create_uniform_real_distribution() {
-  // std::uniform_real_distribution construction does not throw exception.
-  // However, memory allocation can fail. When it happens, application is likely
-  // to crash anyway.
+  // std::uniform_real_distribution<> construction is noexcept, but `new` may throw.
+  // If allocation fails the process is likely to abort anyway.
   return (void*)(new std::uniform_real_distribution<>(0, 1.0));
 }
 
