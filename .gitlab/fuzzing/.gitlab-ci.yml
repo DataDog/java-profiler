@@ -14,7 +14,7 @@ fuzz_infra:
     DDSIGN_ID_TOKEN:
       aud: image-integrity
   rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $RUN_FUZZ == "true"'
     - when: manual
   before_script:
     - apt-get update -qq && apt-get install -y -qq curl unzip jq
