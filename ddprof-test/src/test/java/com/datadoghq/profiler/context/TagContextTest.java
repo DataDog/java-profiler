@@ -54,6 +54,9 @@ public class TagContextTest extends AbstractProfilerTest {
 
     @BeforeEach
     void assumeNotJ9() {
+        // On J9, ProfiledThread (and thus the OTEP TLS buffer) is not allocated until the thread
+        // is registered for wall-clock profiling, so initializeContextTLS0() returns null and
+        // ThreadContext creation throws. These tests require a live ThreadContext from the start.
         Assumptions.assumeTrue(!Platform.isJ9());
     }
 
