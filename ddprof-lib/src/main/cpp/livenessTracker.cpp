@@ -278,9 +278,9 @@ Error LivenessTracker::initialize(Arguments &args) {
 }
 
 static void* create_mt19937() {
-  // std::mt19937 construction does not throw exception.
-  // However, memory allocation can fail. When it happens, application is likely
-  // to crash anyway.
+  // std::mt19937 itself is noexcept, but std::random_device and `new` may throw.
+  // If that happens we let the failure terminate the process (same outcome as
+  // failing thread_local initialization previously).
   return (void*)(new std::mt19937(std::random_device{}()));
 }
 
