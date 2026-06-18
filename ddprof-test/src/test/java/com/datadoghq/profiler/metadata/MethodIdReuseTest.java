@@ -19,10 +19,13 @@ import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.objectweb.asm.ClassWriter;
+import org.objectweb.asm.Label;
+import org.objectweb.asm.MethodVisitor;
+import org.objectweb.asm.Opcodes;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -36,7 +39,6 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Regression test for PROF-15130: duplicate {@code jdk.types.Method} constant-pool ids.
@@ -68,27 +70,119 @@ public class MethodIdReuseTest extends AbstractProfilerTest {
     private static final int PHASE2_DUMPS = 7; // well beyond AGE_THRESHOLD; many erase+reuse chunks
     private static final int DISTINCT_TARGETS_PER_PHASE = 600;
 
-    // Generated lambda call targets. A large, churned set maximises method-pool turnover so the
-    // free-list / size()+1 schemes diverge.
+    // Generated distinct-class call targets (one JVM method each). A large, churned set maximises
+    // method-pool turnover so the free-list / size()+1 schemes diverge.
     private final List<Runnable> phase1Targets = new ArrayList<>();
     private final List<Runnable> persistentTargets = new ArrayList<>();
 
-    protected static volatile long sink;
+    // Every temporary JFR dump produced by the test; deleted in after() unless ddprof_test.keep_jfrs.
+    private final List<Path> dumps = new ArrayList<>();
 
-    private static Runnable makeBusyTarget(final int seed) {
-        return () -> {
-            long acc = seed;
-            for (int i = 0; i < 50_000; i++) {
-                acc += (i ^ (acc >> 1)) + seed;
-            }
-            sink += acc;
-        };
+    // Distinct generated Runnable classes are loaded here; each carries its busy loop in its own
+    // run() method, so every target is a distinct JVM method (and thus a distinct method-pool id).
+    private final GeneratingClassLoader targetLoader = new GeneratingClassLoader();
+    private int targetCounter = 0;
+
+    // Written by the generated run() methods; public so the generated classes (loaded by a child
+    // class loader, in a different runtime package) can reach it via GETSTATIC/PUTSTATIC.
+    public static volatile long sink;
+
+    /**
+     * Generates and instantiates a fresh class implementing {@link Runnable} whose {@code run()}
+     * body spins on a CPU-busy loop. Because each call produces a distinct class, every target is a
+     * distinct JVM method — unlike a shared lambda call site, which HotSpot compiles to a single
+     * synthetic method (and thus a single method-pool id). Distinct methods are what build the large
+     * high-id population PROF-15130 needs to age out and recycle ids.
+     */
+    private Runnable makeBusyTarget(final int seed) {
+        String internalName = "com/datadoghq/profiler/metadata/gen/BusyTarget_" + (targetCounter++);
+        byte[] bytecode = generateBusyRunnable(internalName, seed);
+        try {
+            Class<?> clazz = targetLoader.define(internalName.replace('/', '.'), bytecode);
+            return (Runnable) clazz.getDeclaredConstructor().newInstance();
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException("failed to generate busy target for seed " + seed, e);
+        }
     }
 
     private void buildTargets() {
         for (int i = 0; i < DISTINCT_TARGETS_PER_PHASE; i++) {
             phase1Targets.add(makeBusyTarget(1_000 + i));
             persistentTargets.add(makeBusyTarget(9_000_000 + i));
+        }
+    }
+
+    @Override
+    protected void after() throws Exception {
+        if (!Boolean.getBoolean("ddprof_test.keep_jfrs")) {
+            for (Path dump : dumps) {
+                Files.deleteIfExists(dump);
+            }
+        }
+    }
+
+    /**
+     * Emits {@code public final class <internalName> implements Runnable} whose {@code run()} runs
+     * the CPU-busy loop the test previously expressed as a lambda:
+     * {@code long acc = seed; for (int i = 0; i < 50000; i++) acc += (i ^ (acc >> 1)) + seed; sink += acc;}
+     */
+    private static byte[] generateBusyRunnable(String internalName, long seed) {
+        ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
+        cw.visit(Opcodes.V1_8, Opcodes.ACC_PUBLIC | Opcodes.ACC_FINAL | Opcodes.ACC_SUPER,
+                internalName, null, "java/lang/Object", new String[] {"java/lang/Runnable"});
+
+        MethodVisitor ctor = cw.visitMethod(Opcodes.ACC_PUBLIC, "<init>", "()V", null, null);
+        ctor.visitCode();
+        ctor.visitVarInsn(Opcodes.ALOAD, 0);
+        ctor.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/lang/Object", "<init>", "()V", false);
+        ctor.visitInsn(Opcodes.RETURN);
+        ctor.visitMaxs(0, 0);
+        ctor.visitEnd();
+
+        MethodVisitor mv = cw.visitMethod(Opcodes.ACC_PUBLIC, "run", "()V", null, null);
+        mv.visitCode();
+        mv.visitLdcInsn(seed);               // acc = seed
+        mv.visitVarInsn(Opcodes.LSTORE, 1);
+        mv.visitInsn(Opcodes.ICONST_0);      // i = 0
+        mv.visitVarInsn(Opcodes.ISTORE, 3);
+        Label cond = new Label();
+        Label end = new Label();
+        mv.visitLabel(cond);
+        mv.visitVarInsn(Opcodes.ILOAD, 3);
+        mv.visitLdcInsn(50_000);
+        mv.visitJumpInsn(Opcodes.IF_ICMPGE, end);
+        mv.visitVarInsn(Opcodes.LLOAD, 1);   // acc
+        mv.visitVarInsn(Opcodes.ILOAD, 3);   // i
+        mv.visitInsn(Opcodes.I2L);           // (long) i
+        mv.visitVarInsn(Opcodes.LLOAD, 1);   // acc
+        mv.visitInsn(Opcodes.ICONST_1);      // shift count is an int for LSHR
+        mv.visitInsn(Opcodes.LSHR);          // acc >> 1
+        mv.visitInsn(Opcodes.LXOR);          // (long) i ^ (acc >> 1)
+        mv.visitLdcInsn(seed);
+        mv.visitInsn(Opcodes.LADD);          // + seed
+        mv.visitInsn(Opcodes.LADD);          // acc + ...
+        mv.visitVarInsn(Opcodes.LSTORE, 1);  // acc =
+        mv.visitIincInsn(3, 1);              // i++
+        mv.visitJumpInsn(Opcodes.GOTO, cond);
+        mv.visitLabel(end);
+        mv.visitFieldInsn(Opcodes.GETSTATIC,
+                "com/datadoghq/profiler/metadata/MethodIdReuseTest", "sink", "J");
+        mv.visitVarInsn(Opcodes.LLOAD, 1);
+        mv.visitInsn(Opcodes.LADD);
+        mv.visitFieldInsn(Opcodes.PUTSTATIC,
+                "com/datadoghq/profiler/metadata/MethodIdReuseTest", "sink", "J");
+        mv.visitInsn(Opcodes.RETURN);
+        mv.visitMaxs(0, 0);
+        mv.visitEnd();
+
+        cw.visitEnd();
+        return cw.toByteArray();
+    }
+
+    /** Child loader that exposes defineClass so generated targets become distinct loaded classes. */
+    private static final class GeneratingClassLoader extends ClassLoader {
+        Class<?> define(String binaryName, byte[] bytecode) {
+            return defineClass(binaryName, bytecode, 0, bytecode.length);
         }
     }
 
@@ -112,8 +206,6 @@ public class MethodIdReuseTest extends AbstractProfilerTest {
         buildTargets();
         registerCurrentThreadForWallClockProfiling();
         waitForProfilerReady(2000);
-
-        List<Path> dumps = new ArrayList<>();
 
         // Phase 1: touch the large phase-1 lambda set (+ persistent set) so they all get resolved
         // and assigned high method-pool ids.
@@ -455,13 +547,9 @@ public class MethodIdReuseTest extends AbstractProfilerTest {
             long result = 0;
             int shift = 0;
             int i = (int) p[0];
-            for (int b = 0; b < 9; b++) {
+            // Up to 8 continuation bytes carry 7 data bits each.
+            for (int b = 0; b < 8; b++) {
                 int by = f[i++] & 0xff;
-                if (b == 8) {
-                    result |= ((long) by) << shift;
-                    p[0] = i;
-                    return result;
-                }
                 result |= ((long) (by & 0x7f)) << shift;
                 if ((by & 0x80) == 0) {
                     p[0] = i;
@@ -469,6 +557,9 @@ public class MethodIdReuseTest extends AbstractProfilerTest {
                 }
                 shift += 7;
             }
+            // 9th byte (shift == 56) carries all 8 bits with no continuation flag.
+            int by = f[i++] & 0xff;
+            result |= ((long) by) << shift;
             p[0] = i;
             return result;
         }
