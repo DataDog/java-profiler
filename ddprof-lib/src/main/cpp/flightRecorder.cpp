@@ -1396,14 +1396,15 @@ int Recording::writeCpool(Buffer *buf, int *count_offset_in_cpool) {
   // standby() captures the pre-rotation state which writeClasses extends.
   Lookup lookup(this, &_method_map, Profiler::instance()->classMap());
   lookup.initClassCache();
-  // CONSTANT pools: always non-empty, always emitted -> 4 sections.
+  // CONSTANT pools: always non-empty, always emitted -> 5 sections.
+  // writeThreads always emits: it inserts _tid unconditionally before checking.
   writeFrameTypes(buf);
   writeThreadStates(buf);
   writeExecutionModes(buf);
   writeLogLevels(buf);
-  int pool_count = 4;
+  writeThreads(buf);
+  int pool_count = 5;
   // VARIABLE pools: each returns 1 if emitted, 0 if empty (and thus skipped).
-  pool_count += writeThreads(buf);
   pool_count += writeStackTraces(buf, &lookup);
   pool_count += writeMethods(buf, &lookup);
   pool_count += writeClasses(buf, &lookup);
@@ -1481,22 +1482,18 @@ void Recording::writeExecutionModes(Buffer *buf) {
   flushIfNeeded(buf);
 }
 
-int Recording::writeThreads(Buffer *buf) {
+void Recording::writeThreads(Buffer *buf) {
   int old_index = _active_index.fetch_xor(1, std::memory_order_acq_rel);
   // After flip: new samples go into the new active set
   // We flush from old_index (the previous active set)
 
   std::unordered_set<int> threads;
-  threads.insert(_tid);
+  threads.insert(_tid);  // always present: the recording thread itself
 
   for (int i = 0; i < CONCURRENCY_LEVEL; ++i) {
     // Collect thread IDs from the fixed-size table into the main set
     _thread_ids[i][old_index].collect(threads);
     _thread_ids[i][old_index].clear();
-  }
-
-  if (threads.empty()) {
-    return 0;
   }
 
   Profiler *profiler = Profiler::instance();
@@ -1535,7 +1532,6 @@ int Recording::writeThreads(Buffer *buf) {
     buf->putVar64(thread_id);
     flushIfNeeded(buf);
   }
-  return 1;
 }
 
 int Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {

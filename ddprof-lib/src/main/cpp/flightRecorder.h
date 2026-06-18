@@ -298,9 +298,10 @@ public:
   void writeThreadStates(Buffer *buf);
 
   void writeExecutionModes(Buffer *buf);
-  // The following writers return 1 if a pool section was emitted, 0 if the
-  // pool was empty and therefore skipped (strict JFR readers reject empty pools).
-  int writeThreads(Buffer *buf);
+  // writeThreads always emits: _tid is inserted unconditionally so the thread
+  // pool is never empty. The following variable-pool writers return 1 if a
+  // section was emitted, 0 if the pool was empty and skipped.
+  void writeThreads(Buffer *buf);
 
   int writeStackTraces(Buffer *buf, Lookup *lookup);
 
