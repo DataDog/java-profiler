@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk17
 
 ## glibc-x64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-06-18 09:11:38 EDT
+**Date:** 2026-06-18 09:28:02 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-openj9-jdk17
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 66 |
-| CPU Cores (end) | 66 |
+| CPU Cores (start) | 68 |
+| CPU Cores (end) | 68 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,22 +45,29 @@ title: glibc-x64-openj9-jdk17
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 66-66 cores)</summary>
+<summary>CPU Timeline (1 unique values: 68-68 cores)</summary>
 
 ```
-1781788064 66
-1781788069 66
-1781788074 66
-1781788079 66
-1781788084 66
-1781788089 66
-1781788094 66
-1781788099 66
-1781788104 66
-1781788109 66
-1781788114 66
-1781788119 66
-1781788124 66
+1781789050 68
+1781789055 68
+1781789060 68
+1781789065 68
+1781789070 68
+1781789075 68
+1781789080 68
+1781789085 68
+1781789090 68
+1781789095 68
+1781789100 68
+1781789105 68
+1781789110 68
+1781789115 68
+1781789120 68
+1781789125 68
+1781789130 68
+1781789135 68
+1781789140 68
+1781789145 68
 ```
 </details>
 

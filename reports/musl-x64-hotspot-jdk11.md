@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk11
 
 ## musl-x64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-06-18 09:11:39 EDT
+**Date:** 2026-06-18 09:28:03 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-x64-hotspot-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 30 |
-| CPU Cores (end) | 30 |
+| CPU Cores (start) | 90 |
+| CPU Cores (end) | 92 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,22 +45,29 @@ title: musl-x64-hotspot-jdk11
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 30-30 cores)</summary>
+<summary>CPU Timeline (4 unique values: 85-92 cores)</summary>
 
 ```
-1781788122 30
-1781788127 30
-1781788132 30
-1781788137 30
-1781788142 30
-1781788147 30
-1781788152 30
-1781788157 30
-1781788162 30
-1781788167 30
-1781788172 30
-1781788177 30
-1781788182 30
+1781789011 90
+1781789016 90
+1781789021 90
+1781789026 90
+1781789031 89
+1781789036 89
+1781789041 89
+1781789046 89
+1781789051 89
+1781789056 89
+1781789061 89
+1781789066 89
+1781789071 89
+1781789076 89
+1781789081 89
+1781789086 89
+1781789091 89
+1781789096 89
+1781789101 85
+1781789106 85
 ```
 </details>
 

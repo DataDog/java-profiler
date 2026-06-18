@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk25
 
 ## musl-arm64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-06-18 09:11:39 EDT
+**Date:** 2026-06-18 09:28:03 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,7 +18,7 @@ title: musl-arm64-openj9-jdk25
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 30 |
+| CPU Cores (start) | 48 |
 | CPU Cores (end) | 48 |
 | Throttling | 0% |
 
@@ -45,22 +45,29 @@ title: musl-arm64-openj9-jdk25
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (3 unique values: 30-48 cores)</summary>
+<summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
-1781788057 30
-1781788062 39
-1781788067 39
-1781788072 39
-1781788077 39
-1781788082 39
-1781788087 39
-1781788092 39
-1781788097 39
-1781788102 48
-1781788107 48
-1781788112 48
-1781788117 48
+1781789010 48
+1781789015 48
+1781789020 48
+1781789025 48
+1781789031 48
+1781789036 48
+1781789041 48
+1781789046 48
+1781789051 48
+1781789056 48
+1781789061 48
+1781789066 48
+1781789071 48
+1781789076 48
+1781789081 48
+1781789086 48
+1781789091 48
+1781789096 48
+1781789101 48
+1781789106 48
 ```
 </details>
 
