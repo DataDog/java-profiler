@@ -50,6 +50,9 @@ protected:
     pthread_key_t _key;
  
 public:
+    ThreadLocal(const ThreadLocal&) = delete;
+    ThreadLocal& operator=(const ThreadLocal&) = delete;
+
     ThreadLocal() {
         int err = pthread_key_create(&_key, F);
         // What to do if we can not create a key?
