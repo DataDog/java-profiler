@@ -17,7 +17,6 @@ import java.util.Arrays;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Drives the reapply-by-id-and-bytes hot path continuously from multiple threads while the
@@ -27,10 +26,9 @@ import java.util.concurrent.atomic.AtomicLong;
  * dd-trace-java's {@code reapplyAppContext} pattern and exercises the single-window invariant
  * (no partial publish visible to a signal handler) under high thread count and signal pressure.
  *
- * <p>The only failure signal is a JVM crash or a reapply returning {@code false} while the record
- * is active — the latter is logged and counted but does not abort the run (false positives from
- * genuine attrs_data overflow are possible when the total UTF-8 byte length of this
- * thread's attribute values exceeds the fixed per-thread attrs_data buffer capacity).
+ * <p>The only failure signal is a JVM crash or a reapply returning {@code false}, which throws
+ * {@link IllegalStateException} since the record is always valid immediately after
+ * {@code setContext}.
  */
 public final class ReapplyContextAntagonist implements Antagonist {
 
@@ -49,7 +47,6 @@ public final class ReapplyContextAntagonist implements Antagonist {
     private final int workerCount;
     private final ExecutorService pool;
     private volatile boolean running;
-    private final AtomicLong sink = new AtomicLong();
 
     public ReapplyContextAntagonist() {
         this(8);
@@ -115,7 +112,6 @@ public final class ReapplyContextAntagonist implements Antagonist {
             utf8[i] = ROUTES[i].getBytes(StandardCharsets.UTF_8);
         }
 
-        long r = spanId;
         while (running) {
             // Span activation wipes all custom slots.
             profiler.setContext(localRootSpanId, spanId, 0, traceIdLow);
@@ -123,9 +119,6 @@ public final class ReapplyContextAntagonist implements Antagonist {
             if (!contextSetter.setContextValuesByIdAndBytes(constantIds, utf8)) {
                 throw new IllegalStateException("reapply failed unexpectedly — record should be valid after setContext");
             }
-            // Burn a little CPU so wall-clock signals have something to sample.
-            r = r * 1103515245L + 12345L;
-            sink.addAndGet(r);
         }
     }
 }
