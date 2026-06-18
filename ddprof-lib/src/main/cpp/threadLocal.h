@@ -90,6 +90,9 @@ class ThreadLocal<double> {
 protected:
     pthread_key_t _key;
 public:
+    ThreadLocal(const ThreadLocal&) = delete;
+    ThreadLocal& operator=(const ThreadLocal&) = delete;
+
     ThreadLocal() {
         // Only support 64-bit platforms, double and void* are the same size
         static_assert(sizeof(void*) == 8);
