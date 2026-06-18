@@ -48,8 +48,6 @@ post-benchmarks-pr-comment:
   id_tokens:
     DDOCTOSTS_ID_TOKEN:
       aud: dd-octo-sts
-  variables:
-    KUBERNETES_SERVICE_ACCOUNT_OVERWRITE: benchmarking-platform
   needs:
     - job: prepare:start
       artifacts: true
@@ -76,8 +74,6 @@ publish-benchmark-gh-pages:
   id_tokens:
     DDOCTOSTS_ID_TOKEN:
       aud: dd-octo-sts
-  variables:
-    KUBERNETES_SERVICE_ACCOUNT_OVERWRITE: benchmarking-platform
   needs: []
   # Serialize concurrent GH Pages pushes. publish-gh-pages.sh uses
   # 'git push --force'; two concurrent pushes race and the slower one
