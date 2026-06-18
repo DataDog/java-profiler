@@ -61,7 +61,8 @@ public:
     }
 
     void set(T value) {
-        pthread_setspecific(_key, (const void*)value);
+        int err = pthread_setspecific(_key, (const void*)value);
+        assert(err == 0);
     }
 
     T get() {
