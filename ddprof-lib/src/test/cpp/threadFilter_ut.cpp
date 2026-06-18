@@ -485,7 +485,6 @@ TEST_F(ThreadFilterTest, ClearActiveDropsPreviousRecordingMembership) {
     ThreadFilter::Slot *stale = filter->slotForId(stale_slot);
     ASSERT_NE(nullptr, stale);
     stale->markSampledThisRun(OSThreadState::SLEEPING, 17);
-    stale->incrementSuppressedSampleCount();
 
     filter->clearActive();
 
@@ -498,8 +497,8 @@ TEST_F(ThreadFilterTest, ClearActiveDropsPreviousRecordingMembership) {
     EXPECT_EQ(OSThreadState::UNKNOWN, stale->lastSampledState());
     EXPECT_EQ(OSThreadState::UNKNOWN, stale->activeBlockState());
     EXPECT_EQ(BlockRunOwner::NONE, stale->activeBlockOwner());
-    EXPECT_EQ(0ULL, stale->anchorSampleId());
-    EXPECT_EQ(0ULL, stale->suppressedSampleCount());
+    EXPECT_EQ(0ULL, stale->capturedCallTraceId());
+    EXPECT_EQ(0ULL, stale->capturedCorrelationId());
 
     filter->add(2222, current_slot);
     filter->collect(collected_tids);
@@ -524,6 +523,50 @@ TEST_F(ThreadFilterTest, GenerationCheckedExitDoesNotClearAnotherOwner) {
 
     EXPECT_TRUE(filter->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(first_token)));
     EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
+}
+
+TEST_F(ThreadFilterTest, BlockRunSnapshotCapturesFirstCallTraceId) {
+    int slot_id = filter->registerThread();
+    ASSERT_GE(slot_id, 0);
+    u64 token = filter->enterBlockedRun(slot_id, OSThreadState::SLEEPING);
+    ASSERT_NE(0ULL, token);
+
+    ThreadFilter::Slot *slot = filter->slotForId(slot_id);
+    ASSERT_NE(nullptr, slot);
+    slot->markSampledThisRun(OSThreadState::SLEEPING, 17, 0);
+    slot->markSampledThisRun(OSThreadState::SLEEPING, 23, 0);
+
+    BlockRunSnapshot snapshot = filter->snapshotBlockedRun(slot_id);
+    EXPECT_TRUE(snapshot.has_stack_reference);
+    EXPECT_EQ(17ULL, snapshot.call_trace_id);
+    EXPECT_EQ(0ULL, snapshot.correlation_id);
+    EXPECT_EQ(OSThreadState::SLEEPING, snapshot.sampled_state);
+
+    EXPECT_TRUE(filter->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(token)));
+    snapshot = filter->snapshotBlockedRun(slot_id);
+    EXPECT_FALSE(snapshot.has_stack_reference);
+    EXPECT_EQ(0ULL, snapshot.call_trace_id);
+    EXPECT_EQ(0ULL, snapshot.correlation_id);
+}
+
+TEST_F(ThreadFilterTest, BlockRunSnapshotCapturesFirstCorrelationId) {
+    int slot_id = filter->registerThread();
+    ASSERT_GE(slot_id, 0);
+    u64 token = filter->enterBlockedRun(slot_id, OSThreadState::CONDVAR_WAIT);
+    ASSERT_NE(0ULL, token);
+
+    ThreadFilter::Slot *slot = filter->slotForId(slot_id);
+    ASSERT_NE(nullptr, slot);
+    slot->markSampledThisRun(OSThreadState::CONDVAR_WAIT, 0, 41);
+    slot->markSampledThisRun(OSThreadState::CONDVAR_WAIT, 0, 43);
+
+    BlockRunSnapshot snapshot = filter->snapshotBlockedRun(slot_id);
+    EXPECT_TRUE(snapshot.has_stack_reference);
+    EXPECT_EQ(0ULL, snapshot.call_trace_id);
+    EXPECT_EQ(41ULL, snapshot.correlation_id);
+    EXPECT_EQ(OSThreadState::CONDVAR_WAIT, snapshot.sampled_state);
+
+    EXPECT_TRUE(filter->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(token)));
 }
 
 TEST_F(ThreadFilterTest, NewGenerationRejectsStaleToken) {
@@ -691,7 +734,7 @@ TEST_F(ThreadFilterTest, ConcurrentStaleExitCannotClearNewRun) {
     EXPECT_TRUE(filter->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(current_token)));
 }
 
-TEST_F(ThreadFilterTest, SnapshotWhileMarkSampledKeepsAnchorConsistent) {
+TEST_F(ThreadFilterTest, SnapshotWhileMarkSampledKeepsStackReferenceConsistent) {
     int slot_id = filter->registerThread();
     ASSERT_GE(slot_id, 0);
     u64 token = filter->enterBlockedRun(slot_id, OSThreadState::IO_WAIT,
@@ -703,22 +746,21 @@ TEST_F(ThreadFilterTest, SnapshotWhileMarkSampledKeepsAnchorConsistent) {
     std::atomic<bool> stop{false};
     std::atomic<int> failures{0};
     std::thread marker([&]() {
-        u64 sample_id = 1;
+        u64 call_trace_id = 1;
         while (!stop.load(std::memory_order_acquire)) {
-            slot->markSampledThisRun(OSThreadState::IO_WAIT, sample_id++);
-            slot->incrementSuppressedSampleCount();
+            slot->markSampledThisRun(OSThreadState::IO_WAIT, call_trace_id++);
         }
     });
 
     for (int i = 0; i < 100000; i++) {
         BlockRunSnapshot snapshot = filter->snapshotBlockedRun(slot_id);
-        if (!snapshot.anchored && snapshot.anchor_sample_id != 0) {
+        if (!snapshot.has_stack_reference && snapshot.call_trace_id != 0) {
             failures.fetch_add(1, std::memory_order_relaxed);
         }
-        if (snapshot.anchor_sample_id == 0 && snapshot.anchored) {
+        if (snapshot.call_trace_id == 0 && snapshot.has_stack_reference) {
             failures.fetch_add(1, std::memory_order_relaxed);
         }
-        if (snapshot.anchored &&
+        if (snapshot.has_stack_reference &&
             snapshot.sampled_state != OSThreadState::IO_WAIT) {
             failures.fetch_add(1, std::memory_order_relaxed);
         }

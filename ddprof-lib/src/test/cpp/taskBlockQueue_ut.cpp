@@ -68,6 +68,8 @@ TEST(TaskBlockQueueTest, PreservesQueuedEventFields) {
   in.event._unblockingSpanId = 40;
   in.event._ctx.spanId = 50;
   in.event._ctx.rootSpanId = 60;
+  in.event._callTraceId = 70;
+  in.event._correlationId = 80;
 
   ASSERT_TRUE(queue.tryPush(in));
 
@@ -81,6 +83,8 @@ TEST(TaskBlockQueueTest, PreservesQueuedEventFields) {
   EXPECT_EQ(in.event._unblockingSpanId, out.event._unblockingSpanId);
   EXPECT_EQ(in.event._ctx.spanId, out.event._ctx.spanId);
   EXPECT_EQ(in.event._ctx.rootSpanId, out.event._ctx.rootSpanId);
+  EXPECT_EQ(in.event._callTraceId, out.event._callTraceId);
+  EXPECT_EQ(in.event._correlationId, out.event._correlationId);
   EXPECT_FALSE(queue.tryPop(out));
 }
 

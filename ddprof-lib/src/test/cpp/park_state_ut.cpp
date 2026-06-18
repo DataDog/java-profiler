@@ -67,14 +67,17 @@ TEST(ProfiledThreadParkStateTest, JavaThreadTypeSurvivesParkTransitions) {
   thread->setJavaThread(true);
   EXPECT_EQ(ProfiledThread::TYPE_JAVA_THREAD, thread->threadType());
 
-  EXPECT_TRUE(thread->parkEnter());
+  EXPECT_TRUE(thread->parkEnter(100));
   EXPECT_EQ(ProfiledThread::TYPE_JAVA_THREAD, thread->threadType());
 
   thread->setJavaThread(false);
   EXPECT_EQ(ProfiledThread::TYPE_NOT_JAVA_THREAD, thread->threadType());
 
+  u64 start_ticks = 0;
+  Context park_context = {};
   u64 park_block_token = 0;
-  EXPECT_TRUE(thread->parkExit(park_block_token));
+  EXPECT_TRUE(thread->parkExit(start_ticks, park_context, park_block_token));
+  EXPECT_EQ(100ULL, start_ticks);
   EXPECT_EQ(ProfiledThread::TYPE_NOT_JAVA_THREAD, thread->threadType());
 }
 
@@ -90,9 +93,11 @@ TEST(ProfiledThreadParkStateTest, ConcurrentTypeAndParkUpdatesKeepValidTypeBits)
   });
 
   while (!stop.load(std::memory_order_acquire)) {
-    thread->parkEnter();
+    thread->parkEnter(100);
+    u64 start_ticks = 0;
+    Context park_context = {};
     u64 park_block_token = 0;
-    thread->parkExit(park_block_token);
+    thread->parkExit(start_ticks, park_context, park_block_token);
     ProfiledThread::ThreadType type = thread->threadType();
     EXPECT_TRUE(type == ProfiledThread::TYPE_JAVA_THREAD ||
                 type == ProfiledThread::TYPE_NOT_JAVA_THREAD ||
@@ -100,8 +105,10 @@ TEST(ProfiledThreadParkStateTest, ConcurrentTypeAndParkUpdatesKeepValidTypeBits)
   }
 
   type_toggler.join();
+  u64 start_ticks = 0;
+  Context park_context = {};
   u64 park_block_token = 0;
-  thread->parkExit(park_block_token);
+  thread->parkExit(start_ticks, park_context, park_block_token);
   ProfiledThread::ThreadType type = thread->threadType();
   EXPECT_TRUE(type == ProfiledThread::TYPE_JAVA_THREAD ||
               type == ProfiledThread::TYPE_NOT_JAVA_THREAD);
@@ -210,16 +217,17 @@ TEST(WallClockOncePerRunFilterTest, SlotStateTransitions) {
   EXPECT_TRUE(slot.sampledThisRun());
   EXPECT_EQ(OSThreadState::SLEEPING, slot.lastSampledState());
   EXPECT_EQ(OSThreadState::SLEEPING, slot.activeBlockState());
-  EXPECT_EQ(1234ULL, slot.anchorSampleId());
-  EXPECT_EQ(0ULL, slot.suppressedSampleCount());
+  EXPECT_EQ(1234ULL, slot.capturedCallTraceId());
+  EXPECT_EQ(0ULL, slot.capturedCorrelationId());
 
   // Same state again: suppress (flag + state both match).
   EXPECT_TRUE(slot.sampledThisRun() &&
               OSThreadState::SLEEPING == slot.lastSampledState());
   EXPECT_TRUE(slot.sampledThisRun() &&
               slot.activeBlockState() == slot.lastSampledState());
-  EXPECT_EQ(1ULL, slot.incrementSuppressedSampleCount());
-  EXPECT_EQ(1ULL, slot.suppressedSampleCount());
+  slot.markSampledThisRun(OSThreadState::SLEEPING, 5678);
+  EXPECT_EQ(1234ULL, slot.capturedCallTraceId());
+  EXPECT_EQ(0ULL, slot.capturedCorrelationId());
 
   // Transition within skip set (SLEEPING -> CONDVAR_WAIT): state mismatch -> re-arm.
   slot.setActiveBlockState(OSThreadState::CONDVAR_WAIT);
@@ -237,8 +245,8 @@ TEST(WallClockOncePerRunFilterTest, SlotStateTransitions) {
   EXPECT_FALSE(slot.sampledThisRun());
   EXPECT_EQ(OSThreadState::RUNNABLE, slot.lastSampledState());
   EXPECT_EQ(OSThreadState::UNKNOWN, slot.activeBlockState());
-  EXPECT_EQ(0ULL, slot.anchorSampleId());
-  EXPECT_EQ(0ULL, slot.suppressedSampleCount());
+  EXPECT_EQ(0ULL, slot.capturedCallTraceId());
+  EXPECT_EQ(0ULL, slot.capturedCorrelationId());
 
   slot.setActiveBlockState(OSThreadState::SLEEPING);
   slot.markSampledThisRun(OSThreadState::SLEEPING);
@@ -416,7 +424,7 @@ TEST(WallClockOncePerRunFilterTest, BlockRunTokenRejectsStaleExit) {
   EXPECT_EQ(BlockRunOwner::NONE, slot->activeBlockOwner());
 }
 
-TEST(WallClockOncePerRunFilterTest, SnapshotAndExitPreservesIoWaitAnchor) {
+TEST(WallClockOncePerRunFilterTest, SnapshotAndExitPreservesIoWaitStackReference) {
   ThreadFilter filter;
   filter.init("1");
   ThreadFilter::SlotID slot_id = filter.registerThread();
@@ -427,7 +435,6 @@ TEST(WallClockOncePerRunFilterTest, SnapshotAndExitPreservesIoWaitAnchor) {
   ThreadFilter::Slot *slot = filter.slotForId(slot_id);
   ASSERT_NE(nullptr, slot);
   slot->markSampledThisRun(OSThreadState::IO_WAIT, 42);
-  EXPECT_EQ(1ULL, slot->incrementSuppressedSampleCount());
 
   BlockRunSnapshot snapshot{};
   EXPECT_TRUE(filter.snapshotAndExitBlockedRun(
@@ -435,9 +442,9 @@ TEST(WallClockOncePerRunFilterTest, SnapshotAndExitPreservesIoWaitAnchor) {
   EXPECT_EQ(OSThreadState::IO_WAIT, snapshot.active_state);
   EXPECT_EQ(OSThreadState::IO_WAIT, snapshot.sampled_state);
   EXPECT_EQ(BlockRunOwner::NATIVE, snapshot.owner);
-  EXPECT_TRUE(snapshot.anchored);
-  EXPECT_EQ(42ULL, snapshot.anchor_sample_id);
-  EXPECT_EQ(1ULL, snapshot.suppressed_sample_count);
+  EXPECT_TRUE(snapshot.has_stack_reference);
+  EXPECT_EQ(42ULL, snapshot.call_trace_id);
+  EXPECT_EQ(0ULL, snapshot.correlation_id);
   EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
 }
 
