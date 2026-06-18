@@ -26,9 +26,9 @@ import java.util.concurrent.TimeUnit;
  * dd-trace-java's {@code reapplyAppContext} pattern and exercises the single-window invariant
  * (no partial publish visible to a signal handler) under high thread count and signal pressure.
  *
- * <p>The only failure signal is a JVM crash or a reapply returning {@code false}, which throws
- * {@link IllegalStateException} since the record is always valid immediately after
- * {@code setContext}.
+ * <p>The only expected failure signal is a JVM crash. An unexpected {@code false} return from
+ * reapply (which should never happen since the record is always valid right after
+ * {@code setContext}) throws {@link IllegalStateException} to surface the bug immediately.
  */
 public final class ReapplyContextAntagonist implements Antagonist {
 
