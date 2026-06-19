@@ -14,8 +14,6 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
-namespace {
-
 static inline bool nonZeroTimeval(const struct timeval* timeout) {
   return timeout == nullptr || timeout->tv_sec != 0 || timeout->tv_usec != 0;
 }
@@ -57,8 +55,6 @@ static inline Ret runDatagramSocketHook(int fd, Fn fn, Call call) {
   return runNativeIoHook<Ret>(eligible, NativeBlockKind::UDP_RECEIVE, fd, fn,
                               call);
 }
-
-} // namespace
 
 NativeSocketInterposer* const NativeSocketInterposer::_instance = new NativeSocketInterposer();
 NativeSocketInterposer::send_fn NativeSocketInterposer::_orig_send = nullptr;
