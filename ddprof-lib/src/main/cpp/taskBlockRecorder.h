@@ -8,10 +8,10 @@
 
 #include "context.h"
 #include "context_api.h"
+#include "counters.h"
 #include "event.h"
 #include "profiler.h"
 #include "tsc.h"
-#include "wallClockCounters.h"
 
 void initializeTaskBlockDurationThreshold();
 bool exceedsMinTaskBlockDuration(u64 start_ticks, u64 end_ticks);
@@ -61,11 +61,11 @@ static inline bool recordTaskBlockWithContextIfEligible(int tid, u64 start_ticks
                                                          const Context& ctx, u64 blocker,
                                                          u64 unblocking_span_id) {
   if (hasTraceContext(ctx)) {
-    WallClockCounters::incrementTaskBlockSkippedTraceContext();
+    Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
     return false;
   }
   if (!exceedsMinTaskBlockDuration(start_ticks, end_ticks)) {
-    WallClockCounters::incrementTaskBlockSkippedTooShort();
+    Counters::increment(TASK_BLOCK_SKIPPED_TOO_SHORT);
     return false;
   }
   TaskBlockEvent event{};
@@ -79,7 +79,7 @@ static inline bool recordTaskBlockWithContextIfEligible(int tid, u64 start_ticks
     return false;
   }
   if (Profiler::instance()->recordTaskBlockLive(tid, &event)) {
-    WallClockCounters::incrementTaskBlockEmitted();
+    Counters::increment(TASK_BLOCK_EMITTED);
     return true;
   }
   return false;
@@ -105,11 +105,11 @@ static inline bool recordTaskBlockDeferredIfEligible(int tid, u64 start_ticks, u
                                                       u64 correlation_id = 0,
                                                       OSThreadState observed_state = OSThreadState::UNKNOWN) {
   if (hasTraceContext(ctx)) {
-    WallClockCounters::incrementTaskBlockSkippedTraceContext();
+    Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
     return false;
   }
   if (!exceedsMinTaskBlockDuration(start_ticks, end_ticks)) {
-    WallClockCounters::incrementTaskBlockSkippedTooShort();
+    Counters::increment(TASK_BLOCK_SKIPPED_TOO_SHORT);
     return false;
   }
   TaskBlockEvent event{};
@@ -129,7 +129,7 @@ static inline bool recordTaskBlockDeferredIfEligible(int tid, u64 start_ticks, u
     return false;
   }
   if (Profiler::instance()->recordTaskBlockLive(tid, &event)) {
-    WallClockCounters::incrementTaskBlockEmitted();
+    Counters::increment(TASK_BLOCK_EMITTED);
     return true;
   }
   return false;
@@ -145,11 +145,11 @@ static inline bool recordTaskBlockAsyncWithContextIfEligible(int tid, u64 start_
                                                              u64 correlation_id = 0,
                                                              OSThreadState observed_state = OSThreadState::UNKNOWN) {
   if (hasTraceContext(ctx)) {
-    WallClockCounters::incrementTaskBlockSkippedTraceContext();
+    Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
     return false;
   }
   if (!exceedsMinTaskBlockDuration(start_ticks, end_ticks)) {
-    WallClockCounters::incrementTaskBlockSkippedTooShort();
+    Counters::increment(TASK_BLOCK_SKIPPED_TOO_SHORT);
     return false;
   }
   TaskBlockEvent event{};

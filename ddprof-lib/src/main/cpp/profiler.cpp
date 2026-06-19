@@ -136,7 +136,7 @@ void Profiler::drainTaskBlockQueue(bool record) {
   while (_task_block_queue.tryPop(queued)) {
     if (record && queued.generation == generation) {
       if (recordTaskBlockLive(queued.tid, &queued.event)) {
-        WallClockCounters::incrementTaskBlockEmitted();
+        Counters::increment(TASK_BLOCK_EMITTED);
       }
     }
   }

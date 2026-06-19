@@ -31,6 +31,14 @@ final class TaskBlockAssertions {
             attr("correlationId", "correlationId", "Async Stack Trace Correlation ID", NUMBER);
     private static final IAttribute<String> OBSERVED_BLOCKING_STATE =
             attr("observedBlockingState", "observedBlockingState", "Observed Blocking State", PLAIN_TEXT);
+    private static final IAttribute<IQuantity> EPOCH_TASK_BLOCK_EMITTED =
+            attr("numTaskBlockEmitted", "numTaskBlockEmitted", "Task-block events emitted", NUMBER);
+    private static final IAttribute<IQuantity> EPOCH_TASK_BLOCK_SKIPPED_TRACE_CONTEXT =
+            attr("numTaskBlockSkippedTraceContext", "numTaskBlockSkippedTraceContext",
+                    "Task-block events skipped because trace context was present", NUMBER);
+    private static final IAttribute<IQuantity> EPOCH_TASK_BLOCK_SKIPPED_TOO_SHORT =
+            attr("numTaskBlockSkippedTooShort", "numTaskBlockSkippedTooShort",
+                    "Task-block events skipped because duration was too short", NUMBER);
 
     private TaskBlockAssertions() {}
 
@@ -80,6 +88,23 @@ final class TaskBlockAssertions {
     static void assertContainsCorrelationId(IItemCollection taskBlockEvents) {
         Set<Long> correlationIds = nonZeroValues(taskBlockEvents, CORRELATION_ID);
         assertTrue(correlationIds.size() > 0, "Expected at least one non-zero TaskBlock correlationId");
+    }
+
+    static void assertWallClockEpochDoesNotExposeTaskBlockCounters(IItemCollection epochEvents) {
+        int checked = 0;
+        for (IItemIterable iterable : epochEvents) {
+            checked++;
+            assertNull(
+                    EPOCH_TASK_BLOCK_EMITTED.getAccessor(iterable.getType()),
+                    "WallClockSamplingEpoch must not expose numTaskBlockEmitted");
+            assertNull(
+                    EPOCH_TASK_BLOCK_SKIPPED_TRACE_CONTEXT.getAccessor(iterable.getType()),
+                    "WallClockSamplingEpoch must not expose numTaskBlockSkippedTraceContext");
+            assertNull(
+                    EPOCH_TASK_BLOCK_SKIPPED_TOO_SHORT.getAccessor(iterable.getType()),
+                    "WallClockSamplingEpoch must not expose numTaskBlockSkippedTooShort");
+        }
+        assertTrue(checked > 0, "Expected at least one WallClockSamplingEpoch type to inspect");
     }
 
     static boolean containsSpan(IItemCollection events, long spanId) {

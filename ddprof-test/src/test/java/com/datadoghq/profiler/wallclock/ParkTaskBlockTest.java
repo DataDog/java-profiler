@@ -8,6 +8,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.LockSupport;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class ParkTaskBlockTest extends AbstractProfilerTest {
     private static final long ROOT_SPAN_ID = 0L;
@@ -32,6 +33,11 @@ public class ParkTaskBlockTest extends AbstractProfilerTest {
         assertTaskBlockStackReference(taskBlockEvents);
         TaskBlockAssertions.assertContains(
                 taskBlockEvents, ROOT_SPAN_ID, SPAN_ID, BLOCKER, UNBLOCKING_SPAN_ID);
+        TaskBlockAssertions.assertWallClockEpochDoesNotExposeTaskBlockCounters(
+                verifyEvents("datadog.WallClockSamplingEpoch"));
+        assertTrue(
+                getRecordedCounterValue("task_block_emitted") > 0,
+                "task_block_emitted must be reported as a ProfilerCounter");
     }
 
     @Test
@@ -54,6 +60,9 @@ public class ParkTaskBlockTest extends AbstractProfilerTest {
         assertFalse(
                 verifyEvents("datadog.TaskBlock", false).hasItems(),
                 "Traced park interval must keep MethodSample wall-clock data instead of emitting TaskBlock");
+        assertTrue(
+                getRecordedCounterValue("task_block_skipped_trace_context") > 0,
+                "task_block_skipped_trace_context must be reported as a ProfilerCounter");
     }
 
     @Override

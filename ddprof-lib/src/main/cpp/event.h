@@ -125,17 +125,12 @@ public:
   u32 _num_exited_threads;
   u32 _num_permission_denied;
   u64 _num_suppressed_sampled_run;
-  u64 _num_task_block_emitted;
-  u64 _num_task_block_skipped_trace_context;
-  u64 _num_task_block_skipped_too_short;
 
   WallClockEpochEvent(u64 start_time)
       : _dirty(false), _start_time(start_time), _duration_millis(0),
         _num_samplable_threads(0), _num_successful_samples(0),
         _num_failed_samples(0), _num_exited_threads(0),
-        _num_permission_denied(0), _num_suppressed_sampled_run(0),
-        _num_task_block_emitted(0), _num_task_block_skipped_trace_context(0),
-        _num_task_block_skipped_too_short(0) {}
+        _num_permission_denied(0), _num_suppressed_sampled_run(0) {}
 
   bool hasChanged() { return _dirty; }
 
@@ -181,27 +176,6 @@ public:
     }
   }
 
-  void addNumTaskBlockEmitted(u64 n) {
-    if (n > 0) {
-      _dirty = true;
-      _num_task_block_emitted += n;
-    }
-  }
-
-  void addNumTaskBlockSkippedTraceContext(u64 n) {
-    if (n > 0) {
-      _dirty = true;
-      _num_task_block_skipped_trace_context += n;
-    }
-  }
-
-  void addNumTaskBlockSkippedTooShort(u64 n) {
-    if (n > 0) {
-      _dirty = true;
-      _num_task_block_skipped_too_short += n;
-    }
-  }
-
   void endEpoch(u64 millis) { _duration_millis = millis; }
 
   void clean() { _dirty = false; }
@@ -210,9 +184,6 @@ public:
     _dirty = false;
     _start_time = start_time;
     _num_suppressed_sampled_run = 0;
-    _num_task_block_emitted = 0;
-    _num_task_block_skipped_trace_context = 0;
-    _num_task_block_skipped_too_short = 0;
   }
 };
 

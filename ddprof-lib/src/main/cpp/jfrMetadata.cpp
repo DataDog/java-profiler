@@ -158,13 +158,7 @@ void JfrMetadata::initialize(
               << field("numPermissionDenied", T_INT,
                        "Number of Permission Denied Errors")
               << field("numSuppressedSampledRun", T_LONG,
-                       "Signals suppressed by the wall-clock once-per-run filter")
-              << field("numTaskBlockEmitted", T_LONG,
-                       "Task-block events emitted")
-              << field("numTaskBlockSkippedTraceContext", T_LONG,
-                       "Task-block events skipped because trace context was present")
-              << field("numTaskBlockSkippedTooShort", T_LONG,
-                       "Task-block events skipped because duration was too short"))
+                       "Signals suppressed by the wall-clock once-per-run filter"))
 
           << (type("datadog.ObjectSample", T_ALLOC, "Allocation sample")
                   << category("Datadog", "Profiling")
