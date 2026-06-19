@@ -41,34 +41,6 @@ benchmarks-trigger:
     branch: java-profiler
     strategy: depend
 
-post-benchmarks-pr-comment:
-  extends: .retry-config
-  stage: post-benchmarks
-  tags: ["arch:arm64"]
-  image: registry.ddbuild.io/images/dd-octo-sts-ci-base:2025.06-1
-  id_tokens:
-    DDOCTOSTS_ID_TOKEN:
-      aud: dd-octo-sts
-  needs:
-    - job: prepare:start
-      artifacts: true
-    - job: benchmarks-trigger
-      artifacts: false
-  rules:
-    - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-      when: never
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-      when: never
-    # Always run after the benchmarks stage so results are posted back to the PR.
-    - when: always
-  timeout: 10m
-  script:
-    - mkdir -p reports
-    - .gitlab/benchmarks/download-s3-reports.sh reports
-    - .gitlab/benchmarks/post-pr-comment.sh reports
-  allow_failure: true
 
 publish-benchmark-gh-pages:
   stage: post-benchmarks
@@ -77,9 +49,7 @@ publish-benchmark-gh-pages:
   id_tokens:
     DDOCTOSTS_ID_TOKEN:
       aud: dd-octo-sts
-  needs:
-    - job: benchmarks-trigger
-      artifacts: false
+  needs: []
   # Serialize concurrent GH Pages pushes. publish-gh-pages.sh uses
   # 'git push --force'; two concurrent pushes race and the slower one
   # silently discards the faster one's history update.
