@@ -8,8 +8,9 @@ issuer: https://gitlab.ddbuild.io
 subject_pattern: "project_path:DataDog/apm-reliability/benchmarking-platform:ref_type:branch:ref:.*"
 
 permissions:
-  # issues: write covers creating/updating comments on a PR (the PR comment lives
-  # on the issues/comments endpoint); pull_requests: read is enough to resolve the
-  # open PR for a branch. No contents access is granted.
+  # Posting a comment on a pull request via the issues/comments endpoint requires
+  # pull_requests: write for a GitHub App (PRs are issues, but comment-writes on a
+  # PR are governed by the Pull requests permission — issues: write alone yields a
+  # 403 "Resource not accessible by integration"). No contents access is granted.
   issues: write
-  pull_requests: read
+  pull_requests: write
