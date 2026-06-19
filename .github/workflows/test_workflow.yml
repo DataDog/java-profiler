@@ -191,6 +191,13 @@ jobs:
           name: signal-safety-violation-glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64
           path: /tmp/signal-safety-violation.txt
           if-no-files-found: ignore
+      - name: Upload ASan logs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure() && matrix.config == 'asan'
+        with:
+          name: asan-logs-glibc-${{ matrix.java_version }}-amd64
+          path: /tmp/asan.log.*
+          if-no-files-found: ignore
 
   test-linux-musl-amd64:
     needs: [cache-jdks, filter-musl-configs]
@@ -316,6 +323,13 @@ jobs:
         with:
           name: signal-safety-violation-musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64
           path: /tmp/signal-safety-violation.txt
+          if-no-files-found: ignore
+      - name: Upload ASan logs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure() && matrix.config == 'asan'
+        with:
+          name: asan-logs-musl-${{ matrix.java_version }}-amd64
+          path: /tmp/asan.log.*
           if-no-files-found: ignore
 
   test-linux-glibc-aarch64:
@@ -495,6 +509,13 @@ jobs:
           name: signal-safety-violation-glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
           path: /tmp/signal-safety-violation.txt
           if-no-files-found: ignore
+      - name: Upload ASan logs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure() && matrix.config == 'asan'
+        with:
+          name: asan-logs-glibc-${{ matrix.java_version }}-aarch64
+          path: /tmp/asan.log.*
+          if-no-files-found: ignore
 
   test-linux-musl-aarch64:
      needs: [cache-jdks, filter-musl-configs]
@@ -598,4 +619,11 @@ jobs:
          with:
            name: signal-safety-violation-musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
            path: /tmp/signal-safety-violation.txt
+           if-no-files-found: ignore
+       - name: Upload ASan logs
+         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+         if: failure() && matrix.config == 'asan'
+         with:
+           name: asan-logs-musl-${{ matrix.java_version }}-aarch64
+           path: /tmp/asan.log.*
            if-no-files-found: ignore

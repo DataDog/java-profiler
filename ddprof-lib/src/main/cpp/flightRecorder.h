@@ -10,6 +10,7 @@
 #include <map>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include <limits.h>
 #include <string.h>
@@ -158,6 +159,34 @@ public:
     assert((key & KEY_TYPE_MASK) == 0);
     return (key | VTABLE_RECEIVER_MARK);
   }
+
+  // JFR method-pool id allocator. Ids must be unique among the methods written
+  // in a single chunk, but may be recycled once a method is erased by
+  // cleanupUnreferencedMethods() — an erased method is never written again, so
+  // its id is free for reuse. Recycling freed ids bounds the id range to the
+  // peak number of live methods (keeping LEB128 encoding compact) while
+  // guaranteeing no two live methods ever share an id. Id 0 stays reserved as
+  // the "no entry" sentinel. Single-threaded: only touched on the dump thread
+  // (allocId from resolveMethod under lockAll, freeId from
+  // cleanupUnreferencedMethods under the recording lock).
+  u32 allocId() {
+    if (!_free_ids.empty()) {
+      u32 id = _free_ids.back();
+      _free_ids.pop_back();
+      return id;
+    }
+    return ++_id_high_water;
+  }
+
+  void freeId(u32 id) {
+    if (id != 0) {
+      _free_ids.push_back(id);
+    }
+  }
+
+private:
+  u32 _id_high_water = 0;
+  std::vector<u32> _free_ids;
 };
 
 class Recording {
@@ -189,7 +218,6 @@ private:
   u64 _stop_time;
   u64 _stop_ticks;
 
-  u64 _base_id;
   u64 _bytes_written;
 
   int _tid;
@@ -259,30 +287,37 @@ public:
   void writeJvmInfo(Buffer *buf);
   void writeSystemProperties(Buffer *buf);
   void writeNativeLibraries(Buffer *buf);
-  void writeCpool(Buffer *buf);
+  // Writes the cpool checkpoint. Returns the number of pool sections actually
+  // emitted (empty variable pools are skipped) and reports the byte offset of
+  // the pool-count placeholder within the cpool via *count_offset_in_cpool, so
+  // the caller can back-patch it flush-safe alongside the cpool size field.
+  int writeCpool(Buffer *buf, int *count_offset_in_cpool);
 
   void writeFrameTypes(Buffer *buf);
 
   void writeThreadStates(Buffer *buf);
 
   void writeExecutionModes(Buffer *buf);
+  // writeThreads always emits: _tid is inserted unconditionally so the thread
+  // pool is never empty. The following variable-pool writers return 1 if a
+  // section was emitted, 0 if the pool was empty and skipped.
   void writeThreads(Buffer *buf);
 
-  void writeStackTraces(Buffer *buf, Lookup *lookup);
+  int writeStackTraces(Buffer *buf, Lookup *lookup);
 
-  void writeMethods(Buffer *buf, Lookup *lookup);
+  int writeMethods(Buffer *buf, Lookup *lookup);
 
-  void writeClasses(Buffer *buf, Lookup *lookup);
+  int writeClasses(Buffer *buf, Lookup *lookup);
 
-  void writePackages(Buffer *buf, Lookup *lookup);
+  int writePackages(Buffer *buf, Lookup *lookup);
 
-  void writeConstantPoolSection(Buffer *buf, JfrType type,
-                                std::map<u32, const char *> &constants);
+  int writeConstantPoolSection(Buffer *buf, JfrType type,
+                               std::map<u32, const char *> &constants);
 
-  void writeConstantPoolSection(Buffer *buf, JfrType type,
-                                Dictionary *dictionary);
-  void writeConstantPoolSection(Buffer *buf, JfrType type,
-                                StringDictionaryBuffer *buffer);
+  int writeConstantPoolSection(Buffer *buf, JfrType type,
+                               Dictionary *dictionary);
+  int writeConstantPoolSection(Buffer *buf, JfrType type,
+                               StringDictionaryBuffer *buffer);
 
   void writeLogLevels(Buffer *buf);
 
@@ -405,7 +440,6 @@ public:
   Error start(Arguments &args, bool reset);
   void stop();
   Error dump(const char *filename, const int length);
-  void flush();
   void wallClockEpoch(int lock_index, WallClockEpochEvent *event);
   void recordTraceRoot(int lock_index, int tid, TraceRootEvent *event);
   void recordQueueTime(int lock_index, int tid, QueueTimeEvent *event);

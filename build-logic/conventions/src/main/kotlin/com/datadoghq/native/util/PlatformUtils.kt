@@ -351,6 +351,25 @@ object PlatformUtils {
     }
 
     /**
+     * Returns the major version of the test JVM (e.g. 8, 11, 17, 21, 25).
+     * Returns 0 if the version cannot be determined.
+     */
+    fun testJvmMajorVersion(): Int {
+        val javaHome = testJavaHome()
+        return try {
+            val process = ProcessBuilder("$javaHome/bin/java", "-version")
+                .redirectErrorStream(true)
+                .start()
+            val output = process.inputStream.bufferedReader().readText()
+            process.waitFor(10, TimeUnit.SECONDS)
+            val match = Regex("""version "(?:1\.)?(\d+)""").find(output)
+            match?.groupValues?.get(1)?.toIntOrNull() ?: 0
+        } catch (_: Exception) {
+            0
+        }
+    }
+
+    /**
      * Returns true if the test JVM (from JAVA_TEST_HOME or JAVA_HOME) is an OpenJ9/J9 JVM.
      * Probes `java -version` stderr output for "J9" or "OpenJ9".
      */
@@ -367,4 +386,5 @@ object PlatformUtils {
             false
         }
     }
+
 }

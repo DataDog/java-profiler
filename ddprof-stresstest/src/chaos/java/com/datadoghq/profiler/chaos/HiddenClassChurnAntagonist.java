@@ -102,6 +102,14 @@ public final class HiddenClassChurnAntagonist implements Antagonist {
             } catch (Throwable t) {
                 // transient; JVM crash is the signal we watch for
             }
+            // Pace hidden-class generation so the GC can evict unloaded
+            // classes before they accumulate across a long run.
+            try {
+                Thread.sleep(1L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
         }
     }
 

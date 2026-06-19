@@ -17,13 +17,17 @@ variables:
   rules:
     - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
       when: never
-    - if: '$CI_PIPELINE_SOURCE == "trigger" || $CI_PIPELINE_SOURCE == "pipeline"'
-      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: never
     - if: '$CI_PIPELINE_SOURCE == "web"'
       when: manual
       allow_failure: true
-    - if: '$CI_PIPELINE_SOURCE == "push"'
-      when: manual
+    # Run automatically and non-blocking on any other source (push/trigger/api/
+    # etc.) — mirrors the integration-test rules. The before_script CANCELLED
+    # gate skips branches with no open PR.
+    - when: on_success
       allow_failure: true
   script: |
     # setup the env
@@ -36,8 +40,8 @@ variables:
     if [ -z "${CANDIDATE_VERSION}" ]; then echo "Missing candidate version. Skipping."; exit 0; fi
 
     # fetch the common platform scripts
-    git config --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.ddbuild.io/DataDog/".insteadOf "https://github.com/DataDog/"
-    git clone --branch dd-trace-go https://github.com/DataDog/benchmarking-platform ${PLATFORM_DIR}
+    git -c url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.ddbuild.io/DataDog/".insteadOf="https://github.com/DataDog/" \
+      clone --branch dd-trace-go https://github.com/DataDog/benchmarking-platform ${PLATFORM_DIR}
 
     # apply the specific step scripts
     cp -r .gitlab/benchmarks/steps/* ${PLATFORM_DIR}/steps/
@@ -52,7 +56,6 @@ variables:
     ${PLATFORM_DIR}/steps/run-benchmarks.sh
     ${PLATFORM_DIR}/steps/analyze-results.sh
     ${PLATFORM_DIR}/steps/upload-results-to-s3.sh
-    ${PLATFORM_DIR}/steps/post-pr-comment.sh
   parallel:
     matrix:
       - RUN_MODE: ["cpu", "wall", "alloc", "memleak", "cpu,wall", "memleak,alloc", "cpu,wall,alloc,memleak"]
@@ -75,6 +78,36 @@ benchmarks-candidate-aarch64:
   variables:
     KUBERNETES_MEMORY_REQUEST: 200Gi
     KUBERNETES_MEMORY_LIMIT: 200Gi
+
+post-benchmarks-pr-comment:
+  extends: .retry-config
+  stage: benchmarks
+  tags: ["arch:arm64"]
+  image: registry.ddbuild.io/images/dd-octo-sts-ci-base:2025.06-1
+  id_tokens:
+    DDOCTOSTS_ID_TOKEN:
+      aud: dd-octo-sts
+  needs:
+    - job: prepare:start
+      artifacts: true
+    - job: benchmarks-candidate-amd64
+      artifacts: true
+    - job: benchmarks-candidate-aarch64
+      artifacts: true
+  rules:
+    - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: never
+    # Always run when the candidate jobs ran, regardless of source, so results
+    # are posted back to the PR.
+    - when: always
+  timeout: 5m
+  script:
+    - .gitlab/benchmarks/post-pr-comment.sh reports
+  allow_failure: true
 
 publish-benchmark-gh-pages:
   stage: benchmarks

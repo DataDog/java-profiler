@@ -25,6 +25,7 @@
 #include "common.h"
 #include "symbols.h"
 #include "dwarf.h"
+#include "sframe.h"
 #include "fdtransferClient.h"
 #include "log.h"
 #include "os.h"
@@ -702,6 +703,27 @@ void ElfParser::parseDynamicSection() {
 void ElfParser::parseDwarfInfo() {
     if (!DWARF_SUPPORTED) return;
 
+    // Try SFrame first (simpler format, faster parsing, no opcode interpretation).
+    ElfProgramHeader* sframe_phdr = findProgramHeader(PT_GNU_SFRAME);
+    if (sframe_phdr != NULL && sframe_phdr->p_vaddr != 0) {
+        const char* section_base = at(sframe_phdr);
+        uintptr_t section_offset_full = static_cast<uintptr_t>(section_base - _base);
+        if (section_offset_full <= static_cast<uintptr_t>(UINT32_MAX)) {
+            u32 section_offset = static_cast<u32>(section_offset_full);
+            SFrameParser sframe(_cc->name(), section_base,
+                                static_cast<size_t>(sframe_phdr->p_filesz), section_offset);
+            if (sframe.parse()) {
+                _cc->setDwarfTable(sframe.table(), sframe.count(),
+                                   sframe.detectedDefaultFrame());
+                return;
+            }
+            // SFrame parse failed; fall through to DWARF.
+        } else {
+            Log::warn("SFrame section offset too large for u32 in %s; falling back to DWARF", _cc->name());
+        }
+    }
+
+    // DWARF fallback (reached when SFrame is absent, offset too large, or parse failed).
     ElfProgramHeader* eh_frame_hdr = findProgramHeader(PT_GNU_EH_FRAME);
     if (eh_frame_hdr != NULL) {
         if (eh_frame_hdr->p_vaddr != 0) {
