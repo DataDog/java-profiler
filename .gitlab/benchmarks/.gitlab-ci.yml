@@ -35,6 +35,7 @@ benchmarks-trigger:
     UPSTREAM_PROJECT_NAME: "java-profiler"
     UPSTREAM_BRANCH: "${CI_PIPELINE_ID}"
     UPSTREAM_PIPELINE_ID: "${CI_PIPELINE_ID}"
+    MAVEN_REPOSITORY_PROXY: "${MAVEN_REPOSITORY_PROXY}"
   trigger:
     project: DataDog/apm-reliability/benchmarking-platform
     branch: java-profiler
