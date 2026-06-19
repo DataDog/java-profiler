@@ -1,7 +1,7 @@
-# Allow java-profiler GitLab CI to publish reports and manage issues
+# Allow java-profiler and benchmarking-platform GitLab CI to post reports
 issuer: https://gitlab.ddbuild.io
 
-subject_pattern: "project_path:DataDog/java-profiler:ref_type:branch:ref:.*"
+subject_pattern: "project_path:(DataDog/java-profiler|DataDog/apm-reliability/benchmarking-platform):ref_type:branch:ref:.*"
 
 permissions:
   contents: write
