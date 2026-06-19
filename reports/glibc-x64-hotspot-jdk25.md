@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk25
 
 ## glibc-x64-hotspot-jdk25 - ✅ PASS
 
-**Date:** 2026-06-19 00:54:58 EDT
+**Date:** 2026-06-19 03:20:29 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-hotspot-jdk25
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 28 |
-| CPU Cores (end) | 28 |
+| CPU Cores (start) | 32 |
+| CPU Cores (end) | 32 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-x64-hotspot-jdk25
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 28-28 cores)</summary>
+<summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1781844698 28
-1781844703 28
-1781844708 28
-1781844713 28
-1781844718 28
-1781844723 28
-1781844728 28
-1781844733 28
-1781844738 28
-1781844743 28
-1781844748 28
-1781844753 28
-1781844758 28
-1781844763 28
-1781844768 28
-1781844773 28
-1781844778 28
-1781844783 28
-1781844788 28
-1781844793 28
+1781853311 32
+1781853316 32
+1781853321 32
+1781853326 32
+1781853331 32
+1781853336 32
+1781853341 32
+1781853346 32
+1781853351 32
+1781853356 32
+1781853361 32
+1781853366 32
+1781853371 32
+1781853376 32
+1781853381 32
+1781853386 32
+1781853391 32
+1781853397 32
+1781853402 32
+1781853407 32
 ```
 </details>
 
