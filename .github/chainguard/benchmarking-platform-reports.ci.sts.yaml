@@ -1,0 +1,15 @@
+# Allow the benchmarking-platform GitLab CI to back-report results to PRs only.
+#
+# Scoped deliberately narrower than async-profiler-build.ci: the BP project lives
+# in a separate repository, so it is granted *only* the permissions needed to
+# upsert a result comment on a java-profiler PR — never contents: write.
+issuer: https://gitlab.ddbuild.io
+
+subject_pattern: "project_path:DataDog/apm-reliability/benchmarking-platform:ref_type:branch:ref:.*"
+
+permissions:
+  # issues: write covers creating/updating comments on a PR (the PR comment lives
+  # on the issues/comments endpoint); pull_requests: read is enough to resolve the
+  # open PR for a branch. No contents access is granted.
+  issues: write
+  pull_requests: read
