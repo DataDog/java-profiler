@@ -124,8 +124,8 @@ bool NativeSocketSampler::isSocket(int fd) {
     // Only cache the non-socket verdict when getsockopt definitively says
     // "not a socket" (ENOTSOCK).  Transient errors (EBADF on a racing close,
     // EINTR, etc.) must NOT poison the cache: a sticky misclassification
-    // would survive fd reuse via dup2() and silently suppress sampling for
-    // the rest of the session.
+    // would survive unobserved fd reuse and silently suppress sampling until
+    // the next cache reset.
     if (errno == ENOTSOCK) {
         _fd_type_cache[fd].store((uint8_t)(((gen & 0xF) << 4) | FD_TYPE_NON_SOCKET),
                                  std::memory_order_release);
@@ -145,6 +145,19 @@ void NativeSocketSampler::insertFdAddrLocked(int fd, std::string addr) {
         }
         _fd_lru_list.emplace_front(fd, std::move(addr));
         _fd_cache.emplace(fd, _fd_lru_list.begin());
+    }
+}
+
+void NativeSocketSampler::clearFdCacheEntry(int fd) {
+    if (fd >= 0 && (size_t)fd < (size_t)FD_TYPE_CACHE_SIZE) {
+        _fd_type_cache[fd].store(FD_TYPE_UNKNOWN, std::memory_order_release);
+    }
+
+    std::lock_guard<std::mutex> lock(_fd_cache_mutex);
+    auto it = _fd_cache.find(fd);
+    if (it != _fd_cache.end()) {
+        _fd_lru_list.erase(it->second);
+        _fd_cache.erase(it);
     }
 }
 

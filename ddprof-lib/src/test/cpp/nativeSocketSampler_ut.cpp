@@ -345,6 +345,58 @@ TEST(NativeSocketSamplerLruTest, ClearResetsCache) {
         << "clearFdCache() must empty both the map and the LRU list";
 }
 
+TEST(NativeSocketSamplerLruTest, ClearFdCacheEntryRemovesOnlyRequestedEntry) {
+    NativeSocketSampler* inst = NativeSocketSampler::instance();
+    inst->clearFdCache();
+
+    inst->fdAddrCacheInsertForTest(1, "1.2.3.4:100");
+    inst->fdAddrCacheInsertForTest(2, "1.2.3.4:200");
+    ASSERT_EQ(inst->fdAddrCacheSizeForTest(), 2);
+
+    inst->clearFdCacheEntry(1);
+
+    EXPECT_FALSE(inst->fdAddrCacheContainsForTest(1));
+    EXPECT_TRUE(inst->fdAddrCacheContainsForTest(2));
+    EXPECT_EQ(inst->fdAddrCacheSizeForTest(), 1);
+    inst->clearFdCache();
+}
+
+TEST(NativeSocketSamplerLruTest, ClearFdCacheEntryHandlesInvalidFds) {
+    NativeSocketSampler* inst = NativeSocketSampler::instance();
+    inst->clearFdCache();
+
+    inst->fdAddrCacheInsertForTest(7, "1.2.3.4:700");
+
+    inst->clearFdCacheEntry(-1);
+    inst->clearFdCacheEntry(NativeSocketSampler::MAX_FD_CACHE + 1);
+
+    EXPECT_TRUE(inst->fdAddrCacheContainsForTest(7));
+    EXPECT_EQ(inst->fdAddrCacheSizeForTest(), 1);
+    inst->clearFdCache();
+}
+
+TEST(NativeSocketSamplerLruTest, ClearFdCacheEntryInvalidatesFdTypeBeforeReuse) {
+    NativeSocketSampler* inst = NativeSocketSampler::instance();
+    inst->clearFdCache();
+
+    int stream_fds[2];
+    ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, stream_fds), 0);
+
+    int reused_fd = stream_fds[0];
+    EXPECT_TRUE(inst->isSocketForTest(reused_fd));
+    close(reused_fd);
+
+    inst->clearFdCacheEntry(reused_fd);
+
+    int datagram_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    ASSERT_EQ(datagram_fd, reused_fd);
+    EXPECT_FALSE(inst->isSocketForTest(datagram_fd));
+
+    close(datagram_fd);
+    close(stream_fds[1]);
+    inst->clearFdCache();
+}
+
 TEST(NativeSocketSamplerLruTest, InsertAndLookupPreservesEntries) {
     NativeSocketSampler* inst = NativeSocketSampler::instance();
     inst->clearFdCache();

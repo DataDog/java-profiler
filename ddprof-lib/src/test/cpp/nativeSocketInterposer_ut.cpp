@@ -21,6 +21,7 @@
 #include "libraryPatcher.h"
 #include "nativeBlock.h"
 #include "nativeSocketInterposer.h"
+#include "nativeSocketSampler.h"
 
 #include <atomic>
 #include <cerrno>
@@ -258,6 +259,7 @@ protected:
                         reinterpret_cast<void*>(::dup2));
     setOriginalFunction(NativeSocketInterposer::HOOK_DUP3, nullptr);
     NativeSocketInterposer::instance()->clearFdTypeCache();
+    NativeSocketSampler::instance()->clearFdCache();
   }
 
   void TearDown() override {
@@ -265,6 +267,7 @@ protected:
     setOriginalFunction(NativeSocketInterposer::HOOK_DUP2, nullptr);
     setOriginalFunction(NativeSocketInterposer::HOOK_DUP3, nullptr);
     NativeSocketInterposer::instance()->clearFdTypeCache();
+    NativeSocketSampler::instance()->clearFdCache();
   }
 
   int closeThroughHook(int fd) {
@@ -580,6 +583,30 @@ TEST_F(NativeSocketInterposerFdTest, CloseHookInvalidatesFdBeforeReuse) {
   ASSERT_EQ(0, closeThroughHook(stream_fds[1]));
 }
 
+TEST_F(NativeSocketInterposerFdTest,
+       CloseHookInvalidatesNativeSocketSamplerFdStateBeforeReuse) {
+  int stream_fds[2];
+  ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, stream_fds));
+
+  NativeSocketSampler* sampler = NativeSocketSampler::instance();
+  int reused_fd = stream_fds[0];
+  EXPECT_TRUE(sampler->isSocketForTest(reused_fd));
+  sampler->fdAddrCacheInsertForTest(reused_fd, "127.0.0.1:12345");
+  ASSERT_TRUE(sampler->fdAddrCacheContainsForTest(reused_fd));
+
+  errno = E2BIG;
+  ASSERT_EQ(0, closeThroughHook(reused_fd));
+  EXPECT_EQ(E2BIG, errno);
+  EXPECT_FALSE(sampler->fdAddrCacheContainsForTest(reused_fd));
+
+  int datagram_fd = socket(AF_INET, SOCK_DGRAM, 0);
+  ASSERT_EQ(reused_fd, datagram_fd);
+  EXPECT_FALSE(sampler->isSocketForTest(datagram_fd));
+
+  ASSERT_EQ(0, closeThroughHook(datagram_fd));
+  ASSERT_EQ(0, closeThroughHook(stream_fds[1]));
+}
+
 TEST_F(NativeSocketInterposerFdTest, RepeatedCacheClearsDoNotResurrectOldFdType) {
   int stream_fds[2];
   ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, stream_fds));
@@ -620,6 +647,31 @@ TEST_F(NativeSocketInterposerFdTest, Dup2InvalidatesTargetFdBeforeReuse) {
   ASSERT_EQ(0, closeThroughHook(pipe_fds[1]));
 }
 
+TEST_F(NativeSocketInterposerFdTest,
+       Dup2InvalidatesNativeSocketSamplerTargetFdStateBeforeReuse) {
+  int stream_fds[2];
+  ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, stream_fds));
+  int pipe_fds[2];
+  ASSERT_EQ(0, pipe(pipe_fds));
+
+  NativeSocketSampler* sampler = NativeSocketSampler::instance();
+  int target_fd = stream_fds[0];
+  EXPECT_TRUE(sampler->isSocketForTest(target_fd));
+  sampler->fdAddrCacheInsertForTest(target_fd, "127.0.0.1:12345");
+  ASSERT_TRUE(sampler->fdAddrCacheContainsForTest(target_fd));
+
+  errno = E2BIG;
+  ASSERT_EQ(target_fd, dup2ThroughHook(pipe_fds[0], target_fd));
+  EXPECT_EQ(E2BIG, errno);
+  EXPECT_FALSE(sampler->fdAddrCacheContainsForTest(target_fd));
+  EXPECT_FALSE(sampler->isSocketForTest(target_fd));
+
+  ASSERT_EQ(0, closeThroughHook(target_fd));
+  ASSERT_EQ(0, closeThroughHook(stream_fds[1]));
+  ASSERT_EQ(0, closeThroughHook(pipe_fds[0]));
+  ASSERT_EQ(0, closeThroughHook(pipe_fds[1]));
+}
+
 TEST_F(NativeSocketInterposerFdTest, FailedDup2DoesNotInvalidateTargetFd) {
   int stream_fds[2];
   ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, stream_fds));
@@ -631,6 +683,27 @@ TEST_F(NativeSocketInterposerFdTest, FailedDup2DoesNotInvalidateTargetFd) {
   EXPECT_EQ(-1, dup2ThroughHook(-1, target_fd));
   EXPECT_EQ(EBADF, errno);
   EXPECT_TRUE(NativeSocketInterposer::instance()->isStreamSocket(target_fd));
+
+  ASSERT_EQ(0, closeThroughHook(target_fd));
+  ASSERT_EQ(0, closeThroughHook(stream_fds[1]));
+}
+
+TEST_F(NativeSocketInterposerFdTest,
+       FailedDup2DoesNotInvalidateNativeSocketSamplerTargetFdState) {
+  int stream_fds[2];
+  ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, stream_fds));
+
+  NativeSocketSampler* sampler = NativeSocketSampler::instance();
+  int target_fd = stream_fds[0];
+  EXPECT_TRUE(sampler->isSocketForTest(target_fd));
+  sampler->fdAddrCacheInsertForTest(target_fd, "127.0.0.1:12345");
+  ASSERT_TRUE(sampler->fdAddrCacheContainsForTest(target_fd));
+
+  errno = 0;
+  EXPECT_EQ(-1, dup2ThroughHook(-1, target_fd));
+  EXPECT_EQ(EBADF, errno);
+  EXPECT_TRUE(sampler->isSocketForTest(target_fd));
+  EXPECT_TRUE(sampler->fdAddrCacheContainsForTest(target_fd));
 
   ASSERT_EQ(0, closeThroughHook(target_fd));
   ASSERT_EQ(0, closeThroughHook(stream_fds[1]));
@@ -650,6 +723,31 @@ TEST_F(NativeSocketInterposerFdTest, Dup3InvalidatesTargetFdBeforeReuse) {
   ASSERT_EQ(target_fd, dup3ThroughHook(pipe_fds[0], target_fd, 0));
   EXPECT_EQ(E2BIG, errno);
   EXPECT_FALSE(NativeSocketInterposer::instance()->isStreamSocket(target_fd));
+
+  ASSERT_EQ(0, closeThroughHook(target_fd));
+  ASSERT_EQ(0, closeThroughHook(stream_fds[1]));
+  ASSERT_EQ(0, closeThroughHook(pipe_fds[0]));
+  ASSERT_EQ(0, closeThroughHook(pipe_fds[1]));
+}
+
+TEST_F(NativeSocketInterposerFdTest,
+       Dup3InvalidatesNativeSocketSamplerTargetFdStateBeforeReuse) {
+  int stream_fds[2];
+  ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, stream_fds));
+  int pipe_fds[2];
+  ASSERT_EQ(0, pipe(pipe_fds));
+
+  NativeSocketSampler* sampler = NativeSocketSampler::instance();
+  int target_fd = stream_fds[0];
+  EXPECT_TRUE(sampler->isSocketForTest(target_fd));
+  sampler->fdAddrCacheInsertForTest(target_fd, "127.0.0.1:12345");
+  ASSERT_TRUE(sampler->fdAddrCacheContainsForTest(target_fd));
+
+  errno = E2BIG;
+  ASSERT_EQ(target_fd, dup3ThroughHook(pipe_fds[0], target_fd, 0));
+  EXPECT_EQ(E2BIG, errno);
+  EXPECT_FALSE(sampler->fdAddrCacheContainsForTest(target_fd));
+  EXPECT_FALSE(sampler->isSocketForTest(target_fd));
 
   ASSERT_EQ(0, closeThroughHook(target_fd));
   ASSERT_EQ(0, closeThroughHook(stream_fds[1]));

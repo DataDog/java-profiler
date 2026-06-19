@@ -245,6 +245,7 @@ int NativeSocketInterposer::close_hook(int fd) {
   int saved_errno = errno;
   if (ret == 0) {
     NativeSocketInterposer::instance()->clearFdType(fd);
+    NativeSocketSampler::instance()->clearFdCacheEntry(fd);
   }
   errno = saved_errno;
   return ret;
@@ -264,7 +265,10 @@ int NativeSocketInterposer::dup2_hook(int oldfd, int newfd) {
   }
   int saved_errno = errno;
   if (ret >= 0) {
+    // dup2() implicitly closes newfd before reusing it, so clear stale fd
+    // classification and address state for the target descriptor.
     NativeSocketInterposer::instance()->clearFdType(newfd);
+    NativeSocketSampler::instance()->clearFdCacheEntry(newfd);
   }
   errno = saved_errno;
   return ret;
@@ -284,7 +288,10 @@ int NativeSocketInterposer::dup3_hook(int oldfd, int newfd, int flags) {
   }
   int saved_errno = errno;
   if (ret >= 0) {
+    // dup3() implicitly closes newfd before reusing it, so clear stale fd
+    // classification and address state for the target descriptor.
     NativeSocketInterposer::instance()->clearFdType(newfd);
+    NativeSocketSampler::instance()->clearFdCacheEntry(newfd);
   }
   errno = saved_errno;
   return ret;

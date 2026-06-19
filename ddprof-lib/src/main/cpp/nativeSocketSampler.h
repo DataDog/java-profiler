@@ -34,8 +34,8 @@ class LibraryPatcher;
 //                         released for resolveAddr(); a concurrent thread may
 //                         emplace the same fd before re-acquisition. emplace()
 //                         is idempotent in that case (first writer wins).
-//                         Address staleness on fd reuse is accepted: worst case
-//                         is one misattributed event per reuse.
+//                         Address staleness is possible only after fd reuse
+//                         through unobserved lifecycle paths.
 // _fd_type_cache        : std::atomic<uint8_t> array, lock-free.  Entry encoding:
 //                         bits [7:4] = generation mod 16, bits [3:0] = type
 //                         (0=unknown, 1=TCP socket, 2=non-TCP).  Valid only when
@@ -43,8 +43,8 @@ class LibraryPatcher;
 //                         verdict is trusted on the hot path; revalidation via
 //                         getsockopt() is deferred to recordEvent() for sampled
 //                         write/read events (revalidateSocket()).  A cached NON_SOCKET
-//                         verdict is trusted (worst case: a reused fd under-samples
-//                         until the next gen reset).
+//                         verdict is trusted (worst case: unobserved fd reuse
+//                         under-samples until the next gen reset).
 // _rate_limiter         : RateLimiter — owns std::atomic interval, epoch, and
 //                         event count.  PID update races are resolved by CAS
 //                         inside RateLimiter::maybeUpdateInterval().
@@ -77,6 +77,7 @@ public:
     // Called from both start() (to reset state on restart) and stop().
     // Intentionally NOT called on JFR chunk boundaries.
     void clearFdCache();
+    void clearFdCacheEntry(int fd);
 
     // PLT hooks installed by LibraryPatcher::patch_socket_functions().
     static ssize_t send_hook(int fd, const void* buf, size_t len, int flags);
@@ -195,17 +196,23 @@ public:
         std::lock_guard<std::mutex> lock(_fd_cache_mutex);
         return (int)_fd_cache.size();
     }
+    bool fdAddrCacheContainsForTest(int fd) {
+        std::lock_guard<std::mutex> lock(_fd_cache_mutex);
+        return _fd_cache.find(fd) != _fd_cache.end();
+    }
     void fdAddrCacheInsertForTest(int fd, const std::string& addr) {
         std::lock_guard<std::mutex> lock(_fd_cache_mutex);
         insertFdAddrLocked(fd, addr);
+    }
+    bool isSocketForTest(int fd) {
+        return isSocket(fd);
     }
 
 private:
 
     // Returns true if fd is a SOCK_STREAM socket (including AF_UNIX).
-    // Uses the fd-type cache; calls getsockopt on first encounter per fd and on
-    // every cached-SOCKET hit to revalidate against fd reuse (a closed socket fd
-    // reassigned to a regular file/pipe must not keep emitting socket events).
+    // Uses the fd-type cache; calls getsockopt on first encounter per fd.
+    // Cached SOCKET verdicts are revalidated only on sampled write/read events.
     bool isSocket(int fd);
 
     // Decide whether to sample and compute weight.
@@ -236,6 +243,7 @@ public:
     Error start(Arguments &args) override { return Error::OK; }
     void  stop()                 override {}
     void clearFdCache()          {}
+    void clearFdCacheEntry(int fd) { (void)fd; }
 private:
     static NativeSocketSampler* const _instance;
     NativeSocketSampler() {}
