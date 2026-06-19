@@ -34,8 +34,8 @@ private:
   static PatchEntry  _sigaction_entries[MAX_NATIVE_LIBS];
   static int         _sigaction_size;
 
-  // Separate tracking for native I/O patches. Each library can contribute one
-  // GOT slot per supported I/O hook.
+  // Separate tracking for native I/O patches.
+  // Each library can contribute one GOT slot per supported I/O hook.
   static PatchEntry  _socket_entries[MAX_NATIVE_IO_HOOKS * MAX_NATIVE_LIBS];
   static int         _socket_size;
 
@@ -45,13 +45,13 @@ private:
   static void patch_sigaction_in_library(CodeCache* lib);
   static void unpatch_socket_functions_unlocked();
 public:
-  // True while native I/O hooks are installed. Library refresh paths read this
-  // before attempting to patch newly discovered libraries; this lets DSOs loaded
-  // after profiler start be picked up by install_socket_hooks().
-  //
-  // start()/stop() and the library refresher can observe this state from
-  // different threads, so keep the flag atomic even though stop normally happens
-  // at JVM shutdown.
+  // True while native I/O hooks are installed; read by library refresh paths
+  // to decide whether to re-patch after a new library is loaded.
+  // Set to true after the first batch of libraries is patched in patch_socket_functions().
+  // Libraries loaded after profiler start are picked up on the next refresh,
+  // which calls install_socket_hooks() to patch them if _socket_active is true.
+  // start()/stop() and the library refresher can observe this state from different
+  // threads, so keep the flag atomic even though stop normally happens at JVM shutdown.
   static std::atomic<bool> _socket_active;
   static void initialize();
   static void patch_libraries();
@@ -60,9 +60,8 @@ public:
   static bool patch_socket_functions();
   static void unpatch_socket_functions();
   static bool unpatch_socket_functions_if_inactive();
-  // Called after the library list is refreshed. No-op when native I/O hooks are
-  // inactive; otherwise patch_socket_functions() handles already-patched slots
-  // idempotently under the patch lock.
+  // Called after a new library is loaded and the library list is refreshed.
+  // No-op when native I/O hooks are not active.
   static inline void install_socket_hooks() {
     if (_socket_active.load(std::memory_order_acquire)) {
       patch_socket_functions();
