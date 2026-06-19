@@ -539,14 +539,23 @@ void LibraryPatcher::patch_sigaction() {
 }
 
 bool LibraryPatcher::patch_socket_functions() {
-  // Resolve the real libc symbols once. On a restart cycle, re-resolving through
-  // RTLD_NEXT can find a still-installed hook if a DSO was missed during unpatch,
-  // making the original pointer self-referential.
+  // Resolve the real libc symbols once and cache them. On a restart cycle,
+  // re-resolving through RTLD_NEXT can find a still-installed hook if a DSO was
+  // missed during unpatch, making the original pointer self-referential and the
+  // next hook call recursive.
   //
-  // dlsym must not run while holding _lock: it may take the linker lock, which is
-  // also taken during dlopen. Holding the locks in the opposite order would
-  // deadlock against dlopen refresh.
+  // RTLD_NEXT finds the first definition after this DSO in load order, bypassing
+  // unresolved lazy-binding stubs that could otherwise overwrite the GOT patch.
+  // It may resolve to an LD_PRELOAD interposer, such as libasan; that is
+  // intentional. RTLD_DEFAULT is the fallback for cases where RTLD_NEXT cannot
+  // find the libc symbol, including musl/load-order combinations.
+  //
+  // dlsym must not run while holding _lock: it may take the linker lock, which
+  // is also taken during dlopen. Holding the locks in the opposite order would
+  // deadlock against dlopen refresh. The once_flag serializes one-time writes to
+  // the cached originals without extending the patch lock over dlsym().
   static void* cached_originals[NativeSocketInterposer::NUM_NATIVE_IO_HOOKS] = {};
+  static bool has_cached_original = false;
   static std::once_flag dlsym_once;
 
   const NativeSocketInterposer::NativeIoHookSpec* hooks =
@@ -562,20 +571,16 @@ bool LibraryPatcher::patch_socket_functions() {
       if (original == hooks[hook_index].hook) {
         TEST_LOG("patch_socket_functions dlsym returned hook address for %s",
                  hooks[hook_index].name);
-        // Disable this hook rather than storing a self-reference that would
-        // recurse on the next intercepted call.
+        // Disable this hook rather than storing the hook as its own original.
+        // Keeping a self-reference would recurse on the next intercepted call.
         original = nullptr;
       }
       cached_originals[hook_index] = original;
+      has_cached_original |= original != nullptr;
     }
   });
 
-  bool any_original = false;
-  for (int hook_index = 0; hook_index < NativeSocketInterposer::NUM_NATIVE_IO_HOOKS;
-       hook_index++) {
-    any_original |= cached_originals[hook_index] != nullptr;
-  }
-  if (!any_original) {
+  if (!has_cached_original) {
     TEST_LOG("patch_socket_functions EARLY RETURN: all dlsym calls failed");
     return false;
   }

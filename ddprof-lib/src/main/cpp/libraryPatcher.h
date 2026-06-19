@@ -45,9 +45,13 @@ private:
   static void patch_sigaction_in_library(CodeCache* lib);
   static void unpatch_socket_functions_unlocked();
 public:
-  // True while native I/O hooks are installed; read by dlopen refresh paths
-  // before attempting to patch newly loaded libraries. Libraries loaded after
-  // profiler start are picked up by install_socket_hooks().
+  // True while native I/O hooks are installed. Library refresh paths read this
+  // before attempting to patch newly discovered libraries; this lets DSOs loaded
+  // after profiler start be picked up by install_socket_hooks().
+  //
+  // start()/stop() and the library refresher can observe this state from
+  // different threads, so keep the flag atomic even though stop normally happens
+  // at JVM shutdown.
   static std::atomic<bool> _socket_active;
   static void initialize();
   static void patch_libraries();
@@ -56,6 +60,9 @@ public:
   static bool patch_socket_functions();
   static void unpatch_socket_functions();
   static bool unpatch_socket_functions_if_inactive();
+  // Called after the library list is refreshed. No-op when native I/O hooks are
+  // inactive; otherwise patch_socket_functions() handles already-patched slots
+  // idempotently under the patch lock.
   static inline void install_socket_hooks() {
     if (_socket_active.load(std::memory_order_acquire)) {
       patch_socket_functions();
