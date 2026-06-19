@@ -93,7 +93,7 @@ void NativeBlockScope::finish(u64 end_ticks) {
   OSThreadState observed_state = snapshot.sampled_state != OSThreadState::UNKNOWN
                                      ? snapshot.sampled_state
                                      : _state;
-  recordTaskBlockAsyncWithContextIfEligible(
+  recordTaskBlockAsyncWithStackReferenceIfEligible(
       _tid, _start_ticks, end_ticks, _context, _blocker, 0,
       snapshot.has_stack_reference ? snapshot.call_trace_id : 0,
       snapshot.has_stack_reference ? snapshot.correlation_id : 0,

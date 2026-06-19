@@ -423,8 +423,8 @@ public final class JavaProfiler {
     }
 
     /**
-     * Records a TaskBlock event with an explicit span context. Used for virtual threads where
-     * native OTEP TLS is carrier-scoped and cannot be trusted.
+     * Records a TaskBlock event for the calling profiled thread with an explicit span context.
+     * Stack metadata is still attached from the calling thread.
      */
     public void recordTaskBlockWithContext(long startTicks, long endTicks, long blocker,
             long unblockingSpanId, long spanId, long rootSpanId) {
@@ -432,9 +432,9 @@ public final class JavaProfiler {
     }
 
     /**
-     * Records a TaskBlock event attributed to an explicit thread ID and explicit span context.
-     * Intended for background drain threads that record events on behalf of a different (sleeping)
-     * thread; avoids reading OTEP TLS from the calling thread.
+     * Attempts to record a TaskBlock event attributed to an explicit thread ID and explicit span
+     * context. This overload has no stack-reference metadata, so a recorder thread cannot use it to
+     * emit a self-contained TaskBlock on behalf of another thread.
      */
     public void recordTaskBlockFromContext(int tid, long startTicks, long endTicks,
             long blocker, long unblockingSpanId, long spanId, long rootSpanId) {
@@ -442,7 +442,8 @@ public final class JavaProfiler {
     }
 
     /**
-     * Records a TaskBlock event with explicit thread, span context, and stack reference metadata.
+     * Records a TaskBlock event with explicit thread, span context, and stack-reference metadata.
+     * This is the required overload when recording from a background thread on behalf of {@code tid}.
      */
     public void recordTaskBlockFromContext(int tid, long startTicks, long endTicks,
             long blocker, long unblockingSpanId, long spanId, long rootSpanId,

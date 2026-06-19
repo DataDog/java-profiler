@@ -48,14 +48,20 @@ TEST_F(WallClockCountersTest, TaskBlockDiagnosticsUseProfilerCounters) {
   Counters::increment(TASK_BLOCK_EMITTED);
   Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
   Counters::increment(TASK_BLOCK_SKIPPED_TOO_SHORT);
+  Counters::increment(TASK_BLOCK_SKIPPED_NO_STACK_REFERENCE);
+  Counters::increment(TASK_BLOCK_RECORD_FAILED);
 
   EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_EMITTED));
   EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_SKIPPED_TRACE_CONTEXT));
   EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_SKIPPED_TOO_SHORT));
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_SKIPPED_NO_STACK_REFERENCE));
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_RECORD_FAILED));
 
   WallClockCounters::reset();
 
   EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_EMITTED));
   EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_SKIPPED_TRACE_CONTEXT));
   EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_SKIPPED_TOO_SHORT));
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_SKIPPED_NO_STACK_REFERENCE));
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_RECORD_FAILED));
 }

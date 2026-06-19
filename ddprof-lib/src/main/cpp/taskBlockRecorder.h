@@ -56,16 +56,35 @@ static inline bool hasTaskBlockStackReference(const TaskBlockEvent& event) {
   return event._callTraceId != 0 || event._correlationId != 0;
 }
 
-// Synchronous path for callers that captured the context at block entry.
-static inline bool recordTaskBlockWithContextIfEligible(int tid, u64 start_ticks, u64 end_ticks,
-                                                         const Context& ctx, u64 blocker,
-                                                         u64 unblocking_span_id) {
+static inline bool taskBlockPassesBasicEligibility(u64 start_ticks, u64 end_ticks,
+                                                   const Context& ctx) {
   if (hasTraceContext(ctx)) {
     Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
     return false;
   }
   if (!exceedsMinTaskBlockDuration(start_ticks, end_ticks)) {
     Counters::increment(TASK_BLOCK_SKIPPED_TOO_SHORT);
+    return false;
+  }
+  return true;
+}
+
+static inline bool recordTaskBlockLive(int tid, TaskBlockEvent& event) {
+  if (Profiler::instance()->recordTaskBlockLive(tid, &event)) {
+    Counters::increment(TASK_BLOCK_EMITTED);
+    return true;
+  }
+  Counters::increment(TASK_BLOCK_RECORD_FAILED);
+  return false;
+}
+
+// Same-thread path for callers that captured the context at block entry. Stack
+// metadata is attached from ProfiledThread::current(), so the caller must be the
+// target thread.
+static inline bool recordTaskBlockWithContextIfEligible(int tid, u64 start_ticks, u64 end_ticks,
+                                                         const Context& ctx, u64 blocker,
+                                                         u64 unblocking_span_id) {
+  if (!taskBlockPassesBasicEligibility(start_ticks, end_ticks, ctx)) {
     return false;
   }
   TaskBlockEvent event{};
@@ -76,13 +95,10 @@ static inline bool recordTaskBlockWithContextIfEligible(int tid, u64 start_ticks
   event._ctx = ctx;
   attachTaskBlockStackReference(tid, event);
   if (!hasTaskBlockStackReference(event)) {
+    Counters::increment(TASK_BLOCK_SKIPPED_NO_STACK_REFERENCE);
     return false;
   }
-  if (Profiler::instance()->recordTaskBlockLive(tid, &event)) {
-    Counters::increment(TASK_BLOCK_EMITTED);
-    return true;
-  }
-  return false;
+  return recordTaskBlockLive(tid, event);
 }
 
 // Platform-thread synchronous path. Context is captured from OTEP TLS at call
@@ -95,21 +111,13 @@ static inline bool recordTaskBlockLiveIfEligible(int tid, u64 start_ticks, u64 e
                                              blocker, unblocking_span_id);
 }
 
-// Virtual-thread / drain-thread path. Context is passed explicitly because
-// the native OTEP TLS is carrier-scoped and cannot be trusted. Custom profiling
-// context attributes are not propagated on this path (ctx has zeros for tags).
-static inline bool recordTaskBlockDeferredIfEligible(int tid, u64 start_ticks, u64 end_ticks,
-                                                      const Context& ctx, u64 blocker,
-                                                      u64 unblocking_span_id,
-                                                      u64 call_trace_id = 0,
-                                                      u64 correlation_id = 0,
-                                                      OSThreadState observed_state = OSThreadState::UNKNOWN) {
-  if (hasTraceContext(ctx)) {
-    Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
-    return false;
-  }
-  if (!exceedsMinTaskBlockDuration(start_ticks, end_ticks)) {
-    Counters::increment(TASK_BLOCK_SKIPPED_TOO_SHORT);
+// Off-thread/deferred path. The event must already carry stack metadata because
+// ProfiledThread::current() belongs to the recorder thread, not necessarily tid.
+static inline bool recordTaskBlockWithStackReferenceIfEligible(
+    int tid, u64 start_ticks, u64 end_ticks, const Context& ctx, u64 blocker,
+    u64 unblocking_span_id, u64 call_trace_id, u64 correlation_id,
+    OSThreadState observed_state) {
+  if (!taskBlockPassesBasicEligibility(start_ticks, end_ticks, ctx)) {
     return false;
   }
   TaskBlockEvent event{};
@@ -118,38 +126,23 @@ static inline bool recordTaskBlockDeferredIfEligible(int tid, u64 start_ticks, u
   event._blocker = blocker;
   event._unblockingSpanId = unblocking_span_id;
   event._ctx = ctx;
-  if (call_trace_id != 0 || correlation_id != 0 ||
-      observed_state != OSThreadState::UNKNOWN) {
-    setTaskBlockStackReference(event, call_trace_id, correlation_id,
-                               observed_state);
-  } else {
-    attachTaskBlockStackReference(tid, event);
-  }
+  setTaskBlockStackReference(event, call_trace_id, correlation_id,
+                             observed_state);
   if (!hasTaskBlockStackReference(event)) {
+    Counters::increment(TASK_BLOCK_SKIPPED_NO_STACK_REFERENCE);
     return false;
   }
-  if (Profiler::instance()->recordTaskBlockLive(tid, &event)) {
-    Counters::increment(TASK_BLOCK_EMITTED);
-    return true;
-  }
-  return false;
+  return recordTaskBlockLive(tid, event);
 }
 
-// Async path for native monitor callbacks. The producer side still performs
-// eligibility checks so traced or short intervals do not pressure the queue.
-static inline bool recordTaskBlockAsyncWithContextIfEligible(int tid, u64 start_ticks,
-                                                             u64 end_ticks, const Context& ctx,
-                                                             u64 blocker,
-                                                             u64 unblocking_span_id,
-                                                             u64 call_trace_id = 0,
-                                                             u64 correlation_id = 0,
-                                                             OSThreadState observed_state = OSThreadState::UNKNOWN) {
-  if (hasTraceContext(ctx)) {
-    Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
-    return false;
-  }
-  if (!exceedsMinTaskBlockDuration(start_ticks, end_ticks)) {
-    Counters::increment(TASK_BLOCK_SKIPPED_TOO_SHORT);
+// Async path for native monitor and native I/O callbacks. The producer must
+// snapshot stack metadata before exiting the blocked run; this helper does not
+// inspect ProfiledThread::current().
+static inline bool recordTaskBlockAsyncWithStackReferenceIfEligible(
+    int tid, u64 start_ticks, u64 end_ticks, const Context& ctx, u64 blocker,
+    u64 unblocking_span_id, u64 call_trace_id, u64 correlation_id,
+    OSThreadState observed_state) {
+  if (!taskBlockPassesBasicEligibility(start_ticks, end_ticks, ctx)) {
     return false;
   }
   TaskBlockEvent event{};
@@ -158,14 +151,10 @@ static inline bool recordTaskBlockAsyncWithContextIfEligible(int tid, u64 start_
   event._blocker = blocker;
   event._unblockingSpanId = unblocking_span_id;
   event._ctx = ctx;
-  if (call_trace_id != 0 || correlation_id != 0 ||
-      observed_state != OSThreadState::UNKNOWN) {
-    setTaskBlockStackReference(event, call_trace_id, correlation_id,
-                               observed_state);
-  } else {
-    attachTaskBlockStackReference(tid, event);
-  }
+  setTaskBlockStackReference(event, call_trace_id, correlation_id,
+                             observed_state);
   if (!hasTaskBlockStackReference(event)) {
+    Counters::increment(TASK_BLOCK_SKIPPED_NO_STACK_REFERENCE);
     return false;
   }
   return Profiler::instance()->recordTaskBlockAsync(tid, &event);

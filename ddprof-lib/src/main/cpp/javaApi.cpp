@@ -508,8 +508,9 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTaskBlockWithContext0(
   // Virtual-thread path: span/root ids captured at block entry are passed explicitly because
   // the native OTEP TLS is carrier-scoped and cannot be trusted. Custom attributes not propagated.
   Context ctx{(u64)spanId, (u64)rootSpanId};
-  recordTaskBlockDeferredIfEligible(tid, (u64)startTicks, (u64)endTicks,
-                                    ctx, (u64)blocker, (u64)unblockingSpanId);
+  recordTaskBlockWithContextIfEligible(tid, (u64)startTicks, (u64)endTicks,
+                                       ctx, (u64)blocker,
+                                       (u64)unblockingSpanId);
 }
 
 extern "C" DLLEXPORT void JNICALL
@@ -522,8 +523,9 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTaskBlockFromContext0(
     return;
   }
   Context ctx{(u64)spanId, (u64)rootSpanId};
-  recordTaskBlockDeferredIfEligible((int)tid, (u64)startTicks, (u64)endTicks,
-                                    ctx, (u64)blocker, (u64)unblockingSpanId);
+  recordTaskBlockWithStackReferenceIfEligible(
+      (int)tid, (u64)startTicks, (u64)endTicks, ctx, (u64)blocker,
+      (u64)unblockingSpanId, 0, 0, OSThreadState::UNKNOWN);
 }
 
 extern "C" DLLEXPORT void JNICALL
@@ -535,11 +537,10 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTaskBlockFromContextWithStackRefe
     return;
   }
   Context ctx{(u64)spanId, (u64)rootSpanId};
-  recordTaskBlockDeferredIfEligible((int)tid, (u64)startTicks, (u64)endTicks,
-                                    ctx, (u64)blocker, (u64)unblockingSpanId,
-                                    (u64)callTraceId,
-                                    (u64)correlationId,
-                                    decodeTaskBlockObservedState(observedBlockingState));
+  recordTaskBlockWithStackReferenceIfEligible(
+      (int)tid, (u64)startTicks, (u64)endTicks, ctx, (u64)blocker,
+      (u64)unblockingSpanId, (u64)callTraceId, (u64)correlationId,
+      decodeTaskBlockObservedState(observedBlockingState));
 }
 
 extern "C" DLLEXPORT jlong JNICALL

@@ -137,6 +137,8 @@ void Profiler::drainTaskBlockQueue(bool record) {
     if (record && queued.generation == generation) {
       if (recordTaskBlockLive(queued.tid, &queued.event)) {
         Counters::increment(TASK_BLOCK_EMITTED);
+      } else {
+        Counters::increment(TASK_BLOCK_RECORD_FAILED);
       }
     }
   }

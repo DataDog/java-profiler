@@ -165,7 +165,7 @@ static void monitorBlockExit(JNIEnv *jni, jthread thread, OSThreadState state) {
             snapshot.sampled_state != OSThreadState::UNKNOWN
                 ? snapshot.sampled_state
                 : state;
-        recordTaskBlockAsyncWithContextIfEligible(
+        recordTaskBlockAsyncWithStackReferenceIfEligible(
             tid, start_ticks, TSC::ticks(), context, blocker, 0,
             snapshot.has_stack_reference ? snapshot.call_trace_id : 0,
             snapshot.has_stack_reference ? snapshot.correlation_id : 0,
