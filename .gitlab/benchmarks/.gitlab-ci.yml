@@ -48,7 +48,6 @@ publish-benchmark-gh-pages:
   id_tokens:
     DDOCTOSTS_ID_TOKEN:
       aud: dd-octo-sts
-  needs: []
   # Serialize concurrent GH Pages pushes. publish-gh-pages.sh uses
   # 'git push --force'; two concurrent pushes race and the slower one
   # silently discards the faster one's history update.
