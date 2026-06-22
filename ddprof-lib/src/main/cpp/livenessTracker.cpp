@@ -351,6 +351,7 @@ retry:
     _table[idx].ref = ref;
     _table[idx].alloc = event;
     _table[idx].skipped = skipped.get();
+    skipped.set(0);
     _table[idx].age = 0;
     _table[idx].call_trace_id = call_trace_id;
     _table[idx].ctx = ContextApi::snapshot();
