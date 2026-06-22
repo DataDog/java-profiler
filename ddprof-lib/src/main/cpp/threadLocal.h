@@ -54,6 +54,8 @@ public:
     ThreadLocal& operator=(const ThreadLocal&) = delete;
 
     ThreadLocal() {
+        static_assert(sizeof(T) == sizeof(void*),
+                      "ThreadLocal<T> requires sizeof(T)==sizeof(void*); use a pointer type or add a specialization");
         int err = pthread_key_create(&_key, F);
         // What to do if we can not create a key?
         // We probably want to shutdown profiler gracefully, instead of
