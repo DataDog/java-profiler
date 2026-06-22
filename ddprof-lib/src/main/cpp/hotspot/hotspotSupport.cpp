@@ -1402,8 +1402,7 @@ jmethodID HotspotSupport::resolve(const void* method) {
               if (jvmti != nullptr) {
                 jint count = 0;
                 jmethodID* methods = nullptr;
-                if (jvmti->GetClassMethods(clz, &count, &methods) == JVMTI_ERROR_NONE) {
-                  jvmti->Deallocate((unsigned char*)methods);
+                if (HotspotSupport::loadMethodIDsIfNeededImpl(jvmti, jni, clz, true /*load all*/)) {
                   jmethodID validated = vm_method->validatedId();
                   if (isValidJMethodID(validated)) {
                     method_id = validated;
@@ -1413,7 +1412,6 @@ jmethodID HotspotSupport::resolve(const void* method) {
             }
           }
         }
-
         jni->DeleteLocalRef(clz);
       }
   }
