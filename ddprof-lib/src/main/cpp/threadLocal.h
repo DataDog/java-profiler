@@ -56,6 +56,9 @@ public:
     ThreadLocal() {
         int err = pthread_key_create(&_key, F);
         // What to do if we can not create a key?
+        // We probably want to shutdown profiler gracefully, instead of
+        // aborting user application - We will need this mechanism globally,
+        // defer to a separate task.
         assert(err == 0);
     }
 
@@ -63,6 +66,10 @@ public:
         pthread_key_delete(_key);
     }
 
+    /**
+     * set(nullptr) will result in the value being recreated when get() is called
+     * when CREATE_FUNC is not nullptr
+     */
     void set(T value) {
         int err = pthread_setspecific(_key, (const void*)value);
         assert(err == 0);
@@ -79,14 +86,13 @@ public:
 
     // Clear the value
     void clear() {
-        void* p = nullptr;
-        if (F != nullptr && (p = pthread_getspecific(_key)) != nullptr) {
-            int err = pthread_setspecific(_key, nullptr);
-            // Safety: if reset the value failed, get() can see staled value if
-            // it is freed.
-            if (err == 0) {
-              F(p);
-            }
+        void* p = pthread_getspecific(_key);
+        if (p == nullptr) return;
+        int err = pthread_setspecific(_key, nullptr);
+        // Safety: if reset the value failed, get() can see staled value if
+        // it is freed.
+        if (err == 0 && F != nullptr) {
+            F(p);
         }
     }
 };

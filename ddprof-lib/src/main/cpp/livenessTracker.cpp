@@ -403,8 +403,8 @@ retry:
     } else {
       env->DeleteWeakGlobalRef(ref);
     }
+    skipped.set(0); // reset the subsampling skipped bytes
   }
-  skipped.set(0); // reset the subsampling skipped bytes
 }
 
 void JNICALL LivenessTracker::GarbageCollectionFinish(jvmtiEnv *jvmti_env) {

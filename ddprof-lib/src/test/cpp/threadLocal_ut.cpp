@@ -49,6 +49,9 @@ static void free_tracked(void *p) {
 
 static ThreadLocal<int *, create_tracked, free_tracked> g_tracked_tl;
 
+// ---- tracked without auto-create: for clear() tests ----
+static ThreadLocal<int *, nullptr, free_tracked> g_nocreate_tracked_tl;
+
 // ---- double specialization ----
 static ThreadLocal<double> g_double_tl;
 
@@ -138,6 +141,7 @@ TEST_F(ThreadLocalTest, Lazy_CreateOncePerThread) {
     EXPECT_EQ(first, second);          // same instance reused (pointer compare only)
     EXPECT_EQ(1234, value);            // created via create_tracked()
     EXPECT_EQ(1, g_created.load());    // created exactly once
+    EXPECT_EQ(1, g_freed.load());
 }
 
 // The clean function runs when the owning thread exits, freeing per-thread state.
@@ -209,6 +213,56 @@ TEST_F(ThreadLocalTest, Double_UnsetIsZero) {
     std::thread t([&] { observed = g_double_tl.get(); });
     t.join();
     EXPECT_EQ(0.0, observed);
+}
+
+// clear() zeros the slot and invokes the destructor exactly once.
+TEST_F(ThreadLocalTest, Generic_ClearRunsDestructorAndZerosSlot) {
+    g_created.store(0, std::memory_order_relaxed);
+    g_freed.store(0, std::memory_order_relaxed);
+
+    int *ptr_before = nullptr;
+    int *ptr_after = reinterpret_cast<int *>(1); // sentinel – must become nullptr
+    std::thread t([&] {
+        // Manually place a tracked object; C == nullptr so get() won't re-create.
+        g_nocreate_tracked_tl.set(new int(55));
+        ptr_before = g_nocreate_tracked_tl.get();
+
+        g_nocreate_tracked_tl.clear();
+
+        ptr_after = g_nocreate_tracked_tl.get(); // no auto-create → must be nullptr
+    });
+    t.join();
+
+    EXPECT_NE(nullptr, ptr_before);   // value was present before clear()
+    EXPECT_EQ(nullptr, ptr_after);    // slot is zeroed after clear()
+    EXPECT_EQ(1, g_freed.load());     // destructor ran exactly once
+}
+
+// ThreadLocal<double>::clear() must make the next get() return 0.0.
+TEST_F(ThreadLocalTest, Double_ClearReturnsZero) {
+    double after_clear = -1.0;
+    std::thread t([&] {
+        g_double_tl.set(3.141592653589793);
+        g_double_tl.clear();
+        after_clear = g_double_tl.get();
+    });
+    t.join();
+    EXPECT_EQ(0.0, after_clear);
+}
+
+// clear() must zero the slot even when F == nullptr (no destructor registered).
+TEST_F(ThreadLocalTest, Generic_ClearWithNoDestructorZerosSlot) {
+    intptr_t before = 0;
+    intptr_t after_clear = -1;
+    std::thread t([&] {
+        g_int_tl.set(42);
+        before = g_int_tl.get();
+        g_int_tl.clear();
+        after_clear = g_int_tl.get();
+    });
+    t.join();
+    EXPECT_EQ(42, before);        // value was set
+    EXPECT_EQ(0, after_clear);    // slot is zeroed after clear() despite F == nullptr
 }
 
 // Per-thread accumulation mirrors LivenessTracker's `skipped` usage: each thread
