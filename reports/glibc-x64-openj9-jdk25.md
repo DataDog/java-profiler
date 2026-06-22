@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk25
 
 ## glibc-x64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-06-21 21:15:14 EDT
+**Date:** 2026-06-21 21:16:25 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,7 +18,7 @@ title: glibc-x64-openj9-jdk25
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 48 |
+| CPU Cores (start) | 45 |
 | CPU Cores (end) | 48 |
 | Throttling | 0% |
 
@@ -45,15 +45,11 @@ title: glibc-x64-openj9-jdk25
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
+<summary>CPU Timeline (2 unique values: 45-48 cores)</summary>
 
 ```
-1782090699 48
-1782090704 48
-1782090709 48
-1782090714 48
-1782090719 48
-1782090724 48
+1782090719 45
+1782090724 45
 1782090729 48
 1782090734 48
 1782090739 48
@@ -68,6 +64,10 @@ title: glibc-x64-openj9-jdk25
 1782090784 48
 1782090789 48
 1782090794 48
+1782090799 48
+1782090804 48
+1782090809 48
+1782090814 48
 ```
 </details>
 
