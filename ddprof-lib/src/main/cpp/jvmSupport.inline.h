@@ -39,8 +39,8 @@ jmethodID JVMSupport::resolve(const void* method) {
 bool JVMSupport::isHidden(jint modifiers) {
     static constexpr jint ACC_SYNTHETIC = 0x1000;
     static constexpr jint ACC_BRIDGE = 0x0040;
-    static constexpr jint JVM_ACC_HIDDEN = 0x800;
-    static constexpr jint hidden_mask = (ACC_SYNTHETIC | ACC_BRIDGE | JVM_ACC_HIDDEN);
+    static constexpr jint ACC_HIDDEN = 0x800;
+    static constexpr jint hidden_mask = (ACC_SYNTHETIC | ACC_BRIDGE | ACC_HIDDEN);
     return modifiers != 0 && // JVMTI GetClassModifiers returns 0 for ordinary package-private classes
            ((modifiers & hidden_mask) != 0);
 }
