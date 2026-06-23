@@ -16,13 +16,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Verifies that cstack=vm recordings correctly resolve {@code <clinit>} frames instead of
  * reporting them as "unknown".
  *
- * <p>With cstack=vm, jmethodID preloading is disabled for all classes. walkVM stores
- * method frames as raw VMMethod* pointers when no jmethodID has been allocated.
- * At dump time, HotspotSupport::resolve() tries JNI GetMethodID / GetStaticMethodID to
- * obtain the jmethodID, but JNI intentionally hides class initializers from callers.
- * Without the fix both calls return null and the frame is serialised as "unknown".
- * With the fix, a JVMTI GetClassMethods fallback forces jmethodID-slot allocation for
- * all methods in the class (including {@code <clinit>}), and re-reading from VM metadata
+ * <p>With {@code cstack=vm,fjmethodid=false}, jmethodID preloading is disabled for all
+ * classes ({@code _force_jmethodID=false} makes {@code shouldPreloadJmethodIDs()} return
+ * false). walkVM stores method frames as raw VMMethod* pointers when no jmethodID has been
+ * allocated. At dump time, HotspotSupport::resolve() tries JNI GetMethodID /
+ * GetStaticMethodID to obtain the jmethodID, but JNI intentionally hides class initializers
+ * from callers. Without the fix both calls return null and the frame is serialised as
+ * "unknown". With the fix, a JVMTI GetClassMethods fallback forces jmethodID-slot allocation
+ * for all methods in the class (including {@code <clinit>}), and re-reading from VM metadata
  * returns the correct identifier.
  */
 public class ClinitResolutionTest extends AbstractProfilerTest {
@@ -55,10 +56,12 @@ public class ClinitResolutionTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        // cstack=vm routes all Java-frame collection through HotspotSupport::walkVM and
-        // disables jmethodID preloading, producing raw VMMethod* frames that are resolved
-        // by HotspotSupport::resolve() at dump time.
-        return "cpu=1ms,cstack=vm";
+        // cstack=vm routes all Java-frame collection through HotspotSupport::walkVM.
+        // fjmethodid=false disables the _force_jmethodID default so that shouldPreloadJmethodIDs()
+        // returns false, preventing ClassPrepare from allocating jmethodID slots before <clinit>
+        // runs.  Without fjmethodid=false the preload still happens (force_jmethodID=true by
+        // default) and the JVMTI fallback in HotspotSupport::resolve() is never exercised.
+        return "cpu=1ms,cstack=vm,fjmethodid=false";
     }
 
     @RetryingTest(5)

@@ -1579,7 +1579,7 @@ int Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
         jint bci = trace->frames[i].bci;
         if (mi->_type < FRAME_NATIVE) {
           FrameTypeId type = FrameType::decode(bci);
-          bci = (bci & 0x10000) ? 0 : (bci & 0xffff);
+          bci = FrameType::bci(bci);
           buf->putVar32(mi->getLineNumber(bci));
           buf->putVar32(bci);
           buf->put8(type);
