@@ -13,6 +13,8 @@
 #include <cstdio>
 #include <cstdlib>
 
+#include "common.h"  // TSAN_ENABLED (toolchain-agnostic sanitizer detection)
+
 // Platform detection for execinfo.h availability
 #if defined(__GLIBC__) || (defined(__APPLE__) && defined(__MACH__)) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
     #define HAVE_EXECINFO_H 1
@@ -123,7 +125,7 @@ void specificCrashHandler(int sig, siginfo_t *info, void *context) {
 // and overriding them causes TSan to crash before it can write its report.
 template<const char* TestName>
 void installGtestCrashHandler() {
-#if !defined(__SANITIZE_THREAD__)
+#if !defined(TSAN_ENABLED)
     struct sigaction sa;
     sa.sa_flags = SA_SIGINFO;  // Get detailed info, keep handler active
     sigemptyset(&sa.sa_mask);
@@ -140,7 +142,7 @@ void installGtestCrashHandler() {
 
 // Restore default signal handlers.
 inline void restoreDefaultSignalHandlers() {
-#if !defined(__SANITIZE_THREAD__)
+#if !defined(TSAN_ENABLED)
     signal(SIGSEGV, SIG_DFL);
     signal(SIGBUS, SIG_DFL);
     signal(SIGABRT, SIG_DFL);

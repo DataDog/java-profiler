@@ -57,7 +57,7 @@ jobs:
               echo "enabled=false" >> $GITHUB_OUTPUT
             fi
           fi
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         if: steps.set_enabled.outputs.enabled == 'true'
       - name: Cache Gradle Wrapper Binaries
         if: steps.set_enabled.outputs.enabled == 'true'
@@ -100,14 +100,29 @@ jobs:
       - name: Test
         if: steps.set_enabled.outputs.enabled == 'true'
         run: |
-          sudo sysctl vm.mmap_rnd_bits=28
-      
           set +e
           export KEEP_JFRS=true
           export TEST_COMMIT=${{ github.sha }}
           export TEST_CONFIGURATION=glibc/${{ matrix.java_version }}-${{ matrix.config }}-amd64
           export LIBC=glibc
           export SANITIZER=${{ matrix.config }}
+
+          GRADLEW_PREFIX=""
+          if [[ "${{ matrix.config }}" == "asan" ]]; then
+            # Reduce ASLR entropy so the JVM doesn't land in ASan's shadow range
+            # [0x00007fff7000-0x10007fff7fff]; 28 (the default) causes random aborts.
+            if ! sudo sysctl -w vm.mmap_rnd_bits=8 2>/dev/null; then
+              echo "::warning::Cannot set vm.mmap_rnd_bits; falling back to setarch --addr-no-randomize"
+              GRADLEW_PREFIX="setarch $(uname -m) --addr-no-randomize"
+            fi
+          fi
+
+          # GraalVM pre-allocates fixed memory that conflicts with ASan's shadow range
+          # [0x00007fff7000-0x10007fff7fff]; vm.mmap_rnd_bits tuning does not help (google/sanitizers#856).
+          if [[ "${{ matrix.config }}" == "asan" && "${{ matrix.java_version }}" =~ graal ]]; then
+            echo "::notice::Skipping ASan for GraalVM (incompatible shadow memory ranges — google/sanitizers#856)"
+            exit 0
+          fi
 
           MAX_ATTEMPTS=1
           if [[ "${{ matrix.config }}" == "asan" && "${{ matrix.java_version }}" =~ (j9|ibm) ]]; then
@@ -116,7 +131,7 @@ jobs:
 
           for attempt in $(seq 1 $MAX_ATTEMPTS); do
             mkdir -p build/logs
-            ./gradlew -PCI -PkeepJFRs ${{ inputs.skip_gtest == true && '-Pskip-gtest' || '' }} :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
+            ${GRADLEW_PREFIX} ./gradlew -PCI -PkeepJFRs ${{ inputs.skip_gtest == true && '-Pskip-gtest' || '' }} :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
               | tee -a build/test-raw.log \
               | python3 -u .github/scripts/filter_gradle_log.py
             EXIT_CODE=${PIPESTATUS[0]}
@@ -176,6 +191,13 @@ jobs:
           name: signal-safety-violation-glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64
           path: /tmp/signal-safety-violation.txt
           if-no-files-found: ignore
+      - name: Upload ASan logs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure() && matrix.config == 'asan'
+        with:
+          name: asan-logs-glibc-${{ matrix.java_version }}-amd64
+          path: /tmp/asan.log.*
+          if-no-files-found: ignore
 
   test-linux-musl-amd64:
     needs: [cache-jdks, filter-musl-configs]
@@ -196,7 +218,7 @@ jobs:
           apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ clang git cppcheck jq cmake gtest-dev gmock tar binutils python3 >/dev/null
           # Install debug symbols for musl libc
           apk add musl-dbg
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Cache Gradle Wrapper Binaries
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
@@ -302,6 +324,13 @@ jobs:
           name: signal-safety-violation-musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64
           path: /tmp/signal-safety-violation.txt
           if-no-files-found: ignore
+      - name: Upload ASan logs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure() && matrix.config == 'asan'
+        with:
+          name: asan-logs-musl-${{ matrix.java_version }}-amd64
+          path: /tmp/asan.log.*
+          if-no-files-found: ignore
 
   test-linux-glibc-aarch64:
     needs: cache-jdks
@@ -328,7 +357,7 @@ jobs:
               echo "enabled=false" >> $GITHUB_OUTPUT
             fi
           fi
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         if: steps.set_enabled.outputs.enabled == 'true'
       - name: Cache Gradle Wrapper Binaries
         if: steps.set_enabled.outputs.enabled == 'true'
@@ -373,8 +402,6 @@ jobs:
       - name: Test
         if: steps.set_enabled.outputs.enabled == 'true'
         run: |
-          sudo sysctl vm.mmap_rnd_bits=28
-
           set +e
           export KEEP_JFRS=true
           export TEST_COMMIT=${{ github.sha }}
@@ -382,9 +409,15 @@ jobs:
           export LIBC=glibc
           export SANITIZER=${{ matrix.config }}
 
+          GRADLEW_PREFIX=""
           # For ASAN: launch a gdb watchdog that dumps all native threads before the
           # 30-minute Gradle timeout kills the JVM, so we can diagnose hangs in native code.
           if [[ "${{ matrix.config }}" == "asan" ]]; then
+            # Reduce ASLR entropy so the JVM doesn't land in ASan's shadow range; 28 causes random aborts.
+            if ! sudo sysctl -w vm.mmap_rnd_bits=8 2>/dev/null; then
+              echo "::warning::Cannot set vm.mmap_rnd_bits; falling back to setarch --addr-no-randomize"
+              GRADLEW_PREFIX="setarch $(uname -m) --addr-no-randomize"
+            fi
             mkdir -p build/logs
             (
               sleep 1500  # 25 minutes — fires before the 30-min Gradle timeout
@@ -397,6 +430,13 @@ jobs:
             GDB_WATCHDOG_PID=$!
           fi
 
+          # GraalVM pre-allocates fixed memory that conflicts with ASan's shadow range
+          # [0x00007fff7000-0x10007fff7fff]; vm.mmap_rnd_bits tuning does not help (google/sanitizers#856).
+          if [[ "${{ matrix.config }}" == "asan" && "${{ matrix.java_version }}" =~ graal ]]; then
+            echo "::notice::Skipping ASan for GraalVM (incompatible shadow memory ranges — google/sanitizers#856)"
+            exit 0
+          fi
+
           MAX_ATTEMPTS=1
           if [[ "${{ matrix.config }}" == "asan" && "${{ matrix.java_version }}" =~ (j9|ibm) ]]; then
             MAX_ATTEMPTS=2
@@ -404,7 +444,7 @@ jobs:
 
           for attempt in $(seq 1 $MAX_ATTEMPTS); do
             mkdir -p build/logs
-            ./gradlew -PCI -PkeepJFRs ${{ inputs.skip_gtest == true && '-Pskip-gtest' || '' }} :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
+            ${GRADLEW_PREFIX} ./gradlew -PCI -PkeepJFRs ${{ inputs.skip_gtest == true && '-Pskip-gtest' || '' }} :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
               | tee -a build/test-raw.log \
               | python3 -u .github/scripts/filter_gradle_log.py
             EXIT_CODE=${PIPESTATUS[0]}
@@ -469,6 +509,13 @@ jobs:
           name: signal-safety-violation-glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
           path: /tmp/signal-safety-violation.txt
           if-no-files-found: ignore
+      - name: Upload ASan logs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure() && matrix.config == 'asan'
+        with:
+          name: asan-logs-glibc-${{ matrix.java_version }}-aarch64
+          path: /tmp/asan.log.*
+          if-no-files-found: ignore
 
   test-linux-musl-aarch64:
      needs: [cache-jdks, filter-musl-configs]
@@ -483,7 +530,7 @@ jobs:
        labels: arm-4core-linux-ubuntu24.04
      timeout-minutes: 180
      steps:
-       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
        - name: Cache Gradle Wrapper Binaries
          uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
          with:
@@ -572,4 +619,11 @@ jobs:
          with:
            name: signal-safety-violation-musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
            path: /tmp/signal-safety-violation.txt
+           if-no-files-found: ignore
+       - name: Upload ASan logs
+         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+         if: failure() && matrix.config == 'asan'
+         with:
+           name: asan-logs-musl-${{ matrix.java_version }}-aarch64
+           path: /tmp/asan.log.*
            if-no-files-found: ignore

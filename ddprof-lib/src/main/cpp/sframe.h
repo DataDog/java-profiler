@@ -17,6 +17,9 @@
 const uint16_t SFRAME_MAGIC        = 0xDEE2;
 const uint8_t  SFRAME_VERSION_2    = 2;
 const uint8_t  SFRAME_F_FDE_SORTED = 0x01;
+// SFrame V2 erratum: when set, FDE start_addr is relative to the start_addr
+// field location, not the section start. Unsupported here -> DWARF fallback.
+const uint8_t  SFRAME_F_FDE_FUNC_START_PCREL = 0x04;
 
 // ABI/architecture identifiers
 const uint8_t SFRAME_ABI_AARCH64_ENDIAN_LITTLE = 2;
@@ -42,7 +45,7 @@ const int SFRAME_FRE_TYPE_ADDR1 = 0;
 const int SFRAME_FRE_TYPE_ADDR2 = 1;
 const int SFRAME_FRE_TYPE_ADDR4 = 2;
 
-struct __attribute__((packed)) SFrameHeader {  // 28 bytes
+struct __attribute__((packed, may_alias)) SFrameHeader {  // 28 bytes
     uint16_t magic;
     uint8_t  version;
     uint8_t  flags;
@@ -57,7 +60,7 @@ struct __attribute__((packed)) SFrameHeader {  // 28 bytes
     uint32_t freoff;
 };
 
-struct __attribute__((packed)) SFrameFDE {  // 20 bytes
+struct __attribute__((packed, may_alias)) SFrameFDE {  // 20 bytes
     int32_t  start_addr;   // signed, relative to .sframe section start (V2)
     uint32_t func_size;
     uint32_t fre_off;      // byte offset into FRE sub-section
@@ -78,6 +81,7 @@ class SFrameParser {
     int        _count;
     FrameDesc* _table;
     int        _linked_frame_size;  // for aarch64 GCC vs Clang detection; -1 = undetected
+    bool       _oom;                // set by addRecord on realloc failure
 
     bool       parseFDE(const SFrameHeader* hdr, const SFrameFDE* fde,
                         const char* fre_section, const char* fre_end);

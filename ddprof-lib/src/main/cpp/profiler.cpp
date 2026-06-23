@@ -8,8 +8,8 @@
 #include "profiler.h"
 #include "asyncSampleMutex.h"
 #include "mallocTracer.h"
+#include "nativeSocketSampler.h"
 #include "context.h"
-#include "context_api.h"
 #include "guards.h"
 #include "common.h"
 #include "counters.h"
@@ -133,7 +133,28 @@ int Profiler::registerThread(int tid) {
   return _instance->_cpu_engine->registerThread(tid) |
          _instance->_wall_engine->registerThread(tid);
 }
+#ifdef UNIT_TEST
+static std::atomic<int> g_test_last_unregistered_tid{-1};
+
+int Profiler::lastUnregisteredTidForTest() {
+    return g_test_last_unregistered_tid.load(std::memory_order_relaxed);
+}
+void Profiler::resetUnregisterObservableForTest() {
+    g_test_last_unregistered_tid.store(-1, std::memory_order_relaxed);
+}
+#endif
+
 void Profiler::unregisterThread(int tid) {
+#ifdef UNIT_TEST
+    // In gtest, _cpu_engine/_wall_engine are null (profiler not started).
+    // Record the tid so integration tests can verify the call happened without
+    // crashing on the null engine dereference.  This bypasses the real engine
+    // unregister path entirely, so that path is covered only by JVM-level tests,
+    // not by these gtests.  UNIT_TEST is defined solely for the gtest binaries
+    // (see GtestTaskBuilder); the shipped library never compiles this branch.
+    g_test_last_unregistered_tid.store(tid, std::memory_order_relaxed);
+    return;
+#endif
   _instance->_cpu_engine->unregisterThread(tid);
   _instance->_wall_engine->unregisterThread(tid);
 }
@@ -1031,23 +1052,40 @@ void Profiler::updateJavaThreadNames() {
   jvmti->Deallocate((unsigned char *)thread_objects);
 }
 
-void Profiler::updateNativeThreadNames() {
-    ThreadList *thread_list = OS::listThreads();
-    constexpr size_t buffer_size = 64;
-    char name_buf[buffer_size];  // Stack-allocated buffer
+void Profiler::updateNativeThreadNames(bool defer_initializing) {
+  ThreadList *thread_list = OS::listThreads();
+  constexpr size_t buffer_size = 64;
+  char name_buf[buffer_size];  // Stack-allocated buffer
 
-    while (thread_list->hasNext()) { 
-        int tid = thread_list->next(); 
-        _thread_info.updateThreadName(
-                tid, [&](int tid) -> std::string {
-                    if (OS::threadName(tid, name_buf, buffer_size)) {
-                        return std::string(name_buf, buffer_size);
-                    }
-                    return std::string();
-                });
-    }
+  // A freshly cloned thread inherits the creating thread's comm until it sets
+  // its own name; for the threads we want here that creator is typically the
+  // main thread, so the inherited name is the process name. When deferring, we
+  // skip recording it and let a later pass capture the final name.
+  char proc_name[buffer_size];
+  bool have_proc_name =
+      defer_initializing && OS::threadName(OS::processId(), proc_name, buffer_size);
 
-    delete thread_list;
+  while (thread_list->hasNext()) {
+    int tid = thread_list->next();
+    _thread_info.updateThreadName(
+        tid, [&](int tid) -> std::string {
+          if (OS::threadName(tid, name_buf, buffer_size)) {
+            // Skip a thread still showing the inherited process name: it is
+            // probably mid-initialization. Recording it would latch a
+            // provisional name (updateThreadName is first-writer-wins).
+            if (have_proc_name && strcmp(name_buf, proc_name) == 0) {
+              return std::string();
+            }
+            // name_buf is NUL-terminated by OS::threadName; let
+            // std::string find the length rather than storing the
+            // full 64-byte buffer (NUL + trailing garbage).
+            return std::string(name_buf);
+          }
+          return std::string();
+        });
+  }
+
+  delete thread_list;
 }
 
 Engine *Profiler::selectCpuEngine(Arguments &args) {
@@ -1210,7 +1248,8 @@ Error Profiler::start(Arguments &args, bool reset) {
       (args._record_allocations || args._record_liveness || args._gc_generations
            ? EM_ALLOC
            : 0) |
-      (args._nativemem >= 0 ? EM_NATIVEMEM : 0);
+      (args._nativemem >= 0 ? EM_NATIVEMEM : 0) |
+      (args._nativesocket ? EM_NATIVESOCKET : 0);
 
   if (_event_mask == 0) {
     return Error("No profiling events specified");
@@ -1359,9 +1398,6 @@ Error Profiler::start(Arguments &args, bool reset) {
   JfrMetadata::reset();
   JfrMetadata::initialize(args._context_attributes);
   _num_context_attributes = args._context_attributes.size();
-  // Initialize the OTel thread context so external profilers can decode
-  // the per-thread context, including custom attributes
-  ContextApi::registerAttributeKeys(args._context_attributes);
   error = _jfr.start(args, reset);
   if (error) {
     disableEngines();
@@ -1420,6 +1456,15 @@ Error Profiler::start(Arguments &args, bool reset) {
       activated |= EM_NATIVEMEM;
     }
   }
+  if (_event_mask & EM_NATIVESOCKET) {
+    error = NativeSocketSampler::instance()->start(args);
+    if (error) {
+      Log::warn("%s", error.message());
+      error = Error::OK; // recoverable
+    } else {
+      activated |= EM_NATIVESOCKET;
+    }
+  }
 
   if (activated) {
     switchThreadEvents(JVMTI_ENABLE);
@@ -1460,15 +1505,20 @@ Error Profiler::stop() {
     _alloc_engine->stop();
   if (_event_mask & EM_NATIVEMEM)
     malloc_tracer.stop();
+  // Stop the refresher BEFORE socket unpatch: the refresher calls
+  // install_socket_hooks() which re-reads _socket_active before acquiring the
+  // patch lock.  If the refresher runs concurrently with unpatch_socket_functions()
+  // it can see _socket_active=true, wait for the lock, then re-patch PLT slots
+  // that unpatch just restored.  Stopping the refresher here closes that window.
+  _libs->stopRefresher();
+  if (_event_mask & EM_NATIVESOCKET)
+    NativeSocketSampler::instance()->stop();
   if (_event_mask & EM_WALL)
     _wall_engine->stop();
   if (_event_mask & EM_CPU)
     _cpu_engine->stop();
 
   switchLibraryTrap(false);
-  // Stop the refresher before the final refresh() so it doesn't race the
-  // teardown.  startRefresher/stopRefresher are idempotent.
-  _libs->stopRefresher();
   switchThreadEvents(JVMTI_DISABLE);
   Libraries::instance()->refresh();
   updateJavaThreadNames();
@@ -1549,6 +1599,9 @@ Error Profiler::check(Arguments &args) {
   }
   if (!error && args._nativemem >= 0) {
     error = malloc_tracer.check(args);
+  }
+  if (!error && args._nativesocket) {
+    error = NativeSocketSampler::instance()->check(args);
   }
   if (!error) {
     if (args._cstack == CSTACK_DWARF && !DWARF_SUPPORTED) {

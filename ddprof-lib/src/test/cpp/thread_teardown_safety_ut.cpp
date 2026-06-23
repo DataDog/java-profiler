@@ -22,11 +22,21 @@
 #include "thread.h"
 
 #include <atomic>
-#include <cxxabi.h>
 #include <pthread.h>
 #include <signal.h>
+#include <setjmp.h>
 #include <unistd.h>
 #include <vector>
+
+#ifdef __GLIBC__
+// <pthread.h> declares these only inside the C (non-C++) conditional.
+// Redeclare with extern "C" so we can call them directly from C++ code.
+extern "C" {
+    extern void __pthread_register_cancel(__pthread_unwind_buf_t*);
+    extern void __pthread_unregister_cancel(__pthread_unwind_buf_t*);
+    [[noreturn]] extern void __pthread_unwind_next(__pthread_unwind_buf_t*);
+}
+#endif
 
 // Sentinel value meaning "handler has not run yet" — distinct from both nullptr
 // (not registered) and any real ProfiledThread address.
@@ -255,29 +265,58 @@ static std::atomic<bool> g_t07_release_ran{false};
 
 #ifdef __GLIBC__
 
-static void *t07_body(void *) {
+// t07 uses __pthread_register_cancel for cleanup (same as run_with_cleanup in
+// libraryPatcher_linux.cpp).  Two constraints follow from the static-libgcc /
+// libgcc_s.so.1 incompatibility:
+//
+// 1. No C++ RAII objects with destructors in this frame.  After the longjmp
+//    from glibc's stop function, __pthread_unwind_next calls _Unwind_ForcedUnwind
+//    again to continue unwinding through this frame.  Any LSDA cleanup entry
+//    (e.g. SigGuard, std::unique_ptr) would make __gxx_personality_v0 call
+//    _Unwind_SetGR with a cross-version context → abort().
+//
+// 2. No try/catch: handler frames also add LSDA entries, same problem.
+//
+// Signal handler save/restore is done manually (plain struct sigaction, no
+// destructor) so there is nothing in the LSDA for this frame.
+__attribute__((noinline, no_stack_protector)) static void *t07_body(void *) {
   g_t07_cleanup_ran.store(false, std::memory_order_relaxed);
   g_t07_release_ran.store(false, std::memory_order_relaxed);
 
-  SigGuard guard(SIGVTALRM);
+  // Save and install the signal handler WITHOUT RAII (no destructor = no LSDA
+  // cleanup entry for this frame).
+  struct sigaction old_sa_vtalrm;
+  sigaction(SIGVTALRM, nullptr, &old_sa_vtalrm);
   install_handler(SIGVTALRM, SIG_IGN);
+
   ProfiledThread::initCurrentThread();
 
-  try {
-    // Inject a signal before the cancellation point to exercise the combined path.
-    pthread_kill(pthread_self(), SIGVTALRM);
-    while (true) {
-      pthread_testcancel();
-      usleep(100);
-    }
-  } catch (abi::__forced_unwind &) {
+  __pthread_unwind_buf_t cancel_buf = {};
+  if (__builtin_expect(
+          __sigsetjmp((struct __jmp_buf_tag*)(void*)cancel_buf.__cancel_jmp_buf, 0), 0)) {
+    // Restore handler before continuing forced unwind (no RAII to do it for us).
+    sigaction(SIGVTALRM, &old_sa_vtalrm, nullptr);
     g_t07_cleanup_ran.store(true, std::memory_order_relaxed);
     ProfiledThread::release();
     g_t07_release_ran.store(true, std::memory_order_relaxed);
-    throw;
+    __pthread_unwind_next(&cancel_buf);
   }
-  ProfiledThread::release();
-  return nullptr;
+  __pthread_register_cancel(&cancel_buf);
+  // No matching __pthread_unregister_cancel: the only legal exit from this body
+  // is the forced unwind raised by pthread_cancel, which longjmps into the
+  // __sigsetjmp branch above and continues via __pthread_unwind_next.  The loop
+  // below never returns normally; if it ever did, cancel_buf would be left
+  // registered against a destroyed frame.
+  // Inject a signal before the cancellation point to exercise the combined path.
+  pthread_kill(pthread_self(), SIGVTALRM);
+  while (true) {
+    pthread_testcancel();
+    usleep(100);
+  }
+  // Must only exit via pthread_cancel above.  If control reaches here, the
+  // frame was not cancelled as expected and cancel_buf is now a dangling
+  // registration — abort rather than corrupt glibc's cleanup list.
+  __builtin_unreachable();
 }
 
 #else  // !__GLIBC__ — musl: cancellation runs C cleanup callbacks

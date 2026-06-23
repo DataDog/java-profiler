@@ -151,7 +151,7 @@ jobs:
         # FIXME: Zing disabled - Azul pulled public CDN access
         java_variant: [ "8", "8-orcl", "8-j9", "8-ibm", "11", "11-j9", "17", "17-j9", "17-graal", "21", "21-j9", "21-graal", "25", "25-graal" ]
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Try restore cache JDK ${{ matrix.java_variant }}
         id: cache-jdk
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
@@ -210,7 +210,7 @@ jobs:
       matrix:
         java_variant: [ "8-librca", "11-librca", "17-librca", "21-librca", "25-librca" ]
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Setup OS
         run: |
           # This needs to be done early because alpine does not have bash and tar is also iffy
@@ -262,7 +262,7 @@ jobs:
         # FIXME: Zing disabled - Azul pulled public CDN access
         java_variant: [ "8", "8-j9", "11", "11-j9", "17", "17-j9", "17-graal", "21", "21-j9", "21-graal", "25", "25-graal" ]
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Cache JDK ${{ matrix.java_variant }}
         id: cache-jdk
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
@@ -319,7 +319,7 @@ jobs:
       matrix:
         java_variant: [ "8-librca", "11-librca", "17-librca", "21-librca", "25-librca" ]
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Setup OS
         run: |
           # This needs to be done early because alpine does not have bash and tar is also iffy
