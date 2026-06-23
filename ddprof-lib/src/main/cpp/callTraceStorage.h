@@ -21,7 +21,6 @@
 #include <chrono>
 
 // Forward declarations
-class CallTraceStorage;
 class CallTraceHashTable;
 
 // Liveness checker function type

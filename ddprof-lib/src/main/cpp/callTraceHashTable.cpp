@@ -274,6 +274,21 @@ CallTrace *CallTraceHashTable::findCallTrace(LongHashTable *table, u64 hash) {
   return nullptr;
 }
 
+void CallTraceHashTable::expandTableIfNeeded(LongHashTable* table, u32 size) {
+  u32 capacity = table->capacity();
+
+  // EXPANSION LOGIC: Check if load ratio reached after incrementing size
+  if (size >= (u32) (capacity * LOAD_RATIO)  &&
+      table == __atomic_load_n(&_table, __ATOMIC_RELAXED)) { // quick check, if other thread already expanded the table
+    // Allocate new table with double capacity using LinearAllocator
+    LongHashTable* new_table = LongHashTable::allocate(table, capacity * 2, &_allocator);
+    if (new_table != nullptr) {
+      // Atomic table swap - only one thread succeeds
+      __atomic_compare_exchange_n(&_table, &table, new_table, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
+    }
+  }
+}
+
 u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
                           bool truncated, u64 weight) {
   u64 hash = calcHash(num_frames, frames, truncated);
@@ -357,19 +372,10 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
 
       // Increment size counter for statistics and check for expansion
       u32 new_size = table->incSize();
-      u32 capacity = table->capacity();
 
       probe.updateCapacity(new_size);
 
-      // EXPANSION LOGIC: Check if 75% capacity reached after incrementing size
-      if (new_size == capacity * 3 / 4) {
-        // Allocate new table with double capacity using LinearAllocator
-        LongHashTable* new_table = LongHashTable::allocate(table, capacity * 2, &_allocator);
-        if (new_table != nullptr) {
-          // Atomic table swap - only one thread succeeds
-          __atomic_compare_exchange_n(&_table, &table, new_table, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED);
-        }
-      }
+      expandTableIfNeeded(table, new_size);
 
       // Check if trace exists in previous tables to avoid duplication
       CallTrace *trace = nullptr;
@@ -477,37 +483,36 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
     if (key_value == 0) {
       // Found empty slot - claim it atomically
       u64 expected = 0;
-      if (!__atomic_compare_exchange_n(&keys[slot], &expected, hash, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
-        // Another thread claimed it, try next slot
-        if (probe.hasNext()) {
-          slot = probe.next();
-          continue;
-        }
-      }
-      
-      // Create a copy of the source trace preserving its exact ID
-      const size_t header_size = sizeof(CallTrace) - sizeof(ASGCT_CallFrame);
-      const size_t total_size = header_size + source_trace->num_frames * sizeof(ASGCT_CallFrame);
-      void *memory = _allocator.alloc(total_size);
-      if (memory != nullptr) {
-        // Use placement new to invoke constructor in-place
-        CallTrace* copied_trace = new (memory) CallTrace(source_trace->truncated, source_trace->num_frames, source_trace->trace_id);
-        // memcpy safe since not in signal handler
-        memcpy(copied_trace->frames, source_trace->frames, source_trace->num_frames * sizeof(ASGCT_CallFrame));
-        table->values()[slot].setTrace(copied_trace);
-        Counters::increment(CALLTRACE_STORAGE_BYTES, total_size);
-        Counters::increment(CALLTRACE_STORAGE_TRACES);
+      if (__atomic_compare_exchange_n(&keys[slot], &expected, hash, false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+        // Successfully claimed the slot
+        // Create a copy of the source trace preserving its exact ID
+        const size_t header_size = sizeof(CallTrace) - sizeof(ASGCT_CallFrame);
+        const size_t total_size = header_size + source_trace->num_frames * sizeof(ASGCT_CallFrame);
+        void *memory = _allocator.alloc(total_size);
+        if (memory != nullptr) {
+          // Use placement new to invoke constructor in-place
+          CallTrace* copied_trace = new (memory) CallTrace(source_trace->truncated, source_trace->num_frames, source_trace->trace_id);
+          // memcpy safe since not in signal handler
+          memcpy(copied_trace->frames, source_trace->frames, source_trace->num_frames * sizeof(ASGCT_CallFrame));
+          table->values()[slot].setTrace(copied_trace);
+          Counters::increment(CALLTRACE_STORAGE_BYTES, total_size);
+          Counters::increment(CALLTRACE_STORAGE_TRACES);
 
-        // Increment table size
-        u32 new_size = table->incSize();
-        probe.updateCapacity(new_size);
-      } else {
-        // Allocation failure - clear the key we claimed
-        __atomic_store_n(&keys[slot], 0, __ATOMIC_RELEASE);
+          // Increment table size
+          table->incSize();
+        } else {
+          // Allocation failure - clear the key we claimed
+          __atomic_store_n(&keys[slot], 0, __ATOMIC_RELEASE);
+        }
+        break;
       }
+    }
+    if (probe.hasNext()) {
+      slot = probe.next();
+    } else {
+      // No more slots. The sample is dropped
+      Counters::increment(CALLTRACE_STORAGE_DROPPED);
       break;
     }
-    
-    slot = probe.next();
   }
 }

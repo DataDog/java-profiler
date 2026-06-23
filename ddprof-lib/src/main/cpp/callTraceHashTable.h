@@ -54,6 +54,8 @@ struct CallTraceSample {
 class CallTraceStorage;
 
 class CallTraceHashTable {
+  static constexpr double LOAD_RATIO = 3.0 / 4.0;
+
 public:
   static CallTrace _overflow_trace;
 
@@ -79,6 +81,7 @@ private:
   CallTrace *findCallTrace(LongHashTable *table, u64 hash);
   void decrementCounters();
   
+  void expandTableIfNeeded(LongHashTable* table, u32 size);
 
 public:
   CallTraceHashTable();
