@@ -1381,8 +1381,6 @@ Error Profiler::start(Arguments &args, bool reset) {
     _libs->updateBuildIds();
   }
 
-  enableEngines();
-
   // Refresher must be running before the trap fires: dlopen_hook's
   // signal-context branch only marks dirty and relies on the refresher
   // to call refresh() within REFRESH_INTERVAL_NS (500 ms).
@@ -1396,7 +1394,6 @@ Error Profiler::start(Arguments &args, bool reset) {
   _num_context_attributes = args._context_attributes.size();
   error = _jfr.start(args, reset);
   if (error) {
-    disableEngines();
     switchLibraryTrap(false);
     _libs->stopRefresher();
     return error;
@@ -1470,6 +1467,15 @@ Error Profiler::start(Arguments &args, bool reset) {
     //      However, the thread name will be updated later in updateJavaThreadNames().
     // TODO: find a better way to resolve the thread name.
     onThreadStart(nullptr, nullptr, nullptr);
+
+    // enableEngines() (_enabled=true) is intentionally deferred until here,
+    // after _jfr.start() and all engine starts. Previously it was called
+    // before _jfr.start(), creating a TOCTOU race: a SIGPROF delivered
+    // between enableEngines() and _jfr.start() completing would enter
+    // recordSample() on partially-initialized JFR structures.
+    // Paired with drainInflight() in CTimer::stop() which closes the
+    // symmetric race on the stop side.
+    enableEngines();
 
     _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);

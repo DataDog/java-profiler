@@ -28,6 +28,10 @@ class CTimer : public Engine {
 protected:
   // This is accessed from signal handlers, so must be async-signal-safe
   static bool _enabled;
+  // Count of signal handlers currently executing past the _enabled check.
+  // stop() drains this to zero before tearing down JFR structures, closing
+  // the TOCTOU window between the _enabled check and JFR buffer access.
+  static int _inflight;
   static long _interval;
   static CStack _cstack;
   static int _signal;
@@ -55,6 +59,15 @@ public:
 
   inline void enableEvents(bool enabled) {
     __atomic_store_n(&_enabled, enabled, __ATOMIC_RELEASE);
+  }
+
+  // Spin until all signal handlers that passed the _enabled=true check have
+  // returned. Must be called with _enabled already false (after disableEngines()),
+  // before any JFR teardown that handlers could race against.
+  static void drainInflight() {
+    while (__atomic_load_n(&_inflight, __ATOMIC_ACQUIRE) > 0) {
+      sched_yield();
+    }
   }
 
   // Get the signal number used by CTimer (0 if not initialized)

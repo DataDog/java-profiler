@@ -49,6 +49,7 @@ int CTimer::_max_timers = 0;
 int *CTimer::_timers = NULL;
 CStack CTimer::_cstack;
 bool CTimer::_enabled = false;
+int CTimer::_inflight = 0;
 int CTimer::_signal;
 
 int CTimer::registerThread(int tid) {
@@ -180,6 +181,10 @@ void CTimer::stop() {
   for (int i = 0; i < _max_timers; i++) {
     unregisterThread(i);
   }
+  // _enabled is already false (disableEngines() is called before stop()).
+  // Spin until all handlers that passed the _enabled=true check have returned,
+  // so it is safe to tear down JFR structures on return.
+  drainInflight();
 }
 
 Error CTimerJvmti::check(Arguments &args) {
@@ -210,12 +215,15 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   }
   Counters::increment(CTIMER_SIGNAL_OWN);
 
+  __atomic_fetch_add(&_inflight, 1, __ATOMIC_ACQUIRE);
   CriticalSection cs;
   if (!cs.entered()) {
+    __atomic_fetch_sub(&_inflight, 1, __ATOMIC_RELEASE);
     return;
   }
   int saved_errno = errno;
   if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
+    __atomic_fetch_sub(&_inflight, 1, __ATOMIC_RELEASE);
     errno = saved_errno;
     return;
   }
@@ -245,6 +253,7 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   Profiler::instance()->recordSampleDelegated(ucontext, _interval, tid,
                                                BCI_CPU, &event);
   Shims::instance().setSighandlerTid(-1);
+  __atomic_fetch_sub(&_inflight, 1, __ATOMIC_RELEASE);
   errno = saved_errno;
 }
 
@@ -261,17 +270,24 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   }
   Counters::increment(CTIMER_SIGNAL_OWN);
 
+  // Increment before the _enabled check so drainInflight() reliably waits
+  // for all handlers currently past the check.
+  __atomic_fetch_add(&_inflight, 1, __ATOMIC_ACQUIRE);
+
   // Atomically try to enter critical section - prevents all reentrancy races
   CriticalSection cs;
   if (!cs.entered()) {
+    __atomic_fetch_sub(&_inflight, 1, __ATOMIC_RELEASE);
     return;  // Another critical section is active, defer profiling
   }
   // Save the current errno value
   int saved_errno = errno;
   // we want to ensure memory order because of the possibility the instance gets
   // cleared
-  if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE))
+  if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
+    __atomic_fetch_sub(&_inflight, 1, __ATOMIC_RELEASE);
     return;
+  }
   int tid = 0;
   ProfiledThread *current = ProfiledThread::currentSignalSafe();
   assert(current == nullptr || !current->isDeepCrashHandler());
@@ -282,6 +298,7 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   if (current != nullptr && JVMThread::isInitialized() && JVMThread::current() == nullptr
       && current->inInitWindow()) {
     current->tickInitWindow();
+    __atomic_fetch_sub(&_inflight, 1, __ATOMIC_RELEASE);
     errno = saved_errno;
     return;
   }
@@ -298,6 +315,7 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   Profiler::instance()->recordSample(ucontext, _interval, tid, BCI_CPU, 0,
                                      &event);
   Shims::instance().setSighandlerTid(-1);
+  __atomic_fetch_sub(&_inflight, 1, __ATOMIC_RELEASE);
   // we need to avoid spoiling the value of errno (tsan report)
   errno = saved_errno;
 }
