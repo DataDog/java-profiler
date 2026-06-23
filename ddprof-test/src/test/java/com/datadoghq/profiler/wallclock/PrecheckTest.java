@@ -9,7 +9,16 @@ import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.openjdk.jmc.common.item.Attribute;
+import org.openjdk.jmc.common.item.IAttribute;
+import org.openjdk.jmc.common.item.IItem;
+import org.openjdk.jmc.common.item.IItemCollection;
+import org.openjdk.jmc.common.item.IItemIterable;
+import org.openjdk.jmc.common.item.IMemberAccessor;
 import org.openjdk.jmc.common.item.Aggregators;
+import org.openjdk.jmc.common.unit.IQuantity;
+import org.openjdk.jmc.common.unit.UnitLookup;
+import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -26,6 +35,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 public class PrecheckTest extends AbstractProfilerTest {
     private static final int OSTHREAD_STATE_SLEEPING = 7;
+    private static final String TAIL_WEIGHT_THREAD = "precheck-tail-weight";
+    private static final int TAIL_WEIGHT_ITERATIONS = 50;
+    private static final int TAIL_WEIGHT_SLEEP_MILLIS = 6;
+    private static final long TAIL_WEIGHT_RUNNABLE_NANOS = 2_000_000L;
+    private static final IAttribute<IQuantity> WEIGHT =
+            Attribute.attr("weight", "Sample weight", UnitLookup.NUMBER);
+    private static volatile int tailWeightSpinSink;
 
     @Test
     public void testSleepingThreadIsNotSampled() throws InterruptedException {
@@ -73,6 +89,42 @@ public class PrecheckTest extends AbstractProfilerTest {
                 .getAggregate(Aggregators.count()).longValue();
         assertTrue(sampleCount >= 10,
                 "Unowned Thread.sleep must not be exact once-per-run suppressed; got: " + sampleCount);
+    }
+
+    @Test
+    public void unownedSleepingTailWeightIsPreserved() throws Exception {
+        Assumptions.assumeTrue(!Platform.isJ9());
+        Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
+
+        Thread sleeper = new Thread(() -> {
+            registerCurrentThreadForWallClockProfiling();
+            try {
+                for (int i = 0; i < TAIL_WEIGHT_ITERATIONS; i++) {
+                    Thread.sleep(TAIL_WEIGHT_SLEEP_MILLIS);
+                    long runnableUntil = System.nanoTime() + TAIL_WEIGHT_RUNNABLE_NANOS;
+                    while (System.nanoTime() < runnableUntil) {
+                        tailWeightSpinSink++;
+                        // Brief runnable gap forces the unowned blocked state to flush.
+                    }
+                }
+            } catch (InterruptedException ignored) {
+            }
+        }, TAIL_WEIGHT_THREAD);
+
+        sleeper.start();
+        sleeper.join();
+
+        stopProfiler();
+
+        WeightedSamples weightedSamples = weightedSamplesForThread(TAIL_WEIGHT_THREAD);
+        assertTrue(weightedSamples.count > 0,
+                "Expected MethodSample events for " + TAIL_WEIGHT_THREAD);
+        long expectedTailContribution = TAIL_WEIGHT_ITERATIONS;
+        assertTrue(weightedSamples.weight >= weightedSamples.count + expectedTailContribution,
+                "Expected preserved suppressed tail weight for " + TAIL_WEIGHT_THREAD
+                        + ", count=" + weightedSamples.count
+                        + ", weight=" + weightedSamples.weight
+                        + ", expectedTailContribution=" + expectedTailContribution);
     }
 
     @Test
@@ -150,5 +202,36 @@ public class PrecheckTest extends AbstractProfilerTest {
 
     protected String getPrecheckDisabledProfilerCommand() {
         return "wall=1ms,wallprecheck=false,filter=0";
+    }
+
+    private WeightedSamples weightedSamplesForThread(String threadName) {
+        long count = 0;
+        long weight = 0;
+        IItemCollection events = verifyEvents("datadog.MethodSample", false);
+        for (IItemIterable batch : events) {
+            IMemberAccessor<String, IItem> threadNameAccessor =
+                    JdkAttributes.EVENT_THREAD_NAME.getAccessor(batch.getType());
+            IMemberAccessor<IQuantity, IItem> weightAccessor = WEIGHT.getAccessor(batch.getType());
+            if (threadNameAccessor == null || weightAccessor == null) {
+                continue;
+            }
+            for (IItem item : batch) {
+                if (threadName.equals(threadNameAccessor.getMember(item))) {
+                    count++;
+                    weight += weightAccessor.getMember(item).longValue();
+                }
+            }
+        }
+        return new WeightedSamples(count, weight);
+    }
+
+    private static final class WeightedSamples {
+        final long count;
+        final long weight;
+
+        WeightedSamples(long count, long weight) {
+            this.count = count;
+            this.weight = weight;
+        }
     }
 }

@@ -18,8 +18,10 @@
 #include <atomic>
 #include <memory>
 #include <thread>
+#include <vector>
 #include "thread.h"
 #include "threadFilter.h"
+#include "wallClock.h"
 
 namespace {
 
@@ -199,6 +201,125 @@ TEST(WallClockOncePerRunFilterTest, UnownedBlockedFallbackCarriesWeight) {
   slot.resetUnownedBlockedSampling();
   EXPECT_TRUE(slot.shouldRecordUnownedBlockedSample());
   EXPECT_EQ(1ULL, slot.consumeUnownedBlockedWeight());
+}
+
+TEST(WallClockOncePerRunFilterTest, UnownedBlockedFallbackFlushesTailWeightWithRecordedStack) {
+  ThreadFilter::Slot slot;
+
+  ASSERT_TRUE(slot.shouldRecordUnownedBlockedSample());
+  EXPECT_EQ(1ULL, slot.consumeUnownedBlockedWeight());
+  slot.recordUnownedBlockedSample(42, OSThreadState::SLEEPING);
+
+  for (u64 i = 1; i < ThreadFilter::Slot::kUnownedBlockedFallbackRatio; i++) {
+    EXPECT_FALSE(slot.shouldRecordUnownedBlockedSample());
+  }
+
+  u64 call_trace_id = 0;
+  u64 weight = 0;
+  OSThreadState state = OSThreadState::UNKNOWN;
+  EXPECT_TRUE(slot.flushUnownedBlockedTail(call_trace_id, weight, state));
+  EXPECT_EQ(42ULL, call_trace_id);
+  EXPECT_EQ(ThreadFilter::Slot::kUnownedBlockedFallbackRatio - 1, weight);
+  EXPECT_EQ(OSThreadState::SLEEPING, state);
+
+  EXPECT_FALSE(slot.flushUnownedBlockedTail(call_trace_id, weight, state));
+  EXPECT_TRUE(slot.shouldRecordUnownedBlockedSample());
+  EXPECT_EQ(1ULL, slot.consumeUnownedBlockedWeight());
+}
+
+TEST(WallClockOncePerRunFilterTest, UnownedBlockedFallbackDoesNotFlushWithoutRecordedStack) {
+  ThreadFilter::Slot slot;
+
+  ASSERT_TRUE(slot.shouldRecordUnownedBlockedSample());
+  EXPECT_EQ(1ULL, slot.consumeUnownedBlockedWeight());
+
+  for (u64 i = 1; i < ThreadFilter::Slot::kUnownedBlockedFallbackRatio; i++) {
+    EXPECT_FALSE(slot.shouldRecordUnownedBlockedSample());
+  }
+
+  u64 call_trace_id = 0;
+  u64 weight = 0;
+  OSThreadState state = OSThreadState::UNKNOWN;
+  EXPECT_FALSE(slot.flushUnownedBlockedTail(call_trace_id, weight, state));
+  EXPECT_EQ(0ULL, call_trace_id);
+  EXPECT_EQ(ThreadFilter::Slot::kUnownedBlockedFallbackRatio - 1, weight);
+  EXPECT_EQ(OSThreadState::UNKNOWN, state);
+  EXPECT_TRUE(slot.shouldRecordUnownedBlockedSample());
+}
+
+TEST(WallClockOncePerRunFilterTest, UnownedBlockedFallbackDoesNotFlushWithoutSavedState) {
+  ThreadFilter::Slot slot;
+
+  ASSERT_TRUE(slot.shouldRecordUnownedBlockedSample());
+  EXPECT_EQ(1ULL, slot.consumeUnownedBlockedWeight());
+  slot.recordUnownedBlockedSample(42, OSThreadState::SLEEPING);
+
+  for (u64 i = 1; i < ThreadFilter::Slot::kUnownedBlockedFallbackRatio; i++) {
+    EXPECT_FALSE(slot.shouldRecordUnownedBlockedSample());
+  }
+
+  slot.unowned_blocked_state.store(OSThreadState::UNKNOWN, std::memory_order_relaxed);
+
+  u64 call_trace_id = 0;
+  u64 weight = 0;
+  OSThreadState state = OSThreadState::SLEEPING;
+  EXPECT_FALSE(slot.flushUnownedBlockedTail(call_trace_id, weight, state));
+  EXPECT_EQ(42ULL, call_trace_id);
+  EXPECT_EQ(ThreadFilter::Slot::kUnownedBlockedFallbackRatio - 1, weight);
+  EXPECT_EQ(OSThreadState::UNKNOWN, state);
+}
+
+TEST(WallClockOncePerRunFilterTest, UnownedBlockedTailStateConcurrentStress) {
+  ThreadFilter::Slot slot;
+  std::atomic<bool> start{false};
+  std::atomic<int> invariant_failures{0};
+  std::vector<std::thread> workers;
+
+  for (int worker = 0; worker < 4; worker++) {
+    workers.emplace_back([&, worker] {
+      while (!start.load(std::memory_order_acquire)) {
+      }
+      for (int i = 0; i < 2000; i++) {
+        int operation = (i + worker) % 4;
+        if (operation == 0) {
+          if (slot.shouldRecordUnownedBlockedSample()) {
+            u64 weight = slot.consumeUnownedBlockedWeight();
+            if (weight == 0) {
+              invariant_failures.fetch_add(1, std::memory_order_relaxed);
+            }
+          }
+        } else if (operation == 1) {
+          slot.recordUnownedBlockedSample(
+              1000 + static_cast<u64>(worker), OSThreadState::SLEEPING);
+        } else if (operation == 2) {
+          u64 call_trace_id = 0;
+          u64 weight = 0;
+          OSThreadState state = OSThreadState::UNKNOWN;
+          bool flushed = slot.flushUnownedBlockedTail(call_trace_id, weight, state);
+          if (flushed &&
+              (call_trace_id == 0 || weight == 0 ||
+               state != OSThreadState::SLEEPING)) {
+            invariant_failures.fetch_add(1, std::memory_order_relaxed);
+          }
+        } else {
+          slot.resetUnownedBlockedSampling();
+        }
+      }
+    });
+  }
+
+  start.store(true, std::memory_order_release);
+  for (std::thread& worker : workers) {
+    worker.join();
+  }
+
+  EXPECT_EQ(0, invariant_failures.load(std::memory_order_relaxed));
+
+  slot.resetUnownedBlockedSampling();
+  u64 call_trace_id = 0;
+  u64 weight = 0;
+  OSThreadState state = OSThreadState::UNKNOWN;
+  EXPECT_FALSE(slot.flushUnownedBlockedTail(call_trace_id, weight, state));
 }
 
 TEST(WallClockOncePerRunFilterTest, FilterHelpersManageActiveBlockState) {
