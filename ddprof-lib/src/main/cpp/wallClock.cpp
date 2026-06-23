@@ -65,6 +65,10 @@ struct WallPrecheckResult {
   bool observed_state_valid = false;
   ThreadFilter::Slot* unowned_weight_slot = nullptr;
   u64 unowned_weight = 1;
+  bool flush_unowned_tail = false;
+  u64 flush_call_trace_id = 0;
+  u64 flush_weight = 0;
+  OSThreadState flush_state = OSThreadState::UNKNOWN;
 };
 
 static inline void incrementSuppressedSampledRun() {
@@ -131,22 +135,46 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
     result.unowned_weight_slot = slot;
     result.unowned_weight = slot->consumeUnownedBlockedWeight();
   } else {
-    slot->resetUnownedBlockedSampling();
+    result.flush_unowned_tail = slot->flushUnownedBlockedTail(
+        result.flush_call_trace_id, result.flush_weight, result.flush_state);
   }
   return result;
 }
 
 static inline void finishWallPrecheck(const WallPrecheckResult& precheck,
-                                      bool recorded) {
+                                      bool recorded,
+                                      u64 recorded_call_trace_id = 0) {
   if (!recorded && precheck.unowned_weight_slot != nullptr) {
     precheck.unowned_weight_slot->restoreUnownedBlockedWeight(
         precheck.unowned_weight);
   } else if (recorded && precheck.unowned_weight_slot != nullptr) {
     Counters::increment(WC_UNOWNED_BLOCKED_RECORDED);
+    if (recorded_call_trace_id != 0) {
+      precheck.unowned_weight_slot->recordUnownedBlockedSample(
+          recorded_call_trace_id, precheck.observed_state);
+    }
   }
   if (recorded && precheck.slot_to_arm != nullptr) {
     precheck.slot_to_arm->markSampledThisRun(precheck.state_to_arm);
   }
+}
+
+static inline void recordDeferredWallSample(int tid, u64 call_trace_id,
+                                            ExecutionEvent* event) {
+  Profiler::instance()->recordDeferredSample(tid, call_trace_id, BCI_WALL, event);
+}
+
+static inline void emitUnownedBlockedTailForWallPrecheck(
+    int tid, const WallPrecheckResult& precheck) {
+  if (!precheck.flush_unowned_tail || precheck.flush_call_trace_id == 0) {
+    return;
+  }
+
+  ExecutionEvent flush_event;
+  flush_event._thread_state = precheck.flush_state;
+  flush_event._execution_mode = ExecutionMode::UNKNOWN;
+  flush_event._weight = precheck.flush_weight;
+  recordDeferredWallSample(tid, precheck.flush_call_trace_id, &flush_event);
 }
 
 bool BaseWallClock::inSyscall(void *ucontext) {
@@ -256,10 +284,13 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   event._thread_state = state;
   event._execution_mode = mode;
   event._weight = precheck.unowned_weight;
+  u64 recorded_call_trace_id = 0;
   bool recorded = Profiler::instance()->recordSample(ucontext, last_sample, tid,
                                                      BCI_WALL, call_trace_id,
-                                                     &event);
-  finishWallPrecheck(precheck, recorded);
+                                                     &event,
+                                                     &recorded_call_trace_id);
+  finishWallPrecheck(precheck, recorded, recorded_call_trace_id);
+  emitUnownedBlockedTailForWallPrecheck(tid, precheck);
   Shims::instance().setSighandlerTid(-1);
 }
 
@@ -434,6 +465,8 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
   // Pass nullptr ucontext so the JVM uses safepoint-based stack walking.
   // Passing the signal-frame PC causes the extension to reject samples where
   // the thread is currently inside JVM-internal (non-Java) code.
+  // JVMTI-delegated samples carry a correlation_id, not a call_trace_id, so
+  // unowned tail flushing remains limited to the ASGCT wall engine.
   bool recorded = Profiler::instance()->recordSampleDelegated(
       nullptr, last_sample, tid, BCI_WALL, &event);
   finishWallPrecheck(precheck, recorded);

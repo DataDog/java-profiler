@@ -575,7 +575,8 @@ void Profiler::recordDeferredSample(int tid, u64 call_trace_id, jint event_type,
 }
 
 bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
-                            jint event_type, u64 call_trace_id, Event *event) {
+                            jint event_type, u64 call_trace_id, Event *event,
+                            u64 *recorded_call_trace_id) {
   atomicIncRelaxed(_total_samples);
 
   u32 lock_index = getLockIndex(tid);
@@ -638,6 +639,9 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
 #endif // COUNTERS
   }
   bool recorded = _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
+  if (recorded && recorded_call_trace_id != nullptr) {
+    *recorded_call_trace_id = call_trace_id;
+  }
 
   _locks[lock_index].unlock();
   return recorded;

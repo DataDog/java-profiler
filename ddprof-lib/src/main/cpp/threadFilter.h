@@ -55,6 +55,8 @@ public:
 
         std::atomic<u64>           unowned_blocked_pending_weight{0};
         std::atomic<u64>           unowned_blocked_decision_count{0};
+        std::atomic<u64>           unowned_blocked_call_trace_id{0};
+        std::atomic<OSThreadState> unowned_blocked_state{OSThreadState::UNKNOWN};
         std::atomic<int>           value{-1};
         std::atomic<int>           active_block_owner{static_cast<int>(BlockRunOwner::NONE)};
         std::atomic<u32>           block_generation{0};
@@ -71,6 +73,8 @@ public:
         char padding[2 * DEFAULT_CACHE_LINE_SIZE
                      - sizeof(std::atomic<u64>)
                      - sizeof(std::atomic<u64>)
+                     - sizeof(std::atomic<u64>)
+                     - sizeof(std::atomic<OSThreadState>)
                      - sizeof(std::atomic<int>)
                      - sizeof(std::atomic<int>)
                      - sizeof(std::atomic<u32>)
@@ -108,6 +112,8 @@ public:
         inline void resetUnownedBlockedSampling() {
             unowned_blocked_pending_weight.store(0, std::memory_order_relaxed);
             unowned_blocked_decision_count.store(0, std::memory_order_relaxed);
+            unowned_blocked_state.store(OSThreadState::UNKNOWN, std::memory_order_relaxed);
+            unowned_blocked_call_trace_id.store(0, std::memory_order_release);
         }
         inline bool shouldRecordUnownedBlockedSample() {
             u64 decision = unowned_blocked_decision_count.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -124,6 +130,21 @@ public:
             if (weight > 1) {
                 unowned_blocked_pending_weight.fetch_add(weight - 1, std::memory_order_relaxed);
             }
+        }
+        inline void recordUnownedBlockedSample(u64 call_trace_id, OSThreadState state) {
+            unowned_blocked_state.store(state, std::memory_order_relaxed);
+            unowned_blocked_call_trace_id.store(call_trace_id, std::memory_order_release);
+        }
+        inline bool flushUnownedBlockedTail(u64& call_trace_id, u64& weight,
+                                            OSThreadState& state) {
+            call_trace_id = unowned_blocked_call_trace_id.exchange(0, std::memory_order_acq_rel);
+            weight = unowned_blocked_pending_weight.exchange(0, std::memory_order_relaxed);
+            state = unowned_blocked_state.exchange(OSThreadState::UNKNOWN, std::memory_order_relaxed);
+            unowned_blocked_decision_count.store(0, std::memory_order_relaxed);
+            if (call_trace_id == 0 || weight == 0 || state == OSThreadState::UNKNOWN) {
+                return false;
+            }
+            return true;
         }
         inline bool trySetActiveBlockRun(OSThreadState state, BlockRunOwner owner,
                                          u32* generation_out) {
