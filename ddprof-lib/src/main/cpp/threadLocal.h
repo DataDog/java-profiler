@@ -48,6 +48,7 @@ template <typename T, CREATE_FUNC C = nullptr, CLEAN_FUNC F = nullptr>
 class ThreadLocal {
 protected:
     pthread_key_t _key;
+    bool _key_valid;
  
 public:
     ThreadLocal(const ThreadLocal&) = delete;
@@ -56,28 +57,32 @@ public:
     ThreadLocal() {
         static_assert(sizeof(T) == sizeof(void*),
                       "ThreadLocal<T> requires sizeof(T)==sizeof(void*); use a pointer type or add a specialization");
-        int err = pthread_key_create(&_key, F);
+        _key_valid = pthread_key_create(&_key, F) == 0;
         // What to do if we can not create a key?
         // We probably want to shutdown profiler gracefully, instead of
         // aborting user application - We will need this mechanism globally,
         // defer to a separate task.
-        assert(err == 0);
+        assert(_key_valid);
     }
 
     ~ThreadLocal() {
+        assert(_key_valid);
         pthread_key_delete(_key);
     }
 
     /**
      * set(nullptr) will result in the value being recreated when get() is called
-     * when CREATE_FUNC is not nullptr
+     * when CREATE_FUNC is not nullptr.
+     * Note: caller is responsible to free old value.
      */
     void set(T value) {
+        assert(_key_valid);
         int err = pthread_setspecific(_key, (const void*)value);
         assert(err == 0);
     }
 
     T get() {
+        assert(_key_valid);
         void* p = pthread_getspecific(_key);
         if (p == nullptr && C != nullptr) {
             p = C();
@@ -88,6 +93,7 @@ public:
 
     // Clear the value
     void clear() {
+        assert(_key_valid);
         void* p = pthread_getspecific(_key);
         if (p == nullptr) return;
         int err = pthread_setspecific(_key, nullptr);
@@ -103,6 +109,8 @@ template <>
 class ThreadLocal<double> {
 protected:
     pthread_key_t _key;
+    bool _key_valid;
+
 public:
     ThreadLocal(const ThreadLocal&) = delete;
     ThreadLocal& operator=(const ThreadLocal&) = delete;
@@ -111,18 +119,20 @@ public:
         // Only support 64-bit platforms, double and void* are the same size
         static_assert(sizeof(void*) == 8);
         static_assert(sizeof(double) == 8);
-        int err = pthread_key_create(&_key, nullptr);
+        _key_valid = pthread_key_create(&_key, nullptr) == 0;
         // What to do if we can not create a key?
-        assert(err == 0);
+        assert(_key_valid);
     }
 
     ~ThreadLocal() {
+        assert(_key_valid);
         pthread_key_delete(_key);
     }
 
     // double <--> u64 cast, preserve bit format
     // Can use std::bit_cast after upgrade C++ version to 20
     void set(double value) {
+        assert(_key_valid);
         u64 val;
         memcpy(&val, &value, sizeof(value));
         int err = pthread_setspecific(_key, (const void*)val);
@@ -130,6 +140,7 @@ public:
     }
 
     double get() {
+        assert(_key_valid);
         void* p = pthread_getspecific(_key);
         if (p == nullptr) {
             return 0.0;
@@ -142,6 +153,7 @@ public:
     }
 
     void clear() {
+        assert(_key_valid);
         int err = pthread_setspecific(_key, nullptr);
         assert(err == 0);
     }
