@@ -101,9 +101,18 @@ public final class DirectMemoryAntagonist implements Antagonist {
                 ByteBuffer buf = ByteBuffer.allocateDirect(BURST_SIZE_BYTES);
                 buf.put(0, (byte) 42);
                 acc += buf.limit();
-                // buf goes out of scope; GC + Cleaner handles dealloc
-            } catch (OutOfMemoryError e) {
-                Thread.yield(); // let GC recover direct memory
+            } catch (OutOfMemoryError ignored) {
+                // direct memory exhausted; fall through to sleep so Cleaner can drain
+            }
+            // Pace allocations so the Cleaner daemon thread can drain the
+            // PhantomReference queue before direct memory fills up across a
+            // long run. Without this, burstLoop saturates MaxDirectMemorySize
+            // even though each buf is immediately dropped.
+            try {
+                Thread.sleep(1L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
             }
         }
         sink.addAndGet(acc);
