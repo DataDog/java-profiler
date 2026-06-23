@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
+import com.datadoghq.profiler.ProfilerOwnedBlockHooks;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.item.IItem;
@@ -44,12 +45,13 @@ public class WallclockMitigationsCombinedTest extends AbstractProfilerTest {
                         () -> {
                             registerCurrentThreadForWallClockProfiling();
                             ready.countDown();
-                            long token = profiler.blockEnter(OSTHREAD_STATE_SLEEPING);
+                            long token = ProfilerOwnedBlockHooks.blockEnter(
+                                    profiler, OSTHREAD_STATE_SLEEPING);
                             try {
                                 Thread.sleep(280);
                             } catch (InterruptedException ignored) {
                             } finally {
-                                profiler.blockExit(token);
+                                ProfilerOwnedBlockHooks.blockExit(profiler, token);
                             }
                         },
                         "combined-sleeping");
@@ -62,12 +64,13 @@ public class WallclockMitigationsCombinedTest extends AbstractProfilerTest {
                             long rootSpanId = 0x2222L;
                             profiler.setContext(rootSpanId, spanId, 0, 0);
                             ready.countDown();
-                            profiler.parkEnter();
+                            ProfilerOwnedBlockHooks.parkEnter(profiler);
                             long parkedUntil = System.nanoTime() + 280_000_000L;
                             while (System.nanoTime() < parkedUntil) {
                                 // spin while flagged parked
                             }
-                            profiler.parkExit(System.identityHashCode(this), 0L);
+                            ProfilerOwnedBlockHooks.parkExit(
+                                    profiler, System.identityHashCode(this), 0L);
                             profiler.clearContext();
                         },
                         "combined-parked");

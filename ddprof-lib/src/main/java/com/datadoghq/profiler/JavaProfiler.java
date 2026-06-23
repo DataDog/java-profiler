@@ -323,36 +323,37 @@ public final class JavaProfiler {
     }
 
     /**
-     * Called before {@code LockSupport.park}. Sets the parked flag so the wall-clock
-     * sampler can suppress duplicate signals during the blocking interval.
+     * Internal hook called before {@code LockSupport.park}. This remains package-scoped
+     * until PR2 wires production TaskBlock instrumentation.
      */
-    public void parkEnter() {
+    void parkEnter() {
         parkEnter0();
     }
 
     /**
-     * Called after {@code LockSupport.park}. Clears the parked flag.
-     * {@code blocker} and {@code unblockingSpanId} are reserved for future use.
+     * Internal hook called after {@code LockSupport.park}. Clears the parked flag.
+     * {@code blocker} and {@code unblockingSpanId} are reserved for PR2 TaskBlock use.
      */
-    public void parkExit(long blocker, long unblockingSpanId) {
+    void parkExit(long blocker, long unblockingSpanId) {
         parkExit0(blocker, unblockingSpanId);
     }
 
     /**
-     * Marks the current platform thread as entering an explicitly instrumented blocked interval.
+     * Internal hook marking the current platform thread as entering an explicitly instrumented
+     * blocked interval. This is not public API in this PR; production TaskBlock wiring lands in PR2.
      *
      * @param state native {@code OSThreadState} value for the blocked interval;
      *     currently only {@code SLEEPING} is armed
      * @return an opaque token to pass to {@link #blockExit(long)}, or 0 if no state was armed
      */
-    public long blockEnter(int state) {
+    long blockEnter(int state) {
         return blockEnter0(state);
     }
 
     /**
      * Clears a blocked interval previously armed by {@link #blockEnter(int)}.
      */
-    public void blockExit(long token) {
+    void blockExit(long token) {
         blockExit0(token);
     }
 

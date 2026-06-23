@@ -7,6 +7,7 @@ package com.datadoghq.profiler.wallclock;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
+import com.datadoghq.profiler.ProfilerOwnedBlockHooks;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.item.Attribute;
@@ -50,12 +51,12 @@ public class PrecheckTest extends AbstractProfilerTest {
         leaveClearedInitializedContext();
         registerCurrentThreadForWallClockProfiling();
 
-        long token = profiler.blockEnter(OSTHREAD_STATE_SLEEPING);
+        long token = ProfilerOwnedBlockHooks.blockEnter(profiler, OSTHREAD_STATE_SLEEPING);
         assertTrue(token != 0, "Expected native blockEnter to arm SLEEPING state");
         try {
             Thread.sleep(300);
         } finally {
-            profiler.blockExit(token);
+            ProfilerOwnedBlockHooks.blockExit(profiler, token);
         }
 
         stopProfiler();
