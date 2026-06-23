@@ -1085,7 +1085,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
         VMMethod *method = nmethod->method();
         if (method != NULL) {
           jmethodID method_id = method->id();
-          if (method_id != NULL) {
+          if (isValidJMethodID(method_id)) {
             max_depth -= makeFrame(trace.frames++, 0, method_id);
           }
           if (!(safe_mode & POP_METHOD) && frame.unwindCompiled(nmethod) &&
@@ -1093,7 +1093,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
             VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
           }
           if ((safe_mode & PROBE_SP) && trace.num_frames < 0) {
-            if (method_id != NULL) {
+            if (isValidJMethodID(method_id)) {
               trace.frames--;
             }
             for (int i = 0; trace.num_frames < 0 && i < PROBE_SP_LIMIT; i++) {

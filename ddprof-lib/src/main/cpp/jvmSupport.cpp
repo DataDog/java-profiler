@@ -29,7 +29,7 @@ void JVMSupport::setLoadState(JMethodIDLoadStats state) {
     __atomic_store(&jmethodID_load_state, &state, __ATOMIC_RELEASE);
 }
 
-void JVMSupport::initExecution(jvmtiEnv* jvmti, JNIEnv* jni) {
+void JVMSupport::initExecution(Arguments& args, jvmtiEnv* jvmti, JNIEnv* jni) {
     JMethodIDLoadStats current_state = getLoadState();
     // Already setup by previous execution
     if (current_state == Fully_loaded) {
@@ -38,7 +38,7 @@ void JVMSupport::initExecution(jvmtiEnv* jvmti, JNIEnv* jni) {
 
     bool load_all = true;
     if (VM::isHotspot()) {
-        if (!HotspotSupport::shouldPreloadJmethodIDs()) {
+        if (!HotspotSupport::shouldPreloadJmethodIDs(args)) {
             HotspotSupport::initClassloaderInfo(jni);
             load_all = false;
         }

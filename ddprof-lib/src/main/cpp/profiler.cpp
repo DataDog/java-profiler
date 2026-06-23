@@ -1298,7 +1298,7 @@ Error Profiler::start(Arguments &args, bool reset) {
 
  
   // Prepare JVMSupport for execution
-  JVMSupport::initExecution(VM::jvmti(), VM::jni());
+  JVMSupport::initExecution(args, VM::jvmti(), VM::jni());
 
   // TODO: Current way of setting filter is weird with the recent changes
   _thread_filter.init(args._filter ? args._filter : "0");

@@ -41,7 +41,7 @@ class JVMSupport {
     static void setLoadState(JMethodIDLoadStats state);
 public:
     // Initializing JVM support
-    static void initExecution(jvmtiEnv* jvmti, JNIEnv* jni);
+    static void initExecution(Arguments& args, jvmtiEnv* jvmti, JNIEnv* jni);
 
     static int walkJavaStack(StackWalkRequest& request);
     static inline bool canUnwind(const StackFrame& frame, const void*& pc);
