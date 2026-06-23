@@ -1335,10 +1335,6 @@ Error Profiler::start(Arguments &args, bool reset) {
     _safe_mode |= GC_TRACES | LAST_JAVA_PC;
   }
 
- 
-  // Prepare JVMSupport for execution
-  JVMSupport::initExecution(args, VM::jvmti(), VM::jni());
-
   // TODO: Current way of setting filter is weird with the recent changes
   _thread_filter.init(args._filter ? args._filter : "0");
   
@@ -1374,6 +1370,11 @@ Error Profiler::start(Arguments &args, bool reset) {
       Log::error("VMStructs stack walking is not supported on this JVM/platform, defaulting to the default native call stack unwinding mode.");
     }
   }
+
+  args._cstack = _cstack;
+  // Prepare JVMSupport for execution
+  JVMSupport::initExecution(args, VM::jvmti(), VM::jni());
+
 
   LibraryPatcher::initialize();
 
