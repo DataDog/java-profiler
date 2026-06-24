@@ -55,9 +55,9 @@ public class MonitorDeflationThreadSafetyTest extends AbstractProfilerTest {
      * Repeatedly inflates then releases a batch of ObjectMonitors, sleeping
      * between waves so MonitorDeflationThread can reclaim them.
      *
-     * Each synchronized block on a freshly-allocated Object causes the JVM to
-     * inflate that object's mark word into a full ObjectMonitor.  Releasing
-     * the lock makes the monitor eligible for deflation.
+     * Using an operation like Object.wait(timeout) while holding the lock forces
+     * monitor inflation to a full ObjectMonitor.  Releasing the lock then makes
+     * the monitor eligible for deflation.
      */
     private static void inflateAndDeflateMonitors(long durationMs, long waveSleepMs)
             throws InterruptedException {
