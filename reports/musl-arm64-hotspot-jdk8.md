@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk8
 
 ## musl-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-06-24 04:38:04 EDT
+**Date:** 2026-06-24 05:04:39 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-arm64-hotspot-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 64 |
-| CPU Cores (end) | 64 |
+| CPU Cores (start) | 59 |
+| CPU Cores (end) | 59 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: musl-arm64-hotspot-jdk8
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
+<summary>CPU Timeline (1 unique values: 59-59 cores)</summary>
 
 ```
-1782290023 64
-1782290028 64
-1782290033 64
-1782290038 64
-1782290043 64
-1782290048 64
-1782290053 64
-1782290058 64
-1782290063 64
-1782290068 64
-1782290073 64
-1782290078 64
-1782290083 64
-1782290088 64
-1782290093 64
-1782290098 64
-1782290103 64
-1782290108 64
-1782290113 64
-1782290118 64
+1782291610 59
+1782291615 59
+1782291620 59
+1782291625 59
+1782291631 59
+1782291636 59
+1782291641 59
+1782291646 59
+1782291651 59
+1782291656 59
+1782291661 59
+1782291666 59
+1782291671 59
+1782291676 59
+1782291681 59
+1782291686 59
+1782291691 59
+1782291696 59
+1782291701 59
+1782291706 59
 ```
 </details>
 
