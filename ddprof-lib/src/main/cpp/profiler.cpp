@@ -75,6 +75,37 @@ static ITimerJvmti itimer_jvmti;
 static CTimer ctimer;
 static CTimerJvmti ctimer_jvmti;
 
+#ifdef UNIT_TEST
+static std::atomic<Profiler::RecordTaskBlockLiveOverride> record_task_block_live_override_for_test{nullptr};
+static TaskBlockEvent last_task_block_event_for_test{};
+static std::atomic<int> last_task_block_tid_for_test{-1};
+static std::atomic<int> record_task_block_live_calls_for_test{0};
+
+void Profiler::setRecordTaskBlockLiveOverrideForTest(
+    RecordTaskBlockLiveOverride override) {
+  record_task_block_live_override_for_test.store(override, std::memory_order_release);
+}
+
+TaskBlockEvent Profiler::lastRecordedTaskBlockEventForTest() {
+  return last_task_block_event_for_test;
+}
+
+int Profiler::lastRecordedTaskBlockTidForTest() {
+  return last_task_block_tid_for_test.load(std::memory_order_acquire);
+}
+
+int Profiler::recordTaskBlockLiveCallsForTest() {
+  return record_task_block_live_calls_for_test.load(std::memory_order_acquire);
+}
+
+void Profiler::resetTaskBlockRecordObservableForTest() {
+  record_task_block_live_override_for_test.store(nullptr, std::memory_order_release);
+  last_task_block_event_for_test = {};
+  last_task_block_tid_for_test.store(-1, std::memory_order_release);
+  record_task_block_live_calls_for_test.store(0, std::memory_order_release);
+}
+#endif
+
 void *Profiler::taskBlockDrainLoop(void *arg) {
   Profiler *self = static_cast<Profiler *>(arg);
 
@@ -802,6 +833,16 @@ void Profiler::recordQueueTime(int tid, QueueTimeEvent *event) {
 }
 
 bool Profiler::recordTaskBlockLive(int tid, TaskBlockEvent *event) {
+#ifdef UNIT_TEST
+  record_task_block_live_calls_for_test.fetch_add(1, std::memory_order_acq_rel);
+  last_task_block_tid_for_test.store(tid, std::memory_order_release);
+  last_task_block_event_for_test = *event;
+  RecordTaskBlockLiveOverride override =
+      record_task_block_live_override_for_test.load(std::memory_order_acquire);
+  if (override != nullptr) {
+    return override(tid, event);
+  }
+#endif
   u32 lock_index = getLockIndex(tid);
   if (!_locks[lock_index].tryLock() &&
       !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&

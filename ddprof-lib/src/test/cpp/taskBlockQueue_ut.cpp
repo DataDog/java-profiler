@@ -214,3 +214,68 @@ TEST(TaskBlockQueueTest, ConcurrentMultiProducerMultiConsumerPreservesAllEvents)
   EXPECT_EQ(kTotalEvents, consumed.load(std::memory_order_relaxed));
   expectAllSeen(seen);
 }
+
+TEST(TaskBlockQueueTest, ConcurrentReuseAfterWraparoundPreservesAllEvents) {
+  TaskBlockQueue probe;
+  QueuedTaskBlockEvent event{};
+  int capacity = 0;
+  while (probe.tryPush(event)) {
+    capacity++;
+  }
+  ASSERT_GT(capacity, 0);
+  QueuedTaskBlockEvent out{};
+  for (int i = 0; i < capacity; i++) {
+    ASSERT_TRUE(probe.tryPop(out));
+  }
+  ASSERT_FALSE(probe.tryPop(out));
+
+  TaskBlockQueue queue;
+  static constexpr int kProducers = 4;
+  static constexpr int kConsumers = 2;
+  const int events_per_producer = capacity + capacity / 2;
+  const int total_events = kProducers * events_per_producer;
+  std::vector<std::atomic<int>> seen(total_events);
+  clearSeen(seen);
+  std::atomic<int> consumed{0};
+  std::atomic<int> failures{0};
+
+  std::vector<std::thread> consumers;
+  for (int consumer_index = 0; consumer_index < kConsumers; consumer_index++) {
+    consumers.emplace_back([&]() {
+      QueuedTaskBlockEvent popped{};
+      while (consumed.load(std::memory_order_acquire) < total_events) {
+        if (queue.tryPop(popped)) {
+          markSeen(popped, seen, failures);
+          consumed.fetch_add(1, std::memory_order_release);
+        } else {
+          std::this_thread::yield();
+        }
+      }
+    });
+  }
+
+  std::vector<std::thread> producers;
+  for (int producer = 0; producer < kProducers; producer++) {
+    producers.emplace_back([&, producer]() {
+      int base = producer * events_per_producer;
+      for (int offset = 0; offset < events_per_producer; offset++) {
+        QueuedTaskBlockEvent pushed = eventWithId(base + offset);
+        while (!queue.tryPush(pushed)) {
+          std::this_thread::yield();
+        }
+      }
+    });
+  }
+
+  for (std::thread& producer : producers) {
+    producer.join();
+  }
+  for (std::thread& consumer : consumers) {
+    consumer.join();
+  }
+
+  EXPECT_EQ(0, failures.load(std::memory_order_relaxed));
+  EXPECT_EQ(total_events, consumed.load(std::memory_order_relaxed));
+  expectAllSeen(seen);
+  EXPECT_FALSE(queue.tryPop(out));
+}

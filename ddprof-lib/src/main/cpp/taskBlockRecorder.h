@@ -111,8 +111,10 @@ static inline bool recordTaskBlockLiveIfEligible(int tid, u64 start_ticks, u64 e
                                              blocker, unblocking_span_id);
 }
 
-// Off-thread/deferred path. The event must already carry stack metadata because
-// ProfiledThread::current() belongs to the recorder thread, not necessarily tid.
+// Off-thread/deferred path. The caller must pass stack metadata and observed
+// state captured from the same blocked-run snapshot before the target thread
+// exits that run. Re-reading thread state here would observe the recorder thread
+// or a later target-thread state, not the blocked interval being recorded.
 static inline bool recordTaskBlockWithStackReferenceIfEligible(
     int tid, u64 start_ticks, u64 end_ticks, const Context& ctx, u64 blocker,
     u64 unblocking_span_id, u64 call_trace_id, u64 correlation_id,
@@ -136,8 +138,8 @@ static inline bool recordTaskBlockWithStackReferenceIfEligible(
 }
 
 // Async path for native monitor and native I/O callbacks. The producer must
-// snapshot stack metadata before exiting the blocked run; this helper does not
-// inspect ProfiledThread::current().
+// snapshot stack metadata and observed state before exiting the blocked run; this
+// helper does not inspect ProfiledThread::current().
 static inline bool recordTaskBlockAsyncWithStackReferenceIfEligible(
     int tid, u64 start_ticks, u64 end_ticks, const Context& ctx, u64 blocker,
     u64 unblocking_span_id, u64 call_trace_id, u64 correlation_id,

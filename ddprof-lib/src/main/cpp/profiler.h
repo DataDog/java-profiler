@@ -442,6 +442,55 @@ public:
   static void unregisterThread(int tid);
 
 #ifdef UNIT_TEST
+  using RecordTaskBlockLiveOverride = bool (*)(int tid, TaskBlockEvent *event);
+
+  bool setTaskBlockAsyncActiveForTest(bool active) {
+    return _task_block_drain_running.exchange(active, std::memory_order_acq_rel);
+  }
+
+  void setWallPrecheckForTest(bool enabled) {
+    _wall_precheck = enabled;
+  }
+
+  u64 taskBlockGenerationForTest() const {
+    return _task_block_generation.load(std::memory_order_acquire);
+  }
+
+  void setTaskBlockGenerationForTest(u64 generation) {
+    _task_block_generation.store(generation, std::memory_order_release);
+  }
+
+  void incrementTaskBlockGenerationForTest() {
+    _task_block_generation.fetch_add(1, std::memory_order_acq_rel);
+  }
+
+  bool taskBlockQueueEmptyForTest() {
+    QueuedTaskBlockEvent event;
+    return !_task_block_queue.tryPop(event);
+  }
+
+  void discardTaskBlockQueueForTest() {
+    _task_block_queue.discardAll();
+  }
+
+  void drainTaskBlockQueueForTest(bool record) {
+    drainTaskBlockQueue(record);
+  }
+
+  void startTaskBlockDrainForTest() {
+    startTaskBlockDrain();
+  }
+
+  void stopTaskBlockDrainForTest() {
+    stopTaskBlockDrain();
+  }
+
+  static void setRecordTaskBlockLiveOverrideForTest(RecordTaskBlockLiveOverride override);
+  static TaskBlockEvent lastRecordedTaskBlockEventForTest();
+  static int lastRecordedTaskBlockTidForTest();
+  static int recordTaskBlockLiveCallsForTest();
+  static void resetTaskBlockRecordObservableForTest();
+
   // Returns the tid most recently passed to unregisterThread(), or -1 if it
   // has never been called (or since the last resetUnregisterObservableForTest).
   // Used by integration tests to assert that cleanup_unregister wired

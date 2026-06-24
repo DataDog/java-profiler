@@ -39,6 +39,11 @@ public:
     return (static_cast<u64>(kind) << 32) | static_cast<uint32_t>(blocker_id);
   }
 
+#ifdef UNIT_TEST
+  u64 startTicksForTest() const { return _start_ticks; }
+  void finishForTest(u64 end_ticks) { finish(end_ticks); }
+#endif
+
 private:
   bool _active = false;
   int _tid = -1;
