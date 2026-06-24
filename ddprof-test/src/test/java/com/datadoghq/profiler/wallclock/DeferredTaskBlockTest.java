@@ -63,6 +63,7 @@ public class DeferredTaskBlockTest extends AbstractProfilerTest {
         TaskBlockAssertions.assertContainsStackTrace(taskBlockEvents);
         TaskBlockAssertions.assertContains(
                 taskBlockEvents, ROOT_SPAN_ID, SPAN_ID, BLOCKER_WITH_STACK, UNBLOCKING_SPAN_ID);
+        TaskBlockAssertions.assertContainsObservedState(taskBlockEvents, "SLEEPING");
         assertTrue(
                 getRecordedCounterValue("task_block_emitted") > 0,
                 "explicit-stack off-thread TaskBlock must be reported as emitted");

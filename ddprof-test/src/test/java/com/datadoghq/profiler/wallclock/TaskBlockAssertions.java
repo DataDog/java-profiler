@@ -53,9 +53,17 @@ final class TaskBlockAssertions {
     }
 
     static void assertContainsObservedState(IItemCollection events, String observedState) {
+        Set<String> observedStates = observedStates(events);
         assertTrue(
-                containsObservedState(events, observedState),
-                "Expected TaskBlock with observedBlockingState=" + observedState);
+                observedStates.contains(observedState),
+                "Expected TaskBlock with observedBlockingState=" + observedState
+                        + ", observed states were " + observedStates);
+    }
+
+    static void assertContainsAnyObservedState(IItemCollection events) {
+        assertTrue(
+                containsAnyObservedState(events),
+                "Expected TaskBlock with an observedBlockingState field");
     }
 
     static void assertNoAnchorFields(IItemCollection taskBlockEvents) {
@@ -149,7 +157,8 @@ final class TaskBlockAssertions {
         return false;
     }
 
-    private static boolean containsObservedState(IItemCollection events, String observedState) {
+    static Set<String> observedStates(IItemCollection events) {
+        Set<String> states = new HashSet<>();
         for (IItemIterable iterable : events) {
             IMemberAccessor<String, IItem> stateAccessor =
                     OBSERVED_BLOCKING_STATE.getAccessor(iterable.getType());
@@ -157,7 +166,24 @@ final class TaskBlockAssertions {
                 continue;
             }
             for (IItem item : iterable) {
-                if (observedState.equals(stateAccessor.getMember(item))) {
+                String state = stateAccessor.getMember(item);
+                if (state != null) {
+                    states.add(state);
+                }
+            }
+        }
+        return states;
+    }
+
+    private static boolean containsAnyObservedState(IItemCollection events) {
+        for (IItemIterable iterable : events) {
+            IMemberAccessor<String, IItem> stateAccessor =
+                    OBSERVED_BLOCKING_STATE.getAccessor(iterable.getType());
+            if (stateAccessor == null) {
+                continue;
+            }
+            for (IItem item : iterable) {
+                if (stateAccessor.getMember(item) != null) {
                     return true;
                 }
             }

@@ -2,6 +2,7 @@ package com.datadoghq.profiler.wallclock;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.item.IItemCollection;
 
@@ -26,6 +27,15 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
+    private static final int NATIVE_WAKE_DELAY_MILLIS = 80;
+
+    @BeforeAll
+    static void preloadNativeHelper() {
+        if (Platform.isLinux()) {
+            NativeIoBlockHelper.blockingPpoll(0);
+        }
+    }
+
     @Test
     public void blockingSocketReadEmitsIoWaitTaskBlock() throws Exception {
         CountDownLatch readAttempted = new CountDownLatch(1);
@@ -171,6 +181,41 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
     }
 
     @Test
+    public void blockingAccept4EmitsIoWaitTaskBlock() {
+        NativeIoBlockHelper.blockingAccept4(NATIVE_WAKE_DELAY_MILLIS);
+        stopProfiler();
+        assertIoWaitTaskBlockSelfContained();
+    }
+
+    @Test
+    public void blockingPpollEmitsIoWaitTaskBlock() {
+        NativeIoBlockHelper.blockingPpoll(NATIVE_WAKE_DELAY_MILLIS);
+        stopProfiler();
+        assertIoWaitTaskBlockSelfContained();
+    }
+
+    @Test
+    public void blockingPselectEmitsIoWaitTaskBlock() {
+        NativeIoBlockHelper.blockingPselect(NATIVE_WAKE_DELAY_MILLIS);
+        stopProfiler();
+        assertIoWaitTaskBlockSelfContained();
+    }
+
+    @Test
+    public void blockingEpollWaitEmitsIoWaitTaskBlock() {
+        NativeIoBlockHelper.blockingEpollWait(NATIVE_WAKE_DELAY_MILLIS);
+        stopProfiler();
+        assertIoWaitTaskBlockSelfContained();
+    }
+
+    @Test
+    public void blockingEpollPwaitEmitsIoWaitTaskBlock() {
+        NativeIoBlockHelper.blockingEpollPwait(NATIVE_WAKE_DELAY_MILLIS);
+        stopProfiler();
+        assertIoWaitTaskBlockSelfContained();
+    }
+
+    @Test
     public void tracedBlockingSocketReadDoesNotEmitTaskBlock() throws Exception {
         CountDownLatch readAttempted = new CountDownLatch(1);
         AtomicReference<Throwable> error = new AtomicReference<>();
@@ -235,11 +280,15 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
         return selected;
     }
 
-    private void assertIoWaitTaskBlockSelfContained() {
+    protected void assertIoWaitTaskBlockSelfContained() {
         IItemCollection taskBlockEvents = verifyEvents("datadog.TaskBlock");
         TaskBlockAssertions.assertNoAnchorFields(taskBlockEvents);
-        TaskBlockAssertions.assertContainsStackTrace(taskBlockEvents);
+        assertTaskBlockStackReference(taskBlockEvents);
         TaskBlockAssertions.assertContainsObservedState(taskBlockEvents, "IO_WAIT");
+    }
+
+    protected void assertTaskBlockStackReference(IItemCollection taskBlockEvents) {
+        TaskBlockAssertions.assertContainsStackTrace(taskBlockEvents);
     }
 
     private static void assertCompleted(Thread thread, AtomicReference<Throwable> error)

@@ -33,6 +33,7 @@ public class ParkTaskBlockTest extends AbstractProfilerTest {
         assertTaskBlockStackReference(taskBlockEvents);
         TaskBlockAssertions.assertContains(
                 taskBlockEvents, ROOT_SPAN_ID, SPAN_ID, BLOCKER, UNBLOCKING_SPAN_ID);
+        TaskBlockAssertions.assertContainsObservedState(taskBlockEvents, "PARKED");
         TaskBlockAssertions.assertWallClockEpochDoesNotExposeTaskBlockCounters(
                 verifyEvents("datadog.WallClockSamplingEpoch"));
         assertTrue(
