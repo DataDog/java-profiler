@@ -1,6 +1,7 @@
 package com.datadoghq.profiler.wallclock;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.ProfilerOwnedBlockHooks;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.item.IItemCollection;
 
@@ -19,11 +20,11 @@ public class ParkTaskBlockTest extends AbstractProfilerTest {
     @Test
     public void platformParkEmitsTaskBlockWithoutTraceContext() {
         registerCurrentThreadForWallClockProfiling();
-        profiler.parkEnter();
+        ProfilerOwnedBlockHooks.parkEnter(profiler);
         try {
             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(200));
         } finally {
-            profiler.parkExit(BLOCKER, UNBLOCKING_SPAN_ID);
+            ProfilerOwnedBlockHooks.parkExit(profiler, BLOCKER, UNBLOCKING_SPAN_ID);
         }
 
         stopProfiler();
@@ -46,11 +47,11 @@ public class ParkTaskBlockTest extends AbstractProfilerTest {
         registerCurrentThreadForWallClockProfiling();
         profiler.setContext(0x3100L, 0x3101L, 0L, 0x3101L);
         try {
-            profiler.parkEnter();
+            ProfilerOwnedBlockHooks.parkEnter(profiler);
             try {
                 LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(200));
             } finally {
-                profiler.parkExit(BLOCKER, UNBLOCKING_SPAN_ID);
+                ProfilerOwnedBlockHooks.parkExit(profiler, BLOCKER, UNBLOCKING_SPAN_ID);
             }
         } finally {
             profiler.clearContext();

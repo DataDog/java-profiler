@@ -185,6 +185,41 @@ public class PrecheckTest extends AbstractProfilerTest {
                 "wc_signals_suppressed_sampled_run must not increment when wallprecheck=false");
     }
 
+    @Test
+    public void wallPrecheckCanRestartDisabledAfterEnabledRun() throws Exception {
+        Assumptions.assumeTrue(!Platform.isJ9());
+        Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
+        leaveClearedInitializedContext();
+        registerCurrentThreadForWallClockProfiling();
+
+        long token = ProfilerOwnedBlockHooks.blockEnter(profiler, OSTHREAD_STATE_SLEEPING);
+        assertTrue(token != 0, "Expected native blockEnter to arm SLEEPING state");
+        try {
+            Thread.sleep(300);
+        } finally {
+            ProfilerOwnedBlockHooks.blockExit(profiler, token);
+        }
+        stopProfiler();
+
+        long enabledSampleCount = verifyEvents("datadog.MethodSample", false)
+                .getAggregate(Aggregators.count()).longValue();
+        assertTrue(enabledSampleCount < 10,
+                "Expected once-per-run suppression before restart, got: " + enabledSampleCount);
+
+        Path recordingB = Files.createTempFile(Paths.get("/tmp/recordings"),
+                "PrecheckTest_restart_disabled_", ".jfr");
+        profiler.execute("start," + getPrecheckDisabledProfilerCommand()
+                + ",attributes=tag1;tag2;tag3,jfr,file=" + recordingB.toAbsolutePath());
+        Thread.sleep(300);
+        profiler.stop();
+        Files.deleteIfExists(recordingB);
+
+        long suppressedAfterDisabledRun = profiler.getDebugCounters()
+                .getOrDefault("wc_signals_suppressed_sampled_run", 0L);
+        assertEquals(0L, suppressedAfterDisabledRun,
+                "wc_signals_suppressed_sampled_run must not increment after restarting with wallprecheck=false");
+    }
+
     /**
      * Recreates the steady state left after a previous test initialized and then removed the Java
      * ThreadContext: the native ProfiledThread still owns an initialized OTEP record, but the

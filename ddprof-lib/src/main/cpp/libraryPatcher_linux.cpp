@@ -592,18 +592,17 @@ bool LibraryPatcher::patch_socket_functions() {
 
   const CodeCacheArray& native_libs = Libraries::instance()->native_libs();
   int num_of_libs = native_libs.count();
-  int capped = num_of_libs <= MAX_NATIVE_LIBS ? num_of_libs : MAX_NATIVE_LIBS;
 
   // Pre-resolve all library paths before acquiring the lock: realpath() may
   // block on I/O and must not be called while holding _lock.
   // We only need the is-self flag per library, so avoid a huge stack allocation.
+  static_assert(MAX_NATIVE_LIBS > 0, "MAX_NATIVE_LIBS must be positive");
   bool is_self[MAX_NATIVE_LIBS];
+  int capped = num_of_libs <= MAX_NATIVE_LIBS ? num_of_libs : MAX_NATIVE_LIBS;
   for (int index = 0; index < capped; index++) {
     CodeCache* lib = native_libs.at(index);
     is_self[index] = false;
-    if (lib == nullptr || lib->name() == nullptr) {
-      continue;
-    }
+    if (lib == nullptr || lib->name() == nullptr) continue;
     char path[PATH_MAX];
     char* resolved_path = realpath(lib->name(), path);
     // _profiler_name is normally initialized from dladdr() in initialize().

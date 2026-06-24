@@ -1,6 +1,7 @@
 package com.datadoghq.profiler.wallclock;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.ProfilerOwnedBlockHooks;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.item.IItemCollection;
 
@@ -138,7 +139,7 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
         Thread thread = new Thread(() -> {
             try {
                 registerCurrentThreadForWallClockProfiling();
-                long token = profiler.blockEnter(OSTHREAD_STATE_SLEEPING);
+                long token = ProfilerOwnedBlockHooks.blockEnter(profiler, OSTHREAD_STATE_SLEEPING);
                 if (token == 0) {
                     throw new AssertionError("Expected native blockEnter to arm SLEEPING state");
                 }
@@ -150,7 +151,7 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
                 if (snapshot[0] == 0 && snapshot[1] == 0) {
                     throw new AssertionError("Expected non-zero stack-reference metadata");
                 }
-                long token2 = profiler.blockEnter(OSTHREAD_STATE_SLEEPING);
+                long token2 = ProfilerOwnedBlockHooks.blockEnter(profiler, OSTHREAD_STATE_SLEEPING);
                 if (token2 == 0) {
                     throw new AssertionError("Expected native blockEnter to re-arm SLEEPING state");
                 }
@@ -158,7 +159,7 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
                     Thread.sleep(200L);
                     action.run(profiler.getCurrentThreadId(), startTicks, endTicks, snapshot);
                 } finally {
-                    profiler.blockExit(token2);
+                    ProfilerOwnedBlockHooks.blockExit(profiler, token2);
                 }
             } catch (Throwable t) {
                 error.set(t);

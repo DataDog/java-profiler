@@ -1,6 +1,7 @@
 package com.datadoghq.profiler.wallclock;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.ProfilerOwnedBlockHooks;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.item.IItemCollection;
 
@@ -80,7 +81,7 @@ public class DeferredTaskBlockTest extends AbstractProfilerTest {
         Thread thread = new Thread(() -> {
             try {
                 registerCurrentThreadForWallClockProfiling();
-                long token = profiler.blockEnter(OSTHREAD_STATE_SLEEPING);
+                long token = ProfilerOwnedBlockHooks.blockEnter(profiler, OSTHREAD_STATE_SLEEPING);
                 if (token == 0) {
                     throw new AssertionError("Expected native blockEnter to arm SLEEPING state");
                 }
