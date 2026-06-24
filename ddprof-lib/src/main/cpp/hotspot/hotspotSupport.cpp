@@ -1309,11 +1309,27 @@ static bool isSystemClassLoader(JNIEnv* jni, jobject cl) {
 
 bool isHiddenClass(jvmtiEnv *jvmti, jclass clazz) {
     jint modifiers = 0;
-    if (jvmti->GetClassModifiers(clazz, &modifiers) == JVMTI_ERROR_NONE) {
-        return JVMSupport::isHidden(modifiers);
+    if (jvmti->GetClassModifiers(clazz, &modifiers) == JVMTI_ERROR_NONE &&
+        JVMSupport::isHidden(modifiers)) {
+        return true;
     }
-
-    return false;
+    // Access flags do not reliably mark HotSpot hidden classes: there is no
+    // class-level hidden bit and a Lookup.defineHiddenClass class need not be
+    // synthetic. Hidden/anonymous classes carry a VM-injected "/0x..." name
+    // suffix (see Lookup::getPackage); '/' is illegal in a normal binary class
+    // name, so this reliably identifies the unloadable classes we must keep on
+    // the jmethodID path.
+    char* signature = nullptr;
+    bool hidden = false;
+    if (jvmti->GetClassSignature(clazz, &signature, nullptr) == JVMTI_ERROR_NONE &&
+        signature != nullptr) {
+        const char* slash = strrchr(signature, '/');
+        hidden = slash != nullptr && slash[1] >= '0' && slash[1] <= '9';
+    }
+    if (signature != nullptr) {
+        jvmti->Deallocate((unsigned char*)signature);
+    }
+    return hidden;
 }
 
 bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool load_all) {
