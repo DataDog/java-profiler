@@ -167,7 +167,15 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     } else {
         Counters::increment(WALKVM_VMTHREAD_OK);
     }
-    void* saved_exception = vm_thread != NULL ? vm_thread->exception() : NULL;
+    // Only write _exception_file for real Java application threads.
+    // JVM-internal threads like MonitorDeflationThread are JavaThread subclasses
+    // in JDK 25+ (different vtable → isJavaThread() returns false) but they are
+    // not regular application threads.  Writing _exception_file for them disturbs
+    // JDK 25's ObjectMonitorDeflationSafepointer, which reads thread state at
+    // safepoint boundaries and can crash in deflate_monitor_list when the field
+    // holds a stale jmp_buf address instead of a C-string or NULL.
+    bool setup_crash_protection = vm_thread != NULL && VMThread::isJavaThread(vm_thread);
+    void* saved_exception = setup_crash_protection ? vm_thread->exception() : nullptr;
 
     // Should be preserved across setjmp/longjmp
     volatile int depth = 0;
@@ -183,11 +191,13 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         if (anchor == NULL) {
             Counters::increment(WALKVM_ANCHOR_NULL);
         }
-        vm_thread->exception() = &crash_protection_ctx;
-        if (profiled_thread != nullptr) {
+        if (setup_crash_protection) {
+            vm_thread->exception() = &crash_protection_ctx;
+        }
+        if (profiled_thread != nullptr && setup_crash_protection) {
             profiled_thread->setCrashProtectionActive(true);
         }
-        if (setjmp(crash_protection_ctx) != 0) {
+        if (setup_crash_protection && setjmp(crash_protection_ctx) != 0) {
             // checkFault() does a longjmp from inside segvHandler, bypassing
             // segvHandler's SignalHandlerScope destructor.  Compensate.
             SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
@@ -534,7 +544,8 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 if (features.vtable_target && nm->isVTableStub() && depth == 0) {
                     uintptr_t receiver = frame.jarg0();
                     if (receiver != 0) {
-                        VMSymbol* symbol = VMKlass::fromOop(receiver)->name();
+                        VMKlass* klass = VMKlass::fromOop(receiver);
+                        VMSymbol* symbol = klass != nullptr ? klass->name() : nullptr;
                         // Store the raw VMSymbol* in the frame's method_id
                         // slot. BCI_VTABLE_RECEIVER (vmEntry.h) repurposes
                         // method_id for this pointer — same precedent as
@@ -842,7 +853,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     if (profiled_thread != nullptr) {
         profiled_thread->setCrashProtectionActive(false);
     }
-    if (vm_thread != NULL) {
+    if (setup_crash_protection) {
         vm_thread->exception() = saved_exception;
     }
 

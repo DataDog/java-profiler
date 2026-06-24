@@ -654,7 +654,13 @@ DECLARE(VMKlass)
             if (_compact_object_headers) {
                 uintptr_t mark = *(uintptr_t*)oop;
                 if (mark & MONITOR_BIT) {
-                    mark = *(uintptr_t*)(mark ^ MONITOR_BIT);
+                    // TOCTOU: MonitorDeflationThread may free the ObjectMonitor between
+                    // reading the mark word and dereferencing the monitor pointer. Use
+                    // safeFetch64 so a concurrent deflation/free does not crash here.
+                    mark = (uintptr_t)SafeAccess::safeFetch64((int64_t*)(mark ^ MONITOR_BIT), 0);
+                    if (mark == 0) {
+                        return nullptr;
+                    }
                 }
                 narrow_klass = mark >> _markWord_klass_shift;
             } else {
