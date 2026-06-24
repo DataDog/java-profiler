@@ -17,36 +17,50 @@ enum FrameTypeId {
   FRAME_TYPE_MASK = 0x7
 };
 
+// Packs frame type and BCI into a single int field stored in CallTrace frames.
+//
+// Bit layout of an encoded value (ENCODED_MASK set):
+//   bit 30       RAW_POINTER_MASK  — value is a raw native PC (HotSpot only)
+//   bits 23–21   frame type        — FrameTypeId (0–7)
+//   bit 20       ENCODED_MASK      — set to distinguish encoded values from raw ASGCT BCIs
+//   bits 15–0    BCI               — bytecode index (0–65534; never 65535, see BCI_MASK)
+//
+// When ENCODED_MASK is not set the field is a raw, unencoded BCI from ASGCT (non-VM stack
+// walking modes). Raw values may be negative: HotSpot uses -1 as a sentinel for method-entry
+// and synchronization-entry samples. Both encode() and bci() clamp negative values to 0 so
+// that 65535 (the mask value itself) is never emitted and can be treated as unreachable.
+// decode() returns FRAME_JIT_COMPILED for all unencoded or negative values.
 class FrameType {
-  // Maximum Java method size is 65535 bytes of bytecode (JVM spec §4.7.3), so valid BCIs
-  // are 0–65534; BCI_MASK = 0xffff leaves 65535 as the only unreachable value and is used
-  // as a sentinel: HotSpot ScopeDesc::decode() returns -1 for method-entry and
-  // synchronization-entry locations, which truncates to BCI_MASK under 16-bit masking.
+  // JVM spec §4.7.3 caps method bytecode at 65535 bytes, so valid BCIs are 0–65534.
+  // The mask value 65535 (0xffff) is therefore never a valid BCI; we keep it unreachable
+  // by clamping negative sentinels to 0 in encode() and bci().
   static constexpr int BCI_MASK = 0xffff;
   static constexpr int TYPE_SHIFT = 21;
-  static constexpr int ENCODED_MASK = 1 << 20;  // bit indicates that value is encoded
+  static constexpr int ENCODED_MASK = 1 << 20;  // distinguishes encoded values from raw ASGCT BCIs
   static constexpr int RAW_POINTER_MASK = 1 << 30;
 public:
+  // Produces an encoded int from a frame type and BCI. Negative BCIs (HotSpot -1 sentinels
+  // for method-entry/sync-entry) are mapped to 0 rather than wrapping to 0xffff.
   static inline int encode(int type, int bci, bool rawPointer = false) {
     assert((!rawPointer || VM::isHotspot()) && "Raw pointer is only valid for hotspot");
     assert(type >= FRAME_INTERPRETED && type <= FRAME_TYPE_MAX);
-    // HotSpot ScopeDesc::decode() returns -1 for method-entry and synchronization-entry
-    // locations; map any negative BCI to 0 rather than storing 0xffff in the low bits.
     int bci_bits = (bci < 0) ? 0 : (bci & BCI_MASK);
     return ENCODED_MASK | (type << TYPE_SHIFT) | bci_bits | (rawPointer ? RAW_POINTER_MASK : 0);
   }
 
+  // Extracts the BCI from either an encoded value or a raw ASGCT BCI.
+  // Negative values (HotSpot -1 sentinels) are clamped to 0, matching encode().
   static inline int bci(int bci) {
-    return (bci & BCI_MASK);
+    return (bci < 0) ? 0 : (bci & BCI_MASK);
   }
-  
+
+  // Extracts the FrameTypeId from an encoded value.
+  // Returns FRAME_JIT_COMPILED for unencoded raw ASGCT BCIs and for negative sentinels,
+  // since no type information is available in those cases.
   static inline FrameTypeId decode(int bci) {
     if ((bci & ENCODED_MASK) == 0 || bci < 0) {
-      // Unencoded BCI (ENCODED_SHIFT bit not set) or negative special BCI values
       return FRAME_JIT_COMPILED;
     }
-
-    // Clamp to valid FrameTypeId range to defend against corrupted values
     return (FrameTypeId)((bci >> TYPE_SHIFT) & FRAME_TYPE_MASK);
   }
 
