@@ -68,11 +68,10 @@ public class MonitorDeflationThreadSafetyTest extends AbstractProfilerTest {
 
         long deadline = System.currentTimeMillis() + durationMs;
         while (System.currentTimeMillis() < deadline) {
-            // Inflate: synchronize on every object to force monitor creation.
             for (Object mon : monitors) {
                 synchronized (mon) {
-                    // brief critical section — just enough to inflate the monitor
-                    Thread.yield();
+                    // wait() forces inflation to an ObjectMonitor and makes it eligible for deflation
+                    mon.wait(1);
                 }
             }
 
