@@ -34,6 +34,7 @@
 #include <string.h>
 #include <sys/syscall.h>
 #include <time.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifndef SIGEV_THREAD_ID
@@ -177,13 +178,47 @@ Error CTimer::start(Arguments &args) {
   return Error::OK;
 }
 
+// 200 ms: long enough for any legitimate recordSample() call to finish,
+// short enough to avoid a perceptible hang if a handler is somehow stuck.
+static const long DRAIN_TIMEOUT_NS = 200000000L;
+
+void CTimer::drainInflight() {
+  if (__atomic_load_n(&_inflight, __ATOMIC_ACQUIRE) == 0) {
+    return; // fast path: nothing in flight
+  }
+
+  struct timespec deadline;
+  clock_gettime(CLOCK_MONOTONIC, &deadline);
+  deadline.tv_nsec += DRAIN_TIMEOUT_NS;
+  if (deadline.tv_nsec >= 1000000000L) {
+    deadline.tv_sec += 1;
+    deadline.tv_nsec -= 1000000000L;
+  }
+
+  while (__atomic_load_n(&_inflight, __ATOMIC_ACQUIRE) > 0) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (now.tv_sec > deadline.tv_sec ||
+        (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec)) {
+      Log::warn("CTimer::drainInflight: timed out after %ldms waiting for "
+                "%d in-flight SIGPROF handler(s); proceeding with JFR teardown. "
+                "This may indicate a stuck signal handler.",
+                DRAIN_TIMEOUT_NS / 1000000L,
+                __atomic_load_n(&_inflight, __ATOMIC_ACQUIRE));
+      break;
+    }
+    sched_yield();
+  }
+}
+
 void CTimer::stop() {
   for (int i = 0; i < _max_timers; i++) {
     unregisterThread(i);
   }
   // _enabled is already false (disableEngines() is called before stop()).
-  // Spin until all handlers that passed the _enabled=true check have returned,
-  // so it is safe to tear down JFR structures on return.
+  // Wait for any handler that passed the _enabled=true check to finish before
+  // returning; the caller (Profiler::stop) will proceed to _jfr.stop() which
+  // frees JFR structures those handlers may still be accessing.
   drainInflight();
 }
 
