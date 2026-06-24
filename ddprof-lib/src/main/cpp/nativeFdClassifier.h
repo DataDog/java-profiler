@@ -20,6 +20,11 @@ public:
   void clearFdType(int fd);
   void clearFdTypeCache();
 
+#ifdef UNIT_TEST
+  using ProbeOverride = int (*)(int fd, int *so_type, int *probe_errno);
+  static void setProbeOverrideForTest(ProbeOverride probe);
+#endif
+
 private:
   static const int FD_TYPE_CACHE_SIZE = 65536;
   static const uint32_t FD_TYPE_MASK = 0xf;
@@ -32,7 +37,12 @@ private:
   std::atomic<uint32_t> _fd_cache_gen{1};
   std::atomic<uint32_t> _fd_type_cache[FD_TYPE_CACHE_SIZE];
 
+  static uint8_t probeFdType(int fd);
   uint8_t fdType(int fd);
+
+#ifdef UNIT_TEST
+  static std::atomic<ProbeOverride> _probe_override;
+#endif
 };
 
 #endif // __linux__

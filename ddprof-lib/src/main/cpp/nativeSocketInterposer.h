@@ -82,6 +82,12 @@ public:
   void stop();
   bool active() const { return _active.load(std::memory_order_acquire); }
 
+#ifdef UNIT_TEST
+  bool setActiveForTest(bool active) {
+    return _active.exchange(active, std::memory_order_acq_rel);
+  }
+#endif
+
   bool isStreamSocket(int fd);
   bool isDatagramSocket(int fd);
   void clearFdType(int fd);

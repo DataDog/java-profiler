@@ -22,6 +22,15 @@ static inline bool nonZeroTimespec(const struct timespec* timeout) {
   return timeout == nullptr || timeout->tv_sec != 0 || timeout->tv_nsec != 0;
 }
 
+class ErrnoGuard {
+public:
+  ErrnoGuard() : _saved(errno) {}
+  ~ErrnoGuard() { errno = _saved; }
+
+private:
+  int _saved;
+};
+
 template <typename Ret, typename Fn, typename Call>
 static inline Ret runNativeIoHook(bool eligible, NativeBlockKind kind,
                                   int fd, Fn fn, Call call) {
@@ -40,18 +49,26 @@ static inline Ret runNativeIoHook(bool eligible, NativeBlockKind kind,
 
 template <typename Ret, typename Fn, typename Call>
 static inline Ret runStreamSocketHook(int fd, Fn fn, Call call) {
-  int entry_errno = errno;
-  bool eligible = NativeSocketInterposer::instance()->isStreamSocket(fd);
-  errno = entry_errno;
+  // read/write are intentionally routed through the socket classifier because
+  // socket I/O often uses generic fd APIs. Non-socket fds are cached after the
+  // first stable ENOTSOCK probe; high or transiently failing fds may be probed
+  // again on later calls.
+  bool eligible;
+  {
+    ErrnoGuard errno_guard;
+    eligible = NativeSocketInterposer::instance()->isStreamSocket(fd);
+  }
   return runNativeIoHook<Ret>(eligible, NativeBlockKind::STREAM_SOCKET, fd, fn,
                               call);
 }
 
 template <typename Ret, typename Fn, typename Call>
 static inline Ret runDatagramSocketHook(int fd, Fn fn, Call call) {
-  int entry_errno = errno;
-  bool eligible = NativeSocketInterposer::instance()->isDatagramSocket(fd);
-  errno = entry_errno;
+  bool eligible;
+  {
+    ErrnoGuard errno_guard;
+    eligible = NativeSocketInterposer::instance()->isDatagramSocket(fd);
+  }
   return runNativeIoHook<Ret>(eligible, NativeBlockKind::UDP_RECEIVE, fd, fn,
                               call);
 }
@@ -238,12 +255,13 @@ int NativeSocketInterposer::close_hook(int fd) {
   } else {
     ret = _orig_close(fd);
   }
-  int saved_errno = errno;
-  if (ret == 0) {
-    NativeSocketInterposer::instance()->clearFdType(fd);
-    NativeSocketSampler::instance()->clearFdCacheEntry(fd);
+  {
+    ErrnoGuard errno_guard;
+    if (ret == 0) {
+      NativeSocketInterposer::instance()->clearFdType(fd);
+      NativeSocketSampler::instance()->clearFdCacheEntry(fd);
+    }
   }
-  errno = saved_errno;
   return ret;
 }
 
@@ -259,14 +277,15 @@ int NativeSocketInterposer::dup2_hook(int oldfd, int newfd) {
   } else {
     ret = _orig_dup2(oldfd, newfd);
   }
-  int saved_errno = errno;
-  if (ret >= 0) {
-    // dup2() implicitly closes newfd before reusing it, so clear stale fd
-    // classification and address state for the target descriptor.
-    NativeSocketInterposer::instance()->clearFdType(newfd);
-    NativeSocketSampler::instance()->clearFdCacheEntry(newfd);
+  {
+    ErrnoGuard errno_guard;
+    if (ret >= 0) {
+      // dup2() implicitly closes newfd before reusing it, so clear stale fd
+      // classification and address state for the target descriptor.
+      NativeSocketInterposer::instance()->clearFdType(newfd);
+      NativeSocketSampler::instance()->clearFdCacheEntry(newfd);
+    }
   }
-  errno = saved_errno;
   return ret;
 }
 
@@ -282,40 +301,47 @@ int NativeSocketInterposer::dup3_hook(int oldfd, int newfd, int flags) {
   } else {
     ret = _orig_dup3(oldfd, newfd, flags);
   }
-  int saved_errno = errno;
-  if (ret >= 0) {
-    // dup3() implicitly closes newfd before reusing it, so clear stale fd
-    // classification and address state for the target descriptor.
-    NativeSocketInterposer::instance()->clearFdType(newfd);
-    NativeSocketSampler::instance()->clearFdCacheEntry(newfd);
+  {
+    ErrnoGuard errno_guard;
+    if (ret >= 0) {
+      // dup3() implicitly closes newfd before reusing it, so clear stale fd
+      // classification and address state for the target descriptor.
+      NativeSocketInterposer::instance()->clearFdType(newfd);
+      NativeSocketSampler::instance()->clearFdCacheEntry(newfd);
+    }
   }
-  errno = saved_errno;
   return ret;
 }
 
 int NativeSocketInterposer::connect_hook(int fd, const struct sockaddr* addr,
                                          socklen_t addrlen) {
-  int entry_errno = errno;
-  bool eligible = NativeSocketInterposer::instance()->isStreamSocket(fd);
-  errno = entry_errno;
+  bool eligible;
+  {
+    ErrnoGuard errno_guard;
+    eligible = NativeSocketInterposer::instance()->isStreamSocket(fd);
+  }
   return runNativeIoHook<int>(eligible, NativeBlockKind::CONNECT, fd, _orig_connect,
                               [&](connect_fn fn) { return fn(fd, addr, addrlen); });
 }
 
 int NativeSocketInterposer::accept_hook(int fd, struct sockaddr* addr,
                                         socklen_t* addrlen) {
-  int entry_errno = errno;
-  bool eligible = NativeSocketInterposer::instance()->isStreamSocket(fd);
-  errno = entry_errno;
+  bool eligible;
+  {
+    ErrnoGuard errno_guard;
+    eligible = NativeSocketInterposer::instance()->isStreamSocket(fd);
+  }
   return runNativeIoHook<int>(eligible, NativeBlockKind::ACCEPT, fd, _orig_accept,
                               [&](accept_fn fn) { return fn(fd, addr, addrlen); });
 }
 
 int NativeSocketInterposer::accept4_hook(int fd, struct sockaddr* addr,
                                          socklen_t* addrlen, int flags) {
-  int entry_errno = errno;
-  bool eligible = NativeSocketInterposer::instance()->isStreamSocket(fd);
-  errno = entry_errno;
+  bool eligible;
+  {
+    ErrnoGuard errno_guard;
+    eligible = NativeSocketInterposer::instance()->isStreamSocket(fd);
+  }
   return runNativeIoHook<int>(eligible, NativeBlockKind::ACCEPT, fd, _orig_accept4,
                               [&](accept4_fn fn) { return fn(fd, addr, addrlen, flags); });
 }

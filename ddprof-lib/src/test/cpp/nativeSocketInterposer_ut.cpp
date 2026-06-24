@@ -20,11 +20,14 @@
 
 #include "libraryPatcher.h"
 #include "nativeBlock.h"
+#include "nativeFdClassifier.h"
 #include "nativeSocketInterposer.h"
 #include "nativeSocketSampler.h"
+#include "profiler.h"
 
 #include <atomic>
 #include <cerrno>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <signal.h>
@@ -35,12 +38,16 @@
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
+#include <thread>
+#include <vector>
 
 namespace {
 
 std::atomic<int> g_send_calls{0};
+std::atomic<int> g_sampler_send_calls{0};
 std::atomic<int> g_recv_calls{0};
 std::atomic<int> g_write_calls{0};
+std::atomic<int> g_sampler_write_calls{0};
 std::atomic<int> g_read_calls{0};
 std::atomic<int> g_close_calls{0};
 std::atomic<int> g_connect_calls{0};
@@ -54,9 +61,16 @@ std::atomic<int> g_poll_calls{0};
 std::atomic<int> g_ppoll_calls{0};
 std::atomic<int> g_select_calls{0};
 std::atomic<int> g_pselect_calls{0};
+std::atomic<int> g_fd_probe_calls{0};
+std::atomic<int> g_fd_probe_rc{0};
+std::atomic<int> g_fd_probe_errno{0};
+std::atomic<int> g_fd_probe_so_type{0};
+std::atomic<int> g_fd_probe_last_fd{0};
 std::atomic<ssize_t> g_send_ret{0};
+std::atomic<ssize_t> g_sampler_send_ret{0};
 std::atomic<ssize_t> g_recv_ret{0};
 std::atomic<ssize_t> g_write_ret{0};
+std::atomic<ssize_t> g_sampler_write_ret{0};
 std::atomic<ssize_t> g_read_ret{0};
 std::atomic<int> g_close_ret{0};
 std::atomic<int> g_connect_ret{0};
@@ -76,6 +90,69 @@ ssize_t stub_send(int, const void*, size_t, int) {
   return g_send_ret.load();
 }
 
+ssize_t sampler_stub_send(int, const void*, size_t, int) {
+  g_sampler_send_calls++;
+  return g_sampler_send_ret.load();
+}
+
+int stub_fd_probe(int, int *so_type, int *probe_errno) {
+  g_fd_probe_calls++;
+  *so_type = g_fd_probe_so_type.load(std::memory_order_acquire);
+  *probe_errno = g_fd_probe_errno.load(std::memory_order_acquire);
+  return g_fd_probe_rc.load(std::memory_order_acquire);
+}
+
+int recording_fd_probe(int fd, int *so_type, int *probe_errno) {
+  g_fd_probe_last_fd.store(fd, std::memory_order_release);
+  return stub_fd_probe(fd, so_type, probe_errno);
+}
+
+class ScopedFdProbeOverride {
+public:
+  explicit ScopedFdProbeOverride(NativeFdClassifier::ProbeOverride probe) {
+    NativeFdClassifier::setProbeOverrideForTest(probe);
+  }
+  ~ScopedFdProbeOverride() {
+    NativeFdClassifier::setProbeOverrideForTest(nullptr);
+  }
+};
+
+class ScopedTaskBlockAsyncActive {
+public:
+  explicit ScopedTaskBlockAsyncActive(bool active)
+      : _saved(Profiler::instance()->setTaskBlockAsyncActiveForTest(active)) {}
+  ~ScopedTaskBlockAsyncActive() {
+    Profiler::instance()->setTaskBlockAsyncActiveForTest(_saved);
+  }
+
+private:
+  bool _saved;
+};
+
+class ScopedNativeSocketInterposerActive {
+public:
+  explicit ScopedNativeSocketInterposerActive(bool active)
+      : _saved(NativeSocketInterposer::instance()->setActiveForTest(active)) {}
+  ~ScopedNativeSocketInterposerActive() {
+    NativeSocketInterposer::instance()->setActiveForTest(_saved);
+  }
+
+private:
+  bool _saved;
+};
+
+class ScopedNativeSocketSamplerActive {
+public:
+  explicit ScopedNativeSocketSamplerActive(bool active)
+      : _saved(NativeSocketSampler::setActiveForTest(active)) {}
+  ~ScopedNativeSocketSamplerActive() {
+    NativeSocketSampler::setActiveForTest(_saved);
+  }
+
+private:
+  bool _saved;
+};
+
 ssize_t stub_recv(int, void*, size_t, int) {
   g_recv_calls++;
   return g_recv_ret.load();
@@ -84,6 +161,11 @@ ssize_t stub_recv(int, void*, size_t, int) {
 ssize_t stub_write(int, const void*, size_t) {
   g_write_calls++;
   return g_write_ret.load();
+}
+
+ssize_t sampler_stub_write(int, const void*, size_t) {
+  g_sampler_write_calls++;
+  return g_sampler_write_ret.load();
 }
 
 ssize_t stub_read(int, void*, size_t) {
@@ -162,13 +244,21 @@ protected:
   NativeSocketInterposer::recv_fn saved_recv = nullptr;
   NativeSocketInterposer::write_fn saved_write = nullptr;
   NativeSocketInterposer::read_fn saved_read = nullptr;
+  NativeSocketSampler::send_fn saved_sampler_send = nullptr;
+  NativeSocketSampler::recv_fn saved_sampler_recv = nullptr;
+  NativeSocketSampler::write_fn saved_sampler_write = nullptr;
+  NativeSocketSampler::read_fn saved_sampler_read = nullptr;
   bool saved_active = false;
 
   void SetUp() override {
     NativeSocketInterposer::getOriginalFunctions(saved_send, saved_recv, saved_write,
                                                  saved_read);
+    NativeSocketSampler::getOriginalFunctions(saved_sampler_send, saved_sampler_recv,
+                                              saved_sampler_write, saved_sampler_read);
     NativeSocketInterposer::setOriginalFunctions(stub_send, stub_recv, stub_write,
                                                  stub_read);
+    NativeSocketSampler::setOriginalFunctions(sampler_stub_send, stub_recv,
+                                              sampler_stub_write, stub_read);
     setOriginalFunction(NativeSocketInterposer::HOOK_CLOSE,
                         reinterpret_cast<void*>(stub_close));
     setOriginalFunction(NativeSocketInterposer::HOOK_CONNECT,
@@ -197,8 +287,10 @@ protected:
     LibraryPatcher::_socket_active.store(false, std::memory_order_release);
     NativeSocketInterposer::instance()->clearFdTypeCache();
     g_send_calls = 0;
+    g_sampler_send_calls = 0;
     g_recv_calls = 0;
     g_write_calls = 0;
+    g_sampler_write_calls = 0;
     g_read_calls = 0;
     g_close_calls = 0;
     g_connect_calls = 0;
@@ -213,8 +305,10 @@ protected:
     g_select_calls = 0;
     g_pselect_calls = 0;
     g_send_ret = 0;
+    g_sampler_send_ret = 0;
     g_recv_ret = 0;
     g_write_ret = 0;
+    g_sampler_write_ret = 0;
     g_read_ret = 0;
     g_close_ret = 0;
     g_connect_ret = 0;
@@ -234,6 +328,8 @@ protected:
     LibraryPatcher::_socket_active.store(saved_active, std::memory_order_release);
     NativeSocketInterposer::setOriginalFunctions(saved_send, saved_recv, saved_write,
                                                  saved_read);
+    NativeSocketSampler::setOriginalFunctions(saved_sampler_send, saved_sampler_recv,
+                                              saved_sampler_write, saved_sampler_read);
     setOriginalFunction(NativeSocketInterposer::HOOK_CLOSE, nullptr);
     setOriginalFunction(NativeSocketInterposer::HOOK_CONNECT, nullptr);
     setOriginalFunction(NativeSocketInterposer::HOOK_ACCEPT, nullptr);
@@ -331,6 +427,50 @@ TEST_F(NativeSocketInterposerHookTest, ActiveStreamSocketWriteForwards) {
   close(fds[1]);
 }
 
+TEST_F(NativeSocketInterposerHookTest,
+       CombinedActiveStreamSendDelegatesToSamplerOriginal) {
+  int fds[2];
+  ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, fds));
+  ScopedNativeSocketInterposerActive interposer_active(true);
+  ScopedNativeSocketSamplerActive sampler_active(true);
+  g_send_ret = 11;
+  g_sampler_send_ret = 17;
+  char buf[8] = {};
+
+  LibraryPatcher::_socket_active.store(true, std::memory_order_release);
+  errno = E2BIG;
+  ssize_t ret = NativeSocketInterposer::send_hook(fds[0], buf, sizeof(buf), 0);
+
+  EXPECT_EQ(17, ret);
+  EXPECT_EQ(0, g_send_calls.load());
+  EXPECT_EQ(1, g_sampler_send_calls.load());
+  EXPECT_EQ(E2BIG, errno);
+  close(fds[0]);
+  close(fds[1]);
+}
+
+TEST_F(NativeSocketInterposerHookTest,
+       CombinedActiveStreamWriteDelegatesToSamplerOriginal) {
+  int fds[2];
+  ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, fds));
+  ScopedNativeSocketInterposerActive interposer_active(true);
+  ScopedNativeSocketSamplerActive sampler_active(true);
+  g_write_ret = 11;
+  g_sampler_write_ret = 19;
+  char buf[8] = {};
+
+  LibraryPatcher::_socket_active.store(true, std::memory_order_release);
+  errno = E2BIG;
+  ssize_t ret = NativeSocketInterposer::write_hook(fds[0], buf, sizeof(buf));
+
+  EXPECT_EQ(19, ret);
+  EXPECT_EQ(0, g_write_calls.load());
+  EXPECT_EQ(1, g_sampler_write_calls.load());
+  EXPECT_EQ(E2BIG, errno);
+  close(fds[0]);
+  close(fds[1]);
+}
+
 TEST_F(NativeSocketInterposerHookTest, CloseForwardsAndPreservesErrno) {
   int fds[2];
   ASSERT_EQ(0, pipe(fds));
@@ -343,6 +483,74 @@ TEST_F(NativeSocketInterposerHookTest, CloseForwardsAndPreservesErrno) {
   EXPECT_EQ(0, ret);
   EXPECT_EQ(1, g_close_calls.load());
   EXPECT_EQ(E2BIG, errno);
+  close(fds[0]);
+  close(fds[1]);
+}
+
+TEST_F(NativeSocketInterposerHookTest, NullStreamSendOriginalReturnsEnosys) {
+  int fds[2];
+  ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, fds));
+  setOriginalFunction(NativeSocketInterposer::HOOK_SEND, nullptr);
+  char buf[8] = {};
+
+  LibraryPatcher::_socket_active.store(true, std::memory_order_release);
+  errno = 0;
+  ssize_t ret = NativeSocketInterposer::send_hook(fds[0], buf, sizeof(buf), 0);
+
+  EXPECT_EQ(-1, ret);
+  EXPECT_EQ(ENOSYS, errno);
+  EXPECT_EQ(0, g_send_calls.load());
+  close(fds[0]);
+  close(fds[1]);
+}
+
+TEST_F(NativeSocketInterposerHookTest, NullStreamRecvOriginalReturnsEnosys) {
+  int fds[2];
+  ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, fds));
+  setOriginalFunction(NativeSocketInterposer::HOOK_RECV, nullptr);
+  char buf[8] = {};
+
+  LibraryPatcher::_socket_active.store(true, std::memory_order_release);
+  errno = 0;
+  ssize_t ret = NativeSocketInterposer::recv_hook(fds[0], buf, sizeof(buf), 0);
+
+  EXPECT_EQ(-1, ret);
+  EXPECT_EQ(ENOSYS, errno);
+  EXPECT_EQ(0, g_recv_calls.load());
+  close(fds[0]);
+  close(fds[1]);
+}
+
+TEST_F(NativeSocketInterposerHookTest, NullStreamWriteOriginalReturnsEnosys) {
+  int fds[2];
+  ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, fds));
+  setOriginalFunction(NativeSocketInterposer::HOOK_WRITE, nullptr);
+  char buf[8] = {};
+
+  LibraryPatcher::_socket_active.store(true, std::memory_order_release);
+  errno = 0;
+  ssize_t ret = NativeSocketInterposer::write_hook(fds[0], buf, sizeof(buf));
+
+  EXPECT_EQ(-1, ret);
+  EXPECT_EQ(ENOSYS, errno);
+  EXPECT_EQ(0, g_write_calls.load());
+  close(fds[0]);
+  close(fds[1]);
+}
+
+TEST_F(NativeSocketInterposerHookTest, NullStreamReadOriginalReturnsEnosys) {
+  int fds[2];
+  ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, fds));
+  setOriginalFunction(NativeSocketInterposer::HOOK_READ, nullptr);
+  char buf[8] = {};
+
+  LibraryPatcher::_socket_active.store(true, std::memory_order_release);
+  errno = 0;
+  ssize_t ret = NativeSocketInterposer::read_hook(fds[0], buf, sizeof(buf));
+
+  EXPECT_EQ(-1, ret);
+  EXPECT_EQ(ENOSYS, errno);
+  EXPECT_EQ(0, g_read_calls.load());
   close(fds[0]);
   close(fds[1]);
 }
@@ -369,6 +577,28 @@ TEST(LibraryPatcherSocketStateTest, ConditionalUnpatchClearsSocketActiveWhenOwne
 
   EXPECT_TRUE(LibraryPatcher::unpatch_socket_functions_if_inactive());
   EXPECT_FALSE(LibraryPatcher::_socket_active.load(std::memory_order_acquire));
+
+  LibraryPatcher::_socket_active.store(saved_active, std::memory_order_release);
+}
+
+TEST(LibraryPatcherSocketStateTest, ConditionalUnpatchKeepsSocketActiveWhenSamplerActive) {
+  bool saved_active =
+      LibraryPatcher::_socket_active.exchange(true, std::memory_order_acq_rel);
+  ScopedNativeSocketSamplerActive sampler_active(true);
+
+  EXPECT_FALSE(LibraryPatcher::unpatch_socket_functions_if_inactive());
+  EXPECT_TRUE(LibraryPatcher::_socket_active.load(std::memory_order_acquire));
+
+  LibraryPatcher::_socket_active.store(saved_active, std::memory_order_release);
+}
+
+TEST(LibraryPatcherSocketStateTest, ConditionalUnpatchKeepsSocketActiveWhenInterposerActive) {
+  bool saved_active =
+      LibraryPatcher::_socket_active.exchange(true, std::memory_order_acq_rel);
+  ScopedNativeSocketInterposerActive interposer_active(true);
+
+  EXPECT_FALSE(LibraryPatcher::unpatch_socket_functions_if_inactive());
+  EXPECT_TRUE(LibraryPatcher::_socket_active.load(std::memory_order_acquire));
 
   LibraryPatcher::_socket_active.store(saved_active, std::memory_order_release);
 }
@@ -535,9 +765,66 @@ TEST_F(NativeSocketInterposerHookTest, ActivePselectZeroTimeoutForwards) {
   EXPECT_EQ(E2BIG, errno);
 }
 
+TEST_F(NativeSocketInterposerHookTest, ActiveEpollPositiveTimeoutEligibleForwards) {
+  g_epoll_wait_ret = 1;
+  g_epoll_pwait_ret = 2;
+  struct epoll_event events[1] = {};
+
+  LibraryPatcher::_socket_active.store(true, std::memory_order_release);
+  errno = E2BIG;
+  EXPECT_EQ(1, NativeSocketInterposer::epoll_wait_hook(31, events, 1, 1));
+  EXPECT_EQ(E2BIG, errno);
+  EXPECT_EQ(2, NativeSocketInterposer::epoll_pwait_hook(31, events, 1, -1, nullptr));
+  EXPECT_EQ(E2BIG, errno);
+  EXPECT_EQ(1, g_epoll_wait_calls.load());
+  EXPECT_EQ(1, g_epoll_pwait_calls.load());
+}
+
+TEST_F(NativeSocketInterposerHookTest, ActivePollPositiveAndNullTimeoutEligibleForwards) {
+  g_poll_ret = 1;
+  g_ppoll_ret = 2;
+  struct pollfd fds[1] = {{0, POLLIN, 0}};
+
+  LibraryPatcher::_socket_active.store(true, std::memory_order_release);
+  errno = E2BIG;
+  EXPECT_EQ(1, NativeSocketInterposer::poll_hook(fds, 1, -1));
+  EXPECT_EQ(E2BIG, errno);
+  EXPECT_EQ(2, NativeSocketInterposer::ppoll_hook(fds, 1, nullptr, nullptr));
+  EXPECT_EQ(E2BIG, errno);
+  EXPECT_EQ(1, g_poll_calls.load());
+  EXPECT_EQ(1, g_ppoll_calls.load());
+}
+
+TEST_F(NativeSocketInterposerHookTest, ActiveSelectPositiveAndNullTimeoutEligibleForwards) {
+  g_select_ret = 1;
+  g_pselect_ret = 2;
+  struct timeval select_timeout = {1, 0};
+
+  LibraryPatcher::_socket_active.store(true, std::memory_order_release);
+  errno = E2BIG;
+  EXPECT_EQ(1, NativeSocketInterposer::select_hook(1, nullptr, nullptr, nullptr,
+                                                  &select_timeout));
+  EXPECT_EQ(E2BIG, errno);
+  EXPECT_EQ(2, NativeSocketInterposer::pselect_hook(1, nullptr, nullptr, nullptr,
+                                                   nullptr, nullptr));
+  EXPECT_EQ(E2BIG, errno);
+  EXPECT_EQ(1, g_select_calls.load());
+  EXPECT_EQ(1, g_pselect_calls.load());
+}
+
 TEST(NativeBlockScopeTest, EncodesKindAndBlockerId) {
   EXPECT_EQ((static_cast<u64>(NativeBlockKind::CONNECT) << 32) | 17,
             NativeBlockScope::blocker(NativeBlockKind::CONNECT, 17));
+}
+
+TEST(NativeBlockScopeTest, InactiveAsyncDrainGateLeavesScopeInactiveAndPreservesErrno) {
+  ScopedTaskBlockAsyncActive async_active(false);
+
+  errno = E2BIG;
+  NativeBlockScope scope(NativeBlockKind::STREAM_SOCKET, 17);
+
+  EXPECT_FALSE(scope.active());
+  EXPECT_EQ(E2BIG, errno);
 }
 
 TEST_F(NativeSocketInterposerFdTest, ClassifiesStreamSocketsOnly) {
@@ -565,6 +852,163 @@ TEST_F(NativeSocketInterposerFdTest, ClassifiesDatagramSocketsOnly) {
   EXPECT_FALSE(NativeSocketInterposer::instance()->isDatagramSocket(stream_fds[0]));
   ASSERT_EQ(0, closeThroughHook(stream_fds[0]));
   ASSERT_EQ(0, closeThroughHook(stream_fds[1]));
+}
+
+TEST_F(NativeSocketInterposerFdTest, TransientFdProbeFailureIsNotCached) {
+  NativeFdClassifier classifier;
+  ScopedFdProbeOverride override(stub_fd_probe);
+  g_fd_probe_calls = 0;
+  g_fd_probe_rc = -1;
+  g_fd_probe_errno = EIO;
+  g_fd_probe_so_type = 0;
+  int fd = 42;
+
+  EXPECT_FALSE(classifier.isStreamSocket(fd));
+  EXPECT_EQ(1, g_fd_probe_calls.load());
+
+  g_fd_probe_rc = 0;
+  g_fd_probe_errno = 0;
+  g_fd_probe_so_type = SOCK_STREAM;
+
+  EXPECT_TRUE(classifier.isStreamSocket(fd));
+  EXPECT_EQ(2, g_fd_probe_calls.load());
+
+  EXPECT_TRUE(classifier.isStreamSocket(fd));
+  EXPECT_EQ(2, g_fd_probe_calls.load());
+}
+
+TEST_F(NativeSocketInterposerFdTest, NegativeFdDoesNotProbe) {
+  NativeFdClassifier classifier;
+  ScopedFdProbeOverride override(recording_fd_probe);
+  g_fd_probe_calls = 0;
+  g_fd_probe_so_type = SOCK_STREAM;
+
+  EXPECT_FALSE(classifier.isStreamSocket(-1));
+  EXPECT_FALSE(classifier.isDatagramSocket(-1));
+  EXPECT_EQ(0, g_fd_probe_calls.load());
+}
+
+TEST_F(NativeSocketInterposerFdTest, EnotsockFailureIsCachedAsNonSocket) {
+  NativeFdClassifier classifier;
+  ScopedFdProbeOverride override(stub_fd_probe);
+  g_fd_probe_calls = 0;
+  g_fd_probe_rc = -1;
+  g_fd_probe_errno = ENOTSOCK;
+  g_fd_probe_so_type = 0;
+
+  EXPECT_FALSE(classifier.isStreamSocket(43));
+  EXPECT_FALSE(classifier.isDatagramSocket(43));
+  EXPECT_EQ(1, g_fd_probe_calls.load());
+}
+
+TEST_F(NativeSocketInterposerFdTest, OtherSocketTypeIsCachedAsNeitherStreamNorDatagram) {
+  NativeFdClassifier classifier;
+  ScopedFdProbeOverride override(stub_fd_probe);
+  g_fd_probe_calls = 0;
+  g_fd_probe_rc = 0;
+  g_fd_probe_errno = 0;
+  g_fd_probe_so_type = SOCK_RAW;
+
+  EXPECT_FALSE(classifier.isStreamSocket(44));
+  EXPECT_FALSE(classifier.isDatagramSocket(44));
+  EXPECT_EQ(1, g_fd_probe_calls.load());
+}
+
+TEST_F(NativeSocketInterposerFdTest, HighFdBypassesClassifierCache) {
+  static const int kFdTypeCacheSizeForTest = 65536;
+  NativeFdClassifier classifier;
+  ScopedFdProbeOverride override(recording_fd_probe);
+  g_fd_probe_calls = 0;
+  g_fd_probe_rc = 0;
+  g_fd_probe_errno = 0;
+  g_fd_probe_so_type = SOCK_STREAM;
+
+  EXPECT_TRUE(classifier.isStreamSocket(kFdTypeCacheSizeForTest));
+  EXPECT_TRUE(classifier.isStreamSocket(kFdTypeCacheSizeForTest));
+  EXPECT_EQ(2, g_fd_probe_calls.load());
+  EXPECT_EQ(kFdTypeCacheSizeForTest, g_fd_probe_last_fd.load());
+}
+
+TEST_F(NativeSocketInterposerFdTest, ClearFdTypeInvalidatesOnlyThatFd) {
+  NativeFdClassifier classifier;
+  ScopedFdProbeOverride override(stub_fd_probe);
+  g_fd_probe_calls = 0;
+  g_fd_probe_rc = 0;
+  g_fd_probe_errno = 0;
+  g_fd_probe_so_type = SOCK_STREAM;
+  ASSERT_TRUE(classifier.isStreamSocket(45));
+  ASSERT_TRUE(classifier.isStreamSocket(46));
+  EXPECT_EQ(2, g_fd_probe_calls.load());
+
+  g_fd_probe_so_type = SOCK_DGRAM;
+  classifier.clearFdType(45);
+
+  EXPECT_FALSE(classifier.isStreamSocket(45));
+  EXPECT_TRUE(classifier.isDatagramSocket(45));
+  EXPECT_TRUE(classifier.isStreamSocket(46));
+  EXPECT_EQ(3, g_fd_probe_calls.load());
+}
+
+TEST_F(NativeSocketInterposerFdTest, ClearFdTypeCacheInvalidatesCachedFds) {
+  NativeFdClassifier classifier;
+  ScopedFdProbeOverride override(stub_fd_probe);
+  g_fd_probe_calls = 0;
+  g_fd_probe_rc = 0;
+  g_fd_probe_errno = 0;
+  g_fd_probe_so_type = SOCK_STREAM;
+  ASSERT_TRUE(classifier.isStreamSocket(47));
+  EXPECT_EQ(1, g_fd_probe_calls.load());
+
+  g_fd_probe_so_type = SOCK_DGRAM;
+  classifier.clearFdTypeCache();
+
+  EXPECT_FALSE(classifier.isStreamSocket(47));
+  EXPECT_TRUE(classifier.isDatagramSocket(47));
+  EXPECT_EQ(2, g_fd_probe_calls.load());
+}
+
+TEST_F(NativeSocketInterposerFdTest, ConcurrentClassifierReadsAndClearsAreSafe) {
+  NativeFdClassifier classifier;
+  ScopedFdProbeOverride override(stub_fd_probe);
+  g_fd_probe_calls = 0;
+  g_fd_probe_rc = 0;
+  g_fd_probe_errno = 0;
+  std::atomic<bool> stop{false};
+  std::atomic<int> invalid{0};
+  int fd = 48;
+
+  std::thread clearer([&]() {
+    for (int i = 0; i < 1000; i++) {
+      g_fd_probe_so_type = (i % 2 == 0) ? SOCK_STREAM : SOCK_DGRAM;
+      classifier.clearFdType(fd);
+      if ((i % 16) == 0) {
+        classifier.clearFdTypeCache();
+      }
+      std::this_thread::yield();
+    }
+    stop.store(true, std::memory_order_release);
+  });
+
+  std::vector<std::thread> readers;
+  for (int i = 0; i < 4; i++) {
+    readers.emplace_back([&]() {
+      while (!stop.load(std::memory_order_acquire)) {
+        bool stream = classifier.isStreamSocket(fd);
+        bool datagram = classifier.isDatagramSocket(fd);
+        if (stream && datagram) {
+          invalid.fetch_add(1, std::memory_order_relaxed);
+        }
+      }
+    });
+  }
+
+  clearer.join();
+  for (auto& reader : readers) {
+    reader.join();
+  }
+
+  EXPECT_EQ(0, invalid.load(std::memory_order_relaxed));
+  EXPECT_GT(g_fd_probe_calls.load(), 0);
 }
 
 TEST_F(NativeSocketInterposerFdTest, CloseHookInvalidatesFdBeforeReuse) {
@@ -730,6 +1174,26 @@ TEST_F(NativeSocketInterposerFdTest, Dup3InvalidatesTargetFdBeforeReuse) {
   ASSERT_EQ(0, closeThroughHook(pipe_fds[1]));
 }
 
+TEST_F(NativeSocketInterposerFdTest, Dup3PreservesErrnoOnSuccessfulInvalidation) {
+  int stream_fds[2];
+  ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, stream_fds));
+  int pipe_fds[2];
+  ASSERT_EQ(0, pipe(pipe_fds));
+
+  int target_fd = stream_fds[0];
+  EXPECT_TRUE(NativeSocketInterposer::instance()->isStreamSocket(target_fd));
+
+  errno = E2BIG;
+  ASSERT_EQ(target_fd, dup3ThroughHook(pipe_fds[0], target_fd, O_CLOEXEC));
+  EXPECT_EQ(E2BIG, errno);
+  EXPECT_FALSE(NativeSocketInterposer::instance()->isStreamSocket(target_fd));
+
+  ASSERT_EQ(0, closeThroughHook(target_fd));
+  ASSERT_EQ(0, closeThroughHook(stream_fds[1]));
+  ASSERT_EQ(0, closeThroughHook(pipe_fds[0]));
+  ASSERT_EQ(0, closeThroughHook(pipe_fds[1]));
+}
+
 TEST_F(NativeSocketInterposerFdTest,
        Dup3InvalidatesNativeSocketSamplerTargetFdStateBeforeReuse) {
   int stream_fds[2];
@@ -755,6 +1219,34 @@ TEST_F(NativeSocketInterposerFdTest,
   ASSERT_EQ(0, closeThroughHook(pipe_fds[1]));
 }
 #endif
+
+TEST_F(NativeSocketInterposerFdTest, ConcurrentFdReuseInvalidationDoesNotPreserveStaleStreamType) {
+  for (int i = 0; i < 64; i++) {
+    int stream_fds[2];
+    ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, stream_fds));
+    int reused_fd = stream_fds[0];
+    ASSERT_TRUE(NativeSocketInterposer::instance()->isStreamSocket(reused_fd));
+
+    std::atomic<bool> done{false};
+    std::thread reader([&]() {
+      while (!done.load(std::memory_order_acquire)) {
+        (void)NativeSocketInterposer::instance()->isStreamSocket(reused_fd);
+        std::this_thread::yield();
+      }
+    });
+
+    ASSERT_EQ(0, closeThroughHook(reused_fd));
+    int datagram_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    ASSERT_EQ(reused_fd, datagram_fd);
+    done.store(true, std::memory_order_release);
+    reader.join();
+
+    EXPECT_FALSE(NativeSocketInterposer::instance()->isStreamSocket(datagram_fd));
+    EXPECT_TRUE(NativeSocketInterposer::instance()->isDatagramSocket(datagram_fd));
+    ASSERT_EQ(0, closeThroughHook(datagram_fd));
+    ASSERT_EQ(0, closeThroughHook(stream_fds[1]));
+  }
+}
 
 TEST_F(NativeSocketInterposerFdTest, RejectsNonSockets) {
   int fds[2];

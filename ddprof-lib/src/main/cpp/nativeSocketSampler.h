@@ -102,6 +102,12 @@ public:
         rd = _orig_read.load(std::memory_order_acquire);
     }
 
+#ifdef UNIT_TEST
+    static bool setActiveForTest(bool active) {
+        return _active.exchange(active, std::memory_order_acq_rel);
+    }
+#endif
+
 private:
     static NativeSocketSampler* const _instance;
 
