@@ -66,18 +66,19 @@ public:
     }
 
     ~ThreadLocal() {
-        assert(_key_valid);
-        pthread_key_delete(_key);
+        if(_key_valid) {
+            pthread_key_delete(_key);
+        }
     }
 
     /**
      * set(nullptr) will result in the value being recreated when get() is called
      * when CREATE_FUNC is not nullptr.
-     * Note: caller is responsible to free old value.
+     * Note: caller is responsible to free old value, which mirrors thread_local
      */
     void set(T value) {
         assert(_key_valid);
-        int err = pthread_setspecific(_key, (const void*)value);
+        int err = pthread_setspecific(_key, reinterpret_cast<const void*>(value));
         assert(err == 0);
     }
 
@@ -88,7 +89,7 @@ public:
             p = C();
             set((T)p);
         }
-        return (T)p;
+        return reinterpret_cast<T>(p);
     }
 
     // Clear the value
@@ -125,8 +126,9 @@ public:
     }
 
     ~ThreadLocal() {
-        assert(_key_valid);
-        pthread_key_delete(_key);
+        if(_key_valid) {
+            pthread_key_delete(_key);
+        }
     }
 
     // double <--> u64 cast, preserve bit format
@@ -135,7 +137,7 @@ public:
         assert(_key_valid);
         u64 val;
         memcpy(&val, &value, sizeof(value));
-        int err = pthread_setspecific(_key, (const void*)val);
+        int err = pthread_setspecific(_key, reinterpret_cast<const void*>(val));
         assert(err == 0);
     }
 
