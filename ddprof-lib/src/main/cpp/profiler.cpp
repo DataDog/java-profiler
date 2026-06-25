@@ -1410,9 +1410,15 @@ Error Profiler::start(Arguments &args, bool reset) {
     }
   }
   if ((_event_mask & EM_WALL) && _wall_engine != &noop_engine) {
+    // Enable wall clock BEFORE starting its pthread to close a TOCTOU race:
+    // the pthread enters timerLoopCommon(), checks _enabled, and exits if false.
+    // Wall clock is safe to enable early because it doesn't access JFR in signal
+    // handlers (unlike CPU profiling which must wait until JFR is initialized).
+    _wall_engine->enableEvents(true);
     error = _wall_engine->start(args);
     if (error) {
       Log::warn("%s", error.message());
+      _wall_engine->enableEvents(false);
       error = Error::OK; // recoverable
     } else {
       activated |= EM_WALL;
@@ -1468,14 +1474,15 @@ Error Profiler::start(Arguments &args, bool reset) {
     // TODO: find a better way to resolve the thread name.
     onThreadStart(nullptr, nullptr, nullptr);
 
-    // enableEngines() (_enabled=true) is intentionally deferred until here,
-    // after _jfr.start() and all engine starts. Previously it was called
-    // before _jfr.start(), creating a TOCTOU race: a SIGPROF delivered
-    // between enableEngines() and _jfr.start() completing would enter
-    // recordSample() on partially-initialized JFR structures.
-    // Paired with drainInflight() in CTimer::stop() which closes the
-    // symmetric race on the stop side.
-    enableEngines();
+    // Enable CPU profiling now that JFR is fully initialized. CPU SIGPROF handlers
+    // access JFR buffers, so this must come after _jfr.start() completes to avoid
+    // a TOCTOU race where a signal arrives on partially-initialized JFR structures.
+    // Wall clock was already enabled before _wall_engine->start() to avoid a
+    // different race where its pthread exits before being enabled (wall clock
+    // doesn't access JFR in signal handlers, so early enable is safe).
+    // Paired with drainInflight() in CTimer::stop() which closes the symmetric
+    // race on the stop side.
+    _cpu_engine->enableEvents(true);
 
     _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);

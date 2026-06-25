@@ -119,6 +119,11 @@ uint32_t CriticalSection::hash_tid(int tid) {
 }
 
 // InflightGuard implementation — Linux-specific CTimer race mitigation
+// Uses CTimer::_inflight counter which is placed on its own cache line (alignas(64))
+// to avoid false sharing with _enabled. While the counter is still globally updated,
+// the separate cache line means:
+// - _enabled remains read-only on its cache line (fast, no bouncing)
+// - _inflight writes don't invalidate the _enabled cache line
 
 #ifdef __linux__
 

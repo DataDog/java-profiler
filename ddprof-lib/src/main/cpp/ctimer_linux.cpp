@@ -50,7 +50,7 @@ int CTimer::_max_timers = 0;
 int *CTimer::_timers = NULL;
 CStack CTimer::_cstack;
 bool CTimer::_enabled = false;
-int CTimer::_inflight = 0;
+alignas(64) int CTimer::_inflight = 0;
 int CTimer::_signal;
 
 int CTimer::registerThread(int tid) {
@@ -250,11 +250,11 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   }
   Counters::increment(CTIMER_SIGNAL_OWN);
 
-  InflightGuard inflight;  // Increment on entry, decrement on all exit paths
+  InflightGuard inflight;
 
   CriticalSection cs;
   if (!cs.entered()) {
-    return;  // inflight guard decrements automatically
+    return;
   }
   int saved_errno = errno;
   if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
@@ -268,7 +268,7 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
       && current->inInitWindow()) {
     current->tickInitWindow();
     errno = saved_errno;
-    return;  // inflight guard decrements automatically — this was the bug!
+    return;
   }
   if (current != NULL) {
     current->noteCPUSample(Profiler::instance()->recordingEpoch());
@@ -303,7 +303,7 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   }
   Counters::increment(CTIMER_SIGNAL_OWN);
 
-  InflightGuard inflight;  // Increment on entry, decrement on all exit paths
+  InflightGuard inflight;
 
   // Atomically try to enter critical section - prevents all reentrancy races
   CriticalSection cs;

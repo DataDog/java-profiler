@@ -107,6 +107,9 @@ void signalHandlerUnwindAfterLongjmp();
  *
  * Increments CTimer::_inflight on construction and decrements on destruction,
  * ensuring the counter is always balanced even if the handler returns early.
+ * CTimer::_inflight is cache-line-aligned (alignas(64)) to avoid false sharing
+ * with _enabled, minimizing cache line bouncing.
+ *
  * This closes the TOCTOU race between disableEngines() and _jfr.stop():
  * CTimer::drainInflight() spins until _inflight reaches zero, guaranteeing
  * that _jfr.stop() only runs once all handlers have fully exited.

@@ -28,10 +28,15 @@ class CTimer : public Engine {
 protected:
   // This is accessed from signal handlers, so must be async-signal-safe
   static bool _enabled;
+
+public:
   // Count of signal handlers currently executing past the _enabled check.
   // stop() drains this to zero before tearing down JFR structures, closing
   // the TOCTOU window between the _enabled check and JFR buffer access.
-  static int _inflight;
+  // Public so InflightGuard (in guards.cpp) can access it.
+  // Placed on its own cache line to avoid false sharing with _enabled:
+  // _enabled is read-only on the hot path; _inflight is read-write.
+  alignas(64) static int _inflight;
   static long _interval;
   static CStack _cstack;
   static int _signal;
