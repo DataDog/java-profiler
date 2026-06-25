@@ -19,6 +19,14 @@ struct QueuedTaskBlockEvent {
 
 class TaskBlockQueue {
 private:
+  // Fixed per-process burst buffer for async TaskBlock events. Producers run on
+  // application/VM callback paths, so overflow must not block or allocate; losing
+  // profiler telemetry is preferable to perturbing the application. Full queues
+  // drop new events and increment TASK_BLOCK_QUEUE_DROPPED in
+  // Profiler::recordTaskBlockAsync(). The drain thread periodically empties the
+  // queue, so this capacity covers transient bursts between drains rather than
+  // guaranteeing lossless recording under sustained overload. Keep this a power
+  // of two for ring-buffer indexing.
   static const size_t kCapacity = 4096;
   static_assert((kCapacity & (kCapacity - 1)) == 0,
                 "TaskBlockQueue capacity must be a power of two");
