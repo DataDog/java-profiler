@@ -13,12 +13,32 @@
 #include "thread.h"
 #include "tsc.h"
 
+#include <atomic>
 #include <errno.h>
+
+#ifdef UNIT_TEST
+static std::atomic<NativeBlockScope::HookObserver> _native_block_observer{nullptr};
+
+void NativeBlockScope::setHookObserverForTest(HookObserver observer) {
+  _native_block_observer.store(observer, std::memory_order_release);
+}
+
+static void observeNativeBlockPhase(const char* phase, NativeBlockKind kind, int blocker_id) {
+  NativeBlockScope::HookObserver observer =
+      _native_block_observer.load(std::memory_order_acquire);
+  if (observer != nullptr) {
+    observer(phase, kind, blocker_id);
+  }
+}
+#endif
 
 NativeBlockScope::NativeBlockScope(NativeBlockKind kind, int blocker_id,
                                    OSThreadState state)
     : _blocker(blocker(kind, blocker_id)), _state(state) {
   int saved_errno = errno;
+#ifdef UNIT_TEST
+  observeNativeBlockPhase("enter", kind, blocker_id);
+#endif
 
   Profiler* profiler = Profiler::instance();
   if (!profiler->taskBlockAsyncActive()) {
@@ -66,6 +86,10 @@ NativeBlockScope::NativeBlockScope(NativeBlockKind kind, int blocker_id,
 }
 
 NativeBlockScope::~NativeBlockScope() {
+#ifdef UNIT_TEST
+  observeNativeBlockPhase("exit", static_cast<NativeBlockKind>(_blocker >> 32),
+                          static_cast<int>(_blocker & 0xffffffff));
+#endif
   if (!_active) {
     return;
   }

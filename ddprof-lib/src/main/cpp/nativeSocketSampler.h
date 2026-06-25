@@ -86,6 +86,9 @@ public:
     static ssize_t recv_hook(int fd,       void* buf, size_t len, int flags);
     static ssize_t write_hook(int fd, const void* buf, size_t len);
     static ssize_t read_hook(int fd,        void* buf, size_t len);
+    static ssize_t recordHookResult(int fd, ssize_t ret, u64 t0, u64 t1, u8 op) {
+        return recordResultForHook(fd, ret, t0, t1, op);
+    }
 
     // Called once by LibraryPatcher::patch_socket_functions() to install the
     // real libc function pointers before any PLT entries are patched.
@@ -108,6 +111,10 @@ public:
     static bool setActiveForTest(bool active) {
         return _active.exchange(active, std::memory_order_acq_rel);
     }
+    using HookObserver = void (*)(const char* phase, int fd, u8 op, ssize_t ret);
+    static void setHookObserverForTest(HookObserver observer);
+    static uint64_t socketProbeCountForTest();
+    static void resetSocketProbeCountForTest();
     using ProbeOverride = int (*)(int fd, int *so_type, int *probe_errno);
     static void setProbeOverrideForTest(ProbeOverride probe);
 #endif
@@ -252,7 +259,15 @@ private:
         return ret;
     }
 
+    static inline ssize_t recordResultForHook(int fd, ssize_t ret, u64 t0, u64 t1, u8 op) {
 #ifdef UNIT_TEST
+        observeHookPhaseForTest("record", fd, op, ret);
+#endif
+        return record_if_positive(fd, ret, t0, t1, op);
+    }
+
+#ifdef UNIT_TEST
+    static void observeHookPhaseForTest(const char* phase, int fd, u8 op, ssize_t ret);
     static std::atomic<ProbeOverride> _probe_override;
 #endif
 };

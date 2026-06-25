@@ -40,6 +40,8 @@ public:
   }
 
 #ifdef UNIT_TEST
+  using HookObserver = void (*)(const char* phase, NativeBlockKind kind, int blocker_id);
+  static void setHookObserverForTest(HookObserver observer);
   u64 startTicksForTest() const { return _start_ticks; }
   void finishForTest(u64 end_ticks) { finish(end_ticks); }
 #endif

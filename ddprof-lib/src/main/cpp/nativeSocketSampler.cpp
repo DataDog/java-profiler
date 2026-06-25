@@ -48,13 +48,32 @@ std::atomic<NativeSocketSampler::read_fn>  NativeSocketSampler::_orig_read{nullp
 std::atomic<bool> NativeSocketSampler::_active{false};
 
 #ifdef UNIT_TEST
+static std::atomic<NativeSocketSampler::HookObserver> _native_socket_sampler_observer{nullptr};
+static std::atomic<uint64_t> _native_socket_sampler_socket_probe_count{0};
 std::atomic<NativeSocketSampler::ProbeOverride> NativeSocketSampler::_probe_override{nullptr};
 
+void NativeSocketSampler::setHookObserverForTest(HookObserver observer) {
+    _native_socket_sampler_observer.store(observer, std::memory_order_release);
+}
+
+uint64_t NativeSocketSampler::socketProbeCountForTest() {
+    return _native_socket_sampler_socket_probe_count.load(std::memory_order_acquire);
+}
+
+void NativeSocketSampler::resetSocketProbeCountForTest() {
+    _native_socket_sampler_socket_probe_count.store(0, std::memory_order_release);
+}
 
 void NativeSocketSampler::setProbeOverrideForTest(ProbeOverride probe) {
     _probe_override.store(probe, std::memory_order_release);
 }
 
+void NativeSocketSampler::observeHookPhaseForTest(const char* phase, int fd, u8 op, ssize_t ret) {
+    HookObserver observer = _native_socket_sampler_observer.load(std::memory_order_acquire);
+    if (observer != nullptr) {
+        observer(phase, fd, op, ret);
+    }
+}
 #endif
 
 std::string NativeSocketSampler::resolveAddr(int fd) {
@@ -102,6 +121,9 @@ NativeSocketSampler::NativeSocketSampler() {
 }
 
 uint8_t NativeSocketSampler::probeFdType(int fd) {
+#ifdef UNIT_TEST
+    _native_socket_sampler_socket_probe_count.fetch_add(1, std::memory_order_relaxed);
+#endif
     int so_type;
     socklen_t solen = sizeof(so_type);
     int rc;

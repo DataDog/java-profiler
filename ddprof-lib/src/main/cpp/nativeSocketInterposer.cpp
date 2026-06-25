@@ -9,6 +9,7 @@
 
 #include "libraryPatcher.h"
 #include "nativeSocketSampler.h"
+#include "tsc.h"
 
 #include <errno.h>
 #include <sys/syscall.h>
@@ -32,8 +33,8 @@ private:
 };
 
 template <typename Ret, typename Fn, typename Call>
-static inline Ret runNativeIoHook(bool eligible, NativeBlockKind kind,
-                                  int fd, Fn fn, Call call) {
+static inline Ret runNativeIoHook(bool eligible, NativeBlockKind kind, int fd,
+                                  Fn fn, Call call) {
   if (fn == nullptr) {
     errno = ENOSYS;
     return static_cast<Ret>(-1);
@@ -47,8 +48,13 @@ static inline Ret runNativeIoHook(bool eligible, NativeBlockKind kind,
   return ret;
 }
 
-template <typename Ret, typename Fn, typename Call>
-static inline Ret runStreamSocketHook(int fd, Fn fn, Call call) {
+template <typename Fn, typename Call>
+static inline ssize_t runStreamSocketHook(int fd, Fn fn, u8 op, Call call) {
+  if (fn == nullptr) {
+    errno = ENOSYS;
+    return -1;
+  }
+
   // read/write are intentionally routed through the socket classifier because
   // socket I/O often uses generic fd APIs. Non-socket fds are cached after the
   // first stable ENOTSOCK probe; high or transiently failing fds may be probed
@@ -58,8 +64,21 @@ static inline Ret runStreamSocketHook(int fd, Fn fn, Call call) {
     ErrnoGuard errno_guard;
     eligible = NativeSocketInterposer::instance()->isStreamSocket(fd);
   }
-  return runNativeIoHook<Ret>(eligible, NativeBlockKind::STREAM_SOCKET, fd, fn,
-                              call);
+  if (!eligible) {
+    return call(fn);
+  }
+
+  u64 t0 = TSC::ticks();
+  ssize_t ret;
+  {
+    NativeBlockScope block(NativeBlockKind::STREAM_SOCKET, fd);
+    ret = call(fn);
+  }
+  u64 t1 = TSC::ticks();
+  if (NativeSocketSampler::active()) {
+    return NativeSocketSampler::recordHookResult(fd, ret, t0, t1, op);
+  }
+  return ret;
 }
 
 template <typename Ret, typename Fn, typename Call>
@@ -212,40 +231,36 @@ void NativeSocketInterposer::stop() {
 
 ssize_t NativeSocketInterposer::send_hook(int fd, const void* buf, size_t len,
                                           int flags) {
-  return runStreamSocketHook<ssize_t>(fd, _orig_send, [&](send_fn fn) {
-    if (NativeSocketSampler::active()) {
-      return NativeSocketSampler::send_hook(fd, buf, len, flags);
-    }
-    return fn(fd, buf, len, flags);
-  });
+  if (!NativeSocketInterposer::instance()->active() && NativeSocketSampler::active()) {
+    return NativeSocketSampler::send_hook(fd, buf, len, flags);
+  }
+  return runStreamSocketHook(fd, _orig_send, 0,
+                             [&](send_fn fn) { return fn(fd, buf, len, flags); });
 }
 
 ssize_t NativeSocketInterposer::recv_hook(int fd, void* buf, size_t len,
                                           int flags) {
-  return runStreamSocketHook<ssize_t>(fd, _orig_recv, [&](recv_fn fn) {
-    if (NativeSocketSampler::active()) {
-      return NativeSocketSampler::recv_hook(fd, buf, len, flags);
-    }
-    return fn(fd, buf, len, flags);
-  });
+  if (!NativeSocketInterposer::instance()->active() && NativeSocketSampler::active()) {
+    return NativeSocketSampler::recv_hook(fd, buf, len, flags);
+  }
+  return runStreamSocketHook(fd, _orig_recv, 1,
+                             [&](recv_fn fn) { return fn(fd, buf, len, flags); });
 }
 
 ssize_t NativeSocketInterposer::write_hook(int fd, const void* buf, size_t len) {
-  return runStreamSocketHook<ssize_t>(fd, _orig_write, [&](write_fn fn) {
-    if (NativeSocketSampler::active()) {
-      return NativeSocketSampler::write_hook(fd, buf, len);
-    }
-    return fn(fd, buf, len);
-  });
+  if (!NativeSocketInterposer::instance()->active() && NativeSocketSampler::active()) {
+    return NativeSocketSampler::write_hook(fd, buf, len);
+  }
+  return runStreamSocketHook(fd, _orig_write, 2,
+                             [&](write_fn fn) { return fn(fd, buf, len); });
 }
 
 ssize_t NativeSocketInterposer::read_hook(int fd, void* buf, size_t len) {
-  return runStreamSocketHook<ssize_t>(fd, _orig_read, [&](read_fn fn) {
-    if (NativeSocketSampler::active()) {
-      return NativeSocketSampler::read_hook(fd, buf, len);
-    }
-    return fn(fd, buf, len);
-  });
+  if (!NativeSocketInterposer::instance()->active() && NativeSocketSampler::active()) {
+    return NativeSocketSampler::read_hook(fd, buf, len);
+  }
+  return runStreamSocketHook(fd, _orig_read, 3,
+                             [&](read_fn fn) { return fn(fd, buf, len); });
 }
 
 int NativeSocketInterposer::close_hook(int fd) {
