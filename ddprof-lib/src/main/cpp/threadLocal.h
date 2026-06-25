@@ -68,6 +68,8 @@ public:
     ~ThreadLocal() {
         if(_key_valid) {
             pthread_key_delete(_key);
+        } else {
+            assert(false && "Invalid pthread key");
         }
     }
 
@@ -77,13 +79,13 @@ public:
      * Note: caller is responsible to free old value, which mirrors thread_local
      */
     void set(T value) {
-        assert(_key_valid);
+        assert(_key_valid && "Invalid pthread key");
         int err = pthread_setspecific(_key, reinterpret_cast<const void*>(value));
         assert(err == 0);
     }
 
     T get() {
-        assert(_key_valid);
+        assert(_key_valid && "Invalid pthread key");
         void* p = pthread_getspecific(_key);
         if (p == nullptr && C != nullptr) {
             p = C();
@@ -94,7 +96,7 @@ public:
 
     // Clear the value
     void clear() {
-        assert(_key_valid);
+        assert(_key_valid && "Invalid pthread key");
         void* p = pthread_getspecific(_key);
         if (p == nullptr) return;
         int err = pthread_setspecific(_key, nullptr);
@@ -122,19 +124,21 @@ public:
         static_assert(sizeof(double) == 8);
         _key_valid = pthread_key_create(&_key, nullptr) == 0;
         // What to do if we can not create a key?
-        assert(_key_valid);
+        assert(_key_valid && "Invalid pthread key");
     }
 
     ~ThreadLocal() {
         if(_key_valid) {
             pthread_key_delete(_key);
+        } else {
+            assert(_key_valid && "Invalid pthread key");
         }
     }
 
     // double <--> u64 cast, preserve bit format
     // Can use std::bit_cast after upgrade C++ version to 20
     void set(double value) {
-        assert(_key_valid);
+        assert(_key_valid && "Invalid pthread key");
         u64 val;
         memcpy(&val, &value, sizeof(value));
         int err = pthread_setspecific(_key, reinterpret_cast<const void*>(val));
@@ -142,20 +146,20 @@ public:
     }
 
     double get() {
-        assert(_key_valid);
+        assert(_key_valid && "Invalid pthread key");
         void* p = pthread_getspecific(_key);
         if (p == nullptr) {
             return 0.0;
         }
 
-        u64 val = (u64)p;
+        u64 val = reinterpret_cast<u64>(p);
         double value;
         memcpy(&value, &val, sizeof(val));
         return value;
     }
 
     void clear() {
-        assert(_key_valid);
+        assert(_key_valid && "Invalid pthread key");
         int err = pthread_setspecific(_key, nullptr);
         assert(err == 0);
     }

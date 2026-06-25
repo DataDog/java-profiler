@@ -281,22 +281,22 @@ static void* create_mt19937() {
   // std::mt19937 itself is noexcept, but std::random_device and `new` may throw.
   // If that happens we let the failure terminate the process (same outcome as
   // failing thread_local initialization previously).
-  return (void*)(new std::mt19937(std::random_device{}()));
+  return static_cast<void*>(new std::mt19937(std::random_device{}()));
 }
 
 static void* create_uniform_real_distribution() {
   // std::uniform_real_distribution<> construction is noexcept, but `new` may throw.
   // If allocation fails the process is likely to abort anyway.
-  return (void*)(new std::uniform_real_distribution<>(0, 1.0));
+  return static_cast<void*>(new std::uniform_real_distribution<>(0, 1.0));
 }
 
 static void free_mt19937(void* p) {
-  std::mt19937* mt = (std::mt19937*)p;
+  std::mt19937* mt = static_cast<std::mt19937*>(p);
   delete mt;
 }
 
 static void free_uniform_real_distribution(void* p) {
-  std::uniform_real_distribution<>* urd = (std::uniform_real_distribution<>*)p;
+  std::uniform_real_distribution<>* urd = static_cast<std::uniform_real_distribution<>*>(p);
   delete urd;
 }
 
