@@ -35,6 +35,7 @@
 #ifdef __linux__
 
 #include <pthread.h>
+#include <cstring>
 
 // ---------------------------------------------------------------------------
 // A. ProfiledThread thread-type classification (fast path of isJavaThread)
