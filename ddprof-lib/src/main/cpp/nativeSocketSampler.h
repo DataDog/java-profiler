@@ -36,15 +36,17 @@ class LibraryPatcher;
 //                         is idempotent in that case (first writer wins).
 //                         Address staleness is possible only after fd reuse
 //                         through unobserved lifecycle paths.
-// _fd_type_cache        : std::atomic<uint8_t> array, lock-free.  Entry encoding:
-//                         bits [7:4] = generation mod 16, bits [3:0] = type
-//                         (0=unknown, 1=TCP socket, 2=non-TCP).  Valid only when
-//                         high nibble matches _fd_cache_gen mod 16.  A cached SOCKET
-//                         verdict is trusted on the hot path; revalidation via
-//                         getsockopt() is deferred to recordEvent() for sampled
-//                         write/read events (revalidateSocket()).  A cached NON_SOCKET
-//                         verdict is trusted (worst case: unobserved fd reuse
-//                         under-samples until the next gen reset).
+// _fd_type_cache        : std::atomic<uint8_t> array for low fds and a bounded
+//                         exact-match high-fd side cache, both lock-free.  Low-fd
+//                         encoding: bits [7:4] = generation mod 16, bits [3:0] =
+//                         type (0=unknown, 1=TCP socket, 2=non-TCP).  High-fd
+//                         entries encode fd, generation, and type in one atomic
+//                         word.  A cached SOCKET verdict is trusted on the hot
+//                         path; revalidation via getsockopt() is deferred to
+//                         recordEvent() for sampled write/read events
+//                         (revalidateSocket()).  A cached NON_SOCKET verdict is
+//                         trusted (worst case: unobserved fd reuse under-samples
+//                         until the next gen reset).
 // _rate_limiter         : RateLimiter — owns std::atomic interval, epoch, and
 //                         event count.  PID update races are resolved by CAS
 //                         inside RateLimiter::maybeUpdateInterval().
@@ -106,6 +108,8 @@ public:
     static bool setActiveForTest(bool active) {
         return _active.exchange(active, std::memory_order_acq_rel);
     }
+    using ProbeOverride = int (*)(int fd, int *so_type, int *probe_errno);
+    static void setProbeOverrideForTest(ProbeOverride probe);
 #endif
 
 private:
@@ -170,8 +174,8 @@ private:
     // (only in tests), so the wrap is benign in practice.  If restart-in-prod ever
     // becomes a supported mode, widen _fd_cache_gen to uint32_t and store the full
     // generation in a wider per-fd cell.
-    // Fds outside [0, FD_TYPE_CACHE_SIZE) are probed on every call.
     static const int     FD_TYPE_CACHE_SIZE  = 65536;
+    static const int     HIGH_FD_TYPE_CACHE_SIZE = 4096;
     // FD_TYPE_UNKNOWN is the implicit value-zero sentinel for never-written entries
     // and gen-mismatch entries; it is decoded by the (cached >> 4) != gen path in
     // isSocket(), not by an explicit comparison against this constant.
@@ -180,8 +184,9 @@ private:
     static const uint8_t FD_TYPE_NON_SOCKET  = 2;
     std::atomic<uint8_t> _fd_cache_gen{0};   // incremented on each cache reset
     std::atomic<uint8_t> _fd_type_cache[FD_TYPE_CACHE_SIZE];
+    std::atomic<uint64_t> _high_fd_type_cache[HIGH_FD_TYPE_CACHE_SIZE];
 
-    NativeSocketSampler() = default;
+    NativeSocketSampler();
 
     // Resolve the peer address for fd; returns empty string on failure.
     std::string resolveAddr(int fd);
@@ -220,6 +225,14 @@ private:
     // Uses the fd-type cache; calls getsockopt on first encounter per fd.
     // Cached SOCKET verdicts are revalidated only on sampled write/read events.
     bool isSocket(int fd);
+    uint8_t probeFdType(int fd);
+    uint8_t highFdType(int fd, uint8_t gen);
+    void cacheFdType(int fd, uint8_t gen, uint8_t type);
+    void clearHighFdType(int fd);
+    static uint64_t highFdEntry(int fd, uint8_t gen, uint8_t type);
+    static bool highFdEntryMatches(uint64_t entry, int fd, uint8_t gen);
+    static bool highFdEntryMatchesFd(uint64_t entry, int fd);
+    static int highFdCacheIndex(int fd);
 
     // Decide whether to sample and compute weight.
     // Returns true if the call should be recorded; sets weight out-param.
@@ -238,6 +251,10 @@ private:
         if (ret > 0) _instance->recordEvent(fd, t0, t1, ret, op);
         return ret;
     }
+
+#ifdef UNIT_TEST
+    static std::atomic<ProbeOverride> _probe_override;
+#endif
 };
 
 #else // !__linux__

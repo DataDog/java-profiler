@@ -19,6 +19,9 @@ NativeFdClassifier::NativeFdClassifier() {
   for (int index = 0; index < FD_TYPE_CACHE_SIZE; index++) {
     _fd_type_cache[index].store(0, std::memory_order_relaxed);
   }
+  for (int index = 0; index < HIGH_FD_TYPE_CACHE_SIZE; index++) {
+    _high_fd_type_cache[index].store(0, std::memory_order_relaxed);
+  }
 }
 
 #ifdef UNIT_TEST
@@ -56,16 +59,57 @@ uint8_t NativeFdClassifier::probeFdType(int fd) {
   return errno == ENOTSOCK ? FD_TYPE_NON_SOCKET : 0;
 }
 
+uint64_t NativeFdClassifier::highFdEntry(int fd, uint32_t gen, uint8_t type) {
+  return (static_cast<uint64_t>(static_cast<uint32_t>(fd)) << 32)
+      | (static_cast<uint64_t>(gen & FD_TYPE_GEN_MASK) << FD_TYPE_GEN_SHIFT)
+      | static_cast<uint64_t>(type);
+}
+
+bool NativeFdClassifier::highFdEntryMatches(uint64_t entry, int fd, uint32_t gen) {
+  return highFdEntryMatchesFd(entry, fd)
+      && (((entry >> FD_TYPE_GEN_SHIFT) & FD_TYPE_GEN_MASK)
+          == (gen & FD_TYPE_GEN_MASK));
+}
+
+bool NativeFdClassifier::highFdEntryMatchesFd(uint64_t entry, int fd) {
+  return static_cast<uint32_t>(entry >> 32) == static_cast<uint32_t>(fd);
+}
+
+int NativeFdClassifier::highFdCacheIndex(int fd) {
+  return static_cast<int>(static_cast<uint32_t>(fd) %
+                          static_cast<uint32_t>(HIGH_FD_TYPE_CACHE_SIZE));
+}
+
+uint8_t NativeFdClassifier::highFdType(int fd, uint32_t gen) {
+  int index = highFdCacheIndex(fd);
+  uint64_t cached = _high_fd_type_cache[index].load(std::memory_order_acquire);
+  if (highFdEntryMatches(cached, fd, gen)) {
+    uint8_t type = static_cast<uint8_t>(cached & FD_TYPE_MASK);
+    if (type != 0) {
+      return type;
+    }
+  }
+
+  uint8_t type = probeFdType(fd);
+  // probeFdType() returns 0 for transient errors such as EBADF. Do not cache those:
+  // the same fd number may later be reused for a socket.
+  if (type != 0) {
+    _high_fd_type_cache[index].store(highFdEntry(fd, gen, type),
+                                    std::memory_order_release);
+  }
+  return type;
+}
+
 uint8_t NativeFdClassifier::fdType(int fd) {
   if (fd < 0) {
     return 0;
   }
 
+  uint32_t gen = _fd_cache_gen.load(std::memory_order_acquire);
   if (static_cast<size_t>(fd) >= static_cast<size_t>(FD_TYPE_CACHE_SIZE)) {
-    return probeFdType(fd);
+    return highFdType(fd, gen);
   }
 
-  uint32_t gen = _fd_cache_gen.load(std::memory_order_acquire);
   uint32_t cached = _fd_type_cache[fd].load(std::memory_order_acquire);
   if ((cached >> FD_TYPE_GEN_SHIFT) == gen) {
     uint8_t type = static_cast<uint8_t>(cached & FD_TYPE_MASK);
@@ -92,9 +136,25 @@ bool NativeFdClassifier::isDatagramSocket(int fd) {
   return fdType(fd) == FD_TYPE_DATAGRAM_SOCKET;
 }
 
+void NativeFdClassifier::clearHighFdType(int fd) {
+  int index = highFdCacheIndex(fd);
+  uint64_t cached = _high_fd_type_cache[index].load(std::memory_order_acquire);
+  while (highFdEntryMatchesFd(cached, fd)) {
+    if (_high_fd_type_cache[index].compare_exchange_weak(
+            cached, 0, std::memory_order_acq_rel, std::memory_order_acquire)) {
+      return;
+    }
+  }
+}
+
 void NativeFdClassifier::clearFdType(int fd) {
-  if (fd >= 0 && static_cast<size_t>(fd) < static_cast<size_t>(FD_TYPE_CACHE_SIZE)) {
+  if (fd < 0) {
+    return;
+  }
+  if (static_cast<size_t>(fd) < static_cast<size_t>(FD_TYPE_CACHE_SIZE)) {
     _fd_type_cache[fd].store(0, std::memory_order_release);
+  } else {
+    clearHighFdType(fd);
   }
 }
 

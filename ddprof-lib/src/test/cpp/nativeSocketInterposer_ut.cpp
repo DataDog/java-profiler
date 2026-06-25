@@ -43,6 +43,9 @@
 
 namespace {
 
+static const int kFdTypeCacheSizeForTest = 65536;
+static const int kHighFdCacheSizeForTest = 4096;
+
 std::atomic<int> g_send_calls{0};
 std::atomic<int> g_sampler_send_calls{0};
 std::atomic<int> g_recv_calls{0};
@@ -914,8 +917,7 @@ TEST_F(NativeSocketInterposerFdTest, OtherSocketTypeIsCachedAsNeitherStreamNorDa
   EXPECT_EQ(1, g_fd_probe_calls.load());
 }
 
-TEST_F(NativeSocketInterposerFdTest, HighFdBypassesClassifierCache) {
-  static const int kFdTypeCacheSizeForTest = 65536;
+TEST_F(NativeSocketInterposerFdTest, HighFdUsesClassifierCache) {
   NativeFdClassifier classifier;
   ScopedFdProbeOverride override(recording_fd_probe);
   g_fd_probe_calls = 0;
@@ -925,8 +927,97 @@ TEST_F(NativeSocketInterposerFdTest, HighFdBypassesClassifierCache) {
 
   EXPECT_TRUE(classifier.isStreamSocket(kFdTypeCacheSizeForTest));
   EXPECT_TRUE(classifier.isStreamSocket(kFdTypeCacheSizeForTest));
-  EXPECT_EQ(2, g_fd_probe_calls.load());
+  EXPECT_EQ(1, g_fd_probe_calls.load());
   EXPECT_EQ(kFdTypeCacheSizeForTest, g_fd_probe_last_fd.load());
+}
+
+TEST_F(NativeSocketInterposerFdTest, HighFdTransientProbeFailureIsNotCached) {
+  NativeFdClassifier classifier;
+  ScopedFdProbeOverride override(stub_fd_probe);
+  int fd = kFdTypeCacheSizeForTest + 1;
+  g_fd_probe_calls = 0;
+  g_fd_probe_rc = -1;
+  g_fd_probe_errno = EIO;
+  g_fd_probe_so_type = 0;
+
+  EXPECT_FALSE(classifier.isStreamSocket(fd));
+  EXPECT_EQ(1, g_fd_probe_calls.load());
+
+  g_fd_probe_rc = 0;
+  g_fd_probe_errno = 0;
+  g_fd_probe_so_type = SOCK_STREAM;
+
+  EXPECT_TRUE(classifier.isStreamSocket(fd));
+  EXPECT_EQ(2, g_fd_probe_calls.load());
+
+  EXPECT_TRUE(classifier.isStreamSocket(fd));
+  EXPECT_EQ(2, g_fd_probe_calls.load());
+}
+
+TEST_F(NativeSocketInterposerFdTest, ClearFdTypeInvalidatesHighFdOnly) {
+  NativeFdClassifier classifier;
+  ScopedFdProbeOverride override(stub_fd_probe);
+  int fd = kFdTypeCacheSizeForTest + 2;
+  int other_fd = fd + 1;
+  g_fd_probe_calls = 0;
+  g_fd_probe_rc = 0;
+  g_fd_probe_errno = 0;
+  g_fd_probe_so_type = SOCK_STREAM;
+  ASSERT_TRUE(classifier.isStreamSocket(fd));
+  ASSERT_TRUE(classifier.isStreamSocket(other_fd));
+  EXPECT_EQ(2, g_fd_probe_calls.load());
+
+  g_fd_probe_so_type = SOCK_DGRAM;
+  classifier.clearFdType(fd);
+
+  EXPECT_FALSE(classifier.isStreamSocket(fd));
+  EXPECT_TRUE(classifier.isDatagramSocket(fd));
+  EXPECT_TRUE(classifier.isStreamSocket(other_fd));
+  EXPECT_EQ(3, g_fd_probe_calls.load());
+}
+
+TEST_F(NativeSocketInterposerFdTest, ClearFdTypeCacheInvalidatesHighFds) {
+  NativeFdClassifier classifier;
+  ScopedFdProbeOverride override(stub_fd_probe);
+  int fd = kFdTypeCacheSizeForTest + 3;
+  g_fd_probe_calls = 0;
+  g_fd_probe_rc = 0;
+  g_fd_probe_errno = 0;
+  g_fd_probe_so_type = SOCK_STREAM;
+  ASSERT_TRUE(classifier.isStreamSocket(fd));
+  EXPECT_EQ(1, g_fd_probe_calls.load());
+
+  g_fd_probe_so_type = SOCK_DGRAM;
+  classifier.clearFdTypeCache();
+
+  EXPECT_FALSE(classifier.isStreamSocket(fd));
+  EXPECT_TRUE(classifier.isDatagramSocket(fd));
+  EXPECT_EQ(2, g_fd_probe_calls.load());
+}
+
+TEST_F(NativeSocketInterposerFdTest, HighFdCacheCollisionReprobesExactFd) {
+  NativeFdClassifier classifier;
+  ScopedFdProbeOverride override(recording_fd_probe);
+  int stream_fd = kFdTypeCacheSizeForTest + 4;
+  int datagram_fd = stream_fd + kHighFdCacheSizeForTest;
+  g_fd_probe_calls = 0;
+  g_fd_probe_rc = 0;
+  g_fd_probe_errno = 0;
+
+  g_fd_probe_so_type = SOCK_STREAM;
+  ASSERT_TRUE(classifier.isStreamSocket(stream_fd));
+  EXPECT_EQ(1, g_fd_probe_calls.load());
+
+  g_fd_probe_so_type = SOCK_DGRAM;
+  EXPECT_FALSE(classifier.isStreamSocket(datagram_fd));
+  EXPECT_TRUE(classifier.isDatagramSocket(datagram_fd));
+  EXPECT_EQ(2, g_fd_probe_calls.load());
+  EXPECT_EQ(datagram_fd, g_fd_probe_last_fd.load());
+
+  g_fd_probe_so_type = SOCK_STREAM;
+  EXPECT_TRUE(classifier.isStreamSocket(stream_fd));
+  EXPECT_EQ(3, g_fd_probe_calls.load());
+  EXPECT_EQ(stream_fd, g_fd_probe_last_fd.load());
 }
 
 TEST_F(NativeSocketInterposerFdTest, ClearFdTypeInvalidatesOnlyThatFd) {
