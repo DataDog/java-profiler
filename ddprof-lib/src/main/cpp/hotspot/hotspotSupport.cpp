@@ -8,14 +8,15 @@
 #include <cstdlib>
 #include <setjmp.h>
 #include "asyncSampleMutex.h"
+#include "frames.h"
+#include "guards.h"
 #include "hotspot/hotspotSupport.h"
 #include "hotspot/jitCodeCache.h"
 #include "hotspot/vmStructs.inline.h"
 #include "jvmSupport.h"
 #include "profiler.h"
-#include "guards.h"
 #include "stackWalker.inline.h"
-#include "frames.h"
+#include "threadLocal.h"
 
 using StackWalkValidation::inDeadZone;
 using StackWalkValidation::aligned;
@@ -145,9 +146,12 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     }
 }
 
+static ThreadLocal<jmp_buf*> jmp_ctx;
+
 __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                         StackWalkFeatures features, EventType event_type,
                         const void* pc, uintptr_t sp, uintptr_t fp, int lock_index, bool* truncated) {
+
     // VMStructs is only available for hotspot JVM 
     assert(VM::isHotspot());
     HotspotStackFrame frame(ucontext);
@@ -175,7 +179,6 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     // safepoint boundaries and can crash in deflate_monitor_list when the field
     // holds a stale jmp_buf address instead of a C-string or NULL.
     bool setup_crash_protection = vm_thread != NULL && VMThread::isJavaThread(vm_thread);
-    void* saved_exception = setup_crash_protection ? vm_thread->exception() : nullptr;
 
     // Should be preserved across setjmp/longjmp
     volatile int depth = 0;
@@ -192,7 +195,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             Counters::increment(WALKVM_ANCHOR_NULL);
         }
         if (setup_crash_protection) {
-            vm_thread->exception() = &crash_protection_ctx;
+            jmp_ctx.set(&crash_protection_ctx);
         }
         if (profiled_thread != nullptr && setup_crash_protection) {
             profiled_thread->setCrashProtectionActive(true);
@@ -204,7 +207,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             if (profiled_thread != nullptr) {
                 profiled_thread->setCrashProtectionActive(false);
             }
-            vm_thread->exception() = saved_exception;
+            jmp_ctx.clear();
             if (depth < max_depth) {
                 fillFrame(frames[depth++], BCI_ERROR, "break_not_walkable");
             }
@@ -854,7 +857,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         profiled_thread->setCrashProtectionActive(false);
     }
     if (setup_crash_protection) {
-        vm_thread->exception() = saved_exception;
+        jmp_ctx.clear();
     }
 
     // Drop unknown leaf frame - it provides no useful information and breaks
@@ -896,7 +899,7 @@ void HotspotSupport::checkFault(ProfiledThread* thrd) {
     // early init or in crash recovery tests). sameStack uses a fixed 8KB threshold which
     // can fail with ASAN-inflated frames, but the crashProtectionActive path handles that.
     bool protected_walk = (thrd != nullptr && thrd->isCrashProtectionActive())
-                       || sameStack(vm_thread->exception(), &vm_thread);
+                       || sameStack(jmp_ctx.get(), &vm_thread);
     if (!protected_walk) {
         return;
     }
@@ -904,9 +907,8 @@ void HotspotSupport::checkFault(ProfiledThread* thrd) {
     if (thrd != nullptr) {
         thrd->resetCrashHandler();
     }
-    longjmp(*(jmp_buf*)vm_thread->exception(), 1);
+    longjmp(*jmp_ctx.get(), 1);
 }
-
 
 int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
                                 int max_depth, StackContext *java_ctx,
