@@ -417,38 +417,50 @@ public final class JavaProfiler {
     /**
      * Records a TaskBlock event for the calling platform thread. Span context is read from
      * OTEP TLS inside native code (same as the queue-time pattern).
+     *
+     * @return {@code true} if the event was recorded; {@code false} if it was skipped by
+     *         eligibility rules or could not be recorded
      */
-    public void recordTaskBlock(long startTicks, long endTicks, long blocker, long unblockingSpanId) {
-        recordTaskBlock0(startTicks, endTicks, blocker, unblockingSpanId);
+    public boolean recordTaskBlock(long startTicks, long endTicks, long blocker, long unblockingSpanId) {
+        return recordTaskBlock0(startTicks, endTicks, blocker, unblockingSpanId);
     }
 
     /**
      * Records a TaskBlock event for the calling profiled thread with an explicit span context.
      * Stack metadata is still attached from the calling thread.
+     *
+     * @return {@code true} if the event was recorded; {@code false} if it was skipped by
+     *         eligibility rules or could not be recorded
      */
-    public void recordTaskBlockWithContext(long startTicks, long endTicks, long blocker,
+    public boolean recordTaskBlockWithContext(long startTicks, long endTicks, long blocker,
             long unblockingSpanId, long spanId, long rootSpanId) {
-        recordTaskBlockWithContext0(startTicks, endTicks, blocker, unblockingSpanId, spanId, rootSpanId);
+        return recordTaskBlockWithContext0(startTicks, endTicks, blocker, unblockingSpanId, spanId, rootSpanId);
     }
 
     /**
      * Attempts to record a TaskBlock event attributed to an explicit thread ID and explicit span
      * context. This overload has no stack-reference metadata, so a recorder thread cannot use it to
      * emit a self-contained TaskBlock on behalf of another thread.
+     *
+     * @return {@code true} if the event was recorded; {@code false} if it was skipped by
+     *         eligibility rules or could not be recorded
      */
-    public void recordTaskBlockFromContext(int tid, long startTicks, long endTicks,
+    public boolean recordTaskBlockFromContext(int tid, long startTicks, long endTicks,
             long blocker, long unblockingSpanId, long spanId, long rootSpanId) {
-        recordTaskBlockFromContext0(tid, startTicks, endTicks, blocker, unblockingSpanId, spanId, rootSpanId);
+        return recordTaskBlockFromContext0(tid, startTicks, endTicks, blocker, unblockingSpanId, spanId, rootSpanId);
     }
 
     /**
      * Records a TaskBlock event with explicit thread, span context, and stack-reference metadata.
      * This is the required overload when recording from a background thread on behalf of {@code tid}.
+     *
+     * @return {@code true} if the event was recorded; {@code false} if it was skipped by
+     *         eligibility rules or could not be recorded
      */
-    public void recordTaskBlockFromContext(int tid, long startTicks, long endTicks,
+    public boolean recordTaskBlockFromContext(int tid, long startTicks, long endTicks,
             long blocker, long unblockingSpanId, long spanId, long rootSpanId,
             long callTraceId, long correlationId, int observedBlockingState) {
-        recordTaskBlockFromContextWithStackReference0(tid, startTicks, endTicks, blocker,
+        return recordTaskBlockFromContextWithStackReference0(tid, startTicks, endTicks, blocker,
                 unblockingSpanId, spanId, rootSpanId, callTraceId, correlationId,
                 observedBlockingState);
     }
@@ -515,16 +527,16 @@ public final class JavaProfiler {
 
     private static native long tscFrequency0();
 
-    private static native void recordTaskBlock0(long startTicks, long endTicks,
+    private static native boolean recordTaskBlock0(long startTicks, long endTicks,
             long blocker, long unblockingSpanId);
 
-    private static native void recordTaskBlockWithContext0(long startTicks, long endTicks,
+    private static native boolean recordTaskBlockWithContext0(long startTicks, long endTicks,
             long blocker, long unblockingSpanId, long spanId, long rootSpanId);
 
-    private static native void recordTaskBlockFromContext0(int tid, long startTicks, long endTicks,
+    private static native boolean recordTaskBlockFromContext0(int tid, long startTicks, long endTicks,
             long blocker, long unblockingSpanId, long spanId, long rootSpanId);
 
-    private static native void recordTaskBlockFromContextWithStackReference0(int tid, long startTicks,
+    private static native boolean recordTaskBlockFromContextWithStackReference0(int tid, long startTicks,
             long endTicks, long blocker, long unblockingSpanId, long spanId, long rootSpanId,
             long callTraceId, long correlationId, int observedBlockingState);
 

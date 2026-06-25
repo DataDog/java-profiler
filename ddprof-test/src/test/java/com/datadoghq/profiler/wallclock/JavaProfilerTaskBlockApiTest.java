@@ -19,9 +19,9 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
 
     @Test
     public void recordTaskBlockSameThreadEligibleEmission() throws Exception {
-        runInsideCurrentThreadBlock(
+        assertTrue(runInsideCurrentThreadBlock(
                 (tid, startTicks, endTicks, snapshot) ->
-                        profiler.recordTaskBlock(startTicks, endTicks, BLOCKER, UNBLOCKING_SPAN_ID));
+                        profiler.recordTaskBlock(startTicks, endTicks, BLOCKER, UNBLOCKING_SPAN_ID)));
         stopProfiler();
 
         IItemCollection taskBlockEvents = verifyEvents("datadog.TaskBlock");
@@ -36,7 +36,7 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
     public void recordTaskBlockTooShortSkipsAndCounts() {
         long ticks = profiler.getCurrentTicks();
 
-        profiler.recordTaskBlock(ticks, ticks, BLOCKER, UNBLOCKING_SPAN_ID);
+        assertFalse(profiler.recordTaskBlock(ticks, ticks, BLOCKER, UNBLOCKING_SPAN_ID));
         stopProfiler();
 
         assertFalse(verifyEvents("datadog.TaskBlock", false).hasItems());
@@ -45,11 +45,11 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
 
     @Test
     public void recordTaskBlockWithExplicitZeroContextEmitsExpectedFields() throws Exception {
-        runInsideCurrentThreadBlock(
+        assertTrue(runInsideCurrentThreadBlock(
                 (tid, startTicks, endTicks, snapshot) ->
                         profiler.recordTaskBlockWithContext(
                                 startTicks, endTicks, BLOCKER, UNBLOCKING_SPAN_ID,
-                                SPAN_ID, ROOT_SPAN_ID));
+                                SPAN_ID, ROOT_SPAN_ID)));
         stopProfiler();
 
         IItemCollection taskBlockEvents = verifyEvents("datadog.TaskBlock");
@@ -60,11 +60,11 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
 
     @Test
     public void recordTaskBlockWithNonZeroSpanContextSkipsAndCounts() throws Exception {
-        runInsideCurrentThreadBlock(
+        assertFalse(runInsideCurrentThreadBlock(
                 (tid, startTicks, endTicks, snapshot) ->
                         profiler.recordTaskBlockWithContext(
                                 startTicks, endTicks, BLOCKER, UNBLOCKING_SPAN_ID,
-                                0x7310L, 0x7311L));
+                                0x7310L, 0x7311L)));
         stopProfiler();
 
         assertFalse(verifyEvents("datadog.TaskBlock", false).hasItems());
@@ -75,9 +75,9 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
     public void recordTaskBlockFromContextWithoutStackReferenceSkipsAndCounts() throws Exception {
         CapturedBlock block = captureCurrentThreadBlock();
 
-        profiler.recordTaskBlockFromContext(
+        assertFalse(profiler.recordTaskBlockFromContext(
                 block.tid, block.startTicks, block.endTicks, BLOCKER, UNBLOCKING_SPAN_ID,
-                SPAN_ID, ROOT_SPAN_ID);
+                SPAN_ID, ROOT_SPAN_ID));
         stopProfiler();
 
         assertFalse(verifyEvents("datadog.TaskBlock", false).hasItems());
@@ -89,10 +89,10 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
             throws Exception {
         CapturedBlock block = captureCurrentThreadBlock();
 
-        profiler.recordTaskBlockFromContext(
+        assertTrue(profiler.recordTaskBlockFromContext(
                 block.tid, block.startTicks, block.endTicks, BLOCKER, UNBLOCKING_SPAN_ID,
                 SPAN_ID, ROOT_SPAN_ID, block.snapshot[0], block.snapshot[1],
-                (int) block.snapshot[2]);
+                (int) block.snapshot[2]));
         stopProfiler();
 
         IItemCollection taskBlockEvents = verifyEvents("datadog.TaskBlock");
@@ -106,15 +106,30 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
             throws Exception {
         CapturedBlock block = captureCurrentThreadBlock();
 
-        profiler.recordTaskBlockFromContext(
+        assertTrue(profiler.recordTaskBlockFromContext(
                 block.tid, block.startTicks, block.endTicks, BLOCKER, UNBLOCKING_SPAN_ID,
-                SPAN_ID, ROOT_SPAN_ID, block.snapshot[0], block.snapshot[1], Integer.MAX_VALUE);
+                SPAN_ID, ROOT_SPAN_ID, block.snapshot[0], block.snapshot[1], Integer.MAX_VALUE));
         stopProfiler();
 
         IItemCollection taskBlockEvents = verifyEvents("datadog.TaskBlock");
         TaskBlockAssertions.assertContains(
                 taskBlockEvents, ROOT_SPAN_ID, SPAN_ID, BLOCKER, UNBLOCKING_SPAN_ID);
         TaskBlockAssertions.assertContainsAnyObservedState(taskBlockEvents);
+    }
+
+    @Test
+    public void recordTaskBlockFromContextInvalidTidReturnsFalseAndEmitsNothing() {
+        long ticks = profiler.getCurrentTicks();
+        long endTicks = ticks + profiler.getTscFrequency();
+
+        assertFalse(profiler.recordTaskBlockFromContext(
+                -1, ticks, endTicks, BLOCKER, UNBLOCKING_SPAN_ID, SPAN_ID, ROOT_SPAN_ID));
+        assertFalse(profiler.recordTaskBlockFromContext(
+                -1, ticks, endTicks, BLOCKER, UNBLOCKING_SPAN_ID, SPAN_ID, ROOT_SPAN_ID,
+                1L, 2L, OSTHREAD_STATE_SLEEPING));
+        stopProfiler();
+
+        assertFalse(verifyEvents("datadog.TaskBlock", false).hasItems());
     }
 
     @Override
@@ -125,8 +140,10 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
     private CapturedBlock captureCurrentThreadBlock() throws Exception {
         AtomicReference<CapturedBlock> captured = new AtomicReference<>();
         runInsideCurrentThreadBlock(
-                (tid, startTicks, endTicks, snapshot) ->
-                        captured.set(new CapturedBlock(tid, startTicks, endTicks, snapshot.clone())));
+                (tid, startTicks, endTicks, snapshot) -> {
+                    captured.set(new CapturedBlock(tid, startTicks, endTicks, snapshot.clone()));
+                    return true;
+                });
         CapturedBlock block = captured.get();
         if (block == null) {
             throw new AssertionError("capture thread did not publish block metadata");
@@ -134,8 +151,9 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
         return block;
     }
 
-    private void runInsideCurrentThreadBlock(BlockAction action) throws Exception {
+    private boolean runInsideCurrentThreadBlock(BlockAction action) throws Exception {
         AtomicReference<Throwable> error = new AtomicReference<>();
+        AtomicReference<Boolean> result = new AtomicReference<>();
         Thread thread = new Thread(() -> {
             try {
                 registerCurrentThreadForWallClockProfiling();
@@ -157,7 +175,7 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
                 }
                 try {
                     Thread.sleep(200L);
-                    action.run(profiler.getCurrentThreadId(), startTicks, endTicks, snapshot);
+                    result.set(action.run(profiler.getCurrentThreadId(), startTicks, endTicks, snapshot));
                 } finally {
                     ProfilerOwnedBlockHooks.blockExit(profiler, token2);
                 }
@@ -172,10 +190,15 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
         if (error.get() != null) {
             throw new AssertionError(error.get());
         }
+        Boolean recorded = result.get();
+        if (recorded == null) {
+            throw new AssertionError("capture thread did not publish TaskBlock record result");
+        }
+        return recorded;
     }
 
     private interface BlockAction {
-        void run(int tid, long startTicks, long endTicks, long[] snapshot);
+        boolean run(int tid, long startTicks, long endTicks, long[] snapshot);
     }
 
     private static final class CapturedBlock {

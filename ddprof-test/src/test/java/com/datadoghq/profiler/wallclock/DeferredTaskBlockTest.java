@@ -22,14 +22,14 @@ public class DeferredTaskBlockTest extends AbstractProfilerTest {
     public void offThreadRecordWithoutStackReferenceIsDroppedAndCounted() throws Exception {
         CapturedBlock block = captureSleepingBlock();
 
-        profiler.recordTaskBlockFromContext(
+        assertFalse(profiler.recordTaskBlockFromContext(
                 block.tid,
                 block.startTicks,
                 block.endTicks,
                 BLOCKER_WITHOUT_STACK,
                 UNBLOCKING_SPAN_ID,
                 ROOT_SPAN_ID,
-                SPAN_ID);
+                SPAN_ID));
 
         stopProfiler();
 
@@ -45,7 +45,7 @@ public class DeferredTaskBlockTest extends AbstractProfilerTest {
     public void offThreadRecordWithExplicitStackReferenceEmitsTaskBlock() throws Exception {
         CapturedBlock block = captureSleepingBlock();
 
-        profiler.recordTaskBlockFromContext(
+        assertTrue(profiler.recordTaskBlockFromContext(
                 block.tid,
                 block.startTicks,
                 block.endTicks,
@@ -55,7 +55,7 @@ public class DeferredTaskBlockTest extends AbstractProfilerTest {
                 SPAN_ID,
                 block.snapshot[0],
                 block.snapshot[1],
-                (int) block.snapshot[2]);
+                (int) block.snapshot[2]));
 
         stopProfiler();
 

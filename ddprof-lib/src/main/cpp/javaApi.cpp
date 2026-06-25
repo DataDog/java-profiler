@@ -482,65 +482,73 @@ Java_com_datadoghq_profiler_JavaProfiler_blockExitWithSnapshot0(
   }
 }
 
-extern "C" DLLEXPORT void JNICALL
+extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordTaskBlock0(
     JNIEnv *env, jclass unused, jlong startTicks, jlong endTicks,
     jlong blocker, jlong unblockingSpanId) {
   int tid = ProfiledThread::currentTid();
   if (tid < 0) {
-    return;
+    return JNI_FALSE;
   }
   // Context (span ids + tags) is captured from OTEP TLS via ContextApi::snapshot()
   // inside recordTaskBlockLiveIfEligible, mirroring the recordQueueTime convention.
-  recordTaskBlockLiveIfEligible(tid, (u64)startTicks, (u64)endTicks,
-                                (u64)blocker, (u64)unblockingSpanId);
+  return recordTaskBlockLiveIfEligible(tid, (u64)startTicks, (u64)endTicks,
+                                       (u64)blocker, (u64)unblockingSpanId)
+             ? JNI_TRUE
+             : JNI_FALSE;
 }
 
-extern "C" DLLEXPORT void JNICALL
+extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordTaskBlockWithContext0(
     JNIEnv *env, jclass unused, jlong startTicks, jlong endTicks,
     jlong blocker, jlong unblockingSpanId,
     jlong spanId, jlong rootSpanId) {
   int tid = ProfiledThread::currentTid();
   if (tid < 0) {
-    return;
+    return JNI_FALSE;
   }
   // Virtual-thread path: span/root ids captured at block entry are passed explicitly because
   // the native OTEP TLS is carrier-scoped and cannot be trusted. Custom attributes not propagated.
   Context ctx{(u64)spanId, (u64)rootSpanId};
-  recordTaskBlockWithContextIfEligible(tid, (u64)startTicks, (u64)endTicks,
-                                       ctx, (u64)blocker,
-                                       (u64)unblockingSpanId);
+  return recordTaskBlockWithContextIfEligible(tid, (u64)startTicks, (u64)endTicks,
+                                              ctx, (u64)blocker,
+                                              (u64)unblockingSpanId)
+             ? JNI_TRUE
+             : JNI_FALSE;
 }
 
-extern "C" DLLEXPORT void JNICALL
+extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordTaskBlockFromContext0(
     JNIEnv *env, jclass unused, jint tid, jlong startTicks, jlong endTicks,
     jlong blocker, jlong unblockingSpanId, jlong spanId, jlong rootSpanId) {
   // Drain-thread path: called from background drain thread on behalf of the sleeping thread.
   // tid is the OS tid of the sleeping thread; span context is explicit to bypass OTEP TLS.
   if ((int)tid < 0) {
-    return;
+    return JNI_FALSE;
   }
   Context ctx{(u64)spanId, (u64)rootSpanId};
-  recordTaskBlockWithStackReferenceIfEligible(
-      (int)tid, (u64)startTicks, (u64)endTicks, ctx, (u64)blocker,
-      (u64)unblockingSpanId, 0, 0, OSThreadState::UNKNOWN);
+  return recordTaskBlockWithStackReferenceIfEligible(
+             (int)tid, (u64)startTicks, (u64)endTicks, ctx, (u64)blocker,
+             (u64)unblockingSpanId, 0, 0, OSThreadState::UNKNOWN)
+             ? JNI_TRUE
+             : JNI_FALSE;
 }
 
-extern "C" DLLEXPORT void JNICALL
+extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordTaskBlockFromContextWithStackReference0(
     JNIEnv *env, jclass unused, jint tid, jlong startTicks, jlong endTicks,
     jlong blocker, jlong unblockingSpanId, jlong spanId, jlong rootSpanId,
     jlong callTraceId, jlong correlationId, jint observedBlockingState) {
   if ((int)tid < 0) {
-    return;
+    return JNI_FALSE;
   }
   Context ctx{(u64)spanId, (u64)rootSpanId};
-  recordTaskBlockWithStackReferenceIfEligible(
-      (int)tid, (u64)startTicks, (u64)endTicks, ctx, (u64)blocker,
-      (u64)unblockingSpanId, (u64)callTraceId, (u64)correlationId,
-      decodeTaskBlockObservedState(observedBlockingState));
+  return recordTaskBlockWithStackReferenceIfEligible(
+             (int)tid, (u64)startTicks, (u64)endTicks, ctx, (u64)blocker,
+             (u64)unblockingSpanId, (u64)callTraceId, (u64)correlationId,
+             decodeTaskBlockObservedState(observedBlockingState))
+             ? JNI_TRUE
+             : JNI_FALSE;
 }
 
 extern "C" DLLEXPORT jlong JNICALL

@@ -60,13 +60,18 @@ public:
 
   ProfiledThread* thread() const { return _thread; }
 
+  void releaseOwnership() { _thread = nullptr; }
+
 private:
   ProfiledThread* _thread;
 };
 
 class DetachedCurrentThread {
 public:
-  DetachedCurrentThread() : _thread(ProfiledThread::clearCurrentThreadTLS()) {}
+  explicit DetachedCurrentThread(CurrentThreadScope& current)
+      : _thread(ProfiledThread::clearCurrentThreadTLS()) {
+    current.releaseOwnership();
+  }
   ~DetachedCurrentThread() {
     if (_thread != nullptr) {
       ProfiledThread::deleteForTest(_thread);
@@ -136,7 +141,7 @@ TEST_F(NativeBlockScopeTest, InactiveAsyncDrainGateLeavesScopeInactiveAndPreserv
 TEST_F(NativeBlockScopeTest, NullCurrentThreadGateLeavesScopeInactiveAndPreservesErrno) {
   CurrentThreadScope current;
   ScopedTaskBlockAsyncActive async_active(true);
-  DetachedCurrentThread detached;
+  DetachedCurrentThread detached(current);
 
   errno = E2BIG;
   NativeBlockScope scope(NativeBlockKind::STREAM_SOCKET, 17);
