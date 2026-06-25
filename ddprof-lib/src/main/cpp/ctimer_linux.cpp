@@ -250,15 +250,14 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   }
   Counters::increment(CTIMER_SIGNAL_OWN);
 
-  __atomic_fetch_add(&_inflight, 1, __ATOMIC_ACQUIRE);
+  InflightGuard inflight;  // Increment on entry, decrement on all exit paths
+
   CriticalSection cs;
   if (!cs.entered()) {
-    __atomic_fetch_sub(&_inflight, 1, __ATOMIC_RELEASE);
-    return;
+    return;  // inflight guard decrements automatically
   }
   int saved_errno = errno;
   if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
-    __atomic_fetch_sub(&_inflight, 1, __ATOMIC_RELEASE);
     errno = saved_errno;
     return;
   }
@@ -269,7 +268,7 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
       && current->inInitWindow()) {
     current->tickInitWindow();
     errno = saved_errno;
-    return;
+    return;  // inflight guard decrements automatically — this was the bug!
   }
   if (current != NULL) {
     current->noteCPUSample(Profiler::instance()->recordingEpoch());
@@ -288,7 +287,6 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   Profiler::instance()->recordSampleDelegated(ucontext, _interval, tid,
                                                BCI_CPU, &event);
   Shims::instance().setSighandlerTid(-1);
-  __atomic_fetch_sub(&_inflight, 1, __ATOMIC_RELEASE);
   errno = saved_errno;
 }
 
@@ -305,14 +303,11 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   }
   Counters::increment(CTIMER_SIGNAL_OWN);
 
-  // Increment before the _enabled check so drainInflight() reliably waits
-  // for all handlers currently past the check.
-  __atomic_fetch_add(&_inflight, 1, __ATOMIC_ACQUIRE);
+  InflightGuard inflight;  // Increment on entry, decrement on all exit paths
 
   // Atomically try to enter critical section - prevents all reentrancy races
   CriticalSection cs;
   if (!cs.entered()) {
-    __atomic_fetch_sub(&_inflight, 1, __ATOMIC_RELEASE);
     return;  // Another critical section is active, defer profiling
   }
   // Save the current errno value
@@ -320,7 +315,6 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // we want to ensure memory order because of the possibility the instance gets
   // cleared
   if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
-    __atomic_fetch_sub(&_inflight, 1, __ATOMIC_RELEASE);
     return;
   }
   int tid = 0;
@@ -333,7 +327,6 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   if (current != nullptr && JVMThread::isInitialized() && JVMThread::current() == nullptr
       && current->inInitWindow()) {
     current->tickInitWindow();
-    __atomic_fetch_sub(&_inflight, 1, __ATOMIC_RELEASE);
     errno = saved_errno;
     return;
   }
@@ -350,7 +343,6 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   Profiler::instance()->recordSample(ucontext, _interval, tid, BCI_CPU, 0,
                                      &event);
   Shims::instance().setSighandlerTid(-1);
-  __atomic_fetch_sub(&_inflight, 1, __ATOMIC_RELEASE);
   // we need to avoid spoiling the value of errno (tsan report)
   errno = saved_errno;
 }

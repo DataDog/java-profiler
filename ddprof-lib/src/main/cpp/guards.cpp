@@ -18,6 +18,9 @@
 #include "common.h"
 #include "os.h"
 #include "thread.h"
+#ifdef __linux__
+#include "ctimer.h"
+#endif
 
 // Signal-context tracking — backed by ProfiledThread::_signal_depth; see
 // the comment block in guards.h for the rationale (initial-exec TLS was
@@ -114,3 +117,29 @@ CriticalSection::~CriticalSection() {
 uint32_t CriticalSection::hash_tid(int tid) {
     return static_cast<uint32_t>(tid * KNUTH_MULTIPLICATIVE_CONSTANT);
 }
+
+// InflightGuard implementation — Linux-specific CTimer race mitigation
+
+#ifdef __linux__
+
+InflightGuard::InflightGuard() : _active(true) {
+    // Directly access CTimer's static _inflight counter with ACQUIRE semantics
+    // so drainInflight()'s ACQUIRE load will see all writes before this increment.
+    __atomic_fetch_add(&CTimer::_inflight, 1, __ATOMIC_ACQUIRE);
+}
+
+InflightGuard::~InflightGuard() {
+    if (_active) {
+        // RELEASE semantics: all signal handler writes become visible to
+        // drainInflight() before the counter decrements.
+        __atomic_fetch_sub(&CTimer::_inflight, 1, __ATOMIC_RELEASE);
+    }
+}
+
+#else
+
+// No-op implementation for non-Linux platforms where CTimer doesn't exist
+InflightGuard::InflightGuard() : _active(false) {}
+InflightGuard::~InflightGuard() {}
+
+#endif
