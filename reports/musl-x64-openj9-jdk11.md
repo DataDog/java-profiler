@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk11
 
 ## musl-x64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-06-25 00:53:24 EDT
+**Date:** 2026-06-25 04:07:00 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-x64-openj9-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 8 |
-| CPU Cores (end) | 8 |
+| CPU Cores (start) | 13 |
+| CPU Cores (end) | 13 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: musl-x64-openj9-jdk11
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 8-8 cores)</summary>
+<summary>CPU Timeline (1 unique values: 13-13 cores)</summary>
 
 ```
-1782363002 8
-1782363007 8
-1782363012 8
-1782363017 8
-1782363022 8
-1782363027 8
-1782363032 8
-1782363037 8
-1782363042 8
-1782363047 8
-1782363052 8
-1782363057 8
-1782363062 8
-1782363067 8
-1782363072 8
-1782363077 8
-1782363082 8
-1782363087 8
-1782363092 8
-1782363097 8
+1782374538 13
+1782374543 13
+1782374548 13
+1782374553 13
+1782374558 13
+1782374563 13
+1782374568 13
+1782374573 13
+1782374578 13
+1782374583 13
+1782374588 13
+1782374593 13
+1782374598 13
+1782374603 13
+1782374608 13
+1782374613 13
+1782374618 13
+1782374623 13
+1782374628 13
+1782374633 13
 ```
 </details>
 
