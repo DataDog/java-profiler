@@ -701,6 +701,22 @@ TEST_F(ThreadFilterTest, BlockRunSnapshotCapturesFirstCallTraceId) {
     EXPECT_EQ(0ULL, snapshot.correlation_id);
 }
 
+TEST_F(ThreadFilterTest, BlockRunSnapshotTreatsOwnerlessStateAsInactive) {
+    int slot_id = filter->registerThread();
+    ASSERT_GE(slot_id, 0);
+    ThreadFilter::Slot *slot = filter->slotForId(slot_id);
+    ASSERT_NE(nullptr, slot);
+
+    slot->active_block_state.store(OSThreadState::IO_WAIT, std::memory_order_release);
+    slot->active_block_owner.store(static_cast<int>(BlockRunOwner::NONE),
+                                   std::memory_order_release);
+
+    BlockRunSnapshot snapshot = filter->snapshotBlockedRun(slot_id);
+    EXPECT_FALSE(snapshot.active);
+    EXPECT_EQ(BlockRunOwner::NONE, snapshot.owner);
+    EXPECT_EQ(OSThreadState::IO_WAIT, snapshot.active_state);
+}
+
 TEST_F(ThreadFilterTest, BlockRunSnapshotCapturesFirstCorrelationId) {
     int slot_id = filter->registerThread();
     ASSERT_GE(slot_id, 0);

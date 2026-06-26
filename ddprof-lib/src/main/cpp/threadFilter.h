@@ -215,7 +215,8 @@ public:
                 snapshot.correlation_id = 0;
             }
             snapshot.generation = blockGeneration();
-            snapshot.active = snapshot.active_state != OSThreadState::UNKNOWN;
+            snapshot.active = snapshot.owner != BlockRunOwner::NONE &&
+                snapshot.active_state != OSThreadState::UNKNOWN;
             snapshot.has_stack_reference =
                 sampled && (snapshot.call_trace_id != 0 || snapshot.correlation_id != 0);
             return snapshot;

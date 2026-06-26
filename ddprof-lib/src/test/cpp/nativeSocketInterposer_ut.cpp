@@ -421,6 +421,19 @@ protected:
   int dup3ThroughHook(int oldfd, int newfd, int flags) {
     return NativeSocketInterposer::dup3_hook(oldfd, newfd, flags);
   }
+
+  int datagramSocketAtFd(int target_fd) {
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0 || fd == target_fd) {
+      return fd;
+    }
+
+    int ret = ::dup2(fd, target_fd);
+    int saved_errno = errno;
+    ::close(fd);
+    errno = saved_errno;
+    return ret;
+  }
 };
 
 } // namespace
@@ -1165,11 +1178,18 @@ TEST_F(NativeSocketInterposerFdTest, ConcurrentClassifierReadsAndClearsAreSafe) 
   g_fd_probe_calls = 0;
   g_fd_probe_rc = 0;
   g_fd_probe_errno = 0;
+  static constexpr int kReaders = 4;
+  std::atomic<bool> start{false};
   std::atomic<bool> stop{false};
+  std::atomic<int> ready_readers{0};
   std::atomic<int> reads{0};
   int fd = 48;
 
   std::thread clearer([&]() {
+    while (ready_readers.load(std::memory_order_acquire) < kReaders) {
+      std::this_thread::yield();
+    }
+    start.store(true, std::memory_order_release);
     for (int i = 0; i < 1000; i++) {
       g_fd_probe_so_type = (i % 2 == 0) ? SOCK_STREAM : SOCK_DGRAM;
       classifier.clearFdType(fd);
@@ -1182,8 +1202,12 @@ TEST_F(NativeSocketInterposerFdTest, ConcurrentClassifierReadsAndClearsAreSafe) 
   });
 
   std::vector<std::thread> readers;
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < kReaders; i++) {
     readers.emplace_back([&]() {
+      ready_readers.fetch_add(1, std::memory_order_release);
+      while (!start.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+      }
       while (!stop.load(std::memory_order_acquire)) {
         (void)classifier.isStreamSocket(fd);
         (void)classifier.isDatagramSocket(fd);
@@ -1209,7 +1233,7 @@ TEST_F(NativeSocketInterposerFdTest, CloseHookInvalidatesFdBeforeReuse) {
   EXPECT_TRUE(NativeSocketInterposer::instance()->isStreamSocket(reused_fd));
   ASSERT_EQ(0, closeThroughHook(reused_fd));
 
-  int datagram_fd = socket(AF_INET, SOCK_DGRAM, 0);
+  int datagram_fd = datagramSocketAtFd(reused_fd);
   ASSERT_EQ(reused_fd, datagram_fd);
   EXPECT_FALSE(NativeSocketInterposer::instance()->isStreamSocket(datagram_fd));
 
@@ -1233,7 +1257,7 @@ TEST_F(NativeSocketInterposerFdTest,
   EXPECT_EQ(E2BIG, errno);
   EXPECT_FALSE(sampler->fdAddrCacheContainsForTest(reused_fd));
 
-  int datagram_fd = socket(AF_INET, SOCK_DGRAM, 0);
+  int datagram_fd = datagramSocketAtFd(reused_fd);
   ASSERT_EQ(reused_fd, datagram_fd);
   EXPECT_FALSE(sampler->isSocketForTest(datagram_fd));
 
@@ -1253,7 +1277,7 @@ TEST_F(NativeSocketInterposerFdTest, RepeatedCacheClearsDoNotResurrectOldFdType)
     NativeSocketInterposer::instance()->clearFdTypeCache();
   }
 
-  int datagram_fd = socket(AF_INET, SOCK_DGRAM, 0);
+  int datagram_fd = datagramSocketAtFd(reused_fd);
   ASSERT_EQ(reused_fd, datagram_fd);
   EXPECT_FALSE(NativeSocketInterposer::instance()->isStreamSocket(datagram_fd));
 
@@ -1426,10 +1450,11 @@ TEST_F(NativeSocketInterposerFdTest, ConcurrentFdReuseInvalidationDoesNotPreserv
     });
 
     ASSERT_EQ(0, closeThroughHook(reused_fd));
-    int datagram_fd = socket(AF_INET, SOCK_DGRAM, 0);
-    ASSERT_EQ(reused_fd, datagram_fd);
+    int datagram_fd = datagramSocketAtFd(reused_fd);
     done.store(true, std::memory_order_release);
     reader.join();
+
+    ASSERT_EQ(reused_fd, datagram_fd);
 
     EXPECT_FALSE(NativeSocketInterposer::instance()->isStreamSocket(datagram_fd));
     EXPECT_TRUE(NativeSocketInterposer::instance()->isDatagramSocket(datagram_fd));
