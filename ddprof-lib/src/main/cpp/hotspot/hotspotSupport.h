@@ -34,6 +34,10 @@ public:
         return HotspotStackFrame::unwindAtomicStub(frame, pc);
     }
 
+    // Per-thread initialization.
+    // *Must* be called before signal is enabled for the thread
+    static void initThread();
+
     static inline bool isJitCode(const void* p) {
         return JitCodeCache::isJitCode(p);
     }

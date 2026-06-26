@@ -1212,7 +1212,7 @@ inline bool crashProtectionActive() {
     // is equally redundant — any bad read will be caught by the SIGSEGV handler.
     // Uses VMThread::isExceptionActive() which reads the field directly without
     // going through at() to avoid recursive assertion.
-    return JVMThread::key() != pthread_key_t(-1) && VMThread::isExceptionActive();
+    return JVMThread::isInitialized() && VMThread::isExceptionActive();
 }
 
 #endif // _HOTSPOT_VMSTRUCTS_H

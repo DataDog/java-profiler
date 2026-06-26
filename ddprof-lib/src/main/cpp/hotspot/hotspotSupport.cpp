@@ -40,6 +40,13 @@ static jmethodID getMethodId(VMMethod* method) {
     return NULL;
 }
 
+static ThreadLocal<jmp_buf*> jmp_ctx;
+
+void HotspotSupport::initThread() {
+    // Ensure the slot is allocated
+    jmp_ctx.set(nullptr);
+}
+
 /**
  * Converts a BCI_* frame type value to the corresponding EventType enum value.
  *
@@ -145,8 +152,6 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                       (const void*)frame.pc(), frame.sp(), frame.fp(), lock_index, truncated);
     }
 }
-
-static ThreadLocal<jmp_buf*> jmp_ctx;
 
 __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                         StackWalkFeatures features, EventType event_type,
