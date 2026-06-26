@@ -1,6 +1,6 @@
 /*
  * Copyright The async-profiler authors
- * Copyright 2025, Datadog, Inc.
+ * Copyright 2025, 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -104,6 +104,7 @@ private:
   // ASGCT paths) or _total_samples (written by every recording path).
   alignas(DEFAULT_CACHE_LINE_SIZE) volatile u64 _sample_seq;
   alignas(DEFAULT_CACHE_LINE_SIZE) u64 _failures[ASGCT_FAILURE_TYPES];
+  bool _wall_precheck = false;
 
   SpinLock _class_map_lock;
   SpinLock _locks[CONCURRENCY_LEVEL];
@@ -380,14 +381,15 @@ public:
   NativeFrameResolution resolveNativeFrameForWalkVM(uintptr_t pc, int lock_index);
   int convertNativeTrace(int native_frames, const void **callchain,
                          ASGCT_CallFrame *frames, int lock_index);
-  void recordSample(void *ucontext, u64 weight, int tid, jint event_type,
-                    u64 call_trace_id, Event *event);
+  bool recordSample(void *ucontext, u64 weight, int tid, jint event_type,
+                    u64 call_trace_id, Event *event,
+                    u64 *recorded_call_trace_id = nullptr);
   // Delegated sample path: stack-walking is performed by the HotSpot JFR
   // RequestStackTrace extension (the JVM emits the stack trace into its own
   // JFR recording). We only emit the CPU/wall sample event with no
   // stack-trace reference, tagged by the correlation ID we passed to
   // RequestStackTrace as user_data.
-  void recordSampleDelegated(void *ucontext, u64 weight, int tid,
+  bool recordSampleDelegated(void *ucontext, u64 weight, int tid,
                              jint event_type, Event *event);
   u64 recordJVMTISample(u64 weight, int tid, jthread thread, jint event_type, Event *event, bool deferred);
   void recordDeferredSample(int tid, u64 call_trace_id, jint event_type, Event *event);

@@ -379,6 +379,14 @@ Error Arguments::parse(const char *args) {
         _jvmtistacks = true;
       }
 
+      CASE("wallprecheck")
+      if (value != NULL) {
+        _wall_precheck = strcmp(value, "false") != 0 && strcmp(value, "0") != 0;
+      } else {
+        // No value means enable
+        _wall_precheck = true;
+      }
+
       CASE("wallsampler")
       if (value != NULL) {
           switch (value[0]) {
