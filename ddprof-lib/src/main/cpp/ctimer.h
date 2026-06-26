@@ -37,6 +37,11 @@ public:
   // Placed on its own cache line to avoid false sharing with _enabled:
   // _enabled is read-only on the hot path; _inflight is read-write.
   alignas(64) static int _inflight;
+
+  // Returns true if any handlers are still in-flight (stuck after timeout)
+  static bool hasInflightHandlers() {
+    return __atomic_load_n(&_inflight, __ATOMIC_ACQUIRE) > 0;
+  }
   static long _interval;
   static CStack _cstack;
   static int _signal;
@@ -69,10 +74,9 @@ public:
   // Spin until all signal handlers that passed the _enabled=true check have
   // returned. Must be called with _enabled already false (after disableEngines()),
   // before any JFR teardown that handlers could race against.
-  // Bounded by DRAIN_TIMEOUT_NS; logs a warning and proceeds if the timeout
-  // fires (avoids a hang if a handler is stuck, at the cost of the theoretical
-  // race in that pathological case).
-  static void drainInflight();
+  // Returns true if all handlers drained successfully, false if timeout fired.
+  // Caller must NOT proceed with JFR teardown if this returns false.
+  static bool drainInflight();
 
   // Get the signal number used by CTimer (0 if not initialized)
   static int getSignal() { return _signal; }
@@ -109,6 +113,9 @@ public:
   }
 
   static bool supported() { return false; }
+
+  // No-op on non-Linux platforms
+  static bool drainInflight() { return true; }
 };
 
 class CTimerJvmti : public Engine {

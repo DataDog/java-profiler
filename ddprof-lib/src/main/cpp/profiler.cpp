@@ -1571,11 +1571,22 @@ Error Profiler::stop() {
     }
   }
 
+  // Wait for all SIGPROF handlers to drain before tearing down JFR.
+  // If draining times out (handlers are stuck), skip JFR teardown to prevent
+  // use-after-free. This leaks JFR resources (~few MB) but is far safer than
+  // freeing structures that stuck handlers are still accessing.
+  bool drained = CTimer::drainInflight();
+
   // writing these out before stopping the JFR recording allows to report the
   // correct counts in the recording
   _thread_info.reportCounters();
 
-  rotateDictsAndRun([&]{ _jfr.stop(); });
+  if (drained) {
+    rotateDictsAndRun([&]{ _jfr.stop(); });
+  } else {
+    Log::error("Profiler::stop: skipping JFR teardown due to stuck SIGPROF handlers. "
+               "JFR resources (~few MB) will leak. Recording file may be incomplete.");
+  }
 
   // Unpatch libraries AFTER JFR serialization completes
   // Remote symbolication RemoteFrameInfo structs contain pointers to build-ID strings

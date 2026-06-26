@@ -182,9 +182,9 @@ Error CTimer::start(Arguments &args) {
 // short enough to avoid a perceptible hang if a handler is somehow stuck.
 static const long DRAIN_TIMEOUT_NS = 200000000L;
 
-void CTimer::drainInflight() {
+bool CTimer::drainInflight() {
   if (__atomic_load_n(&_inflight, __ATOMIC_ACQUIRE) == 0) {
-    return; // fast path: nothing in flight
+    return true; // fast path: nothing in flight
   }
 
   struct timespec deadline;
@@ -200,26 +200,25 @@ void CTimer::drainInflight() {
     clock_gettime(CLOCK_MONOTONIC, &now);
     if (now.tv_sec > deadline.tv_sec ||
         (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec)) {
-      Log::warn("CTimer::drainInflight: timed out after %ldms waiting for "
-                "%d in-flight SIGPROF handler(s); proceeding with JFR teardown. "
-                "This may indicate a stuck signal handler.",
-                DRAIN_TIMEOUT_NS / 1000000L,
-                __atomic_load_n(&_inflight, __ATOMIC_ACQUIRE));
-      break;
+      int remaining = __atomic_load_n(&_inflight, __ATOMIC_ACQUIRE);
+      Log::error("CTimer::drainInflight: timed out after %ldms waiting for "
+                 "%d in-flight SIGPROF handler(s). Skipping JFR teardown to "
+                 "prevent use-after-free. This indicates a stuck signal handler.",
+                 DRAIN_TIMEOUT_NS / 1000000L, remaining);
+      return false; // timeout: handlers still in-flight
     }
     sched_yield();
   }
+  return true; // success: all handlers drained
 }
 
 void CTimer::stop() {
   for (int i = 0; i < _max_timers; i++) {
     unregisterThread(i);
   }
-  // _enabled is already false (disableEngines() is called before stop()).
-  // Wait for any handler that passed the _enabled=true check to finish before
-  // returning; the caller (Profiler::stop) will proceed to _jfr.stop() which
-  // frees JFR structures those handlers may still be accessing.
-  drainInflight();
+  // Note: drainInflight() is called by Profiler::stop() after all engines
+  // have stopped, not here. Profiler needs the return value to decide whether
+  // to proceed with JFR teardown.
 }
 
 Error CTimerJvmti::check(Arguments &args) {
