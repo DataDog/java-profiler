@@ -1,3 +1,18 @@
+/*
+ * Copyright 2026, Datadog, Inc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 import com.datadoghq.native.util.PlatformUtils
 
 plugins {
@@ -67,6 +82,9 @@ dependencies {
   // dd-trace-api: annotations only at compile time. The patched dd-java-agent
   // provides the (relocated) runtime classes and intercepts @Trace.
   "chaosCompileOnly"(libs.dd.trace.api)
+  // ddprof-lib public API: compile-only; the patched dd-java-agent provides the
+  // classes at runtime for antagonists that call JavaProfiler/ThreadContext directly.
+  "chaosCompileOnly"(project(mapOf("path" to ":ddprof-lib", "configuration" to "debug")))
 }
 
 tasks.register<Jar>("chaosJar") {

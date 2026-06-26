@@ -24,7 +24,7 @@
 #include "counters.h"
 #include "common.h"
 #include "engine.h"
-#include "hotspot/vmStructs.h"
+#include "hotspot/vmStructs.inline.h"
 #include "incbin.h"
 #include "jvmThread.h"
 #include "os.h"
@@ -155,10 +155,13 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
     slot_id = thread_filter->registerThread();
     current->setFilterSlotId(slot_id);
   }
-  
+
   if (unlikely(slot_id == -1)) {
     return;  // Failed to register thread
   }
+  // Reset suppression state so a new thread occupying this slot does not inherit
+  // stale state from its predecessor. Must happen before add().
+  thread_filter->resetSlotRunState(slot_id);
   thread_filter->add(tid, slot_id);
 }
 
@@ -312,6 +315,95 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
   event._queueType = queue_type_offset;
   event._queueLength = queueLength;
   Profiler::instance()->recordQueueTime(tid, &event);
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) {
+  ProfiledThread *current = ProfiledThread::current();
+  if (current == nullptr) {
+    return;
+  }
+  bool first_park = current->parkEnter();
+  ThreadFilter *tf = Profiler::instance()->threadFilter();
+  if (first_park && tf->enabled()) {
+    ThreadFilter::SlotID slot_id = current->filterSlotId();
+    if (slot_id >= 0) {
+      current->setParkBlockToken(
+          tf->enterBlockedRun(slot_id, OSThreadState::CONDVAR_WAIT));
+    }
+  }
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
+    JNIEnv *env, jclass unused, jlong blocker, jlong unblockingSpanId) {
+  ProfiledThread *current = ProfiledThread::current();
+  if (current == nullptr) {
+    return;
+  }
+  u64 park_block_token = 0;
+  if (!current->parkExit(park_block_token) || park_block_token == 0) {
+    return;
+  }
+  ThreadFilter *tf = Profiler::instance()->threadFilter();
+  if (tf->enabled()) {
+    ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(park_block_token);
+    if (current->filterSlotId() == slot_id) {
+      tf->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(park_block_token));
+    }
+  }
+}
+
+static bool decodeJavaBlockState(jint state, OSThreadState &decoded) {
+  if (state == static_cast<jint>(OSThreadState::SLEEPING)) {
+    decoded = OSThreadState::SLEEPING;
+    return true;
+  }
+  decoded = OSThreadState::UNKNOWN;
+  return false;
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
+    JNIEnv *env, jclass unused, jint state) {
+  OSThreadState decoded;
+  if (!decodeJavaBlockState(state, decoded)) {
+    return 0;
+  }
+  ProfiledThread *current = ProfiledThread::current();
+  if (current == nullptr) {
+    return 0;
+  }
+  ThreadFilter *tf = Profiler::instance()->threadFilter();
+  if (!tf->enabled()) {
+    return 0;
+  }
+  ThreadFilter::SlotID slot_id = current->filterSlotId();
+  if (slot_id < 0) {
+    return 0;
+  }
+  return static_cast<jlong>(tf->enterBlockedRun(slot_id, decoded));
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
+    JNIEnv *env, jclass unused, jlong token) {
+  u64 block_token = static_cast<u64>(token);
+  if (block_token == 0) {
+    return;
+  }
+  ProfiledThread *current = ProfiledThread::current();
+  if (current == nullptr) {
+    return;
+  }
+  ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(block_token);
+  if (current->filterSlotId() != slot_id) {
+    return;
+  }
+  ThreadFilter *tf = Profiler::instance()->threadFilter();
+  if (tf->enabled()) {
+    tf->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(block_token));
+  }
 }
 
 extern "C" DLLEXPORT jlong JNICALL

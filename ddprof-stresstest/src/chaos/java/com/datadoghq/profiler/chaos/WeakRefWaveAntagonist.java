@@ -31,6 +31,7 @@ public final class WeakRefWaveAntagonist implements Antagonist {
 
     private static final int WAVE_SIZE = 10_000;
     private static final int[] OBJECT_SIZES = {64, 256, 1_024, 4_096};
+    private static final long INTER_WAVE_MS = 200L;
 
     private volatile boolean running;
     private Thread waveDriver;
@@ -100,6 +101,15 @@ public final class WeakRefWaveAntagonist implements Antagonist {
 
             // Replace shared reference; weakRefs goes out of scope
             currentWave = new ArrayList<WeakReference<byte[]>>();
+
+            // Pause between waves so concurrent GC can reclaim without being
+            // overwhelmed by back-to-back System.gc() calls.
+            try {
+                Thread.sleep(INTER_WAVE_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
         }
     }
 

@@ -1,6 +1,6 @@
 /*
  * Copyright The async-profiler authors
- * Copyright 2024, 2025 Datadog, Inc
+ * Copyright 2024, 2026 Datadog, Inc
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -35,6 +35,7 @@
 #include "tsc.h"
 #include "utils.h"
 #include "wallClock.h"
+#include "wallClockCounters.h"
 #include "frames.h"
 
 #include <algorithm>
@@ -80,6 +81,7 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   if (_thread_filter.enabled()) {
     int slot_id = _thread_filter.registerThread();
     current->setFilterSlotId(slot_id);
+    _thread_filter.resetSlotRunState(slot_id);
     _thread_filter.remove(slot_id);  // Remove from filtering initially
   }
   if (thread != NULL) {
@@ -527,7 +529,8 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
       // isCarryingVirtualThread() works regardless of JDK version.  Append a
       // synthetic "JVM Continuation" root frame to mark the boundary
       // explicitly, matching the behaviour of walkVM without carrier_frames.
-      if (VM::hotspot_version() >= 21 && num_frames < _max_stack_depth) {
+      if (VM::isHotspot() && VM::hotspot_version() >= 21 &&
+          num_frames < _max_stack_depth) {
         VMThread* carrier = VMThread::current();
         if (carrier != nullptr && carrier->isCarryingVirtualThread()) {
           frames[num_frames].bci = BCI_NATIVE_FRAME;
@@ -571,8 +574,9 @@ void Profiler::recordDeferredSample(int tid, u64 call_trace_id, jint event_type,
   _locks[lock_index].unlock();
 }
 
-void Profiler::recordSample(void *ucontext, u64 counter, int tid,
-                            jint event_type, u64 call_trace_id, Event *event) {
+bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
+                            jint event_type, u64 call_trace_id, Event *event,
+                            u64 *recorded_call_trace_id) {
   atomicIncRelaxed(_total_samples);
 
   u32 lock_index = getLockIndex(tid);
@@ -587,7 +591,7 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
       // collected trace
       PerfEvents::resetBuffer(tid);
     }
-    return;
+    return false;
   }
 
   bool truncated = false;
@@ -634,15 +638,19 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
     }
 #endif // COUNTERS
   }
-  _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
+  bool recorded = _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
+  if (recorded && recorded_call_trace_id != nullptr) {
+    *recorded_call_trace_id = call_trace_id;
+  }
 
   _locks[lock_index].unlock();
+  return recorded;
 }
 
-void Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
+bool Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
                                      jint event_type, Event *event) {
   if (!VM::canRequestStackTrace()) {
-    return;
+    return false;
   }
 
   // Reserve the correlation ID up-front so we can pass the same value to the
@@ -657,7 +665,7 @@ void Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
     } else {
       Counters::increment(JVMTI_STACKS_FAILED_OTHER);
     }
-    return;
+    return false;
   }
 
   atomicIncRelaxed(_total_samples);
@@ -670,11 +678,13 @@ void Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
     // The JVM-side stack trace request is already in flight; we just drop our
     // sample event. The dangling StackTraceRequest entry in the JVM recording
     // will simply have no matching datadog event, which is harmless.
-    return;
+    return false;
   }
 
-  _jfr.recordEventDelegated(lock_index, tid, correlation_id, event_type, event);
+  bool recorded =
+      _jfr.recordEventDelegated(lock_index, tid, correlation_id, event_type, event);
   _locks[lock_index].unlock();
+  return recorded;
 }
 
 void Profiler::recordWallClockEpoch(int tid, WallClockEpochEvent *event) {
@@ -1052,23 +1062,40 @@ void Profiler::updateJavaThreadNames() {
   jvmti->Deallocate((unsigned char *)thread_objects);
 }
 
-void Profiler::updateNativeThreadNames() {
-    ThreadList *thread_list = OS::listThreads();
-    constexpr size_t buffer_size = 64;
-    char name_buf[buffer_size];  // Stack-allocated buffer
+void Profiler::updateNativeThreadNames(bool defer_initializing) {
+  ThreadList *thread_list = OS::listThreads();
+  constexpr size_t buffer_size = 64;
+  char name_buf[buffer_size];  // Stack-allocated buffer
 
-    while (thread_list->hasNext()) { 
-        int tid = thread_list->next(); 
-        _thread_info.updateThreadName(
-                tid, [&](int tid) -> std::string {
-                    if (OS::threadName(tid, name_buf, buffer_size)) {
-                        return std::string(name_buf, buffer_size);
-                    }
-                    return std::string();
-                });
-    }
+  // A freshly cloned thread inherits the creating thread's comm until it sets
+  // its own name; for the threads we want here that creator is typically the
+  // main thread, so the inherited name is the process name. When deferring, we
+  // skip recording it and let a later pass capture the final name.
+  char proc_name[buffer_size];
+  bool have_proc_name =
+      defer_initializing && OS::threadName(OS::processId(), proc_name, buffer_size);
 
-    delete thread_list;
+  while (thread_list->hasNext()) {
+    int tid = thread_list->next();
+    _thread_info.updateThreadName(
+        tid, [&](int tid) -> std::string {
+          if (OS::threadName(tid, name_buf, buffer_size)) {
+            // Skip a thread still showing the inherited process name: it is
+            // probably mid-initialization. Recording it would latch a
+            // provisional name (updateThreadName is first-writer-wins).
+            if (have_proc_name && strcmp(name_buf, proc_name) == 0) {
+              return std::string();
+            }
+            // name_buf is NUL-terminated by OS::threadName; let
+            // std::string find the length rather than storing the
+            // full 64-byte buffer (NUL + trailing garbage).
+            return std::string(name_buf);
+          }
+          return std::string();
+        });
+  }
+
+  delete thread_list;
 }
 
 Engine *Profiler::selectCpuEngine(Arguments &args) {
@@ -1224,6 +1251,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   _omit_stacktraces = args._lightweight;
   _remote_symbolication = args._remote_symbolication;
   _libs->setRemoteSymbolication(_remote_symbolication);
+  _wall_precheck = args._wall_precheck;
   _event_mask =
       ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU
                                                                      : 0) |
@@ -1279,6 +1307,7 @@ Error Profiler::start(Arguments &args, bool reset) {
       unlockAll();
     }
     Counters::reset();
+    WallClockCounters::reset();
 
     // Reset thread names and IDs
     _thread_info.clearAll();
@@ -1323,10 +1352,14 @@ Error Profiler::start(Arguments &args, bool reset) {
   
   // Minor optim: Register the current thread (start thread won't be called)
   if (_thread_filter.enabled()) {
+    _thread_filter.clearActive();
     ProfiledThread *current = ProfiledThread::current();
     assert(current != nullptr);
-    int slot_id = _thread_filter.registerThread();
-    current->setFilterSlotId(slot_id);
+    int slot_id = current->filterSlotId();
+    if (slot_id < 0) {
+      slot_id = _thread_filter.registerThread();
+      current->setFilterSlotId(slot_id);
+    }
     _thread_filter.remove(slot_id);  // Remove from filtering initially (matches onThreadStart behavior)
   }
 

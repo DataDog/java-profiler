@@ -77,6 +77,14 @@ public final class ClassLoaderChurnAntagonist implements Antagonist {
                 // transient; JVM crash is the signal we watch for
             }
             // loader + klass go out of scope here.
+            // Pace class loading so old-gen GC can reclaim ClassLoader
+            // instances before they accumulate across a long run.
+            try {
+                Thread.sleep(1L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
         }
     }
 

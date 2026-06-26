@@ -471,4 +471,84 @@ TEST_F(ThreadFilterTest, CollectMixedStates) {
     for (size_t i = 0; i < expected_tids.size(); i++) {
         EXPECT_EQ(collected_tids[i], expected_tids[i]);
     }
-} 
+}
+
+TEST_F(ThreadFilterTest, ClearActiveDropsPreviousRecordingMembership) {
+    int stale_slot = filter->registerThread();
+    int current_slot = filter->registerThread();
+    ASSERT_GE(stale_slot, 0);
+    ASSERT_GE(current_slot, 0);
+
+    filter->add(1111, stale_slot);
+    filter->add(2222, current_slot);
+    filter->enterBlockedRun(stale_slot, OSThreadState::SLEEPING);
+    ThreadFilter::Slot *stale = filter->slotForId(stale_slot);
+    ASSERT_NE(nullptr, stale);
+    stale->markSampledThisRun(OSThreadState::SLEEPING);
+
+    filter->clearActive();
+
+    std::vector<int> collected_tids;
+    filter->collect(collected_tids);
+    EXPECT_TRUE(collected_tids.empty());
+    EXPECT_FALSE(filter->accept(stale_slot));
+    EXPECT_FALSE(filter->accept(current_slot));
+    EXPECT_FALSE(stale->sampledThisRun());
+    EXPECT_EQ(OSThreadState::UNKNOWN, stale->lastSampledState());
+    EXPECT_EQ(OSThreadState::UNKNOWN, stale->activeBlockState());
+
+    filter->add(2222, current_slot);
+    filter->collect(collected_tids);
+    ASSERT_EQ(1u, collected_tids.size());
+    EXPECT_EQ(2222, collected_tids[0]);
+}
+
+TEST_F(ThreadFilterTest, GenerationCheckedExitDoesNotClearAnotherOwner) {
+    int slot_id = filter->registerThread();
+    ASSERT_GE(slot_id, 0);
+
+    u64 first_token = filter->enterBlockedRun(slot_id, OSThreadState::SLEEPING);
+    ASSERT_NE(0ULL, first_token);
+    EXPECT_EQ(0ULL, filter->enterBlockedRun(slot_id, OSThreadState::CONDVAR_WAIT));
+
+    ThreadFilter::Slot *slot = filter->slotForId(slot_id);
+    ASSERT_NE(nullptr, slot);
+    EXPECT_EQ(OSThreadState::SLEEPING, slot->activeBlockState());
+
+    EXPECT_FALSE(filter->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(first_token) + 1));
+    EXPECT_EQ(OSThreadState::SLEEPING, slot->activeBlockState());
+
+    EXPECT_TRUE(filter->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(first_token)));
+    EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
+}
+
+TEST_F(ThreadFilterTest, NewGenerationRejectsStaleToken) {
+    int slot_id = filter->registerThread();
+    ASSERT_GE(slot_id, 0);
+
+    u64 stale_token = filter->enterBlockedRun(slot_id, OSThreadState::SLEEPING);
+    ASSERT_NE(0ULL, stale_token);
+    EXPECT_TRUE(filter->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(stale_token)));
+
+    u64 current_token = filter->enterBlockedRun(slot_id, OSThreadState::CONDVAR_WAIT);
+    ASSERT_NE(0ULL, current_token);
+    EXPECT_NE(ThreadFilter::tokenGeneration(stale_token),
+              ThreadFilter::tokenGeneration(current_token));
+
+    ThreadFilter::Slot *slot = filter->slotForId(slot_id);
+    ASSERT_NE(nullptr, slot);
+    EXPECT_FALSE(filter->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(stale_token)));
+    EXPECT_EQ(OSThreadState::CONDVAR_WAIT, slot->activeBlockState());
+    EXPECT_TRUE(filter->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(current_token)));
+}
+
+TEST_F(ThreadFilterTest, TokenRoundTripPreservesHighGenerationBit) {
+    ThreadFilter::SlotID slot_id = 7;
+    u32 generation = 0x80000001u;
+    u64 token = ThreadFilter::encodeBlockRunToken(slot_id, generation);
+    int64_t java_token = static_cast<int64_t>(token);
+
+    EXPECT_LT(java_token, 0);
+    EXPECT_EQ(slot_id, ThreadFilter::tokenSlotId(static_cast<u64>(java_token)));
+    EXPECT_EQ(generation, ThreadFilter::tokenGeneration(static_cast<u64>(java_token)));
+}
