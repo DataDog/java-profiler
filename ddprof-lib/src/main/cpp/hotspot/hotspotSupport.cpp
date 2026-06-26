@@ -176,14 +176,6 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     } else {
         Counters::increment(WALKVM_VMTHREAD_OK);
     }
-    // Only write _exception_file for real Java application threads.
-    // JVM-internal threads like MonitorDeflationThread are JavaThread subclasses
-    // in JDK 25+ (different vtable → isJavaThread() returns false) but they are
-    // not regular application threads.  Writing _exception_file for them disturbs
-    // JDK 25's ObjectMonitorDeflationSafepointer, which reads thread state at
-    // safepoint boundaries and can crash in deflate_monitor_list when the field
-    // holds a stale jmp_buf address instead of a C-string or NULL.
-    bool setup_crash_protection = vm_thread != NULL && VMThread::isJavaThread(vm_thread);
 
     // Should be preserved across setjmp/longjmp
     volatile int depth = 0;
@@ -195,17 +187,16 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
     VMJavaFrameAnchor* anchor = NULL;
     if (vm_thread != NULL) {
+        jmp_ctx.set(&crash_protection_ctx);
+        if (profiled_thread != nullptr) {
+            profiled_thread->setCrashProtectionActive(true);
+        }
+
         anchor = vm_thread->anchor();
         if (anchor == NULL) {
             Counters::increment(WALKVM_ANCHOR_NULL);
         }
-        if (setup_crash_protection) {
-            jmp_ctx.set(&crash_protection_ctx);
-        }
-        if (profiled_thread != nullptr && setup_crash_protection) {
-            profiled_thread->setCrashProtectionActive(true);
-        }
-        if (setup_crash_protection && setjmp(crash_protection_ctx) != 0) {
+        if (setjmp(crash_protection_ctx) != 0) {
             // checkFault() does a longjmp from inside segvHandler, bypassing
             // segvHandler's SignalHandlerScope destructor.  Compensate.
             SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
@@ -861,9 +852,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     if (profiled_thread != nullptr) {
         profiled_thread->setCrashProtectionActive(false);
     }
-    if (setup_crash_protection) {
-        jmp_ctx.clear();
-    }
+    jmp_ctx.clear();
 
     // Drop unknown leaf frame - it provides no useful information and breaks
     // aggregation by lumping unrelated samples under a single "unknown" entry
