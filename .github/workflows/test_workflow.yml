@@ -572,6 +572,13 @@ jobs:
              echo "musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64" >> failures_musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
              exit 1
            fi
+       - name: Fix permissions for artifact upload
+         if: always()
+         run: |
+           # Files created by Docker container may have restrictive permissions
+           # that prevent GitHub Actions from reading them during artifact creation
+           sudo chmod -R +r build/ 2>/dev/null || true
+           sudo find build/ -type d -exec chmod +x {} \; 2>/dev/null || true
        - name: Generate Unwinding Report
          if: success() && matrix.config == 'debug'
          run: |
@@ -580,6 +587,9 @@ jobs:
              \"${{ github.sha }}\" \"musl/${{ matrix.java_version }}-${{ matrix.config }}-aarch64\" \
              \"${{ matrix.config }}\" \"${{ env.JAVA_HOME }}\" \"${{ env.JAVA_TEST_HOME }}\"
            "
+           # Fix permissions after Docker container execution
+           sudo chmod -R +r ddprof-test/build/reports/ 2>/dev/null || true
+           sudo find ddprof-test/build/reports/ -type d -exec chmod +x {} \; 2>/dev/null || true
        - name: Add Unwinding Report to Job Summary
          if: success() && matrix.config == 'debug' && hashFiles('ddprof-test/build/reports/unwinding-summary.md') != ''
          run: |
