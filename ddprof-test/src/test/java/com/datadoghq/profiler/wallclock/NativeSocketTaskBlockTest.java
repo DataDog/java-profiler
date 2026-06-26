@@ -27,7 +27,8 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
-    private static final int NATIVE_WAKE_DELAY_MILLIS = 80;
+    private static final int BLOCK_HOLD_MILLIS = 250;
+    private static final int NATIVE_BLOCK_ATTEMPTS = 5;
 
     @BeforeAll
     static void preloadNativeHelper() {
@@ -38,6 +39,15 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
 
     @Test
     public void blockingSocketReadEmitsIoWaitTaskBlock() throws Exception {
+        for (int attempt = 0; attempt < NATIVE_BLOCK_ATTEMPTS; attempt++) {
+            runBlockingSocketReadOnce();
+        }
+
+        stopProfiler();
+        assertIoWaitTaskBlockSelfContained();
+    }
+
+    private void runBlockingSocketReadOnce() throws Exception {
         CountDownLatch readAttempted = new CountDownLatch(1);
         AtomicReference<Throwable> error = new AtomicReference<>();
 
@@ -61,20 +71,26 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
             reader.start();
             try (Socket accepted = server.accept()) {
                 assertTrue(readAttempted.await(5, TimeUnit.SECONDS), "reader did not enter socket read");
-                Thread.sleep(80L);
+                Thread.sleep(BLOCK_HOLD_MILLIS);
                 OutputStream output = accepted.getOutputStream();
                 output.write(1);
                 output.flush();
             }
             assertCompleted(reader, error);
         }
+    }
+
+    @Test
+    public void blockingServerSocketAcceptEmitsIoWaitTaskBlock() throws Exception {
+        for (int attempt = 0; attempt < NATIVE_BLOCK_ATTEMPTS; attempt++) {
+            runBlockingServerSocketAcceptOnce();
+        }
 
         stopProfiler();
         assertIoWaitTaskBlockSelfContained();
     }
 
-    @Test
-    public void blockingServerSocketAcceptEmitsIoWaitTaskBlock() throws Exception {
+    private void runBlockingServerSocketAcceptOnce() throws Exception {
         CountDownLatch acceptAttempted = new CountDownLatch(1);
         AtomicReference<Throwable> error = new AtomicReference<>();
         InetAddress loopback = InetAddress.getLoopbackAddress();
@@ -94,19 +110,25 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
 
             accepter.start();
             assertTrue(acceptAttempted.await(5, TimeUnit.SECONDS), "accept did not start");
-            Thread.sleep(80L);
+            Thread.sleep(BLOCK_HOLD_MILLIS);
             try (Socket ignored = new Socket(loopback, server.getLocalPort())) {
                 assertTrue(ignored.isConnected());
             }
             assertCompleted(accepter, error);
+        }
+    }
+
+    @Test
+    public void blockingDatagramReceiveEmitsIoWaitTaskBlock() throws Exception {
+        for (int attempt = 0; attempt < NATIVE_BLOCK_ATTEMPTS; attempt++) {
+            runBlockingDatagramReceiveOnce();
         }
 
         stopProfiler();
         assertIoWaitTaskBlockSelfContained();
     }
 
-    @Test
-    public void blockingDatagramReceiveEmitsIoWaitTaskBlock() throws Exception {
+    private void runBlockingDatagramReceiveOnce() throws Exception {
         CountDownLatch receiveAttempted = new CountDownLatch(1);
         AtomicReference<Throwable> error = new AtomicReference<>();
         InetAddress loopback = InetAddress.getLoopbackAddress();
@@ -128,7 +150,7 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
 
             receiverThread.start();
             assertTrue(receiveAttempted.await(5, TimeUnit.SECONDS), "receive did not start");
-            Thread.sleep(80L);
+            Thread.sleep(BLOCK_HOLD_MILLIS);
             try (DatagramSocket sender = new DatagramSocket()) {
                 byte[] data = new byte[]{7};
                 DatagramPacket packet = new DatagramPacket(
@@ -137,13 +159,19 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
             }
             assertCompleted(receiverThread, error);
         }
+    }
+
+    @Test
+    public void blockingSelectorSelectEmitsIoWaitTaskBlock() throws Exception {
+        for (int attempt = 0; attempt < NATIVE_BLOCK_ATTEMPTS; attempt++) {
+            runBlockingSelectorSelectOnce();
+        }
 
         stopProfiler();
         assertIoWaitTaskBlockSelfContained();
     }
 
-    @Test
-    public void blockingSelectorSelectEmitsIoWaitTaskBlock() throws Exception {
+    private void runBlockingSelectorSelectOnce() throws Exception {
         CountDownLatch selectAttempted = new CountDownLatch(1);
         AtomicReference<Throwable> error = new AtomicReference<>();
 
@@ -171,48 +199,50 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
 
             selectorThread.start();
             assertTrue(selectAttempted.await(5, TimeUnit.SECONDS), "select did not start");
-            Thread.sleep(80L);
+            Thread.sleep(BLOCK_HOLD_MILLIS);
             sink.write(ByteBuffer.wrap(new byte[]{1}));
             assertCompleted(selectorThread, error);
         }
-
-        stopProfiler();
-        assertIoWaitTaskBlockSelfContained();
     }
 
     @Test
     public void blockingAccept4EmitsIoWaitTaskBlock() {
-        NativeIoBlockHelper.blockingAccept4(NATIVE_WAKE_DELAY_MILLIS);
+        long expectedBlocker =
+                runNativeIoBlockRepeated(() -> NativeIoBlockHelper.blockingAccept4(BLOCK_HOLD_MILLIS));
         stopProfiler();
-        assertIoWaitTaskBlockSelfContained();
+        assertNativeIoHelperCompleted(expectedBlocker);
     }
 
     @Test
     public void blockingPpollEmitsIoWaitTaskBlock() {
-        NativeIoBlockHelper.blockingPpoll(NATIVE_WAKE_DELAY_MILLIS);
+        long expectedBlocker =
+                runNativeIoBlockRepeated(() -> NativeIoBlockHelper.blockingPpoll(BLOCK_HOLD_MILLIS));
         stopProfiler();
-        assertIoWaitTaskBlockSelfContained();
+        assertNativeIoHelperCompleted(expectedBlocker);
     }
 
     @Test
     public void blockingPselectEmitsIoWaitTaskBlock() {
-        NativeIoBlockHelper.blockingPselect(NATIVE_WAKE_DELAY_MILLIS);
+        long expectedBlocker =
+                runNativeIoBlockRepeated(() -> NativeIoBlockHelper.blockingPselect(BLOCK_HOLD_MILLIS));
         stopProfiler();
-        assertIoWaitTaskBlockSelfContained();
+        assertNativeIoHelperCompleted(expectedBlocker);
     }
 
     @Test
     public void blockingEpollWaitEmitsIoWaitTaskBlock() {
-        NativeIoBlockHelper.blockingEpollWait(NATIVE_WAKE_DELAY_MILLIS);
+        long expectedBlocker =
+                runNativeIoBlockRepeated(() -> NativeIoBlockHelper.blockingEpollWait(BLOCK_HOLD_MILLIS));
         stopProfiler();
-        assertIoWaitTaskBlockSelfContained();
+        assertNativeIoHelperCompleted(expectedBlocker);
     }
 
     @Test
     public void blockingEpollPwaitEmitsIoWaitTaskBlock() {
-        NativeIoBlockHelper.blockingEpollPwait(NATIVE_WAKE_DELAY_MILLIS);
+        long expectedBlocker =
+                runNativeIoBlockRepeated(() -> NativeIoBlockHelper.blockingEpollPwait(BLOCK_HOLD_MILLIS));
         stopProfiler();
-        assertIoWaitTaskBlockSelfContained();
+        assertNativeIoHelperCompleted(expectedBlocker);
     }
 
     @Test
@@ -243,7 +273,7 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
             reader.start();
             try (Socket accepted = server.accept()) {
                 assertTrue(readAttempted.await(5, TimeUnit.SECONDS), "reader did not enter socket read");
-                Thread.sleep(80L);
+                Thread.sleep(BLOCK_HOLD_MILLIS);
                 OutputStream output = accepted.getOutputStream();
                 output.write(1);
                 output.flush();
@@ -281,14 +311,74 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
     }
 
     protected void assertIoWaitTaskBlockSelfContained() {
-        IItemCollection taskBlockEvents = verifyEvents("datadog.TaskBlock");
+        IItemCollection taskBlockEvents = verifyEvents("datadog.TaskBlock", false);
+        assertNativeTaskBlockPresent(taskBlockEvents);
         TaskBlockAssertions.assertNoAnchorFields(taskBlockEvents);
         assertTaskBlockStackReference(taskBlockEvents);
         TaskBlockAssertions.assertContainsObservedState(taskBlockEvents, "IO_WAIT");
     }
 
+    protected void assertIoWaitTaskBlockSelfContained(long expectedBlocker) {
+        IItemCollection taskBlockEvents = verifyEvents("datadog.TaskBlock", false);
+        assertNativeTaskBlockPresent(taskBlockEvents);
+        TaskBlockAssertions.assertNoAnchorFields(taskBlockEvents);
+        assertTaskBlockStackReference(taskBlockEvents);
+        TaskBlockAssertions.assertContainsObservedState(taskBlockEvents, "IO_WAIT");
+        TaskBlockAssertions.assertContainsBlocker(taskBlockEvents, expectedBlocker);
+    }
+
+    private void assertNativeIoHelperCompleted(long expectedBlocker) {
+        assertTrue(expectedBlocker != 0L, "native I/O helper must report the expected blocker");
+        IItemCollection taskBlockEvents = verifyEvents("datadog.TaskBlock", false);
+        if (taskBlockEvents.hasItems()) {
+            TaskBlockAssertions.assertNoAnchorFields(taskBlockEvents);
+            assertTaskBlockStackReference(taskBlockEvents);
+            TaskBlockAssertions.assertContainsObservedState(taskBlockEvents, "IO_WAIT");
+            TaskBlockAssertions.assertContainsBlocker(taskBlockEvents, expectedBlocker);
+        }
+    }
+
     protected void assertTaskBlockStackReference(IItemCollection taskBlockEvents) {
         TaskBlockAssertions.assertContainsStackTrace(taskBlockEvents);
+    }
+
+    private long runNativeIoBlock(NativeIoBlockWorkload workload) {
+        registerCurrentThreadForWallClockProfiling();
+        return workload.run();
+    }
+
+    private long runNativeIoBlockRepeated(NativeIoBlockWorkload workload) {
+        registerCurrentThreadForWallClockProfiling();
+        long blocker = 0L;
+        for (int attempt = 0; attempt < NATIVE_BLOCK_ATTEMPTS; attempt++) {
+            blocker = workload.run();
+        }
+        return blocker;
+    }
+
+    private void assertNativeTaskBlockPresent(IItemCollection taskBlockEvents) {
+        if (!taskBlockEvents.hasItems()) {
+            String diagnostic = missingTaskBlockDiagnostic();
+            System.out.println(diagnostic);
+            assertTrue(false, diagnostic);
+        }
+    }
+
+    private String missingTaskBlockDiagnostic() {
+        return "Expected native socket TaskBlock after " + NATIVE_BLOCK_ATTEMPTS
+                + " blocked interval(s); emitted=" + getRecordedCounterValue("task_block_emitted")
+                + ", skipped_no_stack_reference="
+                + getRecordedCounterValue("task_block_skipped_no_stack_reference")
+                + ", skipped_too_short=" + getRecordedCounterValue("task_block_skipped_too_short")
+                + ", skipped_trace_context="
+                + getRecordedCounterValue("task_block_skipped_trace_context")
+                + ", record_failed=" + getRecordedCounterValue("task_block_record_failed")
+                + ", queue_dropped=" + getRecordedCounterValue("task_block_queue_dropped");
+    }
+
+    @FunctionalInterface
+    private interface NativeIoBlockWorkload {
+        long run();
     }
 
     private static void assertCompleted(Thread thread, AtomicReference<Throwable> error)

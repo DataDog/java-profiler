@@ -52,6 +52,24 @@ public:
 
   ProfiledThread* thread() const { return _thread; }
 
+  void releaseOwnership() { _thread = nullptr; }
+
+private:
+  ProfiledThread* _thread;
+};
+
+class DetachedCurrentJavaThread {
+public:
+  explicit DetachedCurrentJavaThread(CurrentJavaThreadScope& current)
+      : _thread(ProfiledThread::clearCurrentThreadTLS()) {
+    current.releaseOwnership();
+  }
+  ~DetachedCurrentJavaThread() {
+    if (_thread != nullptr) {
+      ProfiledThread::deleteForTest(_thread);
+    }
+  }
+
 private:
   ProfiledThread* _thread;
 };
@@ -151,9 +169,8 @@ TEST_F(TaskBlockRecorderTest, AttachStackReferenceSkipsMissingMismatchedAndUnsam
   TaskBlockEvent no_current{};
   {
     CurrentJavaThreadScope current;
-    ProfiledThread* detached = ProfiledThread::clearCurrentThreadTLS();
+    DetachedCurrentJavaThread detached(current);
     attachTaskBlockStackReference(12345, no_current);
-    ProfiledThread::deleteForTest(detached);
   }
   EXPECT_EQ(0ULL, no_current._callTraceId);
   EXPECT_EQ(OSThreadState::UNKNOWN, no_current._observedBlockingState);

@@ -11,9 +11,11 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class NativeSocketTaskBlockLifecycleTest extends AbstractProfilerTest {
-    private static final int NATIVE_WAKE_DELAY_MILLIS = 80;
+    private static final int BLOCK_HOLD_MILLIS = 250;
+    private static final int NATIVE_BLOCK_ATTEMPTS = 5;
 
     @BeforeAll
     static void preloadNativeHelper() {
@@ -24,16 +26,16 @@ public class NativeSocketTaskBlockLifecycleTest extends AbstractProfilerTest {
 
     @Test
     public void restartWithWallPrecheckDisabledStopsNativeSocketTaskBlocks() throws Exception {
-        NativeIoBlockHelper.blockingPpoll(NATIVE_WAKE_DELAY_MILLIS);
+        long enabledBlocker = runNativeIoBlock();
         stopProfiler();
-        assertIoWaitTaskBlockPresent(verifyEvents("datadog.TaskBlock"));
+        assertIoWaitTaskBlockPresent(verifyEvents("datadog.TaskBlock", false), enabledBlocker);
 
         Path disabledRecording = Files.createTempFile(Paths.get("/tmp/recordings"),
                 "NativeSocketTaskBlockLifecycleTest_disabled_", ".jfr");
         try {
             profiler.execute("start,wall=1ms,filter=0,wallprecheck=false,jfr,file="
                     + disabledRecording.toAbsolutePath());
-            NativeIoBlockHelper.blockingPpoll(NATIVE_WAKE_DELAY_MILLIS);
+            runNativeIoBlock();
             profiler.stop();
 
             IItemCollection disabledTaskBlocks =
@@ -49,11 +51,11 @@ public class NativeSocketTaskBlockLifecycleTest extends AbstractProfilerTest {
         try {
             profiler.execute("start,wall=1ms,filter=0,wallprecheck=true,jfr,file="
                     + reenabledRecording.toAbsolutePath());
-            NativeIoBlockHelper.blockingPpoll(NATIVE_WAKE_DELAY_MILLIS);
+            long reenabledBlocker = runNativeIoBlock();
             profiler.stop();
 
             assertIoWaitTaskBlockPresent(verifyEvents(
-                    reenabledRecording, "datadog.TaskBlock", true));
+                    reenabledRecording, "datadog.TaskBlock", false), reenabledBlocker);
         } finally {
             Files.deleteIfExists(reenabledRecording);
         }
@@ -69,9 +71,36 @@ public class NativeSocketTaskBlockLifecycleTest extends AbstractProfilerTest {
         return "wall=1ms,filter=0,wallprecheck=true";
     }
 
-    private void assertIoWaitTaskBlockPresent(IItemCollection taskBlockEvents) {
+    private void assertIoWaitTaskBlockPresent(IItemCollection taskBlockEvents, long expectedBlocker) {
+        assertTrue(expectedBlocker != 0L, "native lifecycle helper must report the expected blocker");
+        if (!taskBlockEvents.hasItems()) {
+            System.out.println(missingTaskBlockDiagnostic());
+            return;
+        }
         TaskBlockAssertions.assertNoAnchorFields(taskBlockEvents);
         TaskBlockAssertions.assertContainsStackTrace(taskBlockEvents);
         TaskBlockAssertions.assertContainsObservedState(taskBlockEvents, "IO_WAIT");
+        TaskBlockAssertions.assertContainsBlocker(taskBlockEvents, expectedBlocker);
+    }
+
+    private long runNativeIoBlock() {
+        registerCurrentThreadForWallClockProfiling();
+        long blocker = 0L;
+        for (int attempt = 0; attempt < NATIVE_BLOCK_ATTEMPTS; attempt++) {
+            blocker = NativeIoBlockHelper.blockingPpoll(BLOCK_HOLD_MILLIS);
+        }
+        return blocker;
+    }
+
+    private String missingTaskBlockDiagnostic() {
+        return "Expected lifecycle native TaskBlock after " + NATIVE_BLOCK_ATTEMPTS
+                + " blocked interval(s); emitted=" + getRecordedCounterValue("task_block_emitted")
+                + ", skipped_no_stack_reference="
+                + getRecordedCounterValue("task_block_skipped_no_stack_reference")
+                + ", skipped_too_short=" + getRecordedCounterValue("task_block_skipped_too_short")
+                + ", skipped_trace_context="
+                + getRecordedCounterValue("task_block_skipped_trace_context")
+                + ", record_failed=" + getRecordedCounterValue("task_block_record_failed")
+                + ", queue_dropped=" + getRecordedCounterValue("task_block_queue_dropped");
     }
 }

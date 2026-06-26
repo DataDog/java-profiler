@@ -5,15 +5,15 @@ final class NativeIoBlockHelper {
         System.loadLibrary("ddproftest");
     }
 
-    static native void blockingAccept4(int delayMillis);
+    static native long blockingAccept4(int delayMillis);
 
-    static native void blockingPpoll(int delayMillis);
+    static native long blockingPpoll(int delayMillis);
 
-    static native void blockingPselect(int delayMillis);
+    static native long blockingPselect(int delayMillis);
 
-    static native void blockingEpollWait(int delayMillis);
+    static native long blockingEpollWait(int delayMillis);
 
-    static native void blockingEpollPwait(int delayMillis);
+    static native long blockingEpollPwait(int delayMillis);
 
     private NativeIoBlockHelper() {}
 }

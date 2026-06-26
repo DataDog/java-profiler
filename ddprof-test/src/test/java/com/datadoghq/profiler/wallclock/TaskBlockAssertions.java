@@ -66,6 +66,13 @@ final class TaskBlockAssertions {
                 "Expected TaskBlock with an observedBlockingState field");
     }
 
+    static void assertContainsBlocker(IItemCollection events, long blocker) {
+        Set<Long> blockers = values(events, BLOCKER);
+        assertTrue(
+                blockers.contains(blocker),
+                "Expected TaskBlock with blocker=" + blocker + ", observed blockers were " + blockers);
+    }
+
     static void assertNoAnchorFields(IItemCollection taskBlockEvents) {
         for (IItemIterable iterable : taskBlockEvents) {
             assertNull(
@@ -192,6 +199,12 @@ final class TaskBlockAssertions {
     }
 
     private static Set<Long> nonZeroValues(IItemCollection events, IAttribute<IQuantity> attribute) {
+        Set<Long> values = values(events, attribute);
+        values.remove(0L);
+        return values;
+    }
+
+    private static Set<Long> values(IItemCollection events, IAttribute<IQuantity> attribute) {
         Set<Long> values = new HashSet<>();
         for (IItemIterable iterable : events) {
             IMemberAccessor<IQuantity, IItem> accessor = attribute.getAccessor(iterable.getType());
@@ -200,9 +213,7 @@ final class TaskBlockAssertions {
             }
             for (IItem item : iterable) {
                 long value = accessor.getMember(item).longValue();
-                if (value != 0) {
-                    values.add(value);
-                }
+                values.add(value);
             }
         }
         return values;

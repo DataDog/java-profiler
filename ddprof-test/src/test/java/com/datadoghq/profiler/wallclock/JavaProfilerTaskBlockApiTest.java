@@ -33,10 +33,11 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
     }
 
     @Test
-    public void recordTaskBlockTooShortSkipsAndCounts() {
-        long ticks = profiler.getCurrentTicks();
-
-        assertFalse(profiler.recordTaskBlock(ticks, ticks, BLOCKER, UNBLOCKING_SPAN_ID));
+    public void recordTaskBlockTooShortSkipsAndCounts() throws Exception {
+        assertFalse(runInsideRegisteredThread(() -> {
+            long ticks = profiler.getCurrentTicks();
+            return profiler.recordTaskBlock(ticks, ticks, BLOCKER, UNBLOCKING_SPAN_ID);
+        }));
         stopProfiler();
 
         assertFalse(verifyEvents("datadog.TaskBlock", false).hasItems());
@@ -197,8 +198,37 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
         return recorded;
     }
 
+    private boolean runInsideRegisteredThread(RegisteredThreadAction action) throws Exception {
+        AtomicReference<Throwable> error = new AtomicReference<>();
+        AtomicReference<Boolean> result = new AtomicReference<>();
+        Thread thread = new Thread(() -> {
+            try {
+                registerCurrentThreadForWallClockProfiling();
+                result.set(action.run());
+            } catch (Throwable t) {
+                error.set(t);
+            }
+        }, "taskblock-direct-api-registered");
+
+        thread.start();
+        thread.join(5_000L);
+        assertFalse(thread.isAlive(), "registered thread did not complete");
+        if (error.get() != null) {
+            throw new AssertionError(error.get());
+        }
+        Boolean recorded = result.get();
+        if (recorded == null) {
+            throw new AssertionError("registered thread did not publish TaskBlock record result");
+        }
+        return recorded;
+    }
+
     private interface BlockAction {
         boolean run(int tid, long startTicks, long endTicks, long[] snapshot);
+    }
+
+    private interface RegisteredThreadAction {
+        boolean run();
     }
 
     private static final class CapturedBlock {
