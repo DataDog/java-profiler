@@ -44,7 +44,7 @@ with open(sys.argv[1]) as f:
 for b in bridges:
     if b.get("name") == "benchmarks-trigger":
         dp = b.get("downstream_pipeline") or {}
-        if dp.get("id") and dp.get("project_id"):
+        if dp.get("id") and dp.get("project_id") and dp.get("status") == "success":
             print(dp["project_id"], dp["id"])
             sys.exit(0)
 print("", "")

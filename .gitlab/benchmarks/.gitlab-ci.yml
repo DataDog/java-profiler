@@ -1,5 +1,4 @@
 variables:
-  PREPARE_IMAGE: registry.ddbuild.io/images/benchmarking-platform-tools-ubuntu:latest
   DD_OCTO_STS_IMAGE: registry.ddbuild.io/images/dd-octo-sts-ci-base:2025.06-1
 
 # Bridge job: triggers the BP pipeline and blocks until it completes.
@@ -7,12 +6,17 @@ variables:
 # stage ordering (post-benchmarks stage runs after benchmarks stage).
 benchmarks-trigger:
   stage: benchmarks
+  # Bridge jobs cannot have before_script, so CANCELLED is checked via rules.
+  # interruptible: false prevents orphaning the BP downstream pipeline on push.
+  interruptible: false
   needs:
     - job: get-versions
       artifacts: true
     - job: deploy-artifact
       artifacts: false
   rules:
+    - if: '$CANCELLED == "true"'
+      when: never
     - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
@@ -33,7 +37,7 @@ benchmarks-trigger:
     DDPROF_COMMIT_SHA: "${CI_COMMIT_SHA}"
     DDPROF_COMMIT_BRANCH: "${CI_COMMIT_BRANCH}"
     UPSTREAM_PROJECT_NAME: "java-profiler"
-    UPSTREAM_BRANCH: "${CI_PIPELINE_ID}"
+    UPSTREAM_BRANCH: "${CI_COMMIT_BRANCH}"
     UPSTREAM_PIPELINE_ID: "${CI_PIPELINE_ID}"
   trigger:
     project: DataDog/apm-reliability/benchmarking-platform
@@ -44,7 +48,7 @@ benchmarks-trigger:
 publish-benchmark-gh-pages:
   stage: post-benchmarks
   tags: ["arch:arm64"]
-  image: registry.ddbuild.io/images/dd-octo-sts-ci-base:2025.06-1
+  image: $DD_OCTO_STS_IMAGE
   id_tokens:
     DDOCTOSTS_ID_TOKEN:
       aud: dd-octo-sts
@@ -54,6 +58,10 @@ publish-benchmark-gh-pages:
   resource_group: gh-pages-publish
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$CANCELLED == "true"'
+      when: never
+    - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
       when: never
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH || $CI_COMMIT_BRANCH == "main"'
       when: always
