@@ -19,7 +19,6 @@ variables:
   FORCE_BUILD: $FORCE_BUILD
 
   REGISTRY: registry.ddbuild.io
-  SONATYPE_USERNAME: robot-sonatype-apm-java
 
 .build_job:
   extends:
@@ -364,6 +363,48 @@ notify-slack-on-failure:
   tags: ["arch:amd64"]
   script:
     - .gitlab/build-deploy/notify_channel.sh alert $(cat version.txt)
+
+publish-dd-trace-snapshot:
+  extends:
+    # pull-only cache: Maven downloads are not written back. Acceptable given this job
+    # is infrequent (tag-triggered or manual). Switch to .cache-config if re-download
+    # latency becomes a concern.
+    - .cache-config-pull
+    - .deploy-sa
+  stage: deploy
+  needs:
+    - job: prepare:start
+      artifacts: true
+    - job: build-artifact
+      artifacts: true
+      optional: true
+  tags: ["arch:amd64"]
+  image: ${BUILD_IMAGE_X64}
+  variables:
+    # java-profiler release version (e.g. 1.47.0). Leave empty when running from a release
+    # pipeline — JAR comes from build-artifact. Required for standalone manual runs.
+    DDPROF_VERSION: ""
+    # DD_TRACE_VERSION is intentionally NOT set here; the global definition in
+    # dd-trace-integration/.gitlab-ci.yml exposes it as a user-settable pipeline variable
+    # (value:/description: form). A job-level override would shadow any user-supplied value.
+  rules:
+    # Suppress in downstream (child) pipelines: a child pipeline triggered by another job should
+    # never automatically publish a snapshot — only a direct release-tag push or a manual run
+    # should do so. Mirrors the same suppression pattern used in the prepare:start job.
+    - if: '$DOWNSTREAM != null'
+      when: never
+    - if: '$CI_COMMIT_TAG =~ /^v_[0-9]+\.[0-9]+\.[0-9]+$/'
+      when: on_success
+    - when: manual
+      allow_failure: true
+  script:
+    - .gitlab/dd-trace-integration/publish-profiler-snapshot.sh
+  artifacts:
+    name: dd-java-agent-profiler-snapshot
+    paths:
+      - dd-java-agent-profiler-snapshot.jar
+      - publish-report.txt
+    expire_in: 7 days
 
 include:
   - local: .gitlab/common.yml

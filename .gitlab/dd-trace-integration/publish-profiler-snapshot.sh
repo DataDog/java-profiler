@@ -6,8 +6,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 source "${PROJECT_ROOT}/.gitlab/config.env"
+[ -n "${AWS_REGION:-}" ]  || { echo "[ERROR] AWS_REGION not set in config.env"; exit 1; }
+[ -n "${SSM_PREFIX:-}" ]  || { echo "[ERROR] SSM_PREFIX not set in config.env"; exit 1; }
 
-SNAPSHOT_REPO="https://central.sonatype.com/repository/maven-snapshots/"
+# URL used for metadata queries and snapshot downloads (Steps 2 and 3).
+CENTRAL_SNAPSHOTS_URL="https://central.sonatype.com/repository/maven-snapshots/"
+# URL used for publishing (Step 5) — legacy s01 endpoint required for deploy:deploy-file.
 OSSRH_SNAPSHOTS_URL="https://s01.oss.sonatype.org/content/repositories/snapshots/"
 
 RED='\033[0;31m'
@@ -20,16 +24,24 @@ log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 
 MAVEN_SETTINGS=""
-MVN_WORK_DIR=""
+MVN_WORK_DIR_DDPROF=""
+MVN_WORK_DIR_AGENT=""
 MVN_LOG1=""
 MVN_LOG2=""
+OUTPUT_JAR=""
 cleanup() {
   [ -n "${MAVEN_SETTINGS}" ] && rm -f "${MAVEN_SETTINGS}"
-  [ -n "${MVN_WORK_DIR}" ] && rm -rf "${MVN_WORK_DIR}"
+  [ -n "${MVN_WORK_DIR_DDPROF}" ] && rm -rf "${MVN_WORK_DIR_DDPROF}"
+  [ -n "${MVN_WORK_DIR_AGENT}" ] && rm -rf "${MVN_WORK_DIR_AGENT}"
   [ -n "${MVN_LOG1}" ] && rm -f "${MVN_LOG1}"
   [ -n "${MVN_LOG2}" ] && rm -f "${MVN_LOG2}"
+  # OUTPUT_JAR and publish-report.txt are GitLab artifacts — do NOT delete them here;
+  # GitLab collects artifacts after the script exits.
 }
 trap cleanup EXIT
+trap 'cleanup; exit 143' TERM
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 129' HUP
 
 # detect_latest_snapshot_version <group_id> <artifact_id> <repo_url>
 # Prints the latest vanilla snapshot version to stdout; all logging goes to stderr.
@@ -39,7 +51,7 @@ detect_latest_snapshot_version() {
   group_path=$(echo "${group_id}" | tr '.' '/')
   local metadata_url="${repo_url}${group_path}/${artifact_id}/maven-metadata.xml"
   log_info "Querying ${artifact_id} metadata from ${metadata_url}" >&2
-  metadata=$(curl -fsSL "${metadata_url}" 2>/dev/null) || {
+  metadata=$(curl -fsSL "${metadata_url}") || {
     log_error "Could not fetch metadata from ${metadata_url}" >&2
     return 1
   }
@@ -81,11 +93,16 @@ fi
 DDPROF_JAR=""
 DDPROF_SOURCE=""
 
-if [ -n "${DDPROF_VERSION:-}" ]; then
-  log_info "DDPROF_VERSION=${DDPROF_VERSION} — downloading from Maven Central"
-  MVN_WORK_DIR=$(mktemp -d)
-  MVN_LOG1=$(mktemp)
-  if ! (cd "${MVN_WORK_DIR}" && mvn org.apache.maven.plugins:maven-dependency-plugin:2.1:get \
+# Prefer the build artifact; only fall back to Maven Central when absent and DDPROF_VERSION is set.
+DDPROF_JAR=$(find "${PROJECT_ROOT}/ddprof-lib/build/libs" -name "ddprof-lib-*.jar" \
+               2>/dev/null | sort -V | tail -1 || true)
+if [ -n "${DDPROF_JAR}" ] && [ -f "${DDPROF_JAR}" ]; then
+  DDPROF_SOURCE="build artifact (${DDPROF_JAR##*/})"
+elif [ -n "${DDPROF_VERSION:-}" ]; then
+  log_info "No build artifact found — downloading com.datadoghq:ddprof:${DDPROF_VERSION} from Maven Central"
+  MVN_WORK_DIR_DDPROF=$(mktemp -d /tmp/mvn-workdir-XXXXXX)
+  MVN_LOG1=$(mktemp /tmp/mvn-log-XXXXXX)
+  if ! (cd "${MVN_WORK_DIR_DDPROF}" && mvn org.apache.maven.plugins:maven-dependency-plugin:2.1:get \
       -DrepoUrl=https://repo1.maven.org/maven2/ \
       -Dartifact="com.datadoghq:ddprof:${DDPROF_VERSION}" \
       -q > "${MVN_LOG1}" 2>&1); then
@@ -96,14 +113,9 @@ if [ -n "${DDPROF_VERSION:-}" ]; then
   DDPROF_JAR="${HOME}/.m2/repository/com/datadoghq/ddprof/${DDPROF_VERSION}/ddprof-${DDPROF_VERSION}.jar"
   DDPROF_SOURCE="Maven Central (${DDPROF_VERSION})"
 else
-  DDPROF_JAR=$(find "${PROJECT_ROOT}/ddprof-lib/build/libs" -name "ddprof-*.jar" \
-                 2>/dev/null | sort -V | tail -1 || true)
-  if [ -z "${DDPROF_JAR}" ] || [ ! -f "${DDPROF_JAR}" ]; then
-    log_error "No build artifact found and DDPROF_VERSION is not set."
-    log_error "Set DDPROF_VERSION to a released version (e.g. 1.47.0) for manual runs."
-    exit 1
-  fi
-  DDPROF_SOURCE="build artifact (${DDPROF_JAR##*/})"
+  log_error "No build artifact found and DDPROF_VERSION is not set."
+  log_error "Set DDPROF_VERSION to a released version (e.g. 1.47.0) for manual runs."
+  exit 1
 fi
 
 if [ ! -f "${DDPROF_JAR}" ]; then
@@ -119,7 +131,7 @@ if [ -n "${DD_TRACE_VERSION:-}" ]; then
 else
   log_info "Detecting latest dd-java-agent snapshot version..."
   if ! DD_TRACE_VERSION=$(detect_latest_snapshot_version \
-        "com.datadoghq" "dd-java-agent" "${SNAPSHOT_REPO}"); then
+        "com.datadoghq" "dd-java-agent" "${CENTRAL_SNAPSHOTS_URL}"); then
     log_error "Could not determine dd-java-agent version from Maven metadata."
     exit 1
   fi
@@ -135,10 +147,10 @@ log_info "Published version:        com.datadoghq:dd-java-agent:${PROFILER_VERSI
 # ── Step 3: Download dd-java-agent snapshot ───────────────────────────────────
 
 log_info "Downloading dd-java-agent:${DD_TRACE_VERSION}..."
-MVN_WORK_DIR=$(mktemp -d)
-MVN_LOG2=$(mktemp)
-if ! (cd "${MVN_WORK_DIR}" && mvn org.apache.maven.plugins:maven-dependency-plugin:2.1:get \
-    -DrepoUrl="${SNAPSHOT_REPO}" \
+MVN_WORK_DIR_AGENT=$(mktemp -d /tmp/mvn-workdir-XXXXXX)
+MVN_LOG2=$(mktemp /tmp/mvn-log-XXXXXX)
+if ! (cd "${MVN_WORK_DIR_AGENT}" && mvn org.apache.maven.plugins:maven-dependency-plugin:2.1:get \
+    -DrepoUrl="${CENTRAL_SNAPSHOTS_URL}" \
     -Dartifact="com.datadoghq:dd-java-agent:${DD_TRACE_VERSION}" \
     -q > "${MVN_LOG2}" 2>&1); then
   log_error "Failed to download dd-java-agent:${DD_TRACE_VERSION}"
@@ -155,7 +167,7 @@ log_info "Downloaded: ${DD_AGENT_JAR}"
 
 # ── Step 4: Patch ─────────────────────────────────────────────────────────────
 
-OUTPUT_JAR="${PROJECT_ROOT}/dd-java-agent-profiler-snapshot.jar"
+OUTPUT_JAR="${PROJECT_ROOT}/dd-java-agent-profiler-snapshot.jar"  # intentionally NOT cleaned up — GitLab artifact
 log_info "Patching dd-java-agent with ddprof..."
 DD_AGENT_JAR="${DD_AGENT_JAR}" \
 DDPROF_JAR="${DDPROF_JAR}" \
@@ -167,25 +179,35 @@ log_info "Patched JAR: ${OUTPUT_JAR}"
 
 log_info "Fetching Sonatype credentials from AWS SSM..."
 # Suppress xtrace to prevent credentials appearing in logs
-{ _xtrace=$(set +o | grep xtrace); set +x; } 2>/dev/null
+case $- in *x*) _xtrace=1;; *) _xtrace=0;; esac
+set +x
 SONATYPE_USERNAME=$(aws ssm get-parameter \
   --region "${AWS_REGION}" \
   --name "${SSM_PREFIX}.sonatype_token_user" \
-  --with-decryption --query "Parameter.Value" --out text)
+  --with-decryption --query "Parameter.Value" --out text) \
+  || { log_error "Failed to fetch Sonatype username from SSM"; exit 1; }
 SONATYPE_PASSWORD=$(aws ssm get-parameter \
   --region "${AWS_REGION}" \
   --name "${SSM_PREFIX}.sonatype_token" \
-  --with-decryption --query "Parameter.Value" --out text)
-eval "${_xtrace}"
+  --with-decryption --query "Parameter.Value" --out text) \
+  || { log_error "Failed to fetch Sonatype password from SSM"; exit 1; }
 [ -z "${SONATYPE_USERNAME}" ] && { log_error "Sonatype username is empty — check SSM parameter"; exit 1; }
 [ -z "${SONATYPE_PASSWORD}" ] && { log_error "Sonatype password is empty — check SSM parameter"; exit 1; }
 
-# Validate credentials contain no XML-special characters
-echo "${SONATYPE_USERNAME}" | grep -qE '[<>&"'"'"']' && { log_error "SONATYPE_USERNAME contains XML-special characters — cannot embed safely"; exit 1; }
-echo "${SONATYPE_PASSWORD}" | grep -qE '[<>&"'"'"']' && { log_error "SONATYPE_PASSWORD contains XML-special characters — cannot embed safely"; exit 1; }
+# Validate credentials contain no XML-special characters.
+# Use POSIX extended regex (no grep -P) for portability across Linux and macOS.
+# Single-quote is checked by splitting the shell quoting; newline/CR are checked via $'...' literals.
+_check_cred() {
+  local name="$1" val="$2"
+  printf '%s' "${val}" | grep -qE '[<>&"'"'"']'   && { log_error "${name} contains XML-special characters — cannot embed safely"; exit 1; }
+  printf '%s' "${val}" | grep -qF $'\n'            && { log_error "${name} contains a newline — cannot embed safely"; exit 1; }
+  printf '%s' "${val}" | grep -qF $'\r'            && { log_error "${name} contains a carriage return — cannot embed safely"; exit 1; }
+}
+_check_cred SONATYPE_USERNAME "${SONATYPE_USERNAME}"
+_check_cred SONATYPE_PASSWORD "${SONATYPE_PASSWORD}"
 
-MAVEN_SETTINGS=$(mktemp /tmp/maven-settings-XXXXXX.xml)
-chmod 600 "${MAVEN_SETTINGS}"
+MAVEN_SETTINGS=$(umask 077; mktemp /tmp/maven-settings-XXXXXX) \
+  || { log_error "Failed to create temporary Maven settings file"; exit 1; }
 # NOTE: delimiter is intentionally unquoted so $SONATYPE_USERNAME / $SONATYPE_PASSWORD expand at runtime
 cat > "${MAVEN_SETTINGS}" << XML
 <settings>
@@ -198,9 +220,8 @@ cat > "${MAVEN_SETTINGS}" << XML
   </servers>
 </settings>
 XML
-
 log_info "Publishing com.datadoghq:dd-java-agent:${PROFILER_VERSION}..."
-if ! mvn deploy:deploy-file \
+if ! mvn --batch-mode -q deploy:deploy-file \
     --settings "${MAVEN_SETTINGS}" \
     -Durl="${OSSRH_SNAPSHOTS_URL}" \
     -DrepositoryId=ossrh \
@@ -212,6 +233,8 @@ if ! mvn deploy:deploy-file \
   log_error "Failed to publish com.datadoghq:dd-java-agent:${PROFILER_VERSION}"
   exit 1
 fi
+# Restore xtrace after deploy — keeps both the settings file path and credentials out of CI trace
+[ "${_xtrace}" = 1 ] && set -x
 log_info "Published successfully"
 
 # ── Step 6: Report ────────────────────────────────────────────────────────────
