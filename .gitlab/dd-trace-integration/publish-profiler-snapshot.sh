@@ -11,8 +11,14 @@ source "${PROJECT_ROOT}/.gitlab/config.env"
 
 # URL used for metadata queries and snapshot downloads (Steps 2 and 3).
 CENTRAL_SNAPSHOTS_URL="https://central.sonatype.com/repository/maven-snapshots/"
+MAVEN_CENTRAL_URL="https://repo1.maven.org/maven2/"
 # URL used for publishing (Step 5) — legacy s01 endpoint required for deploy:deploy-file.
 OSSRH_SNAPSHOTS_URL="https://s01.oss.sonatype.org/content/repositories/snapshots/"
+
+# State file used by the nightly job to skip publishing when the version pair
+# (ddprof release + dd-trace snapshot) is unchanged since the last successful run.
+# Written at the end of a successful publish; restored from GitLab cache on re-runs.
+STATE_FILE="${PROJECT_ROOT}/.profiler-snapshot-state"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -75,6 +81,38 @@ detect_latest_snapshot_version() {
   echo "${latest_version}"
 }
 
+# detect_latest_release_version <group_id> <artifact_id>
+# Queries Maven Central and prints the latest non-snapshot release version to stdout.
+detect_latest_release_version() {
+  local group_id="$1" artifact_id="$2"
+  local group_path metadata release_version
+  group_path=$(echo "${group_id}" | tr '.' '/')
+  local metadata_url="${MAVEN_CENTRAL_URL}${group_path}/${artifact_id}/maven-metadata.xml"
+  log_info "Querying ${artifact_id} release metadata from ${metadata_url}" >&2
+  metadata=$(curl -fsSL "${metadata_url}") || {
+    log_error "Could not fetch metadata from ${metadata_url}" >&2
+    return 1
+  }
+  # Prefer <release> tag; fall back to the highest semver-looking non-snapshot version.
+  release_version=$(echo "${metadata}" | sed -n 's/.*<release>\(.*\)<\/release>.*/\1/p')
+  if [ -n "${release_version}" ] && \
+     echo "${release_version}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+    log_info "Latest ${artifact_id} release: ${release_version}" >&2
+    echo "${release_version}"
+    return 0
+  fi
+  release_version=$(echo "${metadata}" | \
+    sed -n 's/.*<version>\(.*\)<\/version>.*/\1/p' | \
+    grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | \
+    sort -V | tail -1 || true)
+  if [ -z "${release_version}" ]; then
+    log_error "Could not detect latest release version for ${artifact_id}" >&2
+    return 1
+  fi
+  log_info "Latest ${artifact_id} release: ${release_version}" >&2
+  echo "${release_version}"
+}
+
 # ── Input validation ──────────────────────────────────────────────────────────
 
 if [ -n "${DDPROF_VERSION:-}" ] && \
@@ -93,29 +131,35 @@ fi
 DDPROF_JAR=""
 DDPROF_SOURCE=""
 
-# Prefer the build artifact; only fall back to Maven Central when absent and DDPROF_VERSION is set.
+# Prefer the build artifact; fall back to Maven Central (explicit version or auto-detected latest).
 DDPROF_JAR=$(find "${PROJECT_ROOT}/ddprof-lib/build/libs" -name "ddprof-lib-*.jar" \
                2>/dev/null | sort -V | tail -1 || true)
 if [ -n "${DDPROF_JAR}" ] && [ -f "${DDPROF_JAR}" ]; then
   DDPROF_SOURCE="build artifact (${DDPROF_JAR##*/})"
-elif [ -n "${DDPROF_VERSION:-}" ]; then
-  log_info "No build artifact found — downloading com.datadoghq:ddprof:${DDPROF_VERSION} from Maven Central"
+  # Extract the version from the JAR filename (ddprof-lib-X.Y.Z[-qualifier].jar)
+  DDPROF_VERSION=$(basename "${DDPROF_JAR}" .jar | sed 's/^ddprof-lib-//')
+  log_info "Using build artifact — inferred DDPROF_VERSION=${DDPROF_VERSION}"
+else
+  if [ -z "${DDPROF_VERSION:-}" ]; then
+    log_info "No build artifact and DDPROF_VERSION not set — detecting latest ddprof-lib release..."
+    if ! DDPROF_VERSION=$(detect_latest_release_version "com.datadoghq" "ddprof-lib"); then
+      log_error "Could not determine latest ddprof-lib release from Maven Central."
+      exit 1
+    fi
+  fi
+  log_info "No build artifact found — downloading com.datadoghq:ddprof-lib:${DDPROF_VERSION} from Maven Central"
   MVN_WORK_DIR_DDPROF=$(mktemp -d /tmp/mvn-workdir-XXXXXX)
   MVN_LOG1=$(mktemp /tmp/mvn-log-XXXXXX)
   if ! (cd "${MVN_WORK_DIR_DDPROF}" && mvn org.apache.maven.plugins:maven-dependency-plugin:2.1:get \
-      -DrepoUrl=https://repo1.maven.org/maven2/ \
-      -Dartifact="com.datadoghq:ddprof:${DDPROF_VERSION}" \
+      -DrepoUrl="${MAVEN_CENTRAL_URL}" \
+      -Dartifact="com.datadoghq:ddprof-lib:${DDPROF_VERSION}" \
       -q > "${MVN_LOG1}" 2>&1); then
-    log_error "Failed to download com.datadoghq:ddprof:${DDPROF_VERSION}"
+    log_error "Failed to download com.datadoghq:ddprof-lib:${DDPROF_VERSION}"
     cat "${MVN_LOG1}"
     exit 1
   fi
-  DDPROF_JAR="${HOME}/.m2/repository/com/datadoghq/ddprof/${DDPROF_VERSION}/ddprof-${DDPROF_VERSION}.jar"
-  DDPROF_SOURCE="Maven Central (${DDPROF_VERSION})"
-else
-  log_error "No build artifact found and DDPROF_VERSION is not set."
-  log_error "Set DDPROF_VERSION to a released version (e.g. 1.47.0) for manual runs."
-  exit 1
+  DDPROF_JAR="${HOME}/.m2/repository/com/datadoghq/ddprof-lib/${DDPROF_VERSION}/ddprof-lib-${DDPROF_VERSION}.jar"
+  DDPROF_SOURCE="Maven Central (ddprof-lib ${DDPROF_VERSION})"
 fi
 
 if [ ! -f "${DDPROF_JAR}" ]; then
@@ -143,6 +187,31 @@ PROFILER_VERSION="${DD_TRACE_BASE_VERSION}-PROFILER-SNAPSHOT"
 
 log_info "dd-trace source version:  ${DD_TRACE_VERSION}"
 log_info "Published version:        com.datadoghq:dd-java-agent:${PROFILER_VERSION}"
+
+# ── Step 2b: Deduplication check (nightly only) ───────────────────────────────
+#
+# When NIGHTLY_PROFILER_SNAPSHOT=true and NIGHTLY_FORCE_PUBLISH is not set,
+# compare the resolved version pair against the last successful publish recorded
+# in STATE_FILE. Skip if unchanged to avoid redundant OSSRH uploads.
+
+if [ "${NIGHTLY_PROFILER_SNAPSHOT:-}" = "true" ] && \
+   [ "${NIGHTLY_FORCE_PUBLISH:-}" != "true" ]; then
+  if [ -f "${STATE_FILE}" ]; then
+    # shellcheck source=/dev/null
+    source "${STATE_FILE}"
+    LAST_DDPROF="${LAST_PUBLISHED_DDPROF_VERSION:-}"
+    LAST_TRACE="${LAST_PUBLISHED_DD_TRACE_VERSION:-}"
+    if [ "${LAST_DDPROF}" = "${DDPROF_VERSION}" ] && \
+       [ "${LAST_TRACE}" = "${DD_TRACE_VERSION}" ]; then
+      log_info "Versions unchanged since last publish (ddprof=${DDPROF_VERSION}, dd-trace=${DD_TRACE_VERSION}) — skipping."
+      log_info "Set NIGHTLY_FORCE_PUBLISH=true to override."
+      exit 0
+    fi
+    log_info "Version changed (ddprof: ${LAST_DDPROF:-none}→${DDPROF_VERSION}, dd-trace: ${LAST_TRACE:-none}→${DD_TRACE_VERSION}) — publishing."
+  else
+    log_info "No prior state found — publishing."
+  fi
+fi
 
 # ── Step 3: Download dd-java-agent snapshot ───────────────────────────────────
 
@@ -247,3 +316,13 @@ REPORT="${PROJECT_ROOT}/publish-report.txt"
   echo "dd-trace input: ${DD_TRACE_VERSION}"
 } > "${REPORT}"
 cat "${REPORT}"
+
+# ── Step 7: Update state (nightly deduplication) ──────────────────────────────
+
+if [ "${NIGHTLY_PROFILER_SNAPSHOT:-}" = "true" ]; then
+  {
+    echo "LAST_PUBLISHED_DDPROF_VERSION=${DDPROF_VERSION}"
+    echo "LAST_PUBLISHED_DD_TRACE_VERSION=${DD_TRACE_VERSION}"
+  } > "${STATE_FILE}"
+  log_info "State written to ${STATE_FILE}"
+fi

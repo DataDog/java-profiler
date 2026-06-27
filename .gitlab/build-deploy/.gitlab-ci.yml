@@ -364,6 +364,15 @@ notify-slack-on-failure:
   script:
     - .gitlab/build-deploy/notify_channel.sh alert $(cat version.txt)
 
+# Cache that persists the last-published version pair between nightly runs.
+# Used by the deduplication check in publish-profiler-snapshot.sh.
+.publish-snapshot-state-cache:
+  cache:
+    key: profiler-snapshot-state
+    paths:
+      - .profiler-snapshot-state
+    policy: pull-push
+
 # Shared definition for both publish variants.
 .publish-dd-trace-snapshot-common:
   extends:
@@ -383,13 +392,12 @@ notify-slack-on-failure:
       - publish-report.txt
     expire_in: 7 days
 
-# Manual run with an explicit DDPROF_VERSION: the JAR is already in Maven Central,
-# so there is no dependency on build-artifact or deploy-artifact.
+# Manual run with an explicit DDPROF_VERSION: the JAR is already in Maven Central.
+# No dependency on prepare:start — its build.env sets CANCELLED=true on branches
+# without a PR, which would silently skip the job.
 publish-dd-trace-snapshot:
   extends: .publish-dd-trace-snapshot-common
-  needs:
-    - job: prepare:start
-      artifacts: true
+  needs: []
   rules:
     - if: '$DOWNSTREAM != null'
       when: never
@@ -410,6 +418,23 @@ publish-dd-trace-snapshot:release:
       when: never
     - if: '$CI_COMMIT_TAG =~ /^v_[0-9]+\.[0-9]+\.[0-9]+$/'
       when: on_success
+
+# Nightly scheduled run: auto-detects latest ddprof-lib release and latest dd-java-agent snapshot,
+# skips publish when the version pair is unchanged since the last successful run.
+# Trigger: create a GitLab schedule with NIGHTLY_PROFILER_SNAPSHOT=true on the default branch.
+# Override deduplication: set NIGHTLY_FORCE_PUBLISH=true in the schedule or pipeline variables.
+publish-dd-trace-snapshot:nightly:
+  extends:
+    - .publish-dd-trace-snapshot-common
+    - .publish-snapshot-state-cache
+  needs: []
+  variables:
+    NIGHTLY_PROFILER_SNAPSHOT: "true"
+  rules:
+    - if: '$DOWNSTREAM != null'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $NIGHTLY_PROFILER_SNAPSHOT == "true"'
+      when: always
 
 include:
   - local: .gitlab/common.yml
