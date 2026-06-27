@@ -382,7 +382,7 @@ notify-slack-on-failure:
   tags: ["arch:amd64"]
   image: ${BUILD_IMAGE_X64}
   variables:
-    DDPROF_VERSION: ""
+    PROFILER_SNAPSHOT_VERSION: ""
   script:
     - .gitlab/dd-trace-integration/publish-profiler-snapshot.sh
   artifacts:
@@ -392,7 +392,7 @@ notify-slack-on-failure:
       - publish-report.txt
     expire_in: 7 days
 
-# Manual run with an explicit DDPROF_VERSION: the JAR is already in Maven Central.
+# Manual run with an explicit PROFILER_SNAPSHOT_VERSION: the JAR is already in Maven Central.
 # No dependency on prepare:start — its build.env sets CANCELLED=true on branches
 # without a PR, which would silently skip the job.
 publish-dd-trace-snapshot:
@@ -401,12 +401,12 @@ publish-dd-trace-snapshot:
   rules:
     - if: '$DOWNSTREAM != null'
       when: never
-    - if: '$DDPROF_VERSION != ""'
+    - if: '$PROFILER_SNAPSHOT_VERSION != ""'
       when: on_success
     - when: manual
       allow_failure: true
 
-# Release-tag run: DDPROF_VERSION is empty, so the JAR comes from build-artifact.
+# Release-tag run: PROFILER_SNAPSHOT_VERSION is empty, so the JAR comes from build-artifact.
 # Must wait for build-artifact to ensure the freshly built JAR is available.
 publish-dd-trace-snapshot:release:
   extends: .publish-dd-trace-snapshot-common

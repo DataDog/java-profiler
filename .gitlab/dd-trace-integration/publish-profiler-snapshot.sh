@@ -115,9 +115,9 @@ detect_latest_release_version() {
 
 # ── Input validation ──────────────────────────────────────────────────────────
 
-if [ -n "${DDPROF_VERSION:-}" ] && \
-   ! echo "${DDPROF_VERSION}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-  log_error "DDPROF_VERSION '${DDPROF_VERSION}' is not a valid semver (expected X.Y.Z)"
+if [ -n "${PROFILER_SNAPSHOT_VERSION:-}" ] && \
+   ! echo "${PROFILER_SNAPSHOT_VERSION}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+  log_error "PROFILER_SNAPSHOT_VERSION '${PROFILER_SNAPSHOT_VERSION}' is not a valid semver (expected X.Y.Z)"
   exit 1
 fi
 if [ -n "${DD_TRACE_VERSION:-}" ] && \
@@ -137,29 +137,29 @@ DDPROF_JAR=$(find "${PROJECT_ROOT}/ddprof-lib/build/libs" -name "ddprof-lib-*.ja
 if [ -n "${DDPROF_JAR}" ] && [ -f "${DDPROF_JAR}" ]; then
   DDPROF_SOURCE="build artifact (${DDPROF_JAR##*/})"
   # Extract the version from the JAR filename (ddprof-lib-X.Y.Z[-qualifier].jar)
-  DDPROF_VERSION=$(basename "${DDPROF_JAR}" .jar | sed 's/^ddprof-lib-//')
-  log_info "Using build artifact — inferred DDPROF_VERSION=${DDPROF_VERSION}"
+  PROFILER_SNAPSHOT_VERSION=$(basename "${DDPROF_JAR}" .jar | sed 's/^ddprof-lib-//')
+  log_info "Using build artifact — inferred PROFILER_SNAPSHOT_VERSION=${PROFILER_SNAPSHOT_VERSION}"
 else
-  if [ -z "${DDPROF_VERSION:-}" ]; then
-    log_info "No build artifact and DDPROF_VERSION not set — detecting latest ddprof-lib release..."
-    if ! DDPROF_VERSION=$(detect_latest_release_version "com.datadoghq" "ddprof-lib"); then
+  if [ -z "${PROFILER_SNAPSHOT_VERSION:-}" ]; then
+    log_info "No build artifact and PROFILER_SNAPSHOT_VERSION not set — detecting latest ddprof-lib release..."
+    if ! PROFILER_SNAPSHOT_VERSION=$(detect_latest_release_version "com.datadoghq" "ddprof-lib"); then
       log_error "Could not determine latest ddprof-lib release from Maven Central."
       exit 1
     fi
   fi
-  log_info "No build artifact found — downloading com.datadoghq:ddprof-lib:${DDPROF_VERSION} from Maven Central"
+  log_info "No build artifact found — downloading com.datadoghq:ddprof-lib:${PROFILER_SNAPSHOT_VERSION} from Maven Central"
   MVN_WORK_DIR_DDPROF=$(mktemp -d /tmp/mvn-workdir-XXXXXX)
   MVN_LOG1=$(mktemp /tmp/mvn-log-XXXXXX)
   if ! (cd "${MVN_WORK_DIR_DDPROF}" && mvn org.apache.maven.plugins:maven-dependency-plugin:2.1:get \
       -DrepoUrl="${MAVEN_CENTRAL_URL}" \
-      -Dartifact="com.datadoghq:ddprof-lib:${DDPROF_VERSION}" \
+      -Dartifact="com.datadoghq:ddprof-lib:${PROFILER_SNAPSHOT_VERSION}" \
       -q > "${MVN_LOG1}" 2>&1); then
-    log_error "Failed to download com.datadoghq:ddprof-lib:${DDPROF_VERSION}"
+    log_error "Failed to download com.datadoghq:ddprof-lib:${PROFILER_SNAPSHOT_VERSION}"
     cat "${MVN_LOG1}"
     exit 1
   fi
-  DDPROF_JAR="${HOME}/.m2/repository/com/datadoghq/ddprof-lib/${DDPROF_VERSION}/ddprof-lib-${DDPROF_VERSION}.jar"
-  DDPROF_SOURCE="Maven Central (ddprof-lib ${DDPROF_VERSION})"
+  DDPROF_JAR="${HOME}/.m2/repository/com/datadoghq/ddprof-lib/${PROFILER_SNAPSHOT_VERSION}/ddprof-lib-${PROFILER_SNAPSHOT_VERSION}.jar"
+  DDPROF_SOURCE="Maven Central (ddprof-lib ${PROFILER_SNAPSHOT_VERSION})"
 fi
 
 if [ ! -f "${DDPROF_JAR}" ]; then
@@ -199,15 +199,15 @@ if [ "${NIGHTLY_PROFILER_SNAPSHOT:-}" = "true" ] && \
   if [ -f "${STATE_FILE}" ]; then
     # shellcheck source=/dev/null
     source "${STATE_FILE}"
-    LAST_DDPROF="${LAST_PUBLISHED_DDPROF_VERSION:-}"
+    LAST_DDPROF="${LAST_PUBLISHED_PROFILER_SNAPSHOT_VERSION:-}"
     LAST_TRACE="${LAST_PUBLISHED_DD_TRACE_VERSION:-}"
-    if [ "${LAST_DDPROF}" = "${DDPROF_VERSION}" ] && \
+    if [ "${LAST_DDPROF}" = "${PROFILER_SNAPSHOT_VERSION}" ] && \
        [ "${LAST_TRACE}" = "${DD_TRACE_VERSION}" ]; then
-      log_info "Versions unchanged since last publish (ddprof=${DDPROF_VERSION}, dd-trace=${DD_TRACE_VERSION}) — skipping."
+      log_info "Versions unchanged since last publish (ddprof=${PROFILER_SNAPSHOT_VERSION}, dd-trace=${DD_TRACE_VERSION}) — skipping."
       log_info "Set NIGHTLY_FORCE_PUBLISH=true to override."
       exit 0
     fi
-    log_info "Version changed (ddprof: ${LAST_DDPROF:-none}→${DDPROF_VERSION}, dd-trace: ${LAST_TRACE:-none}→${DD_TRACE_VERSION}) — publishing."
+    log_info "Version changed (ddprof: ${LAST_DDPROF:-none}→${PROFILER_SNAPSHOT_VERSION}, dd-trace: ${LAST_TRACE:-none}→${DD_TRACE_VERSION}) — publishing."
   else
     log_info "No prior state found — publishing."
   fi
@@ -321,7 +321,7 @@ cat "${REPORT}"
 
 if [ "${NIGHTLY_PROFILER_SNAPSHOT:-}" = "true" ]; then
   {
-    echo "LAST_PUBLISHED_DDPROF_VERSION=${DDPROF_VERSION}"
+    echo "LAST_PUBLISHED_PROFILER_SNAPSHOT_VERSION=${PROFILER_SNAPSHOT_VERSION}"
     echo "LAST_PUBLISHED_DD_TRACE_VERSION=${DD_TRACE_VERSION}"
   } > "${STATE_FILE}"
   log_info "State written to ${STATE_FILE}"
