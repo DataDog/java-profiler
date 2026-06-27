@@ -401,6 +401,8 @@ publish-dd-trace-snapshot:
   rules:
     - if: '$DOWNSTREAM != null'
       when: never
+    - if: '$DDPROF_VERSION != ""'
+      when: on_success
     - when: manual
       allow_failure: true
 
