@@ -184,12 +184,12 @@ set +x
 SONATYPE_USERNAME=$(aws ssm get-parameter \
   --region "${AWS_REGION}" \
   --name "${SSM_PREFIX}.sonatype_token_user" \
-  --with-decryption --query "Parameter.Value" --out text) \
+  --with-decryption --query "Parameter.Value" --out text | tr -d '\n\r') \
   || { log_error "Failed to fetch Sonatype username from SSM"; exit 1; }
 SONATYPE_PASSWORD=$(aws ssm get-parameter \
   --region "${AWS_REGION}" \
   --name "${SSM_PREFIX}.sonatype_token" \
-  --with-decryption --query "Parameter.Value" --out text) \
+  --with-decryption --query "Parameter.Value" --out text | tr -d '\n\r') \
   || { log_error "Failed to fetch Sonatype password from SSM"; exit 1; }
 [ -z "${SONATYPE_USERNAME}" ] && { log_error "Sonatype username is empty — check SSM parameter"; exit 1; }
 [ -z "${SONATYPE_PASSWORD}" ] && { log_error "Sonatype password is empty — check SSM parameter"; exit 1; }
