@@ -32,6 +32,7 @@ log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 MAVEN_SETTINGS=""
 MVN_WORK_DIR_DDPROF=""
 MVN_WORK_DIR_AGENT=""
+MVN_WORK_DIR_DEPLOY=""
 MVN_LOG1=""
 MVN_LOG2=""
 OUTPUT_JAR=""
@@ -39,6 +40,7 @@ cleanup() {
   [ -n "${MAVEN_SETTINGS}" ] && rm -f "${MAVEN_SETTINGS}"
   [ -n "${MVN_WORK_DIR_DDPROF}" ] && rm -rf "${MVN_WORK_DIR_DDPROF}"
   [ -n "${MVN_WORK_DIR_AGENT}" ] && rm -rf "${MVN_WORK_DIR_AGENT}"
+  [ -n "${MVN_WORK_DIR_DEPLOY}" ] && rm -rf "${MVN_WORK_DIR_DEPLOY}"
   [ -n "${MVN_LOG1}" ] && rm -f "${MVN_LOG1}"
   [ -n "${MVN_LOG2}" ] && rm -f "${MVN_LOG2}"
   # OUTPUT_JAR and publish-report.txt are GitLab artifacts — do NOT delete them here;
@@ -289,8 +291,9 @@ cat > "${MAVEN_SETTINGS}" << XML
   </servers>
 </settings>
 XML
+MVN_WORK_DIR_DEPLOY=$(mktemp -d /tmp/mvn-workdir-XXXXXX)
 log_info "Publishing com.datadoghq:dd-java-agent:${PROFILER_VERSION}..."
-if ! mvn --batch-mode -q deploy:deploy-file \
+if ! (cd "${MVN_WORK_DIR_DEPLOY}" && mvn --batch-mode -q deploy:deploy-file \
     --settings "${MAVEN_SETTINGS}" \
     -Durl="${OSSRH_SNAPSHOTS_URL}" \
     -DrepositoryId=ossrh \
@@ -298,7 +301,7 @@ if ! mvn --batch-mode -q deploy:deploy-file \
     -DgroupId=com.datadoghq \
     -DartifactId=dd-java-agent \
     -Dversion="${PROFILER_VERSION}" \
-    -Dpackaging=jar; then
+    -Dpackaging=jar); then
   log_error "Failed to publish com.datadoghq:dd-java-agent:${PROFILER_VERSION}"
   exit 1
 fi
