@@ -12,8 +12,7 @@ source "${PROJECT_ROOT}/.gitlab/config.env"
 # URL used for metadata queries and snapshot downloads (Steps 2 and 3).
 CENTRAL_SNAPSHOTS_URL="https://central.sonatype.com/repository/maven-snapshots/"
 MAVEN_CENTRAL_URL="https://repo1.maven.org/maven2/"
-# URL used for publishing (Step 5) — legacy s01 endpoint required for deploy:deploy-file.
-OSSRH_SNAPSHOTS_URL="https://s01.oss.sonatype.org/content/repositories/snapshots/"
+OSSRH_SNAPSHOTS_URL="https://central.sonatype.com/repository/maven-snapshots/"
 
 # State file used by the nightly job to skip publishing when the version pair
 # (ddprof release + dd-trace snapshot) is unchanged since the last successful run.
