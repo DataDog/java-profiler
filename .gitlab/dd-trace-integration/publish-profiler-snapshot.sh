@@ -263,14 +263,14 @@ SONATYPE_PASSWORD=$(aws ssm get-parameter \
 [ -z "${SONATYPE_USERNAME}" ] && { log_error "Sonatype username is empty — check SSM parameter"; exit 1; }
 [ -z "${SONATYPE_PASSWORD}" ] && { log_error "Sonatype password is empty — check SSM parameter"; exit 1; }
 
-# Validate credentials contain no XML-special characters.
-# Use POSIX extended regex (no grep -P) for portability across Linux and macOS.
-# Single-quote is checked by splitting the shell quoting; newline/CR are checked via $'...' literals.
+# Validate credentials contain no XML-special characters or control characters.
+# grep -F $'\n' is unreliable (some grep implementations treat newline as pattern
+# separator and match everything); use shell case for newline/CR checks instead.
 _check_cred() {
   local name="$1" val="$2"
-  printf '%s' "${val}" | grep -qE '[<>&"'"'"']'   && { log_error "${name} contains XML-special characters — cannot embed safely"; exit 1; }
-  printf '%s' "${val}" | grep -qF $'\n'            && { log_error "${name} contains a newline — cannot embed safely"; exit 1; }
-  printf '%s' "${val}" | grep -qF $'\r'            && { log_error "${name} contains a carriage return — cannot embed safely"; exit 1; }
+  printf '%s' "${val}" | grep -qE '[<>&"'"'"']' && { log_error "${name} contains XML-special characters — cannot embed safely"; exit 1; }
+  case "${val}" in *$'\n'*) log_error "${name} contains a newline — cannot embed safely"; exit 1 ;; esac
+  case "${val}" in *$'\r'*) log_error "${name} contains a carriage return — cannot embed safely"; exit 1 ;; esac
 }
 _check_cred SONATYPE_USERNAME "${SONATYPE_USERNAME}"
 _check_cred SONATYPE_PASSWORD "${SONATYPE_PASSWORD}"
