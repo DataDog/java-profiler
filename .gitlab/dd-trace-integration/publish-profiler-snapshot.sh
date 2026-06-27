@@ -141,25 +141,25 @@ if [ -n "${DDPROF_JAR}" ] && [ -f "${DDPROF_JAR}" ]; then
   log_info "Using build artifact — inferred PROFILER_SNAPSHOT_VERSION=${PROFILER_SNAPSHOT_VERSION}"
 else
   if [ -z "${PROFILER_SNAPSHOT_VERSION:-}" ]; then
-    log_info "No build artifact and PROFILER_SNAPSHOT_VERSION not set — detecting latest ddprof-lib release..."
-    if ! PROFILER_SNAPSHOT_VERSION=$(detect_latest_release_version "com.datadoghq" "ddprof-lib"); then
-      log_error "Could not determine latest ddprof-lib release from Maven Central."
+    log_info "No build artifact and PROFILER_SNAPSHOT_VERSION not set — detecting latest ddprof release..."
+    if ! PROFILER_SNAPSHOT_VERSION=$(detect_latest_release_version "com.datadoghq" "ddprof"); then
+      log_error "Could not determine latest ddprof release from Maven Central."
       exit 1
     fi
   fi
-  log_info "No build artifact found — downloading com.datadoghq:ddprof-lib:${PROFILER_SNAPSHOT_VERSION} from Maven Central"
+  log_info "No build artifact found — downloading com.datadoghq:ddprof:${PROFILER_SNAPSHOT_VERSION} from Maven Central"
   MVN_WORK_DIR_DDPROF=$(mktemp -d /tmp/mvn-workdir-XXXXXX)
   MVN_LOG1=$(mktemp /tmp/mvn-log-XXXXXX)
   if ! (cd "${MVN_WORK_DIR_DDPROF}" && mvn org.apache.maven.plugins:maven-dependency-plugin:2.1:get \
       -DrepoUrl="${MAVEN_CENTRAL_URL}" \
-      -Dartifact="com.datadoghq:ddprof-lib:${PROFILER_SNAPSHOT_VERSION}" \
+      -Dartifact="com.datadoghq:ddprof:${PROFILER_SNAPSHOT_VERSION}" \
       -q > "${MVN_LOG1}" 2>&1); then
-    log_error "Failed to download com.datadoghq:ddprof-lib:${PROFILER_SNAPSHOT_VERSION}"
+    log_error "Failed to download com.datadoghq:ddprof:${PROFILER_SNAPSHOT_VERSION}"
     cat "${MVN_LOG1}"
     exit 1
   fi
-  DDPROF_JAR="${HOME}/.m2/repository/com/datadoghq/ddprof-lib/${PROFILER_SNAPSHOT_VERSION}/ddprof-lib-${PROFILER_SNAPSHOT_VERSION}.jar"
-  DDPROF_SOURCE="Maven Central (ddprof-lib ${PROFILER_SNAPSHOT_VERSION})"
+  DDPROF_JAR="${HOME}/.m2/repository/com/datadoghq/ddprof/${PROFILER_SNAPSHOT_VERSION}/ddprof-${PROFILER_SNAPSHOT_VERSION}.jar"
+  DDPROF_SOURCE="Maven Central (ddprof ${PROFILER_SNAPSHOT_VERSION})"
 fi
 
 if [ ! -f "${DDPROF_JAR}" ]; then
