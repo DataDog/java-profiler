@@ -364,39 +364,16 @@ notify-slack-on-failure:
   script:
     - .gitlab/build-deploy/notify_channel.sh alert $(cat version.txt)
 
-publish-dd-trace-snapshot:
+# Shared definition for both publish variants.
+.publish-dd-trace-snapshot-common:
   extends:
-    # pull-only cache: Maven downloads are not written back. Acceptable given this job
-    # is infrequent (tag-triggered or manual). Switch to .cache-config if re-download
-    # latency becomes a concern.
     - .cache-config-pull
     - .deploy-sa
   stage: deploy
-  needs:
-    - job: prepare:start
-      artifacts: true
-    - job: build-artifact
-      artifacts: true
-      optional: true
   tags: ["arch:amd64"]
   image: ${BUILD_IMAGE_X64}
   variables:
-    # java-profiler release version (e.g. 1.47.0). Leave empty when running from a release
-    # pipeline — JAR comes from build-artifact. Required for standalone manual runs.
     DDPROF_VERSION: ""
-    # DD_TRACE_VERSION is intentionally NOT set here; the global definition in
-    # dd-trace-integration/.gitlab-ci.yml exposes it as a user-settable pipeline variable
-    # (value:/description: form). A job-level override would shadow any user-supplied value.
-  rules:
-    # Suppress in downstream (child) pipelines: a child pipeline triggered by another job should
-    # never automatically publish a snapshot — only a direct release-tag push or a manual run
-    # should do so. Mirrors the same suppression pattern used in the prepare:start job.
-    - if: '$DOWNSTREAM != null'
-      when: never
-    - if: '$CI_COMMIT_TAG =~ /^v_[0-9]+\.[0-9]+\.[0-9]+$/'
-      when: on_success
-    - when: manual
-      allow_failure: true
   script:
     - .gitlab/dd-trace-integration/publish-profiler-snapshot.sh
   artifacts:
@@ -405,6 +382,34 @@ publish-dd-trace-snapshot:
       - dd-java-agent-profiler-snapshot.jar
       - publish-report.txt
     expire_in: 7 days
+
+# Manual run with an explicit DDPROF_VERSION: the JAR is already in Maven Central,
+# so there is no dependency on build-artifact or deploy-artifact.
+publish-dd-trace-snapshot:
+  extends: .publish-dd-trace-snapshot-common
+  needs:
+    - job: prepare:start
+      artifacts: true
+  rules:
+    - if: '$DOWNSTREAM != null'
+      when: never
+    - when: manual
+      allow_failure: true
+
+# Release-tag run: DDPROF_VERSION is empty, so the JAR comes from build-artifact.
+# Must wait for build-artifact to ensure the freshly built JAR is available.
+publish-dd-trace-snapshot:release:
+  extends: .publish-dd-trace-snapshot-common
+  needs:
+    - job: prepare:start
+      artifacts: true
+    - job: build-artifact
+      artifacts: true
+  rules:
+    - if: '$DOWNSTREAM != null'
+      when: never
+    - if: '$CI_COMMIT_TAG =~ /^v_[0-9]+\.[0-9]+\.[0-9]+$/'
+      when: on_success
 
 include:
   - local: .gitlab/common.yml
