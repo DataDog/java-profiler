@@ -11,6 +11,7 @@
 #include "hotspot/hotspotSupport.h"
 #include "hotspot/jitCodeCache.h"
 #include "hotspot/vmStructs.inline.h"
+#include "profilerVmStructsExt.h"
 #include "jvmSupport.h"
 #include "profiler.h"
 #include "guards.h"
@@ -930,7 +931,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
       return 1;
     }
 
-    if (!VMStructs::isSafeToWalk(saved_pc)) {
+    if (!ProfilerVMStructsExt::isSafeToWalk(saved_pc)) {
       frames->bci = BCI_NATIVE_FRAME;
       CodeBlob *codeBlob =
           VMStructs::libjvm()->findBlobByAddress((const void *)saved_pc);

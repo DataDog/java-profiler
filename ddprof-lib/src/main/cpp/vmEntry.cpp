@@ -19,6 +19,7 @@
 #include "safeAccess.h"
 #include "hotspot/vmStructs.h"
 #include "hotspot/jitCodeCache.h"
+#include "profilerVmStructsExt.h"
 #include <atomic>
 #include <dlfcn.h>
 #include <stdlib.h>
@@ -324,6 +325,7 @@ bool VM::initShared(JavaVM* vm) {
   }
 
   VMStructs::init(lib);
+  ProfilerVMStructsExt::initCriticalJNINatives();
 
   // Mark thread entry points for all JVMs (critical for correct stack unwinding)
   lib->mark(isThreadEntry, MARK_THREAD_ENTRY);
@@ -498,7 +500,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   callbacks.ThreadEnd = Profiler::ThreadEnd;
   callbacks.SampledObjectAlloc = ObjectSampler::SampledObjectAlloc;
   callbacks.GarbageCollectionFinish = LivenessTracker::GarbageCollectionFinish;
-  callbacks.NativeMethodBind = VMStructs::NativeMethodBind;
+  callbacks.NativeMethodBind = ProfilerVMStructsExt::NativeMethodBind;
   _jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
 
   _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_DEATH, NULL);
@@ -559,6 +561,7 @@ void VM::ready(jvmtiEnv *jvmti, JNIEnv *jni) {
   if (isHotspot()) {
     JitWriteProtection jit(true);
     VMStructs::ready();
+    ProfilerVMStructsExt::patchSafeFetch();
   }
 }
 

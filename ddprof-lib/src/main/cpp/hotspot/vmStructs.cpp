@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <stdarg.h>
 #include "hotspot/vmStructs.inline.h"
+#include "profilerVmStructsExt.h"
 #include "vmEntry.h"
 #include "jniHelper.h"
 #include "jvmHeap.h"
@@ -93,14 +94,6 @@ void* VMStructs::_java_thread_vtbl[6];
 VMStructs::LockFunc VMStructs::_lock_func;
 VMStructs::LockFunc VMStructs::_unlock_func;
 
-// Datadog-specific static variables
-CodeCache VMStructs::_unsafe_to_walk("unwalkable code");
-VMStructs::HeapUsageFunc VMStructs::_heap_usage_func = NULL;
-VMStructs::MemoryUsageFunc VMStructs::_memory_usage_func = NULL;
-VMStructs::GCHeapSummaryFunc VMStructs::_gc_heap_summary_func = NULL;
-VMStructs::IsValidMethodFunc VMStructs::_is_valid_method_func = NULL;
-
-
 uintptr_t VMStructs::readSymbol(const char* symbol_name) {
     const void* symbol = _libjvm->findSymbol(symbol_name);
     if (symbol == NULL) {
@@ -117,14 +110,12 @@ void VMStructs::init(CodeCache* libjvm) {
         initOffsets();
         initJvmFunctions();
         initUnsafeFunctions();
-        initCriticalJNINatives();
     }
 }
 
 // Run when VM is initialized and JNI is available
 void VMStructs::ready() {
     resolveOffsets();
-    patchSafeFetch();
 }
 
 bool matchAny(const char* target_name, std::initializer_list<const char*> names) {
@@ -499,27 +490,10 @@ void VMStructs::initJvmFunctions() {
         }
     }
 
-    // Datadog-specific function pointer resolution
-    _heap_usage_func = (HeapUsageFunc)findHeapUsageFunc();
-    _gc_heap_summary_func = (GCHeapSummaryFunc)_libjvm->findSymbol(
-        "_ZN13CollectedHeap19create_heap_summaryEv");
-    _is_valid_method_func = (IsValidMethodFunc)_libjvm->findSymbol(
+    // Datadog-specific function pointer resolution (delegated to ProfilerVMStructsExt)
+    IsValidMethodFunc is_valid_method_func = (IsValidMethodFunc)_libjvm->findSymbol(
         "_ZN6Method15is_valid_methodEPKS_");
-}
-
-void VMStructs::patchSafeFetch() {
-    // Workarounds for JDK-8307549 and JDK-8321116
-    if (WX_MEMORY && VM::hotspot_version() == 17) {
-        void** entry = (void**)_libjvm->findSymbol("_ZN12StubRoutines18_safefetch32_entryE");
-        if (entry != NULL) {
-            *entry = (void*)SafeAccess::load32;
-        }
-    } else if (WX_MEMORY && VM::hotspot_version() == 11) {
-        void** entry = (void**)_libjvm->findSymbol("_ZN12StubRoutines17_safefetchN_entryE");
-        if (entry != NULL) {
-            *entry = (void*)SafeAccess::load;
-        }
-    }
+    ProfilerVMStructsExt::init(is_valid_method_func);
 }
 
 // ===== Datadog-specific VMStructs extensions =====
@@ -534,119 +508,15 @@ void VMStructs::initUnsafeFunctions() {
 
     std::vector<const void *> symbols;
     _libjvm->findSymbolsByPrefix(unsafeMangledPrefixes, symbols);
+    CodeCache& unsafe_to_walk = ProfilerVMStructsExt::unsafeToWalkCache();
     for (const void *symbol : symbols) {
         CodeBlob *blob = _libjvm->findBlobByAddress(symbol);
         if (blob) {
-            _unsafe_to_walk.add(blob->_start,
-                                ((uintptr_t)blob->_end - (uintptr_t)blob->_start),
-                                blob->_name, true);
+            unsafe_to_walk.add(blob->_start,
+                               ((uintptr_t)blob->_end - (uintptr_t)blob->_start),
+                               blob->_name, true);
         }
     }
-}
-
-void VMStructs::initCriticalJNINatives() {
-#ifdef __aarch64__
-    // aarch64 does not support CriticalJNINatives
-    VMFlag* flag = VMFlag::find("CriticalJNINatives", {VMFlag::Type::Bool});
-    if (flag != nullptr && flag->get()) {
-        flag->set(0);
-    }
-#endif // __aarch64__
-}
-
-const void *VMStructs::findHeapUsageFunc() {
-    if (VM::hotspot_version() < 17) {
-        // For JDK 11 it is really unreliable to find the memory_usage function -
-        // just disable it
-        return nullptr;
-    } else {
-        VMFlag* flag = VMFlag::find("UseG1GC", {VMFlag::Type::Bool});
-        if (flag != NULL && flag->get()) {
-            // The CollectedHeap::memory_usage function is a virtual one -
-            // G1, Shenandoah and ZGC are overriding it and calling the base class
-            // method results in asserts triggering. Therefore, we try to locate the
-            // concrete overridden method form.
-            return _libjvm->findSymbol("_ZN15G1CollectedHeap12memory_usageEv");
-        }
-        flag = VMFlag::find("UseShenandoahGC", {VMFlag::Type::Bool});
-        if (flag != NULL && flag->get()) {
-            return _libjvm->findSymbol("_ZN14ShenandoahHeap12memory_usageEv");
-        }
-        flag = VMFlag::find("UseZGC", {VMFlag::Type::Bool});
-        if (flag != NULL && flag->get() && VM::hotspot_version() < 21) {
-            // accessing this method in JDK 21 (generational ZGC) will cause SIGSEGV
-            return _libjvm->findSymbol("_ZN14ZCollectedHeap12memory_usageEv");
-        }
-        return _libjvm->findSymbol("_ZN13CollectedHeap12memory_usageEv");
-    }
-}
-
-bool VMStructs::isSafeToWalk(uintptr_t pc) {
-    // Check if PC is in the unsafe-to-walk code region
-    // Note: findFrameDesc now returns by value instead of pointer, but it always returns
-    // a valid FrameDesc (either from table or default_frame), so the old pointer check
-    // was always true. The effective logic is simply checking if pc is in _unsafe_to_walk.
-    return !_unsafe_to_walk.contains((const void *)pc);
-}
-
-void JNICALL VMStructs::NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
-                                         jmethodID method, void *address,
-                                         void **new_address_ptr) {
-    static SpinLock _lock;
-    static int delayedCounter = 0;
-    static void **delayed = (void **)malloc(512 * sizeof(void *) * 2);
-
-    if (_memory_usage_func == NULL) {
-        if (jvmti != NULL && jni != NULL) {
-            checkNativeBinding(jvmti, jni, method, address);
-            void **tmpDelayed = NULL;
-            int tmpCounter = 0;
-            _lock.lock();
-            if (delayed != NULL && delayedCounter > 0) {
-                // in order to minimize the lock time, we copy the delayed list, free it
-                // and release the lock
-                tmpCounter = delayedCounter;
-                tmpDelayed = (void **)malloc(tmpCounter * sizeof(void *) * 2);
-                memcpy(tmpDelayed, delayed, tmpCounter * sizeof(void *) * 2);
-                delayedCounter = 0;
-                free(delayed);
-                delayed = NULL;
-            }
-            _lock.unlock();
-            // if there was a delayed list, we check it now, not blocking on the lock
-            if (tmpDelayed != NULL) {
-                for (int i = 0; i < tmpCounter; i += 2) {
-                    checkNativeBinding(jvmti, jni, (jmethodID)tmpDelayed[i],
-                                      tmpDelayed[i + 1]);
-                }
-                // don't forget to free the tmp list
-                free(tmpDelayed);
-            }
-        } else {
-            _lock.lock();
-            if (delayed != NULL) {
-                delayed[delayedCounter] = method;
-                delayed[delayedCounter + 1] = address;
-                delayedCounter += 2;
-            }
-            _lock.unlock();
-        }
-    }
-}
-
-void VMStructs::checkNativeBinding(jvmtiEnv *jvmti, JNIEnv *jni,
-                                   jmethodID method, void *address) {
-    char *method_name;
-    char *method_sig;
-    int error = jvmti->GetMethodName(method, &method_name, &method_sig, NULL);
-    if (error == 0) {
-        if (strcmp(method_name, "getMemoryUsage0") == 0 &&
-            strcmp(method_sig, "(Z)Ljava/lang/management/MemoryUsage;") == 0) {
-            _memory_usage_func = (MemoryUsageFunc)address;
-        }
-    }
-    jvmti->Deallocate((unsigned char *)method_sig);
-    jvmti->Deallocate((unsigned char *)method_name);
 }
 
 void* VMThread::initialize(jthread thread) {
@@ -976,7 +846,7 @@ bool VMMethod::check_jmethodID_hotspot(jmethodID id) {
     if (method_ptr == NULL || (size_t)method_ptr == 55) {
         return false;
     }
-    VMStructs::IsValidMethodFunc func = VMStructs::is_valid_method_func();
+    IsValidMethodFunc func = ProfilerVMStructsExt::is_valid_method_func();
     if (func != NULL) {
         if (!func((void *)method_ptr)) {
             return false;
@@ -1066,132 +936,3 @@ JVMJavaThreadState VMThread::state() {
     return static_cast<JVMJavaThreadState>(state);
 }
 
-bool HeapUsage::is_jmx_attempted = false;
-bool HeapUsage::is_jmx_supported = false; // default to not-supported
-
-void HeapUsage::initJMXUsage(JNIEnv *env) {
-    if (is_jmx_attempted) {
-        // do not re-run the initialization
-        return;
-    }
-    is_jmx_attempted = true;
-    jclass factory = env->FindClass("java/lang/management/ManagementFactory");
-    if (!jniExceptionCheck(env) || factory == nullptr) {
-        return;
-    }
-    jclass memoryBeanClass = env->FindClass("java/lang/management/MemoryMXBean");
-    if (!jniExceptionCheck(env) || memoryBeanClass == nullptr) {
-        return;
-    }
-    jmethodID get_memory = env->GetStaticMethodID(
-        factory, "getMemoryMXBean", "()Ljava/lang/management/MemoryMXBean;");
-    if (!jniExceptionCheck(env) || get_memory == nullptr) {
-        return;
-    }
-    jobject memoryBean = env->CallStaticObjectMethod(factory, get_memory);
-    if (!jniExceptionCheck(env) || memoryBean == nullptr) {
-        return;
-    }
-    jmethodID get_heap = env->GetMethodID(memoryBeanClass, "getHeapMemoryUsage",
-                                          "()Ljava/lang/management/MemoryUsage;");
-    if (!jniExceptionCheck(env) || get_heap == nullptr) {
-        return;
-    }
-    env->CallObjectMethod(memoryBean, get_heap);
-    if (!jniExceptionCheck(env)) {
-        return;
-    }
-    // mark JMX as supported only after we were able to retrieve the memory usage
-    is_jmx_supported = true;
-}
-
-bool HeapUsage::isLastGCUsageSupported() {
-    // only supported for JDK 17+
-    // the CollectedHeap structure is vastly different in JDK 11 and earlier so
-    // we can't support it
-    return _collected_heap_addr != NULL && _heap_usage_func != NULL;
-}
-
-bool HeapUsage::needsNativeBindingInterception() {
-    return _collected_heap_addr == NULL ||
-           (_heap_usage_func == NULL && _gc_heap_summary_func == NULL);
-}
-
-jlong HeapUsage::getMaxHeap(JNIEnv *env) {
-    static jclass _rt;
-    static jmethodID _get_rt;
-    static jmethodID _max_memory;
-
-    if (!(_rt = env->FindClass("java/lang/Runtime"))) {
-        jniExceptionCheck(env);
-        return -1;
-    }
-
-    if (!(_get_rt = env->GetStaticMethodID(_rt, "getRuntime",
-                                          "()Ljava/lang/Runtime;"))) {
-        jniExceptionCheck(env);
-        return -1;
-    }
-
-    if (!(_max_memory = env->GetMethodID(_rt, "maxMemory", "()J"))) {
-        jniExceptionCheck(env);
-        return -1;
-    }
-
-    jobject rt = (jobject)env->CallStaticObjectMethod(_rt, _get_rt);
-    jlong ret = (jlong)env->CallLongMethod(rt, _max_memory);
-    if (jniExceptionCheck(env)) {
-        return -1;
-    }
-    return ret;
-}
-
-HeapUsage HeapUsage::get() {
-    return get(true);
-}
-
-HeapUsage HeapUsage::get(bool allow_jmx) {
-    HeapUsage usage;
-    if (_collected_heap_addr != NULL) {
-        if (_heap_usage_func != NULL) {
-            // this is the JDK 17+ path
-            usage = _heap_usage_func(*(char**)_collected_heap_addr);
-            usage._used_at_last_gc =
-                ((CollectedHeapWrapper *)*(char**)_collected_heap_addr)->_used_at_last_gc;
-        } else if (_gc_heap_summary_func != NULL) {
-            // this is the JDK 11 path
-            // we need to collect GCHeapSummary information first
-            GCHeapSummary summary = _gc_heap_summary_func(*(char**)_collected_heap_addr);
-            usage._initSize = -1;
-            usage._used = summary.used();
-            usage._committed = -1;
-            usage._maxSize = summary.maxSize();
-        }
-    }
-    if (usage._maxSize == size_t(-1) && _memory_usage_func != NULL && allow_jmx && isJMXSupported()) {
-        // this path is for non-hotspot JVMs
-        // we need to patch the native method binding for JMX GetMemoryUsage to
-        // capture the native method pointer first also, it requires JMX and
-        // allocating new objects so it really should not be used in a GC callback
-        JNIEnv *env = VM::jni();
-        if (env == NULL) {
-            return usage;
-        }
-        jobject m_usage =
-            (jobject)_memory_usage_func(env, (jobject)NULL, (jboolean) true);
-        jclass cls = env->GetObjectClass(m_usage);
-        jfieldID init_fid = env->GetFieldID(cls, "init", "J");
-        jfieldID max_fid = env->GetFieldID(cls, "max", "J");
-        jfieldID used_fid = env->GetFieldID(cls, "used", "J");
-        jfieldID committed_fid = env->GetFieldID(cls, "committed", "J");
-        if (init_fid == NULL || max_fid == NULL || used_fid == NULL ||
-            committed_fid == NULL) {
-            return usage;
-        }
-        usage._initSize = env->GetLongField(m_usage, init_fid);
-        usage._maxSize = env->GetLongField(m_usage, max_fid);
-        usage._used = env->GetLongField(m_usage, used_fid);
-        usage._committed = env->GetLongField(m_usage, committed_fid);
-    }
-    return usage;
-}

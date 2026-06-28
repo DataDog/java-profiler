@@ -20,8 +20,6 @@
 #include "threadState.h"
 #include "vmEntry.h"
 
-class GCHeapSummary;
-class HeapUsage;
 class VMNMethod;
 
 
@@ -321,9 +319,6 @@ typedef void* address;
     constant_with_version(markWord, monitor_value, 24, MAX_VERSION)
 
 class VMStructs {
-  public:
-    typedef bool (*IsValidMethodFunc)(void *);
-
   protected:
     enum { MONITOR_BIT = 2 };
 
@@ -400,16 +395,6 @@ class VMStructs {
     static LockFunc _lock_func;
     static LockFunc _unlock_func;
 
-    // Datadog-specific extensions
-    static CodeCache _unsafe_to_walk;
-    typedef HeapUsage (*HeapUsageFunc)(const void *);
-    static HeapUsageFunc _heap_usage_func;
-    typedef void *(*MemoryUsageFunc)(void *, void *, bool);
-    static MemoryUsageFunc _memory_usage_func;
-    typedef GCHeapSummary (*GCHeapSummaryFunc)(void *);
-    static GCHeapSummaryFunc _gc_heap_summary_func;
-    static IsValidMethodFunc _is_valid_method_func;
-
     static uintptr_t readSymbol(const char* symbol_name);
 
     // Read VM information from vmStructs
@@ -423,16 +408,12 @@ class VMStructs {
 #endif
 
     static void resolveOffsets();
-    static void patchSafeFetch();
     static void initJvmFunctions();
     static void initTLS(void* vm_thread);
     static void initThreadBridge();
 
     // Datadog-specific private methods
     static void initUnsafeFunctions();
-    static void initCriticalJNINatives();
-    static void checkNativeBinding(jvmtiEnv *jvmti, JNIEnv *jni, jmethodID method, void *address);
-    static const void *findHeapUsageFunc();
 
     const char* at(int offset) {
         const char* ptr = (const char*)this + offset;
@@ -501,12 +482,6 @@ class VMStructs {
         return _enter_special_nm;
     }
 
-    // Datadog-specific extensions
-    static bool isSafeToWalk(uintptr_t pc);
-    static void JNICALL NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni,
-                                         jthread thread, jmethodID method,
-                                         void *address, void **new_address_ptr);
-
     static int thread_osthread_offset() {
         return _thread_osthread_offset;
     }
@@ -543,34 +518,9 @@ class VMStructs {
       return _class_loader_data_offset;
     }
 
-    static IsValidMethodFunc is_valid_method_func() {
-        return _is_valid_method_func;
+    static void* collected_heap_addr() {
+        return _collected_heap_addr;
     }
-};
-
-class HeapUsage : VMStructs {
-private:
-    static bool is_jmx_attempted;
-    static bool is_jmx_supported; // default to not-supported
-public:
-    size_t _initSize = -1;
-    size_t _used = -1;
-    size_t _committed = -1;
-    size_t _maxSize = -1;
-    size_t _used_at_last_gc = -1;
-
-    static void initJMXUsage(JNIEnv* env);
-
-    static bool isJMXSupported() {
-        initJMXUsage(VM::jni());
-        return is_jmx_supported;
-    }
-
-    static bool isLastGCUsageSupported();
-    static bool needsNativeBindingInterception();
-    static jlong getMaxHeap(JNIEnv *env);
-    static HeapUsage get();
-    static HeapUsage get(bool allow_jmx);
 };
 
 class MethodList {
