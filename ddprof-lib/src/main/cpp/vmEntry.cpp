@@ -325,6 +325,7 @@ bool VM::initShared(JavaVM* vm) {
   }
 
   VMStructs::init(lib);
+  ProfilerVMStructsExt::init();
   ProfilerVMStructsExt::initCriticalJNINatives();
 
   // Mark thread entry points for all JVMs (critical for correct stack unwinding)

@@ -13,24 +13,15 @@
 #include <stdlib.h>
 #include <string.h>
 
-// Unwalkable code regions (moved from VMStructs::_unsafe_to_walk)
-static CodeCache _unsafe_to_walk("unwalkable code");
-
 // Static field definitions for ProfilerVMStructsExt
 ProfilerVMStructsExt::HeapUsageFunc ProfilerVMStructsExt::_heap_usage_func = NULL;
 ProfilerVMStructsExt::MemoryUsageFunc ProfilerVMStructsExt::_memory_usage_func = NULL;
 ProfilerVMStructsExt::GCHeapSummaryFunc ProfilerVMStructsExt::_gc_heap_summary_func = NULL;
-IsValidMethodFunc ProfilerVMStructsExt::_is_valid_method_func = NULL;
-
 // Static field definitions for HeapUsage
 bool HeapUsage::is_jmx_attempted = false;
 bool HeapUsage::is_jmx_supported = false;
 
-CodeCache& ProfilerVMStructsExt::unsafeToWalkCache() {
-    return _unsafe_to_walk;
-}
-
-void ProfilerVMStructsExt::init(IsValidMethodFunc func) {
+void ProfilerVMStructsExt::init() {
     CodeCache* libjvm = VMStructs::libjvm();
     if (libjvm == NULL) {
         return;
@@ -38,7 +29,6 @@ void ProfilerVMStructsExt::init(IsValidMethodFunc func) {
     _heap_usage_func = (HeapUsageFunc)findHeapUsageFunc();
     _gc_heap_summary_func = (GCHeapSummaryFunc)libjvm->findSymbol(
         "_ZN13CollectedHeap19create_heap_summaryEv");
-    _is_valid_method_func = func;
 }
 
 void ProfilerVMStructsExt::patchSafeFetch() {
@@ -102,7 +92,7 @@ const void* ProfilerVMStructsExt::findHeapUsageFunc() {
 }
 
 bool ProfilerVMStructsExt::isSafeToWalk(uintptr_t pc) {
-    return !_unsafe_to_walk.contains((const void*)pc);
+    return !VMStructs::unsafeToWalkCache().contains((const void*)pc);
 }
 
 void JNICALL ProfilerVMStructsExt::NativeMethodBind(jvmtiEnv* jvmti, JNIEnv* jni,

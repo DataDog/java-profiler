@@ -446,6 +446,8 @@ class VMStructs {
         return _libjvm;
     }
 
+    static CodeCache& unsafeToWalkCache();
+
     static bool hasClassNames() {
         return _has_class_names;
     }

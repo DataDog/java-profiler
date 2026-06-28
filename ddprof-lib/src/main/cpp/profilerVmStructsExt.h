@@ -9,10 +9,7 @@
 #include <jni.h>
 #include <jvmti.h>
 #include <stdint.h>
-#include "codeCache.h"
 #include "jvmHeap.h"
-
-using IsValidMethodFunc = bool (*)(void*);
 
 class HeapUsage {
   private:
@@ -37,20 +34,13 @@ class HeapUsage {
 
 class ProfilerVMStructsExt {
   public:
-    static void init(IsValidMethodFunc func);
+    static void init();
     static void initCriticalJNINatives();
     static void patchSafeFetch();
     static bool isSafeToWalk(uintptr_t pc);
     static void JNICALL NativeMethodBind(jvmtiEnv* jvmti, JNIEnv* jni,
                                          jthread thread, jmethodID method,
                                          void* address, void** new_address_ptr);
-
-    // Accessor for the unwalkable code cache (used by initUnsafeFunctions in vmStructs)
-    static CodeCache& unsafeToWalkCache();
-
-    static IsValidMethodFunc is_valid_method_func() {
-        return _is_valid_method_func;
-    }
 
   private:
     typedef HeapUsage (*HeapUsageFunc)(const void*);
@@ -60,7 +50,6 @@ class ProfilerVMStructsExt {
     static HeapUsageFunc _heap_usage_func;
     static MemoryUsageFunc _memory_usage_func;
     static GCHeapSummaryFunc _gc_heap_summary_func;
-    static IsValidMethodFunc _is_valid_method_func;
 
     static const void* findHeapUsageFunc();
     static void checkNativeBinding(jvmtiEnv* jvmti, JNIEnv* jni,

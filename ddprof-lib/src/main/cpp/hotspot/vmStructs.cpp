@@ -11,7 +11,6 @@
 #include <stdarg.h>
 #include "hotspot/vmStructs.inline.h"
 #include "thread.h"
-#include "profilerVmStructsExt.h"
 #include "vmEntry.h"
 #include "jniHelper.h"
 #include "jvmHeap.h"
@@ -19,6 +18,13 @@
 #include "safeAccess.h"
 #include "spinLock.h"
 #include "threadState.h"
+
+static bool (*s_is_valid_method_func)(void*) = nullptr;
+static CodeCache s_unsafe_to_walk("unwalkable code");
+
+CodeCache& VMStructs::unsafeToWalkCache() {
+    return s_unsafe_to_walk;
+}
 
 CodeCache* VMStructs::_libjvm = nullptr;
 bool VMStructs::_has_class_names = false;
@@ -506,10 +512,8 @@ void VMStructs::initJvmFunctions() {
         }
     }
 
-    // Datadog-specific function pointer resolution (delegated to ProfilerVMStructsExt)
-    IsValidMethodFunc is_valid_method_func = (IsValidMethodFunc)_libjvm->findSymbol(
+    s_is_valid_method_func = (bool (*)(void*))_libjvm->findSymbol(
         "_ZN6Method15is_valid_methodEPKS_");
-    ProfilerVMStructsExt::init(is_valid_method_func);
 }
 
 // ===== Datadog-specific VMStructs extensions =====
@@ -524,7 +528,7 @@ void VMStructs::initUnsafeFunctions() {
 
     std::vector<const void *> symbols;
     _libjvm->findSymbolsByPrefix(unsafeMangledPrefixes, symbols);
-    CodeCache& unsafe_to_walk = ProfilerVMStructsExt::unsafeToWalkCache();
+    CodeCache& unsafe_to_walk = s_unsafe_to_walk;
     for (const void *symbol : symbols) {
         CodeBlob *blob = _libjvm->findBlobByAddress(symbol);
         if (blob) {
@@ -844,9 +848,8 @@ bool VMMethod::check_jmethodID_hotspot(jmethodID id) {
     if (method_ptr == NULL || (size_t)method_ptr == 55) {
         return false;
     }
-    IsValidMethodFunc func = ProfilerVMStructsExt::is_valid_method_func();
-    if (func != NULL) {
-        if (!func((void *)method_ptr)) {
+    if (s_is_valid_method_func != NULL) {
+        if (!s_is_valid_method_func((void *)method_ptr)) {
             return false;
         }
     }
