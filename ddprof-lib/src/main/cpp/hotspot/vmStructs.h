@@ -7,6 +7,7 @@
 #ifndef _HOTSPOT_VMSTRUCTS_H
 #define _HOTSPOT_VMSTRUCTS_H
 
+#include <atomic>
 #include <initializer_list>
 #include <jni.h>
 #include <jvmti.h>
@@ -16,7 +17,6 @@
 #include "counters.h"
 #include "jvmThread.h"
 #include "safeAccess.h"
-#include "thread.h"
 #include "threadState.h"
 #include "vmEntry.h"
 
@@ -32,6 +32,13 @@ class VMNMethod;
 // When crash protection is active the assert is redundant — any bad read will
 // be caught by the SIGSEGV handler and recovered via longjmp — so we skip it.
 //
+typedef bool (*CrashProtectionProbe)();
+// INVARIANT: always non-null — crashProtectionActive() calls it unconditionally.
+// std::atomic: written on main/attach thread, read from signal context.
+extern std::atomic<CrashProtectionProbe> g_crash_protection_probe;
+bool crashProtectionProbeIsDefault();
+void crashProtectionProbeReset();
+
 // Defined at the bottom of this file after VMThread is declared so that the
 // VMThread fallback path (isExceptionActive) is accessible without forward-
 // declaring the full class.
@@ -1149,13 +1156,8 @@ class InterpreterFrame : VMStructs {
 // is accessible. The forward declaration at the top of this file allows cast_to()
 // to reference it before VMThread is declared.
 inline bool crashProtectionActive() {
-    ProfiledThread* pt = ProfiledThread::currentSignalSafe();
-    if (pt != nullptr && pt->isCrashProtectionActive()) return true;
-    // Fallback for threads without ProfiledThread TLS (e.g. JVM internal threads):
-    // if walkVM has set up setjmp protection via vm_thread->exception(), the assert
-    // is equally redundant — any bad read will be caught by the SIGSEGV handler.
-    // Uses VMThread::isExceptionActive() which reads the field directly without
-    // going through at() to avoid recursive assertion.
+    // acquire load: ensures probe body written before store() is visible here.
+    if (g_crash_protection_probe.load(std::memory_order_acquire)()) return true;
     return JVMThread::key() != pthread_key_t(-1) && VMThread::isExceptionActive();
 }
 

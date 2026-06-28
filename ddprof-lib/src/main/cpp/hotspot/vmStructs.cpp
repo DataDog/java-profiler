@@ -4,11 +4,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <atomic>
 #include <pthread.h>
 #include <string.h>
 #include <unistd.h>
 #include <stdarg.h>
 #include "hotspot/vmStructs.inline.h"
+#include "thread.h"
 #include "profilerVmStructsExt.h"
 #include "vmEntry.h"
 #include "jniHelper.h"
@@ -93,6 +95,15 @@ void* VMStructs::_java_thread_vtbl[6];
 
 VMStructs::LockFunc VMStructs::_lock_func;
 VMStructs::LockFunc VMStructs::_unlock_func;
+
+static bool defaultCrashProtectionProbe() { return false; }
+std::atomic<CrashProtectionProbe> g_crash_protection_probe{defaultCrashProtectionProbe};
+bool crashProtectionProbeIsDefault() {
+    return g_crash_protection_probe.load(std::memory_order_acquire) == defaultCrashProtectionProbe;
+}
+void crashProtectionProbeReset() {
+    g_crash_protection_probe.store(defaultCrashProtectionProbe, std::memory_order_release);
+}
 
 uintptr_t VMStructs::readSymbol(const char* symbol_name) {
     const void* symbol = _libjvm->findSymbol(symbol_name);

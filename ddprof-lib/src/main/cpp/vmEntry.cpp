@@ -440,6 +440,15 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
     return false;
   }
 
+  // Hard double-init guard (active in all build configs including NDEBUG)
+  if (!crashProtectionProbeIsDefault()) { abort(); }
+  g_crash_protection_probe.store(
+      []() -> bool {
+          ProfiledThread* pt = ProfiledThread::currentSignalSafe();
+          return pt != nullptr && pt->isCrashProtectionActive();
+      },
+      std::memory_order_release);
+
   CodeCache *lib = openJvmLibrary();
   if (lib == nullptr) {
     return false;
@@ -729,4 +738,5 @@ extern "C" DLLEXPORT void JNICALL JNI_OnUnload(JavaVM *vm, void *reserved) {
   if (profiler != NULL) {
     profiler->stop();
   }
+  crashProtectionProbeReset();
 }
