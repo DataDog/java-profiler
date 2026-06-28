@@ -734,6 +734,11 @@ enum JVMJavaThreadState {
 DECLARE(VMThread)
   friend class JVMThread;
   public:
+    typedef int (*IsJavaThreadProbe)();
+    // std::atomic: written on main/attach thread, read from signal context.
+    static std::atomic<IsJavaThreadProbe> g_is_java_thread_probe;
+    static void resetIsJavaThreadProbe();
+
     static void* initialize(jthread thread);
 
     static inline VMThread* current();

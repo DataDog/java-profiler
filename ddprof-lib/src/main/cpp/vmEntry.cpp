@@ -449,6 +449,16 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
       },
       std::memory_order_release);
 
+  VMThread::g_is_java_thread_probe.store(
+      []() -> int {
+          ProfiledThread* pt = ProfiledThread::currentSignalSafe();
+          if (pt == nullptr) return 0;
+          ProfiledThread::ThreadType type = pt->threadType();
+          if (type == ProfiledThread::ThreadType::TYPE_UNKNOWN) return 0;
+          return (type == ProfiledThread::ThreadType::TYPE_JAVA_THREAD) ? 1 : -1;
+      },
+      std::memory_order_release);
+
   CodeCache *lib = openJvmLibrary();
   if (lib == nullptr) {
     return false;
@@ -739,4 +749,5 @@ extern "C" DLLEXPORT void JNICALL JNI_OnUnload(JavaVM *vm, void *reserved) {
     profiler->stop();
   }
   crashProtectionProbeReset();
+  VMThread::resetIsJavaThreadProbe();
 }

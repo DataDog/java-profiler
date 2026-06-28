@@ -105,6 +105,11 @@ void crashProtectionProbeReset() {
     g_crash_protection_probe.store(defaultCrashProtectionProbe, std::memory_order_release);
 }
 
+std::atomic<VMThread::IsJavaThreadProbe> VMThread::g_is_java_thread_probe{nullptr};
+void VMThread::resetIsJavaThreadProbe() {
+    g_is_java_thread_probe.store(nullptr, std::memory_order_release);
+}
+
 uintptr_t VMStructs::readSymbol(const char* symbol_name) {
     const void* symbol = _libjvm->findSymbol(symbol_name);
     if (symbol == NULL) {
@@ -554,36 +559,18 @@ void* VMThread::initialize(jthread thread) {
 }
 
 bool VMThread::isJavaThread(VMThread* vm_thread) {
-    // Not a JVM thread - native thread, e.g. thread launched by JNI code
-    if (vm_thread == nullptr) {
-        return false;
-    }
-
-    // Must be called from current thread
+    if (vm_thread == nullptr) return false;
     assert(vm_thread == VMThread::current());
 
-    // JVMTI ThreadStart callback may have set the flag, which is reliable.
-    // Or we may already compute and cache it, so use it instead.
-    ProfiledThread *prof_thread = ProfiledThread::currentSignalSafe();
-    if (prof_thread != nullptr) {
-        ProfiledThread::ThreadType type = prof_thread->threadType();
-        if (type != ProfiledThread::ThreadType::TYPE_UNKNOWN) {
-            return type == ProfiledThread::ThreadType::TYPE_JAVA_THREAD;
-        }
+    // Fast path: profiler-registered probe (ProfiledThread cache).
+    IsJavaThreadProbe probe = g_is_java_thread_probe.load(std::memory_order_acquire);
+    if (probe != nullptr) {
+        int result = probe();
+        if (result != 0) return result > 0;
     }
 
-    // jvmti ThreadStart does not callback to JVM internal threads, e.g. Compiler threads, which are also JavaThreads,
-    // let's check the vtable pointer to make sure it is a Java thread. 
-    // A Java thread should have the same vtable as the one we got from a known Java thread during initialization
-    bool is_java_thread = vm_thread->hasJavaThreadVtable();
-    // Cache the thread type for future quick check
-    if (prof_thread != nullptr) {
-        prof_thread->setJavaThread(is_java_thread);
-    }
-    if (!is_java_thread) {
-        Counters::increment(WALKVM_CACHED_NOT_JAVA);
-    }
-    return is_java_thread;
+    // Reliable vtable check (no ProfiledThread dependency).
+    return vm_thread->hasJavaThreadVtable();
 }
 
 static ExecutionMode convertJvmExecutionState(JVMJavaThreadState state) {
