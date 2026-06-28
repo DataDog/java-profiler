@@ -577,8 +577,8 @@ jobs:
          run: |
            # Files created by Docker container may have restrictive permissions
            # that prevent GitHub Actions from reading them during artifact creation
-           sudo chmod -R +r build/ ddprof-test/build/ ddprof-lib/build/ 2>/dev/null || true
-           sudo find build/ ddprof-test/build/ ddprof-lib/build/ -type d -exec chmod +x {} \; 2>/dev/null || true
+           sudo chmod -R +r build/ ddprof-test/build/ ddprof-lib/build/ || true
+           sudo find build/ ddprof-test/build/ ddprof-lib/build/ -type d -exec chmod +x {} \; || true
        - name: Generate Unwinding Report
          if: success() && matrix.config == 'debug'
          run: |
@@ -588,8 +588,8 @@ jobs:
              \"${{ matrix.config }}\" \"${{ env.JAVA_HOME }}\" \"${{ env.JAVA_TEST_HOME }}\"
            "
            # Fix permissions after Docker container execution (both top-level and subproject builds)
-           sudo chmod -R +r build/ ddprof-test/build/ 2>/dev/null || true
-           sudo find build/ ddprof-test/build/ -type d -exec chmod +x {} \; 2>/dev/null || true
+           sudo chmod -R +r build/ ddprof-test/build/ ddprof-lib/build/ || true
+           sudo find build/ ddprof-test/build/ ddprof-lib/build/ -type d -exec chmod +x {} \; || true
        - name: Add Unwinding Report to Job Summary
          if: success() && matrix.config == 'debug' && hashFiles('ddprof-test/build/reports/unwinding-summary.md') != ''
          run: |
