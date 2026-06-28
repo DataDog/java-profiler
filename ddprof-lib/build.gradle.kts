@@ -1,5 +1,6 @@
 import com.datadoghq.native.model.Platform
 import com.datadoghq.native.util.PlatformUtils
+import com.datadoghq.native.tasks.NativeLinkTask
 import org.gradle.api.publish.maven.tasks.AbstractPublishToMaven
 import org.gradle.api.tasks.VerificationTask
 
@@ -278,6 +279,7 @@ gradle.taskGraph.whenReady {
 afterEvaluate {
   requireNotNull(description) { "Project ${project.path} is published, must have a description" }
 }
+
 
 // Ensure published artifacts depend on release JAR
 // Note: assembleReleaseJar is registered in afterEvaluate, so use matching instead of named
