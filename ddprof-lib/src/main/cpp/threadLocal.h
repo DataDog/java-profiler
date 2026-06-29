@@ -56,7 +56,7 @@ typedef void* (*CREATE_FUNC)(void);
 // Cleanup the value when deleting the key
 typedef void (*CLEAN_FUNC)(void*);
 
-static constexpr pthread_key_t INVLID_KEY = pthread_key_t(-1);
+static constexpr pthread_key_t INVALID_KEY = pthread_key_t(-1);
 
 template <typename T, CREATE_FUNC C = nullptr, CLEAN_FUNC F = nullptr>
 class ThreadLocal {
@@ -67,10 +67,12 @@ public:
     ThreadLocal(const ThreadLocal&) = delete;
     ThreadLocal& operator=(const ThreadLocal&) = delete;
 
-    ThreadLocal() : _key(INVLID_KEY) {
+    ThreadLocal() : _key(INVALID_KEY) {
         static_assert(sizeof(T) == sizeof(void*),
                       "ThreadLocal<T> requires sizeof(T)==sizeof(void*); use a pointer type or add a specialization");
-        pthread_key_create(&_key, F);
+        if (pthread_key_create(&_key, F) != 0) {
+            _key = INVALID_KEY;
+        }
         // What to do if we can not create a key?
         // We probably want to shutdown profiler gracefully, instead of
         // aborting user application - We will need this mechanism globally,
@@ -87,7 +89,7 @@ public:
     }
 
     bool isKeyValid() const {
-        return _key != INVLID_KEY;
+        return _key != INVALID_KEY;
     }
 
     /**
@@ -134,11 +136,13 @@ public:
     ThreadLocal(const ThreadLocal&) = delete;
     ThreadLocal& operator=(const ThreadLocal&) = delete;
 
-    ThreadLocal() : _key(INVLID_KEY) {
+    ThreadLocal() : _key(INVALID_KEY) {
         // Only support 64-bit platforms, double and void* are the same size
         static_assert(sizeof(void*) == 8);
         static_assert(sizeof(double) == 8);
-        pthread_key_create(&_key, nullptr);
+        if (pthread_key_create(&_key, nullptr) != 0) {
+            _key =INVALID_KEY;
+        }
         // What to do if we can not create a key?
         assert(isKeyValid() && "Invalid pthread key");
     }
@@ -152,7 +156,7 @@ public:
     }
 
     bool isKeyValid() const {
-        return _key != INVLID_KEY;
+        return _key != INVALID_KEY;
     }
 
     // double <--> u64 cast, preserve bit format
@@ -200,7 +204,7 @@ public:
     ThreadLocal(const ThreadLocal&) = delete;
     ThreadLocal& operator=(const ThreadLocal&) = delete;
 
-    ThreadLocal() : _key(INVLID_KEY) {
+    ThreadLocal() : _key(INVALID_KEY) {
     }
 
     void initialize(void* current_thread) {
@@ -222,7 +226,7 @@ public:
     }
 
     bool isKeyValid() const {
-        return _key != INVLID_KEY;
+        return _key != INVALID_KEY;
     }
 
     pthread_key_t key() const {
