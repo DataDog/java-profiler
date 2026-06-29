@@ -168,6 +168,7 @@ public:
   long _cpu;
   long _wall;
   bool _wall_collapsing;
+  bool _wall_precheck;
   int _wall_threads_per_tick;
   WallclockSampler _wallclock_sampler;
   long _memory;
@@ -208,6 +209,7 @@ public:
         _cpu(-1),
         _wall(-1),
         _wall_collapsing(false),
+        _wall_precheck(false),
         _wall_threads_per_tick(DEFAULT_WALL_THREADS_PER_TICK),
         _wallclock_sampler(ASGCT),
         _memory(-1),
