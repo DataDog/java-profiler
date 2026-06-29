@@ -5,13 +5,13 @@ title: Java Profiler Build - Test Dashboard
 
 # Java Profiler Build - Test Dashboard
 
-> **Last Updated:** 2026-06-29 01:38 UTC
+> **Last Updated:** 2026-06-29 04:55 UTC
 
 ## Quick Status
 
 | Test Type | Latest | Status | Branch | PR |
 |-----------|--------|--------|--------|-----|
-| [Integration](integration/) | [#121511478](https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/121511478) | ❌ | main | - |
+| [Integration](integration/) | [#121519139](https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/121519139) | ❌ | main | - |
 | [Benchmarks](benchmarks/) | - | - | - | - |
 | [Reliability](reliability/) | - | - | - | - |
 
@@ -37,11 +37,11 @@ Tests multiple allocator configurations (gmalloc, tcmalloc, jemalloc).
 
 | Date | Type | Pipeline | Branch | PR | Status |
 |------|------|----------|--------|-----|--------|
+| 2026-06-29 | Integration | [#121519139](https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/121519139) | main | - | ❌ |
 | 2026-06-29 | Integration | [#121511478](https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/121511478) | main | - | ❌ |
 | 2026-06-29 | Integration | [#121511387](https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/121511387) | main | - | ❌ |
 | 2026-06-29 | Integration | [#121510378](https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/121510378) | main | - | ❌ |
 | 2026-06-28 | Integration | [#121483743](https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/121483743) | main | - | ❌ |
-| 2026-06-28 | Integration | [#121477106](https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/121477106) | main | - | ❌ |
 
 ---
 
