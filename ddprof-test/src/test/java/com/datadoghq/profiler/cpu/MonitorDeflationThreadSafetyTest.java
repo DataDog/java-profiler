@@ -82,6 +82,6 @@ public class MonitorDeflationThreadSafetyTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "cpu=10ms";
+        return "cpu=1ms";
     }
 }
