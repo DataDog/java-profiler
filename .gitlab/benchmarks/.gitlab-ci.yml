@@ -68,7 +68,7 @@ publish-benchmark-gh-pages:
   timeout: 15m
   script:
     - mkdir -p reports
-    - .gitlab/benchmarks/download-s3-reports.sh reports
+    - .gitlab/benchmarks/download-bp-reports.sh reports
     - ./.gitlab/benchmarks/publish-gh-pages.sh reports
   allow_failure: true
 

@@ -21,7 +21,7 @@ api_get() {
   http_code=$(curl -s -o "${out}" -w "%{http_code}" \
     --header "JOB-TOKEN: ${CI_JOB_TOKEN}" "${url}")
   if [[ "${http_code}" != 2* ]]; then
-    echo "  API ${url##*/}: HTTP ${http_code} — $(cat "${out}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('message','?'))" 2>/dev/null || echo 'see above')"
+    echo "  API ${url##*/}: HTTP ${http_code} — $(python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('message','?'))" < "${out}" 2>/dev/null || echo 'see above')"
     return 1
   fi
   return 0
@@ -57,21 +57,31 @@ if [ -z "${DOWNSTREAM_PIPELINE_ID:-}" ]; then
 fi
 echo "BP downstream pipeline: project=${BP_PROJECT_ID}  pipeline=${DOWNSTREAM_PIPELINE_ID}"
 
-# ── 2. list jobs in the downstream pipeline ──────────────────────────────────
-JOBS_FILE="${TMPDIR_LOCAL}/jobs.json"
+# ── 2. list jobs in the downstream pipeline (paginated) ──────────────────────
 echo "Listing BP pipeline jobs…"
-if ! api_get \
-  "${CI_API_V4_URL}/projects/${BP_PROJECT_ID}/pipelines/${DOWNSTREAM_PIPELINE_ID}/jobs?per_page=100" \
-  "${JOBS_FILE}"; then
-  echo "Cannot list BP pipeline jobs — skipping download"
-  exit 0
-fi
-
-JOB_IDS=$(python3 -c "
-import json
-with open('${JOBS_FILE}') as f:
-    print(' '.join(str(j['id']) for j in json.load(f)))
-")
+JOB_IDS=""
+PAGE=1
+while true; do
+  JOBS_FILE="${TMPDIR_LOCAL}/jobs_page${PAGE}.json"
+  if ! api_get \
+    "${CI_API_V4_URL}/projects/${BP_PROJECT_ID}/pipelines/${DOWNSTREAM_PIPELINE_ID}/jobs?per_page=100&page=${PAGE}" \
+    "${JOBS_FILE}"; then
+    echo "Cannot list BP pipeline jobs — skipping download"
+    exit 0
+  fi
+  PAGE_IDS=$(python3 -c "
+import json, sys
+jobs = json.load(open(sys.argv[1]))
+print(' '.join(str(j['id']) for j in jobs))
+print(len(jobs), file=sys.stderr)
+" "${JOBS_FILE}" 2>"${TMPDIR_LOCAL}/page_count.txt")
+  JOB_IDS="${JOB_IDS} ${PAGE_IDS}"
+  PAGE_COUNT=$(cat "${TMPDIR_LOCAL}/page_count.txt")
+  if [ "${PAGE_COUNT}" -lt 100 ]; then
+    break
+  fi
+  PAGE=$((PAGE + 1))
+done
 
 # ── 3. download result_*.json from each job's artifact zip ───────────────────
 DOWNLOADED=0
@@ -81,6 +91,9 @@ for JOB_ID in ${JOB_IDS}; do
     --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
     "${CI_API_V4_URL}/projects/${BP_PROJECT_ID}/jobs/${JOB_ID}/artifacts" 2>/dev/null)
   if [[ "${ART_STATUS}" == 2* ]]; then
+    # Contract with BP (DataDog/apm-reliability/benchmarking-platform#190):
+    # artifacts are stored under the "artifacts/" prefix with names matching
+    # "result_*.json". If BP renames either, this silently extracts nothing.
     # -j: junk paths (strip artifacts/ prefix), -q: quiet, -o: overwrite
     if unzip -q -j "${ART_ZIP}" "artifacts/result_*.json" -d "${DEST}/" 2>/dev/null; then
       DOWNLOADED=$((DOWNLOADED + 1))
