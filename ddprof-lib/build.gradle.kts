@@ -24,7 +24,19 @@ val componentVersion = findProperty("ddprof_version") as? String ?: version.toSt
 // Configure native build with the new plugin
 nativeBuild {
   version.set(componentVersion)
-  cppSourceDirs.set(listOf("src/main/cpp", "src/main/cpp/support", "src/main/cpp/support/hotspot"))
+  cppSourceDirs.set(listOf(
+    "src/main/cpp",
+    "src/main/cpp/support",
+    "src/main/cpp/support/hotspot",
+    "src/main/cpp/support/j9",
+    "src/main/cpp/support/zing",
+  ))
+  supportCppSourceDirs.set(listOf(
+    "src/main/cpp/support",
+    "src/main/cpp/support/hotspot",
+    "src/main/cpp/support/j9",
+    "src/main/cpp/support/zing",
+  ))
   includeDirectories.set(
     listOf(
       "src/main/cpp",
@@ -100,6 +112,25 @@ afterEvaluate {
   }
 }
 
+// Wire split-mode link tasks: SONAME for the support library, ABI symbol list.
+// Runs after NativeBuildPlugin's afterEvaluate has created the tasks.
+afterEvaluate {
+  nativeBuild.buildConfigurations.names.forEach { name ->
+    val cap = name.replaceFirstChar { it.uppercase() }
+    tasks.findByName("linkSupport$cap")?.let {
+      (it as NativeLinkTask).apply {
+        exportSymbolsFile.set(layout.projectDirectory.file("src/main/cpp/support/vmstructs-abi.symbols"))
+        soname.set("libJavaSupport.so")
+        // macOS requires explicit opt-in for undefined symbols (resolved at
+        // runtime by libjavaProfiler.dylib which loads this library).
+        if (PlatformUtils.currentPlatform == Platform.MACOS) {
+          linkerArgs.addAll("-undefined", "dynamic_lookup")
+        }
+      }
+    }
+  }
+}
+
 // Create JAR tasks for each build configuration using nativeBuild extension utilities
 // Uses afterEvaluate to discover configurations dynamically from NativeBuildExtension
 afterEvaluate {
@@ -113,11 +144,13 @@ afterEvaluate {
       }
       into(nativeBuild.libraryTargetDir(name))
 
-      // Ensure library is built before copying (link task created by NativeBuildPlugin)
-      val linkTaskName = "link$capitalizedName"
-      if (tasks.names.contains(linkTaskName)) {
-        dependsOn(linkTaskName)
-      }
+      // Depend on whichever link tasks exist for this config (monolithic or split)
+      val supportLinkTask = "linkSupport$capitalizedName"
+      val profilerLinkTask = "linkProfiler$capitalizedName"
+      val monoLinkTask = "link$capitalizedName"
+      if (tasks.names.contains(supportLinkTask)) dependsOn(supportLinkTask)
+      if (tasks.names.contains(profilerLinkTask)) dependsOn(profilerLinkTask)
+      if (tasks.names.contains(monoLinkTask)) dependsOn(monoLinkTask)
     }
 
     val assembleJarTask = tasks.register("assemble${capitalizedName}Jar", Jar::class) {

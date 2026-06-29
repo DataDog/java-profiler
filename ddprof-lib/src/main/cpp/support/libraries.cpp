@@ -5,12 +5,21 @@
 #include "libraries.h"
 #include "libraryPatcher.h"
 #include "log.h"
-#include "mallocTracer.h"
 #include "os.h"
-#include "profiler.h"
 #include "symbols.h"
 #include "symbols_linux.h"
 #include "vmEntry.h"
+
+static void (*s_native_thread_names_cb)(bool) = nullptr;
+static void (*s_malloc_tracer_refresh_cb)() = nullptr;
+
+void Libraries::setNativeThreadNamesCallback(void (*cb)(bool)) {
+    s_native_thread_names_cb = cb;
+}
+
+void Libraries::setMallocTracerRefreshCallback(void (*cb)()) {
+    s_malloc_tracer_refresh_cb = cb;
+}
 
 // Cadence for the background refresher thread.  Bounds the window during
 // which a library lazily loaded from signal context (and therefore unable
@@ -69,8 +78,8 @@ void Libraries::refresh() {
   updateSymbols(false);
   LibraryPatcher::patch_sigaction();
   LibraryPatcher::install_socket_hooks();
-  if (MallocTracer::running()) {
-    MallocTracer::installHooks();
+  if (s_malloc_tracer_refresh_cb != nullptr) {
+    s_malloc_tracer_refresh_cb();
   }
   if (_remote_symbolication) {
     updateBuildIds();
@@ -121,12 +130,12 @@ void *Libraries::refresherLoop(void *arg) {
     // before the profiler reaches RUNNING (startRefresher precedes that), and
     // decimated to NATIVE_THREAD_NAME_INTERVAL_NS to bound the /proc scan cost.
     u64 now = OS::nanotime();
-    if (Profiler::instance()->isRunning() &&
+    if (s_native_thread_names_cb != nullptr &&
         now - last_native_name_ns >= NATIVE_THREAD_NAME_INTERVAL_NS) {
       last_native_name_ns = now;
       // Defer threads still showing the inherited process name; the dump-time
       // pass (which does not defer) records any that never set a real name.
-      Profiler::instance()->updateNativeThreadNames(true);
+      s_native_thread_names_cb(true);
     }
   }
   return nullptr;
@@ -146,6 +155,10 @@ void Libraries::stopRefresher() {
   if (!_refresher_running.exchange(false, std::memory_order_acq_rel)) {
     return;  // not running
   }
+  // Clear callbacks before joining the thread to avoid races where the
+  // thread fires them after the profiler has started tearing down.
+  s_native_thread_names_cb = nullptr;
+  s_malloc_tracer_refresh_cb = nullptr;
   pthread_kill(_refresher_thread, WAKEUP_SIGNAL);
   pthread_join(_refresher_thread, nullptr);
   // Clear the published TID so a later sampler doesn't skip an unrelated

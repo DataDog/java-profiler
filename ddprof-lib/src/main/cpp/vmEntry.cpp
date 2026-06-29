@@ -33,15 +33,11 @@ const int COMMAND_ERROR = 200;
 
 static Arguments _agent_args(true);
 
-JavaVM *VM::_vm;
-jvmtiEnv *VM::_jvmti = NULL;
+// VM::_vm, _jvmti, _hotspot_version, _openj9, _hotspot, _zing are defined in
+// support/vm_state.cpp so that libJavaSupport can use them without linking to libjavaProfiler.
 
 int VM::_java_version = 0;
 int VM::_java_update_version = 0;
-int VM::_hotspot_version = 0;
-bool VM::_openj9 = false;
-bool VM::_hotspot = false;
-bool VM::_zing = false;
 bool VM::_can_sample_objects = false;
 bool VM::_can_intercept_binding = false;
 bool VM::_is_adaptive_gc_boundary_flag_set = false;

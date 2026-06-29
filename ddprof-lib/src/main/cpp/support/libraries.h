@@ -49,6 +49,14 @@ class Libraries {
   void startRefresher();
   void stopRefresher();
 
+  // Register a callback invoked by the refresher thread to update native thread
+  // names.  The callback is set by the profiler at start and cleared at stop.
+  static void setNativeThreadNamesCallback(void (*cb)(bool));
+
+  // Register a callback invoked by refresh() to install malloc hooks when the
+  // malloc tracer is running.  Set by the profiler at start, cleared at stop.
+  static void setMallocTracerRefreshCallback(void (*cb)());
+
   // TID of the refresher thread once it has captured its own ID, or -1 if
   // the thread is not currently running.  Used by sampler thread-list
   // enumeration to skip this profiler-internal thread.

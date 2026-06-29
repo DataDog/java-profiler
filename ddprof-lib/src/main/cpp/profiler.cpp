@@ -1402,6 +1402,12 @@ Error Profiler::start(Arguments &args, bool reset) {
   // Refresher must be running before the trap fires: dlopen_hook's
   // signal-context branch only marks dirty and relies on the refresher
   // to call refresh() within REFRESH_INTERVAL_NS (500 ms).
+  Libraries::setNativeThreadNamesCallback([](bool defer) { Profiler::instance()->updateNativeThreadNames(defer); });
+  Libraries::setMallocTracerRefreshCallback([]() {
+      if (MallocTracer::running()) {
+          MallocTracer::installHooks();
+      }
+  });
   _libs->startRefresher();
 
   // Always enable library trap to catch wasmtime loading and patch its broken sigaction
