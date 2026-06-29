@@ -20,6 +20,7 @@
 #include "jvmThread.h"
 #include "os.h"
 #include "profiler.h"
+#include "signalInflight.h"
 #include "stackWalker.h"
 #include "thread.h"
 #include "threadState.inline.h"
@@ -38,6 +39,7 @@ void ITimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // is therefore vulnerable to the foreign-SIGPROF deadlock scenario this
   // feature addresses. Use CTimer (the default) when signal-origin
   // validation is required.
+  InflightGuard inflight;
   if (!_enabled)
     return;
   
@@ -104,6 +106,7 @@ long ITimerJvmti::_interval = 0;
 
 void ITimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   SIGNAL_HANDLER_GUARD();
+  InflightGuard inflight;
   CriticalSection cs;
   if (!cs.entered()) {
     return;

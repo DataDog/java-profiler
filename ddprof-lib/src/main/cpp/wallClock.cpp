@@ -16,6 +16,7 @@
 #include "log.h"
 #include "profiler.h"
 #include "signalCookie.h"
+#include "signalInflight.h"
 #include "thread.h"
 #include "threadState.inline.h"
 #include "guards.h"
@@ -66,6 +67,10 @@ void WallClockASGCT::sharedSignalHandler(int signo, siginfo_t *siginfo,
   }
   Counters::increment(WALLCLOCK_SIGNAL_OWN);
 
+  // Past the foreign-signal filter: any work below this point can write JFR.
+  // Participate in SignalInflight::drain() so Profiler::stop() does not tear
+  // down JFR while this handler is still inside recordSample().
+  InflightGuard inflight;
   WallClockASGCT *engine = reinterpret_cast<WallClockASGCT *>(Profiler::instance()->wallEngine());
   if (signo == SIGVTALRM) {
     engine->signalHandler(signo, siginfo, ucontext, engine->_interval);
@@ -246,6 +251,10 @@ void WallClockJvmti::sharedSignalHandler(int signo, siginfo_t *siginfo,
   }
   Counters::increment(WALLCLOCK_SIGNAL_OWN);
 
+  // Past the foreign-signal filter: any work below this point can write JFR.
+  // Participate in SignalInflight::drain() so Profiler::stop() does not tear
+  // down JFR while this handler is still inside recordSampleDelegated().
+  InflightGuard inflight;
   WallClockJvmti *engine =
       reinterpret_cast<WallClockJvmti *>(Profiler::instance()->wallEngine());
   if (signo == SIGVTALRM) {

@@ -29,6 +29,7 @@
 #include "os.h"
 #include "perfEvents.h"
 #include "profiler.h"
+#include "signalInflight.h"
 #include "spinLock.h"
 #include "stackFrame.h"
 #include "stackWalker.h"
@@ -735,6 +736,7 @@ void PerfEvents::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     // Looks like an external signal; don't treat as a profiling event
     return;
   }
+  InflightGuard inflight;
   // Atomically try to enter critical section - prevents all reentrancy races
   CriticalSection cs;
   if (!cs.entered()) {
