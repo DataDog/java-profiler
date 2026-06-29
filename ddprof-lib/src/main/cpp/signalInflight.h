@@ -28,6 +28,26 @@
 // The counter is on its own cache line (alignas(64)) so that handler-side
 // writes do not invalidate the cache line backing each engine's _enabled
 // flag, which is read on every signal.
+//
+// Known limitation — longjmp out of a signal handler frame:
+// If a signal handler frame is unwound by a longjmp that bypasses the
+// InflightGuard destructor, the counter leaks by +1 permanently. In this
+// codebase that can only happen via J9's SIGSEGV null-pointer-check
+// handler: our segvHandler chains to J9 for unclaimed faults, and J9 may
+// siglongjmp to a setjmp installed in normal Java code (J9 null-check
+// recovery), unwinding past every frame above it including any active
+// InflightGuard. SignalHandlerScope has the same limitation for its own
+// depth counter (see guards.h) and the codebase accepts it.
+//
+// In practice this is extremely unlikely to fire from a profiler signal
+// handler: J9 only siglongjmps when the fault matches an annotated
+// null-check site in Java bytecode, and our stack walker faults occur
+// inside our own C++ code that J9 has no reason to claim. If it ever did
+// fire, the failure mode is graceful: every subsequent Profiler::stop()
+// hits drain()'s timeout, returns Error, and refuses to tear down JFR.
+// The JVM keeps running; the profiler is wedged until process exit.
+// No crash, no use-after-free — the timeout path that this counter exists
+// to gate is exactly the safety net for this case.
 class SignalInflight {
 public:
     // ACQUIRE on increment / RELEASE on decrement: drain() observes all
