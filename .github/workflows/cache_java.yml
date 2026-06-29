@@ -68,7 +68,7 @@ jobs:
       sdkman_path: ${{ steps.export-path.outputs.sdkman_path }}
     steps:
       - name: Cache SDKMan! AMD64
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: sdkman
           key: sdkman-amd64-${{ github.run_id }}
@@ -109,7 +109,7 @@ jobs:
       sdkman_path: ${{ steps.export-path.outputs.sdkman_path }}
     steps:
       - name: Cache SDKMan! AARCH64
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: sdkman
           key: sdkman-aarch64-${{ github.run_id }}
