@@ -101,7 +101,7 @@ public final class JVMAccess {
     private final Flags flags;
 
     private JVMAccess() {
-        LibraryLoader.Result result = LibraryLoader.builder().load();;
+        LibraryLoader.Result result = LibraryLoader.builder().library(LibraryLoader.Library.SUPPORT).load();
         if (result.succeeded) {
             // library loaded successfully, check if we can access JVM
             try {
