@@ -9,9 +9,8 @@
 
 #include <setjmp.h>
 
-#include "threadLocal.h"
-
 #include "hotspot/hotspotStackFrame.h"
+#include "hotspot/jitCodeCache.h"
 #include "stackFrame.h"
 #include "stackWalker.h"
 
