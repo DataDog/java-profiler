@@ -58,7 +58,6 @@ private:
   uint8_t _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
   UnwindFailures _unwind_failures;
   bool _otel_ctx_initialized;
-  bool _crash_protection_active;
   // alignas(8) + sizeof(OtelThreadContextRecord)==640 (multiple of 8) guarantee
   // _otel_tag_encodings sits at +640 with no padding, so the three fields form one
   // 688-byte contiguous region exposed as a combined DirectByteBuffer.
@@ -75,7 +74,7 @@ private:
       : ThreadLocalData(), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _tid(tid), _cpu_epoch(0),
         _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0), _filter_slot_id(-1), _init_window(0),
         _signal_depth(0),
-        _otel_ctx_initialized(false), _crash_protection_active(false),
+        _otel_ctx_initialized(false),
         _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0) {};
 
   virtual ~ProfiledThread() { }
@@ -240,9 +239,6 @@ public:
   inline enum ThreadType threadType() const {
     return static_cast<ThreadType>(_misc_flags & TYPE_MASK);
   }
-
-  inline bool isCrashProtectionActive() const { return _crash_protection_active; }
-  inline void setCrashProtectionActive(bool active) { _crash_protection_active = active; }
 
   // JFR tag encoding sidecar — populated by JNI thread, read by signal handler
   // (flightRecorder.cpp writeCurrentContext / wallClock.cpp collapsing).

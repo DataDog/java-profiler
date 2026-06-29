@@ -184,29 +184,23 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
     ProfiledThread* profiled_thread = ProfiledThread::currentSignalSafe();
 
+    _jmp_ctx.set(&crash_protection_ctx);
+    if (setjmp(crash_protection_ctx) != 0) {
+        // checkFault() does a longjmp from inside segvHandler, bypassing
+        // segvHandler's SignalHandlerScope destructor.  Compensate.
+        SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
+        _jmp_ctx.clear();
+        if (depth < max_depth) {
+            fillFrame(frames[depth++], BCI_ERROR, "break_not_walkable");
+        }
+        return depth;
+    }
+ 
     VMJavaFrameAnchor* anchor = NULL;
     if (vm_thread != NULL) {
-        _jmp_ctx.set(&crash_protection_ctx);
-        if (profiled_thread != nullptr) {
-            profiled_thread->setCrashProtectionActive(true);
-        }
-
         anchor = vm_thread->anchor();
         if (anchor == NULL) {
             Counters::increment(WALKVM_ANCHOR_NULL);
-        }
-        if (setjmp(crash_protection_ctx) != 0) {
-            // checkFault() does a longjmp from inside segvHandler, bypassing
-            // segvHandler's SignalHandlerScope destructor.  Compensate.
-            SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
-            if (profiled_thread != nullptr) {
-                profiled_thread->setCrashProtectionActive(false);
-            }
-            _jmp_ctx.clear();
-            if (depth < max_depth) {
-                fillFrame(frames[depth++], BCI_ERROR, "break_not_walkable");
-            }
-            return depth;
         }
     }
 
@@ -848,9 +842,6 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     }
 
     done:
-    if (profiled_thread != nullptr) {
-        profiled_thread->setCrashProtectionActive(false);
-    }
     _jmp_ctx.clear();
 
     // Drop unknown leaf frame - it provides no useful information and breaks
@@ -882,17 +873,11 @@ void HotspotSupport::checkFault(ProfiledThread* thrd) {
         return;
     }
 
-    VMThread* vm_thread = VMThread::current();
-    if (vm_thread == NULL || !vm_thread->isThreadAccessible()) {
-        return;
-    }
-
     // Prefer the semantic crash protection flag (reliable regardless of stack frame sizes).
     // Fall back to sameStack heuristic when ProfiledThread TLS is unavailable (e.g. during
     // early init or in crash recovery tests). sameStack uses a fixed 8KB threshold which
     // can fail with ASAN-inflated frames, but the crashProtectionActive path handles that.
-    bool protected_walk = (thrd != nullptr && thrd->isCrashProtectionActive())
-                       || sameStack(_jmp_ctx.get(), &vm_thread);
+    bool protected_walk = isThreadProtectedByLongjmp();
     if (!protected_walk) {
         return;
     }
@@ -1111,7 +1096,6 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   trace.frames->method_id = (jmethodID)err_string;
   return trace.frames - frames + 1;
 }
-
 
 int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   CStack cstack = Profiler::instance()->cstackMode();

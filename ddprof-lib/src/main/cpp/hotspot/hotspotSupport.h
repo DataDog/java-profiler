@@ -42,11 +42,11 @@ public:
     // *Must* be called before signal is enabled for the thread
     static void initThread();
 
-    static bool isInitialized() {
+    static inline bool isInitialized() {
         return _jmp_ctx.isKeyValid();
     }
 
-    static bool isThreadProtectedByLongjmp() {
+    static inline bool isThreadProtectedByLongjmp() {
         return _jmp_ctx.get() != nullptr;
     }
 

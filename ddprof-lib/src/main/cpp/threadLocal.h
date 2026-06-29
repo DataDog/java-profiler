@@ -207,21 +207,20 @@ public:
     ThreadLocal() : _key(INVALID_KEY) {
     }
 
+    // The key is created by JVM, find out the key.
+    // This method should be called very early at Profiler startup
+    // time
     void initialize(void* current_thread) {
-        // Called from known JavaThread, it should never be nullptr.
-        if (current_thread == nullptr) {
-            assert(false && "Should not reach here");
-        }
+        // Called from known JavaThread, it must not be nullptr.
+        assert(current_thread != nullptr && "Should not reach here");
 
         long max_keys = sysconf(_SC_THREAD_KEYS_MAX);
-
         for (long i = 0; i < max_keys; i++) {
             if (pthread_getspecific((pthread_key_t)i) == current_thread) {
                 _key = pthread_key_t(i);
                 break;
             }
         }
-
         assert(isKeyValid() && "Invalid thread key");
     }
 
