@@ -15,7 +15,7 @@
  */
 
 #include "log.h"
-#include "profiler.h"
+#include "arguments.h"
 #include <string.h>
 
 const char *const Log::LEVEL_NAME[] = {"TRACE", "DEBUG", "INFO",

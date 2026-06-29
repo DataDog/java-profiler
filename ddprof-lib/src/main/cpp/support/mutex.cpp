@@ -4,8 +4,12 @@
  */
 
 #include "mutex.h"
-#include "signalSafety.h"
 
+// signalSafety.h is intentionally omitted here: the DEBUG_ASSERT_NOT_IN_SIGNAL
+// guard references ProfiledThread which lives in libjavaProfiler.  The mutex
+// itself is correct without the guard; the assertion is retained in callers
+// that operate in a profiler context and include signalSafety.h directly.
+#define DEBUG_ASSERT_NOT_IN_SIGNAL() ((void)0)
 
 Mutex::Mutex() {
     pthread_mutexattr_t attr;
