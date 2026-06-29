@@ -24,10 +24,11 @@ val componentVersion = findProperty("ddprof_version") as? String ?: version.toSt
 // Configure native build with the new plugin
 nativeBuild {
   version.set(componentVersion)
-  cppSourceDirs.set(listOf("src/main/cpp"))
+  cppSourceDirs.set(listOf("src/main/cpp", "src/main/cpp/support", "src/main/cpp/support/hotspot"))
   includeDirectories.set(
     listOf(
       "src/main/cpp",
+      "src/main/cpp/support",
       "${project(":malloc-shim").file("src/main/public")}",
     ),
   )
@@ -47,6 +48,7 @@ gtest {
 
   includes.from(
     "src/main/cpp",
+    "src/main/cpp/support",
     "$javaHome/include",
     "$javaHome/include/$platformInclude",
     project(":malloc-shim").file("src/main/public"),
