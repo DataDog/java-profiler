@@ -1,6 +1,7 @@
 import com.datadoghq.native.model.Platform
 import com.datadoghq.native.util.PlatformUtils
 import com.datadoghq.native.tasks.NativeLinkTask
+import com.datadoghq.native.tasks.NativeLinkExecutableTask
 import org.gradle.api.publish.maven.tasks.AbstractPublishToMaven
 import org.gradle.api.tasks.VerificationTask
 
@@ -113,7 +114,7 @@ afterEvaluate {
 }
 
 // Wire split-mode link tasks: SONAME for the support library, ABI symbol list.
-// Runs after NativeBuildPlugin's afterEvaluate has created the tasks.
+// Runs after NativeBuildPlugin's afterEvaluate has registered the tasks.
 afterEvaluate {
   nativeBuild.buildConfigurations.names.forEach { name ->
     val cap = name.replaceFirstChar { it.uppercase() }
@@ -129,6 +130,28 @@ afterEvaluate {
       }
     }
   }
+}
+
+// Support-only gtest tests link against libJavaSupport.so only.
+// The set is empty; populate it when support-only tests (e.g. vmstructs_ut, codeCache_ut) are added.
+afterEvaluate {
+    val supportOnlyTests = setOf<String>()
+    nativeBuild.buildConfigurations.names.forEach { configName ->
+        val cap = configName.replaceFirstChar { it.uppercase() }
+        val libDir = nativeBuild.librarySourceDir(configName).get().asFile.absolutePath
+        supportOnlyTests.forEach { testName ->
+            tasks.findByName("linkGtest${cap}_$testName")?.let {
+                (it as NativeLinkExecutableTask).apply {
+                    libPath(libDir)
+                    lib("JavaSupport")
+                    when (PlatformUtils.currentPlatform) {
+                        Platform.LINUX -> runtimePath("\$ORIGIN")
+                        Platform.MACOS -> linkerArgs.addAll("-rpath", "@loader_path")
+                    }
+                }
+            }
+        }
+    }
 }
 
 // Create JAR tasks for each build configuration using nativeBuild extension utilities
