@@ -40,10 +40,23 @@ abstract class NativeBuildExtension @Inject constructor(
      */
     abstract val includeDirectories: ListProperty<String>
 
+    /** Source directories that belong to the support library only. */
+    abstract val supportCppSourceDirs: ListProperty<String>
+
+    /** Source directories that belong to the profiler library only.
+     *  Defaults to cppSourceDirs minus supportCppSourceDirs when empty. */
+    abstract val profilerCppSourceDirs: ListProperty<String>
+
+    /** When true, compile all sources into a single library (transitional mode). */
+    abstract val monolithicBuild: Property<Boolean>
+
     init {
         version.convention(project.version.toString())
         cppSourceDirs.convention(listOf("src/main/cpp"))
         includeDirectories.convention(emptyList())
+        supportCppSourceDirs.convention(emptyList())
+        profilerCppSourceDirs.convention(emptyList())
+        monolithicBuild.convention(false)
     }
 
     /**

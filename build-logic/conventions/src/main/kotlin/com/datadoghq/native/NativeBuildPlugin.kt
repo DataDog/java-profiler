@@ -47,6 +47,10 @@ class NativeBuildPlugin : Plugin<Project> {
             project.objects
         )
 
+        // Step 3.2.2: read the monolithic Gradle property
+        val monolithic = project.hasProperty("monolithic")
+        extension.monolithicBuild.set(monolithic)
+
         // Setup standard configurations after project evaluation
         project.afterEvaluate {
             setupStandardConfigurations(project, extension)
@@ -82,34 +86,80 @@ class NativeBuildPlugin : Plugin<Project> {
         config: BuildConfiguration
     ) {
         val configName = config.capitalizedName()
+
+        // Step 3.2.3: create two compile+link pairs when split mode is active
+        val linkTaskNames: List<String>
+        if (extension.monolithicBuild.get() || extension.supportCppSourceDirs.get().isEmpty()) {
+            linkTaskNames = listOf(
+                createCompileLinkPair(project, extension, config, extension.cppSourceDirs.get(), "")
+            )
+        } else {
+            val supportDirs = extension.supportCppSourceDirs.get()
+            val allDirs = extension.cppSourceDirs.get()
+            val profilerDirs = allDirs.filter { it !in supportDirs }
+            val supportLinkName = createCompileLinkPair(project, extension, config, supportDirs, "Support")
+            val profilerLinkName = createCompileLinkPair(
+                project, extension, config, profilerDirs, "Profiler",
+                linkAgainst = "libJavaSupport"
+            )
+            // Profiler link depends on support library being built first
+            project.tasks.named(profilerLinkName, NativeLinkTask::class.java) {
+                dependsOn(supportLinkName)
+            }
+            linkTaskNames = listOf(supportLinkName, profilerLinkName)
+        }
+
+        // Create assemble task depending on all link tasks for this config
+        project.tasks.register("assemble$configName") {
+            group = "build"
+            description = "Assembles ${config.name} configuration"
+            linkTaskNames.forEach { dependsOn(it) }
+        }
+
+        project.logger.debug("Created tasks for configuration: ${config.name}")
+    }
+
+    /**
+     * Creates a compile + link task pair for the given source directories and suffix.
+     *
+     * @param suffix  "" for monolithic/default, "Support" or "Profiler" in split mode
+     * @param linkAgainst  "libXxx" library name to add as a link-time dependency (with rpath)
+     * @return the name of the created link task
+     */
+    private fun createCompileLinkPair(
+        project: Project,
+        extension: NativeBuildExtension,
+        config: BuildConfiguration,
+        sourceDirs: List<String>,
+        suffix: String,
+        linkAgainst: String? = null
+    ): String {
+        val configName = config.capitalizedName()
         val platform = config.platform.get()
         val arch = config.architecture.get()
 
-        // Define paths
-        val objDir = project.file("build/obj/main/${config.name}")
+        val libBaseName = if (suffix == "Support") "JavaSupport" else "javaProfiler"
+        val libName = "lib$libBaseName.${PlatformUtils.sharedLibExtension()}"
+
+        val objSubDir = if (suffix.isEmpty()) "" else "/${suffix.lowercase()}"
+        val objDir = project.file("build/obj/main/${config.name}$objSubDir")
         val libDir = project.file("build/lib/main/${config.name}/$platform/$arch")
-        val libName = "libjavaProfiler.${PlatformUtils.sharedLibExtension()}"
         val outputLib = project.file("$libDir/$libName")
 
-        // Create compile task
-        val compileTask = project.tasks.register("compile$configName", NativeCompileTask::class.java) {
+        val compileTaskName = "compile${suffix}${configName}"
+        val compileTask = project.tasks.register(compileTaskName, NativeCompileTask::class.java) {
             group = "build"
-            description = "Compiles C++ sources for ${config.name} configuration"
+            description = "Compiles C++ sources for ${config.name}${if (suffix.isNotEmpty()) " $suffix" else ""}"
 
-            // Find compiler
-            val compilerPath = findCompiler(project)
-            compiler.set(compilerPath)
+            compiler.set(findCompiler(project))
             compilerArgs.set(config.compilerArgs.get())
 
-            // Set sources - default to src/main/cpp
-            val srcDirs = extension.cppSourceDirs.get()
-            sources.from(srcDirs.map { dir ->
+            sources.from(sourceDirs.map { dir ->
                 project.fileTree(dir) {
                     include("**/*.cpp", "**/*.cc", "**/*.c")
                 }
             })
 
-            // Set includes - default + JNI
             val includeList = extension.includeDirectories.get().toMutableList()
             includeList.addAll(PlatformUtils.jniIncludePaths())
             includes.from(includeList)
@@ -117,21 +167,27 @@ class NativeBuildPlugin : Plugin<Project> {
             objectFileDir.set(objDir)
         }
 
-        // Create link task
-        val linkTask = project.tasks.register("link$configName", NativeLinkTask::class.java) {
+        val linkTaskName = "link${suffix}${configName}"
+        project.tasks.register(linkTaskName, NativeLinkTask::class.java) {
             group = "build"
-            description = "Links ${config.name} shared library"
+            description = "Links ${config.name}${if (suffix.isNotEmpty()) " $suffix" else ""} shared library"
             dependsOn(compileTask)
 
-            val compilerPath = findCompiler(project)
-            linker.set(compilerPath)
+            linker.set(findCompiler(project))
             linkerArgs.set(config.linkerArgs.get())
-            objectFiles.from(project.fileTree(objDir) {
-                include("*.o")
-            })
+            objectFiles.from(project.fileTree(objDir) { include("*.o") })
             outputFile.set(outputLib)
 
-            // Enable debug symbol extraction for release builds
+            if (linkAgainst != null) {
+                val libFlag = linkAgainst.removePrefix("lib")
+                libraryPaths.add(libDir.absolutePath)
+                libraries.add(libFlag)
+                when (PlatformUtils.currentPlatform) {
+                    Platform.LINUX -> runtimePaths.add("\$ORIGIN")
+                    Platform.MACOS -> runtimePaths.add("@loader_path")
+                }
+            }
+
             if (config.name == "release") {
                 extractDebugSymbols.set(true)
                 stripSymbols.set(true)
@@ -139,14 +195,7 @@ class NativeBuildPlugin : Plugin<Project> {
             }
         }
 
-        // Create assemble task
-        project.tasks.register("assemble$configName") {
-            group = "build"
-            description = "Assembles ${config.name} configuration"
-            dependsOn(linkTask)
-        }
-
-        project.logger.debug("Created tasks for configuration: ${config.name}")
+        return linkTaskName
     }
 
     private fun findCompiler(project: Project): String = PlatformUtils.findCompiler(project)
