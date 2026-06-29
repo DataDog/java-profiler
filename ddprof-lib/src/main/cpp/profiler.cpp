@@ -1503,7 +1503,21 @@ Error Profiler::stop() {
     return Error("Profiler is not active");
   }
 
+  // Order matters: disable engines first so the _enabled check inside signal
+  // handlers will fail for any new signal delivered from now on. drainInflight()
+  // then waits for handlers that already passed the check to leave recordSample().
+  // Only once those are gone is it safe to run the rest of the teardown
+  // (engine stops, JFR teardown) without risking use-after-free.
   disableEngines();
+
+  if (!CTimer::drainInflight()) {
+    // SIGPROF handlers stuck past the 200 ms timeout. Leave state == RUNNING so
+    // the caller cannot start() against half-torn-down JFR and so engine stops
+    // (notably BaseWallClock::stop()'s pthread_join) are not double-invoked.
+    // The operation is idempotent on retry: disableEngines() above is an atomic
+    // store, and no other engine stop has run yet.
+    return Error("SIGPROF handlers did not drain; teardown skipped, retry stop()");
+  }
 
   if (_event_mask & EM_ALLOC)
     _alloc_engine->stop();
@@ -1566,22 +1580,11 @@ Error Profiler::stop() {
     }
   }
 
-  // Wait for all SIGPROF handlers to drain before tearing down JFR.
-  // If draining times out (handlers are stuck), skip JFR teardown to prevent
-  // use-after-free. This leaks JFR resources (~few MB) but is far safer than
-  // freeing structures that stuck handlers are still accessing.
-  bool drained = CTimer::drainInflight();
-
   // writing these out before stopping the JFR recording allows to report the
   // correct counts in the recording
   _thread_info.reportCounters();
 
-  if (drained) {
-    rotateDictsAndRun([&]{ _jfr.stop(); });
-  } else {
-    Log::error("Profiler::stop: skipping JFR teardown due to stuck SIGPROF handlers. "
-               "JFR resources (~few MB) will leak. Recording file may be incomplete.");
-  }
+  rotateDictsAndRun([&]{ _jfr.stop(); });
 
   // Unpatch libraries AFTER JFR serialization completes
   // Remote symbolication RemoteFrameInfo structs contain pointers to build-ID strings
