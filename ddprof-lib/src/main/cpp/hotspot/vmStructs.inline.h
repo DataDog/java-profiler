@@ -7,6 +7,7 @@
 #ifndef _HOTSPOT_VMSTRUCTS_INLINE_H
 #define _HOTSPOT_VMSTRUCTS_INLINE_H
 
+#include "hotspot/hotspotSupport.h"
 #include "hotspot/vmStructs.h"
 #include "jvmThread.h"
 
@@ -71,5 +72,11 @@ VMMethod* VMThread::compiledMethod() {
     }
     return NULL;
 }
+
+// Test if longjmp context is armed for the thread
+inline bool crashProtectionActive() {
+    return HotspotSupport::isThreadProtectedByLongjmp();
+}
+
 
 #endif // _HOTSPOT_VMSTRUCTS_INLINE_H

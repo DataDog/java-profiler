@@ -7,6 +7,8 @@
 #ifndef _HOTSPOT_HOTSPOTSUPPORT_H
 #define _HOTSPOT_HOTSPOTSUPPORT_H
 
+#include <setjmp.h>
+
 #include "hotspot/hotspotStackFrame.h"
 #include "hotspot/jitCodeCache.h"
 #include "stackFrame.h"
@@ -16,6 +18,8 @@ class ProfiledThread;
 
 class HotspotSupport {
 private:
+    static ThreadLocal<jmp_buf*> _jmp_ctx;
+
     static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                       StackWalkFeatures features, EventType event_type,
                       const void* pc, uintptr_t sp, uintptr_t fp, int lock_index, bool* truncated);
@@ -37,6 +41,14 @@ public:
     // Per-thread initialization.
     // *Must* be called before signal is enabled for the thread
     static void initThread();
+
+    static bool isInitialized() {
+        return _jmp_ctx.isKeyValid();
+    }
+
+    static bool isThreadProtectedByLongjmp() {
+        return _jmp_ctx.get() != nullptr;
+    }
 
     static inline bool isJitCode(const void* p) {
         return JitCodeCache::isJitCode(p);

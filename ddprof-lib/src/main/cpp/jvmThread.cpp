@@ -33,6 +33,17 @@ void JVMThread::initThread() {
     }
 }
 
+bool JVMThread::isInitialized() {
+    if(_tid != nullptr && _jvm_thread.isKeyValid()) {
+      if (VM::isHotspot()) {
+          return HotspotSupport::isInitialized();
+      }
+      return true;
+    }
+    return false;
+}
+
+
 int JVMThread::nativeThreadId(JNIEnv* jni, jthread thread) {
     return VM::isOpenJ9() ? J9Support::GetOSThreadID(thread) : VMThread::nativeThreadId(jni, thread);
 }

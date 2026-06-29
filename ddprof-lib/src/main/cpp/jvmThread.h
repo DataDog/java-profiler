@@ -25,9 +25,7 @@ public:
      * no synchronization is needed
      */
     static bool initialize();
-    static bool isInitialized() {
-        return _tid != nullptr && _jvm_thread.isKeyValid();
-    }
+    static bool isInitialized();
 
     // Per-thread initialization
     static void initThread();

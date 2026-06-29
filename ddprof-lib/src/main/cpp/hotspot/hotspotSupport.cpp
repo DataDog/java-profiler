@@ -6,7 +6,6 @@
 
 #include <climits>
 #include <cstdlib>
-#include <setjmp.h>
 #include "asyncSampleMutex.h"
 #include "frames.h"
 #include "guards.h"
@@ -40,11 +39,11 @@ static jmethodID getMethodId(VMMethod* method) {
     return NULL;
 }
 
-static ThreadLocal<jmp_buf*> jmp_ctx;
+ThreadLocal<jmp_buf*> HotspotSupport::_jmp_ctx;
 
 void HotspotSupport::initThread() {
     // Ensure the slot is allocated
-    jmp_ctx.set(nullptr);
+    _jmp_ctx.set(nullptr);
 }
 
 /**
@@ -187,7 +186,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
     VMJavaFrameAnchor* anchor = NULL;
     if (vm_thread != NULL) {
-        jmp_ctx.set(&crash_protection_ctx);
+        _jmp_ctx.set(&crash_protection_ctx);
         if (profiled_thread != nullptr) {
             profiled_thread->setCrashProtectionActive(true);
         }
@@ -203,7 +202,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             if (profiled_thread != nullptr) {
                 profiled_thread->setCrashProtectionActive(false);
             }
-            jmp_ctx.clear();
+            _jmp_ctx.clear();
             if (depth < max_depth) {
                 fillFrame(frames[depth++], BCI_ERROR, "break_not_walkable");
             }
@@ -852,7 +851,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     if (profiled_thread != nullptr) {
         profiled_thread->setCrashProtectionActive(false);
     }
-    jmp_ctx.clear();
+    _jmp_ctx.clear();
 
     // Drop unknown leaf frame - it provides no useful information and breaks
     // aggregation by lumping unrelated samples under a single "unknown" entry
@@ -893,7 +892,7 @@ void HotspotSupport::checkFault(ProfiledThread* thrd) {
     // early init or in crash recovery tests). sameStack uses a fixed 8KB threshold which
     // can fail with ASAN-inflated frames, but the crashProtectionActive path handles that.
     bool protected_walk = (thrd != nullptr && thrd->isCrashProtectionActive())
-                       || sameStack(jmp_ctx.get(), &vm_thread);
+                       || sameStack(_jmp_ctx.get(), &vm_thread);
     if (!protected_walk) {
         return;
     }
@@ -901,7 +900,7 @@ void HotspotSupport::checkFault(ProfiledThread* thrd) {
     if (thrd != nullptr) {
         thrd->resetCrashHandler();
     }
-    longjmp(*jmp_ctx.get(), 1);
+    longjmp(*_jmp_ctx.get(), 1);
 }
 
 int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
