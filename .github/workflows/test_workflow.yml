@@ -147,6 +147,18 @@ jobs:
             echo "glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64" >> failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
             exit 1
           fi
+      - name: Verify libJavaSupport ABI
+        if: success()
+        run: |
+          SUPPORT_LIB=$(find ddprof-lib/build/lib -name "libJavaSupport.so" | head -1)
+          [ -z "$SUPPORT_LIB" ] && echo "libJavaSupport.so not found" && exit 1
+          PROFILER_UNDEFINED=$(nm -u "$SUPPORT_LIB" | grep -E 'ProfiledThread|Profiler::|FlightRecorder' || true)
+          if [ -n "$PROFILER_UNDEFINED" ]; then
+            echo "ERROR: libJavaSupport.so has undefined profiler symbols:"
+            echo "$PROFILER_UNDEFINED"
+            exit 1
+          fi
+          echo "ABI gate passed — no profiler symbols in libJavaSupport.so"
       - name: Generate Unwinding Report
         if: success() && matrix.config == 'debug'
         run: |
