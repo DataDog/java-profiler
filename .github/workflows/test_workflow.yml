@@ -576,9 +576,9 @@ jobs:
          if: always()
          run: |
            # Files created by Docker container may have restrictive permissions
-           # that prevent GitHub Actions from reading them during artifact creation
-           sudo chmod -R +r build/ ddprof-test/build/ ddprof-lib/build/ || true
-           sudo find build/ ddprof-test/build/ ddprof-lib/build/ -type d -exec chmod +x {} \; || true
+           # that prevent GitHub Actions from reading them during artifact creation.
+           # Use a+rX (umask-independent) where X adds execute only to directories.
+           sudo chmod -R a+rX build/ ddprof-test/build/ ddprof-lib/build/ || true
        - name: Generate Unwinding Report
          if: success() && matrix.config == 'debug'
          run: |
@@ -587,9 +587,9 @@ jobs:
              \"${{ github.sha }}\" \"musl/${{ matrix.java_version }}-${{ matrix.config }}-aarch64\" \
              \"${{ matrix.config }}\" \"${{ env.JAVA_HOME }}\" \"${{ env.JAVA_TEST_HOME }}\"
            "
-           # Fix permissions after Docker container execution (both top-level and subproject builds)
-           sudo chmod -R +r build/ ddprof-test/build/ ddprof-lib/build/ || true
-           sudo find build/ ddprof-test/build/ ddprof-lib/build/ -type d -exec chmod +x {} \; || true
+           # Fix permissions after Docker container execution (both top-level and subproject builds).
+           # Use a+rX (umask-independent) where X adds execute only to directories.
+           sudo chmod -R a+rX build/ ddprof-test/build/ ddprof-lib/build/ || true
        - name: Add Unwinding Report to Job Summary
          if: success() && matrix.config == 'debug' && hashFiles('ddprof-test/build/reports/unwinding-summary.md') != ''
          run: |
