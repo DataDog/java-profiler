@@ -856,11 +856,6 @@ void Profiler::switchLibraryTrap(bool enable) {
   __atomic_store_n(_dlopen_entry, impl, __ATOMIC_RELEASE);
 }
 
-void Profiler::enableEngines() {
-  _cpu_engine->enableEvents(true);
-  _wall_engine->enableEvents(true);
-}
-
 void Profiler::disableEngines() {
   _cpu_engine->enableEvents(false);
   _wall_engine->enableEvents(false);

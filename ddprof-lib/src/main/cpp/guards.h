@@ -103,39 +103,6 @@ void signalHandlerUnwindAfterLongjmp();
 #define SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP() signalHandlerUnwindAfterLongjmp()
 
 /**
- * RAII guard for CTimer signal handler in-flight tracking.
- *
- * Increments CTimer::_inflight on construction and decrements on destruction,
- * ensuring the counter is always balanced even if the handler returns early.
- * CTimer::_inflight is cache-line-aligned (alignas(64)) to avoid false sharing
- * with _enabled, minimizing cache line bouncing.
- *
- * This closes the TOCTOU race between disableEngines() and _jfr.stop():
- * CTimer::drainInflight() spins until _inflight reaches zero, guaranteeing
- * that _jfr.stop() only runs once all handlers have fully exited.
- *
- * Usage (at the start of CTimer signal handlers):
- *   InflightGuard inflight;
- *   // All return paths automatically decrement the counter
- *
- * The guard is a no-op on non-Linux platforms where CTimer is unavailable.
- */
-class InflightGuard {
-public:
-    InflightGuard();
-    ~InflightGuard();
-
-    // Non-copyable, non-movable
-    InflightGuard(const InflightGuard&) = delete;
-    InflightGuard& operator=(const InflightGuard&) = delete;
-    InflightGuard(InflightGuard&&) = delete;
-    InflightGuard& operator=(InflightGuard&&) = delete;
-
-private:
-    bool _active;
-};
-
-/**
  * Race-free critical section using atomic compare-and-swap.
  *
  * Hybrid implementation:
