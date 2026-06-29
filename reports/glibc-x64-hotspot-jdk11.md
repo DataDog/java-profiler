@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk11
 
 ## glibc-x64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-06-28 21:38:34 EDT
+**Date:** 2026-06-28 21:38:57 EDT
 
 ### Configuration
 | Setting | Value |
@@ -48,10 +48,6 @@ title: glibc-x64-hotspot-jdk11
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1782696931 32
-1782696936 32
-1782696941 32
-1782696946 32
 1782696951 32
 1782696956 32
 1782696961 32
@@ -68,6 +64,10 @@ title: glibc-x64-hotspot-jdk11
 1782697016 32
 1782697021 32
 1782697026 32
+1782697031 32
+1782697036 32
+1782697041 32
+1782697046 32
 ```
 </details>
 
