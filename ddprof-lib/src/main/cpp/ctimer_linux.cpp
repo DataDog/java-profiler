@@ -20,6 +20,7 @@
 #include "counters.h"
 #include "guards.h"
 #include "ctimer.h"
+#include "signalInflight.h"
 #include "debugSupport.h"
 #include "jvmThread.h"
 #include "libraries.h"
@@ -49,7 +50,6 @@ int CTimer::_max_timers = 0;
 int *CTimer::_timers = NULL;
 CStack CTimer::_cstack;
 bool CTimer::_enabled = false;
-alignas(64) int CTimer::_inflight = 0;
 int CTimer::_signal;
 
 int CTimer::registerThread(int tid) {
@@ -177,57 +177,12 @@ Error CTimer::start(Arguments &args) {
   return Error::OK;
 }
 
-// 200 ms: long enough for any legitimate recordSample() call to finish,
-// short enough to avoid a perceptible hang if a handler is somehow stuck.
-static const long DRAIN_TIMEOUT_NS = 200000000L;
-
-bool CTimer::drainInflight() {
-  if (__atomic_load_n(&_inflight, __ATOMIC_ACQUIRE) == 0) {
-    return true; // fast path: nothing in flight
-  }
-
-  struct timespec deadline;
-  if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0) {
-    // Cannot establish a deadline; refuse to spin unbounded and conservatively
-    // report timeout so the caller skips JFR teardown.
-    Log::error("CTimer::drainInflight: clock_gettime(CLOCK_MONOTONIC) failed (errno=%d). "
-               "Skipping JFR teardown to prevent use-after-free.", errno);
-    return false;
-  }
-  deadline.tv_nsec += DRAIN_TIMEOUT_NS;
-  if (deadline.tv_nsec >= 1000000000L) {
-    deadline.tv_sec += 1;
-    deadline.tv_nsec -= 1000000000L;
-  }
-
-  while (__atomic_load_n(&_inflight, __ATOMIC_ACQUIRE) > 0) {
-    struct timespec now;
-    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
-      Log::error("CTimer::drainInflight: clock_gettime(CLOCK_MONOTONIC) failed (errno=%d). "
-                 "Skipping JFR teardown to prevent use-after-free.", errno);
-      return false;
-    }
-    if (now.tv_sec > deadline.tv_sec ||
-        (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec)) {
-      int remaining = __atomic_load_n(&_inflight, __ATOMIC_ACQUIRE);
-      Log::error("CTimer::drainInflight: timed out after %ldms waiting for "
-                 "%d in-flight SIGPROF handler(s). Skipping JFR teardown to "
-                 "prevent use-after-free. This indicates a stuck signal handler.",
-                 DRAIN_TIMEOUT_NS / 1000000L, remaining);
-      return false; // timeout: handlers still in-flight
-    }
-    sched_yield();
-  }
-  return true; // success: all handlers drained
-}
-
 void CTimer::stop() {
   for (int i = 0; i < _max_timers; i++) {
     unregisterThread(i);
   }
-  // Note: drainInflight() is called by Profiler::stop() after all engines
-  // have stopped, not here. Profiler needs the return value to decide whether
-  // to proceed with JFR teardown.
+  // Note: SignalInflight::drain() is called by Profiler::stop() after
+  // disableEngines(); see signalInflight.h.
 }
 
 Error CTimerJvmti::check(Arguments &args) {

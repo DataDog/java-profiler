@@ -14,6 +14,7 @@
 #include "common.h"
 #include "counters.h"
 #include "ctimer.h"
+#include "signalInflight.h"
 #include "dwarf.h"
 #include "flightRecorder.h"
 #include "itimer.h"
@@ -1504,19 +1505,19 @@ Error Profiler::stop() {
   }
 
   // Order matters: disable engines first so the _enabled check inside signal
-  // handlers will fail for any new signal delivered from now on. drainInflight()
-  // then waits for handlers that already passed the check to leave recordSample().
-  // Only once those are gone is it safe to run the rest of the teardown
+  // handlers will fail for any new signal delivered from now on. drain() then
+  // waits for handlers that already passed the check to leave their JFR write
+  // path. Only once those are gone is it safe to run the rest of the teardown
   // (engine stops, JFR teardown) without risking use-after-free.
   disableEngines();
 
-  if (!CTimer::drainInflight()) {
-    // SIGPROF handlers stuck past the 200 ms timeout. Leave state == RUNNING so
-    // the caller cannot start() against half-torn-down JFR and so engine stops
+  if (!SignalInflight::drain()) {
+    // Signal handlers stuck past the timeout. Leave state == RUNNING so the
+    // caller cannot start() against half-torn-down JFR and so engine stops
     // (notably BaseWallClock::stop()'s pthread_join) are not double-invoked.
     // The operation is idempotent on retry: disableEngines() above is an atomic
     // store, and no other engine stop has run yet.
-    return Error("SIGPROF handlers did not drain; teardown skipped, retry stop()");
+    return Error("signal handlers did not drain; teardown skipped, retry stop()");
   }
 
   if (_event_mask & EM_ALLOC)
