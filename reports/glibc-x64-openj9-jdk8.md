@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk8
 
 ## glibc-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-06-29 04:11:14 EDT
+**Date:** 2026-06-29 04:25:52 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-openj9-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 87 |
-| CPU Cores (end) | 94 |
+| CPU Cores (start) | 7 |
+| CPU Cores (end) | 11 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-x64-openj9-jdk8
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (3 unique values: 87-94 cores)</summary>
+<summary>CPU Timeline (3 unique values: 7-13 cores)</summary>
 
 ```
-1782720415 87
-1782720420 87
-1782720425 87
-1782720430 87
-1782720435 92
-1782720440 92
-1782720445 92
-1782720450 92
-1782720455 92
-1782720460 92
-1782720465 92
-1782720470 92
-1782720475 92
-1782720480 92
-1782720485 92
-1782720490 92
-1782720495 92
-1782720500 92
-1782720505 94
-1782720510 94
+1782721245 7
+1782721250 7
+1782721255 7
+1782721260 7
+1782721265 7
+1782721270 7
+1782721275 7
+1782721280 7
+1782721285 7
+1782721290 7
+1782721295 7
+1782721300 7
+1782721305 7
+1782721310 7
+1782721315 7
+1782721320 7
+1782721325 13
+1782721330 13
+1782721335 13
+1782721340 13
 ```
 </details>
 
