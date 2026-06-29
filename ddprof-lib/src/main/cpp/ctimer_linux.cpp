@@ -34,7 +34,6 @@
 #include <string.h>
 #include <sys/syscall.h>
 #include <time.h>
-#include <time.h>
 #include <unistd.h>
 
 #ifndef SIGEV_THREAD_ID
@@ -188,7 +187,13 @@ bool CTimer::drainInflight() {
   }
 
   struct timespec deadline;
-  clock_gettime(CLOCK_MONOTONIC, &deadline);
+  if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0) {
+    // Cannot establish a deadline; refuse to spin unbounded and conservatively
+    // report timeout so the caller skips JFR teardown.
+    Log::error("CTimer::drainInflight: clock_gettime(CLOCK_MONOTONIC) failed (errno=%d). "
+               "Skipping JFR teardown to prevent use-after-free.", errno);
+    return false;
+  }
   deadline.tv_nsec += DRAIN_TIMEOUT_NS;
   if (deadline.tv_nsec >= 1000000000L) {
     deadline.tv_sec += 1;
@@ -197,7 +202,11 @@ bool CTimer::drainInflight() {
 
   while (__atomic_load_n(&_inflight, __ATOMIC_ACQUIRE) > 0) {
     struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+      Log::error("CTimer::drainInflight: clock_gettime(CLOCK_MONOTONIC) failed (errno=%d). "
+                 "Skipping JFR teardown to prevent use-after-free.", errno);
+      return false;
+    }
     if (now.tv_sec > deadline.tv_sec ||
         (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec)) {
       int remaining = __atomic_load_n(&_inflight, __ATOMIC_ACQUIRE);

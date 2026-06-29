@@ -26,9 +26,6 @@
 
 class CTimer : public Engine {
 private:
-  // This is accessed from signal handlers, so must be async-signal-safe
-  static bool _enabled;
-
   // Count of signal handlers currently executing past the _enabled check.
   // drainInflight() waits for this to reach zero before JFR teardown, closing
   // the TOCTOU window between the _enabled check and JFR buffer access.
@@ -40,6 +37,10 @@ private:
   static void signalHandler(int signo, siginfo_t *siginfo, void *ucontext);
 
 protected:
+  // Accessed from signal handlers (including CTimerJvmti subclass), so must
+  // be async-signal-safe. Mutated via enableEvents().
+  static bool _enabled;
+
   static long _interval;
   static CStack _cstack;
   static int _signal;
