@@ -15,6 +15,15 @@
 _ZN9VMStructs4initEP9CodeCache
 _ZN9VMStructs5readyEv
 
+# JVMAccess JNI entry points (support library provides these; loaded by JVMAccess before the profiler)
+Java_com_datadoghq_profiler_JVMAccess_findStringJVMFlag0
+Java_com_datadoghq_profiler_JVMAccess_setStringJVMFlag0
+Java_com_datadoghq_profiler_JVMAccess_findBooleanJVMFlag0
+Java_com_datadoghq_profiler_JVMAccess_setBooleanJVMFlag0
+Java_com_datadoghq_profiler_JVMAccess_findIntJVMFlag0
+Java_com_datadoghq_profiler_JVMAccess_findFloatJVMFlag0
+Java_com_datadoghq_profiler_JVMAccess_healthCheck0
+
 # Crash-protection probe (C linkage + helpers)
 g_crash_protection_probe
 _Z25crashProtectionProbeResetv
