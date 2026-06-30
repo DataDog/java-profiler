@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk11
 
 ## glibc-x64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-06-30 11:04:56 EDT
+**Date:** 2026-06-30 11:45:42 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-openj9-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 4 |
-| CPU Cores (end) | 4 |
+| CPU Cores (start) | 77 |
+| CPU Cores (end) | 84 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-x64-openj9-jdk11
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 4-4 cores)</summary>
+<summary>CPU Timeline (3 unique values: 77-84 cores)</summary>
 
 ```
-1782831590 4
-1782831595 4
-1782831600 4
-1782831605 4
-1782831610 4
-1782831615 4
-1782831620 4
-1782831625 4
-1782831630 4
-1782831635 4
-1782831640 4
-1782831645 4
-1782831650 4
-1782831655 4
-1782831660 4
-1782831665 4
-1782831670 4
-1782831675 4
-1782831680 4
-1782831685 4
+1782834041 77
+1782834046 77
+1782834051 77
+1782834056 79
+1782834061 79
+1782834066 79
+1782834071 84
+1782834076 84
+1782834081 84
+1782834086 84
+1782834091 84
+1782834096 84
+1782834101 84
+1782834106 84
+1782834111 84
+1782834116 84
+1782834121 84
+1782834126 84
+1782834131 84
+1782834136 84
 ```
 </details>
 
