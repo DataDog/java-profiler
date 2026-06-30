@@ -1313,23 +1313,18 @@ bool isHiddenClass(jvmtiEnv *jvmti, jclass clazz) {
         JVMSupport::isHidden(modifiers)) {
         return true;
     }
-    // Access flags do not reliably mark HotSpot hidden classes: there is no
-    // class-level hidden bit and a Lookup.defineHiddenClass class need not be
-    // synthetic. Hidden/anonymous classes carry a VM-injected "/0x..." name
-    // suffix (see Lookup::getPackage); '/' is illegal in a normal binary class
-    // name, so this reliably identifies the unloadable classes we must keep on
-    // the jmethodID path.
-    char* signature = nullptr;
-    bool hidden = false;
-    if (jvmti->GetClassSignature(clazz, &signature, nullptr) == JVMTI_ERROR_NONE &&
-        signature != nullptr) {
-        const char* slash = strrchr(signature, '/');
-        hidden = slash != nullptr && slash[1] >= '0' && slash[1] <= '9';
-    }
-    if (signature != nullptr) {
-        jvmti->Deallocate((unsigned char*)signature);
-    }
-    return hidden;
+    return false;
+}
+
+// Access flags do not reliably mark HotSpot hidden classes: there is no
+// class-level hidden bit and a Lookup.defineHiddenClass class need not be
+// synthetic. Hidden/anonymous classes carry a VM-injected "/0x..." name
+// suffix (see Lookup::getPackage); '/' is illegal in a normal binary class
+// name, so this reliably identifies the unloadable classes we must keep on
+// the jmethodID path.
+bool isHiddenClassBySignature(const char* signature) {
+    const char* slash = strrchr(signature, '/');
+    return slash != nullptr && slash[1] >= '0' && slash[1] <= '9';
 }
 
 bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool load_all) {
@@ -1343,7 +1338,7 @@ bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jcl
             if (jvmti->GetClassSignature(klass, &signature_ptr, nullptr) == JVMTI_ERROR_NONE) {
                 // Lambda classes, even loaded by bootstrap class loader, can be unloaded,
                 // fallback to jmethodID
-                if (!isLambdaClass(signature_ptr)) {
+                if (!isLambdaClass(signature_ptr) && !isHiddenClassBySignature(signature_ptr)) {
                     if (cl != nullptr) {
                         jni->DeleteLocalRef(cl);
                     }
