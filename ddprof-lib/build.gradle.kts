@@ -142,6 +142,7 @@ afterEvaluate {
 afterEvaluate {
   if (nativeBuild.monolithicBuild.get() || nativeBuild.supportCppSourceDirs.get().isEmpty()) return@afterEvaluate
   val supportOnlyTests = setOf("dwarf_ut", "sframe_ut", "safefetch_ut", "libraries_ut")
+  val supportLibName = if (PlatformUtils.currentPlatform == Platform.MACOS) "libJavaSupport.dylib" else "libJavaSupport.so"
   nativeBuild.buildConfigurations.names.forEach { configName ->
     val cap = configName.replaceFirstChar { it.uppercase() }
     val libDir = nativeBuild.librarySourceDir(configName).get().asFile.absolutePath
@@ -155,6 +156,14 @@ afterEvaluate {
             Platform.MACOS -> linkerArgs.addAll("-rpath", "@loader_path")
           }
         }
+        // Copy libJavaSupport next to the test binary so $ORIGIN / @loader_path resolves at runtime.
+        val binaryDir = layout.buildDirectory.dir("bin/gtest/${configName}_$testName")
+        val copyTask = tasks.register("copySupportLibFor${cap}_$testName", Copy::class) {
+          from(libDir) { include(supportLibName) }
+          into(binaryDir)
+          dependsOn("linkSupport$cap")
+        }
+        tasks.findByName("gtest${cap}_$testName")?.dependsOn(copyTask)
       }
     }
   }

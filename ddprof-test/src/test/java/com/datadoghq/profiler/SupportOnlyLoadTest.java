@@ -17,24 +17,32 @@ class SupportOnlyLoadTest {
     @Test
     @EnabledOnOs(OS.LINUX)
     void jvmAccessDoesNotLoadProfilerLibrary() throws Exception {
+        // Snapshot maps BEFORE initializing JVMAccess. The profiler may already be
+        // mapped if it was loaded as a JVM agent by other tests in the same JVM;
+        // in that case we cannot attribute the mapping to JVMAccess, so skip.
+        boolean profilerAlreadyMapped = Files.lines(Paths.get("/proc/self/maps"))
+            .anyMatch(line -> line.contains("libjavaProfiler"));
+        org.junit.jupiter.api.Assumptions.assumeFalse(profilerAlreadyMapped,
+            "libjavaProfiler.so already mapped (loaded as agent) — skipping isolation check");
+
         JVMAccess access = JVMAccess.getInstance();
-        // On non-HotSpot JVMs (J9, Zing) the support library may load but the
-        // health check may not succeed; skip the maps assertion in that case.
         org.junit.jupiter.api.Assumptions.assumeTrue(access.isActive(),
             "JVMAccess not active on this JVM — skipping map check");
 
-        boolean profilerMapped = Files.lines(Paths.get("/proc/self/maps"))
+        boolean profilerMappedAfter = Files.lines(Paths.get("/proc/self/maps"))
             .anyMatch(line -> line.contains("libjavaProfiler"));
-
-        assertFalse(profilerMapped,
+        assertFalse(profilerMappedAfter,
             "libjavaProfiler.so must NOT be mapped when only JVMAccess is used");
     }
 
     @Test
     void jvmAccessCanReadJvmFlag() {
+        // MaxHeapSize is a HotSpot-only flag; not present in OpenJ9's vmstructs
+        org.junit.jupiter.api.Assumptions.assumeFalse(
+            System.getProperty("java.vm.name", "").contains("OpenJ9"),
+            "MaxHeapSize flag not available on OpenJ9");
         JVMAccess access = JVMAccess.getInstance();
         assertTrue(access.isActive(), "JVMAccess must load successfully");
-        // MaxHeapSize is always present on HotSpot
         long maxHeap = access.flags().getIntFlag("MaxHeapSize");
         assertTrue(maxHeap > 0, "MaxHeapSize must be positive");
     }
