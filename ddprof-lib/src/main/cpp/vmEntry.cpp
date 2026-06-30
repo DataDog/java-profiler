@@ -437,8 +437,19 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
     return false;
   }
 
-  // Hard double-init guard (active in all build configs including NDEBUG)
-  if (!crashProtectionProbeIsDefault()) { abort(); }
+  // Double-init guard: the crash-protection probe must still be the default
+  // sentinel before we install the profiler-side implementation.  A non-default
+  // probe means initProfilerBridge was called twice without an intervening stop(),
+  // which indicates a programming error.  Abort in debug builds for immediate
+  // visibility; return false in release builds so the caller can propagate the
+  // failure gracefully rather than taking down the JVM.
+  if (!crashProtectionProbeIsDefault()) {
+      Log::warn("initProfilerBridge: double-init detected — crash-protection probe already set");
+#if !defined(NDEBUG)
+      abort();
+#endif
+      return false;
+  }
   g_crash_protection_probe.store(
       []() -> bool {
           ProfiledThread* pt = ProfiledThread::currentSignalSafe();
@@ -453,6 +464,13 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
           ProfiledThread::ThreadType type = pt->threadType();
           if (type == ProfiledThread::ThreadType::TYPE_UNKNOWN) return 0;
           return (type == ProfiledThread::ThreadType::TYPE_JAVA_THREAD) ? 1 : -1;
+      },
+      std::memory_order_release);
+
+  g_is_in_signal_probe.store(
+      []() -> bool {
+          ProfiledThread* pt = ProfiledThread::currentSignalSafe();
+          return pt != nullptr && pt->signalDepth() != 0;
       },
       std::memory_order_release);
 
@@ -747,4 +765,5 @@ extern "C" DLLEXPORT void JNICALL JNI_OnUnload(JavaVM *vm, void *reserved) {
   }
   crashProtectionProbeReset();
   VMThread::resetIsJavaThreadProbe();
+  resetIsInSignalProbe();
 }

@@ -39,6 +39,15 @@ extern std::atomic<CrashProtectionProbe> g_crash_protection_probe;
 bool crashProtectionProbeIsDefault();
 void crashProtectionProbeReset();
 
+// Signal-context probe — analogous to g_is_java_thread_probe.
+// Returns true when the calling thread is inside a tracked signal handler.
+// Null (default) means the profiler bridge has not been initialised; treated
+// as "not in signal" by debug assertions so uninstrumented code is not affected.
+// std::atomic: written once by VM::initProfilerBridge, read from mutex::lock().
+typedef bool (*IsInSignalProbe)();
+extern std::atomic<IsInSignalProbe> g_is_in_signal_probe;
+void resetIsInSignalProbe();
+
 // Defined at the bottom of this file after VMThread is declared so that the
 // VMThread fallback path (isExceptionActive) is accessible without forward-
 // declaring the full class.

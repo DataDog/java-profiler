@@ -126,7 +126,7 @@ public final class JVMAccess {
      * @param errorHandler the error handler or {@literal null}
      */
     public JVMAccess(String libLocation, String scratchDir, Consumer<Throwable> errorHandler) {
-        LibraryLoader.Result result = LibraryLoader.builder().withLibraryLocation(libLocation).withScratchDir(scratchDir).load();
+        LibraryLoader.Result result = LibraryLoader.builder().library(LibraryLoader.Library.SUPPORT).withLibraryLocation(libLocation).withScratchDir(scratchDir).load();
         if (result.succeeded) {
             // library loaded successfully, check if we can access JVM
             try {

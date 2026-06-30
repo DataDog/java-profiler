@@ -4,12 +4,28 @@
  */
 
 #include "mutex.h"
+#include "hotspot/vmStructs.h"
 
-// signalSafety.h is intentionally omitted here: the DEBUG_ASSERT_NOT_IN_SIGNAL
-// guard references ProfiledThread which lives in libjavaProfiler.  The mutex
-// itself is correct without the guard; the assertion is retained in callers
-// that operate in a profiler context and include signalSafety.h directly.
+// Use the support-side signal-context probe to restore the AS-safety assertion
+// without pulling in ProfiledThread (which lives in libjavaProfiler).
+// The probe is null before VM::initProfilerBridge runs; treat null as "not in signal"
+// so uninstrumented code paths are never falsely flagged.
+#if !defined(NDEBUG)
+#include <unistd.h>
+#include <stdlib.h>
+#define DEBUG_ASSERT_NOT_IN_SIGNAL()                                                \
+    do {                                                                             \
+        IsInSignalProbe _probe = g_is_in_signal_probe.load(std::memory_order_acquire); \
+        if (_probe != nullptr && _probe()) {                                         \
+            static const char _msg[] =                                               \
+                "[java-profiler] mutex::lock() called from signal handler context\n";\
+            (void)write(STDERR_FILENO, _msg, sizeof(_msg) - 1);                     \
+            abort();                                                                 \
+        }                                                                            \
+    } while (0)
+#else
 #define DEBUG_ASSERT_NOT_IN_SIGNAL() ((void)0)
+#endif
 
 Mutex::Mutex() {
     pthread_mutexattr_t attr;

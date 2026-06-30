@@ -210,6 +210,7 @@ public:
 
   static bool isOpenJ9() { return _openj9; }
   static bool isHotspot() { return _hotspot; }
+  static void setHotspot(bool v) { _hotspot = v; }
 
   static bool canSampleObjects() { return _can_sample_objects; }
 

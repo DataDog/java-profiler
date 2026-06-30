@@ -125,12 +125,8 @@ public final class LibraryLoader {
                 while (state.get() == LoadingState.LOADING) {
                     LockSupport.parkNanos(5_000_000L); // 5ms
                 }
-                // the library has been loaded by another thread, we can return
+                // the library has been loaded (or failed) by another thread
                 return state.get() == LoadingState.LOADED ? Result.SUCCESS : Result.UNAVAILABLE;
-            }
-            // if the attempt to load the library failed do not try again
-            if (state.get() == LoadingState.UNAVAILABLE) {
-                return Result.UNAVAILABLE;
             }
             if (libraryLocation != null) {
                 System.load(Paths.get(libraryLocation).toAbsolutePath().toString());
@@ -144,6 +140,10 @@ public final class LibraryLoader {
                     // Extract support lib under its exact name so $ORIGIN rpath resolution works,
                     // then extract the profiler lib to a randomised temp name and load it.
                     extractNamedLibrary(SUPPORT_LIBRARY_NAME, os, arch, qualifier, tempDir);
+                    // Mark support as loaded so concurrent SUPPORT-only callers don't race.
+                    loadingStateMap.computeIfAbsent(SUPPORT_LIBRARY_NAME,
+                            k -> new AtomicReference<>(LoadingState.NOT_LOADED))
+                            .compareAndSet(LoadingState.NOT_LOADED, LoadingState.LOADED);
                     Path profilerPath = libraryFromClasspath(os, arch, qualifier, tempDir);
                     System.load(profilerPath.toAbsolutePath().toString());
                 } else {
@@ -173,11 +173,20 @@ public final class LibraryLoader {
                 + "/" + libraryName;
         Path outFile = tempDir.resolve(libraryName);
         if (!Files.exists(outFile) || Files.size(outFile) == 0) {
-            try (InputStream is = JavaProfiler.class.getResourceAsStream(resourcePath)) {
+            try (InputStream is = LibraryLoader.class.getResourceAsStream(resourcePath)) {
                 if (is == null) {
                     throw new IllegalStateException(resourcePath + " not found on classpath");
                 }
-                Files.copy(is, outFile, StandardCopyOption.REPLACE_EXISTING);
+                // Write to a sibling temp file, then atomically rename to avoid partial-write races
+                // between concurrent JVM processes sharing the same temp directory.
+                Path tmpFile = Files.createTempFile(tempDir, libraryName + "-", ".tmp");
+                try {
+                    Files.copy(is, tmpFile, StandardCopyOption.REPLACE_EXISTING);
+                    Files.move(tmpFile, outFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                } catch (IOException e) {
+                    Files.deleteIfExists(tmpFile);
+                    throw e;
+                }
             }
             outFile.toFile().deleteOnExit();
         }
@@ -199,7 +208,7 @@ public final class LibraryLoader {
     private static Path libraryFromClasspath(OperatingSystem os, Arch arch, String qualifier, Path tempDir) throws IOException {
         String resourcePath = NATIVE_LIBS + "/" + os.name().toLowerCase() + "-" + arch.name().toLowerCase() + ((qualifier != null && !qualifier.isEmpty()) ? "-" + qualifier : "") + "/" + JAVA_PROFILER_LIBRARY_NAME;
 
-        InputStream libraryData =  JavaProfiler.class.getResourceAsStream(resourcePath);
+        InputStream libraryData = LibraryLoader.class.getResourceAsStream(resourcePath);
 
         if (libraryData != null) {
             Path libFile = Files.createTempFile(tempDir, JAVA_PROFILER_LIBRARY_NAME_BASE + "-dd-tmp", ".so");

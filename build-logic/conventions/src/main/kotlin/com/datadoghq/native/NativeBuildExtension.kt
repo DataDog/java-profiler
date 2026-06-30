@@ -43,8 +43,13 @@ abstract class NativeBuildExtension @Inject constructor(
     /** Source directories that belong to the support library only. */
     abstract val supportCppSourceDirs: ListProperty<String>
 
-    /** Source directories that belong to the profiler library only.
-     *  Defaults to cppSourceDirs minus supportCppSourceDirs when empty. */
+    /**
+     * Source directories that belong to the profiler library only.
+     * When empty (the default), NativeBuildPlugin falls back to
+     * {@code cppSourceDirs - supportCppSourceDirs} at task-creation time.
+     * Set explicitly only when the profiler sources are not the complement
+     * of supportCppSourceDirs within cppSourceDirs.
+     */
     abstract val profilerCppSourceDirs: ListProperty<String>
 
     /** When true, compile all sources into a single library (transitional mode). */

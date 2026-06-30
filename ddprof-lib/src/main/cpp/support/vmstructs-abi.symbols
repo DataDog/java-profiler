@@ -15,7 +15,7 @@
 _ZN9VMStructs4initEP9CodeCache
 _ZN9VMStructs5readyEv
 
-# JVMAccess JNI entry points (support library provides these; loaded by JVMAccess before the profiler)
+# JVMAccess JNI entry points (implemented in libJavaSupport; JVMAccess loads libJavaSupport independently of the profiler)
 Java_com_datadoghq_profiler_JVMAccess_findStringJVMFlag0
 Java_com_datadoghq_profiler_JVMAccess_setStringJVMFlag0
 Java_com_datadoghq_profiler_JVMAccess_findBooleanJVMFlag0
@@ -28,6 +28,10 @@ Java_com_datadoghq_profiler_JVMAccess_healthCheck0
 g_crash_protection_probe
 _Z25crashProtectionProbeResetv
 _Z29crashProtectionProbeIsDefaultv
+
+# Signal-context probe (set by VM::initProfilerBridge; read by mutex::lock() debug assertion)
+g_is_in_signal_probe
+_Z20resetIsInSignalProbev
 
 # isJavaThread probe + reset
 _ZN8VMThread22g_is_java_thread_probeE

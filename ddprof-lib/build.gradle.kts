@@ -133,9 +133,11 @@ afterEvaluate {
 }
 
 // Support-only gtest tests link against libJavaSupport.so only.
-// The set is empty; populate it when support-only tests (e.g. vmstructs_ut, codeCache_ut) are added.
+// These test files depend exclusively on support-side code (dwarf, sframe, safeAccess, libraries/codeCache).
+// Only wired in split mode — in monolithic mode there is no separate libJavaSupport.so.
 afterEvaluate {
-    val supportOnlyTests = setOf<String>()
+    if (nativeBuild.monolithicBuild.get() || nativeBuild.supportCppSourceDirs.get().isEmpty()) return@afterEvaluate
+    val supportOnlyTests = setOf("dwarf_ut", "sframe_ut", "safefetch_ut", "libraries_ut")
     nativeBuild.buildConfigurations.names.forEach { configName ->
         val cap = configName.replaceFirstChar { it.uppercase() }
         val libDir = nativeBuild.librarySourceDir(configName).get().asFile.absolutePath

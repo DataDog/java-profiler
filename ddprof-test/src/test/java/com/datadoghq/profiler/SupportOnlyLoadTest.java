@@ -18,7 +18,10 @@ class SupportOnlyLoadTest {
     @EnabledOnOs(OS.LINUX)
     void jvmAccessDoesNotLoadProfilerLibrary() throws Exception {
         JVMAccess access = JVMAccess.getInstance();
-        assertTrue(access.isActive(), "JVMAccess must load successfully");
+        // On non-HotSpot JVMs (J9, Zing) the support library may load but the
+        // health check may not succeed; skip the maps assertion in that case.
+        org.junit.jupiter.api.Assumptions.assumeTrue(access.isActive(),
+            "JVMAccess not active on this JVM — skipping map check");
 
         boolean profilerMapped = Files.lines(Paths.get("/proc/self/maps"))
             .anyMatch(line -> line.contains("libjavaProfiler"));

@@ -96,7 +96,9 @@ class NativeBuildPlugin : Plugin<Project> {
         } else {
             val supportDirs = extension.supportCppSourceDirs.get()
             val allDirs = extension.cppSourceDirs.get()
-            val profilerDirs = allDirs.filter { it !in supportDirs }
+            val explicitProfilerDirs = extension.profilerCppSourceDirs.get()
+            val profilerDirs = if (explicitProfilerDirs.isNotEmpty()) explicitProfilerDirs
+                               else allDirs.filter { it !in supportDirs }
             val supportLinkName = createCompileLinkPair(project, extension, config, supportDirs, "Support")
             val profilerLinkName = createCompileLinkPair(
                 project, extension, config, profilerDirs, "Profiler",

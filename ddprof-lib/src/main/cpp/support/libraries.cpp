@@ -9,16 +9,17 @@
 #include "symbols.h"
 #include "symbols_linux.h"
 #include "vmEntry.h"
+#include <atomic>
 
-static void (*s_native_thread_names_cb)(bool) = nullptr;
-static void (*s_malloc_tracer_refresh_cb)() = nullptr;
+static std::atomic<void (*)(bool)> s_native_thread_names_cb{nullptr};
+static std::atomic<void (*)()> s_malloc_tracer_refresh_cb{nullptr};
 
 void Libraries::setNativeThreadNamesCallback(void (*cb)(bool)) {
-    s_native_thread_names_cb = cb;
+    s_native_thread_names_cb.store(cb, std::memory_order_release);
 }
 
 void Libraries::setMallocTracerRefreshCallback(void (*cb)()) {
-    s_malloc_tracer_refresh_cb = cb;
+    s_malloc_tracer_refresh_cb.store(cb, std::memory_order_release);
 }
 
 // Cadence for the background refresher thread.  Bounds the window during
@@ -78,8 +79,9 @@ void Libraries::refresh() {
   updateSymbols(false);
   LibraryPatcher::patch_sigaction();
   LibraryPatcher::install_socket_hooks();
-  if (s_malloc_tracer_refresh_cb != nullptr) {
-    s_malloc_tracer_refresh_cb();
+  auto malloc_cb = s_malloc_tracer_refresh_cb.load(std::memory_order_acquire);
+  if (malloc_cb != nullptr) {
+    malloc_cb();
   }
   if (_remote_symbolication) {
     updateBuildIds();
@@ -130,12 +132,13 @@ void *Libraries::refresherLoop(void *arg) {
     // before the profiler reaches RUNNING (startRefresher precedes that), and
     // decimated to NATIVE_THREAD_NAME_INTERVAL_NS to bound the /proc scan cost.
     u64 now = OS::nanotime();
-    if (s_native_thread_names_cb != nullptr &&
+    auto names_cb = s_native_thread_names_cb.load(std::memory_order_acquire);
+    if (names_cb != nullptr &&
         now - last_native_name_ns >= NATIVE_THREAD_NAME_INTERVAL_NS) {
       last_native_name_ns = now;
       // Defer threads still showing the inherited process name; the dump-time
       // pass (which does not defer) records any that never set a real name.
-      s_native_thread_names_cb(true);
+      names_cb(true);
     }
   }
   return nullptr;
@@ -157,8 +160,8 @@ void Libraries::stopRefresher() {
   }
   // Clear callbacks before joining the thread to avoid races where the
   // thread fires them after the profiler has started tearing down.
-  s_native_thread_names_cb = nullptr;
-  s_malloc_tracer_refresh_cb = nullptr;
+  s_native_thread_names_cb.store(nullptr, std::memory_order_release);
+  s_malloc_tracer_refresh_cb.store(nullptr, std::memory_order_release);
   pthread_kill(_refresher_thread, WAKEUP_SIGNAL);
   pthread_join(_refresher_thread, nullptr);
   // Clear the published TID so a later sampler doesn't skip an unrelated

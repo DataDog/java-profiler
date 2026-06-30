@@ -116,6 +116,11 @@ void VMThread::resetIsJavaThreadProbe() {
     g_is_java_thread_probe.store(nullptr, std::memory_order_release);
 }
 
+std::atomic<IsInSignalProbe> g_is_in_signal_probe{nullptr};
+void resetIsInSignalProbe() {
+    g_is_in_signal_probe.store(nullptr, std::memory_order_release);
+}
+
 uintptr_t VMStructs::readSymbol(const char* symbol_name) {
     const void* symbol = _libjvm->findSymbol(symbol_name);
     if (symbol == NULL) {
@@ -129,6 +134,7 @@ uintptr_t VMStructs::readSymbol(const char* symbol_name) {
 void VMStructs::init(CodeCache* libjvm) {
     if (libjvm != NULL) {
         _libjvm = libjvm;
+        VM::setHotspot(true);
         initOffsets();
         initJvmFunctions();
         initUnsafeFunctions();
