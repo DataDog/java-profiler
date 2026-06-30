@@ -215,6 +215,9 @@ public:
         assert(current_thread != nullptr && "Should not reach here");
 
         long max_keys = sysconf(_SC_THREAD_KEYS_MAX);
+        if (max_keys <= 0 || max_keys > 1024) {
+            max_keys = 1024;  // fallback/cap; matches historical scan bound
+        }
         for (long i = 0; i < max_keys; i++) {
             if (pthread_getspecific((pthread_key_t)i) == current_thread) {
                 _key = pthread_key_t(i);

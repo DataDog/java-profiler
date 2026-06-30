@@ -182,7 +182,6 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     bool fp_chain_fallback = false;
     int fp_chain_depth = 0;
 
-    _jmp_ctx.set(&crash_protection_ctx);
     if (setjmp(crash_protection_ctx) != 0) {
         // checkFault() does a longjmp from inside segvHandler, bypassing
         // segvHandler's SignalHandlerScope destructor.  Compensate.
@@ -193,7 +192,8 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         }
         return depth;
     }
- 
+
+    _jmp_ctx.set(&crash_protection_ctx);
     VMJavaFrameAnchor* anchor = NULL;
     if (vm_thread != NULL) {
         anchor = vm_thread->anchor();
