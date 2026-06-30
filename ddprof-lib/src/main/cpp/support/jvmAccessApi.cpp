@@ -128,18 +128,27 @@ Java_com_datadoghq_profiler_JVMAccess_findFloatJVMFlag0(JNIEnv *env,
 }
 
 // Lazily initialise VMStructs when libJavaSupport.so is loaded standalone
-// (without the profiler agent).  Finds libjvm via /proc/self/maps, parses its
-// symbol table and calls VMStructs::init().  Returns false on J9/Zing where
-// the HotSpot vmstructs symbols do not exist.
+// (without the profiler agent).  Locates libjvm through the loaded-library
+// table, parses its symbols and calls VMStructs::init().  Returns false on
+// J9/Zing: they ship a libjvm too, but it does not export the HotSpot
+// "gHotSpotVMStructs" table that VMFlag::find() (and the rest of the
+// introspection code) relies on.
 static bool ensureVMStructsInitialised() {
     if (VMStructs::libjvm() != nullptr) {
-        return true;  // already initialised (by the profiler or a prior call)
+        // Already located libjvm — confirm the HotSpot vmstructs table is present.
+        return VMStructs::libjvm()->findSymbol("gHotSpotVMStructs") != nullptr;
     }
     Libraries *libs = Libraries::instance();
     libs->updateSymbols(false);
     CodeCache *libjvm = libs->findLibraryByName("libjvm");
     if (libjvm == nullptr) {
-        return false;  // J9 / Zing — no libjvm with HotSpot symbols
+        return false;  // no libjvm mapped at all
+    }
+    // J9 / Zing ship a libjvm too, but without the HotSpot "gHotSpotVMStructs"
+    // table that VMFlag::find() relies on.  Detect this before VMStructs::init(),
+    // which would otherwise flip VM::setHotspot(true).
+    if (libjvm->findSymbol("gHotSpotVMStructs") == nullptr) {
+        return false;
     }
     VMStructs::init(libjvm);
     return VMStructs::libjvm() != nullptr;
