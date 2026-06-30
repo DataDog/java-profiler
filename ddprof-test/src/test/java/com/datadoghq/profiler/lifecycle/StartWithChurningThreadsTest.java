@@ -85,7 +85,7 @@ public class StartWithChurningThreadsTest {
                     Thread.sleep(20);
                     profiler.stop();
                 } catch (Throwable t) {
-                    errors.offer(t);
+                    errors.add(t);
                     break;
                 } finally {
                     Files.deleteIfExists(jfr);
