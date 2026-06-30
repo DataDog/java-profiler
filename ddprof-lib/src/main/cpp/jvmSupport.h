@@ -25,7 +25,7 @@ class HotspotSupport;
 class JVMSupport {
     enum JMethodIDLoadStats {
         No_loaded,          // Has not yet executed any profiling command, no jmethodIDs are loaded
-        Partial_loaded,     // Patially loaded, see HostspotSupport::shouldPreloadJmethodIDs()
+        Partial_loaded,     // Partially loaded, see HotspotSupport::shouldPreloadJmethodIDs()
         Fully_loaded        // All jmethodIDs are loaded
     };
 
