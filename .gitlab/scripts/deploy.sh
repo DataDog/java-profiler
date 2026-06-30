@@ -37,7 +37,7 @@ echo "com.datadoghq:ddprof:${LIB_VERSION}" > version.txt
 # Assemble task (always needed for artifact creation)
 if [ "$MODE" = "assemble" ] || [ "$MODE" = "all" ]; then
   echo "=== Assembling artifact ==="
-  ./gradlew -Pskip-native -Pskip-tests -Pddprof_version="${LIB_VERSION}" -PbuildInfo.build.number=$CI_JOB_ID -Pwith-libs="$(pwd)/libs" :ddprof-lib:jar assembleAll --exclude-task compileFuzzer --exclude-task sign --max-workers=1 --no-build-cache --stacktrace --info --no-watch-fs --no-daemon
+  ./gradlew -Pskip-native -Pskip-tests -Pddprof_version="${LIB_VERSION}" -PbuildInfo.build.number=$CI_JOB_ID -Pwith-libs="$(pwd)/libs" :ddprof-lib:jar assembleAll --exclude-task compileProfilerFuzzer --exclude-task compileSupportFuzzer --exclude-task sign --max-workers=1 --no-build-cache --stacktrace --info --no-watch-fs --no-daemon
 fi
 
 # Publish task (only when publishing to Maven Central)
@@ -47,5 +47,5 @@ if [ "$MODE" = "publish" ] || [ "$MODE" = "all" ]; then
     echo "ERROR: GPG_PRIVATE_KEY is not set — run the create_key CI job first to provision the signing key in SSM (ci.java-profiler.signing.gpg_private_key)"
     exit 1
   fi
-  ./gradlew -Pskip-native -Pskip-tests -Pddprof_version="${LIB_VERSION}" -PbuildInfo.build.number=$CI_JOB_ID -Pwith-libs="$(pwd)/libs" publishToSonatype closeAndReleaseSonatypeStagingRepository --exclude-task compileFuzzer --max-workers=1 --no-build-cache --stacktrace --info --no-watch-fs --no-daemon
+  ./gradlew -Pskip-native -Pskip-tests -Pddprof_version="${LIB_VERSION}" -PbuildInfo.build.number=$CI_JOB_ID -Pwith-libs="$(pwd)/libs" publishToSonatype closeAndReleaseSonatypeStagingRepository --exclude-task compileProfilerFuzzer --exclude-task compileSupportFuzzer --max-workers=1 --no-build-cache --stacktrace --info --no-watch-fs --no-daemon
 fi
