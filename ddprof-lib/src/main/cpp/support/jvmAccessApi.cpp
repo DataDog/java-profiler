@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "common.h"
 #include "hotspot/vmStructs.h"
 
 #include <jni.h>
@@ -127,5 +128,6 @@ Java_com_datadoghq_profiler_JVMAccess_findFloatJVMFlag0(JNIEnv *env,
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JVMAccess_healthCheck0(JNIEnv *env,
                                                          jobject unused) {
+    TEST_LOG("JVMAccess::healthCheck0");
     return true;
 }

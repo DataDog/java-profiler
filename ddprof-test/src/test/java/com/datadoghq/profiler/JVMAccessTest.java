@@ -22,12 +22,14 @@ public class JVMAccessTest extends AbstractProcessProfilerTest {
         String config = System.getProperty("ddprof_test.config");
         assumeTrue("debug".equals(config));
 
-        AtomicBoolean initLibraryFound = new AtomicBoolean(false);
+        // In library-split mode, JVMAccess loads libJavaSupport.so (not the profiler).
+        // Verify that the support library's healthCheck0 ran (TEST_LOG output).
+        AtomicBoolean supportLibInitFound = new AtomicBoolean(false);
         AtomicBoolean initProfilerFound = new AtomicBoolean(false);
 
-        boolean rslt = launch("library", Collections.emptyList(), null, 
+        boolean rslt = launch("library", Collections.emptyList(), null,
             l -> {
-                initLibraryFound.set(initLibraryFound.get() | l.contains("[TEST::INFO] VM::initLibrary"));
+                supportLibInitFound.set(supportLibInitFound.get() | l.contains("[TEST::INFO] JVMAccess::healthCheck0"));
                 initProfilerFound.set(initProfilerFound.get() | l.contains("[TEST::INFO] VM::initProfilerBridge"));
                 return LineConsumerResult.CONTINUE;
             },
@@ -36,25 +38,28 @@ public class JVMAccessTest extends AbstractProcessProfilerTest {
 
         assertTrue(rslt);
 
-        assertTrue(initLibraryFound.get(), "initLibrary not found");
-        assertFalse(initProfilerFound.get(), "initProfilerBridge found");
+        assertTrue(supportLibInitFound.get(), "JVMAccess::healthCheck0 not found — support lib not initialized");
+        assertFalse(initProfilerFound.get(), "initProfilerBridge found — profiler lib should not load");
     }
 
     @Test
     void jvmVersionTest() throws Exception {
+        // This test validates that the profiler logs the JVM version during initialization.
+        // With library-split, "library" mode loads libJavaSupport.so which doesn't log the
+        // JVM version (that happens in the profiler's initShared). Use "profiler" mode instead.
         String config = System.getProperty("ddprof_test.config");
         assumeTrue("debug".equals(config));
 
         String javaVersion = System.getenv("JAVA_VERSION");
         assumeTrue(javaVersion != null);
         if (javaVersion.startsWith("8u")) {
-            // convert 8u432 to nomralized 8.0.432 format which is expected
+            // convert 8u432 to normalized 8.0.432 format which is expected
             javaVersion = "8.0." + javaVersion.split("u")[1];
         }
 
         AtomicReference<String> foundVersion = new AtomicReference<>(null);
 
-        boolean rslt = launch("library", Collections.emptyList(), null, l -> {
+        boolean rslt = launch("profiler", Collections.emptyList(), null, l -> {
             if (l.contains("[TEST::INFO] jvm_version#")) {
                 foundVersion.set(l.split("#")[1]);
                 return LineConsumerResult.STOP;
