@@ -145,6 +145,9 @@ afterEvaluate {
   val supportLibName = if (PlatformUtils.currentPlatform == Platform.MACOS) "libJavaSupport.dylib" else "libJavaSupport.so"
   nativeBuild.buildConfigurations.names.forEach { configName ->
     val cap = configName.replaceFirstChar { it.uppercase() }
+    // Only wire support-only linking for configs that actually build a separate libJavaSupport.
+    // Sanitizer configs (asan, tsan) compile all sources into the gtest binary directly.
+    if (tasks.findByName("linkSupport$cap") == null) return@forEach
     val libDir = nativeBuild.librarySourceDir(configName).get().asFile.absolutePath
     supportOnlyTests.forEach { testName ->
       tasks.findByName("linkGtest${cap}_$testName")?.let {
