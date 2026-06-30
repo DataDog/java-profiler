@@ -134,7 +134,14 @@ uintptr_t VMStructs::readSymbol(const char* symbol_name) {
 void VMStructs::init(CodeCache* libjvm) {
     if (libjvm != NULL) {
         _libjvm = libjvm;
-        VM::setHotspot(true);
+        // Only enter HotSpot mode for an actual HotSpot VM.  The profiler calls
+        // init() with libj9vm on J9 (and the Zing libjvm on Zing), where
+        // initOffsets() bails out and leaves all vmstructs type sizes at 0.
+        // Flipping isHotspot() true there would make every `if (isHotspot())`
+        // guarded cast_to() trip its `type_size() > 0` assertion (SIGABRT).
+        if (!VM::isOpenJ9() && !VM::isZing()) {
+            VM::setHotspot(true);
+        }
         initOffsets();
         initJvmFunctions();
         initUnsafeFunctions();
