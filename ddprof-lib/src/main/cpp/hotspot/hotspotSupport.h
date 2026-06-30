@@ -11,6 +11,7 @@
 
 #include "hotspot/hotspotStackFrame.h"
 #include "hotspot/jitCodeCache.h"
+#include "threadLocal.h"
 #include "stackFrame.h"
 #include "stackWalker.h"
 

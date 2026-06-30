@@ -871,12 +871,8 @@ void HotspotSupport::checkFault(ProfiledThread* thrd) {
         return;
     }
 
-    // Prefer the semantic crash protection flag (reliable regardless of stack frame sizes).
-    // Fall back to sameStack heuristic when ProfiledThread TLS is unavailable (e.g. during
-    // early init or in crash recovery tests). sameStack uses a fixed 8KB threshold which
-    // can fail with ASAN-inflated frames, but the crashProtectionActive path handles that.
-    bool protected_walk = isThreadProtectedByLongjmp();
-    if (!protected_walk) {
+    // Check if longjmp is setup for this thread
+   if (!isThreadProtectedByLongjmp()) {
         return;
     }
 

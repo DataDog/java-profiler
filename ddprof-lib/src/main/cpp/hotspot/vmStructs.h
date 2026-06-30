@@ -1190,7 +1190,4 @@ class InterpreterFrame : VMStructs {
     }
 };
 
-// Test if longjmp context is armed for the thread
-inline bool crashProtectionActive();
-
 #endif // _HOTSPOT_VMSTRUCTS_H
