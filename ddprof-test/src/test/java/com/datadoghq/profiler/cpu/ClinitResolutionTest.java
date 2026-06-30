@@ -101,7 +101,6 @@ public class ClinitResolutionTest extends AbstractProfilerTest {
                 if (stackTrace != null
                         && stackTrace.contains("SpinningClinit")
                         && stackTrace.contains("clinit")) {
-                    System.err.println("=CLINIT TRACE=\n" + stackTrace + "\n=END=");
                     foundClinit = true;
                     break outer;
                 }
