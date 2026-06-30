@@ -5,6 +5,8 @@
 
 #include "common.h"
 #include "hotspot/vmStructs.h"
+#include "libraries.h"
+#include "symbols.h"
 
 #include <jni.h>
 #include <string.h>
@@ -125,9 +127,27 @@ Java_com_datadoghq_profiler_JVMAccess_findFloatJVMFlag0(JNIEnv *env,
     return 0.0;
 }
 
+// Lazily initialise VMStructs when libJavaSupport.so is loaded standalone
+// (without the profiler agent).  Finds libjvm via /proc/self/maps, parses its
+// symbol table and calls VMStructs::init().  Returns false on J9/Zing where
+// the HotSpot vmstructs symbols do not exist.
+static bool ensureVMStructsInitialised() {
+    if (VMStructs::libjvm() != nullptr) {
+        return true;  // already initialised (by the profiler or a prior call)
+    }
+    Libraries *libs = Libraries::instance();
+    libs->updateSymbols(false);
+    CodeCache *libjvm = libs->findLibraryByName("libjvm");
+    if (libjvm == nullptr) {
+        return false;  // J9 / Zing — no libjvm with HotSpot symbols
+    }
+    VMStructs::init(libjvm);
+    return VMStructs::libjvm() != nullptr;
+}
+
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JVMAccess_healthCheck0(JNIEnv *env,
                                                          jobject unused) {
     TEST_LOG("JVMAccess::healthCheck0");
-    return true;
+    return ensureVMStructsInitialised();
 }
