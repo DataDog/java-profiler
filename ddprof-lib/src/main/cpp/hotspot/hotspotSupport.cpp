@@ -1322,7 +1322,7 @@ bool isHiddenClass(jvmtiEnv *jvmti, jclass clazz) {
 // suffix (see Lookup::getPackage); '/' is illegal in a normal binary class
 // name, so this reliably identifies the unloadable classes we must keep on
 // the jmethodID path.
-bool isHiddenClassBySignature(const char* signature) {
+static bool isHiddenClassBySignature(const char* signature) {
     const char* slash = strrchr(signature, '/');
     return slash != nullptr && slash[1] >= '0' && slash[1] <= '9';
 }
