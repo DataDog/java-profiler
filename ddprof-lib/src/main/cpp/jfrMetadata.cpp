@@ -155,7 +155,9 @@ void JfrMetadata::initialize(
               << field("numExitedThreads", T_INT,
                        "Number of Exited Threads Before Handling Signal")
               << field("numPermissionDenied", T_INT,
-                       "Number of Permission Denied Errors"))
+                       "Number of Permission Denied Errors")
+              << field("numSuppressedSampledRun", T_LONG,
+                       "Signals suppressed by the wall-clock once-per-run filter"))
 
           << (type("datadog.ObjectSample", T_ALLOC, "Allocation sample")
                   << category("Datadog", "Profiling")
