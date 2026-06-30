@@ -12,10 +12,12 @@
 #include "jvmThread.h"
 
 VMThread* VMThread::current() {
+    assert(VM::isHotspot());
     return VMThread::cast(JVMThread::current());
 }
 
 VMThread* VMThread::fromJavaThread(JNIEnv* env, jthread thread) {
+    assert(VM::isHotspot());
     assert(_eetop != nullptr);
     if (_eetop != nullptr) {
         jlong eetop = env->GetLongField(thread, _eetop);

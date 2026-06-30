@@ -1,5 +1,5 @@
 /*
- * Copyright 2025, Datadog, Inc.
+ * Copyright 2025, 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -10,6 +10,7 @@
 #include "otel_context.h"
 #include "os.h"
 #include "threadLocalData.h"
+#include "threadState.h"
 #include "unwindStats.h"
 #include <atomic>
 #include <cstdint>
@@ -19,7 +20,7 @@
 #include <sys/types.h>
 #include <vector>
 
-class ProfiledThread : public ThreadLocalData {    
+class ProfiledThread : public ThreadLocalData {
 public:
   enum ThreadType : u32 {
     TYPE_UNKNOWN = 0,
@@ -28,11 +29,16 @@ public:
     TYPE_MASK = TYPE_JAVA_THREAD | TYPE_NOT_JAVA_THREAD
   };
 
-  // Maximum number of nested crash-handler invocations allowed on a single
-  // thread.  Exposed publicly so unit tests can loop to the limit precisely.
-  static constexpr u32 CRASH_HANDLER_NESTING_LIMIT = 5;
+  static constexpr u32 FLAG_PARKED = 0x4u; // next free bit after TYPE_MASK (0x1|0x2)
 
 private:
+  // We are allowing several levels of nesting because we can be
+  // eg. in a crash handler when wallclock signal kicks in,
+  // catching sigseg while also triggering CPU signal handler
+  // which would also potentially trigger sigseg we need to handle.
+  // This means 3 levels but we allow for some wiggling space, just in case.
+  // Even with 5 levels cap we will need any highly recursing signal handlers
+  static constexpr u32 CRASH_HANDLER_NESTING_LIMIT = 5;
   static pthread_key_t _tls_key;
   static bool _tls_key_initialized;
 
@@ -50,6 +56,7 @@ private:
   u64 _call_trace_id;
   u32 _recording_epoch;
   u32 _misc_flags;
+  u64 _park_block_token;
   int _filter_slot_id; // Slot ID for thread filtering
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
   uint8_t _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
@@ -69,7 +76,8 @@ private:
 
   ProfiledThread(int tid)
       : ThreadLocalData(), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _tid(tid), _cpu_epoch(0),
-        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0), _filter_slot_id(-1), _init_window(0),
+        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0),
+        _park_block_token(0), _filter_slot_id(-1), _init_window(0),
         _signal_depth(0),
         _otel_ctx_initialized(false),
         _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0) {};
@@ -224,17 +232,22 @@ public:
     return &_otel_ctx_record;
   }
 
-  // Record java thread state
+  // CAS RMW to update only TYPE_MASK bits without clobbering FLAG_PARKED, which
+  // is managed independently by the Java park hooks on the owning thread.
   inline void setJavaThread(bool is_java) {
-    if (is_java) {
-      _misc_flags = ((_misc_flags & ~TYPE_MASK) | TYPE_JAVA_THREAD);
-    } else {
-      _misc_flags = ((_misc_flags & ~TYPE_MASK) | TYPE_NOT_JAVA_THREAD);
-    }
+    const u32 type_bits = is_java ? static_cast<u32>(TYPE_JAVA_THREAD) : static_cast<u32>(TYPE_NOT_JAVA_THREAD);
+    u32 cur = __atomic_load_n(&_misc_flags, __ATOMIC_RELAXED);
+    u32 desired;
+    do {
+      desired = (cur & ~static_cast<u32>(TYPE_MASK)) | type_bits;
+    } while (!__atomic_compare_exchange_n(&_misc_flags, &cur, desired,
+                                          /*weak=*/true,
+                                          __ATOMIC_ACQ_REL, __ATOMIC_RELAXED));
   }
 
   inline enum ThreadType threadType() const {
-    return static_cast<ThreadType>(_misc_flags & TYPE_MASK);
+    u32 flags = __atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE);
+    return static_cast<ThreadType>(flags & TYPE_MASK);
   }
 
   // JFR tag encoding sidecar — populated by JNI thread, read by signal handler
@@ -248,6 +261,26 @@ public:
   inline void clearOtelSidecar() {
     memset(_otel_tag_encodings, 0, sizeof(_otel_tag_encodings));
     _otel_local_root_span_id = 0;
+  }
+
+  inline bool parkEnter() {
+    u32 prev = __atomic_fetch_or(&_misc_flags, FLAG_PARKED, __ATOMIC_RELEASE);
+    return (prev & FLAG_PARKED) == 0;
+  }
+
+  inline void setParkBlockToken(u64 token) {
+    _park_block_token = token;
+  }
+
+  // Returns false if the thread was not parked (idempotent).
+  inline bool parkExit(u64 &park_block_token) {
+    u32 prev = __atomic_fetch_and(&_misc_flags, ~FLAG_PARKED, __ATOMIC_ACQ_REL);
+    if ((prev & FLAG_PARKED) == 0) {
+      return false;
+    }
+    park_block_token = _park_block_token;
+    _park_block_token = 0;
+    return true;
   }
 
   Context snapshotContext(size_t numAttrs);

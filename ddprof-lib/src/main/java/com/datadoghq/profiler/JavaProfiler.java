@@ -323,6 +323,41 @@ public final class JavaProfiler {
     }
 
     /**
+     * Internal hook called before {@code LockSupport.park}. This remains package-scoped
+     * until PR2 wires production TaskBlock instrumentation.
+     */
+    void parkEnter() {
+        parkEnter0();
+    }
+
+    /**
+     * Internal hook called after {@code LockSupport.park}. Clears the parked flag.
+     * {@code blocker} and {@code unblockingSpanId} are reserved for PR2 TaskBlock use.
+     */
+    void parkExit(long blocker, long unblockingSpanId) {
+        parkExit0(blocker, unblockingSpanId);
+    }
+
+    /**
+     * Internal hook marking the current platform thread as entering an explicitly instrumented
+     * blocked interval. This is not public API in this PR; production TaskBlock wiring lands in PR2.
+     *
+     * @param state native {@code OSThreadState} value for the blocked interval;
+     *     currently only {@code SLEEPING} is armed
+     * @return an opaque token to pass to {@link #blockExit(long)}, or 0 if no state was armed
+     */
+    long blockEnter(int state) {
+        return blockEnter0(state);
+    }
+
+    /**
+     * Clears a blocked interval previously armed by {@link #blockEnter(int)}.
+     */
+    void blockExit(long token) {
+        blockExit0(token);
+    }
+
+    /**
      * Get the ticks for the current thread.
      * @return ticks
      */
@@ -376,6 +411,14 @@ public final class JavaProfiler {
     private static native void recordSettingEvent0(String name, String value, String unit);
 
     private static native void recordQueueEnd0(long startTicks, long endTicks, String task, String scheduler, Thread origin, String queueType, int queueLength);
+
+    private static native void parkEnter0();
+
+    private static native void parkExit0(long blocker, long unblockingSpanId);
+
+    private static native long blockEnter0(int state);
+
+    private static native void blockExit0(long token);
 
     private static native long currentTicks0();
 
