@@ -37,11 +37,11 @@ import static org.junit.jupiter.api.Assertions.fail;
 public class StartWithChurningThreadsTest {
 
     private static final int CHURN_THREADS = 64;
-    private static final int CYCLES = 50;
-    private static final String PROFILER_CMD = "start,wall=5ms,filter=*,jfr,file=";
+    private static final int CYCLES = 500;
+    private static final String PROFILER_CMD = "start,wall=1ms,jfr,file=";
 
     @RetryTest(2)
-    @Timeout(60)
+    @Timeout(120)
     @Test
     public void startRacesThreadStartEnd() throws Exception {
         Assumptions.assumeTrue(!Platform.isJ9(), "J9 has a different JVMTI implementation");
@@ -62,14 +62,7 @@ public class StartWithChurningThreadsTest {
             churn.submit(() -> {
                 churnRunning.countDown();
                 while (running.get()) {
-                    Thread t = new Thread(() -> {});
-                    t.start();
-                    try {
-                        t.join(5);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        return;
-                    }
+                    new Thread(() -> {}).start();
                 }
             });
         }
@@ -82,7 +75,7 @@ public class StartWithChurningThreadsTest {
                 try {
                     // execute() races with active thread churn
                     profiler.execute(PROFILER_CMD + jfr.toAbsolutePath());
-                    Thread.sleep(20);
+                    Thread.sleep(cycle % 3);
                     profiler.stop();
                 } catch (Throwable t) {
                     errors.add(t);

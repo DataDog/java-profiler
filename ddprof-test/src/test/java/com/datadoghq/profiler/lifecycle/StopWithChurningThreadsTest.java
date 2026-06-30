@@ -36,11 +36,13 @@ import static org.junit.jupiter.api.Assertions.fail;
 public class StopWithChurningThreadsTest {
 
     private static final int CHURN_THREADS = 64;
-    private static final int CYCLES = 50;
-    private static final String PROFILER_CMD = "start,wall=5ms,filter=*,jfr,file=";
+    private static final int CYCLES = 500;
+    // wall=1ms maximises signals in-flight during teardown; no filter so all
+    // threads receive signals, increasing collision probability with ThreadEnd.
+    private static final String PROFILER_CMD = "start,wall=1ms,jfr,file=";
 
     @RetryTest(2)
-    @Timeout(60)
+    @Timeout(120)
     @Test
     public void stopRacesThreadEnd() throws Exception {
         Assumptions.assumeTrue(!Platform.isJ9(), "J9 has a different JVMTI implementation");
@@ -59,14 +61,9 @@ public class StopWithChurningThreadsTest {
             churn.submit(() -> {
                 churnRunning.countDown();
                 while (running.get()) {
-                    Thread t = new Thread(() -> {});
-                    t.start();
-                    try {
-                        t.join(5);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        return;
-                    }
+                    // No join — thread dies on its own schedule, so ThreadEnd
+                    // fires at an unpredictable time relative to stop().
+                    new Thread(() -> {}).start();
                 }
             });
         }
@@ -77,7 +74,10 @@ public class StopWithChurningThreadsTest {
                 Path jfr = Files.createTempFile(recordings, "c1-" + cycle + "-", ".jfr");
                 try {
                     profiler.execute(PROFILER_CMD + jfr.toAbsolutePath());
-                    Thread.sleep(20);
+                    // Minimal delay: hit stop() while signals are still in-flight
+                    // and threads are actively dying. Varies per cycle to avoid
+                    // always landing in the same phase of the signal period.
+                    Thread.sleep(cycle % 3);
                     profiler.stop();
                 } catch (Throwable t) {
                     if (!errors.offer(t)) {
