@@ -101,11 +101,15 @@ public final class JVMAccess {
     private final Flags flags;
 
     private JVMAccess() {
-        LibraryLoader.Result result = LibraryLoader.builder().load();;
+        LibraryLoader.Result result = LibraryLoader.builder().library(LibraryLoader.Library.SUPPORT).load();
         if (result.succeeded) {
-            // library loaded successfully, check if we can access JVM
+            // library loaded successfully, check if we can actually access the JVM.
+            // healthCheck0() returns false on J9/Zing where the HotSpot vmstructs
+            // are unavailable, so JVM introspection must be reported as inactive.
             try {
-                healthCheck0();
+                if (!healthCheck0()) {
+                    result = LibraryLoader.Result.UNAVAILABLE;
+                }
             } catch (Throwable t) {
                 // failed to access JVM; update the result
                 result = new LibraryLoader.Result(false, t);
@@ -126,11 +130,15 @@ public final class JVMAccess {
      * @param errorHandler the error handler or {@literal null}
      */
     public JVMAccess(String libLocation, String scratchDir, Consumer<Throwable> errorHandler) {
-        LibraryLoader.Result result = LibraryLoader.builder().withLibraryLocation(libLocation).withScratchDir(scratchDir).load();
+        LibraryLoader.Result result = LibraryLoader.builder().library(LibraryLoader.Library.SUPPORT).withLibraryLocation(libLocation).withScratchDir(scratchDir).load();
         if (result.succeeded) {
-            // library loaded successfully, check if we can access JVM
+            // library loaded successfully, check if we can actually access the JVM.
+            // healthCheck0() returns false on J9/Zing where the HotSpot vmstructs
+            // are unavailable, so JVM introspection must be reported as inactive.
             try {
-                healthCheck0();
+                if (!healthCheck0()) {
+                    result = LibraryLoader.Result.UNAVAILABLE;
+                }
             } catch (Throwable t) {
                 // failed to access JVM; update the result
                 result = new LibraryLoader.Result(false, t);

@@ -206,10 +206,15 @@ public:
 
   static int hotspot_version() { return isHotspot() ? _hotspot_version : -1; }
 
+  // Set when libJavaSupport is used standalone (no profiler agent): the version
+  // is normally resolved by initShared() via JVMTI, which is unavailable then.
+  static void set_hotspot_version(int v) { _hotspot_version = v; }
+
   static int java_update_version() { return _java_update_version; }
 
   static bool isOpenJ9() { return _openj9; }
   static bool isHotspot() { return _hotspot; }
+  static void setHotspot(bool v) { _hotspot = v; }
 
   static bool canSampleObjects() { return _can_sample_objects; }
 

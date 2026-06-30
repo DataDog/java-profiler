@@ -1391,6 +1391,7 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   // Kernel symbols are useful only for perf_events without --all-user
   _libs->updateSymbols(_cpu_engine == &perf_events && (args._ring & RING_KERNEL));
+  LibraryPatcher::patch_libraries();
 
   // Extract build-ids for remote symbolication if enabled
   if (_remote_symbolication) {
@@ -1402,6 +1403,17 @@ Error Profiler::start(Arguments &args, bool reset) {
   // Refresher must be running before the trap fires: dlopen_hook's
   // signal-context branch only marks dirty and relies on the refresher
   // to call refresh() within REFRESH_INTERVAL_NS (500 ms).
+  Libraries::setNativeThreadNamesCallback([](bool defer) { Profiler::instance()->updateNativeThreadNames(defer); });
+  Libraries::setMallocTracerRefreshCallback([]() {
+      if (MallocTracer::running()) {
+          MallocTracer::installHooks();
+      }
+  });
+  Libraries::setLibraryPatchCallback([]() {
+      LibraryPatcher::patch_libraries();
+      LibraryPatcher::patch_sigaction();
+      LibraryPatcher::install_socket_hooks();
+  });
   _libs->startRefresher();
 
   // Always enable library trap to catch wasmtime loading and patch its broken sigaction

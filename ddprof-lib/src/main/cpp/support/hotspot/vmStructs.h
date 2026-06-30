@@ -7,6 +7,7 @@
 #ifndef _HOTSPOT_VMSTRUCTS_H
 #define _HOTSPOT_VMSTRUCTS_H
 
+#include <atomic>
 #include <initializer_list>
 #include <jni.h>
 #include <jvmti.h>
@@ -16,12 +17,9 @@
 #include "counters.h"
 #include "jvmThread.h"
 #include "safeAccess.h"
-#include "thread.h"
 #include "threadState.h"
 #include "vmEntry.h"
 
-class GCHeapSummary;
-class HeapUsage;
 class VMNMethod;
 
 
@@ -34,6 +32,22 @@ class VMNMethod;
 // When crash protection is active the assert is redundant — any bad read will
 // be caught by the SIGSEGV handler and recovered via longjmp — so we skip it.
 //
+typedef bool (*CrashProtectionProbe)();
+// INVARIANT: always non-null — crashProtectionActive() calls it unconditionally.
+// std::atomic: written on main/attach thread, read from signal context.
+extern std::atomic<CrashProtectionProbe> g_crash_protection_probe;
+bool crashProtectionProbeIsDefault();
+void crashProtectionProbeReset();
+
+// Signal-context probe — analogous to g_is_java_thread_probe.
+// Returns true when the calling thread is inside a tracked signal handler.
+// Null (default) means the profiler bridge has not been initialised; treated
+// as "not in signal" by debug assertions so uninstrumented code is not affected.
+// std::atomic: written once by VM::initProfilerBridge, read from mutex::lock().
+typedef bool (*IsInSignalProbe)();
+extern std::atomic<IsInSignalProbe> g_is_in_signal_probe;
+void resetIsInSignalProbe();
+
 // Defined at the bottom of this file after VMThread is declared so that the
 // VMThread fallback path (isExceptionActive) is accessible without forward-
 // declaring the full class.
@@ -321,9 +335,6 @@ typedef void* address;
     constant_with_version(markWord, monitor_value, 24, MAX_VERSION)
 
 class VMStructs {
-  public:
-    typedef bool (*IsValidMethodFunc)(void *);
-
   protected:
     enum { MONITOR_BIT = 2 };
 
@@ -400,16 +411,6 @@ class VMStructs {
     static LockFunc _lock_func;
     static LockFunc _unlock_func;
 
-    // Datadog-specific extensions
-    static CodeCache _unsafe_to_walk;
-    typedef HeapUsage (*HeapUsageFunc)(const void *);
-    static HeapUsageFunc _heap_usage_func;
-    typedef void *(*MemoryUsageFunc)(void *, void *, bool);
-    static MemoryUsageFunc _memory_usage_func;
-    typedef GCHeapSummary (*GCHeapSummaryFunc)(void *);
-    static GCHeapSummaryFunc _gc_heap_summary_func;
-    static IsValidMethodFunc _is_valid_method_func;
-
     static uintptr_t readSymbol(const char* symbol_name);
 
     // Read VM information from vmStructs
@@ -423,16 +424,12 @@ class VMStructs {
 #endif
 
     static void resolveOffsets();
-    static void patchSafeFetch();
     static void initJvmFunctions();
     static void initTLS(void* vm_thread);
     static void initThreadBridge();
 
     // Datadog-specific private methods
     static void initUnsafeFunctions();
-    static void initCriticalJNINatives();
-    static void checkNativeBinding(jvmtiEnv *jvmti, JNIEnv *jni, jmethodID method, void *address);
-    static const void *findHeapUsageFunc();
 
     const char* at(int offset) {
         const char* ptr = (const char*)this + offset;
@@ -457,6 +454,8 @@ class VMStructs {
     static CodeCache* libjvm() {
         return _libjvm;
     }
+
+    static CodeCache& unsafeToWalkCache();
 
     static bool hasClassNames() {
         return _has_class_names;
@@ -501,12 +500,6 @@ class VMStructs {
         return _enter_special_nm;
     }
 
-    // Datadog-specific extensions
-    static bool isSafeToWalk(uintptr_t pc);
-    static void JNICALL NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni,
-                                         jthread thread, jmethodID method,
-                                         void *address, void **new_address_ptr);
-
     static int thread_osthread_offset() {
         return _thread_osthread_offset;
     }
@@ -543,34 +536,9 @@ class VMStructs {
       return _class_loader_data_offset;
     }
 
-    static IsValidMethodFunc is_valid_method_func() {
-        return _is_valid_method_func;
+    static void* collected_heap_addr() {
+        return _collected_heap_addr;
     }
-};
-
-class HeapUsage : VMStructs {
-private:
-    static bool is_jmx_attempted;
-    static bool is_jmx_supported; // default to not-supported
-public:
-    size_t _initSize = -1;
-    size_t _used = -1;
-    size_t _committed = -1;
-    size_t _maxSize = -1;
-    size_t _used_at_last_gc = -1;
-
-    static void initJMXUsage(JNIEnv* env);
-
-    static bool isJMXSupported() {
-        initJMXUsage(VM::jni());
-        return is_jmx_supported;
-    }
-
-    static bool isLastGCUsageSupported();
-    static bool needsNativeBindingInterception();
-    static jlong getMaxHeap(JNIEnv *env);
-    static HeapUsage get();
-    static HeapUsage get(bool allow_jmx);
 };
 
 class MethodList {
@@ -777,6 +745,11 @@ enum JVMJavaThreadState {
 DECLARE(VMThread)
   friend class JVMThread;
   public:
+    typedef int (*IsJavaThreadProbe)();
+    // std::atomic: written on main/attach thread, read from signal context.
+    static std::atomic<IsJavaThreadProbe> g_is_java_thread_probe;
+    static void resetIsJavaThreadProbe();
+
     static void* initialize(jthread thread);
 
     static inline VMThread* current();
@@ -1199,13 +1172,8 @@ class InterpreterFrame : VMStructs {
 // is accessible. The forward declaration at the top of this file allows cast_to()
 // to reference it before VMThread is declared.
 inline bool crashProtectionActive() {
-    ProfiledThread* pt = ProfiledThread::currentSignalSafe();
-    if (pt != nullptr && pt->isCrashProtectionActive()) return true;
-    // Fallback for threads without ProfiledThread TLS (e.g. JVM internal threads):
-    // if walkVM has set up setjmp protection via vm_thread->exception(), the assert
-    // is equally redundant — any bad read will be caught by the SIGSEGV handler.
-    // Uses VMThread::isExceptionActive() which reads the field directly without
-    // going through at() to avoid recursive assertion.
+    // acquire load: ensures probe body written before store() is visible here.
+    if (g_crash_protection_probe.load(std::memory_order_acquire)()) return true;
     return JVMThread::key() != pthread_key_t(-1) && VMThread::isExceptionActive();
 }
 

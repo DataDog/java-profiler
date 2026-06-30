@@ -1,0 +1,200 @@
+/*
+ * Copyright 2026 Datadog, Inc
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include "common.h"
+#include "hotspot/vmStructs.h"
+#include "libraries.h"
+#include "symbols.h"
+#include "vmEntry.h"
+
+#include <jni.h>
+#include <string.h>
+
+#ifndef DLLEXPORT
+#  define DLLEXPORT __attribute__((visibility("default")))
+#endif
+
+// RAII wrapper for JNI string conversion.
+class JniString {
+private:
+    JNIEnv *_env;
+    const char *_c_string;
+    jstring _java_string;
+    int _length;
+
+public:
+    JniString(JNIEnv *env, jstring java_string) {
+        _env = env;
+        _c_string = _env->GetStringUTFChars(java_string, NULL);
+        _length = _env->GetStringUTFLength(java_string);
+        _java_string = java_string;
+    }
+    JniString(JniString &jniString) = delete;
+    ~JniString() { _env->ReleaseStringUTFChars(_java_string, _c_string); }
+    const char *c_str() const { return _c_string; }
+    int length() const { return _length; }
+};
+
+extern "C" DLLEXPORT jstring JNICALL
+Java_com_datadoghq_profiler_JVMAccess_findStringJVMFlag0(JNIEnv *env,
+                                                         jobject unused,
+                                                         jstring flagName) {
+    JniString flag_str(env, flagName);
+    VMFlag *f = VMFlag::find(flag_str.c_str(), {VMFlag::Type::String, VMFlag::Type::Stringlist});
+    if (f) {
+        char** value = static_cast<char**>(f->addr());
+        if (value != NULL && *value != NULL) {
+            return env->NewStringUTF(*value);
+        }
+    }
+    return NULL;
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JVMAccess_setStringJVMFlag0(JNIEnv *env,
+                                                         jobject unused,
+                                                         jstring flagName,
+                                                         jstring flagValue) {
+    JniString flag_str(env, flagName);
+    JniString value_str(env, flagValue);
+    VMFlag *f = VMFlag::find(flag_str.c_str(), {VMFlag::Type::String, VMFlag::Type::Stringlist});
+    if (f) {
+        char** value = static_cast<char**>(f->addr());
+        if (value != NULL) {
+            *value = strdup(value_str.c_str());
+        }
+    }
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JVMAccess_findBooleanJVMFlag0(JNIEnv *env,
+                                                         jobject unused,
+                                                         jstring flagName) {
+    JniString flag_str(env, flagName);
+    VMFlag *f = VMFlag::find(flag_str.c_str(), {VMFlag::Type::Bool});
+    if (f) {
+        char* value = static_cast<char*>(f->addr());
+        if (value != NULL) {
+            return ((*value) & 0xff) == 1;
+        }
+    }
+    return false;
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JVMAccess_setBooleanJVMFlag0(JNIEnv *env,
+                                                         jobject unused,
+                                                         jstring flagName,
+                                                         jboolean flagValue) {
+    JniString flag_str(env, flagName);
+    VMFlag *f = VMFlag::find(flag_str.c_str(), {VMFlag::Type::Bool});
+    if (f) {
+        char* value = static_cast<char*>(f->addr());
+        if (value != NULL) {
+            *value = flagValue ? 1 : 0;
+        }
+    }
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JVMAccess_findIntJVMFlag0(JNIEnv *env,
+                                                         jobject unused,
+                                                         jstring flagName) {
+    JniString flag_str(env, flagName);
+    VMFlag *f = VMFlag::find(flag_str.c_str(), {VMFlag::Type::Int, VMFlag::Type::Uint, VMFlag::Type::Intx, VMFlag::Type::Uintx, VMFlag::Type::Uint64_t, VMFlag::Type::Size_t});
+    if (f) {
+        long* value = static_cast<long*>(f->addr());
+        if (value != NULL) {
+            return *value;
+        }
+    }
+    return 0;
+}
+
+extern "C" DLLEXPORT jdouble JNICALL
+Java_com_datadoghq_profiler_JVMAccess_findFloatJVMFlag0(JNIEnv *env,
+                                                         jobject unused,
+                                                         jstring flagName) {
+    JniString flag_str(env, flagName);
+    VMFlag *f = VMFlag::find(flag_str.c_str(), {VMFlag::Type::Double});
+    if (f) {
+        double* value = static_cast<double*>(f->addr());
+        if (value != NULL) {
+            return *value;
+        }
+    }
+    return 0.0;
+}
+
+// Lazily initialise VMStructs when libJavaSupport.so is loaded standalone
+// (without the profiler agent).  Locates libjvm through the loaded-library
+// table, parses its symbols and calls VMStructs::init().  Returns false on
+// J9/Zing: they ship a libjvm too, but it does not export the HotSpot
+// "gHotSpotVMStructs" table that VMFlag::find() (and the rest of the
+// introspection code) relies on.
+static bool ensureVMStructsInitialised() {
+    if (VMStructs::libjvm() != nullptr) {
+        // Already located libjvm — confirm the HotSpot vmstructs table is present.
+        return VMStructs::libjvm()->findSymbol("gHotSpotVMStructs") != nullptr;
+    }
+    Libraries *libs = Libraries::instance();
+    libs->updateSymbols(false);
+    CodeCache *libjvm = libs->findLibraryByName("libjvm");
+    if (libjvm == nullptr) {
+        return false;  // no libjvm mapped at all
+    }
+    // J9 / Zing ship a libjvm too, but without the HotSpot "gHotSpotVMStructs"
+    // table that VMFlag::find() relies on.  Detect this before VMStructs::init(),
+    // which would otherwise flip VM::setHotspot(true).
+    if (libjvm->findSymbol("gHotSpotVMStructs") == nullptr) {
+        return false;
+    }
+    VMStructs::init(libjvm);
+    return VMStructs::libjvm() != nullptr;
+}
+
+// Resolve VM::hotspot_version() when running standalone.  The profiler agent
+// normally sets it from the "java.vm.version" property via JVMTI in
+// initShared(); without the agent it stays 0, which makes VMFlag::type() take
+// the pre-JDK16 code path and misread the flag layout (crashing the flag walk).
+// Read the property through JNI and parse it with the shared helper.
+static void ensureHotspotVersion(JNIEnv *env) {
+    if (VM::hotspot_version() > 0) {
+        return;  // already resolved (profiler agent path)
+    }
+    jclass system = env->FindClass("java/lang/System");
+    jmethodID getProperty = system != nullptr
+        ? env->GetStaticMethodID(system, "getProperty", "(Ljava/lang/String;)Ljava/lang/String;")
+        : nullptr;
+    if (getProperty == nullptr) {
+        env->ExceptionClear();
+        return;
+    }
+    jstring key = env->NewStringUTF("java.vm.version");
+    jstring value = (jstring)env->CallStaticObjectMethod(system, getProperty, key);
+    if (value == nullptr) {
+        env->ExceptionClear();
+        return;
+    }
+    const char *prop = env->GetStringUTFChars(value, nullptr);
+    if (prop != nullptr) {
+        char buf[64];
+        strncpy(buf, prop, sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = '\0';
+        VM::set_hotspot_version(JavaVersionAccess::get_hotspot_version(buf));
+        env->ReleaseStringUTFChars(value, prop);
+    }
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JVMAccess_healthCheck0(JNIEnv *env,
+                                                         jobject unused) {
+    TEST_LOG("JVMAccess::healthCheck0");
+    if (!ensureVMStructsInitialised()) {
+        return JNI_FALSE;
+    }
+    ensureHotspotVersion(env);
+    return JNI_TRUE;
+}

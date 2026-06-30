@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include "zingSupport.h"
+#include "zing/zingSupport.h"
 
 #include "vmEntry.h"
 #include <jni.h>

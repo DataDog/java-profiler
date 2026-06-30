@@ -162,6 +162,15 @@ abstract class NativeLinkTask @Inject constructor(
     abstract val exportSymbols: ListProperty<String>
 
     /**
+     * File containing explicit symbol names to export, one per line.
+     * Lines starting with '#' and blank lines are ignored.
+     * Merged with exportSymbols at link time.
+     */
+    @get:InputFile
+    @get:Optional
+    abstract val exportSymbolsFile: RegularFileProperty
+
+    /**
      * Symbol patterns to hide (make not visible).
      * Applied after exportSymbols.
      */
@@ -302,7 +311,7 @@ abstract class NativeLinkTask @Inject constructor(
             }
 
             // Add symbol visibility control if specified
-            if (exportSymbols.get().isNotEmpty() || hideSymbols.get().isNotEmpty()) {
+            if (exportSymbols.get().isNotEmpty() || exportSymbolsFile.isPresent || hideSymbols.get().isNotEmpty()) {
                 addAll(generateSymbolVisibilityFlags(outFile))
             }
 
@@ -354,6 +363,13 @@ abstract class NativeLinkTask @Inject constructor(
         logNormal("Successfully linked ${outFile.name} (${sizeKB}KB)")
     }
 
+    private fun loadSymbolsFromFile(): List<String> =
+        if (exportSymbolsFile.isPresent)
+            exportSymbolsFile.get().asFile.readLines()
+                .map { it.trim() }
+                .filter { it.isNotBlank() && !it.startsWith("#") }
+        else emptyList()
+
     /**
      * Generate platform-specific symbol visibility flags.
      * Returns linker flags to control symbol export/hiding.
@@ -375,25 +391,21 @@ abstract class NativeLinkTask @Inject constructor(
     private fun generateLinuxVersionScript(outFile: java.io.File): List<String> {
         val versionScript = java.io.File(temporaryDir, "${outFile.nameWithoutExtension}.ver")
 
+        val patternSymbols = exportSymbols.get()
+        val fileSymbols = loadSymbolsFromFile()
+
         val scriptContent = buildString {
             appendLine("{")
             appendLine("  global:")
 
-            // Export specified symbols
-            exportSymbols.get().forEach { pattern ->
-                appendLine("    $pattern;")
-            }
+            patternSymbols.forEach { pattern -> appendLine("    $pattern;") }
+            fileSymbols.forEach { sym -> appendLine("    $sym;") }
 
-            // Consolidate all hidden symbols in a single local section
             appendLine("  local:")
 
-            // Explicitly hide specified symbols (override exports)
-            hideSymbols.get().forEach { pattern ->
-                appendLine("    $pattern;")
-            }
+            hideSymbols.get().forEach { pattern -> appendLine("    $pattern;") }
 
-            // Hide everything else unless it was explicitly exported
-            if (exportSymbols.get().isNotEmpty() || hideSymbols.get().isNotEmpty()) {
+            if (patternSymbols.isNotEmpty() || fileSymbols.isNotEmpty() || hideSymbols.get().isNotEmpty()) {
                 appendLine("    *;")
             }
 
@@ -408,29 +420,29 @@ abstract class NativeLinkTask @Inject constructor(
 
     /**
      * Generate macOS exported symbols list for symbol visibility control.
+     * macOS prepends an extra '_' to every C/C++ symbol name.
      */
     private fun generateMacOSExportList(outFile: java.io.File): List<String> {
         val exportList = java.io.File(temporaryDir, "${outFile.nameWithoutExtension}.exp")
 
+        val patternSymbols = exportSymbols.get()
+        val fileSymbols = loadSymbolsFromFile()
+
         // Warn if wildcards are used - macOS doesn't support them
-        exportSymbols.get().forEach { pattern ->
+        patternSymbols.forEach { pattern ->
             if (pattern.contains('*') || pattern.contains('?')) {
                 logger.warn("Symbol pattern '$pattern' contains wildcards which are not supported on macOS. " +
-                           "Pattern will be treated as a literal symbol name. " +
                            "Consider using -fvisibility compiler flags instead, or list symbols explicitly.")
             }
         }
 
+        val allExportSymbols = patternSymbols + fileSymbols
+
+        // In Mach-O, every external symbol has a leading '_' — C++ mangled names like
+        // _ZN9VMStructs4initEP9CodeCache become __ZN9VMStructs4initEP9CodeCache.
+        // exported_symbols_list expects the full Mach-O name, so always prepend '_'.
         val listContent = buildString {
-            // Export specified symbols (macOS needs leading underscore for C symbols)
-            exportSymbols.get().forEach { pattern ->
-                // Convert glob patterns to exact names or keep as-is
-                // macOS export list doesn't support wildcards like Linux version scripts
-                // For wildcards, we'd need to use -exported_symbols_list with all matching symbols
-                // For now, treat patterns as literal symbol names
-                val symbol = if (pattern.startsWith("_")) pattern else "_$pattern"
-                appendLine(symbol)
-            }
+            allExportSymbols.forEach { sym -> appendLine("_$sym") }
         }
 
         exportList.writeText(listContent)
@@ -438,19 +450,14 @@ abstract class NativeLinkTask @Inject constructor(
 
         val flags = mutableListOf<String>()
 
-        // Add export list
-        if (exportSymbols.get().isNotEmpty()) {
+        if (allExportSymbols.isNotEmpty()) {
             flags.add("-Wl,-exported_symbols_list,${exportList.absolutePath}")
         }
 
-        // For hiding, use -unexported_symbols_list if needed
         if (hideSymbols.get().isNotEmpty()) {
             val hideList = java.io.File(temporaryDir, "${outFile.nameWithoutExtension}.hide")
             val hideContent = buildString {
-                hideSymbols.get().forEach { pattern ->
-                    val symbol = if (pattern.startsWith("_")) pattern else "_$pattern"
-                    appendLine(symbol)
-                }
+                hideSymbols.get().forEach { sym -> appendLine("_$sym") }
             }
             hideList.writeText(hideContent)
             flags.add("-Wl,-unexported_symbols_list,${hideList.absolutePath}")

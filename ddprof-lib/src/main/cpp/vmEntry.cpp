@@ -13,12 +13,14 @@
 #include "jniHelper.h"
 #include "jvmThread.h"
 #include "libraries.h"
+#include "libraryPatcher.h"
 #include "log.h"
 #include "os.h"
 #include "profiler.h"
 #include "safeAccess.h"
 #include "hotspot/vmStructs.h"
 #include "hotspot/jitCodeCache.h"
+#include "profilerVmStructsExt.h"
 #include <atomic>
 #include <dlfcn.h>
 #include <stdlib.h>
@@ -32,15 +34,11 @@ const int COMMAND_ERROR = 200;
 
 static Arguments _agent_args(true);
 
-JavaVM *VM::_vm;
-jvmtiEnv *VM::_jvmti = NULL;
+// VM::_vm, _jvmti, _hotspot_version, _openj9, _hotspot, _zing are defined in
+// support/vm_state.cpp so that libJavaSupport can use them without linking to libjavaProfiler.
 
 int VM::_java_version = 0;
 int VM::_java_update_version = 0;
-int VM::_hotspot_version = 0;
-bool VM::_openj9 = false;
-bool VM::_hotspot = false;
-bool VM::_zing = false;
 bool VM::_can_sample_objects = false;
 bool VM::_can_intercept_binding = false;
 bool VM::_is_adaptive_gc_boundary_flag_set = false;
@@ -184,20 +182,6 @@ JavaFullVersion JavaVersionAccess::get_java_version(char* prop_value) {
   return version;
 }
 
-int JavaVersionAccess::get_hotspot_version(char* prop_value) {
-  int hs_version = 0;
-  if (strncmp(prop_value, "25.", 3) == 0 && prop_value[3] > '0') {
-    hs_version = 8;
-  } else if (strncmp(prop_value, "24.", 3) == 0 && prop_value[3] > '0') {
-    hs_version = 7;
-  } else if (strncmp(prop_value, "20.", 3) == 0 && prop_value[3] > '0') {
-    hs_version = 6;
-  } else if ((hs_version = atoi(prop_value)) < 9) {
-    hs_version = 9;
-  }
-  return hs_version;
-}
-
 CodeCache* VM::openJvmLibrary() {
   if ((void*)_asyncGetCallTrace == nullptr) {
     return nullptr;
@@ -251,6 +235,7 @@ bool VM::initShared(JavaVM* vm) {
 
   Libraries *libraries = Libraries::instance();
   libraries->updateSymbols(false);
+  LibraryPatcher::patch_libraries();
 
   _openj9 = !_hotspot && J9Support::initialize(
                              _jvmti, libraries->resolveSymbol("j9thread_self*"));
@@ -324,6 +309,8 @@ bool VM::initShared(JavaVM* vm) {
   }
 
   VMStructs::init(lib);
+  ProfilerVMStructsExt::init();
+  ProfilerVMStructsExt::initCriticalJNINatives();
 
   // Mark thread entry points for all JVMs (critical for correct stack unwinding)
   lib->mark(isThreadEntry, MARK_THREAD_ENTRY);
@@ -438,6 +425,43 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
     return false;
   }
 
+  // Double-init guard: the crash-protection probe must still be the default
+  // sentinel before we install the profiler-side implementation.  A non-default
+  // probe means initProfilerBridge was called twice without an intervening stop(),
+  // which indicates a programming error.  Abort in debug builds for immediate
+  // visibility; return false in release builds so the caller can propagate the
+  // failure gracefully rather than taking down the JVM.
+  if (!crashProtectionProbeIsDefault()) {
+      Log::warn("initProfilerBridge: double-init detected — crash-protection probe already set");
+#if !defined(NDEBUG)
+      abort();
+#endif
+      return false;
+  }
+  g_crash_protection_probe.store(
+      []() -> bool {
+          ProfiledThread* pt = ProfiledThread::currentSignalSafe();
+          return pt != nullptr && pt->isCrashProtectionActive();
+      },
+      std::memory_order_release);
+
+  VMThread::g_is_java_thread_probe.store(
+      []() -> int {
+          ProfiledThread* pt = ProfiledThread::currentSignalSafe();
+          if (pt == nullptr) return 0;
+          ProfiledThread::ThreadType type = pt->threadType();
+          if (type == ProfiledThread::ThreadType::TYPE_UNKNOWN) return 0;
+          return (type == ProfiledThread::ThreadType::TYPE_JAVA_THREAD) ? 1 : -1;
+      },
+      std::memory_order_release);
+
+  g_is_in_signal_probe.store(
+      []() -> bool {
+          ProfiledThread* pt = ProfiledThread::currentSignalSafe();
+          return pt != nullptr && pt->signalDepth() != 0;
+      },
+      std::memory_order_release);
+
   CodeCache *lib = openJvmLibrary();
   if (lib == nullptr) {
     return false;
@@ -498,7 +522,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   callbacks.ThreadEnd = Profiler::ThreadEnd;
   callbacks.SampledObjectAlloc = ObjectSampler::SampledObjectAlloc;
   callbacks.GarbageCollectionFinish = LivenessTracker::GarbageCollectionFinish;
-  callbacks.NativeMethodBind = VMStructs::NativeMethodBind;
+  callbacks.NativeMethodBind = ProfilerVMStructsExt::NativeMethodBind;
   _jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
 
   _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_DEATH, NULL);
@@ -559,6 +583,7 @@ void VM::ready(jvmtiEnv *jvmti, JNIEnv *jni) {
   if (isHotspot()) {
     JitWriteProtection jit(true);
     VMStructs::ready();
+    ProfilerVMStructsExt::patchSafeFetch();
   }
 }
 
@@ -726,4 +751,7 @@ extern "C" DLLEXPORT void JNICALL JNI_OnUnload(JavaVM *vm, void *reserved) {
   if (profiler != NULL) {
     profiler->stop();
   }
+  crashProtectionProbeReset();
+  VMThread::resetIsJavaThreadProbe();
+  resetIsInSignalProbe();
 }

@@ -1,4 +1,6 @@
 import com.datadoghq.native.model.Platform
+import com.datadoghq.native.tasks.NativeLinkExecutableTask
+import com.datadoghq.native.tasks.NativeLinkTask
 import com.datadoghq.native.util.PlatformUtils
 import org.gradle.api.publish.maven.tasks.AbstractPublishToMaven
 import org.gradle.api.tasks.VerificationTask
@@ -23,10 +25,27 @@ val componentVersion = findProperty("ddprof_version") as? String ?: version.toSt
 // Configure native build with the new plugin
 nativeBuild {
   version.set(componentVersion)
-  cppSourceDirs.set(listOf("src/main/cpp"))
+  cppSourceDirs.set(
+    listOf(
+      "src/main/cpp",
+      "src/main/cpp/support",
+      "src/main/cpp/support/hotspot",
+      "src/main/cpp/support/j9",
+      "src/main/cpp/support/zing",
+    ),
+  )
+  supportCppSourceDirs.set(
+    listOf(
+      "src/main/cpp/support",
+      "src/main/cpp/support/hotspot",
+      "src/main/cpp/support/j9",
+      "src/main/cpp/support/zing",
+    ),
+  )
   includeDirectories.set(
     listOf(
       "src/main/cpp",
+      "src/main/cpp/support",
       "${project(":malloc-shim").file("src/main/public")}",
     ),
   )
@@ -46,6 +65,7 @@ gtest {
 
   includes.from(
     "src/main/cpp",
+    "src/main/cpp/support",
     "$javaHome/include",
     "$javaHome/include/$platformInclude",
     project(":malloc-shim").file("src/main/public"),
@@ -97,6 +117,62 @@ afterEvaluate {
   }
 }
 
+// Wire split-mode link tasks: SONAME for the support library, ABI symbol list.
+// Runs after NativeBuildPlugin's afterEvaluate has registered the tasks.
+afterEvaluate {
+  nativeBuild.buildConfigurations.names.forEach { name ->
+    val cap = name.replaceFirstChar { it.uppercase() }
+    tasks.findByName("linkSupport$cap")?.let {
+      (it as NativeLinkTask).apply {
+        exportSymbolsFile.set(layout.projectDirectory.file("src/main/cpp/support/vmstructs-abi.symbols"))
+        soname.set("libJavaSupport.so")
+        // macOS requires explicit opt-in for undefined symbols (resolved at
+        // runtime by libjavaProfiler.dylib which loads this library).
+        if (PlatformUtils.currentPlatform == Platform.MACOS) {
+          linkerArgs.addAll("-undefined", "dynamic_lookup")
+        }
+      }
+    }
+  }
+}
+
+// Support-only gtest tests link against libJavaSupport.so only.
+// These test files depend exclusively on support-side code (dwarf, sframe, safeAccess, libraries/codeCache).
+// Only wired in split mode — in monolithic mode there is no separate libJavaSupport.so.
+afterEvaluate {
+  if (nativeBuild.monolithicBuild.get() || nativeBuild.supportCppSourceDirs.get().isEmpty()) return@afterEvaluate
+  val supportOnlyTests = setOf("dwarf_ut", "sframe_ut", "safefetch_ut", "libraries_ut")
+  val supportLibName = if (PlatformUtils.currentPlatform == Platform.MACOS) "libJavaSupport.dylib" else "libJavaSupport.so"
+  nativeBuild.buildConfigurations.names.forEach { configName ->
+    val cap = configName.replaceFirstChar { it.uppercase() }
+    // Only wire support-only linking for debug/release configs.  Sanitizer configs (asan, tsan)
+    // and fuzzer compile ALL sources into the gtest binary directly — they don't use
+    // libJavaSupport.so and adding -lJavaSupport causes duplicate-symbol / missing-lib errors.
+    if (configName !in setOf("debug", "release")) return@forEach
+    val libDir = nativeBuild.librarySourceDir(configName).get().asFile.absolutePath
+    supportOnlyTests.forEach { testName ->
+      tasks.findByName("linkGtest${cap}_$testName")?.let {
+        (it as NativeLinkExecutableTask).apply {
+          libPath(libDir)
+          lib("JavaSupport")
+          when (PlatformUtils.currentPlatform) {
+            Platform.LINUX -> runtimePath("\$ORIGIN")
+            Platform.MACOS -> linkerArgs.addAll("-rpath", "@loader_path")
+          }
+        }
+        // Copy libJavaSupport next to the test binary so $ORIGIN / @loader_path resolves at runtime.
+        val binaryDir = layout.buildDirectory.dir("bin/gtest/${configName}_$testName")
+        val copyTask = tasks.register("copySupportLibFor${cap}_$testName", Copy::class) {
+          from(libDir) { include(supportLibName) }
+          into(binaryDir)
+          dependsOn("linkSupport$cap")
+        }
+        tasks.findByName("gtest${cap}_$testName")?.dependsOn(copyTask)
+      }
+    }
+  }
+}
+
 // Create JAR tasks for each build configuration using nativeBuild extension utilities
 // Uses afterEvaluate to discover configurations dynamically from NativeBuildExtension
 afterEvaluate {
@@ -110,11 +186,13 @@ afterEvaluate {
       }
       into(nativeBuild.libraryTargetDir(name))
 
-      // Ensure library is built before copying (link task created by NativeBuildPlugin)
-      val linkTaskName = "link$capitalizedName"
-      if (tasks.names.contains(linkTaskName)) {
-        dependsOn(linkTaskName)
-      }
+      // Depend on whichever link tasks exist for this config (monolithic or split)
+      val supportLinkTask = "linkSupport$capitalizedName"
+      val profilerLinkTask = "linkProfiler$capitalizedName"
+      val monoLinkTask = "link$capitalizedName"
+      if (tasks.names.contains(supportLinkTask)) dependsOn(supportLinkTask)
+      if (tasks.names.contains(profilerLinkTask)) dependsOn(profilerLinkTask)
+      if (tasks.names.contains(monoLinkTask)) dependsOn(monoLinkTask)
     }
 
     val assembleJarTask = tasks.register("assemble${capitalizedName}Jar", Jar::class) {
