@@ -26,7 +26,8 @@ static jobject JAVA_PLATFORM_CLASSLOADER = nullptr;
 static jobject JAVA_APPLICATION_CLASSLOADER = nullptr;
 
 void HotspotSupport::initClassloaderInfo(JNIEnv* jni) {
-    if (JAVA_PLATFORM_CLASSLOADER != nullptr || JAVA_APPLICATION_CLASSLOADER != nullptr) {
+    if (JAVA_APPLICATION_CLASSLOADER != nullptr &&
+        (JAVA_PLATFORM_CLASSLOADER != nullptr || VM::hotspot_version() == 8)) {
         return;
     }
 
