@@ -89,7 +89,8 @@ TEST(ThreadFilterLifecycle, RegisterRacesInit) {
     std::atomic<bool> run{true};
 
     // Init thread: alternates between enabling ("*") and disabling (nullptr) the
-    // filter, mirroring start()/stop() engine cycling under test conditions.
+    // filter; this is a synthetic enable/disable stress on _enabled, not a
+    // faithful replay of start()/stop() (production stop() never calls init()).
     std::thread initer([&]() {
         int toggle = 0;
         while (run.load(std::memory_order_relaxed)) {

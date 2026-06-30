@@ -99,7 +99,7 @@ public class StartWithChurningThreadsTest {
             }
             try {
                 profiler.stop();
-            } catch (IOException ignored) {
+            } catch (Exception ignored) {
                 // already stopped
             }
             deleteDirectory(recordings);
