@@ -80,7 +80,9 @@ public class StopWithChurningThreadsTest {
                     Thread.sleep(20);
                     profiler.stop();
                 } catch (Throwable t) {
-                    errors.offer(t);
+                    if (!errors.offer(t)) {
+                        fail("Failed to record test error", t);
+                    }
                     break;
                 } finally {
                     Files.deleteIfExists(jfr);
