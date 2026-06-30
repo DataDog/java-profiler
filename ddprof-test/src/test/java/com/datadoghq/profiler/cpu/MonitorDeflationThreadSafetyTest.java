@@ -4,49 +4,51 @@ import com.datadoghq.profiler.AbstractProfilerTest;
 import org.junitpioneer.jupiter.RetryingTest;
 
 /**
- * Regression test for the MonitorDeflationThread crash in JDK 25.0.2+.
+ * Reproducer for the MonitorDeflationThread crash seen in JDK 25.0.2+.
  *
- * Root cause: walkVM() unconditionally wrote a jmp_buf address into
- * ThreadShadow::_exception_file for every non-null VMThread, including
- * JVM-internal threads such as MonitorDeflationThread.  In JDK 25,
- * ObjectMonitorDeflationSafepointer reads thread state (including
- * _exception_file) at safepoint boundaries; finding a stale jmp_buf
- * address instead of NULL or a C-string caused a crash in
- * deflate_monitor_list.
+ * Root cause: profiling signals can interrupt any JVM thread, including
+ * JVM-internal threads such as MonitorDeflationThread.  These threads are
+ * JavaThread subclasses in the JVM's type hierarchy, but they are NOT Java
+ * application threads: fields such as the frame anchor, vframe_top, and
+ * continuation entry are not valid on them.  Before the fix, walkVM
+ * dereferenced those fields unconditionally for every non-null VMThread,
+ * which caused crashes inside MonitorDeflationThread.
  *
- * Fix: gate the _exception_file write on VMThread::isJavaThread(), which
- * uses vtable comparison to distinguish regular Java application threads
- * from JVM-internal threads that are JavaThread subclasses in JDK 25+.
+ * Fix: VMThread::isJavaThread() gates all JavaThread-only field accesses
+ * (anchor(), inDeopt(), compiledMethod(), …).  It uses a two-step check:
+ *   1. Fast path — a JVMTI ThreadStart-cached flag on ProfiledThread.
+ *   2. Slow path — vtable majority vote (2-of-3 entries match a known
+ *      JavaThread) for threads that bypass the JVMTI callback (compiler
+ *      threads, MonitorDeflationThread, etc.).
  *
- * This test forces ObjectMonitor inflation/deflation to race with CPU
- * profiler signal delivery.  If the fix regresses, the JVM will crash
- * with a SIGSEGV in deflate_monitor_list before the test completes.
+ * This test forces ObjectMonitor inflation and deflation to race with CPU
+ * profiler signal delivery.  If the fix regresses, the JVM will crash with
+ * a SIGSEGV or SIGBUS inside MonitorDeflationThread before the test ends.
  */
 public class MonitorDeflationThreadSafetyTest extends AbstractProfilerTest {
 
-    // Number of objects to synchronize on each wave — enough to ensure
-    // MonitorDeflationThread has work to do between waves.
+    // Number of ObjectMonitors to inflate per wave — enough to keep
+    // MonitorDeflationThread busy between waves.
     private static final int MONITOR_COUNT = 500;
 
-    // Total duration of monitor churn while the profiler is running (ms).
+    // Total duration of monitor churn while the profiler is active (ms).
     private static final int CHURN_DURATION_MS = 3000;
 
-    // Sleep between waves to give MonitorDeflationThread time to deflate
-    // the monitors we released (it runs every ~250 ms by default).
+    // Gap between waves — lets MonitorDeflationThread observe and deflate the
+    // idle monitors (it runs approximately every 250 ms by default).
     private static final int WAVE_SLEEP_MS = 300;
 
     @RetryingTest(3)
     public void monitorDeflationDoesNotCrashProfiler() throws Exception {
         // The profiler is already started by AbstractProfilerTest.setupProfiler().
-        // Run the monitor churn on the test thread itself so the CPU profiler
-        // definitely samples it, confirming signals are being delivered during
-        // the deflation window.
+        // Run monitor churn on the test thread so the CPU profiler definitely
+        // delivers signals during the deflation window.
         inflateAndDeflateMonitors(CHURN_DURATION_MS, WAVE_SLEEP_MS);
         stopProfiler();
 
-        // If we reach this line the JVM survived — no SIGSEGV in
-        // deflate_monitor_list.  Verify the profiler actually produced samples
-        // to confirm signals were delivered while monitors were being deflated.
+        // Reaching this line means the JVM survived — no crash in
+        // MonitorDeflationThread.  Verify the profiler produced samples to
+        // confirm that signals were actually delivered during the churn.
         verifyEvents("datadog.ExecutionSample");
     }
 
@@ -54,9 +56,9 @@ public class MonitorDeflationThreadSafetyTest extends AbstractProfilerTest {
      * Repeatedly inflates then releases a batch of ObjectMonitors, sleeping
      * between waves so MonitorDeflationThread can reclaim them.
      *
-     * Using an operation like Object.wait(timeout) while holding the lock forces
-     * monitor inflation to a full ObjectMonitor.  Releasing the lock then makes
-     * the monitor eligible for deflation.
+     * Object.wait(timeout) while holding a lock forces monitor inflation to a
+     * full ObjectMonitor.  Releasing the lock makes the monitor eligible for
+     * deflation on the next MonitorDeflationThread pass.
      */
     private static void inflateAndDeflateMonitors(long durationMs, long waveSleepMs)
             throws InterruptedException {
@@ -69,13 +71,9 @@ public class MonitorDeflationThreadSafetyTest extends AbstractProfilerTest {
         while (System.currentTimeMillis() < deadline) {
             for (Object mon : monitors) {
                 synchronized (mon) {
-                    // wait() forces inflation to an ObjectMonitor and makes it eligible for deflation
                     mon.wait(1);
                 }
             }
-
-            // Sleep so MonitorDeflationThread can observe and deflate the
-            // now-idle monitors while the CPU profiler is still sending signals.
             Thread.sleep(waveSleepMs);
         }
     }

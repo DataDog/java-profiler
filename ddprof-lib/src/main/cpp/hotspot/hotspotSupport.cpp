@@ -182,8 +182,6 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     bool fp_chain_fallback = false;
     int fp_chain_depth = 0;
 
-    ProfiledThread* profiled_thread = ProfiledThread::currentSignalSafe();
-
     _jmp_ctx.set(&crash_protection_ctx);
     if (setjmp(crash_protection_ctx) != 0) {
         // checkFault() does a longjmp from inside segvHandler, bypassing

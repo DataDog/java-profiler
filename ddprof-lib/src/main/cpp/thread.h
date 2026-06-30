@@ -28,14 +28,11 @@ public:
     TYPE_MASK = TYPE_JAVA_THREAD | TYPE_NOT_JAVA_THREAD
   };
 
-private:
-  // We are allowing several levels of nesting because we can be
-  // eg. in a crash handler when wallclock signal kicks in,
-  // catching sigseg while also triggering CPU signal handler
-  // which would also potentially trigger sigseg we need to handle.
-  // This means 3 levels but we allow for some wiggling space, just in case.
-  // Even with 5 levels cap we will need any highly recursing signal handlers
+  // Maximum number of nested crash-handler invocations allowed on a single
+  // thread.  Exposed publicly so unit tests can loop to the limit precisely.
   static constexpr u32 CRASH_HANDLER_NESTING_LIMIT = 5;
+
+private:
   static pthread_key_t _tls_key;
   static bool _tls_key_initialized;
 
