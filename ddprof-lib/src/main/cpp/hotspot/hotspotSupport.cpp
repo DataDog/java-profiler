@@ -1307,7 +1307,7 @@ static bool isSystemClassLoader(JNIEnv* jni, jobject cl) {
            jni->IsSameObject(cl, JAVA_APPLICATION_CLASSLOADER);      // application class loader (system class loader)
 }
 
-bool isHiddenClass(jvmtiEnv *jvmti, jclass clazz) {
+static bool isHiddenClass(jvmtiEnv *jvmti, jclass clazz) {
     jint modifiers = 0;
     if (jvmti->GetClassModifiers(clazz, &modifiers) == JVMTI_ERROR_NONE &&
         JVMSupport::isHidden(modifiers)) {
