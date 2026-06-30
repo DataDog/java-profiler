@@ -67,11 +67,14 @@ void WallClockASGCT::sharedSignalHandler(int signo, siginfo_t *siginfo,
   }
   Counters::increment(WALLCLOCK_SIGNAL_OWN);
 
+  WallClockASGCT *engine = reinterpret_cast<WallClockASGCT *>(Profiler::instance()->wallEngine());
   // Past the foreign-signal filter: any work below this point can write JFR.
   // Participate in SignalInflight::drain() so Profiler::stop() does not tear
   // down JFR while this handler is still inside recordSample().
   InflightGuard inflight;
-  WallClockASGCT *engine = reinterpret_cast<WallClockASGCT *>(Profiler::instance()->wallEngine());
+  if (!BaseWallClock::eventsEnabled()) {
+    return;
+  }
   if (signo == SIGVTALRM) {
     engine->signalHandler(signo, siginfo, ucontext, engine->_interval);
   }
@@ -251,12 +254,15 @@ void WallClockJvmti::sharedSignalHandler(int signo, siginfo_t *siginfo,
   }
   Counters::increment(WALLCLOCK_SIGNAL_OWN);
 
+  WallClockJvmti *engine =
+      reinterpret_cast<WallClockJvmti *>(Profiler::instance()->wallEngine());
   // Past the foreign-signal filter: any work below this point can write JFR.
   // Participate in SignalInflight::drain() so Profiler::stop() does not tear
   // down JFR while this handler is still inside recordSampleDelegated().
   InflightGuard inflight;
-  WallClockJvmti *engine =
-      reinterpret_cast<WallClockJvmti *>(Profiler::instance()->wallEngine());
+  if (!BaseWallClock::eventsEnabled()) {
+    return;
+  }
   if (signo == SIGVTALRM) {
     engine->signalHandler(signo, siginfo, ucontext, engine->_interval);
   }
