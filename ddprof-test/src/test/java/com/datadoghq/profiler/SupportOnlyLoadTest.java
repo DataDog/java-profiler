@@ -6,6 +6,7 @@ import org.junit.jupiter.api.condition.OS;
 
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -20,8 +21,10 @@ class SupportOnlyLoadTest {
         // Snapshot maps BEFORE initializing JVMAccess. The profiler may already be
         // mapped if it was loaded as a JVM agent by other tests in the same JVM;
         // in that case we cannot attribute the mapping to JVMAccess, so skip.
-        boolean profilerAlreadyMapped = Files.lines(Paths.get("/proc/self/maps"))
-            .anyMatch(line -> line.contains("libjavaProfiler"));
+        boolean profilerAlreadyMapped;
+        try (Stream<String> lines = Files.lines(Paths.get("/proc/self/maps"))) {
+            profilerAlreadyMapped = lines.anyMatch(line -> line.contains("libjavaProfiler"));
+        }
         org.junit.jupiter.api.Assumptions.assumeFalse(profilerAlreadyMapped,
             "libjavaProfiler.so already mapped (loaded as agent) — skipping isolation check");
 
@@ -29,8 +32,10 @@ class SupportOnlyLoadTest {
         org.junit.jupiter.api.Assumptions.assumeTrue(access.isActive(),
             "JVMAccess not active on this JVM — skipping map check");
 
-        boolean profilerMappedAfter = Files.lines(Paths.get("/proc/self/maps"))
-            .anyMatch(line -> line.contains("libjavaProfiler"));
+        boolean profilerMappedAfter;
+        try (Stream<String> lines = Files.lines(Paths.get("/proc/self/maps"))) {
+            profilerMappedAfter = lines.anyMatch(line -> line.contains("libjavaProfiler"));
+        }
         assertFalse(profilerMappedAfter,
             "libjavaProfiler.so must NOT be mapped when only JVMAccess is used");
     }

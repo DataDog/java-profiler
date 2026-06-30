@@ -2,6 +2,7 @@ package com.datadoghq.profiler;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -114,7 +115,11 @@ public final class LibraryLoader {
     }
 
     private static Result loadLibrary(final String libraryLocation, String scratchDir, Library target) {
-        String key = libraryLocation != null ? libraryLocation
+        // When loading from a custom path, include the target in the key so that loading
+        // libJavaSupport from /custom/path and libjavaProfiler from the same /custom/path
+        // are tracked independently.  When loading from the classpath the library name is
+        // already unique (SUPPORT_LIBRARY_NAME vs JAVA_PROFILER_LIBRARY_NAME).
+        String key = libraryLocation != null ? target.name() + ":" + libraryLocation
                 : (target == Library.SUPPORT ? SUPPORT_LIBRARY_NAME : JAVA_PROFILER_LIBRARY_NAME);
         AtomicReference<LoadingState> state = loadingStateMap.computeIfAbsent(key, (k) -> new AtomicReference<>(LoadingState.NOT_LOADED));
 
@@ -140,12 +145,14 @@ public final class LibraryLoader {
                     // Extract support lib under its exact name so $ORIGIN rpath resolution works,
                     // then extract the profiler lib to a randomised temp name and load it.
                     extractNamedLibrary(SUPPORT_LIBRARY_NAME, os, arch, qualifier, tempDir);
-                    // Mark support as loaded so concurrent SUPPORT-only callers don't race.
+                    Path profilerPath = libraryFromClasspath(os, arch, qualifier, tempDir);
+                    // Load the profiler; this also loads libJavaSupport via rpath as a side effect.
+                    System.load(profilerPath.toAbsolutePath().toString());
+                    // Mark support as loaded only after System.load succeeds so concurrent
+                    // SUPPORT-only callers that observe LOADED can safely use the library.
                     loadingStateMap.computeIfAbsent(SUPPORT_LIBRARY_NAME,
                             k -> new AtomicReference<>(LoadingState.NOT_LOADED))
                             .compareAndSet(LoadingState.NOT_LOADED, LoadingState.LOADED);
-                    Path profilerPath = libraryFromClasspath(os, arch, qualifier, tempDir);
-                    System.load(profilerPath.toAbsolutePath().toString());
                 } else {
                     Path supportPath = extractNamedLibrary(SUPPORT_LIBRARY_NAME, os, arch, qualifier, tempDir);
                     System.load(supportPath.toAbsolutePath().toString());
@@ -177,12 +184,18 @@ public final class LibraryLoader {
                 if (is == null) {
                     throw new IllegalStateException(resourcePath + " not found on classpath");
                 }
-                // Write to a sibling temp file, then atomically rename to avoid partial-write races
+                // Write to a sibling temp file, then rename to avoid partial-write races
                 // between concurrent JVM processes sharing the same temp directory.
+                // Prefer ATOMIC_MOVE so the rename is all-or-nothing; fall back to
+                // REPLACE_EXISTING when the filesystem or JVM does not support atomic rename.
                 Path tmpFile = Files.createTempFile(tempDir, libraryName + "-", ".tmp");
                 try {
                     Files.copy(is, tmpFile, StandardCopyOption.REPLACE_EXISTING);
-                    Files.move(tmpFile, outFile, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                    try {
+                        Files.move(tmpFile, outFile, StandardCopyOption.ATOMIC_MOVE);
+                    } catch (AtomicMoveNotSupportedException ignored) {
+                        Files.move(tmpFile, outFile, StandardCopyOption.REPLACE_EXISTING);
+                    }
                 } catch (IOException e) {
                     Files.deleteIfExists(tmpFile);
                     throw e;
@@ -208,14 +221,14 @@ public final class LibraryLoader {
     private static Path libraryFromClasspath(OperatingSystem os, Arch arch, String qualifier, Path tempDir) throws IOException {
         String resourcePath = NATIVE_LIBS + "/" + os.name().toLowerCase() + "-" + arch.name().toLowerCase() + ((qualifier != null && !qualifier.isEmpty()) ? "-" + qualifier : "") + "/" + JAVA_PROFILER_LIBRARY_NAME;
 
-        InputStream libraryData = LibraryLoader.class.getResourceAsStream(resourcePath);
-
-        if (libraryData != null) {
+        try (InputStream libraryData = LibraryLoader.class.getResourceAsStream(resourcePath)) {
+            if (libraryData == null) {
+                throw new IllegalStateException(resourcePath + " not found on classpath");
+            }
             Path libFile = Files.createTempFile(tempDir, JAVA_PROFILER_LIBRARY_NAME_BASE + "-dd-tmp", ".so");
             Files.copy(libraryData, libFile, StandardCopyOption.REPLACE_EXISTING);
             libFile.toFile().deleteOnExit();
             return libFile;
         }
-        throw new IllegalStateException(resourcePath + " not found on classpath");
     }
 }
