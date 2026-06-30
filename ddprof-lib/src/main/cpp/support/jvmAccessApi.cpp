@@ -7,6 +7,7 @@
 #include "hotspot/vmStructs.h"
 #include "libraries.h"
 #include "symbols.h"
+#include "vmEntry.h"
 
 #include <jni.h>
 #include <string.h>
@@ -154,9 +155,46 @@ static bool ensureVMStructsInitialised() {
     return VMStructs::libjvm() != nullptr;
 }
 
+// Resolve VM::hotspot_version() when running standalone.  The profiler agent
+// normally sets it from the "java.vm.version" property via JVMTI in
+// initShared(); without the agent it stays 0, which makes VMFlag::type() take
+// the pre-JDK16 code path and misread the flag layout (crashing the flag walk).
+// Read the property through JNI and parse it with the shared helper.
+static void ensureHotspotVersion(JNIEnv *env) {
+    if (VM::hotspot_version() > 0) {
+        return;  // already resolved (profiler agent path)
+    }
+    jclass system = env->FindClass("java/lang/System");
+    jmethodID getProperty = system != nullptr
+        ? env->GetStaticMethodID(system, "getProperty", "(Ljava/lang/String;)Ljava/lang/String;")
+        : nullptr;
+    if (getProperty == nullptr) {
+        env->ExceptionClear();
+        return;
+    }
+    jstring key = env->NewStringUTF("java.vm.version");
+    jstring value = (jstring)env->CallStaticObjectMethod(system, getProperty, key);
+    if (value == nullptr) {
+        env->ExceptionClear();
+        return;
+    }
+    const char *prop = env->GetStringUTFChars(value, nullptr);
+    if (prop != nullptr) {
+        char buf[64];
+        strncpy(buf, prop, sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = '\0';
+        VM::set_hotspot_version(JavaVersionAccess::get_hotspot_version(buf));
+        env->ReleaseStringUTFChars(value, prop);
+    }
+}
+
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JVMAccess_healthCheck0(JNIEnv *env,
                                                          jobject unused) {
     TEST_LOG("JVMAccess::healthCheck0");
-    return ensureVMStructsInitialised();
+    if (!ensureVMStructsInitialised()) {
+        return JNI_FALSE;
+    }
+    ensureHotspotVersion(env);
+    return JNI_TRUE;
 }

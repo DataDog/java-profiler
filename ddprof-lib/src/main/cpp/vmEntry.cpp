@@ -182,20 +182,6 @@ JavaFullVersion JavaVersionAccess::get_java_version(char* prop_value) {
   return version;
 }
 
-int JavaVersionAccess::get_hotspot_version(char* prop_value) {
-  int hs_version = 0;
-  if (strncmp(prop_value, "25.", 3) == 0 && prop_value[3] > '0') {
-    hs_version = 8;
-  } else if (strncmp(prop_value, "24.", 3) == 0 && prop_value[3] > '0') {
-    hs_version = 7;
-  } else if (strncmp(prop_value, "20.", 3) == 0 && prop_value[3] > '0') {
-    hs_version = 6;
-  } else if ((hs_version = atoi(prop_value)) < 9) {
-    hs_version = 9;
-  }
-  return hs_version;
-}
-
 CodeCache* VM::openJvmLibrary() {
   if ((void*)_asyncGetCallTrace == nullptr) {
     return nullptr;
