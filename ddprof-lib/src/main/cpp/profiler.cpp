@@ -74,6 +74,7 @@ static CTimer ctimer;
 static CTimerJvmti ctimer_jvmti;
 
 void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
+  JVMThread::initThread();
   ProfiledThread::initCurrentThread();
   ProfiledThread *current = ProfiledThread::current();
   current->setJavaThread(true);
