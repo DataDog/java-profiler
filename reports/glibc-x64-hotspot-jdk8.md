@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk8
 
 ## glibc-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-06-30 10:25:46 EDT
+**Date:** 2026-06-30 11:01:11 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-hotspot-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 86 |
-| CPU Cores (end) | 82 |
+| CPU Cores (start) | 28 |
+| CPU Cores (end) | 25 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-x64-hotspot-jdk8
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (3 unique values: 82-86 cores)</summary>
+<summary>CPU Timeline (3 unique values: 25-28 cores)</summary>
 
 ```
-1782829248 86
-1782829253 86
-1782829258 86
-1782829263 86
-1782829268 86
-1782829273 86
-1782829278 86
-1782829283 86
-1782829288 86
-1782829293 86
-1782829298 86
-1782829303 86
-1782829308 86
-1782829313 86
-1782829318 82
-1782829323 82
-1782829328 82
-1782829333 84
-1782829338 84
-1782829343 82
+1782831049 28
+1782831054 28
+1782831059 26
+1782831064 26
+1782831069 26
+1782831074 26
+1782831079 26
+1782831084 26
+1782831089 26
+1782831094 26
+1782831099 26
+1782831104 26
+1782831109 26
+1782831114 26
+1782831119 26
+1782831124 26
+1782831129 26
+1782831134 26
+1782831139 26
+1782831144 26
 ```
 </details>
 
