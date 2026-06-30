@@ -1391,6 +1391,7 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   // Kernel symbols are useful only for perf_events without --all-user
   _libs->updateSymbols(_cpu_engine == &perf_events && (args._ring & RING_KERNEL));
+  LibraryPatcher::patch_libraries();
 
   // Extract build-ids for remote symbolication if enabled
   if (_remote_symbolication) {
@@ -1407,6 +1408,11 @@ Error Profiler::start(Arguments &args, bool reset) {
       if (MallocTracer::running()) {
           MallocTracer::installHooks();
       }
+  });
+  Libraries::setLibraryPatchCallback([]() {
+      LibraryPatcher::patch_libraries();
+      LibraryPatcher::patch_sigaction();
+      LibraryPatcher::install_socket_hooks();
   });
   _libs->startRefresher();
 

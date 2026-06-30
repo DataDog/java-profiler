@@ -13,6 +13,7 @@
 #include "jniHelper.h"
 #include "jvmThread.h"
 #include "libraries.h"
+#include "libraryPatcher.h"
 #include "log.h"
 #include "os.h"
 #include "profiler.h"
@@ -248,6 +249,7 @@ bool VM::initShared(JavaVM* vm) {
 
   Libraries *libraries = Libraries::instance();
   libraries->updateSymbols(false);
+  LibraryPatcher::patch_libraries();
 
   _openj9 = !_hotspot && J9Support::initialize(
                              _jvmti, libraries->resolveSymbol("j9thread_self*"));

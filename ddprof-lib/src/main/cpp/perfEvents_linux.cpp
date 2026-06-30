@@ -25,6 +25,7 @@
 #include "jvmSupport.inline.h"
 #include "jvmThread.h"
 #include "libraries.h"
+#include "libraryPatcher.h"
 #include "log.h"
 #include "os.h"
 #include "perfEvents.h"
@@ -804,6 +805,7 @@ Error PerfEvents::check(Arguments &args) {
     attr.exclude_kernel = 1;
   } else if (!Symbols::haveKernelSymbols()) {
     Libraries::instance()->updateSymbols(true);
+    LibraryPatcher::patch_libraries();
     attr.exclude_kernel = Symbols::haveKernelSymbols() ? 0 : 1;
   }
   if (!(_ring & RING_USER)) {

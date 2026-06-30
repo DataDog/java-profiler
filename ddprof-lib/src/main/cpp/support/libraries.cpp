@@ -3,7 +3,6 @@
 #include "findLibraryImpl.h"
 #include "hotspot/vmStructs.h"
 #include "libraries.h"
-#include "libraryPatcher.h"
 #include "log.h"
 #include "os.h"
 #include "symbols.h"
@@ -13,6 +12,10 @@
 
 static std::atomic<void (*)(bool)> s_native_thread_names_cb{nullptr};
 static std::atomic<void (*)()> s_malloc_tracer_refresh_cb{nullptr};
+// Called at the end of refresh() so the profiler lib can run LibraryPatcher
+// hooks (patch_sigaction, install_socket_hooks) without the support lib
+// depending on LibraryPatcher directly.
+static std::atomic<void (*)()> s_library_patch_cb{nullptr};
 
 void Libraries::setNativeThreadNamesCallback(void (*cb)(bool)) {
     s_native_thread_names_cb.store(cb, std::memory_order_release);
@@ -20,6 +23,10 @@ void Libraries::setNativeThreadNamesCallback(void (*cb)(bool)) {
 
 void Libraries::setMallocTracerRefreshCallback(void (*cb)()) {
     s_malloc_tracer_refresh_cb.store(cb, std::memory_order_release);
+}
+
+void Libraries::setLibraryPatchCallback(void (*cb)()) {
+    s_library_patch_cb.store(cb, std::memory_order_release);
 }
 
 // Cadence for the background refresher thread.  Bounds the window during
@@ -65,7 +72,6 @@ end:
 
 void Libraries::updateSymbols(bool kernel_symbols) {
   Symbols::parseLibraries(&_native_libs, kernel_symbols);
-  LibraryPatcher::patch_libraries();
 }
 
 void Libraries::refresh() {
@@ -77,8 +83,10 @@ void Libraries::refresh() {
   // _build_id_processed), so redundant invocations are cheap.
   _dirty.store(false, std::memory_order_release);
   updateSymbols(false);
-  LibraryPatcher::patch_sigaction();
-  LibraryPatcher::install_socket_hooks();
+  auto patch_cb = s_library_patch_cb.load(std::memory_order_acquire);
+  if (patch_cb != nullptr) {
+    patch_cb();
+  }
   auto malloc_cb = s_malloc_tracer_refresh_cb.load(std::memory_order_acquire);
   if (malloc_cb != nullptr) {
     malloc_cb();
@@ -162,6 +170,7 @@ void Libraries::stopRefresher() {
   // thread fires them after the profiler has started tearing down.
   s_native_thread_names_cb.store(nullptr, std::memory_order_release);
   s_malloc_tracer_refresh_cb.store(nullptr, std::memory_order_release);
+  s_library_patch_cb.store(nullptr, std::memory_order_release);
   pthread_kill(_refresher_thread, WAKEUP_SIGNAL);
   pthread_join(_refresher_thread, nullptr);
   // Clear the published TID so a later sampler doesn't skip an unrelated
