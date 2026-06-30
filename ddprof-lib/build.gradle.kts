@@ -1,7 +1,7 @@
 import com.datadoghq.native.model.Platform
-import com.datadoghq.native.util.PlatformUtils
-import com.datadoghq.native.tasks.NativeLinkTask
 import com.datadoghq.native.tasks.NativeLinkExecutableTask
+import com.datadoghq.native.tasks.NativeLinkTask
+import com.datadoghq.native.util.PlatformUtils
 import org.gradle.api.publish.maven.tasks.AbstractPublishToMaven
 import org.gradle.api.tasks.VerificationTask
 
@@ -25,19 +25,23 @@ val componentVersion = findProperty("ddprof_version") as? String ?: version.toSt
 // Configure native build with the new plugin
 nativeBuild {
   version.set(componentVersion)
-  cppSourceDirs.set(listOf(
-    "src/main/cpp",
-    "src/main/cpp/support",
-    "src/main/cpp/support/hotspot",
-    "src/main/cpp/support/j9",
-    "src/main/cpp/support/zing",
-  ))
-  supportCppSourceDirs.set(listOf(
-    "src/main/cpp/support",
-    "src/main/cpp/support/hotspot",
-    "src/main/cpp/support/j9",
-    "src/main/cpp/support/zing",
-  ))
+  cppSourceDirs.set(
+    listOf(
+      "src/main/cpp",
+      "src/main/cpp/support",
+      "src/main/cpp/support/hotspot",
+      "src/main/cpp/support/j9",
+      "src/main/cpp/support/zing",
+    ),
+  )
+  supportCppSourceDirs.set(
+    listOf(
+      "src/main/cpp/support",
+      "src/main/cpp/support/hotspot",
+      "src/main/cpp/support/j9",
+      "src/main/cpp/support/zing",
+    ),
+  )
   includeDirectories.set(
     listOf(
       "src/main/cpp",
@@ -136,24 +140,24 @@ afterEvaluate {
 // These test files depend exclusively on support-side code (dwarf, sframe, safeAccess, libraries/codeCache).
 // Only wired in split mode — in monolithic mode there is no separate libJavaSupport.so.
 afterEvaluate {
-    if (nativeBuild.monolithicBuild.get() || nativeBuild.supportCppSourceDirs.get().isEmpty()) return@afterEvaluate
-    val supportOnlyTests = setOf("dwarf_ut", "sframe_ut", "safefetch_ut", "libraries_ut")
-    nativeBuild.buildConfigurations.names.forEach { configName ->
-        val cap = configName.replaceFirstChar { it.uppercase() }
-        val libDir = nativeBuild.librarySourceDir(configName).get().asFile.absolutePath
-        supportOnlyTests.forEach { testName ->
-            tasks.findByName("linkGtest${cap}_$testName")?.let {
-                (it as NativeLinkExecutableTask).apply {
-                    libPath(libDir)
-                    lib("JavaSupport")
-                    when (PlatformUtils.currentPlatform) {
-                        Platform.LINUX -> runtimePath("\$ORIGIN")
-                        Platform.MACOS -> linkerArgs.addAll("-rpath", "@loader_path")
-                    }
-                }
-            }
+  if (nativeBuild.monolithicBuild.get() || nativeBuild.supportCppSourceDirs.get().isEmpty()) return@afterEvaluate
+  val supportOnlyTests = setOf("dwarf_ut", "sframe_ut", "safefetch_ut", "libraries_ut")
+  nativeBuild.buildConfigurations.names.forEach { configName ->
+    val cap = configName.replaceFirstChar { it.uppercase() }
+    val libDir = nativeBuild.librarySourceDir(configName).get().asFile.absolutePath
+    supportOnlyTests.forEach { testName ->
+      tasks.findByName("linkGtest${cap}_$testName")?.let {
+        (it as NativeLinkExecutableTask).apply {
+          libPath(libDir)
+          lib("JavaSupport")
+          when (PlatformUtils.currentPlatform) {
+            Platform.LINUX -> runtimePath("\$ORIGIN")
+            Platform.MACOS -> linkerArgs.addAll("-rpath", "@loader_path")
+          }
         }
+      }
     }
+  }
 }
 
 // Create JAR tasks for each build configuration using nativeBuild extension utilities
@@ -339,7 +343,6 @@ gradle.taskGraph.whenReady {
 afterEvaluate {
   requireNotNull(description) { "Project ${project.path} is published, must have a description" }
 }
-
 
 // Ensure published artifacts depend on release JAR
 // Note: assembleReleaseJar is registered in afterEvaluate, so use matching instead of named
