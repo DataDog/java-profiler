@@ -32,18 +32,18 @@ import java.util.Locale;
  * freed while the buffer keeps being written — a use-after-free that can corrupt
  * JVM-owned native memory). See {@code ThreadContext} and the design note.
  *
- * <p>{@link Mode#CARRIER} scopes storage to the carrier via
+ * <p>{@link ContextStorageMode#CARRIER} scopes storage to the carrier via
  * {@code jdk.internal.misc.CarrierThreadLocal} (JDK 21+), whose {@code get()/set()/remove()}
  * operate on the current carrier's map even when called from a mounted virtual thread. A
  * mounted virtual thread then always resolves to its current carrier's record, which is
  * exactly what the sampler reads; storage lifetime matches the native record's lifetime,
  * so the dangling-buffer window is eliminated.
  *
- * <p>{@code CarrierThreadLocal} lives in a non-exported package, so {@link Mode#CARRIER}
+ * <p>{@code CarrierThreadLocal} lives in a non-exported package, so {@link ContextStorageMode#CARRIER}
  * needs {@code --add-exports java.base/jdk.internal.misc=ALL-UNNAMED} at runtime (a
  * {@code -javaagent} can grant this via {@code Instrumentation.redefineModule}). When the
  * type is missing (older JDK) or inaccessible (export not granted), we degrade to
- * {@link Mode#THREAD} — today's plain {@code ThreadLocal} behavior — never failing hard.
+ * {@link ContextStorageMode#THREAD} — today's plain {@code ThreadLocal} behavior — never failing hard.
  *
  * <p>The instance is held as a {@link ThreadLocal} (the supertype, available on the Java 8
  * baseline) and constructed reflectively, so calls dispatch virtually to the carrier-scoped
@@ -51,24 +51,19 @@ import java.util.Locale;
  */
 final class OtelContextStorage {
 
-    /** Resolved storage scope. */
-    enum Mode {
-        /** Carrier-scoped via {@code jdk.internal.misc.CarrierThreadLocal} (JDK 21+). */
-        CARRIER,
-        /** Legacy virtual-thread-scoped plain {@link ThreadLocal}. */
-        THREAD
-    }
-
     /**
-     * Kill-switch / selector system property: {@code auto} (default) | {@code carrier} | {@code thread}.
+     * Selector system property: {@code auto} (default) | {@code carrier} | {@code thread}.
+     * Named under {@code ddprof.debug.*} because it is an internal knob, not part of the
+     * supported configuration surface.
      * <ul>
-     *   <li>{@code auto} — use {@link Mode#CARRIER} when available, else {@link Mode#THREAD}
-     *       (logged loudly on JDK 21+, where the fallback is unsafe under virtual threads).</li>
+     *   <li>{@code auto} — use {@link ContextStorageMode#CARRIER} when available, else
+     *       {@link ContextStorageMode#THREAD} (logged loudly on JDK 21+, where the fallback is
+     *       unsafe under virtual threads).</li>
      *   <li>{@code carrier} — require carrier scoping; {@link #create()} throws if unavailable.</li>
      *   <li>{@code thread} — force legacy behavior (disables carrier scoping entirely).</li>
      * </ul>
      */
-    static final String MODE_PROPERTY = "ddprof.context.storage.mode";
+    static final String MODE_PROPERTY = "ddprof.debug.context.storage.mode";
 
     private static final String INTERNAL_CTL = "jdk.internal.misc.CarrierThreadLocal";
 
@@ -79,9 +74,9 @@ final class OtelContextStorage {
      * instance itself (its concrete type), so there is no shared mutable state to leak
      * between callers.
      */
-    static Mode modeOf(ThreadLocal<?> storage) {
+    static ContextStorageMode modeOf(ThreadLocal<?> storage) {
         return storage != null && INTERNAL_CTL.equals(storage.getClass().getName())
-                ? Mode.CARRIER : Mode.THREAD;
+                ? ContextStorageMode.CARRIER : ContextStorageMode.THREAD;
     }
 
     /**
@@ -107,11 +102,16 @@ final class OtelContextStorage {
      * fail-fast behavior.
      */
     static ThreadLocal<ThreadContext> create() {
+        // Resolved once per JavaProfiler instance — this is the tlsContextStorage field
+        // initializer, not a per-thread path. The per-thread get-or-init in JavaProfiler
+        // (currentContext) never reads this property, so parsing it here is not a hot path.
         // Locale.ROOT: the values are ASCII keywords, so lower-casing must be locale-independent
         // (a default-locale toLowerCase() maps "CARRIER" to "carrıer" under tr_TR, breaking the match).
         String requested = System.getProperty(MODE_PROPERTY, "auto").trim().toLowerCase(Locale.ROOT);
+        boolean forceThread = "thread".equals(requested);
+        boolean requireCarrier = "carrier".equals(requested);
 
-        if ("thread".equals(requested)) {
+        if (forceThread) {
             return new ThreadLocal<>();
         }
 
@@ -122,7 +122,7 @@ final class OtelContextStorage {
         }
 
         // Carrier scoping unavailable (JDK < 21, or the jdk.internal.misc export not granted).
-        if ("carrier".equals(requested)) {
+        if (requireCarrier) {
             throw new IllegalStateException("ddprof: -D" + MODE_PROPERTY + "=carrier requires "
                     + INTERNAL_CTL + ", which is not accessible. On JDK 21+ add "
                     + "--add-exports java.base/jdk.internal.misc=ALL-UNNAMED (a -javaagent can grant "

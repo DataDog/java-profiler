@@ -27,7 +27,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * Unit tests for {@link OtelContextStorage} mode selection and the {@code thread} kill-switch.
  *
  * <p>{@link OtelContextStorage#create()} reads {@link OtelContextStorage#MODE_PROPERTY} on each
- * call and returns an instance whose concrete type determines its {@link OtelContextStorage.Mode}
+ * call and returns an instance whose concrete type determines its {@link ContextStorageMode}
  * — there is no shared mutable state — so these tests can drive it directly via the system
  * property without disturbing the profiler's already-constructed storage.
  */
@@ -55,7 +55,7 @@ public class OtelContextStorageTest {
         setMode("thread");
         ThreadLocal<ThreadContext> storage = OtelContextStorage.create();
         assertNotNull(storage);
-        assertEquals(OtelContextStorage.Mode.THREAD, OtelContextStorage.modeOf(storage));
+        assertEquals(ContextStorageMode.THREAD, OtelContextStorage.modeOf(storage));
         // A forced-thread instance must be a plain ThreadLocal, never CarrierThreadLocal.
         assertEquals(ThreadLocal.class, storage.getClass(),
                 "thread mode must not use jdk.internal.misc.CarrierThreadLocal");
@@ -75,7 +75,7 @@ public class OtelContextStorageTest {
 
         setMode("auto");
         ThreadLocal<ThreadContext> storage = OtelContextStorage.create();
-        assertEquals(OtelContextStorage.Mode.CARRIER, OtelContextStorage.modeOf(storage),
+        assertEquals(ContextStorageMode.CARRIER, OtelContextStorage.modeOf(storage),
                 "auto must select carrier scoping when CarrierThreadLocal is accessible");
     }
 
@@ -86,7 +86,7 @@ public class OtelContextStorageTest {
                 "CarrierThreadLocal not accessible; the fail-fast path is covered by the throw test");
         setMode("carrier");
         ThreadLocal<ThreadContext> storage = OtelContextStorage.create();
-        assertEquals(OtelContextStorage.Mode.CARRIER, OtelContextStorage.modeOf(storage));
+        assertEquals(ContextStorageMode.CARRIER, OtelContextStorage.modeOf(storage));
     }
 
     /**

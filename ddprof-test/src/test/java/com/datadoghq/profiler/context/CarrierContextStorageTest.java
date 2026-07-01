@@ -15,6 +15,7 @@
  */
 package com.datadoghq.profiler.context;
 
+import com.datadoghq.profiler.ContextStorageMode;
 import com.datadoghq.profiler.JavaProfiler;
 import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.ThreadContext;
@@ -34,7 +35,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Verifies that {@link ThreadContext} storage is scoped to the <em>carrier</em> thread when
- * carrier scoping is active ({@link com.datadoghq.profiler.OtelContextStorage.Mode#CARRIER}).
+ * carrier scoping is active ({@link com.datadoghq.profiler.ContextStorageMode#CARRIER}).
  *
  * <p>The OTEP record a {@code ThreadContext} writes to is embedded in the carrier's native
  * {@code ProfiledThread} and is what the (carrier-bound) sampler reads. Under carrier scoping,
@@ -76,7 +77,7 @@ public class CarrierContextStorageTest {
     @Test
     public void contextIsSharedPerCarrierAcrossVirtualThreads() throws Exception {
         assumeTrue(Platform.isJavaVersionAtLeast(21), "virtual threads require JDK 21+");
-        assumeTrue("CARRIER".equals(profiler.contextStorageMode()),
+        assumeTrue(ContextStorageMode.CARRIER == profiler.contextStorageMode(),
                 "carrier-scoped storage not active (mode=" + profiler.contextStorageMode()
                         + "); needs JDK 21+ and --add-exports java.base/jdk.internal.misc=ALL-UNNAMED");
 

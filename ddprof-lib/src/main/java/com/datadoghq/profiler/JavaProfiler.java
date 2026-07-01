@@ -469,7 +469,7 @@ public final class JavaProfiler {
 
     /**
      * Returns the {@link ThreadContext} for the current storage slot (the calling thread, or in
-     * {@link OtelContextStorage.Mode#CARRIER} its current carrier).
+     * {@link ContextStorageMode#CARRIER} its current carrier).
      *
      * <p><b>Do not cache the returned instance across a point where the calling thread may be
      * unmounted and remounted on a different carrier</b> (any blocking operation on a virtual
@@ -484,12 +484,12 @@ public final class JavaProfiler {
     }
 
     /**
-     * Diagnostics/tests: the resolved OTEL context storage mode ({@code "CARRIER"} or
-     * {@code "THREAD"}), as selected by {@code -D}{@value OtelContextStorage#MODE_PROPERTY}
-     * and the availability of {@code jdk.internal.misc.CarrierThreadLocal}.
+     * Diagnostics/tests: the resolved OTEL context storage mode, as selected by
+     * {@code -D}{@value OtelContextStorage#MODE_PROPERTY} and the availability of
+     * {@code jdk.internal.misc.CarrierThreadLocal}.
      */
-    public String contextStorageMode() {
-        return OtelContextStorage.modeOf(tlsContextStorage).name();
+    public ContextStorageMode contextStorageMode() {
+        return OtelContextStorage.modeOf(tlsContextStorage);
     }
 
 // --- test and debug utility methods
@@ -504,8 +504,8 @@ public final class JavaProfiler {
 
     /**
      * Resets the cached ThreadContext for the current storage slot — the calling thread in
-     * {@link OtelContextStorage.Mode#THREAD}, or its current carrier in
-     * {@link OtelContextStorage.Mode#CARRIER}. The next call to {@link #getThreadContext()}
+     * {@link ContextStorageMode#THREAD}, or its current carrier in
+     * {@link ContextStorageMode#CARRIER}. The next call to {@link #getThreadContext()}
      * or any {@code setContext} overload will re-create it with fresh OTEL TLS buffers.
      */
     public void resetThreadContext() {
