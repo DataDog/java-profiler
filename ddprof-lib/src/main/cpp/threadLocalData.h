@@ -9,11 +9,11 @@
 #include "context.h"
 #include "otel_context.h"
 #include "os.h"
-#include "threadLocalData.h"
 #include "threadState.h"
 #include "unwindStats.h"
 #include <atomic>
 #include <cstdint>
+#include <cstring>
 #include <jvmti.h>
 #include <pthread.h>
 #include <setjmp.h>
