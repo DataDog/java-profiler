@@ -662,13 +662,23 @@ abstract class ProfilerTestExtension @Inject constructor(
 
     init {
         // Standard JVM arguments for profiler testing
-        standardJvmArgs.convention(listOf(
+        val baseArgs = mutableListOf(
             "-Djdk.attach.allowAttachSelf",      // Allow profiler to attach to self
             "-Djol.tryWithSudo=true",            // JOL memory layout analysis
             "-XX:ErrorFile=build/hs_err_pid%p.log", // HotSpot error file location
             "-XX:+ResizeTLAB",                   // Allow TLAB resizing for allocation profiling
             "-Xmx512m"                           // Default heap size for tests
-        ))
+        )
+        // Carrier-scoped OTEL context storage (OtelContextStorage.Mode.CARRIER) resolves
+        // jdk.internal.misc.CarrierThreadLocal, which lives in a non-exported package.
+        // The type exists only on JDK 21+ and --add-exports aborts a Java 8 JVM, so gate
+        // on 21+. Without this the profiler degrades to thread-scoped storage, so the
+        // carrier-scoping tests would silently exercise only the fallback.
+        val testMajor = try { PlatformUtils.testJvmMajorVersion() } catch (e: Exception) { 0 }
+        if (testMajor >= 21) {
+            baseArgs.add("--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED")
+        }
+        standardJvmArgs.convention(baseArgs)
 
         extraJvmArgs.convention(emptyList())
         respectSkipTests.convention(true)
