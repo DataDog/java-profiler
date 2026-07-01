@@ -237,7 +237,7 @@ public:
         _jvmtistacks(false),
         _nativesocket(false),
         _nativesocket_interval(0),
-	_force_jmethodID(true) {}
+        _force_jmethodID(true) {}
 
   ~Arguments();
 
