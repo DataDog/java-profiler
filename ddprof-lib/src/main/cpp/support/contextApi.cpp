@@ -214,7 +214,7 @@ Java_com_datadoghq_profiler_OTelContext_readProcessCtx0(JNIEnv *env, jclass unus
 }
 
 extern "C" DLLEXPORT jobject JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_initializeContextTLS0(JNIEnv* env, jclass unused, jlongArray metadata) {
+Java_com_datadoghq_profiler_ContextStorage_initializeContextTLS0(JNIEnv* env, jclass unused, jlongArray metadata) {
   ThreadContext* thrd = ThreadContext::current();
   assert(thrd != nullptr);
 

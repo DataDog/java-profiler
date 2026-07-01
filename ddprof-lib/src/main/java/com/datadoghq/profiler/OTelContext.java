@@ -108,7 +108,7 @@ public final class OTelContext {
      * by printing warnings to System.out.
      */
     private OTelContext() {
-        LibraryLoader.Result result = LibraryLoader.builder().load();
+        LibraryLoader.Result result = LibraryLoader.builder().library(LibraryLoader.Library.SUPPORT).load();
         if (!result.succeeded ) {
             System.out.println("[WARNING] Failed to obtain OTel context.\n" + result.error);
         }
@@ -131,7 +131,7 @@ public final class OTelContext {
      *                     to print warnings to System.out
      */
     public OTelContext(String libLocation, String scratchDir, Consumer<Throwable> errorHandler) {
-        LibraryLoader.Result result = LibraryLoader.builder().withLibraryLocation(libLocation).withScratchDir(scratchDir).load();
+        LibraryLoader.Result result = LibraryLoader.builder().library(LibraryLoader.Library.SUPPORT).withLibraryLocation(libLocation).withScratchDir(scratchDir).load();
         if (!result.succeeded && result.error != null) {
             if (errorHandler != null) {
                 errorHandler.accept(result.error);
