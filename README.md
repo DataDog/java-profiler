@@ -169,15 +169,27 @@ By default, the script clones the repository at the current commit for clean bui
 # Force rebuild of base image only (useful after Alpine/Ubuntu updates)
 ./utils/run-containers-tests.sh --libc=musl --rebuild-base
 
+# Preview the full supported local test matrix without running containers
+./utils/run-containers-tests.sh --matrix
+
+# Run all supported musl cells (sanitizer configs are skipped, matching CI policy)
+./utils/run-containers-tests.sh --matrix --libc=musl --run
+
+# Run all aarch64 debug cells
+./utils/run-containers-tests.sh --matrix --arch=aarch64 --config=debug --run
+
+# Run all OpenJ9 cells
+./utils/run-containers-tests.sh --matrix --jdk=j9 --run
+
 # Show options
 ./utils/run-containers-tests.sh --help
 ```
 
 Supported options:
-- `--libc=glibc|musl` (default: glibc)
-- `--jdk=8|11|17|21|25|8-j9|11-j9|17-j9|21-j9|17-graal|21-graal|25-graal` (default: 21)
-- `--arch=x64|aarch64` (default: auto-detect)
-- `--config=debug|release|asan|tsan` (default: debug)
+- `--libc=glibc|musl|all` (default: glibc; `all` only with `--matrix`)
+- `--jdk=8|11|17|21|25|8-j9|11-j9|17-j9|21-j9|17-graal|21-graal|25-graal|j9|graal|regular|all` (default: 21; groups/`all` only with `--matrix`)
+- `--arch=x64|aarch64|all` (default: auto-detect; `all` only with `--matrix`)
+- `--config=debug|release|asan|tsan|all` (default: debug; `all` only with `--matrix`)
 - `--container=podman|docker` (default: podman)
 - `--tests="TestPattern"`
 - `--gtest` (enable C++ gtests, disabled by default for faster runs)
@@ -186,6 +198,11 @@ Supported options:
 - `--mount` (mount local repo instead of cloning - faster but may have stale artifacts)
 - `--rebuild` (force rebuild of all container images)
 - `--rebuild-base` (force rebuild of base image only)
+- `--matrix` (preview a test matrix; unset dimensions expand to `all`)
+- `--run` (execute matrix mode; invalid without `--matrix`)
+- `--fail-fast` (stop matrix execution on first failure)
+
+Without `--matrix`, the script keeps its single-cell behavior and runs one configuration immediately. With `--matrix`, the script previews the expanded matrix by default and only runs containers when `--run` is present. Matrix execution writes summaries to `build/reports/container-matrix/summary.md` and `build/reports/container-matrix/summary.json`.
 
 ## Unwinding Validation Tool
 

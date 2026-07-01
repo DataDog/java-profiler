@@ -84,10 +84,11 @@ Runs tests in containers across various OS/libc/JDK combinations, mirroring the 
 **Usage:**
 ```bash
 ./utils/run-containers-tests.sh [options]
-  --libc=glibc|musl               (default: glibc)
-  --jdk=8|11|17|21|25|8-j9|...   (default: 21)
-  --arch=x64|aarch64              (default: auto-detect)
-  --config=debug|release|asan|tsan (default: debug)
+  --libc=glibc|musl|all           (default: glibc; all only with --matrix)
+  --jdk=8|11|17|21|25|8-j9|...|j9|graal|regular|all
+                                    (default: 21; groups/all only with --matrix)
+  --arch=x64|aarch64|all          (default: auto-detect; all only with --matrix)
+  --config=debug|release|asan|tsan|all (default: debug; all only with --matrix)
   --container=podman|docker       (default: podman)
   --tests="TestPattern"           (optional)
   --gtest                         (enable C++ gtests)
@@ -95,6 +96,9 @@ Runs tests in containers across various OS/libc/JDK combinations, mirroring the 
   --shell                         (drop to shell instead of running tests)
   --mount                         (mount local repo instead of cloning)
   --rebuild                       (force rebuild of container images)
+  --matrix                        (preview a test matrix)
+  --run                           (execute matrix mode)
+  --fail-fast                     (stop matrix execution on first failure)
 ```
 
 Examples:
@@ -104,7 +108,21 @@ Examples:
 
 # Use Docker instead of the default Podman runtime
 ./utils/run-containers-tests.sh --container=docker --libc=glibc --jdk=21
+
+# Preview the full supported local matrix without running containers
+./utils/run-containers-tests.sh --matrix
+
+# Run all supported musl cells (sanitizer configs are skipped, matching CI policy)
+./utils/run-containers-tests.sh --matrix --libc=musl --run
+
+# Run all aarch64 debug cells
+./utils/run-containers-tests.sh --matrix --arch=aarch64 --config=debug --run
+
+# Run all OpenJ9 cells
+./utils/run-containers-tests.sh --matrix --jdk=j9 --run
 ```
+
+Without `--matrix`, the script keeps its single-cell behavior and runs one container test configuration immediately. With `--matrix`, unset dimensions expand to `all`; the command previews the expanded matrix by default and only executes when `--run` is also provided. Matrix execution writes summaries to `build/reports/container-matrix/summary.md` and `build/reports/container-matrix/summary.json`.
 
 ### `patch-dd-java-agent.sh`
 
