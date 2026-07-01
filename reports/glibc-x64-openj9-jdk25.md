@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk25
 
 ## glibc-x64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-07-01 05:26:57 EDT
+**Date:** 2026-07-01 05:45:17 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-openj9-jdk25
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 56 |
-| CPU Cores (end) | 56 |
+| CPU Cores (start) | 6 |
+| CPU Cores (end) | 6 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-x64-openj9-jdk25
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (2 unique values: 54-56 cores)</summary>
+<summary>CPU Timeline (1 unique values: 6-6 cores)</summary>
 
 ```
-1782897695 56
-1782897700 56
-1782897705 56
-1782897710 56
-1782897715 56
-1782897720 56
-1782897725 56
-1782897730 56
-1782897735 56
-1782897740 56
-1782897745 56
-1782897750 54
-1782897755 54
-1782897760 56
-1782897765 56
-1782897770 56
-1782897775 56
-1782897780 56
-1782897785 56
-1782897790 56
+1782898848 6
+1782898853 6
+1782898858 6
+1782898863 6
+1782898868 6
+1782898873 6
+1782898878 6
+1782898883 6
+1782898888 6
+1782898893 6
+1782898898 6
+1782898903 6
+1782898908 6
+1782898913 6
+1782898918 6
+1782898923 6
+1782898928 6
+1782898933 6
+1782898938 6
+1782898943 6
 ```
 </details>
 
