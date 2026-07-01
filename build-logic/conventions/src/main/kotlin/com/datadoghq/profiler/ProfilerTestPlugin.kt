@@ -125,7 +125,7 @@ class ProfilerTestPlugin : Plugin<Project> {
     private fun carrierExportJvmArgs(project: Project): List<String> {
         val major = testJvmMajorVersionFromRelease()
         val enabled = major >= 21
-        project.logger.lifecycle(
+        project.logger.info(
             "ddprof: carrier --add-exports gate — testJavaHome={}, detected major={}, flag {}",
             PlatformUtils.testJavaHome(), major, if (enabled) "ADDED" else "omitted"
         )
