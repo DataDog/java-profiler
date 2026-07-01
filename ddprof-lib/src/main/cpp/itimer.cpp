@@ -27,7 +27,7 @@
 #include "guards.h"
 #include <sys/time.h>
 
-volatile bool ITimer::_enabled = false;
+bool ITimer::_enabled = false;
 long ITimer::_interval;
 CStack ITimer::_cstack;
 
@@ -40,7 +40,7 @@ void ITimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // feature addresses. Use CTimer (the default) when signal-origin
   // validation is required.
   InflightGuard inflight;
-  if (!_enabled)
+  if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE))
     return;
   
   // Atomically try to enter critical section - prevents all reentrancy races
@@ -101,7 +101,7 @@ void ITimer::stop() {
   setitimer(ITIMER_PROF, &tv, NULL);
 }
 
-volatile bool ITimerJvmti::_enabled = false;
+bool ITimerJvmti::_enabled = false;
 long ITimerJvmti::_interval = 0;
 
 void ITimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
