@@ -12,7 +12,7 @@
 #include "symbols.h"
 #include "jvmSupport.inline.h"
 #include "jvmThread.h"
-#include "thread.h"
+#include "threadLocalData.h"
 
 // Use validation helpers from header (shared with tests)
 using StackWalkValidation::inDeadZone;

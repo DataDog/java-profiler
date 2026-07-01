@@ -33,7 +33,7 @@
 #include "stackFrame.h"
 #include "stackWalker.h"
 #include "symbols.h"
-#include "thread.h"
+#include "threadLocalData.h"
 #include "threadState.inline.h"
 #include <dlfcn.h>
 #include <errno.h>

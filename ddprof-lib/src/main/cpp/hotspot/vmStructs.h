@@ -16,7 +16,6 @@
 #include "counters.h"
 #include "jvmThread.h"
 #include "safeAccess.h"
-#include "thread.h"
 #include "threadState.h"
 #include "vmEntry.h"
 

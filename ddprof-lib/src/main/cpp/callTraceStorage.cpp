@@ -9,11 +9,10 @@
 #include "log.h"
 #include "os.h"
 #include "common.h"
-#include "thread.h"
 #include "vmEntry.h" // For BCI_ERROR constant
 #include "arch.h" // For LP64_ONLY macro and COMMA macro
 #include "guards.h" // For table swap critical sections
-#include "thread.h"
+#include "threadLocalData.h"
 #include <string.h>
 #include <atomic>
 

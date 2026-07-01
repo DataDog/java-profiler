@@ -17,7 +17,6 @@
 #include "otel_context.h"
 #include "profiler.h"
 #include "signalCookie.h"
-#include "thread.h"
 #include "threadState.inline.h"
 #include "guards.h"
 #include "wallClockCounters.h"
