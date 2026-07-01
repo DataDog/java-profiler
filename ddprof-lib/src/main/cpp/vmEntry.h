@@ -9,8 +9,6 @@
 
 #include <jvmti.h>
 #include "arch.h"
-
-#include "arch.h"
 #include "arguments.h"
 #include "codeCache.h"
 
