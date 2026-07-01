@@ -122,7 +122,7 @@
    * paths (delegated and direct) go into SAMPLES_DROPPED_REC_LOCK. */         \
   X(JVMTI_STACKS_DROPPED_LOCK, "jvmti_stacks_dropped_lock")                   \
   X(SAMPLES_DROPPED_REC_LOCK, "samples_dropped_rec_lock")                     \
-  X(SAMPLES_DROOPED_THREAD_LOCAL, "samples_dropped_thread_local")
+  X(SAMPLES_DROPPED_THREAD_LOCAL, "samples_dropped_thread_local")
 #define X_ENUM(a, b) a,
 typedef enum CounterId : int {
   DD_COUNTER_TABLE(X_ENUM) DD_NUM_COUNTERS

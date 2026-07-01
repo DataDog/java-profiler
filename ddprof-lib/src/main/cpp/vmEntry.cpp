@@ -541,8 +541,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
 
 
   if (attach) {
-    JVMThread::initThread();
-    _jvmti->GenerateEvents(JVMTI_EVENT_DYNAMIC_CODE_GENERATED);
+2    _jvmti->GenerateEvents(JVMTI_EVENT_DYNAMIC_CODE_GENERATED);
     _jvmti->GenerateEvents(JVMTI_EVENT_COMPILED_METHOD_LOAD);
   } else {
     _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_INIT, NULL);

@@ -23,15 +23,6 @@ bool JVMThread::initialize() {
   return _jvm_thread.isKeyValid();
 }
 
-/**
- * Per-thread initialization
- * 
- * This method *must* be called before signal is enabled
- * for the thread.
- */
-void JVMThread::initThread() {
-}
-
 bool JVMThread::isInitialized() {
     return (_tid != nullptr && _jvm_thread.isKeyValid());
 }

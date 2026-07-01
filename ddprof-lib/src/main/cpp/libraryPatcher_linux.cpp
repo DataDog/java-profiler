@@ -259,7 +259,6 @@ static void init_tls_and_register() {
         pt->startInitWindow();
     }
     Profiler::registerThread(ProfiledThread::currentTid());
-    JVMThread::initThread();
 }
 
 // Wrapper around the real start routine.
@@ -375,7 +374,6 @@ static void* start_routine_wrapper(void* args) {
         ProfiledThread::initCurrentThread();
         ProfiledThread::currentSignalSafe()->startInitWindow();
         Profiler::registerThread(ProfiledThread::currentTid());
-        JVMThread::initThread();
     }
     // Use POSIX cleanup instead of C++ RAII to handle pthread_exit(): see run_with_cleanup.
     // cleanup_unregister has already run on run_with_cleanup's normal return path.

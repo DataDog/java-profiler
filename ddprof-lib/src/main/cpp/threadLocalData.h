@@ -210,10 +210,6 @@ public:
     return _jmp_buf != nullptr;
   }
 
-  void resetJmpCtx() {
-    _jmp_buf = nullptr;
-  }
-
   // Signal-handler depth counter used by SignalHandlerScope (guards.h).  All
   // access happens on the owning thread (signal handlers are delivered to the
   // thread that's interrupted), so plain reads/writes are AS-safe — no locks,

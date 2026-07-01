@@ -73,7 +73,6 @@ static CTimer ctimer;
 static CTimerJvmti ctimer_jvmti;
 
 void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
-  JVMThread::initThread();
   ProfiledThread::initCurrentThread();
   ProfiledThread *current = ProfiledThread::current();
   current->setJavaThread(true);
@@ -946,8 +945,8 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
     have_tls_protection = true;
   }
   // If thrd == nullptr, we proceed but with limited handling capability.
-  // Only HotspotSupport::checkFault (which has its own sameStack fallback)
-  // and the JDK-8313796 workaround can safely handle faults without TLS.
+  // Only HotspotSupport::checkFault and the JDK-8313796 workaround can safely 
+  // handle faults without TLS.
 
   StackFrame frame(ucontext);
   uintptr_t pc = frame.pc();

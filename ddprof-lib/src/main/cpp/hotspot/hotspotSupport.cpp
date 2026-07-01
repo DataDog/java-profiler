@@ -20,7 +20,6 @@
 using StackWalkValidation::inDeadZone;
 using StackWalkValidation::aligned;
 using StackWalkValidation::MAX_FRAME_SIZE;
-using StackWalkValidation::sameStack;
 
 // Initialize once, they survive on profiler restart
 static jobject JAVA_PLATFORM_CLASSLOADER = nullptr;
@@ -234,7 +233,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
     ProfiledThread* prof_thread = ProfiledThread::currentSignalSafe();
     if (prof_thread == nullptr) {
-        Counters::increment(SAMPLES_DROOPED_THREAD_LOCAL);
+        Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
         return 0;
     }
 
