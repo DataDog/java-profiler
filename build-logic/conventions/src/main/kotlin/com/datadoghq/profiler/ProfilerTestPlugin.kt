@@ -15,6 +15,7 @@ import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Exec
 import org.gradle.api.tasks.SourceSetContainer
 import org.gradle.api.tasks.testing.Test
+import java.io.File
 import java.time.Duration
 import javax.inject.Inject
 
@@ -78,27 +79,58 @@ import javax.inject.Inject
 class ProfilerTestPlugin : Plugin<Project> {
 
     /**
+     * Major version of the *test* JVM, read from its `release` file (`JAVA_VERSION="..."`) rather
+     * than by executing the launcher.
+     *
+     * Executing `$JAVA_TEST_HOME/bin/java -version` (PlatformUtils.testJvmMajorVersion()) is
+     * unreliable here: in the musl split-JDK matrix it has been observed to report the build JDK
+     * (21) even when the test JVM is JDK 8, which put a JDK-21-only `--add-exports` onto a JDK-8
+     * launcher and aborted it. Reading the `release` file is a pure file read of the same
+     * JAVA_TEST_HOME the executable is resolved from — deterministic, no subprocess, no exec-format
+     * or PATH hazards. Returns 0 when it cannot be determined (missing/old `release`), so callers
+     * fail safe: they omit the flag, the profiler degrades to thread-scoped storage, and the
+     * carrier-scoping tests skip — never an abort.
+     */
+    private fun testJvmMajorVersionFromRelease(): Int = try {
+        val release = File(PlatformUtils.testJavaHome(), "release")
+        val version = release.takeIf { it.isFile }
+            ?.readLines()
+            ?.firstOrNull { it.startsWith("JAVA_VERSION=") }
+            ?.substringAfter('=')?.trim()?.trim('"')
+        // "1.8.0_452" -> 8 ; "21.0.5" -> 21
+        val parts = version?.split('.').orEmpty()
+        val majorToken = when {
+            parts.isEmpty() -> ""
+            parts[0] == "1" && parts.size > 1 -> parts[1]
+            else -> parts[0]
+        }
+        majorToken.takeWhile { it.isDigit() }.toIntOrNull() ?: 0
+    } catch (e: Exception) {
+        0
+    }
+
+    /**
      * JVM args required to enable carrier-scoped OTEL context storage
      * (`OtelContextStorage.Mode.CARRIER`), or an empty list when the test JVM does not support it.
      *
      * Carrier scoping resolves `jdk.internal.misc.CarrierThreadLocal`, which lives in a
      * non-exported package, so it needs `--add-exports java.base/jdk.internal.misc=ALL-UNNAMED`.
      * That type only exists on JDK 21+, and the flag *aborts* a Java 8 JVM ("Unrecognized option"),
-     * so it must be gated on the version of the actual test JVM.
+     * so it is gated on the version of the actual test JVM.
      *
-     * This MUST be evaluated at task execution time (inside doFirst), not at configuration time:
-     * the test JVM is selected via JAVA_TEST_HOME, which the CI only makes resolvable at execution
-     * time (see the `executable` assignments below). At configuration time
-     * PlatformUtils.testJavaHome() falls back to the build JDK (JAVA_HOME), which in the musl
-     * split-JDK matrix is JDK 21 while the test JVM is JDK 8 — the mismatch that put a JDK-21-only
-     * flag on a JDK-8 launcher. Without the flag the profiler simply degrades to thread-scoped
-     * storage and the carrier-scoping tests skip, which is safe.
+     * MUST be evaluated at task execution time (inside doFirst), not configuration time: the test
+     * JVM is selected via JAVA_TEST_HOME, which the CI only makes resolvable at execution time (see
+     * the `executable` assignments below).
      */
-    private fun carrierExportJvmArgs(): List<String> =
-        if (PlatformUtils.testJvmMajorVersion() >= 21)
-            listOf("--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED")
-        else
-            emptyList()
+    private fun carrierExportJvmArgs(project: Project): List<String> {
+        val major = testJvmMajorVersionFromRelease()
+        val enabled = major >= 21
+        project.logger.lifecycle(
+            "ddprof: carrier --add-exports gate — testJavaHome={}, detected major={}, flag {}",
+            PlatformUtils.testJavaHome(), major, if (enabled) "ADDED" else "omitted"
+        )
+        return if (enabled) listOf("--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED") else emptyList()
+    }
 
     override fun apply(project: Project) {
         val extension = project.extensions.create(
@@ -263,7 +295,7 @@ class ProfilerTestPlugin : Plugin<Project> {
                 val allArgs = mutableListOf<String>()
                 allArgs.addAll(testConfig.standardJvmArgs)
                 // Version-gated at execution time, when the real test JVM is resolvable.
-                allArgs.addAll(carrierExportJvmArgs())
+                allArgs.addAll(carrierExportJvmArgs(project))
 
                 if (extension.nativeLibDir.isPresent) {
                     allArgs.add("-Djava.library.path=${extension.nativeLibDir.get().asFile.absolutePath}")
@@ -329,7 +361,7 @@ class ProfilerTestPlugin : Plugin<Project> {
                 // JVM args
                 allArgs.addAll(testConfig.standardJvmArgs)
                 // Version-gated at execution time, when the real test JVM (JAVA_TEST_HOME) is resolvable.
-                allArgs.addAll(carrierExportJvmArgs())
+                allArgs.addAll(carrierExportJvmArgs(project))
                 if (extension.nativeLibDir.isPresent) {
                     allArgs.add("-Djava.library.path=${extension.nativeLibDir.get().asFile.absolutePath}")
                 }
