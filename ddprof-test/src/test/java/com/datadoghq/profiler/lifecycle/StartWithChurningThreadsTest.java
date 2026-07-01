@@ -15,10 +15,15 @@ import org.junit.jupiter.api.Timeout;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Queue;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -42,7 +47,9 @@ public class StartWithChurningThreadsTest {
 
     private static final int CHURN_THREADS = 64;
     private static final int CYCLES = 500;
-    private static final String PROFILER_CMD = "start,wall=1ms,jfr,file=";
+    // filter= disables thread filtering so all threads receive SIGVTALRM,
+    // maximising the chance of racing execute() with active thread churn.
+    private static final String PROFILER_CMD = "start,wall=1ms,filter=,jfr,file=";
 
     @Timeout(120)
     @Test
@@ -60,14 +67,15 @@ public class StartWithChurningThreadsTest {
         // ensuring JVMTI events fire during profiler initialisation.
         CountDownLatch churnRunning = new CountDownLatch(CHURN_THREADS);
         ExecutorService churn = Executors.newFixedThreadPool(CHURN_THREADS);
+        List<Future<?>> churnFutures = new ArrayList<>(CHURN_THREADS);
 
         for (int i = 0; i < CHURN_THREADS; i++) {
-            churn.submit(() -> {
+            churnFutures.add(churn.submit(() -> {
                 churnRunning.countDown();
                 while (running.get()) {
                     new Thread(() -> {}).start();
                 }
-            });
+            }));
         }
 
         try {
@@ -99,6 +107,13 @@ public class StartWithChurningThreadsTest {
                 // already stopped
             }
             deleteDirectory(recordings);
+            for (Future<?> f : churnFutures) {
+                try {
+                    f.get();
+                } catch (ExecutionException e) {
+                    errors.add(e.getCause());
+                } catch (CancellationException ignored) {}
+            }
         }
 
         if (!errors.isEmpty()) {
