@@ -15,6 +15,8 @@
  */
 package com.datadoghq.profiler;
 
+import java.util.Locale;
+
 /**
  * Factory for the thread-local that backs {@link ThreadContext} storage, and the
  * home of the context-storage <em>mode</em> selection.
@@ -105,7 +107,9 @@ final class OtelContextStorage {
      * fail-fast behavior.
      */
     static ThreadLocal<ThreadContext> create() {
-        String requested = System.getProperty(MODE_PROPERTY, "auto").trim().toLowerCase();
+        // Locale.ROOT: the values are ASCII keywords, so lower-casing must be locale-independent
+        // (a default-locale toLowerCase() maps "CARRIER" to "carrıer" under tr_TR, breaking the match).
+        String requested = System.getProperty(MODE_PROPERTY, "auto").trim().toLowerCase(Locale.ROOT);
 
         if ("thread".equals(requested)) {
             return new ThreadLocal<>();

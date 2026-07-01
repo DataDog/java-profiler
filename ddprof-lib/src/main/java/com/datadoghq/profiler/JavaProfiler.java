@@ -467,6 +467,18 @@ public final class JavaProfiler {
      */
     private static native ByteBuffer initializeContextTLS0(long[] metadata);
 
+    /**
+     * Returns the {@link ThreadContext} for the current storage slot (the calling thread, or in
+     * {@link OtelContextStorage.Mode#CARRIER} its current carrier).
+     *
+     * <p><b>Do not cache the returned instance across a point where the calling thread may be
+     * unmounted and remounted on a different carrier</b> (any blocking operation on a virtual
+     * thread). In carrier mode the returned context's buffer targets the carrier that was mounted
+     * at call time; after migration it no longer corresponds to the current carrier's record — the
+     * sampler reads the new carrier, and once the old carrier's OS thread exits the buffer dangles.
+     * Callers that write context (span/attributes) should re-fetch per use — the {@code setContext*}
+     * methods already do this internally via {@code currentContext()}.
+     */
     public ThreadContext getThreadContext() {
         return currentContext();
     }
