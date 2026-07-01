@@ -360,6 +360,95 @@ class ProfilerTestPlugin : Plugin<Project> {
         }
     }
 
+    /**
+     * Create Exec-based test task that always runs in a separate process.
+     * Available on all platforms. Supports -Pprofiler.options for overriding profiler settings.
+     * Task name: testProcess<Config> (e.g., testProcessDebug, testProcessRelease)
+     */
+    private fun createProcessTestTask(
+        project: Project,
+        extension: ProfilerTestExtension,
+        testConfig: TestTaskConfiguration,
+        testCfg: Configuration,
+        sourceSets: SourceSetContainer
+    ) {
+        val taskName = "testProcess${testConfig.configName.replaceFirstChar { it.uppercase() }}"
+        project.tasks.register(taskName, Exec::class.java) {
+            val execTask = this
+            execTask.description = "Runs tests in separate process with ${testConfig.configName} library (supports -Pprofiler.options)"
+            execTask.group = "verification"
+            execTask.onlyIf { testConfig.isActive && !project.hasProperty("skip-tests") }
+
+            // Dependencies
+            execTask.dependsOn(project.tasks.named("compileTestJava"))
+            execTask.dependsOn(testCfg)
+            execTask.dependsOn(sourceSets.getByName("test").output)
+
+            // Configure at execution time to capture properties
+            execTask.doFirst {
+                execTask.executable = PlatformUtils.testJavaExecutable()
+
+                val allArgs = mutableListOf<String>()
+
+                // JVM args
+                allArgs.addAll(testConfig.standardJvmArgs)
+                if (extension.nativeLibDir.isPresent) {
+                    allArgs.add("-Djava.library.path=${extension.nativeLibDir.get().asFile.absolutePath}")
+                }
+                allArgs.addAll(testConfig.extraJvmArgs)
+
+                // System properties
+                testConfig.systemProperties.forEach { (key, value) ->
+                    allArgs.add("-D$key=$value")
+                }
+
+                // Test filter from -Ptests property
+                val testsFilter = project.findProperty("tests") as String?
+                if (testsFilter != null) {
+                    allArgs.add("-Dtest.filter=$testsFilter")
+                }
+
+                // Profiler options from -Pprofiler.options property
+                val profilerOptions = project.findProperty("profiler.options") as String?
+                if (profilerOptions != null) {
+                    allArgs.add("-Dddprof.test.options=$profilerOptions")
+                }
+
+                // Classpath
+                allArgs.add("-cp")
+                allArgs.add(testConfig.testClasspath.asPath)
+
+                // Use custom test runner
+                allArgs.add("com.datadoghq.profiler.test.ProfilerTestRunner")
+
+                execTask.args = allArgs
+            }
+
+            // Environment variables
+            testConfig.environmentVariables.forEach { (key, value) ->
+                execTask.environment(key, value)
+            }
+
+            // Remove LD_LIBRARY_PATH to let RPATH work correctly
+            execTask.doFirst {
+                val currentLdLibPath = (execTask.environment["LD_LIBRARY_PATH"] as? String) ?: System.getenv("LD_LIBRARY_PATH")
+                if (!currentLdLibPath.isNullOrEmpty()) {
+                    project.logger.info("Removing LD_LIBRARY_PATH to prevent cross-JDK library conflicts (was: $currentLdLibPath)")
+                    execTask.environment.remove("LD_LIBRARY_PATH")
+                }
+            }
+
+            // Sanitizer conditions
+            when (testConfig.configName) {
+                "asan" -> execTask.onlyIf {
+                    PlatformUtils.locateLibasan() != null &&
+                    !PlatformUtils.isTestJvmJ9()
+                }
+                "tsan" -> execTask.onlyIf { false }
+            }
+        }
+    }
+
     private fun generateMultiConfigTasks(project: Project, extension: ProfilerTestExtension) {
         val nativeBuildExt = project.rootProject.extensions.findByType(NativeBuildExtension::class.java)
             ?: return  // No native build extension, nothing to generate
@@ -426,6 +515,10 @@ class ProfilerTestPlugin : Plugin<Project> {
                 project.logger.info("Creating Test task for $configName (glibc/macOS, LIBC=${System.getenv("LIBC")})")
                 createTestTask(project, extension, testConfig, testCfg, sourceSets)
             }
+
+            // Create process-based test task (always uses Exec, available on all platforms)
+            // Supports -Pprofiler.options for overriding profiler settings
+            createProcessTestTask(project, extension, testConfig, testCfg, sourceSets)
 
             // Create application tasks for specified configs
             if (configName in applicationConfigs && appMainClass.isNotEmpty()) {

@@ -94,6 +94,8 @@ Never use 'gradle' or 'gradlew' directly. Instead, use the '/build-and-summarize
 ./gradlew testDebug
 ./gradlew testAsan
 ./gradlew testTsan
+./gradlew -Pprofiler.options=${user options} testProcessRelease
+./gradlew -Pprofiler.options=${user options} testProcessDebug
 
 # Run C++ unit tests only (via GtestPlugin)
 ./gradlew :ddprof-lib:gtestDebug        # All debug tests
