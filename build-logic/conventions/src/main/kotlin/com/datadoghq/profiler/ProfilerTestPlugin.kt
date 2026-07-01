@@ -76,6 +76,30 @@ import javax.inject.Inject
  * ```
  */
 class ProfilerTestPlugin : Plugin<Project> {
+
+    /**
+     * JVM args required to enable carrier-scoped OTEL context storage
+     * (`OtelContextStorage.Mode.CARRIER`), or an empty list when the test JVM does not support it.
+     *
+     * Carrier scoping resolves `jdk.internal.misc.CarrierThreadLocal`, which lives in a
+     * non-exported package, so it needs `--add-exports java.base/jdk.internal.misc=ALL-UNNAMED`.
+     * That type only exists on JDK 21+, and the flag *aborts* a Java 8 JVM ("Unrecognized option"),
+     * so it must be gated on the version of the actual test JVM.
+     *
+     * This MUST be evaluated at task execution time (inside doFirst), not at configuration time:
+     * the test JVM is selected via JAVA_TEST_HOME, which the CI only makes resolvable at execution
+     * time (see the `executable` assignments below). At configuration time
+     * PlatformUtils.testJavaHome() falls back to the build JDK (JAVA_HOME), which in the musl
+     * split-JDK matrix is JDK 21 while the test JVM is JDK 8 — the mismatch that put a JDK-21-only
+     * flag on a JDK-8 launcher. Without the flag the profiler simply degrades to thread-scoped
+     * storage and the carrier-scoping tests skip, which is safe.
+     */
+    private fun carrierExportJvmArgs(): List<String> =
+        if (PlatformUtils.testJvmMajorVersion() >= 21)
+            listOf("--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED")
+        else
+            emptyList()
+
     override fun apply(project: Project) {
         val extension = project.extensions.create(
             "profilerTest",
@@ -238,6 +262,8 @@ class ProfilerTestPlugin : Plugin<Project> {
             testTask.doFirst {
                 val allArgs = mutableListOf<String>()
                 allArgs.addAll(testConfig.standardJvmArgs)
+                // Version-gated at execution time, when the real test JVM is resolvable.
+                allArgs.addAll(carrierExportJvmArgs())
 
                 if (extension.nativeLibDir.isPresent) {
                     allArgs.add("-Djava.library.path=${extension.nativeLibDir.get().asFile.absolutePath}")
@@ -302,6 +328,8 @@ class ProfilerTestPlugin : Plugin<Project> {
 
                 // JVM args
                 allArgs.addAll(testConfig.standardJvmArgs)
+                // Version-gated at execution time, when the real test JVM (JAVA_TEST_HOME) is resolvable.
+                allArgs.addAll(carrierExportJvmArgs())
                 if (extension.nativeLibDir.isPresent) {
                     allArgs.add("-Djava.library.path=${extension.nativeLibDir.get().asFile.absolutePath}")
                 }
@@ -661,24 +689,20 @@ abstract class ProfilerTestExtension @Inject constructor(
     abstract val applicationMainClass: Property<String>
 
     init {
-        // Standard JVM arguments for profiler testing
-        val baseArgs = mutableListOf(
+        // Standard JVM arguments for profiler testing.
+        // NOTE: JDK-version-gated flags (e.g. the carrier-scoping --add-exports) must NOT be
+        // added here. This convention is computed at configuration time, where JAVA_TEST_HOME
+        // is not yet resolvable and PlatformUtils.testJavaHome() falls back to the *build* JDK
+        // (JAVA_HOME) — which misdetects in the musl split-JDK CI (build JDK 21, test JDK 8) and
+        // would emit a JDK-21 flag onto a JDK-8 test JVM. Version-gated flags are added at
+        // execution time in the task doFirst blocks instead (see ProfilerTestPlugin).
+        standardJvmArgs.convention(listOf(
             "-Djdk.attach.allowAttachSelf",      // Allow profiler to attach to self
             "-Djol.tryWithSudo=true",            // JOL memory layout analysis
             "-XX:ErrorFile=build/hs_err_pid%p.log", // HotSpot error file location
             "-XX:+ResizeTLAB",                   // Allow TLAB resizing for allocation profiling
             "-Xmx512m"                           // Default heap size for tests
-        )
-        // Carrier-scoped OTEL context storage (OtelContextStorage.Mode.CARRIER) resolves
-        // jdk.internal.misc.CarrierThreadLocal, which lives in a non-exported package.
-        // The type exists only on JDK 21+ and --add-exports aborts a Java 8 JVM, so gate
-        // on 21+. Without this the profiler degrades to thread-scoped storage, so the
-        // carrier-scoping tests would silently exercise only the fallback.
-        val testMajor = try { PlatformUtils.testJvmMajorVersion() } catch (e: Exception) { 0 }
-        if (testMajor >= 21) {
-            baseArgs.add("--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED")
-        }
-        standardJvmArgs.convention(baseArgs)
+        ))
 
         extraJvmArgs.convention(emptyList())
         respectSkipTests.convention(true)
