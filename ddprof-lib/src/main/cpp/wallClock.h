@@ -64,7 +64,7 @@ class BaseWallClock : public Engine {
       // We don't want to profile ourselves in wall time.
       // current may be null if this thread is still initializing its ProfiledThread
       // (wall-clock thread startup races with JVMTI ThreadStart). Safe to skip removal.
-      ProfiledThread* current = ProfiledThread::current();
+      ProfiledThread* current = ProfiledThread::currentProfiled();
       if (current != nullptr) {
         int slot_id = current->filterSlotId();
         if (slot_id != -1) {

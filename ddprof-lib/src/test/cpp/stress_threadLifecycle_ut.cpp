@@ -111,7 +111,7 @@ static void churn_worker(ThreadFilter* filter, bool with_dump) {
   while (!g_run.load(std::memory_order_acquire)) { }
   for (int i = 0; i < kChurnIterations && g_run.load(std::memory_order_relaxed); i++) {
     ProfiledThread::initCurrentThread();
-    ProfiledThread* self = ProfiledThread::current();
+    ProfiledThread* self = ProfiledThread::currentProfiled();
     EXPECT_NE(nullptr, self);
     if (!self) return;
 

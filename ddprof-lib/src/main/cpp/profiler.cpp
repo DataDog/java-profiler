@@ -75,7 +75,7 @@ static CTimerJvmti ctimer_jvmti;
 
 void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   ProfiledThread::initCurrentThread();
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = ProfiledThread::currentProfiled();
   current->setJavaThread(true);
   int tid = current->tid();
   if (_thread_filter.enabled()) {
@@ -1353,7 +1353,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   // Minor optim: Register the current thread (start thread won't be called)
   if (_thread_filter.enabled()) {
     _thread_filter.clearActive();
-    ProfiledThread *current = ProfiledThread::current();
+    ProfiledThread *current = ProfiledThread::currentProfiled();
     assert(current != nullptr);
     int slot_id = current->filterSlotId();
     if (slot_id < 0) {

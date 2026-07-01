@@ -137,7 +137,7 @@ Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
 // still compatible in the event of signature changes in the future.
 extern "C" DLLEXPORT void JNICALL
 JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = ProfiledThread::currentProfiled();
   assert(current != nullptr);
   int tid = current->tid();
   if (unlikely(tid < 0)) {
@@ -167,7 +167,7 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
 
 extern "C" DLLEXPORT void JNICALL
 JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0() {
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = ProfiledThread::currentProfiled();
   assert(current != nullptr);
   int tid = current->tid();
   if (unlikely(tid < 0)) {
@@ -319,7 +319,7 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) {
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = ProfiledThread::currentProfiled();
   if (current == nullptr) {
     return;
   }
@@ -337,7 +337,7 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
     JNIEnv *env, jclass unused, jlong blocker, jlong unblockingSpanId) {
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = ProfiledThread::currentProfiled();
   if (current == nullptr) {
     return;
   }
@@ -370,7 +370,7 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
   if (!decodeJavaBlockState(state, decoded)) {
     return 0;
   }
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = ProfiledThread::currentProfiled();
   if (current == nullptr) {
     return 0;
   }
@@ -392,7 +392,7 @@ Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
   if (block_token == 0) {
     return;
   }
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = ProfiledThread::currentProfiled();
   if (current == nullptr) {
     return;
   }
@@ -588,7 +588,7 @@ Java_com_datadoghq_profiler_OTelContext_readProcessCtx0(JNIEnv *env, jclass unus
 
 extern "C" DLLEXPORT jobject JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_initializeContextTLS0(JNIEnv* env, jclass unused, jlongArray metadata) {
-  ProfiledThread* thrd = ProfiledThread::current();
+  ProfiledThread* thrd = ProfiledThread::currentProfiled();
   assert(thrd != nullptr);
 
   if (!thrd->isContextInitialized()) {

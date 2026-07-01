@@ -9,7 +9,7 @@
 #include "context.h"
 #include "otel_context.h"
 #include "os.h"
-#include "threadLocalData.h"
+#include "support/threadContext.h"
 #include "threadState.h"
 #include "unwindStats.h"
 #include <atomic>
@@ -20,7 +20,7 @@
 #include <sys/types.h>
 #include <vector>
 
-class ProfiledThread : public ThreadLocalData {
+class ProfiledThread : public ThreadContext {
 public:
   enum ThreadType : u32 {
     TYPE_UNKNOWN = 0,
@@ -39,18 +39,11 @@ private:
   // This means 3 levels but we allow for some wiggling space, just in case.
   // Even with 5 levels cap we will need any highly recursing signal handlers
   static constexpr u32 CRASH_HANDLER_NESTING_LIMIT = 5;
-  static pthread_key_t _tls_key;
-  static bool _tls_key_initialized;
-
-  static void initTLSKey();
-  static void doInitTLSKey();
-  static inline void freeKey(void *key);
 
   u64 _pc;
   u64 _sp;
-  u64 _span_id;  // Wall-clock collapsing cache: last-seen span ID (not a context store — read from _otel_ctx_record on each signal, cached here to detect "same as last time")
+  u64 _span_id;  // Wall-clock collapsing cache: last-seen span ID (not a context store — read from the OTEL context record on each signal, cached here to detect "same as last time")
   volatile u32 _crash_depth;
-  int _tid;
   u32 _cpu_epoch;
   u32 _wall_epoch;
   u64 _call_trace_id;
@@ -61,27 +54,13 @@ private:
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
   uint8_t _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
   UnwindFailures _unwind_failures;
-  bool _otel_ctx_initialized;
   bool _crash_protection_active;
-  // alignas(8) + sizeof(OtelThreadContextRecord)==640 (multiple of 8) guarantee
-  // _otel_tag_encodings sits at +640 with no padding, so the three fields form one
-  // 688-byte contiguous region exposed as a combined DirectByteBuffer.
-  alignas(8) OtelThreadContextRecord _otel_ctx_record;
-  // These two fields MUST be contiguous and 8-byte aligned — the JNI layer
-  // exposes them as a single DirectByteBuffer (sidecar), and VarHandle long
-  // views require 8-byte alignment for the buffer base address.
-  // Read invariant: sidecar readers must gate on record->valid (see ContextApi::get).
-  // ThreadContext.restore() relies on this to perform a bulk memcpy under valid=0.
-  alignas(8) u32 _otel_tag_encodings[DD_TAGS_CAPACITY];
-  u64 _otel_local_root_span_id;
 
   ProfiledThread(int tid)
-      : ThreadLocalData(), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _tid(tid), _cpu_epoch(0),
+      : ThreadContext(tid), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _cpu_epoch(0),
         _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0),
         _park_block_token(0), _filter_slot_id(-1), _init_window(0),
-        _signal_depth(0),
-        _otel_ctx_initialized(false), _crash_protection_active(false),
-        _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0) {};
+        _signal_depth(0), _crash_protection_active(false) {};
 
   virtual ~ProfiledThread() { }
 public:
@@ -94,23 +73,20 @@ public:
   // before delete — the race window the clearCurrentThreadTLS fix covers.
   // Returns the detached pointer so the caller can delete it after assertions.
   static ProfiledThread* clearCurrentThreadTLS() {
-    if (__atomic_load_n(&_tls_key_initialized, __ATOMIC_ACQUIRE)) {
-      ProfiledThread *pt = (ProfiledThread *)pthread_getspecific(_tls_key);
-      pthread_setspecific(_tls_key, nullptr);
-      return pt;
-    }
-    return nullptr;
+    ThreadContext *tls = ThreadContext::clearCurrentThreadTLS();
+    return tls != nullptr ? tls->asProfiledThread() : nullptr;
   }
   // Deletes a ProfiledThread returned by clearCurrentThreadTLS().
   // Needed because the destructor is private.
-  static void deleteForTest(ProfiledThread *pt) { delete pt; }
+  static void deleteForTest(ProfiledThread *pt) { ThreadContext::deleteForTest(pt); }
 #endif
 
-  static ProfiledThread *current();
+  // Downcast hook (see ThreadContext::asProfiledThread).
+  ProfiledThread* asProfiledThread() override { return this; }
+
+  static ProfiledThread *currentProfiled();
   static ProfiledThread *currentSignalSafe(); // Signal-safe version that never allocates
   static int currentTid();
-
-  inline int tid() { return _tid; }
 
   inline u64 noteCPUSample(u32 recording_epoch) {
     _recording_epoch = recording_epoch;
@@ -220,19 +196,6 @@ public:
     __atomic_store_n(&_in_critical_section, false, __ATOMIC_RELEASE);
   }
   
-  // Context TLS (OTEP #4947)
-  inline void markContextInitialized() {
-    _otel_ctx_initialized = true;
-  }
-
-  inline bool isContextInitialized() {
-    return _otel_ctx_initialized;
-  }
-
-  inline OtelThreadContextRecord* getOtelContextRecord() {
-    return &_otel_ctx_record;
-  }
-
   // CAS RMW to update only TYPE_MASK bits without clobbering FLAG_PARKED, which
   // is managed independently by the Java park hooks on the owning thread.
   inline void setJavaThread(bool is_java) {
@@ -253,19 +216,6 @@ public:
 
   inline bool isCrashProtectionActive() const { return _crash_protection_active; }
   inline void setCrashProtectionActive(bool active) { _crash_protection_active = active; }
-
-  // JFR tag encoding sidecar — populated by JNI thread, read by signal handler
-  // (flightRecorder.cpp writeCurrentContext / wallClock.cpp collapsing).
-  inline u32* getOtelTagEncodingsPtr() { return _otel_tag_encodings; }
-  inline u32 getOtelTagEncoding(u32 idx) const {
-    return idx < DD_TAGS_CAPACITY ? _otel_tag_encodings[idx] : 0;
-  }
-  inline u64 getOtelLocalRootSpanId() const { return _otel_local_root_span_id; }
-
-  inline void clearOtelSidecar() {
-    memset(_otel_tag_encodings, 0, sizeof(_otel_tag_encodings));
-    _otel_local_root_span_id = 0;
-  }
 
   inline bool parkEnter() {
     u32 prev = __atomic_fetch_or(&_misc_flags, FLAG_PARKED, __ATOMIC_RELEASE);
