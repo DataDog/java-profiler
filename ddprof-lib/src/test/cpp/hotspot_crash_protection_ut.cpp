@@ -25,7 +25,7 @@
  */
 
 #include <gtest/gtest.h>
-#include "thread.h"
+#include "threadLocalData.h"
 #include "hotspot/hotspotSupport.h"
 
 #ifdef __linux__
@@ -251,33 +251,6 @@ TEST_F(CrashHandlerNestingTest, IsDeepOnlyAboveLimit) {
     }
     EXPECT_FALSE(_pt->isDeepCrashHandler());  // at limit, not above it
     _pt->resetCrashHandler();
-}
-
-// ---------------------------------------------------------------------------
-// D. Longjmp-protection state (HotspotSupport::isThreadProtectedByLongjmp)
-//
-// walkVM arms crash recovery by storing a jmp_buf* in a thread-local slot
-// (_jmp_ctx) before the stack walk and clearing it afterward.  checkFault()
-// reads this slot via isThreadProtectedByLongjmp() to decide whether to
-// longjmp.
-//
-// HotspotSupport::initThread() initialises the slot to nullptr (so the key
-// is valid but the protection is off).  isThreadProtectedByLongjmp() returns
-// true only when the slot holds a non-null jmp_buf*.
-// ---------------------------------------------------------------------------
-
-TEST(LongjmpProtectionTest, UninitializedKeyMeansNotProtected) {
-    // Without initThread() the pthread key may not be valid at all; either way
-    // isThreadProtectedByLongjmp() must not crash and must return false.
-    // (On a thread that has never called initThread the get() returns nullptr.)
-    EXPECT_FALSE(HotspotSupport::isThreadProtectedByLongjmp());
-}
-
-TEST(LongjmpProtectionTest, AfterInitThreadKeyIsValidButNotProtected) {
-    HotspotSupport::initThread();
-    EXPECT_TRUE(HotspotSupport::isInitialized());
-    // The slot is initialised to nullptr — no active walkVM on this thread.
-    EXPECT_FALSE(HotspotSupport::isThreadProtectedByLongjmp());
 }
 
 #endif  // __linux__

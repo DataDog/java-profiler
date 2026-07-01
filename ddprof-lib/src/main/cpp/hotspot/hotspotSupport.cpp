@@ -39,13 +39,6 @@ static jmethodID getMethodId(VMMethod* method) {
     return NULL;
 }
 
-ThreadLocal<jmp_buf*> HotspotSupport::_jmp_ctx;
-
-void HotspotSupport::initThread() {
-    // Ensure the slot is allocated
-    _jmp_ctx.set(nullptr);
-}
-
 /**
  * Converts a BCI_* frame type value to the corresponding EventType enum value.
  *
@@ -158,13 +151,28 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
     // VMStructs is only available for hotspot JVM 
     assert(VM::isHotspot());
+
+    ProfiledThread* prof_thread = ProfiledThread::currentSignalSafe();
+    if (prof_thread == nullptr) {
+        Counters::increment(SAMPLES_DROOPED_THREAD_LOCAL);
+        return 0;
+    }
+
     HotspotStackFrame frame(ucontext);
     uintptr_t bottom = (uintptr_t)&frame + MAX_WALK_SIZE;
 
     Profiler* profiler = Profiler::instance();
     int bcp_offset = InterpreterFrame::bcp_offset();
 
+
     jmp_buf crash_protection_ctx;
+    // Chaining jmp_buf
+    // None signal based sampler can be interrupted by signal based sampler,
+    // then we end up multiple HotspotSupport::walkVM() calls on stack,
+    // each one sets up jmp_buf, they need to be chained to jump back to
+    // correct location.
+    jmp_buf* prev_jmp_buf = prof_thread->getJmpCtx();
+
     VMThread* vm_thread = VMThread::current();
     if (vm_thread != NULL && !vm_thread->isThreadAccessible()) {
         Counters::increment(WALKVM_THREAD_INACCESSIBLE);
@@ -186,14 +194,14 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         // checkFault() does a longjmp from inside segvHandler, bypassing
         // segvHandler's SignalHandlerScope destructor.  Compensate.
         SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
-        _jmp_ctx.clear();
+        prof_thread->setJmpCtx(prev_jmp_buf);
         if (depth < max_depth) {
             fillFrame(frames[depth++], BCI_ERROR, "break_not_walkable");
         }
         return depth;
     }
 
-    _jmp_ctx.set(&crash_protection_ctx);
+    prof_thread->setJmpCtx(&crash_protection_ctx);
     VMJavaFrameAnchor* anchor = NULL;
     if (vm_thread != NULL) {
         anchor = vm_thread->anchor();
@@ -840,7 +848,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     }
 
     done:
-    _jmp_ctx.clear();
+    prof_thread->setJmpCtx(prev_jmp_buf);
 
     // Drop unknown leaf frame - it provides no useful information and breaks
     // aggregation by lumping unrelated samples under a single "unknown" entry
@@ -866,20 +874,23 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 }
 
 void HotspotSupport::checkFault(ProfiledThread* thrd) {
+    // Should not get to here (?)
+    if (thrd == nullptr) {
+        return;
+    }
+
     if (!JVMThread::isInitialized()) {
         // JVM has not been loaded or has not been initialized yet
         return;
     }
 
     // Check if longjmp is setup for this thread
-   if (!isThreadProtectedByLongjmp()) {
+   if (!thrd->isProtected()) {
         return;
     }
 
-    if (thrd != nullptr) {
-        thrd->resetCrashHandler();
-    }
-    longjmp(*_jmp_ctx.get(), 1);
+    thrd->resetCrashHandler();
+    longjmp(*thrd->getJmpCtx(), 1);
 }
 
 int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,

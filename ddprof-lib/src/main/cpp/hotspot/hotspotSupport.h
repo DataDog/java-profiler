@@ -19,8 +19,6 @@ class ProfiledThread;
 
 class HotspotSupport {
 private:
-    static ThreadLocal<jmp_buf*> _jmp_ctx;
-
     static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                       StackWalkFeatures features, EventType event_type,
                       const void* pc, uintptr_t sp, uintptr_t fp, int lock_index, bool* truncated);
@@ -37,18 +35,6 @@ public:
     static int walkJavaStack(StackWalkRequest& request);
     static inline bool canUnwind(const StackFrame& frame, const void*& pc) {
         return HotspotStackFrame::unwindAtomicStub(frame, pc);
-    }
-
-    // Per-thread initialization.
-    // *Must* be called before signal is enabled for the thread
-    static void initThread();
-
-    static inline bool isInitialized() {
-        return _jmp_ctx.isKeyValid();
-    }
-
-    static inline bool isThreadProtectedByLongjmp() {
-        return _jmp_ctx.get() != nullptr;
     }
 
     static inline bool isJitCode(const void* p) {

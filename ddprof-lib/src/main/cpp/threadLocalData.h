@@ -16,6 +16,7 @@
 #include <cstdint>
 #include <jvmti.h>
 #include <pthread.h>
+#include <setjmp.h>
 #include <stdlib.h>
 #include <sys/types.h>
 #include <vector>
@@ -59,6 +60,9 @@ private:
   static void doInitTLSKey();
   static inline void freeKey(void *key);
 
+  // longjmp buffer. used by hotspot only at this moment
+  jmp_buf* _jmp_buf;
+
   u64 _pc;
   u64 _sp;
   u64 _span_id;  // Wall-clock collapsing cache: last-seen span ID (not a context store — read from _otel_ctx_record on each signal, cached here to detect "same as last time")
@@ -88,7 +92,7 @@ private:
   u64 _otel_local_root_span_id;
 
   ProfiledThread(int tid)
-      : ThreadLocalData(), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _tid(tid), _cpu_epoch(0),
+      : ThreadLocalData(), _jmp_buf(nullptr), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _tid(tid), _cpu_epoch(0),
         _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0),
         _park_block_token(0), _filter_slot_id(-1), _init_window(0),
         _signal_depth(0),
@@ -192,6 +196,22 @@ public:
 
   bool isDeepCrashHandler() {
     return _crash_depth > CRASH_HANDLER_NESTING_LIMIT;
+  }
+
+  inline void setJmpCtx(jmp_buf* buf) {
+    _jmp_buf = buf;  
+  }
+
+  inline jmp_buf* getJmpCtx() const {
+    return _jmp_buf;
+  }
+
+  inline bool isProtected() const {
+    return _jmp_buf != nullptr;
+  }
+
+  void resetJmpCtx() {
+    _jmp_buf = nullptr;
   }
 
   // Signal-handler depth counter used by SignalHandlerScope (guards.h).  All

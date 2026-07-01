@@ -10,6 +10,7 @@
 #include "hotspot/hotspotSupport.h"
 #include "hotspot/vmStructs.h"
 #include "jvmThread.h"
+#include "threadLocalData.h"
 
 VMThread* VMThread::current() {
     assert(VM::isHotspot());
@@ -76,7 +77,11 @@ VMMethod* VMThread::compiledMethod() {
 }
 
 inline bool crashProtectionActive() {
-    return HotspotSupport::isThreadProtectedByLongjmp();
+    ProfiledThread* pt = ProfiledThread::currentSignalSafe();
+    if (pt != nullptr) {
+        return pt->isProtected();
+    }
+    return false;
 }
 
 #endif // _HOTSPOT_VMSTRUCTS_INLINE_H
