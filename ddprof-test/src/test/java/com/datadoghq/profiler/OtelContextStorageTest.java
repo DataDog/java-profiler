@@ -20,6 +20,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
@@ -78,15 +79,26 @@ public class OtelContextStorageTest {
                 "auto must select carrier scoping when CarrierThreadLocal is accessible");
     }
 
-    /** {@code carrier} explicitly requested falls back to THREAD (never throws) when unavailable. */
+    /** {@code carrier} succeeds and yields carrier-scoped storage when CarrierThreadLocal is accessible. */
     @Test
-    public void carrierModeFallsBackGracefullyWhenUnavailable() {
-        assumeTrue(!carrierThreadLocalAccessible(),
-                "CarrierThreadLocal IS accessible here; the unavailable-fallback path is covered on older JDKs");
+    public void carrierModeUsesCarrierWhenAvailable() {
+        assumeTrue(carrierThreadLocalAccessible(),
+                "CarrierThreadLocal not accessible; the fail-fast path is covered by the throw test");
         setMode("carrier");
         ThreadLocal<ThreadContext> storage = OtelContextStorage.create();
-        assertEquals(OtelContextStorage.Mode.THREAD, OtelContextStorage.modeOf(storage));
-        assertEquals(ThreadLocal.class, storage.getClass());
+        assertEquals(OtelContextStorage.Mode.CARRIER, OtelContextStorage.modeOf(storage));
+    }
+
+    /**
+     * {@code carrier} fails hard when CarrierThreadLocal is unavailable, rather than silently
+     * falling back to the virtual-thread-pinned storage the fix removes.
+     */
+    @Test
+    public void carrierModeThrowsWhenUnavailable() {
+        assumeTrue(!carrierThreadLocalAccessible(),
+                "CarrierThreadLocal IS accessible here; the fail-fast path only applies when it is not (older JDKs / no export)");
+        setMode("carrier");
+        assertThrows(IllegalStateException.class, OtelContextStorage::create);
     }
 
     private static boolean carrierThreadLocalAccessible() {
