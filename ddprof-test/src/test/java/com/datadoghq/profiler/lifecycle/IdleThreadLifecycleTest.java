@@ -1,8 +1,12 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler.lifecycle;
 
 import com.datadoghq.profiler.JavaProfiler;
 import com.datadoghq.profiler.Platform;
-import com.datadoghq.profiler.junit.RetryTest;
 
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
@@ -30,7 +34,6 @@ public class IdleThreadLifecycleTest {
 
     private static final int THREAD_COUNT = 200;
 
-    @RetryTest(2)
     @Timeout(30)
     @Test
     public void threadLifecycleWhileProfilerIdle() throws Exception {

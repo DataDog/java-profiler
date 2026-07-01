@@ -1,8 +1,12 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler.lifecycle;
 
 import com.datadoghq.profiler.JavaProfiler;
 import com.datadoghq.profiler.Platform;
-import com.datadoghq.profiler.junit.RetryTest;
 
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
@@ -41,7 +45,6 @@ public class StopWithChurningThreadsTest {
     // threads receive signals, increasing collision probability with ThreadEnd.
     private static final String PROFILER_CMD = "start,wall=1ms,jfr,file=";
 
-    @RetryTest(2)
     @Timeout(120)
     @Test
     public void stopRacesThreadEnd() throws Exception {
@@ -67,9 +70,9 @@ public class StopWithChurningThreadsTest {
                 }
             });
         }
-        assertTrue(churnRunning.await(10, TimeUnit.SECONDS), "Churn threads did not start");
 
         try {
+            assertTrue(churnRunning.await(10, TimeUnit.SECONDS), "Churn threads did not start");
             for (int cycle = 0; cycle < CYCLES; cycle++) {
                 Path jfr = Files.createTempFile(recordings, "c1-" + cycle + "-", ".jfr");
                 try {
