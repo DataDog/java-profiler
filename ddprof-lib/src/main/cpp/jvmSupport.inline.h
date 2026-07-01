@@ -26,4 +26,23 @@ bool JVMSupport::isJitCode(const void* pc) {
     }
 }
 
+// Resolve method pointer to jmethodID
+jmethodID JVMSupport::resolve(const void* method) {
+    if (VM::isHotspot()) {
+        return HotspotSupport::resolve(method);
+    } else {
+        assert(false && "Should not reach here");
+        return nullptr;
+    }
+}
+
+bool JVMSupport::isHidden(jint modifiers) {
+    static constexpr jint ACC_SYNTHETIC = 0x1000;
+    static constexpr jint ACC_BRIDGE = 0x0040;
+    static constexpr jint ACC_HIDDEN = 0x800;
+    static constexpr jint hidden_mask = (ACC_SYNTHETIC | ACC_BRIDGE | ACC_HIDDEN);
+    return modifiers != 0 && // JVMTI GetClassModifiers returns 0 for ordinary package-private classes
+           ((modifiers & hidden_mask) != 0);
+}
+
 #endif // _JVMSUPPORT_INLINE_H

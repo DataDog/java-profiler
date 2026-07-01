@@ -11,6 +11,7 @@
 #include "counters.h"
 #include "j9/j9Support.h"
 #include "jniHelper.h"
+#include "jvmSupport.h"
 #include "jvmThread.h"
 #include "libraries.h"
 #include "log.h"
@@ -538,9 +539,9 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   functions->RedefineClasses = RedefineClassesHook;
   functions->RetransformClasses = RetransformClassesHook;
 
+
   if (attach) {
     JVMThread::initThread();
-    loadAllMethodIDs(_jvmti, jni());
     _jvmti->GenerateEvents(JVMTI_EVENT_DYNAMIC_CODE_GENERATED);
     _jvmti->GenerateEvents(JVMTI_EVENT_COMPILED_METHOD_LOAD);
   } else {
@@ -589,62 +590,13 @@ void *VM::getLibraryHandle(const char *name) {
   return RTLD_DEFAULT;
 }
 
-void VM::loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
-  bool needs_patch = VM::hotspot_version() == 8;
-  if (needs_patch) {
-    // Workaround for JVM bug https://bugs.openjdk.org/browse/JDK-8062116
-    // Preallocate space for jmethodIDs at the beginning of the list (rather than at the end)
-    // This is relevant only for JDK 8 - later versions do not have this bug
-    if (VMStructs::hasClassLoaderData()) {
-      VMKlass *vmklass = VMKlass::fromJavaClass(jni, klass);
-      int method_count = vmklass->methodCount();
-      if (method_count > 0) {
-        VMClassLoaderData *cld = vmklass->classLoaderData();
-        cld->lock();
-        for (int i = 0; i < method_count; i += MethodList::SIZE) {
-          *cld->methodList() = new MethodList(*cld->methodList());
-        }
-        cld->unlock();
-      }
-    }
-  }
-
-  // CRITICAL: GetClassMethods must be called to preallocate jmethodIDs for AsyncGetCallTrace.
-  // AGCT operates in signal handlers where lock acquisition is forbidden, so jmethodIDs must
-  // exist before profiling encounters them. Without preallocation, AGCT cannot identify methods
-  // in stack traces, breaking profiling functionality.
-  //
-  // JVM-internal allocation: This triggers JVM to allocate jmethodIDs internally, which persist
-  // until class unload. High class churn causes significant memory growth, but this is inherent
-  // to AGCT architecture and necessary for signal-safe profiling.
-  //
-  // See: https://mostlynerdless.de/blog/2023/07/17/jmethodids-in-profiling-a-tale-of-nightmares/
-  jint method_count;
-  jmethodID *methods;
-  if (jvmti->GetClassMethods(klass, &method_count, &methods) == 0) {
-    jvmti->Deallocate((unsigned char *)methods);
-  }
-}
-
-void VM::loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni) {
-    jint class_count;
-    jclass *classes;
-    if (jvmti->GetLoadedClasses(&class_count, &classes) == 0) {
-      for (int i = 0; i < class_count; i++) {
-        loadMethodIDs(jvmti, jni, classes[i]);
-      }
-      jvmti->Deallocate((unsigned char *)classes);
-    }
-}
-
 void JNICALL VM::ClassPrepare(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
                                jclass klass) {
-  loadMethodIDs(jvmti, jni, klass);
+  JVMSupport::loadMethodIDsIfNeeded(jvmti, jni, klass);
 }
 
 void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
     ready(jvmti, jni);
-    loadAllMethodIDs(jvmti, jni);
 
     // initialize the heap usage tracking only after the VM is ready
     HeapUsage::initJMXUsage(VM::jni());
@@ -654,6 +606,10 @@ void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
     if (error) {
         Log::error("%s", error.message());
     }
+}
+
+Arguments& VM::arguments() {
+  return _agent_args;
 }
 
 void JNICALL VM::VMDeath(jvmtiEnv *jvmti, JNIEnv *jni) {
@@ -671,7 +627,7 @@ VM::RedefineClassesHook(jvmtiEnv *jvmti, jint class_count,
     JNIEnv *env = jni();
     for (int i = 0; i < class_count; i++) {
       if (class_definitions[i].klass != NULL) {
-        loadMethodIDs(jvmti, env, class_definitions[i].klass);
+        JVMSupport::loadMethodIDsIfNeeded(jvmti, env, class_definitions[i].klass);
       }
     }
   }
@@ -688,7 +644,7 @@ jvmtiError VM::RetransformClassesHook(jvmtiEnv *jvmti, jint class_count,
     JNIEnv *env = jni();
     for (int i = 0; i < class_count; i++) {
       if (classes[i] != NULL) {
-        loadMethodIDs(jvmti, env, classes[i]);
+        JVMSupport::loadMethodIDsIfNeeded(jvmti, env, classes[i]);
       }
     }
   }

@@ -196,6 +196,7 @@ public:
   bool _jvmtistacks;           // Delegate CPU/wall stack walks to HotSpot JFR RequestStackTrace extension
   bool _nativesocket;
   long _nativesocket_interval;  // initial sampling period in nanoseconds; 0 = engine default
+  bool _force_jmethodID;       // Load all jmethodIDs, true by default
 
   Arguments(bool persistent = false)
       : _buf(NULL),
@@ -235,7 +236,8 @@ public:
         _remote_symbolication(false),
         _jvmtistacks(false),
         _nativesocket(false),
-        _nativesocket_interval(0) {}
+        _nativesocket_interval(0),
+        _force_jmethodID(true) {}
 
   ~Arguments();
 
