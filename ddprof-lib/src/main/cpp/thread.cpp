@@ -4,7 +4,7 @@
  */
 
 #include "thread.h"
-#include "context_api.h"
+#include "support/context_api.h"
 #include "guards.h"
 #include "otel_context.h"
 #include "os.h"

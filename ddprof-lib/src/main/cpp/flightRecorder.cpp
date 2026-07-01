@@ -10,7 +10,7 @@
 #include "buffers.h"
 #include "callTraceHashTable.h"
 #include "context.h"
-#include "context_api.h"
+#include "support/context_api.h"
 #include "counters.h"
 #include "dictionary.h"
 #include "flightRecorder.h"

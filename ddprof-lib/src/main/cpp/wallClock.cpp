@@ -9,7 +9,7 @@
 #include "counters.h"
 #include "stackFrame.h"
 #include "context.h"
-#include "context_api.h"
+#include "support/context_api.h"
 #include "debugSupport.h"
 #include "jvmThread.h"
 #include "libraries.h"

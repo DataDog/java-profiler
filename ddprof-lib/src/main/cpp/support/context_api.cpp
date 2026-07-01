@@ -18,8 +18,7 @@
 #include "context.h"
 #include "guards.h"
 #include "otel_context.h"
-#include "profiler.h"
-#include "thread.h"
+#include "threadContext.h"
 #include <cstring>
 
 /**
@@ -28,9 +27,9 @@
  * on musl, the first write to a TLS variable triggers lazy slot allocation,
  * which acquires an internal lock that is also held during signal delivery,
  * causing deadlock if a signal fires mid-init.
- * The OtelThreadContextRecord is already zero-initialized by the ProfiledThread ctor.
+ * The OtelThreadContextRecord is already zero-initialized by the ThreadContext ctor.
  */
-void ContextApi::initializeContextTLS(ProfiledThread* thrd) {
+void ContextApi::initializeContextTLS(ThreadContext* thrd) {
     SignalBlocker blocker;
     // Set the TLS pointer permanently to this thread's record.
     // This first write triggers musl's TLS slot initialization (see above).
@@ -41,7 +40,7 @@ void ContextApi::initializeContextTLS(ProfiledThread* thrd) {
 }
 
 bool ContextApi::get(u64& span_id, u64& root_span_id) {
-    ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
+    ThreadContext* thrd = ThreadContext::currentSignalSafe();
     if (thrd == nullptr || !thrd->isContextInitialized()) {
         return false;
     }
@@ -56,13 +55,4 @@ bool ContextApi::get(u64& span_id, u64& root_span_id) {
 
     root_span_id = thrd->getOtelLocalRootSpanId();
     return true;
-}
-
-Context ContextApi::snapshot() {
-    ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
-    if (thrd == nullptr) {
-        return {};
-    }
-    size_t numAttrs = Profiler::instance()->numContextAttributes();
-    return thrd->snapshotContext(numAttrs);
 }

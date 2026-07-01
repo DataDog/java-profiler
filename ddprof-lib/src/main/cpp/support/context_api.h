@@ -19,9 +19,8 @@
 
 #include "arch.h"
 #include "context.h"
+#include "threadContext.h"
 #include <cstdint>
-
-class ProfiledThread;
 
 /**
  * Unified context API for trace/span context storage.
@@ -36,7 +35,7 @@ public:
      * Initialize context TLS for the given thread on first use.
      * Must be called with signals blocked (SignalBlocker).
      */
-    static void initializeContextTLS(ProfiledThread* thrd);
+    static void initializeContextTLS(ThreadContext* thrd);
 
     /**
      * Read span ID and local root span ID for the current thread.
@@ -63,6 +62,11 @@ public:
      * and tag encodings (from sidecar) so that writeContextSnapshot()
      * works for both live and deferred event paths. Unlike get(), this
      * also captures custom attribute tag encodings.
+     *
+     * Implemented in profilerContextApi.cpp (profiler translation unit) since
+     * it needs Profiler::instance()->numContextAttributes() and
+     * ProfiledThread::snapshotContext(), which are not available to the
+     * support-only build.
      *
      * @return A Context struct representing the current thread's context
      */

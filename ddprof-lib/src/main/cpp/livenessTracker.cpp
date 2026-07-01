@@ -10,7 +10,7 @@
 
 #include "arch.h"
 #include "context.h"
-#include "context_api.h"
+#include "support/context_api.h"
 #include "hotspot/vmStructs.h"
 #include "profilerVmStructsExt.h"
 #include "incbin.h"
