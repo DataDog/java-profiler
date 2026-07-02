@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef _THREADLOCALDATA_H
-#define _THREADLOCALDATA_H
+#ifndef THREAD_LOCAL_DATA_H
+#define THREAD_LOCAL_DATA_H
 
 #include "context.h"
 #include "otel_context.h"
