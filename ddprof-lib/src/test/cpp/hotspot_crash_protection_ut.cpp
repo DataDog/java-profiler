@@ -32,6 +32,7 @@
 #include "hotspot/hotspotSupport.h"
 #include "jvmThread.h"
 #include "safeAccess.h"
+#include "os.h"
 
 #ifdef __linux__
 
@@ -383,13 +384,38 @@ TEST(VTableStubNullKlassTest, NullKlassYieldsNullSymbolAndNoFrame) {
     EXPECT_FALSE(fillFrameCalled);
 }
 
+// SafeAccess::safeFetch64 relies on a registered SIGSEGV/SIGBUS handler
+// (SafeAccess::handle_safefetch) to catch the fault and resume with the
+// error value instead of crashing — see safefetch_ut.cpp's SafeFetchTest
+// fixture for the same pattern. Without it, faulting through safeFetch64
+// is a real, unguarded SIGSEGV.
+class SafeFetch64TocTouGuardTest : public ::testing::Test {
+protected:
+    static void handler(int signo, siginfo_t* siginfo, void* context) {
+        SafeAccess::handle_safefetch(signo, context);
+    }
+
+    void SetUp() override {
+        _orig_segv = OS::replaceSigsegvHandler(handler);
+        _orig_bus = OS::replaceSigbusHandler(handler);
+    }
+
+    void TearDown() override {
+        OS::replaceSigsegvHandler(_orig_segv);
+        OS::replaceSigbusHandler(_orig_bus);
+    }
+
+    SigAction _orig_segv = nullptr;
+    SigAction _orig_bus = nullptr;
+};
+
 // Mirrors VMKlass::fromOop's compact-object-headers TOCTOU guard:
 //   mark = (uintptr_t)SafeAccess::safeFetch64((int64_t*)(mark ^ MONITOR_BIT), 0);
 //   if (mark == 0) return nullptr;
 // SafeAccess::safeFetch64 on an unmapped/concurrently-freed address returns
 // its errorValue (0 here); the caller must treat that as "give up" rather
 // than shifting 0 into a bogus klass pointer.
-TEST(SafeFetch64TocTouGuardTest, ZeroReturnMeansGiveUp) {
+TEST_F(SafeFetch64TocTouGuardTest, ZeroReturnMeansGiveUp) {
     void* page = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     ASSERT_NE(page, MAP_FAILED);
