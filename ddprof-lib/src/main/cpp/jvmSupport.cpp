@@ -29,6 +29,11 @@ void JVMSupport::setLoadState(JMethodIDLoadStats state) {
     __atomic_store(&jmethodID_load_state, &state, __ATOMIC_RELEASE);
 }
 
+// If any of the two keys is invalid, profiler should not start
+bool JVMSupport::checkFatalError() {
+    return !JVMThread::hasValidKey() || !ProfiledThread::hasValidKey();     
+} 
+
 void JVMSupport::initExecution(Arguments& args, jvmtiEnv* jvmti, JNIEnv* jni) {
     JMethodIDLoadStats current_state = getLoadState();
     // Already setup by previous execution

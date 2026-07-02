@@ -9,7 +9,9 @@
 #include <cassert>
 #include <cstring>
 #include <pthread.h>
+
 #include "arch.h"
+#include "os.h"
 
 /**
  * This file implements an alternative to C/C++ thread local.
@@ -190,7 +192,6 @@ public:
 };
 
 class JVMThread;
-
 /**
  * This thread local mirrors JVM's Thread::current(). The value is set by JVM
  * and it is read-only variable.
@@ -247,6 +248,80 @@ public:
     void clear() {
         assert(false && "Should not reach here");
     }
+};
+
+
+
+class ProfiledThread;
+template <>
+class ThreadLocal<ProfiledThread*> {
+protected:
+    pthread_key_t _key;
+
+public:
+    ThreadLocal(const ThreadLocal&) = delete;
+    ThreadLocal& operator=(const ThreadLocal&) = delete;
+
+    ThreadLocal() : _key(INVALID_KEY) {
+        if (pthread_key_create(&_key, nullptr) != 0) {
+            _key = INVALID_KEY;
+        }
+        // What to do if we can not create a key?
+        // We probably want to shutdown profiler gracefully, instead of
+        // aborting user application - We will need this mechanism globally,
+        // defer to a separate task.
+        assert(isKeyValid() && "Invalid thread key");
+    }
+
+    void initValue(ProfiledThread* t) {
+        assert(t != nullptr && "Must not be nullptr");
+        assert(isKeyValid() && "Key must be valid");
+        assert(get() == nullptr && "Already initialized");
+        pthread_setspecific(_key, reinterpret_cast<void*>(t));
+    }
+
+    bool isKeyValid() const {
+        return _key != INVALID_KEY;
+    }
+
+    pthread_key_t key() const {
+        return _key;
+    }
+
+    /*
+     * Determine it is async-signal-safe to call pthread_setspecific()
+     * inside a signal handler without a workaround.
+     * 
+     * Musl: A fixed-size array for individual slot, no lock, no allocation, no shared state.
+     *       It is safe to call from a signal handler in practice.
+     * Glibc: When key < PTHREAD_KEY_2NDLEVEL_SIZE, the value stores inside a shared array, no lock,
+     *        no allocation. Althrough, it potential races pthread_key_delete(), but never happens
+     *        in our case - consider this thread local is immortal.     * 
+     */
+    bool isSignalSafe() const {        
+        if (OS::isMusl()) {
+            return isKeyValid();
+        } else {
+            static constexpr int PTHREAD_KEY_2NDLEVEL_SIZE = 32;
+            assert(OS::isLinux() && "What else?");
+            return int(_key) < PTHREAD_KEY_2NDLEVEL_SIZE; 
+        }
+    }
+
+    void set(ProfiledThread* value) {
+        assert(false && "Should not reach here, value is set by JVM");
+    }
+
+    ProfiledThread* get() const {
+        assert(isKeyValid() && "Invalid pthread key");
+        return reinterpret_cast<ProfiledThread*>(pthread_getspecific(_key));
+    }
+
+    void clear() {
+        assert(get() != nullptr && "Must be");
+        assert(isKeyValid() && "Must be");
+        pthread_setspecific(_key, nullptr);
+    } 
 };
 
 

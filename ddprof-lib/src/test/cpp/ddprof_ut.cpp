@@ -396,7 +396,7 @@ static DdprofGlobalSetup ddprof_global_setup;
                 CriticalSection cs;
                 if (!cs.entered()) _exit(4);
                 // Mimics the moment inside release() after pthread_setspecific(NULL).
-                ProfiledThread::clearCurrentThreadTLS();
+                ProfiledThread::release();
             } // dtor: old code → re-fetch nullptr → skip exit → _in_critical_section stuck
               //        new code → _thread_ptr captured at ctor → exitCriticalSection called
 

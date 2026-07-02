@@ -38,6 +38,10 @@ public:
         return _jvm_thread.key();
     }
 
+    static bool hasValidKey() {
+        return _jvm_thread.isKeyValid();
+    }
+
     static int nativeThreadId(JNIEnv* jni, jthread thread);
     static inline jlong javaThreadId(JNIEnv* env, jthread thread) {
        return env->GetLongField(thread, _tid);

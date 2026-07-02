@@ -20,6 +20,7 @@
 #include "safeAccess.h"
 #include "hotspot/vmStructs.h"
 #include "hotspot/jitCodeCache.h"
+#include <cassert>
 #include <atomic>
 #include <dlfcn.h>
 #include <stdlib.h>
@@ -30,6 +31,7 @@
 // JVM TI agent return codes
 const int ARGUMENTS_ERROR = 100;
 const int COMMAND_ERROR = 200;
+const int RESOURCE_ERROR = 300;
 
 static Arguments _agent_args(true);
 
@@ -665,6 +667,12 @@ Agent_OnLoad(JavaVM* vm, char* options, void* reserved) {
     if (!VM::initProfilerBridge(vm, false)) {
         Log::error("JVM does not support Tool Interface");
         return COMMAND_ERROR;
+    }
+
+    if (JVMSupport::checkFatalError()) {
+      assert(false);
+        Log::error("Failed to allocate required resource");
+        return RESOURCE_ERROR;
     }
 
     return 0;

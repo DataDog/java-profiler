@@ -9,6 +9,7 @@
 #include "context.h"
 #include "otel_context.h"
 #include "os.h"
+#include "threadLocal.h"
 #include "threadState.h"
 #include "unwindStats.h"
 #include <atomic>
@@ -53,12 +54,7 @@ public:
   // Even with a 5-level cap we can still encounter highly recursive signal handlers.
   static constexpr u32 CRASH_HANDLER_NESTING_LIMIT = 5;
 private:
-  static pthread_key_t _tls_key;
-  static bool _tls_key_initialized;
-
-  static void initTLSKey();
-  static void doInitTLSKey();
-  static inline void freeKey(void *key);
+  static ThreadLocal<ProfiledThread*> _profiled_thread; 
 
   // longjmp buffer. used by hotspot only at this moment
   jmp_buf* _jmp_buf;
@@ -103,27 +99,23 @@ private:
 
   virtual ~ProfiledThread() { }
 public:
+  static bool hasValidKey() {
+    return _profiled_thread.isKeyValid();
+  }
+
+  static bool hasSignalSafeKey() {
+    return _profiled_thread.isSignalSafe();
+  }
+  
   static ProfiledThread *forTid(int tid) { return new ProfiledThread(tid); }
 
-  static void initCurrentThread();
+  static ProfiledThread* initCurrentThread();
   static void release();
 #ifdef UNIT_TEST
-  // Simulates the moment inside release() after pthread_setspecific(NULL) but
-  // before delete — the race window the clearCurrentThreadTLS fix covers.
-  // Returns the detached pointer so the caller can delete it after assertions.
-  static ProfiledThread* clearCurrentThreadTLS() {
-    if (__atomic_load_n(&_tls_key_initialized, __ATOMIC_ACQUIRE)) {
-      ProfiledThread *pt = (ProfiledThread *)pthread_getspecific(_tls_key);
-      pthread_setspecific(_tls_key, nullptr);
-      return pt;
-    }
-    return nullptr;
-  }
   // Deletes a ProfiledThread returned by clearCurrentThreadTLS().
   // Needed because the destructor is private.
   static void deleteForTest(ProfiledThread *pt) { delete pt; }
 #endif
-
   static ProfiledThread *current();
   static ProfiledThread *currentSignalSafe(); // Signal-safe version that never allocates
   static int currentTid();
