@@ -9,7 +9,7 @@
 #include "frames.h"
 #include "os.h"
 #include "profiler.h"
-#include "thread.h"
+#include "threadLocalData.h"
 #include "vmEntry.h"
 
 #include "hotspot/hotspotSupport.h"

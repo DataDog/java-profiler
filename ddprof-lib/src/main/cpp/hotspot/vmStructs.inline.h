@@ -7,8 +7,26 @@
 #ifndef _HOTSPOT_VMSTRUCTS_INLINE_H
 #define _HOTSPOT_VMSTRUCTS_INLINE_H
 
+#include "hotspot/hotspotSupport.h"
 #include "hotspot/vmStructs.h"
 #include "jvmThread.h"
+#include "threadLocalData.h"
+
+inline bool crashProtectionActive() {
+    ProfiledThread* pt = ProfiledThread::currentSignalSafe();
+    if (pt != nullptr) {
+        return pt->isProtected();
+    }
+    return false;
+}
+
+template <typename T>
+inline T* cast_to(const void* ptr) {
+    assert(VM::isHotspot()); // This should only be used in HotSpot-specific code
+    assert(T::type_size() > 0); // Ensure type size has been initialized
+    assert(crashProtectionActive() || ptr == nullptr || SafeAccess::isReadableRange(ptr, T::type_size()));
+    return reinterpret_cast<T*>(const_cast<void*>(ptr));
+}
 
 VMThread* VMThread::current() {
     assert(VM::isHotspot());
