@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Post aggregated reliability + chaos test results as a single PR comment.
+# Post aggregated reliability + chaos test results as a new PR comment, one
+# per triggering commit (rather than upserting a single running comment).
 #
 # Reads REASON_* variables written to build.env by the reliability/chaos jobs
 # and emits a ✅/❌ matrix with failure <details> blocks.
@@ -7,11 +8,13 @@
 # Required env:
 #   DDPROF_COMMIT_BRANCH  – branch name used to locate the open PR
 # Optional env:
+#   DDPROF_COMMIT_SHA      – triggering commit SHA; falls back to CI_COMMIT_SHA
 #   CI_PIPELINE_URL
 
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COMMIT_SHA="${DDPROF_COMMIT_SHA:-${CI_COMMIT_SHA:-}}"
 
 # ── Collect failures from REASON_* env vars ────────────────────────────────────
 rel_fail=0; rel_failures=""
@@ -58,11 +61,13 @@ fi
 BODY_FILE=$(mktemp)
 trap 'rm -f "${BODY_FILE}"' EXIT
 cat > "${BODY_FILE}" <<EOF
-## Reliability & Chaos Results
+## Reliability & Chaos Results (commit ${COMMIT_SHA:0:8})
 
 ${overall}  Pipeline: ${CI_PIPELINE_URL:-}
 ${rel_failures}${chaos_failures}
 EOF
 
+# Comment ID includes the commit SHA so each triggering commit gets its own
+# comment instead of the upsert helper replacing a single running comment.
 "${HERE}/../scripts/upsert-github-pr-comment.sh" \
-  "reliability-results" "${DDPROF_COMMIT_BRANCH:-}" "${BODY_FILE}"
+  "reliability-results-${COMMIT_SHA:-unknown}" "${DDPROF_COMMIT_BRANCH:-}" "${BODY_FILE}"
