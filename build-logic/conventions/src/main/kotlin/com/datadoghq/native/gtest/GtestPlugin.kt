@@ -253,7 +253,7 @@ class GtestPlugin : Plugin<Project> {
         }
     }
 
-    private fun findCompiler(project: Project): String = PlatformUtils.findCompiler(project)
+    private fun findCompiler(project: Project): String = PlatformUtils.findCompiler(project).executable
 
     private fun getGtestIncludes(extension: GtestExtension): List<File> {
         return when (PlatformUtils.currentPlatform) {
