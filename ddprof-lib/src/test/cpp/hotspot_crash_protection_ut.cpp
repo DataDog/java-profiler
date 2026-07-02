@@ -23,9 +23,8 @@
  *
  * Tests cover:
  *   A. ProfiledThread thread-type classification (isJavaThread fast path)
- *   B. Vtable majority-vote logic (isJavaThread slow path)
- *   C. Crash-handler nesting depth (ProfiledThread crash handler state)
- *   D. jmp_buf chaining across nested/interrupted walkVM() calls
+ *   B. Crash-handler nesting depth (ProfiledThread crash handler state)
+ *   C. jmp_buf chaining across nested/interrupted walkVM() calls
  */
 
 #include <gtest/gtest.h>
