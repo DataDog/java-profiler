@@ -1,10 +1,10 @@
 /*
- * Copyright 2025, 2026, Datadog, Inc.
+ * Copyright 2025, 2026 Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#ifndef _THREADLOCALDATA_H
-#define _THREADLOCALDATA_H
+#ifndef THREAD_LOCAL_DATA_H
+#define THREAD_LOCAL_DATA_H
 
 #include "context.h"
 #include "otel_context.h"
@@ -50,7 +50,7 @@ public:
   // catching sigseg while also triggering CPU signal handler
   // which would also potentially trigger sigseg we need to handle.
   // This means 3 levels but we allow for some wiggling space, just in case.
-  // Even with 5 levels cap we will need any highly recursing signal handlers
+  // Even with a 5-level cap we can still encounter highly recursive signal handlers.
   static constexpr u32 CRASH_HANDLER_NESTING_LIMIT = 5;
 private:
   static pthread_key_t _tls_key;
@@ -335,4 +335,4 @@ private:
   bool _in_critical_section{false};
 };
 
-#endif // _THREADLOCALDATA_H
+#endif // THREAD_LOCAL_DATA_H
