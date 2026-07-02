@@ -556,7 +556,9 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
 void VM::ready(jvmtiEnv *jvmti, JNIEnv *jni) {
   Profiler::check_JDK_8313796_workaround();
   Profiler::setupSignalHandlers();
-  JVMThread::initialize();
+  if (!JVMThread::initialize()) {
+    Log::warn("JVMThread::initialize() failed - JVM thread identification will be degraded");
+  }
   if (isHotspot()) {
     JitWriteProtection jit(true);
     VMStructs::ready();

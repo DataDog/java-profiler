@@ -60,8 +60,12 @@ private:
   static void doInitTLSKey();
   static inline void freeKey(void *key);
 
-  // longjmp buffer. used by hotspot only at this moment
-  jmp_buf* _jmp_buf;
+  // longjmp buffer. used by hotspot only at this moment.
+  // Published in walkVM() and consumed in checkFault() from an asynchronous
+  // SEGV-handler context on the same thread; atomic makes the publish/observe
+  // ordering explicit instead of relying on plain load/store, matching how
+  // _crash_depth is hardened below.
+  std::atomic<jmp_buf*> _jmp_buf;
 
   u64 _pc;
   u64 _sp;
@@ -176,12 +180,17 @@ public:
   }
 
   // this is called in the crash handler to avoid recursing
+  //
+  // Uses a single atomic increment-then-check instead of load-then-branch-
+  // then-increment: the latter lets a nested signal on the same thread
+  // observe the same pre-increment value between the load and the add,
+  // letting more than CRASH_HANDLER_NESTING_LIMIT handlers past the gate.
   bool enterCrashHandler() {
-    u32 prev = __atomic_load_n(&_crash_depth, __ATOMIC_RELAXED);
-    if (prev < CRASH_HANDLER_NESTING_LIMIT) {
-      __atomic_add_fetch(&_crash_depth, 1, __ATOMIC_RELAXED);
+    u32 depth = __atomic_add_fetch(&_crash_depth, 1, __ATOMIC_RELAXED);
+    if (depth <= CRASH_HANDLER_NESTING_LIMIT) {
       return true;
     }
+    __atomic_sub_fetch(&_crash_depth, 1, __ATOMIC_RELAXED);
     return false;
   }
 
@@ -201,15 +210,15 @@ public:
   }
 
   inline void setJmpCtx(jmp_buf* buf) {
-    _jmp_buf = buf;  
+    _jmp_buf.store(buf, std::memory_order_release);
   }
 
   inline jmp_buf* getJmpCtx() const {
-    return _jmp_buf;
+    return _jmp_buf.load(std::memory_order_acquire);
   }
 
   inline bool isProtected() const {
-    return _jmp_buf != nullptr;
+    return _jmp_buf.load(std::memory_order_acquire) != nullptr;
   }
 
   // Signal-handler depth counter used by SignalHandlerScope (guards.h).  All

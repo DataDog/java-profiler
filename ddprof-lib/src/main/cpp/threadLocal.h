@@ -210,9 +210,16 @@ public:
     // The key is created by JVM, find out the key.
     // This method should be called very early at Profiler startup
     // time
-    void initialize(void* current_thread) {
+    bool initialize(void* current_thread) {
         // Called from known JavaThread, it must not be nullptr.
         assert(current_thread != nullptr && "Should not reach here");
+        if (current_thread == nullptr) {
+            // A NULL current_thread would make the scan below match the
+            // first never-created key (pthread_getspecific() also returns
+            // NULL for it), silently producing a bogus _key. Bail out
+            // instead and leave _key == INVALID_KEY.
+            return false;
+        }
 
         long max_keys = sysconf(_SC_THREAD_KEYS_MAX);
         if (max_keys <= 0 || max_keys > 1024) {
@@ -225,6 +232,7 @@ public:
             }
         }
         assert(isKeyValid() && "Invalid thread key");
+        return isKeyValid();
     }
 
     bool isKeyValid() const {
@@ -241,6 +249,9 @@ public:
 
     void* get() const {
         assert(isKeyValid() && "Invalid pthread key");
+        if (!isKeyValid()) {
+            return nullptr;
+        }
         return pthread_getspecific(_key);
     }
 
