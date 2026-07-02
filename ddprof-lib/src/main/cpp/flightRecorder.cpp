@@ -13,10 +13,11 @@
 #include "context_api.h"
 #include "counters.h"
 #include "dictionary.h"
-#include "flightRecorder.h"
+#include "flightRecorder.inline.h"
 #include "incbin.h"
 #include "jfrMetadata.h"
 #include "jniHelper.h"
+#include "jvmSupport.inline.h"
 #include "os.h"
 #include "profiler.h"
 #include "signalSafety.h"
@@ -494,8 +495,12 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   static const char* UNKNOWN = "unknown";
   unsigned long key;
   jint bci = frame.bci;
+  jmethodID method_id = frame.method_id;
 
-  jmethodID method = frame.method_id;
+  // Resolve native method
+  if (FrameType::isRawPointer(bci)) {
+    method_id = JVMSupport::resolve(frame.method);
+  }
 
   // BCI_VTABLE_RECEIVER: method holds a VMSymbol* (see vmEntry.h). Resolve
   // to a class_id via the per-dump cache once, then key MethodMap by the
@@ -504,10 +509,10 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   // row.
   u32 vtable_class_id = 0;
   if (bci == BCI_VTABLE_RECEIVER) {
-    vtable_class_id = resolveVTableReceiverCached((void *)method);
+    vtable_class_id = resolveVTableReceiverCached((void *)method_id);
   }
 
-  if (method == nullptr) {
+  if (method_id == nullptr) {
     key = MethodMap::makeKey(UNKNOWN);
   } else if (bci == BCI_ERROR || bci == BCI_NATIVE_FRAME) {
     key = MethodMap::makeKey(frame.native_function_name);
@@ -520,7 +525,7 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     assert(frame_type == FRAME_INTERPRETED || frame_type == FRAME_JIT_COMPILED ||
            frame_type == FRAME_INLINED || frame_type == FRAME_C1_COMPILED ||
            VM::isOpenJ9()); // OpenJ9 may have bugs that produce invalid frame types
-    key = MethodMap::makeKey(method);
+    key = MethodMap::makeKey(method_id);
   }
 
   MethodInfo *mi = &(*_method_map)[key];
@@ -536,12 +541,12 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
       // (PROF-15130). The allocator recycles ids freed on erase instead.
       mi->_key = _method_map->allocId();
     }
-    if (method == nullptr) {
+    if (method_id == nullptr) {
       fillNativeMethodInfo(mi, UNKNOWN, nullptr);
     } else if (bci == BCI_ERROR) {
-      fillNativeMethodInfo(mi, (const char *)method, nullptr);
+      fillNativeMethodInfo(mi, (const char *)method_id, nullptr);
     } else if (bci == BCI_NATIVE_FRAME) {
-      const char *name = (const char *)method;
+      const char *name = (const char *)method_id;
       fillNativeMethodInfo(mi, name,
                            Profiler::instance()->getLibraryName(name));
     } else if (bci == BCI_NATIVE_FRAME_REMOTE) {
@@ -589,7 +594,7 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
       mi->_type = FRAME_NATIVE;
       mi->_is_entry = false;
     } else {
-      fillJavaMethodInfo(mi, method, first_time);
+      fillJavaMethodInfo(mi, method_id, first_time);
     }
   }
 
@@ -1576,7 +1581,7 @@ int Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
         jint bci = trace->frames[i].bci;
         if (mi->_type < FRAME_NATIVE) {
           FrameTypeId type = FrameType::decode(bci);
-          bci = (bci & 0x10000) ? 0 : (bci & 0xffff);
+          bci = FrameType::bci(bci);
           buf->putVar32(mi->getLineNumber(bci));
           buf->putVar32(bci);
           buf->put8(type);

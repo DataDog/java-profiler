@@ -7,6 +7,7 @@
 #ifndef _STACKWALKER_INLINE_H
 #define _STACKWALKER_INLINE_H
 
+#include "frame.h"
 #include "stackWalker.h"
 #include "safeAccess.h"
 

@@ -61,7 +61,7 @@ jobs:
         if: steps.set_enabled.outputs.enabled == 'true'
       - name: Cache Gradle Wrapper Binaries
         if: steps.set_enabled.outputs.enabled == 'true'
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.gradle/wrapper/dists
           key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
@@ -69,7 +69,7 @@ jobs:
             gradle-wrapper-${{ runner.os }}-
       - name: Cache Gradle User Home
         if: steps.set_enabled.outputs.enabled == 'true'
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.gradle/caches
           key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
@@ -220,14 +220,14 @@ jobs:
           apk add musl-dbg
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Cache Gradle Wrapper Binaries
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.gradle/wrapper/dists
           key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: |
             gradle-wrapper-${{ runner.os }}-
       - name: Cache Gradle User Home
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.gradle/caches
           key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
@@ -361,7 +361,7 @@ jobs:
         if: steps.set_enabled.outputs.enabled == 'true'
       - name: Cache Gradle Wrapper Binaries
         if: steps.set_enabled.outputs.enabled == 'true'
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.gradle/wrapper/dists
           key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
@@ -369,7 +369,7 @@ jobs:
             gradle-wrapper-${{ runner.os }}-
       - name: Cache Gradle User Home
         if: steps.set_enabled.outputs.enabled == 'true'
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.gradle/caches
           key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
@@ -532,14 +532,14 @@ jobs:
      steps:
        - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
        - name: Cache Gradle Wrapper Binaries
-         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
          with:
            path: ~/.gradle/wrapper/dists
            key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
            restore-keys: |
              gradle-wrapper-${{ runner.os }}-
        - name: Cache Gradle User Home
-         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
          with:
            path: ~/.gradle/caches
            key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
@@ -572,6 +572,13 @@ jobs:
              echo "musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64" >> failures_musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
              exit 1
            fi
+       - name: Fix permissions for artifact upload
+         if: always()
+         run: |
+           # Files created by Docker container may have restrictive permissions
+           # that prevent GitHub Actions from reading them during artifact creation.
+           # Use a+rX (umask-independent) where X adds execute only to directories.
+           sudo chmod -R a+rX build/ ddprof-test/build/ ddprof-lib/build/ || true
        - name: Generate Unwinding Report
          if: success() && matrix.config == 'debug'
          run: |
@@ -580,6 +587,9 @@ jobs:
              \"${{ github.sha }}\" \"musl/${{ matrix.java_version }}-${{ matrix.config }}-aarch64\" \
              \"${{ matrix.config }}\" \"${{ env.JAVA_HOME }}\" \"${{ env.JAVA_TEST_HOME }}\"
            "
+           # Fix permissions after Docker container execution (both top-level and subproject builds).
+           # Use a+rX (umask-independent) where X adds execute only to directories.
+           sudo chmod -R a+rX build/ ddprof-test/build/ ddprof-lib/build/ || true
        - name: Add Unwinding Report to Job Summary
          if: success() && matrix.config == 'debug' && hashFiles('ddprof-test/build/reports/unwinding-summary.md') != ''
          run: |

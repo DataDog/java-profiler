@@ -39,8 +39,31 @@ public final class JavaProfiler {
     }
     private static JavaProfiler instance;
 
-    // Thread-local storage for profiling context
-    private final ThreadLocal<ThreadContext> tlsContextStorage = ThreadLocal.withInitial(JavaProfiler::initializeThreadContext);
+    // Storage for profiling context. Scoped to the carrier thread when available so a
+    // mounted virtual thread resolves to its current carrier's OTEP record (the record the
+    // sampler reads); falls back to plain thread-local storage otherwise. See
+    // OtelContextStorage for the mode selection and the rationale.
+    private final ThreadLocal<ThreadContext> tlsContextStorage = OtelContextStorage.create();
+
+    /**
+     * Returns the calling thread's (or, in carrier mode, its current carrier's)
+     * {@link ThreadContext}, creating and caching it on first use. Replaces the previous
+     * {@code ThreadLocal.withInitial(...)} supplier: a carrier-scoped storage instance is
+     * built reflectively and cannot carry a supplier, so lazy initialization is done here.
+     *
+     * <p>Race-free without synchronization: a carrier runs at most one mounted virtual
+     * thread at a time and this method has no blocking point, so no unmount can occur
+     * mid-call. A redundant re-init could at worst produce a second {@link ThreadContext}
+     * over the same carrier record, which is harmless.
+     */
+    private ThreadContext currentContext() {
+        ThreadContext ctx = tlsContextStorage.get();
+        if (ctx == null) {
+            ctx = initializeThreadContext();
+            tlsContextStorage.set(ctx);
+        }
+        return ctx;
+    }
 
     private JavaProfiler() {
     }
@@ -207,7 +230,7 @@ public final class JavaProfiler {
      */
     @Deprecated
     public void setContext(long spanId, long rootSpanId) {
-        tlsContextStorage.get().put(spanId, rootSpanId);
+        currentContext().put(spanId, rootSpanId);
     }
 
     /**
@@ -219,7 +242,7 @@ public final class JavaProfiler {
      * @param traceIdLow Lower 64 bits of the 128-bit trace ID
      */
     public void setContext(long localRootSpanId, long spanId, long traceIdHigh, long traceIdLow) {
-        tlsContextStorage.get().put(localRootSpanId, spanId, traceIdHigh, traceIdLow);
+        currentContext().put(localRootSpanId, spanId, traceIdHigh, traceIdLow);
     }
 
     /**
@@ -227,7 +250,7 @@ public final class JavaProfiler {
      * Custom context attributes are also cleared.
      */
     public void clearContext() {
-        tlsContextStorage.get().put(0, 0, 0, 0);
+        currentContext().put(0, 0, 0, 0);
     }
 
     /**
@@ -242,7 +265,7 @@ public final class JavaProfiler {
      *         for this slot
      */
     public boolean setContextAttribute(int offset, String value) {
-        return tlsContextStorage.get().setContextAttribute(offset, value);
+        return currentContext().setContextAttribute(offset, value);
     }
 
     /**
@@ -252,7 +275,7 @@ public final class JavaProfiler {
      * @param offset slot index (0-based, in [0, 9]); out-of-range values are silently ignored
      */
     public void clearContextAttribute(int offset) {
-        tlsContextStorage.get().clearContextAttribute(offset);
+        currentContext().clearContextAttribute(offset);
     }
 
     /**
@@ -279,11 +302,11 @@ public final class JavaProfiler {
      *                                  or any active {@code utf8[i]} exceeds 255 bytes
      */
     public boolean setContextAttributesByIdAndBytes(int[] constantIds, byte[][] utf8) {
-        return tlsContextStorage.get().setContextAttributesByIdAndBytes(constantIds, utf8);
+        return currentContext().setContextAttributesByIdAndBytes(constantIds, utf8);
     }
 
     void copyTags(int[] snapshot) {
-        tlsContextStorage.get().copyCustoms(snapshot);
+        currentContext().copyCustoms(snapshot);
     }
 
     /**
@@ -560,8 +583,29 @@ public final class JavaProfiler {
      */
     private static native ByteBuffer initializeContextTLS0(long[] metadata);
 
+    /**
+     * Returns the {@link ThreadContext} for the current storage slot (the calling thread, or in
+     * {@link ContextStorageMode#CARRIER} its current carrier).
+     *
+     * <p><b>Do not cache the returned instance across a point where the calling thread may be
+     * unmounted and remounted on a different carrier</b> (any blocking operation on a virtual
+     * thread). In carrier mode the returned context's buffer targets the carrier that was mounted
+     * at call time; after migration it no longer corresponds to the current carrier's record — the
+     * sampler reads the new carrier, and once the old carrier's OS thread exits the buffer dangles.
+     * Callers that write context (span/attributes) should re-fetch per use — the {@code setContext*}
+     * methods already do this internally via {@code currentContext()}.
+     */
     public ThreadContext getThreadContext() {
-        return tlsContextStorage.get();
+        return currentContext();
+    }
+
+    /**
+     * Diagnostics/tests: the resolved OTEL context storage mode, as selected by
+     * {@code -D}{@value OtelContextStorage#MODE_PROPERTY} and the availability of
+     * {@code jdk.internal.misc.CarrierThreadLocal}.
+     */
+    public ContextStorageMode contextStorageMode() {
+        return OtelContextStorage.modeOf(tlsContextStorage);
     }
 
 // --- test and debug utility methods
@@ -575,9 +619,10 @@ public final class JavaProfiler {
     public static native void dumpContext();
 
     /**
-     * Resets the cached ThreadContext for the current thread.
-     * The next call to {@link #getThreadContext()} or any {@code setContext} overload
-     * will re-create it with fresh OTEL TLS buffers.
+     * Resets the cached ThreadContext for the current storage slot — the calling thread in
+     * {@link ContextStorageMode#THREAD}, or its current carrier in
+     * {@link ContextStorageMode#CARRIER}. The next call to {@link #getThreadContext()}
+     * or any {@code setContext} overload will re-create it with fresh OTEL TLS buffers.
      */
     public void resetThreadContext() {
         tlsContextStorage.remove();
