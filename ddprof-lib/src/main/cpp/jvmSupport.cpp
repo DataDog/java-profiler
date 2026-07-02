@@ -9,7 +9,7 @@
 #include "frames.h"
 #include "os.h"
 #include "profiler.h"
-#include "thread.h"
+#include "threadLocalData.h"
 #include "vmEntry.h"
 
 #include "hotspot/hotspotSupport.h"
@@ -28,6 +28,11 @@ void JVMSupport::setLoadState(JMethodIDLoadStats state) {
     // Volatile store
     __atomic_store(&jmethodID_load_state, &state, __ATOMIC_RELEASE);
 }
+
+// If any of the two keys is invalid, profiler should not start
+bool JVMSupport::checkFatalError() {
+    return !JVMThread::hasValidKey() || !ProfiledThread::hasValidKey();     
+} 
 
 void JVMSupport::initExecution(Arguments& args, jvmtiEnv* jvmti, JNIEnv* jni) {
     JMethodIDLoadStats current_state = getLoadState();

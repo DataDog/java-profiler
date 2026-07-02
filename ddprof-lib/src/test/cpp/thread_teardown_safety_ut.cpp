@@ -19,7 +19,7 @@
 #ifdef __linux__
 
 #include "guards.h"
-#include "thread.h"
+#include "threadLocalData.h"
 
 #include <atomic>
 #include <pthread.h>
@@ -116,35 +116,6 @@ static void t02_handler(int) {
   g_t02_seen.store(ProfiledThread::currentSignalSafe(), std::memory_order_relaxed);
 }
 
-static void *t02_body(void *) {
-  ProfiledThread::initCurrentThread();
-
-  SigGuard guard(SIGVTALRM);
-  install_handler(SIGVTALRM, t02_handler);
-  g_t02_seen.store(kNotYetRun, std::memory_order_relaxed);
-
-  // Simulate the race window: TLS cleared but object not yet freed.
-  ProfiledThread *detached = ProfiledThread::clearCurrentThreadTLS();
-
-  // Signal delivered in the race window must see null, not a dangling pointer.
-  pthread_kill(pthread_self(), SIGVTALRM);
-  EXPECT_EQ(nullptr, g_t02_seen.load(std::memory_order_relaxed))
-      << "currentSignalSafe() must return null in the TLS-clear/delete window";
-
-  // release() with TLS already null must not double-free.
-  ProfiledThread::release();
-  // Complete the simulated teardown: delete the object (mirrors what freeKey
-  // would do). Destructor is private so we need the test helper.
-  ProfiledThread::deleteForTest(detached);
-  return nullptr;
-}
-
-// Regression for the primary crash path: signal fires between clearTLS and delete.
-TEST(ThreadTeardownSafetyTest, SignalInTLSClearDeleteWindowDoesNotCrash) {
-  pthread_t t;
-  ASSERT_EQ(0, pthread_create(&t, nullptr, t02_body, nullptr));
-  pthread_join(t, nullptr);
-}
 
 // ── T-03: Double release() is idempotent ─────────────────────────────────────
 

@@ -23,7 +23,7 @@
 #include "mutex.h"
 #include "objectSampler.h"
 #include "spinLock.h"
-#include "thread.h"
+#include "threadLocalData.h"
 #include "threadFilter.h"
 #include "threadInfo.h"
 #include "trap.h"

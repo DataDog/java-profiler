@@ -6,40 +6,43 @@
 #ifndef _JVMTHREAD_H
 #define _JVMTHREAD_H
 
-#include <cassert>
 #include <jni.h>
 #include <jvmti.h>
-#include <pthread.h>
+
+#include "threadLocal.h"
 
 /**
  * JVMThread represents a native JVM thread that is JVM implementation agnostic
  */
 class JVMThread {
 private:
-    static pthread_key_t _thread_key;
     static jfieldID _tid;
+    static ThreadLocal<JVMThread*> _jvm_thread;
 
 public:
-    static bool isInitialized() {
-        return _thread_key != pthread_key_t(-1);
-    }
-
     /*
      * The initialization happens in early startup, in single-threaded mode,
      * no synchronization is needed
      */
     static bool initialize();
+    static bool isInitialized();
+
     static inline void* current() {
-        assert(isInitialized());
-        return pthread_getspecific(_thread_key);
+        // Assertion to ensure initialize() is called. Otherwise,
+        // the key should be valid, JVM depends on it
+        assert(_jvm_thread.isKeyValid() && "Must be");
+        return _jvm_thread.get();
     }
 
     static inline pthread_key_t key() {
-        return _thread_key;
+        return _jvm_thread.key();
+    }
+
+    static bool hasValidKey() {
+        return _jvm_thread.isKeyValid();
     }
 
     static int nativeThreadId(JNIEnv* jni, jthread thread);
-
     static inline jlong javaThreadId(JNIEnv* env, jthread thread) {
        return env->GetLongField(thread, _tid);
     }
@@ -47,7 +50,6 @@ public:
     static inline bool hasJavaThreadId() {
         return _tid != nullptr;
     }
-
 private:
     static void* currentThreadSlow();
 };

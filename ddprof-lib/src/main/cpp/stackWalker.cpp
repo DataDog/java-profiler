@@ -12,13 +12,12 @@
 #include "symbols.h"
 #include "jvmSupport.inline.h"
 #include "jvmThread.h"
-#include "thread.h"
+#include "threadLocalData.h"
 
 // Use validation helpers from header (shared with tests)
 using StackWalkValidation::inDeadZone;
 using StackWalkValidation::aligned;
 using StackWalkValidation::MAX_FRAME_SIZE;
-using StackWalkValidation::sameStack;
 
 
 int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated) {

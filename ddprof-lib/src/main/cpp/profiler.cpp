@@ -31,7 +31,6 @@
 #include "stackFrame.h"
 #include "stackWalker.h"
 #include "symbols.h"
-#include "thread.h"
 #include "tsc.h"
 #include "utils.h"
 #include "wallClock.h"
@@ -934,9 +933,8 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
 
   // Reentrancy protection: use TLS-based tracking if available.
   // If TLS is not available, we can only safely handle faults that we can
-  // prove are from our protected code paths (checked via sameStack heuristic
-  // in HotspotSupport::checkFault). For anything else, we must chain immediately
-  // to avoid claiming faults that aren't ours.
+  // prove are from our protected code paths (checked via jmp_buf is set for the thread).
+  // For anything else, we must chain immediately to avoid claiming faults that aren't ours.
   bool have_tls_protection = false;
   if (thrd != nullptr) {
     if (!thrd->enterCrashHandler()) {
@@ -946,8 +944,8 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
     have_tls_protection = true;
   }
   // If thrd == nullptr, we proceed but with limited handling capability.
-  // Only HotspotSupport::checkFault (which has its own sameStack fallback)
-  // and the JDK-8313796 workaround can safely handle faults without TLS.
+  // Only HotspotSupport::checkFault and the JDK-8313796 workaround can safely 
+  // handle faults without TLS.
 
   StackFrame frame(ucontext);
   uintptr_t pc = frame.pc();
@@ -971,8 +969,7 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
   if (VM::isHotspot()) {
     // the following checks require vmstructs and therefore HotSpot
 
-    // HotspotSupport::checkFault has its own fallback for when TLS is unavailable:
-    // it uses sameStack() heuristic to check if we're in a protected stack walk.
+    // HotspotSupport::checkFault has its own check if we're in a protected stack walk.
     // If the fault is from our protected walk, it will longjmp and never return.
     // If it returns, the fault wasn't from our code.
     HotspotSupport::checkFault(thrd);

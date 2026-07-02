@@ -4,29 +4,27 @@
  */
 
 #include "jvmThread.h"
+#include "hotspot/hotspotSupport.h"
 #include "hotspot/vmStructs.inline.h"
 #include "j9/j9Support.h"
 #include "zing/zingSupport.h"
 #include "vmEntry.h"
 
-pthread_key_t JVMThread::_thread_key = pthread_key_t(-1);
 jfieldID JVMThread::_tid = nullptr;
+ThreadLocal<JVMThread*> JVMThread::_jvm_thread;
 
 bool JVMThread::initialize() {
   void* current_thread = currentThreadSlow();
-  if (current_thread == nullptr) {
-    return false;
-  }
-
-  for (int i = 0; i < 1024; i++) {
-    if (pthread_getspecific((pthread_key_t)i) == current_thread) {
-        _thread_key = pthread_key_t(i);
-        break;
-    }
-  }
-  // _tid is initialized in currentThreadSlow()
+  // Called by known JavaThread, cannot be nullptr
+  assert(current_thread != nullptr && "Must not be nullptr");
+  _jvm_thread.initialize(current_thread);
+  // _tid is side-effect of currentThreadSlow()
   assert(_tid != nullptr);
-  return _thread_key != pthread_key_t(-1);
+  return _jvm_thread.isKeyValid();
+}
+
+bool JVMThread::isInitialized() {
+    return (_tid != nullptr && _jvm_thread.isKeyValid());
 }
 
 int JVMThread::nativeThreadId(JNIEnv* jni, jthread thread) {

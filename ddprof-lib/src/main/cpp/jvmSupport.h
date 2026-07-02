@@ -40,6 +40,9 @@ class JVMSupport {
     static JMethodIDLoadStats getLoadState();
     static void setLoadState(JMethodIDLoadStats state);
 public:
+    // Check if fatal error has happend, if so, disable profiler for the instance.
+    static bool checkFatalError();
+
     // Initializing JVM support
     static void initExecution(Arguments& args, jvmtiEnv* jvmti, JNIEnv* jni);
 

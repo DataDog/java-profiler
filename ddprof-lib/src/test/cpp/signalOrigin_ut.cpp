@@ -15,7 +15,7 @@
 #include "guards.h"
 #include "os.h"
 #include "signalCookie.h"
-#include "thread.h"
+#include "threadLocalData.h"
 
 #ifdef __linux__
 
