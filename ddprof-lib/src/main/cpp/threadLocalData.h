@@ -177,28 +177,18 @@ public:
 
   // this is called in the crash handler to avoid recursing
   bool enterCrashHandler() {
-    u32 cur = __atomic_load_n(&_crash_depth, __ATOMIC_RELAXED);
-    while (cur < CRASH_HANDLER_NESTING_LIMIT) {
-      u32 desired = cur + 1;
-      if (__atomic_compare_exchange_n(&_crash_depth, &cur, desired,
-                                      /*weak=*/true,
-                                      __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
-        return true;
-      }
+    u32 prev = __atomic_load_n(&_crash_depth, __ATOMIC_RELAXED);
+    if (prev < CRASH_HANDLER_NESTING_LIMIT) {
+      __atomic_add_fetch(&_crash_depth, 1, __ATOMIC_RELAXED);
+      return true;
     }
     return false;
   }
 
   // needs to be called when the crash handler exits
   void exitCrashHandler() {
-    u32 cur = __atomic_load_n(&_crash_depth, __ATOMIC_RELAXED);
-    while (cur > 0) {
-      u32 desired = cur - 1;
-      if (__atomic_compare_exchange_n(&_crash_depth, &cur, desired,
-                                      /*weak=*/true,
-                                      __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
-        return;
-      }
+    if (__atomic_load_n(&_crash_depth, __ATOMIC_RELAXED) > 0) {
+      __atomic_add_fetch(&_crash_depth, -1, __ATOMIC_RELAXED);
     }
   }
 

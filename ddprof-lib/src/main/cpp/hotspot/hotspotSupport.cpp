@@ -251,23 +251,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     // each one sets up jmp_buf, they need to be chained to jump back to
     // correct location.
     jmp_buf* prev_jmp_buf = prof_thread->getJmpCtx();
-
-    VMThread* vm_thread = VMThread::current();
-    if (vm_thread != NULL && !vm_thread->isThreadAccessible()) {
-        Counters::increment(WALKVM_THREAD_INACCESSIBLE);
-        vm_thread = NULL;
-    }
-    if (vm_thread == NULL) {
-        Counters::increment(WALKVM_NO_VMTHREAD);
-    } else {
-        Counters::increment(WALKVM_VMTHREAD_OK);
-    }
-
     // Should be preserved across setjmp/longjmp
     volatile int depth = 0;
     int actual_max_depth = truncated ? max_depth + 1 : max_depth;
-    bool fp_chain_fallback = false;
-    int fp_chain_depth = 0;
 
     if (setjmp(crash_protection_ctx) != 0) {
         // checkFault() does a longjmp from inside segvHandler, bypassing
@@ -281,6 +267,20 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     }
 
     prof_thread->setJmpCtx(&crash_protection_ctx);
+    VMThread* vm_thread = VMThread::current();
+    if (vm_thread != NULL && !vm_thread->isThreadAccessible()) {
+        Counters::increment(WALKVM_THREAD_INACCESSIBLE);
+        vm_thread = NULL;
+    }
+    if (vm_thread == NULL) {
+        Counters::increment(WALKVM_NO_VMTHREAD);
+    } else {
+        Counters::increment(WALKVM_VMTHREAD_OK);
+    }
+
+    bool fp_chain_fallback = false;
+    int fp_chain_depth = 0;
+
     VMJavaFrameAnchor* anchor = NULL;
     if (vm_thread != NULL) {
         anchor = vm_thread->anchor();
