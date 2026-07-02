@@ -103,9 +103,13 @@ CriticalSection::~CriticalSection() {
             // Use RELEASE ordering to ensure protected data writes are visible before releasing
             __atomic_fetch_and(&_fallback_bitmap[_word_index], ~_bit_mask, __ATOMIC_RELEASE);
         } else {
+            // Allows thread exiting inside CriticalSection
+            ProfiledThread* pt = ProfiledThread::currentSignalSafe();
+            assert(pt == nullptr || pt == _thread_ptr);
+
             // Release ProfiledThread flag using the pointer captured at construction
-            if (_thread_ptr != nullptr) {
-                _thread_ptr->exitCriticalSection();
+            if (pt != nullptr) {
+                pt->exitCriticalSection();
             }
         }
     }
