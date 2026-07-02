@@ -1387,6 +1387,11 @@ Error Profiler::start(Arguments &args, bool reset) {
     }
   }
 
+  args._cstack = _cstack;
+  // Prepare JVMSupport for execution
+  JVMSupport::initExecution(args, VM::jvmti(), VM::jni());
+
+
   LibraryPatcher::initialize();
 
   // Kernel symbols are useful only for perf_events without --all-user

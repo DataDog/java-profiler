@@ -253,6 +253,17 @@ Error Arguments::parse(const char *args) {
         msg = "jstackdepth must be > 0";
       }
 
+      CASE("fjmethodid")
+      if (value != nullptr) {
+        if (strcmp(value, "false") == 0) {
+          _force_jmethodID = false;
+        } else if (strcmp(value, "true") == 0) {
+          _force_jmethodID = true;
+        } else {
+          msg = "Invalid jmethodID creation value";
+        }
+      }
+
       CASE("safemode")
       _safe_mode = value == NULL ? INT_MAX : (int)strtol(value, NULL, 0);
 
