@@ -574,6 +574,8 @@ bool VM::initializeRequestStackTrace() {
 
 bool VM::initProfilerBridge(JavaVM *vm, bool attach,
                             bool delegateMonitorEvents, bool wallPrecheck) {
+  // wallPrecheck is kept for Java API compatibility; the active wall-precheck
+  // mode is read from Arguments when a profiling session starts.
   (void)wallPrecheck;
   TEST_LOG("VM::initProfilerBridge");
   if (!initShared(vm)) {

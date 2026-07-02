@@ -94,7 +94,7 @@ public final class JavaProfiler {
      * @param libLocation the path to the native library to be used instead of the bundled one
      * @param scratchDir directory where the bundled library will be exploded before linking; ignored when 'libLocation' is {@literal null}
      */
-    public static JavaProfiler getInstance(String libLocation, String scratchDir) throws IOException {
+    public static synchronized JavaProfiler getInstance(String libLocation, String scratchDir) throws IOException {
         return getInstance(libLocation, scratchDir, false, false);
     }
 
