@@ -146,8 +146,10 @@ static void *post_registration_worker(void *) {
   ThreadContext *ctx = ThreadContext::current();
   g_is_profiled.store(ctx->asProfiledThread() != nullptr, std::memory_order_relaxed);
 
-  CriticalSection cs;
-  g_cs_primary_entered.store(cs.entered(), std::memory_order_relaxed);
+  {
+    CriticalSection cs;
+    g_cs_primary_entered.store(cs.entered(), std::memory_order_relaxed);
+  }
 
   ThreadContext::release();
   return nullptr;
