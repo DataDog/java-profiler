@@ -335,4 +335,4 @@ private:
   bool _in_critical_section{false};
 };
 
-#endif // _THREADLOCALDATA_H
+#endif // THREAD_LOCAL_DATA_H
