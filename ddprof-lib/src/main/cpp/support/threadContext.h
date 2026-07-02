@@ -76,6 +76,20 @@ public:
   }
   // Deletes a ThreadContext returned by clearCurrentThreadTLS().
   static void deleteForTest(ThreadContext *tls) { delete tls; }
+
+  // Writes span_id/root_span_id directly on the base object and marks the
+  // record valid, without requiring a ProfiledThread or the JNI put() path.
+  // Exercises the base-object write path for the defensive-mode test
+  // (ContextExtractionToSupportPlan Phase E.5): writing context via a plain
+  // ThreadContext before any profiler factory is registered.
+  inline void setContextForTest(u64 span_id, u64 root_span_id) {
+    OtelThreadContextRecord *record = getOtelContextRecord();
+    for (int i = 0; i < 8; i++) {
+      record->span_id[i] = (uint8_t)(span_id >> (8 * (7 - i)));
+    }
+    _otel_local_root_span_id = root_span_id;
+    __atomic_store_n(&record->valid, (uint8_t)1, __ATOMIC_RELEASE);
+  }
 #endif
 
   inline int tid() { return _tid; }
@@ -112,5 +126,10 @@ public:
 // decided at runtime.
 typedef ThreadContext* (*ThreadContextFactory)(int tid);
 extern std::atomic<ThreadContextFactory> g_thread_context_factory;
+
+// Restores g_thread_context_factory to the support-only default (plain
+// ThreadContext), undoing a profiler-installed factory. Called at profiler
+// teardown so a subsequent re-init starts from a clean slate.
+void resetThreadContextFactory();
 
 #endif // _SUPPORT_THREAD_CONTEXT_H

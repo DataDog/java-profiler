@@ -11,23 +11,6 @@
 #include <cstring>
 #include <time.h>
 
-// The shared ThreadContext TLS slot defaults to producing plain ThreadContext
-// instances (support-only build). This translation unit is only linked into
-// the full profiler build, so it commits the factory to produce ProfiledThread
-// instead, at library-load time — before any thread (including the one that
-// calls Profiler::start()) can observe the TLS slot and lazily allocate a
-// plain ThreadContext.
-static ThreadContext *newProfiledThread(int tid) { return ProfiledThread::forTid(tid); }
-
-namespace {
-struct ProfiledThreadFactoryInstaller {
-  ProfiledThreadFactoryInstaller() {
-    g_thread_context_factory.store(newProfiledThread, std::memory_order_release);
-  }
-};
-static ProfiledThreadFactoryInstaller profiled_thread_factory_installer;
-} // namespace
-
 void ProfiledThread::initCurrentThread() {
   // JVMTI callback path - does NOT use buffer
   // Allocate dedicated ProfiledThread for Java threads (not from buffer)

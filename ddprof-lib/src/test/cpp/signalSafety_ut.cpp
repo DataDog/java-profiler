@@ -21,6 +21,15 @@
 class SignalSafetyTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        // This binary never calls VM::initProfilerBridge, so the
+        // ThreadContext factory (support/threadContext.h) still produces the
+        // support-only default. Register the ProfiledThread-producing
+        // factory explicitly (mirrors what initProfilerBridge does in the
+        // real profiler) before initCurrentThread() below.
+        g_thread_context_factory.store(
+            [](int tid) -> ThreadContext* { return ProfiledThread::forTid(tid); },
+            std::memory_order_release);
+
         // SignalHandlerScope reads/writes ProfiledThread::_signal_depth — the
         // tests need a thread context to exist on the gtest thread, otherwise
         // every scope is a no-op (which is the intended production behavior

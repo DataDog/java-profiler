@@ -114,12 +114,52 @@ public final class LibraryLoader {
         return new Builder();
     }
 
+    /**
+     * Builds the loading-state map key used for a custom-location load, matching the
+     * format written by {@link #loadLibrary}: {@code "<TARGET>:<libraryLocation>"}.
+     * Shared by {@link #loadLibrary} and {@link #isLoaded} so the two never drift apart.
+     */
+    private static String customKey(Library target, String libraryLocation) {
+        return target.name() + ":" + libraryLocation;
+    }
+
+    /**
+     * Returns whether {@code target} has been successfully loaded (via any load path:
+     * classpath-extracted or a custom {@code libraryLocation}). Used to distinguish
+     * profiler-present ({@link Library#PROFILER}) from support-only ({@link Library#SUPPORT})
+     * mode without a dedicated native probe.
+     *
+     * <p>Note: for a custom-location load that is still in progress (state {@code LOADING},
+     * not yet {@code LOADED}) on another thread, this can return a benign false negative —
+     * the entry exists in {@code loadingStateMap} but has not reached {@code LOADED} yet, so
+     * a concurrent caller observes "not loaded" even though the load will shortly succeed.
+     * Callers that re-check this on every use (e.g.
+     * {@code ThreadContext#setContextAttributeDirect}) simply see the sidecar-write path
+     * stay disabled until the in-flight load completes and a later call observes
+     * {@code LOADED}; nothing is permanently pinned to {@code false}.
+     */
+    static boolean isLoaded(Library target) {
+        String defaultKey = target == Library.SUPPORT ? SUPPORT_LIBRARY_NAME : JAVA_PROFILER_LIBRARY_NAME;
+        AtomicReference<LoadingState> state = loadingStateMap.get(defaultKey);
+        if (state != null && state.get() == LoadingState.LOADED) {
+            return true;
+        }
+        // Custom-location loads are keyed as "<TARGET>:<libraryLocation>".
+        String prefix = customKey(target, "");
+        for (Map.Entry<String, AtomicReference<LoadingState>> e : loadingStateMap.entrySet()) {
+            if (e.getKey().startsWith(prefix) && e.getValue().get() == LoadingState.LOADED) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static Result loadLibrary(final String libraryLocation, String scratchDir, Library target) {
         // When loading from a custom path, include the target in the key so that loading
         // libJavaSupport from /custom/path and libjavaProfiler from the same /custom/path
         // are tracked independently.  When loading from the classpath the library name is
         // already unique (SUPPORT_LIBRARY_NAME vs JAVA_PROFILER_LIBRARY_NAME).
-        String key = libraryLocation != null ? target.name() + ":" + libraryLocation
+        String key = libraryLocation != null ? customKey(target, libraryLocation)
                 : (target == Library.SUPPORT ? SUPPORT_LIBRARY_NAME : JAVA_PROFILER_LIBRARY_NAME);
         AtomicReference<LoadingState> state = loadingStateMap.computeIfAbsent(key, (k) -> new AtomicReference<>(LoadingState.NOT_LOADED));
 
@@ -135,6 +175,17 @@ public final class LibraryLoader {
             }
             if (libraryLocation != null) {
                 System.load(Paths.get(libraryLocation).toAbsolutePath().toString());
+                if (target == Library.PROFILER) {
+                    // The custom-location profiler load is a single library file that also
+                    // provides the support-library surface, mirroring the classpath branch
+                    // below which marks SUPPORT loaded once the profiler load succeeds.
+                    // Without this, isLoaded(SUPPORT) wrongly reports false and a subsequent
+                    // classpath SUPPORT load attempt is made (and fails, since the custom
+                    // location — not the classpath resource — is what's actually loaded).
+                    loadingStateMap.computeIfAbsent(customKey(Library.SUPPORT, libraryLocation),
+                            k -> new AtomicReference<>(LoadingState.NOT_LOADED))
+                            .compareAndSet(LoadingState.NOT_LOADED, LoadingState.LOADED);
+                }
             } else {
                 OperatingSystem os = OperatingSystem.current();
                 Arch arch = Arch.current();

@@ -38,6 +38,21 @@ extern "C" {
 }
 #endif
 
+// This binary never calls VM::initProfilerBridge, so the ThreadContext
+// factory (support/threadContext.h) still produces the support-only default.
+// Every test below relies on ProfiledThread-specific behaviour (currentProfiled/
+// currentSignalSafe returning non-null, critical-section bookkeeping, etc.), so
+// register the ProfiledThread-producing factory once for the whole file (mirrors
+// what initProfilerBridge does in the real profiler).
+struct ThreadTeardownGlobalSetup {
+  ThreadTeardownGlobalSetup() {
+    g_thread_context_factory.store(
+        [](int tid) -> ThreadContext* { return ProfiledThread::forTid(tid); },
+        std::memory_order_release);
+  }
+};
+static ThreadTeardownGlobalSetup thread_teardown_global_setup;
+
 // Sentinel value meaning "handler has not run yet" — distinct from both nullptr
 // (not registered) and any real ProfiledThread address.
 static ProfiledThread* const kNotYetRun = reinterpret_cast<ProfiledThread*>(1);

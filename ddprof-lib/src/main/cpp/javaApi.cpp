@@ -137,7 +137,9 @@ Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
 extern "C" DLLEXPORT void JNICALL
 JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
   ProfiledThread *current = ProfiledThread::currentProfiled();
-  assert(current != nullptr);
+  if (current == nullptr) {
+    return;
+  }
   int tid = current->tid();
   if (unlikely(tid < 0)) {
     return;
@@ -167,7 +169,9 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
 extern "C" DLLEXPORT void JNICALL
 JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0() {
   ProfiledThread *current = ProfiledThread::currentProfiled();
-  assert(current != nullptr);
+  if (current == nullptr) {
+    return;
+  }
   int tid = current->tid();
   if (unlikely(tid < 0)) {
     return;

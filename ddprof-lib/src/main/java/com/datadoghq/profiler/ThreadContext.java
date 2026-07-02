@@ -257,10 +257,12 @@ public final class ThreadContext {
      * <p><b>High-cardinality values are not supported.</b> Each unique value
      * permanently occupies one slot in the native Dictionary, which is bounded
      * at 65536 entries across all threads for the JVM lifetime. Once exhausted,
-     * this method returns {@code false} and clears the attribute. Use only
-     * low-cardinality values (e.g. endpoint names, DB system names). UUIDs,
-     * request IDs, and other per-request-unique strings will exhaust the
-     * Dictionary and cause attributes to be silently dropped.
+     * this method returns {@code false}; the OTEP {@code attrs_data} value is still
+     * written (it does not depend on the Dictionary), but the DD sidecar encoding for
+     * this slot is left unset. Use only low-cardinality values (e.g. endpoint names,
+     * DB system names). UUIDs, request IDs, and other per-request-unique strings will
+     * exhaust the Dictionary and cause the DD sidecar view of an attribute to be
+     * silently dropped.
      *
      * <p><b>Value size limit.</b> The UTF-8 encoding of {@code value} must fit in
      * {@value #MAX_VALUE_BYTES} bytes (the OTEP attrs_data entry length field is one byte).
@@ -269,7 +271,8 @@ public final class ThreadContext {
      * @param keyIndex Index into the registered attribute key map (0-based)
      * @param value The string value for this attribute
      * @return true if the attribute was set successfully, false if the value is too long,
-     *         the Dictionary is full, attrs_data overflows, or keyIndex is out of range
+     *         attrs_data overflows, keyIndex is out of range, or (when a profiler is present)
+     *         the Dictionary is full
      */
     public boolean setContextAttribute(int keyIndex, String value) {
         if (keyIndex < 0 || keyIndex >= MAX_CUSTOM_SLOTS || value == null) {
@@ -279,18 +282,31 @@ public final class ThreadContext {
     }
 
     /**
-     * Writes both the sidecar encoding (DD signal handler) and OTEP attrs_data
-     * UTF-8 value (external profilers) via ByteBuffer.
+     * Writes the OTEP attrs_data UTF-8 value (external profilers) and, when a profiler is
+     * present, the DD sidecar encoding (DD signal handler) via ByteBuffer.
+     *
+     * <p>The OTEP {@code attrs_data} write is unconditional: it is the only representation of
+     * this attribute in support-only (profiler-absent) mode, where there is no DD sidecar or
+     * Dictionary at all. The DD sidecar encoding is a profiler-only addition on top of it — a
+     * failure to register the value in the Dictionary (full) must not undo the OTEP write.
      */
     private boolean setContextAttributeDirect(int keyIndex, String value) {
 
-        // Resolve encoding + UTF-8 bytes from per-thread cache
+        // Resolve UTF-8 bytes (and, on a cache hit, the previously registered DD sidecar
+        // encoding, if any) from the per-thread cache.
         int slot = value.hashCode() & CACHE_MASK;
-        int encoding;
+        boolean cacheHit = value.equals(attrCacheKeys[slot]);
         byte[] utf8;
-        if (value.equals(attrCacheKeys[slot])) {
-            // Cache hit — the value was previously validated and cached; no re-check needed.
-            encoding = attrCacheEncodings[slot];
+        // 0 is never a valid Dictionary encoding (registerConstant0 returns an id >= 1 on
+        // success, -1 on failure) — used here as the "no encoding cached for this key yet"
+        // sentinel, since the byte-cache below is now populated independently of whether a
+        // profiler (and therefore a Dictionary encoding) is present.
+        int cachedEncoding = 0;
+        if (cacheHit) {
+            // Cache hit — the UTF-8 bytes were previously validated and cached; no re-check
+            // needed. The encoding may still be unresolved (0) if this value was last set
+            // while support-only, or if the Dictionary was previously full.
+            cachedEncoding = attrCacheEncodings[slot];
             utf8 = attrCacheBytes[slot];
         } else {
             // Cache miss: encode UTF-8 and validate size BEFORE touching the Dictionary.
@@ -300,24 +316,64 @@ public final class ThreadContext {
             if (utf8.length > MAX_VALUE_BYTES) {
                 return false;
             }
-            encoding = registerConstant0(value);
-            if (encoding < 0) {
-                // Dictionary full: clear sidecar AND remove the OTEP attrs_data entry
-                // so both views stay consistent (both report no value for this key).
-                clearContextAttribute(keyIndex);
-                return false;
-            }
-            attrCacheEncodings[slot] = encoding;
+            // Populate the UTF-8 byte-cache independently of profiler presence: in
+            // support-only mode there is no Dictionary encoding to cache, but the encoded
+            // bytes are still reusable for the next call with the same value. Reset the
+            // encoding slot since it belonged to whatever value previously occupied it.
             attrCacheBytes[slot] = utf8;
             attrCacheKeys[slot] = value;
+            attrCacheEncodings[slot] = 0;
         }
 
-        // Write both sidecar and OTEP attrs_data inside the detach/attach window
-        // so a signal handler never sees a new sidecar encoding alongside old attrs_data.
+        // Re-read profiler-present status at the point of use rather than latching it at
+        // construction time: a ThreadContext created support-only before the profiler
+        // attaches must start reporting the DD sidecar encoding once the profiler loads.
+        boolean profilerPresent = LibraryLoader.isLoaded(LibraryLoader.Library.PROFILER);
+
+        // Resolve the Dictionary encoding BEFORE the detach/attach window: registerConstant0
+        // is a JNI call doing a Dictionary bounded_lookup with insert (malloc + lock), and must
+        // not widen the window during which a profiler sample can observe an invalid record.
+        int encoding = 0;
+        boolean dictionaryFull = false;
+        if (profilerPresent) {
+            encoding = cachedEncoding != 0 ? cachedEncoding : registerConstant0(value);
+            if (encoding < 0) {
+                dictionaryFull = true;
+            } else {
+                attrCacheEncodings[slot] = encoding;
+            }
+        }
+
+        // Write the mandatory OTEP attrs_data entry and, if a profiler is present, the DD
+        // sidecar encoding, inside the same detach/attach window so a signal handler never
+        // observes one without the other.
         detach();
-        boolean written = writeSlot(keyIndex, encoding, utf8);
+        boolean written;
+        boolean sidecarOk = true;
+        if (dictionaryFull) {
+            // Fail closed on both views, matching clearContextAttribute(): the DD sidecar
+            // cannot represent this value (Dictionary full), so the OTEP view must not be
+            // left showing a value the sidecar disagrees with.
+            ctxBuffer.putInt(TAG_ENCODINGS_OFFSET + keyIndex * Integer.BYTES, 0);
+            removeOtepAttribute(keyIndex + 1);
+            written = false;
+            sidecarOk = false;
+        } else {
+            written = replaceOtepAttribute(keyIndex + 1, utf8);
+            if (profilerPresent) {
+                if (written) {
+                    ctxBuffer.putInt(TAG_ENCODINGS_OFFSET + keyIndex * Integer.BYTES, encoding);
+                } else {
+                    // attrs_data overflow: zero the sidecar so it doesn't report a stale/
+                    // mismatched encoding. The old OTEP entry for this key was already
+                    // compacted out by replaceOtepAttribute, so both views agree: unset.
+                    ctxBuffer.putInt(TAG_ENCODINGS_OFFSET + keyIndex * Integer.BYTES, 0);
+                    sidecarOk = false;
+                }
+            }
+        }
         attach();
-        return written;
+        return written && sidecarOk;
     }
 
     /**

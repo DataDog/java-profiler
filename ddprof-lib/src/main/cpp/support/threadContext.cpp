@@ -13,6 +13,10 @@ bool ThreadContext::_tls_key_initialized = false;
 static ThreadContext* defaultFactory(int tid) { return new ThreadContext(tid); }
 std::atomic<ThreadContextFactory> g_thread_context_factory{defaultFactory};
 
+void resetThreadContextFactory() {
+  g_thread_context_factory.store(defaultFactory, std::memory_order_release);
+}
+
 void ThreadContext::initTLSKey() {
   static pthread_once_t tls_initialized = PTHREAD_ONCE_INIT;
   pthread_once(&tls_initialized, doInitTLSKey);

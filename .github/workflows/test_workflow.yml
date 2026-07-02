@@ -148,6 +148,10 @@ jobs:
             exit 1
           fi
       - name: Verify libJavaSupport ABI
+        # NOTE: this ABI gate only runs on the glibc/musl Linux matrix legs
+        # (nm -D against libJavaSupport.so). There is no equivalent check for
+        # macOS builds — the otel_thread_ctx_v1 export guarantee documented
+        # below is verified on Linux only.
         if: success()
         run: |
           SUPPORT_LIB=$(find ddprof-lib/build/lib -name "libJavaSupport.so" | head -1)
@@ -158,7 +162,15 @@ jobs:
             echo "$PROFILER_UNDEFINED"
             exit 1
           fi
-          echo "ABI gate passed — no profiler symbols in libJavaSupport.so"
+          # ContextExtractionToSupportPlan Phase E.4: otel_thread_ctx_v1 must be exported
+          # from libJavaSupport.so so external profilers can discover the OTEP thread
+          # context record with only the support library loaded (no profiler).
+          if ! nm -D "$SUPPORT_LIB" | grep -q 'otel_thread_ctx_v1'; then
+            echo "ERROR: libJavaSupport.so does not export otel_thread_ctx_v1"
+            nm -D "$SUPPORT_LIB" | grep -i otel || true
+            exit 1
+          fi
+          echo "ABI gate passed — no profiler symbols in libJavaSupport.so, otel_thread_ctx_v1 exported"
       - name: Generate Unwinding Report
         if: success() && matrix.config == 'debug'
         run: |

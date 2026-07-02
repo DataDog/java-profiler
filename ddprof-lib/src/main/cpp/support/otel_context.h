@@ -75,7 +75,7 @@ DLLEXPORT extern thread_local OtelThreadContextRecord* otel_thread_ctx_v1;
  *
  * Signal safety: signal handlers must never access
  * otel_thread_ctx_v1 directly (TLS lazy init can deadlock
- * in musl). Instead they read via ProfiledThread::getOtelContextRecord().
+ * in musl). Instead they read via ThreadContext::getOtelContextRecord().
  */
 
 #endif /* _OTEL_CONTEXT_H */

@@ -31,6 +31,21 @@
 // Crash handler test name (installed in each multithreaded test below).
 static constexpr const char STRESS_TEST_NAME[] = "StressThreadLifecycle";
 
+// This binary never calls VM::initProfilerBridge, so the ThreadContext
+// factory (support/threadContext.h) still produces the support-only default.
+// churn_worker() below relies on ProfiledThread::currentProfiled() returning
+// a real ProfiledThread, so register the ProfiledThread-producing factory
+// once for the whole file (mirrors what initProfilerBridge does in the real
+// profiler).
+struct StressThreadLifecycleGlobalSetup {
+  StressThreadLifecycleGlobalSetup() {
+    g_thread_context_factory.store(
+        [](int tid) -> ThreadContext* { return ProfiledThread::forTid(tid); },
+        std::memory_order_release);
+  }
+};
+static StressThreadLifecycleGlobalSetup stress_thread_lifecycle_global_setup;
+
 // Number of churn workers and iterations per worker.
 static constexpr int kChurnWorkers = 16;
 static constexpr int kChurnIterations = 2000;

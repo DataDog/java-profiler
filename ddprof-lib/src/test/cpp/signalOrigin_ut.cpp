@@ -368,6 +368,14 @@ TEST_F(SignalOriginTest, WallclockGuardContract_ForeignCookieRejected) {
 // contract directly: depth is 0 after an early release, and the destructor is
 // a no-op.
 TEST_F(SignalOriginTest, WallclockGuardContract_ForeignSignalReleasesGuard) {
+    // This binary never calls VM::initProfilerBridge, so the ThreadContext
+    // factory (support/threadContext.h) still produces the support-only
+    // default. getInSignalDepth()/SIGNAL_HANDLER_GUARD rely on a real
+    // ProfiledThread, so register the ProfiledThread-producing factory
+    // explicitly (mirrors what initProfilerBridge does in the real profiler).
+    g_thread_context_factory.store(
+        [](int tid) -> ThreadContext* { return ProfiledThread::forTid(tid); },
+        std::memory_order_release);
     ProfiledThread::initCurrentThread();
     EXPECT_EQ(0, getInSignalDepth());
     {

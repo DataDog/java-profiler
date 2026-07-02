@@ -462,6 +462,12 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
       },
       std::memory_order_release);
 
+  // Profiler is present: per-thread OTEL context storage must be backed by
+  // the full ProfiledThread record, not the support-only ThreadContext base.
+  g_thread_context_factory.store(
+      [](int tid) -> ThreadContext* { return ProfiledThread::forTid(tid); },
+      std::memory_order_release);
+
   CodeCache *lib = openJvmLibrary();
   if (lib == nullptr) {
     return false;
@@ -754,4 +760,5 @@ extern "C" DLLEXPORT void JNICALL JNI_OnUnload(JavaVM *vm, void *reserved) {
   crashProtectionProbeReset();
   VMThread::resetIsJavaThreadProbe();
   resetIsInSignalProbe();
+  resetThreadContextFactory();
 }

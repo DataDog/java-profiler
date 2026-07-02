@@ -377,6 +377,16 @@ static DdprofGlobalSetup ddprof_global_setup;
     // inconsistent state and crashes before any TSan report can be written.
     #if !defined(TSAN_ENABLED)
     TEST(ProfiledThreadTeardown, CriticalSectionExitsEvenAfterTLSCleared) {
+        // This binary never calls VM::initProfilerBridge, so the
+        // ThreadContext factory (support/threadContext.h) still produces the
+        // support-only default. Register the ProfiledThread-producing
+        // factory explicitly (mirrors what initProfilerBridge does in the
+        // real profiler) so the forked child below gets a real
+        // ProfiledThread via ProfiledThread::initCurrentThread().
+        g_thread_context_factory.store(
+            [](int tid) -> ThreadContext* { return ProfiledThread::forTid(tid); },
+            std::memory_order_release);
+
         pid_t pid = fork();
         ASSERT_NE(-1, pid);
 

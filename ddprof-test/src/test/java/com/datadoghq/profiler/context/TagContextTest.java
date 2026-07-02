@@ -234,6 +234,35 @@ public class TagContextTest extends AbstractProfilerTest {
                    "Overflowed slot must read null — the entry never landed in attrs_data");
     }
 
+    /**
+     * x-13 mutation-testing gap: exercises the profiler-present sidecar-write path in
+     * {@code ThreadContext#setContextAttributeDirect} (encoding cache miss then hit), which
+     * {@code SupportOnlyContextTest} cannot cover since it deliberately never loads the profiler.
+     * Guards against mutants like {@code encoding >= 0} vs {@code encoding > 0}, or writing 0
+     * instead of the real Dictionary encoding.
+     */
+    @Test
+    public void testSidecarEncodingCacheHitAndMissAgree() throws Exception {
+        registerCurrentThreadForWallClockProfiling();
+        ContextSetter contextSetter = new ContextSetter(profiler, Arrays.asList("tag1", "tag2"));
+        int slot = contextSetter.offsetOf("tag1");
+
+        // Cache miss: first call for this value pays one registerConstant0() JNI call and must
+        // populate a non-zero Dictionary encoding in the sidecar.
+        assertTrue(contextSetter.setContextValue("tag1", "cache-miss-value"));
+        int firstEncoding = contextSetter.snapshotTags()[slot];
+        assertNotEquals(0, firstEncoding, "cache-miss write must populate a non-zero sidecar encoding");
+        assertEquals("cache-miss-value", readTag(contextSetter, "tag1"));
+
+        // Cache hit: a repeated call with the SAME value must reuse the identical Dictionary
+        // encoding via the zero-JNI ByteBuffer-write path, not re-register or zero it out.
+        assertTrue(contextSetter.setContextValue("tag1", "cache-miss-value"));
+        int secondEncoding = contextSetter.snapshotTags()[slot];
+        assertEquals(firstEncoding, secondEncoding,
+                "repeated call with the same value must reuse the cached sidecar encoding");
+        assertEquals("cache-miss-value", readTag(contextSetter, "tag1"));
+    }
+
     @Test
     public void testPutClearsCustomSlots() throws Exception {
         registerCurrentThreadForWallClockProfiling();

@@ -24,6 +24,21 @@ Java_com_datadoghq_profiler_JVMAccess_findIntJVMFlag0
 Java_com_datadoghq_profiler_JVMAccess_findFloatJVMFlag0
 Java_com_datadoghq_profiler_JVMAccess_healthCheck0
 
+# OTEP #4947 TLS discovery pointer (support/otel_context.cpp) — external profilers
+# locate this via ELF dynsym; unmangled global-scope C++ variable (no extern "C" needed).
+# Trailing '*' (fnmatch-style, supported by both the GNU ld version script and the
+# macOS export-list generator) matches only this one symbol on Linux. On Mach-O the
+# raw TLS variable is always kept local by the ABI (only the compiler-generated
+# _ZTW... "TLV wrapper" accessor is ever external) — an exact-name entry would make
+# ld64 hard-fail with "symbol(s) not found", so the wildcard form degrades to a
+# harmless no-op match there instead. macOS is dev-degraded (§2.1); Linux is ship.
+otel_thread_ctx_v1*
+
+# Context JNI entry points (support/contextApi.cpp; support-only, no profiler dependency)
+Java_com_datadoghq_profiler_ContextStorage_initializeContextTLS0
+Java_com_datadoghq_profiler_OTelContext_setProcessCtx0
+Java_com_datadoghq_profiler_OTelContext_readProcessCtx0
+
 # Crash-protection probe (C linkage + helpers)
 g_crash_protection_probe
 _Z25crashProtectionProbeResetv
