@@ -101,80 +101,7 @@ TEST_F(ProfiledThreadTypeTest, FastPathReturnsFalseForNonJavaThread) {
 }
 
 // ---------------------------------------------------------------------------
-// B. Vtable majority-vote logic (isJavaThread slow path via hasJavaThreadVtable)
-//
-// hasJavaThreadVtable() compares vtable entries at indices 1, 3, 5 against
-// _java_thread_vtbl[] captured from a known JavaThread at profiler start.
-// At least 2 of 3 must match — tolerating product-vs-debug vtable variation.
-// ---------------------------------------------------------------------------
-
-namespace {
-
-// Replicates the 2-of-3 vote in hasJavaThreadVtable().
-static bool vtableVote(void** thread_vtbl, void** known_vtbl) {
-    int matches = (thread_vtbl[1] == known_vtbl[1])
-                + (thread_vtbl[3] == known_vtbl[3])
-                + (thread_vtbl[5] == known_vtbl[5]);
-    return matches >= 2;
-}
-
-}  // namespace
-
-class VtableVoteTest : public ::testing::Test {
-protected:
-    void* known[8] = {
-        (void*)0x1000, (void*)0x1001, (void*)0x1002,
-        (void*)0x1003, (void*)0x1004, (void*)0x1005,
-        (void*)0x1006, (void*)0x1007
-    };
-
-    // Identical to `known` — a real JavaThread.
-    void* same[8] = {
-        (void*)0x1000, (void*)0x1001, (void*)0x1002,
-        (void*)0x1003, (void*)0x1004, (void*)0x1005,
-        (void*)0x1006, (void*)0x1007
-    };
-
-    // Completely different — MonitorDeflationThread or other JVM-internal thread.
-    void* different[8] = {
-        (void*)0x2000, (void*)0x2001, (void*)0x2002,
-        (void*)0x2003, (void*)0x2004, (void*)0x2005,
-        (void*)0x2006, (void*)0x2007
-    };
-};
-
-TEST_F(VtableVoteTest, ExactMatchIsJavaThread) {
-    EXPECT_TRUE(vtableVote(same, known));
-}
-
-TEST_F(VtableVoteTest, NoMatchIsNotJavaThread) {
-    EXPECT_FALSE(vtableVote(different, known));
-}
-
-// 2/3 match — handles product vs. debug JVM where one entry differs.
-TEST_F(VtableVoteTest, TwoMatchesIsJavaThread) {
-    void* partial[8];
-    memcpy(partial, same, sizeof(partial));
-    partial[1] = (void*)0xDEAD;  // corrupt one of the three checked entries
-    EXPECT_TRUE(vtableVote(partial, known));
-}
-
-TEST_F(VtableVoteTest, OneMatchIsNotJavaThread) {
-    void* partial[8];
-    memcpy(partial, different, sizeof(partial));
-    partial[3] = known[3];  // one real entry — still below threshold
-    EXPECT_FALSE(vtableVote(partial, known));
-}
-
-// _java_thread_vtbl not yet initialised (profiler just attached): any real
-// thread vtable scores 0/3 against an all-zero reference.
-TEST_F(VtableVoteTest, UninitializedReferenceGivesNoMatches) {
-    void* zero_ref[8] = {};
-    EXPECT_FALSE(vtableVote(same, zero_ref));
-}
-
-// ---------------------------------------------------------------------------
-// C. Crash-handler nesting depth
+// B. Crash-handler nesting depth
 //
 // ProfiledThread tracks how many crash-handler invocations are active on this
 // thread so recursive signals (wall-clock arriving inside a crash handler)
@@ -258,7 +185,7 @@ TEST_F(CrashHandlerNestingTest, IsDeepOnlyAboveLimit) {
 }
 
 // ---------------------------------------------------------------------------
-// D. jmp_buf chaining (ProfiledThread::setJmpCtx/getJmpCtx/isProtected)
+// C. jmp_buf chaining (ProfiledThread::setJmpCtx/getJmpCtx/isProtected)
 //
 // A non-signal-based sampler's walkVM() call can itself be interrupted by a
 // signal-based sampler, putting two walkVM() frames on the same thread's

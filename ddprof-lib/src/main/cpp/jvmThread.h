@@ -28,6 +28,9 @@ public:
     static bool isInitialized();
 
     static inline void* current() {
+        // Assertion to ensure initialize() is called. Otherwise,
+        // the key should be valid, JVM depends on it
+        assert(_jvm_thread.isKeyValid() && "Must be");
         return _jvm_thread.get();
     }
 
