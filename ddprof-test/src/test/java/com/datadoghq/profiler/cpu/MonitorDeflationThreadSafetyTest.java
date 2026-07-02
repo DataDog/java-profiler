@@ -67,8 +67,8 @@ public class MonitorDeflationThreadSafetyTest extends AbstractProfilerTest {
             monitors[i] = new Object();
         }
 
-        long deadline = System.currentTimeMillis() + durationMs;
-        while (System.currentTimeMillis() < deadline) {
+        long deadlineNs = System.nanoTime() + durationMs * 1_000_000L;
+        while (System.nanoTime() < deadlineNs) {
             for (Object mon : monitors) {
                 synchronized (mon) {
                     mon.wait(1);
