@@ -15,7 +15,7 @@ ThreadLocal<JVMThread*> JVMThread::_jvm_thread;
 
 bool JVMThread::initialize() {
   void* current_thread = currentThreadSlow();
-  // Called by known JavaThread, cannot be nullpltr
+  // Called by known JavaThread, cannot be nullptr
   assert(current_thread != nullptr && "Must not be nullptr");
   _jvm_thread.initialize(current_thread);
   // _tid is side-effect of currentThreadSlow()

@@ -27,9 +27,6 @@ public:
     static bool initialize();
     static bool isInitialized();
 
-    // Per-thread initialization
-    static void initThread();
-
     static inline void* current() {
         return _jvm_thread.get();
     }

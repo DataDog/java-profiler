@@ -66,6 +66,8 @@ private:
   u64 _pc;
   u64 _sp;
   u64 _span_id;  // Wall-clock collapsing cache: last-seen span ID (not a context store — read from _otel_ctx_record on each signal, cached here to detect "same as last time")
+
+  // The counter should be updated atomically, as signal can interrupt the updates
   volatile u32 _crash_depth;
   int _tid;
   u32 _cpu_epoch;

@@ -141,7 +141,7 @@ public:
         static_assert(sizeof(void*) == 8);
         static_assert(sizeof(double) == 8);
         if (pthread_key_create(&_key, nullptr) != 0) {
-            _key =INVALID_KEY;
+            _key = INVALID_KEY;
         }
         // What to do if we can not create a key?
         assert(isKeyValid() && "Invalid pthread key");
