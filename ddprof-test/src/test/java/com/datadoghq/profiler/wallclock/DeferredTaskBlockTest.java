@@ -12,7 +12,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class DeferredTaskBlockTest extends AbstractProfilerTest {
     private static final int OSTHREAD_STATE_SLEEPING = 7;
-    private static final long ROOT_SPAN_ID = 0L;
+    private static final long ROOT_SPAN_ID = 0x7001L;
     private static final long SPAN_ID = 0L;
     private static final long BLOCKER_WITHOUT_STACK = 0x7101L;
     private static final long BLOCKER_WITH_STACK = 0x7102L;
@@ -28,8 +28,8 @@ public class DeferredTaskBlockTest extends AbstractProfilerTest {
                 block.endTicks,
                 BLOCKER_WITHOUT_STACK,
                 UNBLOCKING_SPAN_ID,
-                ROOT_SPAN_ID,
-                SPAN_ID));
+                SPAN_ID,
+                ROOT_SPAN_ID));
 
         stopProfiler();
 
@@ -51,8 +51,8 @@ public class DeferredTaskBlockTest extends AbstractProfilerTest {
                 block.endTicks,
                 BLOCKER_WITH_STACK,
                 UNBLOCKING_SPAN_ID,
-                ROOT_SPAN_ID,
                 SPAN_ID,
+                ROOT_SPAN_ID,
                 block.snapshot[0],
                 block.snapshot[1],
                 (int) block.snapshot[2]));
