@@ -94,7 +94,23 @@ public final class JavaProfiler {
      * @param libLocation the path to the native library to be used instead of the bundled one
      * @param scratchDir directory where the bundled library will be exploded before linking; ignored when 'libLocation' is {@literal null}
      */
-    public static synchronized JavaProfiler getInstance(String libLocation, String scratchDir) throws IOException {
+    public static JavaProfiler getInstance(String libLocation, String scratchDir) throws IOException {
+        return getInstance(libLocation, scratchDir, false, false);
+    }
+
+    /**
+     * Get a {@linkplain JavaProfiler} instance with explicit feature flags.
+     * @param libLocation the path to the native library, or {@literal null} to use the bundled one
+     * @param scratchDir directory where the bundled library will be exploded before linking
+     * @param delegateMonitorEvents when {@code true}, {@code Object.wait} TaskBlock events are
+     *        emitted by Java instrumentation and native JVMTI wait callbacks are suppressed;
+     *        synchronized monitor contention remains native-owned
+     * @param wallPrecheck compatibility flag reserved for callers that pass wall-precheck
+     *        capability at initialization time; recording behavior is controlled by the
+     *        profiling command's {@code wallprecheck=true} option
+     */
+    public static synchronized JavaProfiler getInstance(String libLocation, String scratchDir,
+            boolean delegateMonitorEvents, boolean wallPrecheck) throws IOException {
         if (instance != null) {
             return instance;
         }
@@ -104,7 +120,7 @@ public final class JavaProfiler {
         if (!result.succeeded) {
             throw new IOException("Failed to load Datadog Java profiler library", result.error);
         }
-        init0();
+        init0(delegateMonitorEvents, wallPrecheck);
 
         instance = profiler;
 
@@ -346,16 +362,17 @@ public final class JavaProfiler {
     }
 
     /**
-     * Internal hook called before {@code LockSupport.park}. This remains package-scoped
-     * until PR2 wires production TaskBlock instrumentation.
+     * Called before {@code LockSupport.park}. Captures the block-entry span context
+     * and marks the thread as parked so wall-clock sampling can suppress duplicate
+     * signals during the blocking interval.
      */
     void parkEnter() {
         parkEnter0();
     }
 
     /**
-     * Internal hook called after {@code LockSupport.park}. Clears the parked flag.
-     * {@code blocker} and {@code unblockingSpanId} are reserved for PR2 TaskBlock use.
+     * Called after {@code LockSupport.park}. Clears the parked flag and records a
+     * {@code TaskBlock} event for eligible blocking intervals.
      */
     void parkExit(long blocker, long unblockingSpanId) {
         parkExit0(blocker, unblockingSpanId);
@@ -381,11 +398,94 @@ public final class JavaProfiler {
     }
 
     /**
+     * Clears a blocked interval and snapshots reconstruction metadata before native state is reset.
+     *
+     * @param token opaque token returned by {@link #blockEnter(int)}
+     * @param snapshot output array: [callTraceId, correlationId, observedBlockingState]
+     */
+    public void blockExit(long token, long[] snapshot) {
+        blockExitWithSnapshot0(token, snapshot);
+    }
+
+    /**
      * Get the ticks for the current thread.
      * @return ticks
      */
     public long getCurrentTicks() {
         return currentTicks0();
+    }
+
+    /**
+     * Returns the OS-level thread ID (tid) of the calling thread.
+     */
+    public int getCurrentThreadId() {
+        return getTid0();
+    }
+
+    /**
+     * Reports whether native {@code Object.wait} TaskBlock callbacks were disabled in favor of
+     * Java-owned wait instrumentation. Synchronized monitor contention remains native-owned.
+     */
+    public boolean isMonitorEventsDelegated() {
+        return monitorEventsDelegated0();
+    }
+
+    /**
+     * Returns the TSC frequency in Hz (ticks per second).
+     */
+    public long getTscFrequency() {
+        return tscFrequency0();
+    }
+
+    /**
+     * Records a TaskBlock event for the calling platform thread. Span context is read from
+     * OTEP TLS inside native code (same as the queue-time pattern).
+     *
+     * @return {@code true} if the event was recorded; {@code false} if it was skipped by
+     *         eligibility rules or could not be recorded
+     */
+    public boolean recordTaskBlock(long startTicks, long endTicks, long blocker, long unblockingSpanId) {
+        return recordTaskBlock0(startTicks, endTicks, blocker, unblockingSpanId);
+    }
+
+    /**
+     * Records a TaskBlock event for the calling profiled thread with an explicit span context.
+     * Stack metadata is still attached from the calling thread.
+     *
+     * @return {@code true} if the event was recorded; {@code false} if it was skipped by
+     *         eligibility rules or could not be recorded
+     */
+    public boolean recordTaskBlockWithContext(long startTicks, long endTicks, long blocker,
+            long unblockingSpanId, long spanId, long rootSpanId) {
+        return recordTaskBlockWithContext0(startTicks, endTicks, blocker, unblockingSpanId, spanId, rootSpanId);
+    }
+
+    /**
+     * Attempts to record a TaskBlock event attributed to an explicit thread ID and explicit span
+     * context. This overload has no stack-reference metadata, so a recorder thread cannot use it to
+     * emit a self-contained TaskBlock on behalf of another thread.
+     *
+     * @return {@code true} if the event was recorded; {@code false} if it was skipped by
+     *         eligibility rules or could not be recorded
+     */
+    public boolean recordTaskBlockFromContext(int tid, long startTicks, long endTicks,
+            long blocker, long unblockingSpanId, long spanId, long rootSpanId) {
+        return recordTaskBlockFromContext0(tid, startTicks, endTicks, blocker, unblockingSpanId, spanId, rootSpanId);
+    }
+
+    /**
+     * Records a TaskBlock event with explicit thread, span context, and stack-reference metadata.
+     * This is the required overload when recording from a background thread on behalf of {@code tid}.
+     *
+     * @return {@code true} if the event was recorded; {@code false} if it was skipped by
+     *         eligibility rules or could not be recorded
+     */
+    public boolean recordTaskBlockFromContext(int tid, long startTicks, long endTicks,
+            long blocker, long unblockingSpanId, long spanId, long rootSpanId,
+            long callTraceId, long correlationId, int observedBlockingState) {
+        return recordTaskBlockFromContextWithStackReference0(tid, startTicks, endTicks, blocker,
+                unblockingSpanId, spanId, rootSpanId, callTraceId, correlationId,
+                observedBlockingState);
     }
 
     /**
@@ -414,7 +514,7 @@ public final class JavaProfiler {
         return new ThreadContext(buffer, metadata);
     }
 
-    private static native boolean init0();
+    private static native boolean init0(boolean delegateMonitorEvents, boolean wallPrecheck);
     private native void stop0() throws IllegalStateException;
     private native String execute0(String command) throws IllegalArgumentException, IllegalStateException, IOException;
 
@@ -422,6 +522,7 @@ public final class JavaProfiler {
     private static native void filterThreadRemove0();
 
     private static native int getTid0();
+    private static native boolean monitorEventsDelegated0();
 
     private static native boolean recordTrace0(long rootSpanId, String endpoint, String operation, int sizeLimit);
 
@@ -443,9 +544,24 @@ public final class JavaProfiler {
 
     private static native void blockExit0(long token);
 
+    private static native void blockExitWithSnapshot0(long token, long[] snapshot);
+
     private static native long currentTicks0();
 
     private static native long tscFrequency0();
+
+    private static native boolean recordTaskBlock0(long startTicks, long endTicks,
+            long blocker, long unblockingSpanId);
+
+    private static native boolean recordTaskBlockWithContext0(long startTicks, long endTicks,
+            long blocker, long unblockingSpanId, long spanId, long rootSpanId);
+
+    private static native boolean recordTaskBlockFromContext0(int tid, long startTicks, long endTicks,
+            long blocker, long unblockingSpanId, long spanId, long rootSpanId);
+
+    private static native boolean recordTaskBlockFromContextWithStackReference0(int tid, long startTicks,
+            long endTicks, long blocker, long unblockingSpanId, long spanId, long rootSpanId,
+            long callTraceId, long correlationId, int observedBlockingState);
 
     private static native void mallocArenaMax0(int max);
 

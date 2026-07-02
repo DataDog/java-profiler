@@ -15,29 +15,29 @@
  * This file implements an alternative to C/C++ thread local.
  * Due to some restrictions of the language implementations, especially, on musl/aarch64,
  * they cannot be safely used in profiler.
- * 
+ *
  * How to use?
  * A ThreadLocal should be declared as a static variable, e.g.
- * 
+ *
  * static void* create_my_object() {
  *   return new MyObject();
  * }
- * 
+ *
  * static void delete_my_object(void* p) {
  *   MyObject* obj = (MyObject*)p;
- *   delete obj; 
+ *   delete obj;
  * }
- * 
+ *
  * static ThreadLocal<MyObject*, create_my_object, delete_my_object> var;
  * MyObject* value = var.get();
  * ...
  * var.clear();
- * ... 
+ * ...
  * MyObject* new_value = new MyObject();
  * var.set(new_value);
  * ...
  * var.clear();
- * 
+ *
  */
 
 // The function to create value if it does not exist
@@ -49,7 +49,7 @@ class ThreadLocal {
 protected:
     pthread_key_t _key;
     bool _key_valid;
- 
+
 public:
     ThreadLocal(const ThreadLocal&) = delete;
     ThreadLocal& operator=(const ThreadLocal&) = delete;

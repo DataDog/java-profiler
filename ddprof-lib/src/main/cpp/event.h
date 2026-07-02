@@ -57,11 +57,13 @@ public:
   OSThreadState _thread_state;
   ExecutionMode _execution_mode;
   u64 _weight;
-  u32 _call_trace_id;
+  u64 _call_trace_id;
+  u64 _correlation_id;
+  u64 _sample_id;
 
   ExecutionEvent()
       : Event(), _thread_state(OSThreadState::RUNNABLE), _execution_mode(ExecutionMode::UNKNOWN),
-        _weight(1), _call_trace_id(0) {}
+        _weight(1), _call_trace_id(0), _correlation_id(0), _sample_id(0) {}
 };
 
 class AllocEvent : public Event {
@@ -205,5 +207,16 @@ typedef struct QueueTimeEvent {
   u32 _queueType;
   u32 _queueLength;
 } QueueTimeEvent;
+
+typedef struct TaskBlockEvent {
+  u64 _start;
+  u64 _end;
+  u64 _blocker;
+  u64 _unblockingSpanId;
+  Context _ctx;
+  u64 _callTraceId;
+  u64 _correlationId;
+  OSThreadState _observedBlockingState;
+} TaskBlockEvent;
 
 #endif // _EVENT_H

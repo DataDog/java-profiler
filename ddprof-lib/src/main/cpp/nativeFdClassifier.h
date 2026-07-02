@@ -1,0 +1,59 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#ifndef _NATIVE_FD_CLASSIFIER_H
+#define _NATIVE_FD_CLASSIFIER_H
+
+#include <atomic>
+#include <stdint.h>
+
+#if defined(__linux__)
+
+class NativeFdClassifier {
+public:
+  NativeFdClassifier();
+
+  bool isStreamSocket(int fd);
+  bool isDatagramSocket(int fd);
+  void clearFdType(int fd);
+  void clearFdTypeCache();
+
+#ifdef UNIT_TEST
+  using ProbeOverride = int (*)(int fd, int *so_type, int *probe_errno);
+  static void setProbeOverrideForTest(ProbeOverride probe);
+#endif
+
+private:
+  static const int FD_TYPE_CACHE_SIZE = 65536;
+  static const int HIGH_FD_TYPE_CACHE_SIZE = 4096;
+  static const uint32_t FD_TYPE_MASK = 0xf;
+  static const uint32_t FD_TYPE_GEN_SHIFT = 4;
+  static const uint32_t FD_TYPE_GEN_MASK = 0x0fffffff;
+  static const uint8_t FD_TYPE_STREAM_SOCKET = 1;
+  static const uint8_t FD_TYPE_DATAGRAM_SOCKET = 2;
+  static const uint8_t FD_TYPE_OTHER_SOCKET = 3;
+  static const uint8_t FD_TYPE_NON_SOCKET = 4;
+
+  std::atomic<uint32_t> _fd_cache_gen{1};
+  std::atomic<uint32_t> _fd_type_cache[FD_TYPE_CACHE_SIZE];
+  std::atomic<uint64_t> _high_fd_type_cache[HIGH_FD_TYPE_CACHE_SIZE];
+
+  static uint8_t probeFdType(int fd);
+  static uint64_t highFdEntry(int fd, uint32_t gen, uint8_t type);
+  static bool highFdEntryMatches(uint64_t entry, int fd, uint32_t gen);
+  static bool highFdEntryMatchesFd(uint64_t entry, int fd);
+  static int highFdCacheIndex(int fd);
+  uint8_t highFdType(int fd, uint32_t gen);
+  void clearHighFdType(int fd);
+  uint8_t fdType(int fd);
+
+#ifdef UNIT_TEST
+  static std::atomic<ProbeOverride> _probe_override;
+#endif
+};
+
+#endif // __linux__
+
+#endif // _NATIVE_FD_CLASSIFIER_H

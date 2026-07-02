@@ -120,6 +120,13 @@
   X(JVMTI_STACKS_FAILED_OTHER, "jvmti_stacks_failed_other")                  \
   /* Delegated stacks dropped at slot-lock. Rec-lock drops from all recording  \
    * paths (delegated and direct) go into SAMPLES_DROPPED_REC_LOCK. */         \
+  X(TASK_BLOCK_EMITTED, "task_block_emitted")                                \
+  X(TASK_BLOCK_SKIPPED_TRACE_CONTEXT, "task_block_skipped_trace_context")    \
+  X(TASK_BLOCK_SKIPPED_TOO_SHORT, "task_block_skipped_too_short")            \
+  X(TASK_BLOCK_SKIPPED_NO_STACK_REFERENCE,                                   \
+    "task_block_skipped_no_stack_reference")                                 \
+  X(TASK_BLOCK_RECORD_FAILED, "task_block_record_failed")                    \
+  X(TASK_BLOCK_QUEUE_DROPPED, "task_block_queue_dropped")                    \
   X(JVMTI_STACKS_DROPPED_LOCK, "jvmti_stacks_dropped_lock")                   \
   X(SAMPLES_DROPPED_REC_LOCK, "samples_dropped_rec_lock")
 #define X_ENUM(a, b) a,

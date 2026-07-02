@@ -9,6 +9,7 @@
 #include "asyncSampleMutex.h"
 #include "mallocTracer.h"
 #include "nativeSocketSampler.h"
+#include "nativeSocketInterposer.h"
 #include "context.h"
 #include "guards.h"
 #include "common.h"
@@ -31,6 +32,7 @@
 #include "stackFrame.h"
 #include "stackWalker.h"
 #include "symbols.h"
+#include "taskBlockRecorder.h"
 #include "thread.h"
 #include "tsc.h"
 #include "utils.h"
@@ -72,6 +74,106 @@ static ITimer itimer;
 static ITimerJvmti itimer_jvmti;
 static CTimer ctimer;
 static CTimerJvmti ctimer_jvmti;
+
+#ifdef UNIT_TEST
+static std::atomic<Profiler::RecordTaskBlockLiveOverride> record_task_block_live_override_for_test{nullptr};
+static TaskBlockEvent last_task_block_event_for_test{};
+static std::atomic<int> last_task_block_tid_for_test{-1};
+static std::atomic<int> record_task_block_live_calls_for_test{0};
+
+void Profiler::setRecordTaskBlockLiveOverrideForTest(
+    RecordTaskBlockLiveOverride override) {
+  record_task_block_live_override_for_test.store(override, std::memory_order_release);
+}
+
+TaskBlockEvent Profiler::lastRecordedTaskBlockEventForTest() {
+  return last_task_block_event_for_test;
+}
+
+int Profiler::lastRecordedTaskBlockTidForTest() {
+  return last_task_block_tid_for_test.load(std::memory_order_acquire);
+}
+
+int Profiler::recordTaskBlockLiveCallsForTest() {
+  return record_task_block_live_calls_for_test.load(std::memory_order_acquire);
+}
+
+void Profiler::resetTaskBlockRecordObservableForTest() {
+  record_task_block_live_override_for_test.store(nullptr, std::memory_order_release);
+  last_task_block_event_for_test = {};
+  last_task_block_tid_for_test.store(-1, std::memory_order_release);
+  record_task_block_live_calls_for_test.store(0, std::memory_order_release);
+}
+#endif
+
+void *Profiler::taskBlockDrainLoop(void *arg) {
+  Profiler *self = static_cast<Profiler *>(arg);
+
+  sigset_t mask;
+  sigemptyset(&mask);
+  sigaddset(&mask, SIGPROF);
+  sigaddset(&mask, SIGVTALRM);
+  pthread_sigmask(SIG_BLOCK, &mask, nullptr);
+
+  while (self->_task_block_drain_running.load(std::memory_order_acquire)) {
+    self->drainTaskBlockQueue(true);
+    OS::sleepWhile(1000000ULL, self->_task_block_drain_running);
+  }
+  self->drainTaskBlockQueue(true);
+  return nullptr;
+}
+
+void Profiler::startTaskBlockDrain() {
+  if (!_wall_precheck) {
+    return;
+  }
+  if (_task_block_drain_running.load(std::memory_order_acquire)) {
+    return;
+  }
+
+  _task_block_queue.discardAll();
+  _task_block_generation.fetch_add(1, std::memory_order_acq_rel);
+  _task_block_drain_running.store(true, std::memory_order_release);
+  if (pthread_create(&_task_block_drain_thread, nullptr, taskBlockDrainLoop,
+                     this) != 0) {
+    _task_block_drain_running.store(false, std::memory_order_release);
+    Log::warn("Unable to start TaskBlock drain thread");
+    return;
+  }
+  if (VM::nativeMonitorEventsAvailable() &&
+      !VM::setNativeMonitorEventsEnabled(true)) {
+    stopTaskBlockDrain();
+  }
+}
+
+void Profiler::stopTaskBlockDrain() {
+  if (!_task_block_drain_running.load(std::memory_order_acquire)) {
+    return;
+  }
+  if (VM::nativeMonitorEventsAvailable()) {
+    VM::setNativeMonitorEventsEnabled(false);
+  }
+  if (!_task_block_drain_running.exchange(false, std::memory_order_acq_rel)) {
+    return;
+  }
+  pthread_kill(_task_block_drain_thread, WAKEUP_SIGNAL);
+  pthread_join(_task_block_drain_thread, nullptr);
+  drainTaskBlockQueue(true);
+}
+
+void Profiler::drainTaskBlockQueue(bool record) {
+  QueuedTaskBlockEvent queued;
+  u64 generation = _task_block_generation.load(std::memory_order_acquire);
+  while (_task_block_queue.tryPop(queued)) {
+    if (record && queued.generation == generation) {
+      if (recordTaskBlockLive(queued.tid, &queued.event)) {
+        Counters::increment(TASK_BLOCK_EMITTED);
+      } else {
+        Counters::increment(TASK_BLOCK_RECORD_FAILED);
+      }
+    }
+  }
+}
 
 void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   ProfiledThread::initCurrentThread();
@@ -550,6 +652,7 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
 #endif // COUNTERS
   }
   if (!deferred) {
+    setWallSampleIdIfNeeded(event_type, event);
     _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
   }
 
@@ -569,6 +672,7 @@ void Profiler::recordDeferredSample(int tid, u64 call_trace_id, jint event_type,
     return;
   }
 
+  setWallSampleIdIfNeeded(event_type, event);
   _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
 
   _locks[lock_index].unlock();
@@ -638,6 +742,10 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
     }
 #endif // COUNTERS
   }
+  setWallSampleIdIfNeeded(event_type, event);
+  if (event_type == BCI_WALL) {
+    static_cast<ExecutionEvent *>(event)->_call_trace_id = call_trace_id;
+  }
   bool recorded = _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
   if (recorded && recorded_call_trace_id != nullptr) {
     *recorded_call_trace_id = call_trace_id;
@@ -681,6 +789,10 @@ bool Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
     return false;
   }
 
+  setWallSampleIdIfNeeded(event_type, event);
+  if (event_type == BCI_WALL) {
+    static_cast<ExecutionEvent *>(event)->_correlation_id = correlation_id;
+  }
   bool recorded =
       _jfr.recordEventDelegated(lock_index, tid, correlation_id, event_type, event);
   _locks[lock_index].unlock();
@@ -720,6 +832,45 @@ void Profiler::recordQueueTime(int tid, QueueTimeEvent *event) {
   _locks[lock_index].unlock();
 }
 
+bool Profiler::recordTaskBlockLive(int tid, TaskBlockEvent *event) {
+#ifdef UNIT_TEST
+  record_task_block_live_calls_for_test.fetch_add(1, std::memory_order_acq_rel);
+  last_task_block_tid_for_test.store(tid, std::memory_order_release);
+  last_task_block_event_for_test = *event;
+  RecordTaskBlockLiveOverride override =
+      record_task_block_live_override_for_test.load(std::memory_order_acquire);
+  if (override != nullptr) {
+    return override(tid, event);
+  }
+#endif
+  u32 lock_index = getLockIndex(tid);
+  if (!_locks[lock_index].tryLock() &&
+      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+    return false;
+  }
+  bool recorded = _jfr.recordTaskBlock(lock_index, tid, event);
+  _locks[lock_index].unlock();
+  return recorded;
+}
+
+bool Profiler::recordTaskBlockAsync(int tid, TaskBlockEvent *event) {
+  if (!_task_block_drain_running.load(std::memory_order_acquire)) {
+    Counters::increment(TASK_BLOCK_QUEUE_DROPPED);
+    return false;
+  }
+
+  QueuedTaskBlockEvent queued;
+  queued.tid = tid;
+  queued.generation = _task_block_generation.load(std::memory_order_acquire);
+  queued.event = *event;
+  if (!_task_block_queue.tryPush(queued)) {
+    Counters::increment(TASK_BLOCK_QUEUE_DROPPED);
+    return false;
+  }
+  return true;
+}
+
 void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
                                     ASGCT_CallFrame *frames, bool truncated,
                                     jint event_type, Event *event) {
@@ -749,6 +900,7 @@ void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
 
   u64 call_trace_id =
       _call_trace_storage.put(num_frames, extended_frames, truncated, weight);
+  setWallSampleIdIfNeeded(event_type, event);
   _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
 
   _locks[lock_index].unlock();
@@ -1422,6 +1574,14 @@ Error Profiler::start(Arguments &args, bool reset) {
     _libs->stopRefresher();
     return error;
   }
+  initializeTaskBlockDurationThreshold();
+  startTaskBlockDrain();
+  if ((_event_mask & EM_WALL) && args._wall_precheck) {
+    Error native_io_error = NativeSocketInterposer::instance()->start();
+    if (native_io_error) {
+      Log::warn("%s", native_io_error.message());
+    }
+  }
 
   int activated = 0;
   if ((_event_mask & EM_CPU) && _cpu_engine != &noop_engine) {
@@ -1461,8 +1621,10 @@ Error Profiler::start(Arguments &args, bool reset) {
       if (_event_mask == EM_NATIVEMEM) {
         // nativemem is the only requested mode: propagate the real error
         disableEngines();
+        NativeSocketInterposer::instance()->stop();
         switchLibraryTrap(false);
         _libs->stopRefresher();
+        stopTaskBlockDrain();
         lockAll();
         _jfr.stop();
         unlockAll();
@@ -1499,8 +1661,10 @@ Error Profiler::start(Arguments &args, bool reset) {
   }
   // no engine was activated; perform cleanup
   disableEngines();
+  NativeSocketInterposer::instance()->stop();
   switchLibraryTrap(false);
   _libs->stopRefresher();
+  stopTaskBlockDrain();
 
   lockAll();
   _jfr.stop();
@@ -1535,11 +1699,13 @@ Error Profiler::stop() {
   if (_event_mask & EM_CPU)
     _cpu_engine->stop();
 
+  NativeSocketInterposer::instance()->stop();
   switchLibraryTrap(false);
   switchThreadEvents(JVMTI_DISABLE);
   Libraries::instance()->refresh();
   updateJavaThreadNames();
   updateNativeThreadNames();
+  stopTaskBlockDrain();
 
   // If jvmtistacks delegation was used this recording, surface likely
   // misconfigurations. The JVM returns WRONG_PHASE when JFR is not recording

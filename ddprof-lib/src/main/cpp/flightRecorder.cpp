@@ -1445,7 +1445,7 @@ void Recording::writeFrameTypes(Buffer *buf) {
 
 void Recording::writeThreadStates(Buffer *buf) {
   buf->putVar64(T_THREAD_STATE);
-  buf->put8(10);
+  buf->put8(11);
   buf->put8(static_cast<int>(OSThreadState::UNKNOWN));
   buf->putUtf8("UNKNOWN");
   buf->put8(static_cast<int>(OSThreadState::NEW));
@@ -1466,6 +1466,8 @@ void Recording::writeThreadStates(Buffer *buf) {
   buf->putUtf8("TERMINATED");
   buf->put8(static_cast<int>(OSThreadState::SYSCALL));
   buf->putUtf8("SYSCALL");
+  buf->put8(static_cast<int>(OSThreadState::IO_WAIT));
+  buf->putUtf8("IO_WAIT");
   flushIfNeeded(buf);
 }
 
@@ -1812,7 +1814,24 @@ void Recording::recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
   buf->put8(static_cast<int>(event->_execution_mode));
   buf->putVar64(event->_weight);
   buf->putVar64(correlation_id);
+  buf->putVar64(event->_sample_id);
   writeCurrentContext(buf);
+  writeEventSizePrefix(buf, start);
+  flushIfNeeded(buf);
+}
+
+void Recording::recordTaskBlock(Buffer *buf, int tid, TaskBlockEvent *event) {
+  int start = buf->skip(1);
+  buf->putVar64(T_TASK_BLOCK);
+  buf->putVar64(event->_start);
+  buf->putVar64(event->_end - event->_start);
+  buf->putVar64(tid);
+  buf->putVar64(event->_blocker);
+  buf->putVar64(event->_unblockingSpanId);
+  buf->putVar64(event->_callTraceId);
+  buf->putVar64(event->_correlationId);
+  buf->put8(static_cast<int>(event->_observedBlockingState));
+  writeContextSnapshot(buf, event->_ctx);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
@@ -2082,6 +2101,20 @@ void FlightRecorder::recordQueueTime(int lock_index, int tid,
   }
 }
 
+bool FlightRecorder::recordTaskBlock(int lock_index, int tid,
+                                     TaskBlockEvent *event) {
+  OptionalSharedLockGuard locker(&_rec_lock);
+  if (locker.ownsLock()) {
+    Recording* rec = _rec;
+    if (rec != nullptr) {
+      Buffer *buf = rec->buffer(lock_index);
+      rec->recordTaskBlock(buf, tid, event);
+      return true;
+    }
+  }
+  return false;
+}
+
 void FlightRecorder::recordDatadogSetting(int lock_index, int length,
                                           const char *name, const char *value,
                                           const char *unit) {
@@ -2115,6 +2148,7 @@ bool FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
     Recording* rec = _rec;
     if (rec != nullptr) {
       RecordingBuffer *buf = rec->buffer(lock_index);
+      bool recorded = true;
       switch (event_type) {
       case BCI_CPU:
           rec->recordExecutionSample(buf, tid, call_trace_id, 0,
@@ -2144,11 +2178,14 @@ bool FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
           rec->recordNativeSocketSample(buf, tid, call_trace_id, (NativeSocketEvent *)event);
           break;
         default:
-          return false;
+          recorded = false;
+          break;
         }
-        rec->flushIfNeeded(buf);
-        rec->addThread(lock_index, tid);
-        return true;
+        if (recorded) {
+          rec->flushIfNeeded(buf);
+          rec->addThread(lock_index, tid);
+        }
+        return recorded;
       }
   } else {
     Counters::increment(SAMPLES_DROPPED_REC_LOCK);
@@ -2164,6 +2201,7 @@ bool FlightRecorder::recordEventDelegated(int lock_index, int tid,
     Recording* rec = _rec;
     if (rec != nullptr) {
       RecordingBuffer *buf = rec->buffer(lock_index);
+      bool recorded = true;
       switch (event_type) {
         case BCI_CPU:
           rec->recordExecutionSample(buf, tid, 0, correlation_id,
@@ -2175,11 +2213,14 @@ bool FlightRecorder::recordEventDelegated(int lock_index, int tid,
           break;
         default:
           // Delegation is only wired for CPU/wall samples in v1.
-          return false;
+          recorded = false;
+          break;
       }
-      rec->flushIfNeeded(buf);
-      rec->addThread(lock_index, tid);
-      return true;
+      if (recorded) {
+        rec->flushIfNeeded(buf);
+        rec->addThread(lock_index, tid);
+      }
+      return recorded;
     }
   } else {
     Counters::increment(SAMPLES_DROPPED_REC_LOCK);

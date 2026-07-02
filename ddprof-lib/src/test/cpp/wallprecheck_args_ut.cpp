@@ -5,6 +5,8 @@
 
 #include <gtest/gtest.h>
 #include "arguments.h"
+#include "taskBlockRecorder.h"
+#include "tsc.h"
 
 TEST(WallPrecheckArgsTest, DefaultsToDisabled) {
     Arguments args;
@@ -56,3 +58,11 @@ TEST(WallPrecheckArgsTest, EnabledWithinLongerArgString) {
     EXPECT_TRUE(args._wall_precheck);
 }
 
+TEST(TaskBlockDurationThresholdTest, UsesOneMillisecondThreshold) {
+    initializeTaskBlockDurationThreshold();
+    u64 min_ticks = (TSC::frequency() * 1000000ULL) / NANOTIME_FREQ;
+
+    EXPECT_FALSE(exceedsMinTaskBlockDuration(100, 100));
+    EXPECT_FALSE(exceedsMinTaskBlockDuration(100, 100 + min_ticks - 1));
+    EXPECT_TRUE(exceedsMinTaskBlockDuration(100, 100 + min_ticks));
+}

@@ -12,13 +12,16 @@ import com.datadoghq.profiler.Platform;
 import java.util.concurrent.locks.LockSupport;
 
 public class CollapsingSleepTest extends AbstractProfilerTest {
+    private static final long PARK_NANOS = 2_000_000_000L;
+    private static final long MIN_COLLAPSED_WEIGHT = 700L;
+    private static final long MIN_SAMPLE_COUNT = 9L;
 
     @Test
     public void testSleep() {
         Assumptions.assumeTrue(!Platform.isJ9());
         registerCurrentThreadForWallClockProfiling();
         long ts = System.nanoTime();
-        long waitTime = 1_000_000_000L; // 1mil ns == 1s
+        long waitTime = PARK_NANOS;
         do {
             LockSupport.parkNanos(waitTime);
             waitTime -= (System.nanoTime() - ts);
@@ -27,8 +30,12 @@ public class CollapsingSleepTest extends AbstractProfilerTest {
         stopProfiler();
         IItemCollection events = verifyEvents("datadog.MethodSample");
         assertTrue(events.hasItems());
-        assertTrue(events.getAggregate(Aggregators.sum(WEIGHT)).longValue() > 700);
-        assertTrue(events.getAggregate(Aggregators.count()).longValue() > 9);
+        long collapsedWeight = events.getAggregate(Aggregators.sum(WEIGHT)).longValue();
+        long sampleCount = events.getAggregate(Aggregators.count()).longValue();
+        assertTrue(collapsedWeight >= MIN_COLLAPSED_WEIGHT,
+                "collapsed wall-clock weight was " + collapsedWeight);
+        assertTrue(sampleCount > MIN_SAMPLE_COUNT,
+                "wall-clock MethodSample count was " + sampleCount);
     }
 
     @Override

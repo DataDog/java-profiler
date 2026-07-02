@@ -46,16 +46,19 @@ TestProfiledThread testThread(int tid) {
 TEST(ProfiledThreadParkStateTest, ParkFlagLifecycle) {
   TestProfiledThread thread = testThread(12345);
 
+  u64 start_ticks = 0;
+  Context park_context = {};
   u64 park_block_token = 0;
-  EXPECT_FALSE(thread->parkExit(park_block_token)); // not parked initially
+  EXPECT_FALSE(thread->parkExit(start_ticks, park_context, park_block_token)); // not parked initially
 
-  EXPECT_TRUE(thread->parkEnter());
+  EXPECT_TRUE(thread->parkEnter(123));
   thread->setParkBlockToken(0x123400000001ULL);
 
-  EXPECT_TRUE(thread->parkExit(park_block_token));
+  EXPECT_TRUE(thread->parkExit(start_ticks, park_context, park_block_token));
+  EXPECT_EQ(123ULL, start_ticks);
   EXPECT_EQ(0x123400000001ULL, park_block_token);
 
-  EXPECT_FALSE(thread->parkExit(park_block_token)); // idempotent after clear
+  EXPECT_FALSE(thread->parkExit(start_ticks, park_context, park_block_token)); // idempotent after clear
 }
 
 TEST(ProfiledThreadParkStateTest, JavaThreadTypeSurvivesParkTransitions) {
@@ -64,14 +67,17 @@ TEST(ProfiledThreadParkStateTest, JavaThreadTypeSurvivesParkTransitions) {
   thread->setJavaThread(true);
   EXPECT_EQ(ProfiledThread::TYPE_JAVA_THREAD, thread->threadType());
 
-  EXPECT_TRUE(thread->parkEnter());
+  EXPECT_TRUE(thread->parkEnter(100));
   EXPECT_EQ(ProfiledThread::TYPE_JAVA_THREAD, thread->threadType());
 
   thread->setJavaThread(false);
   EXPECT_EQ(ProfiledThread::TYPE_NOT_JAVA_THREAD, thread->threadType());
 
+  u64 start_ticks = 0;
+  Context park_context = {};
   u64 park_block_token = 0;
-  EXPECT_TRUE(thread->parkExit(park_block_token));
+  EXPECT_TRUE(thread->parkExit(start_ticks, park_context, park_block_token));
+  EXPECT_EQ(100ULL, start_ticks);
   EXPECT_EQ(ProfiledThread::TYPE_NOT_JAVA_THREAD, thread->threadType());
 }
 
@@ -87,9 +93,11 @@ TEST(ProfiledThreadParkStateTest, ConcurrentTypeAndParkUpdatesKeepValidTypeBits)
   });
 
   while (!stop.load(std::memory_order_acquire)) {
-    thread->parkEnter();
+    thread->parkEnter(100);
+    u64 start_ticks = 0;
+    Context park_context = {};
     u64 park_block_token = 0;
-    thread->parkExit(park_block_token);
+    thread->parkExit(start_ticks, park_context, park_block_token);
     ProfiledThread::ThreadType type = thread->threadType();
     EXPECT_TRUE(type == ProfiledThread::TYPE_JAVA_THREAD ||
                 type == ProfiledThread::TYPE_NOT_JAVA_THREAD ||
@@ -97,8 +105,10 @@ TEST(ProfiledThreadParkStateTest, ConcurrentTypeAndParkUpdatesKeepValidTypeBits)
   }
 
   type_toggler.join();
+  u64 start_ticks = 0;
+  Context park_context = {};
   u64 park_block_token = 0;
-  thread->parkExit(park_block_token);
+  thread->parkExit(start_ticks, park_context, park_block_token);
   ProfiledThread::ThreadType type = thread->threadType();
   EXPECT_TRUE(type == ProfiledThread::TYPE_JAVA_THREAD ||
               type == ProfiledThread::TYPE_NOT_JAVA_THREAD);
@@ -106,35 +116,92 @@ TEST(ProfiledThreadParkStateTest, ConcurrentTypeAndParkUpdatesKeepValidTypeBits)
 
 TEST(ProfiledThreadParkStateTest, NewThreadStartsNotParked) {
   TestProfiledThread thread = testThread(12346);
+  u64 start_ticks = 0;
+  Context park_context = {};
   u64 park_block_token = 0;
-  EXPECT_FALSE(thread->parkExit(park_block_token));
+  EXPECT_FALSE(thread->parkExit(start_ticks, park_context, park_block_token));
   // Out-params must not be touched on failed exit.
+  EXPECT_EQ(0ULL, start_ticks);
   EXPECT_EQ(0ULL, park_block_token);
 }
 
 TEST(ProfiledThreadParkStateTest, SecondParkEnterPreservesToken) {
   TestProfiledThread thread = testThread(12347);
-  EXPECT_TRUE(thread->parkEnter());
+  EXPECT_TRUE(thread->parkEnter(111));
   thread->setParkBlockToken(0xfeed00000001ULL);
-  EXPECT_FALSE(thread->parkEnter());
+  EXPECT_FALSE(thread->parkEnter(222));
 
+  u64 start_ticks = 0;
+  Context park_context = {};
   u64 park_block_token = 0;
-  EXPECT_TRUE(thread->parkExit(park_block_token));
+  EXPECT_TRUE(thread->parkExit(start_ticks, park_context, park_block_token));
+  EXPECT_EQ(111ULL, start_ticks);
   EXPECT_EQ(0xfeed00000001ULL, park_block_token); // first owner token wins
 
   // Flag is now clear; second exit is a no-op.
-  EXPECT_FALSE(thread->parkExit(park_block_token));
+  EXPECT_FALSE(thread->parkExit(start_ticks, park_context, park_block_token));
   EXPECT_EQ(0xfeed00000001ULL, park_block_token);
 }
 
 TEST(ProfiledThreadParkStateTest, ParkExitReturnsZeroTokenWhenBlockRunWasNotArmed) {
   TestProfiledThread thread = testThread(12348);
-  EXPECT_TRUE(thread->parkEnter());
+  EXPECT_TRUE(thread->parkEnter(333));
   thread->setParkBlockToken(0);
 
+  u64 start_ticks = 0;
+  Context park_context = {};
   u64 park_block_token = 42;
-  EXPECT_TRUE(thread->parkExit(park_block_token));
+  EXPECT_TRUE(thread->parkExit(start_ticks, park_context, park_block_token));
+  EXPECT_EQ(333ULL, start_ticks);
   EXPECT_EQ(0ULL, park_block_token);
+}
+
+TEST(ProfiledThreadMonitorStateTest, MonitorFlagLifecycle) {
+  TestProfiledThread thread = testThread(12348);
+
+  u64 start_ticks = 0;
+  Context monitor_context = {};
+  u64 blocker = 0;
+  u64 monitor_block_token = 0;
+  EXPECT_FALSE(thread->monitorExit(OSThreadState::MONITOR_WAIT, start_ticks,
+                                   monitor_context, blocker, monitor_block_token));
+
+  EXPECT_TRUE(thread->monitorEnter(999, 42, OSThreadState::MONITOR_WAIT));
+  thread->setMonitorBlockToken(0x123400000001ULL);
+
+  EXPECT_TRUE(thread->monitorExit(OSThreadState::MONITOR_WAIT, start_ticks,
+                                  monitor_context, blocker, monitor_block_token));
+  EXPECT_EQ(999ULL, start_ticks);
+  EXPECT_EQ(42ULL, blocker);
+  EXPECT_EQ(0x123400000001ULL, monitor_block_token);
+  EXPECT_EQ(0ULL, monitor_context.spanId);
+
+  EXPECT_FALSE(thread->monitorExit(OSThreadState::MONITOR_WAIT, start_ticks,
+                                   monitor_context, blocker, monitor_block_token));
+}
+
+TEST(ProfiledThreadMonitorStateTest, ObjectWaitOwnsNestedMonitorContention) {
+  TestProfiledThread thread = testThread(12349);
+
+  EXPECT_TRUE(thread->monitorEnter(100, 11, OSThreadState::OBJECT_WAIT));
+
+  // HotSpot's Object.wait path includes monitor reacquisition before MonitorWaited.
+  // A nested MonitorContendedEnter during that interval must not overwrite the
+  // original Object.wait TaskBlock interval or blocker attribution.
+  EXPECT_FALSE(thread->monitorEnter(200, 22, OSThreadState::MONITOR_WAIT));
+
+  u64 start_ticks = 0;
+  Context monitor_context = {};
+  u64 blocker = 0;
+  u64 monitor_block_token = 0;
+  EXPECT_FALSE(thread->monitorExit(OSThreadState::MONITOR_WAIT, start_ticks,
+                                   monitor_context, blocker, monitor_block_token));
+
+  EXPECT_TRUE(thread->monitorExit(OSThreadState::OBJECT_WAIT, start_ticks,
+                                  monitor_context, blocker, monitor_block_token));
+  EXPECT_EQ(100ULL, start_ticks);
+  EXPECT_EQ(11ULL, blocker);
+  EXPECT_EQ(0ULL, monitor_block_token);
 }
 
 TEST(WallClockOncePerRunFilterTest, SlotStateTransitions) {
@@ -146,16 +213,21 @@ TEST(WallClockOncePerRunFilterTest, SlotStateTransitions) {
 
   // First signal: arm.
   slot.setActiveBlockState(OSThreadState::SLEEPING);
-  slot.markSampledThisRun(OSThreadState::SLEEPING);
+  slot.markSampledThisRun(OSThreadState::SLEEPING, 1234);
   EXPECT_TRUE(slot.sampledThisRun());
   EXPECT_EQ(OSThreadState::SLEEPING, slot.lastSampledState());
   EXPECT_EQ(OSThreadState::SLEEPING, slot.activeBlockState());
+  EXPECT_EQ(1234ULL, slot.capturedCallTraceId());
+  EXPECT_EQ(0ULL, slot.capturedCorrelationId());
 
   // Same state again: suppress (flag + state both match).
   EXPECT_TRUE(slot.sampledThisRun() &&
               OSThreadState::SLEEPING == slot.lastSampledState());
   EXPECT_TRUE(slot.sampledThisRun() &&
               slot.activeBlockState() == slot.lastSampledState());
+  slot.markSampledThisRun(OSThreadState::SLEEPING, 5678);
+  EXPECT_EQ(1234ULL, slot.capturedCallTraceId());
+  EXPECT_EQ(0ULL, slot.capturedCorrelationId());
 
   // Transition within skip set (SLEEPING -> CONDVAR_WAIT): state mismatch -> re-arm.
   slot.setActiveBlockState(OSThreadState::CONDVAR_WAIT);
@@ -173,6 +245,8 @@ TEST(WallClockOncePerRunFilterTest, SlotStateTransitions) {
   EXPECT_FALSE(slot.sampledThisRun());
   EXPECT_EQ(OSThreadState::RUNNABLE, slot.lastSampledState());
   EXPECT_EQ(OSThreadState::UNKNOWN, slot.activeBlockState());
+  EXPECT_EQ(0ULL, slot.capturedCallTraceId());
+  EXPECT_EQ(0ULL, slot.capturedCorrelationId());
 
   slot.setActiveBlockState(OSThreadState::SLEEPING);
   slot.markSampledThisRun(OSThreadState::SLEEPING);
@@ -320,6 +394,58 @@ TEST(WallClockOncePerRunFilterTest, UnownedBlockedTailStateConcurrentStress) {
   u64 weight = 0;
   OSThreadState state = OSThreadState::UNKNOWN;
   EXPECT_FALSE(slot.flushUnownedBlockedTail(call_trace_id, weight, state));
+}
+
+TEST(WallClockOncePerRunFilterTest, BlockRunTokenRejectsStaleExit) {
+  ThreadFilter filter;
+  filter.init("1");
+  ThreadFilter::SlotID slot_id = filter.registerThread();
+
+  u64 first_token = filter.enterBlockedRun(slot_id, OSThreadState::SLEEPING,
+                                           BlockRunOwner::JAVA);
+  ASSERT_NE(0ULL, first_token);
+  ThreadFilter::Slot *slot = filter.slotForId(slot_id);
+  ASSERT_NE(nullptr, slot);
+  EXPECT_EQ(BlockRunOwner::JAVA, slot->activeBlockOwner());
+
+  EXPECT_EQ(0ULL, filter.enterBlockedRun(slot_id, OSThreadState::OBJECT_WAIT,
+                                         BlockRunOwner::JVMTI));
+
+  filter.exitBlockedRun(slot_id);
+  u64 second_token = filter.enterBlockedRun(slot_id, OSThreadState::OBJECT_WAIT,
+                                            BlockRunOwner::JVMTI);
+  ASSERT_NE(0ULL, second_token);
+  EXPECT_EQ(BlockRunOwner::JVMTI, slot->activeBlockOwner());
+  EXPECT_FALSE(filter.exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(first_token)));
+  EXPECT_EQ(OSThreadState::OBJECT_WAIT, slot->activeBlockState());
+
+  EXPECT_TRUE(filter.exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(second_token)));
+  EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
+  EXPECT_EQ(BlockRunOwner::NONE, slot->activeBlockOwner());
+}
+
+TEST(WallClockOncePerRunFilterTest, SnapshotAndExitPreservesIoWaitStackReference) {
+  ThreadFilter filter;
+  filter.init("1");
+  ThreadFilter::SlotID slot_id = filter.registerThread();
+  u64 token = filter.enterBlockedRun(slot_id, OSThreadState::IO_WAIT,
+                                     BlockRunOwner::NATIVE);
+  ASSERT_NE(0ULL, token);
+
+  ThreadFilter::Slot *slot = filter.slotForId(slot_id);
+  ASSERT_NE(nullptr, slot);
+  slot->markSampledThisRun(OSThreadState::IO_WAIT, 42);
+
+  BlockRunSnapshot snapshot{};
+  EXPECT_TRUE(filter.snapshotAndExitBlockedRun(
+      slot_id, ThreadFilter::tokenGeneration(token), &snapshot));
+  EXPECT_EQ(OSThreadState::IO_WAIT, snapshot.active_state);
+  EXPECT_EQ(OSThreadState::IO_WAIT, snapshot.sampled_state);
+  EXPECT_EQ(BlockRunOwner::NATIVE, snapshot.owner);
+  EXPECT_TRUE(snapshot.has_stack_reference);
+  EXPECT_EQ(42ULL, snapshot.call_trace_id);
+  EXPECT_EQ(0ULL, snapshot.correlation_id);
+  EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
 }
 
 TEST(WallClockOncePerRunFilterTest, FilterHelpersManageActiveBlockState) {

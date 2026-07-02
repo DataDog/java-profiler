@@ -16,6 +16,7 @@ import org.openjdk.jmc.flightrecorder.JfrAttributes;
 import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -23,6 +24,9 @@ import static org.openjdk.jmc.common.item.Attribute.attr;
 import static org.openjdk.jmc.common.unit.UnitLookup.*;
 
 public class QueueTimeTest extends AbstractProfilerTest {
+    private static final long QUEUE_THRESHOLD_MILLIS = 9L;
+    private static final long QUEUE_WAIT_MARGIN_MILLIS = 50L;
+
     @Override
     protected String getProfilerCommand() {
         return "cpu=10ms";
@@ -45,7 +49,7 @@ public class QueueTimeTest extends AbstractProfilerTest {
         public void run() {
             profiler.setContext(1, 2);
             long now = profiler.getCurrentTicks();
-            if (profiler.isThresholdExceeded(9, start, now)) {
+            if (profiler.isThresholdExceeded(QUEUE_THRESHOLD_MILLIS, start, now)) {
                 profiler.recordQueueTime(start, now, getClass(), QueueTimeTest.class, ArrayBlockingQueue.class, 10, origin);
             }
             profiler.clearContext();
@@ -58,7 +62,7 @@ public class QueueTimeTest extends AbstractProfilerTest {
         origin.setName("origin");
         Task task = new Task(profiler);
         Thread thread = new Thread(task, "destination");
-        Thread.sleep(10);
+        waitUntilQueueThresholdExceeded(task.start);
         thread.start();
         thread.join();
         stopProfiler();
@@ -89,7 +93,7 @@ public class QueueTimeTest extends AbstractProfilerTest {
                 assertTrue(startTimeAttr.getAccessor(it.getType()).getMember(item).longValueIn(EPOCH_NS) > 0);
                 IRange<IQuantity> lifetime = JfrAttributes.LIFETIME.getAccessor(it.getType()).getMember(item);
                 long duration = lifetime.getEnd().longValueIn(EPOCH_MS) - lifetime.getStart().longValueIn(EPOCH_MS);
-                assertTrue(duration >= 9);
+                assertTrue(duration >= QUEUE_THRESHOLD_MILLIS);
                 assertEquals(task.getClass().getName(), taskAttr.getAccessor(it.getType()).getMember(item).getTypeName());
                 assertEquals(getClass().getName(), schedulerAttr.getAccessor(it.getType()).getMember(item).getTypeName());
                 assertEquals(1, SPAN_ID.getAccessor(it.getType()).getMember(item).longValue());
@@ -98,6 +102,17 @@ public class QueueTimeTest extends AbstractProfilerTest {
                 assertEquals(ArrayBlockingQueue.class.getName(), queueTypeAttr.getAccessor(it.getType()).getMember(item).getTypeName());
                 assertEquals(10, queueLengthAttr.getAccessor(it.getType()).getMember(item).longValue());
             }
+        }
+    }
+
+    private void waitUntilQueueThresholdExceeded(long startTicks) throws InterruptedException {
+        long deadlineNanos = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        long marginThresholdMillis = QUEUE_THRESHOLD_MILLIS + QUEUE_WAIT_MARGIN_MILLIS;
+        while (!profiler.isThresholdExceeded(
+                marginThresholdMillis, startTicks, profiler.getCurrentTicks())) {
+            assertTrue(System.nanoTime() < deadlineNanos,
+                    "QueueTime threshold was not exceeded before timeout");
+            Thread.sleep(1L);
         }
     }
 }

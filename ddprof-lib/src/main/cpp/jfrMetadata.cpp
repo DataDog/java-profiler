@@ -139,6 +139,7 @@ void JfrMetadata::initialize(
                   << field("mode", T_EXECUTION_MODE, "Execution Mode", F_CPOOL)
                   << field("weight", T_LONG, "Sample weight")
                   << field("correlationId", T_LONG, "Async Stack Trace Correlation ID")
+                  << field("sampleId", T_LONG, "Sample ID")
                   << field("spanId", T_LONG, "Span ID")
                   << field("localRootSpanId", T_LONG, "Local Root Span ID") ||
               contextAttributes)
@@ -205,6 +206,21 @@ void JfrMetadata::initialize(
                   << field("scheduler", T_CLASS, "Scheduler", F_CPOOL)
                   << field("queueType", T_CLASS, "Queue Type", F_CPOOL)
                   << field("queueLength", T_INT, "Queue Length on Entry")
+                  << field("spanId", T_LONG, "Span ID")
+                  << field("localRootSpanId", T_LONG, "Local Root Span ID") ||
+              contextAttributes)
+
+          << (type("datadog.TaskBlock", T_TASK_BLOCK, "Task Block")
+                  << category("Datadog")
+                  << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
+                  << field("duration", T_LONG, "Duration", F_DURATION_TICKS)
+                  << field("eventThread", T_THREAD, "Event Thread", F_CPOOL)
+                  << field("blocker", T_LONG, "Blocker Identity Hash")
+                  << field("unblockingSpanId", T_LONG, "Unblocking Span ID")
+                  << field("stackTrace", T_STACK_TRACE, "Stack Trace", F_CPOOL)
+                  << field("correlationId", T_LONG, "Async Stack Trace Correlation ID")
+                  << field("observedBlockingState", T_THREAD_STATE,
+                           "Observed Blocking State", F_CPOOL)
                   << field("spanId", T_LONG, "Span ID")
                   << field("localRootSpanId", T_LONG, "Local Root Span ID") ||
               contextAttributes)
