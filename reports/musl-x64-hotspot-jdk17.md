@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk17
 
 ## musl-x64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-07-02 05:33:38 EDT
+**Date:** 2026-07-02 06:30:22 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-x64-hotspot-jdk17
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 32 |
-| CPU Cores (end) | 32 |
+| CPU Cores (start) | 7 |
+| CPU Cores (end) | 7 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: musl-x64-hotspot-jdk17
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
+<summary>CPU Timeline (1 unique values: 7-7 cores)</summary>
 
 ```
-1782984636 32
-1782984641 32
-1782984646 32
-1782984651 32
-1782984656 32
-1782984661 32
-1782984666 32
-1782984671 32
-1782984676 32
-1782984681 32
-1782984686 32
-1782984691 32
-1782984696 32
-1782984701 32
-1782984706 32
-1782984711 32
-1782984716 32
-1782984721 32
-1782984726 32
-1782984731 32
+1782987947 7
+1782987952 7
+1782987957 7
+1782987962 7
+1782987967 7
+1782987972 7
+1782987977 7
+1782987982 7
+1782987987 7
+1782987992 7
+1782987997 7
+1782988002 7
+1782988007 7
+1782988012 7
+1782988017 7
+1782988022 7
+1782988027 7
+1782988033 7
+1782988038 7
+1782988043 7
 ```
 </details>
 
