@@ -76,6 +76,7 @@ static inline ssize_t runStreamSocketHook(int fd, Fn fn, u8 op, Call call) {
   }
   u64 t1 = TSC::ticks();
   if (NativeSocketSampler::active()) {
+    ErrnoGuard errno_guard;
     return NativeSocketSampler::recordHookResult(fd, ret, t0, t1, op);
   }
   return ret;
