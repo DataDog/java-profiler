@@ -74,6 +74,11 @@ public class MonitorDeflationThreadSafetyTest extends AbstractProfilerTest {
                     mon.wait(1);
                 }
             }
+            // Ensure the CPU sampler actually gets a chance to fire and generate ExecutionSample events.
+            long spinUntil = System.nanoTime() + 5_000_000L; // ~5ms
+            while (System.nanoTime() < spinUntil) {
+                // spin
+            }
             Thread.sleep(waveSleepMs);
         }
     }
