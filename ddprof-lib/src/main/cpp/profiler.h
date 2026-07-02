@@ -127,7 +127,6 @@ private:
   void switchLibraryTrap(bool enable);
   static void prewarmUnwinder();
 
-  void enableEngines();
   void disableEngines();
 
   void onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
