@@ -175,27 +175,37 @@ public:
 
   // this is called in the crash handler to avoid recursing
   bool enterCrashHandler() {
-    u32 prev = _crash_depth;
-    // This is thread local; no need for atomic cmpxchg
-    if (prev < CRASH_HANDLER_NESTING_LIMIT) {
-      _crash_depth++;
-      return true;
+    u32 cur = __atomic_load_n(&_crash_depth, __ATOMIC_RELAXED);
+    while (cur < CRASH_HANDLER_NESTING_LIMIT) {
+      u32 desired = cur + 1;
+      if (__atomic_compare_exchange_n(&_crash_depth, &cur, desired,
+                                      /*weak=*/true,
+                                      __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+        return true;
+      }
     }
     return false;
   }
 
   // needs to be called when the crash handler exits
   void exitCrashHandler() {
-    // failsafe check - do not attempt to decrement if there are no crash handlers on stack
-    if (_crash_depth > 0) _crash_depth--;
+    u32 cur = __atomic_load_n(&_crash_depth, __ATOMIC_RELAXED);
+    while (cur > 0) {
+      u32 desired = cur - 1;
+      if (__atomic_compare_exchange_n(&_crash_depth, &cur, desired,
+                                      /*weak=*/true,
+                                      __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+        return;
+      }
+    }
   }
 
   void resetCrashHandler() {
-    _crash_depth = 0;
+    __atomic_store_n(&_crash_depth, 0u, __ATOMIC_RELAXED);
   }
 
   bool isDeepCrashHandler() {
-    return _crash_depth > CRASH_HANDLER_NESTING_LIMIT;
+    return __atomic_load_n(&_crash_depth, __ATOMIC_RELAXED) > CRASH_HANDLER_NESTING_LIMIT;
   }
 
   inline void setJmpCtx(jmp_buf* buf) {
