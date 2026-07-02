@@ -122,7 +122,12 @@ public class StopWithChurningThreadsTest {
         }
 
         if (!errors.isEmpty()) {
-            fail(errors.poll());
+            AssertionError composite = new AssertionError(
+                errors.size() + " error(s) occurred during churn/profiler race");
+            for (Throwable t : errors) {
+                composite.addSuppressed(t);
+            }
+            throw composite;
         }
     }
 
