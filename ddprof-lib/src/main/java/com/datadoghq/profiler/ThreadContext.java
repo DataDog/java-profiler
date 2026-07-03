@@ -634,5 +634,7 @@ public final class ThreadContext {
         return sb.toString();
     }
 
-    private static native int registerConstant0(String value);
+    // Package-private (was private) so the all-native path's ContextValueCache can reuse the same
+    // process-global Dictionary registration. Relocates when ThreadContext is removed (phase 3).
+    static native int registerConstant0(String value);
 }

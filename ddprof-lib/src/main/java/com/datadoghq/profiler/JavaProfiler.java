@@ -45,6 +45,10 @@ public final class JavaProfiler {
     // OtelContextStorage for the mode selection and the rationale.
     private final ThreadLocal<ThreadContext> tlsContextStorage = OtelContextStorage.create();
 
+    // Process-wide value->(encoding, utf8) cache for the all-native context write path
+    // (setTraceContext / setContextValue). See ContextValueCache. One instance on the singleton.
+    private final ContextValueCache contextValueCache = new ContextValueCache();
+
     /**
      * Returns the calling thread's (or, in carrier mode, its current carrier's)
      * {@link ThreadContext}, creating and caching it on first use. Replaces the previous
@@ -235,6 +239,64 @@ public final class JavaProfiler {
      */
     public void clearContext() {
         currentContext().put(0, 0, 0, 0);
+    }
+
+    // ---- All-native context write API (OTEP #4947) --------------------------------------------
+    // Provisional names (subject to dd-trace-java coordination). These resolve the current carrier's
+    // OTEP record inside a single JNI call per operation — no cached DirectByteBuffer, so they are
+    // race-free under virtual-thread migration (see the design note and setTraceContext0 et al.).
+    // They coexist with the deprecated DirectByteBuffer path below; both write the same native
+    // record, and no thread uses both at once.
+
+    /**
+     * Combined per-scope-activation write: full trace/span context plus up to two span-derived
+     * attributes (e.g. operation and resource name), in one native call. A negative {@code slotN}
+     * (or {@code null}/oversized {@code vN}) skips that attribute. Custom slots are reset first, so
+     * this establishes a fresh per-span attribute set.
+     */
+    public void setTraceContext(long rootSpanId, long spanId, long traceIdHigh, long traceIdLow,
+                                int slot0, CharSequence v0, int slot1, CharSequence v1) {
+        ContextValueCache.Entry e0 = resolveContextValue(slot0, v0);
+        ContextValueCache.Entry e1 = resolveContextValue(slot1, v1);
+        setTraceContext0(rootSpanId, spanId, traceIdHigh, traceIdLow,
+                e0 == null ? -1 : slot0, e0 == null ? 0 : e0.encoding, e0 == null ? null : e0.utf8,
+                e1 == null ? -1 : slot1, e1 == null ? 0 : e1.encoding, e1 == null ? null : e1.utf8);
+    }
+
+    /** Combined per-scope-deactivation clear (replaces {@link #clearContext()} on the native path). */
+    public void clearTraceContext() {
+        clearTraceContext0();
+    }
+
+    /**
+     * Sets a single custom attribute (sporadic instrumentation-driven attributes such as
+     * {@code http.route}). Returns false if the value is null, its UTF-8 exceeds 255 bytes, the
+     * native Dictionary is full, or {@code slot} is out of range; on failure the slot is cleared.
+     */
+    public boolean setContextValue(int slot, CharSequence value) {
+        if (slot < 0) {
+            return false;
+        }
+        ContextValueCache.Entry e = value == null ? null : contextValueCache.resolve(value.toString());
+        if (e == null) {
+            clearContextValue0(slot);
+            return false;
+        }
+        return setContextValue0(slot, e.encoding, e.utf8);
+    }
+
+    /** Clears a single custom attribute slot on the native path. */
+    public void clearContextValue(int slot) {
+        clearContextValue0(slot);
+    }
+
+    // Resolves an activation attribute for setTraceContext; null (skip) if slot<0, value null,
+    // or the value cannot be represented (oversized / Dictionary full).
+    private ContextValueCache.Entry resolveContextValue(int slot, CharSequence value) {
+        if (slot < 0 || value == null) {
+            return null;
+        }
+        return contextValueCache.resolve(value.toString());
     }
 
     /**
