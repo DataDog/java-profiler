@@ -13,6 +13,45 @@
 
 pthread_key_t ProfiledThread::_tls_key;
 bool ProfiledThread::_tls_key_initialized = false;
+ProfiledThread *ProfiledThread::_registry_head = nullptr;
+int ProfiledThread::_registry_lock = 0;
+
+// Simple test-and-set spinlock. Registry ops are rare (thread create /
+// destroy / drain) so we don't need anything fancier.
+#define REGISTRY_LOCK() \
+  while (__atomic_test_and_set(&_registry_lock, __ATOMIC_ACQUIRE)) { \
+    __asm__ __volatile__("" ::: "memory"); \
+  }
+#define REGISTRY_UNLOCK() \
+  __atomic_clear(&_registry_lock, __ATOMIC_RELEASE)
+
+void ProfiledThread::registryInsert(ProfiledThread *pt) {
+  REGISTRY_LOCK();
+  pt->_registry_next = _registry_head;
+  _registry_head = pt;
+  REGISTRY_UNLOCK();
+}
+
+void ProfiledThread::registryRemove(ProfiledThread *pt) {
+  REGISTRY_LOCK();
+  ProfiledThread **cur = &_registry_head;
+  while (*cur != nullptr && *cur != pt) {
+    cur = &((*cur)->_registry_next);
+  }
+  if (*cur == pt) {
+    *cur = pt->_registry_next;
+    pt->_registry_next = nullptr;
+  }
+  REGISTRY_UNLOCK();
+}
+
+void ProfiledThread::forEachRegistered(void (*visit)(ProfiledThread *, void *), void *ctx) {
+  REGISTRY_LOCK();
+  for (ProfiledThread *p = _registry_head; p != nullptr; p = p->_registry_next) {
+    visit(p, ctx);
+  }
+  REGISTRY_UNLOCK();
+}
 
 void ProfiledThread::initTLSKey() {
   static pthread_once_t tls_initialized = PTHREAD_ONCE_INIT;
@@ -32,6 +71,7 @@ inline void ProfiledThread::freeKey(void *key) {
   ProfiledThread *tls_ref = (ProfiledThread *)(key);
   if (tls_ref != NULL) {
     SignalBlocker blocker;
+    registryRemove(tls_ref);
     delete tls_ref;
   }
 }
@@ -48,6 +88,7 @@ void ProfiledThread::initCurrentThread() {
 
   int tid = OS::threadId();
   ProfiledThread *tls = ProfiledThread::forTid(tid);
+  registryInsert(tls);
   pthread_setspecific(_tls_key, (const void *)tls);
 }
 
@@ -60,6 +101,7 @@ void ProfiledThread::release() {
   if (tls != NULL) {
     SignalBlocker blocker;
     pthread_setspecific(key, NULL);
+    registryRemove(tls);
     delete tls;
   }
 }
@@ -80,6 +122,7 @@ ProfiledThread *ProfiledThread::current() {
     // Lazy allocation - safe since current() is never called from signal handlers
     int tid = OS::threadId();
     tls = ProfiledThread::forTid(tid);
+    registryInsert(tls);
     pthread_setspecific(_tls_key, (const void *)tls);
   }
   return tls;

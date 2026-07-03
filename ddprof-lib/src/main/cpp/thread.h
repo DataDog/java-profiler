@@ -42,6 +42,12 @@ private:
   static pthread_key_t _tls_key;
   static bool _tls_key_initialized;
 
+  // Intrusive singly-linked list of live ProfiledThreads. Protected by
+  // _registry_lock. Iterated by SignalInflight::drain() to sum per-thread
+  // JFR-inflight counters across all threads.
+  static ProfiledThread *_registry_head;
+  static int _registry_lock;   // spinlock; simple RMW acquire/release
+
   static void initTLSKey();
   static void doInitTLSKey();
   static inline void freeKey(void *key);
@@ -60,6 +66,13 @@ private:
   int _filter_slot_id; // Slot ID for thread filtering
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
   uint8_t _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
+  // Per-thread JFR-inflight counter. Incremented by InflightGuard at signal-
+  // handler entry, decremented on all exit paths. drain() reads it across
+  // threads via ACQUIRE.
+  int _jfr_inflight;
+  // Intrusive singly-linked registry pointer. Threads insert themselves in
+  // initCurrentThread() and are removed from freeKey() at thread exit.
+  ProfiledThread *_registry_next;
   UnwindFailures _unwind_failures;
   bool _otel_ctx_initialized;
   bool _crash_protection_active;
@@ -79,7 +92,7 @@ private:
       : ThreadLocalData(), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _tid(tid), _cpu_epoch(0),
         _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0),
         _park_block_token(0), _filter_slot_id(-1), _init_window(0),
-        _signal_depth(0),
+        _signal_depth(0), _jfr_inflight(0), _registry_next(nullptr),
         _otel_ctx_initialized(false), _crash_protection_active(false),
         _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0) {};
 
@@ -189,6 +202,26 @@ public:
   inline uint8_t signalDepth() const { return _signal_depth; }
   inline void enterSignalScope()    { ++_signal_depth; }
   inline void exitSignalScope()     { if (_signal_depth > 0) --_signal_depth; }
+
+  // JFR-inflight tracking (used by InflightGuard). Only the owning thread
+  // writes; drain() reads from other threads with ACQUIRE.
+  inline void enterJfrInflight() {
+    __atomic_fetch_add(&_jfr_inflight, 1, __ATOMIC_ACQUIRE);
+  }
+  inline void exitJfrInflight() {
+    __atomic_fetch_sub(&_jfr_inflight, 1, __ATOMIC_RELEASE);
+  }
+  inline int jfrInflight() const {
+    return __atomic_load_n(&_jfr_inflight, __ATOMIC_ACQUIRE);
+  }
+
+  // Registry iteration for SignalInflight::drain(). Callback is invoked under
+  // the registry lock; it must be short and must not touch the registry.
+  static void forEachRegistered(void (*visit)(ProfiledThread *, void *), void *ctx);
+
+  // Registry insert/remove — called from initCurrentThread() / freeKey().
+  static void registryInsert(ProfiledThread *pt);
+  static void registryRemove(ProfiledThread *pt);
 
   UnwindFailures* unwindFailures(bool reset = true) {
     if (reset) {

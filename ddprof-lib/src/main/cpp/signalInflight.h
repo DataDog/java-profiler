@@ -50,25 +50,24 @@
 // to gate is exactly the safety net for this case.
 class SignalInflight {
 public:
-    // ACQUIRE on increment / RELEASE on decrement: drain() observes all
-    // handler-side writes before observing the counter at zero.
-    static void enter() {
-        __atomic_fetch_add(&_counter, 1, __ATOMIC_ACQUIRE);
-    }
-    static void exit() {
-        __atomic_fetch_sub(&_counter, 1, __ATOMIC_RELEASE);
-    }
-    static bool hasInflight() {
-        return __atomic_load_n(&_counter, __ATOMIC_ACQUIRE) > 0;
-    }
+    // Increment / decrement the inflight tally. Prefers per-thread storage on
+    // the current ProfiledThread when one is available; falls back to the
+    // global counter otherwise (early-init threads, native threads with no PT).
+    static void enter();
+    static void exit();
 
-    // Spin until the counter reaches zero or DRAIN_TIMEOUT_NS elapses.
+    // True iff any thread (per-thread or global-fallback) has a positive count.
+    static bool hasInflight();
+
+    // Spin until every counter reaches zero or DRAIN_TIMEOUT_NS elapses.
     // Returns true on clean drain, false on timeout. Callers MUST NOT proceed
     // with JFR teardown when this returns false.
     static bool drain();
 
-private:
-    alignas(64) static int _counter;
+    // Global fallback counter (still cache-line-aligned to keep it off engine
+    // _enabled lines). Not private so InflightGuard's inline path can access
+    // it if needed; the recommended entry point remains enter()/exit().
+    alignas(64) static int _fallback_counter;
 };
 
 // RAII guard for signal-handler in-flight tracking. Construct as the first
