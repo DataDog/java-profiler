@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk17
 
 ## glibc-x64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-07-02 12:09:13 EDT
+**Date:** 2026-07-03 00:53:40 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-hotspot-jdk17
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 86 |
-| CPU Cores (end) | 78 |
+| CPU Cores (start) | 36 |
+| CPU Cores (end) | 38 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-x64-hotspot-jdk17
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (2 unique values: 78-86 cores)</summary>
+<summary>CPU Timeline (1 unique values: 36-36 cores)</summary>
 
 ```
-1783008279 86
-1783008284 86
-1783008289 86
-1783008294 86
-1783008299 86
-1783008304 78
-1783008309 78
-1783008314 78
-1783008319 78
-1783008324 78
-1783008329 78
-1783008334 78
-1783008339 78
-1783008344 78
-1783008350 78
-1783008355 78
-1783008360 78
-1783008365 78
-1783008370 78
-1783008375 78
+1783054249 36
+1783054254 36
+1783054259 36
+1783054264 36
+1783054269 36
+1783054274 36
+1783054279 36
+1783054284 36
+1783054289 36
+1783054294 36
+1783054299 36
+1783054304 36
+1783054309 36
+1783054314 36
+1783054319 36
+1783054324 36
+1783054329 36
+1783054334 36
+1783054339 36
+1783054344 36
 ```
 </details>
 
