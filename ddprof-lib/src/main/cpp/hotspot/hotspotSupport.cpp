@@ -247,7 +247,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     jmp_buf crash_protection_ctx;
     // Chaining jmp_buf
     // A non-signal-based-sampler can be interrupted by signal based sampler,
-    // then we end up multiple HotspotSupport::walkVM() calls on stack,
+    // then we end up with multiple HotspotSupport::walkVM() calls on stack,
     // each one sets up jmp_buf, they need to be chained to jump back to
     // correct location.
     jmp_buf* prev_jmp_buf = prof_thread->getJmpCtx();

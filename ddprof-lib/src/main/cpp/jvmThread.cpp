@@ -17,10 +17,12 @@ bool JVMThread::initialize() {
   void* current_thread = currentThreadSlow();
   // Called by known JavaThread, cannot be nullptr
   assert(current_thread != nullptr && "Must not be nullptr");
-  _jvm_thread.initialize(current_thread);
+  if (current_thread == nullptr) {
+    return false;
+  }
   // _tid is side-effect of currentThreadSlow()
   assert(_tid != nullptr);
-  return _jvm_thread.isKeyValid();
+  return _jvm_thread.initialize(current_thread);
 }
 
 bool JVMThread::isInitialized() {

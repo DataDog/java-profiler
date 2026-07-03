@@ -60,8 +60,12 @@ private:
   static void doInitTLSKey();
   static inline void freeKey(void *key);
 
-  // longjmp buffer. used by hotspot only at this moment
-  jmp_buf* _jmp_buf;
+  // longjmp buffer. Used by hotspot only at this moment.
+  // Published in walkVM() and consumed in checkFault() from an asynchronous
+  // SEGV-handler context on the same thread; atomic makes the publish/observe
+  // ordering explicit instead of relying on plain load/store, matching how
+  // _crash_depth is hardened below.
+  std::atomic<jmp_buf*> _jmp_buf;
 
   u64 _pc;
   u64 _sp;
@@ -177,11 +181,11 @@ public:
 
   // this is called in the crash handler to avoid recursing
   bool enterCrashHandler() {
-    u32 prev = __atomic_load_n(&_crash_depth, __ATOMIC_RELAXED);
-    if (prev < CRASH_HANDLER_NESTING_LIMIT) {
-      __atomic_add_fetch(&_crash_depth, 1, __ATOMIC_RELAXED);
+    u32 depth = __atomic_add_fetch(&_crash_depth, 1, __ATOMIC_RELAXED);
+    if (depth <= CRASH_HANDLER_NESTING_LIMIT) {
       return true;
     }
+    __atomic_sub_fetch(&_crash_depth, 1, __ATOMIC_RELAXED);
     return false;
   }
 

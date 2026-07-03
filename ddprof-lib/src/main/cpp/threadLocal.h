@@ -210,8 +210,9 @@ public:
     // The key is created by JVM, find out the key.
     // This method should be called very early at Profiler startup
     // time
-    void initialize(void* current_thread) {
-        // Called from known JavaThread, it must not be nullptr.
+    bool initialize(void* current_thread) {
+        // Called from known JavaThread, it must not be nullptr,
+        // and caller already check nullptr
         assert(current_thread != nullptr && "Should not reach here");
 
         long max_keys = sysconf(_SC_THREAD_KEYS_MAX);
@@ -224,7 +225,7 @@ public:
                 break;
             }
         }
-        assert(isKeyValid() && "Invalid thread key");
+        return isKeyValid();
     }
 
     bool isKeyValid() const {
@@ -235,16 +236,14 @@ public:
         return _key;
     }
 
-void set(JVMThread* value) = delete;
-
     void* get() const {
         assert(isKeyValid() && "Invalid pthread key");
         return pthread_getspecific(_key);
     }
 
-    void clear() {
-        assert(false && "Should not reach here");
-    }
+    // The value is owned by JVM, should not modify it
+    void set(JVMThread* value) = delete;
+    void clear() = delete;
 };
 
 

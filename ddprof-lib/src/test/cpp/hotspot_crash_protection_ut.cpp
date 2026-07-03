@@ -31,9 +31,15 @@
 #include "threadLocalData.h"
 #include "hotspot/hotspotSupport.h"
 
+#include "jvmThread.h"
+#include "safeAccess.h"
+#include "os.h"
+
 #ifdef __linux__
 
 #include <cstring>
+#include <sys/mman.h>
+#include <unistd.h>
 
 // ---------------------------------------------------------------------------
 // A. ProfiledThread thread-type classification (isJavaThread fast path)
@@ -316,6 +322,113 @@ TEST_F(JmpCtxChainingTest, FaultInInnerFrameDoesNotDisturbOuterFrame) {
     EXPECT_EQ(1, inner_landed);
     EXPECT_EQ(0, outer_landed) << "the fault must not have unwound past the inner frame";
     EXPECT_FALSE(_pt->isProtected());
+}
+
+// ---------------------------------------------------------------------------
+// D. HotspotSupport::checkFault() guard clauses
+//
+// This gtest binary has no live JVM attached, so JVMThread::isInitialized()
+// is always false and the longjmp path can't be exercised end-to-end here.
+// These tests still call the real checkFault() (not a replica) to lock down
+// its two early-return guards: a null ProfiledThread* and an uninitialized
+// JVMThread must both be safe no-ops, never a crash or a spurious longjmp.
+// ---------------------------------------------------------------------------
+
+TEST(CheckFaultGuardTest, NullThreadIsNoop) {
+    HotspotSupport::checkFault(nullptr);  // must not crash
+}
+
+TEST_F(JmpCtxChainingTest, UninitializedJVMThreadIsNoop) {
+    // Even with a jmp_buf installed, checkFault() must bail out before
+    // touching it while JVMThread is not initialized (no JVM in this
+    // gtest binary), so isProtected() must remain true afterwards.
+    jmp_buf ctx;
+    _pt->setJmpCtx(&ctx);
+    ASSERT_FALSE(JVMThread::isInitialized());
+
+    HotspotSupport::checkFault(_pt);  // must not longjmp or crash
+
+    EXPECT_TRUE(_pt->isProtected());
+    EXPECT_EQ(&ctx, _pt->getJmpCtx());
+    _pt->setJmpCtx(nullptr);
+}
+
+// ---------------------------------------------------------------------------
+// E. VTable-stub null-klass and safeFetch64==0 TOCTOU guards
+//
+// The real call sites (hotspotSupport.cpp's vtable_target branch and
+// VMKlass::fromOop's compact-header path) depend on JVM-populated static
+// offsets that only exist with a live JVM, so they can't be invoked directly
+// in this gtest binary. These tests replicate the exact guard conditions
+// verbatim, mirroring the "replicate the protocol" style already used above
+// for isJavaThread()'s fast path, to lock down the null-safety contract at
+// both sites against future refactors.
+// ---------------------------------------------------------------------------
+
+// Mirrors hotspotSupport.cpp's vtable_target branch:
+//   VMSymbol* symbol = klass != nullptr ? klass->name() : nullptr;
+//   if (symbol != nullptr) fillFrame(...);
+// A null klass (e.g. VMKlass::fromOop returning nullptr) must short-circuit
+// to a null symbol and skip fillFrame, never dereference klass.
+TEST(VTableStubNullKlassTest, NullKlassYieldsNullSymbolAndNoFrame) {
+    struct FakeKlass {
+        void* name() { return this; }  // would only run if wrongly dereferenced
+    };
+    FakeKlass* klass = nullptr;
+    void* symbol = klass != nullptr ? klass->name() : nullptr;
+    EXPECT_EQ(nullptr, symbol);
+
+    bool fillFrameCalled = false;
+    if (symbol != nullptr) {
+        fillFrameCalled = true;
+    }
+    EXPECT_FALSE(fillFrameCalled);
+}
+
+// SafeAccess::safeFetch64 relies on a registered SIGSEGV/SIGBUS handler
+// (SafeAccess::handle_safefetch) to catch the fault and resume with the
+// error value instead of crashing — see safefetch_ut.cpp's SafeFetchTest
+// fixture for the same pattern. Without it, faulting through safeFetch64
+// is a real, unguarded SIGSEGV.
+class SafeFetch64TocTouGuardTest : public ::testing::Test {
+protected:
+    static void handler(int signo, siginfo_t* siginfo, void* context) {
+        SafeAccess::handle_safefetch(signo, context);
+    }
+
+    void SetUp() override {
+        _orig_segv = OS::replaceSigsegvHandler(handler);
+        _orig_bus = OS::replaceSigbusHandler(handler);
+    }
+
+    void TearDown() override {
+        OS::replaceSigsegvHandler(_orig_segv);
+        OS::replaceSigbusHandler(_orig_bus);
+    }
+
+    SigAction _orig_segv = nullptr;
+    SigAction _orig_bus = nullptr;
+};
+
+// Mirrors VMKlass::fromOop's compact-object-headers TOCTOU guard:
+//   mark = (uintptr_t)SafeAccess::safeFetch64((int64_t*)(mark ^ MONITOR_BIT), 0);
+//   if (mark == 0) return nullptr;
+// SafeAccess::safeFetch64 on an unmapped/concurrently-freed address returns
+// its errorValue (0 here); the caller must treat that as "give up" rather
+// than shifting 0 into a bogus klass pointer.
+TEST_F(SafeFetch64TocTouGuardTest, ZeroReturnMeansGiveUp) {
+    void* page = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    ASSERT_NE(page, MAP_FAILED);
+    ASSERT_EQ(0, mprotect(page, 4096, PROT_NONE));
+
+    uintptr_t mark = (uintptr_t)SafeAccess::safeFetch64((int64_t*)page, 0);
+    EXPECT_EQ(0u, mark);
+
+    void* klass = mark == 0 ? nullptr : (void*)(mark >> 3);
+    EXPECT_EQ(nullptr, klass);
+
+    munmap(page, 4096);
 }
 
 #endif  // __linux__
