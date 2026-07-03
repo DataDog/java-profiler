@@ -747,12 +747,16 @@ Java_com_datadoghq_profiler_JavaProfiler_initializeContextTLS0(JNIEnv* env, jcla
 // Byte layout constants shared with ThreadContext (see otel_context.h / ThreadContext.java).
 static const int OTEL_LRS_ENTRY_SIZE = 18; // fixed attrs_data[0] entry: key(1)+len(1)+16 hex bytes
 
-// Writes the 16 hex value bytes of the fixed LRS attrs_data entry in place (attrs_data[2..18)).
-// The entry header (key_index=0, length=16) is initialized by the ThreadContext ctor and left
-// untouched here; only the value is overwritten. Mirrors ThreadContext.writeLrsHex.
-static inline void otelWriteLrsHex(OtelThreadContextRecord* record, u64 v) {
+// Writes the full fixed LRS attrs_data entry: header (key_index=0, length=16) at attrs_data[0..2)
+// plus the 16 hex value bytes at attrs_data[2..18). The all-native path must write the header
+// itself (not rely on the ThreadContext ctor) so it works on a record that only saw the
+// ProfiledThread zero-init — i.e. when no DirectByteBuffer / ThreadContext was ever created
+// (the phase-2 pure-native case). Mirrors ThreadContext's LRS entry layout.
+static inline void otelWriteLrsEntry(OtelThreadContextRecord* record, u64 v) {
   static const char HEXD[16] =
       {'0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'};
+  record->attrs_data[0] = 0;   // OTEP key_index reserved for LRS
+  record->attrs_data[1] = 16;  // fixed LRS value length
   uint8_t* hex = record->attrs_data + 2;
   for (int i = 15; i >= 0; i--) {
     hex[i] = (uint8_t)HEXD[v & 0xF];
@@ -863,7 +867,7 @@ Java_com_datadoghq_profiler_JavaProfiler_setTraceContext0(JNIEnv* env, jclass un
   memset(enc, 0, DD_TAGS_CAPACITY * sizeof(u32));       // reset per-span custom slots
   record->attrs_data_size = (uint16_t)OTEL_LRS_ENTRY_SIZE;
   *lrs = (u64)localRootSpanId;
-  otelWriteLrsHex(record, (u64)localRootSpanId);
+  otelWriteLrsEntry(record, (u64)localRootSpanId);
 
   // activation attributes
   if (has0) { otelWriteSlot(record, enc, slot0, (u32)enc0, b0, len0); }
@@ -894,7 +898,7 @@ Java_com_datadoghq_profiler_JavaProfiler_clearTraceContext0(JNIEnv* env, jclass 
   memset(enc, 0, DD_TAGS_CAPACITY * sizeof(u32));
   *lrs = 0;
   record->attrs_data_size = (uint16_t)OTEL_LRS_ENTRY_SIZE;
-  otelWriteLrsHex(record, 0);
+  otelWriteLrsEntry(record, 0);
   // clear path leaves valid=0 (no attach), mirroring ThreadContext.clearContextDirect.
 }
 
