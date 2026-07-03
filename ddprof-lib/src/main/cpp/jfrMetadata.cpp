@@ -139,7 +139,6 @@ void JfrMetadata::initialize(
                   << field("mode", T_EXECUTION_MODE, "Execution Mode", F_CPOOL)
                   << field("weight", T_LONG, "Sample weight")
                   << field("correlationId", T_LONG, "Async Stack Trace Correlation ID")
-                  << field("sampleId", T_LONG, "Sample ID")
                   << field("spanId", T_LONG, "Span ID")
                   << field("localRootSpanId", T_LONG, "Local Root Span ID") ||
               contextAttributes)

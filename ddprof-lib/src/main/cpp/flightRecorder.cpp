@@ -1814,7 +1814,6 @@ void Recording::recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
   buf->put8(static_cast<int>(event->_execution_mode));
   buf->putVar64(event->_weight);
   buf->putVar64(correlation_id);
-  buf->putVar64(event->_sample_id);
   writeCurrentContext(buf);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);

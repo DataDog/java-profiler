@@ -396,18 +396,14 @@ public:
   bool recordSample(void *ucontext, u64 weight, int tid, jint event_type,
                     u64 call_trace_id, Event *event,
                     u64 *recorded_call_trace_id = nullptr);
-  void setWallSampleIdIfNeeded(jint event_type, Event *event) {
-    if (event_type == BCI_WALL && _wall_precheck) {
-      ((ExecutionEvent *)event)->_sample_id = atomicIncRelaxed(_sample_seq);
-    }
-  }
   // Delegated sample path: stack-walking is performed by the HotSpot JFR
   // RequestStackTrace extension (the JVM emits the stack trace into its own
   // JFR recording). We only emit the CPU/wall sample event with no
   // stack-trace reference, tagged by the correlation ID we passed to
   // RequestStackTrace as user_data.
   bool recordSampleDelegated(void *ucontext, u64 weight, int tid,
-                             jint event_type, Event *event);
+                             jint event_type, Event *event,
+                             u64 *recorded_correlation_id = nullptr);
   u64 recordJVMTISample(u64 weight, int tid, jthread thread, jint event_type, Event *event, bool deferred);
   void recordDeferredSample(int tid, u64 call_trace_id, jint event_type, Event *event);
   void recordExternalSample(u64 weight, int tid, int num_frames,

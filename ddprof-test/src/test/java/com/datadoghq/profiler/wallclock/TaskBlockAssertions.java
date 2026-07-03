@@ -29,6 +29,8 @@ final class TaskBlockAssertions {
             attr("suppressedSampleCount", "suppressedSampleCount", "Suppressed Sample Count", NUMBER);
     private static final IAttribute<IQuantity> CORRELATION_ID =
             attr("correlationId", "correlationId", "Async Stack Trace Correlation ID", NUMBER);
+    private static final IAttribute<IQuantity> METHOD_SAMPLE_ID =
+            attr("sampleId", "sampleId", "Sample ID", NUMBER);
     private static final IAttribute<String> OBSERVED_BLOCKING_STATE =
             attr("observedBlockingState", "observedBlockingState", "Observed Blocking State", PLAIN_TEXT);
     private static final IAttribute<IQuantity> EPOCH_TASK_BLOCK_EMITTED =
@@ -103,6 +105,20 @@ final class TaskBlockAssertions {
     static void assertContainsCorrelationId(IItemCollection taskBlockEvents) {
         Set<Long> correlationIds = nonZeroValues(taskBlockEvents, CORRELATION_ID);
         assertTrue(correlationIds.size() > 0, "Expected at least one non-zero TaskBlock correlationId");
+    }
+
+    static void assertMethodSampleSchemaHasCorrelationIdButNoSampleId(IItemCollection methodSampleEvents) {
+        int checked = 0;
+        for (IItemIterable iterable : methodSampleEvents) {
+            checked++;
+            assertTrue(
+                    CORRELATION_ID.getAccessor(iterable.getType()) != null,
+                    "MethodSample must expose correlationId");
+            assertNull(
+                    METHOD_SAMPLE_ID.getAccessor(iterable.getType()),
+                    "MethodSample must not expose sampleId");
+        }
+        assertTrue(checked > 0, "Expected at least one MethodSample type to inspect");
     }
 
     static void assertWallClockEpochDoesNotExposeTaskBlockCounters(IItemCollection epochEvents) {

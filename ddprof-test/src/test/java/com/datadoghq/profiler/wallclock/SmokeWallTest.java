@@ -42,6 +42,7 @@ public class SmokeWallTest extends CStackAwareAbstractProfilerTest {
         verifyCStackSettings();
 
         IItemCollection events = verifyEvents("datadog.MethodSample");
+        TaskBlockAssertions.assertMethodSampleSchemaHasCorrelationIdButNoSampleId(events);
 
         for (IItemIterable cpuSamples : events) {
             IMemberAccessor<String, IItem> frameAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(cpuSamples.getType());

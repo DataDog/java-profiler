@@ -484,9 +484,10 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
   // the thread is currently inside JVM-internal (non-Java) code.
   // JVMTI-delegated samples carry a correlation_id, not a call_trace_id, so
   // unowned tail flushing remains limited to the ASGCT wall engine.
+  u64 recorded_correlation_id = 0;
   bool recorded = Profiler::instance()->recordSampleDelegated(
-      nullptr, last_sample, tid, BCI_WALL, &event);
-  finishWallPrecheck(precheck, recorded, event._call_trace_id, event._correlation_id);
+      nullptr, last_sample, tid, BCI_WALL, &event, &recorded_correlation_id);
+  finishWallPrecheck(precheck, recorded, 0, recorded_correlation_id);
   Shims::instance().setSighandlerTid(-1);
   errno = saved_errno;
 }
