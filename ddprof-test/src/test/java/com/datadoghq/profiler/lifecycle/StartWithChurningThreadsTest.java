@@ -5,6 +5,7 @@
 
 package com.datadoghq.profiler.lifecycle;
 
+import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JavaProfiler;
 import com.datadoghq.profiler.Platform;
 
@@ -48,7 +49,7 @@ public class StartWithChurningThreadsTest {
     private static final int CYCLES = 500;
     // filter= disables thread filtering so all threads receive SIGVTALRM,
     // maximising the chance of racing execute() with active thread churn.
-    private static final String PROFILER_CMD = "start,wall=1ms,filter=,jfr,file=";
+    private static final String PROFILER_OPTIONS = "wall=1ms,filter=";
 
     @Timeout(120)
     @Test
@@ -60,6 +61,7 @@ public class StartWithChurningThreadsTest {
         JavaProfiler profiler = JavaProfiler.getInstance();
         Path recordings = Files.createTempDirectory("lifecycle-cell2-");
         Queue<Throwable> errors = new LinkedBlockingQueue<>();
+        String profilerCmd = "start," + AbstractProfilerTest.applyProfilerOptionOverrides(PROFILER_OPTIONS) + ",jfr,file=";
 
         AtomicBoolean running = new AtomicBoolean(true);
         // Latch: churn threads signal they are running before execute() is called,
@@ -84,7 +86,7 @@ public class StartWithChurningThreadsTest {
                 Path jfr = Files.createTempFile(recordings, "c2-" + cycle + "-", ".jfr");
                 try {
                     // execute() races with active thread churn
-                    profiler.execute(PROFILER_CMD + jfr.toAbsolutePath());
+                    profiler.execute(profilerCmd + jfr.toAbsolutePath());
                     Thread.sleep(cycle % 3);
                     profiler.stop();
                 } catch (Throwable t) {

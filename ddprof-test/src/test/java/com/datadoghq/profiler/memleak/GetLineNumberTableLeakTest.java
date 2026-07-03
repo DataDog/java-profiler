@@ -143,7 +143,7 @@ public class GetLineNumberTableLeakTest extends AbstractDynamicClassTest {
 
       profiler.execute(
           "start,"
-              + getProfilerCommand()
+              + applyProfilerOptionOverrides(getProfilerCommand())
               + ",jfr,mcleanup=false,file="
               + noCleanupBaseFile);
 
@@ -182,7 +182,7 @@ public class GetLineNumberTableLeakTest extends AbstractDynamicClassTest {
       classCounter = 0;
 
       profiler.execute(
-          "start," + getProfilerCommand() + ",jfr,mcleanup=true,file=" + withCleanupBaseFile);
+          "start," + applyProfilerOptionOverrides(getProfilerCommand()) + ",jfr,mcleanup=true,file=" + withCleanupBaseFile);
 
       Thread.sleep(300); // Stabilize
 

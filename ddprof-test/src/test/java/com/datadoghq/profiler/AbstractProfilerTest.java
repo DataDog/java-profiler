@@ -410,30 +410,44 @@ public abstract class AbstractProfilerTest {
       }
     }
 
-    // Rebuild command
+    // Rebuild command, preserving keys with empty values (e.g. "filter=")
+    // so untouched base options round-trip exactly.
     StringBuilder result = new StringBuilder();
     for (Map.Entry<String, String> entry : options.entrySet()) {
       if (result.length() > 0) {
         result.append(",");
       }
-      // Skip key with empty value
-      if (!entry.getValue().isEmpty()) {
-        result.append(entry.getKey());
-        result.append("=").append(entry.getValue());
-      }
+      result.append(entry.getKey());
+      result.append("=").append(entry.getValue());
     }
     return result.toString();
   }
 
-  private String getAmendedProfilerCommand() {
-    String profilerCommand = getProfilerCommand();
-
-    // Apply user-provided options from -Pprofiler.options (override test defaults)
+  /**
+   * Applies user-provided options from -Pprofiler.options (via the
+   * "ddprof.test.options" system property) to a profiler command string,
+   * overriding any matching keys already present in it.
+   *
+   * <p>Tests that build their profiler command directly (rather than through
+   * {@link #getProfilerCommand()}/{@link #getAmendedProfilerCommand()}) must
+   * call this before {@code JavaProfiler.execute(...)} so that
+   * -Pprofiler.options reliably applies across the whole test set, not just
+   * to subclasses of this class.
+   *
+   * @param profilerCommand the command to apply overrides to
+   * @return the command with overrides applied, or unchanged if none were requested
+   */
+  public static String applyProfilerOptionOverrides(String profilerCommand) {
     String userOptions = System.getProperty("ddprof.test.options");
     if (userOptions != null && !userOptions.isEmpty()) {
       profilerCommand = mergeProfilerOptions(profilerCommand, userOptions);
       System.out.println("[TEST] Applied profiler.options: " + userOptions);
     }
+    return profilerCommand;
+  }
+
+  private String getAmendedProfilerCommand() {
+    String profilerCommand = applyProfilerOptionOverrides(getProfilerCommand());
 
     String testCstack = (String)testParams.get("cstack");
     if (testCstack != null && !profilerCommand.contains("cstack=")) {

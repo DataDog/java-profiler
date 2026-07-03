@@ -461,10 +461,13 @@ class ProfilerTestPlugin : Plugin<Project> {
 
                 // JVM args
                 allArgs.addAll(testConfig.standardJvmArgs)
+                // Version-gated at execution time, when the real test JVM (JAVA_TEST_HOME) is resolvable.
+                allArgs.addAll(carrierExportJvmArgs(project))
                 if (extension.nativeLibDir.isPresent) {
                     allArgs.add("-Djava.library.path=${extension.nativeLibDir.get().asFile.absolutePath}")
                 }
                 allArgs.addAll(testConfig.extraJvmArgs)
+                allArgs.addAll(testConfig.configJvmArgs)
 
                 // System properties
                 testConfig.systemProperties.forEach { (key, value) ->
