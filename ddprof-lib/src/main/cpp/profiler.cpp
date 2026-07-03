@@ -1189,7 +1189,6 @@ Engine *Profiler::selectAllocEngine(Arguments &args) {
 
 Error Profiler::checkJvmCapabilities() {
   if (!JVMThread::hasJavaThreadId()) {
-    assert(false);
     return Error("Could not find Thread ID field. Unsupported JVM?");
   }
 
@@ -1226,9 +1225,7 @@ void Profiler::check_JDK_8313796_workaround() {
     _need_JDK_8313796_workaround = !fixed_version;
 }
 
-
-Error Profiler::start(Arguments &args, bool reset) {
-  MutexLocker ml(_state_lock);
+Error Profiler::checkState() {
   State s = state();
   if (s == ERROR) {
     return Error("Profiler encountered fatal error");
@@ -1243,12 +1240,21 @@ Error Profiler::start(Arguments &args, bool reset) {
   } else if (s > IDLE) {
     return Error("Profiler already started");
   }
+  return Error::OK;
+}
+
+Error Profiler::start(Arguments &args, bool reset) {
+  MutexLocker ml(_state_lock);
+  Error error = checkState();
+  if (error) {
+    return error;
+  }
 
   // Force libgcc_s to load now (idempotent dlopen) so the JVM's DWARF
   // unwinder cannot lazy-load it later from signal context.
   prewarmUnwinder();
 
-  Error error = checkJvmCapabilities();
+  error = checkJvmCapabilities();
   if (error) {
     return error;
   }
@@ -1601,15 +1607,12 @@ Error Profiler::stop() {
 
 Error Profiler::check(Arguments &args) {
   MutexLocker ml(_state_lock);
-  State s = state();
-  if (s) {
-    return Error("Profiler encountered fatal error");
-  }
-  if (s > IDLE) {
-    return Error("Profiler already started");
+  Error error = checkState();
+  if (error) {
+    return error;
   }
 
-  Error error = checkJvmCapabilities();
+  error = checkJvmCapabilities();
 
   if (!error && (args._event != NULL || args._cpu >= 0)) {
     _cpu_engine = selectCpuEngine(args);

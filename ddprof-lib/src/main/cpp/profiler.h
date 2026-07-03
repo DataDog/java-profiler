@@ -64,6 +64,7 @@ enum State { NEW, IDLE, RUNNING, TERMINATED, ERROR };
 // Required because this class contains the _locks[] SpinLock array.
 class alignas(alignof(SpinLock)) Profiler {
   friend VM;
+  friend class ProfilerTestAccessor;
 
 private:
   // signal handlers
@@ -183,6 +184,7 @@ private:
     return _state.load(std::memory_order_relaxed);
   }
 
+  Error checkState();
 public:
   Profiler()
       : _state_lock(), _state(State::NEW), _class_unload_hook_trap(2),

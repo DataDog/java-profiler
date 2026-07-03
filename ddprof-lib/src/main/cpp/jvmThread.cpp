@@ -15,8 +15,6 @@ ThreadLocal<JVMThread*> JVMThread::_jvm_thread;
 
 bool JVMThread::initialize() {
   void* current_thread = currentThreadSlow();
-  // Called by known JavaThread, cannot be nullptr
-  assert(current_thread != nullptr && "Must not be nullptr");
   if (current_thread == nullptr) {
     return false;
   }
