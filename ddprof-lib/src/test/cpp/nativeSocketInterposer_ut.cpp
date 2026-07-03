@@ -1527,10 +1527,10 @@ TEST_F(NativeSocketInterposerFdTest, ConcurrentFdReuseInvalidationDoesNotPreserv
     });
 
     ASSERT_EQ(0, closeThroughHook(reused_fd));
-    int datagram_fd = datagramSocketAtFd(reused_fd);
     done.store(true, std::memory_order_release);
     reader.join();
 
+    int datagram_fd = datagramSocketAtFd(reused_fd);
     ASSERT_EQ(reused_fd, datagram_fd);
 
     EXPECT_FALSE(NativeSocketInterposer::instance()->isStreamSocket(datagram_fd));
