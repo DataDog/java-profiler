@@ -233,7 +233,7 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   // thread_native_entry setting JVM TLS (PROF-13072): skip at most one signal
   // per thread. Pure native threads (where JVMThread::current() is always null)
   // are allowed through once the one-shot window expires.
-  if (current != nullptr && JVMThread::isInitialized() && JVMThread::current() == nullptr
+  if (current != nullptr && JVMThread::current() == nullptr
       && current->inInitWindow()) {
     current->tickInitWindow();
     return;
@@ -432,7 +432,7 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
   }
   int saved_errno = errno;
   ProfiledThread *current = ProfiledThread::currentSignalSafe();
-  if (current != nullptr && JVMThread::isInitialized() && JVMThread::current() == nullptr
+  if (current != nullptr && JVMThread::current() == nullptr
       && current->inInitWindow()) {
     current->tickInitWindow();
     errno = saved_errno;

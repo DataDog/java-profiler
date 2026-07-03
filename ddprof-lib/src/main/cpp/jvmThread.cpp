@@ -21,12 +21,10 @@ bool JVMThread::initialize() {
     return false;
   }
   // _tid is side-effect of currentThreadSlow()
-  assert(_tid != nullptr);
+  if (_tid == nullptr) {
+    return false;
+  }
   return _jvm_thread.initialize(current_thread);
-}
-
-bool JVMThread::isInitialized() {
-    return (_tid != nullptr && _jvm_thread.isKeyValid());
 }
 
 int JVMThread::nativeThreadId(JNIEnv* jni, jthread thread) {

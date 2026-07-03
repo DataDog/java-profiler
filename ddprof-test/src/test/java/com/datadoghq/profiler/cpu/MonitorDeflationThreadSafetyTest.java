@@ -14,13 +14,6 @@ import org.junitpioneer.jupiter.RetryingTest;
  * dereferenced those fields unconditionally for every non-null VMThread,
  * which caused crashes inside MonitorDeflationThread.
  *
- * Fix: VMThread::isJavaThread() gates all JavaThread-only field accesses
- * (anchor(), inDeopt(), compiledMethod(), …).  It uses a two-step check:
- *   1. Fast path — a JVMTI ThreadStart-cached flag on ProfiledThread.
- *   2. Slow path — vtable majority vote (2-of-3 entries match a known
- *      JavaThread) for threads that bypass the JVMTI callback (compiler
- *      threads, MonitorDeflationThread, etc.).
- *
  * This test forces ObjectMonitor inflation and deflation to race with CPU
  * profiler signal delivery.  If the fix regresses, the JVM will crash with
  * a SIGSEGV or SIGBUS inside MonitorDeflationThread before the test ends.

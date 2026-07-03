@@ -327,30 +327,14 @@ TEST_F(JmpCtxChainingTest, FaultInInnerFrameDoesNotDisturbOuterFrame) {
 // ---------------------------------------------------------------------------
 // D. HotspotSupport::checkFault() guard clauses
 //
-// This gtest binary has no live JVM attached, so JVMThread::isInitialized()
-// is always false and the longjmp path can't be exercised end-to-end here.
+// This gtest binary has no live JVM attached, so JVMThread is not initialized
+// and the longjmp path can't be exercised end-to-end here.
 // These tests still call the real checkFault() (not a replica) to lock down
-// its two early-return guards: a null ProfiledThread* and an uninitialized
-// JVMThread must both be safe no-ops, never a crash or a spurious longjmp.
+// its early-return guard: a null ProfiledThread*
 // ---------------------------------------------------------------------------
 
 TEST(CheckFaultGuardTest, NullThreadIsNoop) {
     HotspotSupport::checkFault(nullptr);  // must not crash
-}
-
-TEST_F(JmpCtxChainingTest, UninitializedJVMThreadIsNoop) {
-    // Even with a jmp_buf installed, checkFault() must bail out before
-    // touching it while JVMThread is not initialized (no JVM in this
-    // gtest binary), so isProtected() must remain true afterwards.
-    jmp_buf ctx;
-    _pt->setJmpCtx(&ctx);
-    ASSERT_FALSE(JVMThread::isInitialized());
-
-    HotspotSupport::checkFault(_pt);  // must not longjmp or crash
-
-    EXPECT_TRUE(_pt->isProtected());
-    EXPECT_EQ(&ctx, _pt->getJmpCtx());
-    _pt->setJmpCtx(nullptr);
 }
 
 // ---------------------------------------------------------------------------

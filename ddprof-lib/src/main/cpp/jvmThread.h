@@ -25,12 +25,11 @@ public:
      * no synchronization is needed
      */
     static bool initialize();
-    static bool isInitialized();
 
     static inline void* current() {
-        // Assertion to ensure initialize() is called. Otherwise,
-        // the key should be valid, JVM depends on it
-        assert(_jvm_thread.isKeyValid() && "Must be");
+        // If the key is invalid, we should *never* reach here, because
+        // profiling should have been disabled. See VM::initShared()d
+        assert(_jvm_thread.isKeyValid() && "Should not reach here");
         return _jvm_thread.get();
     }
 

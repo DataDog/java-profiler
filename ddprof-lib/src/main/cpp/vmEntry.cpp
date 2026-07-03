@@ -324,7 +324,16 @@ bool VM::initShared(JavaVM* vm) {
     return false;
   }
 
+  // Initialize VMStructs
   VMStructs::init(lib);
+
+  // Check JVMSupport initialization state.
+  // Must call after JVM library is loaded and JVM type, version number
+  // and etc. are resolved
+  if (!JVMSupport::initialize()) {
+    return false;
+  }
+
 
   // Mark thread entry points for all JVMs (critical for correct stack unwinding)
   lib->mark(isThreadEntry, MARK_THREAD_ENTRY);
@@ -556,9 +565,6 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
 void VM::ready(jvmtiEnv *jvmti, JNIEnv *jni) {
   Profiler::check_JDK_8313796_workaround();
   Profiler::setupSignalHandlers();
-  if (!JVMThread::initialize()) {
-    Log::warn("JVMThread::initialize() failed - JVM thread identification will be degraded");
-  }
   
   if (isHotspot()) {
     JitWriteProtection jit(true);

@@ -13,6 +13,7 @@
 #include "hotspot/jitCodeCache.h"
 #include "hotspot/vmStructs.inline.h"
 #include "jvmSupport.inline.h"
+#include "jvmThread.h"
 #include "profiler.h"
 #include "stackWalker.inline.h"
 #include "threadLocal.h"
@@ -959,11 +960,6 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 void HotspotSupport::checkFault(ProfiledThread* thrd) {
     // Should not get to here (?)
     if (thrd == nullptr) {
-        return;
-    }
-
-    if (!JVMThread::isInitialized()) {
-        // JVM has not been loaded or has not been initialized yet
         return;
     }
 

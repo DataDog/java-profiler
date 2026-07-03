@@ -192,7 +192,7 @@ public:
   // needs to be called when the crash handler exits
   void exitCrashHandler() {
     if (__atomic_load_n(&_crash_depth, __ATOMIC_RELAXED) > 0) {
-      __atomic_add_fetch(&_crash_depth, -1, __ATOMIC_RELAXED);
+      __atomic_sub_fetch(&_crash_depth, 1, __ATOMIC_RELAXED);
     }
   }
 

@@ -19,6 +19,16 @@
 
 volatile JVMSupport::JMethodIDLoadStats JVMSupport::jmethodID_load_state = JVMSupport::No_loaded;
 
+bool JVMSupport::initialize() {
+    // Check if JVMThread key is valid, the key is critical to access JVM `current` thread.
+    if (!JVMThread::initialize()) {
+        return false;
+    }
+
+    // Add ProfiledThread key checking here in next PR
+    return true;
+}
+
 JVMSupport::JMethodIDLoadStats JVMSupport::getLoadState() {
     // Volatile read
     return __atomic_load_n(&jmethodID_load_state, __ATOMIC_ACQUIRE);

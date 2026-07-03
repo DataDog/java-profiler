@@ -40,6 +40,11 @@ class JVMSupport {
     static JMethodIDLoadStats getLoadState();
     static void setLoadState(JMethodIDLoadStats state);
 public:
+    // Initialize JVM support - check JVM related resources are available.
+    // Return false if any critical resource is not available, which should
+    // result in disabling profiling.
+    static bool initialize();
+
     // Initializing JVM support
     static void initExecution(Arguments& args, jvmtiEnv* jvmti, JNIEnv* jni);
 

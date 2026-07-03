@@ -114,7 +114,7 @@ void ITimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     return;
   }
   ProfiledThread *current = ProfiledThread::currentSignalSafe();
-  if (current != nullptr && JVMThread::isInitialized() && JVMThread::current() == nullptr
+  if (current != nullptr && JVMThread::current() == nullptr
       && current->inInitWindow()) {
     current->tickInitWindow();
     errno = saved_errno;
