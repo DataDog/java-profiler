@@ -18,6 +18,7 @@
 #include "arguments.h"
 #include "vmEntry.h"
 
+#include <errno.h>
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,21 +43,13 @@ static const Multiplier UNIVERSAL[] = {
     {'n', 1}, {'u', 1000}, {'m', 1000000},    {'s', 1000000000},
     {'b', 1}, {'k', 1024}, {'g', 1073741824}, {0, 0}};
 
-// Statically compute hash code of a string containing up to 12 [a-z] letters
-#define HASH(s)                                                                \
-  ((s[0] & 31LL) | (s[1] & 31LL) << 5 | (s[2] & 31LL) << 10 |                  \
-   (s[3] & 31LL) << 15 | (s[4] & 31LL) << 20 | (s[5] & 31LL) << 25 |           \
-   (s[6] & 31LL) << 30 | (s[7] & 31LL) << 35 | (s[8] & 31LL) << 40 |           \
-   (s[9] & 31LL) << 45 | (s[10] & 31LL) << 50 | (s[11] & 31LL) << 55)
-
 // Simulate switch statement over string hashes
 #define SWITCH(arg)                                                            \
-  long long arg_hash = hash(arg);                                              \
   if (0)
 
 #define CASE(s)                                                                \
   }                                                                            \
-  else if (arg_hash == HASH(s "            ")) {
+  else if (strcasecmp(arg, s) == 0) {
 
 #define DEFAULT()                                                              \
   }                                                                            \
@@ -260,6 +253,17 @@ Error Arguments::parse(const char *args) {
         msg = "jstackdepth must be > 0";
       }
 
+      CASE("fjmethodid")
+      if (value != nullptr) {
+        if (strcmp(value, "false") == 0) {
+          _force_jmethodID = false;
+        } else if (strcmp(value, "true") == 0) {
+          _force_jmethodID = true;
+        } else {
+          msg = "Invalid jmethodID creation value";
+        }
+      }
+
       CASE("safemode")
       _safe_mode = value == NULL ? INT_MAX : (int)strtol(value, NULL, 0);
 
@@ -386,6 +390,14 @@ Error Arguments::parse(const char *args) {
         _jvmtistacks = true;
       }
 
+      CASE("wallprecheck")
+      if (value != NULL) {
+        _wall_precheck = strcmp(value, "false") != 0 && strcmp(value, "0") != 0;
+      } else {
+        // No value means enable
+        _wall_precheck = true;
+      }
+
       CASE("wallsampler")
       if (value != NULL) {
           switch (value[0]) {
@@ -402,6 +414,18 @@ Error Arguments::parse(const char *args) {
       _nativemem = value == NULL ? 0 : parseUnits(value, BYTES);
       if (_nativemem < 0) {
         msg = "nativemem must be >= 0";
+      }
+
+      CASE("natsock")
+      if (value != NULL) {
+        _nativesocket_interval = parseUnits(value, NANOS);
+        if (_nativesocket_interval < 0) {
+          msg = "natsock interval must be >= 0";
+        } else {
+          _nativesocket = true;
+        }
+      } else {
+        _nativesocket = true;
       }
 
       DEFAULT()
@@ -435,15 +459,6 @@ const char *Arguments::file() {
     return expandFilePattern(_file);
   }
   return _file;
-}
-
-// Should match statically computed HASH(arg)
-long long Arguments::hash(const char *arg) {
-  long long h = 0;
-  for (int shift = 0; *arg != 0; shift += 5) {
-    h |= (*arg++ & 31LL) << shift;
-  }
-  return h;
 }
 
 // Expands the following patterns:
@@ -496,7 +511,11 @@ const char *Arguments::expandFilePattern(const char *pattern) {
 
 long Arguments::parseUnits(const char *str, const Multiplier *multipliers) {
   char *end;
+  errno = 0;
   long result = strtol(str, &end, 0);
+  if (errno == ERANGE) {
+    return -1;
+  }
 
   char c = *end;
   if (c == 0) {
@@ -508,6 +527,9 @@ long Arguments::parseUnits(const char *str, const Multiplier *multipliers) {
 
   for (const Multiplier *m = multipliers; m->symbol; m++) {
     if (c == m->symbol) {
+      if (m->multiplier != 1 && (result > LONG_MAX / m->multiplier || result < LONG_MIN / m->multiplier)) {
+        return -1;
+      }
       return result * m->multiplier;
     }
   }

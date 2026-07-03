@@ -166,23 +166,34 @@ object PlatformUtils {
     fun checkFuzzerSupport(): Boolean {
         return try {
             val testFile = createTempFile("fuzzer_check", ".cpp")
+            val outFile = createTempFile("fuzzer_check", "")
+            // Remove the pre-created output file so the compiler writes its own binary
+            outFile.deleteIfExists()
             try {
                 testFile.writeText("extern \"C\" int LLVMFuzzerTestOneInput(const char*, long) { return 0; }")
 
+                // Link (not just compile) to catch missing libclang_rt.fuzzer_osx.a on Apple clang
                 val process = ProcessBuilder(
                     "clang++",
                     "-fsanitize=fuzzer",
-                    "-c",
                     testFile.toAbsolutePath().toString(),
                     "-o",
-                    "/dev/null"
+                    outFile.toAbsolutePath().toString()
                 ).redirectErrorStream(true).start()
 
-                process.waitFor()
+                if (!process.waitFor(30, TimeUnit.SECONDS)) {
+                    process.destroyForcibly()
+                    process.waitFor(5, TimeUnit.SECONDS)
+                    return false
+                }
                 process.exitValue() == 0
             } finally {
                 testFile.deleteIfExists()
+                outFile.deleteIfExists()
             }
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
         } catch (e: Exception) {
             false
         }
@@ -340,6 +351,25 @@ object PlatformUtils {
     }
 
     /**
+     * Returns the major version of the test JVM (e.g. 8, 11, 17, 21, 25).
+     * Returns 0 if the version cannot be determined.
+     */
+    fun testJvmMajorVersion(): Int {
+        val javaHome = testJavaHome()
+        return try {
+            val process = ProcessBuilder("$javaHome/bin/java", "-version")
+                .redirectErrorStream(true)
+                .start()
+            val output = process.inputStream.bufferedReader().readText()
+            process.waitFor(10, TimeUnit.SECONDS)
+            val match = Regex("""version "(?:1\.)?(\d+)""").find(output)
+            match?.groupValues?.get(1)?.toIntOrNull() ?: 0
+        } catch (_: Exception) {
+            0
+        }
+    }
+
+    /**
      * Returns true if the test JVM (from JAVA_TEST_HOME or JAVA_HOME) is an OpenJ9/J9 JVM.
      * Probes `java -version` stderr output for "J9" or "OpenJ9".
      */
@@ -356,4 +386,5 @@ object PlatformUtils {
             false
         }
     }
+
 }

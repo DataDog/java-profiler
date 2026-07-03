@@ -238,7 +238,18 @@ bool OS::threadName(int thread_id, char* name_buf, size_t name_len) {
     close(fd);
 
     if (r > 0) {
-        name_buf[r - 1] = 0;
+        // /proc comm is newline-terminated; strip the trailing newline.
+        // Otherwise NUL-terminate after the last byte when there is room,
+        // only truncating the final byte if the buffer is completely full.
+        // This guarantees NUL-termination without silently dropping a real
+        // last character.
+        if (name_buf[r - 1] == '\n') {
+            name_buf[r - 1] = 0;
+        } else if ((size_t)r < name_len) {
+            name_buf[r] = 0;
+        } else {
+            name_buf[name_len - 1] = 0;
+        }
         return true;
     }
     return false;

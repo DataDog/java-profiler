@@ -8,6 +8,9 @@ variables:
   FORCE_BUILD:
     value: ""
     description: "Force build even if no new commits (any non-empty value)"
+  RUN_RELIABILITY:
+    value: "false"
+    description: "Run reliability and chaos tests. Set automatically when the test:reliability label is on the PR."
   MAVEN_REPOSITORY_PROXY: "https://depot-read-api-java.us1.ddbuild.io/magicmirror/magicmirror/@current/"
 
 default:
@@ -28,6 +31,8 @@ stages:
   - integration-test
   - reliability
   - benchmarks
+  - post-benchmarks
+  - fuzz
   - notify
 
 # Detects newer images in registry and creates GitHub PR with updates
@@ -152,6 +157,74 @@ jdk-integration-test:
     forward:
       pipeline_variables: true
 
+# Generates a child pipeline YAML for reliability/chaos tests when the PR
+# carries the test:reliability label (RUN_RELIABILITY=true in build.env).
+generate-reliability-child-pipeline:
+  stage: reliability
+  tags: ["arch:amd64"]
+  image: $PREPARE_IMAGE
+  needs:
+    - job: prepare:start
+      artifacts: true
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
+      when: never
+    - when: on_success
+  script:
+    - |
+      if [ "${RUN_RELIABILITY:-}" = "true" ]; then
+        echo "Label test:reliability detected — enabling reliability child pipeline"
+        cp .gitlab/reliability/pr-child.gitlab-ci.yml generated-reliability.yml
+      else
+        cat > generated-reliability.yml << 'NOOP'
+      skip-reliability:
+        image: registry.ddbuild.io/images/benchmarking-platform-tools-ubuntu:latest
+        tags: ["arch:amd64"]
+        script:
+          - echo "Label test:reliability not set — skipping"
+        rules:
+          - when: always
+      NOOP
+      fi
+  artifacts:
+    paths:
+      - generated-reliability.yml
+    expire_in: 1 day
+
+run-reliability-tests:
+  stage: reliability
+  variables:
+    DDPROF_COMMIT_BRANCH: "$DDPROF_COMMIT_BRANCH"
+    DDPROF_COMMIT_SHA: "$DDPROF_COMMIT_SHA"
+  needs:
+    - job: generate-reliability-child-pipeline
+      artifacts: true
+    - job: prepare:start
+      artifacts: true
+    # Reliability/chaos tests download com.datadoghq:ddprof:<branch>-SNAPSHOT from
+    # Maven snapshots; that artifact is published by deploy-artifact. Without this
+    # gate the child pipeline can start before the snapshot exists (cold branch) or
+    # download a stale snapshot from a previous push. optional: true so release
+    # branches, where deploy-artifact never runs, stay satisfiable.
+    - job: deploy-artifact
+      artifacts: false
+      optional: true
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+      when: never
+    - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
+      when: never
+    - when: on_success
+  trigger:
+    include:
+      - artifact: generated-reliability.yml
+        job: generate-reliability-child-pipeline
+    strategy: depend
+    forward:
+      pipeline_variables: true
+
 include:
   - local: .gitlab/common.yml
   - local: .adms/python/gitlab.yaml
@@ -162,3 +235,4 @@ include:
   - local: .gitlab/reliability/.gitlab-ci.yml
   - local: .gitlab/dd-trace-integration/.gitlab-ci.yml
   - local: .gitlab/sanitizer-tests/.gitlab-ci.yml
+  - local: .gitlab/fuzzing/.gitlab-ci.yml

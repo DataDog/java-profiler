@@ -99,6 +99,19 @@ public:
   MallocEvent() : Event(), _start_time(0), _address(0), _size(0), _weight(1.0f) {}
 };
 
+class NativeSocketEvent : public Event {
+public:
+  u64  _start_time;          // TSC ticks at call entry
+  u64  _end_time;            // TSC ticks at call return
+  u8   _operation;           // 0 = SEND, 1 = RECV, 2 = WRITE, 3 = READ
+  char _remote_addr[64];     // "ip:port" null-terminated string
+  u64  _bytes;               // bytes transferred (return value of send/recv/write/read)
+  float _weight;             // inverse-transform sample weight
+
+  NativeSocketEvent() : Event(), _start_time(0), _end_time(0), _operation(0),
+                        _bytes(0), _weight(1.0f) { _remote_addr[0] = '\0'; }
+};
+
 class WallClockEpochEvent {
 public:
   bool _dirty;
@@ -109,12 +122,13 @@ public:
   u32 _num_failed_samples;
   u32 _num_exited_threads;
   u32 _num_permission_denied;
+  u64 _num_suppressed_sampled_run;
 
   WallClockEpochEvent(u64 start_time)
       : _dirty(false), _start_time(start_time), _duration_millis(0),
         _num_samplable_threads(0), _num_successful_samples(0),
         _num_failed_samples(0), _num_exited_threads(0),
-        _num_permission_denied(0) {}
+        _num_permission_denied(0), _num_suppressed_sampled_run(0) {}
 
   bool hasChanged() { return _dirty; }
 
@@ -153,6 +167,13 @@ public:
     }
   }
 
+  void addNumSuppressedSampledRun(u64 n) {
+    if (n > 0) {
+      _dirty = true;
+      _num_suppressed_sampled_run += n;
+    }
+  }
+
   void endEpoch(u64 millis) { _duration_millis = millis; }
 
   void clean() { _dirty = false; }
@@ -160,6 +181,7 @@ public:
   void newEpoch(u64 start_time) {
     _dirty = false;
     _start_time = start_time;
+    _num_suppressed_sampled_run = 0;
   }
 };
 

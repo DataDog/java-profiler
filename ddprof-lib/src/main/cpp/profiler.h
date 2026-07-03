@@ -1,6 +1,6 @@
 /*
  * Copyright The async-profiler authors
- * Copyright 2025, Datadog, Inc.
+ * Copyright 2025, 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -104,6 +104,7 @@ private:
   // ASGCT paths) or _total_samples (written by every recording path).
   alignas(DEFAULT_CACHE_LINE_SIZE) volatile u64 _sample_seq;
   alignas(DEFAULT_CACHE_LINE_SIZE) u64 _failures[ASGCT_FAILURE_TYPES];
+  bool _wall_precheck = false;
 
   SpinLock _class_map_lock;
   SpinLock _locks[CONCURRENCY_LEVEL];
@@ -126,7 +127,6 @@ private:
   void switchLibraryTrap(bool enable);
   static void prewarmUnwinder();
 
-  void enableEngines();
   void disableEngines();
 
   void onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
@@ -138,7 +138,6 @@ private:
   void updateThreadName(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                         bool self = false);
   void updateJavaThreadNames();
-  void updateNativeThreadNames();
   void mangle(const char *name, char *buf, size_t size);
 
   Engine *selectCpuEngine(Arguments &args);
@@ -205,6 +204,20 @@ public:
   static inline Profiler *instance() {
     return _instance;
   }
+
+  // Resolve names of native (non-Java) threads from /proc. Idempotent and
+  // allocation-light (no-op for already-named tids), so it is safe to call
+  // periodically from the Libraries refresher thread to capture transient
+  // compiler/GC threads before they exit. Must NOT be called from a signal
+  // handler: thread enumeration uses opendir/readdir/malloc.
+  //
+  // When defer_initializing is true (periodic refresher), a thread whose comm
+  // still equals the process's own (inherited) name is skipped: it is most
+  // likely still initializing and has not yet set its final pthread name.
+  // Recording it now would latch that provisional name permanently
+  // (ThreadInfo::updateThreadName is first-writer-wins). A later scan, or the
+  // dump-time pass (which passes false), records the final name instead.
+  void updateNativeThreadNames(bool defer_initializing = false);
 
 
   inline void incFailure(int type) {
@@ -367,14 +380,15 @@ public:
   NativeFrameResolution resolveNativeFrameForWalkVM(uintptr_t pc, int lock_index);
   int convertNativeTrace(int native_frames, const void **callchain,
                          ASGCT_CallFrame *frames, int lock_index);
-  void recordSample(void *ucontext, u64 weight, int tid, jint event_type,
-                    u64 call_trace_id, Event *event);
+  bool recordSample(void *ucontext, u64 weight, int tid, jint event_type,
+                    u64 call_trace_id, Event *event,
+                    u64 *recorded_call_trace_id = nullptr);
   // Delegated sample path: stack-walking is performed by the HotSpot JFR
   // RequestStackTrace extension (the JVM emits the stack trace into its own
   // JFR recording). We only emit the CPU/wall sample event with no
   // stack-trace reference, tagged by the correlation ID we passed to
   // RequestStackTrace as user_data.
-  void recordSampleDelegated(void *ucontext, u64 weight, int tid,
+  bool recordSampleDelegated(void *ucontext, u64 weight, int tid,
                              jint event_type, Event *event);
   u64 recordJVMTISample(u64 weight, int tid, jthread thread, jint event_type, Event *event, bool deferred);
   void recordDeferredSample(int tid, u64 call_trace_id, jint event_type, Event *event);
@@ -402,6 +416,24 @@ public:
 
   static int registerThread(int tid);
   static void unregisterThread(int tid);
+
+#ifdef UNIT_TEST
+  // Returns the tid most recently passed to unregisterThread(), or -1 if it
+  // has never been called (or since the last resetUnregisterObservableForTest).
+  // Used by integration tests to assert that cleanup_unregister wired
+  // Profiler::unregisterThread correctly without needing live engine instances.
+  static int  lastUnregisteredTidForTest();
+  static void resetUnregisterObservableForTest();
+
+  // Reads back the name recorded for a tid in _thread_info, or an empty string
+  // if none was recorded. Lets integration tests observe the result of
+  // updateNativeThreadNames() (notably the defer_initializing skip) without
+  // exposing the private _thread_info. Compiled only into gtest binaries.
+  std::string threadNameForTest(int tid) {
+    std::pair<std::shared_ptr<std::string>, u64> info = _thread_info.get(tid);
+    return info.first != nullptr ? *info.first : std::string();
+  }
+#endif
 
 
   static void JNICALL ThreadStart(jvmtiEnv *jvmti, JNIEnv *jni,

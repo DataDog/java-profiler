@@ -19,6 +19,7 @@
 #include "os.h"
 #include "profiler.h"
 #include "thread.h"
+#include "threadLocal.h"
 #include "tsc.h"
 #include <jni.h>
 #include <string.h>
@@ -276,6 +277,29 @@ Error LivenessTracker::initialize(Arguments &args) {
   return _stored_error = Error::OK;
 }
 
+static void* create_mt19937() {
+  // std::mt19937 itself is noexcept, but std::random_device and `new` may throw.
+  // If that happens we let the failure terminate the process (same outcome as
+  // failing thread_local initialization previously).
+  return static_cast<void*>(new std::mt19937(std::random_device{}()));
+}
+
+static void* create_uniform_real_distribution() {
+  // std::uniform_real_distribution<> construction is noexcept, but `new` may throw.
+  // If allocation fails the process is likely to abort anyway.
+  return static_cast<void*>(new std::uniform_real_distribution<>(0, 1.0));
+}
+
+static void free_mt19937(void* p) {
+  std::mt19937* mt = static_cast<std::mt19937*>(p);
+  delete mt;
+}
+
+static void free_uniform_real_distribution(void* p) {
+  std::uniform_real_distribution<>* urd = static_cast<std::uniform_real_distribution<>*>(p);
+  delete urd;
+}
+
 void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
                             jobject object, u64 call_trace_id) {
   if (!_enabled) {
@@ -287,13 +311,17 @@ void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
     return;
   }
 
-  static thread_local std::mt19937 gen(std::random_device{}());
-  static thread_local std::uniform_real_distribution<> dis(0, 1.0);
-  static thread_local double skipped = 0;
+  static ThreadLocal<std::mt19937*, create_mt19937, free_mt19937> gen;
+  static ThreadLocal<std::uniform_real_distribution<>*, create_uniform_real_distribution, free_uniform_real_distribution> dis;
+  static ThreadLocal<double> skipped;
 
-  if (_subsample_ratio < 1.0 && dis(gen) > _subsample_ratio) {
-    skipped += static_cast<double>(event._weight) * event._size;
-    return;
+  if (_subsample_ratio < 1.0) {
+    std::mt19937* genp = gen.get();
+    std::uniform_real_distribution<>* disp = dis.get();
+    if (disp->operator()(*genp) > _subsample_ratio) {
+      skipped.set(skipped.get() + static_cast<double>(event._weight) * event._size);
+      return;
+    }
   }
 
   jweak ref = env->NewWeakGlobalRef(object);
@@ -322,7 +350,8 @@ retry:
     _table[idx].time = TSC::ticks();
     _table[idx].ref = ref;
     _table[idx].alloc = event;
-    _table[idx].skipped = skipped;
+    _table[idx].skipped = skipped.get();
+    skipped.set(0);
     _table[idx].age = 0;
     _table[idx].call_trace_id = call_trace_id;
     _table[idx].ctx = ContextApi::snapshot();
@@ -375,8 +404,8 @@ retry:
     } else {
       env->DeleteWeakGlobalRef(ref);
     }
+    skipped.set(0); // reset the subsampling skipped bytes
   }
-  skipped = 0; // reset the subsampling skipped bytes
 }
 
 void JNICALL LivenessTracker::GarbageCollectionFinish(jvmtiEnv *jvmti_env) {

@@ -24,7 +24,7 @@
 #include "counters.h"
 #include "common.h"
 #include "engine.h"
-#include "hotspot/vmStructs.h"
+#include "hotspot/vmStructs.inline.h"
 #include "incbin.h"
 #include "jvmThread.h"
 #include "os.h"
@@ -155,10 +155,13 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
     slot_id = thread_filter->registerThread();
     current->setFilterSlotId(slot_id);
   }
-  
+
   if (unlikely(slot_id == -1)) {
     return;  // Failed to register thread
   }
+  // Reset suppression state so a new thread occupying this slot does not inherit
+  // stale state from its predecessor. Must happen before add().
+  thread_filter->resetSlotRunState(slot_id);
   thread_filter->add(tid, slot_id);
 }
 
@@ -314,6 +317,95 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
   Profiler::instance()->recordQueueTime(tid, &event);
 }
 
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) {
+  ProfiledThread *current = ProfiledThread::current();
+  if (current == nullptr) {
+    return;
+  }
+  bool first_park = current->parkEnter();
+  ThreadFilter *tf = Profiler::instance()->threadFilter();
+  if (first_park && tf->enabled()) {
+    ThreadFilter::SlotID slot_id = current->filterSlotId();
+    if (slot_id >= 0) {
+      current->setParkBlockToken(
+          tf->enterBlockedRun(slot_id, OSThreadState::CONDVAR_WAIT));
+    }
+  }
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
+    JNIEnv *env, jclass unused, jlong blocker, jlong unblockingSpanId) {
+  ProfiledThread *current = ProfiledThread::current();
+  if (current == nullptr) {
+    return;
+  }
+  u64 park_block_token = 0;
+  if (!current->parkExit(park_block_token) || park_block_token == 0) {
+    return;
+  }
+  ThreadFilter *tf = Profiler::instance()->threadFilter();
+  if (tf->enabled()) {
+    ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(park_block_token);
+    if (current->filterSlotId() == slot_id) {
+      tf->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(park_block_token));
+    }
+  }
+}
+
+static bool decodeJavaBlockState(jint state, OSThreadState &decoded) {
+  if (state == static_cast<jint>(OSThreadState::SLEEPING)) {
+    decoded = OSThreadState::SLEEPING;
+    return true;
+  }
+  decoded = OSThreadState::UNKNOWN;
+  return false;
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
+    JNIEnv *env, jclass unused, jint state) {
+  OSThreadState decoded;
+  if (!decodeJavaBlockState(state, decoded)) {
+    return 0;
+  }
+  ProfiledThread *current = ProfiledThread::current();
+  if (current == nullptr) {
+    return 0;
+  }
+  ThreadFilter *tf = Profiler::instance()->threadFilter();
+  if (!tf->enabled()) {
+    return 0;
+  }
+  ThreadFilter::SlotID slot_id = current->filterSlotId();
+  if (slot_id < 0) {
+    return 0;
+  }
+  return static_cast<jlong>(tf->enterBlockedRun(slot_id, decoded));
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
+    JNIEnv *env, jclass unused, jlong token) {
+  u64 block_token = static_cast<u64>(token);
+  if (block_token == 0) {
+    return;
+  }
+  ProfiledThread *current = ProfiledThread::current();
+  if (current == nullptr) {
+    return;
+  }
+  ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(block_token);
+  if (current->filterSlotId() != slot_id) {
+    return;
+  }
+  ThreadFilter *tf = Profiler::instance()->threadFilter();
+  if (tf->enabled()) {
+    tf->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(block_token));
+  }
+}
+
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_currentTicks0(JNIEnv *env,
                                                        jclass unused) {
@@ -438,7 +530,8 @@ Java_com_datadoghq_profiler_OTelContext_setProcessCtx0(JNIEnv *env,
                                                          jstring runtime_id,
                                                          jstring service,
                                                          jstring version,
-                                                         jstring tracer_version
+                                                         jstring tracer_version,
+                                                         jobjectArray attribute_keys
                                                         ) {
   JniString env_str(env, env_data);
   JniString hostname_str(env, hostname);
@@ -448,6 +541,47 @@ Java_com_datadoghq_profiler_OTelContext_setProcessCtx0(JNIEnv *env,
   JniString tracer_version_str(env, tracer_version);
 
   const char *host_name_attrs[] = {"host.name", hostname_str.c_str(), NULL};
+
+  // Build the thread context attribute_key_map published alongside the process
+  // context: index 0 is the reserved datadog.local_root_span_id slot, followed by
+  // the caller-provided keys (clipped to DD_TAGS_CAPACITY)
+  int count = (attribute_keys != nullptr) ? env->GetArrayLength(attribute_keys) : 0;
+  int n = count < (int)DD_TAGS_CAPACITY ? count : (int)DD_TAGS_CAPACITY;
+  if (count > n) {
+    Log::warn("setProcessContext: %d attribute keys requested but capacity is %d; extra keys will be ignored",
+              count, (int)DD_TAGS_CAPACITY);
+  }
+
+  const char *key_ptrs[DD_TAGS_CAPACITY + 2]; // +1 reserved slot, +1 NULL terminator
+  JniString *jni_keys[DD_TAGS_CAPACITY];
+  int built = 0;
+  key_ptrs[0] = "datadog.local_root_span_id";
+  for (int i = 0; i < n; i++) {
+    jstring jstr = (jstring)env->GetObjectArrayElement(attribute_keys, i);
+    if (jstr == nullptr) {
+      // A null key would corrupt the index mapping; abort the publish.
+      for (int j = 0; j < built; j++) delete jni_keys[j];
+      Log::warn("setProcessContext: null attribute key at index %d; skipping publish", i);
+      return;
+    }
+    jni_keys[built] = new JniString(env, jstr);
+    if (jni_keys[built]->c_str() == nullptr) {
+      // GetStringUTFChars failed (e.g. OOM); a NULL key pointer would truncate
+      // the published map mid-array, so abort the publish.
+      delete jni_keys[built];
+      for (int j = 0; j < built; j++) delete jni_keys[j];
+      Log::warn("setProcessContext: failed to read attribute key at index %d; skipping publish", i);
+      return;
+    }
+    key_ptrs[i + 1] = jni_keys[built]->c_str();
+    built++;
+  }
+  key_ptrs[n + 1] = nullptr;
+
+  otel_thread_ctx_config_data thread_ctx_config = {
+    .schema_version = "tlsdesc_v1_dev",
+    .attribute_key_map = key_ptrs,
+  };
 
   otel_process_ctx_data data = {
     .deployment_environment_name = env_str.c_str(),
@@ -459,13 +593,15 @@ Java_com_datadoghq_profiler_OTelContext_setProcessCtx0(JNIEnv *env,
     .telemetry_sdk_name = "dd-trace-java",
     .resource_attributes = host_name_attrs,
     .extra_attributes = NULL,
-    .thread_ctx_config = NULL  // Set later by ContextApi::registerAttributeKeys() when keys are known
+    .thread_ctx_config = &thread_ctx_config
   };
 
   otel_process_ctx_result result = otel_process_ctx_publish(&data);
   if (!result.success) {
     Log::warn("Failed to publish process context: %s", result.error_message);
   }
+
+  for (int i = 0; i < built; i++) delete jni_keys[i];
 }
 
 extern "C" DLLEXPORT jobject JNICALL
@@ -597,35 +733,6 @@ Java_com_datadoghq_profiler_ThreadContext_registerConstant0(JNIEnv* env, jclass 
   u32 encoding = Profiler::instance()->contextValueMap()->bounded_lookup(
       value_str.c_str(), value_str.length(), 1 << 16);
   return encoding == 0 ? -1 : (jint)encoding;
-}
-
-extern "C" DLLEXPORT void JNICALL
-Java_com_datadoghq_profiler_OTelContext_registerAttributeKeys0(JNIEnv* env, jclass unused, jobjectArray keys) {
-  int count = (keys != nullptr) ? env->GetArrayLength(keys) : 0;
-  int n = count < (int)DD_TAGS_CAPACITY ? count : (int)DD_TAGS_CAPACITY;
-  if (count > n) {
-    LOG_WARN("registerAttributeKeys: %d keys requested but capacity is %d; extra keys will be ignored",
-             count, (int)DD_TAGS_CAPACITY);
-  }
-
-  const char* key_ptrs[DD_TAGS_CAPACITY];
-  JniString* jni_strings[DD_TAGS_CAPACITY];
-
-  for (int i = 0; i < n; i++) {
-    jstring jstr = (jstring)env->GetObjectArrayElement(keys, i);
-    if (jstr == nullptr) {
-      for (int j = 0; j < i; j++) delete jni_strings[j];
-      return;
-    }
-    jni_strings[i] = new JniString(env, jstr);
-    key_ptrs[i] = jni_strings[i]->c_str();
-  }
-
-  // Always call registerAttributeKeys even with n==0 so the reserved
-  // datadog.local_root_span_id key (index 0) is published in the process context.
-  ContextApi::registerAttributeKeys(key_ptrs, n);
-
-  for (int i = 0; i < n; i++) delete jni_strings[i];
 }
 
 // ---- test and debug utilities

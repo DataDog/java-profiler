@@ -1,5 +1,6 @@
 /*
  * Copyright 2018 Andrei Pangin
+ * Copyright 2026, Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -38,8 +39,31 @@ public final class JavaProfiler {
     }
     private static JavaProfiler instance;
 
-    // Thread-local storage for profiling context
-    private final ThreadLocal<ThreadContext> tlsContextStorage = ThreadLocal.withInitial(JavaProfiler::initializeThreadContext);
+    // Storage for profiling context. Scoped to the carrier thread when available so a
+    // mounted virtual thread resolves to its current carrier's OTEP record (the record the
+    // sampler reads); falls back to plain thread-local storage otherwise. See
+    // OtelContextStorage for the mode selection and the rationale.
+    private final ThreadLocal<ThreadContext> tlsContextStorage = OtelContextStorage.create();
+
+    /**
+     * Returns the calling thread's (or, in carrier mode, its current carrier's)
+     * {@link ThreadContext}, creating and caching it on first use. Replaces the previous
+     * {@code ThreadLocal.withInitial(...)} supplier: a carrier-scoped storage instance is
+     * built reflectively and cannot carry a supplier, so lazy initialization is done here.
+     *
+     * <p>Race-free without synchronization: a carrier runs at most one mounted virtual
+     * thread at a time and this method has no blocking point, so no unmount can occur
+     * mid-call. A redundant re-init could at worst produce a second {@link ThreadContext}
+     * over the same carrier record, which is harmless.
+     */
+    private ThreadContext currentContext() {
+        ThreadContext ctx = tlsContextStorage.get();
+        if (ctx == null) {
+            ctx = initializeThreadContext();
+            tlsContextStorage.set(ctx);
+        }
+        return ctx;
+    }
 
     private JavaProfiler() {
     }
@@ -190,7 +214,7 @@ public final class JavaProfiler {
      */
     @Deprecated
     public void setContext(long spanId, long rootSpanId) {
-        tlsContextStorage.get().put(spanId, rootSpanId);
+        currentContext().put(spanId, rootSpanId);
     }
 
     /**
@@ -202,7 +226,7 @@ public final class JavaProfiler {
      * @param traceIdLow Lower 64 bits of the 128-bit trace ID
      */
     public void setContext(long localRootSpanId, long spanId, long traceIdHigh, long traceIdLow) {
-        tlsContextStorage.get().put(localRootSpanId, spanId, traceIdHigh, traceIdLow);
+        currentContext().put(localRootSpanId, spanId, traceIdHigh, traceIdLow);
     }
 
     /**
@@ -210,19 +234,63 @@ public final class JavaProfiler {
      * Custom context attributes are also cleared.
      */
     public void clearContext() {
-        tlsContextStorage.get().put(0, 0, 0, 0);
+        currentContext().put(0, 0, 0, 0);
     }
 
+    /**
+     * Sets a custom context attribute at the given slot offset for the current thread.
+     *
+     * @param offset slot index (0-based, in [0, 9]); out-of-range values return {@code false}
+     * @param value  the string value to record; {@code null} returns {@code false} without
+     *               writing; an empty string is written as a zero-length entry (not a clear —
+     *               use {@link #clearContextAttribute(int)} to remove a value)
+     * @return true if the value was recorded; false if {@code offset} is out of range,
+     *         {@code value} is null, the Dictionary is full, or {@code attrs_data} overflows
+     *         for this slot
+     */
     public boolean setContextAttribute(int offset, String value) {
-        return tlsContextStorage.get().setContextAttribute(offset, value);
+        return currentContext().setContextAttribute(offset, value);
     }
 
+    /**
+     * Clears the custom context attribute at the given slot offset for the current thread.
+     * Zeros the sidecar encoding and removes it from OTEP {@code attrs_data}.
+     *
+     * @param offset slot index (0-based, in [0, 9]); out-of-range values are silently ignored
+     */
     public void clearContextAttribute(int offset) {
-        tlsContextStorage.get().clearContextAttribute(offset);
+        currentContext().clearContextAttribute(offset);
+    }
+
+    /**
+     * Re-applies multiple custom attributes from precomputed constant IDs and UTF-8 bytes for
+     * the current thread in a single detach/attach window.
+     *
+     * <ul>
+     *   <li>Slots with {@code constantIds[i] <= 0} are skipped.</li>
+     *   <li>Returns {@code false} without writing if the thread's record is not currently valid
+     *       (span-less), to avoid resurrecting a cleared record.</li>
+     *   <li>On {@code attrs_data} overflow, the overflowed slot's sidecar is zeroed and
+     *       {@code false} is returned; slots written before the overflow are retained.</li>
+     * </ul>
+     *
+     * @param constantIds per-slot Dictionary constant IDs; entries {@code <= 0} are skipped
+     * @param utf8        per-slot UTF-8 value bytes; must be non-null and at most 255 bytes
+     *                    (the OTEP attrs_data entry length field is one byte) for every slot
+     *                    whose {@code constantId > 0}
+     * @return true if every slot with {@code constantId > 0} was written; false on a cleared
+     *         (span-less) record, or {@code attrs_data} overflow for any slot
+     * @throws NullPointerException     if {@code constantIds}, {@code utf8}, or any active
+     *                                  {@code utf8[i]} is null
+     * @throws IllegalArgumentException if the arrays have different lengths, exceed the slot limit,
+     *                                  or any active {@code utf8[i]} exceeds 255 bytes
+     */
+    public boolean setContextAttributesByIdAndBytes(int[] constantIds, byte[][] utf8) {
+        return currentContext().setContextAttributesByIdAndBytes(constantIds, utf8);
     }
 
     void copyTags(int[] snapshot) {
-        tlsContextStorage.get().copyCustoms(snapshot);
+        currentContext().copyCustoms(snapshot);
     }
 
     /**
@@ -275,6 +343,41 @@ public final class JavaProfiler {
                                 int queueLength,
                                 Thread origin) {
         recordQueueEnd0(startTicks, endTicks, task.getName(), scheduler.getName(), origin, queueType.getName(), queueLength);
+    }
+
+    /**
+     * Internal hook called before {@code LockSupport.park}. This remains package-scoped
+     * until PR2 wires production TaskBlock instrumentation.
+     */
+    void parkEnter() {
+        parkEnter0();
+    }
+
+    /**
+     * Internal hook called after {@code LockSupport.park}. Clears the parked flag.
+     * {@code blocker} and {@code unblockingSpanId} are reserved for PR2 TaskBlock use.
+     */
+    void parkExit(long blocker, long unblockingSpanId) {
+        parkExit0(blocker, unblockingSpanId);
+    }
+
+    /**
+     * Internal hook marking the current platform thread as entering an explicitly instrumented
+     * blocked interval. This is not public API in this PR; production TaskBlock wiring lands in PR2.
+     *
+     * @param state native {@code OSThreadState} value for the blocked interval;
+     *     currently only {@code SLEEPING} is armed
+     * @return an opaque token to pass to {@link #blockExit(long)}, or 0 if no state was armed
+     */
+    long blockEnter(int state) {
+        return blockEnter0(state);
+    }
+
+    /**
+     * Clears a blocked interval previously armed by {@link #blockEnter(int)}.
+     */
+    void blockExit(long token) {
+        blockExit0(token);
     }
 
     /**
@@ -332,6 +435,14 @@ public final class JavaProfiler {
 
     private static native void recordQueueEnd0(long startTicks, long endTicks, String task, String scheduler, Thread origin, String queueType, int queueLength);
 
+    private static native void parkEnter0();
+
+    private static native void parkExit0(long blocker, long unblockingSpanId);
+
+    private static native long blockEnter0(int state);
+
+    private static native void blockExit0(long token);
+
     private static native long currentTicks0();
 
     private static native long tscFrequency0();
@@ -356,8 +467,29 @@ public final class JavaProfiler {
      */
     private static native ByteBuffer initializeContextTLS0(long[] metadata);
 
+    /**
+     * Returns the {@link ThreadContext} for the current storage slot (the calling thread, or in
+     * {@link ContextStorageMode#CARRIER} its current carrier).
+     *
+     * <p><b>Do not cache the returned instance across a point where the calling thread may be
+     * unmounted and remounted on a different carrier</b> (any blocking operation on a virtual
+     * thread). In carrier mode the returned context's buffer targets the carrier that was mounted
+     * at call time; after migration it no longer corresponds to the current carrier's record — the
+     * sampler reads the new carrier, and once the old carrier's OS thread exits the buffer dangles.
+     * Callers that write context (span/attributes) should re-fetch per use — the {@code setContext*}
+     * methods already do this internally via {@code currentContext()}.
+     */
     public ThreadContext getThreadContext() {
-        return tlsContextStorage.get();
+        return currentContext();
+    }
+
+    /**
+     * Diagnostics/tests: the resolved OTEL context storage mode, as selected by
+     * {@code -D}{@value OtelContextStorage#MODE_PROPERTY} and the availability of
+     * {@code jdk.internal.misc.CarrierThreadLocal}.
+     */
+    public ContextStorageMode contextStorageMode() {
+        return OtelContextStorage.modeOf(tlsContextStorage);
     }
 
 // --- test and debug utility methods
@@ -371,9 +503,10 @@ public final class JavaProfiler {
     public static native void dumpContext();
 
     /**
-     * Resets the cached ThreadContext for the current thread.
-     * The next call to {@link #getThreadContext()} or any {@code setContext} overload
-     * will re-create it with fresh OTEL TLS buffers.
+     * Resets the cached ThreadContext for the current storage slot — the calling thread in
+     * {@link ContextStorageMode#THREAD}, or its current carrier in
+     * {@link ContextStorageMode#CARRIER}. The next call to {@link #getThreadContext()}
+     * or any {@code setContext} overload will re-create it with fresh OTEL TLS buffers.
      */
     public void resetThreadContext() {
         tlsContextStorage.remove();

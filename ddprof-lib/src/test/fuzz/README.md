@@ -143,6 +143,17 @@ that would silently corrupt memory in production.
 **Expected bugs**: Buffer overflows when assertions disabled, incorrect varint
 encoding for edge-case values.
 
+### fuzz_callTraceStorage.cpp
+**Target**: `CallTraceStorage::put()` / `processTraces()` / `clear()` — call-trace hash table lifecycle
+
+Drives the table through `put` / `processTraces` / `clear` sequences including inputs that exceed
+the 49152-entry expansion threshold, forcing the multi-node `_prev` chain that exposes:
+- Heap-use-after-free from dangling `_prev` pointers after `clearTableOnly()` frees expanded nodes
+- Non-atomic `_table` reads racing with CAS expansion in `put()`
+
+**Regression guard — detects if these bugs are reintroduced**: heap-use-after-free (ASan), data race on `_table` (TSan), null-deref in
+`processTraces` from use-after-free when `_prev` chain is not fully disconnected.
+
 ## Corpus
 
 Seed corpus files are in `corpus/<target_name>/`. These provide starting points

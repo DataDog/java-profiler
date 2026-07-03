@@ -100,9 +100,10 @@ enum EventMask {
     EM_LOCK         = 4,
     EM_WALL         = 8,
     EM_NATIVEMEM    = 16,
-    EM_METHOD_TRACE = 32
+    EM_METHOD_TRACE = 32,
+    EM_NATIVESOCKET = 64
 };
-constexpr int EVENT_MASK_SIZE = 6;
+constexpr int EVENT_MASK_SIZE = 7;
 
 struct StackWalkFeatures {
     // Deprecated stack recovery techniques used to workaround AsyncGetCallTrace flaws
@@ -152,7 +153,6 @@ private:
   bool _shared;
   bool _persistent;
   const char *expandFilePattern(const char *pattern);
-  static long long hash(const char *arg);
   static long parseUnits(const char *str, const Multiplier *multipliers);
   static bool isCpuEvent(const char *event) {
     // event == NULL will default to EVENT_CPU
@@ -168,6 +168,7 @@ public:
   long _cpu;
   long _wall;
   bool _wall_collapsing;
+  bool _wall_precheck;
   int _wall_threads_per_tick;
   WallclockSampler _wallclock_sampler;
   long _memory;
@@ -193,6 +194,9 @@ public:
   bool _enable_method_cleanup;
   bool _remote_symbolication;  // Enable remote symbolication for native frames
   bool _jvmtistacks;           // Delegate CPU/wall stack walks to HotSpot JFR RequestStackTrace extension
+  bool _nativesocket;
+  long _nativesocket_interval;  // initial sampling period in nanoseconds; 0 = engine default
+  bool _force_jmethodID;       // Load all jmethodIDs, true by default
 
   Arguments(bool persistent = false)
       : _buf(NULL),
@@ -205,6 +209,7 @@ public:
         _cpu(-1),
         _wall(-1),
         _wall_collapsing(false),
+        _wall_precheck(false),
         _wall_threads_per_tick(DEFAULT_WALL_THREADS_PER_TICK),
         _wallclock_sampler(ASGCT),
         _memory(-1),
@@ -229,7 +234,10 @@ public:
         _lightweight(false),
         _enable_method_cleanup(true),
         _remote_symbolication(false),
-        _jvmtistacks(false) {}
+        _jvmtistacks(false),
+        _nativesocket(false),
+        _nativesocket_interval(0),
+        _force_jmethodID(true) {}
 
   ~Arguments();
 

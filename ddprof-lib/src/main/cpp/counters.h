@@ -65,6 +65,10 @@
   X(AGCT_NATIVE_NO_JAVA_CONTEXT, "agct_native_no_java_context")                \
   X(AGCT_BLOCKED_IN_VM, "agct_blocked_in_vm")                                  \
   X(SKIPPED_WALLCLOCK_UNWINDS, "skipped_wallclock_unwinds")                    \
+  X(WC_SIGNAL_SUPPRESSED_SAMPLED_RUN, "wc_signals_suppressed_sampled_run")     \
+  X(WC_UNOWNED_BLOCKED_SUPPRESSED, "wc_unowned_blocked_suppressed")            \
+  X(WC_UNOWNED_BLOCKED_RECORDED, "wc_unowned_blocked_recorded")                \
+  X(WC_SIGNAL_QUEUE_FULL, "wc_signals_queue_full")                             \
   X(UNWINDING_TIME_ASYNC, "unwinding_ticks_async")                             \
   X(UNWINDING_TIME_JVMTI, "unwinding_ticks_jvmti")                             \
   X(CALLTRACE_STORAGE_DROPPED, "calltrace_storage_dropped_traces")             \
@@ -114,7 +118,10 @@
   X(JVMTI_STACKS_REQUESTED, "jvmti_stacks_requested")                         \
   X(JVMTI_STACKS_FAILED_WRONG_PHASE, "jvmti_stacks_failed_wrong_phase")       \
   X(JVMTI_STACKS_FAILED_OTHER, "jvmti_stacks_failed_other")                  \
-  X(JVMTI_STACKS_DROPPED_LOCK, "jvmti_stacks_dropped_lock")
+  /* Delegated stacks dropped at slot-lock. Rec-lock drops from all recording  \
+   * paths (delegated and direct) go into SAMPLES_DROPPED_REC_LOCK. */         \
+  X(JVMTI_STACKS_DROPPED_LOCK, "jvmti_stacks_dropped_lock")                   \
+  X(SAMPLES_DROPPED_REC_LOCK, "samples_dropped_rec_lock")
 #define X_ENUM(a, b) a,
 typedef enum CounterId : int {
   DD_COUNTER_TABLE(X_ENUM) DD_NUM_COUNTERS

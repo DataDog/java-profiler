@@ -67,16 +67,27 @@ int ThreadInfo::size() {
 }
 
 void ThreadInfo::updateThreadName(
-        int tid, std::function<std::string(int)> resolver) {
+    int tid, std::function<std::string(int)> resolver) {
+  // Fast path: bail out if the name is already known, holding the lock only
+  // for the lookup.
+  {
     MutexLocker ml(_ti_lock);
-    auto it = _thread_names.find(tid);
-    if (it == _thread_names.end()) {
-        // Thread ID not found, insert new entry
-        std::string name = resolver(tid);
-        if (!name.empty()) {
-            _thread_names.emplace(tid, std::move(name));
-        }
+    if (_thread_names.find(tid) != _thread_names.end()) {
+      return;
     }
+  }
+  // Resolve OUTSIDE the lock: the resolver may perform blocking I/O (e.g.
+  // reading /proc/self/task/<tid>/comm). Holding _ti_lock across that would
+  // stall every concurrent set/get/clearAll caller for the duration of the
+  // syscall, once per unknown tid.
+  std::string name = resolver(tid);
+  if (name.empty()) {
+    return;
+  }
+  // emplace is a no-op if a concurrent caller inserted this tid in the
+  // meantime, so the brief unlocked window is harmless.
+  MutexLocker ml(_ti_lock);
+  _thread_names.emplace(tid, std::move(name));
 }
 
 void ThreadInfo::reportCounters() {

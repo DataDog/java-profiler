@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "codeCache.h"
+#include "guards.h"
 #include "libraries.h"
 #include "mallocTracer.h"
 #include "os.h"
@@ -19,12 +20,6 @@
 #include "tsc.h"
 #include "vmEntry.h"
 
-#ifdef __clang__
-#  define NO_OPTIMIZE __attribute__((optnone))
-#else
-#  define NO_OPTIMIZE __attribute__((optimize("-fno-omit-frame-pointer,-fno-optimize-sibling-calls")))
-#endif
-
 #define SAVE_IMPORT(FUNC) \
     do { \
         void** _entry = lib->findImport(im_##FUNC); \
@@ -32,16 +27,24 @@
     } while (0)
 
 static void* (*_orig_malloc)(size_t);
-static void (*_orig_free)(void*);
 static void* (*_orig_calloc)(size_t, size_t);
 static void* (*_orig_realloc)(void*, size_t);
 static int (*_orig_posix_memalign)(void**, size_t, size_t);
 static void* (*_orig_aligned_alloc)(size_t, size_t);
 
 // Inline helper to avoid repeating the running+ret+size guard in each hook.
+// CriticalSection prevents reentrancy: profiler-internal allocations triggered
+// inside recordMalloc (e.g. sample buffer allocation) re-enter these hooks via
+// the patched GOT; without the guard they would be double-counted.
+// Acquiring the CS here also blocks concurrent same-thread timer samples
+// (SIGPROF/SIGVTALRM) for the duration of recordMalloc; this is acceptable
+// because the window is short.
 static inline void maybeRecord(void* ret, size_t size) {
     if (MallocTracer::running() && ret && size) {
-        MallocTracer::recordMalloc(ret, size);
+        CriticalSection cs;
+        if (cs.entered()) {
+            MallocTracer::recordMalloc(ret, size);
+        }
     }
 }
 
@@ -53,39 +56,36 @@ extern "C" void* malloc_hook(size_t size) {
 
 extern "C" void* calloc_hook(size_t num, size_t size) {
     void* ret = _orig_calloc(num, size);
-    // ret != NULL guarantees no overflow per POSIX, so num * size is safe.
-    if (MallocTracer::running() && ret && num && size) {
-        MallocTracer::recordMalloc(ret, num * size);
+    // num * size may wrap on size_t, but the wrapped value is only forwarded
+    // to maybeRecord, which discards it when ret == NULL (the libc returns
+    // NULL on overflow per POSIX).
+    if (num && size) {
+        maybeRecord(ret, num * size);
     }
     return ret;
 }
 
-// Make sure this is not optimized away (function-scoped -fno-optimize-sibling-calls)
-extern "C" NO_OPTIMIZE
-void* calloc_hook_dummy(size_t num, size_t size) {
-    return _orig_calloc(num, size);
-}
-
 extern "C" void* realloc_hook(void* addr, size_t size) {
     void* ret = _orig_realloc(addr, size);
-    if (MallocTracer::running() && ret != NULL && size > 0) {
-        MallocTracer::recordMalloc(ret, size);
-    }
+    // Record every successful realloc, regardless of whether addr was NULL.
+    // Without a free hook we cannot subtract the prior allocation, so a
+    // realloc that grows an existing buffer is double-counted against the
+    // original malloc when both were sampled. This is benign for the leak
+    // detector: the prior sample (if any) ages out as the freed address is
+    // never seen again, and missing the realloc entirely would leave a
+    // phantom live allocation on the freed old address.
+    maybeRecord(ret, size);
     return ret;
 }
 
 extern "C" int posix_memalign_hook(void** memptr, size_t alignment, size_t size) {
     int ret = _orig_posix_memalign(memptr, alignment, size);
-    if (MallocTracer::running() && ret == 0 && memptr && *memptr && size) {
-        MallocTracer::recordMalloc(*memptr, size);
+    if (ret == 0 && memptr) {
+        // POSIX guarantees *memptr is set to the allocated block when ret == 0;
+        // maybeRecord is the sole NULL/size gate for non-conforming libc.
+        maybeRecord(*memptr, size);
     }
     return ret;
-}
-
-// Make sure this is not optimized away (function-scoped -fno-optimize-sibling-calls)
-extern "C" NO_OPTIMIZE
-int posix_memalign_hook_dummy(void** memptr, size_t alignment, size_t size) {
-    return _orig_posix_memalign(memptr, alignment, size);
 }
 
 extern "C" void* aligned_alloc_hook(size_t alignment, size_t size) {
@@ -106,9 +106,6 @@ PidController MallocTracer::_pid(MallocTracer::TARGET_SAMPLES_PER_WINDOW,
 Mutex MallocHooker::_patch_lock;
 int MallocHooker::_patched_libs = 0;
 bool MallocHooker::_initialized = false;
-void* MallocHooker::_calloc_hook_fn = nullptr;
-void* MallocHooker::_posix_memalign_hook_fn = nullptr;
-
 // xoroshiro128+ PRNG state — shared, relaxed atomics.
 // Benign races are acceptable: occasional duplicate output is harmless
 // for a sampling PRNG and thread_local cannot be used on the malloc path.
@@ -165,7 +162,7 @@ void MallocHooker::detectNestedMalloc() {
                 void* pm_probe = NULL;
                 _orig_posix_memalign(&pm_probe, sizeof(void*), sizeof(void*));
                 _current_thread = pthread_t(0);
-                if (pm_probe != NULL) _orig_free(pm_probe);
+                if (pm_probe != NULL) free(pm_probe);
 
                 // Restore original aligned_alloc so libc doesn't carry the probe hook.
                 libc->patchImport(im_aligned_alloc, (void*)_orig_aligned_alloc);
@@ -219,7 +216,6 @@ bool MallocHooker::initialize() {
     resolveMallocSymbols();
 
     SAVE_IMPORT(malloc);
-    SAVE_IMPORT(free);
     SAVE_IMPORT(calloc);
     SAVE_IMPORT(realloc);
     SAVE_IMPORT(posix_memalign);
@@ -227,18 +223,12 @@ bool MallocHooker::initialize() {
 
     detectNestedMalloc();
 
-    // Pre-compute hook pointers so patchLibraries() avoids repeated conditionals.
-    _calloc_hook_fn = _nested_malloc ? (void*)calloc_hook_dummy : (void*)calloc_hook;
-    _posix_memalign_hook_fn = _nested_posix_memalign ? (void*)posix_memalign_hook_dummy : (void*)posix_memalign_hook;
-
     lib->mark(
         [](const char* s) -> bool {
             return strcmp(s, "malloc_hook") == 0
                 || strcmp(s, "calloc_hook") == 0
-                || strcmp(s, "calloc_hook_dummy") == 0
                 || strcmp(s, "realloc_hook") == 0
                 || strcmp(s, "posix_memalign_hook") == 0
-                || strcmp(s, "posix_memalign_hook_dummy") == 0
                 || strcmp(s, "aligned_alloc_hook") == 0;
         },
         MARK_ASYNC_PROFILER);
@@ -248,15 +238,10 @@ bool MallocHooker::initialize() {
     return _orig_malloc != NULL;
 }
 
-// To avoid complexity in hooking and tracking reentrancy, a TLS-based approach is not used.
-// Reentrant allocation calls would result in double-accounting. However, this does not impact
-// the leak detector, as it correctly tracks memory as freed regardless of how many times
-// recordMalloc is called with the same address.
 void MallocHooker::patchLibraries() {
-    // If initialize() hasn't resolved _orig_malloc yet, advancing _patched_libs here
-    // would consume library slots without patching them, causing a later real call
-    // (from MallocTracer::start) to find _patched_libs == native_lib_count and skip
-    // all libraries. This happens when dlopen_hook fires during a non-nativemem session.
+    // Defensive guard: _orig_malloc is set by initialize(), which runs in
+    // MallocTracer::start() before _running is set and this path is reached.
+    // Guards against stale or unexpected direct calls.
     if (_orig_malloc == NULL) return;
 
     MutexLocker ml(_patch_lock);
@@ -283,8 +268,10 @@ void MallocHooker::patchLibraries() {
         if (_orig_malloc) cc->patchImport(im_malloc, (void*)malloc_hook);
         if (_orig_realloc) cc->patchImport(im_realloc, (void*)realloc_hook);
         if (_orig_aligned_alloc) cc->patchImport(im_aligned_alloc, (void*)aligned_alloc_hook);
-        if (_orig_calloc) cc->patchImport(im_calloc, _calloc_hook_fn);
-        if (_orig_posix_memalign) cc->patchImport(im_posix_memalign, _posix_memalign_hook_fn);
+        // On musl, calloc/posix_memalign delegate to malloc/aligned_alloc internally;
+        // hooking them too would double-count. Leave the GOT entry untouched instead.
+        if (_orig_calloc && !_nested_malloc) cc->patchImport(im_calloc, (void*)calloc_hook);
+        if (_orig_posix_memalign && !_nested_posix_memalign) cc->patchImport(im_posix_memalign, (void*)posix_memalign_hook);
     }
 }
 

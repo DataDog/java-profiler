@@ -211,9 +211,22 @@ object ConfigurationPresets {
                 if (libasan != null) {
                     config.testEnvironment.apply {
                         put("LD_PRELOAD", libasan)
-                        put("ASAN_OPTIONS", "allocator_may_return_null=1:unwind_abort_on_malloc=1:use_sigaltstack=0:detect_stack_use_after_return=0:handle_segv=0:halt_on_error=0:abort_on_error=0:print_stacktrace=1:symbolize=1:suppressions=$rootDir/gradle/sanitizers/asan.supp")
+                        put("ASAN_OPTIONS", "allocator_may_return_null=1:unwind_abort_on_malloc=1:use_sigaltstack=0:detect_stack_use_after_return=0:handle_segv=0:halt_on_error=0:abort_on_error=0:print_stacktrace=1:symbolize=1:log_path=/tmp/asan.log:suppressions=$rootDir/gradle/sanitizers/asan.supp")
                         put("UBSAN_OPTIONS", "halt_on_error=0:abort_on_error=0:print_stacktrace=1:suppressions=$rootDir/gradle/sanitizers/ubsan.supp")
                         put("LSAN_OPTIONS", "detect_leaks=0")
+                    }
+                    // G1GC's heap reservation is placed just below 2 GB (0x7fff7000) by ASLR on
+                    // some kernel configurations, which is exactly where ASan needs to mmap its
+                    // shadow bytes [0x7fff7000-0x10007fff7fff].  Force the heap to a very low
+                    // base address so the entire JVM footprint stays below the shadow range.
+                    // HeapBaseMinAddress is not accepted by JDK <= 11 (constraint violation);
+                    // those JDKs rely on the vm.mmap_rnd_bits=8 CI-level mitigation instead.
+                    if (PlatformUtils.testJvmMajorVersion() >= 12) {
+                        config.testJvmArgs.addAll(listOf(
+                            "-XX:HeapBaseMinAddress=0x4000000",
+                            "-Xmx512m",
+                            "-XX:CompressedClassSpaceSize=256m"
+                        ))
                     }
                 }
             }

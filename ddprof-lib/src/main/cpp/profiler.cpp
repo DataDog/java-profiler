@@ -1,6 +1,6 @@
 /*
  * Copyright The async-profiler authors
- * Copyright 2024, 2025 Datadog, Inc
+ * Copyright 2024, 2026 Datadog, Inc
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -8,12 +8,13 @@
 #include "profiler.h"
 #include "asyncSampleMutex.h"
 #include "mallocTracer.h"
+#include "nativeSocketSampler.h"
 #include "context.h"
-#include "context_api.h"
 #include "guards.h"
 #include "common.h"
 #include "counters.h"
 #include "ctimer.h"
+#include "signalInflight.h"
 #include "dwarf.h"
 #include "flightRecorder.h"
 #include "itimer.h"
@@ -35,6 +36,7 @@
 #include "tsc.h"
 #include "utils.h"
 #include "wallClock.h"
+#include "wallClockCounters.h"
 #include "frames.h"
 
 #include <algorithm>
@@ -80,6 +82,7 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   if (_thread_filter.enabled()) {
     int slot_id = _thread_filter.registerThread();
     current->setFilterSlotId(slot_id);
+    _thread_filter.resetSlotRunState(slot_id);
     _thread_filter.remove(slot_id);  // Remove from filtering initially
   }
   if (thread != NULL) {
@@ -133,7 +136,28 @@ int Profiler::registerThread(int tid) {
   return _instance->_cpu_engine->registerThread(tid) |
          _instance->_wall_engine->registerThread(tid);
 }
+#ifdef UNIT_TEST
+static std::atomic<int> g_test_last_unregistered_tid{-1};
+
+int Profiler::lastUnregisteredTidForTest() {
+    return g_test_last_unregistered_tid.load(std::memory_order_relaxed);
+}
+void Profiler::resetUnregisterObservableForTest() {
+    g_test_last_unregistered_tid.store(-1, std::memory_order_relaxed);
+}
+#endif
+
 void Profiler::unregisterThread(int tid) {
+#ifdef UNIT_TEST
+    // In gtest, _cpu_engine/_wall_engine are null (profiler not started).
+    // Record the tid so integration tests can verify the call happened without
+    // crashing on the null engine dereference.  This bypasses the real engine
+    // unregister path entirely, so that path is covered only by JVM-level tests,
+    // not by these gtests.  UNIT_TEST is defined solely for the gtest binaries
+    // (see GtestTaskBuilder); the shipped library never compiles this branch.
+    g_test_last_unregistered_tid.store(tid, std::memory_order_relaxed);
+    return;
+#endif
   _instance->_cpu_engine->unregisterThread(tid);
   _instance->_wall_engine->unregisterThread(tid);
 }
@@ -506,7 +530,8 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
       // isCarryingVirtualThread() works regardless of JDK version.  Append a
       // synthetic "JVM Continuation" root frame to mark the boundary
       // explicitly, matching the behaviour of walkVM without carrier_frames.
-      if (VM::hotspot_version() >= 21 && num_frames < _max_stack_depth) {
+      if (VM::isHotspot() && VM::hotspot_version() >= 21 &&
+          num_frames < _max_stack_depth) {
         VMThread* carrier = VMThread::current();
         if (carrier != nullptr && carrier->isCarryingVirtualThread()) {
           frames[num_frames].bci = BCI_NATIVE_FRAME;
@@ -550,8 +575,9 @@ void Profiler::recordDeferredSample(int tid, u64 call_trace_id, jint event_type,
   _locks[lock_index].unlock();
 }
 
-void Profiler::recordSample(void *ucontext, u64 counter, int tid,
-                            jint event_type, u64 call_trace_id, Event *event) {
+bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
+                            jint event_type, u64 call_trace_id, Event *event,
+                            u64 *recorded_call_trace_id) {
   atomicIncRelaxed(_total_samples);
 
   u32 lock_index = getLockIndex(tid);
@@ -566,7 +592,7 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
       // collected trace
       PerfEvents::resetBuffer(tid);
     }
-    return;
+    return false;
   }
 
   bool truncated = false;
@@ -613,15 +639,19 @@ void Profiler::recordSample(void *ucontext, u64 counter, int tid,
     }
 #endif // COUNTERS
   }
-  _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
+  bool recorded = _jfr.recordEvent(lock_index, tid, call_trace_id, event_type, event);
+  if (recorded && recorded_call_trace_id != nullptr) {
+    *recorded_call_trace_id = call_trace_id;
+  }
 
   _locks[lock_index].unlock();
+  return recorded;
 }
 
-void Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
+bool Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
                                      jint event_type, Event *event) {
   if (!VM::canRequestStackTrace()) {
-    return;
+    return false;
   }
 
   // Reserve the correlation ID up-front so we can pass the same value to the
@@ -636,7 +666,7 @@ void Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
     } else {
       Counters::increment(JVMTI_STACKS_FAILED_OTHER);
     }
-    return;
+    return false;
   }
 
   atomicIncRelaxed(_total_samples);
@@ -649,11 +679,13 @@ void Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
     // The JVM-side stack trace request is already in flight; we just drop our
     // sample event. The dangling StackTraceRequest entry in the JVM recording
     // will simply have no matching datadog event, which is harmless.
-    return;
+    return false;
   }
 
-  _jfr.recordEventDelegated(lock_index, tid, correlation_id, event_type, event);
+  bool recorded =
+      _jfr.recordEventDelegated(lock_index, tid, correlation_id, event_type, event);
   _locks[lock_index].unlock();
+  return recorded;
 }
 
 void Profiler::recordWallClockEpoch(int tid, WallClockEpochEvent *event) {
@@ -833,11 +865,6 @@ void Profiler::switchLibraryTrap(bool enable) {
   }
   void *impl = enable ? (void *)dlopen_hook : (void *)dlopen;
   __atomic_store_n(_dlopen_entry, impl, __ATOMIC_RELEASE);
-}
-
-void Profiler::enableEngines() {
-  _cpu_engine->enableEvents(true);
-  _wall_engine->enableEvents(true);
 }
 
 void Profiler::disableEngines() {
@@ -1031,23 +1058,40 @@ void Profiler::updateJavaThreadNames() {
   jvmti->Deallocate((unsigned char *)thread_objects);
 }
 
-void Profiler::updateNativeThreadNames() {
-    ThreadList *thread_list = OS::listThreads();
-    constexpr size_t buffer_size = 64;
-    char name_buf[buffer_size];  // Stack-allocated buffer
+void Profiler::updateNativeThreadNames(bool defer_initializing) {
+  ThreadList *thread_list = OS::listThreads();
+  constexpr size_t buffer_size = 64;
+  char name_buf[buffer_size];  // Stack-allocated buffer
 
-    while (thread_list->hasNext()) { 
-        int tid = thread_list->next(); 
-        _thread_info.updateThreadName(
-                tid, [&](int tid) -> std::string {
-                    if (OS::threadName(tid, name_buf, buffer_size)) {
-                        return std::string(name_buf, buffer_size);
-                    }
-                    return std::string();
-                });
-    }
+  // A freshly cloned thread inherits the creating thread's comm until it sets
+  // its own name; for the threads we want here that creator is typically the
+  // main thread, so the inherited name is the process name. When deferring, we
+  // skip recording it and let a later pass capture the final name.
+  char proc_name[buffer_size];
+  bool have_proc_name =
+      defer_initializing && OS::threadName(OS::processId(), proc_name, buffer_size);
 
-    delete thread_list;
+  while (thread_list->hasNext()) {
+    int tid = thread_list->next();
+    _thread_info.updateThreadName(
+        tid, [&](int tid) -> std::string {
+          if (OS::threadName(tid, name_buf, buffer_size)) {
+            // Skip a thread still showing the inherited process name: it is
+            // probably mid-initialization. Recording it would latch a
+            // provisional name (updateThreadName is first-writer-wins).
+            if (have_proc_name && strcmp(name_buf, proc_name) == 0) {
+              return std::string();
+            }
+            // name_buf is NUL-terminated by OS::threadName; let
+            // std::string find the length rather than storing the
+            // full 64-byte buffer (NUL + trailing garbage).
+            return std::string(name_buf);
+          }
+          return std::string();
+        });
+  }
+
+  delete thread_list;
 }
 
 Engine *Profiler::selectCpuEngine(Arguments &args) {
@@ -1203,6 +1247,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   _omit_stacktraces = args._lightweight;
   _remote_symbolication = args._remote_symbolication;
   _libs->setRemoteSymbolication(_remote_symbolication);
+  _wall_precheck = args._wall_precheck;
   _event_mask =
       ((args._event != NULL && strcmp(args._event, EVENT_NOOP) != 0) ? EM_CPU
                                                                      : 0) |
@@ -1210,7 +1255,8 @@ Error Profiler::start(Arguments &args, bool reset) {
       (args._record_allocations || args._record_liveness || args._gc_generations
            ? EM_ALLOC
            : 0) |
-      (args._nativemem >= 0 ? EM_NATIVEMEM : 0);
+      (args._nativemem >= 0 ? EM_NATIVEMEM : 0) |
+      (args._nativesocket ? EM_NATIVESOCKET : 0);
 
   if (_event_mask == 0) {
     return Error("No profiling events specified");
@@ -1257,6 +1303,7 @@ Error Profiler::start(Arguments &args, bool reset) {
       unlockAll();
     }
     Counters::reset();
+    WallClockCounters::reset();
 
     // Reset thread names and IDs
     _thread_info.clearAll();
@@ -1301,10 +1348,14 @@ Error Profiler::start(Arguments &args, bool reset) {
   
   // Minor optim: Register the current thread (start thread won't be called)
   if (_thread_filter.enabled()) {
+    _thread_filter.clearActive();
     ProfiledThread *current = ProfiledThread::current();
     assert(current != nullptr);
-    int slot_id = _thread_filter.registerThread();
-    current->setFilterSlotId(slot_id);
+    int slot_id = current->filterSlotId();
+    if (slot_id < 0) {
+      slot_id = _thread_filter.registerThread();
+      current->setFilterSlotId(slot_id);
+    }
     _thread_filter.remove(slot_id);  // Remove from filtering initially (matches onThreadStart behavior)
   }
 
@@ -1332,6 +1383,11 @@ Error Profiler::start(Arguments &args, bool reset) {
     }
   }
 
+  args._cstack = _cstack;
+  // Prepare JVMSupport for execution
+  JVMSupport::initExecution(args, VM::jvmti(), VM::jni());
+
+
   LibraryPatcher::initialize();
 
   // Kernel symbols are useful only for perf_events without --all-user
@@ -1341,8 +1397,6 @@ Error Profiler::start(Arguments &args, bool reset) {
   if (_remote_symbolication) {
     _libs->updateBuildIds();
   }
-
-  enableEngines();
 
   // Refresher must be running before the trap fires: dlopen_hook's
   // signal-context branch only marks dirty and relies on the refresher
@@ -1355,12 +1409,8 @@ Error Profiler::start(Arguments &args, bool reset) {
   JfrMetadata::reset();
   JfrMetadata::initialize(args._context_attributes);
   _num_context_attributes = args._context_attributes.size();
-  // Initialize the OTel thread context so external profilers can decode
-  // the per-thread context, including custom attributes
-  ContextApi::registerAttributeKeys(args._context_attributes);
   error = _jfr.start(args, reset);
   if (error) {
-    disableEngines();
     switchLibraryTrap(false);
     _libs->stopRefresher();
     return error;
@@ -1377,9 +1427,16 @@ Error Profiler::start(Arguments &args, bool reset) {
     }
   }
   if ((_event_mask & EM_WALL) && _wall_engine != &noop_engine) {
+    // Enable wall clock BEFORE starting its pthread: timerLoopCommon() checks
+    // _enabled once at startup and exits early if false, so the pthread would
+    // otherwise die immediately and wall profiling would be silently dead for
+    // the recording. JFR is already initialized by this point (_jfr.start()
+    // ran above).
+    _wall_engine->enableEvents(true);
     error = _wall_engine->start(args);
     if (error) {
       Log::warn("%s", error.message());
+      _wall_engine->enableEvents(false);
       error = Error::OK; // recoverable
     } else {
       activated |= EM_WALL;
@@ -1416,6 +1473,15 @@ Error Profiler::start(Arguments &args, bool reset) {
       activated |= EM_NATIVEMEM;
     }
   }
+  if (_event_mask & EM_NATIVESOCKET) {
+    error = NativeSocketSampler::instance()->start(args);
+    if (error) {
+      Log::warn("%s", error.message());
+      error = Error::OK; // recoverable
+    } else {
+      activated |= EM_NATIVESOCKET;
+    }
+  }
 
   if (activated) {
     switchThreadEvents(JVMTI_ENABLE);
@@ -1425,6 +1491,15 @@ Error Profiler::start(Arguments &args, bool reset) {
     //      However, the thread name will be updated later in updateJavaThreadNames().
     // TODO: find a better way to resolve the thread name.
     onThreadStart(nullptr, nullptr, nullptr);
+
+    // Enable CPU profiling last. CPU SIGPROF handlers write JFR events, so
+    // _enabled must not become true until _jfr.start() has completed; we also
+    // wait until after _cpu_engine->start() so the very first signal a thread
+    // ever sees finds the engine fully wired. Unlike wall clock, CPU handlers
+    // re-check _enabled on every signal, so enabling here (rather than before
+    // start()) does not lose samples.
+    // Paired with drainInflight() on the stop side.
+    _cpu_engine->enableEvents(true);
 
     _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);
@@ -1450,21 +1525,40 @@ Error Profiler::stop() {
     return Error("Profiler is not active");
   }
 
+  // Order matters: disable engines first so the _enabled check inside signal
+  // handlers will fail for any new signal delivered from now on. drain() then
+  // waits for handlers that already passed the check to leave their JFR write
+  // path. Only once those are gone is it safe to run the rest of the teardown
+  // (engine stops, JFR teardown) without risking use-after-free.
   disableEngines();
+
+  if (!SignalInflight::drain()) {
+    // Signal handlers stuck past the timeout. Leave state == RUNNING so the
+    // caller cannot start() against half-torn-down JFR and so engine stops
+    // (notably BaseWallClock::stop()'s pthread_join) are not double-invoked.
+    // The operation is idempotent on retry: disableEngines() above is an atomic
+    // store, and no other engine stop has run yet.
+    return Error("signal handlers did not drain; teardown skipped, retry stop()");
+  }
 
   if (_event_mask & EM_ALLOC)
     _alloc_engine->stop();
   if (_event_mask & EM_NATIVEMEM)
     malloc_tracer.stop();
+  // Stop the refresher BEFORE socket unpatch: the refresher calls
+  // install_socket_hooks() which re-reads _socket_active before acquiring the
+  // patch lock.  If the refresher runs concurrently with unpatch_socket_functions()
+  // it can see _socket_active=true, wait for the lock, then re-patch PLT slots
+  // that unpatch just restored.  Stopping the refresher here closes that window.
+  _libs->stopRefresher();
+  if (_event_mask & EM_NATIVESOCKET)
+    NativeSocketSampler::instance()->stop();
   if (_event_mask & EM_WALL)
     _wall_engine->stop();
   if (_event_mask & EM_CPU)
     _cpu_engine->stop();
 
   switchLibraryTrap(false);
-  // Stop the refresher before the final refresh() so it doesn't race the
-  // teardown.  startRefresher/stopRefresher are idempotent.
-  _libs->stopRefresher();
   switchThreadEvents(JVMTI_DISABLE);
   Libraries::instance()->refresh();
   updateJavaThreadNames();
@@ -1545,6 +1639,9 @@ Error Profiler::check(Arguments &args) {
   }
   if (!error && args._nativemem >= 0) {
     error = malloc_tracer.check(args);
+  }
+  if (!error && args._nativesocket) {
+    error = NativeSocketSampler::instance()->check(args);
   }
   if (!error) {
     if (args._cstack == CSTACK_DWARF && !DWARF_SUPPORTED) {

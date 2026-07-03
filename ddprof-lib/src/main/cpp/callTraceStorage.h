@@ -21,7 +21,6 @@
 #include <chrono>
 
 // Forward declarations
-class CallTraceStorage;
 class CallTraceHashTable;
 
 // Liveness checker function type
@@ -34,7 +33,7 @@ public:
     // Reserved trace ID for dropped samples due to contention
     // Real trace IDs are generated as (instance_id << 32) | slot, where instance_id starts from 1
     // Any ID with 0 in upper 32 bits is guaranteed to not clash with real trace IDs
-    static const u64 DROPPED_TRACE_ID = 1ULL;
+    static constexpr u64 DROPPED_TRACE_ID = 1ULL;
     
     // Static dropped trace object that appears in JFR constant pool
     static CallTrace* getDroppedTrace();

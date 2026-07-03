@@ -10,6 +10,7 @@
 #include <map>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include <limits.h>
 #include <string.h>
@@ -90,27 +91,8 @@ public:
   std::shared_ptr<SharedLineNumberTable> _line_number_table;
   FrameTypeId _type;
 
-  jint getLineNumber(jint bci) {
-    // if the shared pointer is not pointing to the line number table, consider
-    // size 0
-    if (!_line_number_table || _line_number_table->_size == 0) {
-      return 0;
-    }
-
-    int i = 1;
-    while (i < _line_number_table->_size &&
-           bci >= ((jvmtiLineNumberEntry *)_line_number_table->_ptr)[i]
-                      .start_location) {
-      i++;
-    }
-    return ((jvmtiLineNumberEntry *)_line_number_table->_ptr)[i - 1]
-        .line_number;
-  }
-
-  bool isHidden() {
-    // 0x1400 = ACC_SYNTHETIC(0x1000) | ACC_BRIDGE(0x0040)
-    return _modifiers == 0 || (_modifiers & 0x1040);
-  }
+  inline jint getLineNumber(jint bci);
+  inline bool isHidden();
 };
 
 // MethodMap's key can be derived from 3 sources:
@@ -158,6 +140,34 @@ public:
     assert((key & KEY_TYPE_MASK) == 0);
     return (key | VTABLE_RECEIVER_MARK);
   }
+
+  // JFR method-pool id allocator. Ids must be unique among the methods written
+  // in a single chunk, but may be recycled once a method is erased by
+  // cleanupUnreferencedMethods() — an erased method is never written again, so
+  // its id is free for reuse. Recycling freed ids bounds the id range to the
+  // peak number of live methods (keeping LEB128 encoding compact) while
+  // guaranteeing no two live methods ever share an id. Id 0 stays reserved as
+  // the "no entry" sentinel. Single-threaded: only touched on the dump thread
+  // (allocId from resolveMethod under lockAll, freeId from
+  // cleanupUnreferencedMethods under the recording lock).
+  u32 allocId() {
+    if (!_free_ids.empty()) {
+      u32 id = _free_ids.back();
+      _free_ids.pop_back();
+      return id;
+    }
+    return ++_id_high_water;
+  }
+
+  void freeId(u32 id) {
+    if (id != 0) {
+      _free_ids.push_back(id);
+    }
+  }
+
+private:
+  u32 _id_high_water = 0;
+  std::vector<u32> _free_ids;
 };
 
 class Recording {
@@ -189,7 +199,6 @@ private:
   u64 _stop_time;
   u64 _stop_ticks;
 
-  u64 _base_id;
   u64 _bytes_written;
 
   int _tid;
@@ -259,30 +268,37 @@ public:
   void writeJvmInfo(Buffer *buf);
   void writeSystemProperties(Buffer *buf);
   void writeNativeLibraries(Buffer *buf);
-  void writeCpool(Buffer *buf);
+  // Writes the cpool checkpoint. Returns the number of pool sections actually
+  // emitted (empty variable pools are skipped) and reports the byte offset of
+  // the pool-count placeholder within the cpool via *count_offset_in_cpool, so
+  // the caller can back-patch it flush-safe alongside the cpool size field.
+  int writeCpool(Buffer *buf, int *count_offset_in_cpool);
 
   void writeFrameTypes(Buffer *buf);
 
   void writeThreadStates(Buffer *buf);
 
   void writeExecutionModes(Buffer *buf);
+  // writeThreads always emits: _tid is inserted unconditionally so the thread
+  // pool is never empty. The following variable-pool writers return 1 if a
+  // section was emitted, 0 if the pool was empty and skipped.
   void writeThreads(Buffer *buf);
 
-  void writeStackTraces(Buffer *buf, Lookup *lookup);
+  int writeStackTraces(Buffer *buf, Lookup *lookup);
 
-  void writeMethods(Buffer *buf, Lookup *lookup);
+  int writeMethods(Buffer *buf, Lookup *lookup);
 
-  void writeClasses(Buffer *buf, Lookup *lookup);
+  int writeClasses(Buffer *buf, Lookup *lookup);
 
-  void writePackages(Buffer *buf, Lookup *lookup);
+  int writePackages(Buffer *buf, Lookup *lookup);
 
-  void writeConstantPoolSection(Buffer *buf, JfrType type,
-                                std::map<u32, const char *> &constants);
+  int writeConstantPoolSection(Buffer *buf, JfrType type,
+                               std::map<u32, const char *> &constants);
 
-  void writeConstantPoolSection(Buffer *buf, JfrType type,
-                                Dictionary *dictionary);
-  void writeConstantPoolSection(Buffer *buf, JfrType type,
-                                StringDictionaryBuffer *buffer);
+  int writeConstantPoolSection(Buffer *buf, JfrType type,
+                               Dictionary *dictionary);
+  int writeConstantPoolSection(Buffer *buf, JfrType type,
+                               StringDictionaryBuffer *buffer);
 
   void writeLogLevels(Buffer *buf);
 
@@ -304,6 +320,8 @@ public:
                         AllocEvent *event);
   void recordMallocSample(Buffer *buf, int tid, u64 call_trace_id,
                           MallocEvent *event);
+  void recordNativeSocketSample(Buffer *buf, int tid, u64 call_trace_id,
+                                NativeSocketEvent *event);
   void recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
                             ObjectLivenessEvent *event);
   void recordMonitorBlocked(Buffer *buf, int tid, u64 call_trace_id,
@@ -403,21 +421,20 @@ public:
   Error start(Arguments &args, bool reset);
   void stop();
   Error dump(const char *filename, const int length);
-  void flush();
   void wallClockEpoch(int lock_index, WallClockEpochEvent *event);
   void recordTraceRoot(int lock_index, int tid, TraceRootEvent *event);
   void recordQueueTime(int lock_index, int tid, QueueTimeEvent *event);
 
   bool active() const { return _rec != NULL; }
 
-  void recordEvent(int lock_index, int tid, u64 call_trace_id, int event_type,
+  bool recordEvent(int lock_index, int tid, u64 call_trace_id, int event_type,
                    Event *event);
 
   // Emit a BCI_CPU / BCI_WALL sample with no stack-trace attached to our
   // recording. `correlation_id` is the same jlong passed to the HotSpot
   // RequestStackTrace extension so downstream tooling can join our event with
   // the JVM-emitted jdk.StackTraceRequest.
-  void recordEventDelegated(int lock_index, int tid, u64 correlation_id,
+  bool recordEventDelegated(int lock_index, int tid, u64 correlation_id,
                             int event_type, Event *event);
 
   void recordLog(LogLevel level, const char *message, size_t len);

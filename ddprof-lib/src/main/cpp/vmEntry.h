@@ -9,10 +9,8 @@
 
 #include <jvmti.h>
 #include "arch.h"
-
-#include "arch.h"
+#include "arguments.h"
 #include "codeCache.h"
-#include "frame.h"
 
 #ifdef __clang__
 #define DLLEXPORT __attribute__((visibility("default")))
@@ -53,6 +51,7 @@ enum ASGCT_CallFrameType {
   // MethodInfo collapses across distinct Symbol* addresses even though
   // the CallTrace itself does not.
   BCI_VTABLE_RECEIVER = -21,
+  BCI_NATIVE_SOCKET = -22,       // native socket I/O sample (bytes stored in counter)
 };
 
 // See hotspot/src/share/vm/prims/forte.cpp
@@ -95,6 +94,7 @@ typedef struct _asgct_callframe {
         jmethodID method_id;
         unsigned long packed_remote_frame; // packed RemoteFrameInfo data
         const char* native_function_name;
+        const void* method; // Hotspot only, direct pointer to JVM method
     };
 } ASGCT_CallFrame;
 
@@ -163,8 +163,6 @@ private:
   static void ready(jvmtiEnv *jvmti, JNIEnv *jni);
   static void applyPatch(char *func, const char *patch, const char *end_patch);
   static void *getLibraryHandle(const char *name);
-  static void loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
-  static void loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni);
 
   static bool initShared(JavaVM *vm);
   static void probeJFRRequestStackTrace();
@@ -217,6 +215,8 @@ public:
   static bool isUseAdaptiveGCBoundarySet() {
     return _is_adaptive_gc_boundary_flag_set;
   }
+
+  static Arguments& arguments();
 
   static bool canRequestStackTrace() {
     return __atomic_load_n(&_request_stack_trace, __ATOMIC_ACQUIRE) != nullptr;

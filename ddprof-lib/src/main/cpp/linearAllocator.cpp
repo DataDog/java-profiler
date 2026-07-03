@@ -20,20 +20,18 @@
 #include "os.h"
 #include "common.h"
 #include <stdio.h>
-
-// Enable ASan memory poisoning for better use-after-free detection
-#ifdef __has_feature
-  #if __has_feature(address_sanitizer)
-    #define ASAN_ENABLED 1
-  #endif
+#ifdef TSAN_ENABLED
+  #include <sys/mman.h>
+  #include <cstdlib>
 #endif
 
-#ifdef __SANITIZE_ADDRESS__
-  #define ASAN_ENABLED 1
-#endif
-
+// ASAN_ENABLED / TSAN_ENABLED are defined in common.h (toolchain-agnostic).
 #ifdef ASAN_ENABLED
   #include <sanitizer/asan_interface.h>
+#endif
+
+#ifdef TSAN_ENABLED
+  #include <sanitizer/tsan_interface.h>
 #endif
 
 LinearAllocator::LinearAllocator(size_t chunk_size) {
@@ -47,9 +45,21 @@ LinearAllocator::~LinearAllocator() {
 }
 
 void LinearAllocator::clear() {
+  // OS::safeAlloc/safeFree use raw syscalls not intercepted by TSan, so TSan
+  // never clears shadow memory on munmap.  Add explicit acquire/release around
+  // every plain prev-field read so the happens-before chain from freeChunk's
+  // __tsan_release reaches any thread that later reuses the same VA.
+  #ifdef TSAN_ENABLED
+  __tsan_acquire(_reserve);
+  #endif
   if (_reserve->prev == _tail) {
-    freeChunk(_reserve);
+    freeChunk(_reserve);  // __tsan_release inside
   }
+  #ifdef TSAN_ENABLED
+  else {
+    __tsan_release(_reserve);  // not freed here; release for future VA-reuse acquirers
+  }
+  #endif
 
   // ASAN POISONING: Mark all allocated memory as poisoned BEFORE freeing chunks
   // This catches use-after-free even when memory isn't munmap'd (kept in _tail)
@@ -71,12 +81,26 @@ void LinearAllocator::clear() {
   }
   #endif
 
-  while (_tail->prev != NULL) {
+  // Walk the chain freeing all chunks except the last (prev==NULL).
+  // Acquire each chunk BEFORE reading its prev field so the TSan happens-before
+  // chain covers the condition check, not just the assignment inside the body.
+  {
     Chunk *current = _tail;
-    _tail = _tail->prev;
-    freeChunk(current);
+    #ifdef TSAN_ENABLED
+    __tsan_acquire(current);  // before the first current->prev read (loop condition)
+    #endif
+    while (current->prev != NULL) {
+      Chunk *next = current->prev;
+      freeChunk(current);  // __tsan_release(current) + safeFree inside
+      current = next;
+      #ifdef TSAN_ENABLED
+      __tsan_acquire(current);  // before the next iteration's current->prev read
+      #endif
+    }
+    // current is the last chunk (prev==NULL); keep it as the new allocator base.
+    _reserve = current;
+    _tail = current;
   }
-  _reserve = _tail;
   _tail->offs = sizeof(Chunk);
 
   // DON'T UNPOISON HERE - let alloc() do it on-demand!
@@ -88,11 +112,20 @@ ChunkList LinearAllocator::detachChunks() {
   // Capture current state before detaching
   ChunkList result(_tail, _chunk_size);
 
-  // Handle reserve chunk: if it's ahead of tail, it needs special handling
-  if (_reserve->prev == _tail) {
-    // Reserve is a separate chunk ahead of tail - it becomes part of detached list
-    // We need to include it in the chain by making it the new head
-    result.head = _reserve;
+  // Handle reserve chunk: if it's ahead of tail, it becomes part of detached list.
+  // Acquire TSan ownership before reading _reserve->prev: the reserve chunk may
+  // have been allocated by another thread via reserveChunk() → allocateChunk(),
+  // which released ownership with __tsan_release after writing chunk->prev.
+  if (_reserve != _tail) {
+    #ifdef TSAN_ENABLED
+    __tsan_acquire(_reserve);
+    #endif
+    if (_reserve->prev == _tail) {
+      result.head = _reserve;
+    }
+    #ifdef TSAN_ENABLED
+    __tsan_release(_reserve);
+    #endif
   }
 
   // Allocate a fresh chunk for new allocations
@@ -118,17 +151,25 @@ void LinearAllocator::freeChunks(ChunkList& chunks) {
     return;
   }
 
-  // Walk the chain and free each chunk
   Chunk* current = chunks.head;
   while (current != nullptr) {
+    // Acquire TSan ownership before reading chunk->prev: pairs with the
+    // __tsan_release in allocateChunk() that published the initialized chunk.
+    // Without this, TSan cannot connect the writer's (e.g. reserveChunk thread)
+    // initialization of chunk->prev to this read, and reports a false data race.
+    #ifdef TSAN_ENABLED
+    __tsan_acquire(current);
+    #endif
     Chunk* prev = current->prev;
+    #ifdef TSAN_ENABLED
+    __tsan_release(current);
+    #endif
     OS::safeFree(current, chunks.chunk_size);
     Counters::decrement(LINEAR_ALLOCATOR_BYTES, chunks.chunk_size);
     Counters::decrement(LINEAR_ALLOCATOR_CHUNKS);
     current = prev;
   }
 
-  // Mark as freed to prevent double-free
   chunks.head = nullptr;
   chunks.chunk_size = 0;
 }
@@ -172,16 +213,49 @@ void *LinearAllocator::alloc(size_t size) {
 Chunk *LinearAllocator::allocateChunk(Chunk *current) {
   Chunk *chunk = (Chunk *)OS::safeAlloc(_chunk_size);
   if (chunk != NULL) {
+    // OS::safeAlloc uses a raw mmap syscall that bypasses ASan and TSan
+    // interceptors by design (to avoid self-instrumentation in the profiler).
+    // When the OS reuses a VA from a prior munmap, TSan's shadow memory for
+    // that VA still holds stale access history from previous chunk users,
+    // causing false-positive data-race reports on user-data addresses.
+    //
+    // Fix: re-map the same VA through the libc mmap() wrapper. TSan intercepts
+    // mmap() and calls MemoryRangeImitateWrite, which sets all 4 shadow slots
+    // for the entire chunk range to the current thread's write — completely
+    // overwriting any stale entries. safeAlloc itself is unchanged.
+    //
+    // This MUST stay TSan-build-only: the libc mmap() wrapper and TSan's
+    // interceptor are not async-signal-safe, and allocateChunk() is reachable
+    // from a signal handler in the full profiler. TSAN_ENABLED is defined for
+    // any TSan-instrumented translation unit (it tracks the compiler's
+    // sanitizer detection in common.h, not the build target), but the build
+    // only applies -fsanitize=thread to the isolated gtest binaries — never to
+    // the shared library the JVM loads. Those gtest binaries never drive the
+    // allocator from a signal handler, so the non-async-signal-safe mmap() call
+    // here is safe in practice.
+    #ifdef ASAN_ENABLED
+    ASAN_UNPOISON_MEMORY_REGION(chunk, _chunk_size);
+    #endif
+    #ifdef TSAN_ENABLED
+    void *remap = mmap(chunk, _chunk_size, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    // MAP_FIXED unmaps before it maps, so a failure would leave a hole at
+    // `chunk` and the writes below would fault. Abort unconditionally rather
+    // than via assert(), which an NDEBUG build would strip — turning a clean,
+    // diagnosable failure into a stale-shadow or use-after-unmap crash.
+    if (remap != chunk) {
+      perror("TSan shadow re-map (mmap MAP_FIXED) failed");
+      abort();
+    }
+    #endif
+
     chunk->prev = current;
     chunk->offs = sizeof(Chunk);
 
-    // ASAN UNPOISONING: New chunks from mmap are clean, unpoison them for use
-    // mmap returns memory that ASan may track as unallocated, so we need to
-    // explicitly unpoison it to allow allocations
-    #ifdef ASAN_ENABLED
-    size_t usable_size = _chunk_size - sizeof(Chunk);
-    void* data_start = (char*)chunk + sizeof(Chunk);
-    ASAN_UNPOISON_MEMORY_REGION(data_start, usable_size);
+    // Publish the initialized chunk: any thread that later acquires this chunk
+    // (via __tsan_acquire in freeChunks/detachChunks) will see these writes.
+    #ifdef TSAN_ENABLED
+    __tsan_release(chunk);
     #endif
 
     Counters::increment(LINEAR_ALLOCATOR_BYTES, _chunk_size);
@@ -191,6 +265,13 @@ Chunk *LinearAllocator::allocateChunk(Chunk *current) {
 }
 
 void LinearAllocator::freeChunk(Chunk *current) {
+  // Release TSan ownership before munmap so the sanitizer knows this thread is
+  // done with the memory.  The mmap(MAP_FIXED) re-map in allocateChunk() resets
+  // the shadow for whichever thread later reuses this VA (after OS VA reuse), so
+  // it starts from a clean baseline rather than seeing stale access history.
+  #ifdef TSAN_ENABLED
+  __tsan_release(current);
+  #endif
   OS::safeFree(current, _chunk_size);
   Counters::decrement(LINEAR_ALLOCATOR_BYTES, _chunk_size);
   Counters::decrement(LINEAR_ALLOCATOR_CHUNKS);
@@ -206,7 +287,9 @@ void LinearAllocator::reserveChunk(Chunk *current) {
 }
 
 Chunk *LinearAllocator::getNextChunk(Chunk *current) {
-  Chunk *reserve = _reserve;
+  // _reserve is written via CAS in reserveChunk(); load it atomically so TSan
+  // sees the acquire-release relationship with the CAS store.
+  Chunk *reserve = __atomic_load_n(&_reserve, __ATOMIC_ACQUIRE);
 
   if (reserve == current) {
     // Unlikely case: no reserve yet.
