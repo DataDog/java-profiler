@@ -20,6 +20,7 @@
 #include "counters.h"
 #include "guards.h"
 #include "ctimer.h"
+#include "signalInflight.h"
 #include "debugSupport.h"
 #include "jvmThread.h"
 #include "libraries.h"
@@ -180,6 +181,8 @@ void CTimer::stop() {
   for (int i = 0; i < _max_timers; i++) {
     unregisterThread(i);
   }
+  // Note: SignalInflight::drain() is called by Profiler::stop() after
+  // disableEngines(); see signalInflight.h.
 }
 
 Error CTimerJvmti::check(Arguments &args) {
@@ -209,6 +212,8 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     return;
   }
   Counters::increment(CTIMER_SIGNAL_OWN);
+
+  InflightGuard inflight;
 
   CriticalSection cs;
   if (!cs.entered()) {
@@ -261,6 +266,8 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   }
   Counters::increment(CTIMER_SIGNAL_OWN);
 
+  InflightGuard inflight;
+
   // Atomically try to enter critical section - prevents all reentrancy races
   CriticalSection cs;
   if (!cs.entered()) {
@@ -270,8 +277,9 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   int saved_errno = errno;
   // we want to ensure memory order because of the possibility the instance gets
   // cleared
-  if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE))
+  if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
     return;
+  }
   int tid = 0;
   ProfiledThread *current = ProfiledThread::currentSignalSafe();
   assert(current == nullptr || !current->isDeepCrashHandler());
