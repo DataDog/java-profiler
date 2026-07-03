@@ -25,6 +25,7 @@ import java.util.Arrays;
  *       chunks, each a single byte[]. Chunks are allocated once per depth band and reused.</li>
  * </ul>
  */
+@Deprecated // DirectByteBuffer snapshot/restore path; unused by dd-trace-java (re-derives context). Removed in phase 3.
 public final class ScopeStack {
     private static final int FAST_DEPTH = 6;
     private static final int CHUNK_DEPTH = 12;

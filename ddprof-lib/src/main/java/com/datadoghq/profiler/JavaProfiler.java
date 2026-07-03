@@ -229,6 +229,8 @@ public final class JavaProfiler {
      * @param traceIdHigh Upper 64 bits of the 128-bit trace ID
      * @param traceIdLow Lower 64 bits of the 128-bit trace ID
      */
+    // @deprecated DirectByteBuffer path; use {@link #setTraceContext} (all-native). Removed in phase 3.
+    @Deprecated
     public void setContext(long localRootSpanId, long spanId, long traceIdHigh, long traceIdLow) {
         currentContext().put(localRootSpanId, spanId, traceIdHigh, traceIdLow);
     }
@@ -237,6 +239,8 @@ public final class JavaProfiler {
      * Resets the current thread's context to zero (traceId=0, spanId=0, localRootSpanId=0).
      * Custom context attributes are also cleared.
      */
+    // @deprecated DirectByteBuffer path; use {@link #clearTraceContext} (all-native). Removed in phase 3.
+    @Deprecated
     public void clearContext() {
         currentContext().put(0, 0, 0, 0);
     }
@@ -310,6 +314,8 @@ public final class JavaProfiler {
      *         {@code value} is null, the Dictionary is full, or {@code attrs_data} overflows
      *         for this slot
      */
+    // @deprecated DirectByteBuffer path; use {@link #setContextValue} (all-native). Removed in phase 3.
+    @Deprecated
     public boolean setContextAttribute(int offset, String value) {
         return currentContext().setContextAttribute(offset, value);
     }
@@ -320,6 +326,8 @@ public final class JavaProfiler {
      *
      * @param offset slot index (0-based, in [0, 9]); out-of-range values are silently ignored
      */
+    // @deprecated DirectByteBuffer path; use {@link #clearContextValue} (all-native). Removed in phase 3.
+    @Deprecated
     public void clearContextAttribute(int offset) {
         currentContext().clearContextAttribute(offset);
     }
@@ -347,10 +355,13 @@ public final class JavaProfiler {
      * @throws IllegalArgumentException if the arrays have different lengths, exceed the slot limit,
      *                                  or any active {@code utf8[i]} exceeds 255 bytes
      */
+    // @deprecated DirectByteBuffer path; unused by dd-trace-java. Removed in phase 3.
+    @Deprecated
     public boolean setContextAttributesByIdAndBytes(int[] constantIds, byte[][] utf8) {
         return currentContext().setContextAttributesByIdAndBytes(constantIds, utf8);
     }
 
+    @Deprecated
     void copyTags(int[] snapshot) {
         currentContext().copyCustoms(snapshot);
     }
@@ -551,6 +562,9 @@ public final class JavaProfiler {
      * Callers that write context (span/attributes) should re-fetch per use — the {@code setContext*}
      * methods already do this internally via {@code currentContext()}.
      */
+    // @deprecated DirectByteBuffer path (test/diagnostic only); the all-native API is stateless and
+    // exposes no per-thread handle. Removed in phase 3.
+    @Deprecated
     public ThreadContext getThreadContext() {
         return currentContext();
     }

@@ -28,6 +28,7 @@ import java.util.Objects;
  * Context is written directly to the OTEP record via DirectByteBuffer
  * for minimal overhead. Only little-endian platforms are supported.
  */
+@Deprecated // DirectByteBuffer context path; superseded by JavaProfiler.setTraceContext (all-native). Removed in phase 3.
 public final class ThreadContext {
     static final int MAX_CUSTOM_SLOTS = 10;
     // Max UTF-8 byte length for a custom attribute value. Matches the 1-byte length
