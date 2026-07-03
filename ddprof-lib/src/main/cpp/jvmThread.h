@@ -26,6 +26,10 @@ public:
      */
     static bool initialize();
 
+    static inline bool isInitialized() {
+        return _tid != nullptr && _jvm_thread.isKeyValid();
+    }
+
     static inline void* current() {
         // If the key is invalid, we should *never* reach here, because
         // profiling should have been disabled. See VM::initShared()d

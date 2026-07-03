@@ -18,8 +18,15 @@
 
 
 volatile JVMSupport::JMethodIDLoadStats JVMSupport::jmethodID_load_state = JVMSupport::No_loaded;
+Mutex JVMSupport::_initialization_lock;
 
 bool JVMSupport::initialize() {
+    MutexLocker locker(_initialization_lock);
+
+    if (isInitialized()) {
+        return true;
+    }
+
     // Check if JVMThread key is valid, the key is critical to access JVM `current` thread.
     if (!JVMThread::initialize()) {
         return false;
@@ -27,6 +34,10 @@ bool JVMSupport::initialize() {
 
     // Add ProfiledThread key checking here in next PR
     return true;
+}
+
+bool JVMSupport::isInitialized() {
+    return JVMThread::isInitialized();
 }
 
 JVMSupport::JMethodIDLoadStats JVMSupport::getLoadState() {

@@ -327,14 +327,6 @@ bool VM::initShared(JavaVM* vm) {
   // Initialize VMStructs
   VMStructs::init(lib);
 
-  // Check JVMSupport initialization state.
-  // Must call after JVM library is loaded and JVM type, version number
-  // and etc. are resolved
-  if (!JVMSupport::initialize()) {
-    return false;
-  }
-
-
   // Mark thread entry points for all JVMs (critical for correct stack unwinding)
   lib->mark(isThreadEntry, MARK_THREAD_ENTRY);
 

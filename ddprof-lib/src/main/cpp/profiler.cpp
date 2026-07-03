@@ -1189,6 +1189,7 @@ Engine *Profiler::selectAllocEngine(Arguments &args) {
 
 Error Profiler::checkJvmCapabilities() {
   if (!JVMThread::hasJavaThreadId()) {
+    assert(false);
     return Error("Could not find Thread ID field. Unsupported JVM?");
   }
 
@@ -1228,7 +1229,18 @@ void Profiler::check_JDK_8313796_workaround() {
 
 Error Profiler::start(Arguments &args, bool reset) {
   MutexLocker ml(_state_lock);
-  if (state() > IDLE) {
+  State s = state();
+  if (s == ERROR) {
+    return Error("Profiler encountered fatal error");
+  } else if (s == NEW) {
+    // Make sure JVMSupport is initialized
+    // In theory, it should be initialized in JVMTI::VMInit() callback,
+    // but the callback arrives too late, after this method is called.
+    if (!JVMSupport::initialize()) {
+      _state.store(ERROR, std::memory_order_release);
+      return Error("Profiler encountered fatal error");
+    }
+  } else if (s > IDLE) {
     return Error("Profiler already started");
   }
 
@@ -1589,7 +1601,11 @@ Error Profiler::stop() {
 
 Error Profiler::check(Arguments &args) {
   MutexLocker ml(_state_lock);
-  if (state() > IDLE) {
+  State s = state();
+  if (s) {
+    return Error("Profiler encountered fatal error");
+  }
+  if (s > IDLE) {
     return Error("Profiler already started");
   }
 

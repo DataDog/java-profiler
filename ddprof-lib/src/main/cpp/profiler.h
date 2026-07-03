@@ -58,7 +58,7 @@ class FrameName;
 class StackContext;
 class VM;
 
-enum State { NEW, IDLE, RUNNING, TERMINATED };
+enum State { NEW, IDLE, RUNNING, TERMINATED, ERROR };
 
 // Aligned to satisfy SpinLock member alignment requirement (64 bytes)
 // Required because this class contains the _locks[] SpinLock array.

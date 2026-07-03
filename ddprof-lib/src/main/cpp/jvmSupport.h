@@ -6,6 +6,7 @@
 #ifndef _JVMSUPPORT_H
 #define _JVMSUPPORT_H
 
+#include "mutex.h"
 #include "stackFrame.h"
 #include "stackWalker.h"
 
@@ -31,6 +32,7 @@ class JVMSupport {
 
     friend class HotspotSupport;
 
+    static Mutex _initialization_lock;
     static volatile JMethodIDLoadStats jmethodID_load_state;
 
     static int asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* ucontext);
@@ -39,6 +41,8 @@ class JVMSupport {
 
     static JMethodIDLoadStats getLoadState();
     static void setLoadState(JMethodIDLoadStats state);
+
+    static bool isInitialized();
 public:
     // Initialize JVM support - check JVM related resources are available.
     // Return false if any critical resource is not available, which should
