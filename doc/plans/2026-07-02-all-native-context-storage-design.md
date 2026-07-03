@@ -277,10 +277,14 @@ matter are the ones the combined API covers, plus the sporadic single app-attrib
 - Split-context coherence (#11646) remains a separate tracer-side concern; this change makes it safe
   but does not address it.
 
-## Appendix: benchmark classes
+## Appendix: benchmark experiment (reproducibility)
 
-All under `ddprof-stresstest/src/jmh/.../throughput/` (benchmark-only; run with
-`./gradlew :ddprof-stresstest:jmh -PjmhInclude="<Class>"`):
-`ContextWritePathBenchmark`, `ContextAttrBenchmark`, `ContextVThreadBenchmark`,
-`ContextScopeBenchmark`, `ContextSingleAttrBenchmark`, `ContextCombinedBenchmark`. Native prototypes
-live in `ddprof-lib/src/main/cpp/javaApi.cpp` (`*Native0`) with wrappers in `JavaProfiler.java`.
+The full JMH campaign — the six benchmark classes
+(`ContextWritePathBenchmark`, `ContextAttrBenchmark`, `ContextVThreadBenchmark`,
+`ContextScopeBenchmark`, `ContextSingleAttrBenchmark`, `ContextCombinedBenchmark`) and the
+benchmark-only native prototypes they exercise (`*Native0` in `javaApi.cpp` with wrappers in
+`JavaProfiler.java`) — is preserved on branch **`context-storage-benchmark-experiment`**
+(`origin`). That scaffolding is intentionally *not* carried into the productionization branch; the
+production API is the pared-down subset (combined per-activation write + single-attribute write +
+value cache). Run any benchmark from that branch with
+`./gradlew :ddprof-stresstest:jmh -PjmhInclude="<Class>"`.
