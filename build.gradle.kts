@@ -20,7 +20,7 @@ plugins {
   id("com.datadoghq.native-root")
 }
 
-version = "1.46.0"
+version = "1.46.1-SNAPSHOT"
 
 apply(plugin = "com.dipien.semantic-version")
 version = findProperty("ddprof_version") as? String ?: version
