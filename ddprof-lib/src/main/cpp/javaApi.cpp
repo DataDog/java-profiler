@@ -727,6 +727,227 @@ Java_com_datadoghq_profiler_JavaProfiler_initializeContextTLS0(JNIEnv* env, jcla
   return env->NewDirectByteBuffer((void*)record, (jlong)totalSize);
 }
 
+// ---------------------------------------------------------------------------
+// All-native context write API (OTEP #4947).
+//
+// Every write resolves the *current* carrier's OtelThreadContextRecord via
+// ProfiledThread::current(). Because a JNI native frame pins a mounted virtual thread to its
+// carrier for the duration of the call (the continuation cannot freeze across a native frame),
+// the record resolved here is guaranteed live and cannot migrate mid-write — there is no cached
+// per-thread buffer to dangle. This replaces the DirectByteBuffer path (see ThreadContext),
+// eliminating the virtual-thread use-after-free.
+//
+// Signal-safety / reader coherence: the sampler (ContextApi::get, wallClock.cpp) reads the same
+// record on the same carrier, gated on record->valid. Each write follows the detach -> mutate ->
+// attach protocol used by ThreadContext: store valid=0, release fence, mutate, release fence,
+// store valid=1. On x86 the release fence is a compiler barrier; on aarch64 it is a real barrier
+// pairing with the sampler's acquire load of valid in ContextApi::get.
+// ---------------------------------------------------------------------------
+
+// Byte layout constants shared with ThreadContext (see otel_context.h / ThreadContext.java).
+static const int OTEL_LRS_ENTRY_SIZE = 18; // fixed attrs_data[0] entry: key(1)+len(1)+16 hex bytes
+
+// Writes the 16 hex value bytes of the fixed LRS attrs_data entry in place (attrs_data[2..18)).
+// The entry header (key_index=0, length=16) is initialized by the ThreadContext ctor and left
+// untouched here; only the value is overwritten. Mirrors ThreadContext.writeLrsHex.
+static inline void otelWriteLrsHex(OtelThreadContextRecord* record, u64 v) {
+  static const char HEXD[16] =
+      {'0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'};
+  uint8_t* hex = record->attrs_data + 2;
+  for (int i = 15; i >= 0; i--) {
+    hex[i] = (uint8_t)HEXD[v & 0xF];
+    v >>= 4;
+  }
+}
+
+// Compacts out the attrs_data entry with the given OTEP key index; returns the new size.
+// Mirrors ThreadContext.compactOtepAttribute. Record must be detached.
+static int otelCompactAttr(OtelThreadContextRecord* record, int otepKeyIndex) {
+  int currentSize = record->attrs_data_size;
+  uint8_t* d = record->attrs_data;
+  int readPos = 0, writePos = 0;
+  bool found = false;
+  while (readPos + 2 <= currentSize) {
+    int k = d[readPos];
+    int len = d[readPos + 1];
+    if (readPos + 2 + len > currentSize) { currentSize = writePos; break; }
+    if (k == otepKeyIndex) {
+      found = true;
+      readPos += 2 + len;
+    } else {
+      if (found && writePos < readPos) {
+        memmove(d + writePos, d + readPos, 2 + len);
+      }
+      writePos += 2 + len;
+      readPos += 2 + len;
+    }
+  }
+  return found ? writePos : currentSize;
+}
+
+// Replaces/inserts an attribute value in attrs_data (record must be detached). Returns false on
+// attrs_data overflow (nothing appended). Mirrors ThreadContext.replaceOtepAttribute.
+static bool otelReplaceAttr(OtelThreadContextRecord* record, int otepKeyIndex,
+                            const uint8_t* utf8, int valueLen) {
+  int currentSize = otelCompactAttr(record, otepKeyIndex);
+  int entrySize = 2 + valueLen;
+  if (currentSize + entrySize <= OTEL_MAX_ATTRS_DATA_SIZE) {
+    uint8_t* base = record->attrs_data + currentSize;
+    base[0] = (uint8_t)otepKeyIndex;
+    base[1] = (uint8_t)valueLen;
+    memcpy(base + 2, utf8, valueLen);
+    record->attrs_data_size = (uint16_t)(currentSize + entrySize);
+    return true;
+  }
+  record->attrs_data_size = (uint16_t)currentSize;
+  return false;
+}
+
+// Copies at most 255 bytes from a Java byte[] into buf; returns the length copied (0 if arr null).
+static inline int otelReadUtf8(JNIEnv* env, jbyteArray arr, uint8_t* buf) {
+  if (arr == nullptr) {
+    return 0;
+  }
+  jint len = env->GetArrayLength(arr);
+  if (len > 255) {
+    len = 255;
+  }
+  env->GetByteArrayRegion(arr, 0, len, (jbyte*)buf);
+  return (int)len;
+}
+
+// Writes one pre-resolved attribute slot (sidecar encoding + attrs_data value). Record detached.
+static inline void otelWriteSlot(OtelThreadContextRecord* record, u32* enc,
+                                 int slot, u32 encoding, const uint8_t* utf8, int len) {
+  enc[slot] = encoding;
+  if (!otelReplaceAttr(record, slot + 1, utf8, len)) {
+    enc[slot] = 0;
+  }
+}
+
+// Combined per-activation write: scalar trace/span/LRS context plus up to two pre-resolved
+// (slot, encoding, utf8) attributes, in one detach/attach window. A negative slot skips that
+// attribute (so callers with 0 or 1 activation attribute pass slot < 0). Assumes an active span
+// (non-zero); clearing is clearTraceContext0. Encodings are resolved by the Java value cache.
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setTraceContext0(JNIEnv* env, jclass unused,
+    jlong localRootSpanId, jlong spanId, jlong traceIdHigh, jlong traceIdLow,
+    jint slot0, jint enc0, jbyteArray utf0, jint slot1, jint enc1, jbyteArray utf1) {
+  ProfiledThread* thrd = ProfiledThread::current();
+  if (thrd == nullptr) {
+    return;
+  }
+  OtelThreadContextRecord* record = thrd->getOtelContextRecord();
+  u32* enc = thrd->getOtelTagEncodingsPtr();
+  u64* lrs = reinterpret_cast<u64*>(enc + DD_TAGS_CAPACITY);
+
+  // Marshal attribute bytes before detaching, to keep the detached window minimal.
+  uint8_t b0[256], b1[256];
+  int len0 = 0, len1 = 0;
+  bool has0 = slot0 >= 0 && slot0 < (jint)DD_TAGS_CAPACITY;
+  bool has1 = slot1 >= 0 && slot1 < (jint)DD_TAGS_CAPACITY;
+  if (has0) { len0 = otelReadUtf8(env, utf0, b0); }
+  if (has1) { len1 = otelReadUtf8(env, utf1, b1); }
+
+  // detach
+  __atomic_store_n(&record->valid, (uint8_t)0, __ATOMIC_RELAXED);
+  __atomic_thread_fence(__ATOMIC_RELEASE);
+
+  // scalar context: trace_id / span_id are big-endian byte arrays (little-endian hosts only).
+  uint64_t beHi = __builtin_bswap64((uint64_t)traceIdHigh);
+  uint64_t beLo = __builtin_bswap64((uint64_t)traceIdLow);
+  uint64_t beSpan = __builtin_bswap64((uint64_t)spanId);
+  memcpy(record->trace_id, &beHi, 8);
+  memcpy(record->trace_id + 8, &beLo, 8);
+  memcpy(record->span_id, &beSpan, 8);
+  memset(enc, 0, DD_TAGS_CAPACITY * sizeof(u32));       // reset per-span custom slots
+  record->attrs_data_size = (uint16_t)OTEL_LRS_ENTRY_SIZE;
+  *lrs = (u64)localRootSpanId;
+  otelWriteLrsHex(record, (u64)localRootSpanId);
+
+  // activation attributes
+  if (has0) { otelWriteSlot(record, enc, slot0, (u32)enc0, b0, len0); }
+  if (has1) { otelWriteSlot(record, enc, slot1, (u32)enc1, b1, len1); }
+
+  // attach
+  __atomic_thread_fence(__ATOMIC_RELEASE);
+  __atomic_store_n(&record->valid, (uint8_t)1, __ATOMIC_RELAXED);
+}
+
+// Combined per-deactivation clear: zeros scalar context + custom slots and leaves the record
+// detached (valid=0), mirroring the DBB clear path (setContext(0,0,0,0) + clearContextValue*).
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_clearTraceContext0(JNIEnv* env, jclass unused) {
+  ProfiledThread* thrd = ProfiledThread::current();
+  if (thrd == nullptr) {
+    return;
+  }
+  OtelThreadContextRecord* record = thrd->getOtelContextRecord();
+  u32* enc = thrd->getOtelTagEncodingsPtr();
+  u64* lrs = reinterpret_cast<u64*>(enc + DD_TAGS_CAPACITY);
+
+  __atomic_store_n(&record->valid, (uint8_t)0, __ATOMIC_RELAXED);
+  __atomic_thread_fence(__ATOMIC_RELEASE);
+
+  memset(record->trace_id, 0, sizeof(record->trace_id));
+  memset(record->span_id, 0, sizeof(record->span_id));
+  memset(enc, 0, DD_TAGS_CAPACITY * sizeof(u32));
+  *lrs = 0;
+  record->attrs_data_size = (uint16_t)OTEL_LRS_ENTRY_SIZE;
+  otelWriteLrsHex(record, 0);
+  // clear path leaves valid=0 (no attach), mirroring ThreadContext.clearContextDirect.
+}
+
+// Single pre-resolved attribute write (sidecar encoding + attrs_data value) in one detach/attach
+// window. Returns false on attrs_data overflow. Encoding resolved by the Java value cache.
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setContextValue0(JNIEnv* env, jclass unused,
+    jint slot, jint encoding, jbyteArray utf8) {
+  ProfiledThread* thrd = ProfiledThread::current();
+  if (thrd == nullptr || slot < 0 || slot >= (jint)DD_TAGS_CAPACITY) {
+    return JNI_FALSE;
+  }
+  OtelThreadContextRecord* record = thrd->getOtelContextRecord();
+  u32* enc = thrd->getOtelTagEncodingsPtr();
+
+  uint8_t buf[256];
+  int len = otelReadUtf8(env, utf8, buf);
+
+  __atomic_store_n(&record->valid, (uint8_t)0, __ATOMIC_RELAXED);
+  __atomic_thread_fence(__ATOMIC_RELEASE);
+
+  enc[slot] = (u32)encoding;
+  jboolean ok = JNI_TRUE;
+  if (!otelReplaceAttr(record, slot + 1, buf, len)) {
+    enc[slot] = 0;
+    ok = JNI_FALSE;
+  }
+
+  __atomic_thread_fence(__ATOMIC_RELEASE);
+  __atomic_store_n(&record->valid, (uint8_t)1, __ATOMIC_RELAXED);
+  return ok;
+}
+
+// Clears a single attribute slot (zeros the sidecar encoding, compacts it out of attrs_data).
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_clearContextValue0(JNIEnv* env, jclass unused, jint slot) {
+  ProfiledThread* thrd = ProfiledThread::current();
+  if (thrd == nullptr || slot < 0 || slot >= (jint)DD_TAGS_CAPACITY) {
+    return;
+  }
+  OtelThreadContextRecord* record = thrd->getOtelContextRecord();
+  u32* enc = thrd->getOtelTagEncodingsPtr();
+
+  __atomic_store_n(&record->valid, (uint8_t)0, __ATOMIC_RELAXED);
+  __atomic_thread_fence(__ATOMIC_RELEASE);
+
+  enc[slot] = 0;
+  record->attrs_data_size = (uint16_t)otelCompactAttr(record, slot + 1);
+
+  __atomic_thread_fence(__ATOMIC_RELEASE);
+  __atomic_store_n(&record->valid, (uint8_t)1, __ATOMIC_RELAXED);
+}
+
 extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_ThreadContext_registerConstant0(JNIEnv* env, jclass unused, jstring value) {
   JniString value_str(env, value);

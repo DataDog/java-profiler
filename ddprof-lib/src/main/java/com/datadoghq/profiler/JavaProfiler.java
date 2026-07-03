@@ -467,6 +467,16 @@ public final class JavaProfiler {
      */
     private static native ByteBuffer initializeContextTLS0(long[] metadata);
 
+    // All-native context write primitives (OTEP #4947). Each resolves the current carrier's record
+    // inside the JNI call (which pins a mounted virtual thread to its carrier), so there is no
+    // cached per-thread buffer to dangle. See the native implementations in javaApi.cpp and the
+    // public API built on top of these. A negative slot skips that activation attribute.
+    private static native void setTraceContext0(long localRootSpanId, long spanId, long traceIdHigh,
+            long traceIdLow, int slot0, int enc0, byte[] utf0, int slot1, int enc1, byte[] utf1);
+    private static native void clearTraceContext0();
+    private static native boolean setContextValue0(int slot, int encoding, byte[] utf8);
+    private static native void clearContextValue0(int slot);
+
     /**
      * Returns the {@link ThreadContext} for the current storage slot (the calling thread, or in
      * {@link ContextStorageMode#CARRIER} its current carrier).
