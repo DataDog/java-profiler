@@ -675,9 +675,20 @@ DECLARE(VMKlass)
                     // TOCTOU: MonitorDeflationThread may free the ObjectMonitor between
                     // reading the mark word and dereferencing the monitor pointer. Use
                     // safeFetch64 so a concurrent deflation/free does not crash here.
-                    mark = (uintptr_t)SafeAccess::safeFetch64((int64_t*)(mark ^ MONITOR_BIT), 0);
-                    if (mark == 0) {
-                        return nullptr;
+                    // Two reads with different error values disambiguate a genuine fault
+                    // from a real header word that happens to equal one sentinel value
+                    // (mirrors SafeAccess::isReadable()'s double-read trick).
+                    int64_t* monitor_addr = (int64_t*)(mark ^ MONITOR_BIT);
+                    uintptr_t tmp = (uintptr_t)SafeAccess::safeFetch64(monitor_addr, 1);
+                    if (tmp != 1) {
+                        mark = tmp;
+                    } else {
+                        tmp = (uintptr_t)SafeAccess::safeFetch64(monitor_addr, 2);
+                        if (tmp != 2) {
+                            mark = tmp;
+                        } else {
+                            return nullptr;
+                        }
                     }
                 }
                 narrow_klass = mark >> _markWord_klass_shift;
