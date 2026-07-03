@@ -133,6 +133,7 @@ public:
   virtual const char* name() = 0;
 
   long interval() const { return _interval; }
+  static bool eventsEnabled() { return _enabled.load(std::memory_order_acquire); }
 
   inline void enableEvents(bool enabled) {
         _enabled.store(enabled, std::memory_order_release);

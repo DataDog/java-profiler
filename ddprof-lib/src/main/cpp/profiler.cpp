@@ -15,6 +15,7 @@
 #include "common.h"
 #include "counters.h"
 #include "ctimer.h"
+#include "signalInflight.h"
 #include "dwarf.h"
 #include "flightRecorder.h"
 #include "itimer.h"
@@ -1018,11 +1019,6 @@ void Profiler::switchLibraryTrap(bool enable) {
   __atomic_store_n(_dlopen_entry, impl, __ATOMIC_RELEASE);
 }
 
-void Profiler::enableEngines() {
-  _cpu_engine->enableEvents(true);
-  _wall_engine->enableEvents(true);
-}
-
 void Profiler::disableEngines() {
   _cpu_engine->enableEvents(false);
   _wall_engine->enableEvents(false);
@@ -1554,8 +1550,6 @@ Error Profiler::start(Arguments &args, bool reset) {
     _libs->updateBuildIds();
   }
 
-  enableEngines();
-
   // Refresher must be running before the trap fires: dlopen_hook's
   // signal-context branch only marks dirty and relies on the refresher
   // to call refresh() within REFRESH_INTERVAL_NS (500 ms).
@@ -1569,7 +1563,6 @@ Error Profiler::start(Arguments &args, bool reset) {
   _num_context_attributes = args._context_attributes.size();
   error = _jfr.start(args, reset);
   if (error) {
-    disableEngines();
     switchLibraryTrap(false);
     _libs->stopRefresher();
     return error;
@@ -1594,9 +1587,16 @@ Error Profiler::start(Arguments &args, bool reset) {
     }
   }
   if ((_event_mask & EM_WALL) && _wall_engine != &noop_engine) {
+    // Enable wall clock BEFORE starting its pthread: timerLoopCommon() checks
+    // _enabled once at startup and exits early if false, so the pthread would
+    // otherwise die immediately and wall profiling would be silently dead for
+    // the recording. JFR is already initialized by this point (_jfr.start()
+    // ran above).
+    _wall_engine->enableEvents(true);
     error = _wall_engine->start(args);
     if (error) {
       Log::warn("%s", error.message());
+      _wall_engine->enableEvents(false);
       error = Error::OK; // recoverable
     } else {
       activated |= EM_WALL;
@@ -1654,6 +1654,15 @@ Error Profiler::start(Arguments &args, bool reset) {
     // TODO: find a better way to resolve the thread name.
     onThreadStart(nullptr, nullptr, nullptr);
 
+    // Enable CPU profiling last. CPU SIGPROF handlers write JFR events, so
+    // _enabled must not become true until _jfr.start() has completed; we also
+    // wait until after _cpu_engine->start() so the very first signal a thread
+    // ever sees finds the engine fully wired. Unlike wall clock, CPU handlers
+    // re-check _enabled on every signal, so enabling here (rather than before
+    // start()) does not lose samples.
+    // Paired with drainInflight() on the stop side.
+    _cpu_engine->enableEvents(true);
+
     _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
@@ -1680,7 +1689,21 @@ Error Profiler::stop() {
     return Error("Profiler is not active");
   }
 
+  // Order matters: disable engines first so the _enabled check inside signal
+  // handlers will fail for any new signal delivered from now on. drain() then
+  // waits for handlers that already passed the check to leave their JFR write
+  // path. Only once those are gone is it safe to run the rest of the teardown
+  // (engine stops, JFR teardown) without risking use-after-free.
   disableEngines();
+
+  if (!SignalInflight::drain()) {
+    // Signal handlers stuck past the timeout. Leave state == RUNNING so the
+    // caller cannot start() against half-torn-down JFR and so engine stops
+    // (notably BaseWallClock::stop()'s pthread_join) are not double-invoked.
+    // The operation is idempotent on retry: disableEngines() above is an atomic
+    // store, and no other engine stop has run yet.
+    return Error("signal handlers did not drain; teardown skipped, retry stop()");
+  }
 
   if (_event_mask & EM_ALLOC)
     _alloc_engine->stop();
