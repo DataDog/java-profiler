@@ -151,6 +151,7 @@ get-versions:
 # into a real pass/fail so `needs:` can skip dependents for real.
 require-published-artifact:
   stage: deploy
+  image: ${PREPARE_IMAGE}
   before_script:
     - echo "Verifying prepare:start did not cancel this pipeline"
   needs:
