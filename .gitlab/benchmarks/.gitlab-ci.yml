@@ -12,11 +12,14 @@ benchmarks-trigger:
   needs:
     - job: get-versions
       artifacts: true
-    - job: deploy-artifact
+    # require-published-artifact fails for real when deploy-artifact was a
+    # no-op (no open PR yet), which skips this job via needs. The
+    # '$CANCELLED == "true"' rule below never worked: rules are evaluated at
+    # pipeline-creation time, before prepare:start's dotenv-reported
+    # $CANCELLED variable exists.
+    - job: require-published-artifact
       artifacts: false
   rules:
-    - if: '$CANCELLED == "true"'
-      when: never
     - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "schedule"'

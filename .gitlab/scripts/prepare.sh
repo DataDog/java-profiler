@@ -15,10 +15,25 @@ if [ "${CI_PIPELINE_SOURCE}" == "push" ] || [ "${CI_PIPELINE_SOURCE}" == "trigge
      [ "${CI_COMMIT_BRANCH}" != "${CI_DEFAULT_BRANCH:-main}" ] && \
      [[ ! ${CI_COMMIT_TAG} =~ ^v_[1-9][0-9]*\.[0-9]+\.[0-9]+(-SNAPSHOT)?$ ]] && \
      [[ ! ${CI_COMMIT_BRANCH} =~ ^release/[0-9]+\.[0-9]+\._$ ]]; then
-    # Check if the branch has an open PR in DataDog/java-profiler
-    API_RESPONSE=$(curl -sf "https://api.github.com/repos/DataDog/java-profiler/pulls?head=DataDog:${CI_COMMIT_BRANCH}&state=open&per_page=1" 2>/dev/null || echo "")
+    # Check if the branch has an open PR in DataDog/java-profiler.
+    # A push-triggered pipeline can start before the corresponding PR is
+    # opened (or before GitHub's API has indexed it), so retry with a short
+    # backoff before concluding there is no PR — otherwise a real PR gets
+    # mistaken for "no PR", the whole pipeline silently no-ops (see the
+    # shared $CANCELLED before_script gate), and no artifact ever gets
+    # published even though downstream benchmark/reliability triggers still
+    # fire against it.
+    API_RESPONSE=""
+    for attempt in 1 2 3 4 5; do
+      API_RESPONSE=$(curl -sf "https://api.github.com/repos/DataDog/java-profiler/pulls?head=DataDog:${CI_COMMIT_BRANCH}&state=open&per_page=1" 2>/dev/null || echo "")
+      if [ -z "${API_RESPONSE}" ] || echo "${API_RESPONSE}" | grep -q '"number"'; then
+        break
+      fi
+      echo "No open PR found for branch ${CI_COMMIT_BRANCH} on attempt ${attempt}/5, retrying in 10s..."
+      sleep 10
+    done
     if [ -n "${API_RESPONSE}" ] && ! echo "${API_RESPONSE}" | grep -q '"number"'; then
-      echo "No open PR for branch ${CI_COMMIT_BRANCH}, skipping pipeline"
+      echo "No open PR for branch ${CI_COMMIT_BRANCH} after 5 attempts, skipping pipeline"
       echo "CANCELLED=true" >> build.env
       exit 0
     fi

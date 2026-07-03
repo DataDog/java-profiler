@@ -140,6 +140,35 @@ get-versions:
     - job: prepare:start
       artifacts: false
 
+# Real (needs-based) gate for the benchmark/reliability triggers below.
+# $CANCELLED is a dotenv variable reported by prepare:start, and GitLab
+# evaluates `rules:` at pipeline-creation time, before that dotenv report
+# exists — so a `rules: - if: '$CANCELLED == "true"' when: never` check can
+# never actually fire. Every job's shared before_script gate (see `default:`
+# above) already no-ops+succeeds when $CANCELLED is true, including
+# deploy-artifact, so "needs: deploy-artifact" alone doesn't prove an
+# artifact was actually published either. This job turns that dotenv value
+# into a real pass/fail so `needs:` can skip dependents for real.
+require-published-artifact:
+  stage: deploy
+  before_script:
+    - echo "Verifying prepare:start did not cancel this pipeline"
+  needs:
+    - job: prepare:start
+      artifacts: true
+    - job: deploy-artifact
+      artifacts: false
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^release\//'
+      when: never
+    - when: on_success
+  script:
+    - |
+      if [ "${CANCELLED:-}" = "true" ]; then
+        echo "No open PR for this branch — deploy-artifact was a no-op, refusing to trigger benchmark/reliability runs against a non-existent artifact"
+        exit 1
+      fi
+
 # Triggered externally from async-profiler-build with JDK build parameters;
 # kept as a child pipeline because it is mutually exclusive with the main build
 jdk-integration-test:
@@ -204,11 +233,12 @@ run-reliability-tests:
     - job: prepare:start
       artifacts: true
     # Reliability/chaos tests download com.datadoghq:ddprof:<branch>-SNAPSHOT from
-    # Maven snapshots; that artifact is published by deploy-artifact. Without this
-    # gate the child pipeline can start before the snapshot exists (cold branch) or
-    # download a stale snapshot from a previous push. optional: true so release
-    # branches, where deploy-artifact never runs, stay satisfiable.
-    - job: deploy-artifact
+    # Maven snapshots; that artifact is published by deploy-artifact. This gate
+    # (see require-published-artifact above) fails for real when deploy-artifact
+    # was a no-op (no open PR), so the child pipeline can't start against a
+    # snapshot that was never published. optional: true so release branches,
+    # where deploy-artifact never runs, stay satisfiable.
+    - job: require-published-artifact
       artifacts: false
       optional: true
   rules:
