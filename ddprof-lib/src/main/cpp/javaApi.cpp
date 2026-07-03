@@ -727,6 +727,374 @@ Java_com_datadoghq_profiler_JavaProfiler_initializeContextTLS0(JNIEnv* env, jcla
   return env->NewDirectByteBuffer((void*)record, (jlong)totalSize);
 }
 
+// ===========================================================================================
+// BENCHMARK-ONLY analysis scaffolding for the all-native context-storage investigation
+// (PROF-15271). These prototypes back the Context*Benchmark JMH classes and are NOT wired into
+// the production context API. Preserved on this branch for reproducibility; the productionized,
+// pared-down subset lives on the all-native-context-storage branch. See the design note:
+// doc/plans/2026-07-02-all-native-context-storage-design.md.
+// ===========================================================================================
+
+// Option B prototype: single-scalar context write, resolving the current carrier's record.
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setContextNative0(JNIEnv* env, jclass unused,
+    jlong localRootSpanId, jlong spanId, jlong traceIdHigh, jlong traceIdLow) {
+  ProfiledThread* thrd = ProfiledThread::current();
+  if (thrd == nullptr) {
+    return;
+  }
+  OtelThreadContextRecord* record = thrd->getOtelContextRecord();
+  u32* encodings = thrd->getOtelTagEncodingsPtr();
+  u64* lrs = reinterpret_cast<u64*>(encodings + DD_TAGS_CAPACITY);
+
+  __atomic_store_n(&record->valid, (uint8_t)0, __ATOMIC_RELAXED);
+  __atomic_thread_fence(__ATOMIC_RELEASE);
+
+  if (traceIdHigh == 0 && traceIdLow == 0 && spanId == 0) {
+    memset(record->trace_id, 0, sizeof(record->trace_id));
+    memset(record->span_id, 0, sizeof(record->span_id));
+    memset(encodings, 0, DD_TAGS_CAPACITY * sizeof(u32));
+    *lrs = 0;
+    memset(record->attrs_data + 2, '0', 16);
+    return;
+  }
+
+  uint64_t beHi = __builtin_bswap64((uint64_t)traceIdHigh);
+  uint64_t beLo = __builtin_bswap64((uint64_t)traceIdLow);
+  uint64_t beSpan = __builtin_bswap64((uint64_t)spanId);
+  memcpy(record->trace_id, &beHi, 8);
+  memcpy(record->trace_id + 8, &beLo, 8);
+  memcpy(record->span_id, &beSpan, 8);
+
+  memset(encodings, 0, DD_TAGS_CAPACITY * sizeof(u32));
+  record->attrs_data_size = (uint16_t)18;
+
+  *lrs = (u64)localRootSpanId;
+  static const char HEXD[16] =
+      {'0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'};
+  uint8_t* hex = record->attrs_data + 2;
+  u64 v = (u64)localRootSpanId;
+  for (int i = 15; i >= 0; i--) {
+    hex[i] = (uint8_t)HEXD[v & 0xF];
+    v >>= 4;
+  }
+
+  __atomic_thread_fence(__ATOMIC_RELEASE);
+  __atomic_store_n(&record->valid, (uint8_t)1, __ATOMIC_RELAXED);
+}
+
+static int otepCompact(OtelThreadContextRecord* record, int otepKeyIndex) {
+  int currentSize = record->attrs_data_size;
+  uint8_t* d = record->attrs_data;
+  int readPos = 0, writePos = 0;
+  bool found = false;
+  while (readPos + 2 <= currentSize) {
+    int k = d[readPos];
+    int len = d[readPos + 1];
+    if (readPos + 2 + len > currentSize) { currentSize = writePos; break; }
+    if (k == otepKeyIndex) {
+      found = true;
+      readPos += 2 + len;
+    } else {
+      if (found && writePos < readPos) {
+        memmove(d + writePos, d + readPos, 2 + len);
+      }
+      writePos += 2 + len;
+      readPos += 2 + len;
+    }
+  }
+  return found ? writePos : currentSize;
+}
+
+static bool otepReplace(OtelThreadContextRecord* record, int otepKeyIndex,
+                        const uint8_t* utf8, int valueLen) {
+  int currentSize = otepCompact(record, otepKeyIndex);
+  int entrySize = 2 + valueLen;
+  if (currentSize + entrySize <= OTEL_MAX_ATTRS_DATA_SIZE) {
+    uint8_t* base = record->attrs_data + currentSize;
+    base[0] = (uint8_t)otepKeyIndex;
+    base[1] = (uint8_t)valueLen;
+    memcpy(base + 2, utf8, valueLen);
+    record->attrs_data_size = (uint16_t)(currentSize + entrySize);
+    return true;
+  }
+  record->attrs_data_size = (uint16_t)currentSize;
+  return false;
+}
+
+// Option B prototype: per-slot object-array attribute reapply (the expensive marshalling variant).
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setContextAttributesNative0(JNIEnv* env, jclass unused,
+    jintArray constantIds, jobjectArray utf8) {
+  ProfiledThread* thrd = ProfiledThread::current();
+  if (thrd == nullptr) {
+    return JNI_FALSE;
+  }
+  OtelThreadContextRecord* record = thrd->getOtelContextRecord();
+  u32* encodings = thrd->getOtelTagEncodingsPtr();
+
+  if (__atomic_load_n(&record->valid, __ATOMIC_RELAXED) == 0) {
+    return JNI_FALSE;
+  }
+
+  jint len = env->GetArrayLength(constantIds);
+  if (len > (jint)DD_TAGS_CAPACITY) {
+    len = (jint)DD_TAGS_CAPACITY;
+  }
+  jint ids[DD_TAGS_CAPACITY];
+  env->GetIntArrayRegion(constantIds, 0, len, ids);
+
+  __atomic_store_n(&record->valid, (uint8_t)0, __ATOMIC_RELAXED);
+  __atomic_thread_fence(__ATOMIC_RELEASE);
+
+  jboolean allWritten = JNI_TRUE;
+  for (jint i = 0; i < len; i++) {
+    if (ids[i] <= 0) {
+      continue;
+    }
+    jbyteArray vb = (jbyteArray)env->GetObjectArrayElement(utf8, i);
+    jint vlen = env->GetArrayLength(vb);
+    if (vlen > 255) {
+      vlen = 255;
+    }
+    uint8_t buf[256];
+    env->GetByteArrayRegion(vb, 0, vlen, (jbyte*)buf);
+    env->DeleteLocalRef(vb);
+
+    encodings[i] = (u32)ids[i];
+    if (!otepReplace(record, i + 1, buf, vlen)) {
+      encodings[i] = 0;
+      allWritten = JNI_FALSE;
+    }
+  }
+
+  __atomic_thread_fence(__ATOMIC_RELEASE);
+  __atomic_store_n(&record->valid, (uint8_t)1, __ATOMIC_RELAXED);
+  return allWritten;
+}
+
+// Option B prototype: flattened attribute reapply (single pre-serialized blob, bulk copy).
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setContextAttributesFlatNative0(JNIEnv* env, jclass unused,
+    jintArray encodings, jbyteArray attrsBlob, jint blobLen) {
+  ProfiledThread* thrd = ProfiledThread::current();
+  if (thrd == nullptr) {
+    return JNI_FALSE;
+  }
+  OtelThreadContextRecord* record = thrd->getOtelContextRecord();
+  u32* enc = thrd->getOtelTagEncodingsPtr();
+
+  if (__atomic_load_n(&record->valid, __ATOMIC_RELAXED) == 0) {
+    return JNI_FALSE;
+  }
+
+  jint n = env->GetArrayLength(encodings);
+  if (n > (jint)DD_TAGS_CAPACITY) {
+    n = (jint)DD_TAGS_CAPACITY;
+  }
+  jint ids[DD_TAGS_CAPACITY];
+  env->GetIntArrayRegion(encodings, 0, n, ids);
+
+  const int LRS_ENTRY = 18;
+  if (blobLen < 0) {
+    blobLen = 0;
+  }
+  if (blobLen > OTEL_MAX_ATTRS_DATA_SIZE - LRS_ENTRY) {
+    blobLen = OTEL_MAX_ATTRS_DATA_SIZE - LRS_ENTRY;
+  }
+
+  __atomic_store_n(&record->valid, (uint8_t)0, __ATOMIC_RELAXED);
+  __atomic_thread_fence(__ATOMIC_RELEASE);
+
+  for (jint i = 0; i < n; i++) {
+    enc[i] = ids[i] > 0 ? (u32)ids[i] : 0;
+  }
+  env->GetByteArrayRegion(attrsBlob, 0, blobLen, (jbyte*)(record->attrs_data + LRS_ENTRY));
+  record->attrs_data_size = (uint16_t)(LRS_ENTRY + blobLen);
+
+  __atomic_thread_fence(__ATOMIC_RELEASE);
+  __atomic_store_n(&record->valid, (uint8_t)1, __ATOMIC_RELAXED);
+  return JNI_TRUE;
+}
+
+static const int CTX_SNAPSHOT_SIZE =
+    OTEL_MAX_RECORD_SIZE + (int)(DD_TAGS_CAPACITY * sizeof(u32)) + (int)sizeof(u64);
+
+// Option B prototype: native snapshot/restore of the full 688-byte record (nested-scope path).
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_snapshotNative0(JNIEnv* env, jclass unused,
+    jbyteArray scratch, jint offset) {
+  ProfiledThread* thrd = ProfiledThread::current();
+  if (thrd == nullptr) {
+    return;
+  }
+  OtelThreadContextRecord* record = thrd->getOtelContextRecord();
+  const jbyte* base = reinterpret_cast<const jbyte*>(record);
+  const int validOff = (int)offsetof(OtelThreadContextRecord, valid);
+
+  uint8_t priorValid = __atomic_load_n(&record->valid, __ATOMIC_RELAXED);
+  __atomic_store_n(&record->valid, (uint8_t)0, __ATOMIC_RELAXED);
+  __atomic_thread_fence(__ATOMIC_RELEASE);
+  env->SetByteArrayRegion(scratch, offset, CTX_SNAPSHOT_SIZE, base);
+  jbyte pv = (jbyte)priorValid;
+  env->SetByteArrayRegion(scratch, offset + validOff, 1, &pv);
+  if (priorValid != 0) {
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    __atomic_store_n(&record->valid, (uint8_t)1, __ATOMIC_RELAXED);
+  }
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_restoreNative0(JNIEnv* env, jclass unused,
+    jbyteArray scratch, jint offset) {
+  ProfiledThread* thrd = ProfiledThread::current();
+  if (thrd == nullptr) {
+    return;
+  }
+  OtelThreadContextRecord* record = thrd->getOtelContextRecord();
+  jbyte* base = reinterpret_cast<jbyte*>(record);
+  const int validOff = (int)offsetof(OtelThreadContextRecord, valid);
+
+  jbyte wasValid = 0;
+  env->GetByteArrayRegion(scratch, offset + validOff, 1, &wasValid);
+  __atomic_store_n(&record->valid, (uint8_t)0, __ATOMIC_RELAXED);
+  __atomic_thread_fence(__ATOMIC_RELEASE);
+  env->GetByteArrayRegion(scratch, offset, CTX_SNAPSHOT_SIZE, base);
+  __atomic_store_n(&record->valid, (uint8_t)0, __ATOMIC_RELAXED);
+  if (wasValid != 0) {
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    __atomic_store_n(&record->valid, (uint8_t)1, __ATOMIC_RELAXED);
+  }
+}
+
+// Option B prototype: single pre-resolved attribute write / clear.
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setContextAttributeNative0(JNIEnv* env, jclass unused,
+    jint keyIndex, jint encoding, jbyteArray utf8) {
+  ProfiledThread* thrd = ProfiledThread::current();
+  if (thrd == nullptr || keyIndex < 0 || keyIndex >= (jint)DD_TAGS_CAPACITY) {
+    return JNI_FALSE;
+  }
+  OtelThreadContextRecord* record = thrd->getOtelContextRecord();
+  u32* enc = thrd->getOtelTagEncodingsPtr();
+
+  jint vlen = env->GetArrayLength(utf8);
+  if (vlen > 255) {
+    vlen = 255;
+  }
+  uint8_t buf[256];
+  env->GetByteArrayRegion(utf8, 0, vlen, (jbyte*)buf);
+
+  __atomic_store_n(&record->valid, (uint8_t)0, __ATOMIC_RELAXED);
+  __atomic_thread_fence(__ATOMIC_RELEASE);
+
+  enc[keyIndex] = (u32)encoding;
+  jboolean ok = JNI_TRUE;
+  if (!otepReplace(record, keyIndex + 1, buf, vlen)) {
+    enc[keyIndex] = 0;
+    ok = JNI_FALSE;
+  }
+
+  __atomic_thread_fence(__ATOMIC_RELEASE);
+  __atomic_store_n(&record->valid, (uint8_t)1, __ATOMIC_RELAXED);
+  return ok;
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_clearContextAttributeNative0(JNIEnv* env, jclass unused,
+    jint keyIndex) {
+  ProfiledThread* thrd = ProfiledThread::current();
+  if (thrd == nullptr || keyIndex < 0 || keyIndex >= (jint)DD_TAGS_CAPACITY) {
+    return;
+  }
+  OtelThreadContextRecord* record = thrd->getOtelContextRecord();
+  u32* enc = thrd->getOtelTagEncodingsPtr();
+
+  __atomic_store_n(&record->valid, (uint8_t)0, __ATOMIC_RELAXED);
+  __atomic_thread_fence(__ATOMIC_RELEASE);
+
+  enc[keyIndex] = 0;
+  record->attrs_data_size = (uint16_t)otepCompact(record, keyIndex + 1);
+
+  __atomic_thread_fence(__ATOMIC_RELEASE);
+  __atomic_store_n(&record->valid, (uint8_t)1, __ATOMIC_RELAXED);
+}
+
+static inline void writeLrsHexInto(OtelThreadContextRecord* record, u64 v) {
+  static const char HEXD[16] =
+      {'0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'};
+  uint8_t* hex = record->attrs_data + 2;
+  for (int i = 15; i >= 0; i--) {
+    hex[i] = (uint8_t)HEXD[v & 0xF];
+    v >>= 4;
+  }
+}
+
+// Option B prototype: combined per-activation write (scalar + two attributes, one JNI call).
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setFullContextNative0(JNIEnv* env, jclass unused,
+    jlong localRootSpanId, jlong spanId, jlong traceIdHigh, jlong traceIdLow,
+    jint enc0, jbyteArray utf0, jint enc1, jbyteArray utf1) {
+  ProfiledThread* thrd = ProfiledThread::current();
+  if (thrd == nullptr) {
+    return;
+  }
+  OtelThreadContextRecord* record = thrd->getOtelContextRecord();
+  u32* enc = thrd->getOtelTagEncodingsPtr();
+  u64* lrs = reinterpret_cast<u64*>(enc + DD_TAGS_CAPACITY);
+
+  jint len0 = env->GetArrayLength(utf0);
+  if (len0 > 255) { len0 = 255; }
+  jint len1 = env->GetArrayLength(utf1);
+  if (len1 > 255) { len1 = 255; }
+  uint8_t b0[256], b1[256];
+  env->GetByteArrayRegion(utf0, 0, len0, (jbyte*)b0);
+  env->GetByteArrayRegion(utf1, 0, len1, (jbyte*)b1);
+
+  __atomic_store_n(&record->valid, (uint8_t)0, __ATOMIC_RELAXED);
+  __atomic_thread_fence(__ATOMIC_RELEASE);
+
+  uint64_t beHi = __builtin_bswap64((uint64_t)traceIdHigh);
+  uint64_t beLo = __builtin_bswap64((uint64_t)traceIdLow);
+  uint64_t beSpan = __builtin_bswap64((uint64_t)spanId);
+  memcpy(record->trace_id, &beHi, 8);
+  memcpy(record->trace_id + 8, &beLo, 8);
+  memcpy(record->span_id, &beSpan, 8);
+  memset(enc, 0, DD_TAGS_CAPACITY * sizeof(u32));
+  record->attrs_data_size = (uint16_t)18;
+  *lrs = (u64)localRootSpanId;
+  writeLrsHexInto(record, (u64)localRootSpanId);
+
+  enc[0] = (u32)enc0;
+  otepReplace(record, 1, b0, len0);
+  enc[1] = (u32)enc1;
+  otepReplace(record, 2, b1, len1);
+
+  __atomic_thread_fence(__ATOMIC_RELEASE);
+  __atomic_store_n(&record->valid, (uint8_t)1, __ATOMIC_RELAXED);
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_clearFullContextNative0(JNIEnv* env, jclass unused) {
+  ProfiledThread* thrd = ProfiledThread::current();
+  if (thrd == nullptr) {
+    return;
+  }
+  OtelThreadContextRecord* record = thrd->getOtelContextRecord();
+  u32* enc = thrd->getOtelTagEncodingsPtr();
+  u64* lrs = reinterpret_cast<u64*>(enc + DD_TAGS_CAPACITY);
+
+  __atomic_store_n(&record->valid, (uint8_t)0, __ATOMIC_RELAXED);
+  __atomic_thread_fence(__ATOMIC_RELEASE);
+
+  memset(record->trace_id, 0, sizeof(record->trace_id));
+  memset(record->span_id, 0, sizeof(record->span_id));
+  memset(enc, 0, DD_TAGS_CAPACITY * sizeof(u32));
+  *lrs = 0;
+  record->attrs_data_size = (uint16_t)18;
+  writeLrsHexInto(record, 0);
+}
+
 extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_ThreadContext_registerConstant0(JNIEnv* env, jclass unused, jstring value) {
   JniString value_str(env, value);

@@ -237,6 +237,37 @@ public final class JavaProfiler {
         currentContext().put(0, 0, 0, 0);
     }
 
+    // ==== BENCHMARK-ONLY all-native context prototypes (PROF-15271 investigation) ==============
+    // Back the Context*Benchmark JMH classes; NOT part of the supported API. See the design note.
+    public void setContextNative(long localRootSpanId, long spanId, long traceIdHigh, long traceIdLow) {
+        setContextNative0(localRootSpanId, spanId, traceIdHigh, traceIdLow);
+    }
+    public boolean setContextAttributesNative(int[] constantIds, byte[][] utf8) {
+        return setContextAttributesNative0(constantIds, utf8);
+    }
+    public boolean setContextAttributesFlatNative(int[] encodings, byte[] attrsBlob, int blobLen) {
+        return setContextAttributesFlatNative0(encodings, attrsBlob, blobLen);
+    }
+    public void snapshotNative(byte[] scratch, int offset) {
+        snapshotNative0(scratch, offset);
+    }
+    public void restoreNative(byte[] scratch, int offset) {
+        restoreNative0(scratch, offset);
+    }
+    public boolean setContextAttributeNative(int keyIndex, int encoding, byte[] utf8) {
+        return setContextAttributeNative0(keyIndex, encoding, utf8);
+    }
+    public void clearContextAttributeNative(int keyIndex) {
+        clearContextAttributeNative0(keyIndex);
+    }
+    public void setFullContextNative(long localRootSpanId, long spanId, long traceIdHigh, long traceIdLow,
+                                     int enc0, byte[] utf0, int enc1, byte[] utf1) {
+        setFullContextNative0(localRootSpanId, spanId, traceIdHigh, traceIdLow, enc0, utf0, enc1, utf1);
+    }
+    public void clearFullContextNative() {
+        clearFullContextNative0();
+    }
+
     /**
      * Sets a custom context attribute at the given slot offset for the current thread.
      *
@@ -466,6 +497,18 @@ public final class JavaProfiler {
      *   [5] LRS_OFFSET — offset of local_root_span_id
      */
     private static native ByteBuffer initializeContextTLS0(long[] metadata);
+
+    // BENCHMARK-ONLY native declarations (PROF-15271 investigation) — see wrappers above.
+    private static native void setContextNative0(long localRootSpanId, long spanId, long traceIdHigh, long traceIdLow);
+    private static native boolean setContextAttributesNative0(int[] constantIds, byte[][] utf8);
+    private static native boolean setContextAttributesFlatNative0(int[] encodings, byte[] attrsBlob, int blobLen);
+    private static native void snapshotNative0(byte[] scratch, int offset);
+    private static native void restoreNative0(byte[] scratch, int offset);
+    private static native boolean setContextAttributeNative0(int keyIndex, int encoding, byte[] utf8);
+    private static native void clearContextAttributeNative0(int keyIndex);
+    private static native void setFullContextNative0(long localRootSpanId, long spanId, long traceIdHigh,
+            long traceIdLow, int enc0, byte[] utf0, int enc1, byte[] utf1);
+    private static native void clearFullContextNative0();
 
     /**
      * Returns the {@link ThreadContext} for the current storage slot (the calling thread, or in
