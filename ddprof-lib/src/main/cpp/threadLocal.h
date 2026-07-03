@@ -235,9 +235,7 @@ public:
         return _key;
     }
 
-    void set(JVMThread* value) {
-        assert(false && "Should not reach here, value is set by JVM");
-    }
+void set(JVMThread* value) = delete;
 
     void* get() const {
         assert(isKeyValid() && "Invalid pthread key");
