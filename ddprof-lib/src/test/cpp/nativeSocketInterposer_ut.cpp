@@ -527,7 +527,7 @@ TEST_F(NativeSocketInterposerHookTest,
 }
 
 TEST_F(NativeSocketInterposerHookTest,
-       SamplerOnlyStreamWriteDoesNotUseInterposerClassifier) {
+       SamplerOnlyStreamWriteClassifiesThroughSamplerClassifier) {
   int fds[2];
   ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, fds));
   ScopedNativeSocketInterposerActive interposer_active(false);
@@ -547,9 +547,8 @@ TEST_F(NativeSocketInterposerHookTest,
   EXPECT_EQ(23, ret);
   EXPECT_EQ(0, g_write_calls.load());
   EXPECT_EQ(1, g_sampler_write_calls.load());
-  EXPECT_EQ(0, g_fd_probe_calls.load())
-      << "sampler-only path must not classify through NativeFdClassifier";
-  EXPECT_EQ(1, NativeSocketSampler::socketProbeCountForTest());
+  EXPECT_EQ(1, g_fd_probe_calls.load())
+      << "sampler-only path must classify through its NativeFdClassifier instance";
   EXPECT_EQ(E2BIG, errno);
   close(fds[0]);
   close(fds[1]);
@@ -578,8 +577,6 @@ TEST_F(NativeSocketInterposerHookTest,
   EXPECT_EQ(1, g_write_calls.load());
   EXPECT_EQ(0, g_sampler_write_calls.load());
   EXPECT_EQ(1, g_fd_probe_calls.load());
-  EXPECT_EQ(0, NativeSocketSampler::socketProbeCountForTest())
-      << "combined path should reuse interposer classification";
   EXPECT_LT(0, g_taskblock_enter_sequence.load());
   EXPECT_LT(g_taskblock_enter_sequence.load(), g_raw_syscall_sequence.load());
   EXPECT_LT(g_raw_syscall_sequence.load(), g_taskblock_exit_sequence.load());
@@ -1018,6 +1015,24 @@ TEST_F(NativeSocketInterposerFdTest, EnotsockFailureIsCachedAsNonSocket) {
   EXPECT_EQ(1, g_fd_probe_calls.load());
 }
 
+TEST_F(NativeSocketInterposerFdTest, CacheNonSocketOverridesCachedStreamType) {
+  NativeFdClassifier classifier;
+  ScopedFdProbeOverride override(stub_fd_probe);
+  g_fd_probe_calls = 0;
+  g_fd_probe_rc = 0;
+  g_fd_probe_errno = 0;
+  g_fd_probe_so_type = SOCK_STREAM;
+
+  ASSERT_TRUE(classifier.isStreamSocket(43));
+  EXPECT_EQ(1, g_fd_probe_calls.load());
+
+  classifier.cacheNonSocket(43);
+
+  EXPECT_FALSE(classifier.isStreamSocket(43));
+  EXPECT_FALSE(classifier.isDatagramSocket(43));
+  EXPECT_EQ(1, g_fd_probe_calls.load());
+}
+
 TEST_F(NativeSocketInterposerFdTest, OtherSocketTypeIsCachedAsNeitherStreamNorDatagram) {
   NativeFdClassifier classifier;
   ScopedFdProbeOverride override(stub_fd_probe);
@@ -1170,6 +1185,68 @@ TEST_F(NativeSocketInterposerFdTest, ClearFdTypeCacheInvalidatesCachedFds) {
   EXPECT_FALSE(classifier.isStreamSocket(47));
   EXPECT_TRUE(classifier.isDatagramSocket(47));
   EXPECT_EQ(2, g_fd_probe_calls.load());
+}
+
+TEST_F(NativeSocketInterposerFdTest, ClassifierInstancesHaveIndependentCacheState) {
+  NativeFdClassifier first;
+  NativeFdClassifier second;
+  ScopedFdProbeOverride override(stub_fd_probe);
+  g_fd_probe_calls = 0;
+  g_fd_probe_rc = 0;
+  g_fd_probe_errno = 0;
+  g_fd_probe_so_type = SOCK_STREAM;
+
+  ASSERT_TRUE(first.isStreamSocket(48));
+  ASSERT_TRUE(second.isStreamSocket(48));
+  EXPECT_EQ(2, g_fd_probe_calls.load());
+
+  first.cacheNonSocket(48);
+
+  EXPECT_FALSE(first.isStreamSocket(48));
+  EXPECT_TRUE(second.isStreamSocket(48));
+  EXPECT_EQ(2, g_fd_probe_calls.load());
+
+  first.clearFdTypeCache();
+  g_fd_probe_so_type = SOCK_DGRAM;
+
+  EXPECT_FALSE(first.isStreamSocket(48));
+  EXPECT_TRUE(second.isStreamSocket(48));
+  EXPECT_EQ(3, g_fd_probe_calls.load());
+}
+
+TEST_F(NativeSocketInterposerFdTest,
+       SamplerAndInterposerClassifiersHaveIndependentCacheState) {
+  NativeSocketInterposer* interposer = NativeSocketInterposer::instance();
+  NativeSocketSampler* sampler = NativeSocketSampler::instance();
+  interposer->clearFdTypeCache();
+  sampler->clearFdCache();
+  ScopedFdProbeOverride override(stub_fd_probe);
+  g_fd_probe_calls = 0;
+  g_fd_probe_rc = 0;
+  g_fd_probe_errno = 0;
+  g_fd_probe_so_type = SOCK_STREAM;
+  const int fd = 49;
+
+  ASSERT_TRUE(interposer->isStreamSocket(fd));
+  EXPECT_EQ(1, g_fd_probe_calls.load());
+  ASSERT_TRUE(sampler->isSocketForTest(fd));
+  EXPECT_EQ(2, g_fd_probe_calls.load());
+
+  g_fd_probe_so_type = SOCK_DGRAM;
+  interposer->clearFdType(fd);
+
+  EXPECT_FALSE(interposer->isStreamSocket(fd));
+  EXPECT_TRUE(interposer->isDatagramSocket(fd));
+  EXPECT_EQ(3, g_fd_probe_calls.load());
+  EXPECT_TRUE(sampler->isSocketForTest(fd));
+  EXPECT_EQ(3, g_fd_probe_calls.load());
+
+  sampler->clearFdCacheEntry(fd);
+
+  EXPECT_FALSE(sampler->isSocketForTest(fd));
+  EXPECT_EQ(4, g_fd_probe_calls.load());
+  interposer->clearFdTypeCache();
+  sampler->clearFdCache();
 }
 
 TEST_F(NativeSocketInterposerFdTest, ConcurrentClassifierReadsAndClearsAreSafe) {

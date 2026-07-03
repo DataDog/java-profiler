@@ -17,12 +17,15 @@ public:
 
   bool isStreamSocket(int fd);
   bool isDatagramSocket(int fd);
+  void cacheNonSocket(int fd);
   void clearFdType(int fd);
   void clearFdTypeCache();
 
 #ifdef UNIT_TEST
   using ProbeOverride = int (*)(int fd, int *so_type, int *probe_errno);
   static void setProbeOverrideForTest(ProbeOverride probe);
+  static uint64_t probeCountForTest();
+  static void resetProbeCountForTest();
 #endif
 
 private:
@@ -45,12 +48,14 @@ private:
   static bool highFdEntryMatches(uint64_t entry, int fd, uint32_t gen);
   static bool highFdEntryMatchesFd(uint64_t entry, int fd);
   static int highFdCacheIndex(int fd);
+  void cacheFdType(int fd, uint8_t type, uint32_t gen);
   uint8_t highFdType(int fd, uint32_t gen);
   void clearHighFdType(int fd);
   uint8_t fdType(int fd);
 
 #ifdef UNIT_TEST
   static std::atomic<ProbeOverride> _probe_override;
+  static std::atomic<uint64_t> _probe_count;
 #endif
 };
 

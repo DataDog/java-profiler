@@ -13,6 +13,7 @@
 
 #if defined(__linux__)
 
+#include "nativeFdClassifier.h"
 #include "poissonSampler.h"
 #include "rateLimiter.h"
 #include <atomic>
@@ -36,17 +37,10 @@ class LibraryPatcher;
 //                         is idempotent in that case (first writer wins).
 //                         Address staleness is possible only after fd reuse
 //                         through unobserved lifecycle paths.
-// _fd_type_cache        : std::atomic<uint8_t> array for low fds and a bounded
-//                         exact-match high-fd side cache, both lock-free.  Low-fd
-//                         encoding: bits [7:4] = generation mod 16, bits [3:0] =
-//                         type (0=unknown, 1=TCP socket, 2=non-TCP).  High-fd
-//                         entries encode fd, generation, and type in one atomic
-//                         word.  A cached SOCKET verdict is trusted on the hot
-//                         path; revalidation via getsockopt() is deferred to
-//                         recordEvent() for sampled write/read events
-//                         (revalidateSocket()).  A cached NON_SOCKET verdict is
-//                         trusted (worst case: unobserved fd reuse under-samples
-//                         until the next gen reset).
+// _fd_classifier        : lock-free fd-type classifier shared as code with the
+//                         native I/O interposer. A cached stream-socket verdict
+//                         is trusted on the hot path; sampled write/read events
+//                         revalidate before recording (revalidateSocket()).
 // _rate_limiter         : RateLimiter — owns std::atomic interval, epoch, and
 //                         event count.  PID update races are resolved by CAS
 //                         inside RateLimiter::maybeUpdateInterval().
@@ -113,6 +107,8 @@ public:
     }
     using HookObserver = void (*)(const char* phase, int fd, u8 op, ssize_t ret);
     static void setHookObserverForTest(HookObserver observer);
+    // Compatibility wrappers for sampler tests; probe override/counting is owned
+    // by NativeFdClassifier now that sampler delegates fd classification to it.
     static uint64_t socketProbeCountForTest();
     static void resetSocketProbeCountForTest();
     using ProbeOverride = int (*)(int fd, int *so_type, int *probe_errno);
@@ -167,33 +163,9 @@ private:
     std::unordered_map<int, FdAddrList::iterator> _fd_cache;
     std::mutex _fd_cache_mutex;
 
-    // fd-type cache for write/read hooks.  Lock-free: one atomic byte per fd number.
-    // Encoding: bits [7:4] = generation mod 16, bits [3:0] = type (0=unknown/invalid
-    // — implicit zero in fresh array, never written explicitly; 1=TCP socket;
-    // 2=non-TCP).  An entry is valid only when its high nibble equals _fd_cache_gen
-    // mod 16.  Incrementing _fd_cache_gen invalidates all entries in O(1) without
-    // touching the 65536-entry array.
-    //
-    // KNOWN LIMITATION (mod-16 generation wrap): _fd_cache_gen is only consulted via
-    // its low 4 bits.  After 16 start() cycles the generation wraps and stale entries
-    // from a previous incarnation become indistinguishable from current ones until each
-    // fd is naturally re-probed.  Profiler restarts are not exercised in production
-    // (only in tests), so the wrap is benign in practice.  If restart-in-prod ever
-    // becomes a supported mode, widen _fd_cache_gen to uint32_t and store the full
-    // generation in a wider per-fd cell.
-    static const int     FD_TYPE_CACHE_SIZE  = 65536;
-    static const int     HIGH_FD_TYPE_CACHE_SIZE = 4096;
-    // FD_TYPE_UNKNOWN is the implicit value-zero sentinel for never-written entries
-    // and gen-mismatch entries; it is decoded by the (cached >> 4) != gen path in
-    // isSocket(), not by an explicit comparison against this constant.
-    static const uint8_t FD_TYPE_UNKNOWN     = 0;
-    static const uint8_t FD_TYPE_SOCKET      = 1;
-    static const uint8_t FD_TYPE_NON_SOCKET  = 2;
-    std::atomic<uint8_t> _fd_cache_gen{0};   // incremented on each cache reset
-    std::atomic<uint8_t> _fd_type_cache[FD_TYPE_CACHE_SIZE];
-    std::atomic<uint64_t> _high_fd_type_cache[HIGH_FD_TYPE_CACHE_SIZE];
+    NativeFdClassifier _fd_classifier;
 
-    NativeSocketSampler();
+    NativeSocketSampler() = default;
 
     // Resolve the peer address for fd; returns empty string on failure.
     std::string resolveAddr(int fd);
@@ -225,21 +197,18 @@ public:
     bool isSocketForTest(int fd) {
         return isSocket(fd);
     }
+#ifdef UNIT_TEST
+    bool revalidateSocketForTest(int fd) {
+        return revalidateSocket(fd);
+    }
+#endif
 
 private:
 
     // Returns true if fd is a SOCK_STREAM socket (including AF_UNIX).
-    // Uses the fd-type cache; calls getsockopt on first encounter per fd.
+    // Uses the fd classifier; calls getsockopt on first encounter per fd.
     // Cached SOCKET verdicts are revalidated only on sampled write/read events.
     bool isSocket(int fd);
-    uint8_t probeFdType(int fd);
-    uint8_t highFdType(int fd, uint8_t gen);
-    void cacheFdType(int fd, uint8_t gen, uint8_t type);
-    void clearHighFdType(int fd);
-    static uint64_t highFdEntry(int fd, uint8_t gen, uint8_t type);
-    static bool highFdEntryMatches(uint64_t entry, int fd, uint8_t gen);
-    static bool highFdEntryMatchesFd(uint64_t entry, int fd);
-    static int highFdCacheIndex(int fd);
 
     // Decide whether to sample and compute weight.
     // Returns true if the call should be recorded; sets weight out-param.
@@ -268,7 +237,6 @@ private:
 
 #ifdef UNIT_TEST
     static void observeHookPhaseForTest(const char* phase, int fd, u8 op, ssize_t ret);
-    static std::atomic<ProbeOverride> _probe_override;
 #endif
 };
 

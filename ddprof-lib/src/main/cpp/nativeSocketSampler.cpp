@@ -49,23 +49,21 @@ std::atomic<bool> NativeSocketSampler::_active{false};
 
 #ifdef UNIT_TEST
 static std::atomic<NativeSocketSampler::HookObserver> _native_socket_sampler_observer{nullptr};
-static std::atomic<uint64_t> _native_socket_sampler_socket_probe_count{0};
-std::atomic<NativeSocketSampler::ProbeOverride> NativeSocketSampler::_probe_override{nullptr};
 
 void NativeSocketSampler::setHookObserverForTest(HookObserver observer) {
     _native_socket_sampler_observer.store(observer, std::memory_order_release);
 }
 
 uint64_t NativeSocketSampler::socketProbeCountForTest() {
-    return _native_socket_sampler_socket_probe_count.load(std::memory_order_acquire);
+    return NativeFdClassifier::probeCountForTest();
 }
 
 void NativeSocketSampler::resetSocketProbeCountForTest() {
-    _native_socket_sampler_socket_probe_count.store(0, std::memory_order_release);
+    NativeFdClassifier::resetProbeCountForTest();
 }
 
 void NativeSocketSampler::setProbeOverrideForTest(ProbeOverride probe) {
-    _probe_override.store(probe, std::memory_order_release);
+    NativeFdClassifier::setProbeOverrideForTest(probe);
 }
 
 void NativeSocketSampler::observeHookPhaseForTest(const char* phase, int fd, u8 op, ssize_t ret) {
@@ -111,135 +109,11 @@ std::string NativeSocketSampler::resolveAddr(int fd) {
     return std::string(buf);
 }
 
-NativeSocketSampler::NativeSocketSampler() {
-    for (int index = 0; index < FD_TYPE_CACHE_SIZE; index++) {
-        _fd_type_cache[index].store(FD_TYPE_UNKNOWN, std::memory_order_relaxed);
-    }
-    for (int index = 0; index < HIGH_FD_TYPE_CACHE_SIZE; index++) {
-        _high_fd_type_cache[index].store(0, std::memory_order_relaxed);
-    }
-}
-
-uint8_t NativeSocketSampler::probeFdType(int fd) {
-#ifdef UNIT_TEST
-    _native_socket_sampler_socket_probe_count.fetch_add(1, std::memory_order_relaxed);
-#endif
-    int so_type;
-    socklen_t solen = sizeof(so_type);
-    int rc;
-#ifdef UNIT_TEST
-    ProbeOverride probe = _probe_override.load(std::memory_order_acquire);
-    int probe_errno = 0;
-    if (probe != nullptr) {
-        rc = probe(fd, &so_type, &probe_errno);
-        if (rc != 0) {
-            errno = probe_errno;
-        }
-    } else
-#endif
-    {
-        rc = getsockopt(fd, SOL_SOCKET, SO_TYPE, &so_type, &solen);
-    }
-    if (rc == 0) {
-        return so_type == SOCK_STREAM ? FD_TYPE_SOCKET : FD_TYPE_NON_SOCKET;
-    }
-    // Only stable negative verdicts are cached. Transient failures must leave
-    // the fd unknown so a later reuse or successful probe can be observed.
-    return errno == ENOTSOCK ? FD_TYPE_NON_SOCKET : FD_TYPE_UNKNOWN;
-}
-
-uint64_t NativeSocketSampler::highFdEntry(int fd, uint8_t gen, uint8_t type) {
-    return (static_cast<uint64_t>(static_cast<uint32_t>(fd)) << 32)
-           | (static_cast<uint64_t>(gen & 0xF) << 4)
-           | static_cast<uint64_t>(type);
-}
-
-bool NativeSocketSampler::highFdEntryMatches(uint64_t entry, int fd, uint8_t gen) {
-    return highFdEntryMatchesFd(entry, fd)
-           && (((entry >> 4) & 0xF) == (gen & 0xF));
-}
-
-bool NativeSocketSampler::highFdEntryMatchesFd(uint64_t entry, int fd) {
-    return static_cast<uint32_t>(entry >> 32) == static_cast<uint32_t>(fd);
-}
-
-int NativeSocketSampler::highFdCacheIndex(int fd) {
-    return static_cast<int>(static_cast<uint32_t>(fd)
-                            % static_cast<uint32_t>(HIGH_FD_TYPE_CACHE_SIZE));
-}
-
-uint8_t NativeSocketSampler::highFdType(int fd, uint8_t gen) {
-    int index = highFdCacheIndex(fd);
-    uint64_t cached = _high_fd_type_cache[index].load(std::memory_order_acquire);
-    if (highFdEntryMatches(cached, fd, gen)) {
-        uint8_t type = static_cast<uint8_t>(cached & 0xF);
-        if (type != FD_TYPE_UNKNOWN) {
-            return type;
-        }
-    }
-
-    uint8_t type = probeFdType(fd);
-    if (type != FD_TYPE_UNKNOWN) {
-        _high_fd_type_cache[index].store(highFdEntry(fd, gen, type),
-                                         std::memory_order_release);
-    }
-    return type;
-}
-
-void NativeSocketSampler::cacheFdType(int fd, uint8_t gen, uint8_t type) {
-    if (fd < 0 || type == FD_TYPE_UNKNOWN) {
-        return;
-    }
-    if ((size_t)fd < (size_t)FD_TYPE_CACHE_SIZE) {
-        _fd_type_cache[fd].store((uint8_t)(((gen & 0xF) << 4) | type),
-                                 std::memory_order_release);
-    } else {
-        _high_fd_type_cache[highFdCacheIndex(fd)].store(highFdEntry(fd, gen, type),
-                                                        std::memory_order_release);
-    }
-}
-
-void NativeSocketSampler::clearHighFdType(int fd) {
-    int index = highFdCacheIndex(fd);
-    uint64_t cached = _high_fd_type_cache[index].load(std::memory_order_acquire);
-    while (highFdEntryMatchesFd(cached, fd)) {
-        if (_high_fd_type_cache[index].compare_exchange_weak(
-                cached, 0, std::memory_order_acq_rel, std::memory_order_acquire)) {
-            return;
-        }
-    }
-}
-
 bool NativeSocketSampler::isSocket(int fd) {
     // Accepts any SOCK_STREAM socket (including AF_UNIX); AF_INET/AF_INET6 filtering
     // is deferred to resolveAddr() which is only called for sampled events. AF_UNIX
     // will produce an empty remoteAddress field in the JFR event.
-    if (fd < 0) return false;
-    // Acquire on the gen load pairs with the release on the gen-bump in start()
-    // and on the cache cell store below; without it, on a weakly-ordered arch
-    // (aarch64) a thread could observe a freshly written cell without the matching
-    // gen bump (or vice versa), defeating the generation-tag invalidation contract.
-    uint8_t gen = _fd_cache_gen.load(std::memory_order_acquire);
-    if ((size_t)fd >= (size_t)FD_TYPE_CACHE_SIZE) {
-        return highFdType(fd, gen) == FD_TYPE_SOCKET;
-    }
-
-    uint8_t cached = _fd_type_cache[fd].load(std::memory_order_acquire);
-    // High nibble encodes generation; entry is valid only when it matches current gen mod 16.
-    if ((cached >> 4) == (gen & 0xF)) {
-        uint8_t type = cached & 0xF;
-        // A cached NON_SOCKET verdict is safe to trust: the worst case is that a
-        // newly-socketed fd reuse under-samples until the next gen reset, which is
-        // the documented accepted staleness tradeoff.
-        if (type == FD_TYPE_NON_SOCKET) return false;
-        // Cached SOCKET: trust the verdict on the hot path; revalidation is deferred
-        // to recordEvent() on sampled write/read events (see revalidateSocket()).
-        if (type == FD_TYPE_SOCKET) return true;
-    }
-
-    uint8_t type = probeFdType(fd);
-    cacheFdType(fd, gen, type);
-    return type == FD_TYPE_SOCKET;
+    return _fd_classifier.isStreamSocket(fd);
 }
 
 void NativeSocketSampler::insertFdAddrLocked(int fd, std::string addr) {
@@ -258,11 +132,7 @@ void NativeSocketSampler::insertFdAddrLocked(int fd, std::string addr) {
 }
 
 void NativeSocketSampler::clearFdCacheEntry(int fd) {
-    if (fd >= 0 && (size_t)fd < (size_t)FD_TYPE_CACHE_SIZE) {
-        _fd_type_cache[fd].store(FD_TYPE_UNKNOWN, std::memory_order_release);
-    } else if (fd >= 0) {
-        clearHighFdType(fd);
-    }
+    _fd_classifier.clearFdType(fd);
 
     std::lock_guard<std::mutex> lock(_fd_cache_mutex);
     auto it = _fd_cache.find(fd);
@@ -278,10 +148,7 @@ bool NativeSocketSampler::revalidateSocket(int fd) {
     int rc = getsockopt(fd, SOL_SOCKET, SO_TYPE, &so_type, &solen);
     if (rc == 0 && so_type == SOCK_STREAM) return true;
     // fd was reused for a non-socket or is already closed; update the type cache.
-    if (fd >= 0) {
-        uint8_t gen = _fd_cache_gen.load(std::memory_order_acquire);
-        cacheFdType(fd, gen, FD_TYPE_NON_SOCKET);
-    }
+    _fd_classifier.cacheNonSocket(fd);
     return false;
 }
 
@@ -493,12 +360,9 @@ Error NativeSocketSampler::start(Arguments &args) {
     // (which carry no latency signal) are suppressed when the interval is large.
     _rate_limiter.start(init_interval, TARGET_EVENTS_PER_SECOND,
                         PID_WINDOW_SECS, PID_P_GAIN, PID_I_GAIN, PID_D_GAIN, PID_CUTOFF_S);
-    // Clear the fd->addr cache and reset the fd-type cache generation for the new
-    // session so stale entries from a prior run cannot produce misattributed events
-    // even if stop() was not called.  clearFdCache() bumps _fd_cache_gen under the
-    // mutex so the clear and the gen bump are atomic with respect to concurrent
-    // isSocket() calls.  A single call per start() keeps the mod-16 generation-wrap
-    // budget at the full 16 cycles documented in nativeSocketSampler.h.
+    // Clear the fd->addr cache and reset the fd-type classifier generation for
+    // the new session so stale entries from a prior run cannot produce
+    // misattributed events even if stop() was not called.
     clearFdCache();
 #ifdef DEBUG
     _send_hook_calls.store(0, std::memory_order_relaxed);
@@ -537,10 +401,7 @@ void NativeSocketSampler::clearFdCache() {
     std::lock_guard<std::mutex> lock(_fd_cache_mutex);
     _fd_cache.clear();
     _fd_lru_list.clear();
-    // Bump the generation under the lock so the clear and the bump are atomic
-    // with respect to concurrent isSocket() calls: no thread can insert an
-    // entry tagged with the old generation after the map is cleared.
-    _fd_cache_gen.fetch_add(1, std::memory_order_release);
+    _fd_classifier.clearFdTypeCache();
 }
 
 #else // !__linux__

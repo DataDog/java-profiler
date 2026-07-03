@@ -24,6 +24,7 @@
 #include <atomic>
 #include <errno.h>
 #include <sys/socket.h>
+#include <unistd.h>
 
 // ---------------------------------------------------------------------------
 // Stub tracking
@@ -73,6 +74,49 @@ static int stub_probe(int fd, int *so_type, int *probe_errno) {
     *probe_errno = g_probe_errno.load();
     return g_probe_rc.load();
 }
+
+static int datagramSocketAtFdForTest(int target_fd) {
+    int datagram_fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (datagram_fd < 0) {
+        return -1;
+    }
+    if (datagram_fd == target_fd) {
+        return datagram_fd;
+    }
+    int dup_fd = dup2(datagram_fd, target_fd);
+    int saved_errno = errno;
+    close(datagram_fd);
+    errno = saved_errno;
+    return dup_fd;
+}
+
+class ScopedFdForTest {
+public:
+    explicit ScopedFdForTest(int fd = -1) : _fd(fd) {}
+    ~ScopedFdForTest() {
+        if (_fd >= 0) {
+            close(_fd);
+        }
+    }
+    ScopedFdForTest(const ScopedFdForTest&) = delete;
+    ScopedFdForTest& operator=(const ScopedFdForTest&) = delete;
+
+    void reset(int fd) {
+        if (_fd >= 0) {
+            close(_fd);
+        }
+        _fd = fd;
+    }
+
+    int release() {
+        int fd = _fd;
+        _fd = -1;
+        return fd;
+    }
+
+private:
+    int _fd;
+};
 
 class ScopedSamplerProbeOverride {
 public:
@@ -422,6 +466,28 @@ TEST(NativeSocketSamplerLruTest, ClearFdCacheEntryInvalidatesFdTypeBeforeReuse) 
 
     close(datagram_fd);
     close(stream_fds[1]);
+    inst->clearFdCache();
+}
+
+TEST(NativeSocketSamplerFdTypeTest, RevalidateSocketDowngradesReusedFdToNonSocket) {
+    NativeSocketSampler* inst = NativeSocketSampler::instance();
+    inst->clearFdCache();
+
+    int stream_fds[2];
+    ASSERT_EQ(socketpair(AF_UNIX, SOCK_STREAM, 0, stream_fds), 0);
+
+    int reused_fd = stream_fds[0];
+    ScopedFdForTest stream_peer(stream_fds[1]);
+    ASSERT_TRUE(inst->isSocketForTest(reused_fd));
+    close(reused_fd);
+
+    int datagram_fd = datagramSocketAtFdForTest(reused_fd);
+    ScopedFdForTest datagram(datagram_fd);
+    ASSERT_EQ(datagram_fd, reused_fd);
+
+    EXPECT_FALSE(inst->revalidateSocketForTest(datagram_fd));
+    EXPECT_FALSE(inst->isSocketForTest(datagram_fd));
+
     inst->clearFdCache();
 }
 
