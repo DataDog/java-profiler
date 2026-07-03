@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk11
 
 ## musl-x64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-07-03 11:08:26 EDT
+**Date:** 2026-07-03 13:29:14 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-x64-openj9-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 49 |
-| CPU Cores (end) | 52 |
+| CPU Cores (start) | 8 |
+| CPU Cores (end) | 8 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: musl-x64-openj9-jdk11
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (2 unique values: 49-52 cores)</summary>
+<summary>CPU Timeline (1 unique values: 8-8 cores)</summary>
 
 ```
-1783091042 49
-1783091047 49
-1783091052 49
-1783091057 49
-1783091062 49
-1783091067 49
-1783091072 49
-1783091077 49
-1783091082 49
-1783091087 52
-1783091092 52
-1783091097 52
-1783091102 52
-1783091107 52
-1783091112 52
-1783091117 52
-1783091122 52
-1783091127 52
-1783091132 52
-1783091137 52
+1783099512 8
+1783099517 8
+1783099522 8
+1783099527 8
+1783099532 8
+1783099537 8
+1783099542 8
+1783099547 8
+1783099552 8
+1783099557 8
+1783099562 8
+1783099567 8
+1783099572 8
+1783099577 8
+1783099582 8
+1783099587 8
+1783099592 8
+1783099597 8
+1783099602 8
+1783099607 8
 ```
 </details>
 
