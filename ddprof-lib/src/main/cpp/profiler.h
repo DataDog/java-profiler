@@ -184,7 +184,6 @@ private:
     return _state.load(std::memory_order_relaxed);
   }
 
-  Error checkState();
 public:
   Profiler()
       : _state_lock(), _state(State::NEW), _class_unload_hook_trap(2),
@@ -295,6 +294,7 @@ public:
   Error start(Arguments &args, bool reset);
   Error stop();
   Error dump(const char *path, const int length);
+  Error checkState();
   void logStats();
   void switchThreadEvents(jvmtiEventMode mode);
 
