@@ -27,6 +27,7 @@ on:
 permissions:
   contents: write
   actions: read
+  pull-requests: write
 
 jobs:
   validate-inputs:
@@ -49,6 +50,8 @@ jobs:
 
       - name: Validate branch and compute versions
         id: compute-version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           BRANCH="${GITHUB_REF_NAME}"
           TYPE="${{ inputs.release_type }}"
@@ -92,19 +95,29 @@ jobs:
             echo "Version $BASE is not yet released"
           fi
 
+          # A non-retag release must never start from an already-tagged base:
+          # it means the post-release version-bump PR from the previous
+          # release never merged, so this branch is stuck. Fail loudly
+          # instead of silently skipping release creation or guessing at
+          # what the next version should be.
+          if [ "$TYPE" != "retag" ] && [ "$ALREADY_RELEASED" == "true" ]; then
+            echo "::error::${BRANCH} is stuck at version ${BASE}, which is already tagged (v_${BASE})."
+            echo "::error::The automated post-release version-bump PR for this branch was never merged."
+            STUCK_PR=$(gh pr list --state open --base "$BRANCH" --json headRefName,url \
+              --jq '[.[] | select(.headRefName | startswith("automated/bump-"))][0].url' 2>/dev/null || true)
+            if [ -n "$STUCK_PR" ]; then
+              echo "::error::Merge the pending bump PR first, then retry: $STUCK_PR"
+            else
+              echo "::error::No pending bump PR was found. Bump ${BRANCH}'s version manually and merge it before retrying the release."
+            fi
+            exit 1
+          fi
+
           # Compute release version based on type
           if [ "$TYPE" == "MAJOR" ] || [ "$TYPE" == "major" ]; then
-            if [ "$ALREADY_RELEASED" == "true" ]; then
-              RELEASE_VERSION="$((MAJOR + 1)).0.0"
-            else
-              RELEASE_VERSION="$BASE"
-            fi
+            RELEASE_VERSION="$BASE"
           elif [ "$TYPE" == "MINOR" ] || [ "$TYPE" == "minor" ]; then
-            if [ "$ALREADY_RELEASED" == "true" ]; then
-              RELEASE_VERSION="$MAJOR.$((MINOR + 1)).0"
-            else
-              RELEASE_VERSION="$BASE"
-            fi
+            RELEASE_VERSION="$BASE"
           elif [ "$TYPE" == "retag" ]; then
             # Retag reuses the current version; tag must already exist
             RELEASE_VERSION="$BASE"
@@ -160,6 +173,10 @@ jobs:
     needs: [validate-inputs, pre-release-tests]
     if: always() && needs.validate-inputs.result == 'success' && (needs.pre-release-tests.result == 'success' || needs.pre-release-tests.result == 'skipped')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write # Needed to federate a token for the bump-PR create-release step
     steps:
       - name: Check test results
         if: ${{ inputs.dry_run != true && inputs.skip_tests != true && inputs.release_type != 'retag' && needs.pre-release-tests.result != 'success' }}
@@ -192,10 +209,19 @@ jobs:
           distribution: 'zulu'
           java-version: '21'
 
+      - name: Federate bump-PR token
+        if: ${{ inputs.dry_run != true }}
+        uses: DataDog/dd-octo-sts-action@96a25462dbcb10ebf0bfd6e2ccc917d2ab235b9a # v1.0.4
+        id: octo-sts
+        with:
+          scope: DataDog/java-profiler
+          policy: self.release-bump.create-pr
+
       - name: Create release
         id: create-release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUMP_PR_TOKEN: ${{ steps.octo-sts.outputs.token }}
         run: |
           cd java-profiler
 

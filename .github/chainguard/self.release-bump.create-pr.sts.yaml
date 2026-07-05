@@ -1,0 +1,22 @@
+# Allows release-validated.yml's create-release job to open and label the
+# automated post-release version-bump PR with an identity distinct from the
+# default GITHUB_TOKEN.
+#
+# This matters because GitHub does not fire new workflow runs for events
+# caused by the default GITHUB_TOKEN. If the bump PR were labeled using
+# GITHUB_TOKEN, approve-trivial.yml's `pull_request_target: types: [labeled]`
+# trigger would never fire, the PR would never get its required approval,
+# and `gh pr merge --auto` would stall forever on main (1 approval required).
+issuer: https://token.actions.githubusercontent.com
+
+# release-validated.yml is workflow_dispatch'd against either main
+# (major/minor) or a release/X.Y._ branch (patch/retag).
+subject_pattern: "repo:DataDog/java-profiler:ref:refs/heads/(main|release/[0-9]+\\.[0-9]+\\._)"
+
+claim_pattern:
+  event_name: workflow_dispatch
+  job_workflow_ref: DataDog/java-profiler/\.github/workflows/release-validated\.yml@.*
+
+permissions:
+  contents: read
+  pull_requests: write
