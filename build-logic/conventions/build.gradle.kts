@@ -13,12 +13,7 @@ repositories {
 
 dependencies {
     implementation("org.jetbrains.kotlin:kotlin-stdlib")
-    // Pinned to 8.5.1 because 8.6.0+ triggers a Spotless/Gradle serialization bug with
-    // the Groovy-Eclipse formatter on fresh Gradle user homes / CI caches:
-    //   "If the initializer was null, then one of roundtripStateInternal or
-    //    equalityStateInternal should be non-null, and neither was"
-    // See https://github.com/diffplug/spotless/issues/2402 and related issues.
-    implementation("com.diffplug.spotless:spotless-plugin-gradle:8.5.1")
+    implementation("com.diffplug.spotless:spotless-plugin-gradle:8.7.0")
 }
 
 gradlePlugin {
