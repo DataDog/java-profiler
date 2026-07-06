@@ -18,7 +18,11 @@ bool JVMThread::initialize() {
   if (current_thread == nullptr) {
     return false;
   }
-  // _tid is side-effect of currentThreadSlow()
+  // _tid is initialized inside currentThreadSlow() via
+  // JNI call.
+  // _tid (jfieldID) is a field of java/lang/Thread object, stores native
+  // thread pointer. Current thread is resolved via this field
+  // of current java thread.
   if (_tid == nullptr) {
     return false;
   }

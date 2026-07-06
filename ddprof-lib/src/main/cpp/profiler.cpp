@@ -928,9 +928,8 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
   }
 
   // Reentrancy protection: use TLS-based tracking if available.
-  // If TLS is not available, we can only safely handle faults that we can
-  // prove are from our protected code paths (checked via jmp_buf is set for the thread).
-  // For anything else, we must chain immediately to avoid claiming faults that aren't ours.
+  // If TLS is not available, the thread is not protected by
+  // longjmp, so bail out.
   bool have_tls_protection = false;
   if (thrd != nullptr) {
     if (!thrd->enterCrashHandler()) {
@@ -939,9 +938,6 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
     }
     have_tls_protection = true;
   }
-  // If thrd == nullptr, we proceed but with limited handling capability.
-  // Only HotspotSupport::checkFault and the JDK-8313796 workaround can safely 
-  // handle faults without TLS.
 
   StackFrame frame(ucontext);
   uintptr_t pc = frame.pc();
