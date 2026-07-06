@@ -8,10 +8,33 @@ DRYRUN=$2
 
 BRANCH=$(git branch --show-current)
 RELEASE_BRANCH=
-SKIP_RELEASE_CREATION=false
 
 BASE=$(./gradlew printVersion -Psnapshot=false | grep 'Version:' | cut -f2 -d' ')
 # BASE == 0.0.1
+
+# Refuse to tag a version whose post-release bump PR never merged: the
+# branch's build.gradle.kts still shows an already-tagged version, so
+# proceeding would either re-tag it (rejected below) or silently skip
+# release creation while still looking like a successful run.
+check_not_stuck() {
+  local base=$1
+  local branch=$2
+
+  [ -n "$DRYRUN" ] && return
+  git rev-parse "v_${base}" >/dev/null 2>&1 || return
+
+  echo "::error::${branch} is stuck at version ${base}, which is already tagged (v_${base})."
+  echo "::error::The automated post-release version-bump PR for this branch was never merged."
+  local stuck_pr
+  stuck_pr=$(gh pr list --state open --base "$branch" --json headRefName,url \
+    --jq '[.[] | select(.headRefName | startswith("automated/bump-"))][0].url' 2>/dev/null || true)
+  if [ -n "$stuck_pr" ]; then
+    echo "::error::Merge the pending bump PR first, then retry: $stuck_pr"
+  else
+    echo "::error::No pending bump PR was found. Bump ${branch}'s version manually and merge it before retrying the release."
+  fi
+  exit 1
+}
 
 create_annotated_tag() {
   local version=$1
@@ -53,12 +76,8 @@ if [ "$TYPE" == "MINOR" ] || [ "$TYPE" == "MAJOR" ]; then
     # BASE == 1.0.0
   fi
   RELEASE_BRANCH="release/${BASE%.*}._"
-  if [ -z "$DRYRUN" ] && git rev-parse "v_${BASE}" >/dev/null 2>&1; then
-    echo "Tag v_${BASE} already exists; skipping tag and release branch creation — will only produce a version-bump PR"
-    SKIP_RELEASE_CREATION=true
-  else
-    create_annotated_tag "$BASE" "$TYPE" "$BRANCH"
-  fi
+  check_not_stuck "$BASE" "$BRANCH"
+  create_annotated_tag "$BASE" "$TYPE" "$BRANCH"
 fi
 
 if [ "$TYPE" == "PATCH" ]; then
@@ -67,6 +86,7 @@ if [ "$TYPE" == "PATCH" ]; then
     exit 1
   fi
   RELEASE_BRANCH="release/${BASE%.*}._"
+  check_not_stuck "$BASE" "$BRANCH"
   create_annotated_tag "$BASE" "$TYPE" "$BRANCH"
 fi
 
@@ -112,7 +132,7 @@ if [ "$TYPE" == "RETAG" ]; then
   exit 0
 fi
 
-if [ "$SKIP_RELEASE_CREATION" == "false" ] && [ "$BRANCH" != "$RELEASE_BRANCH" ]; then
+if [ "$BRANCH" != "$RELEASE_BRANCH" ]; then
   git checkout -b $RELEASE_BRANCH
   if ! git diff --quiet; then
     git add build.gradle.kts
@@ -137,10 +157,21 @@ if [ -z "$DRYRUN" ]; then
   BUMP_BRANCH="automated/bump-${CANDIDATE//./-}"
   git checkout -b "$BUMP_BRANCH"
   git push --force-with-lease --set-upstream origin "$BUMP_BRANCH"
-  REPO="${GITHUB_REPOSITORY:-$(git remote get-url origin | sed 's|.*github.com[:/]\(.*\)\.git|\1|')}"
-  BUMP_PR_URL="https://github.com/${REPO}/compare/${BRANCH}...${BUMP_BRANCH}?quick_pull=1&title=%5BAutomated%5D+Bump+dev+version+to+${CANDIDATE}"
+  # Create, label and merge with the federated BUMP_PR_TOKEN (not the ambient
+  # GITHUB_TOKEN): GitHub does not fire new workflow runs for events caused by
+  # the default GITHUB_TOKEN, so a GITHUB_TOKEN-applied label would never
+  # trigger approve-trivial.yml's `labeled` trigger and the PR would never
+  # auto-merge. Labeling is a separate call from creation so it produces its
+  # own `labeled` event rather than being folded into the `opened` payload.
+  BUMP_PR_URL=$(GH_TOKEN="$BUMP_PR_TOKEN" gh pr create \
+    --title "[Automated] Bump dev version to ${CANDIDATE}" \
+    --body "Automated version bump after releasing v_${BASE}." \
+    --base "$BRANCH" \
+    --head "$BUMP_BRANCH")
+  GH_TOKEN="$BUMP_PR_TOKEN" gh pr edit "$BUMP_PR_URL" --add-label "no-review"
+  GH_TOKEN="$BUMP_PR_TOKEN" gh pr merge "$BUMP_PR_URL" --auto --squash
   echo "BUMP_PR_URL=$BUMP_PR_URL" >> "${GITHUB_OUTPUT:-/dev/null}"
-  echo "⚠ Open this URL to create the version bump PR: $BUMP_PR_URL"
+  echo "✓ Version bump PR created and queued for auto-merge: $BUMP_PR_URL"
 else
   git push $DRYRUN --atomic --set-upstream origin $BRANCH
 fi
