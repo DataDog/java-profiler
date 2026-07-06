@@ -6,20 +6,21 @@
 
 #include <climits>
 #include <cstdlib>
-#include <setjmp.h>
 #include "asyncSampleMutex.h"
+#include "frames.h"
+#include "guards.h"
 #include "hotspot/hotspotSupport.h"
 #include "hotspot/jitCodeCache.h"
 #include "hotspot/vmStructs.inline.h"
 #include "jvmSupport.inline.h"
-#include "guards.h"
+#include "jvmThread.h"
+#include "profiler.h"
 #include "stackWalker.inline.h"
-#include "frames.h"
+#include "threadLocal.h"
 
 using StackWalkValidation::inDeadZone;
 using StackWalkValidation::aligned;
 using StackWalkValidation::MAX_FRAME_SIZE;
-using StackWalkValidation::sameStack;
 
 // Initialize once, they survive on profiler restart
 static jobject JAVA_PLATFORM_CLASSLOADER = nullptr;
@@ -227,15 +228,46 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                         StackWalkFeatures features, EventType event_type,
                         const void* pc, uintptr_t sp, uintptr_t fp, int lock_index, bool* truncated) {
+
     // VMStructs is only available for hotspot JVM 
     assert(VM::isHotspot());
+
+    ProfiledThread* prof_thread = ProfiledThread::currentSignalSafe();
+    if (prof_thread == nullptr) {
+        Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
+        return 0;
+    }
+
     HotspotStackFrame frame(ucontext);
     uintptr_t bottom = (uintptr_t)&frame + MAX_WALK_SIZE;
 
     Profiler* profiler = Profiler::instance();
     int bcp_offset = InterpreterFrame::bcp_offset();
 
+
     jmp_buf crash_protection_ctx;
+    // Chaining jmp_buf
+    // A non-signal-based-sampler can be interrupted by signal based sampler,
+    // then we end up with multiple HotspotSupport::walkVM() calls on stack,
+    // each one sets up jmp_buf, they need to be chained to jump back to
+    // correct location.
+    jmp_buf* prev_jmp_buf = prof_thread->getJmpCtx();
+    // Should be preserved across setjmp/longjmp
+    volatile int depth = 0;
+    int actual_max_depth = truncated ? max_depth + 1 : max_depth;
+
+    if (setjmp(crash_protection_ctx) != 0) {
+        // checkFault() does a longjmp from inside segvHandler, bypassing
+        // segvHandler's SignalHandlerScope destructor.  Compensate.
+        SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
+        prof_thread->setJmpCtx(prev_jmp_buf);
+        if (depth < max_depth) {
+            fillFrame(frames[depth++], BCI_ERROR, "break_not_walkable");
+        }
+        return depth;
+    }
+
+    prof_thread->setJmpCtx(&crash_protection_ctx);
     VMThread* vm_thread = VMThread::current();
     if (vm_thread != NULL && !vm_thread->isThreadAccessible()) {
         Counters::increment(WALKVM_THREAD_INACCESSIBLE);
@@ -246,38 +278,15 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     } else {
         Counters::increment(WALKVM_VMTHREAD_OK);
     }
-    void* saved_exception = vm_thread != NULL ? vm_thread->exception() : NULL;
 
-    // Should be preserved across setjmp/longjmp
-    volatile int depth = 0;
-    int actual_max_depth = truncated ? max_depth + 1 : max_depth;
     bool fp_chain_fallback = false;
     int fp_chain_depth = 0;
-
-    ProfiledThread* profiled_thread = ProfiledThread::currentSignalSafe();
 
     VMJavaFrameAnchor* anchor = NULL;
     if (vm_thread != NULL) {
         anchor = vm_thread->anchor();
         if (anchor == NULL) {
             Counters::increment(WALKVM_ANCHOR_NULL);
-        }
-        vm_thread->exception() = &crash_protection_ctx;
-        if (profiled_thread != nullptr) {
-            profiled_thread->setCrashProtectionActive(true);
-        }
-        if (setjmp(crash_protection_ctx) != 0) {
-            // checkFault() does a longjmp from inside segvHandler, bypassing
-            // segvHandler's SignalHandlerScope destructor.  Compensate.
-            SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
-            if (profiled_thread != nullptr) {
-                profiled_thread->setCrashProtectionActive(false);
-            }
-            vm_thread->exception() = saved_exception;
-            if (depth < max_depth) {
-                fillFrame(frames[depth++], BCI_ERROR, "break_not_walkable");
-            }
-            return depth;
         }
     }
 
@@ -616,7 +625,8 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 if (features.vtable_target && nm->isVTableStub() && depth == 0) {
                     uintptr_t receiver = frame.jarg0();
                     if (receiver != 0) {
-                        VMSymbol* symbol = VMKlass::fromOop(receiver)->name();
+                        VMKlass* klass = VMKlass::fromOop(receiver);
+                        VMSymbol* symbol = klass != nullptr ? klass->name() : nullptr;
                         // Store the raw VMSymbol* in the frame's method_id
                         // slot. BCI_VTABLE_RECEIVER (vmEntry.h) repurposes
                         // method_id for this pointer — same precedent as
@@ -922,12 +932,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     }
 
     done:
-    if (profiled_thread != nullptr) {
-        profiled_thread->setCrashProtectionActive(false);
-    }
-    if (vm_thread != NULL) {
-        vm_thread->exception() = saved_exception;
-    }
+    prof_thread->setJmpCtx(prev_jmp_buf);
 
     // Drop unknown leaf frame - it provides no useful information and breaks
     // aggregation by lumping unrelated samples under a single "unknown" entry
@@ -953,32 +958,19 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 }
 
 void HotspotSupport::checkFault(ProfiledThread* thrd) {
-    if (!JVMThread::isInitialized()) {
-        // JVM has not been loaded or has not been initialized yet
+    // Should not get to here (?)
+    if (thrd == nullptr) {
         return;
     }
 
-    VMThread* vm_thread = VMThread::current();
-    if (vm_thread == NULL || !vm_thread->isThreadAccessible()) {
+    // Check if longjmp is setup for this thread
+    if (!thrd->isProtected()) {
         return;
     }
 
-    // Prefer the semantic crash protection flag (reliable regardless of stack frame sizes).
-    // Fall back to sameStack heuristic when ProfiledThread TLS is unavailable (e.g. during
-    // early init or in crash recovery tests). sameStack uses a fixed 8KB threshold which
-    // can fail with ASAN-inflated frames, but the crashProtectionActive path handles that.
-    bool protected_walk = (thrd != nullptr && thrd->isCrashProtectionActive())
-                       || sameStack(vm_thread->exception(), &vm_thread);
-    if (!protected_walk) {
-        return;
-    }
-
-    if (thrd != nullptr) {
-        thrd->resetCrashHandler();
-    }
-    longjmp(*(jmp_buf*)vm_thread->exception(), 1);
+    thrd->resetCrashHandler();
+    longjmp(*thrd->getJmpCtx(), 1);
 }
-
 
 int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
                                 int max_depth, StackContext *java_ctx,
@@ -1188,7 +1180,6 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   trace.frames->method_id = (jmethodID)err_string;
   return trace.frames - frames + 1;
 }
-
 
 int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   CStack cstack = Profiler::instance()->cstackMode();

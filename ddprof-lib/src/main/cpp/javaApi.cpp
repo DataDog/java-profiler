@@ -30,7 +30,7 @@
 #include "os.h"
 #include "otel_process_ctx.h"
 #include "profiler.h"
-#include "thread.h"
+#include "threadLocalData.h"
 #include "tsc.h"
 #include "vmEntry.h"
 #include <errno.h>
