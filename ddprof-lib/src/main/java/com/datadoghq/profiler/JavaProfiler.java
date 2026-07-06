@@ -257,6 +257,15 @@ public final class JavaProfiler {
      * attributes (e.g. operation and resource name), in one native call. A negative {@code slotN}
      * (or {@code null}/oversized {@code vN}) skips that attribute. Custom slots are reset first, so
      * this establishes a fresh per-span attribute set.
+     *
+     * @param rootSpanId  the local root span ID
+     * @param spanId      the current span ID
+     * @param traceIdHigh upper 64 bits of the 128-bit trace ID
+     * @param traceIdLow  lower 64 bits of the 128-bit trace ID
+     * @param slot0       first custom attribute slot index, or negative to skip
+     * @param v0          value for {@code slot0}; {@code null} or oversized also skips
+     * @param slot1       second custom attribute slot index, or negative to skip
+     * @param v1          value for {@code slot1}; {@code null} or oversized also skips
      */
     public void setTraceContext(long rootSpanId, long spanId, long traceIdHigh, long traceIdLow,
                                 int slot0, CharSequence v0, int slot1, CharSequence v1) {
@@ -276,6 +285,11 @@ public final class JavaProfiler {
      * Sets a single custom attribute (sporadic instrumentation-driven attributes such as
      * {@code http.route}). Returns false if the value is null, its UTF-8 exceeds 255 bytes, the
      * native Dictionary is full, or {@code slot} is out of range; on failure the slot is cleared.
+     *
+     * @param slot  custom attribute slot index
+     * @param value the attribute value; {@code null} clears the slot
+     * @return true if the value was written; false if it was null, oversized, the Dictionary is
+     *         full, or {@code slot} is out of range
      */
     public boolean setContextValue(int slot, CharSequence value) {
         if (slot < 0) {
@@ -289,7 +303,11 @@ public final class JavaProfiler {
         return setContextValue0(slot, e.encoding, e.utf8);
     }
 
-    /** Clears a single custom attribute slot on the native path. */
+    /**
+     * Clears a single custom attribute slot on the native path.
+     *
+     * @param slot custom attribute slot index
+     */
     public void clearContextValue(int slot) {
         clearContextValue0(slot);
     }
