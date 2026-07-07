@@ -18,7 +18,7 @@
 #include "log.h"
 #include "os.h"
 #include "profiler.h"
-#include "thread.h"
+#include "threadLocalData.h"
 #include "threadLocal.h"
 #include "tsc.h"
 #include <jni.h>

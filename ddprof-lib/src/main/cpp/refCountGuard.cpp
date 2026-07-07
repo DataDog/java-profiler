@@ -10,7 +10,7 @@
 #include "log.h"
 #include "os.h"
 #include "primeProbing.h"
-#include "thread.h"
+#include "threadLocalData.h"
 #include <atomic>
 #include <time.h>
 

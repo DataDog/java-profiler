@@ -9,7 +9,6 @@
 
 #include "hotspot/hotspotStackFrame.h"
 #include "hotspot/jitCodeCache.h"
-#include "profiler.h"
 #include "stackFrame.h"
 #include "stackWalker.h"
 

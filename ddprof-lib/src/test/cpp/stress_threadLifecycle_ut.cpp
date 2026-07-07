@@ -16,7 +16,7 @@
 #include "callTraceStorage.h"
 #include "callTraceHashTable.h"
 #include "threadFilter.h"
-#include "thread.h"
+#include "threadLocalData.h"
 #include "arch.h"
 #include "spinLock.h"
 
