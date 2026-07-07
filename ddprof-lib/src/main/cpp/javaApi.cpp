@@ -748,10 +748,17 @@ Java_com_datadoghq_profiler_JavaProfiler_initializeContextTLS0(JNIEnv* env, jcla
 static const int OTEL_LRS_ENTRY_SIZE = 18; // fixed attrs_data[0] entry: key(1)+len(1)+16 hex bytes
 
 // Writes the full fixed LRS attrs_data entry: header (key_index=0, length=16) at attrs_data[0..2)
-// plus the 16 hex value bytes at attrs_data[2..18). The all-native path must write the header
-// itself (not rely on the ThreadContext ctor) so it works on a record that only saw the
-// ProfiledThread zero-init — i.e. when no DirectByteBuffer / ThreadContext was ever created
-// (the phase-2 pure-native case). Mirrors ThreadContext's LRS entry layout.
+// plus the 16 hex value bytes at attrs_data[2..18). The combined write/clear entry points
+// (setTraceContext0 / clearTraceContext0) call this so they establish the LRS entry themselves
+// rather than relying on the ThreadContext ctor — i.e. they work on a record that only saw the
+// ProfiledThread zero-init, the phase-2 pure-native case where no DirectByteBuffer / ThreadContext
+// was ever created. Mirrors ThreadContext's LRS entry layout.
+//
+// Note: the single-attribute path (setContextValue0) does NOT write this entry; it assumes a
+// preceding setTraceContext0 has already established it (the production order — app tags are set
+// after span activation). On a never-activated record it simply appends the attribute at
+// attrs_data[0] with no LRS entry, which is harmless: the sampler reads LRS from the sidecar
+// (_otel_local_root_span_id), and with no active span the LRS is 0 anyway.
 static inline void otelWriteLrsEntry(OtelThreadContextRecord* record, u64 v) {
   static const char HEXD[16] =
       {'0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'};
@@ -808,11 +815,17 @@ static bool otelReplaceAttr(OtelThreadContextRecord* record, int otepKeyIndex,
 }
 
 // Copies at most 255 bytes from a Java byte[] into buf; returns the length copied (0 if arr null).
+// Callers (ContextValueCache.resolve) reject values whose UTF-8 exceeds 255 bytes before they
+// reach here, so an oversized array is a caller-contract violation, not an expected input. The
+// assert documents/enforces that in debug builds; the clamp is release-build defense that also
+// bounds the copy to the 256-byte caller stack buffer. Clamping mid-sequence could split a
+// multi-byte UTF-8 char, but is unreachable given the caller guard.
 static inline int otelReadUtf8(JNIEnv* env, jbyteArray arr, uint8_t* buf) {
   if (arr == nullptr) {
     return 0;
   }
   jint len = env->GetArrayLength(arr);
+  assert(len <= 255);
   if (len > 255) {
     len = 255;
   }

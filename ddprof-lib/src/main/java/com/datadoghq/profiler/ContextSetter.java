@@ -21,7 +21,13 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
-@Deprecated // DirectByteBuffer context wrapper; superseded by JavaProfiler.setTraceContext/setContextValue (all-native). Removed in phase 3.
+/**
+ * DirectByteBuffer context wrapper.
+ *
+ * @deprecated Superseded by {@link JavaProfiler#setTraceContext} /
+ *             {@link JavaProfiler#setContextValue} (all-native). Removed in phase 3.
+ */
+@Deprecated
 public class ContextSetter {
 
     private final List<String> attributes;

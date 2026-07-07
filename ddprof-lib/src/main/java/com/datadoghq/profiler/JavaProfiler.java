@@ -49,6 +49,11 @@ public final class JavaProfiler {
     // (setTraceContext / setContextValue). See ContextValueCache. One instance on the singleton.
     private final ContextValueCache contextValueCache = new ContextValueCache();
 
+    // Number of custom attribute slots on the all-native path. Mirrors the native
+    // DD_TAGS_CAPACITY (context.h) and ThreadContext.MAX_CUSTOM_SLOTS; kept local so the
+    // all-native API does not depend on the phase-3-removed ThreadContext for the bound.
+    private static final int MAX_CONTEXT_SLOTS = 10;
+
     /**
      * Returns the calling thread's (or, in carrier mode, its current carrier's)
      * {@link ThreadContext}, creating and caching it on first use. Replaces the previous
@@ -228,8 +233,8 @@ public final class JavaProfiler {
      * @param spanId Span identifier
      * @param traceIdHigh Upper 64 bits of the 128-bit trace ID
      * @param traceIdLow Lower 64 bits of the 128-bit trace ID
+     * @deprecated DirectByteBuffer path; use {@link #setTraceContext} (all-native). Removed in phase 3.
      */
-    // @deprecated DirectByteBuffer path; use {@link #setTraceContext} (all-native). Removed in phase 3.
     @Deprecated
     public void setContext(long localRootSpanId, long spanId, long traceIdHigh, long traceIdLow) {
         currentContext().put(localRootSpanId, spanId, traceIdHigh, traceIdLow);
@@ -238,8 +243,9 @@ public final class JavaProfiler {
     /**
      * Resets the current thread's context to zero (traceId=0, spanId=0, localRootSpanId=0).
      * Custom context attributes are also cleared.
+     *
+     * @deprecated DirectByteBuffer path; use {@link #clearTraceContext} (all-native). Removed in phase 3.
      */
-    // @deprecated DirectByteBuffer path; use {@link #clearTraceContext} (all-native). Removed in phase 3.
     @Deprecated
     public void clearContext() {
         currentContext().put(0, 0, 0, 0);
@@ -292,7 +298,9 @@ public final class JavaProfiler {
      *         full, or {@code slot} is out of range
      */
     public boolean setContextValue(int slot, CharSequence value) {
-        if (slot < 0) {
+        if (slot < 0 || slot >= MAX_CONTEXT_SLOTS) {
+            // Reject out-of-range slots before resolving, so an invalid slot never registers the
+            // value in the permanent native Dictionary (matches ThreadContext.setContextAttribute).
             return false;
         }
         ContextValueCache.Entry e = value == null ? null : contextValueCache.resolve(value.toString());
@@ -312,10 +320,12 @@ public final class JavaProfiler {
         clearContextValue0(slot);
     }
 
-    // Resolves an activation attribute for setTraceContext; null (skip) if slot<0, value null,
-    // or the value cannot be represented (oversized / Dictionary full).
+    // Resolves an activation attribute for setTraceContext; null (skip) if the slot is out of
+    // range, the value is null, or the value cannot be represented (oversized / Dictionary full).
+    // The range check precedes resolve() so an out-of-range slot never registers the value in the
+    // permanent native Dictionary.
     private ContextValueCache.Entry resolveContextValue(int slot, CharSequence value) {
-        if (slot < 0 || value == null) {
+        if (slot < 0 || slot >= MAX_CONTEXT_SLOTS || value == null) {
             return null;
         }
         return contextValueCache.resolve(value.toString());
@@ -331,8 +341,8 @@ public final class JavaProfiler {
      * @return true if the value was recorded; false if {@code offset} is out of range,
      *         {@code value} is null, the Dictionary is full, or {@code attrs_data} overflows
      *         for this slot
+     * @deprecated DirectByteBuffer path; use {@link #setContextValue} (all-native). Removed in phase 3.
      */
-    // @deprecated DirectByteBuffer path; use {@link #setContextValue} (all-native). Removed in phase 3.
     @Deprecated
     public boolean setContextAttribute(int offset, String value) {
         return currentContext().setContextAttribute(offset, value);
@@ -343,8 +353,8 @@ public final class JavaProfiler {
      * Zeros the sidecar encoding and removes it from OTEP {@code attrs_data}.
      *
      * @param offset slot index (0-based, in [0, 9]); out-of-range values are silently ignored
+     * @deprecated DirectByteBuffer path; use {@link #clearContextValue} (all-native). Removed in phase 3.
      */
-    // @deprecated DirectByteBuffer path; use {@link #clearContextValue} (all-native). Removed in phase 3.
     @Deprecated
     public void clearContextAttribute(int offset) {
         currentContext().clearContextAttribute(offset);
@@ -372,8 +382,8 @@ public final class JavaProfiler {
      *                                  {@code utf8[i]} is null
      * @throws IllegalArgumentException if the arrays have different lengths, exceed the slot limit,
      *                                  or any active {@code utf8[i]} exceeds 255 bytes
+     * @deprecated DirectByteBuffer path; unused by dd-trace-java. Removed in phase 3.
      */
-    // @deprecated DirectByteBuffer path; unused by dd-trace-java. Removed in phase 3.
     @Deprecated
     public boolean setContextAttributesByIdAndBytes(int[] constantIds, byte[][] utf8) {
         return currentContext().setContextAttributesByIdAndBytes(constantIds, utf8);
@@ -579,9 +589,10 @@ public final class JavaProfiler {
      * sampler reads the new carrier, and once the old carrier's OS thread exits the buffer dangles.
      * Callers that write context (span/attributes) should re-fetch per use — the {@code setContext*}
      * methods already do this internally via {@code currentContext()}.
+     *
+     * @deprecated DirectByteBuffer path (test/diagnostic only); the all-native API is stateless and
+     *             exposes no per-thread handle. Removed in phase 3.
      */
-    // @deprecated DirectByteBuffer path (test/diagnostic only); the all-native API is stateless and
-    // exposes no per-thread handle. Removed in phase 3.
     @Deprecated
     public ThreadContext getThreadContext() {
         return currentContext();

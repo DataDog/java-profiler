@@ -18,10 +18,25 @@ the duration by the native frame*, making the write **race-free by construction*
 it.
 
 A JMH campaign (six benchmark classes, JDK 21, glibc x64) establishes the key result: the all-native
-path is a **modest net win (~7–10%) on the real per-scope-activation cycle** — but only when the
-per-activation context is written in **one combined call**. With the current fine-grained call
-sequence it would regress ~1.6×. The recommendation is therefore all-native **plus a combined
-per-activation API**, rolled out via expand → migrate → contract.
+path is a **net win on the real per-scope-activation cycle** — but only when the per-activation
+context is written in **one combined call**. With the current fine-grained call sequence it would
+regress ~1.6×. The recommendation is therefore all-native **plus a combined per-activation API**,
+rolled out via expand → migrate → contract.
+
+The size of the win depends on which DBB baseline it is measured against (see §4 for the full
+breakdown and the two figures):
+
+- Against the **prototype microbenchmark** baseline (§4), which caches the `ThreadContext` handle and
+  so pays the per-call `currentContext()` / `CarrierThreadLocal` lookup only once, the combined
+  native cycle is **~7–10% faster** (128 vs 138 ns).
+- Against the **production API** baseline — the shipped `ContextCombinedBenchmark`, where the DBB
+  cycle is the six real `setContext` / `setContextAttribute` / `clearContextAttribute` calls
+  dd-trace-java actually makes, each re-resolving `currentContext()` — the combined native cycle
+  (two JNI calls, no per-call lookup) is **~28% faster** (~136 vs ~189 ns).
+
+Both are the same effect from opposite ends: the fewer JNI transitions the combined call needs, the
+more of the DBB path's repeated per-call lookup cost it removes. The ~28% figure is the one that
+reflects real tracer usage; the ~7–10% is the conservative lower bound with the lookup amortized away.
 
 Consumer audit: the entire public context API has **exactly one production consumer** (the
 dd-trace-java profiler bridge) and no in-repo external consumers, so the migration risk is internal
@@ -131,6 +146,17 @@ vs 3 zero-JNI writes), but native *deactivate* wins decisively (~22 ns for one `
 ~65 ns for `setContext(0,0,0,0)` + 2× `clearContextAttribute`); the full cycle nets in native's
 favor. vthread mirrors platform (native 131.3 vs DBB 140.8), with a ~1–3 ns mount penalty; native is
 mount- and mode-independent throughout.
+
+> **Prototype vs production baseline (why the PR quotes ~28%, not ~7–10%).** The `138.5` DBB figure
+> above is the *prototype* microbenchmark: it caches the `ThreadContext` handle, so the DBB cycle
+> pays the `currentContext()` / `CarrierThreadLocal` lookup only once. The shipped perf-guard,
+> `ContextCombinedBenchmark`, instead drives the *production* API — the six real
+> `setContext`/`setContextAttribute`/`clearContextAttribute` calls dd-trace-java makes, each
+> re-resolving `currentContext()` — so its DBB baseline is higher (~189 ns) and the combined native
+> cycle (two JNI calls, no repeated lookup) comes out **~28% faster** (~136 ns; ~24% in thread mode).
+> Same effect, two baselines: ~7–10% is the conservative lower bound with the lookup amortized away,
+> ~28% is the figure against real tracer usage. `ContextCombinedBenchmark` is the one to trust going
+> forward; the prototype rows are retained for the path-by-path decomposition only.
 
 **The unifying principle (holds across all six classes):**
 
