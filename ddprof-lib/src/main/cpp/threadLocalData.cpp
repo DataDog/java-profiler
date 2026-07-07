@@ -30,7 +30,11 @@ ProfiledThread* ProfiledThread::initCurrentThreadSignalSafe() {
 }
 
 void ProfiledThread::release() {
-  _current_thread.clear();
+  ProfiledThread* pt = _current_thread.get();
+  if (pt != nullptr) {
+    _current_thread.clear();
+    delete pt;
+  }
 }
 
 int ProfiledThread::currentTid() {

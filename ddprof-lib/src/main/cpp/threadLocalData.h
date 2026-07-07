@@ -127,7 +127,8 @@ public:
   static ProfiledThread* initCurrentThread();
   static void release();
 
-  // Async-signal-safe version
+  // This version blocks signals, so that initialization cannot
+  // be interrupted by signals
   static ProfiledThread* initCurrentThreadSignalSafe();
 
   // This call is async-signal-safe

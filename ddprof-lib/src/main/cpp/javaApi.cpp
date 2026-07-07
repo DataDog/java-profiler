@@ -356,8 +356,11 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
     JNIEnv *env, jclass unused, jlong blocker, jlong unblockingSpanId) {
-  ProfiledThread *current = ProfiledThread::current();
-  assert(current != nullptr);
+  ProfiledThread *current = initOrGetCurrentThread();
+  if (current == nullptr) {
+    return;
+  }
+
   u64 park_block_token = 0;
   if (!current->parkExit(park_block_token) || park_block_token == 0) {
     return;
@@ -388,8 +391,9 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
     return 0;
   }
   ProfiledThread *current = initOrGetCurrentThread();
-  assert(current != nullptr);
-
+  if (current == nullptr) {
+    return 0;
+  }
   ThreadFilter *tf = Profiler::instance()->threadFilter();
   if (!tf->enabled()) {
     return 0;
