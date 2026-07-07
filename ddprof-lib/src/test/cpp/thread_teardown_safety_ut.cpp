@@ -19,7 +19,7 @@
 #ifdef __linux__
 
 #include "guards.h"
-#include "thread.h"
+#include "threadLocalData.h"
 
 #include <atomic>
 #include <pthread.h>

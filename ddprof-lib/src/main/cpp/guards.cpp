@@ -17,7 +17,7 @@
 #include "guards.h"
 #include "common.h"
 #include "os.h"
-#include "thread.h"
+#include "threadLocalData.h"
 
 // Signal-context tracking — backed by ProfiledThread::_signal_depth; see
 // the comment block in guards.h for the rationale (initial-exec TLS was

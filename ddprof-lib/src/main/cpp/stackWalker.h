@@ -35,7 +35,6 @@ namespace StackWalkValidation {
     const intptr_t MAX_INTERPRETER_FRAME_SIZE = 0x1000;
     const uintptr_t DEAD_ZONE = 0x1000;
     const intptr_t MAX_FRAME_SIZE = 0x40000;
-    const uintptr_t SAME_STACK_DISTANCE = 8192;
 
     // Check if pointer is in dead zone (very low or very high address)
     static inline bool inDeadZone(const void* ptr) {
@@ -45,11 +44,6 @@ namespace StackWalkValidation {
     // Check if pointer is properly aligned
     static inline bool aligned(uintptr_t ptr) {
         return (ptr & (sizeof(uintptr_t) - 1)) == 0;
-    }
-
-    // Check if two pointers are on the same stack
-    static inline bool sameStack(void* hi, void* lo) {
-        return (uintptr_t)hi - (uintptr_t)lo < SAME_STACK_DISTANCE;
     }
 
     // Check if a frame pointer is plausibly valid (not in dead zone, properly aligned)

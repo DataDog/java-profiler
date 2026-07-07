@@ -16,7 +16,6 @@
 #include "counters.h"
 #include "jvmThread.h"
 #include "safeAccess.h"
-#include "thread.h"
 #include "threadState.h"
 #include "vmEntry.h"
 
@@ -45,12 +44,8 @@ class VMNMethod;
 inline bool crashProtectionActive();
 
 template <typename T>
-inline T* cast_to(const void* ptr) {
-    assert(VM::isHotspot()); // This should only be used in HotSpot-specific code
-    assert(T::type_size() > 0); // Ensure type size has been initialized
-    assert(crashProtectionActive() || ptr == nullptr || SafeAccess::isReadableRange(ptr, T::type_size()));
-    return reinterpret_cast<T*>(const_cast<void*>(ptr));
-}
+inline T* cast_to(const void* ptr);
+
 
 template <typename T>
 T* cast_or_null(const void* ptr) {
@@ -677,7 +672,24 @@ DECLARE(VMKlass)
             if (_compact_object_headers) {
                 uintptr_t mark = *(uintptr_t*)oop;
                 if (mark & MONITOR_BIT) {
-                    mark = *(uintptr_t*)(mark ^ MONITOR_BIT);
+                    // TOCTOU: MonitorDeflationThread may free the ObjectMonitor between
+                    // reading the mark word and dereferencing the monitor pointer. Use
+                    // safeFetch64 so a concurrent deflation/free does not crash here.
+                    // Two reads with different error values disambiguate a genuine fault
+                    // from a real header word that happens to equal one sentinel value
+                    // (mirrors SafeAccess::isReadable()'s double-read trick).
+                    int64_t* monitor_addr = (int64_t*)(mark ^ MONITOR_BIT);
+                    uintptr_t tmp = (uintptr_t)SafeAccess::safeFetch64(monitor_addr, 1);
+                    if (tmp != 1) {
+                        mark = tmp;
+                    } else {
+                        tmp = (uintptr_t)SafeAccess::safeFetch64(monitor_addr, 2);
+                        if (tmp != 2) {
+                            mark = tmp;
+                        } else {
+                            return nullptr;
+                        }
+                    }
                 }
                 narrow_klass = mark >> _markWord_klass_shift;
             } else {
@@ -841,17 +853,6 @@ DECLARE(VMThread)
             return _null_exception;
         }
         return *(void**) at(_thread_exception_offset);
-    }
-
-    // Returns true if setjmp crash protection is currently active for this thread.
-    // Reads the exception field via direct pointer arithmetic, deliberately bypassing
-    // at() and its crashProtectionActive() assertion to avoid infinite recursion.
-    // Safe because 'this' is the current live thread (we are in its signal handler).
-    static bool isExceptionActive() {
-        if (_thread_exception_offset < 0) return false;
-        void* vt = JVMThread::current();
-        if (vt == nullptr) return false;
-        return *(const void* const*)((const char*)vt + _thread_exception_offset) != nullptr;
     }
 
     NOADDRSANITIZE VMJavaFrameAnchor* anchor() {
@@ -1220,19 +1221,5 @@ class InterpreterFrame : VMStructs {
         return _interpreter_frame_bcp_offset;
     }
 };
-
-// Defined here (after VMThread) so the VMThread::isExceptionActive() fallback
-// is accessible. The forward declaration at the top of this file allows cast_to()
-// to reference it before VMThread is declared.
-inline bool crashProtectionActive() {
-    ProfiledThread* pt = ProfiledThread::currentSignalSafe();
-    if (pt != nullptr && pt->isCrashProtectionActive()) return true;
-    // Fallback for threads without ProfiledThread TLS (e.g. JVM internal threads):
-    // if walkVM has set up setjmp protection via vm_thread->exception(), the assert
-    // is equally redundant — any bad read will be caught by the SIGSEGV handler.
-    // Uses VMThread::isExceptionActive() which reads the field directly without
-    // going through at() to avoid recursive assertion.
-    return JVMThread::key() != pthread_key_t(-1) && VMThread::isExceptionActive();
-}
 
 #endif // _HOTSPOT_VMSTRUCTS_H

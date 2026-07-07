@@ -22,7 +22,7 @@
 
 class ITimer : public Engine {
 private:
-  static volatile bool _enabled;
+  static bool _enabled;
   static long _interval;
   static CStack _cstack;
 
@@ -39,7 +39,9 @@ public:
   Error start(Arguments &args);
   void stop();
 
-  inline void enableEvents(bool enabled) { _enabled = enabled; }
+  inline void enableEvents(bool enabled) {
+    __atomic_store_n(&_enabled, enabled, __ATOMIC_RELEASE);
+  }
 };
 
 // CPU-time engine identical to ITimer in its timer mechanism (process-wide
@@ -51,7 +53,7 @@ public:
 // stack walking rather than relying on the signal-frame PC.
 class ITimerJvmti : public Engine {
 private:
-  static volatile bool _enabled;
+  static bool _enabled;
   static long _interval;
 
   static void signalHandler(int signo, siginfo_t *siginfo, void *ucontext);

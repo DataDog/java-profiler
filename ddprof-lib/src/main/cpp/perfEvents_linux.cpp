@@ -29,11 +29,12 @@
 #include "os.h"
 #include "perfEvents.h"
 #include "profiler.h"
+#include "signalInflight.h"
 #include "spinLock.h"
 #include "stackFrame.h"
 #include "stackWalker.h"
 #include "symbols.h"
-#include "thread.h"
+#include "threadLocalData.h"
 #include "threadState.inline.h"
 #include <dlfcn.h>
 #include <errno.h>
@@ -169,7 +170,6 @@ static void **_pthread_entry = NULL;
 // pthread_setspecific(). HotSpot puts VMThread into TLS on thread start, and
 // resets on thread end.
 static int pthread_setspecific_hook(pthread_key_t key, const void *value) {
-  assert(JVMThread::isInitialized());
   if (JVMThread::key() != key) {
     return pthread_setspecific(key, value);
   }
@@ -560,7 +560,7 @@ private:
   friend class PerfEvents;
 };
 
-volatile bool PerfEvents::_enabled = false;
+bool PerfEvents::_enabled = false;
 int PerfEvents::_max_events = -1;
 PerfEvent *PerfEvents::_events = NULL;
 PerfEventType *PerfEvents::_event_type = NULL;
@@ -735,6 +735,7 @@ void PerfEvents::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     // Looks like an external signal; don't treat as a profiling event
     return;
   }
+  InflightGuard inflight;
   // Atomically try to enter critical section - prevents all reentrancy races
   CriticalSection cs;
   if (!cs.entered()) {
@@ -745,7 +746,7 @@ void PerfEvents::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     current->noteCPUSample(Profiler::instance()->recordingEpoch());
   }
   int tid = current != NULL ? current->tid() : OS::threadId();
-  if (_enabled) {
+  if (__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
     Shims::instance().setSighandlerTid(tid);
 
     u64 counter = readCounter(siginfo, ucontext);

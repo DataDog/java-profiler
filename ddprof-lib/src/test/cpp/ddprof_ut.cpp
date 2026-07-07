@@ -7,7 +7,7 @@
     #include "guards.h"
     #include "mutex.h"
     #include "os.h"
-    #include "thread.h"
+    #include "threadLocalData.h"
     #include "unwindStats.h"
     #include "threadFilter.h"
     #include "threadInfo.h"

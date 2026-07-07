@@ -20,13 +20,14 @@
 #include "jvmThread.h"
 #include "os.h"
 #include "profiler.h"
+#include "signalInflight.h"
 #include "stackWalker.h"
-#include "thread.h"
+#include "threadLocalData.h"
 #include "threadState.inline.h"
 #include "guards.h"
 #include <sys/time.h>
 
-volatile bool ITimer::_enabled = false;
+bool ITimer::_enabled = false;
 long ITimer::_interval;
 CStack ITimer::_cstack;
 
@@ -38,7 +39,8 @@ void ITimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // is therefore vulnerable to the foreign-SIGPROF deadlock scenario this
   // feature addresses. Use CTimer (the default) when signal-origin
   // validation is required.
-  if (!_enabled)
+  InflightGuard inflight;
+  if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE))
     return;
   
   // Atomically try to enter critical section - prevents all reentrancy races
@@ -99,11 +101,12 @@ void ITimer::stop() {
   setitimer(ITIMER_PROF, &tv, NULL);
 }
 
-volatile bool ITimerJvmti::_enabled = false;
+bool ITimerJvmti::_enabled = false;
 long ITimerJvmti::_interval = 0;
 
 void ITimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   SIGNAL_HANDLER_GUARD();
+  InflightGuard inflight;
   CriticalSection cs;
   if (!cs.entered()) {
     return;
@@ -114,7 +117,7 @@ void ITimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     return;
   }
   ProfiledThread *current = ProfiledThread::currentSignalSafe();
-  if (current != nullptr && JVMThread::isInitialized() && JVMThread::current() == nullptr
+  if (current != nullptr && JVMThread::current() == nullptr
       && current->inInitWindow()) {
     current->tickInitWindow();
     errno = saved_errno;
