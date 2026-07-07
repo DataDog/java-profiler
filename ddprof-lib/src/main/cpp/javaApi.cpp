@@ -26,6 +26,7 @@
 #include "engine.h"
 #include "hotspot/vmStructs.inline.h"
 #include "incbin.h"
+#include "jvmSupport.h"
 #include "jvmThread.h"
 #include "os.h"
 #include "otel_process_ctx.h"
@@ -68,6 +69,11 @@ public:
 
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_init0(JNIEnv *env, jclass unused) {
+  Error error = Profiler::instance()->init();
+  if (error) {
+    return JNI_FALSE;
+  }
+
   // JavaVM* has already been stored when the native library was loaded so we can pass nullptr here
   return VM::initProfilerBridge(nullptr, true);
 }
@@ -129,6 +135,19 @@ Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
   return (jlong)Profiler::instance()->total_samples();
 }
 
+// Init or get current profiled thread.
+// Calling thread's thread local may not be initialized due to race. 
+// Especially, during the early startup phase.
+// This problem can be eliminated with native agent.
+static ProfiledThread* initOrGetCurrentThread() {
+  ProfiledThread* current = ProfiledThread::current();
+  if (current == nullptr) {
+    current = ProfiledThread::initCurrentThreadSignalSafe();
+  }
+  return current;
+}
+
+
 // some duplication between add and remove, though we want to avoid having an extra branch in the hot path
 
 // JavaCritical is faster JNI, but more restrictive - parameters and return value have to be
@@ -137,7 +156,7 @@ Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
 // still compatible in the event of signature changes in the future.
 extern "C" DLLEXPORT void JNICALL
 JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = initOrGetCurrentThread();
   assert(current != nullptr);
   int tid = current->tid();
   if (unlikely(tid < 0)) {
@@ -167,7 +186,7 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
 
 extern "C" DLLEXPORT void JNICALL
 JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0() {
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = initOrGetCurrentThread();
   assert(current != nullptr);
   int tid = current->tid();
   if (unlikely(tid < 0)) {
@@ -319,7 +338,7 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) {
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = initOrGetCurrentThread();
   if (current == nullptr) {
     return;
   }
@@ -338,9 +357,7 @@ extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
     JNIEnv *env, jclass unused, jlong blocker, jlong unblockingSpanId) {
   ProfiledThread *current = ProfiledThread::current();
-  if (current == nullptr) {
-    return;
-  }
+  assert(current != nullptr);
   u64 park_block_token = 0;
   if (!current->parkExit(park_block_token) || park_block_token == 0) {
     return;
@@ -370,10 +387,9 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
   if (!decodeJavaBlockState(state, decoded)) {
     return 0;
   }
-  ProfiledThread *current = ProfiledThread::current();
-  if (current == nullptr) {
-    return 0;
-  }
+  ProfiledThread *current = initOrGetCurrentThread();
+  assert(current != nullptr);
+
   ThreadFilter *tf = Profiler::instance()->threadFilter();
   if (!tf->enabled()) {
     return 0;
@@ -392,7 +408,7 @@ Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
   if (block_token == 0) {
     return;
   }
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = initOrGetCurrentThread();
   if (current == nullptr) {
     return;
   }
@@ -685,7 +701,7 @@ Java_com_datadoghq_profiler_OTelContext_readProcessCtx0(JNIEnv *env, jclass unus
 
 extern "C" DLLEXPORT jobject JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_initializeContextTLS0(JNIEnv* env, jclass unused, jlongArray metadata) {
-  ProfiledThread* thrd = ProfiledThread::current();
+  ProfiledThread* thrd = initOrGetCurrentThread();
   assert(thrd != nullptr);
 
   if (!thrd->isContextInitialized()) {

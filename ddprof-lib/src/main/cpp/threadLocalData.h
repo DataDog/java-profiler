@@ -9,6 +9,7 @@
 #include "context.h"
 #include "otel_context.h"
 #include "os.h"
+#include "threadLocal.h"
 #include "threadState.h"
 #include "unwindStats.h"
 #include <atomic>
@@ -53,12 +54,7 @@ public:
   // Even with a 5-level cap we can still encounter highly recursive signal handlers.
   static constexpr u32 CRASH_HANDLER_NESTING_LIMIT = 5;
 private:
-  static pthread_key_t _tls_key;
-  static bool _tls_key_initialized;
-
-  static void initTLSKey();
-  static void doInitTLSKey();
-  static inline void freeKey(void *key);
+  static ThreadLocal<ProfiledThread*>  _current_thread;
 
   // longjmp buffer. Used by hotspot only at this moment.
   // Published in walkVM() and consumed in checkFault() from an asynchronous
@@ -108,32 +104,44 @@ private:
   virtual ~ProfiledThread() { }
 public:
   static ProfiledThread *forTid(int tid) { return new ProfiledThread(tid); }
+  static bool isThreadKeyValid() {
+    return _current_thread.isKeyValid();
+  }
 
-  static void initCurrentThread();
-  static void release();
 #ifdef UNIT_TEST
   // Simulates the moment inside release() after pthread_setspecific(NULL) but
   // before delete — the race window the clearCurrentThreadTLS fix covers.
   // Returns the detached pointer so the caller can delete it after assertions.
   static ProfiledThread* clearCurrentThreadTLS() {
-    if (__atomic_load_n(&_tls_key_initialized, __ATOMIC_ACQUIRE)) {
-      ProfiledThread *pt = (ProfiledThread *)pthread_getspecific(_tls_key);
-      pthread_setspecific(_tls_key, nullptr);
-      return pt;
-    }
-    return nullptr;
+    assert(isThreadKeyValid() && "Should not reach here - profiling should have been disabled");
+    ProfiledThread* pt = _current_thread.get();
+    _current_thread.clear();
+    return pt;
   }
   // Deletes a ProfiledThread returned by clearCurrentThreadTLS().
   // Needed because the destructor is private.
   static void deleteForTest(ProfiledThread *pt) { delete pt; }
 #endif
+  // initCurrentThread() and release() are not async-signal-safe: 
+  // must call outside of a signal handler with signal blocked
+  static ProfiledThread* initCurrentThread();
+  static void release();
 
-  static ProfiledThread *current();
-  static ProfiledThread *currentSignalSafe(); // Signal-safe version that never allocates
+  // Async-signal-safe version
+  static ProfiledThread* initCurrentThreadSignalSafe();
+
+  // This call is async-signal-safe
+  static inline ProfiledThread *current() {
+    assert(isThreadKeyValid() && "Should not reach here - profiling should have been disabled");
+    return _current_thread.get();
+  }
+
+  static inline ProfiledThread *currentSignalSafe() { // Signal-safe version that never allocates
+    return current();
+  }
+
   static int currentTid();
-
   inline int tid() { return _tid; }
-
   inline u64 noteCPUSample(u32 recording_epoch) {
     _recording_epoch = recording_epoch;
     return ++_cpu_epoch;

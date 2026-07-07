@@ -1235,6 +1235,17 @@ Error Profiler::checkState() {
   return Error::OK;
 }
 
+Error Profiler::init() {
+  MutexLocker ml(_state_lock);
+  Error error = checkState();
+  if (error) {
+    return error;
+  }
+
+  ProfiledThread::initCurrentThread();
+  return Error::OK;
+}
+
 Error Profiler::start(Arguments &args, bool reset) {
   MutexLocker ml(_state_lock);
   Error error = checkState();
@@ -1356,7 +1367,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   // Minor optim: Register the current thread (start thread won't be called)
   if (_thread_filter.enabled()) {
     _thread_filter.clearActive();
-    ProfiledThread *current = ProfiledThread::current();
+    ProfiledThread *current = ProfiledThread::initCurrentThread();
     assert(current != nullptr);
     int slot_id = current->filterSlotId();
     if (slot_id < 0) {

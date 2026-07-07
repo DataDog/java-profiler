@@ -32,12 +32,12 @@ bool JVMSupport::initialize() {
         return false;
     }
 
-    // Add ProfiledThread key checking here in next PR
-    return true;
+    // Check ProfiledThread key, it is critical for storing per-thread metadata
+    return ProfiledThread::isThreadKeyValid();
 }
 
 bool JVMSupport::isInitialized() {
-    return JVMThread::isInitialized();
+    return JVMThread::isInitialized() && ProfiledThread::isThreadKeyValid();
 }
 
 JVMSupport::JMethodIDLoadStats JVMSupport::getLoadState() {

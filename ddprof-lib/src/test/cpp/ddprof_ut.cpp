@@ -382,8 +382,7 @@ static DdprofGlobalSetup ddprof_global_setup;
 
         if (pid == 0) {
             // ---- child process (fork isolates TLS from other tests) ----
-            ProfiledThread::initCurrentThread();
-            ProfiledThread* pt = ProfiledThread::currentSignalSafe();
+            ProfiledThread* pt = ProfiledThread::initCurrentThread();
             if (pt == nullptr) _exit(2);
 
             // Baseline: entering critical section works.
