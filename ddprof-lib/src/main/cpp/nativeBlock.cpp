@@ -10,7 +10,7 @@
 #include "context_api.h"
 #include "profiler.h"
 #include "taskBlockRecorder.h"
-#include "thread.h"
+#include "threadLocalData.h"
 #include "tsc.h"
 
 #include <atomic>

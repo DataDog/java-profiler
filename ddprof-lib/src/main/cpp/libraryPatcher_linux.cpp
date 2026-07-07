@@ -8,6 +8,7 @@
 #ifdef __linux__
 #include "counters.h"
 #include "guards.h"
+#include "jvmThread.h"
 #include "nativeSocketInterposer.h"
 #include "nativeSocketSampler.h"
 #include "profiler.h"

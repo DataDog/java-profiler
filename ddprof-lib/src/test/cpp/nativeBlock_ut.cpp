@@ -11,7 +11,7 @@
 #include "counters.h"
 #include "nativeBlock.h"
 #include "profiler.h"
-#include "thread.h"
+#include "threadLocalData.h"
 #include "tsc.h"
 
 #include <atomic>

@@ -463,6 +463,7 @@ bool VM::initShared(JavaVM* vm) {
     return false;
   }
 
+  // Initialize VMStructs
   VMStructs::init(lib);
 
   // Mark thread entry points for all JVMs (critical for correct stack unwinding)
@@ -740,7 +741,6 @@ bool VM::setNativeMonitorEventsEnabled(bool enabled) {
 void VM::ready(jvmtiEnv *jvmti, JNIEnv *jni) {
   Profiler::check_JDK_8313796_workaround();
   Profiler::setupSignalHandlers();
-  JVMThread::initialize();
   if (isHotspot()) {
     JitWriteProtection jit(true);
     VMStructs::ready();

@@ -225,7 +225,7 @@ public final class ThreadContext {
     /**
      * Restores a previously captured state. The detach/memcpy/conditional-attach pair hides the
      * memcpy from readers going through {@link #ctxBuffer}'s valid flag ({@code ContextApi::get}
-     * in native code), which is the sole gate for sidecar reads (see {@code thread.h}).
+     * in native code), which is the sole gate for sidecar reads (see {@code threadLocalData.h}).
      *
      * <p>The valid byte inside scratch is cleared to 0 for the duration of the memcpy so that
      * even if the captured state had {@code valid=1}, the live buffer cannot transiently observe

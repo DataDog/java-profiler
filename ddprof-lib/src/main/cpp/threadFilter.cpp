@@ -22,7 +22,7 @@
 #include "threadFilter.h"
 #include "arch.h"
 #include "os.h"
-#include "thread.h"
+#include "threadLocalData.h"
 #include <cassert>
 #include <cstdlib>
 #include <cstdio>

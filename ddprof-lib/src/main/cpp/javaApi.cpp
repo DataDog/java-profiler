@@ -31,7 +31,7 @@
 #include "otel_process_ctx.h"
 #include "profiler.h"
 #include "taskBlockRecorder.h"
-#include "thread.h"
+#include "threadLocalData.h"
 #include "tsc.h"
 #include "vmEntry.h"
 #include <errno.h>
@@ -840,7 +840,7 @@ Java_com_datadoghq_profiler_JavaProfiler_initializeContextTLS0(JNIEnv* env, jcla
   OtelThreadContextRecord* record = thrd->getOtelContextRecord();
 
   // Contiguity of record + tag_encodings + LRS is enforced by alignas(8) on _otel_ctx_record
-  // plus sizeof(OtelThreadContextRecord) being a multiple of 8 (see thread.h).
+  // plus sizeof(OtelThreadContextRecord) being a multiple of 8 (see threadLocalData.h).
   // Compile-time alignment check always runs; runtime pointer-layout check is debug-only.
   static_assert(DD_TAGS_CAPACITY * sizeof(u32) % alignof(u64) == 0,
       "tag encodings array size must be aligned to u64 for contiguous sidecar layout");

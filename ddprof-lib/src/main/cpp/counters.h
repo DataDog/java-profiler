@@ -128,7 +128,8 @@
   X(TASK_BLOCK_RECORD_FAILED, "task_block_record_failed")                    \
   X(TASK_BLOCK_QUEUE_DROPPED, "task_block_queue_dropped")                    \
   X(JVMTI_STACKS_DROPPED_LOCK, "jvmti_stacks_dropped_lock")                   \
-  X(SAMPLES_DROPPED_REC_LOCK, "samples_dropped_rec_lock")
+  X(SAMPLES_DROPPED_REC_LOCK, "samples_dropped_rec_lock")                     \
+  X(SAMPLES_DROPPED_THREAD_LOCAL, "samples_dropped_thread_local")
 #define X_ENUM(a, b) a,
 typedef enum CounterId : int {
   DD_COUNTER_TABLE(X_ENUM) DD_NUM_COUNTERS

@@ -76,7 +76,7 @@ the tasks are deferred until the user approves.
 #include "callTraceHashTable.h"
 #include "dictionary.h"
 #include "threadFilter.h"
-#include "thread.h"
+#include "threadLocalData.h"
 #include "arch.h"
 
 #include <atomic>

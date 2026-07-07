@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include "thread.h"
+#include "threadLocalData.h"
 #include "context_api.h"
 #include "guards.h"
 #include "otel_context.h"

@@ -133,6 +133,8 @@ class JavaVersionAccess {
 };
 
 class VM {
+  friend class VMTestAccessor;
+
 private:
   static JavaVM *_vm;
   static jvmtiEnv *_jvmti;

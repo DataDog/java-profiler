@@ -43,7 +43,7 @@
 
 #ifdef __linux__
 
-#include "thread.h"
+#include "threadLocalData.h"
 
 #include <atomic>
 #include <pthread.h>
