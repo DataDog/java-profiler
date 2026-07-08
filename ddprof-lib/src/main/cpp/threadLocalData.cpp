@@ -15,7 +15,10 @@
 ThreadLocal<ProfiledThread*, nullptr, ProfiledThread::freeValue>  ProfiledThread::_current_thread;
 
 ProfiledThread* ProfiledThread::initCurrentThread() {
-  ProfiledThread* tls = current();
+  if (!isThreadKeyValid()) {
+    return nullptr;
+  }
+  ProfiledThread* tls = _current_thread.get();
   if (tls == nullptr) {
     int tid = OS::threadId();
     tls = ProfiledThread::forTid(tid);

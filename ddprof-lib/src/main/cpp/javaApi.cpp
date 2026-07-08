@@ -71,6 +71,7 @@ extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_init0(JNIEnv *env, jclass unused) {
   Error error = Profiler::instance()->init();
   if (error) {
+    throwNew(env, "java/lang/IllegalStateException", error.message());
     return JNI_FALSE;
   }
 
