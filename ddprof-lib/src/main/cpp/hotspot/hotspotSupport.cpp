@@ -232,7 +232,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     // VMStructs is only available for hotspot JVM 
     assert(VM::isHotspot());
 
-    ProfiledThread* prof_thread = ProfiledThread::currentSignalSafe();
+    ProfiledThread* prof_thread = ProfiledThread::current();
     if (prof_thread == nullptr) {
         Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
         return 0;
@@ -1198,7 +1198,7 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
     if (cstack >= CSTACK_VM) {
       java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
     } else {
-        AsyncSampleMutex mutex(ProfiledThread::currentSignalSafe());
+        AsyncSampleMutex mutex(ProfiledThread::current());
         if (mutex.acquired()) {
             java_frames = getJavaTraceAsync(ucontext, frames, max_depth, java_ctx, truncated);
             if (java_frames > 0 && java_ctx->pc != NULL && VMStructs::hasMethodStructs()) {
@@ -1223,7 +1223,7 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
         java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
     } else {
         // Async events
-        AsyncSampleMutex mutex(ProfiledThread::currentSignalSafe());
+        AsyncSampleMutex mutex(ProfiledThread::current());
         if (mutex.acquired()) {
             java_frames = getJavaTraceAsync(ucontext, frames, max_depth, java_ctx, truncated);
             if (java_frames > 0 && java_ctx->pc != NULL && VMStructs::hasMethodStructs()) {

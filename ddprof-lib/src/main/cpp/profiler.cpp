@@ -93,7 +93,7 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 }
 
 void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
-  ProfiledThread *current = ProfiledThread::currentSignalSafe();
+  ProfiledThread *current = ProfiledThread::current();
   int tid = -1;
   
   if (current != nullptr) {
@@ -627,7 +627,7 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
 
     call_trace_id =
         _call_trace_storage.put(num_frames, frames, truncated, counter);
-    ProfiledThread *thread = ProfiledThread::currentSignalSafe();
+    ProfiledThread *thread = ProfiledThread::current();
     if (thread != nullptr) {
       thread->recordCallTraceId(call_trace_id);
     }
@@ -918,7 +918,7 @@ void Profiler::busHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 
 // Returns: 0 = not handled (chain to next handler), non-zero = handled
 int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext) {
-  ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
+  ProfiledThread* thrd = ProfiledThread::current();
 
   // First, try to handle safefetch - this doesn't need TLS or any protection
   // because it directly checks the PC and modifies ucontext to skip the fault.

@@ -95,7 +95,7 @@ int JVMSupport::asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* 
         return 0;
     }
 
-    AsyncSampleMutex mutex(ProfiledThread::currentSignalSafe());
+    AsyncSampleMutex mutex(ProfiledThread::current());
     if (!mutex.acquired()) {
         return 0;
     }

@@ -225,7 +225,7 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     return;
   }
   int tid = 0;
-  ProfiledThread *current = ProfiledThread::currentSignalSafe();
+  ProfiledThread *current = ProfiledThread::current();
   assert(current == nullptr || !current->isDeepCrashHandler());
   if (current != nullptr && JVMThread::current() == nullptr
       && current->inInitWindow()) {
@@ -281,7 +281,7 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     return;
   }
   int tid = 0;
-  ProfiledThread *current = ProfiledThread::currentSignalSafe();
+  ProfiledThread *current = ProfiledThread::current();
   assert(current == nullptr || !current->isDeepCrashHandler());
   // Guard against the race window between Profiler::registerThread() and
   // thread_native_entry setting JVM TLS (PROF-13072): skip at most one signal

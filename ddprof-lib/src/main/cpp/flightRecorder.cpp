@@ -1771,7 +1771,7 @@ void Recording::writeCurrentContext(Buffer *buf) {
   buf->putVar64(rootSpanId);
 
   size_t numAttrs = Profiler::instance()->numContextAttributes();
-  ProfiledThread* thrd = hasContext ? ProfiledThread::currentSignalSafe() : nullptr;
+  ProfiledThread* thrd = hasContext ? ProfiledThread::current() : nullptr;
   for (size_t i = 0; i < numAttrs; i++) {
     buf->putVar32(thrd != nullptr ? thrd->getOtelTagEncoding(i) : 0);
   }

@@ -684,7 +684,7 @@ bool VMThread::isJavaThread(VMThread* vm_thread) {
 
     // JVMTI ThreadStart callback may have set the flag, which is reliable.
     // Or we may already compute and cache it, so use it instead.
-    ProfiledThread *prof_thread = ProfiledThread::currentSignalSafe();
+    ProfiledThread *prof_thread = ProfiledThread::current();
     if (prof_thread != nullptr) {
         ProfiledThread::ThreadType type = prof_thread->threadType();
         if (type != ProfiledThread::ThreadType::TYPE_UNKNOWN) {

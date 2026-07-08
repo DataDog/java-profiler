@@ -140,10 +140,6 @@ public:
     return _current_thread.get();
   }
 
-  static inline ProfiledThread *currentSignalSafe() { // Signal-safe version that never allocates
-    return current();
-  }
-
   static int currentTid();
   inline int tid() { return _tid; }
   inline u64 noteCPUSample(u32 recording_epoch) {

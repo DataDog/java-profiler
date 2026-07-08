@@ -64,7 +64,7 @@ public:
 // Unregister the current thread from the profiler and release its TLS under a
 // single SignalBlocker to close the race window between unregisterThread()
 // returning and release() acquiring its internal guard (PROF-14603).  Without
-// this, a SIGVTALRM delivered in that window could call currentSignalSafe()
+// this, a SIGVTALRM delivered in that window could call current()
 // and dereference a now-freed ProfiledThread.  Kept noinline so the
 // SignalBlocker's sigset_t does not appear in the caller's stack frame on
 // musl/aarch64 where the deopt blob may corrupt the wrapper's stack guard.
