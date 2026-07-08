@@ -854,6 +854,13 @@ Java_com_datadoghq_profiler_JavaProfiler_setTraceContext0(JNIEnv* env, jclass un
   if (thrd == nullptr) {
     return;
   }
+  // Publish the OTEP TLS pointer and mark the thread initialized on first native write, exactly
+  // as the DirectByteBuffer path does in initializeContextTLS0. Without this a thread that only
+  // ever uses the all-native API writes a record that ContextApi::get / the wallclock sampler
+  // ignore (both gate on isContextInitialized) and that external OTEP readers can't discover.
+  if (!thrd->isContextInitialized()) {
+    ContextApi::initializeContextTLS(thrd);
+  }
   OtelThreadContextRecord* record = thrd->getOtelContextRecord();
   u32* enc = thrd->getOtelTagEncodingsPtr();
   u64* lrs = reinterpret_cast<u64*>(enc + DD_TAGS_CAPACITY);
@@ -924,6 +931,11 @@ Java_com_datadoghq_profiler_JavaProfiler_setContextValue0(JNIEnv* env, jclass un
   if (thrd == nullptr || slot < 0 || slot >= (jint)DD_TAGS_CAPACITY) {
     return JNI_FALSE;
   }
+  // See setTraceContext0: publish the OTEP TLS pointer on first native write so the sampler and
+  // external readers observe context written purely through the all-native API.
+  if (!thrd->isContextInitialized()) {
+    ContextApi::initializeContextTLS(thrd);
+  }
   OtelThreadContextRecord* record = thrd->getOtelContextRecord();
   u32* enc = thrd->getOtelTagEncodingsPtr();
 
@@ -971,6 +983,13 @@ Java_com_datadoghq_profiler_ThreadContext_registerConstant0(JNIEnv* env, jclass 
   u32 encoding = Profiler::instance()->contextValueMap()->bounded_lookup(
       value_str.c_str(), value_str.length(), 1 << 16);
   return encoding == 0 ? -1 : (jint)encoding;
+}
+
+// Exposes the native custom-attribute slot capacity so Java can assert its mirrored
+// MAX_CONTEXT_SLOTS constant has not drifted from DD_TAGS_CAPACITY (see MaxContextSlotsTest).
+extern "C" DLLEXPORT jint JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_maxContextSlots0(JNIEnv* env, jclass unused) {
+  return (jint)DD_TAGS_CAPACITY;
 }
 
 // ---- test and debug utilities

@@ -49,10 +49,12 @@ public final class JavaProfiler {
     // (setTraceContext / setContextValue). See ContextValueCache. One instance on the singleton.
     private final ContextValueCache contextValueCache = new ContextValueCache();
 
-    // Number of custom attribute slots on the all-native path. Mirrors the native
-    // DD_TAGS_CAPACITY (context.h) and ThreadContext.MAX_CUSTOM_SLOTS; kept local so the
-    // all-native API does not depend on the phase-3-removed ThreadContext for the bound.
-    private static final int MAX_CONTEXT_SLOTS = 10;
+    // Number of custom attribute slots on the all-native path. Must equal the native
+    // DD_TAGS_CAPACITY (context.h); kept as a literal (not derived via JNI) because it bounds
+    // array-slot checks that can run before the native library is loaded, and kept independent of
+    // ThreadContext so the phase-3 removal of ThreadContext does not strand this constant. Drift
+    // from the native value is caught at test time by MaxContextSlotsTest via maxContextSlots0().
+    static final int MAX_CONTEXT_SLOTS = 10;
 
     /**
      * Returns the calling thread's (or, in carrier mode, its current carrier's)
@@ -175,7 +177,22 @@ public final class JavaProfiler {
         if (command == null) {
             throw new NullPointerException();
         }
-        return execute0(command);
+        String result = execute0(command);
+        // A fresh 'start' (ACTION_START) resets the native Dictionary (StringDictionary::clearAll),
+        // reassigning encodings. Drop the value cache so no stale encoding from the prior session
+        // is reused. Matched to the native reset trigger: the action is the first token, and only
+        // 'start' (not 'resume') resets. See ContextValueCache.
+        if (isStartAction(command)) {
+            contextValueCache.clear();
+        }
+        return result;
+    }
+
+    /** True if the command's action (its first comma-separated token) is {@code start}. */
+    private static boolean isStartAction(String command) {
+        int comma = command.indexOf(',');
+        String action = (comma < 0 ? command : command.substring(0, comma)).trim();
+        return action.equals("start");
     }
 
     /**
@@ -577,6 +594,9 @@ public final class JavaProfiler {
     private static native void clearTraceContext0();
     private static native boolean setContextValue0(int slot, int encoding, byte[] utf8);
     private static native void clearContextValue0(int slot);
+
+    /** Native DD_TAGS_CAPACITY (context.h). Test-only drift guard for {@link #MAX_CONTEXT_SLOTS}. */
+    static native int maxContextSlots0();
 
     /**
      * Returns the {@link ThreadContext} for the current storage slot (the calling thread, or in

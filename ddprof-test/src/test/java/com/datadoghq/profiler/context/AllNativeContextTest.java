@@ -75,6 +75,19 @@ public class AllNativeContextTest {
         profilerStarted = true;
     }
 
+    /**
+     * Invokes the private {@code setContextValue0} JNI primitive directly, bypassing the public
+     * {@link JavaProfiler#setContextValue} wrapper. Needed to reach the native {@code arr == null}
+     * guard in {@code otelReadUtf8}: the public path maps a null value to a slot clear, so it never
+     * passes a null {@code byte[]} through to native with a live slot.
+     */
+    private static boolean setContextValue0(int slot, int encoding, byte[] utf8) throws Exception {
+        Method m = JavaProfiler.class.getDeclaredMethod(
+                "setContextValue0", int.class, int.class, byte[].class);
+        m.setAccessible(true);
+        return (boolean) m.invoke(null, slot, encoding, utf8);
+    }
+
     /** {@code Thread.ofVirtual().start(task)} via reflection so this compiles with --release 8. */
     private static Thread startVirtualThread(Runnable task) throws Exception {
         Method ofVirtual = Thread.class.getMethod("ofVirtual");
@@ -231,6 +244,62 @@ public class AllNativeContextTest {
         assertTrue(profiler.setContextValue(SLOT_RES, "native-value")); // native attribute
         assertEquals("native-value", ctx.readContextAttribute(SLOT_RES));
         assertEquals("dbb-value", ctx.readContextAttribute(SLOT_OP), "DBB-written attr still intact");
+    }
+
+    /**
+     * A null {@code byte[]} value at the JNI boundary must be treated as an empty value (the native
+     * {@code arr == null} guard), not dereferenced. The public API can't produce this, so we call
+     * the {@code setContextValue0} primitive directly with a live slot and a null array.
+     */
+    @Test
+    public void nativeNullValueByteArrayIsTreatedAsEmpty() throws Exception {
+        start();
+        ThreadContext ctx = profiler.getThreadContext();
+        profiler.setTraceContext(0x2L, 0x1L, 0L, 0x1L, -1, null, -1, null); // live span
+
+        // encoding 0 is benign; the point is that a null byte[] does not crash and yields an empty
+        // attribute rather than a dereference.
+        assertTrue(setContextValue0(SLOT_OP, 0, null), "null value byte[] accepted as empty");
+        assertEquals("", ctx.readContextAttribute(SLOT_OP), "null value stored as empty attribute");
+    }
+
+    /**
+     * A zero-length value produces a bare 2-byte attrs_data entry (key + zero length). Overwriting
+     * it exercises {@code otelCompactAttr}'s {@code readPos + 2 <= currentSize} guard at the exact
+     * 2-byte boundary — the smallest possible entry.
+     */
+    @Test
+    public void zeroLengthAttributeCompactsCleanly() throws Exception {
+        start();
+        ThreadContext ctx = profiler.getThreadContext();
+        profiler.setTraceContext(0x2L, 0x1L, 0L, 0x1L, -1, null, -1, null); // live span
+
+        assertTrue(profiler.setContextValue(SLOT_OP, ""), "empty value written");
+        assertEquals("", ctx.readContextAttribute(SLOT_OP), "empty attribute observable");
+
+        // Overwrite the zero-length entry: compaction must walk over the 2-byte entry correctly.
+        assertTrue(profiler.setContextValue(SLOT_OP, "now-non-empty"));
+        assertEquals("now-non-empty", ctx.readContextAttribute(SLOT_OP));
+
+        // Clearing it back out also compacts across the (now larger) entry without corruption.
+        profiler.clearContextValue(SLOT_OP);
+        assertNull(ctx.readContextAttribute(SLOT_OP), "attribute cleared");
+    }
+
+    /**
+     * {@code setContextValue} rejects an out-of-range slot at the exact upper boundary
+     * ({@code slot == } the native DD_TAGS_CAPACITY of 10, guarded by {@code MaxContextSlotsTest}).
+     */
+    @Test
+    public void slotBoundaryIsRejected() throws Exception {
+        start();
+        profiler.getThreadContext();
+        profiler.setTraceContext(0x2L, 0x1L, 0L, 0x1L, -1, null, -1, null); // live span
+
+        final int capacity = 10; // native DD_TAGS_CAPACITY; drift caught by MaxContextSlotsTest
+        assertTrue(profiler.setContextValue(capacity - 1, "last-slot"), "highest valid slot accepted");
+        assertFalse(profiler.setContextValue(capacity, "out-of-range"), "slot == capacity rejected");
+        assertFalse(profiler.setContextValue(capacity + 1, "out-of-range"), "slot > capacity rejected");
     }
 
     /**

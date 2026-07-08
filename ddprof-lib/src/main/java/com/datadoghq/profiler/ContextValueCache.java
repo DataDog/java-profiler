@@ -22,9 +22,9 @@ import java.util.concurrent.atomic.AtomicReferenceArray;
  * Process-wide cache resolving an attribute value to its {@code (encoding, utf8)} pair for the
  * all-native context write path, avoiding a JNI {@code registerConstant0} call on every write.
  *
- * <p>The encoding is a <em>process-global, immutable</em> ID: {@code registerConstant0} interns the
- * value in the native Dictionary and returns the same ID for the JVM's lifetime. That immutability
- * is what makes a single shared, lock-free cache correct without per-thread copies:
+ * <p>Within a single recording session the encoding is a <em>stable</em> ID: {@code registerConstant0}
+ * interns the value in the native Dictionary and returns the same ID for the life of that session.
+ * That stability is what makes a single shared, lock-free cache correct without per-thread copies:
  * <ul>
  *   <li>Entries are immutable and published atomically (one array slot store), so a concurrent
  *       reader never sees a torn {@code (key, encoding, utf8)}.</li>
@@ -33,6 +33,12 @@ import java.util.concurrent.atomic.AtomicReferenceArray;
  *   <li>Direct-mapped by {@code value.hashCode()}; a hash collision evicts the previous value, which
  *       is simply re-resolved on its next use.</li>
  * </ul>
+ *
+ * <p><b>Session boundary:</b> the encoding is stable only <em>within</em> a recording session. A
+ * fresh {@code start} (native {@code Profiler::start} with reset) calls
+ * {@code StringDictionary::clearAll()}, which resets the ID counter, so encodings from the previous
+ * session become stale. {@link JavaProfiler} therefore calls {@link #clear()} on every {@code start}
+ * command; a subsequent {@link #resolve} re-registers the value and re-caches its new encoding.
  *
  * <p>Replaces the per-{@link ThreadContext} value cache: in the all-native model there is no
  * per-thread {@code ThreadContext} instance to host it, and a global cache avoids duplicating the
@@ -90,5 +96,17 @@ final class ContextValueCache {
         Entry ne = new Entry(value, encoding, utf8);
         table.set(slot, ne); // benign race: converges on an equivalent entry
         return ne;
+    }
+
+    /**
+     * Drops all cached entries. Called when a fresh recording session starts and the native
+     * Dictionary is reset, so stale encodings from the previous session are not reused. A concurrent
+     * {@link #resolve} racing this simply observes a miss and re-registers the value against the new
+     * Dictionary — correct, just an extra {@code registerConstant0} call.
+     */
+    void clear() {
+        for (int i = 0; i < SIZE; i++) {
+            table.set(i, null);
+        }
     }
 }
