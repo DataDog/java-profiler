@@ -131,9 +131,11 @@ public:
   // be interrupted by signals
   static ProfiledThread* initCurrentThreadSignalSafe();
 
-  // This call is async-signal-safe
+  // Signal-handler friendly (no allocation): returns existing TLS or nullptr.
   static inline ProfiledThread *current() {
-    assert(isThreadKeyValid() && "Should not reach here - profiling should have been disabled");
+    if (!isThreadKeyValid()) {
+      return nullptr;
+    }
     return _current_thread.get();
   }
 
