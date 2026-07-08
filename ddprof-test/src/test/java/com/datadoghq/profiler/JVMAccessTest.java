@@ -3,7 +3,9 @@ package com.datadoghq.profiler;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
+import java.lang.management.ManagementFactory;
 import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -77,8 +79,38 @@ public class JVMAccessTest extends AbstractProcessProfilerTest {
         // The test relies on the gradle test task setting the JVM flags to expected values
         assertEquals("build/hs_err_pid%p.log", flags.getStringFlag("ErrorFile")); // set to 'build/hs_err_pid%p.log' in the test task
         assertTrue(flags.getBooleanFlag("ResizeTLAB")); // set to 'true' in the test task
-        assertEquals(512 * 1024 * 1024, flags.getIntFlag("MaxHeapSize")); // set to 512m in the test task
+        // Derive the expected heap from this JVM's own -Xmx argument rather than hardcoding a
+        // value, so the test stays valid regardless of what the build task passes per config.
+        assertEquals(configuredMaxHeapBytes(), flags.getIntFlag("MaxHeapSize"));
         assertNotNull(flags.getStringFlag("OnError"));
+    }
+
+    private static long configuredMaxHeapBytes() {
+        // HotSpot honors the last -Xmx flag on the command line when duplicates are
+        // present (e.g. ASan configs append a config-specific -Xmx after the
+        // standard one), so scan from the end to find the effective value.
+        List<String> jvmArgs = ManagementFactory.getRuntimeMXBean().getInputArguments();
+        for (int i = jvmArgs.size() - 1; i >= 0; i--) {
+            String arg = jvmArgs.get(i);
+            if (arg.startsWith("-Xmx")) {
+                return parseMemorySize(arg.substring("-Xmx".length()));
+            }
+        }
+        throw new IllegalStateException("Test JVM was not launched with -Xmx: " + jvmArgs);
+    }
+
+    private static long parseMemorySize(String value) {
+        try {
+            char unit = Character.toLowerCase(value.charAt(value.length() - 1));
+            switch (unit) {
+                case 'k': return Long.parseLong(value.substring(0, value.length() - 1)) * 1024L;
+                case 'm': return Long.parseLong(value.substring(0, value.length() - 1)) * 1024L * 1024L;
+                case 'g': return Long.parseLong(value.substring(0, value.length() - 1)) * 1024L * 1024L * 1024L;
+                default: return Long.parseLong(value);
+            }
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Invalid -Xmx memory size: " + value, e);
+        }
     }
 
     @Test
