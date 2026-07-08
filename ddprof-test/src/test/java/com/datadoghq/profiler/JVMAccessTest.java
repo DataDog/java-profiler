@@ -96,12 +96,16 @@ public class JVMAccessTest extends AbstractProcessProfilerTest {
     }
 
     private static long parseMemorySize(String value) {
-        char unit = Character.toLowerCase(value.charAt(value.length() - 1));
-        switch (unit) {
-            case 'k': return Long.parseLong(value.substring(0, value.length() - 1)) * 1024L;
-            case 'm': return Long.parseLong(value.substring(0, value.length() - 1)) * 1024L * 1024L;
-            case 'g': return Long.parseLong(value.substring(0, value.length() - 1)) * 1024L * 1024L * 1024L;
-            default: return Long.parseLong(value);
+        try {
+            char unit = Character.toLowerCase(value.charAt(value.length() - 1));
+            switch (unit) {
+                case 'k': return Long.parseLong(value.substring(0, value.length() - 1)) * 1024L;
+                case 'm': return Long.parseLong(value.substring(0, value.length() - 1)) * 1024L * 1024L;
+                case 'g': return Long.parseLong(value.substring(0, value.length() - 1)) * 1024L * 1024L * 1024L;
+                default: return Long.parseLong(value);
+            }
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("Invalid -Xmx memory size: " + value, e);
         }
     }
 
