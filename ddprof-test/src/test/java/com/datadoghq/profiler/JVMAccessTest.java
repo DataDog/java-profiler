@@ -86,8 +86,12 @@ public class JVMAccessTest extends AbstractProcessProfilerTest {
     }
 
     private static long configuredMaxHeapBytes() {
+        // HotSpot honors the last -Xmx flag on the command line when duplicates are
+        // present (e.g. ASan configs append a config-specific -Xmx after the
+        // standard one), so scan from the end to find the effective value.
         List<String> jvmArgs = ManagementFactory.getRuntimeMXBean().getInputArguments();
-        for (String arg : jvmArgs) {
+        for (int i = jvmArgs.size() - 1; i >= 0; i--) {
+            String arg = jvmArgs.get(i);
             if (arg.startsWith("-Xmx")) {
                 return parseMemorySize(arg.substring("-Xmx".length()));
             }
