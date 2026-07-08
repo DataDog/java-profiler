@@ -74,8 +74,11 @@ static CTimer ctimer;
 static CTimerJvmti ctimer_jvmti;
 
 void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
-  ProfiledThread::initCurrentThread();
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread* current = ProfiledThread::initCurrentThread();
+  if (current == nullptr) {
+    return;
+  }
+
   current->setJavaThread(true);
   int tid = current->tid();
   if (_thread_filter.enabled()) {
