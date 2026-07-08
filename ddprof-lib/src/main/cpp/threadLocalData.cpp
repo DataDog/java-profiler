@@ -12,7 +12,7 @@
 #include <time.h>
 
 
-ThreadLocal<ProfiledThread*>  ProfiledThread::_current_thread;
+ThreadLocal<ProfiledThread*, nullptr, ProfiledThread::freeValue>  ProfiledThread::_current_thread;
 
 ProfiledThread* ProfiledThread::initCurrentThread() {
   ProfiledThread* tls = current();
@@ -29,12 +29,13 @@ ProfiledThread* ProfiledThread::initCurrentThreadSignalSafe() {
   return initCurrentThread();
 }
 
+void ProfiledThread::freeValue(void* value) {
+  ProfiledThread* pt = reinterpret_cast<ProfiledThread*>(value);
+  delete pt;
+}
+
 void ProfiledThread::release() {
-  ProfiledThread* pt = _current_thread.get();
-  if (pt != nullptr) {
-    _current_thread.clear();
-    delete pt;
-  }
+  _current_thread.clear();
 }
 
 int ProfiledThread::currentTid() {

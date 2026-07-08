@@ -8,6 +8,7 @@
 
 #include <string.h>
 #include "hotspot/hotspotStackFrame.h"
+#include "hotspot/vmStructs.inline.h"
 
 __attribute__((no_sanitize("address"))) bool HotspotStackFrame::unwindStub(instruction_t* entry, const char* name, uintptr_t& pc, uintptr_t& sp, uintptr_t& fp) {
     instruction_t* ip = (instruction_t*)pc;

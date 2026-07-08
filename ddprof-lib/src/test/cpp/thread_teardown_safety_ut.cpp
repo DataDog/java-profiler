@@ -133,9 +133,7 @@ static void *t02_body(void *) {
 
   // release() with TLS already null must not double-free.
   ProfiledThread::release();
-  // Complete the simulated teardown: delete the object (mirrors what freeKey
-  // would do). Destructor is private so we need the test helper.
-  ProfiledThread::deleteForTest(detached);
+  EXPECT_EQ(nullptr, ProfiledThread::current());
   return nullptr;
 }
 

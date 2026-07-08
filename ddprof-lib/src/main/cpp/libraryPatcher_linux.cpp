@@ -69,8 +69,9 @@ public:
 // SignalBlocker's sigset_t does not appear in the caller's stack frame on
 // musl/aarch64 where the deopt blob may corrupt the wrapper's stack guard.
 __attribute__((noinline))
-static void unregister_and_release(int tid) {
+static void unregister_and_release() {
     SignalBlocker blocker;
+    int tid = ProfiledThread::currentTid();
     Profiler::unregisterThread(tid);
     ProfiledThread::release();
 }
@@ -83,7 +84,7 @@ static void unregister_and_release(int tid) {
 // appear in the caller's frame on platforms with stack-protector canaries.
 __attribute__((noinline))
 static void cleanup_unregister(void*) {
-    unregister_and_release(ProfiledThread::currentTid());
+    unregister_and_release();
 }
 
 // Thread-cleanup wrapper that avoids the static-libgcc / forced-unwind crash.
@@ -254,8 +255,8 @@ static void delete_routine_info(RoutineInfo* thr) {
 __attribute__((noinline))
 static void init_tls_and_register() {
     SignalBlocker blocker;
-    ProfiledThread::initCurrentThread();
-    if (ProfiledThread *pt = ProfiledThread::currentSignalSafe()) {
+    ProfiledThread* pt = ProfiledThread::initCurrentThread();
+    if (pt != nullptr) {
         pt->startInitWindow();
     }
     Profiler::registerThread(ProfiledThread::currentTid());
@@ -371,8 +372,10 @@ static void* start_routine_wrapper(void* args) {
         routine = thr->routine();
         params = thr->args();
         delete thr;
-        ProfiledThread::initCurrentThread();
-        ProfiledThread::currentSignalSafe()->startInitWindow();
+        ProfiledThread* pt = ProfiledThread::initCurrentThread();
+        if (pt != nullptr) {
+          pt->startInitWindow();
+        }
         Profiler::registerThread(ProfiledThread::currentTid());
     }
     // Use POSIX cleanup instead of C++ RAII to handle pthread_exit(): see run_with_cleanup.

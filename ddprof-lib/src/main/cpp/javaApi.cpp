@@ -138,7 +138,9 @@ Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
 // Init or get current profiled thread.
 // Calling thread's thread local may not be initialized due to race. 
 // Especially, during the early startup phase.
-// This problem can be eliminated with native agent.
+// This call is expensive, should be avoided on hot paths.
+// Note: the racy can be avoided with native agent, remove this method
+//       once converted to native agent.
 static ProfiledThread* initOrGetCurrentThread() {
   ProfiledThread* current = ProfiledThread::current();
   if (current == nullptr) {
@@ -146,7 +148,6 @@ static ProfiledThread* initOrGetCurrentThread() {
   }
   return current;
 }
-
 
 // some duplication between add and remove, though we want to avoid having an extra branch in the hot path
 
@@ -156,8 +157,11 @@ static ProfiledThread* initOrGetCurrentThread() {
 // still compatible in the event of signature changes in the future.
 extern "C" DLLEXPORT void JNICALL
 JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
-  ProfiledThread *current = initOrGetCurrentThread();
-  assert(current != nullptr);
+  ProfiledThread *current = ProfiledThread::current();
+  if(current == nullptr) {
+    return;
+  }
+
   int tid = current->tid();
   if (unlikely(tid < 0)) {
     return;
@@ -186,8 +190,11 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
 
 extern "C" DLLEXPORT void JNICALL
 JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0() {
-  ProfiledThread *current = initOrGetCurrentThread();
-  assert(current != nullptr);
+  ProfiledThread *current = ProfiledThread::current();
+  if(current == nullptr) {
+    return;
+  }
+
   int tid = current->tid();
   if (unlikely(tid < 0)) {
     return;
@@ -338,7 +345,7 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) {
-  ProfiledThread *current = initOrGetCurrentThread();
+  ProfiledThread *current = ProfiledThread::current();
   if (current == nullptr) {
     return;
   }
@@ -356,7 +363,7 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
     JNIEnv *env, jclass unused, jlong blocker, jlong unblockingSpanId) {
-  ProfiledThread *current = initOrGetCurrentThread();
+  ProfiledThread *current = ProfiledThread::current();
   if (current == nullptr) {
     return;
   }
@@ -390,7 +397,7 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
   if (!decodeJavaBlockState(state, decoded)) {
     return 0;
   }
-  ProfiledThread *current = initOrGetCurrentThread();
+  ProfiledThread *current = ProfiledThread::current();
   if (current == nullptr) {
     return 0;
   }
@@ -412,7 +419,7 @@ Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
   if (block_token == 0) {
     return;
   }
-  ProfiledThread *current = initOrGetCurrentThread();
+  ProfiledThread *current = ProfiledThread::current();
   if (current == nullptr) {
     return;
   }
@@ -705,6 +712,7 @@ Java_com_datadoghq_profiler_OTelContext_readProcessCtx0(JNIEnv *env, jclass unus
 
 extern "C" DLLEXPORT jobject JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_initializeContextTLS0(JNIEnv* env, jclass unused, jlongArray metadata) {
+  // Assume this call is not on hot path
   ProfiledThread* thrd = initOrGetCurrentThread();
   assert(thrd != nullptr);
 

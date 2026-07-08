@@ -54,8 +54,9 @@ public:
   // Even with a 5-level cap we can still encounter highly recursive signal handlers.
   static constexpr u32 CRASH_HANDLER_NESTING_LIMIT = 5;
 private:
-  static ThreadLocal<ProfiledThread*>  _current_thread;
+  static void freeValue(void* value);
 
+  static ThreadLocal<ProfiledThread*, nullptr, freeValue>  _current_thread;
   // longjmp buffer. Used by hotspot only at this moment.
   // Published in walkVM() and consumed in checkFault() from an asynchronous
   // SEGV-handler context on the same thread; atomic makes the publish/observe
