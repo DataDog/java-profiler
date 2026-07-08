@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk25
 
 ## glibc-arm64-hotspot-jdk25 - ✅ PASS
 
-**Date:** 2026-07-08 12:44:41 EDT
+**Date:** 2026-07-08 14:00:04 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-arm64-hotspot-jdk25
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 64 |
-| CPU Cores (end) | 59 |
+| CPU Cores (start) | 14 |
+| CPU Cores (end) | 14 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-arm64-hotspot-jdk25
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (2 unique values: 59-64 cores)</summary>
+<summary>CPU Timeline (1 unique values: 14-14 cores)</summary>
 
 ```
-1783528826 64
-1783528831 64
-1783528836 64
-1783528841 64
-1783528846 64
-1783528851 64
-1783528856 64
-1783528861 64
-1783528866 64
-1783528871 59
-1783528876 59
-1783528881 59
-1783528886 59
-1783528891 59
-1783528896 59
-1783528901 59
-1783528906 59
-1783528911 59
-1783528916 59
-1783528921 59
+1783533360 14
+1783533365 14
+1783533370 14
+1783533375 14
+1783533380 14
+1783533385 14
+1783533390 14
+1783533395 14
+1783533400 14
+1783533405 14
+1783533410 14
+1783533415 14
+1783533420 14
+1783533425 14
+1783533430 14
+1783533435 14
+1783533440 14
+1783533445 14
+1783533450 14
+1783533455 14
 ```
 </details>
 
