@@ -113,13 +113,13 @@ Examples:
 ./utils/run-containers-tests.sh --libc=all --jdk=8,17,21 --arch=all
 
 # Run all supported musl cells without an interactive prompt
-./utils/run-containers-tests.sh --libc=musl --jdk=all --arch=all --run
+./utils/run-containers-tests.sh --matrix --libc=musl --run
 
 # Run all OpenJ9 cells
-./utils/run-containers-tests.sh --jdk=j9 --arch=all --run
+./utils/run-containers-tests.sh --matrix --jdk=j9 --run
 ```
 
-Single-value commands run one container test configuration immediately. When any dimension expands to multiple cells, the script prints a compact status table first; interactive terminals ask for confirmation, while non-interactive runs require `--run` to execute. Matrix execution prints the status table again after all cells finish and writes summaries to `build/reports/container-matrix/summary.md` and `build/reports/container-matrix/summary.json`.
+Single-value commands run one container test configuration immediately. When any dimension expands to multiple cells, the script prints a compact status table first; interactive terminals ask for confirmation, while non-interactive runs require `--run` to execute. Matrix execution prints the status table again after all cells finish and writes summaries to `build/reports/container-matrix/summary.md` and `build/reports/container-matrix/summary.json`. Matrix gtest runs require a short `--gtest-task` name so the task follows each cell's configuration. Cells not run because of `--fail-fast` are reported as cancelled separately from unsupported cells that are skipped.
 
 ### `patch-dd-java-agent.sh`
 
