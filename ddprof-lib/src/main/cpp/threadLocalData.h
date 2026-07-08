@@ -116,7 +116,7 @@ public:
   static ProfiledThread* clearCurrentThreadTLS() {
     assert(isThreadKeyValid() && "Should not reach here - profiling should have been disabled");
     ProfiledThread* pt = _current_thread.get();
-    _current_thread.clear();
+    _current_thread.set(nullptr);
     return pt;
   }
   // Deletes a ProfiledThread returned by clearCurrentThreadTLS().
