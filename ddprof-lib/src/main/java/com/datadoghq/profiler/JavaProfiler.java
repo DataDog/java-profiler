@@ -178,21 +178,15 @@ public final class JavaProfiler {
             throw new NullPointerException();
         }
         String result = execute0(command);
-        // A fresh 'start' (ACTION_START) resets the native Dictionary (StringDictionary::clearAll),
-        // reassigning encodings. Drop the value cache so no stale encoding from the prior session
-        // is reused. Matched to the native reset trigger: the action is the first token, and only
-        // 'start' (not 'resume') resets. See ContextValueCache.
-        if (isStartAction(command)) {
+        // A fresh 'start' (ACTION_START) resets the native context-value Dictionary
+        // (StringDictionary::clearAll), reassigning encodings. The native side sets a flag when it
+        // does so; consume it here and drop the value cache so no stale encoding from the prior
+        // session is reused. Driven by the already-parsed native action — no command re-parsing.
+        // See ContextValueCache and Profiler::start.
+        if (consumeContextDictionaryReset0()) {
             contextValueCache.clear();
         }
         return result;
-    }
-
-    /** True if the command's action (its first comma-separated token) is {@code start}. */
-    private static boolean isStartAction(String command) {
-        int comma = command.indexOf(',');
-        String action = (comma < 0 ? command : command.substring(0, comma)).trim();
-        return action.equals("start");
     }
 
     /**
@@ -597,6 +591,13 @@ public final class JavaProfiler {
 
     /** Native DD_TAGS_CAPACITY (context.h). Test-only drift guard for {@link #MAX_CONTEXT_SLOTS}. */
     static native int maxContextSlots0();
+
+    /**
+     * Atomically reads and clears the native "context-value dictionary was reset" flag, set when a
+     * fresh {@code start} resets the encoding Dictionary. Used by {@link #execute} to invalidate the
+     * {@link ContextValueCache} without re-parsing the command in Java.
+     */
+    private static native boolean consumeContextDictionaryReset0();
 
     /**
      * Returns the {@link ThreadContext} for the current storage slot (the calling thread, or in

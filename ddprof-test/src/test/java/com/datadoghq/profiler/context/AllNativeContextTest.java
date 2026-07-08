@@ -88,6 +88,17 @@ public class AllNativeContextTest {
         return (boolean) m.invoke(null, slot, encoding, utf8);
     }
 
+    /** Reads the record's {@code valid} byte through the ThreadContext buffer (test-only introspection). */
+    private static int readValidByte(ThreadContext ctx) throws Exception {
+        java.lang.reflect.Field bufField = ThreadContext.class.getDeclaredField("ctxBuffer");
+        bufField.setAccessible(true);
+        java.nio.ByteBuffer buf = (java.nio.ByteBuffer) bufField.get(ctx);
+        java.lang.reflect.Field offField = ThreadContext.class.getDeclaredField("validOffset");
+        offField.setAccessible(true);
+        int off = (int) offField.get(ctx);
+        return buf.get(off) & 0xFF;
+    }
+
     /** {@code Thread.ofVirtual().start(task)} via reflection so this compiles with --release 8. */
     private static Thread startVirtualThread(Runnable task) throws Exception {
         Method ofVirtual = Thread.class.getMethod("ofVirtual");
@@ -244,6 +255,28 @@ public class AllNativeContextTest {
         assertTrue(profiler.setContextValue(SLOT_RES, "native-value")); // native attribute
         assertEquals("native-value", ctx.readContextAttribute(SLOT_RES));
         assertEquals("dbb-value", ctx.readContextAttribute(SLOT_OP), "DBB-written attr still intact");
+    }
+
+    /**
+     * clearContextValue must not resurrect a record that clearTraceContext intentionally deactivated:
+     * clearing a single attribute should preserve the record's prior {@code valid} flag rather than
+     * unconditionally re-publishing it with {@code valid=1}.
+     */
+    @Test
+    public void clearContextValuePreservesInvalidState() throws Exception {
+        start();
+        ThreadContext ctx = profiler.getThreadContext();
+
+        profiler.setTraceContext(0x2L, 0x1L, 0L, 0x1L, SLOT_OP, "op", -1, null); // active span
+        assertEquals(1, readValidByte(ctx), "precondition: active record is valid");
+
+        profiler.clearTraceContext();
+        assertEquals(0, readValidByte(ctx), "clearTraceContext leaves the record deactivated");
+
+        // Clearing an attribute on a deactivated record must not flip valid back to 1.
+        profiler.clearContextValue(SLOT_OP);
+        assertEquals(0, readValidByte(ctx),
+                "clearContextValue must preserve valid=0; a deactivated record must stay deactivated");
     }
 
     /**

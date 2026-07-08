@@ -967,6 +967,11 @@ Java_com_datadoghq_profiler_JavaProfiler_clearContextValue0(JNIEnv* env, jclass 
   OtelThreadContextRecord* record = thrd->getOtelContextRecord();
   u32* enc = thrd->getOtelTagEncodingsPtr();
 
+  // Preserve the prior valid state rather than unconditionally re-attaching with valid=1: clearing a
+  // single attribute must not resurrect a record that a preceding clearTraceContext0() intentionally
+  // left detached (valid=0). Only the owning carrier writes this record, so the read is race-free.
+  uint8_t wasValid = __atomic_load_n(&record->valid, __ATOMIC_ACQUIRE);
+
   __atomic_store_n(&record->valid, (uint8_t)0, __ATOMIC_RELAXED);
   __atomic_thread_fence(__ATOMIC_RELEASE);
 
@@ -974,7 +979,7 @@ Java_com_datadoghq_profiler_JavaProfiler_clearContextValue0(JNIEnv* env, jclass 
   record->attrs_data_size = (uint16_t)otelCompactAttr(record, slot + 1);
 
   __atomic_thread_fence(__ATOMIC_RELEASE);
-  __atomic_store_n(&record->valid, (uint8_t)1, __ATOMIC_RELAXED);
+  __atomic_store_n(&record->valid, wasValid, __ATOMIC_RELAXED);
 }
 
 extern "C" DLLEXPORT jint JNICALL
@@ -990,6 +995,16 @@ Java_com_datadoghq_profiler_ThreadContext_registerConstant0(JNIEnv* env, jclass 
 extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_maxContextSlots0(JNIEnv* env, jclass unused) {
   return (jint)DD_TAGS_CAPACITY;
+}
+
+// Atomically reads and clears the "context-value dictionary was reset" flag set by a fresh start
+// (Profiler::start -> _context_value_map.clearAll). JavaProfiler.execute calls this right after the
+// command runs and drops its ContextValueCache when it returns true, so stale encodings from the
+// previous session are not reused. Uses the native (already-parsed) ACTION_START signal — no command
+// re-parsing in Java.
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_consumeContextDictionaryReset0(JNIEnv* env, jclass unused) {
+  return Profiler::instance()->consumeContextValueDictReset() ? JNI_TRUE : JNI_FALSE;
 }
 
 // ---- test and debug utilities
