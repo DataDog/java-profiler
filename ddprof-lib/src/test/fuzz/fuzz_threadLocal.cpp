@@ -86,8 +86,8 @@ u64 take8(const uint8_t *data, size_t pos) {
 // is left occupying it is torn down by the pthread key destructor at thread
 // exit (join() below), exercising the path a persistent fuzzer-driver thread
 // never would.
-void runOnWorkerThread(const uint8_t *data, size_t size, int *expected_creates,
-                        int *expected_frees) {
+void runOnWorkerThread(const uint8_t *data, size_t size, uint64_t *expected_creates,
+                        uint64_t *expected_frees) {
   bool tracked_present = false;
   int *tracked_ptr = nullptr;
   int tracked_expected = 0;
@@ -216,8 +216,8 @@ void runOnWorkerThread(const uint8_t *data, size_t size, int *expected_creates,
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
   if (size == 0) return 0;
 
-  int expected_creates = 0;
-  int expected_frees = 0;
+  uint64_t expected_creates = 0;
+  uint64_t expected_frees = 0;
   uint64_t create_before = g_create_count.load(std::memory_order_relaxed);
   uint64_t free_before = g_free_count.load(std::memory_order_relaxed);
 
@@ -225,19 +225,24 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     std::thread worker(runOnWorkerThread, data, size, &expected_creates,
                         &expected_frees);
     worker.join();
-  } catch (const std::system_error &) {
+  } catch (const std::system_error &e) {
     // Transient thread-creation failure (e.g. resource exhaustion under a
     // heavily parallel fuzzer run) - not a bug in ThreadLocal itself.
-    return 0;
+    // Anything else (including a failure from join() itself) is unexpected
+    // and should surface as a crash rather than be silently swallowed.
+    if (e.code() == std::errc::resource_unavailable_try_again) {
+      return 0;
+    }
+    throw;
   }
 
   uint64_t create_after = g_create_count.load(std::memory_order_relaxed);
   uint64_t free_after = g_free_count.load(std::memory_order_relaxed);
 
-  if (create_after - create_before != static_cast<uint64_t>(expected_creates)) {
+  if (create_after - create_before != expected_creates) {
     __builtin_trap();  // I2: create_tracked() ran the wrong number of times
   }
-  if (free_after - free_before != static_cast<uint64_t>(expected_frees)) {
+  if (free_after - free_before != expected_frees) {
     __builtin_trap();  // I2: free_tracked() ran the wrong number of times
                         // (double free / leak from the TSD destructor path)
   }
