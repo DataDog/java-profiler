@@ -31,6 +31,7 @@ class JVMSupport {
     };
 
     friend class HotspotSupport;
+    friend class JVMSupportTestAccessor;
 
     static Mutex _initialization_lock;
     static volatile JMethodIDLoadStats jmethodID_load_state;

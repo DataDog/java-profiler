@@ -39,12 +39,31 @@ static JvmSupportGlobalSetup jvm_support_global_setup;
 
 // ---------------------------------------------------------------------------
 // VMTestAccessor — friend of VM, lets tests swap VM::_jvmti for a mock so
-// JVMThread::currentThreadSlow() can be exercised without a live JVM.
+// JVMThread::currentThreadSlow() can be exercised without a live JVM. Also
+// lets tests force VM::isHotspot() so JVMSupport::initExecution()'s HotSpot
+// branch can be exercised deterministically.
 // ---------------------------------------------------------------------------
 class VMTestAccessor {
 public:
     static jvmtiEnv* getJvmti() { return VM::_jvmti; }
     static void setJvmti(jvmtiEnv* env) { VM::_jvmti = env; }
+    static bool getHotspot() { return VM::_hotspot; }
+    static void setHotspot(bool v) { VM::_hotspot = v; }
+};
+
+// ---------------------------------------------------------------------------
+// JVMSupportTestAccessor — friend of JVMSupport, lets tests read/reset the
+// private jmethodID_load_state directly instead of only observing its
+// effects through initExecution()'s side effects.
+// ---------------------------------------------------------------------------
+class JVMSupportTestAccessor {
+public:
+    using LoadState = JVMSupport::JMethodIDLoadStats;
+    static LoadState getLoadState() { return JVMSupport::getLoadState(); }
+    static void setLoadState(LoadState s) { JVMSupport::setLoadState(s); }
+    static constexpr LoadState NoLoaded()      { return JVMSupport::No_loaded; }
+    static constexpr LoadState PartialLoaded() { return JVMSupport::Partial_loaded; }
+    static constexpr LoadState FullyLoaded()   { return JVMSupport::Fully_loaded; }
 };
 
 // ---------------------------------------------------------------------------
@@ -160,4 +179,83 @@ TEST(JvmSupportErrorLatchTest, CheckStateStaysBlockedOnceInError) {
     EXPECT_TRUE(has_error);
     EXPECT_STREQ("Profiler encountered fatal error", error.message());
     EXPECT_EQ(ERROR, ProfilerTestAccessor::getState(p));
+}
+
+// ---------------------------------------------------------------------------
+// Regression tests for JVMSupport::initExecution(): a stale jmethodID_load_state
+// left over from a previous execution must not short-circuit before the
+// current Arguments are evaluated (otherwise a restart with fjmethodid=false
+// after a full-preload session silently keeps full-preload mode).
+//
+// initExecution() with load_all=false calls HotspotSupport::initClassloaderInfo(jni),
+// which calls jni->FindClass("java/lang/ClassLoader") first; mocking FindClass
+// to return nullptr makes it take the early-exit path (jni->ExceptionClear(); return;)
+// without touching any other JNI/VMStructs machinery.
+// ---------------------------------------------------------------------------
+static jclass JNICALL mock_FindClass_returns_null(JNIEnv*, const char*) {
+    return nullptr;
+}
+static void JNICALL mock_ExceptionClear_noop(JNIEnv*) {}
+
+static jvmtiError JNICALL mock_GetLoadedClasses_empty(jvmtiEnv*, jint* class_count_ptr, jclass** classes_ptr) {
+    *class_count_ptr = 0;
+    *classes_ptr = nullptr;
+    return JVMTI_ERROR_NONE;
+}
+static jvmtiError JNICALL mock_GetClassMethods_empty(jvmtiEnv*, jclass, jint* method_count_ptr, jmethodID** methods_ptr) {
+    *method_count_ptr = 0;
+    *methods_ptr = nullptr;
+    return JVMTI_ERROR_NONE;
+}
+static jvmtiError JNICALL mock_Deallocate_noop(jvmtiEnv*, unsigned char*) {
+    return JVMTI_ERROR_NONE;
+}
+
+class JVMSupportRestartTest : public ::testing::Test {
+protected:
+    jvmtiInterface_1_ jvmti_tbl{};
+    _jvmtiEnv mock_jvmti{};
+    JNINativeInterface_ jni_tbl{};
+    JNIEnv_ mock_jni{};
+    bool _orig_hotspot;
+
+    void SetUp() override {
+        _orig_hotspot = VMTestAccessor::getHotspot();
+        VMTestAccessor::setHotspot(true);
+        JVMSupportTestAccessor::setLoadState(JVMSupportTestAccessor::NoLoaded());
+
+        jvmti_tbl = jvmtiInterface_1_{};
+        jvmti_tbl.GetLoadedClasses = &mock_GetLoadedClasses_empty;
+        jvmti_tbl.GetClassMethods = &mock_GetClassMethods_empty;
+        jvmti_tbl.Deallocate = &mock_Deallocate_noop;
+        mock_jvmti.functions = &jvmti_tbl;
+
+        jni_tbl = JNINativeInterface_{};
+        jni_tbl.FindClass = &mock_FindClass_returns_null;
+        jni_tbl.ExceptionClear = &mock_ExceptionClear_noop;
+        mock_jni.functions = &jni_tbl;
+    }
+
+    void TearDown() override {
+        VMTestAccessor::setHotspot(_orig_hotspot);
+    }
+};
+
+TEST_F(JVMSupportRestartTest, SecondStartWithPartialPreloadIsNotBlockedByStaleFullyLoaded) {
+    Arguments full_args;
+    full_args._force_jmethodID = true; // -> shouldPreloadJmethodIDs()==true -> Fully_loaded
+
+    JVMSupport::initExecution(full_args, &mock_jvmti, reinterpret_cast<JNIEnv*>(&mock_jni));
+    EXPECT_EQ(JVMSupportTestAccessor::FullyLoaded(), JVMSupportTestAccessor::getLoadState());
+
+    Arguments partial_args;
+    partial_args._force_jmethodID = false;
+    partial_args._cstack = CSTACK_VM; // -> shouldPreloadJmethodIDs()==false -> Partial_loaded
+
+    JVMSupport::initExecution(partial_args, &mock_jvmti, reinterpret_cast<JNIEnv*>(&mock_jni));
+
+    // Fails today: the stale Fully_loaded state short-circuits initExecution()
+    // before shouldPreloadJmethodIDs(partial_args) is ever evaluated, so the
+    // state incorrectly stays Fully_loaded instead of downgrading.
+    EXPECT_EQ(JVMSupportTestAccessor::PartialLoaded(), JVMSupportTestAccessor::getLoadState());
 }

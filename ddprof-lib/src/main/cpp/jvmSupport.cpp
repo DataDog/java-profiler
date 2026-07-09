@@ -52,10 +52,6 @@ void JVMSupport::setLoadState(JMethodIDLoadStats state) {
 
 void JVMSupport::initExecution(Arguments& args, jvmtiEnv* jvmti, JNIEnv* jni) {
     JMethodIDLoadStats current_state = getLoadState();
-    // Already setup by previous execution
-    if (current_state == Fully_loaded) {
-        return;
-    }
 
     bool load_all = true;
     if (VM::isHotspot()) {
