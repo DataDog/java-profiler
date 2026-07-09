@@ -512,9 +512,27 @@ class ProfilerTestPlugin : Plugin<Project> {
 
             // Sanitizer conditions
             when (testConfig.configName) {
-                "asan" -> execTask.onlyIf {
-                    PlatformUtils.locateLibasan() != null &&
-                    !PlatformUtils.isTestJvmJ9()
+                "asan" -> {
+                    execTask.onlyIf {
+                        PlatformUtils.locateLibasan() != null &&
+                        !PlatformUtils.isTestJvmJ9()
+                    }
+                    // Unlike the Test task's asan variant (setForkEvery(25) above), this task
+                    // is a single un-forked Exec process running the whole suite in one JVM —
+                    // there is no forkEvery equivalent for Exec. An unfiltered run would
+                    // reintroduce the late-suite OOM under ASan's -Xmx512m cap that forkEvery
+                    // was added to avoid, so require -Ptests to bound the run instead.
+                    execTask.doFirst {
+                        if (project.findProperty("tests") == null) {
+                            throw GradleException(
+                                "$taskName requires -Ptests=<ClassName|ClassName.method> for the " +
+                                "asan config: it runs in a single process with no forkEvery " +
+                                "equivalent, and JFR/JMC allocations accumulate under ASan's " +
+                                "-Xmx512m heap cap until an unfiltered run OOMs late in the suite. " +
+                                "For full-suite ASan coverage, use the forked testAsan task instead."
+                            )
+                        }
+                    }
                 }
                 "tsan" -> execTask.onlyIf { false }
             }
