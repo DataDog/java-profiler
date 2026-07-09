@@ -942,6 +942,13 @@ Java_com_datadoghq_profiler_JavaProfiler_setContextValue0(JNIEnv* env, jclass un
   uint8_t buf[256];
   int len = otelReadUtf8(env, utf8, buf);
 
+  // Preserve the prior valid state (as clearContextValue0 does): setting one attribute must not
+  // resurrect a record that clearTraceContext0 intentionally deactivated — republishing it would
+  // expose a span-less record (zero trace/span) as valid. Mirrors the DBB path's guard in
+  // ThreadContext.setContextAttributesByIdAndBytes. Only the owning carrier writes this record, so
+  // the read is race-free.
+  uint8_t wasValid = __atomic_load_n(&record->valid, __ATOMIC_ACQUIRE);
+
   __atomic_store_n(&record->valid, (uint8_t)0, __ATOMIC_RELAXED);
   __atomic_thread_fence(__ATOMIC_RELEASE);
 
@@ -953,7 +960,7 @@ Java_com_datadoghq_profiler_JavaProfiler_setContextValue0(JNIEnv* env, jclass un
   }
 
   __atomic_thread_fence(__ATOMIC_RELEASE);
-  __atomic_store_n(&record->valid, (uint8_t)1, __ATOMIC_RELAXED);
+  __atomic_store_n(&record->valid, wasValid, __ATOMIC_RELAXED);
   return ok;
 }
 

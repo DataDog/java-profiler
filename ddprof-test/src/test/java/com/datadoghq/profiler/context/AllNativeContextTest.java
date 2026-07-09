@@ -280,6 +280,29 @@ public class AllNativeContextTest {
     }
 
     /**
+     * setContextValue must not resurrect a record that clearTraceContext deactivated: writing a
+     * single attribute should preserve the record's prior {@code valid} flag, so a span-less record
+     * is not republished as valid.
+     */
+    @Test
+    public void setContextValuePreservesInvalidState() throws Exception {
+        start();
+        ThreadContext ctx = profiler.getThreadContext();
+
+        profiler.setTraceContext(0x2L, 0x1L, 0L, 0x1L, -1, null, -1, null); // active span
+        assertEquals(1, readValidByte(ctx), "precondition: active record is valid");
+
+        profiler.clearTraceContext();
+        assertEquals(0, readValidByte(ctx), "clearTraceContext leaves the record deactivated");
+
+        // Writing an attribute on a deactivated record must not flip valid back to 1.
+        profiler.setContextValue(SLOT_OP, "late");
+        assertEquals(0, readValidByte(ctx),
+                "setContextValue must preserve valid=0; a span-less record must not be republished");
+        assertNull(ctx.readContextAttribute(SLOT_OP), "attribute on a span-less record is not observable");
+    }
+
+    /**
      * A null {@code byte[]} value at the JNI boundary must be treated as an empty value (the native
      * {@code arr == null} guard), not dereferenced. The public API can't produce this, so we call
      * the {@code setContextValue0} primitive directly with a live slot and a null array.
