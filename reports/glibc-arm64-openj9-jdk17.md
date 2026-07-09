@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk17
 
 ## glibc-arm64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-07-09 12:09:36 EDT
+**Date:** 2026-07-09 12:58:31 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-arm64-openj9-jdk17
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 64 |
-| CPU Cores (end) | 64 |
+| CPU Cores (start) | 52 |
+| CPU Cores (end) | 52 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-arm64-openj9-jdk17
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
+<summary>CPU Timeline (1 unique values: 52-52 cores)</summary>
 
 ```
-1783613025 64
-1783613030 64
-1783613035 64
-1783613040 64
-1783613045 64
-1783613050 64
-1783613055 64
-1783613060 64
-1783613065 64
-1783613070 64
-1783613075 64
-1783613080 64
-1783613085 64
-1783613090 64
-1783613095 64
-1783613100 64
-1783613105 64
-1783613110 64
-1783613115 64
-1783613120 64
+1783616056 52
+1783616061 52
+1783616066 52
+1783616071 52
+1783616076 52
+1783616081 52
+1783616086 52
+1783616091 52
+1783616096 52
+1783616101 52
+1783616106 52
+1783616111 52
+1783616116 52
+1783616121 52
+1783616126 52
+1783616131 52
+1783616136 52
+1783616141 52
+1783616146 52
+1783616151 52
 ```
 </details>
 
