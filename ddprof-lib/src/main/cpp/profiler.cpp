@@ -74,7 +74,8 @@ static CTimer ctimer;
 static CTimerJvmti ctimer_jvmti;
 
 void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
-  ProfiledThread* current = ProfiledThread::initCurrentThread();
+  // JVMTI callback - outside signal handeler
+  ProfiledThread* current = ProfiledThread::initCurrentThreadSignalSafe();
   if (current == nullptr) {
     return;
   }
@@ -1245,7 +1246,8 @@ Error Profiler::init() {
     return error;
   }
 
-  ProfiledThread::initCurrentThread();
+  // JNI down call, outside signal handler
+  ProfiledThread::initCurrentThreadSignalSafe();
   return Error::OK;
 }
 
@@ -1370,7 +1372,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   // Minor optim: Register the current thread (start thread won't be called)
   if (_thread_filter.enabled()) {
     _thread_filter.clearActive();
-    ProfiledThread *current = ProfiledThread::initCurrentThread();
+    ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
     assert(current != nullptr);
     int slot_id = current->filterSlotId();
     if (slot_id < 0) {
