@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk21
 
 ## musl-arm64-hotspot-jdk21 - ✅ PASS
 
-**Date:** 2026-07-09 15:22:20 EDT
+**Date:** 2026-07-09 15:48:28 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-arm64-hotspot-jdk21
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 59 |
-| CPU Cores (end) | 59 |
+| CPU Cores (start) | 64 |
+| CPU Cores (end) | 64 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: musl-arm64-hotspot-jdk21
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 59-59 cores)</summary>
+<summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
 
 ```
-1783624692 59
-1783624697 59
-1783624702 59
-1783624707 59
-1783624712 59
-1783624717 59
-1783624722 59
-1783624727 59
-1783624732 59
-1783624737 59
-1783624742 59
-1783624747 59
-1783624752 59
-1783624757 59
-1783624762 59
-1783624767 59
-1783624772 59
-1783624777 59
-1783624782 59
-1783624787 59
+1783626298 64
+1783626303 64
+1783626308 64
+1783626313 64
+1783626318 64
+1783626323 64
+1783626328 64
+1783626333 64
+1783626338 64
+1783626343 64
+1783626348 64
+1783626353 64
+1783626358 64
+1783626363 64
+1783626368 64
+1783626373 64
+1783626378 64
+1783626383 64
+1783626388 64
+1783626393 64
 ```
 </details>
 
