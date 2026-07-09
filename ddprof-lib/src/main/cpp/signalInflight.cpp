@@ -16,7 +16,7 @@
 
 #include "signalInflight.h"
 #include "log.h"
-#include "thread.h"
+#include "threadLocalData.h"
 
 #include <errno.h>
 #include <sched.h>
