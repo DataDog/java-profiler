@@ -19,6 +19,7 @@ class ProfiledThread;
 
 class HotspotSupport {
     friend class JVMSupport;
+    friend class HotspotSupportTestAccessor;
 
 private:
     static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,

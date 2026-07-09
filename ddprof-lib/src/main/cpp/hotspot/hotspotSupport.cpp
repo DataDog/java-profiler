@@ -1421,20 +1421,20 @@ jmethodID HotspotSupport::resolve(const void* method) {
             jni->ExceptionClear();
             // JNI GetMethodID/GetStaticMethodID cannot look up <clinit> because
             // the JVM intentionally hides class initializers from JNI callers.
-            // Fall back to JVMTI GetClassMethods, which covers all methods
-            // including <clinit> and forces jmethodID slot allocation for them.
+            // Fall back to loadMethodIDsIfNeededImpl(), which covers all methods
+            // including <clinit> and forces jmethodID slot allocation for them
+            // (going through this helper, rather than calling GetClassMethods
+            // directly, ensures the JDK-8062116 patchClassLoaderData() workaround
+            // is applied here too, same as every other jmethodID-preload path).
             // After the call, re-read the ID directly from VM metadata.
             if (strcmp(method_name, "<clinit>") == 0) {
               jvmtiEnv* jvmti = VM::jvmti();
               if (jvmti != nullptr) {
-                jint count = 0;
-                jmethodID* methods = nullptr;
-                if (jvmti->GetClassMethods(clz, &count, &methods) == JVMTI_ERROR_NONE) {
+                if (HotspotSupport::loadMethodIDsIfNeededImpl(jvmti, jni, clz, true /*load all*/)) {
                   jmethodID validated = vm_method->validatedId();
                   if (isValidJMethodID(validated)) {
                     method_id = validated;
                   }
-                  jvmti->Deallocate((unsigned char*)methods);
                 }
               }
             }
