@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk25
 
 ## glibc-x64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-07-09 15:48:27 EDT
+**Date:** 2026-07-09 16:29:12 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-openj9-jdk25
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 9 |
-| CPU Cores (end) | 9 |
+| CPU Cores (start) | 23 |
+| CPU Cores (end) | 32 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-x64-openj9-jdk25
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 9-9 cores)</summary>
+<summary>CPU Timeline (3 unique values: 23-32 cores)</summary>
 
 ```
-1783626304 9
-1783626309 9
-1783626314 9
-1783626319 9
-1783626324 9
-1783626329 9
-1783626334 9
-1783626339 9
-1783626344 9
-1783626349 9
-1783626354 9
-1783626359 9
-1783626364 9
-1783626369 9
-1783626374 9
-1783626379 9
-1783626384 9
-1783626389 9
-1783626394 9
-1783626399 9
+1783628628 23
+1783628633 23
+1783628638 23
+1783628643 23
+1783628648 23
+1783628653 23
+1783628658 23
+1783628663 23
+1783628668 23
+1783628673 23
+1783628678 32
+1783628683 32
+1783628688 32
+1783628693 32
+1783628698 30
+1783628703 30
+1783628708 30
+1783628713 30
+1783628718 30
+1783628723 30
 ```
 </details>
 
