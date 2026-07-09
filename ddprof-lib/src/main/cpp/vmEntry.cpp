@@ -18,7 +18,10 @@
 #include "os.h"
 #include "profiler.h"
 #include "safeAccess.h"
-#include "hotspot/vmStructs.h"
+// Pulls in vmStructs.h plus the definitions of crashProtectionActive()/cast_to() that its inline
+// accessors odr-use here; the light vmStructs.h alone leaves those unresolved in assertion-enabled
+// builds (see the note in hotspotStackFrame_aarch64.cpp).
+#include "hotspot/vmStructs.inline.h"
 #include "hotspot/jitCodeCache.h"
 #include <atomic>
 #include <dlfcn.h>
@@ -324,6 +327,7 @@ bool VM::initShared(JavaVM* vm) {
     return false;
   }
 
+  // Initialize VMStructs
   VMStructs::init(lib);
 
   // Mark thread entry points for all JVMs (critical for correct stack unwinding)
@@ -556,7 +560,6 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
 void VM::ready(jvmtiEnv *jvmti, JNIEnv *jni) {
   Profiler::check_JDK_8313796_workaround();
   Profiler::setupSignalHandlers();
-  JVMThread::initialize();
   if (isHotspot()) {
     JitWriteProtection jit(true);
     VMStructs::ready();

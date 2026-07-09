@@ -313,12 +313,21 @@ class ProfilerTestPlugin : Plugin<Project> {
 
             // Sanitizer conditions
             when (testConfig.configName) {
-                "asan" -> testTask.onlyIf {
-                    PlatformUtils.locateLibasan() != null &&
-                    // Skip J9+ASAN: OpenJ9 has known GC stack-scanning and defineClass
-                    // race bugs exposed by ASAN timing
-                    // https://github.com/eclipse-openj9/openj9/issues/23514
-                    !PlatformUtils.isTestJvmJ9()
+                "asan" -> {
+                    testTask.onlyIf {
+                        PlatformUtils.locateLibasan() != null &&
+                        // Skip J9+ASAN: OpenJ9 has known GC stack-scanning and defineClass
+                        // race bugs exposed by ASAN timing
+                        // https://github.com/eclipse-openj9/openj9/issues/23514
+                        !PlatformUtils.isTestJvmJ9()
+                    }
+                    // The ASAN test JVM is pinned to -Xmx1024m (see ConfigurationPresets.kt)
+                    // to keep the heap below ASan's shadow-memory region. Without forking,
+                    // Gradle reuses one JVM for the whole suite, and per-test allocations
+                    // (JFR recordings, JMC object models) accumulate until it OOMs late in
+                    // the run even though every individual test passes. Restart periodically
+                    // to bound cumulative heap growth.
+                    testTask.setForkEvery(25)
                 }
                 // TSan + JVM integration tests are incompatible: the profiler's signal
                 // handlers (SIGPROF at 1ms) are TSan-instrumented; when a signal fires

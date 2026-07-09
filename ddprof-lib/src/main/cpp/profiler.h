@@ -23,7 +23,7 @@
 #include "mutex.h"
 #include "objectSampler.h"
 #include "spinLock.h"
-#include "thread.h"
+#include "threadLocalData.h"
 #include "threadFilter.h"
 #include "threadInfo.h"
 #include "trap.h"
@@ -58,12 +58,13 @@ class FrameName;
 class StackContext;
 class VM;
 
-enum State { NEW, IDLE, RUNNING, TERMINATED };
+enum State { NEW, IDLE, RUNNING, TERMINATED, ERROR };
 
 // Aligned to satisfy SpinLock member alignment requirement (64 bytes)
 // Required because this class contains the _locks[] SpinLock array.
 class alignas(alignof(SpinLock)) Profiler {
   friend VM;
+  friend class ProfilerTestAccessor;
 
 private:
   // signal handlers
@@ -292,6 +293,7 @@ public:
   Error start(Arguments &args, bool reset);
   Error stop();
   Error dump(const char *path, const int length);
+  Error checkState();
   void logStats();
   void switchThreadEvents(jvmtiEventMode mode);
 

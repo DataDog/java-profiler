@@ -8,6 +8,10 @@
 
 #include <string.h>
 #include "hotspot/hotspotStackFrame.h"
+// The VMNMethod accessors used below are inline in vmStructs.h and assert via crashProtectionActive()
+// / cast_to(), both of which are defined in vmStructs.inline.h. Without this include, assertion-enabled
+// builds (the gtest targets) leave those symbols unresolved at link time.
+#include "hotspot/vmStructs.inline.h"
 
 static inline bool isSTP(instruction_t insn) {
     // stp  xn, xm, [sp, #-imm]!
