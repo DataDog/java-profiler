@@ -139,7 +139,7 @@ Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
 // Init or get current profiled thread.
 // Calling thread's thread local may not be initialized due to race. 
 // Especially, during the early startup phase.
-// This call is expensive, should be avoided on hot paths.
+// This call could be expensive, if TLS has not yet set.
 // Note: the racy can be avoided with native agent, remove this method
 //       once converted to native agent.
 static ProfiledThread* initOrGetCurrentThread() {
@@ -158,7 +158,7 @@ static ProfiledThread* initOrGetCurrentThread() {
 // still compatible in the event of signature changes in the future.
 extern "C" DLLEXPORT void JNICALL
 JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = initOrGetCurrentThread();
   if(current == nullptr) {
     return;
   }
