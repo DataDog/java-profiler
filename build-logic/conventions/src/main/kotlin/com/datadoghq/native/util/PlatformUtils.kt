@@ -5,11 +5,26 @@ import com.datadoghq.native.model.Architecture
 import com.datadoghq.native.model.Platform
 import org.gradle.api.GradleException
 import org.gradle.api.Project
+import org.gradle.api.logging.Logger
 import java.io.File
 import kotlin.io.path.createTempFile
 import kotlin.io.path.deleteIfExists
 import kotlin.io.path.writeText
 import java.util.concurrent.TimeUnit
+
+/**
+ * A resolved C++ compiler: the executable plus its clang-family flag and major
+ * version, which are parsed from the `--version` banner (not the executable name).
+ */
+data class CompilerInfo(val executable: String, val isClang: Boolean, val majorVersion: Int) {
+    init {
+        require(executable.isNotBlank()) { "compiler executable must not be blank" }
+        require(majorVersion > 0) { "compiler majorVersion must be positive, was $majorVersion" }
+    }
+
+    // gcc has supported GNU2 TLS for x86_64 for a long time, clang only since 19.
+    fun supportsTlsDialectGnu2(): Boolean = !isClang || majorVersion >= 19
+}
 
 object PlatformUtils {
     val currentPlatform: Platform by lazy { Platform.current() }
@@ -199,6 +214,51 @@ object PlatformUtils {
         }
     }
 
+    /**
+     * Detect a compiler's family and major version from `<compiler> --version`,
+     * or null if neither can be parsed. The family comes from the matching banner
+     * shape (not the executable name): "clang version <major>" -> clang;
+     * "<vendor>) <major>.<minor>" -> non-clang. Failures are logged via [logger].
+     */
+    fun detectCompiler(compiler: String, logger: Logger): CompilerInfo? {
+        val output = try {
+            val process = ProcessBuilder(compiler, "--version")
+                .redirectErrorStream(true)
+                .start()
+            val text = process.inputStream.bufferedReader().readText()
+            if (!process.waitFor(5, TimeUnit.SECONDS)) {
+                process.destroyForcibly()
+                process.waitFor(5, TimeUnit.SECONDS)
+                logger.warn("Timed out after 5s running '$compiler --version'.")
+                return null
+            }
+            if (process.exitValue() != 0) {
+                logger.warn("'$compiler --version' exited with ${process.exitValue()}: ${text.trim().take(500)}")
+                return null
+            }
+            text
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            return null
+        } catch (e: Exception) {
+            logger.warn("Failed to run '$compiler --version'", e)
+            return null
+        }
+
+        Regex("""clang version (\d+)""").find(output)?.let { match ->
+            match.groupValues[1].toIntOrNull()?.let { major ->
+                return CompilerInfo(compiler, isClang = true, majorVersion = major)
+            }
+        }
+        Regex("""\)\s+(\d+)\.\d+""").find(output)?.let { match ->
+            match.groupValues[1].toIntOrNull()?.let { major ->
+                return CompilerInfo(compiler, isClang = false, majorVersion = major)
+            }
+        }
+        logger.warn("Could not parse a compiler version from '$compiler --version' output: ${output.trim().take(500)}")
+        return null
+    }
+
     fun hasAsan(compiler: String = "gcc"): Boolean {
         return !isMusl() && locateLibasan(compiler) != null
     }
@@ -294,7 +354,7 @@ object PlatformUtils {
                 return "$homebrewLLVM/bin/clang++"
             }
         }
-        return findCompiler(project)
+        return findCompiler(project).executable
     }
 
     /**
@@ -319,9 +379,18 @@ object PlatformUtils {
 
     /**
      * Find a C++ compiler, respecting -Pnative.forceCompiler property.
-     * Auto-detects clang++ or g++ if not specified.
+     * Auto-detects clang++ or g++ if not specified. Throws if the version cannot
+     * be determined ([detectCompiler] logs the specific reason).
      */
-    fun findCompiler(project: Project): String {
+    fun findCompiler(project: Project): CompilerInfo {
+        val executable = resolveCompilerExecutable(project)
+        return detectCompiler(executable, project.logger)
+            ?: throw GradleException(
+                "Unable to determine the version of compiler '$executable'."
+            )
+    }
+
+    private fun resolveCompilerExecutable(project: Project): String {
         // Check for forced compiler override
         val forcedCompiler = project.findProperty("native.forceCompiler") as? String
         if (forcedCompiler != null) {

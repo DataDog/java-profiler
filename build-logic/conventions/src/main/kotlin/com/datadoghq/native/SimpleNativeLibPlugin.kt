@@ -46,7 +46,7 @@ class SimpleNativeLibPlugin : Plugin<Project> {
                 return@afterEvaluate
             }
 
-            val compiler = extension.compiler.getOrElse(PlatformUtils.findCompiler(project))
+            val compiler = extension.compiler.getOrElse(PlatformUtils.findCompiler(project).executable)
             val linker = extension.linker.getOrElse(compiler)
             val libraryName = extension.libraryName.get()
             val objectDir = extension.objectDir.get().asFile
