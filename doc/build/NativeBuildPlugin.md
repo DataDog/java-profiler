@@ -397,6 +397,25 @@ See `build-logic/README.md` for full GtestPlugin documentation.
 | VERBOSE | Progress per N files |
 | DEBUG | Full command lines |
 
+## Publishing and Artifacts
+
+The main artifact is `ddprof-<version>.jar`, containing Java classes, native libraries for
+all supported platforms, and library-loading metadata.
+
+Build output layout:
+```
+ddprof-lib/build/
+├── lib/main/{config}/{os}/{arch}/
+│   ├── libjavaProfiler.{so|dylib}     # Full library
+│   ├── stripped/ → production binary
+│   └── debug/ → debug symbols
+└── native/{config}/META-INF/native-libs/
+    └── {os}-{arch}/ → final packaged libraries
+```
+
+The final artifact structure for deployment is `META-INF/native-libs/{os}-{arch}/libjavaProfiler.{so|dylib}`,
+with separate debug symbol packages for production debugging support.
+
 ## Future Considerations
 
 1. **Windows Support**: Add MSVC/MinGW compiler support if needed
