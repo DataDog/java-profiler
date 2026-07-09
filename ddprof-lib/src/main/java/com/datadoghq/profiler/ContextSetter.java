@@ -69,6 +69,11 @@ public class ContextSetter {
         return attributes.indexOf(attribute);
     }
 
+    /** Number of (deduplicated, truncated) context attribute slots. Pure Java; no native/DBB read. */
+    public int size() {
+        return attributes.size();
+    }
+
     public boolean setContextValue(String attribute, String value) {
         return setContextValue(offsetOf(attribute), value);
     }
