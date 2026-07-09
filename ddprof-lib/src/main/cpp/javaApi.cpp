@@ -946,13 +946,13 @@ Java_com_datadoghq_profiler_JavaProfiler_setContextValue0(JNIEnv* env, jclass un
   uint8_t buf[256];
   int len = otelReadUtf8(env, utf8, buf);
 
-  // Preserve the prior valid state (as clearContextValue0 does): setting one attribute must not
-  // resurrect a record that clearTraceContext0 intentionally deactivated — republishing it would
-  // expose a span-less record (zero trace/span) as valid. Mirrors the DBB path's guard in
-  // ThreadContext.setContextAttributesByIdAndBytes. Only the owning carrier writes this record, so
-  // the read is race-free.
-  uint8_t wasValid = __atomic_load_n(&record->valid, __ATOMIC_ACQUIRE);
-
+  // Publish the record (valid=1) after the write: setting a value means "make it visible", so an
+  // attribute is observable to the sampler even with no active span (zero trace/span). This is the
+  // app-context-independent-of-span model dd-trace-java relies on — app-owned attributes (e.g.
+  // http.route) and the reapply-after-deactivation path stay visible between spans. Mirrors the DBB
+  // single-attribute setter ThreadContext.setContextAttributeDirect, which likewise always
+  // re-attaches. (clearContextValue0, by contrast, preserves the prior valid: removing a value must
+  // not resurrect a deactivated record.)
   __atomic_store_n(&record->valid, (uint8_t)0, __ATOMIC_RELAXED);
   __atomic_thread_fence(__ATOMIC_RELEASE);
 
@@ -964,7 +964,7 @@ Java_com_datadoghq_profiler_JavaProfiler_setContextValue0(JNIEnv* env, jclass un
   }
 
   __atomic_thread_fence(__ATOMIC_RELEASE);
-  __atomic_store_n(&record->valid, wasValid, __ATOMIC_RELAXED);
+  __atomic_store_n(&record->valid, (uint8_t)1, __ATOMIC_RELAXED);
   return ok;
 }
 

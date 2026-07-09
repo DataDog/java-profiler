@@ -302,12 +302,14 @@ public class AllNativeContextTest {
     }
 
     /**
-     * setContextValue must not resurrect a record that clearTraceContext deactivated: writing a
-     * single attribute should preserve the record's prior {@code valid} flag, so a span-less record
-     * is not republished as valid.
+     * setContextValue publishes the record (valid=1) even with no active span: application-owned
+     * attributes are visible independent of span activation (dd-trace-java's model — an attribute
+     * like {@code http.route}, or app context reapplied after a span deactivates, must be observable
+     * between spans). Contrast {@link #clearContextValuePreservesInvalidState()}: clearing must not
+     * resurrect a deactivated record, but setting a value deliberately does.
      */
     @Test
-    public void setContextValuePreservesInvalidState() throws Exception {
+    public void setContextValuePublishesAppContextWithoutSpan() throws Exception {
         start();
         ThreadContext ctx = profiler.getThreadContext();
 
@@ -317,11 +319,13 @@ public class AllNativeContextTest {
         profiler.clearTraceContext();
         assertEquals(0, readValidByte(ctx), "clearTraceContext leaves the record deactivated");
 
-        // Writing an attribute on a deactivated record must not flip valid back to 1.
+        // Setting an attribute on a deactivated record republishes it so the attribute is visible
+        // with no active span (span/trace stay zero, but the record is valid and carries the value).
         profiler.setContextValue(SLOT_OP, "late");
-        assertEquals(0, readValidByte(ctx),
-                "setContextValue must preserve valid=0; a span-less record must not be republished");
-        assertNull(ctx.readContextAttribute(SLOT_OP), "attribute on a span-less record is not observable");
+        assertEquals(1, readValidByte(ctx),
+                "setContextValue must publish (valid=1) so app context is visible without a span");
+        assertEquals(0, ctx.getSpanId(), "span stays zero — this is app context, not a span");
+        assertEquals("late", ctx.readContextAttribute(SLOT_OP), "attribute observable without a span");
     }
 
     /**
