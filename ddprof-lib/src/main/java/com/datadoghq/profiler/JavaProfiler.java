@@ -279,13 +279,24 @@ public final class JavaProfiler {
      * @param spanId      the current span ID
      * @param traceIdHigh upper 64 bits of the 128-bit trace ID
      * @param traceIdLow  lower 64 bits of the 128-bit trace ID
-     * @param slot0       first custom attribute slot index, or negative to skip
+     * @param slot0       first custom attribute slot index in {@code [0, MAX_CONTEXT_SLOTS)}, or
+     *                    negative to skip this attribute
      * @param v0          value for {@code slot0}; {@code null} or oversized also skips
-     * @param slot1       second custom attribute slot index, or negative to skip
-     * @param v1          value for {@code slot1}; {@code null} or oversized also skips
+     * @param slot1       second custom attribute slot index in {@code [0, MAX_CONTEXT_SLOTS)}, or
+     *                    negative to skip this attribute
+     * @param v1          value for {@code v1}; {@code null} or oversized also skips
+     * @throws IllegalArgumentException if {@code spanId} is 0 — this is the activation path and
+     *         requires a real span; to clear the context use {@link #clearTraceContext()} — or if a
+     *         non-negative {@code slotN} is {@code >= MAX_CONTEXT_SLOTS} (out of range)
      */
     public void setTraceContext(long rootSpanId, long spanId, long traceIdHigh, long traceIdLow,
                                 int slot0, CharSequence v0, int slot1, CharSequence v1) {
+        if (spanId == 0) {
+            throw new IllegalArgumentException(
+                    "spanId must be non-zero; use clearTraceContext() to clear the trace context");
+        }
+        requireActivationSlot(slot0);
+        requireActivationSlot(slot1);
         ContextValueCache.Entry e0 = resolveContextValue(slot0, v0);
         ContextValueCache.Entry e1 = resolveContextValue(slot1, v1);
         setTraceContext0(rootSpanId, spanId, traceIdHigh, traceIdLow,
@@ -300,20 +311,19 @@ public final class JavaProfiler {
 
     /**
      * Sets a single custom attribute (sporadic instrumentation-driven attributes such as
-     * {@code http.route}). Returns false if the value is null, its UTF-8 exceeds 255 bytes, the
-     * native Dictionary is full, or {@code slot} is out of range; on failure the slot is cleared.
+     * {@code http.route}). Returns false — a normal "not applied" signal, not an error — if the
+     * value is null, its UTF-8 exceeds 255 bytes, or the native Dictionary is full; on such a
+     * failure the slot is cleared. An out-of-range {@code slot}, by contrast, is a caller
+     * programming error and throws.
      *
-     * @param slot  custom attribute slot index
+     * @param slot  custom attribute slot index in {@code [0, MAX_CONTEXT_SLOTS)}
      * @param value the attribute value; {@code null} clears the slot
-     * @return true if the value was written; false if it was null, oversized, the Dictionary is
-     *         full, or {@code slot} is out of range
+     * @return true if the value was written; false if it was null, oversized, or the Dictionary is
+     *         full
+     * @throws IllegalArgumentException if {@code slot} is out of range
      */
     public boolean setContextValue(int slot, CharSequence value) {
-        if (slot < 0 || slot >= MAX_CONTEXT_SLOTS) {
-            // Reject out-of-range slots before resolving, so an invalid slot never registers the
-            // value in the permanent native Dictionary (matches ThreadContext.setContextAttribute).
-            return false;
-        }
+        requireValidSlot(slot);
         ContextValueCache.Entry e = value == null ? null : contextValueCache.resolve(value.toString());
         if (e == null) {
             clearContextValue0(slot);
@@ -325,18 +335,39 @@ public final class JavaProfiler {
     /**
      * Clears a single custom attribute slot on the native path.
      *
-     * @param slot custom attribute slot index
+     * @param slot custom attribute slot index in {@code [0, MAX_CONTEXT_SLOTS)}
+     * @throws IllegalArgumentException if {@code slot} is out of range
      */
     public void clearContextValue(int slot) {
+        requireValidSlot(slot);
         clearContextValue0(slot);
     }
 
-    // Resolves an activation attribute for setTraceContext; null (skip) if the slot is out of
-    // range, the value is null, or the value cannot be represented (oversized / Dictionary full).
-    // The range check precedes resolve() so an out-of-range slot never registers the value in the
-    // permanent native Dictionary.
+    // A negative activation slot is the documented "skip this attribute" sentinel (normal control
+    // flow); a non-negative slot must be a valid index. An out-of-range (>= MAX_CONTEXT_SLOTS) slot
+    // is a caller programming error, not a skip, so it fails loudly.
+    private static void requireActivationSlot(int slot) {
+        if (slot >= MAX_CONTEXT_SLOTS) {
+            throw new IllegalArgumentException(
+                    "slot " + slot + " out of range [0, " + MAX_CONTEXT_SLOTS + ")");
+        }
+    }
+
+    // Requires a valid custom-attribute slot index. Unlike the activation path, there is no
+    // negative "skip" sentinel here, so any out-of-range slot is a programming error.
+    private static void requireValidSlot(int slot) {
+        if (slot < 0 || slot >= MAX_CONTEXT_SLOTS) {
+            throw new IllegalArgumentException(
+                    "slot " + slot + " out of range [0, " + MAX_CONTEXT_SLOTS + ")");
+        }
+    }
+
+    // Resolves an activation attribute for setTraceContext; null (skip) if the slot is negative
+    // (skip sentinel), the value is null, or the value cannot be represented (oversized / Dictionary
+    // full). A non-negative out-of-range slot is rejected earlier by requireActivationSlot, so it
+    // never reaches here and never registers the value in the permanent native Dictionary.
     private ContextValueCache.Entry resolveContextValue(int slot, CharSequence value) {
-        if (slot < 0 || slot >= MAX_CONTEXT_SLOTS || value == null) {
+        if (slot < 0 || value == null) {
             return null;
         }
         return contextValueCache.resolve(value.toString());

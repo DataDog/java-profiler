@@ -854,6 +854,10 @@ Java_com_datadoghq_profiler_JavaProfiler_setTraceContext0(JNIEnv* env, jclass un
   if (thrd == nullptr) {
     return;
   }
+  // Contract: this is the activation path and requires a non-zero span; clearing is
+  // clearTraceContext0. The public setTraceContext wrapper enforces this by throwing
+  // IllegalArgumentException, so a zero span reaching here is a direct-JNI/contract violation.
+  assert(spanId != 0 && "setTraceContext0 requires a non-zero span; use clearTraceContext0 to clear");
   // Publish the OTEP TLS pointer and mark the thread initialized on first native write, exactly
   // as the DirectByteBuffer path does in initializeContextTLS0. Without this a thread that only
   // ever uses the all-native API writes a record that ContextApi::get / the wallclock sampler

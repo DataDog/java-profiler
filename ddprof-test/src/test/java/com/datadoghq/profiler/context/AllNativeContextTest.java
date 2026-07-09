@@ -258,6 +258,28 @@ public class AllNativeContextTest {
     }
 
     /**
+     * setTraceContext is the activation path and rejects a zero span with IllegalArgumentException
+     * (rather than silently clearing or publishing a span-less record). Clearing is clearTraceContext.
+     * A rejected call must not mutate the record — a previously active span stays intact.
+     */
+    @Test
+    public void setTraceContextRejectsZeroSpanId() throws Exception {
+        start();
+        ThreadContext ctx = profiler.getThreadContext();
+
+        profiler.setTraceContext(0x9L, 0x7L, 0L, 0x7L, -1, null, -1, null); // active span
+        assertEquals(0x7L, ctx.getSpanId());
+
+        assertThrows(IllegalArgumentException.class,
+                () -> profiler.setTraceContext(0x2L, 0L, 0L, 0L, -1, null, -1, null),
+                "spanId=0 must be rejected");
+
+        // The rejected call is a no-op: it neither clears nor corrupts the still-active span.
+        assertEquals(1, readValidByte(ctx), "record still valid after rejected call");
+        assertEquals(0x7L, ctx.getSpanId(), "previously active span left intact");
+    }
+
+    /**
      * clearContextValue must not resurrect a record that clearTraceContext intentionally deactivated:
      * clearing a single attribute should preserve the record's prior {@code valid} flag rather than
      * unconditionally re-publishing it with {@code valid=1}.
@@ -343,8 +365,10 @@ public class AllNativeContextTest {
     }
 
     /**
-     * {@code setContextValue} rejects an out-of-range slot at the exact upper boundary
-     * ({@code slot == } the native DD_TAGS_CAPACITY of 10, guarded by {@code MaxContextSlotsTest}).
+     * An out-of-range slot is a caller programming error, not a data condition, so the slot methods
+     * throw IllegalArgumentException (rather than silently swallowing it). The boundary is the native
+     * DD_TAGS_CAPACITY of 10, guarded by {@code MaxContextSlotsTest}. {@code setContextValue}'s
+     * {@code false} return is reserved for data conditions (null / oversized / Dictionary full).
      */
     @Test
     public void slotBoundaryIsRejected() throws Exception {
@@ -354,8 +378,25 @@ public class AllNativeContextTest {
 
         final int capacity = 10; // native DD_TAGS_CAPACITY; drift caught by MaxContextSlotsTest
         assertTrue(profiler.setContextValue(capacity - 1, "last-slot"), "highest valid slot accepted");
-        assertFalse(profiler.setContextValue(capacity, "out-of-range"), "slot == capacity rejected");
-        assertFalse(profiler.setContextValue(capacity + 1, "out-of-range"), "slot > capacity rejected");
+
+        // setContextValue: out-of-range slots throw (programming error), not return false.
+        assertThrows(IllegalArgumentException.class, () -> profiler.setContextValue(capacity, "oob"),
+                "slot == capacity rejected");
+        assertThrows(IllegalArgumentException.class, () -> profiler.setContextValue(capacity + 1, "oob"),
+                "slot > capacity rejected");
+        assertThrows(IllegalArgumentException.class, () -> profiler.setContextValue(-1, "oob"),
+                "negative slot rejected");
+
+        // clearContextValue: same contract.
+        assertThrows(IllegalArgumentException.class, () -> profiler.clearContextValue(capacity),
+                "clearContextValue out-of-range slot rejected");
+
+        // setTraceContext: a non-negative out-of-range activation slot throws; negative is the
+        // documented skip sentinel and must NOT throw.
+        assertThrows(IllegalArgumentException.class,
+                () -> profiler.setTraceContext(0x2L, 0x1L, 0L, 0x1L, capacity, "oob", -1, null),
+                "setTraceContext out-of-range slot0 rejected");
+        profiler.setTraceContext(0x2L, 0x1L, 0L, 0x1L, -5, null, -1, null); // negative slots: skip, no throw
     }
 
     /**
