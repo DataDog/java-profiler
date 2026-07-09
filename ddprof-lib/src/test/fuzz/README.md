@@ -154,6 +154,24 @@ the 49152-entry expansion threshold, forcing the multi-node `_prev` chain that e
 **Regression guard — detects if these bugs are reintroduced**: heap-use-after-free (ASan), data race on `_table` (TSan), null-deref in
 `processTraces` from use-after-free when `_prev` chain is not fully disconnected.
 
+### fuzz_threadLocal.cpp
+**Target**: `ThreadLocal<T, CREATE_FUNC, CLEAN_FUNC>` (and the `double`/generic-pointer
+specializations) - the pthread-TSD-based alternative to `thread_local` used because
+`pthread_(get/set)specific()` cannot be safely introduced mid-signal-handling on some
+platforms (see the comment block in `threadLocal.h`).
+
+Each input is replayed on a freshly spawned thread that is joined before returning, so
+the pthread key destructor for whatever is left in a slot fires synchronously inside
+that `join()` - the one part of the lifecycle a persistent driver thread would never
+exercise. A shadow model tracks the expected create/get/set/clear state and traps on
+any mismatch.
+
+**Expected bugs**: stale/mismatched values from `get()`, `create_tracked()`/`free_tracked()`
+running the wrong number of times (double free or leak across `clear()`, an overwriting
+`set()`, or thread-exit teardown), `set(nullptr)` failing to trigger a lazy recreate on
+the next `get()`, and non-bit-exact round-trips for the `double` specialization (NaN,
+infinities, subnormals, -0.0).
+
 ## Corpus
 
 Seed corpus files are in `corpus/<target_name>/`. These provide starting points
