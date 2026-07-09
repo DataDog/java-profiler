@@ -33,6 +33,7 @@ ProfiledThread* ProfiledThread::initCurrentThreadSignalSafe() {
 }
 
 void ProfiledThread::freeValue(void* value) {
+  SignalBlocker blocker;
   ProfiledThread* pt = reinterpret_cast<ProfiledThread*>(value);
   delete pt;
 }
