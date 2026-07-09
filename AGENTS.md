@@ -1,8 +1,9 @@
 <!-- CLAUDE BOOTSTRAP INSTRUCTIONS
 If you are Claude and reading this file, check if CLAUDE.md exists in the same directory.
-If CLAUDE.md does not exist or only contains a redirect to this file, that is correct.
-If CLAUDE.md contains full instructions (not a redirect), you should update it to contain
-only the following redirect content:
+If CLAUDE.md does not exist or only contains the redirect + Compact Instructions below, that
+is correct. If CLAUDE.md contains full project instructions (not just the redirect), you should
+trim it back to contain only the following canonical content — do not drop the Compact
+Instructions section, and do not let this stub grow beyond it:
 
 # CLAUDE.md
 
@@ -12,6 +13,13 @@ Read and follow all instructions in [AGENTS.md](AGENTS.md) in this directory.
 
 All project guidance, build commands, architecture details, and development guidelines
 are maintained in AGENTS.md to support multiple AI coding tools.
+
+## Compact Instructions
+
+When compacting this conversation, prioritize keeping: decisions made, code/config diffs,
+open questions, and file:line references. Drop raw tool output that can be re-fetched on
+demand — full file contents, grep/search dumps, build/test logs — summarize these to a
+one-line pointer (what was read/run and the conclusion) instead of retaining them verbatim.
 -->
 
 # AGENTS.md
@@ -107,103 +115,26 @@ Never use 'gradle' or 'gradlew' directly. Instead, use the '/build-and-summarize
 JAVA_TEST_HOME=/path/to/test/jdk ./gradlew testDebug
 ```
 
-#### Google Test Plugin
+#### Google Test Plugin / Debug Symbol Extraction
 
-The project uses a custom `GtestPlugin` (in `build-logic/`) for C++ unit testing with Google Test. The plugin automatically:
-- Discovers `.cpp` test files in `src/test/cpp/`
-- Creates compilation, linking, and execution tasks for each test
-- Filters configurations by current platform/architecture
-- Integrates with NativeCompileTask and NativeLinkExecutableTask
+Custom `GtestPlugin` and debug-symbol-extraction details (config DSL, generated tasks, size
+reductions, tool requirements): see `build-logic/README.md` and
+[doc/build/NativeBuildPlugin.md](doc/build/NativeBuildPlugin.md).
 
-**Key features:**
-- Platform-aware: Only creates tasks for matching OS/arch
-- Assertion control: Removes `-DNDEBUG` to enable assertions in tests
-- Symbol preservation: Keeps debug symbols in release test builds
-- Task aggregation: Per-config (`gtestDebug`) and master (`gtest`) tasks
-- Shared configurations: Uses BuildConfiguration from NativeBuildPlugin
-
-**Configuration example (ddprof-lib/build.gradle.kts):**
-```kotlin
-plugins {
-    id("com.datadoghq.native-build")
-    id("com.datadoghq.gtest")
-}
-
-gtest {
-    testSourceDir.set(layout.projectDirectory.dir("src/test/cpp"))
-    mainSourceDir.set(layout.projectDirectory.dir("src/main/cpp"))
-    includes.from(
-        "src/main/cpp",
-        "${javaHome}/include",
-        "${javaHome}/include/${platformInclude}"
-    )
-    // Optional
-    enableAssertions.set(true)    // Remove -DNDEBUG (default: true)
-    keepSymbols.set(true)         // Keep symbols in release (default: true)
-    failFast.set(false)           // Stop on first failure (default: false)
-}
-```
-
-**See:** `build-logic/README.md` for full documentation
-
-#### Debug Symbol Extraction
-
-Release builds automatically extract debug symbols via `NativeLinkTask`, reducing production binary size (~69% smaller) while maintaining separate debug files for offline debugging.
-
-**Key features:**
-- Platform-aware: Uses `objcopy`/`strip` on Linux, `dsymutil`/`strip` on macOS
-- Automatic workflow: Extract symbols → Add GNU debuglink (Linux) → Strip library → Copy artifacts
-- Size optimization: Stripped ~1.2MB production library from ~6.1MB with embedded debug info
-- Debug preservation: Separate `.debug` files (Linux) or `.dSYM` bundles (macOS)
-
-**Tool requirements:**
-- Linux: `binutils` package (objcopy, strip)
-- macOS: Xcode Command Line Tools (dsymutil, strip)
-
-**Skip extraction:**
-```bash
-./gradlew buildRelease -Pskip-debug-extraction=true
-```
-
-**See:** `build-logic/README.md` for full documentation
+Skip extraction: `./gradlew buildRelease -Pskip-debug-extraction=true`
 
 ### Container-based Testing (Recommended for ASan/Non-Local Environments)
 
-**When to use**: For ASan testing, cross-architecture testing (aarch64), different libc variants (musl), or reproducing CI environment issues. The script defaults to Podman; use `--container=docker` to use Docker.
+For ASan testing, cross-architecture testing (aarch64), musl libc, or reproducing CI
+environment issues. Defaults to Podman; use `--container=docker` for Docker.
 
 ```bash
-# ASan tests on aarch64 Linux
 ./utils/run-containers-tests.sh --arch=aarch64 --config=asan --libc=glibc --jdk=21
-
-# Run specific test pattern
-./utils/run-containers-tests.sh --arch=aarch64 --tests="*SpecificTest*"
-
-# Enable C++ gtests
-./utils/run-containers-tests.sh --arch=aarch64 --gtest
-
-# Run one C++ gtest binary
-./utils/run-containers-tests.sh --config=asan --gtest-task=elfparser_ut
-
-# Use Docker instead of the default Podman runtime
-./utils/run-containers-tests.sh --container=docker --libc=glibc --jdk=21
-
-# Drop to shell for debugging
-./utils/run-containers-tests.sh --arch=aarch64 --shell
-
-# Test with musl libc
-./utils/run-containers-tests.sh --libc=musl --jdk=21
-
-# Test with OpenJ9
-./utils/run-containers-tests.sh --jdk=21-j9
-
-# Use mounted repo (faster, but may have stale artifacts)
-./utils/run-containers-tests.sh --mount
-
-# Rebuild container images
-./utils/run-containers-tests.sh --rebuild
+./utils/run-containers-tests.sh --shell   # drop to shell for debugging
 ```
 
-**Note**: The container script supports `--config=debug|release|asan|tsan`. Use this for cross-architecture testing and reproducing CI environments. For local development, use `./gradlew testAsan` directly.
+Full flag reference (`--tests`, `--gtest`, `--gtest-task`, `--libc`, `--jdk`, `--mount`,
+`--rebuild`, etc.): see [doc/build/TestingGuide.md](doc/build/TestingGuide.md).
 
 ### Build Options
 ```bash
@@ -314,21 +245,10 @@ Native compilation is automatic during build. C++ code changes require:
 
 ## Publishing and Artifacts
 
-The main artifact is `ddprof-<version>.jar` containing:
-- Java classes
-- Native libraries for all supported platforms
-- Metadata for library loading
-
-Build artifacts structure:
-```
-ddprof-lib/build/
-├── lib/main/{config}/{os}/{arch}/
-│   ├── libjavaProfiler.{so|dylib}     # Full library
-│   ├── stripped/ → production binary
-│   └── debug/ → debug symbols
-└── native/{config}/META-INF/native-libs/
-    └── {os}-{arch}/ → final packaged libraries
-```
+The main artifact is `ddprof-<version>.jar`, containing Java classes, native libraries for
+all supported platforms, and library-loading metadata. Build output layout and the final
+`META-INF/native-libs/{os}-{arch}/` packaging structure: see
+[doc/build/NativeBuildPlugin.md](doc/build/NativeBuildPlugin.md).
 
 ## Core Architecture Components
 
@@ -415,196 +335,25 @@ arm64 has a weakly-ordered memory model (unlike x86 TSO). Incorrect ordering cau
 
 ## Build System Architecture
 
-### Gradle Multi-project Structure
-- **ddprof-lib**: Core profiler with native compilation
-- **ddprof-test**: Integration and Java unit tests
-- **ddprof-test-tracer**: Tracing context integration tests
-- **ddprof-stresstest**: JMH performance benchmarks
-- **malloc-shim**: Linux memory allocation interceptor
+The project uses a custom Kotlin-based native build plugin (`build-logic/`) instead of
+Gradle's `cpp-library`/`cpp-application` plugins — those parse compiler version strings
+(breaks on newer gcc/clang), mishandle non-standard JAVA_HOME layouts, and use undocumented
+internals that change between Gradle versions. `build-logic/` invokes `clang++`/`g++`
+directly instead.
 
-### Native Compilation Pipeline
-- **Platform Detection**: Automatic OS and architecture detection via `PlatformUtils` in build-logic
-- **Configuration Matrix**: Multiple build configs (release/debug/asan/tsan) per platform
-- **Symbol Processing**: Automatic debug symbol extraction for release builds
-- **Library Packaging**: Final JAR contains all platform-specific native libraries
-- **Compiler Detection**: Auto-detects clang++ (preferred) or g++ (fallback); override with `-Pnative.forceCompiler`
+**Modules:** `ddprof-lib` (native compilation), `ddprof-test`, `ddprof-test-tracer`,
+`ddprof-stresstest`, `malloc-shim` (Linux allocation interceptor).
 
-### Native Build Plugin (build-logic)
-The project includes a Kotlin-based native build plugin (`build-logic/`) for type-safe C++ compilation:
-- **Composite Build**: Independent Gradle project for build logic versioning
-- **Type-Safe DSL**: Kotlin-based configuration with compile-time checking
-- **Auto Task Generation**: Creates compile, link, and assemble tasks per configuration
-- **Debug Symbol Extraction**: Automatic split debug info for release builds (69% size reduction)
-- **Source Sets**: Per-directory compiler flags for legacy/third-party code
-- **Symbol Visibility**: Linux version scripts and macOS exported symbols lists
+**Convention plugins** (`build-logic/conventions/`): `com.datadoghq.native-build`,
+`com.datadoghq.gtest`, `com.datadoghq.profiler-test`, `com.datadoghq.simple-native-lib`.
 
-**See:** `build-logic/README.md` for full documentation
+**Key principle**: build configurations (release/debug/asan/tsan/fuzzer) are discovered
+dynamically from `ConfigurationPresets.kt`, never hardcoded.
 
-### Custom Native Build Plugin (build-logic)
-The project uses a custom Kotlin-based native build plugin in `build-logic/` instead of Gradle's `cpp-library` and `cpp-application` plugins. This is intentional:
-
-**Why not cpp-library/cpp-application plugins:**
-- Gradle's native plugins parse compiler version strings which breaks with newer gcc/clang versions
-- JNI header detection has issues with non-standard JAVA_HOME layouts
-- Plugin maintainers are unresponsive to fixes
-- The plugins use undocumented internals that change between Gradle versions
-
-**Plugin components (`com.datadoghq.native-build`):**
-- `NativeCompileTask` - Parallel C++ compilation with source sets support
-- `NativeLinkTask` - Links shared libraries (.so/.dylib) with symbol visibility
-- `PlatformUtils` - Platform detection and compiler location
-
-**Plugin components (`com.datadoghq.gtest`):**
-- `NativeLinkExecutableTask` - Links executables (for gtest)
-- `GtestPlugin` - Google Test integration and task generation
-
-**Key principle:** Direct compiler invocation without version parsing. The tasks simply find `clang++` or `g++` on PATH and invoke them with the configured flags.
-
-#### Configuring Build Tasks
-
-All build tasks support industry-standard configuration options. Configuration is done using Kotlin DSL:
-
-**Basic compilation:**
-```kotlin
-tasks.register("compileLib", NativeCompileTask::class) {
-    compiler.set("clang++")
-    compilerArgs.set(listOf("-O3", "-std=c++17", "-fPIC"))
-    sources.from(fileTree("src/main/cpp") { include("**/*.cpp") })
-    includes.from("src/main/cpp", "${System.getenv("JAVA_HOME")}/include")
-    objectFileDir.set(file("build/obj"))
-}
-```
-
-**Advanced configuration with source sets:**
-```kotlin
-tasks.register("compileLib", NativeCompileTask::class) {
-    compiler.set("clang++")
-    compilerArgs.set(listOf("-Wall", "-O3"))  // Base flags for all files
-
-    // Multiple source directories with per-directory flags
-    sourceSets {
-        create("main") {
-            sources.from(fileTree("src/main/cpp"))
-            compilerArgs.add("-fPIC")
-        }
-        create("legacy") {
-            sources.from(fileTree("src/legacy"))
-            compilerArgs.addAll("-Wno-deprecated", "-std=c++11")
-            excludes.add("**/broken/*.cpp")
-        }
-    }
-
-    // Logging
-    logLevel.set(LogLevel.VERBOSE)
-
-    objectFileDir.set(file("build/obj"))
-}
-```
-
-**Linking shared libraries with symbol management:**
-```kotlin
-tasks.register("linkLib", NativeLinkTask::class) {
-    linker.set("clang++")
-    linkerArgs.set(listOf("-O3"))
-    objectFiles.from(fileTree("build/obj") { include("*.o") })
-    outputFile.set(file("build/lib/libjavaProfiler.so"))
-
-    // Symbol visibility control
-    exportSymbols.set(listOf("Java_*", "JNI_OnLoad", "JNI_OnUnload"))
-    hideSymbols.set(listOf("*_internal*"))
-
-    // Libraries
-    lib("pthread", "dl", "m")
-    libPath("/usr/local/lib")
-
-    logLevel.set(LogLevel.VERBOSE)
-}
-```
-
-**Executable linking (for gtest):**
-```kotlin
-tasks.register("linkTest", NativeLinkExecutableTask::class) {
-    linker.set("clang++")
-    objectFiles.from(fileTree("build/obj/gtest") { include("*.o") })
-    outputFile.set(file("build/bin/callTrace_test"))
-
-    // Library management
-    lib("gtest", "gtest_main", "pthread")
-    libPath("/usr/local/lib")
-    runtimePath("/opt/lib", "/usr/local/lib")
-
-    logLevel.set(LogLevel.VERBOSE)
-}
-```
-
-**Task properties:**
-
-*NativeCompileTask:*
-- `compiler`, `compilerArgs` - Compiler and flags
-- `sources`, `includes` - Source files and include paths
-- `sourceSets` - Per-directory compiler flag overrides
-- `objectFileDir` - Output directory for object files
-- `logLevel` - QUIET, NORMAL, VERBOSE, DEBUG
-
-*NativeLinkTask:*
-- `linker`, `linkerArgs` - Linker and flags
-- `objectFiles`, `outputFile` - Input objects and output library
-- `exportSymbols`, `hideSymbols` - Symbol visibility control
-- `lib()`, `libPath()` - Library convenience methods
-- `logLevel`, `showCommandLine` - Logging options
-
-*NativeLinkExecutableTask:*
-- `linker`, `linkerArgs` - Linker and flags
-- `objectFiles`, `outputFile` - Input objects and output executable
-- `lib()`, `libPath()`, `runtimePath()` - Library and rpath convenience methods
-- `logLevel`, `showCommandLine` - Logging options
-
-### Artifact Structure
-Final artifacts maintain a specific structure for deployment:
-```
-META-INF/native-libs/{os}-{arch}/libjavaProfiler.{so|dylib}
-```
-With separate debug symbol packages for production debugging support.
-
-## Build System Maintenance
-
-> **Detailed guide**: [doc/build/BuildSystemGuide.md](doc/build/BuildSystemGuide.md)
-
-### Quick Reference
-
-**Convention plugins** (in `build-logic/conventions/`):
-- `com.datadoghq.native-build` - Multi-config C++ compilation
-- `com.datadoghq.gtest` - Google Test integration
-- `com.datadoghq.profiler-test` - Multi-config Java test generation
-- `com.datadoghq.simple-native-lib` - Simple single-library builds
-
-**Key principle**: Build configurations (release/debug/asan/tsan/fuzzer) are **discovered dynamically**, not hardcoded. Add new configs in `ConfigurationPresets.kt` only.
-
-**Key files**:
-- `ConfigurationPresets.kt` - Defines all build configurations and their flags
-- `PlatformUtils.kt` - Platform detection and compiler finding
-- `NativeBuildPlugin.kt` - Creates compile/link tasks per configuration
-
-### Common Tasks
-
-| Task | Description |
-|------|-------------|
-| Add compiler flag to all configs | Edit `commonLinuxCompilerArgs()` in `ConfigurationPresets.kt` |
-| Add new build configuration | Add `register("name")` block in `ConfigurationPresets.kt` |
-| Create new convention plugin | Create class, register in `build.gradle.kts`, see [guide](doc/BUILD-SYSTEM-GUIDE.md#creating-a-new-convention-plugin) |
-
-### Gradle Properties
-
-See `gradle.properties.template` for all options. Key ones:
-- `skip-tests`, `skip-native`, `skip-gtest` - Skip build phases
-- `native.forceCompiler` - Override compiler detection
-- `ddprof_version` - Override version
-
-### Troubleshooting
-
-- **Plugin changes not taking effect**: Run `./gradlew --stop`
-- **"Task not found"**: Tasks are created dynamically; check `PlatformUtils` detection
-- **"Configuration not found"**: Access configurations in `afterEvaluate`
+Full plugin architecture, task DSL (`NativeCompileTask`/`NativeLinkTask`/`NativeLinkExecutableTask`
+properties and Kotlin examples), and troubleshooting: see `build-logic/README.md` and
+[doc/build/NativeBuildPlugin.md](doc/build/NativeBuildPlugin.md) /
+[doc/build/BuildSystemGuide.md](doc/build/BuildSystemGuide.md).
 
 ## Legacy and Compatibility
 
@@ -641,52 +390,12 @@ See `gradle.properties.template` for all options. Key ones:
 
 ## Build JDK Configuration
 
-The project uses a **two-JDK pattern**:
-- **Build JDK** (`JAVA_HOME`): Used to run Gradle itself. Must be JDK 17+ for Gradle 9.
-- **Test JDK** (`JAVA_TEST_HOME`): Used to run tests against different Java versions.
+Two-JDK pattern: `JAVA_HOME` (build, JDK 21 LTS, must be 17+ for Gradle 9) runs Gradle;
+`JAVA_TEST_HOME` runs tests against a different target JDK. Target bytecode is Java 8 via
+`--release 8`.
 
-**Current requirement:** JDK 21 (LTS) for building, targeting Java 8 bytecode via `--release 8`.
-
-### Files to Modify When Changing Build JDK Version
-
-When upgrading the build JDK (e.g., from JDK 21 to JDK 25), update these files:
-
-| File | What to Change |
-|------|----------------|
-| `README.md` | Update "Prerequisites" section with new JDK version |
-| `.github/actions/setup_cached_java/action.yml` | Change `build_jdk=jdk21` to new version (line ~25) |
-| `.github/workflows/ci.yml` | Update `java-version` in `check-formatting` job's Setup Java step |
-| `utils/run-containers-tests.sh` | Update `BUILD_JDK_VERSION="21"` constant |
-| `build-logic/.../JavaConventionsPlugin.kt` | Update documentation comment if minimum changes |
-
-### Files to Modify When Changing Target JDK Version
-
-When changing the target bytecode version (e.g., from Java 8 to Java 11):
-
-| File | What to Change |
-|------|----------------|
-| `build-logic/.../JavaConventionsPlugin.kt` | Change `--release 8` to new version |
-| `ddprof-lib/build.gradle.kts` | Change `sourceCompatibility`/`targetCompatibility` |
-| `README.md` | Update minimum Java runtime version |
-
-### Gradle 9 API Changes Reference
-
-When upgrading Gradle major versions, watch for these breaking changes:
-
-| Old API | New API (Gradle 9+) | Affected Files |
-|---------|---------------------|----------------|
-| `project.exec { }` in task actions | `ProcessBuilder` directly | `GtestPlugin.kt` |
-| `String.capitalize()` | `replaceFirstChar { it.uppercaseChar() }` | Kotlin plugins |
-| `createTempFile()` | `kotlin.io.path.createTempFile()` | `PlatformUtils.kt` |
-| Spotless `userData()` | `editorConfigOverride()` | `SpotlessConventionPlugin.kt` |
-| Spotless `indentWithSpaces()` | `leadingTabsToSpaces()` | `SpotlessConventionPlugin.kt` |
-
-### CI JDK Caching
-
-The CI caches JDKs via `.github/workflows/cache_java.yml`. When adding a new JDK version:
-1. Add version URLs to `cache_java.yml` environment variables
-2. Add to the `java_variant` matrix in cache jobs
-3. Run the `cache_java.yml` workflow manually to populate caches
+Files to touch when upgrading the build/target JDK, and the Gradle 9 breaking-API reference
+table: see [doc/build/JdkUpgrades.md](doc/build/JdkUpgrades.md).
 
 ## Agentic Work
 
