@@ -343,6 +343,17 @@ public final class JavaProfiler {
         clearContextValue0(slot);
     }
 
+    /**
+     * Copies the current thread's custom-attribute sidecar tag encodings into {@code out} (index =
+     * slot), reading the native record directly — no {@link ThreadContext} / DirectByteBuffer, so it
+     * does not reset the record. Unlike the deprecated DBB read path, this observes encodings written
+     * through the all-native {@link #setContextValue} path. Introspection / test use; entries beyond
+     * {@code MAX_CONTEXT_SLOTS} are left untouched.
+     */
+    public void copyContextTags(int[] out) {
+        copyContextTags0(out);
+    }
+
     // A negative activation slot is the documented "skip this attribute" sentinel (normal control
     // flow); a non-negative slot must be a valid index. An out-of-range (>= MAX_CONTEXT_SLOTS) slot
     // is a caller programming error, not a skip, so it fails loudly.
@@ -619,6 +630,7 @@ public final class JavaProfiler {
     private static native void clearTraceContext0();
     private static native boolean setContextValue0(int slot, int encoding, byte[] utf8);
     private static native void clearContextValue0(int slot);
+    private static native void copyContextTags0(int[] out);
 
     /** Native DD_TAGS_CAPACITY (context.h). Test-only drift guard for {@link #MAX_CONTEXT_SLOTS}. */
     static native int maxContextSlots0();

@@ -993,6 +993,34 @@ Java_com_datadoghq_profiler_JavaProfiler_clearContextValue0(JNIEnv* env, jclass 
   __atomic_store_n(&record->valid, wasValid, __ATOMIC_RELAXED);
 }
 
+// Copies the current thread's custom-attribute sidecar tag encodings (enc[]) into out, reading the
+// record directly via ProfiledThread::current() — no ThreadContext / DirectByteBuffer, so it does
+// NOT reset the record the way the deprecated DBB copyTags does. This lets a caller observe
+// encodings written through the all-native setContextValue path (introspection / tests); the DBB
+// read went through ThreadContext, whose ctor resets the record and would clobber native writes.
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_copyContextTags0(JNIEnv* env, jclass unused, jintArray out) {
+  if (out == nullptr) {
+    return;
+  }
+  jint len = env->GetArrayLength(out);
+  int n = len < (jint)DD_TAGS_CAPACITY ? (int)len : (int)DD_TAGS_CAPACITY;
+  jint tmp[DD_TAGS_CAPACITY];
+  for (int i = 0; i < n; i++) {
+    tmp[i] = 0;
+  }
+  ProfiledThread* thrd = ProfiledThread::current();
+  if (thrd != nullptr) {
+    u32* enc = thrd->getOtelTagEncodingsPtr();
+    for (int i = 0; i < n; i++) {
+      tmp[i] = (jint)enc[i];
+    }
+  }
+  if (n > 0) {
+    env->SetIntArrayRegion(out, 0, n, tmp);
+  }
+}
+
 extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_ThreadContext_registerConstant0(JNIEnv* env, jclass unused, jstring value) {
   JniString value_str(env, value);

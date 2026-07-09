@@ -329,6 +329,30 @@ public class AllNativeContextTest {
     }
 
     /**
+     * copyContextTags reads the sidecar tag encodings written through the all-native path directly
+     * from the record — without going through ThreadContext (which would reset the record). The test
+     * never calls getThreadContext, proving the native read observes native writes.
+     */
+    @Test
+    public void copyContextTagsReadsNativeEncodings() throws Exception {
+        start();
+        profiler.setTraceContext(0x2L, 0x1L, 0L, 0x1L, -1, null, -1, null); // active span
+        assertTrue(profiler.setContextValue(SLOT_OP, "op-value"));
+        assertTrue(profiler.setContextValue(SLOT_RES, "res-value"));
+
+        int[] tags = new int[10];
+        profiler.copyContextTags(tags);
+        assertNotEquals(0, tags[SLOT_OP], "slot with a value has a non-zero encoding");
+        assertNotEquals(0, tags[SLOT_RES], "slot with a value has a non-zero encoding");
+        assertEquals(0, tags[5], "unset slot reads back zero");
+
+        profiler.clearContextValue(SLOT_OP);
+        profiler.copyContextTags(tags);
+        assertEquals(0, tags[SLOT_OP], "cleared slot reads back zero");
+        assertNotEquals(0, tags[SLOT_RES], "untouched slot still set");
+    }
+
+    /**
      * A null {@code byte[]} value at the JNI boundary must be treated as an empty value (the native
      * {@code arr == null} guard), not dereferenced. The public API can't produce this, so we call
      * the {@code setContextValue0} primitive directly with a live slot and a null array.
