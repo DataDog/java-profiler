@@ -142,6 +142,8 @@ Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
 // This call could be expensive, if TLS has not yet set.
 // Note: the racy can be avoided with native agent, remove this method
 //       once converted to native agent.
+// TODO: Priming is not fully restored at this moment, this method only
+//       handles a few special cases.
 static ProfiledThread* initOrGetCurrentThread() {
   ProfiledThread* current = ProfiledThread::current();
   if (current == nullptr) {
@@ -158,6 +160,7 @@ static ProfiledThread* initOrGetCurrentThread() {
 // still compatible in the event of signature changes in the future.
 extern "C" DLLEXPORT void JNICALL
 JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
+  // Initialize thread TLS if it has not yet done
   ProfiledThread *current = initOrGetCurrentThread();
   if(current == nullptr) {
     return;
@@ -191,7 +194,8 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
 
 extern "C" DLLEXPORT void JNICALL
 JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0() {
-  ProfiledThread *current = ProfiledThread::current();
+  // Initialize thread TLS if it has not yet done
+  ProfiledThread *current = initOrGetCurrentThread();
   if(current == nullptr) {
     return;
   }
@@ -231,6 +235,10 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
     JNIEnv *env, jclass unused, jlong rootSpanId, jstring endpoint,
     jstring operation, jint sizeLimit) {
   JniString endpoint_str(env, endpoint);
+
+  // Initialize thread TLS if it has not yet done
+  initOrGetCurrentThread();
+
   u32 endpointLabel = Profiler::instance()->stringLabelMap()->bounded_lookup(
       endpoint_str.c_str(), endpoint_str.length(), sizeLimit);
   // StringDictionary reserves 0 as "no entry"; valid IDs start at 1.
@@ -288,6 +296,9 @@ Java_com_datadoghq_profiler_JavaProfiler_describeDebugCounters0(
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordSettingEvent0(
     JNIEnv *env, jclass unused, jstring name, jstring value, jstring unit) {
+  // Initialize thread TLS if it has not yet done
+  initOrGetCurrentThread();
+
   int tid = ProfiledThread::currentTid();
   if (tid < 0) {
     return;
@@ -312,6 +323,10 @@ extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
     JNIEnv *env, jclass unused, jlong startTime, jlong endTime, jstring task,
     jstring scheduler, jthread origin, jstring queueType, jint queueLength) {
+
+  // Initialize thread TLS if it has not yet done
+  initOrGetCurrentThread();
+
   int tid = ProfiledThread::currentTid();
   if (tid < 0) {
     return;
@@ -713,7 +728,7 @@ Java_com_datadoghq_profiler_OTelContext_readProcessCtx0(JNIEnv *env, jclass unus
 
 extern "C" DLLEXPORT jobject JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_initializeContextTLS0(JNIEnv* env, jclass unused, jlongArray metadata) {
-  // Assume this call is not on hot path
+  // Initialize thread TLS if it has not yet done
   ProfiledThread* thrd = initOrGetCurrentThread();
   assert(thrd != nullptr);
 

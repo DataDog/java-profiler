@@ -124,7 +124,7 @@ public:
   static void deleteForTest(ProfiledThread *pt) { delete pt; }
 #endif
   // initCurrentThread() and release() are not async-signal-safe: 
-  // must call outside of a signal handler with signal blocked
+  // must be called outside of a signal handler with signal blocked
   static ProfiledThread* initCurrentThread();
   static void release();
 
