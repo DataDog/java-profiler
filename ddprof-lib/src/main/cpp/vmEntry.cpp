@@ -19,7 +19,10 @@
 #include "profiler.h"
 #include "safeAccess.h"
 #include "taskBlockRecorder.h"
-#include "hotspot/vmStructs.h"
+// Pulls in vmStructs.h plus the definitions of crashProtectionActive()/cast_to() that its inline
+// accessors odr-use here; the light vmStructs.h alone leaves those unresolved in assertion-enabled
+// builds (see the note in hotspotStackFrame_aarch64.cpp).
+#include "hotspot/vmStructs.inline.h"
 #include "hotspot/jitCodeCache.h"
 #include <atomic>
 #include <dlfcn.h>
