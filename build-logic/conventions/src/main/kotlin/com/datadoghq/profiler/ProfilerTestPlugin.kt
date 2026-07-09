@@ -321,7 +321,7 @@ class ProfilerTestPlugin : Plugin<Project> {
                         // https://github.com/eclipse-openj9/openj9/issues/23514
                         !PlatformUtils.isTestJvmJ9()
                     }
-                    // The ASAN test JVM is pinned to -Xmx512m (see ConfigurationPresets.kt)
+                    // The ASAN test JVM is pinned to -Xmx1024m (see ConfigurationPresets.kt)
                     // to keep the heap below ASan's shadow-memory region. Without forking,
                     // Gradle reuses one JVM for the whole suite, and per-test allocations
                     // (JFR recordings, JMC object models) accumulate until it OOMs late in

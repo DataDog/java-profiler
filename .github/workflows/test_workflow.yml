@@ -125,7 +125,9 @@ jobs:
           fi
 
           MAX_ATTEMPTS=1
-          if [[ "${{ matrix.config }}" == "asan" && "${{ matrix.java_version }}" =~ (j9|ibm) ]]; then
+          if [[ "${{ matrix.config }}" == "asan" ]]; then
+            # ASan init can nondeterministically collide with the JVM's ASLR-influenced
+            # mmap layout (google/sanitizers#856); retry once before failing the job.
             MAX_ATTEMPTS=2
           fi
 
@@ -438,7 +440,9 @@ jobs:
           fi
 
           MAX_ATTEMPTS=1
-          if [[ "${{ matrix.config }}" == "asan" && "${{ matrix.java_version }}" =~ (j9|ibm) ]]; then
+          if [[ "${{ matrix.config }}" == "asan" ]]; then
+            # ASan init can nondeterministically collide with the JVM's ASLR-influenced
+            # mmap layout (google/sanitizers#856); retry once before failing the job.
             MAX_ATTEMPTS=2
           fi
 

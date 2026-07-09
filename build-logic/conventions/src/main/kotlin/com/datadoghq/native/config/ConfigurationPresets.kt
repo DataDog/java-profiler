@@ -222,9 +222,13 @@ object ConfigurationPresets {
                     // HeapBaseMinAddress is not accepted by JDK <= 11 (constraint violation);
                     // those JDKs rely on the vm.mmap_rnd_bits=8 CI-level mitigation instead.
                     if (PlatformUtils.testJvmMajorVersion() >= 12) {
+                        // HeapBaseMinAddress=64MB leaves ~1.9GB of address space below the
+                        // shadow region (0x7fff7000); 1024m keeps heap+CompressedClassSpace
+                        // well within that margin while giving forkEvery-restarted JVMs
+                        // enough headroom to avoid "Java heap space" OOMs seen in nightly CI.
                         config.testJvmArgs.addAll(listOf(
                             "-XX:HeapBaseMinAddress=0x4000000",
-                            "-Xmx512m",
+                            "-Xmx1024m",
                             "-XX:CompressedClassSpaceSize=256m"
                         ))
                     }

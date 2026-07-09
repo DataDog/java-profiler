@@ -19,7 +19,7 @@
 #ifdef __linux__
 
 #include "threadFilter.h"
-#include "thread.h"
+#include "threadLocalData.h"
 #include "../../main/cpp/gtest_crash_handler.h"
 
 #include <atomic>
