@@ -18,7 +18,7 @@
 #define _SIGNAL_SAFETY_H
 
 #include "guards.h"   // isInSignalContext, SIGNAL_HANDLER_GUARD, ...
-#include "thread.h"   // ProfiledThread::currentSignalSafe
+#include "threadLocalData.h"   // ProfiledThread::currentSignalSafe
 
 // Detect ASAN using compiler-provided macros so the ASAN_ENABLED guard below
 // works in every TU that includes this header, independent of include order.

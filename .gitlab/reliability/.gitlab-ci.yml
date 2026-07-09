@@ -41,7 +41,7 @@ variables:
       - out.log
     reports:
       dotenv: build.env
-    expire_in: 1 day
+    expire_in: 7 days
 
 reliability-amd64:
   extends: .reliability_job
@@ -99,7 +99,7 @@ reliability-aarch64:
       - out.log
     reports:
       dotenv: build.env
-    expire_in: 1 day
+    expire_in: 7 days
 
 reliability-chaos-amd64:
   extends: .reliability_chaos_job

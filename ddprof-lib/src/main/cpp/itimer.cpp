@@ -22,7 +22,7 @@
 #include "profiler.h"
 #include "signalInflight.h"
 #include "stackWalker.h"
-#include "thread.h"
+#include "threadLocalData.h"
 #include "threadState.inline.h"
 #include "guards.h"
 #include <sys/time.h>
@@ -117,7 +117,7 @@ void ITimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     return;
   }
   ProfiledThread *current = ProfiledThread::currentSignalSafe();
-  if (current != nullptr && JVMThread::isInitialized() && JVMThread::current() == nullptr
+  if (current != nullptr && JVMThread::current() == nullptr
       && current->inInitWindow()) {
     current->tickInitWindow();
     errno = saved_errno;
