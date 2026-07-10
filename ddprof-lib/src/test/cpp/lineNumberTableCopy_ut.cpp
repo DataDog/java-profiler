@@ -130,6 +130,12 @@ TEST(LineNumberTableCopyRawTest, UnguardedCopyCrashesWhenSourceUnmapped) {
             (size_t)line_number_table_size * sizeof(jvmtiLineNumberEntry);
         void *owned_table = malloc(bytes);
         memcpy(owned_table, line_number_table, bytes); // <-- crashes here
+        // Force the copied bytes to be observed before free(); otherwise an
+        // optimizing (Release) build can prove owned_table's contents are
+        // never read and eliminate the memcpy as dead code, silently
+        // skipping the very fault this test exists to demonstrate.
+        volatile unsigned char sink = *(volatile unsigned char *)owned_table;
+        (void)sink;
         free(owned_table);
       },
       "");
