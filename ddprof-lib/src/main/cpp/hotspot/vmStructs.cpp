@@ -597,6 +597,8 @@ void JNICALL VMStructs::NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni, jthread t
     static int delayedCounter = 0;
     static void **delayed = (void **)malloc(512 * sizeof(void *) * 2);
 
+    ProfiledThread::initCurrentThreadSignalSafe();
+
     if (_memory_usage_func == NULL) {
         if (jvmti != NULL && jni != NULL) {
             checkNativeBinding(jvmti, jni, method, address);

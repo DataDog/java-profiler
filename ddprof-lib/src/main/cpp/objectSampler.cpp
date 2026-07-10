@@ -50,6 +50,7 @@ bool ObjectSampler::normalizeClassSignature(const char *class_name,
 void ObjectSampler::SampledObjectAlloc(jvmtiEnv *jvmti, JNIEnv *jni,
                                        jthread thread, jobject object,
                                        jclass object_klass, jlong size) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   ObjectSampler::instance()->recordAllocation(jvmti, jni, thread, BCI_ALLOC,
                                               object, object_klass, size);
 }

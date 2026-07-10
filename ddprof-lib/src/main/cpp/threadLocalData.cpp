@@ -28,8 +28,17 @@ ProfiledThread* ProfiledThread::initCurrentThread() {
 }
 
 ProfiledThread* ProfiledThread::initCurrentThreadSignalSafe() {
-  SignalBlocker blocker;
-  return initCurrentThread();
+  if (!isThreadKeyValid()) {
+    return nullptr;
+  }
+
+  ProfiledThread* cur = current();
+  if (cur == nullptr) {
+    SignalBlocker blocker;
+    return initCurrentThread();
+  } else {
+    return cur;
+  }
 }
 
 void ProfiledThread::freeValue(void* value) {
