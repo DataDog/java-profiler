@@ -125,6 +125,8 @@ inline EventType eventTypeFromBCI(jint bci_type) {
             return PARK_SAMPLE;
         case BCI_NATIVE_MALLOC:
             return MALLOC_SAMPLE;
+        case BCI_NATIVE_SOCKET:
+            return SOCKET_SAMPLE;
         default:
             // For unknown or invalid BCI types, default to EXECUTION_SAMPLE
             // This maintains backward compatibility and prevents undefined behavior
@@ -305,7 +307,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     bool anchor_recovery_used = false;
 
     // Show extended frame types and stub frames for execution-type events
-    bool details = event_type <= MALLOC_SAMPLE || features.mixed;
+    bool details = event_type <= SOCKET_SAMPLE || features.mixed;
 
     if (details && vm_thread != NULL && VMThread::isJavaThread(vm_thread)) {
         anchor = vm_thread->anchor();
@@ -679,32 +681,26 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             // Resolve native frame (may use remote symbolication if enabled)
             Profiler::NativeFrameResolution resolution = profiler->resolveNativeFrameForWalkVM((uintptr_t)pc, lock_index);
             if (resolution.is_marked) {
-                // This is a marked C++ interpreter frame, terminate scan
-                break;
+                if (resolution.mark == MARK_ASYNC_PROFILER &&
+                    (event_type == MALLOC_SAMPLE || event_type == SOCKET_SAMPLE)) {
+                    // Discard frames captured above the malloc/socket hook boundary,
+                    // excluding the hook's own frame, and resume from the real
+                    // caller above it — mirrors the FP/DWARF skip-prefix logic in
+                    // Profiler::convertNativeTrace.
+                    depth = 0;
+                } else if (resolution.mark == MARK_THREAD_ENTRY) {
+                    // Thread entry point detected via pre-computed mark - this is the root frame
+                    Counters::increment(THREAD_ENTRY_MARK_DETECTIONS);
+                    break;
+                } else {
+                    // Other marks (VM runtime / interpreter) terminate the scan.
+                    break;
+                }
+                goto dwarf_unwind;
             }
             const char* method_name = resolution.method_name;
             int frame_bci = resolution.bci;
-            char mark;
-            if (frame_bci != BCI_NATIVE_FRAME_REMOTE && method_name != NULL && (mark = NativeFunc::read_mark(method_name)) != 0) {
-                if (mark == MARK_ASYNC_PROFILER && event_type == MALLOC_SAMPLE) {
-                    // Skip all internal frames above malloc_hook functions, leave the hook itself
-                    depth = 0;
-                } else if (mark == MARK_COMPILER_ENTRY && features.comp_task && vm_thread != NULL) {
-                    // Insert current compile task as a pseudo Java frame
-                    VMMethod* method = vm_thread->compiledMethod();
-                    if (method != nullptr) {
-                        jmethodID method_id = method->id();
-                        if (method_id != JMETHODID_NOT_WALKABLE) {
-                            fillFrame(frames[depth++], FRAME_JIT_COMPILED, 0, method_id, method);
-                        }
-                    }
-                } else if (mark == MARK_THREAD_ENTRY) {
-                    // Thread entry point detected via pre-computed mark - this is the root frame
-                    // No need for expensive symbol resolution, just stop unwinding
-                    Counters::increment(THREAD_ENTRY_MARK_DETECTIONS);
-                    break;
-                }
-            } else if (method_name == NULL && details && !anchor_recovery_used
+            if (method_name == NULL && details && !anchor_recovery_used
                        && profiler->findLibraryByAddress(pc) == NULL) {
                 // Try anchor recovery — prefer live anchor, fall back to saved data
                 anchor_recovery_used = true;

@@ -380,10 +380,11 @@ public:
     };
     int bci;                            // BCI_NATIVE_FRAME_REMOTE or BCI_NATIVE_FRAME
     bool is_marked;                     // true if this is a marked C++ interpreter frame (stop processing)
-    NativeFrameResolution(const char* name, int bci_type, bool marked)
-      : method_name(name), bci(bci_type), is_marked(marked) {}
-    NativeFrameResolution(unsigned long packed, int bci_type, bool marked)
-      : packed_remote_frame(packed), bci(bci_type), is_marked(marked) {}
+    char mark;                         // the actual Mark value when is_marked is true, 0 otherwise
+    NativeFrameResolution(const char* name, int bci_type, bool marked, char mark_value = 0)
+      : method_name(name), bci(bci_type), is_marked(marked), mark(mark_value) {}
+    NativeFrameResolution(unsigned long packed, int bci_type, bool marked, char mark_value = 0)
+      : packed_remote_frame(packed), bci(bci_type), is_marked(marked), mark(mark_value) {}
   };
 
   void populateRemoteFrame(ASGCT_CallFrame* frame, uintptr_t pc, CodeCache* lib, char mark);

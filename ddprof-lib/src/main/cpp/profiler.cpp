@@ -379,7 +379,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
     char mark = (method_name != nullptr) ? NativeFunc::read_mark(method_name) : 0;
 
     if (mark != 0) {
-      return {nullptr, BCI_NATIVE_FRAME, true};  // Marked - stop processing
+      return {nullptr, BCI_NATIVE_FRAME, true, mark};  // Marked - caller dispatches on mark
     }
 
     // Pack remote symbolication data using utility struct
@@ -395,8 +395,11 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
   if (lib != nullptr) {
     lib->binarySearch((void*)pc, &method_name);
   }
-  if (method_name != nullptr && NativeFunc::is_marked(method_name)) {
-    return NativeFrameResolution(nullptr, BCI_NATIVE_FRAME, true);
+  if (method_name != nullptr) {
+    char mark = NativeFunc::read_mark(method_name);
+    if (mark != 0) {
+      return NativeFrameResolution(nullptr, BCI_NATIVE_FRAME, true, mark);
+    }
   }
 
   // No symbol but known library: pack for library-relative identification.
