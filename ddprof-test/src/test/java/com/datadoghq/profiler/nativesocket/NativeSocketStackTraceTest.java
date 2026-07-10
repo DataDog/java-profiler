@@ -56,24 +56,26 @@ public class NativeSocketStackTraceTest extends CStackAwareAbstractProfilerTest 
 
         stopProfiler();
 
-        IItemCollection events = verifyEvents("datadog.NativeSocketEvent");
-        assertTrue(events.hasItems(), "No NativeSocketEvent events found");
+        // A recognizable caller frame proves the hook-prefix-skip logic (skip_hook_prefix in
+        // Profiler::convertNativeTrace, the MARK_ASYNC_PROFILER dispatch in walkVM) resumed
+        // unwinding above the send/recv/write/read hook boundary, rather than just returning
+        // whatever frames happened to be on the stack.
+        verifyStackTraces("datadog.NativeSocketEvent", "doTcpTransfer");
 
-        boolean foundNonEmptyStackTrace = false;
+        IItemCollection events = verifyEvents("datadog.NativeSocketEvent");
         for (IItemIterable items : events) {
             IMemberAccessor<String, IItem> stackTraceAccessor =
                     JdkAttributes.STACK_TRACE_STRING.getAccessor(items.getType());
             if (stackTraceAccessor == null) continue;
             for (IItem item : items) {
                 String st = stackTraceAccessor.getMember(item);
-                if (st != null && !st.isEmpty()) {
-                    foundNonEmptyStackTrace = true;
-                    break;
+                if (st == null) continue;
+                for (String hookFrame : new String[] {"send_hook", "recv_hook", "write_hook", "read_hook"}) {
+                    assertFalse(st.contains(hookFrame),
+                            "profiler-internal hook frame " + hookFrame + " leaked into stack trace: " + st);
                 }
             }
-            if (foundNonEmptyStackTrace) break;
         }
-        assertTrue(foundNonEmptyStackTrace, "Expected at least one NativeSocketEvent with a non-empty stack trace");
     }
 
     // Named method so it can appear as a recognizable frame

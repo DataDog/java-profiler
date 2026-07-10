@@ -680,14 +680,23 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         } else {
             // Resolve native frame (may use remote symbolication if enabled)
             Profiler::NativeFrameResolution resolution = profiler->resolveNativeFrameForWalkVM((uintptr_t)pc, lock_index);
-            if (resolution.is_marked) {
+            if (resolution.is_marked()) {
                 if (resolution.mark == MARK_ASYNC_PROFILER &&
-                    (event_type == MALLOC_SAMPLE || event_type == SOCKET_SAMPLE)) {
+                    isHookPrefixedSample(event_type)) {
                     // Discard frames captured above the malloc/socket hook boundary,
                     // excluding the hook's own frame, and resume from the real
                     // caller above it — mirrors the FP/DWARF skip-prefix logic in
                     // Profiler::convertNativeTrace.
                     depth = 0;
+                } else if (resolution.mark == MARK_COMPILER_ENTRY && features.comp_task && vm_thread != NULL) {
+                    // Insert current compile task as a pseudo Java frame
+                    VMMethod* method = vm_thread->compiledMethod();
+                    if (method != nullptr) {
+                        jmethodID method_id = method->id();
+                        if (method_id != JMETHODID_NOT_WALKABLE) {
+                            fillFrame(frames[depth++], FRAME_JIT_COMPILED, 0, method_id, method);
+                        }
+                    }
                 } else if (resolution.mark == MARK_THREAD_ENTRY) {
                     // Thread entry point detected via pre-computed mark - this is the root frame
                     Counters::increment(THREAD_ENTRY_MARK_DETECTIONS);
@@ -1190,7 +1199,7 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   int java_frames = 0;
   if (features.mixed) {
     java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
-  } else if (request.event_type == BCI_NATIVE_MALLOC || request.event_type == BCI_NATIVE_SOCKET) {
+  } else if (isHookPrefixedSample(request.event_type)) {
     if (cstack >= CSTACK_VM) {
       java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
     } else {

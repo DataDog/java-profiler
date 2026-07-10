@@ -294,7 +294,7 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
   if (_cstack == CSTACK_NO ||
       (event_type == BCI_ALLOC || event_type == BCI_ALLOC_OUTSIDE_TLAB) ||
       (event_type != BCI_CPU && event_type != BCI_WALL &&
-       event_type != BCI_NATIVE_MALLOC && event_type != BCI_NATIVE_SOCKET &&
+       !isHookPrefixedSample(event_type) &&
        _cstack == CSTACK_DEFAULT)) {
     return 0;
   }
@@ -319,8 +319,7 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
                                          java_ctx, truncated);
   }
 
-  bool skip_hook_prefix =
-      event_type == BCI_NATIVE_MALLOC || event_type == BCI_NATIVE_SOCKET;
+  bool skip_hook_prefix = isHookPrefixedSample(event_type);
   return convertNativeTrace(native_frames, callchain, frames, lock_index,
                             skip_hook_prefix);
 }
@@ -379,7 +378,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
     char mark = (method_name != nullptr) ? NativeFunc::read_mark(method_name) : 0;
 
     if (mark != 0) {
-      return {nullptr, BCI_NATIVE_FRAME, true, mark};  // Marked - caller dispatches on mark
+      return NativeFrameResolution(nullptr, BCI_NATIVE_FRAME, mark);  // Marked - caller dispatches on mark
     }
 
     // Pack remote symbolication data using utility struct
@@ -387,7 +386,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
     uint32_t lib_index = (uint32_t)lib->libIndex();
     unsigned long packed = RemoteFramePacker::pack(pc_offset, mark, lib_index);
 
-    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE, false);
+    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE);
   }
 
   // Traditional symbol resolution
@@ -398,7 +397,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
   if (method_name != nullptr) {
     char mark = NativeFunc::read_mark(method_name);
     if (mark != 0) {
-      return NativeFrameResolution(nullptr, BCI_NATIVE_FRAME, true, mark);
+      return NativeFrameResolution(nullptr, BCI_NATIVE_FRAME, mark);
     }
   }
 
@@ -409,10 +408,10 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
     uintptr_t pc_offset = pc - (uintptr_t)lib->imageBase();
     uint32_t lib_index = (uint32_t)lib->libIndex();
     unsigned long packed = RemoteFramePacker::pack(pc_offset, 0, lib_index);
-    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE, false);
+    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE);
   }
 
-  return NativeFrameResolution(method_name, BCI_NATIVE_FRAME, false);
+  return NativeFrameResolution(method_name, BCI_NATIVE_FRAME);
 }
 
 /**
@@ -450,7 +449,7 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
         char mark = (method_name != nullptr) ? NativeFunc::read_mark(method_name) : 0;
 
         if (mark != 0) {
-          if (skipping && mark == MARK_ASYNC_PROFILER) {
+          if (skip_hook_prefix && mark == MARK_ASYNC_PROFILER) {
             depth = 0;
             skipping = false;
             continue;
@@ -479,7 +478,7 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
     if (method_name != nullptr) {
       char mark = NativeFunc::read_mark(method_name);
       if (mark != 0) {
-        if (skipping && mark == MARK_ASYNC_PROFILER) {
+        if (skip_hook_prefix && mark == MARK_ASYNC_PROFILER) {
           depth = 0;
           skipping = false;
           continue;
@@ -502,6 +501,11 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
     }
   }
 
+  if (skipping) {
+    // The hook-boundary (MARK_ASYNC_PROFILER) frame was never found in the
+    // callchain; every frame was discarded and the sample has no native stack.
+    Counters::increment(NATIVE_TRACE_HOOK_PREFIX_NOT_FOUND);
+  }
   return depth;
 }
 
