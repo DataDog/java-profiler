@@ -294,7 +294,7 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
   if (_cstack == CSTACK_NO ||
       (event_type == BCI_ALLOC || event_type == BCI_ALLOC_OUTSIDE_TLAB) ||
       (event_type != BCI_CPU && event_type != BCI_WALL &&
-       _cstack == CSTACK_DEFAULT)) {
+       event_type != BCI_NATIVE_MALLOC && _cstack == CSTACK_DEFAULT)) {
     return 0;
   }
   int max_depth = min(_max_stack_depth, MAX_NATIVE_FRAMES);
