@@ -319,7 +319,10 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
                                          java_ctx, truncated);
   }
 
-  return convertNativeTrace(native_frames, callchain, frames, lock_index);
+  bool skip_hook_prefix =
+      event_type == BCI_NATIVE_MALLOC || event_type == BCI_NATIVE_SOCKET;
+  return convertNativeTrace(native_frames, callchain, frames, lock_index,
+                            skip_hook_prefix);
 }
 
 /**
@@ -419,9 +422,16 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
  * marked frames (JVM internals) that should terminate the stack walk.
  */
 int Profiler::convertNativeTrace(int native_frames, const void **callchain,
-                                 ASGCT_CallFrame *frames, int lock_index) {
+                                 ASGCT_CallFrame *frames, int lock_index,
+                                 bool skip_hook_prefix) {
   int depth = 0;
   void* prev_identifier = NULL;  // Can be jmethodID or frame pointer for remote
+  // skip_hook_prefix: the walk started inside profiler-internal code (e.g. the
+  // malloc/socket hook call chain), not at an interrupted user PC. Discard frames
+  // until the hook wrapper's own MARK_ASYNC_PROFILER-marked frame is reached, then
+  // resume normally from the real caller. Other mark kinds still terminate the
+  // scan immediately, same as the non-skipping case.
+  bool skipping = skip_hook_prefix;
 
   for (int i = 0; i < native_frames; i++) {
     uintptr_t pc = (uintptr_t)callchain[i];
@@ -437,9 +447,15 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
         char mark = (method_name != nullptr) ? NativeFunc::read_mark(method_name) : 0;
 
         if (mark != 0) {
+          if (skipping && mark == MARK_ASYNC_PROFILER) {
+            depth = 0;
+            skipping = false;
+            continue;
+          }
           // Terminate scan at marked frame
           return depth;
         }
+        if (skipping) continue;
 
         // Populate remote frame inline - no allocation needed!
         // Pass the mark we already retrieved to avoid duplicate binarySearch
@@ -457,10 +473,19 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
 
     // Fallback: Traditional symbol resolution
     const char *method_name = findNativeMethod((void*)pc);
-    if (method_name != nullptr && NativeFunc::is_marked(method_name)) {
-      // Terminate scan at marked frame
-      return depth;
+    if (method_name != nullptr) {
+      char mark = NativeFunc::read_mark(method_name);
+      if (mark != 0) {
+        if (skipping && mark == MARK_ASYNC_PROFILER) {
+          depth = 0;
+          skipping = false;
+          continue;
+        }
+        // Terminate scan at marked frame
+        return depth;
+      }
     }
+    if (skipping) continue;
 
     // Store standard frame
     jmethodID current_method = (jmethodID)method_name;

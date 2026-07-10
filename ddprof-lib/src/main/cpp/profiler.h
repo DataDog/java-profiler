@@ -389,7 +389,8 @@ public:
   void populateRemoteFrame(ASGCT_CallFrame* frame, uintptr_t pc, CodeCache* lib, char mark);
   NativeFrameResolution resolveNativeFrameForWalkVM(uintptr_t pc, int lock_index);
   int convertNativeTrace(int native_frames, const void **callchain,
-                         ASGCT_CallFrame *frames, int lock_index);
+                         ASGCT_CallFrame *frames, int lock_index,
+                         bool skip_hook_prefix);
   bool recordSample(void *ucontext, u64 weight, int tid, jint event_type,
                     u64 call_trace_id, Event *event,
                     u64 *recorded_call_trace_id = nullptr);

@@ -7,8 +7,10 @@
 
 #if defined(__linux__)
 
+#include "codeCache.h"
 #include "common.h"
 #include "flightRecorder.h"
+#include "libraries.h"
 #include "libraryPatcher.h"
 #include "log.h"
 #include "os.h"
@@ -26,6 +28,21 @@
 
 static thread_local PoissonSampler _send_sampler;
 static thread_local PoissonSampler _recv_sampler;
+
+// Marks the hook wrapper's own symbol as MARK_ASYNC_PROFILER so native call-stack
+// unwinding (Profiler::convertNativeTrace) can recognize the boundary between
+// profiler-internal frames and the real caller, mirroring MallocHooker::initialize().
+// Resolved by address (not by symbol-name predicate) because these are mangled
+// C++ static member functions, unlike malloc_hook's extern "C" free functions.
+static void markAsyncProfilerHook(void* fn_addr) {
+    CodeCache* lib = Libraries::instance()->findLibraryByAddress(fn_addr);
+    if (lib == nullptr) return;
+    const char* name = nullptr;
+    lib->binarySearch(fn_addr, &name);
+    if (name != nullptr) {
+        NativeFunc::set_mark(name, MARK_ASYNC_PROFILER);
+    }
+}
 
 // Debug-only hook-fire counters, paired with TEST_LOG (common.h). Gated at
 // compile time to keep release hot paths free of cross-thread atomic writes.
@@ -386,6 +403,11 @@ Error NativeSocketSampler::start(Arguments &args) {
     TEST_LOG("NativeSocketSampler::start interval_ticks=%ld tsc_freq=%llu",
              init_interval, (unsigned long long)TSC::frequency());
 #endif
+    markAsyncProfilerHook((void*)&NativeSocketSampler::send_hook);
+    markAsyncProfilerHook((void*)&NativeSocketSampler::recv_hook);
+    markAsyncProfilerHook((void*)&NativeSocketSampler::write_hook);
+    markAsyncProfilerHook((void*)&NativeSocketSampler::read_hook);
+
     if (!LibraryPatcher::patch_socket_functions()) {
         return Error("failed to install native socket hooks (dlsym returned NULL)");
     }
