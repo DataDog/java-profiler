@@ -20,6 +20,12 @@
 volatile JVMSupport::JMethodIDLoadStats JVMSupport::jmethodID_load_state = JVMSupport::No_loaded;
 Mutex JVMSupport::_initialization_lock;
 
+
+// This method must be called after JVM has been properly initialized, e.g. after JVMTI::VMinit()
+// callback.
+// Currently, there are two paths lead to this call
+// - JVMTI::VMInit() callback (vmEntry.cpp)
+// - JavaProfiler.getInstance() via JNI down call - JVM must have been initialized
 bool JVMSupport::initialize() {
     MutexLocker locker(_initialization_lock);
 
