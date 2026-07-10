@@ -1241,10 +1241,23 @@ Error Profiler::checkState() {
 
 Error Profiler::init() {
   MutexLocker ml(_state_lock);
-  Error error = checkState();
-  if (error) {
-    return error;
+  State s = state();
+  if (s == ERROR) {
+    return Error("Profiler encountered fatal error");
+  } else if (s == NEW) {
+    // Make sure JVMSupport is initialized
+    // In theory, it should be initialized in JVMTI::VMInit() callback,
+    // but the callback arrives too late, after this method is called.
+    if (!JVMSupport::initialize()) {
+      _state.store(ERROR, std::memory_order_release);
+      return Error("Profiler encountered fatal error");
+    }
   }
+  // Unlike checkState(), init() does not reject a RUNNING/TERMINATED
+  // profiler: it is idempotent per-thread setup for the Java API
+  // (e.g. JavaProfiler.getInstance()), not a state transition, and the
+  // agent may already be RUNNING by the time it is called (VMInit can
+  // auto-start the profiler before Java code gets a chance to call in).
 
   // JNI down call, outside signal handler
   ProfiledThread::initCurrentThreadSignalSafe();

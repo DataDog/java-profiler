@@ -361,7 +361,7 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) {
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = initOrGetCurrentThread();
   if (current == nullptr) {
     return;
   }
@@ -379,7 +379,7 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
     JNIEnv *env, jclass unused, jlong blocker, jlong unblockingSpanId) {
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = initOrGetCurrentThread();
   if (current == nullptr) {
     return;
   }
@@ -413,7 +413,7 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
   if (!decodeJavaBlockState(state, decoded)) {
     return 0;
   }
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = initOrGetCurrentThread();
   if (current == nullptr) {
     return 0;
   }
@@ -435,7 +435,7 @@ Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
   if (block_token == 0) {
     return;
   }
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = initOrGetCurrentThread();
   if (current == nullptr) {
     return;
   }
