@@ -177,6 +177,12 @@ infinities, subnormals, -0.0).
 Seed corpus files are in `corpus/<target_name>/`. These provide starting points
 for the fuzzer to understand the expected input format.
 
+`corpus/fuzz_threadLocal/` seeds a few inputs per opcode range documented in
+`fuzz_threadLocal.cpp` (tracked lifecycle/overwrite, `nullptr` recreate, double
+and intptr bit-exact round-trips including NaN/inf/-0.0/subnormal, and a
+truncated-payload case) to speed up initial coverage discovery. Not required —
+the fuzzer runs fine from an empty corpus — but these give it a head start.
+
 During fuzzing, libFuzzer will add new interesting inputs to the corpus
 directory. These additions are machine-generated and should not be committed.
 
