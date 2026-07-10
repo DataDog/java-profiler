@@ -362,11 +362,25 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
       void *owned_table = nullptr;
       if (line_number_table_size > 0) {
         size_t bytes = (size_t)line_number_table_size * sizeof(jvmtiLineNumberEntry);
-        owned_table = malloc(bytes);
-        if (owned_table != nullptr) {
-          memcpy(owned_table, line_number_table, bytes);
+        // GetLineNumberTable() is called on the same possibly-stale jmethodID
+        // that GetMethodDeclaringClass/GetClassSignature/GetMethodName above
+        // were probed for -- the TOCTOU race documented above (class
+        // unloaded between sample capture and dump) applies here just as
+        // much as to those calls, and crash telemetry already showed those
+        // sibling calls returning JVMTI_ERROR_NONE with unmapped string
+        // pointers despite the spec saying the returned array should be a
+        // fresh, caller-owned allocation. Nothing about this call guarantees
+        // it is exempt from the same failure mode, so probe before copying
+        // rather than assume the pointer is safe to dereference.
+        if (SafeAccess::isReadableRange(line_number_table, bytes)) {
+          owned_table = malloc(bytes);
+          if (owned_table != nullptr) {
+            memcpy(owned_table, line_number_table, bytes);
+          } else {
+            TEST_LOG("Failed to allocate %zu bytes for line number table copy", bytes);
+          }
         } else {
-          TEST_LOG("Failed to allocate %zu bytes for line number table copy", bytes);
+          Counters::increment(LINE_NUMBER_TABLE_UNREADABLE);
         }
       }
       jvmtiError dealloc_err = jvmti->Deallocate((unsigned char *)line_number_table);
