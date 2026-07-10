@@ -878,7 +878,7 @@ extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_setTraceContext0(JNIEnv* env, jclass unused,
     jlong localRootSpanId, jlong spanId, jlong traceIdHigh, jlong traceIdLow,
     jint slot0, jint enc0, jbyteArray utf0, jint slot1, jint enc1, jbyteArray utf1) {
-  ProfiledThread* thrd = ProfiledThread::current();
+  ProfiledThread* thrd = ProfiledThread::initCurrentThreadSignalSafe();
   if (thrd == nullptr) {
     return;
   }
@@ -934,7 +934,7 @@ Java_com_datadoghq_profiler_JavaProfiler_setTraceContext0(JNIEnv* env, jclass un
 // detached (valid=0), mirroring the DBB clear path (setContext(0,0,0,0) + clearContextValue*).
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_clearTraceContext0(JNIEnv* env, jclass unused) {
-  ProfiledThread* thrd = ProfiledThread::current();
+  ProfiledThread* thrd = ProfiledThread::initCurrentThreadSignalSafe();
   if (thrd == nullptr) {
     return;
   }
@@ -959,7 +959,7 @@ Java_com_datadoghq_profiler_JavaProfiler_clearTraceContext0(JNIEnv* env, jclass 
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_setContextValue0(JNIEnv* env, jclass unused,
     jint slot, jint encoding, jbyteArray utf8) {
-  ProfiledThread* thrd = ProfiledThread::current();
+  ProfiledThread* thrd = ProfiledThread::initCurrentThreadSignalSafe();
   if (thrd == nullptr || slot < 0 || slot >= (jint)DD_TAGS_CAPACITY) {
     return JNI_FALSE;
   }
