@@ -18,10 +18,7 @@ public class VtableReceiverFrameTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        // cpu=1ms sampling over the fixed workload below still produces an ASAN-scaled
-        // number of samples (signal handling is slower under ASAN), and every sample's
-        // stack trace is materialized below, so sample coarser under ASAN.
-        return isAsan() ? "cpu=10ms" : "cpu=1ms";
+        return "cpu=1ms";
     }
 
     abstract static class Shape {
@@ -44,11 +41,7 @@ public class VtableReceiverFrameTest extends AbstractProfilerTest {
 
     private int profiledWork(Shape... shapes) {
         int result = 0;
-        // Reduce workload under ASAN: combined with the coarser sampling rate above, this
-        // bounds the number of samples (and thus the stack-trace strings materialized
-        // below) regardless of how much ASAN slows down signal handling.
-        int iterations = isAsan() ? 1_000_000 : 10_000_000;
-        for (int i = 0; i < iterations; i++) {
+        for (int i = 0; i < 10_000_000; i++) {
             for (Shape shape : shapes) {
                 result += shape.area();
             }
