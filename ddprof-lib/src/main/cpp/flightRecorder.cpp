@@ -380,6 +380,7 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
             TEST_LOG("Failed to allocate %zu bytes for line number table copy", bytes);
           }
         } else {
+          line_number_table = nullptr; // make sure the invalid address is not used for jvmti->Deallocate
           Counters::increment(LINE_NUMBER_TABLE_UNREADABLE);
         }
       }
