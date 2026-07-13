@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler.wallclock;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
@@ -74,8 +79,7 @@ public class NativeSocketTaskBlockLifecycleTest extends AbstractProfilerTest {
     private void assertIoWaitTaskBlockPresent(IItemCollection taskBlockEvents, long expectedBlocker) {
         assertTrue(expectedBlocker != 0L, "native lifecycle helper must report the expected blocker");
         if (!taskBlockEvents.hasItems()) {
-            System.out.println(missingTaskBlockDiagnostic());
-            return;
+            assertTrue(false, missingTaskBlockDiagnostic());
         }
         TaskBlockAssertions.assertNoAnchorFields(taskBlockEvents);
         TaskBlockAssertions.assertContainsStackTrace(taskBlockEvents);

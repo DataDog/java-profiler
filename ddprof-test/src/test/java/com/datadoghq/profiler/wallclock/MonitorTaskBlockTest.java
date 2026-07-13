@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler.wallclock;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
@@ -5,6 +10,9 @@ import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.item.IItemCollection;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -155,6 +163,75 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
                 TaskBlockAssertions.containsSpan(verifyEvents("datadog.TaskBlock", false), 0x4501L),
                 "Traced monitor contention must keep MethodSample wall-clock data instead of TaskBlock");
         assertTrue(getRecordedCounterValue("task_block_skipped_trace_context") > 0);
+    }
+
+    @Test
+    public void staleObjectWaitStateRecoversAfterProfilerRestart() throws Exception {
+        Object waitMonitor = new Object();
+        Object contentionMonitor = new Object();
+        CountDownLatch waiting = new CountDownLatch(1);
+        CountDownLatch waitCompleted = new CountDownLatch(1);
+        CountDownLatch restartReady = new CountDownLatch(1);
+        CountDownLatch attemptingContention = new CountDownLatch(1);
+        AtomicReference<Throwable> error = new AtomicReference<>();
+
+        Thread worker = new Thread(() -> {
+            try {
+                registerCurrentThreadForWallClockProfiling();
+                synchronized (waitMonitor) {
+                    waiting.countDown();
+                    waitMonitor.wait();
+                }
+                waitCompleted.countDown();
+                assertTrue(restartReady.await(5, TimeUnit.SECONDS));
+                registerCurrentThreadForWallClockProfiling();
+                attemptingContention.countDown();
+                synchronized (contentionMonitor) {
+                }
+            } catch (Throwable t) {
+                error.set(t);
+            }
+        }, "taskblock-monitor-restart");
+
+        worker.start();
+        assertTrue(waiting.await(5, TimeUnit.SECONDS));
+        Thread.sleep(50L);
+        stopProfiler();
+        synchronized (waitMonitor) {
+            waitMonitor.notifyAll();
+        }
+        assertTrue(waitCompleted.await(5, TimeUnit.SECONDS));
+
+        Path recording = Files.createTempFile(Paths.get("/tmp/recordings"),
+                "MonitorTaskBlockTest_restart_", ".jfr");
+        boolean restarted = false;
+        try {
+            profiler.execute("start,wall=1ms,filter=0,wallprecheck=true,jfr,file="
+                    + recording.toAbsolutePath());
+            restarted = true;
+            synchronized (contentionMonitor) {
+                restartReady.countDown();
+                assertTrue(attemptingContention.await(5, TimeUnit.SECONDS));
+                Thread.sleep(100L);
+            }
+            assertCompleted(worker, error);
+            profiler.stop();
+            restarted = false;
+
+            IItemCollection events = verifyEvents(recording, "datadog.TaskBlock", false);
+            TaskBlockAssertions.assertContainsStackTrace(events);
+            TaskBlockAssertions.assertContainsBlocker(events, identityHash(contentionMonitor));
+        } finally {
+            restartReady.countDown();
+            synchronized (waitMonitor) {
+                waitMonitor.notifyAll();
+            }
+            if (restarted) {
+                profiler.stop();
+            }
+            worker.join(5_000L);
+            Files.deleteIfExists(recording);
+        }
     }
 
     @Override

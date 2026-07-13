@@ -388,6 +388,16 @@ public:
     _monitor_block_token = token;
   }
 
+  inline u64 monitorBlockToken() const {
+    return _monitor_block_token;
+  }
+
+  inline void clearMonitorBlock() {
+    __atomic_fetch_and(&_misc_flags, ~FLAG_MONITOR_BLOCKED, __ATOMIC_ACQ_REL);
+    _monitor_block_token = 0;
+    _monitor_block_state = OSThreadState::UNKNOWN;
+  }
+
   inline bool monitorExit(OSThreadState expected_state, u64 &start_ticks,
                           Context &monitor_context, u64 &blocker,
                           u64 &monitor_block_token) {

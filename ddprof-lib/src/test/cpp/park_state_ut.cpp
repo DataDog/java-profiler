@@ -204,6 +204,25 @@ TEST(ProfiledThreadMonitorStateTest, ObjectWaitOwnsNestedMonitorContention) {
   EXPECT_EQ(0ULL, monitor_block_token);
 }
 
+TEST(ProfiledThreadMonitorStateTest, StaleMonitorStateCanBeClearedAndRearmed) {
+  TestProfiledThread thread = testThread(12350);
+  EXPECT_TRUE(thread->monitorEnter(100, 11, OSThreadState::OBJECT_WAIT));
+  thread->setMonitorBlockToken(0x123400000001ULL);
+
+  thread->clearMonitorBlock();
+  EXPECT_EQ(0ULL, thread->monitorBlockToken());
+  EXPECT_TRUE(thread->monitorEnter(200, 22, OSThreadState::MONITOR_WAIT));
+
+  u64 start_ticks = 0;
+  Context context{};
+  u64 blocker = 0;
+  u64 token = 0;
+  EXPECT_TRUE(thread->monitorExit(OSThreadState::MONITOR_WAIT, start_ticks,
+                                  context, blocker, token));
+  EXPECT_EQ(200ULL, start_ticks);
+  EXPECT_EQ(22ULL, blocker);
+}
+
 TEST(WallClockOncePerRunFilterTest, SlotStateTransitions) {
   ThreadFilter::Slot slot;
 

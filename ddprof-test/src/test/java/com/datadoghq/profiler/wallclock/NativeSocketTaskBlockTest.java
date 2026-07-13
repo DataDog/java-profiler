@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler.wallclock;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
@@ -330,12 +335,11 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
     private void assertNativeIoHelperCompleted(long expectedBlocker) {
         assertTrue(expectedBlocker != 0L, "native I/O helper must report the expected blocker");
         IItemCollection taskBlockEvents = verifyEvents("datadog.TaskBlock", false);
-        if (taskBlockEvents.hasItems()) {
-            TaskBlockAssertions.assertNoAnchorFields(taskBlockEvents);
-            assertTaskBlockStackReference(taskBlockEvents);
-            TaskBlockAssertions.assertContainsObservedState(taskBlockEvents, "IO_WAIT");
-            TaskBlockAssertions.assertContainsBlocker(taskBlockEvents, expectedBlocker);
-        }
+        assertNativeTaskBlockPresent(taskBlockEvents);
+        TaskBlockAssertions.assertNoAnchorFields(taskBlockEvents);
+        assertTaskBlockStackReference(taskBlockEvents);
+        TaskBlockAssertions.assertContainsObservedState(taskBlockEvents, "IO_WAIT");
+        TaskBlockAssertions.assertContainsBlocker(taskBlockEvents, expectedBlocker);
     }
 
     protected void assertTaskBlockStackReference(IItemCollection taskBlockEvents) {

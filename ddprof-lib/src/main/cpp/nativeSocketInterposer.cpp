@@ -273,10 +273,8 @@ int NativeSocketInterposer::close_hook(int fd) {
   }
   {
     ErrnoGuard errno_guard;
-    if (ret == 0) {
-      NativeSocketInterposer::instance()->clearFdType(fd);
-      NativeSocketSampler::instance()->clearFdCacheEntry(fd);
-    }
+    NativeSocketInterposer::instance()->clearFdType(fd);
+    NativeSocketSampler::instance()->clearFdCacheEntry(fd);
   }
   return ret;
 }

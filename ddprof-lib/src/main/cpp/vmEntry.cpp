@@ -127,10 +127,24 @@ static void monitorBlockEnter(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
     return;
   }
   if (!current->monitorEnter(TSC::ticks(), monitorBlockerHash(jvmti, object), state)) {
-    // Object.wait covers the wait and monitor reacquire interval until MonitorWaited.
-    // A nested monitor-contention callback during reacquire must not split or replace
-    // that logical TaskBlock.
-    return;
+    u64 token = current->monitorBlockToken();
+    ThreadFilter* tf = profiler->threadFilter();
+    bool valid = false;
+    if (token != 0) {
+      ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(token);
+      BlockRunSnapshot snapshot = tf->snapshotBlockedRun(slot_id);
+      valid = current->filterSlotId() == slot_id && snapshot.active &&
+          snapshot.owner == BlockRunOwner::JVMTI &&
+          snapshot.generation == ThreadFilter::tokenGeneration(token);
+    }
+    if (valid) {
+      // Object.wait owns the interval through monitor reacquisition.
+      return;
+    }
+    current->clearMonitorBlock();
+    if (!current->monitorEnter(TSC::ticks(), monitorBlockerHash(jvmti, object), state)) {
+      return;
+    }
   }
   ThreadFilter *tf = profiler->threadFilter();
   if (tf->enabled()) {

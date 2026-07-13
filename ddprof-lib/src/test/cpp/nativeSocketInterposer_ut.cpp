@@ -81,6 +81,7 @@ std::atomic<ssize_t> g_write_ret{0};
 std::atomic<ssize_t> g_sampler_write_ret{0};
 std::atomic<ssize_t> g_read_ret{0};
 std::atomic<int> g_close_ret{0};
+std::atomic<int> g_close_errno{0};
 std::atomic<int> g_connect_ret{0};
 std::atomic<int> g_accept_ret{0};
 std::atomic<int> g_accept4_ret{0};
@@ -205,6 +206,7 @@ void native_socket_sampler_observer(const char* phase, int, u8, ssize_t) {
 
 int stub_close(int) {
   g_close_calls++;
+  errno = g_close_errno.load();
   return g_close_ret.load();
 }
 
@@ -351,6 +353,7 @@ protected:
     g_sampler_write_ret = 0;
     g_read_ret = 0;
     g_close_ret = 0;
+    g_close_errno = 0;
     g_connect_ret = 0;
     g_accept_ret = 0;
     g_accept4_ret = 0;
@@ -1339,6 +1342,36 @@ TEST_F(NativeSocketInterposerFdTest,
   EXPECT_FALSE(sampler->isSocketForTest(datagram_fd));
 
   ASSERT_EQ(0, closeThroughHook(datagram_fd));
+  ASSERT_EQ(0, closeThroughHook(stream_fds[1]));
+}
+
+TEST_F(NativeSocketInterposerFdTest, FailedCloseInvalidatesCachesAndPreservesErrno) {
+  int stream_fds[2];
+  ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, stream_fds));
+
+  int fd = stream_fds[0];
+  NativeSocketSampler* sampler = NativeSocketSampler::instance();
+  EXPECT_TRUE(NativeSocketInterposer::instance()->isStreamSocket(fd));
+  EXPECT_TRUE(sampler->isSocketForTest(fd));
+  sampler->fdAddrCacheInsertForTest(fd, "127.0.0.1:12345");
+  ASSERT_TRUE(sampler->fdAddrCacheContainsForTest(fd));
+
+  setOriginalFunction(NativeSocketInterposer::HOOK_CLOSE,
+                      reinterpret_cast<void*>(stub_close));
+  g_close_ret = -1;
+  g_close_errno = EINTR;
+  uint64_t probes_before = NativeFdClassifier::probeCountForTest();
+
+  errno = E2BIG;
+  EXPECT_EQ(-1, closeThroughHook(fd));
+  EXPECT_EQ(EINTR, errno);
+  EXPECT_FALSE(sampler->fdAddrCacheContainsForTest(fd));
+  EXPECT_TRUE(NativeSocketInterposer::instance()->isStreamSocket(fd));
+  EXPECT_GT(NativeFdClassifier::probeCountForTest(), probes_before);
+
+  setOriginalFunction(NativeSocketInterposer::HOOK_CLOSE,
+                      reinterpret_cast<void*>(::close));
+  ASSERT_EQ(0, closeThroughHook(fd));
   ASSERT_EQ(0, closeThroughHook(stream_fds[1]));
 }
 
