@@ -47,6 +47,16 @@
 static const char *const SETTING_RING[] = {NULL, "kernel", "user", "any"};
 static const char *const SETTING_CSTACK[] = {NULL, "no", "fp", "dwarf", "lbr"};
 
+// JVM spec SS4.7.3 caps a method's bytecode (code_length) at 65535 bytes (u2),
+// so a well-formed LineNumberTable can never have more entries than that.
+// Used to sanity-bound line_number_table_size before it drives the byte-count
+// passed to SafeAccess::isReadableRange()/memcpy(): if GetLineNumberTable()
+// returns a corrupted pointer for a stale jmethodID (see the TOCTOU race
+// documented in fillJavaMethodInfo below), the paired out-param size is just
+// as likely to be corrupted, and an implausible size should be rejected
+// before it is trusted to compute a byte range.
+static const jint MAX_LINE_NUMBER_TABLE_ENTRIES = 65535;
+
 // Compute a non-negative event duration from TSC timestamps.  Unsigned u64
 // subtraction wraps to a near-2^64 value when end < start, which can happen if
 // the thread migrates cores between the two TSC reads and the per-core counters
@@ -360,7 +370,8 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
       // the JVMTI-allocated memory immediately. This keeps _ptr valid even
       // after the underlying class is unloaded.
       void *owned_table = nullptr;
-      if (line_number_table_size > 0) {
+      if (line_number_table_size > 0 &&
+          line_number_table_size <= MAX_LINE_NUMBER_TABLE_ENTRIES) {
         size_t bytes = (size_t)line_number_table_size * sizeof(jvmtiLineNumberEntry);
         // GetLineNumberTable() is called on the same possibly-stale jmethodID
         // that GetMethodDeclaringClass/GetClassSignature/GetMethodName above
@@ -383,6 +394,14 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
           line_number_table = nullptr; // make sure the invalid address is not used for jvmti->Deallocate
           Counters::increment(LINE_NUMBER_TABLE_UNREADABLE);
         }
+      } else if (line_number_table_size > MAX_LINE_NUMBER_TABLE_ENTRIES) {
+        // A corrupted size out-param alongside a corrupted pointer is exactly
+        // as plausible as the corrupted-pointer case above (both come from
+        // the same GetLineNumberTable() call on the same stale jmethodID);
+        // an implausible entry count means the pointer can't be trusted for
+        // Deallocate() either, so treat it the same as the unreadable case.
+        line_number_table = nullptr;
+        Counters::increment(LINE_NUMBER_TABLE_UNREADABLE);
       }
       jvmtiError dealloc_err = jvmti->Deallocate((unsigned char *)line_number_table);
       if (dealloc_err != JVMTI_ERROR_NONE) {
