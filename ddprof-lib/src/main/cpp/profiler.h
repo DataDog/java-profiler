@@ -87,6 +87,10 @@ private:
   StringDictionary _class_map{1};
   StringDictionary _string_label_map{2};
   StringDictionary _context_value_map{3};
+  // Set when a fresh start resets _context_value_map (clearAll), reassigning encodings. Consumed by
+  // the Java layer to drop its process-wide ContextValueCache so no stale encoding is reused. See
+  // JavaProfiler.execute / ContextValueCache.
+  std::atomic<bool> _context_value_dict_reset{false};
   ThreadFilter _thread_filter;
   TaskBlockQueue _task_block_queue;
   CallTraceStorage _call_trace_storage;
@@ -286,6 +290,10 @@ public:
   SharedLockGuard classMapSharedGuard() { return SharedLockGuard(&_class_map_lock); }
   StringDictionary *stringLabelMap() { return &_string_label_map; }
   StringDictionary *contextValueMap() { return &_context_value_map; }
+  // Atomically reads and clears the "context value dictionary was reset" flag (see the member).
+  bool consumeContextValueDictReset() {
+    return _context_value_dict_reset.exchange(false, std::memory_order_acq_rel);
+  }
   u32 numContextAttributes() { return _num_context_attributes; }
   ThreadFilter *threadFilter() { return &_thread_filter; }
 

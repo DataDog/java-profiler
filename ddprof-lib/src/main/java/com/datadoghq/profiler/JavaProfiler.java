@@ -45,6 +45,17 @@ public final class JavaProfiler {
     // OtelContextStorage for the mode selection and the rationale.
     private final ThreadLocal<ThreadContext> tlsContextStorage = OtelContextStorage.create();
 
+    // Process-wide value->(encoding, utf8) cache for the all-native context write path
+    // (setTraceContext / setContextValue). See ContextValueCache. One instance on the singleton.
+    private final ContextValueCache contextValueCache = new ContextValueCache();
+
+    // Number of custom attribute slots on the all-native path. Must equal the native
+    // DD_TAGS_CAPACITY (context.h); kept as a literal (not derived via JNI) because it bounds
+    // array-slot checks that can run before the native library is loaded, and kept independent of
+    // ThreadContext so the phase-3 removal of ThreadContext does not strand this constant. Drift
+    // from the native value is caught at test time by MaxContextSlotsTest via maxContextSlots0().
+    static final int MAX_CONTEXT_SLOTS = 10;
+
     /**
      * Returns the calling thread's (or, in carrier mode, its current carrier's)
      * {@link ThreadContext}, creating and caching it on first use. Replaces the previous
@@ -182,7 +193,16 @@ public final class JavaProfiler {
         if (command == null) {
             throw new NullPointerException();
         }
-        return execute0(command);
+        String result = execute0(command);
+        // A fresh 'start' (ACTION_START) resets the native context-value Dictionary
+        // (StringDictionary::clearAll), reassigning encodings. The native side sets a flag when it
+        // does so; consume it here and drop the value cache so no stale encoding from the prior
+        // session is reused. Driven by the already-parsed native action — no command re-parsing.
+        // See ContextValueCache and Profiler::start.
+        if (consumeContextDictionaryReset0()) {
+            contextValueCache.clear();
+        }
+        return result;
     }
 
     /**
@@ -240,7 +260,9 @@ public final class JavaProfiler {
      * @param spanId Span identifier
      * @param traceIdHigh Upper 64 bits of the 128-bit trace ID
      * @param traceIdLow Lower 64 bits of the 128-bit trace ID
+     * @deprecated DirectByteBuffer path; use {@link #setTraceContext} (all-native). Removed in phase 3.
      */
+    @Deprecated
     public void setContext(long localRootSpanId, long spanId, long traceIdHigh, long traceIdLow) {
         currentContext().put(localRootSpanId, spanId, traceIdHigh, traceIdLow);
     }
@@ -248,9 +270,134 @@ public final class JavaProfiler {
     /**
      * Resets the current thread's context to zero (traceId=0, spanId=0, localRootSpanId=0).
      * Custom context attributes are also cleared.
+     *
+     * @deprecated DirectByteBuffer path; use {@link #clearTraceContext} (all-native). Removed in phase 3.
      */
+    @Deprecated
     public void clearContext() {
         currentContext().put(0, 0, 0, 0);
+    }
+
+    // ---- All-native context write API (OTEP #4947) --------------------------------------------
+    // Provisional names (subject to dd-trace-java coordination). These resolve the current carrier's
+    // OTEP record inside a single JNI call per operation — no cached DirectByteBuffer, so they are
+    // race-free under virtual-thread migration (see the design note and setTraceContext0 et al.).
+    // They coexist with the deprecated DirectByteBuffer path below; both write the same native
+    // record, and no thread uses both at once.
+
+    /**
+     * Combined per-scope-activation write: full trace/span context plus up to two span-derived
+     * attributes (e.g. operation and resource name), in one native call. A negative {@code slotN}
+     * (or {@code null}/oversized {@code vN}) skips that attribute. Custom slots are reset first, so
+     * this establishes a fresh per-span attribute set.
+     *
+     * @param rootSpanId  the local root span ID
+     * @param spanId      the current span ID
+     * @param traceIdHigh upper 64 bits of the 128-bit trace ID
+     * @param traceIdLow  lower 64 bits of the 128-bit trace ID
+     * @param slot0       first custom attribute slot index in {@code [0, MAX_CONTEXT_SLOTS)}, or
+     *                    negative to skip this attribute
+     * @param v0          value for {@code slot0}; {@code null} or oversized also skips
+     * @param slot1       second custom attribute slot index in {@code [0, MAX_CONTEXT_SLOTS)}, or
+     *                    negative to skip this attribute
+     * @param v1          value for {@code v1}; {@code null} or oversized also skips
+     * @throws IllegalArgumentException if {@code spanId} is 0 — this is the activation path and
+     *         requires a real span; to clear the context use {@link #clearTraceContext()} — or if a
+     *         non-negative {@code slotN} is {@code >= MAX_CONTEXT_SLOTS} (out of range)
+     */
+    public void setTraceContext(long rootSpanId, long spanId, long traceIdHigh, long traceIdLow,
+                                int slot0, CharSequence v0, int slot1, CharSequence v1) {
+        if (spanId == 0) {
+            throw new IllegalArgumentException(
+                    "spanId must be non-zero; use clearTraceContext() to clear the trace context");
+        }
+        requireActivationSlot(slot0);
+        requireActivationSlot(slot1);
+        ContextValueCache.Entry e0 = resolveContextValue(slot0, v0);
+        ContextValueCache.Entry e1 = resolveContextValue(slot1, v1);
+        setTraceContext0(rootSpanId, spanId, traceIdHigh, traceIdLow,
+                e0 == null ? -1 : slot0, e0 == null ? 0 : e0.encoding, e0 == null ? null : e0.utf8,
+                e1 == null ? -1 : slot1, e1 == null ? 0 : e1.encoding, e1 == null ? null : e1.utf8);
+    }
+
+    /** Combined per-scope-deactivation clear (replaces {@link #clearContext()} on the native path). */
+    public void clearTraceContext() {
+        clearTraceContext0();
+    }
+
+    /**
+     * Sets a single custom attribute (sporadic instrumentation-driven attributes such as
+     * {@code http.route}). Returns false — a normal "not applied" signal, not an error — if the
+     * value is null, its UTF-8 exceeds 255 bytes, or the native Dictionary is full; on such a
+     * failure the slot is cleared. An out-of-range {@code slot}, by contrast, is a caller
+     * programming error and throws.
+     *
+     * @param slot  custom attribute slot index in {@code [0, MAX_CONTEXT_SLOTS)}
+     * @param value the attribute value; {@code null} clears the slot
+     * @return true if the value was written; false if it was null, oversized, or the Dictionary is
+     *         full
+     * @throws IllegalArgumentException if {@code slot} is out of range
+     */
+    public boolean setContextValue(int slot, CharSequence value) {
+        requireValidSlot(slot);
+        ContextValueCache.Entry e = value == null ? null : contextValueCache.resolve(value.toString());
+        if (e == null) {
+            clearContextValue0(slot);
+            return false;
+        }
+        return setContextValue0(slot, e.encoding, e.utf8);
+    }
+
+    /**
+     * Clears a single custom attribute slot on the native path.
+     *
+     * @param slot custom attribute slot index in {@code [0, MAX_CONTEXT_SLOTS)}
+     * @throws IllegalArgumentException if {@code slot} is out of range
+     */
+    public void clearContextValue(int slot) {
+        requireValidSlot(slot);
+        clearContextValue0(slot);
+    }
+
+    /**
+     * Copies the current thread's custom-attribute sidecar tag encodings into {@code out} (index =
+     * slot), reading the native record directly — no {@link ThreadContext} / DirectByteBuffer, so it
+     * does not reset the record. Unlike the deprecated DBB read path, this observes encodings written
+     * through the all-native {@link #setContextValue} path. Introspection / test use; entries beyond
+     * {@code MAX_CONTEXT_SLOTS} are left untouched.
+     */
+    public void copyContextTags(int[] out) {
+        copyContextTags0(out);
+    }
+
+    // A negative activation slot is the documented "skip this attribute" sentinel (normal control
+    // flow); a non-negative slot must be a valid index. An out-of-range (>= MAX_CONTEXT_SLOTS) slot
+    // is a caller programming error, not a skip, so it fails loudly.
+    private static void requireActivationSlot(int slot) {
+        if (slot >= MAX_CONTEXT_SLOTS) {
+            throw new IllegalArgumentException(
+                    "slot " + slot + " out of range [0, " + MAX_CONTEXT_SLOTS + ")");
+        }
+    }
+
+    // Requires a valid custom-attribute slot index. Unlike the activation path, there is no
+    // negative "skip" sentinel here, so any out-of-range slot is a programming error.
+    private static void requireValidSlot(int slot) {
+        if (slot < 0 || slot >= MAX_CONTEXT_SLOTS) {
+            throw new IllegalArgumentException(
+                    "slot " + slot + " out of range [0, " + MAX_CONTEXT_SLOTS + ")");
+        }
+    }
+
+    // Resolves an activation attribute for setTraceContext; null (skip) if the slot is negative
+    // (skip sentinel), the value is null, or the value cannot be represented (oversized / Dictionary
+    // full). A non-negative out-of-range slot is rejected earlier by requireActivationSlot, so it
+    // never reaches here and never registers the value in the permanent native Dictionary.
+    private ContextValueCache.Entry resolveContextValue(int slot, CharSequence value) {
+        if (slot < 0 || value == null) {
+            return null;
+        }
+        return contextValueCache.resolve(value.toString());
     }
 
     /**
@@ -263,7 +410,9 @@ public final class JavaProfiler {
      * @return true if the value was recorded; false if {@code offset} is out of range,
      *         {@code value} is null, the Dictionary is full, or {@code attrs_data} overflows
      *         for this slot
+     * @deprecated DirectByteBuffer path; use {@link #setContextValue} (all-native). Removed in phase 3.
      */
+    @Deprecated
     public boolean setContextAttribute(int offset, String value) {
         return currentContext().setContextAttribute(offset, value);
     }
@@ -273,7 +422,9 @@ public final class JavaProfiler {
      * Zeros the sidecar encoding and removes it from OTEP {@code attrs_data}.
      *
      * @param offset slot index (0-based, in [0, 9]); out-of-range values are silently ignored
+     * @deprecated DirectByteBuffer path; use {@link #clearContextValue} (all-native). Removed in phase 3.
      */
+    @Deprecated
     public void clearContextAttribute(int offset) {
         currentContext().clearContextAttribute(offset);
     }
@@ -300,11 +451,14 @@ public final class JavaProfiler {
      *                                  {@code utf8[i]} is null
      * @throws IllegalArgumentException if the arrays have different lengths, exceed the slot limit,
      *                                  or any active {@code utf8[i]} exceeds 255 bytes
+     * @deprecated DirectByteBuffer path; unused by dd-trace-java. Removed in phase 3.
      */
+    @Deprecated
     public boolean setContextAttributesByIdAndBytes(int[] constantIds, byte[][] utf8) {
         return currentContext().setContextAttributesByIdAndBytes(constantIds, utf8);
     }
 
+    @Deprecated
     void copyTags(int[] snapshot) {
         currentContext().copyCustoms(snapshot);
     }
@@ -525,6 +679,27 @@ public final class JavaProfiler {
      */
     private static native ByteBuffer initializeContextTLS0(long[] metadata);
 
+    // All-native context write primitives (OTEP #4947). Each resolves the current carrier's record
+    // inside the JNI call (which pins a mounted virtual thread to its carrier), so there is no
+    // cached per-thread buffer to dangle. See the native implementations in javaApi.cpp and the
+    // public API built on top of these. A negative slot skips that activation attribute.
+    private static native void setTraceContext0(long localRootSpanId, long spanId, long traceIdHigh,
+            long traceIdLow, int slot0, int enc0, byte[] utf0, int slot1, int enc1, byte[] utf1);
+    private static native void clearTraceContext0();
+    private static native boolean setContextValue0(int slot, int encoding, byte[] utf8);
+    private static native void clearContextValue0(int slot);
+    private static native void copyContextTags0(int[] out);
+
+    /** Native DD_TAGS_CAPACITY (context.h). Test-only drift guard for {@link #MAX_CONTEXT_SLOTS}. */
+    static native int maxContextSlots0();
+
+    /**
+     * Atomically reads and clears the native "context-value dictionary was reset" flag, set when a
+     * fresh {@code start} resets the encoding Dictionary. Used by {@link #execute} to invalidate the
+     * {@link ContextValueCache} without re-parsing the command in Java.
+     */
+    private static native boolean consumeContextDictionaryReset0();
+
     /**
      * Returns the {@link ThreadContext} for the current storage slot (the calling thread, or in
      * {@link ContextStorageMode#CARRIER} its current carrier).
@@ -536,7 +711,11 @@ public final class JavaProfiler {
      * sampler reads the new carrier, and once the old carrier's OS thread exits the buffer dangles.
      * Callers that write context (span/attributes) should re-fetch per use — the {@code setContext*}
      * methods already do this internally via {@code currentContext()}.
+     *
+     * @deprecated DirectByteBuffer path (test/diagnostic only); the all-native API is stateless and
+     *             exposes no per-thread handle. Removed in phase 3.
      */
+    @Deprecated
     public ThreadContext getThreadContext() {
         return currentContext();
     }

@@ -27,7 +27,11 @@ import java.util.Objects;
  * <p>Uses OTEP #4947 TLS record for all context storage.
  * Context is written directly to the OTEP record via DirectByteBuffer
  * for minimal overhead. Only little-endian platforms are supported.
+ *
+ * @deprecated DirectByteBuffer context path; superseded by
+ *             {@link JavaProfiler#setTraceContext} (all-native). Removed in phase 3.
  */
+@Deprecated
 public final class ThreadContext {
     static final int MAX_CUSTOM_SLOTS = 10;
     // Max UTF-8 byte length for a custom attribute value. Matches the 1-byte length
@@ -634,5 +638,7 @@ public final class ThreadContext {
         return sb.toString();
     }
 
-    private static native int registerConstant0(String value);
+    // Package-private (was private) so the all-native path's ContextValueCache can reuse the same
+    // process-global Dictionary registration. Relocates when ThreadContext is removed (phase 3).
+    static native int registerConstant0(String value);
 }

@@ -1508,6 +1508,9 @@ Error Profiler::start(Arguments &args, bool reset) {
     }
     _string_label_map.clearAll();
     _context_value_map.clearAll();
+    // Signal the Java layer that context-value encodings have been reassigned so it can drop its
+    // process-wide ContextValueCache (consumed in JavaProfiler.execute after this start returns).
+    _context_value_dict_reset.store(true, std::memory_order_release);
 
     // Reset call trace storage
     if (!_omit_stacktraces) {
