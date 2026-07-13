@@ -21,6 +21,13 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+/**
+ * DirectByteBuffer context wrapper.
+ *
+ * @deprecated Superseded by {@link JavaProfiler#setTraceContext} /
+ *             {@link JavaProfiler#setContextValue} (all-native). Removed in phase 3.
+ */
+@Deprecated
 public class ContextSetter {
 
     private final List<String> attributes;
@@ -60,6 +67,11 @@ public class ContextSetter {
 
     public int offsetOf(String attribute) {
         return attributes.indexOf(attribute);
+    }
+
+    /** Number of (deduplicated, truncated) context attribute slots. Pure Java; no native/DBB read. */
+    public int size() {
+        return attributes.size();
     }
 
     public boolean setContextValue(String attribute, String value) {

@@ -24,7 +24,11 @@ import java.util.Arrays;
  *   <li>Depths {@value #FAST_DEPTH} and beyond: lazily allocated {@value #CHUNK_DEPTH}-slot
  *       chunks, each a single byte[]. Chunks are allocated once per depth band and reused.</li>
  * </ul>
+ *
+ * @deprecated DirectByteBuffer snapshot/restore path; unused by dd-trace-java (re-derives
+ *             context). Removed in phase 3.
  */
+@Deprecated
 public final class ScopeStack {
     private static final int FAST_DEPTH = 6;
     private static final int CHUNK_DEPTH = 12;
