@@ -8,23 +8,28 @@
 #   2. JDK-specific image on top (java-profiler-test:<libc>-jdk<version>-<arch>)
 #
 # Usage: ./utils/run-containers-tests.sh [options]
-#   --libc=glibc|musl        (default: glibc)
-#   --jdk=8|11|17|21|25|8-j9|11-j9|17-j9|21-j9|17-graal|21-graal|25-graal  (default: 21)
-#   --arch=x64|aarch64       (default: auto-detect)
-#   --config=debug|release|asan|tsan   (default: debug)
+#   --libc=glibc|musl|all[,..]    (default: glibc)
+#   --jdk=8|11|17|21|25|8-j9|11-j9|17-j9|21-j9|17-graal|21-graal|25-graal|regular|j9|graal|all[,..]
+#                                   (default: 21)
+#   --arch=x64|aarch64|all[,..]   (default: auto-detect)
+#   --config=debug|release|asan|tsan|all[,..]   (default: debug)
 #   --container=podman|docker  (default: podman)
 #   --tests="TestPattern"    (optional, specific test to run)
 #   --gtest                  (enable C++ gtests, disabled by default)
-#   --gtest-task=Task        (run one C++ gtest task; accepts elfparser_ut or :ddprof-lib:gtestAsan_elfparser_ut)
+#   --gtest-task=Task        (run one C++ gtest task; full task paths are single-cell only)
 #   --shell                  (drop to shell instead of running tests; enables SYS_PTRACE for gdb)
 #   --mount                  (mount local repo instead of cloning - faster but may have stale artifacts)
 #   --rebuild                (force rebuild of container images)
 #   --rebuild-base           (force rebuild of base image only)
+#   --matrix                 (preview a full matrix; unset dimensions expand to all)
+#   --run                    (execute an inferred matrix without prompting)
+#   --fail-fast              (stop matrix execution on first failure)
 #   --help                   (show this help)
 
 set -e
 
 # Defaults
+ORIGINAL_ARGS=("$@")
 CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-podman}"
 LIBC="glibc"
 JDK_VERSION="21"
@@ -37,6 +42,14 @@ MOUNT_MODE=false
 GTEST_ENABLED=false
 REBUILD=false
 REBUILD_BASE=false
+MATRIX_MODE=false
+RUN_MATRIX=false
+FAIL_FAST=false
+LIBC_SET=false
+JDK_SET=false
+ARCH_SET=false
+CONFIG_SET=false
+PASS_THROUGH_ARGS=()
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 BASE_IMAGE_PREFIX="java-profiler-base"
@@ -146,8 +159,615 @@ get_j9_jdk_url() {
     esac
 }
 
+join_by() {
+    local delimiter=$1
+    shift
+    local first=true
+    local item
+    for item in "$@"; do
+        if $first; then
+            printf "%s" "$item"
+            first=false
+        else
+            printf "%s%s" "$delimiter" "$item"
+        fi
+    done
+}
+
+json_escape() {
+    local value=$1
+    value=${value//\\/\\\\}
+    value=${value//\"/\\\"}
+    value=${value//$'\n'/\\n}
+    value=${value//$'\r'/\\r}
+    value=${value//$'\t'/\\t}
+    printf "%s" "$value"
+}
+
+original_command() {
+    if [[ ${#ORIGINAL_ARGS[@]} -eq 0 ]]; then
+        echo "./utils/run-containers-tests.sh"
+    else
+        echo "./utils/run-containers-tests.sh $(join_by " " "${ORIGINAL_ARGS[@]}")"
+    fi
+}
+
+contains_value() {
+    local needle=$1
+    shift
+    local value
+    for value in "$@"; do
+        if [[ "$value" == "$needle" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+validate_dimension_value() {
+    local name=$1
+    local value=$2
+
+    case "$value" in
+        ""|,*|*,|*,,*)
+            echo "Error: --$name contains an empty value" >&2
+            exit 1
+            ;;
+    esac
+}
+
+# Bash 3.2 lacks namerefs, so these helpers use eval with array names supplied only by internal callers; values remain quoted.
+append_unique_line() {
+    local array_name=$1
+    local value=$2
+
+    eval "contains_value \"\$value\" \"\${${array_name}[@]}\"" && return
+    eval "$array_name+=(\"\$value\")"
+}
+
+read_string_into_array() {
+    local array_name=$1
+    local values=$2
+    local line
+    eval "$array_name=()"
+    while IFS= read -r line; do
+        eval "$array_name+=(\"\$line\")"
+    done <<< "$values"
+}
+
+expand_dimension() {
+    local value=$1
+    local name=$2
+    shift 2
+    local all_values=("$@")
+    local expanded=()
+    local token
+    local tokens=()
+
+    validate_dimension_value "$name" "$value"
+    IFS=',' read -ra tokens <<< "$value"
+    for token in "${tokens[@]}"; do
+        if [[ -z "$token" ]]; then
+            echo "Error: --$name contains an empty value" >&2
+            exit 1
+        elif [[ "$token" == "all" ]]; then
+            local all_value
+            for all_value in "${all_values[@]}"; do
+                append_unique_line expanded "$all_value"
+            done
+        elif contains_value "$token" "${all_values[@]}"; then
+            append_unique_line expanded "$token"
+        else
+            echo "Error: --$name must be one or more of: $(join_by "|" "${all_values[@]}")|all" >&2
+            exit 1
+        fi
+    done
+
+    printf "%s\n" "${expanded[@]}"
+}
+
+expand_jdk_dimension() {
+    local value=$1
+    local regular_jdks=(8 11 17 21 25)
+    local j9_jdks=(8-j9 11-j9 17-j9 21-j9)
+    local graal_jdks=(17-graal 21-graal 25-graal)
+    local all_jdks=("${regular_jdks[@]}" "${j9_jdks[@]}" "${graal_jdks[@]}")
+    local expanded=()
+    local token
+    local tokens=()
+
+    validate_dimension_value "jdk" "$value"
+    IFS=',' read -ra tokens <<< "$value"
+    for token in "${tokens[@]}"; do
+        case "$token" in
+            "")
+                echo "Error: --jdk contains an empty value" >&2
+                exit 1
+                ;;
+            all)
+                local all_jdk
+                for all_jdk in "${all_jdks[@]}"; do
+                    append_unique_line expanded "$all_jdk"
+                done
+                ;;
+            regular)
+                local regular_jdk
+                for regular_jdk in "${regular_jdks[@]}"; do
+                    append_unique_line expanded "$regular_jdk"
+                done
+                ;;
+            j9)
+                local j9_jdk
+                for j9_jdk in "${j9_jdks[@]}"; do
+                    append_unique_line expanded "$j9_jdk"
+                done
+                ;;
+            graal)
+                local graal_jdk
+                for graal_jdk in "${graal_jdks[@]}"; do
+                    append_unique_line expanded "$graal_jdk"
+                done
+                ;;
+            *)
+                if contains_value "$token" "${all_jdks[@]}"; then
+                    append_unique_line expanded "$token"
+                else
+                    echo "Error: --jdk must be one or more of: 8|11|17|21|25|8-j9|11-j9|17-j9|21-j9|17-graal|21-graal|25-graal|regular|j9|graal|all" >&2
+                    exit 1
+                fi
+                ;;
+        esac
+    done
+
+    printf "%s\n" "${expanded[@]}"
+}
+
+skip_reason() {
+    local libc=$1
+    local jdk=$2
+    local config=$3
+    local arch=$4
+
+    if [[ "$libc" == "musl" && "$jdk" == *-j9 ]]; then
+        echo "J9/OpenJ9 is not available for musl libc"
+    elif [[ "$libc" == "musl" && "$jdk" == *-graal ]]; then
+        echo "GraalVM is not available for musl libc"
+    elif [[ "$jdk" == *-graal && "$config" == "asan" ]]; then
+        echo "GraalVM is not compatible with ASan shadow memory ranges"
+    elif [[ "$libc" == "glibc" && "$arch" == "aarch64" && ( "$jdk" == "8" || "$jdk" == "11" ) ]]; then
+        echo "HotSpot 8/11 are skipped on glibc aarch64 in CI"
+    elif [[ "$libc" == "musl" && ( "$config" == "asan" || "$config" == "tsan" ) ]]; then
+        echo "sanitizer configs are filtered out for musl in CI"
+    fi
+}
+
+cell_status_symbol() {
+    local status=$1
+    local style=${2:-text}
+
+    case "$status" in
+        pending)
+            printf "TODO"
+            ;;
+        passed)
+            if [[ "$style" == "emoji" ]]; then
+                printf "✅"
+            else
+                printf "PASS"
+            fi
+            ;;
+        failed)
+            if [[ "$style" == "emoji" ]]; then
+                printf "❌"
+            else
+                printf "FAIL"
+            fi
+            ;;
+        skipped)
+            printf "-"
+            ;;
+        cancelled)
+            if [[ "$style" == "emoji" ]]; then
+                printf "🚫"
+            else
+                printf "CANCEL"
+            fi
+            ;;
+        *)
+            printf "%s" "$status"
+            ;;
+    esac
+}
+
+matrix_column_name() {
+    local libc=$1
+    local arch=$2
+    local config=$3
+    local arch_label=$arch
+
+    if [[ "$arch_label" == "x64" ]]; then
+        arch_label="amd64"
+    fi
+
+    printf "%s-%s/%s" "$libc" "$arch_label" "$config"
+}
+
+repeat_char() {
+    local char=$1
+    local count=$2
+    local i
+
+    for ((i = 0; i < count; i++)); do
+        printf "%s" "$char"
+    done
+}
+
+display_width() {
+    local value=$1
+
+    case "$value" in
+        "✅"|"❌"|"🚫")
+            printf "2"
+            ;;
+        *)
+            printf "%d" "${#value}"
+            ;;
+    esac
+}
+
+print_padded() {
+    local value=$1
+    local width=$2
+    local visible_width
+    local padding
+
+    visible_width=$(display_width "$value")
+    padding=$((width - visible_width))
+    printf "%s" "$value"
+    if (( padding > 0 )); then
+        repeat_char " " "$padding"
+    fi
+}
+
+print_table_separator() {
+    local jdk_width=$1
+    local status_width=$2
+    local columns=$3
+    local i
+
+    printf "+"
+    repeat_char "-" "$((jdk_width + 2))"
+    printf "+"
+    for ((i = 0; i < columns; i++)); do
+        repeat_char "-" "$((status_width + 2))"
+        printf "+"
+    done
+    printf "\n"
+}
+
+print_matrix_status_table() {
+    local style=${1:-text}
+    local i j row col cell_value
+    local columns=()
+    local rows=()
+    local jdk_width=3
+    local status_width=4
+
+    for ((i = 0; i < ${#MATRIX_CELL_LIBCS[@]}; i++)); do
+        append_unique_line columns "$(matrix_column_name "${MATRIX_CELL_LIBCS[$i]}" "${MATRIX_CELL_ARCHES[$i]}" "${MATRIX_CELL_CONFIGS[$i]}")"
+        append_unique_line rows "${MATRIX_CELL_JDKS[$i]}"
+    done
+
+    for row in "${rows[@]}"; do
+        if (( ${#row} > jdk_width )); then
+            jdk_width=${#row}
+        fi
+    done
+    for col in "${columns[@]}"; do
+        if (( ${#col} > status_width )); then
+            status_width=${#col}
+        fi
+    done
+
+    echo "Status overview"
+    echo
+    print_table_separator "$jdk_width" "$status_width" "${#columns[@]}"
+    printf "| "
+    print_padded "JDK" "$jdk_width"
+    printf " |"
+    for col in "${columns[@]}"; do
+        printf " "
+        print_padded "$col" "$status_width"
+        printf " |"
+    done
+    printf "\n"
+    print_table_separator "$jdk_width" "$status_width" "${#columns[@]}"
+
+    for row in "${rows[@]}"; do
+        printf "| "
+        print_padded "$row" "$jdk_width"
+        printf " |"
+        for ((j = 0; j < ${#columns[@]}; j++)); do
+            col="${columns[$j]}"
+            cell_value=""
+            for ((i = 0; i < ${#MATRIX_CELL_LIBCS[@]}; i++)); do
+                if [[ "${MATRIX_CELL_JDKS[$i]}" == "$row" ]] && [[ "$(matrix_column_name "${MATRIX_CELL_LIBCS[$i]}" "${MATRIX_CELL_ARCHES[$i]}" "${MATRIX_CELL_CONFIGS[$i]}")" == "$col" ]]; then
+                    cell_value=$(cell_status_symbol "${MATRIX_CELL_STATUSES[$i]}" "$style")
+                    break
+                fi
+            done
+            printf " "
+            print_padded "${cell_value:--}" "$status_width"
+            printf " |"
+        done
+        printf "\n"
+    done
+    print_table_separator "$jdk_width" "$status_width" "${#columns[@]}"
+}
+
+print_matrix_legend() {
+    echo "Legend: ✅ passed | ❌ failed | - skipped | 🚫 cancelled"
+}
+
+print_failed_cells() {
+    local i has_failures=false
+
+    for ((i = 0; i < ${#MATRIX_CELL_LIBCS[@]}; i++)); do
+        if [[ "${MATRIX_CELL_STATUSES[$i]}" == "failed" ]]; then
+            if ! $has_failures; then
+                echo
+                echo "Failed cells:"
+                has_failures=true
+            fi
+            echo "- jdk=${MATRIX_CELL_JDKS[$i]}, libc=${MATRIX_CELL_LIBCS[$i]}, arch=${MATRIX_CELL_ARCHES[$i]}, config=${MATRIX_CELL_CONFIGS[$i]}, exit_code=${MATRIX_CELL_EXIT_CODES[$i]}"
+        fi
+    done
+}
+
+print_skipped_cells() {
+    local i has_skips=false
+
+    for ((i = 0; i < ${#MATRIX_CELL_LIBCS[@]}; i++)); do
+        if [[ "${MATRIX_CELL_STATUSES[$i]}" == "skipped" ]]; then
+            if ! $has_skips; then
+                echo
+                echo "Skipped cells:"
+                has_skips=true
+            fi
+            echo "- jdk=${MATRIX_CELL_JDKS[$i]}, libc=${MATRIX_CELL_LIBCS[$i]}, arch=${MATRIX_CELL_ARCHES[$i]}, config=${MATRIX_CELL_CONFIGS[$i]}: ${MATRIX_CELL_REASONS[$i]}"
+        fi
+    done
+}
+
+prepare_matrix_cells() {
+    local libc arch jdk config reason
+
+    MATRIX_TOTAL=0
+    MATRIX_RUNNABLE=0
+    MATRIX_SKIPPED=0
+    MATRIX_CELL_LIBCS=()
+    MATRIX_CELL_ARCHES=()
+    MATRIX_CELL_JDKS=()
+    MATRIX_CELL_CONFIGS=()
+    MATRIX_CELL_STATUSES=()
+    MATRIX_CELL_EXIT_CODES=()
+    MATRIX_CELL_REASONS=()
+
+    for libc in "${MATRIX_LIBCS[@]}"; do
+        for arch in "${MATRIX_ARCHES[@]}"; do
+            for jdk in "${MATRIX_JDKS[@]}"; do
+                for config in "${MATRIX_CONFIGS[@]}"; do
+                    ((MATRIX_TOTAL += 1))
+                    reason=$(skip_reason "$libc" "$jdk" "$config" "$arch")
+                    if [[ -n "$reason" ]]; then
+                        ((MATRIX_SKIPPED += 1))
+                        MATRIX_CELL_STATUSES+=("skipped")
+                        MATRIX_CELL_EXIT_CODES+=("null")
+                        MATRIX_CELL_REASONS+=("$reason")
+                    else
+                        ((MATRIX_RUNNABLE += 1))
+                        MATRIX_CELL_STATUSES+=("pending")
+                        MATRIX_CELL_EXIT_CODES+=("null")
+                        MATRIX_CELL_REASONS+=("")
+                    fi
+                    MATRIX_CELL_LIBCS+=("$libc")
+                    MATRIX_CELL_ARCHES+=("$arch")
+                    MATRIX_CELL_JDKS+=("$jdk")
+                    MATRIX_CELL_CONFIGS+=("$config")
+                done
+            done
+        done
+    done
+}
+
+print_matrix_preview() {
+    echo "=== Container Test Matrix ==="
+    echo "LIBC filter:   $LIBC"
+    echo "Arch filter:   $ARCH"
+    echo "JDK filter:    $JDK_VERSION"
+    echo "Config filter: $CONFIG"
+    echo "Runtime:       $CONTAINER_RUNTIME"
+    echo "Mode:          $(if $RUN_MATRIX; then echo 'run'; else echo 'preview'; fi)"
+    echo "============================="
+    echo "Generated cells: $MATRIX_TOTAL"
+    echo "Runnable cells:  $MATRIX_RUNNABLE"
+    echo "Skipped cells:   $MATRIX_SKIPPED"
+    echo
+    print_matrix_status_table emoji
+    print_skipped_cells
+}
+
+write_matrix_reports() {
+    local start_time=$1
+    local end_time=$2
+    local passed=$3
+    local failed=$4
+    local skipped=$5
+    local cancelled=$6
+    local report_dir="$PROJECT_ROOT/build/reports/container-matrix"
+    local markdown_report="$report_dir/summary.md"
+    local json_report="$report_dir/summary.json"
+    local i
+
+    mkdir -p "$report_dir"
+
+    {
+        echo "# Container Matrix Summary"
+        echo
+        echo "- Command: \`$(original_command)\`"
+        echo "- Started: $start_time"
+        echo "- Finished: $end_time"
+        echo "- Filters: libc=$LIBC, arch=$ARCH, jdk=$JDK_VERSION, config=$CONFIG"
+        echo "- Totals: total=$MATRIX_TOTAL, passed=$passed, failed=$failed, skipped=$skipped, cancelled=$cancelled"
+        echo
+        echo '```text'
+        print_matrix_status_table emoji
+        echo '```'
+        echo
+        print_matrix_legend
+        print_failed_cells
+        echo
+        echo "## Cells"
+        for ((i = 0; i < ${#MATRIX_CELL_LIBCS[@]}; i++)); do
+            echo "- libc=${MATRIX_CELL_LIBCS[$i]}, arch=${MATRIX_CELL_ARCHES[$i]}, jdk=${MATRIX_CELL_JDKS[$i]}, config=${MATRIX_CELL_CONFIGS[$i]}, status=${MATRIX_CELL_STATUSES[$i]}, exit_code=${MATRIX_CELL_EXIT_CODES[$i]}, reason=${MATRIX_CELL_REASONS[$i]:-}"
+        done
+    } > "$markdown_report"
+
+    {
+        echo "{"
+        printf '  "command": "%s",\n' "$(json_escape "$(original_command)")"
+        printf '  "started": "%s",\n' "$(json_escape "$start_time")"
+        printf '  "finished": "%s",\n' "$(json_escape "$end_time")"
+        printf '  "filters": {"libc": "%s", "arch": "%s", "jdk": "%s", "config": "%s"},\n' \
+            "$(json_escape "$LIBC")" "$(json_escape "$ARCH")" "$(json_escape "$JDK_VERSION")" "$(json_escape "$CONFIG")"
+        printf '  "totals": {"total": %d, "passed": %d, "failed": %d, "skipped": %d, "cancelled": %d},\n' \
+            "$MATRIX_TOTAL" "$passed" "$failed" "$skipped" "$cancelled"
+        echo '  "cells": ['
+        for ((i = 0; i < ${#MATRIX_CELL_LIBCS[@]}; i++)); do
+            printf '    {"libc": "%s", "arch": "%s", "jdk": "%s", "config": "%s", "status": "%s", "exit_code": %s, "reason": "%s"}' \
+                "$(json_escape "${MATRIX_CELL_LIBCS[$i]}")" \
+                "$(json_escape "${MATRIX_CELL_ARCHES[$i]}")" \
+                "$(json_escape "${MATRIX_CELL_JDKS[$i]}")" \
+                "$(json_escape "${MATRIX_CELL_CONFIGS[$i]}")" \
+                "$(json_escape "${MATRIX_CELL_STATUSES[$i]}")" \
+                "${MATRIX_CELL_EXIT_CODES[$i]}" \
+                "$(json_escape "${MATRIX_CELL_REASONS[$i]:-}")"
+            if (( i < ${#MATRIX_CELL_LIBCS[@]} - 1 )); then
+                echo ","
+            else
+                echo
+            fi
+        done
+        echo "  ]"
+        echo "}"
+    } > "$json_report"
+
+    echo ">>> Matrix reports written:"
+    echo ">>>   $markdown_report"
+    echo ">>>   $json_report"
+}
+
+confirm_matrix_run() {
+    local answer
+
+    if $RUN_MATRIX; then
+        return 0
+    fi
+
+    if [[ -t 0 ]]; then
+        echo
+        read -r -p "Run this matrix? [y/N] " answer
+        case "$answer" in
+            y|Y|yes|YES)
+                return 0
+                ;;
+            *)
+                echo "Preview only. Matrix was not run."
+                return 1
+                ;;
+        esac
+    fi
+
+    echo
+    echo "Preview only. Add --run to execute non-interactively."
+    return 1
+}
+
+run_matrix() {
+    local i j command exit_code
+    local passed=0 failed=0 skipped=$MATRIX_SKIPPED cancelled=0 overall_exit=0
+    local start_time end_time
+
+    if ! command -v "$CONTAINER_RUNTIME" >/dev/null 2>&1; then
+        echo "Error: container runtime '$CONTAINER_RUNTIME' not found"
+        echo "Use --container to select the runtime, e.g. $0 --container=docker ..."
+        exit 1
+    fi
+
+    start_time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    set +e
+    for ((i = 0; i < ${#MATRIX_CELL_LIBCS[@]}; i++)); do
+        if [[ "${MATRIX_CELL_STATUSES[$i]}" == "skipped" ]]; then
+            continue
+        fi
+
+        echo
+        echo ">>> Matrix cell $((i + 1))/${#MATRIX_CELL_LIBCS[@]}: libc=${MATRIX_CELL_LIBCS[$i]} arch=${MATRIX_CELL_ARCHES[$i]} jdk=${MATRIX_CELL_JDKS[$i]} config=${MATRIX_CELL_CONFIGS[$i]}"
+        command=("$SCRIPT_DIR/run-containers-tests.sh"
+            "--libc=${MATRIX_CELL_LIBCS[$i]}"
+            "--arch=${MATRIX_CELL_ARCHES[$i]}"
+            "--jdk=${MATRIX_CELL_JDKS[$i]}"
+            "--config=${MATRIX_CELL_CONFIGS[$i]}")
+        if [[ ${#PASS_THROUGH_ARGS[@]} -gt 0 ]]; then
+            command+=("${PASS_THROUGH_ARGS[@]}")
+        fi
+        "${command[@]}"
+        exit_code=$?
+
+        MATRIX_CELL_EXIT_CODES[$i]=$exit_code
+        if [[ $exit_code -eq 0 ]]; then
+            MATRIX_CELL_STATUSES[$i]="passed"
+            ((passed += 1))
+        else
+            MATRIX_CELL_STATUSES[$i]="failed"
+            ((failed += 1))
+            overall_exit=1
+            if $FAIL_FAST; then
+                echo ">>> Stopping after first failure because --fail-fast is set"
+                for ((j = i + 1; j < ${#MATRIX_CELL_LIBCS[@]}; j++)); do
+                    if [[ "${MATRIX_CELL_STATUSES[$j]}" == "pending" ]]; then
+                        MATRIX_CELL_STATUSES[$j]="cancelled"
+                        MATRIX_CELL_REASONS[$j]="not run because --fail-fast stopped after an earlier failure"
+                        ((cancelled += 1))
+                    fi
+                done
+                break
+            fi
+        fi
+    done
+    set -e
+
+    end_time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    write_matrix_reports "$start_time" "$end_time" "$passed" "$failed" "$skipped" "$cancelled"
+
+    echo
+    echo "=== Matrix Result ==="
+    echo "Passed:  $passed"
+    echo "Failed:  $failed"
+    echo "Skipped: $skipped"
+    echo "Cancelled: $cancelled"
+    echo "====================="
+    echo
+    print_matrix_status_table emoji
+    echo
+    print_matrix_legend
+    print_failed_cells
+
+    exit "$overall_exit"
+}
+
 usage() {
-    head -n 23 "$0" | tail -n 20
+    awk 'NR >= 4 && NR <= 27 { sub(/^# ?/, ""); print }' "$0"
     exit 0
 }
 
@@ -156,26 +776,32 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --libc=*)
             LIBC="${1#*=}"
+            LIBC_SET=true
             shift
             ;;
         --jdk=*)
             JDK_VERSION="${1#*=}"
+            JDK_SET=true
             shift
             ;;
         --arch=*)
             ARCH="${1#*=}"
+            ARCH_SET=true
             shift
             ;;
         --config=*)
             CONFIG="${1#*=}"
+            CONFIG_SET=true
             shift
             ;;
         --container=*)
             CONTAINER_RUNTIME="${1#*=}"
+            PASS_THROUGH_ARGS+=("$1")
             shift
             ;;
         --tests=*)
             TESTS="${1#*=}"
+            PASS_THROUGH_ARGS+=("$1")
             shift
             ;;
         --shell)
@@ -184,23 +810,40 @@ while [[ $# -gt 0 ]]; do
             ;;
         --mount)
             MOUNT_MODE=true
+            PASS_THROUGH_ARGS+=("$1")
             shift
             ;;
         --gtest)
             GTEST_ENABLED=true
+            PASS_THROUGH_ARGS+=("$1")
             shift
             ;;
         --gtest-task=*)
             GTEST_TASK="${1#*=}"
             GTEST_ENABLED=true
+            PASS_THROUGH_ARGS+=("$1")
             shift
             ;;
         --rebuild)
             REBUILD=true
+            PASS_THROUGH_ARGS+=("$1")
             shift
             ;;
         --rebuild-base)
             REBUILD_BASE=true
+            PASS_THROUGH_ARGS+=("$1")
+            shift
+            ;;
+        --matrix)
+            MATRIX_MODE=true
+            shift
+            ;;
+        --run)
+            RUN_MATRIX=true
+            shift
+            ;;
+        --fail-fast)
+            FAIL_FAST=true
             shift
             ;;
         --help|-h)
@@ -213,25 +856,24 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Auto-detect architecture if not specified
-if [[ -z "$ARCH" ]]; then
+if $MATRIX_MODE; then
+    if ! $LIBC_SET; then
+        LIBC="all"
+    fi
+    if ! $JDK_SET; then
+        JDK_VERSION="all"
+    fi
+    if ! $ARCH_SET; then
+        ARCH="all"
+    fi
+    if ! $CONFIG_SET; then
+        CONFIG="all"
+    fi
+fi
+
+# Auto-detect architecture only when neither --arch nor --matrix selected it.
+if ! $ARCH_SET && ! $MATRIX_MODE; then
     ARCH=$(detect_arch)
-fi
-
-# Validate arguments
-if [[ "$LIBC" != "musl" && "$LIBC" != "glibc" ]]; then
-    echo "Error: --libc must be 'musl' or 'glibc'"
-    exit 1
-fi
-
-if [[ "$ARCH" != "x64" && "$ARCH" != "aarch64" ]]; then
-    echo "Error: --arch must be 'x64' or 'aarch64'"
-    exit 1
-fi
-
-if [[ "$CONFIG" != "debug" && "$CONFIG" != "release" && "$CONFIG" != "asan" && "$CONFIG" != "tsan" ]]; then
-    echo "Error: --config must be 'debug', 'release', 'asan', or 'tsan'"
-    exit 1
 fi
 
 if [[ "$CONTAINER_RUNTIME" != "podman" && "$CONTAINER_RUNTIME" != "docker" ]]; then
@@ -244,11 +886,55 @@ if [[ -n "$GTEST_TASK" && -n "$TESTS" ]]; then
     exit 1
 fi
 
+MATRIX_LIBCS_TEXT=$(expand_dimension "$LIBC" "libc" glibc musl)
+MATRIX_ARCHES_TEXT=$(expand_dimension "$ARCH" "arch" x64 aarch64)
+MATRIX_JDKS_TEXT=$(expand_jdk_dimension "$JDK_VERSION")
+MATRIX_CONFIGS_TEXT=$(expand_dimension "$CONFIG" "config" debug release asan tsan)
+read_string_into_array MATRIX_LIBCS "$MATRIX_LIBCS_TEXT"
+read_string_into_array MATRIX_ARCHES "$MATRIX_ARCHES_TEXT"
+read_string_into_array MATRIX_JDKS "$MATRIX_JDKS_TEXT"
+read_string_into_array MATRIX_CONFIGS "$MATRIX_CONFIGS_TEXT"
+prepare_matrix_cells
+
+if [[ "$GTEST_TASK" == :* ]] && { (( MATRIX_TOTAL > 1 || MATRIX_RUNNABLE > 1 )) || $MATRIX_MODE; }; then
+    echo "Error: full --gtest-task paths are not supported with matrix runs. Use a short task name such as --gtest-task=elfparser_ut and select configurations with --config."
+    exit 1
+fi
+
+if (( MATRIX_RUNNABLE == 0 )); then
+    print_matrix_preview
+    echo
+    echo "Error: matrix has no runnable cells"
+    exit 1
+fi
+
+if (( MATRIX_TOTAL > 1 || MATRIX_RUNNABLE > 1 )) || $MATRIX_MODE; then
+    if $SHELL_MODE; then
+        echo "Error: --shell is interactive and is not supported with matrix runs. Run a single cell without matrix dimensions instead."
+        exit 1
+    fi
+    print_matrix_preview
+    if confirm_matrix_run; then
+        run_matrix
+    fi
+    exit 0
+fi
+
+if $FAIL_FAST; then
+    echo "Error: --fail-fast is only valid when the command expands to a matrix"
+    exit 1
+fi
+
 if ! command -v "$CONTAINER_RUNTIME" >/dev/null 2>&1; then
     echo "Error: container runtime '$CONTAINER_RUNTIME' not found"
     echo "Use --container to select the runtime, e.g. $0 --container=docker ..."
     exit 1
 fi
+
+LIBC="${MATRIX_CELL_LIBCS[0]}"
+ARCH="${MATRIX_CELL_ARCHES[0]}"
+JDK_VERSION="${MATRIX_CELL_JDKS[0]}"
+CONFIG="${MATRIX_CELL_CONFIGS[0]}"
 
 # Parse JDK version and variant (e.g., "21-j9" -> version="21", variant="j9")
 JDK_BASE_VERSION="${JDK_VERSION%%-*}"
