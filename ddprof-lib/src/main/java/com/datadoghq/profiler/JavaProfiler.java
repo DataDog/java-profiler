@@ -142,7 +142,7 @@ public final class JavaProfiler {
         }
 
         if (isVirtualThread(Thread.currentThread())) {
-            throw new IOException("Cannot intialize profiler on an virtual thread");
+            throw new IOException("Cannot initialize profiler on a virtual thread");
         }
 
         init0();
