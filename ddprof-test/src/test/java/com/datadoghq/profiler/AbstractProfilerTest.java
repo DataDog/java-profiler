@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler;
 
 import java.nio.file.Files;
@@ -329,6 +334,7 @@ public abstract class AbstractProfilerTest {
 
   public final void stopProfiler() {
     if (!stopped) {
+      profiler.clearTraceContext();
       profiler.stop();
       profiler.resetThreadContext();
       stopped = true;

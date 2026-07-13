@@ -592,9 +592,10 @@ TEST_F(NativeSocketInterposerHookTest, CloseForwardsAndPreservesErrno) {
   int fds[2];
   ASSERT_EQ(0, pipe(fds));
   g_close_ret = 0;
+  g_close_errno = E2BIG;
 
   LibraryPatcher::_socket_active.store(true, std::memory_order_release);
-  errno = E2BIG;
+  errno = ERANGE;
   int ret = NativeSocketInterposer::close_hook(fds[0]);
 
   EXPECT_EQ(0, ret);

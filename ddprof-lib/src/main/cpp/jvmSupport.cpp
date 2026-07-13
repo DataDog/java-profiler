@@ -17,6 +17,14 @@
 #include <jni.h>
 
 
+using JniFunction = void (JNICALL*)();
+using IsVirtualThreadFunction = jboolean (JNICALL*)(JNIEnv*, jobject);
+
+static constexpr jint JNI_VERSION_21_VALUE = 0x00150000;
+static constexpr int IS_VIRTUAL_THREAD_INDEX = 234;
+
+static_assert(sizeof(JniFunction) == sizeof(void*), "JNI function table entries must be pointer-sized");
+
 volatile JVMSupport::JMethodIDLoadStats JVMSupport::jmethodID_load_state = JVMSupport::No_loaded;
 Mutex JVMSupport::_initialization_lock;
 
@@ -24,9 +32,21 @@ bool JVMSupport::isPlatformThread(JNIEnv* jni, jthread thread) {
     if (jni == nullptr || thread == nullptr) {
         return false;
     }
-    int java_version = VM::java_version();
-    return java_version > 0 &&
-        (java_version < 21 || jni->IsVirtualThread(thread) == JNI_FALSE);
+
+    jint jni_version = jni->GetVersion();
+    if (jni_version <= 0) {
+        return false;
+    }
+    if (jni_version < JNI_VERSION_21_VALUE) {
+        return true;
+    }
+
+    // IsVirtualThread is slot 234 in the JNI 21 function table. Access the
+    // standardized slot directly so this file also compiles with older headers.
+    const JniFunction* functions = reinterpret_cast<const JniFunction*>(jni->functions);
+    IsVirtualThreadFunction is_virtual_thread =
+        reinterpret_cast<IsVirtualThreadFunction>(functions[IS_VIRTUAL_THREAD_INDEX]);
+    return is_virtual_thread != nullptr && is_virtual_thread(jni, thread) == JNI_FALSE;
 }
 
 bool JVMSupport::initialize() {
