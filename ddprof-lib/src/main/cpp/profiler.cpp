@@ -97,7 +97,7 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 }
 
 void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
-  // Thread teardown: no point to intialize TLS if not yet initialized
+  // Thread teardown: no point to initialize TLS if not yet initialized
   ProfiledThread *current = ProfiledThread::current();
   int tid = -1;
   
