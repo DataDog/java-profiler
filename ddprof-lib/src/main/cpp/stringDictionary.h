@@ -12,6 +12,7 @@
 #include "tripleBuffer.h"
 #include "arch.h"
 #include <atomic>
+#include <climits>
 #include <map>
 #include <stddef.h>
 #include <stdlib.h>
@@ -550,7 +551,11 @@ public:
     // Resolve a key during the dump phase.  Safe to call from the dump thread
     // after rotate(); must NOT be called from signal handlers or concurrently
     // with another lookupDuringDump call.
-    u32 lookupDuringDump(const char* key, size_t len) {
+    // size_limit bounds new insertions the same way bounded_lookup() does:
+    // once active->size() reaches size_limit, previously-known keys still
+    // resolve (dump/active hits above), but a genuinely new key returns 0
+    // instead of growing the dictionary further.
+    u32 lookupDuringDump(const char* key, size_t len, int size_limit = INT_MAX) {
         StringDictionaryBuffer* dump = _rot.dumpBuffer();
 
         u32 id = dump->lookup(key, len);
@@ -571,6 +576,7 @@ public:
             StringDictionaryBuffer* active = _rot.active();
             RefCountGuard guard(active);
             if (!guard.isActive()) return 0;
+            if (active->size() >= size_limit) return 0;
             u32 new_id = nextId();
             new_id = active->insert_with_id(key, len, new_id);
             if (new_id != 0) dump->insert_with_id(key, len, new_id);

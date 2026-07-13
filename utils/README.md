@@ -84,10 +84,11 @@ Runs tests in containers across various OS/libc/JDK combinations, mirroring the 
 **Usage:**
 ```bash
 ./utils/run-containers-tests.sh [options]
-  --libc=glibc|musl               (default: glibc)
-  --jdk=8|11|17|21|25|8-j9|...   (default: 21)
-  --arch=x64|aarch64              (default: auto-detect)
-  --config=debug|release|asan|tsan (default: debug)
+  --libc=glibc|musl|all[,..]      (default: glibc)
+  --jdk=8|11|17|21|25|8-j9|...|regular|j9|graal|all[,..]
+                                    (default: 21)
+  --arch=x64|aarch64|all[,..]     (default: auto-detect)
+  --config=debug|release|asan|tsan|all[,..] (default: debug)
   --container=podman|docker       (default: podman)
   --tests="TestPattern"           (optional)
   --gtest                         (enable C++ gtests)
@@ -95,6 +96,9 @@ Runs tests in containers across various OS/libc/JDK combinations, mirroring the 
   --shell                         (drop to shell instead of running tests)
   --mount                         (mount local repo instead of cloning)
   --rebuild                       (force rebuild of container images)
+  --matrix                        (preview a full matrix)
+  --run                           (execute an inferred matrix without prompting)
+  --fail-fast                     (stop matrix execution on first failure)
 ```
 
 Examples:
@@ -104,7 +108,18 @@ Examples:
 
 # Use Docker instead of the default Podman runtime
 ./utils/run-containers-tests.sh --container=docker --libc=glibc --jdk=21
+
+# Preview selected JDKs across every supported libc/architecture pair
+./utils/run-containers-tests.sh --libc=all --jdk=8,17,21 --arch=all
+
+# Run all supported musl cells without an interactive prompt
+./utils/run-containers-tests.sh --matrix --libc=musl --run
+
+# Run all OpenJ9 cells
+./utils/run-containers-tests.sh --matrix --jdk=j9 --run
 ```
+
+Single-value commands run one container test configuration immediately. When any dimension expands to multiple cells, the script prints a compact status table first; interactive terminals ask for confirmation, while non-interactive runs require `--run` to execute. Matrix execution prints the status table again after all cells finish and writes summaries to `build/reports/container-matrix/summary.md` and `build/reports/container-matrix/summary.json`. Matrix gtest runs require a short `--gtest-task` name so the task follows each cell's configuration. Cells not run because of `--fail-fast` are reported as cancelled separately from unsupported cells that are skipped.
 
 ### `patch-dd-java-agent.sh`
 
