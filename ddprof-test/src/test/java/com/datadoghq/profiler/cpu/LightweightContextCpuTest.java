@@ -79,6 +79,9 @@ public class LightweightContextCpuTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "cpu=100us,lightweight=yes";
+        // cpu=100us signal-based sampling is much more expensive under ASAN (the signal
+        // handler itself is ASAN-instrumented), which can inflate the sample count and,
+        // via the per-sample accessor calls above, the test heap. Sample coarser under ASAN.
+        return isAsan() ? "cpu=1ms,lightweight=yes" : "cpu=100us,lightweight=yes";
     }
 }
