@@ -64,16 +64,23 @@
 
 namespace {
 
-// SafeAccess::isReadableRange()/isReadable() rely on a SIGSEGV handler
-// registered via OS::replaceSigsegvHandler() to catch the fault at a known
-// trampoline address and turn it into a safe return value (see
-// safefetch_ut.cpp for the same pattern). Without it, a fault inside the
-// safefetch trampoline is an ordinary unhandled SIGSEGV.
+// SafeAccess::isReadableRange()/isReadable() rely on SIGSEGV/SIGBUS handlers
+// registered via OS::replaceSigsegvHandler()/replaceSigbusHandler() to catch
+// the fault at a known trampoline address and turn it into a safe return
+// value (see safefetch_ut.cpp for the same pattern). The safefetch trampoline
+// can fault with either signal depending on platform, so both must be
+// installed; otherwise a fault delivered as the other signal is an ordinary
+// unhandled fault.
 void (*orig_segvHandler)(int signo, siginfo_t *siginfo, void *ucontext);
+void (*orig_busHandler)(int signo, siginfo_t *siginfo, void *ucontext);
 
 void lineNumberTableSegvHandler(int signo, siginfo_t *siginfo, void *context) {
   if (!SafeAccess::handle_safefetch(signo, context)) {
-    if (orig_segvHandler != nullptr) {
+    if (signo == SIGBUS) {
+      if (orig_busHandler != nullptr) {
+        orig_busHandler(signo, siginfo, context);
+      }
+    } else if (orig_segvHandler != nullptr) {
       orig_segvHandler(signo, siginfo, context);
     }
   }
@@ -83,9 +90,13 @@ class LineNumberTableCopyTest : public ::testing::Test {
 protected:
   void SetUp() override {
     orig_segvHandler = OS::replaceSigsegvHandler(lineNumberTableSegvHandler);
+    orig_busHandler = OS::replaceSigbusHandler(lineNumberTableSegvHandler);
   }
 
-  void TearDown() override { OS::replaceSigsegvHandler(orig_segvHandler); }
+  void TearDown() override {
+    OS::replaceSigsegvHandler(orig_segvHandler);
+    OS::replaceSigbusHandler(orig_busHandler);
+  }
 };
 
 // Allocates a page-sized region seeded with `count` jvmtiLineNumberEntry
