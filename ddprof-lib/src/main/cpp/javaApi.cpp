@@ -396,20 +396,6 @@ static bool decodeJavaBlockState(jint state, OSThreadState &decoded) {
   return false;
 }
 
-static OSThreadState decodeTaskBlockObservedState(jint state) {
-  switch (static_cast<OSThreadState>(state)) {
-    case OSThreadState::MONITOR_WAIT:
-    case OSThreadState::CONDVAR_WAIT:
-    case OSThreadState::OBJECT_WAIT:
-    case OSThreadState::SLEEPING:
-    case OSThreadState::SYSCALL:
-    case OSThreadState::IO_WAIT:
-      return static_cast<OSThreadState>(state);
-    default:
-      return OSThreadState::UNKNOWN;
-  }
-}
-
 static bool snapshotAndExitBlockedRun(jlong token, BlockRunSnapshot *snapshot) {
   if (token <= 0) {
     return false;
@@ -431,23 +417,6 @@ static bool snapshotAndExitBlockedRun(jlong token, BlockRunSnapshot *snapshot) {
     return tf->snapshotAndExitBlockedRun(slot_id, generation, snapshot);
   }
   return tf->exitBlockedRun(slot_id, generation);
-}
-
-static void writeBlockRunSnapshot(JNIEnv *env, jlongArray snapshot_array,
-                                  const BlockRunSnapshot *snapshot) {
-  if (snapshot_array == nullptr || env->GetArrayLength(snapshot_array) < 3) {
-    return;
-  }
-  jlong values[3] = {0, 0, static_cast<jlong>(OSThreadState::UNKNOWN)};
-  if (snapshot != nullptr) {
-    OSThreadState observed_state = snapshot->sampled_state != OSThreadState::UNKNOWN
-                                       ? snapshot->sampled_state
-                                       : snapshot->active_state;
-    values[0] = snapshot->has_stack_reference ? static_cast<jlong>(snapshot->call_trace_id) : 0;
-    values[1] = snapshot->has_stack_reference ? static_cast<jlong>(snapshot->correlation_id) : 0;
-    values[2] = static_cast<jlong>(observed_state);
-  }
-  env->SetLongArrayRegion(snapshot_array, 0, 3, values);
 }
 
 extern "C" DLLEXPORT jlong JNICALL
@@ -479,18 +448,79 @@ Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
   snapshotAndExitBlockedRun(token, nullptr);
 }
 
-extern "C" DLLEXPORT void JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_blockExitWithSnapshot0(
-    JNIEnv *env, jclass unused, jlong token, jlongArray snapshotArray) {
-  BlockRunSnapshot snapshot{};
-  snapshot.active_state = OSThreadState::UNKNOWN;
-  snapshot.sampled_state = OSThreadState::UNKNOWN;
-  snapshot.owner = BlockRunOwner::NONE;
-  if (snapshotAndExitBlockedRun(token, &snapshot)) {
-    writeBlockRunSnapshot(env, snapshotArray, &snapshot);
-  } else {
-    writeBlockRunSnapshot(env, snapshotArray, nullptr);
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
+    JNIEnv *env, jclass unused, jint state) {
+  OSThreadState decoded;
+  if (!decodeJavaBlockState(state, decoded)) {
+    return 0;
   }
+  ProfiledThread* current = ProfiledThread::current();
+  if (current == nullptr) {
+    return 0;
+  }
+  if (VM::isHotspot() && VM::hotspot_version() >= 21) {
+    VMThread* carrier = VMThread::current();
+    if (carrier != nullptr && carrier->isCarryingVirtualThread()) {
+      return 0;
+    }
+  }
+  Profiler* profiler = Profiler::instance();
+  if (!profiler->isRunning() || !profiler->taskBlockAsyncActive()) {
+    return 0;
+  }
+  ThreadFilter* tf = profiler->threadFilter();
+  ThreadFilter::SlotID slot_id = current->filterSlotId();
+  if (!tf->enabled() || slot_id < 0) {
+    return 0;
+  }
+  u64 token = tf->enterBlockedRun(slot_id, decoded, BlockRunOwner::JAVA);
+  if (!current->taskBlockEnter(token, TSC::ticks(), ContextApi::snapshot())) {
+    tf->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(token));
+    return 0;
+  }
+  return static_cast<jlong>(token);
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_endTaskBlock0(
+    JNIEnv *env, jclass unused, jlong token, jlong blocker,
+    jlong unblockingSpanId) {
+  ProfiledThread* current = ProfiledThread::current();
+  if (current == nullptr || token <= 0) {
+    return JNI_FALSE;
+  }
+  u64 start_ticks = 0;
+  Context context{};
+  if (!current->taskBlockExit(static_cast<u64>(token), start_ticks, context)) {
+    return JNI_FALSE;
+  }
+  Profiler* profiler = Profiler::instance();
+  bool activity = profiler->tryEnterTaskBlockActivity();
+  if (!activity) {
+    profiler->waitForTaskBlockRotation();
+  }
+  ThreadFilter* tf = profiler->threadFilter();
+  ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(static_cast<u64>(token));
+  BlockRunSnapshot snapshot{};
+  bool exited = current->filterSlotId() == slot_id &&
+      tf->snapshotAndExitBlockedRun(
+          slot_id, ThreadFilter::tokenGeneration(static_cast<u64>(token)), &snapshot);
+  if (!activity) {
+    Counters::increment(TASK_BLOCK_DROPPED_ROTATION);
+    return JNI_FALSE;
+  }
+  bool recorded = false;
+  if (exited) {
+    OSThreadState observed_state = snapshot.sampled_state != OSThreadState::UNKNOWN
+        ? snapshot.sampled_state : snapshot.active_state;
+    recorded = recordTaskBlockWithStackReferenceIfEligible(
+        current->tid(), start_ticks, TSC::ticks(), context, (u64)blocker,
+        (u64)unblockingSpanId, snapshot.call_trace_id,
+        snapshot.correlation_id, observed_state, true);
+  }
+  profiler->leaveTaskBlockActivity();
+  return recorded ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" DLLEXPORT jboolean JNICALL
@@ -524,40 +554,6 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTaskBlockWithContext0(
   return recordTaskBlockWithContextIfEligible(tid, (u64)startTicks, (u64)endTicks,
                                               ctx, (u64)blocker,
                                               (u64)unblockingSpanId)
-             ? JNI_TRUE
-             : JNI_FALSE;
-}
-
-extern "C" DLLEXPORT jboolean JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_recordTaskBlockFromContext0(
-    JNIEnv *env, jclass unused, jint tid, jlong startTicks, jlong endTicks,
-    jlong blocker, jlong unblockingSpanId, jlong spanId, jlong rootSpanId) {
-  // Drain-thread path: called from background drain thread on behalf of the sleeping thread.
-  // tid is the OS tid of the sleeping thread; span context is explicit to bypass OTEP TLS.
-  if ((int)tid < 0) {
-    return JNI_FALSE;
-  }
-  Context ctx{(u64)spanId, (u64)rootSpanId};
-  return recordTaskBlockWithStackReferenceIfEligible(
-             (int)tid, (u64)startTicks, (u64)endTicks, ctx, (u64)blocker,
-             (u64)unblockingSpanId, 0, 0, OSThreadState::UNKNOWN)
-             ? JNI_TRUE
-             : JNI_FALSE;
-}
-
-extern "C" DLLEXPORT jboolean JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_recordTaskBlockFromContextWithStackReference0(
-    JNIEnv *env, jclass unused, jint tid, jlong startTicks, jlong endTicks,
-    jlong blocker, jlong unblockingSpanId, jlong spanId, jlong rootSpanId,
-    jlong callTraceId, jlong correlationId, jint observedBlockingState) {
-  if ((int)tid < 0) {
-    return JNI_FALSE;
-  }
-  Context ctx{(u64)spanId, (u64)rootSpanId};
-  return recordTaskBlockWithStackReferenceIfEligible(
-             (int)tid, (u64)startTicks, (u64)endTicks, ctx, (u64)blocker,
-             (u64)unblockingSpanId, (u64)callTraceId, (u64)correlationId,
-             decodeTaskBlockObservedState(observedBlockingState))
              ? JNI_TRUE
              : JNI_FALSE;
 }

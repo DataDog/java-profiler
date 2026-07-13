@@ -84,6 +84,9 @@ private:
   u64 _park_start_ticks;
   u64 _park_block_token;
   Context _park_context;
+  u64 _task_block_start_ticks;
+  u64 _task_block_token;
+  Context _task_block_context;
   u64 _monitor_start_ticks;
   Context _monitor_context;
   u64 _monitor_blocker;
@@ -110,6 +113,7 @@ private:
       : ThreadLocalData(), _jmp_buf(nullptr), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _tid(tid), _cpu_epoch(0),
         _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0),
         _park_start_ticks(0), _park_block_token(0), _park_context{},
+        _task_block_start_ticks(0), _task_block_token(0), _task_block_context{},
         _monitor_start_ticks(0), _monitor_context{}, _monitor_blocker(0),
         _monitor_block_token(0), _monitor_block_state(OSThreadState::UNKNOWN),
         _filter_slot_id(-1), _init_window(0),
@@ -348,6 +352,26 @@ public:
       }
     }
     return false;
+  }
+
+  inline bool taskBlockEnter(u64 token, u64 start_ticks, const Context& context) {
+    if (token == 0 || _task_block_token != 0) {
+      return false;
+    }
+    _task_block_start_ticks = start_ticks;
+    _task_block_context = context;
+    _task_block_token = token;
+    return true;
+  }
+
+  inline bool taskBlockExit(u64 token, u64& start_ticks, Context& context) {
+    if (token == 0 || _task_block_token != token) {
+      return false;
+    }
+    start_ticks = _task_block_start_ticks;
+    context = _task_block_context;
+    _task_block_token = 0;
+    return true;
   }
 
   inline void setParkBlockToken(u64 token) {

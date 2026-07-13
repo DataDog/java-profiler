@@ -398,28 +398,11 @@ public final class JavaProfiler {
     }
 
     /**
-     * Clears a blocked interval and snapshots reconstruction metadata before native state is reset.
-     *
-     * @param token opaque token returned by {@link #blockEnter(int)}
-     * @param snapshot output array: [callTraceId, correlationId, observedBlockingState]
-     */
-    public void blockExit(long token, long[] snapshot) {
-        blockExitWithSnapshot0(token, snapshot);
-    }
-
-    /**
      * Get the ticks for the current thread.
      * @return ticks
      */
     public long getCurrentTicks() {
         return currentTicks0();
-    }
-
-    /**
-     * Returns the OS-level thread ID (tid) of the calling thread.
-     */
-    public int getCurrentThreadId() {
-        return getTid0();
     }
 
     /**
@@ -431,10 +414,29 @@ public final class JavaProfiler {
     }
 
     /**
-     * Returns the TSC frequency in Hz (ticks per second).
+     * Begins an explicitly instrumented blocking interval on the current platform thread.
+     * The returned token is bound to the current thread and must be passed to
+     * {@link #endTaskBlock(long, long, long)}.
+     *
+     * @param state native {@code OSThreadState} value; currently only {@code SLEEPING} is accepted
+     * @return an opaque token, or {@code 0} when the interval could not be armed
      */
-    public long getTscFrequency() {
-        return tscFrequency0();
+    public long beginTaskBlock(int state) {
+        return beginTaskBlock0(state);
+    }
+
+    /**
+     * Ends a blocking interval created by {@link #beginTaskBlock(int)} and records its
+     * {@code TaskBlock} event when it satisfies the profiler's eligibility rules.
+     * Lifecycle state is cleared even when no event is recorded.
+     *
+     * @param token opaque token returned by {@link #beginTaskBlock(int)}
+     * @param blocker stable identifier describing the blocking resource
+     * @param unblockingSpanId span responsible for unblocking the interval, or {@code 0}
+     * @return {@code true} when an event was recorded
+     */
+    public boolean endTaskBlock(long token, long blocker, long unblockingSpanId) {
+        return endTaskBlock0(token, blocker, unblockingSpanId);
     }
 
     /**
@@ -458,34 +460,6 @@ public final class JavaProfiler {
     public boolean recordTaskBlockWithContext(long startTicks, long endTicks, long blocker,
             long unblockingSpanId, long spanId, long rootSpanId) {
         return recordTaskBlockWithContext0(startTicks, endTicks, blocker, unblockingSpanId, spanId, rootSpanId);
-    }
-
-    /**
-     * Attempts to record a TaskBlock event attributed to an explicit thread ID and explicit span
-     * context. This overload has no stack-reference metadata, so a recorder thread cannot use it to
-     * emit a self-contained TaskBlock on behalf of another thread.
-     *
-     * @return {@code true} if the event was recorded; {@code false} if it was skipped by
-     *         eligibility rules or could not be recorded
-     */
-    public boolean recordTaskBlockFromContext(int tid, long startTicks, long endTicks,
-            long blocker, long unblockingSpanId, long spanId, long rootSpanId) {
-        return recordTaskBlockFromContext0(tid, startTicks, endTicks, blocker, unblockingSpanId, spanId, rootSpanId);
-    }
-
-    /**
-     * Records a TaskBlock event with explicit thread, span context, and stack-reference metadata.
-     * This is the required overload when recording from a background thread on behalf of {@code tid}.
-     *
-     * @return {@code true} if the event was recorded; {@code false} if it was skipped by
-     *         eligibility rules or could not be recorded
-     */
-    public boolean recordTaskBlockFromContext(int tid, long startTicks, long endTicks,
-            long blocker, long unblockingSpanId, long spanId, long rootSpanId,
-            long callTraceId, long correlationId, int observedBlockingState) {
-        return recordTaskBlockFromContextWithStackReference0(tid, startTicks, endTicks, blocker,
-                unblockingSpanId, spanId, rootSpanId, callTraceId, correlationId,
-                observedBlockingState);
     }
 
     /**
@@ -544,7 +518,9 @@ public final class JavaProfiler {
 
     private static native void blockExit0(long token);
 
-    private static native void blockExitWithSnapshot0(long token, long[] snapshot);
+    private static native long beginTaskBlock0(int state);
+
+    private static native boolean endTaskBlock0(long token, long blocker, long unblockingSpanId);
 
     private static native long currentTicks0();
 
@@ -555,13 +531,6 @@ public final class JavaProfiler {
 
     private static native boolean recordTaskBlockWithContext0(long startTicks, long endTicks,
             long blocker, long unblockingSpanId, long spanId, long rootSpanId);
-
-    private static native boolean recordTaskBlockFromContext0(int tid, long startTicks, long endTicks,
-            long blocker, long unblockingSpanId, long spanId, long rootSpanId);
-
-    private static native boolean recordTaskBlockFromContextWithStackReference0(int tid, long startTicks,
-            long endTicks, long blocker, long unblockingSpanId, long spanId, long rootSpanId,
-            long callTraceId, long correlationId, int observedBlockingState);
 
     private static native void mallocArenaMax0(int max);
 
