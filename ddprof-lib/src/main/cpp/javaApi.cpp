@@ -26,6 +26,7 @@
 #include "engine.h"
 #include "hotspot/vmStructs.inline.h"
 #include "incbin.h"
+#include "jvmSupport.h"
 #include "jvmThread.h"
 #include "os.h"
 #include "otel_process_ctx.h"
@@ -325,7 +326,11 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
 }
 
 extern "C" DLLEXPORT void JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) {
+Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
+    JNIEnv *env, jclass unused, jthread thread) {
+  if (!JVMSupport::isPlatformThread(env, thread)) {
+    return;
+  }
   ProfiledThread *current = ProfiledThread::current();
   if (current == nullptr) {
     return;
@@ -347,7 +352,11 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) 
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
-    JNIEnv *env, jclass unused, jlong blocker, jlong unblockingSpanId) {
+    JNIEnv *env, jclass unused, jthread thread, jlong blocker,
+    jlong unblockingSpanId) {
+  if (!JVMSupport::isPlatformThread(env, thread)) {
+    return;
+  }
   ProfiledThread *current = ProfiledThread::current();
   if (current == nullptr) {
     return;
@@ -421,9 +430,12 @@ static bool snapshotAndExitBlockedRun(jlong token, BlockRunSnapshot *snapshot) {
 
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
-    JNIEnv *env, jclass unused, jint state) {
+    JNIEnv *env, jclass unused, jthread thread, jint state) {
   OSThreadState decoded;
   if (!decodeJavaBlockState(state, decoded)) {
+    return 0;
+  }
+  if (!JVMSupport::isPlatformThread(env, thread)) {
     return 0;
   }
   ProfiledThread *current = ProfiledThread::current();
@@ -444,26 +456,26 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
-    JNIEnv *env, jclass unused, jlong token) {
+    JNIEnv *env, jclass unused, jthread thread, jlong token) {
+  if (!JVMSupport::isPlatformThread(env, thread)) {
+    return;
+  }
   snapshotAndExitBlockedRun(token, nullptr);
 }
 
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
-    JNIEnv *env, jclass unused, jint state) {
+    JNIEnv *env, jclass unused, jthread thread, jint state) {
   OSThreadState decoded;
   if (!decodeJavaBlockState(state, decoded)) {
+    return 0;
+  }
+  if (!JVMSupport::isPlatformThread(env, thread)) {
     return 0;
   }
   ProfiledThread* current = ProfiledThread::current();
   if (current == nullptr) {
     return 0;
-  }
-  if (VM::isHotspot() && VM::hotspot_version() >= 21) {
-    VMThread* carrier = VMThread::current();
-    if (carrier != nullptr && carrier->isCarryingVirtualThread()) {
-      return 0;
-    }
   }
   Profiler* profiler = Profiler::instance();
   if (!profiler->isRunning() || !profiler->taskBlockAsyncActive()) {
@@ -484,10 +496,13 @@ Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
 
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_endTaskBlock0(
-    JNIEnv *env, jclass unused, jlong token, jlong blocker,
+    JNIEnv *env, jclass unused, jthread thread, jlong token, jlong blocker,
     jlong unblockingSpanId) {
+  if (token <= 0 || !JVMSupport::isPlatformThread(env, thread)) {
+    return JNI_FALSE;
+  }
   ProfiledThread* current = ProfiledThread::current();
-  if (current == nullptr || token <= 0) {
+  if (current == nullptr) {
     return JNI_FALSE;
   }
   u64 start_ticks = 0;

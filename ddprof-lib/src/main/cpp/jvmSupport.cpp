@@ -20,6 +20,15 @@
 volatile JVMSupport::JMethodIDLoadStats JVMSupport::jmethodID_load_state = JVMSupport::No_loaded;
 Mutex JVMSupport::_initialization_lock;
 
+bool JVMSupport::isPlatformThread(JNIEnv* jni, jthread thread) {
+    if (jni == nullptr || thread == nullptr) {
+        return false;
+    }
+    int java_version = VM::java_version();
+    return java_version > 0 &&
+        (java_version < 21 || jni->IsVirtualThread(thread) == JNI_FALSE);
+}
+
 bool JVMSupport::initialize() {
     MutexLocker locker(_initialization_lock);
 

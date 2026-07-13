@@ -1,6 +1,12 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler.wallclock;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import org.openjdk.jmc.common.IMCThread;
 import org.openjdk.jmc.common.IMCStackTrace;
 import org.openjdk.jmc.common.item.IAttribute;
 import org.openjdk.jmc.common.item.IItem;
@@ -8,16 +14,20 @@ import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jmc.common.item.IItemIterable;
 import org.openjdk.jmc.common.item.IMemberAccessor;
 import org.openjdk.jmc.common.unit.IQuantity;
+import org.openjdk.jmc.flightrecorder.JfrAttributes;
 
 import java.util.HashSet;
 import java.util.Set;
 
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.openjdk.jmc.common.item.Attribute.attr;
 import static org.openjdk.jmc.common.unit.UnitLookup.NUMBER;
 import static org.openjdk.jmc.common.unit.UnitLookup.PLAIN_TEXT;
 
+/** Shared structural and semantic assertions for {@code datadog.TaskBlock} events. */
 final class TaskBlockAssertions {
     private static final IAttribute<IQuantity> BLOCKER =
             attr("blocker", "blocker", "Blocker Identity Hash", NUMBER);
@@ -73,6 +83,36 @@ final class TaskBlockAssertions {
         assertTrue(
                 blockers.contains(blocker),
                 "Expected TaskBlock with blocker=" + blocker + ", observed blockers were " + blockers);
+    }
+
+    static boolean containsBlocker(IItemCollection events, long blocker) {
+        return values(events, BLOCKER).contains(blocker);
+    }
+
+    static void assertBlockerEventThreadDiffers(
+            IItemCollection events, long blocker, long logicalThreadId) {
+        int checked = 0;
+        for (IItemIterable iterable : events) {
+            IMemberAccessor<IQuantity, IItem> blockerAccessor = BLOCKER.getAccessor(iterable.getType());
+            IMemberAccessor<IMCThread, IItem> threadAccessor =
+                    JfrAttributes.EVENT_THREAD.getAccessor(iterable.getType());
+            if (blockerAccessor == null || threadAccessor == null) {
+                continue;
+            }
+            for (IItem item : iterable) {
+                if (blockerAccessor.getMember(item).longValue() != blocker) {
+                    continue;
+                }
+                IMCThread eventThread = threadAccessor.getMember(item);
+                assertNotNull(eventThread, "TaskBlock eventThread must not be null");
+                assertNotEquals(
+                        Long.valueOf(logicalThreadId),
+                        eventThread.getThreadId(),
+                        "Native TaskBlock must identify the physical carrier, not the virtual thread");
+                checked++;
+            }
+        }
+        assertTrue(checked > 0, "Expected TaskBlock eventThread for blocker=" + blocker);
     }
 
     static void assertNoAnchorFields(IItemCollection taskBlockEvents) {

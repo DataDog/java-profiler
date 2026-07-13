@@ -24,7 +24,6 @@
 // builds (see the note in hotspotStackFrame_aarch64.cpp).
 #include "hotspot/vmStructs.inline.h"
 #include "hotspot/jitCodeCache.h"
-#include <atomic>
 #include <dlfcn.h>
 #include <stdlib.h>
 #include "guards.h"
@@ -39,8 +38,6 @@ static Arguments _agent_args(true);
 
 JavaVM *VM::_vm;
 jvmtiEnv *VM::_jvmti = NULL;
-static std::atomic<jclass> _virtual_thread_class(NULL);
-
 int VM::_java_version = 0;
 int VM::_java_update_version = 0;
 int VM::_hotspot_version = 0;
@@ -81,41 +78,13 @@ static u64 monitorBlockerHash(jvmtiEnv *jvmti, jobject object) {
   return static_cast<u64>(static_cast<uint32_t>(hash));
 }
 
-static void initVirtualThreadClass(JNIEnv *jni) {
-  if (jni == NULL || VM::java_version() < 21 ||
-      _virtual_thread_class.load(std::memory_order_acquire) != NULL) {
-    return;
-  }
-  jclass local = jni->FindClass("java/lang/VirtualThread");
-  if (jniExceptionCheck(jni) || local == NULL) {
-    return;
-  }
-  jclass global = (jclass)jni->NewGlobalRef(local);
-  jni->DeleteLocalRef(local);
-  if (jniExceptionCheck(jni) || global == NULL) {
-    return;
-  }
-  jclass expected = NULL;
-  if (!_virtual_thread_class.compare_exchange_strong(
-          expected, global, std::memory_order_acq_rel, std::memory_order_acquire)) {
-    jni->DeleteGlobalRef(global);
-  }
-}
-
-static bool isVirtualThread(JNIEnv *jni, jthread thread) {
-  jclass virtual_thread_class =
-      _virtual_thread_class.load(std::memory_order_acquire);
-  return jni != NULL && thread != NULL && virtual_thread_class != NULL &&
-         jni->IsInstanceOf(thread, virtual_thread_class) == JNI_TRUE;
-}
-
 static void monitorBlockEnter(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                               jobject object, OSThreadState state) {
   Profiler *profiler = Profiler::instance();
   if (!profiler->taskBlockAsyncActive()) {
     return;
   }
-  if (isVirtualThread(jni, thread)) {
+  if (!JVMSupport::isPlatformThread(jni, thread)) {
     // JVMTI monitor callbacks are delivered on the carrier while the jthread
     // argument identifies the virtual thread. Do not store virtual-thread state
     // in carrier TLS or mark the carrier as blocked; that would misattribute
@@ -154,7 +123,7 @@ static void monitorBlockEnter(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
 }
 
 static void monitorBlockExit(JNIEnv *jni, jthread thread, OSThreadState state) {
-  if (isVirtualThread(jni, thread)) {
+  if (!JVMSupport::isPlatformThread(jni, thread)) {
     return;
   }
   ProfiledThread *current = ProfiledThread::current();
@@ -665,10 +634,6 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach,
   if (_hotspot) {
     probeJFRRequestStackTrace();
   }
-  if (_native_monitor_events_available) {
-    initVirtualThreadClass(jni());
-  }
-
   jvmtiEventCallbacks callbacks = {0};
   callbacks.VMInit = VMInit;
   callbacks.VMDeath = VMDeath;

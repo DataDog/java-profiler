@@ -37,6 +37,10 @@ public:
 };
 static JvmSupportGlobalSetup jvm_support_global_setup;
 
+TEST(JvmSupportThreadClassificationTest, NullInputsFailClosed) {
+    EXPECT_FALSE(JVMSupport::isPlatformThread(nullptr, nullptr));
+}
+
 // ---------------------------------------------------------------------------
 // VMTestAccessor — friend of VM, lets tests swap VM::_jvmti for a mock so
 // JVMThread::currentThreadSlow() can be exercised without a live JVM.

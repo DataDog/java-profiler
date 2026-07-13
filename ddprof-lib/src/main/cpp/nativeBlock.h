@@ -24,6 +24,8 @@ enum class NativeBlockKind : u32 {
   EPOLL_WAIT = 7,
 };
 
+// Describes physical blocking by the current OS thread. When called by a virtual
+// thread in JNI, the recorded thread is the pinned carrier, not the logical thread.
 class NativeBlockScope {
 public:
   NativeBlockScope(NativeBlockKind kind, int blocker_id,
