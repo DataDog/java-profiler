@@ -74,7 +74,7 @@ static CTimer ctimer;
 static CTimerJvmti ctimer_jvmti;
 
 void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
-  // JVMTI callback - outside signal handeler
+  // JVMTI callback - outside signal handler
   ProfiledThread* current = ProfiledThread::initCurrentThreadSignalSafe();
   if (current == nullptr) {
     return;
