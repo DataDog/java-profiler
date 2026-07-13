@@ -81,6 +81,15 @@ private:
   NotifyClassUnloadedFunc _notify_class_unloaded_func;
   // --
 
+  // Caps the number of distinct class names _class_map will ever hold.
+  // rotate()/clearStandby() carry the full accumulated set forward on every
+  // JFR chunk (only clearAll() on profiler restart truly resets it), so
+  // without a cap a workload with unbounded distinct-class churn (e.g. heavy
+  // dynamic class generation) grows this dictionary for the lifetime of the
+  // process. 256K distinct classes is far beyond any real application's
+  // class count.
+  static const int MAX_CLASS_MAP_SIZE = 1 << 18;
+
   ThreadInfo _thread_info;
   StringDictionary _class_map{1};
   StringDictionary _string_label_map{2};

@@ -257,6 +257,24 @@ TEST_F(StringDictionaryTest, ClearAllResetsEverything) {
     EXPECT_EQ(1u, new_id);
 }
 
+TEST_F(StringDictionaryTest, BoundedLookupWithSizeLimitRejectsNewKeyAtCapacity) {
+    // Fill active up to size_limit distinct keys via the capped overload.
+    const int size_limit = 5;
+    for (int i = 0; i < size_limit; i++) {
+        std::string k = "cap_" + std::to_string(i);
+        u32 id = dict.bounded_lookup(k.c_str(), k.size(), size_limit);
+        EXPECT_GT(id, 0u) << "insert " << i << " should have succeeded below the limit";
+    }
+
+    // A brand-new key must be rejected once active->size() >= size_limit.
+    EXPECT_EQ(0u, dict.bounded_lookup("overflow", 8, size_limit));
+
+    // An already-present key must still resolve to its existing id even at capacity
+    // (cache hit is checked before the capacity check).
+    u32 id0 = dict.bounded_lookup("cap_0", 5, size_limit);
+    EXPECT_GT(id0, 0u);
+}
+
 TEST_F(StringDictionaryTest, LookupDuringDumpInsertsNewKeyIntoActiveAndStandby) {
     dict.rotate();  // empty active becomes dump, fresh active
     // Key is not in dump and not in active — lookupDuringDump must insert into both.
