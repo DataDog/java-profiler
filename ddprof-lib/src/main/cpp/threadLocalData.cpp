@@ -12,6 +12,11 @@
 #include <time.h>
 
 
+// Namespace-scope static: the ctor (pthread_key_create) runs during library
+// load — single-threaded, before profiling signals or the pthread_create
+// interceptor are armed. So current()/isThreadKeyValid() may read _key without
+// synchronization: the ctor's write happens-before any later thread/signal that
+// reads it.
 ThreadLocal<ProfiledThread*, nullptr, ProfiledThread::freeValue>  ProfiledThread::_current_thread;
 
 ProfiledThread* ProfiledThread::initCurrentThread() {
