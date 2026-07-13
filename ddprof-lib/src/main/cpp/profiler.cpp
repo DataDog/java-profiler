@@ -1862,10 +1862,16 @@ void Profiler::shutdown(Arguments &args) {
 }
 
 int Profiler::lookupClass(const char *key, size_t length) {
-  // StringDictionary::lookup() is internally thread-safe via _accepting +
-  // RefCountGuard; no external lock required (unlike the old Dictionary).
-  u32 id = _class_map.lookup(key, length);
-  return id != 0 ? static_cast<int>(id) : -1;
+  // StringDictionary::bounded_lookup() is internally thread-safe via
+  // _accepting + RefCountGuard; no external lock required. Bounded to
+  // MAX_CLASS_MAP_SIZE so unbounded distinct-class churn cannot grow this
+  // dictionary for the lifetime of the process.
+  u32 id = _class_map.bounded_lookup(key, length, MAX_CLASS_MAP_SIZE);
+  if (id == 0) {
+    Counters::increment(CLASS_MAP_AT_CAPACITY);
+    return -1;
+  }
+  return static_cast<int>(id);
 }
 
 int Profiler::status(char* status, int max_len) {
