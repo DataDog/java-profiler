@@ -123,6 +123,11 @@ case $ALLOCATOR in
   tcmalloc)
     echo "Running with tcmalloc"
     export LD_PRELOAD=$(find /usr/lib/ -name 'libtcmalloc_minimal.so.4')
+    # thread-churn/dump-storm antagonists cycle many short-lived threads;
+    # tcmalloc's defaults are slow to return their per-thread caches to the
+    # OS, which was inflating container RSS past the OOM limit on aarch64.
+    export TCMALLOC_RELEASE_RATE=10
+    export TCMALLOC_AGGRESSIVE_DECOMMIT=1
     ;;
   jemalloc)
     echo "Running with jemalloc"
