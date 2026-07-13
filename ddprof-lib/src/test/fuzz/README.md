@@ -177,7 +177,11 @@ infinities, subnormals, -0.0).
 Seed corpus files are in `corpus/<target_name>/`. These provide starting points
 for the fuzzer to understand the expected input format.
 
-`corpus/fuzz_threadLocal/` seeds a few inputs per opcode range documented in
+Note: the target directory name has the `fuzz_` prefix stripped (see
+`FuzzTargetsPlugin.kt`) — e.g. seeds for `fuzz_threadLocal.cpp` belong in
+`corpus/threadLocal/`, not `corpus/fuzz_threadLocal/`.
+
+`corpus/threadLocal/` seeds a few inputs per opcode range documented in
 `fuzz_threadLocal.cpp` (tracked lifecycle/overwrite, `nullptr` recreate, double
 and intptr bit-exact round-trips including NaN/inf/-0.0/subnormal, and a
 truncated-payload case) to speed up initial coverage discovery. Not required —
@@ -212,7 +216,7 @@ ddprof-lib/fuzz/build/bin/fuzz/dwarf/dwarf <crash_file>
        return 0;
    }
    ```
-3. Optionally add seed corpus files in `corpus/fuzz_newfeature/`
+3. Optionally add seed corpus files in `corpus/newfeature/` (the `fuzz_` prefix is stripped, as noted above)
 4. The build system will automatically detect the new target
 
 ## CI Integration
