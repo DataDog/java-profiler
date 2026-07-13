@@ -204,7 +204,7 @@ ddprof-lib/fuzz/build/bin/fuzz/dwarf/dwarf <crash_file>
 
 ## Adding New Fuzz Targets
 
-1. Create a new `.cpp` file in this directory (e.g., `fuzz_newfeature.cpp`)
+1. Create a new `.cpp` file in this directory (e.g., `newfeature.cpp`)
 2. Implement the `LLVMFuzzerTestOneInput` function:
    ```cpp
    extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
@@ -212,7 +212,7 @@ ddprof-lib/fuzz/build/bin/fuzz/dwarf/dwarf <crash_file>
        return 0;
    }
    ```
-3. Optionally add seed corpus files in `corpus/fuzz_newfeature/`
+3. Optionally add seed corpus files in `corpus/fnewfeature/`
 4. The build system will automatically detect the new target
 
 ## CI Integration
