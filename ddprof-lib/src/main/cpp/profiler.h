@@ -271,6 +271,10 @@ public:
   Engine *wallEngine() { return _wall_engine; }
 
   StringDictionary *classMap() { return &_class_map; }
+  // Same cap lookupClass() enforces for sample-time inserts; dump-time
+  // insertions (Lookup::_classes->lookupDuringDump in flightRecorder.cpp)
+  // must use this too so _class_map cannot grow past it via that path.
+  static int maxClassMapSize() { return MAX_CLASS_MAP_SIZE; }
   SharedLockGuard classMapSharedGuard() { return SharedLockGuard(&_class_map_lock); }
   StringDictionary *stringLabelMap() { return &_string_label_map; }
   StringDictionary *contextValueMap() { return &_context_value_map; }
