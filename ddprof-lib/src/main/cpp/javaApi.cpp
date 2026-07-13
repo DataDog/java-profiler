@@ -360,20 +360,31 @@ Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
     return;
   }
 
-  int tid = ProfiledThread::currentTid();
-  if (tid >= 0) {
-    recordTaskBlockWithContextIfEligible(tid, start_ticks, TSC::ticks(),
-                                         park_context, (u64)blocker,
-                                         (u64)unblockingSpanId);
+  Profiler* profiler = Profiler::instance();
+  bool activity = profiler->tryEnterTaskBlockActivity();
+  if (!activity) {
+    profiler->waitForTaskBlockRotation();
   }
-
-  ThreadFilter *tf = Profiler::instance()->threadFilter();
-  if (tf->enabled()) {
-    ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(park_block_token);
-    if (current->filterSlotId() == slot_id) {
-      tf->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(park_block_token));
-    }
+  ThreadFilter* tf = profiler->threadFilter();
+  ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(park_block_token);
+  BlockRunSnapshot snapshot{};
+  bool exited = tf->enabled() && current->filterSlotId() == slot_id &&
+      tf->snapshotAndExitBlockedRun(
+          slot_id, ThreadFilter::tokenGeneration(park_block_token), &snapshot);
+  if (!activity) {
+    Counters::increment(TASK_BLOCK_DROPPED_ROTATION);
+    return;
   }
+  if (exited) {
+    int tid = ProfiledThread::currentTid();
+    OSThreadState observed_state = snapshot.sampled_state != OSThreadState::UNKNOWN
+        ? snapshot.sampled_state : snapshot.active_state;
+    recordTaskBlockWithStackReferenceIfEligible(
+        tid, start_ticks, TSC::ticks(), park_context, (u64)blocker,
+        (u64)unblockingSpanId, snapshot.call_trace_id,
+        snapshot.correlation_id, observed_state, true);
+  }
+  profiler->leaveTaskBlockActivity();
 }
 
 static bool decodeJavaBlockState(jint state, OSThreadState &decoded) {

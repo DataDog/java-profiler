@@ -352,6 +352,22 @@ TEST_F(TaskBlockRecorderTest, AsyncRecordDropsWhenDrainInactive) {
   EXPECT_TRUE(Profiler::instance()->taskBlockQueueEmptyForTest());
 }
 
+TEST_F(TaskBlockRecorderTest, RotationGateRejectsNewTaskBlockActivity) {
+  Profiler* profiler = Profiler::instance();
+  profiler->beginTaskBlockRotationForTest();
+
+  EXPECT_FALSE(profiler->tryEnterTaskBlockActivity());
+  Context context{};
+  EXPECT_FALSE(recordTaskBlockWithStackReferenceIfEligible(
+      17, 1, minEligibleEndTicks(1), context, 1, 0, 1, 0,
+      OSThreadState::SLEEPING));
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_DROPPED_ROTATION));
+
+  profiler->endTaskBlockRotationForTest();
+  ASSERT_TRUE(profiler->tryEnterTaskBlockActivity());
+  profiler->leaveTaskBlockActivity();
+}
+
 TEST_F(TaskBlockRecorderTest, AsyncQueueFullIncrementsDropCounter) {
   Profiler::instance()->setTaskBlockAsyncActiveForTest(true);
   TaskBlockEvent event = eventWithStack(1);

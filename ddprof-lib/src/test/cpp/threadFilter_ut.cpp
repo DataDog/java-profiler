@@ -1076,3 +1076,24 @@ TEST_F(ThreadFilterTest, ConcurrentMarkSnapshotAndExitPreserveBlockedRunInvarian
 
     EXPECT_EQ(0, failures.load(std::memory_order_relaxed));
 }
+
+TEST_F(ThreadFilterTest, ActiveTaskBlockCallTraceIsReportedAsLiveUntilExit) {
+    int slot_id = filter->registerThread();
+    ASSERT_GE(slot_id, 0);
+    u64 token = filter->enterBlockedRun(slot_id, OSThreadState::SLEEPING,
+                                        BlockRunOwner::JAVA);
+    ASSERT_NE(0ULL, token);
+
+    filter->markTaskBlockSampled(slot_id, OSThreadState::SLEEPING, 0x123400001ULL, 0);
+    std::unordered_set<u64> live_ids;
+    filter->collectTaskBlockLiveTraceIds(live_ids);
+    EXPECT_EQ(1u, live_ids.count(0x123400001ULL));
+
+    BlockRunSnapshot snapshot{};
+    ASSERT_TRUE(filter->snapshotAndExitBlockedRun(
+        slot_id, ThreadFilter::tokenGeneration(token), &snapshot));
+    live_ids.clear();
+    filter->collectTaskBlockLiveTraceIds(live_ids);
+    EXPECT_TRUE(live_ids.empty());
+    EXPECT_EQ(0x123400001ULL, snapshot.call_trace_id);
+}

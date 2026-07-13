@@ -127,6 +127,10 @@ private:
   pthread_t _task_block_drain_thread;
   std::atomic<bool> _task_block_drain_running;
   std::atomic<u64> _task_block_generation;
+  // Dump closes this gate, waits for active producers/consumers, then drains the
+  // queue before rotating call-trace storage.
+  std::atomic<bool> _task_block_rotation;
+  std::atomic<u32> _task_block_inflight;
 
   // dlopen() hook support
   void **_dlopen_entry;
@@ -141,7 +145,10 @@ private:
   static void *taskBlockDrainLoop(void *arg);
   void startTaskBlockDrain();
   void stopTaskBlockDrain();
-  void drainTaskBlockQueue(bool record);
+  void drainTaskBlockQueue(bool record, bool rotation_owner = false);
+  bool recordTaskBlockLiveUnchecked(int tid, TaskBlockEvent *event);
+  void beginTaskBlockRotation();
+  void endTaskBlockRotation();
 
   u32 getLockIndex(int tid);
   int getNativeTrace(void *ucontext, ASGCT_CallFrame *frames, int event_type,
@@ -208,11 +215,16 @@ public:
         _num_context_attributes(0), _omit_stacktraces(false),
         _remote_symbolication(false), _task_block_drain_thread(),
         _task_block_drain_running(false), _task_block_generation(0),
+        _task_block_rotation(false), _task_block_inflight(0),
         _dlopen_entry(NULL) {
 
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
       _calltrace_buffer[i] = NULL;
     }
+    _call_trace_storage.registerLivenessChecker(
+        [this](std::unordered_set<u64>& trace_ids) {
+          _thread_filter.collectTaskBlockLiveTraceIds(trace_ids);
+        });
   }
 
   static inline Profiler *instance() {
@@ -397,7 +409,9 @@ public:
                          ASGCT_CallFrame *frames, int lock_index);
   bool recordSample(void *ucontext, u64 weight, int tid, jint event_type,
                     u64 call_trace_id, Event *event,
-                    u64 *recorded_call_trace_id = nullptr);
+                    u64 *recorded_call_trace_id = nullptr,
+                    ThreadFilter::SlotID task_block_slot_id = -1,
+                    OSThreadState task_block_state = OSThreadState::UNKNOWN);
   // Delegated sample path: stack-walking is performed by the HotSpot JFR
   // RequestStackTrace extension (the JVM emits the stack trace into its own
   // JFR recording). We only emit the CPU/wall sample event with no
@@ -405,7 +419,9 @@ public:
   // RequestStackTrace as user_data.
   bool recordSampleDelegated(void *ucontext, u64 weight, int tid,
                              jint event_type, Event *event,
-                             u64 *recorded_correlation_id = nullptr);
+                             u64 *recorded_correlation_id = nullptr,
+                             ThreadFilter::SlotID task_block_slot_id = -1,
+                             OSThreadState task_block_state = OSThreadState::UNKNOWN);
   u64 recordJVMTISample(u64 weight, int tid, jthread thread, jint event_type, Event *event, bool deferred);
   void recordDeferredSample(int tid, u64 call_trace_id, jint event_type, Event *event);
   void recordExternalSample(u64 weight, int tid, int num_frames,
@@ -416,6 +432,11 @@ public:
   void recordQueueTime(int tid, QueueTimeEvent *event);
   bool recordTaskBlockLive(int tid, TaskBlockEvent *event);
   bool recordTaskBlockAsync(int tid, TaskBlockEvent *event);
+  // TaskBlock producers must hold an activity across stack-reference snapshot
+  // and event recording/enqueue so dump cannot rotate between those operations.
+  bool tryEnterTaskBlockActivity();
+  void leaveTaskBlockActivity();
+  void waitForTaskBlockRotation();
   bool taskBlockAsyncActive() const {
     return _task_block_drain_running.load(std::memory_order_acquire);
   }
@@ -472,6 +493,14 @@ public:
 
   void drainTaskBlockQueueForTest(bool record) {
     drainTaskBlockQueue(record);
+  }
+
+  void beginTaskBlockRotationForTest() {
+    beginTaskBlockRotation();
+  }
+
+  void endTaskBlockRotationForTest() {
+    endTaskBlockRotation();
   }
 
   void startTaskBlockDrainForTest() {

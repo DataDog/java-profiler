@@ -161,13 +161,18 @@ static void monitorBlockExit(JNIEnv *jni, jthread thread, OSThreadState state) {
   if (current == nullptr) {
     return;
   }
+  Profiler* profiler = Profiler::instance();
+  bool activity = profiler->tryEnterTaskBlockActivity();
+  if (!activity) {
+    profiler->waitForTaskBlockRotation();
+  }
   u64 start_ticks = 0;
   Context context = {};
   u64 blocker = 0;
   u64 monitor_block_token = 0;
   bool exited =
       current->monitorExit(state, start_ticks, context, blocker, monitor_block_token);
-  ThreadFilter *tf = Profiler::instance()->threadFilter();
+  ThreadFilter *tf = profiler->threadFilter();
   if (exited && tf->enabled() && monitor_block_token != 0) {
     ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(monitor_block_token);
     if (current->filterSlotId() == slot_id) {
@@ -183,13 +188,20 @@ static void monitorBlockExit(JNIEnv *jni, jthread thread, OSThreadState state) {
             snapshot.sampled_state != OSThreadState::UNKNOWN
                 ? snapshot.sampled_state
                 : state;
-        recordTaskBlockAsyncWithStackReferenceIfEligible(
-            tid, start_ticks, TSC::ticks(), context, blocker, 0,
-            snapshot.has_stack_reference ? snapshot.call_trace_id : 0,
-            snapshot.has_stack_reference ? snapshot.correlation_id : 0,
-            observed_state);
+        if (activity) {
+          recordTaskBlockAsyncWithStackReferenceIfEligible(
+              tid, start_ticks, TSC::ticks(), context, blocker, 0,
+              snapshot.has_stack_reference ? snapshot.call_trace_id : 0,
+              snapshot.has_stack_reference ? snapshot.correlation_id : 0,
+              observed_state, true);
+        }
       }
     }
+  }
+  if (activity) {
+    profiler->leaveTaskBlockActivity();
+  } else {
+    Counters::increment(TASK_BLOCK_DROPPED_ROTATION);
   }
 }
 

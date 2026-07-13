@@ -315,8 +315,10 @@ void ThreadFilter::clearActive() {
             continue;
         }
 
-        for (auto& slot : chunk->slots) {
+        for (int slot_idx = 0; slot_idx < kChunkSize; ++slot_idx) {
+            Slot& slot = chunk->slots[slot_idx];
             slot.value.store(-1, std::memory_order_release);
+            clearTaskBlockLiveSlot((chunk_idx << kChunkShift) | slot_idx);
             slot.clearActiveBlockRun(OSThreadState::UNKNOWN);
         }
     }
@@ -330,6 +332,7 @@ void ThreadFilter::resetSlotRunState(SlotID slot_id) {
     if (chunk != nullptr) {
         // Clear stale suppression state so a new thread in this slot cannot inherit
         // its predecessor's active block or once-per-run sampled marker.
+        clearTaskBlockLiveSlot(slot_id);
         chunk->slots[slot_idx].clearActiveBlockRun(OSThreadState::UNKNOWN);
     }
 }
@@ -345,6 +348,7 @@ u64 ThreadFilter::enterBlockedRun(SlotID slot_id, OSThreadState state,
         if (!s->trySetActiveBlockRun(state, owner, &generation)) {
             return 0;
         }
+        clearTaskBlockLiveSlot(slot_id);
         return encodeBlockRunToken(slot_id, generation);
     }
     return 0;
@@ -353,6 +357,7 @@ u64 ThreadFilter::enterBlockedRun(SlotID slot_id, OSThreadState state,
 void ThreadFilter::exitBlockedRun(SlotID slot_id) {
     Slot* s = slotForId(slot_id);
     if (s != nullptr) {
+        clearTaskBlockLiveSlot(slot_id);
         s->clearActiveBlockRun(OSThreadState::RUNNABLE);
     }
 }
@@ -365,6 +370,7 @@ bool ThreadFilter::exitBlockedRun(SlotID slot_id, u32 generation) {
         s->blockGeneration() != generation) {
         return false;
     }
+    clearTaskBlockLiveSlot(slot_id);
     s->clearActiveBlockRun(OSThreadState::RUNNABLE);
     return true;
 }
@@ -381,6 +387,7 @@ bool ThreadFilter::snapshotAndExitBlockedRun(SlotID slot_id, u32 generation,
     if (snapshot != nullptr) {
         *snapshot = s->snapshotBlockRun();
     }
+    clearTaskBlockLiveSlot(slot_id);
     s->clearActiveBlockRun(OSThreadState::RUNNABLE);
     return true;
 }
@@ -395,6 +402,47 @@ BlockRunSnapshot ThreadFilter::snapshotBlockedRun(SlotID slot_id) const {
     snapshot.sampled_state = OSThreadState::UNKNOWN;
     snapshot.owner = BlockRunOwner::NONE;
     return snapshot;
+}
+
+void ThreadFilter::markTaskBlockSampled(SlotID slot_id, OSThreadState state,
+                                        u64 call_trace_id, u64 correlation_id) {
+    Slot* s = slotForId(slot_id);
+    if (s == nullptr) {
+        return;
+    }
+    s->markSampledThisRun(state, call_trace_id, correlation_id);
+    if (call_trace_id != 0) {
+        int word = slot_id / kTaskBlockLiveWordBits;
+        u64 mask = 1ULL << (slot_id % kTaskBlockLiveWordBits);
+        _task_block_live_slots[word].fetch_or(mask, std::memory_order_release);
+    }
+}
+
+void ThreadFilter::collectTaskBlockLiveTraceIds(std::unordered_set<u64>& trace_ids) const {
+    for (int word = 0; word < kTaskBlockLiveWordCount; ++word) {
+        u64 live = _task_block_live_slots[word].load(std::memory_order_acquire);
+        while (live != 0) {
+            int bit = __builtin_ctzll(live);
+            SlotID slot_id = word * kTaskBlockLiveWordBits + bit;
+            Slot* s = slotForId(slot_id);
+            if (s != nullptr) {
+                u64 call_trace_id = s->capturedCallTraceId();
+                if (call_trace_id != 0) {
+                    trace_ids.insert(call_trace_id);
+                }
+            }
+            live &= live - 1;
+        }
+    }
+}
+
+void ThreadFilter::clearTaskBlockLiveSlot(SlotID slot_id) {
+    if (slot_id < 0 || slot_id >= kMaxThreads) {
+        return;
+    }
+    int word = slot_id / kTaskBlockLiveWordBits;
+    u64 mask = 1ULL << (slot_id % kTaskBlockLiveWordBits);
+    _task_block_live_slots[word].fetch_and(~mask, std::memory_order_release);
 }
 
 void ThreadFilter::init(const char* filter) {

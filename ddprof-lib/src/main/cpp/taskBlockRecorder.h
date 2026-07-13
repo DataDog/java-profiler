@@ -16,6 +16,33 @@
 void initializeTaskBlockDurationThreshold();
 bool exceedsMinTaskBlockDuration(u64 start_ticks, u64 end_ticks);
 
+// Allocation-free guard for the dump rotation protocol. Callers that already
+// hold an activity pass true so nested recorder helpers reuse the outer guard.
+class TaskBlockActivity {
+ private:
+  Profiler* _profiler;
+  bool _active;
+  bool _owns_activity;
+
+ public:
+  explicit TaskBlockActivity(bool already_active = false)
+      : _profiler(Profiler::instance()),
+        _active(already_active || _profiler->tryEnterTaskBlockActivity()),
+        _owns_activity(!already_active && _active) {
+    if (!_active) {
+      Counters::increment(TASK_BLOCK_DROPPED_ROTATION);
+    }
+  }
+
+  ~TaskBlockActivity() {
+    if (_owns_activity) {
+      _profiler->leaveTaskBlockActivity();
+    }
+  }
+
+  bool active() const { return _active; }
+};
+
 static inline bool hasTraceContext(const Context& ctx) {
   return ctx.spanId != 0;
 }
@@ -83,7 +110,12 @@ static inline bool recordTaskBlockLive(int tid, TaskBlockEvent& event) {
 // target thread.
 static inline bool recordTaskBlockWithContextIfEligible(int tid, u64 start_ticks, u64 end_ticks,
                                                          const Context& ctx, u64 blocker,
-                                                         u64 unblocking_span_id) {
+                                                         u64 unblocking_span_id,
+                                                         bool activity_already_held = false) {
+  TaskBlockActivity activity(activity_already_held);
+  if (!activity.active()) {
+    return false;
+  }
   if (!taskBlockPassesBasicEligibility(start_ticks, end_ticks, ctx)) {
     return false;
   }
@@ -118,7 +150,11 @@ static inline bool recordTaskBlockLiveIfEligible(int tid, u64 start_ticks, u64 e
 static inline bool recordTaskBlockWithStackReferenceIfEligible(
     int tid, u64 start_ticks, u64 end_ticks, const Context& ctx, u64 blocker,
     u64 unblocking_span_id, u64 call_trace_id, u64 correlation_id,
-    OSThreadState observed_state) {
+    OSThreadState observed_state, bool activity_already_held = false) {
+  TaskBlockActivity activity(activity_already_held);
+  if (!activity.active()) {
+    return false;
+  }
   if (!taskBlockPassesBasicEligibility(start_ticks, end_ticks, ctx)) {
     return false;
   }
@@ -143,7 +179,11 @@ static inline bool recordTaskBlockWithStackReferenceIfEligible(
 static inline bool recordTaskBlockAsyncWithStackReferenceIfEligible(
     int tid, u64 start_ticks, u64 end_ticks, const Context& ctx, u64 blocker,
     u64 unblocking_span_id, u64 call_trace_id, u64 correlation_id,
-    OSThreadState observed_state) {
+    OSThreadState observed_state, bool activity_already_held = false) {
+  TaskBlockActivity activity(activity_already_held);
+  if (!activity.active()) {
+    return false;
+  }
   if (!taskBlockPassesBasicEligibility(start_ticks, end_ticks, ctx)) {
     return false;
   }

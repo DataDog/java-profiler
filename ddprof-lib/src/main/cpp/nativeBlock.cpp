@@ -104,13 +104,28 @@ void NativeBlockScope::finish(u64 end_ticks) {
   }
   _active = false;
 
-  ThreadFilter* thread_filter = Profiler::instance()->threadFilter();
+  Profiler* profiler = Profiler::instance();
+  bool activity = profiler->tryEnterTaskBlockActivity();
+  if (!activity) {
+    profiler->waitForTaskBlockRotation();
+  }
+  ThreadFilter* thread_filter = profiler->threadFilter();
   BlockRunSnapshot snapshot{};
   snapshot.active_state = _state;
   snapshot.sampled_state = OSThreadState::UNKNOWN;
   snapshot.owner = BlockRunOwner::NATIVE;
   if (!thread_filter->enabled() ||
       !thread_filter->snapshotAndExitBlockedRun(_slot_id, _generation, &snapshot)) {
+    if (activity) {
+      profiler->leaveTaskBlockActivity();
+    } else {
+      Counters::increment(TASK_BLOCK_DROPPED_ROTATION);
+    }
+    return;
+  }
+
+  if (!activity) {
+    Counters::increment(TASK_BLOCK_DROPPED_ROTATION);
     return;
   }
 
@@ -121,7 +136,8 @@ void NativeBlockScope::finish(u64 end_ticks) {
       _tid, _start_ticks, end_ticks, _context, _blocker, 0,
       snapshot.has_stack_reference ? snapshot.call_trace_id : 0,
       snapshot.has_stack_reference ? snapshot.correlation_id : 0,
-      observed_state);
+      observed_state, true);
+  profiler->leaveTaskBlockActivity();
 }
 
 #endif // __linux__

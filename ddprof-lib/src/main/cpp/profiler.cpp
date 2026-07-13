@@ -47,6 +47,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 #include <signal.h>
 #include <stdint.h>
@@ -162,18 +163,58 @@ void Profiler::stopTaskBlockDrain() {
   drainTaskBlockQueue(true);
 }
 
-void Profiler::drainTaskBlockQueue(bool record) {
+void Profiler::drainTaskBlockQueue(bool record, bool rotation_owner) {
+  if (!rotation_owner && !tryEnterTaskBlockActivity()) {
+    return;
+  }
   QueuedTaskBlockEvent queued;
   u64 generation = _task_block_generation.load(std::memory_order_acquire);
   while (_task_block_queue.tryPop(queued)) {
     if (record && queued.generation == generation) {
-      if (recordTaskBlockLive(queued.tid, &queued.event)) {
+      if (recordTaskBlockLiveUnchecked(queued.tid, &queued.event)) {
         Counters::increment(TASK_BLOCK_EMITTED);
       } else {
         Counters::increment(TASK_BLOCK_RECORD_FAILED);
       }
     }
   }
+  if (!rotation_owner) {
+    leaveTaskBlockActivity();
+  }
+}
+
+bool Profiler::tryEnterTaskBlockActivity() {
+  if (_task_block_rotation.load(std::memory_order_acquire)) {
+    return false;
+  }
+  _task_block_inflight.fetch_add(1, std::memory_order_acq_rel);
+  if (_task_block_rotation.load(std::memory_order_acquire)) {
+    _task_block_inflight.fetch_sub(1, std::memory_order_acq_rel);
+    return false;
+  }
+  return true;
+}
+
+void Profiler::leaveTaskBlockActivity() {
+  _task_block_inflight.fetch_sub(1, std::memory_order_release);
+}
+
+void Profiler::waitForTaskBlockRotation() {
+  while (_task_block_rotation.load(std::memory_order_acquire)) {
+    std::this_thread::yield();
+  }
+}
+
+void Profiler::beginTaskBlockRotation() {
+  _task_block_rotation.store(true, std::memory_order_release);
+  while (_task_block_inflight.load(std::memory_order_acquire) != 0) {
+    std::this_thread::yield();
+  }
+  drainTaskBlockQueue(true, true);
+}
+
+void Profiler::endTaskBlockRotation() {
+  _task_block_rotation.store(false, std::memory_order_release);
 }
 
 void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
@@ -679,7 +720,9 @@ void Profiler::recordDeferredSample(int tid, u64 call_trace_id, jint event_type,
 
 bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
                             jint event_type, u64 call_trace_id, Event *event,
-                            u64 *recorded_call_trace_id) {
+                            u64 *recorded_call_trace_id,
+                            ThreadFilter::SlotID task_block_slot_id,
+                            OSThreadState task_block_state) {
   atomicIncRelaxed(_total_samples);
 
   u32 lock_index = getLockIndex(tid);
@@ -748,6 +791,10 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
   if (recorded && recorded_call_trace_id != nullptr) {
     *recorded_call_trace_id = call_trace_id;
   }
+  if (recorded && task_block_slot_id >= 0) {
+    _thread_filter.markTaskBlockSampled(task_block_slot_id, task_block_state,
+                                       call_trace_id, 0);
+  }
 
   _locks[lock_index].unlock();
   return recorded;
@@ -755,7 +802,9 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
 
 bool Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
                                      jint event_type, Event *event,
-                                     u64 *recorded_correlation_id) {
+                                     u64 *recorded_correlation_id,
+                                     ThreadFilter::SlotID task_block_slot_id,
+                                     OSThreadState task_block_state) {
   if (!VM::canRequestStackTrace()) {
     return false;
   }
@@ -792,6 +841,10 @@ bool Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
       _jfr.recordEventDelegated(lock_index, tid, correlation_id, event_type, event);
   if (recorded && recorded_correlation_id != nullptr) {
     *recorded_correlation_id = correlation_id;
+  }
+  if (recorded && task_block_slot_id >= 0) {
+    _thread_filter.markTaskBlockSampled(task_block_slot_id, task_block_state,
+                                       0, correlation_id);
   }
   _locks[lock_index].unlock();
   return recorded;
@@ -830,7 +883,7 @@ void Profiler::recordQueueTime(int tid, QueueTimeEvent *event) {
   _locks[lock_index].unlock();
 }
 
-bool Profiler::recordTaskBlockLive(int tid, TaskBlockEvent *event) {
+bool Profiler::recordTaskBlockLiveUnchecked(int tid, TaskBlockEvent *event) {
 #ifdef UNIT_TEST
   record_task_block_live_calls_for_test.fetch_add(1, std::memory_order_acq_rel);
   last_task_block_tid_for_test.store(tid, std::memory_order_release);
@@ -850,6 +903,10 @@ bool Profiler::recordTaskBlockLive(int tid, TaskBlockEvent *event) {
   bool recorded = _jfr.recordTaskBlock(lock_index, tid, event);
   _locks[lock_index].unlock();
   return recorded;
+}
+
+bool Profiler::recordTaskBlockLive(int tid, TaskBlockEvent *event) {
+  return recordTaskBlockLiveUnchecked(tid, event);
 }
 
 bool Profiler::recordTaskBlockAsync(int tid, TaskBlockEvent *event) {
@@ -1858,10 +1915,12 @@ Error Profiler::dump(const char *path, const int length) {
     // its own writer/reader coordination; #527's classMapSharedGuard readers
     // (deferred vtable receiver resolution) are coordinated through
     // _class_map_lock.
+    beginTaskBlockRotation();
     rotateDictsAndRun([&]{
       err = _jfr.dump(path, length);
       __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
     });
+    endTaskBlockRotation();
 
     _thread_info.clearAll(thread_ids);
     _thread_info.reportCounters();

@@ -60,7 +60,7 @@ static inline bool hasKnownActiveTraceContext(ProfiledThread* thread) {
 
 struct WallPrecheckResult {
   bool suppress = false;
-  ThreadFilter::Slot* slot_to_arm = nullptr;
+  ThreadFilter::SlotID slot_id_to_arm = -1;
   OSThreadState state_to_arm = OSThreadState::UNKNOWN;
   OSThreadState observed_state = OSThreadState::UNKNOWN;
   bool observed_state_valid = false;
@@ -120,7 +120,7 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
     // Arm only after the MethodSample has been successfully recorded. If the
     // JFR write is skipped due to lock contention, the next signal must retry
     // instead of losing the only stack for this blocked run.
-    result.slot_to_arm = slot;
+    result.slot_id_to_arm = current->filterSlotId();
     result.state_to_arm = active_block_state;
     return result;
   }
@@ -143,8 +143,7 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
 }
 
 static inline void finishWallPrecheck(const WallPrecheckResult& precheck,
-                                      bool recorded, u64 call_trace_id,
-                                      u64 correlation_id) {
+                                      bool recorded, u64 call_trace_id) {
   if (!recorded && precheck.unowned_weight_slot != nullptr) {
     precheck.unowned_weight_slot->restoreUnownedBlockedWeight(
         precheck.unowned_weight);
@@ -154,10 +153,6 @@ static inline void finishWallPrecheck(const WallPrecheckResult& precheck,
       precheck.unowned_weight_slot->recordUnownedBlockedSample(
           call_trace_id, precheck.observed_state);
     }
-  }
-  if (recorded && precheck.slot_to_arm != nullptr) {
-    precheck.slot_to_arm->markSampledThisRun(precheck.state_to_arm, call_trace_id,
-                                             correlation_id);
   }
 }
 
@@ -297,8 +292,10 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   bool recorded = Profiler::instance()->recordSample(ucontext, last_sample, tid,
                                                      BCI_WALL, call_trace_id,
                                                      &event,
-                                                     &recorded_call_trace_id);
-  finishWallPrecheck(precheck, recorded, recorded_call_trace_id, 0);
+                                                     &recorded_call_trace_id,
+                                                     precheck.slot_id_to_arm,
+                                                     precheck.state_to_arm);
+  finishWallPrecheck(precheck, recorded, recorded_call_trace_id);
   emitUnownedBlockedTailForWallPrecheck(tid, precheck);
   Shims::instance().setSighandlerTid(-1);
 }
@@ -485,8 +482,9 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
   // unowned tail flushing remains limited to the ASGCT wall engine.
   u64 recorded_correlation_id = 0;
   bool recorded = Profiler::instance()->recordSampleDelegated(
-      nullptr, last_sample, tid, BCI_WALL, &event, &recorded_correlation_id);
-  finishWallPrecheck(precheck, recorded, 0, recorded_correlation_id);
+      nullptr, last_sample, tid, BCI_WALL, &event, &recorded_correlation_id,
+      precheck.slot_id_to_arm, precheck.state_to_arm);
+  finishWallPrecheck(precheck, recorded, 0);
   Shims::instance().setSighandlerTid(-1);
   errno = saved_errno;
 }

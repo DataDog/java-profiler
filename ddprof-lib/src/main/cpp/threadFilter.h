@@ -21,6 +21,7 @@
 #include <vector>
 #include <cstdint>
 #include <memory>
+#include <unordered_set>
 
 #include "arch.h"
 #include "threadState.h"
@@ -55,6 +56,8 @@ public:
     static constexpr int kChunkMask = kChunkSize - 1;
     static constexpr int kMaxThreads = 2048;
     static constexpr int kMaxChunks = (kMaxThreads + kChunkSize - 1) / kChunkSize;  // = 8 chunks
+    static constexpr int kTaskBlockLiveWordBits = 64;
+    static constexpr int kTaskBlockLiveWordCount = kMaxThreads / kTaskBlockLiveWordBits;
     // High-performance free list using Treiber stack, 64 shards
     static constexpr int kFreeListSize  = 1024;       // power-of-two for fast modulo
     static constexpr int kShardCount    = 64;          // power-of-two for fast modulo
@@ -256,6 +259,11 @@ public:
     bool snapshotAndExitBlockedRun(SlotID slot_id, u32 generation,
                                    BlockRunSnapshot* snapshot);
     BlockRunSnapshot snapshotBlockedRun(SlotID slot_id) const;
+    // Publishes the first stack reference and indexes the slot for bounded
+    // dump-time liveness collection. Called while the sample shard is locked.
+    void markTaskBlockSampled(SlotID slot_id, OSThreadState state,
+                              u64 call_trace_id, u64 correlation_id);
+    void collectTaskBlockLiveTraceIds(std::unordered_set<u64>& trace_ids) const;
 
     static inline u64 encodeBlockRunToken(SlotID slot_id, u32 generation) {
         return (static_cast<u64>(generation) << 32) | static_cast<u32>(slot_id + 1);
@@ -298,6 +306,7 @@ private:
     // Lazily allocated storage for chunks
     std::atomic<ChunkStorage*> _chunks[kMaxChunks];
     std::atomic<int> _num_chunks{1};
+    std::array<std::atomic<u64>, kTaskBlockLiveWordCount> _task_block_live_slots{};
 
     // Lock-free slot allocation
     std::atomic<SlotID> _next_index{0};
@@ -311,6 +320,7 @@ private:
     static inline int shardOfSlot(int s){ return s  & (kShardCount - 1); }
     // Helper methods for lock-free operations
     void initializeChunk(int chunk_idx);
+    void clearTaskBlockLiveSlot(SlotID slot_id);
     bool pushToFreeList(SlotID slot_id);
     SlotID popFromFreeList();
 };
