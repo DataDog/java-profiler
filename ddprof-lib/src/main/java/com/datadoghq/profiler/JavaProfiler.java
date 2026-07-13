@@ -440,29 +440,6 @@ public final class JavaProfiler {
     }
 
     /**
-     * Records a TaskBlock event for the calling platform thread. Span context is read from
-     * OTEP TLS inside native code (same as the queue-time pattern).
-     *
-     * @return {@code true} if the event was recorded; {@code false} if it was skipped by
-     *         eligibility rules or could not be recorded
-     */
-    public boolean recordTaskBlock(long startTicks, long endTicks, long blocker, long unblockingSpanId) {
-        return recordTaskBlock0(startTicks, endTicks, blocker, unblockingSpanId);
-    }
-
-    /**
-     * Records a TaskBlock event for the calling profiled thread with an explicit span context.
-     * Stack metadata is still attached from the calling thread.
-     *
-     * @return {@code true} if the event was recorded; {@code false} if it was skipped by
-     *         eligibility rules or could not be recorded
-     */
-    public boolean recordTaskBlockWithContext(long startTicks, long endTicks, long blocker,
-            long unblockingSpanId, long spanId, long rootSpanId) {
-        return recordTaskBlockWithContext0(startTicks, endTicks, blocker, unblockingSpanId, spanId, rootSpanId);
-    }
-
-    /**
      * If the profiler is built in debug mode, returns counters recorded during profile execution.
      * These are for whitebox testing and not intended for production use.
      * @return a map of counters
@@ -525,12 +502,6 @@ public final class JavaProfiler {
     private static native long currentTicks0();
 
     private static native long tscFrequency0();
-
-    private static native boolean recordTaskBlock0(long startTicks, long endTicks,
-            long blocker, long unblockingSpanId);
-
-    private static native boolean recordTaskBlockWithContext0(long startTicks, long endTicks,
-            long blocker, long unblockingSpanId, long spanId, long rootSpanId);
 
     private static native void mallocArenaMax0(int max);
 

@@ -523,41 +523,6 @@ Java_com_datadoghq_profiler_JavaProfiler_endTaskBlock0(
   return recorded ? JNI_TRUE : JNI_FALSE;
 }
 
-extern "C" DLLEXPORT jboolean JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_recordTaskBlock0(
-    JNIEnv *env, jclass unused, jlong startTicks, jlong endTicks,
-    jlong blocker, jlong unblockingSpanId) {
-  int tid = ProfiledThread::currentTid();
-  if (tid < 0) {
-    return JNI_FALSE;
-  }
-  // Context (span ids + tags) is captured from OTEP TLS via ContextApi::snapshot()
-  // inside recordTaskBlockLiveIfEligible, mirroring the recordQueueTime convention.
-  return recordTaskBlockLiveIfEligible(tid, (u64)startTicks, (u64)endTicks,
-                                       (u64)blocker, (u64)unblockingSpanId)
-             ? JNI_TRUE
-             : JNI_FALSE;
-}
-
-extern "C" DLLEXPORT jboolean JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_recordTaskBlockWithContext0(
-    JNIEnv *env, jclass unused, jlong startTicks, jlong endTicks,
-    jlong blocker, jlong unblockingSpanId,
-    jlong spanId, jlong rootSpanId) {
-  int tid = ProfiledThread::currentTid();
-  if (tid < 0) {
-    return JNI_FALSE;
-  }
-  // Virtual-thread path: span/root ids captured at block entry are passed explicitly because
-  // the native OTEP TLS is carrier-scoped and cannot be trusted. Custom attributes not propagated.
-  Context ctx{(u64)spanId, (u64)rootSpanId};
-  return recordTaskBlockWithContextIfEligible(tid, (u64)startTicks, (u64)endTicks,
-                                              ctx, (u64)blocker,
-                                              (u64)unblockingSpanId)
-             ? JNI_TRUE
-             : JNI_FALSE;
-}
-
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_currentTicks0(JNIEnv *env,
                                                        jclass unused) {

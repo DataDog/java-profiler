@@ -7,7 +7,6 @@
 #define _TASK_BLOCK_RECORDER_H
 
 #include "context.h"
-#include "context_api.h"
 #include "counters.h"
 #include "event.h"
 #include "profiler.h"
@@ -47,29 +46,6 @@ static inline bool hasTraceContext(const Context& ctx) {
   return ctx.spanId != 0;
 }
 
-static inline void attachTaskBlockStackReference(int tid, TaskBlockEvent& event) {
-  Profiler* profiler = Profiler::instance();
-  ThreadFilter* thread_filter = profiler->threadFilter();
-  if (!thread_filter->enabled()) {
-    event._observedBlockingState = OSThreadState::UNKNOWN;
-    return;
-  }
-  ProfiledThread* current = ProfiledThread::current();
-  if (current == nullptr || current->tid() != tid) {
-    event._observedBlockingState = OSThreadState::UNKNOWN;
-    return;
-  }
-  BlockRunSnapshot snapshot = thread_filter->snapshotBlockedRun(current->filterSlotId());
-  event._observedBlockingState =
-      snapshot.sampled_state != OSThreadState::UNKNOWN ? snapshot.sampled_state
-                                                       : snapshot.active_state;
-  if (!snapshot.has_stack_reference) {
-    return;
-  }
-  event._callTraceId = snapshot.call_trace_id;
-  event._correlationId = snapshot.correlation_id;
-}
-
 static inline void setTaskBlockStackReference(TaskBlockEvent& event,
                                               u64 call_trace_id,
                                               u64 correlation_id,
@@ -103,44 +79,6 @@ static inline bool recordTaskBlockLive(int tid, TaskBlockEvent& event) {
   }
   Counters::increment(TASK_BLOCK_RECORD_FAILED);
   return false;
-}
-
-// Same-thread path for callers that captured the context at block entry. Stack
-// metadata is attached from ProfiledThread::current(), so the caller must be the
-// target thread.
-static inline bool recordTaskBlockWithContextIfEligible(int tid, u64 start_ticks, u64 end_ticks,
-                                                         const Context& ctx, u64 blocker,
-                                                         u64 unblocking_span_id,
-                                                         bool activity_already_held = false) {
-  TaskBlockActivity activity(activity_already_held);
-  if (!activity.active()) {
-    return false;
-  }
-  if (!taskBlockPassesBasicEligibility(start_ticks, end_ticks, ctx)) {
-    return false;
-  }
-  TaskBlockEvent event{};
-  event._start = start_ticks;
-  event._end = end_ticks;
-  event._blocker = blocker;
-  event._unblockingSpanId = unblocking_span_id;
-  event._ctx = ctx;
-  attachTaskBlockStackReference(tid, event);
-  if (!hasTaskBlockStackReference(event)) {
-    Counters::increment(TASK_BLOCK_SKIPPED_NO_STACK_REFERENCE);
-    return false;
-  }
-  return recordTaskBlockLive(tid, event);
-}
-
-// Platform-thread synchronous path. Context is captured from OTEP TLS at call
-// time so traced intervals can be skipped and custom attributes can be recorded
-// for untraced intervals.
-static inline bool recordTaskBlockLiveIfEligible(int tid, u64 start_ticks, u64 end_ticks,
-                                                  u64 blocker, u64 unblocking_span_id) {
-  Context ctx = ContextApi::snapshot();
-  return recordTaskBlockWithContextIfEligible(tid, start_ticks, end_ticks, ctx,
-                                             blocker, unblocking_span_id);
 }
 
 // Off-thread/deferred path. The caller must pass stack metadata and observed

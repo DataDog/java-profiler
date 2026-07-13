@@ -8,7 +8,6 @@
 #include "counters.h"
 #include "profiler.h"
 #include "taskBlockRecorder.h"
-#include "threadLocalData.h"
 #include "tsc.h"
 
 #include <atomic>
@@ -34,46 +33,6 @@ u64 minEligibleEndTicks(u64 start_ticks) {
   return low;
 }
 
-class CurrentJavaThreadScope {
-public:
-  CurrentJavaThreadScope() {
-    ProfiledThread::initCurrentThread();
-    _thread = ProfiledThread::current();
-    _thread->clearContextForTest();
-    _thread->setJavaThread(true);
-    _thread->setFilterSlotId(-1);
-  }
-  ~CurrentJavaThreadScope() {
-    if (_thread != nullptr) {
-      _thread->clearContextForTest();
-    }
-    ProfiledThread::release();
-  }
-
-  ProfiledThread* thread() const { return _thread; }
-
-  void releaseOwnership() { _thread = nullptr; }
-
-private:
-  ProfiledThread* _thread;
-};
-
-class DetachedCurrentJavaThread {
-public:
-  explicit DetachedCurrentJavaThread(CurrentJavaThreadScope& current)
-      : _thread(ProfiledThread::clearCurrentThreadTLS()) {
-    current.releaseOwnership();
-  }
-  ~DetachedCurrentJavaThread() {
-    if (_thread != nullptr) {
-      ProfiledThread::deleteForTest(_thread);
-    }
-  }
-
-private:
-  ProfiledThread* _thread;
-};
-
 class TaskBlockRecorderTest : public ::testing::Test {
 protected:
   void SetUp() override {
@@ -87,23 +46,11 @@ protected:
   }
 
   void TearDown() override {
-    if (ProfiledThread::currentSignalSafe() != nullptr) {
-      ProfiledThread::release();
-    }
     Profiler::resetTaskBlockRecordObservableForTest();
     Profiler::instance()->setTaskBlockAsyncActiveForTest(false);
     Profiler::instance()->discardTaskBlockQueueForTest();
     Profiler::instance()->threadFilter()->clearActive();
     Counters::reset();
-  }
-
-  int registerThread(ProfiledThread* thread) {
-    ThreadFilter* filter = Profiler::instance()->threadFilter();
-    int slot_id = filter->registerThread();
-    EXPECT_GE(slot_id, 0);
-    thread->setFilterSlotId(slot_id);
-    filter->add(thread->tid(), slot_id);
-    return slot_id;
   }
 
   static bool recordSuccess(int, TaskBlockEvent*) {
@@ -143,90 +90,6 @@ TEST_F(TaskBlockRecorderTest, BasicEligibilityCoversDurationBoundary) {
   EXPECT_TRUE(taskBlockPassesBasicEligibility(start_ticks, passing_end, ctx));
   EXPECT_FALSE(taskBlockPassesBasicEligibility(start_ticks, passing_end - 1, ctx));
   EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_SKIPPED_TOO_SHORT));
-}
-
-TEST_F(TaskBlockRecorderTest, AttachStackReferenceRequiresMatchingSampledCurrentThread) {
-  CurrentJavaThreadScope current;
-  int slot_id = registerThread(current.thread());
-  ThreadFilter* filter = Profiler::instance()->threadFilter();
-  u64 token = filter->enterBlockedRun(slot_id, OSThreadState::CONDVAR_WAIT,
-                                      BlockRunOwner::JVMTI);
-  ASSERT_NE(0ULL, token);
-  ThreadFilter::Slot* slot = filter->slotForId(slot_id);
-  ASSERT_NE(nullptr, slot);
-  slot->markSampledThisRun(OSThreadState::CONDVAR_WAIT, 0xabc, 0xdef);
-
-  TaskBlockEvent event{};
-  attachTaskBlockStackReference(current.thread()->tid(), event);
-
-  EXPECT_EQ(0xabcULL, event._callTraceId);
-  EXPECT_EQ(0xdefULL, event._correlationId);
-  EXPECT_EQ(OSThreadState::CONDVAR_WAIT, event._observedBlockingState);
-  EXPECT_TRUE(filter->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(token)));
-}
-
-TEST_F(TaskBlockRecorderTest, AttachStackReferenceSkipsMissingMismatchedAndUnsampledStates) {
-  TaskBlockEvent no_current{};
-  {
-    CurrentJavaThreadScope current;
-    DetachedCurrentJavaThread detached(current);
-    attachTaskBlockStackReference(12345, no_current);
-  }
-  EXPECT_EQ(0ULL, no_current._callTraceId);
-  EXPECT_EQ(OSThreadState::UNKNOWN, no_current._observedBlockingState);
-
-  CurrentJavaThreadScope current;
-  int slot_id = registerThread(current.thread());
-  ThreadFilter* filter = Profiler::instance()->threadFilter();
-  u64 token = filter->enterBlockedRun(slot_id, OSThreadState::CONDVAR_WAIT,
-                                      BlockRunOwner::JVMTI);
-  ASSERT_NE(0ULL, token);
-
-  TaskBlockEvent mismatched_tid{};
-  attachTaskBlockStackReference(current.thread()->tid() + 1, mismatched_tid);
-  EXPECT_EQ(0ULL, mismatched_tid._callTraceId);
-  EXPECT_EQ(OSThreadState::UNKNOWN, mismatched_tid._observedBlockingState);
-
-  TaskBlockEvent unsampled{};
-  attachTaskBlockStackReference(current.thread()->tid(), unsampled);
-  EXPECT_EQ(0ULL, unsampled._callTraceId);
-  EXPECT_EQ(OSThreadState::CONDVAR_WAIT, unsampled._observedBlockingState);
-
-  EXPECT_TRUE(filter->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(token)));
-  current.thread()->setFilterSlotId(-1);
-  TaskBlockEvent no_slot{};
-  attachTaskBlockStackReference(current.thread()->tid(), no_slot);
-  EXPECT_EQ(0ULL, no_slot._callTraceId);
-  EXPECT_EQ(OSThreadState::UNKNOWN, no_slot._observedBlockingState);
-}
-
-TEST_F(TaskBlockRecorderTest, LiveContextPathRecordsExpectedEventAndCounters) {
-  CurrentJavaThreadScope current;
-  int slot_id = registerThread(current.thread());
-  ThreadFilter* filter = Profiler::instance()->threadFilter();
-  u64 token = filter->enterBlockedRun(slot_id, OSThreadState::CONDVAR_WAIT,
-                                      BlockRunOwner::JVMTI);
-  ASSERT_NE(0ULL, token);
-  filter->slotForId(slot_id)->markSampledThisRun(OSThreadState::CONDVAR_WAIT,
-                                                 0x123, 0);
-  Profiler::instance()->setRecordTaskBlockLiveOverrideForTest(recordSuccess);
-  Context ctx{};
-  u64 start_ticks = TSC::ticks();
-  u64 end_ticks = minEligibleEndTicks(start_ticks);
-
-  EXPECT_TRUE(recordTaskBlockWithContextIfEligible(
-      current.thread()->tid(), start_ticks, end_ticks, ctx, 0x456, 0x789));
-
-  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_EMITTED));
-  EXPECT_EQ(current.thread()->tid(), Profiler::lastRecordedTaskBlockTidForTest());
-  TaskBlockEvent event = Profiler::lastRecordedTaskBlockEventForTest();
-  EXPECT_EQ(start_ticks, event._start);
-  EXPECT_EQ(end_ticks, event._end);
-  EXPECT_EQ(0x456ULL, event._blocker);
-  EXPECT_EQ(0x789ULL, event._unblockingSpanId);
-  EXPECT_EQ(0x123ULL, event._callTraceId);
-  EXPECT_EQ(OSThreadState::CONDVAR_WAIT, event._observedBlockingState);
-  EXPECT_TRUE(filter->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(token)));
 }
 
 TEST_F(TaskBlockRecorderTest, StackReferencePathCoversExplicitIdsAndMissingReference) {
@@ -296,51 +159,6 @@ TEST_F(TaskBlockRecorderTest, RecordFailureIncrementsRecordFailed) {
       OSThreadState::IO_WAIT));
 
   EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_RECORD_FAILED));
-}
-
-TEST_F(TaskBlockRecorderTest, ConcurrentStackReferenceAttachNeverEmitsZeroIds) {
-  CurrentJavaThreadScope current;
-  int slot_id = registerThread(current.thread());
-  ThreadFilter* filter = Profiler::instance()->threadFilter();
-  u64 token = filter->enterBlockedRun(slot_id, OSThreadState::CONDVAR_WAIT,
-                                      BlockRunOwner::JVMTI);
-  ASSERT_NE(0ULL, token);
-  ThreadFilter::Slot* slot = filter->slotForId(slot_id);
-  ASSERT_NE(nullptr, slot);
-
-  std::atomic<bool> stop{false};
-  std::atomic<int> bad_references{0};
-  std::thread sampler([&]() {
-    u64 id = 1;
-    while (!stop.load(std::memory_order_acquire)) {
-      slot->markSampledThisRun(OSThreadState::CONDVAR_WAIT, id++, 0);
-      std::this_thread::yield();
-    }
-  });
-
-  std::vector<std::thread> recorders;
-  for (int i = 0; i < 4; i++) {
-    recorders.emplace_back([&]() {
-      for (int j = 0; j < 1000; j++) {
-        TaskBlockEvent event{};
-        attachTaskBlockStackReference(current.thread()->tid(), event);
-        if (event._observedBlockingState != OSThreadState::UNKNOWN &&
-            event._callTraceId == 0 && event._correlationId == 0 &&
-            hasTaskBlockStackReference(event)) {
-          bad_references.fetch_add(1, std::memory_order_relaxed);
-        }
-      }
-    });
-  }
-
-  for (auto& recorder : recorders) {
-    recorder.join();
-  }
-  stop.store(true, std::memory_order_release);
-  sampler.join();
-
-  EXPECT_EQ(0, bad_references.load(std::memory_order_relaxed));
-  EXPECT_TRUE(filter->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(token)));
 }
 
 TEST_F(TaskBlockRecorderTest, AsyncRecordDropsWhenDrainInactive) {
