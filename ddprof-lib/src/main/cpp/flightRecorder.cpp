@@ -394,12 +394,14 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
           line_number_table = nullptr; // make sure the invalid address is not used for jvmti->Deallocate
           Counters::increment(LINE_NUMBER_TABLE_UNREADABLE);
         }
-      } else if (line_number_table_size > MAX_LINE_NUMBER_TABLE_ENTRIES) {
+      } else if (line_number_table_size != 0) {
         // A corrupted size out-param alongside a corrupted pointer is exactly
         // as plausible as the corrupted-pointer case above (both come from
         // the same GetLineNumberTable() call on the same stale jmethodID);
-        // an implausible entry count means the pointer can't be trusted for
-        // Deallocate() either, so treat it the same as the unreadable case.
+        // an implausible entry count -- including a negative one, since this
+        // is a signed jint and a corrupted value can fall on either side of
+        // zero -- means the pointer can't be trusted for Deallocate() either,
+        // so treat it the same as the unreadable case.
         line_number_table = nullptr;
         Counters::increment(LINE_NUMBER_TABLE_UNREADABLE);
       }
