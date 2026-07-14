@@ -142,6 +142,20 @@ final class TaskBlockAssertions {
         assertTrue(checked > 0, "Expected at least one TaskBlock with a non-empty stackTrace");
     }
 
+    static void assertContainsEventThread(IItemCollection taskBlockEvents) {
+        int checked = 0;
+        for (IItemIterable iterable : taskBlockEvents) {
+            IMemberAccessor<IMCThread, IItem> threadAccessor =
+                    JfrAttributes.EVENT_THREAD.getAccessor(iterable.getType());
+            assertNotNull(threadAccessor, "TaskBlock must expose eventThread");
+            for (IItem item : iterable) {
+                checked++;
+                assertNotNull(threadAccessor.getMember(item), "TaskBlock eventThread must not be null");
+            }
+        }
+        assertTrue(checked > 0, "Expected at least one TaskBlock with an eventThread");
+    }
+
     static void assertContainsCorrelationId(IItemCollection taskBlockEvents) {
         Set<Long> correlationIds = nonZeroValues(taskBlockEvents, CORRELATION_ID);
         assertTrue(correlationIds.size() > 0, "Expected at least one non-zero TaskBlock correlationId");

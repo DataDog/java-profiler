@@ -1,5 +1,5 @@
 /*
- * Copyright 2021, 2025, Datadog, Inc.
+ * Copyright 2021, 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -93,6 +93,12 @@ public:
   void stop();
   void track(JNIEnv *env, AllocEvent &event, jint tid, jobject object, u64 call_trace_id);
   void flush(std::set<int> &tracked_thread_ids);
+
+#ifdef UNIT_TEST
+  void getLiveTraceIdsForTest(std::unordered_set<u64>& out_buffer) {
+    getLiveTraceIds(out_buffer);
+  }
+#endif
 
   static void JNICALL GarbageCollectionFinish(jvmtiEnv *jvmti_env);
 

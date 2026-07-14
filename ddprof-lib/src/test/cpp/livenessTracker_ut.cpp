@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 #include "../../main/cpp/gtest_crash_handler.h"
+#include "../../main/cpp/livenessTracker.h"
 #include <cstdlib>
 #include <cstring>
 
@@ -240,4 +241,13 @@ TEST_F(LivenessTrackerTest, CapacityDoesNotExceedMaxCap) {
     EXPECT_EQ(newcap, 50);  // Already at max, newcap == table_cap
     // In the actual code, this would trigger: if (_table_cap != newcap) { ... }
     // which would be false, so no resize would be attempted
+}
+
+TEST_F(LivenessTrackerTest, LiveTraceCollectionPreservesIdsFromOtherCheckers) {
+    LivenessTracker tracker;
+    std::unordered_set<u64> trace_ids = {0x12345678ULL};
+
+    tracker.getLiveTraceIdsForTest(trace_ids);
+
+    EXPECT_EQ(trace_ids.count(0x12345678ULL), 1U);
 }

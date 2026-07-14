@@ -426,8 +426,8 @@ void LivenessTracker::onGC() {
 }
 
 void LivenessTracker::getLiveTraceIds(std::unordered_set<u64>& out_buffer) {
-  out_buffer.clear();
-  
+  // Liveness checkers share this buffer and must append their IDs. Clearing it
+  // here would discard references contributed by checkers that ran earlier.
   if (!_enabled || !_initialized) {
     return;
   }

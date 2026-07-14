@@ -1,5 +1,5 @@
 /*
- * Copyright 2025, Datadog, Inc.
+ * Copyright 2025, 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -451,15 +451,34 @@ void CallTraceHashTable::putWithExistingId(CallTrace* source_trace, u64 weight) 
   
   u64 hash = calcHash(source_trace->num_frames, source_trace->frames, source_trace->truncated);
   
-  // First check if trace already exists in any table in the chain.
+  // First check if this exact trace ID already exists in any table in the
+  // chain. Different storage generations can assign different IDs to the same
+  // stack. Both entries must survive preservation because recorded events
+  // reference the ID, not the stack hash.
   // Use ACQUIRE to match the RELEASE store in clearTableOnly(); putWithExistingId()
   // is only called on scratch/standby tables with no concurrent writers, so the
   // load is safe, but consistent ordering prevents latent issues if callers change.
   for (LongHashTable *search_table = __atomic_load_n(&_table, __ATOMIC_ACQUIRE);
        search_table != nullptr; search_table = search_table->prev()) {
-    CallTrace *existing_trace = findCallTrace(search_table, hash);
-    if (existing_trace != nullptr) {
-      return;
+    u64 *search_keys = search_table->keys();
+    HashProbe search_probe(hash, search_table->capacity());
+    u32 search_slot = search_probe.slot();
+    while (true) {
+      u64 key = __atomic_load_n(&search_keys[search_slot], __ATOMIC_RELAXED);
+      if (key == 0) {
+        break;
+      }
+      if (key == hash) {
+        CallTrace *existing_trace = search_table->values()[search_slot].acquireTrace();
+        if (existing_trace != nullptr && existing_trace != CallTraceSample::PREPARING &&
+            existing_trace->trace_id == source_trace->trace_id) {
+          return;
+        }
+      }
+      if (!search_probe.hasNext()) {
+        break;
+      }
+      search_slot = search_probe.next();
     }
   }
 

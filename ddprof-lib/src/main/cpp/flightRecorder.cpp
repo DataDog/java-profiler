@@ -498,7 +498,7 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   jmethodID method_id = frame.method_id;
 
   // Resolve native method
-  if (FrameType::isRawPointer(bci)) {
+  if (VM::isHotspot() && FrameType::isRawPointer(bci)) {
     method_id = JVMSupport::resolve(frame.method);
   }
 
@@ -2107,6 +2107,7 @@ bool FlightRecorder::recordTaskBlock(int lock_index, int tid,
     Recording* rec = _rec;
     if (rec != nullptr) {
       Buffer *buf = rec->buffer(lock_index);
+      rec->addThread(lock_index, tid);
       rec->recordTaskBlock(buf, tid, event);
       return true;
     }

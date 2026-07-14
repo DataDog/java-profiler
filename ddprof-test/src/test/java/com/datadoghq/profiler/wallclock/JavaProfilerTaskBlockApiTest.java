@@ -120,7 +120,9 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
         assertTrue(recorded.get());
 
         stopProfiler();
-        TaskBlockAssertions.assertContainsStackTrace(verifyEvents("datadog.TaskBlock"));
+        IItemCollection events = verifyEvents("datadog.TaskBlock");
+        TaskBlockAssertions.assertContainsStackTrace(events);
+        TaskBlockAssertions.assertContainsEventThread(events);
     }
 
     @Override

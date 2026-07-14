@@ -1,5 +1,5 @@
 /*
- * Copyright 2025, Datadog, Inc.
+ * Copyright 2025, 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -725,6 +725,27 @@ TEST_F(CallTraceStorageTest, PutWithExistingIdNoInfiniteLoopWhenFull) {
     EXPECT_TRUE(ok)
         << "putWithExistingId infinite-loop regression: did not terminate within 10 s "
            "when the scratch table was full";
+}
+
+TEST_F(CallTraceStorageTest, PutWithExistingIdPreservesDuplicateStackIds) {
+    CallTraceHashTable table;
+
+    alignas(alignof(CallTrace)) char first_buf[sizeof(CallTrace)];
+    CallTrace* first = new (first_buf) CallTrace(false, 1, 0x100000001ULL);
+    first->frames[0].bci = 17;
+    first->frames[0].method_id = reinterpret_cast<jmethodID>(0x1234);
+
+    alignas(alignof(CallTrace)) char second_buf[sizeof(CallTrace)];
+    CallTrace* second = new (second_buf) CallTrace(false, 1, 0x200000001ULL);
+    second->frames[0] = first->frames[0];
+
+    table.putWithExistingId(first, 1);
+    table.putWithExistingId(second, 1);
+
+    std::unordered_set<CallTrace*> traces;
+    table.collect(traces);
+    EXPECT_NE(findTraceById(traces, first->trace_id), nullptr);
+    EXPECT_NE(findTraceById(traces, second->trace_id), nullptr);
 }
 
 /**
