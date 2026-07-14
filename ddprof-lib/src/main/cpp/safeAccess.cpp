@@ -1,5 +1,5 @@
 /*
- * Copyright 2025 Datadog, Inc
+ * Copyright 2025, 2026 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,6 +16,8 @@
 
 
 #include "safeAccess.h"
+#include <cstdio>
+#include <cstdlib>
 #include <signal.h>
 #include <ucontext.h>
 
@@ -29,6 +31,28 @@ extern "C" int64_t safefetch64_cont(int64_t* adr, int64_t errValue);
 // keeps the return address intact.
 extern "C" int safecopy_impl(void* dst, const void* src, size_t len);
 extern "C" int safecopy_cont(void* dst, const void* src, size_t len);
+
+#ifdef DEBUG
+// handle_safefetch protects safeCopy by treating any fault whose pc lands in
+// [safecopy_impl, safecopy_cont) as a recoverable read fault. That range is
+// only valid if the assembler/linker keeps safecopy_cont strictly above
+// safecopy_impl (they are emitted adjacently in one asm block). A future
+// toolchain change could in principle reorder them, collapsing the range to
+// empty and silently disabling fault protection. Assert the invariant once at
+// load time so such a regression aborts loudly at startup instead of turning
+// safeCopy into an unprotected crash. Debug builds only: this is a
+// toolchain-regression tripwire, not a runtime safety check.
+__attribute__((constructor))
+static void verify_safecopy_range() {
+  if ((uintptr_t)safecopy_cont <= (uintptr_t)safecopy_impl) {
+    fprintf(stderr,
+            "FATAL: safecopy_cont (%p) is not above safecopy_impl (%p); "
+            "safeCopy fault protection would be lost\n",
+            (void*)safecopy_cont, (void*)safecopy_impl);
+    abort();
+  }
+}
+#endif // DEBUG
 
 #ifdef __APPLE__
     #if defined(__x86_64__)

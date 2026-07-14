@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <climits>
@@ -277,6 +282,40 @@ TEST_F(SafeFetchTest, safeCopy_requestedRangeCrossesUnmappedPage_returnsFalse) {
   // Asking for 8 bytes pushes 6 bytes into the unmapped page → must fault.
   char dst[16] = {0};
   EXPECT_FALSE(SafeAccess::safeCopy(dst, src, 8));
+
+  munmap(region, page_size);
+}
+
+TEST_F(SafeFetchTest, safeCopy_partialPrefixCopiedBeforeFault) {
+  // When the requested range straddles the boundary into an unmapped page,
+  // safeCopy returns false but the byte-granular copy still writes every
+  // readable byte before the fault. Verify the readable prefix landed in dst.
+  long page_size = sysconf(_SC_PAGESIZE);
+  ASSERT_GT(page_size, 0);
+
+  void* region = mmap(NULL, 2 * page_size, PROT_READ | PROT_WRITE,
+                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  ASSERT_NE(region, MAP_FAILED);
+  ASSERT_EQ(0, munmap((char*)region + page_size, page_size));
+
+  char* mapped_end = (char*)region + page_size;
+  // Place src so exactly `prefix` bytes are readable and the rest fall in
+  // the unmapped page.
+  const size_t prefix = 5;
+  char* src = mapped_end - prefix;
+  static const char kPrefix[] = "HELLO";  // 5 known readable bytes
+  memcpy(src, kPrefix, prefix);
+
+  // Request more than the readable prefix so the copy faults partway.
+  const size_t requested = prefix + 4;
+  char dst[16];
+  memset(dst, 0x5A, sizeof(dst));
+  EXPECT_FALSE(SafeAccess::safeCopy(dst, src, requested));
+
+  // The readable prefix must have been copied faithfully before the fault.
+  EXPECT_EQ(0, memcmp(dst, kPrefix, prefix));
+  // Bytes past the prefix were never written (fault stopped the copy).
+  EXPECT_EQ((char)0x5A, dst[prefix]);
 
   munmap(region, page_size);
 }
