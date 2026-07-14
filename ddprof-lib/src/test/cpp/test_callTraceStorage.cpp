@@ -874,3 +874,178 @@ TEST_F(CallTraceStorageTest, CollectFindsAllTracesAcrossExpandedChain) {
             << "Trace ID " << id << " was lost across expansion boundary";
     }
 }
+
+// PROF-15396 regression tests: trace_id collisions across CallTraceHashTable
+// table-expansion generations.
+//
+// These operate directly on a heap-allocated CallTraceHashTable (matching the
+// pattern used by ConcurrentTableExpansionRegression and
+// PutWithExistingIdNoInfiniteLoopWhenFull above) so that expansion can be
+// forced deterministically via distinct-frame counts alone, without relying
+// on CallTraceStorage::processTraces() rotation.
+//
+// INITIAL_CAPACITY (65536) and LOAD_RATIO (0.75) are documented public
+// behaviour of CallTraceHashTable (expansion triggers once fill exceeds
+// INITIAL_CAPACITY * LOAD_RATIO = 49152 entries); they are re-declared here
+// as shared constants since the class does not expose them as named
+// constants.
+namespace {
+constexpr u32 kInitialCapacity = 65536;
+constexpr double kLoadRatio = 0.75;
+constexpr u32 kExpansionThreshold = static_cast<u32>(kInitialCapacity * kLoadRatio); // 49152
+constexpr u64 kOverflowTraceId = 0x7fffffffffffffffULL;
+
+// Shared setup for the PROF-15396 expansion/trace_id tests below: a
+// heap-allocated CallTraceHashTable, matching the aligned_alloc + placement-new
+// pattern used by ConcurrentTableExpansionRegression and
+// PutWithExistingIdNoInfiniteLoopWhenFull above.
+std::unique_ptr<CallTraceHashTable, void(*)(CallTraceHashTable*)> makeHeapCallTraceHashTable() {
+    void* aligned_memory = std::aligned_alloc(alignof(CallTraceHashTable), sizeof(CallTraceHashTable));
+    if (aligned_memory == nullptr) {
+        return std::unique_ptr<CallTraceHashTable, void(*)(CallTraceHashTable*)>(
+            nullptr, [](CallTraceHashTable*) {});
+    }
+    return std::unique_ptr<CallTraceHashTable, void(*)(CallTraceHashTable*)>(
+        new (aligned_memory) CallTraceHashTable(),
+        [](CallTraceHashTable* ptr) {
+            ptr->~CallTraceHashTable();
+            std::free(ptr);
+        });
+}
+} // namespace
+
+// Test 1: forcing at least one expansion must not produce duplicate
+// trace_ids, and no successful put() may return OVERFLOW_TRACE_ID or
+// DROPPED_TRACE_ID.
+TEST_F(CallTraceStorageTest, ExpansionProducesNoDuplicateTraceIds) {
+    auto hash_table_ptr = makeHeapCallTraceHashTable();
+    ASSERT_NE(hash_table_ptr.get(), nullptr) << "Failed to allocate aligned memory for CallTraceHashTable";
+    CallTraceHashTable& hash_table = *hash_table_ptr;
+    hash_table.setInstanceId(1);
+
+    // Pre-expansion batch: strictly more than the 75% load-ratio threshold,
+    // so at least one expansion is forced deterministically.
+    const u32 PRE_EXPANSION_COUNT = kExpansionThreshold + 100;
+    // Post-expansion batch: further distinct stacks inserted after expansion.
+    const u32 POST_EXPANSION_COUNT = 1000;
+    const u32 TOTAL_COUNT = PRE_EXPANSION_COUNT + POST_EXPANSION_COUNT;
+
+    std::unordered_set<u64> trace_ids;
+    trace_ids.reserve(TOTAL_COUNT);
+
+    for (u32 i = 0; i < TOTAL_COUNT; i++) {
+        ASGCT_CallFrame frame;
+        frame.bci = static_cast<int>(i);
+        frame.method_id = reinterpret_cast<jmethodID>(static_cast<uintptr_t>(i + 1));
+        u64 trace_id = hash_table.put(1, &frame, false, 1);
+        ASSERT_NE(trace_id, kOverflowTraceId) << "Unexpected overflow at i=" << i;
+        ASSERT_NE(trace_id, CallTraceStorage::DROPPED_TRACE_ID) << "Unexpected drop at i=" << i;
+        trace_ids.insert(trace_id);
+    }
+
+    EXPECT_EQ(trace_ids.size(), TOTAL_COUNT)
+        << "Duplicate trace_id detected across pre- and post-expansion inserts combined";
+}
+
+// Test 2: re-inserting an already-known stack after a forced expansion must
+// return exactly the same trace_id it was originally assigned.
+TEST_F(CallTraceStorageTest, TraceIdStableAcrossExpansion) {
+    auto hash_table_ptr = makeHeapCallTraceHashTable();
+    ASSERT_NE(hash_table_ptr.get(), nullptr) << "Failed to allocate aligned memory for CallTraceHashTable";
+    CallTraceHashTable& hash_table = *hash_table_ptr;
+    hash_table.setInstanceId(1);
+
+    // Insert the stack whose trace_id stability we are testing.
+    ASGCT_CallFrame original_frame;
+    original_frame.bci = 999999999;
+    original_frame.method_id = reinterpret_cast<jmethodID>(static_cast<uintptr_t>(0xdeadbeef));
+    u64 original_trace_id = hash_table.put(1, &original_frame, false, 1);
+    ASSERT_GT(original_trace_id, CallTraceStorage::DROPPED_TRACE_ID);
+
+    // Insert enough further distinct stacks to force an expansion.
+    const u32 FILLER_COUNT = kExpansionThreshold + 100;
+    for (u32 i = 0; i < FILLER_COUNT; i++) {
+        ASGCT_CallFrame frame;
+        frame.bci = static_cast<int>(i);
+        frame.method_id = reinterpret_cast<jmethodID>(static_cast<uintptr_t>(i + 1));
+        hash_table.put(1, &frame, false, 1);
+    }
+
+    // Re-insert the original stack; its trace_id must be unchanged.
+    u64 second_trace_id = hash_table.put(1, &original_frame, false, 1);
+    EXPECT_EQ(second_trace_id, original_trace_id)
+        << "trace_id changed for an already-inserted stack after table expansion";
+}
+
+// Test 3: forcing two expansions within a single tenure (i.e. no rotation in
+// between) must still produce unique trace_ids across all three generations
+// combined.
+TEST_F(CallTraceStorageTest, TwoExpansionsWithinOneTenureNoDuplicateTraceIds) {
+    // _size is per-generation and restarts from 0 when a new LongHashTable is
+    // allocated, so the second expansion is gated on the *second* generation's
+    // own load-ratio threshold (0.75 * 2*INITIAL_CAPACITY = 98304 puts served
+    // by that generation), not on the cumulative insert count from i=0.
+    // The first expansion consumes kExpansionThreshold puts on generation 1;
+    // only puts after that land on generation 2, so the total must clear both
+    // thresholds back-to-back for both expansions to occur within one tenure.
+    static constexpr u32 SECOND_GENERATION_THRESHOLD = kExpansionThreshold * 2; // 98304
+
+    auto hash_table_ptr = makeHeapCallTraceHashTable();
+    ASSERT_NE(hash_table_ptr.get(), nullptr) << "Failed to allocate aligned memory for CallTraceHashTable";
+    CallTraceHashTable& hash_table = *hash_table_ptr;
+    hash_table.setInstanceId(1);
+
+    // Insert past both the first generation's and second generation's
+    // load-ratio thresholds, without any rotation (no processTraces()/clear()
+    // call) in between, so both expansions happen within the same tenure.
+    const u32 TOTAL_COUNT = kExpansionThreshold + SECOND_GENERATION_THRESHOLD + 100;
+
+    std::unordered_set<u64> trace_ids;
+    trace_ids.reserve(TOTAL_COUNT);
+
+    for (u32 i = 0; i < TOTAL_COUNT; i++) {
+        ASGCT_CallFrame frame;
+        frame.bci = static_cast<int>(i);
+        frame.method_id = reinterpret_cast<jmethodID>(static_cast<uintptr_t>(i + 1));
+        u64 trace_id = hash_table.put(1, &frame, false, 1);
+        ASSERT_NE(trace_id, kOverflowTraceId) << "Unexpected overflow at i=" << i;
+        ASSERT_NE(trace_id, CallTraceStorage::DROPPED_TRACE_ID) << "Unexpected drop at i=" << i;
+        trace_ids.insert(trace_id);
+    }
+
+    EXPECT_EQ(trace_ids.size(), TOTAL_COUNT)
+        << "Duplicate trace_id detected across two expansions within one tenure";
+}
+
+// Test 4: the expansion-overflow guard (CallTraceHashTable::wouldExceedSlotIdRange)
+// must reject slot_base/capacity combinations that would push slot_base +
+// local_slot past 2^32, accept the exact 2^32 boundary, and accept anything
+// clearly below it. Exercised directly since reaching this boundary via real
+// put() calls would require billions of inserts.
+TEST(CallTraceHashTableOverflowGuardTest, RejectsOnlyValuesThatExceedSlotIdRange) {
+    constexpr u32 kCapacity = 65536;
+    constexpr u64 kSlotIdRange = 0x100000000ull; // 2^32
+
+    // Well below the boundary: base + capacity + next capacity is nowhere
+    // near 2^32.
+    EXPECT_FALSE(CallTraceHashTable::wouldExceedSlotIdRange(0, kCapacity));
+
+    // Exact boundary: base + capacity + next capacity == 2^32 must be
+    // accepted (valid slots are [0, 2^32)).
+    u64 exact_boundary_base = kSlotIdRange - kCapacity - (u64)kCapacity * 2;
+    EXPECT_FALSE(CallTraceHashTable::wouldExceedSlotIdRange(exact_boundary_base, kCapacity));
+
+    // One past the boundary must be rejected.
+    EXPECT_TRUE(CallTraceHashTable::wouldExceedSlotIdRange(exact_boundary_base + 1, kCapacity));
+
+    // Far past the boundary must be rejected.
+    EXPECT_TRUE(CallTraceHashTable::wouldExceedSlotIdRange(kSlotIdRange, kCapacity));
+}
+
+// Test 5: the next-generation capacity used during expansion must be exactly
+// double the current capacity (CallTraceHashTable::nextGenerationCapacity).
+TEST(CallTraceHashTableOverflowGuardTest, NextGenerationCapacityIsDouble) {
+    EXPECT_EQ(CallTraceHashTable::nextGenerationCapacity(65536), 131072ull);
+    EXPECT_EQ(CallTraceHashTable::nextGenerationCapacity(1), 2ull);
+    EXPECT_EQ(CallTraceHashTable::nextGenerationCapacity(0), 0ull);
+}
