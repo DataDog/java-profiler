@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk8
 
 ## glibc-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-07-14 11:56:29 EDT
+**Date:** 2026-07-14 12:15:57 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-hotspot-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 72 |
-| CPU Cores (end) | 92 |
+| CPU Cores (start) | 39 |
+| CPU Cores (end) | 41 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-x64-hotspot-jdk8
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (4 unique values: 70-92 cores)</summary>
+<summary>CPU Timeline (2 unique values: 39-41 cores)</summary>
 
 ```
-1784044326 72
-1784044331 72
-1784044336 72
-1784044341 72
-1784044346 72
-1784044351 70
-1784044356 70
-1784044361 70
-1784044366 70
-1784044371 70
-1784044376 70
-1784044381 70
-1784044386 70
-1784044391 70
-1784044396 70
-1784044401 90
-1784044406 90
-1784044411 90
-1784044416 92
-1784044421 92
+1784045448 39
+1784045453 39
+1784045458 39
+1784045463 39
+1784045468 39
+1784045473 39
+1784045478 39
+1784045483 39
+1784045488 39
+1784045493 39
+1784045498 39
+1784045503 39
+1784045508 39
+1784045513 39
+1784045518 41
+1784045523 41
+1784045528 41
+1784045533 41
+1784045538 41
+1784045543 41
 ```
 </details>
 
