@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk8
 
 ## glibc-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-07-14 11:40:33 EDT
+**Date:** 2026-07-14 11:47:37 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-arm64-openj9-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 48 |
-| CPU Cores (end) | 48 |
+| CPU Cores (start) | 14 |
+| CPU Cores (end) | 14 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-arm64-openj9-jdk8
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
+<summary>CPU Timeline (1 unique values: 14-14 cores)</summary>
 
 ```
-1784043356 48
-1784043361 48
-1784043366 48
-1784043371 48
-1784043376 48
-1784043381 48
-1784043386 48
-1784043391 48
-1784043396 48
-1784043401 48
-1784043406 48
-1784043411 48
-1784043416 48
-1784043421 48
-1784043426 48
-1784043431 48
-1784043436 48
-1784043441 48
-1784043446 48
-1784043451 48
+1784043768 14
+1784043773 14
+1784043778 14
+1784043783 14
+1784043788 14
+1784043793 14
+1784043798 14
+1784043803 14
+1784043808 14
+1784043813 14
+1784043818 14
+1784043823 14
+1784043828 14
+1784043833 14
+1784043838 14
+1784043843 14
+1784043848 14
+1784043853 14
+1784043858 14
+1784043863 14
 ```
 </details>
 
