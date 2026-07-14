@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk21
 
 ## glibc-arm64-hotspot-jdk21 - ✅ PASS
 
-**Date:** 2026-07-14 09:01:00 EDT
+**Date:** 2026-07-14 09:02:00 EDT
 
 ### Configuration
 | Setting | Value |
@@ -48,6 +48,9 @@ title: glibc-arm64-hotspot-jdk21
 <summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
 
 ```
+1784033794 64
+1784033799 64
+1784033804 64
 1784033809 64
 1784033814 64
 1784033819 64
@@ -65,9 +68,6 @@ title: glibc-arm64-hotspot-jdk21
 1784033879 64
 1784033884 64
 1784033889 64
-1784033894 64
-1784033899 64
-1784033904 64
 ```
 </details>
 
