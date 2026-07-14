@@ -18,9 +18,14 @@
 //
 //   memcpy(owned_table, line_number_table, bytes);
 //
-// (flightRecorder.cpp now guards this copy with SafeAccess::isReadableRange()
-// -- see below -- so the line numbers of the unguarded version are no longer
-// present in the file; this file's tests reproduce that removed pattern.)
+// (flightRecorder.cpp now guards this copy with SafeAccess::safeCopy() -- see
+// below -- so the line numbers of the unguarded version are no longer present
+// in the file; this file's tests reproduce that removed pattern. An earlier
+// version of the fix used a separate SafeAccess::isReadableRange() probe
+// followed by a plain memcpy(), but that still left a check-then-use race:
+// nothing stops the probed memory from becoming invalid in the gap between
+// the probe and the copy. safeCopy() closes that gap by fault-protecting
+// each read as it happens instead of trusting a point-in-time check.)
 //
 // Unlike the class_name/method_name/method_sig strings returned by the
 // preceding JVMTI calls (which ARE probed with SafeAccess::isReadableRange
@@ -152,10 +157,10 @@ TEST(LineNumberTableCopyRawTest, UnguardedCopyCrashesWhenSourceUnmapped) {
       "");
 }
 
-// Documents the fix: guarding the same copy with
-// SafeAccess::isReadableRange() (the same primitive already used to probe
-// class_name/method_name/method_sig in fillJavaMethodInfo) turns the crash
-// into a clean, detectable failure with no memory touched past the guard.
+// Documents the fix: copying via SafeAccess::safeCopy() (which fault-protects
+// each read as it happens, rather than a point-in-time isReadableRange()
+// probe followed by a separate, unprotected memcpy()) turns the crash into a
+// clean, detectable failure with no memory touched past the fault.
 TEST_F(LineNumberTableCopyTest, GuardedCopySkipsSafelyWhenSourceUnmapped) {
   long page_size = sysconf(_SC_PAGESIZE);
   void *page = mmap(NULL, page_size, PROT_READ | PROT_WRITE,
@@ -169,14 +174,14 @@ TEST_F(LineNumberTableCopyTest, GuardedCopySkipsSafelyWhenSourceUnmapped) {
   ASSERT_EQ(0, munmap(page, page_size));
 
   size_t bytes = (size_t)line_number_table_size * sizeof(jvmtiLineNumberEntry);
-  void *owned_table = nullptr;
-  if (SafeAccess::isReadableRange(line_number_table, bytes)) {
-    owned_table = malloc(bytes);
-    memcpy(owned_table, line_number_table, bytes);
+  void *owned_table = malloc(bytes);
+  ASSERT_NE(owned_table, nullptr);
+  if (!SafeAccess::safeCopy(owned_table, line_number_table, bytes)) {
+    free(owned_table);
+    owned_table = nullptr;
   }
 
   EXPECT_EQ(nullptr, owned_table);
-  free(owned_table);
 }
 
 // Sanity check: the guard must not reject a genuinely valid table, or every
@@ -188,10 +193,11 @@ TEST_F(LineNumberTableCopyTest, GuardedCopyStillWorksForValidSource) {
       makeFakeLineNumberTable(stack_table, line_number_table_size);
 
   size_t bytes = (size_t)line_number_table_size * sizeof(jvmtiLineNumberEntry);
-  void *owned_table = nullptr;
-  if (SafeAccess::isReadableRange(line_number_table, bytes)) {
-    owned_table = malloc(bytes);
-    memcpy(owned_table, line_number_table, bytes);
+  void *owned_table = malloc(bytes);
+  ASSERT_NE(owned_table, nullptr);
+  if (!SafeAccess::safeCopy(owned_table, line_number_table, bytes)) {
+    free(owned_table);
+    owned_table = nullptr;
   }
 
   ASSERT_NE(nullptr, owned_table);

@@ -50,7 +50,7 @@ static const char *const SETTING_CSTACK[] = {NULL, "no", "fp", "dwarf", "lbr"};
 // JVM spec SS4.7.3 caps a method's bytecode (code_length) at 65535 bytes (u2),
 // so a well-formed LineNumberTable can never have more entries than that.
 // Used to sanity-bound line_number_table_size before it drives the byte-count
-// passed to SafeAccess::isReadableRange()/memcpy(): if GetLineNumberTable()
+// passed to SafeAccess::safeCopy(): if GetLineNumberTable()
 // returns a corrupted pointer for a stale jmethodID (see the TOCTOU race
 // documented in fillJavaMethodInfo below), the paired out-param size is just
 // as likely to be corrupted, and an implausible size should be rejected
@@ -380,19 +380,25 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         // much as to those calls, and crash telemetry already showed those
         // sibling calls returning JVMTI_ERROR_NONE with unmapped string
         // pointers despite the spec saying the returned array should be a
-        // fresh, caller-owned allocation. Nothing about this call guarantees
-        // it is exempt from the same failure mode, so probe before copying
-        // rather than assume the pointer is safe to dereference.
-        if (SafeAccess::isReadableRange(line_number_table, bytes)) {
-          owned_table = malloc(bytes);
-          if (owned_table != nullptr) {
-            memcpy(owned_table, line_number_table, bytes);
-          } else {
-            TEST_LOG("Failed to allocate %zu bytes for line number table copy", bytes);
+        // fresh, caller-owned allocation. A genuinely-valid returned table is
+        // fully decoupled from jmethodID lifetime per the JVMTI spec and
+        // can't be invalidated later by class unload; the actual risk is a
+        // corrupted pointer that happens to alias other live memory at
+        // check-time and stops being mapped moments later. A separate
+        // isReadableRange() probe followed by a plain memcpy() would still
+        // race that window, so copy via safeCopy() instead: it fault-protects
+        // each read as it happens rather than trusting a point-in-time check
+        // before an unprotected copy.
+        owned_table = malloc(bytes);
+        if (owned_table != nullptr) {
+          if (!SafeAccess::safeCopy(owned_table, line_number_table, bytes)) {
+            free(owned_table);
+            owned_table = nullptr;
+            line_number_table = nullptr; // make sure the invalid address is not used for jvmti->Deallocate
+            Counters::increment(LINE_NUMBER_TABLE_UNREADABLE);
           }
         } else {
-          line_number_table = nullptr; // make sure the invalid address is not used for jvmti->Deallocate
-          Counters::increment(LINE_NUMBER_TABLE_UNREADABLE);
+          TEST_LOG("Failed to allocate %zu bytes for line number table copy", bytes);
         }
       } else if (line_number_table_size != 0) {
         // A corrupted size out-param alongside a corrupted pointer is exactly
