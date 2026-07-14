@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk8
 
 ## glibc-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-07-14 11:47:36 EDT
+**Date:** 2026-07-14 11:56:28 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-arm64-hotspot-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 52 |
-| CPU Cores (end) | 52 |
+| CPU Cores (start) | 48 |
+| CPU Cores (end) | 46 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-arm64-hotspot-jdk8
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 52-52 cores)</summary>
+<summary>CPU Timeline (2 unique values: 46-48 cores)</summary>
 
 ```
-1784043764 52
-1784043769 52
-1784043774 52
-1784043779 52
-1784043784 52
-1784043789 52
-1784043794 52
-1784043799 52
-1784043804 52
-1784043809 52
-1784043814 52
-1784043819 52
-1784043824 52
-1784043829 52
-1784043834 52
-1784043839 52
-1784043844 52
-1784043849 52
-1784043854 52
-1784043859 52
+1784044314 48
+1784044319 48
+1784044324 48
+1784044329 48
+1784044334 48
+1784044339 48
+1784044344 48
+1784044349 48
+1784044354 48
+1784044359 48
+1784044364 48
+1784044369 48
+1784044374 48
+1784044379 48
+1784044384 48
+1784044389 48
+1784044394 48
+1784044399 48
+1784044404 48
+1784044409 48
 ```
 </details>
 
