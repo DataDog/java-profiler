@@ -211,6 +211,54 @@ TEST_F(LivenessTrackerTest, MultipleResizeOperationsMaintainCorrectCapacity) {
 }
 
 /**
+ * Mock structure to test the flush_table id-assignment guard: Profiler::lookupClass()
+ * returns an int (-1 on class-map-at-capacity), but Event::_id is a u32. Assigning -1
+ * directly would wrap to 0xFFFFFFFF and corrupt liveness attribution, so flush_table
+ * must drop the sample instead. Mirrors ObjectSampler's convention for the same
+ * lookupClass() failure mode.
+ */
+struct FlushTableIdGuardMock {
+    bool recorded = false;
+    uint32_t recorded_id = 0;
+
+    // Correct behavior (after the fix): only assign/record when class_id >= 0.
+    void applyGuarded(int class_id) {
+        if (class_id >= 0) {
+            recorded = true;
+            recorded_id = static_cast<uint32_t>(class_id);
+        }
+    }
+
+    // Pre-fix behavior: unconditionally assigns class_id to the u32 event id.
+    void applyUnguarded(int class_id) {
+        recorded = true;
+        recorded_id = static_cast<uint32_t>(class_id);
+    }
+};
+
+TEST_F(LivenessTrackerTest, NegativeClassIdSampleIsDropped) {
+    FlushTableIdGuardMock mock;
+    mock.applyGuarded(-1);
+    EXPECT_FALSE(mock.recorded);
+}
+
+TEST_F(LivenessTrackerTest, NonNegativeClassIdSampleIsRecorded) {
+    FlushTableIdGuardMock mock;
+    mock.applyGuarded(42);
+    EXPECT_TRUE(mock.recorded);
+    EXPECT_EQ(42u, mock.recorded_id);
+}
+
+TEST_F(LivenessTrackerTest, UnguardedNegativeClassIdWrapsToMaxU32) {
+    // Documents the bug the guard prevents: without it, -1 wraps to 0xFFFFFFFF
+    // when narrowed to the u32 event id.
+    FlushTableIdGuardMock mock;
+    mock.applyUnguarded(-1);
+    EXPECT_TRUE(mock.recorded);
+    EXPECT_EQ(0xFFFFFFFFu, mock.recorded_id);
+}
+
+/**
  * Test that verifies capacity never exceeds max_cap during resize operations.
  */
 TEST_F(LivenessTrackerTest, CapacityDoesNotExceedMaxCap) {

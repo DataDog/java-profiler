@@ -117,12 +117,19 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
       env->DeleteLocalRef(clz);
       jniExceptionCheck(env);
       const char *name = env->GetStringUTFChars(name_str, nullptr);
-      event._id = name != nullptr
-                      ? Profiler::instance()->lookupClass(name, strlen(name))
-                      : 0;
+      int class_id = name != nullptr
+                         ? Profiler::instance()->lookupClass(name, strlen(name))
+                         : 0;
       env->ReleaseStringUTFChars(name_str, name);
 
-      Profiler::instance()->recordDeferredSample(_table[i].tid, _table[i].call_trace_id, BCI_LIVENESS, &event);
+      // lookupClass() returns -1 when the class map is at capacity; do not
+      // assign it to the u32 event id (it would wrap to 0xFFFFFFFF and
+      // corrupt liveness attribution in the JFR output) — drop the sample
+      // instead, matching ObjectSampler's convention for the same failure.
+      if (class_id >= 0) {
+        event._id = class_id;
+        Profiler::instance()->recordDeferredSample(_table[i].tid, _table[i].call_trace_id, BCI_LIVENESS, &event);
+      }
     }
 
     env->DeleteLocalRef(ref);

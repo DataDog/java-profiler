@@ -68,7 +68,7 @@ SharedLineNumberTable::~SharedLineNumberTable() {
 
 void Lookup::fillNativeMethodInfo(MethodInfo *mi, const char *name,
                                   const char *lib_name) {
-  mi->_class = _classes->lookupDuringDump("", 0);
+  mi->_class = _classes->lookupDuringDump("", 0, Profiler::maxClassMapSize());
   // TODO return the library name once we figured out how to cooperate with the
   // backend
   //        if (lib_name == NULL) {
@@ -117,7 +117,8 @@ void Lookup::fillNativeMethodInfo(MethodInfo *mi, const char *name,
 
 void Lookup::fillRemoteFrameInfo(MethodInfo *mi, const RemoteFrameInfo *rfi) {
   // Store build-id in the class name field
-  mi->_class = _classes->lookupDuringDump(rfi->build_id, strlen(rfi->build_id));
+  mi->_class = _classes->lookupDuringDump(rfi->build_id, strlen(rfi->build_id),
+                                           Profiler::maxClassMapSize());
 
   // Store PC offset in hex format in the signature field
   char offset_hex[32];
@@ -269,7 +270,8 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
                      "Ljdk/internal/reflect/GeneratedConstructorAccessor")) {
         class_name_id = _classes->lookupDuringDump(
             "jdk/internal/reflect/GeneratedConstructorAccessor",
-            strlen("jdk/internal/reflect/GeneratedConstructorAccessor"));
+            strlen("jdk/internal/reflect/GeneratedConstructorAccessor"),
+            Profiler::maxClassMapSize());
         method_name_id =
             _symbols.lookup("Object "
                             "jdk.internal.reflect.GeneratedConstructorAccessor."
@@ -277,18 +279,20 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         method_sig_id = _symbols.lookup(method_sig);
       } else if (has_prefix(class_name,
                             "Lsun/reflect/GeneratedConstructorAccessor")) {
-        class_name_id =
-            _classes->lookupDuringDump("sun/reflect/GeneratedConstructorAccessor",
-                                       strlen("sun/reflect/GeneratedConstructorAccessor"));
+        class_name_id = _classes->lookupDuringDump(
+            "sun/reflect/GeneratedConstructorAccessor",
+            strlen("sun/reflect/GeneratedConstructorAccessor"),
+            Profiler::maxClassMapSize());
         method_name_id = _symbols.lookup(
             "Object "
             "sun.reflect.GeneratedConstructorAccessor.newInstance(Object[])");
         method_sig_id = _symbols.lookup(method_sig);
       } else if (has_prefix(class_name,
                             "Ljdk/internal/reflect/GeneratedMethodAccessor")) {
-        class_name_id =
-            _classes->lookupDuringDump("jdk/internal/reflect/GeneratedMethodAccessor",
-                                       strlen("jdk/internal/reflect/GeneratedMethodAccessor"));
+        class_name_id = _classes->lookupDuringDump(
+            "jdk/internal/reflect/GeneratedMethodAccessor",
+            strlen("jdk/internal/reflect/GeneratedMethodAccessor"),
+            Profiler::maxClassMapSize());
         method_name_id =
             _symbols.lookup("Object "
                             "jdk.internal.reflect.GeneratedMethodAccessor."
@@ -296,8 +300,10 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         method_sig_id = _symbols.lookup(method_sig);
       } else if (has_prefix(class_name,
                             "Lsun/reflect/GeneratedMethodAccessor")) {
-        class_name_id = _classes->lookupDuringDump("sun/reflect/GeneratedMethodAccessor",
-                                                    strlen("sun/reflect/GeneratedMethodAccessor"));
+        class_name_id = _classes->lookupDuringDump(
+            "sun/reflect/GeneratedMethodAccessor",
+            strlen("sun/reflect/GeneratedMethodAccessor"),
+            Profiler::maxClassMapSize());
         method_name_id = _symbols.lookup(
             "Object sun.reflect.GeneratedMethodAccessor.invoke(Object, "
             "Object[])");
@@ -308,30 +314,38 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         // we want to normalise to java/lang/invoke/LambdaForm$MH,
         // java/lang/invoke/LambdaForm$DMH, java/lang/invoke/LambdaForm$BMH,
         if (has_prefix(class_name + lambdaFormPrefixLength, "MH")) {
-          class_name_id = _classes->lookupDuringDump("java/lang/invoke/LambdaForm$MH",
-                                                      strlen("java/lang/invoke/LambdaForm$MH"));
+          class_name_id = _classes->lookupDuringDump(
+              "java/lang/invoke/LambdaForm$MH",
+              strlen("java/lang/invoke/LambdaForm$MH"),
+              Profiler::maxClassMapSize());
         } else if (has_prefix(class_name + lambdaFormPrefixLength, "BMH")) {
-          class_name_id = _classes->lookupDuringDump("java/lang/invoke/LambdaForm$BMH",
-                                                      strlen("java/lang/invoke/LambdaForm$BMH"));
+          class_name_id = _classes->lookupDuringDump(
+              "java/lang/invoke/LambdaForm$BMH",
+              strlen("java/lang/invoke/LambdaForm$BMH"),
+              Profiler::maxClassMapSize());
         } else if (has_prefix(class_name + lambdaFormPrefixLength, "DMH")) {
-          class_name_id = _classes->lookupDuringDump("java/lang/invoke/LambdaForm$DMH",
-                                                      strlen("java/lang/invoke/LambdaForm$DMH"));
+          class_name_id = _classes->lookupDuringDump(
+              "java/lang/invoke/LambdaForm$DMH",
+              strlen("java/lang/invoke/LambdaForm$DMH"),
+              Profiler::maxClassMapSize());
         } else {
           // don't recognise the suffix, so don't normalise
           class_name_id = _classes->lookupDuringDump(
-              normalized_class_name, normalized_class_name_len);
+              normalized_class_name, normalized_class_name_len,
+              Profiler::maxClassMapSize());
         }
         method_name_id = _symbols.lookup(method_name);
         method_sig_id = _symbols.lookup(method_sig);
       } else {
-        class_name_id = _classes->lookupDuringDump(normalized_class_name,
-                                                   normalized_class_name_len);
+        class_name_id = _classes->lookupDuringDump(
+            normalized_class_name, normalized_class_name_len,
+            Profiler::maxClassMapSize());
         method_name_id = _symbols.lookup(method_name);
         method_sig_id = _symbols.lookup(method_sig);
       }
     } else {
       Counters::increment(JMETHODID_SKIPPED);
-      class_name_id = _classes->lookupDuringDump("", 0);
+      class_name_id = _classes->lookupDuringDump("", 0, Profiler::maxClassMapSize());
       method_name_id = _symbols.lookup("jvmtiError");
       method_sig_id = _symbols.lookup("()L;");
     }
@@ -426,7 +440,7 @@ bool Lookup::resolveVTableReceiver(VMSymbol *sym, char *buf, size_t bufsize,
   // the stack frame's class_id absent from this chunk's class pool.
   // (Plain lookup() remains correct for non-dump callers — e.g. Profiler::
   // lookupClass on JVM threads — where the next rotate() will propagate.)
-  u32 class_id = _classes->lookupDuringDump(buf, len);
+  u32 class_id = _classes->lookupDuringDump(buf, len, Profiler::maxClassMapSize());
   // Apply synthetic-accessor/LambdaForm normalisation so that the many
   // distinct names HotSpot generates for these families (..Accessor1234,
   // LambdaForm$MH/0x...) collapse to one bucket each in the JFR class pool.
@@ -436,32 +450,32 @@ bool Lookup::resolveVTableReceiver(VMSymbol *sym, char *buf, size_t bufsize,
   if (has_prefix_n(buf, len,
                    "jdk/internal/reflect/GeneratedConstructorAccessor")) {
     static const char kName[] = "jdk/internal/reflect/GeneratedConstructorAccessor";
-    class_id = _classes->lookupDuringDump(kName, sizeof(kName) - 1);
+    class_id = _classes->lookupDuringDump(kName, sizeof(kName) - 1, Profiler::maxClassMapSize());
   } else if (has_prefix_n(buf, len, "sun/reflect/GeneratedConstructorAccessor")) {
     static const char kName[] = "sun/reflect/GeneratedConstructorAccessor";
-    class_id = _classes->lookupDuringDump(kName, sizeof(kName) - 1);
+    class_id = _classes->lookupDuringDump(kName, sizeof(kName) - 1, Profiler::maxClassMapSize());
   } else if (has_prefix_n(buf, len,
                           "jdk/internal/reflect/GeneratedMethodAccessor")) {
     static const char kName[] = "jdk/internal/reflect/GeneratedMethodAccessor";
-    class_id = _classes->lookupDuringDump(kName, sizeof(kName) - 1);
+    class_id = _classes->lookupDuringDump(kName, sizeof(kName) - 1, Profiler::maxClassMapSize());
   } else if (has_prefix_n(buf, len, "sun/reflect/GeneratedMethodAccessor")) {
     static const char kName[] = "sun/reflect/GeneratedMethodAccessor";
-    class_id = _classes->lookupDuringDump(kName, sizeof(kName) - 1);
+    class_id = _classes->lookupDuringDump(kName, sizeof(kName) - 1, Profiler::maxClassMapSize());
   } else if (has_prefix_n(buf, len, "java/lang/invoke/LambdaForm$")) {
     size_t prefix_len = strlen("java/lang/invoke/LambdaForm$");
     const char *suffix = buf + prefix_len;
     size_t suffix_len = len - prefix_len;
     if (suffix_len >= 2 && suffix[0] == 'M' && suffix[1] == 'H') {
       static const char kName[] = "java/lang/invoke/LambdaForm$MH";
-      class_id = _classes->lookupDuringDump(kName, sizeof(kName) - 1);
+      class_id = _classes->lookupDuringDump(kName, sizeof(kName) - 1, Profiler::maxClassMapSize());
     } else if (suffix_len >= 3 && suffix[0] == 'B' && suffix[1] == 'M' &&
                suffix[2] == 'H') {
       static const char kName[] = "java/lang/invoke/LambdaForm$BMH";
-      class_id = _classes->lookupDuringDump(kName, sizeof(kName) - 1);
+      class_id = _classes->lookupDuringDump(kName, sizeof(kName) - 1, Profiler::maxClassMapSize());
     } else if (suffix_len >= 3 && suffix[0] == 'D' && suffix[1] == 'M' &&
                suffix[2] == 'H') {
       static const char kName[] = "java/lang/invoke/LambdaForm$DMH";
-      class_id = _classes->lookupDuringDump(kName, sizeof(kName) - 1);
+      class_id = _classes->lookupDuringDump(kName, sizeof(kName) - 1, Profiler::maxClassMapSize());
     }
   }
   *out_class_id = class_id;
@@ -485,7 +499,7 @@ u32 Lookup::resolveVTableReceiverCached(void *sym) {
     // marker instead of an empty class name (which is indistinguishable
     // from a parser/encoder error downstream).
     static const char kName[] = "<unresolved_vtable_receiver>";
-    class_id = _classes->lookupDuringDump(kName, sizeof(kName) - 1);
+    class_id = _classes->lookupDuringDump(kName, sizeof(kName) - 1, Profiler::maxClassMapSize());
   }
   _vtable_receiver_cache[sym] = class_id;
   return class_id;
