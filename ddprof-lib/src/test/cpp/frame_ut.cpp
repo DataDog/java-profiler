@@ -7,6 +7,14 @@
 #include "../../main/cpp/frame.h"
 #include "../../main/cpp/gtest_crash_handler.h"
 
+// VMTestAccessor — friend of VM, lets tests toggle VM::isHotspot() since
+// isRawPointer() now gates on it (raw pointers only exist on HotSpot).
+class VMTestAccessor {
+public:
+    static bool getHotspot() { return VM::_hotspot; }
+    static void setHotspot(bool v) { VM::_hotspot = v; }
+};
+
 static constexpr char FRAME_TEST_NAME[] = "FrameTest";
 
 class GlobalSetup {
@@ -139,12 +147,29 @@ TEST(FrameTypeIsRawPointerTest, FalseForEncodedWithoutFlag) {
     }
 }
 
-TEST(FrameTypeIsRawPointerTest, TrueWhenBit30IsSet) {
-    // Manually set the raw-pointer flag (bit 30) on an encoded value
+TEST(FrameTypeIsRawPointerTest, TrueWhenBit30IsSetOnHotspot) {
+    // Manually set the raw-pointer flag (bit 30) on an encoded value.
+    // Raw pointers only exist on HotSpot, so isRawPointer() must be gated on it.
+    bool saved = VMTestAccessor::getHotspot();
+    VMTestAccessor::setHotspot(true);
     int base = FrameType::encode(FRAME_JIT_COMPILED, 0);
     int withFlag = base | (1 << 30);
     EXPECT_TRUE(FrameType::isRawPointer(withFlag))
-        << "isRawPointer() must be true when bit 30 is set and value is positive";
+        << "isRawPointer() must be true when bit 30 is set, value is positive, and VM is HotSpot";
+    VMTestAccessor::setHotspot(saved);
+}
+
+TEST(FrameTypeIsRawPointerTest, FalseWhenBit30IsSetOnNonHotspot) {
+    // Non-HotSpot VMs can coincidentally produce an unencoded bci with bit 30
+    // set (e.g. OpenJ9's raw AsyncGetCallTrace output); that must not be
+    // mistaken for HotSpot's raw-pointer encoding.
+    bool saved = VMTestAccessor::getHotspot();
+    VMTestAccessor::setHotspot(false);
+    int base = FrameType::encode(FRAME_JIT_COMPILED, 0);
+    int withFlag = base | (1 << 30);
+    EXPECT_FALSE(FrameType::isRawPointer(withFlag))
+        << "isRawPointer() must be false when VM is not HotSpot, even with bit 30 set";
+    VMTestAccessor::setHotspot(saved);
 }
 
 TEST(FrameTypeIsRawPointerTest, FalseWithOnlyBit30SetOnNegative) {
