@@ -22,6 +22,14 @@
 extern "C" int safefetch32_cont(int* adr, int errValue);
 extern "C" int64_t safefetch64_cont(int64_t* adr, int64_t errValue);
 
+// safecopy_impl copies `len` bytes from `src` to `dst` one byte at a time and
+// returns 1 on success. If any load from `src` faults, the signal handler
+// redirects the pc anywhere in [safecopy_impl, safecopy_cont) to safecopy_cont,
+// which returns 0. Both are leaf routines with no stack frame, so the redirect
+// keeps the return address intact.
+extern "C" int safecopy_impl(void* dst, const void* src, size_t len);
+extern "C" int safecopy_cont(void* dst, const void* src, size_t len);
+
 #ifdef __APPLE__
     #if defined(__x86_64__)
       #define current_pc context_rip
@@ -67,6 +75,25 @@ extern "C" int64_t safefetch64_cont(int64_t* adr, int64_t errValue);
         _safefetch64_cont:
             movq %rsi, %rax
             ret
+        .globl _safecopy_impl
+        .private_extern _safecopy_impl
+        _safecopy_impl:
+            xorl %ecx, %ecx
+        Lsafecopy_loop:
+            cmpq %rdx, %rcx
+            jae Lsafecopy_done
+            movzbl (%rsi,%rcx,1), %eax
+            movb %al, (%rdi,%rcx,1)
+            incq %rcx
+            jmp Lsafecopy_loop
+        Lsafecopy_done:
+            movl $1, %eax
+            ret
+        .globl _safecopy_cont
+        .private_extern _safecopy_cont
+        _safecopy_cont:
+            xorl %eax, %eax
+            ret
     )");
   #else
     asm(R"(
@@ -95,6 +122,27 @@ extern "C" int64_t safefetch64_cont(int64_t* adr, int64_t errValue);
         safefetch64_cont:
             movq %rsi, %rax
             ret
+        .globl safecopy_impl
+        .hidden safecopy_impl
+        .type safecopy_impl, %function
+        safecopy_impl:
+            xorl %ecx, %ecx
+        .Lsafecopy_loop:
+            cmpq %rdx, %rcx
+            jae .Lsafecopy_done
+            movzbl (%rsi,%rcx,1), %eax
+            movb %al, (%rdi,%rcx,1)
+            incq %rcx
+            jmp .Lsafecopy_loop
+        .Lsafecopy_done:
+            movl $1, %eax
+            ret
+        .globl safecopy_cont
+        .hidden safecopy_cont
+        .type safecopy_cont, %function
+        safecopy_cont:
+            xorl %eax, %eax
+            ret
     )");
   #endif // __APPLE__
 #elif defined(__aarch64__)
@@ -119,6 +167,25 @@ extern "C" int64_t safefetch64_cont(int64_t* adr, int64_t errValue);
         .private_extern _safefetch64_cont
         _safefetch64_cont:
             mov      x0, x1
+            ret
+        .globl _safecopy_impl
+        .private_extern _safecopy_impl
+        _safecopy_impl:
+            mov      x3, xzr
+        Lsafecopy_loop:
+            cmp      x3, x2
+            b.hs     Lsafecopy_done
+            ldrb     w4, [x1, x3]
+            strb     w4, [x0, x3]
+            add      x3, x3, #1
+            b        Lsafecopy_loop
+        Lsafecopy_done:
+            mov      w0, #1
+            ret
+        .globl _safecopy_cont
+        .private_extern _safecopy_cont
+        _safecopy_cont:
+            mov      w0, #0
             ret
     )");
   #else
@@ -148,61 +215,39 @@ extern "C" int64_t safefetch64_cont(int64_t* adr, int64_t errValue);
         safefetch64_cont:
             mov      x0, x1
             ret
+        .globl safecopy_impl
+        .hidden safecopy_impl
+        .type safecopy_impl, %function
+        safecopy_impl:
+            mov      x3, xzr
+        .Lsafecopy_loop:
+            cmp      x3, x2
+            b.hs     .Lsafecopy_done
+            ldrb     w4, [x1, x3]
+            strb     w4, [x0, x3]
+            add      x3, x3, #1
+            b        .Lsafecopy_loop
+        .Lsafecopy_done:
+            mov      w0, #1
+            ret
+        .globl safecopy_cont
+        .hidden safecopy_cont
+        .type safecopy_cont, %function
+        safecopy_cont:
+            mov      w0, #0
+            ret
     )");
   #endif
 #endif
 
 bool SafeAccess::safeCopy(void* dst, const void* src, size_t len) {
-  // Two-sentinel pattern (same as isReadable): a real-data word may equal
-  // one sentinel by chance, but not both — if both fetches return their
-  // sentinel, the access truly faulted.
-  //
-  // All safefetch32 loads issued here use 4-byte-aligned addresses. Pages
-  // are 4 KiB (or 16 KiB on Apple Silicon), both divisible by 4, so an
-  // aligned 4-byte load never spans a page boundary. The only fault
-  // possible is when the aligned address itself lies in an unmapped page;
-  // we never spuriously fault on an over-read past `src + len`.
-  static const int32_t SENT_A = (int32_t)0x55AA55AA;
-  static const int32_t SENT_B = (int32_t)0xAA55AA55;
-  uint8_t* d = (uint8_t*)dst;
-  const uint8_t* s = (const uint8_t*)src;
-  size_t i = 0;
-
-  // Front fixup: if `src` is not 4-byte aligned, fetch at the previous
-  // aligned address (1..3 bytes before src). That address lies in the
-  // same 4-byte word as src — and since pages are 4-byte aligned, in
-  // the same page as src. The leading k bytes of the fetched word lie
-  // before the caller's range and are discarded via the +k offset; they
-  // never reach `dst`.
-  size_t k = (uintptr_t)s & 3u;
-  if (k != 0 && i < len) {
-    int32_t* aligned = (int32_t*)(s - k);
-    int32_t v1 = safefetch32_impl(aligned, SENT_A);
-    int32_t v2 = safefetch32_impl(aligned, SENT_B);
-    if (v1 == SENT_A && v2 == SENT_B) {
-      return false;
-    }
-    size_t take = (4 - k < len) ? (4 - k) : len;
-    memcpy(d, ((const uint8_t*)&v1) + k, take);
-    i = take;
-  }
-
-  // Middle + tail: (s + i) is now 4-byte aligned. The final iteration may
-  // load up to 3 over-read bytes past `src + len`, but those bytes sit in
-  // the same 4-byte-aligned word and therefore the same page as the bytes
-  // we actually wanted — never a fault from the over-read alone.
-  while (i < len) {
-    int32_t* aligned = (int32_t*)(s + i);
-    int32_t v1 = safefetch32_impl(aligned, SENT_A);
-    int32_t v2 = safefetch32_impl(aligned, SENT_B);
-    if (v1 == SENT_A && v2 == SENT_B) {
-      return false;
-    }
-    size_t chunk = (len - i >= 4) ? 4 : (len - i);
-    memcpy(d + i, &v1, chunk);  // memcpy from local — no UAF risk
-    i += chunk;
-  }
-  return true;
+  // The copy runs entirely inside the safecopy_impl assembly stub, which
+  // reads `src` one byte at a time. If a load faults, handle_safefetch
+  // redirects execution to safecopy_cont, which returns 0. Because the copy
+  // is byte-granular it only ever touches bytes in [src, src+len) — there is
+  // no over-read past the requested range and no alignment reasoning needed.
+  // A fault mid-copy may leave up to len-1 bytes already written to `dst`.
+  return safecopy_impl(dst, src, len) != 0;
 }
 
 bool SafeAccess::handle_safefetch(int sig, void* context) {
@@ -214,6 +259,11 @@ bool SafeAccess::handle_safefetch(int sig, void* context) {
       return true;
     } else if (pc == (uintptr_t)safefetch64_impl) {
       uc->current_pc = (uintptr_t)safefetch64_cont;
+      return true;
+    } else if (pc >= (uintptr_t)safecopy_impl && pc < (uintptr_t)safecopy_cont) {
+      // Unlike safefetch, the faulting load can be at any pc inside the copy
+      // loop, so match the whole [safecopy_impl, safecopy_cont) range.
+      uc->current_pc = (uintptr_t)safecopy_cont;
       return true;
     }
   }

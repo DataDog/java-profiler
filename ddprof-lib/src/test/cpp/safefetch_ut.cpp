@@ -162,16 +162,16 @@ TEST_F(SafeFetchTest, mprotectedMemory64) {
 
 // ---------------------------------------------------------------------------
 // SafeAccess::safeCopy — bulk variant of safeFetch{32,64} that copies a byte
-// range via the safefetch trampoline. Must:
+// range via the safecopy_impl assembly stub (byte-granular loads guarded by
+// handle_safefetch). Must:
 //   - return true and copy the bytes exactly when src is fully readable,
 //     including when [src, src+len) sits within a few bytes of an unmapped
-//     page boundary (aligned-load strategy keeps over-reads in-page)
+//     page boundary (byte-granular reads never over-read past src+len)
 //   - return false (no crash) when the requested range itself crosses into
 //     an unmapped page
-//   - handle unaligned src by fetching at the previous 4-byte aligned
-//     address and discarding the leading 1..3 bytes
-//   - never write past dst[len-1] even when len is not a multiple of 4
-//   - not mis-classify real data as a fault when it equals one sentinel
+//   - handle unaligned src (no alignment requirement on src)
+//   - never write past dst[len-1] regardless of len
+//   - copy real data faithfully regardless of its byte values
 // ---------------------------------------------------------------------------
 
 TEST_F(SafeFetchTest, safeCopy_happyPath) {
@@ -188,7 +188,7 @@ TEST_F(SafeFetchTest, safeCopy_zeroLength) {
 }
 
 TEST_F(SafeFetchTest, safeCopy_shortLength_doesNotOverwriteDst) {
-  // The internal 4-byte fetch must not overflow dst beyond len bytes.
+  // The copy must not write beyond len bytes into dst.
   const char src[] = "AB";
   char dst[8];
   memset(dst, 0x5A, sizeof(dst));
@@ -329,8 +329,8 @@ TEST_F(SafeFetchTest, safeCopy_unalignedShortAtPageEnd_stillSucceeds) {
 }
 
 TEST_F(SafeFetchTest, safeCopy_dataMatchingSingleSentinel_stillSucceeds) {
-  // The two-sentinel pattern must not mis-classify real data that happens
-  // to equal one of the sentinels. SENT_A is 0x55AA55AA.
+  // Real data is copied faithfully regardless of its byte values (the copy
+  // no longer uses sentinel values to detect faults).
   uint32_t real_data = 0x55AA55AA;
   char dst[4];
   ASSERT_TRUE(SafeAccess::safeCopy(dst, &real_data, 4));
