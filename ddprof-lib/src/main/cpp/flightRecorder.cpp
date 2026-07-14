@@ -411,9 +411,9 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         line_number_table = nullptr;
         Counters::increment(LINE_NUMBER_TABLE_UNREADABLE);
       }
-      jvmtiError dealloc_err = jvmti->Deallocate((unsigned char *)line_number_table);
-      if (dealloc_err != JVMTI_ERROR_NONE) {
-        TEST_LOG("Unexpected error while deallocating linenumber table: %d", dealloc_err);
+      if (line_number_table != nullptr) {
+        jvmtiError dealloc_err = jvmti->Deallocate((unsigned char *)line_number_table);
+        assert(dealloc_err == JVMTI_ERROR_NONE && "Unexpected error while deallocating linenumber table");
       }
       if (owned_table != nullptr) {
         mi->_line_number_table = std::make_shared<SharedLineNumberTable>(
