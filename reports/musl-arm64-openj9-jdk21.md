@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk21
 
 ## musl-arm64-openj9-jdk21 - ✅ PASS
 
-**Date:** 2026-07-14 06:40:13 EDT
+**Date:** 2026-07-14 06:40:54 EDT
 
 ### Configuration
 | Setting | Value |
@@ -48,12 +48,6 @@ title: musl-arm64-openj9-jdk21
 <summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
-1784025356 48
-1784025361 48
-1784025366 48
-1784025371 48
-1784025376 48
-1784025381 48
 1784025386 48
 1784025391 48
 1784025396 48
@@ -68,6 +62,12 @@ title: musl-arm64-openj9-jdk21
 1784025441 48
 1784025446 48
 1784025451 48
+1784025456 48
+1784025461 48
+1784025466 48
+1784025471 48
+1784025476 48
+1784025481 48
 ```
 </details>
 
