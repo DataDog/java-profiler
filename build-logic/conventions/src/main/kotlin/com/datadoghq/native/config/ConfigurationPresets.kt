@@ -53,6 +53,14 @@ object ConfigurationPresets {
             register("fuzzer") {
                 configureFuzzer(this, currentPlatform, currentArch, version, rootDir, compiler)
             }
+            // Opt-in fault-injection config: a release build with -D__FAULT_INJECTION__.
+            // Only registered when -PenableFaultInjection is passed, so normal
+            // builds never see the define.
+            if (project.hasProperty("enableFaultInjection")) {
+                register("faultinjection") {
+                    configureFaultInjection(this, currentPlatform, currentArch, version)
+                }
+            }
         }
 
         val activeConfigs = extension.getActiveConfigurations(currentPlatform, currentArch)
@@ -123,6 +131,22 @@ object ConfigurationPresets {
                 config.linkerArgs.set(emptyList())
             }
         }
+    }
+
+    /**
+     * Fault-injection configuration: identical to release but with
+     * -D__FAULT_INJECTION__, which activates the compile-time fault-injection
+     * layer (faultInjection.h) at the profiler's memory-access sites. Opt-in
+     * only (see setupStandardConfigurations); never shipped in production.
+     */
+    fun configureFaultInjection(
+        config: BuildConfiguration,
+        platform: Platform,
+        architecture: Architecture,
+        version: String
+    ) {
+        configureRelease(config, platform, architecture, version)
+        config.compilerArgs.add("-D__FAULT_INJECTION__")
     }
 
     fun configureDebug(

@@ -7,6 +7,7 @@
 #include <climits>
 #include <cstdlib>
 #include "asyncSampleMutex.h"
+#include "faultInjection.h"
 #include "frames.h"
 #include "guards.h"
 #include "hotspot/hotspotSupport.h"
@@ -370,8 +371,8 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         // entry_fp has been range-checked by isValidFP above; any remaining
         // SIGSEGV from a stale/concurrently-freed pointer is caught by the
         // setjmp crash protection in walkVM (checkFault -> longjmp).
-        uintptr_t carrier_fp = *(uintptr_t*)entry_fp;
-        const void* carrier_pc = ((const void**)entry_fp)[FRAME_PC_SLOT];
+        uintptr_t carrier_fp = *(uintptr_t*)INJECT_FAULT_ADDRESS_UNLIKELY(entry_fp);
+        const void* carrier_pc = ((const void**)INJECT_FAULT_ADDRESS_UNLIKELY(entry_fp))[FRAME_PC_SLOT];
         uintptr_t carrier_sp = entry_fp + (FRAME_PC_SLOT + 1) * sizeof(void*);
         if (!StackWalkValidation::isValidFP(carrier_fp) ||
             StackWalkValidation::inDeadZone(carrier_pc) ||
@@ -496,7 +497,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
                 bool is_plausible_interpreter_frame = StackWalkValidation::isPlausibleInterpreterFrame(fp, sp, bcp_offset);
                 if (is_plausible_interpreter_frame) {
-                    VMMethod* method = ((VMMethod**)fp)[InterpreterFrame::method_offset];
+                    VMMethod* method = ((VMMethod**)INJECT_FAULT_ADDRESS_UNLIKELY(fp))[InterpreterFrame::method_offset];
                     jmethodID method_id = getMethodId(method);
                     if (method_id != JMETHODID_NOT_WALKABLE) {
                         Counters::increment(WALKVM_JAVA_FRAME_OK);
@@ -506,7 +507,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                         fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id, method);
                         sp = ((uintptr_t*)fp)[InterpreterFrame::sender_sp_offset];
                         pc = stripPointer(((void**)fp)[FRAME_PC_SLOT]);
-                        fp = *(uintptr_t*)fp;
+                        fp = *(uintptr_t*)INJECT_FAULT_ADDRESS_UNLIKELY(fp);
                         continue;
                     }
                 }
@@ -518,7 +519,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                         Counters::increment(WALKVM_JAVA_FRAME_OK);
                         fillFrame(frames[depth++], FRAME_INTERPRETED, 0, method_id, method);
                         if (is_plausible_interpreter_frame) {
-                            pc = stripPointer(((void**)fp)[FRAME_PC_SLOT]);
+                            pc = stripPointer(((void**)INJECT_FAULT_ADDRESS_UNLIKELY(fp))[FRAME_PC_SLOT]);
                             sp = frame.senderSP();
                             fp = *(uintptr_t*)fp;
                         } else {
@@ -595,7 +596,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                         break;
                     }
 
-                    fp = ((uintptr_t*)sp)[-FRAME_PC_SLOT - 1];
+                    fp = ((uintptr_t*)INJECT_FAULT_ADDRESS_UNLIKELY(sp))[-FRAME_PC_SLOT - 1];
                     pc = ((const void**)sp)[-FRAME_PC_SLOT];
                     continue;
                 } else if (frame.unwindPrologue(nm, (uintptr_t&)pc, sp, fp)) {
@@ -737,7 +738,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     // In HotSpot, lastJavaFP is non-zero only for interpreter frames;
                     // compiled frames record FP=0 in the anchor.
                     if (StackWalkValidation::isPlausibleInterpreterFrame(recovery_fp, recovery_sp, bcp_offset)) {
-                        VMMethod* method = ((VMMethod**)recovery_fp)[InterpreterFrame::method_offset];
+                        VMMethod* method = ((VMMethod**)INJECT_FAULT_ADDRESS_UNLIKELY(recovery_fp))[InterpreterFrame::method_offset];
                         jmethodID method_id = getMethodId(method);
                         if (method_id != JMETHODID_NOT_WALKABLE) {
                             anchor = NULL;

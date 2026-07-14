@@ -257,6 +257,13 @@ class GtestTaskBuilder(
         // Mark unit-test builds so test-only production APIs are compiled in.
         args.add("-DUNIT_TEST")
 
+        // Mirror the opt-in fault-injection define so the fault-injection unit
+        // test can compile the enabled path under -PenableFaultInjection. Guard
+        // against duplicating it if the config already carries it.
+        if (project.hasProperty("enableFaultInjection") && !args.contains("-D__FAULT_INJECTION__")) {
+            args.add("-D__FAULT_INJECTION__")
+        }
+
         return args
     }
 

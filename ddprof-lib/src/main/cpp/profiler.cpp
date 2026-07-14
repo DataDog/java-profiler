@@ -16,6 +16,7 @@
 #include "ctimer.h"
 #include "signalInflight.h"
 #include "dwarf.h"
+#include "faultInjection.h"
 #include "flightRecorder.h"
 #include "itimer.h"
 #include "hotspot/vmStructs.inline.h"
@@ -998,6 +999,11 @@ void Profiler::setupSignalHandlers() {
         // Patch sigaction GOT in libraries with broken signal handlers (already loaded)
         LibraryPatcher::patch_sigaction();
       }
+#ifdef __FAULT_INJECTION__
+      // Reserve the PROT_NONE guard region used to poison memory-access sites.
+      // Done here (off the signal path) once handlers are installed.
+      faultinj::init();
+#endif
   }
 }
 
