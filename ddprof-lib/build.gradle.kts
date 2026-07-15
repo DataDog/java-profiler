@@ -1,3 +1,6 @@
+// Copyright 2026, Datadog, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
 import com.datadoghq.native.model.Platform
 import com.datadoghq.native.util.PlatformUtils
 import org.gradle.api.publish.maven.tasks.AbstractPublishToMaven
@@ -36,6 +39,8 @@ nativeBuild {
 gtest {
   testSourceDir.set(layout.projectDirectory.dir("src/test/cpp"))
   mainSourceDir.set(layout.projectDirectory.dir("src/main/cpp"))
+  nativeLibsSourceDir.set(layout.projectDirectory.dir("src/test/resources/native-libs"))
+  nativeLibsOutputDir.set(rootProject.layout.buildDirectory.dir("test/resources/native-libs"))
 
   // Include paths for compilation
   val javaHome = PlatformUtils.javaHome()

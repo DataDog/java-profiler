@@ -9,6 +9,8 @@
 #include "os.h"
 #include "safeAccess.h"
 
+#include <algorithm>
+#include <new>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -59,7 +61,9 @@ CodeCache::CodeCache(const char *name, short lib_index,
   _build_id_len = 0;
   _load_bias = 0;
 
-  memset(_imports, 0, sizeof(_imports));
+  memset(_import_offsets, 0, sizeof(_import_offsets));
+  _incomplete_imports = 0;
+  _imports_finalized = true;
   _imports_patchable = imports_patchable;
 
   _dwarf_table = NULL;
@@ -96,7 +100,10 @@ void CodeCache::copyFrom(const CodeCache& other) {
   }
   _load_bias = other._load_bias;
 
-  memset(_imports, 0, sizeof(_imports));
+  _imports.clear();
+  memset(_import_offsets, 0, sizeof(_import_offsets));
+  _incomplete_imports = 0;
+  _imports_finalized = true;
   _imports_patchable = other._imports_patchable;
 
   _dwarf_table_length = other._dwarf_table_length;
@@ -299,34 +306,56 @@ void CodeCache::findSymbolsByPrefix(std::vector<const char *> &prefixes,
 }
 
 void CodeCache::saveImport(ImportId id, void** entry) {
-    for (int ty = 0; ty < NUM_IMPORT_TYPES; ty++) {
-        if (_imports[id][ty] == nullptr) {
-            _imports[id][ty] = entry;
-            return;
-        }
+    if (entry == nullptr || id < 0 || id >= NUM_IMPORTS) {
+        return;
+    }
+    try {
+        _imports.push_back({id, entry});
+        _imports_finalized = false;
+    } catch (const std::bad_alloc&) {
+        _incomplete_imports |= 1ULL << id;
     }
 }
 
 void CodeCache::addImport(void **entry, const char *name) {
     switch (name[0]) {
       case 'a':
-          if (strcmp(name, "aligned_alloc") == 0) {
+          if (strcmp(name, "accept") == 0) {
+              saveImport(im_accept, entry);
+          } else if (strcmp(name, "accept4") == 0) {
+              saveImport(im_accept4, entry);
+          } else if (strcmp(name, "aligned_alloc") == 0) {
               saveImport(im_aligned_alloc, entry);
           }
           break;
       case 'c':
           if (strcmp(name, "calloc") == 0) {
               saveImport(im_calloc, entry);
+          } else if (strcmp(name, "close") == 0) {
+              saveImport(im_close, entry);
+          } else if (strcmp(name, "connect") == 0) {
+              saveImport(im_connect, entry);
           }
           break;
       case 'd':
           if (strcmp(name, "dlopen") == 0) {
               saveImport(im_dlopen, entry);
+          } else if (strcmp(name, "dup2") == 0) {
+              saveImport(im_dup2, entry);
+          } else if (strcmp(name, "dup3") == 0) {
+              saveImport(im_dup3, entry);
           }
           break;
       case 'f':
           if (strcmp(name, "free") == 0) {
               saveImport(im_free, entry);
+          }
+          break;
+      case 'e':
+          if (strcmp(name, "epoll_wait") == 0) {
+              saveImport(im_epoll_wait, entry);
+          } else if (strcmp(name, "epoll_pwait") == 0) {
+              saveImport(im_epoll_pwait, entry);
           }
           break;
       case 'm':
@@ -343,6 +372,10 @@ void CodeCache::addImport(void **entry, const char *name) {
               saveImport(im_pthread_setspecific, entry);
           } else if (strcmp(name, "poll") == 0) {
               saveImport(im_poll, entry);
+          } else if (strcmp(name, "ppoll") == 0) {
+              saveImport(im_ppoll, entry);
+          } else if (strcmp(name, "pselect") == 0) {
+              saveImport(im_pselect, entry);
           } else if (strcmp(name, "posix_memalign") == 0) {
               saveImport(im_posix_memalign, entry);
           }
@@ -352,6 +385,10 @@ void CodeCache::addImport(void **entry, const char *name) {
               saveImport(im_realloc, entry);
           } else if (strcmp(name, "recv") == 0) {
               saveImport(im_recv, entry);
+          } else if (strcmp(name, "recvfrom") == 0) {
+              saveImport(im_recvfrom, entry);
+          } else if (strcmp(name, "recvmsg") == 0) {
+              saveImport(im_recvmsg, entry);
           } else if (strcmp(name, "read") == 0) {
               saveImport(im_read, entry);
           }
@@ -361,6 +398,8 @@ void CodeCache::addImport(void **entry, const char *name) {
               saveImport(im_send, entry);
           } else if (strcmp(name, "sigaction") == 0) {
               saveImport(im_sigaction, entry);
+          } else if (strcmp(name, "select") == 0) {
+              saveImport(im_select, entry);
           }
           break;
       case 'w':
@@ -371,46 +410,97 @@ void CodeCache::addImport(void **entry, const char *name) {
     }
 }
 
-void **CodeCache::findImport(ImportId id) {
-  if (!_imports_patchable) {
-    makeImportsPatchable();
-    _imports_patchable = true;
+void CodeCache::finalizeImports() {
+  if (_imports_finalized) {
+    return;
   }
-  return _imports[id][PRIMARY];
-}
 
-void CodeCache::patchImport(ImportId id, void *hook_func) {
-  if (!_imports_patchable) {
-        makeImportsPatchable();
-        _imports_patchable = true;
+  std::sort(_imports.begin(), _imports.end(), [](const ImportLocation& a,
+                                                  const ImportLocation& b) {
+    if (a._id != b._id) {
+      return a._id < b._id;
     }
+    return reinterpret_cast<uintptr_t>(a._location) <
+           reinterpret_cast<uintptr_t>(b._location);
+  });
+  _imports.erase(std::unique(_imports.begin(), _imports.end(),
+                             [](const ImportLocation& a, const ImportLocation& b) {
+    return a._id == b._id && a._location == b._location;
+  }), _imports.end());
 
-    for (int ty = 0; ty < NUM_IMPORT_TYPES; ty++) {void **entry = _imports[id][ty];
-  if (entry != NULL) {
-    *entry = hook_func;
-  }}
+  memset(_import_offsets, 0, sizeof(_import_offsets));
+  for (const ImportLocation& entry : _imports) {
+    _import_offsets[entry._id + 1]++;
+  }
+  for (int id = 0; id < NUM_IMPORTS; id++) {
+    _import_offsets[id + 1] += _import_offsets[id];
+  }
+  _imports_finalized = true;
 }
 
-void CodeCache::makeImportsPatchable() {
-  void **min_import = (void **)-1;
-  void **max_import = NULL;
-  for (int i = 0; i < NUM_IMPORTS; i++) {
-    for (int j = 0; j < NUM_IMPORT_TYPES; j++) {
-            void** entry = _imports[i][j];
-            if (entry == NULL) continue;
-            if (entry < min_import)
+size_t CodeCache::importCount(ImportId id) {
+  if (id < 0 || id >= NUM_IMPORTS) {
+    return 0;
+  }
+  finalizeImports();
+  return _import_offsets[id + 1] - _import_offsets[id];
+}
+
+bool CodeCache::importsComplete(ImportId id) const {
+  return id >= 0 && id < NUM_IMPORTS &&
+         (_incomplete_imports & (1ULL << id)) == 0;
+}
+
+bool CodeCache::prepareImportsForPatch() {
+  if (_imports_patchable) {
+    return true;
+  }
+  return makeImportsPatchable();
+}
+
+void **CodeCache::findImport(ImportId id, size_t index) {
+  if (id < 0 || id >= NUM_IMPORTS || index >= importCount(id)) {
+    return nullptr;
+  }
+  if (!prepareImportsForPatch()) {
+    return nullptr;
+  }
+  return _imports[_import_offsets[id] + index]._location;
+}
+
+bool CodeCache::patchImport(ImportId id, void *hook_func) {
+  if (!prepareImportsForPatch()) {
+    return false;
+  }
+  size_t count = importCount(id);
+  for (size_t index = 0; index < count; index++) {
+    *_imports[_import_offsets[id] + index]._location = hook_func;
+  }
+  return true;
+}
+
+bool CodeCache::makeImportsPatchable() {
+  finalizeImports();
+  uintptr_t min_import = UINTPTR_MAX;
+  uintptr_t max_import = 0;
+  for (const ImportLocation& import : _imports) {
+    uintptr_t entry = reinterpret_cast<uintptr_t>(import._location);
+    if (entry < min_import)
       min_import = entry;
     if (entry > max_import)
       max_import = entry;
-        }
   }
 
-  if (max_import != NULL) {
-    uintptr_t patch_start = (uintptr_t)min_import & ~OS::page_mask;
-    uintptr_t patch_end = (uintptr_t)max_import & ~OS::page_mask;
-    mprotect((void *)patch_start, patch_end - patch_start + OS::page_size,
-             PROT_READ | PROT_WRITE);
+  if (max_import != 0) {
+    uintptr_t patch_start = min_import & ~OS::page_mask;
+    uintptr_t patch_end = max_import & ~OS::page_mask;
+    if (mprotect((void *)patch_start, patch_end - patch_start + OS::page_size,
+                 PROT_READ | PROT_WRITE) != 0) {
+      return false;
+    }
   }
+  _imports_patchable = true;
+  return true;
 }
 
 void CodeCache::setDwarfTable(FrameDesc *table, int length, const FrameDesc &default_frame) {
@@ -467,4 +557,3 @@ void CodeCache::setBuildId(const char* build_id, size_t build_id_len) {
     }
   }
 }
-

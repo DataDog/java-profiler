@@ -441,6 +441,9 @@ public:
       int tid, jthread thread, int start_depth, TaskBlockEvent *event);
   static void setTaskBlockRecordOverrideForTest(
       TaskBlockRecordOverride override);
+  bool setTaskBlockEnabledForTest(bool enabled) {
+    return _task_block_enabled.exchange(enabled, std::memory_order_acq_rel);
+  }
 #endif
   bool tryEnterTaskBlockActivity();
   void leaveTaskBlockActivity();

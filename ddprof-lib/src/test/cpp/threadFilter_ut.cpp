@@ -660,6 +660,24 @@ TEST_F(ThreadFilterTest, ContextScopeNeverSuppressesOwnedBlock) {
     EXPECT_FALSE(filter->isOwnedBlockSuppressionCandidate(entry));
 }
 
+TEST_F(ThreadFilterTest, OwnedNativeIoSuppressesBeforeAnyWallSample) {
+    filter->init(nullptr, true);
+    int slot_id = filter->registerThread(1234);
+    ASSERT_GE(slot_id, 0);
+    ThreadFilter::Slot* slot = filter->slotForId(slot_id);
+    ASSERT_NE(nullptr, slot);
+    u64 token = filter->enterBlockedRun(
+        slot_id, OSThreadState::IO_WAIT, BlockRunOwner::NATIVE);
+    ASSERT_NE(0ULL, token);
+
+    ThreadEntry entry{1234, slot, slot->lifecycleGeneration()};
+    EXPECT_TRUE(filter->isOwnedBlockSuppressionCandidate(entry));
+
+    ASSERT_TRUE(filter->exitBlockedRun(
+        slot_id, ThreadFilter::tokenGeneration(token)));
+    EXPECT_FALSE(filter->isOwnedBlockSuppressionCandidate(entry));
+}
+
 TEST_F(ThreadFilterTest, ContextEpochDisablesOwnedBlockSuppression) {
     filter->init(nullptr, true);
     int slot_id = filter->registerThread(1234);

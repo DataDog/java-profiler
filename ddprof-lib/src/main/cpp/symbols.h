@@ -1,5 +1,6 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -41,9 +42,13 @@ class UnloadProtection {
     UnloadProtection(const CodeCache *cc);
     ~UnloadProtection();
 
+    UnloadProtection(const UnloadProtection& other) = delete;
     UnloadProtection& operator=(const UnloadProtection& other) = delete;
+    UnloadProtection(UnloadProtection&& other) noexcept;
+    UnloadProtection& operator=(UnloadProtection&& other) noexcept;
 
     bool isValid() const { return _valid; }
+    void* release();
 };
 
 #endif // _SYMBOLS_H

@@ -7,6 +7,7 @@
 #define THREAD_LOCAL_DATA_H
 
 #include "context.h"
+#include "context_api.h"
 #include "otel_context.h"
 #include "os.h"
 #include "threadLocal.h"
@@ -350,6 +351,25 @@ public:
     memset(_otel_tag_encodings, 0, sizeof(_otel_tag_encodings));
     _otel_local_root_span_id = 0;
   }
+
+#ifdef UNIT_TEST
+  void setContextForTest(u64 span_id, u64 root_span_id) {
+    ContextApi::initializeContextTLS(this);
+    for (int i = 7; i >= 0; i--) {
+      _otel_ctx_record.span_id[i] = static_cast<uint8_t>(span_id & 0xff);
+      span_id >>= 8;
+    }
+    _otel_local_root_span_id = root_span_id;
+    __atomic_store_n(&_otel_ctx_record.valid, 1, __ATOMIC_RELEASE);
+  }
+
+  void clearContextForTest() {
+    if (_otel_ctx_initialized) {
+      __atomic_store_n(&_otel_ctx_record.valid, 0, __ATOMIC_RELEASE);
+    }
+    clearOtelSidecar();
+  }
+#endif
 
   inline bool parkEnter(u64 start_ticks, const Context& context) {
     u32 flags = __atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE);

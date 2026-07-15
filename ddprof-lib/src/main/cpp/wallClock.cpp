@@ -33,7 +33,8 @@ static inline bool isPrecheckSuppressionState(OSThreadState state) {
   return state == OSThreadState::SLEEPING ||
          state == OSThreadState::CONDVAR_WAIT ||
          state == OSThreadState::OBJECT_WAIT ||
-         state == OSThreadState::MONITOR_WAIT;
+         state == OSThreadState::MONITOR_WAIT ||
+         state == OSThreadState::IO_WAIT;
 }
 
 static inline u64 loadSpanId(OtelThreadContextRecord* record) {
