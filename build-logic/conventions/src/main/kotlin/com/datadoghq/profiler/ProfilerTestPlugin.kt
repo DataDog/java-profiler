@@ -399,20 +399,16 @@ class ProfilerTestPlugin : Plugin<Project> {
             }
 
             // Environment variables
-            testConfig.environmentVariables.forEach { (key, value) ->
-                execTask.environment(key, value)
-            }
-
-            // CRITICAL FIX: Remove LD_LIBRARY_PATH to let RPATH work correctly
+            // CRITICAL FIX: Filter out LD_LIBRARY_PATH to let RPATH work correctly
             // The test JDK's launcher has RPATH set to find its own libraries ($ORIGIN/../lib/jli)
             // But LD_LIBRARY_PATH overrides RPATH and causes it to load the wrong libjli.so
-            // Solution: Unset LD_LIBRARY_PATH entirely to let RPATH take precedence
-            execTask.doFirst {
-                val currentLdLibPath = (execTask.environment["LD_LIBRARY_PATH"] as? String) ?: System.getenv("LD_LIBRARY_PATH")
-                if (!currentLdLibPath.isNullOrEmpty()) {
-                    project.logger.info("Removing LD_LIBRARY_PATH to prevent cross-JDK library conflicts (was: $currentLdLibPath)")
-                    execTask.environment.remove("LD_LIBRARY_PATH")
+            // Solution: Never propagate LD_LIBRARY_PATH so RPATH takes precedence
+            testConfig.environmentVariables.forEach { (key, value) ->
+                if (key == "LD_LIBRARY_PATH") {
+                    project.logger.info("Removing LD_LIBRARY_PATH to prevent cross-JDK library conflicts (was: $value)")
+                    return@forEach
                 }
+                execTask.environment(key, value)
             }
 
             // Sanitizer conditions
