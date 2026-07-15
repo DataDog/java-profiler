@@ -114,6 +114,10 @@ CallTraceHashTable::CallTraceHashTable() : _instance_id(0), _parent_storage(null
   _overflow = 0;
 }
 
+void CallTraceHashTable::seedTableForTesting(u32 slot_base, u32 capacity) {
+  _table = LongHashTable::allocate(nullptr, capacity, slot_base, &_allocator);
+}
+
 CallTraceHashTable::~CallTraceHashTable() {
   // LinearAllocator handles all memory cleanup automatically
   // No need to explicitly destroy tables since they're allocated from LinearAllocator
@@ -304,7 +308,10 @@ void CallTraceHashTable::expandTableIfNeeded(LongHashTable* table, u32 size) {
     if (wouldExceedSlotIdRange(table->slotBase(), capacity)) {
       // Expanding would push slot_base + local_slot past 2^32, carrying
       // into instance_id's bit range. Skip expansion; put() keeps working
-      // on the current table at a higher load factor.
+      // on the current table at a higher load factor. This degraded state
+      // is bounded, not permanent: the next processTraces() rotation resets
+      // slot_base to 0 via clearTableOnly(), so normal JFR-flush cadence
+      // recovers it.
       Counters::increment(CALLTRACE_STORAGE_EXPANSION_SKIPPED);
       return;
     }

@@ -56,6 +56,8 @@ class CallTraceStorage;
 class CallTraceHashTable {
   static constexpr double LOAD_RATIO = 3.0 / 4.0;
 
+  friend class CallTraceHashTableTestAccessor;
+
 public:
   static CallTrace _overflow_trace;
 
@@ -90,6 +92,13 @@ private:
   void decrementCounters();
   
   void expandTableIfNeeded(LongHashTable* table, u32 size);
+
+  // Test-only seam: replaces the live table with a synthetic one seeded at
+  // an explicit slot_base/capacity, so gtest can drive expandTableIfNeeded()
+  // through its real call path at the 2^32 slot-id boundary without
+  // billions of real put() calls to get there. Only ever invoked via
+  // CallTraceHashTableTestAccessor (test_callTraceStorage.cpp).
+  void seedTableForTesting(u32 slot_base, u32 capacity);
 
 public:
   CallTraceHashTable();

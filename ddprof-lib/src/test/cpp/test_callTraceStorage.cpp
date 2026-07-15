@@ -15,6 +15,7 @@
 #include "callTraceHashTable.h"
 #include "gtest_crash_handler.h"
 #include "arch.h"
+#include "counters.h"
 
 // Test name for crash handler
 static constexpr char TEST_NAME[] = "CallTraceStorageTest";
@@ -913,6 +914,60 @@ std::unique_ptr<CallTraceHashTable, void(*)(CallTraceHashTable*)> makeHeapCallTr
         });
 }
 } // namespace
+
+// Test-only accessor granting access to CallTraceHashTable::seedTableForTesting,
+// following the CallTraceHashTable::friend CallTraceHashTableTestAccessor;
+// convention used elsewhere in this codebase (e.g. ObjectSamplerTestAccessor,
+// ProfilerTestAccessor).
+class CallTraceHashTableTestAccessor {
+public:
+  static void seedTable(CallTraceHashTable* table, u32 slot_base, u32 capacity) {
+    table->seedTableForTesting(slot_base, capacity);
+  }
+};
+
+// Companion to Test 4 below: the expansion-overflow guard's real integration
+// point inside
+// expandTableIfNeeded() must skip the actual table swap (not just the pure
+// wouldExceedSlotIdRange() helper exercised in Test 4) once a real put()
+// crosses the load-ratio threshold on a table seeded at the 2^32 slot-id
+// boundary, incrementing CALLTRACE_STORAGE_EXPANSION_SKIPPED and keeping
+// put() functional afterwards. The table is seeded via
+// CallTraceHashTableTestAccessor since reaching this boundary through real
+// put()-driven expansions alone would require billions of inserts.
+TEST_F(CallTraceStorageTest, ExpansionGuardSkipsRealExpansionNearSlotIdBoundary) {
+    auto hash_table_ptr = makeHeapCallTraceHashTable();
+    ASSERT_NE(hash_table_ptr.get(), nullptr) << "Failed to allocate aligned memory for CallTraceHashTable";
+    CallTraceHashTable& hash_table = *hash_table_ptr;
+    hash_table.setInstanceId(1);
+
+    // Matches the "one past the boundary" case from Test 4: with this
+    // slot_base/capacity pair, wouldExceedSlotIdRange() is true, so
+    // expandTableIfNeeded() must take the skip branch instead of expanding.
+    constexpr u64 kSlotIdRange = 0x100000000ull; // 2^32
+    u64 boundary_slot_base = kSlotIdRange - kInitialCapacity - (u64)kInitialCapacity * 2 + 1;
+    CallTraceHashTableTestAccessor::seedTable(&hash_table, static_cast<u32>(boundary_slot_base), kInitialCapacity);
+
+    long long skipped_before = Counters::getCounter(CALLTRACE_STORAGE_EXPANSION_SKIPPED);
+
+    // Insert past the load-ratio threshold; every put() past it re-checks the
+    // guard (since the table is never actually swapped), so the counter must
+    // increase by more than one, proving the degraded state persists rather
+    // than being a one-off fluke.
+    const u32 TOTAL_COUNT = kExpansionThreshold + 100;
+    for (u32 i = 0; i < TOTAL_COUNT; i++) {
+        ASGCT_CallFrame frame;
+        frame.bci = static_cast<int>(i);
+        frame.method_id = reinterpret_cast<jmethodID>(static_cast<uintptr_t>(i + 1));
+        u64 trace_id = hash_table.put(1, &frame, false, 1);
+        ASSERT_NE(trace_id, kOverflowTraceId) << "Unexpected overflow at i=" << i;
+        ASSERT_NE(trace_id, CallTraceStorage::DROPPED_TRACE_ID) << "Unexpected drop at i=" << i;
+    }
+
+    long long skipped_after = Counters::getCounter(CALLTRACE_STORAGE_EXPANSION_SKIPPED);
+    EXPECT_GT(skipped_after - skipped_before, 1)
+        << "Expansion-overflow guard did not repeatedly skip expansion near the slot-id boundary";
+}
 
 // Test 1: forcing at least one expansion must not produce duplicate
 // trace_ids, and no successful put() may return OVERFLOW_TRACE_ID or
