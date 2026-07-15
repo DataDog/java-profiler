@@ -47,6 +47,16 @@
 static const char *const SETTING_RING[] = {NULL, "kernel", "user", "any"};
 static const char *const SETTING_CSTACK[] = {NULL, "no", "fp", "dwarf", "lbr"};
 
+// JVM spec SS4.7.3 caps a method's bytecode (code_length) at 65535 bytes (u2),
+// so a well-formed LineNumberTable can never have more entries than that.
+// Used to sanity-bound line_number_table_size before it drives the byte-count
+// passed to SafeAccess::safeCopy(): if GetLineNumberTable()
+// returns a corrupted pointer for a stale jmethodID (see the TOCTOU race
+// documented in fillJavaMethodInfo below), the paired out-param size is just
+// as likely to be corrupted, and an implausible size should be rejected
+// before it is trusted to compute a byte range.
+static const jint MAX_LINE_NUMBER_TABLE_ENTRIES = 65535;
+
 // Compute a non-negative event duration from TSC timestamps.  Unsigned u64
 // subtraction wraps to a near-2^64 value when end < start, which can happen if
 // the thread migrates cores between the two TSC reads and the per-core counters
@@ -360,18 +370,50 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
       // the JVMTI-allocated memory immediately. This keeps _ptr valid even
       // after the underlying class is unloaded.
       void *owned_table = nullptr;
-      if (line_number_table_size > 0) {
+      if (line_number_table_size > 0 &&
+          line_number_table_size <= MAX_LINE_NUMBER_TABLE_ENTRIES) {
         size_t bytes = (size_t)line_number_table_size * sizeof(jvmtiLineNumberEntry);
+        // GetLineNumberTable() is called on the same possibly-stale jmethodID
+        // that GetMethodDeclaringClass/GetClassSignature/GetMethodName above
+        // were probed for -- the TOCTOU race documented above (class
+        // unloaded between sample capture and dump) applies here just as
+        // much as to those calls, and crash telemetry already showed those
+        // sibling calls returning JVMTI_ERROR_NONE with unmapped string
+        // pointers despite the spec saying the returned array should be a
+        // fresh, caller-owned allocation. A genuinely-valid returned table is
+        // fully decoupled from jmethodID lifetime per the JVMTI spec and
+        // can't be invalidated later by class unload; the actual risk is a
+        // corrupted pointer that happens to alias other live memory at
+        // check-time and stops being mapped moments later. A separate
+        // isReadableRange() probe followed by a plain memcpy() would still
+        // race that window, so copy via safeCopy() instead: it fault-protects
+        // each read as it happens rather than trusting a point-in-time check
+        // before an unprotected copy.
         owned_table = malloc(bytes);
         if (owned_table != nullptr) {
-          memcpy(owned_table, line_number_table, bytes);
+          if (!SafeAccess::safeCopy(owned_table, line_number_table, bytes)) {
+            free(owned_table);
+            owned_table = nullptr;
+            line_number_table = nullptr; // make sure the invalid address is not used for jvmti->Deallocate
+            Counters::increment(LINE_NUMBER_TABLE_UNREADABLE);
+          }
         } else {
           TEST_LOG("Failed to allocate %zu bytes for line number table copy", bytes);
         }
+      } else if (line_number_table_size != 0) {
+        // A corrupted size out-param alongside a corrupted pointer is exactly
+        // as plausible as the corrupted-pointer case above (both come from
+        // the same GetLineNumberTable() call on the same stale jmethodID);
+        // an implausible entry count -- including a negative one, since this
+        // is a signed jint and a corrupted value can fall on either side of
+        // zero -- means the pointer can't be trusted for Deallocate() either,
+        // so treat it the same as the unreadable case.
+        line_number_table = nullptr;
+        Counters::increment(LINE_NUMBER_TABLE_UNREADABLE);
       }
-      jvmtiError dealloc_err = jvmti->Deallocate((unsigned char *)line_number_table);
-      if (dealloc_err != JVMTI_ERROR_NONE) {
-        TEST_LOG("Unexpected error while deallocating linenumber table: %d", dealloc_err);
+      if (line_number_table != nullptr) {
+        jvmtiError dealloc_err = jvmti->Deallocate((unsigned char *)line_number_table);
+        assert(dealloc_err == JVMTI_ERROR_NONE && "Unexpected error while deallocating linenumber table");
       }
       if (owned_table != nullptr) {
         mi->_line_number_table = std::make_shared<SharedLineNumberTable>(

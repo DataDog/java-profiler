@@ -79,8 +79,11 @@ public:
     return (FrameTypeId)((bci >> TYPE_SHIFT) & FRAME_TYPE_MASK);
   }
 
+  // Raw pointers only exist on HotSpot (see hotspotSupport.cpp fillFrameRaw).
+  // On other VMs an unencoded, VM-supplied bci can coincidentally have bit 30
+  // set; that must not be mistaken for our raw-pointer encoding.
   static inline bool isRawPointer(int bci) {
-    return bci > 0 && (bci & RAW_POINTER_MASK) != 0;
+    return VM::isHotspot() && bci > 0 && (bci & RAW_POINTER_MASK) != 0;
   }
 };
 
