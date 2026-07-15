@@ -32,6 +32,7 @@
 #include "otel_process_ctx.h"
 #include "profiler.h"
 #include "threadLocalData.h"
+#include "taskBlockRecorder.h"
 #include "tsc.h"
 #include "vmEntry.h"
 #include <errno.h>
@@ -417,14 +418,16 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
   if (current == nullptr) {
     return 0;
   }
-  ThreadFilter *tf = Profiler::instance()->threadFilter();
-  if (!tf->registryActive()) {
+  if (ContextApi::snapshot().spanId != 0) {
+    return 0;
+  }
+  Profiler *profiler = Profiler::instance();
+  ThreadFilter *tf = profiler->threadFilter();
+  if (!profiler->taskBlockEnabled() && !tf->enabled()) {
     return 0;
   }
   ThreadFilter::SlotID slot_id = ensureCurrentThreadFilterSlot(tf, current);
-  if (slot_id < 0) {
-    return 0;
-  }
+  if (slot_id < 0) return 0;
   return static_cast<jlong>(tf->enterBlockedRun(slot_id, decoded));
 }
 
@@ -448,6 +451,94 @@ Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
   if (tf->registryActive()) {
     tf->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(block_token));
   }
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
+    JNIEnv *env, jclass unused, jthread thread, jint state) {
+  OSThreadState decoded;
+  if (!decodeJavaBlockState(state, decoded) ||
+      !JVMSupport::isPlatformThread(env, thread)) {
+    return 0;
+  }
+  ProfiledThread *current = ProfiledThread::current();
+  Profiler *profiler = Profiler::instance();
+  if (current == nullptr || !profiler->isRunning() ||
+      !profiler->taskBlockEnabled()) {
+    return 0;
+  }
+  ThreadFilter *tf = profiler->threadFilter();
+  if (!tf->unfilteredWallTrackingActive()) return 0;
+  ThreadFilter::SlotID slot_id = ensureCurrentThreadFilterSlot(tf, current);
+  if (slot_id < 0) return 0;
+
+  Context context = ContextApi::snapshot();
+  if (context.spanId != 0) {
+    Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
+    return 0;
+  }
+  u64 token = tf->enterBlockedRun(slot_id, decoded, BlockRunOwner::JAVA);
+  if (!current->taskBlockEnter(token, TSC::ticks(), context)) {
+    if (token != 0) {
+      tf->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(token));
+    }
+    return 0;
+  }
+  return static_cast<jlong>(token);
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_endTaskBlock0(
+    JNIEnv *env, jclass unused, jthread thread, jlong token, jlong blocker,
+    jlong unblockingSpanId) {
+  u64 block_token = static_cast<u64>(token);
+  ThreadFilter::SlotID slot_id = -1;
+  u64 generation = 0;
+  if (!ThreadFilter::decodeBlockRunToken(block_token, slot_id, generation) ||
+      !JVMSupport::isPlatformThread(env, thread)) {
+    return JNI_FALSE;
+  }
+  ProfiledThread *current = ProfiledThread::current();
+  if (current == nullptr) return JNI_FALSE;
+
+  u64 start_ticks = 0;
+  Context context{};
+  if (!current->taskBlockExit(block_token, start_ticks, context)) {
+    return JNI_FALSE;
+  }
+
+  Profiler *profiler = Profiler::instance();
+  bool recording_enabled = profiler->taskBlockEnabled();
+  bool activity = profiler->tryEnterTaskBlockActivity();
+  if (!activity) profiler->waitForTaskBlockRotation();
+
+  ThreadFilter *tf = profiler->threadFilter();
+  ThreadFilter::SlotID current_slot = current->filterSlotId();
+  if (current_slot < 0) current_slot = tf->slotIdByTid(current->tid());
+  BlockRunSnapshot snapshot;
+  bool exited = current_slot == slot_id &&
+      tf->snapshotAndExitBlockedRun(slot_id, generation, &snapshot);
+
+  if (!activity) {
+    Counters::increment(TASK_BLOCK_DROPPED_ROTATION);
+    return JNI_FALSE;
+  }
+  if (!recording_enabled || !exited) {
+    profiler->leaveTaskBlockActivity();
+    return JNI_FALSE;
+  }
+  if (!snapshot.context_eligible) {
+    Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
+    profiler->leaveTaskBlockActivity();
+    return JNI_FALSE;
+  }
+
+  bool recorded = recordTaskBlockIfEligible(
+      current->tid(), thread, 1, start_ticks, TSC::ticks(), context,
+      static_cast<u64>(blocker), static_cast<u64>(unblockingSpanId),
+      snapshot.active_state, true);
+  profiler->leaveTaskBlockActivity();
+  return recorded ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" DLLEXPORT jlong JNICALL

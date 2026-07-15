@@ -37,6 +37,83 @@ public:
 };
 static JvmSupportGlobalSetup jvm_support_global_setup;
 
+class JvmSupportThreadClassificationTest : public ::testing::Test {
+protected:
+    using JniFunction = void (JNICALL*)();
+
+    static constexpr int GET_VERSION_INDEX = 4;
+    static constexpr int IS_VIRTUAL_THREAD_INDEX = 234;
+    static constexpr int FUNCTION_TABLE_SIZE = IS_VIRTUAL_THREAD_INDEX + 1;
+
+    inline static jint jni_version;
+    inline static jboolean virtual_thread;
+    inline static int is_virtual_thread_calls;
+    inline static jobject last_thread;
+
+    JniFunction function_table[FUNCTION_TABLE_SIZE]{};
+    JNIEnv jni{};
+    _jobject thread_object;
+    jthread thread = &thread_object;
+
+    static jint JNICALL getVersion(JNIEnv*) { return jni_version; }
+
+    static jboolean JNICALL isVirtualThread(JNIEnv*, jobject candidate) {
+        is_virtual_thread_calls++;
+        last_thread = candidate;
+        return virtual_thread;
+    }
+
+    void SetUp() override {
+        jni_version = 0x00150000;
+        virtual_thread = JNI_FALSE;
+        is_virtual_thread_calls = 0;
+        last_thread = nullptr;
+        function_table[GET_VERSION_INDEX] =
+            reinterpret_cast<JniFunction>(&getVersion);
+        function_table[IS_VIRTUAL_THREAD_INDEX] =
+            reinterpret_cast<JniFunction>(&isVirtualThread);
+        jni.functions =
+            reinterpret_cast<const JNINativeInterface_*>(function_table);
+    }
+};
+
+TEST_F(JvmSupportThreadClassificationTest, NullInputsFailClosed) {
+    EXPECT_FALSE(JVMSupport::isPlatformThread(nullptr, thread));
+    EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, nullptr));
+}
+
+TEST_F(JvmSupportThreadClassificationTest, InvalidJniVersionFailsClosed) {
+    jni_version = 0;
+    EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, thread));
+    EXPECT_EQ(0, is_virtual_thread_calls);
+}
+
+TEST_F(JvmSupportThreadClassificationTest, PreJni21ThreadIsPlatform) {
+    jni_version = 0x000a0000;
+    function_table[IS_VIRTUAL_THREAD_INDEX] = nullptr;
+    EXPECT_TRUE(JVMSupport::isPlatformThread(&jni, thread));
+    EXPECT_EQ(0, is_virtual_thread_calls);
+}
+
+TEST_F(JvmSupportThreadClassificationTest, Jni21PlatformThreadIsAccepted) {
+    EXPECT_TRUE(JVMSupport::isPlatformThread(&jni, thread));
+    EXPECT_EQ(1, is_virtual_thread_calls);
+    EXPECT_EQ(thread, last_thread);
+}
+
+TEST_F(JvmSupportThreadClassificationTest, Jni21VirtualThreadIsRejected) {
+    virtual_thread = JNI_TRUE;
+    EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, thread));
+    EXPECT_EQ(1, is_virtual_thread_calls);
+    EXPECT_EQ(thread, last_thread);
+}
+
+TEST_F(JvmSupportThreadClassificationTest, MissingJni21FunctionFailsClosed) {
+    function_table[IS_VIRTUAL_THREAD_INDEX] = nullptr;
+    EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, thread));
+    EXPECT_EQ(0, is_virtual_thread_calls);
+}
+
 // ---------------------------------------------------------------------------
 // VMTestAccessor — friend of VM, lets tests swap VM::_jvmti for a mock so
 // JVMThread::currentThreadSlow() can be exercised without a live JVM.

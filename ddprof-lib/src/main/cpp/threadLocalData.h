@@ -77,6 +77,9 @@ private:
   u32 _recording_epoch;
   u32 _misc_flags;
   u64 _park_block_token;
+  u64 _task_block_start_ticks;
+  u64 _task_block_token;
+  Context _task_block_context;
   int _filter_slot_id; // Slot ID for thread filtering
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
   uint8_t _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
@@ -102,7 +105,9 @@ private:
   ProfiledThread(int tid)
       : ThreadLocalData(), _jmp_buf(nullptr), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _tid(tid), _cpu_epoch(0),
         _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0),
-        _park_block_token(0), _filter_slot_id(-1), _init_window(0),
+        _park_block_token(0), _task_block_start_ticks(0),
+        _task_block_token(0), _task_block_context{}, _filter_slot_id(-1),
+        _init_window(0),
         _signal_depth(0),
         _otel_ctx_initialized(false),
         _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0) {
@@ -342,6 +347,23 @@ public:
 
   inline void setParkBlockToken(u64 token) {
     _park_block_token = token;
+  }
+
+  inline bool taskBlockEnter(u64 token, u64 start_ticks,
+                             const Context& context) {
+    if (token == 0 || _task_block_token != 0) return false;
+    _task_block_start_ticks = start_ticks;
+    _task_block_context = context;
+    _task_block_token = token;
+    return true;
+  }
+
+  inline bool taskBlockExit(u64 token, u64& start_ticks, Context& context) {
+    if (token == 0 || _task_block_token != token) return false;
+    start_ticks = _task_block_start_ticks;
+    context = _task_block_context;
+    _task_block_token = 0;
+    return true;
   }
 
   // Returns false if the thread was not parked (idempotent).

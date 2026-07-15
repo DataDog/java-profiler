@@ -39,7 +39,7 @@ TestProfiledThread testThread(int tid) {
 
 } // namespace
 
-// Tests cover FLAG_PARKED lifecycle and the once-per-run slot filter state transitions.
+// Tests cover FLAG_PARKED lifecycle and owned-block slot state transitions.
 // The slot state lives in ThreadFilter process-lifetime storage so the wall-clock
 // timer can read it without dereferencing per-thread objects from another thread.
 
@@ -137,48 +137,18 @@ TEST(ProfiledThreadParkStateTest, ParkExitReturnsZeroTokenWhenBlockRunWasNotArme
   EXPECT_EQ(0ULL, park_block_token);
 }
 
-TEST(WallClockOncePerRunFilterTest, SlotStateTransitions) {
+TEST(WallClockOwnedBlockFilterTest, SlotStateTransitions) {
   ThreadFilter::Slot slot;
 
-  EXPECT_FALSE(slot.sampledThisRun());
-  EXPECT_EQ(OSThreadState::UNKNOWN, slot.lastSampledState());
   EXPECT_EQ(OSThreadState::UNKNOWN, slot.activeBlockState());
 
-  // First signal: arm.
   slot.setActiveBlockState(OSThreadState::SLEEPING);
-  slot.markSampledThisRun(OSThreadState::SLEEPING);
-  EXPECT_TRUE(slot.sampledThisRun());
-  EXPECT_EQ(OSThreadState::SLEEPING, slot.lastSampledState());
   EXPECT_EQ(OSThreadState::SLEEPING, slot.activeBlockState());
 
-  // Same state again: suppress (flag + state both match).
-  EXPECT_TRUE(slot.sampledThisRun() &&
-              OSThreadState::SLEEPING == slot.lastSampledState());
-  EXPECT_TRUE(slot.sampledThisRun() &&
-              slot.activeBlockState() == slot.lastSampledState());
-
-  // Transition within skip set (SLEEPING -> CONDVAR_WAIT): state mismatch -> re-arm.
   slot.setActiveBlockState(OSThreadState::CONDVAR_WAIT);
-  EXPECT_FALSE(slot.sampledThisRun() &&
-               OSThreadState::CONDVAR_WAIT == slot.lastSampledState());
-  slot.markSampledThisRun(OSThreadState::CONDVAR_WAIT);
-  EXPECT_TRUE(slot.sampledThisRun());
-  EXPECT_EQ(OSThreadState::CONDVAR_WAIT, slot.lastSampledState());
-  EXPECT_TRUE(slot.sampledThisRun() &&
-              slot.activeBlockState() == slot.lastSampledState());
-
-  // Leave skip set: reset -> next blocked entry re-arms.
+  EXPECT_EQ(OSThreadState::CONDVAR_WAIT, slot.activeBlockState());
   slot.setActiveBlockState(OSThreadState::UNKNOWN);
-  slot.resetSampledRun(OSThreadState::RUNNABLE);
-  EXPECT_FALSE(slot.sampledThisRun());
-  EXPECT_EQ(OSThreadState::RUNNABLE, slot.lastSampledState());
   EXPECT_EQ(OSThreadState::UNKNOWN, slot.activeBlockState());
-
-  slot.setActiveBlockState(OSThreadState::SLEEPING);
-  slot.markSampledThisRun(OSThreadState::SLEEPING);
-  EXPECT_TRUE(slot.sampledThisRun());
-  EXPECT_EQ(OSThreadState::SLEEPING, slot.lastSampledState());
-  EXPECT_EQ(OSThreadState::SLEEPING, slot.activeBlockState());
 }
 
 TEST(WallClockOncePerRunFilterTest, UnownedBlockedFallbackCarriesWeight) {
@@ -332,33 +302,20 @@ TEST(WallClockOncePerRunFilterTest, FilterHelpersManageActiveBlockState) {
   ASSERT_NE(nullptr, slot);
   EXPECT_EQ(OSThreadState::CONDVAR_WAIT, slot->activeBlockState());
 
-  slot->markSampledThisRun(OSThreadState::CONDVAR_WAIT);
-  EXPECT_TRUE(slot->sampledThisRun());
-  EXPECT_TRUE(slot->sampledThisRun() &&
-              slot->activeBlockState() == slot->lastSampledState());
-
   filter.exitBlockedRun(slot_id);
   EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
-  EXPECT_FALSE(slot->sampledThisRun());
-  EXPECT_EQ(OSThreadState::RUNNABLE, slot->lastSampledState());
 }
 
-// Slot reuse: stale armed state from the previous owner must be cleared before
-// the new thread takes the slot (ThreadFilter::resetSlotRunState does this).
-TEST(WallClockOncePerRunFilterTest, ResetClearsArmedFlagOnSlotReuse) {
+TEST(WallClockOncePerRunFilterTest, ResetClearsOwnedBlockOnSlotReuse) {
   ThreadFilter filter;
   filter.init("1");
   ThreadFilter::SlotID slot_id = filter.registerThread();
   filter.enterBlockedRun(slot_id, OSThreadState::CONDVAR_WAIT);
   ThreadFilter::Slot *slot = filter.slotForId(slot_id);
   ASSERT_NE(nullptr, slot);
-  slot->markSampledThisRun(OSThreadState::CONDVAR_WAIT);
-  EXPECT_TRUE(slot->sampledThisRun());
   EXPECT_EQ(OSThreadState::CONDVAR_WAIT, slot->activeBlockState());
 
   filter.resetSlotRunState(slot_id);
 
-  EXPECT_FALSE(slot->sampledThisRun());
-  EXPECT_EQ(OSThreadState::UNKNOWN, slot->lastSampledState());
   EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
 }

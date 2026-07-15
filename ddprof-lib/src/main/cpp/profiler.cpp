@@ -33,6 +33,7 @@
 #include "stackFrame.h"
 #include "stackWalker.h"
 #include "symbols.h"
+#include "taskBlockRecorder.h"
 #include "tsc.h"
 #include "utils.h"
 #include "wallClock.h"
@@ -45,6 +46,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 #include <signal.h>
 #include <stdint.h>
@@ -146,12 +148,19 @@ int Profiler::registerThread(int tid) {
 }
 #ifdef UNIT_TEST
 static std::atomic<int> g_test_last_unregistered_tid{-1};
+static std::atomic<Profiler::TaskBlockRecordOverride>
+    g_test_task_block_record_override{nullptr};
 
 int Profiler::lastUnregisteredTidForTest() {
     return g_test_last_unregistered_tid.load(std::memory_order_relaxed);
 }
 void Profiler::resetUnregisterObservableForTest() {
     g_test_last_unregistered_tid.store(-1, std::memory_order_relaxed);
+}
+
+void Profiler::setTaskBlockRecordOverrideForTest(
+    TaskBlockRecordOverride override) {
+  g_test_task_block_record_override.store(override, std::memory_order_release);
 }
 #endif
 
@@ -727,6 +736,99 @@ void Profiler::recordQueueTime(int tid, QueueTimeEvent *event) {
   }
   _jfr.recordQueueTime(lock_index, tid, event);
   _locks[lock_index].unlock();
+}
+
+Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
+    int tid, jthread thread, int start_depth, TaskBlockEvent *event) {
+#ifdef UNIT_TEST
+  TaskBlockRecordOverride override =
+      g_test_task_block_record_override.load(std::memory_order_acquire);
+  if (override != nullptr) {
+    return override(tid, thread, start_depth, event);
+  }
+#endif
+  CriticalSection cs;
+  u32 lock_index = getLockIndex(tid);
+  if (!_locks[lock_index].tryLock() &&
+      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+    return TaskBlockRecordResult::RECORD_FAILED;
+  }
+
+  if (_omit_stacktraces || _max_stack_depth <= 0 ||
+      _calltrace_buffer[lock_index] == nullptr) {
+    _locks[lock_index].unlock();
+    return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
+  }
+
+  CallTraceBuffer *buffer = _calltrace_buffer[lock_index];
+  ASGCT_CallFrame *frames = buffer->_asgct_frames;
+  jvmtiFrameInfo *jvmti_frames = buffer->_jvmti_frames;
+  jint num_frames = 0;
+#ifdef COUNTERS
+  u64 stack_start = TSC::ticks();
+#endif
+  jvmtiError error = VM::jvmti()->GetStackTrace(
+      thread, start_depth, _max_stack_depth, jvmti_frames, &num_frames);
+  if (error != JVMTI_ERROR_NONE || num_frames <= 0) {
+    _locks[lock_index].unlock();
+    return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
+  }
+
+  for (int i = 0; i < num_frames; ++i) {
+    frames[i].method_id = jvmti_frames[i].method;
+    frames[i].bci = jvmti_frames[i].location;
+    LP64_ONLY(frames[i].padding = 0;)
+  }
+  u64 call_trace_id =
+      _call_trace_storage.put(num_frames, frames, false, 1);
+#ifdef COUNTERS
+  u64 stack_duration = TSC::ticks() - stack_start;
+  if (stack_duration > 0) {
+    Counters::increment(UNWINDING_TIME_JVMTI, stack_duration);
+  }
+#endif
+  if (call_trace_id == 0) {
+    _locks[lock_index].unlock();
+    return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
+  }
+
+  event->_callTraceId = call_trace_id;
+  bool recorded = _jfr.recordTaskBlock(lock_index, tid, event);
+  _locks[lock_index].unlock();
+  return recorded ? TaskBlockRecordResult::RECORDED
+                  : TaskBlockRecordResult::RECORD_FAILED;
+}
+
+bool Profiler::tryEnterTaskBlockActivity() {
+  if (_task_block_rotation.load(std::memory_order_acquire)) return false;
+  _task_block_inflight.fetch_add(1, std::memory_order_acq_rel);
+  if (_task_block_rotation.load(std::memory_order_acquire)) {
+    _task_block_inflight.fetch_sub(1, std::memory_order_acq_rel);
+    return false;
+  }
+  return true;
+}
+
+void Profiler::leaveTaskBlockActivity() {
+  _task_block_inflight.fetch_sub(1, std::memory_order_release);
+}
+
+void Profiler::waitForTaskBlockRotation() {
+  while (_task_block_rotation.load(std::memory_order_acquire)) {
+    std::this_thread::yield();
+  }
+}
+
+void Profiler::beginTaskBlockRotation() {
+  _task_block_rotation.store(true, std::memory_order_release);
+  while (_task_block_inflight.load(std::memory_order_acquire) != 0) {
+    std::this_thread::yield();
+  }
+}
+
+void Profiler::endTaskBlockRotation() {
+  _task_block_rotation.store(false, std::memory_order_release);
 }
 
 void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
@@ -1319,6 +1421,7 @@ Error Profiler::init() {
 
 Error Profiler::start(Arguments &args, bool reset) {
   MutexLocker ml(_state_lock);
+  _task_block_enabled.store(false, std::memory_order_release);
   Error error = checkState();
   if (error) {
     return error;
@@ -1517,6 +1620,7 @@ Error Profiler::start(Arguments &args, bool reset) {
     _libs->stopRefresher();
     return error;
   }
+  initializeTaskBlockDurationThreshold();
 
   int activated = 0;
   if ((_event_mask & EM_CPU) && _cpu_engine != &noop_engine) {
@@ -1614,6 +1718,9 @@ Error Profiler::start(Arguments &args, bool reset) {
     // Paired with drainInflight() on the stop side.
     _cpu_engine->enableEvents(true);
 
+    _task_block_enabled.store(
+        (activated & EM_WALL) && args._wall_precheck && track_unfiltered_wall,
+        std::memory_order_release);
     _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
@@ -1638,6 +1745,7 @@ Error Profiler::stop() {
   if (state() != RUNNING) {
     return Error("Profiler is not active");
   }
+  _task_block_enabled.store(false, std::memory_order_release);
 
   // Order matters: disable engines first so the _enabled check inside signal
   // handlers will fail for any new signal delivered from now on. drain() then
@@ -1654,6 +1762,11 @@ Error Profiler::stop() {
     // store, and no other engine stop has run yet.
     return Error("signal handlers did not drain; teardown skipped, retry stop()");
   }
+
+  // Prevent existing paired intervals from recording during teardown. New
+  // intervals were disabled above; this also drains endTaskBlock calls that
+  // already entered their snapshot-and-record activity.
+  beginTaskBlockRotation();
 
   if (_event_mask & EM_ALLOC)
     _alloc_engine->stop();
@@ -1723,6 +1836,7 @@ Error Profiler::stop() {
   _thread_info.reportCounters();
 
   rotateDictsAndRun([&]{ _jfr.stop(); });
+  endTaskBlockRotation();
 
   // Unpatch libraries AFTER JFR serialization completes
   // Remote symbolication RemoteFrameInfo structs contain pointers to build-ID strings
@@ -1804,10 +1918,12 @@ Error Profiler::dump(const char *path, const int length) {
     // its own writer/reader coordination; #527's classMapSharedGuard readers
     // (deferred vtable receiver resolution) are coordinated through
     // _class_map_lock.
+    beginTaskBlockRotation();
     rotateDictsAndRun([&]{
       err = _jfr.dump(path, length);
       __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
     });
+    endTaskBlockRotation();
 
     _thread_info.clearAll(thread_ids);
     _thread_info.reportCounters();
