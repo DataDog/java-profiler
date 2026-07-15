@@ -34,6 +34,15 @@
 
 ThreadFilter::ShardHead ThreadFilter::_free_heads[ThreadFilter::kShardCount] {};
 
+#ifdef UNIT_TEST
+std::atomic<ThreadFilter::BlockRunPublishObserver>
+    ThreadFilter::_block_run_publish_observer{nullptr};
+
+void ThreadFilter::setBlockRunPublishObserverForTest(BlockRunPublishObserver observer) {
+    _block_run_publish_observer.store(observer, std::memory_order_release);
+}
+#endif
+
 ThreadFilter::ThreadFilter()
     : _enabled(false), _registry_active(false), _track_unfiltered_wall(false) {
     // Initialize chunk pointers to null (lazy allocation)
@@ -543,7 +552,8 @@ void ThreadFilter::clearActive() {
             continue;
         }
 
-        for (auto& slot : chunk->slots) {
+        for (int slot_idx = 0; slot_idx < kChunkSize; ++slot_idx) {
+            Slot& slot = chunk->slots[slot_idx];
             slot.exitContextWindow();
             slot.clearActiveBlockRun(OSThreadState::UNKNOWN);
         }
@@ -556,21 +566,28 @@ void ThreadFilter::resetSlotRunState(SlotID slot_id) {
     int slot_idx  = slot_id & kChunkMask;
     ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
     if (chunk != nullptr) {
-        // Clear stale suppression state so a new thread in this slot cannot inherit
-        // its predecessor's active block or once-per-run sampled marker.
+        // Clear stale suppression state so a new thread in this slot cannot
+        // inherit its predecessor's active block.
         chunk->slots[slot_idx].clearActiveBlockRun(OSThreadState::UNKNOWN);
     }
 }
 
 u64 ThreadFilter::enterBlockedRun(SlotID slot_id, OSThreadState state,
                                   BlockRunOwner owner) {
+    if (state == OSThreadState::UNKNOWN) return 0;
     Slot* s = slotForId(slot_id);
     if (s != nullptr) {
-        u32 generation = 0;
-        if (!s->trySetActiveBlockRun(state, owner, &generation,
-                                     unfilteredWallTrackingActive())) {
+        u64 generation = 0;
+        if (!s->tryPrepareActiveBlockRun(
+                owner, &generation, unfilteredWallTrackingActive())) {
             return 0;
         }
+        s->publishActiveBlockRun(state);
+#ifdef UNIT_TEST
+        BlockRunPublishObserver observer =
+            _block_run_publish_observer.load(std::memory_order_acquire);
+        if (observer != nullptr) observer(this, slot_id);
+#endif
         return encodeBlockRunToken(slot_id, generation);
     }
     return 0;
@@ -583,31 +600,63 @@ void ThreadFilter::exitBlockedRun(SlotID slot_id) {
     }
 }
 
-bool ThreadFilter::exitBlockedRun(SlotID slot_id, u32 generation) {
+bool ThreadFilter::exitBlockedRun(SlotID slot_id, u64 generation) {
     Slot* s = slotForId(slot_id);
-    if (s == nullptr || generation == 0 || s->blockGeneration() != generation) {
+    if (s == nullptr || generation == 0 ||
+        s->activeBlockState() == OSThreadState::UNKNOWN ||
+        s->activeBlockOwner() == BlockRunOwner::NONE ||
+        s->blockGeneration() != generation) {
         return false;
     }
     s->clearActiveBlockRun(OSThreadState::RUNNABLE);
     return true;
 }
 
-bool ThreadFilter::shouldSuppressOwnedBlock(const ThreadEntry& entry) const {
+bool ThreadFilter::snapshotAndExitBlockedRun(SlotID slot_id, u64 generation,
+                                             BlockRunSnapshot* snapshot) {
+    Slot* s = slotForId(slot_id);
+    if (s == nullptr || generation == 0 ||
+        s->activeBlockState() == OSThreadState::UNKNOWN ||
+        s->activeBlockOwner() == BlockRunOwner::NONE ||
+        s->blockGeneration() != generation) {
+        return false;
+    }
+    if (snapshot != nullptr) *snapshot = s->snapshotBlockRun();
+    s->clearActiveBlockRun(OSThreadState::RUNNABLE);
+    return true;
+}
+
+BlockRunSnapshot ThreadFilter::snapshotBlockedRun(SlotID slot_id) const {
+    Slot* s = slotForId(slot_id);
+    return s == nullptr ? BlockRunSnapshot{} : s->snapshotBlockRun();
+}
+
+bool ThreadFilter::isOwnedBlockSuppressionCandidate(
+    const ThreadEntry& entry) const {
     Slot* slot = entry.slot;
     if (slot == nullptr || slot->nativeTid() != entry.tid ||
         slot->lifecycleGeneration() != entry.lifecycle_generation) {
         return false;
     }
-
     const bool unfiltered_tracking = unfilteredWallTrackingActive();
     RecordingEpoch epoch = 0;
     if (unfiltered_tracking) {
         epoch = recordingEpoch();
         if (epoch == 0 || entry.recording_epoch != epoch ||
-            slot->recordingEpoch() != epoch) {
+            slot->recordingEpoch() != epoch ||
+            !slot->activeBlockRemainedOutsideContextWindow()) {
             return false;
         }
     }
+
+    u64 block_generation = slot->blockGeneration();
+    BlockRunOwner owner = slot->activeBlockOwner();
+    OSThreadState state = slot->activeBlockState();
+    bool suppressible_state = state == OSThreadState::SLEEPING ||
+                              state == OSThreadState::CONDVAR_WAIT ||
+                              state == OSThreadState::OBJECT_WAIT ||
+                              state == OSThreadState::MONITOR_WAIT;
+    if (owner == BlockRunOwner::NONE || !suppressible_state) return false;
 
 #ifdef UNIT_TEST
     if (_suppression_snapshot_hook != nullptr) {
@@ -615,28 +664,11 @@ bool ThreadFilter::shouldSuppressOwnedBlock(const ThreadEntry& entry) const {
     }
 #endif
 
-    u32 block_generation = slot->blockGeneration();
-    BlockRunOwner owner = slot->activeBlockOwner();
-    OSThreadState state = slot->activeBlockState();
-    bool context_eligible =
-        !unfiltered_tracking || slot->activeBlockRemainedOutsideContextWindow();
-    bool sampled = slot->sampledThisRun();
-    OSThreadState last_sampled_state =
-        sampled ? slot->lastSampledState() : OSThreadState::UNKNOWN;
-    bool suppressible_state = state == OSThreadState::SLEEPING ||
-                              state == OSThreadState::CONDVAR_WAIT ||
-                              state == OSThreadState::OBJECT_WAIT ||
-                              state == OSThreadState::MONITOR_WAIT;
-    if (owner == BlockRunOwner::NONE || !context_eligible ||
-        !suppressible_state || !sampled || state != last_sampled_state) {
-        return false;
-    }
-
     // The payload is spread across independent atomics. Accept it only if the
     // slot still represents the lifecycle and block run captured by the timer.
     if (slot->activeBlockOwner() != owner ||
         slot->blockGeneration() != block_generation ||
-        slot->nativeTid() != entry.tid ||
+        slot->activeBlockState() != state || slot->nativeTid() != entry.tid ||
         slot->lifecycleGeneration() != entry.lifecycle_generation) {
         return false;
     }

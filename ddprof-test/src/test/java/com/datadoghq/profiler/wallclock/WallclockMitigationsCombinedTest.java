@@ -24,7 +24,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Verifies once-per-run suppression ({@code wallprecheck=true}) with a mix of sleeping,
+ * Verifies lifecycle-owned suppression ({@code wallprecheck=true}) with a mix of sleeping,
  * parked, and runnable threads.
  */
 public class WallclockMitigationsCombinedTest extends AbstractProfilerTest {
@@ -118,10 +118,10 @@ public class WallclockMitigationsCombinedTest extends AbstractProfilerTest {
 
         // Sleeping thread's suppression counter must have incremented.
         Map<String, Long> counters = profiler.getDebugCounters();
-        if (counters.containsKey("wc_signals_suppressed_sampled_run")) {
+        if (counters.containsKey("wc_signals_suppressed_owned_block")) {
             assertTrue(
-                    counters.get("wc_signals_suppressed_sampled_run") > 0,
-                    "Expected once-per-run suppression counter to increase");
+                    counters.get("wc_signals_suppressed_owned_block") > 0,
+                    "Expected owned-block suppression counter to increase");
         }
     }
 
