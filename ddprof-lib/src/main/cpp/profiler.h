@@ -120,6 +120,7 @@ private:
   alignas(DEFAULT_CACHE_LINE_SIZE) u64 _failures[ASGCT_FAILURE_TYPES];
   bool _wall_precheck = false;
   std::atomic<bool> _task_block_enabled{false};
+  bool _task_block_monitor_events_enabled = false;
   std::atomic<bool> _task_block_rotation{false};
   std::atomic<u64> _task_block_inflight{0};
 

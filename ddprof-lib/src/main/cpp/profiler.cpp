@@ -1704,6 +1704,9 @@ Error Profiler::start(Arguments &args, bool reset) {
     _task_block_enabled.store(
         (activated & EM_WALL) && args._wall_precheck && track_unfiltered_wall,
         std::memory_order_release);
+    _task_block_monitor_events_enabled =
+        taskBlockEnabled() && VM::nativeMonitorEventsAvailable() &&
+        VM::setNativeMonitorEventsEnabled(true);
     _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
@@ -1729,6 +1732,10 @@ Error Profiler::stop() {
     return Error("Profiler is not active");
   }
   _task_block_enabled.store(false, std::memory_order_release);
+  if (_task_block_monitor_events_enabled) {
+    VM::setNativeMonitorEventsEnabled(false);
+    _task_block_monitor_events_enabled = false;
+  }
 
   // Order matters: disable engines first so the _enabled check inside signal
   // handlers will fail for any new signal delivered from now on. drain() then
