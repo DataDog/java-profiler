@@ -1,5 +1,6 @@
 /*
  * Copyright 2021 Andrei Pangin
+* Copyright 2026 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -64,11 +65,12 @@ public:
     return safefetch64_impl(ptr, errorValue);
   }
 
-  // Copies up to len bytes from src to dst using safefetch32_impl so that a
-  // page-unmap or repurpose of src memory during the copy does not crash the
-  // process. Returns true on full success, false if any read faulted. dst must
-  // have at least len bytes capacity; reads from src may over-read up to 3
-  // bytes past src+len (over-read is also safefetch-protected).
+  // Copies len bytes from src to dst via the safecopy_impl assembly stub so
+  // that a page-unmap or repurpose of src memory during the copy does not
+  // crash the process. Returns true on full success, false if any read
+  // faulted (in which case dst may hold a partial prefix). dst must have at
+  // least len bytes capacity. The copy is byte-granular, so it never reads
+  // past src+len.
   NOINLINE
   static bool safeCopy(void* dst, const void* src, size_t len);
 
