@@ -102,10 +102,10 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
     return result;
   }
 
-  // TaskBlock replaces signals only for threads that unfiltered wall-clock
-  // profiling observes outside the tracing context window. Context-scoped
-  // profiling must continue sampling its selected threads normally.
-  if (!registry->unfilteredWallTrackingActive() || slot->inContextWindow()) {
+  // In an unfiltered recording, context threads keep their normal MethodSample
+  // stream. TaskBlock replaces signals only for owned blocks that remain
+  // outside the context window.
+  if (registry->unfilteredWallTrackingActive() && slot->inContextWindow()) {
     return result;
   }
 
@@ -114,13 +114,6 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
   if (registry->isOwnedBlockSuppressionCandidate(entry)) {
     incrementSuppressedOwnedBlock();
     result.suppress = true;
-    return result;
-  }
-
-  // Unfiltered tracking exists only to support explicit context and owned-block
-  // hooks. Keep unowned observations on ordinary per-signal sampling: the JVMTI
-  // path has no call_trace_id with which to replay a suppressed tail.
-  if (registry->unfilteredWallTrackingActive()) {
     return result;
   }
 

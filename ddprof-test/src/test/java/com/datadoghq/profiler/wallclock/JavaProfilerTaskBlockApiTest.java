@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** End-to-end coverage for the paired synchronous TaskBlock API. */
 public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
+  private static final int OSTHREAD_STATE_SLEEPING = 7;
   private static final long BLOCKER = 0x7301L;
   private static final long UNBLOCKING_SPAN_ID = 0x7302L;
 
@@ -45,9 +46,9 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
   public void invalidAndNestedTokensDoNotLoseCurrentOwner() throws Exception {
     AtomicBoolean recorded = new AtomicBoolean();
     runWorker(() -> {
-      long token = profiler.beginTaskBlock();
+      long token = profiler.beginTaskBlock(OSTHREAD_STATE_SLEEPING);
       assertTrue(token != 0);
-      assertEquals(0L, profiler.beginTaskBlock());
+      assertEquals(0L, profiler.beginTaskBlock(OSTHREAD_STATE_SLEEPING));
       assertFalse(profiler.endTaskBlock(token + 1, BLOCKER, UNBLOCKING_SPAN_ID));
       Thread.sleep(200L);
       recorded.set(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
@@ -60,9 +61,9 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
     AtomicBoolean recorded = new AtomicBoolean(true);
     AtomicLong secondToken = new AtomicLong();
     runWorker(() -> {
-      long token = profiler.beginTaskBlock();
+      long token = profiler.beginTaskBlock(OSTHREAD_STATE_SLEEPING);
       recorded.set(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
-      secondToken.set(profiler.beginTaskBlock());
+      secondToken.set(profiler.beginTaskBlock(OSTHREAD_STATE_SLEEPING));
       profiler.endTaskBlock(secondToken.get(), BLOCKER, UNBLOCKING_SPAN_ID);
     });
 
@@ -78,12 +79,12 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
     runWorker(() -> {
       profiler.addThread();
       try {
-        assertEquals(0L, profiler.beginTaskBlock());
+        assertEquals(0L, profiler.beginTaskBlock(OSTHREAD_STATE_SLEEPING));
       } finally {
         profiler.removeThread();
       }
 
-      long crossedToken = profiler.beginTaskBlock();
+      long crossedToken = profiler.beginTaskBlock(OSTHREAD_STATE_SLEEPING);
       assertTrue(crossedToken != 0);
       profiler.addThread();
       profiler.removeThread();
@@ -91,7 +92,7 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
       assertFalse(profiler.endTaskBlock(
           crossedToken, BLOCKER, UNBLOCKING_SPAN_ID));
 
-      tokenAfterWindow.set(profiler.beginTaskBlock());
+      tokenAfterWindow.set(profiler.beginTaskBlock(OSTHREAD_STATE_SLEEPING));
       profiler.endTaskBlock(tokenAfterWindow.get(), BLOCKER, UNBLOCKING_SPAN_ID);
     });
     assertTrue(tokenAfterWindow.get() != 0,
@@ -104,7 +105,7 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
     runWorker(() -> {
       profiler.setContext(0x5100L, 0x5101L, 0L, 0x5101L);
       try {
-        token.set(profiler.beginTaskBlock());
+        token.set(profiler.beginTaskBlock(OSTHREAD_STATE_SLEEPING));
       } finally {
         profiler.clearContext();
       }
@@ -126,14 +127,14 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
 
     AtomicLong token = new AtomicLong(-1L);
     Thread virtual = (Thread) startVirtualThread.invoke(null, (Runnable) () ->
-        token.set(profiler.beginTaskBlock()));
+        token.set(profiler.beginTaskBlock(OSTHREAD_STATE_SLEEPING)));
     virtual.join(5_000L);
     assertFalse(virtual.isAlive());
     assertEquals(0L, token.get());
 
     AtomicLong platformToken = new AtomicLong();
     runWorker(() -> {
-      platformToken.set(profiler.beginTaskBlock());
+      platformToken.set(profiler.beginTaskBlock(OSTHREAD_STATE_SLEEPING));
       profiler.endTaskBlock(platformToken.get(), BLOCKER, UNBLOCKING_SPAN_ID);
     });
     assertTrue(platformToken.get() != 0,
@@ -150,7 +151,7 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
         .getOrDefault("wc_signals_suppressed_owned_block", 0L);
     Thread worker = new Thread(() -> {
       try {
-        long token = profiler.beginTaskBlock();
+        long token = profiler.beginTaskBlock(OSTHREAD_STATE_SLEEPING);
         assertTrue(token != 0);
         armed.countDown();
         assertTrue(release.await(5, TimeUnit.SECONDS));
@@ -181,13 +182,13 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
 
   @Override
   protected String getProfilerCommand() {
-    return "wall=1ms,filter=,wallprecheck=true";
+    return "wall=1ms,wallscope=all,wallprecheck=true";
   }
 
   private boolean runEligibleBlock(long blocker) throws Exception {
     AtomicBoolean result = new AtomicBoolean();
     runWorker(() -> {
-      long token = profiler.beginTaskBlock();
+      long token = profiler.beginTaskBlock(OSTHREAD_STATE_SLEEPING);
       if (token == 0) throw new AssertionError("interval was not armed");
       Thread.sleep(200L);
       result.set(profiler.endTaskBlock(token, blocker, UNBLOCKING_SPAN_ID));

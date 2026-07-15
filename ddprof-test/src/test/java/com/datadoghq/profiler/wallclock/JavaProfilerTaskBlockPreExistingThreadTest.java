@@ -19,6 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Verifies TaskBlock TLS initialization for threads created before profiler startup. */
 public class JavaProfilerTaskBlockPreExistingThreadTest extends AbstractProfilerTest {
+  private static final int OSTHREAD_STATE_SLEEPING = 7;
   private static final long BLOCKER = 0x7401L;
   private static final long UNBLOCKING_SPAN_ID = 0x7402L;
 
@@ -54,7 +55,7 @@ public class JavaProfilerTaskBlockPreExistingThreadTest extends AbstractProfiler
         preExistingWorker.submit(
             () -> {
               assertSame(preExistingThread, Thread.currentThread());
-              long token = profiler.beginTaskBlock();
+              long token = profiler.beginTaskBlock(OSTHREAD_STATE_SLEEPING);
               assertTrue(token != 0, "Pre-existing thread must initialize TaskBlock TLS");
               Thread.sleep(200L);
               return profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID);
@@ -71,6 +72,6 @@ public class JavaProfilerTaskBlockPreExistingThreadTest extends AbstractProfiler
 
   @Override
   protected String getProfilerCommand() {
-    return "wall=1ms,filter=,wallprecheck=true";
+    return "wall=1ms,wallscope=all,wallprecheck=true";
   }
 }

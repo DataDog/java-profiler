@@ -578,7 +578,7 @@ public final class JavaProfiler {
 
     /**
      * Internal hook marking the current platform thread as entering an explicitly instrumented
-     * blocked interval. The public paired API is {@link #beginTaskBlock()}.
+     * blocked interval. The public paired API is {@link #beginTaskBlock(int)}.
      *
      * @param state native {@code OSThreadState} value for the blocked interval;
      *     currently only {@code SLEEPING} is armed
@@ -600,19 +600,20 @@ public final class JavaProfiler {
      * The returned token is bound to the current thread and must be passed to
      * {@link #endTaskBlock(long, long, long)}.
      *
+     * @param state native {@code OSThreadState} value; currently only {@code SLEEPING} is accepted
      * @return an opaque token, or {@code 0} when the interval could not be armed or the current
      *         thread is virtual; any non-zero value, including a negative value, is valid
      */
-    public long beginTaskBlock() {
-        return beginTaskBlock0(Thread.currentThread());
+    public long beginTaskBlock(int state) {
+        return beginTaskBlock0(Thread.currentThread(), state);
     }
 
     /**
-     * Ends a blocking interval created by {@link #beginTaskBlock()} and records its
+     * Ends a blocking interval created by {@link #beginTaskBlock(int)} and records its
      * {@code TaskBlock} event when it satisfies the profiler's eligibility rules.
      * Lifecycle state is cleared even when no event is recorded.
      *
-     * @param token opaque token returned by {@link #beginTaskBlock()}; {@code 0} is the only
+     * @param token opaque token returned by {@link #beginTaskBlock(int)}; {@code 0} is the only
      *     invalid sentinel
      * @param blocker stable identifier describing the blocking resource
      * @param unblockingSpanId span responsible for unblocking the interval, or {@code 0}
@@ -686,7 +687,7 @@ public final class JavaProfiler {
 
     private static native void blockExit0(Thread thread, long token);
 
-    private static native long beginTaskBlock0(Thread thread);
+    private static native long beginTaskBlock0(Thread thread, int state);
 
     private static native boolean endTaskBlock0(Thread thread, long token, long blocker,
             long unblockingSpanId);

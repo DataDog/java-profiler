@@ -23,7 +23,7 @@ public class JavaProfilerApiSurfaceTest {
         assertNotPublic(JavaProfiler.class.getDeclaredMethod("blockEnter", int.class));
         assertNotPublic(JavaProfiler.class.getDeclaredMethod("blockExit", long.class));
         assertTrue(Modifier.isPublic(JavaProfiler.class
-                .getDeclaredMethod("beginTaskBlock").getModifiers()));
+                .getDeclaredMethod("beginTaskBlock", int.class).getModifiers()));
         assertTrue(Modifier.isPublic(JavaProfiler.class
                 .getDeclaredMethod("endTaskBlock", long.class, long.class, long.class)
                 .getModifiers()));

@@ -285,6 +285,7 @@ public:
     bool exitBlockedRun(SlotID slot_id, u64 generation);
     bool snapshotAndExitBlockedRun(SlotID slot_id, u64 generation,
                                    BlockRunSnapshot* snapshot);
+    BlockRunSnapshot snapshotBlockedRun(SlotID slot_id) const;
     bool isOwnedBlockSuppressionCandidate(const ThreadEntry& entry) const;
 
 #ifdef UNIT_TEST
