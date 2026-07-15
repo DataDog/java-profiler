@@ -212,7 +212,7 @@ ddprof-lib/fuzz/build/bin/fuzz/dwarf/dwarf <crash_file>
        return 0;
    }
    ```
-3. Optionally add seed corpus files in `corpus/fuzz_newfeature/`
+3. Optionally add seed corpus files in `corpus/newfeature/`
 4. The build system will automatically detect the new target
 
 ## CI Integration
