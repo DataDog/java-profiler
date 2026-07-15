@@ -37,12 +37,21 @@ object ConfigurationPresets {
         project.logger.lifecycle("Setting up standard build configurations for $currentPlatform-$currentArch")
         project.logger.lifecycle("Using compiler: $compiler")
 
+        // Opt-in compile-time fault injection. When -PenableFaultInjection is
+        // passed we append -D__FAULT_INJECTION__ to the standard release/debug
+        // library builds, so the documented buildRelease / buildDebug workflows
+        // produce a fault-injected libjavaProfiler.so. It is intentionally NOT
+        // applied to asan/tsan/fuzzer: those configs install their own SIGSEGV
+        // interception, which conflicts with the deliberately-faulting loads.
+        val faultInjection = project.hasProperty("enableFaultInjection")
         extension.buildConfigurations.apply {
             register("release") {
                 configureRelease(this, currentPlatform, currentArch, version)
+                if (faultInjection) compilerArgs.add("-D__FAULT_INJECTION__")
             }
             register("debug") {
                 configureDebug(this, currentPlatform, currentArch, version)
+                if (faultInjection) compilerArgs.add("-D__FAULT_INJECTION__")
             }
             register("asan") {
                 configureAsan(this, currentPlatform, currentArch, version, rootDir, compiler)
@@ -52,14 +61,6 @@ object ConfigurationPresets {
             }
             register("fuzzer") {
                 configureFuzzer(this, currentPlatform, currentArch, version, rootDir, compiler)
-            }
-            // Opt-in fault-injection config: a release build with -D__FAULT_INJECTION__.
-            // Only registered when -PenableFaultInjection is passed, so normal
-            // builds never see the define.
-            if (project.hasProperty("enableFaultInjection")) {
-                register("faultinjection") {
-                    configureFaultInjection(this, currentPlatform, currentArch, version)
-                }
             }
         }
 
@@ -131,22 +132,6 @@ object ConfigurationPresets {
                 config.linkerArgs.set(emptyList())
             }
         }
-    }
-
-    /**
-     * Fault-injection configuration: identical to release but with
-     * -D__FAULT_INJECTION__, which activates the compile-time fault-injection
-     * layer (faultInjection.h) at the profiler's memory-access sites. Opt-in
-     * only (see setupStandardConfigurations); never shipped in production.
-     */
-    fun configureFaultInjection(
-        config: BuildConfiguration,
-        platform: Platform,
-        architecture: Architecture,
-        version: String
-    ) {
-        configureRelease(config, platform, architecture, version)
-        config.compilerArgs.add("-D__FAULT_INJECTION__")
     }
 
     fun configureDebug(

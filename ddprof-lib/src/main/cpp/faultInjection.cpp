@@ -20,6 +20,7 @@
 // normal build links a no-op object file.
 #ifdef __FAULT_INJECTION__
 
+#include "counters.h"          // Counters::increment (FAULTS_INJECTED)
 #include "os.h"                // OS::page_size
 #include "threadLocalData.h"   // ProfiledThread::currentSignalSafe / nextFiRandom
 #include <atomic>
@@ -78,7 +79,13 @@ bool shouldFire(u64 threshold, const char* fn) {
   // stream per call site while keeping the fire probability exactly
   // threshold/2^64.
   u64 r = nextRandom() ^ ((u64)(uintptr_t)fn * KNUTH);
-  return r < threshold;
+  if (__builtin_expect(r < threshold, 0)) {
+    // Every address/int/long injection routes through here, so this is the one
+    // place that counts an actually-injected fault.
+    Counters::increment(FAULTS_INJECTED);
+    return true;
+  }
+  return false;
 }
 
 uintptr_t poisonAddress() {

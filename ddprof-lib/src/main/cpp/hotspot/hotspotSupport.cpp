@@ -970,6 +970,7 @@ void HotspotSupport::checkFault(ProfiledThread* thrd) {
     }
 
     thrd->resetCrashHandler();
+    Counters::increment(WALKVM_LONGJMP_RECOVERED);
     longjmp(*thrd->getJmpCtx(), 1);
 }
 

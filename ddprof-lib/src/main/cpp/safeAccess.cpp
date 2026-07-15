@@ -16,8 +16,7 @@
 
 
 #include "safeAccess.h"
-#include <cstdio>
-#include <cstdlib>
+#include "counters.h"
 #include <signal.h>
 #include <ucontext.h>
 
@@ -280,14 +279,17 @@ bool SafeAccess::handle_safefetch(int sig, void* context) {
   if ((sig == SIGSEGV || sig == SIGBUS) && uc != nullptr) {
     if (pc == (uintptr_t)safefetch32_impl) {
       uc->current_pc = (uintptr_t)safefetch32_cont;
+      Counters::increment(SAFEFETCH_FAILED);
       return true;
     } else if (pc == (uintptr_t)safefetch64_impl) {
       uc->current_pc = (uintptr_t)safefetch64_cont;
+      Counters::increment(SAFEFETCH_FAILED);
       return true;
     } else if (pc >= (uintptr_t)safecopy_impl && pc < (uintptr_t)safecopy_cont) {
       // Unlike safefetch, the faulting load can be at any pc inside the copy
       // loop, so match the whole [safecopy_impl, safecopy_cont) range.
       uc->current_pc = (uintptr_t)safecopy_cont;
+      Counters::increment(SAFECOPY_FAILED);
       return true;
     }
   }
