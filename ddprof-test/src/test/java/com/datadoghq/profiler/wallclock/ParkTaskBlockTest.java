@@ -108,7 +108,7 @@ public class ParkTaskBlockTest extends AbstractProfilerTest {
 
   @Override
   protected String getProfilerCommand() {
-    return "wall=1ms,filter=,wallprecheck=true";
+    return "wall=1ms,wallscope=all,wallprecheck=true";
   }
 
   protected void assertTaskBlockStackReference(IItemCollection events) {

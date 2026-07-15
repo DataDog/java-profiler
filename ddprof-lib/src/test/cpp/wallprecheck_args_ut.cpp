@@ -71,6 +71,32 @@ TEST(WallPrecheckArgsTest, EnabledWithinLongerArgString) {
     EXPECT_TRUE(args._wall_precheck);
 }
 
+TEST(WallPrecheckArgsTest, WallScopeDefaultsToContext) {
+    Arguments args;
+
+    EXPECT_EQ(WALLCLOCK_SCOPE_CONTEXT, args._wallclock_scope);
+}
+
+TEST(WallPrecheckArgsTest, WallScopeExplicitValues) {
+    Arguments args;
+
+    Error error = args.parse("wall=1ms,wallscope=all");
+    EXPECT_FALSE(error);
+    EXPECT_EQ(WALLCLOCK_SCOPE_ALL, args._wallclock_scope);
+
+    error = args.parse("wall=1ms,wallscope=context");
+    EXPECT_FALSE(error);
+    EXPECT_EQ(WALLCLOCK_SCOPE_CONTEXT, args._wallclock_scope);
+}
+
+TEST(WallPrecheckArgsTest, WallScopeRejectsUnknownValue) {
+    Arguments args;
+
+    Error error = args.parse("wall=1ms,wallscope=thread");
+    ASSERT_NE(nullptr, error.message());
+    EXPECT_STREQ("wallscope must be 'context' or 'all'", error.message());
+}
+
 TEST(WallPrecheckArgsTest, OmittedFilterRemainsNull) {
     Arguments args;
 

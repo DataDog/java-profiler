@@ -142,7 +142,7 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
     Path recording = Files.createTempFile("MonitorTaskBlockTest-restart-", ".jfr");
     boolean restarted = false;
     try {
-      profiler.execute("start,wall=1ms,filter=,wallprecheck=true,jfr,file="
+      profiler.execute("start,wall=1ms,wallscope=all,wallprecheck=true,jfr,file="
           + recording.toAbsolutePath());
       restarted = true;
       synchronized (contentionMonitor) {
@@ -218,7 +218,7 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
 
   @Override
   protected String getProfilerCommand() {
-    return "wall=1ms,filter=,wallprecheck=true";
+    return "wall=1ms,wallscope=all,wallprecheck=true";
   }
 
   protected void assertTaskBlockStackReference(IItemCollection events) {

@@ -86,9 +86,10 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 
   current->setJavaThread(true);
   int tid = current->tid();
-  // Preserve eager registration for context-filtered recordings. Unfiltered
-  // wall prechecks register only from context and owned-block hooks.
-  if (_thread_filter.enabled()) {
+  // Register post-start Java threads whenever the registry is active. In
+  // unfiltered wall-precheck mode, pre-existing threads still register lazily
+  // through context or owned-block hooks.
+  if (_thread_filter.registryActive()) {
     int slot_id = _thread_filter.registerThread(tid);
     current->setFilterSlotId(slot_id);
   }
@@ -1541,10 +1542,12 @@ Error Profiler::start(Arguments &args, bool reset) {
   _cpu_engine = selectCpuEngine(args);
   _wall_engine = selectWallEngine(args);
 
-  const char *filter = args._filter != nullptr ? args._filter : "0";
+  const bool wall_scope_all = args._wallclock_scope == WALLCLOCK_SCOPE_ALL;
+  const char *filter = args._filter != nullptr ? args._filter
+                                               : (wall_scope_all ? "" : "0");
   const bool track_unfiltered_wall =
       (_event_mask & EM_WALL) != 0 && args._wall_precheck &&
-      args._filter != nullptr && args._filter[0] == '\0' &&
+      filter != nullptr && filter[0] == '\0' &&
       _wall_engine->supportsUnfilteredWallPrecheck();
   _thread_filter.init(filter, track_unfiltered_wall);
 

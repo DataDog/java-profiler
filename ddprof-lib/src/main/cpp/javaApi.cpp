@@ -478,12 +478,17 @@ Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
   }
   ThreadFilter *tf = Profiler::instance()->threadFilter();
   ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(block_token);
-  if (current->filterSlotId() != slot_id ||
-      tf->activeSlotForId(slot_id, current->tid()) == nullptr) {
+  ThreadFilter::Slot *slot = current->filterSlotId() == slot_id
+      ? tf->activeSlotForId(slot_id, current->tid())
+      : nullptr;
+  if (slot == nullptr) {
     return;
   }
+  bool context_eligible = slot->activeBlockRemainedOutsideContextWindow();
   if (tf->registryActive()) {
-    tf->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(block_token));
+    if (tf->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(block_token))) {
+      releaseUnfilteredOwnedBlockSlot(current, tf, slot_id, context_eligible);
+    }
   }
 }
 

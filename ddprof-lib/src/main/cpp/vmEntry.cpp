@@ -86,6 +86,24 @@ static u64 monitorBlockerHash(jvmtiEnv *jvmti, jobject object) {
   return static_cast<u64>(static_cast<uint32_t>(hash));
 }
 
+static ThreadFilter::SlotID ensureCurrentThreadSlot(
+    ThreadFilter *thread_filter, ProfiledThread *current) {
+  int tid = current->tid();
+  if (unlikely(tid < 0)) return -1;
+
+  ThreadFilter::SlotID slot_id = current->filterSlotId();
+  if (likely(slot_id >= 0)) {
+    if (likely(thread_filter->activeSlotForId(slot_id, tid) != nullptr)) {
+      return slot_id;
+    }
+    current->setFilterSlotId(-1);
+  }
+
+  slot_id = thread_filter->registerThread(tid);
+  if (slot_id >= 0) current->setFilterSlotId(slot_id);
+  return slot_id;
+}
+
 static void monitorBlockEnter(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                               jobject object, OSThreadState state) {
   Profiler *profiler = Profiler::instance();
@@ -129,11 +147,7 @@ static void monitorBlockEnter(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
   }
 
   ThreadFilter *tf = profiler->threadFilter();
-  ThreadFilter::SlotID slot_id = current->filterSlotId();
-  if (slot_id < 0) {
-    slot_id = tf->slotIdByTid(current->tid());
-    if (slot_id >= 0) current->setFilterSlotId(slot_id);
-  }
+  ThreadFilter::SlotID slot_id = ensureCurrentThreadSlot(tf, current);
   if (!tf->unfilteredWallTrackingActive() || slot_id < 0) {
     current->clearMonitorBlock();
     return;

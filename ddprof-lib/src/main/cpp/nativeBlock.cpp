@@ -112,6 +112,12 @@ void NativeBlockScope::finish(u64 end_ticks) {
   BlockRunSnapshot snapshot{};
   bool exited = thread_filter->snapshotAndExitBlockedRun(
       _slot_id, _generation, &snapshot);
+  if (exited) {
+    ProfiledThread* current = ProfiledThread::current();
+    if (current != nullptr && current->tid() != _tid) current = nullptr;
+    releaseUnfilteredOwnedBlockSlot(
+        current, thread_filter, _slot_id, snapshot.context_eligible);
+  }
 
   if (!activity) {
     Counters::increment(TASK_BLOCK_DROPPED_ROTATION);

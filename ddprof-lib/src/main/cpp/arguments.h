@@ -87,6 +87,11 @@ enum WallclockSampler {
     JVMTI
 };
 
+enum WallclockScope {
+    WALLCLOCK_SCOPE_CONTEXT,
+    WALLCLOCK_SCOPE_ALL
+};
+
 enum Clock {
     CLK_DEFAULT,
     CLK_TSC,
@@ -171,6 +176,7 @@ public:
   bool _wall_precheck;
   int _wall_threads_per_tick;
   WallclockSampler _wallclock_sampler;
+  WallclockScope _wallclock_scope;
   long _memory;
   bool _record_allocations;
   bool _record_liveness;
@@ -212,6 +218,7 @@ public:
         _wall_precheck(false),
         _wall_threads_per_tick(DEFAULT_WALL_THREADS_PER_TICK),
         _wallclock_sampler(ASGCT),
+        _wallclock_scope(WALLCLOCK_SCOPE_CONTEXT),
         _memory(-1),
         _record_allocations(false),
         _record_liveness(false),

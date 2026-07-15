@@ -20,6 +20,11 @@ bool recordTaskBlockAtExit(ProfiledThread* current, ThreadFilter* thread_filter,
                            ThreadFilter::SlotID slot_id, u64 generation,
                            u64 blocker, u64 unblocking_span_id);
 
+void releaseUnfilteredOwnedBlockSlot(ProfiledThread* current,
+                                     ThreadFilter* thread_filter,
+                                     ThreadFilter::SlotID slot_id,
+                                     bool context_eligible);
+
 // Completes ThreadFilter lifecycle cleanup for an already-exited producer and
 // records its event only when dump/stop rotation admits the recording work.
 // Cleanup is deliberately performed even when admission is rejected so an

@@ -44,6 +44,21 @@ bool recordTaskBlockAtExit(ProfiledThread* current, ThreadFilter* thread_filter,
       context, blocker, unblocking_span_id);
 }
 
+void releaseUnfilteredOwnedBlockSlot(ProfiledThread* current,
+                                     ThreadFilter* thread_filter,
+                                     ThreadFilter::SlotID slot_id,
+                                     bool context_eligible) {
+  if (!context_eligible || !thread_filter->unfilteredWallTrackingActive()) {
+    return;
+  }
+  int tid = -1;
+  if (current != nullptr) {
+    tid = current->tid();
+    if (current->filterSlotId() == slot_id) current->setFilterSlotId(-1);
+  }
+  thread_filter->unregisterThread(slot_id, tid);
+}
+
 bool finishTaskBlockAtExit(ProfiledThread* current,
                            ThreadFilter* thread_filter, jthread thread,
                            int start_depth, u64 block_token, u64 start_ticks,
@@ -62,6 +77,10 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
   BlockRunSnapshot snapshot;
   bool exited = current_slot == slot_id &&
       thread_filter->snapshotAndExitBlockedRun(slot_id, generation, &snapshot);
+  if (exited) {
+    releaseUnfilteredOwnedBlockSlot(
+        current, thread_filter, slot_id, snapshot.context_eligible);
+  }
 
   if (!activity) {
     Counters::increment(TASK_BLOCK_DROPPED_ROTATION);

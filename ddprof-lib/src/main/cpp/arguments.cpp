@@ -184,6 +184,17 @@ Error Arguments::parse(const char *args) {
         msg = "walltpt must be > 0";
       }
 
+      CASE("wallscope")
+      if (value == NULL || value[0] == 0) {
+        msg = "wallscope must not be empty";
+      } else if (strcmp(value, "all") == 0) {
+        _wallclock_scope = WALLCLOCK_SCOPE_ALL;
+      } else if (strcmp(value, "context") == 0) {
+        _wallclock_scope = WALLCLOCK_SCOPE_CONTEXT;
+      } else {
+        msg = "wallscope must be 'context' or 'all'";
+      }
+
       CASE("event")
       if (value == NULL || value[0] == 0) {
         msg = "event must not be empty";
