@@ -42,6 +42,7 @@
   X(DICTIONARY_ENDPOINTS_ARENA_WASTE_BYTES, "dictionary_endpoints_arena_waste_bytes") \
   X(DICTIONARY_CONTEXT_ARENA_WASTE_BYTES, "dictionary_context_arena_waste_bytes")     \
   X(DICTIONARY_DRAIN_TIMEOUTS, "dictionary_drain_timeouts")                    \
+  X(CLASS_MAP_AT_CAPACITY, "class_map_at_capacity_drops")                      \
   X(CONTEXT_STORAGE_BYTES, "context_storage_bytes")                            \
   X(CONTEXT_STORAGE_PAGES, "context_storage_pages")                            \
   X(CONTEXT_BOUNDS_MISS_INITS, "context_bounds_miss_inits")                    \
@@ -73,6 +74,7 @@
   X(UNWINDING_TIME_JVMTI, "unwinding_ticks_jvmti")                             \
   X(CALLTRACE_STORAGE_DROPPED, "calltrace_storage_dropped_traces")             \
   X(LINE_NUMBER_TABLES, "line_number_tables")                                  \
+  X(LINE_NUMBER_TABLE_UNREADABLE, "line_number_table_unreadable")              \
   X(REMOTE_SYMBOLICATION_FRAMES, "remote_symbolication_frames")                \
   X(REMOTE_SYMBOLICATION_LIBS_WITH_BUILD_ID, "remote_symbolication_libs_with_build_id") \
   X(REMOTE_SYMBOLICATION_BUILD_ID_CACHE_HITS, "remote_symbolication_build_id_cache_hits") \

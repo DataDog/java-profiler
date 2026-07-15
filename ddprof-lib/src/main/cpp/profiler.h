@@ -81,6 +81,15 @@ private:
   NotifyClassUnloadedFunc _notify_class_unloaded_func;
   // --
 
+  // Caps the number of distinct class names _class_map will ever hold.
+  // rotate()/clearStandby() carry the full accumulated set forward on every
+  // JFR chunk (only clearAll() on profiler restart truly resets it), so
+  // without a cap a workload with unbounded distinct-class churn (e.g. heavy
+  // dynamic class generation) grows this dictionary for the lifetime of the
+  // process. 256K distinct classes is far beyond any real application's
+  // class count.
+  static const int MAX_CLASS_MAP_SIZE = 1 << 18;
+
   ThreadInfo _thread_info;
   StringDictionary _class_map{1};
   StringDictionary _string_label_map{2};
@@ -262,6 +271,10 @@ public:
   Engine *wallEngine() { return _wall_engine; }
 
   StringDictionary *classMap() { return &_class_map; }
+  // Same cap lookupClass() enforces for sample-time inserts; dump-time
+  // insertions (Lookup::_classes->lookupDuringDump in flightRecorder.cpp)
+  // must use this too so _class_map cannot grow past it via that path.
+  static int maxClassMapSize() { return MAX_CLASS_MAP_SIZE; }
   SharedLockGuard classMapSharedGuard() { return SharedLockGuard(&_class_map_lock); }
   StringDictionary *stringLabelMap() { return &_string_label_map; }
   StringDictionary *contextValueMap() { return &_context_value_map; }

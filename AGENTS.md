@@ -439,6 +439,19 @@ table: see [doc/build/JdkUpgrades.md](doc/build/JdkUpgrades.md).
 - All code needs to strive to be lean in terms of resources consumption and easy to follow -
     do not shy away from factoring out self containing code to shorter functions with explicit name
 
+## CI / Automation Script Changes
+- Before rewriting or replacing a script invoked from `.gitlab-ci.yml`, `.gitlab/**/*.yml`, or any CI job,
+  run `git log -p -- <script>` (or diff against the version being replaced) and enumerate every behavior
+  branch it has — fallbacks, env-var-driven paths, error exits. Preserve all of them unless explicitly
+  asked to drop one; do not silently narrow behavior while refactoring.
+- Grep the calling `.gitlab-ci.yml` / `.gitlab/**/*.yml` jobs for how the script is invoked (env vars set,
+  exit codes expected) and confirm the rewrite still satisfies every caller, not just the common/local case.
+- When removing an item from a default list or config (an antagonist, a test tag, a feature flag), cite
+  the exact file/line proving it is inert or unused in that context before removing it — never remove
+  based on assumption alone.
+- After changing a CI-invoked script, run a syntax check (e.g. `bash -n <script>`) and trace through each
+  CI job that calls it before considering the change complete.
+
 ### C/C++ Code Style
 - **Indentation**: Match the exact indentation style of the surrounding code in each file. Do not introduce inconsistent indentation — reviewers will flag it.
 - **Minimal complexity**: Do not split inline logic into separate helper functions unless the helpers are reused or the original is genuinely hard to follow. Unnecessary splits add indirection without value.
