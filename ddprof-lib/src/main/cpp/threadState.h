@@ -16,8 +16,9 @@ enum class OSThreadState : int {
   BREAKPOINTED = 6, // Suspended at breakpoint
   SLEEPING = 7,     // Thread.sleep()
   TERMINATED = 8,   // All done, but not reclaimed yet
-  SYSCALL = 9 // does not originate in the JVM, used when the current frame is
-              // known to be a syscall
+  SYSCALL = 9, // does not originate in the JVM, used when the current frame is
+               // known to be a syscall
+  IO_WAIT = 10 // Physical platform/carrier thread blocked in native I/O
 };
 
 enum class ExecutionMode : int {

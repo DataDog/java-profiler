@@ -1,5 +1,6 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -948,22 +949,26 @@ void ElfParser::loadSymbolTable(const char* symbols, size_t total_size, size_t e
     // to a small pointer that still compares <= end, walking off the image. The
     // `ent_size <= total_size - off` form keeps off <= total_size with no overflow.
     for (size_t off = 0; ent_size <= total_size - off; off += ent_size) {
-        ElfSymbol* sym = (ElfSymbol*)(symbols + off);
-        if (sym->st_name != 0 && sym->st_value != 0) {
+        // Section contents are byte-addressed and a malformed sh_offset need not
+        // satisfy ElfSymbol alignment. Copying also keeps every field read within
+        // the sizeof(ElfSymbol) range validated by the loop condition.
+        ElfSymbol sym;
+        memcpy(&sym, symbols + off, sizeof(sym));
+        if (sym.st_name != 0 && sym.st_value != 0) {
             // Resolve the name through the bounded string table; a bad st_name
             // offset (or unterminated string) drops the symbol instead of reading
             // out of bounds.
-            const char* sym_name = strAt(strings, strings_size, sym->st_name);
+            const char* sym_name = strAt(strings, strings_size, sym.st_name);
             if (sym_name == NULL) {
                 continue;
             }
             // Skip special AArch64 mapping symbols: $x and $d
-            if (sym->st_size != 0 || sym->st_info != 0 || sym_name[0] != '$') {
+            if (sym.st_size != 0 || sym.st_info != 0 || sym_name[0] != '$') {
                 const char* addr;
                 if (base != NULL) {
-                    // Check for overflow when adding sym->st_value to base
+                    // Check for overflow when adding sym.st_value to base
                     uintptr_t base_addr = (uintptr_t)base;
-                    uint64_t symbol_value = sym->st_value;
+                    uint64_t symbol_value = sym.st_value;
                     
                     // Skip this symbol if addition would overflow
                     // First check if symbol_value exceeds the address space
@@ -978,9 +983,9 @@ void ElfParser::loadSymbolTable(const char* symbols, size_t total_size, size_t e
                     // Perform addition using integer arithmetic to avoid pointer overflow
                     addr = (const char*)(base_addr + (uintptr_t)symbol_value);
                 } else {
-                    addr = (const char*)sym->st_value;
+                    addr = (const char*)sym.st_value;
                 }
-                _cc->add(addr, (int)sym->st_size, sym_name);
+                _cc->add(addr, (int)sym.st_size, sym_name);
             }
         }
     }
@@ -1256,6 +1261,32 @@ UnloadProtection::~UnloadProtection() {
     if (_lib_handle != NULL) {
         dlclose(_lib_handle);
     }
+}
+
+UnloadProtection::UnloadProtection(UnloadProtection&& other) noexcept
+    : _lib_handle(other._lib_handle), _valid(other._valid) {
+    other._lib_handle = NULL;
+    other._valid = false;
+}
+
+UnloadProtection& UnloadProtection::operator=(UnloadProtection&& other) noexcept {
+    if (this != &other) {
+        if (_lib_handle != NULL) {
+            dlclose(_lib_handle);
+        }
+        _lib_handle = other._lib_handle;
+        _valid = other._valid;
+        other._lib_handle = NULL;
+        other._valid = false;
+    }
+    return *this;
+}
+
+void* UnloadProtection::release() {
+    void* handle = _lib_handle;
+    _lib_handle = NULL;
+    _valid = false;
+    return handle;
 }
 
 void Symbols::initLibraryRanges() {

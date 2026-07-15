@@ -701,7 +701,8 @@ bool ThreadFilter::ownedBlockGeneration(const ThreadEntry& entry,
     bool suppressible_state = state == OSThreadState::SLEEPING ||
                               state == OSThreadState::CONDVAR_WAIT ||
                               state == OSThreadState::OBJECT_WAIT ||
-                              state == OSThreadState::MONITOR_WAIT;
+                              state == OSThreadState::MONITOR_WAIT ||
+                              state == OSThreadState::IO_WAIT;
     if (!suppressible_state) return false;
 
     RecordingEpoch epoch = recordingEpoch();

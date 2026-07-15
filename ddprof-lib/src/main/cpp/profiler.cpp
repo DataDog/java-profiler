@@ -8,6 +8,7 @@
 #include "profiler.h"
 #include "asyncSampleMutex.h"
 #include "mallocTracer.h"
+#include "nativeSocketInterposer.h"
 #include "nativeSocketSampler.h"
 #include "context.h"
 #include "guards.h"
@@ -1765,6 +1766,12 @@ Error Profiler::start(Arguments &args, bool reset) {
 
     setTaskBlockEnabled(
         (activated & EM_WALL) && args._wall_precheck && track_unfiltered_wall);
+    if (taskBlockEnabled()) {
+      Error native_io_error = NativeSocketInterposer::instance()->start();
+      if (native_io_error) {
+        Log::warn("%s", native_io_error.message());
+      }
+    }
     _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
@@ -1822,6 +1829,7 @@ Error Profiler::stop() {
   // it can see _socket_active=true, wait for the lock, then re-patch PLT slots
   // that unpatch just restored.  Stopping the refresher here closes that window.
   _libs->stopRefresher();
+  NativeSocketInterposer::instance()->stop();
   if (_event_mask & EM_NATIVESOCKET)
     NativeSocketSampler::instance()->stop();
   if (_event_mask & EM_WALL)
