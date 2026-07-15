@@ -8,6 +8,7 @@
 #include "vmEntry.h"
 #include "arguments.h"
 #include "context.h"
+#include "context_api.h"
 #include "counters.h"
 #include "j9/j9Support.h"
 #include "jniHelper.h"
@@ -19,6 +20,8 @@
 #include "profiler.h"
 #include "safeAccess.h"
 #include "threadLocalData.h"
+#include "taskBlockRecorder.h"
+#include "tsc.h"
 // Pulls in vmStructs.h plus the definitions of crashProtectionActive()/cast_to() that its inline
 // accessors odr-use here; the light vmStructs.h alone leaves those unresolved in assertion-enabled
 // builds (see the note in hotspotStackFrame_aarch64.cpp).
@@ -48,6 +51,8 @@ bool VM::_hotspot = false;
 bool VM::_zing = false;
 bool VM::_can_sample_objects = false;
 bool VM::_can_intercept_binding = false;
+bool VM::_monitor_events_delegated = false;
+bool VM::_native_monitor_events_available = false;
 bool VM::_is_adaptive_gc_boundary_flag_set = false;
 
 jvmtiExtensionFunction VM::_request_stack_trace = nullptr;
@@ -65,6 +70,139 @@ JVM_GetManagement VM::_getManagement;
 static void wakeupHandler(int signo) {
   SIGNAL_HANDLER_GUARD();
   // Dummy handler for interrupting syscalls
+}
+
+static u64 monitorBlockerHash(jvmtiEnv *jvmti, jobject object) {
+  if (object == NULL) return 0;
+  jint hash = 0;
+  if (jvmti->GetObjectHashCode(object, &hash) != JVMTI_ERROR_NONE) return 0;
+  return static_cast<u64>(static_cast<uint32_t>(hash));
+}
+
+static void monitorBlockEnter(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+                              jobject object, OSThreadState state) {
+  Profiler *profiler = Profiler::instance();
+  if (!profiler->taskBlockEnabled() ||
+      !JVMSupport::isPlatformThread(jni, thread)) {
+    return;
+  }
+  ProfiledThread *current = ProfiledThread::current();
+  if (current == nullptr) return;
+  Context context = ContextApi::snapshot();
+  if (context.spanId != 0) {
+    Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
+    return;
+  }
+
+  if (!current->monitorEnter(TSC::ticks(), context,
+                             monitorBlockerHash(jvmti, object), state)) {
+    u64 token = current->monitorBlockToken();
+    ThreadFilter *tf = profiler->threadFilter();
+    bool current_owner = false;
+    if (token != 0) {
+      ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(token);
+      BlockRunSnapshot snapshot = tf->snapshotBlockedRun(slot_id);
+      current_owner = current->filterSlotId() == slot_id && snapshot.active &&
+          snapshot.owner == BlockRunOwner::JVMTI &&
+          snapshot.generation == ThreadFilter::tokenGeneration(token);
+    }
+    if (current_owner) {
+      return;
+    }
+    current->clearMonitorBlock();
+    if (!current->monitorEnter(TSC::ticks(), context,
+                               monitorBlockerHash(jvmti, object), state)) {
+      return;
+    }
+  }
+
+  ThreadFilter *tf = profiler->threadFilter();
+  ThreadFilter::SlotID slot_id = current->filterSlotId();
+  if (slot_id < 0) {
+    slot_id = tf->slotIdByTid(current->tid());
+    if (slot_id >= 0) current->setFilterSlotId(slot_id);
+  }
+  if (!tf->allThreads() || slot_id < 0) {
+    current->clearMonitorBlock();
+    return;
+  }
+  u64 token =
+      tf->enterBlockedRun(slot_id, state, BlockRunOwner::JVMTI);
+  if (token == 0) {
+    ThreadFilter::Slot *slot = tf->slotForId(slot_id);
+    if (slot != nullptr && slot->inContextWindow()) {
+      Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
+    }
+    current->clearMonitorBlock();
+    return;
+  }
+  current->setMonitorBlockToken(token);
+}
+
+static void monitorBlockExit(JNIEnv *jni, jthread thread, OSThreadState state) {
+  if (!JVMSupport::isPlatformThread(jni, thread)) return;
+  ProfiledThread *current = ProfiledThread::current();
+  if (current == nullptr) return;
+
+  u64 start_ticks = 0;
+  Context context{};
+  u64 blocker = 0;
+  u64 token = 0;
+  if (!current->monitorExit(state, start_ticks, context, blocker, token) ||
+      token == 0) {
+    return;
+  }
+
+  Profiler *profiler = Profiler::instance();
+  bool recording_enabled = profiler->taskBlockEnabled();
+  bool activity = profiler->tryEnterTaskBlockActivity();
+  if (!activity) profiler->waitForTaskBlockRotation();
+
+  ThreadFilter *tf = profiler->threadFilter();
+  ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(token);
+  ThreadFilter::SlotID current_slot = current->filterSlotId();
+  if (current_slot < 0) current_slot = tf->slotIdByTid(current->tid());
+  BlockRunSnapshot snapshot{};
+  bool exited = current_slot == slot_id &&
+      tf->snapshotAndExitBlockedRun(
+          slot_id, ThreadFilter::tokenGeneration(token), &snapshot);
+
+  if (!activity) {
+    Counters::increment(TASK_BLOCK_DROPPED_ROTATION);
+    return;
+  }
+  if (recording_enabled && exited && snapshot.context_eligible) {
+    recordTaskBlockIfEligible(current->tid(), thread, 0, start_ticks,
+                              TSC::ticks(), context, blocker, 0,
+                              snapshot.active_state, true);
+  } else if (recording_enabled && exited && !snapshot.context_eligible) {
+    Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
+  }
+  profiler->leaveTaskBlockActivity();
+}
+
+static void JNICALL MonitorContendedEnter(jvmtiEnv *jvmti, JNIEnv *jni,
+                                          jthread thread, jobject object) {
+  monitorBlockEnter(jvmti, jni, thread, object, OSThreadState::MONITOR_WAIT);
+}
+
+static void JNICALL MonitorContendedEntered(jvmtiEnv *jvmti, JNIEnv *jni,
+                                            jthread thread, jobject object) {
+  monitorBlockExit(jni, thread, OSThreadState::MONITOR_WAIT);
+}
+
+static void JNICALL MonitorWait(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+                                jobject object, jlong timeout) {
+  if (!VM::monitorEventsDelegated()) {
+    monitorBlockEnter(jvmti, jni, thread, object, OSThreadState::OBJECT_WAIT);
+  }
+}
+
+static void JNICALL MonitorWaited(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+                                  jobject object, jboolean timed_out) {
+  if (!VM::monitorEventsDelegated()) {
+    monitorBlockExit(jni, thread, OSThreadState::OBJECT_WAIT);
+  }
 }
 
 static bool isVmRuntimeEntry(const char* blob_name) {
@@ -438,7 +576,8 @@ bool VM::initializeRequestStackTrace() {
   return false;
 }
 
-bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
+bool VM::initProfilerBridge(JavaVM *vm, bool attach,
+                            bool delegateMonitorEvents) {
   TEST_LOG("VM::initProfilerBridge");
   if (!initShared(vm)) {
     return false;
@@ -468,6 +607,8 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   _can_intercept_binding =
       potential_capabilities.can_generate_native_method_bind_events &&
       HeapUsage::needsNativeBindingInterception();
+  bool can_add_monitor_events =
+      potential_capabilities.can_generate_monitor_events;
 
   jvmtiCapabilities capabilities = {0};
   capabilities.can_generate_all_class_hook_events = 1;
@@ -484,10 +625,17 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   capabilities.can_get_source_file_name = 1;
   capabilities.can_get_line_numbers = 1;
   capabilities.can_generate_compiled_method_load_events = 1;
-  capabilities.can_generate_monitor_events = 1;
+  capabilities.can_generate_monitor_events = can_add_monitor_events ? 1 : 0;
   capabilities.can_tag_objects = 1;
 
   _jvmti->AddCapabilities(&capabilities);
+
+  jvmtiCapabilities actual_capabilities = {0};
+  _jvmti->GetCapabilities(&actual_capabilities);
+  _native_monitor_events_available =
+      actual_capabilities.can_generate_monitor_events;
+  _monitor_events_delegated =
+      delegateMonitorEvents && _native_monitor_events_available;
 
   if (_hotspot) {
     probeJFRRequestStackTrace();
@@ -505,6 +653,12 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   callbacks.SampledObjectAlloc = ObjectSampler::SampledObjectAlloc;
   callbacks.GarbageCollectionFinish = LivenessTracker::GarbageCollectionFinish;
   callbacks.NativeMethodBind = VMStructs::NativeMethodBind;
+  if (_native_monitor_events_available) {
+    callbacks.MonitorContendedEnter = MonitorContendedEnter;
+    callbacks.MonitorContendedEntered = MonitorContendedEntered;
+    callbacks.MonitorWait = MonitorWait;
+    callbacks.MonitorWaited = MonitorWaited;
+  }
   _jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
 
   _jvmti->SetEventNotificationMode(JVMTI_ENABLE, JVMTI_EVENT_VM_DEATH, NULL);
@@ -555,6 +709,37 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   OS::installSignalHandler(WAKEUP_SIGNAL, NULL, wakeupHandler);
 
   return true;
+}
+
+bool VM::setNativeMonitorEventsEnabled(bool enabled) {
+  if (!_native_monitor_events_available) return false;
+
+  jvmtiEventMode mode = enabled ? JVMTI_ENABLE : JVMTI_DISABLE;
+  jvmtiError enter = _jvmti->SetEventNotificationMode(
+      mode, JVMTI_EVENT_MONITOR_CONTENDED_ENTER, NULL);
+  jvmtiError entered = _jvmti->SetEventNotificationMode(
+      mode, JVMTI_EVENT_MONITOR_CONTENDED_ENTERED, NULL);
+  jvmtiError wait = JVMTI_ERROR_NONE;
+  jvmtiError waited = JVMTI_ERROR_NONE;
+  // When Java instrumentation owns Object.wait, do not enable the native wait
+  // notifications at all. Disable still addresses all four events so teardown
+  // is complete even if ownership was configured before this initialization.
+  if (!enabled || !_monitor_events_delegated) {
+    wait = _jvmti->SetEventNotificationMode(
+        mode, JVMTI_EVENT_MONITOR_WAIT, NULL);
+    waited = _jvmti->SetEventNotificationMode(
+        mode, JVMTI_EVENT_MONITOR_WAITED, NULL);
+  }
+
+  if (enter == JVMTI_ERROR_NONE && entered == JVMTI_ERROR_NONE &&
+      wait == JVMTI_ERROR_NONE && waited == JVMTI_ERROR_NONE) {
+    return true;
+  }
+
+  Log::warn("Unable to %s JVMTI monitor events: %d/%d/%d/%d",
+            enabled ? "enable" : "disable", enter, entered, wait, waited);
+  if (enabled) setNativeMonitorEventsEnabled(false);
+  return false;
 }
 
 // Run late initialization when JVM is ready

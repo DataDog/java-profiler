@@ -137,6 +137,79 @@ TEST(ProfiledThreadParkStateTest, ParkExitReturnsZeroTokenWhenBlockRunWasNotArme
   EXPECT_EQ(0ULL, park_block_token);
 }
 
+TEST(ProfiledThreadParkStateTest, ParkExitReturnsEntrySnapshot) {
+  TestProfiledThread thread = testThread(12351);
+  Context entered{};
+  entered.spanId = 17;
+  entered.rootSpanId = 18;
+  ASSERT_TRUE(thread->parkEnter(123, entered));
+  thread->setParkBlockToken(456);
+
+  u64 start_ticks = 0;
+  u64 token = 0;
+  Context exited{};
+  ASSERT_TRUE(thread->parkExit(start_ticks, exited, token));
+  EXPECT_EQ(123ULL, start_ticks);
+  EXPECT_EQ(456ULL, token);
+  EXPECT_EQ(17ULL, exited.spanId);
+  EXPECT_EQ(18ULL, exited.rootSpanId);
+}
+
+TEST(ProfiledThreadMonitorStateTest, MatchingExitReturnsEntrySnapshot) {
+  TestProfiledThread thread = testThread(12352);
+  Context entered{};
+  entered.spanId = 21;
+  ASSERT_TRUE(thread->monitorEnter(
+      100, entered, 200, OSThreadState::MONITOR_WAIT));
+  thread->setMonitorBlockToken(300);
+
+  u64 start_ticks = 0;
+  u64 blocker = 0;
+  u64 token = 0;
+  Context exited{};
+  ASSERT_TRUE(thread->monitorExit(OSThreadState::MONITOR_WAIT, start_ticks,
+                                  exited, blocker, token));
+  EXPECT_EQ(100ULL, start_ticks);
+  EXPECT_EQ(200ULL, blocker);
+  EXPECT_EQ(300ULL, token);
+  EXPECT_EQ(21ULL, exited.spanId);
+}
+
+TEST(ProfiledThreadMonitorStateTest, NestedContentionDoesNotReplaceObjectWait) {
+  TestProfiledThread thread = testThread(12353);
+  Context context{};
+  ASSERT_TRUE(thread->monitorEnter(
+      100, context, 200, OSThreadState::OBJECT_WAIT));
+  thread->setMonitorBlockToken(300);
+  EXPECT_FALSE(thread->monitorEnter(
+      400, context, 500, OSThreadState::MONITOR_WAIT));
+
+  u64 start_ticks = 0;
+  u64 blocker = 0;
+  u64 token = 0;
+  Context exited{};
+  EXPECT_FALSE(thread->monitorExit(OSThreadState::MONITOR_WAIT, start_ticks,
+                                   exited, blocker, token));
+  ASSERT_TRUE(thread->monitorExit(OSThreadState::OBJECT_WAIT, start_ticks,
+                                  exited, blocker, token));
+  EXPECT_EQ(100ULL, start_ticks);
+  EXPECT_EQ(200ULL, blocker);
+  EXPECT_EQ(300ULL, token);
+}
+
+TEST(ProfiledThreadMonitorStateTest, ClearAllowsRecoveryFromStaleState) {
+  TestProfiledThread thread = testThread(12354);
+  Context context{};
+  ASSERT_TRUE(thread->monitorEnter(
+      100, context, 200, OSThreadState::OBJECT_WAIT));
+  thread->setMonitorBlockToken(300);
+  thread->clearMonitorBlock();
+
+  ASSERT_TRUE(thread->monitorEnter(
+      400, context, 500, OSThreadState::MONITOR_WAIT));
+  EXPECT_EQ(0ULL, thread->monitorBlockToken());
+}
+
 TEST(WallClockOwnedBlockFilterTest, SlotStateTransitions) {
   ThreadFilter::Slot slot;
 

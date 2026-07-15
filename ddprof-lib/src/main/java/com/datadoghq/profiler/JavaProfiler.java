@@ -131,6 +131,25 @@ public final class JavaProfiler {
      * @param scratchDir directory where the bundled library will be exploded before linking; ignored when 'libLocation' is {@literal null}
      */
     public static synchronized JavaProfiler getInstance(String libLocation, String scratchDir) throws IOException {
+        return getInstance(libLocation, scratchDir, false);
+    }
+
+    /**
+     * Get a {@linkplain JavaProfiler} instance with explicit monitor-event ownership.
+     *
+     * <p>The first successful initialization fixes this process-wide setting because the native
+     * profiler is a singleton. When delegation is enabled, Java instrumentation owns
+     * {@code Object.wait} TaskBlock intervals and native JVMTI wait callbacks are suppressed;
+     * native JVMTI callbacks continue to own synchronized monitor contention.
+     *
+     * @param libLocation the path to the native library to use, or {@literal null} for the bundled library
+     * @param scratchDir directory where the bundled library will be exploded before linking
+     * @param delegateMonitorWaitEvents whether Java instrumentation owns {@code Object.wait} intervals
+     * @return the process-wide profiler instance
+     * @throws IOException if the native library cannot be loaded
+     */
+    public static synchronized JavaProfiler getInstance(String libLocation, String scratchDir,
+            boolean delegateMonitorWaitEvents) throws IOException {
         if (instance != null) {
             return instance;
         }
@@ -140,12 +159,11 @@ public final class JavaProfiler {
         if (!result.succeeded) {
             throw new IOException("Failed to load Datadog Java profiler library", result.error);
         }
-
         if (isVirtualThread(Thread.currentThread())) {
             throw new IOException("Cannot initialize profiler on a virtual thread");
         }
 
-        init0();
+        init0(delegateMonitorWaitEvents);
 
         instance = profiler;
 
@@ -159,6 +177,16 @@ public final class JavaProfiler {
         }
 
         return profiler;
+    }
+
+    /**
+     * Reports whether Java instrumentation, rather than JVMTI callbacks, owns
+     * {@code Object.wait} TaskBlock intervals.
+     *
+     * @return {@code true} when native wait callbacks are delegated
+     */
+    public boolean isMonitorEventsDelegated() {
+        return monitorEventsDelegated0();
     }
 
     /**
@@ -534,7 +562,7 @@ public final class JavaProfiler {
      * production is intentionally separate from the public paired API.
      */
     void parkEnter() {
-        parkEnter0();
+        parkEnter0(Thread.currentThread());
     }
 
     /**
@@ -542,7 +570,7 @@ public final class JavaProfiler {
      * {@code blocker} and {@code unblockingSpanId} are reserved for park instrumentation.
      */
     void parkExit(long blocker, long unblockingSpanId) {
-        parkExit0(blocker, unblockingSpanId);
+        parkExit0(Thread.currentThread(), blocker, unblockingSpanId);
     }
 
     /**
@@ -554,14 +582,14 @@ public final class JavaProfiler {
      * @return an opaque token to pass to {@link #blockExit(long)}, or 0 if no state was armed
      */
     long blockEnter(int state) {
-        return blockEnter0(state);
+        return blockEnter0(Thread.currentThread(), state);
     }
 
     /**
      * Clears a blocked interval previously armed by {@link #blockEnter(int)}.
      */
     void blockExit(long token) {
-        blockExit0(token);
+        blockExit0(Thread.currentThread(), token);
     }
 
     /**
@@ -626,7 +654,7 @@ public final class JavaProfiler {
         return new ThreadContext(buffer, metadata);
     }
 
-    private static native boolean init0();
+    private static native boolean init0(boolean delegateMonitorWaitEvents);
     private native void stop0() throws IllegalStateException;
     private native String execute0(String command) throws IllegalArgumentException, IllegalStateException, IOException;
 
@@ -634,6 +662,7 @@ public final class JavaProfiler {
     private static native void filterThreadRemove0();
 
     private static native int getTid0();
+    private static native boolean monitorEventsDelegated0();
 
     private static native boolean recordTrace0(long rootSpanId, String endpoint, String operation, int sizeLimit);
 
@@ -647,13 +676,13 @@ public final class JavaProfiler {
 
     private static native void recordQueueEnd0(long startTicks, long endTicks, String task, String scheduler, Thread origin, String queueType, int queueLength);
 
-    private static native void parkEnter0();
+    private static native void parkEnter0(Thread thread);
 
-    private static native void parkExit0(long blocker, long unblockingSpanId);
+    private static native void parkExit0(Thread thread, long blocker, long unblockingSpanId);
 
-    private static native long blockEnter0(int state);
+    private static native long blockEnter0(Thread thread, int state);
 
-    private static native void blockExit0(long token);
+    private static native void blockExit0(Thread thread, long token);
 
     private static native long beginTaskBlock0(Thread thread);
 
