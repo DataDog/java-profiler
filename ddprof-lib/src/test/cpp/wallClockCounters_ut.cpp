@@ -18,25 +18,25 @@ protected:
   }
 };
 
-TEST_F(WallClockCountersTest, DrainReturnsAndClearsSuppressedSampledRun) {
-  WallClockCounters::incrementSuppressedSampledRun();
-  WallClockCounters::incrementSuppressedSampledRun();
+TEST_F(WallClockCountersTest, DrainReturnsAndClearsSuppressedOwnedBlock) {
+  WallClockCounters::incrementSuppressedOwnedBlock();
+  WallClockCounters::incrementSuppressedOwnedBlock();
 
-  EXPECT_EQ(2ULL, WallClockCounters::drainSuppressedSampledRun());
-  EXPECT_EQ(0ULL, WallClockCounters::drainSuppressedSampledRun());
+  EXPECT_EQ(2ULL, WallClockCounters::drainSuppressedOwnedBlock());
+  EXPECT_EQ(0ULL, WallClockCounters::drainSuppressedOwnedBlock());
 }
 
-TEST_F(WallClockCountersTest, ResetClearsPendingSuppressedSampledRun) {
-  WallClockCounters::incrementSuppressedSampledRun();
+TEST_F(WallClockCountersTest, ResetClearsPendingSuppressedOwnedBlock) {
+  WallClockCounters::incrementSuppressedOwnedBlock();
 
   WallClockCounters::reset();
 
-  EXPECT_EQ(0ULL, WallClockCounters::drainSuppressedSampledRun());
+  EXPECT_EQ(0ULL, WallClockCounters::drainSuppressedOwnedBlock());
 }
 
 TEST_F(WallClockCountersTest, ResetIsIdempotent) {
   WallClockCounters::reset();
   WallClockCounters::reset();
 
-  EXPECT_EQ(0ULL, WallClockCounters::drainSuppressedSampledRun());
+  EXPECT_EQ(0ULL, WallClockCounters::drainSuppressedOwnedBlock());
 }
