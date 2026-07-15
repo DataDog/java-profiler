@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk17
 
 ## glibc-arm64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-07-15 12:11:21 EDT
+**Date:** 2026-07-15 12:36:31 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-arm64-openj9-jdk17
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 47 |
-| CPU Cores (end) | 47 |
+| CPU Cores (start) | 64 |
+| CPU Cores (end) | 64 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-arm64-openj9-jdk17
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 47-47 cores)</summary>
+<summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
 
 ```
-1784131654 47
-1784131659 47
-1784131664 47
-1784131669 47
-1784131674 47
-1784131679 47
-1784131684 47
-1784131689 47
-1784131694 47
-1784131700 47
-1784131705 47
-1784131710 47
-1784131715 47
-1784131720 47
-1784131725 47
-1784131730 47
-1784131735 47
-1784131740 47
-1784131745 47
-1784131750 47
+1784133172 64
+1784133178 64
+1784133183 64
+1784133188 64
+1784133193 64
+1784133198 64
+1784133203 64
+1784133208 64
+1784133213 64
+1784133218 64
+1784133223 64
+1784133228 64
+1784133233 64
+1784133238 64
+1784133243 64
+1784133248 64
+1784133253 64
+1784133258 64
+1784133263 64
+1784133268 64
 ```
 </details>
 
