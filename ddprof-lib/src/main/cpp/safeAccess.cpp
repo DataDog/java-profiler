@@ -299,7 +299,7 @@ bool SafeAccess::handle_safefetch(int sig, void* context) {
   }
 
   uintptr_t pc = uc->current_pc;
-  if ((sig == SIGSEGV || sig == SIGBUS) && uc != nullptr) {
+  if (sig == SIGSEGV || sig == SIGBUS) {
     if (pc == (uintptr_t)safefetch32_impl) {
       uc->current_pc = (uintptr_t)safefetch32_cont;
       Counters::increment(SAFEFETCH_FAILED);

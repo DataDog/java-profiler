@@ -371,8 +371,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         // entry_fp has been range-checked by isValidFP above; any remaining
         // SIGSEGV from a stale/concurrently-freed pointer is caught by the
         // setjmp crash protection in walkVM (checkFault -> longjmp).
-        uintptr_t carrier_fp = *(uintptr_t*)INJECT_FAULT_ADDRESS_UNLIKELY(entry_fp);
-        const void* carrier_pc = ((const void**)INJECT_FAULT_ADDRESS_UNLIKELY(entry_fp))[FRAME_PC_SLOT];
+        uintptr_t* carrier_fp_addr = (uintptr_t*)INJECT_FAULT_ADDRESS_UNLIKELY(entry_fp);
+        uintptr_t carrier_fp = *carrier_fp_addr;
+        const void* carrier_pc = ((const void**)carrier_fp_addr)[FRAME_PC_SLOT];
         uintptr_t carrier_sp = entry_fp + (FRAME_PC_SLOT + 1) * sizeof(void*);
         if (!StackWalkValidation::isValidFP(carrier_fp) ||
             StackWalkValidation::inDeadZone(carrier_pc) ||
@@ -519,9 +520,10 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                         Counters::increment(WALKVM_JAVA_FRAME_OK);
                         fillFrame(frames[depth++], FRAME_INTERPRETED, 0, method_id, method);
                         if (is_plausible_interpreter_frame) {
-                            pc = stripPointer(((void**)INJECT_FAULT_ADDRESS_UNLIKELY(fp))[FRAME_PC_SLOT]);
+                            uintptr_t* fp_addr = (uintptr_t*)INJECT_FAULT_ADDRESS_UNLIKELY(fp);
+                            pc = stripPointer(((void**)fp_addr)[FRAME_PC_SLOT]);
                             sp = frame.senderSP();
-                            fp = *(uintptr_t*)fp;
+                            fp = *fp_addr;
                         } else {
                             pc = stripPointer(SafeAccess::load((void**)sp));
                             sp = frame.senderSP();
@@ -595,8 +597,8 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                         fillFrame(frames[depth++], BCI_ERROR, "break_misaligned_sp");
                         break;
                     }
-
-                    fp = ((uintptr_t*)INJECT_FAULT_ADDRESS_UNLIKELY(sp))[-FRAME_PC_SLOT - 1];
+                    sp = (uintptr_t)INJECT_FAULT_ADDRESS_UNLIKELY(sp);
+                    fp = ((uintptr_t*)sp)[-FRAME_PC_SLOT - 1];
                     pc = ((const void**)sp)[-FRAME_PC_SLOT];
                     continue;
                 } else if (frame.unwindPrologue(nm, (uintptr_t&)pc, sp, fp)) {
