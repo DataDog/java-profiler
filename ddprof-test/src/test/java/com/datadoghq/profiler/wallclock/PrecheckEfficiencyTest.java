@@ -308,6 +308,8 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "wall=1ms";
+        // The workload deliberately has no tracing context, so its samples
+        // require the explicit all-thread wall-clock scope.
+        return "wall=1ms,wallscope=all";
     }
 }

@@ -195,11 +195,14 @@ public class PrecheckTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "wall=1ms,wallprecheck=true";
+        // This suite verifies sampling and suppression for threads outside a
+        // tracing-context window. Keep that population in scope explicitly;
+        // the production default remains wallscope=context.
+        return "wall=1ms,wallscope=all,wallprecheck=true";
     }
 
     protected String getPrecheckDisabledProfilerCommand() {
-        return "wall=1ms,wallprecheck=false,filter=0";
+        return "wall=1ms,wallscope=all,wallprecheck=false";
     }
 
     private long samplesForThread(String threadName) {
