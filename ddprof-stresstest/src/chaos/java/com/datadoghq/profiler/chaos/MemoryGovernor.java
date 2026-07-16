@@ -16,7 +16,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Shared memory-pressure gate for antagonists whose allocation/thread-churn
@@ -82,13 +82,21 @@ final class MemoryGovernor {
             Paths.get("/sys/fs/cgroup/memory/memory.limit_in_bytes"),
     };
 
-    private static volatile boolean throttled;
-    private static volatile boolean critical;
+    // CAS-guarded so a watermark crossing is escalated exactly once even when
+    // several antagonist threads observe it in the same instant (both via the
+    // background sampler and the per-thread inline path below).
+    private static final AtomicBoolean throttled = new AtomicBoolean();
+    private static final AtomicBoolean critical = new AtomicBoolean();
     // Last cgroup reading from the background sampler, for the inline path's
     // log line only — the inline path itself never reads cgroup state (that
     // requires a file read, too costly to do on every antagonist's hot loop).
     private static volatile double lastCgroupFraction;
-    private static final AtomicLong paceCalls = new AtomicLong();
+    // Per-thread rather than a shared counter: this is incremented on every
+    // pace() call across every antagonist's hot loop, so a single shared
+    // AtomicLong would become a cache-line contention point. Exactness across
+    // threads isn't needed — each thread just needs to trigger the inline
+    // check roughly every INLINE_CHECK_STRIDE calls.
+    private static final ThreadLocal<long[]> paceCallCounter = ThreadLocal.withInitial(() -> new long[1]);
 
     private MemoryGovernor() {
     }
@@ -110,16 +118,17 @@ final class MemoryGovernor {
 
     /** Called from an antagonist's hot allocation loop. No-op unless throttled. */
     static void pace() {
-        if ((paceCalls.incrementAndGet() & (INLINE_CHECK_STRIDE - 1)) == 0) {
+        long[] counter = paceCallCounter.get();
+        if ((++counter[0] & (INLINE_CHECK_STRIDE - 1)) == 0) {
             inlineHeapCheck();
         }
-        if (critical) {
+        if (critical.get()) {
             try {
                 Thread.sleep(CRITICAL_THROTTLE_SLEEP_MS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
-        } else if (throttled) {
+        } else if (throttled.get()) {
             try {
                 Thread.sleep(THROTTLE_SLEEP_MS);
             } catch (InterruptedException e) {
@@ -140,12 +149,10 @@ final class MemoryGovernor {
             return;
         }
         double heapFraction = (double) heap.getUsed() / (double) heap.getMax();
-        if (heapFraction >= HEAP_CRITICAL_WATERMARK && !critical) {
-            critical = true;
+        if (heapFraction >= HEAP_CRITICAL_WATERMARK && critical.compareAndSet(false, true)) {
             log(lastCgroupFraction, heapFraction, "critical (inline)");
             System.gc();
-        } else if (heapFraction >= HEAP_HIGH_WATERMARK && !throttled) {
-            throttled = true;
+        } else if (heapFraction >= HEAP_HIGH_WATERMARK && throttled.compareAndSet(false, true)) {
             log(lastCgroupFraction, heapFraction, "throttling (inline)");
         }
     }
@@ -181,24 +188,20 @@ final class MemoryGovernor {
         boolean high = cgroupFraction >= CGROUP_HIGH_WATERMARK || heapFraction >= HEAP_HIGH_WATERMARK;
         boolean low = cgroupFraction <= CGROUP_LOW_WATERMARK && heapFraction <= HEAP_LOW_WATERMARK;
         boolean crit = cgroupFraction >= CGROUP_CRITICAL_WATERMARK || heapFraction >= HEAP_CRITICAL_WATERMARK;
-        if (high && !throttled) {
-            throttled = true;
+        if (high && throttled.compareAndSet(false, true)) {
             log(cgroupFraction, heapFraction, "throttling");
-        } else if (low && throttled) {
-            throttled = false;
+        } else if (low && throttled.compareAndSet(true, false)) {
             log(cgroupFraction, heapFraction, "released");
         }
         // else: in the dead zone between watermarks — keep current state.
 
-        if (crit && !critical) {
-            critical = true;
+        if (crit && critical.compareAndSet(false, true)) {
             log(cgroupFraction, heapFraction, "critical");
             // One-shot nudge on the crossing, not every sample tick, so a
             // sustained critical state doesn't turn into a GC storm on top
             // of the memory pressure it's meant to relieve.
             System.gc();
-        } else if (low && critical) {
-            critical = false;
+        } else if (low && critical.compareAndSet(true, false)) {
             log(cgroupFraction, heapFraction, "critical-released");
         }
     }

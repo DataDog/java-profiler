@@ -134,6 +134,13 @@ public final class VirtualThreadContextCascadeAntagonist implements Antagonist {
     private static final long FAST_SCHEDULER_KEEPALIVE_MILLIS = 200L;
     private static final long FAST_STALE_RACER_SLEEP_MIN_MILLIS = 50L;
     private static final long FAST_STALE_RACER_SLEEP_MAX_MILLIS = FAST_SCHEDULER_KEEPALIVE_MILLIS * 4;
+
+    // Caps the fast-carrier pool's platform-thread growth. MAX_STALE_RACERS is
+    // already the hard ceiling on concurrent virtual threads that could each
+    // need a carrier, so this doesn't reduce headroom — it just removes the
+    // unbounded-growth characteristic of Integer.MAX_VALUE.
+    private static final int MAX_FAST_CARRIER_THREADS = MAX_STALE_RACERS;
+
     private static final Constructor<?> VTHREAD_CTOR = resolveVirtualThreadCtor();
 
     private final Semaphore liveVthreads = new Semaphore(MAX_LIVE_VTHREADS);
@@ -180,20 +187,28 @@ public final class VirtualThreadContextCascadeAntagonist implements Antagonist {
     public void stopGracefully(Duration timeout) {
         running = false;
         long deadlineNanos = System.nanoTime() + timeout.toNanos();
-        try {
-            driver.join(remainingMillis(deadlineNanos));
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+        // Driver threads are only non-null once start() has actually spawned them; guard against
+        // stopGracefully being called when start() never ran or failed partway through.
+        if (driver != null) {
+            try {
+                driver.join(remainingMillis(deadlineNanos));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
-        try {
-            pinningDriver.join(remainingMillis(deadlineNanos));
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+        if (pinningDriver != null) {
+            try {
+                pinningDriver.join(remainingMillis(deadlineNanos));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
-        try {
-            staleRacerDriver.join(remainingMillis(deadlineNanos));
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+        if (staleRacerDriver != null) {
+            try {
+                staleRacerDriver.join(remainingMillis(deadlineNanos));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
         // Best-effort drain of in-flight cascades so the JVM doesn't exit mid-fan-out.
         try {
@@ -492,7 +507,7 @@ public final class VirtualThreadContextCascadeAntagonist implements Antagonist {
     private static Executor newFastCarrierScheduler() {
         return new ThreadPoolExecutor(
                 0,
-                Integer.MAX_VALUE,
+                MAX_FAST_CARRIER_THREADS,
                 FAST_SCHEDULER_KEEPALIVE_MILLIS,
                 TimeUnit.MILLISECONDS,
                 new SynchronousQueue<>(),

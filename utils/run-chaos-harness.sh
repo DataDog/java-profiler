@@ -177,7 +177,7 @@ case $ALLOCATOR in
     if command -v ldd >/dev/null 2>&1; then
       GLIBC_VERSION=$(ldd --version 2>/dev/null | head -1 | grep -oE '[0-9]+\.[0-9]+$')
       if [ -n "${GLIBC_VERSION}" ] && [ "$(printf '%s\n' "2.34" "${GLIBC_VERSION}" | sort -V | head -1)" = "2.34" ]; then
-        MALLOC_DEBUG_LIB=$(find /usr/lib/ /usr/lib64/ /lib/ /lib64/ -name 'libc_malloc_debug.so*' 2>/dev/null | head -1)
+        MALLOC_DEBUG_LIB=$(find /usr/lib/ /usr/lib64/ /lib/ /lib64/ -maxdepth 4 -name 'libc_malloc_debug.so*' 2>/dev/null | head -1)
         if [ -z "${MALLOC_DEBUG_LIB}" ]; then
           echo "FAIL:glibc ${GLIBC_VERSION} requires libc_malloc_debug to be preloaded for MALLOC_CHECK_ to take effect, but it could not be found" >&2
           exit 1
@@ -188,7 +188,7 @@ case $ALLOCATOR in
     fi
     ;;
   tcmalloc)
-    export LD_PRELOAD=$(find /usr/lib/ /usr/lib64/ /opt/homebrew/lib/ /usr/local/lib/ -name 'libtcmalloc_minimal.so.4' -o -name 'libtcmalloc.dylib' 2>/dev/null | head -1)
+    export LD_PRELOAD=$(find /usr/lib/ /usr/lib64/ /opt/homebrew/lib/ /usr/local/lib/ -maxdepth 4 -name 'libtcmalloc_minimal.so.4' -o -name 'libtcmalloc.dylib' 2>/dev/null | head -1)
     # thread-churn/dump-storm antagonists cycle many short-lived threads;
     # tcmalloc's defaults are slow to return their per-thread caches to the
     # OS, which was inflating container RSS past the OOM limit on aarch64.
@@ -196,7 +196,7 @@ case $ALLOCATOR in
     export TCMALLOC_AGGRESSIVE_DECOMMIT=1
     ;;
   jemalloc)
-    export LD_PRELOAD=$(find /usr/lib/ /usr/lib64/ /opt/homebrew/lib/ /usr/local/lib/ -name 'libjemalloc.so' -o -name 'libjemalloc.dylib' 2>/dev/null | head -1)
+    export LD_PRELOAD=$(find /usr/lib/ /usr/lib64/ /opt/homebrew/lib/ /usr/local/lib/ -maxdepth 4 -name 'libjemalloc.so' -o -name 'libjemalloc.dylib' 2>/dev/null | head -1)
     # Same aarch64 RSS-inflation issue as tcmalloc above: jemalloc's default
     # decay times leave dirty/muzzy pages resident under heavy thread churn.
     export MALLOC_CONF="background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:1000"

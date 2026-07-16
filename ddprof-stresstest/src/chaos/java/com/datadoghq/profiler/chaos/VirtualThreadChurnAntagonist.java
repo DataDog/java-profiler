@@ -64,10 +64,14 @@ public final class VirtualThreadChurnAntagonist implements Antagonist {
     @Override
     public void stopGracefully(Duration timeout) {
         running = false;
-        try {
-            driver.join(timeout.toMillis());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+        // driver is only non-null once start() has actually spawned it; guard against
+        // stopGracefully being called when start() never ran.
+        if (driver != null) {
+            try {
+                driver.join(timeout.toMillis());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
