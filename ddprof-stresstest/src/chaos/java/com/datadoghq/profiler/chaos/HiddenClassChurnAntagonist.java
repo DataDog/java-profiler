@@ -110,6 +110,7 @@ public final class HiddenClassChurnAntagonist implements Antagonist {
                 Thread.currentThread().interrupt();
                 return;
             }
+            MemoryGovernor.pace();
         }
     }
 

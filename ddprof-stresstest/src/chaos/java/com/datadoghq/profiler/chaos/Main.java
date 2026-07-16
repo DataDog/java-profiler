@@ -42,16 +42,18 @@ public final class Main {
         Args parsed = Args.parse(args);
         log("starting duration=" + parsed.duration + " antagonists=" + parsed.antagonists);
 
-        List<Antagonist> running = new ArrayList<>();
-        for (String name : parsed.antagonists) {
-            Antagonist a = create(name);
-            a.start();
-            running.add(a);
-            log("antagonist started: " + a.name());
-        }
+        MemoryGovernor.start();
 
-        long deadlineNanos = System.nanoTime() + parsed.duration.toNanos();
+        List<Antagonist> running = new ArrayList<>();
         try {
+            for (String name : parsed.antagonists) {
+                Antagonist a = create(name);
+                a.start();
+                running.add(a);
+                log("antagonist started: " + a.name());
+            }
+
+            long deadlineNanos = System.nanoTime() + parsed.duration.toNanos();
             while (System.nanoTime() < deadlineNanos) {
                 Thread.sleep(1_000L);
             }
