@@ -129,6 +129,7 @@
   X(SAFEFETCH_FAILED, "safefetch_failed")                                     \
   X(WALKVM_LONGJMP_RECOVERED, "walkvm_longjmp_recovered")                     \
   DD_COUNTER_TABLE_FAULT_INJECTION(X)                                          \
+  DD_COUNTER_TABLE_FI_DEBUG(X)                                                 \
   DD_COUNTER_TABLE_DEBUG(X)
 
 // Fault-injection-only counter: number of faults actually injected. Only
@@ -139,6 +140,19 @@
   X(FAULTS_INJECTED, "faults_injected")
 #else
 #define DD_COUNTER_TABLE_FAULT_INJECTION(X)
+#endif
+
+// Fault-injection + debug only: faults injected while the current thread was
+// NOT inside a walkVM longjmp-protected region. Such a site relies solely on
+// safefetch (or would genuinely crash if the poisoned pointer is raw-dereferenced
+// outside any recovery), so a non-zero value flags injection sites that are not
+// covered by longjmp protection. Compiled in only when both __FAULT_INJECTION__
+// and DEBUG are defined.
+#if defined(__FAULT_INJECTION__) && defined(DEBUG)
+#define DD_COUNTER_TABLE_FI_DEBUG(X)                                           \
+  X(FAULTS_INJECTED_UNPROTECTED, "faults_injected_unprotected")
+#else
+#define DD_COUNTER_TABLE_FI_DEBUG(X)
 #endif
 
 // Debug-only counters: SafeAccess reads/copies issued while the thread is
