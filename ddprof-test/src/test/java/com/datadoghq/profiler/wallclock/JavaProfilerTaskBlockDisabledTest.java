@@ -21,6 +21,6 @@ public class JavaProfilerTaskBlockDisabledTest extends AbstractProfilerTest {
 
   @Override
   protected String getProfilerCommand() {
-    return "wall=1ms,wallscope=context,wallprecheck=true";
+    return "wall=1ms,filter=0,wallprecheck=true";
   }
 }

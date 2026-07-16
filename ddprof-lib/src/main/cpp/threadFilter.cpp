@@ -615,19 +615,16 @@ BlockRunSnapshot ThreadFilter::snapshotBlockedRun(SlotID slot_id) const {
 bool ThreadFilter::isOwnedBlockSuppressionCandidate(
     const ThreadEntry& entry) const {
     Slot* slot = entry.slot;
-    if (slot == nullptr || slot->nativeTid() != entry.tid ||
+    if (!unfilteredWallTrackingActive() || slot == nullptr ||
+        slot->nativeTid() != entry.tid ||
         slot->lifecycleGeneration() != entry.lifecycle_generation) {
         return false;
     }
-    const bool unfiltered_tracking = unfilteredWallTrackingActive();
-    RecordingEpoch epoch = 0;
-    if (unfiltered_tracking) {
-        epoch = recordingEpoch();
-        if (epoch == 0 || entry.recording_epoch != epoch ||
-            slot->recordingEpoch() != epoch ||
-            !slot->activeBlockRemainedOutsideContextWindow()) {
-            return false;
-        }
+    RecordingEpoch epoch = recordingEpoch();
+    if (epoch == 0 || entry.recording_epoch != epoch ||
+        slot->recordingEpoch() != epoch ||
+        !slot->activeBlockRemainedOutsideContextWindow()) {
+        return false;
     }
 
     u64 block_generation = slot->blockGeneration();
@@ -653,9 +650,8 @@ bool ThreadFilter::isOwnedBlockSuppressionCandidate(
         slot->lifecycleGeneration() != entry.lifecycle_generation) {
         return false;
     }
-    if (unfiltered_tracking &&
-        (recordingEpoch() != epoch || slot->recordingEpoch() != epoch ||
-         !slot->activeBlockRemainedOutsideContextWindow())) {
+    if (recordingEpoch() != epoch || slot->recordingEpoch() != epoch ||
+        !slot->activeBlockRemainedOutsideContextWindow()) {
         return false;
     }
     return true;
