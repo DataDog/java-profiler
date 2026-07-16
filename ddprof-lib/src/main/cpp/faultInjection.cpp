@@ -37,25 +37,30 @@ static constexpr uintptr_t ALIGN_MASK = ~(uintptr_t)(sizeof(void*) - 1);
 
 // Guard region: mmapped once at init() with PROT_NONE so any access faults.
 // Written only by init() (off the signal path); read-only afterwards.
-static uintptr_t g_guard_base = 0;
-static uintptr_t g_guard_span = 0;
-static bool      g_guard_ok   = false;
+static std::atomic<uintptr_t> g_guard_base{0};
+static std::atomic<uintptr_t> g_guard_span{0};
+static std::atomic<bool>      g_guard_ok{false};
 
 // Fallback PRNG for threads with no ProfiledThread context.  Relaxed atomics
 // keep it lock-free and async-signal-safe; a lost update on a race is harmless.
 static std::atomic<u64> g_fallback_rng{KNUTH};
 
 void init() {
+  // Avoid repeated mmaps (tests call init() in each fixture SetUp()).
+  if (g_guard_ok.load(std::memory_order_acquire)) {
+    return;
+  }
+
   // A handful of pages is plenty of distinct fault addresses; keep it small.
   size_t span = 16 * OS::page_size;
   void* p = mmap(nullptr, span, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   if (p == MAP_FAILED) {
-    g_guard_ok = false;  // poisonAddress() falls back to random garbage.
     return;
   }
-  g_guard_base = (uintptr_t)p;
-  g_guard_span = span;
-  g_guard_ok = true;
+
+  g_guard_base.store((uintptr_t)p, std::memory_order_relaxed);
+  g_guard_span.store(span, std::memory_order_relaxed);
+  g_guard_ok.store(true, std::memory_order_release);
 }
 
 u64 nextRandom() {
