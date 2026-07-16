@@ -73,7 +73,9 @@
   X(UNWINDING_TIME_ASYNC, "unwinding_ticks_async")                             \
   X(UNWINDING_TIME_JVMTI, "unwinding_ticks_jvmti")                             \
   X(CALLTRACE_STORAGE_DROPPED, "calltrace_storage_dropped_traces")             \
+  X(CALLTRACE_STORAGE_EXPANSION_SKIPPED, "calltrace_storage_expansion_skipped") \
   X(LINE_NUMBER_TABLES, "line_number_tables")                                  \
+  X(LINE_NUMBER_TABLE_UNREADABLE, "line_number_table_unreadable")              \
   X(REMOTE_SYMBOLICATION_FRAMES, "remote_symbolication_frames")                \
   X(REMOTE_SYMBOLICATION_LIBS_WITH_BUILD_ID, "remote_symbolication_libs_with_build_id") \
   X(REMOTE_SYMBOLICATION_BUILD_ID_CACHE_HITS, "remote_symbolication_build_id_cache_hits") \
