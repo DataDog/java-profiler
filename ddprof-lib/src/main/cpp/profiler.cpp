@@ -815,11 +815,7 @@ Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
     return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
   }
 
-  for (int i = 0; i < num_frames; ++i) {
-    frames[i].method_id = jvmti_frames[i].method;
-    frames[i].bci = jvmti_frames[i].location;
-    LP64_ONLY(frames[i].padding = 0;)
-  }
+  copyJvmtiFrames(frames, jvmti_frames, num_frames);
   u64 call_trace_id =
       _call_trace_storage.put(num_frames, frames, false, 1);
 #ifdef COUNTERS
