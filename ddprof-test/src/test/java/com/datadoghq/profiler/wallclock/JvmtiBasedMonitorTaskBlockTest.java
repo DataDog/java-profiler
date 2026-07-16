@@ -25,6 +25,6 @@ public class JvmtiBasedMonitorTaskBlockTest extends MonitorTaskBlockTest {
 
   @Override
   protected String getProfilerCommand() {
-    return "wall=1ms,wallprecheck=true,jvmtistacks=true";
+    return "wall=1ms,filter=,wallprecheck=true,jvmtistacks=true";
   }
 }
