@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk25
 
 ## glibc-x64-hotspot-jdk25 - ✅ PASS
 
-**Date:** 2026-07-16 12:50:21 EDT
+**Date:** 2026-07-16 12:57:49 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-hotspot-jdk25
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 32 |
-| CPU Cores (end) | 32 |
+| CPU Cores (start) | 96 |
+| CPU Cores (end) | 96 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-x64-hotspot-jdk25
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
+<summary>CPU Timeline (1 unique values: 96-96 cores)</summary>
 
 ```
-1784220355 32
-1784220360 32
-1784220365 32
-1784220370 32
-1784220375 32
-1784220380 32
-1784220385 32
-1784220390 32
-1784220395 32
-1784220400 32
-1784220405 32
-1784220410 32
-1784220415 32
-1784220420 32
-1784220425 32
-1784220430 32
-1784220435 32
-1784220440 32
-1784220445 32
-1784220450 32
+1784220834 96
+1784220839 96
+1784220844 96
+1784220849 96
+1784220854 96
+1784220860 96
+1784220865 96
+1784220870 96
+1784220875 96
+1784220880 96
+1784220885 96
+1784220890 96
+1784220895 96
+1784220900 96
+1784220905 96
+1784220910 96
+1784220915 96
+1784220920 96
+1784220925 96
+1784220930 96
 ```
 </details>
 
