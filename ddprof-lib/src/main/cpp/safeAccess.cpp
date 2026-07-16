@@ -294,6 +294,10 @@ bool SafeAccess::safeCopy(void* dst, const void* src, size_t len) {
 
 bool SafeAccess::handle_safefetch(int sig, void* context) {
   ucontext_t* uc = (ucontext_t*)context;
+  if (uc == nullptr) {
+    return false;
+  }
+
   uintptr_t pc = uc->current_pc;
   if ((sig == SIGSEGV || sig == SIGBUS) && uc != nullptr) {
     if (pc == (uintptr_t)safefetch32_impl) {
