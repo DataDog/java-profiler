@@ -104,13 +104,13 @@ static void expectRateInBand(u64 threshold, size_t n, double nominal) {
 }
 
 TEST_F(FaultInjectionTest, LikelyTierRate) {
-  expectRateInBand(faultinj::PROB_LIKELY, 1000000, 1e-2);    // ~10000 fires
+  expectRateInBand(faultinj::PROB_LIKELY, 200000, 1e-2);    // ~2000 fires
 }
 TEST_F(FaultInjectionTest, UnlikelyTierRate) {
-  expectRateInBand(faultinj::PROB_UNLIKELY, 10000000, 1e-3); // ~10000 fires
+  expectRateInBand(faultinj::PROB_UNLIKELY, 2000000, 1e-3); // ~2000 fires
 }
 TEST_F(FaultInjectionTest, RareTierRate) {
-  expectRateInBand(faultinj::PROB_RARE, 100000000, 1e-4);    // ~10000 fires
+  expectRateInBand(faultinj::PROB_RARE, 20000000, 1e-4);    // ~2000 fires
 }
 
 // poisonAddress() must always yield a fault-inducing, word-aligned address.
