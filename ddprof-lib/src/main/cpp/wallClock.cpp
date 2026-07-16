@@ -108,10 +108,10 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
     return result;
   }
 
-  // In an unfiltered recording, context threads keep their normal MethodSample
-  // stream. TaskBlock replaces signals only for owned blocks that remain
-  // outside the context window.
-  if (registry->unfilteredWallTrackingActive() && slot->inContextWindow()) {
+  // TaskBlock replaces signals only for threads that unfiltered wall-clock
+  // profiling observes outside the tracing context window. Context-scoped
+  // profiling must continue sampling its selected threads normally.
+  if (!registry->unfilteredWallTrackingActive() || slot->inContextWindow()) {
     return result;
   }
 
