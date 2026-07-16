@@ -96,6 +96,7 @@ public final class BoundedThreadPoolAntagonist implements Antagonist {
                     @Override
                     public void run() {
                         if (!running) return;
+                        MemoryGovernor.pace();
                         long seed = System.nanoTime();
                         sink.addAndGet(burn(seed));
                         ScheduledExecutorService sibling = pools[nextIdx];
