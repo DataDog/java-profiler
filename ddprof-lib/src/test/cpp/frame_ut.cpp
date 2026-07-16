@@ -7,12 +7,27 @@
 #include "../../main/cpp/frame.h"
 #include "../../main/cpp/gtest_crash_handler.h"
 
-// VMTestAccessor — friend of VM, lets tests toggle VM::isHotspot() since
-// isRawPointer() now gates on it (raw pointers only exist on HotSpot).
+// Test-only friend accessor for VM internals. It exists solely so these unit
+// tests can exercise the VM-specific raw-pointer path in FrameType and must
+// never be reused from production code.
 class VMTestAccessor {
 public:
     static bool getHotspot() { return VM::_hotspot; }
     static void setHotspot(bool v) { VM::_hotspot = v; }
+};
+
+class VMHotspotGuard {
+private:
+    bool _saved;
+
+public:
+    explicit VMHotspotGuard(bool hotspot) : _saved(VMTestAccessor::getHotspot()) {
+        VMTestAccessor::setHotspot(hotspot);
+    }
+
+    ~VMHotspotGuard() {
+        VMTestAccessor::setHotspot(_saved);
+    }
 };
 
 static constexpr char FRAME_TEST_NAME[] = "FrameTest";
@@ -150,26 +165,22 @@ TEST(FrameTypeIsRawPointerTest, FalseForEncodedWithoutFlag) {
 TEST(FrameTypeIsRawPointerTest, TrueWhenBit30IsSetOnHotspot) {
     // Manually set the raw-pointer flag (bit 30) on an encoded value.
     // Raw pointers only exist on HotSpot, so isRawPointer() must be gated on it.
-    bool saved = VMTestAccessor::getHotspot();
-    VMTestAccessor::setHotspot(true);
+    VMHotspotGuard hotspot(true);
     int base = FrameType::encode(FRAME_JIT_COMPILED, 0);
     int withFlag = base | (1 << 30);
     EXPECT_TRUE(FrameType::isRawPointer(withFlag))
         << "isRawPointer() must be true when bit 30 is set, value is positive, and VM is HotSpot";
-    VMTestAccessor::setHotspot(saved);
 }
 
 TEST(FrameTypeIsRawPointerTest, FalseWhenBit30IsSetOnNonHotspot) {
     // Non-HotSpot VMs can coincidentally produce an unencoded bci with bit 30
     // set (e.g. OpenJ9's raw AsyncGetCallTrace output); that must not be
     // mistaken for HotSpot's raw-pointer encoding.
-    bool saved = VMTestAccessor::getHotspot();
-    VMTestAccessor::setHotspot(false);
+    VMHotspotGuard hotspot(false);
     int base = FrameType::encode(FRAME_JIT_COMPILED, 0);
     int withFlag = base | (1 << 30);
     EXPECT_FALSE(FrameType::isRawPointer(withFlag))
         << "isRawPointer() must be false when VM is not HotSpot, even with bit 30 set";
-    VMTestAccessor::setHotspot(saved);
 }
 
 TEST(FrameTypeIsRawPointerTest, FalseWithOnlyBit30SetOnNegative) {
@@ -178,4 +189,17 @@ TEST(FrameTypeIsRawPointerTest, FalseWithOnlyBit30SetOnNegative) {
     int negativeWithBit30 = static_cast<int>(0xC0000000u); // bits 31 and 30 set → negative
     EXPECT_LT(negativeWithBit30, 0);
     EXPECT_FALSE(FrameType::isRawPointer(negativeWithBit30));
+}
+
+TEST(FrameTypeIsRawPointerTest, FalseForRawAsgctBciWithBit30SetButNoEncodedMarker) {
+    // Regression test: a raw, unencoded ASGCT BCI (bit 20 / ENCODED_MASK not set)
+    // that incidentally has bit 30 set must NOT be reported as a raw pointer.
+    // Such values occur on non-HotSpot VMs (e.g. J9), which never call encode()
+    // and therefore never set ENCODED_MASK; only encode(..., rawPointer=true)
+    // (HotSpot-only, per its own assert) is allowed to set RAW_POINTER_MASK.
+    int rawAsgctBciWithBit30 = 1 << 30;
+    VMHotspotGuard hotspot(true);
+    EXPECT_FALSE(FrameType::isRawPointer(rawAsgctBciWithBit30))
+        << "isRawPointer() must require ENCODED_MASK (bit 20) before trusting bit 30, "
+        << "otherwise raw ASGCT BCIs that never went through encode() can false-positive";
 }
