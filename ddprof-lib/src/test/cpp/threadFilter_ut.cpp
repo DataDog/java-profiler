@@ -638,15 +638,32 @@ TEST_F(ThreadFilterTest, OwnedBlockSuppressesBeforeAnyWallSample) {
     u64 token = filter->enterBlockedRun(slot_id, OSThreadState::SLEEPING);
     ASSERT_NE(0ULL, token);
 
-    ThreadEntry entry{1234, slot, slot->lifecycleGeneration()};
+    ThreadEntry entry{1234, slot, slot->lifecycleGeneration(),
+                      slot->recordingEpoch()};
     EXPECT_TRUE(filter->isOwnedBlockSuppressionCandidate(entry));
     EXPECT_FALSE(filter->isOwnedBlockSuppressionCandidate(
-        {1235, slot, slot->lifecycleGeneration()}));
+        {1235, slot, slot->lifecycleGeneration(), slot->recordingEpoch()}));
     EXPECT_FALSE(filter->isOwnedBlockSuppressionCandidate(
-        {1234, slot, slot->lifecycleGeneration() + 1}));
+        {1234, slot, slot->lifecycleGeneration() + 1,
+         slot->recordingEpoch()}));
 
     ASSERT_TRUE(filter->exitBlockedRun(
         slot_id, ThreadFilter::tokenGeneration(token)));
+    EXPECT_FALSE(filter->isOwnedBlockSuppressionCandidate(entry));
+}
+
+TEST_F(ThreadFilterTest, ContextScopeNeverSuppressesOwnedBlock) {
+    filter->init("0", false);
+    int slot_id = filter->registerThread(1234);
+    ASSERT_GE(slot_id, 0);
+    filter->add(1234, slot_id);
+    ThreadFilter::Slot* slot = filter->slotForId(slot_id);
+    ASSERT_NE(nullptr, slot);
+    ASSERT_NE(0ULL, filter->enterBlockedRun(
+        slot_id, OSThreadState::CONDVAR_WAIT));
+
+    ThreadEntry entry{1234, slot, slot->lifecycleGeneration(),
+                      slot->recordingEpoch()};
     EXPECT_FALSE(filter->isOwnedBlockSuppressionCandidate(entry));
 }
 
@@ -658,7 +675,8 @@ TEST_F(ThreadFilterTest, ContextEpochDisablesOwnedBlockSuppression) {
     ASSERT_NE(nullptr, slot);
     ASSERT_NE(0ULL, filter->enterBlockedRun(
         slot_id, OSThreadState::CONDVAR_WAIT));
-    ThreadEntry entry{1234, slot, slot->lifecycleGeneration()};
+    ThreadEntry entry{1234, slot, slot->lifecycleGeneration(),
+                      slot->recordingEpoch()};
     ASSERT_TRUE(filter->isOwnedBlockSuppressionCandidate(entry));
 
     filter->add(1234, slot_id);
@@ -845,7 +863,7 @@ TEST_F(ThreadRegistryTest, UnfilteredSuppressionValidatesIdentityAndLifecycle) {
     EXPECT_FALSE(registry.isOwnedBlockSuppressionCandidate(entry));
 }
 
-TEST_F(ThreadRegistryTest, ContextFilteredSuppressionPreservesHistoricalEligibility) {
+TEST_F(ThreadRegistryTest, ContextFilteredSuppressionRemainsDisabled) {
     registry.init("0");
     int slot_id = registry.registerThread(5555);
     ASSERT_GE(slot_id, 0);
@@ -857,7 +875,7 @@ TEST_F(ThreadRegistryTest, ContextFilteredSuppressionPreservesHistoricalEligibil
     ASSERT_NE(0u, token);
     ThreadEntry entry{5555, slot, slot->lifecycleGeneration(),
                       slot->recordingEpoch()};
-    EXPECT_TRUE(registry.isOwnedBlockSuppressionCandidate(entry));
+    EXPECT_FALSE(registry.isOwnedBlockSuppressionCandidate(entry));
 }
 
 TEST_F(ThreadRegistryTest, ConcurrentTidReuseInvalidatesSuppressionSnapshot) {
