@@ -57,19 +57,23 @@ class CallTraceHashTable {
   static constexpr double LOAD_RATIO = 3.0 / 4.0;
 
   friend class CallTraceHashTableTestAccessor;
+  // Test-only: grants CallTraceHashTableOverflowGuardTestAccessor
+  // (test_callTraceStorage.cpp) access to the private overflow-guard
+  // helpers below, so CallTraceHashTableOverflowGuardTest can exercise the
+  // 2^32 slot-id boundary and the capacity-doubling behaviour directly,
+  // without needing billions of real put() calls to reach them.
+  friend class CallTraceHashTableOverflowGuardTestAccessor;
 
 public:
   static CallTrace _overflow_trace;
 
+private:
   // Pure, allocation-free helpers backing the expansion-overflow guard in
-  // expandTableIfNeeded(); exposed here (rather than kept file-local in the
-  // .cpp) so tests can exercise the 2^32 slot-id boundary and the
-  // capacity-doubling behaviour directly, without needing billions of real
-  // put() calls to reach them.
+  // expandTableIfNeeded(); kept private and reached in tests only via
+  // CallTraceHashTableOverflowGuardTestAccessor (see friend declaration above).
   static u64 nextGenerationCapacity(u32 capacity);
   static bool wouldExceedSlotIdRange(u64 slot_base, u32 capacity);
 
-private:
   std::atomic<u64> _instance_id;  // 64-bit instance ID for this hash table - atomic for thread-safe access
   CallTraceStorage* _parent_storage;  // Parent storage for RefCountGuard access
 

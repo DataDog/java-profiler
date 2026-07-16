@@ -926,6 +926,21 @@ public:
   }
 };
 
+// Test-only accessor granting access to CallTraceHashTable's private
+// nextGenerationCapacity()/wouldExceedSlotIdRange() helpers, following the
+// same CallTraceHashTable::friend convention as CallTraceHashTableTestAccessor
+// above (kept separate since these two are pure query helpers, not part of
+// the seedTableForTesting mutation seam).
+class CallTraceHashTableOverflowGuardTestAccessor {
+public:
+  static u64 nextGenerationCapacity(u32 capacity) {
+    return CallTraceHashTable::nextGenerationCapacity(capacity);
+  }
+  static bool wouldExceedSlotIdRange(u64 slot_base, u32 capacity) {
+    return CallTraceHashTable::wouldExceedSlotIdRange(slot_base, capacity);
+  }
+};
+
 // Companion to Test 4 below: the expansion-overflow guard's real integration
 // point inside
 // expandTableIfNeeded() must skip the actual table swap (not just the pure
@@ -1083,24 +1098,24 @@ TEST(CallTraceHashTableOverflowGuardTest, RejectsOnlyValuesThatExceedSlotIdRange
 
     // Well below the boundary: base + capacity + next capacity is nowhere
     // near 2^32.
-    EXPECT_FALSE(CallTraceHashTable::wouldExceedSlotIdRange(0, kCapacity));
+    EXPECT_FALSE(CallTraceHashTableOverflowGuardTestAccessor::wouldExceedSlotIdRange(0, kCapacity));
 
     // Exact boundary: base + capacity + next capacity == 2^32 must be
     // accepted (valid slots are [0, 2^32)).
     u64 exact_boundary_base = kSlotIdRange - kCapacity - (u64)kCapacity * 2;
-    EXPECT_FALSE(CallTraceHashTable::wouldExceedSlotIdRange(exact_boundary_base, kCapacity));
+    EXPECT_FALSE(CallTraceHashTableOverflowGuardTestAccessor::wouldExceedSlotIdRange(exact_boundary_base, kCapacity));
 
     // One past the boundary must be rejected.
-    EXPECT_TRUE(CallTraceHashTable::wouldExceedSlotIdRange(exact_boundary_base + 1, kCapacity));
+    EXPECT_TRUE(CallTraceHashTableOverflowGuardTestAccessor::wouldExceedSlotIdRange(exact_boundary_base + 1, kCapacity));
 
     // Far past the boundary must be rejected.
-    EXPECT_TRUE(CallTraceHashTable::wouldExceedSlotIdRange(kSlotIdRange, kCapacity));
+    EXPECT_TRUE(CallTraceHashTableOverflowGuardTestAccessor::wouldExceedSlotIdRange(kSlotIdRange, kCapacity));
 }
 
 // Test 5: the next-generation capacity used during expansion must be exactly
 // double the current capacity (CallTraceHashTable::nextGenerationCapacity).
 TEST(CallTraceHashTableOverflowGuardTest, NextGenerationCapacityIsDouble) {
-    EXPECT_EQ(CallTraceHashTable::nextGenerationCapacity(65536), 131072ull);
-    EXPECT_EQ(CallTraceHashTable::nextGenerationCapacity(1), 2ull);
-    EXPECT_EQ(CallTraceHashTable::nextGenerationCapacity(0), 0ull);
+    EXPECT_EQ(CallTraceHashTableOverflowGuardTestAccessor::nextGenerationCapacity(65536), 131072ull);
+    EXPECT_EQ(CallTraceHashTableOverflowGuardTestAccessor::nextGenerationCapacity(1), 2ull);
+    EXPECT_EQ(CallTraceHashTableOverflowGuardTestAccessor::nextGenerationCapacity(0), 0ull);
 }
