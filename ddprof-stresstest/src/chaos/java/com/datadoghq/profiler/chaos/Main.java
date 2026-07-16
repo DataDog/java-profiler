@@ -72,6 +72,8 @@ public final class Main {
                 return new AllocStormAntagonist();
             case "vthread-churn":
                 return new VirtualThreadChurnAntagonist();
+            case "vthread-context-cascade":
+                return new VirtualThreadContextCascadeAntagonist();
             case "classloader-churn":
                 return new ClassLoaderChurnAntagonist();
             case "trace-context":
