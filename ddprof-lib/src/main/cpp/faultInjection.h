@@ -59,11 +59,9 @@ u64 nextRandom();
 // draw so distinct call sites get statistically independent decisions.
 bool shouldFire(u64 threshold, const char* fn);
 
-// A word-aligned address guaranteed to fault on access: half the time a pointer
-// into the mmap'd PROT_NONE guard region (deterministic SIGSEGV), half the time
-// a random non-canonical address (SIGSEGV or SIGBUS).  Arithmetic-only, no
-// syscall — safe on the signal-handler hot path.
-uintptr_t poisonAddress();
+// A word-aligned address intended to fault on access. When init() has reserved the
+// mmap'd PROT_NONE guard region, this returns an address inside it (deterministic
+// SIGSEGV). If init() failed, it falls back to a best-effort garbage address.
 
 // Returns ptr unchanged, or a poison address (cast to T) when the tier fires.
 // Templated so the wrapped expression's static type (void**, const char*,
