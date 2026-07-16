@@ -95,12 +95,13 @@ bool shouldFire(u64 threshold, const char* fn) {
 
 uintptr_t poisonAddress() {
   u64 r = nextRandom();
-  if (g_guard_ok && (r & 1u)) {
+  if (g_guard_ok.load(std::memory_order_acquire)) {
     // Guaranteed-unmapped guard page — deterministic SIGSEGV.
-    return (g_guard_base + (uintptr_t)(r % g_guard_span)) & ALIGN_MASK;
+    uintptr_t base = g_guard_base.load(std::memory_order_relaxed);
+    uintptr_t span = g_guard_span.load(std::memory_order_relaxed);
+    return (base + (uintptr_t)(r % span)) & ALIGN_MASK;
   }
-  // Random non-canonical address (high bit set keeps it well above any mapped
-  // low page) — may raise SIGSEGV or SIGBUS.
+  // Fallback: best-effort garbage address if init() failed.
   return ((uintptr_t)r | (uintptr_t)0x8000000000000000ULL) & ALIGN_MASK;
 }
 
