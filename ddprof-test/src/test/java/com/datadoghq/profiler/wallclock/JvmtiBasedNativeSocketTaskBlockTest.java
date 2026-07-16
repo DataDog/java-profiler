@@ -27,6 +27,6 @@ public class JvmtiBasedNativeSocketTaskBlockTest extends NativeSocketTaskBlockTe
 
     @Override
     protected String getProfilerCommand() {
-        return "wall=1ms,wallprecheck=true,jvmtistacks=true";
+        return "wall=1ms,wallscope=all,wallprecheck=true,jvmtistacks=true";
     }
 }

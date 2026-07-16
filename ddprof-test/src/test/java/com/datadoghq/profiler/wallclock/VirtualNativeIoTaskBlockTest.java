@@ -53,7 +53,7 @@ public class VirtualNativeIoTaskBlockTest extends AbstractProfilerTest {
 
   @Override
   protected String getProfilerCommand() {
-    return "wall=1ms,wallprecheck=true";
+    return "wall=1ms,wallscope=all,wallprecheck=true";
   }
 
   private static Thread startVirtualThread(Runnable task) throws Exception {
