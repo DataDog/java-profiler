@@ -17,8 +17,14 @@
 
 #include "safeAccess.h"
 #include "counters.h"
+
+#include <cstdio>
+#include <cstdlib>
 #include <signal.h>
 #include <ucontext.h>
+#ifdef DEBUG
+#include "threadLocalData.h"  // ProfiledThread::currentSignalSafe / isProtected
+#endif
 
 extern "C" int safefetch32_cont(int* adr, int errValue);
 extern "C" int64_t safefetch64_cont(int64_t* adr, int64_t errValue);
@@ -263,7 +269,20 @@ static void verify_safecopy_range() {
   #endif
 #endif
 
+#ifdef DEBUG
+void SafeAccess::countIfLongjmpProtected(bool isCopy) {
+  ProfiledThread* t = ProfiledThread::currentSignalSafe();  // never allocates
+  if (t != nullptr && t->isProtected()) {
+    Counters::increment(isCopy ? SAFECOPY_WHILE_PROTECTED
+                               : SAFEFETCH_WHILE_PROTECTED);
+  }
+}
+#endif
+
 bool SafeAccess::safeCopy(void* dst, const void* src, size_t len) {
+#ifdef DEBUG
+  countIfLongjmpProtected(true);
+#endif
   // The copy runs entirely inside the safecopy_impl assembly stub, which
   // reads `src` one byte at a time. If a load faults, handle_safefetch
   // redirects execution to safecopy_cont, which returns 0. Because the copy
@@ -303,11 +322,17 @@ void* SafeAccess::load(void** ptr, void* default_value) {
 }
 
 int32_t SafeAccess::load32(int32_t* ptr, int32_t default_value) {
+#ifdef DEBUG
+  countIfLongjmpProtected(false);
+#endif
   int res = safefetch32_impl((int*)ptr, (int)default_value);
   return static_cast<int32_t>(res);
 }
 
 void* SafeAccess::loadPtr(void** ptr, void* default_value) {
+#ifdef DEBUG
+  countIfLongjmpProtected(false);
+#endif
 #if defined(__x86_64__) || defined(__aarch64__)
   int64_t res = safefetch64_impl((int64_t*)ptr, (int64_t)reinterpret_cast<uintptr_t>(default_value));
   return (void*)static_cast<uintptr_t>(res);

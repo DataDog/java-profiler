@@ -127,8 +127,32 @@
   X(SAMPLES_DROPPED_THREAD_LOCAL, "samples_dropped_thread_local")             \
   X(SAFECOPY_FAILED, "safecopy_failed")                                       \
   X(SAFEFETCH_FAILED, "safefetch_failed")                                     \
-  X(FAULTS_INJECTED, "faults_injected")                                       \
-  X(WALKVM_LONGJMP_RECOVERED, "walkvm_longjmp_recovered")
+  X(WALKVM_LONGJMP_RECOVERED, "walkvm_longjmp_recovered")                     \
+  DD_COUNTER_TABLE_FAULT_INJECTION(X)                                          \
+  DD_COUNTER_TABLE_DEBUG(X)
+
+// Fault-injection-only counter: number of faults actually injected. Only
+// compiled in when __FAULT_INJECTION__ is defined, so it occupies no enum slot
+// and adds no storage in normal builds.
+#ifdef __FAULT_INJECTION__
+#define DD_COUNTER_TABLE_FAULT_INJECTION(X)                                    \
+  X(FAULTS_INJECTED, "faults_injected")
+#else
+#define DD_COUNTER_TABLE_FAULT_INJECTION(X)
+#endif
+
+// Debug-only counters: SafeAccess reads/copies issued while the thread is
+// already inside a walkVM longjmp-protected region (redundant safefetch
+// overhead). Not compiled into release builds at all, so they occupy no enum
+// slot and add no storage there.
+#ifdef DEBUG
+#define DD_COUNTER_TABLE_DEBUG(X)                                             \
+  X(SAFEFETCH_WHILE_PROTECTED, "safefetch_while_protected")                   \
+  X(SAFECOPY_WHILE_PROTECTED, "safecopy_while_protected")
+#else
+#define DD_COUNTER_TABLE_DEBUG(X)
+#endif
+
 #define X_ENUM(a, b) a,
 typedef enum CounterId : int {
   DD_COUNTER_TABLE(X_ENUM) DD_NUM_COUNTERS

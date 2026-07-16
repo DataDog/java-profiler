@@ -62,6 +62,7 @@ bool shouldFire(u64 threshold, const char* fn);
 // A word-aligned address intended to fault on access. When init() has reserved the
 // mmap'd PROT_NONE guard region, this returns an address inside it (deterministic
 // SIGSEGV). If init() failed, it falls back to a best-effort garbage address.
+uintptr_t poisonAddress();
 
 // Returns ptr unchanged, or a poison address (cast to T) when the tier fires.
 // Templated so the wrapped expression's static type (void**, const char*,
