@@ -313,8 +313,8 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        // The workload deliberately has no tracing context, so keep unfiltered
-        // wall-clock sampling enabled explicitly.
-        return "wall=1ms,filter=";
+        // The workload deliberately has no tracing context, so its samples
+        // require the explicit all-thread wall-clock scope.
+        return "wall=1ms,wallscope=all";
     }
 }
