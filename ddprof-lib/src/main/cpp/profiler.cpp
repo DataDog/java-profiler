@@ -568,14 +568,7 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
     if (VM::jvmti()->GetStackTrace(thread, 0, _max_stack_depth, jvmti_frames, &num_frames) == JVMTI_ERROR_NONE && num_frames > 0) {
       // Convert to AsyncGetCallTrace format.
       // Note: jvmti_frames and frames may overlap.
-      for (int i = 0; i < num_frames; i++) {
-        jint bci = jvmti_frames[i].location;
-        jmethodID mid = jvmti_frames[i].method;
-        frames[i].method_id = mid;
-        frames[i].bci = bci;
-        // see https://github.com/async-profiler/async-profiler/pull/1090
-        LP64_ONLY(frames[i].padding = 0;)
-      }
+      copyJvmtiFrames(frames, jvmti_frames, num_frames);
       // On JDK 21+, GetStackTrace on a virtual thread returns only the VT's
       // logical stack; it stops at the continuation boundary and never includes
       // carrier-thread frames.  Without a synthetic root the trace appears
