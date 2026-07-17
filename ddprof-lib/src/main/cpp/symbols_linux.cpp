@@ -1188,7 +1188,12 @@ void Symbols::parseLibraries(CodeCacheArray* array, bool kernel_symbols) {
         if (strchr(lib.file, ':') != NULL) {
             // Do not try to parse pseudofiles like anon_inode:name, /memfd:name
         } else if (strcmp(lib.file, "[vdso]") == 0) {
+            // A sanitizer build can place the VDSO outside its instrumented
+            // application range. Reading that mapping then faults in the
+            // compiler-generated shadow-memory check before the ELF parser runs.
+#if !defined(ASAN_ENABLED) && !defined(TSAN_ENABLED)
             ElfParser::parseProgramHeaders(cc, lib.map_start, lib.map_end, true);
+#endif
         } else if (lib.image_base == NULL) {
             // Unlikely case when image base has not been found: not safe to access program headers.
             // Be careful: executable file is not always ELF, e.g. classes.jsa
