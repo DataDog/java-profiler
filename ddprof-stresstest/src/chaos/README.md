@@ -15,6 +15,7 @@ the runner script.
 | `classloader-churn` | class unload racing stack walk, `CodeCache`/`Symbols` invalidation     |
 | `alloc-storm`     | Java alloc engine + GOT-patched libc malloc/free                         |
 | `trace-context`   | `setContext`/`clearContext` racing signals, span ID propagation          |
+| `vthread-context-cascade` | tracer-style context propagate/activate/restore across fan-out cascades of short-lived virtual threads, racing carrier-pin churn to trigger the `ContextStorageMode.THREAD` stale-carrier `DirectByteBuffer` use-after-free |
 
 ## Deferred
 

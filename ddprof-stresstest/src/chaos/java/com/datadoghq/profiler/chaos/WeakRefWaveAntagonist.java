@@ -84,6 +84,7 @@ public final class WeakRefWaveAntagonist implements Antagonist {
                 obj[0] = (byte) i;
                 strongRefs.add(obj);
                 weakRefs.add(new WeakReference<byte[]>(obj));
+                MemoryGovernor.pace();
             }
             // Publish filled list to reader
             currentWave = weakRefs;

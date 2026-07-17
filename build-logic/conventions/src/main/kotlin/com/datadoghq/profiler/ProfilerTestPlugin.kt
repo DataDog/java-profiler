@@ -3,6 +3,7 @@ package com.datadoghq.profiler
 
 import com.datadoghq.native.NativeBuildExtension
 import com.datadoghq.native.model.BuildConfiguration
+import com.datadoghq.native.model.Platform
 import com.datadoghq.native.util.PlatformUtils
 import org.gradle.api.DefaultTask
 import org.gradle.api.GradleException
@@ -204,6 +205,22 @@ class ProfilerTestPlugin : Plugin<Project> {
 
         // Environment variables (explicit for consistency across both paths)
         val envVars = buildMap<String, String> {
+            // Turn silent glibc heap corruption (e.g. a use-after-free write into a
+            // freed chunk) into an immediate, attributable SIGABRT instead of a crash
+            // much later in an unrelated allocation. Only meaningful against glibc's
+            // own malloc: skip on musl (no MALLOC_CHECK_ support), and skip whenever a
+            // sanitizer/allocator already replaces malloc via LD_PRELOAD.
+            if (PlatformUtils.currentPlatform == Platform.LINUX &&
+                !PlatformUtils.isMusl() &&
+                !testEnv.containsKey("LD_PRELOAD")
+            ) {
+                val perturbByte = (1..255).random()
+                put("MALLOC_CHECK_", "3")
+                put("MALLOC_PERTURB_", perturbByte.toString())
+                // Logged so a glibc-detected corruption abort can be reproduced with the
+                // same perturb byte (the value is otherwise random per run).
+                project.logger.lifecycle("[$configName] MALLOC_PERTURB_=$perturbByte")
+            }
             putAll(testEnv)
             put("DDPROF_TEST_DISABLE_RATE_LIMIT", "1")
             put("CI", (project.hasProperty("CI") || System.getenv("CI")?.toBoolean() ?: false).toString())

@@ -11,6 +11,7 @@ package com.datadoghq.profiler.chaos;
 
 import java.lang.reflect.Method;
 import java.time.Duration;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -19,6 +20,12 @@ import java.util.concurrent.atomic.AtomicLong;
  *
  * <p>Reflectively detects {@code Thread.ofVirtual()} (Java 21+); gracefully
  * no-ops on older runtimes.
+ *
+ * <p>In-flight virtual threads are bounded by a semaphore: the default
+ * carrier pool has far fewer platform threads than a batch submits, so an
+ * unthrottled submission rate outpaces execution and the backlog of pending
+ * {@code VirtualThread}/{@code Continuation} objects grows without bound
+ * instead of churning.
  */
 public final class VirtualThreadChurnAntagonist implements Antagonist {
 
@@ -26,6 +33,7 @@ public final class VirtualThreadChurnAntagonist implements Antagonist {
     private static final Method BUILDER_START = resolveBuilderStart();
 
     private final int batchSize;
+    private final Semaphore inFlight;
 
     private volatile boolean running;
     private Thread driver;
@@ -37,6 +45,7 @@ public final class VirtualThreadChurnAntagonist implements Antagonist {
 
     public VirtualThreadChurnAntagonist(int batchSize) {
         this.batchSize = batchSize;
+        this.inFlight = new Semaphore(batchSize * 4);
     }
 
     @Override
@@ -55,10 +64,14 @@ public final class VirtualThreadChurnAntagonist implements Antagonist {
     @Override
     public void stopGracefully(Duration timeout) {
         running = false;
-        try {
-            driver.join(timeout.toMillis());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+        // driver is only non-null once start() has actually spawned it; guard against
+        // stopGracefully being called when start() never ran.
+        if (driver != null) {
+            try {
+                driver.join(timeout.toMillis());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 
@@ -71,9 +84,25 @@ public final class VirtualThreadChurnAntagonist implements Antagonist {
             for (int i = 0; i < batchSize && running; i++) {
                 final long seed = System.nanoTime() ^ i;
                 try {
+                    // Blocks once the backlog is full, throttling submission to the
+                    // carrier pool's actual drain rate instead of hoarding pending
+                    // VirtualThread/Continuation objects.
+                    inFlight.acquire();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+                try {
                     Object builder = OF_VIRTUAL.invoke(null);
-                    BUILDER_START.invoke(builder, (Runnable) () -> sink.addAndGet(burn(seed)));
+                    BUILDER_START.invoke(builder, (Runnable) () -> {
+                        try {
+                            sink.addAndGet(burn(seed));
+                        } finally {
+                            inFlight.release();
+                        }
+                    });
                 } catch (Throwable t) {
+                    inFlight.release();
                     return;
                 }
             }
