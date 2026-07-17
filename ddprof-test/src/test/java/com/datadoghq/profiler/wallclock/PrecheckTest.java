@@ -134,6 +134,7 @@ public class PrecheckTest extends AbstractProfilerTest {
         Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
         registerCurrentThreadForWallClockProfiling();
 
+        Map<String, Long> countersBefore = profiler.getDebugCounters();
         profiler.setContext(0x5100L, 0x5101L, 0L, 0x5101L);
         try {
             Thread.sleep(300);
@@ -148,9 +149,11 @@ public class PrecheckTest extends AbstractProfilerTest {
         assertTrue(sampleCount >= 10,
                 "Expected normal MethodSample volume for traced sleep, got: " + sampleCount);
 
-        Map<String, Long> counters = profiler.getDebugCounters();
-        if (counters.containsKey("wc_signals_suppressed_sampled_run")) {
-            assertEquals(0L, counters.get("wc_signals_suppressed_sampled_run"),
+        if (countersBefore.containsKey("wc_signals_suppressed_sampled_run")) {
+            long suppressedBefore = countersBefore.get("wc_signals_suppressed_sampled_run");
+            long suppressedAfter = profiler.getDebugCounters()
+                    .getOrDefault("wc_signals_suppressed_sampled_run", 0L);
+            assertEquals(suppressedBefore, suppressedAfter,
                     "wc_signals_suppressed_sampled_run must not increment for traced sleep");
         }
     }
