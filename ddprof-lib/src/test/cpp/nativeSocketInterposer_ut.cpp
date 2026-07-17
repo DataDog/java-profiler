@@ -32,7 +32,6 @@
 #include <cstdio>
 #include <dlfcn.h>
 #include <fcntl.h>
-#include <limits.h>
 #include <memory>
 #include <netinet/in.h>
 #include <poll.h>
@@ -838,15 +837,22 @@ TEST_F(LibraryPatcherImportTest, MissingImportDoesNotConsumePatchSlot) {
 }
 
 TEST(LibraryPatcherDsoLifetimeTest, RetainsPatchedLibraryUntilImportsAreRestored) {
-  char cwd[PATH_MAX - 64];
-  ASSERT_NE(nullptr, getcwd(cwd, sizeof(cwd)));
-  char path[PATH_MAX];
-  snprintf(path, sizeof(path),
-           "%s/../build/test/resources/native-libs/unloadable-io-lib/"
-           "libunloadable-io.so",
-           cwd);
-
-  void* handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+  // Gradle starts gtests from ddprof-lib, while GitLab runs the binaries from
+  // the repository root. The support library is under the root build directory
+  // in both cases.
+  const char* paths[] = {
+      "build/test/resources/native-libs/unloadable-io-lib/"
+      "libunloadable-io.so",
+      "../build/test/resources/native-libs/unloadable-io-lib/"
+      "libunloadable-io.so",
+  };
+  void* handle = nullptr;
+  for (const char* path : paths) {
+    handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
+    if (handle != nullptr) {
+      break;
+    }
+  }
   ASSERT_NE(nullptr, handle) << dlerror();
   void* symbol = dlsym(handle, "unloadable_read");
   ASSERT_NE(nullptr, symbol) << dlerror();
