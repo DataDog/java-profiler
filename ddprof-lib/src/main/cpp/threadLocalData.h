@@ -130,6 +130,9 @@ public:
 
   // This version blocks signals, so that initialization cannot
   // be interrupted by signals
+  // This method is used for initializing ProfiledThread for known JNI entry points,
+  // in case that the Java threads were started before thread creation interceptor
+  // is fully initialized, so that ProfiledThreads were not setup for the threads.
   static ProfiledThread* initCurrentThreadSignalSafe();
 
   // Signal-handler friendly (no allocation): returns existing TLS or nullptr.
