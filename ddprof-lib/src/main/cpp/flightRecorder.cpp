@@ -1780,24 +1780,37 @@ void Recording::writeLogLevels(Buffer *buf) {
 }
 
 void Recording::updateNativeMemStats() {
-  // Fold the per-category live gauges into their moving-window averages and
-  // running peaks. This is a sampled max: peaks that rise and fall entirely
-  // between two chunk finishes are not observed. A spike-accurate max would
-  // track the high-water mark at allocation time.
+  // Refresh the moving-window averages and the observed total peak. Per-category
+  // peaks are maintained precisely at allocation time, so they are not sampled
+  // here; the total peak is bracketed instead (see writeNativeMem).
   NativeMem::sample();
 
   // Mirror the totals into the flat counter table so they flow out through the
   // existing counter path (JFR T_DATADOG_COUNTER events and the JNI debug
-  // counters). Per-category values are emitted separately by writeNativeMem().
+  // counters). NATIVE_MEM_MAX_BYTES carries the upper bound on the total peak
+  // (sum of precise per-category peaks); the observed lower bound and the
+  // per-category values are emitted by writeNativeMem().
   Counters::set(NATIVE_MEM_LIVE_BYTES, NativeMem::liveTotal());
   Counters::set(NATIVE_MEM_AVG_BYTES, NativeMem::avgTotal());
   Counters::set(NATIVE_MEM_MAX_BYTES, NativeMem::maxTotal());
 }
 
 void Recording::writeNativeMem(Buffer *buf) {
-  // Emit live/avg/max per category as counter events, reusing the counter event
-  // format with a "<metric>.<category>" name so they land alongside the totals
-  // without needing a dedicated event type or a slot in the counter table.
+  // Emit native-memory stats as counter events, reusing the counter event format
+  // so they land alongside the totals without needing a dedicated event type or
+  // a slot in the counter table.
+  auto emit = [&](const char *label, long long value) {
+    int start = buf->skip(1);
+    buf->putVar64(T_DATADOG_COUNTER);
+    buf->putVar64(_start_ticks);
+    buf->putUtf8(label);
+    buf->putVar64(value);
+    writeEventSizePrefix(buf, start);
+    flushIfNeeded(buf);
+  };
+
+  // Per-category live/avg/max, named "<metric>.<category>". The max here is the
+  // precise per-category peak tracked at allocation time.
   for (int c = 0; c < NM_NUM_CATEGORIES; c++) {
     NativeMemCategory cat = (NativeMemCategory)c;
     const char *name = NativeMem::categoryName(cat);
@@ -1812,15 +1825,14 @@ void Recording::writeNativeMem(Buffer *buf) {
     for (const auto &m : metrics) {
       char label[64];
       snprintf(label, sizeof(label), "%s%s", m.prefix, name);
-      int start = buf->skip(1);
-      buf->putVar64(T_DATADOG_COUNTER);
-      buf->putVar64(_start_ticks);
-      buf->putUtf8(label);
-      buf->putVar64(m.value);
-      writeEventSizePrefix(buf, start);
-      flushIfNeeded(buf);
+      emit(label, m.value);
     }
   }
+
+  // The total peak is bracketed: NATIVE_MEM_MAX_BYTES already carries the upper
+  // bound (sum of precise per-category peaks); here we also emit the observed
+  // lower bound (largest instantaneous total seen at a sampling tick).
+  emit("native_mem_max_observed_total_bytes", NativeMem::maxTotalObserved());
 }
 
 void Recording::writeCounters(Buffer *buf) {

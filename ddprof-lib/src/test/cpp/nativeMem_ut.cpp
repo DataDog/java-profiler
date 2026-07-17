@@ -59,15 +59,27 @@ TEST_F(NativeMemTest, MovingAverageOverSamples) {
     EXPECT_EQ(200, NativeMem::avg(NM_CALLTRACE));
 }
 
-// The peak is a high-water mark: it retains the largest sampled value even
-// after live memory has been freed back down.
+// The peak is a high-water mark: it retains the largest value even after live
+// memory has been freed back down.
 TEST_F(NativeMemTest, MaxIsHighWaterMark) {
     NativeMem::record(NM_CALLTRACE, 5000);
-    NativeMem::sample();
     NativeMem::record(NM_CALLTRACE, -4900);  // live drops to 100
-    NativeMem::sample();
     EXPECT_EQ(100, NativeMem::live(NM_CALLTRACE));
     EXPECT_EQ(5000, NativeMem::max(NM_CALLTRACE));
+}
+
+// The per-category peak is precise: it is captured at allocation time, so a
+// spike that rises and falls entirely between two sample() ticks is still seen
+// by max(), while the observed total (sampled) misses it. maxTotal() (upper
+// bound = sum of per-category peaks) brackets the true peak from above.
+TEST_F(NativeMemTest, PerCategoryMaxIsPreciseBetweenSamples) {
+    NativeMem::record(NM_CALLTRACE, 9000);
+    NativeMem::record(NM_CALLTRACE, -8000);  // peak of 9000 undone before any sample
+    NativeMem::sample();                     // only ever observes live == 1000
+    EXPECT_EQ(1000, NativeMem::live(NM_CALLTRACE));
+    EXPECT_EQ(9000, NativeMem::max(NM_CALLTRACE));    // precise: caught the spike
+    EXPECT_EQ(1000, NativeMem::maxTotalObserved());   // sampled: missed the spike
+    EXPECT_EQ(9000, NativeMem::maxTotal());           // upper bound
 }
 
 // Transient negative live (an over-counted free at a not-yet-paired site) is

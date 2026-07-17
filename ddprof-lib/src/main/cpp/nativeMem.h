@@ -58,21 +58,35 @@ private:
   static const int WINDOW = 64;
 
   static volatile long long _live[NM_NUM_CATEGORIES];
+  // Precise per-category high-water mark, maintained at allocation time by
+  // record() so peaks that rise and fall between sample() ticks are still seen.
+  static volatile long long _max[NM_NUM_CATEGORIES];
 
-  // sample()-owned state; not touched from allocation sites.
+  // sample()-owned state; touched only from the single-threaded sampling path.
   static long long _window[NM_NUM_CATEGORIES][WINDOW];
   static long long _total_window[WINDOW];
   static int _window_pos;
   static int _window_count;
   static long long _avg[NM_NUM_CATEGORIES];
-  static long long _max[NM_NUM_CATEGORIES];
   static long long _total_avg;
-  static long long _total_max;
+  static long long _total_max_observed;
 
 public:
   // Account for a backing allocation (delta > 0) or free (delta < 0).
   static void record(NativeMemCategory category, long long delta) {
-    atomicIncRelaxed(_live[category], delta);
+    long long prev = atomicIncRelaxed(_live[category], delta);
+    if (delta > 0) {
+      // Only allocations can raise the peak. In the common case (no new peak)
+      // this is a single relaxed load plus a compare; the CAS fires only when a
+      // genuinely higher peak is set, which is rare since _max is monotonic.
+      long long now = prev + delta;
+      long long m = load(_max[category]);
+      while (now > m &&
+             !__atomic_compare_exchange_n(&_max[category], &m, now, false,
+                                          __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+        // On failure m is reloaded with the current value; loop and retry.
+      }
+    }
   }
 
   static long long live(NativeMemCategory category) {
@@ -80,14 +94,19 @@ public:
   }
   static long long liveTotal();
 
-  // Fold the current live gauges into the moving-average window and the running
-  // peak. Call once per sampling tick from a single thread.
+  // Fold the current live gauges into the moving-average window and the observed
+  // total peak. Call once per sampling tick from a single thread.
   static void sample();
 
   static long long avg(NativeMemCategory category) { return _avg[category]; }
-  static long long max(NativeMemCategory category) { return _max[category]; }
+  static long long max(NativeMemCategory category) { return load(_max[category]); }
   static long long avgTotal() { return _total_avg; }
-  static long long maxTotal() { return _total_max; }
+  // Upper bound on the total peak: the sum of the precise per-category peaks.
+  // Exact only if the category peaks coincided; otherwise an overestimate.
+  static long long maxTotal();
+  // Lower bound on the total peak: the largest instantaneous total seen at a
+  // sampling tick. Misses peaks that rise and fall entirely between ticks.
+  static long long maxTotalObserved() { return _total_max_observed; }
 
   // Clear all live gauges and window/peak state. Not thread-safe against
   // concurrent record()/sample(); intended for process init and tests.

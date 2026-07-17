@@ -16,19 +16,27 @@
 #include "nativeMem.h"
 
 volatile long long NativeMem::_live[NM_NUM_CATEGORIES] = {};
+volatile long long NativeMem::_max[NM_NUM_CATEGORIES] = {};
 long long NativeMem::_window[NM_NUM_CATEGORIES][NativeMem::WINDOW] = {};
 long long NativeMem::_total_window[NativeMem::WINDOW] = {};
 int NativeMem::_window_pos = 0;
 int NativeMem::_window_count = 0;
 long long NativeMem::_avg[NM_NUM_CATEGORIES] = {};
-long long NativeMem::_max[NM_NUM_CATEGORIES] = {};
 long long NativeMem::_total_avg = 0;
-long long NativeMem::_total_max = 0;
+long long NativeMem::_total_max_observed = 0;
 
 long long NativeMem::liveTotal() {
   long long total = 0;
   for (int c = 0; c < NM_NUM_CATEGORIES; c++) {
     total += load(_live[c]);
+  }
+  return total;
+}
+
+long long NativeMem::maxTotal() {
+  long long total = 0;
+  for (int c = 0; c < NM_NUM_CATEGORIES; c++) {
+    total += load(_max[c]);
   }
   return total;
 }
@@ -43,15 +51,14 @@ void NativeMem::sample() {
       v = 0;
     }
     _window[c][_window_pos] = v;
-    if (v > _max[c]) {
-      _max[c] = v;
-    }
     total += v;
   }
 
+  // The per-category peaks are maintained precisely at allocation time by
+  // record(); here we only track the observed total (lower bound on the peak).
   _total_window[_window_pos] = total;
-  if (total > _total_max) {
-    _total_max = total;
+  if (total > _total_max_observed) {
+    _total_max_observed = total;
   }
 
   _window_pos = (_window_pos + 1) % WINDOW;
@@ -77,8 +84,8 @@ void NativeMem::sample() {
 void NativeMem::reset() {
   for (int c = 0; c < NM_NUM_CATEGORIES; c++) {
     store(_live[c], (long long)0);
+    store(_max[c], (long long)0);
     _avg[c] = 0;
-    _max[c] = 0;
     for (int i = 0; i < WINDOW; i++) {
       _window[c][i] = 0;
     }
@@ -89,7 +96,7 @@ void NativeMem::reset() {
   _window_pos = 0;
   _window_count = 0;
   _total_avg = 0;
-  _total_max = 0;
+  _total_max_observed = 0;
 }
 
 const char *NativeMem::categoryName(NativeMemCategory category) {
