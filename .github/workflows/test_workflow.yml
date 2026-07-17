@@ -387,10 +387,14 @@ jobs:
       - name: Setup OS
         if: steps.set_enabled.outputs.enabled == 'true'
         run: |
+          # ports.ubuntu.com's IPv6 route is intermittently unreachable from GH-hosted
+          # aarch64 runners; force IPv4 so apt doesn't stall/fail on a dead IPv6 path,
+          # and retry on top in case of other transient connection blips.
+          printf 'Acquire::ForceIPv4 "true";\nAcquire::Retries "5";\n' | sudo tee /etc/apt/apt.conf.d/99force-ipv4 >/dev/null
           sudo apt update -y
           sudo apt remove -y g++
           sudo apt autoremove -y
-          sudo apt install -y curl zip unzip clang make build-essential binutils gdb
+          sudo apt install -y curl zip unzip clang make build-essential binutils gdb libgtest-dev libgmock-dev
           # Install debug symbols for system libraries
           sudo apt install -y libc6-dbg
           if [[ ${{ matrix.java_version }} =~ "-zing" ]]; then

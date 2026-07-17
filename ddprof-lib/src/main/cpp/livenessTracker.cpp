@@ -4,11 +4,13 @@
  */
 
 #include <algorithm>
+#include <cstdint>
 #include <random>
 #include <set>
 #include <thread>
 
 #include "arch.h"
+#include "common.h"
 #include "context.h"
 #include "context_api.h"
 #include "hotspot/vmStructs.h"
@@ -30,13 +32,26 @@ constexpr int LivenessTracker::MIN_SAMPLING_INTERVAL;
 void LivenessTracker::cleanup_table(bool forced) {
   u64 current = load(_last_gc_epoch);
   u64 target_gc_epoch = load(_gc_epoch);
+  TEST_LOG("LivenessTracker::cleanup_table forced=%d gc_generations=%d current_epoch=%llu "
+           "target_epoch=%llu table_size=%d",
+           forced, _gc_generations, (unsigned long long)current,
+           (unsigned long long)target_gc_epoch, _table_size);
 
-  if ((target_gc_epoch == _last_gc_epoch ||
-       !__atomic_compare_exchange_n(&_last_gc_epoch, &current,
-                                     target_gc_epoch, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED)) &&
-      !forced) {
+  // is_epoch_owner is true iff this call is the one that moves _last_gc_epoch
+  // to target_gc_epoch - i.e. the first cleanup_table() call (forced or not)
+  // to observe this particular GC epoch transition. Population accounting
+  // below is gated on this rather than on !forced, so a forced (table-
+  // overflow) sweep still folds one sample per genuinely new epoch instead
+  // of either skipping it entirely or double-counting the same epoch across
+  // repeated forced sweeps.
+  bool is_epoch_owner = target_gc_epoch != current &&
+      __atomic_compare_exchange_n(&_last_gc_epoch, &current, target_gc_epoch,
+                                   false, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+
+  if (!is_epoch_owner && !forced) {
     // if the last processed GC epoch hasn't changed, or if we failed to update
     // it, there's nothing to do
+    TEST_LOG("LivenessTracker::cleanup_table early-exit: epoch unchanged and not forced");
     return;
   }
 
@@ -61,6 +76,55 @@ void LivenessTracker::cleanup_table(bool forced) {
           _table[i].call_trace_id = 0;
         }
         _table[target].age += epoch_diff;
+
+        if (_gc_generations && is_epoch_owner) {
+          // Per-klass population tracking (design doc's Open Question 3) -
+          // gated on _gc_generations so this new cost is paid only when the
+          // caller actually asked for generation/survival-shaped data
+          // (arguments.cpp:223-227,244), not for every liveness-tracking
+          // session. Gated on is_epoch_owner (not !forced) so a forced
+          // (table-overflow) sweep still contributes one population sample
+          // per genuinely new GC epoch instead of silently dropping it.
+          u32 klass_id = 0;
+          if (!forced) {
+            // GetObjectClass + Class.getName() + StringDictionary lookup per
+            // surviving entry, previously paid only at JFR-flush time (see
+            // flush_table() below). Only affordable on this, the organic
+            // GC-driven cleanup path (flush_table()/stop()'s cadence).
+            jobject ref = env->NewLocalRef(_table[target].ref);
+            if (ref != nullptr) {
+              klass_id = resolveKlassId(env, ref);
+              if (klass_id != 0) {
+                // Cache the resolution: flush_table() runs its own
+                // GetObjectClass+Class.getName()+lookupClass() sequence for
+                // every surviving entry immediately after cleanup_table()
+                // returns (flush_table() always calls cleanup_table() first),
+                // which would otherwise repeat this exact JNI round-trip for
+                // the same object. An object's class is immutable, so this
+                // value stays valid for flush_table()'s read below, and for
+                // a later forced sweep's read right below.
+                _table[target].cached_klass_id = klass_id;
+              }
+              env->DeleteLocalRef(ref);
+            }
+          } else {
+            // track()'s table-overflow branch calls cleanup_table(true)
+            // synchronously from the allocation-sampling call stack (JVMTI
+            // SampledObjectAlloc callback). resolveKlassId() calls
+            // Class.getName(), a genuine Java-bytecode upcall (unlike the
+            // plain native jvmti->GetClassSignature() call
+            // ObjectSampler::recordAllocation already makes on this same
+            // callback stack) - too costly, and too re-entrancy-prone via
+            // the String allocation it can trigger, to run from there. Reuse
+            // whatever class id an earlier organic epoch already resolved
+            // for this entry instead; if it was never resolved, this entry's
+            // sample for this epoch is dropped rather than resolving now.
+            klass_id = _table[target].cached_klass_id;
+          }
+          if (klass_id != 0) {
+            accumulateKlassCount(klass_id, _table[target].ref);
+          }
+        }
       } else {
         jweak tmpRef = _table[i].ref;
         _table[i].ref = nullptr;
@@ -71,12 +135,308 @@ void LivenessTracker::cleanup_table(bool forced) {
 
     _table_size = newsz;
 
+    TEST_LOG("LivenessTracker::cleanup_table survivors=%u klass_count_scratch_size=%d",
+             newsz, _klass_count_scratch_size);
+    if (_gc_generations && is_epoch_owner && _klass_count_scratch_size > 0) {
+      foldKlassCountsLocked(env, target_gc_epoch);
+    }
+
     end = OS::nanotime();
     Log::debug("Liveness tracker cleanup took %.2fms (%.2fus/element)",
                1.0f * (end - start) / 1000 / 1000,
                1.0f * (end - start) / 1000 / sz);
   }
   _table_lock.unlock();
+}
+
+u32 LivenessTracker::resolveKlassId(JNIEnv *env, jobject ref) {
+  // Mirrors flush_table()'s own class-name resolution below (GetObjectClass +
+  // Class.getName() + Profiler::lookupClass()) - kept duplicated rather than
+  // factored out because flush_table() also needs to build an
+  // ObjectLivenessEvent around the result, which this call site does not.
+  // Unlike flush_table(), this call site also DeleteLocalRef()s name_str: it
+  // runs once per surviving TrackingEntry per GC epoch (cleanup_table()'s
+  // survivor loop above) rather than once per JFR flush, so an unreleased
+  // local ref here accumulates far faster within whatever native frame is
+  // driving cleanup_table().
+  jclass clz = env->GetObjectClass(ref);
+  jstring name_str = (jstring)env->CallObjectMethod(clz, _Class_getName);
+  env->DeleteLocalRef(clz);
+  jniExceptionCheck(env);
+  u32 id = 0;
+  // getName() can return null (and leave name_str null) if the call above
+  // threw and jniExceptionCheck() cleared the pending exception rather than
+  // propagating it - GetStringUTFChars()/ReleaseStringUTFChars() require a
+  // non-null jstring, so guard both calls on name_str rather than passing a
+  // possibly-null reference into them.
+  if (name_str != nullptr) {
+    const char *name = env->GetStringUTFChars(name_str, nullptr);
+    if (name != nullptr) {
+      int lookup_id = Profiler::instance()->lookupClass(name, strlen(name));
+      if (lookup_id > 0) {
+        id = (u32)lookup_id;
+      }
+      env->ReleaseStringUTFChars(name_str, name);
+    }
+    env->DeleteLocalRef(name_str);
+  }
+  return id;
+}
+
+void LivenessTracker::accumulateKlassCount(u32 klass_id, jweak sample_source) {
+  for (int i = 0; i < _klass_count_scratch_size; i++) {
+    if (_klass_count_scratch[i].klass_id == klass_id) {
+      if (_klass_count_scratch[i].count < UINT16_MAX) {
+        _klass_count_scratch[i].count++;
+      }
+      return;
+    }
+  }
+  if (_klass_count_scratch_size < MAX_KLASS_POPULATION_ENTRIES) {
+    KlassCountScratch &slot = _klass_count_scratch[_klass_count_scratch_size++];
+    slot.klass_id = klass_id;
+    slot.count = 1;
+    slot.sample_source = sample_source;
+  }
+  // else: this epoch's scratch snapshot already holds
+  // MAX_KLASS_POPULATION_ENTRIES distinct surviving klasses - klass_id's
+  // count for this epoch is dropped rather than growing the scratch array,
+  // the same best-effort tradeoff _klass_population's own fixed capacity
+  // already accepts.
+}
+
+jweak LivenessTracker::recordKlassPopulationSampleLocked(u32 klass_id,
+                                                           u16 count,
+                                                           u64 epoch,
+                                                           int *out_slot,
+                                                           bool *out_created) {
+  // Linear scan is fine: MAX_KLASS_POPULATION_ENTRIES is small enough that a
+  // full scan is cheap, the same shape NativeSocketSampler's fd LRU
+  // (nativeSocketSampler.h:141-142) and this class's own cleanup_table()
+  // pass already accept for bounded tables.
+  int slot = -1;
+  int evict_slot = -1;
+  for (int i = 0; i < _klass_population_size; i++) {
+    if (_klass_population[i].klass_id == klass_id) {
+      slot = i;
+      break;
+    }
+    if (evict_slot < 0 ||
+        _klass_population[i].last_updated_epoch <
+            _klass_population[evict_slot].last_updated_epoch) {
+      evict_slot = i;
+    }
+  }
+
+  jweak evicted_ref = nullptr;
+  bool created = false;
+  if (slot < 0) {
+    created = true;
+    if (_klass_population_size < MAX_KLASS_POPULATION_ENTRIES) {
+      slot = _klass_population_size++;
+    } else {
+      // Table full - evict the least-recently-updated entry (evict_slot is
+      // guaranteed set here since MAX_KLASS_POPULATION_ENTRIES > 0 implies
+      // at least one iteration of the loop above ran).
+      slot = evict_slot;
+      evicted_ref = _klass_population[slot].representative;
+    }
+    _klass_population[slot].klass_id = klass_id;
+    _klass_population[slot].representative = nullptr;
+    _klass_population[slot].ring_head = 0;
+    _klass_population[slot].ring_fill = 0;
+  }
+
+  KlassPopulationEntry &entry = _klass_population[slot];
+  entry.count_ring[entry.ring_head] = count;
+  entry.ring_head = (u8)((entry.ring_head + 1) % KLASS_POPULATION_RING_SIZE);
+  if (entry.ring_fill < KLASS_POPULATION_RING_SIZE) {
+    entry.ring_fill++;
+  }
+  entry.last_updated_epoch = epoch;
+
+  *out_slot = slot;
+  *out_created = created;
+  return evicted_ref;
+}
+
+void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch) {
+  TEST_LOG("LivenessTracker::foldKlassCountsLocked epoch=%llu scratch_size=%d",
+           (unsigned long long)epoch, _klass_count_scratch_size);
+  for (int i = 0; i < _klass_count_scratch_size; i++) {
+    KlassCountScratch &s = _klass_count_scratch[i];
+    TEST_LOG("LivenessTracker::foldKlassCountsLocked scratch[%d] klass_id=%u count=%u", i,
+             s.klass_id, s.count);
+    int slot;
+    bool created;
+    jweak evicted = recordKlassPopulationSampleLocked(s.klass_id, s.count,
+                                                       epoch, &slot, &created);
+    if (evicted != nullptr) {
+      env->DeleteWeakGlobalRef(evicted);
+    }
+    // Also retry minting when an existing entry's representative is stale:
+    // either the field itself is still nullptr (a klass whose first-epoch
+    // sample_source died in the brief window between cleanup_table()'s
+    // survival check and the mint attempt below), or the field holds a jweak
+    // handle whose referent has since died - a jweak's own pointer value
+    // never becomes nullptr just because its referent was collected, so a
+    // representative pinned to one specific instance that later dies (while
+    // other instances of the same still-growing klass keep surviving, so
+    // this entry keeps being re-selected as a leak candidate) would
+    // otherwise be left permanently unresolvable: the `created ||
+    // representative == nullptr` check alone can only ever be true once per
+    // slot. last_updated_epoch keeps advancing every epoch this klass has
+    // survivors (right below), so it is never the LRU eviction victim that
+    // would otherwise let a fresh entry (and a fresh mint attempt) replace
+    // it. Resolving here every epoch bounds any given gap to "one epoch with
+    // no representative", not permanent.
+    jweak current_rep = _klass_population[slot].representative;
+    bool stale = false;
+    if (current_rep != nullptr) {
+      jobject probe = env->NewLocalRef(current_rep);
+      stale = (probe == nullptr);
+      if (probe != nullptr) {
+        env->DeleteLocalRef(probe);
+      }
+    }
+    if (created || current_rep == nullptr || stale) {
+      if (stale) {
+        env->DeleteWeakGlobalRef(current_rep);
+        _klass_population[slot].representative = nullptr;
+      }
+      // Mint a fresh, independent representative jweak rather than reusing
+      // s.sample_source directly - s.sample_source is the corresponding
+      // TrackingEntry's own weak ref, and that table slot's jweak gets
+      // deleted via DeleteWeakGlobalRef (this file's cleanup_table(), the
+      // "else" branch above) the moment the tracked object dies, which
+      // would leave _klass_population holding a dangling handle if it
+      // aliased the same jweak instead.
+      jobject strong = env->NewLocalRef(s.sample_source);
+      if (strong != nullptr) {
+        _klass_population[slot].representative = env->NewWeakGlobalRef(strong);
+        env->DeleteLocalRef(strong);
+      }
+      // else: this epoch's surviving instance for this klass died before we
+      // could mint a representative for it - the entry is left with
+      // representative == nullptr for this epoch and retried on the next one
+      // (see the retry condition's own comment above).
+    }
+  }
+  _klass_count_scratch_size = 0;
+}
+
+bool LivenessTracker::computeKlassPopulationSlope(const KlassPopulationEntry &entry,
+                                                   double *out_slope) const {
+  if (entry.ring_fill < KLASS_POPULATION_MIN_FILL_FOR_TREND) {
+    return false;
+  }
+
+  // Chronological (oldest-first) index of count_ring[0] within the entry's
+  // currently-filled window: while the ring hasn't wrapped yet
+  // (ring_fill < KLASS_POPULATION_RING_SIZE), ring_head == ring_fill and the
+  // oldest sample sits at physical index 0; once wrapped, ring_head is
+  // exactly the oldest (next-to-be-overwritten) slot. Both cases collapse to
+  // the same modular formula.
+  int start = (entry.ring_head - entry.ring_fill + KLASS_POPULATION_RING_SIZE) %
+              KLASS_POPULATION_RING_SIZE;
+  // Integer division deliberately drops the remainder into an untouched
+  // middle third when ring_fill isn't a multiple of 3 - "earliest third vs
+  // recent third" is already a cheap approximation (design doc's own
+  // rationale for not using least-squares), so this extra imprecision is
+  // consistent with that choice rather than a bug to round away.
+  int third = entry.ring_fill / 3;
+
+  double earliest_sum = 0;
+  for (int i = 0; i < third; i++) {
+    earliest_sum += entry.count_ring[(start + i) % KLASS_POPULATION_RING_SIZE];
+  }
+  double recent_sum = 0;
+  for (int i = entry.ring_fill - third; i < entry.ring_fill; i++) {
+    recent_sum += entry.count_ring[(start + i) % KLASS_POPULATION_RING_SIZE];
+  }
+
+  *out_slope = (recent_sum / third) - (earliest_sum / third);
+  return true;
+}
+
+int LivenessTracker::selectLeakCandidates(KlassCandidate *out, int max) {
+  int cap = max < MAX_LEAK_CANDIDATES ? max : MAX_LEAK_CANDIDATES;
+  if (cap <= 0) {
+    return 0;
+  }
+
+  // Kept sorted descending by slope magnitude, at most `cap` (<=
+  // MAX_LEAK_CANDIDATES == 5) entries - not one per klass - so an
+  // insertion-sort-style insert per candidate (O(cap) per insert, O(N*cap)
+  // overall for N <= MAX_KLASS_POPULATION_ENTRIES == 256 klasses) is cheaper
+  // and simpler than collecting every qualifying candidate and calling
+  // std::sort.
+  double best_slopes[MAX_LEAK_CANDIDATES];
+  int count = 0;
+
+  // Read-only pass over _klass_population - mirrors getLiveTraceIds()'s own
+  // shared-lock read pattern above, the same table cleanup_table() writes
+  // under the exclusive lock this shared lock is taken against.
+  _table_lock.lockShared();
+  TEST_LOG("LivenessTracker::selectLeakCandidates scanning %d klass_population entries",
+           _klass_population_size);
+  for (int i = 0; i < _klass_population_size; i++) {
+    const KlassPopulationEntry &entry = _klass_population[i];
+    double slope;
+    bool has_trend = computeKlassPopulationSlope(entry, &slope);
+    TEST_LOG("LivenessTracker::selectLeakCandidates entry[%d] klass_id=%u ring_fill=%u "
+             "has_trend=%d slope=%f representative=%p",
+             i, entry.klass_id, entry.ring_fill, has_trend, has_trend ? slope : 0.0,
+             (void *)entry.representative);
+    if (!has_trend || slope <= 0) {
+      // Not enough history yet, or flat/shrinking - design doc: "Keep only
+      // entries with positive slope".
+      continue;
+    }
+    if (count == cap && slope <= best_slopes[cap - 1]) {
+      // Already holding `cap` stronger (or equal) candidates - this one
+      // doesn't make the cut.
+      continue;
+    }
+
+    int pos = count < cap ? count++ : cap - 1;
+    best_slopes[pos] = slope;
+    out[pos] = KlassCandidate{entry.klass_id, entry.representative};
+    while (pos > 0 && best_slopes[pos - 1] < best_slopes[pos]) {
+      double tmp_slope = best_slopes[pos - 1];
+      best_slopes[pos - 1] = best_slopes[pos];
+      best_slopes[pos] = tmp_slope;
+      KlassCandidate tmp_cand = out[pos - 1];
+      out[pos - 1] = out[pos];
+      out[pos] = tmp_cand;
+      pos--;
+    }
+  }
+  _table_lock.unlockShared();
+
+  return count;
+}
+
+jobject LivenessTracker::resolveCandidateRepresentative(JNIEnv *env, u32 klass_id) {
+  // Shared lock excludes cleanup_table()'s exclusive lock (the only writer,
+  // and the only place that can DeleteWeakGlobalRef() an entry's
+  // representative via foldKlassCountsLocked()'s eviction path above) for
+  // the whole lookup+resolve, so the value NewLocalRef() runs on here is
+  // always the table's current one for klass_id, never a snapshot that
+  // eviction could have invalidated in the meantime - see
+  // selectLeakCandidates()'s own comment for the race this closes.
+  _table_lock.lockShared();
+  jobject obj = nullptr;
+  for (int i = 0; i < _klass_population_size; i++) {
+    if (_klass_population[i].klass_id == klass_id) {
+      if (_klass_population[i].representative != nullptr) {
+        obj = env->NewLocalRef(_klass_population[i].representative);
+      }
+      break;
+    }
+  }
+  _table_lock.unlockShared();
+  return obj;
 }
 
 void LivenessTracker::flush(std::set<int> &tracked_thread_ids) {
@@ -112,15 +472,31 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
       event._skipped = _table[i].skipped;
       event._ctx = _table[i].ctx;
 
-      jclass clz = env->GetObjectClass(ref);
-      jstring name_str = (jstring)env->CallObjectMethod(clz, _Class_getName);
-      env->DeleteLocalRef(clz);
-      jniExceptionCheck(env);
-      const char *name = env->GetStringUTFChars(name_str, nullptr);
-      int class_id = name != nullptr
-                         ? Profiler::instance()->lookupClass(name, strlen(name))
-                         : 0;
-      env->ReleaseStringUTFChars(name_str, name);
+      int class_id = 0;
+      if (_table[i].cached_klass_id != 0) {
+        // Already resolved by cleanup_table()'s survivor loop this epoch
+        // (resolveKlassId(), only when _gc_generations is enabled) - reuse
+        // it instead of repeating the GetObjectClass+Class.getName()+
+        // lookupClass() JNI round-trip for the same object.
+        class_id = _table[i].cached_klass_id;
+      } else {
+        jclass clz = env->GetObjectClass(ref);
+        jstring name_str = (jstring)env->CallObjectMethod(clz, _Class_getName);
+        env->DeleteLocalRef(clz);
+        jniExceptionCheck(env);
+        // name_str can be null if the call above threw and
+        // jniExceptionCheck() cleared the pending exception rather than
+        // propagating it - GetStringUTFChars()/ReleaseStringUTFChars()
+        // require a non-null jstring (mirrors resolveKlassId()'s own guard).
+        if (name_str != nullptr) {
+          const char *name = env->GetStringUTFChars(name_str, nullptr);
+          if (name != nullptr) {
+            class_id = Profiler::instance()->lookupClass(name, strlen(name));
+            env->ReleaseStringUTFChars(name_str, name);
+          }
+          env->DeleteLocalRef(name_str);
+        }
+      }
 
       // lookupClass() returns -1 when the class map is at capacity; do not
       // assign it to the u32 event id (it would wrap to 0xFFFFFFFF and
@@ -219,6 +595,14 @@ void LivenessTracker::stop() {
 
 Error LivenessTracker::initialize(Arguments &args) {
   _enabled = args._gc_generations || args._record_liveness;
+
+  // Gates per-klass population tracking (see the _gc_generations member's
+  // own comment in livenessTracker.h). Updated unconditionally alongside
+  // _record_heap_usage below, ahead of the _initialized guard, for the same
+  // reason: each profiler start should observe the flag it was actually
+  // started with, even though the tracking table itself persists across
+  // recordings.
+  _gc_generations = args._gc_generations;
 
   if (!_enabled) {
     return Error::OK;
@@ -362,6 +746,7 @@ retry:
     _table[idx].age = 0;
     _table[idx].call_trace_id = call_trace_id;
     _table[idx].ctx = ContextApi::snapshot();
+    _table[idx].cached_klass_id = 0;
   }
 
   _table_lock.unlockShared();

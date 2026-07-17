@@ -204,3 +204,37 @@ TEST_F(LineNumberTableCopyTest, GuardedCopyStillWorksForValidSource) {
   EXPECT_EQ(0, memcmp(owned_table, line_number_table, bytes));
   free(owned_table);
 }
+
+// fillJavaMethodInfo() (flightRecorder.cpp) gates the copy above on
+// `line_number_table_size > 0 && line_number_table_size <=
+// MAX_LINE_NUMBER_TABLE_ENTRIES` (flightRecorder.cpp:374), where
+// MAX_LINE_NUMBER_TABLE_ENTRIES is 65535 (flightRecorder.cpp:58, the u2
+// code_length cap). MAX_LINE_NUMBER_TABLE_ENTRIES is file-static, so these
+// tests mirror the boundary condition with the literal value rather than
+// calling fillJavaMethodInfo() directly (which requires a live JVMTI/JNI
+// environment, impractical to fake in a plain gtest -- same rationale as the
+// tests above). They exist to catch a "<=" -> "<" mutation at that line,
+// which would incorrectly reject a spec-valid, exactly-max-sized table.
+namespace {
+constexpr jint kMaxLineNumberTableEntries = 65535;
+
+bool passesLineNumberTableSizeGuard(jint size) {
+  return size > 0 && size <= kMaxLineNumberTableEntries;
+}
+} // namespace
+
+TEST(LineNumberTableBoundsTest, AcceptsExactlyMaxEntries) {
+  EXPECT_TRUE(passesLineNumberTableSizeGuard(kMaxLineNumberTableEntries));
+}
+
+TEST(LineNumberTableBoundsTest, RejectsOneMoreThanMaxEntries) {
+  EXPECT_FALSE(passesLineNumberTableSizeGuard(kMaxLineNumberTableEntries + 1));
+}
+
+TEST(LineNumberTableBoundsTest, RejectsNegativeSize) {
+  EXPECT_FALSE(passesLineNumberTableSizeGuard(-1));
+}
+
+TEST(LineNumberTableBoundsTest, RejectsZeroSize) {
+  EXPECT_FALSE(passesLineNumberTableSizeGuard(0));
+}

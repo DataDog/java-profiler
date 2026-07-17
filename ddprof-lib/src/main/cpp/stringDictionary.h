@@ -429,6 +429,11 @@ public:
 class StringDictionary {
     std::atomic<u32>  _next_id{1};      // starts at 1; id=0 reserved as "no entry"
     std::atomic<bool> _accepting{true}; // false while clearAll() is resetting buffers
+    // Bumped by clearAll() only. Lets a cache keyed by ids from this
+    // dictionary (e.g. ReferenceChainTracker::_class_tags, referenceChains.h)
+    // detect "the id namespace was wiped out from under me" and invalidate
+    // itself, rather than assuming ids stay valid across a clearAll().
+    std::atomic<u64>  _generation{0};
     StringDictionaryBuffer _a, _b, _c;
     TripleBufferRotator<StringDictionaryBuffer> _rot;
     int _counter_offset;  // offset into DICTIONARY_KEYS / DICTIONARY_KEYS_BYTES counter rows
@@ -458,6 +463,9 @@ public:
             _c.initCounters(counter_offset);
         }
     }
+
+    // Current id-namespace generation; see _generation's own comment.
+    u64 generation() const { return _generation.load(std::memory_order_acquire); }
 
     // Insert into active buffer; returns globally stable id.  NOT signal-safe.
     u32 lookup(const char* key, size_t len) {
@@ -605,6 +613,7 @@ public:
         _next_id.store(1, std::memory_order_relaxed);
         Counters::set(DICTIONARY_KEYS, 0, _counter_offset);
         Counters::set(DICTIONARY_KEYS_BYTES, 0, _counter_offset);
+        _generation.fetch_add(1, std::memory_order_release);
         _accepting.store(true, std::memory_order_release);
     }
 };

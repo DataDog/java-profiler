@@ -17,6 +17,7 @@
 #include "log.h"
 #include "os.h"
 #include "profiler.h"
+#include "referenceChains.h"
 #include "safeAccess.h"
 // Pulls in vmStructs.h plus the definitions of crashProtectionActive()/cast_to() that its inline
 // accessors odr-use here; the light vmStructs.h alone leaves those unresolved in assertion-enabled
@@ -387,6 +388,15 @@ bool VM::initLibrary(JavaVM *vm) {
   return true;
 }
 
+// jvmtiEventCallbacks has a single function-pointer slot per event; both
+// LivenessTracker and ReferenceChainTracker need GarbageCollectionFinish
+// (PROF-15341), so this trampoline dispatches to both instead of one
+// subsystem's registration clobbering the other's.
+static void JNICALL onGarbageCollectionFinish(jvmtiEnv *jvmti_env) {
+  LivenessTracker::GarbageCollectionFinish(jvmti_env);
+  ReferenceChainTracker::GarbageCollectionFinish(jvmti_env);
+}
+
 void VM::probeJFRRequestStackTrace() {
   jint ext_count = 0;
   jvmtiExtensionFunctionInfo *ext_functions = nullptr;
@@ -502,7 +512,8 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   callbacks.ThreadStart = Profiler::ThreadStart;
   callbacks.ThreadEnd = Profiler::ThreadEnd;
   callbacks.SampledObjectAlloc = ObjectSampler::SampledObjectAlloc;
-  callbacks.GarbageCollectionFinish = LivenessTracker::GarbageCollectionFinish;
+  callbacks.GarbageCollectionStart = ReferenceChainTracker::GarbageCollectionStart;
+  callbacks.GarbageCollectionFinish = onGarbageCollectionFinish;
   callbacks.NativeMethodBind = VMStructs::NativeMethodBind;
   _jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
 

@@ -1060,3 +1060,119 @@ Java_com_datadoghq_profiler_JavaProfiler_dumpContext(JNIEnv* env, jclass unused)
   ContextApi::get(spanId, rootSpanId);
   TEST_LOG("===> Context: tid:%lu, spanId=%lu, rootSpanId=%lu", OS::threadId(), spanId, rootSpanId);
 }
+
+// PROF-15341: LivenessTracker/ReferenceChainTracker test seams. Unlike
+// testlog()/dumpContext() above (harmless no-ops in release, via TEST_LOG's
+// own release-mode expansion to nothing), these mutate real tracker state
+// (tagging objects, seeding population history) - shipping them into a
+// release build would let a caller corrupt the actual leak-detection state,
+// not just add a silent no-op. Guarded out entirely instead, so they only
+// exist in the debug build ddprof-test's `testdebug` Gradle task loads
+// (`-DDEBUG`, see ConfigurationPresets.kt's configureDebug()) - never in the
+// `-DNDEBUG` release build.
+#ifdef DEBUG
+#include "livenessTracker.h"
+#include "referenceChains.h"
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setGcGenerationsEnabled0(
+    JNIEnv *env, jclass unused, jboolean enabled) {
+  LivenessTracker::instance()->setGcGenerationsForTest(enabled);
+  return JNI_TRUE;
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_seedKlassPopulationSample0(
+    JNIEnv *env, jclass unused, jint klassId, jint count, jlong epoch) {
+  int slot;
+  bool created;
+  LivenessTracker::instance()->klassPopulationRecordForTest(
+      (u32)klassId, (u16)count, (u64)epoch, &slot, &created);
+}
+
+// Wires a real, caller-chosen live object in as klassId's leak-candidate
+// representative, so a test-seeded slope signal (seedKlassPopulationSample0
+// above) and a directly-tagged frontier root (tagAsReferenceChainRoot0
+// below) can be joined into one deterministic end-to-end run of
+// pollWatchedTargets()'s bridging step - without either LivenessTracker's
+// real allocation sampler or ReferenceChainTracker's root-seeded walk ever
+// running. Takes its own weak global ref (klassPopulationSetRepresentativeForTest()'s
+// own contract, livenessTracker.h) rather than aliasing any handle the
+// caller manages.
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setKlassPopulationRepresentativeForTest0(
+    JNIEnv *env, jclass unused, jint klassId, jobject representative) {
+  jweak rep = env->NewWeakGlobalRef(representative);
+  LivenessTracker::instance()->klassPopulationSetRepresentativeForTest(
+      env, (u32)klassId, rep);
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_resetKlassPopulationForTest0(
+    JNIEnv *env, jclass unused) {
+  LivenessTracker::instance()->klassPopulationResetForTest();
+}
+
+extern "C" DLLEXPORT jintArray JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_selectLeakCandidateKlassIds0(
+    JNIEnv *env, jclass unused) {
+  KlassCandidate candidates[5];
+  int n = LivenessTracker::instance()->selectLeakCandidates(candidates, 5);
+  jintArray result = env->NewIntArray(n);
+  if (result == nullptr || n == 0) {
+    return result;
+  }
+  jint ids[5];
+  for (int i = 0; i < n; i++) {
+    ids[i] = (jint)candidates[i].klass_id;
+  }
+  env->SetIntArrayRegion(result, 0, n, ids);
+  return result;
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_tagAsReferenceChainRoot0(
+    JNIEnv *env, jclass unused, jobject target) {
+  jvmtiEnv *jvmti = VM::jvmti();
+  if (jvmti == nullptr) {
+    return 0;
+  }
+  return ReferenceChainTracker::instance()->tagAsRootForTest(jvmti, env,
+                                                               target);
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_runReferenceChainPass0(
+    JNIEnv *env, jclass unused) {
+  jvmtiEnv *jvmti = VM::jvmti();
+  if (jvmti == nullptr) {
+    return JNI_FALSE;
+  }
+  return ReferenceChainTracker::instance()->runPass(jvmti, env);
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_pollReferenceChainTargets0(
+    JNIEnv *env, jclass unused) {
+  jvmtiEnv *jvmti = VM::jvmti();
+  if (jvmti == nullptr) {
+    return;
+  }
+  ReferenceChainTracker::instance()->pollWatchedTargets(jvmti, env);
+}
+
+extern "C" DLLEXPORT jint JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_drainReferenceChainEventCount0(
+    JNIEnv *env, jclass unused) {
+  std::vector<ReferenceChainEvent> events;
+  ReferenceChainTracker::instance()->drainPendingChainEvents(&events);
+  return (jint)events.size();
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_resetReferenceChainSearchForTest0(
+    JNIEnv *env, jclass unused) {
+  jvmtiEnv *jvmti = VM::jvmti();
+  ReferenceChainTracker::instance()->resetSearchStateForTest(jvmti, env);
+}
+#endif // DEBUG
