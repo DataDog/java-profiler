@@ -179,16 +179,26 @@ case $ALLOCATOR in
       if [ -n "${GLIBC_VERSION}" ] && [ "$(printf '%s\n' "2.34" "${GLIBC_VERSION}" | sort -V | head -1)" = "2.34" ]; then
         MALLOC_DEBUG_LIB=$(find /usr/lib/ /usr/lib64/ /lib/ /lib64/ -maxdepth 4 -name 'libc_malloc_debug.so*' 2>/dev/null | head -1)
         if [ -z "${MALLOC_DEBUG_LIB}" ]; then
-          echo "FAIL:glibc ${GLIBC_VERSION} requires libc_malloc_debug to be preloaded for MALLOC_CHECK_ to take effect, but it could not be found" >&2
-          exit 1
+          # Non-fatal: this is a secondary safety net (MALLOC_CHECK_ enforcement)
+          # on top of the run's main purpose, not a hard dependency of the chaos
+          # run itself — a missing libc_malloc_debug package on this image should
+          # not fail the whole run, just lose this one extra corruption-detection
+          # layer (glibc >= 2.34's MALLOC_CHECK_ is a silent no-op without it).
+          echo "WARN: glibc ${GLIBC_VERSION} requires libc_malloc_debug to be preloaded for MALLOC_CHECK_ to take effect, but it could not be found — continuing without MALLOC_CHECK_ enforcement" >&2
+        else
+          export LD_PRELOAD="${MALLOC_DEBUG_LIB}${LD_PRELOAD:+:${LD_PRELOAD}}"
+          echo "glibc ${GLIBC_VERSION} detected — preloading ${MALLOC_DEBUG_LIB} for MALLOC_CHECK_"
         fi
-        export LD_PRELOAD="${MALLOC_DEBUG_LIB}${LD_PRELOAD:+:${LD_PRELOAD}}"
-        echo "glibc ${GLIBC_VERSION} detected — preloading ${MALLOC_DEBUG_LIB} for MALLOC_CHECK_"
       fi
     fi
     ;;
   tcmalloc)
-    export LD_PRELOAD=$(find /usr/lib/ /usr/lib64/ /opt/homebrew/lib/ /usr/local/lib/ -maxdepth 4 -name 'libtcmalloc_minimal.so.4' -o -name 'libtcmalloc.dylib' 2>/dev/null | head -1)
+    TCMALLOC_LIB=$(find /usr/lib/ /usr/lib64/ /opt/homebrew/lib/ /usr/local/lib/ -maxdepth 4 -name 'libtcmalloc_minimal.so.4' -o -name 'libtcmalloc.dylib' 2>/dev/null | head -1)
+    if [ -z "${TCMALLOC_LIB}" ]; then
+      echo "FAIL: allocator=tcmalloc requested but libtcmalloc_minimal.so.4/libtcmalloc.dylib could not be found" >&2
+      exit 1
+    fi
+    export LD_PRELOAD="${TCMALLOC_LIB}"
     # thread-churn/dump-storm antagonists cycle many short-lived threads;
     # tcmalloc's defaults are slow to return their per-thread caches to the
     # OS, which was inflating container RSS past the OOM limit on aarch64.
@@ -196,7 +206,12 @@ case $ALLOCATOR in
     export TCMALLOC_AGGRESSIVE_DECOMMIT=1
     ;;
   jemalloc)
-    export LD_PRELOAD=$(find /usr/lib/ /usr/lib64/ /opt/homebrew/lib/ /usr/local/lib/ -maxdepth 4 -name 'libjemalloc.so' -o -name 'libjemalloc.dylib' 2>/dev/null | head -1)
+    JEMALLOC_LIB=$(find /usr/lib/ /usr/lib64/ /opt/homebrew/lib/ /usr/local/lib/ -maxdepth 4 -name 'libjemalloc.so' -o -name 'libjemalloc.dylib' 2>/dev/null | head -1)
+    if [ -z "${JEMALLOC_LIB}" ]; then
+      echo "FAIL: allocator=jemalloc requested but libjemalloc.so/libjemalloc.dylib could not be found" >&2
+      exit 1
+    fi
+    export LD_PRELOAD="${JEMALLOC_LIB}"
     # Same aarch64 RSS-inflation issue as tcmalloc above: jemalloc's default
     # decay times leave dirty/muzzy pages resident under heavy thread churn.
     export MALLOC_CONF="background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:1000"
@@ -249,7 +264,7 @@ echo "disk usage ($(dirname "${DDPROF_ROOT}")): $(df -h "$(dirname "${DDPROF_ROO
 # OOME instead, so a failure is a single, diagnosable event.
 CHAOS_START=$(date +%s)
 timeout "$((RUNTIME + 300))" \
-java -javaagent:${PATCHED_AGENT} \
+java -javaagent:"${PATCHED_AGENT}" \
      --add-opens java.base/java.lang=ALL-UNNAMED \
      --add-exports java.base/jdk.internal.misc=ALL-UNNAMED \
      ${ENABLEMENT} \
@@ -264,11 +279,11 @@ java -javaagent:${PATCHED_AGENT} \
      -Xmx${HEAP_MB}m -Xms${HEAP_MB}m \
      -XX:MaxMetaspaceSize=384m \
      -XX:NativeMemoryTracking=summary \
-     -XX:ErrorFile=${HS_ERR} \
+     -XX:ErrorFile="${HS_ERR}" \
      -XX:+ExitOnOutOfMemoryError \
-     -jar ${CHAOS_JAR} \
+     -jar "${CHAOS_JAR}" \
      --duration ${RUNTIME}s \
-     --antagonists ${ANTAGONISTS}
+     --antagonists "${ANTAGONISTS}"
 
 RC=$?
 CHAOS_ELAPSED=$(( $(date +%s) - CHAOS_START ))
