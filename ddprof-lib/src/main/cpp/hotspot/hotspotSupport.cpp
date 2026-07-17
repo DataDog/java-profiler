@@ -972,7 +972,10 @@ void HotspotSupport::checkFault(ProfiledThread* thrd) {
     }
 
     thrd->resetCrashHandler();
-    Counters::increment(WALKVM_LONGJMP_RECOVERED);
+    // Shared recovery point for every setjmp/longjmp-protected stack walk
+    // (walkVM's inner region and recordSample's native/AGCT unwind), so the
+    // counter is deliberately not walkVM-specific.
+    Counters::increment(STACKWALK_LONGJMP_RECOVERED);
     longjmp(*thrd->getJmpCtx(), 1);
 }
 
