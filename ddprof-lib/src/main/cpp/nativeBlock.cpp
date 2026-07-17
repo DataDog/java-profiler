@@ -52,7 +52,7 @@ NativeBlockScope::NativeBlockScope(NativeBlockKind kind, int blocker_id,
     return;
   }
 
-  ProfiledThread* current = ProfiledThread::currentSignalSafe();
+  ProfiledThread* current = ProfiledThread::current();
   if (current == nullptr || current->threadType() != ProfiledThread::TYPE_JAVA_THREAD) {
     errno = saved_errno;
     return;
@@ -105,35 +105,27 @@ void NativeBlockScope::finish(u64 end_ticks) {
   _active = false;
 
   Profiler* profiler = Profiler::instance();
-  bool recording_enabled = profiler->taskBlockEnabled();
-  bool activity = profiler->tryEnterTaskBlockActivity();
-  if (!activity) {
-    profiler->waitForTaskBlockRotation();
-  }
   ThreadFilter* thread_filter = profiler->threadFilter();
+  bool recording_enabled =
+      profiler->taskBlockEnabled() && thread_filter->registryActive();
+  bool activity = profiler->tryEnterTaskBlockActivity();
   BlockRunSnapshot snapshot{};
-  snapshot.active_state = _state;
-  snapshot.owner = BlockRunOwner::NATIVE;
-  if (!thread_filter->registryActive() ||
-      !thread_filter->snapshotAndExitBlockedRun(_slot_id, _generation, &snapshot)) {
-    if (activity) {
-      profiler->leaveTaskBlockActivity();
-    } else {
-      Counters::increment(TASK_BLOCK_DROPPED_ROTATION);
-    }
-    return;
-  }
+  bool exited = thread_filter->snapshotAndExitBlockedRun(
+      _slot_id, _generation, &snapshot);
 
   if (!activity) {
     Counters::increment(TASK_BLOCK_DROPPED_ROTATION);
     return;
   }
 
-  if (recording_enabled) {
-    recordTaskBlockIfEligible(_tid, nullptr, 0, _start_ticks, end_ticks,
-                              _context, _blocker, 0,
-                              snapshot.active_state, true);
+  if (!recording_enabled || !exited) {
+    profiler->leaveTaskBlockActivity();
+    return;
   }
+
+  recordTaskBlockIfEligible(_tid, nullptr, 0, _start_ticks, end_ticks,
+                            _context, _blocker, 0,
+                            snapshot.active_state, true);
   profiler->leaveTaskBlockActivity();
 }
 

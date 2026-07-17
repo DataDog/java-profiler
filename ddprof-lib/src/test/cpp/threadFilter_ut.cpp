@@ -670,7 +670,8 @@ TEST_F(ThreadFilterTest, OwnedNativeIoSuppressesBeforeAnyWallSample) {
         slot_id, OSThreadState::IO_WAIT, BlockRunOwner::NATIVE);
     ASSERT_NE(0ULL, token);
 
-    ThreadEntry entry{1234, slot, slot->lifecycleGeneration()};
+    ThreadEntry entry{1234, slot, slot->lifecycleGeneration(),
+                      slot->recordingEpoch()};
     EXPECT_TRUE(filter->isOwnedBlockSuppressionCandidate(entry));
 
     ASSERT_TRUE(filter->exitBlockedRun(

@@ -7,10 +7,12 @@ package com.datadoghq.profiler.wallclock;
 
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Disabled;
 
 import java.util.Map;
 
 /** Verifies synchronous native-I/O production when delegated wall-clock stacks are enabled. */
+@Disabled("Native TaskBlock coverage requires broader DSO interposition than is currently safe")
 public class JvmtiBasedNativeSocketTaskBlockTest extends NativeSocketTaskBlockTest {
     @Override
     protected void before() throws Exception {

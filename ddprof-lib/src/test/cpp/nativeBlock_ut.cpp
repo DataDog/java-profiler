@@ -15,7 +15,9 @@
 #include "tsc.h"
 
 #include <atomic>
+#include <chrono>
 #include <cerrno>
+#include <future>
 #include <thread>
 
 namespace {
@@ -103,7 +105,7 @@ protected:
   }
 
   void TearDown() override {
-    if (ProfiledThread::currentSignalSafe() != nullptr) {
+    if (ProfiledThread::current() != nullptr) {
       ProfiledThread::release();
     }
     Profiler::setTaskBlockRecordOverrideForTest(nullptr);
@@ -281,7 +283,7 @@ TEST_F(NativeBlockScopeTest, FinishAfterTaskBlockDisableExitsWithoutRecording) {
   EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
 }
 
-TEST_F(NativeBlockScopeTest, FinishSkipsAndLeavesSlotOwnedWhenFilterDisabledBeforeExit) {
+TEST_F(NativeBlockScopeTest, FinishAfterFilterDisableExitsWithoutRecording) {
   CurrentThreadScope current;
   ScopedTaskBlockEnabled task_block_enabled(true);
   int slot_id = registerCurrentJavaThread(current.thread());
@@ -296,8 +298,37 @@ TEST_F(NativeBlockScopeTest, FinishSkipsAndLeavesSlotOwnedWhenFilterDisabledBefo
 
   ThreadFilter::Slot* slot = filter->slotForId(slot_id);
   ASSERT_NE(nullptr, slot);
-  EXPECT_EQ(BlockRunOwner::NATIVE, slot->activeBlockOwner());
-  EXPECT_EQ(OSThreadState::IO_WAIT, slot->activeBlockState());
+  EXPECT_EQ(BlockRunOwner::NONE, slot->activeBlockOwner());
+  EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
+  EXPECT_EQ(0, g_record_calls.load(std::memory_order_relaxed));
+}
+
+TEST_F(NativeBlockScopeTest, RotationRejectsFinishWithoutBlockingOrStranding) {
+  CurrentThreadScope current;
+  ScopedTaskBlockEnabled task_block_enabled(true);
+  int slot_id = registerCurrentJavaThread(current.thread());
+  ThreadFilter* filter = Profiler::instance()->threadFilter();
+  NativeBlockScope scope(NativeBlockKind::STREAM_SOCKET, 17,
+                         OSThreadState::IO_WAIT);
+  ASSERT_TRUE(scope.active());
+
+  Profiler* profiler = Profiler::instance();
+  profiler->beginTaskBlockRotationForTest();
+  std::future<void> result = std::async(std::launch::async, [&]() {
+    scope.finishForTest(eligibleEndTicks(scope.startTicksForTest()));
+  });
+
+  std::future_status status = result.wait_for(std::chrono::seconds(1));
+  profiler->endTaskBlockRotationForTest();
+  ASSERT_EQ(std::future_status::ready, status);
+  result.get();
+
+  ThreadFilter::Slot* slot = filter->slotForId(slot_id);
+  ASSERT_NE(nullptr, slot);
+  EXPECT_EQ(BlockRunOwner::NONE, slot->activeBlockOwner());
+  EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
+  EXPECT_EQ(0, g_record_calls.load(std::memory_order_relaxed));
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_DROPPED_ROTATION));
 }
 
 TEST_F(NativeBlockScopeTest, ConcurrentScopeLifecyclePreservesSlotOwnership) {
@@ -310,7 +341,7 @@ TEST_F(NativeBlockScopeTest, ConcurrentScopeLifecyclePreservesSlotOwnership) {
 
   std::thread observer([&]() {
     while (!stop.load(std::memory_order_acquire)) {
-      BlockRunSnapshot snapshot = filter->snapshotBlockedRun(slot_id);
+      BlockRunSnapshot snapshot = filter->slotForId(slot_id)->snapshotBlockRun();
       if (snapshot.active && snapshot.owner != BlockRunOwner::NATIVE) {
         failures.fetch_add(1, std::memory_order_relaxed);
       }

@@ -8,6 +8,7 @@ package com.datadoghq.profiler.wallclock;
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.item.IItemCollection;
 
@@ -33,6 +34,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Verifies Linux native socket and readiness waits produce self-contained TaskBlock events. */
+@Disabled("Native TaskBlock coverage requires broader DSO interposition than is currently safe")
 public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
     private static final int BLOCK_HOLD_MILLIS = 250;
     private static final int NATIVE_BLOCK_ATTEMPTS = 5;

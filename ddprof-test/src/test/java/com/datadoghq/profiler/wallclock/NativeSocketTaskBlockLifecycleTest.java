@@ -8,6 +8,7 @@ package com.datadoghq.profiler.wallclock;
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.item.IItemCollection;
 
@@ -27,6 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Verifies native I/O hooks are fully restored and can be reinstalled across profiler restarts. */
+@Disabled("Arbitrary JNI DSO interposition is disabled until hooks are safe after fork and in signal handlers")
 public class NativeSocketTaskBlockLifecycleTest extends AbstractProfilerTest {
     private static final int BLOCK_HOLD_MILLIS = 250;
     private static final int NATIVE_BLOCK_ATTEMPTS = 5;

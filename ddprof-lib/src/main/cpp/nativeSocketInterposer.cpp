@@ -112,32 +112,58 @@ std::atomic<NativeSocketInterposer::poll_fn> NativeSocketInterposer::_orig_poll{
 std::atomic<NativeSocketInterposer::ppoll_fn> NativeSocketInterposer::_orig_ppoll{nullptr};
 std::atomic<NativeSocketInterposer::select_fn> NativeSocketInterposer::_orig_select{nullptr};
 std::atomic<NativeSocketInterposer::pselect_fn> NativeSocketInterposer::_orig_pselect{nullptr};
+std::atomic<pid_t> NativeSocketInterposer::_hook_owner_pid{0};
 
 static_assert(std::atomic<NativeSocketInterposer::send_fn>::is_always_lock_free,
               "native I/O hook function pointers must be lock-free");
+static_assert(std::atomic<pid_t>::is_always_lock_free,
+              "native I/O hook owner PID must be lock-free");
 
 const NativeSocketInterposer::NativeIoHookSpec* NativeSocketInterposer::hookSpecs() {
   static const NativeIoHookSpec specs[NUM_NATIVE_IO_HOOKS] = {
-      {im_send, "send", reinterpret_cast<void*>(send_hook)},
-      {im_recv, "recv", reinterpret_cast<void*>(recv_hook)},
-      {im_write, "write", reinterpret_cast<void*>(write_hook)},
-      {im_read, "read", reinterpret_cast<void*>(read_hook)},
-      {im_close, "close", reinterpret_cast<void*>(close_hook)},
-      {im_dup2, "dup2", reinterpret_cast<void*>(dup2_hook)},
-      {im_dup3, "dup3", reinterpret_cast<void*>(dup3_hook)},
-      {im_connect, "connect", reinterpret_cast<void*>(connect_hook)},
-      {im_accept, "accept", reinterpret_cast<void*>(accept_hook)},
-      {im_accept4, "accept4", reinterpret_cast<void*>(accept4_hook)},
-      {im_recvfrom, "recvfrom", reinterpret_cast<void*>(recvfrom_hook)},
-      {im_recvmsg, "recvmsg", reinterpret_cast<void*>(recvmsg_hook)},
-      {im_epoll_wait, "epoll_wait", reinterpret_cast<void*>(epoll_wait_hook)},
-      {im_epoll_pwait, "epoll_pwait", reinterpret_cast<void*>(epoll_pwait_hook)},
-      {im_poll, "poll", reinterpret_cast<void*>(poll_hook)},
-      {im_ppoll, "ppoll", reinterpret_cast<void*>(ppoll_hook)},
-      {im_select, "select", reinterpret_cast<void*>(select_hook)},
-      {im_pselect, "pselect", reinterpret_cast<void*>(pselect_hook)},
+      {im_send, "send", reinterpret_cast<void*>(send_hook),
+       reinterpret_cast<void*>(fork_safe_send_hook)},
+      {im_recv, "recv", reinterpret_cast<void*>(recv_hook),
+       reinterpret_cast<void*>(fork_safe_recv_hook)},
+      {im_write, "write", reinterpret_cast<void*>(write_hook),
+       reinterpret_cast<void*>(fork_safe_write_hook)},
+      {im_read, "read", reinterpret_cast<void*>(read_hook),
+       reinterpret_cast<void*>(fork_safe_read_hook)},
+      {im_close, "close", reinterpret_cast<void*>(close_hook),
+       reinterpret_cast<void*>(fork_safe_close_hook)},
+      {im_dup2, "dup2", reinterpret_cast<void*>(dup2_hook),
+       reinterpret_cast<void*>(fork_safe_dup2_hook)},
+      {im_dup3, "dup3", reinterpret_cast<void*>(dup3_hook),
+       reinterpret_cast<void*>(fork_safe_dup3_hook)},
+      {im_connect, "connect", reinterpret_cast<void*>(connect_hook),
+       reinterpret_cast<void*>(fork_safe_connect_hook)},
+      {im_accept, "accept", reinterpret_cast<void*>(accept_hook),
+       reinterpret_cast<void*>(fork_safe_accept_hook)},
+      {im_accept4, "accept4", reinterpret_cast<void*>(accept4_hook),
+       reinterpret_cast<void*>(fork_safe_accept4_hook)},
+      {im_recvfrom, "recvfrom", reinterpret_cast<void*>(recvfrom_hook),
+       reinterpret_cast<void*>(fork_safe_recvfrom_hook)},
+      {im_recvmsg, "recvmsg", reinterpret_cast<void*>(recvmsg_hook),
+       reinterpret_cast<void*>(fork_safe_recvmsg_hook)},
+      {im_epoll_wait, "epoll_wait", reinterpret_cast<void*>(epoll_wait_hook),
+       reinterpret_cast<void*>(fork_safe_epoll_wait_hook)},
+      {im_epoll_pwait, "epoll_pwait", reinterpret_cast<void*>(epoll_pwait_hook),
+       reinterpret_cast<void*>(fork_safe_epoll_pwait_hook)},
+      {im_poll, "poll", reinterpret_cast<void*>(poll_hook),
+       reinterpret_cast<void*>(fork_safe_poll_hook)},
+      {im_ppoll, "ppoll", reinterpret_cast<void*>(ppoll_hook),
+       reinterpret_cast<void*>(fork_safe_ppoll_hook)},
+      {im_select, "select", reinterpret_cast<void*>(select_hook),
+       reinterpret_cast<void*>(fork_safe_select_hook)},
+      {im_pselect, "pselect", reinterpret_cast<void*>(pselect_hook),
+       reinterpret_cast<void*>(fork_safe_pselect_hook)},
   };
   return specs;
+}
+
+bool NativeSocketInterposer::isForkChild() {
+  pid_t current_pid = getpid();
+  return current_pid != _hook_owner_pid.load(std::memory_order_acquire);
 }
 
 bool NativeSocketInterposer::setOriginalFunction(int hook_index, void* original) {
@@ -468,6 +494,249 @@ int NativeSocketInterposer::pselect_hook(int nfds, fd_set* readfds, fd_set* writ
                                 return fn(nfds, readfds, writefds, exceptfds,
                                           timeout_ts, sigmask);
                               });
+}
+
+ssize_t NativeSocketInterposer::fork_safe_send_hook(int fd, const void* buf,
+                                                     size_t len, int flags) {
+  if (!isForkChild()) {
+    return send_hook(fd, buf, len, flags);
+  }
+  send_fn original = _orig_send.load(std::memory_order_acquire);
+  if (original == nullptr) {
+    errno = ENOSYS;
+    return -1;
+  }
+  return original(fd, buf, len, flags);
+}
+
+ssize_t NativeSocketInterposer::fork_safe_recv_hook(int fd, void* buf,
+                                                     size_t len, int flags) {
+  if (!isForkChild()) {
+    return recv_hook(fd, buf, len, flags);
+  }
+  recv_fn original = _orig_recv.load(std::memory_order_acquire);
+  if (original == nullptr) {
+    errno = ENOSYS;
+    return -1;
+  }
+  return original(fd, buf, len, flags);
+}
+
+ssize_t NativeSocketInterposer::fork_safe_write_hook(int fd, const void* buf,
+                                                      size_t len) {
+  if (!isForkChild()) {
+    return write_hook(fd, buf, len);
+  }
+  write_fn original = _orig_write.load(std::memory_order_acquire);
+  if (original == nullptr) {
+    errno = ENOSYS;
+    return -1;
+  }
+  return original(fd, buf, len);
+}
+
+ssize_t NativeSocketInterposer::fork_safe_read_hook(int fd, void* buf,
+                                                     size_t len) {
+  if (!isForkChild()) {
+    return read_hook(fd, buf, len);
+  }
+  read_fn original = _orig_read.load(std::memory_order_acquire);
+  if (original == nullptr) {
+    errno = ENOSYS;
+    return -1;
+  }
+  return original(fd, buf, len);
+}
+
+int NativeSocketInterposer::fork_safe_close_hook(int fd) {
+  if (!isForkChild()) {
+    return close_hook(fd);
+  }
+  close_fn original = _orig_close.load(std::memory_order_acquire);
+  return original == nullptr ? static_cast<int>(syscall(SYS_close, fd))
+                             : original(fd);
+}
+
+int NativeSocketInterposer::fork_safe_dup2_hook(int oldfd, int newfd) {
+  if (!isForkChild()) {
+    return dup2_hook(oldfd, newfd);
+  }
+  dup2_fn original = _orig_dup2.load(std::memory_order_acquire);
+  if (original != nullptr) {
+    return original(oldfd, newfd);
+  }
+#ifdef SYS_dup2
+  return static_cast<int>(syscall(SYS_dup2, oldfd, newfd));
+#else
+  errno = ENOSYS;
+  return -1;
+#endif
+}
+
+int NativeSocketInterposer::fork_safe_dup3_hook(int oldfd, int newfd, int flags) {
+  if (!isForkChild()) {
+    return dup3_hook(oldfd, newfd, flags);
+  }
+  dup3_fn original = _orig_dup3.load(std::memory_order_acquire);
+  if (original != nullptr) {
+    return original(oldfd, newfd, flags);
+  }
+#ifdef SYS_dup3
+  return static_cast<int>(syscall(SYS_dup3, oldfd, newfd, flags));
+#else
+  errno = ENOSYS;
+  return -1;
+#endif
+}
+
+int NativeSocketInterposer::fork_safe_connect_hook(
+    int fd, const struct sockaddr* addr, socklen_t addrlen) {
+  if (!isForkChild()) {
+    return connect_hook(fd, addr, addrlen);
+  }
+  connect_fn original = _orig_connect.load(std::memory_order_acquire);
+  if (original == nullptr) {
+    errno = ENOSYS;
+    return -1;
+  }
+  return original(fd, addr, addrlen);
+}
+
+int NativeSocketInterposer::fork_safe_accept_hook(int fd, struct sockaddr* addr,
+                                                   socklen_t* addrlen) {
+  if (!isForkChild()) {
+    return accept_hook(fd, addr, addrlen);
+  }
+  accept_fn original = _orig_accept.load(std::memory_order_acquire);
+  if (original == nullptr) {
+    errno = ENOSYS;
+    return -1;
+  }
+  return original(fd, addr, addrlen);
+}
+
+int NativeSocketInterposer::fork_safe_accept4_hook(int fd, struct sockaddr* addr,
+                                                    socklen_t* addrlen,
+                                                    int flags) {
+  if (!isForkChild()) {
+    return accept4_hook(fd, addr, addrlen, flags);
+  }
+  accept4_fn original = _orig_accept4.load(std::memory_order_acquire);
+  if (original == nullptr) {
+    errno = ENOSYS;
+    return -1;
+  }
+  return original(fd, addr, addrlen, flags);
+}
+
+ssize_t NativeSocketInterposer::fork_safe_recvfrom_hook(
+    int fd, void* buf, size_t len, int flags, struct sockaddr* src_addr,
+    socklen_t* addrlen) {
+  if (!isForkChild()) {
+    return recvfrom_hook(fd, buf, len, flags, src_addr, addrlen);
+  }
+  recvfrom_fn original = _orig_recvfrom.load(std::memory_order_acquire);
+  if (original == nullptr) {
+    errno = ENOSYS;
+    return -1;
+  }
+  return original(fd, buf, len, flags, src_addr, addrlen);
+}
+
+ssize_t NativeSocketInterposer::fork_safe_recvmsg_hook(int fd,
+                                                        struct msghdr* msg,
+                                                        int flags) {
+  if (!isForkChild()) {
+    return recvmsg_hook(fd, msg, flags);
+  }
+  recvmsg_fn original = _orig_recvmsg.load(std::memory_order_acquire);
+  if (original == nullptr) {
+    errno = ENOSYS;
+    return -1;
+  }
+  return original(fd, msg, flags);
+}
+
+int NativeSocketInterposer::fork_safe_epoll_wait_hook(
+    int epfd, struct epoll_event* events, int maxevents, int timeout) {
+  if (!isForkChild()) {
+    return epoll_wait_hook(epfd, events, maxevents, timeout);
+  }
+  epoll_wait_fn original = _orig_epoll_wait.load(std::memory_order_acquire);
+  if (original == nullptr) {
+    errno = ENOSYS;
+    return -1;
+  }
+  return original(epfd, events, maxevents, timeout);
+}
+
+int NativeSocketInterposer::fork_safe_epoll_pwait_hook(
+    int epfd, struct epoll_event* events, int maxevents, int timeout,
+    const sigset_t* sigmask) {
+  if (!isForkChild()) {
+    return epoll_pwait_hook(epfd, events, maxevents, timeout, sigmask);
+  }
+  epoll_pwait_fn original = _orig_epoll_pwait.load(std::memory_order_acquire);
+  if (original == nullptr) {
+    errno = ENOSYS;
+    return -1;
+  }
+  return original(epfd, events, maxevents, timeout, sigmask);
+}
+
+int NativeSocketInterposer::fork_safe_poll_hook(struct pollfd* fds,
+                                                 nfds_t nfds, int timeout) {
+  if (!isForkChild()) {
+    return poll_hook(fds, nfds, timeout);
+  }
+  poll_fn original = _orig_poll.load(std::memory_order_acquire);
+  if (original == nullptr) {
+    errno = ENOSYS;
+    return -1;
+  }
+  return original(fds, nfds, timeout);
+}
+
+int NativeSocketInterposer::fork_safe_ppoll_hook(
+    struct pollfd* fds, nfds_t nfds, const struct timespec* timeout_ts,
+    const sigset_t* sigmask) {
+  if (!isForkChild()) {
+    return ppoll_hook(fds, nfds, timeout_ts, sigmask);
+  }
+  ppoll_fn original = _orig_ppoll.load(std::memory_order_acquire);
+  if (original == nullptr) {
+    errno = ENOSYS;
+    return -1;
+  }
+  return original(fds, nfds, timeout_ts, sigmask);
+}
+
+int NativeSocketInterposer::fork_safe_select_hook(
+    int nfds, fd_set* readfds, fd_set* writefds, fd_set* exceptfds,
+    struct timeval* timeout) {
+  if (!isForkChild()) {
+    return select_hook(nfds, readfds, writefds, exceptfds, timeout);
+  }
+  select_fn original = _orig_select.load(std::memory_order_acquire);
+  if (original == nullptr) {
+    errno = ENOSYS;
+    return -1;
+  }
+  return original(nfds, readfds, writefds, exceptfds, timeout);
+}
+
+int NativeSocketInterposer::fork_safe_pselect_hook(
+    int nfds, fd_set* readfds, fd_set* writefds, fd_set* exceptfds,
+    const struct timespec* timeout_ts, const sigset_t* sigmask) {
+  if (!isForkChild()) {
+    return pselect_hook(nfds, readfds, writefds, exceptfds, timeout_ts, sigmask);
+  }
+  pselect_fn original = _orig_pselect.load(std::memory_order_acquire);
+  if (original == nullptr) {
+    errno = ENOSYS;
+    return -1;
+  }
+  return original(nfds, readfds, writefds, exceptfds, timeout_ts, sigmask);
 }
 
 #else

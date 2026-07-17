@@ -349,7 +349,7 @@ class ElfParser {
     bool _relocate_dyn;
     ElfHeader* _header;
     const char* _sections;
-    const char* _vaddr_diff;
+    uintptr_t _load_bias;
     const char* _image_end;  // one-past-the-end of the mapped ELF image; bounds file-relative reads
 
     ElfParser(CodeCache* cc, const char* base, const void* addr, size_t image_size, const char* file_name, bool relocate_dyn) {
@@ -358,6 +358,7 @@ class ElfParser {
         _file_name = file_name;
         _relocate_dyn = relocate_dyn;
         _header = (ElfHeader*)addr;
+        _load_bias = 0;
         _image_end = (const char*)addr + image_size;
         // e_shoff sits at a fixed offset inside the header; only compute the pointer
         // when the image is at least header-sized AND e_shoff is within the image,
@@ -451,25 +452,34 @@ class ElfParser {
         return inImage(ph, sizeof(ElfProgramHeader)) ? ph : NULL;
     }
 
-    const char* at(ElfProgramHeader* pheader) {
-        if (_header->e_type == ET_EXEC) {
-            return (const char*)pheader->p_vaddr;
+    const char* addressAt(uint64_t virtual_address, size_t extra_offset = 0) const {
+        if (virtual_address > UINTPTR_MAX) {
+            return NULL;
         }
-        return _vaddr_diff == NULL ? (const char*)pheader->p_vaddr : _vaddr_diff + pheader->p_vaddr;
+        uintptr_t offset = (uintptr_t)virtual_address;
+        if (extra_offset > UINTPTR_MAX - offset) {
+            return NULL;
+        }
+        offset += extra_offset;
+
+        uintptr_t load_bias = _header->e_type == ET_EXEC ? 0 : _load_bias;
+        if (load_bias > UINTPTR_MAX - offset) {
+            return NULL;
+        }
+        return (const char*)(load_bias + offset);
     }
 
-    const char* base() {
-        return _header->e_type == ET_EXEC ? NULL : _vaddr_diff;
+    const char* at(ElfProgramHeader* pheader) {
+        return addressAt(pheader->p_vaddr);
     }
 
     char* dyn_ptr(ElfDyn* dyn) {
         // GNU dynamic linker relocates pointers in the dynamic section, while musl doesn't.
         // Also, [vdso] is not relocated, and its vaddr may differ from the load address.
-        if (_relocate_dyn || (_base != NULL && (char*)dyn->d_un.d_ptr < _base)) {
-            return _vaddr_diff == NULL ? (char*)dyn->d_un.d_ptr : (char*)_vaddr_diff + dyn->d_un.d_ptr;
-        } else {
-            return (char*)dyn->d_un.d_ptr;
+        if (_relocate_dyn || (_base != NULL && dyn->d_un.d_ptr < (uintptr_t)_base)) {
+            return (char*)addressAt(dyn->d_un.d_ptr);
         }
+        return dyn->d_un.d_ptr <= UINTPTR_MAX ? (char*)(uintptr_t)dyn->d_un.d_ptr : NULL;
     }
 
     ElfSection* findSection(uint32_t type, const char* name);
@@ -570,17 +580,18 @@ void ElfParser::parseProgramHeaders(CodeCache* cc, const char* base, const char*
 void ElfParser::calcVirtualLoadAddress() {
     // Find a difference between the virtual load address (often zero) and the actual DSO base
     if (_base == NULL) {
-        _vaddr_diff = NULL;
+        _load_bias = 0;
         return;
     }
     for (int i = 0; i < _header->e_phnum; i++) {
         ElfProgramHeader* pheader = phdrAt(i);
         if (pheader != NULL && pheader->p_type == PT_LOAD) {
-            _vaddr_diff = _base - pheader->p_vaddr;
+            // p_vaddr is an ELF integer address, not an offset into the C++ object at _base.
+            _load_bias = (uintptr_t)_base - (uintptr_t)pheader->p_vaddr;
             return;
         }
     }
-    _vaddr_diff = _base;
+    _load_bias = (uintptr_t)_base;
 }
 
 void ElfParser::parseDynamicSection() {
@@ -666,7 +677,6 @@ void ElfParser::parseDynamicSection() {
             loadSymbolTable(symtab, syment * nsyms, syment, strtab, strsz);
         }
 
-        const char* base = this->base();
         if (jmprel != NULL && pltrelsz != 0) {
             // Parse .rela.plt table
             for (size_t offs = 0; offs < pltrelsz; offs += relent) {
@@ -675,7 +685,10 @@ void ElfParser::parseDynamicSection() {
                 if (sym->st_name != 0) {
                     const char* sym_name = strAt(strtab, strsz, sym->st_name);
                     if (sym_name != NULL) {
-                        _cc->addImport((void**)(base + r->r_offset), sym_name);
+                        const char* location = addressAt(r->r_offset);
+                        if (location != NULL) {
+                            _cc->addImport((void**)location, sym_name);
+                        }
                     }
                 }
             }
@@ -692,7 +705,10 @@ void ElfParser::parseDynamicSection() {
                     if (sym->st_name != 0) {
                         const char* sym_name = strAt(strtab, strsz, sym->st_name);
                         if (sym_name != NULL) {
-                            _cc->addImport((void**)(base + r->r_offset), sym_name);
+                            const char* location = addressAt(r->r_offset);
+                            if (location != NULL) {
+                                _cc->addImport((void**)location, sym_name);
+                            }
                         }
                     }
                 }
@@ -793,7 +809,10 @@ void ElfParser::loadSymbols(bool use_debug) {
             _cc->setPlt(plt->sh_addr, plt->sh_size);
             ElfSection* reltab = findSection(SHT_RELA, ".rela.plt");
             if (reltab != NULL || (reltab = findSection(SHT_REL, ".rel.plt")) != NULL) {
-                addRelocationSymbols(reltab, base() + plt->sh_addr + PLT_HEADER_SIZE);
+                const char* plt_address = addressAt(plt->sh_addr, PLT_HEADER_SIZE);
+                if (plt_address != NULL) {
+                    addRelocationSymbols(reltab, plt_address);
+                }
             }
         }
     }
@@ -943,7 +962,6 @@ void ElfParser::loadSymbolTable(const char* symbols, size_t total_size, size_t e
     if (ent_size < sizeof(ElfSymbol)) {
         return;
     }
-    const char* base = this->base();
     // Iterate by a size_t offset rather than incrementing the pointer: a huge
     // attacker-controlled ent_size would otherwise overflow `symbols + ent_size`
     // to a small pointer that still compares <= end, walking off the image. The
@@ -964,26 +982,9 @@ void ElfParser::loadSymbolTable(const char* symbols, size_t total_size, size_t e
             }
             // Skip special AArch64 mapping symbols: $x and $d
             if (sym.st_size != 0 || sym.st_info != 0 || sym_name[0] != '$') {
-                const char* addr;
-                if (base != NULL) {
-                    // Check for overflow when adding sym.st_value to base
-                    uintptr_t base_addr = (uintptr_t)base;
-                    uint64_t symbol_value = sym.st_value;
-                    
-                    // Skip this symbol if addition would overflow
-                    // First check if symbol_value exceeds the address space
-                    if (symbol_value > UINTPTR_MAX) {
-                        continue;
-                    }
-                    // Then check if addition would overflow
-                    if (base_addr > UINTPTR_MAX - (uintptr_t)symbol_value) {
-                        continue;
-                    }
-                    
-                    // Perform addition using integer arithmetic to avoid pointer overflow
-                    addr = (const char*)(base_addr + (uintptr_t)symbol_value);
-                } else {
-                    addr = (const char*)sym.st_value;
+                const char* addr = addressAt(sym.st_value);
+                if (addr == NULL) {
+                    continue;
                 }
                 _cc->add(addr, (int)sym.st_size, sym_name);
             }
