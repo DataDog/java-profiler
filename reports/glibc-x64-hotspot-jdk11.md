@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk11
 
 ## glibc-x64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-07-17 06:09:37 EDT
+**Date:** 2026-07-17 06:22:00 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-hotspot-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 91 |
-| CPU Cores (end) | 91 |
+| CPU Cores (start) | 90 |
+| CPU Cores (end) | 92 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-x64-hotspot-jdk11
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 91-91 cores)</summary>
+<summary>CPU Timeline (3 unique values: 88-92 cores)</summary>
 
 ```
-1784282761 91
-1784282766 91
-1784282771 91
-1784282776 91
-1784282781 91
-1784282786 91
-1784282791 91
-1784282796 91
-1784282801 91
-1784282806 91
-1784282811 91
-1784282816 91
-1784282821 91
-1784282826 91
-1784282831 91
-1784282836 91
-1784282841 91
-1784282846 91
-1784282851 91
-1784282856 91
+1784283495 90
+1784283501 90
+1784283506 90
+1784283511 90
+1784283516 90
+1784283521 90
+1784283526 90
+1784283531 90
+1784283536 90
+1784283541 90
+1784283546 90
+1784283551 90
+1784283556 90
+1784283561 88
+1784283566 88
+1784283571 88
+1784283576 90
+1784283581 90
+1784283586 90
+1784283591 92
 ```
 </details>
 
