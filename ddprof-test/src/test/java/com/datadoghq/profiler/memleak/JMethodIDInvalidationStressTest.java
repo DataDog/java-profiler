@@ -38,7 +38,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Exploratory stress test for jmethodID invalidation, motivated by PROF-15385 (SIGSEGV in
  * {@code Lookup::fillJavaMethodInfo} copying a JVMTI line-number table for a stale jmethodID,
- * fixed by guarding that copy with {@code SafeAccess::isReadableRange}).
+ * fixed by guarding that copy with {@code SafeAccess::safeCopy}).
  *
  * <p>That fix addressed one call site. This test does not target a specific call site; it tries
  * to manufacture the same underlying condition — jmethodIDs whose declaring class is unloaded
@@ -65,10 +65,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * But that alone would pass vacuously if the churn never actually raced class unload against
  * {@code Lookup::resolveMethod}/{@code fillJavaMethodInfo}. To rule that out, this test reads the
  * native whitebox counters ({@code JavaProfiler#getDebugCounters()}) for {@code
- * jmethodid_skipped_count} and {@code line_number_table_unreadable} -- both are incremented in
- * {@code fillJavaMethodInfo} exactly when {@code SafeAccess::isReadableRange} rejects a stale
- * jmethodID's class/method metadata or line-number table (see flightRecorder.cpp) -- and checks
- * that at least one of them increased during the churn window. Whether the race is actually hit
+ * jmethodid_skipped_count} and {@code line_number_table_unreadable} -- incremented in
+ * {@code fillJavaMethodInfo} when a stale jmethodID's class/method-name probe is rejected by
+ * {@code SafeAccess::isReadableRange}, or when its line-number table copy is rejected by
+ * {@code SafeAccess::safeCopy} (see flightRecorder.cpp) -- and checks that at least one of them
+ * increased during the churn window. Whether the race is actually hit
  * within the window is JVM/host-discretionary, so that check is a JUnit assumption rather than an
  * assertion: if neither counter moved, the test is reported as skipped (not failed), since a
  * healthy host that simply didn't race tightly enough this run is not evidence of a regression. A

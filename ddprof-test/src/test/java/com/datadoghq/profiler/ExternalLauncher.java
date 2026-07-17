@@ -1,7 +1,10 @@
 package com.datadoghq.profiler;
 
+import com.datadoghq.profiler.referencechains.LeakingCacheScenario;
+
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadMXBean;
+import java.nio.file.Paths;
 import java.util.Random;
 import java.util.concurrent.atomic.LongAdder;
 
@@ -15,6 +18,15 @@ import java.util.concurrent.atomic.LongAdder;
  *     <li>library - loads the profiler library</li>
  *     <li>profiler [comma delimited profiler command list] - starts the profiler</li>
  *     <li>profiler-work:<expectedCpuTime> [comma delimited profiler command list] - starts the profiler and runs a CPU-intensive task</li>
+ *     <li>leak-cache "&lt;start command&gt;|||&lt;scratch dump path&gt;" - starts the profiler with
+ *     the given start command, then runs {@link LeakingCacheScenario} in this process and exits
+ *     directly (no readiness/stdin-signal handshake, unlike the other modes above) once it
+ *     prints its one result line. Used by {@code ExternalProcessReferenceChainTest}
+ *     (referencechains package) to prove the reference-chains mechanism end-to-end against a
+ *     genuinely separate JVM, not the in-process dynamic-attach lifecycle every other test in
+ *     this module uses - see that scenario's own class comment for why a *separate* process is
+ *     load-bearing here (the one-shot root-seeded BFS walk is a process-wide, once-ever
+ *     resource).</li>
  * </ul>
  */
 public class ExternalLauncher {
@@ -63,6 +75,30 @@ public class ExternalLauncher {
                         worker.start();
                     }
                 }
+            } else if (args[0].equals("leak-cache")) {
+                // "<start command>|||<scratch dump path>" packed into one args[1] string rather
+                // than extending AbstractProcessProfilerTest.launch()'s generic 2-arg
+                // (target, commands) contract with a 3rd argument every other mode would have to
+                // ignore.
+                String packed = args.length == 2 ? args[1] : "";
+                int sep = packed.indexOf("|||");
+                if (sep < 0) {
+                    throw new IllegalArgumentException(
+                        "leak-cache requires \"<start command>|||<scratch dump path>\", got: " + packed);
+                }
+                String commands = packed.substring(0, sep);
+                String scratchPath = packed.substring(sep + "|||".length());
+                JavaProfiler instance = JavaProfiler.getInstance();
+                // LeakingCacheScenario.run() itself calls instance.execute(commands), not here -
+                // it needs to seed its cache fixture *before* starting the profiler (see that
+                // method's own comment for why).
+                LeakingCacheScenario.run(instance, commands, Paths.get(scratchPath));
+                System.out.flush();
+                // Deliberately exits here rather than falling through to the shared
+                // "[ready]" + stdin-signal handshake below: this mode runs to completion in one
+                // shot (no live back-and-forth with the parent needed) and its own result line
+                // has already been printed by LeakingCacheScenario.run().
+                System.exit(0);
             }
         } finally {
             System.out.println("[ready]");
