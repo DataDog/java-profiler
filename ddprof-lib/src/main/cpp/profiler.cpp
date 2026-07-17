@@ -74,8 +74,12 @@ static CTimer ctimer;
 static CTimerJvmti ctimer_jvmti;
 
 void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
-  ProfiledThread::initCurrentThread();
-  ProfiledThread *current = ProfiledThread::current();
+  // JVMTI callback - outside signal handler
+  ProfiledThread* current = ProfiledThread::initCurrentThreadSignalSafe();
+  if (current == nullptr) {
+    return;
+  }
+
   current->setJavaThread(true);
   int tid = current->tid();
   if (_thread_filter.enabled()) {
@@ -93,7 +97,8 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 }
 
 void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
-  ProfiledThread *current = ProfiledThread::currentSignalSafe();
+  // Thread teardown: no point to initialize TLS if not yet initialized
+  ProfiledThread *current = ProfiledThread::current();
   int tid = -1;
   
   if (current != nullptr) {
@@ -627,7 +632,7 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
 
     call_trace_id =
         _call_trace_storage.put(num_frames, frames, truncated, counter);
-    ProfiledThread *thread = ProfiledThread::currentSignalSafe();
+    ProfiledThread *thread = ProfiledThread::current();
     if (thread != nullptr) {
       thread->recordCallTraceId(call_trace_id);
     }
@@ -918,7 +923,7 @@ void Profiler::busHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 
 // Returns: 0 = not handled (chain to next handler), non-zero = handled
 int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext) {
-  ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
+  ProfiledThread* thrd = ProfiledThread::current();
 
   // First, try to handle safefetch - this doesn't need TLS or any protection
   // because it directly checks the PC and modifies ucontext to skip the fault.
@@ -1235,6 +1240,31 @@ Error Profiler::checkState() {
   return Error::OK;
 }
 
+Error Profiler::init() {
+  MutexLocker ml(_state_lock);
+  State s = state();
+  if (s == ERROR) {
+    return Error("Profiler encountered fatal error");
+  } else if (s == NEW) {
+    // Make sure JVMSupport is initialized
+    // In theory, it should be initialized in JVMTI::VMInit() callback,
+    // but the callback arrives too late, after this method is called.
+    if (!JVMSupport::initialize()) {
+      _state.store(ERROR, std::memory_order_release);
+      return Error("Profiler encountered fatal error");
+    }
+  }
+  // Unlike checkState(), init() does not reject a RUNNING/TERMINATED
+  // profiler: it is idempotent per-thread setup for the Java API
+  // (e.g. JavaProfiler.getInstance()), not a state transition, and the
+  // agent may already be RUNNING by the time it is called (VMInit can
+  // auto-start the profiler before Java code gets a chance to call in).
+
+  // JNI down call, outside signal handler
+  ProfiledThread::initCurrentThreadSignalSafe();
+  return Error::OK;
+}
+
 Error Profiler::start(Arguments &args, bool reset) {
   MutexLocker ml(_state_lock);
   Error error = checkState();
@@ -1359,7 +1389,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   // Minor optim: Register the current thread (start thread won't be called)
   if (_thread_filter.enabled()) {
     _thread_filter.clearActive();
-    ProfiledThread *current = ProfiledThread::current();
+    ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
     assert(current != nullptr);
     int slot_id = current->filterSlotId();
     if (slot_id < 0) {

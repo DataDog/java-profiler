@@ -24,12 +24,12 @@
 // rejected because of the static TLS surplus on Graal).
 
 int getInSignalDepth() {
-    ProfiledThread *pt = ProfiledThread::currentSignalSafe();
+    ProfiledThread *pt = ProfiledThread::current();
     return pt != nullptr ? static_cast<int>(pt->signalDepth()) : 0;
 }
 
 bool isInTrackedSignalContext() {
-    ProfiledThread *pt = ProfiledThread::currentSignalSafe();
+    ProfiledThread *pt = ProfiledThread::current();
     // null ProfiledThread = no thread context; the SignalHandlerScope
     // never ran, so we have no positive evidence of a signal frame.
     // See header comment for the rationale of returning false here.
@@ -37,7 +37,7 @@ bool isInTrackedSignalContext() {
 }
 
 SignalHandlerScope::SignalHandlerScope() : _active(true) {
-    ProfiledThread *pt = ProfiledThread::currentSignalSafe();
+    ProfiledThread *pt = ProfiledThread::current();
     if (pt != nullptr) {
         pt->enterSignalScope();
     } else {
@@ -49,7 +49,7 @@ SignalHandlerScope::SignalHandlerScope() : _active(true) {
 
 SignalHandlerScope::~SignalHandlerScope() {
     if (!_active) return;
-    ProfiledThread *pt = ProfiledThread::currentSignalSafe();
+    ProfiledThread *pt = ProfiledThread::current();
     if (pt != nullptr) {
         pt->exitSignalScope();
     }
@@ -57,7 +57,7 @@ SignalHandlerScope::~SignalHandlerScope() {
 
 void SignalHandlerScope::release() {
     if (!_active) return;
-    ProfiledThread *pt = ProfiledThread::currentSignalSafe();
+    ProfiledThread *pt = ProfiledThread::current();
     if (pt != nullptr) {
         pt->exitSignalScope();
     }
@@ -65,7 +65,7 @@ void SignalHandlerScope::release() {
 }
 
 void signalHandlerUnwindAfterLongjmp() {
-    ProfiledThread *pt = ProfiledThread::currentSignalSafe();
+    ProfiledThread *pt = ProfiledThread::current();
     if (pt != nullptr) {
         pt->exitSignalScope();
     }
@@ -75,7 +75,7 @@ void signalHandlerUnwindAfterLongjmp() {
 uint64_t CriticalSection::_fallback_bitmap[CriticalSection::FALLBACK_BITMAP_WORDS] = {};
 
 CriticalSection::CriticalSection() : _entered(false), _using_fallback(false), _word_index(0), _bit_mask(0), _thread_ptr(nullptr) {
-    _thread_ptr = ProfiledThread::currentSignalSafe();
+    _thread_ptr = ProfiledThread::current();
     if (_thread_ptr != nullptr) {
         // Primary path: Use ProfiledThread storage (fast and memory-efficient)
         _entered = _thread_ptr->tryEnterCriticalSection();

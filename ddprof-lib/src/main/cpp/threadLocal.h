@@ -58,6 +58,8 @@ typedef void (*CLEAN_FUNC)(void*);
 
 static constexpr pthread_key_t INVALID_KEY = pthread_key_t(-1);
 
+// We don't delete keys (pthread_key_delete()) due to various race scenarios, but
+// it is okay, because profiler is considered immortal.
 template <typename T, CREATE_FUNC C = nullptr, CLEAN_FUNC F = nullptr>
 class ThreadLocal {
 protected:
@@ -78,14 +80,6 @@ public:
         // aborting user application - We will need this mechanism globally,
         // defer to a separate task.
         assert(isKeyValid());
-    }
-
-    ~ThreadLocal() {
-        if(isKeyValid()) {
-            pthread_key_delete(_key);
-        } else {
-            assert(false && "Invalid pthread key");
-        }
     }
 
     bool isKeyValid() const {
@@ -145,14 +139,6 @@ public:
         }
         // What to do if we can not create a key?
         assert(isKeyValid() && "Invalid pthread key");
-    }
-
-    ~ThreadLocal() {
-        if(isKeyValid()) {
-            pthread_key_delete(_key);
-        } else {
-            assert(isKeyValid() && "Invalid pthread key");
-        }
     }
 
     bool isKeyValid() const {

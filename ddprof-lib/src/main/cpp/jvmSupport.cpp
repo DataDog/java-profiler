@@ -20,6 +20,12 @@
 volatile JVMSupport::JMethodIDLoadStats JVMSupport::jmethodID_load_state = JVMSupport::No_loaded;
 Mutex JVMSupport::_initialization_lock;
 
+
+// This method must be called after JVM has been properly initialized, e.g. after JVMTI::VMinit()
+// callback.
+// Currently, there are two paths lead to this call
+// - JVMTI::VMInit() callback (vmEntry.cpp)
+// - JavaProfiler.getInstance() via JNI down call - JVM must have been initialized
 bool JVMSupport::initialize() {
     MutexLocker locker(_initialization_lock);
 
@@ -32,12 +38,12 @@ bool JVMSupport::initialize() {
         return false;
     }
 
-    // Add ProfiledThread key checking here in next PR
-    return true;
+    // Check ProfiledThread key, it is critical for storing per-thread metadata
+    return ProfiledThread::isThreadKeyValid();
 }
 
 bool JVMSupport::isInitialized() {
-    return JVMThread::isInitialized();
+    return JVMThread::isInitialized() && ProfiledThread::isThreadKeyValid();
 }
 
 JVMSupport::JMethodIDLoadStats JVMSupport::getLoadState() {
@@ -95,7 +101,7 @@ int JVMSupport::asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* 
         return 0;
     }
 
-    AsyncSampleMutex mutex(ProfiledThread::currentSignalSafe());
+    AsyncSampleMutex mutex(ProfiledThread::current());
     if (!mutex.acquired()) {
         return 0;
     }

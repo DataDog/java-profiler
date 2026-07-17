@@ -237,9 +237,7 @@ public:
   static void JNICALL VMDeath(jvmtiEnv *jvmti, JNIEnv *jni);
 
   static void JNICALL ClassLoad(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
-                                jclass klass) {
-    // Needed only for AsyncGetCallTrace support
-  }
+                                jclass klass);
 
   static void JNICALL ClassPrepare(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
                                    jclass klass);

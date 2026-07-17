@@ -18,6 +18,7 @@
 #include "os.h"
 #include "profiler.h"
 #include "safeAccess.h"
+#include "threadLocalData.h"
 // Pulls in vmStructs.h plus the definitions of crashProtectionActive()/cast_to() that its inline
 // accessors odr-use here; the light vmStructs.h alone leaves those unresolved in assertion-enabled
 // builds (see the note in hotspotStackFrame_aarch64.cpp).
@@ -594,8 +595,16 @@ void *VM::getLibraryHandle(const char *name) {
 
 void JNICALL VM::ClassPrepare(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
                                jclass klass) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   JVMSupport::loadMethodIDsIfNeeded(jvmti, jni, klass);
 }
+
+void JNICALL VM::ClassLoad(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+                                jclass klass) {
+  // Needed only for AsyncGetCallTrace support
+  ProfiledThread::initCurrentThreadSignalSafe();
+}
+
 
 void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
     ready(jvmti, jni);

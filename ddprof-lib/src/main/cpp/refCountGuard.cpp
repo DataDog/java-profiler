@@ -24,7 +24,7 @@ int RefCountGuard::slot_owners[RefCountGuard::MAX_THREADS];
 static std::atomic<bool> s_outer_stack_overflow_warned{false};
 
 int RefCountGuard::getThreadRefCountSlot() {
-    ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
+    ProfiledThread* thrd = ProfiledThread::current();
     int tid = thrd != nullptr ? thrd->tid() : OS::threadId();
 
     HashProbe probe(static_cast<u64>(tid), MAX_THREADS);

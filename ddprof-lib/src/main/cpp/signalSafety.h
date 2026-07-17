@@ -18,7 +18,7 @@
 #define _SIGNAL_SAFETY_H
 
 #include "guards.h"   // isInSignalContext, SIGNAL_HANDLER_GUARD, ...
-#include "threadLocalData.h"   // ProfiledThread::currentSignalSafe
+#include "threadLocalData.h"   // ProfiledThread::current
 
 // Detect ASAN using compiler-provided macros so the ASAN_ENABLED guard below
 // works in every TU that includes this header, independent of include order.
@@ -63,7 +63,7 @@
 
 #define DEBUG_ASSERT_NOT_IN_SIGNAL()                                                        \
     do {                                                                                     \
-        ProfiledThread *_pt_for_assert = ProfiledThread::currentSignalSafe();                \
+        ProfiledThread *_pt_for_assert = ProfiledThread::current();                \
         /* Skip when no thread context — see comment above. */                              \
         if (_pt_for_assert != nullptr && _pt_for_assert->signalDepth() != 0) {              \
             static const char _msg[] =                                                       \

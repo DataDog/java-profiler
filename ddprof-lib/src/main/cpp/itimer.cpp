@@ -49,7 +49,7 @@ void ITimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     return;  // Another critical section is active, defer profiling
   }
   int tid = 0;
-  ProfiledThread *current = ProfiledThread::currentSignalSafe();
+  ProfiledThread *current = ProfiledThread::current();
   if (current != NULL) {
     current->noteCPUSample(Profiler::instance()->recordingEpoch());
     tid = current->tid();
@@ -116,7 +116,7 @@ void ITimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     errno = saved_errno;
     return;
   }
-  ProfiledThread *current = ProfiledThread::currentSignalSafe();
+  ProfiledThread *current = ProfiledThread::current();
   if (current != nullptr && JVMThread::current() == nullptr
       && current->inInitWindow()) {
     current->tickInitWindow();

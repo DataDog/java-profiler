@@ -11,57 +11,49 @@
 #include <cstring>
 #include <time.h>
 
-pthread_key_t ProfiledThread::_tls_key;
-bool ProfiledThread::_tls_key_initialized = false;
 
-void ProfiledThread::initTLSKey() {
-  static pthread_once_t tls_initialized = PTHREAD_ONCE_INIT;
-  pthread_once(&tls_initialized, doInitTLSKey);
+// Namespace-scope static: the ctor (pthread_key_create) runs during library
+// load — single-threaded, before profiling signals or the pthread_create
+// interceptor are armed. So current()/isThreadKeyValid() may read _key without
+// synchronization: the ctor's write happens-before any later thread/signal that
+// reads it.
+ThreadLocal<ProfiledThread*, nullptr, ProfiledThread::freeValue>  ProfiledThread::_current_thread;
+
+ProfiledThread* ProfiledThread::initCurrentThread() {
+  if (!isThreadKeyValid()) {
+    return nullptr;
+  }
+  ProfiledThread* tls = _current_thread.get();
+  if (tls == nullptr) {
+    int tid = OS::threadId();
+    tls = ProfiledThread::forTid(tid);
+    _current_thread.set(tls);
+  }
+  return tls;
 }
 
-void ProfiledThread::doInitTLSKey() {
-  pthread_key_create(&_tls_key, freeKey);
-  // Must be set AFTER pthread_key_create so signal handlers see a valid key.
-  // Store-release pairs with the acquire loads in currentSignalSafe() and release()
-  // to prevent hardware load-load reordering on weakly-ordered architectures (aarch64):
-  // a plain volatile write is not sufficient there.
-  __atomic_store_n(&_tls_key_initialized, true, __ATOMIC_RELEASE);
-}
+ProfiledThread* ProfiledThread::initCurrentThreadSignalSafe() {
+  if (!isThreadKeyValid()) {
+    return nullptr;
+  }
 
-inline void ProfiledThread::freeKey(void *key) {
-  ProfiledThread *tls_ref = (ProfiledThread *)(key);
-  if (tls_ref != NULL) {
+  ProfiledThread* cur = current();
+  if (cur == nullptr) {
     SignalBlocker blocker;
-    delete tls_ref;
+    return initCurrentThread();
+  } else {
+    return cur;
   }
 }
 
-void ProfiledThread::initCurrentThread() {
-  // JVMTI callback path - does NOT use buffer
-  // Allocate dedicated ProfiledThread for Java threads (not from buffer)
-  // This MUST happen here to prevent lazy allocation in signal handler
-  initTLSKey();
-
-  if (pthread_getspecific(_tls_key) != NULL) {
-    return; // Already initialized
-  }
-
-  int tid = OS::threadId();
-  ProfiledThread *tls = ProfiledThread::forTid(tid);
-  pthread_setspecific(_tls_key, (const void *)tls);
+void ProfiledThread::freeValue(void* value) {
+  SignalBlocker blocker;
+  ProfiledThread* pt = reinterpret_cast<ProfiledThread*>(value);
+  delete pt;
 }
 
 void ProfiledThread::release() {
-  if (!__atomic_load_n(&_tls_key_initialized, __ATOMIC_ACQUIRE)) {
-    return;
-  }
-  pthread_key_t key = _tls_key;
-  ProfiledThread *tls = (ProfiledThread *)pthread_getspecific(key);
-  if (tls != NULL) {
-    SignalBlocker blocker;
-    pthread_setspecific(key, NULL);
-    delete tls;
-  }
+  _current_thread.clear();
 }
 
 int ProfiledThread::currentTid() {
@@ -71,27 +63,6 @@ int ProfiledThread::currentTid() {
   }
   return OS::threadId();
 }
-
-ProfiledThread *ProfiledThread::current() {
-  initTLSKey();
-
-  ProfiledThread *tls = (ProfiledThread *)pthread_getspecific(_tls_key);
-  if (tls == NULL) {
-    // Lazy allocation - safe since current() is never called from signal handlers
-    int tid = OS::threadId();
-    tls = ProfiledThread::forTid(tid);
-    pthread_setspecific(_tls_key, (const void *)tls);
-  }
-  return tls;
-}
-
-ProfiledThread *ProfiledThread::currentSignalSafe() {
-  // Signal-safe: never allocate, just return existing TLS or null.
-  // Use _tls_key_initialized instead of key != 0 because pthread_key_create
-  // can legitimately return key 0 (common on musl where keys start at 0).
-  return __atomic_load_n(&_tls_key_initialized, __ATOMIC_ACQUIRE) ? (ProfiledThread *)pthread_getspecific(_tls_key) : nullptr;
-}
-
 
 Context ProfiledThread::snapshotContext(size_t numAttrs) {
   Context ctx = {};
