@@ -863,7 +863,8 @@ VMFlag *VMFlag::find(const char *name, int type_mask) {
         size_t count = *(size_t*)_flag_count;
         for (size_t i = 0; i < count; i++) {
             VMFlag* f = VMFlag::cast(*(const char**)_flags_addr + i * VMFlag::type_size());
-            if (f->name() != NULL && strcmp(f->name(), name) == 0) {
+            const char* fname = f->name();
+            if (fname != nullptr && strcmp(fname, name) == 0) {
                 int masked = 0x1 << f->type();
                 if (masked & type_mask) {
                     return (VMFlag*)f;
