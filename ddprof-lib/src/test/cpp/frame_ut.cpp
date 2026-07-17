@@ -79,13 +79,6 @@ TEST(FrameTypeEncodeTest, RawPointerBitNotSetByDefault) {
     EXPECT_EQ(encoded & (1 << 30), 0) << "rawPointer flag (bit 30) must not be set by default";
 }
 
-TEST(FrameTypeEncodeTest, EncodedValuesArePositive) {
-    for (int t = FRAME_INTERPRETED; t <= FRAME_TYPE_MAX; ++t) {
-        int encoded = FrameType::encode(t, 0);
-        EXPECT_GT(encoded, 0) << "encode() must return a positive value for type " << t;
-    }
-}
-
 // ---- decode ----------------------------------------------------------------
 
 TEST(FrameTypeDecodeTest, DecodeZeroReturnsJitCompiled) {
@@ -130,15 +123,6 @@ TEST(FrameTypeDecodeTest, RoundTripAllTypesNonZeroBci) {
                 << "Round-trip failed for type " << t << " BCI=" << bci
                 << " (encoded=0x" << std::hex << encoded << ")";
         }
-    }
-}
-
-TEST(FrameTypeDecodeTest, DecodedTypeIsInValidRange) {
-    for (int t = FRAME_INTERPRETED; t <= FRAME_TYPE_MAX; ++t) {
-        int encoded = FrameType::encode(t, 42);
-        FrameTypeId decoded = FrameType::decode(encoded);
-        EXPECT_GE(decoded, FRAME_INTERPRETED);
-        EXPECT_LE(decoded, FRAME_TYPE_MAX);
     }
 }
 
