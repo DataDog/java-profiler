@@ -23,6 +23,7 @@
 #include <setjmp.h>
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <utility>
 
 typedef void* (*func_start_routine)(void*);
@@ -41,6 +42,96 @@ std::atomic<bool> LibraryPatcher::_socket_active{false};
 static_assert(SOCKET_BASE_TABLE_SIZE > 0 &&
                   (SOCKET_BASE_TABLE_SIZE & (SOCKET_BASE_TABLE_SIZE - 1)) == 0,
               "socket DSO lookup table size must be a power of two");
+
+static const char* library_basename(const char* path) {
+  if (path == nullptr) {
+    return nullptr;
+  }
+  const char* name = strrchr(path, '/');
+  return name == nullptr ? path : name + 1;
+}
+
+static SocketPatchTarget socket_patch_target_for_library(
+    CodeCache* lib, const char* name, bool in_jdk_directory) {
+  if (lib == nullptr || name == nullptr || !in_jdk_directory) {
+    return SOCKET_PATCH_NONE;
+  }
+
+  if (strcmp(name, "libnet.so") == 0 || strcmp(name, "libnio.so") == 0) {
+    return SOCKET_PATCH_STANDARD_JDK_NETWORK;
+  }
+
+  // IBM Java 8 routes java.net through JCL_* exports in libjava before
+  // reaching libc. Require the complete observed bridge signature so an
+  // OpenJDK libjava or an arbitrary JNI DSO is never selected by name alone.
+  if (strcmp(name, "libjava.so") == 0 &&
+      lib->findSymbol("JCL_Send") != nullptr &&
+      lib->findSymbol("JCL_Recv") != nullptr &&
+      lib->findSymbol("JCL_Connect") != nullptr &&
+      lib->findSymbol("JCL_Accept") != nullptr) {
+    return SOCKET_PATCH_IBM_JCL_BRIDGE;
+  }
+
+  return SOCKET_PATCH_NONE;
+}
+
+static SocketPatchTarget socket_patch_target(
+    CodeCache* lib, const char* path, const char* jdk_library_directory) {
+  if (path == nullptr || jdk_library_directory == nullptr) {
+    return SOCKET_PATCH_NONE;
+  }
+  const char* path_separator = strrchr(path, '/');
+  if (path_separator == nullptr) {
+    return SOCKET_PATCH_NONE;
+  }
+  size_t directory_length = static_cast<size_t>(path_separator - path);
+  bool in_jdk_directory =
+      strlen(jdk_library_directory) == directory_length &&
+      strncmp(path, jdk_library_directory, directory_length) == 0;
+  return socket_patch_target_for_library(
+      lib, library_basename(path), in_jdk_directory);
+}
+
+static void* socket_hook_for_target(
+    SocketPatchTarget target,
+    const NativeSocketInterposer::NativeIoHookSpec& hook) {
+  return target == SOCKET_PATCH_IBM_JCL_BRIDGE ? hook.fork_safe_hook
+                                                : hook.hook;
+}
+
+static bool resolve_jdk_library_directory(char* directory) {
+  CodeCache* java_library = Libraries::instance()->findLibraryByName("libjava.so");
+  if (java_library != nullptr && java_library->name() != nullptr &&
+      strcmp(library_basename(java_library->name()), "libjava.so") == 0 &&
+      realpath(java_library->name(), directory) != nullptr) {
+    char* separator = strrchr(directory, '/');
+    if (separator != nullptr) {
+      *separator = '\0';
+      return true;
+    }
+  }
+
+  // libjava may be loaded lazily. Supported JDK layouts place libjvm in a
+  // subdirectory immediately below the directory containing the other native
+  // JDK libraries.
+  CodeCache* jvm_library = Libraries::instance()->findLibraryByName("libjvm.so");
+  if (jvm_library == nullptr || jvm_library->name() == nullptr ||
+      strcmp(library_basename(jvm_library->name()), "libjvm.so") != 0 ||
+      realpath(jvm_library->name(), directory) == nullptr) {
+    return false;
+  }
+  char* separator = strrchr(directory, '/');
+  if (separator == nullptr) {
+    return false;
+  }
+  *separator = '\0';
+  separator = strrchr(directory, '/');
+  if (separator == nullptr) {
+    return false;
+  }
+  *separator = '\0';
+  return true;
+}
 
 bool LibraryPatcher::socket_library_patched_unlocked(const void* image_base) {
   size_t slot = (reinterpret_cast<uintptr_t>(image_base) >> 12) &
@@ -578,11 +669,12 @@ public:
   CodeCache* _lib;
   UnloadProtection _protection;
   size_t _patch_count;
+  SocketPatchTarget _target;
 
   SocketPatchCandidate(CodeCache* lib, UnloadProtection&& protection,
-                       size_t patch_count)
+                       size_t patch_count, SocketPatchTarget target)
       : _lib(lib), _protection(std::move(protection)),
-        _patch_count(patch_count) {}
+        _patch_count(patch_count), _target(target) {}
 
   SocketPatchCandidate(const SocketPatchCandidate&) = delete;
   SocketPatchCandidate& operator=(const SocketPatchCandidate&) = delete;
@@ -641,7 +733,8 @@ bool LibraryPatcher::patch_socket_functions(bool require_active) {
       if (original == nullptr) {
         original = dlsym(RTLD_DEFAULT, hooks[hook_index].name);
       }
-      if (original == hooks[hook_index].hook) {
+      if (original == hooks[hook_index].hook ||
+          original == hooks[hook_index].fork_safe_hook) {
         TEST_LOG("patch_socket_functions dlsym returned hook address for %s",
                  hooks[hook_index].name);
         // If dlsym resolves to one of our own hooks the linker is already serving
@@ -670,10 +763,20 @@ bool LibraryPatcher::patch_socket_functions(bool require_active) {
     return disable_and_unpatch();
   }
 
+  // Publish the process that owns profiler state before any fork-safe hook can
+  // become reachable. A post-fork child observes a different getpid() value
+  // and calls the original libc function without touching profiler state.
+  NativeSocketInterposer::setHookOwnerPid(getpid());
+
   const CodeCacheArray& native_libs = Libraries::instance()->native_libs();
   int num_of_libs = native_libs.count();
 
   int capped = num_of_libs <= MAX_NATIVE_LIBS ? num_of_libs : MAX_NATIVE_LIBS;
+  char jdk_library_directory[PATH_MAX];
+  if (!resolve_jdk_library_directory(jdk_library_directory)) {
+    Log::warn("native I/O hooks disabled: cannot locate the JDK native library directory");
+    return disable_and_unpatch();
+  }
   std::vector<SocketPatchCandidate> candidates;
   try {
     candidates.reserve(capped);
@@ -689,7 +792,15 @@ bool LibraryPatcher::patch_socket_functions(bool require_active) {
     }
     char path[PATH_MAX];
     char* resolved_path = realpath(lib->name(), path);
-    if (_profiler_name != nullptr && resolved_path != nullptr &&
+    if (resolved_path == nullptr) {
+      continue;
+    }
+    SocketPatchTarget target =
+        socket_patch_target(lib, resolved_path, jdk_library_directory);
+    if (target == SOCKET_PATCH_NONE) {
+      continue;
+    }
+    if (_profiler_name != nullptr &&
         strcmp(resolved_path, _profiler_name) == 0) {
       continue;
     }
@@ -728,8 +839,7 @@ bool LibraryPatcher::patch_socket_functions(bool require_active) {
       return disable_and_unpatch();
     }
     try {
-      candidates.emplace_back(lib, std::move(protection),
-                              patch_count);
+      candidates.emplace_back(lib, std::move(protection), patch_count, target);
     } catch (const std::bad_alloc&) {
       Log::warn("native I/O hooks disabled: unable to retain DSO candidate %s",
                 lib->name());
@@ -739,6 +849,8 @@ bool LibraryPatcher::patch_socket_functions(bool require_active) {
 
   std::vector<SocketPatchedLibrary> libraries_to_release;
   bool success = true;
+  size_t standard_slots_patched = 0;
+  size_t ibm_bridge_slots_patched = 0;
   {
     ExclusiveLockGuard locker(&_lock);
     if (require_active &&
@@ -792,7 +904,14 @@ bool LibraryPatcher::patch_socket_functions(bool require_active) {
             void* original =
                 reinterpret_cast<void*>(__atomic_load_n(location, __ATOMIC_ACQUIRE));
             _socket_entries.push_back({location, original});
-            __atomic_store_n(location, hooks[hook_index].hook, __ATOMIC_RELEASE);
+            void* hook = socket_hook_for_target(candidate._target,
+                                                hooks[hook_index]);
+            __atomic_store_n(location, hook, __ATOMIC_RELEASE);
+            if (candidate._target == SOCKET_PATCH_IBM_JCL_BRIDGE) {
+              ibm_bridge_slots_patched++;
+            } else {
+              standard_slots_patched++;
+            }
           }
         }
         _socket_libraries.push_back(
@@ -813,8 +932,10 @@ bool LibraryPatcher::patch_socket_functions(bool require_active) {
     return false;
   }
 
-  TEST_LOG("patch_socket_functions DONE total_slots=%zu num_libs_scanned=%d",
-           _socket_entries.size(), capped);
+  TEST_LOG("patch_socket_functions DONE total_slots=%zu standard_new=%zu "
+           "ibm_bridge_new=%zu num_libs_scanned=%d",
+           _socket_entries.size(), standard_slots_patched,
+           ibm_bridge_slots_patched, capped);
   return true;
 }
 
@@ -874,6 +995,21 @@ int LibraryPatcher::socket_patch_count_for_test() {
 int LibraryPatcher::socket_library_count_for_test() {
   ExclusiveLockGuard locker(&_lock);
   return static_cast<int>(_socket_libraries.size());
+}
+
+SocketPatchTarget LibraryPatcher::socket_patch_target_for_test(
+    CodeCache* lib, const char* library_name, bool in_jdk_directory) {
+  return socket_patch_target_for_library(lib, library_name, in_jdk_directory);
+}
+
+void* LibraryPatcher::socket_hook_for_target_for_test(
+    SocketPatchTarget target, int hook_index) {
+  if (hook_index < 0 ||
+      hook_index >= NativeSocketInterposer::NUM_NATIVE_IO_HOOKS) {
+    return nullptr;
+  }
+  return socket_hook_for_target(target,
+                                NativeSocketInterposer::hookSpecs()[hook_index]);
 }
 #endif
 

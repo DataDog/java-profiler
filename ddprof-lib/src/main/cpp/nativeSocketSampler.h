@@ -26,9 +26,10 @@ class LibraryPatcher;
 
 // Synchronisation strategy
 // -------------------------
-// Hook functions (send_hook / recv_hook / write_hook / read_hook) run on the
-// calling Java thread, NOT in a signal handler.  Therefore malloc and locking
-// are safe inside hooks.
+// Hook functions (send_hook / recv_hook / write_hook / read_hook) are installed
+// in the JDK's libnet and libnio DSOs. IBM's JCL networking bridge in libjava
+// uses separate wrappers that bypass all profiler state in a post-fork child.
+// Arbitrary JNI libraries remain excluded from code that locks or allocates.
 //
 // fd-to-addr cache      : guarded by _fd_cache_mutex (std::mutex).
 //                         TOCTOU note: the cache is checked under lock, then

@@ -10,12 +10,14 @@ import com.datadoghq.profiler.Platform;
 import java.lang.reflect.Method;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.item.IItemCollection;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 
 /** Verifies pinned virtual-thread native I/O is attributed to its physical carrier. */
+@Disabled("Arbitrary JNI DSO interposition is disabled until hooks are safe after fork and in signal handlers")
 public class VirtualNativeIoTaskBlockTest extends AbstractProfilerTest {
   @Test
   public void nativeBlockOnVirtualThreadRemainsPhysicalCarrierTaskBlock() throws Exception {

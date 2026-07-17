@@ -37,6 +37,12 @@ typedef struct _socketPatchedLibrary {
   size_t _patch_count;
 } SocketPatchedLibrary;
 
+enum SocketPatchTarget : u8 {
+  SOCKET_PATCH_NONE = 0,
+  SOCKET_PATCH_STANDARD_JDK_NETWORK,
+  SOCKET_PATCH_IBM_JCL_BRIDGE
+};
+
 const int SOCKET_BASE_TABLE_SIZE = MAX_NATIVE_LIBS * 2;
 
 class LibraryPatcher {
@@ -89,6 +95,10 @@ public:
                                           bool retain_library = false);
   static int socket_patch_count_for_test();
   static int socket_library_count_for_test();
+  static SocketPatchTarget socket_patch_target_for_test(
+      CodeCache* lib, const char* library_name, bool in_jdk_directory);
+  static void* socket_hook_for_target_for_test(SocketPatchTarget target,
+                                                int hook_index);
 #endif
   // Called after a new library is loaded and the library list is refreshed.
   // No-op when native I/O hooks are not active.
