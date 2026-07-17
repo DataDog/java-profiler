@@ -172,12 +172,11 @@ TEST_F(FaultInjectionTest, WalkVmSetjmpRecoversFromInjectedFault) {
   }
   t->setJmpCtx(nullptr);
 
-  // Either we observed a recovered fault, or the loop completed cleanly. The
+  // We should have observed a recovered fault, or the loop completed cleanly. The
   // essential assertion is that the process did not die and, when a fault was
   // injected, setjmp regained control.
-  if (faults > 0) {
-    EXPECT_TRUE(recovered);
-  }
+  EXPECT_GT(faults, 0u) << "expected at least one injected fault to longjmp-recover";
+  EXPECT_TRUE(recovered);
   SUCCEED();
 }
 

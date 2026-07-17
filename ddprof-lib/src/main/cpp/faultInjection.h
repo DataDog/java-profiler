@@ -76,11 +76,6 @@ inline T injectAddress(T ptr, u64 threshold, const char* fn) {
   }
   return ptr;
 }
-
-// Returns v unchanged, or a pseudo-random value when the tier fires.
-int32_t injectInt(int32_t v, u64 threshold, const char* fn);
-int64_t injectLong(int64_t v, u64 threshold, const char* fn);
-
 }  // namespace faultinj
 
 #define INJECT_FAULT_ADDRESS_RARE(ptr) \
@@ -89,20 +84,6 @@ int64_t injectLong(int64_t v, u64 threshold, const char* fn);
     ::faultinj::injectAddress((ptr), ::faultinj::PROB_UNLIKELY, __func__)
 #define INJECT_FAULT_ADDRESS_LIKELY(ptr) \
     ::faultinj::injectAddress((ptr), ::faultinj::PROB_LIKELY, __func__)
-
-#define INJECT_FAULT_INT_RARE(v) \
-    ::faultinj::injectInt((v), ::faultinj::PROB_RARE, __func__)
-#define INJECT_FAULT_INT_UNLIKELY(v) \
-    ::faultinj::injectInt((v), ::faultinj::PROB_UNLIKELY, __func__)
-#define INJECT_FAULT_INT_LIKELY(v) \
-    ::faultinj::injectInt((v), ::faultinj::PROB_LIKELY, __func__)
-
-#define INJECT_FAULT_LONG_RARE(v) \
-    ::faultinj::injectLong((v), ::faultinj::PROB_RARE, __func__)
-#define INJECT_FAULT_LONG_UNLIKELY(v) \
-    ::faultinj::injectLong((v), ::faultinj::PROB_UNLIKELY, __func__)
-#define INJECT_FAULT_LONG_LIKELY(v) \
-    ::faultinj::injectLong((v), ::faultinj::PROB_LIKELY, __func__)
 
 #else  // __FAULT_INJECTION__ not defined — strict identity, zero cost.
 

@@ -112,21 +112,6 @@ uintptr_t poisonAddress() {
   // Fallback: best-effort garbage address if init() failed.
   return ((uintptr_t)r | (uintptr_t)0x8000000000000000ULL) & ALIGN_MASK;
 }
-
-int32_t injectInt(int32_t v, u64 threshold, const char* fn) {
-  if (__builtin_expect(shouldFire(threshold, fn), 0)) {
-    return (int32_t)nextRandom();
-  }
-  return v;
-}
-
-int64_t injectLong(int64_t v, u64 threshold, const char* fn) {
-  if (__builtin_expect(shouldFire(threshold, fn), 0)) {
-    return (int64_t)nextRandom();
-  }
-  return v;
-}
-
 }  // namespace faultinj
 
 #endif  // __FAULT_INJECTION__
