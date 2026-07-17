@@ -24,6 +24,7 @@
 #include <cstring>
 #include <memory>
 #include <stdint.h>
+#include <vector>
 using namespace std;
 
 #define MAX_STRING_LEN 8191
@@ -87,6 +88,46 @@ public:
   u64 _start_time;
   u64 _age;
   Context _ctx;
+};
+
+// Reporting surface for ReferenceChainTracker's bounded
+// BFS (referenceChains.h/.cpp). `_target_tag` is the FrontierTable tag the
+// chain was reconstructed for (FrontierTable::reconstructChain()); `_chain`
+// holds the referrer-klass StringDictionary ids it returns, in the same
+// leaf(target)-to-root order. `_depth` is the target entry's own
+// FrontierEntry::depth (hop count from the search's root-side seed).
+class ReferenceChainEvent : public Event {
+public:
+  u64 _start_time;
+  u64 _target_tag;
+  u32 _depth;
+  std::vector<u32> _chain;
+
+  ReferenceChainEvent()
+      : Event(), _start_time(0), _target_tag(0), _depth(0) {}
+};
+
+// Search-level abandonment signal (design doc's Termination section:
+// "explicit reporting of abandoned searches ... no silent truncation").
+// Unlike ReferenceChainEvent this does not report any one object's chain -
+// it reports why ReferenceChainTracker's current search stopped before
+// every frontier entry could be resolved, using the same counters
+// runPass()/expandFrontier() already maintain (referenceChains.h/.cpp).
+class ReferenceChainAbandonedEvent : public Event {
+public:
+  u64 _start_time;
+  u8 _reason; // SearchAbandonReason (referenceChains.h)
+  u32 _passes_run;
+  u32 _frontier_size;
+  int _hop_cap;
+  int _budget;
+  long _ttl_ms;
+  u64 _elapsed_ns;
+
+  ReferenceChainAbandonedEvent()
+      : Event(), _start_time(0), _reason(0), _passes_run(0),
+        _frontier_size(0), _hop_cap(0), _budget(0), _ttl_ms(0),
+        _elapsed_ns(0) {}
 };
 
 class MallocEvent : public Event {

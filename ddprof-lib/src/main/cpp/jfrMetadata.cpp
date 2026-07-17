@@ -185,6 +185,28 @@ void JfrMetadata::initialize(
                   << field("localRootSpanId", T_LONG, "Local Root Span ID") ||
               contextAttributes)
 
+          << (type("datadog.ReferenceChain", T_REFERENCE_CHAIN,
+                   "Live Object Reference Chain")
+              << category("Datadog", "Profiling")
+              << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
+              << field("targetTag", T_LONG, "Frontier Tag", F_UNSIGNED)
+              << field("depth", T_INT, "Depth")
+              << field("chain", T_CLASS, "Referrer Chain (Leaf to Root)",
+                       F_CPOOL | F_ARRAY))
+
+          << (type("datadog.ReferenceChainAbandoned",
+                   T_REFERENCE_CHAIN_ABANDONED,
+                   "Live Object Reference Chain Search Abandoned")
+              << category("Datadog", "Profiling")
+              << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
+              << field("reason", T_STRING, "Abandonment Reason")
+              << field("passesRun", T_INT, "Passes Run")
+              << field("frontierSize", T_INT, "Frontier Size")
+              << field("hopCap", T_INT, "Hop Cap")
+              << field("budget", T_INT, "Per-Pass Budget")
+              << field("ttl", T_LONG, "Search TTL", F_DURATION_MILLIS)
+              << field("elapsed", T_LONG, "Elapsed Time", F_DURATION_MILLIS))
+
           << (type("datadog.Endpoint", T_ENDPOINT, "Endpoint")
               << category("Datadog")
               << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)

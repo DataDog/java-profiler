@@ -166,7 +166,9 @@ private:
   //
   // rotate() is self-contained: it uses _accepting + RefCountGuard to drain
   // concurrent JNI readers, and SignalBlocker prevents profiling signals on
-  // this thread from inserting into old_active between Phase 1 and Phase 2.
+  // this thread from inserting into old_active between the pre-populate copy
+  // step and the catch-up copy step of the dictionary's two-step rotation
+  // (see StringDictionary::rotate(), stringDictionary.h).
   // No external lock is required for rotation.
   //
   // lockAll() wraps jfr_op only — to gate call-trace writers (signal handlers
@@ -426,6 +428,20 @@ public:
   void writeDatadogProfilerSetting(int tid, int length, const char *name,
                                    const char *value, const char *unit);
   void writeHeapUsage(long value, bool live);
+  // Mirrors writeHeapUsage()'s shape exactly. Called from dump() whenever
+  // ReferenceChainTracker's search has ended in SearchState::ABANDONED,
+  // the same way LivenessTracker::flush() is called from dump().
+  void writeReferenceChainAbandoned(ReferenceChainAbandonedEvent *event);
+  // Unlike writeReferenceChainAbandoned() above, this is NOT a bare 3-slot
+  // tryLock() sweep - it retries with a bounded, sleeping loop because its
+  // call site is dump()'s drain loop (profiler.cpp), on dump()'s own calling
+  // thread, which can tolerate blocking, unlike a signal handler; see this
+  // method's own comment in profiler.cpp for why that retry exists.
+  // `deadline_ns` is a single retry budget shared across dump()'s *entire*
+  // drain batch (not reset per event) - see the caller in dump() and this
+  // method's own comment in profiler.cpp for why a per-event budget would be
+  // unbounded across a large batch.
+  void writeReferenceChain(ReferenceChainEvent *event, u64 deadline_ns);
   int eventMask() const { return _event_mask; }
   bool isRemoteSymbolication() const { return _remote_symbolication; }
 

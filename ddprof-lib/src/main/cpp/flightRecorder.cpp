@@ -47,14 +47,18 @@
 static const char *const SETTING_RING[] = {NULL, "kernel", "user", "any"};
 static const char *const SETTING_CSTACK[] = {NULL, "no", "fp", "dwarf", "lbr"};
 
-// JVM spec SS4.7.3 caps a method's bytecode (code_length) at 65535 bytes (u2),
-// so a well-formed LineNumberTable can never have more entries than that.
-// Used to sanity-bound line_number_table_size before it drives the byte-count
-// passed to SafeAccess::safeCopy(): if GetLineNumberTable()
-// returns a corrupted pointer for a stale jmethodID (see the TOCTOU race
-// documented in fillJavaMethodInfo below), the paired out-param size is just
-// as likely to be corrupted, and an implausible size should be rejected
-// before it is trusted to compute a byte range.
+// JVM spec SS4.7.3 caps a method's bytecode (code_length) at 65535 bytes (u2).
+// A LineNumberTable entry maps a bytecode offset to a source line, so a
+// well-formed table can have at most one entry per bytecode offset -- the
+// 65535 bound here is inherited indirectly through that one-entry-per-offset
+// invariant, not a direct spec cap on entry count (the numeric equivalence
+// with code_length's own u2 cap is coincidental). Used to sanity-bound
+// line_number_table_size before it drives the byte-count passed to
+// SafeAccess::safeCopy(): if GetLineNumberTable() returns a corrupted
+// pointer for a stale jmethodID (see the TOCTOU race documented in
+// fillJavaMethodInfo below), the paired out-param size is just as likely to
+// be corrupted, and an implausible size should be rejected before it is
+// trusted to compute a byte range.
 static const jint MAX_LINE_NUMBER_TABLE_ENTRIES = 65535;
 
 // Compute a non-negative event duration from TSC timestamps.  Unsigned u64
@@ -413,7 +417,9 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
       }
       if (line_number_table != nullptr) {
         jvmtiError dealloc_err = jvmti->Deallocate((unsigned char *)line_number_table);
-        assert(dealloc_err == JVMTI_ERROR_NONE && "Unexpected error while deallocating linenumber table");
+        if (dealloc_err != JVMTI_ERROR_NONE) {
+          TEST_LOG("Unexpected error %d while deallocating linenumber table", dealloc_err);
+        }
       }
       if (owned_table != nullptr) {
         mi->_line_number_table = std::make_shared<SharedLineNumberTable>(
@@ -893,6 +899,8 @@ void Recording::switchChunk(int fd) {
   _chunk_start = finishChunk(/*end_recording=*/true, /*do_cleanup=*/true);
 
   TEST_LOG("MethodMap: %zu methods after cleanup", _method_map.size());
+  TEST_LOG("Recording::switchChunk copying [0, %lld) from _fd=%d to fd=%d",
+           (long long)_chunk_start, _fd, fd);
 
   _start_time = _stop_time;
   _start_ticks = _stop_ticks;
@@ -1196,6 +1204,7 @@ void Recording::writeSettings(Buffer *buf, Arguments &args) {
 
   writeBoolSetting(buf, T_ALLOC, "enabled", args._record_allocations);
   writeBoolSetting(buf, T_HEAP_LIVE_OBJECT, "enabled", args._record_liveness);
+  writeBoolSetting(buf, T_REFERENCE_CHAIN, "enabled", args._reference_chains);
   writeBoolSetting(buf, T_MALLOC, "enabled", args._nativemem >= 0);
   if (args._nativemem >= 0) {
     writeIntSetting(buf, T_MALLOC, "nativemem", args._nativemem);
@@ -1989,6 +1998,67 @@ void Recording::recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
   flushIfNeeded(buf);
 }
 
+void Recording::recordReferenceChain(Buffer *buf, ReferenceChainEvent *event) {
+  // event->_chain's length is bounded only by FrontierTable::maxCapacity()
+  // (tens of thousands of entries, referenceChains.h) - NOT by
+  // MAX_JFR_EVENT_SIZE, so this event cannot use writeEventSizePrefix()'s
+  // single-byte size field (its assert(size < MAX_JFR_EVENT_SIZE) is
+  // compiled out in release builds, making an oversize chain a silent
+  // corrupt size byte rather than a caught bug) nor rely on the trailing
+  // flushIfNeeded(buf) every fixed-size event above uses (that only flushes
+  // *after* already writing past the buffer). Truncate to
+  // MAX_REFERENCE_CHAIN_EVENT_HOPS (that constant's own comment) and
+  // reserve room for the truncated worst case up front instead.
+  u32 chain_size = (u32)event->_chain.size();
+  u32 emitted_size = chain_size < (u32)MAX_REFERENCE_CHAIN_EVENT_HOPS
+                          ? chain_size
+                          : (u32)MAX_REFERENCE_CHAIN_EVENT_HOPS;
+
+  flushIfNeeded(
+      buf, RECORDING_BUFFER_LIMIT -
+               (MAX_VAR32_LENGTH /* multi-byte size prefix, below */ +
+                3 * MAX_VAR64_LENGTH /* type id, start_time, target_tag */ +
+                2 * MAX_VAR32_LENGTH /* depth, chain count */ +
+                (int)emitted_size * MAX_VAR32_LENGTH));
+  // Multi-byte size prefix (like writeDatadogSetting() above), not
+  // writeEventSizePrefix()'s single byte - this event's size can exceed
+  // MAX_JFR_EVENT_SIZE (255) once the chain is more than a few dozen hops.
+  int start = buf->skip(MAX_VAR32_LENGTH);
+  buf->putVar64(T_REFERENCE_CHAIN);
+  buf->putVar64(event->_start_time);
+  buf->putVar64(event->_target_tag);
+  buf->putVar32(event->_depth);
+  // T_CLASS array field (F_CPOOL|F_ARRAY, jfrMetadata.cpp) - each entry is a
+  // StringDictionary class id, same encoding as a scalar objectClass field
+  // (e.g. recordAllocation() above), just repeated `count` times.
+  buf->putVar32(emitted_size);
+  for (u32 i = 0; i < emitted_size; i++) {
+    buf->putVar32(event->_chain[i]);
+  }
+  buf->putVar32(start, (u32)(buf->offset() - start));
+  flushIfNeeded(buf);
+}
+
+void Recording::recordReferenceChainAbandoned(
+    Buffer *buf, ReferenceChainAbandonedEvent *event) {
+  int start = buf->skip(1);
+  buf->putVar64(T_REFERENCE_CHAIN_ABANDONED);
+  buf->putVar64(event->_start_time);
+  // SearchAbandonReason (referenceChains.h) - kept as a small fixed table
+  // here rather than a T_XXX enum type, mirroring NativeSocketEvent's
+  // _operation -> kOpNames string mapping above.
+  static const char *const kReasons[] = {"none", "frontier_cap", "ttl"};
+  buf->putUtf8(event->_reason < 3 ? kReasons[event->_reason] : "unknown");
+  buf->putVar32(event->_passes_run);
+  buf->putVar32(event->_frontier_size);
+  buf->putVar32(event->_hop_cap);
+  buf->putVar32(event->_budget);
+  buf->putVar64(event->_ttl_ms);
+  buf->putVar64(event->_elapsed_ns / 1000000);
+  writeEventSizePrefix(buf, start);
+  flushIfNeeded(buf);
+}
+
 void Recording::recordMonitorBlocked(Buffer *buf, int tid, u64 call_trace_id,
                                      LockEvent *event) {
   int start = buf->skip(1);
@@ -2160,6 +2230,32 @@ void FlightRecorder::recordHeapUsage(int lock_index, long value, bool live) {
     if (rec != nullptr) {
       Buffer *buf = rec->buffer(lock_index);
       rec->writeHeapUsage(buf, value, live);
+    }
+  }
+}
+
+void FlightRecorder::recordReferenceChainAbandoned(
+    int lock_index, ReferenceChainAbandonedEvent *event) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  OptionalSharedLockGuard locker(&_rec_lock);
+  if (locker.ownsLock()) {
+    Recording* rec = _rec;
+    if (rec != nullptr) {
+      Buffer *buf = rec->buffer(lock_index);
+      rec->recordReferenceChainAbandoned(buf, event);
+    }
+  }
+}
+
+void FlightRecorder::recordReferenceChain(int lock_index,
+                                          ReferenceChainEvent *event) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  OptionalSharedLockGuard locker(&_rec_lock);
+  if (locker.ownsLock()) {
+    Recording* rec = _rec;
+    if (rec != nullptr) {
+      Buffer *buf = rec->buffer(lock_index);
+      rec->recordReferenceChain(buf, event);
     }
   }
 }

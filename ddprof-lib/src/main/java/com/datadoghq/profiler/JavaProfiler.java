@@ -682,6 +682,106 @@ public final class JavaProfiler {
     public static native void dumpContext();
 
     /**
+     * Test seam (debug native builds only - a no-op returning {@code false}/{@code 0}/an
+     * empty array in release builds): decouples LivenessTracker's leak-candidate
+     * detection from ReferenceChainTracker's chain reconstruction, each independently
+     * verifiable end-to-end without depending on both the probabilistic JVMTI heap
+     * sampler and the reference-chain BFS search organically producing the right
+     * conditions in the same test run.
+     * <p>
+     * Enables/disables LivenessTracker's per-klass population tracking directly,
+     * bypassing {@code initialize()}'s live-JVM requirement. Returns {@code true} on
+     * debug builds.
+     */
+    public static native boolean setGcGenerationsEnabled0(boolean enabled);
+
+    /**
+     * Test seam (debug native builds only): seeds one epoch's worth of population
+     * history for {@code klassId} directly into LivenessTracker's ring buffer,
+     * bypassing real allocation sampling. Repeated calls (with distinct
+     * {@code epoch} values) build up a trend {@link #selectLeakCandidateKlassIds0()}
+     * can then rank, letting a test assert a slope signal would be generated for a
+     * chosen klass id without waiting on real GC epochs.
+     */
+    public static native void seedKlassPopulationSample0(int klassId, int count, long epoch);
+
+    /**
+     * Test seam (debug native builds only): wires {@code representative} in as {@code klassId}'s
+     * leak-candidate representative directly (a fresh weak global ref owned by LivenessTracker),
+     * bypassing the real allocation-sampling path that would otherwise populate this. Combined
+     * with {@link #seedKlassPopulationSample0} and {@link #tagAsReferenceChainRoot0}, lets a test
+     * join a synthetic slope signal to a real, directly-tagged object so
+     * {@link #pollReferenceChainTargets0()}'s bridging step can be exercised end-to-end with
+     * neither the real sampler nor the real root-seeded walk involved.
+     */
+    public static native void setKlassPopulationRepresentativeForTest0(int klassId, Object representative);
+
+    /**
+     * Test seam (debug native builds only): clears LivenessTracker's per-klass population table,
+     * so a later test in the same JVM does not observe leak candidates seeded by an earlier one.
+     */
+    public static native void resetKlassPopulationForTest0();
+
+    /**
+     * Test seam (debug native builds only): returns the klass ids LivenessTracker's
+     * real leak-candidate ranking (positive population slope, top 5) currently
+     * selects - the same call ReferenceChainTracker's restart gate and target-polling
+     * bridge use in production, exposed here so a test can assert a slope signal was
+     * generated (real or seeded via {@link #seedKlassPopulationSample0}) without
+     * needing a reference-chain search to also be running.
+     */
+    public static native int[] selectLeakCandidateKlassIds0();
+
+    /**
+     * Test seam (debug native builds only): tags {@code target} and inserts it
+     * directly as a reference-chain frontier root, bypassing ReferenceChainTracker's
+     * normal discovery path (a root-seeded FollowReferences walk) and
+     * LivenessTracker's leak-candidate selection entirely. Lets a test drive
+     * {@link #runReferenceChainPass0()}/{@link #pollReferenceChainTargets0()} against
+     * a known, caller-chosen live object. Returns the assigned frontier tag (matching
+     * the {@code target_tag} a resulting {@code datadog.ReferenceChain} event
+     * reports), or {@code 0} on failure (reference chains disabled, or the frontier
+     * table is at capacity).
+     */
+    public static native long tagAsReferenceChainRoot0(Object target);
+
+    /**
+     * Test seam (debug native builds only): runs exactly one bounded BFS pass of the
+     * reference-chain search synchronously, rather than waiting on the tracker's own
+     * background thread/cadence. Returns {@code false} if reference chains are
+     * disabled or the tracker was never started.
+     */
+    public static native boolean runReferenceChainPass0();
+
+    /**
+     * Test seam (debug native builds only): runs one poll of
+     * ReferenceChainTracker's LivenessTracker-to-chain-reconstruction bridging step
+     * synchronously - for each current leak candidate already discovered by a prior
+     * {@link #runReferenceChainPass0()} walk, reconstructs and queues its chain
+     * event, rather than waiting on the background thread's own scheduling cycle.
+     */
+    public static native void pollReferenceChainTargets0();
+
+    /**
+     * Test seam (debug native builds only): drains and returns the number of
+     * reference-chain events queued by {@link #pollReferenceChainTargets0()} so far
+     * (the same queue {@code Profiler.dump()} drains in production to write
+     * {@code datadog.ReferenceChain} JFR events) - lets a test assert a chain was
+     * actually reconstructed without needing a real JFR dump.
+     */
+    public static native int drainReferenceChainEventCount0();
+
+    /**
+     * Test seam (debug native builds only): resets ReferenceChainTracker's search/frontier state
+     * back to a brand-new tracker's, releasing any tags a previous search still held. Since the
+     * tracker is a process-wide singleton, an in-process test that needs its own genuine first
+     * root-seeded walk (runPass() only re-walks from the roots once per search's whole lifetime)
+     * calls this at the start of its test body to force one, rather than depending on being the
+     * first reference-chain test to run in a shared test JVM.
+     */
+    public static native void resetReferenceChainSearchForTest0();
+
+    /**
      * Resets the cached ThreadContext for the current storage slot — the calling thread in
      * {@link ContextStorageMode#THREAD}, or its current carrier in
      * {@link ContextStorageMode#CARRIER}. The next call to {@link #getThreadContext()}

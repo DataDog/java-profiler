@@ -40,6 +40,20 @@ const int JFR_EVENT_FLUSH_THRESHOLD = RECORDING_BUFFER_LIMIT;
 const int MAX_VAR64_LENGTH = 10;
 const int MAX_VAR32_LENGTH = 5;
 
+// Chain length Recording::recordReferenceChain() (flightRecorder.cpp) will
+// actually serialize per datadog.ReferenceChain event, independent of
+// ReferenceChainTracker's own _hop_cap/frontier-table cap - the frontier
+// table's own defensive walk bound (FrontierTable::reconstructChain(),
+// referenceChains.h) is maxCapacity(), which can run into the tens of
+// thousands of entries, and neither that cap nor _hop_cap is itself
+// range-validated against a buffer-safe maximum (see arguments.cpp's own
+// sub-option parsing). recordReferenceChain() truncates event->_chain to
+// this many entries before writing, so its own worst-case size never
+// depends on trusting either of those upstream caps to stay small - a chain
+// longer than this is still truncated defense-in-depth even if a caller
+// changes those caps later.
+const int MAX_REFERENCE_CHAIN_EVENT_HOPS = 4096;
+
 #ifndef CONCURRENCY_LEVEL
 const int CONCURRENCY_LEVEL = 16;
 #endif
@@ -324,6 +338,9 @@ public:
                                 NativeSocketEvent *event);
   void recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
                             ObjectLivenessEvent *event);
+  void recordReferenceChain(Buffer *buf, ReferenceChainEvent *event);
+  void recordReferenceChainAbandoned(Buffer *buf,
+                                     ReferenceChainAbandonedEvent *event);
   void recordMonitorBlocked(Buffer *buf, int tid, u64 call_trace_id,
                             LockEvent *event);
   void recordThreadPark(Buffer *buf, int tid, u64 call_trace_id,
@@ -443,6 +460,24 @@ public:
                             const char *value, const char *unit);
 
   void recordHeapUsage(int lock_index, long value, bool live);
+
+  // Mirrors recordHeapUsage()'s shape exactly - ReferenceChainAbandonedEvent
+  // is not stack-sample-shaped (no tid/call_trace_id), same as HeapUsage.
+  // Called from Profiler::writeReferenceChainAbandoned() (profiler.cpp),
+  // wired from Profiler::dump() the same way LivenessTracker::flush() is.
+  void recordReferenceChainAbandoned(int lock_index,
+                                     ReferenceChainAbandonedEvent *event);
+
+  // Mirrors recordReferenceChainAbandoned() above exactly, for
+  // ReferenceChainEvent instead. Called from Profiler::writeReferenceChain()
+  // (profiler.cpp), itself called from
+  // ReferenceChainTracker::pollWatchedTargets() (referenceChains.cpp) for
+  // each chain event discovered this poll cycle - unlike
+  // recordReferenceChainAbandoned() (only reached from dump()), chain events
+  // are produced continuously as candidates are discovered, not only at
+  // dump time, so this needs its own call site rather than piggybacking on
+  // dump()'s flush-on-dump pattern.
+  void recordReferenceChain(int lock_index, ReferenceChainEvent *event);
 };
 
 #endif // _FLIGHTRECORDER_H

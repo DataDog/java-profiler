@@ -730,9 +730,12 @@ int OS::createMemoryFile(const char* name) {
 
 void OS::copyFile(int src_fd, int dst_fd, off_t offset, size_t size) {
     // copy_file_range() is probably better, but not supported on all kernels
+    size_t requested = size;
     while (size > 0) {
         ssize_t bytes = sendfile(dst_fd, src_fd, &offset, size);
         if (bytes <= 0) {
+            TEST_LOG("OS::copyFile sendfile returned %zd, errno=%d, remaining=%zu of requested=%zu",
+                     bytes, errno, size, requested);
             break;
         }
         size -= (size_t)bytes;

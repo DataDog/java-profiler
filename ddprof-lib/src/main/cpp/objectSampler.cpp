@@ -174,11 +174,17 @@ Error ObjectSampler::start(Arguments &args) {
     return error;
   }
   if (_interval > 0) {
-    if (_record_liveness || _gc_generations) {
-      error = LivenessTracker::instance()->start(args);
-      if (error) {
-        return error;
-      }
+    // Always call through, even when this start's own args request neither
+    // liveness recording nor gc generations: LivenessTracker::start() ->
+    // initialize() refreshes its own _gc_generations/_enabled from args
+    // unconditionally (see that method's own comment) and is a no-op beyond
+    // that when disabled. Gating this call on ObjectSampler's own
+    // (freshly-set, correct) flags left LivenessTracker's flags stuck at
+    // whatever the previous recording in this process last set them to,
+    // since it never got a chance to observe this recording's request at all.
+    error = LivenessTracker::instance()->start(args);
+    if (error) {
+      return error;
     }
 
     jvmtiEnv *jvmti = VM::jvmti();
@@ -204,9 +210,9 @@ void ObjectSampler::stop() {
   jvmti->SetEventNotificationMode(JVMTI_DISABLE,
                                   JVMTI_EVENT_SAMPLED_OBJECT_ALLOC, NULL);
 
-  if (_record_liveness || _gc_generations) {
-    LivenessTracker::instance()->stop();
-  }
+  // See start()'s own comment on why this call is unconditional -
+  // LivenessTracker::stop() already self-guards on its own _enabled.
+  LivenessTracker::instance()->stop();
 }
 
 Error ObjectSampler::updateConfiguration(u64 events, double time_coefficient) {

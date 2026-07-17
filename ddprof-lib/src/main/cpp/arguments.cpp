@@ -18,6 +18,7 @@
 #include "arguments.h"
 #include "vmEntry.h"
 
+#include <algorithm>
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -81,6 +82,24 @@ static const Multiplier UNIVERSAL[] = {
 //                          and keep the liveness track of 10% of the allocation
 //                          samples
 //     generations        - track surviving generations
+//     referencechains[=BOOL[:hops=N][:budget=N][:ttl=N][:framecap=N][:pausetarget=N][:painbudget=N][:firstpassbudget=N]]
+//                        - (PROF-15341, off by default) tag/BFS-walk live-heap
+//                          samples' referrer chains back toward a GC root.
+//                          pausetarget=N (ms) is the pause-time-SLO ceiling
+//                          ReferenceChainTracker::updatePacing() adapts the
+//                          effective budget/cadence toward (pause-time pacing
+//                          controller). painbudget=N (percent) bounds how much
+//                          wall-clock time a *restarted* search (one begun
+//                          after a prior search already completed/abandoned)
+//                          may spend on average - see PainBudget (painBudget.h).
+//                          firstpassbudget=N overrides just the search's
+//                          one-shot, root-seeded first pass's edge budget
+//                          (default 0 - falls back to budget=N) since that
+//                          pass alone decides which GC roots ever enter the
+//                          frontier at all, unlike every later pass's cheap,
+//                          incremental per-node expansion.
+//                          Sub-options are placeholders pending future tuning;
+//                          see doc/architecture/LiveHeapReferenceChains*.md
 //     lightweight[=BOOL] - enable lightweight profiling - events without
 //     stacktraces (default: true)
 //     remotesym[=BOOL]   - enable remote symbolication for native frames
@@ -426,6 +445,84 @@ Error Arguments::parse(const char *args) {
         }
       } else {
         _nativesocket = true;
+      }
+
+      CASE("referencechains")
+      {
+        // Sub-options are colon-delimited key=value pairs after the boolean,
+        // e.g. "referencechains=true:hops=64:budget=2000". Parsed manually
+        // (not via strtok) because the outer arg loop above is itself mid
+        // strtok(..., ",") over the same buffer - a nested strtok call would
+        // clobber its saved state.
+        char *config = value ? strchr(value, ':') : nullptr;
+        if (config) {
+          *(config++) = 0;
+        }
+        if (value != NULL) {
+          switch (value[0]) {
+          case 'n': // no
+          case 'f': // false
+          case '0': // 0
+            _reference_chains = false;
+            break;
+          default:
+            _reference_chains = true;
+          }
+        } else {
+          _reference_chains = true;
+        }
+        char *cursor = config;
+        while (cursor != NULL) {
+          char *next = strchr(cursor, ':');
+          if (next) {
+            *(next++) = 0;
+          }
+          char *eq = strchr(cursor, '=');
+          if (eq) {
+            *(eq++) = 0;
+            // Floor every sub-option at the parse boundary rather than
+            // trusting a downstream cast/clamp to make an operator-supplied
+            // negative value safe: a negative hops value in particular gets
+            // compared as `depth >= (u32)ctx->hop_cap` (referenceChains.cpp),
+            // so an unclamped negative wraps to ~4e9 and silently disables
+            // the hop cap entirely - the opposite of the flag's intent, and
+            // it removes the one guard that otherwise bounds how long a
+            // single reference chain (and therefore its
+            // datadog.ReferenceChain JFR event) can grow. A negative budget
+            // similarly collapses ReferenceChainTracker::_effective_budget
+            // to 0 (updatePacing()'s own PID-clamp logic), which truncates
+            // every pass immediately and leaves the search RUNNING
+            // (re-walking the whole graph each cadence) until TTL instead of
+            // making progress. A negative framecap is handed straight to
+            // FrontierTable's constructor, which floors it to a
+            // zero-capacity table (that class's own std::max(max_cap, 0)),
+            // silently disabling tracking rather than erroring. ttl/
+            // pausetarget/painbudget already have incidental downstream
+            // clamps (runPass()'s `_ttl_ms > 0` gate, this class's own
+            // PidController/PainBudget std::max(..., 0) calls) but are
+            // floored here too so every sub-option's validation lives at one
+            // boundary instead of being split between here and several
+            // unrelated call sites.
+            if (strcasecmp(cursor, "hops") == 0) {
+              _reference_chains_hop_cap = std::max(atoi(eq), 1);
+            } else if (strcasecmp(cursor, "budget") == 0) {
+              _reference_chains_budget = std::max(atoi(eq), 1);
+            } else if (strcasecmp(cursor, "ttl") == 0) {
+              _reference_chains_ttl_ms = std::max(atol(eq), 0L);
+            } else if (strcasecmp(cursor, "framecap") == 0) {
+              _reference_chains_frontier_cap = std::max(atoi(eq), 1);
+            } else if (strcasecmp(cursor, "pausetarget") == 0) {
+              _reference_chains_pause_target_ms = std::max(atol(eq), 0L);
+            } else if (strcasecmp(cursor, "painbudget") == 0) {
+              _reference_chains_pain_budget_percent =
+                  std::min(std::max(atoi(eq), 0), 100);
+            } else if (strcasecmp(cursor, "firstpassbudget") == 0) {
+              _reference_chains_first_pass_budget = std::min(
+                  std::max(atoi(eq), 0), MAX_REFERENCE_CHAINS_FIRST_PASS_BUDGET);
+            }
+          }
+          cursor = next;
+        }
       }
 
       DEFAULT()

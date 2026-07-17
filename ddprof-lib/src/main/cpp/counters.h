@@ -125,7 +125,24 @@
    * paths (delegated and direct) go into SAMPLES_DROPPED_REC_LOCK. */         \
   X(JVMTI_STACKS_DROPPED_LOCK, "jvmti_stacks_dropped_lock")                   \
   X(SAMPLES_DROPPED_REC_LOCK, "samples_dropped_rec_lock")                     \
-  X(SAMPLES_DROPPED_THREAD_LOCAL, "samples_dropped_thread_local")
+  X(SAMPLES_DROPPED_THREAD_LOCAL, "samples_dropped_thread_local")             \
+  /* A pending datadog.ReferenceChain event was evicted from                  \
+   * ReferenceChainTracker::_pending_chain_events (referenceChains.h) before  \
+   * any dump() drained it - permanently lost, since _emitted_target_tags     \
+   * marks its tag as emitted the moment it is queued, not when it is         \
+   * actually written. See MAX_PENDING_CHAIN_EVENTS' own comment. */          \
+  X(REFERENCE_CHAIN_EVENTS_DROPPED, "reference_chain_events_dropped")         \
+  /* ReferenceChainTracker::releaseSearchTags() (referenceChains.cpp) failed  \
+   * to call GetObjectsWithTags() for at least one batch - the search's tag   \
+   * release is retried on a later call rather than proceeding, but this     \
+   * counts how often that retry path is taken. */                           \
+  X(REFERENCE_CHAIN_TAG_RELEASE_FAILED, "reference_chain_tag_release_failed") \
+  /* Profiler::writeReferenceChain() (profiler.cpp) could not acquire a       \
+   * sample-record lock within its bounded retry budget and dropped the      \
+   * already-dequeued datadog.ReferenceChain event - permanently lost, same  \
+   * as REFERENCE_CHAIN_EVENTS_DROPPED above but from the write side rather  \
+   * than the pending-queue side. */                                         \
+  X(REFERENCE_CHAIN_WRITE_DROPPED, "reference_chain_write_dropped")
 #define X_ENUM(a, b) a,
 typedef enum CounterId : int {
   DD_COUNTER_TABLE(X_ENUM) DD_NUM_COUNTERS
