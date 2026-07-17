@@ -12,6 +12,7 @@
 #include "context.h"
 #include "context_api.h"
 #include "counters.h"
+#include "nativeMem.h"
 #include "dictionary.h"
 #include "flightRecorder.inline.h"
 #include "incbin.h"
@@ -810,7 +811,9 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   // dictionary) will reflect the previous serialization. That is, some level of
   // familiarity with the code base will be required to use this diagnostic
   // information for now.
+  updateNativeMemStats();
   writeCounters(_buf);
+  writeNativeMem(_buf);
 
   // Keep a simple stats for where we failed to unwind
   // For the sakes of simplicity we are not keeping the count of failed unwinds which would also be
@@ -1773,6 +1776,50 @@ void Recording::writeLogLevels(Buffer *buf) {
     buf->putVar32(i);
     buf->putUtf8(Log::LEVEL_NAME[i]);
     flushIfNeeded(buf);
+  }
+}
+
+void Recording::updateNativeMemStats() {
+  // Fold the per-category live gauges into their moving-window averages and
+  // running peaks. This is a sampled max: peaks that rise and fall entirely
+  // between two chunk finishes are not observed. A spike-accurate max would
+  // track the high-water mark at allocation time.
+  NativeMem::sample();
+
+  // Mirror the totals into the flat counter table so they flow out through the
+  // existing counter path (JFR T_DATADOG_COUNTER events and the JNI debug
+  // counters). Per-category values are emitted separately by writeNativeMem().
+  Counters::set(NATIVE_MEM_LIVE_BYTES, NativeMem::liveTotal());
+  Counters::set(NATIVE_MEM_AVG_BYTES, NativeMem::avgTotal());
+  Counters::set(NATIVE_MEM_MAX_BYTES, NativeMem::maxTotal());
+}
+
+void Recording::writeNativeMem(Buffer *buf) {
+  // Emit live/avg/max per category as counter events, reusing the counter event
+  // format with a "<metric>.<category>" name so they land alongside the totals
+  // without needing a dedicated event type or a slot in the counter table.
+  for (int c = 0; c < NM_NUM_CATEGORIES; c++) {
+    NativeMemCategory cat = (NativeMemCategory)c;
+    const char *name = NativeMem::categoryName(cat);
+    const struct {
+      const char *prefix;
+      long long value;
+    } metrics[] = {
+        {"native_mem_live_bytes.", NativeMem::live(cat)},
+        {"native_mem_avg_bytes.", NativeMem::avg(cat)},
+        {"native_mem_max_bytes.", NativeMem::max(cat)},
+    };
+    for (const auto &m : metrics) {
+      char label[64];
+      snprintf(label, sizeof(label), "%s%s", m.prefix, name);
+      int start = buf->skip(1);
+      buf->putVar64(T_DATADOG_COUNTER);
+      buf->putVar64(_start_ticks);
+      buf->putUtf8(label);
+      buf->putVar64(m.value);
+      writeEventSizePrefix(buf, start);
+      flushIfNeeded(buf);
+    }
   }
 }
 

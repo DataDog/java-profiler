@@ -13,6 +13,7 @@
 #include "guards.h"
 #include "common.h"
 #include "counters.h"
+#include "nativeMem.h"
 #include "ctimer.h"
 #include "signalInflight.h"
 #include "dwarf.h"
@@ -1414,6 +1415,7 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   // (Re-)allocate calltrace buffers
   if (_max_stack_depth != args._jstackdepth) {
+    size_t prev_nelem = _max_stack_depth + RESERVED_FRAMES;
     _max_stack_depth = args._jstackdepth;
     size_t nelem = _max_stack_depth + RESERVED_FRAMES;
 
@@ -1427,6 +1429,7 @@ Error Profiler::start(Arguments &args, bool reset) {
         return Error("Not enough memory to allocate stack trace buffers (try "
                      "smaller jstackdepth)");
       }
+      NativeMem::record(NM_CALLTRACE, (long long)(nelem * sizeof(CallTraceBuffer)));
       // Swap under the per-shard lock: all readers (recordJVMTISample,
       // recordExternalSample) acquire this lock via tryLock before reading
       // _calltrace_buffer, so no reader can observe a freed pointer mid-replacement.
@@ -1434,6 +1437,9 @@ Error Profiler::start(Arguments &args, bool reset) {
       CallTraceBuffer *prev = _calltrace_buffer[i];
       _calltrace_buffer[i] = fresh;
       _locks[i].unlock();
+      if (prev != NULL) {
+        NativeMem::record(NM_CALLTRACE, -(long long)(prev_nelem * sizeof(CallTraceBuffer)));
+      }
       free(prev);
     }
   }
