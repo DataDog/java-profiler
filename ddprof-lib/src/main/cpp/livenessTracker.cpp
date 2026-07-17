@@ -307,6 +307,27 @@ static void free_uniform_real_distribution(void* p) {
   delete urd;
 }
 
+// File-scope (not track()-local) so releaseThreadLocalState() below can reach
+// them from Profiler::onThreadEnd(). Relying solely on these ThreadLocal's own
+// pthread-key destructors is not sufficient: pthread key destructors only fire
+// when the underlying OS thread actually exits, not when a JNI-attached thread
+// detaches via DetachCurrentThread. A reused pooled OS thread that repeatedly
+// attaches/detaches would otherwise leak one mt19937 and one
+// uniform_real_distribution allocation per attach cycle, since get() lazily
+// re-creates the value on the next track() call but nothing ever frees the
+// previous one until OS thread exit (which may never happen). Hooking explicit
+// cleanup into onThreadEnd matches how every other per-thread profiler state
+// (CPU/wall engine registration, ProfiledThread) is already torn down.
+static ThreadLocal<std::mt19937*, create_mt19937, free_mt19937> gen;
+static ThreadLocal<std::uniform_real_distribution<>*, create_uniform_real_distribution, free_uniform_real_distribution> dis;
+static ThreadLocal<double> skipped;
+
+void LivenessTracker::releaseThreadLocalState() {
+  gen.clear();
+  dis.clear();
+  skipped.clear();
+}
+
 void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
                             jobject object, u64 call_trace_id) {
   if (!_enabled) {
@@ -317,10 +338,6 @@ void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
     // we are not to store any objects
     return;
   }
-
-  static ThreadLocal<std::mt19937*, create_mt19937, free_mt19937> gen;
-  static ThreadLocal<std::uniform_real_distribution<>*, create_uniform_real_distribution, free_uniform_real_distribution> dis;
-  static ThreadLocal<double> skipped;
 
   if (_subsample_ratio < 1.0) {
     std::mt19937* genp = gen.get();

@@ -94,6 +94,13 @@ public:
   void track(JNIEnv *env, AllocEvent &event, jint tid, jobject object, u64 call_trace_id);
   void flush(std::set<int> &tracked_thread_ids);
 
+  // Frees this thread's subsampling RNG state (track()'s gen/dis/skipped
+  // ThreadLocals, livenessTracker.cpp). Must be called from a thread that is
+  // about to detach/terminate - see those ThreadLocal's own comment for why
+  // their pthread-key destructors alone cannot be relied on for JNI-attached
+  // threads. Safe to call even if this thread never called track().
+  static void releaseThreadLocalState();
+
   static void JNICALL GarbageCollectionFinish(jvmtiEnv *jvmti_env);
 
 private:

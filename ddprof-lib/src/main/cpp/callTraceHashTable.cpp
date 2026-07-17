@@ -46,13 +46,13 @@ private:
   volatile u32 _size;
   u32 _padding2[15];
 
+public:
   static size_t getSize(u32 capacity) {
     size_t size = sizeof(LongHashTable) +
                   (sizeof(u64) + sizeof(CallTraceSample)) * capacity;
     return (size + OS::page_mask) & ~OS::page_mask;
   }
 
-public:
   LongHashTable(LongHashTable *prev = nullptr, u32 capacity = 0,
                 u32 slot_base = 0, bool should_clean = true)
     : _prev(prev), _padding0(nullptr), _capacity(capacity),
@@ -319,6 +319,19 @@ void CallTraceHashTable::expandTableIfNeeded(LongHashTable* table, u32 size) {
     u64 prospective_base = (u64)table->slotBase() + capacity;
     u64 prospective_capacity = nextGenerationCapacity(capacity);
 
+    if (LongHashTable::getSize((u32)prospective_capacity) > _allocator.maxAllocatableSize()) {
+      // The doubled table would not fit in a single LinearAllocator chunk.
+      // alloc() bump-allocates within one chunk and cannot satisfy a request
+      // larger than a chunk - it would loop allocating fresh chunks until mmap
+      // fails (native OOM / vm.max_map_count exhaustion). Stop expanding here;
+      // put() keeps working on the current table at a higher load factor. This
+      // degraded state is bounded, not permanent: the next processTraces()
+      // rotation resets the table to its initial capacity, so normal JFR-flush
+      // cadence recovers it. Deriving the bound from the chunk size keeps it
+      // correct if the chunk size ever changes.
+      Counters::increment(CALLTRACE_STORAGE_EXPANSION_SKIPPED);
+      return;
+    }
     // Allocate new table with double capacity using LinearAllocator
     LongHashTable* new_table = LongHashTable::allocate(
         table, (u32)prospective_capacity, (u32)prospective_base, &_allocator);
