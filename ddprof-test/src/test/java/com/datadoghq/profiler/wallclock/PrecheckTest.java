@@ -133,6 +133,7 @@ public class PrecheckTest extends AbstractProfilerTest {
         Assumptions.assumeTrue(!Platform.isJ9());
         Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
 
+        Map<String, Long> countersBefore = profiler.getDebugCounters();
         profiler.setContext(0x5100L, 0x5101L, 0L, 0x5101L);
         try {
             Thread.sleep(300);
@@ -146,9 +147,11 @@ public class PrecheckTest extends AbstractProfilerTest {
         assertTrue(sampleCount >= 10,
                 "Expected normal MethodSample volume for traced sleep, got: " + sampleCount);
 
-        Map<String, Long> counters = profiler.getDebugCounters();
-        if (counters.containsKey("wc_signals_suppressed_owned_block")) {
-            assertEquals(0L, counters.get("wc_signals_suppressed_owned_block"),
+        if (countersBefore.containsKey("wc_signals_suppressed_owned_block")) {
+            long suppressedBefore = countersBefore.get("wc_signals_suppressed_owned_block");
+            long suppressedAfter = profiler.getDebugCounters()
+                    .getOrDefault("wc_signals_suppressed_owned_block", 0L);
+            assertEquals(suppressedBefore, suppressedAfter,
                     "wc_signals_suppressed_owned_block must not increment for traced sleep");
         }
     }
