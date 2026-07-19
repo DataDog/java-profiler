@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk25
 
 ## glibc-arm64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-07-19 17:38:47 EDT
+**Date:** 2026-07-19 19:19:11 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-arm64-openj9-jdk25
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 13 |
-| CPU Cores (end) | 13 |
+| CPU Cores (start) | 64 |
+| CPU Cores (end) | 64 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-arm64-openj9-jdk25
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 13-13 cores)</summary>
+<summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
 
 ```
-1784496882 13
-1784496887 13
-1784496892 13
-1784496897 13
-1784496902 13
-1784496907 13
-1784496912 13
-1784496917 13
-1784496922 13
-1784496927 13
-1784496932 13
-1784496937 13
-1784496942 13
-1784496947 13
-1784496952 13
-1784496957 13
-1784496962 13
-1784496967 13
-1784496972 13
-1784496977 13
+1784502864 64
+1784502869 64
+1784502874 64
+1784502879 64
+1784502884 64
+1784502889 64
+1784502894 64
+1784502899 64
+1784502904 64
+1784502909 64
+1784502914 64
+1784502919 64
+1784502924 64
+1784502929 64
+1784502934 64
+1784502939 64
+1784502944 64
+1784502949 64
+1784502954 64
+1784502959 64
 ```
 </details>
 
