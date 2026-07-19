@@ -12,11 +12,9 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /** Verifies that TaskBlock does not change legacy/context wall-clock scope. */
 public class JavaProfilerTaskBlockDisabledTest extends AbstractProfilerTest {
-  private static final int OSTHREAD_STATE_SLEEPING = 7;
-
   @Test
   public void pairedApiIsInactiveOutsideAllThreadScope() {
-    assertEquals(0L, profiler.beginTaskBlock(OSTHREAD_STATE_SLEEPING));
+    assertEquals(0L, profiler.beginTaskBlock());
   }
 
   @Override
