@@ -82,11 +82,9 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 
   current->setJavaThread(true);
   int tid = current->tid();
-  if (_thread_filter.enabled()) {
-    int slot_id = _thread_filter.registerThread();
+  if (_thread_filter.registryActive()) {
+    int slot_id = _thread_filter.registerThread(tid);
     current->setFilterSlotId(slot_id);
-    _thread_filter.resetSlotRunState(slot_id);
-    _thread_filter.remove(slot_id);  // Remove from filtering initially
   }
   if (thread != NULL) {
     updateThreadName(jvmti, jni, thread, true);
@@ -106,9 +104,11 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     int slot_id = current->filterSlotId();
     tid = current->tid();
     
-    if (_thread_filter.enabled()) {
-      _thread_filter.unregisterThread(slot_id);
+    if (slot_id >= 0) {
+      _thread_filter.unregisterThread(slot_id, tid);
       current->setFilterSlotId(-1);
+    } else {
+      _thread_filter.unregisterThreadByTid(tid);
     }
 
     updateThreadName(jvmti, jni, thread, false);
@@ -132,6 +132,7 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   }
 
   updateThreadName(jvmti, jni, thread, false);
+  _thread_filter.unregisterThreadByTid(tid);
   _cpu_engine->unregisterThread(tid);
   _wall_engine->unregisterThread(tid);
 }
@@ -1056,6 +1057,38 @@ void Profiler::updateJavaThreadNames() {
   jvmti->Deallocate((unsigned char *)thread_objects);
 }
 
+void Profiler::registerExistingJavaThreads() {
+  if (!_thread_filter.unfilteredWallTrackingActive() ||
+      !JVMThread::supportsNativeThreadIdLookup()) {
+    return;
+  }
+
+  jvmtiEnv *jvmti = VM::jvmti();
+  JNIEnv *jni = VM::jni();
+  jint thread_count;
+  jthread *thread_objects;
+  if (jvmti->GetAllThreads(&thread_count, &thread_objects) != JVMTI_ERROR_NONE) {
+    Counters::increment(THREAD_REGISTRY_BOOTSTRAP_FAILURES);
+    return;
+  }
+
+  for (int i = 0; i < thread_count; ++i) {
+    jthread thread = thread_objects[i];
+    if (thread != nullptr) {
+      int tid = JVMThread::nativeThreadId(jni, thread);
+      if (tid >= 0) {
+        _thread_filter.registerThread(tid);
+      }
+      jni->DeleteLocalRef(thread);
+    }
+  }
+  jvmti->Deallocate(reinterpret_cast<unsigned char *>(thread_objects));
+  int retired = _thread_filter.retireInactiveRegistrations();
+  if (retired > 0) {
+    Counters::increment(THREAD_REGISTRY_STALE_SLOTS_RETIRED, retired);
+  }
+}
+
 void Profiler::updateNativeThreadNames(bool defer_initializing) {
   ThreadList *thread_list = OS::listThreads();
   constexpr size_t buffer_size = 64;
@@ -1383,24 +1416,33 @@ Error Profiler::start(Arguments &args, bool reset) {
     _safe_mode |= GC_TRACES | LAST_JAVA_PC;
   }
 
-  // TODO: Current way of setting filter is weird with the recent changes
-  _thread_filter.init(args._filter ? args._filter : "0");
-  
-  // Minor optim: Register the current thread (start thread won't be called)
-  if (_thread_filter.enabled()) {
+  _cpu_engine = selectCpuEngine(args);
+  _wall_engine = selectWallEngine(args);
+
+  const char *filter = args._filter != nullptr ? args._filter : "0";
+  const bool track_unfiltered_wall =
+      (_event_mask & EM_WALL) != 0 && args._wall_precheck &&
+      args._filter != nullptr && args._filter[0] == '\0' &&
+      _wall_engine->supportsUnfilteredWallPrecheck();
+  _thread_filter.init(filter, track_unfiltered_wall);
+
+  // Reset per-recording state before a wall timer can inspect the registry.
+  if (_thread_filter.registryActive()) {
     _thread_filter.clearActive();
+  }
+
+  // Preserve the context-filter fast path. Unfiltered tracking bootstraps the
+  // current thread only after the wall engine has started successfully.
+  if (_thread_filter.enabled()) {
     ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
     assert(current != nullptr);
     int slot_id = current->filterSlotId();
     if (slot_id < 0) {
-      slot_id = _thread_filter.registerThread();
+      slot_id = _thread_filter.registerThread(current->tid());
       current->setFilterSlotId(slot_id);
     }
-    _thread_filter.remove(slot_id);  // Remove from filtering initially (matches onThreadStart behavior)
   }
 
-  _cpu_engine = selectCpuEngine(args);
-  _wall_engine = selectWallEngine(args);
   _cstack = args._cstack;
   if (_cstack == CSTACK_DEFAULT) {
     if (VMStructs::hasStackStructs() && OS::isLinux()) {
@@ -1451,6 +1493,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   _num_context_attributes = args._context_attributes.size();
   error = _jfr.start(args, reset);
   if (error) {
+    _thread_filter.deactivateRecording();
     switchLibraryTrap(false);
     _libs->stopRefresher();
     return error;
@@ -1500,6 +1543,7 @@ Error Profiler::start(Arguments &args, bool reset) {
       Log::warn("%s", error.message());
       if (_event_mask == EM_NATIVEMEM) {
         // nativemem is the only requested mode: propagate the real error
+        _thread_filter.deactivateRecording();
         disableEngines();
         switchLibraryTrap(false);
         _libs->stopRefresher();
@@ -1523,8 +1567,18 @@ Error Profiler::start(Arguments &args, bool reset) {
     }
   }
 
+  // A recoverable wall-engine failure must not leave registry work enabled for
+  // unrelated engines that did start successfully.
+  if (track_unfiltered_wall && (activated & EM_WALL) == 0) {
+    _thread_filter.init(filter, false);
+  }
+
   if (activated) {
     switchThreadEvents(JVMTI_ENABLE);
+
+    // ThreadStart events cover only threads created after the callbacks are
+    // enabled. Bootstrap registry identity for Java threads that already exist.
+    registerExistingJavaThreads();
 
     // Initialize this thread
     // Note: passing all nullptrs results in not able to resolve the thread name here.
@@ -1547,6 +1601,7 @@ Error Profiler::start(Arguments &args, bool reset) {
     return Error::OK;
   }
   // no engine was activated; perform cleanup
+  _thread_filter.deactivateRecording();
   disableEngines();
   switchLibraryTrap(false);
   _libs->stopRefresher();
@@ -1597,6 +1652,8 @@ Error Profiler::stop() {
     _wall_engine->stop();
   if (_event_mask & EM_CPU)
     _cpu_engine->stop();
+
+  _thread_filter.deactivateRecording();
 
   switchLibraryTrap(false);
   switchThreadEvents(JVMTI_DISABLE);

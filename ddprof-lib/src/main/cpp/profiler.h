@@ -152,6 +152,7 @@ private:
   void updateThreadName(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                         bool self = false);
   void updateJavaThreadNames();
+  void registerExistingJavaThreads();
   void mangle(const char *name, char *buf, size_t size);
 
   Engine *selectCpuEngine(Arguments &args);
@@ -232,7 +233,6 @@ public:
   // (ThreadInfo::updateThreadName is first-writer-wins). A later scan, or the
   // dump-time pass (which passes false), records the final name instead.
   void updateNativeThreadNames(bool defer_initializing = false);
-
 
   inline void incFailure(int type) {
     if (type < ASGCT_FAILURE_TYPES) {
