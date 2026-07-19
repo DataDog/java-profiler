@@ -88,10 +88,54 @@ TEST_F(JvmSupportThreadClassificationTest, InvalidJniVersionFailsClosed) {
     EXPECT_EQ(0, is_virtual_thread_calls);
 }
 
-TEST_F(JvmSupportThreadClassificationTest, PreJni21ThreadIsPlatform) {
+TEST_F(JvmSupportThreadClassificationTest, PreJni19ThreadIsPlatform) {
     jni_version = 0x000a0000;
     function_table[IS_VIRTUAL_THREAD_INDEX] = nullptr;
     EXPECT_TRUE(JVMSupport::isPlatformThread(&jni, thread));
+    EXPECT_EQ(0, is_virtual_thread_calls);
+}
+
+TEST_F(JvmSupportThreadClassificationTest, Jni19PlatformThreadIsAccepted) {
+    jni_version = 0x00130000;
+    EXPECT_TRUE(JVMSupport::isPlatformThread(&jni, thread));
+    EXPECT_EQ(1, is_virtual_thread_calls);
+    EXPECT_EQ(thread, last_thread);
+}
+
+TEST_F(JvmSupportThreadClassificationTest, Jni19VirtualThreadIsRejected) {
+    jni_version = 0x00130000;
+    virtual_thread = JNI_TRUE;
+    EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, thread));
+    EXPECT_EQ(1, is_virtual_thread_calls);
+    EXPECT_EQ(thread, last_thread);
+}
+
+TEST_F(JvmSupportThreadClassificationTest, MissingJni19FunctionFailsClosed) {
+    jni_version = 0x00130000;
+    function_table[IS_VIRTUAL_THREAD_INDEX] = nullptr;
+    EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, thread));
+    EXPECT_EQ(0, is_virtual_thread_calls);
+}
+
+TEST_F(JvmSupportThreadClassificationTest, Jni20PlatformThreadIsAccepted) {
+    jni_version = 0x00140000;
+    EXPECT_TRUE(JVMSupport::isPlatformThread(&jni, thread));
+    EXPECT_EQ(1, is_virtual_thread_calls);
+    EXPECT_EQ(thread, last_thread);
+}
+
+TEST_F(JvmSupportThreadClassificationTest, Jni20VirtualThreadIsRejected) {
+    jni_version = 0x00140000;
+    virtual_thread = JNI_TRUE;
+    EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, thread));
+    EXPECT_EQ(1, is_virtual_thread_calls);
+    EXPECT_EQ(thread, last_thread);
+}
+
+TEST_F(JvmSupportThreadClassificationTest, MissingJni20FunctionFailsClosed) {
+    jni_version = 0x00140000;
+    function_table[IS_VIRTUAL_THREAD_INDEX] = nullptr;
+    EXPECT_FALSE(JVMSupport::isPlatformThread(&jni, thread));
     EXPECT_EQ(0, is_virtual_thread_calls);
 }
 

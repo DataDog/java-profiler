@@ -12,6 +12,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <future>
+#include <memory>
 #include <thread>
 
 namespace {
@@ -133,6 +135,59 @@ TEST_F(TaskBlockRecorderTest, RotationWaitsForInflightActivity) {
   EXPECT_EQ(0, profiler->taskBlockInflightForTest());
   ASSERT_TRUE(profiler->tryEnterTaskBlockActivity());
   profiler->leaveTaskBlockActivity();
+}
+
+TEST_F(TaskBlockRecorderTest, RotationRejectsEndWithoutStrandingLifecycle) {
+  constexpr int tid = 12345;
+  ThreadFilter filter;
+  filter.init("", true);
+  ThreadFilter::SlotID slot_id = filter.registerThread(tid);
+  ASSERT_GE(slot_id, 0);
+
+  std::unique_ptr<ProfiledThread, void (*)(ProfiledThread*)> current(
+      ProfiledThread::forTid(tid), ProfiledThread::deleteForTest);
+  current->setFilterSlotId(slot_id);
+  u64 token = filter.enterBlockedRun(
+      slot_id, OSThreadState::SLEEPING, BlockRunOwner::JAVA);
+  ASSERT_NE(0ULL, token);
+  Context context{};
+  ASSERT_TRUE(current->taskBlockEnter(token, TSC::ticks(), context));
+
+  Profiler* profiler = Profiler::instance();
+  profiler->beginTaskBlockRotationForTest();
+  std::future<bool> result = std::async(std::launch::async, [&]() {
+    return recordTaskBlockAtExit(
+        current.get(), &filter, nullptr, 1, token,
+        ThreadFilter::tokenSlotId(token),
+        ThreadFilter::tokenGeneration(token), 0, 0);
+  });
+
+  std::future_status status = result.wait_for(std::chrono::seconds(1));
+  bool returned_during_rotation = status == std::future_status::ready;
+  EXPECT_TRUE(returned_during_rotation);
+  if (returned_during_rotation) {
+    ThreadFilter::Slot* slot = filter.slotForId(slot_id);
+    EXPECT_NE(nullptr, slot);
+    if (slot != nullptr) {
+      EXPECT_EQ(BlockRunOwner::NONE, slot->activeBlockOwner());
+      EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
+    }
+
+    u64 next_token = filter.enterBlockedRun(
+        slot_id, OSThreadState::SLEEPING, BlockRunOwner::JAVA);
+    EXPECT_NE(0ULL, next_token);
+    EXPECT_TRUE(current->taskBlockEnter(next_token, TSC::ticks(), context));
+    u64 ignored_ticks = 0;
+    Context ignored_context{};
+    EXPECT_TRUE(current->taskBlockExit(
+        next_token, ignored_ticks, ignored_context));
+    EXPECT_TRUE(filter.exitBlockedRun(
+        slot_id, ThreadFilter::tokenGeneration(next_token)));
+  }
+
+  profiler->endTaskBlockRotationForTest();
+  EXPECT_FALSE(result.get());
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_DROPPED_ROTATION));
 }
 
 TEST_F(TaskBlockRecorderTest, StackCaptureFailureIsCountedAndActivityReleased) {

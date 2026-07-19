@@ -795,41 +795,44 @@ Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
     return TaskBlockRecordResult::RECORD_FAILED;
   }
 
-  if (_omit_stacktraces || _max_stack_depth <= 0 ||
-      _calltrace_buffer[lock_index] == nullptr) {
-    _locks[lock_index].unlock();
-    return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
-  }
+  // Lightweight recordings intentionally encode an absent stack trace as
+  // constant-pool ID 0, as the regular CPU and wall-clock sample paths do.
+  if (!_omit_stacktraces) {
+    if (_max_stack_depth <= 0 || _calltrace_buffer[lock_index] == nullptr) {
+      _locks[lock_index].unlock();
+      return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
+    }
 
-  CallTraceBuffer *buffer = _calltrace_buffer[lock_index];
-  ASGCT_CallFrame *frames = buffer->_asgct_frames;
-  jvmtiFrameInfo *jvmti_frames = buffer->_jvmti_frames;
-  jint num_frames = 0;
+    CallTraceBuffer *buffer = _calltrace_buffer[lock_index];
+    ASGCT_CallFrame *frames = buffer->_asgct_frames;
+    jvmtiFrameInfo *jvmti_frames = buffer->_jvmti_frames;
+    jint num_frames = 0;
 #ifdef COUNTERS
-  u64 stack_start = TSC::ticks();
+    u64 stack_start = TSC::ticks();
 #endif
-  jvmtiError error = VM::jvmti()->GetStackTrace(
-      thread, start_depth, _max_stack_depth, jvmti_frames, &num_frames);
-  if (error != JVMTI_ERROR_NONE || num_frames <= 0) {
-    _locks[lock_index].unlock();
-    return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
-  }
+    jvmtiError error = VM::jvmti()->GetStackTrace(
+        thread, start_depth, _max_stack_depth, jvmti_frames, &num_frames);
+    if (error != JVMTI_ERROR_NONE || num_frames <= 0) {
+      _locks[lock_index].unlock();
+      return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
+    }
 
-  copyJvmtiFrames(frames, jvmti_frames, num_frames);
-  u64 call_trace_id =
-      _call_trace_storage.put(num_frames, frames, false, 1);
+    copyJvmtiFrames(frames, jvmti_frames, num_frames);
+    u64 call_trace_id =
+        _call_trace_storage.put(num_frames, frames, false, 1);
 #ifdef COUNTERS
-  u64 stack_duration = TSC::ticks() - stack_start;
-  if (stack_duration > 0) {
-    Counters::increment(UNWINDING_TIME_JVMTI, stack_duration);
-  }
+    u64 stack_duration = TSC::ticks() - stack_start;
+    if (stack_duration > 0) {
+      Counters::increment(UNWINDING_TIME_JVMTI, stack_duration);
+    }
 #endif
-  if (call_trace_id == 0) {
-    _locks[lock_index].unlock();
-    return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
-  }
+    if (call_trace_id == 0) {
+      _locks[lock_index].unlock();
+      return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
+    }
 
-  event->_callTraceId = call_trace_id;
+    event->_callTraceId = call_trace_id;
+  }
   bool recorded = _jfr.recordTaskBlock(lock_index, tid, event);
   _locks[lock_index].unlock();
   return recorded ? TaskBlockRecordResult::RECORDED
@@ -848,12 +851,6 @@ bool Profiler::tryEnterTaskBlockActivity() {
 
 void Profiler::leaveTaskBlockActivity() {
   _task_block_inflight.fetch_sub(1, std::memory_order_release);
-}
-
-void Profiler::waitForTaskBlockRotation() {
-  while (_task_block_rotation.load(std::memory_order_acquire)) {
-    std::this_thread::yield();
-  }
 }
 
 void Profiler::beginTaskBlockRotation() {
