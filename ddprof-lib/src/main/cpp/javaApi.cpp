@@ -489,10 +489,8 @@ Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
 
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
-    JNIEnv *env, jclass unused, jthread thread, jint state) {
-  OSThreadState decoded;
-  if (!decodeJavaBlockState(state, decoded) ||
-      !JVMSupport::isPlatformThread(env, thread)) {
+    JNIEnv *env, jclass unused, jthread thread) {
+  if (!JVMSupport::isPlatformThread(env, thread)) {
     return 0;
   }
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
@@ -511,7 +509,8 @@ Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
     Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
     return 0;
   }
-  u64 token = tf->enterBlockedRun(slot_id, decoded, BlockRunOwner::JAVA);
+  u64 token = tf->enterBlockedRun(
+      slot_id, OSThreadState::SLEEPING, BlockRunOwner::JAVA);
   if (!current->taskBlockEnter(token, TSC::ticks(), context)) {
     if (token != 0) {
       tf->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(token));

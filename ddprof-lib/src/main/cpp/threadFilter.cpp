@@ -612,11 +612,6 @@ bool ThreadFilter::snapshotAndExitBlockedRun(SlotID slot_id, u64 generation,
     return true;
 }
 
-BlockRunSnapshot ThreadFilter::snapshotBlockedRun(SlotID slot_id) const {
-    Slot* s = slotForId(slot_id);
-    return s == nullptr ? BlockRunSnapshot{} : s->snapshotBlockRun();
-}
-
 bool ThreadFilter::isOwnedBlockSuppressionCandidate(
     const ThreadEntry& entry) const {
     Slot* slot = entry.slot;

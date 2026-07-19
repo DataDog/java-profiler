@@ -95,6 +95,20 @@ final class TaskBlockAssertions {
     assertTrue(count > 0, "Expected a TaskBlock with a non-empty stack");
   }
 
+  static void assertContainsNoStackTrace(IItemCollection events) {
+    int count = 0;
+    for (IItemIterable iterable : events) {
+      IMemberAccessor<IMCStackTrace, IItem> accessor =
+          AbstractProfilerTest.STACK_TRACE.getAccessor(iterable.getType());
+      assertTrue(accessor != null, "TaskBlock must expose stackTrace");
+      for (IItem item : iterable) {
+        assertNull(accessor.getMember(item));
+        count++;
+      }
+    }
+    assertTrue(count > 0, "Expected a TaskBlock without a stack");
+  }
+
   static void assertContainsJavaType(IItemCollection events, String expected) {
     for (IItemIterable iterable : events) {
       IMemberAccessor<IMCStackTrace, IItem> accessor =
