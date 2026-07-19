@@ -105,7 +105,6 @@ public:
                      - sizeof(std::atomic<int>)
                      - sizeof(std::atomic<int>)
                      - sizeof(std::atomic<u64>)
-                     - sizeof(std::atomic<OSThreadState>)
                      - sizeof(std::atomic<OSThreadState>)];
 
         inline int nativeTid() const {
@@ -286,7 +285,6 @@ public:
     bool exitBlockedRun(SlotID slot_id, u64 generation);
     bool snapshotAndExitBlockedRun(SlotID slot_id, u64 generation,
                                    BlockRunSnapshot* snapshot);
-    BlockRunSnapshot snapshotBlockedRun(SlotID slot_id) const;
     bool isOwnedBlockSuppressionCandidate(const ThreadEntry& entry) const;
 
 #ifdef UNIT_TEST

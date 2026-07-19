@@ -468,7 +468,6 @@ public:
 #endif
   bool tryEnterTaskBlockActivity();
   void leaveTaskBlockActivity();
-  void waitForTaskBlockRotation();
   bool taskBlockEnabled() const {
     return _task_block_enabled.load(std::memory_order_acquire);
   }

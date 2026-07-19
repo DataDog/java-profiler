@@ -31,14 +31,15 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
   private static final int OSTHREAD_STATE_SLEEPING = 7;
   private static final long SLEEP_MILLIS = 300;
   private static final String PRE_EXISTING_THREAD_NAME = "unfiltered-precheck-existing";
-  private static final String SUPPRESSED_RUN_COUNTER = "wc_signals_suppressed_sampled_run";
   private static final String UNOWNED_SUPPRESSED_COUNTER = "wc_unowned_blocked_suppressed";
+  private static final String SUPPRESSED_OWNED_BLOCK_COUNTER =
+      "wc_signals_suppressed_owned_block";
 
   private ExecutorService preExistingWorker;
   private Thread preExistingThread;
 
   /**
-   * Verifies that an untraced thread's owned sleeping run is sampled once and then suppressed.
+   * Verifies that an untraced thread's owned sleeping run is suppressed.
    *
    * @throws Exception if the worker cannot complete
    */
@@ -126,12 +127,14 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
   @RetryingTest(3)
   public void postStartSleepingThreadLazilyRegistersOwnedBlock() throws Exception {
     String threadName = "unfiltered-precheck-post-start";
+    long suppressedBefore = suppressedSignals();
     assertTrue(
         runPostStartSleepingWorker(threadName) != 0,
         "Expected the owned-block hook to register and arm SLEEPING state");
 
     stopProfiler();
     assertSuppressedSamples(threadName);
+    assertOwnedBlockSuppressionObserved(suppressedBefore);
   }
 
   @Override
@@ -252,7 +255,7 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
   }
 
   private long suppressedSignals() {
-    return profiler.getDebugCounters().getOrDefault(SUPPRESSED_RUN_COUNTER, -1L);
+    return profiler.getDebugCounters().getOrDefault(SUPPRESSED_OWNED_BLOCK_COUNTER, -1L);
   }
 
   private long unownedSuppressedSignals() {
@@ -261,7 +264,6 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
 
   private void assertSuppressedSamples(String threadName) {
     long sampleCount = samplesForThread(threadName);
-    assertTrue(sampleCount > 0, "Expected the owned block run to be sampled once");
     assertTrue(
         sampleCount < 10,
         "Expected nearly no samples from owned block thread, got: " + sampleCount);
