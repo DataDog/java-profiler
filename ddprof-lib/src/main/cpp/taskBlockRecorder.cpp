@@ -23,3 +23,46 @@ bool exceedsMinTaskBlockDuration(u64 start_ticks, u64 end_ticks) {
   if (min_ticks == 0) min_ticks = computeMinTaskBlockTicks();
   return end_ticks > start_ticks && end_ticks - start_ticks >= min_ticks;
 }
+
+bool recordTaskBlockAtExit(ProfiledThread* current, ThreadFilter* thread_filter,
+                           jthread thread, int start_depth, u64 block_token,
+                           ThreadFilter::SlotID slot_id, u64 generation,
+                           u64 blocker, u64 unblocking_span_id) {
+  u64 start_ticks = 0;
+  Context context{};
+  if (!current->taskBlockExit(block_token, start_ticks, context)) {
+    return false;
+  }
+
+  Profiler* profiler = Profiler::instance();
+  bool recording_enabled = profiler->taskBlockEnabled();
+  bool activity = profiler->tryEnterTaskBlockActivity();
+
+  ThreadFilter::SlotID current_slot = current->filterSlotId();
+  if (current_slot < 0) {
+    current_slot = thread_filter->slotIdByTid(current->tid());
+  }
+  BlockRunSnapshot snapshot;
+  bool exited = current_slot == slot_id &&
+      thread_filter->snapshotAndExitBlockedRun(slot_id, generation, &snapshot);
+
+  if (!activity) {
+    Counters::increment(TASK_BLOCK_DROPPED_ROTATION);
+    return false;
+  }
+  if (!recording_enabled || !exited) {
+    profiler->leaveTaskBlockActivity();
+    return false;
+  }
+  if (!snapshot.context_eligible) {
+    Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
+    profiler->leaveTaskBlockActivity();
+    return false;
+  }
+
+  bool recorded = recordTaskBlockIfEligible(
+      current->tid(), thread, start_depth, start_ticks, TSC::ticks(), context,
+      blocker, unblocking_span_id, snapshot.active_state, true);
+  profiler->leaveTaskBlockActivity();
+  return recorded;
+}
