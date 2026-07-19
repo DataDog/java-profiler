@@ -45,7 +45,7 @@ class JVMSupport {
     static bool isInitialized();
 public:
     // Java-owned profiler state is carrier-local and may only be used by platform threads.
-    // IsVirtualThread was added to the JNI function table in JDK 21.
+    // IsVirtualThread was added to the JNI function table in JDK 19.
     static bool isPlatformThread(JNIEnv* jni, jthread thread);
 
     // Initialize JVM support - check JVM related resources are available.

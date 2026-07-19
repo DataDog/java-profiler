@@ -46,9 +46,10 @@ public class OtelContextStorageModeTest {
     public void cleanup() {
         if (profilerStarted) {
             profiler.stop();
-            profiler.resetThreadContext();
             profilerStarted = false;
         }
+        profiler.clearTraceContext();
+        profiler.resetThreadContext();
     }
 
     /**

@@ -461,7 +461,7 @@ Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
       !JVMSupport::isPlatformThread(env, thread)) {
     return 0;
   }
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
   Profiler *profiler = Profiler::instance();
   if (current == nullptr || !profiler->isRunning() ||
       !profiler->taskBlockEnabled()) {
@@ -498,46 +498,13 @@ Java_com_datadoghq_profiler_JavaProfiler_endTaskBlock0(
       !JVMSupport::isPlatformThread(env, thread)) {
     return JNI_FALSE;
   }
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
   if (current == nullptr) return JNI_FALSE;
 
-  u64 start_ticks = 0;
-  Context context{};
-  if (!current->taskBlockExit(block_token, start_ticks, context)) {
-    return JNI_FALSE;
-  }
-
-  Profiler *profiler = Profiler::instance();
-  bool recording_enabled = profiler->taskBlockEnabled();
-  bool activity = profiler->tryEnterTaskBlockActivity();
-  if (!activity) profiler->waitForTaskBlockRotation();
-
-  ThreadFilter *tf = profiler->threadFilter();
-  ThreadFilter::SlotID current_slot = current->filterSlotId();
-  if (current_slot < 0) current_slot = tf->slotIdByTid(current->tid());
-  BlockRunSnapshot snapshot;
-  bool exited = current_slot == slot_id &&
-      tf->snapshotAndExitBlockedRun(slot_id, generation, &snapshot);
-
-  if (!activity) {
-    Counters::increment(TASK_BLOCK_DROPPED_ROTATION);
-    return JNI_FALSE;
-  }
-  if (!recording_enabled || !exited) {
-    profiler->leaveTaskBlockActivity();
-    return JNI_FALSE;
-  }
-  if (!snapshot.context_eligible) {
-    Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
-    profiler->leaveTaskBlockActivity();
-    return JNI_FALSE;
-  }
-
-  bool recorded = recordTaskBlockIfEligible(
-      current->tid(), thread, 1, start_ticks, TSC::ticks(), context,
-      static_cast<u64>(blocker), static_cast<u64>(unblockingSpanId),
-      snapshot.active_state, true);
-  profiler->leaveTaskBlockActivity();
+  bool recorded = recordTaskBlockAtExit(
+      current, Profiler::instance()->threadFilter(), thread, 1, block_token,
+      slot_id, generation, static_cast<u64>(blocker),
+      static_cast<u64>(unblockingSpanId));
   return recorded ? JNI_TRUE : JNI_FALSE;
 }
 

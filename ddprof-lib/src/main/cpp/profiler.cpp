@@ -803,12 +803,6 @@ void Profiler::leaveTaskBlockActivity() {
   _task_block_inflight.fetch_sub(1, std::memory_order_release);
 }
 
-void Profiler::waitForTaskBlockRotation() {
-  while (_task_block_rotation.load(std::memory_order_acquire)) {
-    std::this_thread::yield();
-  }
-}
-
 void Profiler::beginTaskBlockRotation() {
   _task_block_rotation.store(true, std::memory_order_release);
   while (_task_block_inflight.load(std::memory_order_acquire) != 0) {

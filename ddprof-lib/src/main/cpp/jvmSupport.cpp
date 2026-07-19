@@ -19,7 +19,7 @@
 using JniFunction = void (JNICALL*)();
 using IsVirtualThreadFunction = jboolean (JNICALL*)(JNIEnv*, jobject);
 
-static constexpr jint JNI_VERSION_21_VALUE = 0x00150000;
+static constexpr jint JNI_VERSION_19_VALUE = 0x00130000;
 static constexpr int IS_VIRTUAL_THREAD_INDEX = 234;
 
 static_assert(sizeof(JniFunction) == sizeof(void*),
@@ -37,7 +37,7 @@ bool JVMSupport::isPlatformThread(JNIEnv* jni, jthread thread) {
     if (jni == nullptr || thread == nullptr) return false;
     jint jni_version = jni->GetVersion();
     if (jni_version <= 0) return false;
-    if (jni_version < JNI_VERSION_21_VALUE) return true;
+    if (jni_version < JNI_VERSION_19_VALUE) return true;
 
     const JniFunction* functions =
         reinterpret_cast<const JniFunction*>(jni->functions);

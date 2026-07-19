@@ -606,10 +606,12 @@ TEST_F(ThreadFilterTest, SaturatedGenerationRefusesEntryWithoutClaimingSlot) {
 TEST_F(ThreadFilterTest, SnapshotCapturesOwnedLifecycle) {
     int slot_id = filter->registerThread();
     ASSERT_GE(slot_id, 0);
+    ThreadFilter::Slot* slot = filter->slotForId(slot_id);
+    ASSERT_NE(nullptr, slot);
     u64 token = filter->enterBlockedRun(slot_id, OSThreadState::SLEEPING);
     ASSERT_NE(0ULL, token);
 
-    BlockRunSnapshot snapshot = filter->snapshotBlockedRun(slot_id);
+    BlockRunSnapshot snapshot = slot->snapshotBlockRun();
     EXPECT_TRUE(snapshot.active);
     EXPECT_EQ(OSThreadState::SLEEPING, snapshot.active_state);
     EXPECT_EQ(BlockRunOwner::JAVA, snapshot.owner);
@@ -617,7 +619,7 @@ TEST_F(ThreadFilterTest, SnapshotCapturesOwnedLifecycle) {
 
     ASSERT_TRUE(filter->snapshotAndExitBlockedRun(
         slot_id, ThreadFilter::tokenGeneration(token), &snapshot));
-    EXPECT_FALSE(filter->snapshotBlockedRun(slot_id).active);
+    EXPECT_FALSE(slot->snapshotBlockRun().active);
 }
 
 TEST_F(ThreadFilterTest, OwnedBlockSuppressesBeforeAnyWallSample) {

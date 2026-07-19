@@ -607,11 +607,6 @@ bool ThreadFilter::snapshotAndExitBlockedRun(SlotID slot_id, u64 generation,
     return true;
 }
 
-BlockRunSnapshot ThreadFilter::snapshotBlockedRun(SlotID slot_id) const {
-    Slot* s = slotForId(slot_id);
-    return s == nullptr ? BlockRunSnapshot{} : s->snapshotBlockRun();
-}
-
 bool ThreadFilter::isOwnedBlockSuppressionCandidate(
     const ThreadEntry& entry) const {
     Slot* slot = entry.slot;
@@ -620,6 +615,17 @@ bool ThreadFilter::isOwnedBlockSuppressionCandidate(
         slot->lifecycleGeneration() != entry.lifecycle_generation) {
         return false;
     }
+
+    // active_block_state publishes the rest of the block-run payload. Acquire
+    // it before reading the context epoch, owner, or generation so those reads
+    // observe the stores that preceded publishActiveBlockRun().
+    OSThreadState state = slot->activeBlockState();
+    bool suppressible_state = state == OSThreadState::SLEEPING ||
+                              state == OSThreadState::CONDVAR_WAIT ||
+                              state == OSThreadState::OBJECT_WAIT ||
+                              state == OSThreadState::MONITOR_WAIT;
+    if (!suppressible_state) return false;
+
     RecordingEpoch epoch = recordingEpoch();
     if (epoch == 0 || entry.recording_epoch != epoch ||
         slot->recordingEpoch() != epoch ||
@@ -629,12 +635,7 @@ bool ThreadFilter::isOwnedBlockSuppressionCandidate(
 
     u64 block_generation = slot->blockGeneration();
     BlockRunOwner owner = slot->activeBlockOwner();
-    OSThreadState state = slot->activeBlockState();
-    bool suppressible_state = state == OSThreadState::SLEEPING ||
-                              state == OSThreadState::CONDVAR_WAIT ||
-                              state == OSThreadState::OBJECT_WAIT ||
-                              state == OSThreadState::MONITOR_WAIT;
-    if (owner == BlockRunOwner::NONE || !suppressible_state) return false;
+    if (owner == BlockRunOwner::NONE) return false;
 
 #ifdef UNIT_TEST
     if (_suppression_snapshot_hook != nullptr) {
