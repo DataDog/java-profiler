@@ -347,6 +347,7 @@ public abstract class AbstractProfilerTest {
   public final void stopProfiler() {
     if (!stopped) {
       profiler.stop();
+      profiler.clearTraceContext();
       profiler.resetThreadContext();
       stopped = true;
       checkConfig();
