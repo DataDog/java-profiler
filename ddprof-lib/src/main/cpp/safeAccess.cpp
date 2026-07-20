@@ -16,10 +16,15 @@
 
 
 #include "safeAccess.h"
+#include "counters.h"
+
 #include <cstdio>
 #include <cstdlib>
 #include <signal.h>
 #include <ucontext.h>
+#ifdef DEBUG
+#include "threadLocalData.h"  // ProfiledThread::current / isProtected
+#endif
 
 extern "C" int safefetch32_cont(int* adr, int errValue);
 extern "C" int64_t safefetch64_cont(int64_t* adr, int64_t errValue);
@@ -264,7 +269,20 @@ static void verify_safecopy_range() {
   #endif
 #endif
 
+#ifdef DEBUG
+void SafeAccess::countIfLongjmpProtected(bool isCopy) {
+  ProfiledThread* t = ProfiledThread::current();  // never allocates
+  if (t != nullptr && t->isProtected()) {
+    Counters::increment(isCopy ? SAFECOPY_WHILE_PROTECTED
+                               : SAFEFETCH_WHILE_PROTECTED);
+  }
+}
+#endif
+
 bool SafeAccess::safeCopy(void* dst, const void* src, size_t len) {
+#ifdef DEBUG
+  countIfLongjmpProtected(true);
+#endif
   // The copy runs entirely inside the safecopy_impl assembly stub, which
   // reads `src` one byte at a time. If a load faults, handle_safefetch
   // redirects execution to safecopy_cont, which returns 0. Because the copy
@@ -276,18 +294,25 @@ bool SafeAccess::safeCopy(void* dst, const void* src, size_t len) {
 
 bool SafeAccess::handle_safefetch(int sig, void* context) {
   ucontext_t* uc = (ucontext_t*)context;
+  if (uc == nullptr) {
+    return false;
+  }
+
   uintptr_t pc = uc->current_pc;
-  if ((sig == SIGSEGV || sig == SIGBUS) && uc != nullptr) {
+  if (sig == SIGSEGV || sig == SIGBUS) {
     if (pc == (uintptr_t)safefetch32_impl) {
       uc->current_pc = (uintptr_t)safefetch32_cont;
+      Counters::increment(SAFEFETCH_FAILED);
       return true;
     } else if (pc == (uintptr_t)safefetch64_impl) {
       uc->current_pc = (uintptr_t)safefetch64_cont;
+      Counters::increment(SAFEFETCH_FAILED);
       return true;
     } else if (pc >= (uintptr_t)safecopy_impl && pc < (uintptr_t)safecopy_cont) {
       // Unlike safefetch, the faulting load can be at any pc inside the copy
       // loop, so match the whole [safecopy_impl, safecopy_cont) range.
       uc->current_pc = (uintptr_t)safecopy_cont;
+      Counters::increment(SAFECOPY_FAILED);
       return true;
     }
   }
@@ -301,11 +326,17 @@ void* SafeAccess::load(void** ptr, void* default_value) {
 }
 
 int32_t SafeAccess::load32(int32_t* ptr, int32_t default_value) {
+#ifdef DEBUG
+  countIfLongjmpProtected(false);
+#endif
   int res = safefetch32_impl((int*)ptr, (int)default_value);
   return static_cast<int32_t>(res);
 }
 
 void* SafeAccess::loadPtr(void** ptr, void* default_value) {
+#ifdef DEBUG
+  countIfLongjmpProtected(false);
+#endif
 #if defined(__x86_64__) || defined(__aarch64__)
   int64_t res = safefetch64_impl((int64_t*)ptr, (int64_t)reinterpret_cast<uintptr_t>(default_value));
   return (void*)static_cast<uintptr_t>(res);
