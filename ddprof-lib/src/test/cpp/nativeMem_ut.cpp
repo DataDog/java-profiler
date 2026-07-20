@@ -91,6 +91,17 @@ TEST_F(NativeMemTest, NegativeLiveClampedInSample) {
     EXPECT_EQ(0, NativeMem::maxTotal());
 }
 
+// setLive() overwrites the live value (gauge semantics) but still advances the
+// peak, which is retained when the gauge shrinks.
+TEST_F(NativeMemTest, SetLiveOverwritesAndAdvancesMax) {
+    NativeMem::setLive(NM_CODECACHE, 4096);
+    EXPECT_EQ(4096, NativeMem::live(NM_CODECACHE));
+    EXPECT_EQ(4096, NativeMem::max(NM_CODECACHE));
+    NativeMem::setLive(NM_CODECACHE, 1024);  // gauge shrinks
+    EXPECT_EQ(1024, NativeMem::live(NM_CODECACHE));
+    EXPECT_EQ(4096, NativeMem::max(NM_CODECACHE));  // peak retained
+}
+
 // Every category exposes a distinct, non-empty name.
 TEST_F(NativeMemTest, CategoryNamesPresent) {
     for (int c = 0; c < NM_NUM_CATEGORIES; c++) {

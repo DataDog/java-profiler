@@ -7,6 +7,7 @@
 #define THREAD_LOCAL_DATA_H
 
 #include "context.h"
+#include "nativeMem.h"
 #include "otel_context.h"
 #include "os.h"
 #include "threadLocal.h"
@@ -117,7 +118,11 @@ private:
 
   virtual ~ProfiledThread() { }
 public:
-  static ProfiledThread *forTid(int tid) { return new ProfiledThread(tid); }
+  static ProfiledThread *forTid(int tid) {
+    ProfiledThread *pt = new ProfiledThread(tid);
+    NativeMem::record(NM_THREAD_LOCAL, (long long)sizeof(ProfiledThread));
+    return pt;
+  }
   static bool isThreadKeyValid() {
     return _current_thread.isKeyValid();
   }

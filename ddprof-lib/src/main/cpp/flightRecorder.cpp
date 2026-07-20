@@ -74,6 +74,10 @@ SharedLineNumberTable::~SharedLineNumberTable() {
   if (_ptr != nullptr) {
     free(_ptr);
     Counters::decrement(LINE_NUMBER_TABLES);
+    // _size is the JVMTI entry count passed at construction (see
+    // fillJavaMethodInfo), so the byte size matches the allocation.
+    NativeMem::record(NM_LINE_TABLES, -(long long)((size_t)_size *
+                                                   sizeof(jvmtiLineNumberEntry)));
   }
 }
 
@@ -421,6 +425,8 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
             line_number_table_size, owned_table);
         // Increment counter for tracking live line number tables
         Counters::increment(LINE_NUMBER_TABLES);
+        NativeMem::record(NM_LINE_TABLES, (long long)((size_t)line_number_table_size *
+                                                      sizeof(jvmtiLineNumberEntry)));
       }
     }
 
@@ -2123,6 +2129,9 @@ Error FlightRecorder::newRecording(bool reset) {
   }
 
   _rec = new Recording(fd, _args);
+  // The Recording embeds the JFR RecordingBuffer array and the cpu-monitor
+  // buffer, so its allocation size is the profiler's JFR buffer footprint.
+  NativeMem::record(NM_JFR_BUFFERS, (long long)sizeof(Recording));
   return Error::OK;
 }
 
@@ -2133,6 +2142,7 @@ void FlightRecorder::stop() {
   if (rec != nullptr) {
     // NULL first, deallocate later
     _rec = nullptr;
+    NativeMem::record(NM_JFR_BUFFERS, -(long long)sizeof(Recording));
     delete rec;
   }
 }

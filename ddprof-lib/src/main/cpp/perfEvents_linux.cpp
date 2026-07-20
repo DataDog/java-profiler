@@ -26,6 +26,7 @@
 #include "jvmThread.h"
 #include "libraries.h"
 #include "log.h"
+#include "nativeMem.h"
 #include "os.h"
 #include "perfEvents.h"
 #include "profiler.h"
@@ -673,6 +674,10 @@ int PerfEvents::registerThread(int tid) {
     }
   }
 
+  if (page != NULL) {
+    NativeMem::record(NM_PERF, (long long)(2 * OS::page_size));
+  }
+
   _events[tid].reset();
   _events[tid]._fd = fd;
   _events[tid]._page = (struct perf_event_mmap_page *)page;
@@ -707,6 +712,7 @@ void PerfEvents::unregisterThread(int tid) {
     munmap(event->_page, 2 * OS::page_size);
     event->_page = NULL;
     event->unlock();
+    NativeMem::record(NM_PERF, -(long long)(2 * OS::page_size));
   }
 }
 

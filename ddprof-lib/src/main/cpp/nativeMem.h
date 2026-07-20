@@ -89,6 +89,18 @@ public:
     }
   }
 
+  // Set a category's live value directly, for gauge-style subsystems whose size
+  // is recomputed as an absolute (rather than tracked via alloc/free deltas).
+  // Also advances the peak. Not for use from a signal handler.
+  static void setLive(NativeMemCategory category, long long value) {
+    store(_live[category], value);
+    long long m = load(_max[category]);
+    while (value > m &&
+           !__atomic_compare_exchange_n(&_max[category], &m, value, false,
+                                        __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+    }
+  }
+
   static long long live(NativeMemCategory category) {
     return load(_live[category]);
   }

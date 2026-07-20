@@ -21,6 +21,7 @@
 
 #include "threadFilter.h"
 #include "arch.h"
+#include "nativeMem.h"
 #include "os.h"
 #include "threadLocalData.h"
 #include <cassert>
@@ -38,6 +39,8 @@ ThreadFilter::ThreadFilter() : _enabled(false) {
         _chunks[i].store(nullptr, std::memory_order_relaxed);
     }
     _free_list = std::make_unique<FreeListNode[]>(kFreeListSize);
+    NativeMem::record(NM_THREAD_FILTER,
+                      (long long)(kFreeListSize * sizeof(FreeListNode)));
 
     // Initialize the first chunk
     initializeChunk(0);
@@ -64,8 +67,15 @@ ThreadFilter::~ThreadFilter() {
     // Detach and delete chunks
     for (int i = 0; i < kMaxChunks; ++i) {
         ChunkStorage* chunk = _chunks[i].exchange(nullptr, std::memory_order_acquire);
+        if (chunk != nullptr) {
+            NativeMem::record(NM_THREAD_FILTER, -(long long)sizeof(ChunkStorage));
+        }
         delete chunk;
     }
+    // The _free_list unique_ptr frees its FreeListNode[] as this destructor
+    // returns; account for it here.
+    NativeMem::record(NM_THREAD_FILTER,
+                      -(long long)(kFreeListSize * sizeof(FreeListNode)));
 }
 
 void ThreadFilter::initializeChunk(int chunk_idx) {
@@ -86,6 +96,7 @@ void ThreadFilter::initializeChunk(int chunk_idx) {
     ChunkStorage* expected = nullptr;
     if (_chunks[chunk_idx].compare_exchange_strong(expected, new_chunk, std::memory_order_release)) {
         // Successfully installed
+        NativeMem::record(NM_THREAD_FILTER, (long long)sizeof(ChunkStorage));
     } else {
         // Another thread beat us to it - clean up our allocation
         delete new_chunk;
