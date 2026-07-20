@@ -22,7 +22,7 @@
 
 #include "counters.h"          // Counters::increment (FAULTS_INJECTED)
 #include "os.h"                // OS::page_size
-#include "threadLocalData.h"   // ProfiledThread::currentSignalSafe / nextFiRandom
+#include "threadLocalData.h"   // ProfiledThread::current / nextFiRandom
 #include <atomic>
 #include <sys/mman.h>
 
@@ -64,7 +64,7 @@ void init() {
 }
 
 u64 nextRandom() {
-  ProfiledThread* t = ProfiledThread::currentSignalSafe();  // never allocates
+  ProfiledThread* t = ProfiledThread::current();  // never allocates
   if (t != nullptr) {
     return t->nextFiRandom();
   }
@@ -91,7 +91,7 @@ bool shouldFire(u64 threshold, const char* fn) {
 #ifdef DEBUG
     // Flag injections fired at a site with no walkVM longjmp protection active:
     // recovery there depends entirely on safefetch, and a raw deref would crash.
-    ProfiledThread* t = ProfiledThread::currentSignalSafe();  // never allocates
+    ProfiledThread* t = ProfiledThread::current();  // never allocates
     if (t == nullptr || !t->isProtected()) {
       Counters::increment(FAULTS_INJECTED_UNPROTECTED);
     }
