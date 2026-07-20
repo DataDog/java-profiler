@@ -328,9 +328,6 @@ bool VM::initShared(JavaVM* vm) {
     return false;
   }
 
-  // Initialize VMStructs
-  VMStructs::init(lib);
-
   // Mark thread entry points for all JVMs (critical for correct stack unwinding)
   lib->mark(isThreadEntry, MARK_THREAD_ENTRY);
 
@@ -563,6 +560,10 @@ void VM::ready(jvmtiEnv *jvmti, JNIEnv *jni) {
   Profiler::setupSignalHandlers();
   if (isHotspot()) {
     JitWriteProtection jit(true);
+    CodeCache* lib = openJvmLibrary();
+    assert(lib != nullptr); 
+    // Initialize VMStructs
+    VMStructs::init(lib);
     VMStructs::ready();
   }
 }
