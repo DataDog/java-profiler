@@ -741,7 +741,7 @@ void PerfEvents::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   if (!cs.entered()) {
     return;  // Another critical section is active, defer profiling
   }
-  ProfiledThread *current = ProfiledThread::currentSignalSafe();
+  ProfiledThread *current = ProfiledThread::current();
   if (current != NULL) {
     current->noteCPUSample(Profiler::instance()->recordingEpoch());
   }

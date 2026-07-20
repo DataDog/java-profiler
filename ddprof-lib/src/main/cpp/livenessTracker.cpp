@@ -416,6 +416,7 @@ retry:
 }
 
 void JNICALL LivenessTracker::GarbageCollectionFinish(jvmtiEnv *jvmti_env) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   LivenessTracker::instance()->onGC();
 }
 

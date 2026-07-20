@@ -41,7 +41,7 @@ void ContextApi::initializeContextTLS(ProfiledThread* thrd) {
 }
 
 bool ContextApi::get(u64& span_id, u64& root_span_id) {
-    ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
+    ProfiledThread* thrd = ProfiledThread::current();
     if (thrd == nullptr || !thrd->isContextInitialized()) {
         return false;
     }
@@ -59,7 +59,7 @@ bool ContextApi::get(u64& span_id, u64& root_span_id) {
 }
 
 Context ContextApi::snapshot() {
-    ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
+    ProfiledThread* thrd = ProfiledThread::current();
     if (thrd == nullptr) {
         return {};
     }

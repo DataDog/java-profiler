@@ -26,6 +26,7 @@
 #include "engine.h"
 #include "hotspot/vmStructs.inline.h"
 #include "incbin.h"
+#include "jvmSupport.h"
 #include "jvmThread.h"
 #include "os.h"
 #include "otel_process_ctx.h"
@@ -68,6 +69,12 @@ public:
 
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_init0(JNIEnv *env, jclass unused) {
+  Error error = Profiler::instance()->init();
+  if (error) {
+    throwNew(env, "java/lang/IllegalStateException", error.message());
+    return JNI_FALSE;
+  }
+
   // JavaVM* has already been stored when the native library was loaded so we can pass nullptr here
   return VM::initProfilerBridge(nullptr, true);
 }
@@ -137,8 +144,12 @@ Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
 // still compatible in the event of signature changes in the future.
 extern "C" DLLEXPORT void JNICALL
 JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
-  ProfiledThread *current = ProfiledThread::current();
-  assert(current != nullptr);
+  // Initialize thread TLS if it has not yet done
+  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
+  if(current == nullptr) {
+    return;
+  }
+
   int tid = current->tid();
   if (unlikely(tid < 0)) {
     return;
@@ -167,8 +178,12 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
 
 extern "C" DLLEXPORT void JNICALL
 JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0() {
-  ProfiledThread *current = ProfiledThread::current();
-  assert(current != nullptr);
+  // Initialize thread TLS if it has not yet done
+  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
+  if(current == nullptr) {
+    return;
+  }
+
   int tid = current->tid();
   if (unlikely(tid < 0)) {
     return;
@@ -204,6 +219,10 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
     JNIEnv *env, jclass unused, jlong rootSpanId, jstring endpoint,
     jstring operation, jint sizeLimit) {
   JniString endpoint_str(env, endpoint);
+
+  // Initialize thread TLS if it has not yet done
+  ProfiledThread::initCurrentThreadSignalSafe();
+
   u32 endpointLabel = Profiler::instance()->stringLabelMap()->bounded_lookup(
       endpoint_str.c_str(), endpoint_str.length(), sizeLimit);
   // StringDictionary reserves 0 as "no entry"; valid IDs start at 1.
@@ -261,6 +280,9 @@ Java_com_datadoghq_profiler_JavaProfiler_describeDebugCounters0(
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordSettingEvent0(
     JNIEnv *env, jclass unused, jstring name, jstring value, jstring unit) {
+  // Initialize thread TLS if it has not yet done
+  ProfiledThread::initCurrentThreadSignalSafe();
+
   int tid = ProfiledThread::currentTid();
   if (tid < 0) {
     return;
@@ -285,6 +307,10 @@ extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
     JNIEnv *env, jclass unused, jlong startTime, jlong endTime, jstring task,
     jstring scheduler, jthread origin, jstring queueType, jint queueLength) {
+
+  // Initialize thread TLS if it has not yet done
+  ProfiledThread::initCurrentThreadSignalSafe();
+
   int tid = ProfiledThread::currentTid();
   if (tid < 0) {
     return;
@@ -319,7 +345,7 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) {
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
   if (current == nullptr) {
     return;
   }
@@ -337,10 +363,11 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
     JNIEnv *env, jclass unused, jlong blocker, jlong unblockingSpanId) {
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
   if (current == nullptr) {
     return;
   }
+
   u64 park_block_token = 0;
   if (!current->parkExit(park_block_token) || park_block_token == 0) {
     return;
@@ -370,7 +397,7 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
   if (!decodeJavaBlockState(state, decoded)) {
     return 0;
   }
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
   if (current == nullptr) {
     return 0;
   }
@@ -392,7 +419,7 @@ Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
   if (block_token == 0) {
     return;
   }
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
   if (current == nullptr) {
     return;
   }
@@ -685,7 +712,8 @@ Java_com_datadoghq_profiler_OTelContext_readProcessCtx0(JNIEnv *env, jclass unus
 
 extern "C" DLLEXPORT jobject JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_initializeContextTLS0(JNIEnv* env, jclass unused, jlongArray metadata) {
-  ProfiledThread* thrd = ProfiledThread::current();
+  // Initialize thread TLS if it has not yet done
+  ProfiledThread* thrd = ProfiledThread::initCurrentThreadSignalSafe();
   assert(thrd != nullptr);
 
   if (!thrd->isContextInitialized()) {
@@ -850,7 +878,7 @@ extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_setTraceContext0(JNIEnv* env, jclass unused,
     jlong localRootSpanId, jlong spanId, jlong traceIdHigh, jlong traceIdLow,
     jint slot0, jint enc0, jbyteArray utf0, jint slot1, jint enc1, jbyteArray utf1) {
-  ProfiledThread* thrd = ProfiledThread::current();
+  ProfiledThread* thrd = ProfiledThread::initCurrentThreadSignalSafe();
   if (thrd == nullptr) {
     return;
   }
@@ -906,7 +934,7 @@ Java_com_datadoghq_profiler_JavaProfiler_setTraceContext0(JNIEnv* env, jclass un
 // detached (valid=0), mirroring the DBB clear path (setContext(0,0,0,0) + clearContextValue*).
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_clearTraceContext0(JNIEnv* env, jclass unused) {
-  ProfiledThread* thrd = ProfiledThread::current();
+  ProfiledThread* thrd = ProfiledThread::initCurrentThreadSignalSafe();
   if (thrd == nullptr) {
     return;
   }
@@ -931,7 +959,7 @@ Java_com_datadoghq_profiler_JavaProfiler_clearTraceContext0(JNIEnv* env, jclass 
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_setContextValue0(JNIEnv* env, jclass unused,
     jint slot, jint encoding, jbyteArray utf8) {
-  ProfiledThread* thrd = ProfiledThread::current();
+  ProfiledThread* thrd = ProfiledThread::initCurrentThreadSignalSafe();
   if (thrd == nullptr || slot < 0 || slot >= (jint)DD_TAGS_CAPACITY) {
     return JNI_FALSE;
   }

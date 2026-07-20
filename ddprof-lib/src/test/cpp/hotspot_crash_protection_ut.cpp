@@ -52,7 +52,7 @@ class ProfiledThreadTypeTest : public ::testing::Test {
 protected:
     void SetUp() override {
         ProfiledThread::initCurrentThread();
-        _pt = ProfiledThread::currentSignalSafe();
+        _pt = ProfiledThread::current();
         ASSERT_NE(nullptr, _pt);
     }
 
@@ -123,7 +123,7 @@ class CrashHandlerNestingTest : public ::testing::Test {
 protected:
     void SetUp() override {
         ProfiledThread::initCurrentThread();
-        _pt = ProfiledThread::currentSignalSafe();
+        _pt = ProfiledThread::current();
         ASSERT_NE(nullptr, _pt);
     }
 
@@ -210,7 +210,7 @@ class JmpCtxChainingTest : public ::testing::Test {
 protected:
     void SetUp() override {
         ProfiledThread::initCurrentThread();
-        _pt = ProfiledThread::currentSignalSafe();
+        _pt = ProfiledThread::current();
         ASSERT_NE(nullptr, _pt);
     }
 

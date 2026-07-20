@@ -361,7 +361,7 @@ static DdprofGlobalSetup ddprof_global_setup;
 
     // Deterministic regression for the CriticalSection::_thread_ptr capture fix.
     //
-    // Bug: the old destructor re-fetched currentSignalSafe() at destruction time.
+    // Bug: the old destructor re-fetched current() at destruction time.
     // If TLS was cleared between the ctor and dtor (e.g. release() called inside
     // the CS scope as it was in the old onThreadEnd), the re-fetch returned nullptr
     // and exitCriticalSection() was silently skipped, leaving _in_critical_section
@@ -382,8 +382,7 @@ static DdprofGlobalSetup ddprof_global_setup;
 
         if (pid == 0) {
             // ---- child process (fork isolates TLS from other tests) ----
-            ProfiledThread::initCurrentThread();
-            ProfiledThread* pt = ProfiledThread::currentSignalSafe();
+            ProfiledThread* pt = ProfiledThread::initCurrentThread();
             if (pt == nullptr) _exit(2);
 
             // Baseline: entering critical section works.

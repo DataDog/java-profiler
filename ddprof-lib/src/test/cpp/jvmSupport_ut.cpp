@@ -145,6 +145,21 @@ TEST_F(JvmSupportInitFailureTest, CheckReturnsErrorAndLatchesErrorState) {
     EXPECT_EQ(ERROR, ProfilerTestAccessor::getState(p));
 }
 
+// Profiler::init() (invoked from JavaProfiler.init0() right after the native
+// library loads) shares checkState()'s NEW-state JVMSupport::initialize()
+// gate. It must surface the same failure and latch ERROR instead of
+// proceeding to ProfiledThread::initCurrentThread().
+TEST_F(JvmSupportInitFailureTest, InitReturnsErrorAndLatchesErrorState) {
+    Profiler* p = Profiler::instance();
+
+    Error error = p->init();
+    bool has_error = (bool)error;
+
+    EXPECT_TRUE(has_error);
+    EXPECT_STREQ("Profiler encountered fatal error", error.message());
+    EXPECT_EQ(ERROR, ProfilerTestAccessor::getState(p));
+}
+
 // Once JVMSupport initialization has failed once, the profiler is
 // permanently disabled: checkState() must short-circuit on the ERROR state
 // on every later call without retrying JVMSupport::initialize() (no mock
