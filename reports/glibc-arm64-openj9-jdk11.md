@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk11
 
 ## glibc-arm64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-07-19 23:26:29 EDT
+**Date:** 2026-07-19 23:29:31 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-arm64-openj9-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 52 |
-| CPU Cores (end) | 52 |
+| CPU Cores (start) | 32 |
+| CPU Cores (end) | 32 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-arm64-openj9-jdk11
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 52-52 cores)</summary>
+<summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1784517783 52
-1784517788 52
-1784517793 52
-1784517798 52
-1784517803 52
-1784517808 52
-1784517813 52
-1784517818 52
-1784517823 52
-1784517828 52
-1784517833 52
-1784517838 52
-1784517843 52
-1784517848 52
-1784517853 52
-1784517858 52
-1784517863 52
-1784517868 52
-1784517873 52
-1784517878 52
+1784517950 32
+1784517955 32
+1784517960 32
+1784517965 32
+1784517970 32
+1784517975 32
+1784517980 32
+1784517985 32
+1784517990 32
+1784517995 32
+1784518000 32
+1784518005 32
+1784518010 32
+1784518015 32
+1784518020 32
+1784518025 32
+1784518030 32
+1784518035 32
+1784518040 32
+1784518045 32
 ```
 </details>
 
