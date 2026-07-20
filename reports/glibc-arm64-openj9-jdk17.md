@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk17
 
 ## glibc-arm64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-07-19 23:29:31 EDT
+**Date:** 2026-07-19 23:34:54 EDT
 
 ### Configuration
 | Setting | Value |
@@ -48,6 +48,12 @@ title: glibc-arm64-openj9-jdk17
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
+1784517931 32
+1784517936 32
+1784517941 32
+1784517946 32
+1784517951 32
+1784517956 32
 1784517961 32
 1784517966 32
 1784517971 32
@@ -62,12 +68,6 @@ title: glibc-arm64-openj9-jdk17
 1784518016 32
 1784518021 32
 1784518026 32
-1784518031 32
-1784518036 32
-1784518041 32
-1784518046 32
-1784518051 32
-1784518056 32
 ```
 </details>
 

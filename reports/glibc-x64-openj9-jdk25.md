@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk25
 
 ## glibc-x64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-07-19 23:29:34 EDT
+**Date:** 2026-07-19 23:34:55 EDT
 
 ### Configuration
 | Setting | Value |
@@ -48,8 +48,6 @@ title: glibc-x64-openj9-jdk25
 <summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
-1784517916 48
-1784517921 48
 1784517926 48
 1784517931 48
 1784517936 48
@@ -68,6 +66,8 @@ title: glibc-x64-openj9-jdk25
 1784518001 48
 1784518006 48
 1784518011 48
+1784518016 48
+1784518021 48
 ```
 </details>
 
