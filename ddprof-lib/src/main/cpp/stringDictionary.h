@@ -8,6 +8,7 @@
 
 #include "counters.h"
 #include "log.h"
+#include "nativeMem.h"
 #include "refCountGuard.h"
 #include "tripleBuffer.h"
 #include "arch.h"
@@ -80,7 +81,14 @@ class StringArena {
     bool                _oom_logged{false};// latched per generation; cleared by reset()
 
     static Chunk* make_chunk() {
-        return static_cast<Chunk*>(calloc(1, sizeof(Chunk)));
+        Chunk* c = static_cast<Chunk*>(calloc(1, sizeof(Chunk)));
+        // Track every backing chunk regardless of _counter_offset (which only
+        // gates the diagnostic DICTIONARY_BYTES counter). Keys are bump-allocated
+        // inside these chunks, so they must not be counted separately.
+        if (c != nullptr) {
+            NativeMem::record(NM_DICTIONARY, (long long)sizeof(Chunk));
+        }
+        return c;
     }
 
     void countChunkAlloc() {
@@ -133,7 +141,12 @@ public:
 
     ~StringArena() {
         Chunk* c = _first;
-        while (c) { Chunk* n = c->next; free(c); c = n; }
+        while (c) {
+            Chunk* n = c->next;
+            NativeMem::record(NM_DICTIONARY, -(long long)sizeof(Chunk));
+            free(c);
+            c = n;
+        }
     }
 
     StringArena(const StringArena&) = delete;
@@ -167,7 +180,13 @@ public:
     void reset() {
         Chunk* c = _first ? _first->next : nullptr;
         int freed = 0;
-        while (c) { Chunk* n = c->next; free(c); c = n; ++freed; }
+        while (c) {
+            Chunk* n = c->next;
+            NativeMem::record(NM_DICTIONARY, -(long long)sizeof(Chunk));
+            free(c);
+            c = n;
+            ++freed;
+        }
         if (_first) {
             _first->next = nullptr;
             __atomic_store_n(&_first->pos, (size_t)0, __ATOMIC_RELAXED);
@@ -229,7 +248,11 @@ private:
         while (!stk.empty()) {
             Frame& f = stk.back();
             if (f.row >= ROWS) {
-                if (f.t != table) { free(f.t); freed++; }
+                if (f.t != table) {
+                    NativeMem::record(NM_DICTIONARY, -(long long)sizeof(SBTable));
+                    free(f.t);
+                    freed++;
+                }
                 stk.pop_back();
                 continue;
             }
@@ -264,11 +287,15 @@ private:
 public:
     StringDictionaryBuffer() {
         _table = static_cast<SBTable*>(calloc(1, sizeof(SBTable)));
+        if (_table != nullptr) {
+            NativeMem::record(NM_DICTIONARY, (long long)sizeof(SBTable));
+        }
     }
 
     ~StringDictionaryBuffer() {
         if (_table != nullptr) {
-            freeOverflowNodes(_table);
+            freeOverflowNodes(_table);  // records its own decrements
+            NativeMem::record(NM_DICTIONARY, -(long long)sizeof(SBTable));
             free(_table);
             _table = nullptr;
         }
@@ -356,9 +383,12 @@ public:
                 if (nt == nullptr) return 0;
                 if (!__sync_bool_compare_and_swap(&row->next, nullptr, nt)) {
                     free(nt);
-                } else if (_counter_offset != 0) {
-                    Counters::increment(DICTIONARY_PAGES, 1, _counter_offset);
-                    Counters::increment(DICTIONARY_BYTES, (long long)sizeof(SBTable), _counter_offset);
+                } else {
+                    NativeMem::record(NM_DICTIONARY, (long long)sizeof(SBTable));
+                    if (_counter_offset != 0) {
+                        Counters::increment(DICTIONARY_PAGES, 1, _counter_offset);
+                        Counters::increment(DICTIONARY_BYTES, (long long)sizeof(SBTable), _counter_offset);
+                    }
                 }
             }
             table = __atomic_load_n(&row->next, __ATOMIC_ACQUIRE);

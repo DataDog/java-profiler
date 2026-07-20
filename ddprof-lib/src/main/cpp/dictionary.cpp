@@ -37,6 +37,7 @@ static inline bool keyEquals(const char *candidate, const char *key,
 Dictionary::~Dictionary() {
   clear(_table, _id);
   free(_table);
+  NativeMem::record(NM_DICTIONARY, -(long long)sizeof(DictTable));
   Counters::set(DICTIONARY_BYTES, 0, _id);
   Counters::set(DICTIONARY_PAGES, 0, _id);
 }
@@ -58,6 +59,9 @@ void Dictionary::clear(DictTable *table, int id) {
     DictRow *row = &table->rows[i];
     for (int j = 0; j < CELLS; j++) {
       if (row->keys[j]) {
+        // Keys are null-terminated, so the malloc'd size (length + 1) is
+        // recoverable at free time without tracking it per key.
+        NativeMem::record(NM_DICTIONARY, -(long long)(strlen(row->keys[j]) + 1));
         free(row->keys[j]); // content is zeroed en-mass in the clear() function
       }
     }
@@ -65,6 +69,7 @@ void Dictionary::clear(DictTable *table, int id) {
       clear(row->next, id);
       DictTable *tmp = row->next;
       row->next = NULL;
+      NativeMem::record(NM_DICTIONARY, -(long long)sizeof(DictTable));
       free(tmp);
     }
   }
@@ -110,6 +115,7 @@ unsigned int Dictionary::lookup(const char *key, size_t length, bool for_insert,
         if (__sync_bool_compare_and_swap(&row->keys[c], NULL, new_key)) {
           Counters::increment(DICTIONARY_KEYS, 1, _id);
           Counters::increment(DICTIONARY_KEYS_BYTES, length + 1, _id);
+          NativeMem::record(NM_DICTIONARY, (long long)(length + 1));
           atomicInc(_size);
           return table->index(h % ROWS, c);
         }
@@ -130,6 +136,7 @@ unsigned int Dictionary::lookup(const char *key, size_t length, bool for_insert,
         } else {
           Counters::increment(DICTIONARY_PAGES, 1, _id);
           Counters::increment(DICTIONARY_BYTES, sizeof(DictTable), _id);
+          NativeMem::record(NM_DICTIONARY, (long long)sizeof(DictTable));
         }
       } else {
         return sentinel;

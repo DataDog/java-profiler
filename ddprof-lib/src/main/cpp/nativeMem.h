@@ -30,7 +30,6 @@
 #define DD_NATIVE_MEM_CATEGORY_TABLE(X)                                        \
   X(CALLTRACE, "calltrace")                                                    \
   X(DICTIONARY, "dictionary")                                                  \
-  X(CONTEXT, "context")                                                        \
   X(THREAD_FILTER, "thread_filter")                                            \
   X(CODECACHE, "codecache")                                                    \
   X(LINE_TABLES, "line_tables")                                                \

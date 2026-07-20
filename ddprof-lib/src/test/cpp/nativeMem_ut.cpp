@@ -31,7 +31,7 @@ TEST_F(NativeMemTest, RecordTracksLivePerCategoryAndTotal) {
     NativeMem::record(NM_DICTIONARY, 250);
     EXPECT_EQ(1000, NativeMem::live(NM_CALLTRACE));
     EXPECT_EQ(250, NativeMem::live(NM_DICTIONARY));
-    EXPECT_EQ(0, NativeMem::live(NM_CONTEXT));
+    EXPECT_EQ(0, NativeMem::live(NM_THREAD_FILTER));
     EXPECT_EQ(1250, NativeMem::liveTotal());
 
     NativeMem::record(NM_CALLTRACE, -400);
