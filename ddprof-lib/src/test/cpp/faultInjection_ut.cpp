@@ -60,7 +60,7 @@ static void fi_signal_wrapper(int signo, siginfo_t* siginfo, void* context) {
   if (SafeAccess::handle_safefetch(signo, context)) {
     return;  // safefetch load recovered; PC already rewritten to _cont.
   }
-  HotspotSupport::checkFault(ProfiledThread::currentSignalSafe());  // longjmp if protected
+  HotspotSupport::checkFault(ProfiledThread::current());  // longjmp if protected
   // Not protected and not a safefetch fault — real crash.
   if (signo == SIGBUS && orig_busHandler != nullptr) {
     orig_busHandler(signo, siginfo, context);
@@ -89,7 +89,7 @@ protected:
 // (b) The empirical firing rate is within a wide band of the nominal tier rate.
 // Wide bounds ([0.3x, 3x]) + a fixed seed keep it deterministic and non-flaky.
 static void expectRateInBand(u64 threshold, size_t n, double nominal) {
-  ProfiledThread::currentSignalSafe()->setFiRng(0x0123456789ABCDEFULL);
+  ProfiledThread::current()->setFiRng(0x0123456789ABCDEFULL);
   size_t fires = 0;
   for (size_t i = 0; i < n; i++) {
     if (faultinj::shouldFire(threshold, "rateProbe")) {
@@ -115,7 +115,7 @@ TEST_F(FaultInjectionTest, RareTierRate) {
 
 // poisonAddress() must always yield a fault-inducing, word-aligned address.
 TEST_F(FaultInjectionTest, PoisonAddressIsAlignedAndUnmapped) {
-  ProfiledThread::currentSignalSafe()->setFiRng(0xF00DF00DF00DF00DULL);
+  ProfiledThread::current()->setFiRng(0xF00DF00DF00DF00DULL);
   for (int i = 0; i < 1000; i++) {
     uintptr_t bad = faultinj::poisonAddress();
     EXPECT_EQ(bad & (sizeof(void*) - 1), 0u) << "poison address not word-aligned";
@@ -130,7 +130,7 @@ TEST_F(FaultInjectionTest, PoisonAddressIsAlignedAndUnmapped) {
 TEST_F(FaultInjectionTest, SafeAccessRecoversFromInjectedFault) {
   void* real = reinterpret_cast<void*>(0xABCDEF00);
   void** valid = &real;
-  ProfiledThread::currentSignalSafe()->setFiRng(0xBEEFCAFEBEEFCAFEULL);
+  ProfiledThread::current()->setFiRng(0xBEEFCAFEBEEFCAFEULL);
   size_t fired = 0;
   for (int i = 0; i < 200000; i++) {
     // LIKELY tier: some iterations poison the address, others read `valid`.
@@ -146,7 +146,7 @@ TEST_F(FaultInjectionTest, SafeAccessRecoversFromInjectedFault) {
 // (c2) walkVM path: a raw dereference of an injected poison pointer must be
 // caught by the setjmp/longjmp crash protection, returning control to setjmp.
 TEST_F(FaultInjectionTest, WalkVmSetjmpRecoversFromInjectedFault) {
-  ProfiledThread* t = ProfiledThread::currentSignalSafe();
+  ProfiledThread* t = ProfiledThread::current();
   ASSERT_NE(t, nullptr);
 
   uintptr_t real_slot = 0;             // a valid, readable pointer slot
