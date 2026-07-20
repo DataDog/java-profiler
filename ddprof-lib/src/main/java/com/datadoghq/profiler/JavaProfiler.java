@@ -137,8 +137,9 @@ public final class JavaProfiler {
     /**
      * Get a {@linkplain JavaProfiler} instance with explicit monitor-event ownership.
      *
-     * <p>The first successful initialization fixes this process-wide setting because the native
-     * profiler is a singleton. When delegation is enabled, Java instrumentation owns
+     * <p>The first successful native bridge initialization fixes this process-wide setting because
+     * the native profiler is a singleton. This may occur during {@code -agentpath} startup before
+     * this method is called. When delegation is enabled, Java instrumentation owns
      * {@code Object.wait} TaskBlock intervals and native JVMTI wait callbacks are suppressed;
      * native JVMTI callbacks continue to own synchronized monitor contention.
      *
@@ -147,6 +148,8 @@ public final class JavaProfiler {
      * @param delegateMonitorWaitEvents whether Java instrumentation owns {@code Object.wait} intervals
      * @return the process-wide profiler instance
      * @throws IOException if the native library cannot be loaded
+     * @throws IllegalStateException if monitor ownership conflicts with an earlier native bridge
+     *     initialization
      */
     public static synchronized JavaProfiler getInstance(String libLocation, String scratchDir,
             boolean delegateMonitorWaitEvents) throws IOException {

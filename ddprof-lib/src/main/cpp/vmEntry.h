@@ -132,6 +132,15 @@ class JavaVersionAccess {
    static int get_hotspot_version(char* prop_value);
 };
 
+// The profiler bridge is process-wide and initialized exactly once. Later Java
+// API initialization may reuse it only with the same effective Object.wait
+// ownership.
+enum class ProfilerBridgeInitResult {
+  SUCCESS,
+  FAILURE,
+  MONITOR_EVENTS_DELEGATION_CONFLICT,
+};
+
 class VM {
   friend class VMTestAccessor;
 
@@ -179,8 +188,8 @@ public:
   static JVM_GetManagement _getManagement;
 
   static bool initLibrary(JavaVM *vm);
-  static bool initProfilerBridge(JavaVM *vm, bool attach,
-                                 bool delegateMonitorEvents = false);
+  static ProfilerBridgeInitResult initProfilerBridge(
+      JavaVM *vm, bool attach, bool delegateMonitorEvents = false);
 
   static jvmtiEnv *jvmti() { return _jvmti; }
 

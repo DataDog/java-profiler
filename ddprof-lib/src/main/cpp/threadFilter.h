@@ -26,6 +26,7 @@
 #include "arch.h"
 #include "threadState.h"
 
+class ProfiledThread;
 struct ThreadEntry;  // defined after ThreadFilter; carries a pointer to a ThreadFilter::Slot
 
 enum class BlockRunOwner : int {
@@ -90,6 +91,7 @@ public:
         // changing ordinary thread selection.
         std::atomic<int>           tid{-1};
         std::atomic<int>           active_block_owner{static_cast<int>(BlockRunOwner::NONE)};
+        std::atomic<int>           unowned_blocked_fallback_enabled{1};
         // Set by explicit block enter/exit hooks. It lets the timer skip sending a signal
         // only while instrumentation still owns a suppressible blocking interval.
         std::atomic<OSThreadState> active_block_state{OSThreadState::UNKNOWN};
@@ -102,6 +104,7 @@ public:
                      - sizeof(std::atomic<u64>)
                      - sizeof(std::atomic<u64>)
                      - sizeof(std::atomic<OSThreadState>)
+                     - sizeof(std::atomic<int>)
                      - sizeof(std::atomic<int>)
                      - sizeof(std::atomic<int>)
                      - sizeof(std::atomic<u64>)
@@ -156,6 +159,17 @@ public:
         }
         inline u64 blockGeneration() const {
             return block_generation.load(std::memory_order_acquire);
+        }
+        inline bool unownedBlockedFallbackEnabled() const {
+            return unowned_blocked_fallback_enabled.load(std::memory_order_acquire) != 0;
+        }
+        inline void enableUnownedBlockedFallback() {
+            resetUnownedBlockedSampling();
+            unowned_blocked_fallback_enabled.store(1, std::memory_order_release);
+        }
+        inline void disableUnownedBlockedFallback() {
+            unowned_blocked_fallback_enabled.store(0, std::memory_order_release);
+            resetUnownedBlockedSampling();
         }
         inline void resetUnownedBlockedSampling() {
             unowned_blocked_pending_weight.store(0, std::memory_order_relaxed);
@@ -222,7 +236,7 @@ public:
             generation++;
             block_generation.store(generation, std::memory_order_relaxed);
             active_block_context_epoch.store(context_state >> 1, std::memory_order_relaxed);
-            resetUnownedBlockedSampling();
+            disableUnownedBlockedFallback();
             *generation_out = generation;
             return true;
         }
@@ -334,6 +348,10 @@ public:
     Slot* lookupByTid(int tid) const;
     Slot* lookupByTid(int tid, RecordingEpoch epoch) const;
     Slot* activeSlotForId(SlotID slot_id, int tid) const;
+    // Populates lifecycle metadata from an existing mapping without registering
+    // the TID. Timer-side observation must remain read-only.
+    bool lookupThreadEntry(ThreadEntry& entry, RecordingEpoch epoch) const;
+    SlotID ensureCurrentThreadSlot(ProfiledThread* current);
     void deactivateRecording();
     SlotID slotIdByTid(int tid) const { return lookupSlotIdByTid(tid); }
 

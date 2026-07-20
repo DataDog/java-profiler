@@ -16,6 +16,7 @@
 #include "jvmThread.h"
 #include "libraries.h"
 #include "log.h"
+#include "mutex.h"
 #include "os.h"
 #include "profiler.h"
 #include "safeAccess.h"
@@ -55,6 +56,12 @@ bool VM::_monitor_events_delegated = false;
 bool VM::_native_monitor_events_available = false;
 bool VM::_is_adaptive_gc_boundary_flag_set = false;
 
+// Serializes the one-time bridge installation and ownership negotiation.
+// Callback readers need no synchronization because ownership is assigned
+// before callbacks can be enabled and is never changed afterward.
+static Mutex profiler_bridge_init_lock;
+static bool profiler_bridge_initialized = false;
+
 jvmtiExtensionFunction VM::_request_stack_trace = nullptr;
 jvmtiExtensionFunction VM::_init_request_stack_trace = nullptr;
 
@@ -86,7 +93,7 @@ static void monitorBlockEnter(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
       !JVMSupport::isPlatformThread(jni, thread)) {
     return;
   }
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
   if (current == nullptr) return;
   Context context = ContextApi::snapshot();
   if (context.spanId != 0) {
@@ -101,10 +108,15 @@ static void monitorBlockEnter(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
     bool current_owner = false;
     if (token != 0) {
       ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(token);
-      BlockRunSnapshot snapshot = tf->snapshotBlockedRun(slot_id);
-      current_owner = current->filterSlotId() == slot_id && snapshot.active &&
-          snapshot.owner == BlockRunOwner::JVMTI &&
-          snapshot.generation == ThreadFilter::tokenGeneration(token);
+      ThreadFilter::Slot *slot = current->filterSlotId() == slot_id
+          ? tf->activeSlotForId(slot_id, current->tid())
+          : nullptr;
+      if (slot != nullptr) {
+        BlockRunSnapshot snapshot = slot->snapshotBlockRun();
+        current_owner = snapshot.active &&
+            snapshot.owner == BlockRunOwner::JVMTI &&
+            snapshot.generation == ThreadFilter::tokenGeneration(token);
+      }
     }
     if (current_owner) {
       return;
@@ -117,12 +129,8 @@ static void monitorBlockEnter(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
   }
 
   ThreadFilter *tf = profiler->threadFilter();
-  ThreadFilter::SlotID slot_id = current->filterSlotId();
-  if (slot_id < 0) {
-    slot_id = tf->slotIdByTid(current->tid());
-    if (slot_id >= 0) current->setFilterSlotId(slot_id);
-  }
-  if (!tf->allThreads() || slot_id < 0) {
+  ThreadFilter::SlotID slot_id = tf->ensureCurrentThreadSlot(current);
+  if (!tf->unfilteredWallTrackingActive() || slot_id < 0) {
     current->clearMonitorBlock();
     return;
   }
@@ -154,31 +162,8 @@ static void monitorBlockExit(JNIEnv *jni, jthread thread, OSThreadState state) {
   }
 
   Profiler *profiler = Profiler::instance();
-  bool recording_enabled = profiler->taskBlockEnabled();
-  bool activity = profiler->tryEnterTaskBlockActivity();
-  if (!activity) profiler->waitForTaskBlockRotation();
-
-  ThreadFilter *tf = profiler->threadFilter();
-  ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(token);
-  ThreadFilter::SlotID current_slot = current->filterSlotId();
-  if (current_slot < 0) current_slot = tf->slotIdByTid(current->tid());
-  BlockRunSnapshot snapshot{};
-  bool exited = current_slot == slot_id &&
-      tf->snapshotAndExitBlockedRun(
-          slot_id, ThreadFilter::tokenGeneration(token), &snapshot);
-
-  if (!activity) {
-    Counters::increment(TASK_BLOCK_DROPPED_ROTATION);
-    return;
-  }
-  if (recording_enabled && exited && snapshot.context_eligible) {
-    recordTaskBlockIfEligible(current->tid(), thread, 0, start_ticks,
-                              TSC::ticks(), context, blocker, 0,
-                              snapshot.active_state, true);
-  } else if (recording_enabled && exited && !snapshot.context_eligible) {
-    Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
-  }
-  profiler->leaveTaskBlockActivity();
+  finishTaskBlockAtExit(current, profiler->threadFilter(), thread, 0, token,
+                        start_ticks, context, blocker, 0);
 }
 
 static void JNICALL MonitorContendedEnter(jvmtiEnv *jvmti, JNIEnv *jni,
@@ -576,16 +561,25 @@ bool VM::initializeRequestStackTrace() {
   return false;
 }
 
-bool VM::initProfilerBridge(JavaVM *vm, bool attach,
-                            bool delegateMonitorEvents) {
+ProfilerBridgeInitResult VM::initProfilerBridge(JavaVM *vm, bool attach,
+                                                bool delegateMonitorEvents) {
+  MutexLocker init_locker(profiler_bridge_init_lock);
+  if (profiler_bridge_initialized) {
+    bool requested_delegation =
+        delegateMonitorEvents && _native_monitor_events_available;
+    return requested_delegation == _monitor_events_delegated
+        ? ProfilerBridgeInitResult::SUCCESS
+        : ProfilerBridgeInitResult::MONITOR_EVENTS_DELEGATION_CONFLICT;
+  }
+
   TEST_LOG("VM::initProfilerBridge");
   if (!initShared(vm)) {
-    return false;
+    return ProfilerBridgeInitResult::FAILURE;
   }
 
   CodeCache *lib = openJvmLibrary();
   if (lib == nullptr) {
-    return false;
+    return ProfilerBridgeInitResult::FAILURE;
   }
 
   if (!attach && hotspot_version() == 8 && OS::isLinux()) {
@@ -708,7 +702,8 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach,
 
   OS::installSignalHandler(WAKEUP_SIGNAL, NULL, wakeupHandler);
 
-  return true;
+  profiler_bridge_initialized = true;
+  return ProfilerBridgeInitResult::SUCCESS;
 }
 
 bool VM::setNativeMonitorEventsEnabled(bool enabled) {
@@ -859,7 +854,8 @@ Agent_OnLoad(JavaVM* vm, char* options, void* reserved) {
         return ARGUMENTS_ERROR;
     }
 
-    if (!VM::initProfilerBridge(vm, false)) {
+    if (VM::initProfilerBridge(vm, false) !=
+        ProfilerBridgeInitResult::SUCCESS) {
         Log::error("JVM does not support Tool Interface");
         return COMMAND_ERROR;
     }

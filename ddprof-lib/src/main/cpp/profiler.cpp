@@ -87,9 +87,10 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 
   current->setJavaThread(true);
   int tid = current->tid();
-  // Preserve eager registration for context-filtered recordings. Unfiltered
-  // wall prechecks register only from context and owned-block hooks.
-  if (_thread_filter.enabled()) {
+  // Java lifecycle callbacks own registry allocation. The wall timer only
+  // looks up these entries and must never allocate slots for arbitrary OS
+  // threads returned by OS::listThreads().
+  if (_thread_filter.registryActive()) {
     int slot_id = _thread_filter.registerThread(tid);
     current->setFilterSlotId(slot_id);
   }
@@ -1571,8 +1572,8 @@ Error Profiler::start(Arguments &args, bool reset) {
     _thread_filter.clearActive();
   }
 
-  // Preserve the context-filter fast path. Unfiltered tracking remains empty
-  // until a context or owned-block hook registers the current thread.
+  // Preserve the context-filter fast path. Unfiltered Java threads are
+  // registered by ThreadStart callbacks after the engines are activated.
   if (_thread_filter.enabled()) {
     ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
     assert(current != nullptr);

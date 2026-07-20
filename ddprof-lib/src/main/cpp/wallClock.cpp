@@ -115,11 +115,7 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
     result.suppress = true;
     return result;
   }
-
-  // Unfiltered tracking exists only to support explicit context and owned-block
-  // hooks. Keep unowned observations on ordinary per-signal sampling: the JVMTI
-  // path has no call_trace_id with which to replay a suppressed tail.
-  if (registry->unfilteredWallTrackingActive()) {
+  if (!slot->unownedBlockedFallbackEnabled()) {
     return result;
   }
 
@@ -381,13 +377,7 @@ void WallClockASGCT::timerLoop() {
                              int& registry_lookups, bool lookup_registry_slot) {
       if (lookup_registry_slot && entry.slot == nullptr) {
         registry_lookups++;
-        ThreadFilter::Slot* slot =
-            thread_filter->lookupByTid(entry.tid, recording_epoch);
-        if (slot != nullptr) {
-          entry.slot = slot;
-          entry.lifecycle_generation = slot->lifecycleGeneration();
-          entry.recording_epoch = slot->recordingEpoch();
-        }
+        thread_filter->lookupThreadEntry(entry, recording_epoch);
       }
       // Timer-thread fast path (wallprecheck=true): skip the kernel IPI while
       // an explicit lifecycle hook owns a suppressible blocked run. Raw OS
@@ -545,13 +535,7 @@ void WallClockJvmti::timerLoop() {
                            int &registry_lookups, bool lookup_registry_slot) {
     if (lookup_registry_slot && entry.slot == nullptr) {
       registry_lookups++;
-      ThreadFilter::Slot* slot =
-          thread_filter->lookupByTid(entry.tid, recording_epoch);
-      if (slot != nullptr) {
-        entry.slot = slot;
-        entry.lifecycle_generation = slot->lifecycleGeneration();
-        entry.recording_epoch = slot->recordingEpoch();
-      }
+      thread_filter->lookupThreadEntry(entry, recording_epoch);
     }
     if (_precheck && suppressOwnedBlock(entry)) {
       return WallClockCandidateOutcome::PRECHECK_REJECTED;

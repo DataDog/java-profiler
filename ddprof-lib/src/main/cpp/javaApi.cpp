@@ -78,7 +78,20 @@ Java_com_datadoghq_profiler_JavaProfiler_init0(
   }
 
   // JavaVM* has already been stored when the native library was loaded so we can pass nullptr here
-  return VM::initProfilerBridge(nullptr, true, delegateMonitorWaitEvents);
+  ProfilerBridgeInitResult result =
+      VM::initProfilerBridge(nullptr, true, delegateMonitorWaitEvents);
+  if (result == ProfilerBridgeInitResult::MONITOR_EVENTS_DELEGATION_CONFLICT) {
+    throwNew(env, "java/lang/IllegalStateException",
+             "Monitor-event ownership conflicts with the profiler's "
+             "process-wide initialization");
+    return JNI_FALSE;
+  }
+  if (result != ProfilerBridgeInitResult::SUCCESS) {
+    throwNew(env, "java/lang/IllegalStateException",
+             "Failed to initialize the profiler bridge");
+    return JNI_FALSE;
+  }
+  return JNI_TRUE;
 }
 
 extern "C" DLLEXPORT void JNICALL
@@ -144,32 +157,6 @@ Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
   return (jlong)Profiler::instance()->total_samples();
 }
 
-// some duplication between add and remove, though we want to avoid having an extra branch in the hot path
-
-static ThreadFilter::SlotID ensureCurrentThreadFilterSlot(
-    ThreadFilter *thread_filter, ProfiledThread *current) {
-  int tid = current->tid();
-  if (unlikely(tid < 0)) {
-    return -1;
-  }
-
-  ThreadFilter::SlotID slot_id = current->filterSlotId();
-  if (likely(slot_id >= 0)) {
-    if (likely(thread_filter->activeSlotForId(slot_id, tid) != nullptr)) {
-      return slot_id;
-    }
-    current->setFilterSlotId(-1);
-  }
-
-  // Startup can register this TID centrally, but it cannot update another
-  // pthread's TLS. registerThread(tid) reuses that existing slot.
-  slot_id = thread_filter->registerThread(tid);
-  if (slot_id >= 0) {
-    current->setFilterSlotId(slot_id);
-  }
-  return slot_id;
-}
-
 // JavaCritical is faster JNI, but more restrictive - parameters and return value have to be
 // primitives or arrays of primitive types.
 // We direct corresponding JNI calls to JavaCritical to make sure the parameters/return value
@@ -191,7 +178,7 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
     return;
   }
   
-  int slot_id = ensureCurrentThreadFilterSlot(thread_filter, current);
+  int slot_id = thread_filter->ensureCurrentThreadSlot(current);
   if (unlikely(slot_id < 0)) {
     return;  // Failed to register thread
   }
@@ -385,7 +372,7 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
   ThreadFilter *tf = profiler->threadFilter();
   if (context.spanId == 0 && tf->registryActive() &&
       (profiler->taskBlockEnabled() || tf->enabled())) {
-    ThreadFilter::SlotID slot_id = ensureCurrentThreadFilterSlot(tf, current);
+    ThreadFilter::SlotID slot_id = tf->ensureCurrentThreadSlot(current);
     if (slot_id >= 0) {
       current->setParkBlockToken(tf->enterBlockedRun(
           slot_id, OSThreadState::CONDVAR_WAIT, BlockRunOwner::JAVA));
@@ -412,32 +399,10 @@ Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
     return;
   }
   Profiler *profiler = Profiler::instance();
-  bool recording_enabled = profiler->taskBlockEnabled();
-  bool activity = profiler->tryEnterTaskBlockActivity();
-  if (!activity) profiler->waitForTaskBlockRotation();
-
-  ThreadFilter *tf = profiler->threadFilter();
-  ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(park_block_token);
-  ThreadFilter::SlotID current_slot = current->filterSlotId();
-  if (current_slot < 0) current_slot = tf->slotIdByTid(current->tid());
-  BlockRunSnapshot snapshot{};
-  bool exited = current_slot == slot_id &&
-      tf->snapshotAndExitBlockedRun(
-          slot_id, ThreadFilter::tokenGeneration(park_block_token), &snapshot);
-
-  if (!activity) {
-    Counters::increment(TASK_BLOCK_DROPPED_ROTATION);
-    return;
-  }
-  if (recording_enabled && exited && snapshot.context_eligible) {
-    recordTaskBlockIfEligible(
-        current->tid(), thread, 1, start_ticks, TSC::ticks(), context,
-        static_cast<u64>(blocker), static_cast<u64>(unblockingSpanId),
-        snapshot.active_state, true);
-  } else if (recording_enabled && exited && !snapshot.context_eligible) {
-    Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
-  }
-  profiler->leaveTaskBlockActivity();
+  finishTaskBlockAtExit(
+      current, profiler->threadFilter(), thread, 1, park_block_token,
+      start_ticks, context, static_cast<u64>(blocker),
+      static_cast<u64>(unblockingSpanId));
 }
 
 static bool decodeJavaBlockState(jint state, OSThreadState &decoded) {
@@ -469,7 +434,7 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
   if (!profiler->taskBlockEnabled() && !tf->enabled()) {
     return 0;
   }
-  ThreadFilter::SlotID slot_id = ensureCurrentThreadFilterSlot(tf, current);
+  ThreadFilter::SlotID slot_id = tf->ensureCurrentThreadSlot(current);
   if (slot_id < 0) return 0;
   return static_cast<jlong>(tf->enterBlockedRun(slot_id, decoded));
 }
@@ -510,7 +475,7 @@ Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
   }
   ThreadFilter *tf = profiler->threadFilter();
   if (!tf->unfilteredWallTrackingActive()) return 0;
-  ThreadFilter::SlotID slot_id = ensureCurrentThreadFilterSlot(tf, current);
+  ThreadFilter::SlotID slot_id = tf->ensureCurrentThreadSlot(current);
   if (slot_id < 0) return 0;
 
   Context context = ContextApi::snapshot();
