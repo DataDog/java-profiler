@@ -7,8 +7,10 @@ package com.datadoghq.profiler;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -18,12 +20,46 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.LockSupport;
+import java.util.function.Function;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 public class JavaProfilerTest extends AbstractProcessProfilerTest {
+    /** Extracts the packaged native library so a child JVM can load it through {@code -agentpath}. */
+    private static Path extractProfilerLibrary() throws Exception {
+        OperatingSystem os = OperatingSystem.current();
+        String extension = os == OperatingSystem.macos ? "dylib" : "so";
+        String qualifier = os == OperatingSystem.linux && os.isMusl() ? "-musl" : "";
+        String resource = "/META-INF/native-libs/" + os.name().toLowerCase() + "-"
+                + Arch.current().name().toLowerCase() + qualifier + "/libjavaProfiler." + extension;
+        Path library = Files.createTempFile("libjavaProfiler-agent-", "." + extension);
+        try (InputStream input = JavaProfiler.class.getResourceAsStream(resource)) {
+            assertNotNull(input, "Profiler library resource not found: " + resource);
+            Files.copy(input, library, StandardCopyOption.REPLACE_EXISTING);
+        }
+        return library;
+    }
+
+    /** Launches a child JVM whose profiler bridge is initialized before Java application startup. */
+    private LaunchResult launchWithProfilerAgent(
+            String target, Function<String, LineConsumerResult> onStdoutLine) throws Exception {
+        Path library = extractProfilerLibrary();
+        Path recording = Files.createTempFile("agent-initialization-", ".jfr");
+        try {
+            List<String> jvmArgs = new ArrayList<>();
+            jvmArgs.add("-agentpath:" + library.toAbsolutePath()
+                    + "=start,wall=10ms,filter=,wallprecheck=true,jfr,file="
+                    + recording.toAbsolutePath());
+            jvmArgs.add("-Dddprof.test.agent.path=" + library.toAbsolutePath());
+            return launch(target, jvmArgs, "", onStdoutLine, null);
+        } finally {
+            Files.deleteIfExists(recording);
+            Files.deleteIfExists(library);
+        }
+    }
+
     @Test
     void sanityInitailizationTest() throws Exception {
         String config = System.getProperty("ddprof_test.config");
@@ -132,6 +168,69 @@ public class JavaProfilerTest extends AbstractProcessProfilerTest {
         assertNotNull(result, "getInstance() did not report a result from the virtual thread");
         assertTrue(result.startsWith("[virtual-thread-ioexception]"),
                 "Expected IOException from getInstance() on a virtual thread, got: " + result);
+    }
+
+    @Test
+    void compatibleLateJavaInitializationReusesAgentBridge() throws Exception {
+        AtomicReference<String> resultLine = new AtomicReference<>();
+        LaunchResult result = launchWithProfilerAgent("profiler-agent-compatible", line -> {
+            if (line.startsWith("[agent-compatible]")) {
+                resultLine.set(line);
+                return LineConsumerResult.STOP;
+            }
+            return LineConsumerResult.CONTINUE;
+        });
+
+        assertTrue(result.inTime);
+        assertEquals(0, result.exitCode);
+        assertEquals("[agent-compatible] false", resultLine.get());
+    }
+
+    @Test
+    void conflictingLateMonitorDelegationIsRejected() throws Exception {
+        AtomicReference<String> resultLine = new AtomicReference<>();
+        LaunchResult result = launchWithProfilerAgent("profiler-delegation-conflict", line -> {
+            if (line.startsWith("[delegation-conflict")) {
+                resultLine.set(line);
+                return LineConsumerResult.STOP;
+            }
+            return LineConsumerResult.CONTINUE;
+        });
+
+        assertTrue(result.inTime);
+        assertEquals(0, result.exitCode);
+        assertNotNull(resultLine.get(), "Late delegation request did not report a result");
+        assertTrue(resultLine.get().startsWith("[delegation-conflict]"),
+                "Expected ownership conflict, got: " + resultLine.get());
+    }
+
+    @Test
+    void preExistingThreadObjectWaitUsesNativeMonitorCallbacks() throws Exception {
+        assertPreExistingMonitorCallback("profiler-preexisting-monitor-wait");
+    }
+
+    @Test
+    void preExistingThreadContentionUsesNativeMonitorCallbacks() throws Exception {
+        assertPreExistingMonitorCallback("profiler-preexisting-monitor-contention");
+    }
+
+    /** Verifies that a pre-JNI-load worker emits a TaskBlock through its first monitor callback. */
+    private void assertPreExistingMonitorCallback(String target) throws Exception {
+        AtomicReference<String> resultLine = new AtomicReference<>();
+        LaunchResult result = launch(target, Collections.emptyList(), "", line -> {
+            if (line.startsWith("[preexisting-monitor-events]")) {
+                resultLine.set(line);
+                return LineConsumerResult.STOP;
+            }
+            return LineConsumerResult.CONTINUE;
+        }, null);
+
+        assertTrue(result.inTime);
+        assertEquals(0, result.exitCode);
+        assertNotNull(resultLine.get(), "Pre-existing monitor callback did not report a result");
+        long emitted = Long.parseLong(resultLine.get().substring(
+                "[preexisting-monitor-events] ".length()));
+        assertTrue(emitted > 0, "Pre-existing thread emitted no native monitor TaskBlock event");
     }
 
     @Test

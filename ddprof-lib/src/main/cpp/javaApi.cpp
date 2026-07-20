@@ -78,7 +78,20 @@ Java_com_datadoghq_profiler_JavaProfiler_init0(
   }
 
   // JavaVM* has already been stored when the native library was loaded so we can pass nullptr here
-  return VM::initProfilerBridge(nullptr, true, delegateMonitorWaitEvents);
+  ProfilerBridgeInitResult result =
+      VM::initProfilerBridge(nullptr, true, delegateMonitorWaitEvents);
+  if (result == ProfilerBridgeInitResult::MONITOR_EVENTS_DELEGATION_CONFLICT) {
+    throwNew(env, "java/lang/IllegalStateException",
+             "Monitor-event ownership conflicts with the profiler's "
+             "process-wide initialization");
+    return JNI_FALSE;
+  }
+  if (result != ProfilerBridgeInitResult::SUCCESS) {
+    throwNew(env, "java/lang/IllegalStateException",
+             "Failed to initialize the profiler bridge");
+    return JNI_FALSE;
+  }
+  return JNI_TRUE;
 }
 
 extern "C" DLLEXPORT void JNICALL
@@ -412,32 +425,10 @@ Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
     return;
   }
   Profiler *profiler = Profiler::instance();
-  bool recording_enabled = profiler->taskBlockEnabled();
-  bool activity = profiler->tryEnterTaskBlockActivity();
-  if (!activity) profiler->waitForTaskBlockRotation();
-
-  ThreadFilter *tf = profiler->threadFilter();
-  ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(park_block_token);
-  ThreadFilter::SlotID current_slot = current->filterSlotId();
-  if (current_slot < 0) current_slot = tf->slotIdByTid(current->tid());
-  BlockRunSnapshot snapshot{};
-  bool exited = current_slot == slot_id &&
-      tf->snapshotAndExitBlockedRun(
-          slot_id, ThreadFilter::tokenGeneration(park_block_token), &snapshot);
-
-  if (!activity) {
-    Counters::increment(TASK_BLOCK_DROPPED_ROTATION);
-    return;
-  }
-  if (recording_enabled && exited && snapshot.context_eligible) {
-    recordTaskBlockIfEligible(
-        current->tid(), thread, 1, start_ticks, TSC::ticks(), context,
-        static_cast<u64>(blocker), static_cast<u64>(unblockingSpanId),
-        snapshot.active_state, true);
-  } else if (recording_enabled && exited && !snapshot.context_eligible) {
-    Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
-  }
-  profiler->leaveTaskBlockActivity();
+  finishTaskBlockAtExit(
+      current, profiler->threadFilter(), thread, 1, park_block_token,
+      start_ticks, context, static_cast<u64>(blocker),
+      static_cast<u64>(unblockingSpanId));
 }
 
 static bool decodeJavaBlockState(jint state, OSThreadState &decoded) {
@@ -498,10 +489,8 @@ Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
 
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
-    JNIEnv *env, jclass unused, jthread thread, jint state) {
-  OSThreadState decoded;
-  if (!decodeJavaBlockState(state, decoded) ||
-      !JVMSupport::isPlatformThread(env, thread)) {
+    JNIEnv *env, jclass unused, jthread thread) {
+  if (!JVMSupport::isPlatformThread(env, thread)) {
     return 0;
   }
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
@@ -520,7 +509,8 @@ Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
     Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
     return 0;
   }
-  u64 token = tf->enterBlockedRun(slot_id, decoded, BlockRunOwner::JAVA);
+  u64 token = tf->enterBlockedRun(
+      slot_id, OSThreadState::SLEEPING, BlockRunOwner::JAVA);
   if (!current->taskBlockEnter(token, TSC::ticks(), context)) {
     if (token != 0) {
       tf->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(token));
