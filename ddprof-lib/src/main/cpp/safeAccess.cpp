@@ -23,7 +23,7 @@
 #include <signal.h>
 #include <ucontext.h>
 #ifdef DEBUG
-#include "threadLocalData.h"  // ProfiledThread::currentSignalSafe / isProtected
+#include "threadLocalData.h"  // ProfiledThread::current / isProtected
 #endif
 
 extern "C" int safefetch32_cont(int* adr, int errValue);
@@ -271,7 +271,7 @@ static void verify_safecopy_range() {
 
 #ifdef DEBUG
 void SafeAccess::countIfLongjmpProtected(bool isCopy) {
-  ProfiledThread* t = ProfiledThread::currentSignalSafe();  // never allocates
+  ProfiledThread* t = ProfiledThread::current();  // never allocates
   if (t != nullptr && t->isProtected()) {
     Counters::increment(isCopy ? SAFECOPY_WHILE_PROTECTED
                                : SAFEFETCH_WHILE_PROTECTED);
