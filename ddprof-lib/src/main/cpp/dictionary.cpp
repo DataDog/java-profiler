@@ -18,6 +18,7 @@
 #include "arch.h"
 #include "counters.h"
 #include "signalSafety.h"
+#include <cassert>
 #include <climits>
 #include <stdlib.h>
 #include <string.h>
@@ -26,6 +27,12 @@ static inline char *allocateKey(const char *key, size_t length) {
   char *result = (char *)malloc(length + 1);
   memcpy(result, key, length);
   result[length] = 0;
+  // NM_DICTIONARY accounting recovers a freed key's size via strlen at clear()
+  // time, which requires the key to be a NUL-free string of exactly `length`.
+  // Pin that assumption here so a future caller passing an embedded NUL trips in
+  // debug/gtest rather than silently under-counting the free. Stripped under
+  // NDEBUG.
+  assert(strlen(result) == length);
   return result;
 }
 

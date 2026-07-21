@@ -17,6 +17,7 @@
 #define _NATIVEMEM_H
 
 #include "arch.h"
+#include <cassert>
 
 // Physical native-memory categories used by the profiler's own allocations.
 // Every tracked backing allocation belongs to exactly one category, so the
@@ -80,14 +81,20 @@ public:
   // Account for a backing allocation (delta > 0) or free (delta < 0).
   static void record(NativeMemCategory category, long long delta) {
     long long prev = atomicIncRelaxed(_live[category], delta);
+    long long updated = prev + delta;
+    // Invariant: a category's live bytes never go negative — every decrement is
+    // matched by a prior same-sized increment. A negative result means an
+    // unbalanced or oversized free (an accounting bug). Stripped under NDEBUG,
+    // so this costs nothing in release and never runs in a real signal handler
+    // there; it catches pairing bugs in debug/gtest builds instead.
+    assert(updated >= 0);
     if (delta > 0) {
       // Only allocations can raise the peak. In the common case (no new peak)
       // this is a single relaxed load plus a compare; the CAS fires only when a
       // genuinely higher peak is set, which is rare since _max is monotonic.
-      long long now = prev + delta;
       long long m = load(_max[category]);
-      while (now > m &&
-             !__atomic_compare_exchange_n(&_max[category], &m, now, false,
+      while (updated > m &&
+             !__atomic_compare_exchange_n(&_max[category], &m, updated, false,
                                           __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
         // On failure m is reloaded with the current value; loop and retry.
       }

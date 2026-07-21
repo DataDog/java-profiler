@@ -82,15 +82,6 @@ TEST_F(NativeMemTest, PerCategoryMaxIsPreciseBetweenSamples) {
     EXPECT_EQ(9000, NativeMem::maxTotal());           // upper bound
 }
 
-// Transient negative live (an over-counted free at a not-yet-paired site) is
-// clamped to zero when sampled so it does not skew the average or total.
-TEST_F(NativeMemTest, NegativeLiveClampedInSample) {
-    NativeMem::record(NM_MISC, -1234);
-    NativeMem::sample();
-    EXPECT_EQ(0, NativeMem::avg(NM_MISC));
-    EXPECT_EQ(0, NativeMem::maxTotal());
-}
-
 // setLive() overwrites the live value (gauge semantics) but still advances the
 // peak, which is retained when the gauge shrinks.
 TEST_F(NativeMemTest, SetLiveOverwritesAndAdvancesMax) {

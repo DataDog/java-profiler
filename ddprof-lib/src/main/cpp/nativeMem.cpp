@@ -45,8 +45,10 @@ void NativeMem::sample() {
   long long total = 0;
   for (int c = 0; c < NM_NUM_CATEGORIES; c++) {
     long long v = load(_live[c]);
-    // Clamp transient negatives from not-yet-instrumented free sites so they do
-    // not skew the window; accounting is currently best-effort per category.
+    // A category's live bytes are never negative under correct pairing (asserted
+    // in record()). This clamp is a release-mode safety net: should an accounting
+    // bug slip past the assert under NDEBUG, it keeps a negative from skewing the
+    // window average and total rather than propagating garbage.
     if (v < 0) {
       v = 0;
     }
