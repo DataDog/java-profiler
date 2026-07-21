@@ -43,7 +43,7 @@ __asm__(".symver exp,exp@GLIBC_2.17");
 
 // A "hook-prefixed" sample (malloc, socket I/O, ...) is one whose native
 // callchain starts inside the profiler's own PLT/libc hook and must be
-// trimmed up to the MARK_ASYNC_PROFILER boundary frame before symbolication.
+// trimmed up to the MARK_JAVA_PROFILER boundary frame before symbolication.
 // Single source of truth for that predicate across both BCI_* (FP/DWARF path)
 // and EventType (walkVM path) representations.
 inline bool isHookPrefixedSample(jint bci) {
@@ -350,7 +350,7 @@ public:
    *   MARK_VM_RUNTIME = 1      -- terminates the scan
    *   MARK_INTERPRETER = 2     -- terminates the scan
    *   MARK_COMPILER_ENTRY = 3  -- inserts a pseudo JIT-compile-task frame, then resumes unwinding
-   *   MARK_ASYNC_PROFILER = 4  -- resets depth and resumes unwinding above the hook boundary
+   *   MARK_JAVA_PROFILER = 4  -- resets depth and resumes unwinding above the hook boundary
    *
    * During stack walking, we perform symbol resolution (binarySearch) to check
    * marks and pack the mark value for later use. The performance is O(log n) for

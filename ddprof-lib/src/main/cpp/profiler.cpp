@@ -436,7 +436,7 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
   void* prev_identifier = NULL;  // Can be jmethodID or frame pointer for remote
   // skip_hook_prefix: the walk started inside profiler-internal code (e.g. the
   // malloc/socket hook call chain), not at an interrupted user PC. Discard frames
-  // until the hook wrapper's own MARK_ASYNC_PROFILER-marked frame is reached, then
+  // until the hook wrapper's own MARK_JAVA_PROFILER-marked frame is reached, then
   // resume normally from the real caller. Other mark kinds still terminate the
   // scan immediately, same as the non-skipping case.
   bool skipping = skip_hook_prefix;
@@ -455,7 +455,7 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
         char mark = (method_name != nullptr) ? NativeFunc::read_mark(method_name) : 0;
 
         if (mark != 0) {
-          if (skip_hook_prefix && mark == MARK_ASYNC_PROFILER) {
+          if (skip_hook_prefix && mark == MARK_JAVA_PROFILER) {
             depth = 0;
             skipping = false;
             continue;
@@ -484,7 +484,7 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
     if (method_name != nullptr) {
       char mark = NativeFunc::read_mark(method_name);
       if (mark != 0) {
-        if (skip_hook_prefix && mark == MARK_ASYNC_PROFILER) {
+        if (skip_hook_prefix && mark == MARK_JAVA_PROFILER) {
           depth = 0;
           skipping = false;
           continue;
@@ -508,7 +508,7 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
   }
 
   if (skipping) {
-    // The hook-boundary (MARK_ASYNC_PROFILER) frame was never found in the
+    // The hook-boundary (MARK_JAVA_PROFILER) frame was never found in the
     // callchain; every frame was discarded and the sample has no native stack.
     Counters::increment(NATIVE_TRACE_HOOK_PREFIX_NOT_FOUND);
   }

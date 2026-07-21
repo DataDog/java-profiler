@@ -30,7 +30,7 @@
 static thread_local PoissonSampler _send_sampler;
 static thread_local PoissonSampler _recv_sampler;
 
-// Marks the hook wrapper's own symbol as MARK_ASYNC_PROFILER so native call-stack
+// Marks the hook wrapper's own symbol as MARK_JAVA_PROFILER so native call-stack
 // unwinding (Profiler::convertNativeTrace) can recognize the boundary between
 // profiler-internal frames and the real caller, mirroring MallocHooker::initialize().
 // Resolved by address (not by symbol-name predicate) because these are mangled
@@ -50,7 +50,7 @@ static bool markAsyncProfilerHook(void* fn_addr) {
         Counters::increment(NATIVE_HOOK_MARK_RESOLVE_FAILED);
         return false;
     }
-    NativeFunc::set_mark(name, MARK_ASYNC_PROFILER);
+    NativeFunc::set_mark(name, MARK_JAVA_PROFILER);
     return true;
 }
 

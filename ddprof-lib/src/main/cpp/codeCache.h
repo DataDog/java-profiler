@@ -55,7 +55,7 @@ enum Mark {
     MARK_VM_RUNTIME = 1,
     MARK_INTERPRETER = 2,
     MARK_COMPILER_ENTRY = 3,
-    MARK_ASYNC_PROFILER = 4, // async-profiler internals such as native hooks.
+    MARK_JAVA_PROFILER = 4, // async-profiler internals such as native hooks.
     MARK_THREAD_ENTRY = 5,   // Thread entry points (thread_native_entry, JavaThread::, etc.)
 };
 
@@ -218,7 +218,7 @@ public:
    * Mark symbols matching the predicate with the given mark value.
    *
    * This is called during profiler initialization to mark JVM internal functions
-   * (MARK_VM_RUNTIME, MARK_INTERPRETER, MARK_COMPILER_ENTRY, MARK_ASYNC_PROFILER).
+   * (MARK_VM_RUNTIME, MARK_INTERPRETER, MARK_COMPILER_ENTRY, MARK_JAVA_PROFILER).
    */
   template <typename NamePredicate>
   inline void mark(NamePredicate predicate, char value) {

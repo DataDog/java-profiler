@@ -684,7 +684,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             // Resolve native frame (may use remote symbolication if enabled)
             Profiler::NativeFrameResolution resolution = profiler->resolveNativeFrameForWalkVM((uintptr_t)pc, lock_index);
             if (resolution.is_marked()) {
-                if (resolution.mark == MARK_ASYNC_PROFILER &&
+                if (resolution.mark == MARK_JAVA_PROFILER &&
                     isHookPrefixedSample(event_type)) {
                     // Discard frames captured above the malloc/socket hook boundary,
                     // excluding the hook's own frame, and resume from the real

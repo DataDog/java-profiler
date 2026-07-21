@@ -57,7 +57,7 @@ public class NativeSocketStackTraceTest extends CStackAwareAbstractProfilerTest 
         stopProfiler();
 
         // A recognizable caller frame proves the hook-prefix-skip logic (skip_hook_prefix in
-        // Profiler::convertNativeTrace, the MARK_ASYNC_PROFILER dispatch in walkVM) resumed
+        // Profiler::convertNativeTrace, the MARK_JAVA_PROFILER dispatch in walkVM) resumed
         // unwinding above the send/recv/write/read hook boundary, rather than just returning
         // whatever frames happened to be on the stack.
         verifyStackTraces("datadog.NativeSocketEvent", "doTcpTransfer");
