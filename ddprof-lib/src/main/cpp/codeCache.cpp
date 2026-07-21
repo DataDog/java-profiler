@@ -145,19 +145,18 @@ CodeCache::~CodeCache() {
 }
 
 long long CodeCache::memoryUsage() {
-  // Blob array. The previous formula used sizeof(CodeBlob*), undercounting the
-  // array roughly threefold (CodeBlob holds three pointers).
+  // The blob array: _capacity entries of CodeBlob.
   long long total = (long long)_capacity * sizeof(CodeBlob);
 
-  // This cache's own name, plus each symbol's variable-length name string. The
-  // previous formula approximated these as a fixed sizeof(NativeFunc), ignoring
-  // the name length that dominates the allocation.
+  // This cache's own name, plus each symbol's name string. Each is a
+  // variable-length allocation whose size depends on the name length
+  // (see NativeFunc::allocSize).
   total += (long long)NativeFunc::allocSize(_name);
   for (int i = 0; i < _count; i++) {
     total += (long long)NativeFunc::allocSize(_blobs[i]._name);
   }
 
-  // DWARF unwind table and build-id string were not counted at all before.
+  // The DWARF unwind table and the build-id string, when present.
   total += (long long)_dwarf_table_length * sizeof(FrameDesc);
   if (_build_id != nullptr) {
     total += (long long)strlen(_build_id) + 1;

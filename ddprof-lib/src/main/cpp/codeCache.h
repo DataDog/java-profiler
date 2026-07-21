@@ -260,10 +260,10 @@ public:
   void setDwarfTable(FrameDesc *table, int length, const FrameDesc &default_frame = FrameDesc::default_frame);
   FrameDesc findFrameDesc(const void *pc);
 
-  // Accurate live size of everything this CodeCache owns on the heap: the blob
-  // array, the per-symbol name strings (variable length), the DWARF unwind
-  // table, the build-id string, and this cache's own name. Recomputed on
-  // demand (called only at dump time), so it always reflects current contents.
+  // Live size of everything this CodeCache owns on the heap: the blob array,
+  // the per-symbol name strings (variable length), the DWARF unwind table, the
+  // build-id string, and this cache's own name. Recomputed on demand (called
+  // only at dump time), so it reflects the current contents.
   long long memoryUsage();
 
   int count() { return _count; }
@@ -326,9 +326,10 @@ public:
   }
 
   // Sum the live memory of all registered libraries. Recomputed on demand
-  // (called only at dump time) so it tracks each library's later growth,
-  // unlike a value cached at add() time. The array is append-only, so
-  // iterating the published prefix is safe alongside concurrent add()s.
+  // (called only at dump time) so it reflects each library's current size,
+  // including symbols added after the library was registered. The array is
+  // append-only, so iterating the published prefix is safe alongside
+  // concurrent add()s.
   size_t memoryUsage() const {
     size_t total = 0;
     int n = count();
