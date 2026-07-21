@@ -28,6 +28,29 @@ inline T* cast_to(const void* ptr) {
     return reinterpret_cast<T*>(const_cast<void*>(ptr));
 }
 
+inline const char* VMStructs::at(int offset) {
+    const char* ptr = (const char*)this + offset;
+    assert(crashProtectionActive() || SafeAccess::isReadable(ptr));
+    // Poison only the returned pointer; the assert above sees the real ptr.
+    return INJECT_FAULT_ADDRESS_RARE(ptr);
+}
+
+inline const char* VMStructs::at(int offset) const {
+    const char* ptr = (const char*)this + offset;
+    assert(crashProtectionActive() || SafeAccess::isReadable(ptr));
+    return INJECT_FAULT_ADDRESS_RARE(ptr);
+}
+
+template <typename T, bool safe>
+T VMStructs::load_at_offset(int offset) const {
+    const char* ptr = at(offset);
+    if (safe) {
+        return (T)SafeAccess::loadPtr((void**)ptr, nullptr);
+    } else {
+        return  *((T*)ptr);
+    }
+}
+
 VMThread* VMThread::current() {
     assert(VM::isHotspot());
     return VMThread::cast(JVMThread::current());
@@ -186,6 +209,15 @@ u16 VMConstMethod::nameIndex() const {
 u16 VMConstMethod::signatureIndex() const {
     assert(_constmethod_sig_index_offset >= 0 && "Invalid signature index");
     return *(u16*)at(_constmethod_sig_index_offset);
+}
+
+// ClassLoaderData accesses are unprotected
+void* VMClassLoaderData::mutex() {
+    return load_at_offset<void*, true /*safe*/>(sizeof(uintptr_t) * 3);
+}
+
+MethodList* VMClassLoaderData::methodList() {
+    return load_at_offset<MethodList*, true /*safe*/>(sizeof(uintptr_t) * 6 + 8);
 }
 
 
