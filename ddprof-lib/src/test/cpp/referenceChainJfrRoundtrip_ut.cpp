@@ -330,7 +330,12 @@ TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent)
     // buildChainEvent() below reads).
     FrontierTable *frontier = tracker->frontierTable();
     ASSERT_NE(nullptr, frontier);
-    ASSERT_TRUE(frontier->insert(1, 0, (u32)rootKlass, 0, FrontierEntryState::EDGE));
+    // root_kind=21 (JVMTI_HEAP_REFERENCE_JNI_GLOBAL) on the root-attached
+    // entry only - exercises the new rootKind field end to end through
+    // buildChainEvent()/recordReferenceChain(), mirroring how
+    // heapReferenceCallback() only ever sets it on a parent_tag==0 entry.
+    ASSERT_TRUE(frontier->insert(1, 0, (u32)rootKlass, 0,
+                                 FrontierEntryState::EDGE, /*root_kind=*/21));
     ASSERT_TRUE(frontier->insert(2, 1, (u32)middleKlass, 1, FrontierEntryState::EDGE));
     ASSERT_TRUE(frontier->insert(3, 2, (u32)leafKlass, 2, FrontierEntryState::EDGE));
 
@@ -340,6 +345,7 @@ TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent)
     EXPECT_EQ((u32)leafKlass, event._chain[0]);
     EXPECT_EQ((u32)middleKlass, event._chain[1]);
     EXPECT_EQ((u32)rootKlass, event._chain[2]);
+    EXPECT_EQ(21u, event._root_kind);
     event._start_time = TSC::ticks();
 
     const std::string path = chainRoundtripJfrPath();

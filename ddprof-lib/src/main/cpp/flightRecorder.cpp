@@ -1998,6 +1998,38 @@ void Recording::recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
   flushIfNeeded(buf);
 }
 
+// Maps a FrontierEntry::root_kind byte (a jvmtiHeapReferenceKind value,
+// referenceChains.h/.cpp's heapReferenceCallback()) to a human-readable
+// label for datadog.ReferenceChain's rootKind field - only the values
+// heapReferenceCallback() can actually produce (a root reference's own
+// jvmtiHeapReferenceKind, or JVMTI_HEAP_REFERENCE_STATIC_FIELD for the
+// "referrer is a pre-tagged class" root-like case, see that method's own
+// comment) have entries; anything else (including 0, root_kind's
+// "not set" default) reports "unknown" rather than crashing on an
+// out-of-range index.
+static const char *rootKindName(u8 root_kind) {
+  switch (root_kind) {
+  case 8:
+    return "static_field";
+  case 21:
+    return "jni_global";
+  case 22:
+    return "system_class";
+  case 23:
+    return "monitor";
+  case 24:
+    return "stack_local";
+  case 25:
+    return "jni_local";
+  case 26:
+    return "thread";
+  case 27:
+    return "other";
+  default:
+    return "unknown";
+  }
+}
+
 void Recording::recordReferenceChain(Buffer *buf, ReferenceChainEvent *event) {
   // event->_chain's length is bounded only by FrontierTable::maxCapacity()
   // (tens of thousands of entries, referenceChains.h) - NOT by
@@ -2014,11 +2046,16 @@ void Recording::recordReferenceChain(Buffer *buf, ReferenceChainEvent *event) {
                           ? chain_size
                           : (u32)MAX_REFERENCE_CHAIN_EVENT_HOPS;
 
+  // rootKindName() never returns a string longer than "static_field" (12
+  // bytes) - reserve a fixed, generous 16 bytes for its putUtf8() length
+  // prefix + payload rather than computing strlen() up front.
+  const char *root_kind_name = rootKindName(event->_root_kind);
   flushIfNeeded(
       buf, RECORDING_BUFFER_LIMIT -
                (MAX_VAR32_LENGTH /* multi-byte size prefix, below */ +
                 3 * MAX_VAR64_LENGTH /* type id, start_time, target_tag */ +
                 2 * MAX_VAR32_LENGTH /* depth, chain count */ +
+                16 /* rootKind string */ +
                 (int)emitted_size * MAX_VAR32_LENGTH));
   // Multi-byte size prefix (like writeDatadogSetting() above), not
   // writeEventSizePrefix()'s single byte - this event's size can exceed
@@ -2028,6 +2065,7 @@ void Recording::recordReferenceChain(Buffer *buf, ReferenceChainEvent *event) {
   buf->putVar64(event->_start_time);
   buf->putVar64(event->_target_tag);
   buf->putVar32(event->_depth);
+  buf->putUtf8(root_kind_name);
   // T_CLASS array field (F_CPOOL|F_ARRAY, jfrMetadata.cpp) - each entry is a
   // StringDictionary class id, same encoding as a scalar objectClass field
   // (e.g. recordAllocation() above), just repeated `count` times.

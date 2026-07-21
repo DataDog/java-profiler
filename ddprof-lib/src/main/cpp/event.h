@@ -96,15 +96,24 @@ public:
 // holds the referrer-klass StringDictionary ids it returns, in the same
 // leaf(target)-to-root order. `_depth` is the target entry's own
 // FrontierEntry::depth (hop count from the search's root-side seed).
+// `_root_kind` is the jvmtiHeapReferenceKind of whichever edge first
+// admitted this chain into the frontier (FrontierEntry::root_kind, via
+// FrontierTable::reconstructChain()'s out_root_kind) - labels *why* the
+// chain is reachable at all (JNI global, thread stack, static field, ...),
+// written out as a string (Recording::recordReferenceChain(),
+// flightRecorder.cpp) rather than a synthetic node in `_chain` itself,
+// since that array is a T_CLASS cpool array with no room for a
+// non-class placeholder.
 class ReferenceChainEvent : public Event {
 public:
   u64 _start_time;
   u64 _target_tag;
   u32 _depth;
+  u8 _root_kind;
   std::vector<u32> _chain;
 
   ReferenceChainEvent()
-      : Event(), _start_time(0), _target_tag(0), _depth(0) {}
+      : Event(), _start_time(0), _target_tag(0), _depth(0), _root_kind(0) {}
 };
 
 // Search-level abandonment signal (design doc's Termination section:

@@ -191,6 +191,7 @@ void JfrMetadata::initialize(
               << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
               << field("targetTag", T_LONG, "Frontier Tag", F_UNSIGNED)
               << field("depth", T_INT, "Depth")
+              << field("rootKind", T_STRING, "GC Root Kind")
               << field("chain", T_CLASS, "Referrer Chain (Leaf to Root)",
                        F_CPOOL | F_ARRAY))
 

@@ -87,7 +87,7 @@ bool FrontierTable::growLocked(int required_cap) {
 }
 
 bool FrontierTable::insert(jlong tag, jlong parent_tag, u32 referrer_klass,
-                            u32 depth, u8 state) {
+                            u32 depth, u8 state, u8 root_kind) {
   if (tag <= 0 || tag - 1 > (jlong)INT_MAX) {
     return false;
   }
@@ -108,6 +108,7 @@ bool FrontierTable::insert(jlong tag, jlong parent_tag, u32 referrer_klass,
   _table[idx].referrer_klass = referrer_klass;
   _table[idx].depth = depth;
   _table[idx].state = state;
+  _table[idx].root_kind = root_kind;
   _table_lock.unlock();
 
   int sz = _table_size.load(std::memory_order_relaxed);
@@ -179,7 +180,8 @@ void FrontierTable::markExpanded(jlong tag) {
 }
 
 bool FrontierTable::reconstructChain(jlong target_tag,
-                                      std::vector<u32> *out_chain) {
+                                      std::vector<u32> *out_chain,
+                                      u8 *out_root_kind) {
   FrontierEntry entry{};
   if (!lookup(target_tag, &entry)) {
     return false;
@@ -187,6 +189,7 @@ bool FrontierTable::reconstructChain(jlong target_tag,
 
   std::vector<u32> chain;
   jlong tag = target_tag;
+  u8 root_kind = 0;
   // Bounded by maxCapacity(): every tag maps to a distinct slot (this table's
   // "tags/slots are never reused" invariant, see the class comment above),
   // so a well-formed parent_tag chain can visit at most maxCapacity() slots
@@ -200,6 +203,7 @@ bool FrontierTable::reconstructChain(jlong target_tag,
     }
     chain.push_back(entry.referrer_klass);
     markEdge(tag);
+    root_kind = entry.root_kind;
     tag = entry.parent_tag;
   }
   if (tag != 0) {
@@ -210,6 +214,12 @@ bool FrontierTable::reconstructChain(jlong target_tag,
   }
 
   *out_chain = std::move(chain);
+  if (out_root_kind != nullptr) {
+    // The loop's last iteration is always the root-attached entry (the one
+    // whose parent_tag == 0 that just ended the loop), so root_kind here is
+    // that entry's own FrontierEntry::root_kind.
+    *out_root_kind = root_kind;
+  }
   return true;
 }
 
@@ -1065,7 +1075,12 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
 
     jlong tag = ctx->tracker->nextTag();
     u32 referrer_klass = ctx->tracker->classTags()->resolve(class_tag);
-    if (!ctx->frontier->insert(tag, parent_tag, referrer_klass, depth)) {
+    // reference_kind describes this admitting edge; only meaningful for a
+    // root-attached entry (parent_tag == 0) - see FrontierEntry::root_kind's
+    // own comment for why a non-root entry's edge kind is not recorded.
+    u8 root_kind = parent_tag == 0 ? (u8)reference_kind : 0;
+    if (!ctx->frontier->insert(tag, parent_tag, referrer_klass, depth,
+                               FrontierEntryState::FRONTIER, root_kind)) {
       // Frontier-size cap hit (FrontierTable::insert() returns false
       // without partially writing) - stop admitting new entries and report
       // the truncation (design doc: "stop admitting new entries ... report

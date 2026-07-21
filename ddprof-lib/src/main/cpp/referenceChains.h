@@ -190,6 +190,14 @@ typedef struct FrontierEntry {
   u32 referrer_klass;  // StringDictionary id, 0 = unresolved/none
   u32 depth;           // hop count from the frontier's seed, for the hop cap
   u8 state;            // one of FrontierEntryState's constants
+  // jvmtiHeapReferenceKind of the edge that admitted this entry, but only
+  // meaningful when parent_tag == 0 (this entry is root-attached) - 0 (no
+  // JVMTI_HEAP_REFERENCE_* value is 0) for every other entry, since a
+  // non-root entry's own referrer edge kind is not what
+  // reconstructChain()'s callers want to report (they want to label the
+  // chain's root, not every hop). Set by heapReferenceCallback()
+  // (referenceChains.cpp) at insert() time.
+  u8 root_kind;
 } FrontierEntry;
 
 // Tag-indexed slot table storing FrontierEntry metadata, modeled on
@@ -279,8 +287,12 @@ public:
   // frontier-size-cap requirement is "stop admitting new entries and report
   // it", so this reports failure to the caller rather than crashing or
   // silently dropping the write.
+  // `root_kind` is the jvmtiHeapReferenceKind of the admitting edge - only
+  // meaningful when `parent_tag == 0` (see FrontierEntry::root_kind's own
+  // comment); callers that are not admitting a root-attached entry can
+  // leave it at the default 0.
   bool insert(jlong tag, jlong parent_tag, u32 referrer_klass, u32 depth,
-              u8 state = FrontierEntryState::FRONTIER);
+              u8 state = FrontierEntryState::FRONTIER, u8 root_kind = 0);
 
   // Reads the slot for `tag` into *out. Returns false (leaving *out
   // untouched) if `tag` is not positive or has never been inserted.
@@ -320,7 +332,14 @@ public:
   // within one), so a child's parent_tag always points at an
   // already-existing, strictly smaller tag and a cycle should be
   // unreachable in practice; this is not a correctness dependency.
-  bool reconstructChain(jlong target_tag, std::vector<u32> *out_chain);
+  //
+  // `out_root_kind` (if non-null) receives the root-attached entry's own
+  // FrontierEntry::root_kind - the jvmtiHeapReferenceKind of whichever edge
+  // first admitted this chain into the frontier, letting a caller label the
+  // chain with why it is reachable at all (JNI global, thread stack, static
+  // field, ...) instead of just how (the referrer_klass hops in *out_chain).
+  bool reconstructChain(jlong target_tag, std::vector<u32> *out_chain,
+                        u8 *out_root_kind = nullptr);
 
   // Search restart (ReferenceChainTracker::restartSearch(), this class's own
   // header comment): marks every slot unoccupied again without releasing
@@ -1152,15 +1171,17 @@ public:
       return false;
     }
     std::vector<u32> chain;
-    if (!_frontier->reconstructChain(target_tag, &chain)) {
+    u8 root_kind = 0;
+    if (!_frontier->reconstructChain(target_tag, &chain, &root_kind)) {
       return false;
     }
     TEST_LOG("ReferenceChainTracker::buildChainEvent target_tag=%lld chain_size=%zu "
-             "chain[0]=%u depth=%u",
+             "chain[0]=%u depth=%u root_kind=%u",
              (long long)target_tag, chain.size(), chain.empty() ? 0u : chain[0],
-             entry.depth);
+             entry.depth, (unsigned)root_kind);
     out->_target_tag = (u64)target_tag;
     out->_depth = entry.depth;
+    out->_root_kind = root_kind;
     out->_chain = std::move(chain);
     return true;
   }
