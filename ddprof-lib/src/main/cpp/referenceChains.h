@@ -524,8 +524,14 @@ private:
 
   // Edge budget for just the search's one-shot, root-seeded first pass
   // (runPass()'s !_search_started branch) - copied from
-  // Arguments::_reference_chains_first_pass_budget in start(), falling back
-  // to _budget when unset (0). That single FollowReferences(0, nullptr,
+  // Arguments::_reference_chains_first_pass_budget in start(), auto-scaled
+  // from _budget (AUTO_FIRST_PASS_BUDGET_MULTIPLIER, capped at
+  // AUTO_FIRST_PASS_BUDGET_CAP) when unset (0), rather than falling back to
+  // plain _budget: a steady-state per-pass budget sized for cheap incremental
+  // expansion truncates a cold root-seeded walk of a real JVM's object graph
+  // long before it reaches anything interesting (see
+  // ddprof-stresstest's ReferenceChainLeakDemo, whose whole class comment is
+  // about exactly this trap). That single FollowReferences(0, nullptr,
   // nullptr, ...) call enumerates every GC root in one JVMTI-controlled
   // order and never gets to revisit whichever roots it did not reach before
   // this budget ran out - every later pass only expands forward from
@@ -728,6 +734,18 @@ private:
   // directly, once a pass has run.
   static constexpr u64 PASS_CADENCE_NS = 1000000000ULL; // 1s
 
+  // Auto-scaled default for _first_pass_budget when
+  // Arguments::_reference_chains_first_pass_budget is unset (0) - see
+  // _first_pass_budget's own comment for why plain _budget is the wrong
+  // fallback. 50x is a round, provisional guess (same status as every other
+  // _reference_chains* constant here), picked to comfortably clear a cold
+  // JVM's root set without needing firstpassbudget spelled out explicitly for
+  // every reasonably-sized heap; the cap keeps a pathologically large
+  // _budget (e.g. an operator-supplied 100000) from ballooning the first
+  // pass's own one-shot cost unbounded.
+  static constexpr int AUTO_FIRST_PASS_BUDGET_MULTIPLIER = 50;
+  static constexpr int AUTO_FIRST_PASS_BUDGET_CAP = 200000;
+
   // Pause-time pacing controller: bounds and conversion constants for
   // updatePacing()'s budget/cadence adjustment - see that method's own
   // comment for the full mechanism. Every value here is a round, provisional
@@ -837,14 +855,23 @@ private:
   // unmeasured config knob to switch between them.
   bool shouldRunPass(u64 now_ns);
 
+  // Cheap probe (max=1, not the real poll pollWatchedTargets() makes) into
+  // LivenessTracker's population-trend table: true if at least one klass
+  // shows a positive population slope worth chasing. Always true when
+  // LivenessTracker::gcGenerationsEnabled() is off, since there is no
+  // candidate signal to gate on in that mode - callers fall back to their
+  // pre-existing behavior in that case. Shared by canAffordNewSearch()
+  // (restart gate) and threadLoop()'s own steady-state gate below, so a GC
+  // with no accompanying population growth doesn't trigger either a restart
+  // or a fresh pass.
+  bool hasLeakSignal();
+
   // Search restart gate (this class's own header comment): true once
   // _pain_budget has drained back to zero (canStartNow()) *and*
-  // LivenessTracker is currently reporting at least one leak candidate
-  // (selectLeakCandidates() > 0) - a probe call, not the real poll
-  // pollWatchedTargets() makes; this only needs to know whether one exists,
-  // not which. Always true when LivenessTracker::gcGenerationsEnabled() is
-  // off, since there is no candidate signal to gate on in that mode (see the
-  // header comment's last paragraph) - this only ever affects restarts, so a
+  // hasLeakSignal() above reports at least one leak candidate. Always true
+  // when LivenessTracker::gcGenerationsEnabled() is off, since there is no
+  // candidate signal to gate on in that mode (see the header comment's last
+  // paragraph) - this only ever affects restarts, so a
   // reference-chains-without-generations setup is unaffected either way.
   bool canAffordNewSearch(u64 now_ns);
 

@@ -125,6 +125,13 @@ private:
   volatile u64 _gc_epoch;
   volatile u64 _last_gc_epoch;
 
+  // Timestamp (OS::nanotime()) of the last cleanup_table() sweep that
+  // actually ran, whether organic (flush_table()'s JFR cadence) or forced
+  // (track()'s table-overflow branch). Read/written only by
+  // maybeForceCleanup() below - see that method's own comment for why a
+  // third, time-based trigger is needed on top of those two.
+  volatile u64 _last_cleanup_ns;
+
   size_t _used_after_last_gc;
 
   // Gates the per-klass population tracking below. Set from
@@ -175,15 +182,25 @@ private:
   // synchronously from the allocation-sampling call stack, bypassing the
   // GC-epoch-changed check below. The per-klass population tracking below
   // (_gc_generations) runs on both paths, once per genuinely new GC epoch
-  // (see "is_epoch_owner" in livenessTracker.cpp), but resolveKlassId() - a
-  // real Class.getName() Java-bytecode upcall, unlike the plain native JVMTI
-  // calls already made elsewhere on this same callback stack - is only ever
-  // invoked when force is false, i.e. from flush_table()/stop()'s cadence;
-  // too costly/re-entrancy-prone to pay on the hot path. A forced sweep
-  // instead reuses whatever cached_klass_id an entry already picked up from
-  // an earlier organic epoch, or skips accounting for that entry this epoch
-  // if it was never resolved.
-  void cleanup_table(bool force = false);
+  // (see "is_epoch_owner" in livenessTracker.cpp).
+  //
+  // allow_resolve gates resolveKlassId() - a real Class.getName()
+  // Java-bytecode upcall, unlike the plain native JVMTI calls already made
+  // elsewhere on track()'s callback stack - independently of force: force
+  // only says "bypass the epoch-unchanged early-exit", it says nothing about
+  // which call stack this is running on. track()'s hot-path call passes
+  // force=true, allow_resolve=false (too costly/re-entrancy-prone to resolve
+  // from the SampledObjectAlloc callback stack - reuses whatever
+  // cached_klass_id an entry already picked up from an earlier resolving
+  // sweep, or skips accounting for that entry this epoch if it was never
+  // resolved). flush_table()/stop() pass the defaults (force=false,
+  // allow_resolve=true) - the original organic, GC-cadence path. LivenessTracker::maybeForceCleanup() passes force=true,
+  // allow_resolve=true: it runs on ReferenceChainTracker's own background
+  // thread (referenceChains.cpp), not the allocation hot path, so the same
+  // upcalls flush_table() already makes safely are just as safe there - see
+  // that method's own comment for why a third caller needs both bypassing
+  // the early-exit *and* resolution.
+  void cleanup_table(bool force = false, bool allow_resolve = true);
 
   void flush_table(std::set<int> *tracked_thread_ids);
 
@@ -281,13 +298,20 @@ public:
         _table_size(0), _table_cap(0), _table_max_cap(0), _table(NULL),
         _subsample_ratio(0.1), _record_heap_usage(false), _Class(NULL),
         _Class_getName(0), _gc_epoch(0), _last_gc_epoch(0),
-        _used_after_last_gc(0), _gc_generations(false),
+        _last_cleanup_ns(0), _used_after_last_gc(0), _gc_generations(false),
         _klass_population_size(0), _klass_count_scratch_size(0) {}
 
   Error start(Arguments &args);
   void stop();
   void track(JNIEnv *env, AllocEvent &event, jint tid, jobject object, u64 call_trace_id);
   void flush(std::set<int> &tracked_thread_ids);
+
+  // Frees this thread's subsampling RNG state (track()'s gen/dis/skipped
+  // ThreadLocals, livenessTracker.cpp). Must be called from a thread that is
+  // about to detach/terminate - see those ThreadLocal's own comment for why
+  // their pthread-key destructors alone cannot be relied on for JNI-attached
+  // threads. Safe to call even if this thread never called track().
+  static void releaseThreadLocalState();
 
   // Reads the per-klass population histories (_klass_population) and
   // writes up to `max` leak candidates into `out`: klasses whose recent
@@ -338,6 +362,29 @@ public:
   // rather than relying on that method's own "returns 0" fallback to make
   // the no-op cheap. Read-only; this accessor never toggles the flag.
   bool gcGenerationsEnabled() const { return _gc_generations; }
+
+  // Third trigger for cleanup_table(), alongside track()'s table-overflow
+  // branch (forced) and flush_table()'s JFR-flush cadence (organic): those
+  // two both depend on ObjectSampler's allocation-sampling callback firing
+  // often enough. ObjectSampler::updateConfiguration()'s PID controller
+  // throttles the JVMTI heap sampling interval toward a fixed target *event
+  // rate*, not a fixed *byte* rate - under sustained, fast heap growth this
+  // can push the interval high enough that SampledObjectAlloc (and therefore
+  // track()) stops firing in practice, starving cleanup_table() of both its
+  // forced trigger and the per-klass population samples
+  // selectLeakCandidates()'s slope computation needs. If that happens, the
+  // history cleanup_table() would otherwise have advanced goes stale and
+  // ReferenceChainTracker::hasLeakSignal() can never see a positive trend
+  // again, no matter how much the leaking population actually grows.
+  //
+  // Called once per ReferenceChainTracker::threadLoop wake (~1s cadence, see
+  // referenceChains.cpp) with a live JNIEnv already in hand - a convenient,
+  // already-existing periodic tick, not a new thread. No-ops unless both:
+  // (a) at least 30s have passed since the last cleanup_table() sweep
+  // (organic, forced, or one run by this method), and (b) at least one GC
+  // has happened since then (gcEpoch() != _last_gc_epoch) - so this never
+  // does a pointless sweep of an unchanged table.
+  void maybeForceCleanup(u64 now_ns);
 
   static void JNICALL GarbageCollectionFinish(jvmtiEnv *jvmti_env);
 

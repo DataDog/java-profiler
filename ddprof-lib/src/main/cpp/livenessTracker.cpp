@@ -29,7 +29,7 @@
 constexpr int LivenessTracker::MAX_TRACKING_TABLE_SIZE;
 constexpr int LivenessTracker::MIN_SAMPLING_INTERVAL;
 
-void LivenessTracker::cleanup_table(bool forced) {
+void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
   u64 current = load(_last_gc_epoch);
   u64 target_gc_epoch = load(_gc_epoch);
   TEST_LOG("LivenessTracker::cleanup_table forced=%d gc_generations=%d current_epoch=%llu "
@@ -86,11 +86,14 @@ void LivenessTracker::cleanup_table(bool forced) {
           // (table-overflow) sweep still contributes one population sample
           // per genuinely new GC epoch instead of silently dropping it.
           u32 klass_id = 0;
-          if (!forced) {
+          if (allow_resolve) {
             // GetObjectClass + Class.getName() + StringDictionary lookup per
             // surviving entry, previously paid only at JFR-flush time (see
-            // flush_table() below). Only affordable on this, the organic
-            // GC-driven cleanup path (flush_table()/stop()'s cadence).
+            // flush_table() below). Only affordable off the allocation-hot
+            // path - flush_table()/stop()'s cadence and
+            // LivenessTracker::maybeForceCleanup()'s background-thread tick
+            // both pass allow_resolve=true; track()'s hot-path forced sweep
+            // does not (see cleanup_table()'s own header comment).
             jobject ref = env->NewLocalRef(_table[target].ref);
             if (ref != nullptr) {
               klass_id = resolveKlassId(env, ref);
@@ -102,21 +105,21 @@ void LivenessTracker::cleanup_table(bool forced) {
                 // which would otherwise repeat this exact JNI round-trip for
                 // the same object. An object's class is immutable, so this
                 // value stays valid for flush_table()'s read below, and for
-                // a later forced sweep's read right below.
+                // a later non-resolving sweep's read right below.
                 _table[target].cached_klass_id = klass_id;
               }
               env->DeleteLocalRef(ref);
             }
           } else {
-            // track()'s table-overflow branch calls cleanup_table(true)
-            // synchronously from the allocation-sampling call stack (JVMTI
-            // SampledObjectAlloc callback). resolveKlassId() calls
+            // track()'s table-overflow branch calls cleanup_table(true,
+            // false) synchronously from the allocation-sampling call stack
+            // (JVMTI SampledObjectAlloc callback). resolveKlassId() calls
             // Class.getName(), a genuine Java-bytecode upcall (unlike the
             // plain native jvmti->GetClassSignature() call
             // ObjectSampler::recordAllocation already makes on this same
             // callback stack) - too costly, and too re-entrancy-prone via
             // the String allocation it can trigger, to run from there. Reuse
-            // whatever class id an earlier organic epoch already resolved
+            // whatever class id an earlier resolving sweep already resolved
             // for this entry instead; if it was never resolved, this entry's
             // sample for this epoch is dropped rather than resolving now.
             klass_id = _table[target].cached_klass_id;
@@ -378,8 +381,13 @@ int LivenessTracker::selectLeakCandidates(KlassCandidate *out, int max) {
   // shared-lock read pattern above, the same table cleanup_table() writes
   // under the exclusive lock this shared lock is taken against.
   _table_lock.lockShared();
-  TEST_LOG("LivenessTracker::selectLeakCandidates scanning %d klass_population entries",
-           _klass_population_size);
+  // Only log when there is actually something to scan - this runs on every
+  // BFS-thread wake (once per second), so logging an empty scan turns the
+  // steady, idle state into per-second noise.
+  if (_klass_population_size > 0) {
+    TEST_LOG("LivenessTracker::selectLeakCandidates scanning %d klass_population entries",
+             _klass_population_size);
+  }
   for (int i = 0; i < _klass_population_size; i++) {
     const KlassPopulationEntry &entry = _klass_population[i];
     double slope;
@@ -691,6 +699,29 @@ static void free_uniform_real_distribution(void* p) {
   delete urd;
 }
 
+// File-scope (not track()-local) so releaseThreadLocalState() below can
+// reach them from Profiler::onThreadEnd(). Relying solely on these
+// ThreadLocal's own pthread-key destructors (create_mt19937/free_mt19937
+// etc.) is not sufficient: pthread key destructors only fire when the
+// underlying OS thread actually exits, not when a JNI-attached thread
+// detaches via DetachCurrentThread. A reused pooled OS thread that
+// repeatedly attaches/detaches would otherwise leak one mt19937 and one
+// uniform_real_distribution allocation per attach cycle, since get() lazily
+// re-creates the value on the next track() call but nothing ever frees the
+// previous one until OS thread exit (which may never happen for a
+// long-lived pooled thread). Hooking explicit cleanup into onThreadEnd
+// matches how every other per-thread profiler state (CPU/wall engine
+// registration, ProfiledThread) is already torn down.
+static ThreadLocal<std::mt19937*, create_mt19937, free_mt19937> gen;
+static ThreadLocal<std::uniform_real_distribution<>*, create_uniform_real_distribution, free_uniform_real_distribution> dis;
+static ThreadLocal<double> skipped;
+
+void LivenessTracker::releaseThreadLocalState() {
+  gen.clear();
+  dis.clear();
+  skipped.clear();
+}
+
 void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
                             jobject object, u64 call_trace_id) {
   if (!_enabled) {
@@ -701,10 +732,6 @@ void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
     // we are not to store any objects
     return;
   }
-
-  static ThreadLocal<std::mt19937*, create_mt19937, free_mt19937> gen;
-  static ThreadLocal<std::uniform_real_distribution<>*, create_uniform_real_distribution, free_uniform_real_distribution> dis;
-  static ThreadLocal<double> skipped;
 
   if (_subsample_ratio < 1.0) {
     std::mt19937* genp = gen.get();
@@ -757,8 +784,10 @@ retry:
       retried = true;
 
       // try cleanup before resizing - there is a good chance it will free some
-      // space
-      cleanup_table(true);
+      // space. allow_resolve=false: this runs synchronously on the
+      // allocation-sampling callback stack (see cleanup_table()'s own header
+      // comment for why resolveKlassId() is unsafe here).
+      cleanup_table(true, false);
 
       if (_table_cap < _table_max_cap) {
 
@@ -798,6 +827,28 @@ retry:
     }
     skipped.set(0); // reset the subsampling skipped bytes
   }
+}
+
+void LivenessTracker::maybeForceCleanup(u64 now_ns) {
+  if (!_enabled || !_gc_generations) {
+    return;
+  }
+  constexpr u64 FORCE_CLEANUP_INTERVAL_NS = 30ULL * 1000 * 1000 * 1000;
+  u64 last_cleanup_ns = load(_last_cleanup_ns);
+  if (now_ns - last_cleanup_ns < FORCE_CLEANUP_INTERVAL_NS) {
+    return;
+  }
+  if (load(_gc_epoch) == load(_last_gc_epoch)) {
+    // Nothing happened since the last sweep (organic, forced, or a prior
+    // call to this method) - re-walking an unchanged table would just
+    // re-fold the same survivor counts into this epoch's scratch, skewing
+    // the slope computed from it. Leave _last_cleanup_ns alone so the next
+    // wake keeps checking at the same ~1s cadence rather than restarting a
+    // fresh 30s wait with nothing to show for it.
+    return;
+  }
+  store(_last_cleanup_ns, now_ns);
+  cleanup_table(true, true);
 }
 
 void JNICALL LivenessTracker::GarbageCollectionFinish(jvmtiEnv *jvmti_env) {

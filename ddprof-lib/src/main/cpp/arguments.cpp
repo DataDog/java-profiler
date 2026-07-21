@@ -94,10 +94,12 @@ static const Multiplier UNIVERSAL[] = {
 //                          may spend on average - see PainBudget (painBudget.h).
 //                          firstpassbudget=N overrides just the search's
 //                          one-shot, root-seeded first pass's edge budget
-//                          (default 0 - falls back to budget=N) since that
-//                          pass alone decides which GC roots ever enter the
-//                          frontier at all, unlike every later pass's cheap,
-//                          incremental per-node expansion.
+//                          (default 0 - auto-scales from budget=N instead,
+//                          see ReferenceChainTracker::AUTO_FIRST_PASS_BUDGET_*
+//                          in referenceChains.h) since that pass alone
+//                          decides which GC roots ever enter the frontier at
+//                          all, unlike every later pass's cheap, incremental
+//                          per-node expansion.
 //                          Sub-options are placeholders pending future tuning;
 //                          see doc/architecture/LiveHeapReferenceChains*.md
 //     lightweight[=BOOL] - enable lightweight profiling - events without

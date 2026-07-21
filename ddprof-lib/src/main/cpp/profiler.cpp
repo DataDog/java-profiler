@@ -115,6 +115,7 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
       SignalBlocker blocker;
       _cpu_engine->unregisterThread(tid);
       _wall_engine->unregisterThread(tid);
+      LivenessTracker::releaseThreadLocalState();
       ProfiledThread::release();
     }
     return;
@@ -130,6 +131,7 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   updateThreadName(jvmti, jni, thread, false);
   _cpu_engine->unregisterThread(tid);
   _wall_engine->unregisterThread(tid);
+  LivenessTracker::releaseThreadLocalState();
 }
 
 int Profiler::registerThread(int tid) {

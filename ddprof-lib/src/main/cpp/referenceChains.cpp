@@ -265,13 +265,13 @@ Error ReferenceChainTracker::start(Arguments &args) {
 
   _hop_cap = args._reference_chains_hop_cap;
   _budget = args._reference_chains_budget;
-  // 0 (unset) falls back to _budget - see this field's own comment
-  // (referenceChains.h) for why the first pass needs its own, larger
-  // ceiling rather than sharing _budget/_effective_budget with every later
-  // pass.
+  // 0 (unset) auto-scales from _budget instead of falling back to it plainly
+  // - see this field's own comment (referenceChains.h) for why a
+  // steady-state per-pass budget is the wrong size for the first pass.
   _first_pass_budget = args._reference_chains_first_pass_budget > 0
                             ? args._reference_chains_first_pass_budget
-                            : _budget;
+                            : std::min(_budget * AUTO_FIRST_PASS_BUDGET_MULTIPLIER,
+                                       AUTO_FIRST_PASS_BUDGET_CAP);
   _ttl_ms = args._reference_chains_ttl_ms;
 
   // Pause-time pacing controller: (re)seed the controller's ceiling and the
@@ -454,21 +454,68 @@ void ReferenceChainTracker::threadLoop() {
   TEST_LOG("ReferenceChainTracker::threadLoop started, cadence=%lluns", (unsigned long long)_effective_cadence_ns);
 
   int iteration = 0;
+  u64 last_observed_gc_finish_epoch = gcFinishEpoch();
   while (_running) {
-    OS::sleep(_effective_cadence_ns); // woken early by onGCFinish()'s WAKEUP_SIGNAL
+    // Fixed ~1s cadence, no early wake on GC (see onGCFinish()'s own
+    // comment) - stopThread() still interrupts this via its own
+    // pthread_kill so shutdown stays prompt.
+    OS::sleep(_effective_cadence_ns);
     if (!_running) {
       break;
     }
+
+    u64 gc_finish_epoch = gcFinishEpoch();
+    bool new_gc_since_last_wake = gc_finish_epoch != last_observed_gc_finish_epoch;
+    last_observed_gc_finish_epoch = gc_finish_epoch;
+
+    // Third trigger for LivenessTracker::cleanup_table() (see
+    // LivenessTracker::maybeForceCleanup()'s own comment): track()'s
+    // table-overflow branch and flush_table()'s JFR cadence can both starve
+    // under ObjectSampler's PID-controlled sampling interval, leaving
+    // hasLeakSignal() below stuck on a stale population history no matter
+    // how long a real leak keeps growing. This thread already wakes every
+    // ~1s with a live JNIEnv, so it doubles as that fallback tick - cheap,
+    // and a no-op unless 30s have actually elapsed with a GC in between (see
+    // that method for the exact gate).
+    u64 wake_now_ns = OS::nanotime();
+    LivenessTracker::instance()->maybeForceCleanup(wake_now_ns);
+
+    // Steady-state fast path: an active search is just waiting on the next
+    // trigger. If no GC happened since the last wake, there's nothing new
+    // for shouldRunPass()'s own gc-epoch/cadence checks to find - skip the
+    // whole iteration (no probe, no logging) rather than re-deriving the
+    // same "nothing to do" answer every cadence tick. Only applies once a
+    // search has actually started and is still RUNNING - the
+    // not-yet-started and restart-gating branches below need every wake
+    // regardless of GC activity (shouldRunPass()'s own comment).
+    if (_search_started && _search_state == SearchState::RUNNING && !new_gc_since_last_wake) {
+      continue;
+    }
+
+    // Generation-count-slope check first, before any of the more expensive
+    // work below: if LivenessTracker's population trends show nothing
+    // growing, a GC by itself isn't a reason to run a pass. Same
+    // hasLeakSignal() probe canAffordNewSearch() uses for restarts, and
+    // like that method, always true when LivenessTracker::gcGenerationsEnabled()
+    // is off (no signal to gate on) or before a search has ever started
+    // (nothing to compare a slope against yet).
+    if (_search_started && _search_state == SearchState::RUNNING && !hasLeakSignal()) {
+      continue;
+    }
+
     u64 now_ns = OS::nanotime();
     bool should_run = shouldRunPass(now_ns);
-    TEST_LOG("ReferenceChainTracker::threadLoop iteration=%d shouldRunPass=%d searchState=%d "
-             "passesRun=%d effectiveCadenceNs=%llu effectiveBudget=%d gcFinishEpoch=%llu "
-             "lastPassGcFinishEpoch=%llu nowMinusLastPassNs=%llu",
-             ++iteration, should_run, (int)_search_state, _passes_run,
-             (unsigned long long)_effective_cadence_ns, _effective_budget,
-             (unsigned long long)gcFinishEpoch(), (unsigned long long)_last_pass_gc_finish_epoch,
-             (unsigned long long)(now_ns - _last_pass_ns));
+    // Log the loop state only when a pass is actually going to run - the idle
+    // wakes (should_run == false) are the common steady state and logging them
+    // every second is pure noise.
     if (should_run) {
+      TEST_LOG("ReferenceChainTracker::threadLoop iteration=%d shouldRunPass=%d searchState=%d "
+               "passesRun=%d effectiveCadenceNs=%llu effectiveBudget=%d gcFinishEpoch=%llu "
+               "lastPassGcFinishEpoch=%llu nowMinusLastPassNs=%llu",
+               ++iteration, should_run, (int)_search_state, _passes_run,
+               (unsigned long long)_effective_cadence_ns, _effective_budget,
+               (unsigned long long)gcFinishEpoch(), (unsigned long long)_last_pass_gc_finish_epoch,
+               (unsigned long long)(now_ns - _last_pass_ns));
       runPass(jvmti, jni, nullptr);
     }
     // Target-selection bridging step: poll once per scheduling cycle, after
@@ -504,22 +551,16 @@ void ReferenceChainTracker::onGCFinish() {
     return;
   }
   GCCallbackGuard guard;
+  // Design doc's Triggering section: GC callbacks are only a scheduling
+  // *signal*, never a pass's execution vehicle (Heap-category JVMTI calls
+  // are forbidden here - see this file's header comment). Deliberately just
+  // bookkeeping - no pthread_kill/early wake here. threadLoop() below wakes
+  // on its own fixed ~1s cadence and reads this epoch then; waking it early
+  // on every GC gains at most ~1s of latency but, under any GC-heavy
+  // workload, collapses the loop's cadence to GC frequency instead (each
+  // early wake is itself a full iteration's worth of shouldRunPass()/
+  // pollWatchedTargets() work), which is not worth the latency win.
   atomicIncRelaxed(_gc_finish_epoch, (u64)1);
-  if (_running) {
-    // Design doc's Triggering section: GC callbacks are only a scheduling
-    // *signal*, never a pass's execution vehicle (Heap-category JVMTI calls
-    // are forbidden here - see this file's header comment). Waking
-    // threadLoop() early via pthread_kill (the same WAKEUP_SIGNAL/
-    // nanosleep-EINTR mechanism wallClock.cpp:330 and libraries.cpp:149
-    // already use to wake their own sleeping threads) costs nothing beyond
-    // a signal delivery, so the next pass can start as soon as this
-    // callback returns and the VM leaves the safepoint, rather than waiting
-    // out the rest of the current cadence interval. Guarded on _running because start()
-    // itself still does not spawn _thread (see start()'s comment) - only
-    // startThread() does, so this call is inert in any context that never
-    // calls startThread() (e.g. referenceChains_ut.cpp).
-    pthread_kill(_thread, WAKEUP_SIGNAL);
-  }
 }
 
 bool ReferenceChainTracker::shouldRunPass(u64 now_ns) {
@@ -551,9 +592,9 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns) {
       TEST_LOG("ReferenceChainTracker::shouldRunPass -> true (restarting search)");
       return true;
     }
-    TEST_LOG("ReferenceChainTracker::shouldRunPass -> false (searchState=%d not RUNNING, "
-             "restart not warranted yet)",
-             (int)_search_state);
+    // No log here: a terminal search waiting for a restart to become
+    // warranted is the common idle state, re-evaluated every second, so
+    // logging it is pure per-second noise (see threadLoop()).
     return false;
   }
   u64 gc_finish_epoch = gcFinishEpoch();
@@ -571,11 +612,16 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns) {
   // field's own comment (referenceChains.h) for how updatePacing() widens or
   // relaxes it from the measured pause-time signal.
   bool cadence_elapsed = now_ns - _last_pass_ns >= _effective_cadence_ns;
-  TEST_LOG("ReferenceChainTracker::shouldRunPass -> %d (now_ns=%llu last_pass_ns=%llu "
-           "delta=%llu effectiveCadenceNs=%llu)",
-           cadence_elapsed, (unsigned long long)now_ns, (unsigned long long)_last_pass_ns,
-           (unsigned long long)(now_ns - _last_pass_ns),
-           (unsigned long long)_effective_cadence_ns);
+  // Only log when the cadence actually elapsed (a pass will run). The
+  // not-yet-elapsed case is the common idle wake and logging it every second
+  // is noise.
+  if (cadence_elapsed) {
+    TEST_LOG("ReferenceChainTracker::shouldRunPass -> true (now_ns=%llu last_pass_ns=%llu "
+             "delta=%llu effectiveCadenceNs=%llu)",
+             (unsigned long long)now_ns, (unsigned long long)_last_pass_ns,
+             (unsigned long long)(now_ns - _last_pass_ns),
+             (unsigned long long)_effective_cadence_ns);
+  }
   return cadence_elapsed;
 }
 
@@ -583,20 +629,22 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns) {
 // probe (max=1) rather than reusing pollWatchedTargets()'s own
 // selectLeakCandidates() call - that one runs after runPass() in
 // threadLoop()'s own iteration and needs the *list* to poll each candidate's
-// tag; this only needs to know whether at least one exists, before runPass()
-// is even called this iteration.
-bool ReferenceChainTracker::canAffordNewSearch(u64 now_ns) {
+// tag; this only needs to know whether at least one exists.
+bool ReferenceChainTracker::hasLeakSignal() {
   if (!LivenessTracker::instance()->gcGenerationsEnabled()) {
-    // No population-trend signal to gate a restart on at all - see this
-    // class's header comment for why that means "always affordable" here
-    // rather than "never restart".
+    // No population-trend signal to gate on at all - see this method's own
+    // header comment for why that means "always true" here.
     return true;
-  }
-  if (!_pain_budget.canStartNow(now_ns)) {
-    return false; // still cooling down from the last search's own cost
   }
   KlassCandidate probe[1];
   return LivenessTracker::instance()->selectLeakCandidates(probe, 1) > 0;
+}
+
+bool ReferenceChainTracker::canAffordNewSearch(u64 now_ns) {
+  if (!_pain_budget.canStartNow(now_ns)) {
+    return false; // still cooling down from the last search's own cost
+  }
+  return hasLeakSignal();
 }
 
 // Search restart (this class's own header comment). Called only from
@@ -1552,7 +1600,12 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
   KlassCandidate candidates[kMaxWatchedCandidates];
   int candidate_count = LivenessTracker::instance()->selectLeakCandidates(
       candidates, kMaxWatchedCandidates);
-  TEST_LOG("ReferenceChainTracker::pollWatchedTargets candidate_count=%d", candidate_count);
+  // Only log when there are candidates to act on - this poll runs on every
+  // BFS-thread wake (once per second), so logging a zero count is per-second
+  // noise for the common idle case.
+  if (candidate_count > 0) {
+    TEST_LOG("ReferenceChainTracker::pollWatchedTargets candidate_count=%d", candidate_count);
+  }
 
   for (int i = 0; i < candidate_count; i++) {
     TEST_LOG("ReferenceChainTracker::pollWatchedTargets candidate[%d] klass_id=%u", i,

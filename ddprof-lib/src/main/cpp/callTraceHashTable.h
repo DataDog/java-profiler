@@ -86,7 +86,7 @@ private:
   //   - ACQUIRE loads in collect(), put(), and putWithExistingId()
   // Required for correct visibility on weakly-ordered architectures (aarch64).
   LongHashTable* _table;
-  
+
   volatile u64 _overflow;
 
   u64 calcHash(int num_frames, ASGCT_CallFrame *frames, bool truncated);
