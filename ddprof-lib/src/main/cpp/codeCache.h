@@ -74,6 +74,15 @@ public:
   static char *create(const char *name, short lib_index);
   static void destroy(char *name);
 
+  // Size of the heap allocation backing a name string produced by create().
+  // Mirrors the size computed there so callers can account for it. 0 if null.
+  static size_t allocSize(const char *name) {
+    if (name == nullptr) {
+      return 0;
+    }
+    return align_up(sizeof(NativeFunc) + 1 + strlen(name), sizeof(NativeFunc *));
+  }
+
   static short libIndex(const char *name) {
     if (name == nullptr) {
       return -1;
@@ -251,9 +260,11 @@ public:
   void setDwarfTable(FrameDesc *table, int length, const FrameDesc &default_frame = FrameDesc::default_frame);
   FrameDesc findFrameDesc(const void *pc);
 
-  long long memoryUsage() {
-    return _capacity * sizeof(CodeBlob *) + _count * sizeof(NativeFunc);
-  }
+  // Accurate live size of everything this CodeCache owns on the heap: the blob
+  // array, the per-symbol name strings (variable length), the DWARF unwind
+  // table, the build-id string, and this cache's own name. Recomputed on
+  // demand (called only at dump time), so it always reflects current contents.
+  long long memoryUsage();
 
   int count() { return _count; }
   CodeBlob* blob(int idx) {
@@ -266,11 +277,10 @@ private:
   CodeCache *_libs[MAX_NATIVE_LIBS];
   volatile int _reserved;       // next slot to reserve (CAS by writers)
   volatile int _count;          // published count (all indices < _count have non-NULL pointers)
-  volatile size_t _used_memory;
   bool _overflow_reported;
 
 public:
-  CodeCacheArray() : _reserved(0), _count(0), _used_memory(0), _overflow_reported(false) {
+  CodeCacheArray() : _reserved(0), _count(0), _overflow_reported(false) {
     memset(_libs, 0, MAX_NATIVE_LIBS * sizeof(CodeCache *));
   }
 
@@ -296,7 +306,6 @@ public:
     } while (!__atomic_compare_exchange_n(&_reserved, &slot, slot + 1,
                                           true, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
     assert(__atomic_load_n(&_libs[slot], __ATOMIC_RELAXED) == nullptr);
-    __atomic_fetch_add(&_used_memory, lib->memoryUsage(), __ATOMIC_RELAXED);
     // Store pointer before publishing count. The RELEASE here pairs with
     // the ACQUIRE load in operator[]/at() and count().
     __atomic_store_n(&_libs[slot], lib, __ATOMIC_RELEASE);
@@ -316,8 +325,20 @@ public:
     return __atomic_load_n(&_libs[index], __ATOMIC_ACQUIRE);
   }
 
+  // Sum the live memory of all registered libraries. Recomputed on demand
+  // (called only at dump time) so it tracks each library's later growth,
+  // unlike a value cached at add() time. The array is append-only, so
+  // iterating the published prefix is safe alongside concurrent add()s.
   size_t memoryUsage() const {
-    return __atomic_load_n(&_used_memory, __ATOMIC_RELAXED);
+    size_t total = 0;
+    int n = count();
+    for (int i = 0; i < n; i++) {
+      CodeCache *lib = at(i);
+      if (lib != nullptr) {
+        total += (size_t)lib->memoryUsage();
+      }
+    }
+    return total;
   }
 };
 
