@@ -579,7 +579,7 @@ void VM::ready(jvmtiEnv *jvmti, JNIEnv *jni) {
   Profiler::check_JDK_8313796_workaround();
   Profiler::setupSignalHandlers();
   static bool vmstructs_ready = false;
-  if (isHotspot() && __sync_bool_compare_and_swap(&vmstructs_ready, false, true)) {
+  if (isHotspot() && __sync_bool_compare_and_swap(&vmstructs_ready, false, true, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
     JitWriteProtection jit(true);
     CodeCache* lib = openJvmLibrary();
     if (lib != nullptr) {
