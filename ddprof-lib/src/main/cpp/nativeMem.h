@@ -31,7 +31,7 @@
   X(CALLTRACE, "calltrace")                                                    \
   X(DICTIONARY, "dictionary")                                                  \
   X(THREAD_FILTER, "thread_filter")                                            \
-  X(CODECACHE, "codecache")                                                    \
+  X(NATIVE_SYMBOLS, "native_symbols")                                          \
   X(LINE_TABLES, "line_tables")                                                \
   X(PERF, "perf")                                                              \
   X(THREAD_LOCAL, "thread_local")                                              \

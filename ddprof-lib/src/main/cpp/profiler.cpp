@@ -1791,11 +1791,11 @@ Error Profiler::dump(const char *path, const int length) {
     // separate cache from the native libraries. Routed through JVMSupport so
     // the HotSpot-only implementation stays behind the VM abstraction (0 on
     // J9/Zing). Read under its shared lock.
-    Counters::set(CODECACHE_RUNTIME_STUBS_SIZE_BYTES,
                   JVMSupport::runtimeStubsMemoryUsage());
-    // CodeCache size is a recomputed gauge (not alloc/free deltas), so mirror it
-    // as an absolute. It shares the accuracy caveats of the counter above.
-    NativeMem::setLive(NM_CODECACHE, native_libs.memoryUsage());
+    // CodeCache here is the profiler's native-symbol tables (not the JVM code
+    // cache). Its size is a recomputed gauge (not alloc/free deltas), so mirror
+    // it as an absolute. It shares the accuracy caveats of the counter above.
+    NativeMem::setLive(NM_NATIVE_SYMBOLS, native_libs.memoryUsage());
 
     Error err = Error::OK;
     // rotateDictsAndRun rotates the dictionaries, takes lockAll() around the
