@@ -1219,7 +1219,7 @@ Error Profiler::checkJvmCapabilities() {
     }
   }
 
-  if (!VMStructs::libjvm()->hasDebugSymbols() && !VM::isOpenJ9()) {
+  if (!VM::libjvm()->hasDebugSymbols()) {
     Log::warn("Install JVM debug symbols to improve profile accuracy");
   }
 

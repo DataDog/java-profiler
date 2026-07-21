@@ -58,7 +58,7 @@ jvmtiError(JNICALL *VM::_orig_RedefineClasses)(jvmtiEnv *, jint,
 jvmtiError(JNICALL *VM::_orig_RetransformClasses)(jvmtiEnv *, jint,
                                                   const jclass *classes);
 
-void *VM::_libjvm;
+CodeCache* VM::_libjvm = nullptr;
 AsyncGetCallTrace VM::_asyncGetCallTrace;
 JVM_GetManagement VM::_getManagement;
 
@@ -204,6 +204,10 @@ int JavaVersionAccess::get_hotspot_version(char* prop_value) {
 }
 
 CodeCache* VM::openJvmLibrary() {
+  if (_libjvm != nullptr) {
+    return _libjvm;
+  }
+
   if ((void*)_asyncGetCallTrace == nullptr) {
     return nullptr;
   }
@@ -213,6 +217,7 @@ CodeCache* VM::openJvmLibrary() {
     isOpenJ9()
         ? libraries->findJvmLibrary("libj9vm")
         : libraries->findLibraryByAddress((const void *)_asyncGetCallTrace);
+  _libjvm = lib;
   return lib;
 }
 
@@ -250,9 +255,9 @@ bool VM::initShared(JavaVM* vm) {
     prop = NULL;
   }
 
-  _libjvm = getLibraryHandle("libjvm.so");
-  _asyncGetCallTrace = (AsyncGetCallTrace)dlsym(_libjvm, "AsyncGetCallTrace");
-  _getManagement = (JVM_GetManagement)dlsym(_libjvm, "JVM_GetManagement");
+  void *libjvm = getLibraryHandle("libjvm.so");
+  _asyncGetCallTrace = (AsyncGetCallTrace)dlsym(libjvm, "AsyncGetCallTrace");
+  _getManagement = (JVM_GetManagement)dlsym(libjvm, "JVM_GetManagement");
 
   Libraries *libraries = Libraries::instance();
   libraries->updateSymbols(false);
