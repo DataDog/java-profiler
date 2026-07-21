@@ -46,13 +46,14 @@ typedef enum NativeMemCategory : int {
 
 // Tracks the profiler's live native memory per category, plus a moving-window
 // average and running peak. Live accounting is always-on and independent of the
-// COUNTERS build flag: record() is a single relaxed atomic add.
+// COUNTERS build flag: record() is a relaxed atomic add, plus (for allocations)
+// a conditional lock-free high-water update of the per-category peak.
 //
 // Most call sites are off the signal path (they allocate via malloc/new, which
 // are not async-signal-safe anyway). The exception is the CALLTRACE arena: it
 // allocates from within the sampling signal handler (via OS::safeAlloc's raw
-// mmap syscall), so record() must stay async-signal-safe there -- which a
-// relaxed atomic add is.
+// mmap syscall), so record() must stay async-signal-safe there -- which
+// lock-free relaxed atomics are.
 //
 // The moving average and peak are refreshed by sample(), which is expected to
 // be called from a single thread (the JFR chunk-finish path).
