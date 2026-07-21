@@ -44,12 +44,13 @@ inline const char* VMStructs::at(int offset) const {
 
 template <typename T, bool safe>
 T VMStructs::load_at_offset(int offset) const {
-    const char* ptr = at(offset);
+    const char* raw = (const char*)this + offset;
     if (safe) {
-        return (T)SafeAccess::loadPtr((void**)ptr, nullptr);
-    } else {
-        return  *((T*)ptr);
+        // SafeAccess loads must work even when crash protection isn't active; avoid at() asserts.
+        return (T)SafeAccess::loadPtr((void**)INJECT_FAULT_ADDRESS_RARE(raw), nullptr);
     }
+    assert(crashProtectionActive() || SafeAccess::isReadable(raw));
+    return *((T*)INJECT_FAULT_ADDRESS_RARE(raw));
 }
 
 
