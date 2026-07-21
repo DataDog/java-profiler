@@ -82,6 +82,11 @@ private:
   uint8_t _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
   UnwindFailures _unwind_failures;
   bool _otel_ctx_initialized;
+#ifdef __FAULT_INJECTION__
+  // xorshift64 PRNG state for compile-time fault injection (faultInjection.h).
+  // Per-thread, so the signal-path draw needs no lock/atomic; must never be 0.
+  u64 _fi_rng;
+#endif
   // alignas(8) + sizeof(OtelThreadContextRecord)==640 (multiple of 8) guarantee
   // _otel_tag_encodings sits at +640 with no padding, so the three fields form one
   // 688-byte contiguous region exposed as a combined DirectByteBuffer.
@@ -100,7 +105,15 @@ private:
         _park_block_token(0), _filter_slot_id(-1), _init_window(0),
         _signal_depth(0),
         _otel_ctx_initialized(false),
-        _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0) {};
+        _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0) {
+#ifdef __FAULT_INJECTION__
+    // Seed like PoissonSampler: instance address XOR a hash of the tid, forced
+    // non-zero (0 is a fixed point of xorshift64). 0x9e37... is the Knuth
+    // multiplicative constant (see common.h KNUTH_MULTIPLICATIVE_CONSTANT).
+    _fi_rng = ((u64)(uintptr_t)this) ^ (0x9e3779b97f4a7c15ULL * (u64)tid);
+    if (_fi_rng == 0) _fi_rng = 1;
+#endif
+  };
 
   virtual ~ProfiledThread() { }
 public:
@@ -234,6 +247,19 @@ public:
   inline uint8_t signalDepth() const { return _signal_depth; }
   inline void enterSignalScope()    { ++_signal_depth; }
   inline void exitSignalScope()     { if (_signal_depth > 0) --_signal_depth; }
+
+#ifdef __FAULT_INJECTION__
+  // One xorshift64 step (Marsaglia 2003), matching PoissonSampler::nextExp.
+  // Plain member r/w is AS-safe: signals are delivered to the owning thread.
+  inline u64 nextFiRandom() {
+    _fi_rng ^= _fi_rng << 13;
+    _fi_rng ^= _fi_rng >> 7;
+    _fi_rng ^= _fi_rng << 17;
+    return _fi_rng;
+  }
+  // Test hook: force a deterministic PRNG stream for rate/recovery assertions.
+  inline void setFiRng(u64 seed) { _fi_rng = seed ? seed : 1; }
+#endif
 
   UnwindFailures* unwindFailures(bool reset = true) {
     if (reset) {

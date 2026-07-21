@@ -14,6 +14,7 @@
 #include <type_traits>
 #include "codeCache.h"
 #include "counters.h"
+#include "faultInjection.h"
 #include "jvmThread.h"
 #include "safeAccess.h"
 #include "threadState.h"
@@ -451,13 +452,14 @@ class VMStructs {
     const char* at(int offset) {
         const char* ptr = (const char*)this + offset;
         assert(crashProtectionActive() || SafeAccess::isReadable(ptr));
-        return ptr;
+        // Poison only the returned pointer; the assert above sees the real ptr.
+        return INJECT_FAULT_ADDRESS_RARE(ptr);
     }
 
     const char* at(int offset) const {
         const char* ptr = (const char*)this + offset;
         assert(crashProtectionActive() || SafeAccess::isReadable(ptr));
-        return ptr;
+        return INJECT_FAULT_ADDRESS_RARE(ptr);
     }
 
     static bool goodPtr(const void* ptr) {

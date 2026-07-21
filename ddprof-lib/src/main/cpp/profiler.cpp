@@ -16,6 +16,7 @@
 #include "ctimer.h"
 #include "signalInflight.h"
 #include "dwarf.h"
+#include "faultInjection.h"
 #include "flightRecorder.h"
 #include "itimer.h"
 #include "hotspot/vmStructs.inline.h"
@@ -992,6 +993,17 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
 void Profiler::setupSignalHandlers() {
   // Do not re-run the signal setup (run only when VM has not been loaded yet)
   if (__sync_bool_compare_and_swap(&_signals_initialized, false, true)) {
+      // Eagerly initialize the Counters singleton off the signal path, before any
+      // handler that increments counters is installed. The crash handler
+      // (crashHandlerInternal -> SafeAccess::handle_safefetch) bumps
+      // SAFEFETCH_FAILED / SAFECOPY_FAILED, and other async handlers bump the
+      // WALKVM_* counters. The first touch of the singleton lazily runs
+      // aligned_alloc + memset and takes the C++ static-init guard lock — none of
+      // which are async-signal-safe. Forcing that construction here guarantees the
+      // signal path only ever performs lock-free atomic increments on the
+      // already-allocated array.
+      (void)Counters::getCounters();
+
       if (VM::isHotspot() || VM::isOpenJ9()) {
         // HotSpot and J9 tolerate interposed SIGSEGV/SIGBUS handler; other JVMs probably not
         // IMPORTANT: protectSignalHandlers must be called BEFORE replaceSigsegvHandler so that
@@ -1004,6 +1016,11 @@ void Profiler::setupSignalHandlers() {
         // Patch sigaction GOT in libraries with broken signal handlers (already loaded)
         LibraryPatcher::patch_sigaction();
       }
+#ifdef __FAULT_INJECTION__
+      // Reserve the PROT_NONE guard region used to poison memory-access sites.
+      // Done here (off the signal path) once handlers are installed.
+      faultinj::init();
+#endif
   }
 }
 

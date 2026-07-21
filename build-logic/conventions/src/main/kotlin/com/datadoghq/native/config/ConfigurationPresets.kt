@@ -37,12 +37,21 @@ object ConfigurationPresets {
         project.logger.lifecycle("Setting up standard build configurations for $currentPlatform-$currentArch")
         project.logger.lifecycle("Using compiler: $compiler")
 
+        // Opt-in compile-time fault injection. When -PenableFaultInjection is
+        // passed we append -D__FAULT_INJECTION__ to the standard release/debug
+        // library builds, so the documented buildRelease / buildDebug workflows
+        // produce a fault-injected libjavaProfiler.so. It is intentionally NOT
+        // applied to asan/tsan/fuzzer: those configs install their own SIGSEGV
+        // interception, which conflicts with the deliberately-faulting loads.
+        val faultInjection = project.hasProperty("enableFaultInjection")
         extension.buildConfigurations.apply {
             register("release") {
                 configureRelease(this, currentPlatform, currentArch, version)
+                if (faultInjection) compilerArgs.add("-D__FAULT_INJECTION__")
             }
             register("debug") {
                 configureDebug(this, currentPlatform, currentArch, version)
+                if (faultInjection) compilerArgs.add("-D__FAULT_INJECTION__")
             }
             register("asan") {
                 configureAsan(this, currentPlatform, currentArch, version, rootDir, compiler)
