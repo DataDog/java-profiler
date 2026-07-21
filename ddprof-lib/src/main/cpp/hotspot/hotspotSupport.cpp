@@ -575,6 +575,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                                        level >= 1 && level <= 3 ? FRAME_C1_COMPILED : FRAME_JIT_COMPILED;
                             }
                             VMMethod* method = scope.method();
+                            if (method == nullptr) {
+                                break;
+                            }
                             jmethodID method_id = method->id();
                             fillFrame(frames[depth++], type, scope.bci(), method_id, method);
                         } while (scope_offset > 0 && depth < max_depth);
