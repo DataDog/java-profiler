@@ -842,7 +842,8 @@ VMFlag* VMFlag::find(const char* name) {
 
         for (size_t i = 0; i < count; i++) {
             VMFlag* f = VMFlag::cast(*(const char**)_flags_addr + i * VMFlag::type_size());
-            if (f->name() != NULL && strcmp(f->name(), name) == 0 && f->addr() != NULL) {
+            const char* fname = f->name();
+            if (fname != nullptr && strcmp(fname, name) == 0 && f->addr() != nullptr) {
                 return f;
             }
         }
