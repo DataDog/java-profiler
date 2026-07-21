@@ -30,10 +30,10 @@ inline T* cast_to(const void* ptr) {
 }
 
 inline const char* VMStructs::at(int offset) {
-   const char* ptr = (const char*)this + offset;
-   assert(crashProtectionActive() || SafeAccess::isReadable(ptr));
-   // Poison only the returned pointer; the assert above sees the real ptr.
-   return INJECT_FAULT_ADDRESS_RARE(ptr);
+    const char* ptr = (const char*)this + offset;
+    assert(crashProtectionActive() || SafeAccess::isReadable(ptr));
+    // Poison only the returned pointer; the assert above sees the real ptr.
+    return INJECT_FAULT_ADDRESS_RARE(ptr);
 }
 
 inline const char* VMStructs::at(int offset) const {
