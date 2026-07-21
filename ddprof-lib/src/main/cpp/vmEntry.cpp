@@ -204,8 +204,9 @@ int JavaVersionAccess::get_hotspot_version(char* prop_value) {
 }
 
 CodeCache* VM::openJvmLibrary() {
-  if (_libjvm != nullptr) {
-    return _libjvm;
+  CodeCache* lib = __atomic_load_n(&_libjvm, __ATOMIC_ACQUIRE);
+  if (lib != nullptr) {
+    return lib;
   }
 
   if ((void*)_asyncGetCallTrace == nullptr) {
@@ -213,11 +214,10 @@ CodeCache* VM::openJvmLibrary() {
   }
 
   Libraries* libraries = Libraries::instance();
-  CodeCache *lib =
-    isOpenJ9()
+  lib = isOpenJ9()
         ? libraries->findJvmLibrary("libj9vm")
         : libraries->findLibraryByAddress((const void *)_asyncGetCallTrace);
-  _libjvm = lib;
+  __atomic_store_n(&_libjvm, lib, __ATOMIC_RELEASE);
   return lib;
 }
 
