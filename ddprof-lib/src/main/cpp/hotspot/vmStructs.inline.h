@@ -213,7 +213,7 @@ u16 VMConstMethod::signatureIndex() const {
     return *(u16*)at(_constmethod_sig_index_offset);
 }
 
-// The method is called without protection
+// This method may be called without crash protection, so read the name via SafeAccess.
 inline const char* VMFlag::name() const {
     assert(_flag_name_offset >= 0);
     return load_at_offset<const char*, true /* safe load */>(_flag_name_offset);
