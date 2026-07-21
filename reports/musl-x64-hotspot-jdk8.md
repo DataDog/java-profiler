@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk8
 
 ## musl-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-07-21 04:47:29 EDT
+**Date:** 2026-07-21 04:55:51 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-x64-hotspot-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 39 |
-| CPU Cores (end) | 39 |
+| CPU Cores (start) | 48 |
+| CPU Cores (end) | 45 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: musl-x64-hotspot-jdk8
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (2 unique values: 37-39 cores)</summary>
+<summary>CPU Timeline (2 unique values: 45-48 cores)</summary>
 
 ```
-1784623391 39
-1784623396 39
-1784623401 39
-1784623406 39
-1784623411 37
-1784623416 37
-1784623421 37
-1784623426 37
-1784623431 39
-1784623436 39
-1784623441 39
-1784623446 39
-1784623451 39
-1784623456 39
-1784623461 39
-1784623466 39
-1784623471 39
-1784623476 39
-1784623481 39
-1784623486 39
+1784623873 48
+1784623878 48
+1784623883 48
+1784623888 48
+1784623893 48
+1784623898 48
+1784623903 48
+1784623908 48
+1784623913 48
+1784623918 48
+1784623923 48
+1784623928 48
+1784623933 48
+1784623938 48
+1784623943 48
+1784623948 48
+1784623953 48
+1784623958 48
+1784623963 48
+1784623968 48
 ```
 </details>
 
