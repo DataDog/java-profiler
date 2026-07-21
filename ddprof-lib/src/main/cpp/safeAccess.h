@@ -52,6 +52,9 @@ public:
    */
   NOINLINE
   static int safeFetch32(int* ptr, int errorValue) {
+#ifdef DEBUG
+    countIfLongjmpProtected(false);
+#endif
     return safefetch32_impl(ptr, errorValue);
   }
 
@@ -62,6 +65,9 @@ public:
    */
   NOINLINE
   static int64_t safeFetch64(int64_t* ptr, int64_t errorValue) {
+#ifdef DEBUG
+    countIfLongjmpProtected(false);
+#endif
     return safefetch64_impl(ptr, errorValue);
   }
 
@@ -109,6 +115,17 @@ public:
     }
     return isReadable(end_page);
   }
+
+#ifdef DEBUG
+private:
+  // Debug diagnostic: bump a counter when a SafeAccess read/copy is issued while
+  // the current thread is already inside a walkVM longjmp-protected region, where
+  // the safefetch/safecopy overhead is redundant (a fault there is caught by the
+  // longjmp anyway). Defined out-of-line in safeAccess.cpp so this widely-included
+  // header need not pull in threadLocalData.h / counters.h. isCopy selects the
+  // SAFECOPY_WHILE_PROTECTED vs SAFEFETCH_WHILE_PROTECTED counter.
+  static void countIfLongjmpProtected(bool isCopy);
+#endif
 };
 
 #endif // _SAFEACCESS_H

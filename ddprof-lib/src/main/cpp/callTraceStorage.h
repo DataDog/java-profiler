@@ -31,7 +31,9 @@ typedef std::function<void(std::unordered_set<u64>&)> LivenessChecker;
 class CallTraceStorage {
 public:
     // Reserved trace ID for dropped samples due to contention
-    // Real trace IDs are generated as (instance_id << 32) | slot, where instance_id starts from 1
+    // Real trace IDs are generated as (instance_id << 32) | (slot_base + slot),
+    // where instance_id starts from 1 and slot_base makes the low bits unique
+    // across all LongHashTable generations of one active tenure
     // Any ID with 0 in upper 32 bits is guaranteed to not clash with real trace IDs
     static constexpr u64 DROPPED_TRACE_ID = 1ULL;
     

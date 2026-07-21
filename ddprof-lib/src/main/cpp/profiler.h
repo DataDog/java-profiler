@@ -319,6 +319,7 @@ public:
     return __atomic_load_n(&_epoch, __ATOMIC_RELAXED);
   }
 
+  Error init();
   Error run(Arguments &args);
   Error runInternal(Arguments &args, std::ostream &out);
   Error restart(Arguments &args);

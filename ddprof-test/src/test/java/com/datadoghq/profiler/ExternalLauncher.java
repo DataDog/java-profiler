@@ -1,7 +1,14 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler;
 
+import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadMXBean;
+import java.lang.reflect.Method;
 import java.util.Random;
 import java.util.concurrent.atomic.LongAdder;
 
@@ -15,9 +22,22 @@ import java.util.concurrent.atomic.LongAdder;
  *     <li>library - loads the profiler library</li>
  *     <li>profiler [comma delimited profiler command list] - starts the profiler</li>
  *     <li>profiler-work:<expectedCpuTime> [comma delimited profiler command list] - starts the profiler and runs a CPU-intensive task</li>
+ *     <li>profiler-virtual-thread - calls {@link JavaProfiler#getInstance()} for the first time from a virtual thread</li>
  * </ul>
  */
 public class ExternalLauncher {
+    /**
+     * Starts a virtual thread using reflection so this class compiles with {@code --release 8}.
+     * Equivalent to {@code Thread.ofVirtual().start(task)}.
+     */
+    private static Thread startVirtualThread(Runnable task) throws Exception {
+        Method ofVirtual = Thread.class.getMethod("ofVirtual");
+        Object builder = ofVirtual.invoke(null);
+        Class<?> builderInterface = Class.forName("java.lang.Thread$Builder");
+        Method start = builderInterface.getMethod("start", Runnable.class);
+        return (Thread) start.invoke(builder, task);
+    }
+
     public static void main(String[] args) throws Exception {
         Thread worker = null;
         try {
@@ -26,6 +46,18 @@ public class ExternalLauncher {
             }
             if (args[0].equals("library")) {
                 JVMAccess.getInstance();
+            } else if (args[0].equals("profiler-virtual-thread")) {
+                Thread vt = startVirtualThread(() -> {
+                    try {
+                        JavaProfiler.getInstance();
+                        System.out.println("[virtual-thread-no-exception]");
+                    } catch (IOException e) {
+                        System.out.println("[virtual-thread-ioexception] " + e.getMessage());
+                    } catch (Throwable t) {
+                        System.out.println("[virtual-thread-unexpected] " + t.getClass().getName() + ": " + t.getMessage());
+                    }
+                });
+                vt.join();
             } else if (args[0].equals("profiler")) {
                 JavaProfiler instance = JavaProfiler.getInstance();
                 if (args.length == 2) {

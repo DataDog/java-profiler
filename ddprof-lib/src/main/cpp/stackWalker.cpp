@@ -7,6 +7,7 @@
 #include <setjmp.h>
 #include "stackWalker.inline.h"
 #include "dwarf.h"
+#include "faultInjection.h"
 #include "profiler.h"
 #include "stackFrame.h"
 #include "symbols.h"
@@ -60,13 +61,13 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
             break;
         }
 
-        pc = stripPointer(SafeAccess::load((void**)fp + FRAME_PC_SLOT));
+        pc = stripPointer(SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)fp + FRAME_PC_SLOT)));
         if (inDeadZone(pc)) {
             break;
         }
 
         sp = fp + (FRAME_PC_SLOT + 1) * sizeof(void*);
-        fp = (uintptr_t)SafeAccess::load((void**)fp);
+        fp = (uintptr_t)SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)fp));
     }
 
     if (truncated && depth > max_depth) {
@@ -145,7 +146,7 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
                 if (!aligned(fp_addr)) {
                     break;
                 }
-                fp = (uintptr_t)SafeAccess::load((void**)fp_addr);
+                fp = (uintptr_t)SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)fp_addr));
             }
 
             if (EMPTY_FRAME_SIZE > 0 || f.pc_off != DW_LINK_REGISTER) {
@@ -153,7 +154,7 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
                 if (!aligned(pc_addr)) {
                     break;
                 }
-                pc = stripPointer(SafeAccess::load((void**)pc_addr));
+                pc = stripPointer(SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)pc_addr)));
             } else if (depth == 1) {
                 pc = (const void*)frame.link();
             } else {

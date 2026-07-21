@@ -9,6 +9,7 @@
 #include "context.h"
 #include "otel_context.h"
 #include "os.h"
+#include "threadLocal.h"
 #include "threadState.h"
 #include "unwindStats.h"
 #include <atomic>
@@ -53,13 +54,9 @@ public:
   // Even with a 5-level cap we can still encounter highly recursive signal handlers.
   static constexpr u32 CRASH_HANDLER_NESTING_LIMIT = 5;
 private:
-  static pthread_key_t _tls_key;
-  static bool _tls_key_initialized;
+  static void freeValue(void* value);
 
-  static void initTLSKey();
-  static void doInitTLSKey();
-  static inline void freeKey(void *key);
-
+  static ThreadLocal<ProfiledThread*, nullptr, freeValue>  _current_thread;
   // longjmp buffer. Used by hotspot only at this moment.
   // Published in walkVM() and consumed in checkFault() from an asynchronous
   // SEGV-handler context on the same thread; atomic makes the publish/observe
@@ -85,6 +82,11 @@ private:
   uint8_t _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
   UnwindFailures _unwind_failures;
   bool _otel_ctx_initialized;
+#ifdef __FAULT_INJECTION__
+  // xorshift64 PRNG state for compile-time fault injection (faultInjection.h).
+  // Per-thread, so the signal-path draw needs no lock/atomic; must never be 0.
+  u64 _fi_rng;
+#endif
   // alignas(8) + sizeof(OtelThreadContextRecord)==640 (multiple of 8) guarantee
   // _otel_tag_encodings sits at +640 with no padding, so the three fields form one
   // 688-byte contiguous region exposed as a combined DirectByteBuffer.
@@ -103,37 +105,59 @@ private:
         _park_block_token(0), _filter_slot_id(-1), _init_window(0),
         _signal_depth(0),
         _otel_ctx_initialized(false),
-        _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0) {};
+        _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0) {
+#ifdef __FAULT_INJECTION__
+    // Seed like PoissonSampler: instance address XOR a hash of the tid, forced
+    // non-zero (0 is a fixed point of xorshift64). 0x9e37... is the Knuth
+    // multiplicative constant (see common.h KNUTH_MULTIPLICATIVE_CONSTANT).
+    _fi_rng = ((u64)(uintptr_t)this) ^ (0x9e3779b97f4a7c15ULL * (u64)tid);
+    if (_fi_rng == 0) _fi_rng = 1;
+#endif
+  };
 
   virtual ~ProfiledThread() { }
 public:
   static ProfiledThread *forTid(int tid) { return new ProfiledThread(tid); }
+  static bool isThreadKeyValid() {
+    return _current_thread.isKeyValid();
+  }
 
-  static void initCurrentThread();
-  static void release();
 #ifdef UNIT_TEST
   // Simulates the moment inside release() after pthread_setspecific(NULL) but
   // before delete — the race window the clearCurrentThreadTLS fix covers.
   // Returns the detached pointer so the caller can delete it after assertions.
   static ProfiledThread* clearCurrentThreadTLS() {
-    if (__atomic_load_n(&_tls_key_initialized, __ATOMIC_ACQUIRE)) {
-      ProfiledThread *pt = (ProfiledThread *)pthread_getspecific(_tls_key);
-      pthread_setspecific(_tls_key, nullptr);
-      return pt;
-    }
-    return nullptr;
+    assert(isThreadKeyValid() && "Should not reach here - profiling should have been disabled");
+    ProfiledThread* pt = _current_thread.get();
+    _current_thread.set(nullptr);
+    return pt;
   }
   // Deletes a ProfiledThread returned by clearCurrentThreadTLS().
   // Needed because the destructor is private.
   static void deleteForTest(ProfiledThread *pt) { delete pt; }
 #endif
+  // initCurrentThread() and release() are not async-signal-safe: 
+  // must be called outside of a signal handler with signal blocked
+  static ProfiledThread* initCurrentThread();
+  static void release();
 
-  static ProfiledThread *current();
-  static ProfiledThread *currentSignalSafe(); // Signal-safe version that never allocates
+  // This version blocks signals, so that initialization cannot
+  // be interrupted by signals
+  // This method is used for initializing ProfiledThread for known JNI entry points,
+  // in case that the Java threads were started before thread creation interceptor
+  // is fully initialized, so that ProfiledThreads were not setup for the threads.
+  static ProfiledThread* initCurrentThreadSignalSafe();
+
+  // Signal-handler friendly (no allocation): returns existing TLS or nullptr.
+  static inline ProfiledThread *current() {
+    if (!isThreadKeyValid()) {
+      return nullptr;
+    }
+    return _current_thread.get();
+  }
+
   static int currentTid();
-
   inline int tid() { return _tid; }
-
   inline u64 noteCPUSample(u32 recording_epoch) {
     _recording_epoch = recording_epoch;
     return ++_cpu_epoch;
@@ -223,6 +247,19 @@ public:
   inline uint8_t signalDepth() const { return _signal_depth; }
   inline void enterSignalScope()    { ++_signal_depth; }
   inline void exitSignalScope()     { if (_signal_depth > 0) --_signal_depth; }
+
+#ifdef __FAULT_INJECTION__
+  // One xorshift64 step (Marsaglia 2003), matching PoissonSampler::nextExp.
+  // Plain member r/w is AS-safe: signals are delivered to the owning thread.
+  inline u64 nextFiRandom() {
+    _fi_rng ^= _fi_rng << 13;
+    _fi_rng ^= _fi_rng >> 7;
+    _fi_rng ^= _fi_rng << 17;
+    return _fi_rng;
+  }
+  // Test hook: force a deterministic PRNG stream for rate/recovery assertions.
+  inline void setFiRng(u64 seed) { _fi_rng = seed ? seed : 1; }
+#endif
 
   UnwindFailures* unwindFailures(bool reset = true) {
     if (reset) {

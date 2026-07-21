@@ -18,6 +18,7 @@
 package com.datadoghq.profiler;
 
 import java.io.IOException;
+import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Path;
@@ -38,6 +39,30 @@ public final class JavaProfiler {
         static final long FREQUENCY = tscFrequency0();
     }
     private static JavaProfiler instance;
+
+    // Thread.isVirtual() was added in JDK 21; resolved reflectively (once) so this class
+    // still compiles against a JDK 17 (or older) bootclasspath. null means the JVM this
+    // code is running on predates virtual threads, so no thread can ever be one.
+    private static final Method IS_VIRTUAL_METHOD = resolveIsVirtualMethod();
+
+    private static Method resolveIsVirtualMethod() {
+        try {
+            return Thread.class.getMethod("isVirtual");
+        } catch (NoSuchMethodException e) {
+            return null;
+        }
+    }
+
+    private static boolean isVirtualThread(Thread thread) {
+        if (IS_VIRTUAL_METHOD == null) {
+            return false;
+        }
+        try {
+            return (Boolean) IS_VIRTUAL_METHOD.invoke(thread);
+        } catch (ReflectiveOperationException e) {
+            return false;
+        }
+    }
 
     // Storage for profiling context. Scoped to the carrier thread when available so a
     // mounted virtual thread resolves to its current carrier's OTEP record (the record the
@@ -115,6 +140,11 @@ public final class JavaProfiler {
         if (!result.succeeded) {
             throw new IOException("Failed to load Datadog Java profiler library", result.error);
         }
+
+        if (isVirtualThread(Thread.currentThread())) {
+            throw new IOException("Cannot initialize profiler on a virtual thread");
+        }
+
         init0();
 
         instance = profiler;

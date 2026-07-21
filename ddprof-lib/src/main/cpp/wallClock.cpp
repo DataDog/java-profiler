@@ -236,7 +236,7 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   if (!cs.entered()) {
     return;  // Another critical section is active, defer profiling
   }
-  ProfiledThread *current = ProfiledThread::currentSignalSafe();
+  ProfiledThread *current = ProfiledThread::current();
   // Guard against the race window between Profiler::registerThread() and
   // thread_native_entry setting JVM TLS (PROF-13072): skip at most one signal
   // per thread. Pure native threads (where JVMThread::current() is always null)
@@ -446,7 +446,7 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
     return;
   }
   int saved_errno = errno;
-  ProfiledThread *current = ProfiledThread::currentSignalSafe();
+  ProfiledThread *current = ProfiledThread::current();
   if (current != nullptr && JVMThread::current() == nullptr
       && current->inInitWindow()) {
     current->tickInitWindow();

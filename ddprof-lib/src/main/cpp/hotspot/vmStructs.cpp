@@ -597,6 +597,8 @@ void JNICALL VMStructs::NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni, jthread t
     static int delayedCounter = 0;
     static void **delayed = (void **)malloc(512 * sizeof(void *) * 2);
 
+    ProfiledThread::initCurrentThreadSignalSafe();
+
     if (_memory_usage_func == NULL) {
         if (jvmti != NULL && jni != NULL) {
             checkNativeBinding(jvmti, jni, method, address);
@@ -684,7 +686,7 @@ bool VMThread::isJavaThread(VMThread* vm_thread) {
 
     // JVMTI ThreadStart callback may have set the flag, which is reliable.
     // Or we may already compute and cache it, so use it instead.
-    ProfiledThread *prof_thread = ProfiledThread::currentSignalSafe();
+    ProfiledThread *prof_thread = ProfiledThread::current();
     if (prof_thread != nullptr) {
         ProfiledThread::ThreadType type = prof_thread->threadType();
         if (type != ProfiledThread::ThreadType::TYPE_UNKNOWN) {

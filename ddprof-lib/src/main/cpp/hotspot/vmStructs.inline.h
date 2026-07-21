@@ -13,7 +13,7 @@
 #include "threadLocalData.h"
 
 inline bool crashProtectionActive() {
-    ProfiledThread* pt = ProfiledThread::currentSignalSafe();
+    ProfiledThread* pt = ProfiledThread::current();
     if (pt != nullptr) {
         return pt->isProtected();
     }

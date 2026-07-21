@@ -6,6 +6,7 @@
 #include "jitCodeCache.h"
 
 #include "hotspot/vmStructs.h"
+#include "threadLocalData.h"
 
 SpinLock JitCodeCache::_stubs_lock;
 CodeCache JitCodeCache::_runtime_stubs("[stubs]");
@@ -19,11 +20,13 @@ void JNICALL JitCodeCache::CompiledMethodLoad(jvmtiEnv *jvmti, jmethodID method,
                                 jint map_length,
                                 const jvmtiAddrLocationMap *map,
                                 const void *compile_info) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   CodeHeap::updateBounds(code_addr, (const char *)code_addr + code_size);
 }
 
 void JNICALL JitCodeCache::DynamicCodeGenerated(jvmtiEnv *jvmti, const char *name,
                                   const void *address, jint length) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   _stubs_lock.lock();
   _runtime_stubs.add(address, length, name, true);
   _stubs_lock.unlock();
