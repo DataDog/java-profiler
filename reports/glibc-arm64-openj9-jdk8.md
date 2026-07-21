@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk8
 
 ## glibc-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-07-21 05:47:40 EDT
+**Date:** 2026-07-21 05:58:57 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-arm64-openj9-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 48 |
-| CPU Cores (end) | 48 |
+| CPU Cores (start) | 36 |
+| CPU Cores (end) | 32 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-arm64-openj9-jdk8
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
+<summary>CPU Timeline (4 unique values: 29-36 cores)</summary>
 
 ```
-1784626992 48
-1784626997 48
-1784627002 48
-1784627007 48
-1784627012 48
-1784627017 48
-1784627022 48
-1784627027 48
-1784627032 48
-1784627037 48
-1784627042 48
-1784627047 48
-1784627052 48
-1784627057 48
-1784627062 48
-1784627067 48
-1784627072 48
-1784627077 48
-1784627082 48
-1784627087 48
+1784627710 36
+1784627715 36
+1784627720 36
+1784627725 36
+1784627730 36
+1784627735 36
+1784627740 36
+1784627745 36
+1784627750 36
+1784627755 36
+1784627760 36
+1784627765 36
+1784627770 36
+1784627775 31
+1784627780 31
+1784627785 31
+1784627790 29
+1784627795 29
+1784627800 29
+1784627805 29
 ```
 </details>
 
