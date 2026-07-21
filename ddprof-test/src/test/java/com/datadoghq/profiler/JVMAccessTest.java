@@ -4,6 +4,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.lang.management.ManagementFactory;
+import java.nio.file.Path;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -40,6 +41,60 @@ public class JVMAccessTest extends AbstractProcessProfilerTest {
 
         assertTrue(initLibraryFound.get(), "initLibrary not found");
         assertFalse(initProfilerFound.get(), "initProfilerBridge found");
+    }
+
+    /**
+     * Regression test for the Agent_OnLoad (static {@code -agentpath:}) startup path: unlike the
+     * {@code library}/{@code profiler} targets used elsewhere in this file, which load the native
+     * library via {@code System.load} ({@code JNI_OnLoad} -> {@code VM::initLibrary}), an
+     * {@code -agentpath:} JVM argument makes {@code Agent_OnLoad} -> {@code VM::initProfilerBridge}
+     * the *first* native entry point invoked, with no prior call to {@code VM::ready()}.
+     * {@code initProfilerBridge()} looks up the {@code DebugNonSafepoints} VM flag via
+     * {@code VMFlag::find()}, gated on {@code CodeHeap::available()} -- both depend on
+     * {@code VMStructs} offsets/addresses populated by {@code VMStructs::init()}. If that
+     * initialization has been deferred to the asynchronous {@code VMInit} callback without also
+     * covering this call site, {@code CodeHeap::available()} reads {@code false} (its backing
+     * address is still unset) and the code takes the JDK-8173361 workaround path instead of ever
+     * calling {@code VMFlag::find()} -- silently disabling {@code CompiledMethodLoad} events and
+     * skipping the {@code DebugNonSafepoints} detection, even on a JVM where both should have
+     * succeeded.
+     */
+    @Test
+    void agentOnLoadVMFlagDetectionTest() throws Exception {
+        String config = System.getProperty("ddprof_test.config");
+        assumeTrue("debug".equals(config));
+
+        Path agentLib = LibraryLoader.resolveLibraryPath(System.getProperty("java.io.tmpdir"));
+
+        AtomicReference<String> workaroundLine = new AtomicReference<>(null);
+        AtomicReference<String> flagLine = new AtomicReference<>(null);
+
+        boolean rslt = launch("noop",
+            Collections.singletonList("-agentpath:" + agentLib.toAbsolutePath()),
+            null,
+            l -> {
+                if (l.contains("[TEST::INFO] CompiledMethodLoad workaround:")) {
+                    workaroundLine.set(l);
+                    return LineConsumerResult.STOP;
+                }
+                if (l.contains("[TEST::INFO] DebugNonSafepoints flag")) {
+                    flagLine.set(l);
+                    return LineConsumerResult.STOP;
+                }
+                return LineConsumerResult.CONTINUE;
+            },
+            null
+        ).inTime;
+
+        assertTrue(rslt);
+        assertNull(workaroundLine.get(),
+            "VM::initProfilerBridge() took the JDK-8173361 CompiledMethodLoad workaround path (" +
+            workaroundLine.get() + ") instead of reaching the DebugNonSafepoints lookup -- " +
+            "CodeHeap::available() was false, meaning VMStructs was not initialized yet during " +
+            "Agent_OnLoad (startup-ordering regression)");
+        assertNotNull(flagLine.get(), "expected DebugNonSafepoints flag lookup log line was not observed");
+        assertTrue(flagLine.get().contains("flag found"),
+            "VMFlag::find(\"DebugNonSafepoints\") returned NULL during Agent_OnLoad: " + flagLine.get());
     }
 
     @Test
