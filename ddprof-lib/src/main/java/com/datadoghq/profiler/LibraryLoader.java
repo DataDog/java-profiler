@@ -126,12 +126,18 @@ public final class LibraryLoader {
      * @param scratchDir The working scratch dir where to store the temp library file, or {@code null}
      *     to use {@code java.io.tmpdir}
      * @return The library absolute path
-     * @throws IOException if the resource is not found on the classpath
+     * @throws IOException if an I/O error occurs while extracting the library
+     * @throws IllegalStateException if the resource is not found on the classpath
      */
     static Path resolveLibraryPath(String scratchDir) throws IOException {
         OperatingSystem os = OperatingSystem.current();
         String qualifier = (os == OperatingSystem.linux && os.isMusl()) ? "musl" : null;
-        return libraryFromClasspath(os, Arch.current(), qualifier, Paths.get(scratchDir != null ? scratchDir : System.getProperty("java.io.tmpdir")));
+        return libraryFromClasspath(
+                os,
+                Arch.current(),
+                qualifier,
+                Paths.get(scratchDir != null ? scratchDir : System.getProperty("java.io.tmpdir")))
+            .toAbsolutePath();
     }
 
     /**
