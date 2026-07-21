@@ -79,7 +79,7 @@ public class JVMAccessTest extends AbstractProcessProfilerTest {
                 }
                 if (l.contains("[TEST::INFO] DebugNonSafepoints flag")) {
                     flagLine.set(l);
-                    return LineConsumerResult.STOP;
+                    return LineConsumerResult.CONTINUE;
                 }
                 return LineConsumerResult.CONTINUE;
             },
