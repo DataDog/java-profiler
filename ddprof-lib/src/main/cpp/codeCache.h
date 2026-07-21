@@ -260,11 +260,14 @@ public:
   void setDwarfTable(FrameDesc *table, int length, const FrameDesc &default_frame = FrameDesc::default_frame);
   FrameDesc findFrameDesc(const void *pc);
 
-  // Live size of everything this CodeCache owns on the heap: the blob array,
-  // the per-symbol name strings (variable length), the DWARF unwind table, the
-  // build-id string, and this cache's own name. Recomputed on demand (called
-  // only at dump time), so it reflects the current contents.
-  long long memoryUsage();
+  // Live size of what this CodeCache owns on the heap: the blob array, the
+  // per-symbol name strings (variable length), this cache's own name, and the
+  // DWARF unwind table. Recomputed on demand (called only at dump time), so it
+  // reflects the current contents. The build-id string is deliberately excluded
+  // — it is mutated by the background refresher and negligible in size (see the
+  // definition). Const and lock-free: reads only fields that are stable once the
+  // library is published.
+  long long memoryUsage() const;
 
   int count() { return _count; }
   CodeBlob* blob(int idx) {

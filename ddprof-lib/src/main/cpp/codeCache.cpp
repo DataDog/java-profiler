@@ -144,23 +144,29 @@ CodeCache::~CodeCache() {
   free(_build_id);  // Free build-id memory
 }
 
-long long CodeCache::memoryUsage() {
+long long CodeCache::memoryUsage() const {
   // The blob array: _capacity entries of CodeBlob.
   long long total = (long long)_capacity * sizeof(CodeBlob);
 
   // This cache's own name, plus each symbol's name string. Each is a
   // variable-length allocation whose size depends on the name length
-  // (see NativeFunc::allocSize).
+  // (see NativeFunc::allocSize). Both the name pointers and the array are fixed
+  // once the library is published (the same read the symbolication fast path
+  // does), so this is safe to read at dump time without extra synchronization.
   total += (long long)NativeFunc::allocSize(_name);
   for (int i = 0; i < _count; i++) {
     total += (long long)NativeFunc::allocSize(_blobs[i]._name);
   }
 
-  // The DWARF unwind table and the build-id string, when present.
+  // The DWARF unwind table, when present (length only — no pointer deref).
   total += (long long)_dwarf_table_length * sizeof(FrameDesc);
-  if (_build_id != nullptr) {
-    total += (long long)strlen(_build_id) + 1;
-  }
+
+  // The build-id string is intentionally NOT counted here: the background
+  // library refresher (Libraries::updateBuildIds) frees and replaces _build_id
+  // on already-published caches under _build_id_lock, which dump does not hold,
+  // so dereferencing it here would race. It is negligible (~tens of bytes per
+  // library) next to the symbol tables, so excluding it costs no meaningful
+  // accuracy while keeping this read lock-free.
 
   return total;
 }
