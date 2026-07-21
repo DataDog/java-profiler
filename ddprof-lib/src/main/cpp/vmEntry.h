@@ -174,8 +174,9 @@ private:
 
 public:
   static inline CodeCache* libjvm() {
-    assert(_libjvm != nullptr && "Out of order initialization sequence");
-    return _libjvm;
+    CodeCache* lib = __atomic_load_n(&_libjvm, __ATOMIC_ACQUIRE);
+    assert(lib != nullptr && "Out of order initialization sequence");
+    return lib;
   }
 
   static AsyncGetCallTrace _asyncGetCallTrace;
