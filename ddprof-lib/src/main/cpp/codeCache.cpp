@@ -161,8 +161,9 @@ long long CodeCache::memoryUsage() const {
   // and name pointers are fixed once published (add()/expand()/setDwarfTable()
   // run only pre-publish — asserted via _published), which is the same read the
   // symbolication fast path relies on. It must NOT be called on a continuously
-  // mutated, unpublished cache such as Libraries::_runtime_stubs without holding
-  // that cache's lock, since a concurrent expand() would free _blobs underneath.
+  // mutated, unpublished cache such as JitCodeCache::_runtime_stubs without
+  // holding JitCodeCache::_stubs_lock (shared), since a concurrent add()/expand()
+  // would free _blobs underneath the reader.
   total += (long long)NativeFunc::allocSize(_name);
   for (int i = 0; i < _count; i++) {
     total += (long long)NativeFunc::allocSize(_blobs[i]._name);

@@ -167,8 +167,9 @@ private:
   // After that, memoryUsage() may be read lock-free from another thread (dump),
   // so the mutators that touch the fields it reads (add()/expand()/
   // setDwarfTable()) must not run — asserted in debug. Standalone caches that
-  // are never published (e.g. Libraries::_runtime_stubs) stay unpublished and
-  // may be mutated freely.
+  // are never registered (e.g. JitCodeCache::_runtime_stubs, which is instead
+  // guarded by its own JitCodeCache::_stubs_lock) stay unpublished, so the
+  // asserts never fire for them.
   bool _published;
 
   void expand();
