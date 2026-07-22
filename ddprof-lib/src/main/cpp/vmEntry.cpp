@@ -218,7 +218,7 @@ CodeCache* VM::openJvmLibrary() {
         ? libraries->findJvmLibrary("libj9vm")
         : libraries->findLibraryByAddress((const void *)_asyncGetCallTrace);
 
-  // The libaray must have been loaded. Otherwise, we cannot get to here due
+  // The library must have been loaded. Otherwise, we cannot get to here due
   // to JVM initialization
   assert(lib != nullptr && "JVM library must be loaded");
   __atomic_store_n(&_libjvm, lib, __ATOMIC_RELEASE);
