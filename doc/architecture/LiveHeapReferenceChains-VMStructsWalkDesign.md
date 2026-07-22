@@ -150,9 +150,192 @@ This is real, unstarted work, not a trivial extension:
   oops even at a safepoint) — needs a dedicated pass before implementation
   starts, not before this design is accepted as the direction.
 
+## Review findings (adversarial pass against OpenJDK source)
+
+An adversarial review against actual `jvmtiTagMap.cpp` source (not just the
+prior research summaries above) confirmed two claims and broke two others in
+ways that block the design as written:
+
+- **Holds up**: root callbacks (`heap_root_callback`/`stack_ref_callback`) do
+  run for the operation's entire duration inside one safepoint —
+  `VM_HeapWalkOperation` is a real `VM_Operation` dispatched through
+  `VMThread::execute()`, and standard safepoint semantics park all
+  `JavaThread`s for its whole `doit()`. Also holds up: `EscapeBarrier`'s
+  per-call deopt cost is unconditional — it doesn't check whether
+  `object_ref_callback` is null, so §"piggyback" design's cost claim ("same
+  profile as today, not worse") is correct.
+
+- **Broken: the safepoint-object-movement argument (step 4) does not, by
+  itself, make raw VMStructs-offset oop reads safe on Shenandoah/ZGC.** Being
+  at a safepoint stops *new* relocation from starting, but doesn't mean
+  in-flight forwarding/color-bit state from a concurrent phase is already
+  resolved. Shenandoah leaves forwarding words on from-space copies that are
+  normally resolved transparently through `HeapAccess` load barriers — a raw
+  offset read skips that and can walk a stale, or already-recycled,
+  from-space object as live data. ZGC's colored pointers are worse: a raw
+  pointer at an offset isn't even guaranteed to be a dereferenceable address
+  without barrier-mediated color stripping, independent of safepoint state.
+  This was filed above as a deferrable "not yet assessed" item (see the old
+  trade-offs section) — that framing was wrong. It's not a peripheral
+  add-on to check later; it's a correctness precondition for every hop of
+  the walk under non-G1 collectors, and fixing it means reimplementing a
+  meaningful slice of `HeapAccess`/barrier logic via VMStructs — scope well
+  beyond the oop-map/array/compressed-oops list above, which doesn't mention
+  forwarding or color-bit resolution at all.
+
+- **Broken: cross-pass resumability doesn't hold for the root kind most
+  implicated in the original problem.** Stable-identity roots (JNI handles,
+  CLDs) can meaningfully persist "where the walk stopped" across passes.
+  Stack-local roots (thread/depth/method/slot) cannot — mutators run freely
+  between safepoints, so a persisted (thread, depth, slot) tuple from pass N
+  can point at a completely different local variable, or nothing, by pass
+  N+1. That undercuts the "root-cause of truncation goes away" claim
+  specifically for stack roots.
+
+- **Understated, not broken**: doing the N-hop walk from inside a root
+  callback needs constraints the design doesn't state explicitly —
+  bookkeeping allocation must stay off the Java heap (ResourceArea/C-heap
+  only, matching what `collect_stack_refs`/`report_string_value` already do
+  in that same callback context) to avoid reentering GC/safepoint machinery,
+  and the walk must not recurse on the native call stack to arbitrary depth
+  (today's design uses a heap-allocated `GrowableArray`, not C++ recursion,
+  for exactly this reason) or reacquire `Heap_lock` (already held for the
+  whole operation).
+
+- **Minor accounting correction**: "genuinely O(roots)" (for the
+  graph-expansion skip) is accurate but easy to misread as cheap. Two
+  mandatory O(#threads × stack-depth) scans still run every pass regardless
+  of root count or callback nullness — the `EscapeBarrier` deopt scan and
+  `collect_stack_roots()`'s own per-thread vframe walk.
+
+## Proposed fixes for the broken parts
+
+### Fix for barrier/forwarding safety: gate the whole design on G1, don't
+### solve Shenandoah/ZGC in v1
+
+G1 never relocates live objects except during STW evacuation pauses, and
+those pauses are themselves `VM_Operation`s — `VMThread` serializes all
+`VM_Operation`s, so no evacuation can be in flight while *our* safepoint
+operation holds the VM. That means raw VMStructs-offset oop reads are
+actually sound on G1 with no barrier logic needed at all — the forwarding/
+color-bit problem is specific to collectors whose relocation work is
+concurrent with mutation (Shenandoah, ZGC), not to "any GC that can move
+objects."
+
+So: detect the active collector (a VMStructs-read global flag, or
+`Universe::heap()->kind()`) once per pass, and only take the manual-walk
+path when G1 is active. Fall back to today's pure-JVMTI
+`FollowReferences`/`expandFrontier()` path otherwise — no regression on
+Shenandoah/ZGC, just no improvement there either. This is a real scope cut,
+not a workaround: it drops "GC-agnostic" as a goal and ships correctness
+for the collector most production JVMs still default to.
+
+#### Addendum: Shenandoah/ZGC forwarding mechanics, verified against source
+
+A follow-up question ("what about ZGC/Shenandoah, could either be solved
+rather than excluded?") was checked directly against OpenJDK source
+(`markWord.hpp`, `shenandoahForwarding.inline.hpp`, `shenandoahHeap.cpp`,
+`zAddress.hpp`/`zGlobals.hpp` at `master` and at the `jdk-20-ga`/`jdk-21-ga`/
+`jdk-23-ga` tags). The two collectors are not equally hard, and one is worth
+scoping as a real follow-up:
+
+- **Shenandoah is plausibly tractable, more precisely than first described.**
+  Forwarding state does live in the mark word (Brooks pointers removed;
+  `shenandoahForwarding.inline.hpp`'s `get_forwardee_raw_unchecked()` reads
+  `mark()`, checks `is_marked()`, and follows `clear_lock_bits()` for the
+  forwardee) — but "forwarded" is a 3-state check, not a single bit: the 2
+  lock bits + 1 self-forward bit distinguish "real forwarding pointer"
+  (`0b011`) from "self-forwarded" (evacuation failure — object stayed put,
+  no second hop, `0b1xx`) from "not forwarded." A reader also needs to
+  handle a documented HotSpot-internal edge case: JVMTI/JFR can leave a
+  "marked" mark word with a **null** forwardee (their own scratch use of the
+  same bits) — a naive reader that checks `is_marked()` and blindly follows
+  the pointer without a null check can crash on this specific case.
+  Critically, **the race conditions the source comments warn about are
+  mutator/GC-worker-concurrent-with-mutator races, which don't exist at a
+  safepoint** — no thread, including GC workers, executes during one, so
+  the mark word is always a fully-committed value whenever we'd actually be
+  reading it. And from-space reuse is confirmed safe: Shenandoah does not
+  recycle collection-set regions until `update_heap_refs_work` has walked
+  and fixed up all live references (`shenandoahHeap.cpp`, `final_update_refs_*`
+  gates `trash_cset_regions()`/`rebuild_free_set()`), so there's no window
+  where stale from-space memory gets silently repurposed while unfixed
+  references to it still exist. Net: a per-object mark-word check (3-state,
+  with the null-forwardee guard) is a bounded, source-grounded addition —
+  worth scoping as a real v1.5 follow-up, not just a "further-out" idea.
+
+- **ZGC's exclusion is confirmed, and the reason is now more precise than
+  "colored pointers are hard."** Every reference is a `zpointer` (colored,
+  unsafe to dereference) until decoded to a `zaddress`  — confirmed via the
+  explicit type split in current `zAddress.hpp` — so there is genuinely no
+  "clean, skip-the-decode" subset, exactly as suspected. The layout-changed-
+  across-versions claim was directionally right but the JDK version was
+  wrong: the generational-ZGC bit layout (`RRRRMMmmFFrr0000`, 16 metadata
+  bits, young/old-specific marked bits, remembered-set bits) landed in-tree
+  at **JDK 21** but only as an opt-in experimental mode
+  (`-XX:+ZGenerational`); the older 4-bit layout (`Marked0/1`, `Remapped`,
+  `Finalizable`) remained the **default** through JDK 22, and generational
+  ZGC only became the default engine at **JDK 23** (JEP 474). A second,
+  independent reason a static bitmask can't work even for one fixed layout:
+  the "good"/"bad" mask values themselves are runtime-computed and flip on
+  every GC phase transition (`ZGlobalsPointers::flip_young_mark_start()`,
+  `flip_old_relocate_start()`, etc.), so even a version-correct compile-time
+  mask isn't sufficient — the decode step is unavoidable, not just
+  version-fragile. This closes the door a bit more firmly than the original
+  framing: it's not "harder to implement," it's "the wrong kind of state
+  (runtime-computed, phase-dependent) for a static VMStructs-offset
+  approach to represent at all."
+
+A further-out, higher-risk alternative worth naming but not pursuing for v1:
+the codebase already has a *second* introspection mechanism beyond
+VMStructs — `CodeCache::findSymbol`/`findSymbolByPrefix`
+(`codeCache.cpp:263-280`) resolves arbitrary libjvm.so ELF symbols by
+(mangled) name, already used elsewhere (e.g. the `CodeHeap::findNMethod`
+symbol seen in an unrelated crash during this investigation). In principle
+this could resolve and call HotSpot's actual barrier-resolution functions
+(e.g. `ShenandoahBarrierSet`/`ZBarrier` internals) instead of reimplementing
+forwarding/color-bit logic by hand. Rejected for now: calling an arbitrary
+internal non-`extern "C"` C++ function via a raw resolved address requires
+guessing its exact ABI (argument registers, `this`-pointer convention,
+possible inlining meaning the symbol doesn't exist as a distinct entry in
+some builds) — a mismatch here doesn't crash predictably, it silently
+miscalls. Worth revisiting only if G1-only turns out to be an unacceptable
+scope cut in practice.
+
+### Fix for stack-root resumability: it's already solved by the existing
+### frontier-table design, if we use it correctly
+
+The reviewer's concern was that persisting a stack-root's *location*
+(thread/depth/method/slot) across passes doesn't work, because that
+location's contents change as mutators run between safepoints. But looking
+at how `FrontierTable` already works (see `referenceChains.cpp`): it's
+*tag-indexed*, keyed by object identity, not by root descriptor. We don't
+actually need to resume "the stack slot" — we only need to resume "the
+object that slot pointed to at the moment we saw it," which is exactly what
+the frontier table already persists for every other root kind.
+
+So the fix is: when a `stack_ref_callback` fires, immediately admit its
+target object into the frontier table (tagged `root_kind = STACK_LOCAL` for
+reporting) exactly as any other newly-discovered object would be, then hand
+off to the existing resumable frontier machinery. `expandFrontier()` never
+needs to know or care that the object was first reached via a stack slot —
+by the time it's in the table, it's just another tagged object. This isn't
+new mechanism; it's using the existing one for the case the earlier version
+of this design bypassed by trying to persist root descriptors instead of
+tags.
+
 ## Status
 
-Design only — not yet implemented, not yet reviewed against GC-specific
-correctness concerns beyond safepoint object-movement. The memory/RSS
+Design **viable with a scope cut**: gate the manual-walk path on G1 only
+(raw offset reads are sound there without reimplementing barrier logic;
+Shenandoah/ZGC keep using today's pure-JVMTI path, no regression). Stack-root
+resumability is not actually a separate problem to solve — it falls out of
+routing stack-root discoveries through the existing tag-indexed frontier
+table like any other root, rather than trying to persist root descriptors.
+Remaining open item before implementation: making the callback-side walk
+non-recursive (heap-allocated stack, matching today's `GrowableArray`
+pattern, not native C++ recursion) and free of Java-heap allocation, to
+respect the constraints root callbacks already run under
+(`Heap_lock` held, no safepoint-reentrant allocation). The memory/RSS
 overhead investigation for the existing JVMTI-based tracker remains shelved
 separately and is unrelated to this document.
