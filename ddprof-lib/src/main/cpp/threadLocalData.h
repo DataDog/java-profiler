@@ -7,6 +7,7 @@
 #define THREAD_LOCAL_DATA_H
 
 #include "context.h"
+#include "context_api.h"
 #include "otel_context.h"
 #include "os.h"
 #include "threadLocal.h"
@@ -44,7 +45,8 @@ public:
     TYPE_MASK = TYPE_JAVA_THREAD | TYPE_NOT_JAVA_THREAD
   };
 
-  static constexpr u32 FLAG_PARKED = 0x4u; // next free bit after TYPE_MASK (0x1|0x2)
+  static constexpr u32 FLAG_PARKED = 0x4u;
+  static constexpr u32 FLAG_MONITOR_BLOCKED = 0x8u;
 
   // We are allowing several levels of nesting because we can be
   // eg. in a crash handler when wallclock signal kicks in,
@@ -76,7 +78,17 @@ private:
   u64 _call_trace_id;
   u32 _recording_epoch;
   u32 _misc_flags;
+  u64 _park_start_ticks;
   u64 _park_block_token;
+  Context _park_context;
+  u64 _task_block_start_ticks;
+  u64 _task_block_token;
+  Context _task_block_context;
+  u64 _monitor_start_ticks;
+  Context _monitor_context;
+  u64 _monitor_blocker;
+  u64 _monitor_block_token;
+  OSThreadState _monitor_block_state;
   int _filter_slot_id; // Slot ID for thread filtering
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
   uint8_t _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
@@ -102,7 +114,12 @@ private:
   ProfiledThread(int tid)
       : ThreadLocalData(), _jmp_buf(nullptr), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _tid(tid), _cpu_epoch(0),
         _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0),
-        _park_block_token(0), _filter_slot_id(-1), _init_window(0),
+        _park_start_ticks(0), _park_block_token(0), _park_context{},
+        _task_block_start_ticks(0), _task_block_token(0), _task_block_context{},
+        _monitor_start_ticks(0), _monitor_context{}, _monitor_blocker(0),
+        _monitor_block_token(0), _monitor_block_state(OSThreadState::UNKNOWN),
+        _filter_slot_id(-1),
+        _init_window(0),
         _signal_depth(0),
         _otel_ctx_initialized(false),
         _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0) {
@@ -335,23 +352,130 @@ public:
     _otel_local_root_span_id = 0;
   }
 
-  inline bool parkEnter() {
-    u32 prev = __atomic_fetch_or(&_misc_flags, FLAG_PARKED, __ATOMIC_RELEASE);
-    return (prev & FLAG_PARKED) == 0;
+#ifdef UNIT_TEST
+  void setContextForTest(u64 span_id, u64 root_span_id) {
+    ContextApi::initializeContextTLS(this);
+    for (int i = 7; i >= 0; i--) {
+      _otel_ctx_record.span_id[i] = static_cast<uint8_t>(span_id & 0xff);
+      span_id >>= 8;
+    }
+    _otel_local_root_span_id = root_span_id;
+    __atomic_store_n(&_otel_ctx_record.valid, 1, __ATOMIC_RELEASE);
   }
+
+  void clearContextForTest() {
+    if (_otel_ctx_initialized) {
+      __atomic_store_n(&_otel_ctx_record.valid, 0, __ATOMIC_RELEASE);
+    }
+    clearOtelSidecar();
+  }
+#endif
+
+  inline bool parkEnter(u64 start_ticks, const Context& context) {
+    u32 flags = __atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE);
+    while ((flags & FLAG_PARKED) == 0) {
+      _park_start_ticks = start_ticks;
+      _park_context = context;
+      if (__atomic_compare_exchange_n(&_misc_flags, &flags,
+                                      flags | FLAG_PARKED, true,
+                                      __ATOMIC_RELEASE, __ATOMIC_ACQUIRE)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+#ifdef UNIT_TEST
+  inline bool parkEnter() { return parkEnter(0, Context{}); }
+#endif
 
   inline void setParkBlockToken(u64 token) {
     _park_block_token = token;
   }
 
+  inline bool taskBlockEnter(u64 token, u64 start_ticks,
+                             const Context& context) {
+    if (token == 0 || _task_block_token != 0) return false;
+    _task_block_start_ticks = start_ticks;
+    _task_block_context = context;
+    _task_block_token = token;
+    return true;
+  }
+
+  inline bool taskBlockExit(u64 token, u64& start_ticks, Context& context) {
+    if (token == 0 || _task_block_token != token) return false;
+    start_ticks = _task_block_start_ticks;
+    context = _task_block_context;
+    _task_block_token = 0;
+    return true;
+  }
+
   // Returns false if the thread was not parked (idempotent).
-  inline bool parkExit(u64 &park_block_token) {
+  inline bool parkExit(u64& start_ticks, Context& context,
+                       u64& park_block_token) {
     u32 prev = __atomic_fetch_and(&_misc_flags, ~FLAG_PARKED, __ATOMIC_ACQ_REL);
     if ((prev & FLAG_PARKED) == 0) {
       return false;
     }
+    start_ticks = _park_start_ticks;
+    context = _park_context;
     park_block_token = _park_block_token;
     _park_block_token = 0;
+    return true;
+  }
+
+#ifdef UNIT_TEST
+  inline bool parkExit(u64& park_block_token) {
+    u64 start_ticks = 0;
+    Context context{};
+    return parkExit(start_ticks, context, park_block_token);
+  }
+#endif
+
+  // Object.wait owns its interval until MonitorWaited, including monitor
+  // reacquisition. A nested contention callback must not overwrite that state.
+  inline bool monitorEnter(u64 start_ticks, const Context& context, u64 blocker,
+                           OSThreadState state) {
+    u32 flags = __atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE);
+    if ((flags & FLAG_MONITOR_BLOCKED) != 0) return false;
+    _monitor_start_ticks = start_ticks;
+    _monitor_context = context;
+    _monitor_blocker = blocker;
+    _monitor_block_token = 0;
+    _monitor_block_state = state;
+    __atomic_fetch_or(&_misc_flags, FLAG_MONITOR_BLOCKED, __ATOMIC_RELEASE);
+    return true;
+  }
+
+  inline void setMonitorBlockToken(u64 token) {
+    _monitor_block_token = token;
+  }
+
+  inline u64 monitorBlockToken() const { return _monitor_block_token; }
+
+  inline void clearMonitorBlock() {
+    __atomic_fetch_and(&_misc_flags, ~FLAG_MONITOR_BLOCKED, __ATOMIC_ACQ_REL);
+    _monitor_block_token = 0;
+    _monitor_block_state = OSThreadState::UNKNOWN;
+  }
+
+  inline bool monitorExit(OSThreadState expected_state, u64& start_ticks,
+                          Context& context, u64& blocker,
+                          u64& monitor_block_token) {
+    u32 flags = __atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE);
+    if ((flags & FLAG_MONITOR_BLOCKED) == 0 ||
+        _monitor_block_state != expected_state) {
+      return false;
+    }
+    u32 prev = __atomic_fetch_and(&_misc_flags, ~FLAG_MONITOR_BLOCKED,
+                                  __ATOMIC_ACQ_REL);
+    if ((prev & FLAG_MONITOR_BLOCKED) == 0) return false;
+    start_ticks = _monitor_start_ticks;
+    context = _monitor_context;
+    blocker = _monitor_blocker;
+    monitor_block_token = _monitor_block_token;
+    _monitor_block_token = 0;
+    _monitor_block_state = OSThreadState::UNKNOWN;
     return true;
   }
 

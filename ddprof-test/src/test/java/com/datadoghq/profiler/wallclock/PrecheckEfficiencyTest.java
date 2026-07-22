@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler.wallclock;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
@@ -22,9 +27,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Measures the theoretical upper bound on {@code SIGVTALRM} suppression by running with
- * {@code wallprecheck=false} and classifying sample states. The once-per-run filter
+ * {@code wallprecheck=false} and classifying sample states. Lifecycle ownership
  * ({@code wallprecheck=true}) suppresses {@code SLEEPING}, {@code CONDVAR_WAIT}, and
- * {@code OBJECT_WAIT} after the entry sample; {@code RUNNABLE} is not skipped. Monitor
+ * suppresses {@code OBJECT_WAIT}; {@code RUNNABLE} is not skipped. Monitor
  * contention ({@code MONITOR_WAIT}) is also suppressible when monitor hooks identify the blocked
  * interval.
  */
@@ -43,23 +48,20 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
         AtomicBoolean stop = new AtomicBoolean(false);
         Object monitor = new Object();
 
-        // SLEEPING / CONDVAR_WAIT — suppressed by once-per-run filter
+        // SLEEPING / CONDVAR_WAIT — suppressible with lifecycle ownership
         Thread sleeping = new Thread(() -> {
-            registerCurrentThreadForWallClockProfiling();
             ready.countDown();
             try { Thread.sleep(10_000); } catch (InterruptedException ignored) {}
         }, EFFICIENCY_SLEEPING);
 
-        // CONDVAR_WAIT — suppressed by once-per-run filter
+        // CONDVAR_WAIT — suppressible with lifecycle ownership
         Thread parked = new Thread(() -> {
-            registerCurrentThreadForWallClockProfiling();
             ready.countDown();
             LockSupport.parkNanos(10_000_000_000L);
         }, EFFICIENCY_PARKED);
 
-        // OBJECT_WAIT — suppressed by the once-per-run filter.
+        // OBJECT_WAIT — suppressible with lifecycle ownership.
         Thread waiting = new Thread(() -> {
-            registerCurrentThreadForWallClockProfiling();
             ready.countDown();
             synchronized (monitor) {
                 try { monitor.wait(10_000); } catch (InterruptedException ignored) {}
@@ -68,7 +70,6 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
 
         // RUNNABLE — not skipped
         Thread working = new Thread(() -> {
-            registerCurrentThreadForWallClockProfiling();
             ready.countDown();
             long x = 0;
             while (!stop.get()) { x++; }
@@ -205,10 +206,7 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
         AtomicInteger threadIndex = new AtomicInteger(0);
 
         ExecutorService pool = Executors.newFixedThreadPool(POOL_SIZE, r -> {
-            Thread t = new Thread(() -> {
-                registerCurrentThreadForWallClockProfiling();
-                r.run();
-            });
+            Thread t = new Thread(r);
             t.setName("realistic-pool-" + threadIndex.incrementAndGet());
             t.setDaemon(true);
             return t;
@@ -222,7 +220,6 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
         Thread.sleep(50);
 
         Thread scheduler = new Thread(() -> {
-            registerCurrentThreadForWallClockProfiling();
             while (!stop.get()) {
                 try {
                     Thread.sleep(SCHEDULE_INTERVAL_MS);
@@ -241,7 +238,6 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
         scheduler.start();
 
         Thread hotThread = new Thread(() -> {
-            registerCurrentThreadForWallClockProfiling();
             long x = 0;
             while (!stop.get()) { x++; }
         }, "realistic-hot");
@@ -264,8 +260,16 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
 
         for (IItemIterable batch : events) {
             IMemberAccessor<String, IItem> stackAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(batch.getType());
-            if (stackAccessor == null) continue;
+            IMemberAccessor<String, IItem> threadNameAccessor =
+                    JdkAttributes.EVENT_THREAD_NAME.getAccessor(batch.getType());
+            if (stackAccessor == null || threadNameAccessor == null) continue;
             for (IItem item : batch) {
+                String threadName = threadNameAccessor.getMember(item);
+                if (threadName == null || (!threadName.startsWith("realistic-pool-")
+                        && !"realistic-scheduler".equals(threadName)
+                        && !"realistic-hot".equals(threadName))) {
+                    continue;
+                }
                 String stack = stackAccessor.getMember(item);
                 if (stack == null) {
                     otherSamples++;
@@ -309,6 +313,8 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "wall=1ms";
+        // The workload deliberately has no tracing context, so keep unfiltered
+        // wall-clock sampling enabled explicitly.
+        return "wall=1ms,filter=";
     }
 }

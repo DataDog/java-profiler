@@ -119,6 +119,10 @@ private:
   alignas(DEFAULT_CACHE_LINE_SIZE) volatile u64 _sample_seq;
   alignas(DEFAULT_CACHE_LINE_SIZE) u64 _failures[ASGCT_FAILURE_TYPES];
   bool _wall_precheck = false;
+  std::atomic<bool> _task_block_enabled{false};
+  bool _task_block_monitor_events_enabled = false;
+  std::atomic<bool> _task_block_rotation{false};
+  std::atomic<u64> _task_block_inflight{0};
 
   SpinLock _class_map_lock;
   SpinLock _locks[CONCURRENCY_LEVEL];
@@ -152,6 +156,7 @@ private:
   void updateThreadName(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                         bool self = false);
   void updateJavaThreadNames();
+  void registerExistingJavaThreads();
   void mangle(const char *name, char *buf, size_t size);
 
   Engine *selectCpuEngine(Arguments &args);
@@ -161,6 +166,8 @@ private:
 
   void lockAll();
   void unlockAll();
+  void beginTaskBlockRotation();
+  void endTaskBlockRotation();
 
   // Rotate all three dictionaries, then run jfr_op under lockAll().
   //
@@ -232,7 +239,6 @@ public:
   // (ThreadInfo::updateThreadName is first-writer-wins). A later scan, or the
   // dump-time pass (which passes false), records the final name instead.
   void updateNativeThreadNames(bool defer_initializing = false);
-
 
   inline void incFailure(int type) {
     if (type < ASGCT_FAILURE_TYPES) {
@@ -422,6 +428,28 @@ public:
   void recordWallClockEpoch(int tid, WallClockEpochEvent *event);
   void recordTraceRoot(int tid, TraceRootEvent *event);
   void recordQueueTime(int tid, QueueTimeEvent *event);
+  enum class TaskBlockRecordResult {
+    RECORDED,
+    STACK_CAPTURE_FAILED,
+    RECORD_FAILED,
+  };
+  TaskBlockRecordResult recordTaskBlock(int tid, jthread thread,
+                                        int start_depth,
+                                        TaskBlockEvent *event);
+#ifdef UNIT_TEST
+  using TaskBlockRecordOverride = TaskBlockRecordResult (*)(
+      int tid, jthread thread, int start_depth, TaskBlockEvent *event);
+  static void setTaskBlockRecordOverrideForTest(
+      TaskBlockRecordOverride override);
+  bool setTaskBlockEnabledForTest(bool enabled) {
+    return _task_block_enabled.exchange(enabled, std::memory_order_acq_rel);
+  }
+#endif
+  bool tryEnterTaskBlockActivity();
+  void leaveTaskBlockActivity();
+  bool taskBlockEnabled() const {
+    return _task_block_enabled.load(std::memory_order_acquire);
+  }
   void writeLog(LogLevel level, const char *message);
   void writeLog(LogLevel level, const char *message, size_t len);
   void writeDatadogProfilerSetting(int tid, int length, const char *name,
@@ -442,6 +470,15 @@ public:
   static void unregisterThread(int tid);
 
 #ifdef UNIT_TEST
+  void beginTaskBlockRotationForTest() { beginTaskBlockRotation(); }
+  void endTaskBlockRotationForTest() { endTaskBlockRotation(); }
+  bool taskBlockRotationActiveForTest() const {
+    return _task_block_rotation.load(std::memory_order_acquire);
+  }
+  int taskBlockInflightForTest() const {
+    return _task_block_inflight.load(std::memory_order_acquire);
+  }
+
   // Returns the tid most recently passed to unregisterThread(), or -1 if it
   // has never been called (or since the last resetUnregisterObservableForTest).
   // Used by integration tests to assert that cleanup_unregister wired

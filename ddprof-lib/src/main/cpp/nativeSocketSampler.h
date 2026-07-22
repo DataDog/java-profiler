@@ -13,6 +13,7 @@
 
 #if defined(__linux__)
 
+#include "nativeFdClassifier.h"
 #include "poissonSampler.h"
 #include "rateLimiter.h"
 #include <atomic>
@@ -25,26 +26,22 @@ class LibraryPatcher;
 
 // Synchronisation strategy
 // -------------------------
-// Hook functions (send_hook / recv_hook / write_hook / read_hook) run on the
-// calling Java thread, NOT in a signal handler.  Therefore malloc and locking
-// are safe inside hooks.
+// Hook functions (send_hook / recv_hook / write_hook / read_hook) are installed
+// in the JDK's libnet and libnio DSOs. IBM's JCL networking bridge in libjava
+// uses separate wrappers that bypass all profiler state in a post-fork child.
+// Arbitrary JNI libraries remain excluded from code that locks or allocates.
 //
 // fd-to-addr cache      : guarded by _fd_cache_mutex (std::mutex).
 //                         TOCTOU note: the cache is checked under lock, then
 //                         released for resolveAddr(); a concurrent thread may
 //                         emplace the same fd before re-acquisition. emplace()
 //                         is idempotent in that case (first writer wins).
-//                         Address staleness on fd reuse is accepted: worst case
-//                         is one misattributed event per reuse.
-// _fd_type_cache        : std::atomic<uint8_t> array, lock-free.  Entry encoding:
-//                         bits [7:4] = generation mod 16, bits [3:0] = type
-//                         (0=unknown, 1=TCP socket, 2=non-TCP).  Valid only when
-//                         high nibble matches _fd_cache_gen mod 16.  A cached SOCKET
-//                         verdict is trusted on the hot path; revalidation via
-//                         getsockopt() is deferred to recordEvent() for sampled
-//                         write/read events (revalidateSocket()).  A cached NON_SOCKET
-//                         verdict is trusted (worst case: a reused fd under-samples
-//                         until the next gen reset).
+//                         Address staleness is possible only after fd reuse
+//                         through unobserved lifecycle paths.
+// _fd_classifier        : lock-free fd-type classifier shared as code with the
+//                         native I/O interposer. A cached stream-socket verdict
+//                         is trusted on the hot path; sampled write/read events
+//                         revalidate before recording (revalidateSocket()).
 // _rate_limiter         : RateLimiter — owns std::atomic interval, epoch, and
 //                         event count.  PID update races are resolved by CAS
 //                         inside RateLimiter::maybeUpdateInterval().
@@ -71,17 +68,23 @@ public:
     Error check(Arguments &args) override;
     Error start(Arguments &args) override;
     void  stop()                 override;
+    static void disableAfterPatchFailure();
+    static bool active() { return _active.load(std::memory_order_acquire); }
 
     // Clears the fd-to-address cache and resets the fd-type cache.
     // Called from both start() (to reset state on restart) and stop().
     // Intentionally NOT called on JFR chunk boundaries.
     void clearFdCache();
+    void clearFdCacheEntry(int fd);
 
     // PLT hooks installed by LibraryPatcher::patch_socket_functions().
     static ssize_t send_hook(int fd, const void* buf, size_t len, int flags);
     static ssize_t recv_hook(int fd,       void* buf, size_t len, int flags);
     static ssize_t write_hook(int fd, const void* buf, size_t len);
     static ssize_t read_hook(int fd,        void* buf, size_t len);
+    static ssize_t recordHookResult(int fd, ssize_t ret, u64 t0, u64 t1, u8 op) {
+        return recordResultForHook(fd, ret, t0, t1, op);
+    }
 
     // Called once by LibraryPatcher::patch_socket_functions() to install the
     // real libc function pointers before any PLT entries are patched.
@@ -100,19 +103,30 @@ public:
         rd = _orig_read.load(std::memory_order_acquire);
     }
 
+#ifdef UNIT_TEST
+    static bool setActiveForTest(bool active) {
+        return _active.exchange(active, std::memory_order_acq_rel);
+    }
+    using HookObserver = void (*)(const char* phase, int fd, u8 op, ssize_t ret);
+    static void setHookObserverForTest(HookObserver observer);
+    // Compatibility wrappers for sampler tests; probe override/counting is owned
+    // by NativeFdClassifier now that sampler delegates fd classification to it.
+    static uint64_t socketProbeCountForTest();
+    static void resetSocketProbeCountForTest();
+    using ProbeOverride = int (*)(int fd, int *so_type, int *probe_errno);
+    static void setProbeOverrideForTest(ProbeOverride probe);
+#endif
+
 private:
     static NativeSocketSampler* const _instance;
 
-    // Set by setOriginalFunctions() (called under _lock, before PLT patching) and
-    // read by the hooks on arbitrary application threads.  Declared std::atomic with
-    // release/acquire pairing so a stop()→start() restart cycle, which rewrites these
-    // pointers while a stale-epoch hook may still be in flight, has no data race and no
-    // value tearing on any memory model.  The acquire load in each hook also pairs with
-    // the release store here to publish the pointer before the hook observes it.
+    // Production publishes these once before PLT patching. Atomic access pairs
+    // that publication with hook reads and also keeps test overrides data-race-free.
     static std::atomic<send_fn>  _orig_send;
     static std::atomic<recv_fn>  _orig_recv;
     static std::atomic<write_fn> _orig_write;
     static std::atomic<read_fn>  _orig_read;
+    static std::atomic<bool>     _active;
 
     // Target aggregate event rate: ~83 events/s (~5000/min) across all four hooks
     // (send/write and recv/read) combined.
@@ -147,30 +161,7 @@ private:
     std::unordered_map<int, FdAddrList::iterator> _fd_cache;
     std::mutex _fd_cache_mutex;
 
-    // fd-type cache for write/read hooks.  Lock-free: one atomic byte per fd number.
-    // Encoding: bits [7:4] = generation mod 16, bits [3:0] = type (0=unknown/invalid
-    // — implicit zero in fresh array, never written explicitly; 1=TCP socket;
-    // 2=non-TCP).  An entry is valid only when its high nibble equals _fd_cache_gen
-    // mod 16.  Incrementing _fd_cache_gen invalidates all entries in O(1) without
-    // touching the 65536-entry array.
-    //
-    // KNOWN LIMITATION (mod-16 generation wrap): _fd_cache_gen is only consulted via
-    // its low 4 bits.  After 16 start() cycles the generation wraps and stale entries
-    // from a previous incarnation become indistinguishable from current ones until each
-    // fd is naturally re-probed.  Profiler restarts are not exercised in production
-    // (only in tests), so the wrap is benign in practice.  If restart-in-prod ever
-    // becomes a supported mode, widen _fd_cache_gen to uint32_t and store the full
-    // generation in a wider per-fd cell.
-    // Fds outside [0, FD_TYPE_CACHE_SIZE) are probed on every call.
-    static const int     FD_TYPE_CACHE_SIZE  = 65536;
-    // FD_TYPE_UNKNOWN is the implicit value-zero sentinel for never-written entries
-    // and gen-mismatch entries; it is decoded by the (cached >> 4) != gen path in
-    // isSocket(), not by an explicit comparison against this constant.
-    static const uint8_t FD_TYPE_UNKNOWN     = 0;
-    static const uint8_t FD_TYPE_SOCKET      = 1;
-    static const uint8_t FD_TYPE_NON_SOCKET  = 2;
-    std::atomic<uint8_t> _fd_cache_gen{0};   // incremented on each cache reset
-    std::atomic<uint8_t> _fd_type_cache[FD_TYPE_CACHE_SIZE];
+    NativeFdClassifier _fd_classifier;
 
     NativeSocketSampler() = default;
 
@@ -193,17 +184,28 @@ public:
         std::lock_guard<std::mutex> lock(_fd_cache_mutex);
         return (int)_fd_cache.size();
     }
+    bool fdAddrCacheContainsForTest(int fd) {
+        std::lock_guard<std::mutex> lock(_fd_cache_mutex);
+        return _fd_cache.find(fd) != _fd_cache.end();
+    }
     void fdAddrCacheInsertForTest(int fd, const std::string& addr) {
         std::lock_guard<std::mutex> lock(_fd_cache_mutex);
         insertFdAddrLocked(fd, addr);
     }
+    bool isSocketForTest(int fd) {
+        return isSocket(fd);
+    }
+#ifdef UNIT_TEST
+    bool revalidateSocketForTest(int fd) {
+        return revalidateSocket(fd);
+    }
+#endif
 
 private:
 
     // Returns true if fd is a SOCK_STREAM socket (including AF_UNIX).
-    // Uses the fd-type cache; calls getsockopt on first encounter per fd and on
-    // every cached-SOCKET hit to revalidate against fd reuse (a closed socket fd
-    // reassigned to a regular file/pipe must not keep emitting socket events).
+    // Uses the fd classifier; calls getsockopt on first encounter per fd.
+    // Cached SOCKET verdicts are revalidated only on sampled write/read events.
     bool isSocket(int fd);
 
     // Decide whether to sample and compute weight.
@@ -223,6 +225,17 @@ private:
         if (ret > 0) _instance->recordEvent(fd, t0, t1, ret, op);
         return ret;
     }
+
+    static inline ssize_t recordResultForHook(int fd, ssize_t ret, u64 t0, u64 t1, u8 op) {
+#ifdef UNIT_TEST
+        observeHookPhaseForTest("record", fd, op, ret);
+#endif
+        return record_if_positive(fd, ret, t0, t1, op);
+    }
+
+#ifdef UNIT_TEST
+    static void observeHookPhaseForTest(const char* phase, int fd, u8 op, ssize_t ret);
+#endif
 };
 
 #else // !__linux__
@@ -233,7 +246,9 @@ public:
     Error check(Arguments &args) override { return Error::OK; }
     Error start(Arguments &args) override { return Error::OK; }
     void  stop()                 override {}
+    static void disableAfterPatchFailure() {}
     void clearFdCache()          {}
+    void clearFdCacheEntry(int fd) { (void)fd; }
 private:
     static NativeSocketSampler* const _instance;
     NativeSocketSampler() {}

@@ -5,6 +5,21 @@
 
 #include <gtest/gtest.h>
 #include "arguments.h"
+#include "engine.h"
+#include "j9/j9WallClock.h"
+#include "wallClock.h"
+
+TEST(WallPrecheckCapabilityTest, OnlySupportingWallEnginesAdvertiseUnfilteredTracking) {
+    Engine engine;
+    J9WallClock j9;
+    WallClockASGCT asgct;
+    WallClockJvmti jvmti;
+
+    EXPECT_FALSE(engine.supportsUnfilteredWallPrecheck());
+    EXPECT_FALSE(j9.supportsUnfilteredWallPrecheck());
+    EXPECT_TRUE(asgct.supportsUnfilteredWallPrecheck());
+    EXPECT_TRUE(jvmti.supportsUnfilteredWallPrecheck());
+}
 
 TEST(WallPrecheckArgsTest, DefaultsToDisabled) {
     Arguments args;
@@ -56,3 +71,17 @@ TEST(WallPrecheckArgsTest, EnabledWithinLongerArgString) {
     EXPECT_TRUE(args._wall_precheck);
 }
 
+TEST(WallPrecheckArgsTest, OmittedFilterRemainsNull) {
+    Arguments args;
+
+    EXPECT_EQ(nullptr, args._filter);
+}
+
+TEST(WallPrecheckArgsTest, ExplicitEmptyFilterIsPreserved) {
+    Arguments args;
+    Error error = args.parse("filter=");
+
+    EXPECT_FALSE(error);
+    ASSERT_NE(nullptr, args._filter);
+    EXPECT_STREQ("", args._filter);
+}

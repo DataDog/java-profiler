@@ -1,5 +1,6 @@
 /*
  * Copyright 2017 Andrei Pangin
+ * Copyright 2026, Datadog, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -50,6 +51,9 @@ public:
   virtual Error start(Arguments &args);
   virtual void stop();
   virtual long interval() const { return 0L; }
+
+  // Whether empty-filter wall prechecks can consume ThreadFilter registry state.
+  virtual bool supportsUnfilteredWallPrecheck() const { return false; }
 
   virtual int registerThread(int tid) { return -1; }
   virtual void unregisterThread(int tid) {}

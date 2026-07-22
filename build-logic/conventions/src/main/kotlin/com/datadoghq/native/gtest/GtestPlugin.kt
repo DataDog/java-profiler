@@ -1,3 +1,5 @@
+// Copyright 2026, Datadog, Inc.
+// SPDX-License-Identifier: Apache-2.0
 
 package com.datadoghq.native.gtest
 
@@ -200,6 +202,11 @@ class GtestPlugin : Plugin<Project> {
         val buildGtestConfigTask = project.tasks.register("buildGtest${config.capitalizedName()}") {
             group = "build"
             description = "Compile and link all Google Tests for the ${config.name} build (no run)"
+            if (extension.buildNativeLibs.get()) {
+                // CI executes these binaries directly, so the build-only task must also produce
+                // the native fixtures that the binaries load at runtime.
+                dependsOn("buildNativeLibs")
+            }
         }
 
         // Compile all library sources ONCE for this config.  Each test
