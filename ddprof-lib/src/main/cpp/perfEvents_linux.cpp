@@ -888,9 +888,19 @@ Error PerfEvents::start(Arguments &args) {
 
   int max_events = OS::getMaxThreadId();
   if (max_events != _max_events) {
+    // Account the per-thread PerfEvent array under NM_PERF, alongside the ring
+    // mappings. Guard on non-null so a prior calloc failure isn't mis-accounted.
+    if (_events != NULL) {
+      NativeMem::record(NM_PERF,
+                        -(long long)((size_t)_max_events * sizeof(PerfEvent)));
+    }
     free(_events);
     _events = (PerfEvent *)calloc(max_events, sizeof(PerfEvent));
     _max_events = max_events;
+    if (_events != NULL) {
+      NativeMem::record(NM_PERF,
+                        (long long)((size_t)max_events * sizeof(PerfEvent)));
+    }
   }
 
   OS::installSignalHandler(SIGPROF, signalHandler);
