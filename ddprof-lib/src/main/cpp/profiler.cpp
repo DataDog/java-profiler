@@ -973,26 +973,17 @@ void Profiler::busHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 }
 
 void Profiler::checkFault(ProfiledThread* thrd) {
-    // Should not get to here (?)
-    if (thrd == nullptr) {
-        return;
-    }
+  if (thrd == nullptr || !thrd->isProtected()) {
+    return;
+  }
 
-    // Check if longjmp is setup for this thread
-    if (!thrd->isProtected()) {
-        return;
-    }
-
-    thrd->resetCrashHandler();
-    // Shared recovery point for every setjmp/longjmp-protected stack walk
-    // (walkVM's inner region and recordSample's native/AGCT unwind), so the
-    // counter is deliberately not walkVM-specific.
-    Counters::increment(STACKWALK_LONGJMP_RECOVERED);
-    longjmp(*thrd->getJmpCtx(), 1);
+  thrd->resetCrashHandler();
+  // Shared recovery point for every setjmp/longjmp-protected stack walk
+  // (walkVM's inner region and recordSample's native/AGCT unwind), so the
+  // counter is deliberately not walkVM-specific.
+  Counters::increment(STACKWALK_LONGJMP_RECOVERED);
+  longjmp(*thrd->getJmpCtx(), 1);
 }
-
-
-
 // Returns: 0 = not handled (chain to next handler), non-zero = handled
 int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext) {
   ProfiledThread* thrd = ProfiledThread::current();
