@@ -462,6 +462,11 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
             skipping = false;
             continue;
           }
+          if (skipping) {
+            // A non-MARK_JAVA_PROFILER mark terminated the scan before the
+            // hook boundary was ever found; the sample has no native stack.
+            Counters::increment(NATIVE_TRACE_HOOK_PREFIX_NOT_FOUND);
+          }
           // Terminate scan at marked frame
           return depth;
         }
@@ -490,6 +495,11 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
           depth = 0;
           skipping = false;
           continue;
+        }
+        if (skipping) {
+          // A non-MARK_JAVA_PROFILER mark terminated the scan before the
+          // hook boundary was ever found; the sample has no native stack.
+          Counters::increment(NATIVE_TRACE_HOOK_PREFIX_NOT_FOUND);
         }
         // Terminate scan at marked frame
         return depth;

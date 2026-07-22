@@ -55,7 +55,7 @@ enum Mark {
     MARK_VM_RUNTIME = 1,
     MARK_INTERPRETER = 2,
     MARK_COMPILER_ENTRY = 3,
-    MARK_JAVA_PROFILER = 4, // async-profiler internals such as native hooks.
+    MARK_JAVA_PROFILER = 4, // java-profiler internals such as native hooks.
     MARK_THREAD_ENTRY = 5,   // Thread entry points (thread_native_entry, JavaThread::, etc.)
 };
 

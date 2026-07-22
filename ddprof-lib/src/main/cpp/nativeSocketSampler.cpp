@@ -38,7 +38,7 @@ static thread_local PoissonSampler _recv_sampler;
 // Returns false if the symbol could not be resolved/marked, in which case the
 // hook boundary is never recognized and every socket sample's native stack
 // comes back empty (see NATIVE_TRACE_HOOK_PREFIX_NOT_FOUND).
-static bool markAsyncProfilerHook(void* fn_addr) {
+static bool markJavaProfilerHook(void* fn_addr) {
     CodeCache* lib = Libraries::instance()->findLibraryByAddress(fn_addr);
     if (lib == nullptr) {
         Counters::increment(NATIVE_HOOK_MARK_RESOLVE_FAILED);
@@ -413,10 +413,10 @@ Error NativeSocketSampler::start(Arguments &args) {
     TEST_LOG("NativeSocketSampler::start interval_ticks=%ld tsc_freq=%llu",
              init_interval, (unsigned long long)TSC::frequency());
 #endif
-    bool hooks_marked = markAsyncProfilerHook((void*)&NativeSocketSampler::send_hook);
-    hooks_marked &= markAsyncProfilerHook((void*)&NativeSocketSampler::recv_hook);
-    hooks_marked &= markAsyncProfilerHook((void*)&NativeSocketSampler::write_hook);
-    hooks_marked &= markAsyncProfilerHook((void*)&NativeSocketSampler::read_hook);
+    bool hooks_marked = markJavaProfilerHook((void*)&NativeSocketSampler::send_hook);
+    hooks_marked &= markJavaProfilerHook((void*)&NativeSocketSampler::recv_hook);
+    hooks_marked &= markJavaProfilerHook((void*)&NativeSocketSampler::write_hook);
+    hooks_marked &= markJavaProfilerHook((void*)&NativeSocketSampler::read_hook);
     if (!hooks_marked) {
         // Not fatal: hooks are still installed and sampling still works, but
         // native stacks for socket samples will come back empty because the

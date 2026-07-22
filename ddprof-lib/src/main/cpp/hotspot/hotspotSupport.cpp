@@ -307,6 +307,12 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     uintptr_t saved_anchor_fp = 0;
     bool anchor_recovery_used = false;
 
+    // Set once the MARK_JAVA_PROFILER hook boundary is found for a
+    // malloc/socket sample — mirrors skip_hook_prefix/skipping in
+    // Profiler::convertNativeTrace so the same "boundary never found"
+    // condition is observable from walkVM.
+    bool hook_boundary_found = false;
+
     // Show extended frame types and stub frames for execution-type events
     bool details = event_type <= SOCKET_SAMPLE || features.mixed;
 
@@ -690,6 +696,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     // excluding the hook's own frame, and resume from the real
                     // caller above it — mirrors the FP/DWARF skip-prefix logic in
                     // Profiler::convertNativeTrace.
+                    hook_boundary_found = true;
                     depth = 0;
                 } else if (resolution.mark == MARK_COMPILER_ENTRY && features.comp_task && vm_thread != NULL) {
                     // Insert current compile task as a pseudo Java frame
@@ -948,6 +955,12 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
     if (depth == 0) {
         Counters::increment(WALKVM_DEPTH_ZERO);
+    }
+
+    if (isHookPrefixedSample(event_type) && !hook_boundary_found) {
+        // The malloc/socket hook boundary was never found in this walk;
+        // mirrors Profiler::convertNativeTrace's NATIVE_TRACE_HOOK_PREFIX_NOT_FOUND.
+        Counters::increment(NATIVE_TRACE_HOOK_PREFIX_NOT_FOUND);
     }
 
     if (truncated) {
