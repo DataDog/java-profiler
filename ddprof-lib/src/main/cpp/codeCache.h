@@ -75,7 +75,8 @@ public:
   static void destroy(char *name);
 
   // Size of the heap allocation backing a name string produced by create().
-  // Mirrors the size computed there so callers can account for it. 0 if null.
+  // This is the single source of truth for that size: create() allocates
+  // exactly allocSize(name) bytes, and memoryUsage() accounts for it. 0 if null.
   static size_t allocSize(const char *name) {
     if (name == nullptr) {
       return 0;
@@ -162,6 +163,14 @@ private:
   int _count;
   CodeBlob *_blobs;
 
+  // Set once the cache is registered into a CodeCacheArray (see markPublished()).
+  // After that, memoryUsage() may be read lock-free from another thread (dump),
+  // so the mutators that touch the fields it reads (add()/expand()/
+  // setDwarfTable()) must not run — asserted in debug. Standalone caches that
+  // are never published (e.g. Libraries::_runtime_stubs) stay unpublished and
+  // may be mutated freely.
+  bool _published;
+
   void expand();
   void makeImportsPatchable();
   void saveImport(ImportId id, void** entry);
@@ -217,6 +226,11 @@ public:
   // build_id_len: original byte length before hex conversion (e.g., 20 bytes)
   void setBuildId(const char* build_id, size_t build_id_len);
   void setLoadBias(uintptr_t load_bias) { _load_bias = load_bias; }
+
+  // Mark this cache as published into a CodeCacheArray. Call before the array
+  // makes the pointer visible to readers; afterwards add()/expand()/
+  // setDwarfTable() must not be called (see _published).
+  void markPublished() { _published = true; }
 
   void add(const void *start, int length, const char *name,
            bool update_bounds = false);
@@ -309,6 +323,10 @@ public:
     } while (!__atomic_compare_exchange_n(&_reserved, &slot, slot + 1,
                                           true, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
     assert(__atomic_load_n(&_libs[slot], __ATOMIC_RELAXED) == nullptr);
+    // Mark published before the RELEASE store makes the pointer visible, so any
+    // later add()/expand()/setDwarfTable() on this cache trips the assert (its
+    // _blobs would then be read lock-free by memoryUsage() at dump time).
+    lib->markPublished();
     // Store pointer before publishing count. The RELEASE here pairs with
     // the ACQUIRE load in operator[]/at() and count().
     __atomic_store_n(&_libs[slot], lib, __ATOMIC_RELEASE);
@@ -329,10 +347,11 @@ public:
   }
 
   // Sum the live memory of all registered libraries. Recomputed on demand
-  // (called only at dump time) so it reflects each library's current size,
-  // including symbols added after the library was registered. The array is
-  // append-only, so iterating the published prefix is safe alongside
-  // concurrent add()s.
+  // (called only at dump time) so it reflects each library's fully-populated
+  // state at that point — the accurate per-library formula rather than a value
+  // cached at add() time. (Libraries are populated before being registered and
+  // not grown afterwards.) The array is append-only, so iterating the published
+  // prefix is safe alongside concurrent add()s.
   size_t memoryUsage() const {
     size_t total = 0;
     int n = count();

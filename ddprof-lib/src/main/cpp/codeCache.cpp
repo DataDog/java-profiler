@@ -9,13 +9,14 @@
 #include "os.h"
 #include "safeAccess.h"
 
+#include <cassert>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 
 char *NativeFunc::create(const char *name, short lib_index) {
-  size_t size = align_up(sizeof(NativeFunc) + 1 + strlen(name), sizeof(NativeFunc*));
+  size_t size = allocSize(name);
   NativeFunc *f = (NativeFunc *)aligned_alloc(sizeof(NativeFunc*), size);
   f->_lib_index = lib_index;
   f->_mark = 0;
@@ -69,6 +70,8 @@ CodeCache::CodeCache(const char *name, short lib_index,
   _capacity = INITIAL_CODE_CACHE_CAPACITY;
   _count = 0;
   _blobs = new CodeBlob[_capacity];
+
+  _published = false;
 }
 
 void CodeCache::copyFrom(const CodeCache& other) {
@@ -113,6 +116,9 @@ void CodeCache::copyFrom(const CodeCache& other) {
   _count = other._count;
   _blobs = new CodeBlob[_capacity];
   memcpy(_blobs, other._blobs, _count * sizeof(CodeBlob));
+
+  // A copy is a fresh, not-yet-registered cache.
+  _published = false;
 }
 
 CodeCache::CodeCache(const CodeCache &other) {
@@ -150,9 +156,13 @@ long long CodeCache::memoryUsage() const {
 
   // This cache's own name, plus each symbol's name string. Each is a
   // variable-length allocation whose size depends on the name length
-  // (see NativeFunc::allocSize). Both the name pointers and the array are fixed
-  // once the library is published (the same read the symbolication fast path
-  // does), so this is safe to read at dump time without extra synchronization.
+  // (see NativeFunc::allocSize). The lock-free read here is safe only for caches
+  // registered in a CodeCacheArray (Libraries::native_libs): their _blobs array
+  // and name pointers are fixed once published (add()/expand()/setDwarfTable()
+  // run only pre-publish — asserted via _published), which is the same read the
+  // symbolication fast path relies on. It must NOT be called on a continuously
+  // mutated, unpublished cache such as Libraries::_runtime_stubs without holding
+  // that cache's lock, since a concurrent expand() would free _blobs underneath.
   total += (long long)NativeFunc::allocSize(_name);
   for (int i = 0; i < _count; i++) {
     total += (long long)NativeFunc::allocSize(_blobs[i]._name);
@@ -172,6 +182,9 @@ long long CodeCache::memoryUsage() const {
 }
 
 void CodeCache::expand() {
+  // Must not run after publication: memoryUsage() reads _blobs lock-free from
+  // the dump thread and a concurrent realloc would free it underneath.
+  assert(!_published && "expand() on a published CodeCache races memoryUsage()");
   CodeBlob *old_blobs = _blobs;
   CodeBlob *new_blobs = new CodeBlob[_capacity * 2];
 
@@ -184,6 +197,11 @@ void CodeCache::expand() {
 
 void CodeCache::add(const void *start, int length, const char *name,
                     bool update_bounds) {
+  // Symbols are added while parsing a library, before it is registered into a
+  // CodeCacheArray. Adding after publication would race memoryUsage() (which
+  // reads _blobs/_count lock-free at dump time). Unpublished standalone caches
+  // (e.g. _runtime_stubs) are exempt — they are never published.
+  assert(!_published && "add() on a published CodeCache races memoryUsage()");
   char *name_copy = NativeFunc::create(name, _lib_index);
   // Replace non-printable characters
   for (char *s = name_copy; *s != 0; s++) {
@@ -441,6 +459,9 @@ void CodeCache::makeImportsPatchable() {
 }
 
 void CodeCache::setDwarfTable(FrameDesc *table, int length, const FrameDesc &default_frame) {
+  // Set during library parsing, before publication. memoryUsage() reads
+  // _dwarf_table_length lock-free at dump time, so this must not run afterwards.
+  assert(!_published && "setDwarfTable() on a published CodeCache races memoryUsage()");
   _dwarf_table = table;
   _dwarf_table_length = length;
   _default_frame = &default_frame;
