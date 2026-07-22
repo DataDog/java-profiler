@@ -655,31 +655,32 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
         num_frames += makeFrame(frames + num_frames, BCI_ERROR, "break_unwind_fault");
       }
     } else {
-      if (walk_thread != nullptr) {
+      if (walk_thread == nullptr) {
+        // No thread-local jmp_buf available: avoid unsafe raw dereferences during the unwind.
+        num_frames += makeFrame(frames + num_frames, BCI_ERROR, "no_ProfiledThread");
+        truncated = true;
+      } else {
         walk_thread->setJmpCtx(&unwind_ctx);
-      }
 
-      // truncated_local is never read after a longjmp landing (only on the
-      // clean path below), so it need not be volatile; the outer `truncated`
-      // stays false on the recovery path.
-      bool truncated_local = false;
-      ASGCT_CallFrame *native_stop = frames + num_frames;
-      num_frames += getNativeTrace(ucontext, native_stop, event_type, tid,
-                                   &java_ctx, &truncated_local, lock_index);
-      assert(num_frames >= 0);
+        // truncated_local is never read after a longjmp landing (only on the
+        // clean path below), so it need not be volatile; the outer `truncated`
+        // stays false on the recovery path.
+        bool truncated_local = false;
+        ASGCT_CallFrame *native_stop = frames + num_frames;
+        num_frames += getNativeTrace(ucontext, native_stop, event_type, tid,
+                                     &java_ctx, &truncated_local, lock_index);
+        assert(num_frames >= 0);
 
-      int max_remaining = _max_stack_depth - num_frames;
-      if (max_remaining > 0) {
-        StackWalkRequest request = {event_type, lock_index, ucontext, frames + num_frames, max_remaining, &java_ctx, &truncated_local};
-        num_frames += JVMSupport::walkJavaStack(request);
-      }
-      assert(num_frames >= 0);
+        int max_remaining = _max_stack_depth - num_frames;
+        if (max_remaining > 0) {
+          StackWalkRequest request = {event_type, lock_index, ucontext, frames + num_frames, max_remaining, &java_ctx, &truncated_local};
+          num_frames += JVMSupport::walkJavaStack(request);
+        }
+        assert(num_frames >= 0);
 
-      if (walk_thread != nullptr) {
         walk_thread->setJmpCtx(prev_jmp_buf);
+        truncated = truncated_local;
       }
-      truncated = truncated_local;
-    }
 
     if (num_frames == 0) {
       num_frames += makeFrame(frames + num_frames, BCI_ERROR, "no_Java_frame");
