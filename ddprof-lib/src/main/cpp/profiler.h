@@ -407,7 +407,10 @@ public:
       const char* method_name;            // Resolved method name
     };
     int bci;                            // BCI_NATIVE_FRAME_REMOTE or BCI_NATIVE_FRAME
-    char mark;                         // the Mark value for this frame, 0 if unmarked
+    char mark;                         // Value domain: 0 (unmarked) or one of the Mark
+                                        // enum constants (codeCache.h), currently 1-5.
+                                        // Kept as char rather than Mark since it is
+                                        // packed into RemoteFramePacker's 3-bit field.
     // True if this frame carries a JVM-internal mark; caller must inspect
     // `mark` to decide whether to terminate the walk or dispatch/resume
     // (see the Mark values table above resolveNativeFrameForWalkVM).
