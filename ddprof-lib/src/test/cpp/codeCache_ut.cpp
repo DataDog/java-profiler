@@ -35,14 +35,49 @@ TEST(CodeCacheTest, MemoryUsageGrowsWithNameLength) {
     EXPECT_GT(longc.memoryUsage() - long_base, shortc.memoryUsage() - short_base);
 }
 
-// The blob array is counted at the full CodeBlob size (a CodeBlob is several
-// pointers wide): an empty cache already accounts for
-// capacity * sizeof(CodeBlob) plus its own name.
+// A freshly-constructed, empty cache reports exactly the blob array (counted at
+// the full CodeBlob size, not a pointer's worth) plus its own name — nothing
+// more. An exact check so over-counting or an inflated constant would fail.
 TEST(CodeCacheTest, MemoryUsageCountsFullBlobArray) {
     CodeCache cc("lib");
-    long long usage = cc.memoryUsage();
-    EXPECT_GT(usage, (long long)(INITIAL_CODE_CACHE_CAPACITY * sizeof(CodeBlob)));
-    // Sanity: a pointer-sized count would be far smaller than the real array.
-    EXPECT_GT((long long)(INITIAL_CODE_CACHE_CAPACITY * sizeof(CodeBlob)),
-              (long long)(INITIAL_CODE_CACHE_CAPACITY * sizeof(CodeBlob *)));
+    EXPECT_EQ((long long)INITIAL_CODE_CACHE_CAPACITY * sizeof(CodeBlob)
+                  + (long long)NativeFunc::allocSize("lib"),
+              cc.memoryUsage());
+}
+
+// The DWARF unwind table contributes length * sizeof(FrameDesc). Populate it so
+// a regression (e.g. * flipped to /) in that term is caught; the table is
+// zero-length in the other tests.
+TEST(CodeCacheTest, MemoryUsageCountsDwarfTable) {
+    CodeCache cc("lib");
+    long long base = cc.memoryUsage();
+
+    const int entries = 7;
+    // setDwarfTable() takes ownership; ~CodeCache frees it. Contents are
+    // irrelevant here — memoryUsage() reads only the length.
+    FrameDesc *table = (FrameDesc *)malloc(entries * sizeof(FrameDesc));
+    cc.setDwarfTable(table, entries);
+
+    EXPECT_EQ((long long)entries * sizeof(FrameDesc), cc.memoryUsage() - base);
+}
+
+// CodeCacheArray::memoryUsage() is the aggregation production actually consumes
+// (Profiler::dump()). Verify it sums the per-library values — guards the loop
+// bound and the accumulation against regressions the per-instance tests miss.
+TEST(CodeCacheTest, ArrayMemoryUsageSumsLibraries) {
+    CodeCacheArray arr;
+    CodeCache *a = new CodeCache("liba");
+    CodeCache *b = new CodeCache("libb");
+    // Populate before registering: add() must run pre-publication.
+    a->add(reinterpret_cast<const void *>(0x1000), 16, "alpha_symbol");
+    b->add(reinterpret_cast<const void *>(0x2000), 16, "beta_symbol_longer_name");
+
+    long long expected = (long long)a->memoryUsage() + (long long)b->memoryUsage();
+    ASSERT_TRUE(arr.add(a));
+    ASSERT_TRUE(arr.add(b));
+    EXPECT_EQ(expected, (long long)arr.memoryUsage());
+
+    // CodeCacheArray does not own the entries.
+    delete a;
+    delete b;
 }
