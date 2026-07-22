@@ -230,6 +230,29 @@ Shenandoah/ZGC, just no improvement there either. This is a real scope cut,
 not a workaround: it drops "GC-agnostic" as a goal and ships correctness
 for the collector most production JVMs still default to.
 
+**Correction (round-2 adversarial review):** the mechanism cited above is
+wrong, though the conclusion survives. "Those pauses are `VM_Operation`s,
+and `VMThread` serializes all `VM_Operation`s" is a category error — G1's
+concurrent helper threads (concurrent-mark workers, concurrent refinement,
+concurrent string deduplication) are plain `JavaThread`s, never
+`VM_Operation`s, and are never subject to `VM_Operation` serialization at
+all. What actually stops them is the general safepoint protocol
+(`SafepointSynchronize::begin()`) plus G1's own hook into it
+(`G1CollectedHeap::safepoint_synchronize_begin()` →
+`SuspendibleThreadSet::synchronize()`, `g1CollectedHeap.cpp:1663-1681`) — a
+separate mechanism from `VM_Operation` queuing. Verified concretely against
+concurrent string deduplication (`stringDedupTable.cpp:610`,
+`java_lang_String::set_value(...)` — an in-place, non-relocating live-object
+field mutation running concurrently with mutators on a plain `JavaThread`):
+it's blocked during our safepoint by ordinary safepoint sync, not by any
+`VM_Operation`-serialization property. No new hazard was found — G1 still
+has no concurrent phase that *moves* live object data outside STW pauses,
+and evacuation-failure self-forwarding is fully resolved within the same STW
+pause before it ends (`RemoveSelfForwardPtrHRClosure`) — so the "G1-only is
+safe" conclusion holds. But the stated *justification* needs fixing before
+this reasoning gets reused for a future collector decision: it's the
+safepoint protocol stopping concurrent workers, not `VM_Operation` queuing.
+
 #### Addendum: Shenandoah/ZGC forwarding mechanics, verified against source
 
 A follow-up question ("what about ZGC/Shenandoah, could either be solved
@@ -323,6 +346,29 @@ by the time it's in the table, it's just another tagged object. This isn't
 new mechanism; it's using the existing one for the case the earlier version
 of this design bypassed by trying to persist root descriptors instead of
 tags.
+
+**Caveat (round-2 adversarial review): this fixes resumability, but leaves a
+separate, pre-existing reporting-correctness gap unaddressed.**
+`root_kind` is set once, at first admission (`referenceChains.cpp` — insert
+only happens on the `*tag_ptr == 0` first-discovery path, never updated on
+later passes). Stack-local roots are transient by construction — the frame
+that discovered the object can return long before the object itself stops
+being live. Concretely: pass N discovers object X via a stack local in
+thread T; the method returns after pass N; X survives, now reachable only
+through some entirely different, durable path (a static field, say). Passes
+N+1..N+k will keep reporting X as "reachable via stack-local root in thread
+T" — attribution that's now simply false. For a tool whose entire value
+proposition is "here's the reason this object is alive," that's a
+correctness-of-*output* bug, not a cosmetic one, and it's not new: it
+already affects `JNI_LOCAL` roots today under the exact same
+first-discovery-sticks logic, independent of anything in this design. The
+tag-indexed frontier table fully solves "don't crash or misresolve a stale
+stack coordinate" (the resumability bug reviewed earlier) — it does not, by
+itself, solve "don't misreport why an object is still alive," which is a
+different bug that predates this design and should be tracked separately
+(e.g. label such entries "first observed via," or periodically re-verify
+root-attribution for root-attached frontier entries rather than trusting the
+first observation for the object's entire tracked lifetime).
 
 ## Status
 
