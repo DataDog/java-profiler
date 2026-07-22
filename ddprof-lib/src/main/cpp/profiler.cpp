@@ -650,6 +650,7 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
       // marker instead of crashing.
       SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
       walk_thread->setJmpCtx(prev_jmp_buf);
+      truncated = true;
       if (num_frames < _max_stack_depth) {
         num_frames += makeFrame(frames + num_frames, BCI_ERROR, "break_unwind_fault");
       }
