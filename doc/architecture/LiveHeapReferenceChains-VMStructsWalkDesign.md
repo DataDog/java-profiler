@@ -370,6 +370,73 @@ different bug that predates this design and should be tracked separately
 root-attribution for root-attached frontier entries rather than trusting the
 first observation for the object's entire tracked lifetime).
 
+### Fix for root-attribution staleness: cheap tie-break at admission, honest
+### labeling in output, opportunistic upgrade via root re-enumeration
+
+Researched how other tools handle this exact class of problem before
+proposing a fix, since it seemed likely someone else had already solved it.
+They mostly haven't, in a way that transfers:
+
+- **Eclipse MAT** never faces this — it's a one-shot static-dump analyzer,
+  so there's no "later pass" for attribution to go stale against. It does
+  document stack-local/JNI-local roots as noisy/transient for analysts, but
+  that's presentation guidance, not an algorithmic fix.
+- **JFR's `jdk.OldObjectSample`/`PathToGcRootsOperation`** resolves each
+  sample's path-to-GC-roots only once, lazily, at chunk-rotation/recording-
+  stop time — explicitly to avoid the cost of doing it more often. That's
+  the "pay full re-walk price for correctness, always" end of the
+  trade-off, i.e. the thing we already rejected as too expensive for our
+  per-pass cadence. It confirms even OpenJDK treats full root-path
+  resolution as too costly to repeat, but doesn't offer an incremental
+  alternative.
+- **Continuous tools (dotMemory, LeakCanary)** don't re-verify previously
+  reported attributions either. What they do share is a *durability*
+  heuristic: rank/narrate a path toward its most durable link (a static
+  field, a classloader) rather than its most transient one, on the grounds
+  that a durably-rooted explanation is both more actionable and far less
+  likely to go stale. No tool applies this at *admission* time the way we'd
+  need to (deciding which root to record when an object is first seen) —
+  it's used as a presentation/ranking heuristic over an already-fixed path.
+  No tool timestamps or caveats attribution as "observed as of T" either —
+  that's not prior art we're missing, it's a gap we'd be filling first.
+
+Given that, the pragmatic design — cheap, and better than what any
+surveyed tool does for this specific case — is three pieces, none requiring
+a subgraph re-walk:
+
+1. **Admission-time durability tie-break.** If, within the same pass, an
+   object is reachable from more than one root, prefer recording the most
+   durable root kind (static/class/classloader roots over JNI global over
+   JNI local/stack local/monitor) rather than whichever the traversal
+   happens to reach first. This is a direct generalization of the
+   presentation-time heuristic every surveyed tool already uses, just moved
+   to admission time — free of extra JVMTI calls, since all candidate roots
+   for the same object in the same pass are already visited during that
+   pass's root enumeration.
+2. **Honest labeling in output.** Report transient-root (`STACK_LOCAL`/
+   `JNI_LOCAL`) attributions as "first observed via," not as current fact —
+   this alone removes the false-confidence problem even without any
+   further mechanism, and costs nothing.
+3. **Opportunistic upgrade via the root-only re-enumeration we already do
+   every pass.** Root enumeration is already O(#roots) and already runs
+   every pass (this design's own §"piggyback" section). While iterating
+   that root set, if a tracked object is now reachable from a *durable*
+   root it wasn't attributed to before, cheaply overwrite `root_kind` —
+   a root-set diff against already-known tags, no subgraph re-walk. This
+   fixes exactly the bug found (object outlives its original transient
+   root, gains a new durable one) at near-zero marginal cost.
+
+**Residual gap, worth stating rather than solving here**: this doesn't
+catch the case where the object becomes reachable only via some other
+*already-tracked heap object* newly pointing to it (not a root itself) —
+that would require re-walking that object's outgoing edges, which is the
+expensive case we're deliberately not solving. Given no surveyed tool
+solves that case either (JFR's "solution" is a full re-walk, which is what
+we're avoiding), treating it as an accepted, documented limitation rather
+than a blocker seems right — it's strictly better than the status quo
+(permanently-sticky root_kind), not a regression against any known
+alternative.
+
 ## Status
 
 Design **viable with a scope cut**: gate the manual-walk path on G1 only
