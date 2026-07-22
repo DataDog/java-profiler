@@ -61,6 +61,24 @@ TEST(CodeCacheTest, MemoryUsageCountsDwarfTable) {
     EXPECT_EQ((long long)entries * sizeof(FrameDesc), cc.memoryUsage() - base);
 }
 
+// Copying a CodeCache must deep-copy each blob's name string. With the previous
+// shallow memcpy the copy shared the originals' _name pointers, so destroying
+// both double-freed them. Here both copies are populated, sized equally, and
+// destroyed — a double-free would abort (or trip ASan).
+TEST(CodeCacheTest, CopyIsDeepAndDoesNotDoubleFree) {
+    CodeCache src("lib");
+    src.add(reinterpret_cast<const void *>(0x1000), 16, "sym_one");
+    src.add(reinterpret_cast<const void *>(0x2000), 16, "sym_two_longer_name");
+    long long expected = src.memoryUsage();
+
+    {
+        CodeCache copy(src);
+        EXPECT_EQ(expected, copy.memoryUsage());
+    }  // copy destroyed — must not free src's name strings
+
+    EXPECT_EQ(expected, src.memoryUsage());  // src's names still intact
+}  // src destroyed — no double free
+
 // CodeCacheArray::memoryUsage() is the aggregation production actually consumes
 // (Profiler::dump()). Verify it sums the per-library values — guards the loop
 // bound and the accumulation against regressions the per-instance tests miss.

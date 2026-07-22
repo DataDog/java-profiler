@@ -116,6 +116,14 @@ void CodeCache::copyFrom(const CodeCache& other) {
   _count = other._count;
   _blobs = new CodeBlob[_capacity];
   memcpy(_blobs, other._blobs, _count * sizeof(CodeBlob));
+  // The memcpy above copied each CodeBlob's _name *pointer*, so without this the
+  // two caches would share name allocations and both destructors would free
+  // them (double-free / use-after-free). Give this copy its own name strings.
+  for (int i = 0; i < _count; i++) {
+    if (_blobs[i]._name != nullptr) {
+      _blobs[i]._name = NativeFunc::create(other._blobs[i]._name, _lib_index);
+    }
+  }
 
   // A copy is a fresh, not-yet-registered cache.
   _published.store(false, std::memory_order_relaxed);
