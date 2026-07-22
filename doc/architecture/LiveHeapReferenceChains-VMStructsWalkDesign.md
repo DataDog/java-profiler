@@ -437,6 +437,60 @@ than a blocker seems right — it's strictly better than the status quo
 (permanently-sticky root_kind), not a regression against any known
 alternative.
 
+### Closing the residual gap: bounded rotating re-expansion, not a full re-walk
+
+The gap above exists because JVMTI's heap walk only exposes *outgoing*
+edges — there's no "who points to me" query, so discovering that some
+already-`EXPANDED` object Y has gained a new edge to X requires re-walking
+Y's outgoing edges, which is exactly the O(graph) cost this whole design
+exists to avoid paying every pass.
+
+But re-walking Y isn't the same as re-walking *everything*, and this
+design already has a mechanism for spending a bounded amount of expansion
+work per pass: the same per-pass budget that governs frontier growth. The
+fix is to stop treating `EXPANDED` as terminal and instead feed a small,
+budgeted, rotating subset of already-`EXPANDED` entries back into the
+frontier each pass, using the *same* expansion machinery that processes
+genuinely new frontier entries — no second mechanism, no full re-walk, just
+a second admission path into the existing budget queue.
+
+Two things make this cheap enough to be worth doing rather than just
+documenting as a gap:
+
+- **Prioritize, don't randomize uniformly.** Re-expansion candidates should
+  be selected by expected payoff, not picked uniformly at random: entries
+  whose current `root_kind` is transient (`STACK_LOCAL`/`JNI_LOCAL`) are
+  exactly the ones whose attribution can go stale, so they're the ones
+  worth spending the budget on. A durably-rooted entry re-expanding finds
+  nothing new to report even if it *does* have new edges, since its
+  attribution was already correct. This also means the fix composes with
+  the honest-labeling piece above: an entry can stay flagged "first
+  observed via `STACK_LOCAL`, unresolved" until its turn in the rotation
+  comes up, rather than needing every entry re-verified every pass.
+- **Bounded staleness, not zero staleness.** With a rotation size R and N
+  transient-attributed entries in the table, worst-case staleness is
+  `ceil(N/R)` passes before any given entry gets re-checked — a concrete,
+  tunable number instead of "forever," and R is just another knob on the
+  same budget the design already exposes for frontier growth. This is
+  weaker than continuous correctness, but it's a strictly bounded
+  improvement over the status quo (`root_kind` never revisited) and over
+  every surveyed tool (JFR pays for full-graph correctness at dump time;
+  nothing surveyed does incremental, bounded re-verification at all).
+
+Re-expanding Y this way naturally rediscovers any new edge to X through
+the *same* `heapReferenceCallback`/admission path already used for first
+discovery — if X is already tracked, the callback's existing "already
+tagged" branch just needs to also apply the durability tie-break from
+point 1 above (prefer Y's durable attribution over X's existing transient
+one), rather than being a no-op as it is today for already-tagged targets.
+
+This turns the residual gap from an accepted permanent limitation into an
+accepted *bounded-latency* one, which seems like the right place to leave
+it for v1: it reuses 100% of the existing frontier/budget infrastructure,
+adds one selection policy (prioritize transient-attributed `EXPANDED`
+entries) and one small change to the existing admission callback (apply
+the tie-break on re-discovery, not just on first discovery).
+
 ## Status
 
 Design **viable with a scope cut**: gate the manual-walk path on G1 only
