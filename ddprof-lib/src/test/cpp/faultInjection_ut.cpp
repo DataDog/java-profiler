@@ -167,7 +167,9 @@ TEST_F(FaultInjectionTest, WalkVmSetjmpRecoversFromInjectedFault) {
   for (int i = 0; i < 5000 && faults == 0; i++) {
     // Raw deref of the (possibly poisoned) base — mirrors walkVM's raw reads.
     uintptr_t v = *(uintptr_t*)INJECT_FAULT_ADDRESS_LIKELY(base);
-    (void)v;
+    // Tells the compiler the variable is read from and written to ("+r,m")
+    // and clobbers memory to prevent reordering loads/stores/optimizes away the returned value
+    asm volatile("" : "+r,m"(v) : : "memory");
     reads++;
   }
   t->setJmpCtx(nullptr);
