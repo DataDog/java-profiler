@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #include <gtest/gtest.h>
 #include "stringDictionary.h"
 #include "nativeMem.h"
