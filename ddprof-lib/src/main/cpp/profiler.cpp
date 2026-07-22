@@ -628,10 +628,10 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
     // fault there is unrecoverable: crashHandlerInternal -> checkFault() finds
     // isProtected()==false and chains to the JVM handler, crashing the process.
     // walkVM installs its own inner jmp_buf and chains back to whatever we set
-    // here, so nesting is safe. setjmp is called unconditionally (kept as the
-    // whole controlling expression per C11 7.13.1.1); when there is no
-    // ProfiledThread we simply never publish the jmp_buf, and checkFault(null)
-    // returns without longjmp'ing, so the landing branch is unreachable.
+    // here, so nesting is safe. setjmp() must be evaluated as a standalone
+    // expression/controlling expression (C11 7.13.1.1), hence the explicit jmp_rc.
+    // When there is no ProfiledThread we do not publish a jmp_buf, and
+    // checkFault(nullptr) returns without longjmp'ing.
     ProfiledThread *walk_thread = ProfiledThread::current();
     jmp_buf unwind_ctx;
     jmp_buf *prev_jmp_buf =
