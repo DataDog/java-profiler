@@ -138,8 +138,13 @@ public:
     return pt;
   }
   // Deletes a ProfiledThread returned by clearCurrentThreadTLS().
-  // Needed because the destructor is private.
-  static void deleteForTest(ProfiledThread *pt) { delete pt; }
+  // Needed because the destructor is private. This stands in for the delete
+  // that freeValue() performs in production, so it mirrors freeValue()'s
+  // NM_THREAD_LOCAL decrement to keep the accounting balanced in tests.
+  static void deleteForTest(ProfiledThread *pt) {
+    delete pt;
+    NativeMem::record(NM_THREAD_LOCAL, -(long long)sizeof(ProfiledThread));
+  }
 #endif
   // initCurrentThread() and release() are not async-signal-safe: 
   // must be called outside of a signal handler with signal blocked

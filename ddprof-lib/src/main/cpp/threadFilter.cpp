@@ -64,16 +64,19 @@ ThreadFilter::~ThreadFilter() {
     }
     // Publish 0 chunks to stop range scans (collect)
     _num_chunks.store(0, std::memory_order_release);
-    // Detach and delete chunks
+    // Detach and delete chunks. Record the decrement after the delete so the
+    // gauge reflects the free only once it has happened.
     for (int i = 0; i < kMaxChunks; ++i) {
         ChunkStorage* chunk = _chunks[i].exchange(nullptr, std::memory_order_acquire);
+        delete chunk;
         if (chunk != nullptr) {
             NativeMem::record(NM_THREAD_FILTER, -(long long)sizeof(ChunkStorage));
         }
-        delete chunk;
     }
-    // The _free_list unique_ptr frees its FreeListNode[] as this destructor
-    // returns; account for it here.
+    // Free the FreeListNode[] explicitly before recording, rather than letting
+    // the unique_ptr free it after this destructor returns, so the decrement
+    // does not lead the actual free.
+    _free_list.reset();
     NativeMem::record(NM_THREAD_FILTER,
                       -(long long)(kFreeListSize * sizeof(FreeListNode)));
 }
