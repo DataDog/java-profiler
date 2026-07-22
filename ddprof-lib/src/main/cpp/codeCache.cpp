@@ -71,7 +71,7 @@ CodeCache::CodeCache(const char *name, short lib_index,
   _count = 0;
   _blobs = new CodeBlob[_capacity];
 
-  _published = false;
+  _published.store(false, std::memory_order_relaxed);
 }
 
 void CodeCache::copyFrom(const CodeCache& other) {
@@ -118,7 +118,7 @@ void CodeCache::copyFrom(const CodeCache& other) {
   memcpy(_blobs, other._blobs, _count * sizeof(CodeBlob));
 
   // A copy is a fresh, not-yet-registered cache.
-  _published = false;
+  _published.store(false, std::memory_order_relaxed);
 }
 
 CodeCache::CodeCache(const CodeCache &other) {
@@ -185,7 +185,8 @@ long long CodeCache::memoryUsage() const {
 void CodeCache::expand() {
   // Must not run after publication: memoryUsage() reads _blobs lock-free from
   // the dump thread and a concurrent realloc would free it underneath.
-  assert(!_published && "expand() on a published CodeCache races memoryUsage()");
+  assert(!_published.load(std::memory_order_acquire) &&
+         "expand() on a published CodeCache races memoryUsage()");
   CodeBlob *old_blobs = _blobs;
   CodeBlob *new_blobs = new CodeBlob[_capacity * 2];
 
@@ -202,7 +203,8 @@ void CodeCache::add(const void *start, int length, const char *name,
   // CodeCacheArray. Adding after publication would race memoryUsage() (which
   // reads _blobs/_count lock-free at dump time). Unpublished standalone caches
   // (e.g. _runtime_stubs) are exempt — they are never published.
-  assert(!_published && "add() on a published CodeCache races memoryUsage()");
+  assert(!_published.load(std::memory_order_acquire) &&
+         "add() on a published CodeCache races memoryUsage()");
   char *name_copy = NativeFunc::create(name, _lib_index);
   // Replace non-printable characters
   for (char *s = name_copy; *s != 0; s++) {
@@ -462,7 +464,8 @@ void CodeCache::makeImportsPatchable() {
 void CodeCache::setDwarfTable(FrameDesc *table, int length, const FrameDesc &default_frame) {
   // Set during library parsing, before publication. memoryUsage() reads
   // _dwarf_table_length lock-free at dump time, so this must not run afterwards.
-  assert(!_published && "setDwarfTable() on a published CodeCache races memoryUsage()");
+  assert(!_published.load(std::memory_order_acquire) &&
+         "setDwarfTable() on a published CodeCache races memoryUsage()");
   _dwarf_table = table;
   _dwarf_table_length = length;
   _default_frame = &default_frame;

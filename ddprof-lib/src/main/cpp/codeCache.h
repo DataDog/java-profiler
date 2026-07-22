@@ -12,6 +12,7 @@
 #include "dwarf.h"
 #include "utils.h"
 
+#include <atomic>
 #include <jvmti.h>
 #include <stdlib.h>
 #include <string.h>
@@ -169,8 +170,11 @@ private:
   // setDwarfTable()) must not run — asserted in debug. Standalone caches that
   // are never registered (e.g. JitCodeCache::_runtime_stubs, which is instead
   // guarded by its own JitCodeCache::_stubs_lock) stay unpublished, so the
-  // asserts never fire for them.
-  bool _published;
+  // asserts never fire for them. Atomic with release/acquire so the flag is
+  // observably true on any thread that reaches a published cache — the store is
+  // sequenced before CodeCacheArray::add()'s RELEASE publish of the pointer, and
+  // the assert loads it with acquire — without a formal data race.
+  std::atomic<bool> _published;
 
   void expand();
   void makeImportsPatchable();
@@ -231,7 +235,7 @@ public:
   // Mark this cache as published into a CodeCacheArray. Call before the array
   // makes the pointer visible to readers; afterwards add()/expand()/
   // setDwarfTable() must not be called (see _published).
-  void markPublished() { _published = true; }
+  void markPublished() { _published.store(true, std::memory_order_release); }
 
   void add(const void *start, int length, const char *name,
            bool update_bounds = false);
