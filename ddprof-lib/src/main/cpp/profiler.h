@@ -215,6 +215,8 @@ public:
     }
   }
 
+  static void checkFault(ProfiledThread* thrd = nullptr);
+
   static inline Profiler *instance() {
     return _instance;
   }

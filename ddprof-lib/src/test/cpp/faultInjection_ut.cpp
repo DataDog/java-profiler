@@ -14,6 +14,7 @@
 #include "safeAccess.h"
 #include "os.h"
 #include "threadLocalData.h"
+#include "profiler.h"
 #include "hotspot/hotspotSupport.h"
 #include "../../main/cpp/gtest_crash_handler.h"
 
@@ -60,7 +61,7 @@ static void fi_signal_wrapper(int signo, siginfo_t* siginfo, void* context) {
   if (SafeAccess::handle_safefetch(signo, context)) {
     return;  // safefetch load recovered; PC already rewritten to _cont.
   }
-  HotspotSupport::checkFault(ProfiledThread::current());  // longjmp if protected
+  Profiler::checkFault(ProfiledThread::current());  // longjmp if protected
   // Not protected and not a safefetch fault — real crash.
   if (signo == SIGBUS && orig_busHandler != nullptr) {
     orig_busHandler(signo, siginfo, context);

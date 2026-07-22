@@ -963,25 +963,6 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     return depth;
 }
 
-void HotspotSupport::checkFault(ProfiledThread* thrd) {
-    // Should not get to here (?)
-    if (thrd == nullptr) {
-        return;
-    }
-
-    // Check if longjmp is setup for this thread
-    if (!thrd->isProtected()) {
-        return;
-    }
-
-    thrd->resetCrashHandler();
-    // Shared recovery point for every setjmp/longjmp-protected stack walk
-    // (walkVM's inner region and recordSample's native/AGCT unwind), so the
-    // counter is deliberately not walkVM-specific.
-    Counters::increment(STACKWALK_LONGJMP_RECOVERED);
-    longjmp(*thrd->getJmpCtx(), 1);
-}
-
 int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
                                 int max_depth, StackContext *java_ctx,
                                 bool *truncated) {
