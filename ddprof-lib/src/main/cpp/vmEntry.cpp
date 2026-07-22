@@ -217,6 +217,10 @@ CodeCache* VM::openJvmLibrary() {
   lib = isOpenJ9()
         ? libraries->findJvmLibrary("libj9vm")
         : libraries->findLibraryByAddress((const void *)_asyncGetCallTrace);
+
+  // The libaray must have been loaded. Otherwise, we cannot get to here due
+  // to JVM initialization
+  assert(lib != nullptr && "JVM library must be loaded");
   __atomic_store_n(&_libjvm, lib, __ATOMIC_RELEASE);
   return lib;
 }
@@ -585,11 +589,10 @@ void VM::ready(jvmtiEnv *jvmti, JNIEnv *jni) {
                                  __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
     JitWriteProtection jit(true);
     CodeCache* lib = openJvmLibrary();
-    if (lib != nullptr) {
-      // Initialize VMStructs
-      VMStructs::init(lib);
-      VMStructs::ready();
-    }
+    assert(lib != nullptr && "JVM library must have been loaded");
+    // Initialize VMStructs
+    VMStructs::init(lib);
+    VMStructs::ready();
   }
 }
 
