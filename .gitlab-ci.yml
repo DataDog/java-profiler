@@ -2,7 +2,7 @@ image: alpine
 
 variables:
   REGISTRY: registry.ddbuild.io
-  PREPARE_IMAGE: registry.ddbuild.io/images/benchmarking-platform-tools-ubuntu:latest
+  PREPARE_IMAGE: registry.ddbuild.io/images/benchmarking-platform-tools-ubuntu:newest
   # Image with dd-octo-sts for GitHub token exchange (check-image-updates, rebuild-images-pr)
   DD_OCTO_STS_IMAGE: registry.ddbuild.io/images/dd-octo-sts-ci-base:2025.06-1
   FORCE_BUILD:
@@ -180,7 +180,7 @@ generate-reliability-child-pipeline:
       else
         cat > generated-reliability.yml << 'NOOP'
       skip-reliability:
-        image: registry.ddbuild.io/images/benchmarking-platform-tools-ubuntu:latest
+        image: registry.ddbuild.io/images/benchmarking-platform-tools-ubuntu:newest
         tags: ["arch:amd64"]
         script:
           - echo "Label test:reliability not set — skipping"

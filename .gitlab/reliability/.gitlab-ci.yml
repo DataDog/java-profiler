@@ -1,5 +1,5 @@
 variables:
-  PREPARE_IMAGE: registry.ddbuild.io/images/benchmarking-platform-tools-ubuntu:latest
+  PREPARE_IMAGE: registry.ddbuild.io/images/benchmarking-platform-tools-ubuntu:newest
   DD_OCTO_STS_IMAGE: registry.ddbuild.io/images/dd-octo-sts-ci-base:2025.06-1
 
 # Shared template — concrete jobs supply image, tags, and ARCH variable
