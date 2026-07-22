@@ -28,7 +28,13 @@ long long NativeMem::_total_max_observed = 0;
 long long NativeMem::liveTotal() {
   long long total = 0;
   for (int c = 0; c < NM_NUM_CATEGORIES; c++) {
-    total += load(_live[c]);
+    // Clamp per-category negatives to 0 (see sample()): the total is exported
+    // as an unsigned varint, so a stray negative would otherwise serialize as a
+    // huge value and corrupt the counter stream.
+    long long v = load(_live[c]);
+    if (v > 0) {
+      total += v;
+    }
   }
   return total;
 }
@@ -57,7 +63,9 @@ void NativeMem::sample() {
   }
 
   // The per-category peaks are maintained precisely at allocation time by
-  // record(); here we only track the observed total (lower bound on the peak).
+  // record(); here we only track the largest observed total. Note `total` is a
+  // non-atomic sum of the per-category gauges read moments apart, so it is an
+  // approximate sampled figure, not a strict instantaneous total.
   _total_window[_window_pos] = total;
   if (total > _total_max_observed) {
     _total_max_observed = total;

@@ -1794,7 +1794,7 @@ void Recording::updateNativeMemStats() {
   // Mirror the totals into the flat counter table so they flow out through the
   // existing counter path (JFR T_DATADOG_COUNTER events and the JNI debug
   // counters). NATIVE_MEM_MAX_BYTES carries the upper bound on the total peak
-  // (sum of precise per-category peaks); the observed lower bound and the
+  // (sum of precise per-category peaks); the observed sampled total and the
   // per-category values are emitted by writeNativeMem().
   Counters::set(NATIVE_MEM_LIVE_BYTES, NativeMem::liveTotal());
   Counters::set(NATIVE_MEM_AVG_BYTES, NativeMem::avgTotal());
@@ -1806,6 +1806,13 @@ void Recording::writeNativeMem(Buffer *buf) {
   // so they land alongside the totals without needing a dedicated event type or
   // a slot in the counter table.
   auto emit = [&](const char *label, long long value) {
+    // Clamp to 0 before encoding: the value is serialized as an unsigned varint
+    // (putVar64), so a negative live gauge would emit a huge value and corrupt
+    // the counter stream. avg/max are already non-negative; live is clamped
+    // here to match sample()/liveTotal().
+    if (value < 0) {
+      value = 0;
+    }
     int start = buf->skip(1);
     buf->putVar64(T_DATADOG_COUNTER);
     buf->putVar64(_start_ticks);
@@ -1835,9 +1842,9 @@ void Recording::writeNativeMem(Buffer *buf) {
     }
   }
 
-  // The total peak is bracketed: NATIVE_MEM_MAX_BYTES already carries the upper
-  // bound (sum of precise per-category peaks); here we also emit the observed
-  // lower bound (largest instantaneous total seen at a sampling tick).
+  // NATIVE_MEM_MAX_BYTES already carries the upper bound on the total peak (sum
+  // of precise per-category peaks); here we also emit the largest observed
+  // sampled total (a non-atomic per-category sum; approximate).
   emit("native_mem_max_observed_total_bytes", NativeMem::maxTotalObserved());
 }
 
@@ -2142,8 +2149,12 @@ void FlightRecorder::stop() {
   if (rec != nullptr) {
     // NULL first, deallocate later
     _rec = nullptr;
-    NativeMem::record(NM_JFR_BUFFERS, -(long long)sizeof(Recording));
+    // Decrement AFTER delete: ~Recording() runs finishChunk(), which emits the
+    // native-memory counters for the final chunk. The Recording buffers are
+    // still live during that serialization, so account the free only once it
+    // has actually happened.
     delete rec;
+    NativeMem::record(NM_JFR_BUFFERS, -(long long)sizeof(Recording));
   }
 }
 

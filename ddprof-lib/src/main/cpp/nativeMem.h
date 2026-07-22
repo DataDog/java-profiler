@@ -128,8 +128,12 @@ public:
   // Upper bound on the total peak: the sum of the precise per-category peaks.
   // Exact only if the category peaks coincided; otherwise an overestimate.
   static long long maxTotal();
-  // Lower bound on the total peak: the largest instantaneous total seen at a
-  // sampling tick. Misses peaks that rise and fall entirely between ticks.
+  // The largest total seen at a sampling tick, where each tick sums the
+  // per-category live gauges. The sum is not an atomic snapshot, so under
+  // concurrent churn across categories it can drift somewhat above or below any
+  // true instantaneous total — treat it as an approximate sampled figure, not a
+  // strict bound. maxTotal() is the authoritative ceiling; this complements it
+  // as an observed, typically-tighter estimate.
   static long long maxTotalObserved() { return _total_max_observed; }
 
   // Clear all live gauges and window/peak state. Not thread-safe against
