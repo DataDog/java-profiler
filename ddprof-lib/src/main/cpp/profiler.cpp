@@ -21,6 +21,7 @@
 #include "itimer.h"
 #include "hotspot/vmStructs.inline.h"
 #include "hotspot/hotspotSupport.h"
+#include "hotspot/jitCodeCache.h"
 #include "j9/j9Support.h"
 #include "j9/j9WallClock.h"
 #include "jvmSupport.h"
@@ -1780,8 +1781,11 @@ Error Profiler::dump(const char *path, const int length) {
     const CodeCacheArray& native_libs = _libs->native_libs();
     Counters::set(CODECACHE_NATIVE_COUNT, native_libs.count());
     Counters::set(CODECACHE_NATIVE_SIZE_BYTES, native_libs.memoryUsage());
+    // The runtime-stubs counter reflects the JIT runtime-stubs code cache, a
+    // separate cache from the native libraries (it previously duplicated
+    // native_libs.memoryUsage() by copy-paste). Read under its shared lock.
     Counters::set(CODECACHE_RUNTIME_STUBS_SIZE_BYTES,
-                  native_libs.memoryUsage());
+                  JitCodeCache::runtimeStubsMemoryUsage());
 
     Error err = Error::OK;
     // rotateDictsAndRun rotates the dictionaries, takes lockAll() around the
