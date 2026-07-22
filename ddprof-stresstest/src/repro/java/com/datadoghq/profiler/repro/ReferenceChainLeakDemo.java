@@ -31,6 +31,12 @@ import java.util.Map;
  * <p>Takes the JFR output path as {@code args[0]} (must match {@code file=} above) and the
  * agent's own {@code .so} path as {@code args[1]} (must match the {@code -agentpath} value
  * above), and periodically calls {@link JavaProfiler#dump}. Both are load-bearing:
+ *
+ * <p>An optional {@code args[2]} duration in seconds switches from the default "run forever"
+ * manual mode to a bounded session that dumps once more and prints a single {@code [metrics]}
+ * line at exit (throughput, round latency, heap growth) - see
+ * {@code utils/compare-refchains-repro.sh}, which runs this app twice (referencechains on vs.
+ * off) over the same duration and diffs those lines against each run's safepoint/GC logs.
  * <ul>
  *   <li>The dump call itself: {@code Profiler::dump()} (profiler.cpp) is the only code path
  *   that drains {@code ReferenceChainTracker}'s pending chain-event queue and actually writes
@@ -109,14 +115,31 @@ public final class ReferenceChainLeakDemo {
 
     public static void main(String[] args) throws Exception {
         if (args.length < 2) {
-            System.err.println("usage: ReferenceChainLeakDemo <jfr-dump-path> <agent-so-path> "
-                    + "(both must match the -agentpath:<agent-so-path>=...jfr,file=<jfr-dump-path> values)");
+            System.err.println("usage: ReferenceChainLeakDemo <jfr-dump-path> <agent-so-path> [duration-seconds] "
+                    + "(both required args must match the -agentpath:<agent-so-path>=...jfr,file=<jfr-dump-path> values; "
+                    + "duration-seconds runs a bounded, metrics-reporting session instead of forever)");
             System.exit(1);
         }
-        run(Paths.get(args[0]), args[1]);
+        long durationSeconds = args.length >= 3 ? Long.parseLong(args[2]) : -1;
+        run(Paths.get(args[0]), args[1], durationSeconds);
     }
 
-    private static void run(Path dumpPath, String agentSoPath) throws InterruptedException {
+    // FlightRecorder::dump() (flightRecorder.cpp) rejects dumping the continuous recording to
+    // its own file= path ("Can not dump recording to itself"), so periodic drains must target
+    // a different path; this is that path's suffix.
+    private static final String SNAPSHOT_SUFFIX = ".snapshot";
+
+    // Tracked so a bounded run (durationSeconds >= 0) can report throughput/latency/memory
+    // deltas at exit for A/B comparison against a referencechains=false baseline - see
+    // utils/compare-refchains-repro.sh.
+    private static long roundCount = 0;
+    private static long totalEntriesAdded = 0;
+    private static long totalRoundNanos = 0;
+    private static long maxRoundNanos = 0;
+
+    private static void run(Path recordingPath, String agentSoPath, long durationSeconds) throws InterruptedException {
+        // Must differ from recordingPath itself - see SNAPSHOT_SUFFIX's comment.
+        Path snapshotPath = recordingPath.resolveSibling(recordingPath.getFileName() + SNAPSHOT_SUFFIX);
         // Must pass the exact .so path -agentpath already loaded: JavaProfiler.getInstance()
         // with no libLocation extracts the jar's own bundled copy to a fresh temp file and
         // System.load()s *that* instead, producing a second, never-started Profiler singleton
@@ -136,13 +159,19 @@ public final class ReferenceChainLeakDemo {
         seed(cache, 300);
 
         System.out.println("[repro] pid=" + pid()
-                + " - growing cache forever, forcing a GC every round so the profiler's "
+                + " - growing cache " + (durationSeconds >= 0 ? ("for " + durationSeconds + "s") : "forever")
+                + ", forcing a GC every round so the profiler's "
                 + "population-growth trend detection has real epochs to work with; watch "
                 + "heapUsedMb/heapMaxMb and attach/dump once a chain shows up");
 
+        long startNanos = System.nanoTime();
+        long deadlineNanos = durationSeconds >= 0 ? startNanos + durationSeconds * 1_000_000_000L : Long.MAX_VALUE;
+        long startHeapUsedMb = heapUsedMb();
+
         long nextKey = 300;
         int round = 0;
-        while (true) {
+        while (System.nanoTime() < deadlineNanos) {
+            long roundStartNanos = System.nanoTime();
             round++;
             double heapFraction = heapUsedFraction();
             int batchSize = heapFraction >= HIGH_WATERMARK ? THROTTLED_BATCH_SIZE : NORMAL_BATCH_SIZE;
@@ -153,6 +182,7 @@ public final class ReferenceChainLeakDemo {
                     String key = "leak-" + (nextKey++);
                     cache.put(key, new CachedEntry(key));
                 }
+                totalEntriesAdded += batchSize;
             } else {
                 System.out.println("[repro] heap usage critical (" + pct(heapFraction)
                         + ") - pausing growth this round, attach/dump now if you haven't");
@@ -169,11 +199,43 @@ public final class ReferenceChainLeakDemo {
             }
 
             if (round % DUMP_EVERY_N_ROUNDS == 0) {
-                profiler.dump(dumpPath);
+                profiler.dump(snapshotPath);
             }
+
+            long roundNanos = System.nanoTime() - roundStartNanos;
+            roundCount++;
+            totalRoundNanos += roundNanos;
+            maxRoundNanos = Math.max(maxRoundNanos, roundNanos);
 
             Thread.sleep(roundIntervalMs);
         }
+
+        if (durationSeconds >= 0) {
+            profiler.dump(snapshotPath);
+            reportMetrics(startNanos, startHeapUsedMb);
+        }
+    }
+
+    // Printed with a distinct "[metrics]" prefix so utils/compare-refchains-repro.sh can grep
+    // it out of the two runs' stdout (referencechains=true vs. false) and diff throughput/
+    // latency/memory-growth directly, without needing to touch the safepoint/GC logs for those.
+    private static void reportMetrics(long startNanos, long startHeapUsedMb) {
+        long wallNanos = System.nanoTime() - startNanos;
+        double wallSeconds = wallNanos / 1_000_000_000.0;
+        double avgRoundMs = roundCount == 0 ? 0 : (totalRoundNanos / (double) roundCount) / 1_000_000.0;
+        double maxRoundMs = maxRoundNanos / 1_000_000.0;
+        double entriesPerSec = wallSeconds > 0 ? totalEntriesAdded / wallSeconds : 0;
+        long heapGrowthMb = heapUsedMb() - startHeapUsedMb;
+
+        System.out.println("[metrics] wallSeconds=" + String.format("%.1f", wallSeconds)
+                + " rounds=" + roundCount
+                + " entriesAdded=" + totalEntriesAdded
+                + " entriesPerSec=" + String.format("%.1f", entriesPerSec)
+                + " avgRoundMs=" + String.format("%.3f", avgRoundMs)
+                + " maxRoundMs=" + String.format("%.3f", maxRoundMs)
+                + " heapUsedMbStart=" + startHeapUsedMb
+                + " heapUsedMbEnd=" + heapUsedMb()
+                + " heapGrowthMb=" + heapGrowthMb);
     }
 
     private static void seed(Map<String, CachedEntry> cache, int count) {

@@ -34,12 +34,23 @@ FrontierTable::FrontierTable(int max_cap)
       _table_cap = 0;
     }
   }
+  Counters::increment(REFERENCE_CHAIN_FRONTIER_TABLE_BYTES,
+                       (jlong)_table_cap * sizeof(FrontierEntry));
+  Counters::increment(REFERENCE_CHAIN_FRONTIER_TABLE_CAPACITY, _table_cap);
 }
 
-FrontierTable::~FrontierTable() { free(_table); }
+FrontierTable::~FrontierTable() {
+  Counters::increment(REFERENCE_CHAIN_FRONTIER_TABLE_BYTES,
+                       -(jlong)_table_cap * sizeof(FrontierEntry));
+  Counters::increment(REFERENCE_CHAIN_FRONTIER_TABLE_CAPACITY, -_table_cap);
+  free(_table);
+}
 
 void FrontierTable::resetCapacityForTest(int max_cap) {
   _table_lock.lock();
+  Counters::increment(REFERENCE_CHAIN_FRONTIER_TABLE_BYTES,
+                       -(jlong)_table_cap * sizeof(FrontierEntry));
+  Counters::increment(REFERENCE_CHAIN_FRONTIER_TABLE_CAPACITY, -_table_cap);
   free(_table);
   _table = nullptr;
   _table_max_cap = std::max(max_cap, 0);
@@ -50,6 +61,9 @@ void FrontierTable::resetCapacityForTest(int max_cap) {
       _table_cap = 0;
     }
   }
+  Counters::increment(REFERENCE_CHAIN_FRONTIER_TABLE_BYTES,
+                       (jlong)_table_cap * sizeof(FrontierEntry));
+  Counters::increment(REFERENCE_CHAIN_FRONTIER_TABLE_CAPACITY, _table_cap);
   _table_size.store(0, std::memory_order_relaxed);
   _table_lock.unlock();
 }
@@ -81,6 +95,10 @@ bool FrontierTable::growLocked(int required_cap) {
   // realloc() does not zero the newly grown region - clear it so lookup()
   // never returns garbage state for a slot that hasn't been inserted yet.
   memset(tmp + _table_cap, 0, sizeof(FrontierEntry) * (newcap - _table_cap));
+  Counters::increment(REFERENCE_CHAIN_FRONTIER_TABLE_BYTES,
+                       (jlong)(newcap - _table_cap) * sizeof(FrontierEntry));
+  Counters::increment(REFERENCE_CHAIN_FRONTIER_TABLE_CAPACITY,
+                       newcap - _table_cap);
   _table = tmp;
   _table_cap = newcap;
   return _table_cap >= required_cap;

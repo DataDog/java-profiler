@@ -142,7 +142,12 @@
    * already-dequeued datadog.ReferenceChain event - permanently lost, same  \
    * as REFERENCE_CHAIN_EVENTS_DROPPED above but from the write side rather  \
    * than the pending-queue side. */                                         \
-  X(REFERENCE_CHAIN_WRITE_DROPPED, "reference_chain_write_dropped")
+  X(REFERENCE_CHAIN_WRITE_DROPPED, "reference_chain_write_dropped")            \
+  /* FrontierTable's own calloc/realloc-backed storage (referenceChains.cpp) -   \
+   * outside NMT's visibility since it bypasses os::malloc, so this is the only \
+   * way to attribute its native RSS contribution. */                          \
+  X(REFERENCE_CHAIN_FRONTIER_TABLE_BYTES, "reference_chain_frontier_table_bytes") \
+  X(REFERENCE_CHAIN_FRONTIER_TABLE_CAPACITY, "reference_chain_frontier_table_capacity")
 #define X_ENUM(a, b) a,
 typedef enum CounterId : int {
   DD_COUNTER_TABLE(X_ENUM) DD_NUM_COUNTERS

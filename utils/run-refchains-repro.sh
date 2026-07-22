@@ -11,15 +11,25 @@
 # comment: without a dump() call nothing ever drains the tracker's pending
 # chain-event queue, so datadog.ReferenceChain never actually lands in the file.
 #
-# Usage: run-refchains-repro.sh [jfr-output-path]
+# Usage: run-refchains-repro.sh [jfr-output-path] [duration-seconds]
+#
+# duration-seconds (optional) bounds the run and makes the app print a single
+# "[metrics]" summary line (throughput/round-latency/heap growth) at exit
+# instead of running forever - see ReferenceChainLeakDemo.reportMetrics(). Also
+# enables -Xlog safepoint+GC logging to <jfr-output-path>.safepoint.log and
+# .gc.log for STW-pause analysis. Used by compare-refchains-repro.sh to A/B
+# referencechains=true vs. false over an identical bounded window.
 #
 # Env vars:
-#   REFCHAINS_SO   path to libjavaProfiler.so/.dylib (default: locate the
-#                   locally built debug artifact under ddprof-lib/build/lib)
-#   REFCHAINS_JAR  path to refchains_repro.jar (default: build/rebuild via
-#                   ./gradlew :ddprof-stresstest:reproJar)
-#   REFCHAINS_ARGS extra referencechains=... sub-options appended after the
-#                   baked-in defaults below (e.g. "hops=32")
+#   REFCHAINS_SO      path to libjavaProfiler.so/.dylib (default: locate the
+#                      locally built debug artifact under ddprof-lib/build/lib)
+#   REFCHAINS_JAR      path to refchains_repro.jar (default: build/rebuild via
+#                      ./gradlew :ddprof-stresstest:reproJar)
+#   REFCHAINS_ENABLED  "true" (default) or "false" - toggles the
+#                      referencechains=... agent sub-option itself, for A/B
+#                      comparison against a baseline with the feature off.
+#   REFCHAINS_ARGS     extra referencechains=... sub-options appended after the
+#                      baked-in defaults below (e.g. "hops=32")
 
 set -euo pipefail
 
@@ -27,6 +37,7 @@ HERE="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 ROOT="$( cd "${HERE}/.." >/dev/null 2>&1 && pwd )"
 
 JFR_OUT="${1:-/tmp/refchains_repro.jfr}"
+DURATION_SECONDS="${2:-}"
 
 if [ -z "${REFCHAINS_SO:-}" ]; then
   REFCHAINS_SO=$(find "${ROOT}/ddprof-lib/build/lib" -name 'libjavaProfiler.so' -o -name 'libjavaProfiler.dylib' 2>/dev/null | head -1)
@@ -54,14 +65,28 @@ echo "Using jar: ${REFCHAINS_JAR}"
 # from budget=4000 (currently x50, capped at 200000 - referenceChains.h) so
 # it can actually reach this app's leaking population. Pass
 # REFCHAINS_ARGS="firstpassbudget=N" to override that auto-scaled default.
-REFERENCECHAINS_OPTS="true:hops=64:budget=10000:ttl=120000:framecap=2000000:pausetarget=500:painbudget=100"
+REFCHAINS_ENABLED="${REFCHAINS_ENABLED:-true}"
+REFERENCECHAINS_OPTS="${REFCHAINS_ENABLED}:hops=64:budget=10000:ttl=120000:framecap=2000000:pausetarget=500:painbudget=100"
 if [ -n "${REFCHAINS_ARGS:-}" ]; then
   REFERENCECHAINS_OPTS="${REFERENCECHAINS_OPTS}:${REFCHAINS_ARGS}"
 fi
 
 echo "JFR output: ${JFR_OUT}"
+echo "referencechains enabled: ${REFCHAINS_ENABLED}"
 rm -f "${JFR_OUT}"
 
+JAVA_LOG_OPTS=()
+if [ -n "${DURATION_SECONDS}" ]; then
+  # Unified-logging safepoint+GC pause detail, kept per-run alongside the JFR file so
+  # compare-refchains-repro.sh can parse "Total time for which application threads were
+  # stopped" (STW safepoint pauses, includes GC) and per-GC pause times out of one file.
+  SAFEPOINT_LOG="${JFR_OUT}.safepoint.log"
+  rm -f "${SAFEPOINT_LOG}"
+  JAVA_LOG_OPTS=(-Xlog:safepoint*=info,gc*=info:file="${SAFEPOINT_LOG}":time,uptime,level,tags)
+  echo "Safepoint/GC log: ${SAFEPOINT_LOG}"
+fi
+
 exec java \
+  "${JAVA_LOG_OPTS[@]}" \
   -agentpath:"${REFCHAINS_SO}"=start,memory=64:l,generations=true,referencechains=${REFERENCECHAINS_OPTS},jfr,file="${JFR_OUT}" \
-  -jar "${REFCHAINS_JAR}" "${JFR_OUT}" "${REFCHAINS_SO}"
+  -jar "${REFCHAINS_JAR}" "${JFR_OUT}" "${REFCHAINS_SO}" ${DURATION_SECONDS}
