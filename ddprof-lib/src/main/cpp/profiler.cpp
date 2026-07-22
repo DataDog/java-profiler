@@ -637,7 +637,12 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
     jmp_buf *prev_jmp_buf =
         (walk_thread != nullptr) ? walk_thread->getJmpCtx() : nullptr;
 
-    if (walk_thread != nullptr && setjmp(unwind_ctx) != 0) {
+    int jmp_rc = 0;
+    if (walk_thread != nullptr) {
+      jmp_rc = setjmp(unwind_ctx);
+    }
+
+    if (jmp_rc != 0) {
       // A fault during unwinding longjmp'd back here (via checkFault). Reached
       // only when walk_thread != nullptr (see above). The longjmp bypassed
       // segvHandler's SignalHandlerScope destructor, so compensate, restore the
