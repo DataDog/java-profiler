@@ -47,7 +47,7 @@ test-with-jdk:
 notify-slack:
   stage: notify
   when: on_failure
-  image: registry.ddbuild.io/slack-notifier:latest
+  image: registry.ddbuild.io/slack-notifier:v91289620-4ec922a-latest@sha256:06b24f392ccc383d371c72001520a254edef523bc0bfdc445f487106107b4202
   tags: ["arch:amd64"]
   script:
     - .gitlab/jdk-integration/notify_channel.sh "${JDK_VERSION}" "${DEBUG_LEVEL}" "${HASH}"

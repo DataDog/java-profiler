@@ -1,5 +1,5 @@
 variables:
-  PREPARE_IMAGE: registry.ddbuild.io/images/benchmarking-platform-tools-ubuntu:latest
+  PREPARE_IMAGE: registry.ddbuild.io/images/benchmarking-platform-tools-ubuntu:b1a4215d@sha256:af19410c9f2d92c89bbef5c937c5bab527eb6fbdd04d506d626c3cc722ff07ea
   DD_OCTO_STS_IMAGE: registry.ddbuild.io/images/dd-octo-sts-ci-base:2025.06-1
 
 # Shared template — concrete jobs supply image, tags, and ARCH variable
@@ -121,7 +121,7 @@ notify-slack:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: on_failure
     - when: never
-  image: registry.ddbuild.io/slack-notifier:latest
+  image: registry.ddbuild.io/slack-notifier:v91289620-4ec922a-latest@sha256:06b24f392ccc383d371c72001520a254edef523bc0bfdc445f487106107b4202
   tags: [ "arch:amd64" ]
   needs:
     - get-versions
