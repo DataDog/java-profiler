@@ -39,9 +39,10 @@ public:
     
     static CodeBlob* findRuntimeStub(const void *address);
 
-    // Live heap footprint of the runtime-stubs code cache. Read under the
-    // shared stubs lock because DynamicCodeGenerated() mutates _runtime_stubs
-    // (add()/expand()) concurrently.
+    // Approximate heap usage of the runtime-stubs code cache, via
+    // CodeCache::memoryUsage() (a capacity/count-based estimate today; #677
+    // makes it exact). Read under the shared stubs lock because
+    // DynamicCodeGenerated() mutates _runtime_stubs (add()/expand()) concurrently.
     static long long runtimeStubsMemoryUsage();
     static bool isJitCode(const void* pc) {
         return CodeHeap::contains(pc);
