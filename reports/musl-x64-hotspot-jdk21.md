@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk21
 
 ## musl-x64-hotspot-jdk21 - ✅ PASS
 
-**Date:** 2026-07-23 08:04:09 EDT
+**Date:** 2026-07-23 08:07:15 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-x64-hotspot-jdk21
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 58 |
-| CPU Cores (end) | 70 |
+| CPU Cores (start) | 6 |
+| CPU Cores (end) | 6 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: musl-x64-hotspot-jdk21
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (4 unique values: 58-70 cores)</summary>
+<summary>CPU Timeline (1 unique values: 6-6 cores)</summary>
 
 ```
-1784808047 58
-1784808052 58
-1784808057 58
-1784808062 58
-1784808067 58
-1784808072 58
-1784808077 58
-1784808082 58
-1784808087 58
-1784808092 60
-1784808097 60
-1784808102 60
-1784808107 60
-1784808112 60
-1784808117 60
-1784808122 60
-1784808127 60
-1784808132 68
-1784808137 68
-1784808142 68
+1784808069 6
+1784808074 6
+1784808079 6
+1784808084 6
+1784808089 6
+1784808094 6
+1784808099 6
+1784808104 6
+1784808109 6
+1784808114 6
+1784808119 6
+1784808124 6
+1784808129 6
+1784808134 6
+1784808139 6
+1784808144 6
+1784808149 6
+1784808154 6
+1784808159 6
+1784808164 6
 ```
 </details>
 
