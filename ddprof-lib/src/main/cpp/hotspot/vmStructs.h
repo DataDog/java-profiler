@@ -357,10 +357,12 @@ typedef void* address;
     type_end()                                                                                                      \
     /* CompressedOops::_narrow_oop is exported under its own type name, distinct from     */                        \
     /* CompressedKlassPointers (narrow klass) above - HotSpot keeps compressed-oop and     */                       \
-    /* compressed-klass base/shift state in two separate AllStatic classes.                */                       \
+    /* compressed-klass base/shift state in two separate AllStatic classes. JDK-8329306    */                       \
+    /* (JDK 24+) flattened the nested NarrowOopStruct fields, so the exported field names  */                       \
+    /* dropped the "_narrow_oop." prefix - match both spellings.                           */                       \
     type_begin(VMCompressedOops, MATCH_SYMBOLS("CompressedOops"))                                                   \
-        field(_narrow_oop_base_addr, address, MATCH_SYMBOLS("_narrow_oop._base"))                                   \
-        field(_narrow_oop_shift_addr, address, MATCH_SYMBOLS("_narrow_oop._shift"))                                 \
+        field(_narrow_oop_base_addr, address, MATCH_SYMBOLS("_narrow_oop._base", "_base"))                          \
+        field(_narrow_oop_shift_addr, address, MATCH_SYMBOLS("_narrow_oop._shift", "_shift"))                       \
     type_end()
 
 /**
