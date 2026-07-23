@@ -4,6 +4,7 @@
  */
 
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -84,6 +85,7 @@ public:
         t->_pending_chain_events.clear();
         t->_pain_budget = PainBudget();
         t->_search_pain_ms = 0;
+        t->_root_kind_rotation_cursor = 1;
     }
 
     // Search restart + pain budget (SearchRestartTest below) - same
@@ -195,6 +197,50 @@ public:
 
     static int lastResolvedClassCount() {
         return ReferenceChainTracker::instance()->_last_resolved_class_count;
+    }
+
+    // Phase 5 (durability re-verification) test seams: direct pass-throughs
+    // to the private tie-break/rotation methods, plus FrontierTable::insert()
+    // itself (also private-by-convention here in the sense that production
+    // code only ever calls it via admitObject()) so tests can set up a
+    // frontier entry's exact starting root_kind/state/parent_tag without
+    // needing a live JVMTI mock for IterateOverReachableObjects/FollowReferences
+    // (neither is mocked in this file - see the file header's FollowReferences-
+    // only mock rationale).
+    static bool insertFrontierEntry(FrontierTable *frontier, jlong tag,
+                                     jlong parent_tag, u32 depth, u8 state,
+                                     u8 root_kind) {
+        return frontier->insert(tag, parent_tag, /*referrer_klass=*/0, depth,
+                                 state, root_kind);
+    }
+
+    static bool maybeUpgradeRootAttachedRootKind(FrontierTable *frontier,
+                                                  jlong tag,
+                                                  u8 new_root_kind) {
+        return ReferenceChainTracker::instance()
+            ->maybeUpgradeRootAttachedRootKind(frontier, tag, new_root_kind);
+    }
+
+    static std::vector<jlong> collectStaleRootKindEntriesForRotation(
+        int max_count) {
+        return ReferenceChainTracker::instance()
+            ->collectStaleRootKindEntriesForRotation(max_count);
+    }
+
+    static void setRootKindRotationCursor(jlong tag) {
+        ReferenceChainTracker::instance()->_root_kind_rotation_cursor = tag;
+    }
+
+    static jlong rootKindRotationCursor() {
+        return ReferenceChainTracker::instance()->_root_kind_rotation_cursor;
+    }
+
+    static int rootKindRotationBudget() {
+        return ReferenceChainTracker::ROOT_KIND_ROTATION_BUDGET;
+    }
+
+    static size_t pendingExpandSize() {
+        return ReferenceChainTracker::instance()->_pending_expand.size();
     }
 };
 
@@ -2133,6 +2179,172 @@ TEST_F(SearchRestartTest, PainBudgetBlocksARestartUntilItDrains) {
     // Well past the drain point - the debt has cleared, restart #3 proceeds.
     EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(2ULL + 200000000000ULL));
     EXPECT_EQ(SearchState::RUNNING, tracker->searchState());
+
+    tracker->stop();
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5 - correctness hardening: durability re-verification.
+//
+// These tests drive maybeUpgradeRootAttachedRootKind()/
+// collectStaleRootKindEntriesForRotation() directly via
+// ReferenceChainsTestAccessor rather than through a full
+// IterateOverReachableObjects()-driven runPassManualWalk() pass: neither
+// IterateOverReachableObjects nor FollowReferences-as-a-safepoint-pin is
+// mocked in this file (see the fixture's own FollowReferences-only mock
+// rationale above), and both methods are pure FrontierTable/queue logic with
+// no JVMTI dependency of their own - the same rationale
+// admitObject()/rootKindDurability() being free of any callback shape
+// already established for this subsystem.
+// ---------------------------------------------------------------------------
+
+TEST_F(ReferenceChainsBfsTest, StaleRootAttributionUpgradesOnRediscovery) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    // Synthetic stack-local root: admitted, root-attached (parent_tag == 0),
+    // its owning frame has since "gone away" from the design doc's scenario
+    // (nothing further to model here - the entry simply stays as-is until a
+    // more durable root is discovered).
+    jlong tag = 1;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, tag, /*parent_tag=*/0, /*depth=*/0,
+        FrontierEntryState::EXPANDED, JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+
+    // A second, equally-or-less durable root discovery does not overwrite
+    // the recorded root_kind.
+    EXPECT_FALSE(ReferenceChainsTestAccessor::maybeUpgradeRootAttachedRootKind(
+        frontier, tag, JVMTI_HEAP_REFERENCE_JNI_LOCAL));
+    FrontierEntry entry{};
+    ASSERT_TRUE(frontier->lookup(tag, &entry));
+    EXPECT_EQ(JVMTI_HEAP_REFERENCE_STACK_LOCAL, entry.root_kind);
+
+    // A durable root (JNI global) attaching to the same object upgrades it.
+    EXPECT_TRUE(ReferenceChainsTestAccessor::maybeUpgradeRootAttachedRootKind(
+        frontier, tag, JVMTI_HEAP_REFERENCE_JNI_GLOBAL));
+    ASSERT_TRUE(frontier->lookup(tag, &entry));
+    EXPECT_EQ(JVMTI_HEAP_REFERENCE_JNI_GLOBAL, entry.root_kind);
+    EXPECT_EQ(0, entry.parent_tag); // still root-attached, unchanged
+
+    // An even less durable root discovered afterwards cannot downgrade it.
+    EXPECT_FALSE(ReferenceChainsTestAccessor::maybeUpgradeRootAttachedRootKind(
+        frontier, tag, JVMTI_HEAP_REFERENCE_MONITOR));
+    ASSERT_TRUE(frontier->lookup(tag, &entry));
+    EXPECT_EQ(JVMTI_HEAP_REFERENCE_JNI_GLOBAL, entry.root_kind);
+
+    tracker->stop();
+}
+
+// Exercises the invariant conflict Phase 5 itself calls out: a non-root
+// entry (parent_tag != 0) rediscovered as if via a root context must never
+// have its root_kind overwritten - doing so would leave a non-zero root_kind
+// on an entry nothing else treats as root-attached (referenceChains.h's
+// FrontierEntry::root_kind comment), since this mutator never touches
+// parent_tag. This is the edge-based, non-root-Y re-expansion case the
+// option (a) resolution above exists for.
+TEST_F(ReferenceChainsBfsTest, NonRootAttachedEntryNeverUpgraded) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    // Parent Y (root-attached) and child X, admitted the way
+    // manualExpandVisitor() admits a FieldWalker-discovered child: non-root
+    // (parent_tag == Y's tag), root_kind == 0.
+    jlong yTag = 1;
+    jlong xTag = 2;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, yTag, /*parent_tag=*/0, /*depth=*/0,
+        FrontierEntryState::EXPANDED, JVMTI_HEAP_REFERENCE_JNI_GLOBAL));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, xTag, /*parent_tag=*/yTag, /*depth=*/1,
+        FrontierEntryState::EXPANDED, /*root_kind=*/0));
+
+    // Re-expanding Y rediscovers an edge to X (already tracked) - even if
+    // this rediscovery is (incorrectly) attempted with a durable root_kind,
+    // it must be rejected because X is not root-attached.
+    EXPECT_FALSE(ReferenceChainsTestAccessor::maybeUpgradeRootAttachedRootKind(
+        frontier, xTag, JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    FrontierEntry entry{};
+    ASSERT_TRUE(frontier->lookup(xTag, &entry));
+    EXPECT_EQ(0, entry.root_kind);
+    EXPECT_EQ(yTag, entry.parent_tag);
+
+    tracker->stop();
+}
+
+TEST_F(ReferenceChainsBfsTest, RotationSelectsOnlyTransientExpandedRootAttachedEntries) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    // Eligible: root-attached, EXPANDED, transient root_kind.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 1, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    // Not eligible: durable root_kind.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 2, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_JNI_GLOBAL));
+    // Not eligible: transient but still FRONTIER, not yet EXPANDED.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 3, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_JNI_LOCAL));
+    // Not eligible: transient root_kind but not root-attached.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 4, /*parent_tag=*/1, 1, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_JNI_LOCAL));
+    // Eligible: root-attached, EXPANDED, transient (JNI local this time).
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 5, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_JNI_LOCAL));
+
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectStaleRootKindEntriesForRotation(10);
+    std::sort(selected.begin(), selected.end());
+    EXPECT_EQ((std::vector<jlong>{1, 5}), selected);
+
+    // Selected tags are queued for re-expansion, exactly like an ordinary
+    // admission would queue a newly-discovered tag.
+    EXPECT_EQ(2u, ReferenceChainsTestAccessor::pendingExpandSize());
+
+    tracker->stop();
+}
+
+// N transient-root_kind entries, rotation size R: every entry must be
+// selected at least once within ceil(N/R) calls, regardless of where the
+// cursor happened to start.
+TEST_F(ReferenceChainsBfsTest, RotationCoversAllEntriesWithinCeilNOverR) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const int N = 10;
+    const int R = 3;
+    for (jlong tag = 1; tag <= N; tag++) {
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, tag, 0, 0, FrontierEntryState::EXPANDED,
+            JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    }
+
+    std::unordered_set<jlong> covered;
+    int calls = (N + R - 1) / R;
+    for (int i = 0; i < calls; i++) {
+        std::vector<jlong> selected =
+            ReferenceChainsTestAccessor::collectStaleRootKindEntriesForRotation(R);
+        for (jlong tag : selected) {
+            covered.insert(tag);
+        }
+    }
+    EXPECT_EQ((size_t)N, covered.size());
 
     tracker->stop();
 }

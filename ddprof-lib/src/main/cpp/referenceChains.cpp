@@ -6,11 +6,13 @@
 #include "referenceChains.h"
 #include "common.h"
 #include "counters.h"
+#include "hotspot/vmStructs.h"
 #include "livenessTracker.h"
 #include "log.h"
 #include "objectSampler.h"
 #include "os.h"
 #include "profiler.h"
+#include "referenceChainsWalker.h"
 #include "tsc.h"
 #include "vmEntry.h"
 #include <algorithm>
@@ -193,6 +195,19 @@ void FrontierTable::markExpanded(jlong tag) {
   _table_lock.lock();
   if (idx < _table_size) {
     _table[idx].state = FrontierEntryState::EXPANDED;
+  }
+  _table_lock.unlock();
+}
+
+void FrontierTable::updateRootKind(jlong tag, u8 root_kind) {
+  if (tag <= 0 || tag - 1 > (jlong)INT_MAX) {
+    return;
+  }
+  int idx = (int)(tag - 1);
+
+  _table_lock.lock();
+  if (idx < _table_size) {
+    _table[idx].root_kind = root_kind;
   }
   _table_lock.unlock();
 }
@@ -1086,38 +1101,564 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
 
   if (*tag_ptr == 0) {
     // First time this object is visited in this pass.
-    if (ctx->edges_admitted >= ctx->budget) {
-      ctx->truncated = true;
-      return JVMTI_VISIT_ABORT;
-    }
-
-    jlong tag = ctx->tracker->nextTag();
     u32 referrer_klass = ctx->tracker->classTags()->resolve(class_tag);
     // reference_kind describes this admitting edge; only meaningful for a
     // root-attached entry (parent_tag == 0) - see FrontierEntry::root_kind's
     // own comment for why a non-root entry's edge kind is not recorded.
     u8 root_kind = parent_tag == 0 ? (u8)reference_kind : 0;
-    if (!ctx->frontier->insert(tag, parent_tag, referrer_klass, depth,
-                               FrontierEntryState::FRONTIER, root_kind)) {
-      // Frontier-size cap hit (FrontierTable::insert() returns false
+    ReferenceChainTracker::AdmitResult result = ctx->tracker->admitObject(
+        ctx->frontier, ctx->hop_cap, ctx->budget, &ctx->edges_admitted,
+        tag_ptr, parent_tag, referrer_klass, depth, root_kind);
+    switch (result) {
+    case ReferenceChainTracker::AdmitResult::BUDGET_EXHAUSTED:
+      ctx->truncated = true;
+      return JVMTI_VISIT_ABORT;
+    case ReferenceChainTracker::AdmitResult::FRONTIER_CAP_HIT:
+      // Frontier-size cap hit (FrontierTable::insert() returned false
       // without partially writing) - stop admitting new entries and report
       // the truncation (design doc: "stop admitting new entries ... report
       // it"), rather than silently dropping this object and continuing.
-      // Distinct from ordinary budget exhaustion below (frontier_cap_hit) -
-      // runPass() abandons the whole search for this, not just this pass.
+      // Distinct from ordinary budget exhaustion above - runPass() abandons
+      // the whole search for this, not just this pass.
       ctx->truncated = true;
       ctx->frontier_cap_hit = true;
       return JVMTI_VISIT_ABORT;
+    default:
+      // ADMITTED, or HOP_CAP/ALREADY_ADMITTED (neither reachable here: the
+      // hop-cap check above already returned before this branch, and
+      // *tag_ptr == 0 rules out ALREADY_ADMITTED) - nothing further to do.
+      break;
     }
-    *tag_ptr = tag;
-    ctx->edges_admitted++;
-    // Queue for expandFrontier()/markAllFrontierExpanded() - see
-    // _pending_expand's own declaration comment for why this replaces a
-    // scan over the admitted range.
-    ctx->tracker->_pending_expand.push_back(tag);
   }
 
   return JVMTI_VISIT_OBJECTS;
+}
+
+ReferenceChainTracker::AdmitResult ReferenceChainTracker::admitObject(
+    FrontierTable *frontier, int hop_cap, int budget, int *edges_admitted,
+    jlong *tag_ptr, jlong parent_tag, u32 referrer_klass, u32 depth,
+    u8 root_kind) {
+  if (*tag_ptr != 0) {
+    return AdmitResult::ALREADY_ADMITTED;
+  }
+  if (depth >= (u32)hop_cap) {
+    return AdmitResult::HOP_CAP;
+  }
+  if (*edges_admitted >= budget) {
+    return AdmitResult::BUDGET_EXHAUSTED;
+  }
+  jlong tag = nextTag();
+  if (!frontier->insert(tag, parent_tag, referrer_klass, depth,
+                         FrontierEntryState::FRONTIER, root_kind)) {
+    return AdmitResult::FRONTIER_CAP_HIT;
+  }
+  *tag_ptr = tag;
+  (*edges_admitted)++;
+  // Queue for expandFrontier()/expandFrontierManual()/markAllFrontierExpanded() -
+  // see _pending_expand's own declaration comment for why this replaces a
+  // scan over the admitted range.
+  _pending_expand.push_back(tag);
+  return AdmitResult::ADMITTED;
+}
+
+bool ReferenceChainTracker::maybeUpgradeRootAttachedRootKind(
+    FrontierTable *frontier, jlong tag, u8 new_root_kind) {
+  FrontierEntry entry{};
+  if (!frontier->lookup(tag, &entry)) {
+    return false;
+  }
+  if (entry.parent_tag != 0) {
+    // Not root-attached - per this phase's option (a) resolution of the
+    // parent_tag==0/root_kind invariant conflict (referenceChains.h's
+    // FrontierEntry::root_kind comment), only a root-context update may ever
+    // write a non-zero root_kind, and only onto an entry that is already
+    // root-attached. An object that happens to also be a genuine GC root but
+    // was first discovered as a non-root child (e.g. via FieldWalker
+    // expansion) keeps its original, non-root attribution - a known,
+    // documented limitation rather than an attempt to retroactively flip
+    // parent_tag to 0, which reconstructChain()'s parent-link walk does not
+    // support.
+    return false;
+  }
+  if (rootKindDurability(new_root_kind) <= rootKindDurability(entry.root_kind)) {
+    return false;
+  }
+  frontier->updateRootKind(tag, new_root_kind);
+  return true;
+}
+
+std::vector<jlong>
+ReferenceChainTracker::collectStaleRootKindEntriesForRotation(
+    int max_count) {
+  std::vector<jlong> selected;
+  int table_size = _frontier->size();
+  if (max_count <= 0 || table_size <= 0) {
+    return selected;
+  }
+  if (_root_kind_rotation_cursor <= 0 ||
+      _root_kind_rotation_cursor > table_size) {
+    _root_kind_rotation_cursor = 1;
+  }
+
+  jlong start_tag = _root_kind_rotation_cursor;
+  jlong tag = start_tag;
+  do {
+    FrontierEntry entry{};
+    if (_frontier->lookup(tag, &entry) &&
+        entry.state == FrontierEntryState::EXPANDED &&
+        entry.parent_tag == 0 && isTransientRootKind(entry.root_kind)) {
+      selected.push_back(tag);
+      _pending_expand.push_back(tag);
+      if ((int)selected.size() >= max_count) {
+        tag = tag % table_size + 1;
+        break;
+      }
+    }
+    tag = tag % table_size + 1;
+  } while (tag != start_tag);
+
+  _root_kind_rotation_cursor = tag;
+  return selected;
+}
+
+// ---------------------------------------------------------------------------
+// Manual (VMStructs) walk driver - IterateOverReachableObjects root/stack-ref
+// enumeration plus FieldWalker-driven hop expansion, gated on
+// VMStructs::isG1Active() && FieldWalker::available() in runPass() below.
+// ---------------------------------------------------------------------------
+
+namespace {
+// jvmtiHeapRootKind (IterateOverReachableObjects's root/stack-ref callbacks,
+// ordinals 1-7) and jvmtiHeapReferenceKind (FrontierEntry::root_kind's own
+// type, FollowReferences' callback, ordinals 8/21-27) are different, disjoint
+// enums per the real jvmti.h - storing a raw jvmtiHeapRootKind value into
+// root_kind unmodified would make flightRecorder.cpp's rootKindName() report
+// "unknown" for every root-callback-attributed chain. Every jvmtiHeapRootKind
+// value maps onto its jvmtiHeapReferenceKind namesake; there is no root-kind
+// equivalent of STATIC_FIELD (that value only ever arises from
+// heapReferenceCallback()'s own referrer-is-a-tagged-class case), so it is
+// never produced here.
+u8 translateHeapRootKind(jvmtiHeapRootKind root_kind) {
+  switch (root_kind) {
+  case JVMTI_HEAP_ROOT_JNI_GLOBAL:
+    return (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL;
+  case JVMTI_HEAP_ROOT_SYSTEM_CLASS:
+    return (u8)JVMTI_HEAP_REFERENCE_SYSTEM_CLASS;
+  case JVMTI_HEAP_ROOT_MONITOR:
+    return (u8)JVMTI_HEAP_REFERENCE_MONITOR;
+  case JVMTI_HEAP_ROOT_STACK_LOCAL:
+    return (u8)JVMTI_HEAP_REFERENCE_STACK_LOCAL;
+  case JVMTI_HEAP_ROOT_JNI_LOCAL:
+    return (u8)JVMTI_HEAP_REFERENCE_JNI_LOCAL;
+  case JVMTI_HEAP_ROOT_THREAD:
+    return (u8)JVMTI_HEAP_REFERENCE_THREAD;
+  case JVMTI_HEAP_ROOT_OTHER:
+  default:
+    return (u8)JVMTI_HEAP_REFERENCE_OTHER;
+  }
+}
+
+// Resolves a StringDictionary class id directly from a live oop's own
+// VMKlass, with no JNI/JVMTI call of any kind - the only option available to
+// manualExpandVisitor() below, which runs inside a JVMTI Heap-category
+// callback where GetClassSignature (a Class-category, non-"callback safe"
+// call) is not permitted. VMKlass::name() is already the internal ('/'-
+// separated, no 'L'/';' wrapper) form ObjectSampler::normalizeClassSignature()'s
+// "else" branch treats as already-normalized, so no further normalization is
+// needed. Returns 0 (referrer_klass's own "unresolved/none" sentinel) if
+// anything along the way is unavailable.
+u32 resolveKlassIdFromOop(uintptr_t obj) {
+  VMKlass *klass = VMKlass::fromOop(obj);
+  if (klass == nullptr) {
+    return 0;
+  }
+  VMSymbol *name = klass->name();
+  if (name == nullptr) {
+    return 0;
+  }
+  const char *body = name->body();
+  unsigned short len = name->length();
+  if (body == nullptr || len == 0) {
+    return 0;
+  }
+  int id = Profiler::instance()->lookupClass(body, len);
+  return id != -1 ? (u32)id : 0;
+}
+} // namespace
+
+jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
+    jvmtiHeapRootKind root_kind, jlong class_tag, jlong size, jlong *tag_ptr,
+    void *user_data) {
+  PassContext *ctx = (PassContext *)user_data;
+  if (ctx->tracker->_abort_pass_requested.load(std::memory_order_relaxed)) {
+    ctx->truncated = true;
+    return JVMTI_ITERATION_ABORT;
+  }
+  if (ctx->truncated) {
+    return JVMTI_ITERATION_ABORT;
+  }
+
+  u32 referrer_klass = ctx->tracker->classTags()->resolve(class_tag);
+  u8 translated_root_kind = translateHeapRootKind(root_kind);
+  AdmitResult result = ctx->tracker->admitObject(
+      ctx->frontier, ctx->hop_cap, ctx->budget, &ctx->edges_admitted, tag_ptr,
+      /*parent_tag=*/0, referrer_klass, /*depth=*/0, translated_root_kind);
+  switch (result) {
+  case AdmitResult::BUDGET_EXHAUSTED:
+    ctx->truncated = true;
+    return JVMTI_ITERATION_ABORT;
+  case AdmitResult::FRONTIER_CAP_HIT:
+    ctx->truncated = true;
+    ctx->frontier_cap_hit = true;
+    return JVMTI_ITERATION_ABORT;
+  case AdmitResult::ALREADY_ADMITTED:
+    // Rediscovery via a second heap root - either later in this same pass's
+    // root enumeration, or in a later pass re-enumerating roots entirely
+    // (design doc's durability tie-break / "opportunistic upgrade", "Fix for
+    // root-attribution staleness" point 1 and Phase 5 item 1): apply the
+    // same durability ranking admitObject() would have used on first
+    // discovery, upgrading root_kind if this root is more durable than
+    // whatever is currently recorded. Restricted to root-attached entries
+    // only (parent_tag == 0) - see maybeUpgradeRootAttachedRootKind()'s own
+    // comment for why.
+    ctx->tracker->maybeUpgradeRootAttachedRootKind(ctx->frontier, *tag_ptr,
+                                                    translated_root_kind);
+    break;
+  default:
+    break;
+  }
+  return JVMTI_ITERATION_CONTINUE;
+}
+
+jvmtiIterationControl JNICALL ReferenceChainTracker::stackRefCallback(
+    jvmtiHeapRootKind root_kind, jlong class_tag, jlong size, jlong *tag_ptr,
+    jlong thread_tag, jint depth, jmethodID method, jint slot,
+    void *user_data) {
+  // Stack-local/JNI-local roots carry thread/frame/slot detail JVMTI reports
+  // via this callback's richer shape, but FrontierEntry has nowhere to
+  // record it (depth/method/slot are not part of the record) - admission is
+  // otherwise identical to heapRootCallback() above, so this just forwards.
+  return heapRootCallback(root_kind, class_tag, size, tag_ptr, user_data);
+}
+
+namespace {
+// State threaded through manualExpandSafepointPin()/manualExpandVisitor()
+// via FollowReferences' user_data parameter - mirrors PassContext's role for
+// heapReferenceCallback(), scoped to one frontier entry's own expansion
+// call instead of a whole pass.
+struct ManualExpandCtx {
+  ReferenceChainTracker *tracker;
+  FrontierTable *frontier;
+  jvmtiEnv *jvmti;
+  jobject target;    // live JNI handle for the object being expanded
+  jlong parent_tag;  // this entry's own tag - children's parent_tag
+  u32 depth;         // this entry's own depth - children's depth
+  int hop_cap;
+  int budget;
+  int *edges_admitted;
+  bool truncated;
+  bool frontier_cap_hit;
+  bool done; // true once the safepoint-pinning callback has already fired
+};
+
+// GetTag/SetTag take a `jobject`, and on the non-JNI-check HotSpot builds
+// this codebase already assumes elsewhere (javaApi.cpp's walkOneHopForTest0
+// seam dereferences a real local jobject as `*(uintptr_t*)target` to recover
+// its raw oop - the same "a local jobject is just a pointer to a slot
+// holding the oop" assumption, applied here in reverse), resolve that
+// pointer with a single dereference rather than validating it against a
+// real JNIHandleBlock registry. A FieldWalker-discovered child was never
+// reached via any JNI/JVMTI object-reference machinery, so it has no JNI
+// handle of its own; this stack slot stands in for one. Undefined behavior
+// on a checked-JNI/fastdebug JVMTI implementation that validates jobjects
+// against real handle-block provenance instead of just dereferencing them -
+// the same fragility class this codebase already accepts for the read-
+// direction dereference above.
+jobject rawOopAsJobject(uintptr_t *oop_slot) {
+  return (jobject)(void *)oop_slot;
+}
+
+} // namespace
+
+// A free function in the anonymous namespace above can't reach AdmitResult/
+// admitObject() (both private to ReferenceChainTracker), so this admission
+// logic lives directly in this static member function rather than behind an
+// extra forwarding layer.
+void ReferenceChainTracker::manualExpandVisitor(uintptr_t child,
+                                                 int field_slot,
+                                                 void *user_data) {
+  ManualExpandCtx *mctx = (ManualExpandCtx *)user_data;
+  if (child == 0 || mctx->truncated) {
+    return;
+  }
+  uintptr_t child_slot = child;
+  jobject child_ref = rawOopAsJobject(&child_slot);
+  jlong tag = 0;
+  if (mctx->jvmti->GetTag(child_ref, &tag) != JVMTI_ERROR_NONE) {
+    return;
+  }
+  u32 referrer_klass = resolveKlassIdFromOop(child);
+  AdmitResult result = mctx->tracker->admitObject(
+      mctx->frontier, mctx->hop_cap, mctx->budget, mctx->edges_admitted, &tag,
+      mctx->parent_tag, referrer_klass, mctx->depth + 1, /*root_kind=*/0);
+  switch (result) {
+  case AdmitResult::ADMITTED:
+    // admitObject() wrote the freshly assigned tag into the local `tag`
+    // variable, not into any JVMTI-owned storage (unlike heapReferenceCallback()'s
+    // tag_ptr) - persist it now so a later pass's GetObjectsWithTags() can
+    // resolve this child back to a live object.
+    mctx->jvmti->SetTag(child_ref, tag);
+    break;
+  case AdmitResult::BUDGET_EXHAUSTED:
+    mctx->truncated = true;
+    break;
+  case AdmitResult::FRONTIER_CAP_HIT:
+    mctx->truncated = true;
+    mctx->frontier_cap_hit = true;
+    break;
+  default:
+    break;
+  }
+}
+
+jint JNICALL ReferenceChainTracker::manualExpandSafepointPin(
+    jvmtiHeapReferenceKind reference_kind,
+    const jvmtiHeapReferenceInfo *reference_info, jlong class_tag,
+    jlong referrer_class_tag, jlong size, jlong *tag_ptr,
+    jlong *referrer_tag_ptr, jint length, void *user_data) {
+  ManualExpandCtx *mctx = (ManualExpandCtx *)user_data;
+  if (mctx->done) {
+    // Should not normally be reached (JVMTI_VISIT_ABORT below stops further
+    // callbacks for this FollowReferences call) - defensive, mirrors
+    // heapReferenceCallback()'s own defensive re-check of ctx->truncated.
+    return JVMTI_VISIT_ABORT;
+  }
+  mctx->done = true;
+
+  // Safe only here: this callback is guaranteed to run inside the
+  // VM_HeapWalkOperation safepoint FollowReferences() triggers, mirroring
+  // FieldWalker's own header comment and javaApi.cpp's walkOneHopForTest0
+  // seam, which established this exact "call FollowReferences purely to get
+  // a safepoint window, then read the raw oop directly" pattern. The
+  // reference graph FollowReferences would otherwise report is not used at
+  // all - that traversal is exactly the JVMTI machinery FieldWalker exists
+  // to avoid.
+  uintptr_t obj = *(uintptr_t *)mctx->target;
+  FieldWalker walker;
+  do {
+    walker.walkOneHop(obj, ReferenceChainTracker::manualExpandVisitor, mctx, 64);
+  } while (!mctx->truncated && walker.hasMore());
+
+  return JVMTI_VISIT_ABORT;
+}
+
+void ReferenceChainTracker::expandFrontierManual(jvmtiEnv *jvmti, JNIEnv *jni,
+                                                  int hop_cap, int budget,
+                                                  int *edges_admitted,
+                                                  bool *truncated,
+                                                  bool *frontier_cap_hit) {
+  assert(!t_inGCCallback &&
+         "GetObjectsWithTags/FollowReferences are JVMTI Heap-category calls "
+         "and must not be made from GarbageCollectionStart/Finish");
+
+  *edges_admitted = 0;
+  *truncated = false;
+  *frontier_cap_hit = false;
+
+  jvmtiHeapCallbacks callbacks;
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.heap_reference_callback = manualExpandSafepointPin;
+
+  bool progress = true;
+  while (!*truncated && progress) {
+    progress = false;
+
+    if (_pending_expand.empty()) {
+      break;
+    }
+
+    // Same batching rationale as expandFrontier() above: resolve at most
+    // `budget` pending tags per outer-loop iteration, not the whole queue.
+    size_t batch_size =
+        std::min(_pending_expand.size(), (size_t)std::max(budget, 1));
+    std::vector<jlong> candidate_tags(_pending_expand.begin(),
+                                       _pending_expand.begin() + batch_size);
+
+    jint resolved_count = 0;
+    jobject *resolved_objects = nullptr;
+    jlong *resolved_tags = nullptr;
+    jvmtiError resolve_err = jvmti->GetObjectsWithTags(
+        (jint)candidate_tags.size(), candidate_tags.data(), &resolved_count,
+        &resolved_objects, &resolved_tags);
+    if (resolve_err != JVMTI_ERROR_NONE) {
+      *truncated = true;
+      break;
+    }
+
+    std::unordered_map<jlong, jobject> live;
+    for (jint i = 0; i < resolved_count; i++) {
+      live[resolved_tags[i]] = resolved_objects[i];
+    }
+
+    for (jlong tag : candidate_tags) {
+      if (*truncated) {
+        break;
+      }
+      auto it = live.find(tag);
+      if (it == live.end()) {
+        // Dead between passes - same free pruning expandFrontier() performs.
+        _frontier->clear(tag);
+        _pending_expand.pop_front();
+        progress = true;
+        continue;
+      }
+
+      FrontierEntry entry{};
+      if (!_frontier->lookup(tag, &entry)) {
+        // Should not happen (this tag was admitted via admitObject(), which
+        // always inserts before queuing) - drop defensively rather than
+        // walk with a bogus parent_tag/depth.
+        _pending_expand.pop_front();
+        progress = true;
+        continue;
+      }
+
+      ManualExpandCtx mctx;
+      mctx.tracker = this;
+      mctx.frontier = _frontier;
+      mctx.jvmti = jvmti;
+      mctx.target = it->second;
+      mctx.parent_tag = tag;
+      mctx.depth = entry.depth;
+      mctx.hop_cap = hop_cap;
+      mctx.budget = budget;
+      mctx.edges_admitted = edges_admitted;
+      mctx.truncated = false;
+      mctx.frontier_cap_hit = false;
+      mctx.done = false;
+
+      // initial_object=<this entry's object>, exactly like expandFrontier()'s
+      // own FollowReferences call - here purely as a safepoint-pinning
+      // vehicle for manualExpandSafepointPin() (see that method's own
+      // comment), not for its own graph-walk result.
+      jvmtiError follow_err =
+          jvmti->FollowReferences(0, nullptr, it->second, &callbacks, &mctx);
+      if (mctx.frontier_cap_hit) {
+        *frontier_cap_hit = true;
+      }
+      if (follow_err != JVMTI_ERROR_NONE || mctx.truncated) {
+        // Leave `tag` at the front of _pending_expand (still FRONTIER) so a
+        // later pass retries it - already-admitted children stay tagged/in
+        // the table, and walkOneHop()'s own resumability
+        // (FieldWalker::hasMore()) is irrelevant across pass boundaries
+        // since this FieldWalker instance does not survive past this call -
+        // the next pass's walkOneHop() call for this object starts over
+        // from its first field/element, admitObject()'s *tag_ptr != 0 check
+        // making that idempotent for children already admitted.
+        *truncated = true;
+        break;
+      }
+      _frontier->markExpanded(tag);
+      _pending_expand.pop_front();
+      progress = true;
+    }
+
+    if (jni != nullptr) {
+      for (jint i = 0; i < resolved_count; i++) {
+        jni->DeleteLocalRef(resolved_objects[i]);
+      }
+    }
+    if (resolved_objects != nullptr) {
+      jvmti->Deallocate((unsigned char *)resolved_objects);
+    }
+    if (resolved_tags != nullptr) {
+      jvmti->Deallocate((unsigned char *)resolved_tags);
+    }
+  }
+}
+
+void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
+                                               int budget,
+                                               int *edges_admitted,
+                                               bool *truncated,
+                                               bool *frontier_cap_hit) {
+  assert(!t_inGCCallback &&
+         "IterateOverReachableObjects/FollowReferences are JVMTI "
+         "Heap-category calls and must not be made from "
+         "GarbageCollectionStart/Finish");
+
+  PassContext ctx;
+  ctx.tracker = this;
+  ctx.frontier = _frontier;
+  ctx.hop_cap = _hop_cap;
+  ctx.budget = budget;
+  ctx.edges_admitted = 0;
+  ctx.truncated = false;
+  ctx.frontier_cap_hit = false;
+
+  // Root/stack-ref enumeration alone (unlike a root-seeded FollowReferences
+  // call on the fallback path) never discovers a root's own transitive
+  // children - IterateOverReachableObjects's root/stack-ref callbacks are
+  // given no oop, only a tag_ptr (see heapRootCallback()'s own comment) - so
+  // this always runs on every pass, first or resumed, and always needs the
+  // expandFrontierManual() call below to make any further progress.
+  jvmtiError root_err = jvmti->IterateOverReachableObjects(
+      heapRootCallback, stackRefCallback, /*object_ref_callback=*/nullptr,
+      &ctx);
+
+  *edges_admitted = ctx.edges_admitted;
+  if (root_err != JVMTI_ERROR_NONE) {
+    *truncated = true;
+    *frontier_cap_hit = false;
+    return;
+  }
+  if (ctx.truncated) {
+    *truncated = true;
+    *frontier_cap_hit = ctx.frontier_cap_hit;
+    return;
+  }
+
+  int expand_edges_admitted = 0;
+  bool expand_truncated = false;
+  bool expand_frontier_cap_hit = false;
+  int remaining_budget = std::max(budget - ctx.edges_admitted, 0);
+  expandFrontierManual(jvmti, jni, _hop_cap, remaining_budget,
+                        &expand_edges_admitted, &expand_truncated,
+                        &expand_frontier_cap_hit);
+  *edges_admitted += expand_edges_admitted;
+  *truncated = expand_truncated;
+  *frontier_cap_hit = expand_frontier_cap_hit;
+
+  if (*truncated) {
+    // Do not spend any of this pass's already-exhausted budget re-expanding
+    // stale-attribution entries - genuinely new discoveries take priority
+    // (Phase 5 item 3's rotation is a correctness-hardening bonus on top of
+    // ordinary traversal, not a replacement for it).
+    return;
+  }
+
+  // Bounded rotating re-expansion (design doc's closing section, Phase 5
+  // item 3): re-walk a bounded, rotating subset of already-EXPANDED,
+  // transiently-root-attributed entries so a durable root discovered
+  // elsewhere on a later pass (via maybeUpgradeRootAttachedRootKind() above)
+  // gets a chance to be observed even for an entry whose own fields were
+  // already fully expanded once. Runs after the ordinary expansion above so
+  // it only ever spends whatever budget that left unused.
+  std::vector<jlong> rotation_tags =
+      collectStaleRootKindEntriesForRotation(ROOT_KIND_ROTATION_BUDGET);
+  if (rotation_tags.empty()) {
+    return;
+  }
+  int rotation_budget = std::max(budget - *edges_admitted, 0);
+  int rotation_edges_admitted = 0;
+  bool rotation_truncated = false;
+  bool rotation_frontier_cap_hit = false;
+  expandFrontierManual(jvmti, jni, _hop_cap, rotation_budget,
+                        &rotation_edges_admitted, &rotation_truncated,
+                        &rotation_frontier_cap_hit);
+  *edges_admitted += rotation_edges_admitted;
+  *truncated = rotation_truncated;
+  *frontier_cap_hit = rotation_frontier_cap_hit;
 }
 
 // ---------------------------------------------------------------------------
@@ -1389,7 +1930,39 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   // not feed that controller the same way every later pass's does.
   bool was_first_pass = !_search_started;
 
-  if (!_search_started) {
+  // Collector dispatch point: on G1, this pass is driven by a manual
+  // VMStructs field-walk (runPassManualWalk()) instead of FollowReferences
+  // (design doc's motivation - G1's heap-root/reference callbacks are
+  // prohibitively slow at scale). Composite fail-closed gate, not
+  // isG1Active() alone (implementation plan's Phase 4 exit criterion, and
+  // the "Cross-cutting risks" section's fail-closed convention): every
+  // VMStructs primitive the manual walk depends on (oop-map blocks, array
+  // layout_helper decoding) must have resolved during resolveOffsets(), or
+  // this falls back to the existing JVMTI-only path unconditionally, exactly
+  // as if isG1Active() itself were false.
+  bool use_manual_walk = VMStructs::isG1Active() && FieldWalker::available();
+  if (use_manual_walk) {
+    bool manual_first_pass = !_search_started;
+    if (manual_first_pass) {
+      _search_started = true;
+      store(_search_start_ns, OS::nanotime());
+    }
+
+    // Unlike the JVMTI fallback below, root/stack-ref enumeration alone
+    // never discovers a root's transitive children (runPassManualWalk()'s
+    // own comment) - there is no "first pass walks the whole graph inline"
+    // shortcut here, so every pass (first or resumed) takes the same shape.
+    // The first pass still gets the larger _first_pass_budget rather than
+    // _effective_budget, matching the JVMTI path's own first-pass sizing,
+    // since updatePacing() has not yet observed any real per-pass cost to
+    // size _effective_budget from.
+    int manual_budget = manual_first_pass ? _first_pass_budget : _effective_budget;
+    u64 call_start_ticks = TSC::ticks();
+    runPassManualWalk(jvmti, jni, manual_budget, &edges_admitted, &truncated,
+                       &frontier_cap_hit);
+    pass_wall_ticks = TSC::ticks() - call_start_ticks;
+    err = JVMTI_ERROR_NONE;
+  } else if (!_search_started) {
     _search_started = true;
     store(_search_start_ns, OS::nanotime());
 

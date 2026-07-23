@@ -1071,8 +1071,11 @@ Java_com_datadoghq_profiler_JavaProfiler_dumpContext(JNIEnv* env, jclass unused)
 // (`-DDEBUG`, see ConfigurationPresets.kt's configureDebug()) - never in the
 // `-DNDEBUG` release build.
 #ifdef DEBUG
+#include "hotspot/vmStructs.h"
 #include "livenessTracker.h"
 #include "referenceChains.h"
+#include "referenceChainsWalker.h"
+#include <vector>
 
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_setGcGenerationsEnabled0(
@@ -1174,5 +1177,178 @@ Java_com_datadoghq_profiler_JavaProfiler_resetReferenceChainSearchForTest0(
     JNIEnv *env, jclass unused) {
   jvmtiEnv *jvmti = VM::jvmti();
   ReferenceChainTracker::instance()->resetSearchStateForTest(jvmti, env);
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_isG1ActiveForTest0(
+    JNIEnv *env, jclass unused) {
+  return VMStructs::isG1Active() ? JNI_TRUE : JNI_FALSE;
+}
+
+// FieldWalker::available()'s VMStructs prerequisites (notably the
+// InstanceKlass "OopMapBlock" export) are not guaranteed present on every
+// vendor JDK distribution - observed absent entirely from gHotSpotVMStructs/
+// gHotSpotVMTypes on at least one real Temurin 21 build tested against this
+// seam. Tests must check this before asserting on walkOneHopForTest0()'s
+// output rather than assume availability the way the design doc's plumbing
+// section originally did.
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_fieldWalkerAvailableForTest0(
+    JNIEnv *env, jclass unused) {
+  return FieldWalker::available() ? JNI_TRUE : JNI_FALSE;
+}
+
+namespace {
+// State threaded through the FollowReferences callback below via its
+// user_data parameter - mirrors PassContext's role for heapReferenceCallback()
+// (referenceChains.cpp), scoped to this one test seam call instead of a whole
+// pass. `target` is the JNI handle whose raw oop the callback resolves once
+// it is guaranteed to be running at the VM_HeapWalkOperation safepoint -
+// resolving it any earlier (back in the JNI entry point, before
+// FollowReferences() is even called) would read it outside that guarantee.
+struct FieldWalkTestCtx {
+  bool done;
+  jobject target;
+  std::vector<jint> slots;
+};
+
+void fieldWalkTestVisitor(uintptr_t child, int field_slot, void *user_data) {
+  FieldWalkTestCtx *ctx = (FieldWalkTestCtx *)user_data;
+  if (child != 0) {
+    ctx->slots.push_back((jint)field_slot);
+  }
+}
+
+// FollowReferences(initial_object=target) is guaranteed to invoke this at
+// least once even if target's own fields are all null/primitive: every
+// non-null object has an implicit JVMTI_HEAP_REFERENCE_CLASS edge to its own
+// Class object, which FollowReferences always reports first. That first
+// invocation is this seam's only use for FollowReferences at all - it is not
+// interested in the graph FollowReferences would otherwise walk, only in the
+// VM_HeapWalkOperation safepoint window that invoking it guarantees, the
+// same window heapReferenceCallback() relies on for its own raw-oop reads.
+jint JNICALL fieldWalkTestHeapCallback(jvmtiHeapReferenceKind, const jvmtiHeapReferenceInfo *,
+                                       jlong, jlong, jlong, jlong *, jlong *, jint,
+                                       void *user_data) {
+  FieldWalkTestCtx *ctx = (FieldWalkTestCtx *)user_data;
+  if (!ctx->done) {
+    ctx->done = true;
+    // A local jobject handle is a pointer to the slot holding the live oop
+    // itself, not the oop - one dereference recovers it, safe to do only
+    // here, inside the safepoint this callback is running under.
+    uintptr_t target_oop = *(uintptr_t *)ctx->target;
+    if (FieldWalker::available()) {
+      FieldWalker walker;
+      do {
+        walker.walkOneHop(target_oop, fieldWalkTestVisitor, ctx, 64);
+      } while (walker.hasMore());
+    }
+  }
+  return JVMTI_VISIT_ABORT;
+}
+} // namespace
+
+extern "C" DLLEXPORT jintArray JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_walkOneHopForTest0(
+    JNIEnv *env, jclass unused, jobject target) {
+  jvmtiEnv *jvmti = VM::jvmti();
+  if (jvmti == nullptr || target == nullptr) {
+    return env->NewIntArray(0);
+  }
+
+  FieldWalkTestCtx ctx;
+  ctx.done = false;
+  ctx.target = target;
+
+  jvmtiHeapCallbacks callbacks;
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.heap_reference_callback = fieldWalkTestHeapCallback;
+
+  jvmti->FollowReferences(0, nullptr, target, &callbacks, &ctx);
+
+  jsize count = (jsize)ctx.slots.size();
+  jintArray result = env->NewIntArray(count);
+  if (result != nullptr && count > 0) {
+    env->SetIntArrayRegion(result, 0, count, ctx.slots.data());
+  }
+  return result;
+}
+
+namespace {
+// State for layoutSanityForTest0() below - same one-shot-via-FollowReferences
+// trick as FieldWalkTestCtx, just reporting raw layout numbers instead of
+// walked children.
+struct LayoutSanityTestCtx {
+  bool done;
+  jobject target;
+  jint values[5];
+};
+
+// Every VMStructs-derived quantity FieldWalker's manual walk depends on,
+// read directly (not via walkOneHop()) so a JUnit test can assert sane
+// bounds on the real numbers - this is the loud-and-early check requested
+// after arrayHeaderSizeBytes()'s words-vs-bytes bug slipped past
+// FieldWalkerTestSeamsTest's original (bound-free) assertions: those tests
+// only checked "did we get the right children", which a *consistently*
+// wrong offset can still pass if it happens not to crash, whereas the raw
+// numbers here (vtable/itable length, oop-map count, array header size) can
+// be checked against ranges no real HotSpot build would ever produce,
+// independent of whether the walk itself produced plausible-looking output.
+jint JNICALL layoutSanityTestHeapCallback(jvmtiHeapReferenceKind, const jvmtiHeapReferenceInfo *,
+                                          jlong, jlong, jlong, jlong *, jlong *, jint,
+                                          void *user_data) {
+  LayoutSanityTestCtx *ctx = (LayoutSanityTestCtx *)user_data;
+  if (!ctx->done) {
+    ctx->done = true;
+    uintptr_t target_oop = *(uintptr_t *)ctx->target;
+    VMKlass *klass = VMKlass::fromOop(target_oop);
+    for (int i = 0; i < 5; i++) {
+      ctx->values[i] = -1;
+    }
+    if (klass != nullptr) {
+      if (VMKlass::oopMapAvailable()) {
+        ctx->values[0] = (jint)klass->vtableLength();
+        ctx->values[1] = (jint)klass->itableLength();
+        ctx->values[2] = (jint)klass->oopMapCount();
+      }
+      if (VMKlass::arrayLayoutAvailable() && klass->isArrayKlass()) {
+        ctx->values[3] = (jint)klass->arrayHeaderSizeBytes();
+        ctx->values[4] = klass->isObjectArrayKlass() ? 1 : 0;
+      }
+    }
+  }
+  return JVMTI_VISIT_ABORT;
+}
+} // namespace
+
+// Returns {vtableLength, itableLength, oopMapCount, arrayHeaderSizeBytes,
+// isObjectArrayKlass} for `target`'s klass, each -1 if not applicable/not
+// resolved (see VMKlass::oopMapAvailable()/arrayLayoutAvailable() - callers
+// must check FieldWalker::available() first, same contract as
+// walkOneHopForTest0() above). Exists purely so JUnit can assert sane bounds
+// on the raw VMStructs-derived numbers directly - see
+// layoutSanityTestHeapCallback()'s comment for why that catches drift
+// walkOneHopForTest0()'s output-only checks would not.
+extern "C" DLLEXPORT jintArray JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_layoutSanityForTest0(
+    JNIEnv *env, jclass unused, jobject target) {
+  jvmtiEnv *jvmti = VM::jvmti();
+  jintArray result = env->NewIntArray(5);
+  if (jvmti == nullptr || target == nullptr || result == nullptr) {
+    return result;
+  }
+
+  LayoutSanityTestCtx ctx;
+  ctx.done = false;
+  ctx.target = target;
+
+  jvmtiHeapCallbacks callbacks;
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.heap_reference_callback = layoutSanityTestHeapCallback;
+
+  jvmti->FollowReferences(0, nullptr, target, &callbacks, &ctx);
+
+  env->SetIntArrayRegion(result, 0, 5, ctx.values);
+  return result;
 }
 #endif // DEBUG

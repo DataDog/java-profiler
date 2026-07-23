@@ -782,6 +782,55 @@ public final class JavaProfiler {
     public static native void resetReferenceChainSearchForTest0();
 
     /**
+     * Test seam (debug native builds only): returns {@code VMStructs::isG1Active()} -
+     * whether the attached JVM resolved {@code -XX:+UseG1GC} as its active collector
+     * at {@code resolveOffsets()} time. Reference-chain search behavior does not yet
+     * depend on this (the collector dispatch point in {@code ReferenceChainTracker::runPass()}
+     * always takes the existing JVMTI path today); this seam only lets a test assert
+     * the gate itself resolves correctly for whichever collector the test JVM was
+     * launched with.
+     */
+    public static native boolean isG1ActiveForTest0();
+
+    /**
+     * Test seam (debug native builds only): runs {@code FieldWalker::walkOneHop()}
+     * (referenceChainsWalker.h/.cpp) directly against {@code target}'s live oop-map/array
+     * layout, bypassing JVMTI's {@code FollowReferences}-driven heap walk entirely - the
+     * manual VMStructs field-walker this seam exercises is the traversal engine a later
+     * (G1-only) integration phase wires into {@code ReferenceChainTracker}'s pass driver, not
+     * yet anything {@link #runReferenceChainPass0()} calls. Returns the byte offset (instance
+     * fields) or element index (object arrays) of every direct, non-null oop child discovered,
+     * in walk order; an empty array for a primitive array, a klass with no oop-map, or when the
+     * required VMStructs primitives ({@code FieldWalker::available()}) did not resolve on this
+     * JVM. Internally wraps the raw-oop read in a minimal real {@code FollowReferences} call
+     * so it only ever dereferences {@code target}'s oop while the VM is at the same
+     * {@code VM_HeapWalkOperation} safepoint {@code heapReferenceCallback()}'s own raw-oop reads
+     * already rely on - this seam is not itself safe to call outside that safepoint window.
+     */
+    public static native int[] walkOneHopForTest0(Object target);
+
+    /**
+     * Test seam (debug native builds only): returns {@code FieldWalker::available()} -
+     * whether every VMStructs primitive {@code walkOneHopForTest0()} depends on (oop-map
+     * blocks, array layout_helper decoding) resolved on the attached JVM. Not guaranteed
+     * true on every vendor JDK distribution - callers of {@link #walkOneHopForTest0(Object)}
+     * must check this first rather than assume availability.
+     */
+    public static native boolean fieldWalkerAvailableForTest0();
+
+    /**
+     * Test seam (debug native builds only): returns the raw VMStructs-derived layout numbers
+     * {@code FieldWalker} depends on for {@code target}'s klass - {@code {vtableLength,
+     * itableLength, oopMapCount, arrayHeaderSizeBytes, isObjectArrayKlass}} - each {@code -1} if
+     * not applicable or not resolved. Exists so tests can assert sane bounds on the numbers
+     * themselves (e.g. a header size of a few bytes, not hundreds), which catches a wrong
+     * VMStructs field resolution or a units mistake (words vs. bytes) loudly and immediately,
+     * even in cases where a walk driven by the wrong number would happen not to crash or
+     * mis-count. Requires {@link #fieldWalkerAvailableForTest0()} to be true.
+     */
+    public static native int[] layoutSanityForTest0(Object target);
+
+    /**
      * Resets the cached ThreadContext for the current storage slot — the calling thread in
      * {@link ContextStorageMode#THREAD}, or its current carrier in
      * {@link ContextStorageMode#CARRIER}. The next call to {@link #getThreadContext()}

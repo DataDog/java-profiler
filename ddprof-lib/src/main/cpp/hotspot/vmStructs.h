@@ -147,6 +147,19 @@ T* cast_or_null(const void* ptr) {
 #define DECLARE_V27_TYPES_DO(f) \
     f(VMContinuationEntry,    MATCH_SYMBOLS("ContinuationEntry"))
 
+// Oop-map metadata types. InstanceKlass and _nonstatic_oop_map_size are both
+// real gHotSpotVMTypes/gHotSpotVMStructs entries and resolve normally. The
+// per-block struct is a different story: empirically, "OopMapBlock" is not a
+// gHotSpotVMTypes entry on any JDK build checked (Temurin/Microsoft/Liberica,
+// versions 8 through 26) - it appears HotSpot's SA export table has never
+// carried this type, presumably because its layout (two 4-byte ints) is
+// treated as ABI-stable rather than SA-introspectable. VMOopMapBlock's fixed
+// layout below is therefore a documented, deliberate exception to reading
+// struct layout through VMStructs - see its own comment for the rationale
+// and the fail-closed gate that still applies if this assumption ever breaks.
+#define DECLARE_OOPMAP_TYPES_DO(f) \
+    f(VMInstanceKlass,        MATCH_SYMBOLS("InstanceKlass"))
+
 // Fields for virtual-thread / continuation support, all added to
 // gHotSpotVMStructs / gHotSpotVMTypes in JDK 27 (JDK-8378985):
 //   - JavaThread::_cont_entry            -> _cont_entry_offset
@@ -171,6 +184,23 @@ T* cast_or_null(const void* ptr) {
         field_with_version(_cont_entry_return_pc_addr, address, 27, MAX_VERSION, MATCH_SYMBOLS("_return_pc")) \
         field_with_version(_cont_entry_parent_offset,  offset,  27, MAX_VERSION, MATCH_SYMBOLS("_parent"))    \
     type_end()
+
+// No fields to resolve for OopMapBlock via VMStructs - see
+// DECLARE_OOPMAP_TYPES_DO's comment above for why. This macro is now empty
+// but kept (rather than removed) so the DO-list convention stays uniform
+// with DECLARE_V27_TYPE_FIELD_DO/DECLARE_TYPE_FIELD_DO if a real exported
+// field is ever added here.
+//
+// Note: this must stay empty, or add fields under a *different*
+// MATCH_SYMBOLS() type-name set than any type_begin() already declared in
+// DECLARE_TYPE_FIELD_DO/DECLARE_V27_TYPE_FIELD_DO. All three DO-lists expand
+// into the SAME resolveOffsets() scan loop (see vmStructs.cpp), and
+// type_end()/END_TYPE() expands to an unconditional `continue` - so a second
+// type_begin(SameType, <same match set>) block anywhere later in that chain
+// is unreachable dead code for every entry the earlier block already
+// consumed (this exact duplication bug was caught and fixed once already,
+// for VMKlass/InstanceKlass, during this feature's implementation).
+#define DECLARE_OOPMAP_TYPE_FIELD_DO(type_begin, field, field_with_version, type_end)
 
 /**
  * Following macros define field offsets, addresses or values of JVM classes that are exported by
@@ -225,6 +255,10 @@ typedef void* address;
         field(_class_loader_data_offset, offset, MATCH_SYMBOLS("_class_loader_data"))                               \
         field(_methods_offset, offset, MATCH_SYMBOLS("_methods"))                                                   \
         field(_jmethod_ids_offset, offset, MATCH_SYMBOLS("_methods_jmethod_ids"))                                   \
+        field(_layout_helper_offset, offset, MATCH_SYMBOLS("_layout_helper"))                                       \
+        field(_nonstatic_oop_map_size_offset, offset, MATCH_SYMBOLS("_nonstatic_oop_map_size"))                     \
+        field(_vtable_len_offset, offset, MATCH_SYMBOLS("_vtable_len"))                                             \
+        field(_itable_len_offset, offset, MATCH_SYMBOLS("_itable_len"))                                             \
     type_end()                                                                                                      \
     type_begin(VMClassLoaderData, MATCH_SYMBOLS("ClassLoaderData"))                                                 \
         field(_class_loader_data_next_offset, offset, MATCH_SYMBOLS("_next"))                                       \
@@ -320,6 +354,13 @@ typedef void* address;
         field(_narrow_klass_base_addr, address, MATCH_SYMBOLS("_narrow_klass._base", "_base"))                      \
         field(_narrow_klass_shift_addr, address, MATCH_SYMBOLS("_narrow_klass._shift", "_shift"))                   \
         field(_collected_heap_addr, address, MATCH_SYMBOLS("_collectedHeap"))                                       \
+    type_end()                                                                                                      \
+    /* CompressedOops::_narrow_oop is exported under its own type name, distinct from     */                        \
+    /* CompressedKlassPointers (narrow klass) above - HotSpot keeps compressed-oop and     */                       \
+    /* compressed-klass base/shift state in two separate AllStatic classes.                */                       \
+    type_begin(VMCompressedOops, MATCH_SYMBOLS("CompressedOops"))                                                   \
+        field(_narrow_oop_base_addr, address, MATCH_SYMBOLS("_narrow_oop._base"))                                   \
+        field(_narrow_oop_shift_addr, address, MATCH_SYMBOLS("_narrow_oop._shift"))                                 \
     type_end()
 
 /**
@@ -329,6 +370,32 @@ typedef void* address;
 
 #define DECLARE_INT_CONSTANTS_DO(constant, constant_with_version) \
     constant(frame, entry_frame_call_wrapper_offset)
+
+// Klass::layout_helper's tag/header-size/element-size encoding. Kept out of
+// DECLARE_INT_CONSTANTS_DO/verify_offsets()'s hard assertion (same treatment
+// as DECLARE_V27_TYPE_FIELD_DO) rather than assumed always-present -
+// VMKlass::arrayLayoutAvailable() is the real fail-closed gate callers must
+// check. _lh_header_size_mask and _lh_element_type_mask are deliberately
+// NOT in this list: confirmed (via `strings` on real Temurin/Microsoft/
+// Liberica libjvm.so builds, JDK 8 through 26) that gHotSpotVMIntConstants
+// never carries either, even though the shift/tag constants right next to
+// them in klass.hpp always do. Both masks are `right_n_bits(BitsPerByte)` =
+// 0xFF by construction in every HotSpot version - same "trivial derived
+// constant, not worth SA-exporting" treatment as OopMapBlock's layout (see
+// its own comment) - so _lh_header_size_mask is hardcoded below rather than
+// resolved. _lh_element_type_mask has no current caller in this file.
+#define DECLARE_ARRAYLAYOUT_INT_CONSTANTS_DO(constant, constant_with_version) \
+    constant(Klass, _lh_array_tag_shift)                          \
+    constant(Klass, _lh_array_tag_type_value)                     \
+    constant(Klass, _lh_array_tag_obj_value)                      \
+    constant(Klass, _lh_header_size_shift)                        \
+    constant(Klass, _lh_log2_element_size_shift)                  \
+    constant(Klass, _lh_log2_element_size_mask)                   \
+    constant(Klass, _lh_element_type_shift)
+
+// Not resolved via VMStructs - see DECLARE_ARRAYLAYOUT_INT_CONSTANTS_DO's
+// comment above.
+static const int _Klass__lh_header_size_mask = 0xFF;
 
 #define DECLARE_LONG_CONSTANTS_DO(constant, constant_with_version)  \
     constant_with_version(markWord, klass_shift, 24, MAX_VERSION)   \
@@ -351,12 +418,17 @@ class VMStructs {
     static bool _has_native_thread_id;
     static bool _can_dereference_jmethod_id;
     static bool _compact_object_headers;
-    
+    // Collector choice can't change after JVM startup, so this is resolved
+    // once in resolveOffsets() rather than re-checked per pass.
+    static bool _is_g1_active;
+
     static int _narrow_klass_shift;
     static char* _code_heap[3];
     static const void* _code_heap_low;
     static const void* _code_heap_high;
     static char* _narrow_klass_base;
+    static char* _narrow_oop_base;
+    static int _narrow_oop_shift;
     static int _interpreter_frame_bcp_offset;
     static unsigned char _unsigned5_base;
     static const void* _call_stub_return;
@@ -375,6 +447,7 @@ class VMStructs {
 
     DECLARE_TYPES_DO(DECLARE_TYPE_SIZE_VAR)
     DECLARE_V27_TYPES_DO(DECLARE_TYPE_SIZE_VAR)
+    DECLARE_OOPMAP_TYPES_DO(DECLARE_TYPE_SIZE_VAR)
 #undef DECLARE_TYPE_SIZE_VAR
 
 // Declare vmStructs' field offsets and addresses
@@ -388,6 +461,7 @@ class VMStructs {
 
     DECLARE_TYPE_FIELD_DO(DO_NOTHING, DECLARE_TYPE_FIELD, DECLARE_TYPE_FIELD_WITH_VERSION, DO_NOTHING)
     DECLARE_V27_TYPE_FIELD_DO(DO_NOTHING, DECLARE_TYPE_FIELD, DECLARE_TYPE_FIELD_WITH_VERSION, DO_NOTHING)
+    DECLARE_OOPMAP_TYPE_FIELD_DO(DO_NOTHING, DECLARE_TYPE_FIELD, DECLARE_TYPE_FIELD_WITH_VERSION, DO_NOTHING)
 #undef DECLARE_TYPE_FIELD
 #undef DECLARE_TYPE_FIELD_WITH_VERSION
 #undef DO_NOTHING
@@ -396,6 +470,7 @@ class VMStructs {
 #define DECLARE_INT_CONSTANT_VAR(type, field, ...) \
     static int _##type##_##field;
     DECLARE_INT_CONSTANTS_DO(DECLARE_INT_CONSTANT_VAR, DECLARE_INT_CONSTANT_VAR)
+    DECLARE_ARRAYLAYOUT_INT_CONSTANTS_DO(DECLARE_INT_CONSTANT_VAR, DECLARE_INT_CONSTANT_VAR)
 #undef DECLARE_INT_CONSTANT_VAR
 
 // Declare long constant variables
@@ -500,6 +575,30 @@ class VMStructs {
 
     static bool hasNativeThreadId() {
         return _has_native_thread_id;
+    }
+
+    static bool isG1Active() {
+        return _is_g1_active;
+    }
+
+    // Fail-closed gate: false unless UseCompressedOops was on and both the
+    // narrow-oop base and shift addresses resolved during resolveOffsets().
+    static bool isCompressedOopsEnabled() {
+        return _narrow_oop_shift >= 0;
+    }
+
+    // Compressed-oops decode/encode, mirroring VMKlass::fromOop()'s narrow
+    // *klass* pointer handling. Callers must check isCompressedOopsEnabled()
+    // first - a narrow oop is meaningless (and _narrow_oop_base is nullptr)
+    // when compressed oops are off.
+    static uintptr_t decodeOop(uint32_t narrow_oop) {
+        assert(isCompressedOopsEnabled());
+        return narrow_oop == 0 ? 0 : (uintptr_t)_narrow_oop_base + ((uintptr_t)narrow_oop << _narrow_oop_shift);
+    }
+
+    static uint32_t encodeOop(uintptr_t oop) {
+        assert(isCompressedOopsEnabled());
+        return oop == 0 ? 0 : (uint32_t)(((uintptr_t)oop - (uintptr_t)_narrow_oop_base) >> _narrow_oop_shift);
     }
 
     static bool isInterpretedFrameValidFunc(const void* pc) {
@@ -653,7 +752,40 @@ DECLARE(VMClassLoaderData)
     }
 DECLARE_END
 
-DECLARE(VMKlass)    
+// Purely a size anchor: InstanceKlass's own gHotSpotVMTypes entry, distinct
+// from VMKlass::type_size() (which resolves to the base Klass size via its
+// "Klass" MATCH_SYMBOLS entry). Needed because OopMapBlocks are laid out as
+// a variable-length tail starting immediately after the full InstanceKlass
+// object, not after the base Klass slice of it.
+DECLARE(VMInstanceKlass)
+DECLARE_END
+
+// OopMapBlock's layout is NOT resolved via VMStructs (see
+// DECLARE_OOPMAP_TYPES_DO's comment) - it has no gHotSpotVMTypes entry on
+// any JDK build checked. HotSpot's own class (share/oops/klass.hpp) has
+// been `{ int _offset; uint _count; }`, 8 bytes, no padding, since generic
+// OopMapBlocks were introduced (pre-JDK 8), and this is the layout SA's own
+// Java-side InstanceKlass reader hardcodes too rather than resolving via the
+// struct table - so this mirrors an existing precedent, not a new risk.
+// This is empirically validated end-to-end (not just assumed) by
+// FieldWalkerTestSeamsTest, which walks real object graphs and compares
+// discovered fields against reflection - if this layout were ever wrong on
+// some JDK, that test would fail rather than silently walk garbage.
+class VMOopMapBlock : VMStructs {
+  public:
+    static uint64_t type_size() { return 8; }
+    static VMOopMapBlock* cast(const void* ptr) { return cast_to<VMOopMapBlock>(ptr); }
+
+    int fieldOffset() {
+        return *(int*) at(0);
+    }
+
+    int fieldCount() {
+        return *(int*) at(4);
+    }
+};
+
+DECLARE(VMKlass)
     static VMKlass* fromJavaClass(JNIEnv* env, jclass cls) {
         if (sizeof(VMKlass*) == 8) {
             return VMKlass::cast((const void*)(intptr_t)env->GetLongField(cls, _klass));
@@ -720,6 +852,163 @@ DECLARE(VMKlass)
     jmethodID* jmethodIDs() {
         assert(_jmethod_ids_offset >= 0);
         return __atomic_load_n((jmethodID**) at(_jmethod_ids_offset), __ATOMIC_ACQUIRE);
+    }
+
+    // Fail-closed gate for the oop-map accessors below: false if any real
+    // MATCH_SYMBOLS lookup they depend on came back unresolved.
+    // VMOopMapBlock::type_size() is a compile-time constant (see its own
+    // comment), not a resolved lookup, so it's not part of this gate.
+    static bool oopMapAvailable() {
+        return _nonstatic_oop_map_size_offset >= 0
+            && _vtable_len_offset >= 0
+            && _itable_len_offset >= 0
+            && VMInstanceKlass::type_size() > 0;
+    }
+
+    // Number of OopMapBlocks in the variable-length tail. Only meaningful
+    // for InstanceKlass, not the base Klass (arrays/interfaces have no
+    // nonstatic oop maps); caller is expected to already know `this` is an
+    // InstanceKlass, same precondition VMKlass::fromOop() callers already
+    // rely on for other InstanceKlass-only fields on this same class.
+    // Same sanity-bound rationale as kMaxSaneVTableLength above: no real
+    // class has anywhere near this many oop-map blocks (each covers a run of
+    // contiguous oop fields, not one field each).
+    static constexpr int kMaxSaneOopMapCount = 1 << 16;
+
+    int oopMapCount() {
+        assert(oopMapAvailable());
+        int count = *(int*) at(_nonstatic_oop_map_size_offset);
+        assert(count >= 0 && count < kMaxSaneOopMapCount &&
+               "_nonstatic_oop_map_size read a value outside any sane range - "
+               "VMStructs field resolution is likely wrong for this JDK");
+        return count;
+    }
+
+    // Sanity bound, not a real limit: HotSpot itself has nowhere near this
+    // many vtable/itable slots for any real class. Catches a wrong field
+    // resolved to the wrong offset (e.g. a future JDK renumbering Klass's
+    // fields) reading a garbage int, loudly, instead of silently feeding a
+    // huge bogus length into oopMapBlockAt()'s tail arithmetic below.
+    static constexpr int kMaxSaneVTableLength = 1 << 16;
+
+    int vtableLength() {
+        assert(_vtable_len_offset >= 0);
+        int len = *(int*) at(_vtable_len_offset);
+        assert(len >= 0 && len < kMaxSaneVTableLength &&
+               "_vtable_len read a value outside any sane range - "
+               "VMStructs field resolution is likely wrong for this JDK");
+        return len;
+    }
+
+    int itableLength() {
+        assert(_itable_len_offset >= 0);
+        int len = *(int*) at(_itable_len_offset);
+        assert(len >= 0 && len < kMaxSaneVTableLength &&
+               "_itable_len read a value outside any sane range - "
+               "VMStructs field resolution is likely wrong for this JDK");
+        return len;
+    }
+
+    // OopMapBlocks do NOT start immediately after sizeof(InstanceKlass) - per
+    // HotSpot's own layout comment in instanceKlass.hpp ("InstanceKlass
+    // embedded field layout (after declared fields): [EMBEDDED Java vtable]
+    // [EMBEDDED nonstatic oop-map blocks]") and instanceKlass.inline.hpp's
+    // start_of_itable()/start_of_nonstatic_oop_maps(), the real tail is
+    // sizeof(InstanceKlass) bytes, THEN the vtable (vtable_len words), THEN
+    // the itable (itable_len words), THEN the oop-map blocks. Skipping the
+    // vtable/itable was an earlier, incorrect assumption that read garbage
+    // as an OopMapBlock and crashed on any real object with oop fields
+    // (caught by FieldWalkerTestSeamsTest, which is why that suite exists).
+    VMOopMapBlock* oopMapBlockAt(int i) {
+        assert(oopMapAvailable());
+        const char* tail = (const char*) this + VMInstanceKlass::type_size()
+            + (uint64_t)(vtableLength() + itableLength()) * sizeof(void*);
+        return VMOopMapBlock::cast(tail + (uint64_t) i * VMOopMapBlock::type_size());
+    }
+
+    // Fail-closed gate for the layout_helper accessors below. Note:
+    // _Klass__lh_array_tag_type_value's real resolved value is -1 by design
+    // (HotSpot's array-tag encoding uses -1/-2 as the type/obj tags), which
+    // collides with INIT_INT_CONSTANT's "unresolved" sentinel - so it can't
+    // be used in this != -1 unresolved-check, unlike its sibling constants.
+    static bool arrayLayoutAvailable() {
+        return _layout_helper_offset >= 0
+            && _Klass__lh_array_tag_shift != -1
+            && _Klass__lh_array_tag_obj_value != -1
+            && _Klass__lh_header_size_shift != -1
+            && _Klass__lh_header_size_mask != -1;
+    }
+
+    int layoutHelper() {
+        assert(_layout_helper_offset >= 0);
+        return *(int*) at(_layout_helper_offset);
+    }
+
+    // Klass::layout_helper_is_array()/is_objArray() equivalent. The top
+    // _lh_array_tag_bits bits of layout_helper are an arithmetic-shifted
+    // tag; instance klasses decode to _lh_neutral_value or the slow-path
+    // bit, never one of the two array tag values, so a plain tag compare
+    // also rejects non-array klasses without a separate instance check.
+    bool isArrayKlass() {
+        assert(arrayLayoutAvailable());
+        int tag = layoutHelper() >> _Klass__lh_array_tag_shift;
+        return tag == _Klass__lh_array_tag_obj_value || tag == _Klass__lh_array_tag_type_value;
+    }
+
+    bool isObjectArrayKlass() {
+        assert(arrayLayoutAvailable());
+        return (layoutHelper() >> _Klass__lh_array_tag_shift) == _Klass__lh_array_tag_obj_value;
+    }
+
+    // arrayOopDesc::base_offset_in_bytes() equivalent. Klass::layout_helper_
+    // header_size() (klass.hpp) returns this field already in BYTES, not
+    // words - confirmed by HotSpot's own sanity assert on it,
+    // `hsize < (int)sizeof(oopDesc)*3` (a byte-scale bound; oopDesc is the
+    // 12/16-byte mark+klass header, so a plausible word count would never
+    // approach that bound). No separate word->byte conversion is needed or
+    // correct here.
+    int arrayHeaderSizeBytes() {
+        assert(isArrayKlass());
+        int hsize = (layoutHelper() >> _Klass__lh_header_size_shift) & _Klass__lh_header_size_mask;
+        // Mirrors Klass::layout_helper_header_size()'s own sanity assert in
+        // klass.hpp (`hsize > 0 && hsize < (int)sizeof(oopDesc)*3`) - a
+        // byte-scale bound. Catches a unit mismatch (e.g. reintroducing the
+        // words-vs-bytes bug this field once had, or a future JDK moving
+        // where this bitfield sits in layout_helper) immediately instead of
+        // reading array elements from the wrong offset.
+        assert(hsize > 0 && hsize < 64 &&
+               "arrayHeaderSizeBytes() decoded a value outside any sane "
+               "range - VMStructs layout_helper decoding is likely wrong "
+               "for this JDK");
+        return hsize;
+    }
+
+    // arrayOopDesc::length_offset_in_bytes() equivalent: the length field
+    // sits immediately after the klass word at a fixed offset, independent
+    // of any element-alignment padding baked into arrayHeaderSizeBytes()
+    // above (e.g. a long[] header is padded to 8-byte alignment for its
+    // elements, but the length field itself never moves).
+    static int arrayLengthOffset() {
+        assert(_oop_klass_offset >= 0);
+        return _oop_klass_offset + (_narrow_klass_shift >= 0 ? (int) sizeof(uint32_t) : (int) sizeof(void*));
+    }
+
+    static int arrayLength(uintptr_t array_oop) {
+        return *(int*) (array_oop + arrayLengthOffset());
+    }
+
+    // Decoded child oop (already unpacked from a narrow oop when compressed
+    // oops are in use) at `index` of an object array. Caller must already
+    // know `this` is an object-array klass (isObjectArrayKlass()) - same
+    // precondition style as oopMapCount()/oopMapBlockAt() above.
+    uintptr_t arrayElementAt(uintptr_t array_oop, int index) {
+        assert(isObjectArrayKlass());
+        int base = arrayHeaderSizeBytes();
+        if (isCompressedOopsEnabled()) {
+            uint32_t narrow = *(uint32_t*) (array_oop + base + (uint64_t) index * sizeof(uint32_t));
+            return decodeOop(narrow);
+        }
+        return *(uintptr_t*) (array_oop + base + (uint64_t) index * sizeof(uintptr_t));
     }
 DECLARE_END
 

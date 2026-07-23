@@ -27,12 +27,15 @@ bool VMStructs::_has_class_loader_data = false;
 bool VMStructs::_has_native_thread_id = false;
 bool VMStructs::_can_dereference_jmethod_id = false;
 bool VMStructs::_compact_object_headers = false;
+bool VMStructs::_is_g1_active = false;
 
 char* VMStructs::_code_heap[3] = {};
 const void* VMStructs::_code_heap_low = NO_MIN_ADDRESS;
 const void* VMStructs::_code_heap_high = NO_MAX_ADDRESS;
 char* VMStructs::_narrow_klass_base = nullptr;
 int VMStructs::_narrow_klass_shift = -1;
+char* VMStructs::_narrow_oop_base = nullptr;
+int VMStructs::_narrow_oop_shift = -1;
 int VMStructs::_interpreter_frame_bcp_offset = 0;
 unsigned char VMStructs::_unsigned5_base = 0;
 const void* VMStructs::_call_stub_return = nullptr;
@@ -49,6 +52,7 @@ const void* VMStructs::_interpreted_frame_valid_end = nullptr;
 #define INIT_TYPE_SIZE(name, names) uint64_t VMStructs::TYPE_SIZE_NAME(name) = 0;
 DECLARE_TYPES_DO(INIT_TYPE_SIZE)
 DECLARE_V27_TYPES_DO(INIT_TYPE_SIZE)
+DECLARE_OOPMAP_TYPES_DO(INIT_TYPE_SIZE)
 #undef INIT_TYPE_SIZE
 
 #define offset_value -1
@@ -68,6 +72,7 @@ DECLARE_V27_TYPES_DO(INIT_TYPE_SIZE)
 
 DECLARE_TYPE_FIELD_DO(DO_NOTHING, INIT_FIELD, INIT_FIELD_WITH_VERSION, DO_NOTHING)
 DECLARE_V27_TYPE_FIELD_DO(DO_NOTHING, INIT_FIELD, INIT_FIELD_WITH_VERSION, DO_NOTHING)
+DECLARE_OOPMAP_TYPE_FIELD_DO(DO_NOTHING, INIT_FIELD, INIT_FIELD_WITH_VERSION, DO_NOTHING)
 
 #undef INIT_FIELD
 #undef INIT_FIELD_WITH_VERSION
@@ -82,6 +87,7 @@ DECLARE_V27_TYPE_FIELD_DO(DO_NOTHING, INIT_FIELD, INIT_FIELD_WITH_VERSION, DO_NO
     long VMStructs::_##type##_##field = -1;
 
 DECLARE_INT_CONSTANTS_DO(INIT_INT_CONSTANT, INIT_INT_CONSTANT)
+DECLARE_ARRAYLAYOUT_INT_CONSTANTS_DO(INIT_INT_CONSTANT, INIT_INT_CONSTANT)
 DECLARE_LONG_CONSTANTS_DO(INIT_LONG_CONSTANT, INIT_LONG_CONSTANT)
 #undef INIT_INT_CONSTANT
 #undef INIT_LONG_CONSTANT
@@ -182,6 +188,7 @@ void VMStructs::init_offsets_and_addresses() {
 #define END_TYPE() continue; }
         DECLARE_TYPE_FIELD_DO(MATCH_TYPE_NAMES, READ_FIELD_VALUE, READ_FIELD_VALUE_WITH_VERSION, END_TYPE)
         DECLARE_V27_TYPE_FIELD_DO(MATCH_TYPE_NAMES, READ_FIELD_VALUE, READ_FIELD_VALUE_WITH_VERSION, END_TYPE)
+        DECLARE_OOPMAP_TYPE_FIELD_DO(MATCH_TYPE_NAMES, READ_FIELD_VALUE, READ_FIELD_VALUE_WITH_VERSION, END_TYPE)
 #undef MATCH_TYPE_NAMES
 #undef READ_FIELD_VALUE
 #undef READ_FIELD_VALUE_WITH_VERSION
@@ -204,7 +211,7 @@ void VMStructs::init_type_sizes() {
             }
 
             uint64_t size = *(uint64_t*)(entry + size_offset);
-           
+
  #define READ_TYPE_SIZE(name, names)          \
         if (matchAny(type, names)) {          \
             TYPE_SIZE_NAME(name) = size;      \
@@ -213,6 +220,7 @@ void VMStructs::init_type_sizes() {
 
         DECLARE_TYPES_DO(READ_TYPE_SIZE)
         DECLARE_V27_TYPES_DO(READ_TYPE_SIZE)
+        DECLARE_OOPMAP_TYPES_DO(READ_TYPE_SIZE)
 
 #undef READ_TYPE_SIZE   
 
@@ -241,6 +249,7 @@ void VMStructs::init_constants() {
             }
             int value = *(int*)(entry + value_offset);
             DECLARE_INT_CONSTANTS_DO(READ_CONSTANT, READ_CONSTANT)
+            DECLARE_ARRAYLAYOUT_INT_CONSTANTS_DO(READ_CONSTANT, READ_CONSTANT)
         }
     }
     // Special case
@@ -312,6 +321,11 @@ void VMStructs::verify_offsets() {
 
 // Verify constants
 // Initialize constant variables to -1
+// Note: DECLARE_ARRAYLAYOUT_INT_CONSTANTS_DO is intentionally excluded here,
+// same treatment as DECLARE_V27_TYPE_FIELD_DO above - at least one of its
+// constants was observed missing from gHotSpotVMIntConstants on a real
+// JDK 21 build, so asserting all of them present would SIGABRT there.
+// VMKlass::arrayLayoutAvailable() is the real fail-closed gate for callers.
 #define VERIFY_CONSTANT(type, field) \
     assert(_##type##_##field != -1);
 #define VERIFY_CONSTANT_WITH_VERSION(type, field, min_ver, max_ver) \
@@ -320,6 +334,7 @@ void VMStructs::verify_offsets() {
     DECLARE_INT_CONSTANTS_DO(VERIFY_CONSTANT, VERIFY_CONSTANT_WITH_VERSION)
     DECLARE_LONG_CONSTANTS_DO(VERIFY_CONSTANT, VERIFY_CONSTANT_WITH_VERSION)
 #undef VERIFY_CONSTANT
+#undef VERIFY_CONSTANT_WITH_VERSION
 }
 
 #endif // DEBUG
@@ -356,10 +371,19 @@ void VMStructs::resolveOffsets() {
         _narrow_klass_shift = *(int*)_narrow_klass_shift_addr;
     }
 
+    VMFlag* cop = VMFlag::find("UseCompressedOops");
+    if (cop != NULL && cop->get() && _narrow_oop_base_addr != NULL && _narrow_oop_shift_addr != nullptr) {
+        _narrow_oop_base = *(char**)_narrow_oop_base_addr;
+        _narrow_oop_shift = *(int*)_narrow_oop_shift_addr;
+    }
+
     VMFlag* coh = VMFlag::find("UseCompactObjectHeaders");
     if (coh != NULL && coh->get()) {
         _compact_object_headers = true;
     }
+
+    VMFlag* g1 = VMFlag::find("UseG1GC", {VMFlag::Type::Bool});
+    _is_g1_active = g1 != NULL && g1->get();
 
     _has_class_names = _klass_name_offset >= 0
             && (_compact_object_headers ? (_markWord_klass_shift >= 0 && _markWord_monitor_value == MONITOR_BIT)

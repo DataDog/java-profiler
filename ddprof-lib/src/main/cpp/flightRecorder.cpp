@@ -2007,6 +2007,15 @@ void Recording::recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
 // comment) have entries; anything else (including 0, root_kind's
 // "not set" default) reports "unknown" rather than crashing on an
 // out-of-range index.
+//
+// STACK_LOCAL (24) and JNI_LOCAL (25) are labeled "first_observed_via:..."
+// rather than plain "stack_local"/"jni_local" (design doc's "Honest labeling
+// in output", point 2): both are evidence this object was reachable from a
+// live frame/local handle at the moment a pass observed it, not a durable
+// retention reason - the frame can pop or the handle can be freed the
+// instant the pass ends, so "rooted by" would overstate what is actually
+// known. Every other kind here is durable enough for the plain "rooted by"
+// framing this field's name already implies.
 static const char *rootKindName(u8 root_kind) {
   switch (root_kind) {
   case 8:
@@ -2018,9 +2027,9 @@ static const char *rootKindName(u8 root_kind) {
   case 23:
     return "monitor";
   case 24:
-    return "stack_local";
+    return "first_observed_via:stack_local";
   case 25:
-    return "jni_local";
+    return "first_observed_via:jni_local";
   case 26:
     return "thread";
   case 27:
@@ -2046,16 +2055,17 @@ void Recording::recordReferenceChain(Buffer *buf, ReferenceChainEvent *event) {
                           ? chain_size
                           : (u32)MAX_REFERENCE_CHAIN_EVENT_HOPS;
 
-  // rootKindName() never returns a string longer than "static_field" (12
-  // bytes) - reserve a fixed, generous 16 bytes for its putUtf8() length
-  // prefix + payload rather than computing strlen() up front.
+  // rootKindName() never returns a string longer than
+  // "first_observed_via:stack_local" (31 bytes) - reserve a fixed, generous
+  // 32 bytes for its putUtf8() length prefix + payload rather than computing
+  // strlen() up front.
   const char *root_kind_name = rootKindName(event->_root_kind);
   flushIfNeeded(
       buf, RECORDING_BUFFER_LIMIT -
                (MAX_VAR32_LENGTH /* multi-byte size prefix, below */ +
                 3 * MAX_VAR64_LENGTH /* type id, start_time, target_tag */ +
                 2 * MAX_VAR32_LENGTH /* depth, chain count */ +
-                16 /* rootKind string */ +
+                32 /* rootKind string */ +
                 (int)emitted_size * MAX_VAR32_LENGTH));
   // Multi-byte size prefix (like writeDatadogSetting() above), not
   // writeEventSizePrefix()'s single byte - this event's size can exceed
