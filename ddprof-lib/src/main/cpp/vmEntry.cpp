@@ -576,9 +576,6 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
 // initLibrary() followed by a JNI-triggered attach) -- the VMStructs init below only
 // ever runs once.
 void VM::ready(jvmtiEnv *jvmti, JNIEnv *jni) {
-  if (!VM::isHotspot()) {
-    return;
-  }
   // Hotspot specific
   static bool vmstructs_ready = false;
   static SpinLock lock;
@@ -586,12 +583,14 @@ void VM::ready(jvmtiEnv *jvmti, JNIEnv *jni) {
   if (!vmstructs_ready) {
     Profiler::check_JDK_8313796_workaround();
     Profiler::setupSignalHandlers();
-    JitWriteProtection jit(true);
-    CodeCache* lib = openJvmLibrary();
-    assert(lib != nullptr && "JVM library must have been loaded");
-    // Initialize VMStructs
-    VMStructs::init(lib);
-    VMStructs::ready();
+    if (VM::isHotspot()) {
+      JitWriteProtection jit(true);
+      CodeCache* lib = openJvmLibrary();
+      assert(lib != nullptr && "JVM library must have been loaded");
+      // Initialize VMStructs
+      VMStructs::init(lib);
+      VMStructs::ready();
+    }
     vmstructs_ready = true;
   }
 }
