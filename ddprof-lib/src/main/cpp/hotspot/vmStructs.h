@@ -354,15 +354,29 @@ typedef void* address;
         field(_narrow_klass_base_addr, address, MATCH_SYMBOLS("_narrow_klass._base", "_base"))                      \
         field(_narrow_klass_shift_addr, address, MATCH_SYMBOLS("_narrow_klass._shift", "_shift"))                   \
         field(_collected_heap_addr, address, MATCH_SYMBOLS("_collectedHeap"))                                       \
+        /* On JDK 8-16, CompressedOops::_narrow_oop is exported as a Universe static  */                            \
+        /* field, before it moved to its own AllStatic class (see VMCompressedOops    */                            \
+        /* below). Since resolveOffsets()'s scan picks the first type_begin() whose   */                            \
+        /* MATCH_SYMBOLS() matches a given exported type name and then unconditionally*/                            \
+        /* continues, these fields must live in this "Universe"-matching block - a    */                            \
+        /* separate type_begin(_, MATCH_SYMBOLS("Universe")) block declared later      */                           \
+        /* would never see "Universe"-typed entries, as this block already claims them.*/                           \
+        /* Distinct variable names from VMCompressedOops below avoid a duplicate      */                            \
+        /* static member declaration; resolveOffsets() consults both. Version-gated  */                            \
+        /* to JDK 8-16 for verify_offsets(), since JDK 17+ never populates these      */                            \
+        /* (it exports "CompressedOops" as its own type instead - see below).        */                            \
+        field_with_version(_narrow_oop_base_addr_universe, address, MIN_VERSION, 16, MATCH_SYMBOLS("_narrow_oop._base"))   \
+        field_with_version(_narrow_oop_shift_addr_universe, address, MIN_VERSION, 16, MATCH_SYMBOLS("_narrow_oop._shift")) \
     type_end()                                                                                                      \
     /* CompressedOops::_narrow_oop is exported under its own type name, distinct from     */                        \
     /* CompressedKlassPointers (narrow klass) above - HotSpot keeps compressed-oop and     */                       \
     /* compressed-klass base/shift state in two separate AllStatic classes. JDK-8329306    */                       \
     /* (JDK 24+) flattened the nested NarrowOopStruct fields, so the exported field names  */                       \
-    /* dropped the "_narrow_oop." prefix - match both spellings.                           */                       \
+    /* dropped the "_narrow_oop." prefix - match both spellings. On JDK 8-16 these fields  */                       \
+    /* are instead exported under type "Universe" - see VMUniverse above.                 */                       \
     type_begin(VMCompressedOops, MATCH_SYMBOLS("CompressedOops"))                                                   \
-        field(_narrow_oop_base_addr, address, MATCH_SYMBOLS("_narrow_oop._base", "_base"))                          \
-        field(_narrow_oop_shift_addr, address, MATCH_SYMBOLS("_narrow_oop._shift", "_shift"))                       \
+        field_with_version(_narrow_oop_base_addr, address, 17, MAX_VERSION, MATCH_SYMBOLS("_narrow_oop._base", "_base"))   \
+        field_with_version(_narrow_oop_shift_addr, address, 17, MAX_VERSION, MATCH_SYMBOLS("_narrow_oop._shift", "_shift")) \
     type_end()
 
 /**

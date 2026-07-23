@@ -371,10 +371,16 @@ void VMStructs::resolveOffsets() {
         _narrow_klass_shift = *(int*)_narrow_klass_shift_addr;
     }
 
+    // JDK 17+ exports these under the "CompressedOops" type; JDK 8-16 export them
+    // as "Universe" statics instead (see VMUniverse's MATCH_SYMBOLS("Universe") vs.
+    // VMCompressedOops's MATCH_SYMBOLS("CompressedOops") in vmStructs.h) - fall back
+    // to the Universe-resolved addresses when the CompressedOops ones are unset.
+    address narrow_oop_base_addr = _narrow_oop_base_addr != NULL ? _narrow_oop_base_addr : _narrow_oop_base_addr_universe;
+    address narrow_oop_shift_addr = _narrow_oop_shift_addr != NULL ? _narrow_oop_shift_addr : _narrow_oop_shift_addr_universe;
     VMFlag* cop = VMFlag::find("UseCompressedOops");
-    if (cop != NULL && cop->get() && _narrow_oop_base_addr != NULL && _narrow_oop_shift_addr != nullptr) {
-        _narrow_oop_base = *(char**)_narrow_oop_base_addr;
-        _narrow_oop_shift = *(int*)_narrow_oop_shift_addr;
+    if (cop != NULL && cop->get() && narrow_oop_base_addr != NULL && narrow_oop_shift_addr != nullptr) {
+        _narrow_oop_base = *(char**)narrow_oop_base_addr;
+        _narrow_oop_shift = *(int*)narrow_oop_shift_addr;
     }
 
     VMFlag* coh = VMFlag::find("UseCompactObjectHeaders");
