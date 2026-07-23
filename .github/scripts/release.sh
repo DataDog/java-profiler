@@ -20,8 +20,13 @@ check_not_stuck() {
   local base=$1
   local branch=$2
 
-  [ -n "$DRYRUN" ] && return
-  git rev-parse "v_${base}" >/dev/null 2>&1 || return
+  if [ -n "$DRYRUN" ]; then
+    return 0
+  fi
+
+  if ! git show-ref --verify --quiet "refs/tags/v_${base}"; then
+    return 0
+  fi
 
   echo "::error::${branch} is stuck at version ${base}, which is already tagged (v_${base})."
   echo "::error::The automated post-release version-bump PR for this branch was never merged."
