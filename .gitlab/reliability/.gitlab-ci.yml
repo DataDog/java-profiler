@@ -121,7 +121,7 @@ notify-slack:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: on_failure
     - when: never
-  image: registry.ddbuild.io/slack-notifier:latest
+  image: registry.ddbuild.io/slack-notifier:v91289620-4ec922a-latest@sha256:06b24f392ccc383d371c72001520a254edef523bc0bfdc445f487106107b4202
   tags: [ "arch:amd64" ]
   needs:
     - get-versions

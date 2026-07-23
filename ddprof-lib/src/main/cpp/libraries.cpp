@@ -1,7 +1,11 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #include "codeCache.h"
 #include "common.h"
 #include "findLibraryImpl.h"
-#include "hotspot/vmStructs.h"
 #include "libraries.h"
 #include "libraryPatcher.h"
 #include "log.h"
@@ -191,7 +195,7 @@ const void *Libraries::resolveSymbol(const char *name) {
 }
 
 CodeCache *Libraries::findJvmLibrary(const char *j9_lib_name) {
-  return VM::isOpenJ9() ? findLibraryByName(j9_lib_name) : VMStructs::libjvm();
+  return VM::isOpenJ9() ? findLibraryByName(j9_lib_name) : VM::libjvm();
 }
 
 CodeCache *Libraries::findLibraryByName(const char *lib_name) {
