@@ -10,7 +10,7 @@ requiring a custom allocator. The `free` function is also hooked (to forward cal
 correctly through the GOT) but free events are not recorded.
 
 Sampled allocation events carry a full Java + native stack trace and are emitted as
-`profiler.Malloc` JFR events.
+`datadog.NativeMemoryAllocation` JFR events.
 
 The feature is activated by passing `nativemem=<interval>` to the profiler, where
 `<interval>` is the byte-sampling interval (e.g. `nativemem=524288` samples roughly
@@ -37,10 +37,10 @@ one event per 512 KiB allocated). Passing `nativemem=0` records every allocation
                               └────────────┬─────────────┘
                                            │ walkVM (CSTACK_VM)
                                            ▼
-                              ┌──────────────────────────┐
-                              │  JFR buffer               │  flightRecorder.cpp
-                              │  profiler.Malloc          │
-                              └──────────────────────────┘
+                              ┌────────────────────────────────────┐
+                              │  JFR buffer                         │  flightRecorder.cpp
+                              │  datadog.NativeMemoryAllocation     │
+                              └────────────────────────────────────┘
 ```
 
 ---
@@ -256,9 +256,9 @@ it seeds the unwind with `callerPC()` / `callerSP()` / `callerFP()`.
 ## JFR Event Format
 
 A single event type is defined in `jfrMetadata.cpp` under the
-`Java Virtual Machine / Native Memory` category:
+`Datadog / Profiling` category:
 
-### `profiler.Malloc` (`T_MALLOC`)
+### `datadog.NativeMemoryAllocation` (`T_MALLOC`)
 
 | Field | Type | Description |
 |-------|------|-------------|
