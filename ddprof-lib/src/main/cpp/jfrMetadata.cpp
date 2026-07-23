@@ -303,8 +303,8 @@ void JfrMetadata::initialize(
               << field("name", T_STRING, "Name")
               << field("count", T_LONG, "Count"))
 
-          << (type("profiler.Malloc", T_MALLOC, "malloc")
-                  << category("Java Virtual Machine", "Native Memory")
+          << (type("datadog.NativeMemoryAllocation", T_MALLOC, "Native Memory Allocation")
+                  << category("Datadog", "Profiling")
                   << field("startTime", T_LONG, "Start Time", F_TIME_TICKS)
                   << field("eventThread", T_THREAD, "Event Thread", F_CPOOL)
                   << field("stackTrace", T_STACK_TRACE, "Stack Trace", F_CPOOL)

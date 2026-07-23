@@ -342,9 +342,7 @@ void VMStructs::initOffsets() {
 }
 
 void VMStructs::resolveOffsets() {
-    if (VM::isOpenJ9() || VM::isZing()) {
-        return;
-    }
+    assert(VM::isHotspot() && "Should not reach here");
 
     if (_klass_offset_addr != NULL) {
         _klass = (jfieldID)(uintptr_t)(*(int*)_klass_offset_addr << 2 | 2);
