@@ -890,11 +890,14 @@ Error PerfEvents::start(Arguments &args) {
   if (max_events != _max_events) {
     // Account the per-thread PerfEvent array under NM_PERF, alongside the ring
     // mappings. Guard on non-null so a prior calloc failure isn't mis-accounted.
-    if (_events != NULL) {
-      NativeMem::record(NM_PERF,
-                        -(long long)((size_t)_max_events * sizeof(PerfEvent)));
-    }
+    // Record the decrement after the free (consistent with the other decrement
+    // sites); capture the old size first since _max_events is overwritten below.
+    long long old_bytes =
+        (_events != NULL) ? (long long)((size_t)_max_events * sizeof(PerfEvent)) : 0;
     free(_events);
+    if (old_bytes > 0) {
+      NativeMem::record(NM_PERF, -old_bytes);
+    }
     _events = (PerfEvent *)calloc(max_events, sizeof(PerfEvent));
     _max_events = max_events;
     if (_events != NULL) {
