@@ -41,6 +41,19 @@ __asm__(".symver exp,exp@GLIBC_2.17");
 #endif
 #endif
 
+// A "hook-prefixed" sample (malloc, socket I/O, ...) is one whose native
+// callchain starts inside the profiler's own PLT/libc hook and must be
+// trimmed up to the MARK_JAVA_PROFILER boundary frame before symbolication.
+// Single source of truth for that predicate across both BCI_* (FP/DWARF path)
+// and EventType (walkVM path) representations.
+inline bool isHookPrefixedSample(jint bci) {
+  return bci == BCI_NATIVE_MALLOC || bci == BCI_NATIVE_SOCKET;
+}
+
+inline bool isHookPrefixedSample(EventType event_type) {
+  return event_type == MALLOC_SAMPLE || event_type == SOCKET_SAMPLE;
+}
+
 #ifdef DEBUG
 #include <signal.h>
 static const char* force_stackwalk_crash_env = getenv("DDPROF_FORCE_STACKWALK_CRASH");
@@ -331,12 +344,13 @@ public:
    *   Bits 47-61:  lib_index (15 bits, 32K libraries)
    *.  Bits 62-63:  reserved
    *
-   * Mark values indicate JVM internal frames that should terminate stack walks:
+   * Mark values identify JVM-internal frames the caller must dispatch on;
+   * they don't all mean "terminate the walk":
    *   0 = no mark (regular native frame)
-   *   MARK_VM_RUNTIME = 1
-   *   MARK_INTERPRETER = 2
-   *   MARK_COMPILER_ENTRY = 3
-   *   MARK_ASYNC_PROFILER = 4
+   *   MARK_VM_RUNTIME = 1      -- terminates the scan
+   *   MARK_INTERPRETER = 2     -- terminates the scan
+   *   MARK_COMPILER_ENTRY = 3  -- inserts a pseudo JIT-compile-task frame, then resumes unwinding
+   *   MARK_JAVA_PROFILER = 4  -- resets depth and resumes unwinding above the hook boundary
    *
    * During stack walking, we perform symbol resolution (binarySearch) to check
    * marks and pack the mark value for later use. The performance is O(log n) for
@@ -390,20 +404,28 @@ public:
   struct NativeFrameResolution {
     union {
       unsigned long packed_remote_frame;  // Packed remote frame data (pc_offset|mark|lib_index)
-      const char* method_name;            // Resolved method name 
+      const char* method_name;            // Resolved method name
     };
     int bci;                            // BCI_NATIVE_FRAME_REMOTE or BCI_NATIVE_FRAME
-    bool is_marked;                     // true if this is a marked C++ interpreter frame (stop processing)
-    NativeFrameResolution(const char* name, int bci_type, bool marked)
-      : method_name(name), bci(bci_type), is_marked(marked) {}
-    NativeFrameResolution(unsigned long packed, int bci_type, bool marked)
-      : packed_remote_frame(packed), bci(bci_type), is_marked(marked) {}
+    char mark;                         // Value domain: 0 (unmarked) or one of the Mark
+                                        // enum constants (codeCache.h), currently 1-5.
+                                        // Kept as char rather than Mark since it is
+                                        // packed into RemoteFramePacker's 3-bit field.
+    // True if this frame carries a JVM-internal mark; caller must inspect
+    // `mark` to decide whether to terminate the walk or dispatch/resume
+    // (see the Mark values table above resolveNativeFrameForWalkVM).
+    bool is_marked() const { return mark != 0; }
+    NativeFrameResolution(const char* name, int bci_type, char mark_value = 0)
+      : method_name(name), bci(bci_type), mark(mark_value) {}
+    NativeFrameResolution(unsigned long packed, int bci_type, char mark_value = 0)
+      : packed_remote_frame(packed), bci(bci_type), mark(mark_value) {}
   };
 
   void populateRemoteFrame(ASGCT_CallFrame* frame, uintptr_t pc, CodeCache* lib, char mark);
   NativeFrameResolution resolveNativeFrameForWalkVM(uintptr_t pc, int lock_index);
   int convertNativeTrace(int native_frames, const void **callchain,
-                         ASGCT_CallFrame *frames, int lock_index);
+                         ASGCT_CallFrame *frames, int lock_index,
+                         bool skip_hook_prefix);
   bool recordSample(void *ucontext, u64 weight, int tid, jint event_type,
                     u64 call_trace_id, Event *event,
                     u64 *recorded_call_trace_id = nullptr);

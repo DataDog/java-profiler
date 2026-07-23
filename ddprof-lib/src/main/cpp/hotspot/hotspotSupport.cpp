@@ -126,6 +126,8 @@ inline EventType eventTypeFromBCI(jint bci_type) {
             return PARK_SAMPLE;
         case BCI_NATIVE_MALLOC:
             return MALLOC_SAMPLE;
+        case BCI_NATIVE_SOCKET:
+            return SOCKET_SAMPLE;
         default:
             // For unknown or invalid BCI types, default to EXECUTION_SAMPLE
             // This maintains backward compatibility and prevents undefined behavior
@@ -305,8 +307,14 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     uintptr_t saved_anchor_fp = 0;
     bool anchor_recovery_used = false;
 
+    // Set once the MARK_JAVA_PROFILER hook boundary is found for a
+    // malloc/socket sample — mirrors skip_hook_prefix/skipping in
+    // Profiler::convertNativeTrace so the same "boundary never found"
+    // condition is observable from walkVM.
+    bool hook_boundary_found = false;
+
     // Show extended frame types and stub frames for execution-type events
-    bool details = event_type <= MALLOC_SAMPLE || features.mixed;
+    bool details = event_type <= SOCKET_SAMPLE || features.mixed;
 
     if (details && vm_thread != NULL && VMThread::isJavaThread(vm_thread)) {
         anchor = vm_thread->anchor();
@@ -681,18 +689,16 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         } else {
             // Resolve native frame (may use remote symbolication if enabled)
             Profiler::NativeFrameResolution resolution = profiler->resolveNativeFrameForWalkVM((uintptr_t)pc, lock_index);
-            if (resolution.is_marked) {
-                // This is a marked C++ interpreter frame, terminate scan
-                break;
-            }
-            const char* method_name = resolution.method_name;
-            int frame_bci = resolution.bci;
-            char mark;
-            if (frame_bci != BCI_NATIVE_FRAME_REMOTE && method_name != NULL && (mark = NativeFunc::read_mark(method_name)) != 0) {
-                if (mark == MARK_ASYNC_PROFILER && event_type == MALLOC_SAMPLE) {
-                    // Skip all internal frames above malloc_hook functions, leave the hook itself
+            if (resolution.is_marked()) {
+                if (resolution.mark == MARK_JAVA_PROFILER &&
+                    isHookPrefixedSample(event_type)) {
+                    // Discard frames captured above the malloc/socket hook boundary,
+                    // excluding the hook's own frame, and resume from the real
+                    // caller above it — mirrors the FP/DWARF skip-prefix logic in
+                    // Profiler::convertNativeTrace.
+                    hook_boundary_found = true;
                     depth = 0;
-                } else if (mark == MARK_COMPILER_ENTRY && features.comp_task && vm_thread != NULL) {
+                } else if (resolution.mark == MARK_COMPILER_ENTRY && features.comp_task && vm_thread != NULL) {
                     // Insert current compile task as a pseudo Java frame
                     VMMethod* method = vm_thread->compiledMethod();
                     if (method != nullptr) {
@@ -701,13 +707,19 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                             fillFrame(frames[depth++], FRAME_JIT_COMPILED, 0, method_id, method);
                         }
                     }
-                } else if (mark == MARK_THREAD_ENTRY) {
+                } else if (resolution.mark == MARK_THREAD_ENTRY) {
                     // Thread entry point detected via pre-computed mark - this is the root frame
-                    // No need for expensive symbol resolution, just stop unwinding
                     Counters::increment(THREAD_ENTRY_MARK_DETECTIONS);
                     break;
+                } else {
+                    // Other marks (VM runtime / interpreter) terminate the scan.
+                    break;
                 }
-            } else if (method_name == NULL && details && !anchor_recovery_used
+                goto dwarf_unwind;
+            }
+            const char* method_name = resolution.method_name;
+            int frame_bci = resolution.bci;
+            if (method_name == NULL && details && !anchor_recovery_used
                        && profiler->findLibraryByAddress(pc) == NULL) {
                 // Try anchor recovery — prefer live anchor, fall back to saved data
                 anchor_recovery_used = true;
@@ -943,6 +955,12 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
     if (depth == 0) {
         Counters::increment(WALKVM_DEPTH_ZERO);
+    }
+
+    if (isHookPrefixedSample(event_type) && !hook_boundary_found) {
+        // The malloc/socket hook boundary was never found in this walk;
+        // mirrors Profiler::convertNativeTrace's NATIVE_TRACE_HOOK_PREFIX_NOT_FOUND.
+        Counters::increment(NATIVE_TRACE_HOOK_PREFIX_NOT_FOUND);
     }
 
     if (truncated) {
@@ -1198,7 +1216,7 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   int java_frames = 0;
   if (features.mixed) {
     java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
-  } else if (request.event_type == BCI_NATIVE_MALLOC || request.event_type == BCI_NATIVE_SOCKET) {
+  } else if (isHookPrefixedSample(request.event_type)) {
     if (cstack >= CSTACK_VM) {
       java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
     } else {
