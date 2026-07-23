@@ -1446,10 +1446,12 @@ Error Profiler::start(Arguments &args, bool reset) {
       CallTraceBuffer *prev = _calltrace_buffer[i];
       _calltrace_buffer[i] = fresh[i];
       _locks[i].unlock();
+      free(prev);
       if (prev != NULL) {
+        // Account the free after it has happened, consistent with the other
+        // decrement sites (FlightRecorder::stop, ~ThreadFilter).
         NativeMem::record(NM_CALLTRACE, -(long long)(prev_nelem * sizeof(CallTraceBuffer)));
       }
-      free(prev);
     }
   }
 
