@@ -315,6 +315,7 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
   if (_cstack == CSTACK_NO ||
       (event_type == BCI_ALLOC || event_type == BCI_ALLOC_OUTSIDE_TLAB) ||
       (event_type != BCI_CPU && event_type != BCI_WALL &&
+       !isHookPrefixedSample(event_type) &&
        _cstack == CSTACK_DEFAULT)) {
     return 0;
   }
@@ -339,7 +340,9 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
                                          java_ctx, truncated);
   }
 
-  return convertNativeTrace(native_frames, callchain, frames, lock_index);
+  bool skip_hook_prefix = isHookPrefixedSample(event_type);
+  return convertNativeTrace(native_frames, callchain, frames, lock_index,
+                            skip_hook_prefix);
 }
 
 /**
@@ -396,7 +399,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
     char mark = (method_name != nullptr) ? NativeFunc::read_mark(method_name) : 0;
 
     if (mark != 0) {
-      return {nullptr, BCI_NATIVE_FRAME, true};  // Marked - stop processing
+      return NativeFrameResolution(nullptr, BCI_NATIVE_FRAME, mark);  // Marked - caller dispatches on mark
     }
 
     // Pack remote symbolication data using utility struct
@@ -404,7 +407,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
     uint32_t lib_index = (uint32_t)lib->libIndex();
     unsigned long packed = RemoteFramePacker::pack(pc_offset, mark, lib_index);
 
-    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE, false);
+    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE);
   }
 
   // Traditional symbol resolution
@@ -412,8 +415,11 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
   if (lib != nullptr) {
     lib->binarySearch((void*)pc, &method_name);
   }
-  if (method_name != nullptr && NativeFunc::is_marked(method_name)) {
-    return NativeFrameResolution(nullptr, BCI_NATIVE_FRAME, true);
+  if (method_name != nullptr) {
+    char mark = NativeFunc::read_mark(method_name);
+    if (mark != 0) {
+      return NativeFrameResolution(nullptr, BCI_NATIVE_FRAME, mark);
+    }
   }
 
   // No symbol but known library: pack for library-relative identification.
@@ -423,10 +429,10 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
     uintptr_t pc_offset = pc - (uintptr_t)lib->imageBase();
     uint32_t lib_index = (uint32_t)lib->libIndex();
     unsigned long packed = RemoteFramePacker::pack(pc_offset, 0, lib_index);
-    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE, false);
+    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE);
   }
 
-  return NativeFrameResolution(method_name, BCI_NATIVE_FRAME, false);
+  return NativeFrameResolution(method_name, BCI_NATIVE_FRAME);
 }
 
 /**
@@ -439,9 +445,16 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
  * marked frames (JVM internals) that should terminate the stack walk.
  */
 int Profiler::convertNativeTrace(int native_frames, const void **callchain,
-                                 ASGCT_CallFrame *frames, int lock_index) {
+                                 ASGCT_CallFrame *frames, int lock_index,
+                                 bool skip_hook_prefix) {
   int depth = 0;
   void* prev_identifier = NULL;  // Can be jmethodID or frame pointer for remote
+  // skip_hook_prefix: the walk started inside profiler-internal code (e.g. the
+  // malloc/socket hook call chain), not at an interrupted user PC. Discard frames
+  // until the hook wrapper's own MARK_JAVA_PROFILER-marked frame is reached, then
+  // resume normally from the real caller. Other mark kinds still terminate the
+  // scan immediately, same as the non-skipping case.
+  bool skipping = skip_hook_prefix;
 
   for (int i = 0; i < native_frames; i++) {
     uintptr_t pc = (uintptr_t)callchain[i];
@@ -457,9 +470,20 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
         char mark = (method_name != nullptr) ? NativeFunc::read_mark(method_name) : 0;
 
         if (mark != 0) {
+          if (skip_hook_prefix && mark == MARK_JAVA_PROFILER) {
+            depth = 0;
+            skipping = false;
+            continue;
+          }
+          if (skipping) {
+            // A non-MARK_JAVA_PROFILER mark terminated the scan before the
+            // hook boundary was ever found; the sample has no native stack.
+            Counters::increment(NATIVE_TRACE_HOOK_PREFIX_NOT_FOUND);
+          }
           // Terminate scan at marked frame
           return depth;
         }
+        if (skipping) continue;
 
         // Populate remote frame inline - no allocation needed!
         // Pass the mark we already retrieved to avoid duplicate binarySearch
@@ -477,10 +501,24 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
 
     // Fallback: Traditional symbol resolution
     const char *method_name = findNativeMethod((void*)pc);
-    if (method_name != nullptr && NativeFunc::is_marked(method_name)) {
-      // Terminate scan at marked frame
-      return depth;
+    if (method_name != nullptr) {
+      char mark = NativeFunc::read_mark(method_name);
+      if (mark != 0) {
+        if (skip_hook_prefix && mark == MARK_JAVA_PROFILER) {
+          depth = 0;
+          skipping = false;
+          continue;
+        }
+        if (skipping) {
+          // A non-MARK_JAVA_PROFILER mark terminated the scan before the
+          // hook boundary was ever found; the sample has no native stack.
+          Counters::increment(NATIVE_TRACE_HOOK_PREFIX_NOT_FOUND);
+        }
+        // Terminate scan at marked frame
+        return depth;
+      }
     }
+    if (skipping) continue;
 
     // Store standard frame
     jmethodID current_method = (jmethodID)method_name;
@@ -494,6 +532,11 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
     }
   }
 
+  if (skipping) {
+    // The hook-boundary (MARK_JAVA_PROFILER) frame was never found in the
+    // callchain; every frame was discarded and the sample has no native stack.
+    Counters::increment(NATIVE_TRACE_HOOK_PREFIX_NOT_FOUND);
+  }
   return depth;
 }
 

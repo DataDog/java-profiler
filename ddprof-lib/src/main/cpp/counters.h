@@ -130,6 +130,8 @@
   X(JVMTI_STACKS_INIT_OK, "jvmti_stacks_init_ok")                             \
   X(JVMTI_STACKS_INIT_FAILED, "jvmti_stacks_init_failed")                     \
   X(JVMTI_STACKS_REQUESTED, "jvmti_stacks_requested")                         \
+  X(NATIVE_TRACE_HOOK_PREFIX_NOT_FOUND, "native_trace_hook_prefix_not_found") \
+  X(NATIVE_HOOK_MARK_RESOLVE_FAILED, "native_hook_mark_resolve_failed")       \
   X(JVMTI_STACKS_FAILED_WRONG_PHASE, "jvmti_stacks_failed_wrong_phase")       \
   X(JVMTI_STACKS_FAILED_OTHER, "jvmti_stacks_failed_other")                  \
   /* Delegated stacks dropped at slot-lock. Rec-lock drops from all recording  \

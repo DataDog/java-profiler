@@ -195,7 +195,7 @@ TEST_F(NativeFuncTest, AllMarkTypesWork) {
         MARK_VM_RUNTIME,
         MARK_INTERPRETER,
         MARK_COMPILER_ENTRY,
-        MARK_ASYNC_PROFILER,
+        MARK_JAVA_PROFILER,
         MARK_THREAD_ENTRY
     };
 
