@@ -90,17 +90,37 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
   }
 
   /**
-   * Retains coverage for threads whose filter slot is installed by a post-start ThreadStart event.
+   * Verifies that a thread which already owns a registry slot still receives ordinary per-signal
+   * sampling outside an explicitly owned block.
    *
    * @throws Exception if the worker cannot complete
    */
   @RetryingTest(3)
-  public void postStartSleepingThreadStillUsesThreadStartSlot() throws Exception {
+  public void unownedSleepAfterOwnedBlockUsesNormalSampling() throws Exception {
+    assertTrue(
+        runPreExistingUnownedSleepingWorker() != 0,
+        "Expected the setup block to register the worker");
+
+    stopProfiler();
+
+    long sampleCount = samplesForThread(PRE_EXISTING_THREAD_NAME);
+    assertTrue(
+        sampleCount >= 10,
+        "Expected normal MethodSample volume for an unowned sleep, got: " + sampleCount);
+  }
+
+  /**
+   * Retains coverage for post-start threads, whose owned-block hook must register a slot lazily.
+   *
+   * @throws Exception if the worker cannot complete
+   */
+  @RetryingTest(3)
+  public void postStartSleepingThreadLazilyRegistersOwnedBlock() throws Exception {
     String threadName = "unfiltered-precheck-post-start";
     long suppressedBefore = suppressedSignals();
     assertTrue(
         runPostStartSleepingWorker(threadName) != 0,
-        "Expected ThreadStart registration to arm SLEEPING state");
+        "Expected the owned-block hook to register and arm SLEEPING state");
 
     stopProfiler();
     assertSuppressedSamples(threadName);
@@ -164,6 +184,20 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
     Thread worker = new Thread(sleep, threadName);
     worker.start();
     return sleep.get();
+  }
+
+  private long runPreExistingUnownedSleepingWorker() throws Exception {
+    return preExistingWorker
+        .submit(
+            () -> {
+              assertSame(preExistingThread, Thread.currentThread());
+              long token =
+                  ProfilerOwnedBlockHooks.blockEnter(profiler, OSTHREAD_STATE_SLEEPING);
+              ProfilerOwnedBlockHooks.blockExit(profiler, token);
+              Thread.sleep(SLEEP_MILLIS);
+              return token;
+            })
+        .get();
   }
 
   private long runSleepingBlock(boolean enterContextWindowDuringBlock) throws Exception {

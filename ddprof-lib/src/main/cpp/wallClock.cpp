@@ -117,6 +117,13 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
     return result;
   }
 
+  // Unfiltered tracking exists only to support explicit context and owned-block
+  // hooks. Keep unowned observations on ordinary per-signal sampling: the JVMTI
+  // path has no call_trace_id with which to replay a suppressed tail.
+  if (registry->unfilteredWallTrackingActive()) {
+    return result;
+  }
+
   result.observed_state = getOSThreadState();
   result.observed_state_valid = true;
   if (isPrecheckSuppressionState(result.observed_state)) {
