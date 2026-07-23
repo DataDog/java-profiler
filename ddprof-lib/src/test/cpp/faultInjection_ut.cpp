@@ -221,6 +221,14 @@ TEST_F(FaultInjectionTest, RecordSampleOuterSetjmpRecoversAndRestoresChain) {
   // Read again after the setjmp landing below, so it must be volatile — mirrors
   // recordSample's own num_frames.
   volatile int num_frames = 0;
+  // Frames "collected" before the fault, e.g. by a getNativeTrace() call that
+  // partially succeeded before walkJavaStack() faulted. Seeding a non-zero
+  // value here — mutated between setjmp() and the longjmp below — is what
+  // actually exercises the volatile qualifier: a non-volatile local would be
+  // indeterminate after the jump, so the post-recovery checks below would not
+  // reliably see it. Without this seed, num_frames would still read 0 whether
+  // or not it were volatile, and the test would prove nothing about volatile.
+  constexpr int kSeededFrames = 3;
 
   jmp_buf unwind_ctx;
   jmp_buf* prev_jmp_buf = t->getJmpCtx();
@@ -231,14 +239,18 @@ TEST_F(FaultInjectionTest, RecordSampleOuterSetjmpRecoversAndRestoresChain) {
   int jmp_rc = setjmp(unwind_ctx);
   if (jmp_rc != 0) {
     // Landed here via the real Profiler::checkFault() -> longjmp, triggered by
-    // an actual injected fault below.
+    // an actual injected fault below. Mirrors recordSample's
+    // `if (num_frames < _max_stack_depth) { num_frames += makeFrame(...); }`:
+    // the recovery marker is appended to whatever partial progress survived
+    // the jump, never resets it.
     t->setJmpCtx(prev_jmp_buf);
     num_frames += 1;  // stand-in for makeFrame(..., "break_unwind_fault")
   } else {
     t->setJmpCtx(&unwind_ctx);
+    num_frames = kSeededFrames;  // mutated before the fault; must survive the longjmp
 
     // Force at least one fire deterministically, then let the tier drive the rest.
-    for (int i = 0; i < 5000 && num_frames == 0; i++) {
+    for (int i = 0; i < 5000 && num_frames == kSeededFrames; i++) {
       // Raw deref of the (possibly poisoned) base — mirrors the unprotected
       // metadata reads recordSample's outer setjmp now guards.
       uintptr_t v = *(uintptr_t*)INJECT_FAULT_ADDRESS_LIKELY(base);
@@ -250,9 +262,9 @@ TEST_F(FaultInjectionTest, RecordSampleOuterSetjmpRecoversAndRestoresChain) {
   EXPECT_EQ(&grandparent_ctx, t->getJmpCtx())
       << "must restore the caller's jmp_buf chain on both the clean and the "
          "recovery path, never leave it cleared or pointing at unwind_ctx";
-  EXPECT_EQ(1, num_frames)
-      << "the volatile accumulator mutated before the fault must retain its "
-         "value across the longjmp landing";
+  EXPECT_EQ(kSeededFrames + 1, num_frames)
+      << "the seeded pre-fault value must survive the longjmp landing and the "
+         "recovery marker must append to it, not overwrite it";
   EXPECT_GT(Counters::getCounter(STACKWALK_LONGJMP_RECOVERED), recovered_before)
       << "checkFault() must have run and incremented the shared recovery counter";
 
