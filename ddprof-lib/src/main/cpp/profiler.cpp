@@ -83,7 +83,9 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 
   current->setJavaThread(true);
   int tid = current->tid();
-  if (_thread_filter.registryActive()) {
+  // Preserve eager registration for context-filtered recordings. Unfiltered
+  // wall prechecks register only from context and owned-block hooks.
+  if (_thread_filter.enabled()) {
     int slot_id = _thread_filter.registerThread(tid);
     current->setFilterSlotId(slot_id);
   }
@@ -1076,38 +1078,6 @@ void Profiler::updateJavaThreadNames() {
   jvmti->Deallocate((unsigned char *)thread_objects);
 }
 
-void Profiler::registerExistingJavaThreads() {
-  if (!_thread_filter.unfilteredWallTrackingActive() ||
-      !JVMThread::supportsNativeThreadIdLookup()) {
-    return;
-  }
-
-  jvmtiEnv *jvmti = VM::jvmti();
-  JNIEnv *jni = VM::jni();
-  jint thread_count;
-  jthread *thread_objects;
-  if (jvmti->GetAllThreads(&thread_count, &thread_objects) != JVMTI_ERROR_NONE) {
-    Counters::increment(THREAD_REGISTRY_BOOTSTRAP_FAILURES);
-    return;
-  }
-
-  for (int i = 0; i < thread_count; ++i) {
-    jthread thread = thread_objects[i];
-    if (thread != nullptr) {
-      int tid = JVMThread::nativeThreadId(jni, thread);
-      if (tid >= 0) {
-        _thread_filter.registerThread(tid);
-      }
-      jni->DeleteLocalRef(thread);
-    }
-  }
-  jvmti->Deallocate(reinterpret_cast<unsigned char *>(thread_objects));
-  int retired = _thread_filter.retireInactiveRegistrations();
-  if (retired > 0) {
-    Counters::increment(THREAD_REGISTRY_STALE_SLOTS_RETIRED, retired);
-  }
-}
-
 void Profiler::updateNativeThreadNames(bool defer_initializing) {
   ThreadList *thread_list = OS::listThreads();
   constexpr size_t buffer_size = 64;
@@ -1445,13 +1415,14 @@ Error Profiler::start(Arguments &args, bool reset) {
       _wall_engine->supportsUnfilteredWallPrecheck();
   _thread_filter.init(filter, track_unfiltered_wall);
 
-  // Reset per-recording state before a wall timer can inspect the registry.
-  if (_thread_filter.registryActive()) {
+  // Unfiltered init resets registrations before publishing registry admission.
+  // Context-filtered recordings retain identities but must clear membership.
+  if (_thread_filter.enabled()) {
     _thread_filter.clearActive();
   }
 
-  // Preserve the context-filter fast path. Unfiltered tracking bootstraps the
-  // current thread only after the wall engine has started successfully.
+  // Preserve the context-filter fast path. Unfiltered tracking remains empty
+  // until a context or owned-block hook registers the current thread.
   if (_thread_filter.enabled()) {
     ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
     assert(current != nullptr);
@@ -1594,10 +1565,6 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   if (activated) {
     switchThreadEvents(JVMTI_ENABLE);
-
-    // ThreadStart events cover only threads created after the callbacks are
-    // enabled. Bootstrap registry identity for Java threads that already exist.
-    registerExistingJavaThreads();
 
     // Initialize this thread
     // Note: passing all nullptrs results in not able to resolve the thread name here.

@@ -152,7 +152,6 @@ private:
   void updateThreadName(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                         bool self = false);
   void updateJavaThreadNames();
-  void registerExistingJavaThreads();
   void mangle(const char *name, char *buf, size_t size);
 
   Engine *selectCpuEngine(Arguments &args);

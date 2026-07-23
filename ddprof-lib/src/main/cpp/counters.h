@@ -57,8 +57,8 @@
   X(THREAD_NAMES_COUNT, "thread_names_count")                                  \
   X(THREAD_FILTER_PAGES, "thread_filter_pages")                                \
   X(THREAD_FILTER_BYTES, "thread_filter_bytes")                                \
-  X(THREAD_REGISTRY_BOOTSTRAP_FAILURES, "thread_registry_bootstrap_failures")  \
-  X(THREAD_REGISTRY_STALE_SLOTS_RETIRED, "thread_registry_stale_slots_retired") \
+  X(THREAD_REGISTRY_CAPACITY_EXHAUSTED, "thread_registry_capacity_exhausted")  \
+  X(THREAD_REGISTRY_INDEX_FAILURES, "thread_registry_index_failures")          \
   X(JMETHODID_SKIPPED, "jmethodid_skipped_count")                              \
   X(CODECACHE_NATIVE_SIZE_BYTES, "codecache_native_size_bytes")                \
   X(CODECACHE_NATIVE_COUNT, "native_codecache_count")                          \

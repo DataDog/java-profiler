@@ -26,9 +26,6 @@ public:
     */
     static bool initialize();
 
-    // Whether nativeThreadId can resolve a Java thread other than the caller.
-    static bool supportsNativeThreadIdLookup();
-
     static inline bool isInitialized() {
         return _tid != nullptr && _jvm_thread.isKeyValid();
     }

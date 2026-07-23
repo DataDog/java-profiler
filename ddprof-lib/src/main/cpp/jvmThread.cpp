@@ -29,10 +29,6 @@ bool JVMThread::initialize() {
   return _jvm_thread.initialize(current_thread);
 }
 
-bool JVMThread::supportsNativeThreadIdLookup() {
-  return VM::isOpenJ9() || VMThread::hasNativeThreadId();
-}
-
 int JVMThread::nativeThreadId(JNIEnv* jni, jthread thread) {
     return VM::isOpenJ9() ? J9Support::GetOSThreadID(thread) : VMThread::nativeThreadId(jni, thread);
 }

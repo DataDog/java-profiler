@@ -318,7 +318,6 @@ public:
     Slot* lookupByTid(int tid) const;
     Slot* lookupByTid(int tid, RecordingEpoch epoch) const;
     Slot* activeSlotForId(SlotID slot_id, int tid) const;
-    int retireInactiveRegistrations();
     void deactivateRecording();
 
 private:
@@ -372,6 +371,7 @@ private:
     bool indexSlot(SlotID slot_id, int tid);
     void unindexSlot(SlotID slot_id, int tid);
     void refreshSlotForRecording(Slot* slot, RecordingEpoch epoch);
+    void resetRegistrationsLocked();
     void unregisterThreadLocked(SlotID slot_id, int expected_tid = -1);
     SlotID lookupSlotIdByTid(int tid) const;
     static inline unsigned hashTid(int tid) {

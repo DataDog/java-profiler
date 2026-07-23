@@ -15,6 +15,7 @@
  */
 
 #include <gtest/gtest.h>
+#include "counters.h"
 #include "threadFilter.h"
 #include "../../main/cpp/gtest_crash_handler.h"
 #include <thread>
@@ -143,9 +144,17 @@ TEST_F(ThreadFilterTest, MaxCapacityReached) {
     // Should have registered all slots
     EXPECT_EQ(slot_ids.size(), ThreadFilter::kMaxThreads);
     
-    // Next registration should fail
+    // Next registration should fail and make capacity loss observable
+#ifdef COUNTERS
+    long long capacity_failures_before =
+        Counters::getCounter(THREAD_REGISTRY_CAPACITY_EXHAUSTED);
+#endif
     int overflow_slot = filter->registerThread();
     EXPECT_EQ(overflow_slot, -1);
+#ifdef COUNTERS
+    EXPECT_EQ(capacity_failures_before + 1,
+              Counters::getCounter(THREAD_REGISTRY_CAPACITY_EXHAUSTED));
+#endif
     
     // Verify all registered slots work
     std::vector<int> collected_tids;
@@ -840,12 +849,13 @@ TEST_F(ThreadRegistryTest, ConfigurationSeparatesFilterAndUnfilteredTracking) {
     EXPECT_TRUE(registry.unfilteredWallTrackingActive());
 }
 
-TEST_F(ThreadRegistryTest, RecordingEpochMakesRetainedSlotInactiveUntilRefresh) {
+TEST_F(ThreadRegistryTest, NewUnfilteredRecordingReclaimsRetainedSlot) {
     constexpr int tid = 6101;
     int slot_id = registry.registerThread(tid);
     ASSERT_GE(slot_id, 0);
     ThreadFilter::Slot* slot = registry.slotForId(slot_id);
     ASSERT_NE(nullptr, slot);
+    u64 first_lifecycle_generation = slot->lifecycleGeneration();
     ThreadFilter::RecordingEpoch first_epoch = registry.recordingEpoch();
     ASSERT_NE(0u, first_epoch);
     EXPECT_EQ(slot, registry.lookupByTid(tid, first_epoch));
@@ -862,6 +872,9 @@ TEST_F(ThreadRegistryTest, RecordingEpochMakesRetainedSlotInactiveUntilRefresh) 
     ASSERT_NE(first_epoch, second_epoch);
     EXPECT_EQ(nullptr, registry.lookupByTid(tid, first_epoch));
     EXPECT_EQ(nullptr, registry.lookupByTid(tid, second_epoch));
+    EXPECT_EQ(nullptr, registry.lookupByTid(tid));
+    EXPECT_EQ(-1, slot->nativeTid());
+    EXPECT_GT(slot->lifecycleGeneration(), first_lifecycle_generation);
     EXPECT_FALSE(registry.shouldSuppressOwnedBlock(stale));
 
     EXPECT_EQ(slot_id, registry.registerThread(tid));
@@ -871,57 +884,19 @@ TEST_F(ThreadRegistryTest, RecordingEpochMakesRetainedSlotInactiveUntilRefresh) 
     EXPECT_EQ(BlockRunOwner::NONE, slot->activeBlockOwner());
 }
 
-TEST_F(ThreadRegistryTest, RetiresOnlySlotsNotRefreshedIntoCurrentEpoch) {
-    int retained_id = registry.registerThread(6103);
-    int stale_id = registry.registerThread(6104);
-    ASSERT_GE(retained_id, 0);
-    ASSERT_GE(stale_id, 0);
+TEST_F(ThreadRegistryTest, NewUnfilteredRecordingReclaimsFullCapacity) {
+    for (int i = 0; i < ThreadFilter::kMaxThreads; ++i) {
+        ASSERT_GE(registry.registerThread(10000 + i), 0) << "tid index=" << i;
+    }
+    ASSERT_EQ(-1, registry.registerThread(20000));
 
     registry.init("", true);
-    ThreadFilter::RecordingEpoch current_epoch = registry.recordingEpoch();
-    EXPECT_EQ(retained_id, registry.registerThread(6103));
 
-    EXPECT_EQ(1, registry.retireInactiveRegistrations());
-    EXPECT_NE(nullptr, registry.lookupByTid(6103, current_epoch));
-    EXPECT_EQ(nullptr, registry.lookupByTid(6104));
-    EXPECT_EQ(-1, registry.slotForId(stale_id)->nativeTid());
-}
-
-TEST_F(ThreadRegistryTest, ConcurrentRefreshAndRetirementKeepCurrentIdentity) {
-    constexpr int tid = 6110;
-    int slot_id = registry.registerThread(tid);
-    ASSERT_GE(slot_id, 0);
-
-    for (int iteration = 0; iteration < 100; ++iteration) {
-        registry.init("", true);
-        ThreadFilter::RecordingEpoch epoch = registry.recordingEpoch();
-        std::atomic<bool> start{false};
-        int refreshed_id = -1;
-
-        std::thread refresh([&] {
-            while (!start.load(std::memory_order_acquire)) {
-                std::this_thread::yield();
-            }
-            refreshed_id = registry.registerThread(tid);
-        });
-        std::thread retire([&] {
-            while (!start.load(std::memory_order_acquire)) {
-                std::this_thread::yield();
-            }
-            registry.retireInactiveRegistrations();
-        });
-
-        start.store(true, std::memory_order_release);
-        refresh.join();
-        retire.join();
-
-        ASSERT_GE(refreshed_id, 0);
-        ThreadFilter::Slot* slot = registry.lookupByTid(tid, epoch);
-        ASSERT_NE(nullptr, slot);
-        EXPECT_EQ(tid, slot->nativeTid());
-        slot_id = refreshed_id;
+    EXPECT_EQ(nullptr, registry.lookupByTid(10000));
+    for (int i = 0; i < ThreadFilter::kMaxThreads; ++i) {
+        ASSERT_GE(registry.registerThread(30000 + i), 0) << "tid index=" << i;
     }
-    EXPECT_EQ(slot_id, registry.registerThread(tid));
+    EXPECT_EQ(-1, registry.registerThread(40000));
 }
 
 TEST_F(ThreadRegistryTest, ExpectedTidProtectsReusedSlotDuringTeardown) {

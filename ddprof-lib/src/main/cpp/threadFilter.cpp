@@ -21,6 +21,7 @@
 
 #include "threadFilter.h"
 #include "arch.h"
+#include "counters.h"
 #include "os.h"
 #include "threadLocalData.h"
 #include <cassert>
@@ -135,6 +136,7 @@ ThreadFilter::SlotID ThreadFilter::registerThread(int tid) {
         if (tid >= 0 && !indexSlot(reused_slot, tid)) {
             slot->tid.store(-1, std::memory_order_release);
             pushToFreeList(reused_slot);
+            Counters::increment(THREAD_REGISTRY_INDEX_FAILURES);
             return -1;
         }
         if (epoch != 0) {
@@ -148,6 +150,7 @@ ThreadFilter::SlotID ThreadFilter::registerThread(int tid) {
     if (index >= kMaxThreads) {
         // Revert the increment and return failure
         _next_index.fetch_sub(1, std::memory_order_relaxed);
+        Counters::increment(THREAD_REGISTRY_CAPACITY_EXHAUSTED);
         return -1;
     }
 
@@ -179,6 +182,7 @@ ThreadFilter::SlotID ThreadFilter::registerThread(int tid) {
     if (tid >= 0 && !indexSlot(index, tid)) {
         slot->tid.store(-1, std::memory_order_release);
         pushToFreeList(index);
+        Counters::increment(THREAD_REGISTRY_INDEX_FAILURES);
         return -1;
     }
     if (epoch != 0) {
@@ -337,6 +341,7 @@ void ThreadFilter::add(int tid, SlotID slot_id) {
                 slot.tid.store(tid, std::memory_order_release);
                 if (!indexSlot(slot_id, tid)) {
                     slot.tid.store(-1, std::memory_order_release);
+                    Counters::increment(THREAD_REGISTRY_INDEX_FAILURES);
                     return;
                 }
             }
@@ -393,27 +398,27 @@ void ThreadFilter::unregisterThreadByTid(int tid) {
     }
 }
 
-int ThreadFilter::retireInactiveRegistrations() {
-    RecordingEpoch epoch = recordingEpoch();
-    if (epoch == 0 || !unfilteredWallTrackingActive()) {
-        return 0;
-    }
-
-    std::lock_guard<std::mutex> lock(_registry_lock);
-    int retired = 0;
+void ThreadFilter::resetRegistrationsLocked() {
     int num_chunks = _num_chunks.load(std::memory_order_acquire);
     for (int chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
         ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
         if (chunk == nullptr) continue;
         for (int slot_idx = 0; slot_idx < kChunkSize; ++slot_idx) {
             Slot& slot = chunk->slots[slot_idx];
-            if (slot.nativeTid() != -1 && slot.recordingEpoch() != epoch) {
-                unregisterThreadLocked((chunk_idx << kChunkShift) + slot_idx);
-                retired++;
+            if (slot.nativeTid() != -1) {
+                slot.lifecycle_generation.fetch_add(1, std::memory_order_acq_rel);
             }
+            slot.recording_epoch.store(0, std::memory_order_release);
+            slot.tid.store(-1, std::memory_order_release);
+            slot.context_window_state.store(0, std::memory_order_release);
+            slot.clearActiveBlockRun(OSThreadState::UNKNOWN);
         }
     }
-    return retired;
+    for (auto& entry : _tid_index) {
+        entry.store(0, std::memory_order_relaxed);
+    }
+    _next_index.store(0, std::memory_order_relaxed);
+    initFreeList();
 }
 
 bool ThreadFilter::pushToFreeList(SlotID slot_id) {
@@ -635,6 +640,14 @@ void ThreadFilter::init(const char* filter, bool track_unfiltered_wall) {
     // extra flag only retains metadata for unfiltered wall prechecks.
     bool context_filter = filter != nullptr && strlen(filter) > 0;
     bool unfiltered_tracking = track_unfiltered_wall && !context_filter;
+    // Close registration before clearing identities from a previous unfiltered
+    // recording. Other threads retain only stale slot IDs; activeSlotForId()
+    // rejects them until their next context or owned-block hook registers lazily.
+    _registry_active.store(false, std::memory_order_release);
+    if (unfiltered_tracking) {
+        std::lock_guard<std::mutex> lock(_registry_lock);
+        resetRegistrationsLocked();
+    }
     RecordingEpoch epoch = 0;
     if (unfiltered_tracking) {
         epoch = _next_recording_epoch.fetch_add(1, std::memory_order_acq_rel) + 1;
@@ -669,8 +682,9 @@ ThreadFilter::RecordingEpoch ThreadFilter::recordingEpoch() const {
 }
 
 void ThreadFilter::deactivateRecording() {
-    // Close producer admission before invalidating the recording epoch. Existing
-    // slots remain allocated so surviving threads can refresh them on restart.
+    // Close producer admission before invalidating the recording epoch.
+    // Context-filtered recordings may retain slots; a new unfiltered recording
+    // resets them before reopening admission.
     _registry_active.store(false, std::memory_order_release);
     _enabled.store(false, std::memory_order_release);
     _track_unfiltered_wall.store(false, std::memory_order_release);
