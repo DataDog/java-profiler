@@ -577,10 +577,10 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
 // ever runs once.
 void VM::ready(jvmtiEnv *jvmti, JNIEnv *jni) {
   // Hotspot specific
-  static bool vmstructs_ready = false;
+  static bool vmstructs_init = false;
   static SpinLock lock;
   ExclusiveLockGuard guard(&lock);
-  if (!vmstructs_ready) {
+  if (!vmstructs_init) {
     Profiler::check_JDK_8313796_workaround();
     Profiler::setupSignalHandlers();
     if (VM::isHotspot()) {
@@ -591,7 +591,11 @@ void VM::ready(jvmtiEnv *jvmti, JNIEnv *jni) {
       VMStructs::init(lib);
       VMStructs::ready();
     }
-    vmstructs_ready = true;
+    vmstructs_init = true;
+  } else {
+    if (VM::isHotspot()) {
+      VMStructs::ready();
+    }
   }
 }
 
