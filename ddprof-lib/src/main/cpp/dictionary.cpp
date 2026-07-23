@@ -67,17 +67,19 @@ void Dictionary::clear(DictTable *table, int id) {
     for (int j = 0; j < CELLS; j++) {
       if (row->keys[j]) {
         // Keys are null-terminated, so the malloc'd size (length + 1) is
-        // recoverable at free time without tracking it per key.
-        NativeMem::record(NM_DICTIONARY, -(long long)(strlen(row->keys[j]) + 1));
+        // recoverable without tracking it per key. Capture it before free(),
+        // then record after, consistent with the other decrement sites.
+        long long key_bytes = (long long)(strlen(row->keys[j]) + 1);
         free(row->keys[j]); // content is zeroed en-mass in the clear() function
+        NativeMem::record(NM_DICTIONARY, -key_bytes);
       }
     }
     if (row->next != NULL) {
       clear(row->next, id);
       DictTable *tmp = row->next;
       row->next = NULL;
-      NativeMem::record(NM_DICTIONARY, -(long long)sizeof(DictTable));
       free(tmp);
+      NativeMem::record(NM_DICTIONARY, -(long long)sizeof(DictTable));
     }
   }
 }

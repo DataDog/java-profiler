@@ -143,8 +143,8 @@ public:
         Chunk* c = _first;
         while (c) {
             Chunk* n = c->next;
-            NativeMem::record(NM_DICTIONARY, -(long long)sizeof(Chunk));
             free(c);
+            NativeMem::record(NM_DICTIONARY, -(long long)sizeof(Chunk));
             c = n;
         }
     }
@@ -182,8 +182,8 @@ public:
         int freed = 0;
         while (c) {
             Chunk* n = c->next;
-            NativeMem::record(NM_DICTIONARY, -(long long)sizeof(Chunk));
             free(c);
+            NativeMem::record(NM_DICTIONARY, -(long long)sizeof(Chunk));
             c = n;
             ++freed;
         }
@@ -249,8 +249,8 @@ private:
             Frame& f = stk.back();
             if (f.row >= ROWS) {
                 if (f.t != table) {
-                    NativeMem::record(NM_DICTIONARY, -(long long)sizeof(SBTable));
                     free(f.t);
+                    NativeMem::record(NM_DICTIONARY, -(long long)sizeof(SBTable));
                     freed++;
                 }
                 stk.pop_back();
@@ -295,8 +295,8 @@ public:
     ~StringDictionaryBuffer() {
         if (_table != nullptr) {
             freeOverflowNodes(_table);  // records its own decrements
-            NativeMem::record(NM_DICTIONARY, -(long long)sizeof(SBTable));
             free(_table);
+            NativeMem::record(NM_DICTIONARY, -(long long)sizeof(SBTable));
             _table = nullptr;
         }
     }
