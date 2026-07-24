@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler.wallclock;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
@@ -309,6 +314,8 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "wall=1ms";
+        // The workload deliberately has no tracing context, so its samples
+        // require the explicit all-thread wall-clock scope.
+        return "wall=1ms,wallscope=all";
     }
 }

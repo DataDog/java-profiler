@@ -250,7 +250,6 @@ public:
   // dump-time pass (which passes false), records the final name instead.
   void updateNativeThreadNames(bool defer_initializing = false);
 
-
   inline void incFailure(int type) {
     if (type < ASGCT_FAILURE_TYPES) {
       atomicIncRelaxed(_failures[type]);

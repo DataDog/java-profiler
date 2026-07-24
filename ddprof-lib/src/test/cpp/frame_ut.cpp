@@ -4,7 +4,9 @@
 
 #include <gtest/gtest.h>
 #include <climits>
+#include <cstdint>
 #include "../../main/cpp/frame.h"
+#include "../../main/cpp/frames.h"
 #include "../../main/cpp/gtest_crash_handler.h"
 
 // Test-only friend accessor for VM internals. It exists solely so these unit
@@ -43,6 +45,26 @@ public:
 };
 
 static GlobalSetup global_setup;
+
+TEST(CopyJvmtiFramesTest, PreservesOverlappingSourceFields) {
+    union {
+        ASGCT_CallFrame asgct[2];
+        jvmtiFrameInfo jvmti[2];
+    } buffer;
+    jmethodID first_method =
+        reinterpret_cast<jmethodID>(static_cast<uintptr_t>(0x12340));
+    jmethodID second_method =
+        reinterpret_cast<jmethodID>(static_cast<uintptr_t>(0x56780));
+    buffer.jvmti[0] = {first_method, 17};
+    buffer.jvmti[1] = {second_method, 29};
+
+    copyJvmtiFrames(buffer.asgct, buffer.jvmti, 2);
+
+    EXPECT_EQ(buffer.asgct[0].method_id, first_method);
+    EXPECT_EQ(buffer.asgct[0].bci, 17);
+    EXPECT_EQ(buffer.asgct[1].method_id, second_method);
+    EXPECT_EQ(buffer.asgct[1].bci, 29);
+}
 
 // ---- encode ----------------------------------------------------------------
 
