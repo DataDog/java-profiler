@@ -13,6 +13,7 @@
 #include "guards.h"
 #include "common.h"
 #include "counters.h"
+#include "nativeMem.h"
 #include "ctimer.h"
 #include "signalInflight.h"
 #include "dwarf.h"
@@ -24,6 +25,7 @@
 #include "j9/j9Support.h"
 #include "j9/j9WallClock.h"
 #include "jvmSupport.h"
+#include "jvmSupport.inline.h"
 #include "jvmThread.h"
 #include "libraryPatcher.h"
 #include "objectSampler.h"
@@ -1416,27 +1418,43 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   // (Re-)allocate calltrace buffers
   if (_max_stack_depth != args._jstackdepth) {
-    _max_stack_depth = args._jstackdepth;
-    size_t nelem = _max_stack_depth + RESERVED_FRAMES;
+    size_t prev_nelem = _max_stack_depth + RESERVED_FRAMES;
+    size_t nelem = (size_t)args._jstackdepth + RESERVED_FRAMES;
 
+    // Phase 1: allocate all replacements up front. If any allocation fails,
+    // roll back the ones already made and leave the profiler unchanged — old
+    // buffers, _max_stack_depth, and all accounting stay consistent. (The old
+    // code swapped shard-by-shard and reset _max_stack_depth to 0 on failure,
+    // leaving a partially-swapped, mis-accounted state.)
+    CallTraceBuffer *fresh[CONCURRENCY_LEVEL];
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
-      // Allocate the replacement before touching the slot so a calloc failure
-      // does not leave the slot pointing at freed memory.
-      CallTraceBuffer *fresh =
-          (CallTraceBuffer*)calloc(nelem, sizeof(CallTraceBuffer));
-      if (fresh == NULL) {
-        _max_stack_depth = 0;
+      fresh[i] = (CallTraceBuffer*)calloc(nelem, sizeof(CallTraceBuffer));
+      if (fresh[i] == NULL) {
+        for (int j = 0; j < i; j++) {
+          free(fresh[j]);
+        }
         return Error("Not enough memory to allocate stack trace buffers (try "
                      "smaller jstackdepth)");
       }
-      // Swap under the per-shard lock: all readers (recordJVMTISample,
-      // recordExternalSample) acquire this lock via tryLock before reading
-      // _calltrace_buffer, so no reader can observe a freed pointer mid-replacement.
+    }
+
+    // Phase 2: all allocations succeeded — commit. Swap each shard under its
+    // per-shard lock (readers acquire it via tryLock before reading
+    // _calltrace_buffer, so none observes a freed pointer mid-replacement),
+    // then free the old buffer and reconcile accounting.
+    _max_stack_depth = args._jstackdepth;
+    for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
+      NativeMem::record(NM_CALLTRACE, (long long)(nelem * sizeof(CallTraceBuffer)));
       _locks[i].lock();
       CallTraceBuffer *prev = _calltrace_buffer[i];
-      _calltrace_buffer[i] = fresh;
+      _calltrace_buffer[i] = fresh[i];
       _locks[i].unlock();
       free(prev);
+      if (prev != NULL) {
+        // Account the free after it has happened, consistent with the other
+        // decrement sites (FlightRecorder::stop, ~ThreadFilter).
+        NativeMem::record(NM_CALLTRACE, -(long long)(prev_nelem * sizeof(CallTraceBuffer)));
+      }
     }
   }
 
@@ -1689,6 +1707,9 @@ Error Profiler::stop() {
   Libraries::instance()->refresh();
   updateJavaThreadNames();
   updateNativeThreadNames();
+  // Refresh native-symbol counters so the final chunk (emitted by _jfr.stop()
+  // below) reflects them even when stop() runs without a preceding dump().
+  updateNativeLibMemStats();
 
   // If jvmtistacks delegation was used this recording, surface likely
   // misconfigurations. The JVM returns WRONG_PHASE when JFR is not recording
@@ -1784,6 +1805,22 @@ Error Profiler::check(Arguments &args) {
   return error;
 }
 
+void Profiler::updateNativeLibMemStats() {
+  // CodeCache here is the profiler's native-symbol tables (not the JVM code
+  // cache). memoryUsage() is a recomputed gauge; read it once and publish the
+  // counters plus the NativeMem gauge (NATIVE_SYMBOLS) as absolutes.
+  const CodeCacheArray& native_libs = _libs->native_libs();
+  long long usage = (long long)native_libs.memoryUsage();
+  Counters::set(CODECACHE_NATIVE_COUNT, native_libs.count());
+  Counters::set(CODECACHE_NATIVE_SIZE_BYTES, usage);
+  // The runtime-stubs cache is a distinct HotSpot cache, not the native-symbol
+  // tables. Routed through JVMSupport so the HotSpot-only implementation stays
+  // behind the VM abstraction (0 on J9/Zing).
+  Counters::set(CODECACHE_RUNTIME_STUBS_SIZE_BYTES,
+                JVMSupport::runtimeStubsMemoryUsage());
+  NativeMem::setLive(NM_NATIVE_SYMBOLS, usage);
+}
+
 Error Profiler::dump(const char *path, const int length) {
   MutexLocker ml(_state_lock);
   State cur_state = state();
@@ -1801,11 +1838,7 @@ Error Profiler::dump(const char *path, const int length) {
     updateJavaThreadNames();
     updateNativeThreadNames();
 
-    const CodeCacheArray& native_libs = _libs->native_libs();
-    Counters::set(CODECACHE_NATIVE_COUNT, native_libs.count());
-    Counters::set(CODECACHE_NATIVE_SIZE_BYTES, native_libs.memoryUsage());
-    Counters::set(CODECACHE_RUNTIME_STUBS_SIZE_BYTES,
-                  native_libs.memoryUsage());
+    updateNativeLibMemStats();
 
     Error err = Error::OK;
     // rotateDictsAndRun rotates the dictionaries, takes lockAll() around the

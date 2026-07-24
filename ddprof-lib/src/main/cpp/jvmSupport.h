@@ -55,6 +55,9 @@ public:
     static int walkJavaStack(StackWalkRequest& request);
     static inline bool canUnwind(const StackFrame& frame, const void*& pc);
     static inline bool isJitCode(const void* pc);
+    // Live heap usage of the JIT runtime-stubs code cache. HotSpot-only; 0 on
+    // other VMs (J9/Zing), which have no such cache.
+    static inline long long runtimeStubsMemoryUsage();
 
     static void loadAllMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni);
     static bool loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);

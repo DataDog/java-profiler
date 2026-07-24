@@ -22,6 +22,7 @@
 #include "threadFilter.h"
 #include "arch.h"
 #include "counters.h"
+#include "nativeMem.h"
 #include "os.h"
 #include "threadLocalData.h"
 #include <cassert>
@@ -43,6 +44,8 @@ ThreadFilter::ThreadFilter()
     for (auto& entry : _tid_index) {
         entry.store(0, std::memory_order_relaxed);
     }
+    NativeMem::record(NM_THREAD_FILTER,
+                      (long long)(kFreeListSize * sizeof(FreeListNode)));
 
     // Initialize the first chunk
     initializeChunk(0);
@@ -72,11 +75,21 @@ ThreadFilter::~ThreadFilter() {
     }
     // Publish 0 chunks to stop range scans (collect)
     _num_chunks.store(0, std::memory_order_release);
-    // Detach and delete chunks
+    // Detach and delete chunks. Record the decrement after the delete so the
+    // gauge reflects the free only once it has happened.
     for (int i = 0; i < kMaxChunks; ++i) {
         ChunkStorage* chunk = _chunks[i].exchange(nullptr, std::memory_order_acquire);
         delete chunk;
+        if (chunk != nullptr) {
+            NativeMem::record(NM_THREAD_FILTER, -(long long)sizeof(ChunkStorage));
+        }
     }
+    // Free the FreeListNode[] explicitly before recording, rather than letting
+    // the unique_ptr free it after this destructor returns, so the decrement
+    // does not lead the actual free.
+    _free_list.reset();
+    NativeMem::record(NM_THREAD_FILTER,
+                      -(long long)(kFreeListSize * sizeof(FreeListNode)));
 }
 
 void ThreadFilter::initializeChunk(int chunk_idx) {
@@ -99,6 +112,7 @@ void ThreadFilter::initializeChunk(int chunk_idx) {
     ChunkStorage* expected = nullptr;
     if (_chunks[chunk_idx].compare_exchange_strong(expected, new_chunk, std::memory_order_release)) {
         // Successfully installed
+        NativeMem::record(NM_THREAD_FILTER, (long long)sizeof(ChunkStorage));
     } else {
         // Another thread beat us to it - clean up our allocation
         delete new_chunk;

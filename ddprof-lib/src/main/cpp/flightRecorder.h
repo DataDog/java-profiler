@@ -304,6 +304,9 @@ public:
 
   void writeCounters(Buffer *buf);
 
+  void updateNativeMemStats();
+  void writeNativeMem(Buffer *buf);
+
   void writeUnwindFailures(Buffer *buf);
 
   void writeContextSnapshot(Buffer *buf, Context &context);

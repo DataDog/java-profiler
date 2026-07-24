@@ -53,6 +53,9 @@
   X(CALLTRACE_STORAGE_TRACES, "calltrace_storage_traces")                      \
   X(LINEAR_ALLOCATOR_BYTES, "linear_allocator_bytes")                          \
   X(LINEAR_ALLOCATOR_CHUNKS, "linear_allocator_chunks")                        \
+  X(NATIVE_MEM_LIVE_BYTES, "native_mem_live_bytes")                            \
+  X(NATIVE_MEM_MAX_BYTES, "native_mem_max_bytes")                              \
+  X(NATIVE_MEM_AVG_BYTES, "native_mem_avg_bytes")                              \
   X(THREAD_IDS_COUNT, "thread_ids_count")                                      \
   X(THREAD_NAMES_COUNT, "thread_names_count")                                  \
   X(THREAD_FILTER_PAGES, "thread_filter_pages")                                \

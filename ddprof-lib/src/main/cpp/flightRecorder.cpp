@@ -12,6 +12,7 @@
 #include "context.h"
 #include "context_api.h"
 #include "counters.h"
+#include "nativeMem.h"
 #include "dictionary.h"
 #include "flightRecorder.inline.h"
 #include "incbin.h"
@@ -73,6 +74,10 @@ SharedLineNumberTable::~SharedLineNumberTable() {
   if (_ptr != nullptr) {
     free(_ptr);
     Counters::decrement(LINE_NUMBER_TABLES);
+    // _size is the JVMTI entry count passed at construction (see
+    // fillJavaMethodInfo), so the byte size matches the allocation.
+    NativeMem::record(NM_LINE_TABLES, -(long long)((size_t)_size *
+                                                   sizeof(jvmtiLineNumberEntry)));
   }
 }
 
@@ -420,6 +425,8 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
             line_number_table_size, owned_table);
         // Increment counter for tracking live line number tables
         Counters::increment(LINE_NUMBER_TABLES);
+        NativeMem::record(NM_LINE_TABLES, (long long)((size_t)line_number_table_size *
+                                                      sizeof(jvmtiLineNumberEntry)));
       }
     }
 
@@ -810,7 +817,9 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   // dictionary) will reflect the previous serialization. That is, some level of
   // familiarity with the code base will be required to use this diagnostic
   // information for now.
+  updateNativeMemStats();
   writeCounters(_buf);
+  writeNativeMem(_buf);
 
   // Keep a simple stats for where we failed to unwind
   // For the sakes of simplicity we are not keeping the count of failed unwinds which would also be
@@ -1776,6 +1785,69 @@ void Recording::writeLogLevels(Buffer *buf) {
   }
 }
 
+void Recording::updateNativeMemStats() {
+  // Refresh the moving-window averages and the observed total peak. Per-category
+  // peaks are maintained precisely at allocation time, so they are not sampled
+  // here; the total peak is bracketed instead (see writeNativeMem).
+  NativeMem::sample();
+
+  // Mirror the totals into the flat counter table so they flow out through the
+  // existing counter path (JFR T_DATADOG_COUNTER events and the JNI debug
+  // counters). NATIVE_MEM_MAX_BYTES carries the upper bound on the total peak
+  // (sum of precise per-category peaks); the observed sampled total and the
+  // per-category values are emitted by writeNativeMem().
+  Counters::set(NATIVE_MEM_LIVE_BYTES, NativeMem::liveTotal());
+  Counters::set(NATIVE_MEM_AVG_BYTES, NativeMem::avgTotal());
+  Counters::set(NATIVE_MEM_MAX_BYTES, NativeMem::maxTotal());
+}
+
+void Recording::writeNativeMem(Buffer *buf) {
+  // Emit native-memory stats as counter events, reusing the counter event format
+  // so they land alongside the totals without needing a dedicated event type or
+  // a slot in the counter table.
+  auto emit = [&](const char *label, long long value) {
+    // Clamp to 0 before encoding: the value is serialized as an unsigned varint
+    // (putVar64), so a negative live gauge would emit a huge value and corrupt
+    // the counter stream. avg/max are already non-negative; live is clamped
+    // here to match sample()/liveTotal().
+    if (value < 0) {
+      value = 0;
+    }
+    int start = buf->skip(1);
+    buf->putVar64(T_DATADOG_COUNTER);
+    buf->putVar64(_start_ticks);
+    buf->putUtf8(label);
+    buf->putVar64(value);
+    writeEventSizePrefix(buf, start);
+    flushIfNeeded(buf);
+  };
+
+  // Per-category live/avg/max, named "<metric>.<category>". The max here is the
+  // precise per-category peak tracked at allocation time.
+  for (int c = 0; c < NM_NUM_CATEGORIES; c++) {
+    NativeMemCategory cat = (NativeMemCategory)c;
+    const char *name = NativeMem::categoryName(cat);
+    const struct {
+      const char *prefix;
+      long long value;
+    } metrics[] = {
+        {"native_mem_live_bytes.", NativeMem::live(cat)},
+        {"native_mem_avg_bytes.", NativeMem::avg(cat)},
+        {"native_mem_max_bytes.", NativeMem::max(cat)},
+    };
+    for (const auto &m : metrics) {
+      char label[64];
+      snprintf(label, sizeof(label), "%s%s", m.prefix, name);
+      emit(label, m.value);
+    }
+  }
+
+  // NATIVE_MEM_MAX_BYTES already carries the upper bound on the total peak (sum
+  // of precise per-category peaks); here we also emit the largest observed
+  // sampled total (a non-atomic per-category sum; approximate).
+  emit("native_mem_max_observed_total_bytes", NativeMem::maxTotalObserved());
+}
+
 void Recording::writeCounters(Buffer *buf) {
   long long *counters = Counters::getCounters();
   if (counters) {
@@ -2064,6 +2136,9 @@ Error FlightRecorder::newRecording(bool reset) {
   }
 
   _rec = new Recording(fd, _args);
+  // The Recording embeds the JFR RecordingBuffer array and the cpu-monitor
+  // buffer, so its allocation size is the profiler's JFR buffer footprint.
+  NativeMem::record(NM_JFR_BUFFERS, (long long)sizeof(Recording));
   return Error::OK;
 }
 
@@ -2074,7 +2149,12 @@ void FlightRecorder::stop() {
   if (rec != nullptr) {
     // NULL first, deallocate later
     _rec = nullptr;
+    // Decrement AFTER delete: ~Recording() runs finishChunk(), which emits the
+    // native-memory counters for the final chunk. The Recording buffers are
+    // still live during that serialization, so account the free only once it
+    // has actually happened.
     delete rec;
+    NativeMem::record(NM_JFR_BUFFERS, -(long long)sizeof(Recording));
   }
 }
 

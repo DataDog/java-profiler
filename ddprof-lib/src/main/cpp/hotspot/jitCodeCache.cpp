@@ -52,3 +52,10 @@ CodeBlob* JitCodeCache::findRuntimeStub(const void *address) {
   _stubs_lock.unlockShared();
   return stub;
 }
+
+long long JitCodeCache::runtimeStubsMemoryUsage() {
+  _stubs_lock.lockShared();
+  long long usage = _runtime_stubs.memoryUsage();
+  _stubs_lock.unlockShared();
+  return usage;
+}

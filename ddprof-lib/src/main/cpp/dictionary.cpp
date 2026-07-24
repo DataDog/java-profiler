@@ -18,6 +18,7 @@
 #include "arch.h"
 #include "counters.h"
 #include "signalSafety.h"
+#include <cassert>
 #include <climits>
 #include <stdlib.h>
 #include <string.h>
@@ -26,6 +27,12 @@ static inline char *allocateKey(const char *key, size_t length) {
   char *result = (char *)malloc(length + 1);
   memcpy(result, key, length);
   result[length] = 0;
+  // NM_DICTIONARY accounting recovers a freed key's size via strlen at clear()
+  // time, which requires the key to be a NUL-free string of exactly `length`.
+  // Pin that assumption here so a future caller passing an embedded NUL trips in
+  // debug/gtest rather than silently under-counting the free. Stripped under
+  // NDEBUG.
+  assert(strlen(result) == length);
   return result;
 }
 
@@ -37,6 +44,7 @@ static inline bool keyEquals(const char *candidate, const char *key,
 Dictionary::~Dictionary() {
   clear(_table, _id);
   free(_table);
+  NativeMem::record(NM_DICTIONARY, -(long long)sizeof(DictTable));
   Counters::set(DICTIONARY_BYTES, 0, _id);
   Counters::set(DICTIONARY_PAGES, 0, _id);
 }
@@ -58,7 +66,12 @@ void Dictionary::clear(DictTable *table, int id) {
     DictRow *row = &table->rows[i];
     for (int j = 0; j < CELLS; j++) {
       if (row->keys[j]) {
+        // Keys are null-terminated, so the malloc'd size (length + 1) is
+        // recoverable without tracking it per key. Capture it before free(),
+        // then record after, consistent with the other decrement sites.
+        long long key_bytes = (long long)(strlen(row->keys[j]) + 1);
         free(row->keys[j]); // content is zeroed en-mass in the clear() function
+        NativeMem::record(NM_DICTIONARY, -key_bytes);
       }
     }
     if (row->next != NULL) {
@@ -66,6 +79,7 @@ void Dictionary::clear(DictTable *table, int id) {
       DictTable *tmp = row->next;
       row->next = NULL;
       free(tmp);
+      NativeMem::record(NM_DICTIONARY, -(long long)sizeof(DictTable));
     }
   }
 }
@@ -110,6 +124,7 @@ unsigned int Dictionary::lookup(const char *key, size_t length, bool for_insert,
         if (__sync_bool_compare_and_swap(&row->keys[c], NULL, new_key)) {
           Counters::increment(DICTIONARY_KEYS, 1, _id);
           Counters::increment(DICTIONARY_KEYS_BYTES, length + 1, _id);
+          NativeMem::record(NM_DICTIONARY, (long long)(length + 1));
           atomicInc(_size);
           return table->index(h % ROWS, c);
         }
@@ -130,6 +145,7 @@ unsigned int Dictionary::lookup(const char *key, size_t length, bool for_insert,
         } else {
           Counters::increment(DICTIONARY_PAGES, 1, _id);
           Counters::increment(DICTIONARY_BYTES, sizeof(DictTable), _id);
+          NativeMem::record(NM_DICTIONARY, (long long)sizeof(DictTable));
         }
       } else {
         return sentinel;
