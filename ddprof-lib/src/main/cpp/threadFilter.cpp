@@ -115,6 +115,7 @@ void ThreadFilter::initializeChunk(int chunk_idx) {
         slot.recording_epoch.store(0, std::memory_order_relaxed);
         slot.context_window_state.store(0, std::memory_order_relaxed);
         slot.active_block_state.store(OSThreadState::UNKNOWN, std::memory_order_relaxed);
+        slot.unowned_blocked_fallback_enabled.store(1, std::memory_order_relaxed);
     }
 
     // Try to install it atomically
@@ -165,6 +166,7 @@ ThreadFilter::SlotID ThreadFilter::registerThread(int tid) {
         slot->lifecycle_generation.fetch_add(1, std::memory_order_acq_rel);
         slot->recording_epoch.store(0, std::memory_order_relaxed);
         slot->context_window_state.store(0, std::memory_order_relaxed);
+        slot->enableUnownedBlockedFallback();
         slot->clearActiveBlockRun(OSThreadState::UNKNOWN);
         if (!indexOrRollback(*slot, reused_slot, tid)) {
             pushToFreeList(reused_slot);
@@ -208,6 +210,7 @@ ThreadFilter::SlotID ThreadFilter::registerThread(int tid) {
     slot->lifecycle_generation.fetch_add(1, std::memory_order_acq_rel);
     slot->recording_epoch.store(0, std::memory_order_relaxed);
     slot->context_window_state.store(0, std::memory_order_relaxed);
+    slot->enableUnownedBlockedFallback();
     slot->clearActiveBlockRun(OSThreadState::UNKNOWN);
     if (!indexOrRollback(*slot, index, tid)) {
         pushToFreeList(index);
@@ -242,6 +245,7 @@ void ThreadFilter::refreshSlotForRecording(Slot* slot, RecordingEpoch epoch) {
                current, 0, std::memory_order_acq_rel, std::memory_order_acquire)) {
         Counters::increment(THREAD_REGISTRY_CONTEXT_RESET_RACE_DETECTED);
     }
+    slot->enableUnownedBlockedFallback();
 
     slot->clearActiveBlockRun(OSThreadState::UNKNOWN);
     slot->recording_epoch.store(epoch, std::memory_order_release);
@@ -361,6 +365,45 @@ ThreadFilter::Slot* ThreadFilter::activeSlotForId(SlotID slot_id,
     return slot;
 }
 
+bool ThreadFilter::lookupThreadEntry(ThreadEntry& entry,
+                                     RecordingEpoch epoch) const {
+    Slot* slot = epoch != 0 ? lookupByTid(entry.tid, epoch)
+                            : lookupByTid(entry.tid);
+    if (slot == nullptr) {
+        return false;
+    }
+    entry.slot = slot;
+    entry.lifecycle_generation = slot->lifecycleGeneration();
+    entry.recording_epoch = slot->recordingEpoch();
+    return true;
+}
+
+ThreadFilter::SlotID ThreadFilter::ensureCurrentThreadSlot(ProfiledThread* current) {
+    if (current == nullptr) {
+        return -1;
+    }
+    int tid = current->tid();
+    if (unlikely(tid < 0)) {
+        return -1;
+    }
+
+    SlotID slot_id = current->filterSlotId();
+    if (likely(slot_id >= 0)) {
+        if (likely(activeSlotForId(slot_id, tid) != nullptr)) {
+            return slot_id;
+        }
+        current->setFilterSlotId(-1);
+    }
+
+    // Startup can register this TID centrally, but it cannot update another
+    // pthread's TLS. registerThread(tid) reuses that existing slot.
+    slot_id = registerThread(tid);
+    if (slot_id >= 0) {
+        current->setFilterSlotId(slot_id);
+    }
+    return slot_id;
+}
+
 void ThreadFilter::initFreeList() {
     // Initialize the free list storage
     for (int i = 0; i < kFreeListSize; ++i) {
@@ -465,6 +508,7 @@ void ThreadFilter::unregisterThreadLocked(SlotID slot_id, int expected_tid) {
     slot->recording_epoch.store(0, std::memory_order_release);
     slot->tid.store(-1, std::memory_order_release);
     slot->context_window_state.store(0, std::memory_order_release);
+    slot->enableUnownedBlockedFallback();
     slot->clearActiveBlockRun(OSThreadState::UNKNOWN);
     pushToFreeList(slot_id);
 }
@@ -497,6 +541,7 @@ void ThreadFilter::resetRegistrationsLocked() {
             slot.recording_epoch.store(0, std::memory_order_release);
             slot.tid.store(-1, std::memory_order_release);
             slot.context_window_state.store(0, std::memory_order_release);
+            slot.enableUnownedBlockedFallback();
             slot.clearActiveBlockRun(OSThreadState::UNKNOWN);
         }
     }
@@ -618,6 +663,7 @@ void ThreadFilter::clearActive() {
         for (int slot_idx = 0; slot_idx < kChunkSize; ++slot_idx) {
             Slot& slot = chunk->slots[slot_idx];
             slot.exitContextWindow();
+            slot.enableUnownedBlockedFallback();
             slot.clearActiveBlockRun(OSThreadState::UNKNOWN);
         }
     }
@@ -631,6 +677,7 @@ void ThreadFilter::resetSlotRunState(SlotID slot_id) {
     if (chunk != nullptr) {
         // Clear stale suppression state so a new thread in this slot cannot
         // inherit its predecessor's active block.
+        chunk->slots[slot_idx].enableUnownedBlockedFallback();
         chunk->slots[slot_idx].clearActiveBlockRun(OSThreadState::UNKNOWN);
     }
 }
