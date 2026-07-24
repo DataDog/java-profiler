@@ -24,6 +24,7 @@
 #include "j9/j9Support.h"
 #include "j9/j9WallClock.h"
 #include "jvmSupport.h"
+#include "jvmSupport.inline.h"
 #include "jvmThread.h"
 #include "libraryPatcher.h"
 #include "objectSampler.h"
@@ -1780,8 +1781,12 @@ Error Profiler::dump(const char *path, const int length) {
     const CodeCacheArray& native_libs = _libs->native_libs();
     Counters::set(CODECACHE_NATIVE_COUNT, native_libs.count());
     Counters::set(CODECACHE_NATIVE_SIZE_BYTES, native_libs.memoryUsage());
+    // The runtime-stubs counter reflects the JIT runtime-stubs code cache, a
+    // separate cache from the native libraries. Routed through JVMSupport so
+    // the HotSpot-only implementation stays behind the VM abstraction (0 on
+    // J9/Zing). Read under its shared lock.
     Counters::set(CODECACHE_RUNTIME_STUBS_SIZE_BYTES,
-                  native_libs.memoryUsage());
+                  JVMSupport::runtimeStubsMemoryUsage());
 
     Error err = Error::OK;
     // rotateDictsAndRun rotates the dictionaries, takes lockAll() around the
