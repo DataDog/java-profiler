@@ -30,6 +30,14 @@
 #                      comparison against a baseline with the feature off.
 #   REFCHAINS_ARGS     extra referencechains=... sub-options appended after the
 #                      baked-in defaults below (e.g. "hops=32")
+#   REFCHAINS_JAVA_HOME  JDK home to launch the repro with (default: "java" on
+#                      PATH). Lets you A/B a specific JDK, e.g. to reproduce a
+#                      version-specific VMStructs bug: REFCHAINS_JAVA_HOME=/usr/local/sdkman/candidates/java/25.0.3-tem
+#   REFCHAINS_GC       GC to force via -XX:+Use<name>GC (default: JVM's own
+#                      ergonomic default - no flag added). Accepts either the
+#                      bare name ("Serial", "G1", "Parallel", "Shenandoah",
+#                      "Z", "Epsilon") or the full flag name ("SerialGC").
+#                      e.g. REFCHAINS_GC=Serial or REFCHAINS_GC=ZGC
 
 set -euo pipefail
 
@@ -38,6 +46,28 @@ ROOT="$( cd "${HERE}/.." >/dev/null 2>&1 && pwd )"
 
 JFR_OUT="${1:-/tmp/refchains_repro.jfr}"
 DURATION_SECONDS="${2:-}"
+
+JAVA_BIN="java"
+if [ -n "${REFCHAINS_JAVA_HOME:-}" ]; then
+  JAVA_BIN="${REFCHAINS_JAVA_HOME}/bin/java"
+  if [ ! -x "${JAVA_BIN}" ]; then
+    echo "FAIL: ${JAVA_BIN} not found/executable - check REFCHAINS_JAVA_HOME" >&2
+    exit 1
+  fi
+fi
+echo "Using JDK: $("${JAVA_BIN}" -version 2>&1 | head -1)"
+
+GC_JVM_OPTS=()
+if [ -n "${REFCHAINS_GC:-}" ]; then
+  case "${REFCHAINS_GC}" in
+    *GC) GC_FLAG="-XX:+Use${REFCHAINS_GC}" ;;
+    *)   GC_FLAG="-XX:+Use${REFCHAINS_GC}GC" ;;
+  esac
+  GC_JVM_OPTS=("${GC_FLAG}")
+  echo "Forcing GC: ${GC_FLAG}"
+else
+  echo "GC: JVM ergonomic default"
+fi
 
 if [ -z "${REFCHAINS_SO:-}" ]; then
   REFCHAINS_SO=$(find "${ROOT}/ddprof-lib/build/lib" -name 'libjavaProfiler.so' -o -name 'libjavaProfiler.dylib' 2>/dev/null | head -1)
@@ -86,7 +116,8 @@ if [ -n "${DURATION_SECONDS}" ]; then
   echo "Safepoint/GC log: ${SAFEPOINT_LOG}"
 fi
 
-exec java \
+exec "${JAVA_BIN}" \
   "${JAVA_LOG_OPTS[@]}" \
+  "${GC_JVM_OPTS[@]}" \
   -agentpath:"${REFCHAINS_SO}"=start,memory=64:l,generations=true,referencechains=${REFERENCECHAINS_OPTS},jfr,file="${JFR_OUT}" \
   -jar "${REFCHAINS_JAR}" "${JFR_OUT}" "${REFCHAINS_SO}" ${DURATION_SECONDS}

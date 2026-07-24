@@ -14,9 +14,10 @@
 #
 # Usage: compare-refchains-repro.sh [duration-seconds]
 #
-# Env vars: same REFCHAINS_SO/REFCHAINS_JAR/REFCHAINS_ARGS as
-# run-refchains-repro.sh (REFCHAINS_ENABLED is set by this script itself, per
-# run - don't set it yourself).
+# Env vars: same REFCHAINS_SO/REFCHAINS_JAR/REFCHAINS_ARGS/REFCHAINS_JAVA_HOME/
+# REFCHAINS_GC as run-refchains-repro.sh - passed through unchanged to both
+# variants so the two runs stay comparable (REFCHAINS_ENABLED is set by this
+# script itself, per run - don't set it yourself).
 
 set -euo pipefail
 
@@ -25,7 +26,12 @@ HERE="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
 DURATION_SECONDS="${1:-120}"
 WORKDIR="$(mktemp -d /tmp/refchains_compare.XXXXXX)"
 
+JDK_DESC="${REFCHAINS_JAVA_HOME:-java on PATH}"
+GC_DESC="${REFCHAINS_GC:-JVM ergonomic default}"
+
 echo "Comparing referencechains=true vs. false over ${DURATION_SECONDS}s each"
+echo "JDK: ${JDK_DESC}"
+echo "GC: ${GC_DESC}"
 echo "Working directory: ${WORKDIR}"
 
 run_variant() {
@@ -117,6 +123,8 @@ REPORT="${WORKDIR}/report.md"
   echo "# reference-chains overhead comparison"
   echo
   echo "referencechains=true vs. false, ${DURATION_SECONDS}s each. Raw logs: \`${WORKDIR}\`"
+  echo
+  echo "JDK: ${JDK_DESC} | GC: ${GC_DESC}"
   echo
   echo "| metric | on (refchains=true) | off (refchains=false) | delta (on vs. off) |"
   echo "|---|---|---|---|"
