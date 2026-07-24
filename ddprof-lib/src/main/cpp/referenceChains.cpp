@@ -7,6 +7,7 @@
 #include "common.h"
 #include "counters.h"
 #include "hotspot/vmStructs.h"
+#include "hotspot/vmStructs.inline.h"
 #include "livenessTracker.h"
 #include "log.h"
 #include "objectSampler.h"
