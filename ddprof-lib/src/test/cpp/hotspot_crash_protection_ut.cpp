@@ -10,7 +10,7 @@
  * dereference JavaThread-only fields (anchor, vframe_top, …) on such threads.
  * VMThread::isJavaThread() provides the gate.
  *
- * Crash recovery inside walkVM relies on setjmp/longjmp:
+ * Crash recovery inside walkVM relies on sigsetjmp/siglongjmp:
  *   1. walkVM stores a jmp_buf* on ProfiledThread (setJmpCtx/getJmpCtx),
  *      chaining it with whatever context was already installed so a
  *      signal-based sampler interrupting a non-signal-based sampler's own
@@ -280,7 +280,7 @@ TEST_F(JmpCtxChainingTest, NestedFramesChainAndUnwindInOrder) {
     EXPECT_EQ(nullptr, _pt->getJmpCtx());
 }
 
-// End-to-end with real setjmp/longjmp: a fault inside the inner frame must
+// End-to-end with real sigsetjmp/siglongjmp: a fault inside the inner frame must
 // land in the inner frame's own recovery branch — checkFault() always
 // longjmps through whatever is currently installed — and once the inner
 // frame has recovered and restored the outer's context, the outer frame must
@@ -291,7 +291,7 @@ TEST_F(JmpCtxChainingTest, FaultInInnerFrameDoesNotDisturbOuterFrame) {
     int outer_landed = 0;
     int inner_landed = 0;
 
-    if (setjmp(outer_ctx) != 0) {
+    if (sigsetjmp(outer_ctx, 1) != 0) {
         outer_landed++;
     } else {
         _pt->setJmpCtx(&outer_ctx);
@@ -301,14 +301,14 @@ TEST_F(JmpCtxChainingTest, FaultInInnerFrameDoesNotDisturbOuterFrame) {
         jmp_buf* inner_prev = _pt->getJmpCtx();
         ASSERT_EQ(&outer_ctx, inner_prev);
 
-        if (setjmp(inner_ctx) != 0) {
+        if (sigsetjmp(inner_ctx, 1) != 0) {
             inner_landed++;
             _pt->setJmpCtx(inner_prev);
         } else {
             _pt->setJmpCtx(&inner_ctx);
             // Simulate checkFault(): longjmp through whatever is currently
             // installed — this must hit the inner frame, not the outer.
-            longjmp(*_pt->getJmpCtx(), 1);
+            siglongjmp(*_pt->getJmpCtx(), 1);
             FAIL() << "unreachable: longjmp does not return";
         }
         // --- inner call has returned normally after recovering ---
@@ -328,7 +328,7 @@ TEST_F(JmpCtxChainingTest, FaultInInnerFrameDoesNotDisturbOuterFrame) {
 // D. HotspotSupport::checkFault() guard clauses
 //
 // This gtest binary has no live JVM attached, so JVMThread is not initialized
-// and the longjmp path can't be exercised end-to-end here.
+// and the siglongjmp path can't be exercised end-to-end here.
 // These tests still call the real checkFault() (not a replica) to lock down
 // its early-return guard: a null ProfiledThread*
 // ---------------------------------------------------------------------------

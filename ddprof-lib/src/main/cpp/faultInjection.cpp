@@ -89,7 +89,7 @@ bool shouldFire(u64 threshold, const char* fn) {
     // place that counts an actually-injected fault.
     Counters::increment(FAULTS_INJECTED);
 #ifdef DEBUG
-    // Flag injections fired at a site with no walkVM longjmp protection active:
+    // Flag injections fired at a site with no walkVM siglongjmp protection active:
     // recovery there depends entirely on safefetch, and a raw deref would crash.
     ProfiledThread* t = ProfiledThread::current();  // never allocates
     if (t == nullptr || !t->isProtected()) {

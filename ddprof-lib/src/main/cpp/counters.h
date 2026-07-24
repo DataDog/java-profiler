@@ -149,10 +149,10 @@
 #endif
 
 // Fault-injection + debug only: faults injected while the current thread was
-// NOT inside a walkVM longjmp-protected region. Such a site relies solely on
+// NOT inside a walkVM siglongjmp-protected region. Such a site relies solely on
 // safefetch (or would genuinely crash if the poisoned pointer is raw-dereferenced
 // outside any recovery), so a non-zero value flags injection sites that are not
-// covered by longjmp protection. Compiled in only when both __FAULT_INJECTION__
+// covered by siglongjmp protection. Compiled in only when both __FAULT_INJECTION__
 // and DEBUG are defined.
 #if defined(__FAULT_INJECTION__) && defined(DEBUG)
 #define DD_COUNTER_TABLE_FI_DEBUG(X)                                           \
@@ -162,7 +162,7 @@
 #endif
 
 // Debug-only counters: SafeAccess reads/copies issued while the thread is
-// already inside a walkVM longjmp-protected region (redundant safefetch
+// already inside a walkVM siglongjmp-protected region (redundant safefetch
 // overhead). Not compiled into release builds at all, so they occupy no enum
 // slot and add no storage there.
 #ifdef DEBUG

@@ -248,19 +248,19 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     int bcp_offset = InterpreterFrame::bcp_offset();
 
 
-    jmp_buf crash_protection_ctx;
-    // Chaining jmp_buf
+    sigjmp_buf crash_protection_ctx;
+    // Chaining sigjmp_buf
     // A non-signal-based-sampler can be interrupted by signal based sampler,
     // then we end up with multiple HotspotSupport::walkVM() calls on stack,
-    // each one sets up jmp_buf, they need to be chained to jump back to
+    // each one sets up sigjmp_buf, they need to be chained to jump back to
     // correct location.
-    jmp_buf* prev_jmp_buf = prof_thread->getJmpCtx();
-    // Should be preserved across setjmp/longjmp
+    sigjmp_buf* prev_jmp_buf = prof_thread->getJmpCtx();
+    // Should be preserved across sigsetjmp/siglongjmp
     volatile int depth = 0;
     int actual_max_depth = truncated ? max_depth + 1 : max_depth;
 
-    if (setjmp(crash_protection_ctx) != 0) {
-        // checkFault() does a longjmp from inside segvHandler, bypassing
+    if (sigsetjmp(crash_protection_ctx, 1) != 0) {
+        // checkFault() does a siglongjmp from inside segvHandler, bypassing
         // segvHandler's SignalHandlerScope destructor.  Compensate.
         SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
         prof_thread->setJmpCtx(prev_jmp_buf);
@@ -378,7 +378,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         }
         // entry_fp has been range-checked by isValidFP above; any remaining
         // SIGSEGV from a stale/concurrently-freed pointer is caught by the
-        // setjmp crash protection in walkVM (checkFault -> longjmp).
+        // sigsetjmp crash protection in walkVM (checkFault -> siglongjmp).
         uintptr_t* carrier_fp_addr = (uintptr_t*)INJECT_FAULT_ADDRESS_UNLIKELY(entry_fp);
         uintptr_t carrier_fp = *carrier_fp_addr;
         const void* carrier_pc = ((const void**)carrier_fp_addr)[FRAME_PC_SLOT];
@@ -414,8 +414,8 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             // while PC is still in JVM stubs (JavaCalls, method entry/exit), we see CodeHeap
             // code without VMThread context.
             //
-            // Without vm_thread, crash protection via setjmp/longjmp cannot work
-            // (checkFault() needs vm_thread->exception() to longjmp). Any memory dereference in interpreter
+            // Without vm_thread, crash protection via sigsetjmp/siglongjmp cannot work
+            // (checkFault() needs vm_thread->exception() to siglongjmp). Any memory dereference in interpreter
             // frame handling or NMethod validation would crash the process with unrecoverable SEGV.
             //
             // The missing VMThread is a timing issue during thread lifecycle.
@@ -984,14 +984,14 @@ void HotspotSupport::checkFault(ProfiledThread* thrd) {
         return;
     }
 
-    // Check if longjmp is setup for this thread
+    // Check if siglongjmp is setup for this thread
     if (!thrd->isProtected()) {
         return;
     }
 
     thrd->resetCrashHandler();
     Counters::increment(WALKVM_LONGJMP_RECOVERED);
-    longjmp(*thrd->getJmpCtx(), 1);
+    siglongjmp(*thrd->getJmpCtx(), 1);
 }
 
 int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,

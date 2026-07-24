@@ -927,15 +927,15 @@ void Profiler::disableEngines() {
 void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // J9 installs a SIGSEGV handler that uses siglongjmp() to recover from
   // null-pointer-check faults during normal Java execution.  When we chain to
-  // it, that longjmp unwinds past our stack frame and skips the RAII
+  // it, that siglongjmp unwinds past our stack frame and skips the RAII
   // destructor, permanently leaking depth on the thread.  Release the guard
   // before chaining so depth is correct whether the chained handler returns
-  // or longjmps.
+  // or siglongjmps.
   //
   // Sanitizer-coverage note: this also means depth == 0 inside the chained
   // handler, so DEBUG_ASSERT_NOT_IN_SIGNAL() will NOT fire for AS-unsafe
   // code reachable from a chained handler that returns normally.  This is
-  // the lesser of two evils — leaking depth on longjmp would silently
+  // the lesser of two evils — leaking depth on siglongjmp would silently
   // break the production deferred-refresh gate, while the sanitizer gap
   // is bounded to third-party signal handler code we don't own.
   SIGNAL_HANDLER_GUARD();
@@ -943,7 +943,7 @@ void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     return;  // Handled — destructor decrements depth
   }
   SIGNAL_HANDLER_GUARD_RELEASE();
-  // Not handled, chain to next handler (may longjmp; never return through us)
+  // Not handled, chain to next handler (may siglongjmp; never return through us)
   SigAction chain = OS::getSegvChainTarget();
   if (chain != nullptr) {
     chain(signo, siginfo, ucontext);
@@ -954,7 +954,7 @@ void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 
 void Profiler::busHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // See segvHandler: release before chaining in case the chained handler
-  // longjmps through us.
+  // siglongjmps through us.
   SIGNAL_HANDLER_GUARD();
   if (crashHandlerInternal(signo, siginfo, ucontext)) {
     return;  // Handled — destructor decrements depth
@@ -982,7 +982,7 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
 
   // Reentrancy protection: use TLS-based tracking if available.
   // If TLS is not available, the thread is not protected by
-  // longjmp, so bail out.
+  // siglongjmp, so bail out.
   bool have_tls_protection = false;
   if (thrd != nullptr) {
     if (!thrd->enterCrashHandler()) {
@@ -1015,7 +1015,7 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
     // the following checks require vmstructs and therefore HotSpot
 
     // HotspotSupport::checkFault has its own check if we're in a protected stack walk.
-    // If the fault is from our protected walk, it will longjmp and never return.
+    // If the fault is from our protected walk, it will siglongjmp and never return.
     // If it returns, the fault wasn't from our code.
     HotspotSupport::checkFault(thrd);
 

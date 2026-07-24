@@ -90,14 +90,14 @@ private:
 #define SIGNAL_HANDLER_GUARD() SignalHandlerScope _signal_handler_scope
 
 // Manually release the most recent SIGNAL_HANDLER_GUARD() before chaining to
-// another handler that may longjmp through us (e.g. J9's SIGSEGV null-pointer
+// another handler that may siglongjmp through us (e.g. J9's SIGSEGV null-pointer
 // check handler).  After release(), depth has already been decremented; the
 // destructor becomes a no-op.
 #define SIGNAL_HANDLER_GUARD_RELEASE() _signal_handler_scope.release()
 
-// Compensate for a longjmp that bypassed a SignalHandlerScope's destructor.
-// Call at the setjmp landing point AFTER a known longjmp originated from
-// within a signal handler frame (e.g. HotSpot's checkFault → longjmp recovery
+// Compensate for a siglongjmp that bypassed a SignalHandlerScope's destructor.
+// Call at the sigsetjmp landing point AFTER a known siglongjmp originated from
+// within a signal handler frame (e.g. HotSpot's checkFault → siglongjmp recovery
 // in walkVM).
 void signalHandlerUnwindAfterLongjmp();
 #define SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP() signalHandlerUnwindAfterLongjmp()
