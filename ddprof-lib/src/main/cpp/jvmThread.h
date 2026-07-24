@@ -23,7 +23,7 @@ public:
     /*
      * The initialization happens in early startup, in single-threaded mode,
      * no synchronization is needed
-     */
+    */
     static bool initialize();
 
     static inline bool isInitialized() {

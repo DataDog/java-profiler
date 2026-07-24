@@ -85,11 +85,11 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 
   current->setJavaThread(true);
   int tid = current->tid();
+  // Preserve eager registration for context-filtered recordings. Unfiltered
+  // wall prechecks register only from context and owned-block hooks.
   if (_thread_filter.enabled()) {
-    int slot_id = _thread_filter.registerThread();
+    int slot_id = _thread_filter.registerThread(tid);
     current->setFilterSlotId(slot_id);
-    _thread_filter.resetSlotRunState(slot_id);
-    _thread_filter.remove(slot_id);  // Remove from filtering initially
   }
   if (thread != NULL) {
     updateThreadName(jvmti, jni, thread, true);
@@ -109,9 +109,11 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     int slot_id = current->filterSlotId();
     tid = current->tid();
     
-    if (_thread_filter.enabled()) {
-      _thread_filter.unregisterThread(slot_id);
+    if (slot_id >= 0) {
+      _thread_filter.unregisterThread(slot_id, tid);
       current->setFilterSlotId(-1);
+    } else {
+      _thread_filter.unregisterThreadByTid(tid);
     }
 
     updateThreadName(jvmti, jni, thread, false);
@@ -136,6 +138,7 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   }
 
   updateThreadName(jvmti, jni, thread, false);
+  _thread_filter.unregisterThreadByTid(tid);
   _cpu_engine->unregisterThread(tid);
   _wall_engine->unregisterThread(tid);
   LivenessTracker::instance()->releaseThreadLocalState();
@@ -1463,24 +1466,34 @@ Error Profiler::start(Arguments &args, bool reset) {
     _safe_mode |= GC_TRACES | LAST_JAVA_PC;
   }
 
-  // TODO: Current way of setting filter is weird with the recent changes
-  _thread_filter.init(args._filter ? args._filter : "0");
-  
-  // Minor optim: Register the current thread (start thread won't be called)
+  _cpu_engine = selectCpuEngine(args);
+  _wall_engine = selectWallEngine(args);
+
+  const char *filter = args._filter != nullptr ? args._filter : "0";
+  const bool track_unfiltered_wall =
+      (_event_mask & EM_WALL) != 0 && args._wall_precheck &&
+      args._filter != nullptr && args._filter[0] == '\0' &&
+      _wall_engine->supportsUnfilteredWallPrecheck();
+  _thread_filter.init(filter, track_unfiltered_wall);
+
+  // Unfiltered init resets registrations before publishing registry admission.
+  // Context-filtered recordings retain identities but must clear membership.
   if (_thread_filter.enabled()) {
     _thread_filter.clearActive();
+  }
+
+  // Preserve the context-filter fast path. Unfiltered tracking remains empty
+  // until a context or owned-block hook registers the current thread.
+  if (_thread_filter.enabled()) {
     ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
     assert(current != nullptr);
     int slot_id = current->filterSlotId();
     if (slot_id < 0) {
-      slot_id = _thread_filter.registerThread();
+      slot_id = _thread_filter.registerThread(current->tid());
       current->setFilterSlotId(slot_id);
     }
-    _thread_filter.remove(slot_id);  // Remove from filtering initially (matches onThreadStart behavior)
   }
 
-  _cpu_engine = selectCpuEngine(args);
-  _wall_engine = selectWallEngine(args);
   _cstack = args._cstack;
   if (_cstack == CSTACK_DEFAULT) {
     if (VMStructs::hasStackStructs() && OS::isLinux()) {
@@ -1531,6 +1544,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   _num_context_attributes = args._context_attributes.size();
   error = _jfr.start(args, reset);
   if (error) {
+    _thread_filter.deactivateRecording();
     switchLibraryTrap(false);
     _libs->stopRefresher();
     return error;
@@ -1580,6 +1594,7 @@ Error Profiler::start(Arguments &args, bool reset) {
       Log::warn("%s", error.message());
       if (_event_mask == EM_NATIVEMEM) {
         // nativemem is the only requested mode: propagate the real error
+        _thread_filter.deactivateRecording();
         disableEngines();
         switchLibraryTrap(false);
         _libs->stopRefresher();
@@ -1601,6 +1616,12 @@ Error Profiler::start(Arguments &args, bool reset) {
     } else {
       activated |= EM_NATIVESOCKET;
     }
+  }
+
+  // A recoverable wall-engine failure must not leave registry work enabled for
+  // unrelated engines that did start successfully.
+  if (track_unfiltered_wall && (activated & EM_WALL) == 0) {
+    _thread_filter.init(filter, false);
   }
 
   if (activated) {
@@ -1627,6 +1648,7 @@ Error Profiler::start(Arguments &args, bool reset) {
     return Error::OK;
   }
   // no engine was activated; perform cleanup
+  _thread_filter.deactivateRecording();
   disableEngines();
   switchLibraryTrap(false);
   _libs->stopRefresher();
@@ -1677,6 +1699,8 @@ Error Profiler::stop() {
     _wall_engine->stop();
   if (_event_mask & EM_CPU)
     _cpu_engine->stop();
+
+  _thread_filter.deactivateRecording();
 
   switchLibraryTrap(false);
   switchThreadEvents(JVMTI_DISABLE);
