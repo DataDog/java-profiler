@@ -51,7 +51,7 @@ TEST(FaultInjectionTest, DisabledValueMacrosAreIdentity) {
 
 #else  // __FAULT_INJECTION__ enabled (built under -PenableFaultInjection)
 
-// Chain: safefetch recovery first, then walkVM setjmp/longjmp recovery, then
+// Chain: safefetch recovery first, then walkVM sigsetjmp/siglongjmp recovery, then
 // the crash handler as a last resort so a genuine bug still produces a report.
 static void (*orig_segvHandler)(int, siginfo_t*, void*);
 static void (*orig_busHandler)(int, siginfo_t*, void*);
@@ -60,7 +60,7 @@ static void fi_signal_wrapper(int signo, siginfo_t* siginfo, void* context) {
   if (SafeAccess::handle_safefetch(signo, context)) {
     return;  // safefetch load recovered; PC already rewritten to _cont.
   }
-  HotspotSupport::checkFault(ProfiledThread::current());  // setlongjmp if protected
+  HotspotSupport::checkFault(ProfiledThread::current());  // siglongjmp if protected
   // Not protected and not a safefetch fault — real crash.
   if (signo == SIGBUS && orig_busHandler != nullptr) {
     orig_busHandler(signo, siginfo, context);
@@ -155,9 +155,9 @@ TEST_F(FaultInjectionTest, WalkVmSetjmpRecoversFromInjectedFault) {
   volatile size_t reads = 0;
   volatile size_t faults = 0;
 
-  jmp_buf ctx;
-  if (setjmp(ctx) != 0) {
-    recovered = true;                  // returned here via checkFault -> longjmp
+  sigjmp_buf ctx;
+  if (sigsetjmp(ctx) != 0) {
+    recovered = true;                  // returned here via checkFault -> siglongjmp
     faults++;
   }
   t->setJmpCtx(&ctx);
