@@ -239,7 +239,7 @@ public:
   }
 
   inline void setJmpCtx(sigjmp_buf* buf) {
-    _jmp_buf = buf;  
+    _jmp_buf = buf;
   }
 
   inline sigjmp_buf* getJmpCtx() const {
