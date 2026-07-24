@@ -678,14 +678,16 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
     ProfiledThread *walk_thread = ProfiledThread::current();
     if (walk_thread == nullptr) {
         num_frames += makeFrame(frames + num_frames, BCI_ERROR, "no_ProfiledThread");
+        Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
         truncated = true;
     } else {
-        jmp_buf unwind_ctx;
-        jmp_buf *prev_jmp_buf = walk_thread->getJmpCtx();
+        sigjmp_buf unwind_ctx;
+        sigjmp_buf *prev_jmp_buf = walk_thread->getJmpCtx();
 
-        // setjmp() must be evaluated as a standalone expression/controlling
-        // expression (C11 7.13.1.1), hence the explicit jmp_rc.
-        int jmp_rc = setjmp(unwind_ctx);
+        int jmp_rc = 0;
+        if (!VM::isOpenJ9()) {
+          jmp_rc = sigsetjmp(unwind_ctx, 1);
+        }
         if (jmp_rc != 0) {
             // A fault during unwinding longjmp'd back here (via checkFault). The
             // longjmp bypassed segvHandler's SignalHandlerScope destructor, so
@@ -721,7 +723,7 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
         }
     }
     if (num_frames == 0) {
-      num_frames += makeFrame(frames + num_frames, BCI_ERROR, "no_Java_frame");
+        num_frames += makeFrame(frames + num_frames, BCI_ERROR, "no_Java_frame");
     }
 
     call_trace_id =
@@ -2029,7 +2031,7 @@ int Profiler::status(char* status, int max_len) {
 
 void Profiler::checkFault(ProfiledThread* thrd) {
     // Should not get to here (?)
-    if (thrd == nullptr) {
+    if (thrd == nullptr || VM::isOpenJ9()) {
         return;
     }
 
@@ -2040,5 +2042,5 @@ void Profiler::checkFault(ProfiledThread* thrd) {
 
     thrd->resetCrashHandler();
     Counters::increment(STACKWALK_LONGJMP_RECOVERED);
-    longjmp(*thrd->getJmpCtx(), 1);
+    siglongjmp(*thrd->getJmpCtx(), 1);
 }

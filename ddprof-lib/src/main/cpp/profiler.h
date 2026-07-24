@@ -236,8 +236,6 @@ public:
     return _instance;
   }
 
-  static void checkFault(ProfiledThread* thrd = nullptr);
-
   // Resolve names of native (non-Java) threads from /proc. Idempotent and
   // allocation-light (no-op for already-named tids), so it is safe to call
   // periodically from the Libraries refresher thread to capture transient
@@ -465,6 +463,7 @@ public:
   static void segvHandler(int signo, siginfo_t *siginfo, void *ucontext);
   static void busHandler(int signo, siginfo_t *siginfo, void *ucontext);
   static void setupSignalHandlers();
+  static void checkFault(ProfiledThread* thrd);
 
   static int registerThread(int tid);
   static void unregisterThread(int tid);

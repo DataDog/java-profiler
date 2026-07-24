@@ -248,18 +248,18 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     int bcp_offset = InterpreterFrame::bcp_offset();
 
 
-    jmp_buf crash_protection_ctx;
+    sigjmp_buf crash_protection_ctx;
     // Chaining jmp_buf
     // A non-signal-based-sampler can be interrupted by signal based sampler,
     // then we end up with multiple HotspotSupport::walkVM() calls on stack,
     // each one sets up jmp_buf, they need to be chained to jump back to
     // correct location.
-    jmp_buf* prev_jmp_buf = prof_thread->getJmpCtx();
+    sigjmp_buf* prev_jmp_buf = prof_thread->getJmpCtx();
     // Should be preserved across setjmp/longjmp
     volatile int depth = 0;
     int actual_max_depth = truncated ? max_depth + 1 : max_depth;
 
-    if (setjmp(crash_protection_ctx) != 0) {
+    if (sigsetjmp(crash_protection_ctx, 1) != 0) {
         // checkFault() does a longjmp from inside segvHandler, bypassing
         // segvHandler's SignalHandlerScope destructor.  Compensate.
         SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();

@@ -63,7 +63,7 @@ private:
   // SEGV-handler context on the same thread; atomic makes the publish/observe
   // ordering explicit instead of relying on plain load/store, matching how
   // _crash_depth is hardened below.
-  std::atomic<jmp_buf*> _jmp_buf;
+  std::atomic<sigjmp_buf*> _jmp_buf;
 
   u64 _pc;
   u64 _sp;
@@ -238,11 +238,11 @@ public:
     return __atomic_load_n(&_crash_depth, __ATOMIC_RELAXED) > CRASH_HANDLER_NESTING_LIMIT;
   }
 
-  inline void setJmpCtx(jmp_buf* buf) {
+  inline void setJmpCtx(sigjmp_buf* buf) {
     _jmp_buf = buf;  
   }
 
-  inline jmp_buf* getJmpCtx() const {
+  inline sigjmp_buf* getJmpCtx() const {
     return _jmp_buf;
   }
 
