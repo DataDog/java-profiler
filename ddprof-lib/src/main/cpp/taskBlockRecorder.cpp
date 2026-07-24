@@ -34,10 +34,27 @@ bool recordTaskBlockAtExit(ProfiledThread* current, ThreadFilter* thread_filter,
     return false;
   }
 
+  if (slot_id != ThreadFilter::tokenSlotId(block_token) ||
+      generation != ThreadFilter::tokenGeneration(block_token)) {
+    return false;
+  }
+
+  return finishTaskBlockAtExit(
+      current, thread_filter, thread, start_depth, block_token, start_ticks,
+      context, blocker, unblocking_span_id);
+}
+
+bool finishTaskBlockAtExit(ProfiledThread* current,
+                           ThreadFilter* thread_filter, jthread thread,
+                           int start_depth, u64 block_token, u64 start_ticks,
+                           const Context& context, u64 blocker,
+                           u64 unblocking_span_id) {
   Profiler* profiler = Profiler::instance();
   bool recording_enabled = profiler->taskBlockEnabled();
   bool activity = profiler->tryEnterTaskBlockActivity();
 
+  ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(block_token);
+  u64 generation = ThreadFilter::tokenGeneration(block_token);
   ThreadFilter::SlotID current_slot = current->filterSlotId();
   if (current_slot < 0) {
     current_slot = thread_filter->slotIdByTid(current->tid());

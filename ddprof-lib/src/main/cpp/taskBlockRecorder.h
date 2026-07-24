@@ -20,6 +20,17 @@ bool recordTaskBlockAtExit(ProfiledThread* current, ThreadFilter* thread_filter,
                            ThreadFilter::SlotID slot_id, u64 generation,
                            u64 blocker, u64 unblocking_span_id);
 
+// Completes ThreadFilter lifecycle cleanup for an already-exited producer and
+// records its event only when dump/stop rotation admits the recording work.
+// Cleanup is deliberately performed even when admission is rejected so an
+// application thread never waits for rotation and suppression cannot be left
+// armed.
+bool finishTaskBlockAtExit(ProfiledThread* current,
+                           ThreadFilter* thread_filter, jthread thread,
+                           int start_depth, u64 block_token, u64 start_ticks,
+                           const Context& context, u64 blocker,
+                           u64 unblocking_span_id);
+
 class TaskBlockActivity {
  private:
   Profiler* _profiler;
