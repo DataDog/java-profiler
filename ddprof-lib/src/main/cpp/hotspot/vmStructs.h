@@ -437,6 +437,7 @@ class VMStructs {
     // Collector choice can't change after JVM startup, so this is resolved
     // once in resolveOffsets() rather than re-checked per pass.
     static bool _is_g1_active;
+    static bool _is_zgc_active;
 
     static int _narrow_klass_shift;
     static char* _code_heap[3];
@@ -595,6 +596,15 @@ class VMStructs {
 
     static bool isG1Active() {
         return _is_g1_active;
+    }
+
+    // ZGC (and generational ZGC) relocate objects concurrently with GC worker
+    // threads that keep running across a JVMTI-safepoint window, unlike
+    // G1/Parallel/Serial/Shenandoah's STW-only relocation - so a raw oop read
+    // taken while "pinned" at a safepoint is not actually stable under ZGC.
+    // FieldWalker's manual walk relies on that stability; gate it off here.
+    static bool isZgcActive() {
+        return _is_zgc_active;
     }
 
     // Fail-closed gate: false unless UseCompressedOops was on and both the

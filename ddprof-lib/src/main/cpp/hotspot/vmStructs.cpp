@@ -28,6 +28,7 @@ bool VMStructs::_has_native_thread_id = false;
 bool VMStructs::_can_dereference_jmethod_id = false;
 bool VMStructs::_compact_object_headers = false;
 bool VMStructs::_is_g1_active = false;
+bool VMStructs::_is_zgc_active = false;
 
 char* VMStructs::_code_heap[3] = {};
 const void* VMStructs::_code_heap_low = NO_MIN_ADDRESS;
@@ -390,6 +391,9 @@ void VMStructs::resolveOffsets() {
 
     VMFlag* g1 = VMFlag::find("UseG1GC", {VMFlag::Type::Bool});
     _is_g1_active = g1 != NULL && g1->get();
+
+    VMFlag* zgc = VMFlag::find("UseZGC", {VMFlag::Type::Bool});
+    _is_zgc_active = zgc != NULL && zgc->get();
 
     _has_class_names = _klass_name_offset >= 0
             && (_compact_object_headers ? (_markWord_klass_shift >= 0 && _markWord_monitor_value == MONITOR_BIT)

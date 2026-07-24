@@ -1224,7 +1224,7 @@ ReferenceChainTracker::collectStaleRootKindEntriesForRotation(
 // ---------------------------------------------------------------------------
 // Manual (VMStructs) walk driver - IterateOverReachableObjects root/stack-ref
 // enumeration plus FieldWalker-driven hop expansion, gated on
-// VMStructs::isG1Active() && FieldWalker::available() in runPass() below.
+// !VMStructs::isZgcActive() && FieldWalker::available() in runPass() below.
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -1930,17 +1930,22 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   // not feed that controller the same way every later pass's does.
   bool was_first_pass = !_search_started;
 
-  // Collector dispatch point: on G1, this pass is driven by a manual
-  // VMStructs field-walk (runPassManualWalk()) instead of FollowReferences
-  // (design doc's motivation - G1's heap-root/reference callbacks are
-  // prohibitively slow at scale). Composite fail-closed gate, not
-  // isG1Active() alone (implementation plan's Phase 4 exit criterion, and
-  // the "Cross-cutting risks" section's fail-closed convention): every
-  // VMStructs primitive the manual walk depends on (oop-map blocks, array
-  // layout_helper decoding) must have resolved during resolveOffsets(), or
-  // this falls back to the existing JVMTI-only path unconditionally, exactly
-  // as if isG1Active() itself were false.
-  bool use_manual_walk = VMStructs::isG1Active() && FieldWalker::available();
+  // Collector dispatch point: this pass is driven by a manual VMStructs
+  // field-walk (runPassManualWalk()) instead of FollowReferences on every
+  // collector except ZGC (design doc's motivation - the JVMTI heap-root/
+  // reference callbacks are prohibitively slow at scale). The walk itself
+  // reads no G1-specific field - it only needs a stable, non-moving-under-
+  // GC-worker-threads snapshot of oop/klass layout during the JVMTI
+  // safepoint window runPassManualWalk() pins on, which holds for
+  // Serial/Parallel/G1/Shenandoah (all STW-only relocation) but not ZGC
+  // (relocates concurrently via GC worker threads that keep running across
+  // that safepoint). Composite fail-closed gate, not !isZgcActive() alone
+  // (implementation plan's Phase 4 exit criterion, and the "Cross-cutting
+  // risks" section's fail-closed convention): every VMStructs primitive the
+  // manual walk depends on (oop-map blocks, array layout_helper decoding)
+  // must have resolved during resolveOffsets(), or this falls back to the
+  // existing JVMTI-only path unconditionally, exactly as if ZGC were active.
+  bool use_manual_walk = !VMStructs::isZgcActive() && FieldWalker::available();
   if (use_manual_walk) {
     bool manual_first_pass = !_search_started;
     if (manual_first_pass) {
