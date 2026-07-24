@@ -156,7 +156,7 @@ TEST_F(FaultInjectionTest, WalkVmSetjmpRecoversFromInjectedFault) {
   volatile size_t faults = 0;
 
   sigjmp_buf ctx;
-  if (sigsetjmp(ctx) != 0) {
+  if (sigsetjmp(ctx, 1) != 0) {
     recovered = true;                  // returned here via checkFault -> siglongjmp
     faults++;
   }
