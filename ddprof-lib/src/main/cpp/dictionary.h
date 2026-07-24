@@ -18,6 +18,7 @@
 #define _DICTIONARY_H
 
 #include "counters.h"
+#include "nativeMem.h"
 #include <map>
 #include <stddef.h>
 #include <stdlib.h>
@@ -67,6 +68,7 @@ public:
     _table = (DictTable *)calloc(1, sizeof(DictTable));
     Counters::set(DICTIONARY_PAGES, 1, id);
     Counters::set(DICTIONARY_BYTES, sizeof(DictTable), id);
+    NativeMem::record(NM_DICTIONARY, (long long)sizeof(DictTable));
     _table->base_index = _base_index = 1;
     _size = 0;
   }

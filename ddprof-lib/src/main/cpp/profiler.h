@@ -165,6 +165,10 @@ private:
   void updateThreadName(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                         bool self = false);
   void updateJavaThreadNames();
+  // Publish the native-symbol (CodeCache) memory counters and NativeMem gauge
+  // from the current library set. Called before each JFR chunk is finalized
+  // (dump and stop) so the emitted counters reflect the latest libraries.
+  void updateNativeLibMemStats();
   void mangle(const char *name, char *buf, size_t size);
 
   Engine *selectCpuEngine(Arguments &args);
