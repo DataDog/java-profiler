@@ -248,13 +248,13 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     int bcp_offset = InterpreterFrame::bcp_offset();
 
 
-    jmp_buf crash_protection_ctx;
+    sigjmp_buf crash_protection_ctx;
     // Chaining jmp_buf
     // A non-signal-based-sampler can be interrupted by signal based sampler,
     // then we end up with multiple HotspotSupport::walkVM() calls on stack,
     // each one sets up jmp_buf, they need to be chained to jump back to
     // correct location.
-    jmp_buf* prev_jmp_buf = prof_thread->getJmpCtx();
+    sigjmp_buf* prev_jmp_buf = prof_thread->getJmpCtx();
     // Should be preserved across setjmp/longjmp
     volatile int depth = 0;
     int actual_max_depth = truncated ? max_depth + 1 : max_depth;
@@ -991,7 +991,7 @@ void HotspotSupport::checkFault(ProfiledThread* thrd) {
 
     thrd->resetCrashHandler();
     Counters::increment(WALKVM_LONGJMP_RECOVERED);
-    longjmp(*thrd->getJmpCtx(), 1);
+    siglongjmp(*thrd->getJmpCtx(), 1);
 }
 
 int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
