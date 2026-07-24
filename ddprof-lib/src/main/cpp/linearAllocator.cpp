@@ -17,6 +17,7 @@
 
 #include "linearAllocator.h"
 #include "counters.h"
+#include "nativeMem.h"
 #include "os.h"
 #include "common.h"
 #include <stdio.h>
@@ -167,6 +168,9 @@ void LinearAllocator::freeChunks(ChunkList& chunks) {
     OS::safeFree(current, chunks.chunk_size);
     Counters::decrement(LINEAR_ALLOCATOR_BYTES, chunks.chunk_size);
     Counters::decrement(LINEAR_ALLOCATOR_CHUNKS);
+    // The LinearAllocator's only user is call-trace storage, so all of its
+    // chunk memory is attributed to the CALLTRACE category.
+    NativeMem::record(NM_CALLTRACE, -(long long)chunks.chunk_size);
     current = prev;
   }
 
@@ -260,6 +264,7 @@ Chunk *LinearAllocator::allocateChunk(Chunk *current) {
 
     Counters::increment(LINEAR_ALLOCATOR_BYTES, _chunk_size);
     Counters::increment(LINEAR_ALLOCATOR_CHUNKS);
+    NativeMem::record(NM_CALLTRACE, (long long)_chunk_size);
   }
   return chunk;
 }
@@ -275,6 +280,7 @@ void LinearAllocator::freeChunk(Chunk *current) {
   OS::safeFree(current, _chunk_size);
   Counters::decrement(LINEAR_ALLOCATOR_BYTES, _chunk_size);
   Counters::decrement(LINEAR_ALLOCATOR_CHUNKS);
+  NativeMem::record(NM_CALLTRACE, -(long long)_chunk_size);
 }
 
 void LinearAllocator::reserveChunk(Chunk *current) {

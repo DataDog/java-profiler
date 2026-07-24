@@ -44,6 +44,10 @@ public:
         return JitCodeCache::isJitCode(p);
     }
 
+    static inline long long runtimeStubsMemoryUsage() {
+        return JitCodeCache::runtimeStubsMemoryUsage();
+    }
+
     // If should load all jmethodIDs
     static inline bool shouldPreloadJmethodIDs(Arguments& args) {
         CStack cstack = args._cstack;

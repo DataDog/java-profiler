@@ -49,7 +49,11 @@ ProfiledThread* ProfiledThread::initCurrentThreadSignalSafe() {
 void ProfiledThread::freeValue(void* value) {
   SignalBlocker blocker;
   ProfiledThread* pt = reinterpret_cast<ProfiledThread*>(value);
+  // Sole deletion site for a ProfiledThread (invoked by the ThreadLocal
+  // destructor callback), so the THREAD_LOCAL decrement belongs here. Record
+  // after the delete, consistent with the other decrement sites.
   delete pt;
+  NativeMem::record(NM_THREAD_LOCAL, -(long long)sizeof(ProfiledThread));
 }
 
 void ProfiledThread::release() {
