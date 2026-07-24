@@ -172,7 +172,7 @@ public class PrecheckTest extends AbstractProfilerTest {
 
         Path recordingB = Files.createTempFile(Paths.get("/tmp/recordings"),
                 "PrecheckTest_disabled_", ".jfr");
-        profiler.execute("start," + getPrecheckDisabledProfilerCommand()
+        profiler.execute("start," + applyProfilerOptionOverrides(getPrecheckDisabledProfilerCommand())
                 + ",attributes=tag1;tag2;tag3,jfr,file=" + recordingB.toAbsolutePath());
         Thread.sleep(300);
         profiler.stop();

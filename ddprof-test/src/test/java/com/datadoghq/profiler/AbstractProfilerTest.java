@@ -376,10 +376,81 @@ public abstract class AbstractProfilerTest {
     profiler.addThread();
   }
 
+  /**
+   * Merges two profiler command strings. Options in overrides take precedence
+   * over options in base for matching keys.
+   *
+   * @param base The base profiler command (from test's getProfilerCommand())
+   * @param overrides The override options (from -Pprofiler.options)
+   * @return Merged command string with overrides taking precedence
+   */
+  private static String mergeProfilerOptions(String base, String overrides) {
+    if (overrides == null || overrides.isEmpty()) {
+      return base;
+    }
+
+    // Parse base options into ordered map
+    Map<String, String> options = new java.util.LinkedHashMap<>();
+    for (String part : base.split(",")) {
+      int eq = part.indexOf('=');
+      if (eq > 0) {
+        options.put(part.substring(0, eq), part.substring(eq + 1));
+      } else if (!part.isEmpty()) {
+        options.put(part, "");
+      }
+    }
+
+    // Apply overrides
+    for (String part : overrides.split(",")) {
+      int eq = part.indexOf('=');
+      if (eq > 0) {
+        options.put(part.substring(0, eq), part.substring(eq + 1));
+      } else if (!part.isEmpty()) {
+        options.put(part, "");
+      }
+    }
+
+    // Rebuild command, preserving keys with empty values (e.g. "filter=")
+    // so untouched base options round-trip exactly.
+    StringBuilder result = new StringBuilder();
+    for (Map.Entry<String, String> entry : options.entrySet()) {
+      if (result.length() > 0) {
+        result.append(",");
+      }
+      result.append(entry.getKey());
+      result.append("=").append(entry.getValue());
+    }
+    return result.toString();
+  }
+
+  /**
+   * Applies user-provided options from -Pprofiler.options (via the
+   * "ddprof.test.options" system property) to a profiler command string,
+   * overriding any matching keys already present in it.
+   *
+   * <p>Tests that build their profiler command directly (rather than through
+   * {@link #getProfilerCommand()}/{@link #getAmendedProfilerCommand()}) must
+   * call this before {@code JavaProfiler.execute(...)} so that
+   * -Pprofiler.options reliably applies across the whole test set, not just
+   * to subclasses of this class.
+   *
+   * @param profilerCommand the command to apply overrides to
+   * @return the command with overrides applied, or unchanged if none were requested
+   */
+  public static String applyProfilerOptionOverrides(String profilerCommand) {
+    String userOptions = System.getProperty("ddprof.test.options");
+    if (userOptions != null && !userOptions.isEmpty()) {
+      profilerCommand = mergeProfilerOptions(profilerCommand, userOptions);
+      System.out.println("[TEST] Applied profiler.options: " + userOptions);
+    }
+    return profilerCommand;
+  }
+
   private String getAmendedProfilerCommand() {
-    String profilerCommand = getProfilerCommand();
+    String profilerCommand = applyProfilerOptionOverrides(getProfilerCommand());
+
     String testCstack = (String)testParams.get("cstack");
-    if (testCstack != null) {
+    if (testCstack != null && !profilerCommand.contains("cstack=")) {
       profilerCommand += ",cstack=" + testCstack;
     } else if(!(ALLOW_NATIVE_CSTACKS || profilerCommand.contains("cstack="))) {
       profilerCommand += ",cstack=fp";

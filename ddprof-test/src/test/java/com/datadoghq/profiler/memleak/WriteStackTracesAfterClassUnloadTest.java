@@ -82,7 +82,7 @@ public class WriteStackTracesAfterClassUnloadTest extends AbstractDynamicClassTe
     try {
       // mcleanup=false isolates the test to the writeStackTraces read path; the
       // SharedLineNumberTable destructor path is covered by CleanupAfterClassUnloadTest.
-      profiler.execute("start,cpu=1ms,jfr,mcleanup=false,file=" + baseFile.toAbsolutePath());
+      profiler.execute("start," + applyProfilerOptionOverrides(getProfilerCommand()) + ",jfr,mcleanup=false,file=" + baseFile.toAbsolutePath());
       try {
         Thread.sleep(200); // let the profiler stabilize
 

@@ -73,7 +73,7 @@ public class CleanupAfterClassUnloadTest extends AbstractDynamicClassTest {
 
     try {
       profiler.execute(
-          "start,cpu=1ms,jfr,mcleanup=true,file=" + baseFile.toAbsolutePath());
+          "start," + applyProfilerOptionOverrides(getProfilerCommand()) + ",jfr,mcleanup=true,file=" + baseFile.toAbsolutePath());
       Thread.sleep(200); // Let the profiler stabilize
 
       // 1. Load a class, execute its methods to appear in CPU profiling stack traces,

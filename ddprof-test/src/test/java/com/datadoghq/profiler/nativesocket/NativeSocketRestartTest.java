@@ -30,7 +30,7 @@ public class NativeSocketRestartTest extends NativeSocketTestBase {
         Files.createDirectories(Paths.get("/tmp/recordings"));
         Path jfr2 = Files.createTempFile(Paths.get("/tmp/recordings"), "NativeSocketRestartTest_restart", ".jfr");
         try {
-            profiler.execute("start,natsock=100us,jfr,file=" + jfr2.toAbsolutePath());
+            profiler.execute("start," + applyProfilerOptionOverrides("natsock=100us") + ",jfr,file=" + jfr2.toAbsolutePath());
 
             doTcpTransfer(4096, 64);
 
