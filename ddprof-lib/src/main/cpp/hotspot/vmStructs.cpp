@@ -1165,3 +1165,15 @@ HeapUsage HeapUsage::get(bool allow_jmx) {
     }
     return usage;
 }
+
+VMClassLoaderDataMutexLocker::VMClassLoaderDataMutexLocker(void* mutex) : _mutex(mutex) {
+    if (_mutex != nullptr) {
+        _lock_func(_mutex);
+    }
+}
+
+VMClassLoaderDataMutexLocker::~VMClassLoaderDataMutexLocker() {
+    if (_mutex != nullptr) {
+        _unlock_func(_mutex);
+    }
+}

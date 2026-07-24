@@ -449,18 +449,11 @@ class VMStructs {
     static void checkNativeBinding(jvmtiEnv *jvmti, JNIEnv *jni, jmethodID method, void *address);
     static const void *findHeapUsageFunc();
 
-    const char* at(int offset) {
-        const char* ptr = (const char*)this + offset;
-        assert(crashProtectionActive() || SafeAccess::isReadable(ptr));
-        // Poison only the returned pointer; the assert above sees the real ptr.
-        return INJECT_FAULT_ADDRESS_RARE(ptr);
-    }
+    const char* at(int offset);
+    const char* at(int offset) const;
 
-    const char* at(int offset) const {
-        const char* ptr = (const char*)this + offset;
-        assert(crashProtectionActive() || SafeAccess::isReadable(ptr));
-        return INJECT_FAULT_ADDRESS_RARE(ptr);
-    }
+    template <typename T, bool safe = false>
+    T load_at_offset(int offset) const;
 
     static bool goodPtr(const void* ptr) {
         return (uintptr_t)ptr >= 0x1000 && ((uintptr_t)ptr & (sizeof(uintptr_t) - 1)) == 0;
@@ -635,24 +628,20 @@ DECLARE(VMSymbol)
     static int bodyOffset()   { return _symbol_body_offset; }
 DECLARE_END
 
-DECLARE(VMClassLoaderData)
+class VMClassLoaderDataMutexLocker : protected VMStructs {
   private:
-    void* mutex() {
-        return *(void**) at(sizeof(uintptr_t) * 3);
-    }
-
+    void* _mutex;
   public:
-    void lock() {
-        _lock_func(mutex());
-    }
+    VMClassLoaderDataMutexLocker(void* mutex);
+    ~VMClassLoaderDataMutexLocker();
+};
 
-    void unlock() {
-        _unlock_func(mutex());
-    }
-
-    MethodList** methodList() {
-        return (MethodList**) at(sizeof(uintptr_t) * 6 + 8);
-    }
+// VMClassLoaderData is used outside of protected (longjmp) context,
+// so both methods are protected by SafeAccess
+DECLARE(VMClassLoaderData)
+  public:
+    inline void* mutex();
+    inline MethodList* methodList();
 DECLARE_END
 
 DECLARE(VMKlass)    

@@ -1282,11 +1282,10 @@ static void patchClassLoaderData(JNIEnv* jni, jclass klass) {
       int method_count = vmklass->methodCount();
       if (method_count > 0) {
         VMClassLoaderData *cld = vmklass->classLoaderData();
-        cld->lock();
+        VMClassLoaderDataMutexLocker locker(cld->mutex());
         for (int i = 0; i < method_count; i += MethodList::SIZE) {
-          *cld->methodList() = new MethodList(*cld->methodList());
+          *cld->methodList() = new MethodList(cld->methodList());
         }
-        cld->unlock();
       }
     }
   }
