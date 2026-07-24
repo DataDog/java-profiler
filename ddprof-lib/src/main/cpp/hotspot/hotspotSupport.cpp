@@ -583,6 +583,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                                        level >= 1 && level <= 3 ? FRAME_C1_COMPILED : FRAME_JIT_COMPILED;
                             }
                             VMMethod* method = scope.method();
+                            if (method == nullptr) {
+                                break;
+                            }
                             jmethodID method_id = method->id();
                             fillFrame(frames[depth++], type, scope.bci(), method_id, method);
                         } while (scope_offset > 0 && depth < max_depth);
@@ -976,22 +979,6 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     }
 
     return depth;
-}
-
-void HotspotSupport::checkFault(ProfiledThread* thrd) {
-    // Should not get to here (?)
-    if (thrd == nullptr) {
-        return;
-    }
-
-    // Check if longjmp is setup for this thread
-    if (!thrd->isProtected()) {
-        return;
-    }
-
-    thrd->resetCrashHandler();
-    Counters::increment(WALKVM_LONGJMP_RECOVERED);
-    longjmp(*thrd->getJmpCtx(), 1);
 }
 
 int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,

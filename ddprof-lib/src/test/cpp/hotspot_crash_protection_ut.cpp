@@ -30,7 +30,7 @@
 #include <gtest/gtest.h>
 #include "threadLocalData.h"
 #include "hotspot/hotspotSupport.h"
-
+#include "profiler.h"
 #include "jvmThread.h"
 #include "safeAccess.h"
 #include "os.h"
@@ -334,7 +334,7 @@ TEST_F(JmpCtxChainingTest, FaultInInnerFrameDoesNotDisturbOuterFrame) {
 // ---------------------------------------------------------------------------
 
 TEST(CheckFaultGuardTest, NullThreadIsNoop) {
-    HotspotSupport::checkFault(nullptr);  // must not crash
+    Profiler::checkFault(nullptr);  // must not crash
 }
 
 // ---------------------------------------------------------------------------

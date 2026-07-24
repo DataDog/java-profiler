@@ -35,8 +35,6 @@ private:
     static bool loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool load_all);
 public:
     static void initClassloaderInfo(JNIEnv* jni);
-    
-    static void checkFault(ProfiledThread* thrd = nullptr);
     static int walkJavaStack(StackWalkRequest& request);
     static inline bool canUnwind(const StackFrame& frame, const void*& pc) {
         return HotspotStackFrame::unwindAtomicStub(frame, pc);
