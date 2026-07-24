@@ -726,6 +726,25 @@ TEST_F(ThreadRegistryTest, UnfilteredTrackingSeparatesRegistrationFromContextWin
     EXPECT_TRUE(context.empty());
 }
 
+TEST_F(ThreadRegistryTest, LookupThreadEntryDoesNotRegisterUnknownTid) {
+    constexpr int tid = 3210;
+    ThreadEntry entry{tid, nullptr, 0, 0};
+
+    EXPECT_FALSE(registry.lookupThreadEntry(entry, registry.recordingEpoch()));
+    EXPECT_EQ(nullptr, entry.slot);
+    EXPECT_EQ(nullptr, registry.lookupByTid(tid));
+
+    int slot_id = registry.registerThread(tid);
+    ASSERT_GE(slot_id, 0);
+    ThreadFilter::Slot* slot = registry.slotForId(slot_id);
+    ASSERT_NE(nullptr, slot);
+
+    EXPECT_TRUE(registry.lookupThreadEntry(entry, registry.recordingEpoch()));
+    EXPECT_EQ(slot, entry.slot);
+    EXPECT_EQ(slot->lifecycleGeneration(), entry.lifecycle_generation);
+    EXPECT_EQ(slot->recordingEpoch(), entry.recording_epoch);
+}
+
 TEST_F(ThreadRegistryTest, RegisteringKnownTidReturnsExistingSlotWithoutMutation) {
     constexpr int tid = 4321;
     int slot_id = registry.registerThread(tid);
