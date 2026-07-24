@@ -59,8 +59,6 @@ static inline bool hasKnownActiveTraceContext(ProfiledThread* thread) {
 
 struct WallPrecheckResult {
   bool suppress = false;
-  ThreadFilter::Slot* slot_to_arm = nullptr;
-  OSThreadState state_to_arm = OSThreadState::UNKNOWN;
   OSThreadState observed_state = OSThreadState::UNKNOWN;
   bool observed_state_valid = false;
   ThreadFilter::Slot* unowned_weight_slot = nullptr;
@@ -71,21 +69,14 @@ struct WallPrecheckResult {
   OSThreadState flush_state = OSThreadState::UNKNOWN;
 };
 
-static inline void incrementSuppressedSampledRun() {
-  Counters::increment(WC_SIGNAL_SUPPRESSED_SAMPLED_RUN);
-  WallClockCounters::incrementSuppressedSampledRun();
+static inline void incrementSuppressedOwnedBlock() {
+  Counters::increment(WC_SIGNAL_SUPPRESSED_OWNED_BLOCK);
+  WallClockCounters::incrementSuppressedOwnedBlock();
 }
 
-static inline bool suppressAlreadySampledBlock(ThreadFilter::Slot* slot) {
-  if (slot == nullptr) {
-    return false;
-  }
-  OSThreadState block_state = slot->activeBlockState();
-  if (slot->activeBlockOwner() != BlockRunOwner::NONE &&
-      isPrecheckSuppressionState(block_state) &&
-      slot->sampledThisRun() &&
-      block_state == slot->lastSampledState()) {
-    incrementSuppressedSampledRun();
+static inline bool suppressOwnedBlock(const ThreadEntry& entry) {
+  if (Profiler::instance()->threadFilter()->isOwnedBlockSuppressionCandidate(entry)) {
+    incrementSuppressedOwnedBlock();
     return true;
   }
   return false;
@@ -98,29 +89,33 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
     return result;
   }
 
+  ThreadFilter* registry = Profiler::instance()->threadFilter();
   ThreadFilter::Slot* slot =
-      Profiler::instance()->threadFilter()->slotForId(current->filterSlotId());
+      registry->activeSlotForId(current->filterSlotId(), current->tid());
+  if (slot == nullptr) {
+    ThreadFilter::RecordingEpoch epoch = registry->recordingEpoch();
+    slot = epoch != 0 ? registry->lookupByTid(current->tid(), epoch)
+                      : registry->lookupByTid(current->tid());
+  }
   if (slot == nullptr) {
     return result;
   }
 
-  OSThreadState active_block_state = slot->activeBlockState();
-  BlockRunOwner active_block_owner = slot->activeBlockOwner();
-  bool has_owned_block =
-      active_block_owner != BlockRunOwner::NONE &&
-      isPrecheckSuppressionState(active_block_state);
-  if (has_owned_block) {
-    if (slot->sampledThisRun() &&
-        active_block_state == slot->lastSampledState()) {
-      incrementSuppressedSampledRun();
-      result.suppress = true;
-      return result;
-    }
-    // Arm only after the MethodSample has been successfully recorded. If the
-    // JFR write is skipped due to lock contention, the next signal must retry
-    // instead of losing the only stack for this blocked run.
-    result.slot_to_arm = slot;
-    result.state_to_arm = active_block_state;
+  // TaskBlock replaces signals only for threads that unfiltered wall-clock
+  // profiling observes outside the tracing context window. Context-scoped
+  // profiling must continue sampling its selected threads normally.
+  if (!registry->unfilteredWallTrackingActive() || slot->inContextWindow()) {
+    return result;
+  }
+
+  ThreadEntry entry{current->tid(), slot, slot->lifecycleGeneration(),
+                    slot->recordingEpoch()};
+  if (registry->isOwnedBlockSuppressionCandidate(entry)) {
+    incrementSuppressedOwnedBlock();
+    result.suppress = true;
+    return result;
+  }
+  if (!slot->unownedBlockedFallbackEnabled()) {
     return result;
   }
 
@@ -153,9 +148,6 @@ static inline void finishWallPrecheck(const WallPrecheckResult& precheck,
       precheck.unowned_weight_slot->recordUnownedBlockedSample(
           recorded_call_trace_id, precheck.observed_state);
     }
-  }
-  if (recorded && precheck.slot_to_arm != nullptr) {
-    precheck.slot_to_arm->markSampledThisRun(precheck.state_to_arm);
   }
 }
 
@@ -311,7 +303,6 @@ Error BaseWallClock::start(Arguments &args) {
   _reservoir_size =
             args._wall_threads_per_tick ?
             args._wall_threads_per_tick : DEFAULT_WALL_THREADS_PER_TICK;
-
   initialize(args);
 
   _running = true;
@@ -349,11 +340,15 @@ void WallClockASGCT::initialize(Arguments& args) {
 }
 
 void WallClockASGCT::timerLoop() {
-    // todo: re-allocating the vector every time is not efficient
+    ThreadFilter* thread_filter = Profiler::instance()->threadFilter();
+    const bool lazy_backfill =
+        _precheck && thread_filter->unfilteredWallTrackingActive();
+    const ThreadFilter::RecordingEpoch recording_epoch =
+        lazy_backfill ? thread_filter->recordingEpoch() : 0;
     auto collectThreads = [&](std::vector<ThreadEntry>& entries) {
       // Get thread IDs from the filter if it's enabled
       // Otherwise list all threads in the system
-      if (Profiler::instance()->threadFilter()->enabled()) {
+      if (thread_filter->enabled()) {
         Profiler::instance()->threadFilter()->collect(entries);
       } else {
         const int refresher_tid = Libraries::instance()->refresherTid();
@@ -365,21 +360,30 @@ void WallClockASGCT::timerLoop() {
           // enough; we also want to avoid the kill() round-trip and any
           // pending-signal accumulation).
           if (tid != OS::threadId() && tid != refresher_tid) {
-            entries.push_back({tid, nullptr}); // no-filter: precheck fast path is skipped (null guards)
+            entries.push_back({tid, nullptr, 0, 0});
           }
         }
         delete thread_list;
       }
+      if (_precheck && !lazy_backfill) {
+        entries.erase(std::remove_if(entries.begin(), entries.end(),
+                                     suppressOwnedBlock),
+                      entries.end());
+      }
     };
 
-    auto sampleThreads = [&](ThreadEntry entry, int& num_failures, int& threads_already_exited,
-                             int& permission_denied) {
-      // Timer-thread fast path (wallprecheck=true): skip the kernel IPI entirely
-      // only when an explicit lifecycle hook still owns an already-sampled blocked
-      // run. Raw OS thread state is intentionally not used here because the timer
-      // thread cannot prove run boundaries for the target thread.
-      if (_precheck && suppressAlreadySampledBlock(entry.slot)) {
-        return false;
+    auto sampleThreads = [&](ThreadEntry entry, int& num_failures,
+                             int& threads_already_exited, int& permission_denied,
+                             int& registry_lookups, bool lookup_registry_slot) {
+      if (lookup_registry_slot && entry.slot == nullptr) {
+        registry_lookups++;
+        thread_filter->lookupThreadEntry(entry, recording_epoch);
+      }
+      // Timer-thread fast path (wallprecheck=true): skip the kernel IPI while
+      // an explicit lifecycle hook owns a suppressible blocked run. Raw OS
+      // thread state cannot prove run boundaries for the target thread.
+      if (_precheck && suppressOwnedBlock(entry)) {
+        return WallClockCandidateOutcome::PRECHECK_REJECTED;
       }
       if (!OS::sendSignalWithCookie(entry.tid, SIGVTALRM, SignalCookie::wallclock())) {
         num_failures++;
@@ -395,15 +399,16 @@ void WallClockASGCT::timerLoop() {
             Log::debug("unexpected error %s", strerror(errno));
           }
         }
-        return false;
+        return WallClockCandidateOutcome::SIGNAL_FAILED;
       }
-      return true;
+      return WallClockCandidateOutcome::SIGNAL_SENT;
     };
 
     auto doNothing = []() {
     };
 
-    timerLoopCommon<ThreadEntry>(collectThreads, sampleThreads, doNothing, _reservoir_size, _interval);
+    timerLoopCommon<ThreadEntry>(collectThreads, sampleThreads, doNothing,
+                                 _reservoir_size, _interval, lazy_backfill);
 }
 
 // WallClockJvmti: mirrors WallClockASGCT's dispatch, but the signal handler
@@ -479,8 +484,8 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
   // Pass nullptr ucontext so the JVM uses safepoint-based stack walking.
   // Passing the signal-frame PC causes the extension to reject samples where
   // the thread is currently inside JVM-internal (non-Java) code.
-  // JVMTI-delegated samples carry a correlation_id, not a call_trace_id, so
-  // unowned tail flushing remains limited to the ASGCT wall engine.
+  // JVMTI-delegated samples carry no call_trace_id, so unowned tail flushing
+  // remains limited to the ASGCT wall engine.
   bool recorded = Profiler::instance()->recordSampleDelegated(
       nullptr, last_sample, tid, BCI_WALL, &event);
   finishWallPrecheck(precheck, recorded);
@@ -497,9 +502,14 @@ void WallClockJvmti::initialize(Arguments &args) {
 }
 
 void WallClockJvmti::timerLoop() {
+  ThreadFilter* thread_filter = Profiler::instance()->threadFilter();
+  const bool lazy_backfill =
+      _precheck && thread_filter->unfilteredWallTrackingActive();
+  const ThreadFilter::RecordingEpoch recording_epoch =
+      lazy_backfill ? thread_filter->recordingEpoch() : 0;
   auto collectThreads = [&](std::vector<ThreadEntry> &entries) {
     const int refresher_tid = Libraries::instance()->refresherTid();
-    if (Profiler::instance()->threadFilter()->enabled()) {
+    if (thread_filter->enabled()) {
       Profiler::instance()->threadFilter()->collect(entries);
     } else {
       ThreadList *thread_list = OS::listThreads();
@@ -508,17 +518,27 @@ void WallClockJvmti::timerLoop() {
         // Exclude the wallclock timer thread itself and the Libraries
         // refresher (profiler-internal).
         if (tid != OS::threadId() && tid != refresher_tid) {
-          entries.push_back({tid, nullptr});
+          entries.push_back({tid, nullptr, 0, 0});
         }
       }
       delete thread_list;
     }
+    if (_precheck && !lazy_backfill) {
+      entries.erase(std::remove_if(entries.begin(), entries.end(),
+                                   suppressOwnedBlock),
+                    entries.end());
+    }
   };
 
   auto sampleThreads = [&](ThreadEntry entry, int &num_failures,
-                           int &threads_already_exited, int &permission_denied) {
-    if (_precheck && suppressAlreadySampledBlock(entry.slot)) {
-      return false;
+                           int &threads_already_exited, int &permission_denied,
+                           int &registry_lookups, bool lookup_registry_slot) {
+    if (lookup_registry_slot && entry.slot == nullptr) {
+      registry_lookups++;
+      thread_filter->lookupThreadEntry(entry, recording_epoch);
+    }
+    if (_precheck && suppressOwnedBlock(entry)) {
+      return WallClockCandidateOutcome::PRECHECK_REJECTED;
     }
     if (!OS::sendSignalWithCookie(entry.tid, SIGVTALRM, SignalCookie::wallclock())) {
       num_failures++;
@@ -534,13 +554,13 @@ void WallClockJvmti::timerLoop() {
           Log::debug("unexpected error %s", strerror(errno));
         }
       }
-      return false;
+      return WallClockCandidateOutcome::SIGNAL_FAILED;
     }
-    return true;
+    return WallClockCandidateOutcome::SIGNAL_SENT;
   };
 
   auto doNothing = []() {};
 
   timerLoopCommon<ThreadEntry>(collectThreads, sampleThreads, doNothing,
-                               _reservoir_size, _interval);
+                               _reservoir_size, _interval, lazy_backfill);
 }

@@ -16,16 +16,38 @@
 
 #include <jni.h>
 
+using JniFunction = void (JNICALL*)();
+using IsVirtualThreadFunction = jboolean (JNICALL*)(JNIEnv*, jobject);
+
+static constexpr jint JNI_VERSION_19_VALUE = 0x00130000;
+static constexpr int IS_VIRTUAL_THREAD_INDEX = 234;
+
+static_assert(sizeof(JniFunction) == sizeof(void*),
+              "JNI function table entries must be pointer-sized");
 
 volatile JVMSupport::JMethodIDLoadStats JVMSupport::jmethodID_load_state = JVMSupport::No_loaded;
 Mutex JVMSupport::_initialization_lock;
-
 
 // This method must be called after JVM has been properly initialized, e.g. after JVMTI::VMinit()
 // callback.
 // Currently, there are two paths lead to this call
 // - JVMTI::VMInit() callback (vmEntry.cpp)
 // - JavaProfiler.getInstance() via JNI down call - JVM must have been initialized
+bool JVMSupport::isPlatformThread(JNIEnv* jni, jthread thread) {
+    if (jni == nullptr || thread == nullptr) return false;
+    jint jni_version = jni->GetVersion();
+    if (jni_version <= 0) return false;
+    if (jni_version < JNI_VERSION_19_VALUE) return true;
+
+    const JniFunction* functions =
+        reinterpret_cast<const JniFunction*>(jni->functions);
+    IsVirtualThreadFunction is_virtual_thread =
+        reinterpret_cast<IsVirtualThreadFunction>(
+            functions[IS_VIRTUAL_THREAD_INDEX]);
+    return is_virtual_thread != nullptr &&
+        is_virtual_thread(jni, thread) == JNI_FALSE;
+}
+
 bool JVMSupport::initialize() {
     MutexLocker locker(_initialization_lock);
 

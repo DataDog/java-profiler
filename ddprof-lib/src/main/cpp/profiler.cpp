@@ -35,6 +35,7 @@
 #include "stackFrame.h"
 #include "stackWalker.h"
 #include "symbols.h"
+#include "taskBlockRecorder.h"
 #include "tsc.h"
 #include "utils.h"
 #include "wallClock.h"
@@ -47,6 +48,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 #include <signal.h>
 #include <stdint.h>
@@ -85,11 +87,12 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 
   current->setJavaThread(true);
   int tid = current->tid();
-  if (_thread_filter.enabled()) {
-    int slot_id = _thread_filter.registerThread();
+  // Java lifecycle callbacks own registry allocation. The wall timer only
+  // looks up these entries and must never allocate slots for arbitrary OS
+  // threads returned by OS::listThreads().
+  if (_thread_filter.registryActive()) {
+    int slot_id = _thread_filter.registerThread(tid);
     current->setFilterSlotId(slot_id);
-    _thread_filter.resetSlotRunState(slot_id);
-    _thread_filter.remove(slot_id);  // Remove from filtering initially
   }
   if (thread != NULL) {
     updateThreadName(jvmti, jni, thread, true);
@@ -109,9 +112,11 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     int slot_id = current->filterSlotId();
     tid = current->tid();
     
-    if (_thread_filter.enabled()) {
-      _thread_filter.unregisterThread(slot_id);
+    if (slot_id >= 0) {
+      _thread_filter.unregisterThread(slot_id, tid);
       current->setFilterSlotId(-1);
+    } else {
+      _thread_filter.unregisterThreadByTid(tid);
     }
 
     updateThreadName(jvmti, jni, thread, false);
@@ -136,6 +141,7 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   }
 
   updateThreadName(jvmti, jni, thread, false);
+  _thread_filter.unregisterThreadByTid(tid);
   _cpu_engine->unregisterThread(tid);
   _wall_engine->unregisterThread(tid);
   LivenessTracker::instance()->releaseThreadLocalState();
@@ -147,12 +153,19 @@ int Profiler::registerThread(int tid) {
 }
 #ifdef UNIT_TEST
 static std::atomic<int> g_test_last_unregistered_tid{-1};
+static std::atomic<Profiler::TaskBlockRecordOverride>
+    g_test_task_block_record_override{nullptr};
 
 int Profiler::lastUnregisteredTidForTest() {
     return g_test_last_unregistered_tid.load(std::memory_order_relaxed);
 }
 void Profiler::resetUnregisterObservableForTest() {
     g_test_last_unregistered_tid.store(-1, std::memory_order_relaxed);
+}
+
+void Profiler::setTaskBlockRecordOverrideForTest(
+    TaskBlockRecordOverride override) {
+  g_test_task_block_record_override.store(override, std::memory_order_release);
 }
 #endif
 
@@ -565,14 +578,7 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
     if (VM::jvmti()->GetStackTrace(thread, 0, _max_stack_depth, jvmti_frames, &num_frames) == JVMTI_ERROR_NONE && num_frames > 0) {
       // Convert to AsyncGetCallTrace format.
       // Note: jvmti_frames and frames may overlap.
-      for (int i = 0; i < num_frames; i++) {
-        jint bci = jvmti_frames[i].location;
-        jmethodID mid = jvmti_frames[i].method;
-        frames[i].method_id = mid;
-        frames[i].bci = bci;
-        // see https://github.com/async-profiler/async-profiler/pull/1090
-        LP64_ONLY(frames[i].padding = 0;)
-      }
+      copyJvmtiFrames(frames, jvmti_frames, num_frames);
       // On JDK 21+, GetStackTrace on a virtual thread returns only the VT's
       // logical stack; it stops at the continuation boundary and never includes
       // carrier-thread frames.  Without a synthetic root the trace appears
@@ -771,6 +777,92 @@ void Profiler::recordQueueTime(int tid, QueueTimeEvent *event) {
   }
   _jfr.recordQueueTime(lock_index, tid, event);
   _locks[lock_index].unlock();
+}
+
+Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
+    int tid, jthread thread, int start_depth, TaskBlockEvent *event) {
+#ifdef UNIT_TEST
+  TaskBlockRecordOverride override =
+      g_test_task_block_record_override.load(std::memory_order_acquire);
+  if (override != nullptr) {
+    return override(tid, thread, start_depth, event);
+  }
+#endif
+  CriticalSection cs;
+  u32 lock_index = getLockIndex(tid);
+  if (!_locks[lock_index].tryLock() &&
+      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+    return TaskBlockRecordResult::RECORD_FAILED;
+  }
+
+  // Lightweight recordings intentionally encode an absent stack trace as
+  // constant-pool ID 0, as the regular CPU and wall-clock sample paths do.
+  if (!_omit_stacktraces) {
+    if (_max_stack_depth <= 0 || _calltrace_buffer[lock_index] == nullptr) {
+      _locks[lock_index].unlock();
+      return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
+    }
+
+    CallTraceBuffer *buffer = _calltrace_buffer[lock_index];
+    ASGCT_CallFrame *frames = buffer->_asgct_frames;
+    jvmtiFrameInfo *jvmti_frames = buffer->_jvmti_frames;
+    jint num_frames = 0;
+#ifdef COUNTERS
+    u64 stack_start = TSC::ticks();
+#endif
+    jvmtiError error = VM::jvmti()->GetStackTrace(
+        thread, start_depth, _max_stack_depth, jvmti_frames, &num_frames);
+    if (error != JVMTI_ERROR_NONE || num_frames <= 0) {
+      _locks[lock_index].unlock();
+      return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
+    }
+
+    copyJvmtiFrames(frames, jvmti_frames, num_frames);
+    u64 call_trace_id =
+        _call_trace_storage.put(num_frames, frames, false, 1);
+#ifdef COUNTERS
+    u64 stack_duration = TSC::ticks() - stack_start;
+    if (stack_duration > 0) {
+      Counters::increment(UNWINDING_TIME_JVMTI, stack_duration);
+    }
+#endif
+    if (call_trace_id == 0) {
+      _locks[lock_index].unlock();
+      return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
+    }
+
+    event->_callTraceId = call_trace_id;
+  }
+  bool recorded = _jfr.recordTaskBlock(lock_index, tid, event);
+  _locks[lock_index].unlock();
+  return recorded ? TaskBlockRecordResult::RECORDED
+                  : TaskBlockRecordResult::RECORD_FAILED;
+}
+
+bool Profiler::tryEnterTaskBlockActivity() {
+  if (_task_block_rotation.load(std::memory_order_acquire)) return false;
+  _task_block_inflight.fetch_add(1, std::memory_order_acq_rel);
+  if (_task_block_rotation.load(std::memory_order_acquire)) {
+    _task_block_inflight.fetch_sub(1, std::memory_order_acq_rel);
+    return false;
+  }
+  return true;
+}
+
+void Profiler::leaveTaskBlockActivity() {
+  _task_block_inflight.fetch_sub(1, std::memory_order_release);
+}
+
+void Profiler::beginTaskBlockRotation() {
+  _task_block_rotation.store(true, std::memory_order_release);
+  while (_task_block_inflight.load(std::memory_order_acquire) != 0) {
+    std::this_thread::yield();
+  }
+}
+
+void Profiler::endTaskBlockRotation() {
+  _task_block_rotation.store(false, std::memory_order_release);
 }
 
 void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
@@ -1331,6 +1423,7 @@ Error Profiler::init() {
 
 Error Profiler::start(Arguments &args, bool reset) {
   MutexLocker ml(_state_lock);
+  _task_block_enabled.store(false, std::memory_order_release);
   Error error = checkState();
   if (error) {
     return error;
@@ -1463,24 +1556,34 @@ Error Profiler::start(Arguments &args, bool reset) {
     _safe_mode |= GC_TRACES | LAST_JAVA_PC;
   }
 
-  // TODO: Current way of setting filter is weird with the recent changes
-  _thread_filter.init(args._filter ? args._filter : "0");
-  
-  // Minor optim: Register the current thread (start thread won't be called)
+  _cpu_engine = selectCpuEngine(args);
+  _wall_engine = selectWallEngine(args);
+
+  const char *filter = args._filter != nullptr ? args._filter : "0";
+  const bool track_unfiltered_wall =
+      (_event_mask & EM_WALL) != 0 && args._wall_precheck &&
+      args._filter != nullptr && args._filter[0] == '\0' &&
+      _wall_engine->supportsUnfilteredWallPrecheck();
+  _thread_filter.init(filter, track_unfiltered_wall);
+
+  // Unfiltered init resets registrations before publishing registry admission.
+  // Context-filtered recordings retain identities but must clear membership.
   if (_thread_filter.enabled()) {
     _thread_filter.clearActive();
+  }
+
+  // Preserve the context-filter fast path. Unfiltered Java threads are
+  // registered by ThreadStart callbacks after the engines are activated.
+  if (_thread_filter.enabled()) {
     ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
     assert(current != nullptr);
     int slot_id = current->filterSlotId();
     if (slot_id < 0) {
-      slot_id = _thread_filter.registerThread();
+      slot_id = _thread_filter.registerThread(current->tid());
       current->setFilterSlotId(slot_id);
     }
-    _thread_filter.remove(slot_id);  // Remove from filtering initially (matches onThreadStart behavior)
   }
 
-  _cpu_engine = selectCpuEngine(args);
-  _wall_engine = selectWallEngine(args);
   _cstack = args._cstack;
   if (_cstack == CSTACK_DEFAULT) {
     if (VMStructs::hasStackStructs() && OS::isLinux()) {
@@ -1531,10 +1634,12 @@ Error Profiler::start(Arguments &args, bool reset) {
   _num_context_attributes = args._context_attributes.size();
   error = _jfr.start(args, reset);
   if (error) {
+    _thread_filter.deactivateRecording();
     switchLibraryTrap(false);
     _libs->stopRefresher();
     return error;
   }
+  initializeTaskBlockDurationThreshold();
 
   int activated = 0;
   if ((_event_mask & EM_CPU) && _cpu_engine != &noop_engine) {
@@ -1580,6 +1685,7 @@ Error Profiler::start(Arguments &args, bool reset) {
       Log::warn("%s", error.message());
       if (_event_mask == EM_NATIVEMEM) {
         // nativemem is the only requested mode: propagate the real error
+        _thread_filter.deactivateRecording();
         disableEngines();
         switchLibraryTrap(false);
         _libs->stopRefresher();
@@ -1603,6 +1709,12 @@ Error Profiler::start(Arguments &args, bool reset) {
     }
   }
 
+  // A recoverable wall-engine failure must not leave registry work enabled for
+  // unrelated engines that did start successfully.
+  if (track_unfiltered_wall && (activated & EM_WALL) == 0) {
+    _thread_filter.init(filter, false);
+  }
+
   if (activated) {
     switchThreadEvents(JVMTI_ENABLE);
 
@@ -1621,12 +1733,19 @@ Error Profiler::start(Arguments &args, bool reset) {
     // Paired with drainInflight() on the stop side.
     _cpu_engine->enableEvents(true);
 
+    _task_block_enabled.store(
+        (activated & EM_WALL) && args._wall_precheck && track_unfiltered_wall,
+        std::memory_order_release);
+    _task_block_monitor_events_enabled =
+        taskBlockEnabled() && VM::nativeMonitorEventsAvailable() &&
+        VM::setNativeMonitorEventsEnabled(true);
     _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
     return Error::OK;
   }
   // no engine was activated; perform cleanup
+  _thread_filter.deactivateRecording();
   disableEngines();
   switchLibraryTrap(false);
   _libs->stopRefresher();
@@ -1643,6 +1762,11 @@ Error Profiler::stop() {
   MutexLocker ml(_state_lock);
   if (state() != RUNNING) {
     return Error("Profiler is not active");
+  }
+  _task_block_enabled.store(false, std::memory_order_release);
+  if (_task_block_monitor_events_enabled) {
+    VM::setNativeMonitorEventsEnabled(false);
+    _task_block_monitor_events_enabled = false;
   }
 
   // Order matters: disable engines first so the _enabled check inside signal
@@ -1661,6 +1785,11 @@ Error Profiler::stop() {
     return Error("signal handlers did not drain; teardown skipped, retry stop()");
   }
 
+  // Prevent existing paired intervals from recording during teardown. New
+  // intervals were disabled above; this also drains endTaskBlock calls that
+  // already entered their snapshot-and-record activity.
+  beginTaskBlockRotation();
+
   if (_event_mask & EM_ALLOC)
     _alloc_engine->stop();
   if (_event_mask & EM_NATIVEMEM)
@@ -1677,6 +1806,8 @@ Error Profiler::stop() {
     _wall_engine->stop();
   if (_event_mask & EM_CPU)
     _cpu_engine->stop();
+
+  _thread_filter.deactivateRecording();
 
   switchLibraryTrap(false);
   switchThreadEvents(JVMTI_DISABLE);
@@ -1730,6 +1861,7 @@ Error Profiler::stop() {
   _thread_info.reportCounters();
 
   rotateDictsAndRun([&]{ _jfr.stop(); });
+  endTaskBlockRotation();
 
   // Unpatch libraries AFTER JFR serialization completes
   // Remote symbolication RemoteFrameInfo structs contain pointers to build-ID strings
@@ -1823,10 +1955,12 @@ Error Profiler::dump(const char *path, const int length) {
     // its own writer/reader coordination; #527's classMapSharedGuard readers
     // (deferred vtable receiver resolution) are coordinated through
     // _class_map_lock.
+    beginTaskBlockRotation();
     rotateDictsAndRun([&]{
       err = _jfr.dump(path, length);
       __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
     });
+    endTaskBlockRotation();
 
     _thread_info.clearAll(thread_ids);
     _thread_info.reportCounters();
