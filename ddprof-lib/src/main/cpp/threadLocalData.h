@@ -58,7 +58,7 @@ private:
   static void freeValue(void* value);
 
   static ThreadLocal<ProfiledThread*, nullptr, freeValue>  _current_thread;
-  // longjmp buffer. Used by hotspot only at this moment.
+  // siglongjmp buffer. Used by hotspot only at this moment.
   // Published in walkVM() and consumed in checkFault() from an asynchronous
   // SEGV-handler context on the same thread; atomic makes the publish/observe
   // ordering explicit instead of relying on plain load/store, matching how

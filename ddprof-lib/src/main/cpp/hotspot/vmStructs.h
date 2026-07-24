@@ -33,11 +33,11 @@ class VMNMethod;
 // During stack walking in the profiler's signal handler, GC or class unloading
 // on another thread can free VMNMethod/VMMethod memory concurrently, making
 // pointers stale between the readability check and the actual dereference.
-// In release builds the setjmp/longjmp crash protection in walkVM catches the
+// In release builds the sigsetjmp/siglongjmp crash protection in walkVM catches the
 // resulting SIGSEGV. In debug builds the assert(isReadable) fires first,
 // sending SIGABRT which is uncatchable by crash protection.
 // When crash protection is active the assert is redundant — any bad read will
-// be caught by the SIGSEGV handler and recovered via longjmp — so we skip it.
+// be caught by the SIGSEGV handler and recovered via siglongjmp — so we skip it.
 //
 // Defined at the bottom of this file after VMThread is declared so that the
 // VMThread fallback path (isExceptionActive) is accessible without forward-
