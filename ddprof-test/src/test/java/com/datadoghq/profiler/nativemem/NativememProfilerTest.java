@@ -73,7 +73,7 @@ public class NativememProfilerTest extends CStackAwareAbstractProfilerTest {
 
         stopProfiler();
 
-        IItemCollection events = verifyEvents("profiler.Malloc");
+        IItemCollection events = verifyEvents("datadog.NativeMemoryAllocation");
         boolean foundMinSize = false;
         for (IItemIterable items : events) {
             IMemberAccessor<IQuantity, IItem> sizeAccessor = SIZE.getAccessor(items.getType());
@@ -82,11 +82,11 @@ public class NativememProfilerTest extends CStackAwareAbstractProfilerTest {
             if (sizeAccessor == null) {
                 continue;
             }
-            assertNotNull(addrAccessor, "profiler.Malloc events must carry an address field");
-            assertNotNull(weightAccessor, "profiler.Malloc events must carry a weight field");
+            assertNotNull(addrAccessor, "datadog.NativeMemoryAllocation events must carry an address field");
+            assertNotNull(weightAccessor, "datadog.NativeMemoryAllocation events must carry a weight field");
             for (IItem item : items) {
                 IQuantity size = sizeAccessor.getMember(item);
-                assertNotNull(size, "profiler.Malloc event must have a non-null size field");
+                assertNotNull(size, "datadog.NativeMemoryAllocation event must have a non-null size field");
                 assertTrue(size.longValue() > 0, "allocation size must be positive");
                 if (size.longValue() >= 1024) {
                     foundMinSize = true;
@@ -95,7 +95,7 @@ public class NativememProfilerTest extends CStackAwareAbstractProfilerTest {
                 assertTrue(addr == null || addr.longValue() != 0, "malloc address must not be zero");
                 // nativemem=0 samples every allocation; weight must be exactly 1.0.
                 IQuantity weight = weightAccessor.getMember(item);
-                assertNotNull(weight, "profiler.Malloc event must have a non-null weight field");
+                assertNotNull(weight, "datadog.NativeMemoryAllocation event must have a non-null weight field");
                 assertTrue(Math.abs(weight.doubleValue() - 1.0) < 1e-6,
                     "weight must be 1.0 for nativemem=0 (all allocations sampled), got " + weight.doubleValue());
             }
@@ -103,7 +103,7 @@ public class NativememProfilerTest extends CStackAwareAbstractProfilerTest {
         assertTrue(foundMinSize, "expected at least one malloc event with size >= 1024 bytes");
 
         // triggerAllocations is a Java wrapper so it appears in all cstack modes, including fp/dwarf.
-        verifyStackTraces("profiler.Malloc", "triggerAllocations", "shouldRecordMallocSamples");
+        verifyStackTraces("datadog.NativeMemoryAllocation", "triggerAllocations", "shouldRecordMallocSamples");
     }
 
     private static void triggerAllocations(int count) {
