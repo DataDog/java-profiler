@@ -1213,7 +1213,7 @@ void Recording::writeSettings(Buffer *buf, Arguments &args) {
   }
 
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "debugSymbols",
-                   VMStructs::libjvm()->hasDebugSymbols());
+                   VM::libjvm()->hasDebugSymbols());
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "kernelSymbols",
                    Symbols::haveKernelSymbols());
   writeStringSetting(buf, T_ACTIVE_RECORDING, "cpuEngine",

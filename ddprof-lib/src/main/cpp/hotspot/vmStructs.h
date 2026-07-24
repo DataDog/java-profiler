@@ -449,18 +449,11 @@ class VMStructs {
     static void checkNativeBinding(jvmtiEnv *jvmti, JNIEnv *jni, jmethodID method, void *address);
     static const void *findHeapUsageFunc();
 
-    const char* at(int offset) {
-        const char* ptr = (const char*)this + offset;
-        assert(crashProtectionActive() || SafeAccess::isReadable(ptr));
-        // Poison only the returned pointer; the assert above sees the real ptr.
-        return INJECT_FAULT_ADDRESS_RARE(ptr);
-    }
+    inline const char* at(int offset);
+    inline const char* at(int offset) const;
 
-    const char* at(int offset) const {
-        const char* ptr = (const char*)this + offset;
-        assert(crashProtectionActive() || SafeAccess::isReadable(ptr));
-        return INJECT_FAULT_ADDRESS_RARE(ptr);
-    }
+    template <typename T, bool safe = false>
+    T load_at_offset(int offset) const;
 
     static bool goodPtr(const void* ptr) {
         return (uintptr_t)ptr >= 0x1000 && ((uintptr_t)ptr & (sizeof(uintptr_t) - 1)) == 0;
@@ -1136,10 +1129,7 @@ DECLARE(VMFlag)
     static VMFlag* find(const char* name);
     static VMFlag *find(const char* name, std::initializer_list<Type> types);
 
-    const char* name() {
-        assert(_flag_name_offset >= 0);
-        return *(const char**) at(_flag_name_offset);
-    }
+    inline const char* name() const;
 
     int type();
 
