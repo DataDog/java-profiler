@@ -517,6 +517,17 @@ class ReferenceChainTracker {
 private:
   bool _enabled;
 
+  // args._reference_chains_allow_jvmti_fallback as of the most recent
+  // start() call - see runPass()'s dispatch gate. Off by default: without
+  // this, a JVM running ZGC (or one whose FieldWalker offsets failed to
+  // resolve) would silently fall back to JVMTI FollowReferences, whose STW
+  // pauses can run orders of magnitude longer than the manual walk's -
+  // exactly the pause-time regression a low-pause collector is meant to
+  // avoid. Left false, runPass() simply skips walking rather than doing that
+  // silently; start() prints a loud, unconditional stderr warning once
+  // instead (see its own comment).
+  bool _allow_jvmti_fallback;
+
   // Frontier metadata table. Constructed lazily on the first
   // start() with the flag enabled, sized from
   // args._reference_chains_frontier_cap; like LivenessTracker's table
@@ -920,7 +931,8 @@ private:
   std::atomic<bool> _abort_pass_requested;
 
   ReferenceChainTracker()
-      : _enabled(false), _frontier(nullptr), _configured_frontier_cap(0),
+      : _enabled(false), _allow_jvmti_fallback(false),
+        _frontier(nullptr), _configured_frontier_cap(0),
         _last_class_map_generation(0),
         _last_resolved_class_count(0),
         _gc_start_epoch(0),

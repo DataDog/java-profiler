@@ -306,6 +306,29 @@ Error ReferenceChainTracker::start(Arguments &args) {
     _frontier = new FrontierTable(_configured_frontier_cap);
   }
 
+  _allow_jvmti_fallback = args._reference_chains_allow_jvmti_fallback;
+  if (!_allow_jvmti_fallback &&
+      !(!VMStructs::isZgcActive() && FieldWalker::available())) {
+    // Loud, immediate warning at start() - don't wait for the first skipped
+    // pass, since an operator watching startup logs should see this before
+    // wondering why no datadog.ReferenceChain events ever show up.
+    //
+    // fprintf(stderr, ...) directly, not Log::warn(): Log's default level is
+    // LOG_NONE (log.cpp), which silently drops LOG_WARN messages unless the
+    // operator has separately configured log=/loglevel= - exactly the
+    // opposite of "loud" for something this consequential. profiler.cpp's
+    // JVMTI-wallclock-unavailable warning uses this same
+    // "[ddprof] [WARN] ..." direct-stderr convention for the same reason.
+    fprintf(stderr,
+            "[ddprof] [WARN] Reference chain tracking: manual VMStructs walk "
+            "unavailable (%s) and allowjvmtifallback is not set - reference "
+            "chains will NOT be tracked (JVMTI FollowReferences fallback "
+            "imposes STW pauses orders of magnitude longer under this "
+            "collector; set referencechains=...:allowjvmtifallback=true to "
+            "opt in anyway)\n",
+            VMStructs::isZgcActive() ? "ZGC active" : "FieldWalker offsets unresolved");
+  }
+
   _hop_cap = args._reference_chains_hop_cap;
   _budget = args._reference_chains_budget;
   // 0 (unset) auto-scales from _budget instead of falling back to it plainly
@@ -1966,6 +1989,29 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
     runPassManualWalk(jvmti, jni, manual_budget, &edges_admitted, &truncated,
                        &frontier_cap_hit);
     pass_wall_ticks = TSC::ticks() - call_start_ticks;
+    err = JVMTI_ERROR_NONE;
+  } else if (!_allow_jvmti_fallback) {
+    // Loud opt-in gate (see _allow_jvmti_fallback's own comment): rather
+    // than silently dropping into FollowReferences and its multi-hundred-
+    // ms-to-second STW pauses, skip this pass entirely - no chains get
+    // discovered until either the manual walk becomes available again or
+    // the operator explicitly sets allowjvmtifallback=true.
+    //
+    // truncated=true (not false): has_pending_frontier below is read
+    // straight from truncated, so false here would mark the search
+    // COMPLETED after discovering zero objects. Since this gate can never
+    // actually flip for the life of the JVM (GC choice and FieldWalker's
+    // resolved offsets are both fixed at startup), a COMPLETED search would
+    // just make shouldRunPass() restartSearch() every cadence tick forever -
+    // releasing/reacquiring tags and rebuilding search state for no benefit.
+    // Staying RUNNING instead means this branch is simply re-entered as a
+    // cheap no-op each tick, with no restart churn.
+    // start() already printed the loud, unconditional stderr warning once
+    // for this JVM's lifetime (see its own comment) - no need to repeat it
+    // per pass.
+    edges_admitted = 0;
+    truncated = true;
+    frontier_cap_hit = false;
     err = JVMTI_ERROR_NONE;
   } else if (!_search_started) {
     _search_started = true;

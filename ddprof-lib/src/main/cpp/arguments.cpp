@@ -82,7 +82,7 @@ static const Multiplier UNIVERSAL[] = {
 //                          and keep the liveness track of 10% of the allocation
 //                          samples
 //     generations        - track surviving generations
-//     referencechains[=BOOL[:hops=N][:budget=N][:ttl=N][:framecap=N][:pausetarget=N][:painbudget=N][:firstpassbudget=N]]
+//     referencechains[=BOOL[:hops=N][:budget=N][:ttl=N][:framecap=N][:pausetarget=N][:painbudget=N][:firstpassbudget=N][:allowjvmtifallback=BOOL]]
 //                        - (PROF-15341, off by default) tag/BFS-walk live-heap
 //                          samples' referrer chains back toward a GC root.
 //                          pausetarget=N (ms) is the pause-time-SLO ceiling
@@ -100,6 +100,15 @@ static const Multiplier UNIVERSAL[] = {
 //                          decides which GC roots ever enter the frontier at
 //                          all, unlike every later pass's cheap, incremental
 //                          per-node expansion.
+//                          allowjvmtifallback=BOOL (default false) opts in to
+//                          the JVMTI FollowReferences-driven walk whenever
+//                          the manual VMStructs walk isn't available (ZGC
+//                          active, or FieldWalker offsets unresolved). That
+//                          fallback's STW pauses can run multiple orders of
+//                          magnitude longer than the manual walk's, which
+//                          defeats a low-pause collector's purpose - left
+//                          off, reference chains simply stop being tracked
+//                          rather than silently degrading pause times.
 //                          Sub-options are placeholders pending future tuning;
 //                          see doc/architecture/LiveHeapReferenceChains*.md
 //     lightweight[=BOOL] - enable lightweight profiling - events without
@@ -521,6 +530,16 @@ Error Arguments::parse(const char *args) {
             } else if (strcasecmp(cursor, "firstpassbudget") == 0) {
               _reference_chains_first_pass_budget = std::min(
                   std::max(atoi(eq), 0), MAX_REFERENCE_CHAINS_FIRST_PASS_BUDGET);
+            } else if (strcasecmp(cursor, "allowjvmtifallback") == 0) {
+              switch (eq[0]) {
+              case 'n': // no
+              case 'f': // false
+              case '0': // 0
+                _reference_chains_allow_jvmti_fallback = false;
+                break;
+              default:
+                _reference_chains_allow_jvmti_fallback = true;
+              }
             }
           }
           cursor = next;

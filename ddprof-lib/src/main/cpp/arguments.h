@@ -277,6 +277,16 @@ public:
   long _reference_chains_pause_target_ms;
   int _reference_chains_pain_budget_percent;
   int _reference_chains_first_pass_budget;
+  // Explicit opt-in for the JVMTI FollowReferences fallback used whenever
+  // the manual VMStructs walk isn't available (ZGC active, or FieldWalker
+  // failed to resolve some offset) - see ReferenceChainTracker::runPass()'s
+  // dispatch gate. That fallback's heap-root/reference callbacks impose
+  // multi-hundred-ms-to-second-scale STW pauses (measured via
+  // utils/compare-refchains-repro.sh under ZGC), which defeats the purpose
+  // of a low-pause collector; default false so reference-chain tracking
+  // quietly no-ops rather than silently degrading a ZGC deployment's pause
+  // times.
+  bool _reference_chains_allow_jvmti_fallback;
   long _nativemem;
   int  _jstackdepth;
   int _safe_mode;
@@ -326,6 +336,7 @@ public:
         _reference_chains_pause_target_ms(DEFAULT_REFERENCE_CHAINS_PAUSE_TARGET_MS),
         _reference_chains_pain_budget_percent(DEFAULT_REFERENCE_CHAINS_PAIN_BUDGET_PERCENT),
         _reference_chains_first_pass_budget(DEFAULT_REFERENCE_CHAINS_FIRST_PASS_BUDGET),
+        _reference_chains_allow_jvmti_fallback(false),
         _nativemem(-1),
         _jstackdepth(DEFAULT_JSTACKDEPTH),
         _safe_mode(0),
