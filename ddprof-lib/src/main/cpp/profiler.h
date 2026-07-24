@@ -236,6 +236,8 @@ public:
     return _instance;
   }
 
+  static void checkFault(ProfiledThread* thrd = nullptr);
+
   // Resolve names of native (non-Java) threads from /proc. Idempotent and
   // allocation-light (no-op for already-named tids), so it is safe to call
   // periodically from the Libraries refresher thread to capture transient
