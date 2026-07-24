@@ -659,30 +659,75 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
 #endif // COUNTERS
     ASGCT_CallFrame *frames = _calltrace_buffer[lock_index]->_asgct_frames;
 
-    int num_frames = 0;
-
+    // Read again after the setjmp landing below, so it must be volatile: a
+    // longjmp out of the unwind leaves non-volatile locals indeterminate.
+    volatile int num_frames = 0;
     StackContext java_ctx = {0};
-    ASGCT_CallFrame *native_stop = frames + num_frames;
-    num_frames += getNativeTrace(ucontext, native_stop, event_type, tid,
-                                 &java_ctx, &truncated, lock_index);
-    assert(num_frames >= 0);
 
-    int max_remaining = _max_stack_depth - num_frames;
-    if (max_remaining > 0) {
-      StackWalkRequest request = {event_type, lock_index, ucontext, frames + num_frames, max_remaining, &java_ctx, &truncated};
-      num_frames += JVMSupport::walkJavaStack(request);
+    // Establish setjmp/longjmp crash protection around the unwind. The native
+    // walkers (walkFP/walkDwarf) protect their pointer loads with SafeAccess
+    // safefetch, but the surrounding metadata reads (isJitCode, findFrameDesc,
+    // findLibraryByAddress, AGCT in getJavaTraceAsync, frame.link, ...) are raw
+    // dereferences of signal-supplied pc/sp/fp. Without an active jmp_buf a
+    // fault there is unrecoverable: crashHandlerInternal -> checkFault() finds
+    // isProtected()==false and chains to the JVM handler, crashing the process.
+    // walkVM installs its own inner jmp_buf and chains back to whatever we set
+    // here, so nesting is safe. When there is no ProfiledThread we have nowhere
+    // to publish a jmp_buf, so we skip the unwind entirely rather than risk an
+    // unrecoverable fault on a raw dereference.
+    ProfiledThread *walk_thread = ProfiledThread::current();
+    if (walk_thread == nullptr) {
+        num_frames += makeFrame(frames + num_frames, BCI_ERROR, "no_ProfiledThread");
+        truncated = true;
+    } else {
+        jmp_buf unwind_ctx;
+        jmp_buf *prev_jmp_buf = walk_thread->getJmpCtx();
+
+        // setjmp() must be evaluated as a standalone expression/controlling
+        // expression (C11 7.13.1.1), hence the explicit jmp_rc.
+        int jmp_rc = setjmp(unwind_ctx);
+        if (jmp_rc != 0) {
+            // A fault during unwinding longjmp'd back here (via checkFault). The
+            // longjmp bypassed segvHandler's SignalHandlerScope destructor, so
+            // compensate, restore the previous jmp_buf chain, and record the
+            // partial trace with an error marker instead of crashing.
+            SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
+            walk_thread->setJmpCtx(prev_jmp_buf);
+            truncated = true;
+            if (num_frames < _max_stack_depth) {
+                num_frames += makeFrame(frames + num_frames, BCI_ERROR, "break_unwind_fault");
+            }
+        } else {
+            walk_thread->setJmpCtx(&unwind_ctx);
+
+            // truncated_local is never read after a longjmp landing (only on the
+            // clean path below), so it need not be volatile; the outer `truncated`
+            // stays false on the recovery path.
+            bool truncated_local = false;
+            ASGCT_CallFrame *native_stop = frames + num_frames;
+            num_frames += getNativeTrace(ucontext, native_stop, event_type, tid,
+                                        &java_ctx, &truncated_local, lock_index);
+            assert(num_frames >= 0);
+
+            int max_remaining = _max_stack_depth - num_frames;
+            if (max_remaining > 0) {
+                StackWalkRequest request = {event_type, lock_index, ucontext, frames + num_frames, max_remaining, &java_ctx, &truncated_local};
+                num_frames += JVMSupport::walkJavaStack(request);
+            }
+            assert(num_frames >= 0);
+
+            walk_thread->setJmpCtx(prev_jmp_buf);
+            truncated = truncated_local;
+        }
     }
-  
-    assert(num_frames >= 0);
     if (num_frames == 0) {
       num_frames += makeFrame(frames + num_frames, BCI_ERROR, "no_Java_frame");
     }
 
     call_trace_id =
         _call_trace_storage.put(num_frames, frames, truncated, counter);
-    ProfiledThread *thread = ProfiledThread::current();
-    if (thread != nullptr) {
-      thread->recordCallTraceId(call_trace_id);
+    if (walk_thread != nullptr) {
+      walk_thread->recordCallTraceId(call_trace_id);
     }
 #ifdef COUNTERS
     u64 duration = TSC::ticks() - startTime;
@@ -1011,13 +1056,13 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
     return 1;  // handled
   }
 
+  // Profiler::checkFault has its own check if we're in a protected stack walk.
+  // If the fault is from our protected walk, it will longjmp and never return.
+  // If it returns, the fault wasn't from our code.
+  Profiler::checkFault(thrd);
+
   if (VM::isHotspot()) {
     // the following checks require vmstructs and therefore HotSpot
-
-    // HotspotSupport::checkFault has its own check if we're in a protected stack walk.
-    // If the fault is from our protected walk, it will longjmp and never return.
-    // If it returns, the fault wasn't from our code.
-    HotspotSupport::checkFault(thrd);
 
     // Workaround for JDK-8313796 if needed. Setting cstack=dwarf also helps
     if (_need_JDK_8313796_workaround &&
@@ -1980,4 +2025,20 @@ int Profiler::status(char* status, int max_len) {
     _cpu_engine != nullptr ? _cpu_engine->name() : "None",
     _wall_engine != nullptr ? _wall_engine->name() : "None",
     _alloc_engine != nullptr ? _alloc_engine->name() : "None");
+}
+
+void Profiler::checkFault(ProfiledThread* thrd) {
+    // Should not get to here (?)
+    if (thrd == nullptr) {
+        return;
+    }
+
+    // Check if longjmp is setup for this thread
+    if (!thrd->isProtected()) {
+        return;
+    }
+
+    thrd->resetCrashHandler();
+    Counters::increment(STACKWALK_LONGJMP_RECOVERED);
+    longjmp(*thrd->getJmpCtx(), 1);
 }

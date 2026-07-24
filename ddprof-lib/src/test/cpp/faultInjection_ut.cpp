@@ -10,11 +10,12 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include "counters.h"
 #include "faultInjection.h"
 #include "safeAccess.h"
 #include "os.h"
 #include "threadLocalData.h"
-#include "hotspot/hotspotSupport.h"
+#include "profiler.h"
 #include "../../main/cpp/gtest_crash_handler.h"
 
 static constexpr char FAULT_INJECTION_TEST_NAME[] = "FaultInjectionTest";
@@ -60,7 +61,7 @@ static void fi_signal_wrapper(int signo, siginfo_t* siginfo, void* context) {
   if (SafeAccess::handle_safefetch(signo, context)) {
     return;  // safefetch load recovered; PC already rewritten to _cont.
   }
-  HotspotSupport::checkFault(ProfiledThread::current());  // longjmp if protected
+  Profiler::checkFault(ProfiledThread::current());  // longjmp if protected
   // Not protected and not a safefetch fault — real crash.
   if (signo == SIGBUS && orig_busHandler != nullptr) {
     orig_busHandler(signo, siginfo, context);
@@ -167,7 +168,9 @@ TEST_F(FaultInjectionTest, WalkVmSetjmpRecoversFromInjectedFault) {
   for (int i = 0; i < 5000 && faults == 0; i++) {
     // Raw deref of the (possibly poisoned) base — mirrors walkVM's raw reads.
     uintptr_t v = *(uintptr_t*)INJECT_FAULT_ADDRESS_LIKELY(base);
-    (void)v;
+    // Optimization barrier: tell the compiler `v` is read/write and clobber memory to prevent
+    // reordering/optimizing away the load.
+    asm volatile("" : "+r"(v) : : "memory");
     reads++;
   }
   t->setJmpCtx(nullptr);
@@ -179,5 +182,93 @@ TEST_F(FaultInjectionTest, WalkVmSetjmpRecoversFromInjectedFault) {
   EXPECT_TRUE(recovered);
   SUCCEED();
 }
+
+// (c3) recordSample's outer setjmp region (PROF-15447): Profiler::recordSample()
+// wraps the native/Java unwind in its own jmp_buf, chaining off whatever
+// context a caller may already have installed, so a fault in the
+// *unprotected* metadata reads surrounding walkVM/walkFP/walkDwarf (isJitCode,
+// findFrameDesc, findLibraryByAddress, AGCT in getJavaTraceAsync, frame.link,
+// ...) recovers to a partial trace instead of crashing — and, critically,
+// restores the caller's jmp_buf chain on both the clean and the recovery path.
+//
+// recordSample() itself needs a live JVM (ASGCT, VMStructs, an allocated
+// _calltrace_buffer) unavailable in this gtest binary, so — following the
+// same "replicate the protocol" approach used elsewhere in this suite for
+// JVM-dependent code — this test reproduces its exact save/install/setjmp/
+// longjmp/restore sequence verbatim, including the `volatile int num_frames`
+// accumulator that must survive the longjmp landing, and drives it with the
+// same probabilistic fault injection as WalkVmSetjmpRecoversFromInjectedFault.
+// Unlike that test, this one also (a) starts from an already-installed
+// "grandparent" jmp_buf to verify nesting/chain-restore, matching how
+// recordSample can itself run nested under another sampler's protection, and
+// (b) asserts STACKWALK_LONGJMP_RECOVERED actually increments, confirming the
+// real Profiler::checkFault() (wired in via fi_signal_wrapper) did the
+// recovery rather than some other signal-handling path.
+TEST_F(FaultInjectionTest, RecordSampleOuterSetjmpRecoversAndRestoresChain) {
+  ProfiledThread* t = ProfiledThread::current();
+  ASSERT_NE(t, nullptr);
+
+  // Simulate a pre-existing outer protection context, as recordSample must
+  // support when nested inside another sampler's own protected region.
+  jmp_buf grandparent_ctx;
+  t->setJmpCtx(&grandparent_ctx);
+
+  uintptr_t real_slot = 0;              // a valid, readable "metadata" slot
+  uintptr_t base = (uintptr_t)&real_slot;
+  long long recovered_before = Counters::getCounter(STACKWALK_LONGJMP_RECOVERED);
+
+  // Read again after the setjmp landing below, so it must be volatile — mirrors
+  // recordSample's own num_frames.
+  volatile int num_frames = 0;
+  // Frames "collected" before the fault, e.g. by a getNativeTrace() call that
+  // partially succeeded before walkJavaStack() faulted. Seeding a non-zero
+  // value here — mutated between setjmp() and the longjmp below — is what
+  // actually exercises the volatile qualifier: a non-volatile local would be
+  // indeterminate after the jump, so the post-recovery checks below would not
+  // reliably see it. Without this seed, num_frames would still read 0 whether
+  // or not it were volatile, and the test would prove nothing about volatile.
+  constexpr int kSeededFrames = 3;
+
+  jmp_buf unwind_ctx;
+  jmp_buf* prev_jmp_buf = t->getJmpCtx();
+  ASSERT_EQ(&grandparent_ctx, prev_jmp_buf);
+
+  t->setFiRng(0xC0FFEEC0FFEEC0FFULL);
+
+  int jmp_rc = setjmp(unwind_ctx);
+  if (jmp_rc != 0) {
+    // Landed here via the real Profiler::checkFault() -> longjmp, triggered by
+    // an actual injected fault below. Mirrors recordSample's
+    // `if (num_frames < _max_stack_depth) { num_frames += makeFrame(...); }`:
+    // the recovery marker is appended to whatever partial progress survived
+    // the jump, never resets it.
+    t->setJmpCtx(prev_jmp_buf);
+    num_frames += 1;  // stand-in for makeFrame(..., "break_unwind_fault")
+  } else {
+    t->setJmpCtx(&unwind_ctx);
+    num_frames = kSeededFrames;  // mutated before the fault; must survive the longjmp
+
+    // Force at least one fire deterministically, then let the tier drive the rest.
+    for (int i = 0; i < 5000 && num_frames == kSeededFrames; i++) {
+      // Raw deref of the (possibly poisoned) base — mirrors the unprotected
+      // metadata reads recordSample's outer setjmp now guards.
+      uintptr_t v = *(uintptr_t*)INJECT_FAULT_ADDRESS_LIKELY(base);
+      asm volatile("" : "+r"(v) : : "memory");
+    }
+    t->setJmpCtx(prev_jmp_buf);
+  }
+
+  EXPECT_EQ(&grandparent_ctx, t->getJmpCtx())
+      << "must restore the caller's jmp_buf chain on both the clean and the "
+         "recovery path, never leave it cleared or pointing at unwind_ctx";
+  EXPECT_EQ(kSeededFrames + 1, num_frames)
+      << "the seeded pre-fault value must survive the longjmp landing and the "
+         "recovery marker must append to it, not overwrite it";
+  EXPECT_GT(Counters::getCounter(STACKWALK_LONGJMP_RECOVERED), recovered_before)
+      << "checkFault() must have run and incremented the shared recovery counter";
+
+  t->setJmpCtx(nullptr);  // leave the thread unprotected for subsequent tests
+}
+
 
 #endif  // __FAULT_INJECTION__

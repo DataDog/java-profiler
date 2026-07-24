@@ -29,7 +29,7 @@
 
 #include <gtest/gtest.h>
 #include "threadLocalData.h"
-#include "hotspot/hotspotSupport.h"
+#include "profiler.h"
 
 #include "jvmThread.h"
 #include "safeAccess.h"
@@ -325,7 +325,7 @@ TEST_F(JmpCtxChainingTest, FaultInInnerFrameDoesNotDisturbOuterFrame) {
 }
 
 // ---------------------------------------------------------------------------
-// D. HotspotSupport::checkFault() guard clauses
+// D. Profiler::checkFault() guard clauses
 //
 // This gtest binary has no live JVM attached, so JVMThread is not initialized
 // and the longjmp path can't be exercised end-to-end here.
@@ -334,7 +334,7 @@ TEST_F(JmpCtxChainingTest, FaultInInnerFrameDoesNotDisturbOuterFrame) {
 // ---------------------------------------------------------------------------
 
 TEST(CheckFaultGuardTest, NullThreadIsNoop) {
-    HotspotSupport::checkFault(nullptr);  // must not crash
+    Profiler::checkFault(nullptr);  // must not crash
 }
 
 // ---------------------------------------------------------------------------
