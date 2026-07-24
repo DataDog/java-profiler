@@ -2038,7 +2038,9 @@ int Profiler::status(char* status, int max_len) {
     _alloc_engine != nullptr ? _alloc_engine->name() : "None");
 }
 
-(??)
+(??)void Profiler::checkFault(ProfiledThread* thrd) {
+(??)    // Should not get to here (?)
+(??)    if (thrd == nullptr) {
         return;
     }
 
@@ -2047,5 +2049,5 @@ int Profiler::status(char* status, int max_len) {
 
     thrd->resetCrashHandler();
     Counters::increment(STACKWALK_LONGJMP_RECOVERED);
-(??)
+(??)    longjmp(*thrd->getJmpCtx(), 1);
 }
