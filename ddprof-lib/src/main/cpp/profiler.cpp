@@ -1123,8 +1123,7 @@ void Profiler::setupSignalHandlers() {
       // already-allocated array.
       (void)Counters::getCounters();
 
-      Profiler* prof = Profiler::instance();
-      Libraries* libs = (Libraries*) prof->libraries();
+      Libraries* libs = Libraries::instance();
       CodeCache* prof_lib = libs->findLibraryByName("libjavaProfiler");
       assert(prof_lib != nullptr);
       _profiler_min_address = prof_lib->minAddress();
