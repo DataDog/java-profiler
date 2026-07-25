@@ -707,8 +707,8 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
         walk_thread->setJmpCtx(&unwind_ctx);
 
         // truncated_local is never read after a longjmp landing (only on the
-        // clean path below), so it need not be volatile; the outer `truncated`
-        // stays false on the recovery path.
+        // clean path below), so it need not be volatile; on the recovery path
+        // `truncated` is set to true explicitly.
         bool truncated_local = false;
         ASGCT_CallFrame *native_stop = frames + num_frames;
         num_frames += getNativeTrace(ucontext, native_stop, event_type, tid,
