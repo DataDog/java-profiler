@@ -1061,7 +1061,7 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
   // Profiler::checkFault has its own check if we're in a protected stack walk.
   // If the fault is from our protected walk, it will longjmp and never return.
   // If it returns, the fault wasn't from our code.
-  Profiler::checkFault(thrd);
+  Profiler::checkFault(thrd, siginfo, ucontext);
 
   if (VM::isHotspot()) {
     // the following checks require vmstructs and therefore HotSpot
@@ -1082,6 +1082,9 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
   }
   return 0;  // not handled, safe to chain
 }
+
+static const void* profiler_min_address = nullptr;
+static const void* profiler_max_address = nullptr;
 
 void Profiler::setupSignalHandlers() {
   // Do not re-run the signal setup (run only when VM has not been loaded yet)
@@ -1109,7 +1112,16 @@ void Profiler::setupSignalHandlers() {
         // Patch sigaction GOT in libraries with broken signal handlers (already loaded)
         LibraryPatcher::patch_sigaction();
       }
-#ifdef __FAULT_INJECTION__
+
+      // Get address range of java profiler library
+      Libraries* libs = Libraries::instance();
+      CodeCache* prof_lib = libs->findLibraryByName("libjavaProfiler");
+      assert(prof_lib != nullptr);
+      profiler_min_address = prof_lib->minAddress();
+      profiler_max_address = prof_lib->maxAddress();
+      assert(profiler_min_address != nullptr && profiler_max_address != nullptr);
+
+      #ifdef __FAULT_INJECTION__
       // Reserve the PROT_NONE guard region used to poison memory-access sites.
       // Done here (off the signal path) once handlers are installed.
       faultinj::init();
@@ -2029,15 +2041,21 @@ int Profiler::status(char* status, int max_len) {
     _alloc_engine != nullptr ? _alloc_engine->name() : "None");
 }
 
-void Profiler::checkFault(ProfiledThread* thrd) {
-    // Should not get to here (?)
-    if (thrd == nullptr || VM::isOpenJ9()) {
+void Profiler::checkFault(ProfiledThread* thrd, siginfo_t *siginfo, void *ucontext) {
+    // Check if longjmp is setup for this thread
+    if (thrd == nullptr || !thrd->isProtected()) {
         return;
     }
 
-    // Check if longjmp is setup for this thread
-    if (!thrd->isProtected()) {
-        return;
+    // Check if the fault is originated from java profiler
+    const uintptr_t pc = StackFrame(ucontext).pc();
+    const uintptr_t min = (uintptr_t)profiler_min_address;
+    const uintptr_t max = (uintptr_t)profiler_max_address;
+
+    // If the profiler address range is not initialized (e.g. unit tests), fall back
+    // to recovering unconditionally when a protection context is installed.
+    if ((min != 0 && max != 0) && (pc < min || pc >= max)) {
+      return;
     }
 
     thrd->resetCrashHandler();

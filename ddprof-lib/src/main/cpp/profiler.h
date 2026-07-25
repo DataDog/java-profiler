@@ -463,7 +463,7 @@ public:
   static void segvHandler(int signo, siginfo_t *siginfo, void *ucontext);
   static void busHandler(int signo, siginfo_t *siginfo, void *ucontext);
   static void setupSignalHandlers();
-  static void checkFault(ProfiledThread* thrd);
+  static void checkFault(ProfiledThread* thrd, siginfo_t *siginfo, void *ucontext);
 
   static int registerThread(int tid);
   static void unregisterThread(int tid);

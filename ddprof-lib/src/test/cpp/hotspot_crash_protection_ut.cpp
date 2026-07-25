@@ -334,7 +334,7 @@ TEST_F(JmpCtxChainingTest, FaultInInnerFrameDoesNotDisturbOuterFrame) {
 // ---------------------------------------------------------------------------
 
 TEST(CheckFaultGuardTest, NullThreadIsNoop) {
-    Profiler::checkFault(nullptr);  // must not crash
+    Profiler::checkFault(nullptr, nullptr, nullptr);  // must not crash
 }
 
 // ---------------------------------------------------------------------------
