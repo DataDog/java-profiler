@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk21
 
 ## musl-x64-openj9-jdk21 - ✅ PASS
 
-**Date:** 2026-07-25 17:40:38 EDT
+**Date:** 2026-07-25 18:43:16 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-x64-openj9-jdk21
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 8 |
-| CPU Cores (end) | 8 |
+| CPU Cores (start) | 12 |
+| CPU Cores (end) | 12 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: musl-x64-openj9-jdk21
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 8-8 cores)</summary>
+<summary>CPU Timeline (1 unique values: 12-12 cores)</summary>
 
 ```
-1785015478 8
-1785015483 8
-1785015488 8
-1785015493 8
-1785015498 8
-1785015503 8
-1785015508 8
-1785015513 8
-1785015518 8
-1785015523 8
-1785015528 8
-1785015533 8
-1785015538 8
-1785015543 8
-1785015548 8
-1785015553 8
-1785015558 8
-1785015563 8
-1785015568 8
-1785015573 8
+1785019233 12
+1785019238 12
+1785019243 12
+1785019248 12
+1785019253 12
+1785019258 12
+1785019263 12
+1785019268 12
+1785019273 12
+1785019278 12
+1785019283 12
+1785019289 12
+1785019294 12
+1785019299 12
+1785019304 12
+1785019309 12
+1785019314 12
+1785019319 12
+1785019324 12
+1785019329 12
 ```
 </details>
 
