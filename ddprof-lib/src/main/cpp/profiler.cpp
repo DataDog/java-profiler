@@ -1021,22 +1021,25 @@ void Profiler::busHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   }
 }
 
-void Profiler::checkFault(ProfiledThread* thrd, siginfo_t *siginfo, void *ucontext) {
-  if (thrd == nullptr || !thrd->isProtected()) {
+void Profiler::checkFault(ProfiledThread* thrd, siginfo_t* siginfo, void* ucontext) {
+  (void)siginfo;
+  if (thrd == nullptr || !thrd->isProtected() || ucontext == nullptr) {
+    return;
+  }
+
+  const uintptr_t pc = StackFrame(ucontext).pc();
+  const uintptr_t min = (uintptr_t)_profiler_min_address;
+  const uintptr_t max = (uintptr_t)_profiler_max_address;
+
+  // If the profiler address range is not initialized (e.g. unit tests), fall back
+  // to recovering unconditionally when a protection context is installed.
+  if ((min != 0 && max != 0) && (pc < min || pc >= max)) {
     return;
   }
 
   thrd->resetCrashHandler();
-
-  // check if fault is originated from java profiler.
-  assert(_profiler_min_address != nullptr && _profiler_max_address != nullptr);
-  if (siginfo->si_addr >= _profiler_min_address && siginfo->si_addr < _profiler_max_address) {
-    // Shared recovery point for every setjmp/longjmp-protected stack walk
-    // (walkVM's inner region and recordSample's native/AGCT unwind), so the
-    // counter is deliberately not walkVM-specific.
-    Counters::increment(STACKWALK_LONGJMP_RECOVERED);
-    longjmp(*thrd->getJmpCtx(), 1);
-  }
+  Counters::increment(STACKWALK_LONGJMP_RECOVERED);
+  longjmp(*thrd->getJmpCtx(), 1);
 }
 // Returns: 0 = not handled (chain to next handler), non-zero = handled
 int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext) {
