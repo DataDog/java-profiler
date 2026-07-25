@@ -144,6 +144,10 @@ private:
   volatile jvmtiEventMode _thread_events_state;
 
   Libraries* _libs;
+
+  static const void *_profiler_min_address;
+  static const void *_profiler_max_address;
+
   u32 _num_context_attributes;
   bool _omit_stacktraces;
   bool _remote_symbolication;  // Enable remote symbolication for native frames
@@ -231,8 +235,6 @@ public:
       _calltrace_buffer[i] = NULL;
     }
   }
-
-  static void checkFault(ProfiledThread* thrd = nullptr);
 
   static inline Profiler *instance() {
     return _instance;
@@ -465,6 +467,7 @@ public:
   static void segvHandler(int signo, siginfo_t *siginfo, void *ucontext);
   static void busHandler(int signo, siginfo_t *siginfo, void *ucontext);
   static void setupSignalHandlers();
+  static void checkFault(ProfiledThread* thrd, siginfo_t *siginfo, void *ucontext);
 
   static int registerThread(int tid);
   static void unregisterThread(int tid);

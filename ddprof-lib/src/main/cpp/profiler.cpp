@@ -76,6 +76,10 @@ static ITimerJvmti itimer_jvmti;
 static CTimer ctimer;
 static CTimerJvmti ctimer_jvmti;
 
+const void* Profiler::_profiler_min_address = nullptr;
+const void* Profiler::_profiler_max_address = nullptr;
+
+
 void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   // JVMTI callback - outside signal handler
   ProfiledThread* current = ProfiledThread::initCurrentThreadSignalSafe();
@@ -1017,17 +1021,22 @@ void Profiler::busHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   }
 }
 
-void Profiler::checkFault(ProfiledThread* thrd) {
+void Profiler::checkFault(ProfiledThread* thrd, siginfo_t *siginfo, void *ucontext) {
   if (thrd == nullptr || !thrd->isProtected()) {
     return;
   }
 
   thrd->resetCrashHandler();
-  // Shared recovery point for every setjmp/longjmp-protected stack walk
-  // (walkVM's inner region and recordSample's native/AGCT unwind), so the
-  // counter is deliberately not walkVM-specific.
-  Counters::increment(STACKWALK_LONGJMP_RECOVERED);
-  longjmp(*thrd->getJmpCtx(), 1);
+
+  // check if fault is originated from java profiler.
+  assert(_profiler_min_address != nullptr && _profiler_max_address != nullptr);
+  if (siginfo->si_addr >= _profiler_min_address && siginfo->si_addr < _profiler_max_address) {
+    // Shared recovery point for every setjmp/longjmp-protected stack walk
+    // (walkVM's inner region and recordSample's native/AGCT unwind), so the
+    // counter is deliberately not walkVM-specific.
+    Counters::increment(STACKWALK_LONGJMP_RECOVERED);
+    longjmp(*thrd->getJmpCtx(), 1);
+  }
 }
 // Returns: 0 = not handled (chain to next handler), non-zero = handled
 int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext) {
@@ -1075,7 +1084,7 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
   // checkFault has its own check if we're in a protected stack walk.
   // If the fault is from our protected walk, it will longjmp and never return.
   // If it returns, the fault wasn't from our code.
-  checkFault(thrd);
+  checkFault(thrd, siginfo, ucontext);
 
   if (VM::isHotspot()) {
     // the following checks require vmstructs and therefore HotSpot
@@ -1110,6 +1119,13 @@ void Profiler::setupSignalHandlers() {
       // signal path only ever performs lock-free atomic increments on the
       // already-allocated array.
       (void)Counters::getCounters();
+
+      Profiler* prof = Profiler::instance();
+      Libraries* libs = (Libraries*) prof->libraries();
+      CodeCache* prof_lib = libs->findLibraryByName("libjavaProfiler");
+      assert(prof_lib != nullptr);
+      _profiler_min_address = prof_lib->minAddress();
+      _profiler_max_address = prof_lib->maxAddress();
 
       if (VM::isHotspot() || VM::isOpenJ9()) {
         // HotSpot and J9 tolerate interposed SIGSEGV/SIGBUS handler; other JVMs probably not
