@@ -286,8 +286,8 @@ TEST_F(JmpCtxChainingTest, NestedFramesChainAndUnwindInOrder) {
 // frame has recovered and restored the outer's context, the outer frame must
 // be left exactly as it was, never having been unwound itself.
 TEST_F(JmpCtxChainingTest, FaultInInnerFrameDoesNotDisturbOuterFrame) {
-    jmp_buf outer_ctx;
-    jmp_buf* outer_prev = _pt->getJmpCtx();
+    sigjmp_buf outer_ctx;
+    sigjmp_buf* outer_prev = _pt->getJmpCtx();
     int outer_landed = 0;
     int inner_landed = 0;
 
@@ -297,8 +297,8 @@ TEST_F(JmpCtxChainingTest, FaultInInnerFrameDoesNotDisturbOuterFrame) {
         _pt->setJmpCtx(&outer_ctx);
 
         // --- inner "walkVM" call, interrupted mid-flight by a fault ---
-        jmp_buf inner_ctx;
-        jmp_buf* inner_prev = _pt->getJmpCtx();
+        sigjmp_buf inner_ctx;
+        sigjmp_buf* inner_prev = _pt->getJmpCtx();
         ASSERT_EQ(&outer_ctx, inner_prev);
 
         if (sigsetjmp(inner_ctx, 1) != 0) {
@@ -309,7 +309,7 @@ TEST_F(JmpCtxChainingTest, FaultInInnerFrameDoesNotDisturbOuterFrame) {
             // Simulate checkFault(): longjmp through whatever is currently
             // installed — this must hit the inner frame, not the outer.
             siglongjmp(*_pt->getJmpCtx(), 1);
-            FAIL() << "unreachable: longjmp does not return";
+            FAIL() << "unreachable: siglongjmp does not return";
         }
         // --- inner call has returned normally after recovering ---
 
