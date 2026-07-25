@@ -684,10 +684,7 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
         sigjmp_buf unwind_ctx;
         sigjmp_buf *prev_jmp_buf = walk_thread->getJmpCtx();
 
-        int jmp_rc = 0;
-        if (!VM::isOpenJ9()) {
-          jmp_rc = sigsetjmp(unwind_ctx, 1);
-        }
+        int jmp_rc = jmp_rc = sigsetjmp(unwind_ctx, 1);
         if (jmp_rc != 0) {
             // A fault during unwinding longjmp'd back here (via checkFault). The
             // longjmp bypassed segvHandler's SignalHandlerScope destructor, so
