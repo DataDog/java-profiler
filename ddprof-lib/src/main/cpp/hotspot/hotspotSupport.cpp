@@ -984,7 +984,7 @@ void HotspotSupport::checkFault(ProfiledThread* thrd) {
         return;
     }
 
-    // Check if siglongjmp is setup for this thread
+    // Check if siglongjmp is set up for this thread
     if (!thrd->isProtected()) {
         return;
     }
