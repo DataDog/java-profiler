@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk8
 
 ## glibc-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-07-26 12:01:06 EDT
+**Date:** 2026-07-26 12:02:00 EDT
 
 ### Configuration
 | Setting | Value |
@@ -48,12 +48,6 @@ title: glibc-arm64-hotspot-jdk8
 <summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
-1785081475 48
-1785081480 48
-1785081485 48
-1785081490 48
-1785081495 48
-1785081500 48
 1785081505 48
 1785081510 48
 1785081515 48
@@ -68,6 +62,12 @@ title: glibc-arm64-hotspot-jdk8
 1785081560 48
 1785081565 48
 1785081570 48
+1785081575 48
+1785081580 48
+1785081585 48
+1785081590 48
+1785081595 48
+1785081600 48
 ```
 </details>
 
