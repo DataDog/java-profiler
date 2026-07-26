@@ -2035,6 +2035,7 @@ int Profiler::status(char* status, int max_len) {
 }
 
 void Profiler::checkFault(ProfiledThread* thrd, siginfo_t *siginfo, void *ucontext) {
+    (void)siginfo;
     // Check if longjmp is setup for this thread
     if (thrd == nullptr || !thrd->isProtected()) {
         return;
