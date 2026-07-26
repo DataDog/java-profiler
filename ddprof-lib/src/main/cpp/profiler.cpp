@@ -681,10 +681,13 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
         Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
         truncated = true;
     } else {
+        sigjmp_buf unwind_ctx;
+        sigjmp_buf *prev_jmp_buf = walk_thread->getJmpCtx();
         int jmp_rc = sigsetjmp(unwind_ctx, 1);
+        if (jmp_rc != 0) {
             // A fault during unwinding longjmp'd back here (via checkFault). The
-            // longjmp bypassed segvHandler's SignalHandlerScope destructor, so
-            // compensate, restore the previous jmp_buf chain, and record the
+            // siglongjmp bypassed segvHandler's SignalHandlerScope destructor, so
+            // compensate, restore the previous sigjmp_buf chain, and record the
             // partial trace with an error marker instead of crashing.
             SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
             walk_thread->setJmpCtx(prev_jmp_buf);
