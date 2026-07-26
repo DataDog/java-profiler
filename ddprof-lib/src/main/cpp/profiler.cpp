@@ -1108,11 +1108,11 @@ void Profiler::setupSignalHandlers() {
 
       // Get address range of java profiler library
       Libraries* libs = Libraries::instance();
-      CodeCache* prof_lib = libs->findLibraryByName("libjavaProfiler");
-      assert(prof_lib != nullptr);
-      profiler_min_address = prof_lib->minAddress();
-      profiler_max_address = prof_lib->maxAddress();
-      assert(profiler_min_address != nullptr && profiler_max_address != nullptr);
+      CodeCache* prof_lib = libs->findLibraryByAddress((const void*)&Profiler::setupSignalHandlers);
+      if (prof_lib != nullptr) {
+        profiler_min_address = prof_lib->minAddress();
+        profiler_max_address = prof_lib->maxAddress();
+      }
 
       #ifdef __FAULT_INJECTION__
       // Reserve the PROT_NONE guard region used to poison memory-access sites.
