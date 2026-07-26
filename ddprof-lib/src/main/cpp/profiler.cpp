@@ -2038,16 +2038,24 @@ int Profiler::status(char* status, int max_len) {
     _alloc_engine != nullptr ? _alloc_engine->name() : "None");
 }
 
-(??)void Profiler::checkFault(ProfiledThread* thrd) {
-(??)    // Should not get to here (?)
-(??)    if (thrd == nullptr) {
+void Profiler::checkFault(ProfiledThread* thrd, siginfo_t *siginfo, void *ucontext) {
+    // Check if longjmp is setup for this thread
+    if (thrd == nullptr || !thrd->isProtected()) {
         return;
     }
 
-(??)
+    // Check if the fault is originated from java profiler
+    const uintptr_t pc = StackFrame(ucontext).pc();
+    const uintptr_t min = (uintptr_t)profiler_min_address;
+    const uintptr_t max = (uintptr_t)profiler_max_address;
+
+    // If the profiler address range is not initialized (e.g. unit tests), fall back
+    // to recovering unconditionally when a protection context is installed.
+    if ((min != 0 && max != 0) && (pc < min || pc >= max)) {
+      return;
     }
 
     thrd->resetCrashHandler();
     Counters::increment(STACKWALK_LONGJMP_RECOVERED);
-(??)    longjmp(*thrd->getJmpCtx(), 1);
+    siglongjmp(*thrd->getJmpCtx(), 1);
 }
