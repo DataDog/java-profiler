@@ -210,9 +210,8 @@ TEST_F(FaultInjectionTest, RecordSampleOuterSetjmpRecoversAndRestoresChain) {
 
   // Simulate a pre-existing outer protection context, as recordSample must
   // support when nested inside another sampler's own protected region.
-  jmp_buf grandparent_ctx;
+  sigjmp_buf grandparent_ctx;
   t->setJmpCtx(&grandparent_ctx);
-
   uintptr_t real_slot = 0;              // a valid, readable "metadata" slot
   uintptr_t base = (uintptr_t)&real_slot;
   long long recovered_before = Counters::getCounter(STACKWALK_LONGJMP_RECOVERED);
