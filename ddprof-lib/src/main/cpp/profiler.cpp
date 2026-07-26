@@ -659,12 +659,12 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
 #endif // COUNTERS
     ASGCT_CallFrame *frames = _calltrace_buffer[lock_index]->_asgct_frames;
 
-    // Read again after the setjmp landing below, so it must be volatile: a
-    // longjmp out of the unwind leaves non-volatile locals indeterminate.
+    // Read again after the sigsetjmp landing below, so it must be volatile: a
+    // siglongjmp out of the unwind leaves non-volatile locals indeterminate.
     volatile int num_frames = 0;
     StackContext java_ctx = {0};
 
-    // Establish setjmp/longjmp crash protection around the unwind. The native
+    // Establish sigsetjmp/siglongjmp crash protection around the unwind. The native
     // walkers (walkFP/walkDwarf) protect their pointer loads with SafeAccess
     // safefetch, but the surrounding metadata reads (isJitCode, findFrameDesc,
     // findLibraryByAddress, AGCT in getJavaTraceAsync, frame.link, ...) are raw
@@ -685,7 +685,7 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
         sigjmp_buf *prev_jmp_buf = walk_thread->getJmpCtx();
         int jmp_rc = sigsetjmp(unwind_ctx, 1);
         if (jmp_rc != 0) {
-            // A fault during unwinding longjmp'd back here (via checkFault). The
+            // A fault during unwinding siglongjmp'd back here (via checkFault). The
             // siglongjmp bypassed segvHandler's SignalHandlerScope destructor, so
             // compensate, restore the previous sigjmp_buf chain, and record the
             // partial trace with an error marker instead of crashing.
@@ -698,7 +698,7 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
         } else {
             walk_thread->setJmpCtx(&unwind_ctx);
 
-            // truncated_local is never read after a longjmp landing (only on the
+            // truncated_local is never read after a siglongjmp landing (only on the
             // clean path below), so it need not be volatile; the outer `truncated`
             // stays false on the recovery path.
             bool truncated_local = false;
@@ -1055,7 +1055,7 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
   }
 
   // Profiler::checkFault has its own check if we're in a protected stack walk.
-  // If the fault is from our protected walk, it will longjmp and never return.
+  // If the fault is from our protected walk, it will siglongjmp and never return.
   // If it returns, the fault wasn't from our code.
   Profiler::checkFault(thrd, siginfo, ucontext);
 
@@ -2039,7 +2039,7 @@ int Profiler::status(char* status, int max_len) {
 
 void Profiler::checkFault(ProfiledThread* thrd, siginfo_t *siginfo, void *ucontext) {
     (void)siginfo;
-    // Check if longjmp is setup for this thread
+    // Check if siglongjmp is setup for this thread
     if (thrd == nullptr || !thrd->isProtected()) {
         return;
     }

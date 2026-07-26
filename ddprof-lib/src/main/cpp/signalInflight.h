@@ -29,12 +29,12 @@
 // writes do not invalidate the cache line backing each engine's _enabled
 // flag, which is read on every signal.
 //
-// Known limitation — longjmp out of a signal handler frame:
-// If a signal handler frame is unwound by a longjmp that bypasses the
+// Known limitation — siglongjmp out of a signal handler frame:
+// If a signal handler frame is unwound by a siglongjmp that bypasses the
 // InflightGuard destructor, the counter leaks by +1 permanently. In this
 // codebase that can only happen via J9's SIGSEGV null-pointer-check
 // handler: our segvHandler chains to J9 for unclaimed faults, and J9 may
-// siglongjmp to a setjmp installed in normal Java code (J9 null-check
+// siglongjmp to a sigsetjmp installed in normal Java code (J9 null-check
 // recovery), unwinding past every frame above it including any active
 // InflightGuard. SignalHandlerScope has the same limitation for its own
 // depth counter (see guards.h) and the codebase accepts it.
