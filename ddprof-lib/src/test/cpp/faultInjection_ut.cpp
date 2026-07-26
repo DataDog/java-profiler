@@ -52,7 +52,7 @@ TEST(FaultInjectionTest, DisabledValueMacrosAreIdentity) {
 
 #else  // __FAULT_INJECTION__ enabled (built under -PenableFaultInjection)
 
-// Chain: safefetch recovery first, then walkVM setjmp/longjmp recovery, then
+// Chain: safefetch recovery first, then walkVM sigsetjmp/siglongjmp recovery, then
 // the crash handler as a last resort so a genuine bug still produces a report.
 static void (*orig_segvHandler)(int, siginfo_t*, void*);
 static void (*orig_busHandler)(int, siginfo_t*, void*);
@@ -145,7 +145,7 @@ TEST_F(FaultInjectionTest, SafeAccessRecoversFromInjectedFault) {
 }
 
 // (c2) walkVM path: a raw dereference of an injected poison pointer must be
-// caught by the sigsetjmp/siglongjmp crash protection, returning control to setjmp.
+// caught by the sigsetjmp/siglongjmp crash protection, returning control to sigsetjmp.
 TEST_F(FaultInjectionTest, WalkVmSetjmpRecoversFromInjectedFault) {
   ProfiledThread* t = ProfiledThread::current();
   ASSERT_NE(t, nullptr);
@@ -177,13 +177,13 @@ TEST_F(FaultInjectionTest, WalkVmSetjmpRecoversFromInjectedFault) {
 
   // We should have observed a recovered fault, or the loop completed cleanly. The
   // essential assertion is that the process did not die and, when a fault was
-  // injected, setjmp regained control.
-  EXPECT_GT(faults, 0u) << "expected at least one injected fault to longjmp-recover";
+  // injected, sigsetjmp regained control.
+  EXPECT_GT(faults, 0u) << "expected at least one injected fault to siglongjmp-recover";
   EXPECT_TRUE(recovered);
   SUCCEED();
 }
 
-// (c3) recordSample's outer setjmp region (PROF-15447): Profiler::recordSample()
+// (c3) recordSample's outer sigsetjmp region (PROF-15447): Profiler::recordSample()
 // wraps the native/Java unwind in its own jmp_buf, chaining off whatever
 // context a caller may already have installed, so a fault in the
 // *unprotected* metadata reads surrounding walkVM/walkFP/walkDwarf (isJitCode,
@@ -194,9 +194,9 @@ TEST_F(FaultInjectionTest, WalkVmSetjmpRecoversFromInjectedFault) {
 // recordSample() itself needs a live JVM (ASGCT, VMStructs, an allocated
 // _calltrace_buffer) unavailable in this gtest binary, so — following the
 // same "replicate the protocol" approach used elsewhere in this suite for
-// JVM-dependent code — this test reproduces its exact save/install/setjmp/
-// longjmp/restore sequence verbatim, including the `volatile int num_frames`
-// accumulator that must survive the longjmp landing, and drives it with the
+// JVM-dependent code — this test reproduces its exact save/install/sigsetjmp/
+// siglongjmp/restore sequence verbatim, including the `volatile int num_frames`
+// accumulator that must survive the siglongjmp landing, and drives it with the
 // same probabilistic fault injection as WalkVmSetjmpRecoversFromInjectedFault.
 // Unlike that test, this one also (a) starts from an already-installed
 // "grandparent" jmp_buf to verify nesting/chain-restore, matching how
@@ -217,12 +217,12 @@ TEST_F(FaultInjectionTest, RecordSampleOuterSetjmpRecoversAndRestoresChain) {
   uintptr_t base = (uintptr_t)&real_slot;
   long long recovered_before = Counters::getCounter(STACKWALK_LONGJMP_RECOVERED);
 
-  // Read again after the setjmp landing below, so it must be volatile — mirrors
+  // Read again after the sigsetjmp landing below, so it must be volatile — mirrors
   // recordSample's own num_frames.
   volatile int num_frames = 0;
   // Frames "collected" before the fault, e.g. by a getNativeTrace() call that
   // partially succeeded before walkJavaStack() faulted. Seeding a non-zero
-  // value here — mutated between setjmp() and the longjmp below — is what
+  // value here — mutated between sigsetjmp() and the siglongjmp below — is what
   // actually exercises the volatile qualifier: a non-volatile local would be
   // indeterminate after the jump, so the post-recovery checks below would not
   // reliably see it. Without this seed, num_frames would still read 0 whether
@@ -235,9 +235,9 @@ TEST_F(FaultInjectionTest, RecordSampleOuterSetjmpRecoversAndRestoresChain) {
 
   t->setFiRng(0xC0FFEEC0FFEEC0FFULL);
 
-  int jmp_rc = setjmp(unwind_ctx);
+  int jmp_rc = sigsetjmp(unwind_ctx, 1);
   if (jmp_rc != 0) {
-    // Landed here via the real Profiler::checkFault() -> longjmp, triggered by
+    // Landed here via the real Profiler::checkFault() -> siglongjmp, triggered by
     // an actual injected fault below. Mirrors recordSample's
     // `if (num_frames < _max_stack_depth) { num_frames += makeFrame(...); }`:
     // the recovery marker is appended to whatever partial progress survived
@@ -246,12 +246,12 @@ TEST_F(FaultInjectionTest, RecordSampleOuterSetjmpRecoversAndRestoresChain) {
     num_frames += 1;  // stand-in for makeFrame(..., "break_unwind_fault")
   } else {
     t->setJmpCtx(&unwind_ctx);
-    num_frames = kSeededFrames;  // mutated before the fault; must survive the longjmp
+    num_frames = kSeededFrames;  // mutated before the fault; must survive the siglongjmp
 
     // Force at least one fire deterministically, then let the tier drive the rest.
     for (int i = 0; i < 5000 && num_frames == kSeededFrames; i++) {
       // Raw deref of the (possibly poisoned) base — mirrors the unprotected
-      // metadata reads recordSample's outer setjmp now guards.
+      // metadata reads recordSample's outer sigsetjmp now guards.
       uintptr_t v = *(uintptr_t*)INJECT_FAULT_ADDRESS_LIKELY(base);
       asm volatile("" : "+r"(v) : : "memory");
     }
@@ -262,7 +262,7 @@ TEST_F(FaultInjectionTest, RecordSampleOuterSetjmpRecoversAndRestoresChain) {
       << "must restore the caller's jmp_buf chain on both the clean and the "
          "recovery path, never leave it cleared or pointing at unwind_ctx";
   EXPECT_EQ(kSeededFrames + 1, num_frames)
-      << "the seeded pre-fault value must survive the longjmp landing and the "
+      << "the seeded pre-fault value must survive the siglongjmp landing and the "
          "recovery marker must append to it, not overwrite it";
   EXPECT_GT(Counters::getCounter(STACKWALK_LONGJMP_RECOVERED), recovered_before)
       << "checkFault() must have run and incremented the shared recovery counter";
