@@ -223,11 +223,25 @@ public:
     if (JVMThread::_jvm_thread.isKeyValid()) {
       return;
     }
-    static void* marker = &marker;
+
+    static int marker_storage;
+    void* marker = &marker_storage;
+
     pthread_key_t key;
-    ASSERT_EQ(pthread_key_create(&key, nullptr), 0);
-    ASSERT_EQ(pthread_setspecific(key, marker), 0);
-    ASSERT_TRUE(JVMThread::_jvm_thread.initialize(marker));
+    int rc = pthread_key_create(&key, nullptr);
+    if (rc != 0) {
+      ADD_FAILURE() << "pthread_key_create failed: " << rc;
+      return;
+    }
+    rc = pthread_setspecific(key, marker);
+    if (rc != 0) {
+      ADD_FAILURE() << "pthread_setspecific failed: " << rc;
+      return;
+    }
+    if (!JVMThread::_jvm_thread.initialize(marker)) {
+      ADD_FAILURE() << "ThreadLocal<JVMThread*>::initialize failed";
+      return;
+    }
   }
 };
 
