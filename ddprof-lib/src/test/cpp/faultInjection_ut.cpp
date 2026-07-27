@@ -48,6 +48,18 @@ TEST(FaultInjectionTest, DisabledValueMacrosAreIdentity) {
   EXPECT_EQ(INJECT_FAULT_LONG_RARE(l), l);
   EXPECT_EQ(INJECT_FAULT_LONG_UNLIKELY(l), l);
   EXPECT_EQ(INJECT_FAULT_LONG_LIKELY(l), l);
+
+  // BOOL must be identity both ways -- an accidental non-identity expansion
+  // (e.g. always forcing false) would otherwise only show up as a silent
+  // behavioural change in a production build, never a compile error.
+  bool t = true;
+  bool f = false;
+  EXPECT_EQ(INJECT_FAULT_BOOL_RARE(t), t);
+  EXPECT_EQ(INJECT_FAULT_BOOL_UNLIKELY(t), t);
+  EXPECT_EQ(INJECT_FAULT_BOOL_LIKELY(t), t);
+  EXPECT_EQ(INJECT_FAULT_BOOL_RARE(f), f);
+  EXPECT_EQ(INJECT_FAULT_BOOL_UNLIKELY(f), f);
+  EXPECT_EQ(INJECT_FAULT_BOOL_LIKELY(f), f);
 }
 
 #else  // __FAULT_INJECTION__ enabled (built under -PenableFaultInjection)
