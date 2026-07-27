@@ -287,6 +287,7 @@ TEST_F(FaultInjectionTest, CheckStateSurfacesInjectedPrewarmUnwinderFailure) {
   EXPECT_TRUE(sawClean)
       << "expected at least one non-injected call to succeed (LIKELY tier is ~1%)";
   ProfilerTestAccessor::setState(p, NEW);
+#endif  // __linux__
 }
 
 #endif  // __FAULT_INJECTION__
