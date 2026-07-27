@@ -214,6 +214,7 @@ public:
 // that failure path reachable here: the real dlopen() still runs and
 // succeeds, but the caller is deterministically told it failed.
 TEST_F(FaultInjectionTest, CheckStateSurfacesInjectedPrewarmUnwinderFailure) {
+#ifdef __linux__
   Profiler* p = Profiler::instance();
   ProfilerTestAccessor::setState(p, IDLE);
   ProfiledThread::current()->setFiRng(0x5EED5EED5EED5EEDULL);
@@ -234,6 +235,7 @@ TEST_F(FaultInjectionTest, CheckStateSurfacesInjectedPrewarmUnwinderFailure) {
       << "expected at least one injected prewarmUnwinder() failure within 5000 tries";
   EXPECT_TRUE(sawClean)
       << "expected at least one non-injected call to succeed (LIKELY tier is ~1%)";
+#endif // __linux__
 }
 
 #endif  // __FAULT_INJECTION__
