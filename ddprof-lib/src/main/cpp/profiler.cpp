@@ -864,7 +864,11 @@ bool Profiler::prewarmUnwinder() {
   // dlopen by SONAME is the only mechanism that works under static-libgcc.
   // libgcc_s.so.1 has been the stable SONAME since 2002; a bump would
   // constitute a glibc/GCC C++ ABI break and is treated as a fixed contract.
-  return dlopen("libgcc_s.so.1", RTLD_LAZY | RTLD_GLOBAL) != nullptr;
+  //
+  // INJECT_FAULT_BOOL_LIKELY lets fault-injection builds force this to
+  // report failure without the library actually being absent, so
+  // checkState()'s "Missing libgcc_s.so" path can be exercised in CI.
+  return INJECT_FAULT_BOOL_LIKELY(dlopen("libgcc_s.so.1", RTLD_LAZY | RTLD_GLOBAL) != nullptr);
 #else
   return true;
 #endif
@@ -1289,6 +1293,12 @@ void Profiler::check_JDK_8313796_workaround() {
 }
 
 Error Profiler::checkState() {
+  // Force libgcc_s to load now (idempotent dlopen) so the JVM's DWARF
+  // unwinder cannot lazy-load it later from signal context.
+  if (!prewarmUnwinder()) {
+    return Error("Missing libgcc_s.so");
+  }
+
   State s = state();
   if (s == ERROR) {
     return Error("Profiler encountered fatal error");
@@ -1308,11 +1318,6 @@ Error Profiler::checkState() {
 
 Error Profiler::init() {
   MutexLocker ml(_state_lock);
-  // Force libgcc_s to load now (idempotent dlopen) so the JVM's DWARF
-  // unwinder cannot lazy-load it later from signal context.
-  if (!prewarmUnwinder()) {
-    return Error("Missing libgcc_s.so");
-  }
 
   State s = state();
   if (s == ERROR) {

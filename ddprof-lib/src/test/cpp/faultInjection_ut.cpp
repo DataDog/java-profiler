@@ -13,6 +13,7 @@
 #include "faultInjection.h"
 #include "safeAccess.h"
 #include "os.h"
+#include "profiler.h"
 #include "threadLocalData.h"
 #include "hotspot/hotspotSupport.h"
 #include "../../main/cpp/gtest_crash_handler.h"
@@ -178,6 +179,46 @@ TEST_F(FaultInjectionTest, WalkVmSigsetjmpRecoversFromInjectedFault) {
   EXPECT_GT(faults, 0u) << "expected at least one injected fault to siglongjmp-recover";
   EXPECT_TRUE(recovered);
   SUCCEED();
+}
+
+// Friend of Profiler (see profiler.h) — lets this test force the internal
+// state to IDLE so checkState() can be exercised deterministically without a
+// live JVM (matches the pattern in jvmSupport_ut.cpp).
+class ProfilerTestAccessor {
+public:
+  static void setState(Profiler* p, State s) {
+    p->_state.store(s, std::memory_order_release);
+  }
+};
+
+// (d) Value-injection path: PROF-15395 fixed Profiler::checkState() (shared by
+// start()/check(), and therefore also reached by the -agentpath auto-start
+// path) to fail cleanly instead of crashing later when libgcc_s.so.1 can't be
+// loaded. libgcc_s.so.1 is always present in this test environment, so
+// INJECT_FAULT_BOOL_LIKELY on prewarmUnwinder()'s return value is what makes
+// that failure path reachable here: the real dlopen() still runs and
+// succeeds, but the caller is deterministically told it failed.
+TEST_F(FaultInjectionTest, CheckStateSurfacesInjectedPrewarmUnwinderFailure) {
+  Profiler* p = Profiler::instance();
+  ProfilerTestAccessor::setState(p, IDLE);
+  ProfiledThread::current()->setFiRng(0x5EED5EED5EED5EEDULL);
+
+  bool sawInjectedFailure = false;
+  bool sawClean = false;
+  for (int i = 0; i < 5000 && !sawInjectedFailure; i++) {
+    Error error = p->checkState();
+    if (error) {
+      EXPECT_STREQ("Missing libgcc_s.so", error.message());
+      sawInjectedFailure = true;
+    } else {
+      sawClean = true;
+    }
+  }
+
+  EXPECT_TRUE(sawInjectedFailure)
+      << "expected at least one injected prewarmUnwinder() failure within 5000 tries";
+  EXPECT_TRUE(sawClean)
+      << "expected at least one non-injected call to succeed (LIKELY tier is ~1%)";
 }
 
 #endif  // __FAULT_INJECTION__
