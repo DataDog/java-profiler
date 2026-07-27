@@ -20,7 +20,7 @@
 // site (VMStructs::at, walkVM, walkFP, walkDwarf).  When __FAULT_INJECTION__ is
 // defined, each wrapped expression, with the tier's probability, is replaced by
 // a deliberately bad address (so the load faults and the profiler's recovery
-// path — SafeAccess safefetch or walkVM's setjmp/longjmp — is exercised) or a
+// path — SafeAccess safefetch or walkVM's sigsetjmp/siglongjmp — is exercised) or a
 // random int/long value.  When the flag is NOT defined, every macro is a strict
 // identity: it expands to exactly the parenthesized original expression, with
 // unchanged type and value category and zero runtime cost.
