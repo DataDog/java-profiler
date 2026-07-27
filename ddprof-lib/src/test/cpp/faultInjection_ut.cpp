@@ -250,11 +250,17 @@ TEST_F(FaultInjectionTest, CheckStateSurfacesInjectedPrewarmUnwinderFailure) {
 
   bool sawInjectedFailure = false;
   bool sawClean = false;
-  for (int i = 0; i < 5000 && !sawInjectedFailure; i++) {
+  // shouldFire() mixes the fixed RNG seed above with an ASLR-dependent
+  // per-call-site address, so which outcome the *first* call produces is not
+  // deterministic run to run -- the injected failure can land before a clean
+  // call is observed. Keep iterating (and un-latching the ERROR state that a
+  // failure leaves behind) until both outcomes have been seen at least once.
+  for (int i = 0; i < 5000 && !(sawInjectedFailure && sawClean); i++) {
     Error error = p->checkState();
     if (error) {
       EXPECT_STREQ("Missing libgcc_s.so", error.message());
       sawInjectedFailure = true;
+      ProfilerTestAccessor::setState(p, NEW);
     } else {
       sawClean = true;
     }
