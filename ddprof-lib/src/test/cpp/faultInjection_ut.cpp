@@ -218,8 +218,10 @@ public:
 class JVMThreadTestAccessor {
 public:
   static void forceInitialized() {
-  static char dummy_tid_storage;
-  JVMThread::_tid = reinterpret_cast<jfieldID>(&dummy_tid_storage);
+    static char dummy_tid_storage;
+    if (JVMThread::_tid == nullptr) {
+      JVMThread::_tid = reinterpret_cast<jfieldID>(&dummy_tid_storage);
+    }
     if (JVMThread::_jvm_thread.isKeyValid()) {
       return;
     }
