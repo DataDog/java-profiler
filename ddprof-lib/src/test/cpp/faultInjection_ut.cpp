@@ -144,8 +144,8 @@ TEST_F(FaultInjectionTest, SafeAccessRecoversFromInjectedFault) {
 }
 
 // (c2) walkVM path: a raw dereference of an injected poison pointer must be
-// caught by the sigsetjmp/siglongjmp crash protection, returning control to setjmp.
-TEST_F(FaultInjectionTest, WalkVmSetjmpRecoversFromInjectedFault) {
+// caught by the sigsetjmp/siglongjmp crash protection, returning control to sigsetjmp.
+TEST_F(FaultInjectionTest, WalkVmSigsetjmpRecoversFromInjectedFault) {
   ProfiledThread* t = ProfiledThread::current();
   ASSERT_NE(t, nullptr);
 
@@ -174,8 +174,8 @@ TEST_F(FaultInjectionTest, WalkVmSetjmpRecoversFromInjectedFault) {
 
   // We should have observed a recovered fault, or the loop completed cleanly. The
   // essential assertion is that the process did not die and, when a fault was
-  // injected, setjmp regained control.
-  EXPECT_GT(faults, 0u) << "expected at least one injected fault to longjmp-recover";
+  // injected, sigsetjmp regained control.
+  EXPECT_GT(faults, 0u) << "expected at least one injected fault to siglongjmp-recover";
   EXPECT_TRUE(recovered);
   SUCCEED();
 }
