@@ -1297,19 +1297,19 @@ Error Profiler::checkState() {
   if (s == ERROR) {
     return Error("Profiler encountered fatal error");
   } else if (s == NEW) {
+    // Force libgcc_s to load now (idempotent dlopen) so the JVM's DWARF
+    // unwinder cannot lazy-load it later from signal context.
+    if (!prewarmUnwinder()) {
+      _state.store(ERROR, std::memory_order_release);
+      return Error("Missing libgcc_s.so");
+    }
+
     // Make sure JVMSupport is initialized
     // In theory, it should be initialized in JVMTI::VMInit() callback,
     // but the callback arrives too late, after this method is called.
     if (!JVMSupport::initialize()) {
       _state.store(ERROR, std::memory_order_release);
       return Error("Profiler encountered fatal error");
-    }
-
-    // Force libgcc_s to load now (idempotent dlopen) so the JVM's DWARF
-    // unwinder cannot lazy-load it later from signal context.
-    if (!prewarmUnwinder()) {
-      _state.store(ERROR, std::memory_order_release);
-      return Error("Missing libgcc_s.so");
     }
   } else if (s > IDLE) {
     return Error("Profiler already started");

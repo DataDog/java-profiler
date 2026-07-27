@@ -10,12 +10,14 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include <cstring>
+
 #include "faultInjection.h"
 #include "safeAccess.h"
 #include "os.h"
 #include "profiler.h"
 #include "threadLocalData.h"
-#include "jvmThread.h"
+#include "vmEntry.h"
 #include "hotspot/hotspotSupport.h"
 #include "../../main/cpp/gtest_crash_handler.h"
 
@@ -207,42 +209,39 @@ public:
   }
 };
 
-// Friend of JVMThread — lets this test satisfy JVMSupport::initialize()'s
-// JVMThread::isInitialized() check without a live JVM attached, so
-// checkState()'s NEW branch falls through to prewarmUnwinder() instead of
-// latching ERROR on the JVMSupport::initialize() gate first. This binary has
-// no JVMTI/JNI environment to drive JVMThread::initialize() for real, so we
-// fake what a live JVM would have already set up: a discoverable pthread key
-// holding a per-thread marker, exactly what ThreadLocal<JVMThread*>::initialize
-// scans for.
-class JVMThreadTestAccessor {
+// Friend of VM (see vmEntry.h) — lets this test install a mock jvmtiEnv, the
+// same seam jvmSupport_ut.cpp uses. checkState() (below) checks
+// prewarmUnwinder() before JVMSupport::initialize(), so the injected-failure
+// path never touches this at all; it exists only so the ~99% non-injected
+// iterations, which do fall through into JVMSupport::initialize(), fail
+// gracefully instead of crashing on a null VM::_jvmti in this no-live-JVM
+// binary. Unlike a JVMThread-level fake (which would permanently flip
+// JVMThread::isInitialized() for the rest of the process, since ThreadLocal
+// pthread keys are never invalidated), this is a plain pointer swap that
+// ScopedJvmtiMock restores on scope exit -- no state leaks into later tests.
+class VMTestAccessor {
 public:
-  static void forceInitialized() {
-  static char dummy_tid_storage;
-  JVMThread::_tid = reinterpret_cast<jfieldID>(&dummy_tid_storage);
-    if (JVMThread::_jvm_thread.isKeyValid()) {
-      return;
-    }
+  static jvmtiEnv* getJvmti() { return VM::_jvmti; }
+  static void setJvmti(jvmtiEnv* env) { VM::_jvmti = env; }
+};
 
-    static int marker_storage;
-    void* marker = &marker_storage;
+static jvmtiError JNICALL mock_GetCurrentThread_fails(jvmtiEnv*, jthread*) {
+  return JVMTI_ERROR_INTERNAL;
+}
 
-    pthread_key_t key;
-    int rc = pthread_key_create(&key, nullptr);
-    if (rc != 0) {
-      ADD_FAILURE() << "pthread_key_create failed: " << rc;
-      return;
-    }
-    rc = pthread_setspecific(key, marker);
-    if (rc != 0) {
-      ADD_FAILURE() << "pthread_setspecific failed: " << rc;
-      return;
-    }
-    if (!JVMThread::_jvm_thread.initialize(marker)) {
-      ADD_FAILURE() << "ThreadLocal<JVMThread*>::initialize failed";
-      return;
-    }
+class ScopedJvmtiMock {
+public:
+  ScopedJvmtiMock() : _orig(VMTestAccessor::getJvmti()) {
+    _tbl.GetCurrentThread = &mock_GetCurrentThread_fails;
+    _env.functions = &_tbl;
+    VMTestAccessor::setJvmti(&_env);
   }
+  ~ScopedJvmtiMock() { VMTestAccessor::setJvmti(_orig); }
+
+private:
+  jvmtiInterface_1_ _tbl{};
+  _jvmtiEnv _env{};
+  jvmtiEnv* _orig;
 };
 
 // (d) Value-injection path: PROF-15395 fixed Profiler::checkState() (shared by
@@ -255,36 +254,40 @@ public:
 TEST_F(FaultInjectionTest, CheckStateSurfacesInjectedPrewarmUnwinderFailure) {
 #ifdef __linux__
   Profiler* p = Profiler::instance();
-  // checkState() only calls prewarmUnwinder() from the NEW state, after
-  // JVMSupport::initialize() succeeds -- IDLE falls through checkState()
-  // untouched and never reaches prewarmUnwinder() at all.
-  JVMThreadTestAccessor::forceInitialized();
+  // checkState() checks prewarmUnwinder() before JVMSupport::initialize(), so
+  // reaching the injected-failure path below needs nothing but the NEW state.
+  ScopedJvmtiMock jvmti_mock;
   ProfilerTestAccessor::setState(p, NEW);
   ProfiledThread::current()->setFiRng(0x5EED5EED5EED5EEDULL);
 
   bool sawInjectedFailure = false;
-  bool sawClean = false;
+  bool sawNonInjectedPrewarm = false;
   // shouldFire() mixes the fixed RNG seed above with an ASLR-dependent
   // per-call-site address, so which outcome the *first* call produces is not
-  // deterministic run to run -- the injected failure can land before a clean
-  // call is observed. Keep iterating (and un-latching the ERROR state that a
-  // failure leaves behind) until both outcomes have been seen at least once.
-  for (int i = 0; i < 5000 && !(sawInjectedFailure && sawClean); i++) {
+  // deterministic run to run -- the injected failure can land before a
+  // non-injected call is observed. Keep iterating (and un-latching the ERROR
+  // state that every outcome here leaves behind) until both have been seen.
+  for (int i = 0; i < 5000 && !(sawInjectedFailure && sawNonInjectedPrewarm); i++) {
     Error error = p->checkState();
-    if (error) {
-      EXPECT_STREQ("Missing libgcc_s.so", error.message());
+    ASSERT_TRUE((bool)error) << "checkState() must fail here: either the "
+                                 "injected prewarmUnwinder() failure or the "
+                                 "mocked JVMSupport::initialize() failure";
+    if (std::strcmp(error.message(), "Missing libgcc_s.so") == 0) {
       sawInjectedFailure = true;
-      ProfilerTestAccessor::setState(p, NEW);
     } else {
-      sawClean = true;
+      // prewarmUnwinder() succeeded (non-injected, ~99% of calls) and fell
+      // through to the mocked JVMSupport::initialize() failure instead.
+      EXPECT_STREQ("Profiler encountered fatal error", error.message());
+      sawNonInjectedPrewarm = true;
     }
+    ProfilerTestAccessor::setState(p, NEW);
   }
 
   EXPECT_TRUE(sawInjectedFailure)
       << "expected at least one injected prewarmUnwinder() failure within 5000 tries";
-  EXPECT_TRUE(sawClean)
-      << "expected at least one non-injected call to succeed (LIKELY tier is ~1%)";
-  ProfilerTestAccessor::setState(p, NEW);
+  EXPECT_TRUE(sawNonInjectedPrewarm)
+      << "expected at least one non-injected prewarmUnwinder() success within 5000 tries";
+#endif // __linux__
 }
 
 #endif  // __FAULT_INJECTION__

@@ -15,8 +15,6 @@
  * JVMThread represents a native JVM thread that is JVM implementation agnostic
  */
 class JVMThread {
-  friend class JVMThreadTestAccessor;
-
 private:
     static jfieldID _tid;
     static ThreadLocal<JVMThread*> _jvm_thread;
