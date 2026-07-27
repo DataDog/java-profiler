@@ -843,7 +843,7 @@ void Profiler::writeHeapUsage(long value, bool live) {
   _locks[lock_index].unlock();
 }
 
-void Profiler::prewarmUnwinder() {
+bool Profiler::prewarmUnwinder() {
 #ifdef __linux__
   // J9 on aarch64 (and other JVMs) lazily loads libgcc_s.so.1 from its DWARF
   // unwinder during stack walks. When that happens inside a signal handler
@@ -864,7 +864,9 @@ void Profiler::prewarmUnwinder() {
   // dlopen by SONAME is the only mechanism that works under static-libgcc.
   // libgcc_s.so.1 has been the stable SONAME since 2002; a bump would
   // constitute a glibc/GCC C++ ABI break and is treated as a fixed contract.
-  (void)dlopen("libgcc_s.so.1", RTLD_LAZY | RTLD_GLOBAL);
+  return dlopen("libgcc_s.so.1", RTLD_LAZY | RTLD_GLOBAL) != nullptr;
+#else
+  return true;
 #endif
 }
 
@@ -1306,6 +1308,12 @@ Error Profiler::checkState() {
 
 Error Profiler::init() {
   MutexLocker ml(_state_lock);
+  // Force libgcc_s to load now (idempotent dlopen) so the JVM's DWARF
+  // unwinder cannot lazy-load it later from signal context.
+  if (!prewarmUnwinder()) {
+    return Error("Missing libgcc_s.so");
+  }
+
   State s = state();
   if (s == ERROR) {
     return Error("Profiler encountered fatal error");
@@ -1335,10 +1343,6 @@ Error Profiler::start(Arguments &args, bool reset) {
   if (error) {
     return error;
   }
-
-  // Force libgcc_s to load now (idempotent dlopen) so the JVM's DWARF
-  // unwinder cannot lazy-load it later from signal context.
-  prewarmUnwinder();
 
   error = checkJvmCapabilities();
   if (error) {
