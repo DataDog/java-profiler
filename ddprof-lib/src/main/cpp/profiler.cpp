@@ -1079,8 +1079,8 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
   return 0;  // not handled, safe to chain
 }
 
-static const void* profiler_min_address = nullptr;
-static const void* profiler_max_address = nullptr;
+static std::atomic<uintptr_t> profiler_min_address{0};
+static std::atomic<uintptr_t> profiler_max_address{0};
 
 void Profiler::setupSignalHandlers() {
   // Do not re-run the signal setup (run only when VM has not been loaded yet)

@@ -414,9 +414,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             // while PC is still in JVM stubs (JavaCalls, method entry/exit), we see CodeHeap
             // code without VMThread context.
             //
-            // Without vm_thread, crash protection via sigsetjmp/siglongjmp cannot work
-            // (checkFault() needs vm_thread->exception() to siglongjmp). Any memory dereference in interpreter
-            // frame handling or NMethod validation would crash the process with unrecoverable SEGV.
+            // Without vm_thread, we can't safely walk interpreter frames or validate nmethods for
+            // JVM-generated (CodeHeap) code. Any memory dereference there may crash the process
+            // with an unrecoverable SEGV.
             //
             // The missing VMThread is a timing issue during thread lifecycle.
             if (vm_thread == NULL) {
