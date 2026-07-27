@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk21
 
 ## glibc-arm64-openj9-jdk21 - ✅ PASS
 
-**Date:** 2026-07-27 09:01:49 EDT
+**Date:** 2026-07-27 11:40:47 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-arm64-openj9-jdk21
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 26 |
-| CPU Cores (end) | 24 |
+| CPU Cores (start) | 48 |
+| CPU Cores (end) | 48 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-arm64-openj9-jdk21
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (4 unique values: 24-36 cores)</summary>
+<summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
-1785157061 26
-1785157066 28
-1785157071 28
-1785157076 28
-1785157081 28
-1785157086 28
-1785157091 28
-1785157096 28
-1785157101 28
-1785157106 28
-1785157111 28
-1785157116 28
-1785157121 28
-1785157126 36
-1785157131 36
-1785157136 36
-1785157141 36
-1785157146 36
-1785157151 36
-1785157156 24
+1785166447 48
+1785166452 48
+1785166457 48
+1785166462 48
+1785166467 48
+1785166472 48
+1785166477 48
+1785166482 48
+1785166487 48
+1785166492 48
+1785166497 48
+1785166502 48
+1785166507 48
+1785166512 48
+1785166517 48
+1785166522 48
+1785166527 48
+1785166532 48
+1785166537 48
+1785166542 48
 ```
 </details>
 
