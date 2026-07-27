@@ -1293,12 +1293,6 @@ void Profiler::check_JDK_8313796_workaround() {
 }
 
 Error Profiler::checkState() {
-  // Force libgcc_s to load now (idempotent dlopen) so the JVM's DWARF
-  // unwinder cannot lazy-load it later from signal context.
-  if (!prewarmUnwinder()) {
-    return Error("Missing libgcc_s.so");
-  }
-
   State s = state();
   if (s == ERROR) {
     return Error("Profiler encountered fatal error");
@@ -1309,6 +1303,13 @@ Error Profiler::checkState() {
     if (!JVMSupport::initialize()) {
       _state.store(ERROR, std::memory_order_release);
       return Error("Profiler encountered fatal error");
+    }
+
+    // Force libgcc_s to load now (idempotent dlopen) so the JVM's DWARF
+    // unwinder cannot lazy-load it later from signal context.
+    if (!prewarmUnwinder()) {
+      _state.store(ERROR, std::memory_order_release);
+      return Error("Missing libgcc_s.so");
     }
   } else if (s > IDLE) {
     return Error("Profiler already started");
