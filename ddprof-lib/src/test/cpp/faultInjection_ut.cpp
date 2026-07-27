@@ -189,6 +189,9 @@ public:
   static void setState(Profiler* p, State s) {
     p->_state.store(s, std::memory_order_release);
   }
+  static State getState(Profiler* p) {
+    return p->_state.load(std::memory_order_acquire);
+  }
 };
 
 // (d) Value-injection path: PROF-15395 fixed Profiler::checkState() (shared by
