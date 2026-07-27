@@ -15,6 +15,7 @@
 #include "os.h"
 #include "profiler.h"
 #include "threadLocalData.h"
+#include "jvmThread.h"
 #include "hotspot/hotspotSupport.h"
 #include "../../main/cpp/gtest_crash_handler.h"
 
@@ -194,8 +195,8 @@ TEST_F(FaultInjectionTest, WalkVmSigsetjmpRecoversFromInjectedFault) {
 }
 
 // Friend of Profiler (see profiler.h) — lets this test force the internal
-// state to IDLE so checkState() can be exercised deterministically without a
-// live JVM (matches the pattern in jvmSupport_ut.cpp).
+// state to a known value so checkState() can be exercised deterministically
+// (matches the pattern in jvmSupport_ut.cpp).
 class ProfilerTestAccessor {
 public:
   static void setState(Profiler* p, State s) {
@@ -203,6 +204,30 @@ public:
   }
   static State getState(Profiler* p) {
     return p->_state.load(std::memory_order_acquire);
+  }
+};
+
+// Friend of JVMThread — lets this test satisfy JVMSupport::initialize()'s
+// JVMThread::isInitialized() check without a live JVM attached, so
+// checkState()'s NEW branch falls through to prewarmUnwinder() instead of
+// latching ERROR on the JVMSupport::initialize() gate first. This binary has
+// no JVMTI/JNI environment to drive JVMThread::initialize() for real, so we
+// fake what a live JVM would have already set up: a discoverable pthread key
+// holding a per-thread marker, exactly what ThreadLocal<JVMThread*>::initialize
+// scans for.
+class JVMThreadTestAccessor {
+public:
+  static void forceInitialized() {
+    static jfieldID dummy_tid = reinterpret_cast<jfieldID>(0x1);  // never dereferenced here
+    JVMThread::_tid = dummy_tid;
+    if (JVMThread::_jvm_thread.isKeyValid()) {
+      return;
+    }
+    static void* marker = &marker;
+    pthread_key_t key;
+    ASSERT_EQ(pthread_key_create(&key, nullptr), 0);
+    ASSERT_EQ(pthread_setspecific(key, marker), 0);
+    ASSERT_TRUE(JVMThread::_jvm_thread.initialize(marker));
   }
 };
 
@@ -216,7 +241,11 @@ public:
 TEST_F(FaultInjectionTest, CheckStateSurfacesInjectedPrewarmUnwinderFailure) {
 #ifdef __linux__
   Profiler* p = Profiler::instance();
-  ProfilerTestAccessor::setState(p, IDLE);
+  // checkState() only calls prewarmUnwinder() from the NEW state, after
+  // JVMSupport::initialize() succeeds -- IDLE falls through checkState()
+  // untouched and never reaches prewarmUnwinder() at all.
+  JVMThreadTestAccessor::forceInitialized();
+  ProfilerTestAccessor::setState(p, NEW);
   ProfiledThread::current()->setFiRng(0x5EED5EED5EED5EEDULL);
 
   bool sawInjectedFailure = false;
