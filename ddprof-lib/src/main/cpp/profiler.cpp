@@ -1437,11 +1437,11 @@ Error Profiler::init() {
 
 Error Profiler::start(Arguments &args, bool reset) {
   MutexLocker ml(_state_lock);
-  _task_block_enabled.store(false, std::memory_order_release);
   Error error = checkState();
   if (error) {
     return error;
   }
+  _task_block_enabled.store(false, std::memory_order_release);
 
   error = checkJvmCapabilities();
   if (error) {

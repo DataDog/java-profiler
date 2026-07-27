@@ -59,6 +59,8 @@ static inline bool hasKnownActiveTraceContext(ProfiledThread* thread) {
 
 struct WallPrecheckResult {
   bool suppress = false;
+  ThreadFilter::Slot* owned_block_slot = nullptr;
+  u64 owned_block_generation = 0;
   OSThreadState observed_state = OSThreadState::UNKNOWN;
   bool observed_state_valid = false;
   ThreadFilter::Slot* unowned_weight_slot = nullptr;
@@ -101,9 +103,9 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
     return result;
   }
 
-  // TaskBlock replaces signals only for threads that unfiltered wall-clock
-  // profiling observes outside the tracing context window. Context-scoped
-  // profiling must continue sampling its selected threads normally.
+  // Owned blocks replace repeated signals only after their current generation
+  // has produced one MethodSample. Context-scoped profiling must continue
+  // sampling its selected threads normally.
   if (!registry->unfilteredWallTrackingActive() || slot->inContextWindow()) {
     return result;
   }
@@ -113,6 +115,14 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
   if (registry->isOwnedBlockSuppressionCandidate(entry)) {
     incrementSuppressedOwnedBlock();
     result.suppress = true;
+    return result;
+  }
+  u64 block_generation = 0;
+  if (registry->activeOwnedBlockGeneration(entry, block_generation)) {
+    // Arm only after recordSample succeeds. A skipped JFR write must leave the
+    // run eligible so the next signal retries instead of losing its only stack.
+    result.owned_block_slot = slot;
+    result.owned_block_generation = block_generation;
     return result;
   }
   if (!slot->unownedBlockedFallbackEnabled()) {
@@ -139,6 +149,10 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
 static inline void finishWallPrecheck(const WallPrecheckResult& precheck,
                                       bool recorded,
                                       u64 recorded_call_trace_id = 0) {
+  if (recorded && precheck.owned_block_slot != nullptr) {
+    precheck.owned_block_slot->markBlockGenerationSampled(
+        precheck.owned_block_generation);
+  }
   if (!recorded && precheck.unowned_weight_slot != nullptr) {
     precheck.unowned_weight_slot->restoreUnownedBlockedWeight(
         precheck.unowned_weight);
@@ -238,12 +252,10 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
     current->tickInitWindow();
     return;
   }
-  // Once-per-run filter (wallprecheck=true): for untraced threads, exact
-  // suppression is only valid while an explicit lifecycle hook owns the blocked
-  // interval. Raw OS thread state is only an observation; it cannot distinguish
-  // one long sleep from several short sleeps separated by runnable gaps between
-  // signals. Unowned blocked observations therefore use weighted fallback
-  // sampling instead of arming sampled_this_run.
+  // Once-per-run filter (wallprecheck=true): an explicitly owned block keeps
+  // its first successful MethodSample and suppresses subsequent signals.
+  // Unowned blocked observations use weighted fallback sampling because raw OS
+  // state cannot distinguish one long sleep from several shorter runs.
   WallPrecheckResult precheck = prepareWallPrecheck(current, _precheck);
   if (precheck.suppress) {
     return;
@@ -379,9 +391,8 @@ void WallClockASGCT::timerLoop() {
         registry_lookups++;
         thread_filter->lookupThreadEntry(entry, recording_epoch);
       }
-      // Timer-thread fast path (wallprecheck=true): skip the kernel IPI while
-      // an explicit lifecycle hook owns a suppressible blocked run. Raw OS
-      // thread state cannot prove run boundaries for the target thread.
+      // Timer-thread fast path (wallprecheck=true): skip the kernel IPI only
+      // after an explicitly owned run has recorded its first MethodSample.
       if (_precheck && suppressOwnedBlock(entry)) {
         return WallClockCandidateOutcome::PRECHECK_REJECTED;
       }

@@ -85,6 +85,10 @@ public:
         std::atomic<u64>           recording_epoch{0};
         std::atomic<u64>           active_block_context_epoch{0};
         std::atomic<u64>           block_generation{0};
+        // The most recent owned-block generation for which a MethodSample was
+        // recorded successfully. Generations are monotonic, so a delayed
+        // completion from an older run cannot mark a newer run as sampled.
+        std::atomic<u64>           sampled_block_generation{0};
         std::atomic<OSThreadState> unowned_blocked_state{OSThreadState::UNKNOWN};
         // Native identity and context-window membership are independent so an
         // unfiltered wall recording can retain lifecycle metadata without
@@ -96,6 +100,7 @@ public:
         // only while instrumentation still owns a suppressible blocking interval.
         std::atomic<OSThreadState> active_block_state{OSThreadState::UNKNOWN};
         char padding[2 * DEFAULT_CACHE_LINE_SIZE
+                     - sizeof(std::atomic<u64>)
                      - sizeof(std::atomic<u64>)
                      - sizeof(std::atomic<u64>)
                      - sizeof(std::atomic<u64>)
@@ -159,6 +164,20 @@ public:
         }
         inline u64 blockGeneration() const {
             return block_generation.load(std::memory_order_acquire);
+        }
+        inline u64 sampledBlockGeneration() const {
+            return sampled_block_generation.load(std::memory_order_acquire);
+        }
+        inline void markBlockGenerationSampled(u64 generation) {
+            u64 sampled = sampled_block_generation.load(std::memory_order_relaxed);
+            while (sampled < generation &&
+                   !sampled_block_generation.compare_exchange_weak(
+                       sampled, generation, std::memory_order_release,
+                       std::memory_order_relaxed)) {
+            }
+        }
+        inline void resetSampledBlockGeneration() {
+            sampled_block_generation.store(0, std::memory_order_relaxed);
         }
         inline bool unownedBlockedFallbackEnabled() const {
             return unowned_blocked_fallback_enabled.load(std::memory_order_acquire) != 0;
@@ -236,6 +255,7 @@ public:
             generation++;
             block_generation.store(generation, std::memory_order_relaxed);
             active_block_context_epoch.store(context_state >> 1, std::memory_order_relaxed);
+            resetSampledBlockGeneration();
             disableUnownedBlockedFallback();
             *generation_out = generation;
             return true;
@@ -245,6 +265,7 @@ public:
         }
         inline void clearActiveBlockRun(OSThreadState) {
             active_block_state.store(OSThreadState::UNKNOWN, std::memory_order_release);
+            resetSampledBlockGeneration();
             resetUnownedBlockedSampling();
             active_block_owner.store(static_cast<int>(BlockRunOwner::NONE), std::memory_order_release);
         }
@@ -299,6 +320,8 @@ public:
     bool exitBlockedRun(SlotID slot_id, u64 generation);
     bool snapshotAndExitBlockedRun(SlotID slot_id, u64 generation,
                                    BlockRunSnapshot* snapshot);
+    bool activeOwnedBlockGeneration(const ThreadEntry& entry,
+                                    u64& generation) const;
     bool isOwnedBlockSuppressionCandidate(const ThreadEntry& entry) const;
 
 #ifdef UNIT_TEST
@@ -356,6 +379,8 @@ public:
     SlotID slotIdByTid(int tid) const { return lookupSlotIdByTid(tid); }
 
 private:
+    bool ownedBlockGeneration(const ThreadEntry& entry, u64& generation,
+                              bool require_sampled) const;
 
     // Lock-free free list using a stack-like structure
     struct FreeListNode {

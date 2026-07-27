@@ -304,6 +304,7 @@ TEST(WallClockOncePerRunFilterTest, FilterHelpersManageActiveBlockState) {
 
   filter.exitBlockedRun(slot_id);
   EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
+  EXPECT_EQ(0ULL, slot->sampledBlockGeneration());
 }
 
 TEST(WallClockOncePerRunFilterTest, ResetClearsOwnedBlockOnSlotReuse) {
@@ -314,8 +315,11 @@ TEST(WallClockOncePerRunFilterTest, ResetClearsOwnedBlockOnSlotReuse) {
   ThreadFilter::Slot *slot = filter.slotForId(slot_id);
   ASSERT_NE(nullptr, slot);
   EXPECT_EQ(OSThreadState::CONDVAR_WAIT, slot->activeBlockState());
+  slot->markBlockGenerationSampled(slot->blockGeneration());
+  ASSERT_EQ(slot->blockGeneration(), slot->sampledBlockGeneration());
 
   filter.resetSlotRunState(slot_id);
 
   EXPECT_EQ(OSThreadState::UNKNOWN, slot->activeBlockState());
+  EXPECT_EQ(0ULL, slot->sampledBlockGeneration());
 }

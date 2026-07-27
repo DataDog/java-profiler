@@ -673,8 +673,20 @@ bool ThreadFilter::snapshotAndExitBlockedRun(SlotID slot_id, u64 generation,
     return true;
 }
 
+bool ThreadFilter::activeOwnedBlockGeneration(const ThreadEntry& entry,
+                                              u64& generation) const {
+    return ownedBlockGeneration(entry, generation, false);
+}
+
 bool ThreadFilter::isOwnedBlockSuppressionCandidate(
     const ThreadEntry& entry) const {
+    u64 generation = 0;
+    return ownedBlockGeneration(entry, generation, true);
+}
+
+bool ThreadFilter::ownedBlockGeneration(const ThreadEntry& entry,
+                                        u64& generation,
+                                        bool require_sampled) const {
     Slot* slot = entry.slot;
     if (!unfilteredWallTrackingActive() || slot == nullptr ||
         slot->nativeTid() != entry.tid ||
@@ -701,7 +713,11 @@ bool ThreadFilter::isOwnedBlockSuppressionCandidate(
 
     u64 block_generation = slot->blockGeneration();
     BlockRunOwner owner = slot->activeBlockOwner();
-    if (owner == BlockRunOwner::NONE) return false;
+    if (owner == BlockRunOwner::NONE ||
+        (require_sampled &&
+         slot->sampledBlockGeneration() != block_generation)) {
+        return false;
+    }
 
 #ifdef UNIT_TEST
     if (_suppression_snapshot_hook != nullptr) {
@@ -714,13 +730,16 @@ bool ThreadFilter::isOwnedBlockSuppressionCandidate(
     if (slot->activeBlockOwner() != owner ||
         slot->blockGeneration() != block_generation ||
         slot->activeBlockState() != state || slot->nativeTid() != entry.tid ||
-        slot->lifecycleGeneration() != entry.lifecycle_generation) {
+        slot->lifecycleGeneration() != entry.lifecycle_generation ||
+        (require_sampled &&
+         slot->sampledBlockGeneration() != block_generation)) {
         return false;
     }
     if (recordingEpoch() != epoch || slot->recordingEpoch() != epoch ||
         !slot->activeBlockRemainedOutsideContextWindow()) {
         return false;
     }
+    generation = block_generation;
     return true;
 }
 
