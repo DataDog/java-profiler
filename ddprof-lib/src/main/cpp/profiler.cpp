@@ -1112,10 +1112,9 @@ void Profiler::setupSignalHandlers() {
       // Get address range of java profiler library
       Libraries* libs = Libraries::instance();
       CodeCache* prof_lib = libs->findLibraryByAddress((const void*)&Profiler::setupSignalHandlers);
-      if (prof_lib != nullptr) {
-        profiler_min_address = prof_lib->minAddress();
-        profiler_max_address = prof_lib->maxAddress();
-      }
+      assert(prof_lib != nullptr);
+      profiler_min_address = prof_lib->minAddress();
+      profiler_max_address = prof_lib->maxAddress();
 
       #ifdef __FAULT_INJECTION__
       // Reserve the PROT_NONE guard region used to poison memory-access sites.
@@ -2038,16 +2037,20 @@ int Profiler::status(char* status, int max_len) {
 }
 
 void Profiler::checkFault(ProfiledThread* thrd, siginfo_t *siginfo, void *ucontext) {
-    (void)siginfo;
+    (void)ucontext;
     // Check if siglongjmp is setup for this thread
     if (thrd == nullptr || !thrd->isProtected()) {
         return;
     }
 
     // Check if the fault is originated from java profiler
-    const uintptr_t pc = StackFrame(ucontext).pc();
+    const uintptr_t pc = (uintptr_t)siginfo->si_addr;
     const uintptr_t min = (uintptr_t)profiler_min_address;
     const uintptr_t max = (uintptr_t)profiler_max_address;
+
+    #if !defined(UNIT_TEST)
+      assert(min != 0 && max != 0);
+    #endif
 
     // If the profiler address range is not initialized (e.g. unit tests), fall back
     // to recovering unconditionally when a protection context is installed.
