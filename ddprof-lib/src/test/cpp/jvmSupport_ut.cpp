@@ -114,7 +114,7 @@ TEST_F(JvmSupportInitFailureTest, CheckStateBlocksOnInitFailureAndLatchesError) 
 
     // Under -PenableFaultInjection, checkState() checks prewarmUnwinder()
     // before JVMSupport::initialize() (see profiler.cpp), so an injected
-    // fault could occasionally surface "Missing libgcc_s.so" here instead of
+    // fault could occasionally surface "Missing libgcc_s.so.1" here instead of
     // the JVMSupport::initialize() failure this test targets. Retry past any
     // such spurious injected failure -- a single-iteration no-op in the
     // default build, where prewarmUnwinder() always succeeds.
