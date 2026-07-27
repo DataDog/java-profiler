@@ -249,8 +249,12 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
   private void assertSuppressedSamples(String threadName) {
     long sampleCount = samplesForThread(threadName);
     assertTrue(
+        sampleCount >= 1,
+        "Expected the owned block's first MethodSample to be retained");
+    assertTrue(
         sampleCount < 10,
-        "Expected nearly no samples from owned block thread, got: " + sampleCount);
+        "Expected samples after the first owned-block sample to be suppressed, got: "
+            + sampleCount);
   }
 
   private long samplesForThread(String threadName) {

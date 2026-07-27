@@ -16,10 +16,13 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.openjdk.jmc.common.item.IItemCollection;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** End-to-end coverage for the paired synchronous TaskBlock API. */
@@ -39,6 +42,22 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
     TaskBlockAssertions.assertNoCorrelationId(events);
     TaskBlockAssertions.assertContains(events, 0L, 0L, BLOCKER, UNBLOCKING_SPAN_ID);
     TaskBlockAssertions.assertContainsObservedState(events, "SLEEPING");
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"start", "resume"})
+  public void rejectedDuplicateStartOrResumePreservesActiveTaskBlockRecording(String action)
+      throws Exception {
+    IllegalStateException rejected = assertThrows(
+        IllegalStateException.class,
+        () -> profiler.execute(action + "," + getProfilerCommand()));
+    assertEquals("Profiler already started", rejected.getMessage());
+
+    assertTrue(runEligibleBlock(BLOCKER));
+    stopProfiler();
+
+    TaskBlockAssertions.assertContains(
+        verifyEvents("datadog.TaskBlock"), 0L, 0L, BLOCKER, UNBLOCKING_SPAN_ID);
   }
 
   @Test
@@ -141,7 +160,7 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
   }
 
   @Test
-  public void liveDumpDoesNotRequireAnEntrySample() throws Exception {
+  public void liveDumpPreservesTaskBlockAfterEntrySample() throws Exception {
     CountDownLatch armed = new CountDownLatch(1);
     CountDownLatch release = new CountDownLatch(1);
     AtomicBoolean recorded = new AtomicBoolean();
