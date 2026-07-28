@@ -236,7 +236,7 @@ public:
 
   void writeMetadata(Buffer *buf);
 
-  void writeElement(Buffer *buf, const Element *e);
+  void writeElement(Buffer *buf, const Element *e, int depth = 0);
 
   void writeEventSizePrefix(Buffer *buf, int start);
 

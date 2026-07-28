@@ -1145,7 +1145,16 @@ void Recording::writeHeader(Buffer *buf) {
   flushIfNeeded(buf);
 }
 
-void Recording::writeElement(Buffer *buf, const Element *e) {
+void Recording::writeElement(Buffer *buf, const Element *e, int depth) {
+  if (depth > 10) {
+    fprintf(stderr, "[ddprof] [ERROR] writeElement depth limit exceeded, truncating output\n");
+    return;
+  }
+
+  if (e == nullptr) {
+    return;
+  }
+
   buf->putVar64(e->_name);
 
   buf->putVar64(e->_attributes.size());
@@ -1155,10 +1164,22 @@ void Recording::writeElement(Buffer *buf, const Element *e) {
     buf->putVar64(e->_attributes[i]._value);
   }
 
-  buf->putVar64(e->_children.size());
+  size_t child_count = 0;
   for (size_t i = 0; i < e->_children.size(); i++) {
+    if (e->_children[i] != nullptr) {
+      child_count++;
+    } else {
+      fprintf(stderr, "[ddprof] [WARN] writeElement skipping null child at index %zu\n", i);
+    }
+  }
+
+  buf->putVar64(child_count);
+  for (size_t i = 0; i < e->_children.size(); i++) {
+    if (e->_children[i] == nullptr) {
+      continue;
+    }
     flushIfNeeded(buf);
-    writeElement(buf, e->_children[i]);
+    writeElement(buf, e->_children[i], depth + 1);
   }
   flushIfNeeded(buf);
 }
