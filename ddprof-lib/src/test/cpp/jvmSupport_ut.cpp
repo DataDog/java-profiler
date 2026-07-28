@@ -114,17 +114,20 @@ TEST_F(JvmSupportInitFailureTest, CheckStateBlocksOnInitFailureAndLatchesError) 
 
     // Under -PenableFaultInjection, checkState() checks prewarmUnwinder()
     // before JVMSupport::initialize() (see profiler.cpp), so an injected
-    // fault could occasionally surface "Missing libgcc_s.so.1" here instead of
+    // fault could occasionally surface "Missing libgcc_s.so" here instead of
     // the JVMSupport::initialize() failure this test targets. Retry past any
-    // such spurious injected failure -- a single-iteration no-op in the
-    // default build, where prewarmUnwinder() always succeeds.
+    // such injected failure. If it persists across retries, libgcc_s is likely
+    // genuinely absent on this host and this test cannot exercise the intended path.
     Error error = Error::OK;
     for (int i = 0; i < 100; i++) {
         error = p->checkState();
-        if (strcmp(error.message(), "Missing libgcc_s.so") != 0) {
+        if (!error || std::strcmp(error.message(), "Missing libgcc_s.so") != 0) {
             break;
         }
         ProfilerTestAccessor::setState(p, NEW);
+    }
+    if (error && std::strcmp(error.message(), "Missing libgcc_s.so") == 0) {
+        GTEST_SKIP() << "libgcc_s.so.1 is missing on this host; cannot exercise JVMSupport::initialize() failure path";
     }
     bool has_error = (bool)error;
 
