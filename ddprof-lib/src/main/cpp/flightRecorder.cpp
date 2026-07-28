@@ -1147,6 +1147,11 @@ void Recording::writeHeader(Buffer *buf) {
 
 void Recording::writeElement(Buffer *buf, const Element *e, int depth) {
   if (depth > 10) {
+    // Counter is the durable signal here: stderr from an embedded native lib
+    // is rarely captured/monitored, and this guard exists precisely because
+    // we don't yet know what corrupts the tree (PROF-15075) — an unmonitored
+    // log line would let that recur invisibly forever.
+    Counters::increment(METADATA_TREE_DEPTH_EXCEEDED);
     fprintf(stderr, "[ddprof] [ERROR] writeElement depth limit exceeded, truncating output\n");
     return;
   }
@@ -1169,6 +1174,7 @@ void Recording::writeElement(Buffer *buf, const Element *e, int depth) {
     if (e->_children[i] != nullptr) {
       child_count++;
     } else {
+      Counters::increment(METADATA_TREE_NULL_CHILD);
       fprintf(stderr, "[ddprof] [WARN] writeElement skipping null child at index %zu\n", i);
     }
   }
