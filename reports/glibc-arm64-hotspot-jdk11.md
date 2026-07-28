@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk11
 
 ## glibc-arm64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-07-28 15:34:41 EDT
+**Date:** 2026-07-28 16:20:57 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-arm64-hotspot-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 48 |
-| CPU Cores (end) | 48 |
+| CPU Cores (start) | 28 |
+| CPU Cores (end) | 28 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: glibc-arm64-hotspot-jdk11
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
+<summary>CPU Timeline (1 unique values: 28-28 cores)</summary>
 
 ```
-1785266947 48
-1785266952 48
-1785266957 48
-1785266962 48
-1785266967 48
-1785266972 48
-1785266977 48
-1785266982 48
-1785266987 48
-1785266992 48
-1785266997 48
-1785267002 48
-1785267007 48
-1785267012 48
-1785267017 48
-1785267022 48
-1785267027 48
-1785267032 48
-1785267037 48
-1785267042 48
+1785269720 28
+1785269725 28
+1785269730 28
+1785269735 28
+1785269740 28
+1785269745 28
+1785269750 28
+1785269755 28
+1785269760 28
+1785269765 28
+1785269770 28
+1785269775 28
+1785269780 28
+1785269785 28
+1785269790 28
+1785269795 28
+1785269800 28
+1785269805 28
+1785269810 28
+1785269815 28
 ```
 </details>
 
