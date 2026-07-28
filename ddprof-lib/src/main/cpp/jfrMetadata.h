@@ -165,6 +165,8 @@ class JfrMetadata : Element {
 private:
   static JfrMetadata _root;
   static bool _initialized;
+  // Track NoField instances allocated during initialize() for cleanup in reset()
+  static std::vector<NoField *> _nofields;
 
   enum FieldFlags {
     F_CPOOL = 0x1,
@@ -204,7 +206,9 @@ private:
                         const char *label = NULL, int flags = 0,
                         bool condition = true) {
     if (!condition) {
-      return *new NoField(name);
+      NoField *nf = new NoField(name);
+      _nofields.push_back(nf); // Track for cleanup in reset()
+      return *nf;
     }
     Element &e = element("field");
     e.attribute("name", name);
@@ -261,7 +265,14 @@ private:
 public:
   JfrMetadata();
 
+  // Initialize the JFR metadata tree with standard types and optional context attributes.
+  // PRECONDITION: Must be called with Profiler::_state_lock held.
+  //               reset() must be called before each initialize() to clean up the prior tree.
   static void initialize(const std::vector<std::string> &contextAttributes);
+
+  // Reset and deallocate the JFR metadata tree.
+  // PRECONDITION: Must be called with Profiler::_state_lock held.
+  //               Must be called before any signal handlers can fire (all profiling engines stopped).
   static void reset();
 
   static Element *root() { return &_root; }
