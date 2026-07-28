@@ -1301,7 +1301,7 @@ Error Profiler::checkState() {
     // unwinder cannot lazy-load it later from signal context.
     if (!prewarmUnwinder()) {
       _state.store(ERROR, std::memory_order_release);
-      return Error("Missing libgcc_s.so");
+      return Error("Missing libgcc_s.so.1");
     }
 
     // Make sure JVMSupport is initialized
