@@ -121,12 +121,12 @@ TEST_F(JvmSupportInitFailureTest, CheckStateBlocksOnInitFailureAndLatchesError) 
     Error error = Error::OK;
     for (int i = 0; i < 100; i++) {
         error = p->checkState();
-        if (!error || std::strcmp(error.message(), "Missing libgcc_s.so") != 0) {
+        if (!error || std::strcmp(error.message(), "Missing libgcc_s.so.1") != 0) {
             break;
         }
         ProfilerTestAccessor::setState(p, NEW);
     }
-    if (error && std::strcmp(error.message(), "Missing libgcc_s.so") == 0) {
+    if (error && std::strcmp(error.message(), "Missing libgcc_s.so.1") == 0) {
         GTEST_SKIP() << "libgcc_s.so.1 is missing on this host; cannot exercise JVMSupport::initialize() failure path";
     }
     bool has_error = (bool)error;
