@@ -272,7 +272,7 @@ TEST_F(FaultInjectionTest, CheckStateSurfacesInjectedPrewarmUnwinderFailure) {
     ASSERT_TRUE((bool)error) << "checkState() must fail here: either the "
                                  "injected prewarmUnwinder() failure or the "
                                  "mocked JVMSupport::initialize() failure";
-    if (std::strcmp(error.message(), "Missing libgcc_s.so") == 0) {
+    if (std::strcmp(error.message(), "Missing libgcc_s.so.1") == 0) {
       sawInjectedFailure = true;
     } else {
       // prewarmUnwinder() succeeded (non-injected, ~99% of calls) and fell
