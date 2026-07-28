@@ -205,6 +205,33 @@ public class JavaProfilerTest extends AbstractProcessProfilerTest {
     }
 
     @Test
+    void conflictingJavaSingletonMonitorDelegationIsRejected() throws Exception {
+        assertJavaSingletonDelegationConflict(false, true);
+        assertJavaSingletonDelegationConflict(true, false);
+    }
+
+    /** Launches a fresh JVM and verifies that a second ownership mode is rejected. */
+    private void assertJavaSingletonDelegationConflict(boolean initialDelegation,
+            boolean requestedDelegation) throws Exception {
+        AtomicReference<String> resultLine = new AtomicReference<>();
+        LaunchResult result = launch(
+                "profiler-java-delegation-conflict:" + initialDelegation + ":" + requestedDelegation,
+                Collections.emptyList(), "", line -> {
+                    if (line.startsWith("[java-delegation-conflict")) {
+                        resultLine.set(line);
+                        return LineConsumerResult.STOP;
+                    }
+                    return LineConsumerResult.CONTINUE;
+                }, null);
+
+        assertTrue(result.inTime);
+        assertEquals(0, result.exitCode);
+        assertNotNull(resultLine.get(), "Conflicting Java singleton request did not report a result");
+        assertTrue(resultLine.get().startsWith("[java-delegation-conflict]"),
+                "Expected ownership conflict, got: " + resultLine.get());
+    }
+
+    @Test
     void preExistingThreadObjectWaitUsesNativeMonitorCallbacks() throws Exception {
         assertPreExistingMonitorCallback("profiler-preexisting-monitor-wait");
     }

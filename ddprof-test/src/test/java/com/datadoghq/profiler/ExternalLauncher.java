@@ -32,6 +32,7 @@ import java.util.concurrent.atomic.LongAdder;
  *     <li>profiler-virtual-thread - calls {@link JavaProfiler#getInstance()} for the first time from a virtual thread</li>
  *     <li>profiler-agent-compatible - reuses native monitor ownership after agent initialization</li>
  *     <li>profiler-delegation-conflict - requests delegated monitor ownership after agent initialization</li>
+ *     <li>profiler-java-delegation-conflict:&lt;initial&gt;:&lt;requested&gt; - verifies conflicting Java singleton ownership requests</li>
  *     <li>profiler-preexisting-monitor-wait - exercises Object.wait on a thread created before profiler initialization</li>
  *     <li>profiler-preexisting-monitor-contention - exercises monitor contention on a thread created before profiler initialization</li>
  * </ul>
@@ -133,6 +134,17 @@ public class ExternalLauncher {
                     System.out.println("[delegation-conflict-missed]");
                 } catch (IllegalStateException expected) {
                     System.out.println("[delegation-conflict] " + expected.getMessage());
+                }
+            } else if (args[0].startsWith("profiler-java-delegation-conflict:")) {
+                String[] delegationModes = args[0].split(":");
+                boolean initialDelegation = Boolean.parseBoolean(delegationModes[1]);
+                boolean requestedDelegation = Boolean.parseBoolean(delegationModes[2]);
+                JavaProfiler.getInstance(null, null, initialDelegation);
+                try {
+                    JavaProfiler.getInstance(null, null, requestedDelegation);
+                    System.out.println("[java-delegation-conflict-missed]");
+                } catch (IllegalStateException expected) {
+                    System.out.println("[java-delegation-conflict] " + expected.getMessage());
                 }
             } else if (args[0].equals("profiler-agent-compatible")) {
                 String libraryPath = System.getProperty("ddprof.test.agent.path");

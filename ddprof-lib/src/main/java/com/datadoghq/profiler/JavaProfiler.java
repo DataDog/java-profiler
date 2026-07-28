@@ -127,6 +127,11 @@ public final class JavaProfiler {
     public static synchronized JavaProfiler getInstance(String libLocation, String scratchDir,
             boolean delegateMonitorWaitEvents) throws IOException {
         if (instance != null) {
+            if (monitorEventsDelegated0() != delegateMonitorWaitEvents) {
+                throw new IllegalStateException(
+                        "Monitor-event ownership conflicts with the profiler's "
+                                + "process-wide initialization");
+            }
             return instance;
         }
 
