@@ -1113,8 +1113,8 @@ void Profiler::setupSignalHandlers() {
       Libraries* libs = Libraries::instance();
       CodeCache* prof_lib = libs->findLibraryByAddress((const void*)&Profiler::setupSignalHandlers);
       assert(prof_lib != nullptr);
-      profiler_min_address = prof_lib->minAddress();
-      profiler_max_address = prof_lib->maxAddress();
+      profiler_min_address = reinterpret_cast<uintptr_t>(prof_lib->minAddress());
+      profiler_max_address = reinterpret_cast<uintptr_t>(prof_lib->maxAddress());
 
       #ifdef __FAULT_INJECTION__
       // Reserve the PROT_NONE guard region used to poison memory-access sites.
