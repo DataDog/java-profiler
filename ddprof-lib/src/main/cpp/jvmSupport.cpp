@@ -106,6 +106,8 @@ int JVMSupport::asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* 
         return 0;
     }
   
+    LongjmpProtectionLeaver leaver(ProfiledThread::current());
+
     JitWriteProtection jit(false);
     // AsyncGetCallTrace writes to ASGCT_CallFrame array
     ASGCT_CallTrace trace = {jni, 0, frames};
@@ -175,4 +177,18 @@ bool JVMSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
     return true;
   }
   return false;
+}
+
+LongjmpProtectionLeaver::LongjmpProtectionLeaver(ProfiledThread* const thread) :
+    _thread(thread), _jmp_buf(nullptr) {
+    if (thread != nullptr) {
+        _jmp_buf = thread->getJmpCtx();
+        thread->setJmpCtx(nullptr);
+    }
+}
+
+LongjmpProtectionLeaver::~LongjmpProtectionLeaver() {
+    if (_thread != nullptr) {
+        _thread->setJmpCtx(_jmp_buf);
+    }
 }

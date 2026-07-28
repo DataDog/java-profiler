@@ -10,6 +10,8 @@
 #include "stackFrame.h"
 #include "stackWalker.h"
 
+#include <setjmp.h>
+
 // Stack recovery techniques used to workaround AsyncGetCallTrace flaws.
 // Can be disabled with 'safemode' option.
 enum StackRecovery {
@@ -67,6 +69,15 @@ public:
 
     // If a class is hidden class
     static inline bool isHidden(jint modifiers);
+};
+
+class LongjmpProtectionLeaver {
+private:
+    sigjmp_buf*     _jmp_buf;
+    ProfiledThread* const _thread;
+public:
+    LongjmpProtectionLeaver(ProfiledThread* const thread);
+    ~LongjmpProtectionLeaver();
 };
 
 #endif // _JVMSUPPORT_H

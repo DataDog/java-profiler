@@ -978,6 +978,11 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     return depth;
 }
 
+void HotspotSupport::JVMAsyncGetCallTrace(ASGCT_CallTrace* traces, jint depth, void* ucontext) {
+    LongjmpProtectionLeaver leaver(ProfiledThread::current());
+    VM::_asyncGetCallTrace(traces, depth, ucontext);
+}
+
 int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
                                 int max_depth, StackContext *java_ctx,
                                 bool *truncated) {
@@ -1055,7 +1060,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   JitWriteProtection jit(false);
   // AsyncGetCallTrace writes to ASGCT_CallFrame array
   ASGCT_CallTrace trace = {jni, 0, frames};
-  VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+  JVMAsyncGetCallTrace(&trace, max_depth, ucontext);
 
   if (trace.num_frames > 0) {
     frame.restore(saved_pc, saved_sp, saved_fp);
@@ -1076,7 +1081,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
       if (!(safe_mode & POP_STUB) &&
           frame.unwindStub((instruction_t *)stub->_start, stub->_name) &&
           isAddressInCode((const void *)frame.pc())) {
-        VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+        JVMAsyncGetCallTrace(&trace, max_depth, ucontext);
       }
     } else if (VMStructs::hasMethodStructs()) {
       VMNMethod *nmethod = CodeHeap::findNMethod((const void *)frame.pc());
@@ -1089,7 +1094,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
           }
           if (!(safe_mode & POP_METHOD) && frame.unwindCompiled(nmethod) &&
               isAddressInCode((const void *)frame.pc())) {
-            VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+            JVMAsyncGetCallTrace(&trace, max_depth, ucontext);
           }
           if ((safe_mode & PROBE_SP) && trace.num_frames < 0) {
             if (isValidJMethodID(method_id)) {
@@ -1097,7 +1102,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
             }
             for (int i = 0; trace.num_frames < 0 && i < PROBE_SP_LIMIT; i++) {
               frame.sp() += sizeof(void*);
-              VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+              JVMAsyncGetCallTrace(&trace, max_depth, ucontext);
             }
           }
         }
@@ -1109,7 +1114,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
         if (!(safe_mode & POP_STUB) &&
             frame.unwindStub(NULL, nmethod->name()) &&
             isAddressInCode((const void *)frame.pc())) {
-          VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+          JVMAsyncGetCallTrace(&trace, max_depth, ucontext);
         }
       }
     }
@@ -1136,9 +1141,9 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
             m->frameCompleteOffset() == -1) {
           m->setFrameCompleteOffset(0);
         }
-        VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+        JVMAsyncGetCallTrace(&trace, max_depth, ucontext);
       } else if (libs->findLibraryByAddress(pc) != NULL) {
-        VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+        JVMAsyncGetCallTrace(&trace, max_depth, ucontext);
       }
 
       anchor->setLastJavaPC(nullptr);
@@ -1156,7 +1161,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
       if (m != NULL && !m->isNMethod() && m->frameSize() > 0 &&
           m->frameCompleteOffset() == -1) {
         m->setFrameCompleteOffset(0);
-        VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+        JVMAsyncGetCallTrace(&trace, max_depth, ucontext);
       }
     }
   } else if (trace.num_frames == ticks_GC_active && !(safe_mode & GC_TRACES)) {

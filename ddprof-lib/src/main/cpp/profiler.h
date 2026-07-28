@@ -498,14 +498,6 @@ public:
 
   // Keep backward compatibility with the upstream async-profiler
   inline CodeCache* findLibraryByAddress(const void *address) {
-  #ifdef DEBUG
-    // we need this code to simulate segfault during stackwalking
-    // this is a safe place to do it since this wrapper is used solely from the 'vm' stackwalker implementation
-    if (force_stackwalk_crash_env) {
-      TEST_LOG("FORCE_SIGSEGV");
-      raise(SIGSEGV);
-    }
-  #endif
     return Libraries::instance()->findLibraryByAddress(address);
   }
 

@@ -31,6 +31,7 @@ private:
     static int getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
                                  int max_depth, StackContext *java_ctx,
                                  bool *truncated);
+    static void JVMAsyncGetCallTrace(ASGCT_CallTrace *, jint, void *);
 
     static bool loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool load_all);
 public:

@@ -2044,7 +2044,7 @@ void Profiler::checkFault(ProfiledThread* thrd, siginfo_t *siginfo, void *uconte
     }
 
     // Check if the fault is originated from java profiler
-    const uintptr_t pc = (uintptr_t)siginfo->si_addr;
+    const uintptr_t pc = (uintptr_t)StackFrame(ucontext).pc();
     const uintptr_t min = (uintptr_t)profiler_min_address;
     const uintptr_t max = (uintptr_t)profiler_max_address;
 
