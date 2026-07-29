@@ -100,15 +100,22 @@ public final class ReapplyContextValueAntagonist implements Antagonist {
             // Span activation resets all custom slots.
             profiler.setTraceContext(localRootSpanId, spanId, 0, traceIdLow, -1, null, -1, null);
             for (int i = 0; i < SLOT_COUNT; i++) {
-                profiler.setContextValue(i, ROUTES[i % ROUTES.length]);
+                checkSetContextValue(profiler.setContextValue(i, ROUTES[i % ROUTES.length]), i);
             }
             for (int i = 0; i < SLOT_COUNT; i += 2) {
                 profiler.clearContextValue(i);
             }
             for (int i = 0; i < SLOT_COUNT; i += 2) {
-                profiler.setContextValue(i, ROUTES[(i + ThreadLocalRandom.current().nextInt(ROUTES.length)) % ROUTES.length]);
+                int route = (i + ThreadLocalRandom.current().nextInt(ROUTES.length)) % ROUTES.length;
+                checkSetContextValue(profiler.setContextValue(i, ROUTES[route]), i);
             }
             profiler.clearTraceContext();
+        }
+    }
+
+    private static void checkSetContextValue(boolean succeeded, int slot) {
+        if (!succeeded) {
+            throw new IllegalStateException("setContextValue failed for slot " + slot);
         }
     }
 }

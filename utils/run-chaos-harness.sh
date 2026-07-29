@@ -136,14 +136,12 @@ fi
 case $CONFIG in
   profiler)
     ENABLEMENT="-Ddd.profiling.enabled=true -Ddd.trace.enabled=false"
-    # @Trace is a no-op without the tracer, so trace-context and
-    # vthread-context-cascade (which is driven entirely by @Trace-annotated
-    # methods) are excluded here.
+    # @Trace is a no-op without the tracer, so trace-context is excluded here.
     DEFAULT_ANTAGONISTS="thread-churn,alloc-storm,vthread-churn,classloader-churn,bounded-pool,context-hop,consumer-group,hidden-class-churn,direct-memory,weakref-wave,dump-storm"
     ;;
   profiler+tracer)
     ENABLEMENT="-Ddd.profiling.enabled=true -Ddd.trace.enabled=true"
-    DEFAULT_ANTAGONISTS="thread-churn,alloc-storm,vthread-churn,classloader-churn,trace-context,vthread-context-cascade,bounded-pool,context-hop,consumer-group,hidden-class-churn,direct-memory,weakref-wave,dump-storm"
+    DEFAULT_ANTAGONISTS="thread-churn,alloc-storm,vthread-churn,classloader-churn,trace-context,bounded-pool,context-hop,consumer-group,hidden-class-churn,direct-memory,weakref-wave,dump-storm"
     ;;
   *)
     echo "Unknown configuration: $CONFIG (valid: profiler, profiler+tracer)" >&2
@@ -163,7 +161,7 @@ case $ALLOCATOR in
     # Logged so a glibc-detected corruption abort can be reproduced with the
     # same perturb byte (the value is otherwise random per run).
     echo "MALLOC_PERTURB_=${MALLOC_PERTURB_}"
-    # thread-churn/dump-storm/vthread-context-cascade cycle many short-lived
+    # thread-churn/dump-storm/vthread-churn cycle many short-lived
     # threads; glibc's per-thread arenas are slow to trim back to the OS,
     # which was inflating container RSS past the OOM limit on aarch64
     # (mirrors the tcmalloc/jemalloc tuning below).
