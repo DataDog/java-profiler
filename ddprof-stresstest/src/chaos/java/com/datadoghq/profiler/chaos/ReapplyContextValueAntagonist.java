@@ -68,7 +68,7 @@ public final class ReapplyContextValueAntagonist implements Antagonist {
     public void start() {
         running = true;
         for (int i = 0; i < workerCount; i++) {
-            pool.submit(this::workerLoop);
+            pool.execute(this::workerLoop);
         }
     }
 
@@ -113,9 +113,14 @@ public final class ReapplyContextValueAntagonist implements Antagonist {
         }
     }
 
+    // Per Main's class javadoc, the harness's only failure signal is a non-zero process exit;
+    // an exception here would otherwise die silently on this daemon worker thread (and be
+    // swallowed entirely if the task were submitted via ExecutorService.submit and its Future
+    // never inspected). Halt immediately so an unexpected failure actually fails the CI job.
     private static void checkSetContextValue(boolean succeeded, int slot) {
         if (!succeeded) {
-            throw new IllegalStateException("setContextValue failed for slot " + slot);
+            System.err.println("[chaos] reapply-context-value: setContextValue failed for slot " + slot);
+            Runtime.getRuntime().halt(1);
         }
     }
 }
