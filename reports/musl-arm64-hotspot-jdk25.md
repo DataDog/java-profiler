@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk25
 
 ## musl-arm64-hotspot-jdk25 - ✅ PASS
 
-**Date:** 2026-07-29 07:39:50 EDT
+**Date:** 2026-07-29 07:54:00 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-arm64-hotspot-jdk25
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 26 |
-| CPU Cores (end) | 27 |
+| CPU Cores (start) | 15 |
+| CPU Cores (end) | 15 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: musl-arm64-hotspot-jdk25
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (2 unique values: 26-27 cores)</summary>
+<summary>CPU Timeline (1 unique values: 15-15 cores)</summary>
 
 ```
-1785324889 26
-1785324894 26
-1785324899 26
-1785324904 26
-1785324909 26
-1785324914 27
-1785324919 27
-1785324924 27
-1785324929 27
-1785324934 27
-1785324939 27
-1785324944 27
-1785324949 27
-1785324954 27
-1785324959 27
-1785324964 27
-1785324969 27
-1785324974 27
-1785324979 27
-1785324984 27
+1785325774 15
+1785325779 15
+1785325784 15
+1785325789 15
+1785325794 15
+1785325799 15
+1785325804 15
+1785325809 15
+1785325814 15
+1785325819 15
+1785325824 15
+1785325829 15
+1785325834 15
+1785325839 15
+1785325844 15
+1785325849 15
+1785325854 15
+1785325859 15
+1785325864 15
+1785325869 15
 ```
 </details>
 
