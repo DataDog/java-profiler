@@ -15,12 +15,27 @@ source "/root/.sdkman/bin/sdkman-init.sh" 1>/dev/null 2>/dev/null
 
 sdk install java 21.0.3-tem 1>/dev/null 2>/dev/null
 
-mvn org.apache.maven.plugins:maven-dependency-plugin:2.1:get \
-    -DrepoUrl=https://central.sonatype.com/repository/maven-snapshots/ \
-    -Dartifact=com.datadoghq:ddprof:${CURRENT_VERSION} 1>/dev/null 2>/dev/null
 DDPROF_JAR="/root/.m2/repository/com/datadoghq/ddprof/${CURRENT_VERSION}/ddprof-${CURRENT_VERSION}.jar"
+# Sonatype's snapshot repo can lag a bit between a successful publish and the
+# artifact being resolvable, even once deploy-artifact has already completed.
+# Capture mvn's actual output (not just presence/absence of the jar) so a
+# genuine failure (auth, 404, blocked network) is visible instead of looking
+# identical to indexing lag.
+MVN_GET_LOG="${HERE}/../../maven-get.log"
+: > "$MVN_GET_LOG"
+for attempt in 1 2 3 4 5 6; do
+  echo "=== mvn get attempt ${attempt}/6 ===" >> "$MVN_GET_LOG"
+  mvn org.apache.maven.plugins:maven-dependency-plugin:2.1:get \
+      -DrepoUrl=https://central.sonatype.com/repository/maven-snapshots/ \
+      -Dartifact=com.datadoghq:ddprof:${CURRENT_VERSION} >> "$MVN_GET_LOG" 2>&1
+  [ -f "$DDPROF_JAR" ] && break
+  echo "ddprof ${CURRENT_VERSION} not yet resolvable (attempt ${attempt}/6), retrying in 20s"
+  sleep 20
+done
 if [ ! -f "$DDPROF_JAR" ]; then
   echo "FAIL:Could not fetch ddprof ${CURRENT_VERSION} jar" >&2
+  echo "--- last mvn get output (see maven-get.log artifact for full history) ---" >&2
+  tail -n 40 "$MVN_GET_LOG" >&2
   exit 1
 fi
 

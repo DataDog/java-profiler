@@ -42,6 +42,7 @@ variables:
       - hs_err.log
       - err.log
       - out.log
+      - maven-get.log
     reports:
       dotenv: build.env
     expire_in: 7 days
