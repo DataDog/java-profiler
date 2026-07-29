@@ -40,9 +40,8 @@ import java.util.concurrent.atomic.AtomicReferenceArray;
  * session become stale. {@link JavaProfiler} therefore calls {@link #clear()} on every {@code start}
  * command; a subsequent {@link #resolve} re-registers the value and re-caches its new encoding.
  *
- * <p>Replaces the per-{@link ThreadContext} value cache: in the all-native model there is no
- * per-thread {@code ThreadContext} instance to host it, and a global cache avoids duplicating the
- * table across every carrier / virtual thread.
+ * <p>In the all-native model there is no per-thread instance to host this cache, so it is a
+ * single process-wide table shared across every carrier / virtual thread.
  */
 final class ContextValueCache {
 
@@ -89,7 +88,7 @@ final class ContextValueCache {
         if (utf8.length > MAX_VALUE_BYTES) {
             return null;
         }
-        int encoding = ThreadContext.registerConstant0(value);
+        int encoding = registerConstant0(value);
         if (encoding < 0) {
             return null; // Dictionary full
         }
@@ -109,4 +108,7 @@ final class ContextValueCache {
             table.set(i, null);
         }
     }
+
+    /** Registers {@code value} in the native Dictionary, returning its encoding, or a negative value if full. */
+    private static native int registerConstant0(String value);
 }

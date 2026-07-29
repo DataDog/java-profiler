@@ -235,7 +235,7 @@ public final class OTelContext {
      *                      element is null, the entire process context publish is
      *                      skipped - no context is published (a warning is logged) and
      *                      no exception is thrown. Order must match the indices used
-     *                      with {@link ThreadContext#setContextAttribute(int, String)}.
+     *                      with {@link JavaProfiler#setContextValue(int, CharSequence)}.
      *
      * @throws NullPointerException if {@code attributeKeys} is null
      *

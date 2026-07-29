@@ -25,11 +25,6 @@ public class ContextExecutor extends ThreadPoolExecutor {
     protected void beforeExecute(Thread t, Runnable r) {
         super.beforeExecute(t, r);
         profiler.addThread();
-        // Prime OTEL context TLS to avoid race condition with wall clock signals.
-        // TLS is lazily initialized on first setContext() call, which happens in
-        // ContextTask.run() after this method returns. If a wall clock signal
-        // arrives between now and then, the context would be uninitialized.
-        profiler.setContext(0, 0);
     }
 
     @Override

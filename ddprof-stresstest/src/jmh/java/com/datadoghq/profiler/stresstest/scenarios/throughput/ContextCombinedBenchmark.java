@@ -36,16 +36,11 @@ import org.openjdk.jmh.annotations.Warmup;
 
 /**
  * Perf-guard for the all-native context write API: the full per-scope activate+deactivate cycle
- * as dd-trace-java drives it, comparing the production combined native calls
- * ({@code setTraceContext}/{@code clearTraceContext}) against the deprecated DirectByteBuffer
- * sequence ({@code setContext} + 2x {@code setContextAttribute}, then {@code clearContext} + 2x
- * {@code clearContextAttribute}).
+ * as dd-trace-java drives it, using the combined native calls ({@code setTraceContext}/
+ * {@code clearTraceContext}).
  *
  * <p>One measured op = one full activate+deactivate cycle (@OperationsPerInvocation({@value #BATCH})).
- * The all-native cycle is expected to be at parity or a modest win over the fine-grained DBB cycle,
- * on both platform and mounted virtual threads and independent of storage mode (see the design
- * note, doc/plans/2026-07-02-all-native-context-storage-design.md). Guards against a regression in
- * the shipping API.
+ * Guards against a regression in the shipping API, on both platform and mounted virtual threads.
  *
  * <p>Run: {@code ./gradlew :ddprof-stresstest:jmh -PjmhInclude="ContextCombinedBenchmark"}
  */
@@ -55,7 +50,6 @@ import org.openjdk.jmh.annotations.Warmup;
         jvmArgsAppend = {"--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED"})
 @Warmup(iterations = 3, time = 1)
 @Measurement(iterations = 5, time = 2)
-@SuppressWarnings("deprecation") // intentionally exercises the deprecated DirectByteBuffer path as the baseline
 public class ContextCombinedBenchmark {
 
     static final int BATCH = 20_000;
@@ -89,16 +83,11 @@ public class ContextCombinedBenchmark {
     public static class ProfilerState {
         JavaProfiler profiler;
 
-        @Param({"carrier", "thread"})
-        String mode;
-
         @Setup(Level.Trial)
         public void setup() throws Exception {
-            System.setProperty("ddprof.debug.context.storage.mode", mode);
             profiler = JavaProfiler.getInstance();
             Path jfr = Files.createTempFile("ctx-combined", ".jfr");
             profiler.execute("start,cpu=10ms,attributes=op;res,jfr,file=" + jfr.toAbsolutePath());
-            System.out.println("[bench] requested mode=" + mode + " actual=" + profiler.contextStorageMode());
         }
     }
 
@@ -121,17 +110,6 @@ public class ContextCombinedBenchmark {
         p.clearTraceContext();
     }
 
-    // ---- deprecated DirectByteBuffer cycle (6 calls; cache-hit attribute writes) ----
-
-    private static void dbbCycle(JavaProfiler p, CtxState s) {
-        p.setContext(s.lrs, s.span, 0, s.trLo);
-        p.setContextAttribute(SLOT_OP, OP_NAME);
-        p.setContextAttribute(SLOT_RES, RES_NAME);
-        p.setContext(0, 0, 0, 0);
-        p.clearContextAttribute(SLOT_OP);
-        p.clearContextAttribute(SLOT_RES);
-    }
-
     @Benchmark
     @OperationsPerInvocation(BATCH)
     public void platform_native_cycle(ProfilerState ps, CtxState s) {
@@ -142,28 +120,10 @@ public class ContextCombinedBenchmark {
 
     @Benchmark
     @OperationsPerInvocation(BATCH)
-    public void platform_dbb_cycle(ProfilerState ps, CtxState s) {
-        for (int i = 0; i < BATCH; i++) {
-            dbbCycle(ps.profiler, s);
-        }
-    }
-
-    @Benchmark
-    @OperationsPerInvocation(BATCH)
     public void vthread_native_cycle(ProfilerState ps, CtxState s) throws InterruptedException {
         runOnVirtualThread(() -> {
             for (int i = 0; i < BATCH; i++) {
                 nativeCycle(ps.profiler, s);
-            }
-        });
-    }
-
-    @Benchmark
-    @OperationsPerInvocation(BATCH)
-    public void vthread_dbb_cycle(ProfilerState ps, CtxState s) throws InterruptedException {
-        runOnVirtualThread(() -> {
-            for (int i = 0; i < BATCH; i++) {
-                dbbCycle(ps.profiler, s);
             }
         });
     }
