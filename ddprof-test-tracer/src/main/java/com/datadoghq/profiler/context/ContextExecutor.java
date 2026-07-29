@@ -24,6 +24,10 @@ public class ContextExecutor extends ThreadPoolExecutor {
     @Override
     protected void beforeExecute(Thread t, Runnable r) {
         super.beforeExecute(t, r);
+        // Clear any context left over from this worker's previous task before wall-clock
+        // profiling is re-enabled below, so a signal in the window before ContextTask.run()
+        // activates the new context can't be attributed to the previous task's span.
+        profiler.clearTraceContext();
         profiler.addThread();
     }
 
