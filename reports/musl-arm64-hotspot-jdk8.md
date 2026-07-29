@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk8
 
 ## musl-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-07-29 08:27:25 EDT
+**Date:** 2026-07-29 08:37:58 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-arm64-hotspot-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 38 |
-| CPU Cores (end) | 38 |
+| CPU Cores (start) | 52 |
+| CPU Cores (end) | 52 |
 | Throttling | 0% |
 
 ### Test Results
@@ -45,29 +45,29 @@ title: musl-arm64-hotspot-jdk8
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 38-38 cores)</summary>
+<summary>CPU Timeline (1 unique values: 52-52 cores)</summary>
 
 ```
-1785327673 38
-1785327678 38
-1785327683 38
-1785327688 38
-1785327693 38
-1785327698 38
-1785327703 38
-1785327708 38
-1785327713 38
-1785327718 38
-1785327723 38
-1785327728 38
-1785327733 38
-1785327738 38
-1785327743 38
-1785327748 38
-1785327753 38
-1785327758 38
-1785327763 38
-1785327768 38
+1785328372 52
+1785328377 52
+1785328382 52
+1785328387 52
+1785328392 52
+1785328397 52
+1785328402 52
+1785328407 52
+1785328412 52
+1785328417 52
+1785328422 52
+1785328427 52
+1785328432 52
+1785328437 52
+1785328442 52
+1785328447 52
+1785328452 52
+1785328457 52
+1785328462 52
+1785328467 52
 ```
 </details>
 
