@@ -74,12 +74,14 @@ public:
     static inline bool isHidden(jint modifiers);
 };
 
+class ProfiledThread;
+
 class LongjmpProtectionLeaver {
 private:
-    sigjmp_buf*     _jmp_buf;
+    sigjmp_buf* _jmp_buf;
     ProfiledThread* const _thread;
 public:
-    LongjmpProtectionLeaver(ProfiledThread* const thread);
+    explicit LongjmpProtectionLeaver(ProfiledThread* thread);
     ~LongjmpProtectionLeaver();
 };
 
