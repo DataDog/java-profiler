@@ -7,7 +7,8 @@ variables:
   stage: reliability
   timeout: 6h
   variables:
-    RUNTIME: "${RUNTIME}"
+    # Default; a pipeline-schedule variable named RUNTIME overrides this.
+    RUNTIME: "3600"
   needs:
     - get-versions
   rules:
@@ -63,7 +64,8 @@ reliability-aarch64:
   stage: reliability
   timeout: 6h
   variables:
-    RUNTIME: "${RUNTIME}"
+    # Default; a pipeline-schedule variable named RUNTIME overrides this.
+    RUNTIME: "3600"
   needs:
     - get-versions
     - job: chaos:build
