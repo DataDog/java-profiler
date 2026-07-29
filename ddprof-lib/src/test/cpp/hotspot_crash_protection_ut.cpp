@@ -16,7 +16,7 @@
  *      signal-based sampler interrupting a non-signal-based sampler's own
  *      in-flight walkVM() call doesn't clobber the outer call's context.
  *   2. If a fault fires during the walk, checkFault() detects the live
- *      context via ProfiledThread::isProtected() and calls longjmp() to
+ *      context via ProfiledThread::isProtected() and calls siglongjmp() to
  *      unwind through whatever context is currently installed.
  *   3. ProfiledThread tracks nested crash-handler depth so recursive faults
  *      (e.g. wall-clock signal inside a crash handler) are capped safely.
@@ -115,7 +115,7 @@ TEST_F(ProfiledThreadTypeTest, FastPathReturnsFalseForNonJavaThread) {
 // Profiler::crashHandlerInternal calls:
 //   enterCrashHandler()   — on entry, returns false if limit reached
 //   exitCrashHandler()    — on normal exit
-//   resetCrashHandler()   — from checkFault before longjmp to unwind all
+//   resetCrashHandler()   — from checkFault before siglongjmp to unwind all
 //                           nesting at once
 // ---------------------------------------------------------------------------
 
@@ -160,7 +160,7 @@ TEST_F(CrashHandlerNestingTest, LimitBlocksFurtherEntry) {
     }
 }
 
-// resetCrashHandler() is called by checkFault() before longjmp so that the
+// resetCrashHandler() is called by checkFault() before siglongjmp so that the
 // landing pad in walkVM starts with a clean nesting count.
 TEST_F(CrashHandlerNestingTest, ResetAllowsEntryAfterDeepNesting) {
     for (u32 i = 0; i < ProfiledThread::CRASH_HANDLER_NESTING_LIMIT; i++) {
@@ -195,11 +195,11 @@ TEST_F(CrashHandlerNestingTest, IsDeepOnlyAboveLimit) {
 // A non-signal-based sampler's walkVM() call can itself be interrupted by a
 // signal-based sampler, putting two walkVM() frames on the same thread's
 // stack. Each frame follows the same protocol:
-//   sigjmp_buf* prev = prof_thread->getJmpCtx();   // save whatever was there
+//   sigjmp_buf* prev = prof_thread->getJmpCtx(); // save whatever was there
 //   prof_thread->setJmpCtx(&my_ctx);            // install this frame's ctx
 //   ... walk ...
 //   prof_thread->setJmpCtx(prev);               // restore on every exit path
-// checkFault() always longjmps through whatever is currently installed
+// checkFault() always siglongjmps through whatever is currently installed
 // (thrd->getJmpCtx()), so the inner frame must never leave the outer frame's
 // context installed while the inner frame is doing its own protected work,
 // and must always hand it back — via normal completion or fault recovery —
@@ -250,7 +250,7 @@ TEST_F(JmpCtxChainingTest, SingleFrameRestoresPreviousOnExit) {
 
 // Replicates two nested walkVM() calls: a signal-based sampler interrupting a
 // non-signal-based sampler's own in-flight walkVM(). The inner call must
-// chain off the outer's jmp_buf*, install its own, and hand the outer's back
+// chain off the outer's sigjmp_buf*, install its own, and hand the outer's back
 // on its way out — leaving the outer frame's context exactly as it left it.
 TEST_F(JmpCtxChainingTest, NestedFramesChainAndUnwindInOrder) {
     sigjmp_buf outer_ctx;
@@ -306,7 +306,7 @@ TEST_F(JmpCtxChainingTest, FaultInInnerFrameDoesNotDisturbOuterFrame) {
             _pt->setJmpCtx(inner_prev);
         } else {
             _pt->setJmpCtx(&inner_ctx);
-            // Simulate checkFault(): longjmp through whatever is currently
+            // Simulate checkFault(): siglongjmp through whatever is currently
             // installed — this must hit the inner frame, not the outer.
             siglongjmp(*_pt->getJmpCtx(), 1);
             FAIL() << "unreachable: siglongjmp does not return";
