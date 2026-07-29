@@ -1048,16 +1048,31 @@ static std::atomic<uintptr_t> profiler_max_address{0};
 void Profiler::setupSignalHandlers() {
   // Do not re-run the signal setup (run only when VM has not been loaded yet)
   if (__sync_bool_compare_and_swap(&_signals_initialized, false, true)) {
+      // Initialize infrastructure before enabling signal handler
+
       // Eagerly initialize the Counters singleton off the signal path, before any
       // handler that increments counters is installed. The crash handler
       // (crashHandlerInternal -> SafeAccess::handle_safefetch) bumps
       // SAFEFETCH_FAILED / SAFECOPY_FAILED, and other async handlers bump the
-      // WALKVM_* counters. The first touch of the singleton lazily runs
+      // STACKWALK* counters. The first touch of the singleton lazily runs
       // aligned_alloc + memset and takes the C++ static-init guard lock — none of
       // which are async-signal-safe. Forcing that construction here guarantees the
       // signal path only ever performs lock-free atomic increments on the
       // already-allocated array.
       (void)Counters::getCounters();
+
+      // Get address range of java profiler library
+      Libraries* libs = Libraries::instance();
+      CodeCache* prof_lib = libs->findLibraryByAddress((const void*)&Profiler::setupSignalHandlers);
+      assert(prof_lib != nullptr);
+      profiler_min_address = reinterpret_cast<uintptr_t>(prof_lib->minAddress());
+      profiler_max_address = reinterpret_cast<uintptr_t>(prof_lib->maxAddress());
+
+      #ifdef __FAULT_INJECTION__
+      // Reserve the PROT_NONE guard region used to poison memory-access sites.
+      // Done here (off the signal path) once handlers are installed.
+      faultinj::init();
+      #endif
 
       if (VM::isHotspot() || VM::isOpenJ9()) {
         // HotSpot and J9 tolerate interposed SIGSEGV/SIGBUS handler; other JVMs probably not
@@ -1071,19 +1086,6 @@ void Profiler::setupSignalHandlers() {
         // Patch sigaction GOT in libraries with broken signal handlers (already loaded)
         LibraryPatcher::patch_sigaction();
       }
-
-      // Get address range of java profiler library
-      Libraries* libs = Libraries::instance();
-      CodeCache* prof_lib = libs->findLibraryByAddress((const void*)&Profiler::setupSignalHandlers);
-      assert(prof_lib != nullptr);
-      profiler_min_address = reinterpret_cast<uintptr_t>(prof_lib->minAddress());
-      profiler_max_address = reinterpret_cast<uintptr_t>(prof_lib->maxAddress());
-
-      #ifdef __FAULT_INJECTION__
-      // Reserve the PROT_NONE guard region used to poison memory-access sites.
-      // Done here (off the signal path) once handlers are installed.
-      faultinj::init();
-#endif
   }
 }
 

@@ -1198,6 +1198,14 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   u32 lock_index = request.lock_index;
 
   volatile int java_frames = 0;
+  // True exactly while an AsyncSampleMutex acquired by this call is alive,
+  // i.e. while ProfiledThread::is_unwinding_Java() is held on our behalf.
+  // A siglongjmp out of the getJavaTraceAsync() branches below bypasses that
+  // mutex's destructor, so the recovery path below uses this flag to release
+  // the per-thread guard itself — otherwise it would stay stuck true forever
+  // and permanently disable async CPU/wall/malloc/socket sampling on this
+  // thread.
+  volatile bool async_trace_active = false;
 
   // walkVM() installs its own sigsetjmp/siglongjmp crash protection (chained
   // with any pre-existing jmp ctx, see the comment in walkVM), but the
@@ -1215,6 +1223,9 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
     // segvHandler's SignalHandlerScope destructor. Compensate.
     SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
     prof_thread->setJmpCtx(prev_jmp_buf);
+    if (async_trace_active) {
+      prof_thread->set_unwinding_Java(false);
+    }
     if (truncated) {
       *truncated = true;
     }
@@ -1232,6 +1243,7 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
     } else {
         AsyncSampleMutex mutex(ProfiledThread::current());
         if (mutex.acquired()) {
+            async_trace_active = true;
             java_frames = getJavaTraceAsync(ucontext, frames, max_depth, java_ctx, truncated);
             if (java_frames > 0 && java_ctx->pc != NULL && VMStructs::hasMethodStructs()) {
                 VMNMethod* nmethod = CodeHeap::findNMethod(java_ctx->pc);
@@ -1239,6 +1251,7 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
                     fillFrameTypes(frames, java_frames, nmethod);
                 }
             }
+            async_trace_active = false;
         }
         if (java_frames > 0 && VM::hotspot_version() >= 21 && java_frames < max_depth) {
             VMThread* carrier = VMThread::current();
@@ -1257,6 +1270,7 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
         // Async events
         AsyncSampleMutex mutex(ProfiledThread::current());
         if (mutex.acquired()) {
+            async_trace_active = true;
             java_frames = getJavaTraceAsync(ucontext, frames, max_depth, java_ctx, truncated);
             if (java_frames > 0 && java_ctx->pc != NULL && VMStructs::hasMethodStructs()) {
                 VMNMethod* nmethod = CodeHeap::findNMethod(java_ctx->pc);
@@ -1264,6 +1278,7 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
                     fillFrameTypes(frames, java_frames, nmethod);
                 }
             }
+            async_trace_active = false;
         }
         // ASGCT stops at the continuation boundary for virtual threads (JDK 21+).
         // Append a synthetic root frame so the UI does not show "Missing Frames".
