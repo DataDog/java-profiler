@@ -184,13 +184,12 @@ TEST_F(FaultInjectionTest, WalkVmSetjmpRecoversFromInjectedFault) {
 }
 
 // (c3) recordSample's outer sigsetjmp region (PROF-15447): Profiler::recordSample()
-// wraps the native/Java unwind in its own jmp_buf, chaining off whatever
+// wraps the native/Java unwind in its own sigjmp_buf, chaining off whatever
 // context a caller may already have installed, so a fault in the
 // *unprotected* metadata reads surrounding walkVM/walkFP/walkDwarf (isJitCode,
 // findFrameDesc, findLibraryByAddress, AGCT in getJavaTraceAsync, frame.link,
 // ...) recovers to a partial trace instead of crashing — and, critically,
-// restores the caller's jmp_buf chain on both the clean and the recovery path.
-//
+// restores the caller's sigjmp_buf chain on both the clean and the recovery path.
 // recordSample() itself needs a live JVM (ASGCT, VMStructs, an allocated
 // _calltrace_buffer) unavailable in this gtest binary, so — following the
 // same "replicate the protocol" approach used elsewhere in this suite for
