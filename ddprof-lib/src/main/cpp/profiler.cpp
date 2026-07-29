@@ -680,6 +680,7 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
 
     call_trace_id =
         _call_trace_storage.put(num_frames, frames, truncated, counter);
+    ProfiledThread* walk_thread = ProfiledThread::current();
     if (walk_thread != nullptr) {
       walk_thread->recordCallTraceId(call_trace_id);
     }
@@ -1018,11 +1019,6 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
   if (VM::isHotspot()) {
     // the following checks require vmstructs and therefore HotSpot
 
-(??)    // HotspotSupport::checkFault has its own check if we're in a protected stack walk.
-(??)    // If the fault is from our protected walk, it will longjmp and never return.
-(??)    // If it returns, the fault wasn't from our code.
-(??)    HotspotSupport::checkFault(thrd);
-(??)
     // Workaround for JDK-8313796 if needed. Setting cstack=dwarf also helps
     if (_need_JDK_8313796_workaround &&
         VMStructs::isInterpretedFrameValidFunc((const void *)pc) &&
