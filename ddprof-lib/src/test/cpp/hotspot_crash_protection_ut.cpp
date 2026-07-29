@@ -25,12 +25,15 @@
  *   A. ProfiledThread thread-type classification (isJavaThread fast path)
  *   B. Crash-handler nesting depth (ProfiledThread crash handler state)
  *   C. sigjmp_buf chaining across nested/interrupted walkVM() calls
+ *   F. HotspotSupport::walkJavaStack()'s AsyncSampleMutex release on a
+ *      recovered fault
  */
 
 #include <gtest/gtest.h>
 #include "threadLocalData.h"
 #include "profiler.h"
 
+#include "asyncSampleMutex.h"
 #include "jvmThread.h"
 #include "safeAccess.h"
 #include "os.h"
@@ -413,6 +416,121 @@ TEST_F(SafeFetch64TocTouGuardTest, ZeroReturnMeansGiveUp) {
     EXPECT_EQ(nullptr, klass);
 
     munmap(page, 4096);
+}
+
+// ---------------------------------------------------------------------------
+// F. HotspotSupport::walkJavaStack()'s AsyncSampleMutex release on a
+//    recovered fault
+//
+// walkJavaStack() wraps its getJavaTraceAsync() branches in an
+// AsyncSampleMutex, which sets ProfiledThread::is_unwinding_Java() true for
+// as long as it is alive and clears it again in its destructor. A siglongjmp
+// out of that region (Profiler::checkFault() recovering a fault) bypasses
+// the destructor, so walkJavaStack tracks a local `async_trace_active` flag
+// that mirrors the mutex's true lifetime and, on recovery, explicitly clears
+// is_unwinding_Java() itself whenever that flag was set — otherwise the flag
+// would stay stuck true forever and permanently disable async CPU/wall/
+// malloc/socket sampling on that thread (see hotspotSupport.cpp).
+//
+// This gtest binary has no live JVM, so getJavaTraceAsync() itself can't be
+// driven into a real fault — it bails out early on a null VMThread. These
+// tests replicate walkJavaStack's exact protection/AsyncSampleMutex protocol
+// with a real ProfiledThread, a real AsyncSampleMutex and a real
+// sigsetjmp/siglongjmp fault (via the real Profiler::segvHandler ->
+// Profiler::checkFault chain) to lock down the release behavior.
+// ---------------------------------------------------------------------------
+
+class WalkJavaStackAsyncMutexRecoveryTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        ProfiledThread::initCurrentThread();
+        _pt = ProfiledThread::current();
+        ASSERT_NE(nullptr, _pt);
+        ASSERT_FALSE(_pt->isProtected());
+        ASSERT_FALSE(_pt->is_unwinding_Java());
+
+        _orig_segv = OS::replaceSigsegvHandler(Profiler::segvHandler);
+        _orig_bus = OS::replaceSigbusHandler(Profiler::busHandler);
+
+        _bad_page = mmap(nullptr, 4096, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        ASSERT_NE(MAP_FAILED, _bad_page);
+    }
+
+    void TearDown() override {
+        munmap(_bad_page, 4096);
+        OS::replaceSigsegvHandler(_orig_segv);
+        OS::replaceSigbusHandler(_orig_bus);
+        _pt->set_unwinding_Java(false);  // keep failures from this test isolated
+        ProfiledThread::release();
+    }
+
+    ProfiledThread* _pt = nullptr;
+    void* _bad_page = nullptr;
+    SigAction _orig_segv = nullptr;
+    SigAction _orig_bus = nullptr;
+};
+
+// Replicates walkJavaStack's cstack<CSTACK_VM branch: acquire AsyncSampleMutex,
+// fault as if inside getJavaTraceAsync, and confirm recovery releases the
+// per-thread guard instead of leaking it.
+TEST_F(WalkJavaStackAsyncMutexRecoveryTest, RecoveredFaultReleasesAsyncGuard) {
+    sigjmp_buf crash_protection_ctx;
+    sigjmp_buf* prev_jmp_buf = _pt->getJmpCtx();
+    ASSERT_EQ(nullptr, prev_jmp_buf);
+
+    volatile bool async_trace_active = false;
+
+    if (sigsetjmp(crash_protection_ctx, 1) != 0) {
+        SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
+        _pt->setJmpCtx(prev_jmp_buf);
+        if (async_trace_active) {
+            _pt->set_unwinding_Java(false);
+        }
+    } else {
+        _pt->setJmpCtx(&crash_protection_ctx);
+
+        AsyncSampleMutex mutex(_pt);
+        ASSERT_TRUE(mutex.acquired());
+        async_trace_active = true;
+        EXPECT_TRUE(_pt->is_unwinding_Java());
+
+        // Simulate a fault inside getJavaTraceAsync's raw memory access --
+        // this never returns; it lands back at the sigsetjmp above via
+        // Profiler::checkFault()'s siglongjmp.
+        *reinterpret_cast<volatile int*>(_bad_page) = 1;
+        FAIL() << "unreachable: the write above must fault";
+    }
+
+    EXPECT_FALSE(_pt->is_unwinding_Java())
+        << "a recovered fault must release the AsyncSampleMutex guard, not leak it";
+    EXPECT_FALSE(_pt->isProtected());
+}
+
+// Baseline: a fault that occurs *outside* the AsyncSampleMutex's window
+// (async_trace_active still false, as in walkVM()'s own branches) must not
+// touch is_unwinding_Java at all -- confirms the recovery reset is scoped to
+// the mutex's true lifetime rather than firing unconditionally.
+TEST_F(WalkJavaStackAsyncMutexRecoveryTest, RecoveredFaultOutsideGuardWindowLeavesFlagUntouched) {
+    sigjmp_buf crash_protection_ctx;
+    sigjmp_buf* prev_jmp_buf = _pt->getJmpCtx();
+    volatile bool async_trace_active = false;
+
+    if (sigsetjmp(crash_protection_ctx, 1) != 0) {
+        SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
+        _pt->setJmpCtx(prev_jmp_buf);
+        if (async_trace_active) {
+            _pt->set_unwinding_Java(false);
+        }
+    } else {
+        _pt->setJmpCtx(&crash_protection_ctx);
+
+        // walkVM()-style branch: no AsyncSampleMutex involved at all.
+        *reinterpret_cast<volatile int*>(_bad_page) = 1;
+        FAIL() << "unreachable: the write above must fault";
+    }
+
+    EXPECT_FALSE(_pt->is_unwinding_Java());
+    EXPECT_FALSE(_pt->isProtected());
 }
 
 #endif  // __linux__
