@@ -186,7 +186,7 @@ static void fillFrameTypes(ASGCT_CallFrame *frames, int num_frames, VMNMethod *n
 
 // Fill the frame with raw method pointer
 static void fillFrameRaw(ASGCT_CallFrame& frame, FrameTypeId type, int bci, const VMMethod* method) {
-    assert(method != nullptr);
+    NO_INJECTION_ASSERT(method != nullptr);
     frame.bci = FrameType::encode(type, bci, true /*raw method pointer*/);
     frame.method = static_cast<const void*>(method);
 }
@@ -196,7 +196,7 @@ static void fillFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci, jmethod
     if (method_id != nullptr && method_id != JMETHODID_NOT_WALKABLE) {
         fillFrame(frame, type, bci, method_id);
     } else {
-        assert(method != nullptr);
+        NO_INJECTION_ASSERT(method != nullptr);
         fillFrameRaw(frame, type, bci, method);
     }
 }
@@ -1389,7 +1389,7 @@ bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jcl
 // This method only resolves methods that are loaded by system class loaders
 jmethodID HotspotSupport::resolve(const void* method) {
   assert(VM::isHotspot());
-  assert(method != nullptr);
+  NO_INJECTION_ASSERT(method != nullptr);
   // We packed not walkable method as a raw pointer,
   // map it back to nullptr, as JMETHODID_NOT_WALKABLE is only
   // known in hotspot.

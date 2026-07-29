@@ -40,11 +40,14 @@
 #ifndef _FAULT_INJECTION_H
 #define _FAULT_INJECTION_H
 
+#include <cassert>
+
 #ifdef __FAULT_INJECTION__
 
 #include "arch.h"  // u64
 #include <cstdint>
 
+#define NO_INJECTION_ASSERT(a)
 namespace faultinj {
 
 // Firing probability expressed as an xorshift64 threshold (round(p * 2^64)), so
@@ -128,6 +131,8 @@ inline T injectValue(T orig, T faulty, u64 threshold, const char* fn) {
 #define INJECT_FAULT_BOOL_RARE(v)     (v)
 #define INJECT_FAULT_BOOL_UNLIKELY(v) (v)
 #define INJECT_FAULT_BOOL_LIKELY(v)   (v)
+
+#define NO_INJECTION_ASSERT(a) (assert(a))
 
 #endif  // __FAULT_INJECTION__
 

@@ -55,7 +55,6 @@ bool JVMSupport::isHidden(jint modifiers) {
 }
 
 void JVMSupport::jvmAsyncGetCallTrace(ASGCT_CallTrace *frames, int max_depth, void* ucontext) {
-    LongjmpProtectionLeaver leaver(ProfiledThread::current());
     VM::_asyncGetCallTrace(frames, max_depth, ucontext);
 }
 

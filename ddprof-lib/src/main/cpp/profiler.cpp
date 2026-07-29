@@ -2004,7 +2004,7 @@ int Profiler::status(char* status, int max_len) {
 }
 
 void Profiler::checkFault(ProfiledThread* thrd, siginfo_t *siginfo, void *ucontext) {
-    (void)ucontext;
+    (void)siginfo;
     // Check if siglongjmp is setup for this thread
     if (thrd == nullptr || !thrd->isProtected()) {
         return;
@@ -2012,15 +2012,14 @@ void Profiler::checkFault(ProfiledThread* thrd, siginfo_t *siginfo, void *uconte
 
     // Check if the fault is originated from java profiler
     const uintptr_t pc = (uintptr_t)StackFrame(ucontext).pc();
-    const uintptr_t min = (uintptr_t)profiler_min_address;
-    const uintptr_t max = (uintptr_t)profiler_max_address;
-
-    #if !defined(UNIT_TEST)
-      assert(min != 0 && max != 0);
-    #endif
+    const uintptr_t min = profiler_min_address.load(std::memory_order_relaxed);
+    const uintptr_t max = profiler_max_address.load(std::memory_order_relaxed);
 
     // If the profiler address range is not initialized (e.g. unit tests), fall back
     // to recovering unconditionally when a protection context is installed.
+    #if !defined(UNIT_TEST)
+      assert(min != 0 && max != 0);
+    #endif
     if ((min != 0 && max != 0) && (pc < min || pc >= max)) {
       return;
     }

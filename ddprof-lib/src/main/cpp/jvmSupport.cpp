@@ -177,17 +177,3 @@ bool JVMSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
   }
   return false;
 }
-
-LongjmpProtectionLeaver::LongjmpProtectionLeaver(ProfiledThread* const thread) :
-    _thread(thread), _jmp_buf(nullptr) {
-    if (thread != nullptr) {
-        _jmp_buf = thread->getJmpCtx();
-        thread->setJmpCtx(nullptr);
-    }
-}
-
-LongjmpProtectionLeaver::~LongjmpProtectionLeaver() {
-    if (_thread != nullptr) {
-        _thread->setJmpCtx(_jmp_buf);
-    }
-}
