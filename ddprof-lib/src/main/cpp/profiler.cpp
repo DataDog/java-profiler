@@ -680,9 +680,9 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
 
     call_trace_id =
         _call_trace_storage.put(num_frames, frames, truncated, counter);
-    ProfiledThread* walk_thread = ProfiledThread::current();
-    if (walk_thread != nullptr) {
-      walk_thread->recordCallTraceId(call_trace_id);
+    ProfiledThread *thread = ProfiledThread::current();
+    if (thread != nullptr) {
+      thread->recordCallTraceId(call_trace_id);
     }
 #ifdef COUNTERS
     u64 duration = TSC::ticks() - startTime;
@@ -843,7 +843,7 @@ void Profiler::writeHeapUsage(long value, bool live) {
   _locks[lock_index].unlock();
 }
 
-void Profiler::prewarmUnwinder() {
+bool Profiler::prewarmUnwinder() {
 #ifdef __linux__
   // J9 on aarch64 (and other JVMs) lazily loads libgcc_s.so.1 from its DWARF
   // unwinder during stack walks. When that happens inside a signal handler
@@ -864,7 +864,13 @@ void Profiler::prewarmUnwinder() {
   // dlopen by SONAME is the only mechanism that works under static-libgcc.
   // libgcc_s.so.1 has been the stable SONAME since 2002; a bump would
   // constitute a glibc/GCC C++ ABI break and is treated as a fixed contract.
-  (void)dlopen("libgcc_s.so.1", RTLD_LAZY | RTLD_GLOBAL);
+  //
+  // INJECT_FAULT_BOOL_LIKELY lets fault-injection builds force this to
+  // report failure without the library actually being absent, so
+  // checkState()'s "Missing libgcc_s.so" path can be exercised in CI.
+  return INJECT_FAULT_BOOL_LIKELY(dlopen("libgcc_s.so.1", RTLD_LAZY | RTLD_GLOBAL) != nullptr);
+#else
+  return true;
 #endif
 }
 
@@ -1302,6 +1308,13 @@ Error Profiler::checkState() {
   if (s == ERROR) {
     return Error("Profiler encountered fatal error");
   } else if (s == NEW) {
+    // Force libgcc_s to load now (idempotent dlopen) so the JVM's DWARF
+    // unwinder cannot lazy-load it later from signal context.
+    if (!prewarmUnwinder()) {
+      _state.store(ERROR, std::memory_order_release);
+      return Error("Missing libgcc_s.so.1");
+    }
+
     // Make sure JVMSupport is initialized
     // In theory, it should be initialized in JVMTI::VMInit() callback,
     // but the callback arrives too late, after this method is called.
@@ -1317,6 +1330,7 @@ Error Profiler::checkState() {
 
 Error Profiler::init() {
   MutexLocker ml(_state_lock);
+
   State s = state();
   if (s == ERROR) {
     return Error("Profiler encountered fatal error");
@@ -1346,10 +1360,6 @@ Error Profiler::start(Arguments &args, bool reset) {
   if (error) {
     return error;
   }
-
-  // Force libgcc_s to load now (idempotent dlopen) so the JVM's DWARF
-  // unwinder cannot lazy-load it later from signal context.
-  prewarmUnwinder();
 
   error = checkJvmCapabilities();
   if (error) {
