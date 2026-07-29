@@ -11,6 +11,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 
+import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JavaProfiler;
 
 import static org.junit.jupiter.api.Assertions.fail;
@@ -22,7 +23,7 @@ public class ShutdownTest {
   public void testShutdownCpu() throws IOException {
     System.out.println("=== testShutdownCpu()");
     JavaProfiler profiler = JavaProfiler.getInstance();
-    runTest(profiler, "start,cpu=10us,filter=0");
+    runTest(profiler, "cpu=10us,filter=0");
   }
 
   @Test
@@ -30,7 +31,7 @@ public class ShutdownTest {
     System.out.println("=== testShutdownWall()");
     JavaProfiler profiler = JavaProfiler.getInstance();
     profiler.addThread();
-    runTest(profiler, "start,wall=10us,filter=0");
+    runTest(profiler, "wall=10us,filter=0");
   }
 
   @Test
@@ -38,14 +39,17 @@ public class ShutdownTest {
     System.out.println("=== testShutdownCpuAndWall()");
     JavaProfiler profiler = JavaProfiler.getInstance();
     profiler.addThread();
-    runTest(profiler, "start,cpu=10us,wall=~10us,filter=0");
+    runTest(profiler, "cpu=10us,wall=~10us,filter=0");
   }
 
+  // command holds only the options portion (no leading "start," / trailing
+  // "jfr,file=..."), so applyProfilerOptionOverrides never has to parse
+  // those as key=value pairs.
   private static void runTest(JavaProfiler profiler, String command) throws IOException {
     Path rootDir = Paths.get("/tmp/recordings");
     Files.createDirectories(rootDir);
     Path jfrDump = Files.createTempFile(rootDir, "shutdown-test", ".jfr");
-    String commandWithDump = command + ",jfr,file=" + jfrDump.toAbsolutePath();
+    String commandWithDump = "start," + AbstractProfilerTest.applyProfilerOptionOverrides(command) + ",jfr,file=" + jfrDump.toAbsolutePath();
     ExecutorService executor = Executors.newSingleThreadExecutor();
     Queue<Throwable> errors = new LinkedBlockingQueue<>();
     try {

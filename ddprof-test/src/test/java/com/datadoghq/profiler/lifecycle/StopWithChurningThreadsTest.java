@@ -5,6 +5,7 @@
 
 package com.datadoghq.profiler.lifecycle;
 
+import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JavaProfiler;
 import com.datadoghq.profiler.Platform;
 
@@ -49,7 +50,7 @@ public class StopWithChurningThreadsTest {
     // wall=1ms maximises signals in-flight during teardown; filter= disables
     // thread filtering so all threads receive SIGVTALRM, increasing collision
     // probability with ThreadEnd.
-    private static final String PROFILER_CMD = "start,wall=1ms,filter=,jfr,file=";
+    private static final String PROFILER_OPTIONS = "wall=1ms,filter=";
 
     @Timeout(120)
     @Test
@@ -61,6 +62,7 @@ public class StopWithChurningThreadsTest {
         JavaProfiler profiler = JavaProfiler.getInstance();
         Path recordings = Files.createTempDirectory("lifecycle-cell1-");
         Queue<Throwable> errors = new LinkedBlockingQueue<>();
+        String profilerCmd = "start," + AbstractProfilerTest.applyProfilerOptionOverrides(PROFILER_OPTIONS) + ",jfr,file=";
 
         AtomicBoolean running = new AtomicBoolean(true);
         CountDownLatch churnRunning = new CountDownLatch(CHURN_THREADS);
@@ -83,7 +85,7 @@ public class StopWithChurningThreadsTest {
             for (int cycle = 0; cycle < CYCLES; cycle++) {
                 Path jfr = Files.createTempFile(recordings, "c1-" + cycle + "-", ".jfr");
                 try {
-                    profiler.execute(PROFILER_CMD + jfr.toAbsolutePath());
+                    profiler.execute(profilerCmd + jfr.toAbsolutePath());
                     // Minimal delay: hit stop() while signals are still in-flight
                     // and threads are actively dying. Varies per cycle to avoid
                     // always landing in the same phase of the signal period.

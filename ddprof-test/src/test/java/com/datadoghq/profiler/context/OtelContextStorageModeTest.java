@@ -15,6 +15,7 @@
  */
 package com.datadoghq.profiler.context;
 
+import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JavaProfiler;
 import com.datadoghq.profiler.ThreadContext;
 import org.junit.jupiter.api.AfterEach;
@@ -58,7 +59,8 @@ public class OtelContextStorageModeTest {
     public void testOtelStorageModeContext() throws Exception {
         Path jfrFile = Files.createTempFile("otel-ctx-otel", ".jfr");
 
-        profiler.execute(String.format("start,cpu=1ms,attributes=tag1;tag2;tag3,jfr,file=%s", jfrFile.toAbsolutePath()));
+        profiler.execute(String.format("start,%s,jfr,file=%s",
+                AbstractProfilerTest.applyProfilerOptionOverrides("cpu=1ms,attributes=tag1;tag2;tag3"), jfrFile.toAbsolutePath()));
         profilerStarted = true;
 
         long localRootSpanId = 0x1111222233334444L;
@@ -84,7 +86,8 @@ public class OtelContextStorageModeTest {
     public void testOtelModeCustomAttributes() throws Exception {
         Path jfrFile = Files.createTempFile("otel-ctx-attrs", ".jfr");
 
-        profiler.execute(String.format("start,cpu=1ms,attributes=http.route;db.system,jfr,file=%s", jfrFile.toAbsolutePath()));
+        profiler.execute(String.format("start,%s,jfr,file=%s",
+                AbstractProfilerTest.applyProfilerOptionOverrides("cpu=1ms,attributes=http.route;db.system"), jfrFile.toAbsolutePath()));
         profilerStarted = true;
 
         long localRootSpanId = 0x1111222233334444L;
@@ -114,7 +117,8 @@ public class OtelContextStorageModeTest {
     public void testOtelModeAttributeOverflow() throws Exception {
         Path jfrFile = Files.createTempFile("otel-ctx-overflow", ".jfr");
 
-        profiler.execute(String.format("start,cpu=1ms,attributes=k0;k1;k2;k3;k4,jfr,file=%s", jfrFile.toAbsolutePath()));
+        profiler.execute(String.format("start,%s,jfr,file=%s",
+                AbstractProfilerTest.applyProfilerOptionOverrides("cpu=1ms,attributes=k0;k1;k2;k3;k4"), jfrFile.toAbsolutePath()));
         profilerStarted = true;
 
         profiler.setContext(0x2L, 0x1L, 0L, 0x3L);
@@ -203,7 +207,8 @@ public class OtelContextStorageModeTest {
     @Test
     public void testSpanTransitionClearsAttributes() throws Exception {
         Path jfrFile = Files.createTempFile("otel-ctx-transition", ".jfr");
-        profiler.execute(String.format("start,cpu=1ms,attributes=http.route,jfr,file=%s", jfrFile.toAbsolutePath()));
+        profiler.execute(String.format("start,%s,jfr,file=%s",
+                AbstractProfilerTest.applyProfilerOptionOverrides("cpu=1ms,attributes=http.route"), jfrFile.toAbsolutePath()));
         profilerStarted = true;
 
         // Span A: set a custom attribute
@@ -246,7 +251,8 @@ public class OtelContextStorageModeTest {
     @Test
     public void testAttributeCacheIsolation() throws Exception {
         Path jfrFile = Files.createTempFile("otel-attr-cache-iso", ".jfr");
-        profiler.execute(String.format("start,cpu=1ms,attributes=attr0,jfr,file=%s", jfrFile.toAbsolutePath()));
+        profiler.execute(String.format("start,%s,jfr,file=%s",
+                AbstractProfilerTest.applyProfilerOptionOverrides("cpu=1ms,attributes=attr0"), jfrFile.toAbsolutePath()));
         profilerStarted = true;
 
         final String valueA = "FB"; // hashCode = 2236, slot 188
