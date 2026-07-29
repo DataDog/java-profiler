@@ -282,7 +282,7 @@ TEST_F(JmpCtxChainingTest, NestedFramesChainAndUnwindInOrder) {
 
 // End-to-end with real sigsetjmp/siglongjmp: a fault inside the inner frame must
 // land in the inner frame's own recovery branch — checkFault() always
-// longjmps through whatever is currently installed — and once the inner
+// siglongjmps through whatever is currently installed — and once the inner
 // frame has recovered and restored the outer's context, the outer frame must
 // be left exactly as it was, never having been unwound itself.
 TEST_F(JmpCtxChainingTest, FaultInInnerFrameDoesNotDisturbOuterFrame) {
