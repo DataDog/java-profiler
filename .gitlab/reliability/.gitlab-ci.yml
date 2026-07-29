@@ -7,9 +7,13 @@ variables:
   stage: reliability
   timeout: 6h
   variables:
-    RUNTIME: "${RUNTIME}"
+    # Default; a pipeline-schedule variable named RUNTIME overrides this.
+    RUNTIME: "3600"
   needs:
     - get-versions
+    - job: deploy-artifact
+      artifacts: false
+      optional: true
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: always
@@ -39,6 +43,7 @@ variables:
       - hs_err.log
       - err.log
       - out.log
+      - maven-get.log
     reports:
       dotenv: build.env
     expire_in: 7 days
@@ -63,7 +68,8 @@ reliability-aarch64:
   stage: reliability
   timeout: 6h
   variables:
-    RUNTIME: "${RUNTIME}"
+    # Default; a pipeline-schedule variable named RUNTIME overrides this.
+    RUNTIME: "3600"
   needs:
     - get-versions
     - job: chaos:build
