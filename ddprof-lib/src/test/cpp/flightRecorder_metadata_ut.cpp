@@ -26,6 +26,7 @@
 // returns can never diverge from what gets serialized.
 
 #include <gtest/gtest.h>
+#include <memory>
 
 #include "counters.h"
 #include "flightRecorder.h"
@@ -44,18 +45,27 @@ public:
 
 namespace {
 
-// Builds a chain of `depth` nested "field" elements: root -> child_1 -> ... .
-// Only used to hold real Element children; JfrMetadata's own string interning
-// keeps this allocation-free after warmup, and none of these elements are
-// ever freed (mirrors JfrMetadata::root(), whose tree lives for the process
-// lifetime).
-const Element *makeChild() { return new Element("field"); }
+// Owns the "field" Elements handed out by makeChild() below, so each test's
+// children are freed when its owner goes out of scope instead of leaking
+// (unlike JfrMetadata::root(), whose tree intentionally lives for the
+// process lifetime, these are throwaway test fixtures).
+class ElementOwner {
+public:
+  const Element *makeChild() {
+    _owned.push_back(std::make_unique<Element>("field"));
+    return _owned.back().get();
+  }
+
+private:
+  std::vector<std::unique_ptr<Element>> _owned;
+};
 
 } // namespace
 
 TEST(WriteElementMetadataGuardTest, AllValidChildrenAreCountedAtShallowDepth) {
-  std::vector<const Element *> children = {makeChild(), makeChild(),
-                                           makeChild()};
+  ElementOwner owner;
+  std::vector<const Element *> children = {owner.makeChild(), owner.makeChild(),
+                                           owner.makeChild()};
 
   size_t count = RecordingTestAccessor::countSerializableChildren(children, 0);
 
@@ -63,8 +73,9 @@ TEST(WriteElementMetadataGuardTest, AllValidChildrenAreCountedAtShallowDepth) {
 }
 
 TEST(WriteElementMetadataGuardTest, NullChildrenAreExcludedAndCounted) {
-  std::vector<const Element *> children = {makeChild(), nullptr, makeChild(),
-                                           nullptr};
+  ElementOwner owner;
+  std::vector<const Element *> children = {owner.makeChild(), nullptr,
+                                           owner.makeChild(), nullptr};
 
   long long null_before = Counters::getCounter(METADATA_TREE_NULL_CHILD);
 
@@ -85,7 +96,8 @@ TEST(WriteElementMetadataGuardTest, NullChildrenAreExcludedAndCounted) {
 // excluded from child_count, not just skipped by the recursive writer --
 // otherwise the encoded count and the actually-serialized children diverge.
 TEST(WriteElementMetadataGuardTest, ChildAtDepthBoundaryIsExcludedFromCount) {
-  std::vector<const Element *> children = {makeChild()};
+  ElementOwner owner;
+  std::vector<const Element *> children = {owner.makeChild()};
 
   long long depth_before = Counters::getCounter(METADATA_TREE_DEPTH_EXCEEDED);
 
@@ -101,7 +113,8 @@ TEST(WriteElementMetadataGuardTest, ChildAtDepthBoundaryIsExcludedFromCount) {
 // its recursive call lands at depth 10, still within the depth > 10 limit)
 // must still be counted normally -- the truncation must not kick in early.
 TEST(WriteElementMetadataGuardTest, ChildJustBeforeDepthBoundaryIsStillCounted) {
-  std::vector<const Element *> children = {makeChild(), makeChild()};
+  ElementOwner owner;
+  std::vector<const Element *> children = {owner.makeChild(), owner.makeChild()};
 
   size_t count = RecordingTestAccessor::countSerializableChildren(children, 9);
 
