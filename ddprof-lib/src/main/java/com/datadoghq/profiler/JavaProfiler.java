@@ -263,7 +263,7 @@ public final class JavaProfiler {
                 e1 == null ? -1 : slot1, e1 == null ? 0 : e1.encoding, e1 == null ? null : e1.utf8);
     }
 
-    /** Combined per-scope-deactivation clear (replaces {@link #clearContext()} on the native path). */
+    /** Clears the trace context on span deactivation. */
     public void clearTraceContext() {
         clearTraceContext0();
     }
