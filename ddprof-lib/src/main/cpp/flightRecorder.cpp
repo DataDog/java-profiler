@@ -1145,7 +1145,34 @@ void Recording::writeHeader(Buffer *buf) {
   flushIfNeeded(buf);
 }
 
+size_t Recording::countSerializableChildren(
+    const std::vector<const Element *> &children, int depth) {
+  // Children one level deeper than `depth` are what writeElement() would
+  // truncate on its own depth check, so exclude them here too, before being
+  // counted, so child_count always matches the number of children actually
+  // serialized below (an inflated count would make the metadata stream
+  // itself malformed).
+  bool truncate_children = depth + 1 > 10;
+
+  size_t child_count = 0;
+  for (size_t i = 0; i < children.size(); i++) {
+    if (children[i] == nullptr) {
+      Counters::increment(METADATA_TREE_NULL_CHILD);
+      fprintf(stderr, "[ddprof] [WARN] writeElement skipping null child at index %zu\n", i);
+    } else if (truncate_children) {
+      Counters::increment(METADATA_TREE_DEPTH_EXCEEDED);
+    } else {
+      child_count++;
+    }
+  }
+  return child_count;
+}
+
 void Recording::writeElement(Buffer *buf, const Element *e, int depth) {
+  if (e == nullptr) {
+    return;
+  }
+
   if (depth > 10) {
     // Counter is the durable signal here: stderr from an embedded native lib
     // is rarely captured/monitored, and this guard exists precisely because
@@ -1153,10 +1180,6 @@ void Recording::writeElement(Buffer *buf, const Element *e, int depth) {
     // log line would let that recur invisibly forever.
     Counters::increment(METADATA_TREE_DEPTH_EXCEEDED);
     fprintf(stderr, "[ddprof] [ERROR] writeElement depth limit exceeded, truncating output\n");
-    return;
-  }
-
-  if (e == nullptr) {
     return;
   }
 
@@ -1169,23 +1192,18 @@ void Recording::writeElement(Buffer *buf, const Element *e, int depth) {
     buf->putVar64(e->_attributes[i]._value);
   }
 
-  size_t child_count = 0;
-  for (size_t i = 0; i < e->_children.size(); i++) {
-    if (e->_children[i] != nullptr) {
-      child_count++;
-    } else {
-      Counters::increment(METADATA_TREE_NULL_CHILD);
-      fprintf(stderr, "[ddprof] [WARN] writeElement skipping null child at index %zu\n", i);
-    }
-  }
+  bool truncate_children = depth + 1 > 10;
+  size_t child_count = countSerializableChildren(e->_children, depth);
 
   buf->putVar64(child_count);
-  for (size_t i = 0; i < e->_children.size(); i++) {
-    if (e->_children[i] == nullptr) {
-      continue;
+  if (!truncate_children) {
+    for (size_t i = 0; i < e->_children.size(); i++) {
+      if (e->_children[i] == nullptr) {
+        continue;
+      }
+      flushIfNeeded(buf);
+      writeElement(buf, e->_children[i], depth + 1);
     }
-    flushIfNeeded(buf);
-    writeElement(buf, e->_children[i], depth + 1);
   }
   flushIfNeeded(buf);
 }

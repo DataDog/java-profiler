@@ -174,12 +174,26 @@ class Recording {
   friend ObjectSampler;
   friend Profiler;
   friend Lookup;
+  // Grants gtest access to the private countSerializableChildren() helper below,
+  // since Recording itself can't be constructed in a plain gtest binary (its
+  // constructor needs a live JVMTI environment). Same pattern as
+  // VMTestAccessor/ProfilerTestAccessor in the test sources.
+  friend class RecordingTestAccessor;
 
 private:
   static char *_agent_properties;
   static char *_jvm_args;
   static char *_jvm_flags;
   static char *_java_command;
+
+  // Determines how many of `children` writeElement() will actually serialize
+  // at the given depth, applying the same null-child and depth-limit skip
+  // rules the recursive writer uses. Both the child_count written to the
+  // buffer and the recursion in writeElement() call this single function, so
+  // the encoded count can never diverge from what actually gets serialized
+  // (PROF-15075).
+  static size_t countSerializableChildren(
+      const std::vector<const Element *> &children, int depth);
 
   RecordingBuffer _buf[CONCURRENCY_LEVEL];
   // we have several tables to avoid lock contention
