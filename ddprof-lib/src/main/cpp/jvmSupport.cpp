@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include "jvmSupport.h"
+#include "jvmSupport.inline.h"
 
 #include "asyncSampleMutex.h"
 #include "frames.h"
