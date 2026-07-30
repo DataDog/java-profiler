@@ -38,7 +38,7 @@ public class JavaProfilerApiSurfaceTest {
                 .getDeclaredMethod("getInstance", String.class, String.class, boolean.class)
                 .getModifiers()));
         assertTrue(Modifier.isPublic(JavaProfiler.class
-                .getDeclaredMethod("isMonitorEventsDelegated").getModifiers()));
+                .getDeclaredMethod("isMonitorWaitEventsDelegated").getModifiers()));
     }
 
     private static void assertNotPublic(Method method) {

@@ -156,7 +156,7 @@ private:
   static bool _zing;
   static bool _can_sample_objects;
   static bool _can_intercept_binding;
-  static bool _monitor_events_delegated;
+  static bool _monitor_wait_events_delegated;
   static bool _native_monitor_events_available;
   static bool _is_adaptive_gc_boundary_flag_set;
   static CodeCache *_libjvm;
@@ -195,7 +195,7 @@ public:
 
   static bool initLibrary(JavaVM *vm);
   static ProfilerBridgeInitResult initProfilerBridge(
-      JavaVM *vm, bool attach, bool delegateMonitorEvents = false);
+      JavaVM *vm, bool attach, bool delegateMonitorWaitEvents = false);
 
   static jvmtiEnv *jvmti() { return _jvmti; }
 
@@ -230,7 +230,9 @@ public:
 
   static bool canSampleObjects() { return _can_sample_objects; }
 
-  static bool monitorEventsDelegated() { return _monitor_events_delegated; }
+  static bool monitorWaitEventsDelegated() {
+    return _monitor_wait_events_delegated;
+  }
 
   static bool nativeMonitorEventsAvailable() {
     return _native_monitor_events_available;

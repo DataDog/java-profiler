@@ -127,7 +127,7 @@ public final class JavaProfiler {
     public static synchronized JavaProfiler getInstance(String libLocation, String scratchDir,
             boolean delegateMonitorWaitEvents) throws IOException {
         if (instance != null) {
-            if (monitorEventsDelegated0() != delegateMonitorWaitEvents) {
+            if (monitorWaitEventsDelegated0() != delegateMonitorWaitEvents) {
                 throw new IllegalStateException(
                         "Monitor-event ownership conflicts with the profiler's "
                                 + "process-wide initialization");
@@ -161,13 +161,14 @@ public final class JavaProfiler {
     }
 
     /**
-     * Reports whether Java instrumentation, rather than JVMTI callbacks, owns
-     * {@code Object.wait} TaskBlock intervals.
+     * Reports whether Java instrumentation owns {@code Object.wait} TaskBlock intervals instead
+     * of native JVMTI {@code MonitorWait} and {@code MonitorWaited} callbacks. Synchronized-monitor
+     * contention remains owned by native JVMTI callbacks.
      *
-     * @return {@code true} when native wait callbacks are delegated
+     * @return {@code true} when {@code Object.wait} handling is delegated to Java instrumentation
      */
-    public boolean isMonitorEventsDelegated() {
-        return monitorEventsDelegated0();
+    public boolean isMonitorWaitEventsDelegated() {
+        return monitorWaitEventsDelegated0();
     }
 
     /**
@@ -527,7 +528,7 @@ public final class JavaProfiler {
     private static native void filterThreadRemove0();
 
     private static native int getTid0();
-    private static native boolean monitorEventsDelegated0();
+    private static native boolean monitorWaitEventsDelegated0();
 
     private static native boolean recordTrace0(long rootSpanId, String endpoint, String operation, int sizeLimit);
 

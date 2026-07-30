@@ -109,9 +109,9 @@ Java_com_datadoghq_profiler_JavaProfiler_getTid0(JNIEnv *env, jclass unused) {
 }
 
 extern "C" DLLEXPORT jboolean JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_monitorEventsDelegated0(
+Java_com_datadoghq_profiler_JavaProfiler_monitorWaitEventsDelegated0(
     JNIEnv *env, jclass unused) {
-  return VM::monitorEventsDelegated();
+  return VM::monitorWaitEventsDelegated();
 }
 
 extern "C" DLLEXPORT jstring JNICALL

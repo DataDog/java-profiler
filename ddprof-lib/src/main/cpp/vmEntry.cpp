@@ -52,7 +52,7 @@ bool VM::_hotspot = false;
 bool VM::_zing = false;
 bool VM::_can_sample_objects = false;
 bool VM::_can_intercept_binding = false;
-bool VM::_monitor_events_delegated = false;
+bool VM::_monitor_wait_events_delegated = false;
 bool VM::_native_monitor_events_available = false;
 bool VM::_is_adaptive_gc_boundary_flag_set = false;
 
@@ -178,14 +178,14 @@ static void JNICALL MonitorContendedEntered(jvmtiEnv *jvmti, JNIEnv *jni,
 
 static void JNICALL MonitorWait(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                                 jobject object, jlong timeout) {
-  if (!VM::monitorEventsDelegated()) {
+  if (!VM::monitorWaitEventsDelegated()) {
     monitorBlockEnter(jvmti, jni, thread, object, OSThreadState::OBJECT_WAIT);
   }
 }
 
 static void JNICALL MonitorWaited(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                                   jobject object, jboolean timed_out) {
-  if (!VM::monitorEventsDelegated()) {
+  if (!VM::monitorWaitEventsDelegated()) {
     monitorBlockExit(jni, thread, OSThreadState::OBJECT_WAIT);
   }
 }
@@ -564,12 +564,12 @@ bool VM::initializeRequestStackTrace() {
 }
 
 ProfilerBridgeInitResult VM::initProfilerBridge(JavaVM *vm, bool attach,
-                                                bool delegateMonitorEvents) {
+                                                bool delegateMonitorWaitEvents) {
   MutexLocker init_locker(profiler_bridge_init_lock);
   if (profiler_bridge_initialized) {
     bool requested_delegation =
-        delegateMonitorEvents && _native_monitor_events_available;
-    return requested_delegation == _monitor_events_delegated
+        delegateMonitorWaitEvents && _native_monitor_events_available;
+    return requested_delegation == _monitor_wait_events_delegated
         ? ProfilerBridgeInitResult::SUCCESS
         : ProfilerBridgeInitResult::MONITOR_EVENTS_DELEGATION_CONFLICT;
   }
@@ -639,8 +639,8 @@ ProfilerBridgeInitResult VM::initProfilerBridge(JavaVM *vm, bool attach,
   _jvmti->GetCapabilities(&actual_capabilities);
   _native_monitor_events_available =
       actual_capabilities.can_generate_monitor_events;
-  _monitor_events_delegated =
-      delegateMonitorEvents && _native_monitor_events_available;
+  _monitor_wait_events_delegated =
+      delegateMonitorWaitEvents && _native_monitor_events_available;
 
   if (_hotspot) {
     probeJFRRequestStackTrace();
@@ -733,7 +733,7 @@ bool VM::setNativeMonitorEventsEnabled(bool enabled) {
   // When Java instrumentation owns Object.wait, do not enable the native wait
   // notifications at all. Disable still addresses all four events so teardown
   // is complete even if ownership was configured before this initialization.
-  if (!enabled || !_monitor_events_delegated) {
+  if (!enabled || !_monitor_wait_events_delegated) {
     wait = _jvmti->SetEventNotificationMode(
         mode, JVMTI_EVENT_MONITOR_WAIT, NULL);
     waited = _jvmti->SetEventNotificationMode(

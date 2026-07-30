@@ -149,7 +149,8 @@ public class ExternalLauncher {
             } else if (args[0].equals("profiler-agent-compatible")) {
                 String libraryPath = System.getProperty("ddprof.test.agent.path");
                 JavaProfiler profiler = JavaProfiler.getInstance(libraryPath, null, false);
-                System.out.println("[agent-compatible] " + profiler.isMonitorEventsDelegated());
+                System.out.println("[agent-compatible] "
+                        + profiler.isMonitorWaitEventsDelegated());
             } else if (args[0].equals("profiler-preexisting-monitor-wait")) {
                 runPreExistingMonitorCallback(false);
             } else if (args[0].equals("profiler-preexisting-monitor-contention")) {
