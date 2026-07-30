@@ -191,7 +191,8 @@ static void fillFrameRaw(ASGCT_CallFrame& frame, FrameTypeId type, int bci, cons
     frame.method = static_cast<const void*>(method);
 }
 
-static void fillFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci, jmethodID method_id, const VMMethod* method) {
+void HotspotSupport::fillJavaFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci,
+                                   jmethodID method_id, const VMMethod* method) {
     if (method_id == JMETHODID_NOT_WALKABLE) {
         // The Method* failed validation while walking. Preserve only the sentinel;
         // retaining the Method* would defer a dereference of that invalid metadata
@@ -517,7 +518,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                         const char* bytecode_start = method->bytecode();
                         const char* bcp = ((const char**)fp)[bcp_offset];
                         int bci = bytecode_start == NULL || bcp < bytecode_start ? 0 : bcp - bytecode_start;
-                        fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id, method);
+                        HotspotSupport::fillJavaFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id, method);
                         sp = ((uintptr_t*)fp)[InterpreterFrame::sender_sp_offset];
                         pc = stripPointer(((void**)fp)[FRAME_PC_SLOT]);
                         fp = *(uintptr_t*)INJECT_FAULT_ADDRESS_UNLIKELY(fp);
@@ -530,7 +531,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     jmethodID method_id = getMethodId(method);
                     if (method_id != JMETHODID_NOT_WALKABLE) {
                         Counters::increment(WALKVM_JAVA_FRAME_OK);
-                        fillFrame(frames[depth++], FRAME_INTERPRETED, 0, method_id, method);
+                        HotspotSupport::fillJavaFrame(frames[depth++], FRAME_INTERPRETED, 0, method_id, method);
                         if (is_plausible_interpreter_frame) {
                             uintptr_t* fp_addr = (uintptr_t*)INJECT_FAULT_ADDRESS_UNLIKELY(fp);
                             pc = stripPointer(((void**)fp_addr)[FRAME_PC_SLOT]);
@@ -569,7 +570,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
                 VMMethod* method = nm->method();
                 jmethodID method_id = method->id();
-                fillFrame(frames[depth++], type, 0, method_id, method);
+                HotspotSupport::fillJavaFrame(frames[depth++], type, 0, method_id, method);
 
                 if (nm->isFrameCompleteAt(pc)) {
                     if (depth == 1 && frame.unwindEpilogue(nm, (uintptr_t&)pc, sp, fp)) {
@@ -588,7 +589,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                             }
                             VMMethod* method = scope.method();
                             jmethodID method_id = method->id();
-                            fillFrame(frames[depth++], type, scope.bci(), method_id, method);
+                            HotspotSupport::fillJavaFrame(frames[depth++], type, scope.bci(), method_id, method);
                         } while (scope_offset > 0 && depth < max_depth);
                     }
 
@@ -708,7 +709,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     if (method != nullptr) {
                         jmethodID method_id = method->id();
                         if (method_id != JMETHODID_NOT_WALKABLE) {
-                            fillFrame(frames[depth++], FRAME_JIT_COMPILED, 0, method_id, method);
+                            HotspotSupport::fillJavaFrame(frames[depth++], FRAME_JIT_COMPILED, 0, method_id, method);
                         }
                     }
                 } else if (resolution.mark == MARK_THREAD_ENTRY) {
@@ -768,7 +769,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                             const char* bytecode_start = method->bytecode();
                             const char* bcp = ((const char**)recovery_fp)[bcp_offset];
                             int bci = bytecode_start == NULL || bcp < bytecode_start ? 0 : bcp - bytecode_start;
-                            fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id, method);
+                            HotspotSupport::fillJavaFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id, method);
                             sp = ((uintptr_t*)recovery_fp)[InterpreterFrame::sender_sp_offset];
                             pc = stripPointer(((void**)recovery_fp)[FRAME_PC_SLOT]);
                             fp = *(uintptr_t*)recovery_fp;
@@ -924,7 +925,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     const char* bytecode_start = method->bytecode();
                     const char* bcp = ((const char**)anchor_fp)[bcp_offset];
                     int bci = bytecode_start == NULL || bcp < bytecode_start ? 0 : bcp - bytecode_start;
-                    fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id, method);
+                    HotspotSupport::fillJavaFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id, method);
                     sp = ((uintptr_t*)anchor_fp)[InterpreterFrame::sender_sp_offset];
                     pc = stripPointer(((void**)anchor_fp)[FRAME_PC_SLOT]);
                     fp = *(uintptr_t*)anchor_fp;
