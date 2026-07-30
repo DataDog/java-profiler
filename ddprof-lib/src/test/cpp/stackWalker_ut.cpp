@@ -279,8 +279,11 @@ TEST_F(StackWalkerCrashRecoveryTest, CheckFaultRejectsFaultOutsideProfilerRange)
     } else {
         _pt->setJmpCtx(&crash_protection_ctx);
 
-        ucontext_t uc;
-        ASSERT_EQ(0, getcontext(&uc));
+        // Zero-initialized rather than populated via getcontext() -- musl
+        // doesn't provide getcontext(), and checkFault() only ever reads
+        // the pc field out of this struct, so a real, live context is
+        // unnecessary here.
+        ucontext_t uc{};
         StackFrame(&uc).pc() = _range_hi + (256u * 1024 * 1024);
 
         siginfo_t si{};
