@@ -1212,8 +1212,8 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   // getJavaTraceAsync() path below runs without one: it dereferences
   // VMThread/anchor state directly and calls into HotSpot's own
   // AsyncGetCallTrace. Install a jmp ctx here too, so a SIGSEGV anywhere in
-  // walkJavaStack is caught by Profiler::checkFault() and siglongjmp'd back
-  // here instead of crashing the process.
+  // walkJavaStack, except HotSpot's AsyncGetCallTrace call, is caught by 
+  // Profiler::checkFault() and siglongjmp'd back here instead of crashing the process.
   ProfiledThread* prof_thread = ProfiledThread::current();
   sigjmp_buf crash_protection_ctx;
   sigjmp_buf* prev_jmp_buf = prof_thread != nullptr ? prof_thread->getJmpCtx() : nullptr;
@@ -1235,50 +1235,19 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
     prof_thread->setJmpCtx(&crash_protection_ctx);
   }
 
-  if (features.mixed) {
-    java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
-  } else if (isHookPrefixedSample(request.event_type)) {
-    if (cstack >= CSTACK_VM) {
-      java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
-    } else {
-        AsyncSampleMutex mutex(ProfiledThread::current());
-        if (mutex.acquired()) {
-            async_trace_active = true;
-            java_frames = getJavaTraceAsync(ucontext, frames, max_depth, java_ctx, truncated);
-            if (java_frames > 0 && java_ctx->pc != NULL && VMStructs::hasMethodStructs()) {
-                VMNMethod* nmethod = CodeHeap::findNMethod(java_ctx->pc);
-                if (nmethod != NULL) {
-                    fillFrameTypes(frames, java_frames, nmethod);
-                }
+  // Shared by the isHookPrefixedSample and BCI_CPU/BCI_WALL async paths
+  // below. withAsyncSampleGuard keeps async_trace_active true for exactly
+  // the AsyncSampleMutex's lifetime, including the VT continuation check,
+  // so the sigsetjmp recovery path above sees it correctly even if a fault
+  // cuts the callback short.
+  auto walkJavaTraceAsync = [&]() {
+    withAsyncSampleGuard(ProfiledThread::current(), async_trace_active, [&]() {
+        java_frames = getJavaTraceAsync(ucontext, frames, max_depth, java_ctx, truncated);
+        if (java_frames > 0 && java_ctx->pc != NULL && VMStructs::hasMethodStructs()) {
+            VMNMethod* nmethod = CodeHeap::findNMethod(java_ctx->pc);
+            if (nmethod != NULL) {
+                fillFrameTypes(frames, java_frames, nmethod);
             }
-            async_trace_active = false;
-        }
-        if (java_frames > 0 && VM::hotspot_version() >= 21 && java_frames < max_depth) {
-            VMThread* carrier = VMThread::current();
-            if (carrier != nullptr && carrier->isCarryingVirtualThread()) {
-                frames[java_frames].bci = BCI_NATIVE_FRAME;
-                frames[java_frames].method_id = (jmethodID) "JVM Continuation";
-                LP64_ONLY(frames[java_frames].padding = 0;)
-                java_frames++;
-            }
-        }
-    }
-  } else if (request.event_type == BCI_CPU || request.event_type == BCI_WALL) {
-    if (cstack >= CSTACK_VM) {
-        java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
-    } else {
-        // Async events
-        AsyncSampleMutex mutex(ProfiledThread::current());
-        if (mutex.acquired()) {
-            async_trace_active = true;
-            java_frames = getJavaTraceAsync(ucontext, frames, max_depth, java_ctx, truncated);
-            if (java_frames > 0 && java_ctx->pc != NULL && VMStructs::hasMethodStructs()) {
-                VMNMethod* nmethod = CodeHeap::findNMethod(java_ctx->pc);
-                if (nmethod != NULL) {
-                    fillFrameTypes(frames, java_frames, nmethod);
-                }
-            }
-            async_trace_active = false;
         }
         // ASGCT stops at the continuation boundary for virtual threads (JDK 21+).
         // Append a synthetic root frame so the UI does not show "Missing Frames".
@@ -1291,6 +1260,22 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
                 java_frames++;
             }
         }
+    });
+  };
+
+  if (features.mixed) {
+    java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
+  } else if (isHookPrefixedSample(request.event_type)) {
+    if (cstack >= CSTACK_VM) {
+      java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
+    } else {
+      walkJavaTraceAsync();
+    }
+  } else if (request.event_type == BCI_CPU || request.event_type == BCI_WALL) {
+    if (cstack >= CSTACK_VM) {
+        java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
+    } else {
+        walkJavaTraceAsync();
     }
   }
 

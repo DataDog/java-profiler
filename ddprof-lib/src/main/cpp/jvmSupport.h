@@ -10,8 +10,6 @@
 #include "stackFrame.h"
 #include "stackWalker.h"
 
-#include <setjmp.h>
-
 // Stack recovery techniques used to workaround AsyncGetCallTrace flaws.
 // Can be disabled with 'safemode' option.
 enum StackRecovery {

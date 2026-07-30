@@ -7,9 +7,12 @@
 #include "../../main/cpp/gtest_crash_handler.h"
 
 #ifdef __linux__
+#include <algorithm>
 #include <sys/mman.h>
+#include <ucontext.h>
 #include "../../main/cpp/os.h"
 #include "../../main/cpp/profiler.h"
+#include "../../main/cpp/stackFrame.h"
 #include "../../main/cpp/threadLocalData.h"
 #endif
 
@@ -167,10 +170,31 @@ TEST_F(StackWalkerTest, isValidSP_valid_aligned_in_range) {
 // the real StackWalker functions directly — no live JVM is needed since
 // JVMSupport::isJitCode()/JVMThread::current() both degrade to safe
 // not-a-JVM-thread defaults without one.
+//
+// checkFault() also gates recovery on the faulting pc falling inside the
+// profiler library's own address range (profiler_min_address/_max_address,
+// set once by Profiler::setupSignalHandlers()) — a fault whose pc is
+// protected but NOT in profiler code should be left unhandled rather than
+// silently swallowed. setupSignalHandlers() never runs in this gtest binary,
+// so without help that range stays (0, 0) and checkFault takes its
+// "not initialized" fallback, recovering unconditionally and never touching
+// the pc < min || pc >= max comparison at all. SetUp() below installs a real
+// range via the UNIT_TEST-only Profiler::setAddressRangeForTest() so the two
+// recovery tests exercise that comparison for real (fault pc inside range),
+// and CheckFaultRejectsFaultOutsideProfilerRange exercises its rejection
+// side directly (fault pc outside range) — a real out-of-range SIGSEGV can't
+// be used for that half since a correctly-behaving reject leaves it
+// unhandled, which here means the whole test process terminates.
 // ---------------------------------------------------------------------------
 
 class StackWalkerCrashRecoveryTest : public ::testing::Test {
 protected:
+    // Generous enough to cover walkFP/walkDwarf's compiled code in any build
+    // config (debug through fully-inlined release), while remaining far
+    // smaller than the offset CheckFaultRejectsFaultOutsideProfilerRange
+    // uses to land clearly outside it.
+    static constexpr uintptr_t kRangeMargin = 256 * 1024;
+
     void SetUp() override {
         ProfiledThread::initCurrentThread();
         _pt = ProfiledThread::current();
@@ -182,9 +206,16 @@ protected:
 
         _bad_page = mmap(nullptr, 4096, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         ASSERT_NE(MAP_FAILED, _bad_page);
+
+        uintptr_t fp_pc = reinterpret_cast<uintptr_t>(&StackWalker::walkFP);
+        uintptr_t dwarf_pc = reinterpret_cast<uintptr_t>(&StackWalker::walkDwarf);
+        _range_lo = std::min(fp_pc, dwarf_pc) - kRangeMargin;
+        _range_hi = std::max(fp_pc, dwarf_pc) + kRangeMargin;
+        Profiler::setAddressRangeForTest(_range_lo, _range_hi);
     }
 
     void TearDown() override {
+        Profiler::resetAddressRangeForTest();
         munmap(_bad_page, 4096);
         OS::replaceSigsegvHandler(_orig_segv);
         OS::replaceSigbusHandler(_orig_bus);
@@ -195,6 +226,8 @@ protected:
     void* _bad_page = nullptr;
     SigAction _orig_segv = nullptr;
     SigAction _orig_bus = nullptr;
+    uintptr_t _range_lo = 0;
+    uintptr_t _range_hi = 0;
 };
 
 TEST_F(StackWalkerCrashRecoveryTest, WalkFPRecoversFromFaultInsteadOfCrashing) {
@@ -228,6 +261,40 @@ TEST_F(StackWalkerCrashRecoveryTest, WalkDwarfRecoversFromFaultInsteadOfCrashing
     EXPECT_LE(depth, 1);
     EXPECT_TRUE(truncated);
     EXPECT_FALSE(_pt->isProtected()) << "jmp ctx must be restored after recovery";
+}
+
+// The two tests above only prove checkFault() recovers a fault whose pc
+// falls inside the SetUp()-installed range. This drives checkFault()
+// directly (bypassing segvHandler, which isn't needed to test this
+// specific comparison) with a fabricated ucontext whose pc sits 256MB past
+// that range -- far past kRangeMargin, so it lands outside the range
+// regardless of how large walkFP/walkDwarf's compiled bodies turn out to
+// be -- and confirms it returns normally rather than recovering.
+TEST_F(StackWalkerCrashRecoveryTest, CheckFaultRejectsFaultOutsideProfilerRange) {
+    sigjmp_buf crash_protection_ctx;
+    bool recovered = false;
+
+    if (sigsetjmp(crash_protection_ctx, 1) != 0) {
+        recovered = true;
+    } else {
+        _pt->setJmpCtx(&crash_protection_ctx);
+
+        ucontext_t uc;
+        ASSERT_EQ(0, getcontext(&uc));
+        StackFrame(&uc).pc() = _range_hi + (256u * 1024 * 1024);
+
+        siginfo_t si{};
+        si.si_addr = reinterpret_cast<void*>(1);
+        Profiler::checkFault(_pt, &si, &uc);
+        // Must fall through to here -- checkFault must not siglongjmp for a
+        // pc outside the installed range.
+    }
+
+    EXPECT_FALSE(recovered)
+        << "checkFault must not recover a fault whose pc falls outside the profiler's own address range";
+    EXPECT_TRUE(_pt->isProtected())
+        << "a correctly-rejected fault must leave the jmp ctx untouched -- only the recovery path clears it";
+    _pt->setJmpCtx(nullptr);
 }
 
 #endif  // __linux__

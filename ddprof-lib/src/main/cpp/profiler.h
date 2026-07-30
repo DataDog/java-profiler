@@ -484,6 +484,16 @@ public:
     std::pair<std::shared_ptr<std::string>, u64> info = _thread_info.get(tid);
     return info.first != nullptr ? *info.first : std::string();
   }
+
+  // Overrides the profiler address range checkFault() uses to decide
+  // whether a recovered fault actually originated from profiler code.
+  // setupSignalHandlers() never runs in gtest binaries, so the real
+  // profiler_min_address/profiler_max_address stay 0 there and checkFault's
+  // range check short-circuits via its "not initialized" fallback -- these
+  // let tests install a real, non-zero range so the pc < min || pc >= max
+  // comparison itself gets exercised, instead of being skipped entirely.
+  static void setAddressRangeForTest(uintptr_t min, uintptr_t max);
+  static void resetAddressRangeForTest();
 #endif
 
 

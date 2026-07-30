@@ -1045,6 +1045,18 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
 static std::atomic<uintptr_t> profiler_min_address{0};
 static std::atomic<uintptr_t> profiler_max_address{0};
 
+#ifdef UNIT_TEST
+void Profiler::setAddressRangeForTest(uintptr_t min, uintptr_t max) {
+  profiler_min_address.store(min, std::memory_order_relaxed);
+  profiler_max_address.store(max, std::memory_order_relaxed);
+}
+
+void Profiler::resetAddressRangeForTest() {
+  profiler_min_address.store(0, std::memory_order_relaxed);
+  profiler_max_address.store(0, std::memory_order_relaxed);
+}
+#endif
+
 void Profiler::setupSignalHandlers() {
   // Do not re-run the signal setup (run only when VM has not been loaded yet)
   if (__sync_bool_compare_and_swap(&_signals_initialized, false, true)) {
