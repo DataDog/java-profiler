@@ -23,12 +23,16 @@ two platforms are called out inline where they matter.
    diversity (`traces` mode) and via class diversity under wall-clock
    sampling (`classes` mode), which produces distinct call-trace shapes as a
    side effect of sampling different callees.
-3. **Class-name interning behaves differently depending on which sampling
-   engine drives it.** Wall-clock/reflection-driven class touching does not
-   move the class-name dictionary at all, even at 150,000 distinct classes.
-   Allocation sampling *does* move it, at a much smaller N (2,000), then
-   plateaus — the two engines record class names through different paths
-   with different effective thresholds.
+3. **The class-name dictionary's write-time symbolication path is confirmed,
+   via direct source instrumentation, to never run at all for wall-clock
+   `MethodSample` stacks on this build** — not a threshold that needed more
+   scale, not the dictionary being oversized, but the specific function
+   (`Lookup::resolveMethod`) that would insert a class name never being
+   invoked, despite thousands of real, distinct sampled classes appearing in
+   the same JFR file's rendered output. Allocation sampling *does* move the
+   same counter, at a much smaller N (2,000) — almost certainly through a
+   different, untraced call site, since the wall-clock path is confirmed
+   dead on arrival rather than merely slow to trigger.
 4. **The CPU-sampling engine (`cpu=`) works on Linux** (it doesn't
    initialize on this project's current macOS build) and produces real
    samples, but its associated `NM_PERF` counter requires a kernel-symbol
@@ -40,6 +44,12 @@ two platforms are called out inline where they matter.
    explained by NMT's own accounting; the profiler's own tracked structures
    account for a small fraction of a percent (824 B against a ~400 KB/thread
    RSS delta); the rest is OS/kernel thread bookkeeping neither instruments.
+6. **Running the identical thread-count workload with and without the agent
+   attached shows the profiler's own RSS overhead is a small, roughly flat
+   few-MB baseline cost (3.5–10 MB across 1–1000 threads), not a per-thread
+   multiplier** — the ~400 KB/thread RSS growth analyzed under point 1 above
+   happens almost identically with or without the agent, confirming it's
+   JVM/OS thread machinery rather than something the profiler introduces.
 
 ## Harness
 
@@ -94,31 +104,44 @@ threads — check how dd-trace-java integrates this) rather than a platform-
 specific auto-registration gap; the harness's `MemSweepMain` calls
 `addThread()` from the main thread and every spawned worker.
 
-**Reading `NM_*` counters correctly requires knowing which of two behaviors
-a given counter has:**
-- Most counters (`NM_CALLTRACE`, `NM_DICTIONARY`, `NM_THREAD_FILTER`,
-  `NM_NATIVE_SYMBOLS`, ...) are **cumulative high-water marks** — they only
-  grow, tracking allocations made by hash-table resizes, arena chunks, etc.
-  For these, reading the counter once at JFR chunk finish (profiler stop or
-  process exit, for a short single-chunk run) gives the right answer, and
-  that's what `run_sweep.sh` does throughout this document.
-- `NM_THREAD_LOCAL` is different: it's a **live/current count**, incremented
-  when a thread's `ProfiledThread` is allocated and decremented by a pthread
-  TLS destructor as soon as that thread exits (`threadLocalData.cpp`). A
-  workload that spawns N threads and joins all of them before the process
-  exits — like `threads N` above — has already freed nearly every one of
-  those N `ProfiledThread` structures by the time the JFR chunk (and its
-  counter snapshot) is written at exit. Reading it the same way as the other
-  counters would then show only whatever handful of long-lived JVM-internal
-  threads happened to still have one — not N, and not a value that means
-  anything about the workload.
+**All `NM_*` counters share the same underlying mechanism (`nativeMem.h`,
+PR #669), and reading them correctly means understanding it, not treating
+them as simple monotonic high-water marks:** each category is a **live
+gauge** — `NativeMem::record(category, delta)` does a relaxed atomic add on
+every allocation (`delta > 0`) or free (`delta < 0`) — plus a precisely
+tracked running peak (`_max`, updated at allocation time so a peak that
+rises and falls between reads is still captured) and a moving-window average
+over the last 64 `sample()` ticks. All three (`live`, `avg`, `max`) are
+written per category into the JFR file as separate
+`native_mem_{live,avg,max}_bytes.<category>` fields; this document's
+`extract.py` only pulls the `live` field for brevity, which is a fine choice
+for a category that never sees a `record()` with a negative delta during a
+short single-chunk run (true for `NM_CALLTRACE`/`NM_THREAD_FILTER`/
+`NM_NATIVE_SYMBOLS`/etc. here, since nothing in these workloads triggers a
+chunk free or hash-table reset mid-run) — but it is the *wrong* field for a
+category that does see frees during the run.
 
-  `LiveThreadLocalSweep.java` / `run_threadlocal_live.sh` measure this
-  dimension correctly instead: they spawn N threads, wait for all of them to
-  register via `addThread()`, then call the public `JavaProfiler.dump(Path)`
-  API to force a JFR chunk write **while all N are still alive and
-  busy-looping**, and read the counter from that snapshot. This is the
-  measurement used in the thread-count results below.
+`NM_THREAD_LOCAL` is exactly that case: it's incremented when a thread's
+`ProfiledThread` is allocated and decremented by a pthread TLS destructor as
+soon as that thread exits (`threadLocalData.cpp`). A workload that spawns N
+threads and joins all of them before the process exits — like `threads N`
+above — has already freed nearly every one of those N `ProfiledThread`
+structures by the time the JFR chunk (and its counter snapshot) is written
+at exit. Reading the live field the same way as the other counters then
+shows only whatever handful of long-lived JVM-internal threads happened to
+still have one at that instant — not N, and not a value that means anything
+about the workload. (The precise per-category `max` field would, in
+principle, capture the true peak here too, since `_max` updates at
+allocation time regardless of later frees — but rather than rely on reading
+a different field correctly, `LiveThreadLocalSweep.java` /
+`run_threadlocal_live.sh` sidestep the question entirely.)
+
+`LiveThreadLocalSweep.java` / `run_threadlocal_live.sh` measure this
+dimension correctly instead: they spawn N threads, wait for all of them to
+register via `addThread()`, then call the public `JavaProfiler.dump(Path)`
+API to force a JFR chunk write **while all N are still alive and
+busy-looping**, and read the (still-live-at-that-instant) counter from that
+snapshot. This is the measurement used in the thread-count results below.
 
 ## Results: thread count
 
@@ -197,12 +220,43 @@ over 180 seconds** — an order of magnitude past the theoretical ~35–40K
 names needed to fill one 512 KB `StringArena` chunk
 (`stringDictionary.h:67`), and well past the point where the same run's
 `NM_CALLTRACE` counter demonstrably crossed its own threshold, which rules
-out "not enough samples reached the workload" as an explanation for the
-flat dictionary reading. This appears to be a genuine gap in what
-`NM_DICTIONARY` accounts for under wall-clock/reflection-driven class
-touching, not a threshold that just needed more scale to cross — see the
-next section for a sampling-engine comparison that narrows this down
-further.
+out "not enough samples reached the workload" as an explanation. This is not
+a threshold that needed more scale to cross, and not the dictionary being
+oversized for the workload either — it's confirmed, via direct source
+instrumentation, that **the code path that would insert real class names
+here is never invoked at all for wall-clock-sampled stacks on this build.**
+
+`Profiler` owns three `StringDictionary` instances that all feed the same
+`NM_DICTIONARY` category (`profiler.h`: `_class_map`, `_string_label_map`,
+`_context_value_map`) — the baseline ~4.55 MiB is these three, each
+triple-buffered (3 internal buffers × one 512 KB initial chunk ≈ 1.5 MiB
+each). The only path that inserts a real Java class name into `_class_map`
+for a sampled stack frame is `Recording::writeStackTraces()` →
+`Lookup::resolveMethod()` → `Lookup::fillJavaMethodInfo()` →
+`_classes->lookupDuringDump()` (`flightRecorder.cpp`). A temporary log line
+placed at the top of `resolveMethod()` (reverted after this check; not part
+of the harness) fired **zero times** across a `classes 5000` run that
+produced 14,565 real `datadog.MethodSample` events referencing thousands of
+distinct sampled classes — confirmed with both `cstack=fp` (used throughout
+this document) and `cstack=vm`. Since `resolveMethod()` is the only caller
+of `fillJavaMethodInfo()`, and its own two call sites are the only ones
+inside `writeStackTraces()`, this means the write-time symbolication pass
+that would grow `_class_map` never runs for these `MethodSample`-producing
+dumps at all — not "runs but hits a small threshold," not "runs but the
+names get deduplicated," but genuinely never entered.
+
+This leaves an open question this investigation didn't chase down further:
+`jfr print` still renders ~87,000 distinct `GenClassN` class names correctly
+from the same JFR file's `MethodSample` stacks (confirmed by grepping the
+printed output), so *some* mechanism is producing readable class names for
+these events — it just isn't `_class_map`/`NM_DICTIONARY`. The most likely
+explanation is that `MethodSample` stack frames are resolved and embedded
+through a different, non-`resolveMethod` path at sample or encode time
+rather than at dump time, but this wasn't traced further. Practically: **on
+this build, do not expect `NM_DICTIONARY` to reflect class/method diversity
+seen through wall-clock sampling's `MethodSample` events, regardless of
+scale** — the next section shows a sampling engine where the dictionary
+*does* respond as expected.
 
 ## Results: allocation diversity (`allocs`)
 
@@ -219,16 +273,17 @@ wall-clock sampling. The `allocs` mode fills that gap:
 **Allocation sampling moves `NM_DICTIONARY` at 2,000 distinct shapes** —
 smaller than the 150,000-class run above that never moved it at all under
 wall-clock sampling — confirmed with a same-machine, same-N, same-duration
-A/B against `classes` mode (4.55 MiB flat there vs. 6.04 MiB here). The two
-engines clearly record class/type names through different paths with
-different effective growth thresholds: allocation sampling's `ObjectSample`
-events record the *sampled object's own class* directly, while wall-clock
-sampling only ever sees class/method identity indirectly, as part of a
-call-trace's frame — plausibly why the two counters (`NM_CALLTRACE` vs.
-`NM_DICTIONARY`) move independently of each other in the two engines
-(`classes` mode grows call-traces without growing the dictionary; `allocs`
-mode grows the dictionary without growing call-traces, since every sampled
-allocation is reached through the same one-line reflective call site).
+A/B against `classes` mode (4.55 MiB flat there vs. 6.04 MiB here). Given the
+previous section's finding that wall-clock's dump-time symbolication path
+into `_class_map` is never invoked at all on this build, the simplest
+consistent explanation is that allocation sampling's `ObjectSample` path
+interns the sampled object's class through a different call site entirely —
+most likely inserted at *sample* time (when an allocation is caught) rather
+than at *dump* time (when `MethodSample` stacks are symbolized) — which
+would make it structurally independent of the gap found above rather than
+merely "less affected by it." This wasn't traced to a specific call site the
+way the wall-clock gap was; it's inferred from the two engines' otherwise
+inexplicable difference in outcome on the identical `NM_DICTIONARY` counter.
 
 Growth here also matches the step-function model from the `traces` sweep:
 the 2,000-shape and 20,000-shape runs land at essentially the same value
@@ -326,6 +381,47 @@ here) — same conclusion, different exact split, plausibly reflecting
 platform differences in kernel-level thread bookkeeping rather than
 anything specific to this profiler.
 
+### Isolating what the profiler itself adds
+
+The table above shows how much of the *thread-count-driven* RSS growth NMT
+can explain, but it doesn't by itself separate "cost of running N threads in
+this JVM" from "cost the profiler adds on top of that same JVM." Those are
+different questions — the agent's own JFR writer, its wall-clock sampler
+thread, and its per-thread signal-handling setup are all overhead the JVM
+wouldn't otherwise pay, and NMT can see *some* of that (e.g. if the agent's
+activity perturbs HotSpot's own bookkeeping) even though it can't see the
+agent's own `malloc`/`new` allocations directly. Isolating it means running
+the *identical* workload twice, agent attached vs. not, and taking the
+difference — which is what `run_nmt.sh`'s `--no-agent` flag is for:
+
+| N threads | RSS, agent | RSS, no agent | RSS Δ (profiler cost) | NMT Thread, agent | NMT Thread, no agent | NMT Thread Δ | NMT total, agent | NMT total, no agent | NMT total Δ |
+|---|---|---|---|---|---|---|---|---|---|
+| 1 | 72,248 KB | 68,748 KB | +3,500 KB | 966 KB | 961 KB | +5 KB | 1,106,757 KB | 1,106,348 KB | +409 KB |
+| 256 | 177,000 KB | 168,924 KB | +8,076 KB | 28,512 KB | 28,587 KB | −75 KB | 1,134,910 KB | 1,134,599 KB | +311 KB |
+| 1000 | 457,416 KB | 447,288 KB | +10,128 KB | 91,528 KB | 90,431 KB | +1,097 KB | 1,210,526 KB | 1,208,958 KB | +1,568 KB |
+
+**The profiler's RSS overhead here is a roughly flat few-MB baseline cost
+(3.5–10 MB across this range), not a strong per-thread multiplier** — it
+grows mildly with N (consistent with the agent's own housekeeping threads
+and per-thread signal setup costing a little more as N grows) but nowhere
+near proportionally; the bulk of the thread-count-driven RSS growth analyzed
+above happens with or without the agent attached, confirming it's
+overwhelmingly a JVM/OS cost rather than something the profiler introduces.
+**NMT's own "Thread" bucket shows no consistent agent effect at all** — the
+deltas (+5, −75, +1097 KB) are within run-to-run noise, meaning the agent
+does not measurably inflate HotSpot's own thread-stack accounting (expected:
+wall-clock sampling piggybacks on existing application threads rather than
+spawning one dedicated OS thread per profiled thread). NMT's *total*
+committed does show a small, mildly N-dependent increase attributable to the
+agent (409 KB → 1,568 KB from N=1 to N=1000) — plausibly safepoint,
+synchronization, or internal bookkeeping categories responding to the
+additional signal traffic from wall-clock sampling, though this wasn't
+broken down by category. **None of this changes the top-line conclusion**:
+the profiler's own footprint (whether measured via `NM_*`, this with/without
+delta, or NMT) is a small, mostly-fixed cost; the ~400 KB/thread RSS growth
+analyzed above is JVM/OS thread machinery the profiler neither causes nor
+can see into.
+
 ## Practical implications
 
 Updating memory-usage-model.md's own "practical implications" list with what's
@@ -368,3 +464,13 @@ now confirmed empirically:
   for wall-clock sampling.
 - **`nativemem=` (native malloc tracing) was only smoke-tested**, not
   characterized against a dedicated native-allocation-heavy workload.
+- **The mechanism that actually renders class names for wall-clock
+  `MethodSample` stacks was not identified** — only that it isn't
+  `_class_map`/`NM_DICTIONARY`'s `resolveMethod` path, which was confirmed
+  dead via direct instrumentation. The same gap means the `allocs` engine's
+  alternate insertion path is inferred, not traced to a specific call site.
+- **The with/without-agent overhead comparison is a single run per point on
+  each side** — some of the smaller deltas (e.g. the −75 KB NMT Thread delta
+  at N=256) are plausibly within normal run-to-run noise rather than a real
+  effect; treat the overall "small, roughly flat" conclusion as solid but
+  the individual KB-level numbers as indicative only.
