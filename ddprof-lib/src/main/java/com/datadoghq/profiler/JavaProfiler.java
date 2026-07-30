@@ -225,8 +225,7 @@ public final class JavaProfiler {
 
     // ---- All-native context write API (OTEP #4947) --------------------------------------------
     // Each of these resolves the current carrier's OTEP record inside a single JNI call per
-    // operation — no cached DirectByteBuffer, so they are race-free under virtual-thread migration
-    // (see the design note and setTraceContext0 et al.).
+    // operation, so they are race-free under virtual-thread migration.
 
     /**
      * Combined per-scope-activation write: full trace/span context plus up to two span-derived
@@ -249,7 +248,7 @@ public final class JavaProfiler {
      *         non-negative {@code slotN} is {@code >= MAX_CONTEXT_SLOTS} (out of range)
      */
     public void setTraceContext(long rootSpanId, long spanId, long traceIdHigh, long traceIdLow,
-                                int slot0, CharSequence v0, int slot1, CharSequence v1) {
+                                int slot0, String v0, int slot1, String v1) {
         if (spanId == 0) {
             throw new IllegalArgumentException(
                     "spanId must be non-zero; use clearTraceContext() to clear the trace context");
@@ -281,9 +280,9 @@ public final class JavaProfiler {
      *         full
      * @throws IllegalArgumentException if {@code slot} is out of range
      */
-    public boolean setContextValue(int slot, CharSequence value) {
+    public boolean setContextValue(int slot, String value) {
         requireValidSlot(slot);
-        ContextValueCache.Entry e = value == null ? null : contextValueCache.resolve(value.toString());
+        ContextValueCache.Entry e = value == null ? null : contextValueCache.resolve(value);
         if (e == null) {
             clearContextValue0(slot);
             return false;
@@ -335,11 +334,11 @@ public final class JavaProfiler {
     // (skip sentinel), the value is null, or the value cannot be represented (oversized / Dictionary
     // full). A non-negative out-of-range slot is rejected earlier by requireActivationSlot, so it
     // never reaches here and never registers the value in the permanent native Dictionary.
-    private ContextValueCache.Entry resolveContextValue(int slot, CharSequence value) {
+    private ContextValueCache.Entry resolveContextValue(int slot, String value) {
         if (slot < 0 || value == null) {
             return null;
         }
-        return contextValueCache.resolve(value.toString());
+        return contextValueCache.resolve(value);
     }
 
     /**

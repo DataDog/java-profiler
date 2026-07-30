@@ -18,6 +18,7 @@ package com.datadoghq.profiler;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
@@ -57,7 +58,7 @@ public class ContextValueCacheTest {
     public void oversizedValueResolvesToNull() throws IOException {
         loadLibrary();
         char[] chars = new char[ContextValueCache.MAX_VALUE_BYTES + 1];
-        java.util.Arrays.fill(chars, 'x');
+        Arrays.fill(chars, 'x');
         assertNull(cache.resolve(new String(chars)));
     }
 
@@ -65,7 +66,7 @@ public class ContextValueCacheTest {
     public void maxSizeValueResolves() throws IOException {
         loadLibrary();
         char[] chars = new char[ContextValueCache.MAX_VALUE_BYTES];
-        java.util.Arrays.fill(chars, 'x');
+        Arrays.fill(chars, 'x');
         String value = new String(chars);
         ContextValueCache.Entry e = cache.resolve(value);
         assertNotNull(e);
