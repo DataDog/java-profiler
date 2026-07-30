@@ -1435,6 +1435,26 @@ Error Profiler::init() {
   return Error::OK;
 }
 
+void Profiler::setTaskBlockEnabled(bool enabled) {
+  if (enabled) {
+    // Keep callback admission closed until native setup has either completed
+    // or rolled back, so partial event enablement cannot create paired state.
+    bool monitor_events_enabled =
+        VM::nativeMonitorEventsAvailable() &&
+        VM::setNativeMonitorEventsEnabled(true);
+    _task_block_monitor_events_enabled.store(monitor_events_enabled,
+                                             std::memory_order_release);
+    _task_block_enabled.store(true, std::memory_order_release);
+    return;
+  }
+
+  _task_block_enabled.store(false, std::memory_order_release);
+  if (_task_block_monitor_events_enabled.exchange(
+          false, std::memory_order_acq_rel)) {
+    VM::setNativeMonitorEventsEnabled(false);
+  }
+}
+
 Error Profiler::start(Arguments &args, bool reset) {
   MutexLocker ml(_state_lock);
   Error error = checkState();
@@ -1743,12 +1763,8 @@ Error Profiler::start(Arguments &args, bool reset) {
     // Paired with drainInflight() on the stop side.
     _cpu_engine->enableEvents(true);
 
-    _task_block_enabled.store(
-        (activated & EM_WALL) && args._wall_precheck && track_unfiltered_wall,
-        std::memory_order_release);
-    _task_block_monitor_events_enabled =
-        taskBlockEnabled() && VM::nativeMonitorEventsAvailable() &&
-        VM::setNativeMonitorEventsEnabled(true);
+    setTaskBlockEnabled(
+        (activated & EM_WALL) && args._wall_precheck && track_unfiltered_wall);
     _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
@@ -1773,11 +1789,7 @@ Error Profiler::stop() {
   if (state() != RUNNING) {
     return Error("Profiler is not active");
   }
-  _task_block_enabled.store(false, std::memory_order_release);
-  if (_task_block_monitor_events_enabled) {
-    VM::setNativeMonitorEventsEnabled(false);
-    _task_block_monitor_events_enabled = false;
-  }
+  setTaskBlockEnabled(false);
 
   // Order matters: disable engines first so the _enabled check inside signal
   // handlers will fail for any new signal delivered from now on. drain() then

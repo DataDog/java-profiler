@@ -90,6 +90,7 @@ static void monitorBlockEnter(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                               jobject object, OSThreadState state) {
   Profiler *profiler = Profiler::instance();
   if (!profiler->taskBlockEnabled() ||
+      !profiler->nativeMonitorTaskBlockEnabled() ||
       !JVMSupport::isPlatformThread(jni, thread)) {
     return;
   }
@@ -724,31 +725,62 @@ ProfilerBridgeInitResult VM::initProfilerBridge(JavaVM *vm, bool attach,
 bool VM::setNativeMonitorEventsEnabled(bool enabled) {
   if (!_native_monitor_events_available) return false;
 
-  jvmtiEventMode mode = enabled ? JVMTI_ENABLE : JVMTI_DISABLE;
-  jvmtiError enter = _jvmti->SetEventNotificationMode(
-      mode, JVMTI_EVENT_MONITOR_CONTENDED_ENTER, NULL);
-  jvmtiError entered = _jvmti->SetEventNotificationMode(
-      mode, JVMTI_EVENT_MONITOR_CONTENDED_ENTERED, NULL);
+  jvmtiError enter = JVMTI_ERROR_NONE;
+  jvmtiError entered = JVMTI_ERROR_NONE;
   jvmtiError wait = JVMTI_ERROR_NONE;
   jvmtiError waited = JVMTI_ERROR_NONE;
-  // When Java instrumentation owns Object.wait, do not enable the native wait
-  // notifications at all. Disable still addresses all four events so teardown
-  // is complete even if ownership was configured before this initialization.
-  if (!enabled || !_monitor_wait_events_delegated) {
-    wait = _jvmti->SetEventNotificationMode(
-        mode, JVMTI_EVENT_MONITOR_WAIT, NULL);
-    waited = _jvmti->SetEventNotificationMode(
-        mode, JVMTI_EVENT_MONITOR_WAITED, NULL);
+
+  if (enabled) {
+    // JVMTI enables each event independently and does not queue events that
+    // occur while disabled. Install every terminal notification before its
+    // entry notification so an admitted interval always has an exit path.
+    entered = _jvmti->SetEventNotificationMode(
+        JVMTI_ENABLE, JVMTI_EVENT_MONITOR_CONTENDED_ENTERED, NULL);
+    if (entered != JVMTI_ERROR_NONE) goto enable_failed;
+
+    if (!_monitor_wait_events_delegated) {
+      waited = _jvmti->SetEventNotificationMode(
+          JVMTI_ENABLE, JVMTI_EVENT_MONITOR_WAITED, NULL);
+      if (waited != JVMTI_ERROR_NONE) goto enable_failed;
+    }
+
+    enter = _jvmti->SetEventNotificationMode(
+        JVMTI_ENABLE, JVMTI_EVENT_MONITOR_CONTENDED_ENTER, NULL);
+    if (enter != JVMTI_ERROR_NONE) goto enable_failed;
+
+    if (!_monitor_wait_events_delegated) {
+      wait = _jvmti->SetEventNotificationMode(
+          JVMTI_ENABLE, JVMTI_EVENT_MONITOR_WAIT, NULL);
+      if (wait != JVMTI_ERROR_NONE) goto enable_failed;
+    }
+    return true;
+
+enable_failed:
+    Log::warn("Unable to enable JVMTI monitor events: %d/%d/%d/%d",
+              enter, entered, wait, waited);
+    setNativeMonitorEventsEnabled(false);
+    return false;
   }
+
+  // Stop admitting new intervals before removing the terminal notifications.
+  // Disable all four events even when Object.wait is delegated so teardown
+  // also cleans up modes established before ownership was configured.
+  enter = _jvmti->SetEventNotificationMode(
+      JVMTI_DISABLE, JVMTI_EVENT_MONITOR_CONTENDED_ENTER, NULL);
+  wait = _jvmti->SetEventNotificationMode(
+      JVMTI_DISABLE, JVMTI_EVENT_MONITOR_WAIT, NULL);
+  entered = _jvmti->SetEventNotificationMode(
+      JVMTI_DISABLE, JVMTI_EVENT_MONITOR_CONTENDED_ENTERED, NULL);
+  waited = _jvmti->SetEventNotificationMode(
+      JVMTI_DISABLE, JVMTI_EVENT_MONITOR_WAITED, NULL);
 
   if (enter == JVMTI_ERROR_NONE && entered == JVMTI_ERROR_NONE &&
       wait == JVMTI_ERROR_NONE && waited == JVMTI_ERROR_NONE) {
     return true;
   }
 
-  Log::warn("Unable to %s JVMTI monitor events: %d/%d/%d/%d",
-            enabled ? "enable" : "disable", enter, entered, wait, waited);
-  if (enabled) setNativeMonitorEventsEnabled(false);
+  Log::warn("Unable to disable JVMTI monitor events: %d/%d/%d/%d",
+            enter, entered, wait, waited);
   return false;
 }
 
