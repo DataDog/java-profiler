@@ -3,14 +3,14 @@
 # JVM-internal native memory (thread stacks, JFR engine, code cache, etc.)
 # from the profiler agent's own allocations (measured by NM_* via run_sweep.sh).
 #
-# NOTE: on macOS, attaching jcmd while this agent is also attached became
-# unreliable at higher thread counts (attach handshake failures) -- see
-# memory-sweep-handoff.md. If that reproduces on Linux, the workaround used
-# was to run this WITHOUT the agent attached at all (comment out -agentpath
-# below) to get pure JVM-side NMT numbers, and compare against RSS/NM_*
-# numbers collected separately by run_sweep.sh for the same workload.
+# On macOS, attaching jcmd while this agent is also attached became
+# unreliable at higher thread counts (attach handshake failures), so that
+# pass used --no-agent control runs instead of measuring alongside the
+# agent. On Linux, jcmd attach is reliable even with the agent attached at
+# 1000 threads (see memory-sweep-results-linux.md) -- --no-agent is kept
+# for cross-platform parity and as a control, not because it's required here.
 #
-# Usage: run_nmt.sh <threads|traces|classes> <N> <duration_ms> [wall_interval] [--no-agent]
+# Usage: run_nmt.sh <threads|traces|classes|allocs> <N> <duration_ms> [interval] [--no-agent]
 set -u
 MODE="$1"
 N="$2"

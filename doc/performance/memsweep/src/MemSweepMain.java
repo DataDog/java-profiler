@@ -11,14 +11,15 @@ import java.util.concurrent.CountDownLatch;
 /**
  * Standalone synthetic-workload driver for the java-profiler native-memory
  * sweep, run with the agent attached via -agentpath. Modes: threads, traces,
- * classes. traces/classes load classes precompiled by GenSources+javac
- * ahead of time (outside this process) so the profiled JVM never loads the
- * compiler's own classes.
+ * classes, allocs. traces/classes/allocs load classes precompiled by
+ * GenSources+javac ahead of time (outside this process) so the profiled JVM
+ * never loads the compiler's own classes.
  *
  * Every sampled thread must call JavaProfiler.addThread() -- the wall-clock
  * engine here only samples explicitly registered threads, it does not
- * auto-register new threads via a JVMTI ThreadStart hook (see the handoff
- * doc, ../memory-sweep-handoff.md, for whether this also holds on Linux).
+ * auto-register new threads via a JVMTI ThreadStart hook. Confirmed on both
+ * macOS and Linux; very likely intentional fork behavior rather than a
+ * platform-specific gap (see memory-sweep-results-linux.md).
  *
  * Pass the already-loaded agent's library path via -Dmemsweep.libpath=...
  * (must match the -agentpath argument) so JavaProfiler.getInstance() attaches

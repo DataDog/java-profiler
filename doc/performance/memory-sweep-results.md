@@ -1,8 +1,8 @@
 # Native Memory Sweep — Empirical Results (macOS arm64)
 
 > This is a macOS-only first pass. See
-> [memory-sweep-handoff.md](memory-sweep-handoff.md) for open questions and
-> instructions to continue this investigation on Linux.
+> [memory-sweep-results-linux.md](memory-sweep-results-linux.md) for the
+> Linux follow-up, which resolves the open questions this pass left behind.
 
 This is a first empirical calibration pass for the model in
 [memory-usage-model.md](memory-usage-model.md), run locally on macOS
