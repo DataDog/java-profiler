@@ -54,13 +54,13 @@ bool VM::_can_sample_objects = false;
 bool VM::_can_intercept_binding = false;
 bool VM::_monitor_wait_events_delegated = false;
 bool VM::_native_monitor_events_available = false;
+bool VM::_profiler_bridge_initialized = false;
 bool VM::_is_adaptive_gc_boundary_flag_set = false;
 
 // Serializes the one-time bridge installation and ownership negotiation.
 // Callback readers need no synchronization because ownership is assigned
 // before callbacks can be enabled and is never changed afterward.
 static Mutex profiler_bridge_init_lock;
-static bool profiler_bridge_initialized = false;
 
 jvmtiExtensionFunction VM::_request_stack_trace = nullptr;
 jvmtiExtensionFunction VM::_init_request_stack_trace = nullptr;
@@ -563,13 +563,19 @@ bool VM::initializeRequestStackTrace() {
   return false;
 }
 
+void VM::configureMonitorEvents(bool delegateMonitorWaitEvents) {
+  jvmtiCapabilities actual_capabilities = {0};
+  _jvmti->GetCapabilities(&actual_capabilities);
+  _native_monitor_events_available =
+      actual_capabilities.can_generate_monitor_events;
+  _monitor_wait_events_delegated = delegateMonitorWaitEvents;
+}
+
 ProfilerBridgeInitResult VM::initProfilerBridge(JavaVM *vm, bool attach,
                                                 bool delegateMonitorWaitEvents) {
   MutexLocker init_locker(profiler_bridge_init_lock);
-  if (profiler_bridge_initialized) {
-    bool requested_delegation =
-        delegateMonitorWaitEvents && _native_monitor_events_available;
-    return requested_delegation == _monitor_wait_events_delegated
+  if (_profiler_bridge_initialized) {
+    return delegateMonitorWaitEvents == _monitor_wait_events_delegated
         ? ProfilerBridgeInitResult::SUCCESS
         : ProfilerBridgeInitResult::MONITOR_EVENTS_DELEGATION_CONFLICT;
   }
@@ -635,12 +641,7 @@ ProfilerBridgeInitResult VM::initProfilerBridge(JavaVM *vm, bool attach,
 
   _jvmti->AddCapabilities(&capabilities);
 
-  jvmtiCapabilities actual_capabilities = {0};
-  _jvmti->GetCapabilities(&actual_capabilities);
-  _native_monitor_events_available =
-      actual_capabilities.can_generate_monitor_events;
-  _monitor_wait_events_delegated =
-      delegateMonitorWaitEvents && _native_monitor_events_available;
+  configureMonitorEvents(delegateMonitorWaitEvents);
 
   if (_hotspot) {
     probeJFRRequestStackTrace();
@@ -716,7 +717,7 @@ ProfilerBridgeInitResult VM::initProfilerBridge(JavaVM *vm, bool attach,
 
   OS::installSignalHandler(WAKEUP_SIGNAL, NULL, wakeupHandler);
 
-  profiler_bridge_initialized = true;
+  _profiler_bridge_initialized = true;
   return ProfilerBridgeInitResult::SUCCESS;
 }
 

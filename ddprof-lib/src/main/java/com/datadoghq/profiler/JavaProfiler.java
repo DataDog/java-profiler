@@ -114,7 +114,8 @@ public final class JavaProfiler {
      * the native profiler is a singleton. This may occur during {@code -agentpath} startup before
      * this method is called. When delegation is enabled, Java instrumentation owns
      * {@code Object.wait} TaskBlock intervals and native JVMTI wait callbacks are suppressed;
-     * native JVMTI callbacks continue to own synchronized monitor contention.
+     * native JVMTI callbacks continue to own synchronized monitor contention. Ownership is
+     * preserved independently of whether the JVM provides native monitor-event capability.
      *
      * @param libLocation the path to the native library to use, or {@literal null} for the bundled library
      * @param scratchDir directory where the bundled library will be exploded before linking
@@ -163,7 +164,8 @@ public final class JavaProfiler {
     /**
      * Reports whether Java instrumentation owns {@code Object.wait} TaskBlock intervals instead
      * of native JVMTI {@code MonitorWait} and {@code MonitorWaited} callbacks. Synchronized-monitor
-     * contention remains owned by native JVMTI callbacks.
+     * contention remains owned by native JVMTI callbacks. This reports the process-wide ownership
+     * selected during bridge initialization, independently of native monitor-event capability.
      *
      * @return {@code true} when {@code Object.wait} handling is delegated to Java instrumentation
      */

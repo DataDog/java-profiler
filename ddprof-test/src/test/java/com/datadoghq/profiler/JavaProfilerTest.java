@@ -154,20 +154,26 @@ public class JavaProfilerTest extends AbstractProcessProfilerTest {
     void getInstanceFromVirtualThreadThrowsIOException() throws Exception {
         assumeTrue(Platform.isJavaVersionAtLeast(21));
 
-        AtomicReference<String> resultLine = new AtomicReference<>();
+        AtomicReference<String> attemptLine = new AtomicReference<>();
+        AtomicReference<String> recoveryLine = new AtomicReference<>();
         boolean val = launch("profiler-virtual-thread", Collections.emptyList(), "", l -> {
             if (l.startsWith("[virtual-thread-")) {
-                resultLine.set(l);
-                return LineConsumerResult.STOP;
+                if (l.startsWith("[virtual-thread-recovery]")) {
+                    recoveryLine.set(l);
+                    return LineConsumerResult.STOP;
+                }
+                attemptLine.set(l);
+                return LineConsumerResult.CONTINUE;
             }
             return LineConsumerResult.CONTINUE;
         }, null).inTime;
 
         assertTrue(val);
-        String result = resultLine.get();
+        String result = attemptLine.get();
         assertNotNull(result, "getInstance() did not report a result from the virtual thread");
         assertTrue(result.startsWith("[virtual-thread-ioexception]"),
                 "Expected IOException from getInstance() on a virtual thread, got: " + result);
+        assertEquals("[virtual-thread-recovery] true false", recoveryLine.get());
     }
 
     @Test
@@ -199,15 +205,54 @@ public class JavaProfilerTest extends AbstractProcessProfilerTest {
 
         assertTrue(result.inTime);
         assertEquals(0, result.exitCode);
-        assertNotNull(resultLine.get(), "Late delegation request did not report a result");
-        assertTrue(resultLine.get().startsWith("[delegation-conflict]"),
-                "Expected ownership conflict, got: " + resultLine.get());
+        assertEquals("[delegation-conflict] false", resultLine.get());
+    }
+
+    @Test
+    void defaultJavaSingletonMonitorDelegationIsReused() throws Exception {
+        assertJavaDelegationScenario(
+                "profiler-java-default-delegation-reuse",
+                "[java-default-delegation-reuse]",
+                "[java-default-delegation-reuse] true false");
+    }
+
+    @Test
+    void conflictingDefaultJavaSingletonMonitorDelegationDoesNotPoisonInstance()
+            throws Exception {
+        assertJavaDelegationScenario(
+                "profiler-java-default-delegation-conflict",
+                "[java-default-delegation-conflict",
+                "[java-default-delegation-conflict] true false");
     }
 
     @Test
     void conflictingJavaSingletonMonitorDelegationIsRejected() throws Exception {
         assertJavaSingletonDelegationConflict(false, true);
         assertJavaSingletonDelegationConflict(true, false);
+    }
+
+    @Test
+    void compatibleJavaSingletonMonitorDelegationIsReused() throws Exception {
+        assertJavaSingletonDelegationReuse(false);
+        assertJavaSingletonDelegationReuse(true);
+    }
+
+    /** Launches a fresh JVM and verifies that repeated ownership returns the same singleton. */
+    private void assertJavaSingletonDelegationReuse(boolean delegated) throws Exception {
+        AtomicReference<String> resultLine = new AtomicReference<>();
+        LaunchResult result = launch(
+                "profiler-java-delegation-reuse:" + delegated,
+                Collections.emptyList(), "", line -> {
+                    if (line.startsWith("[java-delegation-reuse]")) {
+                        resultLine.set(line);
+                        return LineConsumerResult.STOP;
+                    }
+                    return LineConsumerResult.CONTINUE;
+                }, null);
+
+        assertTrue(result.inTime);
+        assertEquals(0, result.exitCode);
+        assertEquals("[java-delegation-reuse] true " + delegated, resultLine.get());
     }
 
     /** Launches a fresh JVM and verifies that a second ownership mode is rejected. */
@@ -226,9 +271,27 @@ public class JavaProfilerTest extends AbstractProcessProfilerTest {
 
         assertTrue(result.inTime);
         assertEquals(0, result.exitCode);
-        assertNotNull(resultLine.get(), "Conflicting Java singleton request did not report a result");
-        assertTrue(resultLine.get().startsWith("[java-delegation-conflict]"),
-                "Expected ownership conflict, got: " + resultLine.get());
+        assertEquals(
+                "[java-delegation-conflict] true " + initialDelegation,
+                resultLine.get());
+    }
+
+    /** Launches a fresh JVM and verifies the exact output of a delegation scenario. */
+    private void assertJavaDelegationScenario(
+            String target, String marker, String expected) throws Exception {
+        AtomicReference<String> resultLine = new AtomicReference<>();
+        LaunchResult result = launch(
+                target, Collections.emptyList(), "", line -> {
+                    if (line.startsWith(marker)) {
+                        resultLine.set(line);
+                        return LineConsumerResult.STOP;
+                    }
+                    return LineConsumerResult.CONTINUE;
+                }, null);
+
+        assertTrue(result.inTime);
+        assertEquals(0, result.exitCode);
+        assertEquals(expected, resultLine.get());
     }
 
     @Test
