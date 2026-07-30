@@ -137,11 +137,11 @@ case $CONFIG in
   profiler)
     ENABLEMENT="-Ddd.profiling.enabled=true -Ddd.trace.enabled=false"
     # @Trace is a no-op without the tracer, so trace-context is excluded here.
-    DEFAULT_ANTAGONISTS="thread-churn,alloc-storm,vthread-churn,classloader-churn,bounded-pool,context-hop,consumer-group,hidden-class-churn,direct-memory,weakref-wave,dump-storm"
+    DEFAULT_ANTAGONISTS="thread-churn,alloc-storm,vthread-churn,classloader-churn,bounded-pool,context-hop,consumer-group,hidden-class-churn,direct-memory,weakref-wave,dump-storm,reapply-context-value"
     ;;
   profiler+tracer)
     ENABLEMENT="-Ddd.profiling.enabled=true -Ddd.trace.enabled=true"
-    DEFAULT_ANTAGONISTS="thread-churn,alloc-storm,vthread-churn,classloader-churn,trace-context,bounded-pool,context-hop,consumer-group,hidden-class-churn,direct-memory,weakref-wave,dump-storm"
+    DEFAULT_ANTAGONISTS="thread-churn,alloc-storm,vthread-churn,classloader-churn,trace-context,bounded-pool,context-hop,consumer-group,hidden-class-churn,direct-memory,weakref-wave,dump-storm,reapply-context-value"
     ;;
   *)
     echo "Unknown configuration: $CONFIG (valid: profiler, profiler+tracer)" >&2
@@ -249,7 +249,6 @@ CHAOS_START=$(date +%s)
 timeout "$((RUNTIME + 300))" \
 java -javaagent:${PATCHED_AGENT} \
      --add-opens java.base/java.lang=ALL-UNNAMED \
-     --add-exports java.base/jdk.internal.misc=ALL-UNNAMED \
      ${ENABLEMENT} \
      -Ddd.profiling.upload.period=10 \
      -Ddd.profiling.start-force-first=true \

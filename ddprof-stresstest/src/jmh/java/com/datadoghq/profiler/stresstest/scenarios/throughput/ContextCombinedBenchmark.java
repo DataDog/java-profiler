@@ -46,8 +46,7 @@ import org.openjdk.jmh.annotations.Warmup;
  */
 @BenchmarkMode(Mode.AverageTime)
 @OutputTimeUnit(TimeUnit.NANOSECONDS)
-@Fork(value = 3, warmups = 0,
-        jvmArgsAppend = {"--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED"})
+@Fork(value = 3, warmups = 0)
 @Warmup(iterations = 3, time = 1)
 @Measurement(iterations = 5, time = 2)
 public class ContextCombinedBenchmark {
