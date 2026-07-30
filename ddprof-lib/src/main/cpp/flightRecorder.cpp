@@ -553,6 +553,14 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   jint bci = frame.bci;
   jmethodID method_id = frame.method_id;
 
+  // HotSpot's VM stack walker uses this sentinel when it could not validate a
+  // Method*. It is not a JNI/JVMTI jmethodID and must never reach
+  // fillJavaMethodInfo(). Keep the frame structurally intact, but serialize it
+  // as the shared unknown method.
+  if (VM::isHotspot() && method_id == JMETHODID_NOT_WALKABLE) {
+    method_id = nullptr;
+  }
+
   // Resolve native method
   if (FrameType::isRawPointer(bci)) {
     method_id = JVMSupport::resolve(frame.method);

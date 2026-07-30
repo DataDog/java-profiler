@@ -190,8 +190,12 @@ static void fillFrameRaw(ASGCT_CallFrame& frame, FrameTypeId type, int bci, cons
 }
 
 static void fillFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci, jmethodID method_id, const VMMethod* method) {
-    // Pack JMETHODID_NOT_WALKABLE frame as raw pointer frame, so it can not resolved into nullptr to shared code.
-    if (method_id != nullptr && method_id != JMETHODID_NOT_WALKABLE) {
+    if (method_id == JMETHODID_NOT_WALKABLE) {
+        // The Method* failed validation while walking. Preserve only the sentinel;
+        // retaining the Method* would defer a dereference of that invalid metadata
+        // until the dump thread resolves the frame.
+        fillFrame(frame, type, bci, method_id);
+    } else if (method_id != nullptr) {
         fillFrame(frame, type, bci, method_id);
     } else {
         assert(method != nullptr);
