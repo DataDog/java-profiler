@@ -28,15 +28,13 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Verifies native I/O hooks are fully restored and can be reinstalled across profiler restarts. */
-@Disabled("Arbitrary JNI DSO interposition is disabled until hooks are safe after fork and in signal handlers")
 public class NativeSocketTaskBlockLifecycleTest extends AbstractProfilerTest {
     private static final int BLOCK_HOLD_MILLIS = 250;
     private static final int NATIVE_BLOCK_ATTEMPTS = 5;
 
     @BeforeAll
-    static void preloadNativeHelpers() throws Exception {
+    static void preloadJdkNetworking() throws Exception {
         if (Platform.isLinux()) {
-            NativeIoBlockHelper.blockingPpoll(0);
             try (ServerSocket server = new ServerSocket(0);
                     Socket client = new Socket("127.0.0.1", server.getLocalPort());
                     Socket accepted = server.accept()) {
@@ -47,6 +45,7 @@ public class NativeSocketTaskBlockLifecycleTest extends AbstractProfilerTest {
     }
 
     @Test
+    @Disabled("Arbitrary JNI DSO interposition is not currently supported")
     public void restartWithWallPrecheckDisabledStopsNativeSocketTaskBlocks() throws Exception {
         long enabledBlocker = runNativeIoBlock();
         stopProfiler();
