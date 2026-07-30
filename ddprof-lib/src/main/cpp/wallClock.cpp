@@ -72,6 +72,11 @@ struct WallPrecheckResult {
   OSThreadState flush_state = OSThreadState::UNKNOWN;
 };
 
+enum class UnownedBlockedFallback {
+  DISABLED,
+  ENABLED,
+};
+
 static inline void incrementSuppressedOwnedBlock() {
   Counters::increment(WC_SIGNAL_SUPPRESSED_OWNED_BLOCK);
   WallClockCounters::incrementSuppressedOwnedBlock();
@@ -86,7 +91,8 @@ static inline bool suppressOwnedBlock(const ThreadEntry& entry) {
 }
 
 static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
-                                                     bool precheck) {
+                                                     bool precheck,
+                                                     UnownedBlockedFallback fallback) {
   WallPrecheckResult result;
   if (current == nullptr || !precheck || hasKnownActiveTraceContext(current)) {
     return result;
@@ -130,10 +136,10 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
     return result;
   }
 
-  // Unfiltered tracking exists only to support explicit context and owned-block
-  // hooks. Keep unowned observations on ordinary per-signal sampling: the JVMTI
-  // path has no call_trace_id with which to replay a suppressed tail.
-  if (registry->unfilteredWallTrackingActive()) {
+  // Suppressed tails require a recorded call trace for deferred replay. The
+  // delegated JVMTI path does not return one, so it keeps unowned observations
+  // on ordinary per-signal sampling.
+  if (fallback == UnownedBlockedFallback::DISABLED) {
     return result;
   }
 
@@ -264,7 +270,8 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   // its first successful MethodSample and suppresses subsequent signals.
   // Unowned blocked observations use weighted fallback sampling because raw OS
   // state cannot distinguish one long sleep from several shorter runs.
-  WallPrecheckResult precheck = prepareWallPrecheck(current, _precheck);
+  WallPrecheckResult precheck = prepareWallPrecheck(
+      current, _precheck, UnownedBlockedFallback::ENABLED);
   if (precheck.suppress) {
     return;
   }
@@ -477,7 +484,8 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
     errno = saved_errno;
     return;
   }
-  WallPrecheckResult precheck = prepareWallPrecheck(current, _precheck);
+  WallPrecheckResult precheck = prepareWallPrecheck(
+      current, _precheck, UnownedBlockedFallback::DISABLED);
   if (precheck.suppress) {
     errno = saved_errno;
     return;
