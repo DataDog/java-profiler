@@ -192,6 +192,38 @@ private:
   pid_t _saved;
 };
 
+void expectJavaProfilerMark(void* fn_addr) {
+  CodeCache* lib = Libraries::instance()->findLibraryByAddress(fn_addr);
+  ASSERT_NE(nullptr, lib);
+  const char* name = nullptr;
+  lib->binarySearch(fn_addr, &name);
+  ASSERT_NE(nullptr, name);
+  EXPECT_EQ(MARK_JAVA_PROFILER, NativeFunc::read_mark(name)) << name;
+}
+
+TEST(NativeSocketInterposerMarkTest, MarksEverySampledSocketHookLayer) {
+  Libraries::instance()->updateSymbols(false);
+  ASSERT_TRUE(NativeSocketInterposer::markProfilerHooks());
+
+  void* sampler_hooks[] = {
+      reinterpret_cast<void*>(NativeSocketSampler::send_hook),
+      reinterpret_cast<void*>(NativeSocketSampler::recv_hook),
+      reinterpret_cast<void*>(NativeSocketSampler::write_hook),
+      reinterpret_cast<void*>(NativeSocketSampler::read_hook),
+  };
+  for (void* hook : sampler_hooks) {
+    expectJavaProfilerMark(hook);
+  }
+
+  const NativeSocketInterposer::NativeIoHookSpec* specs =
+      NativeSocketInterposer::hookSpecs();
+  for (int hook_index = NativeSocketInterposer::HOOK_SEND;
+       hook_index <= NativeSocketInterposer::HOOK_READ; hook_index++) {
+    expectJavaProfilerMark(specs[hook_index].hook);
+    expectJavaProfilerMark(specs[hook_index].fork_safe_hook);
+  }
+}
+
 ssize_t stub_recv(int, void*, size_t, int) {
   g_recv_calls++;
   return g_recv_ret.load();

@@ -99,6 +99,10 @@ public:
   void clearFdTypeCache();
 
   static const NativeIoHookSpec* hookSpecs();
+  // Marks every wrapper that can appear in a sampled socket call chain.
+  // Both sampler-only and TaskBlock startup paths call this because IBM JCL
+  // bridge imports use the fork-safe interposer layer even when TaskBlock is off.
+  static bool markProfilerHooks();
   static bool setOriginalFunction(int hook_index, void* original);
   static void setHookOwnerPid(pid_t pid) {
     _hook_owner_pid.store(pid, std::memory_order_release);

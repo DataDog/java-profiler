@@ -7,7 +7,10 @@
 
 #if defined(__linux__)
 
+#include "counters.h"
+#include "libraries.h"
 #include "libraryPatcher.h"
+#include "log.h"
 #include "nativeSocketSampler.h"
 #include "tsc.h"
 
@@ -161,6 +164,40 @@ const NativeSocketInterposer::NativeIoHookSpec* NativeSocketInterposer::hookSpec
   return specs;
 }
 
+static bool markJavaProfilerHook(void* fn_addr) {
+  CodeCache* lib = Libraries::instance()->findLibraryByAddress(fn_addr);
+  if (lib == nullptr) {
+    Counters::increment(NATIVE_HOOK_MARK_RESOLVE_FAILED);
+    return false;
+  }
+  const char* name = nullptr;
+  lib->binarySearch(fn_addr, &name);
+  if (name == nullptr) {
+    Counters::increment(NATIVE_HOOK_MARK_RESOLVE_FAILED);
+    return false;
+  }
+  NativeFunc::set_mark(name, MARK_JAVA_PROFILER);
+  return true;
+}
+
+bool NativeSocketInterposer::markProfilerHooks() {
+  bool hooks_marked =
+      markJavaProfilerHook(reinterpret_cast<void*>(NativeSocketSampler::send_hook));
+  hooks_marked &=
+      markJavaProfilerHook(reinterpret_cast<void*>(NativeSocketSampler::recv_hook));
+  hooks_marked &=
+      markJavaProfilerHook(reinterpret_cast<void*>(NativeSocketSampler::write_hook));
+  hooks_marked &=
+      markJavaProfilerHook(reinterpret_cast<void*>(NativeSocketSampler::read_hook));
+
+  const NativeIoHookSpec* specs = hookSpecs();
+  for (int hook_index = HOOK_SEND; hook_index <= HOOK_READ; hook_index++) {
+    hooks_marked &= markJavaProfilerHook(specs[hook_index].hook);
+    hooks_marked &= markJavaProfilerHook(specs[hook_index].fork_safe_hook);
+  }
+  return hooks_marked;
+}
+
 bool NativeSocketInterposer::isForkChild() {
   pid_t current_pid = getpid();
   return current_pid != _hook_owner_pid.load(std::memory_order_acquire);
@@ -263,6 +300,10 @@ void NativeSocketInterposer::clearFdTypeCache() {
 
 Error NativeSocketInterposer::start() {
   clearFdTypeCache();
+  if (!markProfilerHooks()) {
+    Log::warn("NativeSocketInterposer: failed to mark one or more hook symbols; "
+              "native call stacks for socket samples may contain profiler frames");
+  }
   _active.store(true, std::memory_order_release);
   if (!LibraryPatcher::patch_socket_functions()) {
     _active.store(false, std::memory_order_release);
