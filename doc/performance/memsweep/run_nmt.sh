@@ -21,7 +21,7 @@ NO_AGENT="${5:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
-DDPROF_LIB="${DDPROF_LIB:-$(find "$REPO_ROOT/ddprof-lib/build/lib/main/release" -name 'libjavaProfiler.*' 2>/dev/null | head -1)}"
+DDPROF_LIB="${DDPROF_LIB:-$(find "$REPO_ROOT/ddprof-lib/build/lib/main/release" -name 'libjavaProfiler.*' -not -name '*.debug' 2>/dev/null | head -1)}"
 DDPROF_JAVA_API="${DDPROF_JAVA_API:-$REPO_ROOT/ddprof-lib/build/classes/java/main}"
 JAVA_BIN="${JAVA_BIN:-java}"
 JAVA_HOME_DIR="$("$JAVA_BIN" -XshowSettings:properties -version 2>&1 | awk -F'= ' '/java.home/{print $2}')"
@@ -59,17 +59,31 @@ else
     > "$WORKDIR/out/${TAG}.stdout" 2>&1 &
 fi
 PID=$!
+LAUNCH_EPOCH=$(date +%s.%N)
 
 # Give the JVM a moment to initialize before baselining; retry attach a few
 # times since high thread counts can delay readiness for the attach handshake.
 for i in 1 2 3 4 5 6; do
   sleep 1
   "$JCMD_BIN" "$PID" VM.native_memory baseline > "$WORKDIR/out/${TAG}.nmt_baseline.txt" 2>&1
-  grep -q "Baseline succeeded" "$WORKDIR/out/${TAG}.nmt_baseline.txt" && break
+  # Wording is JDK-version-dependent: some print "Baseline succeeded", others
+  # (this JDK 21 build) print "Baseline taken" -- match either.
+  grep -qE "Baseline (succeeded|taken)" "$WORKDIR/out/${TAG}.nmt_baseline.txt" && break
 done
 
-# Sample near the end of the run, while the workload is still active.
-SAMPLE_AT=$(python3 -c "print(max(0.1, ($DURATION_MS - 300) / 1000))")
+# Sample near the end of the run, while the workload is still active. Target
+# time is relative to when the JVM was actually launched, not to "now" --
+# the baseline retry loop above already burned real wall-clock time, and not
+# accounting for it here means this sleep alone can push us past the
+# workload's own deadline, causing the process to have already exited by the
+# time the diff/summary jcmd calls below run (seen in practice as jcmd
+# failing with "No such process" despite the workload having run for the
+# full requested duration).
+SAMPLE_AT=$(python3 -c "
+import time
+target = $LAUNCH_EPOCH + max(0.1, ($DURATION_MS - 1000) / 1000)
+print(max(0.1, target - time.time()))
+")
 sleep "$SAMPLE_AT"
 "$JCMD_BIN" "$PID" VM.native_memory summary.diff > "$WORKDIR/out/${TAG}.nmt_diff.txt" 2>&1
 "$JCMD_BIN" "$PID" VM.native_memory summary > "$WORKDIR/out/${TAG}.nmt_summary.txt" 2>&1

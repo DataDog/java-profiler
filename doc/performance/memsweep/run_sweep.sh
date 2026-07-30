@@ -1,12 +1,19 @@
 #!/bin/bash
 # Runs one native-memory sweep point: mode, N, duration(ms).
 #
-# Usage: run_sweep.sh <threads|traces|classes> <N> <duration_ms> [wall_interval]
+# Usage: run_sweep.sh <threads|traces|classes|allocs> <N> <duration_ms> [interval]
 #
-# For traces/classes, pre-generates and compiles sources with an EXTERNAL
-# (unprofiled) javac process first, so the profiled JVM only ever loads
-# precompiled .class files -- doing this in-process would load the compiler's
-# own classes into the profiled JVM and swamp the intended N-classes signal.
+# threads/traces/classes drive the wall-clock engine (interval is the wall=
+# sampling period, e.g. ~5ms). allocs drives the allocation-sampling engine
+# instead (interval is the memory= sampling period in bytes, e.g. 1024) --
+# it isolates allocation-sampler-driven calltrace/dictionary growth from the
+# wall-clock reflection calls the other three modes use.
+#
+# For traces/classes/allocs, pre-generates and compiles sources with an
+# EXTERNAL (unprofiled) javac process first, so the profiled JVM only ever
+# loads precompiled .class files -- doing this in-process would load the
+# compiler's own classes into the profiled JVM and swamp the intended
+# N-classes signal.
 #
 # Samples RSS while the JVM runs, then extracts native_mem_* counters from
 # the resulting JFR file. Prints one CSV line to stdout:
@@ -23,12 +30,18 @@ set -u
 MODE="$1"
 N="$2"
 DURATION_MS="$3"
-WALL="${4:-~5ms}"
+if [ "$MODE" = "allocs" ]; then
+  INTERVAL="${4:-1024}"
+  ENGINE_ARG="memory=${INTERVAL}:a"
+else
+  INTERVAL="${4:-~5ms}"
+  ENGINE_ARG="wall=${INTERVAL}"
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
-DDPROF_LIB="${DDPROF_LIB:-$(find "$REPO_ROOT/ddprof-lib/build/lib/main/release" -name 'libjavaProfiler.*' 2>/dev/null | head -1)}"
+DDPROF_LIB="${DDPROF_LIB:-$(find "$REPO_ROOT/ddprof-lib/build/lib/main/release" -name 'libjavaProfiler.*' -not -name '*.debug' 2>/dev/null | head -1)}"
 DDPROF_JAVA_API="${DDPROF_JAVA_API:-$REPO_ROOT/ddprof-lib/build/classes/java/main}"
 JAVA_BIN="${JAVA_BIN:-java}"
 # `javac`/`jfr` aren't always on PATH even when `java` is (e.g. macOS's
@@ -55,13 +68,13 @@ GENDIR="$WORKDIR/gen/${TAG}"
 OUTJFR="$WORKDIR/out/${TAG}.jfr"
 mkdir -p "$GENDIR"
 
-if [ "$MODE" = "traces" ] || [ "$MODE" = "classes" ]; then
+if [ "$MODE" = "traces" ] || [ "$MODE" = "classes" ] || [ "$MODE" = "allocs" ]; then
   "$JAVA_BIN" -cp "$CLASSDIR" GenSources "$MODE" "$N" "$GENDIR" >"$WORKDIR/out/${TAG}.gen.log" 2>&1
   find "$GENDIR" -name "*.java" > "$GENDIR.filelist"
   "$JAVAC_BIN" -d "$GENDIR" "@${GENDIR}.filelist" >>"$WORKDIR/out/${TAG}.gen.log" 2>&1
 fi
 
-"$JAVA_BIN" -agentpath:${DDPROF_LIB}=start,wall=${WALL},jfr,file=${OUTJFR},cstack=fp \
+"$JAVA_BIN" -agentpath:${DDPROF_LIB}=start,${ENGINE_ARG},jfr,file=${OUTJFR},cstack=fp \
   -Dmemsweep.libpath="$DDPROF_LIB" \
   -cp "$CLASSDIR:$DDPROF_JAVA_API" MemSweepMain "$MODE" "$N" "$DURATION_MS" "$GENDIR" \
   > "$WORKDIR/out/${TAG}.stdout" 2>&1 &

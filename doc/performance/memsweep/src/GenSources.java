@@ -36,6 +36,24 @@ public class GenSources {
                         "}\n";
                 write(new File(dir, name + ".java"), src);
             }
+        } else if (mode.equals("allocs")) {
+            // N distinct short-lived object shapes (varying field-array size so each
+            // class is a genuinely different allocation size/shape), each with a
+            // static factory so MemSweepMain can allocate+discard in a cycle.
+            for (int i = 0; i < n; i++) {
+                String name = "GenAlloc" + i;
+                int fields = 1 + (i % 8);
+                StringBuilder decl = new StringBuilder();
+                for (int f = 0; f < fields; f++) decl.append("  long f").append(f).append(";\n");
+                String src = "public class " + name + " {\n" + decl +
+                        "  public static Object alloc(long x) {\n" +
+                        "    " + name + " o = new " + name + "();\n" +
+                        "    o.f0 = x;\n" +
+                        "    return o;\n" +
+                        "  }\n" +
+                        "}\n";
+                write(new File(dir, name + ".java"), src);
+            }
         } else {
             throw new IllegalArgumentException(mode);
         }

@@ -1,5 +1,20 @@
 # Native Memory Sweep — Handoff for Linux Follow-up
 
+> **Update:** the Linux follow-up this document requested has been done —
+> see [memory-sweep-results-linux.md](memory-sweep-results-linux.md) for
+> results against all five open questions below. Short version: question 1
+> (`NM_THREAD_LOCAL`) turned out to be a measurement-methodology bug in the
+> original harness, not a platform difference or instrumentation gap;
+> question 2 (`NM_DICTIONARY`) is confirmed genuinely flat under wall-clock
+> sampling even at 150K classes, but moves under allocation sampling;
+> question 3 (`NM_PERF`) is understood but gated by this session's sandboxed
+> container (`kptr_restrict=1`) rather than fully resolved; question 4
+> (alloc/native-malloc engines) got a new `allocs` harness mode and a clean
+> A/B; question 5 (NMT+RSS reconciliation) got same-process data since `jcmd`
+> attach turned out to be reliable here. The sections below are left as
+> originally written for context on what was asked; treat them as superseded
+> by the linked results where they conflict.
+
 This hands off an in-progress investigation into what workload properties
 drive java-profiler's native memory usage, so it can continue on a Linux
 machine. Read in this order:
@@ -12,6 +27,8 @@ machine. Read in this order:
    rounds of debugging null results, and the NMT/JFR-architecture follow-up.
 3. This document — what's unresolved, what Linux specifically should answer,
    and how to run the harness there.
+4. [memory-sweep-results-linux.md](memory-sweep-results-linux.md) — the
+   Linux follow-up results answering the questions below.
 
 ## Why Linux, specifically
 

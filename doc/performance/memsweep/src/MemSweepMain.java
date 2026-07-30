@@ -44,6 +44,7 @@ public class MemSweepMain {
             case "threads": runThreads(n, durationMs, profiler); break;
             case "traces": runTraces(n, durationMs, genDir); break;
             case "classes": runClasses(n, durationMs, genDir); break;
+            case "allocs": runAllocs(n, durationMs, genDir); break;
             default: throw new IllegalArgumentException(mode);
         }
         // Agent was attached via -agentpath; the VMDeath shutdown hook
@@ -108,5 +109,24 @@ public class MemSweepMain {
         }
         if (sink == Long.MIN_VALUE) throw new AssertionError();
         if (classes.size() != n) throw new AssertionError();
+    }
+
+    // N distinct short-lived object shapes, allocated and immediately discarded
+    // in a cycle -- isolates allocation-sampling-driven calltrace/dictionary
+    // growth (memory=<interval>:a engine) from wall-clock reflection calls.
+    private static void runAllocs(int n, long durationMs, File genDir) throws Exception {
+        URLClassLoader loader = new URLClassLoader(new URL[]{genDir.toURI().toURL()}, MemSweepMain.class.getClassLoader());
+        List<Method> factories = new ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            Class<?> c = Class.forName("GenAlloc" + i, true, loader);
+            factories.add(c.getMethod("alloc", long.class));
+        }
+
+        long deadline = System.currentTimeMillis() + durationMs;
+        Object sink = null;
+        while (System.currentTimeMillis() < deadline) {
+            for (int i = 0; i < n; i++) sink = factories.get(i).invoke(null, (long) i);
+        }
+        if (sink == null) throw new AssertionError();
     }
 }
