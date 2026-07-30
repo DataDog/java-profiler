@@ -119,9 +119,9 @@ public:
 #ifdef DEBUG
 private:
   // Debug diagnostic: bump a counter when a SafeAccess read/copy is issued while
-  // the current thread is already inside a walkVM longjmp-protected region, where
+  // the current thread is already inside a walkVM siglongjmp-protected region, where
   // the safefetch/safecopy overhead is redundant (a fault there is caught by the
-  // longjmp anyway). Defined out-of-line in safeAccess.cpp so this widely-included
+  // siglongjmp anyway). Defined out-of-line in safeAccess.cpp so this widely-included
   // header need not pull in threadLocalData.h / counters.h. isCopy selects the
   // SAFECOPY_WHILE_PROTECTED vs SAFEFETCH_WHILE_PROTECTED counter.
   static void countIfLongjmpProtected(bool isCopy);

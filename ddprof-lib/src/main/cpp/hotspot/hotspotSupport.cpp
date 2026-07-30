@@ -126,6 +126,8 @@ inline EventType eventTypeFromBCI(jint bci_type) {
             return PARK_SAMPLE;
         case BCI_NATIVE_MALLOC:
             return MALLOC_SAMPLE;
+        case BCI_NATIVE_SOCKET:
+            return SOCKET_SAMPLE;
         default:
             // For unknown or invalid BCI types, default to EXECUTION_SAMPLE
             // This maintains backward compatibility and prevents undefined behavior
@@ -250,19 +252,19 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     int bcp_offset = InterpreterFrame::bcp_offset();
 
 
-    jmp_buf crash_protection_ctx;
-    // Chaining jmp_buf
+    sigjmp_buf crash_protection_ctx;
+    // Chaining sigjmp_buf
     // A non-signal-based-sampler can be interrupted by signal based sampler,
     // then we end up with multiple HotspotSupport::walkVM() calls on stack,
-    // each one sets up jmp_buf, they need to be chained to jump back to
+    // each one sets up sigjmp_buf, they need to be chained to jump back to
     // correct location.
-    jmp_buf* prev_jmp_buf = prof_thread->getJmpCtx();
-    // Should be preserved across setjmp/longjmp
+    sigjmp_buf* prev_jmp_buf = prof_thread->getJmpCtx();
+    // Should be preserved across sigsetjmp/siglongjmp
     volatile int depth = 0;
     int actual_max_depth = truncated ? max_depth + 1 : max_depth;
 
-    if (setjmp(crash_protection_ctx) != 0) {
-        // checkFault() does a longjmp from inside segvHandler, bypassing
+    if (sigsetjmp(crash_protection_ctx, 1) != 0) {
+        // checkFault() does a siglongjmp from inside segvHandler, bypassing
         // segvHandler's SignalHandlerScope destructor.  Compensate.
         SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
         prof_thread->setJmpCtx(prev_jmp_buf);
@@ -309,8 +311,14 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     uintptr_t saved_anchor_fp = 0;
     bool anchor_recovery_used = false;
 
+    // Set once the MARK_JAVA_PROFILER hook boundary is found for a
+    // malloc/socket sample — mirrors skip_hook_prefix/skipping in
+    // Profiler::convertNativeTrace so the same "boundary never found"
+    // condition is observable from walkVM.
+    bool hook_boundary_found = false;
+
     // Show extended frame types and stub frames for execution-type events
-    bool details = event_type <= MALLOC_SAMPLE || features.mixed;
+    bool details = event_type <= SOCKET_SAMPLE || features.mixed;
 
     if (details && vm_thread != NULL && VMThread::isJavaThread(vm_thread)) {
         anchor = vm_thread->anchor();
@@ -374,7 +382,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         }
         // entry_fp has been range-checked by isValidFP above; any remaining
         // SIGSEGV from a stale/concurrently-freed pointer is caught by the
-        // setjmp crash protection in walkVM (checkFault -> longjmp).
+        // sigsetjmp crash protection in walkVM (checkFault -> siglongjmp).
         uintptr_t* carrier_fp_addr = (uintptr_t*)INJECT_FAULT_ADDRESS_UNLIKELY(entry_fp);
         uintptr_t carrier_fp = *carrier_fp_addr;
         const void* carrier_pc = ((const void**)carrier_fp_addr)[FRAME_PC_SLOT];
@@ -410,8 +418,8 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             // while PC is still in JVM stubs (JavaCalls, method entry/exit), we see CodeHeap
             // code without VMThread context.
             //
-            // Without vm_thread, crash protection via setjmp/longjmp cannot work
-            // (checkFault() needs vm_thread->exception() to longjmp). Any memory dereference in interpreter
+            // Without vm_thread, crash protection via sigsetjmp/siglongjmp cannot work
+            // (checkFault() needs vm_thread->exception() to siglongjmp). Any memory dereference in interpreter
             // frame handling or NMethod validation would crash the process with unrecoverable SEGV.
             //
             // The missing VMThread is a timing issue during thread lifecycle.
@@ -685,18 +693,16 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         } else {
             // Resolve native frame (may use remote symbolication if enabled)
             Profiler::NativeFrameResolution resolution = profiler->resolveNativeFrameForWalkVM((uintptr_t)pc, lock_index);
-            if (resolution.is_marked) {
-                // This is a marked C++ interpreter frame, terminate scan
-                break;
-            }
-            const char* method_name = resolution.method_name;
-            int frame_bci = resolution.bci;
-            char mark;
-            if (frame_bci != BCI_NATIVE_FRAME_REMOTE && method_name != NULL && (mark = NativeFunc::read_mark(method_name)) != 0) {
-                if (mark == MARK_ASYNC_PROFILER && event_type == MALLOC_SAMPLE) {
-                    // Skip all internal frames above malloc_hook functions, leave the hook itself
+            if (resolution.is_marked()) {
+                if (resolution.mark == MARK_JAVA_PROFILER &&
+                    isHookPrefixedSample(event_type)) {
+                    // Discard frames captured above the malloc/socket hook boundary,
+                    // excluding the hook's own frame, and resume from the real
+                    // caller above it — mirrors the FP/DWARF skip-prefix logic in
+                    // Profiler::convertNativeTrace.
+                    hook_boundary_found = true;
                     depth = 0;
-                } else if (mark == MARK_COMPILER_ENTRY && features.comp_task && vm_thread != NULL) {
+                } else if (resolution.mark == MARK_COMPILER_ENTRY && features.comp_task && vm_thread != NULL) {
                     // Insert current compile task as a pseudo Java frame
                     VMMethod* method = vm_thread->compiledMethod();
                     if (method != nullptr) {
@@ -705,13 +711,19 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                             fillFrame(frames[depth++], FRAME_JIT_COMPILED, 0, method_id, method);
                         }
                     }
-                } else if (mark == MARK_THREAD_ENTRY) {
+                } else if (resolution.mark == MARK_THREAD_ENTRY) {
                     // Thread entry point detected via pre-computed mark - this is the root frame
-                    // No need for expensive symbol resolution, just stop unwinding
                     Counters::increment(THREAD_ENTRY_MARK_DETECTIONS);
                     break;
+                } else {
+                    // Other marks (VM runtime / interpreter) terminate the scan.
+                    break;
                 }
-            } else if (method_name == NULL && details && !anchor_recovery_used
+                goto dwarf_unwind;
+            }
+            const char* method_name = resolution.method_name;
+            int frame_bci = resolution.bci;
+            if (method_name == NULL && details && !anchor_recovery_used
                        && profiler->findLibraryByAddress(pc) == NULL) {
                 // Try anchor recovery — prefer live anchor, fall back to saved data
                 anchor_recovery_used = true;
@@ -949,6 +961,12 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         Counters::increment(WALKVM_DEPTH_ZERO);
     }
 
+    if (isHookPrefixedSample(event_type) && !hook_boundary_found) {
+        // The malloc/socket hook boundary was never found in this walk;
+        // mirrors Profiler::convertNativeTrace's NATIVE_TRACE_HOOK_PREFIX_NOT_FOUND.
+        Counters::increment(NATIVE_TRACE_HOOK_PREFIX_NOT_FOUND);
+    }
+
     if (truncated) {
         if (depth > max_depth) {
             *truncated = true;
@@ -970,14 +988,14 @@ void HotspotSupport::checkFault(ProfiledThread* thrd) {
         return;
     }
 
-    // Check if longjmp is setup for this thread
+    // Check if siglongjmp is set up for this thread
     if (!thrd->isProtected()) {
         return;
     }
 
     thrd->resetCrashHandler();
     Counters::increment(WALKVM_LONGJMP_RECOVERED);
-    longjmp(*thrd->getJmpCtx(), 1);
+    siglongjmp(*thrd->getJmpCtx(), 1);
 }
 
 int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
@@ -1202,7 +1220,7 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   int java_frames = 0;
   if (features.mixed) {
     java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
-  } else if (request.event_type == BCI_NATIVE_MALLOC || request.event_type == BCI_NATIVE_SOCKET) {
+  } else if (isHookPrefixedSample(request.event_type)) {
     if (cstack >= CSTACK_VM) {
       java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
     } else {

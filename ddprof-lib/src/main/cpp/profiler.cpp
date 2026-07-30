@@ -13,6 +13,7 @@
 #include "guards.h"
 #include "common.h"
 #include "counters.h"
+#include "nativeMem.h"
 #include "ctimer.h"
 #include "signalInflight.h"
 #include "dwarf.h"
@@ -24,6 +25,7 @@
 #include "j9/j9Support.h"
 #include "j9/j9WallClock.h"
 #include "jvmSupport.h"
+#include "jvmSupport.inline.h"
 #include "jvmThread.h"
 #include "libraryPatcher.h"
 #include "objectSampler.h"
@@ -302,6 +304,7 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
   if (_cstack == CSTACK_NO ||
       (event_type == BCI_ALLOC || event_type == BCI_ALLOC_OUTSIDE_TLAB) ||
       (event_type != BCI_CPU && event_type != BCI_WALL &&
+       !isHookPrefixedSample(event_type) &&
        _cstack == CSTACK_DEFAULT)) {
     return 0;
   }
@@ -326,7 +329,9 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
                                          java_ctx, truncated);
   }
 
-  return convertNativeTrace(native_frames, callchain, frames, lock_index);
+  bool skip_hook_prefix = isHookPrefixedSample(event_type);
+  return convertNativeTrace(native_frames, callchain, frames, lock_index,
+                            skip_hook_prefix);
 }
 
 /**
@@ -383,7 +388,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
     char mark = (method_name != nullptr) ? NativeFunc::read_mark(method_name) : 0;
 
     if (mark != 0) {
-      return {nullptr, BCI_NATIVE_FRAME, true};  // Marked - stop processing
+      return NativeFrameResolution(nullptr, BCI_NATIVE_FRAME, mark);  // Marked - caller dispatches on mark
     }
 
     // Pack remote symbolication data using utility struct
@@ -391,7 +396,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
     uint32_t lib_index = (uint32_t)lib->libIndex();
     unsigned long packed = RemoteFramePacker::pack(pc_offset, mark, lib_index);
 
-    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE, false);
+    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE);
   }
 
   // Traditional symbol resolution
@@ -399,8 +404,11 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
   if (lib != nullptr) {
     lib->binarySearch((void*)pc, &method_name);
   }
-  if (method_name != nullptr && NativeFunc::is_marked(method_name)) {
-    return NativeFrameResolution(nullptr, BCI_NATIVE_FRAME, true);
+  if (method_name != nullptr) {
+    char mark = NativeFunc::read_mark(method_name);
+    if (mark != 0) {
+      return NativeFrameResolution(nullptr, BCI_NATIVE_FRAME, mark);
+    }
   }
 
   // No symbol but known library: pack for library-relative identification.
@@ -410,10 +418,10 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
     uintptr_t pc_offset = pc - (uintptr_t)lib->imageBase();
     uint32_t lib_index = (uint32_t)lib->libIndex();
     unsigned long packed = RemoteFramePacker::pack(pc_offset, 0, lib_index);
-    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE, false);
+    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE);
   }
 
-  return NativeFrameResolution(method_name, BCI_NATIVE_FRAME, false);
+  return NativeFrameResolution(method_name, BCI_NATIVE_FRAME);
 }
 
 /**
@@ -426,9 +434,16 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
  * marked frames (JVM internals) that should terminate the stack walk.
  */
 int Profiler::convertNativeTrace(int native_frames, const void **callchain,
-                                 ASGCT_CallFrame *frames, int lock_index) {
+                                 ASGCT_CallFrame *frames, int lock_index,
+                                 bool skip_hook_prefix) {
   int depth = 0;
   void* prev_identifier = NULL;  // Can be jmethodID or frame pointer for remote
+  // skip_hook_prefix: the walk started inside profiler-internal code (e.g. the
+  // malloc/socket hook call chain), not at an interrupted user PC. Discard frames
+  // until the hook wrapper's own MARK_JAVA_PROFILER-marked frame is reached, then
+  // resume normally from the real caller. Other mark kinds still terminate the
+  // scan immediately, same as the non-skipping case.
+  bool skipping = skip_hook_prefix;
 
   for (int i = 0; i < native_frames; i++) {
     uintptr_t pc = (uintptr_t)callchain[i];
@@ -444,9 +459,20 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
         char mark = (method_name != nullptr) ? NativeFunc::read_mark(method_name) : 0;
 
         if (mark != 0) {
+          if (skip_hook_prefix && mark == MARK_JAVA_PROFILER) {
+            depth = 0;
+            skipping = false;
+            continue;
+          }
+          if (skipping) {
+            // A non-MARK_JAVA_PROFILER mark terminated the scan before the
+            // hook boundary was ever found; the sample has no native stack.
+            Counters::increment(NATIVE_TRACE_HOOK_PREFIX_NOT_FOUND);
+          }
           // Terminate scan at marked frame
           return depth;
         }
+        if (skipping) continue;
 
         // Populate remote frame inline - no allocation needed!
         // Pass the mark we already retrieved to avoid duplicate binarySearch
@@ -464,10 +490,24 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
 
     // Fallback: Traditional symbol resolution
     const char *method_name = findNativeMethod((void*)pc);
-    if (method_name != nullptr && NativeFunc::is_marked(method_name)) {
-      // Terminate scan at marked frame
-      return depth;
+    if (method_name != nullptr) {
+      char mark = NativeFunc::read_mark(method_name);
+      if (mark != 0) {
+        if (skip_hook_prefix && mark == MARK_JAVA_PROFILER) {
+          depth = 0;
+          skipping = false;
+          continue;
+        }
+        if (skipping) {
+          // A non-MARK_JAVA_PROFILER mark terminated the scan before the
+          // hook boundary was ever found; the sample has no native stack.
+          Counters::increment(NATIVE_TRACE_HOOK_PREFIX_NOT_FOUND);
+        }
+        // Terminate scan at marked frame
+        return depth;
+      }
     }
+    if (skipping) continue;
 
     // Store standard frame
     jmethodID current_method = (jmethodID)method_name;
@@ -481,6 +521,11 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
     }
   }
 
+  if (skipping) {
+    // The hook-boundary (MARK_JAVA_PROFILER) frame was never found in the
+    // callchain; every frame was discarded and the sample has no native stack.
+    Counters::increment(NATIVE_TRACE_HOOK_PREFIX_NOT_FOUND);
+  }
   return depth;
 }
 
@@ -798,7 +843,7 @@ void Profiler::writeHeapUsage(long value, bool live) {
   _locks[lock_index].unlock();
 }
 
-void Profiler::prewarmUnwinder() {
+bool Profiler::prewarmUnwinder() {
 #ifdef __linux__
   // J9 on aarch64 (and other JVMs) lazily loads libgcc_s.so.1 from its DWARF
   // unwinder during stack walks. When that happens inside a signal handler
@@ -819,7 +864,13 @@ void Profiler::prewarmUnwinder() {
   // dlopen by SONAME is the only mechanism that works under static-libgcc.
   // libgcc_s.so.1 has been the stable SONAME since 2002; a bump would
   // constitute a glibc/GCC C++ ABI break and is treated as a fixed contract.
-  (void)dlopen("libgcc_s.so.1", RTLD_LAZY | RTLD_GLOBAL);
+  //
+  // INJECT_FAULT_BOOL_LIKELY lets fault-injection builds force this to
+  // report failure without the library actually being absent, so
+  // checkState()'s "Missing libgcc_s.so" path can be exercised in CI.
+  return INJECT_FAULT_BOOL_LIKELY(dlopen("libgcc_s.so.1", RTLD_LAZY | RTLD_GLOBAL) != nullptr);
+#else
+  return true;
 #endif
 }
 
@@ -882,15 +933,15 @@ void Profiler::disableEngines() {
 void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // J9 installs a SIGSEGV handler that uses siglongjmp() to recover from
   // null-pointer-check faults during normal Java execution.  When we chain to
-  // it, that longjmp unwinds past our stack frame and skips the RAII
+  // it, that siglongjmp unwinds past our stack frame and skips the RAII
   // destructor, permanently leaking depth on the thread.  Release the guard
   // before chaining so depth is correct whether the chained handler returns
-  // or longjmps.
+  // or siglongjmps.
   //
   // Sanitizer-coverage note: this also means depth == 0 inside the chained
   // handler, so DEBUG_ASSERT_NOT_IN_SIGNAL() will NOT fire for AS-unsafe
   // code reachable from a chained handler that returns normally.  This is
-  // the lesser of two evils — leaking depth on longjmp would silently
+  // the lesser of two evils — leaking depth on siglongjmp would silently
   // break the production deferred-refresh gate, while the sanitizer gap
   // is bounded to third-party signal handler code we don't own.
   SIGNAL_HANDLER_GUARD();
@@ -898,7 +949,7 @@ void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     return;  // Handled — destructor decrements depth
   }
   SIGNAL_HANDLER_GUARD_RELEASE();
-  // Not handled, chain to next handler (may longjmp; never return through us)
+  // Not handled, chain to next handler (may siglongjmp; never return through us)
   SigAction chain = OS::getSegvChainTarget();
   if (chain != nullptr) {
     chain(signo, siginfo, ucontext);
@@ -909,7 +960,7 @@ void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 
 void Profiler::busHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // See segvHandler: release before chaining in case the chained handler
-  // longjmps through us.
+  // siglongjmps through us.
   SIGNAL_HANDLER_GUARD();
   if (crashHandlerInternal(signo, siginfo, ucontext)) {
     return;  // Handled — destructor decrements depth
@@ -937,7 +988,7 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
 
   // Reentrancy protection: use TLS-based tracking if available.
   // If TLS is not available, the thread is not protected by
-  // longjmp, so bail out.
+  // siglongjmp, so bail out.
   bool have_tls_protection = false;
   if (thrd != nullptr) {
     if (!thrd->enterCrashHandler()) {
@@ -970,7 +1021,7 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
     // the following checks require vmstructs and therefore HotSpot
 
     // HotspotSupport::checkFault has its own check if we're in a protected stack walk.
-    // If the fault is from our protected walk, it will longjmp and never return.
+    // If the fault is from our protected walk, it will siglongjmp and never return.
     // If it returns, the fault wasn't from our code.
     HotspotSupport::checkFault(thrd);
 
@@ -1221,7 +1272,7 @@ Error Profiler::checkJvmCapabilities() {
     }
   }
 
-  if (!VMStructs::libjvm()->hasDebugSymbols() && !VM::isOpenJ9()) {
+  if (!VM::libjvm()->hasDebugSymbols()) {
     Log::warn("Install JVM debug symbols to improve profile accuracy");
   }
 
@@ -1246,6 +1297,13 @@ Error Profiler::checkState() {
   if (s == ERROR) {
     return Error("Profiler encountered fatal error");
   } else if (s == NEW) {
+    // Force libgcc_s to load now (idempotent dlopen) so the JVM's DWARF
+    // unwinder cannot lazy-load it later from signal context.
+    if (!prewarmUnwinder()) {
+      _state.store(ERROR, std::memory_order_release);
+      return Error("Missing libgcc_s.so.1");
+    }
+
     // Make sure JVMSupport is initialized
     // In theory, it should be initialized in JVMTI::VMInit() callback,
     // but the callback arrives too late, after this method is called.
@@ -1261,6 +1319,7 @@ Error Profiler::checkState() {
 
 Error Profiler::init() {
   MutexLocker ml(_state_lock);
+
   State s = state();
   if (s == ERROR) {
     return Error("Profiler encountered fatal error");
@@ -1290,10 +1349,6 @@ Error Profiler::start(Arguments &args, bool reset) {
   if (error) {
     return error;
   }
-
-  // Force libgcc_s to load now (idempotent dlopen) so the JVM's DWARF
-  // unwinder cannot lazy-load it later from signal context.
-  prewarmUnwinder();
 
   error = checkJvmCapabilities();
   if (error) {
@@ -1370,27 +1425,43 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   // (Re-)allocate calltrace buffers
   if (_max_stack_depth != args._jstackdepth) {
-    _max_stack_depth = args._jstackdepth;
-    size_t nelem = _max_stack_depth + RESERVED_FRAMES;
+    size_t prev_nelem = _max_stack_depth + RESERVED_FRAMES;
+    size_t nelem = (size_t)args._jstackdepth + RESERVED_FRAMES;
 
+    // Phase 1: allocate all replacements up front. If any allocation fails,
+    // roll back the ones already made and leave the profiler unchanged — old
+    // buffers, _max_stack_depth, and all accounting stay consistent. (The old
+    // code swapped shard-by-shard and reset _max_stack_depth to 0 on failure,
+    // leaving a partially-swapped, mis-accounted state.)
+    CallTraceBuffer *fresh[CONCURRENCY_LEVEL];
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
-      // Allocate the replacement before touching the slot so a calloc failure
-      // does not leave the slot pointing at freed memory.
-      CallTraceBuffer *fresh =
-          (CallTraceBuffer*)calloc(nelem, sizeof(CallTraceBuffer));
-      if (fresh == NULL) {
-        _max_stack_depth = 0;
+      fresh[i] = (CallTraceBuffer*)calloc(nelem, sizeof(CallTraceBuffer));
+      if (fresh[i] == NULL) {
+        for (int j = 0; j < i; j++) {
+          free(fresh[j]);
+        }
         return Error("Not enough memory to allocate stack trace buffers (try "
                      "smaller jstackdepth)");
       }
-      // Swap under the per-shard lock: all readers (recordJVMTISample,
-      // recordExternalSample) acquire this lock via tryLock before reading
-      // _calltrace_buffer, so no reader can observe a freed pointer mid-replacement.
+    }
+
+    // Phase 2: all allocations succeeded — commit. Swap each shard under its
+    // per-shard lock (readers acquire it via tryLock before reading
+    // _calltrace_buffer, so none observes a freed pointer mid-replacement),
+    // then free the old buffer and reconcile accounting.
+    _max_stack_depth = args._jstackdepth;
+    for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
+      NativeMem::record(NM_CALLTRACE, (long long)(nelem * sizeof(CallTraceBuffer)));
       _locks[i].lock();
       CallTraceBuffer *prev = _calltrace_buffer[i];
-      _calltrace_buffer[i] = fresh;
+      _calltrace_buffer[i] = fresh[i];
       _locks[i].unlock();
       free(prev);
+      if (prev != NULL) {
+        // Account the free after it has happened, consistent with the other
+        // decrement sites (FlightRecorder::stop, ~ThreadFilter).
+        NativeMem::record(NM_CALLTRACE, -(long long)(prev_nelem * sizeof(CallTraceBuffer)));
+      }
     }
   }
 
@@ -1622,6 +1693,9 @@ Error Profiler::stop() {
   Libraries::instance()->refresh();
   updateJavaThreadNames();
   updateNativeThreadNames();
+  // Refresh native-symbol counters so the final chunk (emitted by _jfr.stop()
+  // below) reflects them even when stop() runs without a preceding dump().
+  updateNativeLibMemStats();
 
   // If jvmtistacks delegation was used this recording, surface likely
   // misconfigurations. The JVM returns WRONG_PHASE when JFR is not recording
@@ -1717,6 +1791,22 @@ Error Profiler::check(Arguments &args) {
   return error;
 }
 
+void Profiler::updateNativeLibMemStats() {
+  // CodeCache here is the profiler's native-symbol tables (not the JVM code
+  // cache). memoryUsage() is a recomputed gauge; read it once and publish the
+  // counters plus the NativeMem gauge (NATIVE_SYMBOLS) as absolutes.
+  const CodeCacheArray& native_libs = _libs->native_libs();
+  long long usage = (long long)native_libs.memoryUsage();
+  Counters::set(CODECACHE_NATIVE_COUNT, native_libs.count());
+  Counters::set(CODECACHE_NATIVE_SIZE_BYTES, usage);
+  // The runtime-stubs cache is a distinct HotSpot cache, not the native-symbol
+  // tables. Routed through JVMSupport so the HotSpot-only implementation stays
+  // behind the VM abstraction (0 on J9/Zing).
+  Counters::set(CODECACHE_RUNTIME_STUBS_SIZE_BYTES,
+                JVMSupport::runtimeStubsMemoryUsage());
+  NativeMem::setLive(NM_NATIVE_SYMBOLS, usage);
+}
+
 Error Profiler::dump(const char *path, const int length) {
   MutexLocker ml(_state_lock);
   State cur_state = state();
@@ -1734,11 +1824,7 @@ Error Profiler::dump(const char *path, const int length) {
     updateJavaThreadNames();
     updateNativeThreadNames();
 
-    const CodeCacheArray& native_libs = _libs->native_libs();
-    Counters::set(CODECACHE_NATIVE_COUNT, native_libs.count());
-    Counters::set(CODECACHE_NATIVE_SIZE_BYTES, native_libs.memoryUsage());
-    Counters::set(CODECACHE_RUNTIME_STUBS_SIZE_BYTES,
-                  native_libs.memoryUsage());
+    updateNativeLibMemStats();
 
     Error err = Error::OK;
     // rotateDictsAndRun rotates the dictionaries, takes lockAll() around the

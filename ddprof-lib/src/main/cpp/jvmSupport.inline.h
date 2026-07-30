@@ -26,6 +26,14 @@ bool JVMSupport::isJitCode(const void* pc) {
     }
 }
 
+long long JVMSupport::runtimeStubsMemoryUsage() {
+    if (VM::isHotspot()) {
+        return HotspotSupport::runtimeStubsMemoryUsage();
+    } else {
+        return 0;
+    }
+}
+
 // Resolve method pointer to jmethodID
 jmethodID JVMSupport::resolve(const void* method) {
     if (VM::isHotspot()) {

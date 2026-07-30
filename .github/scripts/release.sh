@@ -162,19 +162,17 @@ if [ -z "$DRYRUN" ]; then
   BUMP_BRANCH="automated/bump-${CANDIDATE//./-}"
   git checkout -b "$BUMP_BRANCH"
   git push --force-with-lease --set-upstream origin "$BUMP_BRANCH"
-  # Create, label and merge with the federated BUMP_PR_TOKEN (not the ambient
-  # GITHUB_TOKEN): GitHub does not fire new workflow runs for events caused by
-  # the default GITHUB_TOKEN, so a GITHUB_TOKEN-applied label would never
-  # trigger approve-trivial.yml's `labeled` trigger and the PR would never
-  # auto-merge. Labeling is a separate call from creation so it produces its
-  # own `labeled` event rather than being folded into the `opened` payload.
+  # Create and label with the federated BUMP_PR_TOKEN: GitHub does not fire new
+  # workflow runs for labeled events caused by the default GITHUB_TOKEN, so the
+  # no-review label would never trigger approve-trivial.yml. Enable auto-merge
+  # with the write-enabled GITHUB_TOKEN after emitting the labeled event.
   BUMP_PR_URL=$(GH_TOKEN="$BUMP_PR_TOKEN" gh pr create \
     --title "[Automated] Bump dev version to ${CANDIDATE}" \
     --body "Automated version bump after releasing v_${BASE}." \
     --base "$BRANCH" \
     --head "$BUMP_BRANCH")
   GH_TOKEN="$BUMP_PR_TOKEN" gh pr edit "$BUMP_PR_URL" --add-label "no-review"
-  GH_TOKEN="$BUMP_PR_TOKEN" gh pr merge "$BUMP_PR_URL" --auto --squash
+  GH_TOKEN="$GITHUB_TOKEN" gh pr merge "$BUMP_PR_URL" --auto --squash
   echo "BUMP_PR_URL=$BUMP_PR_URL" >> "${GITHUB_OUTPUT:-/dev/null}"
   echo "✓ Version bump PR created and queued for auto-merge: $BUMP_PR_URL"
 else

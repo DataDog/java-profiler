@@ -1,5 +1,5 @@
 /*
- * Copyright 2025 Datadog, Inc
+ * Copyright 2025, 2026, Datadog, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,10 @@
 
 #include <gtest/gtest.h>
 #include "dictionary.h"
+#include "nativeMem.h"
 #include <climits>
+#include <cstdio>
+#include <cstring>
 #include <map>
 
 // ── Dictionary ─────────────────────────────────────────────────────────────
@@ -26,6 +29,30 @@ TEST(DictionaryTest, LookupReturnsSameIdForSameKey) {
     unsigned int id1 = d.lookup("hello", 5);
     EXPECT_GT(id1, 0U);
     EXPECT_EQ(id1, d.lookup("hello", 5));
+}
+
+// Native-memory accounting must balance: growth is tracked, clear() returns to
+// the root-table baseline, and destruction releases everything. Exercises the
+// per-key strlen-at-free path and the overflow-table inc/dec pairing.
+TEST(DictionaryTest, NativeMemAccountingBalancesAcrossLifecycle) {
+    long long before = NativeMem::live(NM_DICTIONARY);
+    {
+        Dictionary d(0);
+        long long after_ctor = NativeMem::live(NM_DICTIONARY);
+        EXPECT_GT(after_ctor, before);  // root table counted
+
+        for (int i = 0; i < 5000; i++) {
+            char key[32];
+            snprintf(key, sizeof(key), "symbol_%d", i);
+            d.lookup(key, strlen(key));  // inserts key strings + overflow tables
+        }
+        EXPECT_GT(NativeMem::live(NM_DICTIONARY), after_ctor);  // grew
+
+        d.clear();
+        // Keys + overflow tables freed; root table retained.
+        EXPECT_EQ(after_ctor, NativeMem::live(NM_DICTIONARY));
+    }
+    EXPECT_EQ(before, NativeMem::live(NM_DICTIONARY));  // fully released
 }
 
 TEST(DictionaryTest, LookupReturnsDifferentIdsForDifferentKeys) {

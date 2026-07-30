@@ -53,6 +53,9 @@
   X(CALLTRACE_STORAGE_TRACES, "calltrace_storage_traces")                      \
   X(LINEAR_ALLOCATOR_BYTES, "linear_allocator_bytes")                          \
   X(LINEAR_ALLOCATOR_CHUNKS, "linear_allocator_chunks")                        \
+  X(NATIVE_MEM_LIVE_BYTES, "native_mem_live_bytes")                            \
+  X(NATIVE_MEM_MAX_BYTES, "native_mem_max_bytes")                              \
+  X(NATIVE_MEM_AVG_BYTES, "native_mem_avg_bytes")                              \
   X(THREAD_IDS_COUNT, "thread_ids_count")                                      \
   X(THREAD_NAMES_COUNT, "thread_names_count")                                  \
   X(THREAD_FILTER_PAGES, "thread_filter_pages")                                \
@@ -119,6 +122,8 @@
   X(JVMTI_STACKS_INIT_OK, "jvmti_stacks_init_ok")                             \
   X(JVMTI_STACKS_INIT_FAILED, "jvmti_stacks_init_failed")                     \
   X(JVMTI_STACKS_REQUESTED, "jvmti_stacks_requested")                         \
+  X(NATIVE_TRACE_HOOK_PREFIX_NOT_FOUND, "native_trace_hook_prefix_not_found") \
+  X(NATIVE_HOOK_MARK_RESOLVE_FAILED, "native_hook_mark_resolve_failed")       \
   X(JVMTI_STACKS_FAILED_WRONG_PHASE, "jvmti_stacks_failed_wrong_phase")       \
   X(JVMTI_STACKS_FAILED_OTHER, "jvmti_stacks_failed_other")                  \
   /* Delegated stacks dropped at slot-lock. Rec-lock drops from all recording  \
@@ -144,10 +149,10 @@
 #endif
 
 // Fault-injection + debug only: faults injected while the current thread was
-// NOT inside a walkVM longjmp-protected region. Such a site relies solely on
+// NOT inside a walkVM siglongjmp-protected region. Such a site relies solely on
 // safefetch (or would genuinely crash if the poisoned pointer is raw-dereferenced
 // outside any recovery), so a non-zero value flags injection sites that are not
-// covered by longjmp protection. Compiled in only when both __FAULT_INJECTION__
+// covered by siglongjmp protection. Compiled in only when both __FAULT_INJECTION__
 // and DEBUG are defined.
 #if defined(__FAULT_INJECTION__) && defined(DEBUG)
 #define DD_COUNTER_TABLE_FI_DEBUG(X)                                           \
@@ -157,7 +162,7 @@
 #endif
 
 // Debug-only counters: SafeAccess reads/copies issued while the thread is
-// already inside a walkVM longjmp-protected region (redundant safefetch
+// already inside a walkVM siglongjmp-protected region (redundant safefetch
 // overhead). Not compiled into release builds at all, so they occupy no enum
 // slot and add no storage there.
 #ifdef DEBUG

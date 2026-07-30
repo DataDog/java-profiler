@@ -7,6 +7,7 @@
 #define THREAD_LOCAL_DATA_H
 
 #include "context.h"
+#include "nativeMem.h"
 #include "otel_context.h"
 #include "os.h"
 #include "threadLocal.h"
@@ -57,12 +58,12 @@ private:
   static void freeValue(void* value);
 
   static ThreadLocal<ProfiledThread*, nullptr, freeValue>  _current_thread;
-  // longjmp buffer. Used by hotspot only at this moment.
+  // siglongjmp buffer. Used by hotspot only at this moment.
   // Published in walkVM() and consumed in checkFault() from an asynchronous
   // SEGV-handler context on the same thread; atomic makes the publish/observe
   // ordering explicit instead of relying on plain load/store, matching how
   // _crash_depth is hardened below.
-  std::atomic<jmp_buf*> _jmp_buf;
+  std::atomic<sigjmp_buf*> _jmp_buf;
 
   u64 _pc;
   u64 _sp;
@@ -117,7 +118,11 @@ private:
 
   virtual ~ProfiledThread() { }
 public:
-  static ProfiledThread *forTid(int tid) { return new ProfiledThread(tid); }
+  static ProfiledThread *forTid(int tid) {
+    ProfiledThread *pt = new ProfiledThread(tid);
+    NativeMem::record(NM_THREAD_LOCAL, (long long)sizeof(ProfiledThread));
+    return pt;
+  }
   static bool isThreadKeyValid() {
     return _current_thread.isKeyValid();
   }
@@ -133,8 +138,13 @@ public:
     return pt;
   }
   // Deletes a ProfiledThread returned by clearCurrentThreadTLS().
-  // Needed because the destructor is private.
-  static void deleteForTest(ProfiledThread *pt) { delete pt; }
+  // Needed because the destructor is private. This stands in for the delete
+  // that freeValue() performs in production, so it mirrors freeValue()'s
+  // NM_THREAD_LOCAL decrement to keep the accounting balanced in tests.
+  static void deleteForTest(ProfiledThread *pt) {
+    delete pt;
+    NativeMem::record(NM_THREAD_LOCAL, -(long long)sizeof(ProfiledThread));
+  }
 #endif
   // initCurrentThread() and release() are not async-signal-safe: 
   // must be called outside of a signal handler with signal blocked
@@ -228,11 +238,11 @@ public:
     return __atomic_load_n(&_crash_depth, __ATOMIC_RELAXED) > CRASH_HANDLER_NESTING_LIMIT;
   }
 
-  inline void setJmpCtx(jmp_buf* buf) {
-    _jmp_buf = buf;  
+  inline void setJmpCtx(sigjmp_buf* buf) {
+    _jmp_buf = buf;
   }
 
-  inline jmp_buf* getJmpCtx() const {
+  inline sigjmp_buf* getJmpCtx() const {
     return _jmp_buf;
   }
 

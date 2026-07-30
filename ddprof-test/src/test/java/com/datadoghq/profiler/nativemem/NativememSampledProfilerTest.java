@@ -63,18 +63,18 @@ public class NativememSampledProfilerTest extends CStackAwareAbstractProfilerTes
 
         stopProfiler();
 
-        IItemCollection events = verifyEvents("profiler.Malloc");
+        IItemCollection events = verifyEvents("datadog.NativeMemoryAllocation");
         int sampleCount = 0;
         for (IItemIterable items : events) {
             IMemberAccessor<IQuantity, IItem> sizeAccessor = SIZE.getAccessor(items.getType());
             IMemberAccessor<IQuantity, IItem> weightAccessor = WEIGHT.getAccessor(items.getType());
-            assertNotNull(sizeAccessor, "profiler.Malloc events must carry a size field");
-            assertNotNull(weightAccessor, "profiler.Malloc events must carry a weight field");
+            assertNotNull(sizeAccessor, "datadog.NativeMemoryAllocation events must carry a size field");
+            assertNotNull(weightAccessor, "datadog.NativeMemoryAllocation events must carry a weight field");
             for (IItem item : items) {
                 IQuantity size = sizeAccessor.getMember(item);
                 IQuantity weight = weightAccessor.getMember(item);
-                assertNotNull(size, "profiler.Malloc event must have a non-null size field");
-                assertNotNull(weight, "profiler.Malloc event must have a non-null weight field");
+                assertNotNull(size, "datadog.NativeMemoryAllocation event must have a non-null size field");
+                assertNotNull(weight, "datadog.NativeMemoryAllocation event must have a non-null weight field");
                 // Weight is 1 / (1 - exp(-size/interval)); that function is strictly > 1
                 // for all positive sizes, so any Poisson-sampled event must carry weight >= 1.
                 assertTrue(weight.doubleValue() >= 1.0,

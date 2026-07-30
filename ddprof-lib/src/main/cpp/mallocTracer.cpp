@@ -231,7 +231,7 @@ bool MallocHooker::initialize() {
                 || strcmp(s, "posix_memalign_hook") == 0
                 || strcmp(s, "aligned_alloc_hook") == 0;
         },
-        MARK_ASYNC_PROFILER);
+        MARK_JAVA_PROFILER);
 
     splitmix64_seed(TSC::ticks());
     _initialized = true;
