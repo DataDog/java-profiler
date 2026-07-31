@@ -18,10 +18,6 @@
 
 [[maybe_unused]] static long long* _stackwalker_ut_counters_init = Counters::getCounters();
 #endif
-#include "../../main/cpp/profiler.h"
-#include "../../main/cpp/stackFrame.h"
-#include "../../main/cpp/threadLocalData.h"
-#endif
 
 static constexpr char STACKWALKER_TEST_NAME[] = "StackWalkerTest";
 
