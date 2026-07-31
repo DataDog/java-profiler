@@ -50,6 +50,22 @@ two platforms are called out inline where they matter.
    multiplier** — the ~400 KB/thread RSS growth analyzed under point 1 above
    happens almost identically with or without the agent, confirming it's
    JVM/OS thread machinery rather than something the profiler introduces.
+   **This "small and flat" result is specific to thread count in a workload
+   with no class/call-trace diversity — see point 7.**
+7. **For class/call-trace diversity, the profiler's own RSS overhead is
+   substantial and not flat at all.** A dedicated 80-run sweep (10 reps ×
+   with/without-agent × 4 class-count values, needed because an initial
+   2–3-rep attempt at N=150,000 gave estimates anywhere from 91–246 MB
+   depending on which runs got paired) found profiler-attributable RSS
+   overhead of essentially 0 at 2,000 classes, ~22 MB at 20,000, ~40 MB at
+   60,000, and ~102 MB at 150,000 — growing roughly linearly with the number
+   of classes *actually appearing in sampled stacks* (not raw class count),
+   at a fairly consistent ~1–1.4 KB per sampled class. This is not the
+   `NM_CALLTRACE` hash table's own step-function resize (confirmed a smaller,
+   15–25 MB piece of the total) — most of the overhead scales continuously
+   with call-graph/class diversity actually touched by sampling, and grows
+   noisier at scale (±89 MB stdev at N=150,000, comparable to the mean
+   itself).
 
 ## Harness
 
@@ -67,6 +83,7 @@ memsweep/
 ├── run_sweep.sh                   # one sweep point -> CSV line with RSS + NM_* counters
 ├── run_threadlocal_live.sh        # thread-count-only, reads NM_THREAD_LOCAL live
 ├── run_nmt.sh                     # one sweep point with JVM Native Memory Tracking
+├── run_repeated_sweep.sh          # repeated-measures with/without-agent comparison, see below
 └── extract.py                     # parses `jfr print --json` output for native_mem_* counters
 ```
 
@@ -381,7 +398,7 @@ here) — same conclusion, different exact split, plausibly reflecting
 platform differences in kernel-level thread bookkeeping rather than
 anything specific to this profiler.
 
-### Isolating what the profiler itself adds
+### Isolating what the profiler itself adds: thread count
 
 The table above shows how much of the *thread-count-driven* RSS growth NMT
 can explain, but it doesn't by itself separate "cost of running N threads in
@@ -420,7 +437,93 @@ broken down by category. **None of this changes the top-line conclusion**:
 the profiler's own footprint (whether measured via `NM_*`, this with/without
 delta, or NMT) is a small, mostly-fixed cost; the ~400 KB/thread RSS growth
 analyzed above is JVM/OS thread machinery the profiler neither causes nor
-can see into.
+can see into. **This conclusion is specific to thread count with no other
+diversity in the workload** — the next section shows it does not extend to
+class/call-trace diversity, where the profiler's own overhead is substantial
+and scales with the workload rather than being a small fixed cost.
+
+### Isolating what the profiler itself adds: class diversity
+
+The thread-count result above invites a natural but wrong generalization —
+"the profiler's RSS overhead is basically flat regardless of thread count,
+classes, or stack shapes." It is **not**. The `classes` sweep already showed
+`NM_CALLTRACE` growing by 15–25 MB once its ~49,152-shape resize threshold is
+crossed (see above), which alone is larger than the entire thread-count
+overhead range. To get an honest, statistically defensible answer for class
+diversity specifically, `classes` mode was rerun with `run_repeated_sweep.sh`
+(a repeated-measures variant of the with/without-agent methodology above,
+added for this check — it compiles the N classes once and reuses them across
+all reps, since recompiling per rep the way `run_nmt.sh` does would make
+double-digit repetition counts at high N impractical), at **four N values
+(2,000 / 20,000 / 60,000 / 150,000) with 10 repetitions per condition per N**
+(80 runs total) instead of a single pair — an initial pass with only 2–3
+reps at N=150,000 gave
+estimates ranging from 91 MB to 246 MB depending on which two runs happened
+to be paired, which is not something a customer-facing number should be
+built on. Classes were generated and compiled once per N and reused across
+all reps (recompiling 150,000 classes per rep, as the single-shot `run_nmt.sh`
+does, would have made this scale of repetition impractical); with/without
+runs were interleaved in same-size batches so both conditions saw comparable
+concurrent system load.
+
+| N classes | RSS, agent (mean ± stdev) | RSS, no agent (mean ± stdev) | **Δ (profiler cost)** |
+|---|---|---|---|
+| 2,000 | 284.4 ± 66.9 MB | 286.1 ± 71.0 MB | **-1.7 MB** (noise) |
+| 20,000 | 467.2 ± 7.6 MB | 445.4 ± 7.8 MB | **+21.9 MB** |
+| 60,000 | 962.3 ± 13.9 MB | 922.3 ± 20.9 MB | **+40.0 MB** |
+| 150,000 | 1966.2 ± 89.0 MB | 1863.8 ± 89.9 MB | **+102.4 MB** |
+
+(N=2,000's high per-condition stdev is a shared, environment-level effect —
+reps 9–10 landed at ~400+ MB on *both* conditions equally, versus ~230–290 MB
+for reps 1–8, most likely a batch-timing/system-cache effect rather than
+anything agent-specific; it cancels out in the delta, which is why the delta
+itself stays near zero despite the noisy per-condition numbers.)
+
+**This is not a step function, and not flat — it's closer to roughly linear
+in how many classes the workload actually samples.** Below ~2,000 classes
+the profiler adds nothing measurable; above that, overhead grows
+continuously with class diversity rather than jumping once at a single
+threshold. Naively dividing the delta by N (raw class count) gives a
+per-class rate that drifts across the range (1.12 KB/class at 20K, 0.68 at
+60K and 150K — a 30% coefficient of variation). Normalizing instead by
+**classes actually appearing in a sampled stack** — checked directly by
+grepping distinct class names out of each N's JFR file — tightens this
+considerably:
+
+| N classes | distinct classes touched by a sample | coverage | Δ per touched class |
+|---|---|---|---|
+| 2,000 | 1,872 | 93.6% | (noise) |
+| 20,000 | 16,311 | 81.6% | 1.38 KB |
+| 60,000 | 43,772 | 73.0% | 0.94 KB |
+| 150,000 | 84,640 | 56.4% | 1.24 KB |
+
+The per-touched-class rate (mean 1.18 KB, 19% coefficient of variation) is
+tighter than the per-raw-N rate (30%), consistent with the overhead tracking
+*how much distinct code the workload's sampled stacks actually reference*
+rather than how many classes merely exist. This lines up with the mechanism
+already established for `NM_CALLTRACE`: a workload with a wide call graph
+(many distinct classes/methods/lambdas actually appearing in stacks, as
+generic/framework-heavy or microservice-style Java code often does) is what
+drives this cost — raw class-loading volume with narrow, repetitive call
+graphs would not. The calltrace hash table's own resize *is* a real step
+function internally, but it is a small piece of a larger, smoother-scaling
+total: most of the ~100 MB at N=150,000 is not the one-time doubling of
+`NM_CALLTRACE` (15–25 MB) but something else that scales more continuously
+with sampled-class count — not identified further here (plausibly related
+to Metaspace/Class-metadata or Code-cache pressure the agent's activity
+provokes differently, though this wasn't broken down by NMT category the way
+the thread-count case was).
+
+**Practical takeaway for quantifying this to a customer**: "flat, a few MB"
+is only correct for workloads with narrow call-graph/class diversity
+(few distinct classes and methods actually appearing in sampled stacks,
+regardless of how many exist or how many threads are running). For a
+workload whose sampled stacks touch tens of thousands of distinct
+classes/methods — plausible for a large, framework-heavy, or
+microservice-style Java application — expect profiler-attributable RSS
+overhead on the order of tens to ~100 MB, growing with sampled-class
+diversity, and with substantial run-to-run variance at the high end (the
+150,000-class point had almost as much spread, ±89 MB, as its own mean).
 
 ## Practical implications
 
@@ -434,10 +537,12 @@ now confirmed empirically:
    observed RSS growth) is JVM/OS thread overhead the profiler doesn't
    control and can't be optimized away from the profiler's side.
 2. **Call-graph breadth (distinct stack-trace shapes) drives real, confirmed
-   step-function growth** in call-trace storage, consistently at the
-   documented ~49,152-shape hash-table resize threshold on both platforms
-   tested. This applies whether the diversity comes from many distinct
-   methods at one call site or many distinct classes sampled via reflection.
+   step-function growth** in the call-trace storage structure specifically,
+   consistently at the documented ~49,152-shape hash-table resize threshold
+   on both platforms tested. This applies whether the diversity comes from
+   many distinct methods at one call site or many distinct classes sampled
+   via reflection. **But this internal step function is only a small part of
+   the externally-visible RSS cost** — see point 5.
 3. **Class/method-name diversity's effect on memory depends on which
    sampling engine is driving it** — wall-clock sampling does not grow the
    class-name dictionary in any tested configuration up to 150,000 classes;
@@ -445,15 +550,32 @@ now confirmed empirically:
    profiled primarily with wall-clock sampling should not expect
    `NM_DICTIONARY` to reflect their class-loading diversity; workloads using
    allocation profiling should.
-4. **Sampling frequency and allocation rate remain secondary** to the three
-   points above for steady-state footprint, consistent with the original
+4. **Sampling frequency and allocation rate remain secondary** to the other
+   points here for steady-state footprint, consistent with the original
    model's prediction — nothing in this pass found a counter-example.
+5. **For quantifying total profiler-attributable RSS overhead to a customer,
+   class/call-graph diversity is the dimension that matters, and it does not
+   behave like a small fixed cost the way thread count does.** Measured via a
+   dedicated with/without-agent sweep (not inferred from internal counters):
+   effectively 0 MB overhead at 2,000 distinct classes sampled, growing
+   roughly linearly with sampled-class count to ~102 MB at 150,000 — driven
+   by how many distinct classes/methods actually appear in sampled stacks,
+   not by thread count, raw class-loading volume, or the calltrace table's
+   own one-time resize. A workload with a narrow call graph (few distinct
+   hot methods) stays near the small-and-flat regime regardless of scale or
+   thread count; a workload with a wide call graph (heavy framework/generics/
+   lambda usage, microservice-style code diversity) does not, and this is the
+   dimension worth asking a customer about before quoting a number.
 
 ## Caveats
 
-- **Single sandboxed Linux x86_64 container, single run per sweep point** —
-  indicative, not statistically rigorous; no repeated trials or variance
-  estimates were collected.
+- **Single sandboxed Linux x86_64 container throughout.** Most sweep points
+  in this document are a single run each — indicative, not statistically
+  rigorous, no variance estimates. The class-diversity with/without-agent
+  comparison is the exception (10 reps per condition per N, specifically
+  because a smaller first attempt there was demonstrably too noisy to trust);
+  treat single-run figures elsewhere in this document with more caution than
+  that one.
 - **`NM_PERF` remains unverified in practice**, though the reason is
   understood — see above. A root-accessible bare-metal or VM Linux host with
   relaxed `kptr_restrict` would be needed to close this out.
@@ -469,8 +591,22 @@ now confirmed empirically:
   `_class_map`/`NM_DICTIONARY`'s `resolveMethod` path, which was confirmed
   dead via direct instrumentation. The same gap means the `allocs` engine's
   alternate insertion path is inferred, not traced to a specific call site.
-- **The with/without-agent overhead comparison is a single run per point on
-  each side** — some of the smaller deltas (e.g. the −75 KB NMT Thread delta
-  at N=256) are plausibly within normal run-to-run noise rather than a real
-  effect; treat the overall "small, roughly flat" conclusion as solid but
-  the individual KB-level numbers as indicative only.
+- **The thread-count with/without-agent overhead comparison is a single run
+  per point on each side** (unlike the class-diversity one, which has 10) —
+  some of the smaller deltas (e.g. the −75 KB NMT Thread delta at N=256) are
+  plausibly within normal run-to-run noise rather than a real effect; treat
+  the overall "small, roughly flat" conclusion as solid but the individual
+  KB-level numbers as indicative only.
+- **What actually causes the class-diversity RSS overhead to scale smoothly
+  (rather than just tracking `NM_CALLTRACE`'s own step-function resize) was
+  not identified.** NMT category-level attribution (Metaspace, Code cache,
+  Class metadata, etc.) was not broken down for the with/without-agent class-
+  diversity sweep the way it was for the thread-count one; doing so would be
+  the natural next step to explain the ~1–1.4 KB/sampled-class rate found
+  here rather than just reporting it as an empirical fact.
+- **Coverage (classes actually touched by a sample) fell from 93.6% at
+  N=2,000 to 56.4% at N=150,000 for the same relative duration/interval
+  scaling used across this sweep.** The per-touched-class normalization is
+  more stable than per-raw-N, but wasn't tested against durations tuned to
+  hold coverage constant across N, which would isolate the class-count
+  effect from the duration/coverage confound more cleanly.
