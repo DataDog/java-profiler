@@ -18,6 +18,12 @@ jobs:
       # C++ gtests (ASan + TSan) run on every PR via native-sanitizer-tests in ci.yml.
       # Skip them here so the nightly focuses on Java functional tests under ASan.
       skip_gtest: true
+  run-slow-test:
+    uses: ./.github/workflows/test_workflow.yml
+    with:
+      configuration: '["debug"]'
+      skip_gtest: true
+      slow_tests: true
   fuzz:
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -52,7 +58,7 @@ jobs:
           path: ddprof-lib/fuzz/build/fuzz-crashes/
   report-failures:
     runs-on: ubuntu-latest
-    needs: run-test
+    needs: [run-test, run-slow-test]
     if: failure()
     steps:
       - name: Download all failure artifacts

@@ -10,6 +10,7 @@ export LIBRARY="musl"
 export CONFIG="${3}"
 export JAVA_HOME="${4}"
 export JAVA_TEST_HOME="${5}"
+SLOW_TESTS="${6:-false}"
 
 export PATH="${JAVA_HOME}/bin":${PATH}
 
@@ -33,4 +34,9 @@ apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ cl
 # Install debug symbols for musl libc
 apk add musl-dbg
 
-./gradlew -PCI -PkeepJFRs :ddprof-test:test${CONFIG} --no-daemon --parallel --build-cache --no-watch-fs
+TASK_PREFIX="test"
+if [ "${SLOW_TESTS}" = "true" ]; then
+  TASK_PREFIX="testSlow"
+fi
+
+./gradlew -PCI -PkeepJFRs :ddprof-test:${TASK_PREFIX}${CONFIG} --no-daemon --parallel --build-cache --no-watch-fs

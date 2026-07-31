@@ -11,6 +11,11 @@ on:
         required: false
         type: boolean
         default: false
+      slow_tests:
+        description: "Run the slow/e2e test suite (testSlow<Config>) instead of the regular suite"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -133,7 +138,7 @@ jobs:
 
           for attempt in $(seq 1 $MAX_ATTEMPTS); do
             mkdir -p build/logs
-            ${GRADLEW_PREFIX} ./gradlew -PCI -PkeepJFRs ${{ inputs.skip_gtest == true && '-Pskip-gtest' || '' }} :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
+            ${GRADLEW_PREFIX} ./gradlew -PCI -PkeepJFRs ${{ inputs.skip_gtest == true && '-Pskip-gtest' || '' }} :ddprof-test:test${{ inputs.slow_tests && 'Slow' || '' }}${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
               | tee -a build/test-raw.log \
               | python3 -u .github/scripts/filter_gradle_log.py
             EXIT_CODE=${PIPESTATUS[0]}
@@ -273,7 +278,7 @@ jobs:
           echo "JAVA_VERSION=${JAVA_VERSION}"
 
           mkdir -p build/logs
-          ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
+          ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ inputs.slow_tests && 'Slow' || '' }}${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
             | tee -a build/test-raw.log \
             | python3 -u .github/scripts/filter_gradle_log.py
           EXIT_CODE=${PIPESTATUS[0]}
@@ -387,10 +392,14 @@ jobs:
       - name: Setup OS
         if: steps.set_enabled.outputs.enabled == 'true'
         run: |
+          # ports.ubuntu.com's IPv6 route is intermittently unreachable from GH-hosted
+          # aarch64 runners; force IPv4 so apt doesn't stall/fail on a dead IPv6 path,
+          # and retry on top in case of other transient connection blips.
+          printf 'Acquire::ForceIPv4 "true";\nAcquire::Retries "5";\n' | sudo tee /etc/apt/apt.conf.d/99force-ipv4 >/dev/null
           sudo apt update -y
           sudo apt remove -y g++
           sudo apt autoremove -y
-          sudo apt install -y curl zip unzip clang make build-essential binutils gdb
+          sudo apt install -y curl zip unzip clang make build-essential binutils gdb libgtest-dev libgmock-dev
           # Install debug symbols for system libraries
           sudo apt install -y libc6-dbg
           if [[ ${{ matrix.java_version }} =~ "-zing" ]]; then
@@ -448,7 +457,7 @@ jobs:
 
           for attempt in $(seq 1 $MAX_ATTEMPTS); do
             mkdir -p build/logs
-            ${GRADLEW_PREFIX} ./gradlew -PCI -PkeepJFRs ${{ inputs.skip_gtest == true && '-Pskip-gtest' || '' }} :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
+            ${GRADLEW_PREFIX} ./gradlew -PCI -PkeepJFRs ${{ inputs.skip_gtest == true && '-Pskip-gtest' || '' }} :ddprof-test:test${{ inputs.slow_tests && 'Slow' || '' }}${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
               | tee -a build/test-raw.log \
               | python3 -u .github/scripts/filter_gradle_log.py
             EXIT_CODE=${PIPESTATUS[0]}
@@ -565,7 +574,8 @@ jobs:
            docker run --cpus 4 --rm -v /tmp:/tmp -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}" -w "${GITHUB_WORKSPACE}" alpine:3.21 /bin/sh -c "
              \"$GITHUB_WORKSPACE/.github/scripts/test_alpine_aarch64.sh\" \
              \"${{ github.sha }}\" \"musl/${{ matrix.java_version }}-${{ matrix.config }}-aarch64\" \
-             \"${{ matrix.config }}\" \"${{ env.JAVA_HOME }}\" \"${{ env.JAVA_TEST_HOME }}\"
+             \"${{ matrix.config }}\" \"${{ env.JAVA_HOME }}\" \"${{ env.JAVA_TEST_HOME }}\" \
+             \"${{ inputs.slow_tests }}\"
            " 2>&1 \
              | tee -a build/test-raw.log \
              | python3 -u .github/scripts/filter_gradle_log.py
