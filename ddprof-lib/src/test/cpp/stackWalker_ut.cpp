@@ -10,10 +10,13 @@
 #include <algorithm>
 #include <sys/mman.h>
 #include <ucontext.h>
+#include "../../main/cpp/counters.h"
 #include "../../main/cpp/os.h"
 #include "../../main/cpp/profiler.h"
 #include "../../main/cpp/stackFrame.h"
 #include "../../main/cpp/threadLocalData.h"
+
+[[maybe_unused]] static long long* _stackwalker_ut_counters_init = Counters::getCounters();
 #endif
 
 static constexpr char STACKWALKER_TEST_NAME[] = "StackWalkerTest";
