@@ -1207,6 +1207,22 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   // thread.
   volatile bool async_trace_active = false;
 
+  // getJavaTraceAsync() (below) temporarily rewrites ucontext's pc/sp/fp to
+  // the Java frame via frame.restore() before calling ASGCT, and restores
+  // the original values before returning normally. A siglongjmp out of the
+  // branches below (e.g. from the post-ASGCT CodeHeap/JitCodeCache recovery
+  // paths) bypasses that restore, so capture the pristine register state
+  // here — before any rewrite can happen — and restore it explicitly on the
+  // recovery path. Otherwise the interrupted thread would resume execution
+  // at the temporary Java pc/sp instead of where it actually was.
+  HotspotStackFrame entry_frame(ucontext);
+  uintptr_t entry_pc = 0, entry_sp = 0, entry_fp = 0;
+  if (ucontext != NULL) {
+    entry_pc = entry_frame.pc();
+    entry_sp = entry_frame.sp();
+    entry_fp = entry_frame.fp();
+  }
+
   // walkVM() installs its own sigsetjmp/siglongjmp crash protection (chained
   // with any pre-existing jmp ctx, see the comment in walkVM), but the
   // getJavaTraceAsync() path below runs without one: it dereferences
@@ -1227,6 +1243,10 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
     // thread's JIT write-protection register (macOS/aarch64 W^X state) stuck
     // in the wrong mode. Compensate the same way.
     JitWriteProtection::recoverAfterLongjmp();
+    // Undo any pending getJavaTraceAsync() ucontext rewrite (see comment on
+    // entry_pc/entry_sp/entry_fp above). No-op if ucontext is NULL or was
+    // never rewritten.
+    HotspotStackFrame(ucontext).restore(entry_pc, entry_sp, entry_fp);
     prof_thread->setJmpCtx(prev_jmp_buf);
     if (async_trace_active) {
       prof_thread->set_unwinding_Java(false);
