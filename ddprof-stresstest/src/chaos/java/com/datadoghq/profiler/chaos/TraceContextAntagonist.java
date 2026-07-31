@@ -21,7 +21,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * Drives nested {@link Trace}-annotated invocations from a pool of worker
  * threads. Under a {@code dd-java-agent}-instrumented JVM the tracer drives
- * {@code JavaProfiler.setContext}/{@code clearContext} on every span
+ * {@code JavaProfiler.setTraceContext}/{@code clearTraceContext} on every span
  * activation, so a high enter/exit rate stresses that path against signal
  * delivery and stack walking.
  *

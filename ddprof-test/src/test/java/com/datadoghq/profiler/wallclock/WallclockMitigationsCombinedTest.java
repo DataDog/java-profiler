@@ -62,7 +62,7 @@ public class WallclockMitigationsCombinedTest extends AbstractProfilerTest {
                             registerCurrentThreadForWallClockProfiling();
                             long spanId = 0x1111L;
                             long rootSpanId = 0x2222L;
-                            profiler.setContext(rootSpanId, spanId, 0, 0);
+                            profiler.setTraceContext(rootSpanId, spanId, 0, 0, -1, null, -1, null);
                             ready.countDown();
                             ProfilerOwnedBlockHooks.parkEnter(profiler);
                             long parkedUntil = System.nanoTime() + 280_000_000L;
@@ -71,7 +71,7 @@ public class WallclockMitigationsCombinedTest extends AbstractProfilerTest {
                             }
                             ProfilerOwnedBlockHooks.parkExit(
                                     profiler, System.identityHashCode(this), 0L);
-                            profiler.clearContext();
+                            profiler.clearTraceContext();
                         },
                         "combined-parked");
 

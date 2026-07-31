@@ -34,8 +34,5 @@ public class MaxContextSlotsTest {
         JavaProfiler.getInstance(); // ensure the native library is loaded
         assertEquals(JavaProfiler.maxContextSlots0(), JavaProfiler.MAX_CONTEXT_SLOTS,
                 "JavaProfiler.MAX_CONTEXT_SLOTS drifted from native DD_TAGS_CAPACITY");
-        // ThreadContext mirrors the same native bound on the deprecated path; keep them aligned too.
-        assertEquals(JavaProfiler.MAX_CONTEXT_SLOTS, ThreadContext.MAX_CUSTOM_SLOTS,
-                "MAX_CONTEXT_SLOTS drifted from ThreadContext.MAX_CUSTOM_SLOTS");
     }
 }

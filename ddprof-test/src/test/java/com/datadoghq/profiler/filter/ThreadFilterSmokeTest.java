@@ -32,14 +32,13 @@ public class ThreadFilterSmokeTest extends AbstractProfilerTest {
     doThreadFiltering();
   }
 
-  @SuppressWarnings("deprecation")
   private void doThreadFiltering() throws Exception {
     Future<?>[] futures = new Future[1000];
     for (int i = 0; i < futures.length; i++) {
       int id = i;
       futures[i] = executorService.submit(() -> {
         profiler.addThread();
-        profiler.setContext(id, 42);
+        profiler.setTraceContext(42, id + 1, 0, id + 1, -1, null, -1, null);
         try {
           Thread.sleep(2);
         } catch(InterruptedException e) {
