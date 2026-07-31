@@ -1211,6 +1211,7 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   // walkJavaStack, except HotSpot's AsyncGetCallTrace call, is caught by
   // Profiler::checkFault() and siglongjmp'd back here instead of crashing the process.
   ProfiledThread* prof_thread = ProfiledThread::current();
+  const bool prev_unwinding_java = prof_thread != nullptr ? prof_thread->is_unwinding_Java() : false;
   sigjmp_buf crash_protection_ctx;
   sigjmp_buf* prev_jmp_buf = prof_thread != nullptr ? prof_thread->getJmpCtx() : nullptr;
 
@@ -1219,6 +1220,9 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
     // segvHandler's SignalHandlerScope destructor. Compensate.
     SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
     prof_thread->setJmpCtx(prev_jmp_buf);
+    // A recovered siglongjmp bypasses AsyncSampleMutex destructors, so restore
+    // the per-thread guard to its pre-walk value.
+    prof_thread->set_unwinding_Java(prev_unwinding_java);
     if (truncated) {
       *truncated = true;
     }
