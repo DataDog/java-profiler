@@ -54,7 +54,7 @@ public class NativeSocketTaskBlockLifecycleTest extends AbstractProfilerTest {
         Path disabledRecording = Files.createTempFile(Paths.get("/tmp/recordings"),
                 "NativeSocketTaskBlockLifecycleTest_disabled_", ".jfr");
         try {
-            profiler.execute("start,wall=1ms,wallscope=all,wallprecheck=false,jfr,file="
+            profiler.execute("start,wall=1ms,filter=,wallprecheck=false,jfr,file="
                     + disabledRecording.toAbsolutePath());
             runNativeIoBlock();
             profiler.stop();
@@ -70,7 +70,7 @@ public class NativeSocketTaskBlockLifecycleTest extends AbstractProfilerTest {
         Path reenabledRecording = Files.createTempFile(Paths.get("/tmp/recordings"),
                 "NativeSocketTaskBlockLifecycleTest_reenabled_", ".jfr");
         try {
-            profiler.execute("start,wall=1ms,wallscope=all,wallprecheck=true,jfr,file="
+            profiler.execute("start,wall=1ms,filter=,wallprecheck=true,jfr,file="
                     + reenabledRecording.toAbsolutePath());
             long reenabledBlocker = runNativeIoBlock();
             profiler.stop();
@@ -137,7 +137,7 @@ public class NativeSocketTaskBlockLifecycleTest extends AbstractProfilerTest {
                 "NativeSocketTaskBlockLifecycleTest_inflight_restart_", ".jfr");
         boolean restarted = false;
         try {
-            profiler.execute("start,wall=1ms,wallscope=all,wallprecheck=true,jfr,file="
+            profiler.execute("start,wall=1ms,filter=,wallprecheck=true,jfr,file="
                     + restartedRecording.toAbsolutePath());
             restarted = true;
             String restartedWorkerName = "taskblock-native-stop-reinstalled";
@@ -171,7 +171,7 @@ public class NativeSocketTaskBlockLifecycleTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "wall=1ms,wallscope=all,wallprecheck=true";
+        return "wall=1ms,filter=,wallprecheck=true";
     }
 
     private void assertIoWaitTaskBlockPresent(IItemCollection taskBlockEvents, long expectedBlocker) {

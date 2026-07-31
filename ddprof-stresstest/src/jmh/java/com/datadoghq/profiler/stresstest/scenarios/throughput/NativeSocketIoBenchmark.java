@@ -43,7 +43,7 @@ import java.util.concurrent.atomic.AtomicReference;
 @State(Scope.Benchmark)
 /** Compares representative I/O costs with native TaskBlock interposition disabled and enabled. */
 public class NativeSocketIoBenchmark {
-    @Param({"none", "wall=1s,wallscope=all", "wall=1s,wallscope=all,wallprecheck=true"})
+    @Param({"none", "wall=1s,filter=", "wall=1s,filter=,wallprecheck=true"})
     public String command;
 
     private JavaProfiler profiler;
