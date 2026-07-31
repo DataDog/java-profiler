@@ -932,6 +932,10 @@ bool LibraryPatcher::patch_socket_functions(bool require_active) {
     return false;
   }
 
+  Counters::increment(NATIVE_IO_STANDARD_HOOKS_PATCHED,
+                      standard_slots_patched);
+  Counters::increment(NATIVE_IO_IBM_BRIDGE_HOOKS_PATCHED,
+                      ibm_bridge_slots_patched);
   TEST_LOG("patch_socket_functions DONE total_slots=%zu standard_new=%zu "
            "ibm_bridge_new=%zu num_libs_scanned=%d",
            _socket_entries.size(), standard_slots_patched,
