@@ -65,7 +65,15 @@ two platforms are called out inline where they matter.
    15–25 MB piece of the total) — most of the overhead scales continuously
    with call-graph/class diversity actually touched by sampling, and grows
    noisier at scale (±89 MB stdev at N=150,000, comparable to the mean
-   itself).
+   itself). NMT category attribution explains 44% of it (Class/Internal/Java
+   Heap/NMT's-own-overhead), with jmethodID preloading
+   (`JVMTI_EVENT_CLASS_PREPARE` → `GetClassMethods`, `jvmSupport.cpp:160`) a
+   strong but unconfirmed candidate for the JVM-side share; the remaining
+   ~32–42 MB is invisible to both NMT and this profiler's own `NM_*`
+   counters — a probable real gap in PR #669's coverage (leading suspect:
+   `MethodMap`/`MethodInfo`, already known to be uninstrumented), not just
+   an unexplained number. See the dedicated section below for the full
+   breakdown and what's confirmed vs. inferred.
 
 ## Harness
 
@@ -509,10 +517,68 @@ graphs would not. The calltrace hash table's own resize *is* a real step
 function internally, but it is a small piece of a larger, smoother-scaling
 total: most of the ~100 MB at N=150,000 is not the one-time doubling of
 `NM_CALLTRACE` (15–25 MB) but something else that scales more continuously
-with sampled-class count — not identified further here (plausibly related
-to Metaspace/Class-metadata or Code-cache pressure the agent's activity
-provokes differently, though this wasn't broken down by NMT category the way
-the thread-count case was).
+with sampled-class count.
+
+#### Where the rest of it goes
+
+`run_repeated_sweep.sh` captures the full `jcmd VM.native_memory summary`
+output per rep, not just the Thread/Total figures shown above, so this can
+be broken down further. Averaging all 10 reps per condition at N=150,000 and
+diffing category-by-category:
+
+| NMT category | with-agent mean | without-agent mean | Δ |
+|---|---|---|---|
+| Class | 343.1 MB | 329.2 MB | **+13.6 MB** |
+| Internal | 20.9 MB | 9.1 MB | **+11.6 MB** |
+| Java Heap | 616.0 MB | 605.4 MB | **+10.4 MB** |
+| Native Memory Tracking (NMT's own bookkeeping) | 54.0 MB | 43.4 MB | **+10.3 MB** |
+| GC / Thread / Code / Metaspace / Symbol / others | — | — | ~0 (flat) |
+
+NMT total explains 45.5 of the 102.4 MB delta (44%) — real, confirmed
+JVM-side cost, not something the profiler allocates itself. **A strong
+candidate mechanism for the "Class" line specifically (and plausibly part of
+"Internal")**: this agent registers a `ClassPrepare` JVMTI callback only
+when attached (`vmEntry.cpp:511,523`, `JVMTI_EVENT_CLASS_PREPARE`), which
+calls `JVMSupport::loadMethodIDsImpl()` → `GetClassMethods()`
+(`jvmSupport.cpp:160–178`) to eagerly preallocate every newly-prepared
+class's jmethodIDs. The function's own comment explains why and flags
+exactly this tradeoff:
+
+> CRITICAL: GetClassMethods must be called to preallocate jmethodIDs for
+> AsyncGetCallTrace. AGCT operates in signal handlers where lock acquisition
+> is forbidden, so jmethodIDs must exist before profiling encounters them...
+> JVM-internal allocation: This triggers JVM to allocate jmethodIDs
+> internally, which persist until class unload. High class churn causes
+> significant memory growth, but this is inherent to AGCT architecture and
+> necessary for signal-safe profiling.
+
+This is a plausible, well-targeted explanation for why "Class" grows *only*
+when the agent is attached, for the identical set of 150,000 loaded classes
+— but it wasn't independently confirmed here (e.g. by disabling this
+preloading and re-measuring); flagged as the most promising lead for a
+follow-up investigation rather than a closed finding. The "Java Heap" and
+NMT's-own-overhead deltas have no candidate mechanism identified at all yet.
+
+**The remaining ~57 MB (56% of the delta) is invisible to NMT entirely** —
+this is the profiler's own `malloc`/`new` memory, which NMT structurally
+cannot see. Of that, only 15–25 MB is explained by the profiler's own
+`NM_CALLTRACE` counter (the confirmed hash-table resize). **That leaves
+roughly 32–42 MB that neither NMT nor the profiler's own `NM_*`
+self-accounting explains at all** — real memory this agent is genuinely
+allocating (RSS shows it), that PR #669's `NativeMem` categories don't
+attribute to anything. The most likely candidate, based on source already
+read during this investigation: `MethodMap`/`MethodInfo`
+(`flightRecorder.h`) — the profiler's own per-distinct-method hash map used
+to symbolize samples — which memory-usage-model.md and this document's own
+`NM_DICTIONARY` investigation both already established has **zero**
+`NativeMem::record` calls anywhere in it. At ~87,000 distinct classes
+touched at N=150,000, this structure would scale in exactly the right shape
+to explain a meaningful share of the gap, but this is inferred from what's
+known to be uninstrumented, not confirmed by sizing or measuring
+`MethodInfo` directly. **This reads as a real gap in PR #669's coverage,
+not just an unexplained number** — worth reporting/fixing upstream, and
+worth chasing down with the same kind of targeted source instrumentation
+used for the `NM_DICTIONARY` finding earlier in this document.
 
 **Practical takeaway for quantifying this to a customer**: "flat, a few MB"
 is only correct for workloads with narrow call-graph/class diversity
@@ -597,13 +663,28 @@ now confirmed empirically:
   plausibly within normal run-to-run noise rather than a real effect; treat
   the overall "small, roughly flat" conclusion as solid but the individual
   KB-level numbers as indicative only.
-- **What actually causes the class-diversity RSS overhead to scale smoothly
-  (rather than just tracking `NM_CALLTRACE`'s own step-function resize) was
-  not identified.** NMT category-level attribution (Metaspace, Code cache,
-  Class metadata, etc.) was not broken down for the with/without-agent class-
-  diversity sweep the way it was for the thread-count one; doing so would be
-  the natural next step to explain the ~1–1.4 KB/sampled-class rate found
-  here rather than just reporting it as an empirical fact.
+- **What causes the class-diversity RSS overhead to scale smoothly is now
+  partially identified, not fully resolved.** NMT category breakdown (see
+  above) explains 44% of it and points at `JVMTI_EVENT_CLASS_PREPARE` →
+  `GetClassMethods()` jmethodID preloading (`jvmSupport.cpp:160`) as a
+  strong candidate for the "Class" line specifically — but this was not
+  independently confirmed (e.g. by disabling preloading and re-measuring),
+  and the "Java Heap" / NMT's-own-overhead deltas have no candidate
+  mechanism at all yet. **Follow-up worth doing**: instrument or toggle
+  `loadMethodIDsImpl`/`ClassPrepare` directly, the way `resolveMethod` was
+  instrumented for the `NM_DICTIONARY` finding, to confirm or rule this out.
+- **The remaining ~32–42 MB (neither NMT nor the profiler's own `NM_*`
+  counters explain it) reads as a real gap in PR #669's `NativeMem`
+  coverage, not just an unexplained number** — this is genuine RSS the agent
+  is allocating that isn't attributed to any of the 9 tracked categories.
+  `MethodMap`/`MethodInfo` is the leading candidate (already confirmed
+  elsewhere in this document to have zero `NativeMem::record` calls), but
+  this is inferred, not measured. **Follow-up worth doing**: size
+  `MethodInfo` directly and correlate its count against distinct classes
+  touched, and audit for other uncounted profiler-owned structures the same
+  way — this is worth reporting upstream as a probable instrumentation gap
+  in `NativeMem`'s coverage, independent of whether `MethodMap` turns out to
+  be the specific explanation.
 - **Coverage (classes actually touched by a sample) fell from 93.6% at
   N=2,000 to 56.4% at N=150,000 for the same relative duration/interval
   scaling used across this sweep.** The per-touched-class normalization is
