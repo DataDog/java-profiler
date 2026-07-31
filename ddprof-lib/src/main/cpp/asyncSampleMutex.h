@@ -35,7 +35,7 @@ public:
 };
 
 // Runs `fn` while holding an AsyncSampleMutex, keeping `guard_active` true
-// for exactly the mutex's lifetime (including while `fn` runs). A
+// for at least the mutex's lifetime (including while `fn` runs). A
 // siglongjmp out of `fn` (e.g. Profiler::checkFault() recovering a SIGSEGV)
 // bypasses the AsyncSampleMutex destructor, so callers landing at their
 // sigsetjmp must check `guard_active` and call
@@ -43,13 +43,28 @@ public:
 // true on recovery -- see HotspotSupport::walkJavaStack. Pulling this out
 // of walkJavaStack lets tests exercise the exact guard/flag lifetime
 // pairing production code runs, instead of a hand-copied replica of it.
+//
+// The mutex lives in its own nested scope so its destructor -- which clears
+// is_unwinding_Java on the owning ThreadLocalData -- runs before
+// `guard_active` is cleared below, not after. If `guard_active` were cleared
+// first (as a single flat scope would do, since the mutex's destructor only
+// runs at the function's closing brace), a second signal/fault landing in
+// that gap and recovered via the caller's sigsetjmp would see `guard_active
+// == false`, skip the compensating clear, and never get another chance --
+// the real siglongjmp already bypassed the destructor -- leaving
+// is_unwinding_Java stuck true and the thread permanently excluded from
+// async sampling. Clearing `guard_active` only after the destructor has
+// already run makes a fault in that gap a harmless redundant compensation
+// instead of a missed one.
 template <typename Fn>
 inline void withAsyncSampleGuard(ThreadLocalData *threadLocalData,
                                   volatile bool &guard_active, Fn &&fn) {
-  AsyncSampleMutex mutex(threadLocalData);
-  if (mutex.acquired()) {
-    guard_active = true;
-    fn();
+  {
+    AsyncSampleMutex mutex(threadLocalData);
+    if (mutex.acquired()) {
+      guard_active = true;
+      fn();
+    }
   }
   guard_active = false;
 }

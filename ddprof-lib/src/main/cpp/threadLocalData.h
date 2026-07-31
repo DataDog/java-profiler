@@ -82,6 +82,7 @@ private:
 #if defined(__APPLE__) && defined(__aarch64__)
   // Bookkeeping for JitWriteProtection::recoverAfterLongjmp() (os_macos.cpp).
   bool _jit_write_protection_pending;
+  u32 _jit_write_protection_generation;
   u64 _jit_write_protection_saved;
 #endif
   UnwindFailures _unwind_failures;
@@ -109,7 +110,8 @@ private:
         _park_block_token(0), _filter_slot_id(-1), _init_window(0),
         _signal_depth(0),
 #if defined(__APPLE__) && defined(__aarch64__)
-        _jit_write_protection_pending(false), _jit_write_protection_saved(0),
+        _jit_write_protection_pending(false), _jit_write_protection_generation(0),
+        _jit_write_protection_saved(0),
 #endif
         _otel_ctx_initialized(false),
         _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0) {
@@ -272,11 +274,22 @@ public:
   // HotspotSupport::walkJavaStack() when a siglongjmp skipped that destructor.
   // Plain member r/w is AS-safe for the same reason as signalDepth() above:
   // only ever touched on the thread it belongs to.
+  //
+  // _jit_write_protection_generation is a monotonic per-thread counter bumped
+  // every time a guard newly becomes pending. It lets a sigsetjmp site tell
+  // "the guard pending right now is one I watermarked before, i.e. it
+  // belongs to an outer, still-alive frame" apart from "a guard created
+  // after my watermark, i.e. nested strictly inside the region I protect" --
+  // see JitWriteProtection::recoverAfterLongjmp()'s comment in os.h.
   inline bool jitWriteProtectionPending() const { return _jit_write_protection_pending; }
   inline u64 jitWriteProtectionSaved() const { return _jit_write_protection_saved; }
-  inline void setJitWriteProtectionPending(u64 saved) {
+  inline u32 jitWriteProtectionGeneration() const { return _jit_write_protection_generation; }
+  // Records a newly-toggled guard and returns the generation stamp assigned
+  // to it, for the guard to remember and compare against on its own destructor.
+  inline u32 setJitWriteProtectionPending(u64 saved) {
     _jit_write_protection_saved = saved;
     _jit_write_protection_pending = true;
+    return ++_jit_write_protection_generation;
   }
   inline void clearJitWriteProtectionPending() { _jit_write_protection_pending = false; }
 #endif

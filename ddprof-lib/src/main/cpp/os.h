@@ -88,18 +88,40 @@ class JitWriteProtection {
   private:
     u64 _prev;
     bool _restore;
+    // Generation stamp assigned by ProfiledThread::setJitWriteProtectionPending()
+    // when this instance toggles the register (_restore == true). Lets
+    // recoverAfterLongjmp() tell "a guard created after my watermark" apart
+    // from an outer, still-alive guard elsewhere on the stack; see its comment.
+    u32 _generation;
 
   public:
     JitWriteProtection(bool enable);
     ~JitWriteProtection();
+
+    // Snapshot of the thread's current JitWriteProtection generation counter,
+    // to be captured before installing a sigsetjmp and passed to
+    // recoverAfterLongjmp() on that sigsetjmp's landing path. Returns 0 (never
+    // a valid generation) if there is no ProfiledThread for the current thread.
+    static u32 currentGeneration();
 
     // Force-restores the JIT write-protection register if a JitWriteProtection
     // guard's destructor was skipped by a siglongjmp out from under it (e.g.
     // HotSpot's checkFault() recovery in HotspotSupport::walkJavaStack unwinds
     // past a live JitWriteProtection local without running its destructor).
     // Call at the sigsetjmp landing point right after such a longjmp is known
-    // to have occurred. No-op if no guard is currently pending restoration.
-    static void recoverAfterLongjmp();
+    // to have occurred, passing the generation captured via currentGeneration()
+    // right before that sigsetjmp was installed.
+    //
+    // Only compensates a guard whose generation is newer than `watermark` --
+    // i.e. one constructed strictly inside the region that sigsetjmp
+    // protects. A guard already pending at `watermark` belongs to an outer,
+    // still-alive stack frame (e.g. this thread was merely interrupted by a
+    // profiling signal while already inside Profiler::updateThreadName's or
+    // VM::ready's JitWriteProtection guard) and must be left alone: it is
+    // not the guard this particular longjmp bypassed, and force-restoring it
+    // here would flip the register out from under code that is still live
+    // and will resume expecting its guard's mode.
+    static void recoverAfterLongjmp(u32 watermark);
 };
 
 

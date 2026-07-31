@@ -34,6 +34,7 @@
 #include "profiler.h"
 
 #include "asyncSampleMutex.h"
+#include "counters.h"
 #include "jvmThread.h"
 #include "safeAccess.h"
 #include "os.h"
@@ -43,6 +44,21 @@
 #include <cstring>
 #include <sys/mman.h>
 #include <unistd.h>
+
+namespace {
+// Force Counters::instance()'s function-local static to construct here, off
+// the signal path -- mirrors Profiler::setupSignalHandlers()'s own eager
+// warm-up (profiler.cpp), which exists precisely because the first touch of
+// the singleton runs non-async-signal-safe static-initialization machinery
+// (a C++ guard-variable lock, then aligned_alloc/memset). Several fixtures
+// below install real signal handlers (Profiler::segvHandler -> checkFault(),
+// SafeAccess::handle_safefetch) that increment Counters from inside an
+// actual SIGSEGV, without going through setupSignalHandlers() first. Without
+// this, whichever such test happens to run first in the process would race
+// that first-touch initialization inside a real signal handler instead of
+// ordinary code -- not async-signal-safe, and liable to hang.
+const bool kCountersPrewarmed = (Counters::getCounters(), true);
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // A. ProfiledThread thread-type classification (isJavaThread fast path)

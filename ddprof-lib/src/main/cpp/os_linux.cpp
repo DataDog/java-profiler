@@ -107,8 +107,14 @@ JitWriteProtection::~JitWriteProtection() {
     // Not used on Linux
 }
 
-void JitWriteProtection::recoverAfterLongjmp() {
+u32 JitWriteProtection::currentGeneration() {
     // Not used on Linux
+    return 0;
+}
+
+void JitWriteProtection::recoverAfterLongjmp(u32 watermark) {
+    // Not used on Linux
+    (void)watermark;
 }
 
 

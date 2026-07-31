@@ -80,9 +80,7 @@ JitWriteProtection::JitWriteProtection(bool enable) {
             // No malloc/TLS lazy-init here: ProfiledThread::current() is
             // pthread_getspecific-backed and AS-safe (see its declaration).
             ProfiledThread* pt = ProfiledThread::current();
-            if (pt != nullptr) {
-                pt->setJitWriteProtectionPending(prev);
-            }
+            _generation = (pt != nullptr) ? pt->setJitWriteProtectionPending(prev) : 0;
             asm volatile("msr s3_6_c15_c1_5, %0\n"
                          "isb"
                          : "+r" (val) : : "memory");
@@ -102,17 +100,37 @@ JitWriteProtection::~JitWriteProtection() {
                      "isb"
                      : "+r" (prev) : : "memory");
         ProfiledThread* pt = ProfiledThread::current();
-        if (pt != nullptr) {
+        // Only clear the thread's pending marker if it still refers to this
+        // guard. A nested guard that constructed and destructed entirely
+        // within our lifetime already bumped the generation and left the
+        // marker in whatever state is correct for it; clearing unconditionally
+        // here would wrongly erase that newer guard's bookkeeping.
+        if (pt != nullptr && pt->jitWriteProtectionGeneration() == _generation) {
             pt->clearJitWriteProtectionPending();
         }
     }
 #endif
 }
 
-void JitWriteProtection::recoverAfterLongjmp() {
+u32 JitWriteProtection::currentGeneration() {
 #ifdef __aarch64__
     ProfiledThread* pt = ProfiledThread::current();
-    if (pt != nullptr && pt->jitWriteProtectionPending()) {
+    return pt != nullptr ? pt->jitWriteProtectionGeneration() : 0;
+#else
+    return 0;
+#endif
+}
+
+void JitWriteProtection::recoverAfterLongjmp(u32 watermark) {
+#ifdef __aarch64__
+    ProfiledThread* pt = ProfiledThread::current();
+    // Only compensate a guard constructed after `watermark` was captured --
+    // i.e. strictly inside the sigsetjmp-protected region that is now
+    // recovering. A guard already pending at `watermark` belongs to an
+    // outer, still-alive stack frame and must be left alone; see the
+    // extended rationale on the declaration in os.h.
+    if (pt != nullptr && pt->jitWriteProtectionPending() &&
+        pt->jitWriteProtectionGeneration() != watermark) {
         u64 prev = pt->jitWriteProtectionSaved();
         asm volatile("msr s3_6_c15_c1_5, %0\n"
                      "isb"

@@ -1233,11 +1233,20 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   // getJavaTraceAsync() path below runs without one: it dereferences
   // VMThread/anchor state directly and calls into HotSpot's own
   // AsyncGetCallTrace. Install a jmp ctx here too, so a SIGSEGV anywhere in
-  // walkJavaStack, except HotSpot's AsyncGetCallTrace call, is caught by 
+  // walkJavaStack, except HotSpot's AsyncGetCallTrace call, is caught by
   // Profiler::checkFault() and siglongjmp'd back here instead of crashing the process.
   ProfiledThread* prof_thread = ProfiledThread::current();
   sigjmp_buf crash_protection_ctx;
   sigjmp_buf* prev_jmp_buf = prof_thread != nullptr ? prof_thread->getJmpCtx() : nullptr;
+  // Watermark for JitWriteProtection::recoverAfterLongjmp() below: only a
+  // guard constructed after this point (i.e. getJavaTraceAsync()'s own, from
+  // this call) may be force-restored on recovery. Without it, a guard
+  // already pending here -- e.g. this thread was interrupted by a profiling
+  // signal while already inside Profiler::updateThreadName's or VM::ready's
+  // JitWriteProtection -- would be wrongly force-restored while that outer
+  // guard is still live, flipping the register out from under code that
+  // will resume and expects its own guard's mode.
+  u32 jit_write_protection_watermark = JitWriteProtection::currentGeneration();
 
   if (prof_thread != nullptr && sigsetjmp(crash_protection_ctx, 1) != 0) {
     // checkFault() does a siglongjmp from inside segvHandler, bypassing
@@ -1247,7 +1256,7 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
     // local without running its destructor, which would otherwise leave the
     // thread's JIT write-protection register (macOS/aarch64 W^X state) stuck
     // in the wrong mode. Compensate the same way.
-    JitWriteProtection::recoverAfterLongjmp();
+    JitWriteProtection::recoverAfterLongjmp(jit_write_protection_watermark);
     // Undo any pending getJavaTraceAsync() ucontext rewrite (see comment on
     // entry_pc/entry_sp/entry_fp above). No-op if ucontext is NULL or was
     // never rewritten.
