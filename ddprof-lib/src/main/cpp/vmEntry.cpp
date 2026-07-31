@@ -58,7 +58,7 @@ jvmtiError(JNICALL *VM::_orig_RedefineClasses)(jvmtiEnv *, jint,
 jvmtiError(JNICALL *VM::_orig_RetransformClasses)(jvmtiEnv *, jint,
                                                   const jclass *classes);
 
-void *VM::_libjvm;
+CodeCache* VM::_libjvm = nullptr;
 AsyncGetCallTrace VM::_asyncGetCallTrace;
 JVM_GetManagement VM::_getManagement;
 
@@ -204,15 +204,20 @@ int JavaVersionAccess::get_hotspot_version(char* prop_value) {
 }
 
 CodeCache* VM::openJvmLibrary() {
+  CodeCache* lib = __atomic_load_n(&_libjvm, __ATOMIC_ACQUIRE);
+  if (lib != nullptr) {
+    return lib;
+  }
+
   if ((void*)_asyncGetCallTrace == nullptr) {
     return nullptr;
   }
 
   Libraries* libraries = Libraries::instance();
-  CodeCache *lib =
-    isOpenJ9()
+  lib = isOpenJ9()
         ? libraries->findJvmLibrary("libj9vm")
         : libraries->findLibraryByAddress((const void *)_asyncGetCallTrace);
+  __atomic_store_n(&_libjvm, lib, __ATOMIC_RELEASE);
   return lib;
 }
 
@@ -250,9 +255,9 @@ bool VM::initShared(JavaVM* vm) {
     prop = NULL;
   }
 
-  _libjvm = getLibraryHandle("libjvm.so");
-  _asyncGetCallTrace = (AsyncGetCallTrace)dlsym(_libjvm, "AsyncGetCallTrace");
-  _getManagement = (JVM_GetManagement)dlsym(_libjvm, "JVM_GetManagement");
+  void *libjvm = getLibraryHandle("libjvm.so");
+  _asyncGetCallTrace = (AsyncGetCallTrace)dlsym(libjvm, "AsyncGetCallTrace");
+  _getManagement = (JVM_GetManagement)dlsym(libjvm, "JVM_GetManagement");
 
   Libraries *libraries = Libraries::instance();
   libraries->updateSymbols(false);
@@ -327,9 +332,6 @@ bool VM::initShared(JavaVM* vm) {
   if (lib == nullptr) {
     return false;
   }
-
-  // Initialize VMStructs
-  VMStructs::init(lib);
 
   // Mark thread entry points for all JVMs (critical for correct stack unwinding)
   lib->mark(isThreadEntry, MARK_THREAD_ENTRY);
@@ -449,6 +451,15 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
     return false;
   }
 
+  // Under Agent_OnLoad (attach == false), this is the first native entry point and
+  // VM_INIT has not fired yet, so VMStructs would otherwise stay uninitialized until
+  // VM::VMInit() runs -- but CodeHeap::available()/VMFlag::find() below are used
+  // synchronously in this function. Get VMStructs (and crash-protection signal
+  // handlers) ready now; VM::ready() is idempotent, so the later VM::VMInit()
+  // callback (attach == false) or the direct call from VM::initLibrary() (already
+  // run before a JNI-triggered attach == true call gets here) is a safe no-op.
+  ready(jvmti(), jni());
+
   if (!attach && hotspot_version() == 8 && OS::isLinux()) {
     // Workaround for JDK-8185348
     char *func = (char *)lib->findSymbol(
@@ -517,6 +528,8 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
                                    NULL);
 
   if (hotspot_version() == 0 || !CodeHeap::available()) {
+    TEST_LOG("CompiledMethodLoad workaround: hotspot_version=%d CodeHeap::available=%d",
+             hotspot_version(), CodeHeap::available());
     // Workaround for JDK-8173361: avoid CompiledMethodLoad events when possible
     _jvmti->SetEventNotificationMode(JVMTI_ENABLE,
                                      JVMTI_EVENT_COMPILED_METHOD_LOAD, NULL);
@@ -524,6 +537,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
     // DebugNonSafepoints is automatically enabled with CompiledMethodLoad,
     // otherwise we set the flag manually
     VMFlag* f = VMFlag::find("DebugNonSafepoints", {VMFlag::Type::Bool});
+    TEST_LOG("DebugNonSafepoints flag %s", f != NULL ? "found" : "not found");
     if (f != NULL && f->isDefault()) {
       f->set(1);
     }
@@ -557,12 +571,26 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   return true;
 }
 
-// Run late initialization when JVM is ready
+// Run late initialization when JVM is ready. May be called more than once (from
+// initProfilerBridge() directly, and later from the VMInit JVMTI callback, or from
+// initLibrary() followed by a JNI-triggered attach) -- the VMStructs init below only
+// ever runs once.
 void VM::ready(jvmtiEnv *jvmti, JNIEnv *jni) {
-  Profiler::check_JDK_8313796_workaround();
-  Profiler::setupSignalHandlers();
-  if (isHotspot()) {
+  // Hotspot specific
+  static bool init_signal = false;
+  static SpinLock lock;
+  ExclusiveLockGuard guard(&lock);
+  if (!init_signal) {
+    Profiler::check_JDK_8313796_workaround();
+    Profiler::setupSignalHandlers();
+    init_signal = true;
+  }
+  if (VM::isHotspot()) {
     JitWriteProtection jit(true);
+    CodeCache* lib = openJvmLibrary();
+    assert(lib != nullptr && "JVM library must have been loaded");
+    // Initialize VMStructs
+    VMStructs::init(lib);
     VMStructs::ready();
   }
 }

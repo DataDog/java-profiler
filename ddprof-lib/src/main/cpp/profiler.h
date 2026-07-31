@@ -152,7 +152,7 @@ private:
   void **_dlopen_entry;
   static void *dlopen_hook(const char *filename, int flags);
   void switchLibraryTrap(bool enable);
-  static void prewarmUnwinder();
+  static bool prewarmUnwinder();
 
   void disableEngines();
 

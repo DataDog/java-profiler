@@ -10,10 +10,14 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include <cstring>
+
 #include "faultInjection.h"
 #include "safeAccess.h"
 #include "os.h"
+#include "profiler.h"
 #include "threadLocalData.h"
+#include "vmEntry.h"
 #include "hotspot/hotspotSupport.h"
 #include "../../main/cpp/gtest_crash_handler.h"
 
@@ -47,11 +51,23 @@ TEST(FaultInjectionTest, DisabledValueMacrosAreIdentity) {
   EXPECT_EQ(INJECT_FAULT_LONG_RARE(l), l);
   EXPECT_EQ(INJECT_FAULT_LONG_UNLIKELY(l), l);
   EXPECT_EQ(INJECT_FAULT_LONG_LIKELY(l), l);
+
+  // BOOL must be identity both ways -- an accidental non-identity expansion
+  // (e.g. always forcing false) would otherwise only show up as a silent
+  // behavioural change in a production build, never a compile error.
+  bool t = true;
+  bool f = false;
+  EXPECT_EQ(INJECT_FAULT_BOOL_RARE(t), t);
+  EXPECT_EQ(INJECT_FAULT_BOOL_UNLIKELY(t), t);
+  EXPECT_EQ(INJECT_FAULT_BOOL_LIKELY(t), t);
+  EXPECT_EQ(INJECT_FAULT_BOOL_RARE(f), f);
+  EXPECT_EQ(INJECT_FAULT_BOOL_UNLIKELY(f), f);
+  EXPECT_EQ(INJECT_FAULT_BOOL_LIKELY(f), f);
 }
 
 #else  // __FAULT_INJECTION__ enabled (built under -PenableFaultInjection)
 
-// Chain: safefetch recovery first, then walkVM setjmp/longjmp recovery, then
+// Chain: safefetch recovery first, then walkVM sigsetjmp/siglongjmp recovery, then
 // the crash handler as a last resort so a genuine bug still produces a report.
 static void (*orig_segvHandler)(int, siginfo_t*, void*);
 static void (*orig_busHandler)(int, siginfo_t*, void*);
@@ -60,7 +76,7 @@ static void fi_signal_wrapper(int signo, siginfo_t* siginfo, void* context) {
   if (SafeAccess::handle_safefetch(signo, context)) {
     return;  // safefetch load recovered; PC already rewritten to _cont.
   }
-  HotspotSupport::checkFault(ProfiledThread::current());  // longjmp if protected
+  HotspotSupport::checkFault(ProfiledThread::current());  // siglongjmp if protected
   // Not protected and not a safefetch fault — real crash.
   if (signo == SIGBUS && orig_busHandler != nullptr) {
     orig_busHandler(signo, siginfo, context);
@@ -144,8 +160,8 @@ TEST_F(FaultInjectionTest, SafeAccessRecoversFromInjectedFault) {
 }
 
 // (c2) walkVM path: a raw dereference of an injected poison pointer must be
-// caught by the setjmp/longjmp crash protection, returning control to setjmp.
-TEST_F(FaultInjectionTest, WalkVmSetjmpRecoversFromInjectedFault) {
+// caught by the sigsetjmp/siglongjmp crash protection, returning control to sigsetjmp.
+TEST_F(FaultInjectionTest, WalkVmSigsetjmpRecoversFromInjectedFault) {
   ProfiledThread* t = ProfiledThread::current();
   ASSERT_NE(t, nullptr);
 
@@ -155,9 +171,9 @@ TEST_F(FaultInjectionTest, WalkVmSetjmpRecoversFromInjectedFault) {
   volatile size_t reads = 0;
   volatile size_t faults = 0;
 
-  jmp_buf ctx;
-  if (setjmp(ctx) != 0) {
-    recovered = true;                  // returned here via checkFault -> longjmp
+  sigjmp_buf ctx;
+  if (sigsetjmp(ctx, 1) != 0) {
+    recovered = true;                  // returned here via checkFault -> siglongjmp
     faults++;
   }
   t->setJmpCtx(&ctx);
@@ -174,10 +190,104 @@ TEST_F(FaultInjectionTest, WalkVmSetjmpRecoversFromInjectedFault) {
 
   // We should have observed a recovered fault, or the loop completed cleanly. The
   // essential assertion is that the process did not die and, when a fault was
-  // injected, setjmp regained control.
-  EXPECT_GT(faults, 0u) << "expected at least one injected fault to longjmp-recover";
+  // injected, sigsetjmp regained control.
+  EXPECT_GT(faults, 0u) << "expected at least one injected fault to siglongjmp-recover";
   EXPECT_TRUE(recovered);
   SUCCEED();
+}
+
+// Friend of Profiler (see profiler.h) — lets this test force the internal
+// state to a known value so checkState() can be exercised deterministically
+// (matches the pattern in jvmSupport_ut.cpp).
+class ProfilerTestAccessor {
+public:
+  static void setState(Profiler* p, State s) {
+    p->_state.store(s, std::memory_order_release);
+  }
+  static State getState(Profiler* p) {
+    return p->_state.load(std::memory_order_acquire);
+  }
+};
+
+// Friend of VM (see vmEntry.h) — lets this test install a mock jvmtiEnv, the
+// same seam jvmSupport_ut.cpp uses. checkState() (below) checks
+// prewarmUnwinder() before JVMSupport::initialize(), so the injected-failure
+// path never touches this at all; it exists only so the ~99% non-injected
+// iterations, which do fall through into JVMSupport::initialize(), fail
+// gracefully instead of crashing on a null VM::_jvmti in this no-live-JVM
+// binary. Unlike a JVMThread-level fake (which would permanently flip
+// JVMThread::isInitialized() for the rest of the process, since ThreadLocal
+// pthread keys are never invalidated), this is a plain pointer swap that
+// ScopedJvmtiMock restores on scope exit -- no state leaks into later tests.
+class VMTestAccessor {
+public:
+  static jvmtiEnv* getJvmti() { return VM::_jvmti; }
+  static void setJvmti(jvmtiEnv* env) { VM::_jvmti = env; }
+};
+
+static jvmtiError JNICALL mock_GetCurrentThread_fails(jvmtiEnv*, jthread*) {
+  return JVMTI_ERROR_INTERNAL;
+}
+
+class ScopedJvmtiMock {
+public:
+  ScopedJvmtiMock() : _orig(VMTestAccessor::getJvmti()) {
+    _tbl.GetCurrentThread = &mock_GetCurrentThread_fails;
+    _env.functions = &_tbl;
+    VMTestAccessor::setJvmti(&_env);
+  }
+  ~ScopedJvmtiMock() { VMTestAccessor::setJvmti(_orig); }
+
+private:
+  jvmtiInterface_1_ _tbl{};
+  _jvmtiEnv _env{};
+  jvmtiEnv* _orig;
+};
+
+// (d) Value-injection path: PROF-15395 fixed Profiler::checkState() (shared by
+// start()/check(), and therefore also reached by the -agentpath auto-start
+// path) to fail cleanly instead of crashing later when libgcc_s.so.1 can't be
+// loaded. libgcc_s.so.1 is always present in this test environment, so
+// INJECT_FAULT_BOOL_LIKELY on prewarmUnwinder()'s return value is what makes
+// that failure path reachable here: the real dlopen() still runs and
+// succeeds, but the caller is deterministically told it failed.
+TEST_F(FaultInjectionTest, CheckStateSurfacesInjectedPrewarmUnwinderFailure) {
+#ifdef __linux__
+  Profiler* p = Profiler::instance();
+  // checkState() checks prewarmUnwinder() before JVMSupport::initialize(), so
+  // reaching the injected-failure path below needs nothing but the NEW state.
+  ScopedJvmtiMock jvmti_mock;
+  ProfilerTestAccessor::setState(p, NEW);
+  ProfiledThread::current()->setFiRng(0x5EED5EED5EED5EEDULL);
+
+  bool sawInjectedFailure = false;
+  bool sawNonInjectedPrewarm = false;
+  // shouldFire() mixes the fixed RNG seed above with an ASLR-dependent
+  // per-call-site address, so which outcome the *first* call produces is not
+  // deterministic run to run -- the injected failure can land before a
+  // non-injected call is observed. Keep iterating (and un-latching the ERROR
+  // state that every outcome here leaves behind) until both have been seen.
+  for (int i = 0; i < 5000 && !(sawInjectedFailure && sawNonInjectedPrewarm); i++) {
+    Error error = p->checkState();
+    ASSERT_TRUE((bool)error) << "checkState() must fail here: either the "
+                                 "injected prewarmUnwinder() failure or the "
+                                 "mocked JVMSupport::initialize() failure";
+    if (std::strcmp(error.message(), "Missing libgcc_s.so.1") == 0) {
+      sawInjectedFailure = true;
+    } else {
+      // prewarmUnwinder() succeeded (non-injected, ~99% of calls) and fell
+      // through to the mocked JVMSupport::initialize() failure instead.
+      EXPECT_STREQ("Profiler encountered fatal error", error.message());
+      sawNonInjectedPrewarm = true;
+    }
+    ProfilerTestAccessor::setState(p, NEW);
+  }
+
+  EXPECT_TRUE(sawInjectedFailure)
+      << "expected at least one injected prewarmUnwinder() failure within 5000 tries";
+  EXPECT_TRUE(sawNonInjectedPrewarm)
+      << "expected at least one non-injected prewarmUnwinder() success within 5000 tries";
+#endif // __linux__
 }
 
 #endif  // __FAULT_INJECTION__
