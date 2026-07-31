@@ -504,7 +504,7 @@ public:
   bool taskBlockRotationActiveForTest() const {
     return _task_block_rotation.load(std::memory_order_acquire);
   }
-  int taskBlockInflightForTest() const {
+  u64 taskBlockInflightForTest() const {
     return _task_block_inflight.load(std::memory_order_acquire);
   }
 
