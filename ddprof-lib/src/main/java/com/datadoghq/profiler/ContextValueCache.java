@@ -40,9 +40,8 @@ import java.util.concurrent.atomic.AtomicReferenceArray;
  * session become stale. {@link JavaProfiler} therefore calls {@link #clear()} on every {@code start}
  * command; a subsequent {@link #resolve} re-registers the value and re-caches its new encoding.
  *
- * <p>Replaces the per-{@link ThreadContext} value cache: in the all-native model there is no
- * per-thread {@code ThreadContext} instance to host it, and a global cache avoids duplicating the
- * table across every carrier / virtual thread.
+ * <p>In the all-native model there is no per-thread instance to host this cache, so it is a
+ * single process-wide table shared across every carrier / virtual thread.
  */
 final class ContextValueCache {
 
@@ -69,15 +68,43 @@ final class ContextValueCache {
 
     /**
      * Resolves {@code value} to its cached {@code (encoding, utf8)} pair, registering it on a miss.
+     * The sole entrypoint — deliberately not overloaded on {@code String} alongside {@code
+     * CharSequence}, since Java resolves overloads by static (not runtime) type and a {@code
+     * String}-typed local would silently bind to a different method than a {@code
+     * CharSequence}-typed one holding the same value. {@link #resolveString} is the private,
+     * no-allocation fast path for callers (like this method, on a {@code String} runtime type)
+     * that already hold a {@code String}.
+     *
+     * <p>The cache-hit path never calls {@code toString()} on a non-{@code String} {@code
+     * CharSequence}: {@link #contentHashCode} replicates {@link String#hashCode()}'s algorithm so
+     * a {@code CharSequence} and a content-equal cached {@code String} key land in the same slot,
+     * and {@link String#contentEquals(CharSequence)} compares without allocating. This matters for
+     * callers (e.g. {@code setTraceContext}) whose value may be a non-{@code String}
+     * implementation — dd-trace-java passes {@code UTF8BytesString}/{@code SubSequence} span-name
+     * views specifically to avoid forcing a {@code String} allocation on the hot path.
+     * {@code toString()} is only paid on a genuine miss, where a {@code String} is needed anyway
+     * to hand to {@code registerConstant0} and to store as the entry's key.
      *
      * @return the entry, or {@code null} if the value cannot be represented — {@code null} input, a
      *         UTF-8 encoding longer than {@value #MAX_VALUE_BYTES} bytes, or a full native Dictionary
      *         (encoding {@code < 0}). Callers treat {@code null} as "no attribute" (skip / clear).
      */
-    Entry resolve(String value) {
+    Entry resolve(CharSequence value) {
         if (value == null) {
             return null;
         }
+        if (value instanceof String) {
+            return resolveString((String) value);
+        }
+        int slot = contentHashCode(value) & MASK;
+        Entry e = table.get(slot);
+        if (e != null && e.key.contentEquals(value)) {
+            return e; // hit — no allocation, no JNI
+        }
+        return resolveString(value.toString());
+    }
+
+    private Entry resolveString(String value) {
         int slot = value.hashCode() & MASK;
         Entry e = table.get(slot);
         if (e != null && value.equals(e.key)) {
@@ -89,13 +116,26 @@ final class ContextValueCache {
         if (utf8.length > MAX_VALUE_BYTES) {
             return null;
         }
-        int encoding = ThreadContext.registerConstant0(value);
+        int encoding = registerConstant0(value);
         if (encoding < 0) {
             return null; // Dictionary full
         }
         Entry ne = new Entry(value, encoding, utf8);
         table.set(slot, ne); // benign race: converges on an equivalent entry
         return ne;
+    }
+
+    /**
+     * Computes {@link String#hashCode()}'s polynomial ({@code s[0]*31^(n-1) + ... + s[n-1]}) over
+     * an arbitrary {@code CharSequence}, without materializing a {@code String}.
+     */
+    private static int contentHashCode(CharSequence value) {
+        int h = 0;
+        int len = value.length();
+        for (int i = 0; i < len; i++) {
+            h = 31 * h + value.charAt(i);
+        }
+        return h;
     }
 
     /**
@@ -109,4 +149,7 @@ final class ContextValueCache {
             table.set(i, null);
         }
     }
+
+    /** Registers {@code value} in the native Dictionary, returning its encoding, or a negative value if full. */
+    private static native int registerConstant0(String value);
 }
