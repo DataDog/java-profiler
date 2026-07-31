@@ -107,16 +107,6 @@ JitWriteProtection::~JitWriteProtection() {
     // Not used on Linux
 }
 
-u32 JitWriteProtection::currentGeneration() {
-    // Not used on Linux
-    return 0;
-}
-
-void JitWriteProtection::recoverAfterLongjmp(u32 watermark) {
-    // Not used on Linux
-    (void)watermark;
-}
-
 
 static constexpr int MAX_SIGNALS = 64;
 static SigAction installed_sigaction[MAX_SIGNALS];

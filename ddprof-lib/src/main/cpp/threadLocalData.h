@@ -79,12 +79,6 @@ private:
   int _filter_slot_id; // Slot ID for thread filtering
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
   uint8_t _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
-#if defined(__APPLE__) && defined(__aarch64__)
-  // Bookkeeping for JitWriteProtection::recoverAfterLongjmp() (os_macos.cpp).
-  bool _jit_write_protection_pending;
-  u32 _jit_write_protection_generation;
-  u64 _jit_write_protection_saved;
-#endif
   UnwindFailures _unwind_failures;
   bool _otel_ctx_initialized;
 #ifdef __FAULT_INJECTION__
@@ -109,10 +103,6 @@ private:
         _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0),
         _park_block_token(0), _filter_slot_id(-1), _init_window(0),
         _signal_depth(0),
-#if defined(__APPLE__) && defined(__aarch64__)
-        _jit_write_protection_pending(false), _jit_write_protection_generation(0),
-        _jit_write_protection_saved(0),
-#endif
         _otel_ctx_initialized(false),
         _otel_ctx_record{}, _otel_tag_encodings{}, _otel_local_root_span_id(0) {
 #ifdef __FAULT_INJECTION__
@@ -265,34 +255,6 @@ public:
   inline uint8_t signalDepth() const { return _signal_depth; }
   inline void enterSignalScope()    { ++_signal_depth; }
   inline void exitSignalScope()     { if (_signal_depth > 0) --_signal_depth; }
-
-#if defined(__APPLE__) && defined(__aarch64__)
-  // Tracks whether a JitWriteProtection guard on this thread has toggled the
-  // JIT write-protection register and is awaiting its destructor to restore
-  // it. Lets JitWriteProtection::recoverAfterLongjmp() (os_macos.cpp) force
-  // the restore from the sigsetjmp landing point in
-  // HotspotSupport::walkJavaStack() when a siglongjmp skipped that destructor.
-  // Plain member r/w is AS-safe for the same reason as signalDepth() above:
-  // only ever touched on the thread it belongs to.
-  //
-  // _jit_write_protection_generation is a monotonic per-thread counter bumped
-  // every time a guard newly becomes pending. It lets a sigsetjmp site tell
-  // "the guard pending right now is one I watermarked before, i.e. it
-  // belongs to an outer, still-alive frame" apart from "a guard created
-  // after my watermark, i.e. nested strictly inside the region I protect" --
-  // see JitWriteProtection::recoverAfterLongjmp()'s comment in os.h.
-  inline bool jitWriteProtectionPending() const { return _jit_write_protection_pending; }
-  inline u64 jitWriteProtectionSaved() const { return _jit_write_protection_saved; }
-  inline u32 jitWriteProtectionGeneration() const { return _jit_write_protection_generation; }
-  // Records a newly-toggled guard and returns the generation stamp assigned
-  // to it, for the guard to remember and compare against on its own destructor.
-  inline u32 setJitWriteProtectionPending(u64 saved) {
-    _jit_write_protection_saved = saved;
-    _jit_write_protection_pending = true;
-    return ++_jit_write_protection_generation;
-  }
-  inline void clearJitWriteProtectionPending() { _jit_write_protection_pending = false; }
-#endif
 
 #ifdef __FAULT_INJECTION__
   // One xorshift64 step (Marsaglia 2003), matching PoissonSampler::nextExp.
