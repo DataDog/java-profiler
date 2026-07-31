@@ -110,9 +110,9 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
     return result;
   }
 
-  // Owned blocks replace repeated signals only after their current generation
-  // has produced one MethodSample. Context-scoped profiling must continue
-  // sampling its selected threads normally.
+  // Native-owned blocks suppress immediately because their completion hook
+  // records an eligible TaskBlock stack. Other owners retain their first
+  // successful MethodSample. Context-scoped profiling continues sampling normally.
   if (!registry->unfilteredWallTrackingActive() || slot->inContextWindow()) {
     return result;
   }
@@ -406,8 +406,8 @@ void WallClockASGCT::timerLoop() {
         registry_lookups++;
         thread_filter->lookupThreadEntry(entry, recording_epoch);
       }
-      // Timer-thread fast path (wallprecheck=true): skip the kernel IPI only
-      // after an explicitly owned run has recorded its first MethodSample.
+      // Timer-thread fast path (wallprecheck=true): native hooks suppress
+      // immediately; other owners suppress after their first MethodSample.
       if (_precheck && suppressOwnedBlock(entry)) {
         return WallClockCandidateOutcome::PRECHECK_REJECTED;
       }

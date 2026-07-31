@@ -158,12 +158,22 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
 
     @Test
     public void blockingSelectorSelectEmitsIoWaitTaskBlock() throws Exception {
-        for (int attempt = 0; attempt < NATIVE_BLOCK_ATTEMPTS; attempt++) {
-            runBlockingSelectorSelectOnce();
-        }
+        String workerName = "taskblock-native-selector-select";
+        long suppressedBefore = profiler.getDebugCounters()
+                .getOrDefault("wc_signals_suppressed_owned_block", 0L);
+        runBlockingSelectorSelectOnce();
+        long suppressedAfter = profiler.getDebugCounters()
+                .getOrDefault("wc_signals_suppressed_owned_block", 0L);
+        assertTrue(suppressedAfter > suppressedBefore,
+                "Expected wall signals to be suppressed during the native selector wait");
 
         stopProfiler();
-        assertIoWaitTaskBlockSelfContained("taskblock-native-selector-select");
+        IItemCollection taskBlocks = verifyEvents("datadog.TaskBlock", false);
+        assertIoWaitTaskBlockSelfContained(taskBlocks, workerName);
+        int workerEvents = TaskBlockAssertions.countEventsForThread(taskBlocks, workerName);
+        assertTrue(workerEvents >= 1 && workerEvents <= 2,
+                "Expected one logical selector wait to produce at most two TaskBlocks, got: "
+                        + workerEvents);
     }
 
     private void runBlockingSelectorSelectOnce() throws Exception {
@@ -201,27 +211,32 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
 
     @Test
     public void tracedBlockingSocketReadDoesNotEmitTaskBlock() throws Exception {
+        String workerName = "taskblock-traced-native-socket-read";
+        long skippedBefore = profiler.getDebugCounters()
+                .getOrDefault("task_block_skipped_trace_context", 0L);
         CountDownLatch readAttempted = new CountDownLatch(1);
         AtomicReference<Throwable> error = new AtomicReference<>();
 
         try (ServerSocket server = new ServerSocket(0)) {
             Thread reader = new Thread(() -> {
                 try {
-                    profiler.setContext(0x5100L, 0x5101L, 0L, 0x5101L);
                     try (Socket socket = new Socket("127.0.0.1", server.getLocalPort())) {
                         InputStream input = socket.getInputStream();
-                        readAttempted.countDown();
-                        int value = input.read();
-                        if (value != 1) {
-                            throw new AssertionError("unexpected socket byte: " + value);
+                        profiler.setContext(0x5100L, 0x5101L, 0L, 0x5101L);
+                        try {
+                            readAttempted.countDown();
+                            int value = input.read();
+                            if (value != 1) {
+                                throw new AssertionError("unexpected socket byte: " + value);
+                            }
+                        } finally {
+                            profiler.clearContext();
                         }
-                    } finally {
-                        profiler.clearContext();
                     }
                 } catch (Throwable t) {
                     error.set(t);
                 }
-            }, "taskblock-traced-native-socket-read");
+            }, workerName);
 
             reader.start();
             try (Socket accepted = server.accept()) {
@@ -234,10 +249,19 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
             assertCompleted(reader, error);
         }
 
+        assertTrue(profiler.getDebugCounters()
+                        .getOrDefault("task_block_skipped_trace_context", 0L) > skippedBefore,
+                "Native socket hook did not reject the traced blocking read");
         stopProfiler();
+        IItemCollection taskBlocks = verifyEvents("datadog.TaskBlock", false);
         assertFalse(
-                TaskBlockAssertions.containsSpan(verifyEvents("datadog.TaskBlock", false), 0x5101L),
-                "Traced socket I/O must keep MethodSample wall-clock data instead of emitting TaskBlock");
+                TaskBlockAssertions.containsEventThread(taskBlocks, workerName),
+                "Traced socket I/O must not emit a TaskBlock for the worker");
+        IItemCollection methodSamples = verifyEvents("datadog.MethodSample", false);
+        assertTrue(TaskBlockAssertions.containsEventThread(methodSamples, workerName),
+                "Traced socket I/O must retain MethodSample wall-clock data for the worker");
+        assertTrue(TaskBlockAssertions.containsSpan(methodSamples, 0x5101L),
+                "Traced socket MethodSample must retain its span context");
     }
 
     @Override
@@ -264,7 +288,12 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
     }
 
     protected void assertIoWaitTaskBlockSelfContained(String workerName) {
-        IItemCollection taskBlockEvents = verifyEvents("datadog.TaskBlock", false);
+        assertIoWaitTaskBlockSelfContained(
+                verifyEvents("datadog.TaskBlock", false), workerName);
+    }
+
+    private void assertIoWaitTaskBlockSelfContained(
+            IItemCollection taskBlockEvents, String workerName) {
         assertNativeTaskBlockPresent(taskBlockEvents);
         TaskBlockAssertions.assertNoAnchorFields(taskBlockEvents);
         assertTaskBlockStackReference(taskBlockEvents);

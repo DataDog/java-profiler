@@ -211,6 +211,7 @@ TEST_F(NativeBlockScopeTest, TraceContextGateLeavesScopeInactiveAndSlotUnowned) 
 
   EXPECT_FALSE(scope.active());
   EXPECT_EQ(E2BIG, errno);
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_SKIPPED_TRACE_CONTEXT));
   ThreadFilter::Slot* slot = Profiler::instance()->threadFilter()->slotForId(slot_id);
   ASSERT_NE(nullptr, slot);
   EXPECT_EQ(BlockRunOwner::NONE, slot->activeBlockOwner());

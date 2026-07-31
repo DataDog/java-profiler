@@ -66,6 +66,7 @@ NativeBlockScope::NativeBlockScope(NativeBlockKind kind, int blocker_id,
 
   Context context = ContextApi::snapshot();
   if (context.spanId != 0) {
+    Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
     errno = saved_errno;
     return;
   }

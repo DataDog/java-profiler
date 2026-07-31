@@ -8,7 +8,6 @@ package com.datadoghq.profiler.wallclock;
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmc.common.item.IItemCollection;
 
@@ -21,11 +20,11 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /** Verifies native I/O hooks are fully restored and can be reinstalled across profiler restarts. */
 public class NativeSocketTaskBlockLifecycleTest extends AbstractProfilerTest {
@@ -45,39 +44,61 @@ public class NativeSocketTaskBlockLifecycleTest extends AbstractProfilerTest {
     }
 
     @Test
-    @Disabled("Arbitrary JNI DSO interposition is not currently supported")
     public void restartWithWallPrecheckDisabledStopsNativeSocketTaskBlocks() throws Exception {
-        long enabledBlocker = runNativeIoBlock();
+        String enabledWorkerName = "taskblock-native-lifecycle-enabled";
+        for (int attempt = 0; attempt < NATIVE_BLOCK_ATTEMPTS; attempt++) {
+            runCompletedSocketRead(enabledWorkerName);
+        }
         stopProfiler();
-        assertIoWaitTaskBlockPresent(verifyEvents("datadog.TaskBlock", false), enabledBlocker);
+        assertIoWaitTaskBlockPresent(
+                verifyEvents("datadog.TaskBlock", false), enabledWorkerName);
 
         Path disabledRecording = Files.createTempFile(Paths.get("/tmp/recordings"),
                 "NativeSocketTaskBlockLifecycleTest_disabled_", ".jfr");
+        boolean disabledRunning = false;
         try {
             profiler.execute("start,wall=1ms,filter=,wallprecheck=false,jfr,file="
                     + disabledRecording.toAbsolutePath());
-            runNativeIoBlock();
+            disabledRunning = true;
+            String disabledWorkerName = "taskblock-native-lifecycle-disabled";
+            for (int attempt = 0; attempt < NATIVE_BLOCK_ATTEMPTS; attempt++) {
+                runCompletedSocketRead(disabledWorkerName);
+            }
             profiler.stop();
+            disabledRunning = false;
 
             IItemCollection disabledTaskBlocks =
                     verifyEvents(disabledRecording, "datadog.TaskBlock", false);
-            assertFalse(disabledTaskBlocks.hasItems(),
-                    "wallprecheck=false restart must disable native socket TaskBlock emission");
+            assertFalse(TaskBlockAssertions.containsEventThread(
+                            disabledTaskBlocks, disabledWorkerName),
+                    "wallprecheck=false restart must not emit a socket TaskBlock for the worker");
         } finally {
+            if (disabledRunning) {
+                profiler.stop();
+            }
             Files.deleteIfExists(disabledRecording);
         }
 
         Path reenabledRecording = Files.createTempFile(Paths.get("/tmp/recordings"),
                 "NativeSocketTaskBlockLifecycleTest_reenabled_", ".jfr");
+        boolean reenabledRunning = false;
         try {
             profiler.execute("start,wall=1ms,filter=,wallprecheck=true,jfr,file="
                     + reenabledRecording.toAbsolutePath());
-            long reenabledBlocker = runNativeIoBlock();
+            reenabledRunning = true;
+            String reenabledWorkerName = "taskblock-native-lifecycle-reenabled";
+            for (int attempt = 0; attempt < NATIVE_BLOCK_ATTEMPTS; attempt++) {
+                runCompletedSocketRead(reenabledWorkerName);
+            }
             profiler.stop();
+            reenabledRunning = false;
 
             assertIoWaitTaskBlockPresent(verifyEvents(
-                    reenabledRecording, "datadog.TaskBlock", false), reenabledBlocker);
+                    reenabledRecording, "datadog.TaskBlock", false), reenabledWorkerName);
         } finally {
+            if (reenabledRunning) {
+                profiler.stop();
+            }
             Files.deleteIfExists(reenabledRecording);
         }
     }
@@ -174,10 +195,10 @@ public class NativeSocketTaskBlockLifecycleTest extends AbstractProfilerTest {
         return "wall=1ms,filter=,wallprecheck=true";
     }
 
-    private void assertIoWaitTaskBlockPresent(IItemCollection taskBlockEvents, long expectedBlocker) {
-        assertTrue(expectedBlocker != 0L, "native lifecycle helper must report the expected blocker");
+    private void assertIoWaitTaskBlockPresent(
+            IItemCollection taskBlockEvents, String workerName) {
         if (!taskBlockEvents.hasItems()) {
-            assertTrue(false, missingTaskBlockDiagnostic());
+            fail(missingTaskBlockDiagnostic());
         }
         TaskBlockAssertions.assertNoAnchorFields(taskBlockEvents);
         TaskBlockAssertions.assertContainsStackTrace(taskBlockEvents);
@@ -185,29 +206,9 @@ public class NativeSocketTaskBlockLifecycleTest extends AbstractProfilerTest {
                 taskBlockEvents, "NativeSocketTaskBlockLifecycleTest");
         TaskBlockAssertions.assertNoCorrelationId(taskBlockEvents);
         TaskBlockAssertions.assertContainsObservedState(taskBlockEvents, "IO_WAIT");
-        assertTrue(TaskBlockAssertions.containsBlocker(taskBlockEvents, expectedBlocker),
-                "Expected native blocker " + expectedBlocker);
-    }
-
-    private long runNativeIoBlock() throws InterruptedException {
-        AtomicLong blocker = new AtomicLong();
-        AtomicReference<Throwable> error = new AtomicReference<>();
-        Thread worker = new Thread(() -> {
-            try {
-                for (int attempt = 0; attempt < NATIVE_BLOCK_ATTEMPTS; attempt++) {
-                    blocker.set(NativeIoBlockHelper.blockingPpoll(BLOCK_HOLD_MILLIS));
-                }
-            } catch (Throwable t) {
-                error.set(t);
-            }
-        }, "taskblock-native-lifecycle-helper");
-        worker.start();
-        worker.join(5_000L);
-        assertFalse(worker.isAlive(), "native lifecycle helper did not complete");
-        if (error.get() != null) {
-            throw new AssertionError(error.get());
-        }
-        return blocker.get();
+        assertTrue(TaskBlockAssertions.containsObservedStateForEventThread(
+                        taskBlockEvents, "IO_WAIT", workerName),
+                "Expected native IO_WAIT TaskBlock for " + workerName);
     }
 
     private void runCompletedSocketRead(String workerName) throws Exception {

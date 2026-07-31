@@ -714,8 +714,14 @@ bool ThreadFilter::ownedBlockGeneration(const ThreadEntry& entry,
 
     u64 block_generation = slot->blockGeneration();
     BlockRunOwner owner = slot->activeBlockOwner();
+    // Native hooks own TaskBlock recording at completion,
+    // so waiting for a MethodSample would let the first wall signal interrupt
+    // the syscall and end this generation before suppression can take effect.
+    // Java and JVMTI owners retain their first successful MethodSample.
+    bool sample_required =
+        require_sampled && owner != BlockRunOwner::NATIVE;
     if (owner == BlockRunOwner::NONE ||
-        (require_sampled &&
+        (sample_required &&
          slot->sampledBlockGeneration() != block_generation)) {
         return false;
     }
@@ -732,7 +738,7 @@ bool ThreadFilter::ownedBlockGeneration(const ThreadEntry& entry,
         slot->blockGeneration() != block_generation ||
         slot->activeBlockState() != state || slot->nativeTid() != entry.tid ||
         slot->lifecycleGeneration() != entry.lifecycle_generation ||
-        (require_sampled &&
+        (sample_required &&
          slot->sampledBlockGeneration() != block_generation)) {
         return false;
     }

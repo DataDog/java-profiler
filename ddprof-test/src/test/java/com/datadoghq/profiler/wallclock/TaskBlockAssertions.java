@@ -166,6 +166,33 @@ final class TaskBlockAssertions {
     return false;
   }
 
+  static boolean containsEventThread(IItemCollection events, String threadName) {
+    for (IItemIterable iterable : events) {
+      IMemberAccessor<IMCThread, IItem> threadAccessor =
+          JfrAttributes.EVENT_THREAD.getAccessor(iterable.getType());
+      if (threadAccessor == null) continue;
+      for (IItem item : iterable) {
+        IMCThread thread = threadAccessor.getMember(item);
+        if (thread != null && threadName.equals(thread.getThreadName())) return true;
+      }
+    }
+    return false;
+  }
+
+  static int countEventsForThread(IItemCollection events, String threadName) {
+    int count = 0;
+    for (IItemIterable iterable : events) {
+      IMemberAccessor<IMCThread, IItem> threadAccessor =
+          JfrAttributes.EVENT_THREAD.getAccessor(iterable.getType());
+      if (threadAccessor == null) continue;
+      for (IItem item : iterable) {
+        IMCThread thread = threadAccessor.getMember(item);
+        if (thread != null && threadName.equals(thread.getThreadName())) count++;
+      }
+    }
+    return count;
+  }
+
   static boolean containsSpan(IItemCollection events, long spanId) {
     for (IItemIterable iterable : events) {
       IMemberAccessor<IQuantity, IItem> spanAccessor =
