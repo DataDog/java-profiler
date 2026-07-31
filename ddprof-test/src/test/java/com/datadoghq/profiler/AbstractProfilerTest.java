@@ -330,7 +330,6 @@ public abstract class AbstractProfilerTest {
   public final void stopProfiler() {
     if (!stopped) {
       profiler.stop();
-      profiler.resetThreadContext();
       stopped = true;
       checkConfig();
     }
