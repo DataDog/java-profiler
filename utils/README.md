@@ -12,7 +12,9 @@ Triggers the Validated Release workflow using GitHub CLI to create a new release
 
 **Prerequisites:**
 - [GitHub CLI](https://cli.github.com/) installed and authenticated
+- [jq](https://jqlang.github.io/jq/) installed
 - Git repository is up to date
+- The authenticated user has write, maintain, or admin repository access
 - You are on the correct branch for the release type
 
 **Usage:**
@@ -38,10 +40,36 @@ Triggers the Validated Release workflow using GitHub CLI to create a new release
 1. Validates inputs and branch rules
 2. Interactive commit selection (or use `--commit`)
 3. Triggers GitHub Actions "Validated Release" workflow
-4. Workflow runs pre-release tests, creates annotated git tag
-5. Tag push triggers GitLab build pipeline
-6. GitLab builds multi-platform artifacts and publishes to Maven Central
-7. GitHub workflows create release with assets
+4. Workflow runs pre-release tests, creates the annotated tag, and pushes an
+   exact single-commit version-bump branch
+5. For real releases, the local script downloads the workflow's immutable bump
+   manifest and opens the PR as the authenticated human
+6. Adding `trivial` triggers the approval workflow; automated bump PRs are
+   additionally validated,
+   which approves only after validating permissions, refs, SHAs, and the exact
+   one-line version diff
+7. The local finalizer waits for the exact bot approval and required checks,
+   then squash-merges with `--match-head-commit`; it never queues auto-merge or
+   bypasses branch protection
+8. Tag push triggers GitLab, which publishes the Maven artifacts, and the
+   GitHub release workflows attach the release assets
+
+If the workflow is launched directly from the GitHub UI, its summary prints the
+exact `utils/finalize-release-bump.sh` command required to finish the bump. A
+dry run never creates a PR, adds a label, requests approval, or merges anything.
+
+### Testing release automation
+
+`.github/scripts/tests/test_release_automation.sh` is a single hermetic shell
+test. It validates success,
+authorization failures, fork/bot PRs, malformed or extra diffs, version
+rollovers, merge commits, and stale SHAs using temporary local fixtures. Its
+fixture mode does not load credentials or invoke `gh`, so it cannot publish,
+tag, push, create a PR, approve, or merge anything remotely.
+
+```bash
+.github/scripts/tests/test_release_automation.sh
+```
 
 ---
 

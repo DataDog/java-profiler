@@ -1,5 +1,5 @@
 name: Validated Release
-run-name: "${{ inputs.dry_run && 'Dry-run for ' || 'Perform ' }}${{ inputs.release_type }} release of ${{ github.ref_name }} branch"
+run-name: "${{ inputs.dry_run && 'Dry-run for ' || 'Perform ' }}${{ inputs.release_type }} release of ${{ github.ref_name }} branch [${{ inputs.request_id || 'manual' }}]"
 
 on:
   workflow_dispatch:
@@ -23,11 +23,20 @@ on:
         required: false
         type: boolean
         default: false
+      request_id:
+        description: Unique correlation ID supplied by utils/release.sh
+        required: false
+        type: string
+        default: ""
+      source_sha:
+        description: Exact source SHA expected by utils/release.sh
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: write
   actions: read
-  pull-requests: write
 
 jobs:
   validate-inputs:
@@ -41,6 +50,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          ref: ${{ github.sha }}
 
       - name: Setup Java
         uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
@@ -55,9 +65,15 @@ jobs:
         run: |
           BRANCH="${GITHUB_REF_NAME}"
           TYPE="${{ inputs.release_type }}"
+          EXPECTED_SOURCE_SHA="${{ inputs.source_sha }}"
 
           echo "Current branch: $BRANCH"
           echo "Release type: $TYPE"
+
+          if [ -n "$EXPECTED_SOURCE_SHA" ] && [ "$GITHUB_SHA" != "$EXPECTED_SOURCE_SHA" ]; then
+            echo "::error::Dispatched SHA $GITHUB_SHA differs from requested SHA $EXPECTED_SOURCE_SHA"
+            exit 1
+          fi
 
           # Branch validation
           if [ "$TYPE" == "patch" ] || [ "$TYPE" == "retag" ]; then
@@ -176,7 +192,16 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-      id-token: write # Needed to federate a token for the bump-PR create-release step
+      id-token: write
+    outputs:
+      base_branch: ${{ steps.create-release.outputs.base_branch }}
+      source_sha: ${{ steps.create-release.outputs.source_sha }}
+      release_version: ${{ steps.create-release.outputs.release_version }}
+      next_version: ${{ steps.create-release.outputs.next_version }}
+      release_branch: ${{ steps.create-release.outputs.release_branch }}
+      bump_branch: ${{ steps.create-release.outputs.bump_branch }}
+      bump_head_sha: ${{ steps.create-release.outputs.bump_head_sha }}
+      BUMP_PR_URL: ${{ steps.create-release.outputs.BUMP_PR_URL }}
     steps:
       - name: Check test results
         if: ${{ inputs.dry_run != true && inputs.skip_tests != true && inputs.release_type != 'retag' && needs.pre-release-tests.result != 'success' }}
@@ -201,7 +226,7 @@ jobs:
           cd java-profiler
           git config --global user.email "java-profiler@datadoghq.com"
           git config --global user.name "Datadog Java Profiler"
-          git checkout $GITHUB_REF_NAME
+          git checkout -B "$GITHUB_REF_NAME" "$GITHUB_SHA"
 
       - name: Setup Java
         uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
@@ -234,6 +259,33 @@ jobs:
           TYPE="${{ inputs.release_type }}"
           ./.github/scripts/release.sh ${TYPE^^} $DRY_RUN
 
+      - name: Write exact bump finalization manifest
+        if: ${{ inputs.dry_run != true && inputs.release_type != 'retag' }}
+        env:
+          BASE_BRANCH: ${{ steps.create-release.outputs.base_branch }}
+          SOURCE_SHA: ${{ steps.create-release.outputs.source_sha }}
+          BUMP_BRANCH: ${{ steps.create-release.outputs.bump_branch }}
+          BUMP_HEAD_SHA: ${{ steps.create-release.outputs.bump_head_sha }}
+        run: |
+          jq -n \
+            --arg repo "$GITHUB_REPOSITORY" \
+            --arg base "$BASE_BRANCH" \
+            --arg head "$BUMP_BRANCH" \
+            --arg source_sha "$SOURCE_SHA" \
+            --arg head_sha "$BUMP_HEAD_SHA" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            '{repo: $repo, base: $base, head: $head, source_sha: $source_sha, head_sha: $head_sha, run_id: $run_id}' \
+            > release-bump.json
+
+      - name: Upload exact bump finalization manifest
+        if: ${{ inputs.dry_run != true && inputs.release_type != 'retag' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-bump-${{ github.run_id }}
+          path: release-bump.json
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Output Release Summary
         if: ${{ inputs.dry_run != true }}
         env:
@@ -246,8 +298,8 @@ jobs:
           echo "- **Branch**: ${{ needs.validate-inputs.outputs.release_branch }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ -n "$BUMP_PR_URL" ]; then
-            echo "### ⚠ Action Required" >> $GITHUB_STEP_SUMMARY
-            echo "A version bump PR needs review and merge before the next snapshot builds carry the correct version:" >> $GITHUB_STEP_SUMMARY
+            echo "### ✅ Version Bump Auto-Merge Queued" >> $GITHUB_STEP_SUMMARY
+            echo "The exact validated bump PR was created and queued for auto-merge after approval and required checks:" >> $GITHUB_STEP_SUMMARY
             echo "- $BUMP_PR_URL" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
           fi

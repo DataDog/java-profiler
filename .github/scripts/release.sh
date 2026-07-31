@@ -1,12 +1,22 @@
 #!/usr/bin/env bash
 
 set -x
-set -e
+set -euo pipefail
 
 TYPE=$1
-DRYRUN=$2
+DRYRUN=${2:-}
+PUSH_DRYRUN=()
+if [ -n "$DRYRUN" ]; then
+  PUSH_DRYRUN=("$DRYRUN")
+fi
+
+die() {
+  echo "ERROR: $*" >&2
+  exit 1
+}
 
 BRANCH=$(git branch --show-current)
+SOURCE_SHA=$(git rev-parse HEAD)
 RELEASE_BRANCH=
 
 BASE=$(./gradlew printVersion -Psnapshot=false | grep 'Version:' | cut -f2 -d' ')
@@ -82,7 +92,9 @@ if [ "$TYPE" == "MINOR" ] || [ "$TYPE" == "MAJOR" ]; then
   fi
   RELEASE_BRANCH="release/${BASE%.*}._"
   check_not_stuck "$BASE" "$BRANCH"
-  create_annotated_tag "$BASE" "$TYPE" "$BRANCH"
+  if [ "$TYPE" == "MINOR" ]; then
+    create_annotated_tag "$BASE" "$TYPE" "$BRANCH"
+  fi
 fi
 
 if [ "$TYPE" == "PATCH" ]; then
@@ -134,17 +146,35 @@ if [ "$TYPE" == "RETAG" ]; then
   echo "Retagged Version: $BASE"
   echo "Tag: $TAG_NAME -> $(git rev-parse HEAD)"
   echo "========================================================"
+  if [ -n "${GITHUB_OUTPUT:-}" ]; then
+    {
+      echo "base_branch=$BRANCH"
+      echo "source_sha=$SOURCE_SHA"
+      echo "release_version=$BASE"
+      echo "release_branch=$BRANCH"
+    } >> "$GITHUB_OUTPUT"
+  fi
   exit 0
 fi
 
 if [ "$BRANCH" != "$RELEASE_BRANCH" ]; then
-  git checkout -b $RELEASE_BRANCH
+  git checkout -b "$RELEASE_BRANCH"
   if ! git diff --quiet; then
     git add build.gradle.kts
     git commit -m "[Automated] Release ${BASE}"
   fi
-  git push $DRYRUN --atomic --set-upstream origin $RELEASE_BRANCH
-  git checkout $BRANCH
+  if [ "$TYPE" == "MAJOR" ]; then
+    create_annotated_tag "$BASE" "$TYPE" "$BRANCH"
+  fi
+  git push "${PUSH_DRYRUN[@]}" --atomic --set-upstream origin "$RELEASE_BRANCH"
+  git checkout "$BRANCH"
+  if [ "$TYPE" == "MAJOR" ]; then
+    # Keep the release commit in main so the post-release bump is a single
+    # minor increment from the version that was actually released.
+    git merge --ff-only "$RELEASE_BRANCH"
+    git push "${PUSH_DRYRUN[@]}" --atomic origin "$BRANCH"
+    SOURCE_SHA=$(git rev-parse HEAD)
+  fi
 fi
 
 if [ "$TYPE" == "MAJOR" ] || [ "$TYPE" == "MINOR" ]; then
@@ -162,24 +192,51 @@ if [ -z "$DRYRUN" ]; then
   BUMP_BRANCH="automated/bump-${CANDIDATE//./-}"
   git checkout -b "$BUMP_BRANCH"
   git push --force-with-lease --set-upstream origin "$BUMP_BRANCH"
-  # Create and label with the federated BUMP_PR_TOKEN: GitHub does not fire new
-  # workflow runs for labeled events caused by the default GITHUB_TOKEN, so the
-  # no-review label would never trigger approve-trivial.yml. Enable auto-merge
-  # with the write-enabled GITHUB_TOKEN after emitting the labeled event.
+  BUMP_HEAD_SHA=$(git rev-parse HEAD)
+  # Use the federated token for PR creation and labeling so the labeled event
+  # starts the trusted approval workflow. Queue auto-merge with the workflow
+  # token; branch protection still requires the exact bot approval and checks.
   BUMP_PR_URL=$(GH_TOKEN="$BUMP_PR_TOKEN" gh pr create \
     --title "[Automated] Bump dev version to ${CANDIDATE}" \
     --body "Automated version bump after releasing v_${BASE}." \
     --base "$BRANCH" \
     --head "$BUMP_BRANCH")
-  GH_TOKEN="$BUMP_PR_TOKEN" gh pr edit "$BUMP_PR_URL" --add-label "no-review"
-  GH_TOKEN="$GITHUB_TOKEN" gh pr merge "$BUMP_PR_URL" --auto --squash
-  echo "BUMP_PR_URL=$BUMP_PR_URL" >> "${GITHUB_OUTPUT:-/dev/null}"
-  echo "✓ Version bump PR created and queued for auto-merge: $BUMP_PR_URL"
+  GH_TOKEN="$BUMP_PR_TOKEN" gh pr edit "$BUMP_PR_URL" \
+    --add-label "trivial"
+  BUMP_PR_NUMBER=${BUMP_PR_URL##*/}
+  [[ "$BUMP_PR_NUMBER" =~ ^[0-9]+$ ]] ||
+    die "gh pr create returned an invalid pull request URL"
+  ./.github/scripts/validate-release-bump.sh \
+    --repo "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}" \
+    --pr-number "$BUMP_PR_NUMBER" \
+    --sender "${GITHUB_ACTOR:?GITHUB_ACTOR is required}" \
+    --source-sha "$SOURCE_SHA" \
+    --expected-head-sha "$BUMP_HEAD_SHA"
+  GH_TOKEN="$GITHUB_TOKEN" gh pr merge "$BUMP_PR_URL" \
+    --auto --squash --match-head-commit "$BUMP_HEAD_SHA"
+  echo "✓ Version bump PR created and queued for exact-SHA auto-merge: $BUMP_PR_URL"
 else
-  git push $DRYRUN --atomic --set-upstream origin $BRANCH
+  BUMP_BRANCH="automated/bump-${CANDIDATE//./-}"
+  BUMP_HEAD_SHA=$(git rev-parse HEAD)
+  git push "${PUSH_DRYRUN[@]}" --atomic --set-upstream origin "$BRANCH"
 fi
 
-git push $DRYRUN --atomic --tags
+git push "${PUSH_DRYRUN[@]}" --atomic --tags
+
+if [ -n "${GITHUB_OUTPUT:-}" ]; then
+  {
+    echo "base_branch=$BRANCH"
+    echo "source_sha=$SOURCE_SHA"
+    echo "release_version=$BASE"
+    echo "next_version=$CANDIDATE"
+    echo "release_branch=$RELEASE_BRANCH"
+    echo "bump_branch=$BUMP_BRANCH"
+    echo "bump_head_sha=$BUMP_HEAD_SHA"
+    if [ -n "${BUMP_PR_URL:-}" ]; then
+      echo "BUMP_PR_URL=$BUMP_PR_URL"
+    fi
+  } >> "$GITHUB_OUTPUT"
+fi
 
 echo "==================== RELEASE SUMMARY ===================="
 echo "Release Type: $TYPE"
@@ -188,6 +245,6 @@ echo "Next Dev Version: $CANDIDATE"
 echo "Release Branch: $RELEASE_BRANCH"
 echo "Tag: v_$BASE"
 if [ -z "$DRYRUN" ]; then
-  echo "Tag Message: $(git tag -l v_$BASE -n1 --format='%(contents:subject)')"
+  echo "Tag Message: $(git tag -l "v_$BASE" -n1 --format='%(contents:subject)')"
 fi
 echo "=========================================================="

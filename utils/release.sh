@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Copyright 2025, Datadog, Inc
+# Copyright 2026, Datadog, Inc
 
 # Script to trigger the Validated Release workflow using GitHub CLI
 #
@@ -22,6 +22,8 @@
 #   ./utils/release.sh major --branch main      # Specify branch explicitly
 
 set -e
+
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 # Colors for output
 RED='\033[0;31m'
@@ -105,7 +107,7 @@ select_release_branch() {
         echo "" >&2
 
         for i in "${!branches[@]}"; do
-            if [ $i -eq $selected ]; then
+            if [ "$i" -eq "$selected" ]; then
                 echo -e "${GREEN}→ ${branches[$i]}${NC}" >&2
             else
                 echo -e "  ${branches[$i]}" >&2
@@ -176,7 +178,7 @@ select_commit() {
             IFS='|' read -r sha date author message <<< "${commits[$i]}"
             local short_sha="${sha:0:8}"
 
-            if [ $i -eq $selected ]; then
+            if [ "$i" -eq "$selected" ]; then
                 echo -e "${GREEN}→ ${short_sha}${NC} ${YELLOW}${date}${NC} ${BLUE}${author:0:20}${NC} ${message:0:60}" >&2
             else
                 echo -e "  ${short_sha} ${date} ${author:0:20} ${message:0:60}" >&2
@@ -444,6 +446,18 @@ if ! echo "$AUTH_STATUS" | grep -q "Logged in"; then
 fi
 print_info "GitHub authentication verified"
 
+REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
+REPO_URL=$(gh repo view --json url --jq '.url')
+VIEWER_PERMISSION=$(gh repo view --json viewerPermission --jq '.viewerPermission')
+case "$VIEWER_PERMISSION" in
+    WRITE|MAINTAIN|ADMIN) ;;
+    *)
+        print_error "Release execution requires write, maintain, or admin access to $REPO"
+        exit 1
+        ;;
+esac
+ACTOR=$(gh api user --jq '.login')
+
 # Branch validation already done earlier (before commit selection)
 
 # Show summary
@@ -478,6 +492,7 @@ fi
 
 echo ""
 print_info "Triggering GitHub Actions workflow..."
+REQUEST_ID="release-$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
 
 # Trigger the workflow
 WORKFLOW_OUTPUT=$(mktemp)
@@ -487,19 +502,29 @@ if gh workflow run release-validated.yml \
     --ref "$BRANCH" \
     --field release_type="$RELEASE_TYPE" \
     --field dry_run="$DRY_RUN" \
-    --field skip_tests="$SKIP_TESTS" > "$WORKFLOW_OUTPUT" 2> "$WORKFLOW_ERROR"; then
+    --field skip_tests="$SKIP_TESTS" \
+    --field request_id="$REQUEST_ID" \
+    --field source_sha="$COMMIT_SHA" > "$WORKFLOW_OUTPUT" 2> "$WORKFLOW_ERROR"; then
 
     WORKFLOW_SUCCESS=true
     echo ""
     print_success "✓ Workflow triggered successfully!"
-    REPO_URL=$(gh repo view --json url -q .url)
 
-    # Wait for the run to appear and capture its ID
+    # Correlate by an unguessable request ID plus actor, branch, and exact source
+    # commit. Never select the merely "latest" release workflow run.
     print_info "Waiting for workflow run to appear..."
     RUN_ID=""
     for i in $(seq 1 15); do
         sleep 2
-        RUN_ID=$(gh run list --workflow=release-validated.yml --limit 1 --json databaseId,status -q '.[0].databaseId // empty')
+        RUN_ID=$(gh api "repos/$REPO/actions/runs?event=workflow_dispatch&per_page=50" \
+            --jq ".workflow_runs
+                | map(select(
+                    (.display_title | contains(\"$REQUEST_ID\")) and
+                    .actor.login == \"$ACTOR\" and
+                    .head_branch == \"$BRANCH\" and
+                    .head_sha == \"$COMMIT_SHA\"
+                ))
+                | if length == 1 then .[0].id else empty end")
         if [ -n "$RUN_ID" ]; then
             break
         fi
@@ -513,6 +538,35 @@ if gh workflow run release-validated.yml \
         if gh run watch "$RUN_ID" --exit-status; then
             WORKFLOW_CONCLUSION="success"
             print_success "✓ Workflow completed successfully!"
+            if [ "$DRY_RUN" == "false" ]; then
+                MANIFEST_DIR=$(mktemp -d)
+                if gh run download "$RUN_ID" --repo "$REPO" \
+                    --name "release-bump-$RUN_ID" --dir "$MANIFEST_DIR"; then
+                    MANIFEST="$MANIFEST_DIR/release-bump.json"
+                    [ -f "$MANIFEST" ] || {
+                        print_error "Release succeeded, but its bump manifest is missing"
+                        exit 1
+                    }
+                    if "$ROOT/finalize-release-bump.sh" \
+                            --repo "$(jq -r '.repo' "$MANIFEST")" \
+                            --base "$(jq -r '.base' "$MANIFEST")" \
+                            --head "$(jq -r '.head' "$MANIFEST")" \
+                            --source-sha "$(jq -r '.source_sha' "$MANIFEST")" \
+                            --head-sha "$(jq -r '.head_sha' "$MANIFEST")" \
+                            --run-id "$(jq -r '.run_id' "$MANIFEST")"; then
+                        FINALIZATION_CONCLUSION="success"
+                    else
+                        FINALIZATION_CONCLUSION="failure"
+                        print_error "Release succeeded, but version-bump finalization failed"
+                        echo "Re-run the exact finalizer command printed in workflow run $RUN_ID."
+                    fi
+                else
+                    FINALIZATION_CONCLUSION="failure"
+                    print_error "Release succeeded, but the bump manifest could not be downloaded"
+                    echo "Resume after downloading artifact release-bump-$RUN_ID from run $RUN_ID."
+                fi
+                rm -rf "$MANIFEST_DIR"
+            fi
         else
             WORKFLOW_CONCLUSION="failure"
             print_error "✗ Workflow failed!"
@@ -575,7 +629,11 @@ echo ""
 # Status and next steps
 if [ "$WORKFLOW_SUCCESS" = true ]; then
     if [ "${WORKFLOW_CONCLUSION:-}" = "success" ]; then
-        print_success "Status: WORKFLOW SUCCEEDED"
+        if [ "$DRY_RUN" == "false" ] && [ "${FINALIZATION_CONCLUSION:-}" != "success" ]; then
+            print_error "Status: RELEASE SUCCEEDED; VERSION-BUMP FINALIZATION FAILED"
+        else
+            print_success "Status: WORKFLOW SUCCEEDED"
+        fi
     elif [ "${WORKFLOW_CONCLUSION:-}" = "failure" ]; then
         print_error "Status: WORKFLOW FAILED"
         echo "  View logs: gh run view $RUN_ID --log-failed"
@@ -593,7 +651,7 @@ else
     echo ""
     echo "Error Details:"
     if [ -s "$WORKFLOW_ERROR" ]; then
-        cat "$WORKFLOW_ERROR" | sed 's/^/  /'
+        sed 's/^/  /' "$WORKFLOW_ERROR"
     else
         echo "  Unknown error. Check GitHub CLI authentication and repository access."
     fi
@@ -611,7 +669,9 @@ print_info "══════════════════════�
 rm -f "$WORKFLOW_OUTPUT" "$WORKFLOW_ERROR"
 
 # Exit with appropriate code
-if [ "$WORKFLOW_SUCCESS" = true ]; then
+if [ "$WORKFLOW_SUCCESS" = true ] &&
+   [ "${WORKFLOW_CONCLUSION:-unknown}" != "failure" ] &&
+   { [ "$DRY_RUN" = "true" ] || [ "${FINALIZATION_CONCLUSION:-failure}" = "success" ]; }; then
     exit 0
 else
     exit 1
