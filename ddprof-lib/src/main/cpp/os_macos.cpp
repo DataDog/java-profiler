@@ -26,6 +26,7 @@
 #include <unistd.h>
 #include "common.h"
 #include "os.h"
+#include "threadLocalData.h"
 
 
 class MacThreadList : public ThreadList {
@@ -76,6 +77,12 @@ JitWriteProtection::JitWriteProtection(bool enable) {
         if (prev != val) {
             _prev = prev;
             _restore = true;
+            // No malloc/TLS lazy-init here: ProfiledThread::current() is
+            // pthread_getspecific-backed and AS-safe (see its declaration).
+            ProfiledThread* pt = ProfiledThread::current();
+            if (pt != nullptr) {
+                pt->setJitWriteProtectionPending(prev);
+            }
             asm volatile("msr s3_6_c15_c1_5, %0\n"
                          "isb"
                          : "+r" (val) : : "memory");
@@ -94,6 +101,23 @@ JitWriteProtection::~JitWriteProtection() {
         asm volatile("msr s3_6_c15_c1_5, %0\n"
                      "isb"
                      : "+r" (prev) : : "memory");
+        ProfiledThread* pt = ProfiledThread::current();
+        if (pt != nullptr) {
+            pt->clearJitWriteProtectionPending();
+        }
+    }
+#endif
+}
+
+void JitWriteProtection::recoverAfterLongjmp() {
+#ifdef __aarch64__
+    ProfiledThread* pt = ProfiledThread::current();
+    if (pt != nullptr && pt->jitWriteProtectionPending()) {
+        u64 prev = pt->jitWriteProtectionSaved();
+        asm volatile("msr s3_6_c15_c1_5, %0\n"
+                     "isb"
+                     : "+r" (prev) : : "memory");
+        pt->clearJitWriteProtectionPending();
     }
 #endif
 }

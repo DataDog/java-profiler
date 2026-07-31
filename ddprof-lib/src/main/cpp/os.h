@@ -92,6 +92,14 @@ class JitWriteProtection {
   public:
     JitWriteProtection(bool enable);
     ~JitWriteProtection();
+
+    // Force-restores the JIT write-protection register if a JitWriteProtection
+    // guard's destructor was skipped by a siglongjmp out from under it (e.g.
+    // HotSpot's checkFault() recovery in HotspotSupport::walkJavaStack unwinds
+    // past a live JitWriteProtection local without running its destructor).
+    // Call at the sigsetjmp landing point right after such a longjmp is known
+    // to have occurred. No-op if no guard is currently pending restoration.
+    static void recoverAfterLongjmp();
 };
 
 

@@ -1222,6 +1222,11 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
     // checkFault() does a siglongjmp from inside segvHandler, bypassing
     // segvHandler's SignalHandlerScope destructor. Compensate.
     SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
+    // The longjmp also unwinds past getJavaTraceAsync()'s JitWriteProtection
+    // local without running its destructor, which would otherwise leave the
+    // thread's JIT write-protection register (macOS/aarch64 W^X state) stuck
+    // in the wrong mode. Compensate the same way.
+    JitWriteProtection::recoverAfterLongjmp();
     prof_thread->setJmpCtx(prev_jmp_buf);
     if (async_trace_active) {
       prof_thread->set_unwinding_Java(false);

@@ -107,6 +107,10 @@ JitWriteProtection::~JitWriteProtection() {
     // Not used on Linux
 }
 
+void JitWriteProtection::recoverAfterLongjmp() {
+    // Not used on Linux
+}
+
 
 static constexpr int MAX_SIGNALS = 64;
 static SigAction installed_sigaction[MAX_SIGNALS];
