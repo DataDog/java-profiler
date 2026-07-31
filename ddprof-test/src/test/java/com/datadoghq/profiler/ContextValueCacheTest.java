@@ -113,4 +113,57 @@ public class ContextValueCacheTest {
         assertNotNull(after);
         assertNotSame(before, after, "resolve after clear() must not return the pre-clear entry");
     }
+
+    @Test
+    public void charSequenceHitNeverCallsToString() throws IOException {
+        loadLibrary();
+        ContextValueCache.Entry primed = cache.resolve("shared-value");
+        assertNotNull(primed);
+
+        ToStringCountingCharSequence value = new ToStringCountingCharSequence("shared-value");
+        ContextValueCache.Entry hit = cache.resolve((CharSequence) value);
+        assertSame(primed, hit, "a content-equal CharSequence must hit the String-keyed entry");
+        assertEquals(0, value.toStringCalls, "a cache hit must not materialize a String");
+    }
+
+    @Test
+    public void charSequenceMissMaterializesStringExactlyOnce() throws IOException {
+        loadLibrary();
+        ToStringCountingCharSequence value = new ToStringCountingCharSequence("not-yet-cached");
+        ContextValueCache.Entry e = cache.resolve((CharSequence) value);
+        assertNotNull(e);
+        assertEquals("not-yet-cached", e.key);
+        assertEquals(1, value.toStringCalls, "a miss must materialize a String exactly once");
+    }
+
+    /** A {@link CharSequence} that is not a {@link String}, counting {@link #toString()} calls. */
+    private static final class ToStringCountingCharSequence implements CharSequence {
+        private final String value;
+        int toStringCalls = 0;
+
+        ToStringCountingCharSequence(String value) {
+            this.value = value;
+        }
+
+        @Override
+        public int length() {
+            return value.length();
+        }
+
+        @Override
+        public char charAt(int index) {
+            return value.charAt(index);
+        }
+
+        @Override
+        public CharSequence subSequence(int start, int end) {
+            return value.subSequence(start, end);
+        }
+
+        @Override
+        public String toString() {
+            toStringCalls++;
+            return value;
+        }
+    }
 }

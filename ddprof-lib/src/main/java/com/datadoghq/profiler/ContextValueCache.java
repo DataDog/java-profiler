@@ -98,6 +98,45 @@ final class ContextValueCache {
     }
 
     /**
+     * {@link CharSequence} counterpart of {@link #resolve(String)}, for callers (e.g. {@code
+     * setTraceContext}) whose value may be a non-{@code String} implementation — dd-trace-java
+     * passes {@code UTF8BytesString}/{@code SubSequence} spans-name views specifically to avoid
+     * forcing a {@code String} allocation on the hot path. The cache-hit path here never calls
+     * {@code toString()}: {@link #contentHashCode} replicates {@link String#hashCode()}'s
+     * algorithm so a {@code CharSequence} and a content-equal cached {@code String} key land in
+     * the same slot, and {@link String#contentEquals(CharSequence)} compares without allocating.
+     * {@code toString()} is only paid on a genuine miss, where a {@code String} is needed anyway
+     * to hand to {@code registerConstant0} and to store as the entry's key.
+     */
+    Entry resolve(CharSequence value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof String) {
+            return resolve((String) value);
+        }
+        int slot = contentHashCode(value) & MASK;
+        Entry e = table.get(slot);
+        if (e != null && e.key.contentEquals(value)) {
+            return e; // hit — no allocation, no JNI
+        }
+        return resolve(value.toString());
+    }
+
+    /**
+     * Computes {@link String#hashCode()}'s polynomial ({@code s[0]*31^(n-1) + ... + s[n-1]}) over
+     * an arbitrary {@code CharSequence}, without materializing a {@code String}.
+     */
+    private static int contentHashCode(CharSequence value) {
+        int h = 0;
+        int len = value.length();
+        for (int i = 0; i < len; i++) {
+            h = 31 * h + value.charAt(i);
+        }
+        return h;
+    }
+
+    /**
      * Drops all cached entries. Called when a fresh recording session starts and the native
      * Dictionary is reset, so stale encodings from the previous session are not reused. A concurrent
      * {@link #resolve} racing this simply observes a miss and re-registers the value against the new

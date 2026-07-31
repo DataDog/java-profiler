@@ -248,7 +248,7 @@ public final class JavaProfiler {
      *         non-negative {@code slotN} is {@code >= MAX_CONTEXT_SLOTS} (out of range)
      */
     public void setTraceContext(long rootSpanId, long spanId, long traceIdHigh, long traceIdLow,
-                                int slot0, String v0, int slot1, String v1) {
+                                int slot0, CharSequence v0, int slot1, CharSequence v1) {
         if (spanId == 0) {
             throw new IllegalArgumentException(
                     "spanId must be non-zero; use clearTraceContext() to clear the trace context");
@@ -334,7 +334,7 @@ public final class JavaProfiler {
     // (skip sentinel), the value is null, or the value cannot be represented (oversized / Dictionary
     // full). A non-negative out-of-range slot is rejected earlier by requireActivationSlot, so it
     // never reaches here and never registers the value in the permanent native Dictionary.
-    private ContextValueCache.Entry resolveContextValue(int slot, String value) {
+    private ContextValueCache.Entry resolveContextValue(int slot, CharSequence value) {
         if (slot < 0 || value == null) {
             return null;
         }
