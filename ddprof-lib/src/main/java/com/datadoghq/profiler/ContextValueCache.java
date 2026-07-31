@@ -68,15 +68,43 @@ final class ContextValueCache {
 
     /**
      * Resolves {@code value} to its cached {@code (encoding, utf8)} pair, registering it on a miss.
+     * The sole entrypoint — deliberately not overloaded on {@code String} alongside {@code
+     * CharSequence}, since Java resolves overloads by static (not runtime) type and a {@code
+     * String}-typed local would silently bind to a different method than a {@code
+     * CharSequence}-typed one holding the same value. {@link #resolveString} is the private,
+     * no-allocation fast path for callers (like this method, on a {@code String} runtime type)
+     * that already hold a {@code String}.
+     *
+     * <p>The cache-hit path never calls {@code toString()} on a non-{@code String} {@code
+     * CharSequence}: {@link #contentHashCode} replicates {@link String#hashCode()}'s algorithm so
+     * a {@code CharSequence} and a content-equal cached {@code String} key land in the same slot,
+     * and {@link String#contentEquals(CharSequence)} compares without allocating. This matters for
+     * callers (e.g. {@code setTraceContext}) whose value may be a non-{@code String}
+     * implementation — dd-trace-java passes {@code UTF8BytesString}/{@code SubSequence} span-name
+     * views specifically to avoid forcing a {@code String} allocation on the hot path.
+     * {@code toString()} is only paid on a genuine miss, where a {@code String} is needed anyway
+     * to hand to {@code registerConstant0} and to store as the entry's key.
      *
      * @return the entry, or {@code null} if the value cannot be represented — {@code null} input, a
      *         UTF-8 encoding longer than {@value #MAX_VALUE_BYTES} bytes, or a full native Dictionary
      *         (encoding {@code < 0}). Callers treat {@code null} as "no attribute" (skip / clear).
      */
-    Entry resolve(String value) {
+    Entry resolve(CharSequence value) {
         if (value == null) {
             return null;
         }
+        if (value instanceof String) {
+            return resolveString((String) value);
+        }
+        int slot = contentHashCode(value) & MASK;
+        Entry e = table.get(slot);
+        if (e != null && e.key.contentEquals(value)) {
+            return e; // hit — no allocation, no JNI
+        }
+        return resolveString(value.toString());
+    }
+
+    private Entry resolveString(String value) {
         int slot = value.hashCode() & MASK;
         Entry e = table.get(slot);
         if (e != null && value.equals(e.key)) {
@@ -95,32 +123,6 @@ final class ContextValueCache {
         Entry ne = new Entry(value, encoding, utf8);
         table.set(slot, ne); // benign race: converges on an equivalent entry
         return ne;
-    }
-
-    /**
-     * {@link CharSequence} counterpart of {@link #resolve(String)}, for callers (e.g. {@code
-     * setTraceContext}) whose value may be a non-{@code String} implementation — dd-trace-java
-     * passes {@code UTF8BytesString}/{@code SubSequence} spans-name views specifically to avoid
-     * forcing a {@code String} allocation on the hot path. The cache-hit path here never calls
-     * {@code toString()}: {@link #contentHashCode} replicates {@link String#hashCode()}'s
-     * algorithm so a {@code CharSequence} and a content-equal cached {@code String} key land in
-     * the same slot, and {@link String#contentEquals(CharSequence)} compares without allocating.
-     * {@code toString()} is only paid on a genuine miss, where a {@code String} is needed anyway
-     * to hand to {@code registerConstant0} and to store as the entry's key.
-     */
-    Entry resolve(CharSequence value) {
-        if (value == null) {
-            return null;
-        }
-        if (value instanceof String) {
-            return resolve((String) value);
-        }
-        int slot = contentHashCode(value) & MASK;
-        Entry e = table.get(slot);
-        if (e != null && e.key.contentEquals(value)) {
-            return e; // hit — no allocation, no JNI
-        }
-        return resolve(value.toString());
     }
 
     /**
