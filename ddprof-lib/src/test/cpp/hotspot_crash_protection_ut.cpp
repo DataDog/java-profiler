@@ -45,21 +45,6 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-namespace {
-// Force Counters::instance()'s function-local static to construct here, off
-// the signal path -- mirrors Profiler::setupSignalHandlers()'s own eager
-// warm-up (profiler.cpp), which exists precisely because the first touch of
-// the singleton runs non-async-signal-safe static-initialization machinery
-// (a C++ guard-variable lock, then aligned_alloc/memset). Several fixtures
-// below install real signal handlers (Profiler::segvHandler -> checkFault(),
-// SafeAccess::handle_safefetch) that increment Counters from inside an
-// actual SIGSEGV, without going through setupSignalHandlers() first. Without
-// this, whichever such test happens to run first in the process would race
-// that first-touch initialization inside a real signal handler instead of
-// ordinary code -- not async-signal-safe, and liable to hang.
-const bool kCountersPrewarmed = (Counters::getCounters(), true);
-}  // namespace
-
 // ---------------------------------------------------------------------------
 // A. ProfiledThread thread-type classification (isJavaThread fast path)
 //
@@ -400,6 +385,17 @@ protected:
     }
 
     void SetUp() override {
+        // Force Counters::instance()'s function-local static to construct
+        // here, off the signal path, before the handler below can fire --
+        // mirrors Profiler::setupSignalHandlers()'s own eager warm-up
+        // (profiler.cpp), which exists precisely because the first touch of
+        // the singleton runs non-async-signal-safe static-initialization
+        // machinery (a C++ guard-variable lock, then aligned_alloc/memset;
+        // see AGENTS.md's signal-handler-safety rule). handle_safefetch()
+        // below increments SAFEFETCH_FAILED/SAFECOPY_FAILED from inside a
+        // real SIGSEGV, without going through setupSignalHandlers() first.
+        (void)Counters::getCounters();
+
         _orig_segv = OS::replaceSigsegvHandler(handler);
         _orig_bus = OS::replaceSigbusHandler(handler);
     }
@@ -470,6 +466,18 @@ protected:
         ASSERT_NE(nullptr, _pt);
         ASSERT_FALSE(_pt->isProtected());
         ASSERT_FALSE(_pt->is_unwinding_Java());
+
+        // Force Counters::instance()'s function-local static to construct
+        // here, off the signal path, before Profiler::segvHandler below can
+        // fire -- mirrors Profiler::setupSignalHandlers()'s own eager
+        // warm-up (profiler.cpp), which exists precisely because the first
+        // touch of the singleton runs non-async-signal-safe
+        // static-initialization machinery (a C++ guard-variable lock, then
+        // aligned_alloc/memset; see AGENTS.md's signal-handler-safety rule).
+        // The recovered fault below reaches Profiler::checkFault(), which
+        // increments STACKWALK_LONGJMP_RECOVERED, from inside a real SIGSEGV,
+        // without going through setupSignalHandlers() first.
+        (void)Counters::getCounters();
 
         _orig_segv = OS::replaceSigsegvHandler(Profiler::segvHandler);
         _orig_bus = OS::replaceSigbusHandler(Profiler::busHandler);
