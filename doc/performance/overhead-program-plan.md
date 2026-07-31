@@ -1,19 +1,45 @@
-# Java Profiler Native Memory Overhead — Program Plan
+# Java Profiler Overhead — Program Plan
 
 ## The question
 
-**"What is the native memory overhead of java-profiler, and can we explain it to
-customers?"** This has been asked before — it's what originally motivated
-[dd-trace-doe](https://github.com/DataDog/dd-trace-doe), which reported
-**~150–250 MB** of overhead. We don't yet know how much of that is
-profiler-specific vs. APM tracing, framework/classloading diversity, or
-measurement methodology, and we don't have a model that predicts overhead
-for a given customer's workload shape. This document proposes a program to
-close that gap: understand the overhead, build the tools to keep measuring
-it, track it over time, learn what real customer workloads actually look
-like, and then fix what's fixable.
+**"What is the overhead of java-profiler — CPU, memory, and latency — and
+can we explain it to customers?"** This has been asked before — it's what
+originally motivated [dd-trace-doe](https://github.com/DataDog/dd-trace-doe),
+which reported **~150–250 MB** of memory overhead. We don't yet know how
+much of that is profiler-specific vs. APM tracing, framework/classloading
+diversity, or measurement methodology, and we don't have a model that
+predicts overhead for a given customer's workload shape — for any of the
+three dimensions.
 
-## Where we are today
+**Stated goal, as clarified**: measure overhead and set the baseline, for
+CPU, memory, and latency. dd-trace-doe has been the mechanism for this so
+far, but there's disagreement with how it measures overhead, which raises
+the actual open question: **which use cases (workload shapes) are good ones
+to measure overhead with, and how do we implement measuring those and use
+them to set a baseline and later do routine benchmarking?**
+
+That's a narrower framing than this document takes, deliberately. "Measure
+overhead and set the baseline" is essentially Phase 1 below (understanding
++ baselining). We think it's worth scoping the effort a bit wider than that
+single deliverable, for a concrete reason our own memory investigation
+already demonstrates: a one-time baseline number, by itself, doesn't survive
+contact with "does this help a customer" or "does this stay accurate as the
+codebase changes." Our memory work found overhead ranges from ~0 to >100 MB
+depending on a workload property (call-graph diversity) that a flat baseline
+number can't capture — the useful output isn't "the baseline is N MB," it's
+"here's what drives it, here's how to tell where your app falls, here's how
+we'll know if a future change makes it worse." That requires the fuller loop
+this document lays out: understand → track → calibrate against real
+customers → improve. We believe this is *more* aligned with what will
+actually be useful to customers and the business than a single baseline
+number, not a scope creep away from the ask.
+
+## Where we are today: memory
+
+Everything concrete we have so far is memory-specific. CPU and latency
+overhead haven't been investigated at all yet (see below) — this is the
+most significant gap in the current state and the plan explicitly calls
+out closing it, not just continuing the memory work.
 
 An initial empirical investigation (this repository,
 [memory-usage-model.md](memory-usage-model.md) →
@@ -60,8 +86,35 @@ tooling:
   mechanism rendering class names for wall-clock `MethodSample` stacks
   (confirmed *not* to go through `NM_DICTIONARY`) was never identified.
 
+## Where we are today: CPU and latency
+
+Nothing empirical yet — no synthetic sweep, no candidate driving dimensions
+identified, no hypotheses tested. We do think the *methodology* from the
+memory investigation transfers directly: isolate one workload property at a
+time in a synthetic microbenchmark, measure with/without-agent using enough
+repetitions to trust the number, then attribute the delta to a mechanism
+before proposing a fix. What we don't yet know, and can't credibly guess in
+advance, is *which* workload properties turn out to matter for CPU and
+latency the way call-graph/class diversity turned out to dominate memory —
+that's exploratory work still ahead of us (see Phase 1 below). Plausible
+starting hypotheses worth testing early, none validated: sampling
+frequency/engine choice (wall-clock vs. CPU-time vs. allocation), thread
+count and contention (signal-delivery cost scales with active threads),
+safepoint-biasing effects from JVMTI stack walking, and interaction with GC
+pause timing. Latency specifically may also need tail-latency-sensitive
+measurement (p99/p999) rather than averages, since profiling's overhead is
+plausibly bursty (tied to sample ticks and chunk rotations) rather than
+uniform per-request.
+
 ## What we learned about dd-trace-doe specifically
 
+- **Already measures overhead across CPU, memory, and latency** — its
+  output schema records `cpu`, `memory`, `latency_p50`, `latency_p99`, and
+  `startup_wall` per run, each independently correlatable against the
+  `tracing`/`profiling` toggles. The stated goal above ("measure overhead
+  for CPU, memory, and latency") isn't a scope dd-trace-doe is missing —
+  the friction is with *how* it measures (which workload shapes, how
+  reliably), not *what* it measures.
 - Measures **peak cgroup `anon` memory** of the whole container, sampled
   during load and stop phases, `tracing`/`profiling` each independently
   toggleable (`internal/schema/output.go`).
@@ -88,13 +141,16 @@ task, not assuming either number is "right."
 
 ## Phase 1 — Understand the overhead and its nuances
 
-**Goal**: a customer-explainable model ("your overhead is roughly X, driven
-by A/B/C, here's how to check where your app falls") backed by tooling good
-enough to trust, and a real reconciliation with dd-trace-doe's numbers — not
-just "we found something similar to their number."
+**Goal**: a customer-explainable model, for CPU, memory, and latency each
+("your overhead is roughly X, driven by A/B/C, here's how to check where
+your app falls"), backed by tooling good enough to trust, and a real
+reconciliation with dd-trace-doe's numbers — not just "we found something
+similar to their number." Memory is furthest along; CPU and latency are
+starting close to zero and should follow the same method, not a different
+one invented from scratch.
 
-1. **Close out the open threads from the current investigation** — each is
-   independently actionable:
+1. **Memory — close out the open threads from the current investigation**
+   — each is independently actionable:
    - Confirm or refute jmethodID preloading (`GetClassMethods` via
      `ClassPrepare`) as the driver of the "Class" NMT delta, by toggling it
      off and re-measuring.
@@ -115,7 +171,20 @@ just "we found something similar to their number."
      beyond 150,000 classes, and whether it's specific to reflection-heavy
      workloads (our synthetic harness's method of invocation) or general.
 
-2. **Reconcile with dd-trace-doe.**
+2. **CPU and latency — start from zero, using the memory investigation as
+   the method template, not by guessing the answer up front.** Concretely:
+   build isolated synthetic microbenchmarks varying one candidate dimension
+   at a time (the hypotheses listed under "Where we are today: CPU and
+   latency" above are a reasonable starting list, not a final one), measure
+   with/without-agent with enough repetitions to trust the number (we
+   learned this the hard way on memory — see below), and only *then* decide
+   which dimensions are worth turning into permanent benchmarks. Expect this
+   to surface a different dominant driver than memory's — no reason to
+   assume class/call-graph diversity is also the main CPU/latency lever —
+   so avoid reusing the memory benchmark matrix for CPU/latency without
+   checking it's actually the right one first.
+
+3. **Reconcile with dd-trace-doe.**
    - Find the specific run/config that produced the reported 150–250 MB
      (archetype, `endpoints` value, `tracing`/`profiling` flag combination,
      library version) — this needs someone with access to dd-trace-doe's
@@ -132,28 +201,59 @@ just "we found something similar to their number."
    - Where their container-level `anon` memory metric and our `ps`-based
      RSS diverge, understand why before treating the two as comparable.
 
-3. **Produce the customer-facing model.** A short, publishable explanation:
-   roughly what to expect at low/medium/high call-graph diversity, phrased
-   in terms a customer can self-assess against their own app (e.g. "if your
-   app is a small number of services with narrow, repetitive call paths,
-   expect near-zero overhead; if it's a large framework-heavy monolith or a
-   microservice fleet with wide call-graph diversity, expect overhead in the
-   tens-to-~100MB range, scaling with how much distinct code gets sampled").
-   This is the direct deliverable the original question was asking for.
+4. **Produce the customer-facing model**, per dimension as each matures
+   (memory first). A short, publishable explanation: roughly what to expect
+   at low/medium/high diversity on whatever the dominant driver turns out to
+   be, phrased in terms a customer can self-assess against their own app
+   (e.g., for memory: "if your app is a small number of services with
+   narrow, repetitive call paths, expect near-zero overhead; if it's a large
+   framework-heavy monolith or a microservice fleet with wide call-graph
+   diversity, expect overhead in the tens-to-~100MB range, scaling with how
+   much distinct code gets sampled"). This is the direct deliverable the
+   original question was asking for.
 
-4. **Identify low-hanging fruit and larger improvement opportunities**
+5. **Identify low-hanging fruit and larger improvement opportunities**
    (deliberately sequenced *after* the above, since fixing things you don't
-   understand yet risks fixing the wrong thing). Candidates already visible
-   from phase-0 findings, to be validated: jmethodID preloading strategy
-   (could it be lazier or bounded instead of eager-per-`ClassPrepare`?),
-   `MethodMap`/`MethodInfo` sizing and lifecycle, calltrace/dictionary
-   initial-capacity tuning for high-diversity workloads. Output: a ranked
+   understand yet risks fixing the wrong thing). Memory candidates already
+   visible from findings so far, to be validated: jmethodID preloading
+   strategy (could it be lazier or bounded instead of eager-per-
+   `ClassPrepare`?), `MethodMap`/`MethodInfo` sizing and lifecycle,
+   calltrace/dictionary initial-capacity tuning for high-diversity
+   workloads. No CPU/latency candidates exist yet — they're a product of
+   item 2's investigation, not knowable in advance. Output: a ranked
    backlog (effort vs. expected impact) feeding Phase 4.
+
+### Which use cases are good to measure overhead with?
+
+This is the specific question raised, and the honest answer differs by
+dimension because our depth of investigation differs by dimension:
+
+- **Memory: we have an evidenced answer.** The dominant lever is
+  *call-graph/class diversity actually touched by sampling* — not raw
+  class-loading volume, not thread count. A good memory-overhead use case
+  varies this directly (few endpoints/narrow call paths vs. many/wide),
+  which is close to dd-trace-doe's existing `endpoints` parameter — the
+  gap is that it defaults to 1 (a low-diversity point) and we don't know
+  what range has actually been exercised. Thread count and allocation
+  diversity are secondary levers, worth a smaller number of fixed
+  benchmark points rather than a full sweep.
+- **CPU and latency: we don't have an evidenced answer yet, and shouldn't
+  pretend to.** Item 2 above is how we get one. Until then, any specific
+  archetype recommendation for these two would be a guess dressed up as a
+  plan.
+- **What we can commit to now**: the *method* for answering "which use
+  cases" (isolate one candidate dimension at a time, measure with enough
+  repetition to trust the delta, only promote validated dominant drivers to
+  permanent archetypes), not a final list for all three dimensions today.
+  See "Path to implementation" below for why we think this has to be the
+  answer rather than a fixed archetype list up front.
 
 ## Phase 2 — Continuous tracking
 
-**Goal**: catch memory regressions automatically, see trends across
-releases, without relying on someone remembering to run the sweep by hand.
+**Goal**: catch regressions automatically and see trends across releases,
+without relying on someone remembering to run a sweep by hand — for memory
+first (it's the dimension with a benchmark matrix to build one from), then
+CPU and latency once Phase 1's exploratory work identifies theirs.
 
 - Decide split of responsibility with dd-trace-doe rather than building a
   parallel system from scratch: dd-trace-doe is already positioned for
@@ -186,13 +286,14 @@ and so "is my app going to see the high end of this range" is answerable
 from data, not guesswork.
 
 - Identify what's cheap to report from the live agent without adding
-  overhead of its own: the natural candidates are exactly the dimensions
-  Phase 1 found to matter — distinct call-trace shapes recorded, distinct
-  classes/methods touched, thread count/churn over a session. Some of this
-  may already be adjacent to existing `NM_*`/debug counters; the work is
-  packaging it as a "workload diversity" signal rather than a raw byte
-  count, and deciding what's safe/appropriate to report (opt-in, aggregated,
-  no customer-identifying data).
+  overhead of its own: for memory, the natural candidates are exactly the
+  dimensions Phase 1 found to matter — distinct call-trace shapes recorded,
+  distinct classes/methods touched, thread count/churn over a session. Some
+  of this may already be adjacent to existing `NM_*`/debug counters; the
+  work is packaging it as a "workload diversity" signal rather than a raw
+  byte count, and deciding what's safe/appropriate to report (opt-in,
+  aggregated, no customer-identifying data). CPU/latency-relevant telemetry
+  is a placeholder until their Phase 1 dimensions are known.
 - Report into Datadog's own telemetry so the *distribution* of workload
   diversity across the real customer fleet is visible — not just "what did
   our synthetic benchmark assume."
@@ -206,7 +307,7 @@ from data, not guesswork.
 **Goal**: actually reduce overhead, guided by Phase 1's findings rather than
 guessing.
 
-- Work the ranked backlog from Phase 1.4.
+- Work the ranked backlog from Phase 1.5.
 - Every change validated against Phase 2's tracking (both to confirm the
   improvement landed, and to make sure it didn't regress something else) —
   this is the payoff for building Phase 2 before or alongside this work
@@ -215,17 +316,68 @@ guessing.
   "as of version X, overhead in the high-diversity regime dropped from ~Y to
   ~Z."
 
-## Sequencing and dependencies
+## Path to implementation: iterative, not waterfall
 
-Phases 1 and 2 should start roughly together — Phase 2's tooling needs
-Phase 1's benchmark-matrix decisions (which dimensions, which fixed points),
-but doesn't need Phase 1 fully finished first. Phase 3 can start
-independently (it's mostly agent instrumentation + telemetry pipeline work)
-but its *value* — calibrating the model — depends on Phase 1 having a model
-to calibrate. Phase 4 explicitly waits on Phase 1's findings; starting
-improvement work before understanding the mechanism risks fixing the wrong
-15% and missing the 85% (as this investigation's own NMT breakdown
-illustrates — the biggest lever might not be `NM_CALLTRACE` at all).
+The natural way to ask "what's the path to implementation" is as a
+specification: decide the archetypes, then build them, then run them. We
+don't think that will work here, and we have direct evidence from the
+memory work, not just a general preference for agile-sounding language:
+
+- We started the memory investigation assuming (per the static-analysis
+  model in `memory-usage-model.md`) that thread count and the
+  `NM_CALLTRACE` hash-table resize were likely the dominant costs. Empirical
+  testing found thread count is close to noise, `NM_CALLTRACE`'s own resize
+  is a small fraction (15–25 MB) of the actual overhead (~102 MB), and the
+  real dominant driver (call-graph/class diversity, and specifically the
+  *sampled* subset of it) only emerged after several rounds of "measure,
+  get a confusing result, dig into source, re-measure."
+- A single-pair with/without-agent comparison at realistic scale was off by
+  2x+ from the true value; getting a trustworthy number required building
+  new tooling (`run_repeated_sweep.sh`) *during* the investigation, not
+  something we could have specified up front.
+- We have no reason to expect CPU and latency to be more predictable than
+  memory turned out to be. Committing now to specific new archetypes for
+  them would be guessing, not planning.
+
+**What we propose instead is a loop, run per dimension (CPU, memory,
+latency), currently at different stages for each:**
+
+1. Hypothesize candidate drivers (source reading + intuition) — cheap, fast
+   (memory: done; CPU/latency: listed above as a starting point, not final).
+2. Build isolated synthetic microbenchmarks and measure with/without-agent,
+   repeated enough to trust the delta — this is investigative work, days
+   per dimension based on the memory experience, not weeks, *if* the
+   dimension turns out to matter; ruling one out is faster than confirming
+   one.
+3. Attribute the delta to a mechanism where practical (NMT category
+   breakdown, source instrumentation) — this is where effort is hardest to
+   predict in advance; the memory investigation's attribution work (jmethodID
+   preloading, the `MethodMap` gap) took real digging and isn't fully closed
+   out even now.
+4. Only *then* decide which validated dimensions become permanent
+   archetypes/benchmarks, and build/extend the actual measurement mechanism
+   (dd-trace-doe archetype changes, or a repo-local benchmark) — this is
+   where most of the "should we have new archetypes" effort lives, and its
+   size depends entirely on what step 1–3 found. For memory, this looks
+   like extending dd-trace-doe's existing `endpoints` parameter (a schema
+   change plus benchmark-matrix definition, not new infrastructure) — a
+   reasonable proxy for "small," but not yet scoped in detail. For CPU and
+   latency, we can't size this yet because we don't know the dimension.
+5. Feed findings into the customer-facing model and the tracking mechanism
+   (Phase 2); repeat the loop as new findings (including Phase 3's
+   real-world telemetry) surface dimensions we didn't think to test.
+
+Phases 1 and 2 should start roughly together for the memory track (it's far
+enough along to define an initial benchmark matrix), but CPU and latency
+need at least one pass through steps 1–3 above before Phase 2 tooling can
+be usefully defined for them. Phase 3 can start independently (it's mostly
+agent instrumentation + telemetry pipeline work) but its *value* —
+calibrating the model — depends on each dimension already having a model to
+calibrate. Phase 4 explicitly waits on Phase 1's findings, per dimension;
+starting improvement work before understanding the mechanism risks fixing
+the wrong 15% and missing the 85% (as this investigation's own NMT
+breakdown illustrates — the biggest memory lever might not be
+`NM_CALLTRACE` at all, and we still don't know the CPU/latency equivalent).
 
 ## Open risks
 
@@ -242,16 +394,30 @@ illustrates — the biggest lever might not be `NM_CALLTRACE` at all).
   minutes just for one N value, one dimension). Phase 2's CI-friendly
   benchmark matrix needs to be deliberately smaller than Phase 1's
   exploratory sweep, or it won't run often enough to be useful.
+- **CPU and latency may turn out to need fundamentally different tooling
+  than memory did.** Memory benefited from a fairly clean with/without-agent
+  RSS diff; CPU overhead may be dominated by transient/bursty costs (sample
+  ticks, signal delivery, JFR chunk writes) that a steady-state comparison
+  doesn't capture well, and latency likely needs tail-percentile-aware
+  measurement from the start rather than an average. Budget Phase 1.2 as
+  genuinely exploratory, including "what should we even measure" as an open
+  question, not just "run the memory harness with a different metric."
 
 ## Concrete next steps
 
 1. Get access to the dd-trace-doe run(s)/config that produced the reported
-   150–250 MB figure (Phase 1.2, first task — everything else in
+   150–250 MB figure (Phase 1.3, first task — everything else in
    reconciliation depends on knowing what was actually measured).
 2. Toggle-test the jmethodID-preloading hypothesis (Phase 1.1) — cheapest,
-   most concrete open thread from the current investigation.
-3. Decide the Phase 2 split of responsibility between dd-trace-doe
+   most concrete open thread from the current memory investigation.
+3. Kick off Phase 1.2 for CPU and latency: pick 1–2 of the candidate
+   hypotheses above, build the smallest synthetic microbenchmark that
+   isolates one, and get a first with/without-agent number — the goal at
+   this step is learning whether the memory methodology transfers cleanly,
+   not landing a final answer.
+4. Decide the Phase 2 split of responsibility between dd-trace-doe
    (end-to-end/nightly) and a java-profiler-repo-local benchmark (fast/PR
-   or nightly) before building either.
-4. Scope Phase 3's telemetry additions against what's already technically
+   or nightly) before building either — for memory first, since it's the
+   only dimension far enough along to make this decision concretely.
+5. Scope Phase 3's telemetry additions against what's already technically
    adjacent to existing counters, to estimate effort before committing.
