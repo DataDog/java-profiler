@@ -1079,6 +1079,9 @@ void Profiler::setupSignalHandlers() {
       assert(prof_lib != nullptr);
       profiler_min_address = reinterpret_cast<uintptr_t>(prof_lib->minAddress());
       profiler_max_address = reinterpret_cast<uintptr_t>(prof_lib->maxAddress());
+      // Prevents the compiler from moving profiler_min_address/profiler_max_address stores pass
+      // signal handler setup.
+      std::atomic_signal_fence(std::memory_order_release);
 
       #ifdef __FAULT_INJECTION__
       // Reserve the PROT_NONE guard region used to poison memory-access sites.
