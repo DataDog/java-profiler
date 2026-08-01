@@ -298,6 +298,11 @@ APPROVAL_POLICY=$(<"$ROOT/.github/chainguard/self.approve-trivial.approve-pr.sts
 [[ "$APPROVAL_POLICY" == *"refs/heads/(main|release/[0-9]+\\.[0-9]+\\._)"* ]] ||
   fail "approval policy does not allow protected release branches"
 pass
+RELEASE_POLICY=$(<"$ROOT/.github/chainguard/self.release-bump.create-pr.sts.yaml")
+grep -Fq -- 'job_workflow_ref: DataDog/java-profiler/\.github/workflows/release-validated\.yml@refs/heads/(main|release/[0-9]+\\.[0-9]+\\._)' \
+  <<<"$RELEASE_POLICY" ||
+  fail "release PR policy does not match the workflow claim"
+pass
 [ "$(grep -Fc "inputs.dry_run != true && inputs.release_type != 'retag'" \
   <<<"$RELEASE_WORKFLOW")" -ge 2 ] ||
   fail "dry run can produce a finalization manifest"

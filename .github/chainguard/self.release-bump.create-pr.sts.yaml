@@ -4,7 +4,7 @@ subject_pattern: "repo:DataDog/java-profiler:ref:refs/heads/(main|release/[0-9]+
 
 claim_pattern:
   event_name: workflow_dispatch
-  job_workflow_ref: DataDog/java-profiler/\\.github/workflows/release-validated\\.yml@refs/heads/(main|release/[0-9]+\\.[0-9]+\\._)
+  job_workflow_ref: DataDog/java-profiler/\.github/workflows/release-validated\.yml@refs/heads/(main|release/[0-9]+\\.[0-9]+\\._)
 
 permissions:
   contents: read
