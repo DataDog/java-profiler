@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+# Copyright 2026, Datadog, Inc
+
 set -euo pipefail
 
 REPO="DataDog/java-profiler"
@@ -37,7 +39,10 @@ if [ -n "$FIXTURE" ]; then
   PERMISSION=$FIXTURE_PERMISSION
 else
   command -v gh >/dev/null || die "GitHub CLI (gh) is required"
-  PERMISSION=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq '.permission')
+  if ! PERMISSION=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" \
+      --jq '.permission' 2>/dev/null); then
+    die "unable to determine repository permission for label actor $ACTOR"
+  fi
 fi
 
 case "$ACTOR" in

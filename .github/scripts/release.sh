@@ -2,7 +2,6 @@
 
 # Copyright 2026, Datadog, Inc
 
-set -x
 set -euo pipefail
 
 TYPE=$1

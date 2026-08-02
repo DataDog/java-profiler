@@ -160,6 +160,15 @@ expect_trivial_failure contributor triage
 expect_trivial_failure unknown-user read
 expect_trivial_failure 'unknown[bot]' admin Bot
 
+if PERMISSION_ERROR=$("$TRIVIAL_VALIDATOR" \
+    --actor unavailable-user --actor-type User 2>&1); then
+  fail "trivial validator accepted an actor after permission lookup failure"
+fi
+[ "$PERMISSION_ERROR" = \
+  "trivial approval validation failed: unable to determine repository permission for label actor unavailable-user" ] ||
+  fail "trivial validator did not normalize permission lookup failure"
+pass
+
 VALID="$TEMP_DIR/valid.json"
 write_valid_fixture "$VALID"
 expect_success "$VALID"
@@ -304,6 +313,8 @@ TRIVIAL_VALIDATOR_SCRIPT=$(<"$TRIVIAL_VALIDATOR")
 pass
 [[ "$VALIDATOR_SCRIPT" == *'LABEL="trivial"'* ]] ||
   fail "validator does not use the trivial label"
+[[ "$RELEASE_SCRIPT" != *"set -x"* ]] ||
+  fail "release script enables credential-bearing shell tracing"
 [[ "$VALIDATOR_SCRIPT" == *'github-actions[bot]'* ]] ||
   fail "validator does not require the GitHub Actions PR author"
 [[ "$VALIDATOR_SCRIPT" == *'dd-octo-sts[bot]'* ]] ||
