@@ -390,9 +390,10 @@ if [ "$MODE" = "pr" ]; then
       *) die "human labeling actor must have write, maintain, or admin permission" ;;
     esac
   fi
-  [ "$(json_string '.author_login')" = "github-actions[bot]" ] &&
-    [ "$(json_string '.author_type')" = "Bot" ] ||
+  if [ "$(json_string '.author_login')" != "github-actions[bot]" ] ||
+     [ "$(json_string '.author_type')" != "Bot" ]; then
     die "release bump PR must be created by github-actions[bot]"
+  fi
   jq -e --arg expected_label "$LABEL" \
     '.labels | index($expected_label) != null' "$DATA" >/dev/null ||
     die "PR must have the $LABEL label"

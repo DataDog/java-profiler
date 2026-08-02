@@ -24,8 +24,9 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-[ -n "$REPO" ] && [ -n "$PR_NUMBER" ] && [ -n "$EXPECTED_HEAD_SHA" ] ||
+if [ -z "$REPO" ] || [ -z "$PR_NUMBER" ] || [ -z "$EXPECTED_HEAD_SHA" ]; then
   die "--repo, --pr-number, and --expected-head-sha are required"
+fi
 [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || die "invalid PR number"
 [[ "$POLL_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || die "invalid poll attempts"
 [[ "$POLL_SECONDS" =~ ^[0-9]+$ ]] || die "invalid poll interval"

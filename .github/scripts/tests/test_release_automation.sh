@@ -21,7 +21,7 @@ mkdir "$NETWORK_GUARD_BIN"
 for command in gh ssh scp curl wget; do
   printf '%s\n' \
     '#!/usr/bin/env bash' \
-    'echo "network command blocked by hermetic release test: ${0##*/}" >&2' \
+    "echo \"network command blocked by hermetic release test: \${0##*/}\" >&2" \
     'exit 97' > "$NETWORK_GUARD_BIN/$command"
   chmod +x "$NETWORK_GUARD_BIN/$command"
 done
@@ -308,11 +308,11 @@ pass
   fail "validator does not require the GitHub Actions PR author"
 [[ "$VALIDATOR_SCRIPT" == *'dd-octo-sts[bot]'* ]] ||
   fail "validator does not require the distinct STS labeler"
-[[ "$RELEASE_SCRIPT" == *'GH_TOKEN="$GITHUB_TOKEN" gh api --method POST'* ]] ||
+[[ "$RELEASE_SCRIPT" == *"GH_TOKEN=\"\$GITHUB_TOKEN\" gh api --method POST"* ]] ||
   fail "release job does not create the PR with GITHUB_TOKEN"
-[[ "$RELEASE_SCRIPT" == *'GH_TOKEN="$BUMP_LABEL_TOKEN" gh api --method POST'* ]] ||
+[[ "$RELEASE_SCRIPT" == *"GH_TOKEN=\"\$BUMP_LABEL_TOKEN\" gh api --method POST"* ]] ||
   fail "release job does not label the PR with the distinct STS token"
-[[ "$RELEASE_SCRIPT" == *'gh pr merge "$BUMP_PR_NUMBER"'* ]] ||
+[[ "$RELEASE_SCRIPT" == *"gh pr merge \"\$BUMP_PR_NUMBER\""* ]] ||
   fail "release job does not queue auto-merge"
 [[ "$RELEASE_SCRIPT" == *"--match-head-commit"* ]] ||
   fail "release job auto-merge is not SHA locked"
