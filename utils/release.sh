@@ -538,35 +538,6 @@ if gh workflow run release-validated.yml \
         if gh run watch "$RUN_ID" --exit-status; then
             WORKFLOW_CONCLUSION="success"
             print_success "✓ Workflow completed successfully!"
-            if [ "$DRY_RUN" == "false" ]; then
-                MANIFEST_DIR=$(mktemp -d)
-                if gh run download "$RUN_ID" --repo "$REPO" \
-                    --name "release-bump-$RUN_ID" --dir "$MANIFEST_DIR"; then
-                    MANIFEST="$MANIFEST_DIR/release-bump.json"
-                    [ -f "$MANIFEST" ] || {
-                        print_error "Release succeeded, but its bump manifest is missing"
-                        exit 1
-                    }
-                    if "$ROOT/finalize-release-bump.sh" \
-                            --repo "$(jq -r '.repo' "$MANIFEST")" \
-                            --base "$(jq -r '.base' "$MANIFEST")" \
-                            --head "$(jq -r '.head' "$MANIFEST")" \
-                            --source-sha "$(jq -r '.source_sha' "$MANIFEST")" \
-                            --head-sha "$(jq -r '.head_sha' "$MANIFEST")" \
-                            --run-id "$(jq -r '.run_id' "$MANIFEST")"; then
-                        FINALIZATION_CONCLUSION="success"
-                    else
-                        FINALIZATION_CONCLUSION="failure"
-                        print_error "Release succeeded, but version-bump finalization failed"
-                        echo "Re-run the exact finalizer command printed in workflow run $RUN_ID."
-                    fi
-                else
-                    FINALIZATION_CONCLUSION="failure"
-                    print_error "Release succeeded, but the bump manifest could not be downloaded"
-                    echo "Resume after downloading artifact release-bump-$RUN_ID from run $RUN_ID."
-                fi
-                rm -rf "$MANIFEST_DIR"
-            fi
         else
             WORKFLOW_CONCLUSION="failure"
             print_error "✗ Workflow failed!"
@@ -629,11 +600,7 @@ echo ""
 # Status and next steps
 if [ "$WORKFLOW_SUCCESS" = true ]; then
     if [ "${WORKFLOW_CONCLUSION:-}" = "success" ]; then
-        if [ "$DRY_RUN" == "false" ] && [ "${FINALIZATION_CONCLUSION:-}" != "success" ]; then
-            print_error "Status: RELEASE SUCCEEDED; VERSION-BUMP FINALIZATION FAILED"
-        else
-            print_success "Status: WORKFLOW SUCCEEDED"
-        fi
+        print_success "Status: WORKFLOW SUCCEEDED"
     elif [ "${WORKFLOW_CONCLUSION:-}" = "failure" ]; then
         print_error "Status: WORKFLOW FAILED"
         echo "  View logs: gh run view $RUN_ID --log-failed"
@@ -670,8 +637,7 @@ rm -f "$WORKFLOW_OUTPUT" "$WORKFLOW_ERROR"
 
 # Exit with appropriate code
 if [ "$WORKFLOW_SUCCESS" = true ] &&
-   [ "${WORKFLOW_CONCLUSION:-unknown}" != "failure" ] &&
-   { [ "$DRY_RUN" = "true" ] || [ "${FINALIZATION_CONCLUSION:-failure}" = "success" ]; }; then
+   [ "${WORKFLOW_CONCLUSION:-unknown}" = "success" ]; then
     exit 0
 else
     exit 1

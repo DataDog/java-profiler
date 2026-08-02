@@ -1,3 +1,5 @@
+# Copyright 2026, Datadog, Inc
+
 name: CI Run
 
 concurrency:
@@ -36,15 +38,15 @@ jobs:
             .github/scripts/release.sh \
             .github/scripts/validate-trivial-approval.sh \
             .github/scripts/validate-release-bump.sh \
+            .github/scripts/wait-release-bump.sh \
             utils/release.sh \
-            utils/finalize-release-bump.sh \
             .github/scripts/tests/test_release_automation.sh
           shellcheck \
           .github/scripts/release.sh \
           .github/scripts/validate-trivial-approval.sh \
           .github/scripts/validate-release-bump.sh \
-            utils/release.sh \
-            utils/finalize-release-bump.sh \
+          .github/scripts/wait-release-bump.sh \
+          utils/release.sh \
             .github/scripts/tests/test_release_automation.sh
           .github/scripts/tests/test_release_automation.sh
 

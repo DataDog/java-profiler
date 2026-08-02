@@ -1,0 +1,13 @@
+# Copyright 2026, Datadog, Inc
+
+issuer: https://token.actions.githubusercontent.com
+
+subject_pattern: 'repo:DataDog/java-profiler:ref:refs/heads/(main|release/[0-9]+\.[0-9]+\._)'
+
+claim_pattern:
+  event_name: workflow_dispatch
+  job_workflow_ref: DataDog/java-profiler/\.github/workflows/release-validated\.yml@refs/heads/(main|release/[0-9]+\.[0-9]+\._)
+
+permissions:
+  contents: read
+  pull_requests: write

@@ -1,5 +1,7 @@
 # Utility Scripts
 
+<!-- Copyright 2026, Datadog, Inc -->
+
 This directory contains utility scripts for managing the java-profiler project.
 
 ---
@@ -40,23 +42,28 @@ Triggers the Validated Release workflow using GitHub CLI to create a new release
 1. Validates inputs and branch rules
 2. Interactive commit selection (or use `--commit`)
 3. Triggers GitHub Actions "Validated Release" workflow
-4. Workflow runs pre-release tests, creates the annotated tag, and pushes an
-   exact single-commit version-bump branch
-5. For real releases, the local script downloads the workflow's immutable bump
-   manifest and opens the PR as the authenticated human
-6. Adding `trivial` triggers the approval workflow; automated bump PRs are
-   additionally validated,
-   which approves only after validating permissions, refs, SHAs, and the exact
-   one-line version diff
-7. The local finalizer waits for the exact bot approval and required checks,
-   then squash-merges with `--match-head-commit`; it never queues auto-merge or
-   bypasses branch protection
+4. Workflow runs pre-release tests, creates the annotated tag, and opens an
+   exact single-commit version-bump PR as `github-actions[bot]`
+5. The final commit is pushed through the release SSH identity, producing the
+   `synchronize` event that starts normal PR CI even though `GITHUB_TOKEN`
+   created the PR
+6. A separate `dd-octo-sts[bot]` identity adds `trivial`; the approval workflow
+   validates permissions, refs, SHAs, and the exact one-line version diff before
+   approving that exact commit
+7. The release workflow waits for the exact approval and required checks, then
+   verifies that exact-SHA auto-merge completed; it never bypasses branch
+   protection
 8. Tag push triggers GitLab, which publishes the Maven artifacts, and the
    GitHub release workflows attach the release assets
 
-If the workflow is launched directly from the GitHub UI, its summary prints the
-exact `utils/finalize-release-bump.sh` command required to finish the bump. A
-dry run never creates a PR, adds a label, requests approval, or merges anything.
+For a major release, the generated `N.0.0` commit remains on
+`release/N.0._` and is tagged there. The bump PR moves `main` directly from
+its recorded source commit to `N.1.0`; the workflow never pushes a generated
+commit directly to protected `main`.
+
+The repository's Actions settings must allow GitHub Actions to create and
+approve pull requests. A dry run never creates a PR, adds a label, requests
+approval, or merges anything.
 
 ### Testing release automation
 

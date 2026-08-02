@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+# Copyright 2026, Datadog, Inc
+
 set -euo pipefail
 
 LABEL="trivial"
@@ -8,10 +10,12 @@ FIXTURE=""
 REPO="DataDog/java-profiler"
 PR_NUMBER=""
 SENDER=""
+SENDER_TYPE=""
 BASE=""
 HEAD=""
 SOURCE_SHA=""
 EXPECTED_HEAD_SHA=""
+LOCAL_RELEASE_TAG=""
 TEMP_DIR=""
 
 die() {
@@ -32,11 +36,13 @@ while [ "$#" -gt 0 ]; do
     --repo) REPO=${2:-}; shift 2 ;;
     --pr-number) PR_NUMBER=${2:-}; shift 2 ;;
     --sender) SENDER=${2:-}; shift 2 ;;
+    --sender-type) SENDER_TYPE=${2:-}; shift 2 ;;
     --branch) MODE="branch"; shift ;;
     --base) BASE=${2:-}; shift 2 ;;
     --head) HEAD=${2:-}; shift 2 ;;
     --source-sha) SOURCE_SHA=${2:-}; shift 2 ;;
     --expected-head-sha) EXPECTED_HEAD_SHA=${2:-}; shift 2 ;;
+    --local-release-tag) LOCAL_RELEASE_TAG=${2:-}; shift 2 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -46,6 +52,7 @@ TEMP_DIR=$(mktemp -d)
 DATA="$TEMP_DIR/data.json"
 PARENT_BUILD="$TEMP_DIR/parent-build.gradle.kts"
 HEAD_BUILD="$TEMP_DIR/head-build.gradle.kts"
+RELEASE_BUILD="$TEMP_DIR/release-build.gradle.kts"
 
 permission() {
   gh api "repos/$REPO/collaborators/$1/permission" --jq '.permission'
@@ -64,12 +71,13 @@ is_reachable() {
 
 if [ -n "$FIXTURE" ]; then
   [ -f "$FIXTURE" ] || die "fixture does not exist: $FIXTURE"
-  jq 'del(.parent_build, .head_build)' "$FIXTURE" > "$DATA"
+  jq 'del(.parent_build, .head_build, .release_build)' "$FIXTURE" > "$DATA"
   jq -j '.parent_build' "$FIXTURE" > "$PARENT_BUILD"
   jq -j '.head_build' "$FIXTURE" > "$HEAD_BUILD"
+  jq -j '.release_build // ""' "$FIXTURE" > "$RELEASE_BUILD"
 elif [ "$MODE" = "pr" ]; then
-  if [ -z "$PR_NUMBER" ] || [ -z "$SENDER" ]; then
-    die "PR validation requires --pr-number and --sender"
+  if [ -z "$PR_NUMBER" ] || [ -z "$SENDER" ] || [ -z "$SENDER_TYPE" ]; then
+    die "PR validation requires --pr-number, --sender, and --sender-type"
   fi
   [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || die "invalid PR number"
 
@@ -82,8 +90,10 @@ elif [ "$MODE" = "pr" ]; then
   FILES=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files?per_page=100" \
     --slurp --jq 'add | map({filename, status})')
   CURRENT_HEAD_SHA=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.sha')
-  SENDER_PERMISSION=$(permission "$SENDER")
-  AUTHOR_PERMISSION=$(permission "$AUTHOR")
+  SENDER_PERMISSION="none"
+  if [ "$SENDER" != "dd-octo-sts[bot]" ] || [ "$SENDER_TYPE" != "Bot" ]; then
+    SENDER_PERMISSION=$(permission "$SENDER")
+  fi
   PARENT_REACHABLE=false
   if [ -n "$PARENT_SHA" ] &&
      is_reachable "$PARENT_SHA" "$(jq -er '.base.sha' <<<"$PR")"; then
@@ -96,10 +106,11 @@ elif [ "$MODE" = "pr" ]; then
 
   jq -n \
     --arg repo "$REPO" \
+    --arg sender_login "$SENDER" \
+    --arg sender_type "$SENDER_TYPE" \
     --arg sender_permission "$SENDER_PERMISSION" \
     --arg author_login "$AUTHOR" \
     --arg author_type "$(jq -er '.user.type' <<<"$PR")" \
-    --arg author_permission "$AUTHOR_PERMISSION" \
     --arg state "$(jq -er '.state' <<<"$PR")" \
     --argjson draft "$(jq -e '.draft' <<<"$PR")" \
     --arg title "$(jq -er '.title' <<<"$PR")" \
@@ -116,10 +127,11 @@ elif [ "$MODE" = "pr" ]; then
     --argjson parent_reachable "$PARENT_REACHABLE" \
     '{
       repo: $repo,
+      sender_login: $sender_login,
+      sender_type: $sender_type,
       sender_permission: $sender_permission,
       author_login: $author_login,
       author_type: $author_type,
-      author_permission: $author_permission,
       state: $state,
       draft: $draft,
       title: $title,
@@ -143,7 +155,9 @@ else
 
   BASE_SHA=$(gh api "repos/$REPO/git/ref/heads/$BASE" --jq '.object.sha')
   HEAD_SHA=$(gh api "repos/$REPO/git/ref/heads/$HEAD" --jq '.object.sha')
-  PARENTS=$(gh api "repos/$REPO/commits/$HEAD_SHA" --jq '[.parents[].sha]')
+  COMMIT=$(gh api "repos/$REPO/commits/$HEAD_SHA")
+  PARENTS=$(jq -c '[.parents[].sha]' <<<"$COMMIT")
+  FILES=$(jq -c '[.files[] | {filename, status}]' <<<"$COMMIT")
   PARENT_REACHABLE=false
   if is_reachable "$SOURCE_SHA" "$BASE_SHA"; then
     PARENT_REACHABLE=true
@@ -160,6 +174,7 @@ else
     --arg current_head_sha "$HEAD_SHA" \
     --arg expected_head_sha "$EXPECTED_HEAD_SHA" \
     --arg head_repo "$REPO" \
+    --argjson changed_files "$FILES" \
     --argjson head_parents "$PARENTS" \
     --arg parent_sha "$SOURCE_SHA" \
     --argjson parent_reachable "$PARENT_REACHABLE" \
@@ -172,7 +187,7 @@ else
       current_head_sha: $current_head_sha,
       expected_head_sha: $expected_head_sha,
       head_repo: $head_repo,
-      changed_files: [{filename: "build.gradle.kts", status: "modified"}],
+      changed_files: $changed_files,
       head_parents: $head_parents,
       parent_sha: $parent_sha,
       parent_reachable: $parent_reachable
@@ -245,6 +260,77 @@ cmp -s "$PARENT_BUILD" "$TEMP_DIR/normalized-head.gradle.kts" ||
   die "build.gradle.kts contains changes other than the root version"
 
 IFS=. read -r PARENT_MAJOR PARENT_MINOR PARENT_PATCH <<<"$PARENT_VERSION"
+
+validate_major_release() {
+  local release_major=$1
+  local release_version="$release_major.0.0"
+  local release_branch="release/$release_major.0._"
+  local release_ref_sha release_tag_sha release_tag_annotated
+  local release_parents release_changed_files
+
+  if [ -n "$FIXTURE" ]; then
+    release_ref_sha=$(json_string '.release_ref_sha')
+    release_tag_sha=$(json_string '.release_tag_sha')
+    release_tag_annotated=$(jq -er '.release_tag_annotated' "$DATA")
+    release_parents=$(jq -c '.release_parents' "$DATA")
+    release_changed_files=$(jq -c '.release_changed_files' "$DATA")
+  else
+    local tag_ref tag_object release_commit
+    release_ref_sha=$(gh api "repos/$REPO/git/ref/heads/$release_branch" --jq '.object.sha')
+    if [ -n "$LOCAL_RELEASE_TAG" ]; then
+      [ "$MODE" = "branch" ] ||
+        die "--local-release-tag is allowed only for branch preflight validation"
+      [ "$LOCAL_RELEASE_TAG" = "v_$release_version" ] ||
+        die "local major release tag must be v_$release_version"
+      [ "$(git cat-file -t "refs/tags/$LOCAL_RELEASE_TAG" 2>/dev/null)" = "tag" ] ||
+        die "local major release tag $LOCAL_RELEASE_TAG must be annotated"
+      release_tag_sha=$(git rev-parse "refs/tags/$LOCAL_RELEASE_TAG^{commit}")
+    else
+      tag_ref=$(gh api "repos/$REPO/git/ref/tags/v_$release_version")
+      [ "$(jq -er '.object.type' <<<"$tag_ref")" = "tag" ] ||
+        die "major release tag v_$release_version must be annotated"
+      tag_object=$(gh api "repos/$REPO/git/tags/$(jq -er '.object.sha' <<<"$tag_ref")")
+      [ "$(jq -er '.object.type' <<<"$tag_object")" = "commit" ] ||
+        die "major release tag v_$release_version must point to a commit"
+      release_tag_sha=$(jq -er '.object.sha' <<<"$tag_object")
+    fi
+    release_tag_annotated=true
+    release_commit=$(gh api "repos/$REPO/commits/$release_ref_sha")
+    release_parents=$(jq -c '[.parents[].sha]' <<<"$release_commit")
+    release_changed_files=$(jq -c '[.files[] | {filename, status}]' <<<"$release_commit")
+    content "$release_ref_sha" > "$RELEASE_BUILD"
+  fi
+
+  [ "$release_tag_annotated" = "true" ] ||
+    die "major release tag v_$release_version must be annotated"
+  [ "$release_ref_sha" = "$release_tag_sha" ] ||
+    die "major release branch and tag must identify the same commit"
+  [ "$(jq -r 'length' <<<"$release_parents")" -eq 1 ] ||
+    die "major release commit must have exactly one parent"
+  [ "$(jq -r '.[0]' <<<"$release_parents")" = "$(json_string '.parent_sha')" ] ||
+    die "major release commit parent differs from the bump source"
+  jq -e '. == [{filename: "build.gradle.kts", status: "modified"}]' \
+    <<<"$release_changed_files" >/dev/null ||
+    die "major release commit must modify only build.gradle.kts"
+
+  [ "$(grep -Ec "$VERSION_PATTERN" "$RELEASE_BUILD" || true)" -eq 1 ] ||
+    die "major release build.gradle.kts must contain one canonical root version line"
+  local release_line actual_release_version
+  release_line=$(grep -En "$VERSION_PATTERN" "$RELEASE_BUILD")
+  [ "${release_line%%:*}" = "${PARENT_LINE%%:*}" ] ||
+    die "major release root version line moved"
+  actual_release_version=$(sed -E \
+    's/^[0-9]+:version = "([0-9]+\.[0-9]+\.[0-9]+)-SNAPSHOT"$/\1/' \
+    <<<"$release_line")
+  [ "$actual_release_version" = "$release_version" ] ||
+    die "major release branch must contain $release_version-SNAPSHOT"
+  sed -E \
+    "s/^version = \"[0-9]+\\.[0-9]+\\.[0-9]+-SNAPSHOT\"$/version = \"$PARENT_VERSION-SNAPSHOT\"/" \
+    "$RELEASE_BUILD" > "$TEMP_DIR/normalized-release.gradle.kts"
+  cmp -s "$PARENT_BUILD" "$TEMP_DIR/normalized-release.gradle.kts" ||
+    die "major release commit contains changes other than the root version"
+}
+
 if [ "$INCREMENT" = "minor" ]; then
   if [ "$PARENT_MINOR" -ge 99 ]; then
     EXPECTED_MAJOR=$((10#$PARENT_MAJOR + 1))
@@ -254,6 +340,14 @@ if [ "$INCREMENT" = "minor" ]; then
     EXPECTED_MINOR=$((10#$PARENT_MINOR + 1))
   fi
   EXPECTED_PATCH=0
+  EXPECTED_VERSION="$EXPECTED_MAJOR.$EXPECTED_MINOR.$EXPECTED_PATCH"
+  if [ "$HEAD_VERSION" != "$EXPECTED_VERSION" ]; then
+    MAJOR_RELEASE_MAJOR=$((10#$PARENT_MAJOR + 1))
+    MAJOR_RELEASE_BUMP="$MAJOR_RELEASE_MAJOR.1.0"
+    [ "$HEAD_VERSION" = "$MAJOR_RELEASE_BUMP" ] ||
+      die "expected minor bump $PARENT_VERSION -> $EXPECTED_VERSION or validated major-release bump -> $MAJOR_RELEASE_BUMP, found $HEAD_VERSION"
+    validate_major_release "$MAJOR_RELEASE_MAJOR"
+  fi
 else
   SERIES=${BASE_REF#release/}
   SERIES=${SERIES%._}
@@ -273,10 +367,10 @@ else
     EXPECTED_MINOR=$((10#$PARENT_MINOR))
     EXPECTED_PATCH=$((10#$PARENT_PATCH + 1))
   fi
+  EXPECTED_VERSION="$EXPECTED_MAJOR.$EXPECTED_MINOR.$EXPECTED_PATCH"
+  [ "$HEAD_VERSION" = "$EXPECTED_VERSION" ] ||
+    die "expected patch bump $PARENT_VERSION -> $EXPECTED_VERSION, found $HEAD_VERSION"
 fi
-EXPECTED_VERSION="$EXPECTED_MAJOR.$EXPECTED_MINOR.$EXPECTED_PATCH"
-[ "$HEAD_VERSION" = "$EXPECTED_VERSION" ] ||
-  die "expected $INCREMENT bump $PARENT_VERSION -> $EXPECTED_VERSION, found $HEAD_VERSION"
 [ "$BRANCH_MAJOR.$BRANCH_MINOR.$BRANCH_PATCH" = "$HEAD_VERSION" ] ||
   die "head branch version does not match build.gradle.kts"
 
@@ -285,23 +379,20 @@ if [ "$MODE" = "pr" ]; then
      ! jq -e '.draft == false' "$DATA" >/dev/null; then
     die "PR must be open and ready for review"
   fi
-  case "$(json_string '.sender_permission')" in
-    write|maintain|admin) ;;
-    *) die "labeling actor must have write, maintain, or admin permission" ;;
-  esac
-  AUTHOR_TYPE=$(json_string '.author_type')
-  AUTHOR_LOGIN=$(json_string '.author_login')
-  if [ "$AUTHOR_TYPE" = "User" ]; then
-    :
-  elif [ "$AUTHOR_TYPE" = "Bot" ] && [ "$AUTHOR_LOGIN" = "dd-octo-sts[bot]" ]; then
+  if [ "$(json_string '.sender_login')" = "dd-octo-sts[bot]" ] &&
+     [ "$(json_string '.sender_type')" = "Bot" ]; then
     :
   else
-    die "PR author must be a trusted release user or dd-octo-sts[bot]"
+    [ "$(json_string '.sender_type')" = "User" ] ||
+      die "labeling actor must be the release STS bot or a trusted human"
+    case "$(json_string '.sender_permission')" in
+      write|maintain|admin) ;;
+      *) die "human labeling actor must have write, maintain, or admin permission" ;;
+    esac
   fi
-  case "$(json_string '.author_permission')" in
-    write|maintain|admin) ;;
-    *) die "PR author must have write, maintain, or admin permission" ;;
-  esac
+  [ "$(json_string '.author_login')" = "github-actions[bot]" ] &&
+    [ "$(json_string '.author_type')" = "Bot" ] ||
+    die "release bump PR must be created by github-actions[bot]"
   jq -e --arg expected_label "$LABEL" \
     '.labels | index($expected_label) != null' "$DATA" >/dev/null ||
     die "PR must have the $LABEL label"

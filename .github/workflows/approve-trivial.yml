@@ -1,3 +1,5 @@
+# Copyright 2026, Datadog, Inc
+
 name: Approve Trivial PRs
 
 on:
@@ -47,11 +49,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           LABEL_ACTOR: ${{ github.event.sender.login }}
+          LABEL_ACTOR_TYPE: ${{ github.event.sender.type }}
         run: |
           ./.github/scripts/validate-release-bump.sh \
             --repo "$GITHUB_REPOSITORY" \
             --pr-number "$PR_NUMBER" \
-            --sender "$LABEL_ACTOR"
+            --sender "$LABEL_ACTOR" \
+            --sender-type "$LABEL_ACTOR_TYPE"
 
       - name: Check for an existing exact approval
         id: existing
@@ -86,11 +90,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           LABEL_ACTOR: ${{ github.event.sender.login }}
+          LABEL_ACTOR_TYPE: ${{ github.event.sender.type }}
         run: |
           ./.github/scripts/validate-release-bump.sh \
             --repo "$GITHUB_REPOSITORY" \
             --pr-number "$PR_NUMBER" \
-            --sender "$LABEL_ACTOR"
+            --sender "$LABEL_ACTOR" \
+            --sender-type "$LABEL_ACTOR_TYPE"
 
       - name: Approve exact current commit
         if: steps.existing.outputs.approved != 'true'

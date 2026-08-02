@@ -1,3 +1,5 @@
+# Copyright 2026, Datadog, Inc
+
 name: Validated Release
 run-name: "${{ inputs.dry_run && 'Dry-run for ' || 'Perform ' }}${{ inputs.release_type }} release of ${{ github.ref_name }} branch [${{ inputs.request_id || 'manual' }}]"
 
@@ -201,7 +203,8 @@ jobs:
       release_branch: ${{ steps.create-release.outputs.release_branch }}
       bump_branch: ${{ steps.create-release.outputs.bump_branch }}
       bump_head_sha: ${{ steps.create-release.outputs.bump_head_sha }}
-      BUMP_PR_URL: ${{ steps.create-release.outputs.BUMP_PR_URL }}
+      bump_pr_number: ${{ steps.create-release.outputs.bump_pr_number }}
+      bump_pr_url: ${{ steps.create-release.outputs.bump_pr_url }}
     steps:
       - name: Check test results
         if: ${{ inputs.dry_run != true && inputs.skip_tests != true && inputs.release_type != 'retag' && needs.pre-release-tests.result != 'success' }}
@@ -234,19 +237,19 @@ jobs:
           distribution: 'zulu'
           java-version: '21'
 
-      - name: Federate bump-PR token
-        if: ${{ inputs.dry_run != true }}
+      - name: Federate release bump label token
+        id: bump-label-token
+        if: ${{ inputs.dry_run != true && inputs.release_type != 'retag' }}
         uses: DataDog/dd-octo-sts-action@96a25462dbcb10ebf0bfd6e2ccc917d2ab235b9a # v1.0.4
-        id: octo-sts
         with:
           scope: DataDog/java-profiler
-          policy: self.release-bump.create-pr
+          policy: self.release-bump.label-pr
 
       - name: Create release
         id: create-release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BUMP_PR_TOKEN: ${{ steps.octo-sts.outputs.token }}
+          BUMP_LABEL_TOKEN: ${{ steps.bump-label-token.outputs.token }}
         run: |
           cd java-profiler
 
@@ -259,37 +262,19 @@ jobs:
           TYPE="${{ inputs.release_type }}"
           ./.github/scripts/release.sh ${TYPE^^} $DRY_RUN
 
-      - name: Write exact bump finalization manifest
+      - name: Wait for exact bump approval, checks, and merge
         if: ${{ inputs.dry_run != true && inputs.release_type != 'retag' }}
         env:
-          BASE_BRANCH: ${{ steps.create-release.outputs.base_branch }}
-          SOURCE_SHA: ${{ steps.create-release.outputs.source_sha }}
-          BUMP_BRANCH: ${{ steps.create-release.outputs.bump_branch }}
-          BUMP_HEAD_SHA: ${{ steps.create-release.outputs.bump_head_sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          jq -n \
-            --arg repo "$GITHUB_REPOSITORY" \
-            --arg base "$BASE_BRANCH" \
-            --arg head "$BUMP_BRANCH" \
-            --arg source_sha "$SOURCE_SHA" \
-            --arg head_sha "$BUMP_HEAD_SHA" \
-            --arg run_id "$GITHUB_RUN_ID" \
-            '{repo: $repo, base: $base, head: $head, source_sha: $source_sha, head_sha: $head_sha, run_id: $run_id}' \
-            > release-bump.json
-
-      - name: Upload exact bump finalization manifest
-        if: ${{ inputs.dry_run != true && inputs.release_type != 'retag' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: release-bump-${{ github.run_id }}
-          path: release-bump.json
-          if-no-files-found: error
-          retention-days: 30
+          cd java-profiler
+          ./.github/scripts/wait-release-bump.sh \
+            --repo "$GITHUB_REPOSITORY" \
+            --pr-number '${{ steps.create-release.outputs.bump_pr_number }}' \
+            --expected-head-sha '${{ steps.create-release.outputs.bump_head_sha }}'
 
       - name: Output Release Summary
         if: ${{ inputs.dry_run != true }}
-        env:
-          BUMP_PR_URL: ${{ steps.create-release.outputs.BUMP_PR_URL }}
         run: |
           echo "## ✅ Release Created Successfully" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -297,10 +282,9 @@ jobs:
           echo "- **Tag**: v_${{ needs.validate-inputs.outputs.release_version }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Branch**: ${{ needs.validate-inputs.outputs.release_branch }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          if [ -n "$BUMP_PR_URL" ]; then
-            echo "### ✅ Version Bump Auto-Merge Queued" >> $GITHUB_STEP_SUMMARY
-            echo "The exact validated bump PR was created and queued for auto-merge after approval and required checks:" >> $GITHUB_STEP_SUMMARY
-            echo "- $BUMP_PR_URL" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ inputs.release_type }}" != "retag" ]; then
+            echo "### Version Bump" >> $GITHUB_STEP_SUMMARY
+            echo "- **Automatically merged PR**: ${{ steps.create-release.outputs.bump_pr_url }}" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
           fi
           echo "### Next Steps (Automatic)" >> $GITHUB_STEP_SUMMARY

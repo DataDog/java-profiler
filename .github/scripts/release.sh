@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 
+# Copyright 2026, Datadog, Inc
+
 set -x
 set -euo pipefail
 
 TYPE=$1
 DRYRUN=${2:-}
-PUSH_DRYRUN=()
-if [ -n "$DRYRUN" ]; then
-  PUSH_DRYRUN=("$DRYRUN")
-fi
 
-die() {
-  echo "ERROR: $*" >&2
-  exit 1
+git_push() {
+  if [ -n "$DRYRUN" ]; then
+    git push "$DRYRUN" "$@"
+  else
+    git push "$@"
+  fi
 }
 
 BRANCH=$(git branch --show-current)
@@ -57,7 +58,9 @@ create_annotated_tag() {
   local branch=$3
 
   local tag_name="v_${version}"
-  local tag_message="Release v_${version} (${type,,}) from ${branch}"
+  local lowercase_type
+  lowercase_type=$(tr '[:upper:]' '[:lower:]' <<<"$type")
+  local tag_message="Release v_${version} (${lowercase_type}) from ${branch}"
 
   # Check if tag exists
   if git rev-parse "$tag_name" >/dev/null 2>&1; then
@@ -166,18 +169,16 @@ if [ "$BRANCH" != "$RELEASE_BRANCH" ]; then
   if [ "$TYPE" == "MAJOR" ]; then
     create_annotated_tag "$BASE" "$TYPE" "$BRANCH"
   fi
-  git push "${PUSH_DRYRUN[@]}" --atomic --set-upstream origin "$RELEASE_BRANCH"
+  git_push --atomic --set-upstream origin "$RELEASE_BRANCH"
   git checkout "$BRANCH"
-  if [ "$TYPE" == "MAJOR" ]; then
-    # Keep the release commit in main so the post-release bump is a single
-    # minor increment from the version that was actually released.
-    git merge --ff-only "$RELEASE_BRANCH"
-    git push "${PUSH_DRYRUN[@]}" --atomic origin "$BRANCH"
-    SOURCE_SHA=$(git rev-parse HEAD)
-  fi
 fi
 
-if [ "$TYPE" == "MAJOR" ] || [ "$TYPE" == "MINOR" ]; then
+if [ "$TYPE" == "MAJOR" ]; then
+  # The release commit stays on release/X.0._. Main moves directly from the
+  # previous development version to X.1.0 through the validated bump PR.
+  ./gradlew incrementVersion --versionIncrementType=MAJOR
+  ./gradlew incrementVersion --versionIncrementType=MINOR
+elif [ "$TYPE" == "MINOR" ]; then
   ./gradlew incrementVersion --versionIncrementType=MINOR
 else
   ./gradlew incrementVersion --versionIncrementType=PATCH
@@ -185,43 +186,87 @@ fi
 
 CANDIDATE=$(./gradlew printVersion -Psnapshot=false | grep 'Version:' | cut -f2 -d' ')
 
+FINAL_BUMP_MESSAGE="[Automated] Bump dev version to ${CANDIDATE}"
 git add build.gradle.kts
-git commit -m "[Automated] Bump dev version to ${CANDIDATE}"
+# GITHUB_TOKEN-created pull_request.opened events do not start other workflows.
+# Open the PR from this temporary commit, then amend and push the canonical
+# commit through SSH so GitHub emits a normal pull_request.synchronize event.
+git commit -m "[Automated] Prepare dev version bump to ${CANDIDATE}"
 
 if [ -z "$DRYRUN" ]; then
+  : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
+  : "${GITHUB_TOKEN:?GITHUB_TOKEN is required}"
+  : "${BUMP_LABEL_TOKEN:?BUMP_LABEL_TOKEN is required}"
   BUMP_BRANCH="automated/bump-${CANDIDATE//./-}"
   git checkout -b "$BUMP_BRANCH"
   git push --force-with-lease --set-upstream origin "$BUMP_BRANCH"
+  INITIAL_BUMP_SHA=$(git rev-parse HEAD)
+
+  if ! BUMP_PR_JSON=$(GH_TOKEN="$GITHUB_TOKEN" gh api --method POST \
+      "repos/$GITHUB_REPOSITORY/pulls" \
+      -f title="$FINAL_BUMP_MESSAGE" \
+      -f head="$BUMP_BRANCH" \
+      -f base="$BRANCH" \
+      -f body="Automated post-release development version bump for v_$BASE."); then
+    echo "::error::Unable to create the release bump PR with GITHUB_TOKEN."
+    echo "::error::Verify that Actions is allowed to create and approve pull requests in repository settings."
+    exit 1
+  fi
+  BUMP_PR_NUMBER=$(jq -er '.number' <<<"$BUMP_PR_JSON")
+  BUMP_PR_URL=$(jq -er '.html_url' <<<"$BUMP_PR_JSON")
+
+  git commit --amend -m "$FINAL_BUMP_MESSAGE"
   BUMP_HEAD_SHA=$(git rev-parse HEAD)
-  # Use the federated token for PR creation and labeling so the labeled event
-  # starts the trusted approval workflow. Queue auto-merge with the workflow
-  # token; branch protection still requires the exact bot approval and checks.
-  BUMP_PR_URL=$(GH_TOKEN="$BUMP_PR_TOKEN" gh pr create \
-    --title "[Automated] Bump dev version to ${CANDIDATE}" \
-    --body "Automated version bump after releasing v_${BASE}." \
-    --base "$BRANCH" \
-    --head "$BUMP_BRANCH")
-  GH_TOKEN="$BUMP_PR_TOKEN" gh pr edit "$BUMP_PR_URL" \
-    --add-label "trivial"
-  BUMP_PR_NUMBER=${BUMP_PR_URL##*/}
-  [[ "$BUMP_PR_NUMBER" =~ ^[0-9]+$ ]] ||
-    die "gh pr create returned an invalid pull request URL"
-  ./.github/scripts/validate-release-bump.sh \
-    --repo "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}" \
-    --pr-number "$BUMP_PR_NUMBER" \
-    --sender "${GITHUB_ACTOR:?GITHUB_ACTOR is required}" \
-    --source-sha "$SOURCE_SHA" \
-    --expected-head-sha "$BUMP_HEAD_SHA"
-  GH_TOKEN="$GITHUB_TOKEN" gh pr merge "$BUMP_PR_URL" \
-    --auto --squash --match-head-commit "$BUMP_HEAD_SHA"
-  echo "✓ Version bump PR created and queued for exact-SHA auto-merge: $BUMP_PR_URL"
+  [ "$BUMP_HEAD_SHA" != "$INITIAL_BUMP_SHA" ] || {
+    echo "::error::Amending the bump commit did not change its SHA"
+    exit 1
+  }
+  git push \
+    --force-with-lease="refs/heads/$BUMP_BRANCH:$INITIAL_BUMP_SHA" \
+    origin "$BUMP_BRANCH:$BUMP_BRANCH"
+
+  # Validate every remotely visible commit before publishing the release tag,
+  # which triggers artifact publication. Major preflight additionally proves
+  # that the still-local annotated tag identifies the remote release commit.
+  if [ "$TYPE" == "MAJOR" ]; then
+    ./.github/scripts/validate-release-bump.sh \
+      --repo "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}" \
+      --branch \
+      --base "$BRANCH" \
+      --head "$BUMP_BRANCH" \
+      --source-sha "$SOURCE_SHA" \
+      --expected-head-sha "$BUMP_HEAD_SHA" \
+      --local-release-tag "v_$BASE"
+  else
+    ./.github/scripts/validate-release-bump.sh \
+      --repo "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}" \
+      --branch \
+      --base "$BRANCH" \
+      --head "$BUMP_BRANCH" \
+      --source-sha "$SOURCE_SHA" \
+      --expected-head-sha "$BUMP_HEAD_SHA"
+  fi
+  git push --atomic --tags
+
+  # The STS identity is deliberately distinct from github-actions[bot], which
+  # created the PR. Its label event starts the trusted approval workflow.
+  GH_TOKEN="$BUMP_LABEL_TOKEN" gh api --method POST \
+    "repos/$GITHUB_REPOSITORY/issues/$BUMP_PR_NUMBER/labels" \
+    -f 'labels[]=trivial' >/dev/null
+  GH_TOKEN="$GITHUB_TOKEN" gh pr merge "$BUMP_PR_NUMBER" \
+    --repo "$GITHUB_REPOSITORY" \
+    --auto \
+    --squash \
+    --match-head-commit "$BUMP_HEAD_SHA"
+  echo "✓ Version bump PR opened and queued for exact-SHA auto-merge: $BUMP_PR_URL"
 else
   BUMP_BRANCH="automated/bump-${CANDIDATE//./-}"
   BUMP_HEAD_SHA=$(git rev-parse HEAD)
-  git push "${PUSH_DRYRUN[@]}" --atomic --set-upstream origin "$BRANCH"
+  BUMP_PR_NUMBER=
+  BUMP_PR_URL=
+  git_push --atomic --set-upstream origin "$BRANCH"
+  git_push --atomic --tags
 fi
-
-git push "${PUSH_DRYRUN[@]}" --atomic --tags
 
 if [ -n "${GITHUB_OUTPUT:-}" ]; then
   {
@@ -232,9 +277,8 @@ if [ -n "${GITHUB_OUTPUT:-}" ]; then
     echo "release_branch=$RELEASE_BRANCH"
     echo "bump_branch=$BUMP_BRANCH"
     echo "bump_head_sha=$BUMP_HEAD_SHA"
-    if [ -n "${BUMP_PR_URL:-}" ]; then
-      echo "BUMP_PR_URL=$BUMP_PR_URL"
-    fi
+    echo "bump_pr_number=$BUMP_PR_NUMBER"
+    echo "bump_pr_url=$BUMP_PR_URL"
   } >> "$GITHUB_OUTPUT"
 fi
 
