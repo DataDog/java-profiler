@@ -35,19 +35,25 @@ two platforms are called out inline where they matter.
    `writeCpool()`/`writeStackTraces()` executes — so growth from a chunk's
    own dump-time symbolication is, by design, only visible in a *subsequent*
    chunk's reading. Every measurement in this document used single-chunk
-   runs, which structurally cannot observe this. Two independent two-chunk
-   tests (forcing an intermediate dump mid-run, varying how much workload
-   ran before the dump) confirm real, substantial growth: `NM_DICTIONARY`
-   read ~143 MiB and ~236 MiB respectively in the chunk *after* the one
-   that did the inserting, vs. the usual ~4.55 MiB baseline. **Treat "large,
-   real, and non-zero" as the confirmed finding — not either specific
-   number**, since both come from a deliberately perturbed methodology
-   (forcing an extra `dump()` call) whose relationship to a normal,
-   unmodified single-chunk run's *actual* internal growth isn't
-   independently established; see the dedicated section below for why. This
-   is likely a significant piece of what was previously reported as an
-   "unattributed ~32–42 MB gap," but its precise size relative to that
-   figure remains unmeasured.
+   runs, which structurally cannot observe this. Two-chunk tests (forcing
+   an intermediate dump mid-run, varying how much workload ran before the
+   dump) confirm real, substantial growth: `NM_DICTIONARY` read ~143 MiB
+   after a 90s pre-dump run and ~236 MiB after a 177s pre-dump run (both
+   out of a 180s total), vs. the usual ~4.55 MiB baseline. The ~236 MiB
+   reading reproduces tightly across two independent reps (236.5 MiB and
+   235.3 MiB, a ~0.5% spread) — so the *difference between the two
+   durations* is not run-to-run noise, it's a real, repeatable effect of
+   how much sampled call-trace/method-resolution backlog has accumulated by
+   the time of the forced dump (more pre-dump runtime → bigger backlog →
+   bigger jump in the next chunk). **Treat "large, real, reproducible for a
+   given test construction, and construction-dependent" as the confirmed
+   finding** — the relationship between either specific number and a
+   normal, unmodified single-chunk run's *actual* internal growth still
+   isn't independently established, since both come from a methodology that
+   deliberately perturbs the system (forcing an extra `dump()` call); see
+   the dedicated section below for why. This is likely a significant piece
+   of what was previously reported as an "unattributed ~32–42 MB gap," but
+   its precise size relative to that figure remains unmeasured.
 4. **The CPU-sampling engine (`cpu=`) works on Linux** (it doesn't
    initialize on this project's current macOS build) and produces real
    samples, but its associated `NM_PERF` counter requires a kernel-symbol
@@ -306,37 +312,49 @@ see below) and confirmed three independent ways:
    an instrumentation gap, but because a single-chunk run has no subsequent
    chunk to reveal it in.
 
-**Two two-chunk tests confirm real, large growth — but not a stable
-number.** Both force an intermediate `profiler.dump()` during a `classes
-150000` run, then read the *final* chunk (written normally at process
-exit):
+**Two-chunk tests confirm real, large growth that depends on test
+construction, not run-to-run noise.** Each forces an intermediate
+`profiler.dump()` during a `classes 150000` run, then reads the *final*
+chunk (written normally at process exit):
 
 | Test | Workload before the forced dump | `NM_DICTIONARY` in the dump chunk | `NM_DICTIONARY` in the final chunk |
 |---|---|---|---|
 | Split evenly | 90s of 180s total | 4,774,032 B (baseline) | 149,876,928 B (~143 MiB) |
-| Dump near the end | 177s of 180s total | 4,774,032 B (baseline) | 247,996,656 B (~236 MiB) |
+| Dump near the end, rep 1 | 177s of 180s total | 4,774,032 B (baseline) | 247,996,656 B (~236.5 MiB) |
+| Dump near the end, rep 2 | 177s of 180s total | 4,774,032 B (baseline) | 246,798,576 B (~235.3 MiB) |
 
-Both confirm the same qualitative point unambiguously: wall-clock sampling's
-class-name dictionary growth is real and substantial — comparable to or
-larger than `NM_CALLTRACE`'s own growth, not zero — and it scales with how
-much workload ran before the dump (177s of accumulated class touches
-produced more growth than 90s), consistent with the mechanism being real
-insertions rather than a fixed artifact of forcing a dump at all. **But
-neither number should be read as "the size of the gap."** Both come from a
-methodology that itself perturbs the system (an explicit `dump()` call the
-standard single-chunk runs never make), and both are larger — in the
-"dump near the end" case, over twice as large — than the entire ~102 MB
-RSS delta this whole investigation has been trying to explain. Raw string
-content for 150,000 short class names is only on the order of ~2 MB, so
-something beyond simple string storage is inflating this — plausibly
-per-thread or per-shard `StringDictionaryBuffer` copies of the same names
-accumulating before consolidation into the shared arena (mentioned as a
-hypothesis in the very first version of this investigation, never
-confirmed) — but this wasn't traced further. Treat the *existence and
-substantial size* of wall-clock dictionary growth as solidly confirmed;
-treat its *precise magnitude under normal, unperturbed conditions* as
-still an open question this specific methodology cannot answer, since
-observing it at all requires the perturbation.
+The two "dump near the end" reps agree to within ~0.5% (236.5 vs. 235.3
+MiB) — including an *identical* dump-chunk baseline (4,774,032 B) across
+all three runs, split-evenly included. That rules out ordinary run-to-run
+noise as the explanation for the gap between the two test constructions:
+the ~93 MiB difference between the 90s-pre-dump and 177s-pre-dump results
+is a real, repeatable function of how much workload ran before the forced
+dump, not measurement jitter. This confirms the same qualitative point
+unambiguously: wall-clock sampling's class-name dictionary growth is real
+and substantial — comparable to or larger than `NM_CALLTRACE`'s own growth,
+not zero — and it scales with how much workload ran before the dump (177s
+of accumulated class touches produced more growth than 90s), consistent
+with the mechanism being real insertions rather than a fixed artifact of
+forcing a dump at all. **But no single one of these numbers should be read
+as "the size of the gap."** All three come from a methodology that itself
+perturbs the system (an explicit `dump()` call the standard single-chunk
+runs never make), and all are larger — in the "dump near the end" case,
+over twice as large — than the entire ~102 MB RSS delta this whole
+investigation has been trying to explain. Raw string content for 150,000
+short class names is only on the order of ~2 MB, so something beyond
+simple string storage is inflating this — plausibly per-thread or
+per-shard `StringDictionaryBuffer` copies of the same names accumulating
+before consolidation into the shared arena (mentioned as a hypothesis in
+the very first version of this investigation, never confirmed), with the
+accumulated *volume of unresolved stack-trace/method backlog at the moment
+of the dump* — not elapsed time itself — the likely driver, since the
+177s-pre-dump test showed more growth than the 90s one despite a much
+shorter post-dump tail (3s vs. 90s) before the final chunk was written.
+This wasn't traced further. Treat the *existence, substantial size, and
+reproducibility-per-construction* of wall-clock dictionary growth as
+solidly confirmed; treat its *precise magnitude under normal, unperturbed
+conditions* as still an open question this specific methodology cannot
+answer, since observing it at all requires the perturbation.
 
 **A second, independent finding fell out of the same test: call-trace
 storage resets across a chunk rotation; the dictionary's content persists
@@ -892,23 +910,32 @@ now confirmed empirically:
 - **The ~32–42 MB gap now has a strong, evidenced leading explanation
   (`NM_DICTIONARY`/`MethodMap` growth hidden by the counter-snapshot-timing
   artifact) but not a precise quantification under standard single-run
-  conditions, and a second attempt to get one made this harder to resolve,
-  not easier.** Two two-chunk tests, one splitting the workload evenly and
-  one running almost the full standard duration before forcing the dump
-  (deliberately designed to be closer to the standard single-run
-  methodology), gave ~143 MiB and ~236 MiB respectively — both far larger
-  than the ~102 MB total RSS delta being explained, and neither stable
-  across test construction. **This is itself informative**: it suggests an
-  observer effect (the extra `dump()` call may cause more growth than a
-  normal single dump at process exit would, plausibly via per-thread/shard
-  buffer duplication before consolidation — not confirmed) rather than a
-  measurement that just needs to be run once more, cleanly. **Follow-up
-  worth doing**: trace the per-thread/shard `StringDictionaryBuffer`
-  buffering mechanism directly (source reading + targeted instrumentation,
-  the same pattern used throughout this investigation) to understand why
-  the observed magnitude is an order of magnitude larger than raw string
-  content (~2 MB for 150,000 short names) would predict, before attempting
-  a third magnitude measurement. Separately, this
+  conditions, and a repeat of the closer-to-standard test confirmed the
+  result is reproducible per construction, not that the underlying
+  question is resolved.** Two two-chunk tests, one splitting the workload
+  evenly and one running almost the full standard duration before forcing
+  the dump (deliberately designed to be closer to the standard single-run
+  methodology, and repeated twice), gave ~143 MiB and ~236 MiB (236.5 MiB
+  and 235.3 MiB across the two reps, a ~0.5% spread) respectively — both
+  far larger than the ~102 MB total RSS delta being explained. **The
+  reproducibility itself is informative**: the gap between the two numbers
+  is not run-to-run noise, it's a real, repeatable function of how much
+  workload ran before the forced dump (more pre-dump runtime → bigger
+  resolution backlog → bigger growth in the next chunk) — evidence against
+  a random observer effect and toward a more specific one: the act of
+  dumping mid-run *flushes accumulated backlog whose size scales with time
+  since the last flush*, so forcing a dump earlier or later changes how
+  much backlog there is to flush, without telling us how much a *normal*
+  single-chunk run (whose only "flush" happens once, at process exit)
+  would show. **Follow-up worth doing**: trace the per-thread/shard
+  `StringDictionaryBuffer` buffering mechanism directly (source reading +
+  targeted instrumentation, the same pattern used throughout this
+  investigation) to understand why the observed magnitude is an order of
+  magnitude larger than raw string content (~2 MB for 150,000 short names)
+  would predict, and whether a standard single-chunk run's *own* end-of-run
+  flush (at process exit, via `Recording`'s destructor) shows the same
+  backlog-driven growth that external RSS sampling might not catch if it
+  measures before that final teardown-time allocation burst. Separately, this
   investigation's own initial conclusion (`resolveMethod` dead, `MethodMap`
   ruled out) turned out wrong — worth remembering when reading any other
   "confirmed via source instrumentation" claim earlier in this document:

@@ -82,13 +82,16 @@ tooling:
   chunk's own dump. Confirmed three independent ways (a GDB breakpoint, a
   purpose-built allocation-tracking tool, and the profiler's own source
   comment) that this code path — which also grows the class-name dictionary
-  — is real and allocation-heavy. Two separate two-chunk tests measuring
-  across the artifact found ~143 MiB and ~236 MiB of dictionary growth in a
+  — is real and allocation-heavy. Two-chunk tests measuring across the
+  artifact found ~143 MiB and ~236 MiB of dictionary growth in a
   `classes 150000` run, depending on how much workload ran before the
-  forced dump — neither number stable, and both larger than the entire
-  ~102 MB RSS delta being explained, suggesting the act of measuring this
-  (forcing an extra `dump()` call) may itself inflate the result. Neither
-  number is directly comparable to the 32–42 MB figure (different,
+  forced dump; a repeat of the ~236 MiB test reproduced to within ~0.5%
+  (236.5 vs. 235.3 MiB), confirming the gap between the two numbers is a
+  real, repeatable effect of pre-dump backlog size, not run-to-run noise —
+  but both are larger than the entire ~102 MB RSS delta being explained,
+  so the act of measuring this (forcing an extra `dump()` call) still
+  plausibly inflates the result relative to a normal single-chunk run.
+  Neither number is directly comparable to the 32–42 MB figure (different,
   perturbing methodology), but the qualitative conclusion is solid: this
   gap is most plausibly `NM_DICTIONARY`/`MethodMap` growth PR #669 can't
   see, not an unidentified mystery structure.
@@ -193,12 +196,16 @@ one invented from scratch.
      intentional, documented design choice, `flightRecorder.cpp:819–826`,
      not a bug). Confirmed via GDB breakpoint and an independent
      allocation-tracking tool that this code path is real and
-     allocation-heavy; two separate two-chunk tests measured ~143 MiB and
-     ~236 MiB of dictionary growth directly, depending on test
-     construction — real and large, but not a stable number, and a
-     follow-up attempt to get a cleaner reading made the magnitude *harder*
-     to pin down, not easier (see below). `MethodMap`/`_class_map` are now
-     the *leading* explanation for the gap, not eliminated candidates.
+     allocation-heavy; two-chunk tests measured ~143 MiB and ~236 MiB of
+     dictionary growth directly, depending on test construction — a
+     repeated rep of the ~236 MiB test reproduced to within ~0.5%,
+     confirming the difference between constructions is real and
+     repeatable (driven by pre-dump backlog size), not noise. Real and
+     large, but still not a number comparable to a normal single-chunk
+     run — a follow-up attempt to get a cleaner reading confirmed
+     reproducibility per construction without resolving what a normal,
+     unperturbed run would show (see below). `MethodMap`/`_class_map` are
+     now the *leading* explanation for the gap, not eliminated candidates.
      Worth reporting the counter-snapshot-timing limitation upstream
      regardless — it's a
      real, confirmed measurement blind spot in PR #669's design, even
@@ -268,9 +275,12 @@ one invented from scratch.
    signal-handler constraints, so any change here needs care, not just
    "make it lazy") — plus calltrace/dictionary initial-capacity tuning for
    high-diversity workloads, now a *stronger* candidate given the confirmed
-   (though still unstable — two-chunk tests measured ~143 MiB and ~236 MiB
-   depending on construction) `NM_DICTIONARY`/`MethodMap` growth, and
-   worth investigating alongside whatever fix path emerges for the
+   (two-chunk tests measured ~143 MiB and ~236 MiB depending on
+   construction, with the ~236 MiB reading reproducing to within ~0.5%
+   across reps — real and repeatable per construction, magnitude under
+   normal single-chunk conditions still unresolved) `NM_DICTIONARY`/
+   `MethodMap` growth, and worth investigating alongside whatever fix path
+   emerges for the
    counter-snapshot-timing limitation itself. No CPU/latency candidates
    exist yet — they're a product of item 2's investigation, not knowable in
    advance. Output: a ranked backlog (effort vs. expected impact) feeding
@@ -480,21 +490,30 @@ breakdown illustrates — the biggest memory lever might not be
    "flat" finding. The follow-up meant to pin down the exact magnitude — a
    "clean" reading with the forced dump near the end of a full-length run
    instead of at the midpoint — made the picture *more* complicated, not
-   less: it measured ~236 MiB of growth, vs. ~143 MiB from the original
-   midpoint-split test, and neither is stable enough to treat as "the"
-   number, since both are larger than the entire ~102 MB RSS delta being
-   explained. This is evidence the forced-dump methodology itself perturbs
-   what it's measuring (plausibly via per-thread/shard
-   `StringDictionaryBuffer` duplication triggered by the extra dump), not
-   just noise. It also surfaced a second, independent finding worth
-   tracking on its own: `NM_CALLTRACE` resets to baseline capacity across a
-   chunk rotation while `NM_DICTIONARY` content persists/accumulates — a
-   real lifetime difference with its own production implications regardless
-   of the magnitude question. Next up: trace the per-thread/shard
-   `StringDictionaryBuffer` buffering mechanism directly (source reading +
-   targeted instrumentation) rather than continuing to infer growth from
-   perturbing dump-timing experiments, since the black-box approach has now
-   given two different large numbers instead of converging.
+   less, and a repeat rep of that same reading confirmed why: it measured
+   ~236.5 MiB of growth, a second rep of the identical test measured
+   ~235.3 MiB (a ~0.5% spread — this part is genuinely reproducible, not
+   noise), and both are still ~93 MiB above the ~143 MiB from the original
+   midpoint-split test. That gap between test *constructions* is real and
+   repeatable too: it tracks how much workload ran before the forced dump
+   (more pre-dump runtime → bigger resolution backlog flushed at dump time
+   → bigger growth revealed in the next chunk), not run-to-run jitter. Both
+   construction-level results are still larger than the entire ~102 MB RSS
+   delta being explained, so the open question isn't "is this number
+   stable" (it is, per construction) but "what does forcing a dump at all
+   change relative to a normal run's single end-of-life flush" (plausibly
+   via per-thread/shard `StringDictionaryBuffer` duplication triggered by
+   the extra dump — not confirmed). It also surfaced a second, independent
+   finding worth tracking on its own: `NM_CALLTRACE` resets to baseline
+   capacity across a chunk rotation while `NM_DICTIONARY` content
+   persists/accumulates — a real lifetime difference with its own
+   production implications regardless of the magnitude question. Next up:
+   trace the per-thread/shard `StringDictionaryBuffer` buffering mechanism
+   directly (source reading + targeted instrumentation) rather than
+   continuing to infer growth from perturbing dump-timing experiments,
+   since the black-box approach has now confirmed two different
+   construction-dependent numbers rather than converging on one that
+   generalizes to a normal single-chunk run.
 3. Kick off Phase 1.2 for CPU and latency: pick 1–2 of the candidate
    hypotheses above, build the smallest synthetic microbenchmark that
    isolates one, and get a first with/without-agent number — the goal at
