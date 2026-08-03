@@ -52,7 +52,7 @@ ProfiledThread* ThreadLocalDataPool::claim(int tid) {
         }
         index = (index + 1) % _capacity;
     } while (index != start_pos);
-    assert(false && "Should not reach here");
+    __atomic_fetch_add(&_used, -1, __ATOMIC_RELAXED);
     return nullptr;
 }
 
