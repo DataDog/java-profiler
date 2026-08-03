@@ -524,15 +524,25 @@ breakdown illustrates — the biggest memory lever might not be
    `NM_DICTIONARY` content persists/accumulates — a real lifetime
    difference with its own production implications, unrelated to either
    gap.
-3. Find a fresh explanation for the ~32–42 MB steady-state gap, explicitly
-   *not* reusing anything from the `NM_DICTIONARY`/`MethodMap`/two-chunk
-   line of investigation above (confirmed inapplicable by the timing
-   argument in item 2). Worth first checking whether the LD_PRELOAD
-   allocation shim can be rerun with its `atexit()` report replaced by an
-   in-process trigger fired ~1 second before the sweep's own RSS sample
-   (matching that sweep's exact timing), to get a like-for-like allocation
-   attribution for the steady-state window specifically, rather than the
-   post-shutdown window it captured before.
+3. ~~Rerun the LD_PRELOAD allocation shim with a steady-state-timed
+   snapshot (matching the sweep's own RSS sample point) instead of only
+   `atexit()`.~~ **Done — came up empty, but for an instructive reason.**
+   The steady-state total (~35.7 MB) was dominated (~24.6 MB, verified via
+   `nm`-precise offset targeting and deep-backtrace capture to be real, not
+   a backtrace artifact) by `JVMSupport::loadMethodIDsImpl` — but that's
+   the identical call disabled by the toggle test that already measured
+   jmethodID preloading's ~35.9 MB NMT-visible share (same function
+   `loadMethodIDsIfNeeded` calls), so this is almost certainly the same
+   bytes measured twice, not new evidence. **Two independent attempts to
+   explain this gap (dictionary/`MethodMap` growth, then direct allocation
+   attribution) have now both landed on already-explained mechanisms.**
+   That pattern itself is informative: the gap is unlikely to be additional
+   profiler-`.so`-attributed `malloc`/`new` activity at all — this
+   experiment's entire steady-state total was already-known territory.
+   Next candidates, explicitly *not* profiler-side-allocation hypotheses:
+   glibc allocator fragmentation/bookkeeping overhead, JVM-side memory that
+   bypasses `os::malloc` (so is invisible to both NMT and this shim), or an
+   NMT category that's undercounting rather than one that's silent.
 4. Kick off Phase 1.2 for CPU and latency: pick 1–2 of the candidate
    hypotheses above, build the smallest synthetic microbenchmark that
    isolates one, and get a first with/without-agent number — the goal at

@@ -138,6 +138,20 @@ two platforms are called out inline where they matter.
    (`dump()` or process exit) — and explaining one does not explain the
    other.** The steady-state gap needs a fresh hypothesis, untouched by
    anything found via the two-chunk-test/dump-burst line of investigation.
+9. **The allocation shim, retimed to sample at steady state instead of
+   `atexit()`, mostly re-discovered already-explained costs rather than
+   explaining the ~32–42 MB gap.** Its steady-state total (~35.7 MB)
+   dominant site (~24.6 MB) resolves to `JVMSupport::loadMethodIDsImpl` —
+   verified, after ruling out a suspicious all-`nil` backtrace as an
+   artifact, to be a real, multi-frame allocation chain through
+   `jvmti->GetClassMethods()`. But that's the identical call disabled by
+   the toggle test that already measured jmethodID preloading's ~35.9 MB
+   NMT-visible share (`loadMethodIDsIfNeeded`, which the toggle patches,
+   is what calls `loadMethodIDsImpl`) — since NMT tracks the same
+   underlying `malloc` path this shim intercepts, these are most likely
+   the same bytes measured twice, not additive. See the dedicated section
+   above for the full account. The gap remains open; this rules out
+   "additional profiler-`.so`-attributed allocation" as its likely source.
 
 ## Harness
 
@@ -841,6 +855,69 @@ specific code path is both real and allocation-heavy — consistent with,
 though not a precise cross-check against, the two-chunk tests'
 ~143–236 MiB `NM_DICTIONARY` readings.
 
+### Retiming the allocation shim to steady state: re-discovers, doesn't explain, the gap
+
+The shim above only ever reported via `atexit()`, which — per the
+`finishChunk()` timing argument in "Practical implications" below — fires
+*after* the chunk-flush burst, not during steady state. It was extended
+with an optional background thread that takes a non-destructive snapshot
+at a configurable elapsed time, matching `run_repeated_sweep.sh`'s own RSS
+sample point (`launch_epoch + (DURATION_MS - 1000)/1000`) as closely as
+possible, so the same run gives directly comparable steady-state and
+post-exit attributions.
+
+On a `classes 150000` run (180s total, snapshot at 179s): **steady-state
+total was ~35.7 MB**, vs. ~197 MB at the post-exit snapshot from the same
+run — consistent with the already-confirmed chunk-flush burst, and a
+useful independent cross-check of its rough magnitude via a completely
+different mechanism (allocation attribution vs. RSS/counter deltas).
+
+Of that ~35.7 MB, **~24.6 MB (376,322 allocations, ~68.6 B average)
+resolves to `JVMSupport::loadMethodIDsImpl`.** This looked promising at
+first — close to the ~32–42 MB gap in magnitude — but needed verification
+before trusting it: the top site's printed frames were suspiciously all
+`nil` beyond the match point, unlike every other site (which showed full
+16-24-frame chains). Rather than accept or dismiss this, `nm` was used to
+get the function's exact address range (`[0x284b0, 0x28500)`, 80 bytes),
+and the shim was retargeted to capture full-depth backtraces filtered to
+exactly that range. A first attempt with too wide a filter window
+accidentally caught a neighboring function (`loadAllMethodIDsIfNeeded`)
+instead — caught before drawing any conclusion — and the corrected,
+precise window then produced 50 consistent, coherent 18-21-frame chains
+from `loadMethodIDsImpl` through several `libjvm.so`-internal frames down
+to `malloc`. **Not a backtrace artifact**: this is real allocation, one
+small object per method discovered (not per class) across the 150,000
+touched classes, exactly matching the "JVM-internal allocation... persists
+until class unload... significant memory growth" behavior the profiler's
+own source comment already documents for this call.
+
+**But this is not new evidence for the gap — it's the same mechanism
+already confirmed, seen through a second instrument.** The toggle test
+that measured jmethodID preloading's ~35.9 MB NMT-visible share patched
+`JVMSupport::loadMethodIDsIfNeeded` (`jvmSupport.cpp:145`) to `return
+false` — and `loadMethodIDsIfNeeded` is what calls `loadMethodIDsImpl`.
+Disabling one disables the other; there is no daylight between them. Since
+NMT's tracking wraps the same underlying `os::malloc` → glibc `malloc`
+path this shim intercepts at the lowest level, the far more likely
+explanation is that the shim's ~24.6 MB and the toggle test's ~35.9 MB
+are, to a large extent, **the same bytes measured twice**, not two
+quantities that add together. The same caution applies to the smaller
+sites in this snapshot (`DwarfParser::addRecord`, JIT-code-cache callback
+registration) — these plausibly already live under the profiler's own
+`NM_LINE_TABLES`/`NM_NATIVE_SYMBOLS` categories rather than being new,
+uncounted memory.
+
+**Net result: this experiment mostly re-discovered already-explained
+costs rather than accounting for the ~32–42 MB residual gap.** That's
+still informative — it suggests the gap is unlikely to be sitting in
+additional profiler-`.so`-attributed `malloc`/`new` calls at all (this
+shim's entire steady-state total was already-known territory), pointing
+instead toward something structurally invisible to this kind of
+instrumentation: glibc allocator fragmentation/bookkeeping overhead,
+JVM-side memory that doesn't route through `os::malloc`, or memory that's
+NMT-tracked but was miscategorized/undercounted in the original NMT
+category breakdown. The gap remains open.
+
 **Practical takeaway for quantifying this to a customer**: "flat, a few MB"
 is only correct for workloads with narrow call-graph/class diversity
 (few distinct classes and methods actually appearing in sampled stacks,
@@ -1019,6 +1096,25 @@ now confirmed empirically:
   remembering when reading any other claim in this document: getting the
   *mechanism* right doesn't automatically mean the *conclusion* drawn from
   it is right; check what's actually being measured and when, every time.
+- **A follow-up attempt to close the ~32–42 MB gap with a steady-state-timed
+  allocation shim also came up empty, but for an instructive reason.** The
+  shim's ~35.7 MB steady-state total was dominated (~24.6 MB) by
+  `JVMSupport::loadMethodIDsImpl` — verified as a real allocation chain, not
+  a backtrace artifact, via `nm`-precise offset targeting and deep-backtrace
+  capture. But that call is disabled by the exact same one-line patch
+  (`loadMethodIDsIfNeeded` returning `false`) already used to measure
+  jmethodID preloading's ~35.9 MB NMT-visible share — meaning the shim's
+  number is most likely the same bytes NMT already counts, not additional
+  ones. **Two independent attempts to explain this gap (dictionary/
+  MethodMap growth, and now direct allocation attribution) have both landed
+  on mechanisms that turned out to already be explained elsewhere.** That's
+  a pattern worth taking seriously: whatever is causing the remaining
+  ~32–42 MB is likely *not* sitting in additional profiler-`.so`-attributed
+  `malloc`/`new` calls at all (this experiment's entire total was
+  already-known territory) — worth looking at glibc allocator
+  fragmentation/bookkeeping, JVM-side memory that bypasses `os::malloc`, or
+  NMT categories that may be undercounting rather than missing entirely,
+  before trying a third "new profiler-side allocation" hypothesis.
 - **Coverage (classes actually touched by a sample) fell from 93.6% at
   N=2,000 to 56.4% at N=150,000 for the same relative duration/interval
   scaling used across this sweep.** The per-touched-class normalization is
