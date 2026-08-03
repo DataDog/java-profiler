@@ -1,5 +1,5 @@
 name: Validated Release
-run-name: "${{ inputs.dry_run && 'Dry-run for ' || 'Perform ' }}${{ inputs.release_type }} release of ${{ github.ref_name }} branch"
+run-name: "${{ inputs.dry_run && 'Dry-run for ' || 'Perform ' }}${{ inputs.release_type }} release of ${{ github.ref_name }} branch [${{ inputs.request_id || 'manual' }}]"
 
 on:
   workflow_dispatch:
@@ -23,11 +23,20 @@ on:
         required: false
         type: boolean
         default: false
+      request_id:
+        description: Unique correlation ID supplied by utils/release.sh
+        required: false
+        type: string
+        default: ""
+      source_sha:
+        description: Exact source SHA expected by utils/release.sh
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: write
   actions: read
-  pull-requests: write
 
 jobs:
   validate-inputs:
@@ -41,6 +50,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          ref: ${{ github.sha }}
 
       - name: Setup Java
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
@@ -55,9 +65,15 @@ jobs:
         run: |
           BRANCH="${GITHUB_REF_NAME}"
           TYPE="${{ inputs.release_type }}"
+          EXPECTED_SOURCE_SHA="${{ inputs.source_sha }}"
 
           echo "Current branch: $BRANCH"
           echo "Release type: $TYPE"
+
+          if [ -n "$EXPECTED_SOURCE_SHA" ] && [ "$GITHUB_SHA" != "$EXPECTED_SOURCE_SHA" ]; then
+            echo "::error::Dispatched SHA $GITHUB_SHA differs from requested SHA $EXPECTED_SOURCE_SHA"
+            exit 1
+          fi
 
           # Branch validation
           if [ "$TYPE" == "patch" ] || [ "$TYPE" == "retag" ]; then
@@ -95,12 +111,23 @@ jobs:
             echo "Version $BASE is not yet released"
           fi
 
-          # A non-retag release must never start from an already-tagged base:
-          # it means the post-release version-bump PR from the previous
-          # release never merged, so this branch is stuck. Fail loudly
-          # instead of silently skipping release creation or guessing at
-          # what the next version should be.
-          if [ "$TYPE" != "retag" ] && [ "$ALREADY_RELEASED" == "true" ]; then
+          # A release branch is initially created at the tagged X.Y.0 minor
+          # release. Its first patch legitimately starts from that tag and
+          # creates X.Y.1. A tagged patch version greater than zero instead
+          # means the previous post-release bump PR never merged.
+          FIRST_PATCH=false
+          if [ "$TYPE" == "patch" ] && [ "$ALREADY_RELEASED" == "true" ] &&
+             [ "$PATCH" -eq 0 ]; then
+            if [ "$(git cat-file -t "refs/tags/v_${BASE}" 2>/dev/null)" != "tag" ]; then
+              echo "::error::First patch base v_${BASE} must be an annotated tag"
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "v_${BASE}^{commit}" "$GITHUB_SHA"; then
+              echo "::error::First patch base tag v_${BASE} is not reachable from $GITHUB_SHA"
+              exit 1
+            fi
+            FIRST_PATCH=true
+          elif [ "$TYPE" != "retag" ] && [ "$ALREADY_RELEASED" == "true" ]; then
             echo "::error::${BRANCH} is stuck at version ${BASE}, which is already tagged (v_${BASE})."
             echo "::error::The automated post-release version-bump PR for this branch was never merged."
             STUCK_PR=$(gh pr list --state open --base "$BRANCH" --json headRefName,url \
@@ -132,8 +159,14 @@ jobs:
               exit 1
             fi
           else
-            # PATCH always increments
-            RELEASE_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
+            # The first patch starts from the already-tagged minor version and
+            # releases the next patch. Subsequent patch runs start from the
+            # untagged development version left by the previous bump PR.
+            if [ "$FIRST_PATCH" == "true" ]; then
+              RELEASE_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
+            else
+              RELEASE_VERSION="$BASE"
+            fi
           fi
 
           # Compute release branch
@@ -174,9 +207,21 @@ jobs:
     if: always() && needs.validate-inputs.result == 'success' && (needs.pre-release-tests.result == 'success' || needs.pre-release-tests.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
+      checks: read
       contents: write
       pull-requests: write
-      id-token: write # Needed to federate a token for the bump-PR create-release step
+      statuses: read
+      id-token: write
+    outputs:
+      base_branch: ${{ steps.create-release.outputs.base_branch }}
+      source_sha: ${{ steps.create-release.outputs.source_sha }}
+      release_version: ${{ steps.create-release.outputs.release_version }}
+      next_version: ${{ steps.create-release.outputs.next_version }}
+      release_branch: ${{ steps.create-release.outputs.release_branch }}
+      bump_branch: ${{ steps.create-release.outputs.bump_branch }}
+      bump_head_sha: ${{ steps.create-release.outputs.bump_head_sha }}
+      bump_pr_number: ${{ steps.create-release.outputs.bump_pr_number }}
+      bump_pr_url: ${{ steps.create-release.outputs.bump_pr_url }}
     steps:
       - name: Check test results
         if: ${{ inputs.dry_run != true && inputs.skip_tests != true && inputs.release_type != 'retag' && needs.pre-release-tests.result != 'success' }}
@@ -201,7 +246,7 @@ jobs:
           cd java-profiler
           git config --global user.email "java-profiler@datadoghq.com"
           git config --global user.name "Datadog Java Profiler"
-          git checkout $GITHUB_REF_NAME
+          git checkout -B "$GITHUB_REF_NAME" "$GITHUB_SHA"
 
       - name: Setup Java
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
@@ -209,19 +254,19 @@ jobs:
           distribution: 'zulu'
           java-version: '21'
 
-      - name: Federate bump-PR token
-        if: ${{ inputs.dry_run != true }}
+      - name: Federate release bump label token
+        id: bump-label-token
+        if: ${{ inputs.dry_run != true && inputs.release_type != 'retag' }}
         uses: DataDog/dd-octo-sts-action@96a25462dbcb10ebf0bfd6e2ccc917d2ab235b9a # v1.0.4
-        id: octo-sts
         with:
           scope: DataDog/java-profiler
-          policy: self.release-bump.create-pr
+          policy: self.release-bump.label-pr
 
       - name: Create release
         id: create-release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BUMP_PR_TOKEN: ${{ steps.octo-sts.outputs.token }}
+          BUMP_LABEL_TOKEN: ${{ steps.bump-label-token.outputs.token }}
         run: |
           cd java-profiler
 
@@ -234,10 +279,20 @@ jobs:
           TYPE="${{ inputs.release_type }}"
           ./.github/scripts/release.sh ${TYPE^^} $DRY_RUN
 
+      - name: Wait for exact bump approval and selected CI, then merge
+        if: ${{ inputs.dry_run != true && inputs.release_type != 'retag' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd java-profiler
+          ./.github/scripts/wait-release-bump.sh \
+            --repo "$GITHUB_REPOSITORY" \
+            --pr-number '${{ steps.create-release.outputs.bump_pr_number }}' \
+            --expected-head-sha '${{ steps.create-release.outputs.bump_head_sha }}' \
+            --check release-bump-ci
+
       - name: Output Release Summary
         if: ${{ inputs.dry_run != true }}
-        env:
-          BUMP_PR_URL: ${{ steps.create-release.outputs.BUMP_PR_URL }}
         run: |
           echo "## ✅ Release Created Successfully" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -245,10 +300,9 @@ jobs:
           echo "- **Tag**: v_${{ needs.validate-inputs.outputs.release_version }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Branch**: ${{ needs.validate-inputs.outputs.release_branch }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          if [ -n "$BUMP_PR_URL" ]; then
-            echo "### ⚠ Action Required" >> $GITHUB_STEP_SUMMARY
-            echo "A version bump PR needs review and merge before the next snapshot builds carry the correct version:" >> $GITHUB_STEP_SUMMARY
-            echo "- $BUMP_PR_URL" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ inputs.release_type }}" != "retag" ]; then
+            echo "### Version Bump" >> $GITHUB_STEP_SUMMARY
+            echo "- **Automatically merged PR**: ${{ steps.create-release.outputs.bump_pr_url }}" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
           fi
           echo "### Next Steps (Automatic)" >> $GITHUB_STEP_SUMMARY
