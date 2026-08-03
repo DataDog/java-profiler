@@ -396,9 +396,11 @@ public final class JavaProfiler {
     /**
      * Internal hook called before {@code LockSupport.park}. Park-specific TaskBlock
      * production is intentionally separate from the public paired API.
+     *
+     * @return {@code true} when this call owns a park interval that must be closed
      */
-    void parkEnter() {
-        parkEnter0();
+    boolean parkEnter() {
+        return parkEnter0();
     }
 
     /**
@@ -502,7 +504,7 @@ public final class JavaProfiler {
 
     private static native void recordQueueEnd0(long startTicks, long endTicks, String task, String scheduler, Thread origin, String queueType, int queueLength);
 
-    private static native void parkEnter0();
+    private static native boolean parkEnter0();
 
     private static native void parkExit0(long blocker, long unblockingSpanId);
 

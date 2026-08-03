@@ -422,11 +422,11 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
   Profiler::instance()->recordQueueTime(tid, &event);
 }
 
-extern "C" DLLEXPORT void JNICALL
+extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) {
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
   if (current == nullptr) {
-    return;
+    return JNI_FALSE;
   }
 
   bool first_park = current->parkEnter();
@@ -438,6 +438,7 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) 
           tf->enterBlockedRun(slot_id, OSThreadState::CONDVAR_WAIT));
     }
   }
+  return first_park ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" DLLEXPORT void JNICALL
