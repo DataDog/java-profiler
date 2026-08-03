@@ -10,13 +10,16 @@ import org.junit.jupiter.api.Test;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class JavaProfilerApiSurfaceTest {
     @Test
     public void taskBlockApiIsPublicButInternalHooksRemainPackageScoped() throws Exception {
-        assertNotPublic(JavaProfiler.class.getDeclaredMethod("parkEnter"));
+        Method parkEnter = JavaProfiler.class.getDeclaredMethod("parkEnter");
+        assertNotPublic(parkEnter);
+        assertEquals(boolean.class, parkEnter.getReturnType());
         assertNotPublic(JavaProfiler.class.getDeclaredMethod(
                 "parkExit", long.class, long.class));
         assertNotPublic(JavaProfiler.class.getDeclaredMethod("blockEnter", int.class));
