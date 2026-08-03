@@ -421,9 +421,11 @@ EXPECTED=$(printf 'a%.0s' {1..40})
 if [ "$1" = "api" ] && [[ "$*" == *"/reviews?"* ]]; then
   echo approval >> "$WAITER_ORDER"
   if [ "$WAITER_SCENARIO" = "stale-approval" ]; then
-    echo false
+    printf '[[{"user":{"login":"dd-octo-sts[bot]"},"state":"APPROVED","commit_id":"%s"}]]\n' \
+      "$(printf 'b%.0s' {1..40})"
   else
-    echo true
+    printf '[[{"user":{"login":"dd-octo-sts[bot]"},"state":"APPROVED","commit_id":"%s"}]]\n' \
+      "$EXPECTED"
   fi
 elif [ "$1" = "api" ]; then
   case "$WAITER_SCENARIO" in

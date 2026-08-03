@@ -88,7 +88,7 @@ elif [ "$MODE" = "pr" ]; then
   PARENTS=$(jq -c '[.parents[].sha]' <<<"$COMMIT")
   PARENT_SHA=$(jq -r 'if length == 1 then .[0] else "" end' <<<"$PARENTS")
   FILES=$(gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files?per_page=100" \
-    --slurp --jq 'add | map({filename, status})')
+    --slurp | jq -c 'add | map({filename, status})')
   CURRENT_HEAD_SHA=$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.sha')
   SENDER_PERMISSION="none"
   if [ "$SENDER" != "dd-octo-sts[bot]" ] || [ "$SENDER_TYPE" != "Bot" ]; then

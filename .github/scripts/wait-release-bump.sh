@@ -59,9 +59,10 @@ for ((attempt = 1; attempt <= POLL_ATTEMPTS; attempt++)); do
   verify_open "$PR"
 
   if gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" \
-      --slurp --jq \
-      "add | any(.user.login == \"dd-octo-sts[bot]\" and .state == \"APPROVED\" and .commit_id == \"$EXPECTED_HEAD_SHA\")" |
-      grep -qx true; then
+      --slurp |
+      jq -e --arg expected_head_sha "$EXPECTED_HEAD_SHA" \
+        'add | any(.user.login == "dd-octo-sts[bot]" and .state == "APPROVED" and .commit_id == $expected_head_sha)' \
+        >/dev/null; then
     APPROVED=true
     break
   fi
