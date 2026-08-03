@@ -5,6 +5,7 @@
 
 package com.datadoghq.profiler.wallclock;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
@@ -23,15 +24,12 @@ import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * Verifies once-per-run suppression ({@code wallprecheck=true}) with a mix of sleeping,
- * parked, and runnable threads.
- */
+/** Verifies that {@code wallprecheck=true} does not suppress context-scoped threads. */
 public class WallclockMitigationsCombinedTest extends AbstractProfilerTest {
     private static final int OSTHREAD_STATE_SLEEPING = 7;
 
     @Test
-    public void precheckAndParkSuppressionWorkTogether() throws Exception {
+    public void contextScopedThreadsRemainSampled() throws Exception {
         Assumptions.assumeTrue(!Platform.isJ9());
         Assumptions.assumeTrue(
                 Platform.isJavaVersionAtLeast(11),
@@ -39,6 +37,8 @@ public class WallclockMitigationsCombinedTest extends AbstractProfilerTest {
 
         CountDownLatch ready = new CountDownLatch(3);
         AtomicBoolean stop = new AtomicBoolean(false);
+        long suppressedBefore = profiler.getDebugCounters()
+                .getOrDefault("wc_signals_suppressed_owned_block", 0L);
 
         Thread sleeping =
                 new Thread(
@@ -109,20 +109,17 @@ public class WallclockMitigationsCombinedTest extends AbstractProfilerTest {
         long parkedSamples = samplesByThread.getOrDefault("combined-parked", 0L);
         long runnableSamples = samplesByThread.getOrDefault("combined-runnable", 0L);
 
-        assertTrue(sleepingSamples < 10,
-                "Expected nearly no samples from owned sleeping thread, got: " + sleepingSamples);
+        assertTrue(sleepingSamples > 0,
+                "Expected samples from context-scoped sleeping thread, got: " + sleepingSamples);
         assertTrue(parkedSamples > 0,
                 "Expected samples from traced parked thread, got: " + parkedSamples);
         assertTrue(runnableSamples > 0,
                 "Expected samples from runnable thread, got: " + runnableSamples);
 
-        // Sleeping thread's suppression counter must have incremented.
-        Map<String, Long> counters = profiler.getDebugCounters();
-        if (counters.containsKey("wc_signals_suppressed_sampled_run")) {
-            assertTrue(
-                    counters.get("wc_signals_suppressed_sampled_run") > 0,
-                    "Expected once-per-run suppression counter to increase");
-        }
+        long suppressedAfter = profiler.getDebugCounters()
+                .getOrDefault("wc_signals_suppressed_owned_block", 0L);
+        assertEquals(suppressedBefore, suppressedAfter,
+                "Context-scoped blocked threads must not be signal-suppression candidates");
     }
 
     @Override
