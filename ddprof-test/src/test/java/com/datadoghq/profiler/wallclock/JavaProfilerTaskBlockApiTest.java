@@ -121,11 +121,11 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
   public void traceContextRejectsAtEntry() throws Exception {
     AtomicLong token = new AtomicLong(-1L);
     runWorker(() -> {
-      profiler.setContext(0x5100L, 0x5101L, 0L, 0x5101L);
+      profiler.setTraceContext(0x5100L, 0x5101L, 0L, 0x5101L, -1, null, -1, null);
       try {
         token.set(profiler.beginTaskBlock());
       } finally {
-        profiler.clearContext();
+        profiler.clearTraceContext();
       }
     });
     assertEquals(0L, token.get(),
