@@ -35,11 +35,19 @@ two platforms are called out inline where they matter.
    `writeCpool()`/`writeStackTraces()` executes — so growth from a chunk's
    own dump-time symbolication is, by design, only visible in a *subsequent*
    chunk's reading. Every measurement in this document used single-chunk
-   runs, which structurally cannot observe this. A two-chunk test (forcing
-   an intermediate dump mid-run) confirms real, substantial growth: the
-   final chunk's `NM_DICTIONARY` read ~143 MiB, up from the ~4.55 MiB
-   baseline the intermediate chunk showed. This is almost certainly a major
-   piece of what was previously reported as an "unattributed ~32–42 MB gap."
+   runs, which structurally cannot observe this. Two independent two-chunk
+   tests (forcing an intermediate dump mid-run, varying how much workload
+   ran before the dump) confirm real, substantial growth: `NM_DICTIONARY`
+   read ~143 MiB and ~236 MiB respectively in the chunk *after* the one
+   that did the inserting, vs. the usual ~4.55 MiB baseline. **Treat "large,
+   real, and non-zero" as the confirmed finding — not either specific
+   number**, since both come from a deliberately perturbed methodology
+   (forcing an extra `dump()` call) whose relationship to a normal,
+   unmodified single-chunk run's *actual* internal growth isn't
+   independently established; see the dedicated section below for why. This
+   is likely a significant piece of what was previously reported as an
+   "unattributed ~32–42 MB gap," but its precise size relative to that
+   figure remains unmeasured.
 4. **The CPU-sampling engine (`cpu=`) works on Linux** (it doesn't
    initialize on this project's current macOS build) and produces real
    samples, but its associated `NM_PERF` counter requires a kernel-symbol
@@ -298,21 +306,58 @@ see below) and confirmed three independent ways:
    an instrumentation gap, but because a single-chunk run has no subsequent
    chunk to reveal it in.
 
-**A two-chunk test confirms real, large growth.** Forcing an intermediate
-`profiler.dump()` partway through a `classes 150000` run (splitting the
-180s workload in half, one dedicated test program not part of the
-harness), then reading the *final* chunk (written normally at process
-exit): the intermediate chunk's own `NM_DICTIONARY` reading was the usual
-flat baseline (4,774,032 B), but **the final chunk read 149,876,928 B
-(~143 MiB)** — reflecting the intermediate dump's real class-name
-insertions, one chunk late. This single data point shouldn't be read as an
-exact, generally-applicable number (it comes from a deliberately
-constructed two-chunk scenario, not the standard single-run methodology
-used elsewhere in this document), but the direction and order of magnitude
-are unambiguous: **wall-clock sampling's class-name dictionary growth is
-real, and substantial — comparable to or larger than `NM_CALLTRACE`'s own
-growth — not zero.** The next section's `allocs`-vs-`classes` comparison
-remains a valid, separate finding (allocation sampling's dictionary
+**Two two-chunk tests confirm real, large growth — but not a stable
+number.** Both force an intermediate `profiler.dump()` during a `classes
+150000` run, then read the *final* chunk (written normally at process
+exit):
+
+| Test | Workload before the forced dump | `NM_DICTIONARY` in the dump chunk | `NM_DICTIONARY` in the final chunk |
+|---|---|---|---|
+| Split evenly | 90s of 180s total | 4,774,032 B (baseline) | 149,876,928 B (~143 MiB) |
+| Dump near the end | 177s of 180s total | 4,774,032 B (baseline) | 247,996,656 B (~236 MiB) |
+
+Both confirm the same qualitative point unambiguously: wall-clock sampling's
+class-name dictionary growth is real and substantial — comparable to or
+larger than `NM_CALLTRACE`'s own growth, not zero — and it scales with how
+much workload ran before the dump (177s of accumulated class touches
+produced more growth than 90s), consistent with the mechanism being real
+insertions rather than a fixed artifact of forcing a dump at all. **But
+neither number should be read as "the size of the gap."** Both come from a
+methodology that itself perturbs the system (an explicit `dump()` call the
+standard single-chunk runs never make), and both are larger — in the
+"dump near the end" case, over twice as large — than the entire ~102 MB
+RSS delta this whole investigation has been trying to explain. Raw string
+content for 150,000 short class names is only on the order of ~2 MB, so
+something beyond simple string storage is inflating this — plausibly
+per-thread or per-shard `StringDictionaryBuffer` copies of the same names
+accumulating before consolidation into the shared arena (mentioned as a
+hypothesis in the very first version of this investigation, never
+confirmed) — but this wasn't traced further. Treat the *existence and
+substantial size* of wall-clock dictionary growth as solidly confirmed;
+treat its *precise magnitude under normal, unperturbed conditions* as
+still an open question this specific methodology cannot answer, since
+observing it at all requires the perturbation.
+
+**A second, independent finding fell out of the same test: call-trace
+storage resets across a chunk rotation; the dictionary's content persists
+across it.** In the "dump near the end" test, `NM_CALLTRACE` was
+50,858,496 B (grown/doubled) in the dump chunk, but read back down to
+25,692,672 B — the *initial* baseline capacity — in the final chunk, just
+3 seconds later, despite the workload continuing to sample the same 150,000
+classes throughout. The dictionary shows the opposite pattern: its growth
+from the dump chunk *carries forward* into the final chunk's reading (that
+is precisely the "one chunk late" mechanism above). This is a genuinely
+different lifetime for the two structures across chunk rotation, worth
+knowing for any long-running production process with periodic JFR chunk
+rotation: **call-trace memory is bounded per rotation window** (each
+rotation effectively restarts the hash table), while **class-name
+dictionary memory can accumulate across rotations**, up to its
+`MAX_CLASS_MAP_SIZE` cap (`profiler.h`, 262,144 entries). This wasn't
+independently verified beyond this one test and isn't otherwise documented
+here — worth confirming with a dedicated, purpose-built test rather than
+treating it as settled from a single observation.
+
+The next section's `allocs`-vs-`classes` comparison remains a valid, separate finding (allocation sampling's dictionary
 insertion is visible *immediately*, within the same chunk, while
 wall-clock's is real but deferred by one chunk) — only the explanation for
 *why* wall-clock's didn't show up immediately has changed, from "dead code"
@@ -658,10 +703,12 @@ confirmed to insert real class names, it plausibly *does* grow alongside
 **The ~32–42 MB gap now has a well-evidenced leading explanation instead of
 none: real `NM_DICTIONARY` (and likely `MethodMap`) growth that the
 counters simply couldn't show.** This isn't a precise attribution — the
-only direct *magnitude* measurement available (the two-chunk test above,
-~143 MiB) came from a deliberately constructed scenario, not the standard
-single-run methodology used to derive the 32–42 MB figure itself, so the
-two numbers aren't directly comparable one-to-one. But qualitatively, the
+only direct *magnitude* measurements available (the two-chunk tests above,
+~143–236 MiB depending on construction) came from deliberately perturbed
+scenarios, not the standard single-run methodology used to derive the
+32–42 MB figure itself, so the numbers aren't directly comparable
+one-to-one — if anything, they're evidence the *true* single-run magnitude
+is hard to pin down at all with tools available so far. But qualitatively, the
 gap stopped being "unexplained by anything we've measured" and became
 "real memory whose growth mechanism is confirmed, in a structure whose
 *current* magnitude under standard single-run conditions hasn't been
@@ -723,8 +770,8 @@ each**) both resolving to the exact chain confirmed above:
 via a completely different method (live instruction-pointer attribution
 rather than either source instrumentation or a debugger), that this
 specific code path is both real and allocation-heavy — consistent with,
-though not a precise cross-check against, the two-chunk test's ~143 MiB
-`NM_DICTIONARY` reading.
+though not a precise cross-check against, the two-chunk tests'
+~143–236 MiB `NM_DICTIONARY` readings.
 
 **Practical takeaway for quantifying this to a customer**: "flat, a few MB"
 is only correct for workloads with narrow call-graph/class diversity
@@ -754,23 +801,37 @@ now confirmed empirically:
    on both platforms tested. This applies whether the diversity comes from
    many distinct methods at one call site or many distinct classes sampled
    via reflection. **But this internal step function is only a small part of
-   the externally-visible RSS cost** — see point 5.
+   the externally-visible RSS cost** — see point 6.
 3. **Class/method-name diversity genuinely grows the class-name dictionary
    under both sampling engines — but `NM_DICTIONARY` only shows it promptly
    for one of them.** Allocation sampling's growth is visible in the same
-   chunk it happens in. Wall-clock sampling's growth is just as real (a
-   two-chunk test measured it directly, at a substantial ~143 MiB for
-   `classes 150000`) but is only ever visible in a *subsequent* chunk's
+   chunk it happens in. Wall-clock sampling's growth is just as real (two
+   independent two-chunk tests measured it directly, at ~143–236 MiB for
+   `classes 150000` depending on test construction) but is only ever
+   visible in a *subsequent* chunk's
    counter reading, by design (`flightRecorder.cpp:819–826`) — a
    single-chunk profiling session (the common case for short-lived
    diagnostic runs) will never see it in `NM_DICTIONARY` at all, regardless
    of how much real memory it consumed. Don't read a flat `NM_DICTIONARY` in
    a wall-clock-sampled, single-chunk session as "no class-name diversity
    cost" — it may just mean the cost hasn't been reported yet.
-4. **Sampling frequency and allocation rate remain secondary** to the other
+4. **Call-trace storage and the class-name dictionary appear to have
+   different lifetimes across a JFR chunk rotation** — observed
+   incidentally while investigating point 3, not independently verified
+   beyond one test. `NM_CALLTRACE` reset to its initial baseline capacity
+   in the chunk immediately after one that had grown it, while
+   `NM_DICTIONARY`'s growth from that same prior chunk persisted into the
+   next chunk's reading. If this holds up under further testing, it implies
+   call-trace memory is bounded per rotation window in a long-running,
+   periodically-rotating production process, while class-name dictionary
+   memory can accumulate across rotations up to its capacity cap — a
+   meaningfully different long-term memory profile for the two structures
+   that this investigation otherwise treated as similar "hash table that
+   grows with diversity" cases.
+5. **Sampling frequency and allocation rate remain secondary** to the other
    points here for steady-state footprint, consistent with the original
    model's prediction — nothing in this pass found a counter-example.
-5. **For quantifying total profiler-attributable RSS overhead to a customer,
+6. **For quantifying total profiler-attributable RSS overhead to a customer,
    class/call-graph diversity is the dimension that matters, and it does not
    behave like a small fixed cost the way thread count does.** Measured via a
    dedicated with/without-agent sweep (not inferred from internal counters):
@@ -831,14 +892,23 @@ now confirmed empirically:
 - **The ~32–42 MB gap now has a strong, evidenced leading explanation
   (`NM_DICTIONARY`/`MethodMap` growth hidden by the counter-snapshot-timing
   artifact) but not a precise quantification under standard single-run
-  conditions.** The only direct magnitude measurement (~143 MiB) came from
-  a deliberately constructed two-chunk test, not the same methodology used
-  to derive the 32–42 MB figure — the two numbers are corroborating in
-  direction and order of magnitude, not a validated one-to-one match.
-  **Follow-up worth doing**: a same-methodology magnitude measurement (e.g.
-  reading `NM_DICTIONARY` from a *second* chunk in an otherwise-standard
-  run, rather than an artificially split one) would let the gap be closed
-  quantitatively rather than just qualitatively. Separately, this
+  conditions, and a second attempt to get one made this harder to resolve,
+  not easier.** Two two-chunk tests, one splitting the workload evenly and
+  one running almost the full standard duration before forcing the dump
+  (deliberately designed to be closer to the standard single-run
+  methodology), gave ~143 MiB and ~236 MiB respectively — both far larger
+  than the ~102 MB total RSS delta being explained, and neither stable
+  across test construction. **This is itself informative**: it suggests an
+  observer effect (the extra `dump()` call may cause more growth than a
+  normal single dump at process exit would, plausibly via per-thread/shard
+  buffer duplication before consolidation — not confirmed) rather than a
+  measurement that just needs to be run once more, cleanly. **Follow-up
+  worth doing**: trace the per-thread/shard `StringDictionaryBuffer`
+  buffering mechanism directly (source reading + targeted instrumentation,
+  the same pattern used throughout this investigation) to understand why
+  the observed magnitude is an order of magnitude larger than raw string
+  content (~2 MB for 150,000 short names) would predict, before attempting
+  a third magnitude measurement. Separately, this
   investigation's own initial conclusion (`resolveMethod` dead, `MethodMap`
   ruled out) turned out wrong — worth remembering when reading any other
   "confirmed via source instrumentation" claim earlier in this document:
