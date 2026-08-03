@@ -51,9 +51,10 @@ two platforms are called out inline where they matter.
    normal, unmodified single-chunk run's *actual* internal growth still
    isn't independently established, since both come from a methodology that
    deliberately perturbs the system (forcing an extra `dump()` call); see
-   the dedicated section below for why. This is likely a significant piece
-   of what was previously reported as an "unattributed ~32–42 MB gap," but
-   its precise size relative to that figure remains unmeasured.
+   the dedicated section below for why. **This is a real, separate, additive
+   cost — but it is *not* part of the "unattributed ~32–42 MB" steady-state
+   gap reported elsewhere in this document; see point 8, which corrects an
+   earlier version of this document that conflated the two.**
 4. **The CPU-sampling engine (`cpu=`) works on Linux** (it doesn't
    initialize on this project's current macOS build) and produces real
    samples, but its associated `NM_PERF` counter requires a kernel-symbol
@@ -95,12 +96,48 @@ two platforms are called out inline where they matter.
    either way. The remaining ~32–42 MB was, in an earlier version of this
    document, reported as invisible to both NMT and this profiler's own
    `NM_*` counters, with `MethodMap`/`MethodInfo` "ruled out" as a
-   candidate. **Both of those conclusions rested on the same wrong premise
-   (see point 3) and are superseded**: `NM_DICTIONARY` (and very likely
-   `MethodMap`, which is populated by the same code path) genuinely does
-   grow from wall-clock sampling — the counter just couldn't show it in a
-   single-chunk run. This gap is now most plausibly explained, not
-   unexplained. See the dedicated section below for the full account.
+   candidate. **The "ruled out" conclusion rested on a wrong premise (see
+   point 3) and is superseded — `MethodMap`/`NM_DICTIONARY` growth is real
+   and confirmed. But it does *not* explain this remaining ~32–42 MB.** A
+   still more recent correction (point 8) shows that growth mechanism is
+   gated behind `finishChunk()`, which — absent an explicit `dump()` call —
+   fires exactly once, at process shutdown, strictly *after* this sweep's
+   RSS sample is taken. The remaining ~32–42 MB stays unexplained; see
+   point 8 for the full account and why the two lines of investigation
+   don't connect the way an earlier version of this document claimed.
+8. **CORRECTED: the chunk-flush dictionary burst (point 3) and the ~32–42 MB
+   steady-state gap (point 7) are two separate, real phenomena — the burst
+   does not explain the gap.** Direct RSS instrumentation around the forced
+   `dump()` call in the clean two-chunk test shows a real, physical RSS
+   jump of ~213 MiB (VmRSS and Private_Dirty agree exactly) at the moment
+   `dump()` is called, closely matching `NM_DICTIONARY`'s own ~230 MiB
+   counter delta in the same run — conclusive confirmation the growth is
+   real memory, not a counter-accounting artifact. But `finishChunk()` —
+   the function that gates all of this growth — has exactly two call sites
+   in the source: `Recording::~Recording()` (destructor, run at VM
+   shutdown) and `Recording::switchChunk()`, called only from
+   `FlightRecorder::dump()`. There is no periodic/automatic mid-run
+   rotation. So in a standard run with no explicit `dump()` call,
+   `finishChunk()` fires exactly once, at process shutdown — and the
+   sweep's RSS sample (taken ~1 second *before* the workload loop even
+   finishes, via `run_repeated_sweep.sh`'s `launch_epoch +
+   (DURATION_MS - 1000)/1000` timing) is structurally taken *before* that
+   single event ever occurs. The dictionary-growth mechanism therefore
+   contributed nothing to the ~102 MB steady-state number or its ~32–42 MB
+   unattributed remainder — not "a small piece," literally zero, because it
+   hadn't happened yet at sample time. The same logic reattributes the
+   LD_PRELOAD allocation shim's ~189 MB finding: its report is written via
+   `atexit()`, which fires *after* VM shutdown (and thus after
+   `~Recording()`'s `finishChunk()`) has already run, so it was also
+   capturing the chunk-flush burst, not steady-state growth — corroboration
+   of the burst's magnitude, not independent evidence about the gap. **Net
+   result: there are two confirmed, real, additive overhead components at
+   high class diversity — a ~102 MB steady-state cost (of which ~32–42 MB
+   remains unattributed) paid continuously while the process runs, and a
+   separate ~210–230 MB chunk-flush burst paid once per JFR chunk rotation
+   (`dump()` or process exit) — and explaining one does not explain the
+   other.** The steady-state gap needs a fresh hypothesis, untouched by
+   anything found via the two-chunk-test/dump-burst line of investigation.
 
 ## Harness
 
@@ -712,29 +749,42 @@ snapshotted before `writeCpool()`" ordering as `NM_DICTIONARY`, since
 `MethodMap` insertion (`mi->_key = _method_map->allocId()`) happens one
 line before the `_class_map` insertion, inside the *same*
 `Lookup::resolveMethod()` call that's now confirmed (GDB, the allocation
-shim, source comment) to run during `writeCpool()`. **This result is
-inconclusive, not a ruling-out** — `MethodMap` is reopened as a candidate,
-not eliminated, and given it's populated by the identical call path now
+shim, source comment) to run during `writeCpool()`. `MethodMap` is
+therefore reopened as a real, confirmed-mechanism candidate for
+*something* — given it's populated by the identical call path now
 confirmed to insert real class names, it plausibly *does* grow alongside
 `_class_map`.
 
-**The ~32–42 MB gap now has a well-evidenced leading explanation instead of
-none: real `NM_DICTIONARY` (and likely `MethodMap`) growth that the
-counters simply couldn't show.** This isn't a precise attribution — the
-only direct *magnitude* measurements available (the two-chunk tests above,
-~143–236 MiB depending on construction) came from deliberately perturbed
-scenarios, not the standard single-run methodology used to derive the
-32–42 MB figure itself, so the numbers aren't directly comparable
-one-to-one — if anything, they're evidence the *true* single-run magnitude
-is hard to pin down at all with tools available so far. But qualitatively, the
-gap stopped being "unexplained by anything we've measured" and became
-"real memory whose growth mechanism is confirmed, in a structure whose
-*current* magnitude under standard single-run conditions hasn't been
-independently pinned down yet." An LD_PRELOAD-based allocation-tracking
-tool built for this investigation (below) independently corroborates that
+**But "reopened as a candidate" turned out to mean "candidate for the
+chunk-flush burst," not "candidate for the ~32–42 MB steady-state gap" —
+these are not the same thing, and an earlier version of this document
+conflated them.** `writeCpool()` (and everything it calls, including
+`resolveMethod` and the `MethodMap`/`_class_map` insertions inside it) only
+runs from `finishChunk()`, which — confirmed by reading every call site in
+the source — fires from exactly two places: `Recording::~Recording()` at
+VM shutdown, and `Recording::switchChunk()`, itself called only from the
+explicit `FlightRecorder::dump()` API. There is no periodic/automatic
+mid-run rotation. The steady-state RSS sweep that produced the ~32–42 MB
+figure samples RSS ~1 second *before* the workload loop finishes — i.e.,
+strictly before either of those two trigger points can fire. So this
+growth mechanism contributed *nothing measurable* to that sweep's number;
+it isn't a partial or imprecise explanation, it's temporally excluded from
+that measurement altogether. Direct RSS instrumentation (see "Practical
+implications" below) independently confirms this growth is real and large
+(~213 MiB of physical RSS at the moment `dump()` is called) — it's just a
+separate, additive cost from a different point in the process lifecycle,
+not a hidden component of the steady-state number. **The ~32–42 MB
+steady-state gap remains fully open** and needs a fresh hypothesis
+untouched by anything in this `NM_DICTIONARY`/`MethodMap`/two-chunk-test
+line of investigation. An LD_PRELOAD-based allocation-tracking tool built
+for this investigation (below) independently corroborates that
 `StringDictionaryBuffer::insert_with_id` — the function that actually
 performs this growth — accounts for a large, multi-ten-MB share of the
-profiler's total tracked allocations in a `classes 150000` run.
+profiler's total tracked allocations in a `classes 150000` run; but by the
+same timing argument, its report is captured via `atexit()`, which fires
+*after* VM shutdown's `finishChunk()` has already run, so it too reflects
+the chunk-flush burst rather than steady-state growth, and isn't evidence
+about the ~32–42 MB gap either.
 
 ### Ruling out OS-level causes, and an independent allocation-tracking tool
 
@@ -825,14 +875,21 @@ now confirmed empirically:
    for one of them.** Allocation sampling's growth is visible in the same
    chunk it happens in. Wall-clock sampling's growth is just as real (two
    independent two-chunk tests measured it directly, at ~143–236 MiB for
-   `classes 150000` depending on test construction) but is only ever
-   visible in a *subsequent* chunk's
-   counter reading, by design (`flightRecorder.cpp:819–826`) — a
-   single-chunk profiling session (the common case for short-lived
-   diagnostic runs) will never see it in `NM_DICTIONARY` at all, regardless
-   of how much real memory it consumed. Don't read a flat `NM_DICTIONARY` in
-   a wall-clock-sampled, single-chunk session as "no class-name diversity
-   cost" — it may just mean the cost hasn't been reported yet.
+   `classes 150000` depending on test construction, and confirmed via
+   direct RSS instrumentation to be genuine physical memory — a ~213 MiB
+   real RSS jump was measured at the exact moment `dump()` was called,
+   closely matching the counter's own ~230 MiB delta in the same run) but
+   is only ever visible in a *subsequent* chunk's counter reading, by
+   design (`flightRecorder.cpp:819–826`) — a single-chunk profiling session
+   (the common case for short-lived diagnostic runs) will never see it in
+   `NM_DICTIONARY` at all, regardless of how much real memory it consumed.
+   Don't read a flat `NM_DICTIONARY` in a wall-clock-sampled, single-chunk
+   session as "no class-name diversity cost" — it may just mean the cost
+   hasn't been reported yet. **This growth is gated behind `finishChunk()`,
+   which only fires at an explicit `dump()` call or at process shutdown —
+   it is a separate, additive cost from the steady-state overhead in point
+   6 below, not a hidden component of it** (see the dedicated section
+   above for why the two don't overlap).
 4. **Call-trace storage and the class-name dictionary appear to have
    different lifetimes across a JFR chunk rotation** — observed
    incidentally while investigating point 3, not independently verified
@@ -861,7 +918,23 @@ now confirmed empirically:
    hot methods) stays near the small-and-flat regime regardless of scale or
    thread count; a workload with a wide call graph (heavy framework/generics/
    lambda usage, microservice-style code diversity) does not, and this is the
-   dimension worth asking a customer about before quoting a number.
+   dimension worth asking a customer about before quoting a number. **This
+   ~102 MB figure is steady-state only** — sampled while the process runs,
+   strictly before any `dump()`/chunk-rotation/shutdown event — and does
+   *not* include the separate chunk-flush burst from point 3; see point 7.
+7. **A long-running process that rotates JFR chunks periodically (not just
+   a single continuous recording to process exit) would pay the point-3
+   chunk-flush burst on top of the point-6 steady-state number, once per
+   rotation** — at `classes 150000`, that's roughly another ~210–230 MB,
+   confirmed via direct RSS measurement. Since `NM_DICTIONARY` content
+   persists across rotations (point 4) up to its capacity cap, later
+   rotations may see a smaller incremental burst as the dictionary
+   saturates — untested. For a process using this profiler's default
+   single-continuous-file mode, this burst happens once, at process exit,
+   and doesn't affect the process's own operation (it's paid right before
+   the process would have exited anyway) — but for any configuration that
+   rotates chunks periodically during normal operation, this is a real,
+   recurring cost the steady-state number alone would not predict.
 
 ## Caveats
 
@@ -907,41 +980,45 @@ now confirmed empirically:
   **Follow-up worth doing**: repeat the "Java Heap" comparison with many
   more reps (or find a less noisy way to attribute it) before treating it
   as either confirmed or ruled out.
-- **The ~32–42 MB gap now has a strong, evidenced leading explanation
-  (`NM_DICTIONARY`/`MethodMap` growth hidden by the counter-snapshot-timing
-  artifact) but not a precise quantification under standard single-run
-  conditions, and a repeat of the closer-to-standard test confirmed the
-  result is reproducible per construction, not that the underlying
-  question is resolved.** Two two-chunk tests, one splitting the workload
+- **CORRECTED: the ~32–42 MB steady-state gap is still fully open — the
+  `NM_DICTIONARY`/`MethodMap` growth mechanism explains a different, separate
+  cost, not this one.** Two two-chunk tests, one splitting the workload
   evenly and one running almost the full standard duration before forcing
-  the dump (deliberately designed to be closer to the standard single-run
-  methodology, and repeated twice), gave ~143 MiB and ~236 MiB (236.5 MiB
-  and 235.3 MiB across the two reps, a ~0.5% spread) respectively — both
-  far larger than the ~102 MB total RSS delta being explained. **The
-  reproducibility itself is informative**: the gap between the two numbers
-  is not run-to-run noise, it's a real, repeatable function of how much
-  workload ran before the forced dump (more pre-dump runtime → bigger
-  resolution backlog → bigger growth in the next chunk) — evidence against
-  a random observer effect and toward a more specific one: the act of
-  dumping mid-run *flushes accumulated backlog whose size scales with time
-  since the last flush*, so forcing a dump earlier or later changes how
-  much backlog there is to flush, without telling us how much a *normal*
-  single-chunk run (whose only "flush" happens once, at process exit)
-  would show. **Follow-up worth doing**: trace the per-thread/shard
-  `StringDictionaryBuffer` buffering mechanism directly (source reading +
-  targeted instrumentation, the same pattern used throughout this
-  investigation) to understand why the observed magnitude is an order of
-  magnitude larger than raw string content (~2 MB for 150,000 short names)
-  would predict, and whether a standard single-chunk run's *own* end-of-run
-  flush (at process exit, via `Recording`'s destructor) shows the same
-  backlog-driven growth that external RSS sampling might not catch if it
-  measures before that final teardown-time allocation burst. Separately, this
-  investigation's own initial conclusion (`resolveMethod` dead, `MethodMap`
-  ruled out) turned out wrong — worth remembering when reading any other
-  "confirmed via source instrumentation" claim earlier in this document:
-  the specific mechanism found here (counters snapshotted before
-  dump-time-only code runs) could plausibly affect other counters this
-  investigation treated as settled.
+  the dump (repeated twice for the latter), gave ~143 MiB and ~236 MiB
+  (236.5 MiB and 235.3 MiB across the two reps, a ~0.5% spread — reproducible
+  per construction, not run-to-run noise) respectively. Direct RSS
+  instrumentation around the forced `dump()` call confirmed this is real
+  physical memory (~213 MiB RSS jump at the moment of the call, closely
+  matching the counter's own delta) — but source reading then showed
+  `writeCpool()`/`resolveMethod` only ever runs from `finishChunk()`, which
+  fires from exactly two places (`Recording::~Recording()` at VM shutdown,
+  and `Recording::switchChunk()`, called only from `FlightRecorder::dump()`)
+  — no periodic/automatic mid-run rotation exists. The steady-state RSS
+  sweep that produced the ~32–42 MB figure samples RSS ~1 second *before*
+  the workload loop finishes, strictly before either trigger point can
+  fire. So this mechanism contributed nothing to that sweep's number — not
+  approximately, exactly zero, because it hadn't happened yet. **The two
+  findings don't connect**: there are two separate, real, additive overhead
+  components (a ~102 MB steady-state cost with a ~32–42 MB unattributed
+  remainder, and a ~210–230 MB chunk-flush burst paid once per JFR
+  rotation), and resolving the burst's magnitude did not touch the
+  steady-state gap at all. **Follow-up worth doing**: the steady-state gap
+  needs a fresh hypothesis, independent of anything in this
+  `NM_DICTIONARY`/`MethodMap`/two-chunk-test line of investigation — that
+  entire line of work, however solid on its own terms, turned out to be
+  answering a different question than the one it was originally chasing.
+  Separately, tracing the per-thread/shard `StringDictionaryBuffer`
+  buffering mechanism directly (source reading + targeted instrumentation)
+  is still worth doing to understand why the chunk-flush burst is an order
+  of magnitude larger than raw string content (~2 MB for 150,000 short
+  names) would predict — that remains an open question about the burst
+  itself, just no longer believed to bear on the steady-state gap. And
+  this investigation's own initial conclusion (`resolveMethod` dead,
+  `MethodMap` ruled out) turned out wrong, then a second conclusion
+  (its growth explains the steady-state gap) also turned out wrong — worth
+  remembering when reading any other claim in this document: getting the
+  *mechanism* right doesn't automatically mean the *conclusion* drawn from
+  it is right; check what's actually being measured and when, every time.
 - **Coverage (classes actually touched by a sample) fell from 93.6% at
   N=2,000 to 56.4% at N=150,000 for the same relative duration/interval
   scaling used across this sweep.** The per-touched-class normalization is

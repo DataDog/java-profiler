@@ -72,9 +72,10 @@ tooling:
   way. Separately, the remaining ~56% is invisible to NMT entirely (the
   profiler's own `malloc`/`new`), and of *that*, only 15–25 MB is explained
   by `NM_CALLTRACE` — leaving ~32–42 MB attributable to neither NMT nor
-  `NM_*`. **This gap now has a well-evidenced leading explanation.** An
-  attempt to size `MethodMap`/`MethodInfo` as a candidate initially read as
-  a ruling-out (it appeared to hold zero entries), but that was itself a
+  `NM_*`. **This gap is still fully open — a promising-looking lead turned
+  out to be answering a different question.** An attempt to size
+  `MethodMap`/`MethodInfo` as a candidate for it initially read as a
+  ruling-out (it appeared to hold zero entries), but that was itself a
   measurement artifact: `NM_*` counters are snapshotted into each JFR chunk
   *before* the dump-time code that symbolizes wall-clock stacks runs
   (`flightRecorder.cpp:819–826`, an intentional, documented profiler
@@ -82,19 +83,23 @@ tooling:
   chunk's own dump. Confirmed three independent ways (a GDB breakpoint, a
   purpose-built allocation-tracking tool, and the profiler's own source
   comment) that this code path — which also grows the class-name dictionary
-  — is real and allocation-heavy. Two-chunk tests measuring across the
-  artifact found ~143 MiB and ~236 MiB of dictionary growth in a
-  `classes 150000` run, depending on how much workload ran before the
-  forced dump; a repeat of the ~236 MiB test reproduced to within ~0.5%
-  (236.5 vs. 235.3 MiB), confirming the gap between the two numbers is a
-  real, repeatable effect of pre-dump backlog size, not run-to-run noise —
-  but both are larger than the entire ~102 MB RSS delta being explained,
-  so the act of measuring this (forcing an extra `dump()` call) still
-  plausibly inflates the result relative to a normal single-chunk run.
-  Neither number is directly comparable to the 32–42 MB figure (different,
-  perturbing methodology), but the qualitative conclusion is solid: this
-  gap is most plausibly `NM_DICTIONARY`/`MethodMap` growth PR #669 can't
-  see, not an unidentified mystery structure.
+  — is real and allocation-heavy, and confirmed via direct RSS
+  instrumentation to be genuine physical memory (~213 MiB RSS jump at the
+  exact moment a forced `dump()` call runs, closely matching the counter's
+  own ~230 MiB delta in the same run, reproducible to within ~0.5% across
+  reps). **But this growth cannot be part of the ~32–42 MB steady-state
+  gap**: the code path only runs from `finishChunk()`, which — per every
+  call site in the source — fires only from `Recording::~Recording()` (VM
+  shutdown) or `Recording::switchChunk()` (called only from the explicit
+  `dump()` API); there's no periodic mid-run rotation. The steady-state
+  sweep that produced the ~32–42 MB figure samples RSS ~1 second *before*
+  the workload loop even finishes — strictly before either trigger can
+  fire — so this mechanism contributed nothing to that number, not
+  approximately, exactly zero. It's a real, separate, additive cost (paid
+  once per JFR chunk rotation, ~210–230 MB at N=150,000) from a different
+  point in the process lifecycle, not a hidden piece of the steady-state
+  overhead. The ~32–42 MB gap needs a fresh hypothesis, untouched by
+  anything in this line of investigation.
 - **Single-run comparisons are dangerously unreliable at this scale.** A
   2–3 rep with/without-agent comparison at N=150,000 classes gave estimates
   ranging 91–246 MB depending on which runs happened to be paired; 10 reps
@@ -188,29 +193,33 @@ one invented from scratch.
      measurement approach.
    - ~~Size `MethodMap`/`MethodInfo` directly and correlate against distinct
      classes touched, to close (or at least narrow) the ~32–42 MB
-     unattributed gap.~~ **Done — led to a bigger finding than the gap
-     itself.** The sizing instrumentation read zero, which initially looked
-     like "ruled out," but turned out to be the *same* counter-snapshot-
-     timing artifact affecting `NM_DICTIONARY` (counters are written before
-     the dump-time code that would grow either structure runs — an
-     intentional, documented design choice, `flightRecorder.cpp:819–826`,
-     not a bug). Confirmed via GDB breakpoint and an independent
-     allocation-tracking tool that this code path is real and
-     allocation-heavy; two-chunk tests measured ~143 MiB and ~236 MiB of
-     dictionary growth directly, depending on test construction — a
-     repeated rep of the ~236 MiB test reproduced to within ~0.5%,
-     confirming the difference between constructions is real and
-     repeatable (driven by pre-dump backlog size), not noise. Real and
-     large, but still not a number comparable to a normal single-chunk
-     run — a follow-up attempt to get a cleaner reading confirmed
-     reproducibility per construction without resolving what a normal,
-     unperturbed run would show (see below). `MethodMap`/`_class_map` are
-     now the *leading* explanation for the gap, not eliminated candidates.
-     Worth reporting the counter-snapshot-timing limitation upstream
-     regardless — it's a
-     real, confirmed measurement blind spot in PR #669's design, even
-     though it isn't a coverage bug the way the earlier "dead code" framing
-     implied.
+     unattributed gap.~~ **Done — found a real, large, separate cost, but
+     one that turned out *not* to be the gap.** The sizing instrumentation
+     read zero, which initially looked like "ruled out," but turned out to
+     be the *same* counter-snapshot-timing artifact affecting
+     `NM_DICTIONARY` (counters are written before the dump-time code that
+     would grow either structure runs — an intentional, documented design
+     choice, `flightRecorder.cpp:819–826`, not a bug). Confirmed via GDB
+     breakpoint, an independent allocation-tracking tool, and direct RSS
+     instrumentation (~213 MiB real RSS jump at the moment of a forced
+     `dump()` call, matching the counter's own delta) that this code path
+     is real, allocation-heavy, and reproducible (two-chunk tests: ~143 MiB
+     and ~236 MiB of dictionary growth depending on construction, the
+     ~236 MiB reading reproducing to within ~0.5% across reps). **But
+     reading the source for every call site of `finishChunk()` showed this
+     growth only fires from `Recording::~Recording()` (VM shutdown) or an
+     explicit `dump()` call — never during steady-state execution — so it
+     is structurally impossible for it to be part of the steady-state
+     ~32–42 MB gap**, which is measured ~1 second before the workload loop
+     even finishes. `MethodMap`/`_class_map` are ruled back *out* as
+     candidates for this specific gap (though confirmed as the source of a
+     separate, real, ~210–230 MB per-rotation chunk-flush cost — see the
+     "Where we are today: memory" section above). **The ~32–42 MB gap is
+     back to fully open**, needing a fresh hypothesis untouched by this
+     line of investigation. Worth reporting the counter-snapshot-timing
+     limitation upstream regardless — it's a real, confirmed measurement
+     blind spot in PR #669's design, even though it isn't a coverage bug
+     the way the earlier "dead code" framing implied.
    - Get `NM_PERF` verified on a non-sandboxed host (root, relaxed
      `kptr_restrict`) — currently unverifiable by construction, not by
      absence of effort.
@@ -421,9 +430,14 @@ latency), currently at different stages for each:**
    turned out instead to be a measurement artifact masking a large, real
    effect (dump-time-only code running after that chunk's counters were
    already snapshotted) — surfaced only by cross-checking with a debugger
-   and an independently-built tool when the result didn't sit right. Budget
-   for this kind of second-guessing, not just the first instrumentation
-   attempt.
+   and an independently-built tool when the result didn't sit right. Then,
+   even after that effect was confirmed and quantified, a *second* round of
+   cross-checking (direct RSS instrumentation plus reading every call site
+   of the triggering function in the source) showed it explained a
+   different, separate cost from the one it was being investigated for —
+   the original gap was still open, two "confirmed" conclusions in. Budget
+   for this kind of repeated second-guessing, not just the first
+   instrumentation attempt or the first correction.
 4. Only *then* decide which validated dimensions become permanent
    archetypes/benchmarks, and build/extend the actual measurement mechanism
    (dd-trace-doe archetype changes, or a repo-local benchmark) — this is
@@ -479,49 +493,54 @@ breakdown illustrates — the biggest memory lever might not be
    150–250 MB figure (Phase 1.3, first task — everything else in
    reconciliation depends on knowing what was actually measured).
 2. ~~Toggle-test the jmethodID-preloading hypothesis~~ / ~~Size
-   `MethodMap`/`MethodInfo`~~ / ~~Get a clean second-chunk reading~~ **All
-   done** (Phase 1.1) — preloading confirmed as a real driver. The
-   `MethodMap` sizing attempt uncovered something bigger than planned: a
-   counter-snapshot-timing artifact (`flightRecorder.cpp:819–826`) meaning
-   `NM_DICTIONARY`/`MethodMap` growth from wall-clock sampling is real and
-   substantial (confirmed via GDB, an independent allocation-tracking tool,
-   and two separate two-chunk tests) but invisible to every single-chunk
-   measurement in this document, including the original `NM_DICTIONARY`
-   "flat" finding. The follow-up meant to pin down the exact magnitude — a
-   "clean" reading with the forced dump near the end of a full-length run
-   instead of at the midpoint — made the picture *more* complicated, not
-   less, and a repeat rep of that same reading confirmed why: it measured
-   ~236.5 MiB of growth, a second rep of the identical test measured
-   ~235.3 MiB (a ~0.5% spread — this part is genuinely reproducible, not
-   noise), and both are still ~93 MiB above the ~143 MiB from the original
-   midpoint-split test. That gap between test *constructions* is real and
-   repeatable too: it tracks how much workload ran before the forced dump
-   (more pre-dump runtime → bigger resolution backlog flushed at dump time
-   → bigger growth revealed in the next chunk), not run-to-run jitter. Both
-   construction-level results are still larger than the entire ~102 MB RSS
-   delta being explained, so the open question isn't "is this number
-   stable" (it is, per construction) but "what does forcing a dump at all
-   change relative to a normal run's single end-of-life flush" (plausibly
-   via per-thread/shard `StringDictionaryBuffer` duplication triggered by
-   the extra dump — not confirmed). It also surfaced a second, independent
-   finding worth tracking on its own: `NM_CALLTRACE` resets to baseline
-   capacity across a chunk rotation while `NM_DICTIONARY` content
-   persists/accumulates — a real lifetime difference with its own
-   production implications regardless of the magnitude question. Next up:
-   trace the per-thread/shard `StringDictionaryBuffer` buffering mechanism
-   directly (source reading + targeted instrumentation) rather than
-   continuing to infer growth from perturbing dump-timing experiments,
-   since the black-box approach has now confirmed two different
-   construction-dependent numbers rather than converging on one that
-   generalizes to a normal single-chunk run.
-3. Kick off Phase 1.2 for CPU and latency: pick 1–2 of the candidate
+   `MethodMap`/`MethodInfo`~~ / ~~Get a clean second-chunk reading~~ / ~~Get
+   a second rep of the clean reading~~ / ~~Confirm the growth with direct
+   RSS instrumentation~~ **All done** (Phase 1.1) — preloading confirmed as
+   a real driver of the steady-state overhead. The `MethodMap` sizing
+   attempt uncovered something bigger than planned but, in the end, a false
+   lead for what it was chasing: a counter-snapshot-timing artifact
+   (`flightRecorder.cpp:819–826`) meaning `NM_DICTIONARY`/`MethodMap`
+   growth from wall-clock sampling is real, substantial, and confirmed four
+   independent ways — GDB breakpoint, an independent allocation-tracking
+   tool, three two-chunk-test reps (~232/231/230 MiB dictionary deltas,
+   <1% spread), and direct RSS instrumentation (~213 MiB real RSS jump at
+   the exact moment of a forced `dump()` call, closely matching the
+   counter's own delta). **But reading every call site of `finishChunk()`
+   in the source showed this growth only ever fires from
+   `Recording::~Recording()` (VM shutdown) or an explicit `dump()` call —
+   never during steady-state execution, since there's no periodic mid-run
+   rotation in this codebase.** The steady-state sweep that produced the
+   ~32–42 MB unattributed figure samples RSS ~1 second *before* the
+   workload loop finishes, strictly before either trigger can fire. So
+   this mechanism — however real and well-confirmed — contributed nothing
+   to that number. **The ~32–42 MB steady-state gap is back to fully
+   open**; what's actually resolved is a separate, additive finding: a
+   ~210–230 MB (at N=150,000) cost paid once per JFR chunk rotation, on
+   top of the ~102 MB steady-state number, which matters for any
+   long-running process that rotates chunks periodically rather than
+   writing one continuous file to process exit. It also surfaced an
+   independent structural finding worth tracking on its own:
+   `NM_CALLTRACE` resets to baseline capacity across a chunk rotation while
+   `NM_DICTIONARY` content persists/accumulates — a real lifetime
+   difference with its own production implications, unrelated to either
+   gap.
+3. Find a fresh explanation for the ~32–42 MB steady-state gap, explicitly
+   *not* reusing anything from the `NM_DICTIONARY`/`MethodMap`/two-chunk
+   line of investigation above (confirmed inapplicable by the timing
+   argument in item 2). Worth first checking whether the LD_PRELOAD
+   allocation shim can be rerun with its `atexit()` report replaced by an
+   in-process trigger fired ~1 second before the sweep's own RSS sample
+   (matching that sweep's exact timing), to get a like-for-like allocation
+   attribution for the steady-state window specifically, rather than the
+   post-shutdown window it captured before.
+4. Kick off Phase 1.2 for CPU and latency: pick 1–2 of the candidate
    hypotheses above, build the smallest synthetic microbenchmark that
    isolates one, and get a first with/without-agent number — the goal at
    this step is learning whether the memory methodology transfers cleanly,
    not landing a final answer.
-4. Decide the Phase 2 split of responsibility between dd-trace-doe
+5. Decide the Phase 2 split of responsibility between dd-trace-doe
    (end-to-end/nightly) and a java-profiler-repo-local benchmark (fast/PR
    or nightly) before building either — for memory first, since it's the
    only dimension far enough along to make this decision concretely.
-5. Scope Phase 3's telemetry additions against what's already technically
+6. Scope Phase 3's telemetry additions against what's already technically
    adjacent to existing counters, to estimate effort before committing.
