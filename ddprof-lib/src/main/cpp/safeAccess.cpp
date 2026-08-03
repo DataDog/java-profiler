@@ -61,7 +61,8 @@ static void verify_safecopy_range() {
 
 #ifdef __APPLE__
     #if defined(__x86_64__)
-      #define current_pc context_rip
+      #define DU3_PREFIX(s, m) __ ## s.__ ## m
+      #define current_pc uc_mcontext->DU3_PREFIX(ss,rip)
     #elif defined(__aarch64__)
       #define DU3_PREFIX(s, m) __ ## s.__ ## m
       #define current_pc uc_mcontext->DU3_PREFIX(ss,pc)

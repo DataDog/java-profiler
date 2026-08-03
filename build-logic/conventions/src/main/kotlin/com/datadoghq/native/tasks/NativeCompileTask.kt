@@ -4,6 +4,7 @@ package com.datadoghq.native.tasks
 import com.datadoghq.native.model.ErrorHandlingMode
 import com.datadoghq.native.model.LogLevel
 import com.datadoghq.native.model.SourceSet
+import com.datadoghq.native.util.PlatformUtils
 import org.gradle.api.DefaultTask
 import org.gradle.api.NamedDomainObjectContainer
 import org.gradle.api.file.ConfigurableFileCollection
@@ -41,6 +42,13 @@ abstract class NativeCompileTask @Inject constructor(
      */
     @get:Input
     abstract val compilerArgs: ListProperty<String>
+
+    /**
+     * Target architecture derived from the JVM running the build. Declared on every platform so
+     * changing architecture invalidates up-to-date checks instead of reusing stale objects.
+     */
+    @get:Input
+    val targetArchitecture: String = PlatformUtils.targetArchitecture()
 
     /**
      * The C++ source files to compile.
@@ -250,7 +258,7 @@ abstract class NativeCompileTask @Inject constructor(
         objDir.mkdirs()
 
         // Build base compiler arguments with convenience properties
-        val baseArgs = compilerArgs.get().toMutableList()
+        val baseArgs = (PlatformUtils.macosArchitectureArgs() + compilerArgs.get()).toMutableList()
 
         // Add C++ standard if specified
         if (standardVersion.isPresent) {

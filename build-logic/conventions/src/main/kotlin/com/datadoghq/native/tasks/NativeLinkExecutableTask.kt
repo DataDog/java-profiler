@@ -35,6 +35,13 @@ abstract class NativeLinkExecutableTask @Inject constructor(
     abstract val linkerArgs: ListProperty<String>
 
     /**
+     * Target architecture derived from the JVM running the build. Declared on every platform so
+     * changing architecture invalidates up-to-date checks instead of reusing stale link outputs.
+     */
+    @get:Input
+    val targetArchitecture: String = PlatformUtils.targetArchitecture()
+
+    /**
      * The object files to link.
      */
     @get:InputFiles
@@ -135,6 +142,7 @@ abstract class NativeLinkExecutableTask @Inject constructor(
         // Build command line
         val cmdLine = mutableListOf<String>().apply {
             add(linker.get())
+            addAll(PlatformUtils.macosArchitectureArgs())
             addAll(objectPaths)
             addAll(linkerArgs.get())
 

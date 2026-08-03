@@ -217,6 +217,39 @@ object PlatformUtils {
     }
 
     /**
+     * Architecture targeted by the JVM running the build.
+     *
+     * This is used as a Gradle task input on every platform. Native compiler options remain
+     * platform-specific: macOS accepts a portable {@code -arch} flag, whereas Linux cross
+     * compilation requires a configured cross compiler (and usually a sysroot).
+     */
+    fun targetArchitecture(): String = currentArchitecture.toString()
+
+    /**
+     * Forces Apple Clang to produce objects for the JVM's architecture.
+     *
+     * The compiler process may run through Rosetta even when Gradle and the JVM run natively on
+     * Apple Silicon. Without an explicit target, Apple Clang follows the compiler process
+     * architecture instead, producing objects that cannot be linked with native dependencies for
+     * the JVM architecture. This is intentionally macOS-only: {@code -arch} is an Apple Clang
+     * option; Linux cross compilation must be configured with its own target compiler and sysroot.
+     */
+    fun macosArchitectureArgs(): List<String> {
+        if (currentPlatform != Platform.MACOS) {
+            return emptyList()
+        }
+
+        val architecture = when (currentArchitecture) {
+            Architecture.X64 -> "x86_64"
+            Architecture.ARM64 -> "arm64"
+            else -> throw GradleException(
+                "Unsupported macOS native build architecture: $currentArchitecture"
+            )
+        }
+        return listOf("-arch", architecture)
+    }
+
+    /**
      * Find Homebrew LLVM installation on macOS.
      * Returns the LLVM installation path or null if not found.
      */
