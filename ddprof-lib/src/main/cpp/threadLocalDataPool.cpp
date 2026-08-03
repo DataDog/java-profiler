@@ -7,6 +7,7 @@
 #include "threadLocalData.h"
 #include "threadLocalDataPool.h"
 
+#include <cassert>
 #include <stdlib.h>
 
 ThreadLocalDataPool* ThreadLocalDataPool::_pool = nullptr;
