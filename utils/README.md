@@ -60,6 +60,13 @@ For a major release, the generated `N.0.0` commit remains on
 its recorded source commit to `N.1.0`; the workflow never pushes a generated
 commit directly to protected `main`.
 
+A new release branch initially remains at its tagged `X.Y.0` minor version.
+The first patch creates and tags an `X.Y.1` release commit, then opens the
+validated bump PR for `X.Y.2-SNAPSHOT`. Later patches release the untagged
+development version left by the preceding bump PR. An already-tagged patch
+version greater than zero is rejected because it means that preceding bump PR
+did not merge.
+
 The repository's Actions settings must allow GitHub Actions to create and
 approve pull requests. A dry run never creates a PR, adds a label, requests
 approval, or merges anything.

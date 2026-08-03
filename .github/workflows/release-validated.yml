@@ -113,12 +113,23 @@ jobs:
             echo "Version $BASE is not yet released"
           fi
 
-          # A non-retag release must never start from an already-tagged base:
-          # it means the post-release version-bump PR from the previous
-          # release never merged, so this branch is stuck. Fail loudly
-          # instead of silently skipping release creation or guessing at
-          # what the next version should be.
-          if [ "$TYPE" != "retag" ] && [ "$ALREADY_RELEASED" == "true" ]; then
+          # A release branch is initially created at the tagged X.Y.0 minor
+          # release. Its first patch legitimately starts from that tag and
+          # creates X.Y.1. A tagged patch version greater than zero instead
+          # means the previous post-release bump PR never merged.
+          FIRST_PATCH=false
+          if [ "$TYPE" == "patch" ] && [ "$ALREADY_RELEASED" == "true" ] &&
+             [ "$PATCH" -eq 0 ]; then
+            if [ "$(git cat-file -t "refs/tags/v_${BASE}" 2>/dev/null)" != "tag" ]; then
+              echo "::error::First patch base v_${BASE} must be an annotated tag"
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "v_${BASE}^{commit}" "$GITHUB_SHA"; then
+              echo "::error::First patch base tag v_${BASE} is not reachable from $GITHUB_SHA"
+              exit 1
+            fi
+            FIRST_PATCH=true
+          elif [ "$TYPE" != "retag" ] && [ "$ALREADY_RELEASED" == "true" ]; then
             echo "::error::${BRANCH} is stuck at version ${BASE}, which is already tagged (v_${BASE})."
             echo "::error::The automated post-release version-bump PR for this branch was never merged."
             STUCK_PR=$(gh pr list --state open --base "$BRANCH" --json headRefName,url \
@@ -153,7 +164,7 @@ jobs:
             # The first patch starts from the already-tagged minor version and
             # releases the next patch. Subsequent patch runs start from the
             # untagged development version left by the previous bump PR.
-            if [ "$ALREADY_RELEASED" == "true" ]; then
+            if [ "$FIRST_PATCH" == "true" ]; then
               RELEASE_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"
             else
               RELEASE_VERSION="$BASE"

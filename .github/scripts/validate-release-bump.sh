@@ -16,6 +16,7 @@ HEAD=""
 SOURCE_SHA=""
 EXPECTED_HEAD_SHA=""
 LOCAL_RELEASE_TAG=""
+FIRST_PATCH=false
 TEMP_DIR=""
 
 die() {
@@ -43,6 +44,7 @@ while [ "$#" -gt 0 ]; do
     --source-sha) SOURCE_SHA=${2:-}; shift 2 ;;
     --expected-head-sha) EXPECTED_HEAD_SHA=${2:-}; shift 2 ;;
     --local-release-tag) LOCAL_RELEASE_TAG=${2:-}; shift 2 ;;
+    --first-patch) FIRST_PATCH=true; shift ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -53,6 +55,7 @@ DATA="$TEMP_DIR/data.json"
 PARENT_BUILD="$TEMP_DIR/parent-build.gradle.kts"
 HEAD_BUILD="$TEMP_DIR/head-build.gradle.kts"
 RELEASE_BUILD="$TEMP_DIR/release-build.gradle.kts"
+SOURCE_BUILD="$TEMP_DIR/source-build.gradle.kts"
 
 permission() {
   gh api "repos/$REPO/collaborators/$1/permission" --jq '.permission'
@@ -71,10 +74,11 @@ is_reachable() {
 
 if [ -n "$FIXTURE" ]; then
   [ -f "$FIXTURE" ] || die "fixture does not exist: $FIXTURE"
-  jq 'del(.parent_build, .head_build, .release_build)' "$FIXTURE" > "$DATA"
+  jq 'del(.parent_build, .head_build, .release_build, .source_build)' "$FIXTURE" > "$DATA"
   jq -j '.parent_build' "$FIXTURE" > "$PARENT_BUILD"
   jq -j '.head_build' "$FIXTURE" > "$HEAD_BUILD"
   jq -j '.release_build // ""' "$FIXTURE" > "$RELEASE_BUILD"
+  jq -j '.source_build // ""' "$FIXTURE" > "$SOURCE_BUILD"
 elif [ "$MODE" = "pr" ]; then
   if [ -z "$PR_NUMBER" ] || [ -z "$SENDER" ] || [ -z "$SENDER_TYPE" ]; then
     die "PR validation requires --pr-number, --sender, and --sender-type"
@@ -157,12 +161,22 @@ else
   HEAD_SHA=$(gh api "repos/$REPO/git/ref/heads/$HEAD" --jq '.object.sha')
   COMMIT=$(gh api "repos/$REPO/commits/$HEAD_SHA")
   PARENTS=$(jq -c '[.parents[].sha]' <<<"$COMMIT")
+  PARENT_SHA=$(jq -r 'if length == 1 then .[0] else "" end' <<<"$PARENTS")
   FILES=$(jq -c '[.files[] | {filename, status}]' <<<"$COMMIT")
   PARENT_REACHABLE=false
   if is_reachable "$SOURCE_SHA" "$BASE_SHA"; then
     PARENT_REACHABLE=true
   fi
-  content "$SOURCE_SHA" > "$PARENT_BUILD"
+  if [ -n "$PARENT_SHA" ]; then
+    content "$PARENT_SHA" > "$PARENT_BUILD"
+  else
+    : > "$PARENT_BUILD"
+  fi
+  if [ "$FIRST_PATCH" = "true" ]; then
+    content "$SOURCE_SHA" > "$SOURCE_BUILD"
+  else
+    : > "$SOURCE_BUILD"
+  fi
   content "$HEAD_SHA" > "$HEAD_BUILD"
 
   jq -n \
@@ -176,7 +190,8 @@ else
     --arg head_repo "$REPO" \
     --argjson changed_files "$FILES" \
     --argjson head_parents "$PARENTS" \
-    --arg parent_sha "$SOURCE_SHA" \
+    --arg parent_sha "$PARENT_SHA" \
+    --arg source_sha "$SOURCE_SHA" \
     --argjson parent_reachable "$PARENT_REACHABLE" \
     '{
       repo: $repo,
@@ -190,6 +205,7 @@ else
       changed_files: $changed_files,
       head_parents: $head_parents,
       parent_sha: $parent_sha,
+      source_sha: $source_sha,
       parent_reachable: $parent_reachable
     }' > "$DATA"
 fi
@@ -235,6 +251,10 @@ fi
   die "bump commit must have exactly one parent"
 [ "$(jq -r '.head_parents[0]' "$DATA")" = "$(json_string '.parent_sha')" ] ||
   die "bump commit parent differs from the recorded release source"
+if [ "$MODE" = "branch" ] && [ "$FIRST_PATCH" != "true" ]; then
+  [ "$(json_string '.parent_sha')" = "$SOURCE_SHA" ] ||
+    die "bump commit parent differs from the requested release source"
+fi
 jq -e '.parent_reachable == true' "$DATA" >/dev/null ||
   die "release source is not reachable from the current base branch"
 jq -e '.changed_files == [{filename: "build.gradle.kts", status: "modified"}]' \
@@ -260,6 +280,92 @@ cmp -s "$PARENT_BUILD" "$TEMP_DIR/normalized-head.gradle.kts" ||
   die "build.gradle.kts contains changes other than the root version"
 
 IFS=. read -r PARENT_MAJOR PARENT_MINOR PARENT_PATCH <<<"$PARENT_VERSION"
+
+validate_first_patch_release() {
+  [ "$MODE" = "branch" ] || die "--first-patch is allowed only for branch preflight validation"
+  [ -n "$LOCAL_RELEASE_TAG" ] || die "first patch validation requires --local-release-tag"
+  [ "$(json_string '.source_sha')" = "$SOURCE_SHA" ] ||
+    die "first patch source differs from the requested release source"
+
+  local release_tag_sha release_tag_annotated release_parents release_changed_files
+  local source_tag_annotated source_tag_reachable
+  if [ -n "$FIXTURE" ]; then
+    release_tag_sha=$(json_string '.release_tag_sha')
+    release_tag_annotated=$(jq -er '.release_tag_annotated' "$DATA")
+    release_parents=$(jq -c '.release_parents' "$DATA")
+    release_changed_files=$(jq -c '.release_changed_files' "$DATA")
+    source_tag_annotated=$(jq -er '.source_tag_annotated' "$DATA")
+    source_tag_reachable=$(jq -er '.source_tag_reachable' "$DATA")
+  else
+    [ "$(git cat-file -t "refs/tags/$LOCAL_RELEASE_TAG" 2>/dev/null)" = "tag" ] ||
+      die "first patch release tag $LOCAL_RELEASE_TAG must be annotated"
+    release_tag_sha=$(git rev-parse "refs/tags/$LOCAL_RELEASE_TAG^{commit}")
+    release_tag_annotated=true
+
+    local release_commit source_tag
+    release_commit=$(gh api "repos/$REPO/commits/$(json_string '.parent_sha')")
+    release_parents=$(jq -c '[.parents[].sha]' <<<"$release_commit")
+    release_changed_files=$(jq -c '[.files[] | {filename, status}]' <<<"$release_commit")
+
+    source_tag="v_$(sed -nE \
+      's/^version = "([0-9]+\.[0-9]+\.[0-9]+)-SNAPSHOT"$/\1/p' "$SOURCE_BUILD")"
+    if [ "$(git cat-file -t "refs/tags/$source_tag" 2>/dev/null)" = "tag" ]; then
+      source_tag_annotated=true
+    else
+      source_tag_annotated=false
+    fi
+    if [ "$source_tag_annotated" = "true" ] &&
+       git merge-base --is-ancestor "refs/tags/$source_tag^{commit}" "$SOURCE_SHA"; then
+      source_tag_reachable=true
+    else
+      source_tag_reachable=false
+    fi
+  fi
+
+  [ "$LOCAL_RELEASE_TAG" = "v_$PARENT_VERSION" ] ||
+    die "first patch release tag must be v_$PARENT_VERSION"
+  [ "$release_tag_annotated" = "true" ] ||
+    die "first patch release tag v_$PARENT_VERSION must be annotated"
+  [ "$release_tag_sha" = "$(json_string '.parent_sha')" ] ||
+    die "first patch release tag must identify the bump parent"
+  [ "$(jq -r 'length' <<<"$release_parents")" -eq 1 ] ||
+    die "first patch release commit must have exactly one parent"
+  [ "$(jq -r '.[0]' <<<"$release_parents")" = "$SOURCE_SHA" ] ||
+    die "first patch release commit parent differs from the requested source"
+  jq -e '. == [{filename: "build.gradle.kts", status: "modified"}]' \
+    <<<"$release_changed_files" >/dev/null ||
+    die "first patch release commit must modify only build.gradle.kts"
+  [ "$source_tag_annotated" = "true" ] ||
+    die "first patch source tag must be annotated"
+  [ "$source_tag_reachable" = "true" ] ||
+    die "first patch source tag is not reachable from the requested source"
+
+  [ "$(grep -Ec "$VERSION_PATTERN" "$SOURCE_BUILD" || true)" -eq 1 ] ||
+    die "first patch source build.gradle.kts must contain one canonical root version line"
+  local source_line source_version source_major source_minor source_patch
+  source_line=$(grep -En "$VERSION_PATTERN" "$SOURCE_BUILD")
+  [ "${source_line%%:*}" = "${PARENT_LINE%%:*}" ] ||
+    die "first patch root version line moved"
+  source_version=$(sed -E \
+    's/^[0-9]+:version = "([0-9]+\.[0-9]+\.[0-9]+)-SNAPSHOT"$/\1/' \
+    <<<"$source_line")
+  IFS=. read -r source_major source_minor source_patch <<<"$source_version"
+  [ "$source_patch" -eq 0 ] || die "first patch source version must end in .0"
+  [ "$PARENT_MAJOR.$PARENT_MINOR.$PARENT_PATCH" = \
+    "$source_major.$source_minor.$((source_patch + 1))" ] ||
+    die "first patch release version must increment the source patch once"
+  sed -E \
+    "s/^version = \"[0-9]+\\.[0-9]+\\.[0-9]+-SNAPSHOT\"$/version = \"$source_version-SNAPSHOT\"/" \
+    "$PARENT_BUILD" > "$TEMP_DIR/normalized-first-patch.gradle.kts"
+  cmp -s "$SOURCE_BUILD" "$TEMP_DIR/normalized-first-patch.gradle.kts" ||
+    die "first patch release commit contains changes other than the root version"
+}
+
+if [ "$FIRST_PATCH" = "true" ]; then
+  validate_first_patch_release
+elif [ -n "$LOCAL_RELEASE_TAG" ] && [ "$MODE" != "branch" ]; then
+  die "--local-release-tag is allowed only for branch preflight validation"
+fi
 
 validate_major_release() {
   local release_major=$1

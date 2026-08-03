@@ -190,6 +190,52 @@ jq '
 ' "$VALID" > "$PATCH"
 expect_success "$PATCH"
 
+FIRST_PATCH="$TEMP_DIR/first-patch.json"
+jq \
+  --arg source_sha "$(printf 'a%.0s' {1..40})" \
+  --arg release_sha "$(printf 'd%.0s' {1..40})" \
+  '
+    .base_ref = "release/1.48._" |
+    .base_sha = $release_sha |
+    .head_ref = "automated/bump-1-48-2" |
+    .title = "[Automated] Bump dev version to 1.48.2" |
+    .parent_sha = $release_sha |
+    .head_parents = [$release_sha] |
+    .parent_build |= sub("1.48.0"; "1.48.1") |
+    .head_build |= sub("1.49.0"; "1.48.2") |
+    .source_sha = $source_sha |
+    .source_build = (.parent_build | sub("1.48.1"; "1.48.0")) |
+    .release_tag_sha = $release_sha |
+    .release_tag_annotated = true |
+    .release_parents = [$source_sha] |
+    .release_changed_files = [{filename: "build.gradle.kts", status: "modified"}] |
+    .source_tag_annotated = true |
+    .source_tag_reachable = true
+  ' "$VALID" > "$FIRST_PATCH"
+expect_success "$FIRST_PATCH" --branch --first-patch \
+  --source-sha "$(printf 'a%.0s' {1..40})" \
+  --expected-head-sha "$(printf 'b%.0s' {1..40})" \
+  --local-release-tag v_1.48.1
+
+declare -a FIRST_PATCH_MUTATIONS=(
+  '.release_tag_annotated = false'
+  '.release_tag_sha = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"'
+  '.release_parents = ["eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"]'
+  '.release_changed_files += [{filename: "payload", status: "added"}]'
+  '.source_tag_annotated = false'
+  '.source_tag_reachable = false'
+  '.source_build |= sub("1.48.0"; "1.48.1")'
+  '.parent_build += "malicious = true\n"'
+)
+for index in "${!FIRST_PATCH_MUTATIONS[@]}"; do
+  fixture="$TEMP_DIR/invalid-first-patch-$index.json"
+  jq "${FIRST_PATCH_MUTATIONS[$index]}" "$FIRST_PATCH" > "$fixture"
+  expect_failure "$fixture" --branch --first-patch \
+    --source-sha "$(printf 'a%.0s' {1..40})" \
+    --expected-head-sha "$(printf 'b%.0s' {1..40})" \
+    --local-release-tag v_1.48.1
+done
+
 ROLLOVER="$TEMP_DIR/rollover.json"
 jq '
   .parent_build |= sub("1.48.0"; "1.99.0") |
@@ -243,8 +289,10 @@ for index in "${!MAJOR_MUTATIONS[@]}"; do
 done
 
 BRANCH="$TEMP_DIR/branch.json"
-jq '.expected_head_sha = .head_sha' "$VALID" > "$BRANCH"
-expect_success "$BRANCH" --branch
+jq '.expected_head_sha = .head_sha | .source_sha = .parent_sha' "$VALID" > "$BRANCH"
+expect_success "$BRANCH" --branch \
+  --source-sha "$(printf 'a%.0s' {1..40})" \
+  --expected-head-sha "$(printf 'b%.0s' {1..40})"
 
 declare -a MUTATIONS=(
   '.sender_login = "unknown[bot]"'
@@ -281,7 +329,9 @@ expect_failure "$WRONG_PARENT"
 WRONG_HEAD="$TEMP_DIR/wrong-head.json"
 jq '.expected_head_sha = "ffffffffffffffffffffffffffffffffffffffff"' \
   "$VALID" > "$WRONG_HEAD"
-expect_failure "$WRONG_HEAD" --branch
+expect_failure "$WRONG_HEAD" --branch \
+  --source-sha "$(printf 'a%.0s' {1..40})" \
+  --expected-head-sha "$(printf 'b%.0s' {1..40})"
 
 WRONG_SERIES="$TEMP_DIR/wrong-series.json"
 jq '
@@ -401,8 +451,12 @@ pass
   fail "release workflow still references the human finalizer"
 grep -Fq "GITHUB_SHA\" != \"\$EXPECTED_SOURCE_SHA" <<<"$RELEASE_WORKFLOW" ||
   fail "release dispatch is not locked to the requested source SHA"
-[[ "$RELEASE_WORKFLOW" == *"if [ \"\$ALREADY_RELEASED\" == \"true\" ]; then"* ]] ||
-  fail "release workflow does not distinguish first and subsequent patch releases"
+[[ "$RELEASE_WORKFLOW" == *"FIRST_PATCH=false"* ]] ||
+  fail "release workflow does not track the first-patch state"
+[[ "$RELEASE_WORKFLOW" == *'[ "$TYPE" == "patch" ] && [ "$ALREADY_RELEASED" == "true" ] &&'* ]] ||
+  fail "release workflow does not distinguish the tagged first-patch base"
+[[ "$RELEASE_WORKFLOW" == *'[ "$PATCH" -eq 0 ]'* ]] ||
+  fail "release workflow accepts an already-tagged nonzero patch as the first patch"
 [[ "$RELEASE_WORKFLOW" == *"RELEASE_VERSION=\"\$MAJOR.\$MINOR.\$((PATCH + 1))\""* ]] ||
   fail "release workflow does not increment an already-tagged patch version"
 [[ "$RELEASE_WORKFLOW" == *"RELEASE_VERSION=\"\$BASE\""* ]] ||
@@ -645,6 +699,110 @@ grep -Fqx "bump_head_sha=$BUMP_SHA" "$TEMP_DIR/release-outputs" ||
   fail "release outputs omitted bump SHA"
 grep -Fqx "bump_pr_number=698" "$TEMP_DIR/release-outputs" ||
   fail "release outputs omitted bump PR number"
+pass
+
+# Verify that the first patch advances the initially tagged X.Y.0 release
+# branch to X.Y.1, tags that release commit, and proposes X.Y.2-SNAPSHOT.
+PATCH_REMOTE="$TEMP_DIR/patch-remote.git"
+PATCH_WORK="$TEMP_DIR/patch-work"
+PATCH_BIN="$TEMP_DIR/patch-bin"
+mkdir "$PATCH_BIN"
+git init --bare --quiet "$PATCH_REMOTE"
+git --git-dir="$PATCH_REMOTE" config core.hooksPath /dev/null
+git init --quiet -b 'release/1.48._' "$PATCH_WORK"
+mkdir -p "$PATCH_WORK/.github/scripts"
+cp "$ROOT/.github/scripts/release.sh" "$PATCH_WORK/.github/scripts/release.sh"
+cat > "$PATCH_WORK/.github/scripts/validate-release-bump.sh" <<'VALIDATOR'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "$*" >> "$VALIDATOR_CALLS"
+if git --git-dir="$VALIDATOR_REMOTE" show-ref --verify --quiet refs/tags/v_1.48.1; then
+  echo "first patch tag was published before bump validation" >&2
+  exit 1
+fi
+VALIDATOR
+chmod +x "$PATCH_WORK/.github/scripts/validate-release-bump.sh"
+printf 'version = "1.48.0-SNAPSHOT"\n' > "$PATCH_WORK/build.gradle.kts"
+cp "$WORK/gradlew" "$PATCH_WORK/gradlew"
+chmod +x "$PATCH_WORK/gradlew" "$PATCH_WORK/.github/scripts/release.sh"
+cat > "$PATCH_BIN/gh" <<'GH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "$*" >> "$GH_CALLS"
+if [ "$1 $2 $3" = "api --method POST" ] && [[ "$4" == */pulls ]]; then
+  [ "$GH_TOKEN" = "actions-token" ] || exit 98
+  git --git-dir="$VALIDATOR_REMOTE" rev-parse refs/heads/automated/bump-1-48-2 > "$INITIAL_PR_HEAD"
+  printf '{"number":700,"html_url":"https://example.invalid/pull/700"}\n'
+elif [ "$1 $2 $3" = "api --method POST" ] && [[ "$4" == */issues/700/labels ]]; then
+  [ "$GH_TOKEN" = "label-token" ] || exit 98
+  printf '[]\n'
+else
+  echo "unsupported first-patch gh call: $*" >&2
+  exit 99
+fi
+GH
+chmod +x "$PATCH_BIN/gh"
+git -C "$PATCH_WORK" config user.name "Release Test"
+git -C "$PATCH_WORK" config user.email "release-test@example.invalid"
+git -C "$PATCH_WORK" config commit.gpgsign false
+git -C "$PATCH_WORK" config tag.gpgsign false
+git -C "$PATCH_WORK" config core.hooksPath /dev/null
+git -C "$PATCH_WORK" add .
+git -C "$PATCH_WORK" commit --quiet -m initial
+PATCH_SOURCE_SHA=$(git -C "$PATCH_WORK" rev-parse HEAD)
+git -C "$PATCH_WORK" tag -a v_1.48.0 -m 'Release v_1.48.0 (minor) from main'
+git -C "$PATCH_WORK" remote add origin "$PATCH_REMOTE"
+git -C "$PATCH_WORK" push --quiet -u origin 'release/1.48._'
+git -C "$PATCH_WORK" push --quiet origin v_1.48.0
+(
+  cd "$PATCH_WORK"
+  GITHUB_OUTPUT="$TEMP_DIR/patch-outputs" GH_CALLS="$TEMP_DIR/patch-gh-calls" \
+    INITIAL_PR_HEAD="$TEMP_DIR/patch-initial-pr-head" \
+    VALIDATOR_CALLS="$TEMP_DIR/patch-validator-calls" VALIDATOR_REMOTE="$PATCH_REMOTE" \
+    GITHUB_REPOSITORY=DataDog/java-profiler GITHUB_TOKEN=actions-token \
+    BUMP_LABEL_TOKEN=label-token \
+    PATH="$PATCH_BIN:$PATH" \
+    ./.github/scripts/release.sh PATCH
+) >"$TEMP_DIR/patch-release.log" 2>&1 || {
+    tail -20 "$TEMP_DIR/patch-release.log" >&2
+    fail "first patch release script failed against the local bare remote"
+  }
+PATCH_RELEASE_SHA=$(git --git-dir="$PATCH_REMOTE" rev-parse 'refs/heads/release/1.48._')
+PATCH_BUMP_SHA=$(git --git-dir="$PATCH_REMOTE" rev-parse refs/heads/automated/bump-1-48-2)
+[ "$(git --git-dir="$PATCH_REMOTE" show "$PATCH_RELEASE_SHA:build.gradle.kts")" = \
+  'version = "1.48.1-SNAPSHOT"' ] ||
+  fail "first patch release branch does not contain 1.48.1"
+[ "$(git --git-dir="$PATCH_REMOTE" rev-parse 'refs/tags/v_1.48.1^{commit}')" = \
+  "$PATCH_RELEASE_SHA" ] || fail "first patch tag does not identify the release commit"
+[ "$(git --git-dir="$PATCH_REMOTE" rev-parse "$PATCH_RELEASE_SHA^")" = "$PATCH_SOURCE_SHA" ] ||
+  fail "first patch release commit parent differs from the selected source"
+[ "$(git --git-dir="$PATCH_REMOTE" show "$PATCH_BUMP_SHA:build.gradle.kts")" = \
+  'version = "1.48.2-SNAPSHOT"' ] ||
+  fail "first patch bump does not contain 1.48.2-SNAPSHOT"
+[ "$(git --git-dir="$PATCH_REMOTE" rev-parse "$PATCH_BUMP_SHA^")" = "$PATCH_RELEASE_SHA" ] ||
+  fail "first patch bump parent is not the release commit"
+grep -Fq -- "--first-patch" "$TEMP_DIR/patch-validator-calls" ||
+  fail "first patch preflight did not select first-patch validation"
+grep -Fq -- "--source-sha $PATCH_SOURCE_SHA" "$TEMP_DIR/patch-validator-calls" ||
+  fail "first patch preflight did not preserve the selected source SHA"
+grep -Fq -- "--local-release-tag v_1.48.1" "$TEMP_DIR/patch-validator-calls" ||
+  fail "first patch preflight did not validate the new annotated tag"
+grep -Fqx "release_version=1.48.1" "$TEMP_DIR/patch-outputs" ||
+  fail "first patch outputs omitted the release version"
+grep -Fqx "next_version=1.48.2" "$TEMP_DIR/patch-outputs" ||
+  fail "first patch outputs omitted the next development version"
+pass
+
+STUCK_PATCH_WORK="$TEMP_DIR/stuck-patch-work"
+git clone --quiet --branch 'release/1.48._' "$PATCH_REMOTE" "$STUCK_PATCH_WORK"
+if (
+  cd "$STUCK_PATCH_WORK"
+  PATH="$NETWORK_GUARD_BIN:$PATH" ./.github/scripts/release.sh PATCH
+) >"$TEMP_DIR/stuck-patch.log" 2>&1; then
+  fail "release script accepted an already-tagged nonzero patch version"
+fi
+grep -Fq 'is stuck at version 1.48.1' "$TEMP_DIR/stuck-patch.log" ||
+  fail "release script did not preserve the stuck post-patch bump guard"
 pass
 
 # Verify major releases keep their generated release commit off protected main.

@@ -18,6 +18,7 @@ git_push() {
 BRANCH=$(git branch --show-current)
 SOURCE_SHA=$(git rev-parse HEAD)
 RELEASE_BRANCH=
+FIRST_PATCH=false
 
 BASE=$(./gradlew printVersion -Psnapshot=false | grep 'Version:' | cut -f2 -d' ')
 # BASE == 0.0.1
@@ -105,8 +106,27 @@ if [ "$TYPE" == "PATCH" ]; then
     exit 1
   fi
   RELEASE_BRANCH="release/${BASE%.*}._"
-  check_not_stuck "$BASE" "$BRANCH"
-  create_annotated_tag "$BASE" "$TYPE" "$BRANCH"
+  IFS=. read -r BASE_MAJOR BASE_MINOR BASE_PATCH <<<"$BASE"
+  if git show-ref --verify --quiet "refs/tags/v_${BASE}" && [ "$BASE_PATCH" -eq 0 ]; then
+    if [ "$(git cat-file -t "refs/tags/v_${BASE}" 2>/dev/null)" != "tag" ]; then
+      echo "::error::First patch base v_${BASE} must be an annotated tag"
+      exit 1
+    fi
+    if ! git merge-base --is-ancestor "v_${BASE}^{commit}" "$SOURCE_SHA"; then
+      echo "::error::First patch base tag v_${BASE} is not reachable from $SOURCE_SHA"
+      exit 1
+    fi
+    FIRST_PATCH=true
+    ./gradlew incrementVersion --versionIncrementType=PATCH
+    BASE=$(./gradlew printVersion -Psnapshot=false | grep 'Version:' | cut -f2 -d' ')
+    [ "$BASE" = "$BASE_MAJOR.$BASE_MINOR.$((BASE_PATCH + 1))" ] || {
+      echo "::error::First patch increment produced unexpected version $BASE"
+      exit 1
+    }
+  else
+    check_not_stuck "$BASE" "$BRANCH"
+    create_annotated_tag "$BASE" "$TYPE" "$BRANCH"
+  fi
 fi
 
 # RETAG: re-point an existing tag at the current HEAD of a release branch.
@@ -170,6 +190,11 @@ if [ "$BRANCH" != "$RELEASE_BRANCH" ]; then
   fi
   git_push --atomic --set-upstream origin "$RELEASE_BRANCH"
   git checkout "$BRANCH"
+elif [ "$FIRST_PATCH" == "true" ]; then
+  git add build.gradle.kts
+  git commit -m "[Automated] Release ${BASE}"
+  create_annotated_tag "$BASE" "$TYPE" "$BRANCH"
+  git_push --atomic origin "$BRANCH"
 fi
 
 if [ "$TYPE" == "MAJOR" ]; then
@@ -231,6 +256,16 @@ if [ -z "$DRYRUN" ]; then
     ./.github/scripts/validate-release-bump.sh \
       --repo "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}" \
       --branch \
+      --base "$BRANCH" \
+      --head "$BUMP_BRANCH" \
+      --source-sha "$SOURCE_SHA" \
+      --expected-head-sha "$BUMP_HEAD_SHA" \
+      --local-release-tag "v_$BASE"
+  elif [ "$FIRST_PATCH" == "true" ]; then
+    ./.github/scripts/validate-release-bump.sh \
+      --repo "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}" \
+      --branch \
+      --first-patch \
       --base "$BRANCH" \
       --head "$BUMP_BRANCH" \
       --source-sha "$SOURCE_SHA" \
