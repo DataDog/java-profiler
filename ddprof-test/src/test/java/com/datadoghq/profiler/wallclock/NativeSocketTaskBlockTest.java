@@ -222,7 +222,7 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
                 try {
                     try (Socket socket = new Socket("127.0.0.1", server.getLocalPort())) {
                         InputStream input = socket.getInputStream();
-                        profiler.setContext(0x5100L, 0x5101L, 0L, 0x5101L);
+                        profiler.setTraceContext(0x5100L, 0x5101L, 0L, 0x5101L, -1, null, -1, null);
                         try {
                             readAttempted.countDown();
                             int value = input.read();
@@ -230,7 +230,7 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
                                 throw new AssertionError("unexpected socket byte: " + value);
                             }
                         } finally {
-                            profiler.clearContext();
+                            profiler.clearTraceContext();
                         }
                     }
                 } catch (Throwable t) {
