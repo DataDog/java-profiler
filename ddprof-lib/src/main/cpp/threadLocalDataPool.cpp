@@ -12,16 +12,19 @@
 
 ThreadLocalDataPool* ThreadLocalDataPool::_pool = nullptr;
 
-ThreadLocalDataPool::ThreadLocalDataPool(uint64_t capacity) : _capacity(capacity), _used(0) {
-    size_t malloc_size = capacity * sizeof(ProfiledThread);
+ThreadLocalDataPool::ThreadLocalDataPool(uint64_t capacity)
+    : _capacity(capacity), _used(0), _threads(nullptr) {
+    const size_t malloc_size = capacity * sizeof(ProfiledThread);
     void* p = malloc(malloc_size);
-    if (p != nullptr) {
-      _threads = reinterpret_cast<ProfiledThread*>(p);
-      for (int index = 0; index < capacity; index++) {
-        new (&_threads[index])ProfiledThread(0);
-      }
-      NativeMem::record(NM_THREAD_LOCAL, malloc_size);
+    if (p == nullptr) {
+        return;
     }
+
+    _threads = reinterpret_cast<ProfiledThread*>(p);
+    for (uint64_t index = 0; index < capacity; index++) {
+        new (&_threads[index]) ProfiledThread(0);
+    }
+    NativeMem::record(NM_THREAD_LOCAL, malloc_size);
 }
 
 ThreadLocalDataPool::~ThreadLocalDataPool() {
