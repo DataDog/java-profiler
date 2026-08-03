@@ -167,13 +167,13 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: success()
         with:
-          name: (build) test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
+          name: (build) test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: build/
       - name: Upload failures
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
-          name: failures-glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64
+          name: failures-glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64-${{ inputs.slow_tests && 'slow' || 'regular' }}
           path: failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
       - name: Prepare reports
         if: always() && steps.set_enabled.outputs.enabled == 'true'
@@ -183,26 +183,26 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: success() && matrix.config == 'debug'
         with:
-          name: (unwinding-reports) unwinding-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
+          name: (unwinding-reports) unwinding-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: unwinding-reports
       - name: Upload test reports
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
-          name: (test-reports) test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
+          name: (test-reports) test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: test-reports
       - name: Upload signal-safety violation log
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
-          name: signal-safety-violation-glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64
+          name: signal-safety-violation-glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64-${{ inputs.slow_tests && 'slow' || 'regular' }}
           path: /tmp/signal-safety-violation.txt
           if-no-files-found: ignore
       - name: Upload ASan logs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure() && matrix.config == 'asan'
         with:
-          name: asan-logs-glibc-${{ matrix.java_version }}-amd64
+          name: asan-logs-glibc-${{ matrix.java_version }}-amd64-${{ inputs.slow_tests && 'slow' || 'regular' }}
           path: /tmp/asan.log.*
           if-no-files-found: ignore
 
@@ -300,13 +300,13 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: success()
         with:
-          name: (build) test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
+          name: (build) test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: build/
       - name: Upload failures
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
-          name: failures-musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64
+          name: failures-musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64-${{ inputs.slow_tests && 'slow' || 'regular' }}
           path: failures_musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
       - name: Prepare reports
         if: always()
@@ -316,26 +316,26 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: success() && matrix.config == 'debug'
         with:
-          name: (unwinding-reports) unwinding-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
+          name: (unwinding-reports) unwinding-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: unwinding-reports
       - name: Upload test reports
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
-          name: (test-reports) test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
+          name: (test-reports) test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: test-reports
       - name: Upload signal-safety violation log
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
-          name: signal-safety-violation-musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64
+          name: signal-safety-violation-musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64-${{ inputs.slow_tests && 'slow' || 'regular' }}
           path: /tmp/signal-safety-violation.txt
           if-no-files-found: ignore
       - name: Upload ASan logs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure() && matrix.config == 'asan'
         with:
-          name: asan-logs-musl-${{ matrix.java_version }}-amd64
+          name: asan-logs-musl-${{ matrix.java_version }}-amd64-${{ inputs.slow_tests && 'slow' || 'regular' }}
           path: /tmp/asan.log.*
           if-no-files-found: ignore
 
@@ -491,13 +491,13 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: success()
         with:
-          name: (build) test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
+          name: (build) test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: build/
       - name: Upload failures
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
-          name: failures-glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
+          name: failures-glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64-${{ inputs.slow_tests && 'slow' || 'regular' }}
           path: failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
       - name: Prepare reports
         if: always() && steps.set_enabled.outputs.enabled == 'true'
@@ -507,26 +507,26 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: success() && matrix.config == 'debug'
         with:
-          name: (unwinding-reports) unwinding-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
+          name: (unwinding-reports) unwinding-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: unwinding-reports
       - name: Upload test reports
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
-          name: (test-reports) test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
+          name: (test-reports) test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: test-reports
       - name: Upload signal-safety violation log
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
-          name: signal-safety-violation-glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
+          name: signal-safety-violation-glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64-${{ inputs.slow_tests && 'slow' || 'regular' }}
           path: /tmp/signal-safety-violation.txt
           if-no-files-found: ignore
       - name: Upload ASan logs
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure() && matrix.config == 'asan'
         with:
-          name: asan-logs-glibc-${{ matrix.java_version }}-aarch64
+          name: asan-logs-glibc-${{ matrix.java_version }}-aarch64-${{ inputs.slow_tests && 'slow' || 'regular' }}
           path: /tmp/asan.log.*
           if-no-files-found: ignore
 
@@ -613,13 +613,13 @@ jobs:
          uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
          if: success()
          with:
-           name: (build) test-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
+           name: (build) test-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
            path: build/
        - name: Upload failures
          uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
          if: failure()
          with:
-           name: failures-musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
+           name: failures-musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64-${{ inputs.slow_tests && 'slow' || 'regular' }}
            path: failures_musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
        - name: Prepare reports
          if: always()
@@ -629,25 +629,25 @@ jobs:
          uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
          if: success() && matrix.config == 'debug'
          with:
-           name: (unwinding-reports) unwinding-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
+           name: (unwinding-reports) unwinding-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
            path: unwinding-reports
        - name: Upload test reports
          uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
          if: failure()
          with:
-           name: (test-reports) test-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
+           name: (test-reports) test-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
            path: test-reports
        - name: Upload signal-safety violation log
          uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
          if: failure()
          with:
-           name: signal-safety-violation-musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
+           name: signal-safety-violation-musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64-${{ inputs.slow_tests && 'slow' || 'regular' }}
            path: /tmp/signal-safety-violation.txt
            if-no-files-found: ignore
        - name: Upload ASan logs
          uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
          if: failure() && matrix.config == 'asan'
          with:
-           name: asan-logs-musl-${{ matrix.java_version }}-aarch64
+           name: asan-logs-musl-${{ matrix.java_version }}-aarch64-${{ inputs.slow_tests && 'slow' || 'regular' }}
            path: /tmp/asan.log.*
            if-no-files-found: ignore

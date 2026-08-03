@@ -174,7 +174,7 @@ jobs:
     if: ${{ inputs.dry_run != true && inputs.skip_tests != true && inputs.release_type != 'retag' }}
     uses: ./.github/workflows/test_workflow.yml
     with:
-      configuration: '["debug"]'
+      configuration: '["debug", "asan"]'
       slow_tests: true
 
   create-release:
