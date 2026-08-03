@@ -133,7 +133,7 @@
   X(SAMPLES_DROPPED_THREAD_LOCAL, "samples_dropped_thread_local")             \
   X(SAFECOPY_FAILED, "safecopy_failed")                                       \
   X(SAFEFETCH_FAILED, "safefetch_failed")                                     \
-  X(WALKVM_LONGJMP_RECOVERED, "walkvm_longjmp_recovered")                     \
+  X(STACKWALK_LONGJMP_RECOVERED, "stackwalk_longjmp_recovered")               \
   DD_COUNTER_TABLE_FAULT_INJECTION(X)                                          \
   DD_COUNTER_TABLE_FI_DEBUG(X)                                                 \
   DD_COUNTER_TABLE_DEBUG(X)

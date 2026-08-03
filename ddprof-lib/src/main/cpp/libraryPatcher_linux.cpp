@@ -100,13 +100,13 @@ static void cleanup_unregister(void*) {
 //
 // The fix: use __pthread_register_cancel / __pthread_unregister_cancel
 // directly — the same thing the C macro form of pthread_cleanup_push does.
-// This registers cleanup via a setjmp buffer in a runtime linked-list, NOT
+// This registers cleanup via a sigsetjmp buffer in a runtime linked-list, NOT
 // via an LSDA destructor.  _Unwind_ForcedUnwind's stop function
 // (__pthread_unwind_stop) handles the cleanup without ever calling
 // __gxx_personality_v0 for this frame, so _Unwind_SetGR is never called and
 // the cross-version incompatibility is never triggered.
 //
-// On musl: pthread_cleanup_push already uses the C/setjmp form (no RAII),
+// On musl: pthread_cleanup_push already uses the C/sigsetjmp form (no RAII),
 // and pthread_exit does not use _Unwind_ForcedUnwind, so there is no issue.
 // The __GLIBC__ guard keeps the musl path unchanged.
 #ifdef __GLIBC__
@@ -131,7 +131,7 @@ void run_with_cleanup(func_start_routine routine, void* params,
     static_assert(offsetof(__pthread_unwind_buf_t, __cancel_jmp_buf) == 0 &&
                   sizeof(cancel_buf.__cancel_jmp_buf[0]) == offsetof(struct __jmp_buf_tag, __saved_mask),
                   "glibc __pthread_unwind_buf_t inner layout incompatible with struct __jmp_buf_tag");
-    // __sigsetjmp/longjmp only intercepts _Unwind_ForcedUnwind (pthread_exit /
+    // __sigsetjmp/siglongjmp only intercepts _Unwind_ForcedUnwind (pthread_exit /
     // cancellation).  routine(params) must NOT throw a regular C++ exception
     // across this boundary: an escaping exception would skip both
     // __pthread_unregister_cancel and cleanup_fn below, leaking the thread
@@ -144,7 +144,7 @@ void run_with_cleanup(func_start_routine routine, void* params,
             // set __sigsetjmp's savemask=0 (the second parameter, noting that the signal mask is NOT
             // saved/restored, which is correct because the cancel mechanism does not depend on signal mask state.
             __sigsetjmp((struct __jmp_buf_tag*)(void*)cancel_buf.__cancel_jmp_buf, 0), 0)) {
-        // Reached via longjmp from glibc's stop function when pthread_exit
+        // Reached via siglongjmp from glibc's stop function when pthread_exit
         // (or cancellation) fires.  Run cleanup and continue unwinding.
         cleanup_fn(cleanup_arg);
         __pthread_unwind_next(&cancel_buf);
@@ -163,7 +163,7 @@ void run_with_cleanup(func_start_routine routine, void* params,
     __pthread_unregister_cancel(&cancel_buf);
     cleanup_fn(cleanup_arg);
 #else
-    // musl / non-glibc: pthread_cleanup_push uses the C/setjmp form, no RAII.
+    // musl / non-glibc: pthread_cleanup_push uses the C/sigsetjmp form, no RAII.
     pthread_cleanup_push(cleanup_fn, cleanup_arg);
     routine(params);
     pthread_cleanup_pop(1);

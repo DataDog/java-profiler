@@ -10,15 +10,12 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#include <cstring>
-
+#include "counters.h"
 #include "faultInjection.h"
 #include "safeAccess.h"
 #include "os.h"
-#include "profiler.h"
 #include "threadLocalData.h"
-#include "vmEntry.h"
-#include "hotspot/hotspotSupport.h"
+#include "profiler.h"
 #include "../../main/cpp/gtest_crash_handler.h"
 
 static constexpr char FAULT_INJECTION_TEST_NAME[] = "FaultInjectionTest";
@@ -76,7 +73,7 @@ static void fi_signal_wrapper(int signo, siginfo_t* siginfo, void* context) {
   if (SafeAccess::handle_safefetch(signo, context)) {
     return;  // safefetch load recovered; PC already rewritten to _cont.
   }
-  HotspotSupport::checkFault(ProfiledThread::current());  // siglongjmp if protected
+  Profiler::checkFault(ProfiledThread::current(), siginfo, context);  // siglongjmp if protected
   // Not protected and not a safefetch fault — real crash.
   if (signo == SIGBUS && orig_busHandler != nullptr) {
     orig_busHandler(signo, siginfo, context);
@@ -183,7 +180,9 @@ TEST_F(FaultInjectionTest, WalkVmSigsetjmpRecoversFromInjectedFault) {
   for (int i = 0; i < 5000 && faults == 0; i++) {
     // Raw deref of the (possibly poisoned) base — mirrors walkVM's raw reads.
     uintptr_t v = *(uintptr_t*)INJECT_FAULT_ADDRESS_LIKELY(base);
-    (void)v;
+    // Optimization barrier: tell the compiler `v` is read/write and clobber memory to prevent
+    // reordering/optimizing away the load.
+    asm volatile("" : "+r"(v) : : "memory");
     reads++;
   }
   t->setJmpCtx(nullptr);

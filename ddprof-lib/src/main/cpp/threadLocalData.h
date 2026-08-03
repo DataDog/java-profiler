@@ -59,10 +59,8 @@ private:
 
   static ThreadLocal<ProfiledThread*, nullptr, freeValue>  _current_thread;
   // siglongjmp buffer. Used by hotspot only at this moment.
-  // Published in walkVM() and consumed in checkFault() from an asynchronous
-  // SEGV-handler context on the same thread; atomic makes the publish/observe
-  // ordering explicit instead of relying on plain load/store, matching how
-  // _crash_depth is hardened below.
+  // Published in HotspotSupport::walkVM()/walkJavaStack() and StackWalker::walkFP()/walkDwarf() (all VMs),
+  // consumed in Profiler::checkFault() from an asynchronous SEGV-handler context on the same thread
   std::atomic<sigjmp_buf*> _jmp_buf;
 
   u64 _pc;
