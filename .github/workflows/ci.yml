@@ -232,6 +232,34 @@ jobs:
           body-file: test-summary.md
           comment-id: ci-test-results
 
+  release-bump-ci:
+    needs: [release-automation-tests, check-formatting, check-javadoc, test-matrix]
+    if: >-
+      always() &&
+      github.event_name == 'pull_request' &&
+      startsWith(github.event.pull_request.head.ref, 'automated/bump-')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - name: Require all selected release-bump CI jobs
+        env:
+          AUTOMATION_RESULT: ${{ needs.release-automation-tests.result }}
+          FORMATTING_RESULT: ${{ needs.check-formatting.result }}
+          JAVADOC_RESULT: ${{ needs.check-javadoc.result }}
+          TEST_RESULT: ${{ needs.test-matrix.result }}
+        run: |
+          for result in \
+            "$AUTOMATION_RESULT" \
+            "$FORMATTING_RESULT" \
+            "$JAVADOC_RESULT" \
+            "$TEST_RESULT"; do
+            if [ "$result" != "success" ]; then
+              echo "::error::A selected release-bump CI job completed with result: $result"
+              exit 1
+            fi
+          done
+
   fuzz:
     needs: [check-for-pr, compute-configurations]
     if: needs.check-for-pr.outputs.skip != 'true' && needs.compute-configurations.outputs.run_fuzz == 'true'

@@ -6,7 +6,7 @@ claim_pattern:
   event_name: pull_request_target
   ref: refs/heads/(main|release/[0-9]+\.[0-9]+\._)
   ref_protected: "true"
-  job_workflow_ref: DataDog/java-profiler/\.github/workflows/approve-trivial\.yml@refs/heads/main
+  job_workflow_ref: DataDog/java-profiler/\.github/workflows/approve-trivial\.yml@refs/heads/(main|release/[0-9]+\.[0-9]+\._)
 
 permissions:
   contents: read

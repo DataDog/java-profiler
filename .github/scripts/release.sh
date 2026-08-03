@@ -252,12 +252,7 @@ if [ -z "$DRYRUN" ]; then
   GH_TOKEN="$BUMP_LABEL_TOKEN" gh api --method POST \
     "repos/$GITHUB_REPOSITORY/issues/$BUMP_PR_NUMBER/labels" \
     -f 'labels[]=trivial' >/dev/null
-  GH_TOKEN="$GITHUB_TOKEN" gh pr merge "$BUMP_PR_NUMBER" \
-    --repo "$GITHUB_REPOSITORY" \
-    --auto \
-    --squash \
-    --match-head-commit "$BUMP_HEAD_SHA"
-  echo "✓ Version bump PR opened and queued for exact-SHA auto-merge: $BUMP_PR_URL"
+  echo "✓ Version bump PR opened and labeled for gated merge: $BUMP_PR_URL"
 else
   BUMP_BRANCH="automated/bump-${CANDIDATE//./-}"
   BUMP_HEAD_SHA=$(git rev-parse HEAD)

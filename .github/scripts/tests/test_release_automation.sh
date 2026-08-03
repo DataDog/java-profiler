@@ -323,10 +323,8 @@ pass
   fail "release job does not create the PR with GITHUB_TOKEN"
 [[ "$RELEASE_SCRIPT" == *"GH_TOKEN=\"\$BUMP_LABEL_TOKEN\" gh api --method POST"* ]] ||
   fail "release job does not label the PR with the distinct STS token"
-[[ "$RELEASE_SCRIPT" == *"gh pr merge \"\$BUMP_PR_NUMBER\""* ]] ||
-  fail "release job does not queue auto-merge"
-[[ "$RELEASE_SCRIPT" == *"--match-head-commit"* ]] ||
-  fail "release job auto-merge is not SHA locked"
+[[ "$RELEASE_SCRIPT" != *"gh pr merge"* ]] ||
+  fail "release script can merge before approval and selected CI pass"
 [[ "$RELEASE_SCRIPT" == *"git commit --amend"* ]] ||
   fail "release job does not produce the CI-triggering synchronize update"
 [[ "$RELEASE_SCRIPT" == *"--branch"* ]] || fail "release job does not validate the bump branch"
@@ -339,8 +337,16 @@ pass
 WAITER_SCRIPT=$(<"$WAITER")
 [[ "$WAITER_SCRIPT" == *'dd-octo-sts[bot]'* ]] ||
   fail "waiter does not require the STS approval"
-[[ "$WAITER_SCRIPT" == *"--required --watch --fail-fast"* ]] ||
-  fail "waiter does not enforce required checks"
+[[ "$WAITER_SCRIPT" == *'--check)'* ]] ||
+  fail "waiter does not accept explicit check names"
+[[ "$WAITER_SCRIPT" != *'--required'* ]] ||
+  fail "waiter still depends on repository-required checks"
+[[ "$WAITER_SCRIPT" == *'RELEASE_BUMP_POLL_ATTEMPTS:-360'* ]] ||
+  fail "waiter default does not allow 30 minutes for selected CI"
+[[ "$WAITER_SCRIPT" == *'gh pr merge'* ]] ||
+  fail "waiter does not merge after its gates"
+[[ "$WAITER_SCRIPT" == *'--match-head-commit'* ]] ||
+  fail "waiter merge is not SHA locked"
 [[ "$WAITER_SCRIPT" == *"merged_at"* ]] ||
   fail "waiter does not verify the PR actually merged"
 pass
@@ -371,9 +377,11 @@ AUTHORIZATION_LINE=$(grep -n "Authorize trivial labeler" \
 pass
 
 RELEASE_WORKFLOW=$(<"$ROOT/.github/workflows/release-validated.yml")
+CI_WORKFLOW=$(<"$ROOT/.github/workflows/ci.yml")
 APPROVAL_POLICY=$(<"$ROOT/.github/chainguard/self.approve-trivial.approve-pr.sts.yaml")
-[[ "$APPROVAL_POLICY" == *"refs/heads/(main|release/[0-9]+\\.[0-9]+\\._)"* ]] ||
-  fail "approval policy does not allow protected release branches"
+EXPECTED_APPROVAL_WORKFLOW_REF='job_workflow_ref: DataDog/java-profiler/\.github/workflows/approve-trivial\.yml@refs/heads/(main|release/[0-9]+\.[0-9]+\._)'
+grep -Fqx "  $EXPECTED_APPROVAL_WORKFLOW_REF" <<<"$APPROVAL_POLICY" ||
+  fail "approval policy workflow identity does not allow protected release branches"
 pass
 [ ! -e "$ROOT/.github/chainguard/self.release-bump.create-pr.sts.yaml" ] ||
   fail "obsolete release PR token policy still exists"
@@ -382,15 +390,27 @@ pass
 [[ "$RELEASE_WORKFLOW" == *"self.release-bump.label-pr"* ]] ||
   fail "release workflow does not federate the label-only token"
 [[ "$RELEASE_WORKFLOW" == *"wait-release-bump.sh"* ]] ||
-  fail "release workflow does not wait for automatic merge completion"
+  fail "release workflow does not run the gated merger"
+[[ "$RELEASE_WORKFLOW" == *"--check release-bump-ci"* ]] ||
+  fail "release workflow does not select the aggregate release-bump CI check"
+[[ "$CI_WORKFLOW" == *"release-bump-ci:"* ]] ||
+  fail "CI workflow does not provide the selected release-bump check"
+[[ "$CI_WORKFLOW" == *"needs: [release-automation-tests, check-formatting, check-javadoc, test-matrix]"* ]] ||
+  fail "release-bump CI check does not aggregate the selected jobs"
 [[ "$RELEASE_WORKFLOW" != *"finalize-release-bump.sh"* ]] ||
   fail "release workflow still references the human finalizer"
 grep -Fq "GITHUB_SHA\" != \"\$EXPECTED_SOURCE_SHA" <<<"$RELEASE_WORKFLOW" ||
   fail "release dispatch is not locked to the requested source SHA"
+[[ "$RELEASE_WORKFLOW" == *'if [ "$ALREADY_RELEASED" == "true" ]; then'* ]] ||
+  fail "release workflow does not distinguish first and subsequent patch releases"
+[[ "$RELEASE_WORKFLOW" == *'RELEASE_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"'* ]] ||
+  fail "release workflow does not increment an already-tagged patch version"
+[[ "$RELEASE_WORKFLOW" == *'RELEASE_VERSION="$BASE"'* ]] ||
+  fail "release workflow does not preserve an untagged patch development version"
 pass
 
 # Exercise the completion gate with a deterministic gh stub. These scenarios
-# prove that success requires the exact approval, required checks, and an
+# prove that success requires the exact approval, selected checks, and an
 # observed merge, while stale heads and failed checks fail closed.
 WAITER_BIN="$TEMP_DIR/waiter-bin"
 mkdir "$WAITER_BIN"
@@ -399,16 +419,13 @@ cat > "$WAITER_BIN/gh" <<'GH'
 set -euo pipefail
 EXPECTED=$(printf 'a%.0s' {1..40})
 if [ "$1" = "api" ] && [[ "$*" == *"/reviews?"* ]]; then
+  echo approval >> "$WAITER_ORDER"
   if [ "$WAITER_SCENARIO" = "stale-approval" ]; then
     echo false
   else
     echo true
   fi
 elif [ "$1" = "api" ]; then
-  COUNT=0
-  [ ! -f "$WAITER_STATE" ] || COUNT=$(<"$WAITER_STATE")
-  COUNT=$((COUNT + 1))
-  echo "$COUNT" > "$WAITER_STATE"
   case "$WAITER_SCENARIO" in
     head-change)
       printf '{"head":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"state":"open","merged_at":null}\n'
@@ -420,7 +437,7 @@ elif [ "$1" = "api" ]; then
       printf '{"head":{"sha":"%s"},"state":"closed","merged_at":"2026-08-02T00:00:00Z"}\n' "$EXPECTED"
       ;;
     *)
-      if [ "$COUNT" -ge 2 ] && [ "$WAITER_SCENARIO" = "success" ]; then
+      if [ -f "$WAITER_MERGED" ]; then
         printf '{"head":{"sha":"%s"},"state":"closed","merged_at":"2026-08-02T00:00:00Z"}\n' "$EXPECTED"
       else
         printf '{"head":{"sha":"%s"},"state":"open","merged_at":null}\n' "$EXPECTED"
@@ -428,11 +445,17 @@ elif [ "$1" = "api" ]; then
       ;;
   esac
 elif [ "$1 $2" = "pr checks" ]; then
-  if [[ "$*" == *"--json name"* ]]; then
-    echo 1
-  else
-    [ "$WAITER_SCENARIO" != "failed-check" ]
-  fi
+  echo checks >> "$WAITER_ORDER"
+  case "$WAITER_SCENARIO" in
+    failed-check) printf '[{"name":"release-bump-ci","state":"FAILURE"}]\n' ;;
+    missing-check) printf '[]\n' ;;
+    pending-check) printf '[{"name":"release-bump-ci","state":"IN_PROGRESS"}]\n' ;;
+    *) printf '[{"name":"release-bump-ci","state":"SUCCESS"}]\n' ;;
+  esac
+elif [ "$1 $2 $3" = "pr merge 698" ]; then
+  [[ "$*" == *"--squash --match-head-commit $EXPECTED"* ]] || exit 98
+  echo merge >> "$WAITER_ORDER"
+  touch "$WAITER_MERGED"
 else
   echo "unsupported waiter gh call: $*" >&2
   exit 99
@@ -443,17 +466,23 @@ WAITER_SHA=$(printf 'a%.0s' {1..40})
 
 run_waiter() {
   local scenario=$1
-  rm -f "$TEMP_DIR/waiter-state"
-  WAITER_SCENARIO="$scenario" WAITER_STATE="$TEMP_DIR/waiter-state" \
+  rm -f "$TEMP_DIR/waiter-merged" "$TEMP_DIR/waiter-order"
+  WAITER_SCENARIO="$scenario" WAITER_MERGED="$TEMP_DIR/waiter-merged" \
+    WAITER_ORDER="$TEMP_DIR/waiter-order" \
     RELEASE_BUMP_POLL_ATTEMPTS=1 RELEASE_BUMP_POLL_SECONDS=0 \
     PATH="$WAITER_BIN:$PATH" "$WAITER" \
       --repo DataDog/java-profiler --pr-number 698 \
-      --expected-head-sha "$WAITER_SHA" >/dev/null
+      --expected-head-sha "$WAITER_SHA" \
+      --check release-bump-ci >/dev/null
 }
 
 run_waiter success || fail "waiter rejected exact approval/check/merge success"
+[ "$(<"$TEMP_DIR/waiter-order")" = $'approval\nchecks\nmerge' ] ||
+  fail "waiter did not enforce approval, checks, then merge ordering"
 pass
-run_waiter already-merged || fail "waiter rejected an already merged exact head"
+if run_waiter already-merged 2>/dev/null; then
+  fail "waiter accepted a PR merged before its gates"
+fi
 pass
 if run_waiter stale-approval 2>/dev/null; then
   fail "waiter accepted a stale approval"
@@ -464,7 +493,15 @@ if run_waiter head-change 2>/dev/null; then
 fi
 pass
 if run_waiter failed-check 2>/dev/null; then
-  fail "waiter accepted a failed required check"
+  fail "waiter accepted a failed selected check"
+fi
+pass
+if run_waiter missing-check 2>/dev/null; then
+  fail "waiter accepted a missing selected check"
+fi
+pass
+if run_waiter pending-check 2>/dev/null; then
+  fail "waiter accepted a pending selected check"
 fi
 pass
 if run_waiter closed 2>/dev/null; then
@@ -541,9 +578,6 @@ if [ "$1 $2 $3" = "api --method POST" ] && [[ "$4" == */pulls ]]; then
 elif [ "$1 $2 $3" = "api --method POST" ] && [[ "$4" == */issues/698/labels ]]; then
   [ "$GH_TOKEN" = "label-token" ] || exit 98
   printf '[]\n'
-elif [ "$1 $2 $3" = "pr merge 698" ]; then
-  [ "$GH_TOKEN" = "actions-token" ] || exit 98
-  :
 else
   echo "unsupported fake gh call: $*" >&2
   exit 99
@@ -586,8 +620,9 @@ grep -Fq "api --method POST repos/DataDog/java-profiler/pulls" "$TEMP_DIR/gh-cal
   fail "release script did not create the PR"
 grep -Fq "api --method POST repos/DataDog/java-profiler/issues/698/labels" "$TEMP_DIR/gh-calls" ||
   fail "release script did not label the PR"
-grep -Fq "pr merge 698 --repo DataDog/java-profiler --auto --squash --match-head-commit $BUMP_SHA" \
-  "$TEMP_DIR/gh-calls" || fail "release script did not queue exact-SHA auto-merge"
+if grep -Fq "pr merge" "$TEMP_DIR/gh-calls"; then
+  fail "release script merged before the external approval and CI gates"
+fi
 grep -Fq -- "--branch" "$TEMP_DIR/validator-calls" ||
   fail "release script did not validate the pushed bump branch"
 grep -Fq -- "--base main" "$TEMP_DIR/validator-calls" ||
@@ -697,6 +732,9 @@ grep -Fq -- "--expected-head-sha $MAJOR_BUMP_SHA" "$TEMP_DIR/major-validator-cal
   fail "major branch validation did not pin the bump SHA"
 grep -Fq -- "--local-release-tag v_2.0.0" "$TEMP_DIR/major-validator-calls" ||
   fail "major preflight did not validate the local annotated release tag"
+if grep -Fq "pr merge" "$TEMP_DIR/major-gh-calls"; then
+  fail "major release script merged before the external approval and CI gates"
+fi
 pass
 
 echo "PASS: $TESTS hermetic release-automation test groups"

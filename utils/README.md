@@ -50,9 +50,8 @@ Triggers the Validated Release workflow using GitHub CLI to create a new release
 6. A separate `dd-octo-sts[bot]` identity adds `trivial`; the approval workflow
    validates permissions, refs, SHAs, and the exact one-line version diff before
    approving that exact commit
-7. The release workflow waits for the exact approval and required checks, then
-   verifies that exact-SHA auto-merge completed; it never bypasses branch
-   protection
+7. The release workflow waits for the exact approval and the aggregate
+   `release-bump-ci` check, then performs the SHA-locked squash merge itself
 8. Tag push triggers GitLab, which publishes the Maven artifacts, and the
    GitHub release workflows attach the release assets
 
