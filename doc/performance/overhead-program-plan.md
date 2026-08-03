@@ -59,16 +59,22 @@ tooling:
   class-loading volume) — negligible below ~2,000 sampled classes, growing
   to ~102 MB at ~85,000 sampled classes in synthetic testing, and noisier at
   the high end (stdev comparable to the mean).
-- **A first attribution pass exists but is incomplete.** ~44% of the
+- **Attribution is now partly confirmed, not just plausible.** ~44% of the
   overhead is visible to NMT (Class/Internal/Java-Heap/NMT's-own-tracking
-  categories), with a concrete, plausible-but-unconfirmed candidate
-  mechanism (jmethodID preloading via `JVMTI_EVENT_CLASS_PREPARE` →
-  `GetClassMethods`, `jvmSupport.cpp:160`). The remaining ~56% is invisible
-  to NMT (the profiler's own `malloc`/`new`), and of *that*, only 15–25 MB
-  is explained by `NM_CALLTRACE` — leaving ~32–42 MB attributable to
-  neither NMT nor `NM_*`. This reads as a real gap in PR #669's coverage
-  (leading suspect: `MethodMap`/`MethodInfo`, confirmed to have zero
-  `NativeMem::record` calls), not just an unexplained number.
+  categories). A toggle test (disabling jmethodID preloading —
+  `JVMTI_EVENT_CLASS_PREPARE` → `GetClassMethods`, `jvmSupport.cpp:145` —
+  via a one-line temporary patch, reverted after) confirmed it as the
+  driver of 79% of that NMT-visible share: the Class, Internal, and NMT's-
+  own-tracking deltas all collapse to noise when preloading is disabled.
+  "Java Heap" remains unexplained — it moved the *opposite* direction under
+  the toggle, but that specific metric swung ~240 MB across just 5 reps of
+  the *same* condition, too noisy at practical rep counts to read either
+  way. Separately, the remaining ~56% is invisible to NMT entirely (the
+  profiler's own `malloc`/`new`), and of *that*, only 15–25 MB is explained
+  by `NM_CALLTRACE` — leaving ~32–42 MB attributable to neither NMT nor
+  `NM_*`. This reads as a real gap in PR #669's coverage (leading suspect:
+  `MethodMap`/`MethodInfo`, confirmed to have zero `NativeMem::record`
+  calls), not just an unexplained number — this part is still unconfirmed.
 - **Single-run comparisons are dangerously unreliable at this scale.** A
   2–3 rep with/without-agent comparison at N=150,000 classes gave estimates
   ranging 91–246 MB depending on which runs happened to be paired; 10 reps
@@ -151,9 +157,15 @@ one invented from scratch.
 
 1. **Memory — close out the open threads from the current investigation**
    — each is independently actionable:
-   - Confirm or refute jmethodID preloading (`GetClassMethods` via
+   - ~~Confirm or refute jmethodID preloading (`GetClassMethods` via
      `ClassPrepare`) as the driver of the "Class" NMT delta, by toggling it
-     off and re-measuring.
+     off and re-measuring.~~ **Done** — confirmed as the driver of the
+     Class/Internal/NMT's-own-overhead deltas (79% of the NMT-visible
+     share). "Java Heap" remains open: it moved opposite to expectation
+     under the toggle, but that metric proved too noisy (~240 MB swing
+     across 5 same-condition reps) to attribute either way at a practical
+     rep count — would need many more reps to resolve, or a less noisy
+     measurement approach.
    - Size `MethodMap`/`MethodInfo` directly and correlate against distinct
      classes touched, to close (or at least narrow) the ~32–42 MB
      unattributed gap. Treat this as a probable real coverage gap in PR
@@ -214,14 +226,17 @@ one invented from scratch.
 
 5. **Identify low-hanging fruit and larger improvement opportunities**
    (deliberately sequenced *after* the above, since fixing things you don't
-   understand yet risks fixing the wrong thing). Memory candidates already
-   visible from findings so far, to be validated: jmethodID preloading
-   strategy (could it be lazier or bounded instead of eager-per-
-   `ClassPrepare`?), `MethodMap`/`MethodInfo` sizing and lifecycle,
-   calltrace/dictionary initial-capacity tuning for high-diversity
-   workloads. No CPU/latency candidates exist yet — they're a product of
-   item 2's investigation, not knowable in advance. Output: a ranked
-   backlog (effort vs. expected impact) feeding Phase 4.
+   understand yet risks fixing the wrong thing). Memory candidates, ranked
+   by confidence: jmethodID preloading strategy — **confirmed** driver of a
+   real ~36 MB chunk of overhead at high class diversity, worth asking
+   whether it can be lazier or bounded instead of eager-per-`ClassPrepare`
+   (though the source comment already explains why it's eager: AGCT's
+   signal-handler constraints, so any change here needs care, not just
+   "make it lazy") — plus `MethodMap`/`MethodInfo` sizing/lifecycle and
+   calltrace/dictionary initial-capacity tuning, both still unconfirmed. No
+   CPU/latency candidates exist yet — they're a product of item 2's
+   investigation, not knowable in advance. Output: a ranked backlog (effort
+   vs. expected impact) feeding Phase 4.
 
 ### Which use cases are good to measure overhead with?
 
@@ -408,8 +423,10 @@ breakdown illustrates — the biggest memory lever might not be
 1. Get access to the dd-trace-doe run(s)/config that produced the reported
    150–250 MB figure (Phase 1.3, first task — everything else in
    reconciliation depends on knowing what was actually measured).
-2. Toggle-test the jmethodID-preloading hypothesis (Phase 1.1) — cheapest,
-   most concrete open thread from the current memory investigation.
+2. ~~Toggle-test the jmethodID-preloading hypothesis (Phase 1.1)~~ **Done**
+   — confirmed. Next up from the same list: size `MethodMap`/`MethodInfo`
+   to chase the still-unattributed ~32–42 MB, or resolve "Java Heap" with a
+   much larger rep count.
 3. Kick off Phase 1.2 for CPU and latency: pick 1–2 of the candidate
    hypotheses above, build the smallest synthetic microbenchmark that
    isolates one, and get a first with/without-agent number — the goal at

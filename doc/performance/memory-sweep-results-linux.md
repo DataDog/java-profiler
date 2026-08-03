@@ -65,11 +65,14 @@ two platforms are called out inline where they matter.
    15–25 MB piece of the total) — most of the overhead scales continuously
    with call-graph/class diversity actually touched by sampling, and grows
    noisier at scale (±89 MB stdev at N=150,000, comparable to the mean
-   itself). NMT category attribution explains 44% of it (Class/Internal/Java
-   Heap/NMT's-own-overhead), with jmethodID preloading
-   (`JVMTI_EVENT_CLASS_PREPARE` → `GetClassMethods`, `jvmSupport.cpp:160`) a
-   strong but unconfirmed candidate for the JVM-side share; the remaining
-   ~32–42 MB is invisible to both NMT and this profiler's own `NM_*`
+   itself). NMT category attribution explains 44% of it, and a toggle test
+   confirmed jmethodID preloading (`JVMTI_EVENT_CLASS_PREPARE` →
+   `GetClassMethods`, `jvmSupport.cpp:145`) as the driver of 79% of that
+   NMT-visible share (Class/Internal/NMT's-own-overhead all collapse to
+   noise when preloading is disabled) — "Java Heap" remains unexplained,
+   its own measurement too noisy at practical rep counts to attribute
+   either way. The remaining ~32–42 MB is invisible to both NMT and this
+   profiler's own `NM_*`
    counters — a probable real gap in PR #669's coverage (leading suspect:
    `MethodMap`/`MethodInfo`, already known to be uninstrumented), not just
    an unexplained number. See the dedicated section below for the full
@@ -552,12 +555,41 @@ exactly this tradeoff:
 > significant memory growth, but this is inherent to AGCT architecture and
 > necessary for signal-safe profiling.
 
-This is a plausible, well-targeted explanation for why "Class" grows *only*
-when the agent is attached, for the identical set of 150,000 loaded classes
-— but it wasn't independently confirmed here (e.g. by disabling this
-preloading and re-measuring); flagged as the most promising lead for a
-follow-up investigation rather than a closed finding. The "Java Heap" and
-NMT's-own-overhead deltas have no candidate mechanism identified at all yet.
+**This was confirmed with a toggle test**: a temporary one-line patch
+(`return false;` at the top of `JVMSupport::loadMethodIDsIfNeeded`,
+`jvmSupport.cpp:145` — reverted after the check, not part of the harness)
+disables jmethodID preloading for both the per-class `ClassPrepare` path and
+the bulk `loadAllMethodIDsIfNeeded` path in one place, since both call
+through this single function. Rerunning the with/without-agent sweep at
+N=150,000 (5 reps each) with preloading disabled:
+
+| NMT category | Δ, preloading enabled (10 reps) | Δ, preloading disabled (5 reps) |
+|---|---|---|
+| Class | +13.6 MB | **+0.002 MB** (noise) |
+| Internal | +11.6 MB | **+0.006 MB** (noise) |
+| Native Memory Tracking (own bookkeeping) | +10.3 MB | **-0.1 MB** (noise) |
+| Java Heap | +10.4 MB | +80.3 MB |
+
+Disabling jmethodID preloading makes the "Class", "Internal", and NMT's own
+tracking-overhead deltas **all collapse to noise** — with-agent's "Class"
+value (329,164 KB) lands almost exactly on without-agent's (329,162 KB).
+This confirms jmethodID preloading as the driver of all three, not just a
+plausible guess: **~35.9 MB of the original ~45.5 MB NMT-visible delta (79%
+of it) is directly attributable to this one mechanism.** The overall RSS
+delta also dropped with preloading disabled (74.8 MB vs. 102.4 MB), a
+smaller drop than the 35.9 MB category-level figure but only measured at 5
+reps against high per-run variance (stdev 59–94 MB) — consistent in
+direction, not precise enough to read the exact number from.
+
+"Java Heap" moved the *other* way (delta more than doubled) when preloading
+was disabled, which at first looks like a real effect but isn't: per-rep
+Java Heap committed values swung by ~240 MB across just 5 reps of the
+*same* condition (both with and without agent) — this metric is dominated
+by GC/heap-resize timing noise at this sample size, unrelated to the patch.
+**No conclusion can be drawn about "Java Heap" from this test in either
+direction**; it would need many more reps than were practical here to
+separate signal from this much noise. NMT's-own-overhead deltas have no
+other candidate mechanism to test yet.
 
 **The remaining ~57 MB (56% of the delta) is invisible to NMT entirely** —
 this is the profiler's own `malloc`/`new` memory, which NMT structurally
@@ -664,15 +696,18 @@ now confirmed empirically:
   the overall "small, roughly flat" conclusion as solid but the individual
   KB-level numbers as indicative only.
 - **What causes the class-diversity RSS overhead to scale smoothly is now
-  partially identified, not fully resolved.** NMT category breakdown (see
-  above) explains 44% of it and points at `JVMTI_EVENT_CLASS_PREPARE` →
-  `GetClassMethods()` jmethodID preloading (`jvmSupport.cpp:160`) as a
-  strong candidate for the "Class" line specifically — but this was not
-  independently confirmed (e.g. by disabling preloading and re-measuring),
-  and the "Java Heap" / NMT's-own-overhead deltas have no candidate
-  mechanism at all yet. **Follow-up worth doing**: instrument or toggle
-  `loadMethodIDsImpl`/`ClassPrepare` directly, the way `resolveMethod` was
-  instrumented for the `NM_DICTIONARY` finding, to confirm or rule this out.
+  partially identified, not fully resolved.** NMT category breakdown
+  explains 44% of it; a toggle test (disabling `JVMTI_EVENT_CLASS_PREPARE`
+  → `GetClassMethods()` jmethodID preloading, `jvmSupport.cpp:145`)
+  confirmed it as the driver of the "Class", "Internal", and NMT's-own-
+  overhead lines (all three collapse to noise with it disabled — see
+  above). "Java Heap" remains unexplained: it moved in the *opposite*
+  direction under the toggle test, but per-rep values for that specific
+  metric swung by ~240 MB across 5 reps of the same condition, so no
+  conclusion could be drawn either way at a practical rep count.
+  **Follow-up worth doing**: repeat the "Java Heap" comparison with many
+  more reps (or find a less noisy way to attribute it) before treating it
+  as either confirmed or ruled out.
 - **The remaining ~32–42 MB (neither NMT nor the profiler's own `NM_*`
   counters explain it) reads as a real gap in PR #669's `NativeMem`
   coverage, not just an unexplained number** — this is genuine RSS the agent
