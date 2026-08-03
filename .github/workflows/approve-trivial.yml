@@ -57,7 +57,7 @@ jobs:
 
       - name: Check for an existing exact approval
         id: existing
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b # 9.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # 9.0.0
         env:
           EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         with:
@@ -98,7 +98,7 @@ jobs:
 
       - name: Approve exact current commit
         if: steps.existing.outputs.approved != 'true'
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b # 9.0.0
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # 9.0.0
         env:
           EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         with:

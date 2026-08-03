@@ -422,6 +422,10 @@ AUTHORIZATION_LINE=$(grep -n "Authorize trivial labeler" \
   fail "approval workflow does not conditionally validate release bumps"
 [[ "$APPROVAL_WORKFLOW" == *"commit_id: process.env.EXPECTED_HEAD_SHA"* ]] ||
   fail "approval is not pinned to the validated SHA"
+while IFS= read -r action_ref; do
+  [[ "$action_ref" =~ ^[0-9a-f]{40}$ ]] ||
+    fail "approval workflow action ref is not a full commit SHA: $action_ref"
+done < <(sed -nE 's/^[[:space:]]*uses: [^@]+@([^[:space:]]+).*/\1/p' <<<"$APPROVAL_WORKFLOW")
 pass
 
 RELEASE_WORKFLOW=$(<"$ROOT/.github/workflows/release-validated.yml")
