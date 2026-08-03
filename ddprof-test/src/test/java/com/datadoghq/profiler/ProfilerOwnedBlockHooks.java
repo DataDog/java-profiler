@@ -9,8 +9,8 @@ package com.datadoghq.profiler;
 public final class ProfilerOwnedBlockHooks {
     private ProfilerOwnedBlockHooks() {}
 
-    public static void parkEnter(JavaProfiler profiler) {
-        profiler.parkEnter();
+    public static boolean parkEnter(JavaProfiler profiler) {
+        return profiler.parkEnter();
     }
 
     public static void parkExit(JavaProfiler profiler, long blocker, long unblockingSpanId) {
