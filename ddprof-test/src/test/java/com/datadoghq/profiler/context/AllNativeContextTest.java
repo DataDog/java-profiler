@@ -64,7 +64,6 @@ public class AllNativeContextTest {
             profilerStarted = false;
         }
         profiler.clearTraceContext();
-        profiler.resetThreadContext();
     }
 
     private void start() throws IOException {
