@@ -401,10 +401,14 @@ pass
   fail "release workflow still references the human finalizer"
 grep -Fq "GITHUB_SHA\" != \"\$EXPECTED_SOURCE_SHA" <<<"$RELEASE_WORKFLOW" ||
   fail "release dispatch is not locked to the requested source SHA"
+# These patterns intentionally match unexpanded shell expressions in the workflow source.
+# shellcheck disable=SC2016
 [[ "$RELEASE_WORKFLOW" == *'if [ "$ALREADY_RELEASED" == "true" ]; then'* ]] ||
   fail "release workflow does not distinguish first and subsequent patch releases"
+# shellcheck disable=SC2016
 [[ "$RELEASE_WORKFLOW" == *'RELEASE_VERSION="$MAJOR.$MINOR.$((PATCH + 1))"'* ]] ||
   fail "release workflow does not increment an already-tagged patch version"
+# shellcheck disable=SC2016
 [[ "$RELEASE_WORKFLOW" == *'RELEASE_VERSION="$BASE"'* ]] ||
   fail "release workflow does not preserve an untagged patch development version"
 pass
