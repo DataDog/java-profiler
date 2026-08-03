@@ -1216,14 +1216,18 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
     Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
     return 0;
   }
+  const bool prev_unwinding_java = prof_thread->is_unwinding_Java();
   sigjmp_buf crash_protection_ctx;
-  sigjmp_buf* prev_jmp_buf = prof_thread != nullptr ? prof_thread->getJmpCtx() : nullptr;
+  sigjmp_buf* prev_jmp_buf = prof_thread->getJmpCtx();
 
   if (sigsetjmp(crash_protection_ctx, 1) != 0) {
     // checkFault() does a siglongjmp from inside segvHandler, bypassing
     // segvHandler's SignalHandlerScope destructor. Compensate.
     SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
     prof_thread->setJmpCtx(prev_jmp_buf);
+    // A recovered siglongjmp bypasses AsyncSampleMutex destructors, so restore
+    // the per-thread guard to its pre-walk value.
+    prof_thread->set_unwinding_Java(prev_unwinding_java);
     if (truncated) {
       *truncated = true;
     }

@@ -39,7 +39,7 @@ ProfiledThread* ThreadLocalDataPool::claim(int tid) {
     int start_pos = tid % _capacity;
     int index = start_pos;
     do {
-        if (_threads[index].claim_acquire(tid)) {
+        if (_threads[index].claim_acquire()) {
             return &_threads[index];
         }
         index = (index + 1) % _capacity;
@@ -68,7 +68,11 @@ ProfiledThread* ThreadLocalDataPool::acquire(int tid) {
     if (pool == nullptr) {
         return nullptr;
     } else {
-        return pool->claim(tid);
+        ProfiledThread* t = pool->claim(tid);
+        if (t != nullptr) {
+            new (t)ProfiledThread(tid, true /* claimed */);
+        }
+        return t;
     }
 }
 

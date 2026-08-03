@@ -99,9 +99,9 @@ private:
   alignas(8) u32 _otel_tag_encodings[DD_TAGS_CAPACITY];
   u64 _otel_local_root_span_id;
 
-  ProfiledThread(int tid)
+  ProfiledThread(int tid, bool claimed = false)
       : ThreadLocalData(), _jmp_buf(nullptr), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _tid(tid), _cpu_epoch(0),
-        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0),
+        _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(claimed ? FLAG_CLAIMED : 0),
         _park_block_token(0), _filter_slot_id(-1), _init_window(0),
         _signal_depth(0),
         _otel_ctx_initialized(false),
@@ -118,20 +118,21 @@ private:
   virtual ~ProfiledThread() { }
 
   inline bool isClaimed() const {
-      return (__atomic_load_n(&_misc_flags, __ATOMIC_RELAXED) & FLAG_CLAIMED) == FLAG_CLAIMED;
+    return (__atomic_load_n(&_misc_flags, __ATOMIC_RELAXED) & FLAG_CLAIMED) == FLAG_CLAIMED;
   }
 
- inline bool claim_acquire(int tid) {
+  inline void unclaim() {
+    assert(isClaimed() && "Slot has been claimed");
+    __atomic_fetch_and(&_misc_flags, ~FLAG_CLAIMED, __ATOMIC_RELEASE);
+  }
+  
+  inline bool claim_acquire() {
     if (isClaimed()) {
         return false;
     }
 
     u32 flags = __atomic_fetch_or(&_misc_flags, FLAG_CLAIMED, __ATOMIC_ACQUIRE);
-    bool rc = (flags & FLAG_CLAIMED) == 0;
-    if (rc) {
-      _tid = tid;
-    }
-    return rc;
+    return (flags & FLAG_CLAIMED) == 0;
 }
 
 public:
