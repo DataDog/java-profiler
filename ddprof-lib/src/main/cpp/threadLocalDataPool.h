@@ -29,8 +29,12 @@ private:
     bool unclaim(ProfiledThread* t);
 
 
-    inline bool contains(ProfiledThread* t) {
-        return t >= _threads && t <= &_threads[_capacity - 1];
+    inline bool contains(ProfiledThread* t) const {
+        if (_threads == nullptr || t == nullptr) return false;
+        const uintptr_t addr = reinterpret_cast<uintptr_t>(t);
+        const uintptr_t base = reinterpret_cast<uintptr_t>(_threads);
+        const uintptr_t end  = reinterpret_cast<uintptr_t>(_threads + _capacity);
+        return addr >= base && addr < end;
     }
 
 public:
