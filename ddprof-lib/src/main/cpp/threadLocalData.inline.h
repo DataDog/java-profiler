@@ -10,7 +10,7 @@
 #include "threadLocalData.h"
 #include "threadLocalDataPool.h"
 
-ProfiledThread* ProfiledThread::current() {
+inline ProfiledThread* ProfiledThread::current() {
     if (!isThreadKeyValid()) {
       return nullptr;
     }
