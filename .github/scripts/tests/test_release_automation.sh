@@ -453,9 +453,9 @@ grep -Fq "GITHUB_SHA\" != \"\$EXPECTED_SOURCE_SHA" <<<"$RELEASE_WORKFLOW" ||
   fail "release dispatch is not locked to the requested source SHA"
 [[ "$RELEASE_WORKFLOW" == *"FIRST_PATCH=false"* ]] ||
   fail "release workflow does not track the first-patch state"
-[[ "$RELEASE_WORKFLOW" == *'[ "$TYPE" == "patch" ] && [ "$ALREADY_RELEASED" == "true" ] &&'* ]] ||
+[[ "$RELEASE_WORKFLOW" == *"[ \"\$TYPE\" == \"patch\" ] && [ \"\$ALREADY_RELEASED\" == \"true\" ] &&"* ]] ||
   fail "release workflow does not distinguish the tagged first-patch base"
-[[ "$RELEASE_WORKFLOW" == *'[ "$PATCH" -eq 0 ]'* ]] ||
+[[ "$RELEASE_WORKFLOW" == *"[ \"\$PATCH\" -eq 0 ]"* ]] ||
   fail "release workflow accepts an already-tagged nonzero patch as the first patch"
 [[ "$RELEASE_WORKFLOW" == *"RELEASE_VERSION=\"\$MAJOR.\$MINOR.\$((PATCH + 1))\""* ]] ||
   fail "release workflow does not increment an already-tagged patch version"
