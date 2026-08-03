@@ -28,12 +28,6 @@
 //   pc = SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)fp));
 //   VMMethod* m = ((VMMethod**)INJECT_FAULT_ADDRESS_UNLIKELY(fp))[off];
 //
-// INJECT_FAULT_BOOL_* wraps the *result* of a call that already ran for
-// real, forcing it to report `false` so a caller's failure-handling path
-// (not its memory-safety recovery path) gets exercised, e.g.:
-//
-//   return INJECT_FAULT_BOOL_LIKELY(dlopen(name, flags) != nullptr);
-//
 // The three tiers name their firing frequency: RARE 0.01%, UNLIKELY 0.1%,
 // LIKELY 1%.  See faultInjection.cpp for the poison-address and PRNG details.
 
@@ -82,19 +76,6 @@ inline T injectAddress(T ptr, u64 threshold, const char* fn) {
   }
   return ptr;
 }
-
-// Returns orig unchanged, or `faulty` when the tier fires. Unlike
-// injectAddress() (which fakes an input about to be dereferenced), this fakes
-// the *outcome* of a call that already ran for real — e.g. making a
-// successful dlopen() appear to have failed, to exercise a caller's error
-// path without needing the library to actually be absent.
-template <typename T>
-inline T injectValue(T orig, T faulty, u64 threshold, const char* fn) {
-  if (__builtin_expect(shouldFire(threshold, fn), 0)) {
-    return faulty;
-  }
-  return orig;
-}
 }  // namespace faultinj
 
 #define INJECT_FAULT_ADDRESS_RARE(ptr) \
@@ -103,13 +84,6 @@ inline T injectValue(T orig, T faulty, u64 threshold, const char* fn) {
     ::faultinj::injectAddress((ptr), ::faultinj::PROB_UNLIKELY, __func__)
 #define INJECT_FAULT_ADDRESS_LIKELY(ptr) \
     ::faultinj::injectAddress((ptr), ::faultinj::PROB_LIKELY, __func__)
-
-#define INJECT_FAULT_BOOL_RARE(v) \
-    ::faultinj::injectValue((v), false, ::faultinj::PROB_RARE, __func__)
-#define INJECT_FAULT_BOOL_UNLIKELY(v) \
-    ::faultinj::injectValue((v), false, ::faultinj::PROB_UNLIKELY, __func__)
-#define INJECT_FAULT_BOOL_LIKELY(v) \
-    ::faultinj::injectValue((v), false, ::faultinj::PROB_LIKELY, __func__)
 
 #else  // __FAULT_INJECTION__ not defined — strict identity, zero cost.
 
@@ -124,10 +98,6 @@ inline T injectValue(T orig, T faulty, u64 threshold, const char* fn) {
 #define INJECT_FAULT_LONG_RARE(v)     (v)
 #define INJECT_FAULT_LONG_UNLIKELY(v) (v)
 #define INJECT_FAULT_LONG_LIKELY(v)   (v)
-
-#define INJECT_FAULT_BOOL_RARE(v)     (v)
-#define INJECT_FAULT_BOOL_UNLIKELY(v) (v)
-#define INJECT_FAULT_BOOL_LIKELY(v)   (v)
 
 #endif  // __FAULT_INJECTION__
 

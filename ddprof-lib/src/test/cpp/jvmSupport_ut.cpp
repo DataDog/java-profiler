@@ -4,7 +4,6 @@
  */
 
 #include <gtest/gtest.h>
-#include <cstring>
 #include "jvmSupport.h"
 #include "jvmThread.h"
 #include "vmEntry.h"
@@ -112,23 +111,7 @@ TEST_F(JvmSupportInitFailureTest, JVMSupportInitializeFailsWhenJVMThreadFails) {
 TEST_F(JvmSupportInitFailureTest, CheckStateBlocksOnInitFailureAndLatchesError) {
     Profiler* p = Profiler::instance();
 
-    // Under -PenableFaultInjection, checkState() checks prewarmUnwinder()
-    // before JVMSupport::initialize() (see profiler.cpp), so an injected
-    // fault could occasionally surface "Missing libgcc_s.so" here instead of
-    // the JVMSupport::initialize() failure this test targets. Retry past any
-    // such injected failure. If it persists across retries, libgcc_s is likely
-    // genuinely absent on this host and this test cannot exercise the intended path.
-    Error error = Error::OK;
-    for (int i = 0; i < 100; i++) {
-        error = p->checkState();
-        if (!error || std::strcmp(error.message(), "Missing libgcc_s.so.1") != 0) {
-            break;
-        }
-        ProfilerTestAccessor::setState(p, NEW);
-    }
-    if (error && std::strcmp(error.message(), "Missing libgcc_s.so.1") == 0) {
-        GTEST_SKIP() << "libgcc_s.so.1 is missing on this host; cannot exercise JVMSupport::initialize() failure path";
-    }
+    Error error = p->checkState();
     bool has_error = (bool)error;
 
     EXPECT_TRUE(has_error);

@@ -864,11 +864,7 @@ bool Profiler::prewarmUnwinder() {
   // dlopen by SONAME is the only mechanism that works under static-libgcc.
   // libgcc_s.so.1 has been the stable SONAME since 2002; a bump would
   // constitute a glibc/GCC C++ ABI break and is treated as a fixed contract.
-  //
-  // INJECT_FAULT_BOOL_LIKELY lets fault-injection builds force this to
-  // report failure without the library actually being absent, so
-  // checkState()'s "Missing libgcc_s.so" path can be exercised in CI.
-  return INJECT_FAULT_BOOL_LIKELY(dlopen("libgcc_s.so.1", RTLD_LAZY | RTLD_GLOBAL) != nullptr);
+  return dlopen("libgcc_s.so.1", RTLD_LAZY | RTLD_GLOBAL) != nullptr;
 #else
   return true;
 #endif
