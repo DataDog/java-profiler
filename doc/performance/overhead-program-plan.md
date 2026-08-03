@@ -72,9 +72,13 @@ tooling:
   way. Separately, the remaining ~56% is invisible to NMT entirely (the
   profiler's own `malloc`/`new`), and of *that*, only 15–25 MB is explained
   by `NM_CALLTRACE` — leaving ~32–42 MB attributable to neither NMT nor
-  `NM_*`. This reads as a real gap in PR #669's coverage (leading suspect:
-  `MethodMap`/`MethodInfo`, confirmed to have zero `NativeMem::record`
-  calls), not just an unexplained number — this part is still unconfirmed.
+  `NM_*`. This reads as a real gap in PR #669's coverage. The leading
+  suspect, `MethodMap`/`MethodInfo`, was sized directly and **ruled out** —
+  it holds essentially zero entries in these runs, because its only
+  inserter (`resolveMethod()`) turns out to be dead code for wall-clock
+  `MethodSample` dumps on this build (same root cause as the `NM_DICTIONARY`
+  finding). This part of the gap is now more open, not less — the leading
+  candidate is eliminated, no replacement identified yet.
 - **Single-run comparisons are dangerously unreliable at this scale.** A
   2–3 rep with/without-agent comparison at N=150,000 classes gave estimates
   ranging 91–246 MB depending on which runs happened to be paired; 10 reps
@@ -166,10 +170,15 @@ one invented from scratch.
      across 5 same-condition reps) to attribute either way at a practical
      rep count — would need many more reps to resolve, or a less noisy
      measurement approach.
-   - Size `MethodMap`/`MethodInfo` directly and correlate against distinct
+   - ~~Size `MethodMap`/`MethodInfo` directly and correlate against distinct
      classes touched, to close (or at least narrow) the ~32–42 MB
-     unattributed gap. Treat this as a probable real coverage gap in PR
-     #669, worth a fix or a follow-up PR, not just documentation.
+     unattributed gap.~~ **Done, ruled out** — sizing instrumentation never
+     fired because `resolveMethod()`, its only inserter, is dead code for
+     these dumps (see below). The gap is still open; needs a different
+     candidate structure, one actually exercised by wall-clock sampling.
+     Still worth reporting the `resolveMethod`/`_class_map`/`_method_map`
+     dead-code finding upstream as a probable real gap in PR #669's
+     coverage independent of what explains this specific ~32–42 MB.
    - Get `NM_PERF` verified on a non-sandboxed host (root, relaxed
      `kptr_restrict`) — currently unverifiable by construction, not by
      absence of effort.
@@ -232,9 +241,11 @@ one invented from scratch.
    whether it can be lazier or bounded instead of eager-per-`ClassPrepare`
    (though the source comment already explains why it's eager: AGCT's
    signal-handler constraints, so any change here needs care, not just
-   "make it lazy") — plus `MethodMap`/`MethodInfo` sizing/lifecycle and
-   calltrace/dictionary initial-capacity tuning, both still unconfirmed. No
-   CPU/latency candidates exist yet — they're a product of item 2's
+   "make it lazy") — plus calltrace/dictionary initial-capacity tuning for
+   high-diversity workloads, still unconfirmed. (`MethodMap`/`MethodInfo`
+   sizing/lifecycle was investigated and ruled out as a fix target here —
+   it's not populated in the workload tested, so there's nothing to tune.)
+   No CPU/latency candidates exist yet — they're a product of item 2's
    investigation, not knowable in advance. Output: a ranked backlog (effort
    vs. expected impact) feeding Phase 4.
 
@@ -366,9 +377,12 @@ latency), currently at different stages for each:**
    one.
 3. Attribute the delta to a mechanism where practical (NMT category
    breakdown, source instrumentation) — this is where effort is hardest to
-   predict in advance; the memory investigation's attribution work (jmethodID
-   preloading, the `MethodMap` gap) took real digging and isn't fully closed
-   out even now.
+   predict in advance; the memory investigation's attribution work
+   (jmethodID preloading confirmed, `MethodMap` sized and ruled out) took
+   real digging across two separate toggle/instrumentation tests and still
+   hasn't landed on the actual explanation for the ~32–42 MB gap — ruling
+   out a leading candidate is real progress, but isn't the same as closing
+   the question.
 4. Only *then* decide which validated dimensions become permanent
    archetypes/benchmarks, and build/extend the actual measurement mechanism
    (dd-trace-doe archetype changes, or a repo-local benchmark) — this is
@@ -423,10 +437,14 @@ breakdown illustrates — the biggest memory lever might not be
 1. Get access to the dd-trace-doe run(s)/config that produced the reported
    150–250 MB figure (Phase 1.3, first task — everything else in
    reconciliation depends on knowing what was actually measured).
-2. ~~Toggle-test the jmethodID-preloading hypothesis (Phase 1.1)~~ **Done**
-   — confirmed. Next up from the same list: size `MethodMap`/`MethodInfo`
-   to chase the still-unattributed ~32–42 MB, or resolve "Java Heap" with a
-   much larger rep count.
+2. ~~Toggle-test the jmethodID-preloading hypothesis~~ / ~~Size
+   `MethodMap`/`MethodInfo`~~ **Both done** (Phase 1.1) — preloading
+   confirmed as a real driver; `MethodMap` sized and ruled out (it's
+   unpopulated for this workload, same root cause as the `resolveMethod`
+   dead-code finding under `NM_DICTIONARY`). Next up from the same list:
+   find a replacement candidate for the ~32–42 MB gap — one actually
+   reachable from wall-clock sampling — or resolve "Java Heap" with a much
+   larger rep count.
 3. Kick off Phase 1.2 for CPU and latency: pick 1–2 of the candidate
    hypotheses above, build the smallest synthetic microbenchmark that
    isolates one, and get a first with/without-agent number — the goal at

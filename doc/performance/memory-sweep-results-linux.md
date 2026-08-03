@@ -72,11 +72,13 @@ two platforms are called out inline where they matter.
    noise when preloading is disabled) — "Java Heap" remains unexplained,
    its own measurement too noisy at practical rep counts to attribute
    either way. The remaining ~32–42 MB is invisible to both NMT and this
-   profiler's own `NM_*`
-   counters — a probable real gap in PR #669's coverage (leading suspect:
-   `MethodMap`/`MethodInfo`, already known to be uninstrumented), not just
-   an unexplained number. See the dedicated section below for the full
-   breakdown and what's confirmed vs. inferred.
+   profiler's own `NM_*` counters — a probable real gap in PR #669's
+   coverage. `MethodMap`/`MethodInfo` was the leading suspect but has now
+   been *ruled out* by direct instrumentation (it holds essentially zero
+   entries in these runs, for the same reason `NM_DICTIONARY`'s wall-clock
+   path is dead — see below), narrowing rather than closing the question.
+   See the dedicated section below for the full breakdown and what's
+   confirmed vs. inferred.
 
 ## Harness
 
@@ -598,19 +600,32 @@ cannot see. Of that, only 15–25 MB is explained by the profiler's own
 roughly 32–42 MB that neither NMT nor the profiler's own `NM_*`
 self-accounting explains at all** — real memory this agent is genuinely
 allocating (RSS shows it), that PR #669's `NativeMem` categories don't
-attribute to anything. The most likely candidate, based on source already
-read during this investigation: `MethodMap`/`MethodInfo`
-(`flightRecorder.h`) — the profiler's own per-distinct-method hash map used
-to symbolize samples — which memory-usage-model.md and this document's own
-`NM_DICTIONARY` investigation both already established has **zero**
-`NativeMem::record` calls anywhere in it. At ~87,000 distinct classes
-touched at N=150,000, this structure would scale in exactly the right shape
-to explain a meaningful share of the gap, but this is inferred from what's
-known to be uninstrumented, not confirmed by sizing or measuring
-`MethodInfo` directly. **This reads as a real gap in PR #669's coverage,
-not just an unexplained number** — worth reporting/fixing upstream, and
-worth chasing down with the same kind of targeted source instrumentation
-used for the `NM_DICTIONARY` finding earlier in this document.
+attribute to anything.
+
+**`MethodMap`/`MethodInfo` was the leading candidate for this gap and has
+now been ruled out, not confirmed.** A temporary instrumentation pass
+(`flightRecorder.cpp:605`, reverted after this check) added a
+`NativeMem::record(NM_MISC, ...)` call at the exact point where a genuinely
+new `MethodMap` node gets inserted (`mi->_key == 0`, i.e. first-time-seen),
+sized at `sizeof(pair<key, MethodInfo>)` plus a documented ~32-byte
+libstdc++ red-black-tree node overhead — reusing the otherwise-unused
+`NM_MISC` category so no new extraction tooling was needed. Rerunning
+`classes 150000` with this in place: **`NM_MISC` read exactly 0** — every
+other `NM_*` value was bit-for-bit identical to a pre-instrumentation run,
+ruling out a stale binary. The instrumentation never fired because
+`Lookup::resolveMethod()` — the *only* function that inserts into
+`_method_map`, and the same function already confirmed (in the
+`NM_DICTIONARY` section above) to never be called at all for
+`MethodSample`-producing wall-clock dumps on this build — is dead code
+here. `MethodMap` isn't merely uninstrumented in these runs; it holds
+essentially zero entries, so it cannot be the source of tens of MB of
+untracked memory. **The ~32–42 MB gap is still fully open** — this result
+narrows the search by eliminating the leading suspect rather than closing
+the question, and reinforces that the `resolveMethod` dead-code finding has
+wider consequences than just `NM_DICTIONARY`: anything else this profiler
+symbolizes exclusively through that same function is equally suspect as
+"probably not actually happening in this configuration," not just
+"unmeasured."
 
 **Practical takeaway for quantifying this to a customer**: "flat, a few MB"
 is only correct for workloads with narrow call-graph/class diversity
@@ -712,14 +727,18 @@ now confirmed empirically:
   counters explain it) reads as a real gap in PR #669's `NativeMem`
   coverage, not just an unexplained number** — this is genuine RSS the agent
   is allocating that isn't attributed to any of the 9 tracked categories.
-  `MethodMap`/`MethodInfo` is the leading candidate (already confirmed
-  elsewhere in this document to have zero `NativeMem::record` calls), but
-  this is inferred, not measured. **Follow-up worth doing**: size
-  `MethodInfo` directly and correlate its count against distinct classes
-  touched, and audit for other uncounted profiler-owned structures the same
-  way — this is worth reporting upstream as a probable instrumentation gap
-  in `NativeMem`'s coverage, independent of whether `MethodMap` turns out to
-  be the specific explanation.
+  `MethodMap`/`MethodInfo` was sized directly (a temporary
+  `NativeMem::record` call at the new-node insertion point, reusing
+  `NM_MISC`) and **ruled out**: it never fired, because `resolveMethod()`
+  (the only inserter) is dead code for these dumps — the map holds
+  essentially zero entries, not tens of thousands. **Follow-up worth
+  doing**: find a different candidate structure — something the profiler
+  allocates through a path that *is* actually exercised in wall-clock
+  sampling, unlike `MethodMap`/`_class_map`, both now confirmed dead ends
+  for this specific workload/engine combination. Auditing other
+  profiler-owned structures for missing `NativeMem::record` coverage is
+  still worth doing and worth reporting upstream independent of which
+  structure turns out to explain this specific gap.
 - **Coverage (classes actually touched by a sample) fell from 93.6% at
   N=2,000 to 56.4% at N=150,000 for the same relative duration/interval
   scaling used across this sweep.** The per-touched-class normalization is
