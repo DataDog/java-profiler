@@ -1,5 +1,3 @@
-# Copyright 2026, Datadog, Inc
-
 name: Validated Release
 run-name: "${{ inputs.dry_run && 'Dry-run for ' || 'Perform ' }}${{ inputs.release_type }} release of ${{ github.ref_name }} branch [${{ inputs.request_id || 'manual' }}]"
 

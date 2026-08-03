@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 
-# Copyright 2026, Datadog, Inc
-
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)

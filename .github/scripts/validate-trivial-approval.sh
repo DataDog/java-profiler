@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 
-# Copyright 2026, Datadog, Inc
-
 set -euo pipefail
 
 REPO="DataDog/java-profiler"
