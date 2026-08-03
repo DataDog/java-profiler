@@ -23,16 +23,23 @@ two platforms are called out inline where they matter.
    diversity (`traces` mode) and via class diversity under wall-clock
    sampling (`classes` mode), which produces distinct call-trace shapes as a
    side effect of sampling different callees.
-3. **The class-name dictionary's write-time symbolication path is confirmed,
-   via direct source instrumentation, to never run at all for wall-clock
-   `MethodSample` stacks on this build** — not a threshold that needed more
-   scale, not the dictionary being oversized, but the specific function
-   (`Lookup::resolveMethod`) that would insert a class name never being
-   invoked, despite thousands of real, distinct sampled classes appearing in
-   the same JFR file's rendered output. Allocation sampling *does* move the
-   same counter, at a much smaller N (2,000) — almost certainly through a
-   different, untraced call site, since the wall-clock path is confirmed
-   dead on arrival rather than merely slow to trigger.
+3. **CORRECTED (see below): `NM_DICTIONARY`'s "flat" reading under wall-clock
+   sampling throughout this document was a measurement artifact, not a real
+   finding.** An earlier version of this document claimed
+   `Lookup::resolveMethod` — the function that inserts class names during
+   `writeStackTraces` — was dead code for wall-clock dumps on this build.
+   That was wrong. It's confirmed (GDB breakpoint, an independent
+   allocation-tracking tool, and the profiler's own source comment at
+   `flightRecorder.cpp:819–826`) that this function **does** run, but the
+   `NM_*` counters are snapshotted into the JFR chunk *before*
+   `writeCpool()`/`writeStackTraces()` executes — so growth from a chunk's
+   own dump-time symbolication is, by design, only visible in a *subsequent*
+   chunk's reading. Every measurement in this document used single-chunk
+   runs, which structurally cannot observe this. A two-chunk test (forcing
+   an intermediate dump mid-run) confirms real, substantial growth: the
+   final chunk's `NM_DICTIONARY` read ~143 MiB, up from the ~4.55 MiB
+   baseline the intermediate chunk showed. This is almost certainly a major
+   piece of what was previously reported as an "unattributed ~32–42 MB gap."
 4. **The CPU-sampling engine (`cpu=`) works on Linux** (it doesn't
    initialize on this project's current macOS build) and produces real
    samples, but its associated `NM_PERF` counter requires a kernel-symbol
@@ -71,14 +78,15 @@ two platforms are called out inline where they matter.
    NMT-visible share (Class/Internal/NMT's-own-overhead all collapse to
    noise when preloading is disabled) — "Java Heap" remains unexplained,
    its own measurement too noisy at practical rep counts to attribute
-   either way. The remaining ~32–42 MB is invisible to both NMT and this
-   profiler's own `NM_*` counters — a probable real gap in PR #669's
-   coverage. `MethodMap`/`MethodInfo` was the leading suspect but has now
-   been *ruled out* by direct instrumentation (it holds essentially zero
-   entries in these runs, for the same reason `NM_DICTIONARY`'s wall-clock
-   path is dead — see below), narrowing rather than closing the question.
-   See the dedicated section below for the full breakdown and what's
-   confirmed vs. inferred.
+   either way. The remaining ~32–42 MB was, in an earlier version of this
+   document, reported as invisible to both NMT and this profiler's own
+   `NM_*` counters, with `MethodMap`/`MethodInfo` "ruled out" as a
+   candidate. **Both of those conclusions rested on the same wrong premise
+   (see point 3) and are superseded**: `NM_DICTIONARY` (and very likely
+   `MethodMap`, which is populated by the same code path) genuinely does
+   grow from wall-clock sampling — the counter just couldn't show it in a
+   single-chunk run. This gap is now most plausibly explained, not
+   unexplained. See the dedicated section below for the full account.
 
 ## Harness
 
@@ -245,48 +253,71 @@ each class's method appears as a distinct callee frame, so N distinct
 classes produce (up to) N distinct call-trace shapes even though the call
 *site* invoking them is the same one line of harness code each time.
 
-**`NM_DICTIONARY` does not move at all, even at 150,000 distinct classes
-over 180 seconds** — an order of magnitude past the theoretical ~35–40K
-names needed to fill one 512 KB `StringArena` chunk
-(`stringDictionary.h:67`), and well past the point where the same run's
-`NM_CALLTRACE` counter demonstrably crossed its own threshold, which rules
-out "not enough samples reached the workload" as an explanation. This is not
-a threshold that needed more scale to cross, and not the dictionary being
-oversized for the workload either — it's confirmed, via direct source
-instrumentation, that **the code path that would insert real class names
-here is never invoked at all for wall-clock-sampled stacks on this build.**
+**`NM_DICTIONARY` does not move at all in any single-chunk reading, even at
+150,000 distinct classes over 180 seconds — but this is a measurement
+artifact, not real profiler behavior, and the growth it's not showing is
+large.**
 
-`Profiler` owns three `StringDictionary` instances that all feed the same
-`NM_DICTIONARY` category (`profiler.h`: `_class_map`, `_string_label_map`,
-`_context_value_map`) — the baseline ~4.55 MiB is these three, each
-triple-buffered (3 internal buffers × one 512 KB initial chunk ≈ 1.5 MiB
-each). The only path that inserts a real Java class name into `_class_map`
-for a sampled stack frame is `Recording::writeStackTraces()` →
+An earlier version of this document concluded the opposite: that the code
+path inserting class names (`Recording::writeStackTraces()` →
 `Lookup::resolveMethod()` → `Lookup::fillJavaMethodInfo()` →
-`_classes->lookupDuringDump()` (`flightRecorder.cpp`). A temporary log line
-placed at the top of `resolveMethod()` (reverted after this check; not part
-of the harness) fired **zero times** across a `classes 5000` run that
-produced 14,565 real `datadog.MethodSample` events referencing thousands of
-distinct sampled classes — confirmed with both `cstack=fp` (used throughout
-this document) and `cstack=vm`. Since `resolveMethod()` is the only caller
-of `fillJavaMethodInfo()`, and its own two call sites are the only ones
-inside `writeStackTraces()`, this means the write-time symbolication pass
-that would grow `_class_map` never runs for these `MethodSample`-producing
-dumps at all — not "runs but hits a small threshold," not "runs but the
-names get deduplicated," but genuinely never entered.
+`_classes->lookupDuringDump()`, `flightRecorder.cpp`) was dead code for
+wall-clock `MethodSample` dumps on this build, based on a temporary log line
+at the top of `resolveMethod()` that fired zero times. That conclusion was
+wrong, uncovered while investigating a related question (sizing `MethodMap`,
+see below) and confirmed three independent ways:
 
-This leaves an open question this investigation didn't chase down further:
-`jfr print` still renders ~87,000 distinct `GenClassN` class names correctly
-from the same JFR file's `MethodSample` stacks (confirmed by grepping the
-printed output), so *some* mechanism is producing readable class names for
-these events — it just isn't `_class_map`/`NM_DICTIONARY`. The most likely
-explanation is that `MethodSample` stack frames are resolved and embedded
-through a different, non-`resolveMethod` path at sample or encode time
-rather than at dump time, but this wasn't traced further. Practically: **on
-this build, do not expect `NM_DICTIONARY` to reflect class/method diversity
-seen through wall-clock sampling's `MethodSample` events, regardless of
-scale** — the next section shows a sampling engine where the dictionary
-*does* respond as expected.
+1. **A GDB breakpoint on `Lookup::resolveMethod`** hit immediately on the
+   very same kind of run that supposedly showed zero calls, with a full,
+   sensible backtrace: `Recording::~Recording()` → `finishChunk()` →
+   `writeCpool()` → `writeStackTraces()` → `Profiler::processCallTraces()` →
+   `CallTraceStorage::processTraces()` → the `writeStackTraces` lambda →
+   `Lookup::resolveMethod`.
+2. **An independent LD_PRELOAD allocation-tracking tool** (built specifically
+   for this investigation, see the RSS-reconciliation section below) showed
+   real, substantial live memory attributed to exactly this call chain,
+   ending in `StringDictionaryBuffer::insert_with_id` — the arena-allocating
+   function that actually grows the dictionary.
+3. **The profiler's own source comment explains why**, right above the code
+   that snapshots `NM_*` counters into the JFR chunk (`flightRecorder.cpp:819–826`):
+
+   > this will not report correct counts for any counters updated during
+   > writing the constant pool... Some counters we verify to balance (e.g.
+   > the anonymous dictionaries) will be reported as positive, others (e.g.
+   > **the classes dictionary**) will reflect the previous serialization.
+
+   `updateNativeMemStats()` / `writeCounters()` / `writeNativeMem()` run
+   *before* `writeCpool()` (which calls `writeStackTraces` →
+   `resolveMethod`) within `finishChunk()`. Growth from a chunk's own
+   dump-time class-name insertions is written into the chunk, but the
+   counter snapshot describing that growth was already taken and written
+   moments earlier — it shows up only in a *subsequent* chunk's counter
+   reading. **Every measurement in this document, and the entire premise of
+   reading "the last `ProfilerCounter` event in a short single-chunk run,"
+   is structurally blind to this** — not because of scale, sample count, or
+   an instrumentation gap, but because a single-chunk run has no subsequent
+   chunk to reveal it in.
+
+**A two-chunk test confirms real, large growth.** Forcing an intermediate
+`profiler.dump()` partway through a `classes 150000` run (splitting the
+180s workload in half, one dedicated test program not part of the
+harness), then reading the *final* chunk (written normally at process
+exit): the intermediate chunk's own `NM_DICTIONARY` reading was the usual
+flat baseline (4,774,032 B), but **the final chunk read 149,876,928 B
+(~143 MiB)** — reflecting the intermediate dump's real class-name
+insertions, one chunk late. This single data point shouldn't be read as an
+exact, generally-applicable number (it comes from a deliberately
+constructed two-chunk scenario, not the standard single-run methodology
+used elsewhere in this document), but the direction and order of magnitude
+are unambiguous: **wall-clock sampling's class-name dictionary growth is
+real, and substantial — comparable to or larger than `NM_CALLTRACE`'s own
+growth — not zero.** The next section's `allocs`-vs-`classes` comparison
+remains a valid, separate finding (allocation sampling's dictionary
+insertion is visible *immediately*, within the same chunk, while
+wall-clock's is real but deferred by one chunk) — only the explanation for
+*why* wall-clock's didn't show up immediately has changed, from "dead code"
+to "correctly deferred, and this document's methodology never looked at a
+second chunk."
 
 ## Results: allocation diversity (`allocs`)
 
@@ -300,20 +331,23 @@ wall-clock sampling. The `allocs` mode fills that gap:
 | 2,000 | 15s / `memory=512:a` | 717 MiB | 24.5 MiB (baseline) | **6.04 MiB** | 1,115 / 2,000 |
 | 20,000 | 60s / `memory=256:a` | 680 MiB | 24.5 MiB (baseline) | 6.03 MiB | — |
 
-**Allocation sampling moves `NM_DICTIONARY` at 2,000 distinct shapes** —
-smaller than the 150,000-class run above that never moved it at all under
-wall-clock sampling — confirmed with a same-machine, same-N, same-duration
-A/B against `classes` mode (4.55 MiB flat there vs. 6.04 MiB here). Given the
-previous section's finding that wall-clock's dump-time symbolication path
-into `_class_map` is never invoked at all on this build, the simplest
-consistent explanation is that allocation sampling's `ObjectSample` path
-interns the sampled object's class through a different call site entirely —
-most likely inserted at *sample* time (when an allocation is caught) rather
-than at *dump* time (when `MethodSample` stacks are symbolized) — which
-would make it structurally independent of the gap found above rather than
-merely "less affected by it." This wasn't traced to a specific call site the
-way the wall-clock gap was; it's inferred from the two engines' otherwise
-inexplicable difference in outcome on the identical `NM_DICTIONARY` counter.
+**Allocation sampling moves `NM_DICTIONARY` at 2,000 distinct shapes, and —
+unlike wall-clock sampling — shows it in the *same* chunk it happened in.**
+Confirmed with a same-machine, same-N, same-duration A/B against `classes`
+mode (4.55 MiB flat there vs. 6.04 MiB here). Given the previous section's
+finding, this isn't "allocation sampling grows the dictionary and wall-clock
+sampling doesn't" — wall-clock sampling grows it too, substantially, per the
+two-chunk test above. The real, narrower difference is *when* the growth
+becomes externally visible: allocation sampling's `ObjectSample` path
+apparently interns the sampled object's class at *sample* time (immediately
+reflected in that same chunk's counter reading), while wall-clock's
+`MethodSample` symbolication happens at *dump* time, one chunk later,
+inside `writeCpool()`, after the counter snapshot for that chunk was
+already taken. This wasn't traced to allocation sampling's specific
+insertion call site to confirm the "sample time" half of that explanation
+directly — it's inferred from the timing behavior being the opposite of
+wall-clock's confirmed mechanism, not independently verified the way the
+wall-clock side now is.
 
 Growth here also matches the step-function model from the `traces` sweep:
 the 2,000-shape and 20,000-shape runs land at essentially the same value
@@ -596,36 +630,101 @@ other candidate mechanism to test yet.
 **The remaining ~57 MB (56% of the delta) is invisible to NMT entirely** —
 this is the profiler's own `malloc`/`new` memory, which NMT structurally
 cannot see. Of that, only 15–25 MB is explained by the profiler's own
-`NM_CALLTRACE` counter (the confirmed hash-table resize). **That leaves
+`NM_CALLTRACE` counter (the confirmed hash-table resize). **That left
 roughly 32–42 MB that neither NMT nor the profiler's own `NM_*`
-self-accounting explains at all** — real memory this agent is genuinely
-allocating (RSS shows it), that PR #669's `NativeMem` categories don't
-attribute to anything.
+self-accounting explained at the time** — real memory this agent is
+genuinely allocating (RSS shows it), that PR #669's `NativeMem` categories
+didn't attribute to anything.
 
-**`MethodMap`/`MethodInfo` was the leading candidate for this gap and has
-now been ruled out, not confirmed.** A temporary instrumentation pass
+**Sizing `MethodMap`/`MethodInfo` to test it as a candidate for this gap is
+what uncovered the `resolveMethod` measurement artifact described in the
+`NM_DICTIONARY` section above — the original "ruled out" conclusion from
+that attempt does not hold.** A temporary instrumentation pass
 (`flightRecorder.cpp:605`, reverted after this check) added a
-`NativeMem::record(NM_MISC, ...)` call at the exact point where a genuinely
-new `MethodMap` node gets inserted (`mi->_key == 0`, i.e. first-time-seen),
-sized at `sizeof(pair<key, MethodInfo>)` plus a documented ~32-byte
-libstdc++ red-black-tree node overhead — reusing the otherwise-unused
-`NM_MISC` category so no new extraction tooling was needed. Rerunning
-`classes 150000` with this in place: **`NM_MISC` read exactly 0** — every
-other `NM_*` value was bit-for-bit identical to a pre-instrumentation run,
-ruling out a stale binary. The instrumentation never fired because
-`Lookup::resolveMethod()` — the *only* function that inserts into
-`_method_map`, and the same function already confirmed (in the
-`NM_DICTIONARY` section above) to never be called at all for
-`MethodSample`-producing wall-clock dumps on this build — is dead code
-here. `MethodMap` isn't merely uninstrumented in these runs; it holds
-essentially zero entries, so it cannot be the source of tens of MB of
-untracked memory. **The ~32–42 MB gap is still fully open** — this result
-narrows the search by eliminating the leading suspect rather than closing
-the question, and reinforces that the `resolveMethod` dead-code finding has
-wider consequences than just `NM_DICTIONARY`: anything else this profiler
-symbolizes exclusively through that same function is equally suspect as
-"probably not actually happening in this configuration," not just
-"unmeasured."
+`NativeMem::record(NM_MISC, ...)` call at the point where a genuinely new
+`MethodMap` node gets inserted, reusing the otherwise-unused `NM_MISC`
+category. It read exactly 0 in a single-chunk run — but per the correction
+above, `NM_MISC` here is subject to the *exact same* "counters are
+snapshotted before `writeCpool()`" ordering as `NM_DICTIONARY`, since
+`MethodMap` insertion (`mi->_key = _method_map->allocId()`) happens one
+line before the `_class_map` insertion, inside the *same*
+`Lookup::resolveMethod()` call that's now confirmed (GDB, the allocation
+shim, source comment) to run during `writeCpool()`. **This result is
+inconclusive, not a ruling-out** — `MethodMap` is reopened as a candidate,
+not eliminated, and given it's populated by the identical call path now
+confirmed to insert real class names, it plausibly *does* grow alongside
+`_class_map`.
+
+**The ~32–42 MB gap now has a well-evidenced leading explanation instead of
+none: real `NM_DICTIONARY` (and likely `MethodMap`) growth that the
+counters simply couldn't show.** This isn't a precise attribution — the
+only direct *magnitude* measurement available (the two-chunk test above,
+~143 MiB) came from a deliberately constructed scenario, not the standard
+single-run methodology used to derive the 32–42 MB figure itself, so the
+two numbers aren't directly comparable one-to-one. But qualitatively, the
+gap stopped being "unexplained by anything we've measured" and became
+"real memory whose growth mechanism is confirmed, in a structure whose
+*current* magnitude under standard single-run conditions hasn't been
+independently pinned down yet." An LD_PRELOAD-based allocation-tracking
+tool built for this investigation (below) independently corroborates that
+`StringDictionaryBuffer::insert_with_id` — the function that actually
+performs this growth — accounts for a large, multi-ten-MB share of the
+profiler's total tracked allocations in a `classes 150000` run.
+
+### Ruling out OS-level causes, and an independent allocation-tracking tool
+
+Before chasing `MethodMap` further, it's worth checking a different kind of
+explanation entirely: is the ~32–42 MB gap even the *profiler's* memory, or
+could it be an OS-level side effect of profiling (page cache from writing
+the JFR file, some other kernel-level artifact)? `ps`-based RSS lumps all of
+this together, so it can't distinguish them on its own.
+
+**`/proc/<pid>/smaps_rollup` rules this out.** For a with-agent `classes
+150000` run (RSS ≈ 1.96 GB), `Private_Dirty` = 1,936,752 KB and `Anonymous`
+= 1,936,724 KB against a total `Rss` of 1,963,280 KB — **98.6% of RSS is
+private, dirty, anonymous memory**, the standard signature of heap
+allocation. Only ~14 MB is file-backed (`Pss_File`, almost certainly shared
+library code/data, not something that scales with class diversity), and
+`/proc/<pid>/maps` shows no mmap of the JFR output file at all (it's written
+via plain `write()`, so any file-cache effect would land in system-wide page
+cache, not this process's RSS). Whatever the gap is, it's genuine private
+heap memory sitting in the process — OS-level caching effects are not a
+plausible explanation.
+
+**A purpose-built LD_PRELOAD allocation-tracking tool** was written to
+attribute live heap bytes to call sites inside `libjavaProfiler.so`
+specifically, since this profiler's own interception machinery
+(`mallocTracer.cpp` + `libraryPatcher_linux.cpp`, backing the `nativemem=`
+engine) deliberately excludes its own library from GOT/PLT patching to
+avoid self-recursion (`libraryPatcher_linux.cpp:425`, `// Don't patch
+self`) — it wasn't built for, and can't answer, "how much does the profiler
+allocate." The standalone tool intercepts `malloc`/`calloc`/`realloc`/`free`
+via `dlsym(RTLD_NEXT, ...)`, captures a short `backtrace()` per allocation,
+attributes it to the profiler's library if any captured frame falls within
+its mapped address range (found via `/proc/self/maps`), and tracks live
+bytes per call site in fixed-size, statically-allocated tables (avoiding
+any risk of the tracking code itself recursively calling the hooked
+allocators). Validated incrementally (a trivial program, then a plain JVM,
+then the profiler-attached JVM on a short workload) before running the full
+`classes 150000` workload, which completed without incident.
+
+The tool reported **~189 MB total live bytes attributed to profiler call
+sites** for a `classes 150000` run — this is an *absolute* total (including
+the profiler's full baseline footprint, most of which is already covered by
+existing `NM_*` categories), not a with/without-agent delta, so it isn't
+directly comparable to the ~32–42 MB gap figure without further work to
+separate baseline from workload-driven growth; treat it as corroborating
+signal, not a precise number. Resolving its top call sites via `addr2line`
+against this build's debug symbols showed the two largest (**~78.6 MB
+each**) both resolving to the exact chain confirmed above:
+`CallTraceStorage::processTraces` → `writeStackTraces` → `resolveMethod` →
+`fillJavaMethodInfo` → `StringDictionary::lookupDuringDump` →
+`StringDictionaryBuffer::insert_with_id`. This is independent confirmation,
+via a completely different method (live instruction-pointer attribution
+rather than either source instrumentation or a debugger), that this
+specific code path is both real and allocation-heavy — consistent with,
+though not a precise cross-check against, the two-chunk test's ~143 MiB
+`NM_DICTIONARY` reading.
 
 **Practical takeaway for quantifying this to a customer**: "flat, a few MB"
 is only correct for workloads with narrow call-graph/class diversity
@@ -656,13 +755,18 @@ now confirmed empirically:
    many distinct methods at one call site or many distinct classes sampled
    via reflection. **But this internal step function is only a small part of
    the externally-visible RSS cost** — see point 5.
-3. **Class/method-name diversity's effect on memory depends on which
-   sampling engine is driving it** — wall-clock sampling does not grow the
-   class-name dictionary in any tested configuration up to 150,000 classes;
-   allocation sampling does, at a much smaller 2,000-class scale. Workloads
-   profiled primarily with wall-clock sampling should not expect
-   `NM_DICTIONARY` to reflect their class-loading diversity; workloads using
-   allocation profiling should.
+3. **Class/method-name diversity genuinely grows the class-name dictionary
+   under both sampling engines — but `NM_DICTIONARY` only shows it promptly
+   for one of them.** Allocation sampling's growth is visible in the same
+   chunk it happens in. Wall-clock sampling's growth is just as real (a
+   two-chunk test measured it directly, at a substantial ~143 MiB for
+   `classes 150000`) but is only ever visible in a *subsequent* chunk's
+   counter reading, by design (`flightRecorder.cpp:819–826`) — a
+   single-chunk profiling session (the common case for short-lived
+   diagnostic runs) will never see it in `NM_DICTIONARY` at all, regardless
+   of how much real memory it consumed. Don't read a flat `NM_DICTIONARY` in
+   a wall-clock-sampled, single-chunk session as "no class-name diversity
+   cost" — it may just mean the cost hasn't been reported yet.
 4. **Sampling frequency and allocation rate remain secondary** to the other
    points here for steady-state footprint, consistent with the original
    model's prediction — nothing in this pass found a counter-example.
@@ -699,11 +803,12 @@ now confirmed empirically:
   for wall-clock sampling.
 - **`nativemem=` (native malloc tracing) was only smoke-tested**, not
   characterized against a dedicated native-allocation-heavy workload.
-- **The mechanism that actually renders class names for wall-clock
-  `MethodSample` stacks was not identified** — only that it isn't
-  `_class_map`/`NM_DICTIONARY`'s `resolveMethod` path, which was confirmed
-  dead via direct instrumentation. The same gap means the `allocs` engine's
-  alternate insertion path is inferred, not traced to a specific call site.
+- **The `allocs` engine's insertion path for class names is inferred, not
+  traced to a specific call site** — the *wall-clock* path is now fully
+  identified and confirmed (`_class_map`/`resolveMethod`, see above); by
+  contrast, allocation sampling's "grows the dictionary in the same chunk"
+  behavior is only established by timing/outcome comparison against the
+  wall-clock case, not independently traced to its own source location.
 - **The thread-count with/without-agent overhead comparison is a single run
   per point on each side** (unlike the class-diversity one, which has 10) —
   some of the smaller deltas (e.g. the −75 KB NMT Thread delta at N=256) are
@@ -723,22 +828,23 @@ now confirmed empirically:
   **Follow-up worth doing**: repeat the "Java Heap" comparison with many
   more reps (or find a less noisy way to attribute it) before treating it
   as either confirmed or ruled out.
-- **The remaining ~32–42 MB (neither NMT nor the profiler's own `NM_*`
-  counters explain it) reads as a real gap in PR #669's `NativeMem`
-  coverage, not just an unexplained number** — this is genuine RSS the agent
-  is allocating that isn't attributed to any of the 9 tracked categories.
-  `MethodMap`/`MethodInfo` was sized directly (a temporary
-  `NativeMem::record` call at the new-node insertion point, reusing
-  `NM_MISC`) and **ruled out**: it never fired, because `resolveMethod()`
-  (the only inserter) is dead code for these dumps — the map holds
-  essentially zero entries, not tens of thousands. **Follow-up worth
-  doing**: find a different candidate structure — something the profiler
-  allocates through a path that *is* actually exercised in wall-clock
-  sampling, unlike `MethodMap`/`_class_map`, both now confirmed dead ends
-  for this specific workload/engine combination. Auditing other
-  profiler-owned structures for missing `NativeMem::record` coverage is
-  still worth doing and worth reporting upstream independent of which
-  structure turns out to explain this specific gap.
+- **The ~32–42 MB gap now has a strong, evidenced leading explanation
+  (`NM_DICTIONARY`/`MethodMap` growth hidden by the counter-snapshot-timing
+  artifact) but not a precise quantification under standard single-run
+  conditions.** The only direct magnitude measurement (~143 MiB) came from
+  a deliberately constructed two-chunk test, not the same methodology used
+  to derive the 32–42 MB figure — the two numbers are corroborating in
+  direction and order of magnitude, not a validated one-to-one match.
+  **Follow-up worth doing**: a same-methodology magnitude measurement (e.g.
+  reading `NM_DICTIONARY` from a *second* chunk in an otherwise-standard
+  run, rather than an artificially split one) would let the gap be closed
+  quantitatively rather than just qualitatively. Separately, this
+  investigation's own initial conclusion (`resolveMethod` dead, `MethodMap`
+  ruled out) turned out wrong — worth remembering when reading any other
+  "confirmed via source instrumentation" claim earlier in this document:
+  the specific mechanism found here (counters snapshotted before
+  dump-time-only code runs) could plausibly affect other counters this
+  investigation treated as settled.
 - **Coverage (classes actually touched by a sample) fell from 93.6% at
   N=2,000 to 56.4% at N=150,000 for the same relative duration/interval
   scaling used across this sweep.** The per-touched-class normalization is

@@ -72,13 +72,22 @@ tooling:
   way. Separately, the remaining ~56% is invisible to NMT entirely (the
   profiler's own `malloc`/`new`), and of *that*, only 15–25 MB is explained
   by `NM_CALLTRACE` — leaving ~32–42 MB attributable to neither NMT nor
-  `NM_*`. This reads as a real gap in PR #669's coverage. The leading
-  suspect, `MethodMap`/`MethodInfo`, was sized directly and **ruled out** —
-  it holds essentially zero entries in these runs, because its only
-  inserter (`resolveMethod()`) turns out to be dead code for wall-clock
-  `MethodSample` dumps on this build (same root cause as the `NM_DICTIONARY`
-  finding). This part of the gap is now more open, not less — the leading
-  candidate is eliminated, no replacement identified yet.
+  `NM_*`. **This gap now has a well-evidenced leading explanation.** An
+  attempt to size `MethodMap`/`MethodInfo` as a candidate initially read as
+  a ruling-out (it appeared to hold zero entries), but that was itself a
+  measurement artifact: `NM_*` counters are snapshotted into each JFR chunk
+  *before* the dump-time code that symbolizes wall-clock stacks runs
+  (`flightRecorder.cpp:819–826`, an intentional, documented profiler
+  design choice), so a single-chunk run can never see growth from that
+  chunk's own dump. Confirmed three independent ways (a GDB breakpoint, a
+  purpose-built allocation-tracking tool, and the profiler's own source
+  comment) that this code path — which also grows the class-name dictionary
+  — is real and allocation-heavy. A two-chunk test measuring across the
+  artifact directly found ~143 MiB of dictionary growth in a `classes
+  150000` run. That number isn't directly comparable to the 32–42 MB figure
+  (different methodology), but the qualitative conclusion is solid: this
+  gap is most plausibly `NM_DICTIONARY`/`MethodMap` growth PR #669 can't
+  see, not an unidentified mystery structure.
 - **Single-run comparisons are dangerously unreliable at this scale.** A
   2–3 rep with/without-agent comparison at N=150,000 classes gave estimates
   ranging 91–246 MB depending on which runs happened to be paired; 10 reps
@@ -172,13 +181,21 @@ one invented from scratch.
      measurement approach.
    - ~~Size `MethodMap`/`MethodInfo` directly and correlate against distinct
      classes touched, to close (or at least narrow) the ~32–42 MB
-     unattributed gap.~~ **Done, ruled out** — sizing instrumentation never
-     fired because `resolveMethod()`, its only inserter, is dead code for
-     these dumps (see below). The gap is still open; needs a different
-     candidate structure, one actually exercised by wall-clock sampling.
-     Still worth reporting the `resolveMethod`/`_class_map`/`_method_map`
-     dead-code finding upstream as a probable real gap in PR #669's
-     coverage independent of what explains this specific ~32–42 MB.
+     unattributed gap.~~ **Done — led to a bigger finding than the gap
+     itself.** The sizing instrumentation read zero, which initially looked
+     like "ruled out," but turned out to be the *same* counter-snapshot-
+     timing artifact affecting `NM_DICTIONARY` (counters are written before
+     the dump-time code that would grow either structure runs — an
+     intentional, documented design choice, `flightRecorder.cpp:819–826`,
+     not a bug). Confirmed via GDB breakpoint and an independent
+     allocation-tracking tool that this code path is real and
+     allocation-heavy; a two-chunk test measured ~143 MiB of dictionary
+     growth directly. `MethodMap`/`_class_map` are now the *leading*
+     explanation for the gap, not eliminated candidates. Worth reporting
+     the counter-snapshot-timing limitation upstream regardless — it's a
+     real, confirmed measurement blind spot in PR #669's design, even
+     though it isn't a coverage bug the way the earlier "dead code" framing
+     implied.
    - Get `NM_PERF` verified on a non-sandboxed host (root, relaxed
      `kptr_restrict`) — currently unverifiable by construction, not by
      absence of effort.
@@ -242,12 +259,13 @@ one invented from scratch.
    (though the source comment already explains why it's eager: AGCT's
    signal-handler constraints, so any change here needs care, not just
    "make it lazy") — plus calltrace/dictionary initial-capacity tuning for
-   high-diversity workloads, still unconfirmed. (`MethodMap`/`MethodInfo`
-   sizing/lifecycle was investigated and ruled out as a fix target here —
-   it's not populated in the workload tested, so there's nothing to tune.)
-   No CPU/latency candidates exist yet — they're a product of item 2's
-   investigation, not knowable in advance. Output: a ranked backlog (effort
-   vs. expected impact) feeding Phase 4.
+   high-diversity workloads, now a *stronger* candidate given the confirmed
+   (if not yet precisely quantified) `NM_DICTIONARY`/`MethodMap` growth, and
+   worth investigating alongside whatever fix path emerges for the
+   counter-snapshot-timing limitation itself. No CPU/latency candidates
+   exist yet — they're a product of item 2's investigation, not knowable in
+   advance. Output: a ranked backlog (effort vs. expected impact) feeding
+   Phase 4.
 
 ### Which use cases are good to measure overhead with?
 
@@ -377,12 +395,16 @@ latency), currently at different stages for each:**
    one.
 3. Attribute the delta to a mechanism where practical (NMT category
    breakdown, source instrumentation) — this is where effort is hardest to
-   predict in advance; the memory investigation's attribution work
-   (jmethodID preloading confirmed, `MethodMap` sized and ruled out) took
-   real digging across two separate toggle/instrumentation tests and still
-   hasn't landed on the actual explanation for the ~32–42 MB gap — ruling
-   out a leading candidate is real progress, but isn't the same as closing
-   the question.
+   predict in advance, and where a naive first answer can be wrong in a way
+   that only more digging reveals. The memory investigation's attribution
+   work found a real, confirmed driver for jmethodID preloading, but the
+   `MethodMap` sizing attempt *initially* looked like a clean ruling-out and
+   turned out instead to be a measurement artifact masking a large, real
+   effect (dump-time-only code running after that chunk's counters were
+   already snapshotted) — surfaced only by cross-checking with a debugger
+   and an independently-built tool when the result didn't sit right. Budget
+   for this kind of second-guessing, not just the first instrumentation
+   attempt.
 4. Only *then* decide which validated dimensions become permanent
    archetypes/benchmarks, and build/extend the actual measurement mechanism
    (dd-trace-doe archetype changes, or a repo-local benchmark) — this is
@@ -439,12 +461,18 @@ breakdown illustrates — the biggest memory lever might not be
    reconciliation depends on knowing what was actually measured).
 2. ~~Toggle-test the jmethodID-preloading hypothesis~~ / ~~Size
    `MethodMap`/`MethodInfo`~~ **Both done** (Phase 1.1) — preloading
-   confirmed as a real driver; `MethodMap` sized and ruled out (it's
-   unpopulated for this workload, same root cause as the `resolveMethod`
-   dead-code finding under `NM_DICTIONARY`). Next up from the same list:
-   find a replacement candidate for the ~32–42 MB gap — one actually
-   reachable from wall-clock sampling — or resolve "Java Heap" with a much
-   larger rep count.
+   confirmed as a real driver. The `MethodMap` sizing attempt uncovered
+   something bigger than planned: a counter-snapshot-timing artifact
+   (`flightRecorder.cpp:819–826`) meaning `NM_DICTIONARY`/`MethodMap`
+   growth from wall-clock sampling is real and substantial (confirmed via
+   GDB, an independent allocation-tracking tool, and a two-chunk test
+   showing ~143 MiB of growth) but invisible to every single-chunk
+   measurement in this document, including the original `NM_DICTIONARY`
+   "flat" finding. Next up from the same list: get a same-methodology
+   magnitude for this (a real second-chunk reading, not the artificially
+   split two-chunk test) to quantify how much of the ~32–42 MB gap it
+   actually accounts for, or resolve "Java Heap" with a much larger rep
+   count.
 3. Kick off Phase 1.2 for CPU and latency: pick 1–2 of the candidate
    hypotheses above, build the smallest synthetic microbenchmark that
    isolates one, and get a first with/without-agent number — the goal at
