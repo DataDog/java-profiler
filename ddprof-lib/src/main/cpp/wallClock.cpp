@@ -51,9 +51,9 @@ static inline bool hasKnownActiveTraceContext(ProfiledThread* thread) {
   }
 
   OtelThreadContextRecord* record = thread->getOtelContextRecord();
-  // record->valid is not a context-presence bit. ThreadContext leaves cleared
+  // record->valid is not a context-presence bit. clearTraceContext0 leaves cleared
   // records invalid indefinitely, so gating on valid=1 disables wallprecheck for
-  // the common no-context state after a Java ThreadLocal reset.
+  // the common no-context state after deactivation.
   return loadSpanId(record) != 0;
 }
 

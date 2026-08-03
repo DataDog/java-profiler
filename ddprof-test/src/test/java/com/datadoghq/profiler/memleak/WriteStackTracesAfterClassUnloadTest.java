@@ -118,11 +118,7 @@ public class WriteStackTracesAfterClassUnloadTest extends AbstractDynamicClassTe
         assertTrue(Files.size(dumpFile) > 0,
             "Profiler produced no output — SIGSEGV during writeStackTraces is suspected");
       } finally {
-        try {
-          profiler.stop();
-        } finally {
-          profiler.resetThreadContext();
-        }
+        profiler.stop();
       }
 
     } finally {
