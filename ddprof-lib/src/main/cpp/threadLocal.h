@@ -86,6 +86,10 @@ public:
         return _key != INVALID_KEY;
     }
 
+    pthread_key_t key() const {
+        return _key;
+    }
+
     /**
      * set(nullptr) will result in the value being recreated when get() is called
      * when CREATE_FUNC is not nullptr.

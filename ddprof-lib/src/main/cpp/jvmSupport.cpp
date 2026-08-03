@@ -39,7 +39,7 @@ bool JVMSupport::initialize() {
         return false;
     }
 
-    if (JVMThread::supportPriming()) {
+    if (ProfiledThread::supportPriming()) {
         ThreadLocalDataPool::initialize();
     }
 

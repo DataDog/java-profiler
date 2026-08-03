@@ -39,6 +39,10 @@ public:
 class ProfiledThread : public ThreadLocalData {
   friend class ThreadLocalDataPool;
 
+  // PTHREAD_KEY_2NDLEVEL_SIZE is an internal macro set to 32 in the GNU C Library (glibc) NPTL
+  // implementation. Slot indexes less than PTHREAD_KEY_2NDLEVEL_SIZE are pre-allocated.
+  static constexpr int PTHREAD_KEY_2NDLEVEL_SIZE = 32;
+
 public:
   enum ThreadType : u32 {
     TYPE_UNKNOWN = 0,
@@ -144,6 +148,8 @@ public:
   static bool isThreadKeyValid() {
     return _current_thread.isKeyValid();
   }
+
+  static bool supportPriming();
 
 #ifdef UNIT_TEST
   // Simulates the moment inside release() after pthread_setspecific(NULL) but
