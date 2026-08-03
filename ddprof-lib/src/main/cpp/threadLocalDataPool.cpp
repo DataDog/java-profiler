@@ -37,7 +37,9 @@ ProfiledThread* ThreadLocalDataPool::claim(int tid) {
     if (_threads == nullptr) {
         return nullptr;
     }
+
     uint16_t used = __atomic_fetch_add(&_used, 1, __ATOMIC_RELAXED);
+    if (used >= _capacity) {
         __atomic_fetch_add(&_used, -1, __ATOMIC_RELAXED);
         return nullptr;
     }
