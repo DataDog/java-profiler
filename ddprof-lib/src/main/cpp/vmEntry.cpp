@@ -506,6 +506,11 @@ bool VM::initShared(JavaVM* vm) {
 }
 
 bool VM::initLibrary(JavaVM *vm) {
+  MutexLocker init_locker(profiler_bridge_init_lock);
+  if (_profiler_bridge_initialized) {
+    return true;
+  }
+
   TEST_LOG("VM::initLibrary");
   if (!initShared(vm)) {
     return false;
