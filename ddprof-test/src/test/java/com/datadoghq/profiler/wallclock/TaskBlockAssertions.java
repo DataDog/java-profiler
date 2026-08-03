@@ -131,6 +131,17 @@ final class TaskBlockAssertions {
     }
   }
 
+  static boolean containsBlocker(IItemCollection events, long blocker) {
+    for (IItemIterable iterable : events) {
+      IMemberAccessor<IQuantity, IItem> accessor = BLOCKER.getAccessor(iterable.getType());
+      if (accessor == null) continue;
+      for (IItem item : iterable) {
+        if (accessor.getMember(item).longValue() == blocker) return true;
+      }
+    }
+    return false;
+  }
+
   static void assertNoAnchorFields(IItemCollection events) {
     for (IItemIterable iterable : events) {
       assertNull(ANCHOR_SAMPLE_ID.getAccessor(iterable.getType()));
