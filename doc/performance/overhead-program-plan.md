@@ -543,6 +543,26 @@ breakdown illustrates — the biggest memory lever might not be
    glibc allocator fragmentation/bookkeeping overhead, JVM-side memory that
    bypasses `os::malloc` (so is invisible to both NMT and this shim), or an
    NMT category that's undercounting rather than one that's silent.
+   ~~Check glibc fragmentation via `mallinfo2()`~~ / ~~Check NMT's `Code`
+   category for JIT code-cache growth~~ **Both done — both ruled out.** A
+   5-rep `mallinfo2()` comparison (first single-pair attempt was itself
+   inconsistent and correctly not trusted, matching the earlier RSS
+   single-pair lesson) found the agent produces *less* unaccounted glibc
+   overhead, not more (mean −15.7 MiB) — no fragmentation effect. It did
+   yield a durable new number: ~82.0 MiB (±3.2 MiB) of total
+   `malloc`-visible growth, an independent cross-check of the ~102 MB RSS
+   figure, leaving a smaller ~20 MB "RSS but not `malloc`-visible"
+   residual. `CodeCache` was the obvious candidate for that residual and is
+   also ruled out: NMT's `Code` category grows by an essentially identical
+   ~163 MB with and without the agent across all 10 existing sweep reps
+   (mean delta −0.6 MiB) — pure JIT-warmup, not an agent cost. **Three
+   hypotheses in a row (dictionary/`MethodMap`, direct allocation
+   attribution, and now fragmentation/code-cache) have all been ruled
+   out or shown to be already-explained**, suggesting the ~32–42 MB gap
+   may not be one single mechanism but several small contributors below
+   the resolution of any one check so far — a finer-grained NMT
+   malloc-vs-mmap breakdown per category (already reported by NMT, as seen
+   for `Code`) may be more productive than another single-hypothesis test.
 4. Kick off Phase 1.2 for CPU and latency: pick 1–2 of the candidate
    hypotheses above, build the smallest synthetic microbenchmark that
    isolates one, and get a first with/without-agent number — the goal at

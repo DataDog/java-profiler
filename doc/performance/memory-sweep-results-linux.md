@@ -152,6 +152,21 @@ two platforms are called out inline where they matter.
    the same bytes measured twice, not additive. See the dedicated section
    above for the full account. The gap remains open; this rules out
    "additional profiler-`.so`-attributed allocation" as its likely source.
+10. **Two more candidates for the ~32–42 MB gap ruled out: glibc allocator
+    fragmentation, and JIT code-cache growth.** A 5-rep `mallinfo2()`
+    comparison (steady-state timed, deliberately avoiding the earlier
+    shim's own large static tables) shows the "invisible to allocation
+    tracking" glibc overhead is consistently *smaller* with the agent
+    attached, not larger (mean −15.7 MiB, tight across reps) — ruling out
+    fragmentation. It did surface a clean, independent number though: total
+    `malloc`-visible growth of ~82.0 MiB (±3.2 MiB), about 20 MB less than
+    the established ~102 MB RSS delta. The obvious candidate for that 20 MB
+    — HotSpot's `CodeCache`, `mmap`'d outside glibc's arenas entirely — is
+    also ruled out: NMT's `Code` category grows by an essentially identical
+    ~163 MB with and without the agent across all 10 existing sweep reps
+    (mean delta −0.6 MiB), confirming it's workload-driven JIT warmup, not
+    an agent cost. See the dedicated section above. The gap, and the
+    smaller ~20 MB `malloc`-vs-RSS residual, both remain open.
 
 ## Harness
 
@@ -918,6 +933,62 @@ JVM-side memory that doesn't route through `os::malloc`, or memory that's
 NMT-tracked but was miscategorized/undercounted in the original NMT
 category breakdown. The gap remains open.
 
+### Checking glibc-level fragmentation and JIT code-cache growth
+
+With profiler-`.so`-attributed allocation ruled out, two structurally
+different candidates were checked next: memory glibc's allocator holds but
+that no allocation-level tool (ours or NMT's) would ever attribute to a
+specific structure, and memory the JVM manages entirely outside `malloc`.
+
+**glibc allocator fragmentation/bookkeeping, via `mallinfo2()`.** A second,
+minimal LD_PRELOAD probe (no malloc interception, no static tables — just
+a background thread calling `mallinfo2()` at the same steady-state instant
+`run_repeated_sweep.sh` samples RSS at, plus one at exit) was built
+specifically to avoid the previous shim's own ~512 MB static table
+potentially perturbing the very fragmentation signal being measured. A
+first with/without pair was inconsistent (`hblkhd`, the mmap'd-large-block
+figure, moved the *wrong* direction) — recognized immediately as the same
+single-pair-unreliability trap this investigation already hit once at this
+N, rather than trusted. Five reps each of with/without gave a materially
+tighter picture (mallinfo2's own accounting is deterministic, unlike RSS,
+which is subject to OS-level noise):
+
+| Metric | Mean delta (with − without) | Stdev |
+|---|---|---|
+| `uordblks` (malloc's own "bytes in use") | +82.0 MiB | ±3.2 MiB |
+| `hblkhd` (mmap'd large-block memory) | −28.6 MiB | ±1.5 MiB |
+| `(arena+hblkhd) − uordblks` ("invisible" glibc overhead) | −15.7 MiB | tight, consistent |
+
+**This rules out glibc fragmentation as the explanation**: the "invisible"
+overhead delta is consistently *negative* with the agent attached — the
+agent's allocation pattern produces *less* unaccounted glibc bookkeeping,
+not more, across all 5 reps. But it produced a new, useful, independent
+number: `uordblks` delta of **~82.0 MiB (±3.2 MiB)** — total
+malloc/`new`-attributable growth, measured via glibc's own live-byte
+accounting rather than any per-call-site interception or NMT category.
+That's ~20 MB less than the established ~102 MB total RSS delta, meaning
+~20 MB of the RSS delta is memory `malloc` itself never sees at all.
+
+**JIT code-cache growth, via NMT's `Code` category.** The obvious
+candidate for RSS growth invisible to `malloc` entirely is HotSpot's
+`CodeCache`, which is `mmap`'d directly by the JVM outside glibc's arenas.
+The existing 10-rep sweep's NMT diff files (`with_repN.diff.txt` /
+`without_repN.diff.txt`, already captured, no new run needed) were
+checked for the `Code` category's committed-memory growth across all 10
+reps:
+
+| | with-agent Δcommitted (mean) | without-agent Δcommitted (mean) | delta |
+|---|---|---|---|
+| `Code` category | +162.7 MiB | +163.3 MiB | **−0.6 MiB** |
+
+**Ruled out too, and cleanly**: across all 10 reps, the delta is small and
+consistently negative (range −54 KB to −1,236 KB) — Code cache grows by
+essentially the same ~163 MB in both conditions, driven by the workload's
+own JIT warmup compiling 150,000 distinct `compute` methods, not by the
+agent. The ~20 MB gap between the new `malloc`-visible figure (~82 MB) and
+total RSS (~102 MB) remains open; both of the two most obvious "memory
+`malloc` can't see" candidates are now excluded.
+
 **Practical takeaway for quantifying this to a customer**: "flat, a few MB"
 is only correct for workloads with narrow call-graph/class diversity
 (few distinct classes and methods actually appearing in sampled stacks,
@@ -1115,6 +1186,31 @@ now confirmed empirically:
   fragmentation/bookkeeping, JVM-side memory that bypasses `os::malloc`, or
   NMT categories that may be undercounting rather than missing entirely,
   before trying a third "new profiler-side allocation" hypothesis.
+- **The two follow-up hypotheses from that hint (glibc fragmentation,
+  JIT code-cache growth) are now both ruled out too — three attempts in a
+  row have not explained the ~32–42 MB gap.** A 5-rep `mallinfo2()`
+  comparison found the agent's allocation pattern produces *less*
+  unaccounted glibc overhead, not more (mean −15.7 MiB), ruling out
+  fragmentation; and NMT's `Code` category grows identically with and
+  without the agent across all 10 existing sweep reps (mean delta
+  −0.6 MiB), ruling out JIT code-cache growth. **First single-pair result
+  for the `mallinfo2()` check was itself inconsistent** (`hblkhd` moved the
+  wrong direction) and was not trusted on its own — correctly recognized as
+  the same single-pair-unreliability pattern already documented for RSS at
+  this N, resolved by running 5 reps instead of 1. The `mallinfo2()` check
+  did produce one durable, reusable number: total `malloc`-visible growth
+  of ~82.0 MiB (±3.2 MiB across 5 reps) — a clean, independent
+  cross-check of the ~102 MB RSS figure, leaving a smaller ~20 MB
+  "RSS but not `malloc`-visible" residual that is itself now unexplained
+  (Code cache was the obvious candidate and is ruled out). **Follow-up
+  worth doing**: the pattern of three ruled-out hypotheses in a row
+  (dictionary/`MethodMap`, direct allocation attribution, and now
+  fragmentation/code-cache) suggests the ~32–42 MB gap may not be a single
+  mechanism at all, but several small contributors below the resolution of
+  any one check so far — worth considering a finer-grained NMT
+  malloc-vs-mmap breakdown per category (each category already reports
+  this split, as seen for `Code`) rather than another single-hypothesis
+  test.
 - **Coverage (classes actually touched by a sample) fell from 93.6% at
   N=2,000 to 56.4% at N=150,000 for the same relative duration/interval
   scaling used across this sweep.** The per-touched-class normalization is
