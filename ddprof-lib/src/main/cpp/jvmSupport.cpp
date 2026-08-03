@@ -9,7 +9,8 @@
 #include "frames.h"
 #include "os.h"
 #include "profiler.h"
-#include "threadLocalData.h"
+#include "threadLocalData.inline.h"
+#include "threadLocalDataPool.h"
 #include "vmEntry.h"
 
 #include "hotspot/hotspotSupport.h"
@@ -36,6 +37,10 @@ bool JVMSupport::initialize() {
     // Check if JVMThread key is valid, the key is critical to access JVM `current` thread.
     if (!JVMThread::initialize()) {
         return false;
+    }
+
+    if (JVMThread::supportPriming()) {
+        ThreadLocalDataPool::initialize();
     }
 
     // Check ProfiledThread key, it is critical for storing per-thread metadata

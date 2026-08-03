@@ -10,12 +10,16 @@
 #include <jvmti.h>
 
 #include "threadLocal.h"
+#include "os.h"
 
 /**
  * JVMThread represents a native JVM thread that is JVM implementation agnostic
  */
 class JVMThread {
 private:
+    // PTHREAD_KEY_2NDLEVEL_SIZE is an internal macro set to 32 in the GNU C Library (glibc) NPTL
+    // implementation. Slot indexes less than PTHREAD_KEY_2NDLEVEL_SIZE are pre-allocated.
+    static constexpr int PTHREAD_KEY_2NDLEVEL_SIZE = 32;
     static jfieldID _tid;
     static ThreadLocal<JVMThread*> _jvm_thread;
 
@@ -41,6 +45,16 @@ public:
         return _jvm_thread.key();
     }
 
+    static bool supportPriming() {
+        // Key must be valid
+        assert(_jvm_thread.isKeyValid());
+        if (OS::isMusl()) {
+            return true;
+        } else {
+            return _jvm_thread.key() < PTHREAD_KEY_2NDLEVEL_SIZE;
+        }
+    }
+    
     static int nativeThreadId(JNIEnv* jni, jthread thread);
     static inline jlong javaThreadId(JNIEnv* env, jthread thread) {
        return env->GetLongField(thread, _tid);

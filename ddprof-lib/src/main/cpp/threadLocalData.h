@@ -37,6 +37,8 @@ public:
 };
 
 class ProfiledThread : public ThreadLocalData {
+  friend class ThreadLocalDataPool;
+
 public:
   enum ThreadType : u32 {
     TYPE_UNKNOWN = 0,
@@ -46,6 +48,8 @@ public:
   };
 
   static constexpr u32 FLAG_PARKED = 0x4u; // next free bit after TYPE_MASK (0x1|0x2)
+  static constexpr u32 FLAG_CLAIMED = 0x8u; // Used by ThreadLocalDataPool only
+ 
 
   // We are allowing several levels of nesting because we can be
   // eg. in a crash handler when wallclock signal kicks in,
@@ -74,7 +78,7 @@ private:
   u32 _wall_epoch;
   u64 _call_trace_id;
   u32 _recording_epoch;
-  u32 _misc_flags;
+  volatile u32 _misc_flags;
   u64 _park_block_token;
   int _filter_slot_id; // Slot ID for thread filtering
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
@@ -112,6 +116,24 @@ private:
   };
 
   virtual ~ProfiledThread() { }
+
+  inline bool isClaimed() const {
+      return (__atomic_load_n(&_misc_flags, __ATOMIC_RELAXED) & FLAG_CLAIMED) == FLAG_CLAIMED;
+  }
+
+ inline bool claim_acquire(int tid) {
+    if (isClaimed()) {
+        return false;
+    }
+
+    u32 flags = __atomic_fetch_or(&_misc_flags, FLAG_CLAIMED, __ATOMIC_ACQUIRE);
+    bool rc = (flags & FLAG_CLAIMED) == 0;
+    if (rc) {
+      _tid = tid;
+    }
+    return rc;
+}
+
 public:
   static ProfiledThread *forTid(int tid) {
     ProfiledThread *pt = new ProfiledThread(tid);
@@ -154,12 +176,10 @@ public:
   static ProfiledThread* initCurrentThreadSignalSafe();
 
   // Signal-handler friendly (no allocation): returns existing TLS or nullptr.
-  static inline ProfiledThread *current() {
-    if (!isThreadKeyValid()) {
-      return nullptr;
-    }
-    return _current_thread.get();
-  }
+  static inline ProfiledThread *current();
+  // signal-handler friendly with priming: return existing TLS or acquire and set
+  // ProfiledThread from ThreadLocalDataPool.
+  static inline ProfiledThread* acquire_current();
 
   static int currentTid();
   inline int tid() { return _tid; }

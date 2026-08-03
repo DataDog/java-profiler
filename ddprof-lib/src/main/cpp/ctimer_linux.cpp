@@ -27,6 +27,7 @@
 #include "log.h"
 #include "profiler.h"
 #include "signalCookie.h"
+#include "threadLocalData.inline.h"
 #include "threadState.inline.h"
 #include <assert.h>
 #include <errno.h>

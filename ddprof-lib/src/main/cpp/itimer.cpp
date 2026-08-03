@@ -22,7 +22,7 @@
 #include "profiler.h"
 #include "signalInflight.h"
 #include "stackWalker.h"
-#include "threadLocalData.h"
+#include "threadLocalData.inline.h"
 #include "threadState.inline.h"
 #include "guards.h"
 #include <sys/time.h>

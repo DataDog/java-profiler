@@ -13,7 +13,7 @@
 #include "symbols.h"
 #include "jvmSupport.inline.h"
 #include "jvmThread.h"
-#include "threadLocalData.h"
+#include "threadLocalData.inline.h"
 
 // Use validation helpers from header (shared with tests)
 using StackWalkValidation::inDeadZone;
@@ -45,11 +45,15 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
     // falls inside this library while a jmp ctx is installed gets caught by
     // Profiler::checkFault() from the SEGV handler and siglongjmp'd back here,
     // instead of crashing the process.
-    ProfiledThread* prof_thread = ProfiledThread::current();
+    ProfiledThread* prof_thread = ProfiledThread::acquire_current();
+    if (prof_thread == nullptr) {
+        Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
+        return 0;
+    }
     sigjmp_buf crash_protection_ctx;
-    sigjmp_buf* prev_jmp_buf = prof_thread != nullptr ? prof_thread->getJmpCtx() : nullptr;
+    sigjmp_buf* prev_jmp_buf = prof_thread->getJmpCtx();
 
-    if (prof_thread != nullptr && sigsetjmp(crash_protection_ctx, 1) != 0) {
+    if (sigsetjmp(crash_protection_ctx, 1) != 0) {
         // checkFault() does a siglongjmp from inside segvHandler, bypassing
         // segvHandler's SignalHandlerScope destructor. Compensate.
         SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
@@ -62,9 +66,7 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
         }
         return depth;
     }
-    if (prof_thread != nullptr) {
-        prof_thread->setJmpCtx(&crash_protection_ctx);
-    }
+    prof_thread->setJmpCtx(&crash_protection_ctx);
 
     // Walk until the bottom of the stack or until the first Java frame
     while (depth < actual_max_depth) {
@@ -132,11 +134,16 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
     // falls inside this library while a jmp ctx is installed gets caught by
     // Profiler::checkFault() from the SEGV handler and siglongjmp'd back here,
     // instead of crashing the process.
-    ProfiledThread* prof_thread = ProfiledThread::current();
-    sigjmp_buf crash_protection_ctx;
-    sigjmp_buf* prev_jmp_buf = prof_thread != nullptr ? prof_thread->getJmpCtx() : nullptr;
+    ProfiledThread* prof_thread = ProfiledThread::acquire_current();
+    if (prof_thread == nullptr) {
+        Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
+        return 0;
+    }
 
-    if (prof_thread != nullptr && sigsetjmp(crash_protection_ctx, 1) != 0) {
+    sigjmp_buf crash_protection_ctx;
+    sigjmp_buf* prev_jmp_buf = prof_thread->getJmpCtx();
+
+    if (sigsetjmp(crash_protection_ctx, 1) != 0) {
         // checkFault() does a siglongjmp from inside segvHandler, bypassing
         // segvHandler's SignalHandlerScope destructor. Compensate.
         SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
@@ -149,9 +156,7 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
         }
         return depth;
     }
-    if (prof_thread != nullptr) {
-        prof_thread->setJmpCtx(&crash_protection_ctx);
-    }
+    prof_thread->setJmpCtx(&crash_protection_ctx);
 
     // Walk until the bottom of the stack or until the first Java frame
     while (depth < actual_max_depth) {
@@ -229,9 +234,7 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
         }
     }
 
-    if (prof_thread != nullptr) {
-        prof_thread->setJmpCtx(prev_jmp_buf);
-    }
+    prof_thread->setJmpCtx(prev_jmp_buf);
 
     if (truncated && depth > max_depth) {
         *truncated = true;
