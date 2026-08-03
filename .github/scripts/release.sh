@@ -1,13 +1,22 @@
 #!/usr/bin/env bash
 
-set -x
-set -e
+set -euo pipefail
 
 TYPE=$1
-DRYRUN=$2
+DRYRUN=${2:-}
+
+git_push() {
+  if [ -n "$DRYRUN" ]; then
+    git push "$DRYRUN" "$@"
+  else
+    git push "$@"
+  fi
+}
 
 BRANCH=$(git branch --show-current)
+SOURCE_SHA=$(git rev-parse HEAD)
 RELEASE_BRANCH=
+FIRST_PATCH=false
 
 BASE=$(./gradlew printVersion -Psnapshot=false | grep 'Version:' | cut -f2 -d' ')
 # BASE == 0.0.1
@@ -47,7 +56,9 @@ create_annotated_tag() {
   local branch=$3
 
   local tag_name="v_${version}"
-  local tag_message="Release v_${version} (${type,,}) from ${branch}"
+  local lowercase_type
+  lowercase_type=$(tr '[:upper:]' '[:lower:]' <<<"$type")
+  local tag_message="Release v_${version} (${lowercase_type}) from ${branch}"
 
   # Check if tag exists
   if git rev-parse "$tag_name" >/dev/null 2>&1; then
@@ -82,7 +93,9 @@ if [ "$TYPE" == "MINOR" ] || [ "$TYPE" == "MAJOR" ]; then
   fi
   RELEASE_BRANCH="release/${BASE%.*}._"
   check_not_stuck "$BASE" "$BRANCH"
-  create_annotated_tag "$BASE" "$TYPE" "$BRANCH"
+  if [ "$TYPE" == "MINOR" ]; then
+    create_annotated_tag "$BASE" "$TYPE" "$BRANCH"
+  fi
 fi
 
 if [ "$TYPE" == "PATCH" ]; then
@@ -91,8 +104,27 @@ if [ "$TYPE" == "PATCH" ]; then
     exit 1
   fi
   RELEASE_BRANCH="release/${BASE%.*}._"
-  check_not_stuck "$BASE" "$BRANCH"
-  create_annotated_tag "$BASE" "$TYPE" "$BRANCH"
+  IFS=. read -r BASE_MAJOR BASE_MINOR BASE_PATCH <<<"$BASE"
+  if git show-ref --verify --quiet "refs/tags/v_${BASE}" && [ "$BASE_PATCH" -eq 0 ]; then
+    if [ "$(git cat-file -t "refs/tags/v_${BASE}" 2>/dev/null)" != "tag" ]; then
+      echo "::error::First patch base v_${BASE} must be an annotated tag"
+      exit 1
+    fi
+    if ! git merge-base --is-ancestor "v_${BASE}^{commit}" "$SOURCE_SHA"; then
+      echo "::error::First patch base tag v_${BASE} is not reachable from $SOURCE_SHA"
+      exit 1
+    fi
+    FIRST_PATCH=true
+    ./gradlew incrementVersion --versionIncrementType=PATCH
+    BASE=$(./gradlew printVersion -Psnapshot=false | grep 'Version:' | cut -f2 -d' ')
+    [ "$BASE" = "$BASE_MAJOR.$BASE_MINOR.$((BASE_PATCH + 1))" ] || {
+      echo "::error::First patch increment produced unexpected version $BASE"
+      exit 1
+    }
+  else
+    check_not_stuck "$BASE" "$BRANCH"
+    create_annotated_tag "$BASE" "$TYPE" "$BRANCH"
+  fi
 fi
 
 # RETAG: re-point an existing tag at the current HEAD of a release branch.
@@ -134,20 +166,41 @@ if [ "$TYPE" == "RETAG" ]; then
   echo "Retagged Version: $BASE"
   echo "Tag: $TAG_NAME -> $(git rev-parse HEAD)"
   echo "========================================================"
+  if [ -n "${GITHUB_OUTPUT:-}" ]; then
+    {
+      echo "base_branch=$BRANCH"
+      echo "source_sha=$SOURCE_SHA"
+      echo "release_version=$BASE"
+      echo "release_branch=$BRANCH"
+    } >> "$GITHUB_OUTPUT"
+  fi
   exit 0
 fi
 
 if [ "$BRANCH" != "$RELEASE_BRANCH" ]; then
-  git checkout -b $RELEASE_BRANCH
+  git checkout -b "$RELEASE_BRANCH"
   if ! git diff --quiet; then
     git add build.gradle.kts
     git commit -m "[Automated] Release ${BASE}"
   fi
-  git push $DRYRUN --atomic --set-upstream origin $RELEASE_BRANCH
-  git checkout $BRANCH
+  if [ "$TYPE" == "MAJOR" ]; then
+    create_annotated_tag "$BASE" "$TYPE" "$BRANCH"
+  fi
+  git_push --atomic --set-upstream origin "$RELEASE_BRANCH"
+  git checkout "$BRANCH"
+elif [ "$FIRST_PATCH" == "true" ]; then
+  git add build.gradle.kts
+  git commit -m "[Automated] Release ${BASE}"
+  create_annotated_tag "$BASE" "$TYPE" "$BRANCH"
+  git_push --atomic origin "$BRANCH"
 fi
 
-if [ "$TYPE" == "MAJOR" ] || [ "$TYPE" == "MINOR" ]; then
+if [ "$TYPE" == "MAJOR" ]; then
+  # The release commit stays on release/X.0._. Main moves directly from the
+  # previous development version to X.1.0 through the validated bump PR.
+  ./gradlew incrementVersion --versionIncrementType=MAJOR
+  ./gradlew incrementVersion --versionIncrementType=MINOR
+elif [ "$TYPE" == "MINOR" ]; then
   ./gradlew incrementVersion --versionIncrementType=MINOR
 else
   ./gradlew incrementVersion --versionIncrementType=PATCH
@@ -155,31 +208,106 @@ fi
 
 CANDIDATE=$(./gradlew printVersion -Psnapshot=false | grep 'Version:' | cut -f2 -d' ')
 
+FINAL_BUMP_MESSAGE="[Automated] Bump dev version to ${CANDIDATE}"
 git add build.gradle.kts
-git commit -m "[Automated] Bump dev version to ${CANDIDATE}"
+# GITHUB_TOKEN-created pull_request.opened events do not start other workflows.
+# Open the PR from this temporary commit, then amend and push the canonical
+# commit through SSH so GitHub emits a normal pull_request.synchronize event.
+git commit -m "[Automated] Prepare dev version bump to ${CANDIDATE}"
 
 if [ -z "$DRYRUN" ]; then
+  : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
+  : "${GITHUB_TOKEN:?GITHUB_TOKEN is required}"
+  : "${BUMP_LABEL_TOKEN:?BUMP_LABEL_TOKEN is required}"
   BUMP_BRANCH="automated/bump-${CANDIDATE//./-}"
   git checkout -b "$BUMP_BRANCH"
   git push --force-with-lease --set-upstream origin "$BUMP_BRANCH"
-  # Create and label with the federated BUMP_PR_TOKEN: GitHub does not fire new
-  # workflow runs for labeled events caused by the default GITHUB_TOKEN, so the
-  # no-review label would never trigger approve-trivial.yml. Enable auto-merge
-  # with the write-enabled GITHUB_TOKEN after emitting the labeled event.
-  BUMP_PR_URL=$(GH_TOKEN="$BUMP_PR_TOKEN" gh pr create \
-    --title "[Automated] Bump dev version to ${CANDIDATE}" \
-    --body "Automated version bump after releasing v_${BASE}." \
-    --base "$BRANCH" \
-    --head "$BUMP_BRANCH")
-  GH_TOKEN="$BUMP_PR_TOKEN" gh pr edit "$BUMP_PR_URL" --add-label "no-review"
-  GH_TOKEN="$GITHUB_TOKEN" gh pr merge "$BUMP_PR_URL" --auto --squash
-  echo "BUMP_PR_URL=$BUMP_PR_URL" >> "${GITHUB_OUTPUT:-/dev/null}"
-  echo "✓ Version bump PR created and queued for auto-merge: $BUMP_PR_URL"
+  INITIAL_BUMP_SHA=$(git rev-parse HEAD)
+
+  if ! BUMP_PR_JSON=$(GH_TOKEN="$GITHUB_TOKEN" gh api --method POST \
+      "repos/$GITHUB_REPOSITORY/pulls" \
+      -f title="$FINAL_BUMP_MESSAGE" \
+      -f head="$BUMP_BRANCH" \
+      -f base="$BRANCH" \
+      -f body="Automated post-release development version bump for v_$BASE."); then
+    echo "::error::Unable to create the release bump PR with GITHUB_TOKEN."
+    echo "::error::Verify that Actions is allowed to create and approve pull requests in repository settings."
+    exit 1
+  fi
+  BUMP_PR_NUMBER=$(jq -er '.number' <<<"$BUMP_PR_JSON")
+  BUMP_PR_URL=$(jq -er '.html_url' <<<"$BUMP_PR_JSON")
+
+  git commit --amend -m "$FINAL_BUMP_MESSAGE"
+  BUMP_HEAD_SHA=$(git rev-parse HEAD)
+  [ "$BUMP_HEAD_SHA" != "$INITIAL_BUMP_SHA" ] || {
+    echo "::error::Amending the bump commit did not change its SHA"
+    exit 1
+  }
+  git push \
+    --force-with-lease="refs/heads/$BUMP_BRANCH:$INITIAL_BUMP_SHA" \
+    origin "$BUMP_BRANCH:$BUMP_BRANCH"
+
+  # Validate every remotely visible commit before publishing the release tag,
+  # which triggers artifact publication. Major preflight additionally proves
+  # that the still-local annotated tag identifies the remote release commit.
+  if [ "$TYPE" == "MAJOR" ]; then
+    ./.github/scripts/validate-release-bump.sh \
+      --repo "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}" \
+      --branch \
+      --base "$BRANCH" \
+      --head "$BUMP_BRANCH" \
+      --source-sha "$SOURCE_SHA" \
+      --expected-head-sha "$BUMP_HEAD_SHA" \
+      --local-release-tag "v_$BASE"
+  elif [ "$FIRST_PATCH" == "true" ]; then
+    ./.github/scripts/validate-release-bump.sh \
+      --repo "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}" \
+      --branch \
+      --first-patch \
+      --base "$BRANCH" \
+      --head "$BUMP_BRANCH" \
+      --source-sha "$SOURCE_SHA" \
+      --expected-head-sha "$BUMP_HEAD_SHA" \
+      --local-release-tag "v_$BASE"
+  else
+    ./.github/scripts/validate-release-bump.sh \
+      --repo "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}" \
+      --branch \
+      --base "$BRANCH" \
+      --head "$BUMP_BRANCH" \
+      --source-sha "$SOURCE_SHA" \
+      --expected-head-sha "$BUMP_HEAD_SHA"
+  fi
+  git push --atomic --tags
+
+  # The STS identity is deliberately distinct from github-actions[bot], which
+  # created the PR. Its label event starts the trusted approval workflow.
+  GH_TOKEN="$BUMP_LABEL_TOKEN" gh api --method POST \
+    "repos/$GITHUB_REPOSITORY/issues/$BUMP_PR_NUMBER/labels" \
+    -f 'labels[]=trivial' >/dev/null
+  echo "✓ Version bump PR opened and labeled for gated merge: $BUMP_PR_URL"
 else
-  git push $DRYRUN --atomic --set-upstream origin $BRANCH
+  BUMP_BRANCH="automated/bump-${CANDIDATE//./-}"
+  BUMP_HEAD_SHA=$(git rev-parse HEAD)
+  BUMP_PR_NUMBER=
+  BUMP_PR_URL=
+  git_push --atomic --set-upstream origin "$BRANCH"
+  git_push --atomic --tags
 fi
 
-git push $DRYRUN --atomic --tags
+if [ -n "${GITHUB_OUTPUT:-}" ]; then
+  {
+    echo "base_branch=$BRANCH"
+    echo "source_sha=$SOURCE_SHA"
+    echo "release_version=$BASE"
+    echo "next_version=$CANDIDATE"
+    echo "release_branch=$RELEASE_BRANCH"
+    echo "bump_branch=$BUMP_BRANCH"
+    echo "bump_head_sha=$BUMP_HEAD_SHA"
+    echo "bump_pr_number=$BUMP_PR_NUMBER"
+    echo "bump_pr_url=$BUMP_PR_URL"
+  } >> "$GITHUB_OUTPUT"
+fi
 
 echo "==================== RELEASE SUMMARY ===================="
 echo "Release Type: $TYPE"
@@ -188,6 +316,6 @@ echo "Next Dev Version: $CANDIDATE"
 echo "Release Branch: $RELEASE_BRANCH"
 echo "Tag: v_$BASE"
 if [ -z "$DRYRUN" ]; then
-  echo "Tag Message: $(git tag -l v_$BASE -n1 --format='%(contents:subject)')"
+  echo "Tag Message: $(git tag -l "v_$BASE" -n1 --format='%(contents:subject)')"
 fi
 echo "=========================================================="

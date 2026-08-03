@@ -1,29 +1,122 @@
-name: Auto-Approve Trivial PRs
+name: Approve Trivial PRs
 
 on:
   pull_request_target:
     types: [labeled]
 
 jobs:
-  auto-approve:
-    if: contains(github.event.pull_request.labels.*.name, 'trivial') || contains(github.event.pull_request.labels.*.name, 'no-review')
+  approve:
+    if: github.event.label.name == 'trivial'
     runs-on: ubuntu-latest
     permissions:
-      id-token: write # Needed to federate tokens
+      contents: read
+      pull-requests: read
+      id-token: write
     steps:
+      - name: Checkout trusted validator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+
+      - name: Authorize trivial labeler
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LABEL_ACTOR: ${{ github.event.sender.login }}
+          LABEL_ACTOR_TYPE: ${{ github.event.sender.type }}
+        run: |
+          ./.github/scripts/validate-trivial-approval.sh \
+            --repo "$GITHUB_REPOSITORY" \
+            --actor "$LABEL_ACTOR" \
+            --actor-type "$LABEL_ACTOR_TYPE"
+
+      - name: Classify pull request
+        id: classify
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          if [[ "$HEAD_REF" =~ ^automated/bump-[0-9]+-[0-9]+-[0-9]+$ ]]; then
+            echo "release_bump=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "release_bump=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate release bump before approval
+        if: steps.classify.outputs.release_bump == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          LABEL_ACTOR: ${{ github.event.sender.login }}
+          LABEL_ACTOR_TYPE: ${{ github.event.sender.type }}
+        run: |
+          ./.github/scripts/validate-release-bump.sh \
+            --repo "$GITHUB_REPOSITORY" \
+            --pr-number "$PR_NUMBER" \
+            --sender "$LABEL_ACTOR" \
+            --sender-type "$LABEL_ACTOR_TYPE"
+
+      - name: Check for an existing exact approval
+        id: existing
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b # 9.0.0
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        with:
+          script: |
+            const reviews = await github.paginate(github.rest.pulls.listReviews, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              per_page: 100
+            });
+            const exists = reviews.some(review =>
+              review.user?.login === 'dd-octo-sts[bot]' &&
+              review.state === 'APPROVED' &&
+              review.commit_id === process.env.EXPECTED_HEAD_SHA
+            );
+            core.setOutput('approved', exists ? 'true' : 'false');
+
       - uses: DataDog/dd-octo-sts-action@96a25462dbcb10ebf0bfd6e2ccc917d2ab235b9a # v1.0.4
         id: octo-sts
+        if: steps.existing.outputs.approved != 'true'
         with:
           scope: DataDog/java-profiler
           policy: self.approve-trivial.approve-pr
-      - name: Auto-approve PR
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # 9.0.0
+
+      - name: Revalidate release bump immediately before approval
+        if: steps.classify.outputs.release_bump == 'true' && steps.existing.outputs.approved != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          LABEL_ACTOR: ${{ github.event.sender.login }}
+          LABEL_ACTOR_TYPE: ${{ github.event.sender.type }}
+        run: |
+          ./.github/scripts/validate-release-bump.sh \
+            --repo "$GITHUB_REPOSITORY" \
+            --pr-number "$PR_NUMBER" \
+            --sender "$LABEL_ACTOR" \
+            --sender-type "$LABEL_ACTOR_TYPE"
+
+      - name: Approve exact current commit
+        if: steps.existing.outputs.approved != 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b # 9.0.0
+        env:
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         with:
           github-token: ${{ steps.octo-sts.outputs.token }}
           script: |
+            const pull = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number
+            });
+            if (pull.data.head.sha !== process.env.EXPECTED_HEAD_SHA) {
+              core.setFailed('Head SHA changed after validation; refusing approval');
+              return;
+            }
             await github.rest.pulls.createReview({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: context.payload.pull_request.number,
+              commit_id: process.env.EXPECTED_HEAD_SHA,
               event: 'APPROVE'
-            })
+            });
