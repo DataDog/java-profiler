@@ -45,7 +45,7 @@ public class ParkTaskBlockTest extends AbstractProfilerTest {
   @Test
   public void contextWindowParkDoesNotEmitTaskBlock() {
     registerCurrentThreadForWallClockProfiling();
-    profiler.setContext(0x3100L, 0x3101L, 0L, 0x3101L);
+    profiler.setTraceContext(0x3100L, 0x3101L, 0L, 0x3101L, -1, null, -1, null);
     try {
       ProfilerOwnedBlockHooks.parkEnter(profiler);
       try {
@@ -54,7 +54,7 @@ public class ParkTaskBlockTest extends AbstractProfilerTest {
         ProfilerOwnedBlockHooks.parkExit(profiler, BLOCKER, UNBLOCKING_SPAN_ID);
       }
     } finally {
-      profiler.clearContext();
+      profiler.clearTraceContext();
       profiler.removeThread();
     }
     stopProfiler();

@@ -85,14 +85,14 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
     Thread worker = new Thread(() -> {
       try {
         registerCurrentThreadForWallClockProfiling();
-        profiler.setContext(0x4400L, 0x4401L, 0L, 0x4401L);
+        profiler.setTraceContext(0x4400L, 0x4401L, 0L, 0x4401L, -1, null, -1, null);
         synchronized (monitor) {
           monitor.wait(100);
         }
       } catch (Throwable t) {
         failure.set(t);
       } finally {
-        profiler.clearContext();
+        profiler.clearTraceContext();
         profiler.removeThread();
       }
     }, "taskblock-traced-object-wait");
