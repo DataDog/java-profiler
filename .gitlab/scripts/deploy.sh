@@ -48,20 +48,4 @@ if [ "$MODE" = "publish" ] || [ "$MODE" = "all" ]; then
     exit 1
   fi
   ./gradlew -Pskip-native -Pskip-tests -Pddprof_version="${LIB_VERSION}" -PbuildInfo.build.number=$CI_JOB_ID -Pwith-libs="$(pwd)/libs" publishToSonatype closeAndReleaseSonatypeStagingRepository --exclude-task compileFuzzer --max-workers=1 --no-build-cache --stacktrace --info --no-watch-fs --no-daemon
-
-  # Gradle's maven-publish always uploads snapshots under a unique timestamped
-  # filename (e.g. ddprof-1.2.3-branch-20260804.115820-1-debug.jar); there's no
-  # supported way to opt out of that. Some downstream consumers (e.g. the
-  # benchmarking-platform's downloader) fetch snapshots by the literal
-  # "-SNAPSHOT" filename instead of resolving maven-metadata.xml, so also
-  # publish plain copies of the locally-built jars under that literal name.
-  if [[ "${LIB_VERSION}" == *-SNAPSHOT ]]; then
-    echo "=== Publishing literal-named snapshot copies for non-metadata-aware consumers ==="
-    BASE_URL="https://central.sonatype.com/repository/maven-snapshots/com/datadoghq/ddprof/${LIB_VERSION}"
-    for jar in ddprof-lib/build/libs/ddprof-"${LIB_VERSION}"*.jar; do
-      [ -f "$jar" ] || continue
-      echo "Uploading $(basename "$jar")"
-      curl -sf -u "${SONATYPE_USERNAME}:${SONATYPE_PASSWORD}" --upload-file "$jar" "${BASE_URL}/$(basename "$jar")"
-    done
-  fi
 fi
