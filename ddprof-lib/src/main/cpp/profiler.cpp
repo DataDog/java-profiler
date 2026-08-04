@@ -2014,7 +2014,7 @@ Error Profiler::stop() {
   // Prevent existing paired intervals from recording during teardown. New
   // intervals were disabled above; this also drains endTaskBlock calls that
   // already entered their snapshot-and-record activity.
-  u64 task_block_stop_boundary = beginTaskBlockRotation();
+  beginTaskBlockRotation();
 
   if (_event_mask & EM_ALLOC)
     _alloc_engine->stop();
@@ -2087,10 +2087,9 @@ Error Profiler::stop() {
   // correct counts in the recording
   _thread_info.reportCounters();
 
-  rotateDictsAndRun([&]{
-    emitTaskBlockBoundary(task_block_stop_boundary);
-    _jfr.stop();
-  });
+  // Unlike a dump rotation, a full stop discards paired intervals that have
+  // not completed. Their exits may race with teardown after recording ends.
+  rotateDictsAndRun([&]{ _jfr.stop(); });
   clearAllTaskBlockRuns();
   endTaskBlockRotation();
 
