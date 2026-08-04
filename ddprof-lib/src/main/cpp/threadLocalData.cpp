@@ -140,4 +140,9 @@ void ProfiledThread::resetClaimed(int tid) {
    _in_critical_section = false;
 
    _unwind_failures.reset();
+
+   #ifdef __FAULT_INJECTION__
+    _fi_rng = ((u64)(uintptr_t)this) ^ (0x9e3779b97f4a7c15ULL * (u64)tid);
+    if (_fi_rng == 0) _fi_rng = 1;
+#endif
 }

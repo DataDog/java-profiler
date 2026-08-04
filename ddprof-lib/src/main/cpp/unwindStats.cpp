@@ -13,8 +13,7 @@ UnwindFailures::UnwindFailures() : _nameCount(0) {
 UnwindFailures::~UnwindFailures() {
      delete[] _names;
      delete[] _counters;
-   }
-
+}
 
 void UnwindFailures::reset() {
     memset((void*)_names, 0, MAX_UNWIND_FAILURE_NAMES * MAX_NAME_LENGTH);

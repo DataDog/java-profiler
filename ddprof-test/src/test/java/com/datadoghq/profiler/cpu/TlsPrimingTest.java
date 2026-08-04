@@ -111,7 +111,7 @@ public class TlsPrimingTest extends AbstractProfilerTest {
      * methods (each a different constant expression, so the JIT can't fold them
      * into one shared compiled method) and loads it in a fresh ClassLoader.
      */
-    private static Class<?> defineWorkloadClass() throws ClassNotFoundException {
+    private static Class<?> defineWorkloadClass() throws ClassFormatError {
         String internalName = "com/datadoghq/profiler/cpu/generated/CompilerThreadWorkload";
         ClassWriter cw = new ClassWriter(ClassWriter.COMPUTE_FRAMES | ClassWriter.COMPUTE_MAXS);
         cw.visit(Opcodes.V1_8, Opcodes.ACC_PUBLIC, internalName, null, "java/lang/Object", null);

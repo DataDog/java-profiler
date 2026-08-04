@@ -24,9 +24,12 @@ private:
     ThreadLocalDataPool(const ThreadLocalDataPool&) = delete;
     ThreadLocalDataPool& operator=(const ThreadLocalDataPool&) = delete;
 
-    ThreadLocalDataPool(uint64_t capacity = DEFAULT_CAPACITY);
+    ThreadLocalDataPool(uint16_t capacity = DEFAULT_CAPACITY);
+#ifdef UNIT_TEST
     ~ThreadLocalDataPool();
-
+#else
+    ~ThreadLocalDataPool() = delete;
+#endif // UNIT_TEST
     ProfiledThread* claim(int tid);
     bool unclaim(ProfiledThread* t);
 
