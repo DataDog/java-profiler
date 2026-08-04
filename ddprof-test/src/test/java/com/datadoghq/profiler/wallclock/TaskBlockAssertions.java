@@ -10,18 +10,24 @@ import java.util.HashSet;
 import java.util.Set;
 import org.openjdk.jmc.common.IMCFrame;
 import org.openjdk.jmc.common.IMCStackTrace;
+import org.openjdk.jmc.common.IMCThread;
 import org.openjdk.jmc.common.item.IAttribute;
 import org.openjdk.jmc.common.item.IItem;
 import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jmc.common.item.IItemIterable;
 import org.openjdk.jmc.common.item.IMemberAccessor;
 import org.openjdk.jmc.common.unit.IQuantity;
+import org.openjdk.jmc.flightrecorder.JfrAttributes;
 
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.openjdk.jmc.common.item.Attribute.attr;
+import static org.openjdk.jmc.common.unit.UnitLookup.NANOSECOND;
 import static org.openjdk.jmc.common.unit.UnitLookup.NUMBER;
 import static org.openjdk.jmc.common.unit.UnitLookup.PLAIN_TEXT;
+import static org.openjdk.jmc.common.unit.UnitLookup.TIMESPAN;
 
 /** Assertions for the synchronous {@code datadog.TaskBlock} event contract. */
 final class TaskBlockAssertions {
@@ -37,6 +43,8 @@ final class TaskBlockAssertions {
       attr("observedBlockingState", "observedBlockingState", "Observed Blocking State", PLAIN_TEXT);
   private static final IAttribute<IQuantity> CORRELATION_ID =
       attr("correlationId", "correlationId", "Async Stack Trace Correlation ID", NUMBER);
+  private static final IAttribute<IQuantity> DURATION =
+      attr("duration", "duration", "Duration", TIMESPAN);
 
   private TaskBlockAssertions() {}
 
@@ -127,7 +135,13 @@ final class TaskBlockAssertions {
 
   static void assertNoCorrelationId(IItemCollection events) {
     for (IItemIterable iterable : events) {
-      assertNull(CORRELATION_ID.getAccessor(iterable.getType()));
+      IMemberAccessor<IQuantity, IItem> accessor =
+          CORRELATION_ID.getAccessor(iterable.getType());
+      assertNotNull(accessor, "TaskBlock must expose correlationId");
+      for (IItem item : iterable) {
+        assertTrue(accessor.getMember(item).longValue() == 0,
+            "Direct-stack TaskBlock must have correlationId=0");
+      }
     }
   }
 
@@ -140,6 +154,105 @@ final class TaskBlockAssertions {
       }
     }
     return false;
+  }
+
+  static boolean containsObservedStateForEventThread(
+      IItemCollection events, String observedState, String threadName) {
+    for (IItemIterable iterable : events) {
+      IMemberAccessor<String, IItem> stateAccessor =
+          OBSERVED_BLOCKING_STATE.getAccessor(iterable.getType());
+      IMemberAccessor<IMCThread, IItem> threadAccessor =
+          JfrAttributes.EVENT_THREAD.getAccessor(iterable.getType());
+      if (stateAccessor == null || threadAccessor == null) continue;
+      for (IItem item : iterable) {
+        IMCThread thread = threadAccessor.getMember(item);
+        if (observedState.equals(stateAccessor.getMember(item))
+            && thread != null
+            && threadName.equals(thread.getThreadName())) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  static boolean containsEventThread(IItemCollection events, String threadName) {
+    for (IItemIterable iterable : events) {
+      IMemberAccessor<IMCThread, IItem> threadAccessor =
+          JfrAttributes.EVENT_THREAD.getAccessor(iterable.getType());
+      if (threadAccessor == null) continue;
+      for (IItem item : iterable) {
+        IMCThread thread = threadAccessor.getMember(item);
+        if (thread != null && threadName.equals(thread.getThreadName())) return true;
+      }
+    }
+    return false;
+  }
+
+  static int countEventsForThread(IItemCollection events, String threadName) {
+    int count = 0;
+    for (IItemIterable iterable : events) {
+      IMemberAccessor<IMCThread, IItem> threadAccessor =
+          JfrAttributes.EVENT_THREAD.getAccessor(iterable.getType());
+      if (threadAccessor == null) continue;
+      for (IItem item : iterable) {
+        IMCThread thread = threadAccessor.getMember(item);
+        if (thread != null && threadName.equals(thread.getThreadName())) count++;
+      }
+    }
+    return count;
+  }
+
+  static double durationNanosForThread(IItemCollection events, String threadName) {
+    double durationNanos = 0;
+    for (IItemIterable iterable : events) {
+      IMemberAccessor<IMCThread, IItem> threadAccessor =
+          JfrAttributes.EVENT_THREAD.getAccessor(iterable.getType());
+      IMemberAccessor<IQuantity, IItem> durationAccessor =
+          DURATION.getAccessor(iterable.getType());
+      if (threadAccessor == null || durationAccessor == null) continue;
+      for (IItem item : iterable) {
+        IMCThread thread = threadAccessor.getMember(item);
+        if (thread != null && threadName.equals(thread.getThreadName())) {
+          durationNanos += durationAccessor.getMember(item)
+              .doubleValueIn(NANOSECOND);
+        }
+      }
+    }
+    return durationNanos;
+  }
+
+  static boolean containsSpan(IItemCollection events, long spanId) {
+    for (IItemIterable iterable : events) {
+      IMemberAccessor<IQuantity, IItem> spanAccessor =
+          AbstractProfilerTest.SPAN_ID.getAccessor(iterable.getType());
+      if (spanAccessor == null) continue;
+      for (IItem item : iterable) {
+        if (spanAccessor.getMember(item).longValue() == spanId) return true;
+      }
+    }
+    return false;
+  }
+
+  static void assertBlockerEventThreadDiffers(
+      IItemCollection events, long blocker, long logicalThreadId) {
+    int checked = 0;
+    for (IItemIterable iterable : events) {
+      IMemberAccessor<IQuantity, IItem> blockerAccessor =
+          BLOCKER.getAccessor(iterable.getType());
+      IMemberAccessor<IMCThread, IItem> threadAccessor =
+          JfrAttributes.EVENT_THREAD.getAccessor(iterable.getType());
+      if (blockerAccessor == null || threadAccessor == null) continue;
+      for (IItem item : iterable) {
+        if (blockerAccessor.getMember(item).longValue() != blocker) continue;
+        IMCThread eventThread = threadAccessor.getMember(item);
+        assertNotNull(eventThread, "TaskBlock eventThread must not be null");
+        assertNotEquals(Long.valueOf(logicalThreadId), eventThread.getThreadId(),
+            "Native TaskBlock must identify the physical carrier, not the virtual thread");
+        checked++;
+      }
+    }
+    assertTrue(checked > 0, "Expected TaskBlock eventThread for blocker=" + blocker);
   }
 
   static void assertNoAnchorFields(IItemCollection events) {

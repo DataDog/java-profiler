@@ -83,6 +83,7 @@
   X(TASK_BLOCK_SKIPPED_TOO_SHORT, "task_block_skipped_too_short")             \
   X(TASK_BLOCK_STACK_CAPTURE_FAILED, "task_block_stack_capture_failed")      \
   X(TASK_BLOCK_RECORD_FAILED, "task_block_record_failed")                     \
+  X(TASK_BLOCK_SEGMENT_STACKLESS, "task_block_segment_stackless")             \
   X(TASK_BLOCK_DROPPED_ROTATION, "task_block_dropped_rotation")               \
   X(UNWINDING_TIME_ASYNC, "unwinding_ticks_async")                             \
   X(UNWINDING_TIME_JVMTI, "unwinding_ticks_jvmti")                             \
@@ -135,6 +136,8 @@
   X(JVMTI_STACKS_REQUESTED, "jvmti_stacks_requested")                         \
   X(NATIVE_TRACE_HOOK_PREFIX_NOT_FOUND, "native_trace_hook_prefix_not_found") \
   X(NATIVE_HOOK_MARK_RESOLVE_FAILED, "native_hook_mark_resolve_failed")       \
+  X(NATIVE_IO_STANDARD_HOOKS_PATCHED, "native_io_standard_hooks_patched")     \
+  X(NATIVE_IO_IBM_BRIDGE_HOOKS_PATCHED, "native_io_ibm_bridge_hooks_patched") \
   X(JVMTI_STACKS_FAILED_WRONG_PHASE, "jvmti_stacks_failed_wrong_phase")       \
   X(JVMTI_STACKS_FAILED_OTHER, "jvmti_stacks_failed_other")                  \
   /* Delegated stacks dropped at slot-lock. Rec-lock drops from all recording  \

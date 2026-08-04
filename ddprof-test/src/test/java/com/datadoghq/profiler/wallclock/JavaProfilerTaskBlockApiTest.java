@@ -161,41 +161,69 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
 
   @Test
   public void liveDumpPreservesTaskBlockAfterEntrySample() throws Exception {
+    String workerName = "taskblock-live-dump";
     CountDownLatch armed = new CountDownLatch(1);
     CountDownLatch release = new CountDownLatch(1);
     AtomicBoolean recorded = new AtomicBoolean();
+    AtomicLong logicalStart = new AtomicLong();
+    AtomicLong logicalEnd = new AtomicLong();
     AtomicReference<Throwable> error = new AtomicReference<>();
     long before = profiler.getDebugCounters()
         .getOrDefault("wc_signals_suppressed_owned_block", 0L);
     Thread worker = new Thread(() -> {
       try {
+        logicalStart.set(System.nanoTime());
         long token = profiler.beginTaskBlock();
         assertTrue(token != 0);
         armed.countDown();
         assertTrue(release.await(5, TimeUnit.SECONDS));
         recorded.set(profiler.endTaskBlock(token, BLOCKER, UNBLOCKING_SPAN_ID));
+        logicalEnd.set(System.nanoTime());
       } catch (Throwable t) {
         error.set(t);
       }
-    }, "taskblock-live-dump");
+    }, workerName);
 
     worker.start();
     assertTrue(armed.await(5, TimeUnit.SECONDS));
     waitForCounterAbove("wc_signals_suppressed_owned_block", before, 5_000L);
+    Thread.sleep(150L);
     Path snapshot = Files.createTempFile("taskblock-live-dump-", ".jfr");
     try {
       dump(snapshot);
+      IItemCollection prefix = verifyEvents(snapshot, "datadog.TaskBlock", true);
+      assertEquals(1, TaskBlockAssertions.countEventsForThread(prefix, workerName));
+      TaskBlockAssertions.assertContainsStackTrace(prefix);
+      TaskBlockAssertions.assertNoCorrelationId(prefix);
+
+      Thread.sleep(150L);
+      release.countDown();
+      worker.join(5_000L);
+      assertFalse(worker.isAlive());
+      if (error.get() != null) throw new AssertionError(error.get());
+      assertTrue(recorded.get());
+
+      stopProfiler();
+      IItemCollection suffix = verifyEvents("datadog.TaskBlock");
+      assertEquals(1, TaskBlockAssertions.countEventsForThread(suffix, workerName));
+      TaskBlockAssertions.assertContainsStackTrace(suffix);
+      TaskBlockAssertions.assertNoCorrelationId(suffix);
+
+      double segmentedDuration =
+          TaskBlockAssertions.durationNanosForThread(prefix, workerName)
+              + TaskBlockAssertions.durationNanosForThread(suffix, workerName);
+      long logicalDuration = logicalEnd.get() - logicalStart.get();
+      assertTrue(segmentedDuration >= logicalDuration * 0.75,
+          "rotation lost TaskBlock duration: segmented=" + segmentedDuration
+              + ", logical=" + logicalDuration);
+      assertTrue(segmentedDuration <= logicalDuration * 1.25,
+          "rotation duplicated TaskBlock duration: segmented=" + segmentedDuration
+              + ", logical=" + logicalDuration);
     } finally {
+      release.countDown();
+      worker.join(5_000L);
       Files.deleteIfExists(snapshot);
     }
-    release.countDown();
-    worker.join(5_000L);
-    assertFalse(worker.isAlive());
-    if (error.get() != null) throw new AssertionError(error.get());
-    assertTrue(recorded.get());
-
-    stopProfiler();
-    TaskBlockAssertions.assertContainsStackTrace(verifyEvents("datadog.TaskBlock"));
   }
 
   @Override

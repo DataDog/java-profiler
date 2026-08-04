@@ -214,6 +214,7 @@ typedef struct TaskBlockEvent {
   u64 _unblockingSpanId;
   Context _ctx;
   u64 _callTraceId;
+  u64 _correlationId;
   OSThreadState _observedBlockingState;
 } TaskBlockEvent;
 
