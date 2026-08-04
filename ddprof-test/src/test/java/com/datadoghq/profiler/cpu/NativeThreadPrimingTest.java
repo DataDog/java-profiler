@@ -39,7 +39,7 @@ public class NativeThreadPrimingTest extends CStackAwareAbstractProfilerTest {
 
     @TestTemplate
     @ValueSource(strings = {"vm"})
-    public void testPreExistingNativeThreadsHaveUsableFrames(@CStack String cstack) throws Exception {
+    public void testPreExistingNativeThreadsHaveUsableFrames() throws Exception {
         try (ProfiledCode profiledCode = new ProfiledCode(profiler)) {
             for (int i = 0, id = 1; i < 100; i++, id += 3) {
                 profiledCode.method1(id);

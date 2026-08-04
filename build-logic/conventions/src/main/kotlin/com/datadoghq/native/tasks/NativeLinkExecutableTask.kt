@@ -142,7 +142,7 @@ abstract class NativeLinkExecutableTask @Inject constructor(
         // Build command line
         val cmdLine = mutableListOf<String>().apply {
             add(linker.get())
-            addAll(PlatformUtils.macosArchitectureArgs())
+            addAll(PlatformUtils.macosArchitectureArgs(linker.get()))
             addAll(objectPaths)
             addAll(linkerArgs.get())
 

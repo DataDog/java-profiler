@@ -276,7 +276,7 @@ abstract class NativeLinkTask @Inject constructor(
         val cmdLine = mutableListOf<String>().apply {
             add(linker.get())
             add(sharedFlag)
-            addAll(PlatformUtils.macosArchitectureArgs())
+            addAll(PlatformUtils.macosArchitectureArgs(linker.get()))
             addAll(objectPaths)
             addAll(linkerArgs.get())
 

@@ -258,7 +258,7 @@ abstract class NativeCompileTask @Inject constructor(
         objDir.mkdirs()
 
         // Build base compiler arguments with convenience properties
-        val baseArgs = (PlatformUtils.macosArchitectureArgs() + compilerArgs.get()).toMutableList()
+        val baseArgs = (PlatformUtils.macosArchitectureArgs(compiler.get()) + compilerArgs.get()).toMutableList()
 
         // Add C++ standard if specified
         if (standardVersion.isPresent) {

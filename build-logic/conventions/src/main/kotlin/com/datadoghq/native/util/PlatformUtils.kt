@@ -226,6 +226,16 @@ object PlatformUtils {
     fun targetArchitecture(): String = currentArchitecture.toString()
 
     /**
+     * Returns true unless the given compiler/linker driver is GCC-family (`gcc`, `g++`, or a
+     * versioned variant like `g++-13`), which does not accept Apple Clang's {@code -arch} flag.
+     * Anything else (`clang++`, `c++`, `cc`, or a custom path) is treated as clang-like.
+     */
+    private fun isClangLikeDriver(driver: String): Boolean {
+        val name = File(driver).name
+        return !Regex("""^(gcc|g\+\+)(-\d+(\.\d+)*)?$""").matches(name)
+    }
+
+    /**
      * Forces Apple Clang to produce objects for the JVM's architecture.
      *
      * The compiler process may run through Rosetta even when Gradle and the JVM run natively on
@@ -233,20 +243,34 @@ object PlatformUtils {
      * architecture instead, producing objects that cannot be linked with native dependencies for
      * the JVM architecture. This is intentionally macOS-only: {@code -arch} is an Apple Clang
      * option; Linux cross compilation must be configured with its own target compiler and sysroot.
+     * GCC (via {@code -Pnative.forceCompiler}) doesn't accept {@code -arch}, so the flag is
+     * skipped when {@code driver} resolves to a GCC-family executable.
      */
-    fun macosArchitectureArgs(): List<String> {
-        if (currentPlatform != Platform.MACOS) {
+    fun macosArchitectureArgs(driver: String): List<String> {
+        return macosArchitectureArgsFor(currentPlatform, currentArchitecture, driver)
+    }
+
+    /**
+     * Platform/architecture-parameterized implementation of [macosArchitectureArgs], split out so
+     * it can be unit tested independently of the host OS running the build.
+     */
+    internal fun macosArchitectureArgsFor(
+        platform: Platform,
+        architecture: Architecture,
+        driver: String
+    ): List<String> {
+        if (platform != Platform.MACOS || !isClangLikeDriver(driver)) {
             return emptyList()
         }
 
-        val architecture = when (currentArchitecture) {
+        val archFlag = when (architecture) {
             Architecture.X64 -> "x86_64"
             Architecture.ARM64 -> "arm64"
             else -> throw GradleException(
-                "Unsupported macOS native build architecture: $currentArchitecture"
+                "Unsupported macOS native build architecture: $architecture"
             )
         }
-        return listOf("-arch", architecture)
+        return listOf("-arch", archFlag)
     }
 
     /**
