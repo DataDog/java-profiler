@@ -1391,7 +1391,7 @@ Error Profiler::start(Arguments &args, bool reset) {
       sanity_result = SanityChecker::runChecks(args);
     }
   }
-  if (sanity_result) {
+  if (sanity_result && !args._skip_sanity_checks) {
     return sanity_result;
   }
 
