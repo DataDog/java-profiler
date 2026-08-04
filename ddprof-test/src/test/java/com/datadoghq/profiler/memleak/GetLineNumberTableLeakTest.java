@@ -15,6 +15,7 @@
  */
 package com.datadoghq.profiler.memleak;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -49,6 +50,7 @@ import java.nio.file.Path;
  *   <li>Combined cleanup: method_map cleanup + class unloading</li>
  * </ul>
  */
+@Tag("slow")
 public class GetLineNumberTableLeakTest extends AbstractDynamicClassTest {
 
   @Override

@@ -83,7 +83,7 @@ dependencies {
   // provides the (relocated) runtime classes and intercepts @Trace.
   "chaosCompileOnly"(libs.dd.trace.api)
   // ddprof-lib public API: compile-only; the patched dd-java-agent provides the
-  // classes at runtime for antagonists that call JavaProfiler/ThreadContext directly.
+  // classes at runtime for antagonists that call JavaProfiler directly.
   "chaosCompileOnly"(project(mapOf("path" to ":ddprof-lib", "configuration" to "debug")))
 }
 

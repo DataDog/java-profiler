@@ -16,6 +16,7 @@
 package com.datadoghq.profiler.memleak;
 
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.objectweb.asm.ClassWriter;
@@ -86,6 +87,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * is evidence of nothing more than "no crash was hit this time" for whatever code paths happened
  * to be exercised.
  */
+@Tag("slow")
 public class JMethodIDInvalidationStressTest extends AbstractDynamicClassTest {
 
   private static final int CHURN_THREADS = 4;

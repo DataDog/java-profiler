@@ -134,11 +134,11 @@ public class PrecheckTest extends AbstractProfilerTest {
         Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
         registerCurrentThreadForWallClockProfiling();
 
-        profiler.setContext(0x5100L, 0x5101L, 0L, 0x5101L);
+        profiler.setTraceContext(0x5100L, 0x5101L, 0L, 0x5101L, -1, null, -1, null);
         try {
             Thread.sleep(300);
         } finally {
-            profiler.clearContext();
+            profiler.clearTraceContext();
         }
 
         stopProfiler();
@@ -186,14 +186,13 @@ public class PrecheckTest extends AbstractProfilerTest {
     }
 
     /**
-     * Recreates the steady state left after a previous test initialized and then removed the Java
-     * ThreadContext: the native ProfiledThread still owns an initialized OTEP record, but the
-     * record is cleared and invalid.
+     * Recreates the steady state left after a previous test activated and then cleared the trace
+     * context: the native ProfiledThread still owns an initialized OTEP record, but the record is
+     * cleared and invalid.
      */
     private void leaveClearedInitializedContext() {
-        profiler.setContext(0x7700L, 0x7701L, 0L, 0x7701L);
-        profiler.clearContext();
-        profiler.resetThreadContext();
+        profiler.setTraceContext(0x7700L, 0x7701L, 0L, 0x7701L, -1, null, -1, null);
+        profiler.clearTraceContext();
     }
 
     @Override

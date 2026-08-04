@@ -843,7 +843,7 @@ void Profiler::writeHeapUsage(long value, bool live) {
   _locks[lock_index].unlock();
 }
 
-void Profiler::prewarmUnwinder() {
+bool Profiler::prewarmUnwinder() {
 #ifdef __linux__
   // J9 on aarch64 (and other JVMs) lazily loads libgcc_s.so.1 from its DWARF
   // unwinder during stack walks. When that happens inside a signal handler
@@ -864,7 +864,13 @@ void Profiler::prewarmUnwinder() {
   // dlopen by SONAME is the only mechanism that works under static-libgcc.
   // libgcc_s.so.1 has been the stable SONAME since 2002; a bump would
   // constitute a glibc/GCC C++ ABI break and is treated as a fixed contract.
-  (void)dlopen("libgcc_s.so.1", RTLD_LAZY | RTLD_GLOBAL);
+  //
+  // INJECT_FAULT_BOOL_LIKELY lets fault-injection builds force this to
+  // report failure without the library actually being absent, so
+  // checkState()'s "Missing libgcc_s.so" path can be exercised in CI.
+  return INJECT_FAULT_BOOL_LIKELY(dlopen("libgcc_s.so.1", RTLD_LAZY | RTLD_GLOBAL) != nullptr);
+#else
+  return true;
 #endif
 }
 
@@ -1011,13 +1017,13 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
     return 1;  // handled
   }
 
+  // Profiler::checkFault has its own check if we're in a protected stack walk.
+  // If the fault is from our protected walk, it will siglongjmp and never return.
+  // If it returns, the fault wasn't from our code.
+  Profiler::checkFault(thrd, siginfo, ucontext);
+
   if (VM::isHotspot()) {
     // the following checks require vmstructs and therefore HotSpot
-
-    // HotspotSupport::checkFault has its own check if we're in a protected stack walk.
-    // If the fault is from our protected walk, it will siglongjmp and never return.
-    // If it returns, the fault wasn't from our code.
-    HotspotSupport::checkFault(thrd);
 
     // Workaround for JDK-8313796 if needed. Setting cstack=dwarf also helps
     if (_need_JDK_8313796_workaround &&
@@ -1036,19 +1042,52 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
   return 0;  // not handled, safe to chain
 }
 
+static std::atomic<uintptr_t> profiler_min_address{0};
+static std::atomic<uintptr_t> profiler_max_address{0};
+
+#ifdef UNIT_TEST
+void Profiler::setAddressRangeForTest(uintptr_t min, uintptr_t max) {
+  profiler_min_address.store(min, std::memory_order_relaxed);
+  profiler_max_address.store(max, std::memory_order_relaxed);
+}
+
+void Profiler::resetAddressRangeForTest() {
+  profiler_min_address.store(0, std::memory_order_relaxed);
+  profiler_max_address.store(0, std::memory_order_relaxed);
+}
+#endif
+
 void Profiler::setupSignalHandlers() {
   // Do not re-run the signal setup (run only when VM has not been loaded yet)
   if (__sync_bool_compare_and_swap(&_signals_initialized, false, true)) {
+      // Initialize infrastructure before enabling signal handler
+
       // Eagerly initialize the Counters singleton off the signal path, before any
       // handler that increments counters is installed. The crash handler
       // (crashHandlerInternal -> SafeAccess::handle_safefetch) bumps
       // SAFEFETCH_FAILED / SAFECOPY_FAILED, and other async handlers bump the
-      // WALKVM_* counters. The first touch of the singleton lazily runs
+      // STACKWALK* counters. The first touch of the singleton lazily runs
       // aligned_alloc + memset and takes the C++ static-init guard lock — none of
       // which are async-signal-safe. Forcing that construction here guarantees the
       // signal path only ever performs lock-free atomic increments on the
       // already-allocated array.
       (void)Counters::getCounters();
+
+      // Get address range of java profiler library
+      Libraries* libs = Libraries::instance();
+      CodeCache* prof_lib = libs->findLibraryByAddress((const void*)&Profiler::setupSignalHandlers);
+      assert(prof_lib != nullptr);
+      profiler_min_address = reinterpret_cast<uintptr_t>(prof_lib->minAddress());
+      profiler_max_address = reinterpret_cast<uintptr_t>(prof_lib->maxAddress());
+      // Prevents the compiler from moving profiler_min_address/profiler_max_address stores pass
+      // signal handler setup.
+      std::atomic_signal_fence(std::memory_order_release);
+
+      #ifdef __FAULT_INJECTION__
+      // Reserve the PROT_NONE guard region used to poison memory-access sites.
+      // Done here (off the signal path) once handlers are installed.
+      faultinj::init();
+      #endif
 
       if (VM::isHotspot() || VM::isOpenJ9()) {
         // HotSpot and J9 tolerate interposed SIGSEGV/SIGBUS handler; other JVMs probably not
@@ -1062,11 +1101,6 @@ void Profiler::setupSignalHandlers() {
         // Patch sigaction GOT in libraries with broken signal handlers (already loaded)
         LibraryPatcher::patch_sigaction();
       }
-#ifdef __FAULT_INJECTION__
-      // Reserve the PROT_NONE guard region used to poison memory-access sites.
-      // Done here (off the signal path) once handlers are installed.
-      faultinj::init();
-#endif
   }
 }
 
@@ -1291,6 +1325,13 @@ Error Profiler::checkState() {
   if (s == ERROR) {
     return Error("Profiler encountered fatal error");
   } else if (s == NEW) {
+    // Force libgcc_s to load now (idempotent dlopen) so the JVM's DWARF
+    // unwinder cannot lazy-load it later from signal context.
+    if (!prewarmUnwinder()) {
+      _state.store(ERROR, std::memory_order_release);
+      return Error("Missing libgcc_s.so.1");
+    }
+
     // Make sure JVMSupport is initialized
     // In theory, it should be initialized in JVMTI::VMInit() callback,
     // but the callback arrives too late, after this method is called.
@@ -1306,6 +1347,7 @@ Error Profiler::checkState() {
 
 Error Profiler::init() {
   MutexLocker ml(_state_lock);
+
   State s = state();
   if (s == ERROR) {
     return Error("Profiler encountered fatal error");
@@ -1335,10 +1377,6 @@ Error Profiler::start(Arguments &args, bool reset) {
   if (error) {
     return error;
   }
-
-  // Force libgcc_s to load now (idempotent dlopen) so the JVM's DWARF
-  // unwinder cannot lazy-load it later from signal context.
-  prewarmUnwinder();
 
   error = checkJvmCapabilities();
   if (error) {
@@ -1980,4 +2018,30 @@ int Profiler::status(char* status, int max_len) {
     _cpu_engine != nullptr ? _cpu_engine->name() : "None",
     _wall_engine != nullptr ? _wall_engine->name() : "None",
     _alloc_engine != nullptr ? _alloc_engine->name() : "None");
+}
+
+void Profiler::checkFault(ProfiledThread* thrd, siginfo_t *siginfo, void *ucontext) {
+    (void)siginfo;
+    // Check if siglongjmp is setup for this thread
+    if (thrd == nullptr || !thrd->isProtected()) {
+        return;
+    }
+
+    // Check if the fault is originated from java profiler
+    const uintptr_t pc = (uintptr_t)StackFrame(ucontext).pc();
+    const uintptr_t min = profiler_min_address.load(std::memory_order_relaxed);
+    const uintptr_t max = profiler_max_address.load(std::memory_order_relaxed);
+
+    // If the profiler address range is not initialized (e.g. unit tests), fall back
+    // to recovering unconditionally when a protection context is installed.
+    #if !defined(UNIT_TEST)
+      assert(min != 0 && max != 0);
+    #endif
+    if ((min != 0 && max != 0) && (pc < min || pc >= max)) {
+      return;
+    }
+
+    thrd->resetCrashHandler();
+    Counters::increment(STACKWALK_LONGJMP_RECOVERED);
+    siglongjmp(*thrd->getJmpCtx(), 1);
 }

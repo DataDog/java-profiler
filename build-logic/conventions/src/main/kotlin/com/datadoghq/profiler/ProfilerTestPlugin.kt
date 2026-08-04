@@ -16,7 +16,6 @@ import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Exec
 import org.gradle.api.tasks.SourceSetContainer
 import org.gradle.api.tasks.testing.Test
-import java.io.File
 import java.time.Duration
 import javax.inject.Inject
 
@@ -78,60 +77,6 @@ import javax.inject.Inject
  * ```
  */
 class ProfilerTestPlugin : Plugin<Project> {
-
-    /**
-     * Major version of the *test* JVM, read from its `release` file (`JAVA_VERSION="..."`) rather
-     * than by executing the launcher.
-     *
-     * Executing `$JAVA_TEST_HOME/bin/java -version` (PlatformUtils.testJvmMajorVersion()) is
-     * unreliable here: in the musl split-JDK matrix it has been observed to report the build JDK
-     * (21) even when the test JVM is JDK 8, which put a JDK-21-only `--add-exports` onto a JDK-8
-     * launcher and aborted it. Reading the `release` file is a pure file read of the same
-     * JAVA_TEST_HOME the executable is resolved from — deterministic, no subprocess, no exec-format
-     * or PATH hazards. Returns 0 when it cannot be determined (missing/old `release`), so callers
-     * fail safe: they omit the flag, the profiler degrades to thread-scoped storage, and the
-     * carrier-scoping tests skip — never an abort.
-     */
-    private fun testJvmMajorVersionFromRelease(): Int = try {
-        val release = File(PlatformUtils.testJavaHome(), "release")
-        val version = release.takeIf { it.isFile }
-            ?.readLines()
-            ?.firstOrNull { it.startsWith("JAVA_VERSION=") }
-            ?.substringAfter('=')?.trim()?.trim('"')
-        // "1.8.0_452" -> 8 ; "21.0.5" -> 21
-        val parts = version?.split('.').orEmpty()
-        val majorToken = when {
-            parts.isEmpty() -> ""
-            parts[0] == "1" && parts.size > 1 -> parts[1]
-            else -> parts[0]
-        }
-        majorToken.takeWhile { it.isDigit() }.toIntOrNull() ?: 0
-    } catch (e: Exception) {
-        0
-    }
-
-    /**
-     * JVM args required to enable carrier-scoped OTEL context storage
-     * (`OtelContextStorage.Mode.CARRIER`), or an empty list when the test JVM does not support it.
-     *
-     * Carrier scoping resolves `jdk.internal.misc.CarrierThreadLocal`, which lives in a
-     * non-exported package, so it needs `--add-exports java.base/jdk.internal.misc=ALL-UNNAMED`.
-     * That type only exists on JDK 21+, and the flag *aborts* a Java 8 JVM ("Unrecognized option"),
-     * so it is gated on the version of the actual test JVM.
-     *
-     * MUST be evaluated at task execution time (inside doFirst), not configuration time: the test
-     * JVM is selected via JAVA_TEST_HOME, which the CI only makes resolvable at execution time (see
-     * the `executable` assignments below).
-     */
-    private fun carrierExportJvmArgs(project: Project): List<String> {
-        val major = testJvmMajorVersionFromRelease()
-        val enabled = major >= 21
-        project.logger.info(
-            "ddprof: carrier --add-exports gate — testJavaHome={}, detected major={}, flag {}",
-            PlatformUtils.testJavaHome(), major, if (enabled) "ADDED" else "omitted"
-        )
-        return if (enabled) listOf("--add-exports=java.base/jdk.internal.misc=ALL-UNNAMED") else emptyList()
-    }
 
     override fun apply(project: Project) {
         val extension = project.extensions.create(
@@ -245,6 +190,23 @@ class ProfilerTestPlugin : Plugin<Project> {
     }
 
     /**
+     * Task name for a given config, shared between the glibc Test task and the musl Exec task
+     * so both platforms expose the same testXxx/testSlowXxx naming.
+     */
+    private fun testTaskName(configName: String, slow: Boolean): String {
+        val capitalized = configName.replaceFirstChar { it.uppercase() }
+        return if (slow) "testSlow$capitalized" else "test$capitalized"
+    }
+
+    private fun testTaskDescription(configName: String, slow: Boolean, platformSuffix: String = ""): String {
+        return if (slow) {
+            "Runs the slow/e2e test suite with the $configName library variant$platformSuffix"
+        } else {
+            "Runs unit tests with the $configName library variant$platformSuffix"
+        }
+    }
+
+    /**
      * Create native Test task for glibc/macOS (normal path).
      * Uses Gradle's Test task with -Ptests property support.
      */
@@ -253,11 +215,13 @@ class ProfilerTestPlugin : Plugin<Project> {
         extension: ProfilerTestExtension,
         testConfig: TestTaskConfiguration,
         testCfg: Configuration,
-        sourceSets: SourceSetContainer
+        sourceSets: SourceSetContainer,
+        slow: Boolean = false
     ) {
-        project.tasks.register("test${testConfig.configName.replaceFirstChar { it.uppercase() }}", Test::class.java) {
+        val taskName = testTaskName(testConfig.configName, slow)
+        project.tasks.register(taskName, Test::class.java) {
             val testTask = this
-            testTask.description = "Runs unit tests with the ${testConfig.configName} library variant"
+            testTask.description = testTaskDescription(testConfig.configName, slow)
             testTask.group = "verification"
             testTask.onlyIf { testConfig.isActive && !project.hasProperty("skip-tests") }
 
@@ -271,7 +235,14 @@ class ProfilerTestPlugin : Plugin<Project> {
             testTask.classpath = testConfig.testClasspath
 
             // Use JUnit Platform
-            testTask.useJUnitPlatform()
+            testTask.useJUnitPlatform {
+                val platformOptions = this
+                if (slow) {
+                    platformOptions.includeTags("slow")
+                } else {
+                    platformOptions.excludeTags("slow")
+                }
+            }
 
             // Configure Java executable - bypasses toolchain system
             testTask.setExecutable(PlatformUtils.testJavaExecutable())
@@ -311,8 +282,6 @@ class ProfilerTestPlugin : Plugin<Project> {
             testTask.doFirst {
                 val allArgs = mutableListOf<String>()
                 allArgs.addAll(testConfig.standardJvmArgs)
-                // Version-gated at execution time, when the real test JVM is resolvable.
-                allArgs.addAll(carrierExportJvmArgs(project))
 
                 if (extension.nativeLibDir.isPresent) {
                     allArgs.add("-Djava.library.path=${extension.nativeLibDir.get().asFile.absolutePath}")
@@ -365,11 +334,13 @@ class ProfilerTestPlugin : Plugin<Project> {
         extension: ProfilerTestExtension,
         testConfig: TestTaskConfiguration,
         testCfg: Configuration,
-        sourceSets: SourceSetContainer
+        sourceSets: SourceSetContainer,
+        slow: Boolean = false
     ) {
-        project.tasks.register("test${testConfig.configName.replaceFirstChar { it.uppercase() }}", Exec::class.java) {
+        val taskName = testTaskName(testConfig.configName, slow)
+        project.tasks.register(taskName, Exec::class.java) {
             val execTask = this
-            execTask.description = "Runs unit tests with the ${testConfig.configName} library variant (musl workaround)"
+            execTask.description = testTaskDescription(testConfig.configName, slow, " (musl workaround)")
             execTask.group = "verification"
             execTask.onlyIf { testConfig.isActive && !project.hasProperty("skip-tests") }
 
@@ -386,8 +357,6 @@ class ProfilerTestPlugin : Plugin<Project> {
 
                 // JVM args
                 allArgs.addAll(testConfig.standardJvmArgs)
-                // Version-gated at execution time, when the real test JVM (JAVA_TEST_HOME) is resolvable.
-                allArgs.addAll(carrierExportJvmArgs(project))
                 if (extension.nativeLibDir.isPresent) {
                     allArgs.add("-Djava.library.path=${extension.nativeLibDir.get().asFile.absolutePath}")
                 }
@@ -403,6 +372,14 @@ class ProfilerTestPlugin : Plugin<Project> {
                 val testsFilter = project.findProperty("tests") as String?
                 if (testsFilter != null) {
                     allArgs.add("-Dtest.filter=$testsFilter")
+                }
+
+                // Carve out the "slow" suite the same way the glibc Test task does via
+                // useJUnitPlatform { includeTags/excludeTags }
+                if (slow) {
+                    allArgs.add("-Dtest.tags.include=slow")
+                } else {
+                    allArgs.add("-Dtest.tags.exclude=slow")
                 }
 
                 // Classpath (includes custom test runner)
@@ -508,9 +485,11 @@ class ProfilerTestPlugin : Plugin<Project> {
             if (isMuslSystem) {
                 project.logger.info("Creating Exec task for $configName (musl workaround, LIBC=${System.getenv("LIBC")})")
                 createExecTestTask(project, extension, testConfig, testCfg, sourceSets)
+                createExecTestTask(project, extension, testConfig, testCfg, sourceSets, slow = true)
             } else {
                 project.logger.info("Creating Test task for $configName (glibc/macOS, LIBC=${System.getenv("LIBC")})")
                 createTestTask(project, extension, testConfig, testCfg, sourceSets)
+                createTestTask(project, extension, testConfig, testCfg, sourceSets, slow = true)
             }
 
             // Create application tasks for specified configs
@@ -654,22 +633,25 @@ class ProfilerTestPlugin : Plugin<Project> {
             }
         }
 
-        // Wire up gtest -> test dependencies (C++ tests run before Java tests)
+        // Wire up gtest -> test dependencies (C++ tests run before Java tests).
+        // Both the regular and slow/e2e test tasks get the same gtest dependency: each is an
+        // independent Gradle invocation (e.g. a separate CI job), so gtest coverage from a
+        // "sibling" regular test job doesn't carry over to a testSlow-only invocation.
         project.gradle.projectsEvaluated {
             configNames.forEach { cfgName ->
                 val capitalizedCfgName = cfgName.replaceFirstChar { it.uppercaseChar() }
-                val testTaskName = "test$capitalizedCfgName"
-                val testTask = project.tasks.findByName(testTaskName)
                 val profilerLibProject = project.rootProject.findProject(profilerLibProjectPath)
+                val gtestTaskName = "gtest${capitalizedCfgName}"
 
-                if (profilerLibProject != null && testTask != null) {
-                    // gtest runs before test (C++ unit tests run before Java integration tests)
-                    val gtestTaskName = "gtest${capitalizedCfgName}"
-                    try {
-                        val gtestTask = profilerLibProject.tasks.named(gtestTaskName)
-                        testTask.dependsOn(gtestTask)
-                    } catch (e: org.gradle.api.UnknownTaskException) {
-                        project.logger.info("Task $gtestTaskName not found in $profilerLibProjectPath - gtest may not be available")
+                listOf("test$capitalizedCfgName", "testSlow$capitalizedCfgName").forEach { taskName ->
+                    val testTask = project.tasks.findByName(taskName)
+                    if (profilerLibProject != null && testTask != null) {
+                        try {
+                            val gtestTask = profilerLibProject.tasks.named(gtestTaskName)
+                            testTask.dependsOn(gtestTask)
+                        } catch (e: org.gradle.api.UnknownTaskException) {
+                            project.logger.info("Task $gtestTaskName not found in $profilerLibProjectPath - gtest may not be available")
+                        }
                     }
                 }
             }
@@ -748,12 +730,12 @@ abstract class ProfilerTestExtension @Inject constructor(
 
     init {
         // Standard JVM arguments for profiler testing.
-        // NOTE: JDK-version-gated flags (e.g. the carrier-scoping --add-exports) must NOT be
-        // added here. This convention is computed at configuration time, where JAVA_TEST_HOME
-        // is not yet resolvable and PlatformUtils.testJavaHome() falls back to the *build* JDK
-        // (JAVA_HOME) — which misdetects in the musl split-JDK CI (build JDK 21, test JDK 8) and
-        // would emit a JDK-21 flag onto a JDK-8 test JVM. Version-gated flags are added at
-        // execution time in the task doFirst blocks instead (see ProfilerTestPlugin).
+        // NOTE: JDK-version-gated flags must NOT be added here. This convention is computed at
+        // configuration time, where JAVA_TEST_HOME is not yet resolvable and
+        // PlatformUtils.testJavaHome() falls back to the *build* JDK (JAVA_HOME) — which
+        // misdetects in the musl split-JDK CI (build JDK 21, test JDK 8) and would emit a
+        // JDK-21 flag onto a JDK-8 test JVM. Version-gated flags belong in the task doFirst
+        // blocks instead (see ProfilerTestPlugin), where the real test JVM is resolvable.
         standardJvmArgs.convention(listOf(
             "-Djdk.attach.allowAttachSelf",      // Allow profiler to attach to self
             "-Djol.tryWithSudo=true",            // JOL memory layout analysis

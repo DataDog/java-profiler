@@ -35,6 +35,9 @@ class JVMSupport {
     static Mutex _initialization_lock;
     static volatile JMethodIDLoadStats jmethodID_load_state;
 
+    // Call JVM AsyncGetCallTrace implementation
+    static inline void jvmAsyncGetCallTrace(ASGCT_CallTrace *frames, int max_depth, void* ucontext);
+
     static int asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* ucontext);
     // J9 and Zing shared implementation, load jmethodIDs of the method unconditionally.
     static bool loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
