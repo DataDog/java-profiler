@@ -48,24 +48,4 @@ if [ "$MODE" = "publish" ] || [ "$MODE" = "all" ]; then
     exit 1
   fi
   ./gradlew -Pskip-native -Pskip-tests -Pddprof_version="${LIB_VERSION}" -PbuildInfo.build.number=$CI_JOB_ID -Pwith-libs="$(pwd)/libs" publishToSonatype closeAndReleaseSonatypeStagingRepository --exclude-task compileFuzzer --max-workers=1 --no-build-cache --stacktrace --info --no-watch-fs --no-daemon
-
-  # Snapshot artifacts publish straight to the Central Portal snapshot repo (no
-  # staging/close/release step), but the repo can take a while to make a freshly
-  # published artifact fetchable. benchmarks-trigger downloads it immediately
-  # after this job succeeds, so poll until it's actually there before returning.
-  if [[ "${LIB_VERSION}" == *-SNAPSHOT ]]; then
-    JAR_URL="https://central.sonatype.com/repository/maven-snapshots/com/datadoghq/ddprof/${LIB_VERSION}/ddprof-${LIB_VERSION}-debug.jar"
-    echo "=== Waiting for snapshot artifact to propagate: ${JAR_URL} ==="
-    for attempt in $(seq 1 20); do
-      if curl -sf -o /dev/null "${JAR_URL}"; then
-        echo "Snapshot artifact available after ${attempt} attempt(s)"
-        break
-      fi
-      if [ "${attempt}" -eq 20 ]; then
-        echo "ERROR: snapshot artifact still not available after ${attempt} attempts"
-        exit 1
-      fi
-      sleep 15
-    done
-  fi
 fi
