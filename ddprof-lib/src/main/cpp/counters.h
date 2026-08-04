@@ -134,10 +134,9 @@
   X(SAFECOPY_FAILED, "safecopy_failed")                                       \
   X(SAFEFETCH_FAILED, "safefetch_failed")                                     \
   X(STACKWALK_LONGJMP_RECOVERED, "stackwalk_longjmp_recovered")               \
-  /* writeElement() guards against a corrupted/dangling JfrMetadata tree      \
-   * (PROF-15075); root cause unconfirmed as of this counter's addition, see  \
-   * docs/sphinx/specs/2026-07-27-sigsegv-in-recording-writeelement.md. These \
-   * counters are the durable signal for spotting a recurrence. */            \
+  /* writeElement() guards against a corrupted/dangling JfrMetadata tree.     \
+   * Root cause is still unconfirmed, so these counters are the durable       \
+   * signal for spotting a recurrence. */                                     \
   X(METADATA_TREE_NULL_CHILD, "metadata_tree_null_child")                     \
   X(METADATA_TREE_DEPTH_EXCEEDED, "metadata_tree_depth_exceeded")             \
   DD_COUNTER_TABLE_FAULT_INJECTION(X)                                          \

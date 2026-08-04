@@ -4,9 +4,9 @@
  */
 
 // Regression tests for Recording::countSerializableChildren(), the helper
-// writeElement() uses (PROF-15075) to decide which children of a
-// JfrMetadata::Element tree get serialized when the tree is corrupted
-// (null children) or unexpectedly deep (cycles / excessive recursion).
+// writeElement() uses to decide which children of a JfrMetadata::Element
+// tree get serialized when the tree is corrupted (null children) or
+// unexpectedly deep (cycles / excessive recursion).
 //
 // Recording itself can't be constructed in a plain gtest binary -- its
 // constructor unconditionally calls VM::jvmti()->GetAvailableProcessors(),

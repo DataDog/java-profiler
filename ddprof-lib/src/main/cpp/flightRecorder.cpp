@@ -1174,10 +1174,9 @@ void Recording::writeElement(Buffer *buf, const Element *e, int depth) {
   }
 
   if (depth > 10) {
-    // Counter is the durable signal here: stderr from an embedded native lib
-    // is rarely captured/monitored, and this guard exists precisely because
-    // we don't yet know what corrupts the tree (PROF-15075) — an unmonitored
-    // log line would let that recur invisibly forever.
+    // stderr from an embedded native lib is rarely captured or monitored, and
+    // we don't yet know what corrupts the tree, so the counter is the durable
+    // signal here — an unmonitored log line would let it recur invisibly.
     Counters::increment(METADATA_TREE_DEPTH_EXCEEDED);
     fprintf(stderr, "[ddprof] [ERROR] writeElement depth limit exceeded, truncating output\n");
     return;

@@ -190,8 +190,7 @@ private:
   // at the given depth, applying the same null-child and depth-limit skip
   // rules the recursive writer uses. Both the child_count written to the
   // buffer and the recursion in writeElement() call this single function, so
-  // the encoded count can never diverge from what actually gets serialized
-  // (PROF-15075).
+  // the encoded count can never diverge from what actually gets serialized.
   static size_t countSerializableChildren(
       const std::vector<const Element *> &children, int depth);
 
