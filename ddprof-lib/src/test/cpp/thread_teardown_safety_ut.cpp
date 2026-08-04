@@ -20,7 +20,7 @@
 
 #include "guards.h"
 #include "nativeMem.h"
-#include "threadLocalData.h"
+#include "threadLocalData.inline.h"
 
 #include <atomic>
 #include <pthread.h>
