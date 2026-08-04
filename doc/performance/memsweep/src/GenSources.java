@@ -36,6 +36,27 @@ public class GenSources {
                         "}\n";
                 write(new File(dir, name + ".java"), src);
             }
+        } else if (mode.equals("classesM")) {
+            // N classes, each with M methods (m0..m(M-1), same body as `classes`
+            // mode's single `compute`) -- isolates methods-per-class as its own
+            // variable, to test whether overhead tracks distinct classes touched
+            // or distinct methods touched (the `classes` mode above can't tell
+            // the two apart, since every class there has exactly one method).
+            int methodsPerClass = Integer.parseInt(args[3]);
+            for (int i = 0; i < n; i++) {
+                String name = "GenClassM" + i;
+                StringBuilder sb = new StringBuilder();
+                sb.append("public class ").append(name).append(" {\n");
+                for (int m = 0; m < methodsPerClass; m++) {
+                    sb.append("  public static long m").append(m).append("(long x) {\n")
+                      .append("    double s = 0;\n")
+                      .append("    for (int j = 0; j < 200; j++) s += Math.sqrt(x + j);\n")
+                      .append("    return (long) s;\n")
+                      .append("  }\n");
+                }
+                sb.append("}\n");
+                write(new File(dir, name + ".java"), sb.toString());
+            }
         } else if (mode.equals("allocs")) {
             // N distinct short-lived object shapes (varying field-array size so each
             // class is a genuinely different allocation size/shape), each with a

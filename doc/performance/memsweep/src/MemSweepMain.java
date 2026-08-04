@@ -11,9 +11,9 @@ import java.util.concurrent.CountDownLatch;
 /**
  * Standalone synthetic-workload driver for the java-profiler native-memory
  * sweep, run with the agent attached via -agentpath. Modes: threads, traces,
- * classes, allocs. traces/classes/allocs load classes precompiled by
- * GenSources+javac ahead of time (outside this process) so the profiled JVM
- * never loads the compiler's own classes.
+ * classes, classesM, allocs. traces/classes/classesM/allocs load classes
+ * precompiled by GenSources+javac ahead of time (outside this process) so
+ * the profiled JVM never loads the compiler's own classes.
  *
  * Every sampled thread must call JavaProfiler.addThread() -- the wall-clock
  * engine here only samples explicitly registered threads, it does not
@@ -45,6 +45,7 @@ public class MemSweepMain {
             case "threads": runThreads(n, durationMs, profiler); break;
             case "traces": runTraces(n, durationMs, genDir); break;
             case "classes": runClasses(n, durationMs, genDir); break;
+            case "classesM": runClassesM(n, Integer.parseInt(args[4]), durationMs, genDir); break;
             case "allocs": runAllocs(n, durationMs, genDir); break;
             default: throw new IllegalArgumentException(mode);
         }
@@ -107,6 +108,34 @@ public class MemSweepMain {
         long sink = 0;
         while (System.currentTimeMillis() < deadline) {
             for (int i = 0; i < n; i++) sink += (long) methods.get(i).invoke(null, (long) i);
+        }
+        if (sink == Long.MIN_VALUE) throw new AssertionError();
+        if (classes.size() != n) throw new AssertionError();
+    }
+
+    // N classes, each with M methods, ALL of which get invoked every cycle --
+    // unlike `classes` above, this can distinguish "overhead tracks distinct
+    // classes touched" from "overhead tracks distinct methods touched", since
+    // classes-touched and methods-touched no longer move together.
+    private static void runClassesM(int n, int methodsPerClass, long durationMs, File genDir) throws Exception {
+        URLClassLoader loader = new URLClassLoader(new URL[]{genDir.toURI().toURL()}, MemSweepMain.class.getClassLoader());
+        List<Class<?>> classes = new ArrayList<>();
+        List<Method[]> methodsByClass = new ArrayList<>();
+        for (int i = 0; i < n; i++) {
+            Class<?> c = Class.forName("GenClassM" + i, true, loader);
+            classes.add(c); // keep alive so it can't be unloaded mid-sweep
+            Method[] ms = new Method[methodsPerClass];
+            for (int m = 0; m < methodsPerClass; m++) ms[m] = c.getMethod("m" + m, long.class);
+            methodsByClass.add(ms);
+        }
+
+        long deadline = System.currentTimeMillis() + durationMs;
+        long sink = 0;
+        while (System.currentTimeMillis() < deadline) {
+            for (int i = 0; i < n; i++) {
+                Method[] ms = methodsByClass.get(i);
+                for (int m = 0; m < ms.length; m++) sink += (long) ms[m].invoke(null, (long) i);
+            }
         }
         if (sink == Long.MIN_VALUE) throw new AssertionError();
         if (classes.size() != n) throw new AssertionError();

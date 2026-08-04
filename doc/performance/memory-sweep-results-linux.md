@@ -16,16 +16,22 @@ two platforms are called out inline where they matter.
 **What drives memory overhead.** Thread count adds a small, linear,
 well-understood cost (~824 bytes/thread inside the profiler itself); the
 much larger ~400 KB/thread RSS growth alongside it is JVM/OS thread
-machinery the profiler doesn't cause and can't see into. **Class and
-call-graph diversity is the dimension that actually matters for
-customer-facing sizing**: a workload whose sampled stacks touch few
-distinct classes/methods costs the profiler close to nothing regardless of
-scale; a workload with a wide call graph (framework-heavy, generics/lambda-
-heavy, microservice-style code) drives real, substantial, scaling overhead
-— measured at ~0 MB at 2,000 sampled classes up to ~102 MB at 150,000, in a
-dedicated 80-run with/without-agent comparison, growing at a fairly
-consistent ~1.2 KB per class actually appearing in a sampled stack (not per
-class merely loaded).
+machinery the profiler doesn't cause and can't see into. **Call-graph
+diversity is the dimension that actually matters for customer-facing
+sizing — specifically, the number of distinct *methods* (equivalently,
+distinct call-trace shapes) actually appearing in sampled stacks, not the
+number of distinct classes**: a workload whose sampled stacks touch few
+distinct methods costs the profiler close to nothing regardless of scale;
+a workload with a wide call graph (framework-heavy, generics/lambda-heavy,
+microservice-style code) drives real, substantial, scaling overhead —
+measured at ~0 MB at 2,000 sampled classes up to ~102 MB at 150,000
+(one method per class in that sweep, so "classes touched" and "methods
+touched" moved together and looked indistinguishable), growing at a
+fairly consistent ~1-1.4 KB per touched method. A dedicated follow-up
+disentangling the two (same 2,000 classes, but 100 methods each instead of
+1) confirmed it's methods that matter: overhead jumped to ~74 MB — in the
+same range as the 150,000-class result — purely from adding methods to
+the *same* small set of classes.
 
 **Where that ~102 MB (at N=150,000) comes from.** About a third (~35 MB) is
 visible to the JVM's own Native Memory Tracking and has a confirmed
@@ -72,18 +78,19 @@ Everything needed is under `doc/performance/memsweep/` in this checkout:
 ```
 memsweep/
 ├── src/
-│   ├── MemSweepMain.java          # threads / traces / classes / allocs workloads
-│   ├── GenSources.java            # writes .java sources for traces/classes/allocs,
+│   ├── MemSweepMain.java          # threads / traces / classes / classesM / allocs workloads
+│   ├── GenSources.java            # writes .java sources for traces/classes/classesM/allocs,
 │   │                              # compiled externally
 │   └── LiveThreadLocalSweep.java  # dedicated thread-count-only program, see below
 ├── run_sweep.sh                   # one sweep point -> CSV line with RSS + NM_* counters
 ├── run_threadlocal_live.sh        # thread-count-only, reads NM_THREAD_LOCAL live
 ├── run_nmt.sh                     # one sweep point with JVM Native Memory Tracking
 ├── run_repeated_sweep.sh          # repeated-measures with/without-agent comparison, see below
+├── run_repeated_sweep_classesm.sh # same, for classesM mode (extra methods-per-class parameter)
 └── extract.py                     # parses `jfr print --json` output for native_mem_* counters
 ```
 
-Four independent workload modes, each isolating one dimension:
+Five independent workload modes, each isolating one dimension:
 
 - **`threads N`** — spawns N daemon threads, each busy-looping
   (`Math.sqrt`) for the run duration. Driven by the wall-clock engine
@@ -94,12 +101,18 @@ Four independent workload modes, each isolating one dimension:
 - **`classes N`** — one thread, N distinct precompiled classes each with one
   method, invoked in a cycle via reflection. Isolates class/method diversity
   from call-trace shape variety (same call site each time). Wall-clock
-  engine.
+  engine. **Every class here has exactly one method, so this mode alone
+  cannot distinguish "cost tracks classes touched" from "cost tracks
+  methods touched" — see `classesM` below.**
+- **`classesM N M`** — like `classes`, but N classes each with M methods,
+  all M invoked every cycle. Lets classes-touched and methods-touched vary
+  independently, specifically to test which one drives overhead (see
+  "Isolating what the profiler itself adds: class diversity" below).
 - **`allocs N`** — one thread, N distinct precompiled short-lived object
   shapes (varying field count, so each is a genuinely different allocation
   size), allocated and discarded in a cycle. Driven by the allocation-
   sampling engine (`memory=<interval>:a`) instead of wall-clock, since none
-  of the other three modes allocate any Java objects.
+  of the other modes allocate any Java objects.
 
 Classes/methods for `traces`/`classes`/`allocs` are precompiled by an
 **external, unprofiled `javac` process** before the profiled JVM starts —
@@ -495,13 +508,13 @@ MB for reps 1–8, most likely a batch-timing/system-cache effect rather than
 anything agent-specific; it cancels out in the delta.)
 
 **This is not a step function, and not flat — it's closer to roughly linear
-in how many classes the workload actually samples.** Below ~2,000 classes
-the profiler adds nothing measurable; above that, overhead grows
-continuously with class diversity. Naively dividing by raw class count
-gives a per-class rate that drifts (1.12 KB/class at 20K, 0.68 at 60K/150K —
-30% coefficient of variation). Normalizing instead by **classes actually
-appearing in a sampled stack** (checked directly by grepping distinct class
-names out of each N's JFR file) tightens this considerably:
+in how much of the workload's call graph the sampler actually records.**
+Below ~2,000 classes the profiler adds nothing measurable; above that,
+overhead grows continuously. Naively dividing by raw class count gives a
+per-class rate that drifts (1.12 KB/class at 20K, 0.68 at 60K/150K — 30%
+coefficient of variation). Normalizing instead by **classes actually
+appearing in a sampled stack** (checked directly by grepping distinct
+class names out of each N's JFR file) tightens this considerably:
 
 | N classes | distinct classes touched by a sample | coverage | Δ per touched class |
 |---|---|---|---|
@@ -510,15 +523,47 @@ names out of each N's JFR file) tightens this considerably:
 | 60,000 | 43,772 | 73.0% | 0.94 KB |
 | 150,000 | 84,640 | 56.4% | 1.24 KB |
 
-The per-touched-class rate (mean 1.18 KB, 19% coefficient of variation) is
-tighter than the per-raw-N rate, consistent with the overhead tracking how
-much distinct code the workload's sampled stacks actually reference, not
-how many classes merely exist. A workload with a wide call graph (many
-distinct classes/methods/lambdas actually appearing in stacks, as
-generic/framework-heavy or microservice-style Java code often does) drives
-this cost; raw class-loading volume with narrow, repetitive call graphs
-does not. `NM_CALLTRACE`'s own resize is a real step function internally,
-but it's a small piece (15–25 MB) of a much larger, smoother-scaling total.
+But every class in this sweep's workload has exactly one method, so
+"classes touched" and "methods touched" are the same number here by
+construction — this table alone can't tell whether classes or methods are
+the real driver. A dedicated follow-up disentangles them: `classesM` mode
+generates N classes with a configurable M methods each, all invoked every
+cycle, so classes-touched and methods-touched can move independently. At
+**N=2,000 classes with 100 methods each** (200,000 total methods, still
+only 2,000 total classes), the run touched all 2,000 classes but only
+96,953 of the 200,000 methods (48.5% method coverage) — and cost **+74.3
+MB (±19.2 MB SE, 10 reps)**, in the same range as the 150,000-class,
+one-method-each result (+102.4 MB, 84,640 touched), despite using **75x
+fewer classes**. `NM_CALLTRACE` confirms this without any RSS-level noise
+at all: both runs land on the identical 48.5 MiB hash-table capacity,
+since both touch a comparable number of distinct call-trace shapes — the
+structure never counted classes, only shapes, to begin with.
+
+| Configuration | Classes touched | Methods touched | RSS Δ | Rate per touched method |
+|---|---|---|---|---|
+| N=2,000, 1 method/class | 1,872 | 1,872 | ~0 (noise) | — |
+| N=20,000, 1 method/class | 16,311 | 16,311 | +21.9 MB | 1.38 KB |
+| N=150,000, 1 method/class | 84,640 | 84,640 | +102.4 MB | 1.24 KB |
+| N=2,000, 100 methods/class | 2,000 | 96,953 | +74.3 MB | 0.78 KB |
+
+**The driver is the number of distinct methods (equivalently, distinct
+call-trace shapes) actually appearing in sampled stacks, not the number of
+distinct classes.** The ~1.2 KB/touched-*class* rate from the single-
+method sweep and the ~0.78 KB/touched-*method* rate from the multi-method
+follow-up are the same underlying quantity, not two separate findings — a
+workload with a wide call graph (many distinct methods/lambdas actually
+appearing in stacks, as generic/framework-heavy or microservice-style Java
+code often does) drives this cost regardless of how many classes those
+methods happen to be spread across; raw class-loading volume with narrow,
+repetitive call graphs does not. (A smaller-contrast attempt at this same
+question — N=20,000 classes with 5 methods each — was inconclusive: the
+5x-methods condition turned out far noisier, run to run, than the
+1-method baseline at the same N, for reasons not yet identified, and the
+modest predicted separation didn't clear that noise. The 100x-methods
+design above was chosen specifically to produce a large enough contrast to
+be decisive despite that.) `NM_CALLTRACE`'s own resize is a real step
+function internally, but it's a small piece (15–25 MB) of a much larger,
+smoother-scaling total tied to this same touched-method-count variable.
 
 #### NMT category breakdown
 
@@ -579,6 +624,20 @@ by ~240 MB across just 5 reps of the *same* condition, dominated by
 GC/heap-resize timing noise at this sample size. **This is noise, not a
 signal in either direction**; it would need many more reps to attribute at
 all.
+
+**One nuance the `classesM` finding above raises but doesn't resolve**:
+jmethodID preloading fires on `ClassPrepare`, once per *class*, regardless
+of whether that class's methods ever get sampled — so on its own terms
+this specific mechanism should scale with total classes loaded (and their
+method counts), not with touched-method count the way the overall RSS
+delta does. An attempt to check this directly (comparing NMT category
+deltas between 1-method and 5-method classes at the same N) didn't give a
+clean answer — the category-level deltas were as noisy as the overall RSS
+figure at that configuration, in some cases flipping sign entirely. How
+jmethodID preloading's own contribution interacts with the
+touched-vs-loaded distinction remains open; the touched-method-count
+finding above is solid at the aggregate RSS/`NM_CALLTRACE` level, not yet
+decomposed back down to this specific mechanism.
 
 ## Investigating the unattributed remainder
 
@@ -776,18 +835,24 @@ diminishing returns.
    to its capacity cap — a meaningfully different long-term profile for two
    structures that otherwise look similar.
 5. **For quantifying total profiler-attributable RSS overhead to a
-   customer, class/call-graph diversity is the dimension that matters, and
-   it does not behave like a small fixed cost the way thread count does.**
-   Measured via a dedicated with/without-agent sweep: effectively 0 MB
-   overhead at 2,000 distinct classes sampled, growing roughly linearly with
-   sampled-class count to ~102 MB at 150,000 — driven by how many distinct
-   classes/methods actually appear in sampled stacks. A workload with a
-   narrow call graph stays near the small-and-flat regime regardless of
-   scale or thread count; a workload with a wide call graph does not, and
-   this is the dimension worth asking a customer about before quoting a
-   number. **This ~102 MB figure is steady-state only** — sampled while the
-   process runs, before any chunk write — and does not include the chunk-
-   flush burst from point 3.
+   customer, call-graph diversity is the dimension that matters — and
+   specifically, the number of distinct *methods* actually appearing in
+   sampled stacks, not the number of distinct classes.** A dedicated
+   with/without-agent sweep at fixed methods-per-class found: effectively
+   0 MB overhead at 2,000 distinct classes sampled, growing roughly
+   linearly with sampled-class count to ~102 MB at 150,000. A follow-up
+   holding class count fixed at 2,000 while adding methods (100 instead of
+   1) reached ~74 MB — confirming it's touched-method count, not class
+   count, doing the work; the first sweep's "classes" and "methods" moved
+   together only because that benchmark gave every class exactly one
+   method. A workload with a narrow call graph stays near the small-and-
+   flat regime regardless of how many classes or threads exist; a workload
+   with a wide call graph (many distinct methods actually invoked, whether
+   spread across few classes or many) does not, and this is the dimension
+   worth asking a customer about before quoting a number. **This ~102 MB
+   figure is steady-state only** — sampled while the process runs, before
+   any chunk write — and does not include the chunk-flush burst from
+   point 3.
 6. **A long-running process that rotates JFR chunks periodically (not just
    a single continuous recording to process exit) pays the point-3
    chunk-flush burst on top of the point-5 steady-state number, once per
@@ -848,3 +913,17 @@ diminishing returns.
   more stable than per-raw-N, but wasn't tested against durations tuned to
   hold coverage constant across N, which would isolate the class-count
   effect from the duration/coverage confound more cleanly.
+- **How jmethodID preloading's own NMT-visible contribution (the confirmed
+  ~35 MB piece) responds to methods-per-class specifically is still
+  unresolved**, even though the *aggregate* driver is now confirmed to be
+  touched methods rather than touched classes (see "Isolating what the
+  profiler itself adds: class diversity" above). This mechanism fires per
+  `ClassPrepare`, once per class, regardless of sampling — so on its own
+  terms it should scale with total methods across all *loaded* classes,
+  not just touched ones. A direct check (NMT category deltas at 1 vs. 5
+  methods per class, same N) didn't give a clean answer — the category-
+  level deltas were noisier than the aggregate RSS figure at that specific
+  configuration, in some cases flipping sign. Worth revisiting with a
+  larger methods-per-class contrast (the same fix that resolved the
+  aggregate question) rather than treating the noisy 5x attempt as
+  conclusive either way.
