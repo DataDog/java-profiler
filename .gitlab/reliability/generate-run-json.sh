@@ -32,8 +32,10 @@ if [ -x "${SCRIPT_DIR}/../common/lookup-pr.sh" ]; then
   PR_JSON=$("${SCRIPT_DIR}/../common/lookup-pr.sh" "${DDPROF_BRANCH}" 2>/dev/null) || PR_JSON="{}"
 fi
 
-# Expected configs: 2 configs x 2 variants x 3 allocators x 2 architectures = 24
-EXPECTED_CONFIGS=24
+# Non-chaos: 2 configs x 2 variants x 3 allocators x 2 architectures = 24
+# Chaos:     2 configs x 3 allocators x 2 architectures = 12
+# Total = 36
+EXPECTED_CONFIGS=36
 
 # Parse reliability results
 python3 <<EOF

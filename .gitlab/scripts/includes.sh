@@ -41,13 +41,13 @@ function get_previous_version() {
 }
 
 function setup_java_home() {
-  if [ -z "${JAVA_HOME}" ]; then
-    export JAVA_HOME=~/.sdkman/candidates/java/current
-  fi
-
-  if [ ! -d "$JAVA_HOME" ]; then
-    echo "ERROR: JAVA_HOME does not exist: $JAVA_HOME"
-    exit 1
+  if [ -z "${JAVA_HOME}" ] || [ ! -x "${JAVA_HOME}/bin/java" ]; then
+    if [ -x ~/.sdkman/candidates/java/current/bin/java ]; then
+      export JAVA_HOME=~/.sdkman/candidates/java/current
+    else
+      echo "ERROR: JAVA_HOME=${JAVA_HOME:-<unset>} does not point to a valid Java installation."
+      exit 1
+    fi
   fi
 
   echo "Using Java @ ${JAVA_HOME}"

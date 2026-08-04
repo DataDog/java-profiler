@@ -3,6 +3,7 @@ package com.datadoghq.profiler
 
 import com.datadoghq.native.NativeBuildExtension
 import com.datadoghq.native.model.BuildConfiguration
+import com.datadoghq.native.model.Platform
 import com.datadoghq.native.util.PlatformUtils
 import org.gradle.api.DefaultTask
 import org.gradle.api.GradleException
@@ -76,6 +77,7 @@ import javax.inject.Inject
  * ```
  */
 class ProfilerTestPlugin : Plugin<Project> {
+
     override fun apply(project: Project) {
         val extension = project.extensions.create(
             "profilerTest",
@@ -111,6 +113,7 @@ class ProfilerTestPlugin : Plugin<Project> {
         val testClasspath: FileCollection,
         val standardJvmArgs: List<String>,
         val extraJvmArgs: List<String>,
+        val configJvmArgs: List<String>,
         val systemProperties: Map<String, String>,
         val environmentVariables: Map<String, String>
     )
@@ -147,6 +150,22 @@ class ProfilerTestPlugin : Plugin<Project> {
 
         // Environment variables (explicit for consistency across both paths)
         val envVars = buildMap<String, String> {
+            // Turn silent glibc heap corruption (e.g. a use-after-free write into a
+            // freed chunk) into an immediate, attributable SIGABRT instead of a crash
+            // much later in an unrelated allocation. Only meaningful against glibc's
+            // own malloc: skip on musl (no MALLOC_CHECK_ support), and skip whenever a
+            // sanitizer/allocator already replaces malloc via LD_PRELOAD.
+            if (PlatformUtils.currentPlatform == Platform.LINUX &&
+                !PlatformUtils.isMusl() &&
+                !testEnv.containsKey("LD_PRELOAD")
+            ) {
+                val perturbByte = (1..255).random()
+                put("MALLOC_CHECK_", "3")
+                put("MALLOC_PERTURB_", perturbByte.toString())
+                // Logged so a glibc-detected corruption abort can be reproduced with the
+                // same perturb byte (the value is otherwise random per run).
+                project.logger.lifecycle("[$configName] MALLOC_PERTURB_=$perturbByte")
+            }
             putAll(testEnv)
             put("DDPROF_TEST_DISABLE_RATE_LIMIT", "1")
             put("CI", (project.hasProperty("CI") || System.getenv("CI")?.toBoolean() ?: false).toString())
@@ -164,9 +183,27 @@ class ProfilerTestPlugin : Plugin<Project> {
             testClasspath = testClasspath,
             standardJvmArgs = extension.standardJvmArgs.get(),
             extraJvmArgs = extension.extraJvmArgs.get(),
+            configJvmArgs = config.testJvmArgs.get(),
             systemProperties = systemProps,
             environmentVariables = envVars
         )
+    }
+
+    /**
+     * Task name for a given config, shared between the glibc Test task and the musl Exec task
+     * so both platforms expose the same testXxx/testSlowXxx naming.
+     */
+    private fun testTaskName(configName: String, slow: Boolean): String {
+        val capitalized = configName.replaceFirstChar { it.uppercase() }
+        return if (slow) "testSlow$capitalized" else "test$capitalized"
+    }
+
+    private fun testTaskDescription(configName: String, slow: Boolean, platformSuffix: String = ""): String {
+        return if (slow) {
+            "Runs the slow/e2e test suite with the $configName library variant$platformSuffix"
+        } else {
+            "Runs unit tests with the $configName library variant$platformSuffix"
+        }
     }
 
     /**
@@ -178,11 +215,13 @@ class ProfilerTestPlugin : Plugin<Project> {
         extension: ProfilerTestExtension,
         testConfig: TestTaskConfiguration,
         testCfg: Configuration,
-        sourceSets: SourceSetContainer
+        sourceSets: SourceSetContainer,
+        slow: Boolean = false
     ) {
-        project.tasks.register("test${testConfig.configName.replaceFirstChar { it.uppercase() }}", Test::class.java) {
+        val taskName = testTaskName(testConfig.configName, slow)
+        project.tasks.register(taskName, Test::class.java) {
             val testTask = this
-            testTask.description = "Runs unit tests with the ${testConfig.configName} library variant"
+            testTask.description = testTaskDescription(testConfig.configName, slow)
             testTask.group = "verification"
             testTask.onlyIf { testConfig.isActive && !project.hasProperty("skip-tests") }
 
@@ -196,7 +235,14 @@ class ProfilerTestPlugin : Plugin<Project> {
             testTask.classpath = testConfig.testClasspath
 
             // Use JUnit Platform
-            testTask.useJUnitPlatform()
+            testTask.useJUnitPlatform {
+                val platformOptions = this
+                if (slow) {
+                    platformOptions.includeTags("slow")
+                } else {
+                    platformOptions.excludeTags("slow")
+                }
+            }
 
             // Configure Java executable - bypasses toolchain system
             testTask.setExecutable(PlatformUtils.testJavaExecutable())
@@ -247,19 +293,33 @@ class ProfilerTestPlugin : Plugin<Project> {
                 }
 
                 allArgs.addAll(testConfig.extraJvmArgs)
+                allArgs.addAll(testConfig.configJvmArgs)
                 testTask.jvmArgs(allArgs)
             }
 
             // Sanitizer conditions
             when (testConfig.configName) {
-                "asan" -> testTask.onlyIf {
-                    PlatformUtils.locateLibasan() != null &&
-                    // Skip J9+ASAN: OpenJ9 has known GC stack-scanning and defineClass
-                    // race bugs exposed by ASAN timing
-                    // https://github.com/eclipse-openj9/openj9/issues/23514
-                    !PlatformUtils.isTestJvmJ9()
+                "asan" -> {
+                    testTask.onlyIf {
+                        PlatformUtils.locateLibasan() != null &&
+                        // Skip J9+ASAN: OpenJ9 has known GC stack-scanning and defineClass
+                        // race bugs exposed by ASAN timing
+                        // https://github.com/eclipse-openj9/openj9/issues/23514
+                        !PlatformUtils.isTestJvmJ9()
+                    }
+                    // The ASAN test JVM is pinned to -Xmx1024m (see ConfigurationPresets.kt)
+                    // to keep the heap below ASan's shadow-memory region. Without forking,
+                    // Gradle reuses one JVM for the whole suite, and per-test allocations
+                    // (JFR recordings, JMC object models) accumulate until it OOMs late in
+                    // the run even though every individual test passes. Restart periodically
+                    // to bound cumulative heap growth.
+                    testTask.setForkEvery(25)
                 }
-                "tsan" -> testTask.onlyIf { PlatformUtils.locateLibtsan() != null }
+                // TSan + JVM integration tests are incompatible: the profiler's signal
+                // handlers (SIGPROF at 1ms) are TSan-instrumented; when a signal fires
+                // while TSan is updating its shadow memory it causes re-entrance and a
+                // SIGSEGV.  TSan coverage is provided by the C++ gtest suite (gtestTsan).
+                "tsan" -> testTask.onlyIf { false }
             }
         }
     }
@@ -274,11 +334,13 @@ class ProfilerTestPlugin : Plugin<Project> {
         extension: ProfilerTestExtension,
         testConfig: TestTaskConfiguration,
         testCfg: Configuration,
-        sourceSets: SourceSetContainer
+        sourceSets: SourceSetContainer,
+        slow: Boolean = false
     ) {
-        project.tasks.register("test${testConfig.configName.replaceFirstChar { it.uppercase() }}", Exec::class.java) {
+        val taskName = testTaskName(testConfig.configName, slow)
+        project.tasks.register(taskName, Exec::class.java) {
             val execTask = this
-            execTask.description = "Runs unit tests with the ${testConfig.configName} library variant (musl workaround)"
+            execTask.description = testTaskDescription(testConfig.configName, slow, " (musl workaround)")
             execTask.group = "verification"
             execTask.onlyIf { testConfig.isActive && !project.hasProperty("skip-tests") }
 
@@ -299,6 +361,7 @@ class ProfilerTestPlugin : Plugin<Project> {
                     allArgs.add("-Djava.library.path=${extension.nativeLibDir.get().asFile.absolutePath}")
                 }
                 allArgs.addAll(testConfig.extraJvmArgs)
+                allArgs.addAll(testConfig.configJvmArgs)
 
                 // System properties
                 testConfig.systemProperties.forEach { (key, value) ->
@@ -309,6 +372,14 @@ class ProfilerTestPlugin : Plugin<Project> {
                 val testsFilter = project.findProperty("tests") as String?
                 if (testsFilter != null) {
                     allArgs.add("-Dtest.filter=$testsFilter")
+                }
+
+                // Carve out the "slow" suite the same way the glibc Test task does via
+                // useJUnitPlatform { includeTags/excludeTags }
+                if (slow) {
+                    allArgs.add("-Dtest.tags.include=slow")
+                } else {
+                    allArgs.add("-Dtest.tags.exclude=slow")
                 }
 
                 // Classpath (includes custom test runner)
@@ -347,7 +418,7 @@ class ProfilerTestPlugin : Plugin<Project> {
                     // https://github.com/eclipse-openj9/openj9/issues/23514
                     !PlatformUtils.isTestJvmJ9()
                 }
-                "tsan" -> execTask.onlyIf { PlatformUtils.locateLibtsan() != null }
+                "tsan" -> execTask.onlyIf { false }  // same reason as testTask above
             }
         }
     }
@@ -414,9 +485,11 @@ class ProfilerTestPlugin : Plugin<Project> {
             if (isMuslSystem) {
                 project.logger.info("Creating Exec task for $configName (musl workaround, LIBC=${System.getenv("LIBC")})")
                 createExecTestTask(project, extension, testConfig, testCfg, sourceSets)
+                createExecTestTask(project, extension, testConfig, testCfg, sourceSets, slow = true)
             } else {
                 project.logger.info("Creating Test task for $configName (glibc/macOS, LIBC=${System.getenv("LIBC")})")
                 createTestTask(project, extension, testConfig, testCfg, sourceSets)
+                createTestTask(project, extension, testConfig, testCfg, sourceSets, slow = true)
             }
 
             // Create application tasks for specified configs
@@ -560,22 +633,25 @@ class ProfilerTestPlugin : Plugin<Project> {
             }
         }
 
-        // Wire up gtest -> test dependencies (C++ tests run before Java tests)
+        // Wire up gtest -> test dependencies (C++ tests run before Java tests).
+        // Both the regular and slow/e2e test tasks get the same gtest dependency: each is an
+        // independent Gradle invocation (e.g. a separate CI job), so gtest coverage from a
+        // "sibling" regular test job doesn't carry over to a testSlow-only invocation.
         project.gradle.projectsEvaluated {
             configNames.forEach { cfgName ->
                 val capitalizedCfgName = cfgName.replaceFirstChar { it.uppercaseChar() }
-                val testTaskName = "test$capitalizedCfgName"
-                val testTask = project.tasks.findByName(testTaskName)
                 val profilerLibProject = project.rootProject.findProject(profilerLibProjectPath)
+                val gtestTaskName = "gtest${capitalizedCfgName}"
 
-                if (profilerLibProject != null && testTask != null) {
-                    // gtest runs before test (C++ unit tests run before Java integration tests)
-                    val gtestTaskName = "gtest${capitalizedCfgName}"
-                    try {
-                        val gtestTask = profilerLibProject.tasks.named(gtestTaskName)
-                        testTask.dependsOn(gtestTask)
-                    } catch (e: org.gradle.api.UnknownTaskException) {
-                        project.logger.info("Task $gtestTaskName not found in $profilerLibProjectPath - gtest may not be available")
+                listOf("test$capitalizedCfgName", "testSlow$capitalizedCfgName").forEach { taskName ->
+                    val testTask = project.tasks.findByName(taskName)
+                    if (profilerLibProject != null && testTask != null) {
+                        try {
+                            val gtestTask = profilerLibProject.tasks.named(gtestTaskName)
+                            testTask.dependsOn(gtestTask)
+                        } catch (e: org.gradle.api.UnknownTaskException) {
+                            project.logger.info("Task $gtestTaskName not found in $profilerLibProjectPath - gtest may not be available")
+                        }
                     }
                 }
             }
@@ -653,7 +729,13 @@ abstract class ProfilerTestExtension @Inject constructor(
     abstract val applicationMainClass: Property<String>
 
     init {
-        // Standard JVM arguments for profiler testing
+        // Standard JVM arguments for profiler testing.
+        // NOTE: JDK-version-gated flags must NOT be added here. This convention is computed at
+        // configuration time, where JAVA_TEST_HOME is not yet resolvable and
+        // PlatformUtils.testJavaHome() falls back to the *build* JDK (JAVA_HOME) — which
+        // misdetects in the musl split-JDK CI (build JDK 21, test JDK 8) and would emit a
+        // JDK-21 flag onto a JDK-8 test JVM. Version-gated flags belong in the task doFirst
+        // blocks instead (see ProfilerTestPlugin), where the real test JVM is resolvable.
         standardJvmArgs.convention(listOf(
             "-Djdk.attach.allowAttachSelf",      // Allow profiler to attach to self
             "-Djol.tryWithSudo=true",            // JOL memory layout analysis

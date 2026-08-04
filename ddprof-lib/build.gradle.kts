@@ -7,12 +7,11 @@ plugins {
   java
   `maven-publish`
   signing
-  id("com.github.ben-manes.versions") version "0.53.0"
+  id("com.github.ben-manes.versions") version "0.58.0"
   id("de.undercouch.download") version "5.7.0"
   id("com.datadoghq.native-build")
   id("com.datadoghq.gtest")
   id("com.datadoghq.scanbuild")
-  id("com.datadoghq.versioned-sources")
 }
 
 val libraryName = "ddprof"
@@ -50,23 +49,13 @@ gtest {
     "$javaHome/include/$platformInclude",
     project(":malloc-shim").file("src/main/public"),
   )
+
+  failFast.set(true)
 }
 
-// Java configuration - using sourceCompatibility (not --release 8)
-// because BufferWriter8 needs access to internal sun.nio.ch package
 java {
   sourceCompatibility = JavaVersion.VERSION_1_8
   targetCompatibility = JavaVersion.VERSION_1_8
-}
-
-// Configure versioned sources for runtime version-specific implementations
-versionedSources {
-  versions {
-    register("java9") {
-      release.set(9)
-      minToolchainVersion.set(11) // Compile Java 9 code with JDK 11+
-    }
-  }
 }
 
 // Test configuration
@@ -84,14 +73,6 @@ val copyExternalLibs by tasks.registering(Copy::class) {
       include("**/*.so", "**/*.dylib", "**/*.debug", "**/*.dSYM/**")
     }
     into("$projectDir/build/classes/java/main/META-INF/native-libs")
-  }
-}
-
-// Gradle 9 requires explicit dependency: compileJava9Java uses mainSourceSet.output
-// which includes the copyExternalLibs destination directory
-afterEvaluate {
-  tasks.named("compileJava9Java") {
-    dependsOn(copyExternalLibs)
   }
 }
 
@@ -131,7 +112,6 @@ afterEvaluate {
       }
 
       from(sourceSets.main.get().output.classesDirs)
-      versionedSources.configureJar(this)
       from(nativeBuild.libraryTargetBase(name)) {
         include("**/*")
         // Exclude debug symbols from production JAR
@@ -167,7 +147,6 @@ tasks.jar {
 // Source JAR
 val sourcesJar by tasks.registering(Jar::class) {
   from(sourceSets.main.get().allJava)
-  versionedSources.configureSourceJar(this)
   archiveBaseName.set(libraryName)
   archiveClassifier.set("sources")
   archiveVersion.set(componentVersion)
@@ -176,8 +155,6 @@ val sourcesJar by tasks.registering(Jar::class) {
 // Javadoc configuration
 tasks.withType<Javadoc>().configureEach {
   dependsOn(copyExternalLibs)
-  // Allow javadoc to access internal sun.nio.ch package used by BufferWriter8
-  (options as StandardJavadocDocletOptions).addStringOption("-add-exports", "java.base/sun.nio.ch=ALL-UNNAMED")
 }
 
 // Javadoc JAR

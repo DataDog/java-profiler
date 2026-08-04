@@ -7,6 +7,7 @@
 #include "common.h"
 #include "os.h"
 #include "hotspot/vmStructs.h"
+#include "hotspot/vmStructs.inline.h"
 
 // Returns the value of a size-typed JVM flag, or default_val if not found.
 static size_t getVMSizeFlag(const char* name, size_t default_val) {

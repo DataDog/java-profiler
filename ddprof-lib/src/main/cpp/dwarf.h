@@ -106,7 +106,14 @@ class DwarfParser {
   private:
     const char* _name;
     const char* _image_base;
+    const char* _image_end;
     const char* _ptr;
+    // Read window [_section_start, _section_end). Both paths set this window:
+    // - parseEhFrame(): set to the .eh_frame section bounds.
+    // - parse(): set to the full ELF image bounds [image_base, image_end) so
+    //   that FDE reads into the adjacent .eh_frame are bounded to mapped memory.
+    const char* _section_start;
+    const char* _section_end;
 
     int _capacity;
     int _count;
@@ -118,25 +125,41 @@ class DwarfParser {
     int _linked_frame_size;  // detected from FP-based DWARF entries; -1 = undetected
     bool _has_z_augmentation;
 
-    const char* add(size_t size) {
-        const char* ptr = _ptr;
-        _ptr = ptr + size;
-        return ptr;
+    // True if `size` bytes can be read at _ptr without leaving the section.
+    // Guards against both over-reads (past _section_end) and under-reads
+    // (_ptr moved before _section_start by an untrusted offset).
+    bool canRead(size_t size) const {
+        return _ptr >= _section_start && _ptr <= _section_end &&
+               size <= (size_t)(_section_end - _ptr);
     }
 
     u8 get8() {
+        if (!canRead(1)) {
+            _ptr = _section_end;
+            return 0;
+        }
         return *_ptr++;
     }
 
     u16 get16() {
-        const char* ptr = add(2);
+        if (!canRead(2)) {
+            _ptr = _section_end;
+            return 0;
+        }
+        const char* ptr = _ptr;
+        _ptr += 2;
         u16 result;
         memcpy(&result, ptr, sizeof(u16));
         return result;
     }
 
     u32 get32() {
-        const char* ptr = add(4);
+        if (!canRead(4)) {
+            _ptr = _section_end;
+            return 0;
+        }
+        const char* ptr = _ptr;
+        _ptr += 4;
         u32 result;
         memcpy(&result, ptr, sizeof(u32));
         return result;
@@ -144,16 +167,18 @@ class DwarfParser {
 
     u32 getLeb() {
         u32 result = 0;
-        for (u32 shift = 0; ; shift += 7) {
+        for (u32 shift = 0; canRead(1) && shift < 32; shift += 7) {
             u8 b = *_ptr++;
-            result |= (b & 0x7f) << shift;
+            result |= (u32)(b & 0x7f) << shift;
             if ((b & 0x80) == 0) {
-                return result;
+                break;
             }
         }
+        return result;
     }
 
     u32 getLeb(const char* end) {
+        if (end > _section_end) end = _section_end;
         u32 result = 0;
         for (u32 shift = 0; _ptr < end && shift < 32; shift += 7) {
             u8 b = *_ptr++;
@@ -167,26 +192,32 @@ class DwarfParser {
 
     int getSLeb() {
         int result = 0;
-        for (u32 shift = 0; ; shift += 7) {
+        for (u32 shift = 0; canRead(1) && shift < 32; shift += 7) {
             u8 b = *_ptr++;
-            result |= (b & 0x7f) << shift;
+            // Compute in unsigned to avoid signed left-shift overflow (UB) for
+            // large shift values; the result is reinterpreted as signed below.
+            result |= (int)((u32)(b & 0x7f) << shift);
             if ((b & 0x80) == 0) {
                 if ((b & 0x40) != 0 && (shift += 7) < 32) {
-                    result |= ~0U << shift;
+                    result |= (int)(~0U << shift);
                 }
-                return result;
+                break;
             }
         }
+        return result;
     }
 
     int getSLeb(const char* end) {
+        if (end > _section_end) end = _section_end;
         int result = 0;
-        for (u32 shift = 0; _ptr < end; shift += 7) {
+        for (u32 shift = 0; _ptr < end && shift < 32; shift += 7) {
             u8 b = *_ptr++;
-            result |= (b & 0x7f) << shift;
+            // Compute in unsigned to avoid signed left-shift overflow (UB) for
+            // large shift values; the result is reinterpreted as signed below.
+            result |= (int)((u32)(b & 0x7f) << shift);
             if ((b & 0x80) == 0) {
                 if ((b & 0x40) != 0 && (shift += 7) < 32) {
-                    result |= ~0U << shift;
+                    result |= (int)(~0U << shift);
                 }
                 return result;
             }
@@ -195,19 +226,24 @@ class DwarfParser {
     }
 
     void skipLeb() {
-        while (*_ptr++ & 0x80) {}
+        while (canRead(1) && (*_ptr++ & 0x80)) {}
     }
 
     const char* getPtr() {
+        if (_ptr + 4 > _image_end) { _ptr = _image_end; return _image_base; }
         const char* ptr = _ptr;
-        const char* offset_ptr = add(4);
+        if (!canRead(4)) {
+            _ptr = _section_end;
+            return ptr;
+        }
         int offset;
-        memcpy(&offset, offset_ptr, sizeof(int));
+        memcpy(&offset, _ptr, sizeof(int));
+        _ptr += 4;
         return ptr + offset;
     }
 
-    void init(const char* name, const char* image_base);
-    void parse(const char* eh_frame_hdr);
+    void init(const char* name, const char* image_base, const char* image_end);
+    void parse(const char* eh_frame_hdr, size_t size, const char* image_end);
     void parseEhFrame(const char* eh_frame, size_t size);
     void parseCie();
     void parseFde();
@@ -218,7 +254,11 @@ class DwarfParser {
     FrameDesc* addRecordRaw(u32 loc, int cfa, int fp_off, int pc_off);
 
   public:
-    DwarfParser(const char* name, const char* image_base, const char* eh_frame_hdr);
+    // Tag to disambiguate the .eh_frame_hdr (binary-search index) constructor
+    // from the raw .eh_frame constructor below: with a size added, the two
+    // would otherwise share a signature.
+    struct EhFrameHdrTag {};
+    DwarfParser(const char* name, const char* image_base, const char* eh_frame_hdr, size_t eh_frame_hdr_size, EhFrameHdrTag, const char* image_end);
     DwarfParser(const char* name, const char* image_base, const char* eh_frame, size_t eh_frame_size);
 
     // Ownership of the returned pointer transfers to the caller.

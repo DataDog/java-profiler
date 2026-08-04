@@ -73,7 +73,21 @@ class FuzzTargetsPlugin : Plugin<Project> {
             }
         }
 
+        // Build-only aggregate: compiles and links all targets without running them
+        val buildFuzz = project.tasks.register("buildFuzz") {
+            onlyIf { hasFuzzer && !project.hasProperty("skip-tests") && !project.hasProperty("skip-native") && !project.hasProperty("skip-fuzz") }
+            group = "build"
+            description = "Build all fuzz targets without running them"
+        }
+
         if (!hasFuzzer) {
+            val msg = if (PlatformUtils.currentPlatform == Platform.MACOS) {
+                "WARNING: libFuzzer not available on macOS — skipping fuzz targets. " +
+                "Install LLVM via Homebrew and ensure 'clang' resolves to the Homebrew clang."
+            } else {
+                "WARNING: libFuzzer not available — skipping fuzz targets (requires clang with -fsanitize=fuzzer)."
+            }
+            project.logger.lifecycle(msg)
             createListFuzzTargetsTask(project, extension)
             return
         }
@@ -86,13 +100,33 @@ class FuzzTargetsPlugin : Plugin<Project> {
         val includeFiles = buildIncludePaths(project, extension, homebrewLLVM)
 
         // Build compiler/linker args
-        val compilerArgs = buildFuzzCompilerArgs()
+        val compilerArgs = buildFuzzCompilerArgs(project)
         val linkerArgs = buildFuzzLinkerArgs(homebrewLLVM, clangResourceDir, project.logger)
 
         val fuzzSourceDir = extension.fuzzSourceDir.get().asFile
         val corpusBaseDir = extension.corpusDir.get().asFile
         val crashDir = extension.crashDir.get().asFile
         val duration = extension.duration.get()
+
+        // Profiler sources are identical for every fuzz target (same compiler args and
+        // includes), so compile them once and share the resulting objects across targets
+        // instead of recompiling the whole profiler per target.
+        val sharedObjDir = project.file("${project.layout.buildDirectory.get()}/obj/fuzz/_profiler")
+        val compileProfilerTask = project.tasks.register("compileFuzzProfilerSources", NativeCompileTask::class.java) {
+            onlyIf { hasFuzzer && !project.hasProperty("skip-tests") && !project.hasProperty("skip-native") && !project.hasProperty("skip-fuzz") }
+            group = "build"
+            description = "Compile the profiler sources shared by all fuzz targets"
+
+            this.compiler.set(compiler)
+            this.compilerArgs.set(compilerArgs)
+            sources.from(
+                extension.profilerSourceDir.map { dir ->
+                    project.fileTree(dir) { include("**/*.cpp") }
+                }
+            )
+            includes.from(includeFiles)
+            objectFileDir.set(sharedObjDir)
+        }
 
         // Discover and create tasks for each fuzz target
         if (fuzzSourceDir.exists()) {
@@ -105,7 +139,8 @@ class FuzzTargetsPlugin : Plugin<Project> {
                 val binary = project.file("$binDir/$fuzzName")
                 val targetCorpusDir = File(corpusBaseDir, fuzzName)
 
-                // Compile task
+                // Compile task - only compiles this target's own fuzz driver; profiler
+                // sources come from the shared compileFuzzProfilerSources task.
                 val compileTask = project.tasks.register("compileFuzz_$fuzzName", NativeCompileTask::class.java) {
                     onlyIf { hasFuzzer && !project.hasProperty("skip-tests") && !project.hasProperty("skip-native") && !project.hasProperty("skip-fuzz") }
                     group = "build"
@@ -113,12 +148,7 @@ class FuzzTargetsPlugin : Plugin<Project> {
 
                     this.compiler.set(compiler)
                     this.compilerArgs.set(compilerArgs)
-                    sources.from(
-                        extension.profilerSourceDir.map { dir ->
-                            project.fileTree(dir) { include("**/*.cpp") }
-                        },
-                        fuzzFile
-                    )
+                    sources.from(fuzzFile)
                     includes.from(includeFiles)
                     objectFileDir.set(objDir)
                 }
@@ -126,13 +156,16 @@ class FuzzTargetsPlugin : Plugin<Project> {
                 // Link task
                 val linkTask = project.tasks.register("linkFuzz_$fuzzName", NativeLinkExecutableTask::class.java) {
                     onlyIf { hasFuzzer && !project.hasProperty("skip-tests") && !project.hasProperty("skip-native") && !project.hasProperty("skip-fuzz") }
-                    dependsOn(compileTask)
+                    dependsOn(compileProfilerTask, compileTask)
                     group = "build"
                     description = "Link the fuzz target $fuzzName"
 
                     linker.set(compiler)
                     this.linkerArgs.set(linkerArgs)
-                    objectFiles.from(project.fileTree(objDir) { include("*.o") })
+                    objectFiles.from(
+                        project.fileTree(sharedObjDir) { include("*.o") },
+                        project.fileTree(objDir) { include("*.o") }
+                    )
                     outputFile.set(binary)
                 }
 
@@ -161,6 +194,7 @@ class FuzzTargetsPlugin : Plugin<Project> {
                 }
 
                 fuzzAll.configure { dependsOn(executeTask) }
+                buildFuzz.configure { dependsOn(linkTask) }
             }
         }
 
@@ -194,7 +228,8 @@ class FuzzTargetsPlugin : Plugin<Project> {
         return includes
     }
 
-    private fun buildFuzzCompilerArgs(): List<String> {
+    private fun buildFuzzCompilerArgs(project: Project): List<String> {
+        val version = project.version.toString()
         val args = mutableListOf(
             "-O1",
             "-g",
@@ -202,7 +237,8 @@ class FuzzTargetsPlugin : Plugin<Project> {
             "-fsanitize=fuzzer,address,undefined",
             "-fvisibility=hidden",
             "-std=c++17",
-            "-DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION"
+            "-DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION",
+            "-DPROFILER_VERSION=\"$version\""
         )
         if (PlatformUtils.currentPlatform == Platform.LINUX && PlatformUtils.isMusl()) {
             args.add("-D__musl__")

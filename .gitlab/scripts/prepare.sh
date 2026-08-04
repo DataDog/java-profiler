@@ -11,13 +11,24 @@ export CI_COMMIT_BRANCH
 # Allow: default branch pushes, scheduled runs, and web (manual) triggers
 # Gate: push/trigger/pipeline sources on non-default branches must have an open GitHub PR
 if [ "${CI_PIPELINE_SOURCE}" == "push" ] || [ "${CI_PIPELINE_SOURCE}" == "trigger" ] || [ "${CI_PIPELINE_SOURCE}" == "pipeline" ]; then
-  if [ -n "${CI_COMMIT_BRANCH}" ] && [ "${CI_COMMIT_BRANCH}" != "${CI_DEFAULT_BRANCH:-main}" ] && [[ ! ${CI_COMMIT_TAG} =~ ^v_[0-9]+(-SNAPSHOT)?$ ]]; then
+  if [ -n "${CI_COMMIT_BRANCH}" ] && \
+     [ "${CI_COMMIT_BRANCH}" != "${CI_DEFAULT_BRANCH:-main}" ] && \
+     [[ ! ${CI_COMMIT_TAG} =~ ^v_[1-9][0-9]*\.[0-9]+\.[0-9]+(-SNAPSHOT)?$ ]] && \
+     [[ ! ${CI_COMMIT_BRANCH} =~ ^release/[0-9]+\.[0-9]+\._$ ]]; then
     # Check if the branch has an open PR in DataDog/java-profiler
     API_RESPONSE=$(curl -sf "https://api.github.com/repos/DataDog/java-profiler/pulls?head=DataDog:${CI_COMMIT_BRANCH}&state=open&per_page=1" 2>/dev/null || echo "")
     if [ -n "${API_RESPONSE}" ] && ! echo "${API_RESPONSE}" | grep -q '"number"'; then
       echo "No open PR for branch ${CI_COMMIT_BRANCH}, skipping pipeline"
       echo "CANCELLED=true" >> build.env
       exit 0
+    fi
+    # Detect PR labels and export flags for downstream jobs
+    if command -v jq >/dev/null 2>&1; then
+      if echo "${API_RESPONSE}" | jq -e '[.[0].labels[].name] | any(. == "test:reliability")' >/dev/null 2>&1; then
+        echo "RUN_RELIABILITY=true" >> build.env
+      fi
+    elif echo "${API_RESPONSE}" | grep -q '"test:reliability"'; then
+      echo "RUN_RELIABILITY=true" >> build.env
     fi
   fi
 fi

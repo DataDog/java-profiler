@@ -12,14 +12,18 @@
 #include "context.h"
 #include "context_api.h"
 #include "counters.h"
+#include "nativeMem.h"
 #include "dictionary.h"
-#include "flightRecorder.h"
+#include "flightRecorder.inline.h"
 #include "incbin.h"
 #include "jfrMetadata.h"
 #include "jniHelper.h"
+#include "jvmSupport.inline.h"
 #include "os.h"
 #include "profiler.h"
+#include "signalSafety.h"
 #include "rustDemangler.h"
+#include "safeAccess.h"
 #include "spinLock.h"
 #include "unwindStats.h"
 #include "symbols.h"
@@ -44,31 +48,42 @@
 static const char *const SETTING_RING[] = {NULL, "kernel", "user", "any"};
 static const char *const SETTING_CSTACK[] = {NULL, "no", "fp", "dwarf", "lbr"};
 
+// JVM spec SS4.7.3 caps a method's bytecode (code_length) at 65535 bytes (u2),
+// so a well-formed LineNumberTable can never have more entries than that.
+// Used to sanity-bound line_number_table_size before it drives the byte-count
+// passed to SafeAccess::safeCopy(): if GetLineNumberTable()
+// returns a corrupted pointer for a stale jmethodID (see the TOCTOU race
+// documented in fillJavaMethodInfo below), the paired out-param size is just
+// as likely to be corrupted, and an implausible size should be rejected
+// before it is trusted to compute a byte range.
+static const jint MAX_LINE_NUMBER_TABLE_ENTRIES = 65535;
+
+// Compute a non-negative event duration from TSC timestamps.  Unsigned u64
+// subtraction wraps to a near-2^64 value when end < start, which can happen if
+// the thread migrates cores between the two TSC reads and the per-core counters
+// are not perfectly synchronised.  Clamp such inversions to 0 so the emitted
+// duration is never an absurd outlier.
+static inline u64 safeDuration(u64 start_time, u64 end_time) {
+  return end_time >= start_time ? end_time - start_time : 0;
+}
+
 SharedLineNumberTable::~SharedLineNumberTable() {
-  // Always attempt to deallocate if we have a valid pointer
-  // JVMTI spec requires that memory allocated by GetLineNumberTable
-  // must be freed with Deallocate
+  // _ptr is a malloc'd copy of the JVMTI line number table (see
+  // Lookup::fillJavaMethodInfo). Freeing here is independent of class
+  // unload, preventing use-after-free in ~SharedLineNumberTable and getLineNumber.
   if (_ptr != nullptr) {
-    jvmtiEnv *jvmti = VM::jvmti();
-    if (jvmti != nullptr) {
-      jvmtiError err = jvmti->Deallocate((unsigned char *)_ptr);
-      // If Deallocate fails, log it for debugging (this could indicate a JVM bug)
-      // JVMTI_ERROR_ILLEGAL_ARGUMENT means the memory wasn't allocated by JVMTI
-      // which would be a serious bug in GetLineNumberTable
-      if (err != JVMTI_ERROR_NONE) {
-        TEST_LOG("Unexpected error while deallocating linenumber table: %d", err);
-      }
-    } else {
-      TEST_LOG("WARNING: Cannot deallocate line number table - JVMTI is null");
-    }
-    // Decrement counter whenever destructor runs (symmetric with increment at creation)
+    free(_ptr);
     Counters::decrement(LINE_NUMBER_TABLES);
+    // _size is the JVMTI entry count passed at construction (see
+    // fillJavaMethodInfo), so the byte size matches the allocation.
+    NativeMem::record(NM_LINE_TABLES, -(long long)((size_t)_size *
+                                                   sizeof(jvmtiLineNumberEntry)));
   }
 }
 
 void Lookup::fillNativeMethodInfo(MethodInfo *mi, const char *name,
                                   const char *lib_name) {
-  mi->_class = _classes->lookup("");
+  mi->_class = _classes->lookupDuringDump("", 0, Profiler::maxClassMapSize());
   // TODO return the library name once we figured out how to cooperate with the
   // backend
   //        if (lib_name == NULL) {
@@ -117,7 +132,8 @@ void Lookup::fillNativeMethodInfo(MethodInfo *mi, const char *name,
 
 void Lookup::fillRemoteFrameInfo(MethodInfo *mi, const RemoteFrameInfo *rfi) {
   // Store build-id in the class name field
-  mi->_class = _classes->lookup(rfi->build_id);
+  mi->_class = _classes->lookupDuringDump(rfi->build_id, strlen(rfi->build_id),
+                                           Profiler::maxClassMapSize());
 
   // Store PC offset in hex format in the signature field
   char offset_hex[32];
@@ -174,17 +190,48 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
   jvmti->GetPhase(&phase);
   if ((phase & (JVMTI_PHASE_START | JVMTI_PHASE_LIVE)) != 0) {
     bool entry = false;
+    bool readable = false;
+    const size_t probe_len = 256;
     if (VMMethod::check_jmethodID(method) &&
         jvmti->GetMethodDeclaringClass(method, &method_class) == 0 &&
+        // GetMethodDeclaringClass may return a jclass wrapping a stale/garbage oop when the class was
+        // unloaded between sample capture and dump (TOCTOU race with class unloading). Guard against
+        // null handles before calling GetClassSignature.
+        method_class != NULL &&
         // On some older versions of J9, the JVMTI call to GetMethodDeclaringClass will return OK = 0, but when a
         // classloader is unloaded they free all JNIIDs. This means that anyone holding on to a jmethodID is
         // pointing to corrupt data and the behaviour is undefined.
         // The behaviour is adjusted so that when asgct() is used or if `-XX:+KeepJNIIDs` is specified,
         // when a classloader is unloaded, the jmethodIDs are not freed, but instead marked as -1.
-        // The nested check below is to mitigate these crashes.
-        // In more recent versions, the condition above will short-circuit safely.
-        ((!VM::isOpenJ9() || method_class != reinterpret_cast<jclass>(-1)) && jvmti->GetClassSignature(method_class, &class_name, NULL) == 0) &&
+        // The check below mitigates these crashes on J9.
+        (!VM::isOpenJ9() || method_class != reinterpret_cast<jclass>(-1)) &&
+        jvmti->GetClassSignature(method_class, &class_name, NULL) == 0 &&
         jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == 0) {
+      // The JVMTI strings should be non-null and mapped per spec, but crash
+      // telemetry shows both `strncmp` and `jvmti_Deallocate` faulting on them.
+      // Probe each pointer over a range covering the longest prefix
+      // compared below (~50 bytes) plus headroom for strlen, and NULL any that
+      // fails so the unconditional Deallocate block at end of this function
+      // skips it (os::free faults on an unmapped pointer just like strncmp).
+      // Accept a small leak on the corruption path. Probes run independently
+      // so a single bad pointer does not leak its siblings. Best-effort only:
+      // a concurrent munmap between probe and use can still fault; the SIGSEGV
+      // handler is the second line of defence.
+      auto probe = [&](char*& ptr) -> bool {
+        if (ptr == nullptr || !SafeAccess::isReadableRange(ptr, probe_len)) {
+          ptr = nullptr;
+          return false;
+        }
+        return true;
+      };
+      readable = probe(class_name) & probe(method_name) & probe(method_sig);
+    }
+    if (readable) {
+      const size_t class_name_len = strnlen(class_name, 65536);
+      const char* normalized_class_name =
+          class_name_len >= 2 ? class_name + 1 : "";
+      const size_t normalized_class_name_len =
+          class_name_len >= 2 ? class_name_len - 2 : 0;
 
       if (first_time) {
         jvmtiError line_table_error = jvmti->GetLineNumberTable(method, &line_number_table_size,
@@ -236,8 +283,10 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
       // constants...
       if (has_prefix(class_name,
                      "Ljdk/internal/reflect/GeneratedConstructorAccessor")) {
-        class_name_id = _classes->lookup(
-            "jdk/internal/reflect/GeneratedConstructorAccessor");
+        class_name_id = _classes->lookupDuringDump(
+            "jdk/internal/reflect/GeneratedConstructorAccessor",
+            strlen("jdk/internal/reflect/GeneratedConstructorAccessor"),
+            Profiler::maxClassMapSize());
         method_name_id =
             _symbols.lookup("Object "
                             "jdk.internal.reflect.GeneratedConstructorAccessor."
@@ -245,16 +294,20 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         method_sig_id = _symbols.lookup(method_sig);
       } else if (has_prefix(class_name,
                             "Lsun/reflect/GeneratedConstructorAccessor")) {
-        class_name_id =
-            _classes->lookup("sun/reflect/GeneratedConstructorAccessor");
+        class_name_id = _classes->lookupDuringDump(
+            "sun/reflect/GeneratedConstructorAccessor",
+            strlen("sun/reflect/GeneratedConstructorAccessor"),
+            Profiler::maxClassMapSize());
         method_name_id = _symbols.lookup(
             "Object "
             "sun.reflect.GeneratedConstructorAccessor.newInstance(Object[])");
         method_sig_id = _symbols.lookup(method_sig);
       } else if (has_prefix(class_name,
                             "Ljdk/internal/reflect/GeneratedMethodAccessor")) {
-        class_name_id =
-            _classes->lookup("jdk/internal/reflect.GeneratedMethodAccessor");
+        class_name_id = _classes->lookupDuringDump(
+            "jdk/internal/reflect/GeneratedMethodAccessor",
+            strlen("jdk/internal/reflect/GeneratedMethodAccessor"),
+            Profiler::maxClassMapSize());
         method_name_id =
             _symbols.lookup("Object "
                             "jdk.internal.reflect.GeneratedMethodAccessor."
@@ -262,7 +315,10 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         method_sig_id = _symbols.lookup(method_sig);
       } else if (has_prefix(class_name,
                             "Lsun/reflect/GeneratedMethodAccessor")) {
-        class_name_id = _classes->lookup("sun/reflect/GeneratedMethodAccessor");
+        class_name_id = _classes->lookupDuringDump(
+            "sun/reflect/GeneratedMethodAccessor",
+            strlen("sun/reflect/GeneratedMethodAccessor"),
+            Profiler::maxClassMapSize());
         method_name_id = _symbols.lookup(
             "Object sun.reflect.GeneratedMethodAccessor.invoke(Object, "
             "Object[])");
@@ -273,27 +329,38 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         // we want to normalise to java/lang/invoke/LambdaForm$MH,
         // java/lang/invoke/LambdaForm$DMH, java/lang/invoke/LambdaForm$BMH,
         if (has_prefix(class_name + lambdaFormPrefixLength, "MH")) {
-          class_name_id = _classes->lookup("java/lang/invoke/LambdaForm$MH");
+          class_name_id = _classes->lookupDuringDump(
+              "java/lang/invoke/LambdaForm$MH",
+              strlen("java/lang/invoke/LambdaForm$MH"),
+              Profiler::maxClassMapSize());
         } else if (has_prefix(class_name + lambdaFormPrefixLength, "BMH")) {
-          class_name_id = _classes->lookup("java/lang/invoke/LambdaForm$BMH");
+          class_name_id = _classes->lookupDuringDump(
+              "java/lang/invoke/LambdaForm$BMH",
+              strlen("java/lang/invoke/LambdaForm$BMH"),
+              Profiler::maxClassMapSize());
         } else if (has_prefix(class_name + lambdaFormPrefixLength, "DMH")) {
-          class_name_id = _classes->lookup("java/lang/invoke/LambdaForm$DMH");
+          class_name_id = _classes->lookupDuringDump(
+              "java/lang/invoke/LambdaForm$DMH",
+              strlen("java/lang/invoke/LambdaForm$DMH"),
+              Profiler::maxClassMapSize());
         } else {
           // don't recognise the suffix, so don't normalise
-          class_name_id =
-              _classes->lookup(class_name + 1, strlen(class_name) - 2);
+          class_name_id = _classes->lookupDuringDump(
+              normalized_class_name, normalized_class_name_len,
+              Profiler::maxClassMapSize());
         }
         method_name_id = _symbols.lookup(method_name);
         method_sig_id = _symbols.lookup(method_sig);
       } else {
-        class_name_id =
-            _classes->lookup(class_name + 1, strlen(class_name) - 2);
+        class_name_id = _classes->lookupDuringDump(
+            normalized_class_name, normalized_class_name_len,
+            Profiler::maxClassMapSize());
         method_name_id = _symbols.lookup(method_name);
         method_sig_id = _symbols.lookup(method_sig);
       }
     } else {
       Counters::increment(JMETHODID_SKIPPED);
-      class_name_id = _classes->lookup("");
+      class_name_id = _classes->lookupDuringDump("", 0, Profiler::maxClassMapSize());
       method_name_id = _symbols.lookup("jvmtiError");
       method_sig_id = _symbols.lookup("()L;");
     }
@@ -304,10 +371,63 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
     mi->_type = FRAME_INTERPRETED;
     mi->_is_entry = entry;
     if (line_number_table != nullptr) {
-      mi->_line_number_table = std::make_shared<SharedLineNumberTable>(
-          line_number_table_size, line_number_table);
-      // Increment counter for tracking live line number tables
-      Counters::increment(LINE_NUMBER_TABLES);
+      // Detach from JVMTI lifetime: copy into our own buffer and deallocate
+      // the JVMTI-allocated memory immediately. This keeps _ptr valid even
+      // after the underlying class is unloaded.
+      void *owned_table = nullptr;
+      if (line_number_table_size > 0 &&
+          line_number_table_size <= MAX_LINE_NUMBER_TABLE_ENTRIES) {
+        size_t bytes = (size_t)line_number_table_size * sizeof(jvmtiLineNumberEntry);
+        // GetLineNumberTable() is called on the same possibly-stale jmethodID
+        // that GetMethodDeclaringClass/GetClassSignature/GetMethodName above
+        // were probed for -- the TOCTOU race documented above (class
+        // unloaded between sample capture and dump) applies here just as
+        // much as to those calls, and crash telemetry already showed those
+        // sibling calls returning JVMTI_ERROR_NONE with unmapped string
+        // pointers despite the spec saying the returned array should be a
+        // fresh, caller-owned allocation. A genuinely-valid returned table is
+        // fully decoupled from jmethodID lifetime per the JVMTI spec and
+        // can't be invalidated later by class unload; the actual risk is a
+        // corrupted pointer that happens to alias other live memory at
+        // check-time and stops being mapped moments later. A separate
+        // isReadableRange() probe followed by a plain memcpy() would still
+        // race that window, so copy via safeCopy() instead: it fault-protects
+        // each read as it happens rather than trusting a point-in-time check
+        // before an unprotected copy.
+        owned_table = malloc(bytes);
+        if (owned_table != nullptr) {
+          if (!SafeAccess::safeCopy(owned_table, line_number_table, bytes)) {
+            free(owned_table);
+            owned_table = nullptr;
+            line_number_table = nullptr; // make sure the invalid address is not used for jvmti->Deallocate
+            Counters::increment(LINE_NUMBER_TABLE_UNREADABLE);
+          }
+        } else {
+          TEST_LOG("Failed to allocate %zu bytes for line number table copy", bytes);
+        }
+      } else if (line_number_table_size != 0) {
+        // A corrupted size out-param alongside a corrupted pointer is exactly
+        // as plausible as the corrupted-pointer case above (both come from
+        // the same GetLineNumberTable() call on the same stale jmethodID);
+        // an implausible entry count -- including a negative one, since this
+        // is a signed jint and a corrupted value can fall on either side of
+        // zero -- means the pointer can't be trusted for Deallocate() either,
+        // so treat it the same as the unreadable case.
+        line_number_table = nullptr;
+        Counters::increment(LINE_NUMBER_TABLE_UNREADABLE);
+      }
+      if (line_number_table != nullptr) {
+        jvmtiError dealloc_err = jvmti->Deallocate((unsigned char *)line_number_table);
+        assert(dealloc_err == JVMTI_ERROR_NONE && "Unexpected error while deallocating linenumber table");
+      }
+      if (owned_table != nullptr) {
+        mi->_line_number_table = std::make_shared<SharedLineNumberTable>(
+            line_number_table_size, owned_table);
+        // Increment counter for tracking live line number tables
+        Counters::increment(LINE_NUMBER_TABLES);
+        NativeMem::record(NM_LINE_TABLES, (long long)((size_t)line_number_table_size *
+                                                      sizeof(jvmtiLineNumberEntry)));
+      }
     }
 
     // strings are null or came from JVMTI
@@ -324,24 +444,159 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
   jni->PopLocalFrame(NULL);
 }
 
+bool Lookup::resolveVTableReceiver(VMSymbol *sym, char *buf, size_t bufsize,
+                                    u32 *out_class_id) {
+  if (sym == nullptr || !SafeAccess::isReadable(sym)) {
+    return false;
+  }
+  // Read the 4-byte word containing the u2 length field. In all HotSpot
+  // versions we support the length is at offset 0 of Symbol; we still go
+  // through VMStructs in case that ever changes. The low 16 bits hold the
+  // length on little-endian targets (all supported platforms).
+  int32_t *len_word_addr =
+      (int32_t *)((char *)sym + VMSymbol::lengthOffset());
+  int32_t w1 = SafeAccess::safeFetch32(len_word_addr, -1);
+  int32_t w2 = SafeAccess::safeFetch32(len_word_addr, 0);
+  if (w1 == -1 && w2 == 0) {
+    return false;
+  }
+  unsigned len = (unsigned)(w1 & 0xFFFF);
+  // Bounds: a usable internal class name needs at least 1 byte (single-char
+  // descriptors like "B"/"C" for primitives never appear as vtable receivers
+  // because primitives can't be receivers of virtual or interface dispatch).
+  // Upper bound is the caller-provided buffer; class names above this length
+  // are dropped — operators see VTABLE_RECEIVER_RESOLVE_FAILED rise.
+  if (len == 0 || len > bufsize) {
+    return false;
+  }
+  const void *body = (const char *)sym + VMSymbol::bodyOffset();
+  if (!SafeAccess::safeCopy(buf, body, len)) {
+    return false;
+  }
+  // Reject anything that doesn't look like a JVM internal class name.
+  // Valid bytes for slash-separated internal names: '/', '$', '[', ';', '_',
+  // alnum. Rejecting reduces — but does not eliminate — the case where the
+  // Symbol slot was reused for unrelated data that happens to be printable.
+  for (unsigned i = 0; i < len; i++) {
+    unsigned char c = (unsigned char)buf[i];
+    if (c < 0x20 || c >= 0x7F) {
+      return false;
+    }
+  }
+  // lookupDuringDump (not lookup) because this runs inside writeCpool, after
+  // rotate(): standby holds the pre-rotate snapshot that writeClasses() will
+  // serialize.  Plain lookup() would insert into the new active only, leaving
+  // the stack frame's class_id absent from this chunk's class pool.
+  // (Plain lookup() remains correct for non-dump callers — e.g. Profiler::
+  // lookupClass on JVM threads — where the next rotate() will propagate.)
+  u32 class_id = _classes->lookupDuringDump(buf, len, Profiler::maxClassMapSize());
+  // Apply synthetic-accessor/LambdaForm normalisation so that the many
+  // distinct names HotSpot generates for these families (..Accessor1234,
+  // LambdaForm$MH/0x...) collapse to one bucket each in the JFR class pool.
+  // Folding the normalisation inside resolveVTableReceiver keeps the call
+  // site in resolveMethod minimal and ensures the cache stores normalised
+  // class ids (so MethodMap deduplication works for these families too).
+  if (has_prefix_n(buf, len,
+                   "jdk/internal/reflect/GeneratedConstructorAccessor")) {
+    static const char kName[] = "jdk/internal/reflect/GeneratedConstructorAccessor";
+    class_id = _classes->lookupDuringDump(kName, sizeof(kName) - 1, Profiler::maxClassMapSize());
+  } else if (has_prefix_n(buf, len, "sun/reflect/GeneratedConstructorAccessor")) {
+    static const char kName[] = "sun/reflect/GeneratedConstructorAccessor";
+    class_id = _classes->lookupDuringDump(kName, sizeof(kName) - 1, Profiler::maxClassMapSize());
+  } else if (has_prefix_n(buf, len,
+                          "jdk/internal/reflect/GeneratedMethodAccessor")) {
+    static const char kName[] = "jdk/internal/reflect/GeneratedMethodAccessor";
+    class_id = _classes->lookupDuringDump(kName, sizeof(kName) - 1, Profiler::maxClassMapSize());
+  } else if (has_prefix_n(buf, len, "sun/reflect/GeneratedMethodAccessor")) {
+    static const char kName[] = "sun/reflect/GeneratedMethodAccessor";
+    class_id = _classes->lookupDuringDump(kName, sizeof(kName) - 1, Profiler::maxClassMapSize());
+  } else if (has_prefix_n(buf, len, "java/lang/invoke/LambdaForm$")) {
+    size_t prefix_len = strlen("java/lang/invoke/LambdaForm$");
+    const char *suffix = buf + prefix_len;
+    size_t suffix_len = len - prefix_len;
+    if (suffix_len >= 2 && suffix[0] == 'M' && suffix[1] == 'H') {
+      static const char kName[] = "java/lang/invoke/LambdaForm$MH";
+      class_id = _classes->lookupDuringDump(kName, sizeof(kName) - 1, Profiler::maxClassMapSize());
+    } else if (suffix_len >= 3 && suffix[0] == 'B' && suffix[1] == 'M' &&
+               suffix[2] == 'H') {
+      static const char kName[] = "java/lang/invoke/LambdaForm$BMH";
+      class_id = _classes->lookupDuringDump(kName, sizeof(kName) - 1, Profiler::maxClassMapSize());
+    } else if (suffix_len >= 3 && suffix[0] == 'D' && suffix[1] == 'M' &&
+               suffix[2] == 'H') {
+      static const char kName[] = "java/lang/invoke/LambdaForm$DMH";
+      class_id = _classes->lookupDuringDump(kName, sizeof(kName) - 1, Profiler::maxClassMapSize());
+    }
+  }
+  *out_class_id = class_id;
+  return true;
+}
+
+u32 Lookup::resolveVTableReceiverCached(void *sym) {
+  auto cached = _vtable_receiver_cache.find(sym);
+  if (cached != _vtable_receiver_cache.end()) {
+    return cached->second;
+  }
+  // Stack buffer sized to fit virtually every real class name. HotSpot
+  // Symbol length is u2 (max 65535); names beyond 4096 bytes are rare
+  // (deeply nested LambdaForm signatures, large CGLIB proxies) and are
+  // recorded as resolve failures via the sentinel below.
+  char buf[4096];
+  u32 class_id = 0;
+  if (!resolveVTableReceiver((VMSymbol *)sym, buf, sizeof(buf), &class_id)) {
+    Counters::increment(VTABLE_RECEIVER_RESOLVE_FAILED);
+    // Explicit sentinel so JFR renders an obvious "we couldn't read it"
+    // marker instead of an empty class name (which is indistinguishable
+    // from a parser/encoder error downstream).
+    static const char kName[] = "<unresolved_vtable_receiver>";
+    class_id = _classes->lookupDuringDump(kName, sizeof(kName) - 1, Profiler::maxClassMapSize());
+  }
+  _vtable_receiver_cache[sym] = class_id;
+  return class_id;
+}
+
 MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   static const char* UNKNOWN = "unknown";
   unsigned long key;
   jint bci = frame.bci;
+  jmethodID method_id = frame.method_id;
 
-  jmethodID method = frame.method_id;
-  if (method == nullptr) {
+  // HotSpot's VM stack walker uses this sentinel when it could not validate a
+  // Method*. It is not a JNI/JVMTI jmethodID and must never reach
+  // fillJavaMethodInfo(). Keep the frame structurally intact, but serialize it
+  // as the shared unknown method.
+  if (VM::isHotspot() && method_id == JMETHODID_NOT_WALKABLE) {
+    method_id = nullptr;
+  }
+
+  // Resolve native method
+  if (FrameType::isRawPointer(bci)) {
+    method_id = JVMSupport::resolve(frame.method);
+  }
+
+  // BCI_VTABLE_RECEIVER: method holds a VMSymbol* (see vmEntry.h). Resolve
+  // to a class_id via the per-dump cache once, then key MethodMap by the
+  // resolved class_id so two distinct Symbol addresses for the same class
+  // name (class unload + reload within a chunk) collapse to one MethodInfo
+  // row.
+  u32 vtable_class_id = 0;
+  if (bci == BCI_VTABLE_RECEIVER) {
+    vtable_class_id = resolveVTableReceiverCached((void *)method_id);
+  }
+
+  if (method_id == nullptr) {
     key = MethodMap::makeKey(UNKNOWN);
   } else if (bci == BCI_ERROR || bci == BCI_NATIVE_FRAME) {
     key = MethodMap::makeKey(frame.native_function_name);
   } else if (bci == BCI_NATIVE_FRAME_REMOTE) {
     key = MethodMap::makeKey(frame.packed_remote_frame);
+  } else if (bci == BCI_VTABLE_RECEIVER) {
+    key = MethodMap::makeVTableReceiverKey(vtable_class_id);
   } else {
     FrameTypeId frame_type = FrameType::decode(bci);
     assert(frame_type == FRAME_INTERPRETED || frame_type == FRAME_JIT_COMPILED ||
            frame_type == FRAME_INLINED || frame_type == FRAME_C1_COMPILED ||
            VM::isOpenJ9()); // OpenJ9 may have bugs that produce invalid frame types
-    key = MethodMap::makeKey(method);
+    key = MethodMap::makeKey(method_id);
   }
 
   MethodInfo *mi = &(*_method_map)[key];
@@ -350,14 +605,19 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     mi->_mark = true;
     bool first_time = mi->_key == 0;
     if (first_time) {
-      mi->_key = _method_map->size() + 1; // avoid zero key
+      // Allocate a method-pool id that is unique among live methods. Must not
+      // be derived from the map size: cleanupUnreferencedMethods() erases
+      // entries, so size()+1 would reissue an id still owned by a surviving
+      // method, producing duplicate ids in the chunk's method constant pool
+      // (PROF-15130). The allocator recycles ids freed on erase instead.
+      mi->_key = _method_map->allocId();
     }
-    if (method == nullptr) {
+    if (method_id == nullptr) {
       fillNativeMethodInfo(mi, UNKNOWN, nullptr);
     } else if (bci == BCI_ERROR) {
-      fillNativeMethodInfo(mi, (const char *)method, nullptr);
+      fillNativeMethodInfo(mi, (const char *)method_id, nullptr);
     } else if (bci == BCI_NATIVE_FRAME) {
-      const char *name = (const char *)method;
+      const char *name = (const char *)method_id;
       fillNativeMethodInfo(mi, name,
                            Profiler::instance()->getLibraryName(name));
     } else if (bci == BCI_NATIVE_FRAME_REMOTE) {
@@ -392,12 +652,40 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
         TEST_LOG("WARNING: Library lookup failed for index %u", lib_index);
         fillNativeMethodInfo(mi, "unknown_library", nullptr);
       }
+    } else if (bci == BCI_VTABLE_RECEIVER) {
+      // Synthetic vtable-receiver frame: method_id holds a VMSymbol*
+      // captured in walkVM. The Symbol -> class_id resolution (with
+      // synthetic-accessor/LambdaForm normalisation) was already done
+      // above via resolveVTableReceiverCached, which also handles
+      // resolution failures by mapping them to "<unresolved_vtable_receiver>"
+      // and incrementing VTABLE_RECEIVER_RESOLVE_FAILED.
+      mi->_class = vtable_class_id;
+      mi->_name = _symbols.lookup("<vtable_receiver>");
+      mi->_sig = _symbols.lookup("()V");
+      mi->_type = FRAME_NATIVE;
+      mi->_is_entry = false;
     } else {
-      fillJavaMethodInfo(mi, method, first_time);
+      fillJavaMethodInfo(mi, method_id, first_time);
     }
   }
 
   return mi;
+}
+
+void Lookup::initClassCache() {
+  // Snapshot _classes into _class_cache for use by resolveMethod(BCI_ALLOC).
+  // Must be called before writeStackTraces() so the snapshot covers all
+  // vtable-receiver classes (pre-registered before profiling starts).
+  // This snapshot is intentionally NOT used by writeClasses(): regular Java
+  // classes are inserted into _classes by fillJavaMethodInfo() during
+  // writeStackTraces/writeMethods, so writeClasses() must re-collect after
+  // those passes to obtain the complete class pool.
+  // standby() is the post-rotate snapshot of _classes; collect() copies its
+  // entries with no concurrent writers (rotate drained them).  The shared
+  // classMapSharedGuard is held for any concurrent #527 vtable readers that
+  // also touch _classes directly via lookup() on active.
+  auto guard = Profiler::instance()->classMapSharedGuard();
+  _classes->standby()->collect(_class_cache);
 }
 
 u32 Lookup::getPackage(const char *class_name) {
@@ -434,7 +722,6 @@ Recording::Recording(int fd, Arguments &args)
   _start_ticks = TSC::ticks();
   _recording_start_time = _start_time;
   _recording_start_ticks = _start_ticks;
-  _base_id = 0;
   _bytes_written = 0;
 
   _tid = OS::threadId();
@@ -480,14 +767,20 @@ void Recording::copyTo(int target_fd) {
 
 off_t Recording::finishChunk() { return finishChunk(false); }
 
-off_t Recording::finishChunk(bool end_recording) {
+off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   jvmtiEnv *jvmti = VM::jvmti();
   JNIEnv *env = VM::jni();
 
   jclass *classes;
   jint count = 0;
-  // obtaining the class list will create local refs to all loaded classes,
-  // effectively preventing them from being unloaded while flushing
+  // Pin all currently-loaded classes for the duration of finishChunk().
+  // resolveMethod() calls GetLineNumberTable/GetClassSignature/GetMethodName on
+  // jmethodIDs of classes that were loaded when the sample was taken but could
+  // be unloaded concurrently by the GC before we flush.  Holding a local JNI
+  // reference to each class makes it a GC root, closing that race window.
+  // Note: this only guards against concurrent unloading that starts AFTER this
+  // call.  Classes already unloaded before finishChunk() was entered are not
+  // present in the list and receive no protection here.
   jvmtiError err = jvmti->GetLoadedClasses(&count, &classes);
 
   flush(&_cpu_monitor_buf);
@@ -532,7 +825,9 @@ off_t Recording::finishChunk(bool end_recording) {
   // dictionary) will reflect the previous serialization. That is, some level of
   // familiarity with the code base will be required to use this diagnostic
   // information for now.
+  updateNativeMemStats();
   writeCounters(_buf);
+  writeNativeMem(_buf);
 
   // Keep a simple stats for where we failed to unwind
   // For the sakes of simplicity we are not keeping the count of failed unwinds which would also be
@@ -544,7 +839,8 @@ off_t Recording::finishChunk(bool end_recording) {
   }
 
   off_t cpool_offset = lseek(_fd, 0, SEEK_CUR);
-  writeCpool(_buf);
+  int count_offset_in_cpool = 0;
+  int pool_count = writeCpool(_buf, &count_offset_in_cpool);
   flush(_buf);
 
   off_t cpool_end = lseek(_fd, 0, SEEK_CUR);
@@ -552,6 +848,13 @@ off_t Recording::finishChunk(bool end_recording) {
   // Patch cpool size field
   _buf->putVar32(0, cpool_end - cpool_offset);
   ssize_t result = pwrite(_fd, _buf->data(), 5, cpool_offset);
+  (void)result;
+
+  // Patch the constant pool count placeholder (written as a 1-byte put8 in
+  // writeCpool). Done flush-safe via pwrite to the FILE offset, mirroring the
+  // size patch above: _buf has been flushed/reset, so _buf->data() is scratch.
+  _buf->put8(0, (char)pool_count);
+  result = pwrite(_fd, _buf->data(), 1, cpool_offset + count_offset_in_cpool);
   (void)result;
 
   off_t chunk_end = lseek(_fd, 0, SEEK_CUR);
@@ -579,6 +882,16 @@ off_t Recording::finishChunk(bool end_recording) {
 
   _buf->reset();
 
+  // Run method_map cleanup while the class pins from GetLoadedClasses are still
+  // held.  Line number tables are now malloc'd copies (fillJavaMethodInfo copies
+  // the JVMTI buffer and calls Deallocate() immediately), so ~SharedLineNumberTable()
+  // calls free() — safe regardless of class-unload state.  Cleanup runs before
+  // DeleteLocalRef to ensure erased jmethodID keys have not yet been recycled by
+  // a newly-loaded class.
+  if (do_cleanup) {
+    cleanupUnreferencedMethods();
+  }
+
   if (!err) {
     // delete all local references
     for (int i = 0; i < count; i++) {
@@ -590,48 +903,39 @@ off_t Recording::finishChunk(bool end_recording) {
   return chunk_end;
 }
 
+// Finish the current chunk, move it to the external file `fd` (must be a valid
+// open descriptor), then restart the continuous recording file with a fresh
+// chunk header. Callers guarantee fd > -1 (see FlightRecorder::dump).
 void Recording::switchChunk(int fd) {
-  _chunk_start = finishChunk(fd > -1);
-
-  // Cleanup unreferenced methods after finishing the chunk
-  cleanupUnreferencedMethods();
+  _chunk_start = finishChunk(/*end_recording=*/true, /*do_cleanup=*/true);
 
   TEST_LOG("MethodMap: %zu methods after cleanup", _method_map.size());
 
   _start_time = _stop_time;
   _start_ticks = _stop_ticks;
   _bytes_written = 0;
-  if (fd > -1) {
-    // move the chunk to external file and reset the continuous recording file
-    OS::copyFile(_fd, fd, 0, _chunk_start);
-    OS::truncateFile(_fd);
-    // need to reset the file offset here
-    _chunk_start = 0;
-    _base_id = 0;
-  } else {
-    // same file, different logical chunk
-    _base_id += 0x1000000;
-  }
 
+  // move the chunk to the external file and reset the continuous recording file
+  OS::copyFile(_fd, fd, 0, _chunk_start);
+  OS::truncateFile(_fd);
+  _chunk_start = 0;
+
+  // the recording file is restarted, so write out all the info events again
   writeHeader(_buf);
   writeMetadata(_buf);
-  if (fd > -1) {
-    // if the recording file is to be restarted write out all the info events
-    // again
-    writeSettings(_buf, _args);
-    if (!_args.hasOption(NO_SYSTEM_INFO)) {
-      writeOsCpuInfo(_buf);
-      writeJvmInfo(_buf);
-    }
-    if (!_args.hasOption(NO_SYSTEM_PROPS)) {
-      writeSystemProperties(_buf);
-    }
-    if (!_args.hasOption(NO_NATIVE_LIBS)) {
-      _recorded_lib_count = 0;
-      writeNativeLibraries(_buf);
-    } else {
-      _recorded_lib_count = -1;
-    }
+  writeSettings(_buf, _args);
+  if (!_args.hasOption(NO_SYSTEM_INFO)) {
+    writeOsCpuInfo(_buf);
+    writeJvmInfo(_buf);
+  }
+  if (!_args.hasOption(NO_SYSTEM_PROPS)) {
+    writeSystemProperties(_buf);
+  }
+  if (!_args.hasOption(NO_NATIVE_LIBS)) {
+    _recorded_lib_count = 0;
+    writeNativeLibraries(_buf);
+  } else {
+    _recorded_lib_count = -1;
   }
   flush(_buf);
 }
@@ -696,6 +1000,9 @@ void Recording::cleanupUnreferencedMethods() {
         if (has_line_table) {
           removed_with_line_tables++;
         }
+        // Recycle the erased method's pool id so a later method can reuse it
+        // without colliding with any still-live method (PROF-15130).
+        _method_map.freeId(mi._key);
         it = _method_map.erase(it);
         removed_count++;
         continue;
@@ -906,9 +1213,15 @@ void Recording::writeSettings(Buffer *buf, Arguments &args) {
 
   writeBoolSetting(buf, T_ALLOC, "enabled", args._record_allocations);
   writeBoolSetting(buf, T_HEAP_LIVE_OBJECT, "enabled", args._record_liveness);
+  writeBoolSetting(buf, T_MALLOC, "enabled", args._nativemem >= 0);
+  if (args._nativemem >= 0) {
+    writeIntSetting(buf, T_MALLOC, "nativemem", args._nativemem);
+    // samplingInterval=-1 signals "record every allocation"; mirrors shouldSample's interval<=1 threshold.
+    writeIntSetting(buf, T_MALLOC, "samplingInterval", args._nativemem <= 1 ? -1 : args._nativemem);
+  }
 
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "debugSymbols",
-                   VMStructs::libjvm()->hasDebugSymbols());
+                   VM::libjvm()->hasDebugSymbols());
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "kernelSymbols",
                    Symbols::haveKernelSymbols());
   writeStringSetting(buf, T_ACTIVE_RECORDING, "cpuEngine",
@@ -1132,35 +1445,55 @@ void Recording::writeNativeLibraries(Buffer *buf) {
   _recorded_lib_count = native_lib_count;
 }
 
-void Recording::writeCpool(Buffer *buf) {
+int Recording::writeCpool(Buffer *buf, int *count_offset_in_cpool) {
+  // Offset of the cpool start within the buffer. The header below is tiny and
+  // flush-free, so the placeholder offset captured relative to this start is a
+  // stable cpool-relative offset usable for a flush-safe back-patch by the
+  // caller (mirrors the cpool SIZE patch).
+  int cpool_start = buf->offset();
   buf->skip(5); // size will be patched later
   buf->putVar64(T_CPOOL);
   buf->putVar64(_start_ticks);
   buf->put8(0);
   buf->put8(0);
   buf->put8(1);
-  // constant pool count - bump each time a new pool is added
-  buf->put8(12);
+  // Constant pool count. We cannot precompute it: the Method/Class/Package/Symbol
+  // pools are only fully populated as a side effect of writeStackTraces/writeMethods
+  // (fillJavaMethodInfo), and empty variable pools are skipped entirely. Write a
+  // 1-byte placeholder here and back-patch it flush-safe in the caller.
+  *count_offset_in_cpool = buf->offset() - cpool_start;
+  buf->put8(0);
 
-  // Profiler::instance()->classMap() provides access to non-locked _class_map
-  // instance The non-locked access is ok here as this code will never run
-  // concurrently to _class_map.clear()
+  // Profiler::rotateDictsAndRun() rotates the three dictionaries before this
+  // path runs, so classMap()->standby() returns an old-active snapshot stable
+  // for the lifetime of writeCpool().
+  // initClassCache() seeds vtable-receiver class names for resolveMethod(BCI_ALLOC).
+  // writeClasses() then collects the COMPLETE class set from standby(): regular Java
+  // classes are inserted into the new-active by fillJavaMethodInfo during
+  // writeStackTraces/writeMethods, and those would not appear in the snapshot —
+  // standby() captures the pre-rotation state which writeClasses extends.
   Lookup lookup(this, &_method_map, Profiler::instance()->classMap());
+  lookup.initClassCache();
+  // CONSTANT pools: always non-empty, always emitted -> 5 sections.
+  // writeThreads always emits: it inserts _tid unconditionally before checking.
   writeFrameTypes(buf);
   writeThreadStates(buf);
   writeExecutionModes(buf);
-  writeThreads(buf);
-  writeStackTraces(buf, &lookup);
-  writeMethods(buf, &lookup);
-  writeClasses(buf, &lookup);
-  writePackages(buf, &lookup);
-  writeConstantPoolSection(buf, T_SYMBOL, &lookup._symbols);
-  writeConstantPoolSection(buf, T_STRING,
-                           Profiler::instance()->stringLabelMap());
-  writeConstantPoolSection(buf, T_ATTRIBUTE_VALUE,
-                           Profiler::instance()->contextValueMap());
   writeLogLevels(buf);
+  writeThreads(buf);
+  int pool_count = 5;
+  // VARIABLE pools: each returns 1 if emitted, 0 if empty (and thus skipped).
+  pool_count += writeStackTraces(buf, &lookup);
+  pool_count += writeMethods(buf, &lookup);
+  pool_count += writeClasses(buf, &lookup);
+  pool_count += writePackages(buf, &lookup);
+  pool_count += writeConstantPoolSection(buf, T_SYMBOL, &lookup._symbols);
+  pool_count += writeConstantPoolSection(
+      buf, T_STRING, Profiler::instance()->stringLabelMap()->standby());
+  pool_count += writeConstantPoolSection(
+      buf, T_ATTRIBUTE_VALUE, Profiler::instance()->contextValueMap()->standby());
   flushIfNeeded(buf);
+  return pool_count;
 }
 
 void Recording::writeFrameTypes(Buffer *buf) {
@@ -1233,7 +1566,7 @@ void Recording::writeThreads(Buffer *buf) {
   // We flush from old_index (the previous active set)
 
   std::unordered_set<int> threads;
-  threads.insert(_tid);
+  threads.insert(_tid);  // always present: the recording thread itself
 
   for (int i = 0; i < CONCURRENCY_LEVEL; ++i) {
     // Collect thread IDs from the fixed-size table into the main set
@@ -1279,14 +1612,22 @@ void Recording::writeThreads(Buffer *buf) {
   }
 }
 
-void Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
+int Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
   // Reset all referenced flags before processing
   for (MethodMap::iterator it = _method_map.begin(); it != _method_map.end(); ++it) {
     it->second._referenced = false;
   }
 
+  // Tracks how many traces were written so the empty pool can be skipped.
+  // Note: even with zero traces, the methods marking pass below must still run
+  // via processCallTraces, but no T_STACK_TRACE section is emitted in that case.
+  int trace_count = 0;
   // Use safe trace processing with guaranteed lifetime during callback execution
-  Profiler::instance()->processCallTraces([this, buf, lookup](const std::unordered_set<CallTrace*>& traces) {
+  Profiler::instance()->processCallTraces([this, buf, lookup, &trace_count](const std::unordered_set<CallTrace*>& traces) {
+    if (traces.empty()) {
+      return;
+    }
+    trace_count = (int)traces.size();
     buf->putVar64(T_STACK_TRACE);
     buf->putVar64(traces.size());
     for (std::unordered_set<CallTrace *>::const_iterator it = traces.begin();
@@ -1311,7 +1652,7 @@ void Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
         jint bci = trace->frames[i].bci;
         if (mi->_type < FRAME_NATIVE) {
           FrameTypeId type = FrameType::decode(bci);
-          bci = (bci & 0x10000) ? 0 : (bci & 0xffff);
+          bci = FrameType::bci(bci);
           buf->putVar32(mi->getLineNumber(bci));
           buf->putVar32(bci);
           buf->put8(type);
@@ -1325,9 +1666,10 @@ void Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
       flushIfNeeded(buf);
     }
   });  // End of processCallTraces lambda
+  return trace_count > 0 ? 1 : 0;
 }
 
-void Recording::writeMethods(Buffer *buf, Lookup *lookup) {
+int Recording::writeMethods(Buffer *buf, Lookup *lookup) {
   MethodMap *method_map = lookup->_method_map;
 
   u32 marked_count = 0;
@@ -1336,6 +1678,10 @@ void Recording::writeMethods(Buffer *buf, Lookup *lookup) {
     if (it->second._mark) {
       marked_count++;
     }
+  }
+
+  if (marked_count == 0) {
+    return 0;
   }
 
   buf->putVar64(T_METHOD);
@@ -1347,20 +1693,28 @@ void Recording::writeMethods(Buffer *buf, Lookup *lookup) {
       mi._mark = false;
       buf->putVar64(mi._key);
       buf->putVar64(mi._class);
-      buf->putVar64(mi._name | _base_id);
-      buf->putVar64(mi._sig | _base_id);
+      buf->putVar64(mi._name);
+      buf->putVar64(mi._sig);
       buf->putVar64(mi._modifiers);
       buf->putVar64(mi.isHidden());
       flushIfNeeded(buf);
     }
   }
+  return 1;
 }
 
-void Recording::writeClasses(Buffer *buf, Lookup *lookup) {
+int Recording::writeClasses(Buffer *buf, Lookup *lookup) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   std::map<u32, const char *> classes;
-  // no need to lock _classes as this code will never run concurrently with
-  // resetting that dictionary
-  lookup->_classes->collect(classes);
+  // standby() returns the dump buffer — the stable snapshot captured by
+  // rotate() for this recording cycle.  No other thread writes to this
+  // buffer after rotate() completes: rotate() drained all in-flight
+  // cross-thread writers via waitForRefCountToClear() before returning.
+  lookup->_classes->standby()->collect(classes);
+
+  if (classes.empty()) {
+    return 0;
+  }
 
   buf->putVar64(T_CLASS);
   buf->putVar64(classes.size());
@@ -1369,29 +1723,38 @@ void Recording::writeClasses(Buffer *buf, Lookup *lookup) {
     const char *name = it->second;
     buf->putVar64(it->first);
     buf->putVar64(0); // classLoader
-    buf->putVar64(lookup->getSymbol(name) | _base_id);
-    buf->putVar64(lookup->getPackage(name) | _base_id);
+    buf->putVar64(lookup->getSymbol(name));
+    buf->putVar64(lookup->getPackage(name));
     buf->putVar64(0); // access flags
     flushIfNeeded(buf);
   }
+  return 1;
 }
 
-void Recording::writePackages(Buffer *buf, Lookup *lookup) {
+int Recording::writePackages(Buffer *buf, Lookup *lookup) {
   std::map<u32, const char *> packages;
   lookup->_packages.collect(packages);
+
+  if (packages.empty()) {
+    return 0;
+  }
 
   buf->putVar32(T_PACKAGE);
   buf->putVar32(packages.size());
   for (std::map<u32, const char *>::const_iterator it = packages.begin();
        it != packages.end(); ++it) {
-    buf->putVar64(it->first | _base_id);
-    buf->putVar64(lookup->getSymbol(it->second) | _base_id);
+    buf->putVar64(it->first);
+    buf->putVar64(lookup->getSymbol(it->second));
     flushIfNeeded(buf);
   }
+  return 1;
 }
 
-void Recording::writeConstantPoolSection(
+int Recording::writeConstantPoolSection(
     Buffer *buf, JfrType type, std::map<u32, const char *> &constants) {
+  if (constants.empty()) {
+    return 0;
+  }
   flushIfNeeded(buf);
   buf->putVar64(type);
   buf->putVar64(constants.size());
@@ -1400,16 +1763,24 @@ void Recording::writeConstantPoolSection(
     int length = strlen(it->second);
     // 5 is max varint length
     flushIfNeeded(buf, RECORDING_BUFFER_LIMIT - length - 5);
-    buf->putVar64(it->first | _base_id);
+    buf->putVar64(it->first);
     buf->putUtf8(it->second, length);
   }
+  return 1;
 }
 
-void Recording::writeConstantPoolSection(Buffer *buf, JfrType type,
-                                         Dictionary *dictionary) {
+int Recording::writeConstantPoolSection(Buffer *buf, JfrType type,
+                                        Dictionary *dictionary) {
   std::map<u32, const char *> constants;
   dictionary->collect(constants);
-  writeConstantPoolSection(buf, type, constants);
+  return writeConstantPoolSection(buf, type, constants);
+}
+
+int Recording::writeConstantPoolSection(Buffer *buf, JfrType type,
+                                        StringDictionaryBuffer *buffer) {
+  std::map<u32, const char *> constants;
+  buffer->collect(constants);
+  return writeConstantPoolSection(buf, type, constants);
 }
 
 void Recording::writeLogLevels(Buffer *buf) {
@@ -1420,6 +1791,69 @@ void Recording::writeLogLevels(Buffer *buf) {
     buf->putUtf8(Log::LEVEL_NAME[i]);
     flushIfNeeded(buf);
   }
+}
+
+void Recording::updateNativeMemStats() {
+  // Refresh the moving-window averages and the observed total peak. Per-category
+  // peaks are maintained precisely at allocation time, so they are not sampled
+  // here; the total peak is bracketed instead (see writeNativeMem).
+  NativeMem::sample();
+
+  // Mirror the totals into the flat counter table so they flow out through the
+  // existing counter path (JFR T_DATADOG_COUNTER events and the JNI debug
+  // counters). NATIVE_MEM_MAX_BYTES carries the upper bound on the total peak
+  // (sum of precise per-category peaks); the observed sampled total and the
+  // per-category values are emitted by writeNativeMem().
+  Counters::set(NATIVE_MEM_LIVE_BYTES, NativeMem::liveTotal());
+  Counters::set(NATIVE_MEM_AVG_BYTES, NativeMem::avgTotal());
+  Counters::set(NATIVE_MEM_MAX_BYTES, NativeMem::maxTotal());
+}
+
+void Recording::writeNativeMem(Buffer *buf) {
+  // Emit native-memory stats as counter events, reusing the counter event format
+  // so they land alongside the totals without needing a dedicated event type or
+  // a slot in the counter table.
+  auto emit = [&](const char *label, long long value) {
+    // Clamp to 0 before encoding: the value is serialized as an unsigned varint
+    // (putVar64), so a negative live gauge would emit a huge value and corrupt
+    // the counter stream. avg/max are already non-negative; live is clamped
+    // here to match sample()/liveTotal().
+    if (value < 0) {
+      value = 0;
+    }
+    int start = buf->skip(1);
+    buf->putVar64(T_DATADOG_COUNTER);
+    buf->putVar64(_start_ticks);
+    buf->putUtf8(label);
+    buf->putVar64(value);
+    writeEventSizePrefix(buf, start);
+    flushIfNeeded(buf);
+  };
+
+  // Per-category live/avg/max, named "<metric>.<category>". The max here is the
+  // precise per-category peak tracked at allocation time.
+  for (int c = 0; c < NM_NUM_CATEGORIES; c++) {
+    NativeMemCategory cat = (NativeMemCategory)c;
+    const char *name = NativeMem::categoryName(cat);
+    const struct {
+      const char *prefix;
+      long long value;
+    } metrics[] = {
+        {"native_mem_live_bytes.", NativeMem::live(cat)},
+        {"native_mem_avg_bytes.", NativeMem::avg(cat)},
+        {"native_mem_max_bytes.", NativeMem::max(cat)},
+    };
+    for (const auto &m : metrics) {
+      char label[64];
+      snprintf(label, sizeof(label), "%s%s", m.prefix, name);
+      emit(label, m.value);
+    }
+  }
+
+  // NATIVE_MEM_MAX_BYTES already carries the upper bound on the total peak (sum
+  // of precise per-category peaks); here we also emit the largest observed
+  // sampled total (a non-atomic per-category sum; approximate).
+  emit("native_mem_max_observed_total_bytes", NativeMem::maxTotalObserved());
 }
 
 void Recording::writeCounters(Buffer *buf) {
@@ -1473,7 +1907,7 @@ void Recording::writeCurrentContext(Buffer *buf) {
   buf->putVar64(rootSpanId);
 
   size_t numAttrs = Profiler::instance()->numContextAttributes();
-  ProfiledThread* thrd = hasContext ? ProfiledThread::currentSignalSafe() : nullptr;
+  ProfiledThread* thrd = hasContext ? ProfiledThread::current() : nullptr;
   for (size_t i = 0; i < numAttrs; i++) {
     buf->putVar32(thrd != nullptr ? thrd->getOtelTagEncoding(i) : 0);
   }
@@ -1486,6 +1920,7 @@ void Recording::writeEventSizePrefix(Buffer *buf, int start) {
 }
 
 void Recording::recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
+                                      u64 correlation_id,
                                       ExecutionEvent *event) {
   int start = buf->skip(1);
   buf->putVar64(T_EXECUTION_SAMPLE);
@@ -1495,12 +1930,14 @@ void Recording::recordExecutionSample(Buffer *buf, int tid, u64 call_trace_id,
   buf->put8(static_cast<int>(event->_thread_state));
   buf->put8(static_cast<int>(event->_execution_mode));
   buf->putVar64(event->_weight);
+  buf->putVar64(correlation_id);
   writeCurrentContext(buf);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
 
 void Recording::recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
+                                   u64 correlation_id,
                                    ExecutionEvent *event) {
   int start = buf->skip(1);
   buf->putVar64(T_METHOD_SAMPLE);
@@ -1510,6 +1947,7 @@ void Recording::recordMethodSample(Buffer *buf, int tid, u64 call_trace_id,
   buf->put8(static_cast<int>(event->_thread_state));
   buf->put8(static_cast<int>(event->_execution_mode));
   buf->putVar64(event->_weight);
+  buf->putVar64(correlation_id);
   writeCurrentContext(buf);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
@@ -1525,6 +1963,7 @@ void Recording::recordWallClockEpoch(Buffer *buf, WallClockEpochEvent *event) {
   buf->putVar64(event->_num_failed_samples);
   buf->putVar64(event->_num_exited_threads);
   buf->putVar64(event->_num_permission_denied);
+  buf->putVar64(event->_num_suppressed_sampled_run);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
@@ -1575,6 +2014,39 @@ void Recording::recordAllocation(RecordingBuffer *buf, int tid,
   flushIfNeeded(buf);
 }
 
+void Recording::recordMallocSample(Buffer *buf, int tid, u64 call_trace_id,
+                                   MallocEvent *event) {
+  int start = buf->skip(1);
+  buf->putVar64(T_MALLOC);
+  buf->putVar64(event->_start_time);
+  buf->putVar64(tid);
+  buf->putVar64(call_trace_id);
+  buf->putVar64(event->_address);
+  buf->putVar64(event->_size);
+  buf->putFloat(event->_weight);
+  writeCurrentContext(buf);
+  writeEventSizePrefix(buf, start);
+  flushIfNeeded(buf);
+}
+
+void Recording::recordNativeSocketSample(Buffer *buf, int tid, u64 call_trace_id,
+                                         NativeSocketEvent *event) {
+  int start = buf->skip(1);
+  buf->putVar64(T_NATIVE_SOCKET);
+  buf->putVar64(event->_start_time);
+  buf->putVar64(tid);
+  buf->putVar64(call_trace_id);
+  buf->putVar64(safeDuration(event->_start_time, event->_end_time));
+  static const char* const kOpNames[] = {"SEND", "RECV", "WRITE", "READ"};
+  buf->putUtf8(event->_operation < 4 ? kOpNames[event->_operation] : "UNKNOWN");
+  buf->putUtf8(event->_remote_addr);
+  buf->putVar64(event->_bytes);
+  buf->putFloat(event->_weight);
+  writeCurrentContext(buf);
+  writeEventSizePrefix(buf, start);
+  flushIfNeeded(buf);
+}
+
 void Recording::recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
                                      ObjectLivenessEvent *event) {
   int start = buf->skip(1);
@@ -1602,7 +2074,7 @@ void Recording::recordMonitorBlocked(Buffer *buf, int tid, u64 call_trace_id,
   int start = buf->skip(1);
   buf->putVar64(T_MONITOR_ENTER);
   buf->putVar64(event->_start_time);
-  buf->putVar64(event->_end_time - event->_start_time);
+  buf->putVar64(safeDuration(event->_start_time, event->_end_time));
   buf->putVar64(tid);
   buf->putVar64(call_trace_id);
   buf->putVar64(event->_id);
@@ -1618,7 +2090,7 @@ void Recording::recordThreadPark(Buffer *buf, int tid, u64 call_trace_id,
   int start = buf->skip(1);
   buf->putVar64(T_THREAD_PARK);
   buf->putVar64(event->_start_time);
-  buf->putVar64(event->_end_time - event->_start_time);
+  buf->putVar64(safeDuration(event->_start_time, event->_end_time));
   buf->putVar64(tid);
   buf->putVar64(call_trace_id);
   buf->putVar64(event->_id);
@@ -1644,10 +2116,11 @@ void Recording::recordCpuLoad(Buffer *buf, float proc_user, float proc_system,
 // assumption is that we hold the lock (with lock_index)
 void Recording::addThread(int lock_index, int tid) {
     int active = _active_index.load(std::memory_order_acquire);
-    _thread_ids[lock_index][active].insert(tid);
+    _thread_ids[lock_index][active].insert(tid);  // ThreadIdTable::insert is signal-safe (atomics only)
 }
 
 Error FlightRecorder::start(Arguments &args, bool reset) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   ExclusiveLockGuard locker(&_rec_lock);
   const char *file = args.file();
   if (file == NULL || file[0] == 0) {
@@ -1671,20 +2144,30 @@ Error FlightRecorder::newRecording(bool reset) {
   }
 
   _rec = new Recording(fd, _args);
+  // The Recording embeds the JFR RecordingBuffer array and the cpu-monitor
+  // buffer, so its allocation size is the profiler's JFR buffer footprint.
+  NativeMem::record(NM_JFR_BUFFERS, (long long)sizeof(Recording));
   return Error::OK;
 }
 
 void FlightRecorder::stop() {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   ExclusiveLockGuard locker(&_rec_lock);
   Recording* rec = _rec;
   if (rec != nullptr) {
     // NULL first, deallocate later
     _rec = nullptr;
+    // Decrement AFTER delete: ~Recording() runs finishChunk(), which emits the
+    // native-memory counters for the final chunk. The Recording buffers are
+    // still live during that serialization, so account the free only once it
+    // has actually happened.
     delete rec;
+    NativeMem::record(NM_JFR_BUFFERS, -(long long)sizeof(Recording));
   }
 }
 
 Error FlightRecorder::dump(const char *filename, const int length) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   assert(length >= 0);
   ExclusiveLockGuard locker(&_rec_lock);
   Recording* rec = _rec;
@@ -1694,6 +2177,9 @@ Error FlightRecorder::dump(const char *filename, const int length) {
       // if the filename to dump the recording to is specified move the current
       // working file there
       int copy_fd = open(filename, O_CREAT | O_RDWR | O_TRUNC, 0644);
+      if (copy_fd == -1) {
+        return Error("Could not open recording file for dump");
+      }
       rec->switchChunk(copy_fd);
       close(copy_fd);
       return Error::OK;
@@ -1702,30 +2188,6 @@ Error FlightRecorder::dump(const char *filename, const int length) {
       "Can not dump recording to itself. Provide a different file name!");
   }
   return Error("No active recording");
-}
-
-void FlightRecorder::flush() {
-  ExclusiveLockGuard locker(&_rec_lock);
-  Recording* rec = _rec;
-  if (rec != nullptr) {
-    jvmtiEnv* jvmti = VM::jvmti();
-    JNIEnv* env = VM::jni();
-
-    jclass* classes = NULL;
-    jint count = 0;
-    // obtaining the class list will create local refs to all loaded classes,
-    // effectively preventing them from being unloaded while flushing
-    jvmtiError err = jvmti->GetLoadedClasses(&count, &classes);
-    rec->switchChunk(-1);
-    if (!err) {
-      // delete all local references
-      for (int i = 0; i < count; i++) {
-        env->DeleteLocalRef((jobject) classes[i]);
-      }
-      // deallocate the class array
-      jvmti->Deallocate((unsigned char*) classes);
-    }
-  }
 }
 
 void FlightRecorder::wallClockEpoch(int lock_index,
@@ -1767,6 +2229,7 @@ void FlightRecorder::recordQueueTime(int lock_index, int tid,
 void FlightRecorder::recordDatadogSetting(int lock_index, int length,
                                           const char *name, const char *value,
                                           const char *unit) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   OptionalSharedLockGuard locker(&_rec_lock);
   if (locker.ownsLock()) {
     Recording* rec = _rec;
@@ -1778,6 +2241,7 @@ void FlightRecorder::recordDatadogSetting(int lock_index, int length,
 }
 
 void FlightRecorder::recordHeapUsage(int lock_index, long value, bool live) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
   OptionalSharedLockGuard locker(&_rec_lock);
   if (locker.ownsLock()) {
     Recording* rec = _rec;
@@ -1788,7 +2252,7 @@ void FlightRecorder::recordHeapUsage(int lock_index, long value, bool live) {
   }
 }
 
-void FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
+bool FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
                                  int event_type, Event *event) {
   OptionalSharedLockGuard locker(&_rec_lock);
   if (locker.ownsLock()) {
@@ -1797,11 +2261,11 @@ void FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
       RecordingBuffer *buf = rec->buffer(lock_index);
       switch (event_type) {
       case BCI_CPU:
-          rec->recordExecutionSample(buf, tid, call_trace_id,
+          rec->recordExecutionSample(buf, tid, call_trace_id, 0,
                                      (ExecutionEvent *)event);
           break;
         case BCI_WALL:
-          rec->recordMethodSample(buf, tid, call_trace_id,
+          rec->recordMethodSample(buf, tid, call_trace_id, 0,
                                   (ExecutionEvent *)event);
           break;
         case BCI_ALLOC:
@@ -1817,11 +2281,54 @@ void FlightRecorder::recordEvent(int lock_index, int tid, u64 call_trace_id,
         case BCI_PARK:
           rec->recordThreadPark(buf, tid, call_trace_id, (LockEvent *)event);
           break;
+        case BCI_NATIVE_MALLOC:
+          rec->recordMallocSample(buf, tid, call_trace_id, (MallocEvent *)event);
+          break;
+        case BCI_NATIVE_SOCKET:
+          rec->recordNativeSocketSample(buf, tid, call_trace_id, (NativeSocketEvent *)event);
+          break;
+        default:
+          return false;
         }
         rec->flushIfNeeded(buf);
         rec->addThread(lock_index, tid);
+        return true;
       }
+  } else {
+    Counters::increment(SAMPLES_DROPPED_REC_LOCK);
   }
+  return false;
+}
+
+bool FlightRecorder::recordEventDelegated(int lock_index, int tid,
+                                          u64 correlation_id, int event_type,
+                                          Event *event) {
+  OptionalSharedLockGuard locker(&_rec_lock);
+  if (locker.ownsLock()) {
+    Recording* rec = _rec;
+    if (rec != nullptr) {
+      RecordingBuffer *buf = rec->buffer(lock_index);
+      switch (event_type) {
+        case BCI_CPU:
+          rec->recordExecutionSample(buf, tid, 0, correlation_id,
+                                     (ExecutionEvent *)event);
+          break;
+        case BCI_WALL:
+          rec->recordMethodSample(buf, tid, 0, correlation_id,
+                                  (ExecutionEvent *)event);
+          break;
+        default:
+          // Delegation is only wired for CPU/wall samples in v1.
+          return false;
+      }
+      rec->flushIfNeeded(buf);
+      rec->addThread(lock_index, tid);
+      return true;
+    }
+  } else {
+    Counters::increment(SAMPLES_DROPPED_REC_LOCK);
+  }
+  return false;
 }
 
 void FlightRecorder::recordLog(LogLevel level, const char *message,

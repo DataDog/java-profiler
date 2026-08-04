@@ -57,6 +57,14 @@ public:
         _integral_value(0) {}
 
   double compute(u64 input, double time_delta_seconds);
+
+  // Reset integrator/derivative state. Intended for tests and for cases where the
+  // controller must start from a clean slate (e.g. a new profiling session on a
+  // different workload).
+  inline void reset() {
+    _avg_error = 0;
+    _integral_value = 0;
+  }
 };
 
 #endif

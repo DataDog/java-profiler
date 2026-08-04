@@ -15,6 +15,7 @@
 #include "jvmThread.h"
 #include "safeAccess.h"
 #include "spinLock.h"
+#include "threadLocalData.h"
 #include "threadState.h"
 
 CodeCache* VMStructs::_libjvm = nullptr;
@@ -35,6 +36,9 @@ int VMStructs::_narrow_klass_shift = -1;
 int VMStructs::_interpreter_frame_bcp_offset = 0;
 unsigned char VMStructs::_unsigned5_base = 0;
 const void* VMStructs::_call_stub_return = nullptr;
+const void* VMStructs::_cont_return_barrier   = nullptr;
+const void* VMStructs::_cont_entry_return_pc  = nullptr;
+VMNMethod*  VMStructs::_enter_special_nm       = nullptr;
 const void* VMStructs::_interpreter_start = nullptr;
 VMNMethod* VMStructs::_interpreter_nm = nullptr;
 const void* VMStructs::_interpreted_frame_valid_start = nullptr;
@@ -44,6 +48,7 @@ const void* VMStructs::_interpreted_frame_valid_end = nullptr;
 // Initialize type size to 0
 #define INIT_TYPE_SIZE(name, names) uint64_t VMStructs::TYPE_SIZE_NAME(name) = 0;
 DECLARE_TYPES_DO(INIT_TYPE_SIZE)
+DECLARE_V27_TYPES_DO(INIT_TYPE_SIZE)
 #undef INIT_TYPE_SIZE
 
 #define offset_value -1
@@ -62,6 +67,7 @@ DECLARE_TYPES_DO(INIT_TYPE_SIZE)
     field_type VMStructs::var = field_type##_value;
 
 DECLARE_TYPE_FIELD_DO(DO_NOTHING, INIT_FIELD, INIT_FIELD_WITH_VERSION, DO_NOTHING)
+DECLARE_V27_TYPE_FIELD_DO(DO_NOTHING, INIT_FIELD, INIT_FIELD_WITH_VERSION, DO_NOTHING)
 
 #undef INIT_FIELD
 #undef INIT_FIELD_WITH_VERSION
@@ -175,6 +181,7 @@ void VMStructs::init_offsets_and_addresses() {
 
 #define END_TYPE() continue; }
         DECLARE_TYPE_FIELD_DO(MATCH_TYPE_NAMES, READ_FIELD_VALUE, READ_FIELD_VALUE_WITH_VERSION, END_TYPE)
+        DECLARE_V27_TYPE_FIELD_DO(MATCH_TYPE_NAMES, READ_FIELD_VALUE, READ_FIELD_VALUE_WITH_VERSION, END_TYPE)
 #undef MATCH_TYPE_NAMES
 #undef READ_FIELD_VALUE
 #undef READ_FIELD_VALUE_WITH_VERSION
@@ -205,6 +212,7 @@ void VMStructs::init_type_sizes() {
         }
 
         DECLARE_TYPES_DO(READ_TYPE_SIZE)
+        DECLARE_V27_TYPES_DO(READ_TYPE_SIZE)
 
 #undef READ_TYPE_SIZE   
 
@@ -271,12 +279,21 @@ void VMStructs::verify_offsets() {
     }
 
 // Verify type sizes
+// Note: DECLARE_V27_TYPES_DO (VMContinuationEntry) is intentionally excluded here.
+// ContinuationEntry is not exported in gHotSpotVMTypes before JDK 27 (added via JDK-8378985);
+// asserting type_size() > 0 would SIGABRT on any JDK 21-26 build.
 #define VERIFY_TYPE_SIZE(name, names) assert(TYPE_SIZE_NAME(name) > 0);
     DECLARE_TYPES_DO(VERIFY_TYPE_SIZE);
 #undef VERIFY_TYPE_SIZE
 
 
 // Verify offsets and addresses
+// Note: DECLARE_V27_TYPE_FIELD_DO is intentionally excluded here.
+// Continuation-related fields (_cont_entry_offset, _cont_return_barrier_addr,
+// _cont_entry_return_pc_addr, _cont_entry_parent_offset) are absent from
+// gHotSpotVMStructs in all JDK 21-26 builds: ContinuationEntry was not
+// exported in the vmStructs table until JDK 27 (JDK-8378985). walkVM degrades
+// gracefully when they are missing.
 #define offset_value -1
 #define address_value nullptr
 
@@ -325,9 +342,7 @@ void VMStructs::initOffsets() {
 }
 
 void VMStructs::resolveOffsets() {
-    if (VM::isOpenJ9() || VM::isZing()) {
-        return;
-    }
+    assert(VM::isHotspot() && "Should not reach here");
 
     if (_klass_offset_addr != NULL) {
         _klass = (jfieldID)(uintptr_t)(*(int*)_klass_offset_addr << 2 | 2);
@@ -391,6 +406,25 @@ void VMStructs::resolveOffsets() {
     if (_call_stub_return_addr != NULL) {
         _call_stub_return = *(const void**)_call_stub_return_addr;
     }
+    if (_cont_return_barrier_addr != NULL) {
+        _cont_return_barrier = *(const void**)_cont_return_barrier_addr;
+    }
+    if (_cont_entry_return_pc_addr != NULL) {
+        _cont_entry_return_pc = *(const void**)_cont_entry_return_pc_addr;
+    }
+    // Fallback for JDK 21-26: StubRoutines::_cont_returnBarrier and
+    // ContinuationEntry::_return_pc are absent from gHotSpotVMStructs before
+    // JDK 27 (added via JDK-8378985).  Resolve them via C++ symbol lookup.
+    // Symbol names use Itanium C++ ABI mangling (GCC/Clang), which matches
+    // the HotSpot build toolchain on all supported platforms.
+    if (_cont_return_barrier == nullptr && VM::hotspot_version() >= 21) {
+        const void** sym = (const void**)_libjvm->findSymbol("_ZN12StubRoutines19_cont_returnBarrierE");
+        if (sym != nullptr) _cont_return_barrier = *sym;
+    }
+    if (_cont_entry_return_pc == nullptr && VM::hotspot_version() >= 21) {
+        const void** sym = (const void**)_libjvm->findSymbol("_ZN17ContinuationEntry10_return_pcE");
+        if (sym != nullptr) _cont_entry_return_pc = *sym;
+    }
 
     // Since JDK 23, _metadata_offset is relative to _data_offset. See metadata()
     if (_nmethod_immutable_offset < 0) {
@@ -439,6 +473,14 @@ void VMStructs::resolveOffsets() {
     }
     if (_interpreter_nm == NULL && _interpreter_start != NULL) {
         _interpreter_nm = CodeHeap::findNMethod(_interpreter_start);
+    }
+    if (_enter_special_nm == NULL && _cont_entry_return_pc != NULL) {
+        // On JDK 27+, enterSpecial is a proper nmethod; findNMethod succeeds.
+        // On JDK 21-26, it is a RuntimeBlob; findNMethod returns NULL and
+        // _enter_special_nm stays NULL.  The cont_entry_return_pc boundary is
+        // then detected via isContEntryReturnPc() in the walk loop rather than
+        // nmethod identity.
+        _enter_special_nm = CodeHeap::findNMethod(_cont_entry_return_pc);
     }
 }
 
@@ -553,6 +595,8 @@ void JNICALL VMStructs::NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni, jthread t
     static int delayedCounter = 0;
     static void **delayed = (void **)malloc(512 * sizeof(void *) * 2);
 
+    ProfiledThread::initCurrentThreadSignalSafe();
+
     if (_memory_usage_func == NULL) {
         if (jvmti != NULL && jni != NULL) {
             checkNativeBinding(jvmti, jni, method, address);
@@ -640,7 +684,7 @@ bool VMThread::isJavaThread(VMThread* vm_thread) {
 
     // JVMTI ThreadStart callback may have set the flag, which is reliable.
     // Or we may already compute and cache it, so use it instead.
-    ProfiledThread *prof_thread = ProfiledThread::currentSignalSafe();
+    ProfiledThread *prof_thread = ProfiledThread::current();
     if (prof_thread != nullptr) {
         ProfiledThread::ThreadType type = prof_thread->threadType();
         if (type != ProfiledThread::ThreadType::TYPE_UNKNOWN) {
@@ -709,7 +753,7 @@ OSThreadState VMThread::getOSThreadState() {
 }
 
 int VMThread::osThreadId() {
-    const char* osthread = *(const char**) at(_thread_osthread_offset);
+    const char* osthread = (const char*) SafeAccess::load((void**) at(_thread_osthread_offset));
     if (osthread != NULL) {
         // Java thread may be in the middle of termination, and its osthread structure just released
         return SafeAccess::load32((int32_t*)(osthread + _osthread_id_offset), -1);
@@ -722,39 +766,6 @@ JNIEnv* VMThread::jni() {
         return VM::jni();  // fallback for non-HotSpot JVM
     }
     return isJavaThread(this) ? (JNIEnv*) at(_env_offset) : NULL;
-}
-
-jmethodID VMMethod::id() {
-    // We may find a bogus NMethod during stack walking, it does not always point to a valid VMMethod
-    const char* const_method = (const char*) SafeAccess::load((void**) at(_method_constmethod_offset));
-    if (!goodPtr(const_method)) {
-        return NULL;
-    }
-
-    const char* cpool = (const char*) SafeAccess::load((void**)(const_method + _constmethod_constants_offset));
-    unsigned short num = (unsigned short) SafeAccess::load32((int32_t*)(const_method + _constmethod_idnum_offset), 0);
-    if (goodPtr(cpool)) {
-        VMKlass* holder = (VMKlass*) SafeAccess::loadPtr((void**)(cpool + _pool_holder_offset), nullptr);
-        if (goodPtr(holder)) {
-            jmethodID* ids = (jmethodID*) SafeAccess::loadPtr((void**)((char*)holder + _jmethod_ids_offset), nullptr);
-            if (ids != NULL) {
-                size_t len = (size_t) SafeAccess::load32((int32_t*)ids, 0);
-                if (num < len) {
-                    return (jmethodID) SafeAccess::loadPtr((void**)(ids + num + 1), nullptr);
-                }
-            }
-        }
-    }
-    return NULL;
-}
-
-jmethodID VMMethod::validatedId() {
-    jmethodID method_id = id();
-    if (!_can_dereference_jmethod_id || 
-        ((goodPtr(method_id) && SafeAccess::loadPtr((void**)method_id, nullptr) == this))) {
-        return method_id;
-    }
-    return NULL;
 }
 
 VMNMethod* CodeHeap::findNMethod(char* heap, const void* pc) {
@@ -829,7 +840,8 @@ VMFlag* VMFlag::find(const char* name) {
 
         for (size_t i = 0; i < count; i++) {
             VMFlag* f = VMFlag::cast(*(const char**)_flags_addr + i * VMFlag::type_size());
-            if (f->name() != NULL && strcmp(f->name(), name) == 0 && f->addr() != NULL) {
+            const char* fname = f->name();
+            if (fname != nullptr && strcmp(fname, name) == 0 && f->addr() != nullptr) {
                 return f;
             }
         }
@@ -850,7 +862,8 @@ VMFlag *VMFlag::find(const char *name, int type_mask) {
         size_t count = *(size_t*)_flag_count;
         for (size_t i = 0; i < count; i++) {
             VMFlag* f = VMFlag::cast(*(const char**)_flags_addr + i * VMFlag::type_size());
-            if (f->name() != NULL && strcmp(f->name(), name) == 0) {
+            const char* fname = f->name();
+            if (fname != nullptr && strcmp(fname, name) == 0) {
                 int masked = 0x1 << f->type();
                 if (masked & type_mask) {
                     return (VMFlag*)f;
@@ -969,6 +982,12 @@ bool VMMethod::check_jmethodID_hotspot(jmethodID id) {
         }
     }
     if (VMStructs::class_loader_data_offset() >= 0) {
+        // Verify the Klass at cpool_holder is readable over the full range we're about to access,
+        // catching freed/reclaimed Klass memory between check_jmethodID and the JVMTI calls (PROF-14003).
+        if (!SafeAccess::isReadableRange(cpool_holder,
+                                         (size_t)VMStructs::class_loader_data_offset() + sizeof(void*))) {
+            return false;
+        }
         cl_data = (const char *)SafeAccess::load(
             (void **)(cpool_holder + VMStructs::class_loader_data_offset()));
         if (cl_data == NULL) {
@@ -985,7 +1004,7 @@ bool VMMethod::check_jmethodID_J9(jmethodID id) {
 
 OSThreadState VMThread::osThreadState() {
     if (VMStructs::thread_osthread_offset() >= 0 && VMStructs::osthread_state_offset() >= 0) {
-        const char *osthread = *(char **)at(VMStructs::thread_osthread_offset());
+        const char *osthread = (const char*) SafeAccess::load((void**) at(VMStructs::thread_osthread_offset()));
         if (osthread != nullptr) {
             // If the location is not accessible, the thread must have been terminated
             int value = SafeAccess::safeFetch32((int*)(osthread + VMStructs::osthread_state_offset()),

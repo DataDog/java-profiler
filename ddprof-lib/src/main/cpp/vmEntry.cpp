@@ -8,18 +8,26 @@
 #include "vmEntry.h"
 #include "arguments.h"
 #include "context.h"
+#include "counters.h"
 #include "j9/j9Support.h"
 #include "jniHelper.h"
+#include "jvmSupport.h"
 #include "jvmThread.h"
 #include "libraries.h"
 #include "log.h"
 #include "os.h"
 #include "profiler.h"
 #include "safeAccess.h"
-#include "hotspot/vmStructs.h"
+#include "threadLocalData.h"
+// Pulls in vmStructs.h plus the definitions of crashProtectionActive()/cast_to() that its inline
+// accessors odr-use here; the light vmStructs.h alone leaves those unresolved in assertion-enabled
+// builds (see the note in hotspotStackFrame_aarch64.cpp).
+#include "hotspot/vmStructs.inline.h"
 #include "hotspot/jitCodeCache.h"
+#include <atomic>
 #include <dlfcn.h>
 #include <stdlib.h>
+#include "guards.h"
 #include <string.h>
 #include <sys/mman.h>
 
@@ -42,16 +50,20 @@ bool VM::_can_sample_objects = false;
 bool VM::_can_intercept_binding = false;
 bool VM::_is_adaptive_gc_boundary_flag_set = false;
 
+jvmtiExtensionFunction VM::_request_stack_trace = nullptr;
+jvmtiExtensionFunction VM::_init_request_stack_trace = nullptr;
+
 jvmtiError(JNICALL *VM::_orig_RedefineClasses)(jvmtiEnv *, jint,
                                                const jvmtiClassDefinition *);
 jvmtiError(JNICALL *VM::_orig_RetransformClasses)(jvmtiEnv *, jint,
                                                   const jclass *classes);
 
-void *VM::_libjvm;
+CodeCache* VM::_libjvm = nullptr;
 AsyncGetCallTrace VM::_asyncGetCallTrace;
 JVM_GetManagement VM::_getManagement;
 
 static void wakeupHandler(int signo) {
+  SIGNAL_HANDLER_GUARD();
   // Dummy handler for interrupting syscalls
 }
 
@@ -142,17 +154,19 @@ JavaFullVersion JavaVersionAccess::get_java_version(char* prop_value) {
     version.major = 8;
     version.update = atoi(prop_value + 3);
   } else if (strncmp(prop_value, "JRE 1.8.0", 9) == 0) {
-    // IBM JDK 8 does not report the 'real' version in any property accessible
-    // from JVMTI The only piece of info we can use has the following format
-    // `JRE 1.8.0 <some text> 20230313_47323 <some more text>`
-    // Considering that JDK 8.0.361 is the only release in 2023 we can use
-    // that part of the version string to pretend anything after year 2023
-    // inclusive is 8.0.361. Not perfect, but this is the only thing we have.
+    // Old IBM SDK JDK 8 embeds only a build date (YYYYMMDD) in its version
+    // string, not the update number. Map known date ranges to update numbers:
+    //   >= 20250328: IBM SDK SR8 FP45 (JDK 8u451, J9 VM build date for OpenJ9
+    //                0.51 which fixes the ASGCT livelock; eclipse-openj9#20577)
+    //   >= 20230313: IBM SDK SR6 FP11 (JDK 8u361, first 2023 quarterly release)
+    //   otherwise:   IBM SDK SR6 FP10 or earlier (JDK 8u351)
     version.major = 8;
     char *idx = strstr(prop_value, " 202");
     if (idx != NULL) {
-      int year = atol(idx + 1);
-      if (year >= 2023) {
+      long date = atol(idx + 1);
+      if (date >= 20250328L) {
+        version.update = 451;
+      } else if (date >= 20230313L) {
         version.update = 361;
       } else {
         version.update = 351;
@@ -190,15 +204,23 @@ int JavaVersionAccess::get_hotspot_version(char* prop_value) {
 }
 
 CodeCache* VM::openJvmLibrary() {
+  CodeCache* lib = __atomic_load_n(&_libjvm, __ATOMIC_ACQUIRE);
+  if (lib != nullptr) {
+    return lib;
+  }
+
   if ((void*)_asyncGetCallTrace == nullptr) {
     return nullptr;
   }
 
   Libraries* libraries = Libraries::instance();
-  CodeCache *lib =
-    isOpenJ9()
+  lib = isOpenJ9()
         ? libraries->findJvmLibrary("libj9vm")
         : libraries->findLibraryByAddress((const void *)_asyncGetCallTrace);
+  // The library must have been loaded. Otherwise, we cannot get to here due
+  // to JVM initialization
+  assert(lib != nullptr && "JVM library must be loaded");
+  __atomic_store_n(&_libjvm, lib, __ATOMIC_RELEASE);
   return lib;
 }
 
@@ -236,9 +258,9 @@ bool VM::initShared(JavaVM* vm) {
     prop = NULL;
   }
 
-  _libjvm = getLibraryHandle("libjvm.so");
-  _asyncGetCallTrace = (AsyncGetCallTrace)dlsym(_libjvm, "AsyncGetCallTrace");
-  _getManagement = (JVM_GetManagement)dlsym(_libjvm, "JVM_GetManagement");
+  void *libjvm = getLibraryHandle("libjvm.so");
+  _asyncGetCallTrace = (AsyncGetCallTrace)dlsym(libjvm, "AsyncGetCallTrace");
+  _getManagement = (JVM_GetManagement)dlsym(libjvm, "JVM_GetManagement");
 
   Libraries *libraries = Libraries::instance();
   libraries->updateSymbols(false);
@@ -314,8 +336,6 @@ bool VM::initShared(JavaVM* vm) {
     return false;
   }
 
-  VMStructs::init(lib);
-
   // Mark thread entry points for all JVMs (critical for correct stack unwinding)
   lib->mark(isThreadEntry, MARK_THREAD_ENTRY);
 
@@ -373,6 +393,56 @@ bool VM::initLibrary(JavaVM *vm) {
   return true;
 }
 
+void VM::probeJFRRequestStackTrace() {
+  jint ext_count = 0;
+  jvmtiExtensionFunctionInfo *ext_functions = nullptr;
+  if (_jvmti->GetExtensionFunctions(&ext_count, &ext_functions) == 0) {
+    for (jint i = 0; i < ext_count; i++) {
+      if (strcmp(ext_functions[i].id,
+                 "com.sun.hotspot.functions.RequestStackTrace") == 0) {
+        __atomic_store_n(&_request_stack_trace, ext_functions[i].func, __ATOMIC_RELEASE);
+      } else if (strcmp(ext_functions[i].id,
+                        "com.sun.hotspot.functions.InitializeRequestStackTrace") == 0) {
+        _init_request_stack_trace = ext_functions[i].func;
+      }
+      for (jint j = 0; j < ext_functions[i].param_count; j++) {
+        _jvmti->Deallocate((unsigned char *)ext_functions[i].params[j].name);
+      }
+      _jvmti->Deallocate((unsigned char *)ext_functions[i].params);
+      _jvmti->Deallocate((unsigned char *)ext_functions[i].errors);
+      _jvmti->Deallocate((unsigned char *)ext_functions[i].id);
+      _jvmti->Deallocate((unsigned char *)ext_functions[i].short_description);
+    }
+    _jvmti->Deallocate((unsigned char *)ext_functions);
+  }
+
+  if (_agent_args._jvmtistacks) {
+    if (_request_stack_trace == nullptr || _init_request_stack_trace == nullptr) {
+      Log::warn("jvmtistacks requested but HotSpot RequestStackTrace extension "
+                "is not available on this JVM");
+      Counters::increment(JVMTI_STACKS_INIT_FAILED);
+    } else {
+      initializeRequestStackTrace();
+    }
+  }
+}
+
+// Must not be called from a signal handler — invokes JVMTI which is not async-signal-safe.
+bool VM::initializeRequestStackTrace() {
+  if (__atomic_load_n(&_request_stack_trace, __ATOMIC_RELAXED) == nullptr || _init_request_stack_trace == nullptr) {
+    return false;
+  }
+  jvmtiError rc = _init_request_stack_trace(_jvmti);
+  if (rc == JVMTI_ERROR_NONE) {
+    Counters::increment(JVMTI_STACKS_INIT_OK);
+    return true;
+  }
+  Log::warn("InitializeRequestStackTrace failed: %d", rc);
+  __atomic_store_n(&_request_stack_trace, (jvmtiExtensionFunction)nullptr, __ATOMIC_RELEASE);
+  Counters::increment(JVMTI_STACKS_INIT_FAILED);
+  return false;
+}
+
 bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   TEST_LOG("VM::initProfilerBridge");
   if (!initShared(vm)) {
@@ -383,6 +453,15 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   if (lib == nullptr) {
     return false;
   }
+
+  // Under Agent_OnLoad (attach == false), this is the first native entry point and
+  // VM_INIT has not fired yet, so VMStructs would otherwise stay uninitialized until
+  // VM::VMInit() runs -- but CodeHeap::available()/VMFlag::find() below are used
+  // synchronously in this function. Get VMStructs (and crash-protection signal
+  // handlers) ready now; VM::ready() is idempotent, so the later VM::VMInit()
+  // callback (attach == false) or the direct call from VM::initLibrary() (already
+  // run before a JNI-triggered attach == true call gets here) is a safe no-op.
+  ready(jvmti(), jni());
 
   if (!attach && hotspot_version() == 8 && OS::isLinux()) {
     // Workaround for JDK-8185348
@@ -424,6 +503,10 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
 
   _jvmti->AddCapabilities(&capabilities);
 
+  if (_hotspot) {
+    probeJFRRequestStackTrace();
+  }
+
   jvmtiEventCallbacks callbacks = {0};
   callbacks.VMInit = VMInit;
   callbacks.VMDeath = VMDeath;
@@ -448,6 +531,8 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
                                    NULL);
 
   if (hotspot_version() == 0 || !CodeHeap::available()) {
+    TEST_LOG("CompiledMethodLoad workaround: hotspot_version=%d CodeHeap::available=%d",
+             hotspot_version(), CodeHeap::available());
     // Workaround for JDK-8173361: avoid CompiledMethodLoad events when possible
     _jvmti->SetEventNotificationMode(JVMTI_ENABLE,
                                      JVMTI_EVENT_COMPILED_METHOD_LOAD, NULL);
@@ -455,6 +540,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
     // DebugNonSafepoints is automatically enabled with CompiledMethodLoad,
     // otherwise we set the flag manually
     VMFlag* f = VMFlag::find("DebugNonSafepoints", {VMFlag::Type::Bool});
+    TEST_LOG("DebugNonSafepoints flag %s", f != NULL ? "found" : "not found");
     if (f != NULL && f->isDefault()) {
       f->set(1);
     }
@@ -475,8 +561,8 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   functions->RedefineClasses = RedefineClassesHook;
   functions->RetransformClasses = RetransformClassesHook;
 
+
   if (attach) {
-    loadAllMethodIDs(_jvmti, jni());
     _jvmti->GenerateEvents(JVMTI_EVENT_DYNAMIC_CODE_GENERATED);
     _jvmti->GenerateEvents(JVMTI_EVENT_COMPILED_METHOD_LOAD);
   } else {
@@ -488,13 +574,26 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   return true;
 }
 
-// Run late initialization when JVM is ready
+// Run late initialization when JVM is ready. May be called more than once (from
+// initProfilerBridge() directly, and later from the VMInit JVMTI callback, or from
+// initLibrary() followed by a JNI-triggered attach) -- the VMStructs init below only
+// ever runs once.
 void VM::ready(jvmtiEnv *jvmti, JNIEnv *jni) {
-  Profiler::check_JDK_8313796_workaround();
-  Profiler::setupSignalHandlers();
-  JVMThread::initialize();
-  if (isHotspot()) {
+  // Hotspot specific
+  static bool init_signal = false;
+  static SpinLock lock;
+  ExclusiveLockGuard guard(&lock);
+  if (!init_signal) {
+    Profiler::check_JDK_8313796_workaround();
+    Profiler::setupSignalHandlers();
+    init_signal = true;
+  }
+  if (VM::isHotspot()) {
     JitWriteProtection jit(true);
+    CodeCache* lib = openJvmLibrary();
+    assert(lib != nullptr && "JVM library must have been loaded");
+    // Initialize VMStructs
+    VMStructs::init(lib);
     VMStructs::ready();
   }
 }
@@ -525,57 +624,21 @@ void *VM::getLibraryHandle(const char *name) {
   return RTLD_DEFAULT;
 }
 
-void VM::loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
-  bool needs_patch = VM::hotspot_version() == 8;
-  if (needs_patch) {
-    // Workaround for JVM bug https://bugs.openjdk.org/browse/JDK-8062116
-    // Preallocate space for jmethodIDs at the beginning of the list (rather than at the end)
-    // This is relevant only for JDK 8 - later versions do not have this bug
-    if (VMStructs::hasClassLoaderData()) {
-      VMKlass *vmklass = VMKlass::fromJavaClass(jni, klass);
-      int method_count = vmklass->methodCount();
-      if (method_count > 0) {
-        VMClassLoaderData *cld = vmklass->classLoaderData();
-        cld->lock();
-        for (int i = 0; i < method_count; i += MethodList::SIZE) {
-          *cld->methodList() = new MethodList(*cld->methodList());
-        }
-        cld->unlock();
-      }
-    }
-  }
-
-  // CRITICAL: GetClassMethods must be called to preallocate jmethodIDs for AsyncGetCallTrace.
-  // AGCT operates in signal handlers where lock acquisition is forbidden, so jmethodIDs must
-  // exist before profiling encounters them. Without preallocation, AGCT cannot identify methods
-  // in stack traces, breaking profiling functionality.
-  //
-  // JVM-internal allocation: This triggers JVM to allocate jmethodIDs internally, which persist
-  // until class unload. High class churn causes significant memory growth, but this is inherent
-  // to AGCT architecture and necessary for signal-safe profiling.
-  //
-  // See: https://mostlynerdless.de/blog/2023/07/17/jmethodids-in-profiling-a-tale-of-nightmares/
-  jint method_count;
-  jmethodID *methods;
-  if (jvmti->GetClassMethods(klass, &method_count, &methods) == 0) {
-    jvmti->Deallocate((unsigned char *)methods);
-  }
+void JNICALL VM::ClassPrepare(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
+                               jclass klass) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+  JVMSupport::loadMethodIDsIfNeeded(jvmti, jni, klass);
 }
 
-void VM::loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni) {
-    jint class_count;
-    jclass *classes;
-    if (jvmti->GetLoadedClasses(&class_count, &classes) == 0) {
-      for (int i = 0; i < class_count; i++) {
-        loadMethodIDs(jvmti, jni, classes[i]);
-      }
-      jvmti->Deallocate((unsigned char *)classes);
-    }
+void JNICALL VM::ClassLoad(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+                                jclass klass) {
+  // Needed only for AsyncGetCallTrace support
+  ProfiledThread::initCurrentThreadSignalSafe();
 }
+
 
 void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
     ready(jvmti, jni);
-    loadAllMethodIDs(jvmti, jni);
 
     // initialize the heap usage tracking only after the VM is ready
     HeapUsage::initJMXUsage(VM::jni());
@@ -585,6 +648,10 @@ void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
     if (error) {
         Log::error("%s", error.message());
     }
+}
+
+Arguments& VM::arguments() {
+  return _agent_args;
 }
 
 void JNICALL VM::VMDeath(jvmtiEnv *jvmti, JNIEnv *jni) {
@@ -602,7 +669,7 @@ VM::RedefineClassesHook(jvmtiEnv *jvmti, jint class_count,
     JNIEnv *env = jni();
     for (int i = 0; i < class_count; i++) {
       if (class_definitions[i].klass != NULL) {
-        loadMethodIDs(jvmti, env, class_definitions[i].klass);
+        JVMSupport::loadMethodIDsIfNeeded(jvmti, env, class_definitions[i].klass);
       }
     }
   }
@@ -619,7 +686,7 @@ jvmtiError VM::RetransformClassesHook(jvmtiEnv *jvmti, jint class_count,
     JNIEnv *env = jni();
     for (int i = 0; i < class_count; i++) {
       if (classes[i] != NULL) {
-        loadMethodIDs(jvmti, env, classes[i]);
+        JVMSupport::loadMethodIDsIfNeeded(jvmti, env, classes[i]);
       }
     }
   }

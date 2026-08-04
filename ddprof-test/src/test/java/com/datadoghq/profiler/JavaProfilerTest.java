@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler;
 
 import org.junit.jupiter.api.Test;
@@ -48,12 +53,15 @@ public class JavaProfilerTest extends AbstractProcessProfilerTest {
         Path jfr = Files.createTempFile("j9", ".jfr");
         jfr.toFile().deleteOnExit();
 
+        // ASGCT re-enabled for versions containing the OpenJ9 0.51 fix (eclipse-openj9/openj9#20577)
         String sampler = "jvmti";
-        if (Platform.isJavaVersion(8) && Platform.isJavaVersionAtLeast(8, 0, 432)) {
+        if (Platform.isJavaVersion(8) && Platform.isJavaVersionAtLeast(8, 0, 451)) {
             sampler = "asgct";
-        } else if (Platform.isJavaVersion(11) && Platform.isJavaVersionAtLeast(11, 0, 25)) {
+        } else if (Platform.isJavaVersion(11) && Platform.isJavaVersionAtLeast(11, 0, 27)) {
             sampler = "asgct";
-        } else if (Platform.isJavaVersion(17) && Platform.isJavaVersionAtLeast(17, 0, 13)) {
+        } else if (Platform.isJavaVersion(17) && Platform.isJavaVersionAtLeast(17, 0, 15)) {
+            sampler = "asgct";
+        } else if (Platform.isJavaVersion(21) && Platform.isJavaVersionAtLeast(21, 0, 7)) {
             sampler = "asgct";
         }
 
@@ -104,6 +112,26 @@ public class JavaProfilerTest extends AbstractProcessProfilerTest {
         assertTrue(val);
         assertEquals(sampler, usedSampler.get());
         assertFalse(hasWall.get());
+    }
+
+    @Test
+    void getInstanceFromVirtualThreadThrowsIOException() throws Exception {
+        assumeTrue(Platform.isJavaVersionAtLeast(21));
+
+        AtomicReference<String> resultLine = new AtomicReference<>();
+        boolean val = launch("profiler-virtual-thread", Collections.emptyList(), "", l -> {
+            if (l.startsWith("[virtual-thread-")) {
+                resultLine.set(l);
+                return LineConsumerResult.STOP;
+            }
+            return LineConsumerResult.CONTINUE;
+        }, null).inTime;
+
+        assertTrue(val);
+        String result = resultLine.get();
+        assertNotNull(result, "getInstance() did not report a result from the virtual thread");
+        assertTrue(result.startsWith("[virtual-thread-ioexception]"),
+                "Expected IOException from getInstance() on a virtual thread, got: " + result);
     }
 
     @Test

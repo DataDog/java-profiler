@@ -19,6 +19,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <cstdlib>
 #include <cstring>
 
 // Include the DWARF parser
@@ -87,16 +88,15 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     const char *image_base = eh_frame_hdr;  // Relative addresses are within fuzzed data
 
     // The DwarfParser constructor calls parse() internally, which is where
-    // most of the interesting parsing happens. We wrap this in a try-catch
-    // because the parser may throw on invalid data.
-    try {
-        DwarfParser parser(name, image_base, eh_frame_hdr);
-        // If we get here, the parser successfully built an unwind table.
-        // The parser allocates a FrameDesc table internally; destructor
-        // will clean it up.
-    } catch (...) {
-        // Expected for malformed input - the parser may throw on invalid data
-    }
+    // most of the interesting parsing happens.
+    //
+    // DwarfParser has no destructor: it malloc()s its FrameDesc table in
+    // init() and transfers ownership to the caller via table() (see dwarf.h).
+    // Production callers hand that pointer to CodeCache::setDwarfTable(), which
+    // later free()s it. We must do the same here, otherwise the table leaks.
+    DwarfParser parser(name, image_base, eh_frame_hdr, size,
+                       DwarfParser::EhFrameHdrTag{}, image_base + size);
+    free(parser.table());  // free(), not delete[], to match the malloc() in init()
 
     delete[] eh_frame_hdr;
     return 0;

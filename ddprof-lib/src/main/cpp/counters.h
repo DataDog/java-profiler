@@ -37,6 +37,12 @@
   X(DICTIONARY_CLASSES_KEYS_BYTES, "dictionary_classes_keys_bytes")            \
   X(DICTIONARY_ENDPOINTS_KEYS_BYTES, "dictionary_endpoints_keys_bytes")        \
   X(DICTIONARY_CONTEXT_KEYS_BYTES, "dictionary_context_keys_bytes")            \
+  X(DICTIONARY_ARENA_WASTE_BYTES, "dictionary_arena_waste_bytes")              \
+  X(DICTIONARY_CLASSES_ARENA_WASTE_BYTES, "dictionary_classes_arena_waste_bytes")     \
+  X(DICTIONARY_ENDPOINTS_ARENA_WASTE_BYTES, "dictionary_endpoints_arena_waste_bytes") \
+  X(DICTIONARY_CONTEXT_ARENA_WASTE_BYTES, "dictionary_context_arena_waste_bytes")     \
+  X(DICTIONARY_DRAIN_TIMEOUTS, "dictionary_drain_timeouts")                    \
+  X(CLASS_MAP_AT_CAPACITY, "class_map_at_capacity_drops")                      \
   X(CONTEXT_STORAGE_BYTES, "context_storage_bytes")                            \
   X(CONTEXT_STORAGE_PAGES, "context_storage_pages")                            \
   X(CONTEXT_BOUNDS_MISS_INITS, "context_bounds_miss_inits")                    \
@@ -47,6 +53,9 @@
   X(CALLTRACE_STORAGE_TRACES, "calltrace_storage_traces")                      \
   X(LINEAR_ALLOCATOR_BYTES, "linear_allocator_bytes")                          \
   X(LINEAR_ALLOCATOR_CHUNKS, "linear_allocator_chunks")                        \
+  X(NATIVE_MEM_LIVE_BYTES, "native_mem_live_bytes")                            \
+  X(NATIVE_MEM_MAX_BYTES, "native_mem_max_bytes")                              \
+  X(NATIVE_MEM_AVG_BYTES, "native_mem_avg_bytes")                              \
   X(THREAD_IDS_COUNT, "thread_ids_count")                                      \
   X(THREAD_NAMES_COUNT, "thread_names_count")                                  \
   X(THREAD_FILTER_PAGES, "thread_filter_pages")                                \
@@ -60,13 +69,20 @@
   X(AGCT_NATIVE_NO_JAVA_CONTEXT, "agct_native_no_java_context")                \
   X(AGCT_BLOCKED_IN_VM, "agct_blocked_in_vm")                                  \
   X(SKIPPED_WALLCLOCK_UNWINDS, "skipped_wallclock_unwinds")                    \
+  X(WC_SIGNAL_SUPPRESSED_SAMPLED_RUN, "wc_signals_suppressed_sampled_run")     \
+  X(WC_UNOWNED_BLOCKED_SUPPRESSED, "wc_unowned_blocked_suppressed")            \
+  X(WC_UNOWNED_BLOCKED_RECORDED, "wc_unowned_blocked_recorded")                \
+  X(WC_SIGNAL_QUEUE_FULL, "wc_signals_queue_full")                             \
   X(UNWINDING_TIME_ASYNC, "unwinding_ticks_async")                             \
   X(UNWINDING_TIME_JVMTI, "unwinding_ticks_jvmti")                             \
   X(CALLTRACE_STORAGE_DROPPED, "calltrace_storage_dropped_traces")             \
+  X(CALLTRACE_STORAGE_EXPANSION_SKIPPED, "calltrace_storage_expansion_skipped") \
   X(LINE_NUMBER_TABLES, "line_number_tables")                                  \
+  X(LINE_NUMBER_TABLE_UNREADABLE, "line_number_table_unreadable")              \
   X(REMOTE_SYMBOLICATION_FRAMES, "remote_symbolication_frames")                \
   X(REMOTE_SYMBOLICATION_LIBS_WITH_BUILD_ID, "remote_symbolication_libs_with_build_id") \
   X(REMOTE_SYMBOLICATION_BUILD_ID_CACHE_HITS, "remote_symbolication_build_id_cache_hits") \
+  X(VTABLE_RECEIVER_RESOLVE_FAILED, "vtable_receiver_resolve_failed")           \
   X(THREAD_ENTRY_MARK_DETECTIONS, "thread_entry_mark_detections")              \
   X(WALKVM_THREAD_INACCESSIBLE, "walkvm_thread_inaccessible")                  \
   X(WALKVM_ANCHOR_NULL, "walkvm_anchor_null")                                  \
@@ -91,10 +107,72 @@
   X(WALKVM_STUB_FRAMESIZE_FALLBACK, "walkvm_stub_framesize_fallback")        \
   X(WALKVM_FP_CHAIN_ATTEMPT, "walkvm_fp_chain_attempt")                      \
   X(WALKVM_FP_CHAIN_REACHED_CODEHEAP, "walkvm_fp_chain_reached_codeheap")    \
-  X(WALKVM_ANCHOR_NOT_IN_JAVA, "walkvm_anchor_not_in_java")                    \
+  X(WALKVM_ANCHOR_NOT_IN_JAVA,  "walkvm_anchor_not_in_java")                   \
+  X(WALKVM_CONT_BARRIER_HIT,    "walkvm_cont_barrier_hit")                     \
+  X(WALKVM_ENTER_SPECIAL_HIT,   "walkvm_enter_special_hit")                    \
+  X(WALKVM_CONT_SPECULATIVE_HIT,"walkvm_cont_speculative_hit")                 \
+  X(WALKVM_CONT_ENTRY_NULL,     "walkvm_cont_entry_null")                      \
   X(NATIVE_LIBS_DROPPED, "native_libs_dropped")                                \
   X(SIGACTION_PATCHED_LIBS, "sigaction_patched_libs")                          \
-  X(SIGACTION_INTERCEPTED, "sigaction_intercepted")
+  X(SIGACTION_INTERCEPTED, "sigaction_intercepted")                            \
+  X(CTIMER_SIGNAL_OWN, "ctimer_signal_own")                                    \
+  X(CTIMER_SIGNAL_FOREIGN, "ctimer_signal_foreign")                            \
+  X(WALLCLOCK_SIGNAL_OWN, "wallclock_signal_own")                              \
+  X(WALLCLOCK_SIGNAL_FOREIGN, "wallclock_signal_foreign")                      \
+  X(JVMTI_STACKS_INIT_OK, "jvmti_stacks_init_ok")                             \
+  X(JVMTI_STACKS_INIT_FAILED, "jvmti_stacks_init_failed")                     \
+  X(JVMTI_STACKS_REQUESTED, "jvmti_stacks_requested")                         \
+  X(NATIVE_TRACE_HOOK_PREFIX_NOT_FOUND, "native_trace_hook_prefix_not_found") \
+  X(NATIVE_HOOK_MARK_RESOLVE_FAILED, "native_hook_mark_resolve_failed")       \
+  X(JVMTI_STACKS_FAILED_WRONG_PHASE, "jvmti_stacks_failed_wrong_phase")       \
+  X(JVMTI_STACKS_FAILED_OTHER, "jvmti_stacks_failed_other")                  \
+  /* Delegated stacks dropped at slot-lock. Rec-lock drops from all recording  \
+   * paths (delegated and direct) go into SAMPLES_DROPPED_REC_LOCK. */         \
+  X(JVMTI_STACKS_DROPPED_LOCK, "jvmti_stacks_dropped_lock")                   \
+  X(SAMPLES_DROPPED_REC_LOCK, "samples_dropped_rec_lock")                     \
+  X(SAMPLES_DROPPED_THREAD_LOCAL, "samples_dropped_thread_local")             \
+  X(SAFECOPY_FAILED, "safecopy_failed")                                       \
+  X(SAFEFETCH_FAILED, "safefetch_failed")                                     \
+  X(STACKWALK_LONGJMP_RECOVERED, "stackwalk_longjmp_recovered")               \
+  DD_COUNTER_TABLE_FAULT_INJECTION(X)                                          \
+  DD_COUNTER_TABLE_FI_DEBUG(X)                                                 \
+  DD_COUNTER_TABLE_DEBUG(X)
+
+// Fault-injection-only counter: number of faults actually injected. Only
+// compiled in when __FAULT_INJECTION__ is defined, so it occupies no enum slot
+// and adds no storage in normal builds.
+#ifdef __FAULT_INJECTION__
+#define DD_COUNTER_TABLE_FAULT_INJECTION(X)                                    \
+  X(FAULTS_INJECTED, "faults_injected")
+#else
+#define DD_COUNTER_TABLE_FAULT_INJECTION(X)
+#endif
+
+// Fault-injection + debug only: faults injected while the current thread was
+// NOT inside a walkVM siglongjmp-protected region. Such a site relies solely on
+// safefetch (or would genuinely crash if the poisoned pointer is raw-dereferenced
+// outside any recovery), so a non-zero value flags injection sites that are not
+// covered by siglongjmp protection. Compiled in only when both __FAULT_INJECTION__
+// and DEBUG are defined.
+#if defined(__FAULT_INJECTION__) && defined(DEBUG)
+#define DD_COUNTER_TABLE_FI_DEBUG(X)                                           \
+  X(FAULTS_INJECTED_UNPROTECTED, "faults_injected_unprotected")
+#else
+#define DD_COUNTER_TABLE_FI_DEBUG(X)
+#endif
+
+// Debug-only counters: SafeAccess reads/copies issued while the thread is
+// already inside a walkVM siglongjmp-protected region (redundant safefetch
+// overhead). Not compiled into release builds at all, so they occupy no enum
+// slot and add no storage there.
+#ifdef DEBUG
+#define DD_COUNTER_TABLE_DEBUG(X)                                             \
+  X(SAFEFETCH_WHILE_PROTECTED, "safefetch_while_protected")                   \
+  X(SAFECOPY_WHILE_PROTECTED, "safecopy_while_protected")
+#else
+#define DD_COUNTER_TABLE_DEBUG(X)
+#endif
+
 #define X_ENUM(a, b) a,
 typedef enum CounterId : int {
   DD_COUNTER_TABLE(X_ENUM) DD_NUM_COUNTERS

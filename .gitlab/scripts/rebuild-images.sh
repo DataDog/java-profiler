@@ -22,7 +22,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 REGISTRY="${REGISTRY:-registry.ddbuild.io}"
 
@@ -59,9 +59,9 @@ usage() {
 IMAGE_DEFS=(
     "x64|BUILD_IMAGE_X64|.gitlab/build-deploy/.gitlab-ci.yml|x64-base|.gitlab/base/Dockerfile|linux/amd64|async-profiler-build|OPENJDK_BASE_IMAGE"
     "x64-2.17|BUILD_IMAGE_X64_2_17|.gitlab/build-deploy/.gitlab-ci.yml|x64-2.17-base|.gitlab/base/centos7/Dockerfile|linux/amd64|async-profiler-build|BASE_IMAGE_LIBC_2_17"
-    "x64-musl|BUILD_IMAGE_X64_MUSL|.gitlab/build-deploy/.gitlab-ci.yml|x64-musl-base|.gitlab/base/Dockerfile|linux/amd64|async-profiler-build|OPENJDK_BASE_IMAGE_MUSL"
+    "x64-musl|BUILD_IMAGE_X64_MUSL|.gitlab/build-deploy/.gitlab-ci.yml|x64-musl-base|.gitlab/base/Dockerfile.musl|linux/amd64|async-profiler-build|OPENJDK_BASE_IMAGE_MUSL"
     "arm64|BUILD_IMAGE_ARM64|.gitlab/build-deploy/.gitlab-ci.yml|arm64-base|.gitlab/base/Dockerfile|linux/arm64|async-profiler-build|OPENJDK_BASE_IMAGE_ARM64"
-    "arm64-musl|BUILD_IMAGE_ARM64_MUSL|.gitlab/build-deploy/.gitlab-ci.yml|arm64-musl-base|.gitlab/base/Dockerfile|linux/arm64|async-profiler-build|OPENJDK_BASE_IMAGE_ARM64_MUSL"
+    "arm64-musl|BUILD_IMAGE_ARM64_MUSL|.gitlab/build-deploy/.gitlab-ci.yml|arm64-musl-base|.gitlab/base/Dockerfile.musl|linux/arm64|async-profiler-build|OPENJDK_BASE_IMAGE_ARM64_MUSL"
     "datadog-ci|DATADOG_CI_IMAGE|.gitlab/build-deploy/.gitlab-ci.yml|datadog-ci|.gitlab/Dockerfile.datadog-ci|linux/amd64|async-profiler-build|"
     "benchmarks-amd64|BENCHMARK_IMAGE_AMD64|.gitlab/benchmarks/images.yml|amd64-benchmarks|.gitlab/benchmarks/docker/Dockerfile|linux/amd64|async-profiler-build-amd64|BASE_BENCHMARK_IMAGE_NAME"
     "benchmarks-arm64|BENCHMARK_IMAGE_ARM64|.gitlab/benchmarks/images.yml|arm64-benchmarks|.gitlab/benchmarks/docker/Dockerfile|linux/arm64|async-profiler-build-arm64|BASE_BENCHMARK_IMAGE_NAME"

@@ -4,6 +4,7 @@
  */
 
 #include "mutex.h"
+#include "signalSafety.h"
 
 
 Mutex::Mutex() {
@@ -14,6 +15,7 @@ Mutex::Mutex() {
 }
 
 void Mutex::lock() {
+    DEBUG_ASSERT_NOT_IN_SIGNAL();
     pthread_mutex_lock(&_mutex);
 }
 

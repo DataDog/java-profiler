@@ -15,9 +15,14 @@ fi
 HERE=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 REPO_ROOT=$( cd "${HERE}/../.." && pwd )
 
-if [ -z "${JAVA_HOME}" ]; then
-  # workaround for CI when JAVA_HOME is not properly defined
-  export JAVA_HOME=~/.sdkman/candidates/java/current
+if [ -z "${JAVA_HOME}" ] || [ ! -x "${JAVA_HOME}/bin/java" ]; then
+  # JAVA_HOME is unset or points to a non-existent binary; try the SDKMAN default.
+  if [ -x ~/.sdkman/candidates/java/current/bin/java ]; then
+    export JAVA_HOME=~/.sdkman/candidates/java/current
+  else
+    echo "ERROR: JAVA_HOME=${JAVA_HOME:-<unset>} does not point to a valid Java installation."
+    exit 1
+  fi
 fi
 
 echo "Using Java @ ${JAVA_HOME}"

@@ -1,5 +1,7 @@
 # Utility Scripts
 
+<!-- Copyright 2026, Datadog, Inc -->
+
 This directory contains utility scripts for managing the java-profiler project.
 
 ---
@@ -12,7 +14,9 @@ Triggers the Validated Release workflow using GitHub CLI to create a new release
 
 **Prerequisites:**
 - [GitHub CLI](https://cli.github.com/) installed and authenticated
+- [jq](https://jqlang.github.io/jq/) installed
 - Git repository is up to date
+- The authenticated user has write, maintain, or admin repository access
 - You are on the correct branch for the release type
 
 **Usage:**
@@ -38,10 +42,47 @@ Triggers the Validated Release workflow using GitHub CLI to create a new release
 1. Validates inputs and branch rules
 2. Interactive commit selection (or use `--commit`)
 3. Triggers GitHub Actions "Validated Release" workflow
-4. Workflow runs pre-release tests, creates annotated git tag
-5. Tag push triggers GitLab build pipeline
-6. GitLab builds multi-platform artifacts and publishes to Maven Central
-7. GitHub workflows create release with assets
+4. Workflow runs pre-release tests, creates the annotated tag, and opens an
+   exact single-commit version-bump PR as `github-actions[bot]`
+5. The final commit is pushed through the release SSH identity, producing the
+   `synchronize` event that starts normal PR CI even though `GITHUB_TOKEN`
+   created the PR
+6. A separate `dd-octo-sts[bot]` identity adds `trivial`; the approval workflow
+   validates permissions, refs, SHAs, and the exact one-line version diff before
+   approving that exact commit
+7. The release workflow waits for the exact approval and the aggregate
+   `release-bump-ci` check, then performs the SHA-locked squash merge itself
+8. Tag push triggers GitLab, which publishes the Maven artifacts, and the
+   GitHub release workflows attach the release assets
+
+For a major release, the generated `N.0.0` commit remains on
+`release/N.0._` and is tagged there. The bump PR moves `main` directly from
+its recorded source commit to `N.1.0`; the workflow never pushes a generated
+commit directly to protected `main`.
+
+A new release branch initially remains at its tagged `X.Y.0` minor version.
+The first patch creates and tags an `X.Y.1` release commit, then opens the
+validated bump PR for `X.Y.2-SNAPSHOT`. Later patches release the untagged
+development version left by the preceding bump PR. An already-tagged patch
+version greater than zero is rejected because it means that preceding bump PR
+did not merge.
+
+The repository's Actions settings must allow GitHub Actions to create and
+approve pull requests. A dry run never creates a PR, adds a label, requests
+approval, or merges anything.
+
+### Testing release automation
+
+`.github/scripts/tests/test_release_automation.sh` is a single hermetic shell
+test. It validates success,
+authorization failures, fork/bot PRs, malformed or extra diffs, version
+rollovers, merge commits, and stale SHAs using temporary local fixtures. Its
+fixture mode does not load credentials or invoke `gh`, so it cannot publish,
+tag, push, create a PR, approve, or merge anything remotely.
+
+```bash
+.github/scripts/tests/test_release_automation.sh
+```
 
 ---
 
@@ -77,23 +118,49 @@ Cherry-picks a merged PR onto a release branch, pushes the backport branch, and 
 
 ## Testing
 
-### `run-docker-tests.sh`
+### `run-containers-tests.sh`
 
-Runs tests in Docker across various OS/libc/JDK combinations, mirroring the CI matrix locally.
+Runs tests in containers across various OS/libc/JDK combinations, mirroring the CI matrix locally. Defaults to Podman; use `--container=docker` to use Docker.
 
 **Usage:**
 ```bash
-./utils/run-docker-tests.sh [options]
-  --libc=glibc|musl               (default: glibc)
-  --jdk=8|11|17|21|25|8-j9|...   (default: 21)
-  --arch=x64|aarch64              (default: auto-detect)
-  --config=debug|release|asan|tsan (default: debug)
+./utils/run-containers-tests.sh [options]
+  --libc=glibc|musl|all[,..]      (default: glibc)
+  --jdk=8|11|17|21|25|8-j9|...|regular|j9|graal|all[,..]
+                                    (default: 21)
+  --arch=x64|aarch64|all[,..]     (default: auto-detect)
+  --config=debug|release|asan|tsan|all[,..] (default: debug)
+  --container=podman|docker       (default: podman)
   --tests="TestPattern"           (optional)
   --gtest                         (enable C++ gtests)
+  --gtest-task=Task               (run one C++ gtest task)
   --shell                         (drop to shell instead of running tests)
   --mount                         (mount local repo instead of cloning)
-  --rebuild                       (force rebuild of Docker images)
+  --rebuild                       (force rebuild of container images)
+  --matrix                        (preview a full matrix)
+  --run                           (execute an inferred matrix without prompting)
+  --fail-fast                     (stop matrix execution on first failure)
 ```
+
+Examples:
+```bash
+# Run a single C++ gtest binary in ASan mode
+./utils/run-containers-tests.sh --config=asan --gtest-task=elfparser_ut
+
+# Use Docker instead of the default Podman runtime
+./utils/run-containers-tests.sh --container=docker --libc=glibc --jdk=21
+
+# Preview selected JDKs across every supported libc/architecture pair
+./utils/run-containers-tests.sh --libc=all --jdk=8,17,21 --arch=all
+
+# Run all supported musl cells without an interactive prompt
+./utils/run-containers-tests.sh --matrix --libc=musl --run
+
+# Run all OpenJ9 cells
+./utils/run-containers-tests.sh --matrix --jdk=j9 --run
+```
+
+Single-value commands run one container test configuration immediately. When any dimension expands to multiple cells, the script prints a compact status table first; interactive terminals ask for confirmation, while non-interactive runs require `--run` to execute. Matrix execution prints the status table again after all cells finish and writes summaries to `build/reports/container-matrix/summary.md` and `build/reports/container-matrix/summary.json`. Matrix gtest runs require a short `--gtest-task` name so the task follows each cell's configuration. Cells not run because of `--fail-fast` are reported as cancelled separately from unsupported cells that are skipped.
 
 ### `patch-dd-java-agent.sh`
 

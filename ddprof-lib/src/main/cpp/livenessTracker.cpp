@@ -18,7 +18,8 @@
 #include "log.h"
 #include "os.h"
 #include "profiler.h"
-#include "thread.h"
+#include "threadLocalData.h"
+#include "threadLocal.h"
 #include "tsc.h"
 #include <jni.h>
 #include <string.h>
@@ -116,12 +117,19 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
       env->DeleteLocalRef(clz);
       jniExceptionCheck(env);
       const char *name = env->GetStringUTFChars(name_str, nullptr);
-      event._id = name != nullptr
-                      ? Profiler::instance()->lookupClass(name, strlen(name))
-                      : 0;
+      int class_id = name != nullptr
+                         ? Profiler::instance()->lookupClass(name, strlen(name))
+                         : 0;
       env->ReleaseStringUTFChars(name_str, name);
 
-      Profiler::instance()->recordDeferredSample(_table[i].tid, _table[i].call_trace_id, BCI_LIVENESS, &event);
+      // lookupClass() returns -1 when the class map is at capacity; do not
+      // assign it to the u32 event id (it would wrap to 0xFFFFFFFF and
+      // corrupt liveness attribution in the JFR output) — drop the sample
+      // instead, matching ObjectSampler's convention for the same failure.
+      if (class_id >= 0) {
+        event._id = class_id;
+        Profiler::instance()->recordDeferredSample(_table[i].tid, _table[i].call_trace_id, BCI_LIVENESS, &event);
+      }
     }
 
     env->DeleteLocalRef(ref);
@@ -216,6 +224,11 @@ Error LivenessTracker::initialize(Arguments &args) {
     return Error::OK;
   }
 
+  // _record_heap_usage controls per-session JFR event emission only, not the
+  // tracking table. Update it before the _initialized guard so each profiler
+  // start gets the correct setting even when the table persists across recordings.
+  _record_heap_usage = args._record_heap_usage;
+
   if (_initialized) {
     // if the tracker was previously initialized return the stored result for
     // consistency this hack also means that if the profiler is started with
@@ -265,12 +278,54 @@ Error LivenessTracker::initialize(Arguments &args) {
                                    // enough for 1G of heap
   _table = (TrackingEntry *)malloc(sizeof(TrackingEntry) * _table_cap);
 
-  _record_heap_usage = args._record_heap_usage;
-
   _gc_epoch = 0;
   _last_gc_epoch = 0;
 
   return _stored_error = Error::OK;
+}
+
+static void* create_mt19937() {
+  // std::mt19937 itself is noexcept, but std::random_device and `new` may throw.
+  // If that happens we let the failure terminate the process (same outcome as
+  // failing thread_local initialization previously).
+  return static_cast<void*>(new std::mt19937(std::random_device{}()));
+}
+
+static void* create_uniform_real_distribution() {
+  // std::uniform_real_distribution<> construction is noexcept, but `new` may throw.
+  // If allocation fails the process is likely to abort anyway.
+  return static_cast<void*>(new std::uniform_real_distribution<>(0, 1.0));
+}
+
+static void free_mt19937(void* p) {
+  std::mt19937* mt = static_cast<std::mt19937*>(p);
+  delete mt;
+}
+
+static void free_uniform_real_distribution(void* p) {
+  std::uniform_real_distribution<>* urd = static_cast<std::uniform_real_distribution<>*>(p);
+  delete urd;
+}
+
+// File-scope (not track()-local) so releaseThreadLocalState() below can reach
+// them from Profiler::onThreadEnd(). Relying solely on these ThreadLocal's own
+// pthread-key destructors is not sufficient: pthread key destructors only fire
+// when the underlying OS thread actually exits, not when a JNI-attached thread
+// detaches via DetachCurrentThread. A reused pooled OS thread that repeatedly
+// attaches/detaches would otherwise leak one mt19937 and one
+// uniform_real_distribution allocation per attach cycle, since get() lazily
+// re-creates the value on the next track() call but nothing ever frees the
+// previous one until OS thread exit (which may never happen). Hooking explicit
+// cleanup into onThreadEnd matches how every other per-thread profiler state
+// (CPU/wall engine registration, ProfiledThread) is already torn down.
+static ThreadLocal<std::mt19937*, create_mt19937, free_mt19937> gen;
+static ThreadLocal<std::uniform_real_distribution<>*, create_uniform_real_distribution, free_uniform_real_distribution> dis;
+static ThreadLocal<double> skipped;
+
+void LivenessTracker::releaseThreadLocalState() {
+  gen.clear();
+  dis.clear();
+  skipped.clear();
 }
 
 void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
@@ -284,13 +339,13 @@ void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
     return;
   }
 
-  static thread_local std::mt19937 gen(std::random_device{}());
-  static thread_local std::uniform_real_distribution<> dis(0, 1.0);
-  static thread_local double skipped = 0;
-
-  if (_subsample_ratio < 1.0 && dis(gen) > _subsample_ratio) {
-    skipped += static_cast<double>(event._weight) * event._size;
-    return;
+  if (_subsample_ratio < 1.0) {
+    std::mt19937* genp = gen.get();
+    std::uniform_real_distribution<>* disp = dis.get();
+    if (disp->operator()(*genp) > _subsample_ratio) {
+      skipped.set(skipped.get() + static_cast<double>(event._weight) * event._size);
+      return;
+    }
   }
 
   jweak ref = env->NewWeakGlobalRef(object);
@@ -319,7 +374,8 @@ retry:
     _table[idx].time = TSC::ticks();
     _table[idx].ref = ref;
     _table[idx].alloc = event;
-    _table[idx].skipped = skipped;
+    _table[idx].skipped = skipped.get();
+    skipped.set(0);
     _table[idx].age = 0;
     _table[idx].call_trace_id = call_trace_id;
     _table[idx].ctx = ContextApi::snapshot();
@@ -348,15 +404,16 @@ retry:
         int newcap = std::min(_table_cap * 2, _table_max_cap);
         if (_table_cap != newcap) {
           TrackingEntry *tmp = (TrackingEntry *)realloc(
-              _table, sizeof(TrackingEntry) * (_table_cap = newcap));
+                _table, sizeof(TrackingEntry) * newcap);
           if (tmp != nullptr) {
-            _table = tmp;
-            Log::debug(
-                "Increased size of Liveness tracking table to %d entries",
-                _table_cap);
+              _table = tmp;
+              _table_cap = newcap;
+              Log::debug(
+                 "Increased size of Liveness tracking table to %d entries",
+                  _table_cap);
           } else {
-            Log::debug("Cannot add sampled object to Liveness tracking table, "
-                       "resize attempt failed, the table is overflowing");
+              Log::debug("Cannot add sampled object to Liveness tracking table, "
+                         "resize attempt failed, the table is overflowing");
           }
         }
 
@@ -366,13 +423,17 @@ retry:
       } else {
         Log::debug("Cannot add sampled object to Liveness tracking table, it's "
                    "overflowing");
+        env->DeleteWeakGlobalRef(ref);
       }
+    } else {
+      env->DeleteWeakGlobalRef(ref);
     }
+    skipped.set(0); // reset the subsampling skipped bytes
   }
-  skipped = 0; // reset the subsampling skipped bytes
 }
 
 void JNICALL LivenessTracker::GarbageCollectionFinish(jvmtiEnv *jvmti_env) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   LivenessTracker::instance()->onGC();
 }
 

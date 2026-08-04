@@ -1,5 +1,6 @@
 /*
  * Copyright 2017 Andrei Pangin
+ * Copyright 2026, Datadog, Inc.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -99,9 +100,10 @@ enum EventMask {
     EM_LOCK         = 4,
     EM_WALL         = 8,
     EM_NATIVEMEM    = 16,
-    EM_METHOD_TRACE = 32
+    EM_METHOD_TRACE = 32,
+    EM_NATIVESOCKET = 64
 };
-constexpr int EVENT_MASK_SIZE = 6;
+constexpr int EVENT_MASK_SIZE = 7;
 
 struct StackWalkFeatures {
     // Deprecated stack recovery techniques used to workaround AsyncGetCallTrace flaws
@@ -122,7 +124,8 @@ struct StackWalkFeatures {
     unsigned short vtable_target : 1;  // show receiver classes of vtable/itable stubs
     unsigned short comp_task     : 1;  // display current compilation task for JIT threads
     unsigned short pc_addr       : 1;  // record exact PC address for each sample
-    unsigned short _padding      : 3;  // pad structure to 16 bits
+    unsigned short carrier_frames: 1;  // walk through VT continuation boundary to carrier frames (enabled automatically with cstack=vmx)
+    unsigned short _padding      : 2;  // pad structure to 16 bits
 };
 
 struct Multiplier {
@@ -150,7 +153,6 @@ private:
   bool _shared;
   bool _persistent;
   const char *expandFilePattern(const char *pattern);
-  static long long hash(const char *arg);
   static long parseUnits(const char *str, const Multiplier *multipliers);
   static bool isCpuEvent(const char *event) {
     // event == NULL will default to EVENT_CPU
@@ -166,6 +168,7 @@ public:
   long _cpu;
   long _wall;
   bool _wall_collapsing;
+  bool _wall_precheck;
   int _wall_threads_per_tick;
   WallclockSampler _wallclock_sampler;
   long _memory;
@@ -174,6 +177,7 @@ public:
   double _live_samples_ratio;
   bool _record_heap_usage;
   bool _gc_generations;
+  long _nativemem;
   int  _jstackdepth;
   int _safe_mode;
   StackWalkFeatures _features;
@@ -190,6 +194,10 @@ public:
   bool _enable_method_cleanup;
   bool _remote_symbolication;  // Enable remote symbolication for native frames
   bool _skip_sanity_checks;
+  bool _jvmtistacks;           // Delegate CPU/wall stack walks to HotSpot JFR RequestStackTrace extension
+  bool _nativesocket;
+  long _nativesocket_interval;  // initial sampling period in nanoseconds; 0 = engine default
+  bool _force_jmethodID;       // Load all jmethodIDs, true by default
 
   Arguments(bool persistent = false)
       : _buf(NULL),
@@ -202,6 +210,7 @@ public:
         _cpu(-1),
         _wall(-1),
         _wall_collapsing(false),
+        _wall_precheck(false),
         _wall_threads_per_tick(DEFAULT_WALL_THREADS_PER_TICK),
         _wallclock_sampler(ASGCT),
         _memory(-1),
@@ -210,6 +219,7 @@ public:
         _live_samples_ratio(0.1), // default to liveness-tracking 10% of the allocation samples
         _record_heap_usage(false),
         _gc_generations(false),
+        _nativemem(-1),
         _jstackdepth(DEFAULT_JSTACKDEPTH),
         _safe_mode(0),
         _features{1, 1, 1, 1, 1, 1},
@@ -225,7 +235,11 @@ public:
         _lightweight(false),
         _enable_method_cleanup(true),
         _remote_symbolication(false),
-        _skip_sanity_checks(false) {}
+        _skip_sanity_checks(false),
+        _jvmtistacks(false),
+        _nativesocket(false),
+        _nativesocket_interval(0),
+        _force_jmethodID(true) {}
 
   ~Arguments();
 

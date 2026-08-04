@@ -15,6 +15,7 @@ abstract class BuildConfiguration @Inject constructor(
     abstract val compilerArgs: ListProperty<String>
     abstract val linkerArgs: ListProperty<String>
     abstract val testEnvironment: MapProperty<String, String>
+    abstract val testJvmArgs: ListProperty<String>
     abstract val active: Property<Boolean>
 
     override fun getName(): String = configName
@@ -23,6 +24,7 @@ abstract class BuildConfiguration @Inject constructor(
         // Default to active unless overridden
         active.convention(true)
         testEnvironment.convention(emptyMap())
+        testJvmArgs.convention(emptyList())
     }
 
     fun isActiveFor(targetPlatform: Platform, targetArch: Architecture): Boolean {

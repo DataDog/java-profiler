@@ -57,8 +57,7 @@ struct __attribute__((packed)) OtelThreadContextRecord {
     uint8_t  attrs_data[OTEL_MAX_ATTRS_DATA_SIZE];
 };
 static_assert(sizeof(OtelThreadContextRecord) == OTEL_MAX_RECORD_SIZE,
-              "OtelThreadContextRecord size must match OTEL_MAX_RECORD_SIZE (640 bytes); "
-              "update the Java constant ThreadContext.OTEL_MAX_RECORD_SIZE if the struct changes");
+              "OtelThreadContextRecord size must match OTEL_MAX_RECORD_SIZE (640 bytes)");
 
 // OTEP #4947 TLS pointer — MUST appear in dynsym for external profiler discovery
 DLLEXPORT extern thread_local OtelThreadContextRecord* otel_thread_ctx_v1;
@@ -69,9 +68,9 @@ DLLEXPORT extern thread_local OtelThreadContextRecord* otel_thread_ctx_v1;
  * Each thread gets a pre-allocated OtelThreadContextRecord cached in
  * ProfiledThread. The TLS pointer otel_thread_ctx_v1 is set permanently
  * to the record during thread initialization; detach/attach (context writes)
- * never touch it. It is nulled on thread exit (in releaseFromBuffer) to
- * prevent external profilers from dereferencing a recycled record.
- * Context activity is indicated solely by the valid flag in the record.
+ * never touch it. Readers must not assume the TLS pointer is cleared during
+ * teardown; record liveness is determined by the owning thread lifetime and
+ * the valid flag in the record.
  *
  * Signal safety: signal handlers must never access
  * otel_thread_ctx_v1 directly (TLS lazy init can deadlock

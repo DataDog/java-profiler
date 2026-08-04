@@ -6,6 +6,7 @@
 #ifndef _JVMSUPPORT_H
 #define _JVMSUPPORT_H
 
+#include "mutex.h"
 #include "stackFrame.h"
 #include "stackWalker.h"
 
@@ -20,13 +21,55 @@ enum StackRecovery {
   PROBE_SP = 0x100,
 };
 
+class HotspotSupport;
 
 class JVMSupport {
+    enum JMethodIDLoadStats {
+        No_loaded,          // Has not yet executed any profiling command, no jmethodIDs are loaded
+        Partial_loaded,     // Partially loaded, see HotspotSupport::shouldPreloadJmethodIDs()
+        Fully_loaded        // All jmethodIDs are loaded
+    };
+
+    friend class HotspotSupport;
+
+    static Mutex _initialization_lock;
+    static volatile JMethodIDLoadStats jmethodID_load_state;
+
+    // Call JVM AsyncGetCallTrace implementation
+    static inline void jvmAsyncGetCallTrace(ASGCT_CallTrace *frames, int max_depth, void* ucontext);
+
     static int asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* ucontext);
+    // J9 and Zing shared implementation, load jmethodIDs of the method unconditionally.
+    static bool loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
+
+    static JMethodIDLoadStats getLoadState();
+    static void setLoadState(JMethodIDLoadStats state);
+
+    static bool isInitialized();
 public:
+    // Initialize JVM support - check JVM related resources are available.
+    // Return false if any critical resource is not available, which should
+    // result in disabling profiling.
+    static bool initialize();
+
+    // Initializing JVM support
+    static void initExecution(Arguments& args, jvmtiEnv* jvmti, JNIEnv* jni);
+
     static int walkJavaStack(StackWalkRequest& request);
     static inline bool canUnwind(const StackFrame& frame, const void*& pc);
     static inline bool isJitCode(const void* pc);
+    // Live heap usage of the JIT runtime-stubs code cache. HotSpot-only; 0 on
+    // other VMs (J9/Zing), which have no such cache.
+    static inline long long runtimeStubsMemoryUsage();
+
+    static void loadAllMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni);
+    static bool loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
+
+    // Resolve method pointer to jmethodID
+    static inline jmethodID resolve(const void* method);
+
+    // If a class is hidden class
+    static inline bool isHidden(jint modifiers);
 };
 
 #endif // _JVMSUPPORT_H

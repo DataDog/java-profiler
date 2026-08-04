@@ -18,6 +18,7 @@
 #define _DICTIONARY_H
 
 #include "counters.h"
+#include "nativeMem.h"
 #include <map>
 #include <stddef.h>
 #include <stdlib.h>
@@ -67,6 +68,7 @@ public:
     _table = (DictTable *)calloc(1, sizeof(DictTable));
     Counters::set(DICTIONARY_PAGES, 1, id);
     Counters::set(DICTIONARY_BYTES, sizeof(DictTable), id);
+    NativeMem::record(NM_DICTIONARY, (long long)sizeof(DictTable));
     _table->base_index = _base_index = 1;
     _size = 0;
   }
@@ -75,6 +77,10 @@ public:
   void clear();
 
   bool         check(const char* key);
+  // NOT signal-safe: the inserting lookup overloads call malloc/calloc on miss
+  // (see allocateKey and the calloc in dictionary.cpp). Signal handlers must use
+  // bounded_lookup(key, length, 0) instead, which never inserts and returns
+  // INT_MAX on miss.
   unsigned int lookup(const char *key);
   unsigned int lookup(const char *key, size_t length);
   unsigned int bounded_lookup(const char *key, size_t length, int size_limit);

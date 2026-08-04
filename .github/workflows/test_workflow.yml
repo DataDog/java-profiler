@@ -6,6 +6,16 @@ on:
       configuration:
         required: true
         type: string
+      skip_gtest:
+        description: "Skip C++ gtest execution (use when gtests run in a separate job)"
+        required: false
+        type: boolean
+        default: false
+      slow_tests:
+        description: "Run the slow/e2e test suite (testSlow<Config>) instead of the regular suite"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -52,11 +62,11 @@ jobs:
               echo "enabled=false" >> $GITHUB_OUTPUT
             fi
           fi
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.set_enabled.outputs.enabled == 'true'
       - name: Cache Gradle Wrapper Binaries
         if: steps.set_enabled.outputs.enabled == 'true'
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.gradle/wrapper/dists
           key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
@@ -64,7 +74,7 @@ jobs:
             gradle-wrapper-${{ runner.os }}-
       - name: Cache Gradle User Home
         if: steps.set_enabled.outputs.enabled == 'true'
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.gradle/caches
           key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
@@ -95,8 +105,6 @@ jobs:
       - name: Test
         if: steps.set_enabled.outputs.enabled == 'true'
         run: |
-          sudo sysctl vm.mmap_rnd_bits=28
-      
           set +e
           export KEEP_JFRS=true
           export TEST_COMMIT=${{ github.sha }}
@@ -104,14 +112,33 @@ jobs:
           export LIBC=glibc
           export SANITIZER=${{ matrix.config }}
 
+          GRADLEW_PREFIX=""
+          if [[ "${{ matrix.config }}" == "asan" ]]; then
+            # Reduce ASLR entropy so the JVM doesn't land in ASan's shadow range
+            # [0x00007fff7000-0x10007fff7fff]; 28 (the default) causes random aborts.
+            if ! sudo sysctl -w vm.mmap_rnd_bits=8 2>/dev/null; then
+              echo "::warning::Cannot set vm.mmap_rnd_bits; falling back to setarch --addr-no-randomize"
+              GRADLEW_PREFIX="setarch $(uname -m) --addr-no-randomize"
+            fi
+          fi
+
+          # GraalVM pre-allocates fixed memory that conflicts with ASan's shadow range
+          # [0x00007fff7000-0x10007fff7fff]; vm.mmap_rnd_bits tuning does not help (google/sanitizers#856).
+          if [[ "${{ matrix.config }}" == "asan" && "${{ matrix.java_version }}" =~ graal ]]; then
+            echo "::notice::Skipping ASan for GraalVM (incompatible shadow memory ranges — google/sanitizers#856)"
+            exit 0
+          fi
+
           MAX_ATTEMPTS=1
-          if [[ "${{ matrix.config }}" == "asan" && "${{ matrix.java_version }}" =~ (j9|ibm) ]]; then
+          if [[ "${{ matrix.config }}" == "asan" ]]; then
+            # ASan init can nondeterministically collide with the JVM's ASLR-influenced
+            # mmap layout (google/sanitizers#856); retry once before failing the job.
             MAX_ATTEMPTS=2
           fi
 
           for attempt in $(seq 1 $MAX_ATTEMPTS); do
             mkdir -p build/logs
-            ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
+            ${GRADLEW_PREFIX} ./gradlew -PCI -PkeepJFRs ${{ inputs.skip_gtest == true && '-Pskip-gtest' || '' }} :ddprof-test:test${{ inputs.slow_tests && 'Slow' || '' }}${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
               | tee -a build/test-raw.log \
               | python3 -u .github/scripts/filter_gradle_log.py
             EXIT_CODE=${PIPESTATUS[0]}
@@ -140,13 +167,13 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: success()
         with:
-          name: (build) test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
+          name: (build) test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: build/
       - name: Upload failures
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
-          name: failures-glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64
+          name: failures-glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64-${{ inputs.slow_tests && 'slow' || 'regular' }}
           path: failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
       - name: Prepare reports
         if: always() && steps.set_enabled.outputs.enabled == 'true'
@@ -156,14 +183,28 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: success() && matrix.config == 'debug'
         with:
-          name: (unwinding-reports) unwinding-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
+          name: (unwinding-reports) unwinding-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: unwinding-reports
       - name: Upload test reports
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
-          name: (test-reports) test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
+          name: (test-reports) test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: test-reports
+      - name: Upload signal-safety violation log
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: signal-safety-violation-glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64-${{ inputs.slow_tests && 'slow' || 'regular' }}
+          path: /tmp/signal-safety-violation.txt
+          if-no-files-found: ignore
+      - name: Upload ASan logs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure() && matrix.config == 'asan'
+        with:
+          name: asan-logs-glibc-${{ matrix.java_version }}-amd64-${{ inputs.slow_tests && 'slow' || 'regular' }}
+          path: /tmp/asan.log.*
+          if-no-files-found: ignore
 
   test-linux-musl-amd64:
     needs: [cache-jdks, filter-musl-configs]
@@ -175,7 +216,7 @@ jobs:
        config: ${{ fromJson(needs.filter-musl-configs.outputs.configs) }}
     runs-on: ubuntu-latest
     container:
-      image: "alpine:3.21"
+      image: "alpine:3.23"
       options: --cpus 4 --workdir /github/workspace -v /home/runner/work/_temp:/home/runner/work/_temp
     timeout-minutes: 180
     steps:
@@ -184,16 +225,16 @@ jobs:
           apk update && apk add curl moreutils wget hexdump linux-headers bash make g++ clang git cppcheck jq cmake gtest-dev gmock tar binutils python3 >/dev/null
           # Install debug symbols for musl libc
           apk add musl-dbg
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Cache Gradle Wrapper Binaries
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.gradle/wrapper/dists
           key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: |
             gradle-wrapper-${{ runner.os }}-
       - name: Cache Gradle User Home
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.gradle/caches
           key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
@@ -237,7 +278,7 @@ jobs:
           echo "JAVA_VERSION=${JAVA_VERSION}"
 
           mkdir -p build/logs
-          ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
+          ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ inputs.slow_tests && 'Slow' || '' }}${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
             | tee -a build/test-raw.log \
             | python3 -u .github/scripts/filter_gradle_log.py
           EXIT_CODE=${PIPESTATUS[0]}
@@ -259,13 +300,13 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: success()
         with:
-          name: (build) test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
+          name: (build) test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: build/
       - name: Upload failures
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
-          name: failures-musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64
+          name: failures-musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64-${{ inputs.slow_tests && 'slow' || 'regular' }}
           path: failures_musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64.txt
       - name: Prepare reports
         if: always()
@@ -275,14 +316,28 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: success() && matrix.config == 'debug'
         with:
-          name: (unwinding-reports) unwinding-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
+          name: (unwinding-reports) unwinding-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: unwinding-reports
       - name: Upload test reports
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
-          name: (test-reports) test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }})
+          name: (test-reports) test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: test-reports
+      - name: Upload signal-safety violation log
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: signal-safety-violation-musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64-${{ inputs.slow_tests && 'slow' || 'regular' }}
+          path: /tmp/signal-safety-violation.txt
+          if-no-files-found: ignore
+      - name: Upload ASan logs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure() && matrix.config == 'asan'
+        with:
+          name: asan-logs-musl-${{ matrix.java_version }}-amd64-${{ inputs.slow_tests && 'slow' || 'regular' }}
+          path: /tmp/asan.log.*
+          if-no-files-found: ignore
 
   test-linux-glibc-aarch64:
     needs: cache-jdks
@@ -309,11 +364,11 @@ jobs:
               echo "enabled=false" >> $GITHUB_OUTPUT
             fi
           fi
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.set_enabled.outputs.enabled == 'true'
       - name: Cache Gradle Wrapper Binaries
         if: steps.set_enabled.outputs.enabled == 'true'
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.gradle/wrapper/dists
           key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
@@ -321,7 +376,7 @@ jobs:
             gradle-wrapper-${{ runner.os }}-
       - name: Cache Gradle User Home
         if: steps.set_enabled.outputs.enabled == 'true'
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.gradle/caches
           key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
@@ -337,10 +392,14 @@ jobs:
       - name: Setup OS
         if: steps.set_enabled.outputs.enabled == 'true'
         run: |
+          # ports.ubuntu.com's IPv6 route is intermittently unreachable from GH-hosted
+          # aarch64 runners; force IPv4 so apt doesn't stall/fail on a dead IPv6 path,
+          # and retry on top in case of other transient connection blips.
+          printf 'Acquire::ForceIPv4 "true";\nAcquire::Retries "5";\n' | sudo tee /etc/apt/apt.conf.d/99force-ipv4 >/dev/null
           sudo apt update -y
           sudo apt remove -y g++
           sudo apt autoremove -y
-          sudo apt install -y curl zip unzip clang make build-essential binutils gdb
+          sudo apt install -y curl zip unzip clang make build-essential binutils gdb libgtest-dev libgmock-dev
           # Install debug symbols for system libraries
           sudo apt install -y libc6-dbg
           if [[ ${{ matrix.java_version }} =~ "-zing" ]]; then
@@ -354,8 +413,6 @@ jobs:
       - name: Test
         if: steps.set_enabled.outputs.enabled == 'true'
         run: |
-          sudo sysctl vm.mmap_rnd_bits=28
-
           set +e
           export KEEP_JFRS=true
           export TEST_COMMIT=${{ github.sha }}
@@ -363,9 +420,15 @@ jobs:
           export LIBC=glibc
           export SANITIZER=${{ matrix.config }}
 
+          GRADLEW_PREFIX=""
           # For ASAN: launch a gdb watchdog that dumps all native threads before the
           # 30-minute Gradle timeout kills the JVM, so we can diagnose hangs in native code.
           if [[ "${{ matrix.config }}" == "asan" ]]; then
+            # Reduce ASLR entropy so the JVM doesn't land in ASan's shadow range; 28 causes random aborts.
+            if ! sudo sysctl -w vm.mmap_rnd_bits=8 2>/dev/null; then
+              echo "::warning::Cannot set vm.mmap_rnd_bits; falling back to setarch --addr-no-randomize"
+              GRADLEW_PREFIX="setarch $(uname -m) --addr-no-randomize"
+            fi
             mkdir -p build/logs
             (
               sleep 1500  # 25 minutes — fires before the 30-min Gradle timeout
@@ -378,14 +441,23 @@ jobs:
             GDB_WATCHDOG_PID=$!
           fi
 
+          # GraalVM pre-allocates fixed memory that conflicts with ASan's shadow range
+          # [0x00007fff7000-0x10007fff7fff]; vm.mmap_rnd_bits tuning does not help (google/sanitizers#856).
+          if [[ "${{ matrix.config }}" == "asan" && "${{ matrix.java_version }}" =~ graal ]]; then
+            echo "::notice::Skipping ASan for GraalVM (incompatible shadow memory ranges — google/sanitizers#856)"
+            exit 0
+          fi
+
           MAX_ATTEMPTS=1
-          if [[ "${{ matrix.config }}" == "asan" && "${{ matrix.java_version }}" =~ (j9|ibm) ]]; then
+          if [[ "${{ matrix.config }}" == "asan" ]]; then
+            # ASan init can nondeterministically collide with the JVM's ASLR-influenced
+            # mmap layout (google/sanitizers#856); retry once before failing the job.
             MAX_ATTEMPTS=2
           fi
 
           for attempt in $(seq 1 $MAX_ATTEMPTS); do
             mkdir -p build/logs
-            ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
+            ${GRADLEW_PREFIX} ./gradlew -PCI -PkeepJFRs ${{ inputs.skip_gtest == true && '-Pskip-gtest' || '' }} :ddprof-test:test${{ inputs.slow_tests && 'Slow' || '' }}${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs 2>&1 \
               | tee -a build/test-raw.log \
               | python3 -u .github/scripts/filter_gradle_log.py
             EXIT_CODE=${PIPESTATUS[0]}
@@ -419,13 +491,13 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: success()
         with:
-          name: (build) test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
+          name: (build) test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: build/
       - name: Upload failures
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
-          name: failures-glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
+          name: failures-glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64-${{ inputs.slow_tests && 'slow' || 'regular' }}
           path: failures_glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
       - name: Prepare reports
         if: always() && steps.set_enabled.outputs.enabled == 'true'
@@ -435,14 +507,28 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: success() && matrix.config == 'debug'
         with:
-          name: (unwinding-reports) unwinding-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
+          name: (unwinding-reports) unwinding-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: unwinding-reports
       - name: Upload test reports
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:
-          name: (test-reports) test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
+          name: (test-reports) test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: test-reports
+      - name: Upload signal-safety violation log
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: signal-safety-violation-glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64-${{ inputs.slow_tests && 'slow' || 'regular' }}
+          path: /tmp/signal-safety-violation.txt
+          if-no-files-found: ignore
+      - name: Upload ASan logs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure() && matrix.config == 'asan'
+        with:
+          name: asan-logs-glibc-${{ matrix.java_version }}-aarch64-${{ inputs.slow_tests && 'slow' || 'regular' }}
+          path: /tmp/asan.log.*
+          if-no-files-found: ignore
 
   test-linux-musl-aarch64:
      needs: [cache-jdks, filter-musl-configs]
@@ -457,16 +543,16 @@ jobs:
        labels: arm-4core-linux-ubuntu24.04
      timeout-minutes: 180
      steps:
-       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
        - name: Cache Gradle Wrapper Binaries
-         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
          with:
            path: ~/.gradle/wrapper/dists
            key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
            restore-keys: |
              gradle-wrapper-${{ runner.os }}-
        - name: Cache Gradle User Home
-         uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
+         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
          with:
            path: ~/.gradle/caches
            key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
@@ -488,7 +574,8 @@ jobs:
            docker run --cpus 4 --rm -v /tmp:/tmp -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}" -w "${GITHUB_WORKSPACE}" alpine:3.21 /bin/sh -c "
              \"$GITHUB_WORKSPACE/.github/scripts/test_alpine_aarch64.sh\" \
              \"${{ github.sha }}\" \"musl/${{ matrix.java_version }}-${{ matrix.config }}-aarch64\" \
-             \"${{ matrix.config }}\" \"${{ env.JAVA_HOME }}\" \"${{ env.JAVA_TEST_HOME }}\"
+             \"${{ matrix.config }}\" \"${{ env.JAVA_HOME }}\" \"${{ env.JAVA_TEST_HOME }}\" \
+             \"${{ inputs.slow_tests }}\"
            " 2>&1 \
              | tee -a build/test-raw.log \
              | python3 -u .github/scripts/filter_gradle_log.py
@@ -499,6 +586,13 @@ jobs:
              echo "musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64" >> failures_musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
              exit 1
            fi
+       - name: Fix permissions for artifact upload
+         if: always()
+         run: |
+           # Files created by Docker container may have restrictive permissions
+           # that prevent GitHub Actions from reading them during artifact creation.
+           # Use a+rX (umask-independent) where X adds execute only to directories.
+           sudo chmod -R a+rX build/ ddprof-test/build/ ddprof-lib/build/ || true
        - name: Generate Unwinding Report
          if: success() && matrix.config == 'debug'
          run: |
@@ -507,6 +601,9 @@ jobs:
              \"${{ github.sha }}\" \"musl/${{ matrix.java_version }}-${{ matrix.config }}-aarch64\" \
              \"${{ matrix.config }}\" \"${{ env.JAVA_HOME }}\" \"${{ env.JAVA_TEST_HOME }}\"
            "
+           # Fix permissions after Docker container execution (both top-level and subproject builds).
+           # Use a+rX (umask-independent) where X adds execute only to directories.
+           sudo chmod -R a+rX build/ ddprof-test/build/ ddprof-lib/build/ || true
        - name: Add Unwinding Report to Job Summary
          if: success() && matrix.config == 'debug' && hashFiles('ddprof-test/build/reports/unwinding-summary.md') != ''
          run: |
@@ -516,13 +613,13 @@ jobs:
          uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
          if: success()
          with:
-           name: (build) test-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
+           name: (build) test-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
            path: build/
        - name: Upload failures
          uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
          if: failure()
          with:
-           name: failures-musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64
+           name: failures-musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64-${{ inputs.slow_tests && 'slow' || 'regular' }}
            path: failures_musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64.txt
        - name: Prepare reports
          if: always()
@@ -532,11 +629,25 @@ jobs:
          uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
          if: success() && matrix.config == 'debug'
          with:
-           name: (unwinding-reports) unwinding-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
+           name: (unwinding-reports) unwinding-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
            path: unwinding-reports
        - name: Upload test reports
          uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
          if: failure()
          with:
-           name: (test-reports) test-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }})
+           name: (test-reports) test-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
            path: test-reports
+       - name: Upload signal-safety violation log
+         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+         if: failure()
+         with:
+           name: signal-safety-violation-musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64-${{ inputs.slow_tests && 'slow' || 'regular' }}
+           path: /tmp/signal-safety-violation.txt
+           if-no-files-found: ignore
+       - name: Upload ASan logs
+         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+         if: failure() && matrix.config == 'asan'
+         with:
+           name: asan-logs-musl-${{ matrix.java_version }}-aarch64-${{ inputs.slow_tests && 'slow' || 'regular' }}
+           path: /tmp/asan.log.*
+           if-no-files-found: ignore

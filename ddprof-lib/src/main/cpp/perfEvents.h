@@ -30,7 +30,7 @@ class StackContext;
 
 class PerfEvents : public Engine {
 private:
-  static volatile bool _enabled;
+  static bool _enabled;
   static int _max_events;
   static PerfEvent *_events;
   static PerfEventType *_event_type;
@@ -62,7 +62,9 @@ public:
 
   static const char *getEventName(int event_id);
 
-  inline void enableEvents(bool enabled) { _enabled = enabled; }
+  inline void enableEvents(bool enabled) {
+    __atomic_store_n(&_enabled, enabled, __ATOMIC_RELEASE);
+  }
 };
 
 #else

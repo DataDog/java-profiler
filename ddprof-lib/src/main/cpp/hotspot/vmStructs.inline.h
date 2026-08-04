@@ -7,17 +7,68 @@
 #ifndef _HOTSPOT_VMSTRUCTS_INLINE_H
 #define _HOTSPOT_VMSTRUCTS_INLINE_H
 
+#include "hotspot/hotspotSupport.h"
 #include "hotspot/vmStructs.h"
 #include "jvmThread.h"
+#include "safeAccess.h"
+#include "threadLocalData.h"
+
+inline bool crashProtectionActive() {
+    ProfiledThread* pt = ProfiledThread::current();
+    if (pt != nullptr) {
+        return pt->isProtected();
+    }
+    return false;
+}
+
+template <typename T>
+inline T* cast_to(const void* ptr) {
+    assert(VM::isHotspot()); // This should only be used in HotSpot-specific code
+    assert(T::type_size() > 0); // Ensure type size has been initialized
+    assert(crashProtectionActive() || ptr == nullptr || SafeAccess::isReadableRange(ptr, T::type_size()));
+    return reinterpret_cast<T*>(const_cast<void*>(ptr));
+}
+
+inline const char* VMStructs::at(int offset) {
+    const char* ptr = (const char*)this + offset;
+    assert(crashProtectionActive() || SafeAccess::isReadable(ptr));
+    // Poison only the returned pointer; the assert above sees the real ptr.
+    return INJECT_FAULT_ADDRESS_RARE(ptr);
+}
+
+inline const char* VMStructs::at(int offset) const {
+    const char* ptr = (const char*)this + offset;
+    assert(crashProtectionActive() || SafeAccess::isReadable(ptr));
+    return INJECT_FAULT_ADDRESS_RARE(ptr);
+}
+
+template <typename T, bool safe>
+T VMStructs::load_at_offset(int offset) const {
+    const char* raw = (const char*)this + offset;
+    if (safe) {
+        // SafeAccess loads must work even when crash protection isn't active; avoid at() asserts.
+        return (T)SafeAccess::loadPtr((void**)INJECT_FAULT_ADDRESS_RARE(raw), nullptr);
+    }
+    assert(crashProtectionActive() || SafeAccess::isReadable(raw));
+    return *((T*)INJECT_FAULT_ADDRESS_RARE(raw));
+}
+
 
 VMThread* VMThread::current() {
+    assert(VM::isHotspot());
     return VMThread::cast(JVMThread::current());
 }
 
 VMThread* VMThread::fromJavaThread(JNIEnv* env, jthread thread) {
+    assert(VM::isHotspot());
     assert(_eetop != nullptr);
     if (_eetop != nullptr) {
-        return VMThread::cast((void*)env->GetLongField(thread, _eetop));
+        jlong eetop = env->GetLongField(thread, _eetop);
+        if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+            return nullptr;
+        }
+        return eetop != 0 ? VMThread::cast((void*)eetop) : nullptr;
     } else {
         return nullptr;
     }
@@ -65,6 +116,108 @@ VMMethod* VMThread::compiledMethod() {
         }
     }
     return NULL;
+}
+
+VMConstMethod* VMMethod::constMethod_or_null() const {
+    assert(_method_constmethod_offset >= 0);
+    return VMConstMethod::load_then_cast(at(_method_constmethod_offset));
+}
+
+jmethodID VMMethod::id() {
+    // We may find a bogus NMethod during stack walking, it does not always point to a valid VMMethod
+    const char* const_method = (const char*) SafeAccess::load((void**) at(_method_constmethod_offset));
+    if (!goodPtr(const_method)) {
+        return JMETHODID_NOT_WALKABLE;
+    }
+
+    const char* cpool = (const char*) SafeAccess::load((void**)(const_method + _constmethod_constants_offset));
+    unsigned short num = (unsigned short) SafeAccess::load32((int32_t*)(const_method + _constmethod_idnum_offset), 0);
+    if (goodPtr(cpool)) {
+        VMKlass* holder = (VMKlass*) SafeAccess::loadPtr((void**)(cpool + _pool_holder_offset), nullptr);
+        if (goodPtr(holder)) {
+            jmethodID* ids = (jmethodID*) SafeAccess::loadPtr((void**)((char*)holder + _jmethod_ids_offset), nullptr);
+            if (ids != NULL) {
+                size_t len = (size_t) SafeAccess::load32((int32_t*)ids, 0);
+                if (num < len) {
+                    return (jmethodID) SafeAccess::loadPtr((void**)(ids + num + 1), JMETHODID_NOT_WALKABLE);
+                } else {
+                    // The jmethodID is not populated
+                    return nullptr;
+                }
+            } else {
+                // No jmethodID was populated
+                return nullptr;
+            }
+        }
+    }
+    return JMETHODID_NOT_WALKABLE;
+}
+
+
+jmethodID VMMethod::validatedId() {
+    jmethodID method_id = id();
+    // We are sure about the value, return it
+    if (method_id == JMETHODID_NOT_WALKABLE || method_id == nullptr) {
+        return method_id;
+    }
+    // Check if the value make sense
+    if (!_can_dereference_jmethod_id ||
+        ((goodPtr(method_id) && SafeAccess::loadPtr((void**)method_id, nullptr) == this))) {
+        return method_id;
+    }
+
+    return JMETHODID_NOT_WALKABLE;
+}
+
+VMKlass* VMConstantPool::holder_or_null() const {
+    assert(_pool_holder_offset >= 0);
+    return VMKlass::load_then_cast(at(_pool_holder_offset));   
+}
+VMSymbol* VMConstantPool::symbolAt(int index) const {
+    if (index < 0) return nullptr;
+    void* ptr = SafeAccess::load((void**)&base()[index], nullptr); 
+    return VMSymbol::cast_or_null(ptr);
+}
+
+intptr_t* VMConstantPool::base() const {
+    assert(_VMConstantPool_size > 0);
+    return (intptr_t*)(((char*)this) + _VMConstantPool_size);
+}
+
+VMConstantPool* VMConstMethod::constants_or_null() const {
+    return VMConstantPool::load_then_cast(at(_constmethod_constants_offset));
+}
+
+VMSymbol* VMConstMethod::name() const {
+    VMConstantPool* cpool = constants_or_null();
+    if (cpool == nullptr) return nullptr;
+
+    u16 name_index = nameIndex();
+    return cpool->symbolAt(name_index);
+}
+
+VMSymbol* VMConstMethod::signature() const {
+    VMConstantPool* cpool = constants_or_null();
+    if (cpool == nullptr) return nullptr;
+
+    u16 sig_index = signatureIndex();
+    return cpool->symbolAt(sig_index);
+}
+
+u16 VMConstMethod::nameIndex() const {
+    assert(_constmethod_name_index_offset >= 0 && "Invalid name index");
+    return *(u16*)at(_constmethod_name_index_offset);
+}
+
+u16 VMConstMethod::signatureIndex() const {
+    assert(_constmethod_sig_index_offset >= 0 && "Invalid signature index");
+    return *(u16*)at(_constmethod_sig_index_offset);
+}
+
+// This method may be called without crash protection, so read the name via SafeAccess.
+inline const char* VMFlag::name() const {
+    assert(_flag_name_offset >= 0);
+    return load_at_offset<const char*, true /* safe load */>(_flag_name_offset);
 }
 
 #endif // _HOTSPOT_VMSTRUCTS_INLINE_H

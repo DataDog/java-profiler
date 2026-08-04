@@ -190,4 +190,67 @@ TEST(DwarfEhFrame, FdeAugDataOverrun) {
     delete dwarf;
 }
 
+// CIE + FDE whose body ends at exactly the last byte of the section (no
+// terminator appended). Verifies that _image_end-bounded reads are not
+// spuriously rejected when the FDE occupies the full section.
+TEST(DwarfEhFrame, FdeAtExactImageBoundary) {
+    std::vector<uint8_t> buf;
+    appendCie(buf);          // 15 bytes
+    appendFde(buf, 0, 256);  // 17 bytes; FDE ends at offset 32 == image_end
+    ASSERT_EQ(buf.size(), static_cast<size_t>(32));
+    DwarfParser* dwarf = parseBuf(buf);
+    EXPECT_EQ(dwarf->count(), 2);  // normal result; boundary must not be spuriously rejected
+    free(dwarf->table());
+    delete dwarf;
+}
+
+// An FDE where fde_len makes fde_end > _image_end.
+// parseFde()'s `fde_end > _image_end` guard must reject it without reading past
+// the buffer. Uses the .eh_frame_hdr constructor path (parse → parseFde).
+//
+// Buffer layout (24 bytes):
+//   [0-3]   .eh_frame_hdr header (version + 3 encoding bytes)
+//   [4-7]   eh_frame_ptr = 0
+//   [8-11]  fde_count = 1
+//   [12-15] table[0].initial_loc = 0
+//   [16-19] table[0].fde_ptr = 20  (offset from hdr start to fde_len field below)
+//   [20-23] fde_len = 100          (fde_end = hdr+24+100 = hdr+124 > image_end=hdr+24)
+TEST(DwarfEhFrameHdr, FdeExceedsImageEnd) {
+    std::vector<uint8_t> hdr(24, 0);
+    hdr[0] = 1;     // version
+    hdr[1] = 0x03;  // eh_frame_ptr_enc = DW_EH_PE_udata4
+    hdr[2] = 0x03;  // fde_count_enc    = DW_EH_PE_udata4
+    hdr[3] = 0x33;  // table_enc        = DW_EH_PE_datarel | DW_EH_PE_udata4
+    hdr[8]  = 1;    // fde_count = 1
+    hdr[16] = 20;   // table[0].fde_ptr: points to the fde_len field below
+    hdr[20] = 100;  // fde_len = 100 → fde_end = hdr+124 > image_end = hdr+24
+
+    const char* base = reinterpret_cast<const char*>(hdr.data());
+    DwarfParser dwarf("test", base, base, hdr.size(), DwarfParser::EhFrameHdrTag{}, base + hdr.size());
+    EXPECT_EQ(dwarf.count(), 0);  // rejected: fde_end > image_end, no crash
+    free(dwarf.table());
+}
+
+// Regression test for the .eh_frame_hdr hardening (found by fuzz_dwarf).
+// A hostile .eh_frame_hdr can claim a large fde_count while providing no
+// binary-search table; pre-hardening, parse() walked `table[i*2]` off the end
+// of the section. The bounded parser rejects a fde_count that cannot fit in the
+// section. The header is a heap buffer sized to exactly 16 bytes (header only,
+// no table entries), so ASan's redzone catches any over-read deterministically.
+TEST(DwarfEhFrameHdr, FdeCountOverrun) {
+    std::vector<uint8_t> hdr(16, 0);  // 16-byte header; the table would start at 16
+    hdr[0] = 1;     // version
+    hdr[1] = 0x03;  // eh_frame_ptr_enc = DW_EH_PE_udata4
+    hdr[2] = 0x03;  // fde_count_enc    = DW_EH_PE_udata4
+    hdr[3] = 0x33;  // table_enc        = DW_EH_PE_datarel | DW_EH_PE_udata4
+    // fde_count at offset 8 (little-endian): claim 1024 entries that aren't there.
+    hdr[8] = 0x00;
+    hdr[9] = 0x04;
+
+    const char* base = reinterpret_cast<const char*>(hdr.data());
+    DwarfParser dwarf("test", base, base, hdr.size(), DwarfParser::EhFrameHdrTag{}, base + hdr.size());
+    EXPECT_EQ(dwarf.count(), 0);  // rejected: no records, no crash
+    free(dwarf.table());
+}
+
 #endif  // DWARF_SUPPORTED

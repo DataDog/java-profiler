@@ -14,10 +14,59 @@ jobs:
   run-test:
     uses: ./.github/workflows/test_workflow.yml
     with:
-      configuration: '["asan"]' # Ignoring tsan for now '["asan", "tsan"]'
+      configuration: '["asan"]'
+      # C++ gtests (ASan + TSan) run on every PR via native-sanitizer-tests in ci.yml.
+      # Skip them here so the nightly focuses on Java functional tests under ASan.
+      skip_gtest: true
+  run-slow-test:
+    uses: ./.github/workflows/test_workflow.yml
+    with:
+      configuration: '["debug"]'
+      skip_gtest: true
+      slow_tests: true
+  run-slow-test-asan:
+    uses: ./.github/workflows/test_workflow.yml
+    with:
+      configuration: '["asan"]'
+      # C++ gtests (ASan + TSan) run on every PR via native-sanitizer-tests in ci.yml.
+      # Skip them here so the nightly focuses on Java functional tests under ASan.
+      skip_gtest: true
+      slow_tests: true
+  fuzz:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Cache Gradle Wrapper Binaries
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: gradle-wrapper-${{ runner.os }}-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-wrapper-${{ runner.os }}-
+      - name: Cache Gradle User Home
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.gradle/caches
+          key: gradle-caches-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-caches-${{ runner.os }}-
+      - name: Setup OS
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang
+      - name: Fuzz
+        run: ./gradlew :ddprof-lib:fuzz:fuzz -Pfuzz-duration=120 --no-daemon
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-crashes
+          path: ddprof-lib/fuzz/build/fuzz-crashes/
   report-failures:
     runs-on: ubuntu-latest
-    needs: run-test
+    needs: [run-test, run-slow-test, run-slow-test-asan]
     if: failure()
     steps:
       - name: Download all failure artifacts

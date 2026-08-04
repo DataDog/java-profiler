@@ -67,17 +67,6 @@ public:
      * @return A Context struct representing the current thread's context
      */
     static Context snapshot();
-
-    /**
-     * Register attribute key names and publish them in the process context.
-     * Must be called before setAttribute().
-     * Keys beyond DD_TAGS_CAPACITY are silently clipped.
-     *
-     * @param keys Array of key name strings
-     * @param count Number of keys (clipped to DD_TAGS_CAPACITY)
-     */
-    static void registerAttributeKeys(const char** keys, int count);
-
 };
 
 #endif /* _CONTEXT_API_H */

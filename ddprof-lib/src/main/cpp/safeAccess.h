@@ -1,5 +1,6 @@
 /*
  * Copyright 2021 Andrei Pangin
+* Copyright 2026 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -51,6 +52,9 @@ public:
    */
   NOINLINE
   static int safeFetch32(int* ptr, int errorValue) {
+#ifdef DEBUG
+    countIfLongjmpProtected(false);
+#endif
     return safefetch32_impl(ptr, errorValue);
   }
 
@@ -61,8 +65,20 @@ public:
    */
   NOINLINE
   static int64_t safeFetch64(int64_t* ptr, int64_t errorValue) {
+#ifdef DEBUG
+    countIfLongjmpProtected(false);
+#endif
     return safefetch64_impl(ptr, errorValue);
   }
+
+  // Copies len bytes from src to dst via the safecopy_impl assembly stub so
+  // that a page-unmap or repurpose of src memory during the copy does not
+  // crash the process. Returns true on full success, false if any read
+  // faulted (in which case dst may hold a partial prefix). dst must have at
+  // least len bytes capacity. The copy is byte-granular, so it never reads
+  // past src+len.
+  NOINLINE
+  static bool safeCopy(void* dst, const void* src, size_t len);
 
   static bool handle_safefetch(int sig, void* context);
 
@@ -83,17 +99,33 @@ public:
 
   static inline bool isReadableRange(const void* start, size_t size) {
     assert(size > 0);
+    // Reject addresses where start + size - 1 would wrap around UINTPTR_MAX,
+    // which would produce a bogus end_page below start_page.
+    if (reinterpret_cast<uintptr_t>(start) > UINTPTR_MAX - (size - 1)) {
+      return false;
+    }
     void* start_page = (void*)align_down((uintptr_t)start, OS::page_size);
     void* end_page = (void*)align_down((uintptr_t)start + size - 1, OS::page_size);
-    // Memory readability is determined at the page level, so we check each page in the range for readability. 
-    // This is more efficient than checking each byte.
-    for (void* page = start_page; page <= end_page; page = (void*)((uintptr_t)page + OS::page_size)) {
+    // Check readability page by page. The loop only increments when page != end_page,
+    // so (uintptr_t)page + OS::page_size never wraps even when end_page is near UINTPTR_MAX.
+    for (void* page = start_page; page != end_page; page = (void*)((uintptr_t)page + OS::page_size)) {
       if (!isReadable(page)) {
         return false;
       }
     }
-    return true;
+    return isReadable(end_page);
   }
+
+#ifdef DEBUG
+private:
+  // Debug diagnostic: bump a counter when a SafeAccess read/copy is issued while
+  // the current thread is already inside a walkVM siglongjmp-protected region, where
+  // the safefetch/safecopy overhead is redundant (a fault there is caught by the
+  // siglongjmp anyway). Defined out-of-line in safeAccess.cpp so this widely-included
+  // header need not pull in threadLocalData.h / counters.h. isCopy selects the
+  // SAFECOPY_WHILE_PROTECTED vs SAFEFETCH_WHILE_PROTECTED counter.
+  static void countIfLongjmpProtected(bool isCopy);
+#endif
 };
 
 #endif // _SAFEACCESS_H

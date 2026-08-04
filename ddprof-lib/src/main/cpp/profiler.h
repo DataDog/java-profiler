@@ -1,6 +1,6 @@
 /*
  * Copyright The async-profiler authors
- * Copyright 2025, Datadog, Inc.
+ * Copyright 2025, 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -13,19 +13,22 @@
 #include "codeCache.h"
 #include "common.h"
 #include "dictionary.h"
+#include "stringDictionary.h"
 #include "engine.h"
 #include "event.h"
 #include "flightRecorder.h"
+#include "guards.h"
 #include "libraries.h"
 #include "log.h"
 #include "mutex.h"
 #include "objectSampler.h"
 #include "spinLock.h"
-#include "thread.h"
+#include "threadLocalData.h"
 #include "threadFilter.h"
 #include "threadInfo.h"
 #include "trap.h"
 #include "vmEntry.h"
+#include <atomic>
 #include <iostream>
 #include <map>
 #include <time.h>
@@ -37,6 +40,19 @@ __asm__(".symver log,log@GLIBC_2.17");
 __asm__(".symver exp,exp@GLIBC_2.17");
 #endif
 #endif
+
+// A "hook-prefixed" sample (malloc, socket I/O, ...) is one whose native
+// callchain starts inside the profiler's own PLT/libc hook and must be
+// trimmed up to the MARK_JAVA_PROFILER boundary frame before symbolication.
+// Single source of truth for that predicate across both BCI_* (FP/DWARF path)
+// and EventType (walkVM path) representations.
+inline bool isHookPrefixedSample(jint bci) {
+  return bci == BCI_NATIVE_MALLOC || bci == BCI_NATIVE_SOCKET;
+}
+
+inline bool isHookPrefixedSample(EventType event_type) {
+  return event_type == MALLOC_SAMPLE || event_type == SOCKET_SAMPLE;
+}
 
 #ifdef DEBUG
 #include <signal.h>
@@ -55,13 +71,13 @@ class FrameName;
 class StackContext;
 class VM;
 
-enum State { NEW, IDLE, RUNNING, TERMINATED };
+enum State { NEW, IDLE, RUNNING, TERMINATED, ERROR };
 
-// Aligned to satisfy SpinLock member alignment requirement (64 bytes)  
-// Required because this class contains multiple SpinLock members:
-// _class_map_lock and _locks[]
+// Aligned to satisfy SpinLock member alignment requirement (64 bytes)
+// Required because this class contains the _locks[] SpinLock array.
 class alignas(alignof(SpinLock)) Profiler {
   friend VM;
+  friend class ProfilerTestAccessor;
 
 private:
   // signal handlers
@@ -71,17 +87,30 @@ private:
   static volatile bool _need_JDK_8313796_workaround;
 
   Mutex _state_lock;
-  State _state;
+  std::atomic<State> _state;
   // class unload hook
   Trap _class_unload_hook_trap;
   typedef void (*NotifyClassUnloadedFunc)(void *);
   NotifyClassUnloadedFunc _notify_class_unloaded_func;
   // --
 
+  // Caps the number of distinct class names _class_map will ever hold.
+  // rotate()/clearStandby() carry the full accumulated set forward on every
+  // JFR chunk (only clearAll() on profiler restart truly resets it), so
+  // without a cap a workload with unbounded distinct-class churn (e.g. heavy
+  // dynamic class generation) grows this dictionary for the lifetime of the
+  // process. 256K distinct classes is far beyond any real application's
+  // class count.
+  static const int MAX_CLASS_MAP_SIZE = 1 << 18;
+
   ThreadInfo _thread_info;
-  Dictionary _class_map;
-  Dictionary _string_label_map;
-  Dictionary _context_value_map;
+  StringDictionary _class_map{1};
+  StringDictionary _string_label_map{2};
+  StringDictionary _context_value_map{3};
+  // Set when a fresh start resets _context_value_map (clearAll), reassigning encodings. Consumed by
+  // the Java layer to drop its process-wide ContextValueCache so no stale encoding is reused. See
+  // JavaProfiler.execute / ContextValueCache.
+  std::atomic<bool> _context_value_dict_reset{false};
   ThreadFilter _thread_filter;
   CallTraceStorage _call_trace_storage;
   FlightRecorder _jfr;
@@ -97,7 +126,12 @@ private:
   void *_timer_id;
 
   volatile u64 _total_samples;
-  u64 _failures[ASGCT_FAILURE_TYPES];
+  // On a separate cache line: incremented from every signal handler via
+  // recordSampleDelegated; must not share a line with _failures (written by
+  // ASGCT paths) or _total_samples (written by every recording path).
+  alignas(DEFAULT_CACHE_LINE_SIZE) volatile u64 _sample_seq;
+  alignas(DEFAULT_CACHE_LINE_SIZE) u64 _failures[ASGCT_FAILURE_TYPES];
+  bool _wall_precheck = false;
 
   SpinLock _class_map_lock;
   SpinLock _locks[CONCURRENCY_LEVEL];
@@ -118,8 +152,8 @@ private:
   void **_dlopen_entry;
   static void *dlopen_hook(const char *filename, int flags);
   void switchLibraryTrap(bool enable);
+  static bool prewarmUnwinder();
 
-  void enableEngines();
   void disableEngines();
 
   void onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread);
@@ -131,7 +165,10 @@ private:
   void updateThreadName(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                         bool self = false);
   void updateJavaThreadNames();
-  void updateNativeThreadNames();
+  // Publish the native-symbol (CodeCache) memory counters and NativeMem gauge
+  // from the current library set. Called before each JFR chunk is finalized
+  // (dump and stop) so the emitted counters reflect the latest libraries.
+  void updateNativeLibMemStats();
   void mangle(const char *name, char *buf, size_t size);
 
   Engine *selectCpuEngine(Arguments &args);
@@ -142,20 +179,49 @@ private:
   void lockAll();
   void unlockAll();
 
+  // Rotate all three dictionaries, then run jfr_op under lockAll().
+  //
+  // rotate() is self-contained: it uses _accepting + RefCountGuard to drain
+  // concurrent JNI readers, and SignalBlocker prevents profiling signals on
+  // this thread from inserting into old_active between Phase 1 and Phase 2.
+  // No external lock is required for rotation.
+  //
+  // lockAll() wraps jfr_op only — to gate call-trace writers (signal handlers
+  // and JNI paths that write to CallTraceStorage) from racing with the dump.
+  // Dictionary writers that bypass lockAll() (e.g. recordTrace0) are handled
+  // by the dictionary's own RefCountGuard protocol, not by lockAll().
+  template<typename F>
+  void rotateDictsAndRun(F jfr_op) {
+    SignalBlocker blocker;
+    _class_map.rotate();
+    _string_label_map.rotate();
+    _context_value_map.rotate();
+    lockAll();
+    jfr_op();
+    unlockAll();
+    _class_map.clearStandby();
+    _string_label_map.clearStandby();
+    _context_value_map.clearStandby();
+  }
+
   static int crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext);
   static void check_JDK_8313796_workaround();
 
   static Profiler *const _instance;
 
+  inline State state() const {
+    return _state.load(std::memory_order_relaxed);
+  }
+
 public:
   Profiler()
-      : _state_lock(), _state(NEW), _class_unload_hook_trap(2),
+      : _state_lock(), _state(State::NEW), _class_unload_hook_trap(2),
         _notify_class_unloaded_func(NULL), _thread_info(), _class_map(1),
         _string_label_map(2), _context_value_map(3), _thread_filter(),
         _call_trace_storage(), _jfr(), _cpu_engine(NULL), _wall_engine(NULL),
         _alloc_engine(NULL), _event_mask(0),
         _start_time(0), _stop_time(0), _epoch(0), _timer_id(NULL),
-        _total_samples(0), _failures(), _class_map_lock(),
+        _total_samples(0), _sample_seq(0), _failures(), _class_map_lock(),
         _max_stack_depth(0), _features(), _safe_mode(0), _cstack(CSTACK_NO),
         _thread_events_state(JVMTI_DISABLE), _libs(Libraries::instance()),
         _num_context_attributes(0), _omit_stacktraces(false),
@@ -169,6 +235,20 @@ public:
   static inline Profiler *instance() {
     return _instance;
   }
+
+  // Resolve names of native (non-Java) threads from /proc. Idempotent and
+  // allocation-light (no-op for already-named tids), so it is safe to call
+  // periodically from the Libraries refresher thread to capture transient
+  // compiler/GC threads before they exit. Must NOT be called from a signal
+  // handler: thread enumeration uses opendir/readdir/malloc.
+  //
+  // When defer_initializing is true (periodic refresher), a thread whose comm
+  // still equals the process's own (inherited) name is skipped: it is most
+  // likely still initializing and has not yet set its final pthread name.
+  // Recording it now would latch that provisional name permanently
+  // (ThreadInfo::updateThreadName is first-writer-wins). A later scan, or the
+  // dump-time pass (which passes false), records the final name instead.
+  void updateNativeThreadNames(bool defer_initializing = false);
 
 
   inline void incFailure(int type) {
@@ -197,15 +277,28 @@ public:
     return _features;
   }
 
+  inline bool isRunning() {
+    return _state.load(std::memory_order_acquire) == RUNNING;
+  }
+
   u64 total_samples() { return _total_samples; }
   int max_stack_depth() { return _max_stack_depth; }
   time_t uptime() { return time(NULL) - _start_time; }
   Engine *cpuEngine() { return _cpu_engine; }
   Engine *wallEngine() { return _wall_engine; }
 
-  Dictionary *classMap() { return &_class_map; }
-  Dictionary *stringLabelMap() { return &_string_label_map; }
-  Dictionary *contextValueMap() { return &_context_value_map; }
+  StringDictionary *classMap() { return &_class_map; }
+  // Same cap lookupClass() enforces for sample-time inserts; dump-time
+  // insertions (Lookup::_classes->lookupDuringDump in flightRecorder.cpp)
+  // must use this too so _class_map cannot grow past it via that path.
+  static int maxClassMapSize() { return MAX_CLASS_MAP_SIZE; }
+  SharedLockGuard classMapSharedGuard() { return SharedLockGuard(&_class_map_lock); }
+  StringDictionary *stringLabelMap() { return &_string_label_map; }
+  StringDictionary *contextValueMap() { return &_context_value_map; }
+  // Atomically reads and clears the "context value dictionary was reset" flag (see the member).
+  bool consumeContextValueDictReset() {
+    return _context_value_dict_reset.exchange(false, std::memory_order_acq_rel);
+  }
   u32 numContextAttributes() { return _num_context_attributes; }
   ThreadFilter *threadFilter() { return &_thread_filter; }
 
@@ -230,6 +323,7 @@ public:
     return __atomic_load_n(&_epoch, __ATOMIC_RELAXED);
   }
 
+  Error init();
   Error run(Arguments &args);
   Error runInternal(Arguments &args, std::ostream &out);
   Error restart(Arguments &args);
@@ -237,8 +331,8 @@ public:
   Error check(Arguments &args);
   Error start(Arguments &args, bool reset);
   Error stop();
-  Error flushJfr();
   Error dump(const char *path, const int length);
+  Error checkState();
   void logStats();
   void switchThreadEvents(jvmtiEventMode mode);
 
@@ -254,12 +348,13 @@ public:
    *   Bits 47-61:  lib_index (15 bits, 32K libraries)
    *.  Bits 62-63:  reserved
    *
-   * Mark values indicate JVM internal frames that should terminate stack walks:
+   * Mark values identify JVM-internal frames the caller must dispatch on;
+   * they don't all mean "terminate the walk":
    *   0 = no mark (regular native frame)
-   *   MARK_VM_RUNTIME = 1
-   *   MARK_INTERPRETER = 2
-   *   MARK_COMPILER_ENTRY = 3
-   *   MARK_ASYNC_PROFILER = 4
+   *   MARK_VM_RUNTIME = 1      -- terminates the scan
+   *   MARK_INTERPRETER = 2     -- terminates the scan
+   *   MARK_COMPILER_ENTRY = 3  -- inserts a pseudo JIT-compile-task frame, then resumes unwinding
+   *   MARK_JAVA_PROFILER = 4  -- resets depth and resumes unwinding above the hook boundary
    *
    * During stack walking, we perform symbol resolution (binarySearch) to check
    * marks and pack the mark value for later use. The performance is O(log n) for
@@ -313,22 +408,38 @@ public:
   struct NativeFrameResolution {
     union {
       unsigned long packed_remote_frame;  // Packed remote frame data (pc_offset|mark|lib_index)
-      const char* method_name;            // Resolved method name 
+      const char* method_name;            // Resolved method name
     };
     int bci;                            // BCI_NATIVE_FRAME_REMOTE or BCI_NATIVE_FRAME
-    bool is_marked;                     // true if this is a marked C++ interpreter frame (stop processing)
-    NativeFrameResolution(const char* name, int bci_type, bool marked)
-      : method_name(name), bci(bci_type), is_marked(marked) {}
-    NativeFrameResolution(unsigned long packed, int bci_type, bool marked)
-      : packed_remote_frame(packed), bci(bci_type), is_marked(marked) {}
+    char mark;                         // Value domain: 0 (unmarked) or one of the Mark
+                                        // enum constants (codeCache.h), currently 1-5.
+                                        // Kept as char rather than Mark since it is
+                                        // packed into RemoteFramePacker's 3-bit field.
+    // True if this frame carries a JVM-internal mark; caller must inspect
+    // `mark` to decide whether to terminate the walk or dispatch/resume
+    // (see the Mark values table above resolveNativeFrameForWalkVM).
+    bool is_marked() const { return mark != 0; }
+    NativeFrameResolution(const char* name, int bci_type, char mark_value = 0)
+      : method_name(name), bci(bci_type), mark(mark_value) {}
+    NativeFrameResolution(unsigned long packed, int bci_type, char mark_value = 0)
+      : packed_remote_frame(packed), bci(bci_type), mark(mark_value) {}
   };
 
   void populateRemoteFrame(ASGCT_CallFrame* frame, uintptr_t pc, CodeCache* lib, char mark);
   NativeFrameResolution resolveNativeFrameForWalkVM(uintptr_t pc, int lock_index);
   int convertNativeTrace(int native_frames, const void **callchain,
-                         ASGCT_CallFrame *frames, int lock_index);
-  void recordSample(void *ucontext, u64 weight, int tid, jint event_type,
-                    u64 call_trace_id, Event *event);
+                         ASGCT_CallFrame *frames, int lock_index,
+                         bool skip_hook_prefix);
+  bool recordSample(void *ucontext, u64 weight, int tid, jint event_type,
+                    u64 call_trace_id, Event *event,
+                    u64 *recorded_call_trace_id = nullptr);
+  // Delegated sample path: stack-walking is performed by the HotSpot JFR
+  // RequestStackTrace extension (the JVM emits the stack trace into its own
+  // JFR recording). We only emit the CPU/wall sample event with no
+  // stack-trace reference, tagged by the correlation ID we passed to
+  // RequestStackTrace as user_data.
+  bool recordSampleDelegated(void *ucontext, u64 weight, int tid,
+                             jint event_type, Event *event);
   u64 recordJVMTISample(u64 weight, int tid, jthread thread, jint event_type, Event *event, bool deferred);
   void recordDeferredSample(int tid, u64 call_trace_id, jint event_type, Event *event);
   void recordExternalSample(u64 weight, int tid, int num_frames,
@@ -352,9 +463,38 @@ public:
   static void segvHandler(int signo, siginfo_t *siginfo, void *ucontext);
   static void busHandler(int signo, siginfo_t *siginfo, void *ucontext);
   static void setupSignalHandlers();
+  static void checkFault(ProfiledThread* thrd, siginfo_t *siginfo, void *ucontext);
 
   static int registerThread(int tid);
   static void unregisterThread(int tid);
+
+#ifdef UNIT_TEST
+  // Returns the tid most recently passed to unregisterThread(), or -1 if it
+  // has never been called (or since the last resetUnregisterObservableForTest).
+  // Used by integration tests to assert that cleanup_unregister wired
+  // Profiler::unregisterThread correctly without needing live engine instances.
+  static int  lastUnregisteredTidForTest();
+  static void resetUnregisterObservableForTest();
+
+  // Reads back the name recorded for a tid in _thread_info, or an empty string
+  // if none was recorded. Lets integration tests observe the result of
+  // updateNativeThreadNames() (notably the defer_initializing skip) without
+  // exposing the private _thread_info. Compiled only into gtest binaries.
+  std::string threadNameForTest(int tid) {
+    std::pair<std::shared_ptr<std::string>, u64> info = _thread_info.get(tid);
+    return info.first != nullptr ? *info.first : std::string();
+  }
+
+  // Overrides the profiler address range checkFault() uses to decide
+  // whether a recovered fault actually originated from profiler code.
+  // setupSignalHandlers() never runs in gtest binaries, so the real
+  // profiler_min_address/profiler_max_address stay 0 there and checkFault's
+  // range check short-circuits via its "not initialized" fallback -- these
+  // let tests install a real, non-zero range so the pc < min || pc >= max
+  // comparison itself gets exercised, instead of being skipped entirely.
+  static void setAddressRangeForTest(uintptr_t min, uintptr_t max);
+  static void resetAddressRangeForTest();
+#endif
 
 
   static void JNICALL ThreadStart(jvmtiEnv *jvmti, JNIEnv *jni,
@@ -368,14 +508,15 @@ public:
 
   // Keep backward compatibility with the upstream async-profiler
   inline CodeCache* findLibraryByAddress(const void *address) {
-  #ifdef DEBUG
+#ifdef DEBUG
     // we need this code to simulate segfault during stackwalking
     // this is a safe place to do it since this wrapper is used solely from the 'vm' stackwalker implementation
     if (force_stackwalk_crash_env) {
       TEST_LOG("FORCE_SIGSEGV");
-      raise(SIGSEGV);
+      int* p = nullptr;
+      *p = 1;
     }
-  #endif
+#endif
     return Libraries::instance()->findLibraryByAddress(address);
   }
 

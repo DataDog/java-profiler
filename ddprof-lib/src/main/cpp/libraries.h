@@ -1,16 +1,59 @@
 #ifndef _LIBRARIES_H
 #define _LIBRARIES_H
 
+#include <atomic>
+#include <pthread.h>
+
 #include "codeCache.h"
 
 class Libraries {
  private:
   CodeCacheArray _native_libs;
   CodeCache _runtime_stubs;
+  bool _remote_symbolication;  // set via setRemoteSymbolication()
+
+  // Pending-refresh flag set by dlopen_hook when it cannot call refresh()
+  // synchronously (signal context).  Polled by the refresher thread.
+  std::atomic<bool> _dirty;
+
+  // Background refresher thread: periodically (every REFRESH_INTERVAL_NS)
+  // checks _dirty and runs refresh() outside signal context, narrowing the
+  // window during which newly-loaded libraries are unresolvable.
+  pthread_t _refresher_thread;
+  std::atomic<bool> _refresher_running;
+  std::atomic<int> _refresher_tid;  // captured from OS::threadId() on entry
+  static void *refresherLoop(void *arg);
 
   static void mangle(const char *name, char *buf, size_t size);
  public:
-  Libraries() : _native_libs(), _runtime_stubs("runtime stubs") {}
+  Libraries() : _native_libs(), _runtime_stubs("runtime stubs"),
+                _remote_symbolication(false), _dirty(false),
+                _refresher_thread(), _refresher_running(false),
+                _refresher_tid(-1) {}
+
+  void setRemoteSymbolication(bool enabled) { _remote_symbolication = enabled; }
+
+  // Refresh symbol tables and reinstall hooks/patches for any libraries
+  // loaded since the last refresh.  Idempotent and cheap when no new
+  // libraries have been loaded (parseLibraries tracks _parsed_inodes).
+  // Clears the dirty flag.  Must be called from non-signal context:
+  // updateSymbols acquires a Mutex and reads /proc/self/maps.
+  void refresh();
+
+  // Async-signal-safe: just sets a flag.  The refresher thread will pick
+  // up the change on its next tick.
+  void markDirty() { _dirty.store(true, std::memory_order_release); }
+
+  // Start/stop the background refresher thread.  Called from
+  // Profiler::start/stop.
+  void startRefresher();
+  void stopRefresher();
+
+  // TID of the refresher thread once it has captured its own ID, or -1 if
+  // the thread is not currently running.  Used by sampler thread-list
+  // enumeration to skip this profiler-internal thread.
+  int refresherTid() const { return _refresher_tid.load(std::memory_order_acquire); }
+
   void updateSymbols(bool kernel_symbols);
   void updateBuildIds();  // Extract build-ids for all loaded libraries
   const void *resolveSymbol(const char *name);

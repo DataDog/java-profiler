@@ -15,7 +15,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.stream.IntStream;
 
-import static com.datadoghq.profiler.MoreAssertions.*;
+import static com.datadoghq.profiler.MoreAssertions.assertBoundedBy;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.openjdk.jmc.common.item.Attribute.attr;
@@ -40,6 +40,8 @@ public class EndpointTest extends AbstractProfilerTest {
         // reject above size limit
         record(new Endpoint(0, UUID.randomUUID().toString(), UUID.randomUUID().toString()), false, sizeLimit);
 
+        Map<String, Long> debugCounters = profiler.getDebugCounters();
+        assertEquals(endpoints.length, debugCounters.get("dictionary_endpoints_keys"));
         stopProfiler();
         IItemCollection events = verifyEvents("datadog.Endpoint");
         IAttribute<String> endpointAttribute = attr("endpoint", "endpoint", "endpoint",
@@ -64,11 +66,19 @@ public class EndpointTest extends AbstractProfilerTest {
         for (int i = 0; i < endpoints.length; i++) {
             assertTrue(recovered.get(i), i + " not tested");
         }
-        Map<String, Long> debugCounters = profiler.getDebugCounters();
-        assertEquals(endpoints.length, debugCounters.get("dictionary_endpoints_keys"));
         assertEquals(Arrays.stream(endpoints).mapToInt(ep -> ep.endpoint.length() + 1).sum(), debugCounters.get("dictionary_endpoints_keys_bytes"));
-        assertBoundedBy(debugCounters.get("dictionary_endpoints_pages"), 300, "endpoint storage too many pages");
-        assertBoundedBy(debugCounters.get("dictionary_endpoints_bytes"), 300 * DICTIONARY_PAGE_SIZE, "endpoint storage too many pages");
+        // SBTable geometry (post-StringDictionary refactor): ROWS=128, CELLS=3.
+        // 1000 keys distribute ~8 entries per row, so nearly every row in the
+        // active buffer overflows, allocating one new SBTable per row → up to
+        // ~129 pages per buffer (1 root + 128 overflow). With 3 buffers and
+        // potential dump-cycle rotation, 512 is a safe upper bound.
+        assertBoundedBy(debugCounters.get("dictionary_endpoints_pages"), 512,
+                "endpoint storage too many SBTable pages");
+        // dictionary_endpoints_bytes covers SBTable nodes plus arena Chunk(s).
+        // Worst case for 1000 short keys: 3 buffers × (sizeof(SBTable) +
+        // sizeof(Chunk)) ≈ 2.3 MB; bound at 4 MB for safety.
+        assertBoundedBy(debugCounters.get("dictionary_endpoints_bytes"), 4L * 1024 * 1024,
+                "endpoint storage too many bytes");
     }
 
     private void record(Endpoint endpoint, boolean shouldAccept, int sizeLimit) {

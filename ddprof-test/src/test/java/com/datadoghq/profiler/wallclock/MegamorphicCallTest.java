@@ -20,7 +20,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 public class MegamorphicCallTest extends AbstractProfilerTest {
     @Override
     protected String getProfilerCommand() {
-        return "wall=100us";
+        // wall=100us over the fixed workload below is ~10k samples/s. Under ASAN each
+        // invocation is much slower, so the same fixed-rate sampling over a much longer
+        // wall-clock duration produces hundreds of thousands of samples, and stack-trace
+        // stringification of all of them (below) OOMs the test-runner heap. Sample 10x
+        // coarser under ASAN, combined with a smaller workload, to bound the sample count.
+        return isAsan() ? "wall=1ms" : "wall=100us";
     }
 
     private static int calculation() {
@@ -60,9 +65,9 @@ public class MegamorphicCallTest extends AbstractProfilerTest {
         }
     }
 
-    private int profiledWork(Calculator... calculators) {
+    private int profiledWork(int iterations, Calculator... calculators) {
         int result = 0;
-        for (int i = 0; i < 1_000_000; i++) {
+        for (int i = 0; i < iterations; i++) {
             for (Calculator calculator : calculators) {
                 result += calculator.calculate();
             }
@@ -74,7 +79,11 @@ public class MegamorphicCallTest extends AbstractProfilerTest {
     public void testITableStubs() {
         Assumptions.assumeFalse(Platform.isZing() || Platform.isJ9());
         registerCurrentThreadForWallClockProfiling();
-        int result = profiledWork(new Calculator1(), new Calculator2(), new Calculator3());
+        // Reduce workload under ASAN: combined with the coarser wall rate above, this
+        // bounds the number of samples (and thus the stack-trace strings materialized
+        // below) regardless of how much ASAN slows down each invocation.
+        int iterations = isAsan() ? 100_000 : 1_000_000;
+        int result = profiledWork(iterations, new Calculator1(), new Calculator2(), new Calculator3());
         System.err.println(result);
         stopProfiler();
         IItemCollection events = verifyEvents("datadog.MethodSample");

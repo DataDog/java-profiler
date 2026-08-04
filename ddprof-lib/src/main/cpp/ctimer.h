@@ -26,8 +26,14 @@
 
 class CTimer : public Engine {
 private:
-  // This is accessed from signal handlers, so must be async-signal-safe
+  // cppcheck-suppress unusedPrivateFunction
+  static void signalHandler(int signo, siginfo_t *siginfo, void *ucontext);
+
+protected:
+  // Accessed from signal handlers (including CTimerJvmti subclass), so must
+  // be async-signal-safe. Mutated via enableEvents().
   static bool _enabled;
+
   static long _interval;
   static CStack _cstack;
   static int _signal;
@@ -37,9 +43,6 @@ private:
 
   int registerThread(int tid);
   void unregisterThread(int tid);
-
-  // cppcheck-suppress unusedPrivateFunction
-  static void signalHandler(int signo, siginfo_t *siginfo, void *ucontext);
 
 public:
   const char *units() { return "ns"; }
@@ -60,6 +63,24 @@ public:
   static int getSignal() { return _signal; }
 };
 
+// A CPU-time engine that reuses CTimer's per-thread timer_create / SIGPROF
+// dispatch, but instead of walking the stack in the signal handler delegates
+// the walk to HotSpot's JFR RequestStackTrace JVMTI extension. The sampled
+// event is emitted on our side with only a correlation ID; the JVM writes
+// the stack trace (and its own JFR stack-trace id) into the concurrent JFR
+// recording as jdk.StackTraceRequest. See VM::canRequestStackTrace().
+class CTimerJvmti : public CTimer {
+private:
+  // cppcheck-suppress unusedPrivateFunction
+  static void signalHandler(int signo, siginfo_t *siginfo, void *ucontext);
+
+public:
+  const char *name() { return "CTimerJvmti"; }
+
+  Error check(Arguments &args);
+  Error start(Arguments &args);
+};
+
 #else
 
 class CTimer : public Engine {
@@ -73,6 +94,19 @@ public:
   }
 
   static bool supported() { return false; }
+};
+
+class CTimerJvmti : public Engine {
+public:
+  const char *name() { return "CTimerJvmti"; }
+
+  Error check(Arguments &args) {
+    return Error("CTimerJvmti is not supported on this platform");
+  }
+
+  Error start(Arguments &args) {
+    return Error("CTimerJvmti is not supported on this platform");
+  }
 };
 
 #endif // __linux__

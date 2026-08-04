@@ -73,8 +73,6 @@ public class SanityCheckTest {
         profiler.stop();
         // Second start (without nosanity) must not fail due to re-running checks — the
         // static guard in the native layer ensures they only fire on the first invocation.
-        // On a normal host this will also pass because normal hosts satisfy the requirements.
-        // On a pathological host the first start already set sanity_checked=true.
-        assertDoesNotThrow(() -> profiler.execute(startCommand("nosanity")));
+        assertDoesNotThrow(() -> profiler.execute(startCommand(null)));
     }
 }

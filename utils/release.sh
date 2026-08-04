@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Copyright 2025, Datadog, Inc
+# Copyright 2026, Datadog, Inc
 
 # Script to trigger the Validated Release workflow using GitHub CLI
 #
@@ -54,6 +54,91 @@ print_info() {
     echo -e "${BLUE}$1${NC}"
 }
 
+# Read a single keypress (arrow keys, enter, q) from /dev/tty
+read_key() {
+    local key
+    IFS= read -rsn1 key </dev/tty
+
+    if [[ $key == $'\x1b' ]]; then
+        read -rsn2 key </dev/tty
+        case $key in
+            '[A') echo "up" ;;
+            '[B') echo "down" ;;
+            *) echo "other" ;;
+        esac
+    elif [[ $key == "" ]]; then
+        echo "enter"
+    elif [[ $key == "q" ]] || [[ $key == "Q" ]]; then
+        echo "quit"
+    else
+        echo "other"
+    fi
+}
+
+# Function to show interactive release branch picker (for patch releases)
+select_release_branch() {
+    mapfile -t branches < <(git branch -r --list 'origin/release/[0-9]*.[0-9]*._' \
+        | sed 's|[[:space:]]*origin/||' | sort -V 2>/dev/null)
+
+    if [ ${#branches[@]} -eq 0 ]; then
+        print_error "No release branches found matching release/X.Y._" >&2
+        exit 1
+    fi
+
+    if [ ! -t 0 ]; then
+        print_error "Interactive mode requires a terminal" >&2
+        print_error "Use --branch <name> to specify a release branch" >&2
+        exit 1
+    fi
+
+    local selected=0
+    local total=${#branches[@]}
+
+    display_branch_menu() {
+        clear >&2
+        echo "" >&2
+        echo -e "${BLUE}═══════════════════════════════════════════════════════════════════════════${NC}" >&2
+        echo -e "${BLUE}  Select Release Branch for Patch${NC}" >&2
+        echo -e "${BLUE}═══════════════════════════════════════════════════════════════════════════${NC}" >&2
+        echo "" >&2
+        echo "Use ↑/↓ arrow keys to navigate, Enter to select, 'q' to quit" >&2
+        echo "" >&2
+
+        for i in "${!branches[@]}"; do
+            if [ "$i" -eq "$selected" ]; then
+                echo -e "${GREEN}→ ${branches[$i]}${NC}" >&2
+            else
+                echo -e "  ${branches[$i]}" >&2
+            fi
+        done
+
+        echo "" >&2
+        echo -e "${BLUE}═══════════════════════════════════════════════════════════════════════════${NC}" >&2
+    }
+
+    while true; do
+        display_branch_menu
+        key=$(read_key)
+        case $key in
+            up)
+                [ $selected -gt 0 ] && ((selected--))
+                ;;
+            down)
+                [ $selected -lt $((total - 1)) ] && ((selected++))
+                ;;
+            enter)
+                echo "${branches[$selected]}"
+                return 0
+                ;;
+            quit)
+                echo "" >&2
+                print_info "Selection cancelled" >&2
+                exit 0
+                ;;
+        esac
+    done
+}
+
 # Function to show interactive commit selector
 select_commit() {
     local branch=$1
@@ -91,7 +176,7 @@ select_commit() {
             IFS='|' read -r sha date author message <<< "${commits[$i]}"
             local short_sha="${sha:0:8}"
 
-            if [ $i -eq $selected ]; then
+            if [ "$i" -eq "$selected" ]; then
                 echo -e "${GREEN}→ ${short_sha}${NC} ${YELLOW}${date}${NC} ${BLUE}${author:0:20}${NC} ${message:0:60}" >&2
             else
                 echo -e "  ${short_sha} ${date} ${author:0:20} ${message:0:60}" >&2
@@ -100,28 +185,6 @@ select_commit() {
 
         echo "" >&2
         echo -e "${BLUE}═══════════════════════════════════════════════════════════════════════════${NC}" >&2
-    }
-
-    # Read single keypress from /dev/tty
-    read_key() {
-        local key
-        IFS= read -rsn1 key </dev/tty
-
-        # Handle escape sequences (arrow keys)
-        if [[ $key == $'\x1b' ]]; then
-            read -rsn2 key </dev/tty
-            case $key in
-                '[A') echo "up" ;;
-                '[B') echo "down" ;;
-                *) echo "other" ;;
-            esac
-        elif [[ $key == "" ]]; then
-            echo "enter"
-        elif [[ $key == "q" ]] || [[ $key == "Q" ]]; then
-            echo "quit"
-        else
-            echo "other"
-        fi
     }
 
     # Main selection loop
@@ -173,7 +236,9 @@ Options:
 Examples:
   $0 minor                        # Dry-run, interactive commit selection
   $0 minor --no-dry-run           # Actual minor release
-  $0 patch --commit abc123        # Release specific commit
+  $0 patch                        # Interactive release-branch picker, then commit selection
+  $0 patch --branch release/1.2._ # Patch on a specific release branch
+  $0 patch --commit abc123        # Release specific commit (branch picked interactively if needed)
   $0 patch --skip-tests           # Emergency patch without tests (dry-run)
   $0 patch --no-dry-run --skip-tests  # Emergency patch without tests (real)
   $0 major --branch main          # Specify branch explicitly
@@ -264,13 +329,13 @@ fi
 # Validate branch rules BEFORE commit selection
 if [ "$RELEASE_TYPE" == "patch" ]; then
     if [[ ! "$BRANCH" =~ ^release/[0-9]+\.[0-9]+\._$ ]]; then
-        print_error "Patch releases can ONLY be performed from 'release/X.Y._' branches"
-        echo "Current branch: $BRANCH"
+        print_info "Patch releases require a release branch. Fetching available branches..."
+        git fetch --prune origin 'refs/heads/release/*:refs/remotes/origin/release/*' 2>/dev/null || true
         echo ""
-        echo "To create a patch release:"
-        echo "  1. Switch to a release branch: git checkout release/X.Y._"
-        echo "  2. Run: $0 patch"
-        exit 1
+        BRANCH=$(select_release_branch)
+        clear
+        print_info "Branch selected: $BRANCH"
+        echo ""
     fi
 else
     if [ "$BRANCH" != "main" ]; then
@@ -379,6 +444,18 @@ if ! echo "$AUTH_STATUS" | grep -q "Logged in"; then
 fi
 print_info "GitHub authentication verified"
 
+REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
+REPO_URL=$(gh repo view --json url --jq '.url')
+VIEWER_PERMISSION=$(gh repo view --json viewerPermission --jq '.viewerPermission')
+case "$VIEWER_PERMISSION" in
+    WRITE|MAINTAIN|ADMIN) ;;
+    *)
+        print_error "Release execution requires write, maintain, or admin access to $REPO"
+        exit 1
+        ;;
+esac
+ACTOR=$(gh api user --jq '.login')
+
 # Branch validation already done earlier (before commit selection)
 
 # Show summary
@@ -413,6 +490,7 @@ fi
 
 echo ""
 print_info "Triggering GitHub Actions workflow..."
+REQUEST_ID="release-$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
 
 # Trigger the workflow
 WORKFLOW_OUTPUT=$(mktemp)
@@ -422,19 +500,29 @@ if gh workflow run release-validated.yml \
     --ref "$BRANCH" \
     --field release_type="$RELEASE_TYPE" \
     --field dry_run="$DRY_RUN" \
-    --field skip_tests="$SKIP_TESTS" > "$WORKFLOW_OUTPUT" 2> "$WORKFLOW_ERROR"; then
+    --field skip_tests="$SKIP_TESTS" \
+    --field request_id="$REQUEST_ID" \
+    --field source_sha="$COMMIT_SHA" > "$WORKFLOW_OUTPUT" 2> "$WORKFLOW_ERROR"; then
 
     WORKFLOW_SUCCESS=true
     echo ""
     print_success "✓ Workflow triggered successfully!"
-    REPO_URL=$(gh repo view --json url -q .url)
 
-    # Wait for the run to appear and capture its ID
+    # Correlate by an unguessable request ID plus actor, branch, and exact source
+    # commit. Never select the merely "latest" release workflow run.
     print_info "Waiting for workflow run to appear..."
     RUN_ID=""
     for i in $(seq 1 15); do
         sleep 2
-        RUN_ID=$(gh run list --workflow=release-validated.yml --limit 1 --json databaseId,status -q '.[0].databaseId // empty')
+        RUN_ID=$(gh api "repos/$REPO/actions/runs?event=workflow_dispatch&per_page=50" \
+            --jq ".workflow_runs
+                | map(select(
+                    (.display_title | contains(\"$REQUEST_ID\")) and
+                    .actor.login == \"$ACTOR\" and
+                    .head_branch == \"$BRANCH\" and
+                    .head_sha == \"$COMMIT_SHA\"
+                ))
+                | if length == 1 then .[0].id else empty end")
         if [ -n "$RUN_ID" ]; then
             break
         fi
@@ -528,7 +616,7 @@ else
     echo ""
     echo "Error Details:"
     if [ -s "$WORKFLOW_ERROR" ]; then
-        cat "$WORKFLOW_ERROR" | sed 's/^/  /'
+        sed 's/^/  /' "$WORKFLOW_ERROR"
     else
         echo "  Unknown error. Check GitHub CLI authentication and repository access."
     fi
@@ -546,7 +634,8 @@ print_info "══════════════════════�
 rm -f "$WORKFLOW_OUTPUT" "$WORKFLOW_ERROR"
 
 # Exit with appropriate code
-if [ "$WORKFLOW_SUCCESS" = true ]; then
+if [ "$WORKFLOW_SUCCESS" = true ] &&
+   [ "${WORKFLOW_CONCLUSION:-unknown}" = "success" ]; then
     exit 0
 else
     exit 1

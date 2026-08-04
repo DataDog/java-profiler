@@ -10,7 +10,15 @@ ALLOCATOR=${3:-gmalloc}
 
 # Function to count CPUs from ranges and individual numbers
 count_cpus() {
-    local cpus=$(cat /sys/fs/cgroup/cpuset/cpuset.cpus)
+    local cpuset_file="/sys/fs/cgroup/cpuset/cpuset.cpus"
+    if [ ! -f "$cpuset_file" ] && [ -f /sys/fs/cgroup/cgroup.controllers ]; then
+        cpuset_file="/sys/fs/cgroup/cpuset.cpus.effective"
+    fi
+    if [ ! -f "$cpuset_file" ]; then
+        nproc
+        return
+    fi
+    local cpus=$(cat "$cpuset_file")
     local cpu_count=0
     local IFS=','  # Use comma as delimiter to split ranges and numbers
 
@@ -36,15 +44,37 @@ source "/root/.sdkman/bin/sdkman-init.sh" 1>/dev/null 2>/dev/null
 
 sdk install java 21.0.3-tem 1>/dev/null 2>/dev/null
 
-mvn org.apache.maven.plugins:maven-dependency-plugin:2.1:get \
-    -DrepoUrl=https://central.sonatype.com/repository/maven-snapshots/ \
-    -Dartifact=com.datadoghq:ddprof:${CURRENT_VERSION} 1>/dev/null 2>/dev/null
+DDPROF_JAR="/root/.m2/repository/com/datadoghq/ddprof/${CURRENT_VERSION}/ddprof-${CURRENT_VERSION}.jar"
+# Capture mvn's actual output (not just presence/absence of the jar) so a
+# genuine failure (auth, 404, blocked network) is visible instead of looking
+# like a transient miss.
+MVN_GET_LOG="${HERE}/../../maven-get.log"
+: > "$MVN_GET_LOG"
+for attempt in 1 2 3 4 5 6; do
+  echo "=== mvn get attempt ${attempt}/6 ===" >> "$MVN_GET_LOG"
+  mvn org.apache.maven.plugins:maven-dependency-plugin:2.1:get \
+      -DrepoUrl=https://central.sonatype.com/repository/maven-snapshots/ \
+      -Dartifact=com.datadoghq:ddprof:${CURRENT_VERSION} >> "$MVN_GET_LOG" 2>&1
+  [ -f "$DDPROF_JAR" ] && break
+  echo "ddprof ${CURRENT_VERSION} not yet resolvable (attempt ${attempt}/6), retrying in 20s"
+  sleep 20
+done
+if [ ! -f "$DDPROF_JAR" ]; then
+  echo "FAIL:Could not fetch ddprof ${CURRENT_VERSION} jar" >&2
+  echo "--- last mvn get output (see maven-get.log artifact for full history) ---" >&2
+  tail -n 40 "$MVN_GET_LOG" >&2
+  exit 1
+fi
 
 mkdir -p /var/lib/datadog/${CURRENT_VERSION}
 rm -rf /var/lib/datadog/${CURRENT_VERSION}/*
 
-unzip -q -d /var/lib/datadog/${CURRENT_VERSION} /root/.m2/repository/com/datadoghq/ddprof/${CURRENT_VERSION}/ddprof-${CURRENT_VERSION}.jar
+unzip -q -d /var/lib/datadog/${CURRENT_VERSION} "$DDPROF_JAR"
 AGENT_LIB=$(find /var/lib/datadog/${CURRENT_VERSION} -name 'libjavaProfiler.so' | fgrep '/linux-x64/')
+if [ -z "$AGENT_LIB" ]; then
+  echo "FAIL:Could not locate libjavaProfiler.so for linux-x64" >&2
+  exit 1
+fi
 
 echo "Agent lib: ${AGENT_LIB}"
 uname -a
@@ -55,7 +85,7 @@ wget -q -O /var/lib/datadog/dd-java-agent.jar 'https://dtdg.co/latest-java-trace
 
 CONTROL_FILE=".running"
 touch $CONTROL_FILE
-sh ./benchmarks/steps/mem_watch.sh $CONTROL_FILE ${HERE}/../../memwatch.log &
+sh ${HERE}/../benchmarks/steps/mem_watch.sh $CONTROL_FILE ${HERE}/../../memwatch.log &
 
 case $CONFIG in
   profiler)
@@ -104,8 +134,8 @@ java -javaagent:/var/lib/datadog/dd-java-agent.jar \
      -Ddd.env=java-profiler-stability \
      -Ddd.service=java-profiler-memory-trend \
      -Ddd.profiling.ddprof.debug.lib="${AGENT_LIB}" \
-     -Dddprof.debug.malloc_arena_max=2 \
      -Xmx800m -Xms800m \
+     -XX:MaxMetaspaceSize=384m \
      -Dctl=$CONTROL_FILE \
      -XX:ErrorFile=${HERE}/../../hs_err.log \
      -jar /var/lib/benchmarks/renaissance.jar akka-uct -t ${RUNTIME}

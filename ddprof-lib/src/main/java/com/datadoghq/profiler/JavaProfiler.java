@@ -1,5 +1,6 @@
 /*
  * Copyright 2018 Andrei Pangin
+ * Copyright 2026, Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,6 +18,7 @@
 package com.datadoghq.profiler;
 
 import java.io.IOException;
+import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.file.Path;
@@ -38,8 +40,39 @@ public final class JavaProfiler {
     }
     private static JavaProfiler instance;
 
-    // Thread-local storage for profiling context
-    private final ThreadLocal<ThreadContext> tlsContextStorage = ThreadLocal.withInitial(JavaProfiler::initializeThreadContext);
+    // Thread.isVirtual() was added in JDK 21; resolved reflectively (once) so this class
+    // still compiles against a JDK 17 (or older) bootclasspath. null means the JVM this
+    // code is running on predates virtual threads, so no thread can ever be one.
+    private static final Method IS_VIRTUAL_METHOD = resolveIsVirtualMethod();
+
+    private static Method resolveIsVirtualMethod() {
+        try {
+            return Thread.class.getMethod("isVirtual");
+        } catch (NoSuchMethodException e) {
+            return null;
+        }
+    }
+
+    private static boolean isVirtualThread(Thread thread) {
+        if (IS_VIRTUAL_METHOD == null) {
+            return false;
+        }
+        try {
+            return (Boolean) IS_VIRTUAL_METHOD.invoke(thread);
+        } catch (ReflectiveOperationException e) {
+            return false;
+        }
+    }
+
+    // Process-wide value->(encoding, utf8) cache for the all-native context write path
+    // (setTraceContext / setContextValue). See ContextValueCache. One instance on the singleton.
+    private final ContextValueCache contextValueCache = new ContextValueCache();
+
+    // Number of custom attribute slots on the all-native path. Must equal the native
+    // DD_TAGS_CAPACITY (context.h); kept as a literal (not derived via JNI) because it bounds
+    // array-slot checks that can run before the native library is loaded. Drift from the native
+    // value is caught at test time by MaxContextSlotsTest via maxContextSlots0().
+    static final int MAX_CONTEXT_SLOTS = 10;
 
     private JavaProfiler() {
     }
@@ -80,6 +113,11 @@ public final class JavaProfiler {
         if (!result.succeeded) {
             throw new IOException("Failed to load Datadog Java profiler library", result.error);
         }
+
+        if (isVirtualThread(Thread.currentThread())) {
+            throw new IOException("Cannot initialize profiler on a virtual thread");
+        }
+
         init0();
 
         instance = profiler;
@@ -142,7 +180,16 @@ public final class JavaProfiler {
         if (command == null) {
             throw new NullPointerException();
         }
-        return execute0(command);
+        String result = execute0(command);
+        // A fresh 'start' (ACTION_START) resets the native context-value Dictionary
+        // (StringDictionary::clearAll), reassigning encodings. The native side sets a flag when it
+        // does so; consume it here and drop the value cache so no stale encoding from the prior
+        // session is reused. Driven by the already-parsed native action — no command re-parsing.
+        // See ContextValueCache and Profiler::start.
+        if (consumeContextDictionaryReset0()) {
+            contextValueCache.clear();
+        }
+        return result;
     }
 
     /**
@@ -176,56 +223,124 @@ public final class JavaProfiler {
         filterThreadRemove0();
     }
 
+    // ---- All-native context write API (OTEP #4947) --------------------------------------------
+    // Each of these resolves the current carrier's OTEP record inside a single JNI call per
+    // operation, so they are race-free under virtual-thread migration.
+
     /**
-     * Passing context identifier to a profiler. This ID is thread-local and is dumped in
-     * the JFR output only. 0 is a reserved value for "no-context".
+     * Combined per-scope-activation write: full trace/span context plus up to two span-derived
+     * attributes (e.g. operation and resource name), in one native call. A negative {@code slotN}
+     * (or {@code null}/oversized {@code vN}) skips that attribute. Custom slots are reset first, so
+     * this establishes a fresh per-span attribute set.
      *
-     * <p>Note: {@code rootSpanId} maps to {@code localRootSpanId} internally. A synthetic
-     * trace_id of {@code [0, spanId]} is written to the OTEP record. For correct W3C
-     * trace ID interop use {@link #setContext(long, long, long, long)}.
+     * @param rootSpanId  the local root span ID
+     * @param spanId      the current span ID
+     * @param traceIdHigh upper 64 bits of the 128-bit trace ID
+     * @param traceIdLow  lower 64 bits of the 128-bit trace ID
+     * @param slot0       first custom attribute slot index in {@code [0, MAX_CONTEXT_SLOTS)}, or
+     *                    negative to skip this attribute
+     * @param v0          value for {@code slot0}; {@code null} or oversized also skips
+     * @param slot1       second custom attribute slot index in {@code [0, MAX_CONTEXT_SLOTS)}, or
+     *                    negative to skip this attribute
+     * @param v1          value for {@code v1}; {@code null} or oversized also skips
+     * @throws IllegalArgumentException if {@code spanId} is 0 — this is the activation path and
+     *         requires a real span; to clear the context use {@link #clearTraceContext()} — or if a
+     *         non-negative {@code slotN} is {@code >= MAX_CONTEXT_SLOTS} (out of range)
+     */
+    public void setTraceContext(long rootSpanId, long spanId, long traceIdHigh, long traceIdLow,
+                                int slot0, CharSequence v0, int slot1, CharSequence v1) {
+        if (spanId == 0) {
+            throw new IllegalArgumentException(
+                    "spanId must be non-zero; use clearTraceContext() to clear the trace context");
+        }
+        requireActivationSlot(slot0);
+        requireActivationSlot(slot1);
+        ContextValueCache.Entry e0 = resolveContextValue(slot0, v0);
+        ContextValueCache.Entry e1 = resolveContextValue(slot1, v1);
+        setTraceContext0(rootSpanId, spanId, traceIdHigh, traceIdLow,
+                e0 == null ? -1 : slot0, e0 == null ? 0 : e0.encoding, e0 == null ? null : e0.utf8,
+                e1 == null ? -1 : slot1, e1 == null ? 0 : e1.encoding, e1 == null ? null : e1.utf8);
+    }
+
+    /** Clears the trace context on span deactivation. */
+    public void clearTraceContext() {
+        clearTraceContext0();
+    }
+
+    /**
+     * Sets a single custom attribute (sporadic instrumentation-driven attributes such as
+     * {@code http.route}). Returns false — a normal "not applied" signal, not an error — if the
+     * value is null, its UTF-8 exceeds 255 bytes, or the native Dictionary is full; on such a
+     * failure the slot is cleared. An out-of-range {@code slot}, by contrast, is a caller
+     * programming error and throws.
      *
-     * @param spanId Span identifier that should be stored for current thread
-     * @param rootSpanId Local root span identifier (used for endpoint correlation)
-     * @deprecated Use {@link #setContext(long, long, long, long)} for full OTEP interop.
+     * @param slot  custom attribute slot index in {@code [0, MAX_CONTEXT_SLOTS)}
+     * @param value the attribute value; {@code null} clears the slot
+     * @return true if the value was written; false if it was null, oversized, or the Dictionary is
+     *         full
+     * @throws IllegalArgumentException if {@code slot} is out of range
      */
-    @Deprecated
-    public void setContext(long spanId, long rootSpanId) {
-        tlsContextStorage.get().put(spanId, rootSpanId);
+    public boolean setContextValue(int slot, String value) {
+        requireValidSlot(slot);
+        ContextValueCache.Entry e = value == null ? null : contextValueCache.resolve(value);
+        if (e == null) {
+            clearContextValue0(slot);
+            return false;
+        }
+        return setContextValue0(slot, e.encoding, e.utf8);
     }
 
     /**
-     * Sets trace context with full 128-bit W3C trace ID, span ID, and local root span ID.
+     * Clears a single custom attribute slot on the native path.
      *
-     * @param localRootSpanId Local root span ID (for endpoint correlation)
-     * @param spanId Span identifier
-     * @param traceIdHigh Upper 64 bits of the 128-bit trace ID
-     * @param traceIdLow Lower 64 bits of the 128-bit trace ID
+     * @param slot custom attribute slot index in {@code [0, MAX_CONTEXT_SLOTS)}
+     * @throws IllegalArgumentException if {@code slot} is out of range
      */
-    public void setContext(long localRootSpanId, long spanId, long traceIdHigh, long traceIdLow) {
-        tlsContextStorage.get().put(localRootSpanId, spanId, traceIdHigh, traceIdLow);
+    public void clearContextValue(int slot) {
+        requireValidSlot(slot);
+        clearContextValue0(slot);
     }
 
     /**
-     * Resets the current thread's context to zero (traceId=0, spanId=0, localRootSpanId=0).
-     * Custom context attributes are also cleared.
+     * Copies the current thread's custom-attribute sidecar tag encodings into {@code out} (index =
+     * slot), reading the native record directly. Observes encodings written through the all-native
+     * {@link #setContextValue} path. Introspection / test use; entries beyond {@code
+     * MAX_CONTEXT_SLOTS} are left untouched.
      */
-    public void clearContext() {
-        tlsContextStorage.get().put(0, 0, 0, 0);
+    public void copyContextTags(int[] out) {
+        copyContextTags0(out);
     }
 
-    public boolean setContextAttribute(int offset, String value) {
-        return tlsContextStorage.get().setContextAttribute(offset, value);
+    // A negative activation slot is the documented "skip this attribute" sentinel (normal control
+    // flow); a non-negative slot must be a valid index. An out-of-range (>= MAX_CONTEXT_SLOTS) slot
+    // is a caller programming error, not a skip, so it fails loudly.
+    private static void requireActivationSlot(int slot) {
+        if (slot >= MAX_CONTEXT_SLOTS) {
+            throw new IllegalArgumentException(
+                    "slot " + slot + " out of range [0, " + MAX_CONTEXT_SLOTS + ")");
+        }
     }
 
-    public void clearContextAttribute(int offset) {
-        tlsContextStorage.get().clearContextAttribute(offset);
+    // Requires a valid custom-attribute slot index. Unlike the activation path, there is no
+    // negative "skip" sentinel here, so any out-of-range slot is a programming error.
+    private static void requireValidSlot(int slot) {
+        if (slot < 0 || slot >= MAX_CONTEXT_SLOTS) {
+            throw new IllegalArgumentException(
+                    "slot " + slot + " out of range [0, " + MAX_CONTEXT_SLOTS + ")");
+        }
     }
 
-    void copyTags(int[] snapshot) {
-        tlsContextStorage.get().copyCustoms(snapshot);
+    // Resolves an activation attribute for setTraceContext; null (skip) if the slot is negative
+    // (skip sentinel), the value is null, or the value cannot be represented (oversized / Dictionary
+    // full). A non-negative out-of-range slot is rejected earlier by requireActivationSlot, so it
+    // never reaches here and never registers the value in the permanent native Dictionary.
+    private ContextValueCache.Entry resolveContextValue(int slot, CharSequence value) {
+        if (slot < 0 || value == null) {
+            return null;
+        }
+        return contextValueCache.resolve(value);
     }
 
-    /**
     /**
      * Dumps the JFR recording at the provided path
      * @param recording the path to the recording
@@ -279,6 +394,41 @@ public final class JavaProfiler {
     }
 
     /**
+     * Internal hook called before {@code LockSupport.park}. This remains package-scoped
+     * until PR2 wires production TaskBlock instrumentation.
+     */
+    void parkEnter() {
+        parkEnter0();
+    }
+
+    /**
+     * Internal hook called after {@code LockSupport.park}. Clears the parked flag.
+     * {@code blocker} and {@code unblockingSpanId} are reserved for PR2 TaskBlock use.
+     */
+    void parkExit(long blocker, long unblockingSpanId) {
+        parkExit0(blocker, unblockingSpanId);
+    }
+
+    /**
+     * Internal hook marking the current platform thread as entering an explicitly instrumented
+     * blocked interval. This is not public API in this PR; production TaskBlock wiring lands in PR2.
+     *
+     * @param state native {@code OSThreadState} value for the blocked interval;
+     *     currently only {@code SLEEPING} is armed
+     * @return an opaque token to pass to {@link #blockExit(long)}, or 0 if no state was armed
+     */
+    long blockEnter(int state) {
+        return blockEnter0(state);
+    }
+
+    /**
+     * Clears a blocked interval previously armed by {@link #blockEnter(int)}.
+     */
+    void blockExit(long token) {
+        blockExit0(token);
+    }
+
+    /**
      * Get the ticks for the current thread.
      * @return ticks
      */
@@ -303,15 +453,6 @@ public final class JavaProfiler {
         return counters;
     }
 
-    private static ThreadContext initializeThreadContext() {
-        long[] metadata = new long[6];
-        ByteBuffer[] buffers = initializeContextTLS0(metadata);
-        if (buffers == null) {
-            throw new IllegalStateException("Failed to initialize OTEL TLS — ProfiledThread not available");
-        }
-        return new ThreadContext(buffers[0], buffers[1], metadata);
-    }
-
     private static native boolean init0();
     private native void stop0() throws IllegalStateException;
     private native String execute0(String command) throws IllegalArgumentException, IllegalStateException, IOException;
@@ -333,6 +474,14 @@ public final class JavaProfiler {
 
     private static native void recordQueueEnd0(long startTicks, long endTicks, String task, String scheduler, Thread origin, String queueType, int queueLength);
 
+    private static native void parkEnter0();
+
+    private static native void parkExit0(long blocker, long unblockingSpanId);
+
+    private static native long blockEnter0(int state);
+
+    private static native void blockExit0(long token);
+
     private static native long currentTicks0();
 
     private static native long tscFrequency0();
@@ -341,24 +490,26 @@ public final class JavaProfiler {
 
     private static native String getStatus0();
 
-    /**
-     * Initializes context TLS for the current thread and returns 2 DirectByteBuffers.
-     * Sets otel_thread_ctx_v1 permanently to the thread's OtelThreadContextRecord.
-     *
-     * @param metadata output array filled with:
-     *   [0] VALID_OFFSET — offset of 'valid' field in the record
-     *   [1] TRACE_ID_OFFSET — offset of 'trace_id' field in the record
-     *   [2] SPAN_ID_OFFSET — offset of 'span_id' field in the record
-     *   [3] ATTRS_DATA_SIZE_OFFSET — offset of 'attrs_data_size' field
-     *   [4] ATTRS_DATA_OFFSET — offset of 'attrs_data' field
-     *   [5] LRS_SIDECAR_OFFSET — offset of local_root_span_id in sidecar buffer
-     * @return array of 2 ByteBuffers: [recordBuffer, sidecarBuffer]
-     */
-    private static native ByteBuffer[] initializeContextTLS0(long[] metadata);
+    // All-native context write primitives (OTEP #4947). Each resolves the current carrier's record
+    // inside the JNI call (which pins a mounted virtual thread to its carrier), so there is no
+    // cached per-thread buffer to dangle. See the native implementations in javaApi.cpp and the
+    // public API built on top of these. A negative slot skips that activation attribute.
+    private static native void setTraceContext0(long localRootSpanId, long spanId, long traceIdHigh,
+            long traceIdLow, int slot0, int enc0, byte[] utf0, int slot1, int enc1, byte[] utf1);
+    private static native void clearTraceContext0();
+    private static native boolean setContextValue0(int slot, int encoding, byte[] utf8);
+    private static native void clearContextValue0(int slot);
+    private static native void copyContextTags0(int[] out);
 
-    public ThreadContext getThreadContext() {
-        return tlsContextStorage.get();
-    }
+    /** Native DD_TAGS_CAPACITY (context.h). Test-only drift guard for {@link #MAX_CONTEXT_SLOTS}. */
+    static native int maxContextSlots0();
+
+    /**
+     * Atomically reads and clears the native "context-value dictionary was reset" flag, set when a
+     * fresh {@code start} resets the encoding Dictionary. Used by {@link #execute} to invalidate the
+     * {@link ContextValueCache} without re-parsing the command in Java.
+     */
+    private static native boolean consumeContextDictionaryReset0();
 
 // --- test and debug utility methods
 
@@ -370,12 +521,38 @@ public final class JavaProfiler {
 
     public static native void dumpContext();
 
-    /**
-     * Resets the cached ThreadContext for the current thread.
-     * The next call to {@link #getThreadContext()} or any {@code setContext} overload
-     * will re-create it with fresh OTEL TLS buffers.
-     */
-    public void resetThreadContext() {
-        tlsContextStorage.remove();
+    // ---- Test-only reads of the current thread's OTEP record ----------------------------------
+    // Each resolves the current carrier's record directly (like the write primitives above) with
+    // no cached buffer and no per-thread Java object; introspection/test use only.
+
+    /** Test-only: the current thread's span ID from the OTEP record. */
+    long testGetSpanId() {
+        return testGetSpanId0();
     }
+
+    /** Test-only: the current thread's local root span ID from the OTEP record. */
+    long testGetRootSpanId() {
+        return testGetRootSpanId0();
+    }
+
+    /** Test-only: the current thread's trace ID as a 32-char lowercase hex string. */
+    String testReadTraceId() {
+        return testReadTraceId0();
+    }
+
+    /** Test-only: the current thread's custom attribute value at {@code slot}, or null if unset. */
+    String testReadContextAttribute(int slot) {
+        return testReadContextAttribute0(slot);
+    }
+
+    /** Test-only: whether the current thread's OTEP record is currently valid (published). */
+    boolean testIsContextValid() {
+        return testIsContextValid0();
+    }
+
+    private static native long testGetSpanId0();
+    private static native long testGetRootSpanId0();
+    private static native String testReadTraceId0();
+    private static native String testReadContextAttribute0(int slot);
+    private static native boolean testIsContextValid0();
 }

@@ -39,11 +39,16 @@ OUTPUT_FILE=""
 
 # Colors
 GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
 function log_info() {
   echo -e "${GREEN}[INFO]${NC} $*"
+}
+
+function log_warn() {
+  echo -e "${YELLOW}[WARN]${NC} $*"
 }
 
 function log_error() {
@@ -299,9 +304,10 @@ log_info ""
 
 # Check if JFR validation should be skipped (JDK 25 unavailable)
 if [ -f /tmp/skip-jfr-validation ]; then
-  log_warn "Skipping JFR validation - JDK 25 not available (Foojay API may be down)"
+  SKIP_REASON=$(cat /tmp/skip-jfr-validation 2>/dev/null || echo "prerequisite unavailable")
+  log_warn "Skipping JFR validation: ${SKIP_REASON}"
   if [ -n "${OUTPUT_FILE}" ]; then
-    echo "VALIDATION_SKIPPED: JDK 25 not available for jbang" > "${OUTPUT_FILE}"
+    echo "VALIDATION_SKIPPED: ${SKIP_REASON}" > "${OUTPUT_FILE}"
   fi
   exit 0
 fi

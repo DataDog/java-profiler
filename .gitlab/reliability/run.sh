@@ -21,6 +21,10 @@ case $VARIANT in
     # Long variant
     ${HERE}/memory_trend_check.sh $RUNTIME $CONFIG $ALLOCATOR
     ;;
+  chaos)
+    # Reliability chaos harness — runs antagonists under a patched dd-java-agent
+    ${HERE}/chaos_check.sh $RUNTIME $CONFIG $ALLOCATOR
+    ;;
   *)
     echo "Unknown variant: $VARIANT"
     exit 1

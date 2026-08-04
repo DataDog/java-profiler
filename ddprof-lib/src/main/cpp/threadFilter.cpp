@@ -1,5 +1,5 @@
 /*
- * Copyright 2025 Datadog, Inc
+ * Copyright 2025, 2026 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,9 @@
 
 #include "threadFilter.h"
 #include "arch.h"
+#include "nativeMem.h"
 #include "os.h"
+#include "threadLocalData.h"
 #include <cassert>
 #include <cstdlib>
 #include <cstdio>
@@ -37,6 +39,8 @@ ThreadFilter::ThreadFilter() : _enabled(false) {
         _chunks[i].store(nullptr, std::memory_order_relaxed);
     }
     _free_list = std::make_unique<FreeListNode[]>(kFreeListSize);
+    NativeMem::record(NM_THREAD_FILTER,
+                      (long long)(kFreeListSize * sizeof(FreeListNode)));
 
     // Initialize the first chunk
     initializeChunk(0);
@@ -60,11 +64,21 @@ ThreadFilter::~ThreadFilter() {
     }
     // Publish 0 chunks to stop range scans (collect)
     _num_chunks.store(0, std::memory_order_release);
-    // Detach and delete chunks
+    // Detach and delete chunks. Record the decrement after the delete so the
+    // gauge reflects the free only once it has happened.
     for (int i = 0; i < kMaxChunks; ++i) {
         ChunkStorage* chunk = _chunks[i].exchange(nullptr, std::memory_order_acquire);
         delete chunk;
+        if (chunk != nullptr) {
+            NativeMem::record(NM_THREAD_FILTER, -(long long)sizeof(ChunkStorage));
+        }
     }
+    // Free the FreeListNode[] explicitly before recording, rather than letting
+    // the unique_ptr free it after this destructor returns, so the decrement
+    // does not lead the actual free.
+    _free_list.reset();
+    NativeMem::record(NM_THREAD_FILTER,
+                      -(long long)(kFreeListSize * sizeof(FreeListNode)));
 }
 
 void ThreadFilter::initializeChunk(int chunk_idx) {
@@ -78,12 +92,14 @@ void ThreadFilter::initializeChunk(int chunk_idx) {
     ChunkStorage* new_chunk = new ChunkStorage();
     for (auto& slot : new_chunk->slots) {
         slot.value.store(-1, std::memory_order_relaxed);
+        slot.active_block_state.store(OSThreadState::UNKNOWN, std::memory_order_relaxed);
     }
 
     // Try to install it atomically
     ChunkStorage* expected = nullptr;
     if (_chunks[chunk_idx].compare_exchange_strong(expected, new_chunk, std::memory_order_release)) {
         // Successfully installed
+        NativeMem::record(NM_THREAD_FILTER, (long long)sizeof(ChunkStorage));
     } else {
         // Another thread beat us to it - clean up our allocation
         delete new_chunk;
@@ -202,6 +218,7 @@ void ThreadFilter::remove(SlotID slot_id) {
 void ThreadFilter::unregisterThread(SlotID slot_id) {
     if (slot_id < 0) return;
     remove(slot_id);
+    resetSlotRunState(slot_id);
     pushToFreeList(slot_id);
 }
 
@@ -282,6 +299,82 @@ void ThreadFilter::collect(std::vector<int>& tids) const {
     if (tids.capacity() > tids.size() * 2) {
         tids.shrink_to_fit();
     }
+}
+
+void ThreadFilter::collect(std::vector<ThreadEntry>& entries) const {
+    entries.clear();
+    entries.reserve(512);
+
+    int num_chunks = _num_chunks.load(std::memory_order_relaxed);
+    for (int chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
+        ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
+        if (chunk == nullptr) {
+            continue;
+        }
+
+        for (auto& slot : chunk->slots) {
+            int slot_tid = slot.value.load(std::memory_order_acquire);
+            if (slot_tid != -1) {
+                entries.push_back({slot_tid, &slot});
+            }
+        }
+    }
+}
+
+void ThreadFilter::clearActive() {
+    int num_chunks = _num_chunks.load(std::memory_order_acquire);
+    for (int chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
+        ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
+        if (chunk == nullptr) {
+            continue;
+        }
+
+        for (auto& slot : chunk->slots) {
+            slot.value.store(-1, std::memory_order_release);
+            slot.clearActiveBlockRun(OSThreadState::UNKNOWN);
+        }
+    }
+}
+
+void ThreadFilter::resetSlotRunState(SlotID slot_id) {
+    if (slot_id < 0) return;
+    int chunk_idx = slot_id >> kChunkShift;
+    int slot_idx  = slot_id & kChunkMask;
+    ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
+    if (chunk != nullptr) {
+        // Clear stale suppression state so a new thread in this slot cannot inherit
+        // its predecessor's active block or once-per-run sampled marker.
+        chunk->slots[slot_idx].clearActiveBlockRun(OSThreadState::UNKNOWN);
+    }
+}
+
+u64 ThreadFilter::enterBlockedRun(SlotID slot_id, OSThreadState state,
+                                  BlockRunOwner owner) {
+    Slot* s = slotForId(slot_id);
+    if (s != nullptr) {
+        u32 generation = 0;
+        if (!s->trySetActiveBlockRun(state, owner, &generation)) {
+            return 0;
+        }
+        return encodeBlockRunToken(slot_id, generation);
+    }
+    return 0;
+}
+
+void ThreadFilter::exitBlockedRun(SlotID slot_id) {
+    Slot* s = slotForId(slot_id);
+    if (s != nullptr) {
+        s->clearActiveBlockRun(OSThreadState::RUNNABLE);
+    }
+}
+
+bool ThreadFilter::exitBlockedRun(SlotID slot_id, u32 generation) {
+    Slot* s = slotForId(slot_id);
+    if (s == nullptr || generation == 0 || s->blockGeneration() != generation) {
+        return false;
+    }
+    s->clearActiveBlockRun(OSThreadState::RUNNABLE);
+    return true;
 }
 
 void ThreadFilter::init(const char* filter) {

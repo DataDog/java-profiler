@@ -10,8 +10,16 @@ updates:
     labels:
       - "dependencies"
       - "no-release-notes"
-      - "no-review"
+      - "trivial"
     ignore:
+      # JUnit 5.10+ dropped Java 8 support; 5.12+ dropped Java 11; 6.x requires Java 17.
+      # CI targets on Java 8 and 11 (HotSpot and J9) run the Gradle test worker on the
+      # test JDK itself (the profiler attaches to its own process), so the JUnit Platform
+      # classes must be loadable by Java 8/11. Keep the entire JUnit stack at 5.9.x / 1.9.x.
+      - dependency-name: "org.junit.jupiter:*"
+        versions: [">=5.10.0"]
+      - dependency-name: "org.junit.platform:*"
+        versions: [">=1.10.0"]
       - dependency-name: "org.junit-pioneer:junit-pioneer"
         versions: [">=2.0.0"]
     groups:
@@ -32,7 +40,7 @@ updates:
     labels:
       - "dependencies"
       - "no-release-notes"
-      - "no-review"
+      - "trivial"
     groups:
       gradle-minor:
         update-types:
@@ -51,6 +59,13 @@ updates:
     labels:
       - "dependencies"
       - "no-release-notes"
-      - "no-review"
+      - "trivial"
+    groups:
+      # init and analyze must stay on the same codeql-action release, or
+      # analyze fails with "Loaded a configuration file for version X, but
+      # running version Y". Group them so dependabot bumps both together.
+      codeql-action:
+        patterns:
+          - "github/codeql-action/*"
     cooldown:
       default-days: 2

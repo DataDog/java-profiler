@@ -26,14 +26,16 @@
 #include "jvmThread.h"
 #include "libraries.h"
 #include "log.h"
+#include "nativeMem.h"
 #include "os.h"
 #include "perfEvents.h"
 #include "profiler.h"
+#include "signalInflight.h"
 #include "spinLock.h"
 #include "stackFrame.h"
 #include "stackWalker.h"
 #include "symbols.h"
-#include "thread.h"
+#include "threadLocalData.h"
 #include "threadState.inline.h"
 #include <dlfcn.h>
 #include <errno.h>
@@ -169,7 +171,6 @@ static void **_pthread_entry = NULL;
 // pthread_setspecific(). HotSpot puts VMThread into TLS on thread start, and
 // resets on thread end.
 static int pthread_setspecific_hook(pthread_key_t key, const void *value) {
-  assert(JVMThread::isInitialized());
   if (JVMThread::key() != key) {
     return pthread_setspecific(key, value);
   }
@@ -184,8 +185,11 @@ static int pthread_setspecific_hook(pthread_key_t key, const void *value) {
     return result;
   } else {
     int tid = ProfiledThread::currentTid();
-    Profiler::unregisterThread(tid);
-    ProfiledThread::release();
+    {
+      SignalBlocker blocker;
+      Profiler::unregisterThread(tid);
+      ProfiledThread::release();
+    }
     return pthread_setspecific(key, value);
   }
 }
@@ -557,7 +561,7 @@ private:
   friend class PerfEvents;
 };
 
-volatile bool PerfEvents::_enabled = false;
+bool PerfEvents::_enabled = false;
 int PerfEvents::_max_events = -1;
 PerfEvent *PerfEvents::_events = NULL;
 PerfEventType *PerfEvents::_event_type = NULL;
@@ -670,6 +674,10 @@ int PerfEvents::registerThread(int tid) {
     }
   }
 
+  if (page != NULL) {
+    NativeMem::record(NM_PERF, (long long)(2 * OS::page_size));
+  }
+
   _events[tid].reset();
   _events[tid]._fd = fd;
   _events[tid]._page = (struct perf_event_mmap_page *)page;
@@ -704,6 +712,7 @@ void PerfEvents::unregisterThread(int tid) {
     munmap(event->_page, 2 * OS::page_size);
     event->_page = NULL;
     event->unlock();
+    NativeMem::record(NM_PERF, -(long long)(2 * OS::page_size));
   }
 }
 
@@ -727,21 +736,23 @@ u64 PerfEvents::readCounter(siginfo_t *siginfo, void *ucontext) {
 }
 
 void PerfEvents::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  SIGNAL_HANDLER_GUARD();
   if (siginfo->si_code <= 0) {
     // Looks like an external signal; don't treat as a profiling event
     return;
   }
+  InflightGuard inflight;
   // Atomically try to enter critical section - prevents all reentrancy races
   CriticalSection cs;
   if (!cs.entered()) {
     return;  // Another critical section is active, defer profiling
   }
-  ProfiledThread *current = ProfiledThread::currentSignalSafe();
+  ProfiledThread *current = ProfiledThread::current();
   if (current != NULL) {
     current->noteCPUSample(Profiler::instance()->recordingEpoch());
   }
   int tid = current != NULL ? current->tid() : OS::threadId();
-  if (_enabled) {
+  if (__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
     Shims::instance().setSighandlerTid(tid);
 
     u64 counter = readCounter(siginfo, ucontext);
@@ -877,9 +888,22 @@ Error PerfEvents::start(Arguments &args) {
 
   int max_events = OS::getMaxThreadId();
   if (max_events != _max_events) {
+    // Account the per-thread PerfEvent array under NM_PERF, alongside the ring
+    // mappings. Guard on non-null so a prior calloc failure isn't mis-accounted.
+    // Record the decrement after the free (consistent with the other decrement
+    // sites); capture the old size first since _max_events is overwritten below.
+    long long old_bytes =
+        (_events != NULL) ? (long long)((size_t)_max_events * sizeof(PerfEvent)) : 0;
     free(_events);
+    if (old_bytes > 0) {
+      NativeMem::record(NM_PERF, -old_bytes);
+    }
     _events = (PerfEvent *)calloc(max_events, sizeof(PerfEvent));
     _max_events = max_events;
+    if (_events != NULL) {
+      NativeMem::record(NM_PERF,
+                        (long long)((size_t)max_events * sizeof(PerfEvent)));
+    }
   }
 
   OS::installSignalHandler(SIGPROF, signalHandler);

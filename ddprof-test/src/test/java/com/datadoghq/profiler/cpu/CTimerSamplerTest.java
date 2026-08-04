@@ -72,6 +72,10 @@ public class CTimerSamplerTest extends CStackAwareAbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "cpu=100us,event=ctimer";
+        // cpu=100us signal-based sampling is much more expensive under ASAN (the signal
+        // handler itself is ASAN-instrumented), which can inflate the sample count and,
+        // via the per-sample stack-trace materialization above, the test heap. Sample
+        // coarser under ASAN.
+        return isAsan() ? "cpu=1ms,event=ctimer" : "cpu=100us,event=ctimer";
     }
 }

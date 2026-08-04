@@ -13,6 +13,8 @@
 #include <cstdio>
 #include <cstdlib>
 
+#include "common.h"  // TSAN_ENABLED (toolchain-agnostic sanitizer detection)
+
 // Platform detection for execinfo.h availability
 #if defined(__GLIBC__) || (defined(__APPLE__) && defined(__MACH__)) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
     #define HAVE_EXECINFO_H 1
@@ -118,29 +120,35 @@ void specificCrashHandler(int sig, siginfo_t *info, void *context) {
     gtestCrashHandler(sig, info, context, TestName);
 }
 
-// Install crash handler for debugging
+// Install crash handler for debugging.
+// No-op under TSan: TSan installs its own SIGSEGV/SIGBUS/SIGABRT interceptors
+// and overriding them causes TSan to crash before it can write its report.
 template<const char* TestName>
 void installGtestCrashHandler() {
+#if !defined(TSAN_ENABLED)
     struct sigaction sa;
     sa.sa_flags = SA_SIGINFO;  // Get detailed info, keep handler active
     sigemptyset(&sa.sa_mask);
     sa.sa_sigaction = specificCrashHandler<TestName>;
-    
+
     // Install for various crash signals
     sigaction(SIGSEGV, &sa, nullptr);
     sigaction(SIGBUS, &sa, nullptr);
     sigaction(SIGABRT, &sa, nullptr);
     sigaction(SIGFPE, &sa, nullptr);
     sigaction(SIGILL, &sa, nullptr);
+#endif
 }
 
-// Restore default signal handlers
+// Restore default signal handlers.
 inline void restoreDefaultSignalHandlers() {
+#if !defined(TSAN_ENABLED)
     signal(SIGSEGV, SIG_DFL);
     signal(SIGBUS, SIG_DFL);
     signal(SIGABRT, SIG_DFL);
     signal(SIGFPE, SIG_DFL);
     signal(SIGILL, SIG_DFL);
+#endif
 }
 
 #endif // GTEST_CRASH_HANDLER_H

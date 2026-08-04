@@ -8,6 +8,7 @@
 #define _CALLTRACESTORAGE_H
 
 #include "callTraceHashTable.h"
+#include "refCountGuard.h"
 #include "spinLock.h"
 #include "os.h"
 #include <functional>
@@ -20,7 +21,6 @@
 #include <chrono>
 
 // Forward declarations
-class CallTraceStorage;
 class CallTraceHashTable;
 
 // Liveness checker function type
@@ -28,88 +28,14 @@ class CallTraceHashTable;
 // Using reference parameter avoids malloc() for vector creation and copying
 typedef std::function<void(std::unordered_set<u64>&)> LivenessChecker;
 
-/**
- * Cache-aligned reference counting slot for thread-local reference counting.
- * Each slot occupies a full cache line (64 bytes) to eliminate false sharing.
- *
- * CORRECTNESS: The pointer-first protocol ensures race-free operation:
- * - Constructor: Store pointer first, then increment count
- * - Destructor: Decrement count first, then clear pointer
- * - Scanner: Check count first (if 0, slot is inactive)
- *
- * This ordering ensures no window where scanner incorrectly believes a slot
- * is inactive when it should be protecting a table.
- */
-struct alignas(DEFAULT_CACHE_LINE_SIZE) RefCountSlot {
-    volatile uint32_t count;          // Reference count (0 = inactive)
-    char _padding1[4];                // Alignment padding for pointer
-    CallTraceHashTable* active_table; // Which table is being referenced (8 bytes on 64-bit)
-    char padding[DEFAULT_CACHE_LINE_SIZE - 16];  // Remaining padding (64 - 16 = 48 bytes)
-
-    RefCountSlot() : count(0), _padding1{}, active_table(nullptr), padding{} {
-        static_assert(sizeof(RefCountSlot) == DEFAULT_CACHE_LINE_SIZE,
-                      "RefCountSlot must be exactly one cache line");
-    }
-};
-
-/**
- * RAII guard for thread-local reference counting.
- *
- * This class provides lock-free memory reclamation for CallTraceHashTable instances.
- * Uses the pointer-first protocol to avoid race conditions during slot activation/deactivation.
- *
- * Performance characteristics:
- * - Hot path: ~44-94 cycles
- * - Thread-local cache line access (zero contention)
- * - No bitmap operations required
- *
- * Correctness:
- * - Pointer stored BEFORE count increment (activation)
- * - Count decremented BEFORE pointer cleared (deactivation)
- * - Scanner checks count first, ensuring consistent view
- */
-class RefCountGuard {
-public:
-    static constexpr int MAX_THREADS = 8192;
-    static constexpr int MAX_PROBE_DISTANCE = 32;  // Maximum probing attempts
-
-    static RefCountSlot refcount_slots[MAX_THREADS];
-    static int slot_owners[MAX_THREADS];  // Thread ID ownership verification
-
-private:
-    bool _active;
-    int _my_slot;  // This instance's assigned slot
-
-    // Signal-safe slot assignment using thread ID hash with prime probing
-    static int getThreadRefCountSlot();
-
-public:
-    RefCountGuard(CallTraceHashTable* resource);
-    ~RefCountGuard();
-
-    // Non-copyable, movable for efficiency
-    RefCountGuard(const RefCountGuard&) = delete;
-    RefCountGuard& operator=(const RefCountGuard&) = delete;
-
-    RefCountGuard(RefCountGuard&& other) noexcept;
-    RefCountGuard& operator=(RefCountGuard&& other) noexcept;
-
-    // Check if refcount guard is active (slot allocation succeeded)
-    bool isActive() const { return _active; }
-
-    // Wait for reference counts pointing to specific table to clear
-    static void waitForRefCountToClear(CallTraceHashTable* table_to_delete);
-
-    // Wait for ALL reference counts to clear
-    static void waitForAllRefCountsToClear();
-};
-
 class CallTraceStorage {
 public:
     // Reserved trace ID for dropped samples due to contention
-    // Real trace IDs are generated as (instance_id << 32) | slot, where instance_id starts from 1
+    // Real trace IDs are generated as (instance_id << 32) | (slot_base + slot),
+    // where instance_id starts from 1 and slot_base makes the low bits unique
+    // across all LongHashTable generations of one active tenure
     // Any ID with 0 in upper 32 bits is guaranteed to not clash with real trace IDs
-    static const u64 DROPPED_TRACE_ID = 1ULL;
+    static constexpr u64 DROPPED_TRACE_ID = 1ULL;
     
     // Static dropped trace object that appears in JFR constant pool
     static CallTrace* getDroppedTrace();

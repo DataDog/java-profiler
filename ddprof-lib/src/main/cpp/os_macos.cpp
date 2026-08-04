@@ -127,9 +127,20 @@ void OS::sleep(u64 nanos) {
     nanosleep(&ts, NULL);
 }
 
-void OS::uninterruptibleSleep(u64 nanos, volatile bool* flag) {
-    struct timespec ts = {(time_t)(nanos / 1000000000), (long)(nanos % 1000000000)};
-    while (*flag && nanosleep(&ts, &ts) < 0 && errno == EINTR);
+void OS::sleepWhile(u64 max_nanos, std::atomic<bool>& keep_sleeping) {
+    // macOS does not expose clock_nanosleep(TIMER_ABSTIME).  Recompute the
+    // remaining interval against OS::nanotime() each iteration so spurious
+    // wake-ups don't shorten the wait, mirroring the Linux semantics.
+    u64 deadline = OS::nanotime() + max_nanos;
+    while (keep_sleeping.load(std::memory_order_acquire)) {
+        u64 now = OS::nanotime();
+        if (now >= deadline) {
+            return;
+        }
+        u64 remaining = deadline - now;
+        struct timespec ts = {(time_t)(remaining / 1000000000ULL), (long)(remaining % 1000000000ULL)};
+        nanosleep(&ts, nullptr);
+    }
 }
 
 u64 OS::overrun(siginfo_t* siginfo) {
@@ -308,6 +319,37 @@ bool OS::sendSignalToThread(int thread_id, int signo) {
                  : "rcx", "r11", "memory");
     return result == 0;
 #endif
+}
+
+// macOS does not expose rt_tgsigqueueinfo. Fall back to plain per-thread
+// delivery without a payload. The Go-setitimer deadlock the origin check
+// defends against is Linux-specific, so macOS can keep the pre-fix behaviour.
+bool OS::sendSignalWithCookie(int thread_id, int signo, void* /*cookie*/) {
+    return sendSignalToThread(thread_id, signo);
+}
+
+// On macOS, signalOriginCheckEnabled() returns false (feature off) and
+// shouldProcessSignal() returns true (accept-all). This is consistent:
+// no rt_tgsigqueueinfo means no cookie discrimination is possible, so
+// the handler degrades to pre-fix accept-all behaviour. callers must not
+// use signalOriginCheckEnabled() to infer rejection statistics on macOS.
+// On macOS the origin-check helper degrades to "accept everything" since the
+// fallback sender cannot carry a cookie. Handlers that call this helper
+// therefore behave exactly as before on macOS.
+bool OS::shouldProcessSignal(siginfo_t* /*siginfo*/, int /*expected_si_code*/, void* /*expected_cookie*/) {
+    return true;
+}
+
+void OS::forwardForeignSignal(int /*signo*/, siginfo_t* /*siginfo*/, void* /*ucontext*/) {
+    // No-op on macOS — see comment above.
+}
+
+bool OS::signalOriginCheckEnabled() {
+    return false;
+}
+
+void OS::primeSignalOriginCheck(bool /*forceReload*/) {
+    // No-op on macOS.
 }
 
 void* OS::safeAlloc(size_t size) {
