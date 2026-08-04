@@ -1379,16 +1379,20 @@ Error Profiler::start(Arguments &args, bool reset) {
     return error;
   }
 
-  if (!args._skip_sanity_checks) {
-    static Error sanity_result = Error::OK;
-    static bool sanity_checked = false;
-    if (!sanity_checked) {
-      sanity_checked = true;
+  // Sanity checks run at most once per process, across start/stop cycles —
+  // record that the first start was handled regardless of _skip_sanity_checks,
+  // otherwise a first start with nosanity leaves sanity_checked false and the
+  // checks unexpectedly run (and can fail) on a later start without nosanity.
+  static Error sanity_result = Error::OK;
+  static bool sanity_checked = false;
+  if (!sanity_checked) {
+    sanity_checked = true;
+    if (!args._skip_sanity_checks) {
       sanity_result = SanityChecker::runChecks(args);
     }
-    if (sanity_result) {
-      return sanity_result;
-    }
+  }
+  if (sanity_result) {
+    return sanity_result;
   }
 
   error = checkJvmCapabilities();

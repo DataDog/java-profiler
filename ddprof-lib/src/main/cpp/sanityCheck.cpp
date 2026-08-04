@@ -3,19 +3,32 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <cstdint>
+
 #include "sanityCheck.h"
 #include "common.h"
 #include "os.h"
+#include "vmEntry.h"
 #include "hotspot/vmStructs.h"
 #include "hotspot/vmStructs.inline.h"
 
 // Returns the value of a size-typed JVM flag, or default_val if not found.
+// ThreadStackSize is declared as `intx` on standard HotSpot builds, so the
+// Intx type must be accepted here too — otherwise this call always falls
+// back to default_val for that flag.
 static size_t getVMSizeFlag(const char* name, size_t default_val) {
-    VMFlag* f = VMFlag::find(name, {VMFlag::Type::Uintx, VMFlag::Type::Size_t, VMFlag::Type::Uint64_t});
+    VMFlag* f = VMFlag::find(name, {VMFlag::Type::Uintx, VMFlag::Type::Size_t,
+                                     VMFlag::Type::Uint64_t, VMFlag::Type::Intx});
     if (f != NULL && f->addr() != NULL) {
         return *static_cast<size_t*>(f->addr());
     }
     return default_val;
+}
+
+// Adds b to a, clamping to UINT64_MAX on overflow instead of wrapping.
+static u64 addClamped(u64 a, u64 b) {
+    u64 sum = a + b;
+    return sum < a ? UINT64_MAX : sum;
 }
 
 Error SanityChecker::runChecks(const Arguments& /*args*/) {
@@ -29,10 +42,14 @@ Error SanityChecker::runChecks(const Arguments& /*args*/) {
     long container_limit = OS::getContainerMemoryLimit();
     bool containerized = (cgroup_mc > 0 || container_limit > 0);
 
-    int effective_cores = logical_cpus;
+    // -1 means "unknown" (OS::getCpuCount() failed, and no cgroup CPU limit is
+    // in effect) — an unknown core count must not fail the check, since that
+    // would reject on an OS query error rather than an actual resource
+    // constraint.
+    int effective_cores = (logical_cpus > 0) ? logical_cpus : -1;
     if (cgroup_mc > 0) {
         int cgroup_cores = cgroup_mc / 1000;
-        if (cgroup_cores < effective_cores) {
+        if (effective_cores < 0 || cgroup_cores < effective_cores) {
             effective_cores = cgroup_cores;
         }
     }
@@ -51,10 +68,25 @@ Error SanityChecker::runChecks(const Arguments& /*args*/) {
     const size_t DEFAULT_STACK_SIZE   = 512ULL * 1024;
     const int    DEFAULT_THREAD_COUNT = 200;
 
-    size_t heap_max      = getVMSizeFlag("MaxHeapSize",             0);
-    size_t metaspace_max = getVMSizeFlag("MaxMetaspaceSize",        DEFAULT_METASPACE);
-    size_t codecache     = getVMSizeFlag("ReservedCodeCacheSize",   DEFAULT_CODECACHE);
-    size_t stack_size    = getVMSizeFlag("ThreadStackSize",         DEFAULT_STACK_SIZE / 1024) * 1024;
+    // VMFlag::find() walks the HotSpot VMStructs flag table, which does not
+    // exist on OpenJ9/Zing — the calls below would silently report a
+    // zero-byte heap and fall back to fixed guesses for the other regions.
+    // Skip the memory estimate entirely on those runtimes rather than fail
+    // (or pass) the check on numbers that don't reflect the actual JVM.
+    bool hotspot = !VM::isOpenJ9() && !VM::isZing();
+
+    size_t heap_max      = hotspot ? getVMSizeFlag("MaxHeapSize",           0) : 0;
+    size_t metaspace_max = hotspot ? getVMSizeFlag("MaxMetaspaceSize",      DEFAULT_METASPACE) : 0;
+    size_t codecache     = hotspot ? getVMSizeFlag("ReservedCodeCacheSize", DEFAULT_CODECACHE) : 0;
+    size_t stack_size    = hotspot ? getVMSizeFlag("ThreadStackSize",       DEFAULT_STACK_SIZE / 1024) * 1024 : 0;
+
+    // MaxMetaspaceSize defaults to SIZE_MAX (unbounded) on standard HotSpot
+    // builds, so the flag is present and the default_val fallback above never
+    // triggers. Normalize the sentinel to a finite estimate, otherwise it
+    // wraps the sum below and silently omits the metaspace allowance.
+    if (metaspace_max == SIZE_MAX) {
+        metaspace_max = DEFAULT_METASPACE;
+    }
 
     int thread_count = DEFAULT_THREAD_COUNT;
     ProcessInfo info = {};
@@ -63,14 +95,19 @@ Error SanityChecker::runChecks(const Arguments& /*args*/) {
     }
 
     u64 gc_overhead = (u64)heap_max * 30 / 100;
-    u64 lower = (u64)heap_max + (u64)metaspace_max + (u64)codecache
-                + gc_overhead
-                + (u64)thread_count * (u64)stack_size
-                + PROFILER_OVERHEAD;
+    u64 lower = (u64)heap_max;
+    lower = addClamped(lower, (u64)metaspace_max);
+    lower = addClamped(lower, (u64)codecache);
+    lower = addClamped(lower, gc_overhead);
+    lower = addClamped(lower, (u64)thread_count * (u64)stack_size);
+    lower = addClamped(lower, PROFILER_OVERHEAD);
 
     // --- Run checks ---
-    bool cpu_fail = (effective_cores < 1);
-    bool mem_fail = (upper > 0 && lower > upper);
+    // Per DataDog/java-profiler#480, the profiler refuses to run with fewer
+    // than 2 cores. An unknown core count (-1) never fails this check — see
+    // the effective_cores computation above.
+    bool cpu_fail = (effective_cores >= 0 && effective_cores < 2);
+    bool mem_fail = (hotspot && upper > 0 && lower > upper);
 
     if (!cpu_fail && !mem_fail) {
         return Error::OK;
