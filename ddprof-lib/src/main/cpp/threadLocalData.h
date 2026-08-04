@@ -41,6 +41,9 @@ class ProfiledThread : public ThreadLocalData {
 
   // PTHREAD_KEY_2NDLEVEL_SIZE is an internal macro set to 32 in the GNU C Library (glibc) NPTL
   // implementation. Slot indexes less than PTHREAD_KEY_2NDLEVEL_SIZE are pre-allocated.
+  // glibc-specific: only meaningful under the __GLIBC__ branch of supportPriming()
+  // (threadLocalData.cpp). Other libcs (musl, macOS libpthread) don't share this
+  // layout and must not be routed through this constant.
   static constexpr int PTHREAD_KEY_2NDLEVEL_SIZE = 32;
 
 public:
@@ -132,7 +135,7 @@ private:
     __atomic_fetch_and(&_misc_flags, ~FLAG_CLAIMED, __ATOMIC_RELEASE);
   }
   
-  inline bool claim_acquire() {
+  inline bool claimAcquire() {
     if (isClaimed()) {
         return false;
     }
@@ -163,16 +166,15 @@ public:
     _current_thread.set(nullptr);
     return pt;
   }
-  // Deletes a ProfiledThread returned by clearCurrentThreadTLS().
-  // Needed because the destructor is private. This stands in for the delete
-  // that freeValue() performs in production, so it mirrors freeValue()'s
-  // NM_THREAD_LOCAL decrement to keep the accounting balanced in tests.
-  static void deleteForTest(ProfiledThread *pt) {
-    delete pt;
-    NativeMem::record(NM_THREAD_LOCAL, -(long long)sizeof(ProfiledThread));
-  }
+  // Releases a ProfiledThread returned by clearCurrentThreadTLS().
+  // Needed because the destructor is private. Mirrors freeValue()'s
+  // ThreadLocalDataPool::release()-then-delete logic (and its NM_THREAD_LOCAL
+  // decrement) so it's safe to call on both forTid()-obtained and pool-backed
+  // threads. Defined in threadLocalData.cpp, where ThreadLocalDataPool's full
+  // declaration is visible.
+  static void deleteForTest(ProfiledThread *pt);
 #endif
-  // initCurrentThread() and release() are not async-signal-safe: 
+  // initCurrentThread() and release() are not async-signal-safe:
   // must be called outside of a signal handler with signal blocked
   static ProfiledThread* initCurrentThread();
   static void release();
@@ -188,7 +190,7 @@ public:
   static inline ProfiledThread *current();
   // signal-handler friendly with priming: return existing TLS or acquire and set
   // ProfiledThread from ThreadLocalDataPool.
-  static inline ProfiledThread* acquire_current();
+  static inline ProfiledThread* acquireCurrent();
 
   static int currentTid();
   inline int tid() { return _tid; }

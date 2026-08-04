@@ -6,6 +6,7 @@
 #include "jvmSupport.inline.h"
 
 #include "asyncSampleMutex.h"
+#include "common.h"
 #include "frames.h"
 #include "os.h"
 #include "profiler.h"
@@ -41,6 +42,8 @@ bool JVMSupport::initialize() {
 
     if (ProfiledThread::supportPriming()) {
         ThreadLocalDataPool::initialize();
+    } else {
+        LOG_WARN("Thread priming is not supported");
     }
 
     // Check ProfiledThread key, it is critical for storing per-thread metadata

@@ -241,7 +241,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     // VMStructs is only available for hotspot JVM 
     assert(VM::isHotspot());
 
-    ProfiledThread* prof_thread = ProfiledThread::acquire_current();
+    ProfiledThread* prof_thread = ProfiledThread::acquireCurrent();
     if (prof_thread == nullptr) {
         Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
         return 0;
@@ -1211,7 +1211,7 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   // AsyncGetCallTrace. Install a jmp ctx here too, so a SIGSEGV anywhere in
   // walkJavaStack, except HotSpot's AsyncGetCallTrace call, is caught by
   // Profiler::checkFault() and siglongjmp'd back here instead of crashing the process.
-  ProfiledThread* prof_thread = ProfiledThread::acquire_current();
+  ProfiledThread* prof_thread = ProfiledThread::acquireCurrent();
   if (prof_thread == nullptr) {
     Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
     return 0;

@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "faultInjection.h"
 #include "threadLocalData.inline.h"
 #include "threadLocalDataPool.h"
 #include "context_api.h"
@@ -26,9 +27,18 @@ bool ProfiledThread::supportPriming() {
   assert(_current_thread.isKeyValid());
   if (OS::isMusl()) {
     return true;
-  } else {
-    return _current_thread.key() < PTHREAD_KEY_2NDLEVEL_SIZE;
   }
+#ifdef __GLIBC__
+  bool rc = _current_thread.key() < PTHREAD_KEY_2NDLEVEL_SIZE;
+  return INJECT_FAULT_BOOL_HIGH(rc);
+#else
+  // Neither musl nor glibc (e.g. macOS libpthread): PTHREAD_KEY_2NDLEVEL_SIZE
+  // is a glibc NPTL implementation detail (see threadLocalData.h) that doesn't
+  // describe this libc's pthread_key_t allocation scheme. Fail safe by
+  // disabling signal-handler TLS priming rather than assuming glibc-compatible
+  // pthread_setspecific behavior.
+  return false;
+#endif
 }
 
 ProfiledThread* ProfiledThread::initCurrentThread() {
@@ -74,6 +84,15 @@ void ProfiledThread::release() {
   _current_thread.clear();
 }
 
+#ifdef UNIT_TEST
+void ProfiledThread::deleteForTest(ProfiledThread* pt) {
+  if (!ThreadLocalDataPool::release(pt)) {
+    delete pt;
+    NativeMem::record(NM_THREAD_LOCAL, -(long long)sizeof(ProfiledThread));
+  }
+}
+#endif
+
 int ProfiledThread::currentTid() {
   ProfiledThread *tls = current();
   if (tls != NULL) {
@@ -109,7 +128,7 @@ void ProfiledThread::resetClaimed(int tid) {
   _recording_epoch = 0;
   _misc_flags = FLAG_CLAIMED;
   _park_block_token = 0;
-  _filter_slot_id = 0;
+  _filter_slot_id = -1;
   _init_window = 0;
   _signal_depth = 0;
   _otel_ctx_initialized = false;
@@ -118,4 +137,7 @@ void ProfiledThread::resetClaimed(int tid) {
     _otel_tag_encodings[index] = 0;
   }
    _otel_local_root_span_id = 0;
+   _in_critical_section = false;
+
+   _unwind_failures.reset();
 }

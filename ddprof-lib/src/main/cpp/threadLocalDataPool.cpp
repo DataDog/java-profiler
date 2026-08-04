@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include "counters.h"
 #include "threadLocalData.h"
 #include "threadLocalDataPool.h"
 
@@ -26,14 +27,6 @@ ThreadLocalDataPool::ThreadLocalDataPool(uint64_t capacity)
     NativeMem::record(NM_THREAD_LOCAL, malloc_size + sizeof(ThreadLocalDataPool));
 }
 
-ThreadLocalDataPool::~ThreadLocalDataPool() {
-    if (_threads != nullptr) {
-        for (uint64_t index = 0; index < _capacity; index++) {
-            _threads[index].~ProfiledThread();
-        }
-        free(reinterpret_cast<void*>(_threads));
-    }
-}
 
 ProfiledThread* ThreadLocalDataPool::claim(int tid) {
     if (_threads == nullptr) {
@@ -49,12 +42,13 @@ ProfiledThread* ThreadLocalDataPool::claim(int tid) {
     int start_pos = tid % _capacity;
     int index = start_pos;
     do {
-        if (_threads[index].claim_acquire()) {
+        if (_threads[index].claimAcquire()) {
             return &_threads[index];
         }
         index = (index + 1) % _capacity;
     } while (index != start_pos);
     __atomic_fetch_add(&_used, -1, __ATOMIC_RELAXED);
+    Counters::increment(SAMPLES_DROPPED_TLS_POOL_EXHAUSTED);
     return nullptr;
 }
 
@@ -69,6 +63,7 @@ bool ThreadLocalDataPool::unclaim(ProfiledThread* t) {
 }
 
 void ThreadLocalDataPool::initialize() {
+    // process-lifetime singleton
     ThreadLocalDataPool* pool = new ThreadLocalDataPool();
     __atomic_store_n(&_pool, pool, __ATOMIC_RELEASE);
 }

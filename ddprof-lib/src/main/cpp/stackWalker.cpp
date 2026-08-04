@@ -45,7 +45,7 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
     // falls inside this library while a jmp ctx is installed gets caught by
     // Profiler::checkFault() from the SEGV handler and siglongjmp'd back here,
     // instead of crashing the process.
-    ProfiledThread* prof_thread = ProfiledThread::acquire_current();
+    ProfiledThread* prof_thread = ProfiledThread::acquireCurrent();
     if (prof_thread == nullptr) {
         Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
         return 0;
@@ -134,7 +134,7 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
     // falls inside this library while a jmp ctx is installed gets caught by
     // Profiler::checkFault() from the SEGV handler and siglongjmp'd back here,
     // instead of crashing the process.
-    ProfiledThread* prof_thread = ProfiledThread::acquire_current();
+    ProfiledThread* prof_thread = ProfiledThread::acquireCurrent();
     if (prof_thread == nullptr) {
         Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
         return 0;
