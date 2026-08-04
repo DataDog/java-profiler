@@ -17,8 +17,7 @@ benchmarks-trigger:
   rules:
     - if: '$CANCELLED == "true"'
       when: never
-    - if: '$CI_COMMIT_BRANCH =~ /^release\//'
-      when: never
+    - !reference [.skip-on-release, rules]
     - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
