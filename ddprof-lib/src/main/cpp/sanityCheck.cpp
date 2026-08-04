@@ -80,11 +80,13 @@ Error SanityChecker::runChecks(const Arguments& /*args*/) {
     size_t codecache     = hotspot ? getVMSizeFlag("ReservedCodeCacheSize", DEFAULT_CODECACHE) : 0;
     size_t stack_size    = hotspot ? getVMSizeFlag("ThreadStackSize",       DEFAULT_STACK_SIZE / 1024) * 1024 : 0;
 
-    // MaxMetaspaceSize defaults to SIZE_MAX (unbounded) on standard HotSpot
+    // MaxMetaspaceSize defaults to unbounded (max_uintx) on standard HotSpot
     // builds, so the flag is present and the default_val fallback above never
-    // triggers. Normalize the sentinel to a finite estimate, otherwise it
-    // wraps the sum below and silently omits the metaspace allowance.
-    if (metaspace_max == SIZE_MAX) {
+    // triggers. The exact sentinel value isn't reliable to match against —
+    // debug builds align it down during ergonomics, leaving it astronomically
+    // large but not bit-identical to SIZE_MAX. Any "limit" larger than total
+    // available memory isn't a real limit, so normalize on that instead.
+    if (metaspace_max > upper) {
         metaspace_max = DEFAULT_METASPACE;
     }
 
