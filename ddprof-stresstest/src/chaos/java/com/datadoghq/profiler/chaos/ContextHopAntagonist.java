@@ -76,6 +76,7 @@ public final class ContextHopAntagonist implements Antagonist {
 
     private void startChain(final int chainId) {
         if (!running) return;
+        MemoryGovernor.pace();
         final long seed = ThreadLocalRandom.current().nextLong() ^ ((long) chainId << 32);
         CompletableFuture
                 .runAsync(new Runnable() {

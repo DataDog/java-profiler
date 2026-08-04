@@ -15,6 +15,7 @@
 #include "jvmThread.h"
 #include "safeAccess.h"
 #include "spinLock.h"
+#include "threadLocalData.h"
 #include "threadState.h"
 
 CodeCache* VMStructs::_libjvm = nullptr;
@@ -341,9 +342,7 @@ void VMStructs::initOffsets() {
 }
 
 void VMStructs::resolveOffsets() {
-    if (VM::isOpenJ9() || VM::isZing()) {
-        return;
-    }
+    assert(VM::isHotspot() && "Should not reach here");
 
     if (_klass_offset_addr != NULL) {
         _klass = (jfieldID)(uintptr_t)(*(int*)_klass_offset_addr << 2 | 2);
@@ -596,6 +595,8 @@ void JNICALL VMStructs::NativeMethodBind(jvmtiEnv *jvmti, JNIEnv *jni, jthread t
     static int delayedCounter = 0;
     static void **delayed = (void **)malloc(512 * sizeof(void *) * 2);
 
+    ProfiledThread::initCurrentThreadSignalSafe();
+
     if (_memory_usage_func == NULL) {
         if (jvmti != NULL && jni != NULL) {
             checkNativeBinding(jvmti, jni, method, address);
@@ -683,7 +684,7 @@ bool VMThread::isJavaThread(VMThread* vm_thread) {
 
     // JVMTI ThreadStart callback may have set the flag, which is reliable.
     // Or we may already compute and cache it, so use it instead.
-    ProfiledThread *prof_thread = ProfiledThread::currentSignalSafe();
+    ProfiledThread *prof_thread = ProfiledThread::current();
     if (prof_thread != nullptr) {
         ProfiledThread::ThreadType type = prof_thread->threadType();
         if (type != ProfiledThread::ThreadType::TYPE_UNKNOWN) {
@@ -767,39 +768,6 @@ JNIEnv* VMThread::jni() {
     return isJavaThread(this) ? (JNIEnv*) at(_env_offset) : NULL;
 }
 
-jmethodID VMMethod::id() {
-    // We may find a bogus NMethod during stack walking, it does not always point to a valid VMMethod
-    const char* const_method = (const char*) SafeAccess::load((void**) at(_method_constmethod_offset));
-    if (!goodPtr(const_method)) {
-        return NULL;
-    }
-
-    const char* cpool = (const char*) SafeAccess::load((void**)(const_method + _constmethod_constants_offset));
-    unsigned short num = (unsigned short) SafeAccess::load32((int32_t*)(const_method + _constmethod_idnum_offset), 0);
-    if (goodPtr(cpool)) {
-        VMKlass* holder = (VMKlass*) SafeAccess::loadPtr((void**)(cpool + _pool_holder_offset), nullptr);
-        if (goodPtr(holder)) {
-            jmethodID* ids = (jmethodID*) SafeAccess::loadPtr((void**)((char*)holder + _jmethod_ids_offset), nullptr);
-            if (ids != NULL) {
-                size_t len = (size_t) SafeAccess::load32((int32_t*)ids, 0);
-                if (num < len) {
-                    return (jmethodID) SafeAccess::loadPtr((void**)(ids + num + 1), nullptr);
-                }
-            }
-        }
-    }
-    return NULL;
-}
-
-jmethodID VMMethod::validatedId() {
-    jmethodID method_id = id();
-    if (!_can_dereference_jmethod_id || 
-        ((goodPtr(method_id) && SafeAccess::loadPtr((void**)method_id, nullptr) == this))) {
-        return method_id;
-    }
-    return NULL;
-}
-
 VMNMethod* CodeHeap::findNMethod(char* heap, const void* pc) {
     unsigned char* heap_start = *(unsigned char**)(heap + _code_heap_memory_offset + _vs_low_offset);
     unsigned char* segmap = *(unsigned char**)(heap + _code_heap_segmap_offset + _vs_low_offset);
@@ -872,7 +840,8 @@ VMFlag* VMFlag::find(const char* name) {
 
         for (size_t i = 0; i < count; i++) {
             VMFlag* f = VMFlag::cast(*(const char**)_flags_addr + i * VMFlag::type_size());
-            if (f->name() != NULL && strcmp(f->name(), name) == 0 && f->addr() != NULL) {
+            const char* fname = f->name();
+            if (fname != nullptr && strcmp(fname, name) == 0 && f->addr() != nullptr) {
                 return f;
             }
         }
@@ -893,7 +862,8 @@ VMFlag *VMFlag::find(const char *name, int type_mask) {
         size_t count = *(size_t*)_flag_count;
         for (size_t i = 0; i < count; i++) {
             VMFlag* f = VMFlag::cast(*(const char**)_flags_addr + i * VMFlag::type_size());
-            if (f->name() != NULL && strcmp(f->name(), name) == 0) {
+            const char* fname = f->name();
+            if (fname != nullptr && strcmp(fname, name) == 0) {
                 int masked = 0x1 << f->type();
                 if (masked & type_mask) {
                     return (VMFlag*)f;

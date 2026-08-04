@@ -3,18 +3,83 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include "jvmSupport.h"
+#include "jvmSupport.inline.h"
 
 #include "asyncSampleMutex.h"
 #include "frames.h"
 #include "os.h"
 #include "profiler.h"
-#include "thread.h"
+#include "threadLocalData.h"
 #include "vmEntry.h"
 
 #include "hotspot/hotspotSupport.h"
 
 #include <jni.h>
+
+
+volatile JVMSupport::JMethodIDLoadStats JVMSupport::jmethodID_load_state = JVMSupport::No_loaded;
+Mutex JVMSupport::_initialization_lock;
+
+
+// This method must be called after JVM has been properly initialized, e.g. after JVMTI::VMinit()
+// callback.
+// Currently, there are two paths lead to this call
+// - JVMTI::VMInit() callback (vmEntry.cpp)
+// - JavaProfiler.getInstance() via JNI down call - JVM must have been initialized
+bool JVMSupport::initialize() {
+    MutexLocker locker(_initialization_lock);
+
+    if (isInitialized()) {
+        return true;
+    }
+
+    // Check if JVMThread key is valid, the key is critical to access JVM `current` thread.
+    if (!JVMThread::initialize()) {
+        return false;
+    }
+
+    // Check ProfiledThread key, it is critical for storing per-thread metadata
+    return ProfiledThread::isThreadKeyValid();
+}
+
+bool JVMSupport::isInitialized() {
+    return JVMThread::isInitialized() && ProfiledThread::isThreadKeyValid();
+}
+
+JVMSupport::JMethodIDLoadStats JVMSupport::getLoadState() {
+    // Volatile read
+    return __atomic_load_n(&jmethodID_load_state, __ATOMIC_ACQUIRE);
+}
+
+void JVMSupport::setLoadState(JMethodIDLoadStats state) {
+    // Volatile store
+    __atomic_store(&jmethodID_load_state, &state, __ATOMIC_RELEASE);
+}
+
+void JVMSupport::initExecution(Arguments& args, jvmtiEnv* jvmti, JNIEnv* jni) {
+    JMethodIDLoadStats current_state = getLoadState();
+    // Already setup by previous execution
+    if (current_state == Fully_loaded) {
+        return;
+    }
+
+    bool load_all = true;
+    if (VM::isHotspot()) {
+        if (!HotspotSupport::shouldPreloadJmethodIDs(args)) {
+            HotspotSupport::initClassloaderInfo(jni);
+            load_all = false;
+        }
+    }
+
+    JMethodIDLoadStats state = load_all ? Fully_loaded : Partial_loaded;
+    if (state == current_state) {
+        return;
+    }
+
+    setLoadState(state);
+
+    loadAllMethodIDsIfNeeded(jvmti, jni);
+}
 
 int JVMSupport::walkJavaStack(StackWalkRequest& request) {
     if (VM::isHotspot()) {
@@ -36,15 +101,16 @@ int JVMSupport::asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* 
         return 0;
     }
 
-    AsyncSampleMutex mutex(ProfiledThread::currentSignalSafe());
+    AsyncSampleMutex mutex(ProfiledThread::current());
     if (!mutex.acquired()) {
         return 0;
     }
   
+
     JitWriteProtection jit(false);
     // AsyncGetCallTrace writes to ASGCT_CallFrame array
     ASGCT_CallTrace trace = {jni, 0, frames};
-    VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+    jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
     if (trace.num_frames > 0) {
         return trace.num_frames;
     }
@@ -57,4 +123,57 @@ int JVMSupport::asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* 
 
     Profiler::instance()->incFailure(-trace.num_frames);
     return makeFrame(frames, BCI_ERROR, err_string);
+}
+
+void JVMSupport::loadAllMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni) {
+    assert(getLoadState() != No_loaded && "Should not call before profiler execution");
+
+    jint class_count = 0;
+    jclass *classes = nullptr;
+    int loaded_count = 0;
+
+    if (jvmti->GetLoadedClasses(&class_count, &classes) == JVMTI_ERROR_NONE) {
+        for (int i = 0; i < class_count; i++) {
+            if(loadMethodIDsIfNeeded(jvmti, jni, classes[i])) {
+                loaded_count++;
+            }
+        }
+        jvmti->Deallocate((unsigned char *)classes);
+    }
+    TEST_LOG("Preloaded jmethodIDs for %d/%d classes", loaded_count, class_count);
+}
+
+bool JVMSupport::loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
+    JMethodIDLoadStats state = getLoadState();
+    // Callback from JVMTI for class loading - We don't have to deal with it before
+    // the first execution - loadAllMethodIDsIfNeeded() will fix it.
+    if (state == No_loaded) {
+        return false;
+    }
+
+    if (VM::isHotspot()) {
+        return HotspotSupport::loadMethodIDsIfNeededImpl(jvmti, jni, klass, state == Fully_loaded /* load all */);
+    } else {
+        return loadMethodIDsImpl(jvmti, jni, klass);
+    }
+}
+
+bool JVMSupport::loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
+  // CRITICAL: GetClassMethods must be called to preallocate jmethodIDs for AsyncGetCallTrace.
+  // AGCT operates in signal handlers where lock acquisition is forbidden, so jmethodIDs must
+  // exist before profiling encounters them. Without preallocation, AGCT cannot identify methods
+  // in stack traces, breaking profiling functionality.
+  //
+  // JVM-internal allocation: This triggers JVM to allocate jmethodIDs internally, which persist
+  // until class unload. High class churn causes significant memory growth, but this is inherent
+  // to AGCT architecture and necessary for signal-safe profiling.
+  //
+  // See: https://mostlynerdless.de/blog/2023/07/17/jmethodids-in-profiling-a-tale-of-nightmares/
+  jint method_count;
+  jmethodID *methods;
+  if (jvmti->GetClassMethods(klass, &method_count, &methods) == JVMTI_ERROR_NONE) {
+    jvmti->Deallocate((unsigned char *)methods);
+    return true;
+  }
+  return false;
 }

@@ -250,6 +250,7 @@ integration-test-arm64-musl:
 report-dd-trace-results:
   extends: .retry-config
   stage: integration-test
+  resource_group: gh-pages-publish
   tags: [ "arch:arm64" ]
   image: registry.ddbuild.io/images/dd-octo-sts-ci-base:2025.06-1
   id_tokens:

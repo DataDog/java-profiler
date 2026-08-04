@@ -17,7 +17,7 @@
 #include "otel_context.h"
 #include "profiler.h"
 #include "signalCookie.h"
-#include "thread.h"
+#include "signalInflight.h"
 #include "threadState.inline.h"
 #include "guards.h"
 #include "wallClockCounters.h"
@@ -51,9 +51,9 @@ static inline bool hasKnownActiveTraceContext(ProfiledThread* thread) {
   }
 
   OtelThreadContextRecord* record = thread->getOtelContextRecord();
-  // record->valid is not a context-presence bit. ThreadContext leaves cleared
+  // record->valid is not a context-presence bit. clearTraceContext0 leaves cleared
   // records invalid indefinitely, so gating on valid=1 disables wallprecheck for
-  // the common no-context state after a Java ThreadLocal reset.
+  // the common no-context state after deactivation.
   return loadSpanId(record) != 0;
 }
 
@@ -217,6 +217,13 @@ void WallClockASGCT::sharedSignalHandler(int signo, siginfo_t *siginfo,
   Counters::increment(WALLCLOCK_SIGNAL_OWN);
 
   WallClockASGCT *engine = reinterpret_cast<WallClockASGCT *>(Profiler::instance()->wallEngine());
+  // Past the foreign-signal filter: any work below this point can write JFR.
+  // Participate in SignalInflight::drain() so Profiler::stop() does not tear
+  // down JFR while this handler is still inside recordSample().
+  InflightGuard inflight;
+  if (!BaseWallClock::eventsEnabled()) {
+    return;
+  }
   if (signo == SIGVTALRM) {
     engine->signalHandler(signo, siginfo, ucontext, engine->_interval);
   }
@@ -229,12 +236,12 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   if (!cs.entered()) {
     return;  // Another critical section is active, defer profiling
   }
-  ProfiledThread *current = ProfiledThread::currentSignalSafe();
+  ProfiledThread *current = ProfiledThread::current();
   // Guard against the race window between Profiler::registerThread() and
   // thread_native_entry setting JVM TLS (PROF-13072): skip at most one signal
   // per thread. Pure native threads (where JVMThread::current() is always null)
   // are allowed through once the one-shot window expires.
-  if (current != nullptr && JVMThread::isInitialized() && JVMThread::current() == nullptr
+  if (current != nullptr && JVMThread::current() == nullptr
       && current->inInitWindow()) {
     current->tickInitWindow();
     return;
@@ -420,6 +427,13 @@ void WallClockJvmti::sharedSignalHandler(int signo, siginfo_t *siginfo,
 
   WallClockJvmti *engine =
       reinterpret_cast<WallClockJvmti *>(Profiler::instance()->wallEngine());
+  // Past the foreign-signal filter: any work below this point can write JFR.
+  // Participate in SignalInflight::drain() so Profiler::stop() does not tear
+  // down JFR while this handler is still inside recordSampleDelegated().
+  InflightGuard inflight;
+  if (!BaseWallClock::eventsEnabled()) {
+    return;
+  }
   if (signo == SIGVTALRM) {
     engine->signalHandler(signo, siginfo, ucontext, engine->_interval);
   }
@@ -432,8 +446,8 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
     return;
   }
   int saved_errno = errno;
-  ProfiledThread *current = ProfiledThread::currentSignalSafe();
-  if (current != nullptr && JVMThread::isInitialized() && JVMThread::current() == nullptr
+  ProfiledThread *current = ProfiledThread::current();
+  if (current != nullptr && JVMThread::current() == nullptr
       && current->inInitWindow()) {
     current->tickInitWindow();
     errno = saved_errno;

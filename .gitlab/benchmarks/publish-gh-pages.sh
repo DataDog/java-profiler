@@ -5,7 +5,7 @@
 # Usage: publish-gh-pages.sh [reports-dir]
 #
 # Updates benchmark history and regenerates GitHub Pages site.
-# Reports are available at: https://datadog.github.io/async-profiler-build/benchmarks/
+# Reports are available at: https://datadog.github.io/java-profiler/benchmarks/
 #
 # In CI: Uses Octo-STS for secure, short-lived GitHub tokens (no secrets needed)
 # Locally: Use 'devflow gitlab auth' for Octo-STS, or set GITHUB_TOKEN env var

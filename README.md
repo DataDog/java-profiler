@@ -169,23 +169,40 @@ By default, the script clones the repository at the current commit for clean bui
 # Force rebuild of base image only (useful after Alpine/Ubuntu updates)
 ./utils/run-containers-tests.sh --libc=musl --rebuild-base
 
+# Preview all supported musl cells (sanitizer configs are skipped, matching CI policy)
+./utils/run-containers-tests.sh --matrix --libc=musl
+
+# Run all supported musl cells without an interactive prompt
+./utils/run-containers-tests.sh --matrix --libc=musl --run
+
+# Preview selected JDKs across every supported libc/architecture pair
+./utils/run-containers-tests.sh --libc=all --jdk=8,17,21 --arch=all
+
+# Run all OpenJ9 cells
+./utils/run-containers-tests.sh --matrix --jdk=j9 --run
+
 # Show options
 ./utils/run-containers-tests.sh --help
 ```
 
 Supported options:
-- `--libc=glibc|musl` (default: glibc)
-- `--jdk=8|11|17|21|25|8-j9|11-j9|17-j9|21-j9|17-graal|21-graal|25-graal` (default: 21)
-- `--arch=x64|aarch64` (default: auto-detect)
-- `--config=debug|release|asan|tsan` (default: debug)
+- `--libc=glibc|musl|all[,..]` (default: glibc)
+- `--jdk=8|11|17|21|25|8-j9|11-j9|17-j9|21-j9|17-graal|21-graal|25-graal|regular|j9|graal|all[,..]` (default: 21)
+- `--arch=x64|aarch64|all[,..]` (default: auto-detect)
+- `--config=debug|release|asan|tsan|all[,..]` (default: debug)
 - `--container=podman|docker` (default: podman)
 - `--tests="TestPattern"`
 - `--gtest` (enable C++ gtests, disabled by default for faster runs)
-- `--gtest-task=Task` (run one C++ gtest task; accepts `elfparser_ut` or a full task path like `:ddprof-lib:gtestAsan_elfparser_ut`)
+- `--gtest-task=Task` (run one C++ gtest task; matrix runs require a short name like `elfparser_ut`, while single-cell runs also accept a full task path like `:ddprof-lib:gtestAsan_elfparser_ut`)
 - `--shell` (interactive shell instead of running tests)
 - `--mount` (mount local repo instead of cloning - faster but may have stale artifacts)
 - `--rebuild` (force rebuild of all container images)
 - `--rebuild-base` (force rebuild of base image only)
+- `--matrix` (preview a full test matrix; unset dimensions expand to `all`)
+- `--run` (execute an inferred matrix without prompting)
+- `--fail-fast` (stop matrix execution on first failure)
+
+Single-value commands run one configuration immediately. When any dimension expands to multiple cells, the script prints a compact status table first; interactive terminals ask for confirmation, while non-interactive runs require `--run` to execute. Matrix execution prints the status table again after all cells finish and writes summaries to `build/reports/container-matrix/summary.md` and `build/reports/container-matrix/summary.json`. Cells not run because of `--fail-fast` are reported as cancelled separately from unsupported cells that are skipped.
 
 ## Unwinding Validation Tool
 

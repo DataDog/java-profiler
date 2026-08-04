@@ -73,6 +73,12 @@ public:
   static void freeChunks(ChunkList& chunks);
 
   void *alloc(size_t size);
+
+  // Largest single allocation this allocator can ever satisfy: one chunk minus
+  // its header. alloc() bump-allocates within a single chunk, so a request
+  // larger than this can never be placed - callers must not request more (see
+  // CallTraceHashTable::expandTableIfNeeded()).
+  size_t maxAllocatableSize() const { return _chunk_size - sizeof(Chunk); }
 };
 
 #endif // _LINEARALLOCATOR_H

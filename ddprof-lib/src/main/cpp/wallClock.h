@@ -12,7 +12,7 @@
 #include "os.h"
 #include "profiler.h"
 #include "reservoirSampler.h"
-#include "thread.h"
+#include "threadLocalData.h"
 #include "threadFilter.h"
 #include "threadState.h"
 #include "tsc.h"
@@ -133,6 +133,7 @@ public:
   virtual const char* name() = 0;
 
   long interval() const { return _interval; }
+  static bool eventsEnabled() { return _enabled.load(std::memory_order_acquire); }
 
   inline void enableEvents(bool enabled) {
         _enabled.store(enabled, std::memory_order_release);

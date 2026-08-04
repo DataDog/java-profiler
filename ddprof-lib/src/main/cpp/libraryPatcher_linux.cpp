@@ -8,6 +8,7 @@
 #ifdef __linux__
 #include "counters.h"
 #include "guards.h"
+#include "jvmThread.h"
 #include "nativeSocketSampler.h"
 #include "profiler.h"
 
@@ -63,13 +64,14 @@ public:
 // Unregister the current thread from the profiler and release its TLS under a
 // single SignalBlocker to close the race window between unregisterThread()
 // returning and release() acquiring its internal guard (PROF-14603).  Without
-// this, a SIGVTALRM delivered in that window could call currentSignalSafe()
+// this, a SIGVTALRM delivered in that window could call current()
 // and dereference a now-freed ProfiledThread.  Kept noinline so the
 // SignalBlocker's sigset_t does not appear in the caller's stack frame on
 // musl/aarch64 where the deopt blob may corrupt the wrapper's stack guard.
 __attribute__((noinline))
-static void unregister_and_release(int tid) {
+static void unregister_and_release() {
     SignalBlocker blocker;
+    int tid = ProfiledThread::currentTid();
     Profiler::unregisterThread(tid);
     ProfiledThread::release();
 }
@@ -82,7 +84,7 @@ static void unregister_and_release(int tid) {
 // appear in the caller's frame on platforms with stack-protector canaries.
 __attribute__((noinline))
 static void cleanup_unregister(void*) {
-    unregister_and_release(ProfiledThread::currentTid());
+    unregister_and_release();
 }
 
 // Thread-cleanup wrapper that avoids the static-libgcc / forced-unwind crash.
@@ -98,13 +100,13 @@ static void cleanup_unregister(void*) {
 //
 // The fix: use __pthread_register_cancel / __pthread_unregister_cancel
 // directly — the same thing the C macro form of pthread_cleanup_push does.
-// This registers cleanup via a setjmp buffer in a runtime linked-list, NOT
+// This registers cleanup via a sigsetjmp buffer in a runtime linked-list, NOT
 // via an LSDA destructor.  _Unwind_ForcedUnwind's stop function
 // (__pthread_unwind_stop) handles the cleanup without ever calling
 // __gxx_personality_v0 for this frame, so _Unwind_SetGR is never called and
 // the cross-version incompatibility is never triggered.
 //
-// On musl: pthread_cleanup_push already uses the C/setjmp form (no RAII),
+// On musl: pthread_cleanup_push already uses the C/sigsetjmp form (no RAII),
 // and pthread_exit does not use _Unwind_ForcedUnwind, so there is no issue.
 // The __GLIBC__ guard keeps the musl path unchanged.
 #ifdef __GLIBC__
@@ -129,7 +131,7 @@ void run_with_cleanup(func_start_routine routine, void* params,
     static_assert(offsetof(__pthread_unwind_buf_t, __cancel_jmp_buf) == 0 &&
                   sizeof(cancel_buf.__cancel_jmp_buf[0]) == offsetof(struct __jmp_buf_tag, __saved_mask),
                   "glibc __pthread_unwind_buf_t inner layout incompatible with struct __jmp_buf_tag");
-    // __sigsetjmp/longjmp only intercepts _Unwind_ForcedUnwind (pthread_exit /
+    // __sigsetjmp/siglongjmp only intercepts _Unwind_ForcedUnwind (pthread_exit /
     // cancellation).  routine(params) must NOT throw a regular C++ exception
     // across this boundary: an escaping exception would skip both
     // __pthread_unregister_cancel and cleanup_fn below, leaking the thread
@@ -142,7 +144,7 @@ void run_with_cleanup(func_start_routine routine, void* params,
             // set __sigsetjmp's savemask=0 (the second parameter, noting that the signal mask is NOT
             // saved/restored, which is correct because the cancel mechanism does not depend on signal mask state.
             __sigsetjmp((struct __jmp_buf_tag*)(void*)cancel_buf.__cancel_jmp_buf, 0), 0)) {
-        // Reached via longjmp from glibc's stop function when pthread_exit
+        // Reached via siglongjmp from glibc's stop function when pthread_exit
         // (or cancellation) fires.  Run cleanup and continue unwinding.
         cleanup_fn(cleanup_arg);
         __pthread_unwind_next(&cancel_buf);
@@ -161,7 +163,7 @@ void run_with_cleanup(func_start_routine routine, void* params,
     __pthread_unregister_cancel(&cancel_buf);
     cleanup_fn(cleanup_arg);
 #else
-    // musl / non-glibc: pthread_cleanup_push uses the C/setjmp form, no RAII.
+    // musl / non-glibc: pthread_cleanup_push uses the C/sigsetjmp form, no RAII.
     pthread_cleanup_push(cleanup_fn, cleanup_arg);
     routine(params);
     pthread_cleanup_pop(1);
@@ -253,8 +255,8 @@ static void delete_routine_info(RoutineInfo* thr) {
 __attribute__((noinline))
 static void init_tls_and_register() {
     SignalBlocker blocker;
-    ProfiledThread::initCurrentThread();
-    if (ProfiledThread *pt = ProfiledThread::currentSignalSafe()) {
+    ProfiledThread* pt = ProfiledThread::initCurrentThread();
+    if (pt != nullptr) {
         pt->startInitWindow();
     }
     Profiler::registerThread(ProfiledThread::currentTid());
@@ -370,8 +372,10 @@ static void* start_routine_wrapper(void* args) {
         routine = thr->routine();
         params = thr->args();
         delete thr;
-        ProfiledThread::initCurrentThread();
-        ProfiledThread::currentSignalSafe()->startInitWindow();
+        ProfiledThread* pt = ProfiledThread::initCurrentThread();
+        if (pt != nullptr) {
+          pt->startInitWindow();
+        }
         Profiler::registerThread(ProfiledThread::currentTid());
     }
     // Use POSIX cleanup instead of C++ RAII to handle pthread_exit(): see run_with_cleanup.

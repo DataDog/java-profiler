@@ -79,6 +79,7 @@ public final class DumpStormAntagonist implements Antagonist {
                     return;
                 }
             }
+            MemoryGovernor.pace();
         }
     }
 

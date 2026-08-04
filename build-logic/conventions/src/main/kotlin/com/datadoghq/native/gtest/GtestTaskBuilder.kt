@@ -257,6 +257,16 @@ class GtestTaskBuilder(
         // Mark unit-test builds so test-only production APIs are compiled in.
         args.add("-DUNIT_TEST")
 
+        // NOTE: -D__FAULT_INJECTION__ is intentionally NOT added here. It is
+        // applied per-config in ConfigurationPresets (release/debug only) and we
+        // start from config.compilerArgs.get() above, so the release/debug gtest
+        // builds inherit it automatically under -PenableFaultInjection while the
+        // asan/tsan/fuzzer configs correctly never receive it. Re-deriving it
+        // from the project property here would be redundant for release/debug
+        // (they already carry it) and would wrongly leak the deliberately-
+        // faulting loads into the sanitizer configs, which install their own
+        // SIGSEGV interception.
+
         return args
     }
 

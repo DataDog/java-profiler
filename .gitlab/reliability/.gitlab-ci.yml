@@ -1,5 +1,5 @@
 variables:
-  PREPARE_IMAGE: registry.ddbuild.io/images/benchmarking-platform-tools-ubuntu:latest
+  PREPARE_IMAGE: registry.ddbuild.io/images/benchmarking-platform-tools-ubuntu:newest
   DD_OCTO_STS_IMAGE: registry.ddbuild.io/images/dd-octo-sts-ci-base:2025.06-1
 
 # Shared template — concrete jobs supply image, tags, and ARCH variable
@@ -7,9 +7,13 @@ variables:
   stage: reliability
   timeout: 6h
   variables:
-    RUNTIME: "${RUNTIME}"
+    # Default; a pipeline-schedule variable named RUNTIME overrides this.
+    RUNTIME: "3600"
   needs:
     - get-versions
+    - job: deploy-artifact
+      artifacts: false
+      optional: true
   rules:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: always
@@ -39,9 +43,10 @@ variables:
       - hs_err.log
       - err.log
       - out.log
+      - maven-get.log
     reports:
       dotenv: build.env
-    expire_in: 1 day
+    expire_in: 7 days
 
 reliability-amd64:
   extends: .reliability_job
@@ -63,7 +68,8 @@ reliability-aarch64:
   stage: reliability
   timeout: 6h
   variables:
-    RUNTIME: "${RUNTIME}"
+    # Default; a pipeline-schedule variable named RUNTIME overrides this.
+    RUNTIME: "3600"
   needs:
     - get-versions
     - job: chaos:build
@@ -99,7 +105,7 @@ reliability-aarch64:
       - out.log
     reports:
       dotenv: build.env
-    expire_in: 1 day
+    expire_in: 7 days
 
 reliability-chaos-amd64:
   extends: .reliability_chaos_job
@@ -121,7 +127,7 @@ notify-slack:
     - if: '$CI_PIPELINE_SOURCE == "schedule"'
       when: on_failure
     - when: never
-  image: registry.ddbuild.io/slack-notifier:latest
+  image: registry.ddbuild.io/slack-notifier:v91289620-4ec922a-latest@sha256:06b24f392ccc383d371c72001520a254edef523bc0bfdc445f487106107b4202
   tags: [ "arch:amd64" ]
   needs:
     - get-versions

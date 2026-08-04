@@ -105,7 +105,7 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
  * Optional: Provide initial corpus seeds to guide fuzzing.
  *
  * libFuzzer can use these to understand the expected input format.
- * Place seed files in ddprof-lib/src/test/fuzz/corpus/fuzz_arguments/
+ * Place seed files in ddprof-lib/src/test/fuzz/corpus/arguments/
  */
 #ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
 // Example valid argument strings for initial corpus:

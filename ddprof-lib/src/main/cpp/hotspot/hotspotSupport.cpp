@@ -6,21 +6,76 @@
 
 #include <climits>
 #include <cstdlib>
-#include <setjmp.h>
 #include "asyncSampleMutex.h"
+#include "faultInjection.h"
+#include "frames.h"
+#include "guards.h"
 #include "hotspot/hotspotSupport.h"
 #include "hotspot/jitCodeCache.h"
 #include "hotspot/vmStructs.inline.h"
-#include "jvmSupport.h"
+#include "jvmSupport.inline.h"
+#include "jvmThread.h"
 #include "profiler.h"
-#include "guards.h"
 #include "stackWalker.inline.h"
-#include "frames.h"
+#include "threadLocal.h"
 
 using StackWalkValidation::inDeadZone;
 using StackWalkValidation::aligned;
 using StackWalkValidation::MAX_FRAME_SIZE;
-using StackWalkValidation::sameStack;
+
+// Initialize once, they survive on profiler restart
+static jobject JAVA_PLATFORM_CLASSLOADER = nullptr;
+static jobject JAVA_APPLICATION_CLASSLOADER = nullptr;
+
+void HotspotSupport::initClassloaderInfo(JNIEnv* jni) {
+    if (JAVA_APPLICATION_CLASSLOADER != nullptr &&
+        (JAVA_PLATFORM_CLASSLOADER != nullptr || VM::hotspot_version() == 8)) {
+        return;
+    }
+
+    jclass classLoaderClass = jni->FindClass("java/lang/ClassLoader");
+    if (classLoaderClass == nullptr) {
+        jni->ExceptionClear();
+        return;
+    }
+
+    jmethodID getSysLoaderMethod = jni->GetStaticMethodID(classLoaderClass,
+                                                          "getSystemClassLoader",
+                                                          "()Ljava/lang/ClassLoader;");
+    if (getSysLoaderMethod == nullptr) {
+        jni->ExceptionClear();
+    }
+
+    jmethodID getPlatformLoaderMethod = jni->GetStaticMethodID(classLoaderClass,
+                                                          "getPlatformClassLoader",
+                                                          "()Ljava/lang/ClassLoader;");
+    // JDK8 does not have platform class loader
+    if (getPlatformLoaderMethod == nullptr) {
+        jni->ExceptionClear();
+    }
+
+    if (getSysLoaderMethod != nullptr) {
+        jobject ret = jni->CallStaticObjectMethod(classLoaderClass, getSysLoaderMethod);
+        if (ret != nullptr) {
+            JAVA_APPLICATION_CLASSLOADER = jni->NewGlobalRef(ret);
+            jni->DeleteLocalRef(ret);
+        }
+    }
+
+    if (getPlatformLoaderMethod != nullptr) {
+        jobject ret = jni->CallStaticObjectMethod(classLoaderClass, getPlatformLoaderMethod);
+        if (ret != nullptr) {
+            JAVA_PLATFORM_CLASSLOADER = jni->NewGlobalRef(ret);
+            jni->DeleteLocalRef(ret);
+        }
+    }
+
+    if (jni->ExceptionCheck()) {
+        jni->ExceptionClear();
+    }
+
+    jni->DeleteLocalRef(classLoaderClass);
+}
 
 static bool isAddressInCode(const void *pc, bool include_stubs = true) {
   if (CodeHeap::contains(pc)) {
@@ -36,7 +91,7 @@ static jmethodID getMethodId(VMMethod* method) {
             && SafeAccess::isReadableRange(method, VMMethod::type_size())) {
         return method->validatedId();
     }
-    return NULL;
+    return JMETHODID_NOT_WALKABLE;
 }
 
 /**
@@ -71,10 +126,20 @@ inline EventType eventTypeFromBCI(jint bci_type) {
             return PARK_SAMPLE;
         case BCI_NATIVE_MALLOC:
             return MALLOC_SAMPLE;
+        case BCI_NATIVE_SOCKET:
+            return SOCKET_SAMPLE;
         default:
             // For unknown or invalid BCI types, default to EXECUTION_SAMPLE
             // This maintains backward compatibility and prevents undefined behavior
             return EXECUTION_SAMPLE;
+    }
+}
+
+static bool hasTheSameMethod(ASGCT_CallFrame& frame, jmethodID method_id, const VMMethod* method) {
+    if (FrameType::isRawPointer(frame.bci)) {
+        return frame.method == method;
+    } else {
+        return frame.method_id == method_id;
     }
 }
 
@@ -86,17 +151,18 @@ static void fillFrameTypes(ASGCT_CallFrame *frames, int num_frames, VMNMethod *n
     }
 
     jmethodID current_method_id = method->id();
-    if (current_method_id == NULL) {
+    if (!isValidJMethodID(current_method_id)) {
       return;
     }
 
     // Mark current_method as COMPILED and frames above current_method as
     // INLINED
     for (int i = 0; i < num_frames; i++) {
+      // method_id == nullptr, also means method == nullptr
       if (frames[i].method_id == NULL || frames[i].bci <= BCI_NATIVE_FRAME) {
         break;
       }
-      if (frames[i].method_id == current_method_id) {
+      if (hasTheSameMethod(frames[i], current_method_id, method)) {
         int level = nmethod->level();
         frames[i].bci = FrameType::encode(
             level >= 1 && level <= 3 ? FRAME_C1_COMPILED : FRAME_JIT_COMPILED,
@@ -116,6 +182,28 @@ static void fillFrameTypes(ASGCT_CallFrame *frames, int num_frames, VMNMethod *n
       }
     }
   }
+}
+
+// Fill the frame with raw method pointer
+static void fillFrameRaw(ASGCT_CallFrame& frame, FrameTypeId type, int bci, const VMMethod* method) {
+    NO_INJECTION_ASSERT(method != nullptr);
+    frame.bci = FrameType::encode(type, bci, true /*raw method pointer*/);
+    frame.method = static_cast<const void*>(method);
+}
+
+void HotspotSupport::fillJavaFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci,
+                                   jmethodID method_id, const VMMethod* method) {
+    if (method_id == JMETHODID_NOT_WALKABLE) {
+        // The Method* failed validation while walking. Preserve only the sentinel;
+        // retaining the Method* would defer a dereference of that invalid metadata
+        // until the dump thread resolves the frame.
+        fillFrame(frame, type, bci, method_id);
+    } else if (method_id != nullptr) {
+        fillFrame(frame, type, bci, method_id);
+    } else {
+        NO_INJECTION_ASSERT(method != nullptr);
+        fillFrameRaw(frame, type, bci, method);
+    }
 }
 
 static ucontext_t empty_ucontext{};
@@ -148,15 +236,46 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                         StackWalkFeatures features, EventType event_type,
                         const void* pc, uintptr_t sp, uintptr_t fp, int lock_index, bool* truncated) {
+
     // VMStructs is only available for hotspot JVM 
     assert(VM::isHotspot());
+
+    ProfiledThread* prof_thread = ProfiledThread::current();
+    if (prof_thread == nullptr) {
+        Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
+        return 0;
+    }
+
     HotspotStackFrame frame(ucontext);
     uintptr_t bottom = (uintptr_t)&frame + MAX_WALK_SIZE;
 
     Profiler* profiler = Profiler::instance();
     int bcp_offset = InterpreterFrame::bcp_offset();
 
-    jmp_buf crash_protection_ctx;
+
+    sigjmp_buf crash_protection_ctx;
+    // Chaining sigjmp_buf
+    // A non-signal-based-sampler can be interrupted by signal based sampler,
+    // then we end up with multiple HotspotSupport::walkVM() calls on stack,
+    // each one sets up sigjmp_buf, they need to be chained to jump back to
+    // correct location.
+    sigjmp_buf* prev_jmp_buf = prof_thread->getJmpCtx();
+    // Should be preserved across sigsetjmp/siglongjmp
+    volatile int depth = 0;
+    int actual_max_depth = truncated ? max_depth + 1 : max_depth;
+
+    if (sigsetjmp(crash_protection_ctx, 1) != 0) {
+        // checkFault() does a siglongjmp from inside segvHandler, bypassing
+        // segvHandler's SignalHandlerScope destructor.  Compensate.
+        SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
+        prof_thread->setJmpCtx(prev_jmp_buf);
+        if (depth < max_depth) {
+            fillFrame(frames[depth++], BCI_ERROR, "break_not_walkable");
+        }
+        return depth;
+    }
+
+    prof_thread->setJmpCtx(&crash_protection_ctx);
     VMThread* vm_thread = VMThread::current();
     if (vm_thread != NULL && !vm_thread->isThreadAccessible()) {
         Counters::increment(WALKVM_THREAD_INACCESSIBLE);
@@ -167,38 +286,15 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     } else {
         Counters::increment(WALKVM_VMTHREAD_OK);
     }
-    void* saved_exception = vm_thread != NULL ? vm_thread->exception() : NULL;
 
-    // Should be preserved across setjmp/longjmp
-    volatile int depth = 0;
-    int actual_max_depth = truncated ? max_depth + 1 : max_depth;
     bool fp_chain_fallback = false;
     int fp_chain_depth = 0;
-
-    ProfiledThread* profiled_thread = ProfiledThread::currentSignalSafe();
 
     VMJavaFrameAnchor* anchor = NULL;
     if (vm_thread != NULL) {
         anchor = vm_thread->anchor();
         if (anchor == NULL) {
             Counters::increment(WALKVM_ANCHOR_NULL);
-        }
-        vm_thread->exception() = &crash_protection_ctx;
-        if (profiled_thread != nullptr) {
-            profiled_thread->setCrashProtectionActive(true);
-        }
-        if (setjmp(crash_protection_ctx) != 0) {
-            // checkFault() does a longjmp from inside segvHandler, bypassing
-            // segvHandler's SignalHandlerScope destructor.  Compensate.
-            SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
-            if (profiled_thread != nullptr) {
-                profiled_thread->setCrashProtectionActive(false);
-            }
-            vm_thread->exception() = saved_exception;
-            if (depth < max_depth) {
-                fillFrame(frames[depth++], BCI_ERROR, "break_not_walkable");
-            }
-            return depth;
         }
     }
 
@@ -216,8 +312,14 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     uintptr_t saved_anchor_fp = 0;
     bool anchor_recovery_used = false;
 
+    // Set once the MARK_JAVA_PROFILER hook boundary is found for a
+    // malloc/socket sample — mirrors skip_hook_prefix/skipping in
+    // Profiler::convertNativeTrace so the same "boundary never found"
+    // condition is observable from walkVM.
+    bool hook_boundary_found = false;
+
     // Show extended frame types and stub frames for execution-type events
-    bool details = event_type <= MALLOC_SAMPLE || features.mixed;
+    bool details = event_type <= SOCKET_SAMPLE || features.mixed;
 
     if (details && vm_thread != NULL && VMThread::isJavaThread(vm_thread)) {
         anchor = vm_thread->anchor();
@@ -281,9 +383,10 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         }
         // entry_fp has been range-checked by isValidFP above; any remaining
         // SIGSEGV from a stale/concurrently-freed pointer is caught by the
-        // setjmp crash protection in walkVM (checkFault -> longjmp).
-        uintptr_t carrier_fp = *(uintptr_t*)entry_fp;
-        const void* carrier_pc = ((const void**)entry_fp)[FRAME_PC_SLOT];
+        // sigsetjmp crash protection in walkVM (checkFault -> siglongjmp).
+        uintptr_t* carrier_fp_addr = (uintptr_t*)INJECT_FAULT_ADDRESS_UNLIKELY(entry_fp);
+        uintptr_t carrier_fp = *carrier_fp_addr;
+        const void* carrier_pc = ((const void**)carrier_fp_addr)[FRAME_PC_SLOT];
         uintptr_t carrier_sp = entry_fp + (FRAME_PC_SLOT + 1) * sizeof(void*);
         if (!StackWalkValidation::isValidFP(carrier_fp) ||
             StackWalkValidation::inDeadZone(carrier_pc) ||
@@ -316,8 +419,8 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             // while PC is still in JVM stubs (JavaCalls, method entry/exit), we see CodeHeap
             // code without VMThread context.
             //
-            // Without vm_thread, crash protection via setjmp/longjmp cannot work
-            // (checkFault() needs vm_thread->exception() to longjmp). Any memory dereference in interpreter
+            // Without vm_thread, crash protection via sigsetjmp/siglongjmp cannot work
+            // (checkFault() needs vm_thread->exception() to siglongjmp). Any memory dereference in interpreter
             // frame handling or NMethod validation would crash the process with unrecoverable SEGV.
             //
             // The missing VMThread is a timing issue during thread lifecycle.
@@ -408,18 +511,17 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
                 bool is_plausible_interpreter_frame = StackWalkValidation::isPlausibleInterpreterFrame(fp, sp, bcp_offset);
                 if (is_plausible_interpreter_frame) {
-                    VMMethod* method = ((VMMethod**)fp)[InterpreterFrame::method_offset];
+                    VMMethod* method = ((VMMethod**)INJECT_FAULT_ADDRESS_UNLIKELY(fp))[InterpreterFrame::method_offset];
                     jmethodID method_id = getMethodId(method);
-                    if (method_id != NULL) {
+                    if (method_id != JMETHODID_NOT_WALKABLE) {
                         Counters::increment(WALKVM_JAVA_FRAME_OK);
                         const char* bytecode_start = method->bytecode();
                         const char* bcp = ((const char**)fp)[bcp_offset];
                         int bci = bytecode_start == NULL || bcp < bytecode_start ? 0 : bcp - bytecode_start;
-                        fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id);
-
+                        HotspotSupport::fillJavaFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id, method);
                         sp = ((uintptr_t*)fp)[InterpreterFrame::sender_sp_offset];
                         pc = stripPointer(((void**)fp)[FRAME_PC_SLOT]);
-                        fp = *(uintptr_t*)fp;
+                        fp = *(uintptr_t*)INJECT_FAULT_ADDRESS_UNLIKELY(fp);
                         continue;
                     }
                 }
@@ -427,14 +529,14 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 if (depth == 0) {
                     VMMethod* method = (VMMethod*)frame.method();
                     jmethodID method_id = getMethodId(method);
-                    if (method_id != NULL) {
+                    if (method_id != JMETHODID_NOT_WALKABLE) {
                         Counters::increment(WALKVM_JAVA_FRAME_OK);
-                        fillFrame(frames[depth++], FRAME_INTERPRETED, 0, method_id);
-
+                        HotspotSupport::fillJavaFrame(frames[depth++], FRAME_INTERPRETED, 0, method_id, method);
                         if (is_plausible_interpreter_frame) {
-                            pc = stripPointer(((void**)fp)[FRAME_PC_SLOT]);
+                            uintptr_t* fp_addr = (uintptr_t*)INJECT_FAULT_ADDRESS_UNLIKELY(fp);
+                            pc = stripPointer(((void**)fp_addr)[FRAME_PC_SLOT]);
                             sp = frame.senderSP();
-                            fp = *(uintptr_t*)fp;
+                            fp = *fp_addr;
                         } else {
                             pc = stripPointer(SafeAccess::load((void**)sp));
                             sp = frame.senderSP();
@@ -465,7 +567,10 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 Counters::increment(WALKVM_JAVA_FRAME_OK);
                 int level = nm->level();
                 FrameTypeId type = details && level >= 1 && level <= 3 ? FRAME_C1_COMPILED : FRAME_JIT_COMPILED;
-                fillFrame(frames[depth++], type, 0, nm->method()->id());
+
+                VMMethod* method = nm->method();
+                jmethodID method_id = method->id();
+                HotspotSupport::fillJavaFrame(frames[depth++], type, 0, method_id, method);
 
                 if (nm->isFrameCompleteAt(pc)) {
                     if (depth == 1 && frame.unwindEpilogue(nm, (uintptr_t&)pc, sp, fp)) {
@@ -482,7 +587,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                                 type = scope_offset > 0 ? FRAME_INLINED :
                                        level >= 1 && level <= 3 ? FRAME_C1_COMPILED : FRAME_JIT_COMPILED;
                             }
-                            fillFrame(frames[depth++], type, scope.bci(), scope.method()->id());
+                            VMMethod* method = scope.method();
+                            jmethodID method_id = method->id();
+                            HotspotSupport::fillJavaFrame(frames[depth++], type, scope.bci(), method_id, method);
                         } while (scope_offset > 0 && depth < max_depth);
                     }
 
@@ -503,7 +610,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                         fillFrame(frames[depth++], BCI_ERROR, "break_misaligned_sp");
                         break;
                     }
-
+                    sp = (uintptr_t)INJECT_FAULT_ADDRESS_UNLIKELY(sp);
                     fp = ((uintptr_t*)sp)[-FRAME_PC_SLOT - 1];
                     pc = ((const void**)sp)[-FRAME_PC_SLOT];
                     continue;
@@ -534,7 +641,8 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 if (features.vtable_target && nm->isVTableStub() && depth == 0) {
                     uintptr_t receiver = frame.jarg0();
                     if (receiver != 0) {
-                        VMSymbol* symbol = VMKlass::fromOop(receiver)->name();
+                        VMKlass* klass = VMKlass::fromOop(receiver);
+                        VMSymbol* symbol = klass != nullptr ? klass->name() : nullptr;
                         // Store the raw VMSymbol* in the frame's method_id
                         // slot. BCI_VTABLE_RECEIVER (vmEntry.h) repurposes
                         // method_id for this pointer — same precedent as
@@ -586,31 +694,37 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         } else {
             // Resolve native frame (may use remote symbolication if enabled)
             Profiler::NativeFrameResolution resolution = profiler->resolveNativeFrameForWalkVM((uintptr_t)pc, lock_index);
-            if (resolution.is_marked) {
-                // This is a marked C++ interpreter frame, terminate scan
-                break;
+            if (resolution.is_marked()) {
+                if (resolution.mark == MARK_JAVA_PROFILER &&
+                    isHookPrefixedSample(event_type)) {
+                    // Discard frames captured above the malloc/socket hook boundary,
+                    // excluding the hook's own frame, and resume from the real
+                    // caller above it — mirrors the FP/DWARF skip-prefix logic in
+                    // Profiler::convertNativeTrace.
+                    hook_boundary_found = true;
+                    depth = 0;
+                } else if (resolution.mark == MARK_COMPILER_ENTRY && features.comp_task && vm_thread != NULL) {
+                    // Insert current compile task as a pseudo Java frame
+                    VMMethod* method = vm_thread->compiledMethod();
+                    if (method != nullptr) {
+                        jmethodID method_id = method->id();
+                        if (method_id != JMETHODID_NOT_WALKABLE) {
+                            HotspotSupport::fillJavaFrame(frames[depth++], FRAME_JIT_COMPILED, 0, method_id, method);
+                        }
+                    }
+                } else if (resolution.mark == MARK_THREAD_ENTRY) {
+                    // Thread entry point detected via pre-computed mark - this is the root frame
+                    Counters::increment(THREAD_ENTRY_MARK_DETECTIONS);
+                    break;
+                } else {
+                    // Other marks (VM runtime / interpreter) terminate the scan.
+                    break;
+                }
+                goto dwarf_unwind;
             }
             const char* method_name = resolution.method_name;
             int frame_bci = resolution.bci;
-            char mark;
-            if (frame_bci != BCI_NATIVE_FRAME_REMOTE && method_name != NULL && (mark = NativeFunc::read_mark(method_name)) != 0) {
-                if (mark == MARK_ASYNC_PROFILER && event_type == MALLOC_SAMPLE) {
-                    // Skip all internal frames above malloc_hook functions, leave the hook itself
-                    depth = 0;
-                } else if (mark == MARK_COMPILER_ENTRY && features.comp_task && vm_thread != NULL) {
-                    // Insert current compile task as a pseudo Java frame
-                    VMMethod* method = vm_thread->compiledMethod();
-                    jmethodID method_id = method != NULL ? method->id() : NULL;
-                    if (method_id != NULL) {
-                        fillFrame(frames[depth++], FRAME_JIT_COMPILED, 0, method_id);
-                    }
-                } else if (mark == MARK_THREAD_ENTRY) {
-                    // Thread entry point detected via pre-computed mark - this is the root frame
-                    // No need for expensive symbol resolution, just stop unwinding
-                    Counters::increment(THREAD_ENTRY_MARK_DETECTIONS);
-                    break;
-                }
-            } else if (method_name == NULL && details && !anchor_recovery_used
+            if (method_name == NULL && details && !anchor_recovery_used
                        && profiler->findLibraryByAddress(pc) == NULL) {
                 // Try anchor recovery — prefer live anchor, fall back to saved data
                 anchor_recovery_used = true;
@@ -643,9 +757,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     // In HotSpot, lastJavaFP is non-zero only for interpreter frames;
                     // compiled frames record FP=0 in the anchor.
                     if (StackWalkValidation::isPlausibleInterpreterFrame(recovery_fp, recovery_sp, bcp_offset)) {
-                        VMMethod* method = ((VMMethod**)recovery_fp)[InterpreterFrame::method_offset];
+                        VMMethod* method = ((VMMethod**)INJECT_FAULT_ADDRESS_UNLIKELY(recovery_fp))[InterpreterFrame::method_offset];
                         jmethodID method_id = getMethodId(method);
-                        if (method_id != NULL) {
+                        if (method_id != JMETHODID_NOT_WALKABLE) {
                             anchor = NULL;
                             prev_native_pc = NULL;
                             if (depth > 0 && depth + 1 < actual_max_depth) {
@@ -655,8 +769,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                             const char* bytecode_start = method->bytecode();
                             const char* bcp = ((const char**)recovery_fp)[bcp_offset];
                             int bci = bytecode_start == NULL || bcp < bytecode_start ? 0 : bcp - bytecode_start;
-                            fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id);
-
+                            HotspotSupport::fillJavaFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id, method);
                             sp = ((uintptr_t*)recovery_fp)[InterpreterFrame::sender_sp_offset];
                             pc = stripPointer(((void**)recovery_fp)[FRAME_PC_SLOT]);
                             fp = *(uintptr_t*)recovery_fp;
@@ -803,7 +916,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         if (StackWalkValidation::isPlausibleInterpreterFrame(anchor_fp, anchor_sp, bcp_offset)) {
             VMMethod* method = ((VMMethod**)anchor_fp)[InterpreterFrame::method_offset];
             jmethodID method_id = getMethodId(method);
-            if (method_id != NULL) {
+            if (method_id != JMETHODID_NOT_WALKABLE) {
                 Counters::increment(WALKVM_ANCHOR_FALLBACK);
                 Counters::increment(WALKVM_JAVA_FRAME_OK);
                 anchor = NULL;
@@ -812,7 +925,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     const char* bytecode_start = method->bytecode();
                     const char* bcp = ((const char**)anchor_fp)[bcp_offset];
                     int bci = bytecode_start == NULL || bcp < bytecode_start ? 0 : bcp - bytecode_start;
-                    fillFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id);
+                    HotspotSupport::fillJavaFrame(frames[depth++], FRAME_INTERPRETED, bci, method_id, method);
                     sp = ((uintptr_t*)anchor_fp)[InterpreterFrame::sender_sp_offset];
                     pc = stripPointer(((void**)anchor_fp)[FRAME_PC_SLOT]);
                     fp = *(uintptr_t*)anchor_fp;
@@ -839,12 +952,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     }
 
     done:
-    if (profiled_thread != nullptr) {
-        profiled_thread->setCrashProtectionActive(false);
-    }
-    if (vm_thread != NULL) {
-        vm_thread->exception() = saved_exception;
-    }
+    prof_thread->setJmpCtx(prev_jmp_buf);
 
     // Drop unknown leaf frame - it provides no useful information and breaks
     // aggregation by lumping unrelated samples under a single "unknown" entry
@@ -852,6 +960,12 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
     if (depth == 0) {
         Counters::increment(WALKVM_DEPTH_ZERO);
+    }
+
+    if (isHookPrefixedSample(event_type) && !hook_boundary_found) {
+        // The malloc/socket hook boundary was never found in this walk;
+        // mirrors Profiler::convertNativeTrace's NATIVE_TRACE_HOOK_PREFIX_NOT_FOUND.
+        Counters::increment(NATIVE_TRACE_HOOK_PREFIX_NOT_FOUND);
     }
 
     if (truncated) {
@@ -868,34 +982,6 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
     return depth;
 }
-
-void HotspotSupport::checkFault(ProfiledThread* thrd) {
-    if (!JVMThread::isInitialized()) {
-        // JVM has not been loaded or has not been initialized yet
-        return;
-    }
-
-    VMThread* vm_thread = VMThread::current();
-    if (vm_thread == NULL || !vm_thread->isThreadAccessible()) {
-        return;
-    }
-
-    // Prefer the semantic crash protection flag (reliable regardless of stack frame sizes).
-    // Fall back to sameStack heuristic when ProfiledThread TLS is unavailable (e.g. during
-    // early init or in crash recovery tests). sameStack uses a fixed 8KB threshold which
-    // can fail with ASAN-inflated frames, but the crashProtectionActive path handles that.
-    bool protected_walk = (thrd != nullptr && thrd->isCrashProtectionActive())
-                       || sameStack(vm_thread->exception(), &vm_thread);
-    if (!protected_walk) {
-        return;
-    }
-
-    if (thrd != nullptr) {
-        thrd->resetCrashHandler();
-    }
-    longjmp(*(jmp_buf*)vm_thread->exception(), 1);
-}
-
 
 int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
                                 int max_depth, StackContext *java_ctx,
@@ -974,7 +1060,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   JitWriteProtection jit(false);
   // AsyncGetCallTrace writes to ASGCT_CallFrame array
   ASGCT_CallTrace trace = {jni, 0, frames};
-  VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+  JVMSupport::jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
 
   if (trace.num_frames > 0) {
     frame.restore(saved_pc, saved_sp, saved_fp);
@@ -995,7 +1081,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
       if (!(safe_mode & POP_STUB) &&
           frame.unwindStub((instruction_t *)stub->_start, stub->_name) &&
           isAddressInCode((const void *)frame.pc())) {
-        VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+        JVMSupport::jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
       }
     } else if (VMStructs::hasMethodStructs()) {
       VMNMethod *nmethod = CodeHeap::findNMethod((const void *)frame.pc());
@@ -1003,20 +1089,20 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
         VMMethod *method = nmethod->method();
         if (method != NULL) {
           jmethodID method_id = method->id();
-          if (method_id != NULL) {
+          if (isValidJMethodID(method_id)) {
             max_depth -= makeFrame(trace.frames++, 0, method_id);
           }
           if (!(safe_mode & POP_METHOD) && frame.unwindCompiled(nmethod) &&
               isAddressInCode((const void *)frame.pc())) {
-            VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+            JVMSupport::jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
           }
           if ((safe_mode & PROBE_SP) && trace.num_frames < 0) {
-            if (method_id != NULL) {
+            if (isValidJMethodID(method_id)) {
               trace.frames--;
             }
             for (int i = 0; trace.num_frames < 0 && i < PROBE_SP_LIMIT; i++) {
               frame.sp() += sizeof(void*);
-              VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+              JVMSupport::jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
             }
           }
         }
@@ -1028,7 +1114,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
         if (!(safe_mode & POP_STUB) &&
             frame.unwindStub(NULL, nmethod->name()) &&
             isAddressInCode((const void *)frame.pc())) {
-          VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+          JVMSupport::jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
         }
       }
     }
@@ -1055,9 +1141,9 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
             m->frameCompleteOffset() == -1) {
           m->setFrameCompleteOffset(0);
         }
-        VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+        JVMSupport::jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
       } else if (libs->findLibraryByAddress(pc) != NULL) {
-        VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+        JVMSupport::jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
       }
 
       anchor->setLastJavaPC(nullptr);
@@ -1075,7 +1161,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
       if (m != NULL && !m->isNMethod() && m->frameSize() > 0 &&
           m->frameCompleteOffset() == -1) {
         m->setFrameCompleteOffset(0);
-        VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+        JVMSupport::jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
       }
     }
   } else if (trace.num_frames == ticks_GC_active && !(safe_mode & GC_TRACES)) {
@@ -1106,7 +1192,6 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   return trace.frames - frames + 1;
 }
 
-
 int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   CStack cstack = Profiler::instance()->cstackMode();
   StackWalkFeatures features = Profiler::instance()->stackWalkFeatures();
@@ -1117,14 +1202,43 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   bool* truncated = request.truncated;
   u32 lock_index = request.lock_index;
 
-  int java_frames = 0;
+  volatile int java_frames = 0;
+  // walkVM() installs its own sigsetjmp/siglongjmp crash protection (chained
+  // with any pre-existing jmp ctx, see the comment in walkVM), but the
+  // getJavaTraceAsync() path below runs without one: it dereferences
+  // VMThread/anchor state directly and calls into HotSpot's own
+  // AsyncGetCallTrace. Install a jmp ctx here too, so a SIGSEGV anywhere in
+  // walkJavaStack, except HotSpot's AsyncGetCallTrace call, is caught by
+  // Profiler::checkFault() and siglongjmp'd back here instead of crashing the process.
+  ProfiledThread* prof_thread = ProfiledThread::current();
+  const bool prev_unwinding_java = prof_thread != nullptr ? prof_thread->is_unwinding_Java() : false;
+  sigjmp_buf crash_protection_ctx;
+  sigjmp_buf* prev_jmp_buf = prof_thread != nullptr ? prof_thread->getJmpCtx() : nullptr;
+
+  if (prof_thread != nullptr && sigsetjmp(crash_protection_ctx, 1) != 0) {
+    // checkFault() does a siglongjmp from inside segvHandler, bypassing
+    // segvHandler's SignalHandlerScope destructor. Compensate.
+    SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
+    prof_thread->setJmpCtx(prev_jmp_buf);
+    // A recovered siglongjmp bypasses AsyncSampleMutex destructors, so restore
+    // the per-thread guard to its pre-walk value.
+    prof_thread->set_unwinding_Java(prev_unwinding_java);
+    if (truncated) {
+      *truncated = true;
+    }
+    return java_frames;
+  }
+  if (prof_thread != nullptr) {
+    prof_thread->setJmpCtx(&crash_protection_ctx);
+  }
+
   if (features.mixed) {
     java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
-  } else if (request.event_type == BCI_NATIVE_MALLOC || request.event_type == BCI_NATIVE_SOCKET) {
+  } else if (isHookPrefixedSample(request.event_type)) {
     if (cstack >= CSTACK_VM) {
       java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
     } else {
-        AsyncSampleMutex mutex(ProfiledThread::currentSignalSafe());
+        AsyncSampleMutex mutex(ProfiledThread::current());
         if (mutex.acquired()) {
             java_frames = getJavaTraceAsync(ucontext, frames, max_depth, java_ctx, truncated);
             if (java_frames > 0 && java_ctx->pc != NULL && VMStructs::hasMethodStructs()) {
@@ -1148,8 +1262,7 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
     if (cstack >= CSTACK_VM) {
         java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
     } else {
-        // Async events
-        AsyncSampleMutex mutex(ProfiledThread::currentSignalSafe());
+        AsyncSampleMutex mutex(ProfiledThread::current());
         if (mutex.acquired()) {
             java_frames = getJavaTraceAsync(ucontext, frames, max_depth, java_ctx, truncated);
             if (java_frames > 0 && java_ctx->pc != NULL && VMStructs::hasMethodStructs()) {
@@ -1159,8 +1272,6 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
                 }
             }
         }
-        // ASGCT stops at the continuation boundary for virtual threads (JDK 21+).
-        // Append a synthetic root frame so the UI does not show "Missing Frames".
         if (java_frames > 0 && VM::hotspot_version() >= 21 && java_frames < max_depth) {
             VMThread* carrier = VMThread::current();
             if (carrier != nullptr && carrier->isCarryingVirtualThread()) {
@@ -1172,5 +1283,211 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
         }
     }
   }
-  return java_frames; 
+
+  if (prof_thread != nullptr) {
+    prof_thread->setJmpCtx(prev_jmp_buf);
+  }
+  return java_frames;
+}
+
+static void patchClassLoaderData(JNIEnv* jni, jclass klass) {
+  bool needs_patch = VM::hotspot_version() == 8;
+  if (needs_patch) {
+    // Workaround for JVM bug https://bugs.openjdk.org/browse/JDK-8062116
+    // Preallocate space for jmethodIDs at the beginning of the list (rather than at the end)
+    // This is relevant only for JDK 8 - later versions do not have this bug
+    if (VMStructs::hasClassLoaderData()) {
+      VMKlass *vmklass = VMKlass::fromJavaClass(jni, klass);
+      int method_count = vmklass->methodCount();
+      if (method_count > 0) {
+        VMClassLoaderData *cld = vmklass->classLoaderData();
+        cld->lock();
+        for (int i = 0; i < method_count; i += MethodList::SIZE) {
+          *cld->methodList() = new MethodList(*cld->methodList());
+        }
+        cld->unlock();
+      }
+    }
+  }
+}
+
+constexpr const char LAMBDA_PREFIX[] = "Ljava/lang/invoke/LambdaForm$";
+constexpr const size_t LAMBDA_PREFIX_LEN = sizeof(LAMBDA_PREFIX) - 1;
+
+constexpr const char FFM_PREFIX[] = "Ljdk/internal/foreign/abi/";
+constexpr const size_t FFM_PREFIX_LEN = sizeof(FFM_PREFIX) - 1;
+
+constexpr const char* LAMBDA_FORMS[] = {"$$Lambda.", "$$Lambda$", ".lambda$"};
+
+static bool isLambdaClass(const char* signature) {
+    if (strncmp(signature, LAMBDA_PREFIX, LAMBDA_PREFIX_LEN) == 0 ||
+        strncmp(signature, FFM_PREFIX, FFM_PREFIX_LEN) == 0) {
+        return true;
+    }
+
+    size_t count = sizeof(LAMBDA_FORMS) / sizeof(LAMBDA_FORMS[0]);
+    for (size_t index = 0; index < count; index++) {
+        if (strstr(signature, LAMBDA_FORMS[index]) != nullptr) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool isSystemClassLoader(JNIEnv* jni, jobject cl) {
+    return cl == nullptr ||                         // bootstrap class loader
+           jni->IsSameObject(cl, JAVA_PLATFORM_CLASSLOADER) ||       // platform class loader
+           jni->IsSameObject(cl, JAVA_APPLICATION_CLASSLOADER);      // application class loader (system class loader)
+}
+
+static bool isHiddenClass(jvmtiEnv *jvmti, jclass clazz) {
+    jint modifiers = 0;
+    if (jvmti->GetClassModifiers(clazz, &modifiers) == JVMTI_ERROR_NONE &&
+        JVMSupport::isHidden(modifiers)) {
+        return true;
+    }
+    return false;
+}
+
+// Access flags do not reliably mark HotSpot hidden classes: there is no
+// class-level hidden bit and a Lookup.defineHiddenClass class need not be
+// synthetic. Hidden/anonymous classes carry a VM-injected "/0x..." name
+// suffix (see Lookup::getPackage); '/' is illegal in a normal binary class
+// name, so this reliably identifies the unloadable classes we must keep on
+// the jmethodID path.
+static bool isHiddenClassBySignature(const char* signature) {
+    const char* slash = strrchr(signature, '/');
+    return slash != nullptr && slash[1] >= '0' && slash[1] <= '9';
+}
+
+bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool load_all) {
+    if (!load_all) {
+        jobject cl = nullptr;
+        // Hidden/lambda classes can be unloaded, fallback to use jmethodIDs, so preload them.
+        if (!isHiddenClass(jvmti, klass) &&
+            jvmti->GetClassLoader(klass, &cl) == JVMTI_ERROR_NONE && 
+            isSystemClassLoader(jni, cl)) {
+            char* signature_ptr = nullptr;
+            if (jvmti->GetClassSignature(klass, &signature_ptr, nullptr) == JVMTI_ERROR_NONE) {
+                // Lambda classes, even loaded by bootstrap class loader, can be unloaded,
+                // fallback to jmethodID
+                if (!isLambdaClass(signature_ptr) && !isHiddenClassBySignature(signature_ptr)) {
+                    if (cl != nullptr) {
+                        jni->DeleteLocalRef(cl);
+                    }
+                    jvmti->Deallocate((unsigned char*)signature_ptr);
+                    return false;
+                }
+            }
+            if (signature_ptr != nullptr) {
+                jvmti->Deallocate((unsigned char*)signature_ptr);
+            }
+        }
+        if (cl != nullptr) {
+            jni->DeleteLocalRef(cl);
+        }
+    }
+    patchClassLoaderData(jni, klass);
+    return JVMSupport::loadMethodIDsImpl(jvmti, jni, klass);
+}
+
+// This method only resolves methods that are loaded by system class loaders
+jmethodID HotspotSupport::resolve(const void* method) {
+  assert(VM::isHotspot());
+  NO_INJECTION_ASSERT(method != nullptr);
+  // We packed not walkable method as a raw pointer,
+  // map it back to nullptr, as JMETHODID_NOT_WALKABLE is only
+  // known in hotspot.
+  if ((jmethodID)method == JMETHODID_NOT_WALKABLE) {
+    return nullptr;
+  }
+
+  VMMethod* vm_method = VMMethod::cast_or_null(method);
+  if (vm_method == nullptr) {
+    return nullptr;
+  }
+
+  // May have been populated by following code or JMETHODID_NOT_WALKABLE
+  jmethodID method_id = vm_method->validatedId();
+  if (isValidJMethodID(method_id)) {
+    return method_id;
+  }
+
+  VMConstMethod* const_method = vm_method->constMethod_or_null();
+  if (const_method == nullptr) {
+    return nullptr;
+  }
+
+  VMConstantPool* const_pool = const_method->constants_or_null();
+  if (const_pool == nullptr) {
+    return nullptr;
+  }
+
+  VMSymbol* name_sym = const_method->name();
+  VMSymbol* sig_sym = const_method->signature();
+  VMKlass* klass = const_pool->holder_or_null();
+
+  if (name_sym == nullptr || sig_sym == nullptr || klass == nullptr) {
+    return nullptr;
+  }
+
+  VMSymbol* klass_sym = klass->name();
+  if (klass_sym == nullptr) {
+    return nullptr;
+  }
+
+  method_id = nullptr;
+  char* method_name = (char*)malloc(name_sym->length() + 1);
+  char* method_signature = (char*)malloc(sig_sym->length() + 1);
+  int klass_name_len = klass_sym->length();
+  char* klass_name = (char*)malloc(klass_name_len + 1);
+  if (method_name !=nullptr && method_signature != nullptr && klass_name != nullptr) {
+      memcpy(method_name, name_sym->body(), name_sym->length());
+      method_name[name_sym->length()] = '\0';
+      memcpy(method_signature, sig_sym->body(), sig_sym->length());
+      method_signature[sig_sym->length()] = '\0';
+      memcpy(klass_name, klass_sym->body(), klass_name_len);
+      klass_name[klass_name_len] = '\0';
+
+      JNIEnv *jni = VM::jni();
+      jclass clz = jni->FindClass(klass_name);
+      if (clz == nullptr) {
+        jni->ExceptionClear();
+      } else {
+        method_id = jni->GetMethodID(clz, method_name, method_signature);
+        if (method_id == nullptr) {
+          jni->ExceptionClear();
+          method_id = jni->GetStaticMethodID(clz, method_name, method_signature);
+          if (method_id == nullptr) {
+            jni->ExceptionClear();
+            // JNI GetMethodID/GetStaticMethodID cannot look up <clinit> because
+            // the JVM intentionally hides class initializers from JNI callers.
+            // Fall back to JVMTI GetClassMethods, which covers all methods
+            // including <clinit> and forces jmethodID slot allocation for them.
+            // After the call, re-read the ID directly from VM metadata.
+            if (strcmp(method_name, "<clinit>") == 0) {
+              jvmtiEnv* jvmti = VM::jvmti();
+              if (jvmti != nullptr) {
+                jint count = 0;
+                jmethodID* methods = nullptr;
+                if (jvmti->GetClassMethods(clz, &count, &methods) == JVMTI_ERROR_NONE) {
+                  jmethodID validated = vm_method->validatedId();
+                  if (isValidJMethodID(validated)) {
+                    method_id = validated;
+                  }
+                  jvmti->Deallocate((unsigned char*)methods);
+                }
+              }
+            }
+          }
+        }
+        jni->DeleteLocalRef(clz);
+      }
+  }
+
+  free(method_name);
+  free(method_signature);
+  free(klass_name);
+
+  return method_id;
 }

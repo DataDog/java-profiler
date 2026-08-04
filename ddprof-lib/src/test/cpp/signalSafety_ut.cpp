@@ -15,7 +15,7 @@
  */
 
 #include "signalSafety.h"
-#include "thread.h"
+#include "threadLocalData.h"
 #include <gtest/gtest.h>
 
 class SignalSafetyTest : public ::testing::Test {

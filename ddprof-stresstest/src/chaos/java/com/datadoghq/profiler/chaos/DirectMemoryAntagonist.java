@@ -88,6 +88,7 @@ public final class DirectMemoryAntagonist implements Antagonist {
             }
             slot = (slot + 1) % RING_SIZE;
             sizeIdx = (sizeIdx + 1) % RING_SIZES_BYTES.length;
+            MemoryGovernor.pace();
         }
         for (int i = 0; i < RING_SIZE; i++) {
             ring[i] = null;
@@ -114,6 +115,7 @@ public final class DirectMemoryAntagonist implements Antagonist {
                 Thread.currentThread().interrupt();
                 return;
             }
+            MemoryGovernor.pace();
         }
         sink.addAndGet(acc);
     }

@@ -37,12 +37,21 @@ object ConfigurationPresets {
         project.logger.lifecycle("Setting up standard build configurations for $currentPlatform-$currentArch")
         project.logger.lifecycle("Using compiler: $compiler")
 
+        // Opt-in compile-time fault injection. When -PenableFaultInjection is
+        // passed we append -D__FAULT_INJECTION__ to the standard release/debug
+        // library builds, so the documented buildRelease / buildDebug workflows
+        // produce a fault-injected libjavaProfiler.so. It is intentionally NOT
+        // applied to asan/tsan/fuzzer: those configs install their own SIGSEGV
+        // interception, which conflicts with the deliberately-faulting loads.
+        val faultInjection = project.hasProperty("enableFaultInjection")
         extension.buildConfigurations.apply {
             register("release") {
                 configureRelease(this, currentPlatform, currentArch, version)
+                if (faultInjection) compilerArgs.add("-D__FAULT_INJECTION__")
             }
             register("debug") {
                 configureDebug(this, currentPlatform, currentArch, version)
+                if (faultInjection) compilerArgs.add("-D__FAULT_INJECTION__")
             }
             register("asan") {
                 configureAsan(this, currentPlatform, currentArch, version, rootDir, compiler)
@@ -51,7 +60,7 @@ object ConfigurationPresets {
                 configureTsan(this, currentPlatform, currentArch, version, rootDir, compiler)
             }
             register("fuzzer") {
-                configureFuzzer(this, currentPlatform, currentArch, version, rootDir)
+                configureFuzzer(this, currentPlatform, currentArch, version, rootDir, compiler)
             }
         }
 
@@ -222,9 +231,13 @@ object ConfigurationPresets {
                     // HeapBaseMinAddress is not accepted by JDK <= 11 (constraint violation);
                     // those JDKs rely on the vm.mmap_rnd_bits=8 CI-level mitigation instead.
                     if (PlatformUtils.testJvmMajorVersion() >= 12) {
+                        // HeapBaseMinAddress=64MB leaves ~1.9GB of address space below the
+                        // shadow region (0x7fff7000); 1024m keeps heap+CompressedClassSpace
+                        // well within that margin while giving forkEvery-restarted JVMs
+                        // enough headroom to avoid "Java heap space" OOMs seen in nightly CI.
                         config.testJvmArgs.addAll(listOf(
                             "-XX:HeapBaseMinAddress=0x4000000",
-                            "-Xmx512m",
+                            "-Xmx1024m",
                             "-XX:CompressedClassSpaceSize=256m"
                         ))
                     }
@@ -309,7 +322,8 @@ object ConfigurationPresets {
         platform: Platform,
         architecture: Architecture,
         version: String,
-        rootDir: File
+        rootDir: File,
+        compiler: String = "gcc"
     ) {
         config.platform.set(platform)
         config.architecture.set(architecture)
@@ -335,7 +349,28 @@ object ConfigurationPresets {
         when (platform) {
             Platform.LINUX -> {
                 config.compilerArgs.set(fuzzerCompilerArgs + commonLinuxCompilerArgs(version))
-                config.linkerArgs.set(commonLinuxLinkerArgs() + fuzzerLinkerArgs)
+
+                // commonLinuxLinkerArgs() carries -Wl,-z,defs, which forbids the
+                // undefined __asan_*/__ubsan_* symbols the instrumented objects
+                // reference. -fsanitize=address only links the runtime into
+                // executables, not shared libraries, so the fuzzer .so needs the
+                // runtime linked explicitly — same treatment (and rationale) as the
+                // asan config. On clang this resolves both __asan_* and __ubsan_*
+                // from one clang_rt.asan runtime; on gcc it adds -lubsan.
+                val libasan = PlatformUtils.locateLibasan(compiler)
+                val fuzzerRuntimeArgs = if (libasan != null) {
+                    val asanLibDir = File(libasan).parent
+                    val asanLibName = File(libasan).nameWithoutExtension.removePrefix("lib")
+                    val ubsanLibs = if (asanLibName.startsWith("clang_rt")) emptyList()
+                                    else listOf("-lubsan")
+                    listOf("-L$asanLibDir", "-l$asanLibName",
+                           "-Wl,-rpath,$asanLibDir") +
+                    ubsanLibs +
+                    fuzzerLinkerArgs
+                } else {
+                    fuzzerLinkerArgs
+                }
+                config.linkerArgs.set(commonLinuxLinkerArgs() + fuzzerRuntimeArgs)
 
                 config.testEnvironment.apply {
                     put("ASAN_OPTIONS", "allocator_may_return_null=1:detect_stack_use_after_return=0:handle_segv=0:abort_on_error=1:symbolize=1:suppressions=$rootDir/gradle/sanitizers/asan.supp")

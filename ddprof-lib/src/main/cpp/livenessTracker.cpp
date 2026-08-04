@@ -18,7 +18,7 @@
 #include "log.h"
 #include "os.h"
 #include "profiler.h"
-#include "thread.h"
+#include "threadLocalData.h"
 #include "threadLocal.h"
 #include "tsc.h"
 #include <jni.h>
@@ -117,12 +117,19 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
       env->DeleteLocalRef(clz);
       jniExceptionCheck(env);
       const char *name = env->GetStringUTFChars(name_str, nullptr);
-      event._id = name != nullptr
-                      ? Profiler::instance()->lookupClass(name, strlen(name))
-                      : 0;
+      int class_id = name != nullptr
+                         ? Profiler::instance()->lookupClass(name, strlen(name))
+                         : 0;
       env->ReleaseStringUTFChars(name_str, name);
 
-      Profiler::instance()->recordDeferredSample(_table[i].tid, _table[i].call_trace_id, BCI_LIVENESS, &event);
+      // lookupClass() returns -1 when the class map is at capacity; do not
+      // assign it to the u32 event id (it would wrap to 0xFFFFFFFF and
+      // corrupt liveness attribution in the JFR output) — drop the sample
+      // instead, matching ObjectSampler's convention for the same failure.
+      if (class_id >= 0) {
+        event._id = class_id;
+        Profiler::instance()->recordDeferredSample(_table[i].tid, _table[i].call_trace_id, BCI_LIVENESS, &event);
+      }
     }
 
     env->DeleteLocalRef(ref);
@@ -300,6 +307,27 @@ static void free_uniform_real_distribution(void* p) {
   delete urd;
 }
 
+// File-scope (not track()-local) so releaseThreadLocalState() below can reach
+// them from Profiler::onThreadEnd(). Relying solely on these ThreadLocal's own
+// pthread-key destructors is not sufficient: pthread key destructors only fire
+// when the underlying OS thread actually exits, not when a JNI-attached thread
+// detaches via DetachCurrentThread. A reused pooled OS thread that repeatedly
+// attaches/detaches would otherwise leak one mt19937 and one
+// uniform_real_distribution allocation per attach cycle, since get() lazily
+// re-creates the value on the next track() call but nothing ever frees the
+// previous one until OS thread exit (which may never happen). Hooking explicit
+// cleanup into onThreadEnd matches how every other per-thread profiler state
+// (CPU/wall engine registration, ProfiledThread) is already torn down.
+static ThreadLocal<std::mt19937*, create_mt19937, free_mt19937> gen;
+static ThreadLocal<std::uniform_real_distribution<>*, create_uniform_real_distribution, free_uniform_real_distribution> dis;
+static ThreadLocal<double> skipped;
+
+void LivenessTracker::releaseThreadLocalState() {
+  gen.clear();
+  dis.clear();
+  skipped.clear();
+}
+
 void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
                             jobject object, u64 call_trace_id) {
   if (!_enabled) {
@@ -310,10 +338,6 @@ void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
     // we are not to store any objects
     return;
   }
-
-  static ThreadLocal<std::mt19937*, create_mt19937, free_mt19937> gen;
-  static ThreadLocal<std::uniform_real_distribution<>*, create_uniform_real_distribution, free_uniform_real_distribution> dis;
-  static ThreadLocal<double> skipped;
 
   if (_subsample_ratio < 1.0) {
     std::mt19937* genp = gen.get();
@@ -409,6 +433,7 @@ retry:
 }
 
 void JNICALL LivenessTracker::GarbageCollectionFinish(jvmtiEnv *jvmti_env) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   LivenessTracker::instance()->onGC();
 }
 

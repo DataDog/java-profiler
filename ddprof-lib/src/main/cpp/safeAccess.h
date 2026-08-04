@@ -1,5 +1,6 @@
 /*
  * Copyright 2021 Andrei Pangin
+* Copyright 2026 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -51,6 +52,9 @@ public:
    */
   NOINLINE
   static int safeFetch32(int* ptr, int errorValue) {
+#ifdef DEBUG
+    countIfLongjmpProtected(false);
+#endif
     return safefetch32_impl(ptr, errorValue);
   }
 
@@ -61,14 +65,18 @@ public:
    */
   NOINLINE
   static int64_t safeFetch64(int64_t* ptr, int64_t errorValue) {
+#ifdef DEBUG
+    countIfLongjmpProtected(false);
+#endif
     return safefetch64_impl(ptr, errorValue);
   }
 
-  // Copies up to len bytes from src to dst using safefetch32_impl so that a
-  // page-unmap or repurpose of src memory during the copy does not crash the
-  // process. Returns true on full success, false if any read faulted. dst must
-  // have at least len bytes capacity; reads from src may over-read up to 3
-  // bytes past src+len (over-read is also safefetch-protected).
+  // Copies len bytes from src to dst via the safecopy_impl assembly stub so
+  // that a page-unmap or repurpose of src memory during the copy does not
+  // crash the process. Returns true on full success, false if any read
+  // faulted (in which case dst may hold a partial prefix). dst must have at
+  // least len bytes capacity. The copy is byte-granular, so it never reads
+  // past src+len.
   NOINLINE
   static bool safeCopy(void* dst, const void* src, size_t len);
 
@@ -107,6 +115,17 @@ public:
     }
     return isReadable(end_page);
   }
+
+#ifdef DEBUG
+private:
+  // Debug diagnostic: bump a counter when a SafeAccess read/copy is issued while
+  // the current thread is already inside a walkVM siglongjmp-protected region, where
+  // the safefetch/safecopy overhead is redundant (a fault there is caught by the
+  // siglongjmp anyway). Defined out-of-line in safeAccess.cpp so this widely-included
+  // header need not pull in threadLocalData.h / counters.h. isCopy selects the
+  // SAFECOPY_WHILE_PROTECTED vs SAFEFETCH_WHILE_PROTECTED counter.
+  static void countIfLongjmpProtected(bool isCopy);
+#endif
 };
 
 #endif // _SAFEACCESS_H

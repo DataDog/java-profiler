@@ -27,14 +27,18 @@ public class MetadataNormalisationTest extends AbstractProfilerTest {
         Method arrayListAdd = ArrayList.class.getDeclaredMethod("add", Object.class);
         Constructor<?> linkedListConstructor = LinkedList.class.getConstructor();
         Method linkedListAdd = LinkedList.class.getDeclaredMethod("add", Object.class);
-        // need to invoke enough times to result in generation of accessors and to record some cpu time
+        // need to invoke enough times to result in generation of accessors and to record some cpu time.
+        // Under ASAN, cpu=100us sampling combined with this fixed iteration count produces a much
+        // larger sample set (stack-trace signal handling is slower under ASAN), and every sample's
+        // stack trace is materialized below, so reduce the iteration count to bound the sample count.
+        int iterations = isAsan() ? 10_000 : 100_000;
         int count = 0;
-        for (int i = 0; i < 100_000; i++) {
+        for (int i = 0; i < iterations; i++) {
             Object list = arrayListConstructor.newInstance();
             arrayListAdd.invoke(list, "element");
             count += ((List<?>) list).size();
         }
-        for (int i = 0; i < 100_000; i++) {
+        for (int i = 0; i < iterations; i++) {
             Object list = linkedListConstructor.newInstance();
             linkedListAdd.invoke(list, "element");
             count += ((List<?>) list).size();
@@ -63,6 +67,6 @@ public class MetadataNormalisationTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        return "cpu=100us";
+        return isAsan() ? "cpu=1ms" : "cpu=100us";
     }
 }

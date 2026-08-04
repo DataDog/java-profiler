@@ -41,14 +41,13 @@ public class QueueTimeTest extends AbstractProfilerTest {
         }
 
         @Override
-        @SuppressWarnings("deprecation")
         public void run() {
-            profiler.setContext(1, 2);
+            profiler.setTraceContext(2, 1, 0, 1, -1, null, -1, null);
             long now = profiler.getCurrentTicks();
             if (profiler.isThresholdExceeded(9, start, now)) {
                 profiler.recordQueueTime(start, now, getClass(), QueueTimeTest.class, ArrayBlockingQueue.class, 10, origin);
             }
-            profiler.clearContext();
+            profiler.clearTraceContext();
         }
     }
 

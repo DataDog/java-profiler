@@ -9,10 +9,8 @@
 
 #include <jvmti.h>
 #include "arch.h"
-
-#include "arch.h"
+#include "arguments.h"
 #include "codeCache.h"
-#include "frame.h"
 
 #ifdef __clang__
 #define DLLEXPORT __attribute__((visibility("default")))
@@ -96,6 +94,7 @@ typedef struct _asgct_callframe {
         jmethodID method_id;
         unsigned long packed_remote_frame; // packed RemoteFrameInfo data
         const char* native_function_name;
+        const void* method; // Hotspot only, direct pointer to JVM method
     };
 } ASGCT_CallFrame;
 
@@ -134,6 +133,8 @@ class JavaVersionAccess {
 };
 
 class VM {
+  friend class VMTestAccessor;
+
 private:
   static JavaVM *_vm;
   static jvmtiEnv *_jvmti;
@@ -147,6 +148,7 @@ private:
   static bool _can_sample_objects;
   static bool _can_intercept_binding;
   static bool _is_adaptive_gc_boundary_flag_set;
+  static CodeCache *_libjvm;
 
   // HotSpot JFR async stack-trace extension (optional, JDK 27+).
   // _request_stack_trace is atomic (RELEASE/ACQUIRE) because canRequestStackTrace()
@@ -164,8 +166,6 @@ private:
   static void ready(jvmtiEnv *jvmti, JNIEnv *jni);
   static void applyPatch(char *func, const char *patch, const char *end_patch);
   static void *getLibraryHandle(const char *name);
-  static void loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
-  static void loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni);
 
   static bool initShared(JavaVM *vm);
   static void probeJFRRequestStackTrace();
@@ -173,7 +173,12 @@ private:
   static CodeCache* openJvmLibrary();
 
 public:
-  static void *_libjvm;
+  static inline CodeCache* libjvm() {
+    CodeCache* lib = __atomic_load_n(&_libjvm, __ATOMIC_ACQUIRE);
+    assert(lib != nullptr && "Out of order initialization sequence");
+    return lib;
+  }
+
   static AsyncGetCallTrace _asyncGetCallTrace;
   static JVM_GetManagement _getManagement;
 
@@ -219,6 +224,8 @@ public:
     return _is_adaptive_gc_boundary_flag_set;
   }
 
+  static Arguments& arguments();
+
   static bool canRequestStackTrace() {
     return __atomic_load_n(&_request_stack_trace, __ATOMIC_ACQUIRE) != nullptr;
   }
@@ -236,9 +243,7 @@ public:
   static void JNICALL VMDeath(jvmtiEnv *jvmti, JNIEnv *jni);
 
   static void JNICALL ClassLoad(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
-                                jclass klass) {
-    // Needed only for AsyncGetCallTrace support
-  }
+                                jclass klass);
 
   static void JNICALL ClassPrepare(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
                                    jclass klass);

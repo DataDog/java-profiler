@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler;
 
 import org.junit.jupiter.api.Test;
@@ -107,6 +112,26 @@ public class JavaProfilerTest extends AbstractProcessProfilerTest {
         assertTrue(val);
         assertEquals(sampler, usedSampler.get());
         assertFalse(hasWall.get());
+    }
+
+    @Test
+    void getInstanceFromVirtualThreadThrowsIOException() throws Exception {
+        assumeTrue(Platform.isJavaVersionAtLeast(21));
+
+        AtomicReference<String> resultLine = new AtomicReference<>();
+        boolean val = launch("profiler-virtual-thread", Collections.emptyList(), "", l -> {
+            if (l.startsWith("[virtual-thread-")) {
+                resultLine.set(l);
+                return LineConsumerResult.STOP;
+            }
+            return LineConsumerResult.CONTINUE;
+        }, null).inTime;
+
+        assertTrue(val);
+        String result = resultLine.get();
+        assertNotNull(result, "getInstance() did not report a result from the virtual thread");
+        assertTrue(result.startsWith("[virtual-thread-ioexception]"),
+                "Expected IOException from getInstance() on a virtual thread, got: " + result);
     }
 
     @Test

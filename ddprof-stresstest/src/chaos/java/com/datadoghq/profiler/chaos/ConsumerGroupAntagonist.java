@@ -104,6 +104,7 @@ public final class ConsumerGroupAntagonist implements Antagonist {
                 return;
             }
             if (!running) return;
+            MemoryGovernor.pace();
 
             // Interrupt all victims simultaneously (burst)
             Thread[] victims = new Thread[BURST_SIZE];

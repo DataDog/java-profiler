@@ -19,7 +19,7 @@
 #include <memory>
 #include <thread>
 #include <vector>
-#include "thread.h"
+#include "threadLocalData.h"
 #include "threadFilter.h"
 #include "wallClock.h"
 

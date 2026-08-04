@@ -15,7 +15,13 @@ import static org.junit.jupiter.api.Assumptions.assumeFalse;
 public class BoundMethodHandleProfilerTest extends AbstractProfilerTest {
     @Override
     protected String getProfilerCommand() {
-        return Platform.isJ9() ? "wall=100ms" : "wall=100us";
+        if (Platform.isJ9()) {
+            return "wall=100ms";
+        }
+        // wall=100us is ~10k samples/s. Under ASAN the workload runs for minutes,
+        // producing a JFR too large for JMC to load into the 512MB test heap. Sampling
+        // 10x coarser cuts both the recording size and the SIGVTALRM overhead.
+        return isAsan() ? "wall=1ms" : "wall=100us";
     }
 
     @Test
@@ -26,8 +32,10 @@ public class BoundMethodHandleProfilerTest extends AbstractProfilerTest {
         assumeFalse(Platform.isAarch64() && Platform.isMusl() && !Platform.isJavaVersionAtLeast(11)); // aarch64 + musl + jdk 8 will crash very often
         registerCurrentThreadForWallClockProfiling();
         // Reduce workload on aarch64+asan: ASAN slows each invocation enough that the test
-        // takes 3+ minutes, generating a 56MB JFR that OOMs the 512MB test-runner heap.
-        int numBoundMethodHandles = isAsan() && Platform.isAarch64() ? 1_000 : 10_000;
+        // takes 3+ minutes, generating a JFR that OOMs the 512MB test-runner heap. Combined
+        // with the coarser wall rate in getProfilerCommand(), 500 keeps the recording small
+        // while still generating enough bound-method-handle classes to sample.
+        int numBoundMethodHandles = isAsan() && Platform.isAarch64() ? 500 : 10_000;
         int x = generateBoundMethodHandles(numBoundMethodHandles);
         assertTrue(x != 0);
         stopProfiler();

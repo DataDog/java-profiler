@@ -101,6 +101,7 @@ public final class AllocStormAntagonist implements Antagonist {
             buf[0] = (byte) idx;
             acc += buf[buf.length - 1];
             idx = (idx + 1) % SIZES.length;
+            MemoryGovernor.pace();
         }
         sink.addAndGet(acc);
     }
@@ -116,6 +117,7 @@ public final class AllocStormAntagonist implements Antagonist {
                 long addr = (long) ALLOCATE_MEMORY.invoke(UNSAFE, NATIVE_BLOCK_SIZE);
                 acc += addr;
                 FREE_MEMORY.invoke(UNSAFE, addr);
+                MemoryGovernor.pace();
             }
         } catch (Throwable t) {
             // reflective failure; JVM crash is the signal we watch for

@@ -14,7 +14,8 @@ the runner script.
 | `vthread-churn`   | virtual thread mount/unmount, carrier-thread context, `ProfiledThread`   |
 | `classloader-churn` | class unload racing stack walk, `CodeCache`/`Symbols` invalidation     |
 | `alloc-storm`     | Java alloc engine + GOT-patched libc malloc/free                         |
-| `trace-context`   | `setContext`/`clearContext` racing signals, span ID propagation          |
+| `trace-context`   | `setTraceContext`/`clearTraceContext` racing signals, span ID propagation |
+| `reapply-context-value` | concurrent per-slot `setContextValue`/`clearContextValue` churn interleaved with span activation, racing the all-native record's write/read window |
 
 ## Deferred
 

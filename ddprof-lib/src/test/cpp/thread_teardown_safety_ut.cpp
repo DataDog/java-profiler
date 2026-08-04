@@ -6,7 +6,7 @@
  *
  * Root cause: SIGVTALRM delivered between ProfiledThread::release() clearing TLS
  * (pthread_setspecific(NULL)) and deleting the ProfiledThread object, causing
- * a signal handler to call currentSignalSafe() and dereference a freed pointer.
+ * a signal handler to call current() and dereference a freed pointer.
  *
  * Fix coverage:
  * - Signal-safe TLS accessor returns null in the race window (no crash).
@@ -19,7 +19,8 @@
 #ifdef __linux__
 
 #include "guards.h"
-#include "thread.h"
+#include "nativeMem.h"
+#include "threadLocalData.h"
 
 #include <atomic>
 #include <pthread.h>
@@ -63,12 +64,12 @@ struct SigGuard {
   SigGuard& operator=(const SigGuard&) = delete;
 };
 
-// ── T-01: currentSignalSafe() is non-null while live, null after release ─────
+// ── T-01: current() is non-null while live, null after release ─────
 
 static std::atomic<ProfiledThread *> g_t01_seen{nullptr};
 
 static void t01_handler(int) {
-  g_t01_seen.store(ProfiledThread::currentSignalSafe(), std::memory_order_relaxed);
+  g_t01_seen.store(ProfiledThread::current(), std::memory_order_relaxed);
 }
 
 static void *t01_body(void *) {
@@ -84,7 +85,7 @@ static void *t01_body(void *) {
     return nullptr;
   }
   EXPECT_NE(nullptr, t01_pre)
-      << "currentSignalSafe() must return non-null while ProfiledThread is live";
+      << "current() must return non-null while ProfiledThread is live";
 
   ProfiledThread::release();
 
@@ -96,7 +97,7 @@ static void *t01_body(void *) {
     return nullptr;
   }
   EXPECT_EQ(nullptr, t01_post)
-      << "currentSignalSafe() must return null after release()";
+      << "current() must return null after release()";
 
   return nullptr;
 }
@@ -113,7 +114,7 @@ TEST(ThreadTeardownSafetyTest, TLSAccessibleDuringLifetimeNullAfterRelease) {
 static std::atomic<ProfiledThread *> g_t02_seen{nullptr};
 
 static void t02_handler(int) {
-  g_t02_seen.store(ProfiledThread::currentSignalSafe(), std::memory_order_relaxed);
+  g_t02_seen.store(ProfiledThread::current(), std::memory_order_relaxed);
 }
 
 static void *t02_body(void *) {
@@ -129,13 +130,14 @@ static void *t02_body(void *) {
   // Signal delivered in the race window must see null, not a dangling pointer.
   pthread_kill(pthread_self(), SIGVTALRM);
   EXPECT_EQ(nullptr, g_t02_seen.load(std::memory_order_relaxed))
-      << "currentSignalSafe() must return null in the TLS-clear/delete window";
+      << "current() must return null in the TLS-clear/delete window";
 
   // release() with TLS already null must not double-free.
   ProfiledThread::release();
   // Complete the simulated teardown: delete the object (mirrors what freeKey
   // would do). Destructor is private so we need the test helper.
   ProfiledThread::deleteForTest(detached);
+  EXPECT_EQ(nullptr, ProfiledThread::current());
   return nullptr;
 }
 
@@ -166,7 +168,7 @@ TEST(ThreadTeardownSafetyTest, DoubleReleaseIsIdempotent) {
 static std::atomic<ProfiledThread *> g_t04_seen{nullptr};
 
 static void t04_handler(int) {
-  g_t04_seen.store(ProfiledThread::currentSignalSafe(), std::memory_order_relaxed);
+  g_t04_seen.store(ProfiledThread::current(), std::memory_order_relaxed);
 }
 
 static void *t04_body(void *) {
@@ -176,7 +178,7 @@ static void *t04_body(void *) {
   g_t04_seen.store(kNotYetRun, std::memory_order_relaxed);
   pthread_kill(pthread_self(), SIGVTALRM);
   EXPECT_EQ(nullptr, g_t04_seen.load(std::memory_order_relaxed))
-      << "currentSignalSafe() must return null for unregistered threads";
+      << "current() must return null for unregistered threads";
   return nullptr;
 }
 
@@ -191,7 +193,7 @@ TEST(ThreadTeardownSafetyTest, SignalSafeAccessorReturnsNullWithoutInit) {
 static std::atomic<int> g_t05_signal_count{0};
 
 static void t05_handler(int) {
-  (void)ProfiledThread::currentSignalSafe();
+  (void)ProfiledThread::current();
   g_t05_signal_count.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -365,11 +367,11 @@ TEST(ThreadTeardownSafetyTest, ForcedUnwindWithConcurrentSignalDoesNotCrash) {
 
 static void *t08_body(void *) {
   ProfiledThread::initCurrentThread();
-  ProfiledThread *first = ProfiledThread::currentSignalSafe();
+  ProfiledThread *first = ProfiledThread::current();
   EXPECT_NE(nullptr, first);
 
   ProfiledThread::initCurrentThread(); // second call on the same thread
-  ProfiledThread *second = ProfiledThread::currentSignalSafe();
+  ProfiledThread *second = ProfiledThread::current();
   EXPECT_NE(nullptr, second);
   EXPECT_EQ(first, second) << "double init must not allocate a second ProfiledThread";
 
@@ -389,7 +391,7 @@ static std::atomic<bool> g_t09_stop{false};
 static std::atomic<int> g_t09_signal_count{0};
 
 static void t09_handler(int) {
-  (void)ProfiledThread::currentSignalSafe();
+  (void)ProfiledThread::current();
   g_t09_signal_count.fetch_add(1, std::memory_order_relaxed);
 }
 
@@ -436,9 +438,9 @@ TEST(ThreadTeardownSafetyTest, HighFrequencySignalsDuringThreadChurn) {
 
 static void *t10_body(void *) {
   ProfiledThread::initCurrentThread();
-  ProfiledThread *pt = ProfiledThread::currentSignalSafe();
+  ProfiledThread *pt = ProfiledThread::current();
   if (pt == nullptr) {
-    ADD_FAILURE() << "currentSignalSafe() returned nullptr";
+    ADD_FAILURE() << "current() returned nullptr";
     return nullptr;
   }
 
@@ -463,6 +465,47 @@ TEST(ThreadTeardownSafetyTest, CriticalSectionReentrancyGuard) {
   pthread_t t;
   ASSERT_EQ(0, pthread_create(&t, nullptr, t10_body, nullptr));
   pthread_join(t, nullptr);
+}
+
+// ── NM_THREAD_LOCAL accounting balances across the ProfiledThread lifecycle ──
+// forTid() (in initCurrentThread) increments NM_THREAD_LOCAL; the matching
+// decrement lives in freeValue(), which is invoked both by release() (via
+// ThreadLocal::clear()) and by the pthread-key destructor on thread exit.
+// These verify both teardown paths return the gauge to its baseline.
+
+static std::atomic<long long> g_tl_live_during{0};
+
+static void *tl_release_body(void *) {
+  ProfiledThread::initCurrentThread();
+  g_tl_live_during.store(NativeMem::live(NM_THREAD_LOCAL),
+                         std::memory_order_relaxed);
+  ProfiledThread::release();
+  return nullptr;
+}
+
+TEST(ThreadTeardownSafetyTest, NativeMemThreadLocalBalancesOnRelease) {
+  long long base = NativeMem::live(NM_THREAD_LOCAL);
+  pthread_t t;
+  ASSERT_EQ(0, pthread_create(&t, nullptr, tl_release_body, nullptr));
+  pthread_join(t, nullptr);
+  EXPECT_GT(g_tl_live_during.load(std::memory_order_relaxed), base)
+      << "forTid() must account the ProfiledThread allocation";
+  EXPECT_EQ(base, NativeMem::live(NM_THREAD_LOCAL))
+      << "release() -> clear() -> freeValue() must balance the accounting";
+}
+
+static void *tl_exit_body(void *) {
+  ProfiledThread::initCurrentThread();
+  return nullptr;  // no explicit release: thread exit runs freeValue()
+}
+
+TEST(ThreadTeardownSafetyTest, NativeMemThreadLocalReleasedOnThreadExit) {
+  long long base = NativeMem::live(NM_THREAD_LOCAL);
+  pthread_t t;
+  ASSERT_EQ(0, pthread_create(&t, nullptr, tl_exit_body, nullptr));
+  pthread_join(t, nullptr);
+  EXPECT_EQ(base, NativeMem::live(NM_THREAD_LOCAL))
+      << "pthread-key destructor (freeValue) must balance the accounting";
 }
 
 #endif // __linux__

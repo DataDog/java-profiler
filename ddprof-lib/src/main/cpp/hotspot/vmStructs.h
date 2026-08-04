@@ -14,11 +14,16 @@
 #include <type_traits>
 #include "codeCache.h"
 #include "counters.h"
+#include "faultInjection.h"
 #include "jvmThread.h"
 #include "safeAccess.h"
-#include "thread.h"
 #include "threadState.h"
 #include "vmEntry.h"
+
+#define JMETHODID_NOT_WALKABLE  (jmethodID)((uintptr_t)-1)
+inline bool isValidJMethodID(jmethodID method_id) {
+  return method_id != JMETHODID_NOT_WALKABLE && method_id != nullptr;
+}
 
 class GCHeapSummary;
 class HeapUsage;
@@ -28,11 +33,11 @@ class VMNMethod;
 // During stack walking in the profiler's signal handler, GC or class unloading
 // on another thread can free VMNMethod/VMMethod memory concurrently, making
 // pointers stale between the readability check and the actual dereference.
-// In release builds the setjmp/longjmp crash protection in walkVM catches the
+// In release builds the sigsetjmp/siglongjmp crash protection in walkVM catches the
 // resulting SIGSEGV. In debug builds the assert(isReadable) fires first,
 // sending SIGABRT which is uncatchable by crash protection.
 // When crash protection is active the assert is redundant — any bad read will
-// be caught by the SIGSEGV handler and recovered via longjmp — so we skip it.
+// be caught by the SIGSEGV handler and recovered via siglongjmp — so we skip it.
 //
 // Defined at the bottom of this file after VMThread is declared so that the
 // VMThread fallback path (isExceptionActive) is accessible without forward-
@@ -40,11 +45,18 @@ class VMNMethod;
 inline bool crashProtectionActive();
 
 template <typename T>
-inline T* cast_to(const void* ptr) {
+inline T* cast_to(const void* ptr);
+
+
+template <typename T>
+T* cast_or_null(const void* ptr) {
     assert(VM::isHotspot()); // This should only be used in HotSpot-specific code
     assert(T::type_size() > 0); // Ensure type size has been initialized
-    assert(crashProtectionActive() || ptr == nullptr || SafeAccess::isReadableRange(ptr, T::type_size()));
-    return reinterpret_cast<T*>(const_cast<void*>(ptr));
+    if(ptr == nullptr || SafeAccess::isReadableRange(ptr, T::type_size())) {
+        return reinterpret_cast<T*>(const_cast<void*>(ptr));
+    } else {
+        return nullptr;
+    }
 }
 
 #define TYPE_SIZE_NAME(name)    _##name##_size
@@ -72,10 +84,11 @@ inline T* cast_to(const void* ptr) {
       public: \
         static uint64_t type_size() { return TYPE_SIZE_NAME(name); } \
         static name * cast(const void* ptr) { return cast_to<name>(ptr); } \
+        static name * cast_or_null(const void* ptr) { return ::cast_or_null<name>(ptr); } \
         static name * cast_raw(const void* ptr) { return (name *)ptr; } \
-        static name * load_then_cast(const void* ptr) { \
-            assert(ptr != nullptr); \
-            return cast(*(const void**)ptr); }
+        static name * load_then_cast(const void* ptr) {     \
+            if (ptr == nullptr) return nullptr;             \
+            return cast_or_null(*(const void**)ptr); }
 
 #define DECLARE_END  };
 
@@ -202,6 +215,8 @@ typedef void* address;
     type_begin(VMConstMethod, MATCH_SYMBOLS("ConstMethod"))                                                         \
         field(_constmethod_constants_offset, offset, MATCH_SYMBOLS("_constants"))                                   \
         field(_constmethod_idnum_offset, offset, MATCH_SYMBOLS("_method_idnum"))                                    \
+        field(_constmethod_name_index_offset, offset, MATCH_SYMBOLS("_name_index"))                                 \
+        field(_constmethod_sig_index_offset, offset, MATCH_SYMBOLS("_signature_index"))                             \
     type_end()                                                                                                      \
     type_begin(VMConstantPool, MATCH_SYMBOLS("ConstantPool"))                                                       \
         field(_pool_holder_offset, offset, MATCH_SYMBOLS("_pool_holder"))                                           \
@@ -434,11 +449,11 @@ class VMStructs {
     static void checkNativeBinding(jvmtiEnv *jvmti, JNIEnv *jni, jmethodID method, void *address);
     static const void *findHeapUsageFunc();
 
-    const char* at(int offset) {
-        const char* ptr = (const char*)this + offset;
-        assert(crashProtectionActive() || SafeAccess::isReadable(ptr));
-        return ptr;
-    }
+    inline const char* at(int offset);
+    inline const char* at(int offset) const;
+
+    template <typename T, bool safe = false>
+    T load_at_offset(int offset) const;
 
     static bool goodPtr(const void* ptr) {
         return (uintptr_t)ptr >= 0x1000 && ((uintptr_t)ptr & (sizeof(uintptr_t) - 1)) == 0;
@@ -596,7 +611,6 @@ class VMNMethod;
 class VMMethod;
 
 DECLARE(VMSymbol)
-  public:
     unsigned short length() {
         assert(_symbol_length_offset >= 0);
         return *(unsigned short*) at(_symbol_length_offset);
@@ -635,7 +649,6 @@ DECLARE(VMClassLoaderData)
 DECLARE_END
 
 DECLARE(VMKlass)    
-  public:
     static VMKlass* fromJavaClass(JNIEnv* env, jclass cls) {
         if (sizeof(VMKlass*) == 8) {
             return VMKlass::cast((const void*)(intptr_t)env->GetLongField(cls, _klass));
@@ -654,7 +667,24 @@ DECLARE(VMKlass)
             if (_compact_object_headers) {
                 uintptr_t mark = *(uintptr_t*)oop;
                 if (mark & MONITOR_BIT) {
-                    mark = *(uintptr_t*)(mark ^ MONITOR_BIT);
+                    // TOCTOU: MonitorDeflationThread may free the ObjectMonitor between
+                    // reading the mark word and dereferencing the monitor pointer. Use
+                    // safeFetch64 so a concurrent deflation/free does not crash here.
+                    // Two reads with different error values disambiguate a genuine fault
+                    // from a real header word that happens to equal one sentinel value
+                    // (mirrors SafeAccess::isReadable()'s double-read trick).
+                    int64_t* monitor_addr = (int64_t*)(mark ^ MONITOR_BIT);
+                    uintptr_t tmp = (uintptr_t)SafeAccess::safeFetch64(monitor_addr, 1);
+                    if (tmp != 1) {
+                        mark = tmp;
+                    } else {
+                        tmp = (uintptr_t)SafeAccess::safeFetch64(monitor_addr, 2);
+                        if (tmp != 2) {
+                            mark = tmp;
+                        } else {
+                            return nullptr;
+                        }
+                    }
                 }
                 narrow_klass = mark >> _markWord_klass_shift;
             } else {
@@ -735,7 +765,6 @@ DECLARE(VMJavaFrameAnchor)
 DECLARE_END
 
 DECLARE(VMContinuationEntry)
-  public:
     // Address of the enterSpecial frame's {saved_fp, return_addr} pair.
     // Layout above this address: [saved_fp][return_addr_to_carrier][carrier_sp...]
     // The ContinuationEntry struct is embedded on the carrier stack immediately
@@ -776,7 +805,6 @@ enum JVMJavaThreadState {
 
 DECLARE(VMThread)
   friend class JVMThread;
-  public:
     static void* initialize(jthread thread);
 
     static inline VMThread* current();
@@ -822,17 +850,6 @@ DECLARE(VMThread)
         return *(void**) at(_thread_exception_offset);
     }
 
-    // Returns true if setjmp crash protection is currently active for this thread.
-    // Reads the exception field via direct pointer arithmetic, deliberately bypassing
-    // at() and its crashProtectionActive() assertion to avoid infinite recursion.
-    // Safe because 'this' is the current live thread (we are in its signal handler).
-    static bool isExceptionActive() {
-        if (_thread_exception_offset < 0) return false;
-        void* vt = JVMThread::current();
-        if (vt == nullptr) return false;
-        return *(const void* const*)((const char*)vt + _thread_exception_offset) != nullptr;
-    }
-
     NOADDRSANITIZE VMJavaFrameAnchor* anchor() {
         if (!isJavaThread(this)) return NULL;
         assert(_thread_anchor_offset >= 0);
@@ -869,8 +886,21 @@ private:
 
 DECLARE_END
 
-DECLARE(VMConstMethod)
+DECLARE(VMConstantPool)
+    inline VMKlass* holder_or_null() const;
+    inline VMSymbol* symbolAt(int index) const;
+ private:
+    inline intptr_t* base() const;
 DECLARE_END
+
+DECLARE(VMConstMethod)
+    inline VMConstantPool* constants_or_null() const;
+    inline VMSymbol* name() const;
+    inline VMSymbol* signature() const;
+private:
+    inline u16 nameIndex() const;
+    inline u16 signatureIndex() const;
+ DECLARE_END
 
 
 DECLARE(VMMethod)   
@@ -879,24 +909,17 @@ DECLARE(VMMethod)
     static bool check_jmethodID_hotspot(jmethodID id);
 
   public:
-    jmethodID id();
+    inline jmethodID id();
 
     // Performs extra validation when VMMethod comes from incomplete frame
-    jmethodID validatedId();
-
-    // Workaround for JDK-8313816
-    static bool isStaleMethodId(jmethodID id) {
-        if (!_can_dereference_jmethod_id) return false;
-
-        VMMethod* vm_method = VMMethod::load_then_cast((const void*)id);
-        return vm_method == NULL || vm_method->id() == NULL;
-    }
+    inline jmethodID validatedId();
 
     const char* bytecode() {
         assert(_method_constmethod_offset >= 0);
         return *(const char**) at(_method_constmethod_offset) + VMConstMethod::type_size();
     }
 
+    inline VMConstMethod* constMethod_or_null() const;
     inline VMNMethod* code();
 
     static bool check_jmethodID(jmethodID id);
@@ -912,7 +935,6 @@ static inline bool startsWith(const char* s, const char (&pattern)[N]) {
 }
 
 DECLARE(VMNMethod)
-  public:
     int size() {
         assert(_blob_size_offset >= 0);
         return *(int*) at(_blob_size_offset);
@@ -1107,10 +1129,7 @@ DECLARE(VMFlag)
     static VMFlag* find(const char* name);
     static VMFlag *find(const char* name, std::initializer_list<Type> types);
 
-    const char* name() {
-        assert(_flag_name_offset >= 0);
-        return *(const char**) at(_flag_name_offset);
-    }
+    inline const char* name() const;
 
     int type();
 
@@ -1194,19 +1213,5 @@ class InterpreterFrame : VMStructs {
         return _interpreter_frame_bcp_offset;
     }
 };
-
-// Defined here (after VMThread) so the VMThread::isExceptionActive() fallback
-// is accessible. The forward declaration at the top of this file allows cast_to()
-// to reference it before VMThread is declared.
-inline bool crashProtectionActive() {
-    ProfiledThread* pt = ProfiledThread::currentSignalSafe();
-    if (pt != nullptr && pt->isCrashProtectionActive()) return true;
-    // Fallback for threads without ProfiledThread TLS (e.g. JVM internal threads):
-    // if walkVM has set up setjmp protection via vm_thread->exception(), the assert
-    // is equally redundant — any bad read will be caught by the SIGSEGV handler.
-    // Uses VMThread::isExceptionActive() which reads the field directly without
-    // going through at() to avoid recursive assertion.
-    return JVMThread::key() != pthread_key_t(-1) && VMThread::isExceptionActive();
-}
 
 #endif // _HOTSPOT_VMSTRUCTS_H

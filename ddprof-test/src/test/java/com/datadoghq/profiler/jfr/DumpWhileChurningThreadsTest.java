@@ -6,6 +6,7 @@ import com.datadoghq.profiler.junit.CStack;
 import com.datadoghq.profiler.junit.RetryTest;
 
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.TestTemplate;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -27,6 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Exercises the race by churning short-lived threads while calling dump() repeatedly.
  * A SIGSEGV would abort the JVM and fail the test with a non-zero exit code.
  */
+@Tag("slow")
 public class DumpWhileChurningThreadsTest extends CStackAwareAbstractProfilerTest {
 
     private static final int TEST_DURATION_SECS = 10;

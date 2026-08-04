@@ -25,9 +25,15 @@
 #include <signal.h>
 
 class CTimer : public Engine {
+private:
+  // cppcheck-suppress unusedPrivateFunction
+  static void signalHandler(int signo, siginfo_t *siginfo, void *ucontext);
+
 protected:
-  // This is accessed from signal handlers, so must be async-signal-safe
+  // Accessed from signal handlers (including CTimerJvmti subclass), so must
+  // be async-signal-safe. Mutated via enableEvents().
   static bool _enabled;
+
   static long _interval;
   static CStack _cstack;
   static int _signal;
@@ -37,10 +43,6 @@ protected:
 
   int registerThread(int tid);
   void unregisterThread(int tid);
-
-private:
-  // cppcheck-suppress unusedPrivateFunction
-  static void signalHandler(int signo, siginfo_t *siginfo, void *ucontext);
 
 public:
   const char *units() { return "ns"; }

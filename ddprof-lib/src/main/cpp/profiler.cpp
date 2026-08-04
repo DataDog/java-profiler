@@ -13,8 +13,11 @@
 #include "guards.h"
 #include "common.h"
 #include "counters.h"
+#include "nativeMem.h"
 #include "ctimer.h"
+#include "signalInflight.h"
 #include "dwarf.h"
+#include "faultInjection.h"
 #include "flightRecorder.h"
 #include "itimer.h"
 #include "hotspot/vmStructs.inline.h"
@@ -22,6 +25,7 @@
 #include "j9/j9Support.h"
 #include "j9/j9WallClock.h"
 #include "jvmSupport.h"
+#include "jvmSupport.inline.h"
 #include "jvmThread.h"
 #include "libraryPatcher.h"
 #include "objectSampler.h"
@@ -31,7 +35,6 @@
 #include "stackFrame.h"
 #include "stackWalker.h"
 #include "symbols.h"
-#include "thread.h"
 #include "tsc.h"
 #include "utils.h"
 #include "wallClock.h"
@@ -74,8 +77,12 @@ static CTimer ctimer;
 static CTimerJvmti ctimer_jvmti;
 
 void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
-  ProfiledThread::initCurrentThread();
-  ProfiledThread *current = ProfiledThread::current();
+  // JVMTI callback - outside signal handler
+  ProfiledThread* current = ProfiledThread::initCurrentThreadSignalSafe();
+  if (current == nullptr) {
+    return;
+  }
+
   current->setJavaThread(true);
   int tid = current->tid();
   if (_thread_filter.enabled()) {
@@ -93,7 +100,8 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
 }
 
 void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
-  ProfiledThread *current = ProfiledThread::currentSignalSafe();
+  // Thread teardown: no point to initialize TLS if not yet initialized
+  ProfiledThread *current = ProfiledThread::current();
   int tid = -1;
   
   if (current != nullptr) {
@@ -114,6 +122,7 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
       SignalBlocker blocker;
       _cpu_engine->unregisterThread(tid);
       _wall_engine->unregisterThread(tid);
+      LivenessTracker::instance()->releaseThreadLocalState();
       ProfiledThread::release();
     }
     return;
@@ -129,6 +138,7 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   updateThreadName(jvmti, jni, thread, false);
   _cpu_engine->unregisterThread(tid);
   _wall_engine->unregisterThread(tid);
+  LivenessTracker::instance()->releaseThreadLocalState();
 }
 
 int Profiler::registerThread(int tid) {
@@ -294,6 +304,7 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
   if (_cstack == CSTACK_NO ||
       (event_type == BCI_ALLOC || event_type == BCI_ALLOC_OUTSIDE_TLAB) ||
       (event_type != BCI_CPU && event_type != BCI_WALL &&
+       !isHookPrefixedSample(event_type) &&
        _cstack == CSTACK_DEFAULT)) {
     return 0;
   }
@@ -318,7 +329,9 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
                                          java_ctx, truncated);
   }
 
-  return convertNativeTrace(native_frames, callchain, frames, lock_index);
+  bool skip_hook_prefix = isHookPrefixedSample(event_type);
+  return convertNativeTrace(native_frames, callchain, frames, lock_index,
+                            skip_hook_prefix);
 }
 
 /**
@@ -375,7 +388,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
     char mark = (method_name != nullptr) ? NativeFunc::read_mark(method_name) : 0;
 
     if (mark != 0) {
-      return {nullptr, BCI_NATIVE_FRAME, true};  // Marked - stop processing
+      return NativeFrameResolution(nullptr, BCI_NATIVE_FRAME, mark);  // Marked - caller dispatches on mark
     }
 
     // Pack remote symbolication data using utility struct
@@ -383,7 +396,7 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
     uint32_t lib_index = (uint32_t)lib->libIndex();
     unsigned long packed = RemoteFramePacker::pack(pc_offset, mark, lib_index);
 
-    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE, false);
+    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE);
   }
 
   // Traditional symbol resolution
@@ -391,8 +404,11 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
   if (lib != nullptr) {
     lib->binarySearch((void*)pc, &method_name);
   }
-  if (method_name != nullptr && NativeFunc::is_marked(method_name)) {
-    return NativeFrameResolution(nullptr, BCI_NATIVE_FRAME, true);
+  if (method_name != nullptr) {
+    char mark = NativeFunc::read_mark(method_name);
+    if (mark != 0) {
+      return NativeFrameResolution(nullptr, BCI_NATIVE_FRAME, mark);
+    }
   }
 
   // No symbol but known library: pack for library-relative identification.
@@ -402,10 +418,10 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
     uintptr_t pc_offset = pc - (uintptr_t)lib->imageBase();
     uint32_t lib_index = (uint32_t)lib->libIndex();
     unsigned long packed = RemoteFramePacker::pack(pc_offset, 0, lib_index);
-    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE, false);
+    return NativeFrameResolution(packed, BCI_NATIVE_FRAME_REMOTE);
   }
 
-  return NativeFrameResolution(method_name, BCI_NATIVE_FRAME, false);
+  return NativeFrameResolution(method_name, BCI_NATIVE_FRAME);
 }
 
 /**
@@ -418,9 +434,16 @@ Profiler::NativeFrameResolution Profiler::resolveNativeFrameForWalkVM(uintptr_t 
  * marked frames (JVM internals) that should terminate the stack walk.
  */
 int Profiler::convertNativeTrace(int native_frames, const void **callchain,
-                                 ASGCT_CallFrame *frames, int lock_index) {
+                                 ASGCT_CallFrame *frames, int lock_index,
+                                 bool skip_hook_prefix) {
   int depth = 0;
   void* prev_identifier = NULL;  // Can be jmethodID or frame pointer for remote
+  // skip_hook_prefix: the walk started inside profiler-internal code (e.g. the
+  // malloc/socket hook call chain), not at an interrupted user PC. Discard frames
+  // until the hook wrapper's own MARK_JAVA_PROFILER-marked frame is reached, then
+  // resume normally from the real caller. Other mark kinds still terminate the
+  // scan immediately, same as the non-skipping case.
+  bool skipping = skip_hook_prefix;
 
   for (int i = 0; i < native_frames; i++) {
     uintptr_t pc = (uintptr_t)callchain[i];
@@ -436,9 +459,20 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
         char mark = (method_name != nullptr) ? NativeFunc::read_mark(method_name) : 0;
 
         if (mark != 0) {
+          if (skip_hook_prefix && mark == MARK_JAVA_PROFILER) {
+            depth = 0;
+            skipping = false;
+            continue;
+          }
+          if (skipping) {
+            // A non-MARK_JAVA_PROFILER mark terminated the scan before the
+            // hook boundary was ever found; the sample has no native stack.
+            Counters::increment(NATIVE_TRACE_HOOK_PREFIX_NOT_FOUND);
+          }
           // Terminate scan at marked frame
           return depth;
         }
+        if (skipping) continue;
 
         // Populate remote frame inline - no allocation needed!
         // Pass the mark we already retrieved to avoid duplicate binarySearch
@@ -456,10 +490,24 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
 
     // Fallback: Traditional symbol resolution
     const char *method_name = findNativeMethod((void*)pc);
-    if (method_name != nullptr && NativeFunc::is_marked(method_name)) {
-      // Terminate scan at marked frame
-      return depth;
+    if (method_name != nullptr) {
+      char mark = NativeFunc::read_mark(method_name);
+      if (mark != 0) {
+        if (skip_hook_prefix && mark == MARK_JAVA_PROFILER) {
+          depth = 0;
+          skipping = false;
+          continue;
+        }
+        if (skipping) {
+          // A non-MARK_JAVA_PROFILER mark terminated the scan before the
+          // hook boundary was ever found; the sample has no native stack.
+          Counters::increment(NATIVE_TRACE_HOOK_PREFIX_NOT_FOUND);
+        }
+        // Terminate scan at marked frame
+        return depth;
+      }
     }
+    if (skipping) continue;
 
     // Store standard frame
     jmethodID current_method = (jmethodID)method_name;
@@ -473,6 +521,11 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
     }
   }
 
+  if (skipping) {
+    // The hook-boundary (MARK_JAVA_PROFILER) frame was never found in the
+    // callchain; every frame was discarded and the sample has no native stack.
+    Counters::increment(NATIVE_TRACE_HOOK_PREFIX_NOT_FOUND);
+  }
   return depth;
 }
 
@@ -627,7 +680,7 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
 
     call_trace_id =
         _call_trace_storage.put(num_frames, frames, truncated, counter);
-    ProfiledThread *thread = ProfiledThread::currentSignalSafe();
+    ProfiledThread *thread = ProfiledThread::current();
     if (thread != nullptr) {
       thread->recordCallTraceId(call_trace_id);
     }
@@ -790,7 +843,7 @@ void Profiler::writeHeapUsage(long value, bool live) {
   _locks[lock_index].unlock();
 }
 
-void Profiler::prewarmUnwinder() {
+bool Profiler::prewarmUnwinder() {
 #ifdef __linux__
   // J9 on aarch64 (and other JVMs) lazily loads libgcc_s.so.1 from its DWARF
   // unwinder during stack walks. When that happens inside a signal handler
@@ -811,7 +864,13 @@ void Profiler::prewarmUnwinder() {
   // dlopen by SONAME is the only mechanism that works under static-libgcc.
   // libgcc_s.so.1 has been the stable SONAME since 2002; a bump would
   // constitute a glibc/GCC C++ ABI break and is treated as a fixed contract.
-  (void)dlopen("libgcc_s.so.1", RTLD_LAZY | RTLD_GLOBAL);
+  //
+  // INJECT_FAULT_BOOL_LIKELY lets fault-injection builds force this to
+  // report failure without the library actually being absent, so
+  // checkState()'s "Missing libgcc_s.so" path can be exercised in CI.
+  return INJECT_FAULT_BOOL_LIKELY(dlopen("libgcc_s.so.1", RTLD_LAZY | RTLD_GLOBAL) != nullptr);
+#else
+  return true;
 #endif
 }
 
@@ -866,11 +925,6 @@ void Profiler::switchLibraryTrap(bool enable) {
   __atomic_store_n(_dlopen_entry, impl, __ATOMIC_RELEASE);
 }
 
-void Profiler::enableEngines() {
-  _cpu_engine->enableEvents(true);
-  _wall_engine->enableEvents(true);
-}
-
 void Profiler::disableEngines() {
   _cpu_engine->enableEvents(false);
   _wall_engine->enableEvents(false);
@@ -879,15 +933,15 @@ void Profiler::disableEngines() {
 void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // J9 installs a SIGSEGV handler that uses siglongjmp() to recover from
   // null-pointer-check faults during normal Java execution.  When we chain to
-  // it, that longjmp unwinds past our stack frame and skips the RAII
+  // it, that siglongjmp unwinds past our stack frame and skips the RAII
   // destructor, permanently leaking depth on the thread.  Release the guard
   // before chaining so depth is correct whether the chained handler returns
-  // or longjmps.
+  // or siglongjmps.
   //
   // Sanitizer-coverage note: this also means depth == 0 inside the chained
   // handler, so DEBUG_ASSERT_NOT_IN_SIGNAL() will NOT fire for AS-unsafe
   // code reachable from a chained handler that returns normally.  This is
-  // the lesser of two evils — leaking depth on longjmp would silently
+  // the lesser of two evils — leaking depth on siglongjmp would silently
   // break the production deferred-refresh gate, while the sanitizer gap
   // is bounded to third-party signal handler code we don't own.
   SIGNAL_HANDLER_GUARD();
@@ -895,7 +949,7 @@ void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     return;  // Handled — destructor decrements depth
   }
   SIGNAL_HANDLER_GUARD_RELEASE();
-  // Not handled, chain to next handler (may longjmp; never return through us)
+  // Not handled, chain to next handler (may siglongjmp; never return through us)
   SigAction chain = OS::getSegvChainTarget();
   if (chain != nullptr) {
     chain(signo, siginfo, ucontext);
@@ -906,7 +960,7 @@ void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 
 void Profiler::busHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // See segvHandler: release before chaining in case the chained handler
-  // longjmps through us.
+  // siglongjmps through us.
   SIGNAL_HANDLER_GUARD();
   if (crashHandlerInternal(signo, siginfo, ucontext)) {
     return;  // Handled — destructor decrements depth
@@ -923,7 +977,7 @@ void Profiler::busHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 
 // Returns: 0 = not handled (chain to next handler), non-zero = handled
 int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext) {
-  ProfiledThread* thrd = ProfiledThread::currentSignalSafe();
+  ProfiledThread* thrd = ProfiledThread::current();
 
   // First, try to handle safefetch - this doesn't need TLS or any protection
   // because it directly checks the PC and modifies ucontext to skip the fault.
@@ -933,10 +987,8 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
   }
 
   // Reentrancy protection: use TLS-based tracking if available.
-  // If TLS is not available, we can only safely handle faults that we can
-  // prove are from our protected code paths (checked via sameStack heuristic
-  // in HotspotSupport::checkFault). For anything else, we must chain immediately
-  // to avoid claiming faults that aren't ours.
+  // If TLS is not available, the thread is not protected by
+  // siglongjmp, so bail out.
   bool have_tls_protection = false;
   if (thrd != nullptr) {
     if (!thrd->enterCrashHandler()) {
@@ -945,9 +997,6 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
     }
     have_tls_protection = true;
   }
-  // If thrd == nullptr, we proceed but with limited handling capability.
-  // Only HotspotSupport::checkFault (which has its own sameStack fallback)
-  // and the JDK-8313796 workaround can safely handle faults without TLS.
 
   StackFrame frame(ucontext);
   uintptr_t pc = frame.pc();
@@ -968,14 +1017,13 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
     return 1;  // handled
   }
 
+  // Profiler::checkFault has its own check if we're in a protected stack walk.
+  // If the fault is from our protected walk, it will siglongjmp and never return.
+  // If it returns, the fault wasn't from our code.
+  Profiler::checkFault(thrd, siginfo, ucontext);
+
   if (VM::isHotspot()) {
     // the following checks require vmstructs and therefore HotSpot
-
-    // HotspotSupport::checkFault has its own fallback for when TLS is unavailable:
-    // it uses sameStack() heuristic to check if we're in a protected stack walk.
-    // If the fault is from our protected walk, it will longjmp and never return.
-    // If it returns, the fault wasn't from our code.
-    HotspotSupport::checkFault(thrd);
 
     // Workaround for JDK-8313796 if needed. Setting cstack=dwarf also helps
     if (_need_JDK_8313796_workaround &&
@@ -994,9 +1042,53 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
   return 0;  // not handled, safe to chain
 }
 
+static std::atomic<uintptr_t> profiler_min_address{0};
+static std::atomic<uintptr_t> profiler_max_address{0};
+
+#ifdef UNIT_TEST
+void Profiler::setAddressRangeForTest(uintptr_t min, uintptr_t max) {
+  profiler_min_address.store(min, std::memory_order_relaxed);
+  profiler_max_address.store(max, std::memory_order_relaxed);
+}
+
+void Profiler::resetAddressRangeForTest() {
+  profiler_min_address.store(0, std::memory_order_relaxed);
+  profiler_max_address.store(0, std::memory_order_relaxed);
+}
+#endif
+
 void Profiler::setupSignalHandlers() {
   // Do not re-run the signal setup (run only when VM has not been loaded yet)
   if (__sync_bool_compare_and_swap(&_signals_initialized, false, true)) {
+      // Initialize infrastructure before enabling signal handler
+
+      // Eagerly initialize the Counters singleton off the signal path, before any
+      // handler that increments counters is installed. The crash handler
+      // (crashHandlerInternal -> SafeAccess::handle_safefetch) bumps
+      // SAFEFETCH_FAILED / SAFECOPY_FAILED, and other async handlers bump the
+      // STACKWALK* counters. The first touch of the singleton lazily runs
+      // aligned_alloc + memset and takes the C++ static-init guard lock — none of
+      // which are async-signal-safe. Forcing that construction here guarantees the
+      // signal path only ever performs lock-free atomic increments on the
+      // already-allocated array.
+      (void)Counters::getCounters();
+
+      // Get address range of java profiler library
+      Libraries* libs = Libraries::instance();
+      CodeCache* prof_lib = libs->findLibraryByAddress((const void*)&Profiler::setupSignalHandlers);
+      assert(prof_lib != nullptr);
+      profiler_min_address = reinterpret_cast<uintptr_t>(prof_lib->minAddress());
+      profiler_max_address = reinterpret_cast<uintptr_t>(prof_lib->maxAddress());
+      // Prevents the compiler from moving profiler_min_address/profiler_max_address stores pass
+      // signal handler setup.
+      std::atomic_signal_fence(std::memory_order_release);
+
+      #ifdef __FAULT_INJECTION__
+      // Reserve the PROT_NONE guard region used to poison memory-access sites.
+      // Done here (off the signal path) once handlers are installed.
+      faultinj::init();
+      #endif
+
       if (VM::isHotspot() || VM::isOpenJ9()) {
         // HotSpot and J9 tolerate interposed SIGSEGV/SIGBUS handler; other JVMs probably not
         // IMPORTANT: protectSignalHandlers must be called BEFORE replaceSigsegvHandler so that
@@ -1191,10 +1283,6 @@ Engine *Profiler::selectAllocEngine(Arguments &args) {
 }
 
 Error Profiler::checkJvmCapabilities() {
-  if (!JVMThread::isInitialized()) {
-    return Error("Could not find JVMThread bridge. Unsupported JVM?");
-  }
-
   if (!JVMThread::hasJavaThreadId()) {
     return Error("Could not find Thread ID field. Unsupported JVM?");
   }
@@ -1212,7 +1300,7 @@ Error Profiler::checkJvmCapabilities() {
     }
   }
 
-  if (!VMStructs::libjvm()->hasDebugSymbols() && !VM::isOpenJ9()) {
+  if (!VM::libjvm()->hasDebugSymbols()) {
     Log::warn("Install JVM debug symbols to improve profile accuracy");
   }
 
@@ -1232,18 +1320,65 @@ void Profiler::check_JDK_8313796_workaround() {
     _need_JDK_8313796_workaround = !fixed_version;
 }
 
+Error Profiler::checkState() {
+  State s = state();
+  if (s == ERROR) {
+    return Error("Profiler encountered fatal error");
+  } else if (s == NEW) {
+    // Force libgcc_s to load now (idempotent dlopen) so the JVM's DWARF
+    // unwinder cannot lazy-load it later from signal context.
+    if (!prewarmUnwinder()) {
+      _state.store(ERROR, std::memory_order_release);
+      return Error("Missing libgcc_s.so.1");
+    }
+
+    // Make sure JVMSupport is initialized
+    // In theory, it should be initialized in JVMTI::VMInit() callback,
+    // but the callback arrives too late, after this method is called.
+    if (!JVMSupport::initialize()) {
+      _state.store(ERROR, std::memory_order_release);
+      return Error("Profiler encountered fatal error");
+    }
+  } else if (s > IDLE) {
+    return Error("Profiler already started");
+  }
+  return Error::OK;
+}
+
+Error Profiler::init() {
+  MutexLocker ml(_state_lock);
+
+  State s = state();
+  if (s == ERROR) {
+    return Error("Profiler encountered fatal error");
+  } else if (s == NEW) {
+    // Make sure JVMSupport is initialized
+    // In theory, it should be initialized in JVMTI::VMInit() callback,
+    // but the callback arrives too late, after this method is called.
+    if (!JVMSupport::initialize()) {
+      _state.store(ERROR, std::memory_order_release);
+      return Error("Profiler encountered fatal error");
+    }
+  }
+  // Unlike checkState(), init() does not reject a RUNNING/TERMINATED
+  // profiler: it is idempotent per-thread setup for the Java API
+  // (e.g. JavaProfiler.getInstance()), not a state transition, and the
+  // agent may already be RUNNING by the time it is called (VMInit can
+  // auto-start the profiler before Java code gets a chance to call in).
+
+  // JNI down call, outside signal handler
+  ProfiledThread::initCurrentThreadSignalSafe();
+  return Error::OK;
+}
 
 Error Profiler::start(Arguments &args, bool reset) {
   MutexLocker ml(_state_lock);
-  if (state() > IDLE) {
-    return Error("Profiler already started");
+  Error error = checkState();
+  if (error) {
+    return error;
   }
 
-  // Force libgcc_s to load now (idempotent dlopen) so the JVM's DWARF
-  // unwinder cannot lazy-load it later from signal context.
-  prewarmUnwinder();
-
-  Error error = checkJvmCapabilities();
+  error = checkJvmCapabilities();
   if (error) {
     return error;
   }
@@ -1299,6 +1434,9 @@ Error Profiler::start(Arguments &args, bool reset) {
     }
     _string_label_map.clearAll();
     _context_value_map.clearAll();
+    // Signal the Java layer that context-value encodings have been reassigned so it can drop its
+    // process-wide ContextValueCache (consumed in JavaProfiler.execute after this start returns).
+    _context_value_dict_reset.store(true, std::memory_order_release);
 
     // Reset call trace storage
     if (!_omit_stacktraces) {
@@ -1315,27 +1453,43 @@ Error Profiler::start(Arguments &args, bool reset) {
 
   // (Re-)allocate calltrace buffers
   if (_max_stack_depth != args._jstackdepth) {
-    _max_stack_depth = args._jstackdepth;
-    size_t nelem = _max_stack_depth + RESERVED_FRAMES;
+    size_t prev_nelem = _max_stack_depth + RESERVED_FRAMES;
+    size_t nelem = (size_t)args._jstackdepth + RESERVED_FRAMES;
 
+    // Phase 1: allocate all replacements up front. If any allocation fails,
+    // roll back the ones already made and leave the profiler unchanged — old
+    // buffers, _max_stack_depth, and all accounting stay consistent. (The old
+    // code swapped shard-by-shard and reset _max_stack_depth to 0 on failure,
+    // leaving a partially-swapped, mis-accounted state.)
+    CallTraceBuffer *fresh[CONCURRENCY_LEVEL];
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
-      // Allocate the replacement before touching the slot so a calloc failure
-      // does not leave the slot pointing at freed memory.
-      CallTraceBuffer *fresh =
-          (CallTraceBuffer*)calloc(nelem, sizeof(CallTraceBuffer));
-      if (fresh == NULL) {
-        _max_stack_depth = 0;
+      fresh[i] = (CallTraceBuffer*)calloc(nelem, sizeof(CallTraceBuffer));
+      if (fresh[i] == NULL) {
+        for (int j = 0; j < i; j++) {
+          free(fresh[j]);
+        }
         return Error("Not enough memory to allocate stack trace buffers (try "
                      "smaller jstackdepth)");
       }
-      // Swap under the per-shard lock: all readers (recordJVMTISample,
-      // recordExternalSample) acquire this lock via tryLock before reading
-      // _calltrace_buffer, so no reader can observe a freed pointer mid-replacement.
+    }
+
+    // Phase 2: all allocations succeeded — commit. Swap each shard under its
+    // per-shard lock (readers acquire it via tryLock before reading
+    // _calltrace_buffer, so none observes a freed pointer mid-replacement),
+    // then free the old buffer and reconcile accounting.
+    _max_stack_depth = args._jstackdepth;
+    for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
+      NativeMem::record(NM_CALLTRACE, (long long)(nelem * sizeof(CallTraceBuffer)));
       _locks[i].lock();
       CallTraceBuffer *prev = _calltrace_buffer[i];
-      _calltrace_buffer[i] = fresh;
+      _calltrace_buffer[i] = fresh[i];
       _locks[i].unlock();
       free(prev);
+      if (prev != NULL) {
+        // Account the free after it has happened, consistent with the other
+        // decrement sites (FlightRecorder::stop, ~ThreadFilter).
+        NativeMem::record(NM_CALLTRACE, -(long long)(prev_nelem * sizeof(CallTraceBuffer)));
+      }
     }
   }
 
@@ -1353,7 +1507,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   // Minor optim: Register the current thread (start thread won't be called)
   if (_thread_filter.enabled()) {
     _thread_filter.clearActive();
-    ProfiledThread *current = ProfiledThread::current();
+    ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
     assert(current != nullptr);
     int slot_id = current->filterSlotId();
     if (slot_id < 0) {
@@ -1387,6 +1541,11 @@ Error Profiler::start(Arguments &args, bool reset) {
     }
   }
 
+  args._cstack = _cstack;
+  // Prepare JVMSupport for execution
+  JVMSupport::initExecution(args, VM::jvmti(), VM::jni());
+
+
   LibraryPatcher::initialize();
 
   // Kernel symbols are useful only for perf_events without --all-user
@@ -1396,8 +1555,6 @@ Error Profiler::start(Arguments &args, bool reset) {
   if (_remote_symbolication) {
     _libs->updateBuildIds();
   }
-
-  enableEngines();
 
   // Refresher must be running before the trap fires: dlopen_hook's
   // signal-context branch only marks dirty and relies on the refresher
@@ -1412,7 +1569,6 @@ Error Profiler::start(Arguments &args, bool reset) {
   _num_context_attributes = args._context_attributes.size();
   error = _jfr.start(args, reset);
   if (error) {
-    disableEngines();
     switchLibraryTrap(false);
     _libs->stopRefresher();
     return error;
@@ -1429,9 +1585,16 @@ Error Profiler::start(Arguments &args, bool reset) {
     }
   }
   if ((_event_mask & EM_WALL) && _wall_engine != &noop_engine) {
+    // Enable wall clock BEFORE starting its pthread: timerLoopCommon() checks
+    // _enabled once at startup and exits early if false, so the pthread would
+    // otherwise die immediately and wall profiling would be silently dead for
+    // the recording. JFR is already initialized by this point (_jfr.start()
+    // ran above).
+    _wall_engine->enableEvents(true);
     error = _wall_engine->start(args);
     if (error) {
       Log::warn("%s", error.message());
+      _wall_engine->enableEvents(false);
       error = Error::OK; // recoverable
     } else {
       activated |= EM_WALL;
@@ -1487,6 +1650,15 @@ Error Profiler::start(Arguments &args, bool reset) {
     // TODO: find a better way to resolve the thread name.
     onThreadStart(nullptr, nullptr, nullptr);
 
+    // Enable CPU profiling last. CPU SIGPROF handlers write JFR events, so
+    // _enabled must not become true until _jfr.start() has completed; we also
+    // wait until after _cpu_engine->start() so the very first signal a thread
+    // ever sees finds the engine fully wired. Unlike wall clock, CPU handlers
+    // re-check _enabled on every signal, so enabling here (rather than before
+    // start()) does not lose samples.
+    // Paired with drainInflight() on the stop side.
+    _cpu_engine->enableEvents(true);
+
     _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
@@ -1511,7 +1683,21 @@ Error Profiler::stop() {
     return Error("Profiler is not active");
   }
 
+  // Order matters: disable engines first so the _enabled check inside signal
+  // handlers will fail for any new signal delivered from now on. drain() then
+  // waits for handlers that already passed the check to leave their JFR write
+  // path. Only once those are gone is it safe to run the rest of the teardown
+  // (engine stops, JFR teardown) without risking use-after-free.
   disableEngines();
+
+  if (!SignalInflight::drain()) {
+    // Signal handlers stuck past the timeout. Leave state == RUNNING so the
+    // caller cannot start() against half-torn-down JFR and so engine stops
+    // (notably BaseWallClock::stop()'s pthread_join) are not double-invoked.
+    // The operation is idempotent on retry: disableEngines() above is an atomic
+    // store, and no other engine stop has run yet.
+    return Error("signal handlers did not drain; teardown skipped, retry stop()");
+  }
 
   if (_event_mask & EM_ALLOC)
     _alloc_engine->stop();
@@ -1535,6 +1721,9 @@ Error Profiler::stop() {
   Libraries::instance()->refresh();
   updateJavaThreadNames();
   updateNativeThreadNames();
+  // Refresh native-symbol counters so the final chunk (emitted by _jfr.stop()
+  // below) reflects them even when stop() runs without a preceding dump().
+  updateNativeLibMemStats();
 
   // If jvmtistacks delegation was used this recording, surface likely
   // misconfigurations. The JVM returns WRONG_PHASE when JFR is not recording
@@ -1591,11 +1780,12 @@ Error Profiler::stop() {
 
 Error Profiler::check(Arguments &args) {
   MutexLocker ml(_state_lock);
-  if (state() > IDLE) {
-    return Error("Profiler already started");
+  Error error = checkState();
+  if (error) {
+    return error;
   }
 
-  Error error = checkJvmCapabilities();
+  error = checkJvmCapabilities();
 
   if (!error && (args._event != NULL || args._cpu >= 0)) {
     _cpu_engine = selectCpuEngine(args);
@@ -1629,6 +1819,22 @@ Error Profiler::check(Arguments &args) {
   return error;
 }
 
+void Profiler::updateNativeLibMemStats() {
+  // CodeCache here is the profiler's native-symbol tables (not the JVM code
+  // cache). memoryUsage() is a recomputed gauge; read it once and publish the
+  // counters plus the NativeMem gauge (NATIVE_SYMBOLS) as absolutes.
+  const CodeCacheArray& native_libs = _libs->native_libs();
+  long long usage = (long long)native_libs.memoryUsage();
+  Counters::set(CODECACHE_NATIVE_COUNT, native_libs.count());
+  Counters::set(CODECACHE_NATIVE_SIZE_BYTES, usage);
+  // The runtime-stubs cache is a distinct HotSpot cache, not the native-symbol
+  // tables. Routed through JVMSupport so the HotSpot-only implementation stays
+  // behind the VM abstraction (0 on J9/Zing).
+  Counters::set(CODECACHE_RUNTIME_STUBS_SIZE_BYTES,
+                JVMSupport::runtimeStubsMemoryUsage());
+  NativeMem::setLive(NM_NATIVE_SYMBOLS, usage);
+}
+
 Error Profiler::dump(const char *path, const int length) {
   MutexLocker ml(_state_lock);
   State cur_state = state();
@@ -1646,11 +1852,7 @@ Error Profiler::dump(const char *path, const int length) {
     updateJavaThreadNames();
     updateNativeThreadNames();
 
-    const CodeCacheArray& native_libs = _libs->native_libs();
-    Counters::set(CODECACHE_NATIVE_COUNT, native_libs.count());
-    Counters::set(CODECACHE_NATIVE_SIZE_BYTES, native_libs.memoryUsage());
-    Counters::set(CODECACHE_RUNTIME_STUBS_SIZE_BYTES,
-                  native_libs.memoryUsage());
+    updateNativeLibMemStats();
 
     Error err = Error::OK;
     // rotateDictsAndRun rotates the dictionaries, takes lockAll() around the
@@ -1793,10 +1995,16 @@ void Profiler::shutdown(Arguments &args) {
 }
 
 int Profiler::lookupClass(const char *key, size_t length) {
-  // StringDictionary::lookup() is internally thread-safe via _accepting +
-  // RefCountGuard; no external lock required (unlike the old Dictionary).
-  u32 id = _class_map.lookup(key, length);
-  return id != 0 ? static_cast<int>(id) : -1;
+  // StringDictionary::bounded_lookup() is internally thread-safe via
+  // _accepting + RefCountGuard; no external lock required. Bounded to
+  // MAX_CLASS_MAP_SIZE so unbounded distinct-class churn cannot grow this
+  // dictionary for the lifetime of the process.
+  u32 id = _class_map.bounded_lookup(key, length, MAX_CLASS_MAP_SIZE);
+  if (id == 0) {
+    Counters::increment(CLASS_MAP_AT_CAPACITY);
+    return -1;
+  }
+  return static_cast<int>(id);
 }
 
 int Profiler::status(char* status, int max_len) {
@@ -1810,4 +2018,30 @@ int Profiler::status(char* status, int max_len) {
     _cpu_engine != nullptr ? _cpu_engine->name() : "None",
     _wall_engine != nullptr ? _wall_engine->name() : "None",
     _alloc_engine != nullptr ? _alloc_engine->name() : "None");
+}
+
+void Profiler::checkFault(ProfiledThread* thrd, siginfo_t *siginfo, void *ucontext) {
+    (void)siginfo;
+    // Check if siglongjmp is setup for this thread
+    if (thrd == nullptr || !thrd->isProtected()) {
+        return;
+    }
+
+    // Check if the fault is originated from java profiler
+    const uintptr_t pc = (uintptr_t)StackFrame(ucontext).pc();
+    const uintptr_t min = profiler_min_address.load(std::memory_order_relaxed);
+    const uintptr_t max = profiler_max_address.load(std::memory_order_relaxed);
+
+    // If the profiler address range is not initialized (e.g. unit tests), fall back
+    // to recovering unconditionally when a protection context is installed.
+    #if !defined(UNIT_TEST)
+      assert(min != 0 && max != 0);
+    #endif
+    if ((min != 0 && max != 0) && (pc < min || pc >= max)) {
+      return;
+    }
+
+    thrd->resetCrashHandler();
+    Counters::increment(STACKWALK_LONGJMP_RECOVERED);
+    siglongjmp(*thrd->getJmpCtx(), 1);
 }

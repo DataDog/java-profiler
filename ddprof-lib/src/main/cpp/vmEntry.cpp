@@ -11,13 +11,18 @@
 #include "counters.h"
 #include "j9/j9Support.h"
 #include "jniHelper.h"
+#include "jvmSupport.h"
 #include "jvmThread.h"
 #include "libraries.h"
 #include "log.h"
 #include "os.h"
 #include "profiler.h"
 #include "safeAccess.h"
-#include "hotspot/vmStructs.h"
+#include "threadLocalData.h"
+// Pulls in vmStructs.h plus the definitions of crashProtectionActive()/cast_to() that its inline
+// accessors odr-use here; the light vmStructs.h alone leaves those unresolved in assertion-enabled
+// builds (see the note in hotspotStackFrame_aarch64.cpp).
+#include "hotspot/vmStructs.inline.h"
 #include "hotspot/jitCodeCache.h"
 #include <atomic>
 #include <dlfcn.h>
@@ -53,7 +58,7 @@ jvmtiError(JNICALL *VM::_orig_RedefineClasses)(jvmtiEnv *, jint,
 jvmtiError(JNICALL *VM::_orig_RetransformClasses)(jvmtiEnv *, jint,
                                                   const jclass *classes);
 
-void *VM::_libjvm;
+CodeCache* VM::_libjvm = nullptr;
 AsyncGetCallTrace VM::_asyncGetCallTrace;
 JVM_GetManagement VM::_getManagement;
 
@@ -199,15 +204,23 @@ int JavaVersionAccess::get_hotspot_version(char* prop_value) {
 }
 
 CodeCache* VM::openJvmLibrary() {
+  CodeCache* lib = __atomic_load_n(&_libjvm, __ATOMIC_ACQUIRE);
+  if (lib != nullptr) {
+    return lib;
+  }
+
   if ((void*)_asyncGetCallTrace == nullptr) {
     return nullptr;
   }
 
   Libraries* libraries = Libraries::instance();
-  CodeCache *lib =
-    isOpenJ9()
+  lib = isOpenJ9()
         ? libraries->findJvmLibrary("libj9vm")
         : libraries->findLibraryByAddress((const void *)_asyncGetCallTrace);
+  // The library must have been loaded. Otherwise, we cannot get to here due
+  // to JVM initialization
+  assert(lib != nullptr && "JVM library must be loaded");
+  __atomic_store_n(&_libjvm, lib, __ATOMIC_RELEASE);
   return lib;
 }
 
@@ -245,9 +258,9 @@ bool VM::initShared(JavaVM* vm) {
     prop = NULL;
   }
 
-  _libjvm = getLibraryHandle("libjvm.so");
-  _asyncGetCallTrace = (AsyncGetCallTrace)dlsym(_libjvm, "AsyncGetCallTrace");
-  _getManagement = (JVM_GetManagement)dlsym(_libjvm, "JVM_GetManagement");
+  void *libjvm = getLibraryHandle("libjvm.so");
+  _asyncGetCallTrace = (AsyncGetCallTrace)dlsym(libjvm, "AsyncGetCallTrace");
+  _getManagement = (JVM_GetManagement)dlsym(libjvm, "JVM_GetManagement");
 
   Libraries *libraries = Libraries::instance();
   libraries->updateSymbols(false);
@@ -322,8 +335,6 @@ bool VM::initShared(JavaVM* vm) {
   if (lib == nullptr) {
     return false;
   }
-
-  VMStructs::init(lib);
 
   // Mark thread entry points for all JVMs (critical for correct stack unwinding)
   lib->mark(isThreadEntry, MARK_THREAD_ENTRY);
@@ -443,6 +454,15 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
     return false;
   }
 
+  // Under Agent_OnLoad (attach == false), this is the first native entry point and
+  // VM_INIT has not fired yet, so VMStructs would otherwise stay uninitialized until
+  // VM::VMInit() runs -- but CodeHeap::available()/VMFlag::find() below are used
+  // synchronously in this function. Get VMStructs (and crash-protection signal
+  // handlers) ready now; VM::ready() is idempotent, so the later VM::VMInit()
+  // callback (attach == false) or the direct call from VM::initLibrary() (already
+  // run before a JNI-triggered attach == true call gets here) is a safe no-op.
+  ready(jvmti(), jni());
+
   if (!attach && hotspot_version() == 8 && OS::isLinux()) {
     // Workaround for JDK-8185348
     char *func = (char *)lib->findSymbol(
@@ -511,6 +531,8 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
                                    NULL);
 
   if (hotspot_version() == 0 || !CodeHeap::available()) {
+    TEST_LOG("CompiledMethodLoad workaround: hotspot_version=%d CodeHeap::available=%d",
+             hotspot_version(), CodeHeap::available());
     // Workaround for JDK-8173361: avoid CompiledMethodLoad events when possible
     _jvmti->SetEventNotificationMode(JVMTI_ENABLE,
                                      JVMTI_EVENT_COMPILED_METHOD_LOAD, NULL);
@@ -518,6 +540,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
     // DebugNonSafepoints is automatically enabled with CompiledMethodLoad,
     // otherwise we set the flag manually
     VMFlag* f = VMFlag::find("DebugNonSafepoints", {VMFlag::Type::Bool});
+    TEST_LOG("DebugNonSafepoints flag %s", f != NULL ? "found" : "not found");
     if (f != NULL && f->isDefault()) {
       f->set(1);
     }
@@ -538,8 +561,8 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   functions->RedefineClasses = RedefineClassesHook;
   functions->RetransformClasses = RetransformClassesHook;
 
+
   if (attach) {
-    loadAllMethodIDs(_jvmti, jni());
     _jvmti->GenerateEvents(JVMTI_EVENT_DYNAMIC_CODE_GENERATED);
     _jvmti->GenerateEvents(JVMTI_EVENT_COMPILED_METHOD_LOAD);
   } else {
@@ -551,13 +574,26 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   return true;
 }
 
-// Run late initialization when JVM is ready
+// Run late initialization when JVM is ready. May be called more than once (from
+// initProfilerBridge() directly, and later from the VMInit JVMTI callback, or from
+// initLibrary() followed by a JNI-triggered attach) -- the VMStructs init below only
+// ever runs once.
 void VM::ready(jvmtiEnv *jvmti, JNIEnv *jni) {
-  Profiler::check_JDK_8313796_workaround();
-  Profiler::setupSignalHandlers();
-  JVMThread::initialize();
-  if (isHotspot()) {
+  // Hotspot specific
+  static bool init_signal = false;
+  static SpinLock lock;
+  ExclusiveLockGuard guard(&lock);
+  if (!init_signal) {
+    Profiler::check_JDK_8313796_workaround();
+    Profiler::setupSignalHandlers();
+    init_signal = true;
+  }
+  if (VM::isHotspot()) {
     JitWriteProtection jit(true);
+    CodeCache* lib = openJvmLibrary();
+    assert(lib != nullptr && "JVM library must have been loaded");
+    // Initialize VMStructs
+    VMStructs::init(lib);
     VMStructs::ready();
   }
 }
@@ -588,62 +624,21 @@ void *VM::getLibraryHandle(const char *name) {
   return RTLD_DEFAULT;
 }
 
-void VM::loadMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass) {
-  bool needs_patch = VM::hotspot_version() == 8;
-  if (needs_patch) {
-    // Workaround for JVM bug https://bugs.openjdk.org/browse/JDK-8062116
-    // Preallocate space for jmethodIDs at the beginning of the list (rather than at the end)
-    // This is relevant only for JDK 8 - later versions do not have this bug
-    if (VMStructs::hasClassLoaderData()) {
-      VMKlass *vmklass = VMKlass::fromJavaClass(jni, klass);
-      int method_count = vmklass->methodCount();
-      if (method_count > 0) {
-        VMClassLoaderData *cld = vmklass->classLoaderData();
-        cld->lock();
-        for (int i = 0; i < method_count; i += MethodList::SIZE) {
-          *cld->methodList() = new MethodList(*cld->methodList());
-        }
-        cld->unlock();
-      }
-    }
-  }
-
-  // CRITICAL: GetClassMethods must be called to preallocate jmethodIDs for AsyncGetCallTrace.
-  // AGCT operates in signal handlers where lock acquisition is forbidden, so jmethodIDs must
-  // exist before profiling encounters them. Without preallocation, AGCT cannot identify methods
-  // in stack traces, breaking profiling functionality.
-  //
-  // JVM-internal allocation: This triggers JVM to allocate jmethodIDs internally, which persist
-  // until class unload. High class churn causes significant memory growth, but this is inherent
-  // to AGCT architecture and necessary for signal-safe profiling.
-  //
-  // See: https://mostlynerdless.de/blog/2023/07/17/jmethodids-in-profiling-a-tale-of-nightmares/
-  jint method_count;
-  jmethodID *methods;
-  if (jvmti->GetClassMethods(klass, &method_count, &methods) == 0) {
-    jvmti->Deallocate((unsigned char *)methods);
-  }
-}
-
-void VM::loadAllMethodIDs(jvmtiEnv *jvmti, JNIEnv *jni) {
-    jint class_count;
-    jclass *classes;
-    if (jvmti->GetLoadedClasses(&class_count, &classes) == 0) {
-      for (int i = 0; i < class_count; i++) {
-        loadMethodIDs(jvmti, jni, classes[i]);
-      }
-      jvmti->Deallocate((unsigned char *)classes);
-    }
-}
-
 void JNICALL VM::ClassPrepare(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
                                jclass klass) {
-  loadMethodIDs(jvmti, jni, klass);
+  ProfiledThread::initCurrentThreadSignalSafe();
+  JVMSupport::loadMethodIDsIfNeeded(jvmti, jni, klass);
 }
+
+void JNICALL VM::ClassLoad(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+                                jclass klass) {
+  // Needed only for AsyncGetCallTrace support
+  ProfiledThread::initCurrentThreadSignalSafe();
+}
+
 
 void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
     ready(jvmti, jni);
-    loadAllMethodIDs(jvmti, jni);
 
     // initialize the heap usage tracking only after the VM is ready
     HeapUsage::initJMXUsage(VM::jni());
@@ -653,6 +648,10 @@ void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
     if (error) {
         Log::error("%s", error.message());
     }
+}
+
+Arguments& VM::arguments() {
+  return _agent_args;
 }
 
 void JNICALL VM::VMDeath(jvmtiEnv *jvmti, JNIEnv *jni) {
@@ -670,7 +669,7 @@ VM::RedefineClassesHook(jvmtiEnv *jvmti, jint class_count,
     JNIEnv *env = jni();
     for (int i = 0; i < class_count; i++) {
       if (class_definitions[i].klass != NULL) {
-        loadMethodIDs(jvmti, env, class_definitions[i].klass);
+        JVMSupport::loadMethodIDsIfNeeded(jvmti, env, class_definitions[i].klass);
       }
     }
   }
@@ -687,7 +686,7 @@ jvmtiError VM::RetransformClassesHook(jvmtiEnv *jvmti, jint class_count,
     JNIEnv *env = jni();
     for (int i = 0; i < class_count; i++) {
       if (classes[i] != NULL) {
-        loadMethodIDs(jvmti, env, classes[i]);
+        JVMSupport::loadMethodIDsIfNeeded(jvmti, env, classes[i]);
       }
     }
   }

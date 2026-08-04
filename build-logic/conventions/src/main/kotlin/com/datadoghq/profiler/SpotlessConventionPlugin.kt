@@ -27,10 +27,15 @@ class SpotlessConventionPlugin : Plugin<Project> {
     }
 
     // Groovy Gradle files
+    // NOTE: greclipse() is disabled because it triggers a Spotless/Gradle serialization
+    // bug on fresh CI caches (see diffplug/spotless#2402). Basic whitespace formatting
+    // is still applied.
     spotless.groovyGradle {
       toggleOffOn()
       target("*.gradle", "gradle/**/*.gradle")
-      greclipse().configFile("$configPath/enforcement/spotless-groovy.properties")
+      leadingTabsToSpaces()
+      trimTrailingWhitespace()
+      endWithNewline()
     }
 
     // Kotlin Gradle files
@@ -54,7 +59,10 @@ class SpotlessConventionPlugin : Plugin<Project> {
         if (!skipJavaExclude) {
           excludeJava()
         }
-        greclipse().configFile("$configPath/enforcement/spotless-groovy.properties")
+        // greclipse() disabled: see the groovyGradle block above.
+        leadingTabsToSpaces()
+        trimTrailingWhitespace()
+        endWithNewline()
       }
     }
 

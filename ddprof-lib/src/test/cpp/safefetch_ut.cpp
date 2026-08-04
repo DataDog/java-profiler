@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <climits>
@@ -162,16 +167,16 @@ TEST_F(SafeFetchTest, mprotectedMemory64) {
 
 // ---------------------------------------------------------------------------
 // SafeAccess::safeCopy — bulk variant of safeFetch{32,64} that copies a byte
-// range via the safefetch trampoline. Must:
+// range via the safecopy_impl assembly stub (byte-granular loads guarded by
+// handle_safefetch). Must:
 //   - return true and copy the bytes exactly when src is fully readable,
 //     including when [src, src+len) sits within a few bytes of an unmapped
-//     page boundary (aligned-load strategy keeps over-reads in-page)
+//     page boundary (byte-granular reads never over-read past src+len)
 //   - return false (no crash) when the requested range itself crosses into
 //     an unmapped page
-//   - handle unaligned src by fetching at the previous 4-byte aligned
-//     address and discarding the leading 1..3 bytes
-//   - never write past dst[len-1] even when len is not a multiple of 4
-//   - not mis-classify real data as a fault when it equals one sentinel
+//   - handle unaligned src (no alignment requirement on src)
+//   - never write past dst[len-1] regardless of len
+//   - copy real data faithfully regardless of its byte values
 // ---------------------------------------------------------------------------
 
 TEST_F(SafeFetchTest, safeCopy_happyPath) {
@@ -188,7 +193,7 @@ TEST_F(SafeFetchTest, safeCopy_zeroLength) {
 }
 
 TEST_F(SafeFetchTest, safeCopy_shortLength_doesNotOverwriteDst) {
-  // The internal 4-byte fetch must not overflow dst beyond len bytes.
+  // The copy must not write beyond len bytes into dst.
   const char src[] = "AB";
   char dst[8];
   memset(dst, 0x5A, sizeof(dst));
@@ -281,6 +286,40 @@ TEST_F(SafeFetchTest, safeCopy_requestedRangeCrossesUnmappedPage_returnsFalse) {
   munmap(region, page_size);
 }
 
+TEST_F(SafeFetchTest, safeCopy_partialPrefixCopiedBeforeFault) {
+  // When the requested range straddles the boundary into an unmapped page,
+  // safeCopy returns false but the byte-granular copy still writes every
+  // readable byte before the fault. Verify the readable prefix landed in dst.
+  long page_size = sysconf(_SC_PAGESIZE);
+  ASSERT_GT(page_size, 0);
+
+  void* region = mmap(NULL, 2 * page_size, PROT_READ | PROT_WRITE,
+                      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+  ASSERT_NE(region, MAP_FAILED);
+  ASSERT_EQ(0, munmap((char*)region + page_size, page_size));
+
+  char* mapped_end = (char*)region + page_size;
+  // Place src so exactly `prefix` bytes are readable and the rest fall in
+  // the unmapped page.
+  const size_t prefix = 5;
+  char* src = mapped_end - prefix;
+  static const char kPrefix[] = "HELLO";  // 5 known readable bytes
+  memcpy(src, kPrefix, prefix);
+
+  // Request more than the readable prefix so the copy faults partway.
+  const size_t requested = prefix + 4;
+  char dst[16];
+  memset(dst, 0x5A, sizeof(dst));
+  EXPECT_FALSE(SafeAccess::safeCopy(dst, src, requested));
+
+  // The readable prefix must have been copied faithfully before the fault.
+  EXPECT_EQ(0, memcmp(dst, kPrefix, prefix));
+  // Bytes past the prefix were never written (fault stopped the copy).
+  EXPECT_EQ((char)0x5A, dst[prefix]);
+
+  munmap(region, page_size);
+}
+
 TEST_F(SafeFetchTest, safeCopy_unalignedSource_allMisalignments) {
   // The front fixup must correctly extract leading bytes from the
   // previous-aligned-word fetch for every misalignment k ∈ {1, 2, 3}.
@@ -329,8 +368,8 @@ TEST_F(SafeFetchTest, safeCopy_unalignedShortAtPageEnd_stillSucceeds) {
 }
 
 TEST_F(SafeFetchTest, safeCopy_dataMatchingSingleSentinel_stillSucceeds) {
-  // The two-sentinel pattern must not mis-classify real data that happens
-  // to equal one of the sentinels. SENT_A is 0x55AA55AA.
+  // Real data is copied faithfully regardless of its byte values (the copy
+  // no longer uses sentinel values to detect faults).
   uint32_t real_data = 0x55AA55AA;
   char dst[4];
   ASSERT_TRUE(SafeAccess::safeCopy(dst, &real_data, 4));

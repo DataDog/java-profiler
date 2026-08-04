@@ -1,12 +1,46 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #include <gtest/gtest.h>
 #include "stringDictionary.h"
+#include "nativeMem.h"
 #include <atomic>
+#include <cstdio>
+#include <cstring>
 #include <map>
 #include <string>
 #include <thread>
 #include <vector>
 
 // ── StringDictionaryBuffer ─────────────────────────────────────────────────
+
+// Native-memory accounting must balance across the arena lifecycle: the root
+// SBTable and initial chunk are counted at construction, growth adds overflow
+// SBTables and arena chunks, clear() returns to the construction baseline, and
+// destruction releases everything. 50k keys force at least one extra 512 KiB
+// arena chunk so chunk alloc/free pairing is exercised too.
+TEST(StringDictionaryBufferTest, NativeMemAccountingBalancesAcrossLifecycle) {
+    long long before = NativeMem::live(NM_DICTIONARY);
+    {
+        StringDictionaryBuffer buf;
+        long long after_ctor = NativeMem::live(NM_DICTIONARY);
+        EXPECT_GT(after_ctor, before);  // root SBTable + initial arena chunk
+
+        for (int i = 0; i < 50000; i++) {
+            char key[32];
+            int len = snprintf(key, sizeof(key), "string_key_%d", i);
+            buf.insert_with_id(key, (size_t)len, (u32)(i + 1));
+        }
+        EXPECT_GT(NativeMem::live(NM_DICTIONARY), after_ctor);  // grew
+
+        buf.clear();
+        // Overflow SBTables + extra arena chunks freed; root + first chunk kept.
+        EXPECT_EQ(after_ctor, NativeMem::live(NM_DICTIONARY));
+    }
+    EXPECT_EQ(before, NativeMem::live(NM_DICTIONARY));  // fully released
+}
 
 TEST(StringDictionaryBufferTest, InsertWithIdReturnsSameIdForSameKey) {
     StringDictionaryBuffer buf;
@@ -257,6 +291,24 @@ TEST_F(StringDictionaryTest, ClearAllResetsEverything) {
     EXPECT_EQ(1u, new_id);
 }
 
+TEST_F(StringDictionaryTest, BoundedLookupWithSizeLimitRejectsNewKeyAtCapacity) {
+    // Fill active up to size_limit distinct keys via the capped overload.
+    const int size_limit = 5;
+    for (int i = 0; i < size_limit; i++) {
+        std::string k = "cap_" + std::to_string(i);
+        u32 id = dict.bounded_lookup(k.c_str(), k.size(), size_limit);
+        EXPECT_GT(id, 0u) << "insert " << i << " should have succeeded below the limit";
+    }
+
+    // A brand-new key must be rejected once active->size() >= size_limit.
+    EXPECT_EQ(0u, dict.bounded_lookup("overflow", 8, size_limit));
+
+    // An already-present key must still resolve to its existing id even at capacity
+    // (cache hit is checked before the capacity check).
+    u32 id0 = dict.bounded_lookup("cap_0", 5, size_limit);
+    EXPECT_GT(id0, 0u);
+}
+
 TEST_F(StringDictionaryTest, LookupDuringDumpInsertsNewKeyIntoActiveAndStandby) {
     dict.rotate();  // empty active becomes dump, fresh active
     // Key is not in dump and not in active — lookupDuringDump must insert into both.
@@ -270,4 +322,25 @@ TEST_F(StringDictionaryTest, LookupDuringDumpInsertsNewKeyIntoActiveAndStandby) 
 
     // Must be in active (bounded_lookup is a probe of active)
     EXPECT_EQ(id, dict.bounded_lookup("brand/New", 9));
+}
+
+TEST_F(StringDictionaryTest, LookupDuringDumpWithSizeLimitRejectsNewKeyAtCapacity) {
+    dict.rotate();  // empty active becomes dump, fresh active
+
+    // Fill active up to size_limit distinct keys via the capped overload.
+    const int size_limit = 5;
+    for (int i = 0; i < size_limit; i++) {
+        std::string k = "dump_cap_" + std::to_string(i);
+        u32 id = dict.lookupDuringDump(k.c_str(), k.size(), size_limit);
+        EXPECT_GT(id, 0u) << "insert " << i << " should have succeeded below the limit";
+    }
+
+    // A brand-new key must be rejected once active->size() >= size_limit —
+    // neither active nor the dump snapshot should gain the entry.
+    EXPECT_EQ(0u, dict.lookupDuringDump("dump_overflow", 13, size_limit));
+
+    // An already-present key must still resolve to its existing id even at
+    // capacity (dump/active hits are checked before the capacity check).
+    u32 id0 = dict.lookupDuringDump("dump_cap_0", 10, size_limit);
+    EXPECT_GT(id0, 0u);
 }
