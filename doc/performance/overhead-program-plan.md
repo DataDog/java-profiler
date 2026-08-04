@@ -53,12 +53,18 @@ produced real findings and reusable tooling:
   15–25 MB, but the actual with/without-agent RSS delta is ~102 MB
   (10-rep measured, not inferred). The counters are useful signal, not a
   complete accounting.
-- **Overhead is not flat and not a simple step function.** It's roughly
-  linear in the number of distinct classes/methods *actually appearing in
-  sampled stacks* (not raw class count, not thread count, not raw
-  class-loading volume) — negligible below ~2,000 sampled classes, growing
-  to ~102 MB at ~85,000 sampled classes in synthetic testing, and noisier
-  at the high end (stdev comparable to the mean).
+- **Overhead is not flat and not a simple step function. It's roughly
+  linear in the number of distinct *methods* (equivalently, call-trace
+  shapes) actually appearing in sampled stacks — not classes, not raw
+  class-loading volume, not thread count.** The original benchmark gave
+  every synthetic class exactly one method, so "classes touched" and
+  "methods touched" moved together and looked like the same variable; a
+  follow-up holding class count fixed at 2,000 while adding methods per
+  class (100 instead of 1) reached ~74 MB — in the same range as the
+  85,000-sampled-class/1-method-each result (~102 MB) — confirming methods,
+  not classes, drive it. Negligible below ~2,000 sampled methods, growing
+  to ~102 MB by ~85,000, and noisier at the high end (stdev comparable to
+  the mean).
 - **~35 MB of the ~102 MB has a confirmed mechanism.** It's visible to
   NMT and driven by jmethodID preloading (`JVMTI_EVENT_CLASS_PREPARE` →
   `GetClassMethods`, `jvmSupport.cpp:145`) — the agent eagerly
@@ -88,8 +94,10 @@ produced real findings and reusable tooling:
   needs to budget for repetition, not trust a single pair.
 - **Reusable tooling exists**: `doc/performance/memsweep/` — synthetic
   workloads isolating thread count, call-trace diversity, class diversity,
-  and allocation diversity independently; a repeated-measures with/without-
-  agent harness (`run_repeated_sweep.sh`) built specifically because
+  methods-per-class (isolates methods touched from classes touched, which
+  the class-diversity workload alone can't do), and allocation diversity
+  independently; a repeated-measures with/without-agent harness
+  (`run_repeated_sweep.sh`) built specifically because
   single-pair comparisons proved unreliable; NMT category-level breakdown
   methodology.
 - **Known measurement gaps**: `NM_PERF` unverifiable in the sandboxed test
@@ -106,7 +114,8 @@ time in a synthetic microbenchmark, measure with/without-agent using enough
 repetitions to trust the number, then attribute the delta to a mechanism
 before proposing a fix. What we don't yet know, and can't credibly guess in
 advance, is *which* workload properties turn out to matter for CPU and
-latency the way call-graph/class diversity turned out to dominate memory —
+latency the way call-graph diversity (distinct methods actually sampled)
+turned out to dominate memory —
 that's exploratory work still ahead of us (see Phase 1 below). Plausible
 starting hypotheses worth testing early, none validated: sampling
 frequency/engine choice (wall-clock vs. CPU-time vs. allocation), thread
@@ -142,13 +151,17 @@ uniform per-request.
   at the language/archetype level, just not with the granularity (or
   profiler-only isolation) our investigation needs.
 
-**Implication**: reconciling "our ~102 MB at high class-diversity" against
-"their 150–250 MB" is not an apples-to-apples number comparison yet. Their
-figure likely includes APM tracing overhead, Spring/Tomcat/dd-trace-java's
-own substantial baseline class diversity (present even at `endpoints=1`),
-and container-level measurement noise, on top of whatever the profiler
-itself contributes. Phase 1 below includes pinning this down as an explicit
-task, not assuming either number is "right."
+**Implication**: reconciling "our ~102 MB at high method/call-graph-
+diversity" against "their 150–250 MB" is not an apples-to-apples number
+comparison yet. Their figure likely includes APM tracing overhead,
+Spring/Tomcat/dd-trace-java's own substantial baseline diversity of
+distinct methods actually invoked (present even at `endpoints=1`, and
+potentially large regardless of how few *classes* that involves — our own
+finding that methods, not classes, drive this cost means a framework-heavy
+app's baseline could be higher than a naive class-count estimate would
+suggest), and container-level measurement noise, on top of whatever the
+profiler itself contributes. Phase 1 below includes pinning this down as
+an explicit task, not assuming either number is "right."
 
 ## Phase 1 — Understand the overhead and its nuances
 
@@ -185,9 +198,10 @@ one invented from scratch.
      only have a *statistically trustworthy* number for one dimension.
    - Characterize `nativemem=` (native malloc sampling) properly — only
      smoke-tested so far, no dedicated workload built for it.
-   - Test whether the "roughly linear in sampled-class-count" finding holds
-     beyond 150,000 classes, and whether it's specific to reflection-heavy
-     workloads (our synthetic harness's method of invocation) or general.
+   - Test whether the "roughly linear in sampled-method-count" finding
+     holds beyond ~100,000 touched methods, and whether it's specific to
+     reflection-heavy workloads (our synthetic harness's method of
+     invocation) or general.
 
 2. **CPU and latency — start from zero, using the memory investigation as
    the method template, not by guessing the answer up front.** Concretely:
@@ -234,7 +248,11 @@ one invented from scratch.
    (deliberately sequenced *after* the above, since fixing things you don't
    understand yet risks fixing the wrong thing). Memory candidates, ranked
    by confidence: jmethodID preloading strategy — confirmed driver of a
-   real ~36 MB chunk of overhead at high class diversity, worth asking
+   real ~36 MB chunk of overhead at high class diversity (this specific
+   mechanism fires per loaded class, independent of sampling, so "class"
+   is the mechanistically accurate word here even though the *aggregate*
+   overhead figure is method-driven — see "Where we are today: memory"),
+   worth asking
    whether it can be lazier or bounded instead of eager-per-`ClassPrepare`
    (though the source comment already explains why it's eager: AGCT's
    signal-handler constraints, so any change here needs care) — plus
@@ -250,13 +268,17 @@ one invented from scratch.
 This is the specific question raised, and the honest answer differs by
 dimension because our depth of investigation differs by dimension:
 
-- **Memory: we have an evidenced answer.** The dominant lever is
-  *call-graph/class diversity actually touched by sampling* — not raw
-  class-loading volume, not thread count. A good memory-overhead use case
-  varies this directly (few endpoints/narrow call paths vs. many/wide),
-  which is close to dd-trace-doe's existing `endpoints` parameter — the
-  gap is that it defaults to 1 (a low-diversity point) and we don't know
-  what range has actually been exercised. Thread count and allocation
+- **Memory: we have an evidenced answer.** The dominant lever is *distinct
+  methods (call-trace shapes) actually touched by sampling* — confirmed to
+  be methods rather than classes specifically (varying methods-per-class
+  at a fixed, small class count reproduced the same overhead a 75x larger
+  class count did), and not raw class-loading volume or thread count
+  either. A good memory-overhead use case varies this directly (few
+  endpoints/narrow call paths vs. many/wide), which is close to
+  dd-trace-doe's existing `endpoints` parameter — the gap is that it
+  defaults to 1 (a low-diversity point) and we don't know what range has
+  actually been exercised, nor how many distinct methods (as opposed to
+  classes) that range actually touches. Thread count and allocation
   diversity are secondary levers, worth a smaller number of fixed
   benchmark points rather than a full sweep.
 - **CPU and latency: we don't have an evidenced answer yet, and shouldn't
@@ -309,8 +331,9 @@ from data, not guesswork.
 
 - Identify what's cheap to report from the live agent without adding
   overhead of its own: for memory, the natural candidates are exactly the
-  dimensions Phase 1 found to matter — distinct call-trace shapes recorded,
-  distinct classes/methods touched, thread count/churn over a session. Some
+  dimensions Phase 1 found to matter — distinct call-trace shapes/methods
+  touched (the confirmed dominant driver, not raw class count), thread
+  count/churn over a session. Some
   of this may already be adjacent to existing `NM_*`/debug counters; the
   work is packaging it as a "workload diversity" signal rather than a raw
   byte count, and deciding what's safe/appropriate to report (opt-in,
@@ -350,9 +373,11 @@ memory work, not just a general preference for agile-sounding language:
   `NM_CALLTRACE` hash-table resize were likely the dominant costs. Empirical
   testing found thread count is close to noise, `NM_CALLTRACE`'s own resize
   is a small fraction (15–25 MB) of the actual overhead (~102 MB), and the
-  real dominant driver (call-graph/class diversity, and specifically the
-  *sampled* subset of it) only emerged after several rounds of "measure,
-  get a confusing result, dig into source, re-measure."
+  real dominant driver (distinct methods/call-trace shapes actually
+  *sampled* — not distinct classes, which the first benchmark design
+  couldn't distinguish from methods since it gave every class exactly one)
+  only emerged after several rounds of "measure, get a confusing result,
+  dig into source, re-measure."
 - A single-pair with/without-agent comparison at realistic scale was off by
   2x+ from the true value; getting a trustworthy number required building
   new tooling (`run_repeated_sweep.sh`) *during* the investigation, not
