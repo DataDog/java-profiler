@@ -70,9 +70,17 @@ tooling:
   the toggle, but that specific metric swung ~240 MB across just 5 reps of
   the *same* condition, too noisy at practical rep counts to read either
   way. Separately, the remaining ~56% is invisible to NMT entirely (the
-  profiler's own `malloc`/`new`), and of *that*, only 15–25 MB is explained
-  by `NM_CALLTRACE` — leaving ~32–42 MB attributable to neither NMT nor
-  `NM_*`. **This gap is still fully open — a promising-looking lead turned
+  profiler's own `malloc`/`new` plus `NM_CALLTRACE`'s raw-`mmap`-backed
+  storage), and of *that*, `NM_CALLTRACE` explains a real but hard-to-pin
+  precisely amount (its counter is a deterministic 48.5 MB at N=150,000,
+  but that's logical/allocated capacity, not resident memory — smaps shows
+  most of it sitting on sparse, mostly-untouched anonymous pages from
+  rotated-out triple-buffer generations, so its true RSS contribution is
+  closer to ~10–15 MB; see "Concrete next steps" below for the full
+  derivation) — leaving **~42–57 MB** attributable to neither NMT nor
+  `NM_*`, revised from an earlier ~32–42 MB estimate that used an
+  incorrect, too-small figure for `NM_CALLTRACE`. **This gap is still
+  fully open — a promising-looking lead turned
   out to be answering a different question.** An attempt to size
   `MethodMap`/`MethodInfo` as a candidate for it initially read as a
   ruling-out (it appeared to hold zero entries), but that was itself a
@@ -563,6 +571,31 @@ breakdown illustrates — the biggest memory lever might not be
    the resolution of any one check so far — a finer-grained NMT
    malloc-vs-mmap breakdown per category (already reported by NMT, as seen
    for `Code`) may be more productive than another single-hypothesis test.
+   ~~Mine the existing NMT diff data for that breakdown, and reconsider
+   whether the ~32–42 MB figure itself is still right given everything
+   learned since it was first derived~~ **Done.** Mining reproduced the
+   toggle-test numbers closely (good sanity check) and, excluding Java
+   Heap's already-known noise, confirmed NMT-visible growth at ~35.5 MB
+   (matching jmethodID's 35.9 MB almost exactly). Cross-checking with the
+   mallinfo2 figures (82.0 MiB total malloc minus ~23.1 MiB NMT-tracked
+   malloc = 58.9 MiB NMT-invisible malloc) independently reproduced the
+   original ~56.9 MB NMT-invisible estimate to within ~2 MiB — reassuring,
+   until the same scrutiny applied to `NM_CALLTRACE` found its documented
+   "15–25 MB" contribution was wrong: its real value is a deterministic
+   48.5 MiB, roughly double, and it's backed by a raw `mmap()` syscall
+   (`OS::safeAlloc`, confirmed in source), not `malloc` — invisible to
+   NMT, the allocation shim, *and* mallinfo2 simultaneously, so its full
+   size can't simply be subtracted from the malloc-based figures.
+   Checking `/proc/<pid>/smaps` directly (readable without `ptrace`, after
+   a GDB struct-inspection attempt failed on this build's member-layout
+   debug info) found `NM_CALLTRACE`'s counter substantially overstates its
+   true RSS footprint: of 4 identified 8 MiB chunks, only the actively-
+   written triple-buffer slot was fully resident, while three older,
+   rotated-out generations sat 0.15–12.5% resident. **Net result: the
+   recalibrated gap lands around ~42–57 MiB — the same order of magnitude
+   as the original ~32–42 MB, not smaller.** The magnitude holds up under
+   rigorous re-derivation; getting a more precise number would require
+   exhaustively mapping every remaining memory region, not pursued further.
 4. Kick off Phase 1.2 for CPU and latency: pick 1–2 of the candidate
    hypotheses above, build the smallest synthetic microbenchmark that
    isolates one, and get a first with/without-agent number — the goal at

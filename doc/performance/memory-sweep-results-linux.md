@@ -167,6 +167,25 @@ two platforms are called out inline where they matter.
     (mean delta −0.6 MiB), confirming it's workload-driven JIT warmup, not
     an agent cost. See the dedicated section above. The gap, and the
     smaller ~20 MB `malloc`-vs-RSS residual, both remain open.
+11. **Recalibrating the ~32–42 MB gap from scratch (mining already-captured
+    NMT data plus the mallinfo2 figures) reproduces essentially the same
+    magnitude — but along the way, `NM_CALLTRACE`'s documented "15–25 MB"
+    contribution turned out to be wrong, in a way that doesn't simplify the
+    picture.** `NM_CALLTRACE`'s actual counter value at N=150,000 is a
+    deterministic 48.5 MiB (not 15–25 MB, which described a single resize
+    increment, not the structure's full size) — but it's backed by a raw
+    `mmap()` syscall (`OS::safeAlloc`, confirmed in source), not `malloc`,
+    so its logical size can't be directly compared to `malloc`-based
+    figures. Checking `/proc/<pid>/smaps` directly (no `ptrace` needed)
+    found the counter substantially overstates real RSS: of 4 identified
+    8 MiB `CALL_TRACE_CHUNK`-sized regions, one (the active buffer) was
+    100% resident while three older, rotated-out buffer generations were
+    0.15–12.5% resident — real anonymous-mmap sparsity, not measurement
+    error. Net result: the recalibrated gap lands around **~42–57 MiB**,
+    comparable to (if anything larger than) the original ~32–42 MB figure.
+    **The magnitude holds up; a more precise number would require
+    exhaustively mapping every memory region, not pursued further.** See
+    the dedicated section above for the full derivation.
 
 ## Harness
 
@@ -989,6 +1008,137 @@ agent. The ~20 MB gap between the new `malloc`-visible figure (~82 MB) and
 total RSS (~102 MB) remains open; both of the two most obvious "memory
 `malloc` can't see" candidates are now excluded.
 
+### Recalibrating the gap: mining NMT category data, and a NM_CALLTRACE measurement subtlety
+
+After four ruled-out mechanisms in a row, it's worth asking whether the
+~32–42 MB figure itself still holds up, rather than continuing to search
+for what explains it. Mining the *already-captured* NMT diff files from
+the original 10-rep sweep (no new runs) for a full category-by-category
+malloc-vs-mmap breakdown gives a cross-check:
+
+| Category | Total Δ | malloc Δ | mmap Δ |
+|---|---|---|---|
+| Class | +13.9 MB | +13.2 MB | +0.7 MB |
+| Internal | +11.3 MB | +11.3 MB | 0 |
+| Java Heap | +10.4 MB | 0 | +10.4 MB |
+| Native Memory Tracking (own) | +10.2 MB | ~0 | +10.2 MB, as "tracking overhead" (ambiguous — see below) |
+| Compiler | −3.6 MB | ~0 | — |
+| Arena Chunk | −1.8 MB | −1.8 MB | 0 |
+| everything else | ~+1.5 MB combined | small | small |
+
+This closely reproduces the already-confirmed toggle-test figures (Class
++13.6 MB, Internal +11.6 MB per the toggle test above), a good sanity
+check on the mining itself. Two things this enables:
+
+**First, Java Heap's +10.4 MB was already flagged as noise** (a 240 MB
+swing across 5 reps of the *same* condition). Excluding it, the
+*confirmed* NMT-visible total is Class+Internal+NMT-own ≈ **35.5 MB**, not
+45.5 MB — matching the toggle-test-confirmed jmethodID figure (35.9 MB)
+almost exactly, suggesting Java Heap's contribution to the original 45.5 MB
+was never real.
+
+**Second, cross-checking with the mallinfo2 experiment sidesteps the Java
+Heap ambiguity entirely** (Java Heap is 100% mmap, contributing zero to
+either number below):
+
+```
+82.0 MiB (total malloc, mallinfo2, 5 reps)  −  23.1 MiB (NMT-tracked malloc, mined)  =  58.9 MiB NMT-invisible malloc growth
+```
+
+That's within ~2 MiB of the original derivation's ~56.9 MB NMT-invisible
+*total* (102.4 − 45.5) — two independent methods agreeing closely. So far,
+so good: the original derivation's *overall* magnitude looks sound, even
+though its Java Heap component was noise.
+
+**Then the NM_CALLTRACE figure itself needed the same scrutiny, and it
+did not hold up as previously stated.** Reading the profiler's own
+`NM_CALLTRACE` counter directly from the 10 already-existing with-agent
+JFR files (`with_repN.jfr`) gives a value of exactly 50,858,496 bytes
+(**48.5 MiB**) at N=150,000 — deterministic, bit-for-bit identical across
+all 10 reps. Checking across all four N values from the same sweep
+confirms this isn't specific to N=150,000:
+
+| N classes | NM_CALLTRACE |
+|---|---|
+| 2,000 | 24.5 MiB |
+| 20,000 | 32.5 MiB |
+| 60,000 | 40.5 MiB |
+| 150,000 | 48.5 MiB |
+
+Each step is exactly +8.0 MiB (`CALL_TRACE_CHUNK`, confirmed in source —
+`callTraceHashTable.cpp:18`). The documented "15–25 MB" figure apparently
+described a single resize *increment*, not `NM_CALLTRACE`'s full size —
+and since it doesn't exist at all without the agent, its *entire* value
+should be what's subtracted, not one increment.
+
+Substituting 48.5 MiB for "15–25 MB" produced an impossible result,
+though, which is itself informative. Checking whether `NM_CALLTRACE`
+overlaps with the mallinfo2 figures required reading the source: its
+backing allocator (`LinearAllocator::allocateChunk`,
+`linearAllocator.cpp:218`) calls `OS::safeAlloc()`, which the code's own
+comments confirm uses "a raw mmap syscall" — bypassing glibc's malloc
+subsystem entirely, invisible to NMT, the allocation shim, *and*
+`mallinfo2()` simultaneously. So `NM_CALLTRACE`'s 48.5 MiB and the
+mallinfo2-derived 82.0 MiB should be non-overlapping and additive — but
+`82.0 + 48.5 = 130.5 MiB`, which already exceeds the entire 102.4 MB RSS
+delta before adding anything else. The pieces don't add up.
+
+**Resolved (partially) via `/proc/<pid>/smaps`.** `CallTraceStorage` is
+triple-buffered (`_active_storage`/`_standby_storage`/`_scratch_storage`,
+`callTraceStorage.h`), each with its own `LinearAllocator`. GDB-based
+struct inspection wasn't usable here (the release build's debug info
+resolves function symbols fine but not full member-layout access for this
+class), so this was checked directly via smaps instead — no special
+permissions needed, since reading a same-UID process's own smaps doesn't
+require `ptrace`. Four distinct anonymous regions sized as exact multiples
+of `CALL_TRACE_CHUNK` (8 MiB) were found with dramatically different
+residency:
+
+| Chunk | Size | Resident (Rss) | % resident |
+|---|---|---|---|
+| A | 8.0 MiB | 8,192 KB | **100%** |
+| B | 8.0 MiB | 1,028 KB | 12.5% |
+| C | 8.0 MiB | 32 KB | 0.4% |
+| D | 8.0 MiB | 12 KB | **0.15%** |
+
+This confirms the mechanism directly: one chunk (almost certainly the
+*currently-active* buffer) is fully resident; the other three (older,
+rotated-out generations retained for in-flight sample continuity per the
+triple-buffer design) are mostly untouched anonymous pages sitting on the
+shared zero-page, barely counting toward RSS at all. **`NM_CALLTRACE`'s
+48.5 MiB counter value is a logical/requested-capacity figure, not a
+resident-memory figure** — its true RSS contribution is substantially
+smaller (these 4 chunks alone: 9.06 MiB resident out of 32 MiB logical,
+~28%).
+
+**This is a genuine, previously-undocumented measurement subtlety worth
+remembering when reading `NM_CALLTRACE` (or any `NativeMem` counter backed
+by `OS::safeAlloc`) for capacity-planning purposes**: the counter tracks
+what's been *allocated*, not what's *resident*. But it only partially
+closes the recalibration, since only 4 of an estimated ~6 chunks
+(48.5 MiB ÷ 8 MiB) were positively identified — the larger 64/128/40 MiB
+regions elsewhere in smaps are more likely Metaspace/glibc-arena/other JVM
+structures, but weren't ruled out with the same rigor. Extrapolating the
+~28% residency ratio from the 4 confirmed chunks gives a rough estimate of
+**~10–15 MiB** true RSS contribution for `NM_CALLTRACE` — not an
+exhaustive measurement.
+
+**Net effect of this whole recalibration pass**: redoing the *original*
+(RSS-based, not malloc-specific) derivation with this revised estimate —
+56.9–66.9 MiB NMT-invisible total (depending on whether Java Heap's noise
+is included) minus ~10–15 MiB true `NM_CALLTRACE` cost — gives **~42–57
+MiB** still unattributed, comparable to (if anything somewhat larger than)
+the original ~32–42 MB figure. **The magnitude holds up under more
+rigorous re-derivation; it does not shrink or resolve.** Trying to get a
+more *precise* number ran into a real measurement subtlety
+(`NM_CALLTRACE`'s counter overstating its RSS footprint) that, once
+corrected for, widened the uncertainty band rather than narrowing it —
+getting an exact figure would require exhaustively mapping every relevant
+memory region, which wasn't pursued further given diminishing returns.
+The qualitative conclusion from every angle checked so far stands: this is
+real, substantial, agent-attributable memory that neither NMT nor any
+single-mechanism hypothesis tested so far fully explains.
+
 **Practical takeaway for quantifying this to a customer**: "flat, a few MB"
 is only correct for workloads with narrow call-graph/class diversity
 (few distinct classes and methods actually appearing in sampled stacks,
@@ -1211,6 +1361,34 @@ now confirmed empirically:
   malloc-vs-mmap breakdown per category (each category already reports
   this split, as seen for `Code`) rather than another single-hypothesis
   test.
+- **That finer-grained NMT breakdown was done (mining already-captured
+  data, no new runs) and the gap's magnitude held up — but it also
+  uncovered that `NM_CALLTRACE`'s documented "15–25 MB" figure was wrong,
+  and correcting it made the picture messier, not cleaner.**
+  `NM_CALLTRACE`'s actual value (48.5 MiB at N=150,000, deterministic
+  across 10 reps) is roughly double what was previously assumed, but it's
+  backed by a raw `mmap()` syscall (confirmed in source:
+  `LinearAllocator::allocateChunk` → `OS::safeAlloc`), not `malloc` —
+  invisible to NMT, the allocation shim, and `mallinfo2()` alike, and not
+  directly comparable to the malloc-based figures from the two entries
+  above. Checking `/proc/<pid>/smaps` directly (readable without `ptrace`,
+  unlike the GDB struct-inspection attempted first, which failed on this
+  release build's member-layout debug info) found `NM_CALLTRACE`'s logical
+  size substantially overstates its true residency: of 4 identified
+  8 MiB `CALL_TRACE_CHUNK` regions, only one (the actively-written
+  triple-buffer slot) was fully resident; the other three (older, rotated-
+  out generations) were 0.15–12.5% resident, sitting mostly on
+  never-written anonymous-mmap zero-pages. **Recalibrating with this
+  correction lands the gap around ~42–57 MiB — the same order of magnitude
+  as the original ~32–42 MB, not smaller.** A precise number would need
+  exhaustively mapping every remaining chunk (only 4 of an estimated ~6
+  were positively identified) and possibly other `OS::safeAlloc`-backed
+  structures elsewhere in the profiler — not pursued further given
+  diminishing returns. **Follow-up worth doing, if returning to this**:
+  any future NMT/RSS reconciliation work should check whether other
+  profiler structures use `OS::safeAlloc` (raw mmap, sparse-residency-
+  prone) the same way `CallTraceStorage` does, since their counters would
+  have the same logical-vs-resident gap.
 - **Coverage (classes actually touched by a sample) fell from 93.6% at
   N=2,000 to 56.4% at N=150,000 for the same relative duration/interval
   scaling used across this sweep.** The per-touched-class normalization is
