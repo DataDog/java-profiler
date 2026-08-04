@@ -38,79 +38,52 @@ number, not a scope creep away from the ask.
 
 Everything concrete we have so far is memory-specific. CPU and latency
 overhead haven't been investigated at all yet (see below) — this is the
-most significant gap in the current state and the plan explicitly calls
+most significant gap in the current state, and the plan explicitly calls
 out closing it, not just continuing the memory work.
 
 An initial empirical investigation (this repository,
 [memory-usage-model.md](memory-usage-model.md) →
 [memory-sweep-results.md](memory-sweep-results.md) (macOS) →
 [memory-sweep-results-linux.md](memory-sweep-results-linux.md) (Linux,
-current)) has already produced real, load-bearing findings and reusable
-tooling:
+current, has the full detail behind everything summarized here)) has
+produced real findings and reusable tooling:
 
-- **The profiler's own tracked accounting (PR #669's `NM_*` counters) badly
-  understates true overhead.** At 150,000 distinct classes, `NM_CALLTRACE`'s
-  own growth is 15–25 MB, but the actual with/without-agent RSS delta is
-  ~102 MB (10-rep measured, not inferred). The counters are useful signal,
-  not a complete accounting.
+- **The profiler's own tracked accounting badly understates true
+  overhead.** At 150,000 distinct classes, `NM_CALLTRACE`'s own growth is
+  15–25 MB, but the actual with/without-agent RSS delta is ~102 MB
+  (10-rep measured, not inferred). The counters are useful signal, not a
+  complete accounting.
 - **Overhead is not flat and not a simple step function.** It's roughly
   linear in the number of distinct classes/methods *actually appearing in
   sampled stacks* (not raw class count, not thread count, not raw
   class-loading volume) — negligible below ~2,000 sampled classes, growing
-  to ~102 MB at ~85,000 sampled classes in synthetic testing, and noisier at
-  the high end (stdev comparable to the mean).
-- **Attribution is now partly confirmed, not just plausible.** ~44% of the
-  overhead is visible to NMT (Class/Internal/Java-Heap/NMT's-own-tracking
-  categories). A toggle test (disabling jmethodID preloading —
-  `JVMTI_EVENT_CLASS_PREPARE` → `GetClassMethods`, `jvmSupport.cpp:145` —
-  via a one-line temporary patch, reverted after) confirmed it as the
-  driver of 79% of that NMT-visible share: the Class, Internal, and NMT's-
-  own-tracking deltas all collapse to noise when preloading is disabled.
-  "Java Heap" remains unexplained — it moved the *opposite* direction under
-  the toggle, but that specific metric swung ~240 MB across just 5 reps of
-  the *same* condition, too noisy at practical rep counts to read either
-  way. Separately, the remaining ~56% is invisible to NMT entirely (the
-  profiler's own `malloc`/`new` plus `NM_CALLTRACE`'s raw-`mmap`-backed
-  storage), and of *that*, `NM_CALLTRACE` explains a real but hard-to-pin
-  precisely amount (its counter is a deterministic 48.5 MB at N=150,000,
-  but that's logical/allocated capacity, not resident memory — smaps shows
-  most of it sitting on sparse, mostly-untouched anonymous pages from
-  rotated-out triple-buffer generations, so its true RSS contribution is
-  closer to ~10–15 MB; see "Concrete next steps" below for the full
-  derivation) — leaving **~42–57 MB** attributable to neither NMT nor
-  `NM_*`, revised from an earlier ~32–42 MB estimate that used an
-  incorrect, too-small figure for `NM_CALLTRACE`. **This gap is still
-  fully open — a promising-looking lead turned
-  out to be answering a different question.** An attempt to size
-  `MethodMap`/`MethodInfo` as a candidate for it initially read as a
-  ruling-out (it appeared to hold zero entries), but that was itself a
-  measurement artifact: `NM_*` counters are snapshotted into each JFR chunk
-  *before* the dump-time code that symbolizes wall-clock stacks runs
-  (`flightRecorder.cpp:819–826`, an intentional, documented profiler
-  design choice), so a single-chunk run can never see growth from that
-  chunk's own dump. Confirmed three independent ways (a GDB breakpoint, a
-  purpose-built allocation-tracking tool, and the profiler's own source
-  comment) that this code path — which also grows the class-name dictionary
-  — is real and allocation-heavy, and confirmed via direct RSS
-  instrumentation to be genuine physical memory (~213 MiB RSS jump at the
-  exact moment a forced `dump()` call runs, closely matching the counter's
-  own ~230 MiB delta in the same run, reproducible to within ~0.5% across
-  reps). **But this growth cannot be part of the ~32–42 MB steady-state
-  gap**: the code path only runs from `finishChunk()`, which — per every
-  call site in the source — fires only from `Recording::~Recording()` (VM
-  shutdown) or `Recording::switchChunk()` (called only from the explicit
-  `dump()` API); there's no periodic mid-run rotation. The steady-state
-  sweep that produced the ~32–42 MB figure samples RSS ~1 second *before*
-  the workload loop even finishes — strictly before either trigger can
-  fire — so this mechanism contributed nothing to that number, not
-  approximately, exactly zero. It's a real, separate, additive cost (paid
-  once per JFR chunk rotation, ~210–230 MB at N=150,000) from a different
-  point in the process lifecycle, not a hidden piece of the steady-state
-  overhead. The ~32–42 MB gap needs a fresh hypothesis, untouched by
-  anything in this line of investigation.
-- **Single-run comparisons are dangerously unreliable at this scale.** A
-  2–3 rep with/without-agent comparison at N=150,000 classes gave estimates
-  ranging 91–246 MB depending on which runs happened to be paired; 10 reps
+  to ~102 MB at ~85,000 sampled classes in synthetic testing, and noisier
+  at the high end (stdev comparable to the mean).
+- **~35 MB of the ~102 MB has a confirmed mechanism.** It's visible to
+  NMT and driven by jmethodID preloading (`JVMTI_EVENT_CLASS_PREPARE` →
+  `GetClassMethods`, `jvmSupport.cpp:145`) — the agent eagerly
+  preallocates jmethodIDs for every prepared class, which AsyncGetCallTrace's
+  signal-handler safety requires. Confirmed with a toggle test: disabling
+  the mechanism collapses the relevant NMT category deltas to noise.
+- **The remaining ~42–57 MB is real, agent-attributable memory whose
+  mechanism we haven't pinned down**, despite five independent
+  investigations (dictionary/`MethodMap` growth, direct allocation-site
+  attribution, glibc fragmentation, JIT code-cache growth, and a
+  from-scratch NMT recalibration) — each either ruled out or turned out to
+  already be counted elsewhere. Full detail in the results doc. This gap
+  is the single biggest open item in the memory track.
+- **A separate, additive cost exists at JFR chunk write time.** Wall-clock
+  sampling's class-name dictionary growth is only reflected in the
+  *following* chunk's counter reading, by design — so the steady-state
+  ~102 MB figure above doesn't include it. Measured directly at
+  ~140–235 MB (construction-dependent; the measurement itself perturbs the
+  system, so the unperturbed magnitude isn't pinned down precisely), paid
+  once per JFR chunk write. For the default single-continuous-recording
+  mode this happens once, at process exit; for any config that rotates
+  chunks periodically, it recurs.
+- **Single-run comparisons are unreliable at this scale.** A 2–3 rep
+  with/without-agent comparison at N=150,000 classes gave estimates ranging
+  91–246 MB depending on which runs happened to be paired; 10 reps
   converged on ~102 MB. Any future measurement — ours or dd-trace-doe's —
   needs to budget for repetition, not trust a single pair.
 - **Reusable tooling exists**: `doc/performance/memsweep/` — synthetic
@@ -122,8 +95,7 @@ tooling:
 - **Known measurement gaps**: `NM_PERF` unverifiable in the sandboxed test
   environment (needs a root-accessible host with relaxed `kptr_restrict`);
   `nativemem=` (native malloc tracing) only smoke-tested; the exact
-  mechanism rendering class names for wall-clock `MethodSample` stacks
-  (confirmed *not* to go through `NM_DICTIONARY`) was never identified.
+  mechanism behind the ~42–57 MB gap above.
 
 ## Where we are today: CPU and latency
 
@@ -188,46 +160,22 @@ similar to their number." Memory is furthest along; CPU and latency are
 starting close to zero and should follow the same method, not a different
 one invented from scratch.
 
-1. **Memory — close out the open threads from the current investigation**
-   — each is independently actionable:
-   - ~~Confirm or refute jmethodID preloading (`GetClassMethods` via
-     `ClassPrepare`) as the driver of the "Class" NMT delta, by toggling it
-     off and re-measuring.~~ **Done** — confirmed as the driver of the
-     Class/Internal/NMT's-own-overhead deltas (79% of the NMT-visible
-     share). "Java Heap" remains open: it moved opposite to expectation
-     under the toggle, but that metric proved too noisy (~240 MB swing
-     across 5 same-condition reps) to attribute either way at a practical
-     rep count — would need many more reps to resolve, or a less noisy
-     measurement approach.
-   - ~~Size `MethodMap`/`MethodInfo` directly and correlate against distinct
-     classes touched, to close (or at least narrow) the ~32–42 MB
-     unattributed gap.~~ **Done — found a real, large, separate cost, but
-     one that turned out *not* to be the gap.** The sizing instrumentation
-     read zero, which initially looked like "ruled out," but turned out to
-     be the *same* counter-snapshot-timing artifact affecting
-     `NM_DICTIONARY` (counters are written before the dump-time code that
-     would grow either structure runs — an intentional, documented design
-     choice, `flightRecorder.cpp:819–826`, not a bug). Confirmed via GDB
-     breakpoint, an independent allocation-tracking tool, and direct RSS
-     instrumentation (~213 MiB real RSS jump at the moment of a forced
-     `dump()` call, matching the counter's own delta) that this code path
-     is real, allocation-heavy, and reproducible (two-chunk tests: ~143 MiB
-     and ~236 MiB of dictionary growth depending on construction, the
-     ~236 MiB reading reproducing to within ~0.5% across reps). **But
-     reading the source for every call site of `finishChunk()` showed this
-     growth only fires from `Recording::~Recording()` (VM shutdown) or an
-     explicit `dump()` call — never during steady-state execution — so it
-     is structurally impossible for it to be part of the steady-state
-     ~32–42 MB gap**, which is measured ~1 second before the workload loop
-     even finishes. `MethodMap`/`_class_map` are ruled back *out* as
-     candidates for this specific gap (though confirmed as the source of a
-     separate, real, ~210–230 MB per-rotation chunk-flush cost — see the
-     "Where we are today: memory" section above). **The ~32–42 MB gap is
-     back to fully open**, needing a fresh hypothesis untouched by this
-     line of investigation. Worth reporting the counter-snapshot-timing
-     limitation upstream regardless — it's a real, confirmed measurement
-     blind spot in PR #669's design, even though it isn't a coverage bug
-     the way the earlier "dead code" framing implied.
+1. **Memory — close out the open threads from the current investigation**:
+   - jmethodID preloading confirmed as the driver of the Class/Internal/
+     NMT's-own-overhead deltas (~35 MB of the ~102 MB). "Java Heap"
+     remains open — it moved opposite to expectation under the toggle
+     test, but that metric is too noisy (~240 MB swing across 5 same-
+     condition reps) to attribute either way at a practical rep count;
+     would need many more reps or a less noisy measurement approach.
+   - The ~42–57 MB unattributed remainder needs a genuinely new angle,
+     distinct from the five already tried (see "Where we are today:
+     memory" and the results doc for what's been ruled out). Worth
+     checking whether other profiler structures use the same raw-`mmap`
+     backing allocator `CallTraceStorage` does (their counters would have
+     the same logical-vs-resident measurement gap that complicated the
+     `NM_CALLTRACE` analysis), and tracing the dictionary's per-thread/
+     shard buffering mechanism directly to explain why the chunk-flush
+     burst is far larger than raw string content would predict.
    - Get `NM_PERF` verified on a non-sandboxed host (root, relaxed
      `kptr_restrict`) — currently unverifiable by construction, not by
      absence of effort.
@@ -285,23 +233,17 @@ one invented from scratch.
 5. **Identify low-hanging fruit and larger improvement opportunities**
    (deliberately sequenced *after* the above, since fixing things you don't
    understand yet risks fixing the wrong thing). Memory candidates, ranked
-   by confidence: jmethodID preloading strategy — **confirmed** driver of a
+   by confidence: jmethodID preloading strategy — confirmed driver of a
    real ~36 MB chunk of overhead at high class diversity, worth asking
    whether it can be lazier or bounded instead of eager-per-`ClassPrepare`
    (though the source comment already explains why it's eager: AGCT's
-   signal-handler constraints, so any change here needs care, not just
-   "make it lazy") — plus calltrace/dictionary initial-capacity tuning for
-   high-diversity workloads, now a *stronger* candidate given the confirmed
-   (two-chunk tests measured ~143 MiB and ~236 MiB depending on
-   construction, with the ~236 MiB reading reproducing to within ~0.5%
-   across reps — real and repeatable per construction, magnitude under
-   normal single-chunk conditions still unresolved) `NM_DICTIONARY`/
-   `MethodMap` growth, and worth investigating alongside whatever fix path
-   emerges for the
-   counter-snapshot-timing limitation itself. No CPU/latency candidates
-   exist yet — they're a product of item 2's investigation, not knowable in
-   advance. Output: a ranked backlog (effort vs. expected impact) feeding
-   Phase 4.
+   signal-handler constraints, so any change here needs care) — plus
+   calltrace/dictionary initial-capacity tuning for high-diversity
+   workloads, a stronger candidate given the confirmed real (if not yet
+   precisely quantified under normal conditions) chunk-flush dictionary
+   growth. No CPU/latency candidates exist yet — they're a product of item
+   2's investigation, not knowable in advance. Output: a ranked backlog
+   (effort vs. expected impact) feeding Phase 4.
 
 ### Which use cases are good to measure overhead with?
 
@@ -415,6 +357,13 @@ memory work, not just a general preference for agile-sounding language:
   2x+ from the true value; getting a trustworthy number required building
   new tooling (`run_repeated_sweep.sh`) *during* the investigation, not
   something we could have specified up front.
+- Attributing the ~102 MB to specific mechanisms took multiple rounds of
+  cross-checking with independent tools (a debugger, a purpose-built
+  allocation tracker, direct `/proc` memory inspection) before a result was
+  trustworthy enough to act on — an initially-plausible-looking explanation
+  turned out to be measuring something else on more than one occasion.
+  Budget for this kind of repeated verification, not just a single
+  instrumentation pass.
 - We have no reason to expect CPU and latency to be more predictable than
   memory turned out to be. Committing now to specific new archetypes for
   them would be guessing, not planning.
@@ -431,26 +380,12 @@ latency), currently at different stages for each:**
    one.
 3. Attribute the delta to a mechanism where practical (NMT category
    breakdown, source instrumentation) — this is where effort is hardest to
-   predict in advance, and where a naive first answer can be wrong in a way
-   that only more digging reveals. The memory investigation's attribution
-   work found a real, confirmed driver for jmethodID preloading, but the
-   `MethodMap`/`NM_DICTIONARY` growth attempt *initially* looked like a clean ruling-out and
-   turned out instead to be a measurement artifact masking a large, real
-   effect (dump-time-only code running after that chunk's counters were
-   already snapshotted) — surfaced only by cross-checking with a debugger
-   and an independently-built tool when the result didn't sit right. Then,
-   even after that effect was confirmed and quantified, a *second* round of
-   cross-checking (direct RSS instrumentation plus reading every call site
-   of the triggering function in the source) showed it explained a
-   different, separate cost from the one it was being investigated for —
-   the original gap was still open, two "confirmed" conclusions in. Budget
-   for this kind of repeated second-guessing, not just the first
-   instrumentation attempt or the first correction.
+   predict in advance and where cross-checking matters most (see above).
 4. Only *then* decide which validated dimensions become permanent
    archetypes/benchmarks, and build/extend the actual measurement mechanism
    (dd-trace-doe archetype changes, or a repo-local benchmark) — this is
    where most of the "should we have new archetypes" effort lives, and its
-   size depends entirely on what step 1–3 found. For memory, this looks
+   size depends entirely on what steps 1–3 found. For memory, this looks
    like extending dd-trace-doe's existing `endpoints` parameter (a schema
    change plus benchmark-matrix definition, not new infrastructure) — a
    reasonable proxy for "small," but not yet scoped in detail. For CPU and
@@ -500,110 +435,22 @@ breakdown illustrates — the biggest memory lever might not be
 1. Get access to the dd-trace-doe run(s)/config that produced the reported
    150–250 MB figure (Phase 1.3, first task — everything else in
    reconciliation depends on knowing what was actually measured).
-2. ~~Toggle-test the jmethodID-preloading hypothesis~~ / ~~Size
-   `MethodMap`/`MethodInfo`~~ / ~~Get a clean second-chunk reading~~ / ~~Get
-   a second rep of the clean reading~~ / ~~Confirm the growth with direct
-   RSS instrumentation~~ **All done** (Phase 1.1) — preloading confirmed as
-   a real driver of the steady-state overhead. The `MethodMap` sizing
-   attempt uncovered something bigger than planned but, in the end, a false
-   lead for what it was chasing: a counter-snapshot-timing artifact
-   (`flightRecorder.cpp:819–826`) meaning `NM_DICTIONARY`/`MethodMap`
-   growth from wall-clock sampling is real, substantial, and confirmed four
-   independent ways — GDB breakpoint, an independent allocation-tracking
-   tool, three two-chunk-test reps (~232/231/230 MiB dictionary deltas,
-   <1% spread), and direct RSS instrumentation (~213 MiB real RSS jump at
-   the exact moment of a forced `dump()` call, closely matching the
-   counter's own delta). **But reading every call site of `finishChunk()`
-   in the source showed this growth only ever fires from
-   `Recording::~Recording()` (VM shutdown) or an explicit `dump()` call —
-   never during steady-state execution, since there's no periodic mid-run
-   rotation in this codebase.** The steady-state sweep that produced the
-   ~32–42 MB unattributed figure samples RSS ~1 second *before* the
-   workload loop finishes, strictly before either trigger can fire. So
-   this mechanism — however real and well-confirmed — contributed nothing
-   to that number. **The ~32–42 MB steady-state gap is back to fully
-   open**; what's actually resolved is a separate, additive finding: a
-   ~210–230 MB (at N=150,000) cost paid once per JFR chunk rotation, on
-   top of the ~102 MB steady-state number, which matters for any
-   long-running process that rotates chunks periodically rather than
-   writing one continuous file to process exit. It also surfaced an
-   independent structural finding worth tracking on its own:
-   `NM_CALLTRACE` resets to baseline capacity across a chunk rotation while
-   `NM_DICTIONARY` content persists/accumulates — a real lifetime
-   difference with its own production implications, unrelated to either
-   gap.
-3. ~~Rerun the LD_PRELOAD allocation shim with a steady-state-timed
-   snapshot (matching the sweep's own RSS sample point) instead of only
-   `atexit()`.~~ **Done — came up empty, but for an instructive reason.**
-   The steady-state total (~35.7 MB) was dominated (~24.6 MB, verified via
-   `nm`-precise offset targeting and deep-backtrace capture to be real, not
-   a backtrace artifact) by `JVMSupport::loadMethodIDsImpl` — but that's
-   the identical call disabled by the toggle test that already measured
-   jmethodID preloading's ~35.9 MB NMT-visible share (same function
-   `loadMethodIDsIfNeeded` calls), so this is almost certainly the same
-   bytes measured twice, not new evidence. **Two independent attempts to
-   explain this gap (dictionary/`MethodMap` growth, then direct allocation
-   attribution) have now both landed on already-explained mechanisms.**
-   That pattern itself is informative: the gap is unlikely to be additional
-   profiler-`.so`-attributed `malloc`/`new` activity at all — this
-   experiment's entire steady-state total was already-known territory.
-   Next candidates, explicitly *not* profiler-side-allocation hypotheses:
-   glibc allocator fragmentation/bookkeeping overhead, JVM-side memory that
-   bypasses `os::malloc` (so is invisible to both NMT and this shim), or an
-   NMT category that's undercounting rather than one that's silent.
-   ~~Check glibc fragmentation via `mallinfo2()`~~ / ~~Check NMT's `Code`
-   category for JIT code-cache growth~~ **Both done — both ruled out.** A
-   5-rep `mallinfo2()` comparison (first single-pair attempt was itself
-   inconsistent and correctly not trusted, matching the earlier RSS
-   single-pair lesson) found the agent produces *less* unaccounted glibc
-   overhead, not more (mean −15.7 MiB) — no fragmentation effect. It did
-   yield a durable new number: ~82.0 MiB (±3.2 MiB) of total
-   `malloc`-visible growth, an independent cross-check of the ~102 MB RSS
-   figure, leaving a smaller ~20 MB "RSS but not `malloc`-visible"
-   residual. `CodeCache` was the obvious candidate for that residual and is
-   also ruled out: NMT's `Code` category grows by an essentially identical
-   ~163 MB with and without the agent across all 10 existing sweep reps
-   (mean delta −0.6 MiB) — pure JIT-warmup, not an agent cost. **Three
-   hypotheses in a row (dictionary/`MethodMap`, direct allocation
-   attribution, and now fragmentation/code-cache) have all been ruled
-   out or shown to be already-explained**, suggesting the ~32–42 MB gap
-   may not be one single mechanism but several small contributors below
-   the resolution of any one check so far — a finer-grained NMT
-   malloc-vs-mmap breakdown per category (already reported by NMT, as seen
-   for `Code`) may be more productive than another single-hypothesis test.
-   ~~Mine the existing NMT diff data for that breakdown, and reconsider
-   whether the ~32–42 MB figure itself is still right given everything
-   learned since it was first derived~~ **Done.** Mining reproduced the
-   toggle-test numbers closely (good sanity check) and, excluding Java
-   Heap's already-known noise, confirmed NMT-visible growth at ~35.5 MB
-   (matching jmethodID's 35.9 MB almost exactly). Cross-checking with the
-   mallinfo2 figures (82.0 MiB total malloc minus ~23.1 MiB NMT-tracked
-   malloc = 58.9 MiB NMT-invisible malloc) independently reproduced the
-   original ~56.9 MB NMT-invisible estimate to within ~2 MiB — reassuring,
-   until the same scrutiny applied to `NM_CALLTRACE` found its documented
-   "15–25 MB" contribution was wrong: its real value is a deterministic
-   48.5 MiB, roughly double, and it's backed by a raw `mmap()` syscall
-   (`OS::safeAlloc`, confirmed in source), not `malloc` — invisible to
-   NMT, the allocation shim, *and* mallinfo2 simultaneously, so its full
-   size can't simply be subtracted from the malloc-based figures.
-   Checking `/proc/<pid>/smaps` directly (readable without `ptrace`, after
-   a GDB struct-inspection attempt failed on this build's member-layout
-   debug info) found `NM_CALLTRACE`'s counter substantially overstates its
-   true RSS footprint: of 4 identified 8 MiB chunks, only the actively-
-   written triple-buffer slot was fully resident, while three older,
-   rotated-out generations sat 0.15–12.5% resident. **Net result: the
-   recalibrated gap lands around ~42–57 MiB — the same order of magnitude
-   as the original ~32–42 MB, not smaller.** The magnitude holds up under
-   rigorous re-derivation; getting a more precise number would require
-   exhaustively mapping every remaining memory region, not pursued further.
-4. Kick off Phase 1.2 for CPU and latency: pick 1–2 of the candidate
+2. Find a new angle on the ~42–57 MB unattributed memory gap — not another
+   single-hypothesis test in the style of the five already tried (see
+   "Where we are today: memory"). Two concrete candidates: check whether
+   other profiler structures share `CallTraceStorage`'s raw-`mmap` backing
+   allocator (same logical-vs-resident measurement gap likely applies), and
+   trace the class-name dictionary's per-thread/shard buffering mechanism
+   directly to explain why chunk-flush growth so far exceeds raw string
+   content.
+3. Kick off Phase 1.2 for CPU and latency: pick 1–2 of the candidate
    hypotheses above, build the smallest synthetic microbenchmark that
    isolates one, and get a first with/without-agent number — the goal at
    this step is learning whether the memory methodology transfers cleanly,
    not landing a final answer.
-5. Decide the Phase 2 split of responsibility between dd-trace-doe
+4. Decide the Phase 2 split of responsibility between dd-trace-doe
    (end-to-end/nightly) and a java-profiler-repo-local benchmark (fast/PR
    or nightly) before building either — for memory first, since it's the
    only dimension far enough along to make this decision concretely.
-6. Scope Phase 3's telemetry additions against what's already technically
+5. Scope Phase 3's telemetry additions against what's already technically
    adjacent to existing counters, to estimate effort before committing.
