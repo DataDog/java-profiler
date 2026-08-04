@@ -48,4 +48,32 @@ if [ "$MODE" = "publish" ] || [ "$MODE" = "all" ]; then
     exit 1
   fi
   ./gradlew -Pskip-native -Pskip-tests -Pddprof_version="${LIB_VERSION}" -PbuildInfo.build.number=$CI_JOB_ID -Pwith-libs="$(pwd)/libs" publishToSonatype closeAndReleaseSonatypeStagingRepository --exclude-task compileFuzzer --max-workers=1 --no-build-cache --stacktrace --info --no-watch-fs --no-daemon
+
+  # Downstream consumers (e.g. benchmarking-platform's run-benchmarks.sh)
+  # resolve the real timestamped filename via maven-metadata.xml right after
+  # this job finishes. Sonatype needs a little time to index a freshly
+  # published snapshot, so wait until the metadata (and the jar it points to)
+  # are actually resolvable before this job reports success.
+  if [[ "${LIB_VERSION}" == *-SNAPSHOT ]]; then
+    echo "=== Waiting for snapshot artifact to become resolvable on Sonatype ==="
+    META_URL="https://central.sonatype.com/repository/maven-snapshots/com/datadoghq/ddprof/${LIB_VERSION}/maven-metadata.xml"
+    RESOLVED=0
+    for attempt in $(seq 1 20); do
+      SNAPSHOT_VER=$(curl -fsSL "${META_URL}" 2>/dev/null | grep -o '<value>[^<]*</value>' | tail -1 | sed 's/<[^>]*>//g' || true)
+      if [ -n "${SNAPSHOT_VER}" ]; then
+        JAR_URL="https://central.sonatype.com/repository/maven-snapshots/com/datadoghq/ddprof/${LIB_VERSION}/ddprof-${SNAPSHOT_VER}-debug.jar"
+        if curl -fsSL -o /dev/null "${JAR_URL}"; then
+          echo "Snapshot artifact resolvable: ${JAR_URL}"
+          RESOLVED=1
+          break
+        fi
+      fi
+      echo "Attempt ${attempt}/20: snapshot not yet resolvable, retrying in 15s..."
+      sleep 15
+    done
+    if [ "${RESOLVED}" -ne 1 ]; then
+      echo "ERROR: snapshot artifact still not resolvable after 20 attempts" >&2
+      exit 1
+    fi
+  fi
 fi
