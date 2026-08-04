@@ -52,8 +52,7 @@ public:
   };
 
   static constexpr u32 FLAG_PARKED = 0x4u; // next free bit after TYPE_MASK (0x1|0x2)
-  static constexpr u32 FLAG_CLAIMED = 0x8u; // Used by ThreadLocalDataPool only
- 
+  static constexpr u32 FLAG_CLAIMED = 0x8u; // Used by ThreadLocalDataPool only 
 
   // We are allowing several levels of nesting because we can be
   // eg. in a crash handler when wallclock signal kicks in,
@@ -140,7 +139,7 @@ private:
 
     u32 flags = __atomic_fetch_or(&_misc_flags, FLAG_CLAIMED, __ATOMIC_ACQUIRE);
     return (flags & FLAG_CLAIMED) == 0;
-}
+  }
 
 public:
   static ProfiledThread *forTid(int tid) {

@@ -10,7 +10,6 @@
 #include <jvmti.h>
 
 #include "threadLocal.h"
-#include "os.h"
 
 /**
  * JVMThread represents a native JVM thread that is JVM implementation agnostic
@@ -41,7 +40,7 @@ public:
     static inline pthread_key_t key() {
         return _jvm_thread.key();
     }
-    
+
     static int nativeThreadId(JNIEnv* jni, jthread thread);
     static inline jlong javaThreadId(JNIEnv* env, jthread thread) {
        return env->GetLongField(thread, _tid);

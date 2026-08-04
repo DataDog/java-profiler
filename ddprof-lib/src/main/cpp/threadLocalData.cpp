@@ -22,14 +22,14 @@
 ThreadLocal<ProfiledThread*, nullptr, ProfiledThread::freeValue>  ProfiledThread::_current_thread;
 
 bool ProfiledThread::supportPriming() {
-    // Key must be valid
-    assert(_current_thread.isKeyValid());
-    if (OS::isMusl()) {
-      return true;
-    } else {
-      return _current_thread.key() < PTHREAD_KEY_2NDLEVEL_SIZE;
-    }
+  // Key must be valid
+  assert(_current_thread.isKeyValid());
+  if (OS::isMusl()) {
+    return true;
+  } else {
+    return _current_thread.key() < PTHREAD_KEY_2NDLEVEL_SIZE;
   }
+}
 
 ProfiledThread* ProfiledThread::initCurrentThread() {
   if (!isThreadKeyValid()) {

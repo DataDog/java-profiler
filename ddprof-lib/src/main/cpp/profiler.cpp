@@ -35,6 +35,7 @@
 #include "stackFrame.h"
 #include "stackWalker.h"
 #include "symbols.h"
+#include "threadLocalData.inline.h"
 #include "tsc.h"
 #include "utils.h"
 #include "wallClock.h"

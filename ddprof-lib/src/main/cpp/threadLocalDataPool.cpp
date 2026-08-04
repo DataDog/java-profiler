@@ -1,5 +1,4 @@
-
- /*
+/*
  * Copyright 2026 Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -29,6 +28,9 @@ ThreadLocalDataPool::ThreadLocalDataPool(uint64_t capacity)
 
 ThreadLocalDataPool::~ThreadLocalDataPool() {
     if (_threads != nullptr) {
+        for (uint64_t index = 0; index < _capacity; index++) {
+            _threads[index].~ProfiledThread();
+        }
         free(reinterpret_cast<void*>(_threads));
     }
 }
