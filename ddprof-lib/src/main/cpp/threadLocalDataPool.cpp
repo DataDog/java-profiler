@@ -24,7 +24,7 @@ ThreadLocalDataPool::ThreadLocalDataPool(uint64_t capacity)
     for (uint64_t index = 0; index < capacity; index++) {
         new (&_threads[index]) ProfiledThread(0);
     }
-    NativeMem::record(NM_THREAD_LOCAL, malloc_size);
+    NativeMem::record(NM_THREAD_LOCAL, malloc_size + sizeof(ThreadLocalDataPool));
 }
 
 ThreadLocalDataPool::~ThreadLocalDataPool() {
@@ -58,7 +58,7 @@ ProfiledThread* ThreadLocalDataPool::claim(int tid) {
 
 bool ThreadLocalDataPool::unclaim(ProfiledThread* t) {
     if (contains(t)) {
-        new (t)ProfiledThread(0);
+        t->unclaim();
         uint16_t used = __atomic_fetch_add(&_used, -1, __ATOMIC_RELEASE);
         assert(used > 0);
         return true;
@@ -78,7 +78,7 @@ ProfiledThread* ThreadLocalDataPool::acquire(int tid) {
     } else {
         ProfiledThread* t = pool->claim(tid);
         if (t != nullptr) {
-            new (t)ProfiledThread(tid, true /* claimed */);
+            t->resetClaimed(tid);
         }
         return t;
     }

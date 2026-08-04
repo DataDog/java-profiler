@@ -95,3 +95,27 @@ Context ProfiledThread::snapshotContext(size_t numAttrs) {
   }
   return ctx;
 }
+
+void ProfiledThread::resetClaimed(int tid) {
+  _jmp_buf = nullptr;
+  _pc = 0;
+  _sp = 0;
+  _span_id = 0;
+  _crash_depth = 0;
+  _tid = tid;
+  _cpu_epoch = 0;
+  _wall_epoch = 0;
+  _call_trace_id = 0;
+  _recording_epoch = 0;
+  _misc_flags = FLAG_CLAIMED;
+  _park_block_token = 0;
+  _filter_slot_id = 0;
+  _init_window = 0;
+  _signal_depth = 0;
+  _otel_ctx_initialized = false;
+  _otel_ctx_record = {};
+  for (int index = 0; index < DD_TAGS_CAPACITY; index++) {
+    _otel_tag_encodings[index] = 0;
+  }
+   _otel_local_root_span_id = 0;
+}
