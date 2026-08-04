@@ -59,7 +59,13 @@ if [ "$MODE" = "publish" ] || [ "$MODE" = "all" ]; then
     META_URL="https://central.sonatype.com/repository/maven-snapshots/com/datadoghq/ddprof/${LIB_VERSION}/maven-metadata.xml"
     RESOLVED=0
     for attempt in $(seq 1 20); do
-      SNAPSHOT_VER=$(curl -fsSL "${META_URL}" 2>/dev/null | grep -o '<value>[^<]*</value>' | tail -1 | sed 's/<[^>]*>//g' || true)
+      SNAPSHOT_VER=$(curl -fsSL "${META_URL}" 2>/dev/null | awk '
+        /<snapshotVersion>/ { classifier=""; extension=""; value="" }
+        /<classifier>/ { gsub(/<\/?classifier>/,""); gsub(/^[ \t]+|[ \t]+$/,""); classifier=$0 }
+        /<extension>/ { gsub(/<\/?extension>/,""); gsub(/^[ \t]+|[ \t]+$/,""); extension=$0 }
+        /<value>/ { gsub(/<\/?value>/,""); gsub(/^[ \t]+|[ \t]+$/,""); value=$0 }
+        /<\/snapshotVersion>/ { if (classifier=="debug" && extension=="jar") print value }
+      ' || true)
       if [ -n "${SNAPSHOT_VER}" ]; then
         JAR_URL="https://central.sonatype.com/repository/maven-snapshots/com/datadoghq/ddprof/${LIB_VERSION}/ddprof-${SNAPSHOT_VER}-debug.jar"
         if curl -fsSL -o /dev/null "${JAR_URL}"; then
