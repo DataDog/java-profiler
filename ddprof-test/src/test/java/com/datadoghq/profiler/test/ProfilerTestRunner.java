@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler.test;
 
 import org.junit.platform.engine.TestExecutionResult;
@@ -7,6 +12,7 @@ import org.junit.platform.engine.discovery.DiscoverySelectors;
 import org.junit.platform.engine.support.descriptor.MethodSource;
 import org.junit.platform.launcher.Launcher;
 import org.junit.platform.launcher.LauncherDiscoveryRequest;
+import org.junit.platform.launcher.TagFilter;
 import org.junit.platform.launcher.TestExecutionListener;
 import org.junit.platform.launcher.TestIdentifier;
 import org.junit.platform.launcher.core.LauncherDiscoveryRequestBuilder;
@@ -33,6 +39,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * - -Dtest.filter=ClassName         - Run all tests in a class
  * - -Dtest.filter=ClassName#method  - Run specific test method
  * - -Dtest.filter=*.Pattern*        - Pattern matching on class names
+ * - -Dtest.tags.include=tag1,tag2  - Only run tests tagged with one of these tags
+ * - -Dtest.tags.exclude=tag1,tag2  - Skip tests tagged with any of these tags
  */
 public class ProfilerTestRunner {
     public static void main(String[] args) {
@@ -104,6 +112,17 @@ public class ProfilerTestRunner {
             requestBuilder.selectors(
                 DiscoverySelectors.selectPackage("")
             );
+        }
+
+        // Tag filtering, orthogonal to the class/method filter above (e.g. carving the
+        // "slow" suite out of the default run, or selecting only "slow" tests for it).
+        String includeTags = System.getProperty("test.tags.include");
+        if (includeTags != null && !includeTags.isEmpty()) {
+            requestBuilder.filters(TagFilter.includeTags(includeTags.split(",")));
+        }
+        String excludeTags = System.getProperty("test.tags.exclude");
+        if (excludeTags != null && !excludeTags.isEmpty()) {
+            requestBuilder.filters(TagFilter.excludeTags(excludeTags.split(",")));
         }
 
         LauncherDiscoveryRequest request = requestBuilder.build();
