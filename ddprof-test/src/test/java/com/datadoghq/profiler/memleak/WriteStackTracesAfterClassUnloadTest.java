@@ -9,6 +9,7 @@
  */
 package com.datadoghq.profiler.memleak;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -63,6 +64,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *       covered by {@code CleanupAfterClassUnloadTest}.</li>
  * </ul>
  */
+@Tag("slow")
 public class WriteStackTracesAfterClassUnloadTest extends AbstractDynamicClassTest {
 
   @Override

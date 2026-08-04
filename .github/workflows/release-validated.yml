@@ -202,9 +202,17 @@ jobs:
     with:
       configuration: '["debug", "asan"]'
 
+  pre-release-slow-tests:
+    needs: validate-inputs
+    if: ${{ inputs.dry_run != true && inputs.skip_tests != true && inputs.release_type != 'retag' }}
+    uses: ./.github/workflows/test_workflow.yml
+    with:
+      configuration: '["debug", "asan"]'
+      slow_tests: true
+
   create-release:
-    needs: [validate-inputs, pre-release-tests]
-    if: always() && needs.validate-inputs.result == 'success' && (needs.pre-release-tests.result == 'success' || needs.pre-release-tests.result == 'skipped')
+    needs: [validate-inputs, pre-release-tests, pre-release-slow-tests]
+    if: always() && needs.validate-inputs.result == 'success' && (needs.pre-release-tests.result == 'success' || needs.pre-release-tests.result == 'skipped') && (needs.pre-release-slow-tests.result == 'success' || needs.pre-release-slow-tests.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       checks: read
@@ -224,7 +232,7 @@ jobs:
       bump_pr_url: ${{ steps.create-release.outputs.bump_pr_url }}
     steps:
       - name: Check test results
-        if: ${{ inputs.dry_run != true && inputs.skip_tests != true && inputs.release_type != 'retag' && needs.pre-release-tests.result != 'success' }}
+        if: ${{ inputs.dry_run != true && inputs.skip_tests != true && inputs.release_type != 'retag' && (needs.pre-release-tests.result != 'success' || needs.pre-release-slow-tests.result != 'success') }}
         run: |
           echo "::error::Pre-release tests failed. Cannot proceed with release."
           exit 1
