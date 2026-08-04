@@ -1964,6 +1964,7 @@ void Recording::recordTaskBlock(Buffer *buf, int tid, TaskBlockEvent *event) {
   buf->putVar64(event->_blocker);
   buf->putVar64(event->_unblockingSpanId);
   buf->putVar64(event->_callTraceId);
+  buf->putVar64(event->_correlationId);
   buf->put8(static_cast<int>(event->_observedBlockingState));
   writeContextSnapshot(buf, event->_ctx);
   writeEventSizePrefix(buf, start);
@@ -2183,7 +2184,8 @@ void FlightRecorder::stop() {
   }
 }
 
-Error FlightRecorder::dump(const char *filename, const int length) {
+Error FlightRecorder::prepareDump(const char *filename, const int length,
+                                  int *fd) {
   DEBUG_ASSERT_NOT_IN_SIGNAL();
   assert(length >= 0);
   ExclusiveLockGuard locker(&_rec_lock);
@@ -2193,18 +2195,28 @@ Error FlightRecorder::dump(const char *filename, const int length) {
         strncmp(filename, _filename.c_str(), length) != 0) {
       // if the filename to dump the recording to is specified move the current
       // working file there
-      int copy_fd = open(filename, O_CREAT | O_RDWR | O_TRUNC, 0644);
-      if (copy_fd == -1) {
+      *fd = open(filename, O_CREAT | O_RDWR | O_TRUNC, 0644);
+      if (*fd == -1) {
         return Error("Could not open recording file for dump");
       }
-      rec->switchChunk(copy_fd);
-      close(copy_fd);
       return Error::OK;
     }
     return Error(
       "Can not dump recording to itself. Provide a different file name!");
   }
   return Error("No active recording");
+}
+
+Error FlightRecorder::dump(int fd) {
+  DEBUG_ASSERT_NOT_IN_SIGNAL();
+  assert(fd >= 0);
+  ExclusiveLockGuard locker(&_rec_lock);
+  Recording* rec = _rec;
+  if (rec == nullptr) {
+    return Error("No active recording");
+  }
+  rec->switchChunk(fd);
+  return Error::OK;
 }
 
 void FlightRecorder::wallClockEpoch(int lock_index,

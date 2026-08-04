@@ -708,7 +708,8 @@ bool Profiler::recordSample(void *ucontext, u64 counter, int tid,
 }
 
 bool Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
-                                     jint event_type, Event *event) {
+                                     jint event_type, Event *event,
+                                     u64 *recorded_correlation_id) {
   if (!VM::canRequestStackTrace()) {
     return false;
   }
@@ -743,6 +744,9 @@ bool Profiler::recordSampleDelegated(void *ucontext, u64 weight, int tid,
 
   bool recorded =
       _jfr.recordEventDelegated(lock_index, tid, correlation_id, event_type, event);
+  if (recorded && recorded_correlation_id != nullptr) {
+    *recorded_correlation_id = correlation_id;
+  }
   _locks[lock_index].unlock();
   return recorded;
 }
@@ -855,15 +859,208 @@ void Profiler::leaveTaskBlockActivity() {
   _task_block_inflight.fetch_sub(1, std::memory_order_release);
 }
 
-void Profiler::beginTaskBlockRotation() {
+u64 Profiler::beginTaskBlockRotation() {
+  // Establish the cut before rejecting exits. An exit that observes the
+  // rotation flag can then publish a completion timestamp that is guaranteed
+  // to belong to the next segment.
+  u64 boundary_ticks = TSC::ticks();
   _task_block_rotation.store(true, std::memory_order_release);
   while (_task_block_inflight.load(std::memory_order_acquire) != 0) {
     std::this_thread::yield();
   }
+  return boundary_ticks;
 }
 
 void Profiler::endTaskBlockRotation() {
   _task_block_rotation.store(false, std::memory_order_release);
+}
+
+bool Profiler::registerTaskBlockRun(ThreadFilter::SlotID slot_id,
+                                    u64 generation, int tid, u64 start_ticks,
+                                    const Context &context, u64 blocker,
+                                    OSThreadState state) {
+  if (slot_id < 0 || slot_id >= ThreadFilter::kMaxThreads || generation == 0 ||
+      !taskBlockEnabled() || taskBlockRotationActive()) {
+    return false;
+  }
+  TaskBlockRun &run = _task_block_runs[slot_id];
+  u64 expected = 0;
+  if (!run.generation.compare_exchange_strong(
+          expected, UINT64_MAX, std::memory_order_acq_rel,
+          std::memory_order_acquire)) {
+    return false;
+  }
+  run.start_ticks = start_ticks;
+  run.segment_start_ticks.store(start_ticks, std::memory_order_relaxed);
+  run.entry_blocker = blocker;
+  run.tid = tid;
+  run.context = context;
+  run.state = state;
+  run.end_ticks.store(0, std::memory_order_relaxed);
+  run.call_trace_id.store(0, std::memory_order_relaxed);
+  run.correlation_id.store(0, std::memory_order_relaxed);
+  run.final_blocker.store(0, std::memory_order_relaxed);
+  run.unblocking_span_id.store(0, std::memory_order_relaxed);
+  run.generation.store(generation, std::memory_order_release);
+  if (taskBlockRotationActive()) {
+    clearTaskBlockRun(slot_id, generation);
+    return false;
+  }
+  return true;
+}
+
+void Profiler::recordTaskBlockAnchor(ThreadFilter::SlotID slot_id,
+                                     u64 generation, u64 call_trace_id,
+                                     u64 correlation_id) {
+  if (slot_id < 0 || slot_id >= ThreadFilter::kMaxThreads ||
+      (call_trace_id == 0 && correlation_id == 0)) {
+    return;
+  }
+  TaskBlockRun &run = _task_block_runs[slot_id];
+  if (run.generation.load(std::memory_order_acquire) != generation) return;
+  if (call_trace_id != 0) {
+    if (run.correlation_id.load(std::memory_order_acquire) != 0) return;
+    u64 expected = 0;
+    run.call_trace_id.compare_exchange_strong(
+        expected, call_trace_id, std::memory_order_release,
+        std::memory_order_relaxed);
+  } else {
+    if (run.call_trace_id.load(std::memory_order_acquire) != 0) return;
+    u64 expected = 0;
+    run.correlation_id.compare_exchange_strong(
+        expected, correlation_id, std::memory_order_release,
+        std::memory_order_relaxed);
+  }
+}
+
+void Profiler::completeTaskBlockRun(ThreadFilter::SlotID slot_id,
+                                    u64 generation, u64 end_ticks,
+                                    u64 blocker, u64 unblocking_span_id) {
+  if (slot_id < 0 || slot_id >= ThreadFilter::kMaxThreads) return;
+  TaskBlockRun &run = _task_block_runs[slot_id];
+  if (run.generation.load(std::memory_order_acquire) != generation) return;
+  run.final_blocker.store(blocker, std::memory_order_relaxed);
+  run.unblocking_span_id.store(unblocking_span_id, std::memory_order_relaxed);
+  run.end_ticks.store(end_ticks, std::memory_order_release);
+}
+
+u64 Profiler::taskBlockSegmentStart(ThreadFilter::SlotID slot_id,
+                                    u64 generation) const {
+  if (slot_id < 0 || slot_id >= ThreadFilter::kMaxThreads) return 0;
+  const TaskBlockRun &run = _task_block_runs[slot_id];
+  if (run.generation.load(std::memory_order_acquire) != generation) return 0;
+  return run.segment_start_ticks.load(std::memory_order_acquire);
+}
+
+void Profiler::clearTaskBlockRun(ThreadFilter::SlotID slot_id,
+                                 u64 generation) {
+  if (slot_id < 0 || slot_id >= ThreadFilter::kMaxThreads) return;
+  TaskBlockRun &run = _task_block_runs[slot_id];
+  u64 expected = generation;
+  run.generation.compare_exchange_strong(
+      expected, 0, std::memory_order_acq_rel, std::memory_order_acquire);
+}
+
+bool Profiler::recordTaskBlockSegmentLocked(int tid, TaskBlockEvent *event) {
+  return _jfr.recordTaskBlock(getLockIndex(tid), tid, event);
+}
+
+bool Profiler::recordTaskBlockSegment(int tid, TaskBlockEvent *event) {
+  u32 lock_index = getLockIndex(tid);
+  if (!_locks[lock_index].tryLock() &&
+      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+    return false;
+  }
+  bool recorded = _jfr.recordTaskBlock(lock_index, tid, event);
+  _locks[lock_index].unlock();
+  return recorded;
+}
+
+void Profiler::emitTaskBlockBoundary(u64 boundary_ticks) {
+  for (int slot_id = 0; slot_id < ThreadFilter::kMaxThreads; slot_id++) {
+    TaskBlockRun &run = _task_block_runs[slot_id];
+    u64 generation = run.generation.load(std::memory_order_acquire);
+    if (generation == 0 || generation == UINT64_MAX) continue;
+    u64 segment_start = run.segment_start_ticks.load(std::memory_order_acquire);
+    u64 end_ticks = run.end_ticks.load(std::memory_order_acquire);
+    u64 segment_end = end_ticks != 0 && end_ticks < boundary_ticks
+        ? end_ticks
+        : boundary_ticks;
+    if (segment_end <= segment_start) continue;
+    TaskBlockEvent event{};
+    event._start = segment_start;
+    event._end = segment_end;
+    u64 final_blocker = run.final_blocker.load(std::memory_order_acquire);
+    event._blocker = final_blocker != 0 ? final_blocker : run.entry_blocker;
+    event._unblockingSpanId =
+        run.unblocking_span_id.load(std::memory_order_acquire);
+    event._ctx = run.context;
+    event._callTraceId = run.call_trace_id.load(std::memory_order_acquire);
+    event._correlationId = run.correlation_id.load(std::memory_order_acquire);
+    event._observedBlockingState = run.state;
+    if (event._callTraceId == 0 && event._correlationId == 0) {
+      Counters::increment(TASK_BLOCK_SEGMENT_STACKLESS);
+    }
+    if (recordTaskBlockSegmentLocked(run.tid, &event)) {
+      Counters::increment(TASK_BLOCK_EMITTED);
+    } else {
+      Counters::increment(TASK_BLOCK_RECORD_FAILED);
+    }
+  }
+}
+
+void Profiler::commitTaskBlockBoundary(u64 boundary_ticks) {
+  for (int slot_id = 0; slot_id < ThreadFilter::kMaxThreads; slot_id++) {
+    TaskBlockRun &run = _task_block_runs[slot_id];
+    u64 generation = run.generation.load(std::memory_order_acquire);
+    if (generation == 0 || generation == UINT64_MAX) continue;
+    u64 end_ticks = run.end_ticks.load(std::memory_order_acquire);
+    if (end_ticks != 0 && end_ticks <= boundary_ticks) {
+      clearTaskBlockRun(slot_id, generation);
+      continue;
+    }
+    run.segment_start_ticks.store(boundary_ticks, std::memory_order_release);
+    run.call_trace_id.store(0, std::memory_order_release);
+    run.correlation_id.store(0, std::memory_order_release);
+    ThreadFilter::Slot *slot = _thread_filter.slotForId(slot_id);
+    if (slot != nullptr && slot->blockGeneration() == generation) {
+      slot->resetSampledBlockGeneration();
+    }
+  }
+}
+
+void Profiler::flushCompletedTaskBlockRuns() {
+  for (int slot_id = 0; slot_id < ThreadFilter::kMaxThreads; slot_id++) {
+    TaskBlockRun &run = _task_block_runs[slot_id];
+    u64 generation = run.generation.load(std::memory_order_acquire);
+    if (generation == 0 || generation == UINT64_MAX) continue;
+    u64 end_ticks = run.end_ticks.load(std::memory_order_acquire);
+    u64 segment_start = run.segment_start_ticks.load(std::memory_order_acquire);
+    if (end_ticks == 0 || end_ticks <= segment_start) continue;
+    TaskBlockEvent event{};
+    event._start = segment_start;
+    event._end = end_ticks;
+    u64 final_blocker = run.final_blocker.load(std::memory_order_acquire);
+    event._blocker = final_blocker != 0 ? final_blocker : run.entry_blocker;
+    event._unblockingSpanId =
+        run.unblocking_span_id.load(std::memory_order_acquire);
+    event._ctx = run.context;
+    event._observedBlockingState = run.state;
+    Counters::increment(TASK_BLOCK_SEGMENT_STACKLESS);
+    if (recordTaskBlockSegment(run.tid, &event)) {
+      Counters::increment(TASK_BLOCK_EMITTED);
+      clearTaskBlockRun(slot_id, generation);
+    } else {
+      Counters::increment(TASK_BLOCK_RECORD_FAILED);
+    }
+  }
+}
+
+void Profiler::clearAllTaskBlockRuns() {
+  for (TaskBlockRun &run : _task_block_runs) {
+    run.generation.store(0, std::memory_order_release);
+  }
 }
 
 void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
@@ -1817,7 +2014,7 @@ Error Profiler::stop() {
   // Prevent existing paired intervals from recording during teardown. New
   // intervals were disabled above; this also drains endTaskBlock calls that
   // already entered their snapshot-and-record activity.
-  beginTaskBlockRotation();
+  u64 task_block_stop_boundary = beginTaskBlockRotation();
 
   if (_event_mask & EM_ALLOC)
     _alloc_engine->stop();
@@ -1890,7 +2087,11 @@ Error Profiler::stop() {
   // correct counts in the recording
   _thread_info.reportCounters();
 
-  rotateDictsAndRun([&]{ _jfr.stop(); });
+  rotateDictsAndRun([&]{
+    emitTaskBlockBoundary(task_block_stop_boundary);
+    _jfr.stop();
+  });
+  clearAllTaskBlockRuns();
   endTaskBlockRotation();
 
   // Unpatch libraries AFTER JFR serialization completes
@@ -1967,6 +2168,10 @@ Error Profiler::dump(const char *path, const int length) {
   }
 
   if (cur_state == RUNNING) {
+    int dump_fd = -1;
+    Error err = _jfr.prepareDump(path, length, &dump_fd);
+    if (err) return err;
+
     std::set<int> thread_ids;
     // flush the liveness tracker instance and note all the threads referenced
     // by the live objects
@@ -1978,19 +2183,26 @@ Error Profiler::dump(const char *path, const int length) {
 
     updateNativeLibMemStats();
 
-    Error err = Error::OK;
     // rotateDictsAndRun rotates the dictionaries, takes lockAll() around the
     // dump (fences ASGCT/JNI writers to CallTraceStorage), then clearStandby()s
     // the rotated buffers.  StringDictionary's RefCountGuard protocol handles
     // its own writer/reader coordination; #527's classMapSharedGuard readers
     // (deferred vtable receiver resolution) are coordinated through
     // _class_map_lock.
-    beginTaskBlockRotation();
+    u64 task_block_boundary = beginTaskBlockRotation();
     rotateDictsAndRun([&]{
-      err = _jfr.dump(path, length);
-      __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
+      emitTaskBlockBoundary(task_block_boundary);
+      err = _jfr.dump(dump_fd);
+      if (!err) {
+        commitTaskBlockBoundary(task_block_boundary);
+        __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
+      }
     });
+    close(dump_fd);
     endTaskBlockRotation();
+    if (!err) {
+      flushCompletedTaskBlockRuns();
+    }
 
     _thread_info.clearAll(thread_ids);
     _thread_info.reportCounters();

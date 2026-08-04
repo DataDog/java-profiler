@@ -24,8 +24,10 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.openjdk.jmc.common.item.Attribute.attr;
+import static org.openjdk.jmc.common.unit.UnitLookup.NANOSECOND;
 import static org.openjdk.jmc.common.unit.UnitLookup.NUMBER;
 import static org.openjdk.jmc.common.unit.UnitLookup.PLAIN_TEXT;
+import static org.openjdk.jmc.common.unit.UnitLookup.TIMESPAN;
 
 /** Assertions for the synchronous {@code datadog.TaskBlock} event contract. */
 final class TaskBlockAssertions {
@@ -41,6 +43,8 @@ final class TaskBlockAssertions {
       attr("observedBlockingState", "observedBlockingState", "Observed Blocking State", PLAIN_TEXT);
   private static final IAttribute<IQuantity> CORRELATION_ID =
       attr("correlationId", "correlationId", "Async Stack Trace Correlation ID", NUMBER);
+  private static final IAttribute<IQuantity> DURATION =
+      attr("duration", "duration", "Duration", TIMESPAN);
 
   private TaskBlockAssertions() {}
 
@@ -131,7 +135,13 @@ final class TaskBlockAssertions {
 
   static void assertNoCorrelationId(IItemCollection events) {
     for (IItemIterable iterable : events) {
-      assertNull(CORRELATION_ID.getAccessor(iterable.getType()));
+      IMemberAccessor<IQuantity, IItem> accessor =
+          CORRELATION_ID.getAccessor(iterable.getType());
+      assertNotNull(accessor, "TaskBlock must expose correlationId");
+      for (IItem item : iterable) {
+        assertTrue(accessor.getMember(item).longValue() == 0,
+            "Direct-stack TaskBlock must have correlationId=0");
+      }
     }
   }
 
@@ -191,6 +201,25 @@ final class TaskBlockAssertions {
       }
     }
     return count;
+  }
+
+  static double durationNanosForThread(IItemCollection events, String threadName) {
+    double durationNanos = 0;
+    for (IItemIterable iterable : events) {
+      IMemberAccessor<IMCThread, IItem> threadAccessor =
+          JfrAttributes.EVENT_THREAD.getAccessor(iterable.getType());
+      IMemberAccessor<IQuantity, IItem> durationAccessor =
+          DURATION.getAccessor(iterable.getType());
+      if (threadAccessor == null || durationAccessor == null) continue;
+      for (IItem item : iterable) {
+        IMCThread thread = threadAccessor.getMember(item);
+        if (thread != null && threadName.equals(thread.getThreadName())) {
+          durationNanos += durationAccessor.getMember(item)
+              .doubleValueIn(NANOSECOND);
+        }
+      }
+    }
+    return durationNanos;
   }
 
   static boolean containsSpan(IItemCollection events, long spanId) {

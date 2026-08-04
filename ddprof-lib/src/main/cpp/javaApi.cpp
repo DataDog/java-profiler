@@ -364,7 +364,8 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
     return JNI_FALSE;
   }
   Context context = ContextApi::snapshot();
-  if (!current->parkEnter(TSC::ticks(), context)) {
+  u64 start_ticks = TSC::ticks();
+  if (!current->parkEnter(start_ticks, context)) {
     return JNI_FALSE;
   }
 
@@ -374,8 +375,17 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
       (profiler->taskBlockEnabled() || tf->enabled())) {
     ThreadFilter::SlotID slot_id = tf->ensureCurrentThreadSlot(current);
     if (slot_id >= 0) {
-      current->setParkBlockToken(tf->enterBlockedRun(
-          slot_id, OSThreadState::CONDVAR_WAIT, BlockRunOwner::JAVA));
+      u64 token = tf->enterBlockedRun(
+          slot_id, OSThreadState::CONDVAR_WAIT, BlockRunOwner::JAVA);
+      if (token != 0 &&
+          (!profiler->taskBlockEnabled() ||
+           profiler->registerTaskBlockRun(
+               slot_id, ThreadFilter::tokenGeneration(token), current->tid(),
+               start_ticks, context, 0, OSThreadState::CONDVAR_WAIT))) {
+        current->setParkBlockToken(token);
+      } else if (token != 0) {
+        tf->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(token));
+      }
     }
   }
   return JNI_TRUE;
@@ -486,9 +496,15 @@ Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
   }
   u64 token = tf->enterBlockedRun(
       slot_id, OSThreadState::SLEEPING, BlockRunOwner::JAVA);
-  if (!current->taskBlockEnter(token, TSC::ticks(), context)) {
+  u64 start_ticks = TSC::ticks();
+  bool registered = token != 0 && profiler->registerTaskBlockRun(
+      slot_id, ThreadFilter::tokenGeneration(token), current->tid(),
+      start_ticks, context, 0, OSThreadState::SLEEPING);
+  if (!registered || !current->taskBlockEnter(token, start_ticks, context)) {
     if (token != 0) {
       tf->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(token));
+      profiler->clearTaskBlockRun(slot_id,
+                                  ThreadFilter::tokenGeneration(token));
     }
     return 0;
   }

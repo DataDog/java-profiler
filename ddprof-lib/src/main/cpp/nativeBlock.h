@@ -22,6 +22,8 @@ enum class NativeBlockKind : u32 {
   POLL = 5,
   SELECT = 6,
   EPOLL_WAIT = 7,
+  STREAM_SOCKET_READ = 8,
+  STREAM_SOCKET_WRITE = 9,
 };
 
 // Describes physical blocking by the current OS thread. When called by a virtual

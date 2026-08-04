@@ -52,7 +52,9 @@ static inline Ret runNativeIoHook(bool eligible, NativeBlockKind kind, int fd,
 }
 
 template <typename Fn, typename Call>
-static inline ssize_t runStreamSocketHook(int fd, Fn fn, u8 op, Call call) {
+static inline ssize_t runStreamSocketHook(int fd, Fn fn, u8 op,
+                                          NativeBlockKind block_kind,
+                                          Call call) {
   if (fn == nullptr) {
     errno = ENOSYS;
     return -1;
@@ -74,7 +76,7 @@ static inline ssize_t runStreamSocketHook(int fd, Fn fn, u8 op, Call call) {
   u64 t0 = TSC::ticks();
   ssize_t ret;
   {
-    NativeBlockScope block(NativeBlockKind::STREAM_SOCKET, fd);
+    NativeBlockScope block(block_kind, fd);
     ret = call(fn);
   }
   u64 t1 = TSC::ticks();
@@ -329,6 +331,7 @@ ssize_t NativeSocketInterposer::send_hook(int fd, const void* buf, size_t len,
     return NativeSocketSampler::send_hook(fd, buf, len, flags);
   }
   return runStreamSocketHook(fd, _orig_send.load(std::memory_order_acquire), 0,
+                             NativeBlockKind::STREAM_SOCKET_WRITE,
                              [&](send_fn fn) { return fn(fd, buf, len, flags); });
 }
 
@@ -338,6 +341,7 @@ ssize_t NativeSocketInterposer::recv_hook(int fd, void* buf, size_t len,
     return NativeSocketSampler::recv_hook(fd, buf, len, flags);
   }
   return runStreamSocketHook(fd, _orig_recv.load(std::memory_order_acquire), 1,
+                             NativeBlockKind::STREAM_SOCKET_READ,
                              [&](recv_fn fn) { return fn(fd, buf, len, flags); });
 }
 
@@ -346,6 +350,7 @@ ssize_t NativeSocketInterposer::write_hook(int fd, const void* buf, size_t len) 
     return NativeSocketSampler::write_hook(fd, buf, len);
   }
   return runStreamSocketHook(fd, _orig_write.load(std::memory_order_acquire), 2,
+                             NativeBlockKind::STREAM_SOCKET_WRITE,
                              [&](write_fn fn) { return fn(fd, buf, len); });
 }
 
@@ -354,6 +359,7 @@ ssize_t NativeSocketInterposer::read_hook(int fd, void* buf, size_t len) {
     return NativeSocketSampler::read_hook(fd, buf, len);
   }
   return runStreamSocketHook(fd, _orig_read.load(std::memory_order_acquire), 3,
+                             NativeBlockKind::STREAM_SOCKET_READ,
                              [&](read_fn fn) { return fn(fd, buf, len); });
 }
 

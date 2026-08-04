@@ -81,6 +81,7 @@ std::atomic<int> g_sequence{0};
 std::atomic<int> g_raw_syscall_sequence{0};
 std::atomic<int> g_taskblock_enter_sequence{0};
 std::atomic<int> g_taskblock_exit_sequence{0};
+std::atomic<u32> g_taskblock_kind{0};
 std::atomic<int> g_sampler_record_sequence{0};
 std::atomic<ssize_t> g_send_ret{0};
 std::atomic<ssize_t> g_sampler_send_ret{0};
@@ -250,9 +251,10 @@ ssize_t stub_read(int, void*, size_t) {
   return g_read_ret.load();
 }
 
-void native_block_observer(const char* phase, NativeBlockKind, int) {
+void native_block_observer(const char* phase, NativeBlockKind kind, int) {
   int sequence = g_sequence.fetch_add(1) + 1;
   if (strcmp(phase, "enter") == 0) {
+    g_taskblock_kind.store(static_cast<u32>(kind), std::memory_order_release);
     g_taskblock_enter_sequence.store(sequence, std::memory_order_release);
   } else if (strcmp(phase, "exit") == 0) {
     g_taskblock_exit_sequence.store(sequence, std::memory_order_release);
@@ -407,6 +409,7 @@ protected:
     g_raw_syscall_sequence = 0;
     g_taskblock_enter_sequence = 0;
     g_taskblock_exit_sequence = 0;
+    g_taskblock_kind = 0;
     g_sampler_record_sequence = 0;
     g_send_ret = 0;
     g_sampler_send_ret = 0;
@@ -591,6 +594,7 @@ TEST_F(NativeSocketInterposerHookTest, ActiveStreamSocketWriteForwards) {
   ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, fds));
   g_write_ret = 5;
   char buf[8] = {};
+  NativeBlockScope::setHookObserverForTest(native_block_observer);
 
   LibraryPatcher::_socket_active.store(true, std::memory_order_release);
   errno = E2BIG;
@@ -598,7 +602,27 @@ TEST_F(NativeSocketInterposerHookTest, ActiveStreamSocketWriteForwards) {
 
   EXPECT_EQ(5, ret);
   EXPECT_EQ(1, g_write_calls.load());
+  EXPECT_EQ(static_cast<u32>(NativeBlockKind::STREAM_SOCKET_WRITE),
+            g_taskblock_kind.load());
   EXPECT_EQ(E2BIG, errno);
+  close(fds[0]);
+  close(fds[1]);
+}
+
+TEST_F(NativeSocketInterposerHookTest, ActiveStreamSocketReadUsesReadBlockKind) {
+  int fds[2];
+  ASSERT_EQ(0, socketpair(AF_UNIX, SOCK_STREAM, 0, fds));
+  g_read_ret = 5;
+  char buf[8] = {};
+  NativeBlockScope::setHookObserverForTest(native_block_observer);
+
+  LibraryPatcher::_socket_active.store(true, std::memory_order_release);
+  ssize_t ret = NativeSocketInterposer::read_hook(fds[0], buf, sizeof(buf));
+
+  EXPECT_EQ(5, ret);
+  EXPECT_EQ(1, g_read_calls.load());
+  EXPECT_EQ(static_cast<u32>(NativeBlockKind::STREAM_SOCKET_READ),
+            g_taskblock_kind.load());
   close(fds[0]);
   close(fds[1]);
 }

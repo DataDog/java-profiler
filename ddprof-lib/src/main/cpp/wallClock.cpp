@@ -61,6 +61,7 @@ static inline bool hasKnownActiveTraceContext(ProfiledThread* thread) {
 struct WallPrecheckResult {
   bool suppress = false;
   ThreadFilter::Slot* owned_block_slot = nullptr;
+  ThreadFilter::SlotID owned_block_slot_id = -1;
   u64 owned_block_generation = 0;
   OSThreadState observed_state = OSThreadState::UNKNOWN;
   bool observed_state_valid = false;
@@ -129,6 +130,7 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
     // Arm only after recordSample succeeds. A skipped JFR write must leave the
     // run eligible so the next signal retries instead of losing its only stack.
     result.owned_block_slot = slot;
+    result.owned_block_slot_id = current->filterSlotId();
     result.owned_block_generation = block_generation;
     return result;
   }
@@ -162,8 +164,12 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
 
 static inline void finishWallPrecheck(const WallPrecheckResult& precheck,
                                       bool recorded,
-                                      u64 recorded_call_trace_id = 0) {
+                                      u64 recorded_call_trace_id = 0,
+                                      u64 recorded_correlation_id = 0) {
   if (recorded && precheck.owned_block_slot != nullptr) {
+    Profiler::instance()->recordTaskBlockAnchor(
+        precheck.owned_block_slot_id, precheck.owned_block_generation,
+        recorded_call_trace_id, recorded_correlation_id);
     precheck.owned_block_slot->markBlockGenerationSampled(
         precheck.owned_block_generation);
   }
@@ -513,9 +519,11 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
   // the thread is currently inside JVM-internal (non-Java) code.
   // JVMTI-delegated samples carry no call_trace_id, so unowned tail flushing
   // remains limited to the ASGCT wall engine.
+  u64 recorded_correlation_id = 0;
   bool recorded = Profiler::instance()->recordSampleDelegated(
-      nullptr, last_sample, tid, BCI_WALL, &event);
-  finishWallPrecheck(precheck, recorded);
+      nullptr, last_sample, tid, BCI_WALL, &event,
+      &recorded_correlation_id);
+  finishWallPrecheck(precheck, recorded, 0, recorded_correlation_id);
   Shims::instance().setSighandlerTid(-1);
   errno = saved_errno;
 }

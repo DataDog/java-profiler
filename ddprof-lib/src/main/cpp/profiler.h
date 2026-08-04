@@ -29,6 +29,7 @@
 #include "trap.h"
 #include "vmEntry.h"
 #include <atomic>
+#include <array>
 #include <iostream>
 #include <map>
 #include <time.h>
@@ -80,6 +81,21 @@ class alignas(alignof(SpinLock)) Profiler {
   friend class ProfilerTestAccessor;
 
 private:
+  struct TaskBlockRun {
+    std::atomic<u64> generation{0};
+    std::atomic<u64> end_ticks{0};
+    std::atomic<u64> call_trace_id{0};
+    std::atomic<u64> correlation_id{0};
+    std::atomic<u64> final_blocker{0};
+    std::atomic<u64> unblocking_span_id{0};
+    u64 start_ticks{0};
+    std::atomic<u64> segment_start_ticks{0};
+    u64 entry_blocker{0};
+    int tid{-1};
+    Context context{};
+    OSThreadState state{OSThreadState::UNKNOWN};
+  };
+
   // signal handlers
   static volatile bool _signals_initialized;
 
@@ -136,6 +152,7 @@ private:
   std::atomic<bool> _task_block_monitor_events_enabled{false};
   std::atomic<bool> _task_block_rotation{false};
   std::atomic<u64> _task_block_inflight{0};
+  std::array<TaskBlockRun, ThreadFilter::kMaxThreads> _task_block_runs{};
 
   SpinLock _class_map_lock;
   SpinLock _locks[CONCURRENCY_LEVEL];
@@ -183,8 +200,14 @@ private:
   void lockAll();
   void unlockAll();
   void setTaskBlockEnabled(bool enabled);
-  void beginTaskBlockRotation();
+  u64 beginTaskBlockRotation();
   void endTaskBlockRotation();
+  bool recordTaskBlockSegment(int tid, TaskBlockEvent *event);
+  bool recordTaskBlockSegmentLocked(int tid, TaskBlockEvent *event);
+  void emitTaskBlockBoundary(u64 boundary_ticks);
+  void commitTaskBlockBoundary(u64 boundary_ticks);
+  void flushCompletedTaskBlockRuns();
+  void clearAllTaskBlockRuns();
 
   // Rotate all three dictionaries, then run jfr_op under lockAll().
   //
@@ -445,7 +468,8 @@ public:
   // stack-trace reference, tagged by the correlation ID we passed to
   // RequestStackTrace as user_data.
   bool recordSampleDelegated(void *ucontext, u64 weight, int tid,
-                             jint event_type, Event *event);
+                             jint event_type, Event *event,
+                             u64 *recorded_correlation_id = nullptr);
   u64 recordJVMTISample(u64 weight, int tid, jthread thread, jint event_type, Event *event, bool deferred);
   void recordDeferredSample(int tid, u64 call_trace_id, jint event_type, Event *event);
   void recordExternalSample(u64 weight, int tid, int num_frames,
@@ -473,6 +497,20 @@ public:
 #endif
   bool tryEnterTaskBlockActivity();
   void leaveTaskBlockActivity();
+  bool registerTaskBlockRun(ThreadFilter::SlotID slot_id, u64 generation,
+                            int tid, u64 start_ticks, const Context &context,
+                            u64 blocker, OSThreadState state);
+  void recordTaskBlockAnchor(ThreadFilter::SlotID slot_id, u64 generation,
+                             u64 call_trace_id, u64 correlation_id);
+  void completeTaskBlockRun(ThreadFilter::SlotID slot_id, u64 generation,
+                            u64 end_ticks, u64 blocker,
+                            u64 unblocking_span_id);
+  u64 taskBlockSegmentStart(ThreadFilter::SlotID slot_id,
+                            u64 generation) const;
+  void clearTaskBlockRun(ThreadFilter::SlotID slot_id, u64 generation);
+  bool taskBlockRotationActive() const {
+    return _task_block_rotation.load(std::memory_order_acquire);
+  }
   bool taskBlockEnabled() const {
     return _task_block_enabled.load(std::memory_order_acquire);
   }
@@ -499,13 +537,31 @@ public:
   static void unregisterThread(int tid);
 
 #ifdef UNIT_TEST
-  void beginTaskBlockRotationForTest() { beginTaskBlockRotation(); }
+  u64 beginTaskBlockRotationForTest() { return beginTaskBlockRotation(); }
   void endTaskBlockRotationForTest() { endTaskBlockRotation(); }
   bool taskBlockRotationActiveForTest() const {
     return _task_block_rotation.load(std::memory_order_acquire);
   }
   u64 taskBlockInflightForTest() const {
     return _task_block_inflight.load(std::memory_order_acquire);
+  }
+  u64 taskBlockRunGenerationForTest(ThreadFilter::SlotID slot_id) const {
+    return _task_block_runs[slot_id].generation.load(std::memory_order_acquire);
+  }
+  u64 taskBlockRunEndForTest(ThreadFilter::SlotID slot_id) const {
+    return _task_block_runs[slot_id].end_ticks.load(std::memory_order_acquire);
+  }
+  u64 taskBlockRunCallTraceForTest(ThreadFilter::SlotID slot_id) const {
+    return _task_block_runs[slot_id].call_trace_id.load(std::memory_order_acquire);
+  }
+  u64 taskBlockRunCorrelationForTest(ThreadFilter::SlotID slot_id) const {
+    return _task_block_runs[slot_id].correlation_id.load(std::memory_order_acquire);
+  }
+  u64 taskBlockRunSegmentStartForTest(ThreadFilter::SlotID slot_id) const {
+    return _task_block_runs[slot_id].segment_start_ticks.load(std::memory_order_acquire);
+  }
+  void commitTaskBlockBoundaryForTest(u64 boundary_ticks) {
+    commitTaskBlockBoundary(boundary_ticks);
   }
 
   // Returns the tid most recently passed to unregisterThread(), or -1 if it
