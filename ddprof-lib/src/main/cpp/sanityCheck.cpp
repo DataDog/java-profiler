@@ -106,9 +106,9 @@ Error SanityChecker::runChecks(const Arguments& /*args*/) {
 
     // --- Run checks ---
     // Per DataDog/java-profiler#480, the profiler refuses to run with fewer
-    // than 2 cores. An unknown core count (-1) never fails this check — see
+    // than 1 core. An unknown core count (-1) never fails this check — see
     // the effective_cores computation above.
-    bool cpu_fail = (effective_cores >= 0 && effective_cores < 2);
+    bool cpu_fail = (effective_cores >= 0 && effective_cores < 1);
     bool mem_fail = (hotspot && upper > 0 && lower > upper);
 
     if (!cpu_fail && !mem_fail) {
