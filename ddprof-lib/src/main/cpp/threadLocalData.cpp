@@ -122,11 +122,10 @@ void ProfiledThread::resetClaimed(int tid) {
   _span_id = 0;
   _crash_depth = 0;
   _tid = tid;
-  _cpu_epoch = 0;
   _wall_epoch = 0;
   _call_trace_id = 0;
   _recording_epoch = 0;
-  _misc_flags = FLAG_CLAIMED;
+  __atomic_store_n(&_misc_flags, FLAG_CLAIMED, __ATOMIC_RELEASE);
   _park_block_token = 0;
   _filter_slot_id = -1;
   _init_window = 0;
