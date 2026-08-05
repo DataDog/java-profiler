@@ -32,12 +32,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>The wall-clock sampler reads context through {@code ContextApi::get}, which returns nothing
  * until the thread is context-initialized (and only then is the {@code otel_thread_ctx_v1} discovery
- * pointer published). Before the fix, that flag was set only by the deprecated DirectByteBuffer path
- * ({@code getThreadContext()} / {@code initializeContextTLS0}); a thread that used only the
- * all-native API ({@code setTraceContext}) wrote a record the sampler silently ignored.
+ * pointer published). {@code setTraceContext} must set that flag itself on first write — a thread
+ * that only ever calls the all-native API must still be visible to the sampler.
  *
- * <p>This test deliberately <em>never</em> calls {@code getThreadContext()} on the sampled thread.
- * If the native write does not initialize TLS, every sample carries spanId 0 and the assertion fails.
+ * <p>If the native write does not initialize TLS, every sample carries spanId 0 and the assertion
+ * fails.
  */
 public class AllNativeContextSamplingTest extends AbstractProfilerTest {
 
@@ -46,7 +45,7 @@ public class AllNativeContextSamplingTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        // filter=0 samples every thread, so no getThreadContext()/registration is needed.
+        // filter=0 samples every thread, so no extra registration is needed.
         return "wall=1ms,filter=0,loglevel=warn";
     }
 
@@ -54,8 +53,8 @@ public class AllNativeContextSamplingTest extends AbstractProfilerTest {
     public void nativeOnlyContextIsVisibleToSampler() throws Exception {
         Assumptions.assumeTrue(!Platform.isJ9() && !Platform.isZing());
 
-        // Register for wall-clock profiling (addThread(); does NOT touch getThreadContext, so the
-        // all-native-only nature of the test is preserved).
+        // Register for wall-clock profiling (addThread()); the sampled thread never touches
+        // anything but the all-native context API.
         registerCurrentThreadForWallClockProfiling();
 
         // Keep the context live for the whole sampling window; only the all-native path is used.

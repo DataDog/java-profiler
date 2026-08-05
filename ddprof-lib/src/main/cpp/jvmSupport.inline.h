@@ -8,6 +8,7 @@
 
 #include "hotspot/hotspotSupport.h"
 #include "jvmSupport.h"
+#include "threadLocalData.h"
 #include "vmEntry.h"
 
 bool JVMSupport::canUnwind(const StackFrame& frame, const void*& pc) {
@@ -23,6 +24,14 @@ bool JVMSupport::isJitCode(const void* pc) {
         return HotspotSupport::isJitCode(pc);
     } else {
         return false;
+    }
+}
+
+long long JVMSupport::runtimeStubsMemoryUsage() {
+    if (VM::isHotspot()) {
+        return HotspotSupport::runtimeStubsMemoryUsage();
+    } else {
+        return 0;
     }
 }
 
@@ -43,6 +52,10 @@ bool JVMSupport::isHidden(jint modifiers) {
     static constexpr jint hidden_mask = (ACC_SYNTHETIC | ACC_BRIDGE | ACC_HIDDEN);
     return modifiers != 0 && // JVMTI GetClassModifiers returns 0 for ordinary package-private classes
            ((modifiers & hidden_mask) != 0);
+}
+
+void JVMSupport::jvmAsyncGetCallTrace(ASGCT_CallTrace *frames, int max_depth, void* ucontext) {
+    VM::_asyncGetCallTrace(frames, max_depth, ucontext);
 }
 
 #endif // _JVMSUPPORT_INLINE_H

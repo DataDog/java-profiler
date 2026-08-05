@@ -7,8 +7,11 @@
 
 #if defined(__linux__)
 
+#include "codeCache.h"
 #include "common.h"
+#include "counters.h"
 #include "flightRecorder.h"
+#include "libraries.h"
 #include "libraryPatcher.h"
 #include "log.h"
 #include "os.h"
@@ -26,6 +29,30 @@
 
 static thread_local PoissonSampler _send_sampler;
 static thread_local PoissonSampler _recv_sampler;
+
+// Marks the hook wrapper's own symbol as MARK_JAVA_PROFILER so native call-stack
+// unwinding (Profiler::convertNativeTrace) can recognize the boundary between
+// profiler-internal frames and the real caller, mirroring MallocHooker::initialize().
+// Resolved by address (not by symbol-name predicate) because these are mangled
+// C++ static member functions, unlike malloc_hook's extern "C" free functions.
+// Returns false if the symbol could not be resolved/marked, in which case the
+// hook boundary is never recognized and every socket sample's native stack
+// comes back empty (see NATIVE_TRACE_HOOK_PREFIX_NOT_FOUND).
+static bool markJavaProfilerHook(void* fn_addr) {
+    CodeCache* lib = Libraries::instance()->findLibraryByAddress(fn_addr);
+    if (lib == nullptr) {
+        Counters::increment(NATIVE_HOOK_MARK_RESOLVE_FAILED);
+        return false;
+    }
+    const char* name = nullptr;
+    lib->binarySearch(fn_addr, &name);
+    if (name == nullptr) {
+        Counters::increment(NATIVE_HOOK_MARK_RESOLVE_FAILED);
+        return false;
+    }
+    NativeFunc::set_mark(name, MARK_JAVA_PROFILER);
+    return true;
+}
 
 // Debug-only hook-fire counters, paired with TEST_LOG (common.h). Gated at
 // compile time to keep release hot paths free of cross-thread atomic writes.
@@ -386,6 +413,18 @@ Error NativeSocketSampler::start(Arguments &args) {
     TEST_LOG("NativeSocketSampler::start interval_ticks=%ld tsc_freq=%llu",
              init_interval, (unsigned long long)TSC::frequency());
 #endif
+    bool hooks_marked = markJavaProfilerHook((void*)&NativeSocketSampler::send_hook);
+    hooks_marked &= markJavaProfilerHook((void*)&NativeSocketSampler::recv_hook);
+    hooks_marked &= markJavaProfilerHook((void*)&NativeSocketSampler::write_hook);
+    hooks_marked &= markJavaProfilerHook((void*)&NativeSocketSampler::read_hook);
+    if (!hooks_marked) {
+        // Not fatal: hooks are still installed and sampling still works, but
+        // native stacks for socket samples will come back empty because the
+        // hook boundary frame can't be recognized during unwinding.
+        Log::warn("NativeSocketSampler: failed to mark one or more hook symbols; "
+                  "native call stacks for socket samples may be empty");
+    }
+
     if (!LibraryPatcher::patch_socket_functions()) {
         return Error("failed to install native socket hooks (dlsym returned NULL)");
     }

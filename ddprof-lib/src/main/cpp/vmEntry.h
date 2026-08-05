@@ -148,6 +148,7 @@ private:
   static bool _can_sample_objects;
   static bool _can_intercept_binding;
   static bool _is_adaptive_gc_boundary_flag_set;
+  static CodeCache *_libjvm;
 
   // HotSpot JFR async stack-trace extension (optional, JDK 27+).
   // _request_stack_trace is atomic (RELEASE/ACQUIRE) because canRequestStackTrace()
@@ -172,7 +173,12 @@ private:
   static CodeCache* openJvmLibrary();
 
 public:
-  static void *_libjvm;
+  static inline CodeCache* libjvm() {
+    CodeCache* lib = __atomic_load_n(&_libjvm, __ATOMIC_ACQUIRE);
+    assert(lib != nullptr && "Out of order initialization sequence");
+    return lib;
+  }
+
   static AsyncGetCallTrace _asyncGetCallTrace;
   static JVM_GetManagement _getManagement;
 

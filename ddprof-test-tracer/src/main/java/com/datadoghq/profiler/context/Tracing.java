@@ -82,7 +82,7 @@ public class Tracing {
         }
 
         private void notifyProfiler() {
-            profiler.setContext(spanId, rootSpanId);
+            profiler.setTraceContext(rootSpanId, spanId, 0, spanId, -1, null, -1, null);
         }
 
         public long getRootSpanId() {

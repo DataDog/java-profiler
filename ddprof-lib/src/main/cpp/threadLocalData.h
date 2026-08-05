@@ -7,6 +7,7 @@
 #define THREAD_LOCAL_DATA_H
 
 #include "context.h"
+#include "nativeMem.h"
 #include "otel_context.h"
 #include "os.h"
 #include "threadLocal.h"
@@ -57,12 +58,10 @@ private:
   static void freeValue(void* value);
 
   static ThreadLocal<ProfiledThread*, nullptr, freeValue>  _current_thread;
-  // longjmp buffer. Used by hotspot only at this moment.
-  // Published in walkVM() and consumed in checkFault() from an asynchronous
-  // SEGV-handler context on the same thread; atomic makes the publish/observe
-  // ordering explicit instead of relying on plain load/store, matching how
-  // _crash_depth is hardened below.
-  std::atomic<jmp_buf*> _jmp_buf;
+  // siglongjmp buffer. Used by hotspot only at this moment.
+  // Published in HotspotSupport::walkVM()/walkJavaStack() and StackWalker::walkFP()/walkDwarf() (all VMs),
+  // consumed in Profiler::checkFault() from an asynchronous SEGV-handler context on the same thread
+  std::atomic<sigjmp_buf*> _jmp_buf;
 
   u64 _pc;
   u64 _sp;
@@ -89,13 +88,10 @@ private:
 #endif
   // alignas(8) + sizeof(OtelThreadContextRecord)==640 (multiple of 8) guarantee
   // _otel_tag_encodings sits at +640 with no padding, so the three fields form one
-  // 688-byte contiguous region exposed as a combined DirectByteBuffer.
+  // 688-byte contiguous region.
   alignas(8) OtelThreadContextRecord _otel_ctx_record;
-  // These two fields MUST be contiguous and 8-byte aligned — the JNI layer
-  // exposes them as a single DirectByteBuffer (sidecar), and VarHandle long
-  // views require 8-byte alignment for the buffer base address.
+  // 8-byte aligned so VarHandle long views over this region require no unaligned access.
   // Read invariant: sidecar readers must gate on record->valid (see ContextApi::get).
-  // ThreadContext.restore() relies on this to perform a bulk memcpy under valid=0.
   alignas(8) u32 _otel_tag_encodings[DD_TAGS_CAPACITY];
   u64 _otel_local_root_span_id;
 
@@ -117,7 +113,11 @@ private:
 
   virtual ~ProfiledThread() { }
 public:
-  static ProfiledThread *forTid(int tid) { return new ProfiledThread(tid); }
+  static ProfiledThread *forTid(int tid) {
+    ProfiledThread *pt = new ProfiledThread(tid);
+    NativeMem::record(NM_THREAD_LOCAL, (long long)sizeof(ProfiledThread));
+    return pt;
+  }
   static bool isThreadKeyValid() {
     return _current_thread.isKeyValid();
   }
@@ -133,8 +133,13 @@ public:
     return pt;
   }
   // Deletes a ProfiledThread returned by clearCurrentThreadTLS().
-  // Needed because the destructor is private.
-  static void deleteForTest(ProfiledThread *pt) { delete pt; }
+  // Needed because the destructor is private. This stands in for the delete
+  // that freeValue() performs in production, so it mirrors freeValue()'s
+  // NM_THREAD_LOCAL decrement to keep the accounting balanced in tests.
+  static void deleteForTest(ProfiledThread *pt) {
+    delete pt;
+    NativeMem::record(NM_THREAD_LOCAL, -(long long)sizeof(ProfiledThread));
+  }
 #endif
   // initCurrentThread() and release() are not async-signal-safe: 
   // must be called outside of a signal handler with signal blocked
@@ -228,11 +233,11 @@ public:
     return __atomic_load_n(&_crash_depth, __ATOMIC_RELAXED) > CRASH_HANDLER_NESTING_LIMIT;
   }
 
-  inline void setJmpCtx(jmp_buf* buf) {
-    _jmp_buf = buf;  
+  inline void setJmpCtx(sigjmp_buf* buf) {
+    _jmp_buf = buf;
   }
 
-  inline jmp_buf* getJmpCtx() const {
+  inline sigjmp_buf* getJmpCtx() const {
     return _jmp_buf;
   }
 

@@ -26,6 +26,7 @@
 #include "jvmThread.h"
 #include "libraries.h"
 #include "log.h"
+#include "nativeMem.h"
 #include "os.h"
 #include "perfEvents.h"
 #include "profiler.h"
@@ -673,6 +674,10 @@ int PerfEvents::registerThread(int tid) {
     }
   }
 
+  if (page != NULL) {
+    NativeMem::record(NM_PERF, (long long)(2 * OS::page_size));
+  }
+
   _events[tid].reset();
   _events[tid]._fd = fd;
   _events[tid]._page = (struct perf_event_mmap_page *)page;
@@ -707,6 +712,7 @@ void PerfEvents::unregisterThread(int tid) {
     munmap(event->_page, 2 * OS::page_size);
     event->_page = NULL;
     event->unlock();
+    NativeMem::record(NM_PERF, -(long long)(2 * OS::page_size));
   }
 }
 
@@ -882,9 +888,22 @@ Error PerfEvents::start(Arguments &args) {
 
   int max_events = OS::getMaxThreadId();
   if (max_events != _max_events) {
+    // Account the per-thread PerfEvent array under NM_PERF, alongside the ring
+    // mappings. Guard on non-null so a prior calloc failure isn't mis-accounted.
+    // Record the decrement after the free (consistent with the other decrement
+    // sites); capture the old size first since _max_events is overwritten below.
+    long long old_bytes =
+        (_events != NULL) ? (long long)((size_t)_max_events * sizeof(PerfEvent)) : 0;
     free(_events);
+    if (old_bytes > 0) {
+      NativeMem::record(NM_PERF, -old_bytes);
+    }
     _events = (PerfEvent *)calloc(max_events, sizeof(PerfEvent));
     _max_events = max_events;
+    if (_events != NULL) {
+      NativeMem::record(NM_PERF,
+                        (long long)((size_t)max_events * sizeof(PerfEvent)));
+    }
   }
 
   OS::installSignalHandler(SIGPROF, signalHandler);

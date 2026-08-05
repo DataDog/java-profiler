@@ -9,6 +9,7 @@
  */
 package com.datadoghq.profiler.memleak;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -63,6 +64,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *       covered by {@code CleanupAfterClassUnloadTest}.</li>
  * </ul>
  */
+@Tag("slow")
 public class WriteStackTracesAfterClassUnloadTest extends AbstractDynamicClassTest {
 
   @Override
@@ -118,11 +120,7 @@ public class WriteStackTracesAfterClassUnloadTest extends AbstractDynamicClassTe
         assertTrue(Files.size(dumpFile) > 0,
             "Profiler produced no output — SIGSEGV during writeStackTraces is suspected");
       } finally {
-        try {
-          profiler.stop();
-        } finally {
-          profiler.resetThreadContext();
-        }
+        profiler.stop();
       }
 
     } finally {

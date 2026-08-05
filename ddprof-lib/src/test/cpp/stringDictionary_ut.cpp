@@ -1,12 +1,46 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #include <gtest/gtest.h>
 #include "stringDictionary.h"
+#include "nativeMem.h"
 #include <atomic>
+#include <cstdio>
+#include <cstring>
 #include <map>
 #include <string>
 #include <thread>
 #include <vector>
 
 // ── StringDictionaryBuffer ─────────────────────────────────────────────────
+
+// Native-memory accounting must balance across the arena lifecycle: the root
+// SBTable and initial chunk are counted at construction, growth adds overflow
+// SBTables and arena chunks, clear() returns to the construction baseline, and
+// destruction releases everything. 50k keys force at least one extra 512 KiB
+// arena chunk so chunk alloc/free pairing is exercised too.
+TEST(StringDictionaryBufferTest, NativeMemAccountingBalancesAcrossLifecycle) {
+    long long before = NativeMem::live(NM_DICTIONARY);
+    {
+        StringDictionaryBuffer buf;
+        long long after_ctor = NativeMem::live(NM_DICTIONARY);
+        EXPECT_GT(after_ctor, before);  // root SBTable + initial arena chunk
+
+        for (int i = 0; i < 50000; i++) {
+            char key[32];
+            int len = snprintf(key, sizeof(key), "string_key_%d", i);
+            buf.insert_with_id(key, (size_t)len, (u32)(i + 1));
+        }
+        EXPECT_GT(NativeMem::live(NM_DICTIONARY), after_ctor);  // grew
+
+        buf.clear();
+        // Overflow SBTables + extra arena chunks freed; root + first chunk kept.
+        EXPECT_EQ(after_ctor, NativeMem::live(NM_DICTIONARY));
+    }
+    EXPECT_EQ(before, NativeMem::live(NM_DICTIONARY));  // fully released
+}
 
 TEST(StringDictionaryBufferTest, InsertWithIdReturnsSameIdForSameKey) {
     StringDictionaryBuffer buf;

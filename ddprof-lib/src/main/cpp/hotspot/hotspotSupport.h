@@ -9,6 +9,7 @@
 
 #include "hotspot/hotspotStackFrame.h"
 #include "hotspot/jitCodeCache.h"
+#include "frame.h"
 #include "stackFrame.h"
 #include "stackWalker.h"
 
@@ -16,6 +17,7 @@
 #include <jvmti.h>
 
 class ProfiledThread;
+class VMMethod;
 
 class HotspotSupport {
     friend class JVMSupport;
@@ -36,7 +38,6 @@ private:
 public:
     static void initClassloaderInfo(JNIEnv* jni);
     
-    static void checkFault(ProfiledThread* thrd = nullptr);
     static int walkJavaStack(StackWalkRequest& request);
     static inline bool canUnwind(const StackFrame& frame, const void*& pc) {
         return HotspotStackFrame::unwindAtomicStub(frame, pc);
@@ -44,6 +45,10 @@ public:
 
     static inline bool isJitCode(const void* p) {
         return JitCodeCache::isJitCode(p);
+    }
+
+    static inline long long runtimeStubsMemoryUsage() {
+        return JitCodeCache::runtimeStubsMemoryUsage();
     }
 
     // If should load all jmethodIDs
@@ -55,6 +60,12 @@ public:
 
     // Resolve a method to a jmethodID at dumping time
     static jmethodID resolve(const void* method);
+
+    // Store a Java frame captured from HotSpot metadata. A null jmethodID
+    // retains the raw Method* fallback; the rejected-ID sentinel is stored as
+    // an ordinary frame so it can be resolved to the shared unknown method.
+    static void fillJavaFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci,
+                              jmethodID method_id, const VMMethod* method);
 };
 
 #endif // _HOTSPOT_HOTSPOTSUPPORT_H

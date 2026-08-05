@@ -74,8 +74,6 @@ public final class Main {
                 return new AllocStormAntagonist();
             case "vthread-churn":
                 return new VirtualThreadChurnAntagonist();
-            case "vthread-context-cascade":
-                return new VirtualThreadContextCascadeAntagonist();
             case "classloader-churn":
                 return new ClassLoaderChurnAntagonist();
             case "trace-context":
@@ -94,8 +92,8 @@ public final class Main {
                 return new WeakRefWaveAntagonist();
             case "dump-storm":
                 return new DumpStormAntagonist();
-            case "reapply-context":
-                return new ReapplyContextAntagonist();
+            case "reapply-context-value":
+                return new ReapplyContextValueAntagonist();
             // Deferred: dlopen-churn (needs per-arch dummy .so built in CI prep).
             default:
                 throw new IllegalArgumentException("unknown antagonist: " + name);

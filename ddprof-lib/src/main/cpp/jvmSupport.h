@@ -35,6 +35,9 @@ class JVMSupport {
     static Mutex _initialization_lock;
     static volatile JMethodIDLoadStats jmethodID_load_state;
 
+    // Call JVM AsyncGetCallTrace implementation
+    static inline void jvmAsyncGetCallTrace(ASGCT_CallTrace *frames, int max_depth, void* ucontext);
+
     static int asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* ucontext);
     // J9 and Zing shared implementation, load jmethodIDs of the method unconditionally.
     static bool loadMethodIDsImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);
@@ -55,6 +58,9 @@ public:
     static int walkJavaStack(StackWalkRequest& request);
     static inline bool canUnwind(const StackFrame& frame, const void*& pc);
     static inline bool isJitCode(const void* pc);
+    // Live heap usage of the JIT runtime-stubs code cache. HotSpot-only; 0 on
+    // other VMs (J9/Zing), which have no such cache.
+    static inline long long runtimeStubsMemoryUsage();
 
     static void loadAllMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni);
     static bool loadMethodIDsIfNeeded(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass);

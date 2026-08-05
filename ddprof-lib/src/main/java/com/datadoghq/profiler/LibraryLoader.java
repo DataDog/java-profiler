@@ -1,3 +1,7 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
 package com.datadoghq.profiler;
 
 import java.io.IOException;
@@ -107,13 +111,7 @@ public final class LibraryLoader {
             if (state.get() == LoadingState.UNAVAILABLE) {
                 return Result.UNAVAILABLE;
             }
-            Path libraryPath = libraryLocation != null ? Paths.get(libraryLocation) : null;
-            if (libraryPath == null) {
-                OperatingSystem os = OperatingSystem.current();
-                String qualifier = (os == OperatingSystem.linux && os.isMusl()) ? "musl" : null;
-
-                libraryPath = libraryFromClasspath(os, Arch.current(), qualifier, Paths.get(scratchDir != null ? scratchDir : System.getProperty("java.io.tmpdir")));
-            }
+            Path libraryPath = libraryLocation != null ? Paths.get(libraryLocation) : resolveLibraryPath(scratchDir);
             System.load(libraryPath.toAbsolutePath().toString());
             return Result.SUCCESS;
         } catch (Throwable t) {
@@ -122,6 +120,28 @@ public final class LibraryLoader {
         } finally {
             state.compareAndSet(LoadingState.LOADING, LoadingState.LOADED);
         }
+    }
+
+    /**
+     * Resolves the on-disk path of the bundled native library for the current OS/arch, extracting it
+     * from the classpath if necessary. Package-visible so tests can obtain a real file path (e.g. to
+     * pass via {@code -agentpath:}) without loading the library into the calling process.
+     *
+     * @param scratchDir The working scratch dir where to store the temp library file, or {@code null}
+     *     to use {@code java.io.tmpdir}
+     * @return The library absolute path
+     * @throws IOException if an I/O error occurs while extracting the library
+     * @throws IllegalStateException if the resource is not found on the classpath
+     */
+    static Path resolveLibraryPath(String scratchDir) throws IOException {
+        OperatingSystem os = OperatingSystem.current();
+        String qualifier = (os == OperatingSystem.linux && os.isMusl()) ? "musl" : null;
+        return libraryFromClasspath(
+                os,
+                Arch.current(),
+                qualifier,
+                Paths.get(scratchDir != null ? scratchDir : System.getProperty("java.io.tmpdir")))
+            .toAbsolutePath();
     }
 
     /**

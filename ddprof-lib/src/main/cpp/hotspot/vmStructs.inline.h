@@ -10,6 +10,7 @@
 #include "hotspot/hotspotSupport.h"
 #include "hotspot/vmStructs.h"
 #include "jvmThread.h"
+#include "safeAccess.h"
 #include "threadLocalData.h"
 
 inline bool crashProtectionActive() {
@@ -27,6 +28,31 @@ inline T* cast_to(const void* ptr) {
     assert(crashProtectionActive() || ptr == nullptr || SafeAccess::isReadableRange(ptr, T::type_size()));
     return reinterpret_cast<T*>(const_cast<void*>(ptr));
 }
+
+inline const char* VMStructs::at(int offset) {
+    const char* ptr = (const char*)this + offset;
+    assert(crashProtectionActive() || SafeAccess::isReadable(ptr));
+    // Poison only the returned pointer; the assert above sees the real ptr.
+    return INJECT_FAULT_ADDRESS_RARE(ptr);
+}
+
+inline const char* VMStructs::at(int offset) const {
+    const char* ptr = (const char*)this + offset;
+    assert(crashProtectionActive() || SafeAccess::isReadable(ptr));
+    return INJECT_FAULT_ADDRESS_RARE(ptr);
+}
+
+template <typename T, bool safe>
+T VMStructs::load_at_offset(int offset) const {
+    const char* raw = (const char*)this + offset;
+    if (safe) {
+        // SafeAccess loads must work even when crash protection isn't active; avoid at() asserts.
+        return (T)SafeAccess::loadPtr((void**)INJECT_FAULT_ADDRESS_RARE(raw), nullptr);
+    }
+    assert(crashProtectionActive() || SafeAccess::isReadable(raw));
+    return *((T*)INJECT_FAULT_ADDRESS_RARE(raw));
+}
+
 
 VMThread* VMThread::current() {
     assert(VM::isHotspot());
@@ -188,5 +214,10 @@ u16 VMConstMethod::signatureIndex() const {
     return *(u16*)at(_constmethod_sig_index_offset);
 }
 
+// This method may be called without crash protection, so read the name via SafeAccess.
+inline const char* VMFlag::name() const {
+    assert(_flag_name_offset >= 0);
+    return load_at_offset<const char*, true /* safe load */>(_flag_name_offset);
+}
 
 #endif // _HOTSPOT_VMSTRUCTS_INLINE_H

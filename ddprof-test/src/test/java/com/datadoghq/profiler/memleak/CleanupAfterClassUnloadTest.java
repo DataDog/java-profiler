@@ -15,6 +15,7 @@
  */
 package com.datadoghq.profiler.memleak;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -53,6 +54,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *   <li>cleanupUnreferencedMethods() must not SIGSEGV when freeing the line number table</li>
  * </ol>
  */
+@Tag("slow")
 public class CleanupAfterClassUnloadTest extends AbstractDynamicClassTest {
 
   // AGE_THRESHOLD in C++ is 3; run 4 dumps to ensure cleanup fires

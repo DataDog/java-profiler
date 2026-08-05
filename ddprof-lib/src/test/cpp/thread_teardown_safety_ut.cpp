@@ -19,6 +19,7 @@
 #ifdef __linux__
 
 #include "guards.h"
+#include "nativeMem.h"
 #include "threadLocalData.h"
 
 #include <atomic>
@@ -464,6 +465,47 @@ TEST(ThreadTeardownSafetyTest, CriticalSectionReentrancyGuard) {
   pthread_t t;
   ASSERT_EQ(0, pthread_create(&t, nullptr, t10_body, nullptr));
   pthread_join(t, nullptr);
+}
+
+// ── NM_THREAD_LOCAL accounting balances across the ProfiledThread lifecycle ──
+// forTid() (in initCurrentThread) increments NM_THREAD_LOCAL; the matching
+// decrement lives in freeValue(), which is invoked both by release() (via
+// ThreadLocal::clear()) and by the pthread-key destructor on thread exit.
+// These verify both teardown paths return the gauge to its baseline.
+
+static std::atomic<long long> g_tl_live_during{0};
+
+static void *tl_release_body(void *) {
+  ProfiledThread::initCurrentThread();
+  g_tl_live_during.store(NativeMem::live(NM_THREAD_LOCAL),
+                         std::memory_order_relaxed);
+  ProfiledThread::release();
+  return nullptr;
+}
+
+TEST(ThreadTeardownSafetyTest, NativeMemThreadLocalBalancesOnRelease) {
+  long long base = NativeMem::live(NM_THREAD_LOCAL);
+  pthread_t t;
+  ASSERT_EQ(0, pthread_create(&t, nullptr, tl_release_body, nullptr));
+  pthread_join(t, nullptr);
+  EXPECT_GT(g_tl_live_during.load(std::memory_order_relaxed), base)
+      << "forTid() must account the ProfiledThread allocation";
+  EXPECT_EQ(base, NativeMem::live(NM_THREAD_LOCAL))
+      << "release() -> clear() -> freeValue() must balance the accounting";
+}
+
+static void *tl_exit_body(void *) {
+  ProfiledThread::initCurrentThread();
+  return nullptr;  // no explicit release: thread exit runs freeValue()
+}
+
+TEST(ThreadTeardownSafetyTest, NativeMemThreadLocalReleasedOnThreadExit) {
+  long long base = NativeMem::live(NM_THREAD_LOCAL);
+  pthread_t t;
+  ASSERT_EQ(0, pthread_create(&t, nullptr, tl_exit_body, nullptr));
+  pthread_join(t, nullptr);
+  EXPECT_EQ(base, NativeMem::live(NM_THREAD_LOCAL))
+      << "pthread-key destructor (freeValue) must balance the accounting";
 }
 
 #endif // __linux__

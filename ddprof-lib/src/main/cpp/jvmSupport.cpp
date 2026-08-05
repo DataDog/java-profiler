@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include "jvmSupport.h"
+#include "jvmSupport.inline.h"
 
 #include "asyncSampleMutex.h"
 #include "frames.h"
@@ -106,10 +106,11 @@ int JVMSupport::asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* 
         return 0;
     }
   
+
     JitWriteProtection jit(false);
     // AsyncGetCallTrace writes to ASGCT_CallFrame array
     ASGCT_CallTrace trace = {jni, 0, frames};
-    VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+    jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
     if (trace.num_frames > 0) {
         return trace.num_frames;
     }
