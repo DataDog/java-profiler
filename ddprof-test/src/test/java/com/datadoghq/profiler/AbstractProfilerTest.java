@@ -12,7 +12,10 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
@@ -369,6 +372,25 @@ public abstract class AbstractProfilerTest {
     }
   }
 
+  /**
+   * Like {@link #verifyEventsPresent}, but for a single event type where the caller doesn't need
+   * the materialized collection back — stops parsing as soon as one matching event is found
+   * (see {@link JfrEvents#load(Path, Predicate, Predicate)}), instead of resolving every event of
+   * a possibly high-volume type just to confirm it's non-empty.
+   */
+  protected void verifyEventPresent(String eventType) {
+    verifyEventPresent(jfrDump, eventType);
+  }
+
+  protected void verifyEventPresent(Path recording, String eventType) {
+    try {
+      JfrEvents events = JfrEvents.load(recording, eventType::equals, item -> true);
+      assertTrue(events.hasItems(), eventType + " was empty for " + getAmendedProfilerCommand());
+    } catch (Throwable t) {
+      fail(getProfilerCommand() + " " + t, t);
+    }
+  }
+
   public final JfrEvents verifyEvents(String eventType) {
     return verifyEvents(eventType, true);
   }
@@ -386,6 +408,43 @@ public abstract class AbstractProfilerTest {
                 eventType + " was empty for " + getAmendedProfilerCommand());
       }
       return collection;
+    } catch (Throwable t) {
+      fail(getProfilerCommand() + " " + t, t);
+      return null;
+    }
+  }
+
+  /**
+   * Like {@link #verifyEvents(String)}, but for callers that only need per-event checks and/or a
+   * count (e.g. {@code NativememSampledProfilerTest}'s per-sample field validation) rather than
+   * the materialized {@link JfrEvents} collection — never holds more than one event in memory at
+   * a time. See {@link JfrEvents#forEach} for the idempotency requirement on {@code consumer}.
+   */
+  protected long streamEvents(String eventType, Consumer<JfrEvent> consumer) {
+    return streamEvents(jfrDump, eventType, consumer);
+  }
+
+  protected long streamEvents(Path recording, String eventType, Consumer<JfrEvent> consumer) {
+    try {
+      return JfrEvents.forEach(recording, eventType::equals, consumer);
+    } catch (Throwable t) {
+      fail(getProfilerCommand() + " " + t, t);
+      return 0;
+    }
+  }
+
+  /**
+   * Like {@link #streamEvents}, but for callers that fold matching events into an accumulator
+   * (e.g. {@code NativeLibrariesTest}'s per-mode/per-library sample counts) instead of running
+   * independent per-event checks. See {@link JfrEvents#reduce} for the per-attempt reset contract.
+   */
+  protected <T> T reduceEvents(String eventType, Supplier<T> initial, BiConsumer<T, JfrEvent> accumulator) {
+    return reduceEvents(jfrDump, eventType, initial, accumulator);
+  }
+
+  protected <T> T reduceEvents(Path recording, String eventType, Supplier<T> initial, BiConsumer<T, JfrEvent> accumulator) {
+    try {
+      return JfrEvents.reduce(recording, eventType::equals, initial, accumulator);
     } catch (Throwable t) {
       fail(getProfilerCommand() + " " + t, t);
       return null;

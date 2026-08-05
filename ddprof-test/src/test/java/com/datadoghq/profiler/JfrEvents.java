@@ -16,7 +16,10 @@ import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 /**
@@ -109,6 +112,76 @@ public final class JfrEvents implements Iterable<JfrEvent> {
             } catch (IOException e) {
                 lastFailure = e;
                 System.err.println("JfrEvents.load: retrying " + recording + " after parse failure (attempt "
+                        + (attempt + 1) + "/" + LOAD_RETRIES + "): " + e);
+            }
+        }
+        throw lastFailure;
+    }
+
+    /**
+     * Streams matching events through {@code consumer} one at a time without ever retaining more
+     * than one in memory, for callers that only need per-event checks and/or a count (e.g.
+     * {@code NativememSampledProfilerTest}'s per-sample field validation) rather than the
+     * materialized collection {@link #load} returns. Retries the whole parse on {@link IOException}
+     * exactly like {@link #load}, so {@code consumer} may see a subset of a failed attempt's events
+     * before a retry starts over from zero — it must be idempotent (e.g. plain per-event
+     * assertions), not accumulate state that would double-count across attempts. Returns the
+     * number of events streamed from the attempt that ultimately succeeded.
+     */
+    public static long forEach(Path recording, Predicate<String> typeFilter, Consumer<JfrEvent> consumer)
+            throws Exception {
+        IOException lastFailure = null;
+        for (int attempt = 0; attempt < LOAD_RETRIES; attempt++) {
+            if (attempt > 0) {
+                Thread.sleep(LOAD_RETRY_BACKOFF_MILLIS * attempt);
+            }
+            long[] count = {0};
+            try (UntypedJafarParser parser = JafarParser.newUntypedParser(recording)) {
+                parser.handle((type, value, ctl) -> {
+                    if (typeFilter.test(type.getName())) {
+                        JfrEvent event = new JfrEvent(type.getName(), collapseSimpleTypes(Values.resolvedDeep(value)));
+                        consumer.accept(event);
+                        count[0]++;
+                    }
+                });
+                parser.run();
+                return count[0];
+            } catch (IOException e) {
+                lastFailure = e;
+                System.err.println("JfrEvents.forEach: retrying " + recording + " after parse failure (attempt "
+                        + (attempt + 1) + "/" + LOAD_RETRIES + "): " + e);
+            }
+        }
+        throw lastFailure;
+    }
+
+    /**
+     * Like {@link #forEach}, but for callers that fold matching events into an accumulator (e.g.
+     * {@code NativeLibrariesTest}'s per-mode/per-library sample counts) instead of running
+     * independent per-event checks. {@code initial} is called fresh at the start of every attempt
+     * so a retry after an {@link IOException} starts accumulation over, rather than double-counting
+     * events an earlier, failed attempt already folded in.
+     */
+    public static <T> T reduce(Path recording, Predicate<String> typeFilter, Supplier<T> initial,
+            BiConsumer<T, JfrEvent> accumulator) throws Exception {
+        IOException lastFailure = null;
+        for (int attempt = 0; attempt < LOAD_RETRIES; attempt++) {
+            if (attempt > 0) {
+                Thread.sleep(LOAD_RETRY_BACKOFF_MILLIS * attempt);
+            }
+            T acc = initial.get();
+            try (UntypedJafarParser parser = JafarParser.newUntypedParser(recording)) {
+                parser.handle((type, value, ctl) -> {
+                    if (typeFilter.test(type.getName())) {
+                        JfrEvent event = new JfrEvent(type.getName(), collapseSimpleTypes(Values.resolvedDeep(value)));
+                        accumulator.accept(acc, event);
+                    }
+                });
+                parser.run();
+                return acc;
+            } catch (IOException e) {
+                lastFailure = e;
+                System.err.println("JfrEvents.reduce: retrying " + recording + " after parse failure (attempt "
                         + (attempt + 1) + "/" + LOAD_RETRIES + "): " + e);
             }
         }

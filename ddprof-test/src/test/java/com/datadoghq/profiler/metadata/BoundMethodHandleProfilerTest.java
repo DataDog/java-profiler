@@ -39,7 +39,7 @@ public class BoundMethodHandleProfilerTest extends AbstractProfilerTest {
         int x = generateBoundMethodHandles(numBoundMethodHandles);
         assertTrue(x != 0);
         stopProfiler();
-        verifyEvents("datadog.MethodSample");
+        verifyEventPresent("datadog.MethodSample");
         Map<String, Long> counters = profiler.getDebugCounters();
         assertFalse(counters.isEmpty(), "profiler debug counters must not be empty after BoundMethodHandle workload");
     }

@@ -10,7 +10,6 @@ import net.jpountz.lz4.LZ4SafeDecompressor;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junitpioneer.jupiter.RetryingTest;
-import com.datadoghq.profiler.JfrEvent;
 import org.xerial.snappy.Snappy;
 
 import java.io.IOException;
@@ -63,12 +62,13 @@ public class NativeLibrariesTest extends AbstractProfilerTest {
         }
         stopProfiler();
         assertTrue(blackhole != 0);
-        Map<String, AtomicInteger> modeCounters = new HashMap<>();
-        Map<String, AtomicInteger> libraryCounters = new HashMap<>();
-        for (JfrEvent item : verifyEvents("datadog.ExecutionSample")) {
+        // Folded rather than materialized: a 1ms-CPU-sampled recording of this workload can carry
+        // far more datadog.ExecutionSample events (each with a native stack) than fit comfortably
+        // in the test heap if collected into a list first, and only the counts below are needed.
+        Counters counters = reduceEvents("datadog.ExecutionSample", Counters::new, (c, item) -> {
             String stacktrace = item.getStackTraceString();
             String mode = item.getEnumName(THREAD_EXECUTION_MODE);
-            modeCounters.computeIfAbsent(mode, x -> new AtomicInteger()).incrementAndGet();
+            c.modeCounters.computeIfAbsent(mode, x -> new AtomicInteger()).incrementAndGet();
             if ("NATIVE".equals(mode)) {
                 String library = "";
                 if (stacktrace.contains("LZ4JNI") || stacktrace.contains(".LZ4HC_")) {
@@ -80,18 +80,18 @@ public class NativeLibrariesTest extends AbstractProfilerTest {
                 } else if (stacktrace.contains("Compile")) {
                     library = "JIT";
                 }
-                libraryCounters.computeIfAbsent(library, x -> new AtomicInteger()).incrementAndGet();
+                c.libraryCounters.computeIfAbsent(library, x -> new AtomicInteger()).incrementAndGet();
             }
-        }
-        assertTrue(modeCounters.containsKey("JVM"), "no JVM samples");
-        assertTrue(modeCounters.containsKey("NATIVE"), "no NATIVE samples");
-        assertTrue(libraryCounters.containsKey("LZ4"), "no lz4-java samples");
+        });
+        assertTrue(counters.modeCounters.containsKey("JVM"), "no JVM samples");
+        assertTrue(counters.modeCounters.containsKey("NATIVE"), "no NATIVE samples");
+        assertTrue(counters.libraryCounters.containsKey("LZ4"), "no lz4-java samples");
         // snappy is problematic on musl; we are not running it
         // for some reason it is not also appearing in sanitized runs
-        assertTrue(isMusl || isSanitizer || libraryCounters.containsKey("SNAPPY"), "no snappy-java samples");
-        assertTrue(libraryCounters.containsKey("ZSTD"), "no zstd-jni samples");
-        modeCounters.forEach((mode, count) -> System.err.println(mode + ": " + count.get()));
-        libraryCounters.forEach((lib, count) -> System.err.println(lib + ": " + count.get()));
+        assertTrue(isMusl || isSanitizer || counters.libraryCounters.containsKey("SNAPPY"), "no snappy-java samples");
+        assertTrue(counters.libraryCounters.containsKey("ZSTD"), "no zstd-jni samples");
+        counters.modeCounters.forEach((mode, count) -> System.err.println(mode + ": " + count.get()));
+        counters.libraryCounters.forEach((lib, count) -> System.err.println(lib + ": " + count.get()));
     }
 
 
@@ -186,6 +186,11 @@ public class NativeLibrariesTest extends AbstractProfilerTest {
                     });
         }
         return blackhole;
+    }
+
+    private static class Counters {
+        final Map<String, AtomicInteger> modeCounters = new HashMap<>();
+        final Map<String, AtomicInteger> libraryCounters = new HashMap<>();
     }
 
     ByteBuffer fill(ByteBuffer buffer) {

@@ -12,8 +12,6 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.TestTemplate;
 import org.junit.jupiter.params.provider.ValueSource;
-import com.datadoghq.profiler.JfrEvent;
-import com.datadoghq.profiler.JfrEvents;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -60,9 +58,10 @@ public class NativememSampledProfilerTest extends CStackAwareAbstractProfilerTes
 
         stopProfiler();
 
-        JfrEvents events = verifyEvents("datadog.NativeMemoryAllocation");
-        int sampleCount = 0;
-        for (JfrEvent item : events) {
+        // Streamed rather than materialized: ~40k deep-native-stack events at this volume
+        // can exceed the test heap if collected into a list first, and every check here is
+        // per-event with no need to retain the collection afterward.
+        long sampleCount = streamEvents("datadog.NativeMemoryAllocation", item -> {
             assertTrue(item.has(SIZE), "datadog.NativeMemoryAllocation events must carry a size field");
             assertTrue(item.has(WEIGHT), "datadog.NativeMemoryAllocation events must carry a weight field");
             Long size = item.getLong(SIZE);
@@ -74,8 +73,7 @@ public class NativememSampledProfilerTest extends CStackAwareAbstractProfilerTes
             assertTrue(weight >= 1.0,
                 "weight must be >= 1.0 on the sampled path, got " + weight
                 + " (size=" + size + ")");
-            sampleCount++;
-        }
+        });
 
         // With ~20M bytes allocated and a 512-byte interval we expect plenty of samples.
         // The assertion is loose to tolerate CI variance but tight enough to catch
