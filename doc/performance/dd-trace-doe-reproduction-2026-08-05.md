@@ -10,47 +10,49 @@ JVM Native Memory Tracking (NMT).
 
 ## Summary
 
-**Tracing dominates NMT-visible growth; profiling's NMT footprint is
-small, but only because most of it bypasses NMT entirely.** Enabling
-dd-trace-java's tracer alone (no profiling) grows NMT-tracked committed
-memory by ~70 MB, driven by bytecode instrumentation: more loaded classes,
-more JIT-compiled code, more interned symbols. Turning on profiling on top
-of that adds only ~18 MB more to NMT's tracked categories — but the
-profiler's own `NativeMem` counters (see
-[memory-usage-model.md](memory-usage-model.md)) independently report
-~43-46 MB of live native memory for the same run, dominated by call-trace
-storage (~25 MB) and native symbol tables (~12 MB). The profiler's
-buffers are plain `malloc`/`mmap` in a separate `.so`, never routed
-through HotSpot's NMT-hooked allocator, so this cost is real, additive,
-and simply invisible to NMT — consistent with the "NMT undercounts the
-profiler's true footprint" pattern already documented in the synthetic
-sweep.
+This reproduces the originally-reported **~250 MB memory overhead** for
+the enterprise archetype: measured peak-RSS delta from baseline to
+tracing+profiling is **+240.4 MB**, in line with that figure.
+
+Coarse breakdown of where that memory goes:
+
+| Where it goes | ~MB | Driven by |
+|---|---|---|
+| JVM growth (classes, JIT code, symbols) | ~97 | tracer |
+| JVM growth (classes, JIT code, symbols, JFR engine) | ~46 | profiler |
+| Profiler agent's own native memory (outside the JVM entirely) | ~44 | profiler |
+| Unexplained | ~53 | tracer ~39, profiler ~12, rounding |
+| **Total measured** | **~240** | (original claim: ~250) |
+
+The tracer's cost is almost entirely inside the JVM: enabling
+dd-trace-java alone (no profiling) grows JVM-tracked (NMT) memory by
+~97 MB, driven by bytecode instrumentation — more loaded classes, more
+JIT-compiled code, more interned symbols, plus the transient
+compiler-arena spike from JIT-compiling that injected code.
+
+Turning on profiling on top of that adds two distinct things: (1) ~46 MB
+more *inside* the JVM — more classes/code/symbols from the profiler's own
+instrumentation, plus the JVM's native JFR engine starting up, which is
+actually dd-trace-java's own auxiliary JFR event classes (exception
+sampling, endpoint tracking, etc.) rather than this profiler, but only
+shows up once profiling is turned on — and (2) ~44 MB of this profiler's
+*own* native memory, entirely outside the JVM and invisible to NMT (see
+[memory-usage-model.md](memory-usage-model.md)): plain `malloc`/`mmap` in
+the agent's own `.so` for call-trace storage (~25 MB) and native symbol
+tables (~12 MB), never routed through HotSpot's NMT-hooked allocator —
+consistent with the "NMT undercounts the profiler's true footprint"
+pattern already documented in the synthetic sweep.
 
 **A single-digit tens-of-MB gap remains, in the same range as the
-synthetic sweep's unattributed remainder.** After accounting for NMT's
-steady-state delta, the profiler's own NativeMem counters, and the
-transient JIT-compiler-arena peak (NMT reports this only as a `(peak=...)`
-annotation, but it's relevant here because dd-trace-doe's own memory
-metric is itself a peak, not a steady-state reading), tracing-alone still
-leaves **~39 MB of peak-RSS growth unexplained**, and profiling-alone
-leaves **~12 MB unexplained**. The ~39 MB figure is the same order of
+synthetic sweep's unattributed remainder.** Accounting for all of the
+above still leaves **~39 MB of the tracer's peak-RSS delta unexplained**,
+and **~12 MB of the profiler's**. The ~39 MB figure is the same order of
 magnitude as the ~42-57 MB unattributed remainder in the synthetic sweep
 (memory-sweep-results-linux.md). This is flagged as a *suggestive but
 unconfirmed* parallel — the two experiments differ enough in methodology
 (real Spring Boot workload vs. synthetic microbenchmark, peak RSS vs.
 steady-state RSS) that the magnitude match could point to a shared
 accounting blind spot, or could be coincidental. Not chased further here.
-
-**Part of the NMT `Tracing` growth is dd-trace-java's own cost, not this
-profiler's.** The NMT `Tracing` (`mtTracing`) category — HotSpot's native
-JFR-engine bucket — grows even in configurations built to isolate this
-profiler's contribution (see below), because dd-trace-java defines its
-own `jdk.jfr.Event` subclasses for signals unrelated to continuous
-profiling (exception sampling, endpoint tracking, queue time, deadlock
-detection, direct allocation sampling). Using any of these starts the
-JVM's native JFR engine as a side effect, independent of this profiler.
-When attributing overhead between tracer and profiler, this growth
-belongs to the tracer.
 
 ## Environment
 
@@ -106,27 +108,25 @@ being enabled separately.
 | Tracing (mtTracing) | ~0 | 32 KB | 16,181 KB |
 | Compiler arena, `(peak=...)` | 53,462 KB | 80,802 KB | 109,235 KB |
 
-Tracing alone accounts for most of the NMT-visible growth — more loaded
-classes, more JIT-compiled code, more interned symbols from bytecode
-instrumentation — which dominates over profiling's own cost at the NMT
-level. Profiling's own NMT-visible increment is only +17.9 MB on top of
-that; most of the `Tracing` category's growth in the `tracing+profiling`
-row is dd-trace-java's own auxiliary-event cost (see Summary above), not
-this profiler's.
+Profiling's own NMT-visible increment (+17.9 MB) is small compared to
+tracing's (+69.8 MB) — see Summary for why, and for where the rest of
+profiling's cost actually goes.
 
 ## Reconciling RSS against NMT + profiler counters
 
-Adding NMT's steady-state delta, the profiler's own `NativeMem` total
-(~43-46 MB, dominated by `calltrace` ~25.3 MB, `native_symbols` ~11.7 MB,
-`dictionary` ~7.1 MB — see [memory-usage-model.md](memory-usage-model.md)
-for what these categories mean), and the transient JIT-compiler-arena
-peak spike (relevant here since dd-trace-doe's `memory` metric is itself
-a peak, not a steady-state sample):
+This is the arithmetic behind the Summary's coarse breakdown. Adding
+NMT's steady-state delta, the profiler's own `NativeMem` total (~43-46 MB
+— see [memory-usage-model.md](memory-usage-model.md) for what its
+sub-categories mean), and the transient JIT-compiler-arena peak spike
+(relevant here since dd-trace-doe's `memory` metric is itself a peak, not
+a steady-state sample):
 
-- **Tracing-alone**: ~97 MB explained of the +136.1 MB RSS-peak delta →
+- **Tracing-alone**: 69.8 MB (NMT) + 26.7 MB (compiler-arena peak delta
+  vs. baseline) = ~97 MB explained of the +136.1 MB RSS-peak delta →
   **~39 MB unexplained**.
-- **Profiling-increment**: ~92 MB explained of the +104.3 MB RSS-peak
-  delta → **~12 MB unexplained**.
+- **Profiling-increment**: 17.9 MB (NMT) + ~44 MB (profiler `NativeMem`)
+  + 27.8 MB (compiler-arena peak delta) = ~92 MB explained of the
+  +104.3 MB RSS-peak delta → **~12 MB unexplained**.
 
 ## What we don't know
 
