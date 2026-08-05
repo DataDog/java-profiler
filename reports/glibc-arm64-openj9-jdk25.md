@@ -3,9 +3,9 @@ layout: default
 title: glibc-arm64-openj9-jdk25
 ---
 
-## glibc-arm64-openj9-jdk25 - ❌ FAIL
+## glibc-arm64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-08-05 07:24:01 EDT
+**Date:** 2026-08-05 08:26:01 EDT
 
 ### Configuration
 | Setting | Value |
@@ -24,43 +24,50 @@ title: glibc-arm64-openj9-jdk25
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ❌
+#### Scenario 1: Profiler-Only ✅
 | Metric | Value |
 |--------|-------|
-| Status | FAIL |
-| CPU Samples | N/A |
-| Sample Rate | N/A/sec |
-| Health Score | N/A% |
-| Threads | N/A |
-| Allocations | N/A |
+| Status | PASS |
+| CPU Samples | 99 |
+| Sample Rate | 1.65/sec |
+| Health Score | 103% |
+| Threads | 10 |
+| Allocations | 63 |
 
-#### Scenario 2: Tracer+Profiler ⚠️
+#### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
-| Status | N/A |
-| CPU Samples | N/A |
-| Sample Rate | N/A/sec |
-| Health Score | N/A% |
-| Threads | N/A |
-| Allocations | N/A |
+| Status | PASS |
+| CPU Samples | 692 |
+| Sample Rate | 11.53/sec |
+| Health Score | 721% |
+| Threads | 10 |
+| Allocations | 480 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 51-51 cores)</summary>
 
 ```
-1785928871 51
-1785928876 51
-1785928881 51
-1785928886 51
-1785928891 51
-1785928896 51
-1785928901 51
-1785928906 51
-1785928911 51
-1785928916 51
-1785928921 51
-1785928926 51
-1785928931 51
+1785932429 51
+1785932434 51
+1785932439 51
+1785932444 51
+1785932449 51
+1785932454 51
+1785932459 51
+1785932464 51
+1785932469 51
+1785932474 51
+1785932479 51
+1785932484 51
+1785932489 51
+1785932494 51
+1785932499 51
+1785932504 51
+1785932509 51
+1785932514 51
+1785932519 51
+1785932524 51
 ```
 </details>
 
