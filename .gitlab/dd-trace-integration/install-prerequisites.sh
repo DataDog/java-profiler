@@ -54,14 +54,14 @@ if ! command -v jbang &> /dev/null; then
 
     # Verify installation
     if command -v jbang &> /dev/null; then
-        JBANG_VERSION=$(jbang version 2>&1 | head -1)
+        JBANG_VERSION=$(jbang version 2>&1 | head -1 || true)
         log_info "jbang installed successfully: ${JBANG_VERSION}"
     else
         log_warn "jbang installation completed but not found in PATH"
         log_warn "Please ensure ~/.jbang/bin is in your PATH"
     fi
 else
-    JBANG_VERSION=$(jbang version 2>&1 | head -1)
+    JBANG_VERSION=$(jbang version 2>&1 | head -1 || true)
     log_info "jbang already installed: ${JBANG_VERSION}"
 fi
 
@@ -124,7 +124,7 @@ else
             if [ -x "$JBANG_JDK_DIR/bin/java" ]; then
                 JDK25_INSTALLED=true
                 log_info "JDK 25 installed manually from Adoptium"
-                "$JBANG_JDK_DIR/bin/java" -version 2>&1 | head -1
+                "$JBANG_JDK_DIR/bin/java" -version 2>&1 | head -1 || true
             else
                 log_warn "JDK 25 extraction failed"
             fi
@@ -164,7 +164,7 @@ fi
 if [ -z "${JAVA_HOME:-}" ]; then
     if command -v java &> /dev/null; then
         log_info "Java found in PATH"
-        java -version 2>&1 | head -3
+        java -version 2>&1 | head -3 || true
     else
         echo "ERROR: Java not found. Please set JAVA_HOME or ensure java is in PATH"
         exit 1
@@ -176,7 +176,7 @@ else
     fi
 
     log_info "Java found at JAVA_HOME: ${JAVA_HOME}"
-    "${JAVA_HOME}/bin/java" -version 2>&1 | head -3
+    "${JAVA_HOME}/bin/java" -version 2>&1 | head -3 || true
 fi
 
 # ========================================

@@ -147,9 +147,12 @@ elif [ "${TOTAL_PASS}" -gt 0 ]; then
   STATUS_EMOJI=":white_check_mark:"
   STATUS_TEXT="PASSED"
 else
-  OVERALL_STATUS="neutral"
-  STATUS_EMOJI=":grey_question:"
-  STATUS_TEXT="NO RESULTS"
+  # No results at all usually means the test matrix never ran (setup/prerequisite
+  # failure) rather than a clean run — treat it as a failure so it isn't silently
+  # swallowed.
+  OVERALL_STATUS="failure"
+  STATUS_EMOJI=":rotating_light:"
+  STATUS_TEXT="COULD NOT RUN"
 fi
 
 log_info "Results: ${TOTAL_PASS} passed, ${TOTAL_FAIL} failed out of ${TOTAL} configurations"
@@ -162,6 +165,15 @@ if [ "${OVERALL_STATUS}" = "success" ]; then
   COMMENT_BODY=":white_check_mark: **All ${TOTAL} integration tests passed**
 
 :bar_chart: [Dashboard](${DASHBOARD_URL}) · :construction_worker: [Pipeline](${CI_PIPELINE_URL:-}) · :package: \`${DDPROF_SHA:0:8}\`"
+elif [ "${TOTAL}" -eq 0 ]; then
+  # No results produced at all - the test matrix itself never ran (e.g. a setup
+  # or prerequisite failure), not a clean pass/fail outcome.
+  COMMENT_BODY=":rotating_light: **Integration tests could not run — no results were produced**
+
+The test matrix in \`${RESULTS_DIR}\` is empty. This usually means a setup step
+(prerequisite installation, JDK provisioning, etc.) failed before any test could run.
+
+:construction_worker: [Pipeline](${CI_PIPELINE_URL:-}) · :package: \`${DDPROF_SHA:0:8}\`"
 else
   # Some failures or unknowns - show full matrix
   COMMENT_BODY="${STATUS_EMOJI} **${TOTAL_PASS}** passed, **${TOTAL_FAIL}** failed out of **${TOTAL}** configurations

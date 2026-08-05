@@ -195,7 +195,7 @@ mkdir -p "${RESULTS_DIR}"
 
 log_info "Results directory: ${RESULTS_DIR}"
 log_info "Java version:"
-"${JAVA_HOME}/bin/java" -version 2>&1 | head -3
+"${JAVA_HOME}/bin/java" -version 2>&1 | head -3 || true
 
 # ========================================
 # Install Prerequisites
@@ -220,7 +220,7 @@ if ! command -v jbang &> /dev/null; then
   exit 1
 fi
 
-log_info "jbang version: $(jbang version 2>&1 | head -1)"
+log_info "jbang version: $(jbang version 2>&1 | head -1 || true)"
 
 # ========================================
 # Artifact Collection on Exit
