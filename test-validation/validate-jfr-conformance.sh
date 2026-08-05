@@ -296,20 +296,38 @@ log_info ""
 # returning a zero count when a type isn't in the recording's metadata at all
 # (e.g. JDK built-in CPU/allocation events are entirely absent from
 # ddprof-only recordings, or an event predates the JDK that produced the
-# file). Precompute presence with the JDK's own `jfr summary`, which lists
-# every registered event type unconditionally, so the .jfrs script can skip
-# queries for types that were never registered instead of crashing.
-EVENT_SUMMARY=""
-if ! EVENT_SUMMARY=$(jbang jdk exec -j 25 jfr summary "${JFR_FILE}" 2>/dev/null); then
-  log_warn "Could not run 'jfr summary' on ${JFR_FILE}; assuming all event types are present"
-  EVENT_SUMMARY=""
+# file). Precompute presence with jfr-shell's own `metadata` command (the
+# jafar backend), which lists every registered event type unconditionally, so
+# the .jfrs script can skip queries for types that were never registered
+# instead of crashing. This must use the same jafar backend as the actual
+# validation query below - the stock JDK `jfr summary`/`jfr print` tools
+# misparse ddprof's multi-chunk recordings and silently report datadog.*
+# event types as absent even when they are present with real events.
+
+# jfr-shell (jafar) requires Java 25 (class file version 69.0)
+# Always use --java 25 to let jbang download the correct JDK
+unset JAVA_VERSION  # Prevent jbang from picking up test JDK version
+
+log_info "Using Java 25 for jbang (required by jfr-shell)"
+
+# jbang resolves jafar-shell from Maven Central, which CI runners can't reach directly.
+# Route it through the same internal Maven proxy Gradle uses (MAVEN_REPOSITORY_PROXY).
+JBANG_REPOS_OPT=""
+if [ -n "${MAVEN_REPOSITORY_PROXY:-}" ]; then
+  JBANG_REPOS_OPT="--repos=\"central=${MAVEN_REPOSITORY_PROXY}\""
+fi
+
+EVENT_METADATA=""
+if ! EVENT_METADATA=$(eval "jbang --java 25 ${JBANG_REPOS_OPT} jfr-shell@btraceio metadata \"${JFR_FILE}\"" 2>/dev/null); then
+  log_warn "Could not run 'jfr-shell metadata' on ${JFR_FILE}; assuming all event types are present"
+  EVENT_METADATA=""
 fi
 
 has_event_type() {
   local type="$1"
-  if [ -z "${EVENT_SUMMARY}" ]; then
+  if [ -z "${EVENT_METADATA}" ]; then
     echo "true"
-  elif echo "${EVENT_SUMMARY}" | grep -qE "^[[:space:]]*${type//./\\.}[[:space:]]"; then
+  elif echo "${EVENT_METADATA}" | grep -qE -- "- ${type//./\\.}\$"; then
     echo "true"
   else
     echo "false"
@@ -355,19 +373,6 @@ if [ -f /tmp/skip-jfr-validation ]; then
     echo "VALIDATION_FAILED: Skipped - ${SKIP_REASON}" > "${OUTPUT_FILE}"
   fi
   exit 1
-fi
-
-# jfr-shell (jafar) requires Java 25 (class file version 69.0)
-# Always use --java 25 to let jbang download the correct JDK
-unset JAVA_VERSION  # Prevent jbang from picking up test JDK version
-
-log_info "Using Java 25 for jbang (required by jfr-shell)"
-
-# jbang resolves jafar-shell from Maven Central, which CI runners can't reach directly.
-# Route it through the same internal Maven proxy Gradle uses (MAVEN_REPOSITORY_PROXY).
-JBANG_REPOS_OPT=""
-if [ -n "${MAVEN_REPOSITORY_PROXY:-}" ]; then
-  JBANG_REPOS_OPT="--repos=\"central=${MAVEN_REPOSITORY_PROXY}\""
 fi
 
 # Pass calculated thresholds directly (single source of truth - no duplicate logic in jfrs)
