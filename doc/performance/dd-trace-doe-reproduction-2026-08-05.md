@@ -45,7 +45,11 @@ directly.
 
 This reproduces the originally-reported **~250 MB memory overhead** for
 the enterprise archetype: measured peak-RSS delta from baseline to
-tracing+profiling is **+240.4 MB**, in line with that figure.
+tracing+profiling is **+240.4 MB**, in line with that figure. In
+absolute terms, that's a peak RSS of **1514.3 MB with nothing attached**
+growing to **1754.7 MB with tracer and profiler both on** — the tracer
+and profiler together add **~16%** on top of the app's own baseline
+footprint.
 
 Coarse breakdown of where that memory goes:
 
