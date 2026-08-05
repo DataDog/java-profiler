@@ -373,7 +373,7 @@ if "${expected_alloc}" == "jdk"
   # Show top allocation sites if we have any
   if ${jdk_alloc_count.count} > 0
     echo "  Top allocation types:"
-    show events/jdk.ObjectAllocationSample | groupBy(objectClass/name) | top(5, by=sum(weight))
+    show events/jdk.ObjectAllocationSample | groupBy(objectClass/name, sortBy=value) | top(5)
   endif
 
 elif "${expected_alloc}" == "datadog"
@@ -396,7 +396,7 @@ elif "${expected_alloc}" == "datadog"
   # Show top allocation sites if we have any
   if ${dd_alloc_count.count} > 0
     echo "  Top allocation types:"
-    show events/datadog.ObjectSample | groupBy(objectClass/name) | top(5, by=sum(weight))
+    show events/datadog.ObjectSample | groupBy(objectClass/name, sortBy=value) | top(5)
   endif
 
 else
@@ -415,7 +415,7 @@ else
     # Show top allocation sites if we have any
     if ${jdk_alloc_count.count} > 0
       echo "  Top allocation types:"
-      show events/jdk.ObjectAllocationSample | groupBy(objectClass/name) | top(5, by=sum(weight))
+      show events/jdk.ObjectAllocationSample | groupBy(objectClass/name, sortBy=value) | top(5)
     endif
   else
     echo "  Total: ${dd_alloc_count.count} allocation events (using datadog.ObjectSample)"
@@ -431,7 +431,7 @@ else
     # Show top allocation sites if we have any
     if ${dd_alloc_count.count} > 0
       echo "  Top allocation types:"
-      show events/datadog.ObjectSample | groupBy(objectClass/name) | top(5, by=sum(weight))
+      show events/datadog.ObjectSample | groupBy(objectClass/name, sortBy=value) | top(5)
     endif
   endif
 endif
