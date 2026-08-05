@@ -41,6 +41,10 @@ static void* (*_orig_aligned_alloc)(size_t, size_t);
 // because the window is short.
 static inline void maybeRecord(void* ret, size_t size) {
     if (MallocTracer::running() && ret && size) {
+        // We are not in a signal handler - take this chance to ensure ProfiledThread
+        // is attached to the thread cheaply.
+        ProfiledThread::initCurrentThreadSignalSafe();
+
         CriticalSection cs;
         if (cs.entered()) {
             MallocTracer::recordMalloc(ret, size);
@@ -337,9 +341,6 @@ void MallocTracer::recordMalloc(void* address, size_t size) {
             event._weight = (float)(1.0 / (1.0 - exp(-(double)size / (double)current_interval)));
         }
 
-        // We are not in a signal handler - take this chance to ensure ProfiledThread
-        // is attached to the thread cheaply.
-        ProfiledThread::initCurrentThreadSignalSafe();
         Profiler::instance()->recordSample(NULL, size, OS::threadId(), BCI_NATIVE_MALLOC, 0, &event);
 
         u64 current_samples = __atomic_add_fetch(&_sample_count, 1, __ATOMIC_RELAXED);
