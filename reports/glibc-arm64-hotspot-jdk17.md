@@ -3,9 +3,9 @@ layout: default
 title: glibc-arm64-hotspot-jdk17
 ---
 
-## glibc-arm64-hotspot-jdk17 - ❌ FAIL
+## glibc-arm64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-08-05 10:18:25 EDT
+**Date:** 2026-08-05 11:34:36 EDT
 
 ### Configuration
 | Setting | Value |
@@ -24,44 +24,50 @@ title: glibc-arm64-hotspot-jdk17
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ❌
+#### Scenario 1: Profiler-Only ✅
 | Metric | Value |
 |--------|-------|
-| Status | FAIL |
-| CPU Samples | 0 |
-| Sample Rate | 0.00/sec |
-| Health Score | 0% |
-| Threads | 0 |
-| Allocations | 0 |
+| Status | PASS |
+| CPU Samples | 564 |
+| Sample Rate | 9.40/sec |
+| Health Score | 588% |
+| Threads | 9 |
+| Allocations | 363 |
 
-#### Scenario 2: Tracer+Profiler ⚠️
+#### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
-| Status | N/A |
-| CPU Samples | N/A |
-| Sample Rate | N/A/sec |
-| Health Score | N/A% |
-| Threads | N/A |
-| Allocations | N/A |
+| Status | PASS |
+| CPU Samples | 83 |
+| Sample Rate | 1.38/sec |
+| Health Score | 86% |
+| Threads | 13 |
+| Allocations | 57 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 44-44 cores)</summary>
 
 ```
-1785939204 44
-1785939209 44
-1785939214 44
-1785939219 44
-1785939224 44
-1785939229 44
-1785939234 44
-1785939239 44
-1785939244 44
-1785939249 44
-1785939254 44
-1785939259 44
-1785939264 44
-1785939269 44
+1785943717 44
+1785943722 44
+1785943727 44
+1785943732 44
+1785943737 44
+1785943742 44
+1785943747 44
+1785943752 44
+1785943757 44
+1785943762 44
+1785943767 44
+1785943772 44
+1785943777 44
+1785943782 44
+1785943787 44
+1785943792 44
+1785943797 44
+1785943802 44
+1785943807 44
+1785943812 44
 ```
 </details>
 
