@@ -337,6 +337,9 @@ void MallocTracer::recordMalloc(void* address, size_t size) {
             event._weight = (float)(1.0 / (1.0 - exp(-(double)size / (double)current_interval)));
         }
 
+        // We are not in a signal handler - take this chance to ensure ProfiledThread
+        // is attached to the thread cheaply.
+        ProfiledThread::initCurrentThreadSignalSafe();
         Profiler::instance()->recordSample(NULL, size, OS::threadId(), BCI_NATIVE_MALLOC, 0, &event);
 
         u64 current_samples = __atomic_add_fetch(&_sample_count, 1, __ATOMIC_RELAXED);

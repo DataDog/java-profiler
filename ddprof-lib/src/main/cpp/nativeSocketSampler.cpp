@@ -264,6 +264,9 @@ void NativeSocketSampler::recordEvent(int fd, u64 t0, u64 t1, ssize_t bytes, u8 
     event._bytes  = (u64)bytes;
     event._weight = weight;
 
+    // We are not in a signal handler - take this chance to ensure ProfiledThread
+    // is attached to the thread cheaply.
+    ProfiledThread::initCurrentThreadSignalSafe();
     Profiler::instance()->recordSample(NULL, (u64)bytes, OS::threadId(),
                                        BCI_NATIVE_SOCKET, 0, &event);
 

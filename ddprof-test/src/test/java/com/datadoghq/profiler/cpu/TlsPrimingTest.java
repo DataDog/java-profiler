@@ -17,9 +17,11 @@ import org.openjdk.jmc.common.item.IMemberAccessor;
 import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
 import java.lang.reflect.Method;
+import java.util.Map;
 import java.util.TreeSet;
 import java.util.Set;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -34,10 +36,20 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * the first profiling signal reaches them. TLS priming is what covers this
  * gap: on that first signal, ProfiledThread::acquireCurrent() claims a slot
  * from the pool and attaches it via pthread_setspecific right there in the
- * signal handler (see threadLocalData.cpp/ThreadLocalDataPool). If priming
- * were broken, these early-started threads would simply never show up as
- * eventThread on a sample. So seeing compiler-thread samples here is direct
- * evidence that TLS priming worked.
+ * signal handler (see threadLocalData.cpp/ThreadLocalDataPool).
+ *
+ * Seeing a compiler-thread eventThread alone is not sufficient evidence: the
+ * CPU signal handlers resolve tid via OS::threadId() before recordSample() is
+ * even called, and native thread names are refreshed independently of TLS
+ * priming, so a sample tagged with a compiler thread's name would show up
+ * regardless of whether ProfiledThread::acquireCurrent() actually succeeded.
+ * If priming fails, recordSample() still emits an event for that tid, just
+ * with a synthetic "no_Java_frame" stack instead of a real unwind. The
+ * "samples_dropped_thread_local" debug counter is incremented exactly when
+ * acquireCurrent() fails (see StackWalker::walkFP/walkDwarf), so asserting it
+ * stayed at zero for the whole run is what actually proves every signal that
+ * reached a stack walker — including the ones on these never-registered
+ * compiler threads — found or attached a ProfiledThread.
  *
  * The test forces JIT compilation by loading a dynamically-generated class
  * with many distinct trivial methods and invoking each one past HotSpot's/
@@ -90,6 +102,16 @@ public class TlsPrimingTest extends AbstractProfilerTest {
         assertTrue(sawCompilerThreadSample,
                 "expected a datadog.ExecutionSample with eventThread starting with \"" + expectedPrefix
                         + "\", but observed thread names: " + observedThreadNames);
+
+        // A compiler-thread eventThread on its own doesn't prove a pool slot was
+        // ever attached (see class javadoc) — the tid and thread name are resolved
+        // independently of priming. Confirm no signal ever fell back to the
+        // "no_Java_frame" stack for lack of a ProfiledThread, on this or any other
+        // thread in the run.
+        Map<String, Long> debugCounters = profiler.getDebugCounters();
+        assertEquals(0L, debugCounters.get("samples_dropped_thread_local"),
+                "TLS priming failed for at least one signal; compiler-thread samples "
+                        + "may have used the no_Java_frame fallback instead of a real unwind");
     }
 
     private void triggerJitCompilation() throws Exception {

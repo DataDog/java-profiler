@@ -47,8 +47,9 @@ public:
     static ProfiledThread* acquire(int tid);
     static bool release(ProfiledThread* t);
     static inline bool containsThread(ProfiledThread* t) {
-        if (_pool != nullptr) {
-            return _pool->contains(t);
+        ThreadLocalDataPool* pool = __atomic_load_n(&_pool, __ATOMIC_ACQUIRE);
+        if (pool != nullptr) {
+            return pool->contains(t);
         } else {
             return false;
         }
