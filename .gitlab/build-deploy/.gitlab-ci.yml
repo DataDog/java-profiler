@@ -218,8 +218,7 @@ build-artifact:
       artifacts: false
       optional: true
   rules:
-    - if: '$CI_COMMIT_BRANCH =~ /^release\//'
-      when: never
+    - !reference [.skip-on-release, rules]
     - when: on_success
   tags: [ "arch:amd64" ]
   image: ${BUILD_IMAGE_X64}
@@ -254,8 +253,7 @@ deploy-artifact:
     - job: build:arm64-musl
       artifacts: true
   rules:
-    - if: '$CI_COMMIT_BRANCH =~ /^release\//'
-      when: never
+    - !reference [.skip-on-release, rules]
     - when: on_success
   tags: [ "arch:amd64" ]
   image: ${BUILD_IMAGE_X64}
@@ -345,7 +343,9 @@ notify-slack-on-success:
       artifacts: true
     - job: deploy-artifact
       artifacts: false
-  when: on_success
+  rules:
+    - !reference [.skip-on-release, rules]
+    - when: on_success
   image: registry.ddbuild.io/slack-notifier:v91289620-4ec922a-latest@sha256:06b24f392ccc383d371c72001520a254edef523bc0bfdc445f487106107b4202
   tags: ["arch:amd64"]
   script:
@@ -359,7 +359,9 @@ notify-slack-on-failure:
       artifacts: true
     - job: deploy-artifact
       artifacts: true
-  when: on_failure
+  rules:
+    - !reference [.skip-on-release, rules]
+    - when: on_failure
   image: registry.ddbuild.io/slack-notifier:v91289620-4ec922a-latest@sha256:06b24f392ccc383d371c72001520a254edef523bc0bfdc445f487106107b4202
   tags: ["arch:amd64"]
   script:
