@@ -3,9 +3,9 @@ layout: default
 title: glibc-arm64-openj9-jdk21
 ---
 
-## glibc-arm64-openj9-jdk21 - ✅ PASS
+## glibc-arm64-openj9-jdk21 - ❌ FAIL
 
-**Date:** 2026-08-05 08:26:00 EDT
+**Date:** 2026-08-05 10:18:25 EDT
 
 ### Configuration
 | Setting | Value |
@@ -24,50 +24,43 @@ title: glibc-arm64-openj9-jdk21
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ✅
+#### Scenario 1: Profiler-Only ❌
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 587 |
-| Sample Rate | 9.78/sec |
-| Health Score | 611% |
-| Threads | 9 |
-| Allocations | 381 |
+| Status | FAIL |
+| CPU Samples | 0 |
+| Sample Rate | 0.00/sec |
+| Health Score | 0% |
+| Threads | 0 |
+| Allocations | 0 |
 
-#### Scenario 2: Tracer+Profiler ✅
+#### Scenario 2: Tracer+Profiler ⚠️
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 100 |
-| Sample Rate | 1.67/sec |
-| Health Score | 104% |
-| Threads | 14 |
-| Allocations | 67 |
+| Status | N/A |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
 <details>
 <summary>CPU Timeline (1 unique values: 43-43 cores)</summary>
 
 ```
-1785932433 43
-1785932438 43
-1785932443 43
-1785932448 43
-1785932453 43
-1785932458 43
-1785932463 43
-1785932468 43
-1785932473 43
-1785932478 43
-1785932483 43
-1785932488 43
-1785932494 43
-1785932499 43
-1785932504 43
-1785932509 43
-1785932514 43
-1785932519 43
-1785932524 43
-1785932529 43
+1785939227 43
+1785939232 43
+1785939237 43
+1785939242 43
+1785939247 43
+1785939252 43
+1785939257 43
+1785939262 43
+1785939267 43
+1785939272 43
+1785939277 43
+1785939282 43
+1785939287 43
 ```
 </details>
 
