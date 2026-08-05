@@ -3,9 +3,9 @@ layout: default
 title: glibc-x64-openj9-jdk11
 ---
 
-## glibc-x64-openj9-jdk11 - ✅ PASS
+## glibc-x64-openj9-jdk11 - ❌ FAIL
 
-**Date:** 2026-08-05 05:48:16 EDT
+**Date:** 2026-08-05 07:24:02 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,16 +18,16 @@ title: glibc-x64-openj9-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 8 |
-| CPU Cores (end) | 12 |
+| CPU Cores (start) | 96 |
+| CPU Cores (end) | 96 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ⚠️
+#### Scenario 1: Profiler-Only ❌
 | Metric | Value |
 |--------|-------|
-| Status | N/A |
+| Status | FAIL |
 | CPU Samples | N/A |
 | Sample Rate | N/A/sec |
 | Health Score | N/A% |
@@ -45,29 +45,22 @@ title: glibc-x64-openj9-jdk11
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (3 unique values: 8-32 cores)</summary>
+<summary>CPU Timeline (1 unique values: 96-96 cores)</summary>
 
 ```
-1785922926 8
-1785922931 8
-1785922936 8
-1785922941 8
-1785922946 8
-1785922951 8
-1785922956 8
-1785922961 8
-1785922966 8
-1785922971 8
-1785922976 8
-1785922981 8
-1785922986 8
-1785922991 8
-1785922996 32
-1785923001 32
-1785923006 12
-1785923011 12
-1785923016 12
-1785923021 12
+1785928892 96
+1785928898 96
+1785928903 96
+1785928908 96
+1785928913 96
+1785928918 96
+1785928923 96
+1785928928 96
+1785928933 96
+1785928938 96
+1785928943 96
+1785928948 96
+1785928953 96
 ```
 </details>
 

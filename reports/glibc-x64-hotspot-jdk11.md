@@ -3,9 +3,9 @@ layout: default
 title: glibc-x64-hotspot-jdk11
 ---
 
-## glibc-x64-hotspot-jdk11 - ✅ PASS
+## glibc-x64-hotspot-jdk11 - ❌ FAIL
 
-**Date:** 2026-08-05 05:48:16 EDT
+**Date:** 2026-08-05 07:24:02 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,16 +18,16 @@ title: glibc-x64-hotspot-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 62 |
-| CPU Cores (end) | 64 |
+| CPU Cores (start) | 17 |
+| CPU Cores (end) | 17 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ⚠️
+#### Scenario 1: Profiler-Only ❌
 | Metric | Value |
 |--------|-------|
-| Status | N/A |
+| Status | FAIL |
 | CPU Samples | N/A |
 | Sample Rate | N/A/sec |
 | Health Score | N/A% |
@@ -45,29 +45,22 @@ title: glibc-x64-hotspot-jdk11
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (2 unique values: 62-64 cores)</summary>
+<summary>CPU Timeline (1 unique values: 17-17 cores)</summary>
 
 ```
-1785923052 62
-1785923057 62
-1785923062 62
-1785923067 62
-1785923072 62
-1785923077 62
-1785923082 62
-1785923087 62
-1785923092 62
-1785923097 62
-1785923102 62
-1785923107 62
-1785923112 62
-1785923117 62
-1785923122 62
-1785923127 62
-1785923132 64
-1785923137 64
-1785923142 64
-1785923147 64
+1785928905 17
+1785928910 17
+1785928915 17
+1785928920 17
+1785928925 17
+1785928930 17
+1785928935 17
+1785928940 17
+1785928945 17
+1785928950 17
+1785928955 17
+1785928960 17
+1785928965 17
 ```
 </details>
 

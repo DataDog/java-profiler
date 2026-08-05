@@ -3,9 +3,9 @@ layout: default
 title: glibc-x64-openj9-jdk8
 ---
 
-## glibc-x64-openj9-jdk8 - ✅ PASS
+## glibc-x64-openj9-jdk8 - ❌ FAIL
 
-**Date:** 2026-08-05 05:48:16 EDT
+**Date:** 2026-08-05 07:24:02 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,16 +18,16 @@ title: glibc-x64-openj9-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 46 |
-| CPU Cores (end) | 46 |
+| CPU Cores (start) | 37 |
+| CPU Cores (end) | 35 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ⚠️
+#### Scenario 1: Profiler-Only ❌
 | Metric | Value |
 |--------|-------|
-| Status | N/A |
+| Status | FAIL |
 | CPU Samples | N/A |
 | Sample Rate | N/A/sec |
 | Health Score | N/A% |
@@ -45,29 +45,22 @@ title: glibc-x64-openj9-jdk8
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (2 unique values: 46-48 cores)</summary>
+<summary>CPU Timeline (2 unique values: 35-37 cores)</summary>
 
 ```
-1785922918 46
-1785922923 48
-1785922928 48
-1785922933 46
-1785922938 46
-1785922943 46
-1785922948 46
-1785922953 46
-1785922958 46
-1785922963 46
-1785922968 46
-1785922973 46
-1785922978 46
-1785922983 48
-1785922988 48
-1785922993 48
-1785922998 48
-1785923003 48
-1785923008 48
-1785923013 46
+1785928880 37
+1785928885 37
+1785928890 37
+1785928895 37
+1785928900 37
+1785928905 37
+1785928910 37
+1785928915 37
+1785928920 37
+1785928925 37
+1785928930 37
+1785928935 37
+1785928940 35
 ```
 </details>
 

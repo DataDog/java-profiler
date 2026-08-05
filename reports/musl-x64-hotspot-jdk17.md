@@ -3,9 +3,9 @@ layout: default
 title: musl-x64-hotspot-jdk17
 ---
 
-## musl-x64-hotspot-jdk17 - ✅ PASS
+## musl-x64-hotspot-jdk17 - ❌ FAIL
 
-**Date:** 2026-08-05 05:48:17 EDT
+**Date:** 2026-08-05 07:24:03 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,16 +18,16 @@ title: musl-x64-hotspot-jdk17
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 36 |
-| CPU Cores (end) | 34 |
+| CPU Cores (start) | 79 |
+| CPU Cores (end) | 79 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ⚠️
+#### Scenario 1: Profiler-Only ❌
 | Metric | Value |
 |--------|-------|
-| Status | N/A |
+| Status | FAIL |
 | CPU Samples | N/A |
 | Sample Rate | N/A/sec |
 | Health Score | N/A% |
@@ -45,29 +45,22 @@ title: musl-x64-hotspot-jdk17
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (2 unique values: 34-36 cores)</summary>
+<summary>CPU Timeline (1 unique values: 79-79 cores)</summary>
 
 ```
-1785922909 36
-1785922914 34
-1785922919 34
-1785922924 34
-1785922929 34
-1785922934 34
-1785922939 34
-1785922944 34
-1785922949 34
-1785922954 34
-1785922959 34
-1785922964 34
-1785922969 34
-1785922974 34
-1785922979 34
-1785922984 34
-1785922989 34
-1785922994 34
-1785922999 34
-1785923004 34
+1785928871 79
+1785928876 79
+1785928881 79
+1785928886 79
+1785928891 79
+1785928896 79
+1785928901 79
+1785928906 79
+1785928911 79
+1785928916 79
+1785928921 79
+1785928926 79
+1785928931 79
 ```
 </details>
 

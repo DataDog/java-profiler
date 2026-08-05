@@ -3,9 +3,9 @@ layout: default
 title: musl-arm64-openj9-jdk8
 ---
 
-## musl-arm64-openj9-jdk8 - ✅ PASS
+## musl-arm64-openj9-jdk8 - ❌ FAIL
 
-**Date:** 2026-08-05 05:48:17 EDT
+**Date:** 2026-08-05 07:24:03 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,16 +18,16 @@ title: musl-arm64-openj9-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 10 |
-| CPU Cores (end) | 10 |
+| CPU Cores (start) | 34 |
+| CPU Cores (end) | 34 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ⚠️
+#### Scenario 1: Profiler-Only ❌
 | Metric | Value |
 |--------|-------|
-| Status | N/A |
+| Status | FAIL |
 | CPU Samples | N/A |
 | Sample Rate | N/A/sec |
 | Health Score | N/A% |
@@ -45,29 +45,22 @@ title: musl-arm64-openj9-jdk8
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 10-10 cores)</summary>
+<summary>CPU Timeline (1 unique values: 34-34 cores)</summary>
 
 ```
-1785922922 10
-1785922927 10
-1785922932 10
-1785922937 10
-1785922942 10
-1785922947 10
-1785922952 10
-1785922957 10
-1785922962 10
-1785922967 10
-1785922972 10
-1785922977 10
-1785922982 10
-1785922987 10
-1785922992 10
-1785922997 10
-1785923002 10
-1785923007 10
-1785923012 10
-1785923017 10
+1785928897 34
+1785928902 34
+1785928907 34
+1785928912 34
+1785928917 34
+1785928922 34
+1785928927 34
+1785928932 34
+1785928937 34
+1785928942 34
+1785928947 34
+1785928952 34
+1785928957 34
 ```
 </details>
 

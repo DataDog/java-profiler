@@ -3,9 +3,9 @@ layout: default
 title: glibc-arm64-openj9-jdk21
 ---
 
-## glibc-arm64-openj9-jdk21 - ✅ PASS
+## glibc-arm64-openj9-jdk21 - ❌ FAIL
 
-**Date:** 2026-08-05 05:48:15 EDT
+**Date:** 2026-08-05 07:24:01 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,16 +18,16 @@ title: glibc-arm64-openj9-jdk21
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 48 |
-| CPU Cores (end) | 48 |
+| CPU Cores (start) | 32 |
+| CPU Cores (end) | 26 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ⚠️
+#### Scenario 1: Profiler-Only ❌
 | Metric | Value |
 |--------|-------|
-| Status | N/A |
+| Status | FAIL |
 | CPU Samples | N/A |
 | Sample Rate | N/A/sec |
 | Health Score | N/A% |
@@ -45,29 +45,22 @@ title: glibc-arm64-openj9-jdk21
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
+<summary>CPU Timeline (3 unique values: 26-32 cores)</summary>
 
 ```
-1785922923 48
-1785922928 48
-1785922933 48
-1785922938 48
-1785922943 48
-1785922948 48
-1785922953 48
-1785922958 48
-1785922963 48
-1785922968 48
-1785922974 48
-1785922979 48
-1785922984 48
-1785922989 48
-1785922994 48
-1785922999 48
-1785923004 48
-1785923009 48
-1785923014 48
-1785923019 48
+1785928866 32
+1785928871 29
+1785928876 29
+1785928881 29
+1785928886 29
+1785928891 29
+1785928896 26
+1785928901 26
+1785928906 26
+1785928911 26
+1785928916 26
+1785928921 26
+1785928926 26
 ```
 </details>
 

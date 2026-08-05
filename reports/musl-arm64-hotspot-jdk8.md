@@ -3,9 +3,9 @@ layout: default
 title: musl-arm64-hotspot-jdk8
 ---
 
-## musl-arm64-hotspot-jdk8 - ✅ PASS
+## musl-arm64-hotspot-jdk8 - ❌ FAIL
 
-**Date:** 2026-08-05 05:48:17 EDT
+**Date:** 2026-08-05 07:24:03 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,16 +18,16 @@ title: musl-arm64-hotspot-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 48 |
-| CPU Cores (end) | 48 |
+| CPU Cores (start) | 10 |
+| CPU Cores (end) | 10 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ⚠️
+#### Scenario 1: Profiler-Only ❌
 | Metric | Value |
 |--------|-------|
-| Status | N/A |
+| Status | FAIL |
 | CPU Samples | N/A |
 | Sample Rate | N/A/sec |
 | Health Score | N/A% |
@@ -45,29 +45,22 @@ title: musl-arm64-hotspot-jdk8
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
+<summary>CPU Timeline (1 unique values: 10-10 cores)</summary>
 
 ```
-1785922923 48
-1785922928 48
-1785922933 48
-1785922938 48
-1785922944 48
-1785922949 48
-1785922954 48
-1785922959 48
-1785922964 48
-1785922969 48
-1785922974 48
-1785922979 48
-1785922984 48
-1785922989 48
-1785922994 48
-1785922999 48
-1785923004 48
-1785923009 48
-1785923014 48
-1785923019 48
+1785928881 10
+1785928886 10
+1785928891 10
+1785928896 10
+1785928901 10
+1785928906 10
+1785928911 10
+1785928916 10
+1785928921 10
+1785928926 10
+1785928931 10
+1785928936 10
+1785928941 10
 ```
 </details>
 

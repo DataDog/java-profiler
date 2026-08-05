@@ -3,9 +3,9 @@ layout: default
 title: glibc-arm64-hotspot-jdk25
 ---
 
-## glibc-arm64-hotspot-jdk25 - ✅ PASS
+## glibc-arm64-hotspot-jdk25 - ❌ FAIL
 
-**Date:** 2026-08-05 05:48:15 EDT
+**Date:** 2026-08-05 07:24:01 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,16 +18,16 @@ title: glibc-arm64-hotspot-jdk25
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 53 |
-| CPU Cores (end) | 53 |
+| CPU Cores (start) | 39 |
+| CPU Cores (end) | 39 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ⚠️
+#### Scenario 1: Profiler-Only ❌
 | Metric | Value |
 |--------|-------|
-| Status | N/A |
+| Status | FAIL |
 | CPU Samples | N/A |
 | Sample Rate | N/A/sec |
 | Health Score | N/A% |
@@ -45,29 +45,22 @@ title: glibc-arm64-hotspot-jdk25
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 53-53 cores)</summary>
+<summary>CPU Timeline (1 unique values: 39-39 cores)</summary>
 
 ```
-1785922915 53
-1785922920 53
-1785922925 53
-1785922930 53
-1785922935 53
-1785922940 53
-1785922945 53
-1785922950 53
-1785922955 53
-1785922960 53
-1785922965 53
-1785922970 53
-1785922975 53
-1785922980 53
-1785922985 53
-1785922990 53
-1785922995 53
-1785923000 53
-1785923005 53
-1785923010 53
+1785928889 39
+1785928894 39
+1785928899 39
+1785928904 39
+1785928909 39
+1785928914 39
+1785928919 39
+1785928924 39
+1785928929 39
+1785928934 39
+1785928939 39
+1785928944 39
+1785928949 39
 ```
 </details>
 

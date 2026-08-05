@@ -3,9 +3,9 @@ layout: default
 title: glibc-x64-openj9-jdk25
 ---
 
-## glibc-x64-openj9-jdk25 - ✅ PASS
+## glibc-x64-openj9-jdk25 - ❌ FAIL
 
-**Date:** 2026-08-05 05:48:16 EDT
+**Date:** 2026-08-05 07:24:02 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,16 +18,16 @@ title: glibc-x64-openj9-jdk25
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 58 |
-| CPU Cores (end) | 60 |
+| CPU Cores (start) | 96 |
+| CPU Cores (end) | 96 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ⚠️
+#### Scenario 1: Profiler-Only ❌
 | Metric | Value |
 |--------|-------|
-| Status | N/A |
+| Status | FAIL |
 | CPU Samples | N/A |
 | Sample Rate | N/A/sec |
 | Health Score | N/A% |
@@ -45,29 +45,22 @@ title: glibc-x64-openj9-jdk25
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (2 unique values: 58-60 cores)</summary>
+<summary>CPU Timeline (1 unique values: 96-96 cores)</summary>
 
 ```
-1785922936 58
-1785922941 58
-1785922946 58
-1785922951 58
-1785922956 58
-1785922961 60
-1785922966 60
-1785922971 60
-1785922976 60
-1785922981 60
-1785922986 60
-1785922991 60
-1785922996 60
-1785923001 60
-1785923006 60
-1785923011 60
-1785923016 60
-1785923022 60
-1785923027 60
-1785923032 60
+1785928879 96
+1785928884 96
+1785928889 96
+1785928894 96
+1785928899 96
+1785928904 96
+1785928909 96
+1785928914 96
+1785928919 96
+1785928924 96
+1785928929 96
+1785928934 96
+1785928939 96
 ```
 </details>
 

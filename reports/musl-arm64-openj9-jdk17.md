@@ -3,9 +3,9 @@ layout: default
 title: musl-arm64-openj9-jdk17
 ---
 
-## musl-arm64-openj9-jdk17 - ✅ PASS
+## musl-arm64-openj9-jdk17 - ❌ FAIL
 
-**Date:** 2026-08-05 05:48:17 EDT
+**Date:** 2026-08-05 07:24:03 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,16 +18,16 @@ title: musl-arm64-openj9-jdk17
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 64 |
-| CPU Cores (end) | 52 |
+| CPU Cores (start) | 51 |
+| CPU Cores (end) | 51 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ⚠️
+#### Scenario 1: Profiler-Only ❌
 | Metric | Value |
 |--------|-------|
-| Status | N/A |
+| Status | FAIL |
 | CPU Samples | N/A |
 | Sample Rate | N/A/sec |
 | Health Score | N/A% |
@@ -45,29 +45,22 @@ title: musl-arm64-openj9-jdk17
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (2 unique values: 52-64 cores)</summary>
+<summary>CPU Timeline (1 unique values: 51-51 cores)</summary>
 
 ```
-1785922912 64
-1785922917 64
-1785922922 64
-1785922927 64
-1785922932 64
-1785922937 64
-1785922942 64
-1785922947 64
-1785922952 64
-1785922957 64
-1785922962 64
-1785922967 64
-1785922972 64
-1785922977 64
-1785922982 64
-1785922987 64
-1785922992 52
-1785922997 52
-1785923002 52
-1785923007 52
+1785928875 51
+1785928880 51
+1785928885 51
+1785928890 51
+1785928895 51
+1785928900 51
+1785928905 51
+1785928910 51
+1785928915 51
+1785928920 51
+1785928925 51
+1785928930 51
+1785928935 51
 ```
 </details>
 

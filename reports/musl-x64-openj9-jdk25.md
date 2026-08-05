@@ -3,9 +3,9 @@ layout: default
 title: musl-x64-openj9-jdk25
 ---
 
-## musl-x64-openj9-jdk25 - ✅ PASS
+## musl-x64-openj9-jdk25 - ❌ FAIL
 
-**Date:** 2026-08-05 05:48:18 EDT
+**Date:** 2026-08-05 07:24:04 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,16 +18,16 @@ title: musl-x64-openj9-jdk25
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 30 |
-| CPU Cores (end) | 30 |
+| CPU Cores (start) | 56 |
+| CPU Cores (end) | 56 |
 | Throttling | 0% |
 
 ### Test Results
 
-#### Scenario 1: Profiler-Only ⚠️
+#### Scenario 1: Profiler-Only ❌
 | Metric | Value |
 |--------|-------|
-| Status | N/A |
+| Status | FAIL |
 | CPU Samples | N/A |
 | Sample Rate | N/A/sec |
 | Health Score | N/A% |
@@ -45,29 +45,22 @@ title: musl-x64-openj9-jdk25
 | Allocations | N/A |
 
 <details>
-<summary>CPU Timeline (1 unique values: 30-30 cores)</summary>
+<summary>CPU Timeline (1 unique values: 56-56 cores)</summary>
 
 ```
-1785922913 30
-1785922918 30
-1785922923 30
-1785922928 30
-1785922933 30
-1785922938 30
-1785922943 30
-1785922948 30
-1785922953 30
-1785922958 30
-1785922963 30
-1785922968 30
-1785922973 30
-1785922978 30
-1785922983 30
-1785922988 30
-1785922993 30
-1785922998 30
-1785923003 30
-1785923008 30
+1785928882 56
+1785928887 56
+1785928892 56
+1785928897 56
+1785928902 56
+1785928907 56
+1785928912 56
+1785928917 56
+1785928922 56
+1785928927 56
+1785928932 56
+1785928937 56
+1785928942 56
 ```
 </details>
 
