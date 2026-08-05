@@ -4,12 +4,8 @@ import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
-import org.openjdk.jmc.common.IMCThread;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.flightrecorder.JfrAttributes;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -44,20 +40,14 @@ public class NativeSocketEventThreadTest extends AbstractProfilerTest {
 
         stopProfiler();
 
-        IItemCollection events = verifyEvents("datadog.NativeSocketEvent");
+        JfrEvents events = verifyEvents("datadog.NativeSocketEvent");
         assertTrue(events.hasItems(), "No NativeSocketEvent events found");
 
-        for (IItemIterable items : events) {
-            IMemberAccessor<IMCThread, IItem> threadAccessor =
-                    JfrAttributes.EVENT_THREAD.getAccessor(items.getType());
-            assertNotNull(threadAccessor, "eventThread accessor must be present");
-            for (IItem item : items) {
-                IMCThread thread = threadAccessor.getMember(item);
-                assertNotNull(thread, "eventThread must not be null");
-                String name = thread.getThreadName();
-                assertNotNull(name, "thread name must not be null");
-                assertFalse(name.isEmpty(), "thread name must not be empty");
-            }
+        for (JfrEvent item : events) {
+            assertTrue(item.has("eventThread"), "eventThread field must be present");
+            String name = item.getThreadName("eventThread");
+            assertNotNull(name, "thread name must not be null");
+            assertFalse(name.isEmpty(), "thread name must not be empty");
         }
     }
 

@@ -16,14 +16,11 @@
 package com.datadoghq.profiler.context;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.common.unit.IQuantity;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -67,22 +64,12 @@ public class AllNativeContextSamplingTest extends AbstractProfilerTest {
         profiler.clearTraceContext();
         stopProfiler();
 
-        IItemCollection events = verifyEvents("datadog.MethodSample");
+        JfrEvents events = verifyEvents("datadog.MethodSample");
         boolean found = false;
-        for (IItemIterable samples : events) {
-            IMemberAccessor<IQuantity, IItem> spanIdAccessor = SPAN_ID.getAccessor(samples.getType());
-            IMemberAccessor<IQuantity, IItem> rootSpanIdAccessor = LOCAL_ROOT_SPAN_ID.getAccessor(samples.getType());
-            if (spanIdAccessor == null || rootSpanIdAccessor == null) {
-                continue;
-            }
-            for (IItem sample : samples) {
-                if (spanIdAccessor.getMember(sample).longValue() == EXPECTED_SPAN_ID
-                        && rootSpanIdAccessor.getMember(sample).longValue() == EXPECTED_LOCAL_ROOT_SPAN_ID) {
-                    found = true;
-                    break;
-                }
-            }
-            if (found) {
+        for (JfrEvent sample : events) {
+            if (sample.getLong(SPAN_ID, -1) == EXPECTED_SPAN_ID
+                    && sample.getLong(LOCAL_ROOT_SPAN_ID, -1) == EXPECTED_LOCAL_ROOT_SPAN_ID) {
+                found = true;
                 break;
             }
         }

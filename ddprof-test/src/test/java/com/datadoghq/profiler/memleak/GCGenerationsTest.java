@@ -5,9 +5,6 @@ import com.datadoghq.profiler.AbstractProfilerTest;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junitpioneer.jupiter.RetryingTest;
-import org.openjdk.jmc.common.item.Aggregators;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.ItemFilters;
 
 import java.util.ArrayList;
 import java.util.List;

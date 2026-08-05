@@ -3,17 +3,9 @@ package com.datadoghq.profiler.nativesocket;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
-import org.openjdk.jmc.common.IMCThread;
-import org.openjdk.jmc.common.IMCStackTrace;
-import org.openjdk.jmc.common.item.Attribute;
-import org.openjdk.jmc.common.item.IAttribute;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.common.unit.IQuantity;
-import org.openjdk.jmc.common.unit.UnitLookup;
-import org.openjdk.jmc.flightrecorder.JfrAttributes;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
+import com.datadoghq.profiler.JfrStackTrace;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -24,12 +16,9 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 public class NativeSocketEventFieldsTest extends NativeSocketTestBase {
 
-    private static final IAttribute<String> REMOTE_ADDRESS =
-            Attribute.attr("remoteAddress", "remoteAddress", "Remote address", UnitLookup.PLAIN_TEXT);
-    private static final IAttribute<IQuantity> BYTES_TRANSFERRED =
-            Attribute.attr("bytesTransferred", "bytesTransferred", "Bytes transferred", UnitLookup.MEMORY);
-    private static final IAttribute<IQuantity> DURATION =
-            Attribute.attr("duration", "duration", "Duration", UnitLookup.TIMESPAN);
+    private static final String REMOTE_ADDRESS = "remoteAddress";
+    private static final String BYTES_TRANSFERRED = "bytesTransferred";
+    private static final String DURATION = "duration";
 
     @RetryingTest(3)
     public void allRequiredFieldsPresentAndValid() throws Exception {
@@ -39,74 +28,57 @@ public class NativeSocketEventFieldsTest extends NativeSocketTestBase {
 
         stopProfiler();
 
-        IItemCollection events = verifyEvents("datadog.NativeSocketEvent");
+        JfrEvents events = verifyEvents("datadog.NativeSocketEvent");
         assertTrue(events.hasItems(), "No NativeSocketEvent events found");
 
         boolean foundSend = false;
         boolean foundRecv = false;
 
-        for (IItemIterable items : events) {
-            IMemberAccessor<String, IItem> operationAccessor =
-                    OPERATION.getAccessor(items.getType());
-            IMemberAccessor<String, IItem> remoteAddressAccessor =
-                    REMOTE_ADDRESS.getAccessor(items.getType());
-            IMemberAccessor<IQuantity, IItem> bytesAccessor =
-                    BYTES_TRANSFERRED.getAccessor(items.getType());
-            IMemberAccessor<IQuantity, IItem> weightAccessor =
-                    WEIGHT.getAccessor(items.getType());
-            IMemberAccessor<IQuantity, IItem> durationAccessor =
-                    DURATION.getAccessor(items.getType());
-            IMemberAccessor<IMCThread, IItem> threadAccessor =
-                    JfrAttributes.EVENT_THREAD.getAccessor(items.getType());
-            IMemberAccessor<IMCStackTrace, IItem> stackTraceAccessor =
-                    STACK_TRACE.getAccessor(items.getType());
+        for (JfrEvent item : events) {
+            assertTrue(item.has(OPERATION), "operation field must be present");
+            assertTrue(item.has(REMOTE_ADDRESS), "remoteAddress field must be present");
+            assertTrue(item.has(BYTES_TRANSFERRED), "bytesTransferred field must be present");
+            assertTrue(item.has(WEIGHT), "weight field must be present");
+            assertTrue(item.has(DURATION), "duration field must be present");
+            assertTrue(item.has("eventThread"), "eventThread field must be present");
+            assertTrue(item.has(STACK_TRACE), "stackTrace field must be present");
 
-            assertNotNull(operationAccessor, "operation field accessor must be present");
-            assertNotNull(remoteAddressAccessor, "remoteAddress field accessor must be present");
-            assertNotNull(bytesAccessor, "bytesTransferred field accessor must be present");
-            assertNotNull(weightAccessor, "weight field accessor must be present");
-            assertNotNull(durationAccessor, "duration field accessor must be present");
-            assertNotNull(threadAccessor, "eventThread field accessor must be present");
-            assertNotNull(stackTraceAccessor, "stackTrace field accessor must be present");
+            String operation = item.getString(OPERATION);
+            assertNotNull(operation, "operation must not be null");
+            // op encodes the underlying syscall: SEND/RECV are emitted by send_hook/recv_hook;
+            // WRITE/READ are emitted by write_hook/read_hook.  Java sockets typically reach
+            // libc via write()/read(), so foundSend covers SEND and WRITE, foundRecv covers
+            // RECV and READ — both directions must be observed.
+            assertTrue(operation.equals("SEND") || operation.equals("RECV")
+                    || operation.equals("WRITE") || operation.equals("READ"),
+                    "operation must be one of SEND/RECV/WRITE/READ, got: " + operation);
+            if ("SEND".equals(operation) || "WRITE".equals(operation)) foundSend = true;
+            if ("RECV".equals(operation) || "READ".equals(operation))  foundRecv = true;
 
-            for (IItem item : items) {
-                String operation = operationAccessor.getMember(item);
-                assertNotNull(operation, "operation must not be null");
-                // op encodes the underlying syscall: SEND/RECV are emitted by send_hook/recv_hook;
-                // WRITE/READ are emitted by write_hook/read_hook.  Java sockets typically reach
-                // libc via write()/read(), so foundSend covers SEND and WRITE, foundRecv covers
-                // RECV and READ — both directions must be observed.
-                assertTrue(operation.equals("SEND") || operation.equals("RECV")
-                        || operation.equals("WRITE") || operation.equals("READ"),
-                        "operation must be one of SEND/RECV/WRITE/READ, got: " + operation);
-                if ("SEND".equals(operation) || "WRITE".equals(operation)) foundSend = true;
-                if ("RECV".equals(operation) || "READ".equals(operation))  foundRecv = true;
-
-                String remoteAddress = remoteAddressAccessor.getMember(item);
-                assertNotNull(remoteAddress, "remoteAddress must not be null");
-                // AF_UNIX SOCK_STREAM sockets produce an empty remoteAddress; skip
-                // the ip:port format check for those events.
-                if (!remoteAddress.isEmpty()) {
-                    assertTrue(remoteAddress.contains(":"),
-                            "remoteAddress must be in ip:port format, got: " + remoteAddress);
-                }
-
-                IQuantity bytes = bytesAccessor.getMember(item);
-                assertNotNull(bytes, "bytesTransferred must not be null");
-                assertTrue(bytes.longValue() > 0,
-                        "bytesTransferred must be > 0, got: " + bytes);
-
-                IQuantity weight = weightAccessor.getMember(item);
-                assertNotNull(weight, "weight must not be null");
-                assertTrue(weight.doubleValue() > 0.0,
-                        "weight must be > 0, got: " + weight);
-
-                IQuantity duration = durationAccessor.getMember(item);
-                assertNotNull(duration, "duration must not be null");
-
-                IMCThread thread = threadAccessor.getMember(item);
-                assertNotNull(thread, "eventThread must not be null");
+            String remoteAddress = item.getString(REMOTE_ADDRESS);
+            assertNotNull(remoteAddress, "remoteAddress must not be null");
+            // AF_UNIX SOCK_STREAM sockets produce an empty remoteAddress; skip
+            // the ip:port format check for those events.
+            if (!remoteAddress.isEmpty()) {
+                assertTrue(remoteAddress.contains(":"),
+                        "remoteAddress must be in ip:port format, got: " + remoteAddress);
             }
+
+            Long bytes = item.getLong(BYTES_TRANSFERRED);
+            assertNotNull(bytes, "bytesTransferred must not be null");
+            assertTrue(bytes > 0,
+                    "bytesTransferred must be > 0, got: " + bytes);
+
+            Double weight = item.getDouble(WEIGHT);
+            assertNotNull(weight, "weight must not be null");
+            assertTrue(weight > 0.0,
+                    "weight must be > 0, got: " + weight);
+
+            Long duration = item.getLong(DURATION);
+            assertNotNull(duration, "duration must not be null");
+
+            String threadName = item.getThreadName("eventThread");
+            assertNotNull(threadName, "eventThread must not be null");
         }
 
         assertTrue(foundSend, "Expected at least one SEND event");

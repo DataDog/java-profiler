@@ -5,11 +5,8 @@ import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.junit.CStack;
 import com.datadoghq.profiler.junit.RetryTest;
 import org.junit.jupiter.api.TestTemplate;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -76,56 +73,40 @@ public class VirtualThreadWallClockTest extends CStackAwareAbstractProfilerTest 
      * Asserts that carrier frames (ForkJoinWorkerThread) are visible in the stack traces,
      * confirming that continuation unwinding is working correctly.
      */
-    private void assertCarrierFramesVisible(IItemCollection events) {
+    private void assertCarrierFramesVisible(JfrEvents events) {
         boolean carrierVisible = false;
-        for (IItemIterable samples : events) {
-            IMemberAccessor<String, IItem> frameAccessor =
-                    JdkAttributes.STACK_TRACE_STRING.getAccessor(samples.getType());
-            if (frameAccessor == null) continue;
-            for (IItem sample : samples) {
-                String stackTrace = frameAccessor.getMember(sample);
-                if (stackTrace == null || !stackTrace.contains("VirtualThreadWallClockTest")) continue;
-                // Standard JDK VTs run on ForkJoinWorkerThread carriers.
-                // If the JVM ever changes the default carrier pool this check must be updated.
-                if (stackTrace.contains("ForkJoinWorkerThread")) {
-                    carrierVisible = true;
-                    break;
-                }
+        for (JfrEvent sample : events) {
+            String stackTrace = sample.getStackTraceString();
+            if (stackTrace == null || !stackTrace.contains("VirtualThreadWallClockTest")) continue;
+            // Standard JDK VTs run on ForkJoinWorkerThread carriers.
+            // If the JVM ever changes the default carrier pool this check must be updated.
+            if (stackTrace.contains("ForkJoinWorkerThread")) {
+                carrierVisible = true;
+                break;
             }
-            if (carrierVisible) break;
         }
         if (!carrierVisible) {
             System.out.println("=== MISSING CARRIER — sample stack traces ===");
             int printed = 0;
             outer:
-            for (IItemIterable dump : events) {
-                IMemberAccessor<String, IItem> fa =
-                        JdkAttributes.STACK_TRACE_STRING.getAccessor(dump.getType());
-                if (fa == null) continue;
-                for (IItem sample : dump) {
-                    String st = fa.getMember(sample);
-                    if (st != null && st.contains("VirtualThreadWallClockTest")) {
-                        System.out.println("--- vt sample " + (++printed) + " ---");
-                        System.out.println(st);
-                        if (printed >= 5) break outer;
-                    }
+            for (JfrEvent sample : events) {
+                String st = sample.getStackTraceString();
+                if (st != null && st.contains("VirtualThreadWallClockTest")) {
+                    System.out.println("--- vt sample " + (++printed) + " ---");
+                    System.out.println(st);
+                    if (printed >= 5) break outer;
                 }
             }
             // Carrier-only samples: ForkJoinWorkerThread without VT frames
             int carrierPrinted = 0;
             System.out.println("=== CARRIER-ONLY samples (no VT frames) ===");
             outer2:
-            for (IItemIterable dump : events) {
-                IMemberAccessor<String, IItem> fa =
-                        JdkAttributes.STACK_TRACE_STRING.getAccessor(dump.getType());
-                if (fa == null) continue;
-                for (IItem sample : dump) {
-                    String st = fa.getMember(sample);
-                    if (st != null && st.contains("ForkJoinWorkerThread") && !st.contains("VirtualThreadWallClockTest")) {
-                        System.out.println("--- carrier " + (++carrierPrinted) + " ---");
-                        System.out.println(st);
-                        if (carrierPrinted >= 3) break outer2;
-                    }
+            for (JfrEvent sample : events) {
+                String st = sample.getStackTraceString();
+                if (st != null && st.contains("ForkJoinWorkerThread") && !st.contains("VirtualThreadWallClockTest")) {
+                    System.out.println("--- carrier " + (++carrierPrinted) + " ---");
+                    System.out.println(st);
+                    if (carrierPrinted >= 3) break outer2;
                 }
             }
             if (carrierPrinted == 0) {
@@ -133,17 +114,12 @@ public class VirtualThreadWallClockTest extends CStackAwareAbstractProfilerTest 
                 System.out.println("=== No carrier samples — first 3 arbitrary samples ===");
                 int anyPrinted = 0;
                 outer3:
-                for (IItemIterable dump : events) {
-                    IMemberAccessor<String, IItem> fa =
-                            JdkAttributes.STACK_TRACE_STRING.getAccessor(dump.getType());
-                    if (fa == null) continue;
-                    for (IItem sample : dump) {
-                        String st = fa.getMember(sample);
-                        if (st != null && !st.isEmpty()) {
-                            System.out.println("--- any " + (++anyPrinted) + " ---");
-                            System.out.println(st);
-                            if (anyPrinted >= 3) break outer3;
-                        }
+                for (JfrEvent sample : events) {
+                    String st = sample.getStackTraceString();
+                    if (st != null && !st.isEmpty()) {
+                        System.out.println("--- any " + (++anyPrinted) + " ---");
+                        System.out.println(st);
+                        if (anyPrinted >= 3) break outer3;
                     }
                 }
             }

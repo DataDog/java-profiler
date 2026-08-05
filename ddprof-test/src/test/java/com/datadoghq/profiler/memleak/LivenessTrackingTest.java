@@ -7,15 +7,11 @@ package com.datadoghq.profiler.memleak;
 
 import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
+import com.datadoghq.profiler.JfrStackTrace;
 import org.junit.jupiter.api.Test;
 import org.junitpioneer.jupiter.RetryingTest;
-import org.openjdk.jmc.common.IMCStackTrace;
-import org.openjdk.jmc.common.item.Aggregators;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.ItemFilters;
-import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -78,12 +74,10 @@ public class LivenessTrackingTest extends AbstractProfilerTest {
             assertTrue(Files.exists(firstDump), "First JFR dump should be created");
 
             // Parse first recording and verify liveness samples
-            IItemCollection firstRecording = JfrLoaderToolkit.loadEvents(Files.newInputStream(firstDump));
-            IItemCollection firstLiveObjects = firstRecording.apply(
-                    ItemFilters.type("datadog.HeapLiveObject"));
+            JfrEvents firstLiveObjects = JfrEvents.load(firstDump, "datadog.HeapLiveObject");
 
             assertTrue(firstLiveObjects.hasItems(), "First recording should contain live object samples");
-            long firstSampleCount = firstLiveObjects.getAggregate(Aggregators.count()).longValue();
+            long firstSampleCount = firstLiveObjects.count();
             assertTrue(firstSampleCount > 0, "First recording should have liveness samples");
 
             // Verify all live object samples have stack traces with at least one frame
@@ -116,12 +110,10 @@ public class LivenessTrackingTest extends AbstractProfilerTest {
                 assertTrue(Files.exists(secondDump), "Second JFR dump should be created");
 
                 // Parse second recording and verify reduced liveness samples
-                IItemCollection secondRecording = JfrLoaderToolkit.loadEvents(Files.newInputStream(secondDump));
-                IItemCollection secondLiveObjects = secondRecording.apply(
-                        ItemFilters.type("datadog.HeapLiveObject"));
+                JfrEvents secondLiveObjects = JfrEvents.load(secondDump, "datadog.HeapLiveObject");
 
                 assertTrue(secondLiveObjects.hasItems(), "Second recording should contain live object samples");
-                long secondSampleCount = secondLiveObjects.getAggregate(Aggregators.count()).longValue();
+                long secondSampleCount = secondLiveObjects.count();
 
                 // Verify all live object samples have stack traces with at least one frame
                 verifyStackTracesPresent(secondLiveObjects);
@@ -154,21 +146,19 @@ public class LivenessTrackingTest extends AbstractProfilerTest {
      * Verify that liveness samples have valid stack traces with at least one frame
      * Allow some tolerance for profiling timing issues
      */
-    private void verifyStackTracesPresent(IItemCollection liveObjects) {
+    private void verifyStackTracesPresent(JfrEvents liveObjects) {
         AtomicInteger samplesWithoutStackTrace = new AtomicInteger(0);
         AtomicInteger samplesWithEmptyStackTrace = new AtomicInteger(0);
         AtomicInteger totalSamples = new AtomicInteger(0);
 
-        for (IItemIterable iterable : liveObjects) {
-            for (IItem item : iterable) {
-                totalSamples.incrementAndGet();
+        for (JfrEvent item : liveObjects) {
+            totalSamples.incrementAndGet();
 
-                IMCStackTrace stackTrace = STACK_TRACE.getAccessor(iterable.getType()).getMember(item);
-                if (stackTrace == null) {
-                    samplesWithoutStackTrace.incrementAndGet();
-                } else if (stackTrace.getFrames().isEmpty()) {
-                    samplesWithEmptyStackTrace.incrementAndGet();
-                }
+            JfrStackTrace stackTrace = item.getStackTrace(STACK_TRACE);
+            if (stackTrace == null) {
+                samplesWithoutStackTrace.incrementAndGet();
+            } else if (stackTrace.isEmpty()) {
+                samplesWithEmptyStackTrace.incrementAndGet();
             }
         }
 

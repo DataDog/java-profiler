@@ -12,11 +12,8 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.TestTemplate;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.common.unit.IQuantity;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -63,25 +60,21 @@ public class NativememSampledProfilerTest extends CStackAwareAbstractProfilerTes
 
         stopProfiler();
 
-        IItemCollection events = verifyEvents("datadog.NativeMemoryAllocation");
+        JfrEvents events = verifyEvents("datadog.NativeMemoryAllocation");
         int sampleCount = 0;
-        for (IItemIterable items : events) {
-            IMemberAccessor<IQuantity, IItem> sizeAccessor = SIZE.getAccessor(items.getType());
-            IMemberAccessor<IQuantity, IItem> weightAccessor = WEIGHT.getAccessor(items.getType());
-            assertNotNull(sizeAccessor, "datadog.NativeMemoryAllocation events must carry a size field");
-            assertNotNull(weightAccessor, "datadog.NativeMemoryAllocation events must carry a weight field");
-            for (IItem item : items) {
-                IQuantity size = sizeAccessor.getMember(item);
-                IQuantity weight = weightAccessor.getMember(item);
-                assertNotNull(size, "datadog.NativeMemoryAllocation event must have a non-null size field");
-                assertNotNull(weight, "datadog.NativeMemoryAllocation event must have a non-null weight field");
-                // Weight is 1 / (1 - exp(-size/interval)); that function is strictly > 1
-                // for all positive sizes, so any Poisson-sampled event must carry weight >= 1.
-                assertTrue(weight.doubleValue() >= 1.0,
-                    "weight must be >= 1.0 on the sampled path, got " + weight.doubleValue()
-                    + " (size=" + size.longValue() + ")");
-                sampleCount++;
-            }
+        for (JfrEvent item : events) {
+            assertTrue(item.has(SIZE), "datadog.NativeMemoryAllocation events must carry a size field");
+            assertTrue(item.has(WEIGHT), "datadog.NativeMemoryAllocation events must carry a weight field");
+            Long size = item.getLong(SIZE);
+            Double weight = item.getDouble(WEIGHT);
+            assertNotNull(size, "datadog.NativeMemoryAllocation event must have a non-null size field");
+            assertNotNull(weight, "datadog.NativeMemoryAllocation event must have a non-null weight field");
+            // Weight is 1 / (1 - exp(-size/interval)); that function is strictly > 1
+            // for all positive sizes, so any Poisson-sampled event must carry weight >= 1.
+            assertTrue(weight >= 1.0,
+                "weight must be >= 1.0 on the sampled path, got " + weight
+                + " (size=" + size + ")");
+            sampleCount++;
         }
 
         // With ~20M bytes allocated and a 512-byte interval we expect plenty of samples.

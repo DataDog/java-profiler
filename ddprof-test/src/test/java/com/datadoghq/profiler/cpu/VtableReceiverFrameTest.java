@@ -4,11 +4,8 @@ import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 
 import java.util.concurrent.ThreadLocalRandom;
 
@@ -62,32 +59,24 @@ public class VtableReceiverFrameTest extends AbstractProfilerTest {
         System.err.println(result);
         stopProfiler();
 
-        IItemCollection events = verifyEvents("datadog.ExecutionSample");
+        JfrEvents events = verifyEvents("datadog.ExecutionSample");
         boolean foundVtableWithReceiver = false;
-        for (IItemIterable cpuSamples : events) {
-            IMemberAccessor<String, IItem> frameAccessor =
-                    JdkAttributes.STACK_TRACE_STRING.getAccessor(cpuSamples.getType());
-            if (frameAccessor == null) continue;
-            for (IItem sample : cpuSamples) {
-                String stackTrace = frameAccessor.getMember(sample);
-                if (stackTrace != null && stackTrace.contains(".vtable stub()")) {
-                    System.err.println("=VTABLE STUB TRACE=\n" + stackTrace + "\n=END=");
-                }
-                // JMC's STACK_TRACE_STRING HTML-escapes angle brackets in method
-                // names (it does the same for <init>/<clinit>), so the synthetic
-                // method appears as "&lt;vtable_receiver&gt;" in the rendered string.
-                // Match on the bare token so the test is robust to either form.
-                if (stackTrace != null
-                        && stackTrace.contains(".vtable stub()")
-                        && stackTrace.contains("vtable_receiver")
-                        && (stackTrace.contains("Circle")
-                                || stackTrace.contains("Square")
-                                || stackTrace.contains("Triangle"))) {
-                    foundVtableWithReceiver = true;
-                    break;
-                }
+        for (JfrEvent sample : events) {
+            String stackTrace = sample.getStackTraceString();
+            if (stackTrace != null && stackTrace.contains(".vtable stub()")) {
+                System.err.println("=VTABLE STUB TRACE=\n" + stackTrace + "\n=END=");
             }
-            if (foundVtableWithReceiver) break;
+            // Match on the bare token so the test is robust regardless of how the
+            // synthetic method name is escaped/rendered.
+            if (stackTrace != null
+                    && stackTrace.contains(".vtable stub()")
+                    && stackTrace.contains("vtable_receiver")
+                    && (stackTrace.contains("Circle")
+                            || stackTrace.contains("Square")
+                            || stackTrace.contains("Triangle"))) {
+                foundVtableWithReceiver = true;
+                break;
+            }
         }
         assertTrue(foundVtableWithReceiver,
                 "No CPU sample contained a vtable stub frame, a vtable_receiver synthetic frame, " +

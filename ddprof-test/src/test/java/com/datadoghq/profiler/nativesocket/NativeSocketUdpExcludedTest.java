@@ -1,10 +1,10 @@
 package com.datadoghq.profiler.nativesocket;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
-import org.openjdk.jmc.common.item.IItemCollection;
 
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
@@ -42,7 +42,7 @@ public class NativeSocketUdpExcludedTest extends AbstractProfilerTest {
 
         stopProfiler();
 
-        IItemCollection events = verifyEvents("datadog.NativeSocketEvent", false);
+        JfrEvents events = verifyEvents("datadog.NativeSocketEvent", false);
         assertNotNull(events);
         assertFalse(events.hasItems(),
                 "NativeSocketEvent must not be produced for UDP (sendto/recvfrom) transfers");

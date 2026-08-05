@@ -1,13 +1,9 @@
 package com.datadoghq.profiler.endpoints;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 import org.junit.jupiter.api.Test;
-import org.openjdk.jmc.common.item.IAttribute;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.common.unit.IQuantity;
 
 import java.util.Arrays;
 import java.util.BitSet;
@@ -18,8 +14,6 @@ import java.util.stream.IntStream;
 import static com.datadoghq.profiler.MoreAssertions.assertBoundedBy;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.openjdk.jmc.common.item.Attribute.attr;
-import static org.openjdk.jmc.common.unit.UnitLookup.PLAIN_TEXT;
 
 public class EndpointTest extends AbstractProfilerTest {
 
@@ -43,25 +37,18 @@ public class EndpointTest extends AbstractProfilerTest {
         Map<String, Long> debugCounters = profiler.getDebugCounters();
         assertEquals(endpoints.length, debugCounters.get("dictionary_endpoints_keys"));
         stopProfiler();
-        IItemCollection events = verifyEvents("datadog.Endpoint");
-        IAttribute<String> endpointAttribute = attr("endpoint", "endpoint", "endpoint",
-                PLAIN_TEXT);
+        JfrEvents events = verifyEvents("datadog.Endpoint");
         BitSet recovered = new BitSet();
-        for (IItemIterable it : events) {
-            IMemberAccessor<String, IItem> endpointAccessor = endpointAttribute.getAccessor(it.getType());
-            IMemberAccessor<IQuantity, IItem> rootSpanIdAccessor = LOCAL_ROOT_SPAN_ID.getAccessor(it.getType());
-            IMemberAccessor<String, IItem> operationAccessor = OPERATION.getAccessor(it.getType());
-            for (IItem event : it) {
-                long rootSpanId = rootSpanIdAccessor.getMember(event).longValue();
-                String operation = operationAccessor.getMember(event);
-                Endpoint endpoint = endpoints[(int) rootSpanId];
-                recovered.set((int) rootSpanId);
-                String message = endpoint.toString();
-                String recordedEndpoint = endpointAccessor.getMember(event);
-                assertEquals(endpoint.endpoint, recordedEndpoint, message);
-                assertEquals(endpoint.rootSpanId, rootSpanId, message);
-                assertEquals(endpoint.operation, operation, message);
-            }
+        for (JfrEvent event : events) {
+            long rootSpanId = event.getLong(LOCAL_ROOT_SPAN_ID, -1);
+            String operation = event.getString(OPERATION);
+            Endpoint endpoint = endpoints[(int) rootSpanId];
+            recovered.set((int) rootSpanId);
+            String message = endpoint.toString();
+            String recordedEndpoint = event.getString("endpoint");
+            assertEquals(endpoint.endpoint, recordedEndpoint, message);
+            assertEquals(endpoint.rootSpanId, rootSpanId, message);
+            assertEquals(endpoint.operation, operation, message);
         }
         for (int i = 0; i < endpoints.length; i++) {
             assertTrue(recovered.get(i), i + " not tested");

@@ -1,11 +1,11 @@
 package com.datadoghq.profiler.alloc;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
-import org.openjdk.jmc.common.item.Aggregators;
-import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jol.info.GraphLayout;
 
 import java.util.Random;
@@ -35,7 +35,7 @@ public class AllocationProfilerTest extends AbstractProfilerTest {
     AllocatingTarget target1 = new AllocatingTarget();
     AllocatingTarget target2 = new AllocatingTarget();
     runTests(target1, target2);
-    IItemCollection allocations = verifyEvents("datadog.ObjectSample");
+    JfrEvents allocations = verifyEvents("datadog.ObjectSample");
     // FIXME when more tests are ported to this structure
     if (!Platform.isMusl()) {
       // JOL on musl seems to be locking up randomly
@@ -44,14 +44,17 @@ public class AllocationProfilerTest extends AbstractProfilerTest {
     }
   }
 
-  private static void assertAllocations(IItemCollection allocations, Class<?> clazz, AllocatingTarget... targets) {
+  private static void assertAllocations(JfrEvents allocations, Class<?> clazz, AllocatingTarget... targets) {
     long allocated = 0;
     for (AllocatingTarget target : targets) {
       allocated += target.getAllocated(clazz);
     }
-    IItemCollection allocationsByType = allocations.apply(allocatedTypeFilter(clazz.getCanonicalName()));
+    JfrEvents allocationsByType = allocations.filter(allocatedTypeFilter(clazz.getCanonicalName()));
     assertTrue(allocationsByType.hasItems());
-    long recorded = allocationsByType.getAggregate(Aggregators.sum(SCALED_SIZE)).longValue();
+    long recorded = 0;
+    for (JfrEvent item : allocationsByType) {
+      recorded += (long) scaledSize(item);
+    }
     double error = Math.abs(recorded - allocated) / (double)allocated;
     assertTrue(error <= 0.50,
         String.format("allocation samples should be within 10pct tolerance of allocated memory (recorded %d, allocated %d :: %4.2f)",

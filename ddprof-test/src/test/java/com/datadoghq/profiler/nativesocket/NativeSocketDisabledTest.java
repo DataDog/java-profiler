@@ -1,9 +1,9 @@
 package com.datadoghq.profiler.nativesocket;
 
+import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
-import org.openjdk.jmc.common.item.IItemCollection;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 
@@ -31,7 +31,7 @@ public class NativeSocketDisabledTest extends NativeSocketTestBase {
 
         stopProfiler();
 
-        IItemCollection events = verifyEvents("datadog.NativeSocketEvent", false);
+        JfrEvents events = verifyEvents("datadog.NativeSocketEvent", false);
         assertFalse(events.hasItems(),
                 "NativeSocketEvent events must not appear when nativesocket argument is absent");
     }

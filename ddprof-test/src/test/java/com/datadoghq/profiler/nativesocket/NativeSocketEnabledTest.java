@@ -2,8 +2,8 @@ package com.datadoghq.profiler.nativesocket;
 
 import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
-import org.openjdk.jmc.common.item.IItemCollection;
 
+import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.Platform;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -22,7 +22,7 @@ public class NativeSocketEnabledTest extends NativeSocketTestBase {
 
         stopProfiler();
 
-        IItemCollection events = verifyEvents("datadog.NativeSocketEvent");
+        JfrEvents events = verifyEvents("datadog.NativeSocketEvent");
         assertTrue(events.hasItems(), "Expected NativeSocketEvent events to be present in JFR recording");
     }
 }

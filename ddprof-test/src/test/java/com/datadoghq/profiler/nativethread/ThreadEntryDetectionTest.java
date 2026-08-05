@@ -18,11 +18,8 @@ package com.datadoghq.profiler.nativethread;
 import com.datadoghq.profiler.AbstractProfilerTest;
 
 import org.junitpioneer.jupiter.RetryingTest;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -65,7 +62,7 @@ public class ThreadEntryDetectionTest extends AbstractProfilerTest {
         stopProfiler();
 
         // Verify events
-        IItemCollection events = verifyEvents("datadog.ExecutionSample");
+        JfrEvents events = verifyEvents("datadog.ExecutionSample");
         assertNoErrorFrames(events);
 
         // Verify we captured some samples
@@ -80,23 +77,18 @@ public class ThreadEntryDetectionTest extends AbstractProfilerTest {
      * for pure pthreads.  break_no_symbol is acceptable — it means the DWARF
      * unwind hit an unresolvable PC, expected when CFI is incomplete.
      */
-    private void assertNoErrorFrames(IItemCollection events) {
+    private void assertNoErrorFrames(JfrEvents events) {
         int samplesChecked = 0;
 
-        for (IItemIterable samples : events) {
-            IMemberAccessor<String, IItem> stackTraceAccessor =
-                JdkAttributes.STACK_TRACE_STRING.getAccessor(samples.getType());
+        for (JfrEvent sample : events) {
+            String stackTrace = sample.getStackTraceString();
+            samplesChecked++;
 
-            for (IItem sample : samples) {
-                String stackTrace = stackTraceAccessor.getMember(sample);
-                samplesChecked++;
-
-                if (stackTrace.contains("do_primes()")) {
-                    // Native thread sample: must not be misclassified as break_no_anchor
-                    assertFalse(stackTrace.contains("break_no_anchor"),
-                        String.format("Found break_no_anchor in native thread sample %d:\n%s",
-                            samplesChecked, stackTrace));
-                }
+            if (stackTrace != null && stackTrace.contains("do_primes()")) {
+                // Native thread sample: must not be misclassified as break_no_anchor
+                assertFalse(stackTrace.contains("break_no_anchor"),
+                    String.format("Found break_no_anchor in native thread sample %d:\n%s",
+                        samplesChecked, stackTrace));
             }
         }
 
@@ -106,13 +98,7 @@ public class ThreadEntryDetectionTest extends AbstractProfilerTest {
     /**
      * Counts total number of samples in the event collection.
      */
-    private int countTotalSamples(IItemCollection events) {
-        int count = 0;
-        for (IItemIterable samples : events) {
-            for (IItem sample : samples) {
-                count++;
-            }
-        }
-        return count;
+    private int countTotalSamples(JfrEvents events) {
+        return (int) events.count();
     }
 }

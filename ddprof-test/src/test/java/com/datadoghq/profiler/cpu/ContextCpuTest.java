@@ -16,12 +16,8 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.TestTemplate;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.common.unit.IQuantity;
-import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import static com.datadoghq.profiler.MoreAssertions.assertInRange;
@@ -55,7 +51,7 @@ public class ContextCpuTest extends CStackAwareAbstractProfilerTest {
         Set<Long> method1SpanIds = profiledCode.spanIdsForMethod("method1Impl");
         Set<Long> method2SpanIds = profiledCode.spanIdsForMethod("method2Impl");
         Set<Long> method3SpanIds = profiledCode.spanIdsForMethod("method3Impl");
-        IItemCollection events = verifyEvents("datadog.ExecutionSample");
+        JfrEvents events = verifyEvents("datadog.ExecutionSample");
 
         // on mac the usage of itimer to drive the sampling provides very unreliable outputs
         if (!Platform.isMac()) {
@@ -65,42 +61,36 @@ public class ContextCpuTest extends CStackAwareAbstractProfilerTest {
             long method2Weight = 0;
             long method3Weight = 0;
             long totalWeight = 0;
-            for (IItemIterable cpuSamples : events) {
-                IMemberAccessor<String, IItem> frameAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(cpuSamples.getType());
-                IMemberAccessor<IQuantity, IItem> spanIdAccessor = SPAN_ID.getAccessor(cpuSamples.getType());
-                IMemberAccessor<IQuantity, IItem> rootSpanIdAccessor = LOCAL_ROOT_SPAN_ID.getAccessor(cpuSamples.getType());
-                IMemberAccessor<String, IItem> stateAccessor = THREAD_STATE.getAccessor(cpuSamples.getType());
-                for (IItem sample : cpuSamples) {
-                    String stackTrace = frameAccessor.getMember(sample);
-                    long spanId = spanIdAccessor.getMember(sample).longValue();
-                    long rootSpanId = rootSpanIdAccessor.getMember(sample).longValue();
-                    String state = stateAccessor.getMember(sample);
-                    assertDoesNotThrow(() -> Thread.State.valueOf(state));
-                    assertEquals(Thread.State.RUNNABLE, Thread.State.valueOf(state));
-                    if (stackTrace.contains("method3Impl")) {
-                        // method3 is scheduled after method2, and method1 blocks on it, so spanId == rootSpanId + 2
-                        if (spanId > 0) {
-                            assertEquals(rootSpanId + 2, spanId, stackTrace);
-                            assertTrue(method3SpanIds.contains(spanId), stackTrace);
-                            method3Weight += 1;
-                        }
-                    } else if (stackTrace.contains("method2Impl")) {
-                        // method2 is called next, so spanId == rootSpanId + 1
-                        if (spanId > 0) {
-                            assertEquals(rootSpanId + 1, spanId, stackTrace);
-                            assertTrue(method2SpanIds.contains(spanId), stackTrace);
-                            method2Weight += 1;
-                        }
-                    } else if (stackTrace.contains("method1Impl")
-                            && !stackTrace.contains("method2") && !stackTrace.contains("method3")) {
-                        // need to check this after method2 because method1 calls method2
-                        // it's the root so spanId == rootSpanId
-                        assertEquals(rootSpanId, spanId, stackTrace);
-                        assertTrue(spanId == 0 || method1SpanIds.contains(spanId), stackTrace);
-                        method1Weight += 1;
+            for (JfrEvent sample : events) {
+                String stackTrace = sample.getStackTraceString();
+                long spanId = sample.getLong(SPAN_ID, 0);
+                long rootSpanId = sample.getLong(LOCAL_ROOT_SPAN_ID, 0);
+                String state = sample.getEnumName(THREAD_STATE);
+                assertDoesNotThrow(() -> Thread.State.valueOf(state));
+                assertEquals(Thread.State.RUNNABLE, Thread.State.valueOf(state));
+                if (stackTrace.contains("method3Impl")) {
+                    // method3 is scheduled after method2, and method1 blocks on it, so spanId == rootSpanId + 2
+                    if (spanId > 0) {
+                        assertEquals(rootSpanId + 2, spanId, stackTrace);
+                        assertTrue(method3SpanIds.contains(spanId), stackTrace);
+                        method3Weight += 1;
                     }
-                    totalWeight++;
+                } else if (stackTrace.contains("method2Impl")) {
+                    // method2 is called next, so spanId == rootSpanId + 1
+                    if (spanId > 0) {
+                        assertEquals(rootSpanId + 1, spanId, stackTrace);
+                        assertTrue(method2SpanIds.contains(spanId), stackTrace);
+                        method2Weight += 1;
+                    }
+                } else if (stackTrace.contains("method1Impl")
+                        && !stackTrace.contains("method2") && !stackTrace.contains("method3")) {
+                    // need to check this after method2 because method1 calls method2
+                    // it's the root so spanId == rootSpanId
+                    assertEquals(rootSpanId, spanId, stackTrace);
+                    assertTrue(spanId == 0 || method1SpanIds.contains(spanId), stackTrace);
+                    method1Weight += 1;
                 }
+                totalWeight++;
             }
             assertInRange(method1Weight / (double) totalWeight, 0.1, 0.6);
             assertInRange(method2Weight / (double) totalWeight, 0.1, 0.6);

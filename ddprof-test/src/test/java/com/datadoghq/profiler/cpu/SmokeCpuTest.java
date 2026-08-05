@@ -7,11 +7,8 @@ import com.datadoghq.profiler.junit.RetryTest;
 import org.junit.jupiter.api.TestTemplate;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.junitpioneer.jupiter.RetryingTest;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 
 import java.util.concurrent.ExecutionException;
 
@@ -37,21 +34,18 @@ public class SmokeCpuTest extends CStackAwareAbstractProfilerTest {
 
             verifyCStackSettings();
 
-            IItemCollection events = verifyEvents("datadog.ExecutionSample");
+            JfrEvents events = verifyEvents("datadog.ExecutionSample");
 
             // on mac the usage of itimer to drive the sampling provides very unreliable outputs
-            for (IItemIterable cpuSamples : events) {
-                IMemberAccessor<String, IItem> frameAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(cpuSamples.getType());
-                for (IItem sample : cpuSamples) {
-                    String stackTrace = frameAccessor.getMember(sample);
-                    assertFalse(stackTrace.contains("jvmtiError"));
-                    if ("vmx".equals(stackTrace)) {
-                        // extra checks to make sure we see the mixed stacktraces
-                        assertTrue(stackTrace.contains("JavaCalls::call_virtual()"),
-                                "JavaCalls::call_virtual() (above call_stub) found in stack trace");
-                        assertTrue(stackTrace.contains("call_stub()"),
-                                "call_stub() (sentinel value used to halt unwinding) found in stack trace");
-                    }
+            for (JfrEvent sample : events) {
+                String stackTrace = sample.getStackTraceString();
+                assertFalse(stackTrace.contains("jvmtiError"));
+                if ("vmx".equals(stackTrace)) {
+                    // extra checks to make sure we see the mixed stacktraces
+                    assertTrue(stackTrace.contains("JavaCalls::call_virtual()"),
+                            "JavaCalls::call_virtual() (above call_stub) found in stack trace");
+                    assertTrue(stackTrace.contains("call_stub()"),
+                            "call_stub() (sentinel value used to halt unwinding) found in stack trace");
                 }
             }
         }
@@ -67,21 +61,18 @@ public class SmokeCpuTest extends CStackAwareAbstractProfilerTest {
 
         verifyCStackSettings();
 
-        IItemCollection events = verifyEvents("datadog.ExecutionSample");
+        JfrEvents events = verifyEvents("datadog.ExecutionSample");
 
         // on mac the usage of itimer to drive the sampling provides very unreliable outputs
-        for (IItemIterable cpuSamples : events) {
-            IMemberAccessor<String, IItem> frameAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(cpuSamples.getType());
-            for (IItem sample : cpuSamples) {
-                String stackTrace = frameAccessor.getMember(sample);
-                assertFalse(stackTrace.contains("jvmtiError"));
-                if ("vmx".equals(stackTrace)) {
-                    // extra checks to make sure we see the mixed stacktraces
-                    assertTrue(stackTrace.contains("JavaCalls::call_virtual()"),
-                            "JavaCalls::call_virtual() (above call_stub) found in stack trace");
-                    assertTrue(stackTrace.contains("call_stub()"),
-                            "call_stub() (sentinel value used to halt unwinding) found in stack trace");
-                }
+        for (JfrEvent sample : events) {
+            String stackTrace = sample.getStackTraceString();
+            assertFalse(stackTrace.contains("jvmtiError"));
+            if ("vmx".equals(stackTrace)) {
+                // extra checks to make sure we see the mixed stacktraces
+                assertTrue(stackTrace.contains("JavaCalls::call_virtual()"),
+                        "JavaCalls::call_virtual() (above call_stub) found in stack trace");
+                assertTrue(stackTrace.contains("call_stub()"),
+                        "call_stub() (sentinel value used to halt unwinding) found in stack trace");
             }
         }
     }

@@ -7,11 +7,8 @@ import com.datadoghq.profiler.junit.CStack;
 import com.datadoghq.profiler.junit.RetryTest;
 import org.junit.jupiter.api.TestTemplate;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 
 import java.util.concurrent.ExecutionException;
 
@@ -41,14 +38,11 @@ public class SmokeWallTest extends CStackAwareAbstractProfilerTest {
 
         verifyCStackSettings();
 
-        IItemCollection events = verifyEvents("datadog.MethodSample");
+        JfrEvents events = verifyEvents("datadog.MethodSample");
 
-        for (IItemIterable cpuSamples : events) {
-            IMemberAccessor<String, IItem> frameAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(cpuSamples.getType());
-            for (IItem sample : cpuSamples) {
-                String stackTrace = frameAccessor.getMember(sample);
-                assertFalse(stackTrace.contains("jvmtiError"));
-            }
+        for (JfrEvent sample : events) {
+            String stackTrace = sample.getStackTraceString();
+            assertFalse(stackTrace.contains("jvmtiError"));
         }
     }
 
