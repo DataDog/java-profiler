@@ -46,6 +46,13 @@ public:
     static void initialize();
     static ProfiledThread* acquire(int tid);
     static bool release(ProfiledThread* t);
+    static inline bool containsThread(ProfiledThread* t) {
+        if (_pool != nullptr) {
+            return _pool->contains(t);
+        } else {
+            return false;
+        }
+    }
 
 #ifdef UNIT_TEST
     // Test-only: a pool isolated from the process-wide singleton (_pool), so

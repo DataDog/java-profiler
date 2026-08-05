@@ -18,6 +18,7 @@
 #include "common.h"
 #include "os.h"
 #include "threadLocalData.inline.h"
+#include "threadLocalDataPool.h"
 
 // Signal-context tracking — backed by ProfiledThread::_signal_depth; see
 // the comment block in guards.h for the rationale (initial-exec TLS was
@@ -30,10 +31,14 @@ int getInSignalDepth() {
 
 bool isInTrackedSignalContext() {
     ProfiledThread *pt = ProfiledThread::current();
-    // null ProfiledThread = no thread context; the SignalHandlerScope
-    // never ran, so we have no positive evidence of a signal frame.
+    // null ProfiledThread or primed ProfiledThread = no thread context;
+    // the SignalHandlerScope never ran, so we have no positive evidence
+    // of a signal frame.
     // See header comment for the rationale of returning false here.
-    return pt != nullptr && pt->signalDepth() != 0;
+    if (pt == nullptr || ThreadLocalDataPool::containsThread(pt)) {
+        return false;
+    }
+    return pt->signalDepth() != 0;
 }
 
 SignalHandlerScope::SignalHandlerScope() : _active(true) {

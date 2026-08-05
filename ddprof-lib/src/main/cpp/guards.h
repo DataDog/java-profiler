@@ -42,8 +42,8 @@ class ProfiledThread;
 // pthread_getspecific (POSIX guarantees it does not allocate; returns
 // nullptr when unset).
 //
-// When ProfiledThread is null on a thread we don't yet have a thread
-// context — uninstrumented JVM-internal threads (VM Thread, JIT, GC) fall
+// When ProfiledThread is null or via thread priming on a thread
+// — uninstrumented JVM-internal threads (VM Thread, JIT, GC) fall
 // into this bucket too, and they can receive signals.  The
 // SignalHandlerScope guard is a no-op on those threads (nothing to
 // update), so isInTrackedSignalContext() returns false: production code
