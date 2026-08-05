@@ -5,12 +5,8 @@ This is a real-workload cross-check of the synthetic findings in
 an actual Spring Boot application via
 [dd-trace-doe](https://github.com/DataDog/dd-trace-doe) instead of the
 synthetic `memsweep` harness. It measures dd-trace-java's (tracer) and
-this profiler's (via dd-trace-java's `DatadogProfilerController`) native
-memory footprint separately, using peak RSS and JVM Native Memory Tracking
-(NMT), and resolves a specific question raised along the way: why does the
-JVM's own native JFR engine still show activity when this profiler is
-configured to write its own separate, independent JFR stream instead of
-using it.
+this profiler's native memory footprint separately, using peak RSS and
+JVM Native Memory Tracking (NMT).
 
 ## Summary
 
@@ -45,36 +41,16 @@ unconfirmed* parallel — the two experiments differ enough in methodology
 steady-state RSS) that the magnitude match could point to a shared
 accounting blind spot, or could be coincidental. Not chased further here.
 
-**"JFR disabled" changes which independent JFR stream carries this
-profiler's data — it does not disable the JVM's native JFR engine.**
-There is no single "main" JFR recording that one implementation owns:
-the JVM has its own native JFR engine (producing the JVM's own events,
-plus whatever dd-trace-java's auxiliary `jdk.jfr.Event` classes emit),
-and this profiler has its own, completely separate and independently
-implemented JFR-format writer. Normally, dd-trace-java's
-`CompositeController` builds both an `OpenJdkController` and this
-profiler's `DatadogProfilerController` side by side, and this profiler
-can be told to enable specific JVM JFR events (e.g. `CPUTimeSample`)
-that then go out through the JVM's own stream — the two never merge or
-interleave; `CompositeController` just concatenates whatever independent
-byte streams each controller produces. Setting
-`-Ddd.profiling.debug.jfr.disabled=true` skips building
-`OpenJdkController` entirely, so this profiler instead runs standalone
-and writes only its own independent stream — which is why
-`NativeMem`/`ProfilerCounter` events (specific to this profiler's own
-format) only show up in that configuration. But the NMT `Tracing`
-(`mtTracing`) category still grew by ~16 MB under this config, and `jcmd
-Thread.print` confirmed a live `JFR Recorder Thread` and `JFR Periodic
-Tasks` thread — the JVM's native JFR engine was genuinely running
-regardless. Root cause: dd-trace-java defines several real
-`jdk.jfr.Event` subclasses for signals unrelated to continuous profiling
-(exception sampling, endpoint tracking, queue time, deadlock detection,
-direct allocation sampling), and these always go through the JVM's own
-engine, independent of this profiler's mode. This profiler's own JFR
-writer (`flightRecorder.cpp`/`jfrMetadata.cpp`) was confirmed to be fully
-self-contained and structurally incapable of driving the JVM's engine —
-it never calls into HotSpot's internal `Jfr::`/`JfrChunkWriter`
-machinery.
+**Part of the NMT `Tracing` growth is dd-trace-java's own cost, not this
+profiler's.** The NMT `Tracing` (`mtTracing`) category — HotSpot's native
+JFR-engine bucket — grows even in configurations built to isolate this
+profiler's contribution (see below), because dd-trace-java defines its
+own `jdk.jfr.Event` subclasses for signals unrelated to continuous
+profiling (exception sampling, endpoint tracking, queue time, deadlock
+detection, direct allocation sampling). Using any of these starts the
+JVM's native JFR engine as a side effect, independent of this profiler.
+When attributing overhead between tracer and profiler, this growth
+belongs to the tracer.
 
 ## Environment
 
@@ -87,13 +63,13 @@ machinery.
 | dd-trace-java | 1.65.0, `libjavaProfiler.so` built from this checkout |
 | Metric | dd-trace-doe's `memory` field (peak RSS), corroborated with `jcmd VM.native_memory summary` |
 
-Getting this profiler's own independent stream to carry its
-`NativeMem`/`ProfilerCounter` events requires
-`-Ddd.profiling.debug.jfr.disabled=true` — confirmed via bytecode
-disassembly of dd-trace-java's `CompositeController.build()` that this
-flag skips constructing `OpenJdkController`/`OracleJdkController`, so
-this profiler's `DatadogProfilerController` runs standalone instead of
-alongside it. Do not run a second `-agentpath`-loaded instance of
+Getting this profiler's own `NativeMem`/`ProfilerCounter` counters to
+appear at all requires `-Ddd.profiling.debug.jfr.disabled=true` (a
+dd-trace-java config flag; confirmed via bytecode disassembly of
+`CompositeController.build()`). Without it, dd-trace-java's default
+composite mode doesn't produce those counters, which would otherwise
+make this profiler's own memory cost invisible to this kind of
+measurement. Do not run a second `-agentpath`-loaded instance of
 `libjavaProfiler.so` alongside dd-trace-java's already-loaded one as an
 alternative — two independent native-agent instances of the same shared
 library in one JVM crashed it (SIGSEGV, corrupt partial JFR file) in
@@ -107,7 +83,7 @@ dd-trace-doe's own `memory` field, itself a peak measurement:
 |---|---|---|
 | baseline (no tracer, no profiler) | 1514.3 | — |
 | tracing=true, profiling=false | 1650.4 | +136.1 |
-| tracing=true, profiling=true (this profiler standalone, its own stream) | 1754.7 | +240.4 (profiling adds +104.3 on top of tracing) |
+| tracing=true, profiling=true | 1754.7 | +240.4 (profiling adds +104.3 on top of tracing) |
 
 Tracing-only mode loads none of dd-trace-java's bundled native libraries
 — no `libddwaf.so` (AppSec/WAF), no `libjnidispatch.so` (JNA), no
@@ -134,7 +110,9 @@ Tracing alone accounts for most of the NMT-visible growth — more loaded
 classes, more JIT-compiled code, more interned symbols from bytecode
 instrumentation — which dominates over profiling's own cost at the NMT
 level. Profiling's own NMT-visible increment is only +17.9 MB on top of
-that.
+that; most of the `Tracing` category's growth in the `tracing+profiling`
+row is dd-trace-java's own auxiliary-event cost (see Summary above), not
+this profiler's.
 
 ## Reconciling RSS against NMT + profiler counters
 
@@ -149,55 +127,6 @@ a peak, not a steady-state sample):
   **~39 MB unexplained**.
 - **Profiling-increment**: ~92 MB explained of the +104.3 MB RSS-peak
   delta → **~12 MB unexplained**.
-
-## Resolved: does disabling JFR actually disable the JVM's JFR engine?
-
-No. This was checked properly rather than assumed, after the NMT diff
-showed the `Tracing` category still growing substantially under
-`profiling.debug.jfr.disabled=true`:
-
-- `jcmd JFR.check` reported "No available recordings" — but this only
-  queries the *public* `FlightRecorder`/`jdk.jfr.Recording` registry, not
-  whether the underlying native engine is active.
-- `jcmd Thread.print` showed live **`JFR Recorder Thread`** and **`JFR
-  Periodic Tasks`** threads (absent when profiling was off entirely) —
-  proof the real native JFR engine was running.
-- This profiler's own source (`flightRecorder.cpp`, `jfrMetadata.cpp`,
-  and every file using `dlsym` in `ddprof-lib`) was checked end-to-end:
-  no calls into HotSpot's internal `Jfr::`/`JfrChunkWriter` classes
-  anywhere, and no lookups of JFR-related native symbols. This profiler's
-  JFR writer is fully self-contained C++ and structurally incapable of
-  causing this.
-- dd-trace-java's `DatadogProfiler`/`DatadogProfilerController`/
-  `CompositeController` classes were checked directly against source
-  (`github.com/DataDog/dd-trace-java`) and never touch
-  `jdk.jfr.Recording`/`FlightRecorder` either.
-- Root cause: dd-trace-java defines several genuine `jdk.jfr.Event`
-  subclasses for signals that have nothing to do with this profiler at
-  all — `ExceptionSampleEvent` / `ExceptionCountEvent` (exception
-  profiling), `EndpointEvent`, `QueueTimeEvent`, `DeadlockEvent` /
-  `DeadlockedThreadEvent`, `BackpressureSampleEvent`,
-  `DirectAllocationSampleEvent` / `DirectAllocationTotalEvent`. These
-  always go through the JVM's own native JFR engine, regardless of
-  whether this profiler is running standalone or alongside
-  `OpenJdkController`. Loading or using any of these bootstraps the JVM's
-  native JFR engine (recorder thread + periodic-task thread) as a side
-  effect, with no corresponding user-visible `Recording` — exactly
-  matching what was observed.
-
-**Conclusion**: there is no single "main" JFR engine that either side
-owns. The JVM has its own native JFR engine — used for the JVM's own
-events, for whichever of this profiler's events are enabled to run
-through it when composited with `OpenJdkController`, and for
-dd-trace-java's own auxiliary events unconditionally — and this profiler
-has a second, entirely separate and independently implemented JFR-format
-writer that it uses when running standalone. Neither implementation
-"owns" or interacts with the other; they're just two unrelated sources
-of JFR-formatted output that happen to coexist in the same process.
-`profiling.debug.jfr.disabled=true` only chooses whether this profiler's
-own samples go out via the JVM's engine or via its own separate one; it
-was never going to silence the JVM's JFR subsystem, since dd-trace-java's
-always-on auxiliary events use that engine independently of this flag.
 
 ## What we don't know
 
