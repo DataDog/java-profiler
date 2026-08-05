@@ -41,10 +41,9 @@ static void* (*_orig_aligned_alloc)(size_t, size_t);
 // because the window is short.
 static inline void maybeRecord(void* ret, size_t size) {
     if (MallocTracer::running() && ret && size) {
-        // We are not in a signal handler - take this chance to ensure ProfiledThread
-        // is attached to the thread cheaply.
-        ProfiledThread::initCurrentThreadSignalSafe();
-
+        // Even we are not in a signal handler, we cannot malloc or
+        // we may get into indefinite loop
+        ProfiledThread::acquireCurrent();
         CriticalSection cs;
         if (cs.entered()) {
             MallocTracer::recordMalloc(ret, size);

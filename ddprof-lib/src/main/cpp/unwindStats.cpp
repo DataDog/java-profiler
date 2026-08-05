@@ -1,3 +1,9 @@
+/*
+ * Copyright The async-profiler authors
+ * Copyright 2026 Datadog, Inc
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #include "unwindStats.h"
 
 // initialize static members
