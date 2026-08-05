@@ -18,4 +18,5 @@ UnwindFailures::~UnwindFailures() {
 void UnwindFailures::reset() {
     memset((void*)_names, 0, MAX_UNWIND_FAILURE_NAMES * MAX_NAME_LENGTH);
     memset((void*)_counters, 0, MAX_UNWIND_FAILURE_NAMES * (UNWIND_FAILURE_ANY + 1) * sizeof(u64));
+    _nameCount = 0;
 }

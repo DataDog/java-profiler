@@ -21,9 +21,9 @@ inline ProfiledThread* ProfiledThread::current() {
 ProfiledThread* ProfiledThread::acquireCurrent() {
     ProfiledThread* prof_thread = current();
     if (prof_thread == nullptr) {
+        SignalBlocker blocker;
         prof_thread = ThreadLocalDataPool::acquire(OS::threadId());
         if (prof_thread != nullptr) {
-            SignalBlocker blocker;
             _current_thread.set(prof_thread);
         }
     }
