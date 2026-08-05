@@ -8,6 +8,39 @@ synthetic `memsweep` harness. It measures dd-trace-java's (tracer) and
 this profiler's native memory footprint separately, using peak RSS and
 JVM Native Memory Tracking (NMT).
 
+## What dd-trace-doe is, and how this differs from the synthetic sweep
+
+[dd-trace-doe](https://github.com/DataDog/dd-trace-doe) runs a real
+packaged application (here, the `enterprise` archetype — a Spring Boot
+app with a realistic dependency/endpoint footprint) inside Docker under
+sustained synthetic traffic for a fixed duration, with dd-trace-java
+attached the way a customer actually would (as a `-javaagent`, doing
+bytecode instrumentation, with this profiler embedded inside it rather
+than run standalone). Its `memory` metric is the container process's
+**peak RSS** over the whole run. This makes it good for checking whether
+a claimed overhead number holds up end-to-end in something resembling
+production, but it can't cleanly isolate *why* — a real app's class
+count, call-graph shape, thread count, and GC behavior are all fixed by
+the workload and confounded together.
+
+The [memory-sweep-results-linux.md](memory-sweep-results-linux.md)
+synthetic sweep is the opposite trade-off: small, purpose-built Java
+programs with this profiler attached directly via `-agentpath` (no
+tracer at all), each sweep varying exactly one dimension (thread count,
+call-trace diversity, class diversity, allocation diversity) while
+holding everything else fixed, read continuously via this profiler's own
+live `NM_*` counters. That isolates mechanism cleanly but says nothing
+about whether the isolated effects actually add up to the overhead a
+real deployment sees.
+
+This report uses dd-trace-doe for exactly what it's good for — confirming
+the previously-reported ~250 MB figure is real and reproducible, and
+getting a coarse tracer-vs-profiler split from a handful of on/off runs —
+then leans on the synthetic sweep's already-established mechanisms
+(NMT undercounting the profiler's own buffers, etc.) to explain the
+pieces, rather than re-deriving mechanism from the real-workload numbers
+directly.
+
 ## Summary
 
 This reproduces the originally-reported **~250 MB memory overhead** for
