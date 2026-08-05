@@ -305,11 +305,13 @@ log_info ""
 # Check if JFR validation should be skipped (JDK 25 unavailable)
 if [ -f /tmp/skip-jfr-validation ]; then
   SKIP_REASON=$(cat /tmp/skip-jfr-validation 2>/dev/null || echo "prerequisite unavailable")
-  log_warn "Skipping JFR validation: ${SKIP_REASON}"
+  log_error "Cannot run JFR validation: ${SKIP_REASON}"
+  # A skipped validation is not a pass — no conformance check actually ran, so
+  # this must not be reported as success further up the chain.
   if [ -n "${OUTPUT_FILE}" ]; then
-    echo "VALIDATION_SKIPPED: ${SKIP_REASON}" > "${OUTPUT_FILE}"
+    echo "VALIDATION_FAILED: Skipped - ${SKIP_REASON}" > "${OUTPUT_FILE}"
   fi
-  exit 0
+  exit 1
 fi
 
 # jfr-shell (jafar) requires Java 25 (class file version 69.0)
