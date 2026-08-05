@@ -103,7 +103,7 @@ collect_system_metrics() {
   local cpu_count=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo "1")
   local cpu_quota=$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us 2>/dev/null || echo "-1")
   local cpu_period=$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us 2>/dev/null || echo "-1")
-  local load_avg=$(uptime | awk -F'load average:' '{print $2}' | xargs)
+  local load_avg=$(command -v uptime >/dev/null 2>&1 && uptime | awk -F'load average:' '{print $2}' | xargs || echo "unavailable")
   local container=$(test -f /.dockerenv && echo "true" || echo "false")
 
   # Parse throttling stats

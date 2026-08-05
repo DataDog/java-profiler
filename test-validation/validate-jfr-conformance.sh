@@ -286,7 +286,50 @@ log_info "  jdk.ExecutionSample: ${UNEXPECTED_JDK_EXEC}"
 log_info "  jdk.ObjectAllocationSample: ${UNEXPECTED_JDK_ALLOC}"
 log_info "  datadog.ExecutionSample: ${UNEXPECTED_DD_EXEC}"
 log_info "  datadog.ObjectSample: ${UNEXPECTED_DD_ALLOC}"
-log_info "  datadog.EndpointEvent: ${UNEXPECTED_ENDPOINT}"
+log_info "  datadog.Endpoint: ${UNEXPECTED_ENDPOINT}"
+log_info ""
+
+# ========================================
+# Detect which event types are actually registered in the recording
+# ========================================
+# jfr-shell's query engine hard-fails with "Event type not found" instead of
+# returning a zero count when a type isn't in the recording's metadata at all
+# (e.g. JDK built-in CPU/allocation events are entirely absent from
+# ddprof-only recordings, or an event predates the JDK that produced the
+# file). Precompute presence with the JDK's own `jfr summary`, which lists
+# every registered event type unconditionally, so the .jfrs script can skip
+# queries for types that were never registered instead of crashing.
+EVENT_SUMMARY=""
+if ! EVENT_SUMMARY=$(jbang jdk exec -j 25 jfr summary "${JFR_FILE}" 2>/dev/null); then
+  log_warn "Could not run 'jfr summary' on ${JFR_FILE}; assuming all event types are present"
+  EVENT_SUMMARY=""
+fi
+
+has_event_type() {
+  local type="$1"
+  if [ -z "${EVENT_SUMMARY}" ]; then
+    echo "true"
+  elif echo "${EVENT_SUMMARY}" | grep -qE "^[[:space:]]*${type//./\\.}[[:space:]]"; then
+    echo "true"
+  else
+    echo "false"
+  fi
+}
+
+HAS_JDK_EXEC=$(has_event_type "jdk.ExecutionSample")
+HAS_DD_EXEC=$(has_event_type "datadog.ExecutionSample")
+HAS_JDK_ALLOC=$(has_event_type "jdk.ObjectAllocationSample")
+HAS_DD_ALLOC=$(has_event_type "datadog.ObjectSample")
+HAS_JDK_THREAD_ALLOC=$(has_event_type "jdk.ThreadAllocationStatistics")
+HAS_DD_ENDPOINT=$(has_event_type "datadog.Endpoint")
+
+log_info "Event types registered in recording:"
+log_info "  jdk.ExecutionSample: ${HAS_JDK_EXEC}"
+log_info "  datadog.ExecutionSample: ${HAS_DD_EXEC}"
+log_info "  jdk.ObjectAllocationSample: ${HAS_JDK_ALLOC}"
+log_info "  datadog.ObjectSample: ${HAS_DD_ALLOC}"
+log_info "  jdk.ThreadAllocationStatistics: ${HAS_JDK_THREAD_ALLOC}"
+log_info "  datadog.Endpoint: ${HAS_DD_ENDPOINT}"
 log_info ""
 
 # Prepare validation command
@@ -328,7 +371,7 @@ if [ -n "${MAVEN_REPOSITORY_PROXY:-}" ]; then
 fi
 
 # Pass calculated thresholds directly (single source of truth - no duplicate logic in jfrs)
-VALIDATION_CMD="jbang --java 25 ${JBANG_REPOS_OPT} jfr-shell@btraceio script \"${VALIDATION_SCRIPT}\" \"${JFR_FILE}\" \"${PROFILE}\" \"${MIN_EXECUTION_SAMPLES}\" \"${MIN_ALLOCATION_SAMPLES}\" \"${MIN_THREAD_COUNT}\" \"${EXPECTED_CPU_EVENT}\" \"${EXPECTED_ALLOC_EVENT}\" \"${CHECK_ENDPOINT}\" \"${UNEXPECTED_JDK_EXEC}\" \"${UNEXPECTED_JDK_ALLOC}\" \"${UNEXPECTED_DD_EXEC}\" \"${UNEXPECTED_DD_ALLOC}\" \"${UNEXPECTED_ENDPOINT}\""
+VALIDATION_CMD="jbang --java 25 ${JBANG_REPOS_OPT} jfr-shell@btraceio script \"${VALIDATION_SCRIPT}\" \"${JFR_FILE}\" \"${PROFILE}\" \"${MIN_EXECUTION_SAMPLES}\" \"${MIN_ALLOCATION_SAMPLES}\" \"${MIN_THREAD_COUNT}\" \"${EXPECTED_CPU_EVENT}\" \"${EXPECTED_ALLOC_EVENT}\" \"${CHECK_ENDPOINT}\" \"${UNEXPECTED_JDK_EXEC}\" \"${UNEXPECTED_JDK_ALLOC}\" \"${UNEXPECTED_DD_EXEC}\" \"${UNEXPECTED_DD_ALLOC}\" \"${UNEXPECTED_ENDPOINT}\" \"${HAS_JDK_EXEC}\" \"${HAS_DD_EXEC}\" \"${HAS_JDK_ALLOC}\" \"${HAS_DD_ALLOC}\" \"${HAS_JDK_THREAD_ALLOC}\" \"${HAS_DD_ENDPOINT}\""
 
 if [ -n "${OUTPUT_FILE}" ]; then
   # Set up trap to write failure marker if script is killed/crashes
