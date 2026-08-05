@@ -24,6 +24,13 @@ ProfiledThread* ProfiledThread::acquireCurrent() {
         SignalBlocker blocker;
         prof_thread = ThreadLocalDataPool::acquire(OS::threadId());
         if (prof_thread != nullptr) {
+            // Claim the critical section before publishing the pointer. A signal
+            // that interrupts us on this thread right after publish (cross-type
+            // nesting isn't blocked — see os_linux.cpp's empty sa_mask) would
+            // otherwise see a non-null ProfiledThread whose _in_critical_section
+            // is still false and race into the primary path. CriticalSection's
+            // fallback-path destructor releases this once the outer handler exits.
+            prof_thread->tryEnterCriticalSection();
             _current_thread.set(prof_thread);
         }
     }

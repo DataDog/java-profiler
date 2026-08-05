@@ -102,6 +102,17 @@ CriticalSection::~CriticalSection() {
             // Clear the bit atomically for fallback bitmap
             // Use RELEASE ordering to ensure protected data writes are visible before releasing
             __atomic_fetch_and(&_fallback_bitmap[_word_index], ~_bit_mask, __ATOMIC_RELEASE);
+
+            // ProfiledThread::current() was null when we entered via the fallback
+            // path, but TLS may have been published during this critical section's
+            // lifetime (ProfiledThread::acquireCurrent(), invoked from stack walking
+            // inside recordSample). acquireCurrent() marks the newly-published
+            // ProfiledThread's critical section held before exposing it; release
+            // that here too, otherwise it would stay stuck at true forever.
+            ProfiledThread* published = ProfiledThread::current();
+            if (published != nullptr) {
+                published->exitCriticalSection();
+            }
         } else {
             // Release ProfiledThread flag using the pointer captured at construction
             if (_thread_ptr != nullptr) {
