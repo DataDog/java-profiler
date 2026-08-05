@@ -320,8 +320,15 @@ unset JAVA_VERSION  # Prevent jbang from picking up test JDK version
 
 log_info "Using Java 25 for jbang (required by jfr-shell)"
 
+# jbang resolves jafar-shell from Maven Central, which CI runners can't reach directly.
+# Route it through the same internal Maven proxy Gradle uses (MAVEN_REPOSITORY_PROXY).
+JBANG_REPOS_OPT=""
+if [ -n "${MAVEN_REPOSITORY_PROXY:-}" ]; then
+  JBANG_REPOS_OPT="--repos=\"central=${MAVEN_REPOSITORY_PROXY}\""
+fi
+
 # Pass calculated thresholds directly (single source of truth - no duplicate logic in jfrs)
-VALIDATION_CMD="jbang --java 25 jfr-shell@btraceio script \"${VALIDATION_SCRIPT}\" \"${JFR_FILE}\" \"${PROFILE}\" \"${MIN_EXECUTION_SAMPLES}\" \"${MIN_ALLOCATION_SAMPLES}\" \"${MIN_THREAD_COUNT}\" \"${EXPECTED_CPU_EVENT}\" \"${EXPECTED_ALLOC_EVENT}\" \"${CHECK_ENDPOINT}\" \"${UNEXPECTED_JDK_EXEC}\" \"${UNEXPECTED_JDK_ALLOC}\" \"${UNEXPECTED_DD_EXEC}\" \"${UNEXPECTED_DD_ALLOC}\" \"${UNEXPECTED_ENDPOINT}\""
+VALIDATION_CMD="jbang --java 25 ${JBANG_REPOS_OPT} jfr-shell@btraceio script \"${VALIDATION_SCRIPT}\" \"${JFR_FILE}\" \"${PROFILE}\" \"${MIN_EXECUTION_SAMPLES}\" \"${MIN_ALLOCATION_SAMPLES}\" \"${MIN_THREAD_COUNT}\" \"${EXPECTED_CPU_EVENT}\" \"${EXPECTED_ALLOC_EVENT}\" \"${CHECK_ENDPOINT}\" \"${UNEXPECTED_JDK_EXEC}\" \"${UNEXPECTED_JDK_ALLOC}\" \"${UNEXPECTED_DD_EXEC}\" \"${UNEXPECTED_DD_ALLOC}\" \"${UNEXPECTED_ENDPOINT}\""
 
 if [ -n "${OUTPUT_FILE}" ]; then
   # Set up trap to write failure marker if script is killed/crashes

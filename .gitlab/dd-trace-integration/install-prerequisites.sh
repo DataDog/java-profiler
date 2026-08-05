@@ -143,12 +143,18 @@ fi
 # ========================================
 # Pre-warm jfr-shell backend
 # ========================================
-# jafar-shell resolves its backend plugin (io.btrace:jfr-shell-jafar) from Maven at
-# runtime. If that artifact is unavailable (network restriction, version not yet
-# published), every validation run fails. Detect this early so we can skip gracefully.
+# jafar-shell itself (io.btrace:jafar-shell) is resolved by jbang from Maven Central,
+# which CI runners can't reach directly. Route jbang through the same internal Maven
+# proxy Gradle already uses (MAVEN_REPOSITORY_PROXY) so resolution doesn't depend on
+# public internet egress. Detect remaining resolution failures early so we can skip
+# gracefully instead of failing every validation run.
 if [ ! -f /tmp/skip-jfr-validation ] && command -v jbang &> /dev/null; then
     log_info "Pre-warming jfr-shell backend..."
-    PREWARM_OUT=$(jbang --java 25 jfr-shell@btraceio script /dev/null 2>&1 || true)
+    if [ -n "${MAVEN_REPOSITORY_PROXY:-}" ]; then
+        PREWARM_OUT=$(jbang --java 25 --repos="central=${MAVEN_REPOSITORY_PROXY}" jfr-shell@btraceio script /dev/null 2>&1 || true)
+    else
+        PREWARM_OUT=$(jbang --java 25 jfr-shell@btraceio script /dev/null 2>&1 || true)
+    fi
     if echo "$PREWARM_OUT" | grep -q "No backends found\|No JFR backends available\|Failed to resolve artifact.*jfr-shell-jafar"; then
         log_warn "jfr-shell backend unavailable (io.btrace:jfr-shell-jafar not resolvable from Maven)"
         log_warn "JFR validation will be skipped"
