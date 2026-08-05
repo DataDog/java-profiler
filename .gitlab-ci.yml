@@ -133,6 +133,15 @@ create_key:
     paths:
       - pubkeys
 
+# Unit tests for shared helpers in .gitlab/scripts/includes.sh (e.g. the
+# snapshot-staleness check deploy.sh relies on to poll Sonatype).
+shell-unit-tests:
+  stage: prepare
+  needs: []
+  image: ${PREPARE_IMAGE}
+  script:
+    - bash .gitlab/scripts/tests/includes_test.sh
+
 # Shared version detection used by benchmarks and reliability pipelines
 get-versions:
   extends: .get-versions
