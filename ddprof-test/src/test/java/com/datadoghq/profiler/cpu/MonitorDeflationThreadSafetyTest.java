@@ -6,6 +6,8 @@
 package com.datadoghq.profiler.cpu;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.Platform;
+import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
 
 /**
@@ -38,6 +40,15 @@ public class MonitorDeflationThreadSafetyTest extends AbstractProfilerTest {
 
     @RetryingTest(3)
     public void monitorDeflationDoesNotCrashProfiler() throws Exception {
+        // Disabled on J9/OpenJ9: this test's monitor-inflate/deflate churn
+        // combined with signal-based sampling reliably self-deadlocks the
+        // JVM inside AsyncGetCallTrace, which can re-enter the
+        // non-reentrant jitArtifactMonitor lock on the same thread that
+        // already holds it via the J9VM_JIT_FULL_SPEED_DEBUG fallback path
+        // (jitGetExceptionTable -> jitGetExceptionTableFromPCSync). Upstream
+        // bug: https://github.com/eclipse-openj9/openj9/issues/24472
+        Assumptions.assumeFalse(Platform.isJ9(), "known OpenJ9 hang, see eclipse-openj9/openj9#24472");
+
         // The profiler is already started by AbstractProfilerTest.setupProfiler().
         // Run monitor churn on the test thread so the CPU profiler definitely
         // delivers signals during the deflation window.
