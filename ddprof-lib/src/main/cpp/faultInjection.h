@@ -34,6 +34,15 @@
 //
 //   return INJECT_FAULT_BOOL_LIKELY(dlopen(name, flags) != nullptr);
 //
+// INJECT_CRASH_* has the same shape and call sites as INJECT_FAULT_ADDRESS_*
+// but instead of substituting a poison address for the caller to dereference
+// -- which some downstream recovery path (SafeAccess safefetch, walkVM's
+// sigsetjmp/siglongjmp) may absorb -- it raises the SIGSEGV itself, right at
+// the call site, so it always reaches the top-level crash handler:
+//
+//   INJECT_CRASH_LIKELY();
+//
+
 // The three tiers name their firing frequency: RARE 0.01%, UNLIKELY 0.1%,
 // LIKELY 1%.  See faultInjection.cpp for the poison-address and PRNG details.
 
@@ -73,6 +82,12 @@ bool shouldFire(u64 threshold, const char* fn);
 // SIGSEGV). If init() failed, it falls back to a best-effort garbage address.
 uintptr_t poisonAddress();
 
+// Deliberately dereferences poisonAddress() to raise a real SIGSEGV right now,
+// unconditionally (no probability gate, no shouldFire() draw). For exercising
+// crash-handler / recovery paths on demand (e.g. from a test), never from a
+// production code path.
+[[noreturn]] void crashNow();
+
 // Returns ptr unchanged, or a poison address (cast to T) when the tier fires.
 // Templated so the wrapped expression's static type (void**, const char*,
 // uintptr_t, ...) is preserved exactly.
@@ -84,6 +99,18 @@ inline T injectAddress(T ptr, u64 threshold, const char* fn) {
     return (T)poisonAddress();
   }
   return ptr;
+}
+
+// Like injectAddress(), but instead of substituting a poison pointer into the
+// expression (leaving recovery to whatever the caller does with it downstream
+// -- SafeAccess safefetch, walkVM's sigsetjmp/siglongjmp), this crashes right
+// here, right now, when the tier fires. For exercising the top-level crash
+// handler itself rather than a specific recovery path. Returns ptr unchanged
+// otherwise, so it's a drop-in replacement at any INJECT_FAULT_ADDRESS_* site.
+inline void injectCrash(u64 threshold, const char* fn) {
+  if (__builtin_expect(shouldFire(threshold, fn), 0)) {
+    crashNow();
+  }
 }
 
 // Returns orig unchanged, or `faulty` when the tier fires. Unlike
@@ -114,11 +141,24 @@ inline T injectValue(T orig, T faulty, u64 threshold, const char* fn) {
 #define INJECT_FAULT_BOOL_LIKELY(v) \
     ::faultinj::injectValue((v), false, ::faultinj::PROB_LIKELY, __func__)
 
+#define INJECT_CRASH_RARE() \
+    ::faultinj::injectCrash(::faultinj::PROB_RARE, __func__)
+#define INJECT_CRASH_UNLIKELY() \
+    ::faultinj::injectCrash(::faultinj::PROB_UNLIKELY, __func__)
+#define INJECT_CRASH_LIKELY() \
+    ::faultinj::injectCrash(::faultinj::PROB_LIKELY, __func__)
+#define INJECT_CRASH_ALWAYS() crashNow()
+
 #else  // __FAULT_INJECTION__ not defined — strict identity, zero cost.
 
 #define INJECT_FAULT_ADDRESS_RARE(ptr)     (ptr)
 #define INJECT_FAULT_ADDRESS_UNLIKELY(ptr) (ptr)
 #define INJECT_FAULT_ADDRESS_LIKELY(ptr)   (ptr)
+
+#define INJECT_CRASH_RARE()
+#define INJECT_CRASH_UNLIKELY()
+#define INJECT_CRASH_LIKELY()
+#define INJECT_CRASH_ALWAYS()
 
 #define INJECT_FAULT_INT_RARE(v)     (v)
 #define INJECT_FAULT_INT_UNLIKELY(v) (v)

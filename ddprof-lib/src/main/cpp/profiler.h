@@ -16,6 +16,7 @@
 #include "stringDictionary.h"
 #include "engine.h"
 #include "event.h"
+#include "faultInjection.h"
 #include "flightRecorder.h"
 #include "guards.h"
 #include "libraries.h"

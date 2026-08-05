@@ -14,6 +14,7 @@
 #include "counters.h"
 #include "nativeMem.h"
 #include "dictionary.h"
+#include "faultInjection.h"
 #include "flightRecorder.inline.h"
 #include "incbin.h"
 #include "jfrMetadata.h"
@@ -28,6 +29,7 @@
 #include "unwindStats.h"
 #include "symbols.h"
 #include "threadFilter.h"
+#include "threadLocalData.h"
 #include "threadState.h"
 #include "tsc.h"
 #include "hotspot/vmStructs.h"
@@ -568,10 +570,26 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     method_id = nullptr;
   }
 
+  // Setup siglongjmp protection
+  ProfiledThread* prof_thread = ProfiledThread::initCurrentThread();
+  assert(prof_thread != nullptr);
+
+  sigjmp_buf crash_protection_ctx;
+  sigjmp_buf* prev_buf = prof_thread->getJmpCtx();
+  if (sigsetjmp(crash_protection_ctx, 1) != 0) {
+    prof_thread->setJmpCtx(prev_buf);
+    key = MethodMap::makeKey(UNKNOWN);
+    return &(*_method_map)[key];
+  }
+  prof_thread->setJmpCtx(&crash_protection_ctx);
+
   // Resolve native method
   if (FrameType::isRawPointer(bci)) {
     method_id = JVMSupport::resolve(frame.method);
   }
+
+  // Inject fault for testing siglongjmp protection
+  INJECT_CRASH_LIKELY();
 
   // BCI_VTABLE_RECEIVER: method holds a VMSymbol* (see vmEntry.h). Resolve
   // to a class_id via the per-dump cache once, then key MethodMap by the
