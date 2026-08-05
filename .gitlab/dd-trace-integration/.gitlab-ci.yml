@@ -287,7 +287,12 @@ post-pr-comment:
   stage: integration-test
   tags: [ "arch:arm64" ]
   image: registry.ddbuild.io/images/dd-octo-sts-ci-base:2025.06-1
+  id_tokens:
+    DDOCTOSTS_ID_TOKEN:
+      aud: dd-octo-sts
   needs:
+    - job: prepare:start
+      artifacts: true
     - job: prepare-patched-agent
       artifacts: true
     - job: integration-test-x64-glibc
