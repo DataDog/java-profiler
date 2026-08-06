@@ -1573,7 +1573,8 @@ Error Profiler::start(Arguments &args, bool reset) {
   // Prepare JVMSupport for execution
   JVMSupport::initExecution(args, VM::jvmti(), VM::jni());
 
-
+  // Must precede the first updateSymbols(): it is what allows LibraryPatcher to
+  // start patching, and the hooks it installs assume a running profiler.
   LibraryPatcher::initialize();
 
   // Kernel symbols are useful only for perf_events without --all-user
