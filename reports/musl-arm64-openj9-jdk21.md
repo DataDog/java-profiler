@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk21
 
 ## musl-arm64-openj9-jdk21 - ✅ PASS
 
-**Date:** 2026-08-06 06:20:07 EDT
+**Date:** 2026-08-06 07:13:57 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-arm64-openj9-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 110 |
-| Sample Rate | 1.83/sec |
-| Health Score | 114% |
+| CPU Samples | 78 |
+| Sample Rate | 1.30/sec |
+| Health Score | 81% |
 | Threads | 11 |
-| Allocations | 64 |
+| Allocations | 79 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 41 |
-| Sample Rate | 0.68/sec |
-| Health Score | 42% |
-| Threads | 12 |
-| Allocations | 37 |
+| CPU Samples | 16 |
+| Sample Rate | 0.27/sec |
+| Health Score | 17% |
+| Threads | 7 |
+| Allocations | 14 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 46-51 cores)</summary>
+<summary>CPU Timeline (1 unique values: 51-51 cores)</summary>
 
 ```
-1786011321 51
-1786011326 51
-1786011331 51
-1786011336 51
-1786011342 46
-1786011347 46
-1786011352 46
-1786011357 46
-1786011362 46
-1786011367 46
-1786011372 46
-1786011377 46
-1786011382 46
-1786011387 46
-1786011392 46
-1786011397 46
-1786011402 46
-1786011407 46
-1786011412 46
-1786011417 46
+1786014516 51
+1786014521 51
+1786014526 51
+1786014531 51
+1786014536 51
+1786014541 51
+1786014546 51
+1786014551 51
+1786014556 51
+1786014561 51
+1786014566 51
+1786014571 51
+1786014576 51
+1786014581 51
+1786014586 51
+1786014591 51
+1786014596 51
+1786014601 51
+1786014606 51
+1786014611 51
 ```
 </details>
 
