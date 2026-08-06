@@ -181,8 +181,10 @@ fi
 BODY_FILE=$(mktemp)
 trap 'rm -f "${BODY_FILE}"' EXIT
 echo "${COMMENT_BODY}" > "${BODY_FILE}"
-"${HERE}/../scripts/upsert-github-pr-comment.sh" \
-  "dd-trace-integration-results" "${DDPROF_COMMIT_BRANCH:-}" "${BODY_FILE}"
+if ! "${HERE}/../scripts/upsert-github-pr-comment.sh" \
+    "dd-trace-integration-results" "${DDPROF_COMMIT_BRANCH:-}" "${BODY_FILE}"; then
+  log_error "Failed to post PR comment (transport failure) — continuing; only the test outcome below determines pipeline status"
+fi
 
 # Exit with failure if tests failed (makes pipeline fail)
 if [ "${OVERALL_STATUS}" = "failure" ]; then
