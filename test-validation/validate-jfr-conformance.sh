@@ -286,7 +286,68 @@ log_info "  jdk.ExecutionSample: ${UNEXPECTED_JDK_EXEC}"
 log_info "  jdk.ObjectAllocationSample: ${UNEXPECTED_JDK_ALLOC}"
 log_info "  datadog.ExecutionSample: ${UNEXPECTED_DD_EXEC}"
 log_info "  datadog.ObjectSample: ${UNEXPECTED_DD_ALLOC}"
-log_info "  datadog.EndpointEvent: ${UNEXPECTED_ENDPOINT}"
+log_info "  datadog.Endpoint: ${UNEXPECTED_ENDPOINT}"
+log_info ""
+
+# ========================================
+# Detect which event types are actually registered in the recording
+# ========================================
+# jfr-shell's query engine hard-fails with "Event type not found" instead of
+# returning a zero count when a type isn't in the recording's metadata at all
+# (e.g. JDK built-in CPU/allocation events are entirely absent from
+# ddprof-only recordings, or an event predates the JDK that produced the
+# file). Precompute presence with jfr-shell's own `metadata` command (the
+# jafar backend), which lists every registered event type unconditionally, so
+# the .jfrs script can skip queries for types that were never registered
+# instead of crashing. This must use the same jafar backend as the actual
+# validation query below - the stock JDK `jfr summary`/`jfr print` tools
+# misparse ddprof's multi-chunk recordings and silently report datadog.*
+# event types as absent even when they are present with real events.
+
+# jfr-shell (jafar) requires Java 25 (class file version 69.0)
+# Always use --java 25 to let jbang download the correct JDK
+unset JAVA_VERSION  # Prevent jbang from picking up test JDK version
+
+log_info "Using Java 25 for jbang (required by jfr-shell)"
+
+# jbang resolves jafar-shell from Maven Central, which CI runners can't reach directly.
+# Route it through the same internal Maven proxy Gradle uses (MAVEN_REPOSITORY_PROXY).
+JBANG_REPOS_OPT=""
+if [ -n "${MAVEN_REPOSITORY_PROXY:-}" ]; then
+  JBANG_REPOS_OPT="--repos=\"central=${MAVEN_REPOSITORY_PROXY}\""
+fi
+
+EVENT_METADATA=""
+if ! EVENT_METADATA=$(eval "jbang --java 25 ${JBANG_REPOS_OPT} jfr-shell@btraceio metadata \"${JFR_FILE}\"" 2>/dev/null); then
+  log_warn "Could not run 'jfr-shell metadata' on ${JFR_FILE}; assuming all event types are present"
+  EVENT_METADATA=""
+fi
+
+has_event_type() {
+  local type="$1"
+  if [ -z "${EVENT_METADATA}" ]; then
+    echo "true"
+  elif echo "${EVENT_METADATA}" | grep -qE -- "- ${type//./\\.}\$"; then
+    echo "true"
+  else
+    echo "false"
+  fi
+}
+
+HAS_JDK_EXEC=$(has_event_type "jdk.ExecutionSample")
+HAS_DD_EXEC=$(has_event_type "datadog.ExecutionSample")
+HAS_JDK_ALLOC=$(has_event_type "jdk.ObjectAllocationSample")
+HAS_DD_ALLOC=$(has_event_type "datadog.ObjectSample")
+HAS_JDK_THREAD_ALLOC=$(has_event_type "jdk.ThreadAllocationStatistics")
+HAS_DD_ENDPOINT=$(has_event_type "datadog.Endpoint")
+
+log_info "Event types registered in recording:"
+log_info "  jdk.ExecutionSample: ${HAS_JDK_EXEC}"
+log_info "  datadog.ExecutionSample: ${HAS_DD_EXEC}"
+log_info "  jdk.ObjectAllocationSample: ${HAS_JDK_ALLOC}"
+log_info "  datadog.ObjectSample: ${HAS_DD_ALLOC}"
+log_info "  jdk.ThreadAllocationStatistics: ${HAS_JDK_THREAD_ALLOC}"
+log_info "  datadog.Endpoint: ${HAS_DD_ENDPOINT}"
 log_info ""
 
 # Prepare validation command
@@ -305,21 +366,17 @@ log_info ""
 # Check if JFR validation should be skipped (JDK 25 unavailable)
 if [ -f /tmp/skip-jfr-validation ]; then
   SKIP_REASON=$(cat /tmp/skip-jfr-validation 2>/dev/null || echo "prerequisite unavailable")
-  log_warn "Skipping JFR validation: ${SKIP_REASON}"
+  log_error "Cannot run JFR validation: ${SKIP_REASON}"
+  # A skipped validation is not a pass — no conformance check actually ran, so
+  # this must not be reported as success further up the chain.
   if [ -n "${OUTPUT_FILE}" ]; then
-    echo "VALIDATION_SKIPPED: ${SKIP_REASON}" > "${OUTPUT_FILE}"
+    echo "VALIDATION_FAILED: Skipped - ${SKIP_REASON}" > "${OUTPUT_FILE}"
   fi
-  exit 0
+  exit 1
 fi
 
-# jfr-shell (jafar) requires Java 25 (class file version 69.0)
-# Always use --java 25 to let jbang download the correct JDK
-unset JAVA_VERSION  # Prevent jbang from picking up test JDK version
-
-log_info "Using Java 25 for jbang (required by jfr-shell)"
-
 # Pass calculated thresholds directly (single source of truth - no duplicate logic in jfrs)
-VALIDATION_CMD="jbang --java 25 jfr-shell@btraceio script \"${VALIDATION_SCRIPT}\" \"${JFR_FILE}\" \"${PROFILE}\" \"${MIN_EXECUTION_SAMPLES}\" \"${MIN_ALLOCATION_SAMPLES}\" \"${MIN_THREAD_COUNT}\" \"${EXPECTED_CPU_EVENT}\" \"${EXPECTED_ALLOC_EVENT}\" \"${CHECK_ENDPOINT}\" \"${UNEXPECTED_JDK_EXEC}\" \"${UNEXPECTED_JDK_ALLOC}\" \"${UNEXPECTED_DD_EXEC}\" \"${UNEXPECTED_DD_ALLOC}\" \"${UNEXPECTED_ENDPOINT}\""
+VALIDATION_CMD="jbang --java 25 ${JBANG_REPOS_OPT} jfr-shell@btraceio script \"${VALIDATION_SCRIPT}\" \"${JFR_FILE}\" \"${PROFILE}\" \"${MIN_EXECUTION_SAMPLES}\" \"${MIN_ALLOCATION_SAMPLES}\" \"${MIN_THREAD_COUNT}\" \"${EXPECTED_CPU_EVENT}\" \"${EXPECTED_ALLOC_EVENT}\" \"${CHECK_ENDPOINT}\" \"${UNEXPECTED_JDK_EXEC}\" \"${UNEXPECTED_JDK_ALLOC}\" \"${UNEXPECTED_DD_EXEC}\" \"${UNEXPECTED_DD_ALLOC}\" \"${UNEXPECTED_ENDPOINT}\" \"${HAS_JDK_EXEC}\" \"${HAS_DD_EXEC}\" \"${HAS_JDK_ALLOC}\" \"${HAS_DD_ALLOC}\" \"${HAS_JDK_THREAD_ALLOC}\" \"${HAS_DD_ENDPOINT}\""
 
 if [ -n "${OUTPUT_FILE}" ]; then
   # Set up trap to write failure marker if script is killed/crashes
