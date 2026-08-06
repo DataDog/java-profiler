@@ -43,3 +43,15 @@ doc/temp/
 
 # CLAUDE.md is auto-generated from AGENTS.md bootstrap instructions
 CLAUDE.md
+
+# OS/editor cruft
+.DS_Store
+
+# AI review/agent tooling scratch state
+.sphinx/
+.skill-builder-temp/
+.claude/scheduled_tasks.lock
+
+# Python bytecode cache
+__pycache__/
+*.pyc
