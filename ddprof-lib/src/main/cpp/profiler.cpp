@@ -31,6 +31,7 @@
 #include "objectSampler.h"
 #include "os.h"
 #include "perfEvents.h"
+#include "referenceChains.h"
 #include "safeAccess.h"
 #include "stackFrame.h"
 #include "stackWalker.h"
@@ -840,6 +841,89 @@ void Profiler::writeHeapUsage(long value, bool live) {
     return;
   }
   _jfr.recordHeapUsage(lock_index, value, live);
+  _locks[lock_index].unlock();
+}
+
+void Profiler::writeReferenceChainAbandoned(ReferenceChainAbandonedEvent *event) {
+  int tid = ProfiledThread::currentTid();
+  if (tid < 0) {
+    return;
+  }
+  u32 lock_index = getLockIndex(tid);
+  if (!_locks[lock_index].tryLock() &&
+      !_locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() &&
+      !_locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+    return;
+  }
+  _jfr.recordReferenceChainAbandoned(lock_index, event);
+  _locks[lock_index].unlock();
+}
+
+// Unlike writeReferenceChainAbandoned() above (mirroring CPU/wall's signal-handler-safe
+// non-blocking pattern out of caution, even though its own call site - Profiler::dump(),
+// profiler.cpp - isn't a signal handler either), this call site genuinely cannot be one:
+// this is called from Profiler::dump()'s drain loop, on dump()'s own calling thread, once
+// per event snapshotted from ReferenceChainTracker::_resolved_chains (up to
+// MAX_RESOLVED_CHAINS per dump) - never from pollWatchedTargets() or any other call on
+// ReferenceChainTracker's own BFS agent thread, and never from a signal handler. A single
+// bare 3-slot tryLock() sweep with no wait - correct for a signal handler, which must never
+// block - was found, by running PROF-15341's end-to-end integration test
+// (ddprof-test's ReferenceChainTrackingTest.shouldReconstructReferrerChainToGcRoot) for real,
+// to drop this event under perfectly ordinary contention: the same _locks[] pool is shared
+// with every other sample type (recordJVMTISample() et al.), and any nontrivial allocation
+// throughput keeps enough of CONCURRENCY_LEVEL's slots busy that 3 immediate, back-to-back
+// attempts routinely all miss. A bounded retry with a short sleep between sweeps costs
+// nothing the dump()-thread cannot afford, but the retry budget below is a single deadline
+// shared across the *entire* drain batch (see the caller in dump()) rather than per event:
+// with up to MAX_RESOLVED_CHAINS events snapshotted, a fresh per-event budget could stall
+// the dump/JFR-flush thread for seconds under contention. Once the shared deadline has
+// passed this degrades to the same single non-blocking 3-slot sweep as
+// writeReferenceChainAbandoned() above for the remainder of the batch.
+void Profiler::writeReferenceChain(ReferenceChainEvent *event, u64 deadline_ns) {
+  int tid = ProfiledThread::currentTid();
+  if (tid < 0) {
+    TEST_LOG("Profiler::writeReferenceChain drop: currentTid() < 0");
+    return;
+  }
+  u32 lock_index;
+  bool locked = false;
+  int sweeps = 0;
+  u64 start_ns = OS::nanotime();
+  for (;;) {
+    sweeps++;
+    lock_index = getLockIndex(tid);
+    if (_locks[lock_index].tryLock() ||
+        _locks[lock_index = (lock_index + 1) % CONCURRENCY_LEVEL].tryLock() ||
+        _locks[lock_index = (lock_index + 2) % CONCURRENCY_LEVEL].tryLock()) {
+      locked = true;
+      break;
+    }
+    if (OS::nanotime() >= deadline_ns) {
+      // Shared batch budget exhausted - the sweep just above was already a
+      // single non-blocking attempt, so stop retrying rather than sleeping
+      // again.
+      break;
+    }
+    usleep(1000);
+  }
+  if (!locked) {
+    // Unlike the drain-once era, this drop is NOT permanent: the event was
+    // only copied out of ReferenceChainTracker::_resolved_chains
+    // (drainPendingChainEvents() snapshots without clearing), so as long as
+    // the sample stays live the next dump re-emits it and gets another chance
+    // at the lock. Still counted like every other counted-drop path
+    // (REFERENCE_CHAIN_WRITE_DROPPED's own comment) rather than dropping it
+    // silently.
+    Counters::increment(REFERENCE_CHAIN_WRITE_DROPPED);
+    TEST_LOG("Profiler::writeReferenceChain drop: lock contention exhausted shared "
+             "deadline after sweeps=%d waited_us=%llu",
+             sweeps, (unsigned long long)((OS::nanotime() - start_ns) / 1000));
+    return;
+  }
+  TEST_LOG("Profiler::writeReferenceChain locked lock_index=%u after sweeps=%d "
+           "waited_us=%llu",
+           lock_index, sweeps, (unsigned long long)((OS::nanotime() - start_ns) / 1000));
+  _jfr.recordReferenceChain(lock_index, event);
   _locks[lock_index].unlock();
 }
 
@@ -1659,6 +1743,27 @@ Error Profiler::start(Arguments &args, bool reset) {
     // Paired with drainInflight() on the stop side.
     _cpu_engine->enableEvents(true);
 
+    // Independent of the CPU/wall/alloc engine mask above (GC-triggered, not
+    // sample-triggered) - gated only on its own args._reference_chains flag,
+    // same pattern as malloc_tracer/NativeSocketSampler being gated on their
+    // own flags rather than folded into `activated`. Placed after the
+    // engines are confirmed running (inside this `if (activated)` block) so
+    // there is nothing to unwind here if it fails - see this method's
+    // failure path below, which never reaches this point.
+    if (args._reference_chains) {
+      error = ReferenceChainTracker::instance()->start(args);
+      if (error) {
+        Log::warn("%s", error.message());
+        error = Error::OK; // recoverable
+      } else {
+        // Only safe once the JVM/JVMTI environment is fully up, which is
+        // guaranteed at this point in Profiler::start() - see
+        // ReferenceChainTracker::start()'s own comment (referenceChains.cpp)
+        // for why this is not called from inside start() itself.
+        ReferenceChainTracker::instance()->startThread();
+      }
+    }
+
     _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
@@ -1703,6 +1808,13 @@ Error Profiler::stop() {
     _alloc_engine->stop();
   if (_event_mask & EM_NATIVEMEM)
     malloc_tracer.stop();
+  // Not part of _event_mask (see the matching start() block above) - gated
+  // on enabled() instead, which start() set from args._reference_chains for
+  // this session.
+  if (ReferenceChainTracker::instance()->enabled()) {
+    ReferenceChainTracker::instance()->stopThread();
+    ReferenceChainTracker::instance()->stop();
+  }
   // Stop the refresher BEFORE socket unpatch: the refresher calls
   // install_socket_hooks() which re-reads _socket_active before acquiring the
   // patch lock.  If the refresher runs concurrently with unpatch_socket_functions()
@@ -1848,6 +1960,55 @@ Error Profiler::dump(const char *path, const int length) {
     // by the live objects
     LivenessTracker::instance()->flush(thread_ids);
 
+    // ReferenceChainTracker::_resolved_chains (and the search-state fields
+    // read below) are intentionally left populated across a stop()/start()
+    // cycle - see _resolved_chains' own comment (referenceChains.h) - but
+    // that means they can still hold state from a *previous* recording that
+    // had referencechains enabled, even once the current recording started
+    // with referencechains=false (in which case ReferenceChainTracker::
+    // start() sets _enabled=false and no BFS thread is polling to ever
+    // refresh or prune them). Gate both emissions on the current session's
+    // flag so an opted-out recording does not keep re-reporting a dead
+    // session's abandoned search or stale resolved chains.
+    if (ReferenceChainTracker::instance()->enabled()) {
+      // If ReferenceChainTracker's search has ended in ABANDONED (Termination
+      // section, referenceChains.h), report it via a datadog.ReferenceChainAbandoned
+      // event. Mirrors the flush() call directly above; unlike that table this
+      // read does not clear any state, so a dump taken again after this point
+      // re-reports the same abandoned search rather than losing it.
+      if (ReferenceChainTracker::instance()->searchState() ==
+          SearchState::ABANDONED) {
+        ReferenceChainAbandonedEvent rc_event;
+        if (ReferenceChainTracker::instance()->buildAbandonedEvent(&rc_event)) {
+          rc_event._start_time = TSC::ticks();
+          writeReferenceChainAbandoned(&rc_event);
+        }
+      }
+
+      // Re-emit every currently-cached datadog.ReferenceChain pollWatchedTargets()
+      // (referenceChains.cpp) has resolved - snapshotted here, on this call's
+      // own thread, rather than written eagerly from the BFS scheduling thread
+      // that discovered them (see ReferenceChainTracker::_resolved_chains' own
+      // comment for why the cache re-emits on every dump rather than draining).
+      std::vector<ReferenceChainEvent> pending_chain_events;
+      ReferenceChainTracker::instance()->drainPendingChainEvents(
+          &pending_chain_events);
+      // One ~50ms retry budget for the *whole* batch, not per event -
+      // writeReferenceChain()'s own comment for why: up to
+      // MAX_RESOLVED_CHAINS events can be snapshotted, and a fresh per-event
+      // budget would let this dump()-thread stall for seconds under ordinary
+      // _locks[] contention.
+      const u64 kChainDrainBudgetNs = 50 * 1000000ULL;
+      u64 chain_drain_deadline_ns = OS::nanotime() + kChainDrainBudgetNs;
+      long long write_dropped_before = Counters::getCounter(REFERENCE_CHAIN_WRITE_DROPPED);
+      for (auto &rc_event : pending_chain_events) {
+        writeReferenceChain(&rc_event, chain_drain_deadline_ns);
+      }
+      TEST_LOG("Profiler::dump reference-chain batch=%d write_dropped=%lld",
+               (int)pending_chain_events.size(),
+               Counters::getCounter(REFERENCE_CHAIN_WRITE_DROPPED) - write_dropped_before);
+    }
+
     Libraries::instance()->refresh();
     updateJavaThreadNames();
     updateNativeThreadNames();
@@ -1865,6 +2026,9 @@ Error Profiler::dump(const char *path, const int length) {
       err = _jfr.dump(path, length);
       __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
     });
+    if (err) {
+      TEST_LOG("Profiler::dump _jfr.dump failed: %s", err.message());
+    }
 
     _thread_info.clearAll(thread_ids);
     _thread_info.reportCounters();
