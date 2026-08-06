@@ -56,6 +56,7 @@ public final class JfrFrame {
         if (!(type instanceof Map)) {
             return null;
         }
-        return symbolString(((Map<String, Object>) type).get("name"));
+        String name = symbolString(((Map<String, Object>) type).get("name"));
+        return name != null ? name.replace('/', '.') : null;
     }
 }

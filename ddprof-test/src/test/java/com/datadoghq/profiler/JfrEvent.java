@@ -192,11 +192,14 @@ public final class JfrEvent {
             return null;
         }
         Object name = ((Map<String, Object>) c).get("name");
+        String s;
         if (name instanceof Map) {
-            Object s = ((Map<String, Object>) name).get("string");
-            return s != null ? s.toString() : null;
+            Object v = ((Map<String, Object>) name).get("string");
+            s = v != null ? v.toString() : null;
+        } else {
+            s = name != null ? name.toString() : null;
         }
-        return name != null ? name.toString() : null;
+        return s != null ? s.replace('/', '.') : null;
     }
 
     @Override
