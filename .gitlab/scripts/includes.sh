@@ -53,6 +53,12 @@ function setup_java_home() {
   echo "Using Java @ ${JAVA_HOME}"
 }
 
+function is_new_snapshot_version() {
+  local candidate="$1"
+  local baseline="$2"
+  [ -n "${candidate}" ] && [ "${candidate}" != "${baseline}" ]
+}
+
 function collect_artifacts() {
   local target=$1
   local artifact_type=$2  # "test" or "stresstest"
