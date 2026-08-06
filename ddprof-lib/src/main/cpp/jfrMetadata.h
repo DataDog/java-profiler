@@ -122,6 +122,8 @@ public:
 
   Element(const char *name) : _name(getId(name)), _attributes(), _children() {}
 
+  virtual ~Element() = default;
+
   Element &attribute(const char *key, const char *value) {
     _attributes.push_back(Attribute(getId(key), getId(value)));
     return *this;
