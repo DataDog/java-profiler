@@ -5,6 +5,8 @@
 
 package com.datadoghq.profiler.referencechains;
 
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 import org.openjdk.jmc.common.IMCType;
 import org.openjdk.jmc.common.item.IAccessorKey;
 import org.openjdk.jmc.common.item.IItem;
@@ -16,6 +18,7 @@ import org.openjdk.jmc.common.unit.IQuantity;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Shared {@code datadog.ReferenceChain} JFR-parsing helpers, extracted out of
@@ -23,6 +26,13 @@ import java.util.List;
  * {@link LeakingCacheScenario} (run inside a genuinely separate child JVM by
  * {@code ExternalProcessReferenceChainTest}) can reuse the exact same JMC-accessor logic
  * rather than maintaining two copies.
+ *
+ * <p>{@link #findMatchForClass(JfrEvents, Class)} is a separate, jafar-backed counterpart to
+ * {@link #findMatchForClass(IItemCollection, Class)} for {@code ReferenceChainTrackingTest}, which
+ * loads recordings via {@code AbstractProfilerTest}'s {@code JfrEvents}-returning helpers
+ * (jb/jfr-lightweight-query-api). {@link LeakingCacheScenario} and {@code ReferenceChainJfrParserTest}
+ * load recordings directly via JMC's {@code JfrLoaderToolkit} and keep using the
+ * {@code IItemCollection} overload unchanged.
  */
 public final class ReferenceChainAssertions {
   private ReferenceChainAssertions() {}
@@ -34,6 +44,19 @@ public final class ReferenceChainAssertions {
     public final int depth;
 
     ChainMatch(List<IMCType> chain, long targetTag, int depth) {
+      this.chain = chain;
+      this.targetTag = targetTag;
+      this.depth = depth;
+    }
+  }
+
+  /** Result of {@link #findMatchForClass(JfrEvents, Class)}: one resolved chain event's fields. */
+  public static final class JfrChainMatch {
+    public final List<String> chain;
+    public final long targetTag;
+    public final int depth;
+
+    JfrChainMatch(List<String> chain, long targetTag, int depth) {
       this.chain = chain;
       this.targetTag = targetTag;
       this.depth = depth;
@@ -80,6 +103,57 @@ public final class ReferenceChainAssertions {
       }
     }
     return null;
+  }
+
+  /**
+   * jafar/{@code JfrEvents}-backed counterpart to {@link #findMatchForClass(IItemCollection, Class)} -
+   * see this class's own header comment for why these are two separate overloads rather than one.
+   */
+  public static JfrChainMatch findMatchForClass(JfrEvents events, Class<?> targetClass) {
+    if (events == null || !events.hasItems()) {
+      return null;
+    }
+    for (JfrEvent item : events) {
+      Object chainValue = item.get("chain");
+      if (!(chainValue instanceof Object[])) {
+        throw new IllegalStateException(
+            "'chain' field resolved to " + chainValue + ", expected an array");
+      }
+      Object[] rawChain = (Object[]) chainValue;
+      if (rawChain.length == 0 || !targetClass.getName().equals(classFullName(rawChain[0]))) {
+        continue;
+      }
+      List<String> chain = new ArrayList<>(rawChain.length);
+      for (Object element : rawChain) {
+        chain.add(classFullName(element));
+      }
+      long targetTag = item.getLong("targetTag", -1);
+      int depth = (int) item.getLong("depth", -1);
+      return new JfrChainMatch(chain, targetTag, depth);
+    }
+    return null;
+  }
+
+  /**
+   * The full name (e.g. {@code java.lang.String}) of a resolved {@code chain[]} array element -
+   * mirrors {@code JfrEvent.getClassName(String)}'s own class-reference-map unwrapping, applied
+   * to an array element rather than a named field.
+   */
+  @SuppressWarnings("unchecked")
+  private static String classFullName(Object element) {
+    if (!(element instanceof Map)) {
+      throw new IllegalStateException(
+          "chain[] element resolved to " + element + ", expected a class reference map");
+    }
+    Object name = ((Map<String, Object>) element).get("name");
+    String s;
+    if (name instanceof Map) {
+      Object v = ((Map<String, Object>) name).get("string");
+      s = v != null ? v.toString() : null;
+    } else {
+      s = name != null ? name.toString() : null;
+    }
+    return s != null ? s.replace('/', '.') : null;
   }
 
   /**

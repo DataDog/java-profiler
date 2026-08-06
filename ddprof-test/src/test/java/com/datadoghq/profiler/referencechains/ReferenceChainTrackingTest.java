@@ -7,6 +7,8 @@ package com.datadoghq.profiler.referencechains;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JavaProfiler;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
@@ -14,12 +16,6 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 import org.junitpioneer.jupiter.RetryingTest;
-import org.openjdk.jmc.common.IMCType;
-import org.openjdk.jmc.common.item.IAttribute;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -32,8 +28,6 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.openjdk.jmc.common.item.Attribute.attr;
-import static org.openjdk.jmc.common.unit.UnitLookup.PLAIN_TEXT;
 
 /**
  * PROF-15341 (+ lifecycle-wiring follow-up, + the Remaining Work Plan's target-selection bridging,
@@ -91,9 +85,6 @@ import static org.openjdk.jmc.common.unit.UnitLookup.PLAIN_TEXT;
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @Tag("slow")
 public class ReferenceChainTrackingTest extends AbstractProfilerTest {
-
-  private static final IAttribute<String> SETTING_NAME = attr("name", "", "", PLAIN_TEXT);
-  private static final IAttribute<String> SETTING_VALUE = attr("value", "", "", PLAIN_TEXT);
 
   // Arbitrary, test-chosen klass ids for the debug-only population-seeding seams below (see
   // ReferenceChainTestSeamsTest's own comment: LivenessTracker's population table treats these as
@@ -224,19 +215,11 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
   @RetryingTest(5)
   public void shouldExposeReferenceChainsSettingWhenEnabled() {
     stopProfiler();
-    IItemCollection settings = verifyEvents("jdk.ActiveSetting");
+    JfrEvents settings = verifyEvents("jdk.ActiveSetting");
     boolean sawEnabledSetting = false;
-    for (IItemIterable iterable : settings) {
-      IMemberAccessor<String, IItem> nameAccessor = SETTING_NAME.getAccessor(iterable.getType());
-      IMemberAccessor<String, IItem> valueAccessor = SETTING_VALUE.getAccessor(iterable.getType());
-      if (nameAccessor == null || valueAccessor == null) {
-        continue;
-      }
-      for (IItem item : iterable) {
-        if ("enabled".equals(nameAccessor.getMember(item))
-            && "true".equals(valueAccessor.getMember(item))) {
-          sawEnabledSetting = true;
-        }
+    for (JfrEvent item : settings) {
+      if ("enabled".equals(item.getString("name")) && "true".equals(item.getString("value"))) {
+        sawEnabledSetting = true;
       }
     }
     assertTrue(sawEnabledSetting, "datadog.ReferenceChain#enabled setting was not found");
@@ -334,7 +317,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       // flag as leak candidates - this test's own assertions below look for ChainLink specifically
       // among however many datadog.ReferenceChain events actually appear, rather than assuming it
       // is the only one.
-      ReferenceChainAssertions.ChainMatch match = null;
+      ReferenceChainAssertions.JfrChainMatch match = null;
       boolean seededTestKlassTrend = false;
       int totalRounds = 16;
       for (int round = 1; round <= totalRounds && match == null; round++) {
@@ -436,7 +419,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       // keep as its representative. Everything above chain[0] reflects real JDK-internal
       // collection representation (e.g. ArrayList's backing array) rather than anything this test
       // controls, so it is deliberately not asserted beyond "at least one hop was reconstructed".
-      assertEquals(ChainLink.class.getName(), match.chain.get(0).getFullName());
+      assertEquals(ChainLink.class.getName(), match.chain.get(0));
       assertTrue(match.targetTag > 0, "targetTag should be a valid, non-zero JVMTI tag");
       assertTrue(match.depth >= 0, "depth should be a non-negative hop count");
       assertTrue(!gcRootHolder.isEmpty()); // keeps every allocated ChainLink reachable until here
@@ -515,7 +498,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       // floor rather than this test's own "memory=64" request, why totalRounds is capped at
       // 16 rather than a larger margin above the 10-round minimum (shared-fork heap headroom),
       // and why per-round growth itself is clamped to round 10 (Math.min(round, 10) below).
-      ReferenceChainAssertions.ChainMatch match = null;
+      ReferenceChainAssertions.JfrChainMatch match = null;
       boolean seededTestKlassTrend = false;
       int totalRounds = 16;
 
@@ -559,7 +542,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
         nextKey += newEntries;
         System.gc();
         dump(scratchDumpPath);
-        IItemCollection events1 = verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false);
+        JfrEvents events1 = verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false);
         match = ReferenceChainAssertions.findMatchForClass(events1, CachedPayload.class);
 
         if (match == null && "debug".equals(System.getProperty("ddprof_test.config"))) {
@@ -581,7 +564,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
           JavaProfiler.setKlassPopulationRepresentativeForTest0(CACHED_PAYLOAD_TEST_KLASS_ID, cache.get(keys[0]));
           JavaProfiler.pollReferenceChainTargets0();
           dump(scratchDumpPath);
-          IItemCollection events2 = verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false);
+          JfrEvents events2 = verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false);
           match = ReferenceChainAssertions.findMatchForClass(events2, CachedPayload.class);
         }
 
@@ -591,7 +574,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
           // slot against Profiler::dump()'s own exclusive hold.
           Thread.sleep(300);
           dump(scratchDumpPath);
-          IItemCollection events3 = verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false);
+          JfrEvents events3 = verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false);
           match = ReferenceChainAssertions.findMatchForClass(events3, CachedPayload.class);
         }
       }
@@ -599,7 +582,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       for (int attempt = 0; match == null && attempt < 5; attempt++) {
         Thread.sleep(1000);
         dump(scratchDumpPath);
-        IItemCollection events4 = verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false);
+        JfrEvents events4 = verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false);
         match = ReferenceChainAssertions.findMatchForClass(events4, CachedPayload.class);
       }
 
@@ -607,7 +590,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
           "Never observed a datadog.ReferenceChain event whose chain[0] is " + CachedPayload.class
               + " after " + cache.size() + " cached entries across up to " + totalRounds
               + " population-growth rounds plus a grace period");
-      assertEquals(CachedPayload.class.getName(), match.chain.get(0).getFullName());
+      assertEquals(CachedPayload.class.getName(), match.chain.get(0));
       assertTrue(match.targetTag > 0, "targetTag should be a valid, non-zero JVMTI tag");
       assertTrue(match.depth >= 0, "depth should be a non-negative hop count");
 
@@ -615,8 +598,8 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       // actually passed through the cache's own internal storage, not some other, coincidental
       // retainer - cache is the only thing keeping any CachedPayload instance reachable.
       boolean sawHashMapInternals = false;
-      for (IMCType type : match.chain) {
-        if (type.getFullName().startsWith("java.util.HashMap")) {
+      for (String type : match.chain) {
+        if (type.startsWith("java.util.HashMap")) {
           sawHashMapInternals = true;
           break;
         }
@@ -685,7 +668,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
     Path dumpPath = Paths.get("referencechains-abandoned-test.jfr");
     try {
       dump(dumpPath);
-      IItemCollection abandoned = verifyEvents(dumpPath, "datadog.ReferenceChainAbandoned", true);
+      JfrEvents abandoned = verifyEvents(dumpPath, "datadog.ReferenceChainAbandoned", true);
       assertTrue(abandoned.hasItems(), "Expected at least one datadog.ReferenceChainAbandoned event");
     } finally {
       Files.deleteIfExists(dumpPath);
