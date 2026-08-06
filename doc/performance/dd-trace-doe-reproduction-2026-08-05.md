@@ -165,6 +165,42 @@ a steady-state sample):
   + 27.8 MB (compiler-arena peak delta) = ~92 MB explained of the
   +104.3 MB RSS-peak delta → **~12 MB unexplained**.
 
+## Other archetypes: is this workload-specific?
+
+The same baseline / tracing-only / tracing+profiling measurement was
+repeated against the other three dd-trace-doe archetypes (`idle`,
+`latency`, `throughput`) to check whether the ~240 MB figure is specific to
+the `enterprise` workload or holds more generally. All four run the same
+Spring Boot app; only the traffic pattern and simulated CPU/allocation load
+differ.
+
+| Archetype | baseline | tracing-only | tracing+profiling | Δ tracing | Δ profiling | Δ total |
+|---|---|---|---|---|---|---|
+| enterprise | 1514.3 | 1650.4 | 1754.7 | +136.1 | +104.3 | +240.4 |
+| idle | 1528.8 | 1648.8 | 1754.9 | +120.0 | +106.1 | +226.1 |
+| latency | 1553.3 | 1710.0 | 1800.7 | +156.7 | +90.7 | +247.4 |
+| throughput (mean of 3/3/2 reps) | 1555.2 | 1693.4 | 1811.3 | +138.2 | +117.9 | +256.1 |
+
+**The overhead is largely workload-invariant.** `idle` (RPS=5, almost no
+CPU work) lands within a few MB of `enterprise` (RPS=100) on every number,
+despite the two workloads differing by orders of magnitude in traffic and
+CPU usage. That's consistent with the earlier finding that the overhead is
+driven by which classes/methods get touched — fixed by the app's own code,
+since all four archetypes run the same Spring Boot app — rather than by
+request volume, concurrency, or CPU load.
+
+**Single-run peak-RSS numbers are noisy — repeat before treating a
+difference as real.** `throughput`'s profiling-increment looked like an
+outlier on the first pass (+64.3 MB vs. +90-106 MB for the other three,
+each from a single run). Repeating `throughput` (3 reps of baseline and
+tracing-only; 2 successful reps of tracing+profiling — the 3rd hit a
+transient load-generator timeout unrelated to memory) put its mean
+profiling-increment at +117.9 MB, squarely inside the other archetypes'
+range. The original single-run sample (1766.0 MB) sat ~40-50 MB below both
+of its own repeats (1805.5 MB, 1817.1 MB). Treat any single-run
+dd-trace-doe `memory` figure — including the `enterprise` numbers earlier
+in this report — as carrying roughly that much run-to-run noise.
+
 ## What we don't know
 
 The specific mechanism for the ~39 MB (tracing) / ~12 MB (profiling)
