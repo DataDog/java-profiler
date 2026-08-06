@@ -180,4 +180,132 @@ TEST_F(FaultInjectionTest, WalkVmSigsetjmpRecoversFromInjectedFault) {
   SUCCEED();
 }
 
+// Friend of Profiler (see profiler.h) — lets this test force the internal
+// state to a known value so checkState() can be exercised deterministically
+// (matches the pattern in jvmSupport_ut.cpp).
+class ProfilerTestAccessor {
+public:
+  static void setState(Profiler* p, State s) {
+    p->_state.store(s, std::memory_order_release);
+  }
+  static State getState(Profiler* p) {
+    return p->_state.load(std::memory_order_acquire);
+  }
+};
+
+// Friend of VM (see vmEntry.h) — lets this test install a mock jvmtiEnv, the
+// same seam jvmSupport_ut.cpp uses. checkState() (below) checks
+// prewarmUnwinder() before JVMSupport::initialize(), so the injected-failure
+// path never touches this at all; it exists only so the ~99% non-injected
+// iterations, which do fall through into JVMSupport::initialize(), fail
+// gracefully instead of crashing on a null VM::_jvmti in this no-live-JVM
+// binary. Unlike a JVMThread-level fake (which would permanently flip
+// JVMThread::isInitialized() for the rest of the process, since ThreadLocal
+// pthread keys are never invalidated), this is a plain pointer swap that
+// ScopedJvmtiMock restores on scope exit -- no state leaks into later tests.
+class VMTestAccessor {
+public:
+  static jvmtiEnv* getJvmti() { return VM::_jvmti; }
+  static void setJvmti(jvmtiEnv* env) { VM::_jvmti = env; }
+};
+
+static jvmtiError JNICALL mock_GetCurrentThread_fails(jvmtiEnv*, jthread*) {
+  return JVMTI_ERROR_INTERNAL;
+}
+
+class ScopedJvmtiMock {
+public:
+  ScopedJvmtiMock() : _orig(VMTestAccessor::getJvmti()) {
+    _tbl.GetCurrentThread = &mock_GetCurrentThread_fails;
+    _env.functions = &_tbl;
+    VMTestAccessor::setJvmti(&_env);
+  }
+  ~ScopedJvmtiMock() { VMTestAccessor::setJvmti(_orig); }
+
+private:
+  jvmtiInterface_1_ _tbl{};
+  _jvmtiEnv _env{};
+  jvmtiEnv* _orig;
+};
+
+// (d) Value-injection path: Profiler::checkState() (shared by start()/check(),
+// and therefore also reached by the -agentpath auto-start path) fails cleanly
+// instead of crashing later when libgcc_s.so.1 can't be loaded. libgcc_s.so.1
+// is always present in this test environment, so INJECT_FAULT_BOOL_LIKELY on
+// prewarmUnwinder()'s return value is what makes that failure path reachable
+// here: the real dlopen() still runs and succeeds, but the caller is
+// deterministically told it failed.
+//
+// checkState() only treats that failure as fatal off musl (see its comment:
+// musl never hits the pthread_exit path that needs libgcc_s.so.1), so on
+// musl an injected failure falls through to the mocked
+// JVMSupport::initialize() failure instead of surfacing "Missing
+// libgcc_s.so.1" -- expect whichever outcome the current libc implies.
+TEST_F(FaultInjectionTest, CheckStateSurfacesInjectedPrewarmUnwinderFailure) {
+#ifdef __linux__
+  Profiler* p = Profiler::instance();
+  // checkState() checks prewarmUnwinder() before JVMSupport::initialize(), so
+  // reaching the injected-failure path below needs nothing but the NEW state.
+  ScopedJvmtiMock jvmti_mock;
+  ProfilerTestAccessor::setState(p, NEW);
+  ProfiledThread::current()->setFiRng(0x5EED5EED5EED5EEDULL);
+
+  const bool prewarmFailureIsFatal = !OS::isMusl();
+  bool sawInjectedFailure = false;
+  bool sawNonInjectedPrewarm = false;
+  // shouldFire() mixes the fixed RNG seed above with an ASLR-dependent
+  // per-call-site address, so which outcome the *first* call produces is not
+  // deterministic run to run -- the injected failure can land before a
+  // non-injected call is observed. Keep iterating (and un-latching the ERROR
+  // state that every outcome here leaves behind) until both have been seen.
+  for (int i = 0; i < 5000 && !(sawInjectedFailure && sawNonInjectedPrewarm); i++) {
+    // shouldFire() increments FAULTS_INJECTED exactly once whenever it fires,
+    // and the only fault-injection site reachable from checkState() is the
+    // INJECT_FAULT_BOOL_LIKELY around prewarmUnwinder()'s dlopen() call --
+    // JVMSupport::initialize() below is a plain mock, not an injection site.
+    // So the counter delta across one checkState() call, not the returned
+    // error message, is the ground truth for whether this iteration actually
+    // took the injected path; that lets the two outcomes be set from
+    // independent evidence instead of both being inferred from one string
+    // compare.
+    long long faultsBefore = Counters::getCounter(FAULTS_INJECTED);
+    Error error = p->checkState();
+    bool injectedThisCall = Counters::getCounter(FAULTS_INJECTED) > faultsBefore;
+    ASSERT_TRUE((bool)error) << "checkState() must fail here: either the "
+                                 "injected prewarmUnwinder() failure or the "
+                                 "mocked JVMSupport::initialize() failure";
+    if (prewarmFailureIsFatal) {
+      if (injectedThisCall) {
+        EXPECT_STREQ("Missing libgcc_s.so.1", error.message());
+        sawInjectedFailure = true;
+      } else {
+        // prewarmUnwinder() succeeded (non-injected, ~99% of calls) and fell
+        // through to the mocked JVMSupport::initialize() failure instead.
+        EXPECT_STREQ("Profiler encountered fatal error", error.message());
+        sawNonInjectedPrewarm = true;
+      }
+    } else {
+      // On musl, checkState() doesn't treat a prewarmUnwinder() failure as
+      // fatal, so both an injected and a non-injected call fall through to
+      // the same mocked JVMSupport::initialize() failure message -- only the
+      // counter delta distinguishes them.
+      EXPECT_STREQ("Profiler encountered fatal error", error.message());
+      if (injectedThisCall) {
+        sawInjectedFailure = true;
+      } else {
+        sawNonInjectedPrewarm = true;
+      }
+    }
+    ProfilerTestAccessor::setState(p, NEW);
+  }
+
+  if (prewarmFailureIsFatal) {
+    EXPECT_TRUE(sawInjectedFailure)
+        << "expected at least one injected prewarmUnwinder() failure within 5000 tries";
+  }
+  EXPECT_TRUE(sawNonInjectedPrewarm)
+      << "expected at least one non-injected prewarmUnwinder() success within 5000 tries";
+#endif // __linux__
+}
+
 #endif  // __FAULT_INJECTION__
