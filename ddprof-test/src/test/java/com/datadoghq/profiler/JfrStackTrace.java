@@ -24,6 +24,12 @@ public final class JfrStackTrace {
         this.truncated = truncated;
     }
 
+    /**
+     * Converts a raw resolved {@code jdk.types.StackTrace} value (a {@code Map} with
+     * {@code frames}/{@code truncated} entries, as produced by {@code Values.resolvedDeep()}) into
+     * a {@link JfrStackTrace}. Returns {@link #EMPTY} if {@code rawStackTrace} isn't such a map
+     * (e.g. the field was absent from the event).
+     */
     @SuppressWarnings("unchecked")
     static JfrStackTrace of(Object rawStackTrace) {
         if (!(rawStackTrace instanceof Map)) {
@@ -48,14 +54,17 @@ public final class JfrStackTrace {
         return new JfrStackTrace(frames, truncated);
     }
 
+    /** This stack trace's frames, outermost (root) frame first. */
     public List<JfrFrame> frames() {
         return frames;
     }
 
+    /** {@code true} if this stack trace has no frames (e.g. the field was absent from the event). */
     public boolean isEmpty() {
         return frames.isEmpty();
     }
 
+    /** {@code true} if the JVM truncated this stack trace (frame count exceeded the configured depth). */
     public boolean isTruncated() {
         return truncated;
     }

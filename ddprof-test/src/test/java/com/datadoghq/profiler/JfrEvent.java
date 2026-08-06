@@ -30,6 +30,7 @@ public final class JfrEvent {
         this.value = value;
     }
 
+    /** The JFR event type name (e.g. {@code "datadog.ExecutionSample"}). */
     public String typeName() {
         return typeName;
     }
@@ -44,10 +45,12 @@ public final class JfrEvent {
         return value.get(field);
     }
 
+    /** {@code true} if {@code field} is present in this event's field map. */
     public boolean has(String field) {
         return value.containsKey(field);
     }
 
+    /** The value at {@code field} converted via {@link Object#toString()}, or {@code null} if absent. */
     public String getString(String field) {
         Object v = value.get(field);
         return v != null ? v.toString() : null;
@@ -70,21 +73,25 @@ public final class JfrEvent {
         return v instanceof Number ? ((Number) v).longValue() : null;
     }
 
+    /** Like {@link #getLong(String)}, but returns {@code defaultValue} instead of {@code null} if absent. */
     public long getLong(String field, long defaultValue) {
         Long v = getLong(field);
         return v != null ? v : defaultValue;
     }
 
+    /** Boxed so callers can distinguish "field absent" (null) from a real {@code 0.0}. */
     public Double getDouble(String field) {
         Object v = value.get(field);
         return v instanceof Number ? ((Number) v).doubleValue() : null;
     }
 
+    /** Like {@link #getDouble(String)}, but returns {@code defaultValue} instead of {@code null} if absent. */
     public double getDouble(String field, double defaultValue) {
         Double v = getDouble(field);
         return v != null ? v : defaultValue;
     }
 
+    /** Boxed so callers can distinguish "field absent" (null) from a real {@code false}. */
     public Boolean getBoolean(String field) {
         Object v = value.get(field);
         return v instanceof Boolean ? (Boolean) v : null;
@@ -105,6 +112,7 @@ public final class JfrEvent {
         return getStackTrace("stackTrace");
     }
 
+    /** Like {@link #getStackTrace()}, but for a caller-specified {@code field} name. */
     public JfrStackTrace getStackTrace(String field) {
         return JfrStackTrace.of(value.get(field));
     }
@@ -128,6 +136,7 @@ public final class JfrEvent {
         return getStackTraceString("stackTrace");
     }
 
+    /** Like {@link #getStackTraceString()}, but for a caller-specified {@code field} name. */
     public String getStackTraceString(String field) {
         // Mirrors IMemberAccessor.getMember()'s null-on-absent contract: some events
         // (e.g. lightweight-mode CPU samples) have no stackTrace field at all, which
@@ -136,13 +145,18 @@ public final class JfrEvent {
             return null;
         }
         StringBuilder sb = new StringBuilder();
+        boolean first = true;
         for (JfrFrame frame : getStackTrace(field).frames()) {
+            if (!first) {
+                sb.append('\n');
+            }
+            first = false;
             String className = frame.className();
             String methodName = frame.methodName();
             if (className != null) {
                 sb.append(className).append('.');
             }
-            sb.append(methodName != null ? methodName : "").append("()\n");
+            sb.append(methodName != null ? methodName : "").append("()");
         }
         return sb.toString();
     }
