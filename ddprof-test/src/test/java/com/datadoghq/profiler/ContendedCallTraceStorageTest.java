@@ -6,19 +6,14 @@
 package com.datadoghq.profiler;
 
 import org.junit.jupiter.api.Test;
-import org.openjdk.jmc.common.IMCStackTrace;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.ItemFilters;
-import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
-import org.openjdk.jmc.flightrecorder.CouldNotLoadRecordingException;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
@@ -138,14 +133,15 @@ public class ContendedCallTraceStorageTest extends AbstractProfilerTest {
         }
     }
 
-    private List<ContentionResult> analyzeContentionFromJFR(List<Path> recordings) throws IOException, CouldNotLoadRecordingException {
+    private List<ContentionResult> analyzeContentionFromJFR(List<Path> recordings) throws Exception {
         List<ContentionResult> results = new ArrayList<>();
         for (Path jfrFile : recordings) {
-            IItemCollection events = JfrLoaderToolkit.loadEvents(Files.newInputStream(jfrFile));
+            JfrEvents events = JfrEvents.load(jfrFile, new HashSet<>(Arrays.asList(
+                    "datadog.ExecutionSample", "jdk.ObjectAllocationInNewTLAB"))::contains);
 
             // Count profiling events - represents successful put() operations
-            IItemCollection cpuEvents = events.apply(ItemFilters.type("datadog.ExecutionSample"));
-            IItemCollection allocationEvents = events.apply(ItemFilters.type("jdk.ObjectAllocationInNewTLAB"));
+            JfrEvents cpuEvents = events.byType("datadog.ExecutionSample");
+            JfrEvents allocationEvents = events.byType("jdk.ObjectAllocationInNewTLAB");
 
             // Count events with regular stack traces vs dropped traces
             long cpuWithRegularStack = countEventsWithRegularStackTrace(cpuEvents);
@@ -169,39 +165,35 @@ public class ContendedCallTraceStorageTest extends AbstractProfilerTest {
         return results;
     }
     
-    private long countEventsWithRegularStackTrace(IItemCollection events) {
+    private long countEventsWithRegularStackTrace(JfrEvents events) {
         if (!events.hasItems()) return 0;
-        
+
         long count = 0;
-        for (IItemIterable iterable : events) {
-            for (IItem item : iterable) {
-                IMCStackTrace stackTrace = STACK_TRACE.getAccessor(iterable.getType()).getMember(item);
-                if (stackTrace != null && !stackTrace.getFrames().isEmpty()) {
-                    // Check if this is NOT the dropped trace (contains method with "dropped")
-                    String topMethodName = stackTrace.getFrames().get(0).getMethod().getMethodName();
-                    if (!topMethodName.contains("dropped")) {
-                        count++;
-                    }
+        for (JfrEvent item : events) {
+            JfrStackTrace stackTrace = item.getStackTrace(STACK_TRACE);
+            if (stackTrace != null && !stackTrace.isEmpty()) {
+                // Check if this is NOT the dropped trace (contains method with "dropped")
+                String topMethodName = stackTrace.frames().get(0).methodName();
+                if (!topMethodName.contains("dropped")) {
+                    count++;
                 }
             }
         }
         return count;
     }
-    
-    private long countEventsWithDroppedStackTrace(IItemCollection events) {
+
+    private long countEventsWithDroppedStackTrace(JfrEvents events) {
         if (!events.hasItems()) return 0;
-        
+
         long count = 0;
-        for (IItemIterable iterable : events) {
-            for (IItem item : iterable) {
-                IMCStackTrace stackTrace = STACK_TRACE.getAccessor(iterable.getType()).getMember(item);
-                if (stackTrace != null && !stackTrace.getFrames().isEmpty()) {
-                    // Check if this is the special dropped trace (single frame with "dropped" method)
-                    if (stackTrace.getFrames().size() == 1) {
-                        String methodName = stackTrace.getFrames().get(0).getMethod().getMethodName();
-                        if (methodName.contains("dropped")) {
-                            count++;
-                        }
+        for (JfrEvent item : events) {
+            JfrStackTrace stackTrace = item.getStackTrace(STACK_TRACE);
+            if (stackTrace != null && !stackTrace.isEmpty()) {
+                // Check if this is the special dropped trace (single frame with "dropped" method)
+                if (stackTrace.frames().size() == 1) {
+                    String methodName = stackTrace.frames().get(0).methodName();
+                    if (methodName.contains("dropped")) {
+                        count++;
                     }
                 }
             }

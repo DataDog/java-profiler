@@ -20,10 +20,7 @@ import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.nativethread.NativeThreadCreator;
 
 import org.junitpioneer.jupiter.RetryingTest;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
+import com.datadoghq.profiler.JfrEvent;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -62,19 +59,15 @@ public class DynamicNativeThread extends AbstractProfilerTest {
         stopProfiler();
         int count = 0;
         boolean stacktrace_printed = false;
-        for (IItemIterable cpuSamples : verifyEvents("datadog.ExecutionSample")) {
-            IMemberAccessor<String, IItem> stacktraceAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(cpuSamples.getType());
-            IMemberAccessor<String, IItem> modeAccessor = THREAD_EXECUTION_MODE.getAccessor(cpuSamples.getType());
-            for (IItem item : cpuSamples) {
-                String stacktrace = stacktraceAccessor.getMember(item);
-                if (stacktrace.indexOf("do_primes()") != -1) {
-                    if (!stacktrace_printed) {
-                        stacktrace_printed = true;
-                        System.out.println("Native thread stack:");
-                        System.out.println(stacktrace);
-                    }
-                    count++;
+        for (JfrEvent item : verifyEvents("datadog.ExecutionSample")) {
+            String stacktrace = item.getStackTraceString();
+            if (stacktrace != null && stacktrace.indexOf("do_primes()") != -1) {
+                if (!stacktrace_printed) {
+                    stacktrace_printed = true;
+                    System.out.println("Native thread stack:");
+                    System.out.println(stacktrace);
                 }
+                count++;
             }
         }
         assertTrue(count > 0, "no native thread sample");

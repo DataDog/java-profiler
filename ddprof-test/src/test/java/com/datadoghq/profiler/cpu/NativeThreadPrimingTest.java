@@ -10,12 +10,8 @@ import com.datadoghq.profiler.junit.CStack;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.TestTemplate;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -46,26 +42,19 @@ public class NativeThreadPrimingTest extends CStackAwareAbstractProfilerTest {
             }
             stopProfiler();
 
-            IItemCollection events = verifyEvents("datadog.ExecutionSample");
-            int syntheticSamples = 0;
-            int totalSamples = 0;
-            for (IItemIterable cpuSamples : events) {
-                IMemberAccessor<String, IItem> frameAccessor =
-                        JdkAttributes.STACK_TRACE_STRING.getAccessor(cpuSamples.getType());
-                for (IItem sample : cpuSamples) {
-                    totalSamples++;
-                    String stackTrace = frameAccessor.getMember(sample);
-                    if (stackTrace.contains(UNKNOWN_NATIVE_THREAD_FRAME)
-                            || NO_JAVA_FRAME_ONLY.matcher(stackTrace).matches()) {
-                        syntheticSamples++;
-                    }
+            AtomicInteger syntheticSamples = new AtomicInteger();
+            long totalSamples = streamEvents("datadog.ExecutionSample", item -> {
+                String stackTrace = item.getStackTraceString();
+                if (stackTrace.contains(UNKNOWN_NATIVE_THREAD_FRAME)
+                        || NO_JAVA_FRAME_ONLY.matcher(stackTrace).matches()) {
+                    syntheticSamples.incrementAndGet();
                 }
-            }
+            });
 
-            assertTrue(syntheticSamples <= MAX_SYNTHETIC_NATIVE_THREAD_SAMPLES,
+            assertTrue(syntheticSamples.get() <= MAX_SYNTHETIC_NATIVE_THREAD_SAMPLES,
                     "Expected at most " + MAX_SYNTHETIC_NATIVE_THREAD_SAMPLES
                             + " samples with a synthetic native-thread frame, got "
-                            + syntheticSamples + " of " + totalSamples);
+                            + syntheticSamples.get() + " of " + totalSamples);
         }
     }
 

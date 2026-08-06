@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler.nativelibs;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
@@ -10,10 +15,6 @@ import net.jpountz.lz4.LZ4SafeDecompressor;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junitpioneer.jupiter.RetryingTest;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 import org.xerial.snappy.Snappy;
 
 import java.io.IOException;
@@ -66,39 +67,36 @@ public class NativeLibrariesTest extends AbstractProfilerTest {
         }
         stopProfiler();
         assertTrue(blackhole != 0);
-        Map<String, AtomicInteger> modeCounters = new HashMap<>();
-        Map<String, AtomicInteger> libraryCounters = new HashMap<>();
-        for (IItemIterable cpuSamples : verifyEvents("datadog.ExecutionSample")) {
-            IMemberAccessor<String, IItem> stacktraceAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(cpuSamples.getType());
-            IMemberAccessor<String, IItem> modeAccessor = THREAD_EXECUTION_MODE.getAccessor(cpuSamples.getType());
-            for (IItem item : cpuSamples) {
-                String stacktrace = stacktraceAccessor.getMember(item);
-                String mode = modeAccessor.getMember(item);
-                modeCounters.computeIfAbsent(mode, x -> new AtomicInteger()).incrementAndGet();
-                if ("NATIVE".equals(mode)) {
-                    String library = "";
-                    if (stacktrace.contains("LZ4JNI") || stacktrace.contains(".LZ4HC_")) {
-                        library = "LZ4";
-                    } else if (stacktrace.contains("Java_org_xerial_snappy_SnappyNative") || stacktrace.contains("libsnappyjava")) {
-                        library = "SNAPPY";
-                    } else if (stacktrace.contains("Java_com_github_luben_zstd") || stacktrace.contains(".ZSTD_")) {
-                        library = "ZSTD";
-                    } else if (stacktrace.contains("Compile")) {
-                        library = "JIT";
-                    }
-                    libraryCounters.computeIfAbsent(library, x -> new AtomicInteger()).incrementAndGet();
+        // Folded rather than materialized: a 1ms-CPU-sampled recording of this workload can carry
+        // far more datadog.ExecutionSample events (each with a native stack) than fit comfortably
+        // in the test heap if collected into a list first, and only the counts below are needed.
+        Counters counters = reduceEvents("datadog.ExecutionSample", Counters::new, (c, item) -> {
+            String stacktrace = item.getStackTraceString();
+            String mode = item.getEnumName(THREAD_EXECUTION_MODE);
+            c.modeCounters.computeIfAbsent(mode, x -> new AtomicInteger()).incrementAndGet();
+            if ("NATIVE".equals(mode)) {
+                String library = "";
+                if (stacktrace.contains("LZ4JNI") || stacktrace.contains(".LZ4HC_")) {
+                    library = "LZ4";
+                } else if (stacktrace.contains("Java_org_xerial_snappy_SnappyNative") || stacktrace.contains("libsnappyjava")) {
+                    library = "SNAPPY";
+                } else if (stacktrace.contains("Java_com_github_luben_zstd") || stacktrace.contains(".ZSTD_")) {
+                    library = "ZSTD";
+                } else if (stacktrace.contains("Compile")) {
+                    library = "JIT";
                 }
+                c.libraryCounters.computeIfAbsent(library, x -> new AtomicInteger()).incrementAndGet();
             }
-        }
-        assertTrue(modeCounters.containsKey("JVM"), "no JVM samples");
-        assertTrue(modeCounters.containsKey("NATIVE"), "no NATIVE samples");
-        assertTrue(libraryCounters.containsKey("LZ4"), "no lz4-java samples");
+        });
+        assertTrue(counters.modeCounters.containsKey("JVM"), "no JVM samples");
+        assertTrue(counters.modeCounters.containsKey("NATIVE"), "no NATIVE samples");
+        assertTrue(counters.libraryCounters.containsKey("LZ4"), "no lz4-java samples");
         // snappy is problematic on musl; we are not running it
         // for some reason it is not also appearing in sanitized runs
-        assertTrue(isMusl || isSanitizer || libraryCounters.containsKey("SNAPPY"), "no snappy-java samples");
-        assertTrue(libraryCounters.containsKey("ZSTD"), "no zstd-jni samples");
-        modeCounters.forEach((mode, count) -> System.err.println(mode + ": " + count.get()));
-        libraryCounters.forEach((lib, count) -> System.err.println(lib + ": " + count.get()));
+        assertTrue(isMusl || isSanitizer || counters.libraryCounters.containsKey("SNAPPY"), "no snappy-java samples");
+        assertTrue(counters.libraryCounters.containsKey("ZSTD"), "no zstd-jni samples");
+        counters.modeCounters.forEach((mode, count) -> System.err.println(mode + ": " + count.get()));
+        counters.libraryCounters.forEach((lib, count) -> System.err.println(lib + ": " + count.get()));
     }
 
 
@@ -193,6 +191,11 @@ public class NativeLibrariesTest extends AbstractProfilerTest {
                     });
         }
         return blackhole;
+    }
+
+    private static class Counters {
+        final Map<String, AtomicInteger> modeCounters = new HashMap<>();
+        final Map<String, AtomicInteger> libraryCounters = new HashMap<>();
     }
 
     ByteBuffer fill(ByteBuffer buffer) {

@@ -1,20 +1,17 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler.wallclock;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class MegamorphicCallTest extends AbstractProfilerTest {
@@ -86,25 +83,29 @@ public class MegamorphicCallTest extends AbstractProfilerTest {
         int result = profiledWork(iterations, new Calculator1(), new Calculator2(), new Calculator3());
         System.err.println(result);
         stopProfiler();
-        IItemCollection events = verifyEvents("datadog.MethodSample");
-        System.err.println(events.stream().count());
-        List<String> itableStubStacktraces = new ArrayList<>();
-        for (IItemIterable cpuSamples : events) {
-            IMemberAccessor<String, IItem> frameAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(cpuSamples.getType());
-            for (IItem sample : cpuSamples) {
-                String stackTrace = frameAccessor.getMember(sample);
-                if (stackTrace.contains(".itable stub()")) {
-                    itableStubStacktraces.add(stackTrace);
+
+        // Streamed rather than materialized: wall=100us over this workload produces up to
+        // hundreds of thousands of samples, and every check here is per-event (a running
+        // "did we see X" flag) with no need to retain the stack-trace strings afterward.
+        StubSearch found = reduceEvents("datadog.MethodSample", StubSearch::new, (acc, sample) -> {
+            acc.total++;
+            String stackTrace = sample.getStackTraceString();
+            if (stackTrace.contains(".itable stub()")) {
+                acc.foundItableStub = true;
+                if (stackTrace.contains("MegamorphicCallTest.profiledWork")) {
+                    acc.foundProfiledWork = true;
                 }
             }
-        }
-        assertFalse(itableStubStacktraces.isEmpty());
-        boolean foundProfiledWork = false;
-        for (String stacktrace : itableStubStacktraces) {
-            foundProfiledWork = stacktrace.contains("MegamorphicCallTest.profiledWork");
-            if (foundProfiledWork)
-                break;
-        }
-        assertTrue(foundProfiledWork);
+        });
+        System.err.println(found.total);
+        assertTrue(found.total > 0, "datadog.MethodSample was empty");
+        assertTrue(found.foundItableStub);
+        assertTrue(found.foundProfiledWork);
+    }
+
+    private static final class StubSearch {
+        long total;
+        boolean foundItableStub;
+        boolean foundProfiledWork;
     }
 }
