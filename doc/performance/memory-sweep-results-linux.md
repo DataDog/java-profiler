@@ -33,19 +33,33 @@ disentangling the two (same 2,000 classes, but 100 methods each instead of
 same range as the 150,000-class result — purely from adding methods to
 the *same* small set of classes.
 
-**Where that ~102 MB (at N=150,000) comes from.** About a third (~35 MB) is
-visible to the JVM's own Native Memory Tracking and has a confirmed
-mechanism: this agent eagerly preallocates jmethodIDs for every newly
-prepared class (`JVMTI_EVENT_CLASS_PREPARE` → `GetClassMethods`,
-`jvmSupport.cpp:145`), which AsyncGetCallTrace's signal-handler safety
-requires — confirmed by a toggle test that makes the NMT-visible deltas
-collapse to noise when this is disabled. The remaining **~42–57 MB is real,
-agent-attributable memory whose precise mechanism resists attribution** —
-five independent lines of investigation (dictionary/`MethodMap` growth,
-direct allocation-site attribution, glibc fragmentation, JIT code-cache
-growth, and a from-scratch recalibration of the NMT breakdown) each ruled
-out or turned out to already be counted elsewhere. See "Investigating the
-unattributed remainder" below for what was checked.
+**Where that ~102 MB (at N=150,000, default JVM heap ergonomics) comes
+from.** About a third (~35 MB) is visible to the JVM's own Native Memory
+Tracking and has a confirmed mechanism: this agent eagerly preallocates
+jmethodIDs for every newly prepared class (`JVMTI_EVENT_CLASS_PREPARE` →
+`GetClassMethods`, `jvmSupport.cpp:145`), which AsyncGetCallTrace's
+signal-handler safety requires — confirmed by a toggle test that makes the
+NMT-visible deltas collapse to noise when this is disabled. The remainder
+is real, agent-attributable memory whose precise mechanism resists
+attribution — five independent lines of investigation (dictionary/`MethodMap`
+growth, direct allocation-site attribution, glibc fragmentation, JIT
+code-cache growth, and a from-scratch recalibration of the NMT breakdown)
+each ruled out or turned out to already be counted elsewhere.
+
+That remainder was originally reported as "~42–57 MB", but that range came
+from a 10-rep sweep with default (unfixed) JVM heap sizing, where each
+condition's own RSS carried ±89 MB of run-to-run stdev — large enough that
+the ~102 MB headline delta itself was only a ~2.5σ signal, and the
+"42–57 MB" band inherited that same uncertainty without ever being stated
+as a confidence interval. **A follow-up fixed-heap re-measurement
+(`-Xms=-Xmx`, `-XX:+AlwaysPreTouch`, removing GC/heap-resize timing as a
+noise source) at the same N, 12 reps, cut each condition's stdev by roughly
+10x (to ~6–11 MB) and landed the residual at ~34.6 MB with a ±3.9 MB
+standard error** — a real, non-noise, agent-attributable gap of roughly
+30–40 MB, now with an actual confidence interval instead of an
+unquantified range. See "Investigating the unattributed remainder" below,
+specifically "Tightening the residual: a fixed-heap re-measurement", for
+the full derivation.
 
 **A separate, additive cost at JFR chunk boundaries.** Wall-clock sampling's
 class-name dictionary growth happens at chunk-write time (an explicit
@@ -61,8 +75,9 @@ write. For the default single-continuous-recording mode, that's paid once,
 at process exit, with no effect on the running process; for any
 configuration that rotates JFR chunks periodically, it recurs.
 
-**What we don't know.** The specific mechanism for the ~42–57 MB
-unattributed remainder; the true (unperturbed) magnitude of the chunk-flush
+**What we don't know.** The specific mechanism for the ~34.6 MB (±3.9 MB
+SE) unattributed remainder — its magnitude is now precisely bounded, but
+not its cause; the true (unperturbed) magnitude of the chunk-flush
 burst; whether call-trace storage resetting across chunk rotations while
 the dictionary's content persists (observed once) generalizes; `NM_PERF`'s
 behavior under load (unverifiable in this sandboxed container); precise
@@ -502,6 +517,16 @@ batches so both conditions saw comparable concurrent system load.
 | 60,000 | 962.3 ± 13.9 MB | 922.3 ± 20.9 MB | **+40.0 MB** |
 | 150,000 | 1966.2 ± 89.0 MB | 1863.8 ± 89.9 MB | **+102.4 MB** |
 
+**This N=150,000 row's own stdev (±89 MB per condition) is large enough
+that its point estimate shouldn't be read as precise** — see "Tightening
+the residual: a fixed-heap re-measurement" (under "Investigating the
+unattributed remainder") for a 12-rep fixed-heap redo at the same N that
+cuts per-condition stdev roughly 10x. The *qualitative* conclusion this
+table exists to support — touched-method count, not raw class count,
+drives the cost, confirmed by comparing across N and against the
+`classesM` follow-up below — holds regardless of heap methodology; only
+this row's absolute precision is superseded.
+
 (N=2,000's high per-condition stdev is a shared, environment-level effect —
 reps 9–10 landed at ~400+ MB on *both* conditions equally, versus ~230–290
 MB for reps 1–8, most likely a batch-timing/system-cache effect rather than
@@ -794,12 +819,118 @@ resident of 32 MiB logical) gives a rough estimate of ~10–15 MiB true RSS
 contribution — not an exhaustive measurement (only 4 of an estimated ~6
 chunks were positively identified).
 
-**Net result**: redoing the original derivation with this — 56.9–66.9 MiB
-NMT-invisible total (depending on whether Java Heap's noise is included)
-minus ~10–15 MiB true `NM_CALLTRACE` cost — lands the residual around
-**~42–57 MiB**. Getting a more precise number would need exhaustively
-mapping every remaining memory region; not pursued further given
-diminishing returns.
+**Net result at this point**: redoing the original derivation with this —
+56.9–66.9 MiB NMT-invisible total (depending on whether Java Heap's noise
+is included) minus ~10–15 MiB true `NM_CALLTRACE` cost — landed the
+residual around ~42–57 MiB. That range itself was never a real confidence
+interval, though — it was built from a 10-rep sweep whose own per-condition
+stdev (±89 MB) was large relative to the effect being measured. The
+following re-measurement addresses that directly.
+
+### Tightening the residual: a fixed-heap re-measurement
+
+Every recalibration pass up to this point re-mined the *same* 10-rep
+default-heap dataset rather than collecting new, less noisy data — so the
+~42–57 MiB range inherited whatever imprecision was baked into that
+original sweep, without ever being checked. That sweep's own numbers make
+the concern concrete: at N=150,000, RSS was 1966.2 ± 89.0 MB (agent) vs.
+1863.8 ± 89.9 MB (no agent) over 10 reps — if the two conditions varied
+independently, the delta's own standard error would be ~40 MB, making the
+"102.4 MB" headline only a ~2.5σ signal, not the precise number the prose
+elsewhere implies. None of the five ruling-out checks above re-measured
+the residual itself at tighter precision; they measured other quantities
+(`mallinfo2`, Code cache, `CallTraceStorage` residency) and subtracted
+estimates, so the noise in the original RSS delta flows straight through
+into the residual's uncertainty.
+
+The likely dominant noise source was identifiable directly from the
+original sweep's own NMT breakdown: "Java Heap" swung ~240 MB across 5 reps
+of the *same* condition in the jmethodID toggle test (already flagged as
+noise there), and the class-diversity sweep never set `-Xms`/`-Xmx` at all
+— every rep ran under default ergonomic heap sizing, with GC/heap-resize
+timing free to vary rep to rep. Re-running the same N=150,000 with/without
+comparison with `-Xms512m -Xmx512m -XX:+AlwaysPreTouch` added (forcing both
+conditions to commit and fully touch an identical, fixed-size heap up
+front, removing that timing variable entirely), 12 reps, interleaved
+batches as before, using
+`doc/performance/memsweep/run_repeated_sweep_fixedheap.sh` (same structure as
+`run_repeated_sweep.sh`, plus a `HEAP_FLAGS` env var):
+
+| | RSS mean | RSS stdev | vs. original stdev |
+|---|---|---|---|
+| with-agent | 1867.7 MiB | **6.3 MiB** | was ±89.0 MiB |
+| without-agent | 1788.9 MiB | **11.3 MiB** | was ±89.9 MiB |
+
+Roughly a 10x reduction in per-condition noise from one change. The
+**paired** per-rep delta (with − without, same rep) — the statistic that
+actually matters, and one the original sweep never explicitly reported —
+came out to **78.77 MiB, stdev 13.4 MiB, standard error 3.86 MiB** (12
+reps). Dropping the single lowest rep (47.0 MiB, the one visible outlier)
+barely moves the mean (78.8 → 80.8 MiB), confirming it's not distorting
+the result.
+
+The absolute magnitude (78.77 MiB) differs from the original 102.4 MiB
+headline, which is expected, not contradictory: fixing the heap
+mechanically zeroes out Java Heap's category delta (previously +10.4 MiB,
+already flagged as noise), and the original 102.4 MiB point estimate
+carried enough of its own sampling noise (~±40 MiB SE) that a ~24 MiB
+difference from a much tighter re-measurement isn't a surprising
+discrepancy.
+
+Redoing the NMT category breakdown on this same fixed-heap data (paired
+per-rep, not just per-condition):
+
+| NMT category | Original (10 reps, unfixed heap) | Fixed-heap (12 reps, paired) | Fixed-heap stdev |
+|---|---|---|---|
+| Class | +13.6 MB | **+13.50 MiB** | ±0.46 MiB |
+| Internal | +11.6 MB | **+11.36 MiB** | ±0.06 MiB |
+| NMT (own bookkeeping) | +10.3 MB | **+10.20 MiB** | ±0.16 MiB |
+| Java Heap | +10.4 MB (flagged as noise) | **0.00 MiB** | — (mechanically zero) |
+
+The three jmethodID-driven categories reproduce almost exactly, but now
+with sub-MiB stdevs instead of implied tens-of-MB noise — strong
+confirmation that this ~35 MiB piece is a real, heap-size-independent
+effect. Java Heap going to exactly zero (rather than just "closer to
+zero") confirms its old +10.4 MiB contribution really was pure GC/heap-
+resize timing noise, as suspected but never proven. NMT-visible total:
+Class + Internal + NMT-own = **35.06 MiB**.
+
+`NM_CALLTRACE`'s logical size, read directly from this run's JFR file, is
+50,858,496 bytes (48.5 MiB) — bit-for-bit identical to the original sweep,
+confirming it's driven by touched call-trace shapes, not heap size, as
+expected. Its *residency* was previously only extrapolated (4 of an
+estimated ~6 `CALL_TRACE_CHUNK`s positively identified, ~28% average
+residency assumed to generalize). Re-checking `/proc/<pid>/smaps` directly
+on a fresh live fixed-heap run instead of extrapolating: the same 4-chunk
+pattern reproduced to within 10 KB of the original measurement (100% /
+12.5% / 0.4% / 0.15% resident, 9.05 MiB total resident of 32 MiB logical).
+A further 32 MiB anonymous region was found at 0.1% residency (24 KB
+resident) — its size is consistent with covering the remaining ~2
+unidentified chunks, and its residency is low enough that even
+attributing it entirely to `CallTraceStorage` adds only ~24 KB. This
+replaces the previous **10–15 MiB extrapolated estimate** with a directly
+measured **~9.05–9.1 MiB** — tighter, and no longer dependent on assuming
+the unidentified chunks behave like the identified ones.
+
+**Result**:
+
+```
+Residual = Total RSS delta − NMT-visible − CallTraceStorage resident
+         = 78.77 MiB − 35.06 MiB − 9.07 MiB
+         ≈ 34.6 MiB, SE ≈ 3.9 MiB (dominated by the RSS-delta term)
+```
+
+**~34.6 MiB ± ~3.9 MiB**, versus the original **~42–57 MiB with no stated
+confidence interval**. The new figure sits inside the old range, so this
+isn't a reversal — it's the same effect, now with an actual error bar
+instead of a band inherited from an unexamined noisy dataset. The
+practical conclusion: there is a real, non-noise, agent-attributable
+residual of roughly 30–40 MiB at N=150,000 — not a measurement artifact,
+and not as uncertain as "42–57 MiB" made it sound, but its *mechanism*
+remains exactly as unknown as before. Tightening precision was the goal of
+this pass, not localization; see "Caveats and open questions" for what a
+follow-up mechanism hunt (e.g. a full smaps region inventory, with vs.
+without) would need to do next.
 
 ## Practical implications
 
@@ -852,7 +983,13 @@ diminishing returns.
    worth asking a customer about before quoting a number. **This ~102 MB
    figure is steady-state only** — sampled while the process runs, before
    any chunk write — and does not include the chunk-flush burst from
-   point 3.
+   point 3. (This specific N=150,000 point was measured under default,
+   unfixed JVM heap sizing and carries a wide confidence interval as a
+   result — see "Tightening the residual: a fixed-heap re-measurement"
+   under "Investigating the unattributed remainder" for a 12-rep
+   fixed-heap redo landing at ~79 MiB with a ±3.9 MiB standard error. The
+   qualitative touched-method-count conclusion here doesn't depend on
+   which heap methodology was used.)
 6. **A long-running process that rotates JFR chunks periodically (not just
    a single continuous recording to process exit) pays the point-3
    chunk-flush burst on top of the point-5 steady-state number, once per
@@ -870,8 +1007,9 @@ diminishing returns.
 - **Single sandboxed Linux x86_64 container throughout.** Most sweep points
   in this document are a single run each — indicative, not statistically
   rigorous. The class-diversity with/without-agent comparison is the
-  exception (10 reps per condition per N); treat single-run figures
-  elsewhere with more caution than that one.
+  exception (10 reps per condition per N, default heap; 12 reps at
+  N=150,000 under a fixed-heap redo — see "Tightening the residual" above);
+  treat single-run figures elsewhere with more caution than those.
 - **`NM_PERF` remains unverified in practice**, though the reason is
   understood (see above) — a root-accessible bare-metal or VM Linux host
   with relaxed `kptr_restrict` would be needed to close this out.
@@ -893,10 +1031,12 @@ diminishing returns.
   disabled, but swung ~240 MB across 5 reps of the *same* condition, too
   noisy to attribute in either direction at practical rep counts. Worth
   repeating with many more reps, or a less noisy measurement approach.
-- **The exact mechanism for the ~42–57 MB unattributed remainder is still
-  unknown**, despite five independent lines of investigation (all detailed
-  under "Investigating the unattributed remainder" above). The pattern
-  across all five — each either ruled out or shown to already be counted
+- **The exact mechanism for the ~34.6 MB (±3.9 MB SE) unattributed
+  remainder is still unknown**, despite five independent lines of
+  investigation (all detailed under "Investigating the unattributed
+  remainder" above) plus a sixth pass that tightened the magnitude's
+  precision without localizing it further. The pattern across the five
+  mechanism checks — each either ruled out or shown to already be counted
   elsewhere — suggests the residual is unlikely to be additional
   profiler-`.so`-attributed `malloc`/`new` activity, glibc fragmentation, or
   JIT code-cache growth. Worth checking next: whether other profiler
