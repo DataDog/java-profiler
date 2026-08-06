@@ -92,6 +92,8 @@ public final class Main {
                 return new WeakRefWaveAntagonist();
             case "dump-storm":
                 return new DumpStormAntagonist();
+            case "reference-chain-leak":
+                return new ReferenceChainLeakAntagonist();
             case "reapply-context-value":
                 return new ReapplyContextValueAntagonist();
             // Deferred: dlopen-churn (needs per-arch dummy .so built in CI prep).
