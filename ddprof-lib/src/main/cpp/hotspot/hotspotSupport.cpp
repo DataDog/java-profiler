@@ -241,11 +241,8 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     // VMStructs is only available for hotspot JVM 
     assert(VM::isHotspot());
 
-    ProfiledThread* prof_thread = ProfiledThread::acquireCurrent();
-    if (prof_thread == nullptr) {
-        Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
-        return 0;
-    }
+    ProfiledThread* prof_thread = ProfiledThread::current();
+    assert(prof_thread != nullptr && "Should have been setup at signal handler entery");
 
     HotspotStackFrame frame(ucontext);
     uintptr_t bottom = (uintptr_t)&frame + MAX_WALK_SIZE;

@@ -8,6 +8,7 @@
 #include "callTraceHashTable.h"
 #include "guards.h"
 #include "common.h"  // TSAN_ENABLED (toolchain-agnostic sanitizer detection)
+#include "threadLocalData.h"
 #include <vector>
 #include <unordered_set>
 #include <thread>
@@ -30,7 +31,7 @@
 #include <memory>
 #include <sstream>
 #include <fstream>
-#include "../../main/cpp/gtest_crash_handler.h"
+#include "gtest_crash_handler.h"
 
 // Test name for crash handler
 static constexpr const char STRESS_TEST_NAME[] = "StressCallTraceStorage";

@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "codeCache.h"
+#include "counters.h"
 #include "guards.h"
 #include "libraries.h"
 #include "mallocTracer.h"
@@ -43,7 +44,10 @@ static inline void maybeRecord(void* ret, size_t size) {
     if (MallocTracer::running() && ret && size) {
         // Even we are not in a signal handler, we cannot malloc or
         // we may get into indefinite loop
-        ProfiledThread::acquireCurrent();
+        if (ProfiledThread::acquireCurrent() == nullptr) {
+            Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
+            return;
+        }
         CriticalSection cs;
         if (cs.entered()) {
             MallocTracer::recordMalloc(ret, size);

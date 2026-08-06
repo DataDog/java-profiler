@@ -226,19 +226,19 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     return;
   }
   int tid = 0;
-  ProfiledThread *current = ProfiledThread::current();
-  assert(current == nullptr || !current->isDeepCrashHandler());
-  if (current != nullptr && JVMThread::current() == nullptr
+  ProfiledThread *current = SIGNAL_HANDLER_CURRENT_THREAD();
+  assert(current != nullptr);
+
+  if (JVMThread::current() == nullptr
       && current->inInitWindow()) {
     current->tickInitWindow();
     errno = saved_errno;
     return;
   }
+
   if (current != NULL) {
     current->noteCPUSample(Profiler::instance()->recordingEpoch());
     tid = current->tid();
-  } else {
-    tid = OS::threadId();
   }
   Shims::instance().setSighandlerTid(tid);
 
@@ -268,6 +268,8 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   Counters::increment(CTIMER_SIGNAL_OWN);
 
   InflightGuard inflight;
+  ProfiledThread* current = SIGNAL_HANDLER_CURRENT_THREAD();
+  assert(current != nullptr);
 
   // Atomically try to enter critical section - prevents all reentrancy races
   CriticalSection cs;
@@ -281,25 +283,18 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
     return;
   }
-  int tid = 0;
-  ProfiledThread *current = ProfiledThread::current();
-  assert(current == nullptr || !current->isDeepCrashHandler());
+  assert(!current->isDeepCrashHandler());
   // Guard against the race window between Profiler::registerThread() and
   // thread_native_entry setting JVM TLS (PROF-13072): skip at most one signal
   // per thread. Pure native threads (where JVMThread::current() is always null)
   // are allowed through once the one-shot window expires.
-  if (current != nullptr && JVMThread::current() == nullptr
-      && current->inInitWindow()) {
+  if (JVMThread::current() == nullptr && current->inInitWindow()) {
     current->tickInitWindow();
     errno = saved_errno;
     return;
   }
-  if (current != NULL) {
-    current->noteCPUSample(Profiler::instance()->recordingEpoch());
-    tid = current->tid();
-  } else {
-    tid = OS::threadId();
-  }
+  current->noteCPUSample(Profiler::instance()->recordingEpoch());
+  int tid = current->tid();
   Shims::instance().setSighandlerTid(tid);
 
   ExecutionEvent event;

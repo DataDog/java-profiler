@@ -531,6 +531,13 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
 }
 
 u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event_type, Event *event, bool deferred) {
+  // Called from none signal based sampler
+  ProfiledThread* prof_thread = ProfiledThread::initCurrentThreadSignalSafe();
+  if (prof_thread == nullptr) {
+    Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
+    return 0;
+  }
+
   // Protect JVMTI sampling operations to prevent signal handler interference
   CriticalSection cs;
   atomicIncRelaxed(_total_samples);

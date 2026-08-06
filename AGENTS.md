@@ -288,6 +288,11 @@ The profiler uses a sophisticated double-buffered storage system for call traces
 - **Atomic Operations**: Instance ID management and counter updates use atomics
 - **Memory Allocation**: Minimize malloc() in hot paths, use pre-allocated containers
 
+### Sampler Safety
+- **Stack walker**: `HotspotSupport::walkVM()`, `StackWalker::walkDwarf()`, and `StackWalker::walkFP()` must be protected by `sigsetjmp()`/`siglongjmp()`.
+- **Samplers**: Every sampler must set up the `ProfiledThread` thread-local before sampling, and skip the sample if it isn't available. Signal-based samplers use `ProfiledThread::acquireCurrent()`; non-signal-based samplers use `ProfiledThread::initCurrentThreadSignalSafe()`.
+- **JNI/JVMTI callbacks**: Use `ProfiledThread::initCurrentThreadSignalSafe()` to set up `ProfiledThread` for the thread.
+
 ### Atomic Memory Ordering (Critical for arm64)
 arm64 has a weakly-ordered memory model (unlike x86 TSO). Incorrect ordering causes real lockups on arm64 that never reproduce on x86.
 - **Cross-thread reads**: Always use `__ATOMIC_ACQUIRE` for loads that must see stores from another thread. Never use `__ATOMIC_RELAXED` for cross-thread visibility unless you can prove no ordering dependency exists.

@@ -21,6 +21,7 @@
 #include "threadState.inline.h"
 #include "guards.h"
 #include "wallClockCounters.h"
+#include <cassert>
 #include <cerrno>
 #include <string.h>
 #include <math.h>
@@ -231,18 +232,28 @@ void WallClockASGCT::sharedSignalHandler(int signo, siginfo_t *siginfo,
 
 void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext,
                               u64 last_sample) {
+  // A thread with no ProfiledThread attached must never enter the critical
+  // section below. acquireCurrent() is the only thing that can attach one; it
+  // must fully succeed or fail before we try to claim exclusivity, not while
+  // we're holding it -- otherwise a signal that interrupts us right after
+  // publish could observe a ProfiledThread whose critical-section state
+  // doesn't yet reflect reality. Drop the sample instead.
+  ProfiledThread *current = ProfiledThread::acquireCurrent();
+  if (current == nullptr) {
+    Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
+    return;
+  }
+
   // Atomically try to enter critical section - prevents all reentrancy races
   CriticalSection cs;
   if (!cs.entered()) {
     return;  // Another critical section is active, defer profiling
   }
-  ProfiledThread *current = ProfiledThread::current();
   // Guard against the race window between Profiler::registerThread() and
   // thread_native_entry setting JVM TLS (PROF-13072): skip at most one signal
   // per thread. Pure native threads (where JVMThread::current() is always null)
   // are allowed through once the one-shot window expires.
-  if (current != nullptr && JVMThread::current() == nullptr
-      && current->inInitWindow()) {
+  if (JVMThread::current() == nullptr && current->inInitWindow()) {
     current->tickInitWindow();
     return;
   }
@@ -256,10 +267,10 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   if (precheck.suppress) {
     return;
   }
-  int tid = current != NULL ? current->tid() : OS::threadId();
+  int tid = current->tid();
   Shims::instance().setSighandlerTid(tid);
   u64 call_trace_id = 0;
-  if (current != NULL && _collapsing) {
+  if (_collapsing) {
     StackFrame frame(ucontext);
     u64 spanId = 0, rootSpanId = 0;
     // contextValid is not redundant with (spanId==0 && rootSpanId==0): a cleared
@@ -447,18 +458,21 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
   }
   int saved_errno = errno;
   ProfiledThread *current = ProfiledThread::current();
-  if (current != nullptr && JVMThread::current() == nullptr
+  assert(current != nullptr && "Should have been setup at signal handler entery");
+
+  if (JVMThread::current() == nullptr
       && current->inInitWindow()) {
     current->tickInitWindow();
     errno = saved_errno;
     return;
   }
+
   WallPrecheckResult precheck = prepareWallPrecheck(current, _precheck);
   if (precheck.suppress) {
     errno = saved_errno;
     return;
   }
-  int tid = current != NULL ? current->tid() : OS::threadId();
+  int tid = current->tid();
   Shims::instance().setSighandlerTid(tid);
 
   ExecutionEvent event;

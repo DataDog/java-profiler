@@ -626,21 +626,26 @@ void *VM::getLibraryHandle(const char *name) {
 
 void JNICALL VM::ClassPrepare(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
                                jclass klass) {
-  ProfiledThread::initCurrentThreadSignalSafe();
+  ProfiledThread* thr = ProfiledThread::initCurrentThreadSignalSafe();
+  assert(thr != nullptr);
   JVMSupport::loadMethodIDsIfNeeded(jvmti, jni, klass);
 }
 
 void JNICALL VM::ClassLoad(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                                 jclass klass) {
   // Needed only for AsyncGetCallTrace support
-  ProfiledThread::initCurrentThreadSignalSafe();
+  ProfiledThread* thr = ProfiledThread::initCurrentThreadSignalSafe();
+  assert(thr != nullptr);
 }
 
 
 void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
     ready(jvmti, jni);
 
-    // initialize the heap usage tracking only after the VM is ready
+    ProfiledThread* thr = ProfiledThread::initCurrentThreadSignalSafe();
+    assert(thr != nullptr);
+
+  // initialize the heap usage tracking only after the VM is ready
     HeapUsage::initJMXUsage(VM::jni());
 
     // Delayed start of profiler if agent has been loaded at VM bootstrap
@@ -655,6 +660,8 @@ Arguments& VM::arguments() {
 }
 
 void JNICALL VM::VMDeath(jvmtiEnv *jvmti, JNIEnv *jni) {
+  ProfiledThread* thr = ProfiledThread::initCurrentThreadSignalSafe();
+  assert(thr != nullptr);
   Profiler::instance()->shutdown(_agent_args);
 }
 
