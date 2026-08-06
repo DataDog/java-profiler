@@ -11,7 +11,6 @@ import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Assumptions;
 
 public class GCGenerationsTest extends AbstractProfilerTest {
@@ -30,11 +29,10 @@ public class GCGenerationsTest extends AbstractProfilerTest {
         MemLeakTarget target1 = new MemLeakTarget();
         MemLeakTarget target2 = new MemLeakTarget();
         runTests(target1, target2);
-        // Streamed rather than materialized: with "generations" tracking, every retained
-        // survivor is re-reported on each flush cycle for the rest of the run, which can
-        // drive the event count well past what's safe to hold fully resolved in memory.
-        long sampleCount = streamEvents("datadog.HeapLiveObject", e -> {});
-        assertTrue(sampleCount > 0, "datadog.HeapLiveObject was empty");
+        // With "generations" tracking, every retained survivor is re-reported on each flush
+        // cycle for the rest of the run, which can drive the event count well past what's safe
+        // to hold fully resolved in memory, so only presence is checked, not materialized.
+        verifyEventPresent("datadog.HeapLiveObject");
     }
 
     public static class MemLeakTarget extends ClassValue<AtomicLong> implements Runnable {

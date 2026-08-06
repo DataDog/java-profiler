@@ -391,6 +391,12 @@ public abstract class AbstractProfilerTest {
     }
   }
 
+  /**
+   * Materializes every matching event, deep-resolved (including its stack trace, if the event
+   * type has one), into memory. For high-volume event types, prefer {@link #verifyEventPresent}
+   * (presence only), {@link #streamEvents} (per-event checks) or {@link #reduceEvents} (folding into an
+   * accumulator) to avoid exhausting the test heap.
+   */
   public final JfrEvents verifyEvents(String eventType) {
     return verifyEvents(eventType, true);
   }

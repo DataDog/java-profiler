@@ -2,8 +2,6 @@ package com.datadoghq.profiler.memleak;
 
 import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.AbstractProfilerTest;
-import com.datadoghq.profiler.JfrEvent;
-import com.datadoghq.profiler.JfrEvents;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junitpioneer.jupiter.RetryingTest;
@@ -13,7 +11,6 @@ import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Assumptions;
 
 public class MemleakProfilerTest extends AbstractProfilerTest {
@@ -32,31 +29,13 @@ public class MemleakProfilerTest extends AbstractProfilerTest {
         MemLeakTarget target1 = new MemLeakTarget();
         MemLeakTarget target2 = new MemLeakTarget();
         runTests(target1, target2);
-        // Streamed rather than materialized: every retained survivor is re-reported on each
-        // flush cycle for the rest of the run, which can drive the event count well past
-        // what's safe to hold fully resolved in memory.
-        long sampleCount = streamEvents("datadog.HeapLiveObject", e -> {});
-        assertTrue(sampleCount > 0, "datadog.HeapLiveObject was empty");
+        // Every retained survivor is re-reported on each flush cycle for the rest of the run,
+        // which can drive the event count well past what's safe to hold fully resolved in
+        // memory, so only presence is checked, not materialized.
+        verifyEventPresent("datadog.HeapLiveObject");
+        // HeapUsage is a low-frequency periodic gauge event, unlike HeapLiveObject above, so
+        // materializing it is safe.
         verifyEvents("datadog.HeapUsage");
-//        assertAllocations(allocations, int[].class, target1, target2);
-//        assertAllocations(allocations, Integer[].class, target1, target2);
-    }
-
-    private static void assertAllocations(JfrEvents allocations, Class<?> clazz, MemLeakTarget... targets) {
-        long allocated = 0;
-        for (MemLeakTarget target : targets) {
-            allocated += target.getAllocated(clazz);
-        }
-        JfrEvents allocationsByType = allocations.filter(allocatedTypeFilter(clazz.getCanonicalName()));
-        assertTrue(allocationsByType.hasItems());
-        long recorded = 0;
-        for (JfrEvent item : allocationsByType) {
-            recorded += (long) scaledSize(item);
-        }
-        long absoluteError = Math.abs(recorded - allocated);
-        assertTrue(absoluteError < allocated / 10,
-                String.format("allocation samples should be within 10pct tolerance of allocated memory (recorded %d, allocated %d)",
-                        recorded, allocated));
     }
 
     public static class MemLeakTarget extends ClassValue<AtomicLong> implements Runnable {
@@ -76,10 +55,6 @@ public class MemleakProfilerTest extends AbstractProfilerTest {
             } finally {
                 sink.clear();
             }
-        }
-
-        long getAllocated(Class<?> clazz) {
-            return get(clazz).get();
         }
 
         private static void allocate(ThreadLocalRandom random, int depth) {
