@@ -201,6 +201,29 @@ of its own repeats (1805.5 MB, 1817.1 MB). Treat any single-run
 dd-trace-doe `memory` figure — including the `enterprise` numbers earlier
 in this report — as carrying roughly that much run-to-run noise.
 
+**Confirmed directly via class counts, not just inferred from RSS.** Captured
+NMT's `Class` count (`jcmd VM.native_memory summary`, mid-run) for all three
+archetypes' baseline/tracing-only/tracing+profiling configs, the same way as
+`enterprise` earlier:
+
+| Archetype | baseline | tracing-only | tracing+profiling |
+|---|---|---|---|
+| enterprise | ~7,907 | 13,241 | 13,872 |
+| idle | 7,907 | 13,232 | 13,640 |
+| latency | 7,916 | 13,238 | 13,664 |
+| throughput | 7,921 | 13,262 | 13,668 |
+
+Baseline and tracing-only class counts are essentially identical across all
+four archetypes (spreads of 14 and 30 classes respectively — noise).
+Tracing roughly doubles the class count regardless of RPS/concurrency,
+because it's driven by which classes get touched by instrumentation, not by
+how many requests flow through them. `enterprise`'s tracing+profiling count
+runs ~200-230 classes ahead of the other three, the one place a real (if
+small) difference shows up — plausibly its higher `loops_cpu`/`off_cpu`
+exercising a few extra code paths once profiling's own instrumentation is
+also active. This is a more direct confirmation of the touched-methods/
+fixed-cost framing than the RSS numbers alone.
+
 ## What we don't know
 
 The specific mechanism for the ~39 MB (tracing) / ~12 MB (profiling)
