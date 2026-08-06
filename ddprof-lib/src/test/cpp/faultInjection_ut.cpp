@@ -274,22 +274,42 @@ TEST_F(FaultInjectionTest, CheckStateSurfacesInjectedPrewarmUnwinderFailure) {
   // non-injected call is observed. Keep iterating (and un-latching the ERROR
   // state that every outcome here leaves behind) until both have been seen.
   for (int i = 0; i < 5000 && !(sawInjectedFailure && sawNonInjectedPrewarm); i++) {
+    // shouldFire() increments FAULTS_INJECTED exactly once whenever it fires,
+    // and the only fault-injection site reachable from checkState() is the
+    // INJECT_FAULT_BOOL_LIKELY around prewarmUnwinder()'s dlopen() call --
+    // JVMSupport::initialize() below is a plain mock, not an injection site.
+    // So the counter delta across one checkState() call, not the returned
+    // error message, is the ground truth for whether this iteration actually
+    // took the injected path; that lets the two outcomes be set from
+    // independent evidence instead of both being inferred from one string
+    // compare.
+    long long faultsBefore = Counters::getCounter(FAULTS_INJECTED);
     Error error = p->checkState();
+    bool injectedThisCall = Counters::getCounter(FAULTS_INJECTED) > faultsBefore;
     ASSERT_TRUE((bool)error) << "checkState() must fail here: either the "
                                  "injected prewarmUnwinder() failure or the "
                                  "mocked JVMSupport::initialize() failure";
-    if (prewarmFailureIsFatal && std::strcmp(error.message(), "Missing libgcc_s.so.1") == 0) {
-      sawInjectedFailure = true;
-    } else {
-      // prewarmUnwinder() succeeded (non-injected, ~99% of calls) and fell
-      // through to the mocked JVMSupport::initialize() failure instead --
-      // or, on musl, an injected prewarmUnwinder() failure did the same
-      // because checkState() doesn't treat it as fatal there.
-      EXPECT_STREQ("Profiler encountered fatal error", error.message());
-      if (!prewarmFailureIsFatal) {
+    if (prewarmFailureIsFatal) {
+      if (injectedThisCall) {
+        EXPECT_STREQ("Missing libgcc_s.so.1", error.message());
         sawInjectedFailure = true;
+      } else {
+        // prewarmUnwinder() succeeded (non-injected, ~99% of calls) and fell
+        // through to the mocked JVMSupport::initialize() failure instead.
+        EXPECT_STREQ("Profiler encountered fatal error", error.message());
+        sawNonInjectedPrewarm = true;
       }
-      sawNonInjectedPrewarm = true;
+    } else {
+      // On musl, checkState() doesn't treat a prewarmUnwinder() failure as
+      // fatal, so both an injected and a non-injected call fall through to
+      // the same mocked JVMSupport::initialize() failure message -- only the
+      // counter delta distinguishes them.
+      EXPECT_STREQ("Profiler encountered fatal error", error.message());
+      if (injectedThisCall) {
+        sawInjectedFailure = true;
+      } else {
+        sawNonInjectedPrewarm = true;
+      }
     }
     ProfilerTestAccessor::setState(p, NEW);
   }
