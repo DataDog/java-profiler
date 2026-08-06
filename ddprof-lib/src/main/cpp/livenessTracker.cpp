@@ -105,7 +105,7 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
   u64 target_gc_epoch = load(_gc_epoch);
   TEST_LOG("LivenessTracker::cleanup_table forced=%d gc_generations=%d current_epoch=%llu "
            "target_epoch=%llu table_size=%d",
-           forced, _gc_generations, (unsigned long long)current,
+           forced, _gc_generations.load(std::memory_order_relaxed), (unsigned long long)current,
            (unsigned long long)target_gc_epoch, _table_size);
 
   // is_epoch_owner is true iff this call is the one that moves _last_gc_epoch
@@ -174,7 +174,7 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
         }
         _table[target].age += epoch_diff;
 
-        if (_gc_generations && is_epoch_owner) {
+        if (_gc_generations.load(std::memory_order_relaxed) && is_epoch_owner) {
           // Per-klass population tracking (design doc's Open Question 3) -
           // gated on _gc_generations so this new cost is paid only when the
           // caller actually asked for generation/survival-shaped data
@@ -237,8 +237,9 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
 
     TEST_LOG("LivenessTracker::cleanup_table survivors=%u klass_count_scratch_size=%d",
              newsz, _klass_count_scratch_size);
-    if (_gc_generations && is_epoch_owner && _klass_count_scratch_size > 0) {
-      foldKlassCountsLocked(env, target_gc_epoch);
+    if (_gc_generations.load(std::memory_order_relaxed) && is_epoch_owner &&
+        _klass_count_scratch_size > 0) {
+      foldKlassCountsLocked(env, target_gc_epoch, allow_resolve);
     }
 
     end = OS::nanotime();
@@ -286,7 +287,7 @@ u32 LivenessTracker::resolveKlassId(JNIEnv *env, jobject ref) {
 void LivenessTracker::accumulateKlassCount(u32 klass_id, jweak sample_source) {
   for (int i = 0; i < _klass_count_scratch_size; i++) {
     if (_klass_count_scratch[i].klass_id == klass_id) {
-      if (_klass_count_scratch[i].count < UINT16_MAX) {
+      if (_klass_count_scratch[i].count < UINT32_MAX) {
         _klass_count_scratch[i].count++;
       }
       return;
@@ -306,7 +307,7 @@ void LivenessTracker::accumulateKlassCount(u32 klass_id, jweak sample_source) {
 }
 
 jweak LivenessTracker::recordKlassPopulationSampleLocked(u32 klass_id,
-                                                           u16 count,
+                                                           u32 count,
                                                            u64 epoch,
                                                            int *out_slot,
                                                            bool *out_created) {
@@ -376,7 +377,8 @@ jweak LivenessTracker::recordKlassPopulationSampleLocked(u32 klass_id,
   return evicted_ref;
 }
 
-void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch) {
+void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch,
+                                             bool allow_resolve) {
   TEST_LOG("LivenessTracker::foldKlassCountsLocked epoch=%llu scratch_size=%d",
            (unsigned long long)epoch, _klass_count_scratch_size);
   for (int i = 0; i < _klass_count_scratch_size; i++) {
@@ -389,6 +391,17 @@ void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch) {
                                                        epoch, &slot, &created);
     if (evicted != nullptr) {
       env->DeleteWeakGlobalRef(evicted);
+    }
+    if (!allow_resolve) {
+      // track()'s table-overflow branch calls cleanup_table(true, false)
+      // synchronously from the JVMTI SampledObjectAlloc callback stack - the
+      // same reason resolveKlassId() is skipped there (cleanup_table()'s own
+      // comment above). The representative-minting NewLocalRef/
+      // NewWeakGlobalRef/DeleteLocalRef churn below is no Java-bytecode
+      // upcall, but it is still avoidable JNI work on that hot path; leaving
+      // the representative unset here is safe because the retry condition
+      // right below picks it up again on the next allow_resolve=true sweep.
+      continue;
     }
     // Also retry minting when an existing entry's representative is stale:
     // either the field itself is still nullptr (a klass whose first-epoch
@@ -783,7 +796,7 @@ Error LivenessTracker::initialize(Arguments &args) {
   // reason: each profiler start should observe the flag it was actually
   // started with, even though the tracking table itself persists across
   // recordings.
-  _gc_generations = args._gc_generations;
+  _gc_generations.store(args._gc_generations, std::memory_order_relaxed);
 
   if (!_enabled) {
     return Error::OK;
@@ -1006,7 +1019,7 @@ retry:
 }
 
 void LivenessTracker::maybeForceCleanup(u64 now_ns) {
-  if (!_enabled || !_gc_generations) {
+  if (!_enabled || !_gc_generations.load(std::memory_order_relaxed)) {
     return;
   }
   constexpr u64 FORCE_CLEANUP_INTERVAL_NS = 30ULL * 1000 * 1000 * 1000;
@@ -1058,7 +1071,7 @@ void LivenessTracker::onGC() {
     store(_used_after_last_gc, HeapUsage::get(false)._used);
   }
 
-  if (_gc_generations) {
+  if (_gc_generations.load(std::memory_order_relaxed)) {
     // Feeds heapFloorRising()'s corroboration check (selectLeakCandidates())
     // - gated on _gc_generations, same as the per-klass population table
     // itself, since this ring exists purely to support that feature.

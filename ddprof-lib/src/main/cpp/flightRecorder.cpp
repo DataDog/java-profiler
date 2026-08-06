@@ -2162,7 +2162,7 @@ void Recording::recordReferenceChain(Buffer *buf, ReferenceChainEvent *event) {
       buf, RECORDING_BUFFER_LIMIT -
                (MAX_VAR32_LENGTH /* multi-byte size prefix, below */ +
                 3 * MAX_VAR64_LENGTH /* type id, start_time, target_tag */ +
-                2 * MAX_VAR32_LENGTH /* depth, chain count */ +
+                3 * MAX_VAR32_LENGTH /* depth, totalHops, chain count */ +
                 32 /* rootKind string */ +
                 (int)emitted_size * MAX_VAR32_LENGTH));
   // Multi-byte size prefix (like writeDatadogSetting() above), not
@@ -2174,6 +2174,10 @@ void Recording::recordReferenceChain(Buffer *buf, ReferenceChainEvent *event) {
   buf->putVar64(event->_target_tag);
   buf->putVar32(event->_depth);
   buf->putUtf8(root_kind_name);
+  // Original (pre-truncation) chain length, so a consumer can tell a full
+  // chain (totalHops == chain.length) from a silently truncated one -
+  // mirrors ReferenceChainAbandonedEvent's "no silent truncation" design.
+  buf->putVar32(chain_size);
   // T_CLASS array field (F_CPOOL|F_ARRAY, jfrMetadata.cpp) - each entry is a
   // StringDictionary class id, same encoding as a scalar objectClass field
   // (e.g. recordAllocation() above), just repeated `count` times.

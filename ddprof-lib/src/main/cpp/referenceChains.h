@@ -33,19 +33,20 @@
 //   2. JVMTI object tags round-trip a live object across a GC (SetTag/GetTag),
 //      via the minimal tagObject()/getTag()/clearTag() helpers below.
 // The tag-indexed FrontierTable was added next, followed by the actual heap
-// walk (runPass() calling jvmtiEnv::FollowReferences from the heap roots,
-// heapReferenceCallback() populating FrontierTable subject to the hop
-// cap/budget/frontier cap) - but that walk originally ran as a single,
+// walk (runPass() calling jvmtiEnv::IterateOverReachableObjects to enumerate
+// heap roots via heapRootCallback()/stackRefCallback(), populating
+// FrontierTable subject to the hop cap/budget/frontier cap) - but that walk
+// originally ran as a single,
 // non-resumable pass with no cross-pass persistence, no GC-epoch-driven
 // scheduling, and no tag release. This revision makes the search resumable
 // and terminating:
-//   - runPass() now distinguishes a search's first pass (seed
-//     FollowReferences from the heap roots, exactly as the original
-//     single-pass walk did) from a resumed pass (expandFrontier() below:
-//     resolve each not-yet-expanded frontier entry via GetObjectsWithTags -
-//     dead ones are pruned for free - then call FollowReferences with that
-//     object as initial_object to discover its own outgoing edges,
-//     continuing until the per-pass budget or the frontier cap is hit).
+//   - runPass() now distinguishes a search's first pass (IterateOverReachableObjects
+//     to enumerate heap roots, exactly as the original single-pass walk did)
+//     from a resumed pass (expandFrontier() below: resolve each
+//     not-yet-expanded frontier entry via GetObjectsWithTags - dead ones are
+//     pruned for free - then call FollowReferences with that object as
+//     initial_object to discover its own outgoing edges, continuing until
+//     the per-pass budget or the frontier cap is hit).
 //   - The Termination section's cutoffs are enforced across passes: the hop
 //     cap already carried over via FrontierEntry::depth; this adds a
 //     wall-clock TTL cutoff (_ttl_ms, from first pass) and treats the

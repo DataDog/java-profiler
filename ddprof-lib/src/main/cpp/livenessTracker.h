@@ -12,6 +12,7 @@
 #include "engine.h"
 #include "event.h"
 #include "spinLock.h"
+#include <atomic>
 #include <jvmti.h>
 #include <pthread.h>
 #include <set>
@@ -59,7 +60,11 @@ typedef struct KlassPopulationEntry {
                           // foldKlassCountsLocked()'s comment for why aliasing
                           // would leave a dangling handle once cleanup_table()
                           // reaps the original TrackingEntry).
-  u16 count_ring[30];     // ring buffer of per-epoch live population counts
+  u32 count_ring[30];     // ring buffer of per-epoch live population counts.
+                          // u32, not u16: a single klass's surviving count in
+                          // one epoch can reach _table_max_cap
+                          // (MAX_TRACKING_TABLE_SIZE = 262144), which u16
+                          // cannot represent losslessly.
   u8 ring_head;           // next slot to write
   u8 ring_fill;           // samples written so far, caps at 30
   // Number of consecutive epochs (most recent first) for which
@@ -231,8 +236,11 @@ private:
   // Question 3 by itself, but the plan built on top of this table requires
   // liveness tracking *and* _gc_generations, matching the doc's stated
   // fallback of "no target-seeding" when generations tracking isn't on
-  // (arguments.cpp:223-227,244).
-  bool _gc_generations;
+  // (arguments.cpp:223-227,244). std::atomic (relaxed) since initialize()
+  // writes it from the control thread while the BFS thread
+  // (maybeForceCleanup()) and the GC-callback thread (cleanup_table()) can
+  // still be reading it from a session that persists across a restart.
+  std::atomic<bool> _gc_generations;
 
   // Per-klass population history table (see KlassPopulationEntry above).
   // Populated only from cleanup_table()'s GC-epoch-advance pass, never from
@@ -252,7 +260,7 @@ private:
   // end of the pass.
   typedef struct KlassCountScratch {
     u32 klass_id;
-    u16 count;
+    u32 count; // matches count_ring's width - see that field's own comment.
     jweak sample_source; // the original TrackingEntry::ref of the first
                           // surviving instance of this klass seen this
                           // epoch; consulted only by foldKlassCountsLocked()
@@ -365,7 +373,7 @@ private:
   // so the caller can DeleteWeakGlobalRef() it.
   // Precondition: _table_lock is held (by cleanup_table(), the only
   // production caller).
-  jweak recordKlassPopulationSampleLocked(u32 klass_id, u16 count, u64 epoch,
+  jweak recordKlassPopulationSampleLocked(u32 klass_id, u32 count, u64 epoch,
                                            int *out_slot, bool *out_created);
 
   // Drains _klass_count_scratch into _klass_population for the epoch that
@@ -385,7 +393,14 @@ private:
   // dangling handle if it aliased the same jweak. Resets
   // _klass_count_scratch_size to 0 once drained. Called with _table_lock
   // held, at the end of cleanup_table()'s epoch-advance pass.
-  void foldKlassCountsLocked(JNIEnv *env, u64 epoch);
+  // allow_resolve mirrors resolveKlassId()'s own parameter (cleanup_table()'s
+  // header comment): when false, this runs synchronously on the JVMTI
+  // SampledObjectAlloc callback stack (track()'s table-overflow branch), so
+  // the representative-minting NewLocalRef/NewWeakGlobalRef/DeleteLocalRef
+  // churn below is skipped - the ring/count bookkeeping still happens, and a
+  // missing representative is retried on the next allow_resolve=true sweep
+  // (see the retry-condition comment in livenessTracker.cpp).
+  void foldKlassCountsLocked(JNIEnv *env, u64 epoch, bool allow_resolve);
 
   // --- Slope computation and candidate ranking (selectLeakCandidates() below) ---
 
@@ -505,7 +520,9 @@ public:
   // calling selectLeakCandidates() entirely when the feature isn't in use,
   // rather than relying on that method's own "returns 0" fallback to make
   // the no-op cheap. Read-only; this accessor never toggles the flag.
-  bool gcGenerationsEnabled() const { return _gc_generations; }
+  bool gcGenerationsEnabled() const {
+    return _gc_generations.load(std::memory_order_relaxed);
+  }
 
   // Third trigger for cleanup_table(), alongside track()'s table-overflow
   // branch (forced) and flush_table()'s JFR-flush cadence (organic): those
@@ -550,7 +567,7 @@ public:
     }
     return false;
   }
-  jweak klassPopulationRecordForTest(u32 klass_id, u16 count, u64 epoch,
+  jweak klassPopulationRecordForTest(u32 klass_id, u32 count, u64 epoch,
                                       int *out_slot, bool *out_created) {
     return recordKlassPopulationSampleLocked(klass_id, count, epoch, out_slot,
                                               out_created);
@@ -619,7 +636,9 @@ public:
   // gcGenerationsEnabled()'s gate (e.g. referenceChains_ut.cpp's
   // pollWatchedTargets() tests) use this instead of standing up a full
   // initialize()/start() call.
-  void setGcGenerationsForTest(bool v) { _gc_generations = v; }
+  void setGcGenerationsForTest(bool v) {
+    _gc_generations.store(v, std::memory_order_relaxed);
+  }
 
 private:
   void getLiveTraceIds(CallTraceIdSet& out_buffer);
