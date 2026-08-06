@@ -432,7 +432,7 @@ retaining path, not a claim about the object's current exact retention state.
      `LiveHeapReferenceChains-BenchmarkPlan.md` (kept locally, not committed) item,
      not fully closed by this mechanism landing.
    - Measurement point: `runPass()` (`referenceChains.cpp`) times its own root
-     `FollowReferences` call (first pass) or `expandFrontier()`'s
+     `IterateOverReachableObjects` call (first pass) or `expandFrontier()`'s
      `GetObjectsWithTags`+`FollowReferences` pair (resumed pass) — already the thread blocked
      inside the safepoint those calls trigger (Triggering section) — and converts to whole
      milliseconds before feeding `_pause_pid.compute()` (matching every other `PidController`

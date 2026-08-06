@@ -606,7 +606,9 @@ void ElfParser::parseDynamicSection() {
         uint32_t nsyms = 0;
 
         const char* dyn_start = at(dynamic);
-        const char* dyn_end = dyn_start + dynamic->p_memsz;
+        // at(dynamic) is NULL when dynamic->p_vaddr == 0 - same null-base
+        // pointer-arithmetic UB as the other fixes in this file.
+        const char* dyn_end = (const char*)((uintptr_t)dyn_start + dynamic->p_memsz);
         for (ElfDyn* dyn = (ElfDyn*)dyn_start; dyn < (ElfDyn*)dyn_end; dyn++) {
             switch (dyn->d_tag) {
                 case DT_SYMTAB:

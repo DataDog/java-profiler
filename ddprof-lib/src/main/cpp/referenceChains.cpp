@@ -772,6 +772,12 @@ void ReferenceChainTracker::restartSearch() {
   _last_pass_gc_finish_epoch = 0;
   store(_last_pass_ns, (u64)0);
   store(_passes_run, 0);
+  // Reset back to their just-constructed values (0 / -1) like every other
+  // per-search field this method touches: resolveLoadedClasses() and
+  // admitStaticFieldRoots() must both run unconditionally on the restarted
+  // search's first pass, exactly as they do for a brand-new tracker.
+  _last_resolved_class_count = 0;
+  _last_static_field_class_count = -1;
   // _resolved_chains is intentionally left intact: a chain resolved by the
   // finishing search stays cached (and keeps being re-emitted on every dump)
   // across the restart, since it describes a sample that is still live. The
