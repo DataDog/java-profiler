@@ -243,13 +243,19 @@ private:
   jvmtiEnv* _orig;
 };
 
-// (d) Value-injection path: PROF-15395 fixed Profiler::checkState() (shared by
-// start()/check(), and therefore also reached by the -agentpath auto-start
-// path) to fail cleanly instead of crashing later when libgcc_s.so.1 can't be
-// loaded. libgcc_s.so.1 is always present in this test environment, so
-// INJECT_FAULT_BOOL_LIKELY on prewarmUnwinder()'s return value is what makes
-// that failure path reachable here: the real dlopen() still runs and
-// succeeds, but the caller is deterministically told it failed.
+// (d) Value-injection path: Profiler::checkState() (shared by start()/check(),
+// and therefore also reached by the -agentpath auto-start path) fails cleanly
+// instead of crashing later when libgcc_s.so.1 can't be loaded. libgcc_s.so.1
+// is always present in this test environment, so INJECT_FAULT_BOOL_LIKELY on
+// prewarmUnwinder()'s return value is what makes that failure path reachable
+// here: the real dlopen() still runs and succeeds, but the caller is
+// deterministically told it failed.
+//
+// checkState() only treats that failure as fatal off musl (see its comment:
+// musl never hits the pthread_exit path that needs libgcc_s.so.1), so on
+// musl an injected failure falls through to the mocked
+// JVMSupport::initialize() failure instead of surfacing "Missing
+// libgcc_s.so.1" -- expect whichever outcome the current libc implies.
 TEST_F(FaultInjectionTest, CheckStateSurfacesInjectedPrewarmUnwinderFailure) {
 #ifdef __linux__
   Profiler* p = Profiler::instance();
@@ -259,6 +265,7 @@ TEST_F(FaultInjectionTest, CheckStateSurfacesInjectedPrewarmUnwinderFailure) {
   ProfilerTestAccessor::setState(p, NEW);
   ProfiledThread::current()->setFiRng(0x5EED5EED5EED5EEDULL);
 
+  const bool prewarmFailureIsFatal = !OS::isMusl();
   bool sawInjectedFailure = false;
   bool sawNonInjectedPrewarm = false;
   // shouldFire() mixes the fixed RNG seed above with an ASLR-dependent
@@ -271,19 +278,26 @@ TEST_F(FaultInjectionTest, CheckStateSurfacesInjectedPrewarmUnwinderFailure) {
     ASSERT_TRUE((bool)error) << "checkState() must fail here: either the "
                                  "injected prewarmUnwinder() failure or the "
                                  "mocked JVMSupport::initialize() failure";
-    if (std::strcmp(error.message(), "Missing libgcc_s.so.1") == 0) {
+    if (prewarmFailureIsFatal && std::strcmp(error.message(), "Missing libgcc_s.so.1") == 0) {
       sawInjectedFailure = true;
     } else {
       // prewarmUnwinder() succeeded (non-injected, ~99% of calls) and fell
-      // through to the mocked JVMSupport::initialize() failure instead.
+      // through to the mocked JVMSupport::initialize() failure instead --
+      // or, on musl, an injected prewarmUnwinder() failure did the same
+      // because checkState() doesn't treat it as fatal there.
       EXPECT_STREQ("Profiler encountered fatal error", error.message());
+      if (!prewarmFailureIsFatal) {
+        sawInjectedFailure = true;
+      }
       sawNonInjectedPrewarm = true;
     }
     ProfilerTestAccessor::setState(p, NEW);
   }
 
-  EXPECT_TRUE(sawInjectedFailure)
-      << "expected at least one injected prewarmUnwinder() failure within 5000 tries";
+  if (prewarmFailureIsFatal) {
+    EXPECT_TRUE(sawInjectedFailure)
+        << "expected at least one injected prewarmUnwinder() failure within 5000 tries";
+  }
   EXPECT_TRUE(sawNonInjectedPrewarm)
       << "expected at least one non-injected prewarmUnwinder() success within 5000 tries";
 #endif // __linux__
