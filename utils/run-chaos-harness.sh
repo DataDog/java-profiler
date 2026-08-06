@@ -47,7 +47,7 @@ echo "Chaos run: runtime=${RUNTIME}s config=${CONFIG} allocator=${ALLOCATOR}"
 # doesn't match what's already active; otherwise just use `java` as found.
 if [ -n "${CHAOS_JDK:-}" ]; then
   JDK_MAJOR="${CHAOS_JDK%%.*}"
-  ACTIVE_MAJOR=$(java -version 2>&1 | head -1 | grep -oE '"[0-9]+' | tr -d '"')
+  ACTIVE_MAJOR=$(java -version 2>&1 | grep -m1 'version "' | grep -oE '"[0-9]+' | tr -d '"')
   if [ "${ACTIVE_MAJOR}" != "${JDK_MAJOR}" ]; then
     JDK_ARCH=$(uname -m | sed 's/x86_64/x64/')
     JDK_INSTALL_DIR="${CHAOS_JDK_DIR:-${WORK_DIR}/jdk-${CHAOS_JDK}}"
@@ -73,7 +73,7 @@ if ! command -v java >/dev/null 2>&1; then
   echo "FAIL:no java on PATH (set CHAOS_JDK to have one downloaded)" >&2
   exit 1
 fi
-echo "Using: $(java -version 2>&1 | head -1)"
+echo "Using: $(java -version 2>&1 | grep -m1 'version "')"
 
 # --- ddprof jar --------------------------------------------------------------
 # Prefer a local build artifact. If absent and CURRENT_VERSION is set (CI

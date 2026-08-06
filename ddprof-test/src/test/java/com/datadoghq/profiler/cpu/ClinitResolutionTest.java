@@ -9,11 +9,8 @@ import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -87,23 +84,17 @@ public class ClinitResolutionTest extends AbstractProfilerTest {
         // SpinningClinit — i.e. both the class name and the method name are present,
         // not replaced by "unknown".
         //
-        // JMC's STACK_TRACE_STRING HTML-escapes angle brackets, so <clinit> appears as
-        // "&lt;clinit&gt;".  Matching on "clinit" catches both representations.
-        IItemCollection events = verifyEvents("datadog.ExecutionSample");
+        // Matching on the bare "clinit" token is robust regardless of how the class
+        // initializer's method name is escaped/rendered.
+        JfrEvents events = verifyEvents("datadog.ExecutionSample");
         boolean foundClinit = false;
-        outer:
-        for (IItemIterable cpuSamples : events) {
-            IMemberAccessor<String, IItem> frameAccessor =
-                    JdkAttributes.STACK_TRACE_STRING.getAccessor(cpuSamples.getType());
-            if (frameAccessor == null) continue;
-            for (IItem sample : cpuSamples) {
-                String stackTrace = frameAccessor.getMember(sample);
-                if (stackTrace != null
-                        && stackTrace.contains("SpinningClinit")
-                        && stackTrace.contains("clinit")) {
-                    foundClinit = true;
-                    break outer;
-                }
+        for (JfrEvent sample : events) {
+            String stackTrace = sample.getStackTraceString();
+            if (stackTrace != null
+                    && stackTrace.contains("SpinningClinit")
+                    && stackTrace.contains("clinit")) {
+                foundClinit = true;
+                break;
             }
         }
         assertTrue(foundClinit,

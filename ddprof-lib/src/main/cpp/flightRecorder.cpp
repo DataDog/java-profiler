@@ -1146,7 +1146,35 @@ void Recording::writeHeader(Buffer *buf) {
   flushIfNeeded(buf);
 }
 
-void Recording::writeElement(Buffer *buf, const Element *e) {
+size_t Recording::countSerializableChildren(
+    const std::vector<const Element *> &children, int depth) {
+  // Children one level deeper than `depth` are what writeElement() would
+  // truncate on its own depth check, so exclude them here too, before being
+  // counted, so child_count always matches the number of children actually
+  // serialized below (an inflated count would make the metadata stream
+  // itself malformed).
+  bool truncate_children = depth + 1 > 10;
+
+  size_t child_count = 0;
+  for (size_t i = 0; i < children.size(); i++) {
+    if (children[i] == nullptr) {
+      Counters::increment(METADATA_TREE_NULL_CHILD);
+      fprintf(stderr, "[ddprof] [WARN] writeElement skipping null child at index %zu\n", i);
+    } else if (truncate_children) {
+      Counters::increment(METADATA_TREE_DEPTH_EXCEEDED);
+      fprintf(stderr, "[ddprof] [WARN] writeElement truncating child at index %zu, depth limit exceeded\n", i);
+    } else {
+      child_count++;
+    }
+  }
+  return child_count;
+}
+
+void Recording::writeElement(Buffer *buf, const Element *e, int depth) {
+  if (e == nullptr) {
+    return;
+  }
+
   buf->putVar64(e->_name);
 
   buf->putVar64(e->_attributes.size());
@@ -1156,10 +1184,18 @@ void Recording::writeElement(Buffer *buf, const Element *e) {
     buf->putVar64(e->_attributes[i]._value);
   }
 
-  buf->putVar64(e->_children.size());
-  for (size_t i = 0; i < e->_children.size(); i++) {
-    flushIfNeeded(buf);
-    writeElement(buf, e->_children[i]);
+  bool truncate_children = depth + 1 > 10;
+  size_t child_count = countSerializableChildren(e->_children, depth);
+
+  buf->putVar64(child_count);
+  if (!truncate_children) {
+    for (size_t i = 0; i < e->_children.size(); i++) {
+      if (e->_children[i] == nullptr) {
+        continue;
+      }
+      flushIfNeeded(buf);
+      writeElement(buf, e->_children[i], depth + 1);
+    }
   }
   flushIfNeeded(buf);
 }

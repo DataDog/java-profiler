@@ -24,12 +24,32 @@ std::vector<std::string> Element::_strings;
 
 JfrMetadata JfrMetadata::_root;
 bool JfrMetadata::_initialized = false;
+std::vector<NoField *> JfrMetadata::_nofields;
 
 JfrMetadata::JfrMetadata() : Element("root") {}
+
+// Private helper: recursively delete all heap-allocated Elements in the subtree.
+// Safe to call only when no profiling engines are running (called from reset()).
+static void deleteElementTree(Element *e) {
+  if (e == nullptr) return;
+  for (const Element *child : e->_children) {
+    deleteElementTree(const_cast<Element *>(child));
+  }
+  delete e;
+}
 
 // Must only be called after all profiler engines are stopped and no signal
 // handlers can fire. std::vector/std::map are not async-signal-safe.
 void JfrMetadata::reset() {
+  // Recursively delete all heap-allocated Elements in the tree before clearing vectors.
+  for (const Element *child : _root._children) {
+    deleteElementTree(const_cast<Element *>(child));
+  }
+  // Delete all tracked NoField instances that were allocated during initialize()
+  for (NoField *nf : _nofields) {
+    delete nf;
+  }
+  _nofields.clear();
   _root._children.clear();
   _root._attributes.clear();
   _strings.clear();

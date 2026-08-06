@@ -287,7 +287,12 @@ post-pr-comment:
   stage: integration-test
   tags: [ "arch:arm64" ]
   image: registry.ddbuild.io/images/dd-octo-sts-ci-base:2025.06-1
+  id_tokens:
+    DDOCTOSTS_ID_TOKEN:
+      aud: dd-octo-sts
   needs:
+    - job: prepare:start
+      artifacts: true
     - job: prepare-patched-agent
       artifacts: true
     - job: integration-test-x64-glibc
@@ -309,4 +314,34 @@ post-pr-comment:
   timeout: 5m
   script:
     - .gitlab/dd-trace-integration/post-pr-comment.sh integration-test-results
-  allow_failure: true
+
+# Loud failure signal for scheduled/main runs, which have no PR to report back to.
+notify-slack-dd-trace-integration:
+  stage: notify
+  tags: [ "arch:amd64" ]
+  image: registry.ddbuild.io/slack-notifier:v91289620-4ec922a-latest@sha256:06b24f392ccc383d371c72001520a254edef523bc0bfdc445f487106107b4202
+  needs:
+    - job: prepare:start
+      artifacts: true
+    - job: get-versions
+      artifacts: true
+    - job: prepare-patched-agent
+      artifacts: false
+    - job: integration-test-x64-glibc
+      artifacts: false
+    - job: integration-test-x64-musl
+      artifacts: false
+    - job: integration-test-arm64-glibc
+      artifacts: false
+    - job: integration-test-arm64-musl
+      artifacts: false
+  rules:
+    - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+      when: never
+    - if: '$CI_PIPELINE_SOURCE == "schedule" || $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      when: on_failure
+    - when: never
+  script:
+    - .gitlab/dd-trace-integration/notify_channel.sh "${CURRENT_VERSION}"

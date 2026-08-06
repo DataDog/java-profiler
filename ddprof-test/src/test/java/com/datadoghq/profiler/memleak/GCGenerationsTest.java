@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler.memleak;
 
 import com.datadoghq.profiler.Platform;
@@ -5,16 +10,12 @@ import com.datadoghq.profiler.AbstractProfilerTest;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junitpioneer.jupiter.RetryingTest;
-import org.openjdk.jmc.common.item.Aggregators;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.ItemFilters;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicLong;
 
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Assumptions;
 
 public class GCGenerationsTest extends AbstractProfilerTest {
@@ -33,7 +34,10 @@ public class GCGenerationsTest extends AbstractProfilerTest {
         MemLeakTarget target1 = new MemLeakTarget();
         MemLeakTarget target2 = new MemLeakTarget();
         runTests(target1, target2);
-        verifyEvents("datadog.HeapLiveObject");
+        // With "generations" tracking, every retained survivor is re-reported on each flush
+        // cycle for the rest of the run, which can drive the event count well past what's safe
+        // to hold fully resolved in memory, so only presence is checked, not materialized.
+        verifyEventPresent("datadog.HeapLiveObject");
     }
 
     public static class MemLeakTarget extends ClassValue<AtomicLong> implements Runnable {
