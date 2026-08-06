@@ -1161,6 +1161,7 @@ size_t Recording::countSerializableChildren(
       fprintf(stderr, "[ddprof] [WARN] writeElement skipping null child at index %zu\n", i);
     } else if (truncate_children) {
       Counters::increment(METADATA_TREE_DEPTH_EXCEEDED);
+      fprintf(stderr, "[ddprof] [WARN] writeElement truncating child at index %zu, depth limit exceeded\n", i);
     } else {
       child_count++;
     }
@@ -1170,15 +1171,6 @@ size_t Recording::countSerializableChildren(
 
 void Recording::writeElement(Buffer *buf, const Element *e, int depth) {
   if (e == nullptr) {
-    return;
-  }
-
-  if (depth > 10) {
-    // stderr from an embedded native lib is rarely captured or monitored, and
-    // we don't yet know what corrupts the tree, so the counter is the durable
-    // signal here — an unmonitored log line would let it recur invisibly.
-    Counters::increment(METADATA_TREE_DEPTH_EXCEEDED);
-    fprintf(stderr, "[ddprof] [ERROR] writeElement depth limit exceeded, truncating output\n");
     return;
   }
 
