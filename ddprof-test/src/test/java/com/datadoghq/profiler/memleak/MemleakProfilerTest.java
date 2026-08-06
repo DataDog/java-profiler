@@ -32,8 +32,12 @@ public class MemleakProfilerTest extends AbstractProfilerTest {
         MemLeakTarget target1 = new MemLeakTarget();
         MemLeakTarget target2 = new MemLeakTarget();
         runTests(target1, target2);
-        JfrEvents allocations = verifyEvents("datadog.HeapLiveObject");
-        JfrEvents heapUsage = verifyEvents("datadog.HeapUsage");
+        // Streamed rather than materialized: every retained survivor is re-reported on each
+        // flush cycle for the rest of the run, which can drive the event count well past
+        // what's safe to hold fully resolved in memory.
+        long sampleCount = streamEvents("datadog.HeapLiveObject", e -> {});
+        assertTrue(sampleCount > 0, "datadog.HeapLiveObject was empty");
+        verifyEvents("datadog.HeapUsage");
 //        assertAllocations(allocations, int[].class, target1, target2);
 //        assertAllocations(allocations, Integer[].class, target1, target2);
     }

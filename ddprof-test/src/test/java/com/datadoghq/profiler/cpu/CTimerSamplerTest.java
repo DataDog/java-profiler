@@ -13,14 +13,13 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.junitpioneer.jupiter.RetryingTest;
-import com.datadoghq.profiler.JfrEvent;
-import com.datadoghq.profiler.JfrEvents;
 
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -50,12 +49,13 @@ public class CTimerSamplerTest extends CStackAwareAbstractProfilerTest {
 
         verifyCStackSettings();
 
-        JfrEvents events = verifyEvents("datadog.ExecutionSample");
-
-        for (JfrEvent sample : events) {
+        // Streamed rather than materialized: cpu=100us over this workload can produce tens of
+        // thousands of samples, and every check here is per-event with no need to retain them.
+        long sampleCount = streamEvents("datadog.ExecutionSample", sample -> {
             String stackTrace = sample.getStackTraceString();
             assertFalse(stackTrace.contains("jvmtiError"));
-        }
+        });
+        assertTrue(sampleCount > 0, "datadog.ExecutionSample was empty");
     }
 
     @Override

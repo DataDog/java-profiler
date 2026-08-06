@@ -30,7 +30,11 @@ public class GCGenerationsTest extends AbstractProfilerTest {
         MemLeakTarget target1 = new MemLeakTarget();
         MemLeakTarget target2 = new MemLeakTarget();
         runTests(target1, target2);
-        verifyEvents("datadog.HeapLiveObject");
+        // Streamed rather than materialized: with "generations" tracking, every retained
+        // survivor is re-reported on each flush cycle for the rest of the run, which can
+        // drive the event count well past what's safe to hold fully resolved in memory.
+        long sampleCount = streamEvents("datadog.HeapLiveObject", e -> {});
+        assertTrue(sampleCount > 0, "datadog.HeapLiveObject was empty");
     }
 
     public static class MemLeakTarget extends ClassValue<AtomicLong> implements Runnable {
