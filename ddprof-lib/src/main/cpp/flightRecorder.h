@@ -345,7 +345,6 @@ public:
   Recording *_rec;
   MethodMap *_method_map;
   StringDictionary *_classes;
-  std::map<u32, const char*> _class_cache;  // snapshot of _classes->standby() at dump time
   // Per-dump VMSymbol* -> resolved class_id cache for BCI_VTABLE_RECEIVER
   // frames. Two purposes: (1) amortise the SafeAccess work to once per
   // distinct Symbol pointer per dump; (2) the resolved class_id is used
@@ -393,14 +392,6 @@ public:
   Lookup(Recording *rec, MethodMap *method_map, StringDictionary *classes)
       : _rec(rec), _method_map(method_map), _classes(classes), _packages(),
         _symbols() {}
-
-  // Call once before writeStackTraces.  Populates _class_cache from
-  // _classes->standby() under the shared lock.  NOTE: _class_cache is
-  // currently write-only — writeClasses() re-collects from standby() and
-  // resolveMethod() inserts via lookupDuringDump() rather than reading
-  // this cache.  Kept for compatibility with #527's API and as a hook
-  // for future readers; safe to remove if no consumer materialises.
-  void initClassCache();
 
   MethodInfo *resolveMethod(ASGCT_CallFrame &frame);
   u32 getPackage(const char *class_name);
