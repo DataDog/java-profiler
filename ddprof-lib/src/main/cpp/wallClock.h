@@ -9,6 +9,7 @@
 
 #include <cassert>
 #include "engine.h"
+#include "nativeMem.h"
 #include "os.h"
 #include "profiler.h"
 #include "reservoirSampler.h"
@@ -79,6 +80,7 @@ class BaseWallClock : public Engine {
 
       while (_running.load(std::memory_order_relaxed)) {
         collectThreads(threads);
+        NativeMem::setLive(NM_MISC, (long long)threads.capacity() * sizeof(ThreadType));
 
         int num_failures = 0;
         int threads_already_exited = 0;

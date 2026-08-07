@@ -7,7 +7,9 @@
 #define _CALLTRACEHASHTABLE_H
 
 #include "arch.h"
+#include "countingAllocator.h"
 #include "linearAllocator.h"
+#include "nativeMem.h"
 #include "vmEntry.h"
 #include <unordered_set>
 #include <atomic>
@@ -21,10 +23,20 @@ struct CallTrace {
   u64 trace_id;  // 64-bit for JFR constant pool compatibility
   ASGCT_CallFrame frames[1];
 
-  CallTrace(bool truncated, int num_frames, u64 trace_id) 
+  CallTrace(bool truncated, int num_frames, u64 trace_id)
     : truncated(truncated), num_frames(num_frames), trace_id(trace_id) {
   }
 };
+
+// Traces collected for JFR/liveness processing. Uses CountingAllocator so the
+// real per-node heap cost is attributed to NM_CALLTRACE, the same category the
+// rest of the call-trace arena already accounts into.
+using CallTraceSet =
+    std::unordered_set<CallTrace *, std::hash<CallTrace *>, std::equal_to<CallTrace *>,
+                        CountingAllocator<CallTrace *, NM_CALLTRACE>>;
+using CallTraceIdSet =
+    std::unordered_set<u64, std::hash<u64>, std::equal_to<u64>,
+                        CountingAllocator<u64, NM_CALLTRACE>>;
 
 struct CallTraceSample {
   CallTrace *trace;
@@ -122,7 +134,7 @@ public:
    */
   ChunkList clearTableOnly();
 
-  void collect(std::unordered_set<CallTrace *> &traces, std::function<void(CallTrace*)> trace_hook = nullptr);
+  void collect(CallTraceSet &traces, std::function<void(CallTrace*)> trace_hook = nullptr);
 
   u64 put(int num_frames, ASGCT_CallFrame *frames, bool truncated, u64 weight);
   void putWithExistingId(CallTrace* trace, u64 weight);  // For standby tables with no contention

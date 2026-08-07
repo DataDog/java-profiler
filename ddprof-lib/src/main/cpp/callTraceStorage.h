@@ -26,7 +26,7 @@ class CallTraceHashTable;
 // Liveness checker function type
 // Fills the provided set with 64-bit call_trace_id values that should be preserved
 // Using reference parameter avoids malloc() for vector creation and copying
-typedef std::function<void(std::unordered_set<u64>&)> LivenessChecker;
+typedef std::function<void(CallTraceIdSet&)> LivenessChecker;
 
 class CallTraceStorage {
 public:
@@ -65,8 +65,8 @@ private:
     
     // Pre-allocated collections for processTraces (single-threaded operation)
     // These collections are reused to eliminate malloc/free cycles
-    std::unordered_set<CallTrace*> _traces_buffer;           // All traces for JFR processing
-    std::unordered_set<u64> _preserve_set_buffer;           // Preserve set for current cycle
+    CallTraceSet _traces_buffer;           // All traces for JFR processing
+    CallTraceIdSet _preserve_set_buffer;           // Preserve set for current cycle
     
 public:
     CallTraceStorage();
@@ -85,7 +85,7 @@ public:
     // Lock-free trace processing with RefCountGuard protection
     // The callback receives traces that are guaranteed to be valid during execution
     // Uses atomic table swapping with grace period for safe memory reclamation
-    void processTraces(std::function<void(const std::unordered_set<CallTrace*>&)> processor);
+    void processTraces(std::function<void(const CallTraceSet&)> processor);
 
     // Enhanced clear with liveness preservation (rarely called - uses atomic operations)
     void clear();
