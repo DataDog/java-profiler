@@ -144,10 +144,10 @@ select_release_branch() {
         [ "$visible" -lt "$total" ] && menu_rows=$((visible + 1))
         case $key in
             up)
-                [ $selected -gt 0 ] && ((selected--))
+                [ $selected -gt 0 ] && selected=$((selected - 1))
                 ;;
             down)
-                [ $selected -lt $((menu_rows - 1)) ] && ((selected++))
+                [ $selected -lt $((menu_rows - 1)) ] && selected=$((selected + 1))
                 ;;
             enter)
                 if [ "$visible" -lt "$total" ] && [ "$selected" -eq "$visible" ]; then
@@ -409,7 +409,12 @@ print_info "$BRANCH is up to date with origin"
 # branch before picking a commit to release.
 if [ "$RELEASE_TYPE" == "patch" ]; then
     echo ""
-    read -p "Pick PRs from main to backport to $BRANCH before releasing? (y/n): " -r </dev/tty
+    if [ -t 0 ]; then
+        read -p "Pick PRs from main to backport to $BRANCH before releasing? (y/n): " -r </dev/tty
+    else
+        REPLY="n"
+        print_info "No terminal attached; skipping the interactive backport-PR prompt."
+    fi
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         PREPARE_ARGS=(--branch "$BRANCH")
         [ "$DRY_RUN" == "false" ] && PREPARE_ARGS+=(--no-dry-run)

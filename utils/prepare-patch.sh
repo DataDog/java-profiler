@@ -206,8 +206,8 @@ select_release_branch() {
         local menu_rows=$visible
         [ "$visible" -lt "$total" ] && menu_rows=$((visible + 1))
         case $key in
-            up)   [ $selected -gt 0 ] && ((selected--)) ;;
-            down) [ $selected -lt $((menu_rows - 1)) ] && ((selected++)) ;;
+            up)   [ $selected -gt 0 ] && selected=$((selected - 1)) ;;
+            down) [ $selected -lt $((menu_rows - 1)) ] && selected=$((selected + 1)) ;;
             enter)
                 if [ "$visible" -lt "$total" ] && [ "$selected" -eq "$visible" ]; then
                     visible=$(( visible + page_size < total ? visible + page_size : total ))
@@ -241,9 +241,9 @@ info "Target branch: $RELEASE_BRANCH"
 step "Looking for PRs merged to main since $RELEASE_BRANCH diverged"
 
 CANDIDATE_SHAS=()
-while IFS= read -r line; do
-    CANDIDATE_SHAS+=("$line")
-done < <(git rev-list --reverse "origin/main" "^origin/$RELEASE_BRANCH")
+while IFS= read -r sign sha _; do
+    [ "$sign" == "+" ] && CANDIDATE_SHAS+=("$sha")
+done < <(git cherry "origin/$RELEASE_BRANCH" "origin/main")
 
 if [ ${#CANDIDATE_SHAS[@]} -eq 0 ]; then
     info "No commits on main ahead of $RELEASE_BRANCH. Nothing to prepare."
@@ -320,8 +320,8 @@ select_prs() {
         display_menu
         key=$(read_key)
         case $key in
-            up)   [ $cursor -gt 0 ] && ((cursor--)) ;;
-            down) [ $cursor -lt $((total - 1)) ] && ((cursor++)) ;;
+            up)   [ $cursor -gt 0 ] && cursor=$((cursor - 1)) ;;
+            down) [ $cursor -lt $((total - 1)) ] && cursor=$((cursor + 1)) ;;
             space)
                 [ "${checked[$cursor]}" -eq 1 ] && checked[cursor]=0 || checked[cursor]=1
                 ;;
@@ -337,7 +337,7 @@ select_prs() {
                 for ((i = 0; i < total; i++)); do
                     [ "${checked[$i]}" -eq 1 ] && out+=("$i")
                 done
-                printf '%s\n' "${out[@]}"
+                [ ${#out[@]} -gt 0 ] && printf '%s\n' "${out[@]}"
                 return 0
                 ;;
             quit)
@@ -400,9 +400,7 @@ fi
 # --- Cherry-pick selected PRs --------------------------------------------------
 step "Creating $PREP_BRANCH from $RELEASE_BRANCH"
 
-git checkout "$RELEASE_BRANCH"
-git pull --quiet
-git checkout -b "$PREP_BRANCH"
+git checkout -b "$PREP_BRANCH" "origin/$RELEASE_BRANCH"
 
 CHERRY_PICK_IN_PROGRESS=1
 for idx in "${SELECTED_IDX[@]}"; do
@@ -428,12 +426,12 @@ for idx in "${SELECTED_IDX[@]}"; do
 
     if [ $USE_MERGE_COMMIT -eq 1 ]; then
         [ -n "$PR_MERGE_COMMIT" ] || { error "No usable commit found for #$num"; exit 1; }
-        PR_COMMITS="$PR_MERGE_COMMIT"
+        git cherry-pick -x -m 1 "$PR_MERGE_COMMIT"
+    else
+        for PR_COMMIT in $PR_COMMITS; do
+            git cherry-pick -x "$PR_COMMIT"
+        done
     fi
-
-    for PR_COMMIT in $PR_COMMITS; do
-        git cherry-pick -x "$PR_COMMIT"
-    done
 done
 CHERRY_PICK_IN_PROGRESS=0
 
