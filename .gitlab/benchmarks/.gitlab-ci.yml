@@ -12,11 +12,15 @@ benchmarks-trigger:
   needs:
     - job: get-versions
       artifacts: true
+    # deploy-artifact never runs on release branches (see build-deploy/.gitlab-ci.yml);
+    # optional: true keeps this job's needs satisfiable there.
     - job: deploy-artifact
       artifacts: false
+      optional: true
   rules:
     - if: '$CANCELLED == "true"'
       when: never
+    - !reference [.skip-on-release, rules]
     - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "schedule"'

@@ -14,9 +14,13 @@ prepare-patched-agent:
   needs:
     - job: prepare:start
       artifacts: true
+    # build-artifact never runs on release branches (see build-deploy/.gitlab-ci.yml);
+    # optional: true keeps this job's needs satisfiable there.
     - job: build-artifact
       artifacts: true
+      optional: true
   rules:
+    - !reference [.skip-on-release, rules]
     - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
@@ -82,11 +86,15 @@ prepare-patched-agent:
   needs:
     - job: prepare:start
       artifacts: true
+    # build-artifact never runs on release branches (see build-deploy/.gitlab-ci.yml);
+    # optional: true keeps this job's needs satisfiable there.
     - job: build-artifact
       artifacts: true
+      optional: true
     - job: prepare-patched-agent
       artifacts: true
   rules:
+    - !reference [.skip-on-release, rules]
     - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
@@ -268,6 +276,7 @@ report-dd-trace-results:
     - job: integration-test-arm64-musl
       artifacts: true
   rules:
+    - !reference [.skip-on-release, rules]
     - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
@@ -296,6 +305,7 @@ post-pr-comment:
     - job: integration-test-arm64-musl
       artifacts: true
   rules:
+    - !reference [.skip-on-release, rules]
     - if: '$JDK_VERSION != null || $DEBUG_LEVEL != null || $HASH != null || $DOWNSTREAM != null'
       when: never
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
