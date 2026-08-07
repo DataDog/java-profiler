@@ -40,6 +40,7 @@
 #include "wallClock.h"
 #include "wallClockCounters.h"
 #include "frames.h"
+#include "sanityCheck.h"
 
 #include <algorithm>
 #include <dlfcn.h>
@@ -1404,6 +1405,30 @@ Error Profiler::start(Arguments &args, bool reset) {
   Error error = checkState();
   if (error) {
     return error;
+  }
+
+  // Sanity checks run at most once per process, across start and stop cycles.
+  // Profiler::start() sets sanity_checked to true before it checks
+  // _skip_sanity_checks, not after. If it set the flag only when the checks
+  // ran, a nosanity start would leave sanity_checked false. A later start
+  // without nosanity would then run the checks unexpectedly and could fail.
+  //
+  // A failed check does not abort startup. The resource estimate is
+  // inherently approximate, so Profiler::start() logs a warning and records
+  // the failure as a JFR setting (see Recording::writeSettings) instead of
+  // refusing to profile.
+  static bool sanity_checked = false;
+  if (!sanity_checked) {
+    sanity_checked = true;
+    if (!args._skip_sanity_checks) {
+      Error sanity_result = SanityChecker::runChecks(args);
+      if (sanity_result) {
+        _sanity_check_failed = true;
+        _sanity_check_message = sanity_result.message();
+        LOG_WARN("Continuing to start profiler despite failed sanity check "
+                 "(see JFR settings for details).");
+      }
+    }
   }
 
   error = checkJvmCapabilities();

@@ -12,6 +12,7 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <link.h>
 #include <pthread.h>
 #include <sched.h>
@@ -693,6 +694,321 @@ bool OS::getCpuDescription(char* buf, size_t size) {
 
 int OS::getCpuCount() {
     return sysconf(_SC_NPROCESSORS_ONLN);
+}
+
+// Matches `controller` only as a whole, comma-delimited token in
+// `controllers` (e.g. "cpu" matches "cpu,cpuacct" but not "cpuacct" or
+// "cpuset"). Substring matching would give false positives because several
+// v1 controller names share the "cpu" prefix.
+static bool hasControllerToken(const char* controllers, const char* controller) {
+    size_t controller_len = strlen(controller);
+    const char* p = controllers;
+    while (*p != 0) {
+        const char* comma = strchr(p, ',');
+        size_t tok_len = (comma != NULL) ? (size_t)(comma - p) : strlen(p);
+        if (tok_len == controller_len && strncmp(p, controller, tok_len) == 0) {
+            return true;
+        }
+        if (comma == NULL) {
+            break;
+        }
+        p = comma + 1;
+    }
+    return false;
+}
+
+// Resolves this process's own path within a cgroup hierarchy from
+// /proc/self/cgroup, so that the caller reads limits from the process's
+// actual (possibly nested, e.g. "/user.slice/...") cgroup rather than from
+// the hierarchy mount root. Pass an empty controller for the cgroup v2
+// unified hierarchy (format "0::/path"). Pass a controller name (e.g.
+// "cpu", "memory") to match a v1 hierarchy whose comma-separated controller
+// list contains it (format "N:list:/path"). On success, this function
+// copies the path (leading '/', no trailing '/', NUL-terminated) into
+// `out` and returns true.
+static bool getOwnCgroupPath(const char* controller, char* out, size_t out_size) {
+    int fd = open("/proc/self/cgroup", O_RDONLY);
+    if (fd == -1) {
+        return false;
+    }
+    char buf[2048];
+    ssize_t r = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (r <= 0) {
+        return false;
+    }
+    buf[r] = 0;
+
+    char* line = buf;
+    while (line != NULL && *line != 0) {
+        char* nl = strchr(line, '\n');
+        if (nl != NULL) {
+            *nl = 0;
+        }
+        char* c1 = strchr(line, ':');
+        char* c2 = (c1 != NULL) ? strchr(c1 + 1, ':') : NULL;
+        if (c1 != NULL && c2 != NULL) {
+            *c2 = 0;
+            const char* controllers = c1 + 1;
+            const char* path = c2 + 1;
+            bool matches = (controller[0] == 0) ? (controllers[0] == 0)
+                                                 : hasControllerToken(controllers, controller);
+            if (matches) {
+                size_t len = strlen(path);
+                if (len == 0 || len >= out_size) {
+                    return false;
+                }
+                memcpy(out, path, len + 1);
+                return true;
+            }
+        }
+        line = (nl != NULL) ? nl + 1 : NULL;
+    }
+    return false;
+}
+
+// Trims the last '/'-separated component from `path` (in place). Refuses to
+// trim past `base_len` (the length of the hierarchy mount prefix, which is
+// never itself a cgroup boundary to walk beyond). Returns false when `path`
+// already is the mount root.
+static bool trimToParentCgroup(char* path, size_t base_len) {
+    if (strlen(path) <= base_len) {
+        return false;
+    }
+    char* slash = strrchr(path, '/');
+    if (slash == NULL || (size_t)(slash - path) < base_len) {
+        return false;
+    }
+    *slash = 0;
+    return true;
+}
+
+// Applies the most restrictive cpu.max quota found across this process's
+// cgroup v2 group and all of its ancestors up to the mount root — a nested
+// group can never be more permissive than a constrained ancestor.
+static int walkCgroupV2CpuMillicores(char* path) {
+    size_t base_len = strlen("/sys/fs/cgroup");
+    int best = -1; // unconstrained (or no data) so far
+    for (;;) {
+        char file[PATH_MAX];
+        if ((size_t)snprintf(file, sizeof(file), "%s/cpu.max", path) < sizeof(file)) {
+            int fd = open(file, O_RDONLY);
+            if (fd != -1) {
+                char buf[64] = {0};
+                ssize_t r = read(fd, buf, sizeof(buf) - 1);
+                close(fd);
+                if (r > 0 && strncmp(buf, "max", 3) != 0) {
+                    long quota, period;
+                    if (sscanf(buf, "%ld %ld", &quota, &period) == 2 && period > 0) {
+                        int mc = (int)(quota * 1000 / period);
+                        if (best < 0 || mc < best) {
+                            best = mc;
+                        }
+                    }
+                }
+            }
+        }
+        if (!trimToParentCgroup(path, base_len)) {
+            break;
+        }
+    }
+    return best;
+}
+
+// Walks ancestors the same way as walkCgroupV2CpuMillicores(), but reads
+// the cgroup v1 CPU controller's separate quota and period files instead
+// of a single "cpu.max".
+static int walkCgroupV1CpuMillicores(char* path) {
+    size_t base_len = strlen("/sys/fs/cgroup/cpu");
+    int best = -1;
+    for (;;) {
+        long quota = -1;
+        char qfile[PATH_MAX];
+        if ((size_t)snprintf(qfile, sizeof(qfile), "%s/cpu.cfs_quota_us", path) < sizeof(qfile)) {
+            int fd = open(qfile, O_RDONLY);
+            if (fd != -1) {
+                char buf[32] = {0};
+                ssize_t r = read(fd, buf, sizeof(buf) - 1);
+                close(fd);
+                if (r > 0) {
+                    quota = atol(buf);
+                }
+            }
+        }
+        if (quota > 0) {
+            long period = 100000; // default 100ms
+            char pfile[PATH_MAX];
+            if ((size_t)snprintf(pfile, sizeof(pfile), "%s/cpu.cfs_period_us", path) < sizeof(pfile)) {
+                int fd = open(pfile, O_RDONLY);
+                if (fd != -1) {
+                    char buf[32] = {0};
+                    ssize_t r = read(fd, buf, sizeof(buf) - 1);
+                    close(fd);
+                    if (r > 0) {
+                        long p = atol(buf);
+                        if (p > 0) period = p;
+                    }
+                }
+            }
+            int mc = (int)(quota * 1000 / period);
+            if (best < 0 || mc < best) {
+                best = mc;
+            }
+        }
+        if (!trimToParentCgroup(path, base_len)) {
+            break;
+        }
+    }
+    return best;
+}
+
+int OS::getCgroupCpuMillicores() {
+    char subpath[PATH_MAX];
+    char path[PATH_MAX];
+
+    // Try cgroup v2 first, resolved from this process's own cgroup path.
+    if (getOwnCgroupPath("", subpath, sizeof(subpath))) {
+        size_t base_len = strlen("/sys/fs/cgroup");
+        size_t sub_len = strlen(subpath);
+        if (base_len + sub_len < sizeof(path)) {
+            memcpy(path, "/sys/fs/cgroup", base_len);
+            memcpy(path + base_len, subpath, sub_len + 1);
+
+            char leaf[PATH_MAX];
+            if ((size_t)snprintf(leaf, sizeof(leaf), "%s/cpu.max", path) < sizeof(leaf)) {
+                int fd = open(leaf, O_RDONLY);
+                if (fd != -1) {
+                    close(fd);
+                    return walkCgroupV2CpuMillicores(path);
+                }
+            }
+        }
+    }
+
+    // Fall back to cgroup v1, likewise resolved from the process's own path.
+    if (getOwnCgroupPath("cpu", subpath, sizeof(subpath))) {
+        const char* base = "/sys/fs/cgroup/cpu";
+        size_t base_len = strlen(base);
+        size_t sub_len = strlen(subpath);
+        if (base_len + sub_len < sizeof(path)) {
+            memcpy(path, base, base_len);
+            memcpy(path + base_len, subpath, sub_len + 1);
+
+            char leaf[PATH_MAX];
+            if ((size_t)snprintf(leaf, sizeof(leaf), "%s/cpu.cfs_quota_us", path) < sizeof(leaf)) {
+                int fd = open(leaf, O_RDONLY);
+                if (fd != -1) {
+                    close(fd);
+                    return walkCgroupV1CpuMillicores(path);
+                }
+            }
+        }
+    }
+
+    return -1; // unconstrained or unavailable
+}
+
+// Applies the smallest (most restrictive) memory.max found across this
+// process's cgroup v2 group and all of its ancestors up to the mount root.
+static long walkCgroupV2MemoryLimit(char* path) {
+    size_t base_len = strlen("/sys/fs/cgroup");
+    long best = -1;
+    for (;;) {
+        char file[PATH_MAX];
+        if ((size_t)snprintf(file, sizeof(file), "%s/memory.max", path) < sizeof(file)) {
+            int fd = open(file, O_RDONLY);
+            if (fd != -1) {
+                char buf[32] = {0};
+                ssize_t r = read(fd, buf, sizeof(buf) - 1);
+                close(fd);
+                if (r > 0 && strncmp(buf, "max", 3) != 0) {
+                    long limit = atol(buf);
+                    if (limit > 0 && (best < 0 || limit < best)) {
+                        best = limit;
+                    }
+                }
+            }
+        }
+        if (!trimToParentCgroup(path, base_len)) {
+            break;
+        }
+    }
+    return best;
+}
+
+// Walks ancestors the same way as walkCgroupV2MemoryLimit(), but reads the
+// cgroup v1 memory controller's limit file instead.
+static long walkCgroupV1MemoryLimit(char* path) {
+    size_t base_len = strlen("/sys/fs/cgroup/memory");
+    long best = -1;
+    for (;;) {
+        char file[PATH_MAX];
+        if ((size_t)snprintf(file, sizeof(file), "%s/memory.limit_in_bytes", path) < sizeof(file)) {
+            int fd = open(file, O_RDONLY);
+            if (fd != -1) {
+                char buf[32] = {0};
+                ssize_t r = read(fd, buf, sizeof(buf) - 1);
+                close(fd);
+                if (r > 0) {
+                    long limit = atol(buf);
+                    // A limit of 9223372036854771712 (LLONG_MAX rounded) means unconstrained.
+                    if (limit > 0 && limit < 0x7ffffffffffff000L && (best < 0 || limit < best)) {
+                        best = limit;
+                    }
+                }
+            }
+        }
+        if (!trimToParentCgroup(path, base_len)) {
+            break;
+        }
+    }
+    return best;
+}
+
+long OS::getContainerMemoryLimit() {
+    char subpath[PATH_MAX];
+    char path[PATH_MAX];
+
+    // Try cgroup v2 first, resolved from this process's own cgroup path.
+    if (getOwnCgroupPath("", subpath, sizeof(subpath))) {
+        size_t base_len = strlen("/sys/fs/cgroup");
+        size_t sub_len = strlen(subpath);
+        if (base_len + sub_len < sizeof(path)) {
+            memcpy(path, "/sys/fs/cgroup", base_len);
+            memcpy(path + base_len, subpath, sub_len + 1);
+
+            char leaf[PATH_MAX];
+            if ((size_t)snprintf(leaf, sizeof(leaf), "%s/memory.max", path) < sizeof(leaf)) {
+                int fd = open(leaf, O_RDONLY);
+                if (fd != -1) {
+                    close(fd);
+                    return walkCgroupV2MemoryLimit(path);
+                }
+            }
+        }
+    }
+
+    // Fall back to cgroup v1, likewise resolved from the process's own path.
+    if (getOwnCgroupPath("memory", subpath, sizeof(subpath))) {
+        const char* base = "/sys/fs/cgroup/memory";
+        size_t base_len = strlen(base);
+        size_t sub_len = strlen(subpath);
+        if (base_len + sub_len < sizeof(path)) {
+            memcpy(path, base, base_len);
+            memcpy(path + base_len, subpath, sub_len + 1);
+
+            char leaf[PATH_MAX];
+            if ((size_t)snprintf(leaf, sizeof(leaf), "%s/memory.limit_in_bytes", path) < sizeof(leaf)) {
+                int fd = open(leaf, O_RDONLY);
+                if (fd != -1) {
+                    close(fd);
+                    return walkCgroupV1MemoryLimit(path);
+                }
+            }
+        }
+    }
+
+    return -1;
 }
 
 u64 OS::getProcessCpuTime(u64* utime, u64* stime) {
