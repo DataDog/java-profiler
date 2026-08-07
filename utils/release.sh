@@ -377,6 +377,29 @@ else
     fi
 fi
 
+# Ensure origin/$BRANCH exists, and that a local branch of the same name (if
+# one is checked out) isn't stale or carrying unpushed commits, before doing
+# any further work.
+print_info "Checking that $BRANCH is up to date with origin..."
+git fetch --quiet origin "$BRANCH" 2>/dev/null
+ORIGIN_BRANCH_HEAD=$(git rev-parse "origin/$BRANCH" 2>&1) || {
+    print_error "Branch $BRANCH does not exist on origin"
+    exit 1
+}
+if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+    LOCAL_BRANCH_HEAD=$(git rev-parse "$BRANCH")
+    if [ "$LOCAL_BRANCH_HEAD" != "$ORIGIN_BRANCH_HEAD" ]; then
+        print_error "Local branch '$BRANCH' is not up to date with origin/$BRANCH"
+        echo "  Local:  ${LOCAL_BRANCH_HEAD:0:8}"
+        echo "  Origin: ${ORIGIN_BRANCH_HEAD:0:8}"
+        echo ""
+        echo "Update your local branch, e.g.:"
+        echo "  git checkout $BRANCH && git pull --ff-only origin $BRANCH"
+        exit 1
+    fi
+fi
+print_info "$BRANCH is up to date with origin"
+
 # For patch releases, offer to backport pending main PRs onto the release
 # branch before picking a commit to release.
 if [ "$RELEASE_TYPE" == "patch" ]; then
@@ -396,7 +419,7 @@ fi
 if [ -z "$COMMIT_SHA" ]; then
     print_info "No commit specified. Showing recent commits on branch: $BRANCH"
     echo ""
-    COMMIT_SHA=$(select_commit "$BRANCH")
+    COMMIT_SHA=$(select_commit "origin/$BRANCH")
     clear
     print_info "Commit selected. Validating..."
     echo ""
@@ -420,7 +443,7 @@ print_info "Commit: $SHORT_SHA"
 
 # Verify the commit is on the selected branch
 print_info "Verifying commit is on branch $BRANCH..."
-if ! git merge-base --is-ancestor "$COMMIT_SHA" "$BRANCH" 2>&1; then
+if ! git merge-base --is-ancestor "$COMMIT_SHA" "origin/$BRANCH" 2>&1; then
     print_error "Commit $SHORT_SHA is not on branch '$BRANCH'"
     echo ""
     echo "The selected commit must be part of the branch history."
