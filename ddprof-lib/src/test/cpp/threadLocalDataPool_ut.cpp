@@ -75,24 +75,30 @@ TEST_F(ThreadLocalDataPoolTest, nullptrIsNotContained) {
     ThreadLocalDataPool::destroyForTest(pool);
 }
 
-// Covers claim()'s (used >= _capacity) fast-path rejection once the pool is
-// full. claim()'s return value is nullptr whether that guard reads `>=` or
-// (bugged) `>`, because a bugged `>` still falls through to the slot-scanning
-// loop, which finds every real slot already claimed and also returns nullptr.
-// The observable difference is that the buggy fallthrough additionally
-// increments SAMPLES_DROPPED_TLS_POOL_EXHAUSTED, which the fast path must not
-// do -- that's what this test pins down.
-TEST_F(ThreadLocalDataPoolTest, claimAtCapacityRejectsWithoutExhaustionScan) {
+// Covers claim() once every slot is taken. Two things must hold, and neither is
+// visible in the return value alone (which is nullptr on every failure path):
+//
+//  1. The drop is recorded in SAMPLES_DROPPED_TLS_POOL_EXHAUSTED. This counter
+//     is the only signal that priming is silently failing in the field; an
+//     earlier revision incremented it solely on the scan fallthrough, so the
+//     real (used >= _capacity) path dropped samples untracked.
+//  2. The rejected claim rolls back the speculative _used increment it took
+//     before the capacity check. Without the rollback, _used never falls back
+//     below _capacity and the pool stays permanently full even after slots are
+//     returned -- which the reclaim at the end of this test exercises.
+TEST_F(ThreadLocalDataPoolTest, claimAtCapacityRejectsAndRecordsExhaustion) {
     ThreadLocalDataPool* pool = ThreadLocalDataPool::createForTest(2);
 
-    ASSERT_NE(pool->claimForTest(0), nullptr);
+    ProfiledThread* first = pool->claimForTest(0);
+    ASSERT_NE(first, nullptr);
     ASSERT_NE(pool->claimForTest(1), nullptr);
 
     long long before = Counters::getCounter(SAMPLES_DROPPED_TLS_POOL_EXHAUSTED);
     EXPECT_EQ(pool->claimForTest(2), nullptr);
-    long long after = Counters::getCounter(SAMPLES_DROPPED_TLS_POOL_EXHAUSTED);
+    EXPECT_EQ(Counters::getCounter(SAMPLES_DROPPED_TLS_POOL_EXHAUSTED), before + 1);
 
-    EXPECT_EQ(after, before);
+    EXPECT_TRUE(pool->unclaimForTest(first));
+    EXPECT_NE(pool->claimForTest(0), nullptr);
 
     ThreadLocalDataPool::destroyForTest(pool);
 }

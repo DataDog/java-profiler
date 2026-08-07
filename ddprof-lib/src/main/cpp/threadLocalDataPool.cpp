@@ -47,6 +47,7 @@ ProfiledThread* ThreadLocalDataPool::claim(int tid) {
     uint16_t used = __atomic_fetch_add(&_used, 1, __ATOMIC_RELAXED);
     if (used >= _capacity) {
         __atomic_fetch_add(&_used, -1, __ATOMIC_RELAXED);
+        Counters::increment(SAMPLES_DROPPED_TLS_POOL_EXHAUSTED);
         return nullptr;
     }
 

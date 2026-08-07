@@ -44,9 +44,12 @@ static inline void maybeRecord(void* ret, size_t size) {
     if (MallocTracer::running() && ret && size) {
         // Even we are not in a signal handler, we cannot malloc or
         // we may get into indefinite loop
-        if (ProfiledThread::acquireCurrent() == nullptr) {
-            Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
-            return;
+        {
+            SignalBlocker blocker;
+            if (ProfiledThread::acquireCurrent() == nullptr) {
+                Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
+                return;
+            }
         }
         CriticalSection cs;
         if (cs.entered()) {

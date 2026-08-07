@@ -90,6 +90,9 @@ Java_com_datadoghq_profiler_JavaProfiler_init0(JNIEnv *env, jclass unused) {
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_stop0(JNIEnv *env, jobject unused) {
+  // Attach ProfiledThread
+  ProfiledThread* current =  ProfiledThread::initCurrentThreadSignalSafe();
+  assert(current != nullptr && "Out of order initialization");
   Error error = Profiler::instance()->stop();
 
   if (error) {
@@ -1163,6 +1166,9 @@ extern "C" DLLEXPORT jstring JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_testReadContextAttribute0(JNIEnv* env, jclass unused, jint slot) {
   ProfiledThread *thrd = ProfiledThread::initCurrentThreadSignalSafe();
   assert(thrd != nullptr && "Out of order initialization");
+  if (slot < 0 || slot >= (jint)DD_TAGS_CAPACITY) {
+    return nullptr;
+  }
 
   OtelThreadContextRecord* record = thrd->getOtelContextRecord();
   int targetKey = slot + 1;
