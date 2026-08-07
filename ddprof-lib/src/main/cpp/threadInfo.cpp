@@ -42,7 +42,7 @@ void ThreadInfo::clearAll(std::set<int> &live_thread_ids) {
     _thread_ids.clear();
   } else {
     // we need to honor the thread referenced from the liveness tracker
-    std::map<int, std::string>::iterator name_itr = _thread_names.begin();
+    auto name_itr = _thread_names.begin();
     while (name_itr != _thread_names.end()) {
       if (live_thread_ids.find(name_itr->first) == live_thread_ids.end()) {
         name_itr = _thread_names.erase(name_itr);
@@ -50,7 +50,7 @@ void ThreadInfo::clearAll(std::set<int> &live_thread_ids) {
         ++name_itr;
       }
     }
-    std::map<int, u64>::iterator id_itr = _thread_ids.begin();
+    auto id_itr = _thread_ids.begin();
     while (id_itr != _thread_ids.end()) {
       if (live_thread_ids.find(id_itr->first) == live_thread_ids.end()) {
         id_itr = _thread_ids.erase(id_itr);

@@ -41,7 +41,7 @@ static constexpr const char STRESS_TEST_NAME[] = "StressCallTraceStorage";
 static constexpr int CALLTRACE_EXPANSION_THRESHOLD = 65536 * 3 / 4;  // 49152
 
 // Helper function to find a CallTrace by trace_id in an unordered_set
-CallTrace* findTraceById(const std::unordered_set<CallTrace*>& traces, u64 trace_id) {
+CallTrace* findTraceById(const CallTraceSet& traces, u64 trace_id) {
     for (CallTrace* trace : traces) {
         if (trace && trace != CallTraceSample::PREPARING && trace->trace_id == trace_id) {
             return trace;
@@ -51,7 +51,7 @@ CallTrace* findTraceById(const std::unordered_set<CallTrace*>& traces, u64 trace
 }
 
 // Optimized batch lookup for multiple trace IDs
-void findMultipleTracesById(const std::unordered_set<CallTrace*>& traces, 
+void findMultipleTracesById(const CallTraceSet& traces, 
                            const std::vector<u64>& trace_ids,
                            size_t& found_count) {
     // Create a lookup set for O(1) lookups instead of O(n) per trace
@@ -250,7 +250,7 @@ TEST_F(StressTestSuite, SwapStormTest) {
                 // Use mutex to ensure single-threaded processTraces access - matches production
                 {
                     std::lock_guard<std::mutex> lock(process_traces_mutex);
-                    storage->processTraces([](const std::unordered_set<CallTrace*>& traces) {
+                    storage->processTraces([](const CallTraceSet& traces) {
                         // Process traces (simulating JFR serialization)
                         (void)traces.size();
                     });
@@ -655,7 +655,7 @@ TEST_F(StressTestSuite, LivenessPurityTest) {
             size_t preserve_count = trace_ids.size() / 2;
             std::vector<u64> to_preserve(trace_ids.begin(), trace_ids.begin() + preserve_count);
             
-            storage->registerLivenessChecker([to_preserve](std::unordered_set<u64>& buffer) {
+            storage->registerLivenessChecker([to_preserve](CallTraceIdSet& buffer) {
                 // Pure callback - no side effects, deterministic output
                 for (u64 trace_id : to_preserve) {
                     buffer.insert(trace_id);
@@ -668,7 +668,7 @@ TEST_F(StressTestSuite, LivenessPurityTest) {
             size_t actual_preserved = 0;
             {
                 std::lock_guard<std::mutex> lock(process_traces_mutex);
-                storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+                storage->processTraces([&](const CallTraceSet& traces) {
                     findMultipleTracesById(traces, to_preserve, actual_preserved);
                 });
             }
@@ -676,7 +676,7 @@ TEST_F(StressTestSuite, LivenessPurityTest) {
             preserved_traces.fetch_add(actual_preserved, std::memory_order_relaxed);
             
             // Verify deterministic behavior - re-register same callback
-            storage->registerLivenessChecker([to_preserve](std::unordered_set<u64>& buffer) {
+            storage->registerLivenessChecker([to_preserve](CallTraceIdSet& buffer) {
                 for (u64 trace_id : to_preserve) {
                     buffer.insert(trace_id);
                 }
@@ -686,7 +686,7 @@ TEST_F(StressTestSuite, LivenessPurityTest) {
             size_t second_preserved = 0;
             {
                 std::lock_guard<std::mutex> lock(process_traces_mutex);
-                storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+                storage->processTraces([&](const CallTraceSet& traces) {
                     findMultipleTracesById(traces, to_preserve, second_preserved);
                 });
             }
@@ -879,7 +879,7 @@ TEST_F(StressTestSuite, TLSOverrunCanaryTest) {
             try {
                 {
                     std::lock_guard<std::mutex> lock(process_traces_mutex);
-                    storage->processTraces([](const std::unordered_set<CallTrace*>& traces) {
+                    storage->processTraces([](const CallTraceSet& traces) {
                         // Aggressive processing to stress TLS during swaps
                         volatile size_t count = traces.size();
                         (void)count;
@@ -1375,7 +1375,7 @@ TEST_F(StressTestSuite, TeardownFuzzTest) {
         // Periodic cleanup of storage to simulate real usage patterns
         if (cycle % 10 == 0) {
             std::lock_guard<std::mutex> lock(process_traces_mutex);
-            test_storage->processTraces([](const std::unordered_set<CallTrace*>& traces) {
+            test_storage->processTraces([](const CallTraceSet& traces) {
                 // Simulate processing collected traces
                 volatile size_t count = traces.size();
                 (void)count;
@@ -1588,7 +1588,7 @@ static void realProfilerSignalStressImpl(int signal_barrage_count, int num_worke
                 // Single-threaded processTraces call - matches production pattern
                 {
                     std::lock_guard<std::mutex> lock(StressTestSuite::process_traces_mutex);
-                    signal_storage->processTraces([](const std::unordered_set<CallTrace*>& traces) {
+                    signal_storage->processTraces([](const CallTraceSet& traces) {
                         volatile size_t count = traces.size();
                         (void)count;
                     });
@@ -1751,7 +1751,7 @@ TEST_F(StressTestSuite, InstanceIdTraceIdStressTest) {
                     if (op % 100 == 0 && t == 0) {  // Only one thread does swaps
                         for (int swap = 0; swap < 3; ++swap) {
                             std::lock_guard<std::mutex> lock(process_traces_mutex);
-                            storage->processTraces([](const std::unordered_set<CallTrace*>& traces) {
+                            storage->processTraces([](const CallTraceSet& traces) {
                                 volatile size_t count = traces.size();
                                 (void)count;
                             });
@@ -1778,7 +1778,7 @@ TEST_F(StressTestSuite, InstanceIdTraceIdStressTest) {
                 // Use single shared storage instance for swap
                 {
                     std::lock_guard<std::mutex> lock(process_traces_mutex);
-                    shared_storage->processTraces([](const std::unordered_set<CallTrace*>& traces) {
+                    shared_storage->processTraces([](const CallTraceSet& traces) {
                         // Process traces - this triggers new instance ID assignment
                         volatile size_t count = traces.size();
                         (void)count;
@@ -2401,7 +2401,7 @@ TEST_F(StressTestSuite, ConcurrentExpansionAndCollectStressTest) {
     for (int cycle = 0; cycle < 3 && !phase2_failed.load(); cycle++) {
         {
             std::lock_guard<std::mutex> lock(process_traces_mutex);
-            storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+            storage->processTraces([&](const CallTraceSet& traces) {
                 // Sanity: first cycle must contain all traces from Phase 1.
                 if (cycle == 0 &&
                     static_cast<int>(traces.size()) < total_inserted.load()) {

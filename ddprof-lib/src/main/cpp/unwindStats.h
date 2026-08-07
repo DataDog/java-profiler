@@ -2,6 +2,7 @@
 #define STUB_UNWIND_STATS_H
 
 #include "common.h"
+#include "nativeMem.h"
 #include "spinLock.h"
 
 #include <stddef.h>
@@ -30,9 +31,15 @@ class UnwindFailures {
      _counters = new u64[MAX_UNWIND_FAILURE_NAMES][UNWIND_FAILURE_ANY + 1];
      memset((void*)_names, 0, MAX_UNWIND_FAILURE_NAMES * MAX_NAME_LENGTH);
      memset((void*)_counters, 0, MAX_UNWIND_FAILURE_NAMES * (UNWIND_FAILURE_ANY + 1) * sizeof(u64));
+     NativeMem::record(NM_THREAD_LOCAL,
+         (long long)(MAX_UNWIND_FAILURE_NAMES * MAX_NAME_LENGTH) +
+         (long long)(MAX_UNWIND_FAILURE_NAMES * (UNWIND_FAILURE_ANY + 1) * sizeof(u64)));
    }
 
    ~UnwindFailures() {
+     NativeMem::record(NM_THREAD_LOCAL,
+         -((long long)(MAX_UNWIND_FAILURE_NAMES * MAX_NAME_LENGTH) +
+           (long long)(MAX_UNWIND_FAILURE_NAMES * (UNWIND_FAILURE_ANY + 1) * sizeof(u64))));
      delete[] _names;
      delete[] _counters;
    }

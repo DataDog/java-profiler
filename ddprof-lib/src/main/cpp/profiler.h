@@ -304,12 +304,12 @@ public:
 
   const char* cstack() const;
   int lookupClass(const char *key, size_t length);
-  void processCallTraces(std::function<void(const std::unordered_set<CallTrace*>&)> processor) {
+  void processCallTraces(std::function<void(const CallTraceSet&)> processor) {
     if (!_omit_stacktraces) {
       _call_trace_storage.processTraces(processor);
     } else {
       // If stack traces are omitted, call processor with empty set
-      static std::unordered_set<CallTrace*> empty_traces;
+      static CallTraceSet empty_traces;
       processor(empty_traces);
     }
   }

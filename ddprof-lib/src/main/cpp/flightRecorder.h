@@ -7,6 +7,7 @@
 #ifndef _FLIGHTRECORDER_H
 #define _FLIGHTRECORDER_H
 
+#include <functional>
 #include <map>
 #include <unordered_map>
 #include <unordered_set>
@@ -18,6 +19,7 @@
 #include "arch.h"
 #include "arguments.h"
 #include "buffers.h"
+#include "countingAllocator.h"
 #include "counters.h"
 #include "dictionary.h"
 #include "stringDictionary.h"
@@ -106,7 +108,10 @@ public:
 //   10 - void* address (native frame names)
 //   01 - RemoteFrameInfo (packed remote symbolication)
 //   11 - vtable_receiver class_id (BCI_VTABLE_RECEIVER frames)
-class MethodMap : public std::map<unsigned long, MethodInfo> {
+class MethodMap
+    : public std::map<unsigned long, MethodInfo, std::less<unsigned long>,
+                       CountingAllocator<std::pair<const unsigned long, MethodInfo>,
+                                          NM_METHOD_MAP>> {
 public:
   static constexpr unsigned long ADDRESS_MARK = 0x8000000000000000ULL;
   static constexpr unsigned long REMOTE_FRAME_MARK = 0x4000000000000000ULL;
@@ -365,7 +370,9 @@ public:
   // as the MethodMap key, so distinct Symbol* addresses for the same
   // class name (class unload/reload mid-chunk) collapse to a single
   // MethodInfo row.
-  std::unordered_map<void*, u32> _vtable_receiver_cache;
+  std::unordered_map<void*, u32, std::hash<void*>, std::equal_to<void*>,
+                      CountingAllocator<std::pair<void* const, u32>, NM_JFR_BUFFERS>>
+      _vtable_receiver_cache;
   Dictionary _packages;
   Dictionary _symbols;
 
