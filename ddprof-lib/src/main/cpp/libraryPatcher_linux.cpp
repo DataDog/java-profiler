@@ -12,18 +12,15 @@
 #include "nativeSocketSampler.h"
 #include "profiler.h"
 
-#include <cassert>
 #include <dlfcn.h>
 #include <mutex>
-#include <limits.h>
 #include <setjmp.h>
 #include <string.h>
-#include <stdlib.h>
 
 typedef void* (*func_start_routine)(void*);
 
 SpinLock LibraryPatcher::_lock;
-const char* LibraryPatcher::_profiler_name = nullptr;
+std::atomic<bool> LibraryPatcher::_initialized{false};
 PatchEntry LibraryPatcher::_patched_entries[MAX_NATIVE_LIBS];
 int        LibraryPatcher::_size = 0;
 PatchEntry LibraryPatcher::_sigaction_entries[MAX_NATIVE_LIBS];
@@ -33,14 +30,38 @@ int        LibraryPatcher::_socket_size = 0;
 std::atomic<bool> LibraryPatcher::_socket_active{false};
 
 void LibraryPatcher::initialize() {
-  if (_profiler_name == nullptr) {
-    Dl_info info;
-    void* caller_address = __builtin_return_address(0); // Get return address of caller
-    bool ret = dladdr(caller_address, &info);
-    assert(ret);
-    _profiler_name = realpath(info.dli_fname, nullptr);
+  if (!_initialized.load(std::memory_order_acquire)) {
     _size = 0;
+    // Release so the reset above is visible to any thread that sees the flag.
+    _initialized.store(true, std::memory_order_release);
   }
+}
+
+const void* LibraryPatcher::self_anchor() {
+  // Any code address in this translation unit lies inside the profiler's own
+  // mapping, so its address identifies us. A function is used rather than a
+  // static variable because a CodeCache spans a library's executable segments
+  // (see Symbols::parseLibraries), which do not cover .data/.bss.
+  return (const void*)&self_anchor;
+}
+
+// The profiler must never patch its own import table. pthread_create_hook()
+// below reaches the real pthread_create() through this library's own PLT, so a
+// self-patch makes the hook call itself: the recursion exhausts the thread
+// stack and the process dies of SIGSEGV without even an hs_err file, because
+// the JVM's crash handler needs stack of its own to run.
+//
+// Recognising ourselves by mapped address range is the whole check. Comparing
+// realpath(lib->name()) with our own path used to be, and it silently fails:
+// dd-trace-java extracts libjavaProfiler.so to a temporary file and unlinks it
+// once loaded, so realpath() on the still-mapped path returns nullptr and the
+// comparison reported "not self". Whether that mattered depended on a library
+// re-scan landing after the unlink, which is why the crashes looked random.
+//
+// Every native library cache carries its mapping bounds (Symbols::parseLibraries
+// builds them from /proc/self/maps), so the range test needs no fallback.
+bool LibraryPatcher::is_profiler_library(CodeCache* lib) {
+  return lib != nullptr && lib->contains(self_anchor());
 }
 
 class RoutineInfo {
@@ -406,8 +427,9 @@ static int pthread_create_hook(pthread_t* thread,
 }
 
 void LibraryPatcher::patch_libraries() {
-   // LibraryPatcher has yet initialized, only happens in Gtest
-   if (_profiler_name == nullptr) {
+   // Profiler::start() has not run yet, so the hook would have nowhere to
+   // register new threads. Also the case in Gtest, which never initializes.
+   if (!_initialized.load(std::memory_order_acquire)) {
      return;
    }
 
@@ -419,10 +441,7 @@ void LibraryPatcher::patch_libraries() {
 void LibraryPatcher::patch_library_unlocked(CodeCache* lib) {
   if (lib->name() == nullptr) return;
 
-  char path[PATH_MAX];
-  char* resolved_path = realpath(lib->name(), path);
-  if (resolved_path != nullptr &&     //  filter out virtual file, e.g. [vdso], etc.
-      strcmp(resolved_path, _profiler_name) == 0) { // Don't patch self
+  if (is_profiler_library(lib)) { // Don't patch self
     return;
   }
 
@@ -489,12 +508,10 @@ void LibraryPatcher::patch_pthread_create() {
 // (like wasmtime) that install broken signal handlers calling malloc().
 void LibraryPatcher::patch_sigaction_in_library(CodeCache* lib) {
   if (lib->name() == nullptr) return;
-  if (_profiler_name == nullptr) return;  // Not initialized yet
+  if (!_initialized.load(std::memory_order_acquire)) return;  // Not initialized yet
 
   // Don't patch ourselves
-  char path[PATH_MAX];
-  char* resolved_path = realpath(lib->name(), path);
-  if (resolved_path != nullptr && strcmp(resolved_path, _profiler_name) == 0) {
+  if (is_profiler_library(lib)) {
     return;
   }
 
@@ -598,20 +615,7 @@ bool LibraryPatcher::patch_socket_functions() {
   const CodeCacheArray& native_libs = Libraries::instance()->native_libs();
   int num_of_libs = native_libs.count();
 
-  // Pre-resolve all library paths before acquiring the lock: realpath() may
-  // block on I/O and must not be called while holding _lock.
-  // We only need the is-self flag per library, so avoid a huge stack allocation.
-  static_assert(MAX_NATIVE_LIBS > 0, "MAX_NATIVE_LIBS must be positive");
-  bool is_self[MAX_NATIVE_LIBS];
   int capped = (num_of_libs <= MAX_NATIVE_LIBS) ? num_of_libs : MAX_NATIVE_LIBS;
-  for (int index = 0; index < capped; index++) {
-    CodeCache* lib = native_libs.at(index);
-    is_self[index] = false;
-    if (lib == nullptr || lib->name() == nullptr) continue;
-    char path[PATH_MAX];
-    char* rp = realpath(lib->name(), path);
-    is_self[index] = (rp != nullptr && strcmp(rp, _profiler_name) == 0);
-  }
 
   ExclusiveLockGuard locker(&_lock);
   // Re-check under the lock only on re-entry (when hooks are already installed):
@@ -651,7 +655,10 @@ bool LibraryPatcher::patch_socket_functions() {
     if (lib == nullptr) continue;
     if (lib->name() == nullptr) continue;
 
-    if (is_self[index]) {
+    // Checked here rather than in a pre-pass keyed by index: the library array
+    // can grow between the two, and a flag applied to the wrong entry could let
+    // us patch ourselves.
+    if (is_profiler_library(lib)) {
       continue;
     }
 

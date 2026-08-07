@@ -18,9 +18,16 @@ typedef struct _patchEntry {
 
 
 class LibraryPatcher {
+  friend class LibraryPatcherTestAccessor;
+
 private:
   static SpinLock    _lock;
-  static const char* _profiler_name;
+  // Set by initialize(), which Profiler::start() calls just before the first
+  // library scan. Patching must not begin any earlier: pthread_create_hook()
+  // routes newly created threads through Profiler::registerThread(), which
+  // dereferences state that only exists once the profiler is running. Read from
+  // the Libraries refresher thread, hence atomic with release/acquire.
+  static std::atomic<bool> _initialized;
   static PatchEntry  _patched_entries[MAX_NATIVE_LIBS];
   static int         _size;
   static bool        _patch_pthread_create;
@@ -38,6 +45,11 @@ private:
   static void patch_pthread_create();
   static void patch_pthread_setspecific();
   static void patch_sigaction_in_library(CodeCache* lib);
+  // An address known to lie inside this library; how is_profiler_library()
+  // recognises the profiler's own mapping.
+  static const void* self_anchor();
+  // True when `lib` is the profiler's own library, which must never be patched.
+  static bool is_profiler_library(CodeCache* lib);
 public:
   // True while socket hooks are installed; read by Profiler::dlopen_hook
   // to decide whether to re-patch after a new library is loaded.
