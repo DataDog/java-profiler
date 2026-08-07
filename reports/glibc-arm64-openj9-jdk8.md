@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk8
 
 ## glibc-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-08-07 13:11:24 EDT
+**Date:** 2026-08-07 14:42:22 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-arm64-openj9-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 32 |
-| CPU Cores (end) | 32 |
+| CPU Cores (start) | 51 |
+| CPU Cores (end) | 51 |
 | Throttling | 0% |
 
 ### Test Results
@@ -38,36 +38,36 @@ title: glibc-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 190 |
-| Sample Rate | 3.17/sec |
-| Health Score | 198% |
-| Threads | 9 |
+| CPU Samples | 3 |
+| Sample Rate | 0.05/sec |
+| Health Score | 3% |
+| Threads | 2 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
+<summary>CPU Timeline (1 unique values: 51-51 cores)</summary>
 
 ```
-1786122389 32
-1786122394 32
-1786122399 32
-1786122404 32
-1786122409 32
-1786122414 32
-1786122419 32
-1786122424 32
-1786122429 32
-1786122434 32
-1786122439 32
-1786122444 32
-1786122449 32
-1786122454 32
-1786122459 32
-1786122464 32
-1786122469 32
-1786122474 32
-1786122479 32
-1786122484 32
+1786127891 51
+1786127896 51
+1786127901 51
+1786127906 51
+1786127911 51
+1786127916 51
+1786127921 51
+1786127926 51
+1786127931 51
+1786127936 51
+1786127941 51
+1786127946 51
+1786127951 51
+1786127956 51
+1786127961 51
+1786127966 51
+1786127971 51
+1786127976 51
+1786127981 51
+1786127986 51
 ```
 </details>
 
