@@ -43,9 +43,9 @@ Triggers the Validated Release workflow using GitHub CLI to create a new release
 2. Fetches and verifies the selected branch is up to date with
    `origin` (a checked-out local branch that's behind or ahead of origin
    fails fast with pull instructions)
-3. For patch releases, offers to run `prepare-patch.sh` to backport pending
-   main PRs onto the release branch first; if you accept, the script exits
-   so you can merge the resulting PR and re-run
+3. For patch releases, asks whether to pick PRs from `main` to backport onto
+   the release branch first; if you accept, you select which PRs, a combined
+   backport PR is opened, and the script exits so you can merge it and re-run
 4. Interactive commit selection (or use `--commit`)
 5. Triggers GitHub Actions "Validated Release" workflow
 6. Workflow runs pre-release tests, creates the annotated tag, and opens an
