@@ -34,8 +34,9 @@
 //
 //   return INJECT_FAULT_BOOL_LIKELY(dlopen(name, flags) != nullptr);
 //
-// The three tiers name their firing frequency: RARE 0.01%, UNLIKELY 0.1%,
-// LIKELY 1%.  See faultInjection.cpp for the poison-address and PRNG details.
+// The four tiers name their firing frequency: RARE 0.01%, UNLIKELY 0.1%,
+// LIKELY 1%, HIGH 10%.  See faultInjection.cpp for the poison-address and PRNG
+// details.
 
 #ifndef _FAULT_INJECTION_H
 #define _FAULT_INJECTION_H
@@ -56,6 +57,7 @@ namespace faultinj {
 constexpr u64 PROB_RARE     = 1844674407370955ULL;    // 1e-4  (0.01%)
 constexpr u64 PROB_UNLIKELY = 18446744073709552ULL;   // 1e-3  (0.1%)
 constexpr u64 PROB_LIKELY   = 184467440737095520ULL;  // 1e-2  (1%)
+constexpr u64 PROB_HIGH     = 1844674407370955162ULL; // 1e-1  (10%)
 
 // Called once at profiler startup (off the signal path) to mmap the PROT_NONE
 // guard region used by poisonAddress().  Safe to call before any injection.
@@ -106,6 +108,8 @@ inline T injectValue(T orig, T faulty, u64 threshold, const char* fn) {
     ::faultinj::injectAddress((ptr), ::faultinj::PROB_UNLIKELY, __func__)
 #define INJECT_FAULT_ADDRESS_LIKELY(ptr) \
     ::faultinj::injectAddress((ptr), ::faultinj::PROB_LIKELY, __func__)
+#define INJECT_FAULT_ADDRESS_HIGH(ptr) \
+    ::faultinj::injectAddress((ptr), ::faultinj::PROB_HIGH, __func__)
 
 #define INJECT_FAULT_BOOL_RARE(v) \
     ::faultinj::injectValue((v), false, ::faultinj::PROB_RARE, __func__)
@@ -113,24 +117,30 @@ inline T injectValue(T orig, T faulty, u64 threshold, const char* fn) {
     ::faultinj::injectValue((v), false, ::faultinj::PROB_UNLIKELY, __func__)
 #define INJECT_FAULT_BOOL_LIKELY(v) \
     ::faultinj::injectValue((v), false, ::faultinj::PROB_LIKELY, __func__)
+#define INJECT_FAULT_BOOL_HIGH(v) \
+    ::faultinj::injectValue((v), false, ::faultinj::PROB_HIGH, __func__)
 
 #else  // __FAULT_INJECTION__ not defined — strict identity, zero cost.
 
 #define INJECT_FAULT_ADDRESS_RARE(ptr)     (ptr)
 #define INJECT_FAULT_ADDRESS_UNLIKELY(ptr) (ptr)
 #define INJECT_FAULT_ADDRESS_LIKELY(ptr)   (ptr)
+#define INJECT_FAULT_ADDRESS_HIGH(ptr)     (ptr)
 
 #define INJECT_FAULT_INT_RARE(v)     (v)
 #define INJECT_FAULT_INT_UNLIKELY(v) (v)
 #define INJECT_FAULT_INT_LIKELY(v)   (v)
+#define INJECT_FAULT_INT_HIGH(v)     (v)
 
 #define INJECT_FAULT_LONG_RARE(v)     (v)
 #define INJECT_FAULT_LONG_UNLIKELY(v) (v)
 #define INJECT_FAULT_LONG_LIKELY(v)   (v)
+#define INJECT_FAULT_LONG_HIGH(v)     (v)
 
 #define INJECT_FAULT_BOOL_RARE(v)     (v)
 #define INJECT_FAULT_BOOL_UNLIKELY(v) (v)
 #define INJECT_FAULT_BOOL_LIKELY(v)   (v)
+#define INJECT_FAULT_BOOL_HIGH(v)     (v)
 
 #define NO_INJECTION_ASSERT(a) (assert(a))
 

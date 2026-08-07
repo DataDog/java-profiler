@@ -22,6 +22,8 @@
 #include <signal.h>
 #include <pthread.h>
 
+#include "counters.h"
+
 class ProfiledThread;
 
 // ---------------------------------------------------------------------------
@@ -42,8 +44,8 @@ class ProfiledThread;
 // pthread_getspecific (POSIX guarantees it does not allocate; returns
 // nullptr when unset).
 //
-// When ProfiledThread is null on a thread we don't yet have a thread
-// context — uninstrumented JVM-internal threads (VM Thread, JIT, GC) fall
+// When ProfiledThread is null or via thread priming on a thread
+// — uninstrumented JVM-internal threads (VM Thread, JIT, GC) fall
 // into this bucket too, and they can receive signals.  The
 // SignalHandlerScope guard is a no-op on those threads (nothing to
 // update), so isInTrackedSignalContext() returns false: production code
@@ -80,14 +82,32 @@ public:
     void release();
     SignalHandlerScope(const SignalHandlerScope&)            = delete;
     SignalHandlerScope& operator=(const SignalHandlerScope&) = delete;
+
+    bool isActive() const { return _active; }
+    ProfiledThread* current() const { return _current; }
 private:
+    ProfiledThread* _current;
     bool _active;
 };
 
 // Declare a scope guard local that increments the depth on entry and
 // decrements on scope exit.  Use as the very first statement in every
-// installed signal handler.
-#define SIGNAL_HANDLER_GUARD() SignalHandlerScope _signal_handler_scope
+// installed sampler signal handler
+#define SIGNAL_HANDLER_GUARD()                              \
+      SignalHandlerScope _signal_handler_scope;             \
+      if (!_signal_handler_scope.isActive()) {              \
+        Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);  \
+        return;                                             \
+      }
+
+// Declare a scope guard local that increments the depth on entry and
+// decrements on scope exit.  Use as the very first statement in every
+// installed non-sampler signal handler
+#define SIGNAL_HANDLER_GUARD_NO_SAMPLE()                    \
+      SignalHandlerScope _signal_handler_scope;
+
+// Cheaper way to retrieve current ProfiledThread inside the scope
+#define SIGNAL_HANDLER_CURRENT_THREAD() _signal_handler_scope.current()
 
 // Manually release the most recent SIGNAL_HANDLER_GUARD() before chaining to
 // another handler that may siglongjmp through us (e.g. J9's SIGSEGV null-pointer
@@ -136,17 +156,7 @@ void signalHandlerUnwindAfterLongjmp();
  */
 class CriticalSection {
 private:
-    static constexpr size_t FALLBACK_BITMAP_WORDS = 1024;  // 8KB for 64K bits
-    // Atomic bitmap for thread-safe critical section tracking without TLS
-    // Must be atomic because multiple signal handlers can run concurrently across
-    // different threads and attempt to set/clear bits simultaneously. Compare-and-swap
-    // operations ensure race-free bit manipulation even during signal interruption.
-    static uint64_t _fallback_bitmap[FALLBACK_BITMAP_WORDS];
-
     bool _entered;          // Track if this instance successfully entered
-    bool _using_fallback;   // Track which storage mechanism we're using
-    uint32_t _word_index;   // For fallback bitmap cleanup
-    uint64_t _bit_mask;     // For fallback bitmap cleanup
     ProfiledThread* _thread_ptr; // ProfiledThread captured at construction
 
 public:
@@ -161,10 +171,6 @@ public:
 
     // Check if this instance successfully entered the critical section
     bool entered() const { return _entered; }
-
-private:
-    // Hash function to distribute thread IDs across bitmap words
-    static uint32_t hash_tid(int tid);
 };
 
 /**

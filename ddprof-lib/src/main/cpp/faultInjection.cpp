@@ -22,7 +22,7 @@
 
 #include "counters.h"          // Counters::increment (FAULTS_INJECTED)
 #include "os.h"                // OS::page_size
-#include "threadLocalData.h"   // ProfiledThread::current / nextFiRandom
+#include "threadLocalData.inline.h"   // ProfiledThread::current / nextFiRandom
 #include <atomic>
 #include <sys/mman.h>
 

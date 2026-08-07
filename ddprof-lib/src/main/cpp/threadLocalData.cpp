@@ -3,11 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include "threadLocalData.h"
+#include "faultInjection.h"
+#include "threadLocalData.inline.h"
+#include "threadLocalDataPool.h"
 #include "context_api.h"
 #include "guards.h"
 #include "otel_context.h"
 #include "os.h"
+#include <cassert>
 #include <cstring>
 #include <time.h>
 
@@ -18,6 +21,25 @@
 // synchronization: the ctor's write happens-before any later thread/signal that
 // reads it.
 ThreadLocal<ProfiledThread*, nullptr, ProfiledThread::freeValue>  ProfiledThread::_current_thread;
+
+bool ProfiledThread::supportPriming() {
+  // Key must be valid
+  assert(_current_thread.isKeyValid());
+  if (OS::isMusl()) {
+    return true;
+  }
+#ifdef __GLIBC__
+  bool rc = _current_thread.key() < PTHREAD_KEY_2NDLEVEL_SIZE;
+  return INJECT_FAULT_BOOL_HIGH(rc);
+#else
+  // Neither musl nor glibc (e.g. macOS libpthread): PTHREAD_KEY_2NDLEVEL_SIZE
+  // is a glibc NPTL implementation detail (see threadLocalData.h) that doesn't
+  // describe this libc's pthread_key_t allocation scheme. Fail safe by
+  // disabling signal-handler TLS priming rather than assuming glibc-compatible
+  // pthread_setspecific behavior.
+  return false;
+#endif
+}
 
 ProfiledThread* ProfiledThread::initCurrentThread() {
   if (!isThreadKeyValid()) {
@@ -49,16 +71,27 @@ ProfiledThread* ProfiledThread::initCurrentThreadSignalSafe() {
 void ProfiledThread::freeValue(void* value) {
   SignalBlocker blocker;
   ProfiledThread* pt = reinterpret_cast<ProfiledThread*>(value);
-  // Sole deletion site for a ProfiledThread (invoked by the ThreadLocal
-  // destructor callback), so the THREAD_LOCAL decrement belongs here. Record
-  // after the delete, consistent with the other decrement sites.
-  delete pt;
-  NativeMem::record(NM_THREAD_LOCAL, -(long long)sizeof(ProfiledThread));
+  if (!ThreadLocalDataPool::release(pt)) {
+    // Sole deletion site for a ProfiledThread (invoked by the ThreadLocal
+    // destructor callback), so the THREAD_LOCAL decrement belongs here. Record
+    // after the delete, consistent with the other decrement sites.
+    delete pt;
+    NativeMem::record(NM_THREAD_LOCAL, -(long long)sizeof(ProfiledThread));
+  }
 }
 
 void ProfiledThread::release() {
   _current_thread.clear();
 }
+
+#ifdef UNIT_TEST
+void ProfiledThread::deleteForTest(ProfiledThread* pt) {
+  if (!ThreadLocalDataPool::release(pt)) {
+    delete pt;
+    NativeMem::record(NM_THREAD_LOCAL, -(long long)sizeof(ProfiledThread));
+  }
+}
+#endif
 
 int ProfiledThread::currentTid() {
   ProfiledThread *tls = current();
@@ -80,4 +113,38 @@ Context ProfiledThread::snapshotContext(size_t numAttrs) {
     }
   }
   return ctx;
+}
+
+void ProfiledThread::unclaimAndReset() {
+  _unwinding_Java = false;
+  _jmp_buf = nullptr;
+  _pc = 0;
+  _sp = 0;
+  _span_id = 0;
+  _crash_depth = 0;
+  _tid = 0;
+  _cpu_epoch = 0;
+  _wall_epoch = 0;
+  _call_trace_id = 0;
+  _recording_epoch = 0;
+  _park_block_token = 0;
+  _filter_slot_id = -1;
+  _init_window = 0;
+  _signal_depth = 0;
+  _in_critical_section = false;
+
+  _otel_ctx_initialized = false;
+  _otel_ctx_record = {};
+  _otel_local_root_span_id = 0;
+  for (int index = 0; index < DD_TAGS_CAPACITY; index++) {
+    _otel_tag_encodings[index] = 0;
+  }
+
+  _unwind_failures.reset();
+
+#ifdef __FAULT_INJECTION__
+    _fi_rng = 0;
+#endif
+
+  __atomic_store_n(&_misc_flags, 0, __ATOMIC_RELEASE);
 }

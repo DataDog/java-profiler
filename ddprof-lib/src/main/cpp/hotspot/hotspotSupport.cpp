@@ -18,6 +18,7 @@
 #include "profiler.h"
 #include "stackWalker.inline.h"
 #include "threadLocal.h"
+#include "threadLocalData.inline.h"
 
 using StackWalkValidation::inDeadZone;
 using StackWalkValidation::aligned;
@@ -241,10 +242,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     assert(VM::isHotspot());
 
     ProfiledThread* prof_thread = ProfiledThread::current();
-    if (prof_thread == nullptr) {
-        Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
-        return 0;
-    }
+    assert(prof_thread != nullptr && "Should have been setup at signal handler entery");
 
     HotspotStackFrame frame(ucontext);
     uintptr_t bottom = (uintptr_t)&frame + MAX_WALK_SIZE;
@@ -1210,12 +1208,16 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   // AsyncGetCallTrace. Install a jmp ctx here too, so a SIGSEGV anywhere in
   // walkJavaStack, except HotSpot's AsyncGetCallTrace call, is caught by
   // Profiler::checkFault() and siglongjmp'd back here instead of crashing the process.
-  ProfiledThread* prof_thread = ProfiledThread::current();
-  const bool prev_unwinding_java = prof_thread != nullptr ? prof_thread->is_unwinding_Java() : false;
+  ProfiledThread* prof_thread = ProfiledThread::acquireCurrent();
+  if (prof_thread == nullptr) {
+    Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
+    return 0;
+  }
+  const bool prev_unwinding_java = prof_thread->is_unwinding_Java();
   sigjmp_buf crash_protection_ctx;
-  sigjmp_buf* prev_jmp_buf = prof_thread != nullptr ? prof_thread->getJmpCtx() : nullptr;
+  sigjmp_buf* prev_jmp_buf = prof_thread->getJmpCtx();
 
-  if (prof_thread != nullptr && sigsetjmp(crash_protection_ctx, 1) != 0) {
+  if (sigsetjmp(crash_protection_ctx, 1) != 0) {
     // checkFault() does a siglongjmp from inside segvHandler, bypassing
     // segvHandler's SignalHandlerScope destructor. Compensate.
     SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
@@ -1228,9 +1230,7 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
     }
     return java_frames;
   }
-  if (prof_thread != nullptr) {
-    prof_thread->setJmpCtx(&crash_protection_ctx);
-  }
+  prof_thread->setJmpCtx(&crash_protection_ctx);
 
   if (features.mixed) {
     java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
@@ -1284,9 +1284,7 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
     }
   }
 
-  if (prof_thread != nullptr) {
-    prof_thread->setJmpCtx(prev_jmp_buf);
-  }
+  prof_thread->setJmpCtx(prev_jmp_buf);
   return java_frames;
 }
 

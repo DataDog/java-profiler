@@ -11,7 +11,7 @@
 #include "hotspot/vmStructs.h"
 #include "jvmThread.h"
 #include "safeAccess.h"
-#include "threadLocalData.h"
+#include "threadLocalData.inline.h"
 
 inline bool crashProtectionActive() {
     ProfiledThread* pt = ProfiledThread::current();

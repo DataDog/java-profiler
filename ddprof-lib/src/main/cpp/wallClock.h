@@ -12,7 +12,7 @@
 #include "os.h"
 #include "profiler.h"
 #include "reservoirSampler.h"
-#include "threadLocalData.h"
+#include "threadLocalData.inline.h"
 #include "threadFilter.h"
 #include "threadState.h"
 #include "tsc.h"

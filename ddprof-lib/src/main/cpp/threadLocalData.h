@@ -37,6 +37,15 @@ public:
 };
 
 class ProfiledThread : public ThreadLocalData {
+  friend class ThreadLocalDataPool;
+
+  // PTHREAD_KEY_2NDLEVEL_SIZE is an internal macro set to 32 in the GNU C Library (glibc) NPTL
+  // implementation. Slot indexes less than PTHREAD_KEY_2NDLEVEL_SIZE are pre-allocated.
+  // glibc-specific: only meaningful under the __GLIBC__ branch of supportPriming()
+  // (threadLocalData.cpp). Other libcs (musl, macOS libpthread) don't share this
+  // layout and must not be routed through this constant.
+  static constexpr int PTHREAD_KEY_2NDLEVEL_SIZE = 32;
+
 public:
   enum ThreadType : u32 {
     TYPE_UNKNOWN = 0,
@@ -46,6 +55,7 @@ public:
   };
 
   static constexpr u32 FLAG_PARKED = 0x4u; // next free bit after TYPE_MASK (0x1|0x2)
+  static constexpr u32 FLAG_CLAIMED = 0x8u; // Used by ThreadLocalDataPool only 
 
   // We are allowing several levels of nesting because we can be
   // eg. in a crash handler when wallclock signal kicks in,
@@ -74,7 +84,7 @@ private:
   u32 _wall_epoch;
   u64 _call_trace_id;
   u32 _recording_epoch;
-  u32 _misc_flags;
+  volatile u32 _misc_flags;
   u64 _park_block_token;
   int _filter_slot_id; // Slot ID for thread filtering
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
@@ -112,6 +122,14 @@ private:
   };
 
   virtual ~ProfiledThread() { }
+
+  inline bool isClaimed() const {
+    return (__atomic_load_n(&_misc_flags, __ATOMIC_RELAXED) & FLAG_CLAIMED) == FLAG_CLAIMED;
+  }
+
+  void unclaimAndReset();
+  
+  inline bool claimAcquire(int tid);
 public:
   static ProfiledThread *forTid(int tid) {
     ProfiledThread *pt = new ProfiledThread(tid);
@@ -121,6 +139,8 @@ public:
   static bool isThreadKeyValid() {
     return _current_thread.isKeyValid();
   }
+
+  static bool supportPriming();
 
 #ifdef UNIT_TEST
   // Simulates the moment inside release() after pthread_setspecific(NULL) but
@@ -132,16 +152,15 @@ public:
     _current_thread.set(nullptr);
     return pt;
   }
-  // Deletes a ProfiledThread returned by clearCurrentThreadTLS().
-  // Needed because the destructor is private. This stands in for the delete
-  // that freeValue() performs in production, so it mirrors freeValue()'s
-  // NM_THREAD_LOCAL decrement to keep the accounting balanced in tests.
-  static void deleteForTest(ProfiledThread *pt) {
-    delete pt;
-    NativeMem::record(NM_THREAD_LOCAL, -(long long)sizeof(ProfiledThread));
-  }
+  // Releases a ProfiledThread returned by clearCurrentThreadTLS().
+  // Needed because the destructor is private. Mirrors freeValue()'s
+  // ThreadLocalDataPool::release()-then-delete logic (and its NM_THREAD_LOCAL
+  // decrement) so it's safe to call on both forTid()-obtained and pool-backed
+  // threads. Defined in threadLocalData.cpp, where ThreadLocalDataPool's full
+  // declaration is visible.
+  static void deleteForTest(ProfiledThread *pt);
 #endif
-  // initCurrentThread() and release() are not async-signal-safe: 
+  // initCurrentThread() and release() are not async-signal-safe:
   // must be called outside of a signal handler with signal blocked
   static ProfiledThread* initCurrentThread();
   static void release();
@@ -154,12 +173,10 @@ public:
   static ProfiledThread* initCurrentThreadSignalSafe();
 
   // Signal-handler friendly (no allocation): returns existing TLS or nullptr.
-  static inline ProfiledThread *current() {
-    if (!isThreadKeyValid()) {
-      return nullptr;
-    }
-    return _current_thread.get();
-  }
+  static inline ProfiledThread *current();
+  // signal-handler friendly with priming: return existing TLS or acquire and set
+  // ProfiledThread from ThreadLocalDataPool.
+  static inline ProfiledThread* acquireCurrent();
 
   static int currentTid();
   inline int tid() { return _tid; }

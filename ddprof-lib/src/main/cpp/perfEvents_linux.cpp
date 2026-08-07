@@ -20,6 +20,7 @@
 #include "arch.h"
 #include "arguments.h"
 #include "context.h"
+#include "counters.h"
 #include "guards.h"
 #include "debugSupport.h"
 #include "jvmSupport.inline.h"
@@ -35,7 +36,7 @@
 #include "stackFrame.h"
 #include "stackWalker.h"
 #include "symbols.h"
-#include "threadLocalData.h"
+#include "threadLocalData.inline.h"
 #include "threadState.inline.h"
 #include <dlfcn.h>
 #include <errno.h>
@@ -736,22 +737,29 @@ u64 PerfEvents::readCounter(siginfo_t *siginfo, void *ucontext) {
 }
 
 void PerfEvents::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
-  SIGNAL_HANDLER_GUARD();
   if (siginfo->si_code <= 0) {
     // Looks like an external signal; don't treat as a profiling event
     return;
   }
+  SIGNAL_HANDLER_GUARD();
   InflightGuard inflight;
+
+  // A thread with no ProfiledThread attached must never enter the critical
+  // section below. acquireCurrent() is the only thing that can attach one; it
+  // must fully succeed or fail before we try to claim exclusivity, not while
+  // we're holding it -- otherwise a signal that interrupts us right after
+  // publish could observe a ProfiledThread whose critical-section state
+  // doesn't yet reflect reality. Drop the sample instead.
+  ProfiledThread *current = SIGNAL_HANDLER_CURRENT_THREAD();
+  assert(current != nullptr);
+
   // Atomically try to enter critical section - prevents all reentrancy races
   CriticalSection cs;
   if (!cs.entered()) {
     return;  // Another critical section is active, defer profiling
   }
-  ProfiledThread *current = ProfiledThread::current();
-  if (current != NULL) {
-    current->noteCPUSample(Profiler::instance()->recordingEpoch());
-  }
-  int tid = current != NULL ? current->tid() : OS::threadId();
+  current->noteCPUSample(Profiler::instance()->recordingEpoch());
+  int tid = current->tid();
   if (__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
     Shims::instance().setSighandlerTid(tid);
 

@@ -14,7 +14,7 @@
 #include "faultInjection.h"
 #include "safeAccess.h"
 #include "os.h"
-#include "threadLocalData.h"
+#include "threadLocalData.inline.h"
 #include "profiler.h"
 #include "../../main/cpp/gtest_crash_handler.h"
 
