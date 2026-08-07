@@ -115,35 +115,37 @@ Context ProfiledThread::snapshotContext(size_t numAttrs) {
   return ctx;
 }
 
-void ProfiledThread::resetClaimed(int tid) {
+void ProfiledThread::unclaimAndReset() {
   _unwinding_Java = false;
   _jmp_buf = nullptr;
   _pc = 0;
   _sp = 0;
   _span_id = 0;
   _crash_depth = 0;
-  _tid = tid;
+  _tid = 0;
   _cpu_epoch = 0;
   _wall_epoch = 0;
   _call_trace_id = 0;
   _recording_epoch = 0;
-  __atomic_store_n(&_misc_flags, FLAG_CLAIMED, __ATOMIC_RELEASE);
   _park_block_token = 0;
   _filter_slot_id = -1;
   _init_window = 0;
   _signal_depth = 0;
+  _in_critical_section = false;
+
   _otel_ctx_initialized = false;
   _otel_ctx_record = {};
+  _otel_local_root_span_id = 0;
   for (int index = 0; index < DD_TAGS_CAPACITY; index++) {
     _otel_tag_encodings[index] = 0;
   }
-   _otel_local_root_span_id = 0;
-   _in_critical_section = false;
 
-   _unwind_failures.reset();
+  _unwind_failures.reset();
 
    #ifdef __FAULT_INJECTION__
     _fi_rng = ((u64)(uintptr_t)this) ^ (0x9e3779b97f4a7c15ULL * (u64)tid);
     if (_fi_rng == 0) _fi_rng = 1;
 #endif
+
+  __atomic_store_n(&_misc_flags, 0, __ATOMIC_RELEASE);
 }

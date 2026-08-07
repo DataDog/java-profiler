@@ -54,7 +54,7 @@ ProfiledThread* ThreadLocalDataPool::claim(int tid) {
     int start_pos = tid % _capacity;
     int index = start_pos;
     do {
-        if (_threads[index].claimAcquire()) {
+        if (_threads[index].claimAcquire(tid)) {
             return &_threads[index];
         }
         index = (index + 1) % _capacity;
@@ -66,8 +66,8 @@ ProfiledThread* ThreadLocalDataPool::claim(int tid) {
 
 bool ThreadLocalDataPool::unclaim(ProfiledThread* t) {
     if (contains(t)) {
-        t->unclaim();
-        uint16_t used = __atomic_fetch_add(&_used, -1, __ATOMIC_RELEASE);
+        t->unclaimAndReset();
+        uint16_t used = __atomic_fetch_add(&_used, -1, __ATOMIC_RELAXED);
         assert(used > 0);
         return true;
     }
@@ -85,11 +85,7 @@ ProfiledThread* ThreadLocalDataPool::acquire(int tid) {
     if (pool == nullptr) {
         return nullptr;
     } else {
-        ProfiledThread* t = pool->claim(tid);
-        if (t != nullptr) {
-            t->resetClaimed(tid);
-        }
-        return t;
+        return pool->claim(tid);
     }
 }
 

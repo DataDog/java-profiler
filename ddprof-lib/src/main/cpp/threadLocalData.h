@@ -123,25 +123,23 @@ private:
 
   virtual ~ProfiledThread() { }
 
-  // Reset content of claimed slot
-  void resetClaimed(int tid);
-
   inline bool isClaimed() const {
     return (__atomic_load_n(&_misc_flags, __ATOMIC_RELAXED) & FLAG_CLAIMED) == FLAG_CLAIMED;
   }
 
-  inline void unclaim() {
-    assert(isClaimed() && "Slot has been claimed");
-    __atomic_fetch_and(&_misc_flags, ~FLAG_CLAIMED, __ATOMIC_RELEASE);
-  }
+  void unclaimAndReset();
   
-  inline bool claimAcquire() {
+  inline bool claimAcquire(int tid) {
     if (isClaimed()) {
         return false;
     }
 
     u32 flags = __atomic_fetch_or(&_misc_flags, FLAG_CLAIMED, __ATOMIC_ACQUIRE);
-    return (flags & FLAG_CLAIMED) == 0;
+    if((flags & FLAG_CLAIMED) == 0) {
+      _tid = tid;
+      return true;
+    }
+    return false;
   }
 
 public:
