@@ -95,9 +95,7 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
         fp = (uintptr_t)SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)fp));
     }
 
-    if (prof_thread != nullptr) {
-        prof_thread->setJmpCtx(prev_jmp_buf);
-    }
+    prof_thread->setJmpCtx(prev_jmp_buf);
 
     if (truncated && depth > max_depth) {
         *truncated = true;

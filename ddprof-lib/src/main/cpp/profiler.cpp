@@ -784,6 +784,9 @@ void Profiler::recordQueueTime(int tid, QueueTimeEvent *event) {
 void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
                                     ASGCT_CallFrame *frames, bool truncated,
                                     jint event_type, Event *event) {
+  // This is a non-signal based sampler
+  ProfiledThread::initCurrentThreadSignalSafe();
+  
   // Protect external sampling operations to prevent signal handler interference
   CriticalSection cs;
   atomicIncRelaxed(_total_samples);

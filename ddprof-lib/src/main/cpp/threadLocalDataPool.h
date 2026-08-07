@@ -13,6 +13,7 @@
 class ProfiledThread;
 
 class ThreadLocalDataPool {
+    
     static constexpr uint16_t DEFAULT_CAPACITY = 64;
 private:
     static ThreadLocalDataPool* _pool;

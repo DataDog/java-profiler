@@ -142,9 +142,8 @@ void ProfiledThread::unclaimAndReset() {
 
   _unwind_failures.reset();
 
-   #ifdef __FAULT_INJECTION__
-    _fi_rng = ((u64)(uintptr_t)this) ^ (0x9e3779b97f4a7c15ULL * (u64)tid);
-    if (_fi_rng == 0) _fi_rng = 1;
+#ifdef __FAULT_INJECTION__
+    _fi_rng = 0;
 #endif
 
   __atomic_store_n(&_misc_flags, 0, __ATOMIC_RELEASE);

@@ -205,17 +205,17 @@ bool BaseWallClock::inSyscall(void *ucontext) {
 
 void WallClockASGCT::sharedSignalHandler(int signo, siginfo_t *siginfo,
                                     void *ucontext) {
-  SIGNAL_HANDLER_GUARD();
   // Reject any SIGVTALRM that did not originate from our rt_tgsigqueueinfo
   // send. Defends against stray in-process tgkill / external sigqueue that
   // would otherwise drive our wallclock sampling path.
   if (!OS::shouldProcessSignal(siginfo, SI_QUEUE, SignalCookie::wallclock())) {
     Counters::increment(WALLCLOCK_SIGNAL_FOREIGN);
-    SIGNAL_HANDLER_GUARD_RELEASE();
     OS::forwardForeignSignal(signo, siginfo, ucontext);
     return;
   }
   Counters::increment(WALLCLOCK_SIGNAL_OWN);
+
+  SIGNAL_HANDLER_GUARD();
 
   WallClockASGCT *engine = reinterpret_cast<WallClockASGCT *>(Profiler::instance()->wallEngine());
   // Past the foreign-signal filter: any work below this point can write JFR.
@@ -424,17 +424,16 @@ void WallClockASGCT::timerLoop() {
 
 void WallClockJvmti::sharedSignalHandler(int signo, siginfo_t *siginfo,
                                          void *ucontext) {
-  SIGNAL_HANDLER_GUARD();
   // Reject any SIGVTALRM that did not originate from our rt_tgsigqueueinfo
   // send (mirrors WallClockASGCT). Defends against stray in-process tgkill or
   // external sigqueue driving the JVMTI RequestStackTrace path.
   if (!OS::shouldProcessSignal(siginfo, SI_QUEUE, SignalCookie::wallclock())) {
     Counters::increment(WALLCLOCK_SIGNAL_FOREIGN);
-    SIGNAL_HANDLER_GUARD_RELEASE();
     OS::forwardForeignSignal(signo, siginfo, ucontext);
     return;
   }
   Counters::increment(WALLCLOCK_SIGNAL_OWN);
+  SIGNAL_HANDLER_GUARD();
 
   WallClockJvmti *engine =
       reinterpret_cast<WallClockJvmti *>(Profiler::instance()->wallEngine());

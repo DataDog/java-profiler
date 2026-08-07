@@ -206,7 +206,6 @@ Error CTimerJvmti::start(Arguments &args) {
 }
 
 void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
-  SIGNAL_HANDLER_GUARD();
   if (!OS::shouldProcessSignal(siginfo, SI_TIMER, SignalCookie::cpu())) {
     Counters::increment(CTIMER_SIGNAL_FOREIGN);
     OS::forwardForeignSignal(signo, siginfo, ucontext);
@@ -214,6 +213,7 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   }
   Counters::increment(CTIMER_SIGNAL_OWN);
 
+  SIGNAL_HANDLER_GUARD();
   InflightGuard inflight;
 
   CriticalSection cs;

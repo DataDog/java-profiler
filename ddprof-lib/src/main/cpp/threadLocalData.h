@@ -129,19 +129,7 @@ private:
 
   void unclaimAndReset();
   
-  inline bool claimAcquire(int tid) {
-    if (isClaimed()) {
-        return false;
-    }
-
-    u32 flags = __atomic_fetch_or(&_misc_flags, FLAG_CLAIMED, __ATOMIC_ACQUIRE);
-    if((flags & FLAG_CLAIMED) == 0) {
-      _tid = tid;
-      return true;
-    }
-    return false;
-  }
-
+  inline bool claimAcquire(int tid);
 public:
   static ProfiledThread *forTid(int tid) {
     ProfiledThread *pt = new ProfiledThread(tid);

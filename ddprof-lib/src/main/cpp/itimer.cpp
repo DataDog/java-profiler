@@ -102,6 +102,7 @@ bool ITimerJvmti::_enabled = false;
 long ITimerJvmti::_interval = 0;
 
 void ITimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  int saved_errno = errno;
   SIGNAL_HANDLER_GUARD();
   ProfiledThread *current = SIGNAL_HANDLER_CURRENT_THREAD();
   assert(current != nullptr);
@@ -111,7 +112,6 @@ void ITimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   if (!cs.entered()) {
     return;
   }
-  int saved_errno = errno;
   if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
     errno = saved_errno;
     return;

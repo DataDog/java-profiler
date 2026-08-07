@@ -4,7 +4,7 @@
  */
 
 #include "counters.h"
-#include "threadLocalData.h"
+#include "threadLocalData.inline.h"
 #include "threadLocalDataPool.h"
 
 #include <cassert>
