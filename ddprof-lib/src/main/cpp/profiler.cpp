@@ -785,8 +785,12 @@ void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
                                     ASGCT_CallFrame *frames, bool truncated,
                                     jint event_type, Event *event) {
   // This is a non-signal based sampler
-  ProfiledThread::initCurrentThreadSignalSafe();
-  
+  ProfiledThread* current = ProfiledThread::initCurrentThreadSignalSafe();
+  if (current == nullptr) {
+    Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
+    return;
+  }
+
   // Protect external sampling operations to prevent signal handler interference
   CriticalSection cs;
   atomicIncRelaxed(_total_samples);
