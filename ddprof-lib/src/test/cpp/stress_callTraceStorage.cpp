@@ -9,6 +9,7 @@
 #include "guards.h"
 #include "common.h"  // TSAN_ENABLED (toolchain-agnostic sanitizer detection)
 #include "threadLocalData.h"
+#include "threadLocalDataPool.h"
 #include <vector>
 #include <unordered_set>
 #include <thread>
@@ -162,13 +163,29 @@ protected:
     void SetUp() override {
         // Install crash handler for detailed debugging
         installGtestCrashHandler<STRESS_TEST_NAME>();
-        
+
+        // Signal-handler TLS priming is the only way a thread this suite spawns
+        // (a plain std::thread that never registers with the profiler) can end up
+        // with a ProfiledThread: ProfiledThread::acquireCurrent() claims a pool
+        // slot without allocating, which is what SignalHandlerScope relies on.
+        // That pool is normally created by JVMSupport during agent startup, and
+        // this binary has no JVM -- leaving _pool null, so acquireCurrent()
+        // returns null and CriticalSection's ctor trips its
+        // `_thread_ptr != nullptr` assertion (gtest builds keep asserts live).
+        // Create it here instead. initialize() is not idempotent -- it news a
+        // fresh pool and overwrites the singleton -- and SetUp() runs per test,
+        // so it must happen exactly once for the process.
+        static std::once_flag pool_once;
+        std::call_once(pool_once, [] { ThreadLocalDataPool::initialize(); });
+
         // Initialize shared storage if not already done
         if (!shared_storage) {
             shared_storage = std::make_unique<CallTraceStorage>();
         }
-        
+
         // Clear any traces from previous tests to start fresh
+        ProfiledThread* pt = ProfiledThread::initCurrentThreadSignalSafe();
+        assert(pt != nullptr); 
         shared_storage->clear();
     }
     
@@ -251,6 +268,7 @@ TEST_F(StressTestSuite, SwapStormTest) {
                 // Use mutex to ensure single-threaded processTraces access - matches production
                 {
                     std::lock_guard<std::mutex> lock(process_traces_mutex);
+                    ProfiledThread::initCurrentThreadSignalSafe();
                     storage->processTraces([](const std::unordered_set<CallTrace*>& traces) {
                         // Process traces (simulating JFR serialization)
                         (void)traces.size();
@@ -879,6 +897,7 @@ TEST_F(StressTestSuite, TLSOverrunCanaryTest) {
             
             try {
                 {
+                    ProfiledThread::initCurrentThreadSignalSafe();
                     std::lock_guard<std::mutex> lock(process_traces_mutex);
                     storage->processTraces([](const std::unordered_set<CallTrace*>& traces) {
                         // Aggressive processing to stress TLS during swaps
@@ -1067,12 +1086,16 @@ static CallTraceStorage* realistic_shared_storage = nullptr;
 
 // Signal handler for pressure test
 void pressure_signal_handler(int sig) {
+    SIGNAL_HANDLER_GUARD_NO_SAMPLE();
+
     if (!signal_pressure_active.load()) {
+        SIGNAL_HANDLER_GUARD_RELEASE();
         return;
     }
     CriticalSection cs;
 
     if (!cs.entered()) {
+        SIGNAL_HANDLER_GUARD_RELEASE();
         // behave like the real-life signal handler
         return;
     }
@@ -1096,11 +1119,17 @@ void pressure_signal_handler(int sig) {
 
 // Realistic signal handler for profiler stress test
 void realistic_profiler_signal_handler(int sig) {
-    if (!realistic_test_running.load()) return;
+    SIGNAL_HANDLER_GUARD_NO_SAMPLE();
+
+    if (!realistic_test_running.load()) {
+        SIGNAL_HANDLER_GUARD_RELEASE();
+        return;
+    }
     CriticalSection cs;
 
     // Critical: Check if critical section is active (storage swap in progress)
     if (!cs.entered()) {
+        SIGNAL_HANDLER_GUARD_RELEASE();
         return;  // Skip this signal - storage operation in progress
     }
     
@@ -1553,6 +1582,9 @@ static void realProfilerSignalStressImpl(int signal_barrage_count, int num_worke
     std::vector<std::thread> workers;
     for (int t = 0; t < num_worker_threads; ++t) {
         workers.emplace_back([&, t]() {
+            // Needed before any put()/processTraces() call -- see the worker threads
+            // in InstanceIdTraceIdStressTest for why.
+            ProfiledThread::initCurrentThreadSignalSafe();
             while (test_running.load()) {
                 try {
                     // Simulate normal application work that profiler samples
@@ -1580,6 +1612,7 @@ static void realProfilerSignalStressImpl(int signal_barrage_count, int num_worke
     // Single dump thread - represents realistic JFR dump operations
     // In production, this would be protected by mutex and only one thread does dumps
     std::thread dump_thread([&]() {
+        ProfiledThread::initCurrentThreadSignalSafe();
         int dump_count = 0;
         while (test_running.load() && dump_count < 3) {  // Only do a few dumps
             try {
@@ -1680,6 +1713,11 @@ TEST_F(StressTestSuite, InstanceIdTraceIdStressTest) {
     std::vector<std::thread> workers;
     for (int t = 0; t < NUM_THREADS; ++t) {
         workers.emplace_back([&, t]() {
+            // put()/processTraces() build a CriticalSection, which requires this
+            // thread to already have a ProfiledThread. Only signal handlers get one
+            // implicitly (via SignalHandlerScope -> acquireCurrent()), so a plain
+            // worker thread has to ask for one up front.
+            ProfiledThread::initCurrentThreadSignalSafe();
             for (int op = 0; op < OPERATIONS_PER_THREAD && !test_failed.load(); ++op) {
                 try {
                     // Use the single shared storage instance
@@ -1774,6 +1812,7 @@ TEST_F(StressTestSuite, InstanceIdTraceIdStressTest) {
     
     // Additional thread that does rapid processTraces() calls to stress instance ID assignment
     std::thread rapid_swapper([&]() {
+        ProfiledThread::initCurrentThreadSignalSafe();
         for (int swap = 0; swap < RAPID_SWAPS_COUNT && !test_failed.load(); ++swap) {
             try {
                 // Use single shared storage instance for swap

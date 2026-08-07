@@ -5,23 +5,18 @@
 package com.datadoghq.profiler.cpu;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.Platform;
 import org.junitpioneer.jupiter.RetryingTest;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.MethodVisitor;
 import org.objectweb.asm.Opcodes;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
 import java.lang.reflect.Method;
-import java.util.Map;
 import java.util.TreeSet;
 import java.util.Set;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -38,18 +33,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * from the pool and attaches it via pthread_setspecific right there in the
  * signal handler (see threadLocalData.cpp/ThreadLocalDataPool).
  *
- * Seeing a compiler-thread eventThread alone is not sufficient evidence: the
- * CPU signal handlers resolve tid via OS::threadId() before recordSample() is
- * even called, and native thread names are refreshed independently of TLS
- * priming, so a sample tagged with a compiler thread's name would show up
- * regardless of whether ProfiledThread::acquireCurrent() actually succeeded.
- * If priming fails, recordSample() still emits an event for that tid, just
- * with a synthetic "no_Java_frame" stack instead of a real unwind. The
- * "samples_dropped_thread_local" debug counter is incremented exactly when
- * acquireCurrent() fails (see StackWalker::walkFP/walkDwarf), so asserting it
- * stayed at zero for the whole run is what actually proves every signal that
- * reached a stack walker — including the ones on these never-registered
- * compiler threads — found or attached a ProfiledThread.
+ * The presence of compiler-thread samples is itself the proof that priming
+ * worked on those threads. CTimer::signalHandler (the engine behind "cpu=")
+ * opens with SIGNAL_HANDLER_GUARD(), which returns before recordSample() is
+ * ever reached whenever ProfiledThread::acquireCurrent() comes back null (see
+ * ctimer_linux.cpp and guards.h). A compiler thread whose priming failed
+ * therefore contributes no datadog.ExecutionSample at all, so counting those
+ * samples is a direct, per-thread observation rather than a proxy.
+ *
+ * Note that these samples legitimately carry an empty frame list -- a compiler
+ * thread has no Java stack to unwind -- so the stack contents cannot be used
+ * as a priming signal, only the samples' existence.
  *
  * The test forces JIT compilation by loading a dynamically-generated class
  * with many distinct trivial methods and invoking each one past HotSpot's/
@@ -73,45 +67,65 @@ public class TlsPrimingTest extends AbstractProfilerTest {
     // drain the queue while the CPU sampler is still active.
     private static final long COMPILE_DRAIN_WAIT_MS = 4000;
 
+    // Floor for the proportional drop allowance, so a run that happened to record
+    // very few samples doesn't turn a couple of incidental pool-slot losses into a
+    // failure. Mirrors NativeThreadPrimingTest's MAX_SYNTHETIC_NATIVE_THREAD_SAMPLES.
+    private static final long MIN_DROPPED_ALLOWANCE = 10;
+
     @RetryingTest(3)
     public void compilerThreadSamplesArePresent() throws Exception {
         triggerJitCompilation();
 
         stopProfiler();
 
-        IItemCollection events = verifyEvents("datadog.ExecutionSample");
+        JfrEvents events = verifyEvents("datadog.ExecutionSample");
         String expectedPrefix = Platform.isJ9() ? J9_COMPILER_THREAD_PREFIX : HOTSPOT_COMPILER_THREAD_PREFIX;
 
         Set<String> observedThreadNames = new TreeSet<>();
-        boolean sawCompilerThreadSample = false;
-        for (IItemIterable cpuSamples : events) {
-            IMemberAccessor<String, IItem> threadNameAccessor =
-                    JdkAttributes.EVENT_THREAD_NAME.getAccessor(cpuSamples.getType());
-            for (IItem sample : cpuSamples) {
-                String threadName = threadNameAccessor.getMember(sample);
-                if (threadName == null) {
-                    continue;
-                }
-                observedThreadNames.add(threadName);
-                if (threadName.startsWith(expectedPrefix)) {
-                    sawCompilerThreadSample = true;
-                }
+        long totalSamples = 0;
+        long compilerThreadSamples = 0;
+        for (JfrEvent sample : events) {
+            String threadName = sample.getThreadName("eventThread");
+            if (threadName == null) {
+                continue;
+            }
+            totalSamples++;
+            observedThreadNames.add(threadName);
+            if (threadName.startsWith(expectedPrefix)) {
+                compilerThreadSamples++;
             }
         }
 
-        assertTrue(sawCompilerThreadSample,
+        assertTrue(compilerThreadSamples > 0,
                 "expected a datadog.ExecutionSample with eventThread starting with \"" + expectedPrefix
                         + "\", but observed thread names: " + observedThreadNames);
 
-        // A compiler-thread eventThread on its own doesn't prove a pool slot was
-        // ever attached (see class javadoc) — the tid and thread name are resolved
-        // independently of priming. Confirm no signal ever fell back to the
-        // "no_Java_frame" stack for lack of a ProfiledThread, on this or any other
-        // thread in the run.
-        Map<String, Long> debugCounters = profiler.getDebugCounters();
-        assertEquals(0L, debugCounters.get("samples_dropped_thread_local"),
-                "TLS priming failed for at least one signal; compiler-thread samples "
-                        + "may have used the no_Java_frame fallback instead of a real unwind");
+        // Secondary, whole-process signal only -- see the class javadoc for why the
+        // assertion above is the actual proof. samples_dropped_thread_local cannot be
+        // asserted to be exactly zero here:
+        //  * it is absent entirely from builds without -DCOUNTERS, where
+        //    getDebugCounters() hands back an empty map (javaApi.cpp/JavaProfiler);
+        //  * it is shared with the mallocTracer, wallClock, nativeSocketSampler and
+        //    JVMTI recording paths, and with every SIGNAL_HANDLER_GUARD() -- including
+        //    the non-sampling wakeupHandler in vmEntry.cpp; and
+        //  * it also counts threads that merely lost the race for one of the pool's
+        //    64 slots (ThreadLocalDataPool::DEFAULT_CAPACITY) rather than hitting a
+        //    priming bug, and plain capacity exhaustion does not set the
+        //    thread_local_pool_exhausted counter that would let us tell the two apart.
+        // A systematic priming failure drops samples on the order of the sample count,
+        // so bound it proportionally instead: that still catches a real regression
+        // without failing on a machine whose JVM simply runs more threads than the pool
+        // has slots.
+        Long droppedThreadLocal = profiler.getDebugCounters().get("samples_dropped_thread_local");
+        System.out.println("compilerThreadSamples=" + compilerThreadSamples + "/" + totalSamples
+                + ", samples_dropped_thread_local=" + droppedThreadLocal);
+        if (droppedThreadLocal != null) {
+            long maxDrops = Math.max(MIN_DROPPED_ALLOWANCE, totalSamples / 20);
+            assertTrue(droppedThreadLocal <= maxDrops,
+                    "TLS priming failed for an implausible number of signals: "
+                            + droppedThreadLocal + " drops for " + totalSamples
+                            + " recorded samples (allowed at most " + maxDrops + ")");
+        }
     }
 
     private void triggerJitCompilation() throws Exception {

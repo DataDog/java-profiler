@@ -116,12 +116,14 @@ Context ProfiledThread::snapshotContext(size_t numAttrs) {
 }
 
 void ProfiledThread::resetClaimed(int tid) {
+  _unwinding_Java = false;
   _jmp_buf = nullptr;
   _pc = 0;
   _sp = 0;
   _span_id = 0;
   _crash_depth = 0;
   _tid = tid;
+  _cpu_epoch = 0;
   _wall_epoch = 0;
   _call_trace_id = 0;
   _recording_epoch = 0;

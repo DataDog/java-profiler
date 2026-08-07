@@ -76,11 +76,7 @@ void signalHandlerUnwindAfterLongjmp() {
 
 
 CriticalSection::CriticalSection() : _entered(false), _thread_ptr(nullptr) {
-#ifdef UNIT_TEST
-    _thread_ptr = ProfiledThread::initCurrentThreadSignalSafe();
-#else
     _thread_ptr = ProfiledThread::current();
-#endif
     assert(_thread_ptr != nullptr);
     _entered = _thread_ptr->tryEnterCriticalSection();
 }

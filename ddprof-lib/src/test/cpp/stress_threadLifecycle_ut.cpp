@@ -139,6 +139,7 @@ static void churn_worker(ThreadFilter* filter, bool with_dump) {
 // dump path where Profiler::rotateDictsAndRun() holds all shard locks while
 // writeStackTraces() calls processCallTraces().
 static void dump_thread() {
+  ProfiledThread::initCurrentThreadSignalSafe();
   while (g_run.load(std::memory_order_relaxed)) {
     lock_all();
     g_storage.processTraces([](const std::unordered_set<CallTrace*>& traces) {
@@ -155,6 +156,7 @@ static void dump_thread() {
 }
 
 TEST(StressThreadLifecycle, Smoke) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   CallTraceStorage storage;
   storage.clear();
   SUCCEED();

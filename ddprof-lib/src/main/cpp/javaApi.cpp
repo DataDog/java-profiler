@@ -340,7 +340,6 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
     jstring scheduler, jthread origin, jstring queueType, jint queueLength) {
 
   // Initialize thread TLS if it has not yet done
-  ProfiledThread::initCurrentThreadSignalSafe();
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
   assert(current != nullptr && "Out of order initialization");
 

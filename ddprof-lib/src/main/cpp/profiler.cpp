@@ -977,7 +977,7 @@ void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // the lesser of two evils — leaking depth on siglongjmp would silently
   // break the production deferred-refresh gate, while the sanitizer gap
   // is bounded to third-party signal handler code we don't own.
-  SIGNAL_HANDLER_GUARD();
+  SIGNAL_HANDLER_GUARD_NO_SAMPLE();
   if (crashHandlerInternal(signo, siginfo, ucontext)) {
     return;  // Handled — destructor decrements depth
   }
@@ -994,7 +994,7 @@ void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 void Profiler::busHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // See segvHandler: release before chaining in case the chained handler
   // siglongjmps through us.
-  SIGNAL_HANDLER_GUARD();
+  SIGNAL_HANDLER_GUARD_NO_SAMPLE();
   if (crashHandlerInternal(signo, siginfo, ucontext)) {
     return;  // Handled — destructor decrements depth
   }

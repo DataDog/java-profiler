@@ -92,13 +92,19 @@ private:
 
 // Declare a scope guard local that increments the depth on entry and
 // decrements on scope exit.  Use as the very first statement in every
-// installed signal handler.
+// installed sampler signal handler
 #define SIGNAL_HANDLER_GUARD()                              \
       SignalHandlerScope _signal_handler_scope;             \
       if (!_signal_handler_scope.isActive()) {              \
         Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);  \
         return;                                             \
       }
+
+// Declare a scope guard local that increments the depth on entry and
+// decrements on scope exit.  Use as the very first statement in every
+// installed non-sampler signal handler
+#define SIGNAL_HANDLER_GUARD_NO_SAMPLE()                    \
+      SignalHandlerScope _signal_handler_scope;
 
 // Cheaper way to retrieve current ProfiledThread inside the scope
 #define SIGNAL_HANDLER_CURRENT_THREAD() _signal_handler_scope.current()
