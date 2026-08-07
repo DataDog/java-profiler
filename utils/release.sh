@@ -79,7 +79,10 @@ read_key() {
 # Defaults to the most recent branch; older ones are revealed 10 at a time
 # via a "show more" row.
 select_release_branch() {
-    mapfile -t branches < <(git branch -r --list 'origin/release/[0-9]*.[0-9]*._' \
+    branches=()
+    while IFS= read -r line; do
+        branches+=("$line")
+    done < <(git branch -r --list 'origin/release/[0-9]*.[0-9]*._' \
         | sed 's|[[:space:]]*origin/||' | sort -Vr 2>/dev/null)
 
     if [ ${#branches[@]} -eq 0 ]; then
@@ -163,7 +166,10 @@ select_commit() {
     local branch=$1
 
     # Get last 10 commits with format: SHA | DATE | AUTHOR | MESSAGE
-    mapfile -t commits < <(git log "$branch" -n 10 --pretty=format:"%H|%ar|%an|%s" 2>&1)
+    commits=()
+    while IFS= read -r line; do
+        commits+=("$line")
+    done < <(git log "$branch" -n 10 --pretty=format:"%H|%ar|%an|%s" 2>&1)
 
     if [ ${#commits[@]} -eq 0 ]; then
         print_error "No commits found on branch $branch" >&2

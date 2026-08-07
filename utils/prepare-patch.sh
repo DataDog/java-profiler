@@ -149,7 +149,10 @@ read_key() {
 
 # --- Release branch selection -------------------------------------------------
 select_release_branch() {
-    mapfile -t branches < <(git for-each-ref --sort=-version:refname \
+    branches=()
+    while IFS= read -r line; do
+        branches+=("$line")
+    done < <(git for-each-ref --sort=-version:refname \
         --format='%(refname:short)' 'refs/remotes/origin/release/[0-9]*.[0-9]*._' \
         | sed 's|^origin/||')
 
@@ -233,7 +236,10 @@ info "Target branch: $RELEASE_BRANCH"
 # --- Find PRs merged to main after the branch diverged -----------------------
 step "Looking for PRs merged to main since $RELEASE_BRANCH diverged"
 
-mapfile -t CANDIDATE_SHAS < <(git rev-list --reverse "origin/main" "^origin/$RELEASE_BRANCH")
+CANDIDATE_SHAS=()
+while IFS= read -r line; do
+    CANDIDATE_SHAS+=("$line")
+done < <(git rev-list --reverse "origin/main" "^origin/$RELEASE_BRANCH")
 
 if [ ${#CANDIDATE_SHAS[@]} -eq 0 ]; then
     info "No commits on main ahead of $RELEASE_BRANCH. Nothing to prepare."
@@ -257,9 +263,20 @@ if [ "$PR_COUNT" -eq 0 ]; then
     exit 0
 fi
 
-mapfile -t PR_NUMBERS < <(echo "$PR_LIST_JSON" | jq -r '.[].number')
-mapfile -t PR_TITLES < <(echo "$PR_LIST_JSON" | jq -r '.[].title')
-mapfile -t PR_LABELS < <(echo "$PR_LIST_JSON" | jq -r '[.[].labels | map(.name) | join(",")][]')
+PR_NUMBERS=()
+while IFS= read -r line; do
+    PR_NUMBERS+=("$line")
+done < <(echo "$PR_LIST_JSON" | jq -r '.[].number')
+
+PR_TITLES=()
+while IFS= read -r line; do
+    PR_TITLES+=("$line")
+done < <(echo "$PR_LIST_JSON" | jq -r '.[].title')
+
+PR_LABELS=()
+while IFS= read -r line; do
+    PR_LABELS+=("$line")
+done < <(echo "$PR_LIST_JSON" | jq -r '[.[].labels | map(.name) | join(",")][]')
 
 info "Found $PR_COUNT candidate PR(s)"
 
@@ -328,7 +345,10 @@ select_prs() {
     done
 }
 
-mapfile -t SELECTED_IDX < <(select_prs)
+SELECTED_IDX=()
+while IFS= read -r line; do
+    SELECTED_IDX+=("$line")
+done < <(select_prs)
 clear
 
 if [ ${#SELECTED_IDX[@]} -eq 0 ]; then
