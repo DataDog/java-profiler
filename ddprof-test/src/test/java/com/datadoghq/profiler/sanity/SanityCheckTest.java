@@ -5,7 +5,11 @@
 
 package com.datadoghq.profiler.sanity;
 
+import com.datadoghq.profiler.AbstractProcessProfilerTest;
 import com.datadoghq.profiler.JavaProfiler;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
+import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -13,10 +17,15 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Collections;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
-public class SanityCheckTest {
+public class SanityCheckTest extends AbstractProcessProfilerTest {
 
     private JavaProfiler profiler;
     private Path jfrDump;
@@ -44,7 +53,7 @@ public class SanityCheckTest {
     }
 
     /**
-     * nosanity=true bypasses sanity checks; profiler must start successfully on any host.
+     * nosanity=true bypasses sanity checks. The profiler must start successfully on any host.
      */
     @Test
     void nosanity_bypasses_checks() throws Exception {
@@ -74,5 +83,50 @@ public class SanityCheckTest {
         // Second start (without nosanity) must not fail due to re-running checks — the
         // static guard in the native layer ensures they only fire on the first invocation.
         assertDoesNotThrow(() -> profiler.execute(startCommand(null)));
+    }
+
+    /**
+     * A forced -Xmx far larger than any real host's RAM makes the memory sanity check fail
+     * deterministically, regardless of the actual host resources. The check is advisory, so
+     * the profiler must still start, and the JFR recording's settings must show the failure.
+     */
+    @Test
+    void mem_sanity_check_failure_is_recorded_in_jfr() throws Exception {
+        // SanityChecker::runChecks() skips the memory check on OpenJ9/Zing, where VMFlag
+        // lookups are unavailable. An oversized -Xmx alone cannot force a failure there.
+        assumeFalse(Platform.isJ9() || Platform.isZing());
+        // OS::getRamSize() is a stub that always returns 0 on macOS (os_macos.cpp). The
+        // zero return value keeps the memory check's upper bound at 0, so the check
+        // always passes on macOS.
+        assumeTrue(Platform.isLinux());
+
+        Path rootDir = Paths.get("/tmp/recordings");
+        Files.createDirectories(rootDir);
+        Path forkedJfr = Files.createTempFile(rootDir, "sanity-check-mem-fail", ".jfr");
+        try {
+            LaunchResult result = launch("profiler", Collections.singletonList("-Xmx900g"),
+                    "start,jfr,file=" + forkedJfr.toAbsolutePath(),
+                    line -> LineConsumerResult.CONTINUE, line -> LineConsumerResult.CONTINUE);
+            assertTrue(result.inTime, "forked JVM did not exit in time");
+            assertEquals(0, result.exitCode, "forked JVM exited with a non-zero code");
+
+            JfrEvents settings = JfrEvents.load(forkedJfr, "jdk.ActiveSetting");
+            boolean sawFailed = false;
+            boolean sawDetail = false;
+            for (JfrEvent item : settings) {
+                String name = item.getString("name");
+                if ("sanityCheckFailed".equals(name)) {
+                    assertEquals("true", item.getString("value"));
+                    sawFailed = true;
+                } else if ("sanityCheckDetail".equals(name)) {
+                    assertTrue(item.getString("value").startsWith("[sanity]"));
+                    sawDetail = true;
+                }
+            }
+            assertTrue(sawFailed, "sanityCheckFailed setting not found in JFR recording");
+            assertTrue(sawDetail, "sanityCheckDetail setting not found in JFR recording");
+        } finally {
+            Files.deleteIfExists(forkedJfr);
+        }
     }
 }

@@ -377,11 +377,11 @@ int OS::getCpuCount() {
 }
 
 int OS::getCgroupCpuMillicores() {
-    return -1; // not applicable on macOS
+    return -1; // macOS has no cgroup support.
 }
 
 long OS::getContainerMemoryLimit() {
-    return -1; // not applicable on macOS
+    return -1; // macOS has no cgroup support.
 }
 
 u64 OS::getProcessCpuTime(u64* utime, u64* stime) {

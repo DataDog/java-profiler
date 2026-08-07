@@ -32,8 +32,9 @@ static u64 addClamped(u64 a, u64 b) {
 }
 
 Error SanityChecker::runChecks(const Arguments& /*args*/) {
-    // Static buffer for error message — safe because runChecks is called under
-    // _state_lock and the result is cached as a static Error in profiler.cpp.
+    // Static buffer for the error message. This is safe because Profiler::start()
+    // holds _state_lock for the whole call and never runs runChecks() concurrently
+    // from two threads.
     static char err_buf[1024];
 
     // --- Gather all system info upfront ---
@@ -82,10 +83,10 @@ Error SanityChecker::runChecks(const Arguments& /*args*/) {
 
     // MaxMetaspaceSize defaults to unbounded (max_uintx) on standard HotSpot
     // builds, so the flag is present and the default_val fallback above never
-    // triggers. The exact sentinel value isn't reliable to match against —
+    // triggers. The exact sentinel value is not reliable to match against —
     // debug builds align it down during ergonomics, leaving it astronomically
     // large but not bit-identical to SIZE_MAX. Any "limit" larger than total
-    // available memory isn't a real limit, so normalize on that instead.
+    // available memory is not a real limit, so this normalizes on that instead.
     if (metaspace_max > upper) {
         metaspace_max = DEFAULT_METASPACE;
     }
@@ -105,9 +106,9 @@ Error SanityChecker::runChecks(const Arguments& /*args*/) {
     lower = addClamped(lower, PROFILER_OVERHEAD);
 
     // --- Run checks ---
-    // Per DataDog/java-profiler#480, the profiler refuses to run with fewer
-    // than 1 core. An unknown core count (-1) never fails this check — see
-    // the effective_cores computation above.
+    // The profiler refuses to run with fewer than 1 core. An unknown core
+    // count (-1) never fails this check — see the effective_cores
+    // computation above.
     bool cpu_fail = (effective_cores >= 0 && effective_cores < 1);
     bool mem_fail = (hotspot && upper > 0 && lower > upper);
 

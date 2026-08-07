@@ -422,7 +422,7 @@ Error Arguments::parse(const char *args) {
           _skip_sanity_checks = true;
         }
       } else {
-        // bare 'nosanity' with no value means skip checks
+        // A bare 'nosanity' with no value skips the checks.
         _skip_sanity_checks = true;
       }
 

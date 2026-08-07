@@ -1407,20 +1407,28 @@ Error Profiler::start(Arguments &args, bool reset) {
     return error;
   }
 
-  // Sanity checks run at most once per process, across start/stop cycles —
-  // record that the first start was handled regardless of _skip_sanity_checks,
-  // otherwise a first start with nosanity leaves sanity_checked false and the
-  // checks unexpectedly run (and can fail) on a later start without nosanity.
-  static Error sanity_result = Error::OK;
+  // Sanity checks run at most once per process, across start and stop cycles.
+  // Profiler::start() sets sanity_checked to true before it checks
+  // _skip_sanity_checks, not after. If it set the flag only when the checks
+  // ran, a nosanity start would leave sanity_checked false. A later start
+  // without nosanity would then run the checks unexpectedly and could fail.
+  //
+  // A failed check does not abort startup. The resource estimate is
+  // inherently approximate, so Profiler::start() logs a warning and records
+  // the failure as a JFR setting (see Recording::writeSettings) instead of
+  // refusing to profile.
   static bool sanity_checked = false;
   if (!sanity_checked) {
     sanity_checked = true;
     if (!args._skip_sanity_checks) {
-      sanity_result = SanityChecker::runChecks(args);
+      Error sanity_result = SanityChecker::runChecks(args);
+      if (sanity_result) {
+        _sanity_check_failed = true;
+        _sanity_check_message = sanity_result.message();
+        LOG_WARN("Continuing to start profiler despite failed sanity check "
+                 "(see JFR settings for details).");
+      }
     }
-  }
-  if (sanity_result && !args._skip_sanity_checks) {
-    return sanity_result;
   }
 
   error = checkJvmCapabilities();

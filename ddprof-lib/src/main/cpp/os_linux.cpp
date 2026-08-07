@@ -696,10 +696,10 @@ int OS::getCpuCount() {
     return sysconf(_SC_NPROCESSORS_ONLN);
 }
 
-// Returns true if `controller` is present as an exact, comma-delimited
-// token in `controllers` (e.g. "cpu" matches "cpu,cpuacct" but not
-// "cpuacct" or "cpuset"; substring matching would give false positives
-// since several v1 controller names share a "cpu" prefix).
+// Matches `controller` only as a whole, comma-delimited token in
+// `controllers` (e.g. "cpu" matches "cpu,cpuacct" but not "cpuacct" or
+// "cpuset"). Substring matching would give false positives because several
+// v1 controller names share the "cpu" prefix.
 static bool hasControllerToken(const char* controllers, const char* controller) {
     size_t controller_len = strlen(controller);
     const char* p = controllers;
@@ -718,13 +718,14 @@ static bool hasControllerToken(const char* controllers, const char* controller) 
 }
 
 // Resolves this process's own path within a cgroup hierarchy from
-// /proc/self/cgroup, so that limits are read from the process's actual
-// (possibly nested, e.g. "/user.slice/...") cgroup rather than from the
-// hierarchy mount root. Pass an empty controller for the cgroup v2 unified
-// hierarchy (format "0::/path"); pass a controller name (e.g. "cpu",
-// "memory") to match a v1 hierarchy whose comma-separated controller list
-// contains it (format "N:list:/path"). On success, copies the path (leading
-// '/', no trailing '/', NUL-terminated) into `out` and returns true.
+// /proc/self/cgroup, so that the caller reads limits from the process's
+// actual (possibly nested, e.g. "/user.slice/...") cgroup rather than from
+// the hierarchy mount root. Pass an empty controller for the cgroup v2
+// unified hierarchy (format "0::/path"). Pass a controller name (e.g.
+// "cpu", "memory") to match a v1 hierarchy whose comma-separated controller
+// list contains it (format "N:list:/path"). On success, this function
+// copies the path (leading '/', no trailing '/', NUL-terminated) into
+// `out` and returns true.
 static bool getOwnCgroupPath(const char* controller, char* out, size_t out_size) {
     int fd = open("/proc/self/cgroup", O_RDONLY);
     if (fd == -1) {
@@ -768,8 +769,8 @@ static bool getOwnCgroupPath(const char* controller, char* out, size_t out_size)
 
 // Trims the last '/'-separated component from `path` (in place). Refuses to
 // trim past `base_len` (the length of the hierarchy mount prefix, which is
-// never itself a cgroup boundary to walk beyond). Returns false once the
-// mount root has been reached.
+// never itself a cgroup boundary to walk beyond). Returns false when `path`
+// already is the mount root.
 static bool trimToParentCgroup(char* path, size_t base_len) {
     if (strlen(path) <= base_len) {
         return false;
@@ -814,8 +815,9 @@ static int walkCgroupV2CpuMillicores(char* path) {
     return best;
 }
 
-// Same ancestor-walk as walkCgroupV2CpuMillicores(), for the cgroup v1 CPU
-// controller (separate quota/period files instead of a single "cpu.max").
+// Walks ancestors the same way as walkCgroupV2CpuMillicores(), but reads
+// the cgroup v1 CPU controller's separate quota and period files instead
+// of a single "cpu.max".
 static int walkCgroupV1CpuMillicores(char* path) {
     size_t base_len = strlen("/sys/fs/cgroup/cpu");
     int best = -1;
@@ -934,8 +936,8 @@ static long walkCgroupV2MemoryLimit(char* path) {
     return best;
 }
 
-// Same ancestor-walk as walkCgroupV2MemoryLimit(), for the cgroup v1 memory
-// controller.
+// Walks ancestors the same way as walkCgroupV2MemoryLimit(), but reads the
+// cgroup v1 memory controller's limit file instead.
 static long walkCgroupV1MemoryLimit(char* path) {
     size_t base_len = strlen("/sys/fs/cgroup/memory");
     long best = -1;
