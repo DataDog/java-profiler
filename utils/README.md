@@ -40,19 +40,22 @@ Triggers the Validated Release workflow using GitHub CLI to create a new release
 
 **Release flow:**
 1. Validates inputs and branch rules
-2. Interactive commit selection (or use `--commit`)
-3. Triggers GitHub Actions "Validated Release" workflow
-4. Workflow runs pre-release tests, creates the annotated tag, and opens an
+2. For patch releases, offers to run `prepare-patch.sh` to backport pending
+   main PRs onto the release branch first; if you accept, the script exits
+   so you can merge the resulting PR and re-run
+3. Interactive commit selection (or use `--commit`)
+4. Triggers GitHub Actions "Validated Release" workflow
+5. Workflow runs pre-release tests, creates the annotated tag, and opens an
    exact single-commit version-bump PR as `github-actions[bot]`
-5. The final commit is pushed through the release SSH identity, producing the
+6. The final commit is pushed through the release SSH identity, producing the
    `synchronize` event that starts normal PR CI even though `GITHUB_TOKEN`
    created the PR
-6. A separate `dd-octo-sts[bot]` identity adds `trivial`; the approval workflow
+7. A separate `dd-octo-sts[bot]` identity adds `trivial`; the approval workflow
    validates permissions, refs, SHAs, and the exact one-line version diff before
    approving that exact commit
-7. The release workflow waits for the exact approval and the aggregate
+8. The release workflow waits for the exact approval and the aggregate
    `release-bump-ci` check, then performs the SHA-locked squash merge itself
-8. Tag push triggers GitLab, which publishes the Maven artifacts, and the
+9. Tag push triggers GitLab, which publishes the Maven artifacts, and the
    GitHub release workflows attach the release assets
 
 For a major release, the generated `N.0.0` commit remains on
@@ -112,6 +115,35 @@ Cherry-picks a merged PR onto a release branch, pushes the backport branch, and 
 ./utils/backport-pr.sh 1.9._ 420
 ./utils/backport-pr.sh 420          # interactive branch selection
 ./utils/backport-pr.sh --dry-run 1.9._ 420
+```
+
+### `prepare-patch.sh`
+
+Finds PRs merged to `main` since a release branch diverged, lets you
+multi-select which ones to backport, cherry-picks them onto a single new
+branch off the release branch, runs `./gradlew buildDebug` to catch a
+combination that doesn't build before pushing, and opens one combined PR.
+Also invoked interactively from `release.sh` when preparing a patch release.
+
+**Prerequisites:**
+- [GitHub CLI](https://cli.github.com/) installed and authenticated
+- [jq](https://jqlang.github.io/jq/) installed
+- Clean working tree
+
+**Usage:**
+```bash
+./utils/prepare-patch.sh [--branch release/X.Y._] [--no-dry-run]
+```
+
+**Options:**
+- `--branch <name>`: Release branch to prepare. If omitted, an interactive picker is shown.
+- `--no-dry-run`: Actually cherry-pick, push, and open the PR (default is dry-run).
+
+**Examples:**
+```bash
+./utils/prepare-patch.sh --branch release/1.9._            # dry-run, preview only
+./utils/prepare-patch.sh                                   # interactive branch selection, dry-run
+./utils/prepare-patch.sh --no-dry-run --branch release/1.9._
 ```
 
 ---

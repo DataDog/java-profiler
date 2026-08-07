@@ -76,9 +76,11 @@ read_key() {
 }
 
 # Function to show interactive release branch picker (for patch releases)
+# Defaults to the most recent branch; older ones are revealed 10 at a time
+# via a "show more" row.
 select_release_branch() {
     mapfile -t branches < <(git branch -r --list 'origin/release/[0-9]*.[0-9]*._' \
-        | sed 's|[[:space:]]*origin/||' | sort -V 2>/dev/null)
+        | sed 's|[[:space:]]*origin/||' | sort -Vr 2>/dev/null)
 
     if [ ${#branches[@]} -eq 0 ]; then
         print_error "No release branches found matching release/X.Y._" >&2
@@ -93,6 +95,8 @@ select_release_branch() {
 
     local selected=0
     local total=${#branches[@]}
+    local page_size=10
+    local visible=$(( total < page_size ? total : page_size ))
 
     display_branch_menu() {
         clear >&2
@@ -104,13 +108,22 @@ select_release_branch() {
         echo "Use ↑/↓ arrow keys to navigate, Enter to select, 'q' to quit" >&2
         echo "" >&2
 
-        for i in "${!branches[@]}"; do
+        for ((i = 0; i < visible; i++)); do
             if [ "$i" -eq "$selected" ]; then
                 echo -e "${GREEN}→ ${branches[$i]}${NC}" >&2
             else
                 echo -e "  ${branches[$i]}" >&2
             fi
         done
+
+        if [ "$visible" -lt "$total" ]; then
+            local remaining=$((total - visible))
+            if [ "$selected" -eq "$visible" ]; then
+                echo -e "${GREEN}→ … show more ($remaining remaining)${NC}" >&2
+            else
+                echo -e "  … show more ($remaining remaining)" >&2
+            fi
+        fi
 
         echo "" >&2
         echo -e "${BLUE}═══════════════════════════════════════════════════════════════════════════${NC}" >&2
@@ -119,16 +132,22 @@ select_release_branch() {
     while true; do
         display_branch_menu
         key=$(read_key)
+        local menu_rows=$visible
+        [ "$visible" -lt "$total" ] && menu_rows=$((visible + 1))
         case $key in
             up)
                 [ $selected -gt 0 ] && ((selected--))
                 ;;
             down)
-                [ $selected -lt $((total - 1)) ] && ((selected++))
+                [ $selected -lt $((menu_rows - 1)) ] && ((selected++))
                 ;;
             enter)
-                echo "${branches[$selected]}"
-                return 0
+                if [ "$visible" -lt "$total" ] && [ "$selected" -eq "$visible" ]; then
+                    visible=$(( visible + page_size < total ? visible + page_size : total ))
+                else
+                    echo "${branches[$selected]}"
+                    return 0
+                fi
                 ;;
             quit)
                 echo "" >&2
@@ -245,11 +264,14 @@ Examples:
 
 Release Flow:
   1. Validates inputs and branch rules
-  2. Runs pre-release tests (testDebug + testAsan) unless skipped
-  3. Creates annotated git tag
-  4. Triggers GitLab build pipeline
-  5. GitLab publishes to Maven Central
-  6. GitHub creates release with assets
+  2. For patch: optionally backports pending main PRs to the release branch
+     first (see utils/prepare-patch.sh), then exits for you to merge the
+     backport PR and re-run
+  3. Runs pre-release tests (testDebug + testAsan) unless skipped
+  4. Creates annotated git tag
+  5. Triggers GitLab build pipeline
+  6. GitLab publishes to Maven Central
+  7. GitHub creates release with assets
 
 Branch Rules:
   - major/minor: Must be run from 'main' branch
@@ -346,6 +368,20 @@ else
         echo "  1. Switch to main: git checkout main"
         echo "  2. Run: $0 $RELEASE_TYPE"
         exit 1
+    fi
+fi
+
+# For patch releases, offer to backport pending main PRs onto the release
+# branch before picking a commit to release.
+if [ "$RELEASE_TYPE" == "patch" ]; then
+    echo ""
+    read -p "Pick PRs from main to backport to $BRANCH before releasing? (y/n): " -r </dev/tty
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        PREPARE_ARGS=(--branch "$BRANCH")
+        [ "$DRY_RUN" == "false" ] && PREPARE_ARGS+=(--no-dry-run)
+        "$(dirname "$0")/prepare-patch.sh" "${PREPARE_ARGS[@]}"
+        print_info "Re-run this script once any prep PR has been merged."
+        exit 0
     fi
 fi
 
