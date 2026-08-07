@@ -54,13 +54,18 @@ print_info() {
     echo -e "${BLUE}$1${NC}"
 }
 
+trap 'echo ""; print_warning "Interrupted"; exit 130' INT
+
 # Read a single keypress (arrow keys, enter, q) from /dev/tty
 read_key() {
-    local key
-    IFS= read -rsn1 key </dev/tty
+    local key=""
+    if ! IFS= read -rsn1 key </dev/tty; then
+        echo "quit"
+        return
+    fi
 
     if [[ $key == $'\x1b' ]]; then
-        read -rsn2 key </dev/tty
+        read -rsn2 key </dev/tty || true
         case $key in
             '[A') echo "up" ;;
             '[B') echo "down" ;;

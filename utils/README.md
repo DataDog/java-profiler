@@ -40,23 +40,29 @@ Triggers the Validated Release workflow using GitHub CLI to create a new release
 
 **Release flow:**
 1. Validates inputs and branch rules
-2. For patch releases, offers to run `prepare-patch.sh` to backport pending
+2. Fetches and verifies the selected branch is up to date with
+   `origin` (a checked-out local branch that's behind or ahead of origin
+   fails fast with pull instructions)
+3. For patch releases, offers to run `prepare-patch.sh` to backport pending
    main PRs onto the release branch first; if you accept, the script exits
    so you can merge the resulting PR and re-run
-3. Interactive commit selection (or use `--commit`)
-4. Triggers GitHub Actions "Validated Release" workflow
-5. Workflow runs pre-release tests, creates the annotated tag, and opens an
+4. Interactive commit selection (or use `--commit`)
+5. Triggers GitHub Actions "Validated Release" workflow
+6. Workflow runs pre-release tests, creates the annotated tag, and opens an
    exact single-commit version-bump PR as `github-actions[bot]`
-6. The final commit is pushed through the release SSH identity, producing the
+7. The final commit is pushed through the release SSH identity, producing the
    `synchronize` event that starts normal PR CI even though `GITHUB_TOKEN`
    created the PR
-7. A separate `dd-octo-sts[bot]` identity adds `trivial`; the approval workflow
+8. A separate `dd-octo-sts[bot]` identity adds `trivial`; the approval workflow
    validates permissions, refs, SHAs, and the exact one-line version diff before
    approving that exact commit
-8. The release workflow waits for the exact approval and the aggregate
+9. The release workflow waits for the exact approval and the aggregate
    `release-bump-ci` check, then performs the SHA-locked squash merge itself
-9. Tag push triggers GitLab, which publishes the Maven artifacts, and the
-   GitHub release workflows attach the release assets
+10. Tag push triggers GitLab, which publishes the Maven artifacts, and the
+    GitHub release workflows attach the release assets
+
+Interactive pickers (branch and commit selection) support ↑/↓/Enter, and
+can be cancelled at any time with `q` or Ctrl-C.
 
 For a major release, the generated `N.0.0` commit remains on
 `release/N.0._` and is tagged there. The bump PR moves `main` directly from

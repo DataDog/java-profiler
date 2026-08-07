@@ -78,6 +78,7 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+trap 'echo ""; warn "Interrupted"; exit 130' INT
 
 # --- Argument parsing --------------------------------------------------------
 usage() {
@@ -125,10 +126,13 @@ info "Fetched latest from origin"
 
 # --- Read a single keypress (arrow keys, space, enter, a, q) ----------------
 read_key() {
-    local key
-    IFS= read -rsn1 key </dev/tty
+    local key=""
+    if ! IFS= read -rsn1 key </dev/tty; then
+        echo "quit"
+        return
+    fi
     if [[ $key == $'\x1b' ]]; then
-        read -rsn2 key </dev/tty
+        read -rsn2 key </dev/tty || true
         case $key in
             '[A') echo "up" ;;
             '[B') echo "down" ;;
