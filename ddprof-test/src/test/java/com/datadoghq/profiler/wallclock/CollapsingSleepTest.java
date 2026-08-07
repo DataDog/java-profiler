@@ -1,12 +1,17 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler.wallclock;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
-import org.openjdk.jmc.common.item.Aggregators;
-import org.openjdk.jmc.common.item.IItemCollection;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.Platform;
 
 import java.util.concurrent.locks.LockSupport;
@@ -25,10 +30,14 @@ public class CollapsingSleepTest extends AbstractProfilerTest {
             ts = System.nanoTime();
         } while (waitTime > 1_000);
         stopProfiler();
-        IItemCollection events = verifyEvents("datadog.MethodSample");
+        JfrEvents events = verifyEvents("datadog.MethodSample");
         assertTrue(events.hasItems());
-        assertTrue(events.getAggregate(Aggregators.sum(WEIGHT)).longValue() > 700);
-        assertTrue(events.getAggregate(Aggregators.count()).longValue() > 9);
+        long totalWeight = 0;
+        for (JfrEvent item : events) {
+            totalWeight += item.getLong(WEIGHT, 0);
+        }
+        assertTrue(totalWeight > 700);
+        assertTrue(events.count() > 9);
     }
 
     @Override

@@ -1,8 +1,12 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler.wallclock;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import org.junit.jupiter.api.Test;
-import org.openjdk.jmc.common.item.Aggregators;
 
 import java.util.concurrent.locks.LockSupport;
 
@@ -21,7 +25,7 @@ public class SleepTest extends AbstractProfilerTest {
             ts = System.nanoTime();
         } while (waitTime > 1_000);
         stopProfiler();
-        assertTrue(verifyEvents("datadog.MethodSample").getAggregate(Aggregators.count()).longValue() > 90);
+        assertTrue(verifyEvents("datadog.MethodSample").count() > 90);
     }
 
     @Override

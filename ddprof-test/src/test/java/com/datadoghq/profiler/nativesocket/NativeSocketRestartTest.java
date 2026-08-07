@@ -1,9 +1,14 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler.nativesocket;
 
+import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
-import org.openjdk.jmc.common.item.IItemCollection;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -36,7 +41,7 @@ public class NativeSocketRestartTest extends NativeSocketTestBase {
 
             profiler.stop();
 
-            IItemCollection events = verifyEvents(jfr2, "datadog.NativeSocketEvent", true);
+            JfrEvents events = verifyEvents(jfr2, "datadog.NativeSocketEvent", true);
             assertTrue(events.hasItems(),
                     "NativeSocketEvent events must be recorded in the second profiling session");
         } finally {

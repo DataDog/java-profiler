@@ -846,12 +846,37 @@ void Profiler::writeHeapUsage(long value, bool live) {
 
 bool Profiler::prewarmUnwinder() {
 #ifdef __linux__
-  // J9 on aarch64 (and other JVMs) lazily loads libgcc_s.so.1 from its DWARF
-  // unwinder during stack walks. When that happens inside a signal handler
-  // frame, our dlopen_hook fires from signal context and tries to refresh the
-  // library list — Mutex::lock and malloc on a signal stack.  By forcing the
-  // load here, before any signal handler is installed, subsequent calls find
-  // libgcc_s already mapped and the lazy-load path never runs.
+  // Force libgcc_s.so.1 to load now and report whether that succeeded. This
+  // closes two separate lazy-load landmines that happen to share the same
+  // library and the same fix:
+  //
+  // 1. J9's DWARF unwinder can lazily dlopen libgcc_s.so.1 while walking a
+  //    stack (e.g. on aarch64). Our sampling stack walks run from a signal
+  //    handler, so that dlopen call can fire our PLT-patched dlopen_hook()
+  //    from signal context, where it does Mutex::lock/malloc — both
+  //    AS-unsafe. Other JVM-internal lazy loads (observed under Graal on
+  //    aarch64) can trigger the same path. Forcing the load here, before any
+  //    signal handler is installed, means the JVM's later resolve finds
+  //    libgcc_s already mapped and this lazy-load path never runs.
+  //
+  // 2. Separately, glibc's pthread_exit()/pthread_cancel() call
+  //    __pthread_unwind(), which invokes _Unwind_ForcedUnwind()
+  //    unconditionally. glibc does not hard-link libgcc_s into
+  //    libc/libpthread; it lazily resolves that symbol via its own private
+  //    __libc_dlopen(LIBGCC_S_SO) the first time a thread exits or is
+  //    cancelled — including our own worker/sampler threads, whose
+  //    start_routine_wrapper (libraryPatcher_linux.cpp) calls pthread_exit().
+  //    If that lazy load fails, glibc itself calls __libc_fatal("libgcc_s.
+  //    so.1 must be installed for pthread_exit to work\n"), aborting the
+  //    whole process — observed in production on hardened/distroless images
+  //    that ship without libgcc_s.so.1.
+  //    __libc_dlopen is glibc's private loader, not the public PLT-visible
+  //    dlopen, so unlike (1) this does not route through dlopen_hook().
+  //
+  // Whether a load failure here is actually fatal is decided by the caller
+  // (see checkState()): only landmine (2) is glibc-specific, so a musl host
+  // missing libgcc_s.so.1 is not at risk and should not fail profiler
+  // startup over it.
   //
   // The handle is intentionally leaked: keeping the refcount > 0 prevents the
   // library from being unmapped for the remainder of the process lifetime.
@@ -1326,9 +1351,12 @@ Error Profiler::checkState() {
   if (s == ERROR) {
     return Error("Profiler encountered fatal error");
   } else if (s == NEW) {
-    // Force libgcc_s to load now (idempotent dlopen) so the JVM's DWARF
-    // unwinder cannot lazy-load it later from signal context.
-    if (!prewarmUnwinder()) {
+    // prewarmUnwinder() closes a glibc-specific pthread_exit/pthread_cancel
+    // landmine (see its comment) by force-loading libgcc_s.so.1 up front.
+    // A failure only matters on glibc, where that landmine is real; musl
+    // never hits the code path that needs libgcc_s, so a missing library
+    // there is not a reason to fail profiler startup.
+    if (!prewarmUnwinder() && !OS::isMusl()) {
       _state.store(ERROR, std::memory_order_release);
       return Error("Missing libgcc_s.so.1");
     }

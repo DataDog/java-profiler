@@ -1,13 +1,16 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler.nativesocket;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -46,22 +49,18 @@ public class NativeSocketSendRecvSeparateTest extends AbstractProfilerTest {
 
         stopProfiler();
 
-        IItemCollection events = verifyEvents("datadog.NativeSocketEvent");
+        JfrEvents events = verifyEvents("datadog.NativeSocketEvent");
         assertTrue(events.hasItems(), "No NativeSocketEvent events found");
 
         long sendCount = 0;
         long recvCount = 0;
 
-        for (IItemIterable items : events) {
-            IMemberAccessor<String, IItem> opAccessor = OPERATION.getAccessor(items.getType());
-            assertNotNull(opAccessor);
-            for (IItem item : items) {
-                String op = opAccessor.getMember(item);
-                // Java sockets reach libc via write()/read(); send()/recv() also possible.
-                // Group by direction: outbound (SEND, WRITE) vs inbound (RECV, READ).
-                if ("SEND".equals(op) || "WRITE".equals(op))      sendCount++;
-                else if ("RECV".equals(op) || "READ".equals(op))  recvCount++;
-            }
+        for (JfrEvent item : events) {
+            String op = item.getString(OPERATION);
+            // Java sockets reach libc via write()/read(); send()/recv() also possible.
+            // Group by direction: outbound (SEND, WRITE) vs inbound (RECV, READ).
+            if ("SEND".equals(op) || "WRITE".equals(op))      sendCount++;
+            else if ("RECV".equals(op) || "READ".equals(op))  recvCount++;
         }
 
         System.out.println("Outbound (SEND/WRITE) events: " + sendCount
