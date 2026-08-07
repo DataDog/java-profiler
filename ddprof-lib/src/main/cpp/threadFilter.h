@@ -21,6 +21,7 @@
 #include <vector>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 
 #include "arch.h"
 #include "threadState.h"
@@ -37,6 +38,7 @@ enum class BlockRunOwner : int {
 class ThreadFilter {
 public:
     using SlotID = int;
+    using RecordingEpoch = u64;
 
     // Optimized limits for reasonable memory usage
     static constexpr int kChunkSize = 256;
@@ -45,8 +47,10 @@ public:
     static constexpr int kMaxThreads = 2048;
     static constexpr int kMaxChunks = (kMaxThreads + kChunkSize - 1) / kChunkSize;  // = 8 chunks
     // High-performance free list using Treiber stack, 64 shards
-    static constexpr int kFreeListSize  = 1024;       // power-of-two for fast modulo
+    static constexpr int kFreeListSize  = kMaxThreads;
     static constexpr int kShardCount    = 64;          // power-of-two for fast modulo
+    static constexpr int kTidIndexSize  = 8192;        // 4x maximum live slots
+    static constexpr int kTidIndexMask  = kTidIndexSize - 1;
 
     // One cache line per slot to avoid false sharing. Slot instances are never freed
     // (ChunkStorage is process-lifetime), so a captured Slot* is always dereferenceable.
@@ -56,8 +60,21 @@ public:
         std::atomic<u64>           unowned_blocked_pending_weight{0};
         std::atomic<u64>           unowned_blocked_decision_count{0};
         std::atomic<u64>           unowned_blocked_call_trace_id{0};
+        // Packed as (epoch << 1) | in_context_window so a transition and its
+        // epoch change are observed atomically by block admission and exit.
+        std::atomic<u64>           context_window_state{0};
+        std::atomic<u64>           lifecycle_generation{0};
+        // Per-recording publication flag. A retained TID mapping is eligible for
+        // unfiltered suppression only when this value matches the registry's
+        // active recording epoch. The payload is reset before the epoch is
+        // release-published.
+        std::atomic<u64>           recording_epoch{0};
+        std::atomic<u64>           active_block_context_epoch{0};
         std::atomic<OSThreadState> unowned_blocked_state{OSThreadState::UNKNOWN};
-        std::atomic<int>           value{-1};
+        // Native identity and context-window membership are independent so an
+        // unfiltered wall recording can retain lifecycle metadata without
+        // changing ordinary thread selection.
+        std::atomic<int>           tid{-1};
         std::atomic<int>           active_block_owner{static_cast<int>(BlockRunOwner::NONE)};
         std::atomic<u32>           block_generation{0};
         // Wall-clock once-per-run suppression state. The signal handler records the
@@ -74,6 +91,10 @@ public:
                      - sizeof(std::atomic<u64>)
                      - sizeof(std::atomic<u64>)
                      - sizeof(std::atomic<u64>)
+                     - sizeof(std::atomic<u64>)
+                     - sizeof(std::atomic<u64>)
+                     - sizeof(std::atomic<u64>)
+                     - sizeof(std::atomic<u64>)
                      - sizeof(std::atomic<OSThreadState>)
                      - sizeof(std::atomic<int>)
                      - sizeof(std::atomic<int>)
@@ -81,6 +102,44 @@ public:
                      - sizeof(std::atomic<OSThreadState>)
                      - sizeof(std::atomic<OSThreadState>)
                      - sizeof(std::atomic<bool>)];
+
+        inline int nativeTid() const {
+            return tid.load(std::memory_order_acquire);
+        }
+        inline u64 lifecycleGeneration() const {
+            return lifecycle_generation.load(std::memory_order_acquire);
+        }
+        inline RecordingEpoch recordingEpoch() const {
+            return recording_epoch.load(std::memory_order_acquire);
+        }
+        inline bool inContextWindow() const {
+            return (context_window_state.load(std::memory_order_acquire) & 1) != 0;
+        }
+        inline u64 contextWindowEpoch() const {
+            return context_window_state.load(std::memory_order_acquire) >> 1;
+        }
+        inline bool enterContextWindow() {
+            u64 current = context_window_state.load(std::memory_order_acquire);
+            while ((current & 1) == 0) {
+                if (context_window_state.compare_exchange_weak(
+                        current, current + 3, std::memory_order_acq_rel,
+                        std::memory_order_acquire)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        inline bool exitContextWindow() {
+            u64 current = context_window_state.load(std::memory_order_acquire);
+            while ((current & 1) != 0) {
+                if (context_window_state.compare_exchange_weak(
+                        current, current + 1, std::memory_order_acq_rel,
+                        std::memory_order_acquire)) {
+                    return true;
+                }
+            }
+            return false;
+        }
 
         inline bool sampledThisRun() const {
             return sampled_this_run.load(std::memory_order_acquire);
@@ -147,14 +206,26 @@ public:
             return true;
         }
         inline bool trySetActiveBlockRun(OSThreadState state, BlockRunOwner owner,
-                                         u32* generation_out) {
+                                         u32* generation_out,
+                                         bool outside_context_required) {
+            u64 context_state = context_window_state.load(std::memory_order_acquire);
+            if (outside_context_required && (context_state & 1) != 0) {
+                return false;
+            }
             int expected_owner = static_cast<int>(BlockRunOwner::NONE);
             if (!active_block_owner.compare_exchange_strong(
                     expected_owner, static_cast<int>(owner), std::memory_order_acq_rel,
                     std::memory_order_acquire)) {
                 return false;
             }
+            if (outside_context_required &&
+                context_window_state.load(std::memory_order_acquire) != context_state) {
+                active_block_owner.store(static_cast<int>(BlockRunOwner::NONE),
+                                         std::memory_order_release);
+                return false;
+            }
             u32 generation = block_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+            active_block_context_epoch.store(context_state >> 1, std::memory_order_relaxed);
             resetUnownedBlockedSampling();
             last_sampled_state.store(OSThreadState::UNKNOWN, std::memory_order_relaxed);
             sampled_this_run.store(false, std::memory_order_relaxed);
@@ -167,19 +238,30 @@ public:
             resetSampledRun(state);
             active_block_owner.store(static_cast<int>(BlockRunOwner::NONE), std::memory_order_release);
         }
+        inline bool activeBlockRemainedOutsideContextWindow() const {
+            u64 context_state = context_window_state.load(std::memory_order_acquire);
+            return (context_state & 1) == 0 &&
+                   active_block_context_epoch.load(std::memory_order_acquire) ==
+                       (context_state >> 1);
+        }
     };
     static_assert(sizeof(Slot) == 2 * DEFAULT_CACHE_LINE_SIZE, "Slot must be exactly two cache lines");
     static_assert(std::atomic<OSThreadState>::is_always_lock_free,
                   "Slot OSThreadState fields must be lock-free for signal-handler safety");
     static_assert(std::atomic<bool>::is_always_lock_free,
                   "Slot::sampled_this_run must be lock-free for signal-handler safety");
+    static_assert(std::atomic<u64>::is_always_lock_free,
+                  "Slot::recording_epoch must be lock-free for signal-handler safety");
 
     ThreadFilter();
     ~ThreadFilter();
 
-    void init(const char* filter);
+    void init(const char* filter, bool track_unfiltered_wall = false);
     void initFreeList();
     bool enabled() const;
+    bool registryActive() const;
+    bool unfilteredWallTrackingActive() const;
+    RecordingEpoch recordingEpoch() const;
     // Hot path methods - slot_id MUST be from registerThread(), undefined behavior otherwise
     bool accept(SlotID slot_id) const;
     void add(int tid, SlotID slot_id);
@@ -197,6 +279,18 @@ public:
     // another owner.
     void exitBlockedRun(SlotID slot_id);
     bool exitBlockedRun(SlotID slot_id, u32 generation);
+    // Reads the complete timer-side suppression payload and rejects it if slot
+    // identity or block lifecycle changes before final validation.
+    bool shouldSuppressOwnedBlock(const ThreadEntry& entry) const;
+
+#ifdef UNIT_TEST
+    using SuppressionSnapshotHook = void (*)(void*);
+    void setSuppressionSnapshotHookForTest(SuppressionSnapshotHook hook,
+                                           void* arg) {
+        _suppression_snapshot_hook = hook;
+        _suppression_snapshot_hook_arg = arg;
+    }
+#endif
 
     static inline u64 encodeBlockRunToken(SlotID slot_id, u32 generation) {
         return (static_cast<u64>(generation) << 32) | static_cast<u32>(slot_id + 1);
@@ -218,8 +312,13 @@ public:
         return chunk != nullptr ? &chunk->slots[slot_idx] : nullptr;
     }
 
-    SlotID registerThread();
-    void unregisterThread(SlotID slot_id);
+    SlotID registerThread(int tid = -1);
+    void unregisterThread(SlotID slot_id, int expected_tid = -1);
+    void unregisterThreadByTid(int tid);
+    Slot* lookupByTid(int tid) const;
+    Slot* lookupByTid(int tid, RecordingEpoch epoch) const;
+    Slot* activeSlotForId(SlotID slot_id, int tid) const;
+    void deactivateRecording();
 
 private:
 
@@ -235,6 +334,10 @@ private:
     };
 
     std::atomic<bool> _enabled{false};
+    std::atomic<bool> _registry_active{false};
+    std::atomic<bool> _track_unfiltered_wall{false};
+    std::atomic<RecordingEpoch> _recording_epoch{0};
+    std::atomic<RecordingEpoch> _next_recording_epoch{0};
 
     // Lazily allocated storage for chunks
     std::atomic<ChunkStorage*> _chunks[kMaxChunks];
@@ -243,6 +346,17 @@ private:
     // Lock-free slot allocation
     std::atomic<SlotID> _next_index{0};
     std::unique_ptr<FreeListNode[]> _free_list;
+    // Entries contain slot_id + 1. Zero terminates a lookup probe; -1 is a
+    // tombstone left by unregister. The slot's published TID is the key.
+    std::array<std::atomic<int>, kTidIndexSize> _tid_index;
+    // Registration and teardown never run in a signal handler. Serializing
+    // writers prevents duplicate TID mappings while lookups remain lock-free.
+    std::mutex _registry_lock;
+
+#ifdef UNIT_TEST
+    SuppressionSnapshotHook _suppression_snapshot_hook = nullptr;
+    void* _suppression_snapshot_hook_arg = nullptr;
+#endif
 
     // Cache line aligned to prevent false sharing between shards
     struct alignas(DEFAULT_CACHE_LINE_SIZE) ShardHead { std::atomic<int> head{-1}; };
@@ -254,12 +368,23 @@ private:
     void initializeChunk(int chunk_idx);
     bool pushToFreeList(SlotID slot_id);
     SlotID popFromFreeList();
+    bool indexSlot(SlotID slot_id, int tid);
+    void unindexSlot(SlotID slot_id, int tid);
+    void refreshSlotForRecording(Slot* slot, RecordingEpoch epoch);
+    void resetRegistrationsLocked();
+    void unregisterThreadLocked(SlotID slot_id, int expected_tid = -1);
+    SlotID lookupSlotIdByTid(int tid) const;
+    static inline unsigned hashTid(int tid) {
+        return static_cast<unsigned>(tid) * 2654435761u;
+    }
 };
 
 // Snapshot entry produced by ThreadFilter::collect for the wall-clock timer.
 struct ThreadEntry {
     int tid;
     ThreadFilter::Slot* slot;
+    u64 lifecycle_generation;
+    ThreadFilter::RecordingEpoch recording_epoch;
 };
 
 #endif // _THREADFILTER_H
