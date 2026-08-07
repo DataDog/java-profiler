@@ -79,8 +79,11 @@ Java_com_datadoghq_profiler_JavaProfiler_init0(JNIEnv *env, jclass unused) {
   // JavaVM* has already been stored when the native library was loaded so we can pass nullptr here
   if (VM::initProfilerBridge(nullptr, true)) {
     // Attach ProfiledThread
-    ProfiledThread* current =  ProfiledThread::initCurrentThreadSignalSafe();
-    assert(current != nullptr && "Out of order initialization");
+    ProfiledThread* current = ProfiledThread::initCurrentThreadSignalSafe();
+    if (current == nullptr) {
+      throwNew(env, "java/lang/IllegalStateException", "Failed to initialize profiler thread-local state");
+      return JNI_FALSE;
+    }
 
     return JNI_TRUE;
   } else {
