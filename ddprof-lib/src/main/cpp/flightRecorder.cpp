@@ -672,22 +672,6 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   return mi;
 }
 
-void Lookup::initClassCache() {
-  // Snapshot _classes into _class_cache for use by resolveMethod(BCI_ALLOC).
-  // Must be called before writeStackTraces() so the snapshot covers all
-  // vtable-receiver classes (pre-registered before profiling starts).
-  // This snapshot is intentionally NOT used by writeClasses(): regular Java
-  // classes are inserted into _classes by fillJavaMethodInfo() during
-  // writeStackTraces/writeMethods, so writeClasses() must re-collect after
-  // those passes to obtain the complete class pool.
-  // standby() is the post-rotate snapshot of _classes; collect() copies its
-  // entries with no concurrent writers (rotate drained them).  The shared
-  // classMapSharedGuard is held for any concurrent #527 vtable readers that
-  // also touch _classes directly via lookup() on active.
-  auto guard = Profiler::instance()->classMapSharedGuard();
-  _classes->standby()->collect(_class_cache);
-}
-
 u32 Lookup::getPackage(const char *class_name) {
   const char *package = strrchr(class_name, '/');
   if (package == NULL) {
@@ -1503,13 +1487,11 @@ int Recording::writeCpool(Buffer *buf, int *count_offset_in_cpool) {
   // Profiler::rotateDictsAndRun() rotates the three dictionaries before this
   // path runs, so classMap()->standby() returns an old-active snapshot stable
   // for the lifetime of writeCpool().
-  // initClassCache() seeds vtable-receiver class names for resolveMethod(BCI_ALLOC).
-  // writeClasses() then collects the COMPLETE class set from standby(): regular Java
+  // writeClasses() collects the COMPLETE class set from standby(): regular Java
   // classes are inserted into the new-active by fillJavaMethodInfo during
   // writeStackTraces/writeMethods, and those would not appear in the snapshot —
   // standby() captures the pre-rotation state which writeClasses extends.
   Lookup lookup(this, &_method_map, Profiler::instance()->classMap());
-  lookup.initClassCache();
   // CONSTANT pools: always non-empty, always emitted -> 5 sections.
   // writeThreads always emits: it inserts _tid unconditionally before checking.
   writeFrameTypes(buf);
