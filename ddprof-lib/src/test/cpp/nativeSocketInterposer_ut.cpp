@@ -1103,6 +1103,36 @@ TEST(LibraryPatcherSocketStateTest,
   }
 }
 
+TEST(LibraryPatcherSocketStateTest, AdmitsNettyNativeEpollBySymbolOutsideJdkDirectory) {
+  CodeCache netty("libnetty_transport_native_epoll_x86_64.so");
+  CodeCache netty_shaded("libio_grpc_netty_shaded_netty_transport_native_epoll_x86_64.so");
+  CodeCache netty_partial("libnetty_transport_native_epoll_x86_64.so");
+
+  char marker_addresses[2] = {};
+  netty.add(&marker_addresses[0], 1, "JNI_OnLoad_netty_transport_native_epoll");
+  netty.add(&marker_addresses[1], 1, "JNI_OnUnload_netty_transport_native_epoll");
+  netty_shaded.add(&marker_addresses[0], 1, "JNI_OnLoad_netty_transport_native_epoll");
+  netty_shaded.add(&marker_addresses[1], 1, "JNI_OnUnload_netty_transport_native_epoll");
+  netty_partial.add(&marker_addresses[0], 1, "JNI_OnLoad_netty_transport_native_epoll");
+
+  // Admitted even though it is not located in the JDK's own lib directory,
+  // and regardless of the .so's basename (shading relocates the filename).
+  EXPECT_EQ(SOCKET_PATCH_NETTY_NATIVE_EPOLL,
+            LibraryPatcher::socket_patch_target_for_test(
+                &netty, "libnetty_transport_native_epoll_x86_64.so", false));
+  EXPECT_EQ(SOCKET_PATCH_NETTY_NATIVE_EPOLL,
+            LibraryPatcher::socket_patch_target_for_test(
+                &netty_shaded,
+                "libio_grpc_netty_shaded_netty_transport_native_epoll_x86_64.so",
+                false));
+
+  // Requires both symbols, mirroring the IBM JCL bridge's all-or-nothing check.
+  EXPECT_EQ(SOCKET_PATCH_NONE,
+            LibraryPatcher::socket_patch_target_for_test(
+                &netty_partial,
+                "libnetty_transport_native_epoll_x86_64.so", false));
+}
+
 TEST_F(LibraryPatcherImportTest, PatchesAndRestoresEveryImportLocation) {
   initializeImports(3);
   void* originals[3] = {imports[0], imports[1], imports[2]};
