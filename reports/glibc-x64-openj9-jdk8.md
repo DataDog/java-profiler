@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk8
 
 ## glibc-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-08-10 09:14:02 EDT
+**Date:** 2026-08-10 09:32:24 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 373 |
-| Sample Rate | 6.22/sec |
-| Health Score | 389% |
+| CPU Samples | 328 |
+| Sample Rate | 5.47/sec |
+| Health Score | 342% |
 | Threads | 7 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: glibc-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 195 |
-| Sample Rate | 3.25/sec |
-| Health Score | 203% |
-| Threads | 9 |
+| CPU Samples | 236 |
+| Sample Rate | 3.93/sec |
+| Health Score | 246% |
+| Threads | 8 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 27-27 cores)</summary>
 
 ```
-1786367349 27
-1786367354 27
-1786367359 27
-1786367364 27
-1786367369 27
-1786367374 27
-1786367379 27
-1786367384 27
-1786367389 27
-1786367394 27
-1786367399 27
-1786367404 27
-1786367409 27
-1786367414 27
-1786367419 27
-1786367424 27
-1786367429 27
-1786367434 27
-1786367439 27
-1786367444 27
+1786368423 27
+1786368428 27
+1786368433 27
+1786368438 27
+1786368443 27
+1786368448 27
+1786368453 27
+1786368458 27
+1786368464 27
+1786368469 27
+1786368474 27
+1786368479 27
+1786368484 27
+1786368489 27
+1786368494 27
+1786368499 27
+1786368504 27
+1786368509 27
+1786368514 27
+1786368519 27
 ```
 </details>
 
