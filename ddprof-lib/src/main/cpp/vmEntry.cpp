@@ -625,8 +625,7 @@ void *VM::getLibraryHandle(const char *name) {
 
 void JNICALL VM::ClassPrepare(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
                                jclass klass) {
-  ProfiledThread* thr = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(thr != nullptr);
+  ProfiledThread::initCurrentThreadSignalSafe();
   JVMSupport::loadMethodIDsIfNeeded(jvmti, jni, klass);
 }
 
@@ -657,8 +656,7 @@ Arguments& VM::arguments() {
 }
 
 void JNICALL VM::VMDeath(jvmtiEnv *jvmti, JNIEnv *jni) {
-  ProfiledThread* thr = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(thr != nullptr);
+  ProfiledThread::initCurrentThreadSignalSafe();
   Profiler::instance()->shutdown(_agent_args);
 }
 
