@@ -48,46 +48,28 @@ Triggers the Validated Release workflow using GitHub CLI to create a new release
    backport PR is opened, and the script exits so you can merge it and re-run
 4. Interactive commit selection (or use `--commit`)
 5. Triggers GitHub Actions "Validated Release" workflow
-6. Workflow runs pre-release tests, creates the annotated tag, and opens an
-   exact single-commit version-bump PR as `github-actions[bot]`
-7. The final commit is pushed through the release SSH identity, producing the
-   `synchronize` event that starts normal PR CI even though `GITHUB_TOKEN`
-   created the PR
-8. A separate `dd-octo-sts[bot]` identity adds `trivial`; the approval workflow
-   validates permissions, refs, SHAs, and the exact one-line version diff before
-   approving that exact commit
-9. The release workflow waits for the exact approval and the aggregate
-   `release-bump-ci` check, then performs the SHA-locked squash merge itself
-10. Tag push triggers GitLab, which publishes the Maven artifacts, and the
-    GitHub release workflows attach the release assets
+6. Workflow runs pre-release tests, then creates the annotated tag on the
+   selected commit (and a release branch for minor/major releases)
+7. Tag push triggers GitLab, which publishes the Maven artifacts, and the
+   GitHub release workflows attach the release assets
+
+No file modifications or version-bump PRs are needed — the version is
+computed from git tags at build time. The next build from `main` (or the
+release branch) automatically sees the new tag and computes the next
+snapshot version.
 
 Interactive pickers (branch and commit selection) support ↑/↓/Enter, and
 can be cancelled at any time with `q` or Ctrl-C.
 
-For a major release, the generated `N.0.0` commit remains on
-`release/N.0._` and is tagged there. The bump PR moves `main` directly from
-its recorded source commit to `N.1.0`; the workflow never pushes a generated
-commit directly to protected `main`.
-
-A new release branch initially remains at its tagged `X.Y.0` minor version.
-The first patch creates and tags an `X.Y.1` release commit, then opens the
-validated bump PR for `X.Y.2-SNAPSHOT`. Later patches release the untagged
-development version left by the preceding bump PR. An already-tagged patch
-version greater than zero is rejected because it means that preceding bump PR
-did not merge.
-
-The repository's Actions settings must allow GitHub Actions to create and
-approve pull requests. A dry run never creates a PR, adds a label, requests
-approval, or merges anything.
+A dry run never creates a tag, pushes a branch, or triggers GitLab.
 
 ### Testing release automation
 
 `.github/scripts/tests/test_release_automation.sh` is a single hermetic shell
-test. It validates success,
-authorization failures, fork/bot PRs, malformed or extra diffs, version
-rollovers, merge commits, and stale SHAs using temporary local fixtures. Its
-fixture mode does not load credentials or invoke `gh`, so it cannot publish,
-tag, push, create a PR, approve, or merge anything remotely.
+test. It validates release tag/branch creation, version computation, and
+trivial-PR authorization using temporary local git fixtures. It does not
+load credentials or invoke `gh`, so it cannot publish, tag, push, or merge
+anything remotely.
 
 ```bash
 .github/scripts/tests/test_release_automation.sh
