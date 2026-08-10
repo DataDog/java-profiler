@@ -91,7 +91,7 @@ public:
 // musl/aarch64 where the deopt blob may corrupt the wrapper's stack guard.
 __attribute__((noinline))
 static void unregister_and_release() {
-    SignalBlocker blocker;
+    blockProfilingForExit();
     int tid = ProfiledThread::currentTid();
     Profiler::unregisterThread(tid);
     ProfiledThread::release();
@@ -239,7 +239,7 @@ int pthread_create_wrapped_for_test(pthread_t* thread,
     }
     int ret = pthread_create(thread, nullptr, start_routine_for_test, ctx);
     if (ret != 0) {
-        SignalBlocker blocker;
+        blockProfilingForExit();
         delete ctx;
     }
     return ret;
@@ -362,7 +362,7 @@ static int pthread_create_hook_spec(pthread_t* thread,
   }
   int ret = pthread_create(thread, attr, start_routine_wrapper_spec, (void*)thr);
   if (ret != 0) {
-    SignalBlocker blocker;
+    blockProfilingForExit();
     delete thr;
   }
   return ret;
@@ -420,7 +420,7 @@ static int pthread_create_hook(pthread_t* thread,
   }
   int ret = pthread_create(thread, attr, start_routine_wrapper, (void*)thr);
   if (ret != 0) {
-    SignalBlocker blocker;
+    blockProfilingForExit();
     delete thr;
   }
   return ret;

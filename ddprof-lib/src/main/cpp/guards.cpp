@@ -21,6 +21,16 @@
 
 #include <cassert>
 
+void blockProfilingForExit() {
+    sigset_t prof_signals, old_signals;
+    sigemptyset(&prof_signals);
+    sigaddset(&prof_signals, SIGPROF);     // Used by ITimer and CTimer
+    sigaddset(&prof_signals, SIGVTALRM);   // Used by WallClock
+
+    int rc= pthread_sigmask(SIG_BLOCK, &prof_signals, &old_signals);
+    assert(rc == 0);
+}
+
 // Signal-context tracking — backed by ProfiledThread::_signal_depth; see
 // the comment block in guards.h for the rationale (initial-exec TLS was
 // rejected because of the static TLS surplus on Graal).
@@ -39,7 +49,7 @@ bool isInTrackedSignalContext() {
     return pt != nullptr && pt->signalDepth() != 0;
 }
 
-SignalHandlerScope::SignalHandlerScope() : _active(true), _current(nullptr) {
+SignalHandlerScope::SignalHandlerScope() : _current(nullptr), _active(true) {
     ProfiledThread *pt = ProfiledThread::acquireCurrent();
     if (pt != nullptr) {
         _current = pt;

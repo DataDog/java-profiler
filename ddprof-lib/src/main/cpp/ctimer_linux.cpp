@@ -206,6 +206,7 @@ Error CTimerJvmti::start(Arguments &args) {
 }
 
 void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  int saved_errno = errno;
   if (!OS::shouldProcessSignal(siginfo, SI_TIMER, SignalCookie::cpu())) {
     Counters::increment(CTIMER_SIGNAL_FOREIGN);
     OS::forwardForeignSignal(signo, siginfo, ucontext);
@@ -220,7 +221,6 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   if (!cs.entered()) {
     return;
   }
-  int saved_errno = errno;
   if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
     errno = saved_errno;
     return;
@@ -236,10 +236,9 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     return;
   }
 
-  if (current != NULL) {
-    current->noteCPUSample(Profiler::instance()->recordingEpoch());
-    tid = current->tid();
-  }
+  current->noteCPUSample(Profiler::instance()->recordingEpoch());
+  tid = current->tid();
+
   Shims::instance().setSighandlerTid(tid);
 
   ExecutionEvent event;

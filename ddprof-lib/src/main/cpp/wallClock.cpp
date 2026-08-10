@@ -456,7 +456,7 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
     return;
   }
   int saved_errno = errno;
-  ProfiledThread *current = ProfiledThread::current();
+  ProfiledThread *current = cs.current();
   assert(current != nullptr && "Should have been setup at signal handler entery");
 
   if (JVMThread::current() == nullptr

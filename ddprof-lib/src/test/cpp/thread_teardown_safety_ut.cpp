@@ -89,15 +89,17 @@ static void *t01_body(void *) {
 
   ProfiledThread::release();
 
-  g_t01_seen.store(kNotYetRun, std::memory_order_relaxed);
-  pthread_kill(pthread_self(), SIGVTALRM);
-  ProfiledThread *t01_post = g_t01_seen.load(std::memory_order_relaxed);
-  if (t01_post == kNotYetRun) {
-    ADD_FAILURE() << "SIGVTALRM handler must have run after release() (handler did not execute)";
-    return nullptr;
-  }
+  ProfiledThread *t01_post = ProfiledThread::current();
   EXPECT_EQ(nullptr, t01_post)
       << "current() must return null after release()";
+
+  g_t01_seen.store(kNotYetRun, std::memory_order_relaxed);
+  pthread_kill(pthread_self(), SIGVTALRM);
+  t01_post = g_t01_seen.load(std::memory_order_relaxed);
+  if (t01_post != kNotYetRun) {
+    ADD_FAILURE() << "SIGVTALRM handler must have run after release() (handler execute)";
+    return nullptr;
+  }
 
   return nullptr;
 }

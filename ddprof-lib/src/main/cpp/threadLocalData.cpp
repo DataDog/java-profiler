@@ -69,7 +69,10 @@ ProfiledThread* ProfiledThread::initCurrentThreadSignalSafe() {
 }
 
 void ProfiledThread::freeValue(void* value) {
-  SignalBlocker blocker;
+  // Block future profiling signals that prevents re-allocating
+  // ProfiledThread that cannot be released - memory leak
+  blockProfilingForExit();
+
   ProfiledThread* pt = reinterpret_cast<ProfiledThread*>(value);
   if (!ThreadLocalDataPool::release(pt)) {
     // Sole deletion site for a ProfiledThread (invoked by the ThreadLocal
@@ -143,7 +146,7 @@ void ProfiledThread::unclaimAndReset() {
   _unwind_failures.reset();
 
 #ifdef __FAULT_INJECTION__
-    _fi_rng = 0;
+  _fi_rng = 0;
 #endif
 
   __atomic_store_n(&_misc_flags, 0, __ATOMIC_RELEASE);

@@ -26,6 +26,12 @@
 
 class ProfiledThread;
 
+// Block all profiling signal for thread exiting.
+// Blocking the signals prevent any future profiling signals from delievering,
+// which can result in allocation of ProfiledThread that can never
+// be released.
+void blockProfilingForExit();
+
 // ---------------------------------------------------------------------------
 // Signal-context depth tracking — always on.
 //
@@ -45,10 +51,11 @@ class ProfiledThread;
 // nullptr when unset).
 //
 // When ProfiledThread is null or via thread priming on a thread
-// — uninstrumented JVM-internal threads (VM Thread, JIT, GC) fall
-// into this bucket too, and they can receive signals.  The
-// SignalHandlerScope guard is a no-op on those threads (nothing to
-// update), so isInTrackedSignalContext() returns false: production code
+// — uninstrumented JVM-internal threads now get a ProfiledThread via priming
+// when supportPriming() allows it (so isInTrackedSignalContext() does track them),
+// and that the no-ProfiledThread path only applies when priming is unavailable or
+// the pool is exhausted. The SignalHandlerScope guard is a no-op on those threads
+// (nothing to update), so isInTrackedSignalContext() returns false: production code
 // prefers synchronous refresh() on null-PT threads because (a) those
 // threads regularly call dlopen during normal JVM operation, and (b)
 // wasmtime's broken sigaction patching depends on switchLibraryTrap
@@ -171,6 +178,7 @@ public:
 
     // Check if this instance successfully entered the critical section
     bool entered() const { return _entered; }
+    ProfiledThread* current() const { return _thread_ptr; }
 };
 
 /**

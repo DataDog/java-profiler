@@ -12,6 +12,15 @@
 
 ThreadLocalDataPool* ThreadLocalDataPool::_pool = nullptr;
 
+void ThreadLocalDataPool::initialize() {
+    assert(__atomic_load_n(&_pool, __ATOMIC_ACQUIRE) == nullptr && "Already initialized");
+
+    // process-lifetime singleton
+    ThreadLocalDataPool* pool = new ThreadLocalDataPool();
+    __atomic_store_n(&_pool, pool, __ATOMIC_RELEASE);
+}
+
+
 ThreadLocalDataPool::ThreadLocalDataPool(uint16_t capacity)
     : _capacity(capacity), _used(0), _threads(nullptr) {
     const size_t malloc_size = capacity * sizeof(ProfiledThread);
@@ -72,12 +81,6 @@ bool ThreadLocalDataPool::unclaim(ProfiledThread* t) {
         return true;
     }
     return false;
-}
-
-void ThreadLocalDataPool::initialize() {
-    // process-lifetime singleton
-    ThreadLocalDataPool* pool = new ThreadLocalDataPool();
-    __atomic_store_n(&_pool, pool, __ATOMIC_RELEASE);
 }
 
 ProfiledThread* ThreadLocalDataPool::acquire(int tid) {

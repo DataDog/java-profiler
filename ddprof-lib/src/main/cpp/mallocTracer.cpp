@@ -18,6 +18,7 @@
 #include "pidController.h"
 #include "profiler.h"
 #include "symbols.h"
+#include "threadLocalData.inline.h"
 #include "tsc.h"
 #include "vmEntry.h"
 
@@ -44,7 +45,7 @@ static inline void maybeRecord(void* ret, size_t size) {
     if (MallocTracer::running() && ret && size) {
         // Even we are not in a signal handler, we cannot malloc or
         // we may get into indefinite loop
-        {
+        if (ProfiledThread::current() == nullptr) {
             SignalBlocker blocker;
             if (ProfiledThread::acquireCurrent() == nullptr) {
                 Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
