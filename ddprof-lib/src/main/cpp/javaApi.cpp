@@ -107,7 +107,9 @@ extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getTid0(JNIEnv *env, jclass unused) {
   // Attach ProfiledThread
   ProfiledThread* current =  ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
+  if (current != nullptr) {
+    return current->tid();
+  }
 
   return OS::threadId();
 }
@@ -178,7 +180,9 @@ extern "C" DLLEXPORT void JNICALL
 JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
   // Initialize thread TLS if it has not yet done
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
+  if (current == nullptr) {
+    return;
+  }
 
   int tid = current->tid();
   if (unlikely(tid < 0)) {
@@ -210,7 +214,9 @@ extern "C" DLLEXPORT void JNICALL
 JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0() {
   // Initialize thread TLS if it has not yet done
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
+  if (current == nullptr) {
+    return;
+  }
   int tid = current->tid();
   if (unlikely(tid < 0)) {
     return;

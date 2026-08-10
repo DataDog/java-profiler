@@ -219,6 +219,7 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 
   CriticalSection cs;
   if (!cs.entered()) {
+    errno = saved_errno;
     return;
   }
   if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
@@ -227,6 +228,7 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   }
   int tid = 0;
   ProfiledThread *current = SIGNAL_HANDLER_CURRENT_THREAD();
+  assert(!current->isDeepCrashHandler());
 
   if (JVMThread::current() == nullptr
       && current->inInitWindow()) {

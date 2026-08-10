@@ -88,7 +88,7 @@ private:
   u64 _park_block_token;
   int _filter_slot_id; // Slot ID for thread filtering
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
-  uint8_t _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
+  volatile uint8_t _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
   UnwindFailures _unwind_failures;
   bool _otel_ctx_initialized;
 #ifdef __FAULT_INJECTION__
@@ -262,13 +262,11 @@ public:
     return _jmp_buf != nullptr;
   }
 
-  // Signal-handler depth counter used by SignalHandlerScope (guards.h).  All
-  // access happens on the owning thread (signal handlers are delivered to the
-  // thread that's interrupted), so plain reads/writes are AS-safe — no locks,
-  // no malloc, no syscalls.  See guards.h for the public API.
-  inline uint8_t signalDepth() const { return _signal_depth; }
-  inline void enterSignalScope()    { ++_signal_depth; }
-  inline void exitSignalScope()     { if (_signal_depth > 0) --_signal_depth; }
+  // Signal-handler depth counter used by SignalHandlerScope (guards.h).
+  // Atomic operations to prevent another signal interrupt load-modify-store.
+  inline uint8_t signalDepth() const { return __atomic_load_n(&_signal_depth, __ATOMIC_RELAXED); }
+  inline void enterSignalScope()    { __atomic_fetch_add(&_signal_depth, 1, __ATOMIC_RELAXED); }
+  inline void exitSignalScope()     { if (signalDepth() > 0) __atomic_fetch_sub(&_signal_depth, 1, __ATOMIC_RELAXED); }
 
 #ifdef __FAULT_INJECTION__
   // One xorshift64 step (Marsaglia 2003), matching PoissonSampler::nextExp.

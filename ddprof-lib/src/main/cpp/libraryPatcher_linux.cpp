@@ -239,7 +239,6 @@ int pthread_create_wrapped_for_test(pthread_t* thread,
     }
     int ret = pthread_create(thread, nullptr, start_routine_for_test, ctx);
     if (ret != 0) {
-        blockProfilingForExit();
         delete ctx;
     }
     return ret;
@@ -362,7 +361,6 @@ static int pthread_create_hook_spec(pthread_t* thread,
   }
   int ret = pthread_create(thread, attr, start_routine_wrapper_spec, (void*)thr);
   if (ret != 0) {
-    blockProfilingForExit();
     delete thr;
   }
   return ret;

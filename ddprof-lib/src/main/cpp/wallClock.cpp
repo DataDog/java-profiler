@@ -232,18 +232,9 @@ void WallClockASGCT::sharedSignalHandler(int signo, siginfo_t *siginfo,
 
 void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext,
                               u64 last_sample) {
-  // A thread with no ProfiledThread attached must never enter the critical
-  // section below. acquireCurrent() is the only thing that can attach one; it
-  // must fully succeed or fail before we try to claim exclusivity, not while
-  // we're holding it -- otherwise a signal that interrupts us right after
-  // publish could observe a ProfiledThread whose critical-section state
-  // doesn't yet reflect reality. Drop the sample instead.
-  ProfiledThread *current = ProfiledThread::acquireCurrent();
-  if (current == nullptr) {
-    Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
-    return;
-  }
-
+  // ProfiledThread must have been setup, or the sample already skipped
+  ProfiledThread* current = ProfiledThread::current();
+  assert(current != nullptr);
   // Atomically try to enter critical section - prevents all reentrancy races
   CriticalSection cs;
   if (!cs.entered()) {

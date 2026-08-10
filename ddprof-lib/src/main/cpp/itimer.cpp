@@ -110,6 +110,7 @@ void ITimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   InflightGuard inflight;
   CriticalSection cs;
   if (!cs.entered()) {
+    errno = saved_errno;
     return;
   }
   if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
