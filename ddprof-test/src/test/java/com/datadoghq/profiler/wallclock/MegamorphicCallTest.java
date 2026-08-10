@@ -74,7 +74,9 @@ public class MegamorphicCallTest extends AbstractProfilerTest {
 
     @RetryingTest(5)
     public void testITableStubs() {
-        Assumptions.assumeFalse(Platform.isZing() || Platform.isJ9());
+        // itable stub frames are HotSpot-specific; GraalVM's JIT doesn't generate the
+        // same stub layout, as with the other itable/vtable stub tests in this suite.
+        Assumptions.assumeFalse(Platform.isZing() || Platform.isJ9() || Platform.isGraal());
         registerCurrentThreadForWallClockProfiling();
         // Reduce workload under ASAN: combined with the coarser wall rate above, this
         // bounds the number of samples (and thus the stack-trace strings materialized
