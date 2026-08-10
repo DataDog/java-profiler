@@ -103,7 +103,7 @@ long ITimerJvmti::_interval = 0;
 
 void ITimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   int saved_errno = errno;
-  SIGNAL_HANDLER_GUARD();
+  SIGNAL_HANDLER_GUARD_WITH_ERRNO(saved_errno);
   ProfiledThread *current = SIGNAL_HANDLER_CURRENT_THREAD();
   assert(current != nullptr);
 

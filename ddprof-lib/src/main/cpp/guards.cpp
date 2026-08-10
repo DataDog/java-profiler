@@ -70,9 +70,8 @@ SignalHandlerScope::~SignalHandlerScope() {
 
 void SignalHandlerScope::release() {
     if (!_active) return;
-    ProfiledThread *pt = ProfiledThread::current();
-    if (pt != nullptr) {
-        pt->exitSignalScope();
+    if (_current != nullptr) {
+        _current->exitSignalScope();
     }
     _active = false;
 }

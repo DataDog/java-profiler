@@ -97,7 +97,7 @@ static void *t01_body(void *) {
   pthread_kill(pthread_self(), SIGVTALRM);
   t01_post = g_t01_seen.load(std::memory_order_relaxed);
   if (t01_post != kNotYetRun) {
-    ADD_FAILURE() << "SIGVTALRM handler must have run after release() (handler execute)";
+    ADD_FAILURE() << "SIGVTALRM handler must not run after release() (handler execute)";
     return nullptr;
   }
 

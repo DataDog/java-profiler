@@ -266,10 +266,11 @@ void NativeSocketSampler::recordEvent(int fd, u64 t0, u64 t1, ssize_t bytes, u8 
 
     // We are not in a signal handler - take this chance to ensure ProfiledThread
     // is attached to the thread cheaply.
-    if (ProfiledThread::initCurrentThreadSignalSafe() == nullptr) {
+    ProfiledThread* current = ProfiledThread::initCurrentThreadSignalSafe();
+    if (current == nullptr) {
         Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
     } else {
-        Profiler::instance()->recordSample(NULL, (u64)bytes, OS::threadId(),
+        Profiler::instance()->recordSample(NULL, (u64)bytes, current->tid(),
                                         BCI_NATIVE_SOCKET, 0, &event);
     }
 

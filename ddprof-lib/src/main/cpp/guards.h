@@ -107,6 +107,15 @@ private:
         return;                                             \
       }
 
+#define SIGNAL_HANDLER_GUARD_WITH_ERRNO(err)                \
+      SignalHandlerScope _signal_handler_scope;             \
+      if (!_signal_handler_scope.isActive()) {              \
+        Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);  \
+        errno = err;                                        \
+        return;                                             \
+      }
+
+
 // Declare a scope guard local that increments the depth on entry and
 // decrements on scope exit.  Use as the very first statement in every
 // installed non-sampler signal handler

@@ -120,7 +120,7 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     // close the window where a wall-clock/CPU signal could sample a
     // partially-torn-down thread (PROF-14674).
     {
-      SignalBlocker blocker;
+      blockProfilingForExit();
       _cpu_engine->unregisterThread(tid);
       _wall_engine->unregisterThread(tid);
       LivenessTracker::instance()->releaseThreadLocalState();

@@ -420,7 +420,6 @@ static int pthread_create_hook(pthread_t* thread,
   }
   int ret = pthread_create(thread, attr, start_routine_wrapper, (void*)thr);
   if (ret != 0) {
-    blockProfilingForExit();
     delete thr;
   }
   return ret;
