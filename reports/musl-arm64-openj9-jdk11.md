@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk11
 
 ## musl-arm64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-08-10 01:00:33 EDT
+**Date:** 2026-08-10 01:03:09 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: musl-arm64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 837 |
-| Sample Rate | 13.95/sec |
-| Health Score | 872% |
+| CPU Samples | 663 |
+| Sample Rate | 11.05/sec |
+| Health Score | 691% |
 | Threads | 8 |
 | Allocations | 363 |
 
@@ -38,36 +38,36 @@ title: musl-arm64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 941 |
-| Sample Rate | 15.68/sec |
-| Health Score | 980% |
-| Threads | 10 |
-| Allocations | 547 |
+| CPU Samples | 254 |
+| Sample Rate | 4.23/sec |
+| Health Score | 264% |
+| Threads | 11 |
+| Allocations | 52 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 51-51 cores)</summary>
 
 ```
-1786337829 51
-1786337834 51
-1786337839 51
-1786337844 51
-1786337849 51
-1786337854 51
-1786337859 51
-1786337864 51
-1786337869 51
-1786337874 51
-1786337879 51
-1786337884 51
-1786337889 51
-1786337894 51
-1786337899 51
-1786337904 51
-1786337909 51
-1786337914 51
-1786337919 51
-1786337924 51
+1786337971 51
+1786337976 51
+1786337981 51
+1786337986 51
+1786337991 51
+1786337996 51
+1786338001 51
+1786338006 51
+1786338011 51
+1786338016 51
+1786338021 51
+1786338026 51
+1786338031 51
+1786338036 51
+1786338041 51
+1786338046 51
+1786338051 51
+1786338056 51
+1786338061 51
+1786338066 51
 ```
 </details>
 

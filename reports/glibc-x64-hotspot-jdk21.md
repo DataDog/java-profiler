@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk21
 
 ## glibc-x64-hotspot-jdk21 - ✅ PASS
 
-**Date:** 2026-08-10 01:00:32 EDT
+**Date:** 2026-08-10 01:03:08 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 470 |
-| Sample Rate | 7.83/sec |
-| Health Score | 489% |
+| CPU Samples | 464 |
+| Sample Rate | 7.73/sec |
+| Health Score | 483% |
 | Threads | 8 |
-| Allocations | 343 |
+| Allocations | 382 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 520 |
-| Sample Rate | 8.67/sec |
-| Health Score | 542% |
+| CPU Samples | 544 |
+| Sample Rate | 9.07/sec |
+| Health Score | 567% |
 | Threads | 9 |
-| Allocations | 400 |
+| Allocations | 469 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
 
 ```
-1786337827 64
-1786337832 64
-1786337837 64
-1786337842 64
-1786337847 64
-1786337852 64
-1786337857 64
-1786337862 64
-1786337867 64
-1786337872 64
-1786337877 64
-1786337882 64
-1786337887 64
-1786337892 64
-1786337897 64
-1786337902 64
-1786337907 64
-1786337912 64
-1786337917 64
-1786337922 64
+1786337918 64
+1786337923 64
+1786337928 64
+1786337933 64
+1786337938 64
+1786337943 64
+1786337948 64
+1786337953 64
+1786337958 64
+1786337963 64
+1786337968 64
+1786337973 64
+1786337978 64
+1786337983 64
+1786337988 64
+1786337993 64
+1786337998 64
+1786338003 64
+1786338008 64
+1786338013 64
 ```
 </details>
 

@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk11
 
 ## musl-arm64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-08-10 01:00:32 EDT
+**Date:** 2026-08-10 01:03:08 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: musl-arm64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 620 |
-| Sample Rate | 10.33/sec |
-| Health Score | 646% |
+| CPU Samples | 460 |
+| Sample Rate | 7.67/sec |
+| Health Score | 479% |
 | Threads | 8 |
 | Allocations | 363 |
 
@@ -38,36 +38,36 @@ title: musl-arm64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 157 |
-| Sample Rate | 2.62/sec |
-| Health Score | 164% |
-| Threads | 10 |
-| Allocations | 63 |
+| CPU Samples | 286 |
+| Sample Rate | 4.77/sec |
+| Health Score | 298% |
+| Threads | 12 |
+| Allocations | 117 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 34-34 cores)</summary>
 
 ```
-1786337814 34
-1786337819 34
-1786337824 34
-1786337829 34
-1786337834 34
-1786337839 34
-1786337844 34
-1786337849 34
-1786337854 34
-1786337859 34
-1786337864 34
-1786337869 34
-1786337874 34
-1786337879 34
-1786337884 34
-1786337889 34
-1786337894 34
-1786337899 34
-1786337904 34
-1786337909 34
+1786337928 34
+1786337933 34
+1786337938 34
+1786337943 34
+1786337948 34
+1786337953 34
+1786337958 34
+1786337963 34
+1786337968 34
+1786337973 34
+1786337978 34
+1786337983 34
+1786337988 34
+1786337993 34
+1786337998 34
+1786338003 34
+1786338008 34
+1786338013 34
+1786338018 34
+1786338023 34
 ```
 </details>
 
