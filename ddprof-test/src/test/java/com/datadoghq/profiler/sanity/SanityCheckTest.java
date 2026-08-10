@@ -17,7 +17,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Collections;
+import java.util.Arrays;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -104,7 +104,10 @@ public class SanityCheckTest extends AbstractProcessProfilerTest {
         Files.createDirectories(rootDir);
         Path forkedJfr = Files.createTempFile(rootDir, "sanity-check-mem-fail", ".jfr");
         try {
-            LaunchResult result = launch("profiler", Collections.singletonList("-Xmx900g"),
+            // -Xms is pinned small so the JVM doesn't try to commit its default initial
+            // heap (~Xmx/32, i.e. ~28g here) up front; that commit fails with an actual
+            // OOM on CI runners, crashing the forked JVM before the sanity check runs.
+            LaunchResult result = launch("profiler", Arrays.asList("-Xmx900g", "-Xms8m"),
                     "start,jfr,file=" + forkedJfr.toAbsolutePath(),
                     line -> LineConsumerResult.CONTINUE, line -> LineConsumerResult.CONTINUE);
             assertTrue(result.inTime, "forked JVM did not exit in time");
