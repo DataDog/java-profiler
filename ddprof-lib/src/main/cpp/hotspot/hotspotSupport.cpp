@@ -242,7 +242,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     assert(VM::isHotspot());
 
     ProfiledThread* prof_thread = ProfiledThread::current();
-    assert(prof_thread != nullptr && "Should have been setup at signal handler entery");
+    assert(prof_thread != nullptr && "Should have been set up at signal handler entry");
 
     HotspotStackFrame frame(ucontext);
     uintptr_t bottom = (uintptr_t)&frame + MAX_WALK_SIZE;
