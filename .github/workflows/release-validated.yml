@@ -83,7 +83,12 @@ jobs:
 
           # Compute release version from git tags
           if [ "$TYPE" == "retag" ]; then
-            RELEASE_VERSION=$(utils/compute-version.sh --release --patch)
+            # For retag, find the most recent tag on this branch (the one to re-point)
+            RELEASE_VERSION=$(git tag --merged HEAD --list 'v_*' | sed 's/^v_//' | sort -V | tail -1)
+            if [ -z "$RELEASE_VERSION" ]; then
+              echo "::error::No version tags found on this branch."
+              exit 1
+            fi
             if ! git rev-parse "v_${RELEASE_VERSION}" >/dev/null 2>&1; then
               echo "::error::Tag v_${RELEASE_VERSION} does not exist. Use a normal release to create a new tag."
               exit 1
@@ -183,6 +188,8 @@ jobs:
 
       - name: Create release
         id: create-release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd java-profiler
 

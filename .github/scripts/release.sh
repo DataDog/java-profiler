@@ -42,8 +42,12 @@ if [ "$TYPE" == "RETAG" ]; then
     exit 1
   fi
 
-  # Compute the current release version for this branch
-  RELEASE_VERSION=$(utils/compute-version.sh --release --patch)
+  # For retag, find the most recent tag on this branch (the one to re-point)
+  RELEASE_VERSION=$(git tag --merged HEAD --list 'v_*' | sed 's/^v_//' | sort -V | tail -1)
+  if [ -z "$RELEASE_VERSION" ]; then
+    echo "::error::No version tags found on this branch. Use a normal release to create a new tag."
+    exit 1
+  fi
   TAG_NAME="v_${RELEASE_VERSION}"
 
   if ! git rev-parse "$TAG_NAME" >/dev/null 2>&1; then

@@ -1,6 +1,4 @@
 function get_version() {
-  rm -f .version
-
   if [[ "${CI_COMMIT_TAG}" =~ ^v_[0-9.]+(-SNAPSHOT)?$ ]]; then
     echo "${CI_COMMIT_TAG//v_/}"
     return
