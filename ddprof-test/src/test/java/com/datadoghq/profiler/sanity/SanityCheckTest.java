@@ -104,10 +104,11 @@ public class SanityCheckTest extends AbstractProcessProfilerTest {
         Files.createDirectories(rootDir);
         Path forkedJfr = Files.createTempFile(rootDir, "sanity-check-mem-fail", ".jfr");
         try {
-            // -Xms is pinned small so the JVM doesn't try to commit its default initial
-            // heap (~Xmx/32, i.e. ~28g here) up front; that commit fails with an actual
-            // OOM on CI runners, crashing the forked JVM before the sanity check runs.
-            LaunchResult result = launch("profiler", Arrays.asList("-Xmx900g", "-Xms8m"),
+            // On Linux, Parallel GC's (the JDK 8 default) initial-heap commit is aligned
+            // to a fraction of -Xmx regardless of -Xms, so -Xms8m alone still eagerly
+            // commits ~28g and OOMs before the sanity check runs. G1 sizes its initial
+            // commit in fixed-size regions independent of -Xmx, avoiding that.
+            LaunchResult result = launch("profiler", Arrays.asList("-XX:+UseG1GC", "-Xmx900g", "-Xms8m"),
                     "start,jfr,file=" + forkedJfr.toAbsolutePath(),
                     line -> LineConsumerResult.CONTINUE, line -> LineConsumerResult.CONTINUE);
             assertTrue(result.inTime, "forked JVM did not exit in time");
