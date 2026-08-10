@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk11
 
 ## musl-x64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-08-09 21:24:18 EDT
+**Date:** 2026-08-09 21:25:30 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 497 |
-| Sample Rate | 8.28/sec |
-| Health Score | 517% |
+| CPU Samples | 477 |
+| Sample Rate | 7.95/sec |
+| Health Score | 497% |
 | Threads | 8 |
-| Allocations | 383 |
+| Allocations | 408 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 680 |
-| Sample Rate | 11.33/sec |
-| Health Score | 708% |
-| Threads | 9 |
-| Allocations | 526 |
+| CPU Samples | 785 |
+| Sample Rate | 13.08/sec |
+| Health Score | 817% |
+| Threads | 10 |
+| Allocations | 514 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
-1786324669 48
-1786324674 48
-1786324679 48
-1786324684 48
-1786324689 48
-1786324694 48
-1786324699 48
-1786324704 48
-1786324709 48
-1786324714 48
-1786324719 48
-1786324724 48
-1786324729 48
-1786324734 48
-1786324739 48
-1786324744 48
-1786324749 48
-1786324754 48
-1786324759 48
-1786324764 48
+1786324691 48
+1786324696 48
+1786324701 48
+1786324706 48
+1786324711 48
+1786324716 48
+1786324721 48
+1786324726 48
+1786324731 48
+1786324736 48
+1786324741 48
+1786324746 48
+1786324751 48
+1786324756 48
+1786324761 48
+1786324766 48
+1786324771 48
+1786324776 48
+1786324781 48
+1786324786 48
 ```
 </details>
 

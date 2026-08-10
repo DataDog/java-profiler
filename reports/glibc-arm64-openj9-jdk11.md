@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk11
 
 ## glibc-arm64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-08-09 21:24:16 EDT
+**Date:** 2026-08-09 21:25:28 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,30 +28,26 @@ title: glibc-arm64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | N/A |
-| Sample Rate | N/A/sec |
-| Health Score | N/A% |
-| Threads | N/A |
-| Allocations | N/A |
+| CPU Samples | 70 |
+| Sample Rate | 1.17/sec |
+| Health Score | 73% |
+| Threads | 8 |
+| Allocations | 54 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | N/A |
-| Sample Rate | N/A/sec |
-| Health Score | N/A% |
-| Threads | N/A |
-| Allocations | N/A |
+| CPU Samples | 8 |
+| Sample Rate | 0.13/sec |
+| Health Score | 8% |
+| Threads | 5 |
+| Allocations | 9 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 34-34 cores)</summary>
 
 ```
-1786324687 34
-1786324692 34
-1786324697 34
-1786324702 34
 1786324707 34
 1786324712 34
 1786324717 34
@@ -68,6 +64,10 @@ title: glibc-arm64-openj9-jdk11
 1786324772 34
 1786324777 34
 1786324782 34
+1786324787 34
+1786324792 34
+1786324797 34
+1786324802 34
 ```
 </details>
 
