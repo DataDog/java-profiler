@@ -10,15 +10,12 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-#include <cstring>
-
+#include "counters.h"
 #include "faultInjection.h"
 #include "safeAccess.h"
 #include "os.h"
-#include "profiler.h"
 #include "threadLocalData.h"
-#include "vmEntry.h"
-#include "hotspot/hotspotSupport.h"
+#include "profiler.h"
 #include "../../main/cpp/gtest_crash_handler.h"
 
 static constexpr char FAULT_INJECTION_TEST_NAME[] = "FaultInjectionTest";
@@ -76,7 +73,7 @@ static void fi_signal_wrapper(int signo, siginfo_t* siginfo, void* context) {
   if (SafeAccess::handle_safefetch(signo, context)) {
     return;  // safefetch load recovered; PC already rewritten to _cont.
   }
-  HotspotSupport::checkFault(ProfiledThread::current());  // siglongjmp if protected
+  Profiler::checkFault(ProfiledThread::current(), siginfo, context);  // siglongjmp if protected
   // Not protected and not a safefetch fault — real crash.
   if (signo == SIGBUS && orig_busHandler != nullptr) {
     orig_busHandler(signo, siginfo, context);
@@ -183,7 +180,9 @@ TEST_F(FaultInjectionTest, WalkVmSigsetjmpRecoversFromInjectedFault) {
   for (int i = 0; i < 5000 && faults == 0; i++) {
     // Raw deref of the (possibly poisoned) base — mirrors walkVM's raw reads.
     uintptr_t v = *(uintptr_t*)INJECT_FAULT_ADDRESS_LIKELY(base);
-    (void)v;
+    // Optimization barrier: tell the compiler `v` is read/write and clobber memory to prevent
+    // reordering/optimizing away the load.
+    asm volatile("" : "+r"(v) : : "memory");
     reads++;
   }
   t->setJmpCtx(nullptr);
@@ -244,13 +243,19 @@ private:
   jvmtiEnv* _orig;
 };
 
-// (d) Value-injection path: PROF-15395 fixed Profiler::checkState() (shared by
-// start()/check(), and therefore also reached by the -agentpath auto-start
-// path) to fail cleanly instead of crashing later when libgcc_s.so.1 can't be
-// loaded. libgcc_s.so.1 is always present in this test environment, so
-// INJECT_FAULT_BOOL_LIKELY on prewarmUnwinder()'s return value is what makes
-// that failure path reachable here: the real dlopen() still runs and
-// succeeds, but the caller is deterministically told it failed.
+// (d) Value-injection path: Profiler::checkState() (shared by start()/check(),
+// and therefore also reached by the -agentpath auto-start path) fails cleanly
+// instead of crashing later when libgcc_s.so.1 can't be loaded. libgcc_s.so.1
+// is always present in this test environment, so INJECT_FAULT_BOOL_LIKELY on
+// prewarmUnwinder()'s return value is what makes that failure path reachable
+// here: the real dlopen() still runs and succeeds, but the caller is
+// deterministically told it failed.
+//
+// checkState() only treats that failure as fatal off musl (see its comment:
+// musl never hits the pthread_exit path that needs libgcc_s.so.1), so on
+// musl an injected failure falls through to the mocked
+// JVMSupport::initialize() failure instead of surfacing "Missing
+// libgcc_s.so.1" -- expect whichever outcome the current libc implies.
 TEST_F(FaultInjectionTest, CheckStateSurfacesInjectedPrewarmUnwinderFailure) {
 #ifdef __linux__
   Profiler* p = Profiler::instance();
@@ -260,6 +265,7 @@ TEST_F(FaultInjectionTest, CheckStateSurfacesInjectedPrewarmUnwinderFailure) {
   ProfilerTestAccessor::setState(p, NEW);
   ProfiledThread::current()->setFiRng(0x5EED5EED5EED5EEDULL);
 
+  const bool prewarmFailureIsFatal = !OS::isMusl();
   bool sawInjectedFailure = false;
   bool sawNonInjectedPrewarm = false;
   // shouldFire() mixes the fixed RNG seed above with an ASLR-dependent
@@ -268,23 +274,50 @@ TEST_F(FaultInjectionTest, CheckStateSurfacesInjectedPrewarmUnwinderFailure) {
   // non-injected call is observed. Keep iterating (and un-latching the ERROR
   // state that every outcome here leaves behind) until both have been seen.
   for (int i = 0; i < 5000 && !(sawInjectedFailure && sawNonInjectedPrewarm); i++) {
+    // shouldFire() increments FAULTS_INJECTED exactly once whenever it fires,
+    // and the only fault-injection site reachable from checkState() is the
+    // INJECT_FAULT_BOOL_LIKELY around prewarmUnwinder()'s dlopen() call --
+    // JVMSupport::initialize() below is a plain mock, not an injection site.
+    // So the counter delta across one checkState() call, not the returned
+    // error message, is the ground truth for whether this iteration actually
+    // took the injected path; that lets the two outcomes be set from
+    // independent evidence instead of both being inferred from one string
+    // compare.
+    long long faultsBefore = Counters::getCounter(FAULTS_INJECTED);
     Error error = p->checkState();
+    bool injectedThisCall = Counters::getCounter(FAULTS_INJECTED) > faultsBefore;
     ASSERT_TRUE((bool)error) << "checkState() must fail here: either the "
                                  "injected prewarmUnwinder() failure or the "
                                  "mocked JVMSupport::initialize() failure";
-    if (std::strcmp(error.message(), "Missing libgcc_s.so.1") == 0) {
-      sawInjectedFailure = true;
+    if (prewarmFailureIsFatal) {
+      if (injectedThisCall) {
+        EXPECT_STREQ("Missing libgcc_s.so.1", error.message());
+        sawInjectedFailure = true;
+      } else {
+        // prewarmUnwinder() succeeded (non-injected, ~99% of calls) and fell
+        // through to the mocked JVMSupport::initialize() failure instead.
+        EXPECT_STREQ("Profiler encountered fatal error", error.message());
+        sawNonInjectedPrewarm = true;
+      }
     } else {
-      // prewarmUnwinder() succeeded (non-injected, ~99% of calls) and fell
-      // through to the mocked JVMSupport::initialize() failure instead.
+      // On musl, checkState() doesn't treat a prewarmUnwinder() failure as
+      // fatal, so both an injected and a non-injected call fall through to
+      // the same mocked JVMSupport::initialize() failure message -- only the
+      // counter delta distinguishes them.
       EXPECT_STREQ("Profiler encountered fatal error", error.message());
-      sawNonInjectedPrewarm = true;
+      if (injectedThisCall) {
+        sawInjectedFailure = true;
+      } else {
+        sawNonInjectedPrewarm = true;
+      }
     }
     ProfilerTestAccessor::setState(p, NEW);
   }
 
-  EXPECT_TRUE(sawInjectedFailure)
-      << "expected at least one injected prewarmUnwinder() failure within 5000 tries";
+  if (prewarmFailureIsFatal) {
+    EXPECT_TRUE(sawInjectedFailure)
+        << "expected at least one injected prewarmUnwinder() failure within 5000 tries";
+  }
   EXPECT_TRUE(sawNonInjectedPrewarm)
       << "expected at least one non-injected prewarmUnwinder() success within 5000 tries";
 #endif // __linux__

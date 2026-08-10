@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler.metadata;
 
 import com.datadoghq.profiler.Platform;
@@ -39,7 +44,7 @@ public class BoundMethodHandleProfilerTest extends AbstractProfilerTest {
         int x = generateBoundMethodHandles(numBoundMethodHandles);
         assertTrue(x != 0);
         stopProfiler();
-        verifyEvents("datadog.MethodSample");
+        verifyEventPresent("datadog.MethodSample");
         Map<String, Long> counters = profiler.getDebugCounters();
         assertFalse(counters.isEmpty(), "profiler debug counters must not be empty after BoundMethodHandle workload");
     }

@@ -16,14 +16,11 @@
 package com.datadoghq.profiler.context;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.common.unit.IQuantity;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -32,12 +29,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>The wall-clock sampler reads context through {@code ContextApi::get}, which returns nothing
  * until the thread is context-initialized (and only then is the {@code otel_thread_ctx_v1} discovery
- * pointer published). Before the fix, that flag was set only by the deprecated DirectByteBuffer path
- * ({@code getThreadContext()} / {@code initializeContextTLS0}); a thread that used only the
- * all-native API ({@code setTraceContext}) wrote a record the sampler silently ignored.
+ * pointer published). {@code setTraceContext} must set that flag itself on first write — a thread
+ * that only ever calls the all-native API must still be visible to the sampler.
  *
- * <p>This test deliberately <em>never</em> calls {@code getThreadContext()} on the sampled thread.
- * If the native write does not initialize TLS, every sample carries spanId 0 and the assertion fails.
+ * <p>If the native write does not initialize TLS, every sample carries spanId 0 and the assertion
+ * fails.
  */
 public class AllNativeContextSamplingTest extends AbstractProfilerTest {
 
@@ -46,7 +42,7 @@ public class AllNativeContextSamplingTest extends AbstractProfilerTest {
 
     @Override
     protected String getProfilerCommand() {
-        // filter=0 samples every thread, so no getThreadContext()/registration is needed.
+        // filter=0 samples every thread, so no extra registration is needed.
         return "wall=1ms,filter=0,loglevel=warn";
     }
 
@@ -54,8 +50,8 @@ public class AllNativeContextSamplingTest extends AbstractProfilerTest {
     public void nativeOnlyContextIsVisibleToSampler() throws Exception {
         Assumptions.assumeTrue(!Platform.isJ9() && !Platform.isZing());
 
-        // Register for wall-clock profiling (addThread(); does NOT touch getThreadContext, so the
-        // all-native-only nature of the test is preserved).
+        // Register for wall-clock profiling (addThread()); the sampled thread never touches
+        // anything but the all-native context API.
         registerCurrentThreadForWallClockProfiling();
 
         // Keep the context live for the whole sampling window; only the all-native path is used.
@@ -68,22 +64,12 @@ public class AllNativeContextSamplingTest extends AbstractProfilerTest {
         profiler.clearTraceContext();
         stopProfiler();
 
-        IItemCollection events = verifyEvents("datadog.MethodSample");
+        JfrEvents events = verifyEvents("datadog.MethodSample");
         boolean found = false;
-        for (IItemIterable samples : events) {
-            IMemberAccessor<IQuantity, IItem> spanIdAccessor = SPAN_ID.getAccessor(samples.getType());
-            IMemberAccessor<IQuantity, IItem> rootSpanIdAccessor = LOCAL_ROOT_SPAN_ID.getAccessor(samples.getType());
-            if (spanIdAccessor == null || rootSpanIdAccessor == null) {
-                continue;
-            }
-            for (IItem sample : samples) {
-                if (spanIdAccessor.getMember(sample).longValue() == EXPECTED_SPAN_ID
-                        && rootSpanIdAccessor.getMember(sample).longValue() == EXPECTED_LOCAL_ROOT_SPAN_ID) {
-                    found = true;
-                    break;
-                }
-            }
-            if (found) {
+        for (JfrEvent sample : events) {
+            if (sample.getLong(SPAN_ID, -1) == EXPECTED_SPAN_ID
+                    && sample.getLong(LOCAL_ROOT_SPAN_ID, -1) == EXPECTED_LOCAL_ROOT_SPAN_ID) {
+                found = true;
                 break;
             }
         }

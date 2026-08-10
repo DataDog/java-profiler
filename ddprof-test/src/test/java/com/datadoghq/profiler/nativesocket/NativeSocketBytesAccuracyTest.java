@@ -1,17 +1,16 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler.nativesocket;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
-import org.openjdk.jmc.common.item.Attribute;
-import org.openjdk.jmc.common.item.IAttribute;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.common.unit.IQuantity;
-import org.openjdk.jmc.common.unit.UnitLookup;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -34,11 +33,6 @@ import static org.junit.jupiter.api.Assertions.*;
  * value.
  */
 public class NativeSocketBytesAccuracyTest extends AbstractProfilerTest {
-
-    private static final IAttribute<IQuantity> DURATION_ATTR =
-            Attribute.attr("duration", "duration", "Duration", UnitLookup.TIMESPAN);
-    private static final IAttribute<IQuantity> WEIGHT_ATTR =
-            Attribute.attr("weight", "weight", "weight", UnitLookup.NUMBER);
 
     @Override
     protected boolean isPlatformSupported() {
@@ -65,27 +59,20 @@ public class NativeSocketBytesAccuracyTest extends AbstractProfilerTest {
 
         stopProfiler();
 
-        IItemCollection events = verifyEvents("datadog.NativeSocketEvent");
+        JfrEvents events = verifyEvents("datadog.NativeSocketEvent");
         assertTrue(events.hasItems(), "No NativeSocketEvent events found");
 
         double scaledDurationNs = 0.0;
         long sendEventCount = 0;
-        for (IItemIterable items : events) {
-            IMemberAccessor<String, IItem> opAccessor = OPERATION.getAccessor(items.getType());
-            IMemberAccessor<IQuantity, IItem> durationAccessor = DURATION_ATTR.getAccessor(items.getType());
-            IMemberAccessor<IQuantity, IItem> weightAccessor = WEIGHT_ATTR.getAccessor(items.getType());
-            if (opAccessor == null || durationAccessor == null || weightAccessor == null) continue;
-            for (IItem item : items) {
-                String op = opAccessor.getMember(item);
-                // Outbound direction: SEND (send syscall) or WRITE (write syscall on socket fd).
-                if ("SEND".equals(op) || "WRITE".equals(op)) {
-                    IQuantity dur = durationAccessor.getMember(item);
-                    IQuantity weight = weightAccessor.getMember(item);
-                    if (dur != null && weight != null) {
-                        double durationNs = dur.doubleValueIn(UnitLookup.NANOSECOND);
-                        scaledDurationNs += durationNs * weight.doubleValue();
-                        sendEventCount++;
-                    }
+        for (JfrEvent item : events) {
+            String op = item.getString(OPERATION);
+            // Outbound direction: SEND (send syscall) or WRITE (write syscall on socket fd).
+            if ("SEND".equals(op) || "WRITE".equals(op)) {
+                Long dur = item.getLong("duration");
+                Double weight = item.getDouble(WEIGHT);
+                if (dur != null && weight != null) {
+                    scaledDurationNs += dur * weight;
+                    sendEventCount++;
                 }
             }
         }

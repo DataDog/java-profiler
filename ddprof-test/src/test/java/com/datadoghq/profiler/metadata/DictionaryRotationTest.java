@@ -16,12 +16,9 @@
 package com.datadoghq.profiler.metadata;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 import org.junit.jupiter.api.Test;
-import org.openjdk.jmc.common.item.IAttribute;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -30,8 +27,6 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.openjdk.jmc.common.item.Attribute.attr;
-import static org.openjdk.jmc.common.unit.UnitLookup.PLAIN_TEXT;
 
 /**
  * Verifies that the dictionary rotate+clearStandby cycle correctly:
@@ -40,9 +35,6 @@ import static org.openjdk.jmc.common.unit.UnitLookup.PLAIN_TEXT;
  * - Accumulates post-dump entries in the new active buffer.
  */
 public class DictionaryRotationTest extends AbstractProfilerTest {
-
-    private static final IAttribute<String> ENDPOINT_ATTR =
-            attr("endpoint", "endpoint", "endpoint", PLAIN_TEXT);
 
     @Test
     public void dumpCycleSeparatesPreAndPostDumpEntries() throws Exception {
@@ -103,15 +95,11 @@ public class DictionaryRotationTest extends AbstractProfilerTest {
         return "wall=~1ms";
     }
 
-    private static Set<String> endpointNames(IItemCollection events) {
+    private static Set<String> endpointNames(JfrEvents events) {
         Set<String> names = new HashSet<>();
-        for (IItemIterable it : events) {
-            IMemberAccessor<String, IItem> accessor = ENDPOINT_ATTR.getAccessor(it.getType());
-            if (accessor == null) continue;
-            for (IItem item : it) {
-                String v = accessor.getMember(item);
-                if (v != null) names.add(v);
-            }
+        for (JfrEvent item : events) {
+            String v = item.getString("endpoint");
+            if (v != null) names.add(v);
         }
         return names;
     }

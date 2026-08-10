@@ -14,24 +14,13 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.TestTemplate;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.openjdk.jmc.common.IMCFrame;
-import org.openjdk.jmc.common.IMCMethod;
-import org.openjdk.jmc.common.IMCStackTrace;
-import org.openjdk.jmc.common.IMCType;
-import org.openjdk.jmc.common.item.Attribute;
-import org.openjdk.jmc.common.item.IAttribute;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
-
-import java.util.List;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
+import com.datadoghq.profiler.JfrFrame;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
-import static org.openjdk.jmc.common.unit.UnitLookup.PLAIN_TEXT;
 
 /**
  * Integration test for remote symbolication feature.
@@ -78,31 +67,22 @@ public class RemoteSymbolicationTest extends CStackAwareAbstractProfilerTest {
 
             // First verify that our test library (libddproftest) has a build-id
             // We use the extended jdk.NativeLibrary event which now includes buildId and loadBias fields
-            IItemCollection libraryEvents = verifyEvents("jdk.NativeLibrary");
+            JfrEvents libraryEvents = verifyEvents("jdk.NativeLibrary");
             String testLibBuildId = null;
             boolean foundTestLib = false;
 
-            // Create attributes for the custom fields we added to jdk.NativeLibrary
-            IAttribute<String> buildIdAttr = Attribute.attr("buildId", "buildId", "GNU Build ID", PLAIN_TEXT);
-            IAttribute<String> nameAttr = Attribute.attr("name", "name", "Name", PLAIN_TEXT);
+            for (JfrEvent libItem : libraryEvents) {
+                String name = libItem.getString("name");
+                String buildId = libItem.getString("buildId");
 
-            for (IItemIterable libItems : libraryEvents) {
-                IMemberAccessor<String, IItem> buildIdAccessor = buildIdAttr.getAccessor(libItems.getType());
-                IMemberAccessor<String, IItem> nameAccessor = nameAttr.getAccessor(libItems.getType());
+                System.out.println("Library: " + name + " -> build-id: " +
+                    (buildId != null && !buildId.isEmpty() ? buildId : "<none>"));
 
-                for (IItem libItem : libItems) {
-                    String name = nameAccessor.getMember(libItem);
-                    String buildId = buildIdAccessor.getMember(libItem);
-
-                    System.out.println("Library: " + name + " -> build-id: " +
-                        (buildId != null && !buildId.isEmpty() ? buildId : "<none>"));
-
-                    // Check if this is our test library
-                    if (name != null && name.contains("libddproftest")) {
-                        foundTestLib = true;
-                        testLibBuildId = buildId;
-                        System.out.println("Found test library: " + name + " with build-id: " + buildId);
-                    }
+                // Check if this is our test library
+                if (name != null && name.contains("libddproftest")) {
+                    foundTestLib = true;
+                    testLibBuildId = buildId;
+                    System.out.println("Found test library: " + name + " with build-id: " + buildId);
                 }
             }
 
@@ -114,7 +94,7 @@ public class RemoteSymbolicationTest extends CStackAwareAbstractProfilerTest {
                 "Test library libddproftest found but has no build-id. "
                 + "Cannot test remote symbolication without build-id.");
 
-            IItemCollection events = verifyEvents("datadog.ExecutionSample");
+            JfrEvents events = verifyEvents("datadog.ExecutionSample");
 
             boolean foundTestLibFrame = false;
             boolean foundTestLibRemoteFrame = false;
@@ -122,68 +102,53 @@ public class RemoteSymbolicationTest extends CStackAwareAbstractProfilerTest {
             int printCount = 0;
             int testLibFrameCount = 0;
 
-            for (IItemIterable cpuSamples : events) {
-                IMemberAccessor<IMCStackTrace, IItem> stackTraceAccessor =
-                    STACK_TRACE.getAccessor(cpuSamples.getType());
+            for (JfrEvent sample : events) {
+                if (!sample.has("stackTrace")) {
+                    continue;
+                }
+                sampleCount++;
 
-                for (IItem sample : cpuSamples) {
-                    IMCStackTrace stackTrace = stackTraceAccessor.getMember(sample);
-                    if (stackTrace == null) {
-                        continue;
+                // Iterate through frames to check for test library frames
+                for (JfrFrame frame : sample.getStackTrace().frames()) {
+                    // Check for jvmtiError in method name
+                    String methodName = frame.methodName();
+                    if (methodName != null && methodName.contains("jvmtiError")) {
+                        fail("Found jvmtiError in frame method name: " + methodName);
                     }
 
-                    sampleCount++;
+                    // Get class name (contains build-id for remote symbolication frames)
+                    String className = frame.className();
 
-                    // Iterate through frames to check for test library frames
-                    List<? extends IMCFrame> frames = stackTrace.getFrames();
+                    // Check if this is a remote symbolication frame from our test library
+                    // Format in JFR: type.name = build-ID (bare, no suffix), method.name = "<remote>"
+                    if (methodName != null && methodName.equals("<remote>") &&
+                        className != null && className.equals(testLibBuildId)) {
+                        foundTestLibRemoteFrame = true;
+                        testLibFrameCount++;
+                        foundTestLibFrame = true;
 
-                    for (IMCFrame frame : frames) {
-                        IMCMethod method = frame.getMethod();
-                        if (method == null) {
-                            continue;
+                        // Print first remote frame for debugging
+                        if (printCount == 0) {
+                            System.out.println("=== First remote symbolication frame ===");
+                            System.out.println("Class: " + className);
+                            System.out.println("Method: " + methodName);
+                            System.out.println("Signature: " + (frame.methodDescriptor() != null ? frame.methodDescriptor() : "null"));
+                            printCount++;
                         }
+                    }
 
-                        // Check for jvmtiError in method name
-                        String methodName = method.getMethodName();
-                        if (methodName != null && methodName.contains("jvmtiError")) {
-                            fail("Found jvmtiError in frame method name: " + methodName);
-                        }
+                    // With remote symbolication, we should see <remote> method names, not resolved symbols
+                    // Log a warning if we find resolved symbols (indicates remote symbolication didn't work for this frame)
+                    if (methodName != null && (methodName.equals("burn_cpu") || methodName.equals("compute_fibonacci"))) {
+                        System.out.println("WARNING: Found resolved symbol instead of remote frame: " + methodName + " (class: " + className + ")");
+                    }
 
-                        // Get class name (contains build-id for remote symbolication frames)
-                        IMCType type = method.getType();
-                        String className = type != null ? type.getFullName() : null;
-
-                        // Check if this is a remote symbolication frame from our test library
-                        // Format in JFR: type.name = build-ID (bare, no suffix), method.name = "<remote>"
-                        if (methodName != null && methodName.equals("<remote>") &&
-                            className != null && className.equals(testLibBuildId)) {
-                            foundTestLibRemoteFrame = true;
-                            testLibFrameCount++;
-                            foundTestLibFrame = true;
-
-                            // Print first remote frame for debugging
-                            if (printCount == 0) {
-                                System.out.println("=== First remote symbolication frame ===");
-                                System.out.println("Class: " + className);
-                                System.out.println("Method: " + methodName);
-                                System.out.println("Signature: " + (method.getFormalDescriptor() != null ? method.getFormalDescriptor() : "null"));
-                                printCount++;
-                            }
-                        }
-
-                        // With remote symbolication, we should see <remote> method names, not resolved symbols
-                        // Log a warning if we find resolved symbols (indicates remote symbolication didn't work for this frame)
-                        if (methodName != null && (methodName.equals("burn_cpu") || methodName.equals("compute_fibonacci"))) {
-                            System.out.println("WARNING: Found resolved symbol instead of remote frame: " + methodName + " (class: " + className + ")");
-                        }
-
-                        // Also count frames with resolved symbols from libddproftest
-                        // (for fallback case or if library name appears in class name)
-                        if ((methodName != null && (methodName.contains("burn_cpu") || methodName.contains("compute_fibonacci"))) ||
-                            (className != null && className.contains("libddproftest"))) {
-                            foundTestLibFrame = true;
-                            // Don't increment testLibFrameCount here to avoid double-counting
-                        }
+                    // Also count frames with resolved symbols from libddproftest
+                    // (for fallback case or if library name appears in class name)
+                    if ((methodName != null && (methodName.contains("burn_cpu") || methodName.contains("compute_fibonacci"))) ||
+                        (className != null && className.contains("libddproftest"))) {
+                        foundTestLibFrame = true;
+                        // Don't increment testLibFrameCount here to avoid double-counting
                     }
                 }
             }

@@ -57,8 +57,7 @@ struct __attribute__((packed)) OtelThreadContextRecord {
     uint8_t  attrs_data[OTEL_MAX_ATTRS_DATA_SIZE];
 };
 static_assert(sizeof(OtelThreadContextRecord) == OTEL_MAX_RECORD_SIZE,
-              "OtelThreadContextRecord size must match OTEL_MAX_RECORD_SIZE (640 bytes); "
-              "update the Java constant ThreadContext.OTEL_MAX_RECORD_SIZE if the struct changes");
+              "OtelThreadContextRecord size must match OTEL_MAX_RECORD_SIZE (640 bytes)");
 
 // OTEP #4947 TLS pointer — MUST appear in dynsym for external profiler discovery
 DLLEXPORT extern thread_local OtelThreadContextRecord* otel_thread_ctx_v1;

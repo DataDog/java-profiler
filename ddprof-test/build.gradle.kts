@@ -43,6 +43,7 @@ dependencies {
   // Test dependencies
   "testCommon"(libs.bundles.testing)
   "testCommon"(libs.bundles.profiler.runtime)
+  "testCommon"(libs.jafar.parser)
   "testCommon"(libs.asm)
 
   // Main/application dependencies

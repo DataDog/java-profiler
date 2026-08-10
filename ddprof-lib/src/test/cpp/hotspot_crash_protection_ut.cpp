@@ -25,12 +25,15 @@
  *   A. ProfiledThread thread-type classification (isJavaThread fast path)
  *   B. Crash-handler nesting depth (ProfiledThread crash handler state)
  *   C. sigjmp_buf chaining across nested/interrupted walkVM() calls
+ *   F. HotspotSupport::walkJavaStack()'s AsyncSampleMutex release on a
+ *      recovered fault
  */
 
 #include <gtest/gtest.h>
 #include "threadLocalData.h"
-#include "hotspot/hotspotSupport.h"
+#include "profiler.h"
 
+#include "asyncSampleMutex.h"
 #include "jvmThread.h"
 #include "safeAccess.h"
 #include "os.h"
@@ -325,7 +328,7 @@ TEST_F(JmpCtxChainingTest, FaultInInnerFrameDoesNotDisturbOuterFrame) {
 }
 
 // ---------------------------------------------------------------------------
-// D. HotspotSupport::checkFault() guard clauses
+// D. Profiler::checkFault() guard clauses
 //
 // This gtest binary has no live JVM attached, so JVMThread is not initialized
 // and the siglongjmp path can't be exercised end-to-end here.
@@ -334,7 +337,7 @@ TEST_F(JmpCtxChainingTest, FaultInInnerFrameDoesNotDisturbOuterFrame) {
 // ---------------------------------------------------------------------------
 
 TEST(CheckFaultGuardTest, NullThreadIsNoop) {
-    HotspotSupport::checkFault(nullptr);  // must not crash
+    Profiler::checkFault(nullptr, nullptr, nullptr);  // must not crash
 }
 
 // ---------------------------------------------------------------------------

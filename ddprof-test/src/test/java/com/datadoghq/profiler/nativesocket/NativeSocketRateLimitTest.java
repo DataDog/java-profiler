@@ -20,14 +20,8 @@ import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
-import org.openjdk.jmc.common.item.Attribute;
-import org.openjdk.jmc.common.item.IAttribute;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.common.unit.IQuantity;
-import org.openjdk.jmc.common.unit.UnitLookup;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -53,9 +47,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 public class NativeSocketRateLimitTest extends AbstractProfilerTest {
 
-    private static final IAttribute<IQuantity> WEIGHT_ATTR =
-            Attribute.attr("weight", "weight", "weight", UnitLookup.NUMBER);
-
     @Override
     protected boolean isPlatformSupported() {
         return Platform.isLinux() && !Platform.isMusl();
@@ -77,23 +68,17 @@ public class NativeSocketRateLimitTest extends AbstractProfilerTest {
 
         stopProfiler();
 
-        IItemCollection events = verifyEvents("datadog.NativeSocketEvent");
+        JfrEvents events = verifyEvents("datadog.NativeSocketEvent");
         assertTrue(events.hasItems(), "No NativeSocketEvent events found");
 
         long eventCount = 0;
         boolean foundWeightAboveOne = false;
 
-        for (IItemIterable items : events) {
-            IMemberAccessor<IQuantity, IItem> weightAccessor =
-                    WEIGHT_ATTR.getAccessor(items.getType());
-            for (IItem item : items) {
-                eventCount++;
-                if (weightAccessor != null) {
-                    IQuantity w = weightAccessor.getMember(item);
-                    if (w != null && w.doubleValue() > 1.0) {
-                        foundWeightAboveOne = true;
-                    }
-                }
+        for (JfrEvent item : events) {
+            eventCount++;
+            Double w = item.getDouble(WEIGHT);
+            if (w != null && w > 1.0) {
+                foundWeightAboveOne = true;
             }
         }
 

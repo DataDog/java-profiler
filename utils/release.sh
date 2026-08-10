@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Copyright 2025, Datadog, Inc
+# Copyright 2026, Datadog, Inc
 
 # Script to trigger the Validated Release workflow using GitHub CLI
 #
@@ -54,13 +54,18 @@ print_info() {
     echo -e "${BLUE}$1${NC}"
 }
 
+trap 'echo ""; print_warning "Interrupted"; exit 130' INT
+
 # Read a single keypress (arrow keys, enter, q) from /dev/tty
 read_key() {
-    local key
-    IFS= read -rsn1 key </dev/tty
+    local key=""
+    if ! IFS= read -rsn1 key </dev/tty; then
+        echo "quit"
+        return
+    fi
 
     if [[ $key == $'\x1b' ]]; then
-        read -rsn2 key </dev/tty
+        read -rsn2 key </dev/tty || true
         case $key in
             '[A') echo "up" ;;
             '[B') echo "down" ;;
@@ -76,9 +81,14 @@ read_key() {
 }
 
 # Function to show interactive release branch picker (for patch releases)
+# Defaults to the most recent branch; older ones are revealed 10 at a time
+# via a "show more" row.
 select_release_branch() {
-    mapfile -t branches < <(git branch -r --list 'origin/release/[0-9]*.[0-9]*._' \
-        | sed 's|[[:space:]]*origin/||' | sort -V 2>/dev/null)
+    branches=()
+    while IFS= read -r line; do
+        branches+=("$line")
+    done < <(git branch -r --list 'origin/release/[0-9]*.[0-9]*._' \
+        | sed 's|[[:space:]]*origin/||' | sort -Vr 2>/dev/null)
 
     if [ ${#branches[@]} -eq 0 ]; then
         print_error "No release branches found matching release/X.Y._" >&2
@@ -93,6 +103,8 @@ select_release_branch() {
 
     local selected=0
     local total=${#branches[@]}
+    local page_size=10
+    local visible=$(( total < page_size ? total : page_size ))
 
     display_branch_menu() {
         clear >&2
@@ -104,13 +116,22 @@ select_release_branch() {
         echo "Use ↑/↓ arrow keys to navigate, Enter to select, 'q' to quit" >&2
         echo "" >&2
 
-        for i in "${!branches[@]}"; do
-            if [ $i -eq $selected ]; then
+        for ((i = 0; i < visible; i++)); do
+            if [ "$i" -eq "$selected" ]; then
                 echo -e "${GREEN}→ ${branches[$i]}${NC}" >&2
             else
                 echo -e "  ${branches[$i]}" >&2
             fi
         done
+
+        if [ "$visible" -lt "$total" ]; then
+            local remaining=$((total - visible))
+            if [ "$selected" -eq "$visible" ]; then
+                echo -e "${GREEN}→ … show more ($remaining remaining)${NC}" >&2
+            else
+                echo -e "  … show more ($remaining remaining)" >&2
+            fi
+        fi
 
         echo "" >&2
         echo -e "${BLUE}═══════════════════════════════════════════════════════════════════════════${NC}" >&2
@@ -119,16 +140,22 @@ select_release_branch() {
     while true; do
         display_branch_menu
         key=$(read_key)
+        local menu_rows=$visible
+        [ "$visible" -lt "$total" ] && menu_rows=$((visible + 1))
         case $key in
             up)
-                [ $selected -gt 0 ] && ((selected--))
+                [ $selected -gt 0 ] && selected=$((selected - 1))
                 ;;
             down)
-                [ $selected -lt $((total - 1)) ] && ((selected++))
+                [ $selected -lt $((menu_rows - 1)) ] && selected=$((selected + 1))
                 ;;
             enter)
-                echo "${branches[$selected]}"
-                return 0
+                if [ "$visible" -lt "$total" ] && [ "$selected" -eq "$visible" ]; then
+                    visible=$(( visible + page_size < total ? visible + page_size : total ))
+                else
+                    echo "${branches[$selected]}"
+                    return 0
+                fi
                 ;;
             quit)
                 echo "" >&2
@@ -144,7 +171,10 @@ select_commit() {
     local branch=$1
 
     # Get last 10 commits with format: SHA | DATE | AUTHOR | MESSAGE
-    mapfile -t commits < <(git log "$branch" -n 10 --pretty=format:"%H|%ar|%an|%s" 2>&1)
+    commits=()
+    while IFS= read -r line; do
+        commits+=("$line")
+    done < <(git log "$branch" -n 10 --pretty=format:"%H|%ar|%an|%s" 2>&1)
 
     if [ ${#commits[@]} -eq 0 ]; then
         print_error "No commits found on branch $branch" >&2
@@ -176,7 +206,7 @@ select_commit() {
             IFS='|' read -r sha date author message <<< "${commits[$i]}"
             local short_sha="${sha:0:8}"
 
-            if [ $i -eq $selected ]; then
+            if [ "$i" -eq "$selected" ]; then
                 echo -e "${GREEN}→ ${short_sha}${NC} ${YELLOW}${date}${NC} ${BLUE}${author:0:20}${NC} ${message:0:60}" >&2
             else
                 echo -e "  ${short_sha} ${date} ${author:0:20} ${message:0:60}" >&2
@@ -245,11 +275,14 @@ Examples:
 
 Release Flow:
   1. Validates inputs and branch rules
-  2. Runs pre-release tests (testDebug + testAsan) unless skipped
-  3. Creates annotated git tag
-  4. Triggers GitLab build pipeline
-  5. GitLab publishes to Maven Central
-  6. GitHub creates release with assets
+  2. For patch: optionally backports pending main PRs to the release branch
+     first (see utils/prepare-patch.sh), then exits for you to merge the
+     backport PR and re-run
+  3. Runs pre-release tests (testDebug + testAsan) unless skipped
+  4. Creates annotated git tag
+  5. Triggers GitLab build pipeline
+  6. GitLab publishes to Maven Central
+  7. GitHub creates release with assets
 
 Branch Rules:
   - major/minor: Must be run from 'main' branch
@@ -349,12 +382,54 @@ else
     fi
 fi
 
+# Ensure origin/$BRANCH exists, and that a local branch of the same name (if
+# one is checked out) isn't stale or carrying unpushed commits, before doing
+# any further work.
+print_info "Checking that $BRANCH is up to date with origin..."
+git fetch --quiet origin "$BRANCH" 2>/dev/null
+ORIGIN_BRANCH_HEAD=$(git rev-parse "origin/$BRANCH" 2>&1) || {
+    print_error "Branch $BRANCH does not exist on origin"
+    exit 1
+}
+if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+    LOCAL_BRANCH_HEAD=$(git rev-parse "$BRANCH")
+    if [ "$LOCAL_BRANCH_HEAD" != "$ORIGIN_BRANCH_HEAD" ]; then
+        print_error "Local branch '$BRANCH' is not up to date with origin/$BRANCH"
+        echo "  Local:  ${LOCAL_BRANCH_HEAD:0:8}"
+        echo "  Origin: ${ORIGIN_BRANCH_HEAD:0:8}"
+        echo ""
+        echo "Update your local branch, e.g.:"
+        echo "  git checkout $BRANCH && git pull --ff-only origin $BRANCH"
+        exit 1
+    fi
+fi
+print_info "$BRANCH is up to date with origin"
+
+# For patch releases, offer to backport pending main PRs onto the release
+# branch before picking a commit to release.
+if [ "$RELEASE_TYPE" == "patch" ]; then
+    echo ""
+    if [ -t 0 ]; then
+        read -p "Pick PRs from main to backport to $BRANCH before releasing? (y/n): " -r </dev/tty
+    else
+        REPLY="n"
+        print_info "No terminal attached; skipping the interactive backport-PR prompt."
+    fi
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        PREPARE_ARGS=(--branch "$BRANCH")
+        [ "$DRY_RUN" == "false" ] && PREPARE_ARGS+=(--no-dry-run)
+        "$(dirname "$0")/prepare-patch.sh" "${PREPARE_ARGS[@]}"
+        print_info "Re-run this script once any prep PR has been merged."
+        exit 0
+    fi
+fi
+
 # Get commit SHA - either from option or interactive selection
 # This happens BEFORE gh authentication check so users can browse commits
 if [ -z "$COMMIT_SHA" ]; then
     print_info "No commit specified. Showing recent commits on branch: $BRANCH"
     echo ""
-    COMMIT_SHA=$(select_commit "$BRANCH")
+    COMMIT_SHA=$(select_commit "origin/$BRANCH")
     clear
     print_info "Commit selected. Validating..."
     echo ""
@@ -378,7 +453,7 @@ print_info "Commit: $SHORT_SHA"
 
 # Verify the commit is on the selected branch
 print_info "Verifying commit is on branch $BRANCH..."
-if ! git merge-base --is-ancestor "$COMMIT_SHA" "$BRANCH" 2>&1; then
+if ! git merge-base --is-ancestor "$COMMIT_SHA" "origin/$BRANCH" 2>&1; then
     print_error "Commit $SHORT_SHA is not on branch '$BRANCH'"
     echo ""
     echo "The selected commit must be part of the branch history."
@@ -444,6 +519,18 @@ if ! echo "$AUTH_STATUS" | grep -q "Logged in"; then
 fi
 print_info "GitHub authentication verified"
 
+REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
+REPO_URL=$(gh repo view --json url --jq '.url')
+VIEWER_PERMISSION=$(gh repo view --json viewerPermission --jq '.viewerPermission')
+case "$VIEWER_PERMISSION" in
+    WRITE|MAINTAIN|ADMIN) ;;
+    *)
+        print_error "Release execution requires write, maintain, or admin access to $REPO"
+        exit 1
+        ;;
+esac
+ACTOR=$(gh api user --jq '.login')
+
 # Branch validation already done earlier (before commit selection)
 
 # Show summary
@@ -478,6 +565,7 @@ fi
 
 echo ""
 print_info "Triggering GitHub Actions workflow..."
+REQUEST_ID="release-$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
 
 # Trigger the workflow
 WORKFLOW_OUTPUT=$(mktemp)
@@ -487,19 +575,29 @@ if gh workflow run release-validated.yml \
     --ref "$BRANCH" \
     --field release_type="$RELEASE_TYPE" \
     --field dry_run="$DRY_RUN" \
-    --field skip_tests="$SKIP_TESTS" > "$WORKFLOW_OUTPUT" 2> "$WORKFLOW_ERROR"; then
+    --field skip_tests="$SKIP_TESTS" \
+    --field request_id="$REQUEST_ID" \
+    --field source_sha="$COMMIT_SHA" > "$WORKFLOW_OUTPUT" 2> "$WORKFLOW_ERROR"; then
 
     WORKFLOW_SUCCESS=true
     echo ""
     print_success "✓ Workflow triggered successfully!"
-    REPO_URL=$(gh repo view --json url -q .url)
 
-    # Wait for the run to appear and capture its ID
+    # Correlate by an unguessable request ID plus actor, branch, and exact source
+    # commit. Never select the merely "latest" release workflow run.
     print_info "Waiting for workflow run to appear..."
     RUN_ID=""
     for i in $(seq 1 15); do
         sleep 2
-        RUN_ID=$(gh run list --workflow=release-validated.yml --limit 1 --json databaseId,status -q '.[0].databaseId // empty')
+        RUN_ID=$(gh api "repos/$REPO/actions/runs?event=workflow_dispatch&per_page=50" \
+            --jq ".workflow_runs
+                | map(select(
+                    (.display_title | contains(\"$REQUEST_ID\")) and
+                    .actor.login == \"$ACTOR\" and
+                    .head_branch == \"$BRANCH\" and
+                    .head_sha == \"$COMMIT_SHA\"
+                ))
+                | if length == 1 then .[0].id else empty end")
         if [ -n "$RUN_ID" ]; then
             break
         fi
@@ -593,7 +691,7 @@ else
     echo ""
     echo "Error Details:"
     if [ -s "$WORKFLOW_ERROR" ]; then
-        cat "$WORKFLOW_ERROR" | sed 's/^/  /'
+        sed 's/^/  /' "$WORKFLOW_ERROR"
     else
         echo "  Unknown error. Check GitHub CLI authentication and repository access."
     fi
@@ -611,7 +709,8 @@ print_info "══════════════════════�
 rm -f "$WORKFLOW_OUTPUT" "$WORKFLOW_ERROR"
 
 # Exit with appropriate code
-if [ "$WORKFLOW_SUCCESS" = true ]; then
+if [ "$WORKFLOW_SUCCESS" = true ] &&
+   [ "${WORKFLOW_CONCLUSION:-unknown}" = "success" ]; then
     exit 0
 else
     exit 1
