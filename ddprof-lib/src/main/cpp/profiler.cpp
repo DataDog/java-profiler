@@ -1477,10 +1477,8 @@ Error Profiler::start(Arguments &args, bool reset) {
     memset(_failures, 0, sizeof(_failures));
 
     // Reset dictionaries. StringDictionary::clearAll() manages its own
-    // synchronisation (RefCountGuard drain). The exclusive _class_map_lock
-    // additionally fences out shared-lock readers introduced by #527
-    // (deferred vtable receiver resolution) so they cannot observe a
-    // half-cleared class map.
+    // synchronisation (RefCountGuard drain) internally; _class_map_lock is
+    // held exclusively here for the duration of the reset.
     {
       ExclusiveLockGuard guard(&_class_map_lock);
       _class_map.clearAll();
@@ -1598,7 +1596,8 @@ Error Profiler::start(Arguments &args, bool reset) {
   // Prepare JVMSupport for execution
   JVMSupport::initExecution(args, VM::jvmti(), VM::jni());
 
-
+  // Must precede the first updateSymbols(): it is what allows LibraryPatcher to
+  // start patching, and the hooks it installs assume a running profiler.
   LibraryPatcher::initialize();
 
   // Kernel symbols are useful only for perf_events without --all-user
@@ -1911,9 +1910,7 @@ Error Profiler::dump(const char *path, const int length) {
     // rotateDictsAndRun rotates the dictionaries, takes lockAll() around the
     // dump (fences ASGCT/JNI writers to CallTraceStorage), then clearStandby()s
     // the rotated buffers.  StringDictionary's RefCountGuard protocol handles
-    // its own writer/reader coordination; #527's classMapSharedGuard readers
-    // (deferred vtable receiver resolution) are coordinated through
-    // _class_map_lock.
+    // its own writer/reader coordination.
     rotateDictsAndRun([&]{
       err = _jfr.dump(path, length);
       __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);

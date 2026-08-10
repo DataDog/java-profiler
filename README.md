@@ -465,6 +465,7 @@ The [`utils/`](utils/) directory contains helper scripts for common workflows. S
 | Script | Description |
 |--------|-------------|
 | `release.sh` | Trigger a validated release (major/minor/patch) via GitHub Actions |
+| `prepare-patch.sh` | Backport a batch of pending main PRs onto a release branch before a patch release |
 | `backport-pr.sh` | Cherry-pick a merged PR onto a release branch and open a backport PR |
 | `patch-dd-java-agent.sh` | Patch `dd-java-agent.jar` with a local ddprof build for quick testing |
 | `run-containers-tests.sh` | Run tests in containers (musl/glibc, multiple JDKs) |
