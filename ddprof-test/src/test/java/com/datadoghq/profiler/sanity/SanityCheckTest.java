@@ -6,50 +6,36 @@
 package com.datadoghq.profiler.sanity;
 
 import com.datadoghq.profiler.AbstractProcessProfilerTest;
-import com.datadoghq.profiler.JavaProfiler;
 import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.Platform;
-import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
+import java.util.Collections;
 
-import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeFalse;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+/**
+ * {@code Profiler::start()}'s sanity-check guard ({@code sanity_checked} in {@code profiler.cpp})
+ * is a function-local static with process lifetime, not reset by {@code profiler.stop()}. Every
+ * test here therefore forks a fresh JVM ({@link #launch}) rather than calling
+ * {@code JavaProfiler.getInstance()} in-process — an in-process test would share that static flag
+ * (and the {@code Profiler} singleton) with every other test in the same test JVM, so whichever
+ * test happens to run first would silently decide the outcome for the rest.
+ */
 public class SanityCheckTest extends AbstractProcessProfilerTest {
 
-    private JavaProfiler profiler;
-    private Path jfrDump;
-
-    private String startCommand(String extra) throws IOException {
+    private Path newJfrPath(String prefix) throws Exception {
         Path rootDir = Paths.get("/tmp/recordings");
         Files.createDirectories(rootDir);
-        jfrDump = Files.createTempFile(rootDir, "sanity-check-test", ".jfr");
-        String base = "start,cpu=10ms,jfr,file=" + jfrDump.toAbsolutePath();
-        return extra == null || extra.isEmpty() ? base : base + "," + extra;
-    }
-
-    @AfterEach
-    void cleanup() throws Exception {
-        if (profiler != null) {
-            try {
-                profiler.stop();
-            } catch (IllegalStateException ignored) {
-                // already stopped or never started
-            }
-        }
-        if (jfrDump != null) {
-            Files.deleteIfExists(jfrDump);
-        }
+        return Files.createTempFile(rootDir, prefix, ".jfr");
     }
 
     /**
@@ -57,8 +43,16 @@ public class SanityCheckTest extends AbstractProcessProfilerTest {
      */
     @Test
     void nosanity_bypasses_checks() throws Exception {
-        profiler = JavaProfiler.getInstance();
-        assertDoesNotThrow(() -> profiler.execute(startCommand("nosanity")));
+        Path jfrDump = newJfrPath("sanity-check-test");
+        try {
+            LaunchResult result = launch("profiler", Collections.emptyList(),
+                    "start,cpu=10ms,jfr,file=" + jfrDump.toAbsolutePath() + ",nosanity",
+                    line -> LineConsumerResult.CONTINUE, line -> LineConsumerResult.CONTINUE);
+            assertTrue(result.inTime, "forked JVM did not exit in time");
+            assertEquals(0, result.exitCode, "forked JVM exited with a non-zero code");
+        } finally {
+            Files.deleteIfExists(jfrDump);
+        }
     }
 
     /**
@@ -66,8 +60,16 @@ public class SanityCheckTest extends AbstractProcessProfilerTest {
      */
     @Test
     void nosanity_explicit_true_bypasses_checks() throws Exception {
-        profiler = JavaProfiler.getInstance();
-        assertDoesNotThrow(() -> profiler.execute(startCommand("nosanity=true")));
+        Path jfrDump = newJfrPath("sanity-check-test");
+        try {
+            LaunchResult result = launch("profiler", Collections.emptyList(),
+                    "start,cpu=10ms,jfr,file=" + jfrDump.toAbsolutePath() + ",nosanity=true",
+                    line -> LineConsumerResult.CONTINUE, line -> LineConsumerResult.CONTINUE);
+            assertTrue(result.inTime, "forked JVM did not exit in time");
+            assertEquals(0, result.exitCode, "forked JVM exited with a non-zero code");
+        } finally {
+            Files.deleteIfExists(jfrDump);
+        }
     }
 
     /**
@@ -76,13 +78,23 @@ public class SanityCheckTest extends AbstractProcessProfilerTest {
      */
     @Test
     void sanity_checks_run_once() throws Exception {
-        profiler = JavaProfiler.getInstance();
-        // First start with nosanity to guarantee success regardless of host resources.
-        profiler.execute(startCommand("nosanity"));
-        profiler.stop();
-        // Second start (without nosanity) must not fail due to re-running checks — the
-        // static guard in the native layer ensures they only fire on the first invocation.
-        assertDoesNotThrow(() -> profiler.execute(startCommand(null)));
+        Path jfrDump1 = newJfrPath("sanity-check-test");
+        Path jfrDump2 = newJfrPath("sanity-check-test");
+        try {
+            // First start with nosanity to guarantee success regardless of host resources.
+            // Second start (without nosanity) must not fail due to re-running checks — the
+            // static guard in the native layer ensures they only fire on the first invocation.
+            String sequence = "start,cpu=10ms,jfr,file=" + jfrDump1.toAbsolutePath() + ",nosanity"
+                    + ";STOP;"
+                    + "start,cpu=10ms,jfr,file=" + jfrDump2.toAbsolutePath();
+            LaunchResult result = launch("profiler-sequence", Collections.emptyList(), sequence,
+                    line -> LineConsumerResult.CONTINUE, line -> LineConsumerResult.CONTINUE);
+            assertTrue(result.inTime, "forked JVM did not exit in time");
+            assertEquals(0, result.exitCode, "forked JVM exited with a non-zero code");
+        } finally {
+            Files.deleteIfExists(jfrDump1);
+            Files.deleteIfExists(jfrDump2);
+        }
     }
 
     /**

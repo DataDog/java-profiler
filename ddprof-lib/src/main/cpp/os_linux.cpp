@@ -818,6 +818,12 @@ static int walkCgroupV2CpuMillicores(char* path) {
 // Walks ancestors the same way as walkCgroupV2CpuMillicores(), but reads
 // the cgroup v1 CPU controller's separate quota and period files instead
 // of a single "cpu.max".
+//
+// "/sys/fs/cgroup/cpu" assumes the systemd-created "cpu -> cpu,cpuacct"
+// compatibility symlink; /proc/self/cgroup only confirms that "cpu" is a
+// controller token, not the real mount directory name. On a non-systemd
+// runtime without that symlink this falls through to "unconstrained"
+// instead of finding the real quota.
 static int walkCgroupV1CpuMillicores(char* path) {
     size_t base_len = strlen("/sys/fs/cgroup/cpu");
     int best = -1;
@@ -886,6 +892,7 @@ int OS::getCgroupCpuMillicores() {
     }
 
     // Fall back to cgroup v1, likewise resolved from the process's own path.
+    // See walkCgroupV1CpuMillicores() for the systemd-symlink assumption this base path makes.
     if (getOwnCgroupPath("cpu", subpath, sizeof(subpath))) {
         const char* base = "/sys/fs/cgroup/cpu";
         size_t base_len = strlen(base);
