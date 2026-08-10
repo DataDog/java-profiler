@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk8
 
 ## glibc-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-08-10 11:46:28 EDT
+**Date:** 2026-08-10 14:37:46 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,19 +28,19 @@ title: glibc-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 196 |
-| Sample Rate | 3.27/sec |
-| Health Score | 204% |
-| Threads | 6 |
+| CPU Samples | 169 |
+| Sample Rate | 2.82/sec |
+| Health Score | 176% |
+| Threads | 7 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 349 |
-| Sample Rate | 5.82/sec |
-| Health Score | 364% |
+| CPU Samples | 205 |
+| Sample Rate | 3.42/sec |
+| Health Score | 214% |
 | Threads | 8 |
 | Allocations | 0 |
 
@@ -48,26 +48,26 @@ title: glibc-x64-hotspot-jdk8
 <summary>CPU Timeline (1 unique values: 6-6 cores)</summary>
 
 ```
-1786376366 6
-1786376371 6
-1786376376 6
-1786376381 6
-1786376386 6
-1786376391 6
-1786376396 6
-1786376401 6
-1786376406 6
-1786376411 6
-1786376416 6
-1786376421 6
-1786376426 6
-1786376431 6
-1786376436 6
-1786376441 6
-1786376446 6
-1786376451 6
-1786376456 6
-1786376461 6
+1786386804 6
+1786386809 6
+1786386814 6
+1786386819 6
+1786386824 6
+1786386829 6
+1786386834 6
+1786386839 6
+1786386844 6
+1786386849 6
+1786386854 6
+1786386859 6
+1786386864 6
+1786386869 6
+1786386874 6
+1786386879 6
+1786386884 6
+1786386889 6
+1786386894 6
+1786386899 6
 ```
 </details>
 
