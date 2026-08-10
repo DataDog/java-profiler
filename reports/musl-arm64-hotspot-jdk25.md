@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk25
 
 ## musl-arm64-hotspot-jdk25 - ✅ PASS
 
-**Date:** 2026-08-09 21:23:20 EDT
+**Date:** 2026-08-09 21:24:18 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,30 +28,26 @@ title: musl-arm64-hotspot-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 107 |
-| Sample Rate | 1.78/sec |
-| Health Score | 111% |
-| Threads | 7 |
-| Allocations | 59 |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 311 |
-| Sample Rate | 5.18/sec |
-| Health Score | 324% |
-| Threads | 14 |
-| Allocations | 135 |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
 <details>
 <summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
 
 ```
-1786324649 64
-1786324654 64
-1786324659 64
-1786324664 64
 1786324669 64
 1786324674 64
 1786324679 64
@@ -68,6 +64,10 @@ title: musl-arm64-hotspot-jdk25
 1786324734 64
 1786324739 64
 1786324744 64
+1786324749 64
+1786324754 64
+1786324759 64
+1786324764 64
 ```
 </details>
 

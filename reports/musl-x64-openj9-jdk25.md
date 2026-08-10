@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk25
 
 ## musl-x64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-08-09 21:23:22 EDT
+**Date:** 2026-08-09 21:24:19 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 399 |
-| Sample Rate | 6.65/sec |
-| Health Score | 416% |
-| Threads | 8 |
-| Allocations | 398 |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 512 |
-| Sample Rate | 8.53/sec |
-| Health Score | 533% |
-| Threads | 8 |
-| Allocations | 506 |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
 <details>
 <summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
-1786324641 48
-1786324646 48
-1786324651 48
-1786324656 48
-1786324661 48
-1786324666 48
-1786324671 48
-1786324676 48
-1786324681 48
-1786324686 48
-1786324691 48
-1786324696 48
-1786324701 48
-1786324706 48
-1786324711 48
-1786324716 48
-1786324721 48
-1786324726 48
-1786324731 48
-1786324736 48
+1786324678 48
+1786324683 48
+1786324688 48
+1786324693 48
+1786324698 48
+1786324703 48
+1786324708 48
+1786324713 48
+1786324718 48
+1786324723 48
+1786324728 48
+1786324733 48
+1786324738 48
+1786324743 48
+1786324748 48
+1786324753 48
+1786324758 48
+1786324763 48
+1786324768 48
+1786324773 48
 ```
 </details>
 

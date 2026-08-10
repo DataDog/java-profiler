@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk8
 
 ## glibc-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-08-09 21:23:20 EDT
+**Date:** 2026-08-09 21:24:17 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 157 |
-| Sample Rate | 2.62/sec |
-| Health Score | 164% |
+| CPU Samples | 180 |
+| Sample Rate | 3.00/sec |
+| Health Score | 188% |
 | Threads | 5 |
 | Allocations | 0 |
 
@@ -38,9 +38,9 @@ title: glibc-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 428 |
-| Sample Rate | 7.13/sec |
-| Health Score | 446% |
+| CPU Samples | 418 |
+| Sample Rate | 6.97/sec |
+| Health Score | 436% |
 | Threads | 10 |
 | Allocations | 0 |
 
@@ -48,26 +48,26 @@ title: glibc-x64-hotspot-jdk8
 <summary>CPU Timeline (1 unique values: 38-38 cores)</summary>
 
 ```
-1786324633 38
-1786324638 38
-1786324643 38
-1786324648 38
-1786324653 38
-1786324658 38
-1786324663 38
-1786324668 38
-1786324673 38
-1786324678 38
-1786324683 38
-1786324688 38
-1786324693 38
-1786324698 38
-1786324703 38
-1786324708 38
-1786324713 38
-1786324718 38
-1786324723 38
-1786324728 38
+1786324662 38
+1786324667 38
+1786324672 38
+1786324677 38
+1786324682 38
+1786324687 38
+1786324692 38
+1786324697 38
+1786324702 38
+1786324707 38
+1786324712 38
+1786324717 38
+1786324722 38
+1786324727 38
+1786324732 38
+1786324737 38
+1786324742 38
+1786324747 38
+1786324752 38
+1786324757 38
 ```
 </details>
 

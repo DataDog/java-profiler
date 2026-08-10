@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk25
 
 ## glibc-x64-hotspot-jdk25 - ✅ PASS
 
-**Date:** 2026-08-09 21:23:20 EDT
+**Date:** 2026-08-09 21:24:17 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 424 |
-| Sample Rate | 7.07/sec |
-| Health Score | 442% |
-| Threads | 8 |
-| Allocations | 364 |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 519 |
-| Sample Rate | 8.65/sec |
-| Health Score | 541% |
-| Threads | 10 |
-| Allocations | 490 |
+| CPU Samples | N/A |
+| Sample Rate | N/A/sec |
+| Health Score | N/A% |
+| Threads | N/A |
+| Allocations | N/A |
 
 <details>
 <summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
-1786324662 48
-1786324667 48
-1786324672 48
-1786324677 48
-1786324682 48
-1786324687 48
-1786324692 48
-1786324697 48
-1786324702 48
-1786324707 48
-1786324712 48
-1786324717 48
-1786324722 48
-1786324727 48
-1786324732 48
-1786324737 48
-1786324742 48
-1786324747 48
-1786324752 48
-1786324757 48
+1786324673 48
+1786324678 48
+1786324683 48
+1786324688 48
+1786324693 48
+1786324698 48
+1786324703 48
+1786324708 48
+1786324713 48
+1786324718 48
+1786324723 48
+1786324728 48
+1786324733 48
+1786324738 48
+1786324743 48
+1786324748 48
+1786324753 48
+1786324758 48
+1786324763 48
+1786324768 48
 ```
 </details>
 
