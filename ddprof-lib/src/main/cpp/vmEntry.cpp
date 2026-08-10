@@ -633,16 +633,14 @@ void JNICALL VM::ClassPrepare(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread,
 void JNICALL VM::ClassLoad(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                                 jclass klass) {
   // Needed only for AsyncGetCallTrace support
-  ProfiledThread* thr = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(thr != nullptr);
+  ProfiledThread::initCurrentThreadSignalSafe();
 }
 
 
 void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
     ready(jvmti, jni);
 
-    ProfiledThread* thr = ProfiledThread::initCurrentThreadSignalSafe();
-    assert(thr != nullptr);
+    ProfiledThread::initCurrentThreadSignalSafe();
 
   // initialize the heap usage tracking only after the VM is ready
     HeapUsage::initJMXUsage(VM::jni());

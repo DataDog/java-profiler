@@ -94,8 +94,7 @@ Java_com_datadoghq_profiler_JavaProfiler_init0(JNIEnv *env, jclass unused) {
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_stop0(JNIEnv *env, jobject unused) {
   // Attach ProfiledThread
-  ProfiledThread* current =  ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
+  ProfiledThread::initCurrentThreadSignalSafe();
   Error error = Profiler::instance()->stop();
 
   if (error) {
@@ -131,8 +130,7 @@ Java_com_datadoghq_profiler_JavaProfiler_execute0(JNIEnv *env, jobject unused,
   std::ostringstream out;
 
   // Attach ProfiledThread
-  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
+  ProfiledThread::initCurrentThreadSignalSafe();
 
   error = Profiler::instance()->runInternal(args, out);
   if (!error) {
@@ -153,8 +151,7 @@ Java_com_datadoghq_profiler_JavaProfiler_getStatus0(JNIEnv* env,
                                                     jclass unused) {
   char msg[2048];
   // Attach ProfiledThread
-  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
+  ProfiledThread::initCurrentThreadSignalSafe();
 
   Profiler::instance()->status((char*)msg, sizeof(msg) - 1);
   return env->NewStringUTF(msg);
@@ -164,8 +161,7 @@ extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
                                                     jclass unused) {
   // Attach ProfiledThread
-  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
+  ProfiledThread::initCurrentThreadSignalSafe();
 
   return (jlong)Profiler::instance()->total_samples();
 }
@@ -254,8 +250,7 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
   JniString endpoint_str(env, endpoint);
 
   // Initialize thread TLS if it has not yet done
-  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
+  ProfiledThread::initCurrentThreadSignalSafe();
 
   u32 endpointLabel = Profiler::instance()->stringLabelMap()->bounded_lookup(
       endpoint_str.c_str(), endpoint_str.length(), sizeLimit);
@@ -279,8 +274,7 @@ extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_dump0(JNIEnv *env, jclass unused,
                                                jstring path) {
   // Initialize thread TLS if it has not yet done
-  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
+  ProfiledThread::initCurrentThreadSignalSafe();
 
   JniString path_str(env, path);
   Profiler::instance()->dump(path_str.c_str(), path_str.length());
@@ -302,8 +296,7 @@ Java_com_datadoghq_profiler_JavaProfiler_describeDebugCounters0(
     JNIEnv *env, jclass unused) {
 #ifdef COUNTERS
   // Initialize thread TLS if it has not yet done
-  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
+  ProfiledThread::initCurrentThreadSignalSafe();
 
   std::vector<const char *> counter_names = Counters::describeCounters();
   jobjectArray array = (jobjectArray)env->NewObjectArray(
@@ -324,9 +317,13 @@ Java_com_datadoghq_profiler_JavaProfiler_recordSettingEvent0(
     JNIEnv *env, jclass unused, jstring name, jstring value, jstring unit) {
   // Initialize thread TLS if it has not yet done
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
+  int tid;
+  if (current != nullptr) {
+    tid = current->tid();
+  } else {
+    tid = OS::threadId();
+  }
 
-  int tid = ProfiledThread::currentTid();
   if (tid < 0) {
     return;
   }
@@ -353,12 +350,14 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
 
   // Initialize thread TLS if it has not yet done
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
 
-  int tid = ProfiledThread::currentTid();
-  if (tid < 0) {
-    return;
+  int tid;
+  if (current != nullptr) {
+    tid = current->tid();
+  } else {
+    tid = OS::threadId();
   }
+
   int origin_tid = JVMThread::nativeThreadId(env, origin);
   if (origin_tid < 0) {
     return;
@@ -390,7 +389,9 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) {
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
+  if (current == nullptr) {
+    return;
+  }
 
   bool first_park = current->parkEnter();
   ThreadFilter *tf = Profiler::instance()->threadFilter();
@@ -407,7 +408,9 @@ extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
     JNIEnv *env, jclass unused, jlong blocker, jlong unblockingSpanId) {
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
+  if (current == nullptr) {
+    return;
+  }
 
   u64 park_block_token = 0;
   if (!current->parkExit(park_block_token) || park_block_token == 0) {
@@ -435,7 +438,9 @@ extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
     JNIEnv *env, jclass unused, jint state) {
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
+  if (current == nullptr) {
+    return 0;
+  }
 
   OSThreadState decoded;
   if (!decodeJavaBlockState(state, decoded)) {
@@ -456,7 +461,9 @@ extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
     JNIEnv *env, jclass unused, jlong token) {
    ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
+  if (current == nullptr) {
+    return;
+  }
 
   u64 block_token = static_cast<u64>(token);
   if (block_token == 0) {
@@ -475,8 +482,7 @@ Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_currentTicks0(JNIEnv *env,
                                                        jclass unused) {
-  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
+  ProfiledThread::initCurrentThreadSignalSafe();
 
   return TSC::ticks();
 }
@@ -484,8 +490,7 @@ Java_com_datadoghq_profiler_JavaProfiler_currentTicks0(JNIEnv *env,
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_tscFrequency0(JNIEnv *env,
                                                        jclass unused) {
-  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
+  ProfiledThread::initCurrentThreadSignalSafe();
   return TSC::frequency();
 }
 
@@ -493,8 +498,7 @@ extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_mallocArenaMax0(JNIEnv *env,
                                                          jclass unused,
                                                          jint maxArenas) {
-  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
+  ProfiledThread::initCurrentThreadSignalSafe();
   OS::mallocArenaMax(maxArenas);
 }
 
@@ -502,9 +506,8 @@ extern "C" DLLEXPORT jstring JNICALL
 Java_com_datadoghq_profiler_JVMAccess_findStringJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
-  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
-
+  ProfiledThread::initCurrentThreadSignalSafe();
+ 
   JniString flag_str(env, flagName);
   VMFlag *f = VMFlag::find(flag_str.c_str(), {VMFlag::Type::String, VMFlag::Type::Stringlist});
   if (f) {
@@ -521,9 +524,8 @@ Java_com_datadoghq_profiler_JVMAccess_setStringJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName,
                                                          jstring flagValue) {
-  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
-
+  ProfiledThread::initCurrentThreadSignalSafe();
+ 
   JniString flag_str(env, flagName);
   JniString value_str(env, flagValue);
   VMFlag *f = VMFlag::find(flag_str.c_str(), {VMFlag::Type::String, VMFlag::Type::Stringlist});
@@ -539,9 +541,8 @@ extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JVMAccess_findBooleanJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
-  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
-
+  ProfiledThread::initCurrentThreadSignalSafe();
+ 
   JniString flag_str(env, flagName);
   VMFlag *f = VMFlag::find(flag_str.c_str(), {VMFlag::Type::Bool});
   if (f) {
@@ -558,9 +559,8 @@ Java_com_datadoghq_profiler_JVMAccess_setBooleanJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName,
                                                          jboolean flagValue) {
-  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
-
+  ProfiledThread::initCurrentThreadSignalSafe();
+ 
   JniString flag_str(env, flagName);
   VMFlag *f = VMFlag::find(flag_str.c_str(), {VMFlag::Type::Bool});
   if (f) {
@@ -575,9 +575,8 @@ extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JVMAccess_findIntJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
-  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
-
+  ProfiledThread::initCurrentThreadSignalSafe();
+ 
   JniString flag_str(env, flagName);
   VMFlag *f = VMFlag::find(flag_str.c_str(), {VMFlag::Type::Int, VMFlag::Type::Uint, VMFlag::Type::Intx, VMFlag::Type::Uintx, VMFlag::Type::Uint64_t, VMFlag::Type::Size_t});
   if (f) {
@@ -593,9 +592,8 @@ extern "C" DLLEXPORT jdouble JNICALL
 Java_com_datadoghq_profiler_JVMAccess_findFloatJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
-  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
-
+  ProfiledThread::initCurrentThreadSignalSafe();
+ 
   JniString flag_str(env, flagName);
   VMFlag *f = VMFlag::find(flag_str.c_str(),{ VMFlag::Type::Double});
   if (f) {
@@ -610,9 +608,8 @@ Java_com_datadoghq_profiler_JVMAccess_findFloatJVMFlag0(JNIEnv *env,
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JVMAccess_healthCheck0(JNIEnv *env,
                                                          jobject unused) {
-  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
-
+  ProfiledThread::initCurrentThreadSignalSafe();
+ 
   return true;
 }
 
@@ -627,9 +624,8 @@ Java_com_datadoghq_profiler_OTelContext_setProcessCtx0(JNIEnv *env,
                                                          jstring tracer_version,
                                                          jobjectArray attribute_keys
                                                         ) {
-  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
-
+  ProfiledThread::initCurrentThreadSignalSafe();
+ 
   JniString env_str(env, env_data);
   JniString hostname_str(env, hostname);
   JniString runtime_id_str(env, runtime_id);
@@ -704,9 +700,8 @@ Java_com_datadoghq_profiler_OTelContext_setProcessCtx0(JNIEnv *env,
 extern "C" DLLEXPORT jobject JNICALL
 Java_com_datadoghq_profiler_OTelContext_readProcessCtx0(JNIEnv *env, jclass unused) {
 #ifndef OTEL_PROCESS_CTX_NO_READ
-  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(current != nullptr && "Out of order initialization");
-
+ ProfiledThread::initCurrentThreadSignalSafe();
+ 
   otel_process_ctx_read_result result = otel_process_ctx_read();
 
   if (!result.success) {
@@ -903,7 +898,9 @@ Java_com_datadoghq_profiler_JavaProfiler_setTraceContext0(JNIEnv* env, jclass un
     jlong localRootSpanId, jlong spanId, jlong traceIdHigh, jlong traceIdLow,
     jint slot0, jint enc0, jbyteArray utf0, jint slot1, jint enc1, jbyteArray utf1) {
   ProfiledThread *thrd = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(thrd != nullptr && "Out of order initialization");
+  if (thrd == nullptr) {
+    return;
+  }
 
   // Contract: this is the activation path and requires a non-zero span; clearing is
   // clearTraceContext0. The public setTraceContext wrapper enforces this by throwing
@@ -957,8 +954,10 @@ Java_com_datadoghq_profiler_JavaProfiler_setTraceContext0(JNIEnv* env, jclass un
 // detached (valid=0).
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_clearTraceContext0(JNIEnv* env, jclass unused) {
-  ProfiledThread *thrd = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(thrd != nullptr && "Out of order initialization");
+  ProfiledThread* thrd = ProfiledThread::initCurrentThreadSignalSafe();
+  if (thrd == nullptr) {
+    return;
+  }
 
   OtelThreadContextRecord* record = thrd->getOtelContextRecord();
   u32* enc = thrd->getOtelTagEncodingsPtr();
@@ -982,9 +981,8 @@ extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_setContextValue0(JNIEnv* env, jclass unused,
     jint slot, jint encoding, jbyteArray utf8) {
   ProfiledThread *thrd = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(thrd != nullptr && "Out of order initialization");
-
-  if (slot < 0 || slot >= (jint)DD_TAGS_CAPACITY) {
+  
+  if (thrd == nullptr || slot < 0 || slot >= (jint)DD_TAGS_CAPACITY) {
     return JNI_FALSE;
   }
   // See setTraceContext0: publish the OTEP TLS pointer on first native write so the sampler and
@@ -1023,11 +1021,11 @@ Java_com_datadoghq_profiler_JavaProfiler_setContextValue0(JNIEnv* env, jclass un
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_clearContextValue0(JNIEnv* env, jclass unused, jint slot) {
   ProfiledThread *thrd = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(thrd != nullptr && "Out of order initialization");
 
-  if (slot < 0 || slot >= (jint)DD_TAGS_CAPACITY) {
+  if (thrd == nullptr || slot < 0 || slot >= (jint)DD_TAGS_CAPACITY) {
     return;
   }
+
   OtelThreadContextRecord* record = thrd->getOtelContextRecord();
   u32* enc = thrd->getOtelTagEncodingsPtr();
 
@@ -1050,12 +1048,10 @@ Java_com_datadoghq_profiler_JavaProfiler_clearContextValue0(JNIEnv* env, jclass 
 // record directly via ProfiledThread::current() without mutating it. Introspection / test use.
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_copyContextTags0(JNIEnv* env, jclass unused, jintArray out) {
-  if (out == nullptr) {
+  ProfiledThread* thrd = ProfiledThread::initCurrentThreadSignalSafe();
+  if (thrd == nullptr || out == nullptr) {
     return;
   }
-
-  ProfiledThread *thrd = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(thrd != nullptr && "Out of order initialization");
 
   jint len = env->GetArrayLength(out);
   int n = len < (jint)DD_TAGS_CAPACITY ? (int)len : (int)DD_TAGS_CAPACITY;
@@ -1075,9 +1071,8 @@ Java_com_datadoghq_profiler_JavaProfiler_copyContextTags0(JNIEnv* env, jclass un
 
 extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_ContextValueCache_registerConstant0(JNIEnv* env, jclass unused, jstring value) {
-  ProfiledThread *thrd = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(thrd != nullptr && "Out of order initialization");
-
+  ProfiledThread::initCurrentThreadSignalSafe();
+ 
   JniString value_str(env, value);
   u32 encoding = Profiler::instance()->contextValueMap()->bounded_lookup(
       value_str.c_str(), value_str.length(), 1 << 16);
@@ -1088,9 +1083,8 @@ Java_com_datadoghq_profiler_ContextValueCache_registerConstant0(JNIEnv* env, jcl
 // MAX_CONTEXT_SLOTS constant has not drifted from DD_TAGS_CAPACITY (see MaxContextSlotsTest).
 extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_maxContextSlots0(JNIEnv* env, jclass unused) {
-  ProfiledThread *thrd = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(thrd != nullptr && "Out of order initialization");
-
+  ProfiledThread::initCurrentThreadSignalSafe();
+ 
   return (jint)DD_TAGS_CAPACITY;
 }
 
@@ -1101,18 +1095,16 @@ Java_com_datadoghq_profiler_JavaProfiler_maxContextSlots0(JNIEnv* env, jclass un
 // re-parsing in Java.
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_consumeContextDictionaryReset0(JNIEnv* env, jclass unused) {
-  ProfiledThread *thrd = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(thrd != nullptr && "Out of order initialization");
-
+  ProfiledThread::initCurrentThreadSignalSafe();
+ 
   return Profiler::instance()->consumeContextValueDictReset() ? JNI_TRUE : JNI_FALSE;
 }
 
 // ---- test and debug utilities
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_testlog(JNIEnv* env, jclass unused, jstring msg) {
-  ProfiledThread *thrd = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(thrd != nullptr && "Out of order initialization");
-
+  ProfiledThread::initCurrentThreadSignalSafe();
+ 
   JniString msg_str(env, msg);
 
   TEST_LOG("%s", msg_str.c_str());
@@ -1120,9 +1112,8 @@ Java_com_datadoghq_profiler_JavaProfiler_testlog(JNIEnv* env, jclass unused, jst
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_dumpContext(JNIEnv* env, jclass unused) {
-  ProfiledThread *thrd = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(thrd != nullptr && "Out of order initialization");
-
+  ProfiledThread::initCurrentThreadSignalSafe();
+ 
   u64 spanId = 0, rootSpanId = 0;
   ContextApi::get(spanId, rootSpanId);
   TEST_LOG("===> Context: tid:%lu, spanId=%lu, rootSpanId=%lu", OS::threadId(), spanId, rootSpanId);
@@ -1134,8 +1125,10 @@ Java_com_datadoghq_profiler_JavaProfiler_dumpContext(JNIEnv* env, jclass unused)
 
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_testGetSpanId0(JNIEnv* env, jclass unused) {
-  ProfiledThread *thrd = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(thrd != nullptr && "Out of order initialization");
+  ProfiledThread* thrd = ProfiledThread::initCurrentThreadSignalSafe();
+  if (thrd == nullptr) {
+    return 0;
+  }
 
   OtelThreadContextRecord* record = thrd->getOtelContextRecord();
   uint64_t beSpan;
@@ -1145,9 +1138,10 @@ Java_com_datadoghq_profiler_JavaProfiler_testGetSpanId0(JNIEnv* env, jclass unus
 
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_testGetRootSpanId0(JNIEnv* env, jclass unused) {
-  ProfiledThread *thrd = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(thrd != nullptr && "Out of order initialization");
-
+  ProfiledThread* thrd = ProfiledThread::initCurrentThreadSignalSafe();
+  if (thrd == nullptr) {
+    return 0;
+  }
   u32* enc = thrd->getOtelTagEncodingsPtr();
   u64* lrs = reinterpret_cast<u64*>(enc + DD_TAGS_CAPACITY);
   return (jlong)*lrs;
@@ -1155,8 +1149,10 @@ Java_com_datadoghq_profiler_JavaProfiler_testGetRootSpanId0(JNIEnv* env, jclass 
 
 extern "C" DLLEXPORT jstring JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_testReadTraceId0(JNIEnv* env, jclass unused) {
-  ProfiledThread *thrd = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(thrd != nullptr && "Out of order initialization");
+  ProfiledThread* thrd = ProfiledThread::initCurrentThreadSignalSafe();
+  if(thrd == nullptr) {
+    return nullptr;
+  }
 
   OtelThreadContextRecord* record = thrd->getOtelContextRecord();
   static const char HEXD[16] =
@@ -1174,8 +1170,7 @@ Java_com_datadoghq_profiler_JavaProfiler_testReadTraceId0(JNIEnv* env, jclass un
 extern "C" DLLEXPORT jstring JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_testReadContextAttribute0(JNIEnv* env, jclass unused, jint slot) {
   ProfiledThread *thrd = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(thrd != nullptr && "Out of order initialization");
-  if (slot < 0 || slot >= (jint)DD_TAGS_CAPACITY) {
+  if (thrd == nullptr || slot < 0 || slot >= (jint)DD_TAGS_CAPACITY) {
     return nullptr;
   }
 
@@ -1203,9 +1198,10 @@ Java_com_datadoghq_profiler_JavaProfiler_testReadContextAttribute0(JNIEnv* env, 
 
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_testIsContextValid0(JNIEnv* env, jclass unused) {
-  ProfiledThread *thrd = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(thrd != nullptr && "Out of order initialization");
-
+  ProfiledThread* thrd = ProfiledThread::initCurrentThreadSignalSafe();
+  if (thrd == nullptr) {
+    return JNI_FALSE;
+  }
   OtelThreadContextRecord* record = thrd->getOtelContextRecord();
   return __atomic_load_n(&record->valid, __ATOMIC_ACQUIRE) ? JNI_TRUE : JNI_FALSE;
 }
