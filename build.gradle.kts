@@ -1,29 +1,17 @@
 import java.net.URI
 
-buildscript {
-  dependencies {
-    classpath("com.dipien:semantic-version-gradle-plugin:2.0.0")
-  }
-  repositories {
-    val mavenRepositoryProxy = providers.gradleProperty("mavenRepositoryProxy").orNull
-    mavenLocal()
-    if (mavenRepositoryProxy != null) {
-      maven { url = uri(mavenRepositoryProxy) }
-    }
-    mavenCentral()
-    gradlePluginPortal()
-  }
-}
-
 plugins {
   id("io.github.gradle-nexus.publish-plugin") version "2.0.0"
   id("com.datadoghq.native-root")
 }
 
-version = "1.49.0-SNAPSHOT"
+// Compute version from git tags at configuration time.
+// See doc/Versioning/TagBasedVersioning.md for the version computation rules.
+val computedVersion = providers.exec {
+  commandLine(rootProject.layout.projectDirectory.file("utils/compute-version.sh").asFile.absolutePath)
+}.standardOutput.asText.get().trim()
 
-apply(plugin = "com.dipien.semantic-version")
-version = findProperty("ddprof_version") as? String ?: version
+version = findProperty("ddprof_version") as? String ?: computedVersion
 
 allprojects {
   repositories {
