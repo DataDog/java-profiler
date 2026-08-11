@@ -201,6 +201,8 @@ void HotspotSupport::fillJavaFrame(ASGCT_CallFrame& frame, FrameTypeId type, int
     } else if (method_id != nullptr) {
         fillFrame(frame, type, bci, method_id);
     } else {
+        // Unreachable: id(), validatedId(), and getMethodId() all return
+        // JMETHODID_NOT_WALKABLE on failure, never nullptr. Kept as a guard.
         NO_INJECTION_ASSERT(method != nullptr);
         fillFrameRaw(frame, type, bci, method);
     }
@@ -1395,9 +1397,9 @@ bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jcl
 jmethodID HotspotSupport::resolve(const void* method) {
   assert(VM::isHotspot());
   NO_INJECTION_ASSERT(method != nullptr);
-  // We packed not walkable method as a raw pointer,
-  // map it back to nullptr, as JMETHODID_NOT_WALKABLE is only
-  // known in hotspot.
+  // Defensive: fillJavaFrame stores the sentinel without the raw flag, so this
+  // should never reach the raw-pointer resolve path. Map it to nullptr so the
+  // dump thread serializes it as the shared unknown method.
   if ((jmethodID)method == JMETHODID_NOT_WALKABLE) {
     return nullptr;
   }

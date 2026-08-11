@@ -141,12 +141,17 @@ jmethodID VMMethod::id() {
                 if (num < len) {
                     return (jmethodID) SafeAccess::loadPtr((void**)(ids + num + 1), JMETHODID_NOT_WALKABLE);
                 } else {
-                    // The jmethodID is not populated
-                    return nullptr;
+                    // Slot not populated yet; return the sentinel so fillJavaFrame
+                    // does not fall back to the raw Method* path. The cache is
+                    // repopulated after RedefineClasses/RetransformClasses
+                    // (vmEntry.cpp), but a thread sampled before that sees an
+                    // unpopulated slot here.
+                    return JMETHODID_NOT_WALKABLE;
                 }
             } else {
-                // No jmethodID was populated
-                return nullptr;
+                // No jmethodID cache allocated for this klass yet; same reason
+                // as above — return the sentinel, not nullptr.
+                return JMETHODID_NOT_WALKABLE;
             }
         }
     }
@@ -156,8 +161,8 @@ jmethodID VMMethod::id() {
 
 jmethodID VMMethod::validatedId() {
     jmethodID method_id = id();
-    // We are sure about the value, return it
-    if (method_id == JMETHODID_NOT_WALKABLE || method_id == nullptr) {
+    // id() never returns nullptr; all failure paths return JMETHODID_NOT_WALKABLE
+    if (method_id == JMETHODID_NOT_WALKABLE) {
         return method_id;
     }
     // Check if the value make sense
