@@ -703,6 +703,11 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     unwindFailures->record(UNWIND_FAILURE_STUB, name);
                 }
 #endif // DEBUG
+                // Unconditional (not DEBUG-only): previously this path fell through with
+                // pc/sp/depth all unchanged, re-entering the enclosing
+                // `while (depth < actual_max_depth)` in the same state -- an infinite loop
+                // whenever a runtime-stub frame can't be unwound and the frameSize()
+                // fallback above isn't available. Terminate the walk explicitly instead.
                 fillFrame(frames[depth++], BCI_ERROR, "break_unwind_stub_failed");
                 break;
             }
