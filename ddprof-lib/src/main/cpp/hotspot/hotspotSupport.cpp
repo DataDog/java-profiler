@@ -245,6 +245,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
         return 0;
     }
+    UnwindFailures* unwindFailures = prof_thread->unwindFailures();
 
     HotspotStackFrame frame(ucontext);
     uintptr_t bottom = (uintptr_t)&frame + MAX_WALK_SIZE;
@@ -271,6 +272,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         prof_thread->setJmpCtx(prev_jmp_buf);
         if (depth < max_depth) {
             fillFrame(frames[depth++], BCI_ERROR, "break_not_walkable");
+        }
+        if (unwindFailures) {
+            UnwindStats::recordFailures(unwindFailures);
         }
         return depth;
     }
@@ -690,6 +694,10 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     pc = ((const void**)sp)[-FRAME_PC_SLOT];
                     continue;
                 }
+
+                if (unwindFailures) {
+                    unwindFailures->record(UNWIND_FAILURE_STUB, name);
+                }
             }
         } else {
             // Resolve native frame (may use remote symbolication if enabled)
@@ -978,6 +986,10 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 *truncated = true;
             }
         }
+    }
+
+    if (unwindFailures && !unwindFailures->empty()) {
+        UnwindStats::recordFailures(unwindFailures);
     }
 
     return depth;
