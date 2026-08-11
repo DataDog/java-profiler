@@ -149,7 +149,13 @@ object ConfigurationPresets {
                 config.compilerArgs.set(
                     listOf("-O0", "-g", "-DDEBUG") + commonLinuxCompilerArgs(version)
                 )
-                config.linkerArgs.set(commonLinuxLinkerArgs())
+                // -z,nodelete: same as configureRelease. Without it, the JVM (observed
+                // on OpenJ9's DestroyJavaVM path) can unmap this library while a
+                // profiler-spawned thread (via the patched pthread_create hook in
+                // LibraryPatcher) is still executing wrapper code inside it, causing a
+                // SIGSEGV with no hs_err. nodelete pins the mapping for the process's
+                // lifetime no matter how many times the host dlcloses it.
+                config.linkerArgs.set(commonLinuxLinkerArgs() + listOf("-Wl,-z,nodelete"))
             }
             Platform.MACOS -> {
                 config.compilerArgs.set(
