@@ -22,7 +22,18 @@
 set -euo pipefail
 
 # Resolve repo root so the script works regardless of CWD
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo ".")
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+if [ -z "$REPO_ROOT" ]; then
+  # Fallback: try to find .git by walking up from CWD
+  REPO_ROOT="."
+  dir="$(pwd)"
+  while [ "$dir" != "/" ] && [ ! -d "$dir/.git" ]; do
+    dir=$(dirname "$dir")
+  done
+  if [ -d "$dir/.git" ]; then
+    REPO_ROOT="$dir"
+  fi
+fi
 
 RELEASE=false
 BUMP_TYPE=""
@@ -69,6 +80,9 @@ fi
 
 # --- Find most recent reachable tag -----------------------------------------
 
+# Disable pipefail/errexit for git commands that may fail in unusual
+# CI environments (detached HEAD, shallow clones, etc.)
+set +e
 latest_tag=$(git -C "$REPO_ROOT" tag --merged HEAD --list 'v_*' 2>/dev/null | sed 's/^v_//' | sort -V | tail -1)
 
 # Fallback: if --merged fails (e.g. detached HEAD in some CI environments),
@@ -77,6 +91,7 @@ latest_tag=$(git -C "$REPO_ROOT" tag --merged HEAD --list 'v_*' 2>/dev/null | se
 if [ -z "$latest_tag" ]; then
   latest_tag=$(git -C "$REPO_ROOT" tag --list 'v_*' 2>/dev/null | sed 's/^v_//' | sort -V | tail -1)
 fi
+set -e
 
 if [ -z "$latest_tag" ]; then
   echo "ERROR: no version tags (v_*) reachable from HEAD" >&2
