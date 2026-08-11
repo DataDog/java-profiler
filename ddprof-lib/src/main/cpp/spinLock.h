@@ -34,6 +34,9 @@ public:
   explicit constexpr SpinLock(int initial_state = 0) : _lock(initial_state), _padding() {
     static_assert(sizeof(SpinLock) == DEFAULT_CACHE_LINE_SIZE);
   }
+  // Non-copyable
+  SpinLock(const SpinLock&) = delete;
+  SpinLock& operator=(const SpinLock&) = delete;
 
   void reset() { __atomic_store_n(&_lock, 0, __ATOMIC_RELAXED); }
 
