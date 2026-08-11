@@ -250,15 +250,8 @@ all supported platforms, and library-loading metadata. Build output layout and t
 `META-INF/native-libs/{os}-{arch}/` packaging structure: see
 [doc/build/NativeBuildPlugin.md](doc/build/NativeBuildPlugin.md).
 
-### Versioning
-
-Version is computed from git tags at build time by `utils/compute-version.sh` —
-no version is stored in any file. On `main`, the most recent `v_X.Y.Z` tag
-produces `X.(Y+1).0-SNAPSHOT`. On `release/X.Y._`, only `v_X.Y.*` tags are
-considered, producing `X.Y.(Z+1)-SNAPSHOT`. Gradle calls the script at
-configuration time; CI can override with `-Pddprof_version`. Releases create
-only an annotated tag (and a release branch for minor/major) — no bump PRs.
-See [README.md](README.md#versioning) for details.
+Version is computed from git tags at build time: see
+[doc/build/Versioning.md](doc/build/Versioning.md).
 
 ## Core Architecture Components
 
