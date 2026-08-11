@@ -72,6 +72,12 @@ public class TlsPrimingTest extends AbstractProfilerTest {
     // failure. Mirrors NativeThreadPrimingTest's MAX_SYNTHETIC_NATIVE_THREAD_SAMPLES.
     private static final long MIN_DROPPED_ALLOWANCE = 10;
 
+    @Override
+    protected boolean isPlatformSupported() {
+        // TLS priming is not implemented on macOS.
+        return !Platform.isMac();
+    }
+
     @RetryingTest(3)
     public void compilerThreadSamplesArePresent() throws Exception {
         triggerJitCompilation();
