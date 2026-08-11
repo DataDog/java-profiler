@@ -97,6 +97,12 @@ set -e
 
 if [ -z "$latest_tag" ]; then
   echo "ERROR: no version tags (v_*) reachable from HEAD" >&2
+  echo "  REPO_ROOT=$REPO_ROOT" >&2
+  echo "  CWD=$(pwd)" >&2
+  echo "  GIT=$GIT" >&2
+  echo "  All tags:" >&2
+  $GIT -C "$REPO_ROOT" tag --list 2>&1 | head -20 >&2
+  echo "  .git exists: $([ -d "$REPO_ROOT/.git" ] && echo yes || echo no)" >&2
   exit 1
 fi
 
