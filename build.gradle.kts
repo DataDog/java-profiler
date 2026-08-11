@@ -12,8 +12,8 @@ plugins {
 // git tags to be available at Gradle configuration time.
 version = (findProperty("ddprof_version") as? String)
   ?: providers.exec {
-      commandLine(rootProject.layout.projectDirectory.file("utils/compute-version.sh").asFile.absolutePath)
-    }.standardOutput.asText.get().trim()
+    commandLine(rootProject.layout.projectDirectory.file("utils/compute-version.sh").asFile.absolutePath)
+  }.standardOutput.asText.get().trim()
 
 allprojects {
   repositories {
