@@ -21,6 +21,11 @@
 
 set -euo pipefail
 
+# In CI containers (e.g. Alpine/musl), the checkout may be owned by a
+# different user, triggering git's "dubious ownership" safety check.
+# Suppress it globally before any git operation.
+git config --global --add safe.directory '*' 2>/dev/null || true
+
 # Resolve repo root so the script works regardless of CWD
 REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
 if [ -z "$REPO_ROOT" ]; then
