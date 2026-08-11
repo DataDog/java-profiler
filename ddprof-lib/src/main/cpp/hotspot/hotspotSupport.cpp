@@ -702,7 +702,9 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                 if (unwindFailures) {
                     unwindFailures->record(UNWIND_FAILURE_STUB, name);
                 }
-#endif // DBEUG
+#endif // DEBUG
+                fillFrame(frames[depth++], BCI_ERROR, "break_unwind_stub_failed");
+                break;
             }
         } else {
             // Resolve native frame (may use remote symbolication if enabled)
