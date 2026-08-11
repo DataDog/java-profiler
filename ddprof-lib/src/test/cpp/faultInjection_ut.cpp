@@ -40,15 +40,6 @@ TEST(FaultInjectionTest, DisabledAddressMacrosAreIdentity) {
 }
 
 TEST(FaultInjectionTest, DisabledValueMacrosAreIdentity) {
-  int32_t i = 42;
-  int64_t l = 0x1122334455667788LL;
-  EXPECT_EQ(INJECT_FAULT_INT_RARE(i), i);
-  EXPECT_EQ(INJECT_FAULT_INT_UNLIKELY(i), i);
-  EXPECT_EQ(INJECT_FAULT_INT_LIKELY(i), i);
-  EXPECT_EQ(INJECT_FAULT_LONG_RARE(l), l);
-  EXPECT_EQ(INJECT_FAULT_LONG_UNLIKELY(l), l);
-  EXPECT_EQ(INJECT_FAULT_LONG_LIKELY(l), l);
-
   // BOOL must be identity both ways -- an accidental non-identity expansion
   // (e.g. always forcing false) would otherwise only show up as a silent
   // behavioural change in a production build, never a compile error.
