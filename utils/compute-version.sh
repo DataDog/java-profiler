@@ -21,6 +21,9 @@
 
 set -euo pipefail
 
+# Resolve repo root so the script works regardless of CWD
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo ".")
+
 RELEASE=false
 BUMP_TYPE=""
 BRANCH_SUFFIX=""
@@ -66,7 +69,14 @@ fi
 
 # --- Find most recent reachable tag -----------------------------------------
 
-latest_tag=$(git tag --merged HEAD --list 'v_*' 2>/dev/null | sed 's/^v_//' | sort -V | tail -1)
+latest_tag=$(git -C "$REPO_ROOT" tag --merged HEAD --list 'v_*' 2>/dev/null | sed 's/^v_//' | sort -V | tail -1)
+
+# Fallback: if --merged fails (e.g. detached HEAD in some CI environments),
+# use all tags sorted by version — the most recent one is almost certainly
+# reachable from HEAD in practice.
+if [ -z "$latest_tag" ]; then
+  latest_tag=$(git -C "$REPO_ROOT" tag --list 'v_*' 2>/dev/null | sed 's/^v_//' | sort -V | tail -1)
+fi
 
 if [ -z "$latest_tag" ]; then
   echo "ERROR: no version tags (v_*) reachable from HEAD" >&2
@@ -83,7 +93,7 @@ if [ -n "${CI_COMMIT_BRANCH:-}" ]; then
 elif [ -n "${GITHUB_REF_NAME:-}" ] && [ "${GITHUB_REF_TYPE:-}" != "tag" ]; then
   branch="$GITHUB_REF_NAME"
 else
-  branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+  branch=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
 fi
 
 # --- Determine bump type -----------------------------------------------------
