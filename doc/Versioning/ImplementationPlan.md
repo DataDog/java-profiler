@@ -1,3 +1,5 @@
+<!-- Copyright 2026, Datadog, Inc -->
+
 # Implementation Plan: Tag-Based Versioning
 
 Reference: [TagBasedVersioning.md](TagBasedVersioning.md) for design rationale.

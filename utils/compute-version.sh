@@ -80,18 +80,45 @@ if [ "${GITHUB_REF_TYPE:-}" = "tag" ] && [[ "${GITHUB_REF_NAME:-}" =~ ^v_([0-9]+
   exit 0
 fi
 
+# --- Detect current branch --------------------------------------------------
+
+branch=""
+if [ -n "${CI_COMMIT_BRANCH:-}" ]; then
+  branch="$CI_COMMIT_BRANCH"
+elif [ -n "${GITHUB_REF_NAME:-}" ] && [ "${GITHUB_REF_TYPE:-}" != "tag" ]; then
+  branch="$GITHUB_REF_NAME"
+else
+  branch=$($GIT -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+fi
+
 # --- Find most recent reachable tag -----------------------------------------
+
+# Determine tag filter: on release/X.Y._ branches, only consider tags
+# matching that series (v_X.Y.*) to prevent a merged mainline tag from
+# producing a wrong-series version.
+tag_filter='v_*'
+if [[ "$branch" =~ ^release/([0-9]+)\.([0-9]+)\._$ ]]; then
+  release_major="${BASH_REMATCH[1]}"
+  release_minor="${BASH_REMATCH[2]}"
+  tag_filter="v_${release_major}.${release_minor}.*"
+fi
+
+# Portable version sort: works on both GNU and BSD sort (macOS).
+# sort -t. -k1,1n -k2,2n -k3,3n splits on '.' and sorts numerically.
+version_sort() {
+  sort -t. -k1,1n -k2,2n -k3,3n
+}
 
 # Disable pipefail/errexit for git commands that may fail in unusual
 # CI environments (detached HEAD, shallow clones, etc.)
 set +e
-latest_tag=$($GIT -C "$REPO_ROOT" tag --merged HEAD --list 'v_*' 2>/dev/null | sed 's/^v_//' | sort -V | tail -1)
+latest_tag=$($GIT -C "$REPO_ROOT" tag --merged HEAD --list "$tag_filter" 2>/dev/null | sed 's/^v_//' | version_sort | tail -1)
 
 # Fallback: if --merged fails (e.g. detached HEAD in some CI environments),
 # use all tags sorted by version — the most recent one is almost certainly
 # reachable from HEAD in practice.
 if [ -z "$latest_tag" ]; then
-  latest_tag=$($GIT -C "$REPO_ROOT" tag --list 'v_*' 2>/dev/null | sed 's/^v_//' | sort -V | tail -1)
+  latest_tag=$($GIT -C "$REPO_ROOT" tag --list "$tag_filter" 2>/dev/null | sed 's/^v_//' | version_sort | tail -1)
 fi
 set -e
 
@@ -107,17 +134,6 @@ if [ -z "$latest_tag" ]; then
 fi
 
 IFS=. read -r major minor patch <<<"$latest_tag"
-
-# --- Detect current branch --------------------------------------------------
-
-branch=""
-if [ -n "${CI_COMMIT_BRANCH:-}" ]; then
-  branch="$CI_COMMIT_BRANCH"
-elif [ -n "${GITHUB_REF_NAME:-}" ] && [ "${GITHUB_REF_TYPE:-}" != "tag" ]; then
-  branch="$GITHUB_REF_NAME"
-else
-  branch=$($GIT -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-fi
 
 # --- Determine bump type -----------------------------------------------------
 

@@ -1,3 +1,5 @@
+<!-- Copyright 2026, Datadog, Inc -->
+
 # Tag-Based Versioning
 
 ## Problem

@@ -242,6 +242,19 @@ result=$(run_in "$repo13" CI_COMMIT_BRANCH="release/1.48._" -- --branch-suffix "
 [ "$result" = "1.48.1-SNAPSHOT" ] || fail "expected 1.48.1-SNAPSHOT (no suffix for release branch), got '$result'"
 pass
 
+# --- Test 19: Release branch ignores tags from other series -----------------
+# If v_1.49.0 is merged into release/1.48._, it should NOT be used
+repo14=$(setup_repo)
+commit "$repo14" "initial"
+git -C "$repo14" checkout -b "release/1.48._" 2>/dev/null || git -C "$repo14" branch -m "release/1.48._"
+tag "$repo14" "v_1.48.2"
+# Create a commit with a higher-series tag merged in
+commit "$repo14" "merge mainline"
+tag "$repo14" "v_1.49.0"
+result=$(run_in "$repo14" CI_COMMIT_BRANCH="release/1.48._" --)
+[ "$result" = "1.48.3-SNAPSHOT" ] || fail "expected 1.48.3-SNAPSHOT (series filter), got '$result'"
+pass
+
 # --- Summary -----------------------------------------------------------------
 
 if [ "$FAILED" -gt 0 ]; then
