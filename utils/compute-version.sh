@@ -21,24 +21,21 @@
 
 set -euo pipefail
 
-# In CI containers (e.g. Alpine/musl), the checkout may be owned by a
-# different user, triggering git's "dubious ownership" safety check.
-# Suppress it globally before any git operation.
-git config --global --add safe.directory '*' 2>/dev/null || true
-
-# Resolve repo root so the script works regardless of CWD
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
-if [ -z "$REPO_ROOT" ]; then
-  # Fallback: try to find .git by walking up from CWD
-  REPO_ROOT="."
-  dir="$(pwd)"
-  while [ "$dir" != "/" ] && [ ! -d "$dir/.git" ]; do
-    dir=$(dirname "$dir")
-  done
-  if [ -d "$dir/.git" ]; then
-    REPO_ROOT="$dir"
-  fi
+# Resolve repo root by walking up from CWD (no git command needed, so
+# this works even when git's "dubious ownership" check would block
+# git rev-parse --show-toplevel in CI containers).
+REPO_ROOT="."
+dir="$(pwd)"
+while [ "$dir" != "/" ] && [ ! -d "$dir/.git" ]; do
+  dir=$(dirname "$dir")
+done
+if [ -d "$dir/.git" ]; then
+  REPO_ROOT="$dir"
 fi
+# Use -c safe.directory for all git commands so they work regardless of
+# ownership (CI containers may have a different owner than the runner user).
+# This does NOT modify global git config.
+GIT="git -c safe.directory=$REPO_ROOT"
 
 RELEASE=false
 BUMP_TYPE=""
@@ -88,13 +85,13 @@ fi
 # Disable pipefail/errexit for git commands that may fail in unusual
 # CI environments (detached HEAD, shallow clones, etc.)
 set +e
-latest_tag=$(git -C "$REPO_ROOT" tag --merged HEAD --list 'v_*' 2>/dev/null | sed 's/^v_//' | sort -V | tail -1)
+latest_tag=$($GIT -C "$REPO_ROOT" tag --merged HEAD --list 'v_*' 2>/dev/null | sed 's/^v_//' | sort -V | tail -1)
 
 # Fallback: if --merged fails (e.g. detached HEAD in some CI environments),
 # use all tags sorted by version — the most recent one is almost certainly
 # reachable from HEAD in practice.
 if [ -z "$latest_tag" ]; then
-  latest_tag=$(git -C "$REPO_ROOT" tag --list 'v_*' 2>/dev/null | sed 's/^v_//' | sort -V | tail -1)
+  latest_tag=$($GIT -C "$REPO_ROOT" tag --list 'v_*' 2>/dev/null | sed 's/^v_//' | sort -V | tail -1)
 fi
 set -e
 
@@ -113,7 +110,7 @@ if [ -n "${CI_COMMIT_BRANCH:-}" ]; then
 elif [ -n "${GITHUB_REF_NAME:-}" ] && [ "${GITHUB_REF_TYPE:-}" != "tag" ]; then
   branch="$GITHUB_REF_NAME"
 else
-  branch=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+  branch=$($GIT -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
 fi
 
 # --- Determine bump type -----------------------------------------------------
