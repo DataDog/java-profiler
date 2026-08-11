@@ -217,7 +217,7 @@ static DdprofGlobalSetup ddprof_global_setup;
     }
 
 #ifdef DEBUG
-// UnwinFailures is debug only feature
+// UnwindFailures is a debug-only feature
     TEST(UnwindFailures, BasicFunctionality) {
       UnwindFailures failures;
 
