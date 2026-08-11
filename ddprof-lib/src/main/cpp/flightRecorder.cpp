@@ -1891,6 +1891,7 @@ void Recording::writeCounters(Buffer *buf) {
 }
 
 void Recording::writeUnwindFailures(Buffer *buf) {
+#ifdef DEBUG
   static UnwindFailures failures;
   UnwindStats::collectAndReset(failures);
 
@@ -1904,6 +1905,7 @@ void Recording::writeUnwindFailures(Buffer *buf) {
     writeEventSizePrefix(buf, start);
     flushIfNeeded(buf);
   });
+#endif // DEBUG
 }
 
 void Recording::writeContextSnapshot(Buffer *buf, Context &context) {

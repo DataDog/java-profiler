@@ -216,6 +216,8 @@ static DdprofGlobalSetup ddprof_global_setup;
         EXPECT_EQ(24, hs_version1);
     }
 
+#ifdef DEBUG
+// UnwinFailures is debug only feature
     TEST(UnwindFailures, BasicFunctionality) {
       UnwindFailures failures;
 
@@ -358,6 +360,7 @@ static DdprofGlobalSetup ddprof_global_setup;
       }
       EXPECT_TRUE(globalCount > 0);
     }
+#endif // DEBUG
 
     // Deterministic regression for the CriticalSection::_thread_ptr capture fix.
     //
