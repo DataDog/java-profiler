@@ -4,7 +4,14 @@
 
 void ThreadInfo::set(int tid, const char *name, u64 java_thread_id) {
   MutexLocker ml(_ti_lock);
-  _thread_names[tid] = std::string(name);
+  auto it = _thread_names.find(tid);
+  long long old_bytes = it != _thread_names.end() ? nameHeapBytes(it->second) : 0;
+  std::string &stored = _thread_names[tid];
+  stored = std::string(name);
+  long long new_bytes = nameHeapBytes(stored);
+  if (new_bytes != old_bytes) {
+    NativeMem::record(NM_THREAD_INFO, new_bytes - old_bytes);
+  }
   _thread_ids[tid] = java_thread_id;
 }
 
@@ -29,6 +36,13 @@ int ThreadInfo::getThreadId(int threadId) {
 
 void ThreadInfo::clearAll() {
   MutexLocker ml(_ti_lock);
+  long long freed_bytes = 0;
+  for (const auto &kv : _thread_names) {
+    freed_bytes += nameHeapBytes(kv.second);
+  }
+  if (freed_bytes != 0) {
+    NativeMem::record(NM_THREAD_INFO, -freed_bytes);
+  }
   _thread_names.clear();
   _thread_ids.clear();
 }
@@ -38,6 +52,13 @@ void ThreadInfo::clearAll(std::set<int> &live_thread_ids) {
   MutexLocker ml(_ti_lock);
   if (live_thread_ids.empty()) {
     // take the fast path
+    long long freed_bytes = 0;
+    for (const auto &kv : _thread_names) {
+      freed_bytes += nameHeapBytes(kv.second);
+    }
+    if (freed_bytes != 0) {
+      NativeMem::record(NM_THREAD_INFO, -freed_bytes);
+    }
     _thread_names.clear();
     _thread_ids.clear();
   } else {
@@ -45,6 +66,10 @@ void ThreadInfo::clearAll(std::set<int> &live_thread_ids) {
     auto name_itr = _thread_names.begin();
     while (name_itr != _thread_names.end()) {
       if (live_thread_ids.find(name_itr->first) == live_thread_ids.end()) {
+        long long bytes = nameHeapBytes(name_itr->second);
+        if (bytes != 0) {
+          NativeMem::record(NM_THREAD_INFO, -bytes);
+        }
         name_itr = _thread_names.erase(name_itr);
       } else {
         ++name_itr;
@@ -87,7 +112,13 @@ void ThreadInfo::updateThreadName(
   // emplace is a no-op if a concurrent caller inserted this tid in the
   // meantime, so the brief unlocked window is harmless.
   MutexLocker ml(_ti_lock);
-  _thread_names.emplace(tid, std::move(name));
+  auto result = _thread_names.emplace(tid, std::move(name));
+  if (result.second) {
+    long long bytes = nameHeapBytes(result.first->second);
+    if (bytes != 0) {
+      NativeMem::record(NM_THREAD_INFO, bytes);
+    }
+  }
 }
 
 void ThreadInfo::reportCounters() {

@@ -8,6 +8,7 @@
 #define _DWARF_H
 
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 #include "arch.h"
 
@@ -264,7 +265,17 @@ class DwarfParser {
     // Ownership of the returned pointer transfers to the caller.
     // The caller is responsible for freeing it with free() (not delete[]).
     // DwarfParser has no destructor; _table is left dangling after this call is used.
-    FrameDesc* table() const {
+    FrameDesc* table() {
+        // Shrink the capacity-doubled buffer to _count entries here, at the
+        // source, so every consumer of table()/count() already gets an
+        // exactly-sized allocation instead of relying on a shared trim step
+        // downstream.
+        if (_table != nullptr && _count > 0 && _count < _capacity) {
+            FrameDesc* trimmed = (FrameDesc*)realloc(_table, _count * sizeof(FrameDesc));
+            if (trimmed != nullptr) {
+                _table = trimmed;
+            }
+        }
         return _table;
     }
 
