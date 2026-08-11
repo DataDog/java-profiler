@@ -29,7 +29,7 @@ class ProfiledThread;
 // Block all profiling signal for thread exiting.
 // Blocking the signals prevent any future profiling signals from delievering,
 // which can result in allocation of ProfiledThread that can never
-// be released.
+// be released (leak).
 void blockProfilingForExit();
 
 // ---------------------------------------------------------------------------
