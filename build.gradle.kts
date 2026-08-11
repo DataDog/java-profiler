@@ -7,13 +7,21 @@ plugins {
 
 // Compute version from git tags at configuration time.
 // See doc/Versioning/TagBasedVersioning.md for the version computation rules.
-// Only run compute-version.sh when -Pddprof_version is not explicitly set,
-// so CI environments that pass the version via -Pddprof_version don't need
-// git tags to be available at Gradle configuration time.
-version = (findProperty("ddprof_version") as? String)
-  ?: providers.exec {
-    commandLine(rootProject.layout.projectDirectory.file("utils/compute-version.sh").asFile.absolutePath)
-  }.standardOutput.asText.get().trim()
+// Priority: -Pddprof_version > compute-version.sh > fallback.
+// -Pddprof_version is always set by GitLab CI (publish builds).
+// compute-version.sh is used for local builds and GHA CI with full history.
+// The fallback handles environments with no git tags (CodeQL autobuild).
+val ddprofVersion = findProperty("ddprof_version") as? String
+version = ddprofVersion ?: run {
+  try {
+    providers.exec {
+      commandLine(rootProject.layout.projectDirectory.file("utils/compute-version.sh").asFile.absolutePath)
+    }.standardOutput.asText.get().trim()
+  } catch (e: Exception) {
+    logger.warn("compute-version.sh failed; falling back to 0.0.0-SNAPSHOT. Set -Pddprof_version to override.")
+    "0.0.0-SNAPSHOT"
+  }
+}
 
 allprojects {
   repositories {
