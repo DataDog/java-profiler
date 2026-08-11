@@ -317,7 +317,7 @@ Java_com_datadoghq_profiler_JavaProfiler_recordSettingEvent0(
     JNIEnv *env, jclass unused, jstring name, jstring value, jstring unit) {
   // Initialize thread TLS if it has not yet done
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  int tid = current == nullptr ? current->tid() : OS::threadId();
+  int tid = current != nullptr ? current->tid() : OS::threadId();
 
   if (tid < 0) {
     return;
@@ -346,7 +346,7 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
   // Initialize thread TLS if it has not yet done
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
 
-  int tid = current == nullptr ? current->tid() : OS::threadId();
+  int tid = current != nullptr ? current->tid() : OS::threadId();
 
   int origin_tid = JVMThread::nativeThreadId(env, origin);
   if (origin_tid < 0) {
