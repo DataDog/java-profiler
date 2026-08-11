@@ -432,15 +432,6 @@ void ReferenceChainTracker::startThread() {
   if (!_enabled || _running.load(std::memory_order_acquire)) {
     return;
   }
-  // Create the thread (into a local pthread_t) and only publish _thread /
-  // flip _running=true once pthread_create() has actually succeeded.
-  // onGCFinish() (GC callback thread) guards its pthread_kill(_thread, ...)
-  // call on _running alone - GC-finish notifications are already enabled by
-  // start() before this method runs, so a GC-finish callback firing between
-  // "_running=true" and pthread_create() actually initializing _thread would
-  // previously call pthread_kill() on a still value-initialized (0) or
-  // stale/joined pthread_t, which is undefined behavior. Publishing _thread
-  // before _running closes that window.
   // Reset from any previous stopThread() call - a dynamic-attach profiler
   // can go through multiple start()/stop() cycles in one JVM lifetime (this
   // class's own start()/stop() header comments), and a stale abort request
@@ -464,13 +455,30 @@ void ReferenceChainTracker::startThread() {
   _cached_object_class = nullptr;
   _cached_object_class_jni = nullptr;
 
+  // Publish _running=true *before* creating the thread, not after. If the
+  // OS schedules the new thread ahead of the parent, threadLoop()'s startup
+  // check (`while (_running.load(...))`) would otherwise be racing against
+  // this store: the child could see the still-`false` initial value, fall
+  // straight through the loop, detach and exit - and the parent would then
+  // publish `true` regardless, leaving startThread() reporting the tracker
+  // as running while no BFS thread is actually alive for the rest of the
+  // recording. pthread_create() itself is the fix's synchronization point:
+  // POSIX guarantees everything the calling thread writes before this call
+  // is visible to the new thread once it starts running, so ordering the
+  // store first removes the race outright rather than narrowing it. Roll
+  // back on a failed create so a later startThread() call is not blocked by
+  // a stale `_running=true` with no thread behind it. stopThread() is only
+  // ever called after this method has returned (Profiler::start()/stop()
+  // pair the two sequentially - see this class's own start()/stop() header
+  // comments), so its use of _thread below is unaffected by this reordering.
+  _running.store(true, std::memory_order_release);
   pthread_t thread;
   if (pthread_create(&thread, NULL, threadEntry, this) != 0) {
     Log::warn("Unable to create ReferenceChains BFS thread");
+    _running.store(false, std::memory_order_release);
     return;
   }
   _thread = thread;
-  _running.store(true, std::memory_order_release);
 }
 
 void ReferenceChainTracker::stopThread() {

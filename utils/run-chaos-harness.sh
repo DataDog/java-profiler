@@ -177,12 +177,17 @@ case $ALLOCATOR in
       if [ -n "${GLIBC_VERSION}" ] && [ "$(printf '%s\n' "2.34" "${GLIBC_VERSION}" | sort -V | head -1)" = "2.34" ]; then
         MALLOC_DEBUG_LIB=$(find /usr/lib/ /usr/lib64/ /lib/ /lib64/ -maxdepth 4 -name 'libc_malloc_debug.so*' 2>/dev/null | head -1)
         if [ -z "${MALLOC_DEBUG_LIB}" ]; then
-          # Non-fatal: this is a secondary safety net (MALLOC_CHECK_ enforcement)
-          # on top of the run's main purpose, not a hard dependency of the chaos
-          # run itself — a missing libc_malloc_debug package on this image should
-          # not fail the whole run, just lose this one extra corruption-detection
-          # layer (glibc >= 2.34's MALLOC_CHECK_ is a silent no-op without it).
-          echo "WARN: glibc ${GLIBC_VERSION} requires libc_malloc_debug to be preloaded for MALLOC_CHECK_ to take effect, but it could not be found — continuing without MALLOC_CHECK_ enforcement" >&2
+          # Fatal, matching tcmalloc/jemalloc's own missing-library handling
+          # below: ALLOCATOR=gmalloc is an explicit test variant in the
+          # scheduled chaos matrix specifically to exercise MALLOC_CHECK_'s
+          # heap-corruption detection, and the CI caller recognizes failure
+          # by grepping stderr for "FAIL:". Silently downgrading this to a
+          # WARN would let the job report success while never actually
+          # performing the corruption checking this variant promises (glibc
+          # >= 2.34's MALLOC_CHECK_ is a silent no-op without
+          # libc_malloc_debug preloaded).
+          echo "FAIL: glibc ${GLIBC_VERSION} requires libc_malloc_debug to be preloaded for MALLOC_CHECK_ to take effect, but it could not be found" >&2
+          exit 1
         else
           export LD_PRELOAD="${MALLOC_DEBUG_LIB}${LD_PRELOAD:+:${LD_PRELOAD}}"
           echo "glibc ${GLIBC_VERSION} detected — preloading ${MALLOC_DEBUG_LIB} for MALLOC_CHECK_"

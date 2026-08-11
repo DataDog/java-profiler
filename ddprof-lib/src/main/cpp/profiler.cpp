@@ -1811,24 +1811,33 @@ Error Profiler::start(Arguments &args, bool reset) {
     _cpu_engine->enableEvents(true);
 
     // Independent of the CPU/wall/alloc engine mask above (GC-triggered, not
-    // sample-triggered) - gated only on its own args._reference_chains flag,
-    // same pattern as malloc_tracer/NativeSocketSampler being gated on their
-    // own flags rather than folded into `activated`. Placed after the
-    // engines are confirmed running (inside this `if (activated)` block) so
-    // there is nothing to unwind here if it fails - see this method's
-    // failure path below, which never reaches this point.
-    if (args._reference_chains) {
-      error = ReferenceChainTracker::instance()->start(args);
-      if (error) {
-        Log::warn("%s", error.message());
-        error = Error::OK; // recoverable
-      } else {
-        // Only safe once the JVM/JVMTI environment is fully up, which is
-        // guaranteed at this point in Profiler::start() - see
-        // ReferenceChainTracker::start()'s own comment (referenceChains.cpp)
-        // for why this is not called from inside start() itself.
-        ReferenceChainTracker::instance()->startThread();
-      }
+    // sample-triggered) - same pattern as malloc_tracer/NativeSocketSampler
+    // being gated on their own flags rather than folded into `activated`.
+    // Placed after the engines are confirmed running (inside this
+    // `if (activated)` block) so there is nothing to unwind here if it
+    // fails - see this method's failure path below, which never reaches
+    // this point.
+    // Called unconditionally, not gated on args._reference_chains: start()
+    // is the only place that refreshes ReferenceChainTracker::_enabled
+    // (stop() deliberately leaves it unchanged - see that method's own
+    // comment), so a previous recording's `referencechains=true` session
+    // must still reach start() when this one opts out, or the tracker keeps
+    // reporting enabled()==true - and Profiler::dump()'s reference-chains
+    // gate keeps emitting that stale session's cached chains/abandonment
+    // state - for the entire duration of this new, opted-out recording.
+    // start() itself sets `_enabled = args._reference_chains` up front and
+    // returns early when that is false, so this call is a cheap no-op for
+    // an opted-out recording.
+    error = ReferenceChainTracker::instance()->start(args);
+    if (error) {
+      Log::warn("%s", error.message());
+      error = Error::OK; // recoverable
+    } else if (args._reference_chains) {
+      // Only safe once the JVM/JVMTI environment is fully up, which is
+      // guaranteed at this point in Profiler::start() - see
+      // ReferenceChainTracker::start()'s own comment (referenceChains.cpp)
+      // for why this is not called from inside start() itself.
+      ReferenceChainTracker::instance()->startThread();
     }
 
     _state.store(RUNNING, std::memory_order_release);
