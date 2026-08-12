@@ -134,6 +134,7 @@
   X(SAFECOPY_FAILED, "safecopy_failed")                                       \
   X(SAFEFETCH_FAILED, "safefetch_failed")                                     \
   X(STACKWALK_LONGJMP_RECOVERED, "stackwalk_longjmp_recovered")               \
+  X(METHOD_RESOLUTION_FAILED, "method_resolution_failed")                     \
   /* writeElement() guards against a corrupted/dangling JfrMetadata tree.     \
    * Root cause is still unconfirmed, so these counters are the durable       \
    * signal for spotting a recurrence. */                                     \

@@ -22,6 +22,8 @@
 #include <signal.h>
 #include <pthread.h>
 
+#include "common.h"
+
 class ProfiledThread;
 
 // ---------------------------------------------------------------------------
@@ -82,6 +84,7 @@ public:
     SignalHandlerScope& operator=(const SignalHandlerScope&) = delete;
 private:
     bool _active;
+    debug_only(int _signal_depth;)
 };
 
 // Declare a scope guard local that increments the depth on entry and

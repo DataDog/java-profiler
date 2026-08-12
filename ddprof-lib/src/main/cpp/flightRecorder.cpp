@@ -14,6 +14,7 @@
 #include "counters.h"
 #include "nativeMem.h"
 #include "dictionary.h"
+#include "faultInjection.h"
 #include "flightRecorder.inline.h"
 #include "incbin.h"
 #include "jfrMetadata.h"
@@ -568,10 +569,38 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     method_id = nullptr;
   }
 
+  // Setup siglongjmp protection
+  // This is outside of a signal handler, there is no reason for allocation to fail,
+  // other than OOM
+  ProfiledThread* prof_thread = ProfiledThread::initCurrentThreadSignalSafe();
+  MethodInfo* mi = nullptr;
+  assert(prof_thread != nullptr);
+  sigjmp_buf crash_protection_ctx;
+  sigjmp_buf* prev_buf = prof_thread->getJmpCtx();
+  if (sigsetjmp(crash_protection_ctx, 1) != 0) {
+    SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
+    prof_thread->setJmpCtx(prev_buf);
+    key = MethodMap::makeKey(UNKNOWN);
+    Counters::increment(METHOD_RESOLUTION_FAILED);
+    mi = &(*_method_map)[key];
+    if (!mi->_mark) {
+      mi->_mark = true;
+      if (mi->_key == 0) {
+        mi->_key = _method_map->allocId();
+      }
+      fillNativeMethodInfo(mi, UNKNOWN, nullptr);
+    }
+    return mi;
+  }
+  prof_thread->setJmpCtx(&crash_protection_ctx);
+
   // Resolve native method
   if (FrameType::isRawPointer(bci)) {
     method_id = JVMSupport::resolve(frame.method);
   }
+
+  // Inject fault to test siglongjmp protection
+  INJECT_CRASH_LIKELY();
 
   // BCI_VTABLE_RECEIVER: method holds a VMSymbol* (see vmEntry.h). Resolve
   // to a class_id via the per-dump cache once, then key MethodMap by the
@@ -599,7 +628,7 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     key = MethodMap::makeKey(method_id);
   }
 
-  MethodInfo *mi = &(*_method_map)[key];
+  mi = &(*_method_map)[key];
 
   if (!mi->_mark) {
     mi->_mark = true;
@@ -2191,6 +2220,7 @@ void FlightRecorder::stop() {
 }
 
 Error FlightRecorder::dump(const char *filename, const int length) {
+  TEST_LOG("Dump jfr to file: %s", filename);
   DEBUG_ASSERT_NOT_IN_SIGNAL();
   assert(length >= 0);
   ExclusiveLockGuard locker(&_rec_lock);

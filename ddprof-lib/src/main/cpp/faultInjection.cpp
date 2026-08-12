@@ -101,6 +101,13 @@ bool shouldFire(u64 threshold, const char* fn) {
   return false;
 }
 
+void crashNow() {
+   volatile uintptr_t* p = (volatile uintptr_t*)poisonAddress();
+   *p = 0xBAD;
+   __builtin_unreachable();  // PROT_NONE guard page: the store above never returns.
+}
+
+
 uintptr_t poisonAddress() {
   u64 r = nextRandom();
   if (g_guard_ok.load(std::memory_order_acquire)) {
