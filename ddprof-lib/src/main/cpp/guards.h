@@ -141,9 +141,13 @@ void signalHandlerUnwindAfterLongjmp();
 /**
  * Race-free critical section using atomic compare-and-swap.
  *
- * Hybrid implementation:
- * - Primary: Uses ProfiledThread storage when available (zero memory overhead)
- * - Fallback: Hash-based bitmap for stress tests and cases without ProfiledThread
+ * Backed by ProfiledThread::_in_critical_section (zero extra memory
+ * overhead). ProfiledThread::acquireCurrent() is used instead of current()
+ * so that a not-yet-primed thread can still get a ProfiledThread from
+ * ThreadLocalDataPool's pre-allocated pool. If priming is unsupported
+ * (e.g. macOS) and the pool is exhausted, acquireCurrent() returns
+ * nullptr and entered() is simply false — there is no unguarded thread
+ * pointer dereference in that case.
  *
  * This approach is async-signal-safe and avoids TLS allocation issues.
  *

@@ -85,14 +85,19 @@ void signalHandlerUnwindAfterLongjmp() {
 
 
 CriticalSection::CriticalSection() : _entered(false), _thread_ptr(nullptr) {
-    _thread_ptr = ProfiledThread::current();
-    assert(_thread_ptr != nullptr);
-    _entered = _thread_ptr->tryEnterCriticalSection();
+    // acquireCurrent() falls back to ThreadLocalDataPool::acquire() (a
+    // pre-allocated, async-signal-safe pool) when the calling thread has
+    // not been primed yet. _thread_ptr can still legitimately be nullptr
+    // here if priming is unsupported (e.g. macOS) and the pool is
+    // exhausted; treat that as "did not enter" rather than dereferencing.
+    _thread_ptr = ProfiledThread::acquireCurrent();
+    if (_thread_ptr != nullptr) {
+        _entered = _thread_ptr->tryEnterCriticalSection();
+    }
 }
 
 CriticalSection::~CriticalSection() {
-    assert(_thread_ptr != nullptr);
-    if (_entered) {
+    if (_entered && _thread_ptr != nullptr) {
         _thread_ptr->exitCriticalSection();
     }
 }
