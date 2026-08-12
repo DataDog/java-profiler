@@ -94,6 +94,28 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
   private static final int CHAIN_LINK_TEST_KLASS_ID = 987201;
   private static final int CACHED_PAYLOAD_TEST_KLASS_ID = 987202;
 
+  // LivenessTracker's own hysteresis gate (livenessTracker.h's
+  // KLASS_POPULATION_MIN_FILL_FOR_TREND=10 / LEAK_TREND_HYSTERESIS_BASE=5;
+  // livenessTracker.cpp's recordKlassPopulationSampleLocked()/hasQualifyingGrowth()) only starts
+  // incrementing KlassPopulationEntry::consecutive_positive once ring_fill has reached 10 - every
+  // call before that resets it straight back to 0 (ringThirdsStats()'s own fill < min_fill guard).
+  // A single batch of exactly 10 seedKlassPopulationSample0() calls therefore caps
+  // consecutive_positive at 1 (only the 10th call ever sees ring_fill==10), far short of the >=5
+  // (or >=3 if LivenessTracker::heapFloorRising() independently corroborates) that
+  // selectLeakCandidates() (livenessTracker.cpp) requires before it reports a candidate at all -
+  // which is what ReferenceChainTracker::hasLeakSignal() consults, and what shouldRunPass()
+  // (referenceChains.cpp) gates even this search's very first pass on whenever generations=true
+  // (see this class's own header comment on why runPass() never otherwise fires here without one).
+  // 10 (KLASS_POPULATION_MIN_FILL_FOR_TREND) + 5 (LEAK_TREND_HYSTERESIS_BASE) - 1 = 14 calls are
+  // the minimum for the 5 qualifying calls at ring_fill>=10 (epochs 10-14) to actually land; +1
+  // for margin against off-by-one uncertainty in that derivation.
+  private static final int SEED_EPOCHS_FOR_HYSTERESIS = 15;
+
+  // Dedicated id for shouldReportAbandonedSearchOnTinyFrontierCap()'s own seeding (see that
+  // method's own comment) - distinct from CHAIN_LINK_TEST_KLASS_ID/CACHED_PAYLOAD_TEST_KLASS_ID
+  // for the same cheap-insurance-against-collision reason those two are distinct from each other.
+  private static final int ABANDON_TEST_KLASS_ID = 987203;
+
   @Override
   protected String getProfilerCommand() {
     String testName = testInfo != null
@@ -186,8 +208,21 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
     // start() call re-parses ttl, that clock already reads however long
     // shouldReconstructReferrerChainToGcRoot's own run took. Either path produces a
     // datadog.ReferenceChainAbandoned event, which is all this method actually asserts on.
+    //
+    // painbudget=100, for the same reason shouldReconstructReferrerChainThroughUnboundedCacheLeak()
+    // above needs it (see that method's own comment on painbudget=100): this method's own
+    // resetReferenceChainSearchForTest0() call spends whatever _search_pain_ms
+    // shouldReconstructReferrerChainThroughUnboundedCacheLeak()'s own long-running search left
+    // behind (found the hard way - that search runs 20+ passes admitting tens of thousands of
+    // edges each, and nothing zeroes _search_pain_ms between its own end and this method's start()
+    // reconstructing a fresh, zero-balance PainBudget) into *this* method's own PainBudget
+    // (referenceChains.cpp's restartSearch()/resetSearchStateForTest(), both call
+    // _pain_budget.spend(_search_pain_ms) unconditionally) - at the default 1% refill rate,
+    // draining that debt back to canStartNow()==true would take on the order of minutes, far past
+    // this method's own retry budget below. painbudget=100 keeps that gate affordable immediately,
+    // the same way it does for the sibling method.
     if ("shouldReportAbandonedSearchOnTinyFrontierCap".equals(testName)) {
-      return "referencechains=true:hops=32:budget=500:framecap=1:ttl=100";
+      return "referencechains=true:hops=32:budget=500:framecap=1:ttl=100:painbudget=100";
     }
     // Deliberately does not request cpu/wall/memory/nativemem: those categories also
     // write an "enabled" ActiveSetting (flightRecorder.cpp:1141-1144) and all default to
@@ -277,6 +312,17 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       // search so this test's own ChainLink population is guaranteed reachable by a real walk,
       // regardless of what ran earlier in this JVM. Debug-only: this native seam does not exist
       // in a release build.
+      //
+      // resetKlassPopulationForTest0() first, for the same "no forkEvery" reason:
+      // LivenessTracker's _klass_population table (livenessTracker.cpp) also survives stop()/
+      // start() cycles, so an unrelated earlier test class in this same shared JVM (e.g. another
+      // generations=true scenario) could leave a klass already past hasLeakSignal()'s
+      // consecutive_positive hysteresis gate (selectLeakCandidates(), livenessTracker.cpp)
+      // sitting in that table - which would let this test's first pass start for a reason that
+      // has nothing to do with the seeding this method does further down (see
+      // SEED_EPOCHS_FOR_HYSTERESIS's own comment), masking whether that seeding is actually
+      // sufficient on its own.
+      JavaProfiler.resetKlassPopulationForTest0();
       JavaProfiler.resetReferenceChainSearchForTest0();
     }
     Path scratchDumpPath = Paths.get("referencechains-population-scratch.jfr");
@@ -343,30 +389,37 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
         match = ReferenceChainAssertions.findMatchForClass(verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false), ChainLink.class);
 
         if (match == null && "debug".equals(System.getProperty("ddprof_test.config"))) {
-          // Deterministic short-circuit (debug-only native seams - a no-op in release builds, so
-          // this leaves release-build coverage of the organic path below completely unchanged):
-          // the dump() just above already drove a real BFS pass (Profiler::dump() ->
-          // ReferenceChainTracker::runPass(), the same background-thread-cadence path production
-          // uses), which, given this method's own generous firstpassbudget=200000, has almost
-          // certainly already tagged gcRootHolder's very first ChainLink (getTag() > 0) - that's
-          // pollWatchedTargets()'s only precondition for reconstructing a chain from it. Only
-          // *which klass gets ranked* as a leak candidate was ever left to chance
-          // (ObjectSampler's own probabilistic allocation sampling into LivenessTracker's ring,
-          // KLASS_POPULATION_MIN_FILL_FOR_TREND = 10 real epochs needed - observed to flake in
-          // practice). Seeding that ranking directly for an arbitrary klass id wired to that same
-          // real, already-tagged instance, then polling synchronously instead of waiting on the
-          // background thread's own cadence, removes exactly that flakiness without touching the
-          // real walk/reconstruction this test exists to prove.
+          // Debug-only native seams - a no-op in release builds, so this leaves release-build
+          // coverage of the organic path below completely unchanged.
+          //
+          // Seeding a klass_id's population ring here is not just a ranking shortcut for an
+          // object some other pass has already tagged - with generations=true,
+          // ReferenceChainTracker::shouldRunPass() (referenceChains.cpp) gates even this search's
+          // very first pass on LivenessTracker::hasLeakSignal(), which (once secondsToOOM() has
+          // nothing to report yet, this early) falls through to selectLeakCandidates() requiring
+          // consecutive_positive >= LEAK_TREND_HYSTERESIS_BASE for *some* klass, real or not (see
+          // SEED_EPOCHS_FOR_HYSTERESIS's own comment for why 10 seeded epochs alone cannot clear
+          // that bar). Seeding SEED_EPOCHS_FOR_HYSTERESIS epochs for this test-chosen id clears it
+          // outright, which is what actually authorizes the background BFS thread's next
+          // scheduled wake to run its real, root-seeded runPass() walk - nothing before that point
+          // has tagged gcRootHolder's own ChainLink yet. pollReferenceChainTargets0() right below
+          // is therefore best-effort, not guaranteed on this call: it only reconstructs a chain
+          // once getTag() on the representative is actually > 0 (pollWatchedTargets()'s only
+          // precondition), which needs that background pass to have already run. The retry loop
+          // below (a 300ms-sleep-then-dump fallback, repeated across rounds) gives the
+          // now-unblocked background thread room to do that and have its own post-pass
+          // pollWatchedTargets() call (threadLoop(), referenceChains.cpp) pick the chain up on its
+          // own, independent of this method's own poll call succeeding on the first try.
           //
           // Seed exactly once (recordKlassPopulationSampleLocked(), livenessTracker.cpp, always
           // *appends* a fresh ring slot rather than overwriting one for a repeated epoch - calling
-          // this whole block again on a later round would append a second 10..100 ramp right after
-          // the first, turning the ring into a non-monotonic sawtooth and destroying the very
+          // this whole block again on a later round would append a second ramp right after the
+          // first, turning the ring into a non-monotonic sawtooth and destroying the very
           // positive-slope signal selectLeakCandidates() needs). Only the poll+dump recheck below
-          // needs to repeat across rounds - not the seeding - to give a still-untagged
-          // representative or a lock-contended dump() more rounds to resolve.
+          // needs to repeat across rounds - not the seeding - to give the background pass, or a
+          // lock-contended dump(), more rounds to resolve.
           if (!seededTestKlassTrend) {
-            for (int epoch = 1; epoch <= 10; epoch++) {
+            for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
               JavaProfiler.seedKlassPopulationSample0(CHAIN_LINK_TEST_KLASS_ID, epoch * 10, epoch);
             }
             seededTestKlassTrend = true;
@@ -546,17 +599,16 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
         match = ReferenceChainAssertions.findMatchForClass(events1, CachedPayload.class);
 
         if (match == null && "debug".equals(System.getProperty("ddprof_test.config"))) {
-          // Same deterministic short-circuit as shouldReconstructReferrerChainToGcRoot() (see that
-          // method's own comment) - debug-only native seams, a no-op in release builds, so the
-          // organic path below still fully covers release builds unchanged. keys[0]'s own
-          // CachedPayload is reachable from round 1 onward and, given this method's own
-          // firstpassbudget=200000, almost certainly already tagged by the real BFS pass the
-          // dump() just above triggered. Seed exactly once - see
-          // shouldReconstructReferrerChainToGcRoot()'s own comment for why reseeding the same
-          // epoch 1..10 ramp on a later round would corrupt the ring into a non-monotonic
+          // Same deterministic short-circuit as shouldReconstructReferrerChainToGcRoot() - see
+          // that method's own comment for the full mechanism (why seeding
+          // SEED_EPOCHS_FOR_HYSTERESIS epochs is what actually authorizes the background BFS
+          // thread's next real pass, and why this method's own pollReferenceChainTargets0() call
+          // right below is therefore best-effort rather than something the seed alone
+          // guarantees on this call). Seed exactly once - see that method's own comment for why
+          // reseeding the same ramp on a later round would corrupt the ring into a non-monotonic
           // sawtooth and destroy the positive-slope signal instead of just re-establishing it.
           if (!seededTestKlassTrend) {
-            for (int epoch = 1; epoch <= 10; epoch++) {
+            for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
               JavaProfiler.seedKlassPopulationSample0(CACHED_PAYLOAD_TEST_KLASS_ID, epoch * 10, epoch);
             }
             seededTestKlassTrend = true;
@@ -643,11 +695,75 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
    * their own scenarios, makes this method's own precondition (a fresh search) something it
    * establishes itself rather than something it presumes a prior test left behind. Debug-only:
    * this native seam does not exist in a release build.
+   *
+   * <p><b>Why this method also seeds a klass population trend, despite requesting no
+   * {@code generations=true} of its own (found the hard way: {@code resetReferenceChainSearchForTest0()}
+   * alone was not enough - the search's first pass never ran at all, so it could never reach
+   * {@code SearchState::ABANDONED} for {@code dump()} to observe):</b> {@code LivenessTracker::_gc_generations}
+   * (livenessTracker.cpp's {@code initialize()}) is only ever updated when a {@code start()} command
+   * actually requests liveness tracking - a bare {@code referencechains=true:...} command like this
+   * method's own does not call {@code LivenessTracker::start()} at all, so
+   * {@code gcGenerationsEnabled()} stays stuck at whatever the two {@code generations=true} tests
+   * above last left it (confirmed directly: this method's own native trace shows
+   * {@code gc_generations=1}). {@code ReferenceChainTracker::hasLeakSignal()}, which
+   * {@code shouldRunPass()} consults for even this search's very first pass, therefore falls
+   * through to {@code selectLeakCandidates()} exactly as the two tests above do - with nothing
+   * left over from {@link #shouldReconstructReferrerChainThroughUnboundedCacheLeak()}'s own
+   * {@code resetKlassPopulationForTest0()} call to satisfy it. Seeding
+   * {@code SEED_EPOCHS_FOR_HYSTERESIS} epochs for a dedicated klass id (see
+   * {@code SEED_EPOCHS_FOR_HYSTERESIS}'s own comment for the full derivation) clears that gate the
+   * same way it does there - this method never sets a representative or polls for it, since it has
+   * no reconstructed chain of its own to prove; {@code selectLeakCandidates()}
+   * (livenessTracker.cpp) counts a qualifying entry toward {@code hasLeakSignal()}'s candidate
+   * count regardless of whether its representative was ever set, and
+   * {@code resolveCandidateRepresentative()} is null-safe against one that wasn't.
+   *
+   * <p><b>Why the seeding is preceded by a {@code System.gc()} and a throwaway {@code dump()}
+   * (found the hard way, twice: a bare {@code dump()} with no preceding GC still lost the
+   * race):</b> {@code cleanup_table()} (livenessTracker.cpp) compares
+   * {@code Profiler::classMap()->generation()} against its own cached copy and, on a mismatch -
+   * which this method's own fresh {@code start()} causes, by clearing that map - wipes
+   * {@code _klass_population} back to empty before folding anything else, exactly once per
+   * mismatch; but that comparison sits *after* an early-return guard
+   * (`{@code if (!is_epoch_owner && !forced) return;}`) that a {@code dump()}-triggered call
+   * (always {@code forced=false}) only clears when a genuinely new, not-yet-processed GC epoch
+   * is pending - a {@code dump()} with no GC since the last {@code cleanup_table()} pass never
+   * reaches the mismatch check at all. The two methods above never hit any of this because their
+   * own seed loop runs only after their round-1 {@code System.gc()}+{@code dump()} pair has
+   * already triggered that one-time wipe-and-resync as a side effect of their own allocation
+   * loop; seeding before any GC/dump of this method's own would instead leave the seed to be
+   * discarded by the *next* call that does clear the guard - this class's own
+   * {@code maybeForceCleanup()} tick (called once per {@code ReferenceChainTracker::threadLoop()}
+   * wake, {@code forced=true} unconditionally clears the guard), which fires on this method's own
+   * 3 {@code System.gc()} calls below regardless. The explicit {@code System.gc()}+{@code dump()}
+   * pair here forces that one-time wipe-and-resync to happen now, before seeding, exactly like
+   * the two methods above get for free from their own round-1 allocation loop.
    */
   @Test
   @Order(3)
   public void shouldReportAbandonedSearchOnTinyFrontierCap() throws Exception {
     if ("debug".equals(System.getProperty("ddprof_test.config"))) {
+      // See this method's own javadoc ("Why this method also seeds a klass population trend...")
+      // for why this is needed even though this method requests no generations=true of its own.
+      //
+      // A System.gc() + throwaway dump() first - see this method's own javadoc ("Why the seeding
+      // is preceded by...") for why *both* are needed: a dump() alone triggers cleanup_table()
+      // with forced=false, which only clears the class-map-generation-mismatch guard (and
+      // therefore only wipes/resyncs _klass_population) when a new GC epoch is actually pending -
+      // this System.gc() is what makes that true for this call, rather than leaving it to chance
+      // (or to this method's own 3 System.gc() calls below, which run after the seed and would
+      // let maybeForceCleanup()'s forced=true tick discard it first).
+      System.gc();
+      Path warmupDumpPath = Paths.get("referencechains-abandoned-test-warmup.jfr");
+      try {
+        dump(warmupDumpPath);
+      } finally {
+        Files.deleteIfExists(warmupDumpPath);
+      }
+      JavaProfiler.resetKlassPopulationForTest0();
+      for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
+        JavaProfiler.seedKlassPopulationSample0(ABANDON_TEST_KLASS_ID, epoch * 10, epoch);
+      }
       JavaProfiler.resetReferenceChainSearchForTest0();
     }
     List<Object> gcRootHolder = new ArrayList<>();
@@ -667,9 +783,29 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
 
     Path dumpPath = Paths.get("referencechains-abandoned-test.jfr");
     try {
-      dump(dumpPath);
-      JfrEvents abandoned = verifyEvents(dumpPath, "datadog.ReferenceChainAbandoned", true);
-      assertTrue(abandoned.hasItems(), "Expected at least one datadog.ReferenceChainAbandoned event");
+      // Even with the seeding above clearing hasLeakSignal()'s gate so the search's first pass is
+      // actually allowed to start (this method's own javadoc), that pass still has to be woken by
+      // the BFS thread and still has to actually reach the frontier cap/ttl cutoff, inside whatever
+      // real wall-clock time this shared, no-forkEvery test JVM's own scheduling happens to grant
+      // it (this class's own header comment) - a single fixed-length sleep-then-dump-then-assert,
+      // with no room to retry, previously failed outright whenever that one attempt landed a beat
+      // early. Retry across a few more dumps, spaced far enough apart to tolerate a slow
+      // BFS-thread wake or a walk over a larger-than-usual inherited heap, before concluding the
+      // search genuinely never abandoned - mirroring the bounded retry loops
+      // shouldReconstructReferrerChainToGcRoot()/shouldReconstructReferrerChainThroughUnboundedCacheLeak()
+      // already use above.
+      JfrEvents abandoned = null;
+      for (int attempt = 0; attempt < 8; attempt++) {
+        dump(dumpPath);
+        abandoned = verifyEvents(dumpPath, "datadog.ReferenceChainAbandoned", false);
+        if (abandoned.hasItems()) {
+          break;
+        }
+        Thread.sleep(1000);
+      }
+      assertTrue(abandoned != null && abandoned.hasItems(),
+          "Expected at least one datadog.ReferenceChainAbandoned event after 3 GCs, an initial "
+              + "1500ms grace period, and 8 retries 1s apart");
     } finally {
       Files.deleteIfExists(dumpPath);
     }

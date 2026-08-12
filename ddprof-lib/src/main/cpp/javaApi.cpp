@@ -1248,6 +1248,44 @@ Java_com_datadoghq_profiler_JavaProfiler_getReferenceChainPendingSizeForTest0(
   return (jlong)ReferenceChainTracker::instance()->pendingExpandSizeForTest();
 }
 
+// Seeds one heap-floor-ring sample directly (LivenessTracker::secondsToOOM()'s
+// input), bypassing the real GarbageCollectionFinish callback - lets a test
+// build an arbitrary rising/flat heap-usage-over-time history without
+// waiting on real GCs. timestampNs values are only ever compared against
+// each other (secondsToOOM()'s own ringThirdsStats() deltas), never against
+// a real wall clock, so a test may use any self-consistent, strictly
+// increasing sequence.
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_heapFloorRecordForTest0(
+    JNIEnv *env, jclass unused, jlong usedBytes, jlong timestampNs) {
+  LivenessTracker::instance()->heapFloorRecordForTest((u64)usedBytes,
+                                                        (u64)timestampNs);
+}
+
+// Bypasses initialize_table()'s JNI-dependent HeapUsage::getMaxHeap() call so
+// secondsToOOM() can be exercised against a test-chosen fake max heap size,
+// independent of whatever -Xmx this JVM's own shared, no-forkEvery fork
+// happens to run with.
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setMaxHeapBytesForTest0(
+    JNIEnv *env, jclass unused, jlong maxHeapBytes) {
+  LivenessTracker::instance()->setMaxHeapBytesForTest((jlong)maxHeapBytes);
+}
+
+// Exposes ReferenceChainTracker::shouldRunPass() directly (see that seam's
+// own comment, referenceChains.h) - unlike runReferenceChainPass0() above,
+// which calls runPass() unconditionally, this reports whether the
+// search-restart gate itself (canAffordNewSearch() -> hasLeakSignal()) would
+// currently allow a fresh/terminal search to start.
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_shouldRunPassForTest0(JNIEnv *env,
+                                                                jclass unused) {
+  return ReferenceChainTracker::instance()->shouldRunPassForTest(
+             OS::nanotime())
+             ? JNI_TRUE
+             : JNI_FALSE;
+}
+
 #endif // DEBUG
 
 // ---- Test-only reads of the current thread's OTEP record -----------------------------------

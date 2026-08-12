@@ -59,6 +59,16 @@ public final class LeakingCacheScenario {
   // separate JVMs.
   private static final int CACHED_PAYLOAD_TEST_KLASS_ID = 987301;
 
+  // See ReferenceChainTrackingTest.SEED_EPOCHS_FOR_HYSTERESIS's own comment for the full
+  // derivation: LivenessTracker's hysteresis gate (livenessTracker.h's
+  // KLASS_POPULATION_MIN_FILL_FOR_TREND=10 / LEAK_TREND_HYSTERESIS_BASE=5) only starts
+  // incrementing consecutive_positive once ring_fill has reached 10, so a batch of exactly 10
+  // seedKlassPopulationSample0() calls caps consecutive_positive at 1 - far short of what
+  // selectLeakCandidates() (livenessTracker.cpp) requires before ReferenceChainTracker::
+  // hasLeakSignal() reports a candidate, which is what this scenario's own generations=true
+  // startCommand needs to authorize the BFS thread's first real pass at all.
+  private static final int SEED_EPOCHS_FOR_HYSTERESIS = 15;
+
   /** Printed to stdout, followed by the matched leaf class's name, on success. */
   public static final String FOUND_MARKER = "[chain-found] ";
 
@@ -128,13 +138,16 @@ public final class LeakingCacheScenario {
       if (match == null && debugBuild) {
         // Same debug-only, seeded-representative short-circuit as ReferenceChainTrackingTest's
         // own shouldReconstructReferrerChainThroughUnboundedCacheLeak() (see that method's own
-        // comment): decouples this scenario's assertion from whether the real, probabilistic
-        // allocation-sampling-driven slope detection happens to notice CachedPayload's own
-        // population trend within this scenario's fixed round/timeout budget. "seed-0" (from
-        // seedInitialBatch()) is reachable via cache for the scenario's entire lifetime, so it
-        // is a safe, always-valid representative regardless of which round this fires on.
+        // comment, and SEED_EPOCHS_FOR_HYSTERESIS's own comment above): decouples this scenario's
+        // assertion from whether the real, probabilistic allocation-sampling-driven slope
+        // detection happens to notice CachedPayload's own population trend within this scenario's
+        // fixed round/timeout budget - by clearing hasLeakSignal()'s own hysteresis gate outright,
+        // which is what actually authorizes the BFS thread's first real pass, rather than assuming
+        // some earlier pass has already tagged anything. "seed-0" (from seedInitialBatch()) is
+        // reachable via cache for the scenario's entire lifetime, so it is a safe, always-valid
+        // representative regardless of which round this fires on.
         if (!seededTestKlassTrend) {
-          for (int epoch = 1; epoch <= 10; epoch++) {
+          for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
             JavaProfiler.seedKlassPopulationSample0(CACHED_PAYLOAD_TEST_KLASS_ID, epoch * 10, epoch);
           }
           seededTestKlassTrend = true;

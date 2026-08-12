@@ -1801,6 +1801,18 @@ public:
   // pendingExpandPositionForTest() above, for computing a position's
   // fraction of the current backlog.
   size_t pendingExpandSizeForTest() const;
+
+  // Test seam - not part of the production API. Exposes the private
+  // shouldRunPass() gate directly, so a test can assert whether a
+  // fresh/terminal search would be allowed to start right now - in
+  // particular, whether LivenessTracker::secondsToOOM()'s urgent-OOM bypass
+  // (hasLeakSignal(), see OOM_URGENT_THRESHOLD_S's own comment above) opens
+  // this gate even with zero per-klass leak candidate (confirmable in the
+  // same test via LivenessTracker::selectLeakCandidates()/JavaProfiler's
+  // selectLeakCandidateKlassIds0() seam) - something runReferenceChainPass0()
+  // (javaApi.cpp) cannot show, since it calls runPass() directly and never
+  // consults this gate at all.
+  bool shouldRunPassForTest(u64 now_ns) { return shouldRunPass(now_ns); }
 };
 
 #endif // _REFERENCECHAINS_H

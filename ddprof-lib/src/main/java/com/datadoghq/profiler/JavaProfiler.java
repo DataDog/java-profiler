@@ -647,6 +647,34 @@ public final class JavaProfiler {
     public static native long getReferenceChainPendingSizeForTest0();
 >>>>>>> 4267dc125 (Implement reference chains for surviving live-heap samples)
 
+    /**
+     * Test seam (debug native builds only): seeds one heap-floor-ring sample - the input to
+     * {@code LivenessTracker::secondsToOOM()}'s time-to-OOM projection - directly, bypassing the
+     * real {@code GarbageCollectionFinish} callback. {@code timestampNs} values are only ever
+     * compared against each other, never against a real wall clock, so a test may use any
+     * self-consistent, strictly increasing sequence to build an arbitrary rising or flat
+     * heap-usage-over-time history without waiting on real GCs.
+     */
+    public static native void heapFloorRecordForTest0(long usedBytes, long timestampNs);
+
+    /**
+     * Test seam (debug native builds only): overrides the max-heap-size {@code secondsToOOM()}
+     * projects against, bypassing the real {@code Runtime.maxMemory()} resolution - so a test can
+     * exercise the projection deterministically, independent of whatever {@code -Xmx} this JVM's
+     * own shared, no-{@code forkEvery} fork happens to run with.
+     */
+    public static native void setMaxHeapBytesForTest0(long maxHeapBytes);
+
+    /**
+     * Test seam (debug native builds only): reports whether ReferenceChainTracker's search-restart
+     * gate ({@code canAffordNewSearch()} -&gt; {@code hasLeakSignal()}) would currently allow a
+     * fresh/terminal search to start - in particular, whether {@code secondsToOOM()}'s urgent-OOM
+     * bypass opens this gate even with zero per-klass leak candidate (confirmable in the same test
+     * via {@link #selectLeakCandidateKlassIds0()}). Unlike {@link #runReferenceChainPass0()}, which
+     * calls {@code runPass()} unconditionally, this reads the gate itself without running a pass.
+     */
+    public static native boolean shouldRunPassForTest0();
+
     // ---- Test-only reads of the current thread's OTEP record ----------------------------------
     // Each resolves the current carrier's record directly (like the write primitives above) with
     // no cached buffer and no per-thread Java object; introspection/test use only.
