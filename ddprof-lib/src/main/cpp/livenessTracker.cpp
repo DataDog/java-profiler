@@ -488,7 +488,7 @@ bool LivenessTracker::hasQualifyingGrowth(KlassPopulationEntry &entry) const {
   return (stats.recent_min - stats.earliest_min) >= floor_bar;
 }
 
-void LivenessTracker::recordHeapFloorSample(u64 used) {
+void LivenessTracker::recordHeapFloorSample(u64 used, u64 timestamp_ns) {
   // Lock-free, single-writer-at-a-time - see _heap_floor_ring's own comment
   // (livenessTracker.h) for why onGC() cannot take _table_lock here.
   //
@@ -500,9 +500,12 @@ void LivenessTracker::recordHeapFloorSample(u64 used) {
   // (The previous version had this backwards - storeRelease() on the
   // payload with a plain store on the index - which does not establish any
   // ordering between "the index says this slot is valid" and "the payload
-  // for that slot is visible".)
+  // for that slot is visible".) _heap_floor_time_ring's payload write below
+  // is a plain store for the same reason - it precedes the same
+  // storeRelease() in program order.
   u8 head = load(_heap_floor_ring_head);
   store(_heap_floor_ring[head], used);
+  store(_heap_floor_time_ring[head], timestamp_ns);
   storeRelease(_heap_floor_ring_head, (u8)((head + 1) % KLASS_POPULATION_RING_SIZE));
   u8 fill = load(_heap_floor_ring_fill);
   if (fill < KLASS_POPULATION_RING_SIZE) {
@@ -537,6 +540,53 @@ bool LivenessTracker::heapFloorRising() const {
     floor_bar = (double)HEAP_FLOOR_FLOOR_ABS_MIN;
   }
   return (stats.recent_min - stats.earliest_min) >= floor_bar;
+}
+
+double LivenessTracker::secondsToOOM() const {
+  if (!_gc_generations.load(std::memory_order_relaxed) || _max_heap_bytes <= 0) {
+    // No heap-floor history is ever recorded outside _gc_generations (onGC()'s
+    // own gate), and a projection is meaningless without a resolved max heap.
+    return -1;
+  }
+
+  // Matches heapFloorRising()'s own acquire/scan pattern - same rings, same
+  // single-writer/lock-free discipline (recordHeapFloorSample()'s comment).
+  u8 fill = loadAcquire(_heap_floor_ring_fill);
+  u8 head = loadAcquire(_heap_floor_ring_head);
+
+  RingThirdsStats byte_stats;
+  if (!ringThirdsStats(
+          head, fill, KLASS_POPULATION_RING_SIZE,
+          KLASS_POPULATION_MIN_FILL_FOR_TREND,
+          [this](int i) { return (double)load(_heap_floor_ring[i]); },
+          &byte_stats)) {
+    return -1;
+  }
+  // Same head/fill as byte_stats above - both rings are only ever pushed
+  // together by recordHeapFloorSample(), so this call cannot disagree with
+  // byte_stats' window and its own min-fill check cannot fail differently.
+  RingThirdsStats time_stats;
+  ringThirdsStats(
+      head, fill, KLASS_POPULATION_RING_SIZE, KLASS_POPULATION_MIN_FILL_FOR_TREND,
+      [this](int i) { return (double)load(_heap_floor_time_ring[i]); },
+      &time_stats);
+
+  double bytes_delta = byte_stats.recent_mean - byte_stats.earliest_mean;
+  double time_delta_ns = time_stats.recent_mean - time_stats.earliest_mean;
+  if (bytes_delta <= 0 || time_delta_ns <= 0) {
+    // Floor isn't rising (or the two windows have no time separation at all,
+    // which should not happen once min-fill is satisfied) - no projection.
+    return -1;
+  }
+
+  double bytes_per_ns = bytes_delta / time_delta_ns;
+  double remaining_bytes = (double)_max_heap_bytes - byte_stats.recent_mean;
+  if (remaining_bytes <= 0) {
+    // The floor's own recent mean has already reached (or passed) the max
+    // heap size - exhaustion is not "in N seconds", it's now.
+    return 0;
+  }
+  return (remaining_bytes / bytes_per_ns) / 1e9; // ns -> seconds
 }
 
 int LivenessTracker::selectLeakCandidates(KlassCandidate *out, int max) {
@@ -733,6 +783,10 @@ Error LivenessTracker::initialize_table(JNIEnv *jni, int sampling_interval) {
     return Error("Can not track liveness for allocation samples without heap "
                  "size information.");
   }
+  // Cached for secondsToOOM() - see _max_heap_bytes' own comment
+  // (livenessTracker.h) for why this is resolved once here rather than
+  // re-querying HeapUsage::getMaxHeap() on every projection.
+  _max_heap_bytes = max_heap;
 
   int required_table_capacity =
       sampling_interval > 0 ? max_heap / sampling_interval : max_heap;
@@ -1077,7 +1131,7 @@ void LivenessTracker::onGC() {
     // itself, since this ring exists purely to support that feature.
     size_t used = resolvePostGcHeapUsage(nullptr);
     if (used > 0) {
-      recordHeapFloorSample((u64)used);
+      recordHeapFloorSample((u64)used, OS::nanotime());
     }
   }
 }

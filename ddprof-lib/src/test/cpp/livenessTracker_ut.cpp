@@ -726,3 +726,116 @@ TEST_F(SelectLeakCandidatesTest, EmptyTableReturnsZero) {
 
     EXPECT_EQ(count, 0);
 }
+
+// ---------------------------------------------------------------------------
+// Heap-wide time-to-OOM projection (secondsToOOM()) - the aggressive-leak gap
+// selectLeakCandidates()'s per-klass ring-fill/hysteresis gate leaves open:
+// that gate can take longer to trust a candidate than a fast, heap-wide leak
+// has left before OOM (see ReferenceChainTracker::hasLeakSignal()'s
+// OOM_URGENT_THRESHOLD_S fast path, referenceChains.h/.cpp). Exercises the
+// heap-floor ring/time-ring pair directly via the same heapFloorRecordForTest()
+// seam SelectLeakCandidatesTest's HeapFloorCorroboration test above already
+// uses for heapFloorRising(), plus setMaxHeapBytesForTest() to avoid the
+// JNI-dependent HeapUsage::getMaxHeap() call this suite has no live JVM for.
+// ---------------------------------------------------------------------------
+class SecondsToOOMTest : public ::testing::Test {
+protected:
+    static constexpr u64 SEC_NS = 1000000000ULL;
+    static constexpr u64 MiB = 1ULL << 20;
+
+    void SetUp() override {
+        installGtestCrashHandler<LIVENESS_TRACKER_TEST_NAME>();
+        LivenessTracker::instance()->klassPopulationResetForTest();
+        LivenessTracker::instance()->setGcGenerationsForTest(true);
+    }
+
+    void TearDown() override {
+        LivenessTracker::instance()->klassPopulationResetForTest();
+        LivenessTracker::instance()->setGcGenerationsForTest(false);
+        LivenessTracker::instance()->setMaxHeapBytesForTest(-1);
+        restoreDefaultSignalHandlers();
+    }
+
+    // Ten samples, one second apart, growing by 100MiB each: earliest third
+    // (indices 0-2) means to 1100MiB at t=1s, recent third (indices 7-9)
+    // means to 1800MiB at t=8s - a 700MiB rise over 7s, i.e. exactly
+    // 100MiB/s, chosen so the projected time-to-exhaustion below comes out
+    // to a clean value rather than a value only checked against itself.
+    static void seedRisingFloor(LivenessTracker *tracker) {
+        for (int i = 0; i < 10; i++) {
+            tracker->heapFloorRecordForTest(1000 * MiB + (u64)i * 100 * MiB,
+                                             (u64)i * SEC_NS);
+        }
+    }
+};
+
+// Fewer than KLASS_POPULATION_MIN_FILL_FOR_TREND (10) heap-floor samples -
+// same "not enough history yet" gate ringThirdsStats() applies to every
+// other trend check in this class.
+TEST_F(SecondsToOOMTest, NotEnoughSamplesReturnsNegative) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setMaxHeapBytesForTest((jlong)(2800 * MiB));
+    for (int i = 0; i < 9; i++) {
+        tracker->heapFloorRecordForTest(1000 * MiB + (u64)i * 100 * MiB,
+                                         (u64)i * SEC_NS);
+    }
+    EXPECT_LT(tracker->secondsToOOM(), 0.0);
+}
+
+// A flat floor (zero byte delta between the earliest and recent thirds) is
+// not rising - no projection is offered, mirroring hasQualifyingGrowth()'s
+// own "strictly positive slope" requirement.
+TEST_F(SecondsToOOMTest, FlatFloorReturnsNegative) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setMaxHeapBytesForTest((jlong)(2800 * MiB));
+    for (int i = 0; i < 10; i++) {
+        tracker->heapFloorRecordForTest(1000 * MiB, (u64)i * SEC_NS);
+    }
+    EXPECT_LT(tracker->secondsToOOM(), 0.0);
+}
+
+// No heap-floor history is ever recorded outside _gc_generations (onGC()'s
+// own gate) - secondsToOOM() must not fabricate a projection from whatever
+// ring contents happen to be left over from a previous _gc_generations
+// session.
+TEST_F(SecondsToOOMTest, GcGenerationsDisabledReturnsNegative) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setMaxHeapBytesForTest((jlong)(2800 * MiB));
+    seedRisingFloor(tracker);
+    tracker->setGcGenerationsForTest(false);
+
+    EXPECT_LT(tracker->secondsToOOM(), 0.0);
+}
+
+// A rising floor is meaningless without a resolved max heap size to project
+// against - initialize_table()'s own Error path (livenessTracker.cpp) never
+// lets liveness tracking start without one, but secondsToOOM() must still
+// guard the case explicitly rather than dividing/comparing against -1.
+TEST_F(SecondsToOOMTest, UnresolvedMaxHeapReturnsNegative) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setMaxHeapBytesForTest(-1);
+    seedRisingFloor(tracker);
+
+    EXPECT_LT(tracker->secondsToOOM(), 0.0);
+}
+
+// The worked example seedRisingFloor() documents: 700MiB rise over 7s
+// (100MiB/s) with 1000MiB of headroom (2800MiB max heap - 1800MiB recent
+// floor mean) projects to exactly 10 seconds.
+TEST_F(SecondsToOOMTest, RisingFloorProjectsExpectedSeconds) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setMaxHeapBytesForTest((jlong)(2800 * MiB));
+    seedRisingFloor(tracker);
+
+    EXPECT_NEAR(tracker->secondsToOOM(), 10.0, 1e-6);
+}
+
+// The floor's own recent-third mean has already reached the max heap size -
+// exhaustion is "now", not some positive number of seconds out.
+TEST_F(SecondsToOOMTest, FloorAtMaxHeapReturnsZero) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setMaxHeapBytesForTest((jlong)(1800 * MiB)); // == recent third's mean
+    seedRisingFloor(tracker);
+
+    EXPECT_EQ(tracker->secondsToOOM(), 0.0);
+}

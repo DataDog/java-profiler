@@ -2445,6 +2445,12 @@ protected:
         VMTestAccessor::setJvmti(orig_jvmti);
         LivenessTracker::instance()->klassPopulationResetForTest();
         LivenessTracker::instance()->setGcGenerationsForTest(false);
+        // UrgentOOMProjectionBypassesCandidateGate below sets this - reset it
+        // here (TearDown always runs, even after a fatal ASSERT_* return)
+        // rather than as a trailing statement in that test body, so a failed
+        // assertion can't leak a stale max-heap value into the next test
+        // sharing this singleton.
+        LivenessTracker::instance()->setMaxHeapBytesForTest(-1);
     }
 
     // No loaded classes to resolve - resolveLoadedClasses() reports 0 and
@@ -2626,6 +2632,41 @@ TEST_F(SearchRestartTest, PainBudgetBlocksARestartUntilItDrains) {
 
     // Well past the drain point - the debt has cleared, restart #3 proceeds.
     EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(2ULL + 200000000000ULL));
+    EXPECT_EQ(SearchState::RUNNING, tracker->searchState());
+
+    tracker->stop();
+}
+
+// hasLeakSignal()'s OOM_URGENT_THRESHOLD_S fast path (referenceChains.h/.cpp):
+// a heap-wide leak growing fast enough to project exhaustion sooner than the
+// threshold must start a search immediately, without waiting for any klass
+// to clear selectLeakCandidates()'s own per-klass ring-fill/hysteresis gate -
+// this is the aggressive-leak gap GenerationsEnabledButNoCandidateBlocksFirstSearch
+// above documents for the non-urgent case. Deliberately seeds no candidate at
+// all (LivenessTracker::instance()->klassPopulationResetForTest() in SetUp
+// leaves the population table empty) so this test can only pass via the
+// heap-floor projection, never via selectLeakCandidates() falling back to a
+// real candidate.
+TEST_F(SearchRestartTest, UrgentOOMProjectionBypassesCandidateGate) {
+    LivenessTracker::instance()->setGcGenerationsForTest(true);
+    constexpr u64 SEC_NS = 1000000000ULL;
+    constexpr u64 MiB = 1ULL << 20;
+    // Same worked example as livenessTracker_ut.cpp's
+    // SecondsToOOMTest.RisingFloorProjectsExpectedSeconds: 700MiB rise over
+    // 7s against a 2800MiB max heap projects to 10s - comfortably under
+    // OOM_URGENT_THRESHOLD_S (5 minutes).
+    LivenessTracker::instance()->setMaxHeapBytesForTest((jlong)(2800 * MiB));
+    for (int i = 0; i < 10; i++) {
+        LivenessTracker::instance()->heapFloorRecordForTest(
+            1000 * MiB + (u64)i * 100 * MiB, (u64)i * SEC_NS);
+    }
+
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(1));
     EXPECT_EQ(SearchState::RUNNING, tracker->searchState());
 
     tracker->stop();

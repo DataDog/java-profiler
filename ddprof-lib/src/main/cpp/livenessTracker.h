@@ -226,8 +226,23 @@ private:
   // recordHeapFloorSample()/heapFloorRising() (livenessTracker.cpp) for the
   // load/store ordering this relies on.
   u64 _heap_floor_ring[KLASS_POPULATION_RING_SIZE];
+  // OS::nanotime() paired index-for-index with _heap_floor_ring above (same
+  // head/fill, always pushed together by recordHeapFloorSample() - see that
+  // method's comment) - heapFloorRising() itself has no use for elapsed
+  // time, but secondsToOOM() below needs it to turn the ring's byte growth
+  // into a rate rather than just a magnitude.
+  u64 _heap_floor_time_ring[KLASS_POPULATION_RING_SIZE];
   volatile u8 _heap_floor_ring_head;
   volatile u8 _heap_floor_ring_fill;
+
+  // Runtime.maxMemory(), resolved once by initialize_table() (the same call
+  // that already requires it to enable liveness tracking at all - see that
+  // method's own Error path) and cached here so secondsToOOM() - polled once
+  // per ReferenceChainTracker::threadLoop wake, ~1s - does not repeat
+  // HeapUsage::getMaxHeap()'s handful of JNI calls on every poll. A JVM's max
+  // heap does not change at runtime, so a value resolved once stays valid.
+  // -1 if never resolved (mirrors getMaxHeap()'s own sentinel).
+  jlong _max_heap_bytes;
 
   // Gates the per-klass population tracking below. Set from
   // args._gc_generations in initialize() - deliberately not folded into
@@ -428,10 +443,13 @@ private:
   // caller.
   bool hasQualifyingGrowth(KlassPopulationEntry &entry) const;
 
-  // Pushes `used` into _heap_floor_ring - see that member's own comment for
-  // why this is lock-free rather than _table_lock-guarded. Called only from
-  // onGC() (single-writer-at-a-time, same comment).
-  void recordHeapFloorSample(u64 used);
+  // Pushes `used`/`timestamp_ns` into _heap_floor_ring/_heap_floor_time_ring -
+  // see those members' own comments for why this is lock-free rather than
+  // _table_lock-guarded. Called only from onGC() (single-writer-at-a-time,
+  // same comment), which supplies OS::nanotime() explicitly rather than this
+  // method calling it internally - keeps this method itself deterministic
+  // for the heapFloorRecordForTest() test seam below.
+  void recordHeapFloorSample(u64 used, u64 timestamp_ns);
 
   // Reads whether the aggregate post-GC live heap has itself shown a
   // sustained rise over _heap_floor_ring's horizon - see
@@ -456,6 +474,7 @@ public:
         _Class_getName(0), _gc_epoch(0), _last_gc_epoch(0),
         _last_cleanup_ns(0), _used_after_last_gc(0),
         _heap_floor_ring_head(0), _heap_floor_ring_fill(0),
+        _max_heap_bytes(-1),
         _gc_generations(false),
         _klass_population_size(0), _klass_count_scratch_size(0),
         _last_class_map_generation(0) {}
@@ -523,6 +542,37 @@ public:
   bool gcGenerationsEnabled() const {
     return _gc_generations.load(std::memory_order_relaxed);
   }
+
+  // Heap-wide time-to-OOM projection, fed by the same _heap_floor_ring
+  // heapFloorRising() reads (aggregate post-GC heap usage, one sample per GC
+  // epoch) plus _heap_floor_time_ring's paired timestamps. Exists because
+  // selectLeakCandidates()'s per-klass gate (KLASS_POPULATION_MIN_FILL_FOR_TREND
+  // ring samples plus LEAK_TREND_HYSTERESIS_BASE/CORROBORATED consecutive
+  // qualifying epochs) can take longer to trust a candidate than a fast,
+  // heap-wide leak has left before OOM - this gives
+  // ReferenceChainTracker::hasLeakSignal() an independent, rate-based signal
+  // to start a search immediately instead of waiting on that gate. Same
+  // "mean of thirds" rate estimate every other trend check here uses
+  // (allocation-free, one ring scan), extrapolated linearly to
+  // _max_heap_bytes - not a claim that heap growth stays linear, only that a
+  // short-horizon linear extrapolation is a reasonable urgency signal.
+  // Returns a negative value if the heap-floor ring is not filled enough yet
+  // (gcGenerationsEnabled() is off, or too few GC epochs have happened), the
+  // floor is not rising, or _max_heap_bytes was never resolved - callers
+  // must treat any non-positive return as "no projection available", not
+  // "zero seconds". Returns 0 if the floor's own recent mean has already
+  // reached _max_heap_bytes.
+  //
+  // Known limitation, inherited from heapFloorRising() rather than
+  // introduced here: cleanup_table()'s class-map-reset branch clears
+  // _klass_population but never _heap_floor_ring/_heap_floor_time_ring, so a
+  // stop()/start() gap with a real wall-clock pause in between can still mix
+  // pre-gap and post-gap samples into the same window. heapFloorRising()
+  // only risked a magnitude error from this; this method additionally
+  // divides by elapsed time, so the same gap understates the growth rate
+  // (overstates the projected time-to-OOM) rather than the reverse - not
+  // solved here.
+  double secondsToOOM() const;
 
   // Third trigger for cleanup_table(), alongside track()'s table-overflow
   // branch (forced) and flush_table()'s JFR-flush cadence (organic): those
@@ -624,9 +674,19 @@ public:
 
   // Test seams for the heap-floor ring (mirrors klassPopulation*ForTest()'s
   // own seams immediately above) - lock-free, see _heap_floor_ring's own
-  // comment, so no locking wrapper is needed here either.
-  void heapFloorRecordForTest(u64 used) { recordHeapFloorSample(used); }
+  // comment, so no locking wrapper is needed here either. timestamp_ns
+  // defaults to 0 for existing callers that only exercise
+  // heapFloorRising()/heapFloorRisingForTest() (which never reads the time
+  // ring) - a test exercising secondsToOOM() must pass real, increasing
+  // values explicitly.
+  void heapFloorRecordForTest(u64 used, u64 timestamp_ns = 0) {
+    recordHeapFloorSample(used, timestamp_ns);
+  }
   bool heapFloorRisingForTest() const { return heapFloorRising(); }
+  // Bypasses initialize_table()'s JNI-dependent HeapUsage::getMaxHeap() call
+  // (out of gtest's reach, same reason setGcGenerationsForTest() exists) so
+  // secondsToOOM() can be exercised directly against a fake max heap size.
+  void setMaxHeapBytesForTest(jlong v) { _max_heap_bytes = v; }
 
   // Sets _gc_generations directly, bypassing initialize() (which requires a
   // live JVM - VM::hotspot_version()/VM::jni(), see that method's own code -

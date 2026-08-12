@@ -731,6 +731,19 @@ bool ReferenceChainTracker::hasLeakSignal() {
     // header comment for why that means "always true" here.
     return true;
   }
+  double seconds_to_oom = LivenessTracker::instance()->secondsToOOM();
+  if (seconds_to_oom >= 0 && seconds_to_oom < OOM_URGENT_THRESHOLD_S) {
+    // Heap-wide floor is rising fast enough that OOM is imminent - don't
+    // wait for a specific klass to clear selectLeakCandidates()'s own
+    // per-klass ring-fill/hysteresis gate; see OOM_URGENT_THRESHOLD_S's own
+    // comment (referenceChains.h) for why that gate alone is too slow here.
+    // canAffordNewSearch() can still defer this via the pain-budget check it
+    // runs before calling this method (this method's own header comment).
+    TEST_LOG("ReferenceChainTracker::hasLeakSignal -> true (secondsToOOM=%.1f < "
+             "OOM_URGENT_THRESHOLD_S=%.1f)",
+             seconds_to_oom, OOM_URGENT_THRESHOLD_S);
+    return true;
+  }
   KlassCandidate probe[1];
   return LivenessTracker::instance()->selectLeakCandidates(probe, 1) > 0;
 }

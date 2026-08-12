@@ -958,6 +958,19 @@ private:
   // directly, once a pass has run.
   static constexpr u64 PASS_CADENCE_NS = 1000000000ULL; // 1s
 
+  // Heap-wide time-to-OOM urgency threshold (LivenessTracker::secondsToOOM())
+  // - hasLeakSignal() below forces a search to start immediately once the
+  // projection drops under this, rather than waiting for a klass to clear
+  // selectLeakCandidates()'s own per-klass ring-fill/hysteresis gate
+  // (KLASS_POPULATION_MIN_FILL_FOR_TREND plus LEAK_TREND_HYSTERESIS_BASE/
+  // CORROBORATED epochs, livenessTracker.h). Without this, an aggressive,
+  // heap-wide leak can OOM the process before any single klass ever clears
+  // that gate. Provisional, same status as every other un-benchmarked
+  // *_NS/*_S constant in this file: 5 minutes is chosen only to leave some
+  // margin for a BFS pass plus a JFR flush to actually run before the
+  // projected exhaustion, not measured against a real OOM race.
+  static constexpr double OOM_URGENT_THRESHOLD_S = 300.0; // 5 minutes
+
   // Auto-scaled default for _first_pass_budget when
   // Arguments::_reference_chains_first_pass_budget is unset (0) - see
   // _first_pass_budget's own comment for why plain _budget is the wrong
@@ -1186,6 +1199,15 @@ private:
   // (restart gate) and threadLoop()'s own steady-state gate below, so a GC
   // with no accompanying population growth doesn't trigger either a restart
   // or a fresh pass.
+  //
+  // Also true, independent of the per-klass check above, whenever
+  // LivenessTracker::secondsToOOM() projects exhaustion sooner than
+  // OOM_URGENT_THRESHOLD_S - see that constant's own comment for why the
+  // per-klass gate alone is too slow for an aggressive, heap-wide leak. This
+  // only removes *this* gate: canAffordNewSearch() (the actual restart/
+  // first-search decision) still checks the pain budget before ever calling
+  // this method, so a search already cooling down from a recent one's own
+  // cost can still be deferred even while this returns true.
   bool hasLeakSignal();
 
   // Search restart gate (this class's own header comment): true once
