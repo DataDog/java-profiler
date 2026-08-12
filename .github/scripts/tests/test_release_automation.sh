@@ -2,17 +2,20 @@
 
 set -euo pipefail
 
+# Copyright 2026, Datadog, Inc
+
+# Hermetic tests for the tag-based release automation.
+# Run with: .github/scripts/tests/test_release_automation.sh
+
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
-VALIDATOR="$ROOT/.github/scripts/validate-release-bump.sh"
+RELEASE_SCRIPT="$ROOT/.github/scripts/release.sh"
 TRIVIAL_VALIDATOR="$ROOT/.github/scripts/validate-trivial-approval.sh"
-WAITER="$ROOT/.github/scripts/wait-release-bump.sh"
+COMPUTE_VERSION="$ROOT/utils/compute-version.sh"
 TEMP_DIR=$(mktemp -d)
 TESTS=0
 
 # This suite must never mutate GitHub or any other network remote. Restrict Git
-# to filesystem transports and shadow every network-capable command used by the
-# release automation. Individual integration scenarios prepend their own gh
-# fixture, while every unexpected network command fails immediately.
+# to filesystem transports and shadow every network-capable command.
 export GIT_ALLOW_PROTOCOL=file
 NETWORK_GUARD_BIN="$TEMP_DIR/network-guard-bin"
 mkdir "$NETWORK_GUARD_BIN"
@@ -40,79 +43,7 @@ pass() {
   TESTS=$((TESTS + 1))
 }
 
-write_valid_fixture() {
-  local path=$1
-  local parent='plugins {
-    java
-}
-
-version = "1.48.0-SNAPSHOT"
-'
-  local head='plugins {
-    java
-}
-
-version = "1.49.0-SNAPSHOT"
-'
-  jq -n \
-    --arg repo "DataDog/java-profiler" \
-    --arg sender_login "dd-octo-sts[bot]" \
-    --arg sender_type "Bot" \
-    --arg sender_permission "none" \
-    --arg author_login "github-actions[bot]" \
-    --arg author_type "Bot" \
-    --arg state "open" \
-    --arg title "[Automated] Bump dev version to 1.49.0" \
-    --arg base_ref "main" \
-    --arg base_sha "$(printf 'c%.0s' {1..40})" \
-    --arg head_ref "automated/bump-1-49-0" \
-    --arg head_sha "$(printf 'b%.0s' {1..40})" \
-    --arg head_repo "DataDog/java-profiler" \
-    --arg parent_sha "$(printf 'a%.0s' {1..40})" \
-    --arg parent_build "$parent" \
-    --arg head_build "$head" \
-    '{
-      repo: $repo,
-      sender_login: $sender_login,
-      sender_type: $sender_type,
-      sender_permission: $sender_permission,
-      author_login: $author_login,
-      author_type: $author_type,
-      state: $state,
-      draft: false,
-      title: $title,
-      base_ref: $base_ref,
-      base_sha: $base_sha,
-      head_ref: $head_ref,
-      head_sha: $head_sha,
-      current_head_sha: $head_sha,
-      head_repo: $head_repo,
-      labels: ["trivial"],
-      changed_files: [{filename: "build.gradle.kts", status: "modified"}],
-      head_parents: [$parent_sha],
-      parent_sha: $parent_sha,
-      parent_reachable: true,
-      parent_build: $parent_build,
-      head_build: $head_build
-    }' > "$path"
-}
-
-expect_success() {
-  local fixture=$1
-  shift
-  "$VALIDATOR" --fixture "$fixture" "$@" >/dev/null ||
-    fail "expected validation success for $fixture"
-  pass
-}
-
-expect_failure() {
-  local fixture=$1
-  shift
-  if "$VALIDATOR" --fixture "$fixture" "$@" >/dev/null 2>&1; then
-    fail "expected validation failure for $fixture"
-  fi
-  pass
-}
+# --- Trivial approval authorization tests (kept from old suite) -------------
 
 write_labeler_fixture() {
   local path=$1
@@ -167,735 +98,242 @@ fi
   fail "trivial validator did not normalize permission lookup failure"
 pass
 
-VALID="$TEMP_DIR/valid.json"
-write_valid_fixture "$VALID"
-expect_success "$VALID"
-expect_success "$VALID" \
-  --source-sha "$(printf 'a%.0s' {1..40})" \
-  --expected-head-sha "$(printf 'b%.0s' {1..40})"
+# --- Script content assertions ----------------------------------------------
 
-HUMAN_LABELER="$TEMP_DIR/human-labeler.json"
-jq '.sender_login = "release-engineer" | .sender_type = "User" | .sender_permission = "maintain"' \
-  "$VALID" > "$HUMAN_LABELER"
-expect_success "$HUMAN_LABELER"
-
-PATCH="$TEMP_DIR/patch.json"
-jq '
-  .base_ref = "release/1.48._" |
-  .head_ref = "automated/bump-1-48-1" |
-  .title = "[Automated] Bump dev version to 1.48.1" |
-  .head_build |= sub("1.49.0"; "1.48.1")
-' "$VALID" > "$PATCH"
-expect_success "$PATCH"
-
-FIRST_PATCH="$TEMP_DIR/first-patch.json"
-jq \
-  --arg source_sha "$(printf 'a%.0s' {1..40})" \
-  --arg release_sha "$(printf 'd%.0s' {1..40})" \
-  '
-    .base_ref = "release/1.48._" |
-    .base_sha = $release_sha |
-    .head_ref = "automated/bump-1-48-2" |
-    .title = "[Automated] Bump dev version to 1.48.2" |
-    .parent_sha = $release_sha |
-    .head_parents = [$release_sha] |
-    .parent_build |= sub("1.48.0"; "1.48.1") |
-    .head_build |= sub("1.49.0"; "1.48.2") |
-    .source_sha = $source_sha |
-    .source_build = (.parent_build | sub("1.48.1"; "1.48.0")) |
-    .release_tag_sha = $release_sha |
-    .release_tag_annotated = true |
-    .release_parents = [$source_sha] |
-    .release_changed_files = [{filename: "build.gradle.kts", status: "modified"}] |
-    .source_tag_annotated = true |
-    .source_tag_reachable = true
-  ' "$VALID" > "$FIRST_PATCH"
-expect_success "$FIRST_PATCH" --branch --first-patch \
-  --source-sha "$(printf 'a%.0s' {1..40})" \
-  --expected-head-sha "$(printf 'b%.0s' {1..40})" \
-  --local-release-tag v_1.48.1
-
-declare -a FIRST_PATCH_MUTATIONS=(
-  '.release_tag_annotated = false'
-  '.release_tag_sha = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"'
-  '.release_parents = ["eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"]'
-  '.release_changed_files += [{filename: "payload", status: "added"}]'
-  '.source_tag_annotated = false'
-  '.source_tag_reachable = false'
-  '.source_build |= sub("1.48.0"; "1.48.1")'
-  '.parent_build += "malicious = true\n"'
-)
-for index in "${!FIRST_PATCH_MUTATIONS[@]}"; do
-  fixture="$TEMP_DIR/invalid-first-patch-$index.json"
-  jq "${FIRST_PATCH_MUTATIONS[$index]}" "$FIRST_PATCH" > "$fixture"
-  expect_failure "$fixture" --branch --first-patch \
-    --source-sha "$(printf 'a%.0s' {1..40})" \
-    --expected-head-sha "$(printf 'b%.0s' {1..40})" \
-    --local-release-tag v_1.48.1
-done
-
-ROLLOVER="$TEMP_DIR/rollover.json"
-jq '
-  .parent_build |= sub("1.48.0"; "1.99.0") |
-  .head_build |= sub("1.49.0"; "2.0.0") |
-  .head_ref = "automated/bump-2-0-0" |
-  .title = "[Automated] Bump dev version to 2.0.0"
-' "$VALID" > "$ROLLOVER"
-expect_success "$ROLLOVER"
-
-STS_BOT="$TEMP_DIR/sts-bot.json"
-jq '
-  .author_login = "dd-octo-sts[bot]" |
-  .author_type = "Bot"
-' "$VALID" > "$STS_BOT"
-expect_failure "$STS_BOT"
-
-HUMAN_AUTHOR="$TEMP_DIR/human-author.json"
-jq '.author_login = "release-engineer" | .author_type = "User"' \
-  "$VALID" > "$HUMAN_AUTHOR"
-expect_failure "$HUMAN_AUTHOR"
-
-MAJOR="$TEMP_DIR/major.json"
-jq \
-  --arg release_sha "$(printf 'd%.0s' {1..40})" \
-  '
-    .head_ref = "automated/bump-2-1-0" |
-    .title = "[Automated] Bump dev version to 2.1.0" |
-    .head_build |= sub("1.49.0"; "2.1.0") |
-    .release_ref_sha = $release_sha |
-    .release_tag_sha = $release_sha |
-    .release_tag_annotated = true |
-    .release_parents = [.parent_sha] |
-    .release_changed_files = [{filename: "build.gradle.kts", status: "modified"}] |
-    .release_build = (.parent_build | sub("1.48.0"; "2.0.0"))
-  ' "$VALID" > "$MAJOR"
-expect_success "$MAJOR"
-
-declare -a MAJOR_MUTATIONS=(
-  '.release_tag_annotated = false'
-  '.release_tag_sha = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"'
-  '.release_parents = ["eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"]'
-  '.release_changed_files += [{filename: "payload", status: "added"}]'
-  '.release_build |= sub("2.0.0"; "2.0.1")'
-  '.release_build += "malicious = true\n"'
-  '.head_build |= sub("2.1.0"; "3.1.0")'
-)
-for index in "${!MAJOR_MUTATIONS[@]}"; do
-  fixture="$TEMP_DIR/invalid-major-$index.json"
-  jq "${MAJOR_MUTATIONS[$index]}" "$MAJOR" > "$fixture"
-  expect_failure "$fixture"
-done
-
-BRANCH="$TEMP_DIR/branch.json"
-jq '.expected_head_sha = .head_sha | .source_sha = .parent_sha' "$VALID" > "$BRANCH"
-expect_success "$BRANCH" --branch \
-  --source-sha "$(printf 'a%.0s' {1..40})" \
-  --expected-head-sha "$(printf 'b%.0s' {1..40})"
-
-declare -a MUTATIONS=(
-  '.sender_login = "unknown[bot]"'
-  '.sender_type = "User" | .sender_permission = "read"'
-  '.author_login = "unknown[bot]"'
-  '.author_type = "User"'
-  '.draft = true'
-  '.state = "closed"'
-  '.base_ref = "feature"'
-  '.head_ref = "attacker/bump-1-49-0"'
-  '.head_repo = "attacker/java-profiler"'
-  '.labels = []'
-  '.changed_files += [{filename: "payload", status: "added"}]'
-  '.head_parents += ["dddddddddddddddddddddddddddddddddddddddd"]'
-  '.parent_reachable = false'
-  '.current_head_sha = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"'
-  '.title = "Looks harmless"'
-  '.head_build |= sub("1.49.0"; "1.50.0")'
-  '.head_build += "malicious = true\n"'
-  '.head_build |= rtrimstr("\n")'
-)
-
-for index in "${!MUTATIONS[@]}"; do
-  fixture="$TEMP_DIR/invalid-$index.json"
-  jq "${MUTATIONS[$index]}" "$VALID" > "$fixture"
-  expect_failure "$fixture"
-done
-
-WRONG_PARENT="$TEMP_DIR/wrong-parent.json"
-jq '.parent_sha = "ffffffffffffffffffffffffffffffffffffffff"' \
-  "$VALID" > "$WRONG_PARENT"
-expect_failure "$WRONG_PARENT"
-
-WRONG_HEAD="$TEMP_DIR/wrong-head.json"
-jq '.expected_head_sha = "ffffffffffffffffffffffffffffffffffffffff"' \
-  "$VALID" > "$WRONG_HEAD"
-expect_failure "$WRONG_HEAD" --branch \
-  --source-sha "$(printf 'a%.0s' {1..40})" \
-  --expected-head-sha "$(printf 'b%.0s' {1..40})"
-
-WRONG_SERIES="$TEMP_DIR/wrong-series.json"
-jq '
-  .base_ref = "release/1.47._" |
-  .head_ref = "automated/bump-1-48-1" |
-  .title = "[Automated] Bump dev version to 1.48.1" |
-  .head_build |= sub("1.49.0"; "1.48.1")
-' "$VALID" > "$WRONG_SERIES"
-expect_failure "$WRONG_SERIES"
-
-NETWORK_DIR="$TEMP_DIR/no-network"
-mkdir "$NETWORK_DIR"
-NETWORK_MARKER="$NETWORK_DIR/gh-was-called"
-printf '#!/usr/bin/env bash\n: > "%s"\nexit 99\n' "$NETWORK_MARKER" \
-  > "$NETWORK_DIR/gh"
-chmod +x "$NETWORK_DIR/gh"
-PATH="$NETWORK_DIR:/usr/bin:/bin" "$VALIDATOR" --fixture "$VALID" >/dev/null ||
-  fail "fixture validation failed with a fail-closed gh stub"
-[ ! -e "$NETWORK_MARKER" ] || fail "fixture validation invoked gh"
-pass
-
-RELEASE_SCRIPT=$(<"$ROOT/.github/scripts/release.sh")
-VALIDATOR_SCRIPT=$(<"$ROOT/.github/scripts/validate-release-bump.sh")
-TRIVIAL_VALIDATOR_SCRIPT=$(<"$TRIVIAL_VALIDATOR")
-[[ "$TRIVIAL_VALIDATOR_SCRIPT" == *'dependabot\[bot\]|dd-octo-sts\[bot\]'* ]] ||
-  fail "trivial validator does not use the trusted bot allowlist"
-[[ "$TRIVIAL_VALIDATOR_SCRIPT" == *"write|maintain|admin"* ]] ||
-  fail "trivial validator does not accept trusted human permissions"
-pass
-[[ "$VALIDATOR_SCRIPT" == *'LABEL="trivial"'* ]] ||
-  fail "validator does not use the trivial label"
-[[ "$RELEASE_SCRIPT" != *"set -x"* ]] ||
+RELEASE_SCRIPT_CONTENT=$(<"$RELEASE_SCRIPT")
+[[ "$RELEASE_SCRIPT_CONTENT" != *"set -x"* ]] ||
   fail "release script enables credential-bearing shell tracing"
-[[ "$VALIDATOR_SCRIPT" == *'github-actions[bot]'* ]] ||
-  fail "validator does not require the GitHub Actions PR author"
-[[ "$VALIDATOR_SCRIPT" == *'dd-octo-sts[bot]'* ]] ||
-  fail "validator does not require the distinct STS labeler"
-[[ "$RELEASE_SCRIPT" == *"GH_TOKEN=\"\$GITHUB_TOKEN\" gh api --method POST"* ]] ||
-  fail "release job does not create the PR with GITHUB_TOKEN"
-[[ "$RELEASE_SCRIPT" == *"GH_TOKEN=\"\$BUMP_LABEL_TOKEN\" gh api --method POST"* ]] ||
-  fail "release job does not label the PR with the distinct STS token"
-[[ "$RELEASE_SCRIPT" != *"gh pr merge"* ]] ||
-  fail "release script can merge before approval and selected CI pass"
-[[ "$RELEASE_SCRIPT" == *"git commit --amend"* ]] ||
-  fail "release job does not produce the CI-triggering synchronize update"
-[[ "$RELEASE_SCRIPT" == *"--branch"* ]] || fail "release job does not validate the bump branch"
-[[ "$RELEASE_SCRIPT" != *"release-version-bump"* ]] ||
-  fail "release job uses an unrecognized release label"
+[[ "$RELEASE_SCRIPT_CONTENT" != *"gh pr merge"* ]] ||
+  fail "release script can merge PRs"
+[[ "$RELEASE_SCRIPT_CONTENT" != *"incrementVersion"* ]] ||
+  fail "release script uses incrementVersion"
+[[ "$RELEASE_SCRIPT_CONTENT" != *"printVersion"* ]] ||
+  fail "release script uses printVersion"
+[[ "$RELEASE_SCRIPT_CONTENT" != *"BUMP_LABEL_TOKEN"* ]] ||
+  fail "release script uses BUMP_LABEL_TOKEN"
+[[ "$RELEASE_SCRIPT_CONTENT" != *"validate-release-bump"* ]] ||
+  fail "release script references validate-release-bump"
+[[ "$RELEASE_SCRIPT_CONTENT" != *"wait-release-bump"* ]] ||
+  fail "release script references wait-release-bump"
 pass
 
 [ ! -e "$ROOT/utils/finalize-release-bump.sh" ] ||
   fail "obsolete human release-bump finalizer still exists"
-WAITER_SCRIPT=$(<"$WAITER")
-[[ "$WAITER_SCRIPT" == *'dd-octo-sts[bot]'* ]] ||
-  fail "waiter does not require the STS approval"
-[[ "$WAITER_SCRIPT" == *'--check)'* ]] ||
-  fail "waiter does not accept explicit check names"
-[[ "$WAITER_SCRIPT" != *'--required'* ]] ||
-  fail "waiter still depends on repository-required checks"
-[[ "$WAITER_SCRIPT" == *'RELEASE_BUMP_POLL_ATTEMPTS:-360'* ]] ||
-  fail "waiter default does not allow 30 minutes for selected CI"
-[[ "$WAITER_SCRIPT" == *'gh pr merge'* ]] ||
-  fail "waiter does not merge after its gates"
-[[ "$WAITER_SCRIPT" == *'--match-head-commit'* ]] ||
-  fail "waiter merge is not SHA locked"
-[[ "$WAITER_SCRIPT" == *"merged_at"* ]] ||
-  fail "waiter does not verify the PR actually merged"
+[ ! -e "$ROOT/.github/scripts/validate-release-bump.sh" ] ||
+  fail "obsolete validate-release-bump.sh still exists"
+[ ! -e "$ROOT/.github/scripts/wait-release-bump.sh" ] ||
+  fail "obsolete wait-release-bump.sh still exists"
+[ ! -e "$ROOT/.github/chainguard/self.release-bump.label-pr.sts.yaml" ] ||
+  fail "obsolete release-bump label STS policy still exists"
 pass
 
 APPROVAL_WORKFLOW=$(<"$ROOT/.github/workflows/approve-trivial.yml")
-VALIDATION_LINE=$(grep -n "Validate release bump before approval" \
-  <<<"$APPROVAL_WORKFLOW" | cut -d: -f1)
-FEDERATION_LINE=$(grep -n "uses: DataDog/dd-octo-sts-action" \
-  <<<"$APPROVAL_WORKFLOW" | cut -d: -f1)
-REVALIDATION_LINE=$(grep -n "Revalidate release bump immediately before approval" \
-  <<<"$APPROVAL_WORKFLOW" | cut -d: -f1)
-[ "$VALIDATION_LINE" -lt "$FEDERATION_LINE" ] ||
-  fail "approval token is federated before validation"
-[ "$FEDERATION_LINE" -lt "$REVALIDATION_LINE" ] ||
-  fail "approval token is federated after the final validation"
+[[ "$APPROVAL_WORKFLOW" != *"release_bump"* ]] ||
+  fail "approval workflow still classifies release bumps"
+[[ "$APPROVAL_WORKFLOW" != *"validate-release-bump"* ]] ||
+  fail "approval workflow still validates release bumps"
 [[ "$APPROVAL_WORKFLOW" == *"github.event.label.name == 'trivial'"* ]] ||
   fail "approval workflow does not trigger on trivial"
 [[ "$APPROVAL_WORKFLOW" == *"github.event.sender.login"* ]] ||
   fail "approval workflow does not use the label event sender"
-AUTHORIZATION_LINE=$(grep -n "Authorize trivial labeler" \
-  <<<"$APPROVAL_WORKFLOW" | cut -d: -f1)
-[ "$AUTHORIZATION_LINE" -lt "$FEDERATION_LINE" ] ||
-  fail "STS token is federated before labeler authorization"
-[[ "$APPROVAL_WORKFLOW" == *"steps.classify.outputs.release_bump == 'true'"* ]] ||
-  fail "approval workflow does not conditionally validate release bumps"
 [[ "$APPROVAL_WORKFLOW" == *"commit_id: process.env.EXPECTED_HEAD_SHA"* ]] ||
   fail "approval is not pinned to the validated SHA"
-while IFS= read -r action_ref; do
-  [[ "$action_ref" =~ ^[0-9a-f]{40}$ ]] ||
-    fail "approval workflow action ref is not a full commit SHA: $action_ref"
-done < <(sed -nE 's/^[[:space:]]*uses: [^@]+@([^[:space:]]+).*/\1/p' <<<"$APPROVAL_WORKFLOW")
+pass
+
+CI_WORKFLOW=$(<"$ROOT/.github/workflows/ci.yml")
+[[ "$CI_WORKFLOW" != *"release-bump-ci"* ]] ||
+  fail "CI workflow still has release-bump-ci job"
+[[ "$CI_WORKFLOW" != *"validate-release-bump"* ]] ||
+  fail "CI workflow still references validate-release-bump"
 pass
 
 RELEASE_WORKFLOW=$(<"$ROOT/.github/workflows/release-validated.yml")
-CI_WORKFLOW=$(<"$ROOT/.github/workflows/ci.yml")
-APPROVAL_POLICY=$(<"$ROOT/.github/chainguard/self.approve-trivial.approve-pr.sts.yaml")
-EXPECTED_APPROVAL_WORKFLOW_REF='job_workflow_ref: DataDog/java-profiler/\.github/workflows/approve-trivial\.yml@refs/heads/(main|release/[0-9]+\.[0-9]+\._)'
-grep -Fqx "  $EXPECTED_APPROVAL_WORKFLOW_REF" <<<"$APPROVAL_POLICY" ||
-  fail "approval policy workflow identity does not allow protected release branches"
-pass
-[ ! -e "$ROOT/.github/chainguard/self.release-bump.create-pr.sts.yaml" ] ||
-  fail "obsolete release PR token policy still exists"
-[ -e "$ROOT/.github/chainguard/self.release-bump.label-pr.sts.yaml" ] ||
-  fail "release bump label policy is missing"
-[[ "$RELEASE_WORKFLOW" == *"self.release-bump.label-pr"* ]] ||
-  fail "release workflow does not federate the label-only token"
-[[ "$RELEASE_WORKFLOW" == *"wait-release-bump.sh"* ]] ||
-  fail "release workflow does not run the gated merger"
-[[ "$RELEASE_WORKFLOW" == *"--check release-bump-ci"* ]] ||
-  fail "release workflow does not select the aggregate release-bump CI check"
-[[ "$CI_WORKFLOW" == *"release-bump-ci:"* ]] ||
-  fail "CI workflow does not provide the selected release-bump check"
-[[ "$CI_WORKFLOW" == *"needs: [release-automation-tests, check-formatting, check-javadoc, test-matrix]"* ]] ||
-  fail "release-bump CI check does not aggregate the selected jobs"
-[[ "$RELEASE_WORKFLOW" != *"finalize-release-bump.sh"* ]] ||
-  fail "release workflow still references the human finalizer"
-grep -Fq "GITHUB_SHA\" != \"\$EXPECTED_SOURCE_SHA" <<<"$RELEASE_WORKFLOW" ||
-  fail "release dispatch is not locked to the requested source SHA"
-[[ "$RELEASE_WORKFLOW" == *"FIRST_PATCH=false"* ]] ||
-  fail "release workflow does not track the first-patch state"
-[[ "$RELEASE_WORKFLOW" == *"[ \"\$TYPE\" == \"patch\" ] && [ \"\$ALREADY_RELEASED\" == \"true\" ] &&"* ]] ||
-  fail "release workflow does not distinguish the tagged first-patch base"
-[[ "$RELEASE_WORKFLOW" == *"[ \"\$PATCH\" -eq 0 ]"* ]] ||
-  fail "release workflow accepts an already-tagged nonzero patch as the first patch"
-[[ "$RELEASE_WORKFLOW" == *"RELEASE_VERSION=\"\$MAJOR.\$MINOR.\$((PATCH + 1))\""* ]] ||
-  fail "release workflow does not increment an already-tagged patch version"
-[[ "$RELEASE_WORKFLOW" == *"RELEASE_VERSION=\"\$BASE\""* ]] ||
-  fail "release workflow does not preserve an untagged patch development version"
+[[ "$RELEASE_WORKFLOW" != *"printVersion"* ]] ||
+  fail "release workflow still uses printVersion"
+[[ "$RELEASE_WORKFLOW" != *"wait-release-bump"* ]] ||
+  fail "release workflow still references wait-release-bump"
+[[ "$RELEASE_WORKFLOW" != *"bump_pr_number"* ]] ||
+  fail "release workflow still has bump_pr_number output"
+[[ "$RELEASE_WORKFLOW" != *"bump_branch"* ]] ||
+  fail "release workflow still has bump_branch output"
+[[ "$RELEASE_WORKFLOW" == *"compute-version.sh"* ]] ||
+  fail "release workflow does not use compute-version.sh"
 pass
 
-# Exercise the completion gate with a deterministic gh stub. These scenarios
-# prove that success requires the exact approval, selected checks, and an
-# observed merge, while stale heads and failed checks fail closed.
-WAITER_BIN="$TEMP_DIR/waiter-bin"
-mkdir "$WAITER_BIN"
-cat > "$WAITER_BIN/gh" <<'GH'
-#!/usr/bin/env bash
-set -euo pipefail
-EXPECTED=$(printf 'a%.0s' {1..40})
-if [ "$1" = "api" ] && [[ "$*" == *"/reviews?"* ]]; then
-  echo approval >> "$WAITER_ORDER"
-  if [ "$WAITER_SCENARIO" = "stale-approval" ]; then
-    printf '[[{"user":{"login":"dd-octo-sts[bot]"},"state":"APPROVED","commit_id":"%s"}]]\n' \
-      "$(printf 'b%.0s' {1..40})"
-  else
-    printf '[[{"user":{"login":"dd-octo-sts[bot]"},"state":"APPROVED","commit_id":"%s"}]]\n' \
-      "$EXPECTED"
-  fi
-elif [ "$1" = "api" ]; then
-  case "$WAITER_SCENARIO" in
-    head-change)
-      printf '{"head":{"sha":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},"state":"open","merged_at":null}\n'
-      ;;
-    closed)
-      printf '{"head":{"sha":"%s"},"state":"closed","merged_at":null}\n' "$EXPECTED"
-      ;;
-    already-merged)
-      printf '{"head":{"sha":"%s"},"state":"closed","merged_at":"2026-08-02T00:00:00Z"}\n' "$EXPECTED"
-      ;;
-    *)
-      if [ -f "$WAITER_MERGED" ]; then
-        printf '{"head":{"sha":"%s"},"state":"closed","merged_at":"2026-08-02T00:00:00Z"}\n' "$EXPECTED"
-      else
-        printf '{"head":{"sha":"%s"},"state":"open","merged_at":null}\n' "$EXPECTED"
-      fi
-      ;;
-  esac
-elif [ "$1 $2" = "pr checks" ]; then
-  echo checks >> "$WAITER_ORDER"
-  case "$WAITER_SCENARIO" in
-    failed-check) printf '[{"name":"release-bump-ci","state":"FAILURE"}]\n' ;;
-    missing-check) printf '[]\n' ;;
-    pending-check) printf '[{"name":"release-bump-ci","state":"IN_PROGRESS"}]\n' ;;
-    *) printf '[{"name":"release-bump-ci","state":"SUCCESS"}]\n' ;;
-  esac
-elif [ "$1 $2 $3" = "pr merge 698" ]; then
-  [[ "$*" == *"--squash --match-head-commit $EXPECTED"* ]] || exit 98
-  echo merge >> "$WAITER_ORDER"
-  touch "$WAITER_MERGED"
-else
-  echo "unsupported waiter gh call: $*" >&2
-  exit 99
-fi
-GH
-chmod +x "$WAITER_BIN/gh"
-WAITER_SHA=$(printf 'a%.0s' {1..40})
+# --- Release script integration tests (hermetic, local bare remote) ----------
 
-run_waiter() {
-  local scenario=$1
-  rm -f "$TEMP_DIR/waiter-merged" "$TEMP_DIR/waiter-order"
-  WAITER_SCENARIO="$scenario" WAITER_MERGED="$TEMP_DIR/waiter-merged" \
-    WAITER_ORDER="$TEMP_DIR/waiter-order" \
-    RELEASE_BUMP_POLL_ATTEMPTS=1 RELEASE_BUMP_POLL_SECONDS=0 \
-    PATH="$WAITER_BIN:$PATH" "$WAITER" \
-      --repo DataDog/java-profiler --pr-number 698 \
-      --expected-head-sha "$WAITER_SHA" \
-      --check release-bump-ci >/dev/null
+setup_remote() {
+  local remote="$TEMP_DIR/remote-$RANDOM.git"
+  git init --bare --quiet "$remote"
+  git --git-dir="$remote" config core.hooksPath /dev/null
+  echo "$remote"
 }
 
-run_waiter success || fail "waiter rejected exact approval/check/merge success"
-[ "$(<"$TEMP_DIR/waiter-order")" = $'approval\nchecks\nmerge' ] ||
-  fail "waiter did not enforce approval, checks, then merge ordering"
-pass
-if run_waiter already-merged 2>/dev/null; then
-  fail "waiter accepted a PR merged before its gates"
-fi
-pass
-if run_waiter stale-approval 2>/dev/null; then
-  fail "waiter accepted a stale approval"
-fi
-pass
-if run_waiter head-change 2>/dev/null; then
-  fail "waiter accepted a changed head"
-fi
-pass
-if run_waiter failed-check 2>/dev/null; then
-  fail "waiter accepted a failed selected check"
-fi
-pass
-if run_waiter missing-check 2>/dev/null; then
-  fail "waiter accepted a missing selected check"
-fi
-pass
-if run_waiter pending-check 2>/dev/null; then
-  fail "waiter accepted a pending selected check"
-fi
-pass
-if run_waiter closed 2>/dev/null; then
-  fail "waiter accepted a PR closed without merging"
-fi
-pass
+setup_work() {
+  local remote=$1
+  local branch=$2
+  local work="$TEMP_DIR/work-$RANDOM"
+  git init --quiet -b "$branch" "$work"
+  git -C "$work" config user.name "Release Test"
+  git -C "$work" config user.email "release-test@example.invalid"
+  git -C "$work" config commit.gpgsign false
+  git -C "$work" config tag.gpgsign false
+  git -C "$work" config core.hooksPath /dev/null
+  mkdir -p "$work/.github/scripts" "$work/utils"
+  cp "$RELEASE_SCRIPT" "$work/.github/scripts/release.sh"
+  cp "$COMPUTE_VERSION" "$work/utils/compute-version.sh"
+  chmod +x "$work/.github/scripts/release.sh" "$work/utils/compute-version.sh"
+  echo "initial" > "$work/file.txt"
+  git -C "$work" add .
+  git -C "$work" commit --quiet -m "initial"
+  git -C "$work" remote add origin "$remote"
+  git -C "$work" push --quiet -u origin "$branch"
+  echo "$work"
+}
 
-# Run the release script against a filesystem-backed bare remote. The gh and
-# validator stubs enforce the command contract without network access.
-REMOTE="$TEMP_DIR/remote.git"
-WORK="$TEMP_DIR/work"
-FAKE_BIN="$TEMP_DIR/bin"
-mkdir "$FAKE_BIN"
-git init --bare --quiet "$REMOTE"
-git --git-dir="$REMOTE" config core.hooksPath /dev/null
-git init --quiet -b main "$WORK"
-mkdir -p "$WORK/.github/scripts"
-cp "$ROOT/.github/scripts/release.sh" "$WORK/.github/scripts/release.sh"
-cat > "$WORK/.github/scripts/validate-release-bump.sh" <<'VALIDATOR'
-#!/usr/bin/env bash
-set -euo pipefail
-echo "$*" >> "$VALIDATOR_CALLS"
-if git --git-dir="$VALIDATOR_REMOTE" show-ref --tags --quiet; then
-  echo "release tag was published before bump validation" >&2
-  exit 1
-fi
-VALIDATOR
-chmod +x "$WORK/.github/scripts/validate-release-bump.sh"
-printf 'version = "1.48.0-SNAPSHOT"\n' > "$WORK/build.gradle.kts"
-cat > "$WORK/gradlew" <<'GRADLE'
-#!/usr/bin/env bash
-set -euo pipefail
-version=$(sed -nE 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)-SNAPSHOT"$/\1/p' build.gradle.kts)
-IFS=. read -r major minor patch <<<"$version"
-case "$*" in
-  "printVersion -Psnapshot=false")
-    echo "Version: $version"
-    ;;
-  "incrementVersion --versionIncrementType=MINOR")
-    if [ "$minor" -ge 99 ]; then
-      major=$((major + 1))
-      minor=0
-    else
-      minor=$((minor + 1))
-    fi
-    patch=0
-    printf 'version = "%s.%s.%s-SNAPSHOT"\n' "$major" "$minor" "$patch" > build.gradle.kts
-    ;;
-  "incrementVersion --versionIncrementType=MAJOR")
-    major=$((major + 1))
-    minor=0
-    patch=0
-    printf 'version = "%s.%s.%s-SNAPSHOT"\n' "$major" "$minor" "$patch" > build.gradle.kts
-    ;;
-  "incrementVersion --versionIncrementType=PATCH")
-    patch=$((patch + 1))
-    printf 'version = "%s.%s.%s-SNAPSHOT"\n' "$major" "$minor" "$patch" > build.gradle.kts
-    ;;
-  *)
-    echo "unsupported fake Gradle call: $*" >&2
-    exit 1
-    ;;
-esac
-GRADLE
-chmod +x "$WORK/gradlew" "$WORK/.github/scripts/release.sh"
-cat > "$FAKE_BIN/gh" <<'GH'
-#!/usr/bin/env bash
-set -euo pipefail
-echo "$*" >> "$GH_CALLS"
-if [ "$1 $2 $3" = "api --method POST" ] && [[ "$4" == */pulls ]]; then
-  [ "$GH_TOKEN" = "actions-token" ] || exit 98
-  git --git-dir="$VALIDATOR_REMOTE" rev-parse refs/heads/automated/bump-1-49-0 > "$INITIAL_PR_HEAD"
-  printf '{"number":698,"html_url":"https://example.invalid/pull/698"}\n'
-elif [ "$1 $2 $3" = "api --method POST" ] && [[ "$4" == */issues/698/labels ]]; then
-  [ "$GH_TOKEN" = "label-token" ] || exit 98
-  printf '[]\n'
-else
-  echo "unsupported fake gh call: $*" >&2
-  exit 99
-fi
-GH
-chmod +x "$FAKE_BIN/gh"
-git -C "$WORK" config user.name "Release Test"
-git -C "$WORK" config user.email "release-test@example.invalid"
-git -C "$WORK" config commit.gpgsign false
-git -C "$WORK" config tag.gpgsign false
-git -C "$WORK" config core.hooksPath /dev/null
-git -C "$WORK" add .
-git -C "$WORK" commit --quiet -m initial
+# Test: Minor release from main
+REMOTE=$(setup_remote)
+WORK=$(setup_work "$REMOTE" main)
+# Create a tag on main so compute-version.sh has a base
+git -C "$WORK" tag -a "v_1.48.0" -m "Release v_1.48.0"
+git -C "$WORK" push --quiet origin "v_1.48.0"
 SOURCE_SHA=$(git -C "$WORK" rev-parse HEAD)
-git -C "$WORK" remote add origin "$REMOTE"
-git -C "$WORK" push --quiet -u origin main
-(
-  cd "$WORK"
-  GITHUB_OUTPUT="$TEMP_DIR/release-outputs" GH_CALLS="$TEMP_DIR/gh-calls" \
-    INITIAL_PR_HEAD="$TEMP_DIR/initial-pr-head" \
-    VALIDATOR_CALLS="$TEMP_DIR/validator-calls" VALIDATOR_REMOTE="$REMOTE" \
-    GITHUB_REPOSITORY=DataDog/java-profiler GITHUB_TOKEN=actions-token \
-    BUMP_LABEL_TOKEN=label-token \
-    PATH="$FAKE_BIN:$PATH" \
-    ./.github/scripts/release.sh MINOR
-) >"$TEMP_DIR/release.log" 2>&1 || {
-    tail -20 "$TEMP_DIR/release.log" >&2
-    fail "release script failed against the local bare remote"
-  }
-BUMP_SHA=$(git --git-dir="$REMOTE" rev-parse refs/heads/automated/bump-1-49-0)
-INITIAL_PR_SHA=$(<"$TEMP_DIR/initial-pr-head")
-[ "$INITIAL_PR_SHA" != "$BUMP_SHA" ] ||
-  fail "PR creation was not followed by a synchronize-producing commit update"
-[ "$(git --git-dir="$REMOTE" rev-parse "$INITIAL_PR_SHA^")" = "$SOURCE_SHA" ] ||
-  fail "initial PR commit parent differs from the release source"
-[ "$(git --git-dir="$REMOTE" rev-parse "$INITIAL_PR_SHA^{tree}")" = \
-  "$(git --git-dir="$REMOTE" rev-parse "$BUMP_SHA^{tree}")" ] ||
-  fail "temporary and canonical bump commits do not have identical trees"
-grep -Fq "api --method POST repos/DataDog/java-profiler/pulls" "$TEMP_DIR/gh-calls" ||
-  fail "release script did not create the PR"
-grep -Fq "api --method POST repos/DataDog/java-profiler/issues/698/labels" "$TEMP_DIR/gh-calls" ||
-  fail "release script did not label the PR"
-if grep -Fq "pr merge" "$TEMP_DIR/gh-calls"; then
-  fail "release script merged before the external approval and CI gates"
-fi
-grep -Fq -- "--branch" "$TEMP_DIR/validator-calls" ||
-  fail "release script did not validate the pushed bump branch"
-grep -Fq -- "--base main" "$TEMP_DIR/validator-calls" ||
-  fail "release script did not validate the bump base"
-grep -Fq -- "--head automated/bump-1-49-0" "$TEMP_DIR/validator-calls" ||
-  fail "release script did not validate the bump head"
-grep -Fq -- "--expected-head-sha $BUMP_SHA" "$TEMP_DIR/validator-calls" ||
-  fail "branch validation did not pin the bump SHA"
-[ "$(git --git-dir="$REMOTE" rev-parse "$BUMP_SHA^")" = "$SOURCE_SHA" ] ||
-  fail "bump commit parent differs from the release source"
-git --git-dir="$REMOTE" show-ref --verify --quiet refs/heads/release/1.48._ ||
-  fail "release branch was not pushed"
-git --git-dir="$REMOTE" show-ref --verify --quiet refs/tags/v_1.48.0 ||
-  fail "release tag was not pushed"
-grep -Fqx "source_sha=$SOURCE_SHA" "$TEMP_DIR/release-outputs" ||
-  fail "release outputs omitted source SHA"
-grep -Fqx "bump_head_sha=$BUMP_SHA" "$TEMP_DIR/release-outputs" ||
-  fail "release outputs omitted bump SHA"
-grep -Fqx "bump_pr_number=698" "$TEMP_DIR/release-outputs" ||
-  fail "release outputs omitted bump PR number"
+GITHUB_OUTPUT="$TEMP_DIR/minor-outputs" \
+  PATH="$WORK/utils:$PATH" \
+  bash -c 'cd "$0" && ./.github/scripts/release.sh MINOR --dry-run' "$WORK" >/dev/null 2>&1 || \
+  fail "minor release dry-run failed"
+# Now do the real release
+GITHUB_OUTPUT="$TEMP_DIR/minor-outputs" \
+  PATH="$WORK/utils:$PATH" \
+  bash -c 'cd "$0" && ./.github/scripts/release.sh MINOR' "$WORK" >/dev/null 2>&1 || \
+  fail "minor release failed"
+git --git-dir="$REMOTE" show-ref --verify --quiet "refs/tags/v_1.49.0" ||
+  fail "minor release tag was not pushed"
+git --git-dir="$REMOTE" show-ref --verify --quiet "refs/heads/release/1.49._" ||
+  fail "minor release branch was not pushed"
+[ "$(git --git-dir="$REMOTE" rev-parse 'refs/tags/v_1.49.0^{commit}')" = "$SOURCE_SHA" ] ||
+  fail "minor release tag does not point to source SHA"
+grep -Fqx "release_version=1.49.0" "$TEMP_DIR/minor-outputs" ||
+  fail "minor release outputs omitted release version"
+grep -Fqx "release_branch=release/1.49._" "$TEMP_DIR/minor-outputs" ||
+  fail "minor release outputs omitted release branch"
 pass
 
-# Verify that the first patch advances the initially tagged X.Y.0 release
-# branch to X.Y.1, tags that release commit, and proposes X.Y.2-SNAPSHOT.
-PATCH_REMOTE="$TEMP_DIR/patch-remote.git"
-PATCH_WORK="$TEMP_DIR/patch-work"
-PATCH_BIN="$TEMP_DIR/patch-bin"
-mkdir "$PATCH_BIN"
-git init --bare --quiet "$PATCH_REMOTE"
-git --git-dir="$PATCH_REMOTE" config core.hooksPath /dev/null
-git init --quiet -b 'release/1.48._' "$PATCH_WORK"
-mkdir -p "$PATCH_WORK/.github/scripts"
-cp "$ROOT/.github/scripts/release.sh" "$PATCH_WORK/.github/scripts/release.sh"
-cat > "$PATCH_WORK/.github/scripts/validate-release-bump.sh" <<'VALIDATOR'
-#!/usr/bin/env bash
-set -euo pipefail
-echo "$*" >> "$VALIDATOR_CALLS"
-if git --git-dir="$VALIDATOR_REMOTE" show-ref --verify --quiet refs/tags/v_1.48.1; then
-  echo "first patch tag was published before bump validation" >&2
-  exit 1
-fi
-VALIDATOR
-chmod +x "$PATCH_WORK/.github/scripts/validate-release-bump.sh"
-printf 'version = "1.48.0-SNAPSHOT"\n' > "$PATCH_WORK/build.gradle.kts"
-cp "$WORK/gradlew" "$PATCH_WORK/gradlew"
-chmod +x "$PATCH_WORK/gradlew" "$PATCH_WORK/.github/scripts/release.sh"
-cat > "$PATCH_BIN/gh" <<'GH'
-#!/usr/bin/env bash
-set -euo pipefail
-echo "$*" >> "$GH_CALLS"
-if [ "$1 $2 $3" = "api --method POST" ] && [[ "$4" == */pulls ]]; then
-  [ "$GH_TOKEN" = "actions-token" ] || exit 98
-  git --git-dir="$VALIDATOR_REMOTE" rev-parse refs/heads/automated/bump-1-48-2 > "$INITIAL_PR_HEAD"
-  printf '{"number":700,"html_url":"https://example.invalid/pull/700"}\n'
-elif [ "$1 $2 $3" = "api --method POST" ] && [[ "$4" == */issues/700/labels ]]; then
-  [ "$GH_TOKEN" = "label-token" ] || exit 98
-  printf '[]\n'
-else
-  echo "unsupported first-patch gh call: $*" >&2
-  exit 99
-fi
-GH
-chmod +x "$PATCH_BIN/gh"
-git -C "$PATCH_WORK" config user.name "Release Test"
-git -C "$PATCH_WORK" config user.email "release-test@example.invalid"
-git -C "$PATCH_WORK" config commit.gpgsign false
-git -C "$PATCH_WORK" config tag.gpgsign false
-git -C "$PATCH_WORK" config core.hooksPath /dev/null
-git -C "$PATCH_WORK" add .
-git -C "$PATCH_WORK" commit --quiet -m initial
-PATCH_SOURCE_SHA=$(git -C "$PATCH_WORK" rev-parse HEAD)
-git -C "$PATCH_WORK" tag -a v_1.48.0 -m 'Release v_1.48.0 (minor) from main'
-git -C "$PATCH_WORK" remote add origin "$PATCH_REMOTE"
-git -C "$PATCH_WORK" push --quiet -u origin 'release/1.48._'
-git -C "$PATCH_WORK" push --quiet origin v_1.48.0
-(
-  cd "$PATCH_WORK"
-  GITHUB_OUTPUT="$TEMP_DIR/patch-outputs" GH_CALLS="$TEMP_DIR/patch-gh-calls" \
-    INITIAL_PR_HEAD="$TEMP_DIR/patch-initial-pr-head" \
-    VALIDATOR_CALLS="$TEMP_DIR/patch-validator-calls" VALIDATOR_REMOTE="$PATCH_REMOTE" \
-    GITHUB_REPOSITORY=DataDog/java-profiler GITHUB_TOKEN=actions-token \
-    BUMP_LABEL_TOKEN=label-token \
-    PATH="$PATCH_BIN:$PATH" \
-    ./.github/scripts/release.sh PATCH
-) >"$TEMP_DIR/patch-release.log" 2>&1 || {
-    tail -20 "$TEMP_DIR/patch-release.log" >&2
-    fail "first patch release script failed against the local bare remote"
-  }
-PATCH_RELEASE_SHA=$(git --git-dir="$PATCH_REMOTE" rev-parse 'refs/heads/release/1.48._')
-PATCH_BUMP_SHA=$(git --git-dir="$PATCH_REMOTE" rev-parse refs/heads/automated/bump-1-48-2)
-[ "$(git --git-dir="$PATCH_REMOTE" show "$PATCH_RELEASE_SHA:build.gradle.kts")" = \
-  'version = "1.48.1-SNAPSHOT"' ] ||
-  fail "first patch release branch does not contain 1.48.1"
-[ "$(git --git-dir="$PATCH_REMOTE" rev-parse 'refs/tags/v_1.48.1^{commit}')" = \
-  "$PATCH_RELEASE_SHA" ] || fail "first patch tag does not identify the release commit"
-[ "$(git --git-dir="$PATCH_REMOTE" rev-parse "$PATCH_RELEASE_SHA^")" = "$PATCH_SOURCE_SHA" ] ||
-  fail "first patch release commit parent differs from the selected source"
-[ "$(git --git-dir="$PATCH_REMOTE" show "$PATCH_BUMP_SHA:build.gradle.kts")" = \
-  'version = "1.48.2-SNAPSHOT"' ] ||
-  fail "first patch bump does not contain 1.48.2-SNAPSHOT"
-[ "$(git --git-dir="$PATCH_REMOTE" rev-parse "$PATCH_BUMP_SHA^")" = "$PATCH_RELEASE_SHA" ] ||
-  fail "first patch bump parent is not the release commit"
-grep -Fq -- "--first-patch" "$TEMP_DIR/patch-validator-calls" ||
-  fail "first patch preflight did not select first-patch validation"
-grep -Fq -- "--source-sha $PATCH_SOURCE_SHA" "$TEMP_DIR/patch-validator-calls" ||
-  fail "first patch preflight did not preserve the selected source SHA"
-grep -Fq -- "--local-release-tag v_1.48.1" "$TEMP_DIR/patch-validator-calls" ||
-  fail "first patch preflight did not validate the new annotated tag"
-grep -Fqx "release_version=1.48.1" "$TEMP_DIR/patch-outputs" ||
-  fail "first patch outputs omitted the release version"
-grep -Fqx "next_version=1.48.2" "$TEMP_DIR/patch-outputs" ||
-  fail "first patch outputs omitted the next development version"
+# Test: Major release from main
+REMOTE=$(setup_remote)
+WORK=$(setup_work "$REMOTE" main)
+git -C "$WORK" tag -a "v_1.49.0" -m "Release v_1.49.0"
+git -C "$WORK" push --quiet origin "v_1.49.0"
+SOURCE_SHA=$(git -C "$WORK" rev-parse HEAD)
+GITHUB_OUTPUT="$TEMP_DIR/major-outputs" \
+  PATH="$WORK/utils:$PATH" \
+  bash -c 'cd "$0" && ./.github/scripts/release.sh MAJOR' "$WORK" >/dev/null 2>&1 || \
+  fail "major release failed"
+git --git-dir="$REMOTE" show-ref --verify --quiet "refs/tags/v_2.0.0" ||
+  fail "major release tag was not pushed"
+git --git-dir="$REMOTE" show-ref --verify --quiet "refs/heads/release/2.0._" ||
+  fail "major release branch was not pushed"
+[ "$(git --git-dir="$REMOTE" rev-parse 'refs/tags/v_2.0.0^{commit}')" = "$SOURCE_SHA" ] ||
+  fail "major release tag does not point to source SHA"
+grep -Fqx "release_version=2.0.0" "$TEMP_DIR/major-outputs" ||
+  fail "major release outputs omitted release version"
 pass
 
-STUCK_PATCH_WORK="$TEMP_DIR/stuck-patch-work"
-git clone --quiet --branch 'release/1.48._' "$PATCH_REMOTE" "$STUCK_PATCH_WORK"
-if (
-  cd "$STUCK_PATCH_WORK"
-  PATH="$NETWORK_GUARD_BIN:$PATH" ./.github/scripts/release.sh PATCH
-) >"$TEMP_DIR/stuck-patch.log" 2>&1; then
-  fail "release script accepted an already-tagged nonzero patch version"
+# Test: Patch release from release branch
+REMOTE=$(setup_remote)
+WORK=$(setup_work "$REMOTE" "release/1.48._")
+git -C "$WORK" tag -a "v_1.48.2" -m "Release v_1.48.2"
+git -C "$WORK" push --quiet origin "v_1.48.2"
+SOURCE_SHA=$(git -C "$WORK" rev-parse HEAD)
+GITHUB_OUTPUT="$TEMP_DIR/patch-outputs" \
+  PATH="$WORK/utils:$PATH" \
+  bash -c 'cd "$0" && ./.github/scripts/release.sh PATCH' "$WORK" >/dev/null 2>&1 || \
+  fail "patch release failed"
+git --git-dir="$REMOTE" show-ref --verify --quiet "refs/tags/v_1.48.3" ||
+  fail "patch release tag was not pushed"
+# Patch should NOT create a new branch
+if git --git-dir="$REMOTE" show-ref --verify --quiet "refs/heads/release/1.48.3._" 2>/dev/null; then
+  fail "patch release should not create a new branch"
 fi
-grep -Fq 'is stuck at version 1.48.1' "$TEMP_DIR/stuck-patch.log" ||
-  fail "release script did not preserve the stuck post-patch bump guard"
+[ "$(git --git-dir="$REMOTE" rev-parse 'refs/tags/v_1.48.3^{commit}')" = "$SOURCE_SHA" ] ||
+  fail "patch release tag does not point to source SHA"
+grep -Fqx "release_version=1.48.3" "$TEMP_DIR/patch-outputs" ||
+  fail "patch release outputs omitted release version"
 pass
 
-# Verify major releases keep their generated release commit off protected main.
-# The bump moves main directly from the recorded source to the next development
-# series, while the release branch and annotated tag identify the 2.0.0 commit.
-MAJOR_REMOTE="$TEMP_DIR/major-remote.git"
-MAJOR_WORK="$TEMP_DIR/major-work"
-MAJOR_BIN="$TEMP_DIR/major-bin"
-mkdir "$MAJOR_BIN"
-git init --bare --quiet "$MAJOR_REMOTE"
-git --git-dir="$MAJOR_REMOTE" config core.hooksPath /dev/null
-git init --quiet -b main "$MAJOR_WORK"
-mkdir -p "$MAJOR_WORK/.github/scripts"
-cp "$ROOT/.github/scripts/release.sh" "$MAJOR_WORK/.github/scripts/release.sh"
-cp "$WORK/.github/scripts/validate-release-bump.sh" "$MAJOR_WORK/.github/scripts/validate-release-bump.sh"
-printf 'version = "1.48.0-SNAPSHOT"\n' > "$MAJOR_WORK/build.gradle.kts"
-cp "$WORK/gradlew" "$MAJOR_WORK/gradlew"
-chmod +x "$MAJOR_WORK/.github/scripts/release.sh"
-cat > "$MAJOR_BIN/gh" <<'GH'
-#!/usr/bin/env bash
-set -euo pipefail
-echo "$*" >> "$GH_CALLS"
-if [ "$1 $2 $3" = "api --method POST" ] && [[ "$4" == */pulls ]]; then
-  [ "$GH_TOKEN" = "actions-token" ] || exit 98
-  git --git-dir="$VALIDATOR_REMOTE" rev-parse refs/heads/automated/bump-2-1-0 > "$INITIAL_PR_HEAD"
-  printf '{"number":699,"html_url":"https://example.invalid/pull/699"}\n'
-elif [ "$1 $2 $3" = "api --method POST" ] && [[ "$4" == */issues/699/labels ]]; then
-  [ "$GH_TOKEN" = "label-token" ] || exit 98
-  printf '[]\n'
-elif [ "$1 $2 $3" = "pr merge 699" ]; then
-  [ "$GH_TOKEN" = "actions-token" ] || exit 98
-  :
-else
-  echo "unsupported fake gh call: $*" >&2
-  exit 99
+# Test: First patch on new release branch
+REMOTE=$(setup_remote)
+WORK=$(setup_work "$REMOTE" "release/1.50._")
+git -C "$WORK" tag -a "v_1.50.0" -m "Release v_1.50.0"
+git -C "$WORK" push --quiet origin "v_1.50.0"
+GITHUB_OUTPUT="$TEMP_DIR/first-patch-outputs" \
+  PATH="$WORK/utils:$PATH" \
+  bash -c 'cd "$0" && ./.github/scripts/release.sh PATCH' "$WORK" >/dev/null 2>&1 || \
+  fail "first patch release failed"
+git --git-dir="$REMOTE" show-ref --verify --quiet "refs/tags/v_1.50.1" ||
+  fail "first patch tag was not pushed"
+pass
+
+# Test: Tag already exists → fail
+REMOTE=$(setup_remote)
+WORK=$(setup_work "$REMOTE" main)
+git -C "$WORK" tag -a "v_1.48.0" -m "Release v_1.48.0"
+git -C "$WORK" push --quiet origin "v_1.48.0"
+# Compute what the minor release would produce
+COLLISION_VERSION=$(cd "$WORK" && PATH="$WORK/utils:$PATH" utils/compute-version.sh --release --minor)
+# Create the collision tag on a DIFFERENT commit so it doesn't affect computation
+git -C "$WORK" checkout --quiet HEAD~0  # stay on HEAD but create a dummy commit for the tag
+# Actually, just create the tag pointing to a new dummy commit
+git -C "$WORK" checkout -b collision-branch --quiet
+echo "collision" > "$WORK/collision.txt"
+git -C "$WORK" add collision.txt
+git -C "$WORK" commit --quiet -m "collision base"
+git -C "$WORK" tag -a "v_${COLLISION_VERSION}" -m "Pre-existing collision"
+git -C "$WORK" push --quiet origin "v_${COLLISION_VERSION}"
+git -C "$WORK" checkout --quiet main
+# Now v_${COLLISION_VERSION} exists but is NOT reachable from main HEAD
+# The release script should still detect it via git rev-parse
+if bash -c 'cd "$0" && PATH="$1" ./.github/scripts/release.sh MINOR' "$WORK" "$WORK/utils:$PATH" >/dev/null 2>&1; then
+  fail "release script accepted an already-existing tag"
 fi
-GH
-chmod +x "$MAJOR_BIN/gh"
-git -C "$MAJOR_WORK" config user.name "Release Test"
-git -C "$MAJOR_WORK" config user.email "release-test@example.invalid"
-git -C "$MAJOR_WORK" config commit.gpgsign false
-git -C "$MAJOR_WORK" config tag.gpgsign false
-git -C "$MAJOR_WORK" config core.hooksPath /dev/null
-git -C "$MAJOR_WORK" add .
-git -C "$MAJOR_WORK" commit --quiet -m initial
-MAJOR_INITIAL_SHA=$(git -C "$MAJOR_WORK" rev-parse HEAD)
-git -C "$MAJOR_WORK" remote add origin "$MAJOR_REMOTE"
-git -C "$MAJOR_WORK" push --quiet -u origin main
-(
-  cd "$MAJOR_WORK"
-  GITHUB_OUTPUT="$TEMP_DIR/major-outputs" GH_CALLS="$TEMP_DIR/major-gh-calls" \
-    INITIAL_PR_HEAD="$TEMP_DIR/major-initial-pr-head" \
-    VALIDATOR_CALLS="$TEMP_DIR/major-validator-calls" VALIDATOR_REMOTE="$MAJOR_REMOTE" \
-    GITHUB_REPOSITORY=DataDog/java-profiler GITHUB_TOKEN=actions-token \
-    BUMP_LABEL_TOKEN=label-token \
-    PATH="$MAJOR_BIN:$PATH" \
-    ./.github/scripts/release.sh MAJOR
-) >"$TEMP_DIR/major-release.log" 2>&1 || {
-    tail -20 "$TEMP_DIR/major-release.log" >&2
-    fail "major release script failed against the local bare remote"
-  }
-MAJOR_MAIN_SHA=$(git --git-dir="$MAJOR_REMOTE" rev-parse refs/heads/main)
-MAJOR_RELEASE_SHA=$(git --git-dir="$MAJOR_REMOTE" rev-parse refs/heads/release/2.0._)
-MAJOR_BUMP_SHA=$(git --git-dir="$MAJOR_REMOTE" rev-parse refs/heads/automated/bump-2-1-0)
-MAJOR_INITIAL_PR_SHA=$(<"$TEMP_DIR/major-initial-pr-head")
-[ "$MAJOR_INITIAL_PR_SHA" != "$MAJOR_BUMP_SHA" ] ||
-  fail "major bump did not produce a synchronize update"
-[ "$MAJOR_MAIN_SHA" = "$MAJOR_INITIAL_SHA" ] ||
-  fail "major release pushed its generated release commit to protected main"
-[ "$(git --git-dir="$MAJOR_REMOTE" show "$MAJOR_RELEASE_SHA:build.gradle.kts")" = \
-  'version = "2.0.0-SNAPSHOT"' ] ||
-  fail "major release branch does not contain the release version"
-[ "$(git --git-dir="$MAJOR_REMOTE" show "$MAJOR_BUMP_SHA:build.gradle.kts")" = \
-  'version = "2.1.0-SNAPSHOT"' ] ||
-  fail "major bump does not contain the next development version"
-[ "$(git --git-dir="$MAJOR_REMOTE" rev-parse "$MAJOR_RELEASE_SHA^")" = "$MAJOR_INITIAL_SHA" ] ||
-  fail "major release commit parent is not the recorded main source"
-[ "$(git --git-dir="$MAJOR_REMOTE" rev-parse "$MAJOR_BUMP_SHA^")" = "$MAJOR_INITIAL_SHA" ] ||
-  fail "major bump parent is not the recorded main source"
-[ "$(git --git-dir="$MAJOR_REMOTE" rev-parse 'refs/tags/v_2.0.0^{commit}')" = "$MAJOR_RELEASE_SHA" ] ||
-  fail "major release tag does not point to the release commit"
-grep -Fqx "source_sha=$MAJOR_INITIAL_SHA" "$TEMP_DIR/major-outputs" ||
-  fail "major release outputs changed the recorded main source SHA"
-grep -Fq -- "--source-sha $MAJOR_INITIAL_SHA" "$TEMP_DIR/major-validator-calls" ||
-  fail "major branch validation did not use the original main source"
-grep -Fq -- "--expected-head-sha $MAJOR_BUMP_SHA" "$TEMP_DIR/major-validator-calls" ||
-  fail "major branch validation did not pin the bump SHA"
-grep -Fq -- "--local-release-tag v_2.0.0" "$TEMP_DIR/major-validator-calls" ||
-  fail "major preflight did not validate the local annotated release tag"
-if grep -Fq "pr merge" "$TEMP_DIR/major-gh-calls"; then
-  fail "major release script merged before the external approval and CI gates"
+pass
+
+# Test: Patch from main → fail
+REMOTE=$(setup_remote)
+WORK=$(setup_work "$REMOTE" main)
+git -C "$WORK" tag -a "v_1.48.0" -m "Release v_1.48.0"
+if bash -c 'cd "$0" && PATH="$1" ./.github/scripts/release.sh PATCH' "$WORK" "$WORK/utils:$PATH" >/dev/null 2>&1; then
+  fail "release script accepted patch from main"
+fi
+pass
+
+# Test: Minor from release branch → fail
+REMOTE=$(setup_remote)
+WORK=$(setup_work "$REMOTE" "release/1.48._")
+git -C "$WORK" tag -a "v_1.48.0" -m "Release v_1.48.0"
+if bash -c 'cd "$0" && PATH="$1" ./.github/scripts/release.sh MINOR' "$WORK" "$WORK/utils:$PATH" >/dev/null 2>&1; then
+  fail "release script accepted minor from release branch"
+fi
+pass
+
+# Test: Version computation after release
+REMOTE=$(setup_remote)
+WORK=$(setup_work "$REMOTE" main)
+git -C "$WORK" tag -a "v_1.48.0" -m "Release v_1.48.0"
+bash -c 'cd "$0" && PATH="$1" ./.github/scripts/release.sh MINOR' "$WORK" "$WORK/utils:$PATH" >/dev/null 2>&1
+# After minor release, main should compute 1.50.0-SNAPSHOT
+NEXT_VERSION=$(cd "$WORK" && PATH="$WORK/utils:$PATH" utils/compute-version.sh)
+[ "$NEXT_VERSION" = "1.50.0-SNAPSHOT" ] ||
+  fail "expected 1.50.0-SNAPSHOT after minor release, got '$NEXT_VERSION'"
+pass
+
+# Test: Dry-run does not push
+REMOTE=$(setup_remote)
+WORK=$(setup_work "$REMOTE" main)
+git -C "$WORK" tag -a "v_1.48.0" -m "Release v_1.48.0"
+bash -c 'cd "$0" && PATH="$1" ./.github/scripts/release.sh MINOR --dry-run' "$WORK" "$WORK/utils:$PATH" >/dev/null 2>&1
+if git --git-dir="$REMOTE" show-ref --verify --quiet "refs/tags/v_1.49.0" 2>/dev/null; then
+  fail "dry-run pushed a tag"
 fi
 pass
 

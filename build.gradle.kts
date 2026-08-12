@@ -1,29 +1,27 @@
 import java.net.URI
 
-buildscript {
-  dependencies {
-    classpath("com.dipien:semantic-version-gradle-plugin:2.0.0")
-  }
-  repositories {
-    val mavenRepositoryProxy = providers.gradleProperty("mavenRepositoryProxy").orNull
-    mavenLocal()
-    if (mavenRepositoryProxy != null) {
-      maven { url = uri(mavenRepositoryProxy) }
-    }
-    mavenCentral()
-    gradlePluginPortal()
-  }
-}
-
 plugins {
   id("io.github.gradle-nexus.publish-plugin") version "2.0.0"
   id("com.datadoghq.native-root")
 }
 
-version = "1.49.0-SNAPSHOT"
-
-apply(plugin = "com.dipien.semantic-version")
-version = findProperty("ddprof_version") as? String ?: version
+// Compute version from git tags at configuration time.
+// See doc/Versioning/TagBasedVersioning.md for the version computation rules.
+// Priority: -Pddprof_version > compute-version.sh > fallback.
+// -Pddprof_version is always set by GitLab CI (publish builds).
+// compute-version.sh is used for local builds and GHA CI with full history.
+// The fallback handles environments with no git tags (CodeQL autobuild).
+val ddprofVersion = findProperty("ddprof_version") as? String
+version = ddprofVersion ?: run {
+  try {
+    providers.exec {
+      commandLine(rootProject.layout.projectDirectory.file("utils/compute-version.sh").asFile.absolutePath)
+    }.standardOutput.asText.get().trim()
+  } catch (e: Exception) {
+    logger.warn("compute-version.sh failed; falling back to 0.0.0-SNAPSHOT. Set -Pddprof_version to override.")
+    "0.0.0-SNAPSHOT"
+  }
+}
 
 allprojects {
   repositories {
