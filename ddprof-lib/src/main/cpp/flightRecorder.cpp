@@ -581,7 +581,9 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
     prof_thread->setJmpCtx(prev_buf);
     key = MethodMap::makeKey(UNKNOWN);
-    Counters::increment(METHOD_RESOLUTION_FAILED);
+    // We want to have counter to record method resoluation failures.
+    // Unfortunately, the counter cannot be reported accurately,
+    // see comments in finishChunk(), just above writeCounters() call.
     mi = &(*_method_map)[key];
     if (!mi->_mark) {
       mi->_mark = true;
