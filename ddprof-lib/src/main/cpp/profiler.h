@@ -147,6 +147,10 @@ private:
   u32 _num_context_attributes;
   bool _omit_stacktraces;
   bool _remote_symbolication;  // Enable remote symbolication for native frames
+  bool _sanity_check_failed;
+  // _sanity_check_message points into SanityChecker's static error buffer.
+  // That buffer has process lifetime, so the pointer stays valid.
+  const char *_sanity_check_message;
 
   // dlopen() hook support
   void **_dlopen_entry;
@@ -225,7 +229,8 @@ public:
         _max_stack_depth(0), _features(), _safe_mode(0), _cstack(CSTACK_NO),
         _thread_events_state(JVMTI_DISABLE), _libs(Libraries::instance()),
         _num_context_attributes(0), _omit_stacktraces(false),
-        _remote_symbolication(false), _dlopen_entry(NULL) {
+        _remote_symbolication(false), _sanity_check_failed(false),
+        _sanity_check_message(NULL), _dlopen_entry(NULL) {
 
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
       _calltrace_buffer[i] = NULL;
@@ -292,7 +297,6 @@ public:
   // insertions (Lookup::_classes->lookupDuringDump in flightRecorder.cpp)
   // must use this too so _class_map cannot grow past it via that path.
   static int maxClassMapSize() { return MAX_CLASS_MAP_SIZE; }
-  SharedLockGuard classMapSharedGuard() { return SharedLockGuard(&_class_map_lock); }
   StringDictionary *stringLabelMap() { return &_string_label_map; }
   StringDictionary *contextValueMap() { return &_context_value_map; }
   // Atomically reads and clears the "context value dictionary was reset" flag (see the member).
@@ -455,6 +459,8 @@ public:
   void writeHeapUsage(long value, bool live);
   int eventMask() const { return _event_mask; }
   bool isRemoteSymbolication() const { return _remote_symbolication; }
+  bool sanityCheckFailed() const { return _sanity_check_failed; }
+  const char *sanityCheckMessage() const { return _sanity_check_message; }
 
   const void *resolveSymbol(const char *name);
   const char *getLibraryName(const char *native_symbol);

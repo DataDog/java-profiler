@@ -40,6 +40,7 @@
 #include "wallClock.h"
 #include "wallClockCounters.h"
 #include "frames.h"
+#include "sanityCheck.h"
 
 #include <algorithm>
 #include <dlfcn.h>
@@ -1406,6 +1407,30 @@ Error Profiler::start(Arguments &args, bool reset) {
     return error;
   }
 
+  // Sanity checks run at most once per process, across start and stop cycles.
+  // Profiler::start() sets sanity_checked to true before it checks
+  // _skip_sanity_checks, not after. If it set the flag only when the checks
+  // ran, a nosanity start would leave sanity_checked false. A later start
+  // without nosanity would then run the checks unexpectedly and could fail.
+  //
+  // A failed check does not abort startup. The resource estimate is
+  // inherently approximate, so Profiler::start() logs a warning and records
+  // the failure as a JFR setting (see Recording::writeSettings) instead of
+  // refusing to profile.
+  static bool sanity_checked = false;
+  if (!sanity_checked) {
+    sanity_checked = true;
+    if (!args._skip_sanity_checks) {
+      Error sanity_result = SanityChecker::runChecks(args);
+      if (sanity_result) {
+        _sanity_check_failed = true;
+        _sanity_check_message = sanity_result.message();
+        LOG_WARN("Continuing to start profiler despite failed sanity check "
+                 "(see JFR settings for details).");
+      }
+    }
+  }
+
   error = checkJvmCapabilities();
   if (error) {
     return error;
@@ -1452,10 +1477,8 @@ Error Profiler::start(Arguments &args, bool reset) {
     memset(_failures, 0, sizeof(_failures));
 
     // Reset dictionaries. StringDictionary::clearAll() manages its own
-    // synchronisation (RefCountGuard drain). The exclusive _class_map_lock
-    // additionally fences out shared-lock readers introduced by #527
-    // (deferred vtable receiver resolution) so they cannot observe a
-    // half-cleared class map.
+    // synchronisation (RefCountGuard drain) internally; _class_map_lock is
+    // held exclusively here for the duration of the reset.
     {
       ExclusiveLockGuard guard(&_class_map_lock);
       _class_map.clearAll();
@@ -1887,9 +1910,7 @@ Error Profiler::dump(const char *path, const int length) {
     // rotateDictsAndRun rotates the dictionaries, takes lockAll() around the
     // dump (fences ASGCT/JNI writers to CallTraceStorage), then clearStandby()s
     // the rotated buffers.  StringDictionary's RefCountGuard protocol handles
-    // its own writer/reader coordination; #527's classMapSharedGuard readers
-    // (deferred vtable receiver resolution) are coordinated through
-    // _class_map_lock.
+    // its own writer/reader coordination.
     rotateDictsAndRun([&]{
       err = _jfr.dump(path, length);
       __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
