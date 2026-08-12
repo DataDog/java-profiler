@@ -69,25 +69,20 @@ protected:
   }
 };
 
-// resolveMethod() wraps its body in a sigsetjmp/siglongjmp jmp ctx specifically
-// so that INJECT_CRASH_LIKELY() (a real SIGSEGV, not a poisoned pointer left
-// for the caller to dereference) is recoverable: when it fires, control must
-// land back at the sigsetjmp, producing the same "unknown" MethodInfo that a
-// genuine resolution failure would, and the process must not crash.
+// resolveMethod() arms a sigsetjmp/siglongjmp window around fillMethod()
+// specifically so that INJECT_CRASH_LIKELY() (a real SIGSEGV, not a poisoned
+// pointer left for the caller to dereference) is recoverable: when it fires,
+// control must land back at the sigsetjmp, producing the same "unknown"
+// MethodInfo that a genuine resolution failure would, and the process must not
+// crash.
 //
-// The frame here has a NULL method_id and bci == 0 (not a raw-pointer bci),
-// so both the non-injected (~99%) and injected-and-recovered (~1%) paths
-// converge on the exact same MethodMap key/fill (see flightRecorder.cpp:
-// `if (method_id == nullptr) fillNativeMethodInfo(mi, UNKNOWN, nullptr);`),
-// which keeps the assertions below valid regardless of which path any given
-// call took.
-//
-// Note: on the non-recovering (success) path resolveMethod() deliberately
-// leaves the ProfiledThread's jmp ctx pointing at its own (now-popped) stack
-// frame rather than restoring the caller's prior context -- each call
-// re-installs a fresh one via sigsetjmp before doing anything risky, so this
-// is safe, but it does mean ProfiledThread::isProtected() cannot be used
-// here to distinguish a recovered call from a normal one.
+// The frame is a BCI_ERROR frame carrying a plain error string. That shape is
+// chosen so the call actually enters the protected window: a null method_id
+// short-circuits to the shared unknown row before any protection is armed, and
+// BCI_ERROR resolution needs no live JVM (it goes to fillNativeMethodInfo, not
+// fillJavaMethodInfo). Both the non-injected (~99%) and injected (~1%) paths
+// therefore produce a FRAME_NATIVE MethodInfo, which keeps the per-iteration
+// assertions valid regardless of which path any given call took.
 TEST_F(ResolveMethodFaultInjectionTest, RecoversFromInjectedCrashInsteadOfCrashing) {
   ProfiledThread* t = ProfiledThread::current();
   ASSERT_NE(t, nullptr);
@@ -98,8 +93,8 @@ TEST_F(ResolveMethodFaultInjectionTest, RecoversFromInjectedCrashInsteadOfCrashi
   Lookup lookup(nullptr, &methods, &classes);
 
   ASGCT_CallFrame frame{};
-  frame.bci = 0;
-  frame.method_id = nullptr;
+  frame.bci = BCI_ERROR;
+  frame.native_function_name = "injected_fault_test_frame";
 
   long long faultsBefore = Counters::getCounter(FAULTS_INJECTED);
   bool sawRecoveredInjection = false;
@@ -107,31 +102,49 @@ TEST_F(ResolveMethodFaultInjectionTest, RecoversFromInjectedCrashInsteadOfCrashi
   // LIKELY tier fires ~1% of the time; 5000 tries makes seeing at least one
   // recovery astronomically likely without hardcoding an exact iteration.
   for (int i = 0; i < 5000; i++) {
-    long long recoveredBefore = Counters::getCounter(STACKWALK_LONGJMP_RECOVERED);
+    // Start each iteration from an empty map so the call is forced down
+    // resolveMethod()'s protected slow path. Its fast path deliberately
+    // short-circuits an already-marked row without arming any protection, and
+    // INJECT_CRASH_LIKELY() lives inside the protected window -- so without the
+    // reset only the very first iteration would ever reach the injection site.
+    methods.clear();
+
+    long long recoveredBefore =
+        Counters::getCounter(METHOD_RESOLVE_LONGJMP_RECOVERED);
 
     MethodInfo* info = lookup.resolveMethod(frame);
 
     ASSERT_NE(info, nullptr);
     EXPECT_EQ(info->_type, FRAME_NATIVE);
+    // Every exit path restores the jmp ctx the thread had on entry (nullptr
+    // here), recovery included -- a landing pad left published would point into
+    // resolveMethod()'s already-popped stack frame. Asserting it per iteration
+    // covers both the success and the recovery path.
+    EXPECT_FALSE(t->isProtected());
 
-    if (Counters::getCounter(STACKWALK_LONGJMP_RECOVERED) > recoveredBefore) {
+    if (Counters::getCounter(METHOD_RESOLVE_LONGJMP_RECOVERED) > recoveredBefore) {
+      // The recovery path must hand back the shared unknown row, and must not
+      // have touched the MethodMap: it runs with protection already disarmed, so
+      // an allocating map insert there is exactly what it must avoid. The
+      // injection fires ahead of the map lookup in fillMethod(), so on a
+      // recovering iteration the map is still empty.
+      EXPECT_EQ(info, &lookup._unknown_method);
+      EXPECT_TRUE(methods.empty());
+      EXPECT_NE(info->_key, 0U);  // must still be referenceable from a trace
       sawRecoveredInjection = true;
       break;
     }
+
+    // Non-injected iteration: resolved normally into its own map row, not the
+    // shared unknown one.
+    EXPECT_NE(info, &lookup._unknown_method);
+    EXPECT_EQ(methods.size(), 1U);
   }
 
   EXPECT_TRUE(sawRecoveredInjection)
-      << "expected INJECT_CRASH_LIKELY() in Lookup::resolveMethod() to fire "
+      << "expected INJECT_CRASH_LIKELY() in Lookup::fillMethod() to fire "
          "and be recovered via siglongjmp within 5000 calls";
   EXPECT_GT(Counters::getCounter(FAULTS_INJECTED), faultsBefore);
-
-  // Every call -- injected-and-recovered or not -- resolves the same NULL
-  // method_id frame to the single shared "unknown" MethodInfo row.
-  EXPECT_EQ(methods.size(), 1U);
-
-  // Defensive cleanup: leaving the stale post-call jmp ctx (see note above)
-  // live into TearDown()/ProfiledThread::release() serves no purpose here.
-  t->setJmpCtx(nullptr);
 }
 
 #else  // __FAULT_INJECTION__ not defined (the default release/debug build).
@@ -150,13 +163,38 @@ TEST(ResolveMethodFaultInjectionTest, DisabledBuildResolvesNormally) {
   MethodMap methods;
   Lookup lookup(nullptr, &methods, &classes);
 
-  ASGCT_CallFrame frame{};
-  frame.bci = 0;
-  frame.method_id = nullptr;
+  // A null method_id short-circuits to the shared unknown row before any
+  // protection is armed. That row lives outside the MethodMap
+  // (Lookup::_unknown_method), so nothing is inserted for it.
+  ASGCT_CallFrame unresolvable{};
+  unresolvable.bci = 0;
+  unresolvable.method_id = nullptr;
 
-  MethodInfo* info = lookup.resolveMethod(frame);
-  ASSERT_NE(info, nullptr);
-  EXPECT_EQ(info->_type, FRAME_NATIVE);
+  MethodInfo* unknown = lookup.resolveMethod(unresolvable);
+  ASSERT_NE(unknown, nullptr);
+  EXPECT_EQ(unknown, &lookup._unknown_method);
+  EXPECT_EQ(unknown->_type, FRAME_NATIVE);
+  EXPECT_TRUE(unknown->_mark);
+  EXPECT_NE(unknown->_key, 0U);  // must still be referenceable from a trace
+  EXPECT_TRUE(methods.empty());
+
+  // A BCI_ERROR frame does go through the protected slow path, so this covers
+  // the sigsetjmp window itself being inert here rather than just the
+  // short-circuit above.
+  ASGCT_CallFrame error_frame{};
+  error_frame.bci = BCI_ERROR;
+  error_frame.native_function_name = "disabled_build_test_frame";
+
+  MethodInfo* resolved = lookup.resolveMethod(error_frame);
+  ASSERT_NE(resolved, nullptr);
+  EXPECT_NE(resolved, &lookup._unknown_method);
+  EXPECT_EQ(resolved->_type, FRAME_NATIVE);
+  EXPECT_EQ(methods.size(), 1U);
+
+  // The jmp ctx is restored on the normal path, not just on recovery.
+  ProfiledThread* t = ProfiledThread::current();
+  ASSERT_NE(t, nullptr);  // the protected path creates one if the thread had none
+  EXPECT_FALSE(t->isProtected());
 }
 
 #endif  // __FAULT_INJECTION__

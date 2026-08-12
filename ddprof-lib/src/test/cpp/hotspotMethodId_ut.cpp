@@ -51,5 +51,10 @@ TEST(HotspotMethodIdTest, RejectedMethodIdStaysNonRawAndResolvesToUnknown) {
 
     ASSERT_NE(info, nullptr);
     EXPECT_EQ(info->_type, FRAME_NATIVE);
-    EXPECT_EQ(methods.size(), 1U);
+    // The sentinel is normalised to a null method_id, which resolves to the
+    // shared unknown row. That row lives outside the MethodMap (see
+    // Lookup::_unknown_method), so nothing is inserted for this frame.
+    EXPECT_EQ(info, &lookup._unknown_method);
+    EXPECT_TRUE(methods.empty());
+    EXPECT_NE(info->_key, 0U);  // still needs a pool id to be referenceable
 }

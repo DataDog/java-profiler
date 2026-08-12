@@ -127,14 +127,29 @@ TEST_F(SignalSafetyTest, SignalHandlerUnwindAfterLongjmpDecrementsOnce) {
 // segvHandler()/busHandler(), both of which open a SIGNAL_HANDLER_GUARD()
 // first -- so every real compensating call is paired with a prior
 // enterSignalScope(). Calling it here with no matching scope at all (depth
-// already 0) is exactly the kind of pairing bug that must never be
-// tolerated silently: it has to abort loudly instead of underflowing the
-// counter (which signalDepth() truncates to uint8_t, so an underflow would
-// silently wrap to a large positive value and corrupt
-// isInTrackedSignalContext() for the rest of the thread's life).
+// already 0) is exactly the kind of pairing bug that must never be tolerated
+// silently, so exitSignalScope() asserts on it.
 TEST_F(SignalSafetyTest, SignalHandlerUnwindAfterLongjmpAbortsOnUnmatchedCall) {
     EXPECT_EQ(0, getInSignalDepth());
     EXPECT_DEATH({ signalHandlerUnwindAfterLongjmp(); }, "Assertion .*");
+}
+
+// Release-build backstop for the same bug: -DNDEBUG compiles the assert above
+// out, so a release binary carries the negative depth instead of aborting.
+// isInTrackedSignalContext() tests `> 0` rather than `!= 0` precisely so a
+// negative depth reads as "not in a signal handler"; reading it as "in one"
+// would pin Profiler::dlopen_hook to the deferred-refresh path for the rest of
+// the thread's life. Injected directly rather than through exitSignalScope() so
+// this stays a test of the reader, not of the assert.
+TEST_F(SignalSafetyTest, NegativeDepthIsNotTrackedSignalContext) {
+    ProfiledThread* pt = ProfiledThread::current();
+    ASSERT_NE(nullptr, pt);
+
+    pt->setSignalDepthForTest(-1);
+    EXPECT_EQ(-1, getInSignalDepth());
+    EXPECT_FALSE(isInTrackedSignalContext());
+
+    pt->setSignalDepthForTest(0);  // TearDown asserts the depth is back to 0
 }
 
 TEST(SignalSafetyTestNoContext, NullProfiledThreadIsNotTrackedSignal) {

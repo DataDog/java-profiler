@@ -165,8 +165,23 @@ public:
     }
   }
 
+  // Pool id for Lookup::_unknown_method, the shared row for frames that could
+  // not be resolved. That row deliberately lives outside this map (see
+  // Lookup::unknownMethod()), so it needs an id that no map entry can ever be
+  // given: drawn from the same counter so it cannot collide, but drawn only
+  // once for the life of the recording and never recycled, since
+  // cleanupUnreferencedMethods() only ever erases -- and frees the ids of --
+  // actual map entries.
+  u32 unknownMethodId() {
+    if (_unknown_method_id == 0) {
+      _unknown_method_id = allocId();
+    }
+    return _unknown_method_id;
+  }
+
 private:
   u32 _id_high_water = 0;
+  u32 _unknown_method_id = 0;
   std::vector<u32> _free_ids;
 };
 
@@ -368,6 +383,20 @@ public:
   Dictionary _packages;
   Dictionary _symbols;
 
+  // The single row every frame that could not be resolved collapses onto.
+  //
+  // Deliberately NOT a MethodMap entry: resolveMethod()'s siglongjmp landing pad
+  // hands this row back with crash protection already disarmed, so it must be
+  // reachable without touching the map, whose operator[] allocates a node and
+  // can throw std::bad_alloc.
+  //
+  // Because it is outside the map, the map walk in writeMethods() cannot see it,
+  // so writeMethods() emits it separately. It has to reach the method pool:
+  // writeStackTraces() writes its _key for every frame that resolved to it, and
+  // a _key with no matching pool entry is a dangling reference in the chunk.
+  // Public for that reason, matching _method_map/_symbols above.
+  MethodInfo _unknown_method;
+
 private:
   void fillNativeMethodInfo(MethodInfo *mi, const char *name,
                             const char *lib_name);
@@ -400,6 +429,28 @@ private:
   // bytes) returns the sentinel "<unresolved_vtable_receiver>" class_id and
   // increments VTABLE_RECEIVER_RESOLVE_FAILED.
   u32 resolveVTableReceiverCached(void *sym);
+
+  // The MethodMap row `frame` belongs to. Factored out so resolveMethod()'s
+  // unprotected fast path and fillMethod()'s protected slow path can never
+  // disagree about which row a frame maps to -- ASGCT_CallFrame's method_id /
+  // native_function_name / packed_remote_frame / method fields are a union, so
+  // the bci branching below is the only thing that gives the payload a meaning.
+  //
+  // Reads the union's *value* only: MethodMap::makeKey() hashes a pointer, it
+  // never dereferences it. So for every bci except BCI_VTABLE_RECEIVER -- whose
+  // class_id the caller must resolve from a VMSymbol* first -- computing a key
+  // touches no VM metadata and cannot fault.
+  unsigned long methodKey(const ASGCT_CallFrame &frame, jmethodID method_id,
+                          jint bci, u32 vtable_class_id);
+
+  // Resolves and fills in the MethodInfo for `frame`. This is the part that
+  // reads VM metadata and may therefore fault; resolveMethod() wraps it in the
+  // sigsetjmp/siglongjmp window.
+  MethodInfo *fillMethod(ASGCT_CallFrame &frame, jmethodID method_id, jint bci);
+
+  // Materializes _unknown_method for this dump (filling it on first use) and
+  // returns it.
+  MethodInfo *unknownMethod();
 
 public:
   Lookup(Recording *rec, MethodMap *method_map, StringDictionary *classes)

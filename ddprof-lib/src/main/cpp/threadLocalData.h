@@ -140,6 +140,14 @@ public:
     delete pt;
     NativeMem::record(NM_THREAD_LOCAL, -(long long)sizeof(ProfiledThread));
   }
+  // Forces the signal-handler depth to an arbitrary value, including a negative
+  // one that exitSignalScope()'s assert would refuse to produce. Exists so
+  // signalSafety_ut can check that isInTrackedSignalContext() reads a corrupted
+  // (negative) depth as "not in a signal handler" -- the only guard a release
+  // build has left once that assert is compiled out by -DNDEBUG.
+  void setSignalDepthForTest(int depth) {
+    __atomic_store_n(&_signal_depth, depth, __ATOMIC_RELAXED);
+  }
 #endif
   // initCurrentThread() and release() are not async-signal-safe: 
   // must be called outside of a signal handler with signal blocked
@@ -247,7 +255,7 @@ public:
 
   // Signal-handler depth counter used by SignalHandlerScope (guards.h).
   // But read-modify-store can be interrupted by other signals, so it has to be an atomic counter.
-  inline uint8_t signalDepth() const { return __atomic_load_n(&_signal_depth, __ATOMIC_RELAXED); }
+  inline int signalDepth() const { return __atomic_load_n(&_signal_depth, __ATOMIC_RELAXED); }
   inline void enterSignalScope()    { __atomic_fetch_add(&_signal_depth, 1, __ATOMIC_RELAXED); }
   // Every real exitSignalScope() call is paired with a prior enterSignalScope():
   // either the normal SignalHandlerScope destructor, or exactly one compensating
@@ -256,6 +264,12 @@ public:
   // reachable from segvHandler()/busHandler(), both of which open SIGNAL_HANDLER_GUARD()
   // first). A call here with depth already 0 means that pairing was broken elsewhere;
   // that is a real bug and must fail loudly, not be silently tolerated.
+  //
+  // The assert is compiled out under -DNDEBUG, so a release build would carry a
+  // negative depth instead of aborting. Nothing latches on that: the only
+  // production reader, isInTrackedSignalContext(), tests `> 0` precisely so a
+  // negative value reads as "not in a signal handler" rather than as "forever
+  // in one" (see guards.cpp).
   inline void exitSignalScope()     {
     int depth = __atomic_fetch_sub(&_signal_depth, 1, __ATOMIC_RELAXED);
     assert(depth > 0);

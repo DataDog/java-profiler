@@ -133,7 +133,19 @@
   X(SAMPLES_DROPPED_THREAD_LOCAL, "samples_dropped_thread_local")             \
   X(SAFECOPY_FAILED, "safecopy_failed")                                       \
   X(SAFEFETCH_FAILED, "safefetch_failed")                                     \
+  /* Every siglongjmp recovery, from any protected window, counted centrally  \
+   * in Profiler::checkFault(). */                                            \
   X(STACKWALK_LONGJMP_RECOVERED, "stackwalk_longjmp_recovered")               \
+  /* Subset of the above: recoveries that landed in Lookup::resolveMethod(),  \
+   * i.e. faults while symbolicating at dump time rather than while walking a \
+   * stack in a signal handler. Counted separately because the two have       \
+   * different root causes (stale jmethodID / class unload vs. a bad frame    \
+   * pointer) and would otherwise be indistinguishable. */                    \
+  X(METHOD_RESOLVE_LONGJMP_RECOVERED, "method_resolve_longjmp_recovered")     \
+  /* Lookup::resolveMethod() calls that ran without siglongjmp protection     \
+   * because no ProfiledThread could be allocated for the dump thread (OOM):  \
+   * there is nowhere to publish a landing pad. Expected to stay at 0. */     \
+  X(METHOD_RESOLVE_UNPROTECTED, "method_resolve_unprotected")                 \
   /* writeElement() guards against a corrupted/dangling JfrMetadata tree.     \
    * Root cause is still unconfirmed, so these counters are the durable       \
    * signal for spotting a recurrence. */                                     \

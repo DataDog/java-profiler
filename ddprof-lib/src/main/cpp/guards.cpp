@@ -27,7 +27,9 @@
 
 int getInSignalDepth() {
     ProfiledThread *pt = ProfiledThread::current();
-    return pt != nullptr ? static_cast<int>(pt->signalDepth()) : 0;
+    // Deliberately returns the raw counter, negative values included, so a
+    // pairing bug is visible to tests and diagnostics rather than clamped away.
+    return pt != nullptr ? pt->signalDepth() : 0;
 }
 
 bool isInTrackedSignalContext() {
@@ -35,7 +37,14 @@ bool isInTrackedSignalContext() {
     // null ProfiledThread = no thread context; the SignalHandlerScope
     // never ran, so we have no positive evidence of a signal frame.
     // See header comment for the rationale of returning false here.
-    return pt != nullptr && pt->signalDepth() != 0;
+    //
+    // `> 0`, not `!= 0`: exitSignalScope() asserts the depth never drops below
+    // zero, but that assert is compiled out under -DNDEBUG, so in a release
+    // build an unmatched decrement would leave the counter negative. Reading a
+    // negative depth as "not in a signal handler" keeps the blast radius of
+    // such a bug to the one bad decrement, instead of latching dlopen_hook onto
+    // the deferred-refresh path for the rest of the thread's life.
+    return pt != nullptr && pt->signalDepth() > 0;
 }
 
 SignalHandlerScope::SignalHandlerScope() : _active(true) {
@@ -75,6 +84,16 @@ void signalHandlerUnwindAfterLongjmp() {
         pt->exitSignalScope();
     }
 }
+
+JmpCtxScope::JmpCtxScope(ProfiledThread *pt) : _pt(pt), _prev(pt->getJmpCtx()) {
+    assert(pt != nullptr);
+}
+
+JmpCtxScope::~JmpCtxScope() { _pt->setJmpCtx(_prev); }
+
+void JmpCtxScope::install(sigjmp_buf *ctx) { _pt->setJmpCtx(ctx); }
+
+void JmpCtxScope::restore() { _pt->setJmpCtx(_prev); }
 
 // Static bitmap storage for fallback cases
 uint64_t CriticalSection::_fallback_bitmap[CriticalSection::FALLBACK_BITMAP_WORDS] = {};
