@@ -46,9 +46,8 @@ int getInSignalDepth() {
 
 bool isInTrackedSignalContext() {
     ProfiledThread *pt = ProfiledThread::current();
-    // null ProfiledThread = no thread context;
-    // the SignalHandlerScope never ran, so we have no positive evidence
-    // of a signal frame.
+    // null ProfiledThread = no thread context; the SignalHandlerScope
+    // never ran, so we have no positive evidence of a signal frame.
     // See header comment for the rationale of returning false here.
     return pt != nullptr && pt->signalDepth() != 0;
 }
@@ -56,6 +55,7 @@ bool isInTrackedSignalContext() {
 SignalHandlerScope::SignalHandlerScope(bool shouldRunPriming) : _current(nullptr), _active(true) {
     ProfiledThread *pt = shouldRunPriming ? ProfiledThread::acquireCurrent() : ProfiledThread::current();
     if (pt != nullptr) {
+         DEBUG_ONLY(_signal_depth = pt->signalDepth();)
         _current = pt;
         pt->enterSignalScope();
     } else {

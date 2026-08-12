@@ -85,7 +85,7 @@ private:
   u32 _wall_epoch;
   u64 _call_trace_id;
   u32 _recording_epoch;
-  u32 _misc_flags;
+  volatile u32 _misc_flags;
   u64 _park_block_token;
   int _filter_slot_id; // Slot ID for thread filtering
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
