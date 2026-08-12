@@ -93,6 +93,12 @@ bool shouldFire(u64 threshold, const char* fn);
 // SIGSEGV). If init() failed, it falls back to a best-effort garbage address.
 uintptr_t poisonAddress();
 
+// Deliberately dereferences poisonAddress() to raise a real SIGSEGV right now,
+// unconditionally (no probability gate, no shouldFire() draw). For exercising
+// crash-handler / recovery paths on demand (e.g. from a test), never from a
+// production code path.
+[[noreturn]] void crashNow();
+
 // Returns ptr unchanged, or a poison address (cast to T) when the tier fires.
 // Templated so the wrapped expression's static type (void**, const char*,
 // uintptr_t, ...) is preserved exactly.
