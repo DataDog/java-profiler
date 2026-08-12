@@ -194,18 +194,28 @@ static void fillFrameRaw(ASGCT_CallFrame& frame, FrameTypeId type, int bci, cons
 void HotspotSupport::fillJavaFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci,
                                    jmethodID method_id, const VMMethod* method) {
     if (method_id == JMETHODID_NOT_WALKABLE) {
-        // The Method* failed validation while walking. Preserve only the sentinel;
-        // retaining the Method* would defer a dereference of that invalid metadata
-        // until the dump thread resolves the frame.
+        // The Method* failed validation while walking (bad pointer chain or
+        // faulted load). Preserve only the sentinel; retaining the Method*
+        // would defer a dereference of invalid metadata until the dump thread
+        // resolves the frame.
         fillFrame(frame, type, bci, method_id);
     } else if (method_id != nullptr) {
         fillFrame(frame, type, bci, method_id);
-    } else {
-        // nullptr is returned by id() for deliberately unprimed classes
-        // (fjmethodid=false). The raw Method* fallback is the designed path;
-        // the Method* is stable for non-redefined classes.
+    } else if (!VM::arguments()._force_jmethodID) {
+        // fjmethodid=false: the user opted into the raw Method* path. nullptr
+        // means no jmethodID is available — either the klass was deliberately
+        // not primed (ids == NULL) or the cache was shrunk by a redefine
+        // (num >= len). In both cases the raw Method* is the designed
+        // resolution path; the deferred-dereference race at dump time is
+        // inherent to this mode.
         NO_INJECTION_ASSERT(method != nullptr);
         fillFrameRaw(frame, type, bci, method);
+    } else {
+        // fjmethodid=true: all jmethodIDs should be preloaded, so nullptr is
+        // unexpected — a transient invalidation window or a missed preload.
+        // Use the sentinel rather than deferring a raw Method* dereference to
+        // the dump thread, where the metadata may have been reclaimed.
+        fillFrame(frame, type, bci, JMETHODID_NOT_WALKABLE);
     }
 }
 
@@ -1398,9 +1408,9 @@ bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jcl
 jmethodID HotspotSupport::resolve(const void* method) {
   assert(VM::isHotspot());
   NO_INJECTION_ASSERT(method != nullptr);
-  // Defensive: fillJavaFrame stores the sentinel without the raw flag, so this
-  // should never reach the raw-pointer resolve path. Map it to nullptr so the
-  // dump thread serializes it as the shared unknown method.
+  // fillJavaFrame stores the sentinel without the raw flag, so this should
+  // never reach the raw-pointer resolve path. Map it to nullptr so the dump
+  // thread serializes it as the shared unknown method.
   if ((jmethodID)method == JMETHODID_NOT_WALKABLE) {
     return nullptr;
   }

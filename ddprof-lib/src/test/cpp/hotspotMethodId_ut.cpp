@@ -199,7 +199,7 @@ TEST(HotspotMethodIdTest, IdReturnsNullptrForUnprimedCache) {
     EXPECT_EQ(vm_method->id(), nullptr);
 }
 
-TEST(HotspotMethodIdTest, IdReturnsSentinelForShrunkCache) {
+TEST(HotspotMethodIdTest, IdReturnsNullptrForShrunkCache) {
     HotspotMethodIdVMHotspotGuard hotspot;
     VMStructsTestAccessor offsets(ID_OFFSETS);
 
@@ -207,7 +207,9 @@ TEST(HotspotMethodIdTest, IdReturnsSentinelForShrunkCache) {
     md.link(/*idnum*/ 2, /*cache_len*/ 1); // num >= len → post-invalidation
 
     VMMethod* vm_method = reinterpret_cast<VMMethod*>(&md.method);
-    EXPECT_EQ(vm_method->id(), JMETHODID_NOT_WALKABLE);
+    // id() returns nullptr (not the sentinel) so that fillJavaFrame can decide
+    // based on fjmethodid whether to use the raw Method* fallback.
+    EXPECT_EQ(vm_method->id(), nullptr);
 }
 
 TEST(HotspotMethodIdTest, IdReturnsNullForEmptySlot) {
