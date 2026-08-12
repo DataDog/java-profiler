@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk11
 
 ## glibc-x64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-08-12 05:47:59 EDT
+**Date:** 2026-08-12 08:46:05 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 543 |
-| Sample Rate | 9.05/sec |
-| Health Score | 566% |
+| CPU Samples | 485 |
+| Sample Rate | 8.08/sec |
+| Health Score | 505% |
 | Threads | 8 |
-| Allocations | 379 |
+| Allocations | 357 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 692 |
-| Sample Rate | 11.53/sec |
-| Health Score | 721% |
+| CPU Samples | 672 |
+| Sample Rate | 11.20/sec |
+| Health Score | 700% |
 | Threads | 10 |
-| Allocations | 516 |
+| Allocations | 515 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 60-60 cores)</summary>
 
 ```
-1786527831 60
-1786527836 60
-1786527841 60
-1786527846 60
-1786527851 60
-1786527856 60
-1786527861 60
-1786527866 60
-1786527871 60
-1786527876 60
-1786527881 60
-1786527886 60
-1786527891 60
-1786527896 60
-1786527901 60
-1786527906 60
-1786527911 60
-1786527916 60
-1786527921 60
-1786527926 60
+1786538514 60
+1786538519 60
+1786538524 60
+1786538529 60
+1786538534 60
+1786538539 60
+1786538544 60
+1786538549 60
+1786538554 60
+1786538559 60
+1786538564 60
+1786538569 60
+1786538574 60
+1786538579 60
+1786538584 60
+1786538589 60
+1786538594 60
+1786538599 60
+1786538604 60
+1786538609 60
 ```
 </details>
 
