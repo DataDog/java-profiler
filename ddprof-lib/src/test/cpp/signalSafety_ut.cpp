@@ -120,13 +120,21 @@ TEST_F(SignalSafetyTest, SignalHandlerUnwindAfterLongjmpDecrementsOnce) {
     EXPECT_EQ(0, getInSignalDepth());
 }
 
-// Safety property: signalHandlerUnwindAfterLongjmp() saturates at zero;
-// double calls do not underflow.
-TEST_F(SignalSafetyTest, SignalHandlerUnwindAfterLongjmpSaturatesAtZero) {
+// Safety property: signalHandlerUnwindAfterLongjmp() must only ever compensate
+// for a SignalHandlerScope whose constructor genuinely ran. In production,
+// Profiler::checkFault() is the only thing that ever siglongjmp's past a
+// SignalHandlerScope's destructor, and it's only reachable from
+// segvHandler()/busHandler(), both of which open a SIGNAL_HANDLER_GUARD()
+// first -- so every real compensating call is paired with a prior
+// enterSignalScope(). Calling it here with no matching scope at all (depth
+// already 0) is exactly the kind of pairing bug that must never be
+// tolerated silently: it has to abort loudly instead of underflowing the
+// counter (which signalDepth() truncates to uint8_t, so an underflow would
+// silently wrap to a large positive value and corrupt
+// isInTrackedSignalContext() for the rest of the thread's life).
+TEST_F(SignalSafetyTest, SignalHandlerUnwindAfterLongjmpAbortsOnUnmatchedCall) {
     EXPECT_EQ(0, getInSignalDepth());
-    signalHandlerUnwindAfterLongjmp();
-    signalHandlerUnwindAfterLongjmp();
-    EXPECT_EQ(0, getInSignalDepth());
+    EXPECT_DEATH({ signalHandlerUnwindAfterLongjmp(); }, "Assertion .*");
 }
 
 TEST(SignalSafetyTestNoContext, NullProfiledThreadIsNotTrackedSignal) {

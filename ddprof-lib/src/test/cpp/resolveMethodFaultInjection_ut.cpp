@@ -134,4 +134,29 @@ TEST_F(ResolveMethodFaultInjectionTest, RecoversFromInjectedCrashInsteadOfCrashi
   t->setJmpCtx(nullptr);
 }
 
+#else  // __FAULT_INJECTION__ not defined (the default release/debug build).
+
+// INJECT_CRASH_LIKELY() in resolveMethod() compiles to nothing here (see
+// faultInjection.h), so there is nothing to inject -- this is a plain smoke
+// test of the same call, kept for two reasons: (1) it documents that the
+// call site is inert in this configuration, and (2) a translation unit that
+// registers zero gtest tests fails to *link* as its own binary: with no
+// TEST/TEST_F in this object file, nothing here pulls a member out of
+// -lgtest before -lgtest_main's gtest_main.cc.o (which needs
+// testing::InitGoogleTest() etc. from that same archive) is processed, and
+// -lgtest is never revisited afterwards.
+TEST(ResolveMethodFaultInjectionTest, DisabledBuildResolvesNormally) {
+  StringDictionary classes;
+  MethodMap methods;
+  Lookup lookup(nullptr, &methods, &classes);
+
+  ASGCT_CallFrame frame{};
+  frame.bci = 0;
+  frame.method_id = nullptr;
+
+  MethodInfo* info = lookup.resolveMethod(frame);
+  ASSERT_NE(info, nullptr);
+  EXPECT_EQ(info->_type, FRAME_NATIVE);
+}
+
 #endif  // __FAULT_INJECTION__

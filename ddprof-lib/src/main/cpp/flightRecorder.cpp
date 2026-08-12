@@ -573,8 +573,10 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   // This is outside of a signal handler, there is no reason for allocation to fail,
   // other than OOM
   ProfiledThread* prof_thread = ProfiledThread::initCurrentThreadSignalSafe();
+  if (prof_thread == nullptr) {
+    return nullptr;
+  }
   MethodInfo* mi = nullptr;
-  assert(prof_thread != nullptr);
   sigjmp_buf crash_protection_ctx;
   sigjmp_buf* prev_buf = prof_thread->getJmpCtx();
   if (sigsetjmp(crash_protection_ctx, 1) != 0) {
@@ -699,7 +701,7 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
       fillJavaMethodInfo(mi, method_id, first_time);
     }
   }
-
+  prof_thread->setJmpCtx(prev_buf);
   return mi;
 }
 

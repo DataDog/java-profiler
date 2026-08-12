@@ -245,12 +245,17 @@ public:
     return _jmp_buf != nullptr;
   }
 
-  // Signal-handler depth counter used by SignalHandlerScope (guards.h).  All
-  // access happens on the owning thread (signal handlers are delivered to the
-  // thread that's interrupted), so plain reads/writes are AS-safe — no locks,
-  // no malloc, no syscalls.  See guards.h for the public API.
+  // Signal-handler depth counter used by SignalHandlerScope (guards.h).
+  // But read-modify-store can be interrupted by other signals, so it has to be an atomic counter.
   inline uint8_t signalDepth() const { return __atomic_load_n(&_signal_depth, __ATOMIC_RELAXED); }
   inline void enterSignalScope()    { __atomic_fetch_add(&_signal_depth, 1, __ATOMIC_RELAXED); }
+  // Every real exitSignalScope() call is paired with a prior enterSignalScope():
+  // either the normal SignalHandlerScope destructor, or exactly one compensating
+  // SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP() per skipped destructor (Profiler::checkFault()
+  // -- the only thing that ever siglongjmp's past a SignalHandlerScope -- is only
+  // reachable from segvHandler()/busHandler(), both of which open SIGNAL_HANDLER_GUARD()
+  // first). A call here with depth already 0 means that pairing was broken elsewhere;
+  // that is a real bug and must fail loudly, not be silently tolerated.
   inline void exitSignalScope()     {
     int depth = __atomic_fetch_sub(&_signal_depth, 1, __ATOMIC_RELAXED);
     assert(depth > 0);

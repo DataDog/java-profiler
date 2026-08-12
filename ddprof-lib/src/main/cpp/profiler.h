@@ -16,6 +16,7 @@
 #include "stringDictionary.h"
 #include "engine.h"
 #include "event.h"
+#include "faultInjection.h"
 #include "flightRecorder.h"
 #include "guards.h"
 #include "libraries.h"
@@ -519,8 +520,7 @@ public:
     // this is a safe place to do it since this wrapper is used solely from the 'vm' stackwalker implementation
     if (force_stackwalk_crash_env) {
       TEST_LOG("FORCE_SIGSEGV");
-      int* p = nullptr;
-      *p = 1;
+      crashNow();
     }
 #endif
     return Libraries::instance()->findLibraryByAddress(address);

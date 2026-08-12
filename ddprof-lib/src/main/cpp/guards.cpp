@@ -41,7 +41,7 @@ bool isInTrackedSignalContext() {
 SignalHandlerScope::SignalHandlerScope() : _active(true) {
     ProfiledThread *pt = ProfiledThread::current();
     if (pt != nullptr) {
-        debug_only(_signal_depth = pt->signalDepth();)
+        DEBUG_ONLY(_signal_depth = pt->signalDepth();)
         pt->enterSignalScope();
     } else {
         // No thread context: nothing to update; mark inactive so destructor
@@ -55,7 +55,7 @@ SignalHandlerScope::~SignalHandlerScope() {
     ProfiledThread *pt = ProfiledThread::current();
     if (pt != nullptr) {
         pt->exitSignalScope();
-        assert(_signal_depth == pt->signalDepth());
+        DEBUG_ONLY(assert(_signal_depth == pt->signalDepth());)
     }
 }
 
@@ -64,7 +64,7 @@ void SignalHandlerScope::release() {
     ProfiledThread *pt = ProfiledThread::current();
     if (pt != nullptr) {
         pt->exitSignalScope();
-        assert(_signal_depth == pt->signalDepth());
+        DEBUG_ONLY(assert(_signal_depth == pt->signalDepth());)
     }
     _active = false;
 }
