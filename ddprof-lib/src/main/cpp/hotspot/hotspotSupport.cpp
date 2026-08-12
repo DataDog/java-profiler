@@ -201,8 +201,9 @@ void HotspotSupport::fillJavaFrame(ASGCT_CallFrame& frame, FrameTypeId type, int
     } else if (method_id != nullptr) {
         fillFrame(frame, type, bci, method_id);
     } else {
-        // Unreachable: id(), validatedId(), and getMethodId() all return
-        // JMETHODID_NOT_WALKABLE on failure, never nullptr. Kept as a guard.
+        // nullptr is returned by id() for deliberately unprimed classes
+        // (fjmethodid=false). The raw Method* fallback is the designed path;
+        // the Method* is stable for non-redefined classes.
         NO_INJECTION_ASSERT(method != nullptr);
         fillFrameRaw(frame, type, bci, method);
     }
