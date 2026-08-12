@@ -246,7 +246,11 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         return 0;
     }
     
-    debug_only(UnwindFailures* unwindFailures = prof_thread->unwindFailures();)
+    // reset=false: the buffer only needs clearing after a failure was actually
+    // recorded into it (done below, right after merging into UnwindStats), not
+    // on every walk — clear() memsets ~288 KiB and this runs on the hot sample
+    // path in DEBUG/ASan/TSan builds.
+    DEBUG_ONLY(UnwindFailures* unwindFailures = prof_thread->unwindFailures(false);)
 
     HotspotStackFrame frame(ucontext);
     uintptr_t bottom = (uintptr_t)&frame + MAX_WALK_SIZE;
@@ -277,6 +281,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 #ifdef DEBUG
         if (unwindFailures) {
             UnwindStats::recordFailures(unwindFailures);
+            unwindFailures->clear();
         }
 #endif // DEBUG
         return depth;
@@ -1003,6 +1008,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 #ifdef DEBUG
     if (unwindFailures && !unwindFailures->empty()) {
         UnwindStats::recordFailures(unwindFailures);
+        unwindFailures->clear();
     }
 #endif // DEBUG
 

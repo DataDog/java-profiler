@@ -81,7 +81,7 @@ private:
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
   uint8_t _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
   // Debug only due to memory overhead
-  debug_only(UnwindFailures _unwind_failures;)
+  DEBUG_ONLY(UnwindFailures _unwind_failures;)
   bool _otel_ctx_initialized;
 #ifdef __FAULT_INJECTION__
   // xorshift64 PRNG state for compile-time fault injection (faultInjection.h).

@@ -1,3 +1,18 @@
+/*
+ * Copyright 2026 Datadog, Inc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 #ifndef _COMMON_H
 #define _COMMON_H
 
@@ -32,22 +47,18 @@
 #  endif
 #endif
 
-#ifdef DEBUG
-#define debug_only(s)   s
-#else
-#define debug_only(s)
-#endif
-
 // Knuth's multiplicative constant (golden ratio * 2^64 for 64-bit)
 // Used for hash distribution in various components
 constexpr size_t KNUTH_MULTIPLICATIVE_CONSTANT = 0x9e3779b97f4a7c15ULL;
 
 #ifdef DEBUG
+#define DEBUG_ONLY(s) s
 #define TEST_LOG(fmt, ...) do { \
   fprintf(stdout, "[TEST::INFO] " fmt "\n", ##__VA_ARGS__); \
   fflush(stdout); \
 } while (0)
 #else
+#define DEBUG_ONLY(s)
 #define TEST_LOG(fmt, ...) // No-op in non-debug mode
 #endif
 
