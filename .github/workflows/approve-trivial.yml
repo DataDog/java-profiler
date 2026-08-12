@@ -30,31 +30,6 @@ jobs:
             --actor "$LABEL_ACTOR" \
             --actor-type "$LABEL_ACTOR_TYPE"
 
-      - name: Classify pull request
-        id: classify
-        env:
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
-        run: |
-          if [[ "$HEAD_REF" =~ ^automated/bump-[0-9]+-[0-9]+-[0-9]+$ ]]; then
-            echo "release_bump=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "release_bump=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Validate release bump before approval
-        if: steps.classify.outputs.release_bump == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          LABEL_ACTOR: ${{ github.event.sender.login }}
-          LABEL_ACTOR_TYPE: ${{ github.event.sender.type }}
-        run: |
-          ./.github/scripts/validate-release-bump.sh \
-            --repo "$GITHUB_REPOSITORY" \
-            --pr-number "$PR_NUMBER" \
-            --sender "$LABEL_ACTOR" \
-            --sender-type "$LABEL_ACTOR_TYPE"
-
       - name: Check for an existing exact approval
         id: existing
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # 9.0.0
@@ -81,20 +56,6 @@ jobs:
         with:
           scope: DataDog/java-profiler
           policy: self.approve-trivial.approve-pr
-
-      - name: Revalidate release bump immediately before approval
-        if: steps.classify.outputs.release_bump == 'true' && steps.existing.outputs.approved != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          LABEL_ACTOR: ${{ github.event.sender.login }}
-          LABEL_ACTOR_TYPE: ${{ github.event.sender.type }}
-        run: |
-          ./.github/scripts/validate-release-bump.sh \
-            --repo "$GITHUB_REPOSITORY" \
-            --pr-number "$PR_NUMBER" \
-            --sender "$LABEL_ACTOR" \
-            --sender-type "$LABEL_ACTOR_TYPE"
 
       - name: Approve exact current commit
         if: steps.existing.outputs.approved != 'true'

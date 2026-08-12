@@ -250,6 +250,9 @@ all supported platforms, and library-loading metadata. Build output layout and t
 `META-INF/native-libs/{os}-{arch}/` packaging structure: see
 [doc/build/NativeBuildPlugin.md](doc/build/NativeBuildPlugin.md).
 
+Version is computed from git tags at build time: see
+[doc/build/Versioning.md](doc/build/Versioning.md).
+
 ## Core Architecture Components
 
 ### Double-Buffered Call Trace Storage

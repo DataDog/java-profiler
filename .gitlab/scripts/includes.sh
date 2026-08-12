@@ -1,29 +1,22 @@
 function get_version() {
-  rm -f .version
-
   if [[ "${CI_COMMIT_TAG}" =~ ^v_[0-9.]+(-SNAPSHOT)?$ ]]; then
     echo "${CI_COMMIT_TAG//v_/}"
     return
   fi
 
-  local gradlecmd=$GRADLE_CMD
-  if [ -z "$gradlecmd" ]; then
-    gradlecmd="./gradlew"
-  fi
-  ${gradlecmd} printVersion --max-workers=1 --no-build-cache --stacktrace --info --no-watch-fs --no-daemon | grep 'Version:' | cut -f2 -d' ' > .version
-  local version=$(cat .version)
-  if [ -z "$version" ]; then
-    echo "ERROR: Failed to determine version from Gradle printVersion task" >&2
-    return 1
+  local branch="${CI_COMMIT_BRANCH:-${CI_COMMIT_REF_NAME:-}}"
+  local version
+  if [ -n "${branch}" ] && [ "${branch}" != "${CI_DEFAULT_BRANCH:-main}" ] && [ "${branch}" != "main" ] && [[ ! "${branch}" =~ ^release/ ]]; then
+    version=$(utils/compute-version.sh --branch-suffix "${branch}")
+  else
+    version=$(utils/compute-version.sh)
   fi
 
-  local branch="${CI_COMMIT_BRANCH:-${CI_COMMIT_REF_NAME:-}}"
-  local default_branch="${CI_DEFAULT_BRANCH:-main}"
-  if [ -n "${branch}" ] && [ "${branch}" != "${default_branch}" ] && [ "${branch}" != "main" ]; then
-    local suffix=$(echo "$branch" | tr '/' '_')
-    version=$(echo "$version" | sed "s#-SNAPSHOT#-${suffix}-SNAPSHOT#g")
+  if [ -z "$version" ]; then
+    echo "ERROR: Failed to determine version from compute-version.sh" >&2
+    return 1
   fi
-  echo "${version}"
+  echo "$version"
 }
 
 function get_current_version() {

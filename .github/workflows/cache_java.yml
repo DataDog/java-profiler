@@ -152,6 +152,8 @@ jobs:
         java_variant: [ "8", "8-orcl", "8-j9", "8-ibm", "11", "11-j9", "17", "17-j9", "17-graal", "21", "21-j9", "21-graal", "25", "25-graal" ]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - name: Try restore cache JDK ${{ matrix.java_variant }}
         id: cache-jdk
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -211,6 +213,8 @@ jobs:
         java_variant: [ "8-librca", "11-librca", "17-librca", "21-librca", "25-librca" ]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - name: Setup OS
         run: |
           # This needs to be done early because alpine does not have bash and tar is also iffy
@@ -263,6 +267,8 @@ jobs:
         java_variant: [ "8", "8-j9", "11", "11-j9", "17", "17-j9", "17-graal", "21", "21-j9", "21-graal", "25", "25-graal" ]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - name: Cache JDK ${{ matrix.java_variant }}
         id: cache-jdk
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -320,6 +326,8 @@ jobs:
         java_variant: [ "8-librca", "11-librca", "17-librca", "21-librca", "25-librca" ]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - name: Setup OS
         run: |
           # This needs to be done early because alpine does not have bash and tar is also iffy
