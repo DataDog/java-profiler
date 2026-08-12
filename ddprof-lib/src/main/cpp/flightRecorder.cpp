@@ -624,14 +624,14 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   // initCurrentThreadSignalSafe() can only fail on OOM.
   ProfiledThread *prof_thread = ProfiledThread::initCurrentThreadSignalSafe();
   if (prof_thread == nullptr) {
-    // No thread context means nowhere to publish a landing pad. Resolve to
-    // the shared unknown row rather than touching VM metadata unprotected --
-    // both call sites in writeStackTraces() dereference the result
-    // unconditionally, so a nullptr return would convert a transient
-    // allocation failure into a SIGSEGV on the dump thread. Same counter
-    // HotspotSupport::resolve() uses for the identical no-landing-pad case.
-    Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
-    return unknownMethod();
+    // No thread context means nowhere to publish a landing pad. Resolve
+    // unprotected rather than returning nullptr: both call sites in
+    // writeStackTraces() dereference the result unconditionally, so a nullptr
+    // return would convert a transient allocation failure into a SIGSEGV on the
+    // dump thread. Unprotected is also exactly what this code did before the
+    // protection was added.
+    Counters::increment(METHOD_RESOLVE_UNPROTECTED);
+    return fillMethod(frame, method_id, bci);
   }
 
   // Fill the shared "unknown" row *before* arming. The recovery branch below
@@ -666,7 +666,6 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     return &_unknown_method;
   }
   jmp_scope.install(&crash_protection_ctx);
-
   return fillMethod(frame, method_id, bci);
 }
 
@@ -681,6 +680,12 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
   }
 
   assert(method_id != nullptr && "Already filtered by caller");
+
+  // Inject fault to test siglongjmp protection. Sits inside the window
+  // resolveMethod() arms around this function, which is the point: this is
+  // never compiled into a production build (it needs -PenableFaultInjection).
+  INJECT_CRASH_LIKELY();
+
 
   // BCI_VTABLE_RECEIVER: method holds a VMSymbol* (see vmEntry.h). Resolve
   // to a class_id via the per-dump cache once, then key MethodMap by the

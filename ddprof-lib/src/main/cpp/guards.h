@@ -139,6 +139,56 @@ private:
 void signalHandlerUnwindAfterLongjmp();
 #define SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP() signalHandlerUnwindAfterLongjmp()
 
+// RAII for the per-thread siglongjmp landing pad (ProfiledThread::_jmp_buf)
+// that Profiler::checkFault() jumps through.
+//
+// The previous landing pad must be reinstated on *every* exit from the frame
+// that owns the sigjmp_buf -- normal return, a siglongjmp back into it, or an
+// exception unwinding out of it -- because checkFault() will happily jump into
+// a landing pad whose stack frame has already been popped. Hand-rolled
+// "setJmpCtx(prev) before each return" only covers the returns the author
+// remembered.
+//
+// Both members are const and initialised before the owning frame calls
+// sigsetjmp(), and install()/restore() mutate only the ProfiledThread, so the
+// guard's own state is never modified between sigsetjmp() and siglongjmp().
+// Reading it from the landing pad is therefore well defined -- unlike a plain
+// non-volatile local, whose value after siglongjmp is indeterminate if it was
+// assigned in the meantime.
+//
+// Usage:
+//   sigjmp_buf ctx;
+//   JmpCtxScope jmp_scope(prof_thread);       // pt must be non-null
+//   if (sigsetjmp(ctx, 1) != 0) {             // savemask=1: see note below
+//     SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
+//     jmp_scope.restore();                    // disarm before anything else
+//     return recovery_value;
+//   }
+//   jmp_scope.install(&ctx);
+//   ... risky work ...
+//
+// savemask must be 1: the siglongjmp originates inside the SIGSEGV handler,
+// where the kernel has SIGSEGV blocked, so without restoring the saved mask the
+// signal would stay blocked and the next fault on this thread would be fatal.
+class JmpCtxScope {
+public:
+    // `pt` must be non-null.
+    explicit JmpCtxScope(ProfiledThread* pt);
+    ~JmpCtxScope();
+    // Publish `ctx` as this thread's landing pad; call after sigsetjmp()
+    // returns 0.
+    void install(sigjmp_buf* ctx);
+    // Reinstate the previous landing pad now. Idempotent with the destructor,
+    // so it is safe (and required) to call from the sigsetjmp landing pad
+    // before touching anything that could fault again.
+    void restore();
+    JmpCtxScope(const JmpCtxScope&)            = delete;
+    JmpCtxScope& operator=(const JmpCtxScope&) = delete;
+private:
+    ProfiledThread* const _pt;
+    sigjmp_buf* const _prev;
+};
+
 /**
  * Race-free critical section using atomic compare-and-swap.
  *
