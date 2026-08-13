@@ -489,6 +489,15 @@ bool LivenessTracker::hasQualifyingGrowth(KlassPopulationEntry &entry) const {
 }
 
 void LivenessTracker::recordHeapFloorSample(u64 used, u64 timestamp_ns) {
+#ifdef DEBUG
+  if (_heap_floor_recording_disabled_for_test.load(std::memory_order_acquire)) {
+    return;
+  }
+#endif
+  recordHeapFloorSampleUnchecked(used, timestamp_ns);
+}
+
+void LivenessTracker::recordHeapFloorSampleUnchecked(u64 used, u64 timestamp_ns) {
   // Lock-free, single-writer-at-a-time - see _heap_floor_ring's own comment
   // (livenessTracker.h) for why onGC() cannot take _table_lock here.
   //
@@ -543,7 +552,15 @@ bool LivenessTracker::heapFloorRising() const {
 }
 
 double LivenessTracker::secondsToOOM() const {
-  if (!_gc_generations.load(std::memory_order_relaxed) || _max_heap_bytes <= 0) {
+#ifdef DEBUG
+  jlong max_heap = _max_heap_bytes_for_test.load(std::memory_order_acquire);
+  if (max_heap <= 0) {
+    max_heap = _max_heap_bytes;
+  }
+#else
+  jlong max_heap = _max_heap_bytes;
+#endif
+  if (!_gc_generations.load(std::memory_order_relaxed) || max_heap <= 0) {
     // No heap-floor history is ever recorded outside _gc_generations (onGC()'s
     // own gate), and a projection is meaningless without a resolved max heap.
     return -1;
@@ -580,7 +597,7 @@ double LivenessTracker::secondsToOOM() const {
   }
 
   double bytes_per_ns = bytes_delta / time_delta_ns;
-  double remaining_bytes = (double)_max_heap_bytes - byte_stats.recent_mean;
+  double remaining_bytes = (double)max_heap - byte_stats.recent_mean;
   if (remaining_bytes <= 0) {
     // The floor's own recent mean has already reached (or passed) the max
     // heap size - exhaustion is not "in N seconds", it's now.
@@ -1129,11 +1146,8 @@ void LivenessTracker::onGC() {
     // Feeds heapFloorRising()'s corroboration check (selectLeakCandidates())
     // - gated on _gc_generations, same as the per-klass population table
     // itself, since this ring exists purely to support that feature.
-#ifdef DEBUG
-    if (_heap_floor_recording_disabled_for_test) {
-      return;
-    }
-#endif
+    // recordHeapFloorSample() itself checks _heap_floor_recording_disabled_for_test
+    // (debug-only) so a test can seed the ring exclusively.
     size_t used = resolvePostGcHeapUsage(nullptr);
     if (used > 0) {
       recordHeapFloorSample((u64)used, OS::nanotime());

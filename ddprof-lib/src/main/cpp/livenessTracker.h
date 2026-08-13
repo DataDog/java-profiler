@@ -243,7 +243,11 @@ private:
   // closes (a real GC firing between resetKlassPopulationForTest0() and
   // shouldRunPassForTest0()).
 #ifdef DEBUG
-  bool _heap_floor_recording_disabled_for_test = false;
+  // Atomic (not plain bool) so the GC thread sees the test thread's store
+  // on arm64's weak memory model. Checked inside recordHeapFloorSample()
+  // at the actual write point, not just in onGC(), so a GC already past the
+  // onGC() gate when the test sets this flag still cannot corrupt the ring.
+  std::atomic<bool> _heap_floor_recording_disabled_for_test{false};
 #endif
 
   // Runtime.maxMemory(), resolved once by initialize_table() (the same call
@@ -254,6 +258,15 @@ private:
   // heap does not change at runtime, so a value resolved once stays valid.
   // -1 if never resolved (mirrors getMaxHeap()'s own sentinel).
   jlong _max_heap_bytes;
+#ifdef DEBUG
+  // Atomic mirror used only by the setMaxHeapBytesForTest() seam so the
+  // test thread's store is published to the BFS thread's secondsToOOM()
+  // read on arm64's weak memory model. _max_heap_bytes above stays plain
+  // for the production path (written once from the control thread during
+  // initialize_table(), before the BFS thread starts, so no cross-thread
+  // visibility issue there).
+  std::atomic<jlong> _max_heap_bytes_for_test{-1};
+#endif
 
   // Gates the per-klass population tracking below. Set from
   // args._gc_generations in initialize() - deliberately not folded into
@@ -461,6 +474,13 @@ private:
   // method calling it internally - keeps this method itself deterministic
   // for the heapFloorRecordForTest() test seam below.
   void recordHeapFloorSample(u64 used, u64 timestamp_ns);
+
+  // Internal: pushes to the ring without checking
+  // _heap_floor_recording_disabled_for_test. Called by
+  // recordHeapFloorSample() (after the debug-only flag check) and by
+  // heapFloorRecordForTest() (which bypasses the check so a test can
+  // seed the ring even while real GC recording is disabled).
+  void recordHeapFloorSampleUnchecked(u64 used, u64 timestamp_ns);
 
   // Reads whether the aggregate post-GC live heap has itself shown a
   // sustained rise over _heap_floor_ring's horizon - see
@@ -678,9 +698,12 @@ public:
     // _gc_generations-gated feature, read by every selectLeakCandidates()
     // scan (heapFloorRising()), so leaving it populated across tests in the
     // same gtest binary would leak one test's heap-usage history into the
-    // next test's hysteresis threshold.
-    store(_heap_floor_ring_head, (u8)0);
-    store(_heap_floor_ring_fill, (u8)0);
+    // next test's hysteresis threshold. storeRelease() (not plain store())
+    // so the reset is published to the BFS/GC thread on arm64's weak memory
+    // model - a relaxed store may never be visible to a reader doing
+    // loadAcquire() on these same indices.
+    storeRelease(_heap_floor_ring_head, (u8)0);
+    storeRelease(_heap_floor_ring_fill, (u8)0);
   }
 
   // Test seams for the heap-floor ring (mirrors klassPopulation*ForTest()'s
@@ -691,13 +714,19 @@ public:
   // ring) - a test exercising secondsToOOM() must pass real, increasing
   // values explicitly.
   void heapFloorRecordForTest(u64 used, u64 timestamp_ns = 0) {
-    recordHeapFloorSample(used, timestamp_ns);
+    recordHeapFloorSampleUnchecked(used, timestamp_ns);
   }
   bool heapFloorRisingForTest() const { return heapFloorRising(); }
   // Bypasses initialize_table()'s JNI-dependent HeapUsage::getMaxHeap() call
   // (out of gtest's reach, same reason setGcGenerationsForTest() exists) so
   // secondsToOOM() can be exercised directly against a fake max heap size.
-  void setMaxHeapBytesForTest(jlong v) { _max_heap_bytes = v; }
+  void setMaxHeapBytesForTest(jlong v) {
+#ifdef DEBUG
+    _max_heap_bytes_for_test.store(v, std::memory_order_release);
+#else
+    _max_heap_bytes = v;
+#endif
+  }
 
 #ifdef DEBUG
   // Temporarily disables onGC()'s own recordHeapFloorSample() call so a
@@ -705,7 +734,7 @@ public:
   // a real GC interleaving a sample. See _heap_floor_recording_disabled_for_test's
   // own comment above.
   void setHeapFloorRecordingForTest(bool enabled) {
-    _heap_floor_recording_disabled_for_test = !enabled;
+    _heap_floor_recording_disabled_for_test.store(!enabled, std::memory_order_release);
   }
 #endif
 
