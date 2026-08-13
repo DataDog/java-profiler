@@ -74,8 +74,11 @@ public class TlsPrimingTest extends AbstractProfilerTest {
 
     @Override
     protected boolean isPlatformSupported() {
-        // TLS priming is not implemented on macOS.
-        return !Platform.isMac();
+        // TLS priming is not implemented on macOS. Zing is excluded separately:
+        // its compiler threads don't use either the HotSpot ("C1 CompilerThre")
+        // or OpenJ9 ("JIT Compilation Thread") naming this test's assertion
+        // recognizes, so it would fail here even when priming works correctly.
+        return !Platform.isMac() && !Platform.isZing();
     }
 
     @RetryingTest(3)
