@@ -71,6 +71,7 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
   @Test
   public void shouldOpenSearchGateOnAggressiveHeapWideGrowthWithNoLeakCandidate() {
     assumeDebugBuild();
+    JavaProfiler.setHeapFloorRecordingForTest0(false);
     JavaProfiler.resetKlassPopulationForTest0();
     JavaProfiler.resetReferenceChainSearchForTest0();
     try {
@@ -94,6 +95,7 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
               + "alone, with zero per-klass leak candidate");
     } finally {
       JavaProfiler.setMaxHeapBytesForTest0(-1);
+      JavaProfiler.setHeapFloorRecordingForTest0(true);
     }
   }
 
@@ -106,6 +108,7 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
   @Test
   public void shouldNotOpenSearchGateOnFlatHeapFloorWithNoLeakCandidate() {
     assumeDebugBuild();
+    JavaProfiler.setHeapFloorRecordingForTest0(false);
     JavaProfiler.resetKlassPopulationForTest0();
     JavaProfiler.resetReferenceChainSearchForTest0();
     try {
@@ -123,6 +126,7 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
               + "candidate give hasLeakSignal() nothing to trust");
     } finally {
       JavaProfiler.setMaxHeapBytesForTest0(-1);
+      JavaProfiler.setHeapFloorRecordingForTest0(true);
     }
   }
 }

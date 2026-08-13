@@ -1272,6 +1272,16 @@ Java_com_datadoghq_profiler_JavaProfiler_setMaxHeapBytesForTest0(
   LivenessTracker::instance()->setMaxHeapBytesForTest((jlong)maxHeapBytes);
 }
 
+// Temporarily disables onGC()'s own recordHeapFloorSample() call so a test
+// can seed the heap-floor ring exclusively via heapFloorRecordForTest0()
+// without a real GC interleaving a sample with a real OS::nanotime()
+// timestamp and real heap usage, corrupting secondsToOOM()'s projection.
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setHeapFloorRecordingForTest0(
+    JNIEnv *env, jclass unused, jboolean enabled) {
+  LivenessTracker::instance()->setHeapFloorRecordingForTest(enabled == JNI_TRUE);
+}
+
 // Exposes ReferenceChainTracker::shouldRunPass() directly (see that seam's
 // own comment, referenceChains.h) - unlike runReferenceChainPass0() above,
 // which calls runPass() unconditionally, this reports whether the

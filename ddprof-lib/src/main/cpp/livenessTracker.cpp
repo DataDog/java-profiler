@@ -1129,6 +1129,11 @@ void LivenessTracker::onGC() {
     // Feeds heapFloorRising()'s corroboration check (selectLeakCandidates())
     // - gated on _gc_generations, same as the per-klass population table
     // itself, since this ring exists purely to support that feature.
+#ifdef DEBUG
+    if (_heap_floor_recording_disabled_for_test) {
+      return;
+    }
+#endif
     size_t used = resolvePostGcHeapUsage(nullptr);
     if (used > 0) {
       recordHeapFloorSample((u64)used, OS::nanotime());

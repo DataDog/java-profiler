@@ -666,6 +666,15 @@ public final class JavaProfiler {
     public static native void setMaxHeapBytesForTest0(long maxHeapBytes);
 
     /**
+     * Test seam (debug native builds only): temporarily disables {@code onGC()}'s own
+     * {@code recordHeapFloorSample()} call so a test can seed the heap-floor ring exclusively
+     * via {@link #heapFloorRecordForTest0(long, long)} without a real GC interleaving a sample
+     * with a real {@code OS::nanotime()} timestamp and real heap usage, corrupting
+     * {@code secondsToOOM()}'s projection. Pass {@code false} to disable, {@code true} to restore.
+     */
+    public static native void setHeapFloorRecordingForTest0(boolean enabled);
+
+    /**
      * Test seam (debug native builds only): reports whether ReferenceChainTracker's search-restart
      * gate ({@code canAffordNewSearch()} -&gt; {@code hasLeakSignal()}) would currently allow a
      * fresh/terminal search to start - in particular, whether {@code secondsToOOM()}'s urgent-OOM

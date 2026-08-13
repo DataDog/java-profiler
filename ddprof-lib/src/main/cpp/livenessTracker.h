@@ -235,6 +235,17 @@ private:
   volatile u8 _heap_floor_ring_head;
   volatile u8 _heap_floor_ring_fill;
 
+  // Debug-only test seam: when true, onGC() skips recordHeapFloorSample()
+  // so a test can seed the ring exclusively via heapFloorRecordForTest()
+  // without a real GC interleaving a sample with a real OS::nanotime()
+  // timestamp and real heap usage, corrupting secondsToOOM()'s projection.
+  // See AggressiveLeakReferenceChainTest's own comment for the race this
+  // closes (a real GC firing between resetKlassPopulationForTest0() and
+  // shouldRunPassForTest0()).
+#ifdef DEBUG
+  bool _heap_floor_recording_disabled_for_test = false;
+#endif
+
   // Runtime.maxMemory(), resolved once by initialize_table() (the same call
   // that already requires it to enable liveness tracking at all - see that
   // method's own Error path) and cached here so secondsToOOM() - polled once
@@ -687,6 +698,16 @@ public:
   // (out of gtest's reach, same reason setGcGenerationsForTest() exists) so
   // secondsToOOM() can be exercised directly against a fake max heap size.
   void setMaxHeapBytesForTest(jlong v) { _max_heap_bytes = v; }
+
+#ifdef DEBUG
+  // Temporarily disables onGC()'s own recordHeapFloorSample() call so a
+  // test can seed the ring exclusively via heapFloorRecordForTest() without
+  // a real GC interleaving a sample. See _heap_floor_recording_disabled_for_test's
+  // own comment above.
+  void setHeapFloorRecordingForTest(bool enabled) {
+    _heap_floor_recording_disabled_for_test = !enabled;
+  }
+#endif
 
   // Sets _gc_generations directly, bypassing initialize() (which requires a
   // live JVM - VM::hotspot_version()/VM::jni(), see that method's own code -
