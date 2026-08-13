@@ -9,6 +9,7 @@
 
 #include <cassert>
 #include "engine.h"
+#include "nativeMem.h"
 #include "os.h"
 #include "profiler.h"
 #include "reservoirSampler.h"
@@ -79,6 +80,7 @@ class BaseWallClock : public Engine {
 
       while (_running.load(std::memory_order_relaxed)) {
         collectThreads(threads);
+        NativeMem::setLive(NM_WALLCLOCK, (long long)threads.capacity() * sizeof(ThreadType));
 
         int num_failures = 0;
         int threads_already_exited = 0;
@@ -116,6 +118,11 @@ class BaseWallClock : public Engine {
         // the probability of clamping is extremely small, close to zero
         OS::sleep(std::min(std::max((long int)1, static_cast<long int>(distribution(generator))), ((_interval * 2) - 1)));
       }
+
+      // `threads` goes out of scope (and frees its buffer) when this function
+      // returns; reset the gauge here so a final JFR flush after stop()
+      // doesn't keep reporting the last observed capacity as live.
+      NativeMem::setLive(NM_WALLCLOCK, 0);
     }
 
 public:

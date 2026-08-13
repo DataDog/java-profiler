@@ -4,6 +4,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+
+#ifdef DEBUG
+
 #include "unwindStats.h"
 #include "nativeMem.h"
 
@@ -41,3 +44,6 @@ void UnwindFailures::reset() {
     memset((void*)_counters, 0, MAX_UNWIND_FAILURE_NAMES * (UNWIND_FAILURE_ANY + 1) * sizeof(u64));
     _nameCount = 0;
 }
+
+#endif // DEBUG
+

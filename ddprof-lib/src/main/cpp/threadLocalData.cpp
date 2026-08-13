@@ -88,6 +88,13 @@ void ProfiledThread::release() {
 }
 
 #ifdef UNIT_TEST
+ProfiledThread* ProfiledThread::clearCurrentThreadTLS() {
+    assert(isThreadKeyValid() && "Should not reach here - profiling should have been disabled");
+    ProfiledThread* pt = _current_thread.get();
+    _current_thread.set(nullptr);
+    return pt;
+}
+
 void ProfiledThread::deleteForTest(ProfiledThread* pt) {
   if (!ThreadLocalDataPool::release(pt)) {
     delete pt;
@@ -143,11 +150,8 @@ void ProfiledThread::unclaimAndReset() {
     _otel_tag_encodings[index] = 0;
   }
 
-  _unwind_failures.reset();
-
-#ifdef __FAULT_INJECTION__
-  _fi_rng = 0;
-#endif
+  DEBUG_ONLY(_unwind_failures.reset();)
+  FAULT_INJECTION_ONLY(_fi_rng = 0;)
 
   __atomic_store_n(&_misc_flags, 0, __ATOMIC_RELEASE);
 }

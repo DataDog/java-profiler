@@ -26,6 +26,16 @@ SFrameParser::~SFrameParser() {
 }
 
 FrameDesc* SFrameParser::table() {
+    // Shrink the capacity-doubled buffer to _count entries here, at the source,
+    // so every consumer of table()/count() already gets an exactly-sized
+    // allocation instead of relying on a shared trim step downstream.
+    if (_table != nullptr && _count > 0 && _count < _capacity) {
+        FrameDesc* trimmed = static_cast<FrameDesc*>(
+            realloc(_table, _count * sizeof(FrameDesc)));
+        if (trimmed != nullptr) {
+            _table = trimmed;
+        }
+    }
     FrameDesc* t = _table;
     _table = nullptr;
     return t;

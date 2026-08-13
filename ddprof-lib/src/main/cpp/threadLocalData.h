@@ -6,6 +6,7 @@
 #ifndef THREAD_LOCAL_DATA_H
 #define THREAD_LOCAL_DATA_H
 
+#include "common.h"
 #include "context.h"
 #include "nativeMem.h"
 #include "otel_context.h"
@@ -89,13 +90,13 @@ private:
   int _filter_slot_id; // Slot ID for thread filtering
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
   volatile uint8_t _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
-  UnwindFailures _unwind_failures;
-  bool _otel_ctx_initialized;
-#ifdef __FAULT_INJECTION__
+  // Debug only due to memory overhead
+  DEBUG_ONLY(UnwindFailures _unwind_failures;)
   // xorshift64 PRNG state for compile-time fault injection (faultInjection.h).
   // Per-thread, so the signal-path draw needs no lock/atomic; must never be 0.
-  u64 _fi_rng;
-#endif
+  FAULT_INJECTION_ONLY(u64 _fi_rng;)
+
+  bool _otel_ctx_initialized;
   // alignas(8) + sizeof(OtelThreadContextRecord)==640 (multiple of 8) guarantee
   // _otel_tag_encodings sits at +640 with no padding, so the three fields form one
   // 688-byte contiguous region.
@@ -146,18 +147,11 @@ public:
   // Simulates the moment inside release() after pthread_setspecific(NULL) but
   // before delete — the race window the clearCurrentThreadTLS fix covers.
   // Returns the detached pointer so the caller can delete it after assertions.
-  static ProfiledThread* clearCurrentThreadTLS() {
-    assert(isThreadKeyValid() && "Should not reach here - profiling should have been disabled");
-    ProfiledThread* pt = _current_thread.get();
-    _current_thread.set(nullptr);
-    return pt;
-  }
-  // Releases a ProfiledThread returned by clearCurrentThreadTLS().
-  // Needed because the destructor is private. Mirrors freeValue()'s
-  // ThreadLocalDataPool::release()-then-delete logic (and its NM_THREAD_LOCAL
-  // decrement) so it's safe to call on both forTid()-obtained and pool-backed
-  // threads. Defined in threadLocalData.cpp, where ThreadLocalDataPool's full
-  // declaration is visible.
+  static ProfiledThread* clearCurrentThreadTLS();
+  // Deletes a ProfiledThread returned by clearCurrentThreadTLS().
+  // Needed because the destructor is private. This stands in for the delete
+  // that freeValue() performs in production, so it mirrors freeValue()'s
+  // NM_THREAD_LOCAL decrement to keep the accounting balanced in tests.
   static void deleteForTest(ProfiledThread *pt);
 #endif
   // initCurrentThread() and release() are not async-signal-safe:
@@ -281,12 +275,14 @@ public:
   inline void setFiRng(u64 seed) { _fi_rng = seed ? seed : 1; }
 #endif
 
+#ifdef DEBUG
   UnwindFailures* unwindFailures(bool reset = true) {
     if (reset) {
       _unwind_failures.clear();
     }
     return &_unwind_failures;
   }
+#endif // DEBUG
 
   int filterSlotId() { return _filter_slot_id; }
   void setFilterSlotId(int slotId) { _filter_slot_id = slotId; }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2025, 2026 Datadog, Inc.
+ * Copyright 2025, 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -22,7 +22,7 @@
 static constexpr char TEST_NAME[] = "CallTraceStorageTest";
 
 // Helper function to find a CallTrace by trace_id in an unordered_set
-CallTrace* findTraceById(const std::unordered_set<CallTrace*>& traces, u64 trace_id) {
+CallTrace* findTraceById(const CallTraceSet& traces, u64 trace_id) {
     for (CallTrace* trace : traces) {
         if (trace && trace->trace_id == trace_id) {
             return trace;
@@ -62,7 +62,7 @@ TEST_F(CallTraceStorageTest, BasicFunctionality) {
     
     // Process traces to verify storage
     bool found_traces = false;
-    storage->processTraces([&found_traces](const std::unordered_set<CallTrace*>& traces) {
+    storage->processTraces([&found_traces](const CallTraceSet& traces) {
         found_traces = traces.size() > 0;
     });
     EXPECT_TRUE(found_traces);
@@ -86,14 +86,14 @@ TEST_F(CallTraceStorageTest, LivenessCheckerRegistration) {
     // Register a liveness checker that preserves only trace_id2 and trace_id4
     u64 preserved_trace_id2 = trace_id2;
     u64 preserved_trace_id4 = trace_id4;
-    storage->registerLivenessChecker([&preserved_trace_id2, &preserved_trace_id4](std::unordered_set<u64>& buffer) {
+    storage->registerLivenessChecker([&preserved_trace_id2, &preserved_trace_id4](CallTraceIdSet& buffer) {
         buffer.insert(preserved_trace_id2);
         buffer.insert(preserved_trace_id4);
     });
     
     // processTraces should preserve trace_id2 and trace_id4 but not trace_id1 and trace_id3
     size_t traces_collected = 0;
-    storage->processTraces([&traces_collected](const std::unordered_set<CallTrace*>& traces) {
+    storage->processTraces([&traces_collected](const CallTraceSet& traces) {
         // Should have all 4 traces from the collection plus the dropped trace
         traces_collected = traces.size();
         EXPECT_EQ(traces.size(), 5);
@@ -104,7 +104,7 @@ TEST_F(CallTraceStorageTest, LivenessCheckerRegistration) {
     CallTrace* found_trace2 = nullptr;
     CallTrace* found_trace4 = nullptr;
     
-    storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+    storage->processTraces([&](const CallTraceSet& traces) {
         traces_after_preserve = traces.size();
         found_trace2 = findTraceById(traces, preserved_trace_id2);
         found_trace4 = findTraceById(traces, preserved_trace_id4);
@@ -143,16 +143,16 @@ TEST_F(CallTraceStorageTest, MultipleLivenessCheckers) {
     u64 preserved_id4 = trace_id4;
     
     // Register two liveness checkers that preserve non-consecutive traces
-    storage->registerLivenessChecker([&preserved_id1](std::unordered_set<u64>& buffer) {
+    storage->registerLivenessChecker([&preserved_id1](CallTraceIdSet& buffer) {
         buffer.insert(preserved_id1);
     });
     
-    storage->registerLivenessChecker([&preserved_id4](std::unordered_set<u64>& buffer) {
+    storage->registerLivenessChecker([&preserved_id4](CallTraceIdSet& buffer) {
         buffer.insert(preserved_id4);
     });
     
     // processTraces should preserve specified traces and swap storages
-    storage->processTraces([](const std::unordered_set<CallTrace*>& traces) {
+    storage->processTraces([](const CallTraceSet& traces) {
         // Should have all 5 traces from the collection plus the dropped trace
         EXPECT_EQ(traces.size(), 6);
     });
@@ -162,7 +162,7 @@ TEST_F(CallTraceStorageTest, MultipleLivenessCheckers) {
     CallTrace* found_trace4 = nullptr;
     size_t preserved_count = 0;
     
-    storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+    storage->processTraces([&](const CallTraceSet& traces) {
         preserved_count = traces.size();
         found_trace1 = findTraceById(traces, preserved_id1);
         found_trace4 = findTraceById(traces, preserved_id4);
@@ -194,13 +194,13 @@ TEST_F(CallTraceStorageTest, TraceIdPreservation) {
     
     // Register liveness checker to preserve this trace
     u64 preserved_id = original_trace_id;
-    storage->registerLivenessChecker([&preserved_id](std::unordered_set<u64>& buffer) {
+    storage->registerLivenessChecker([&preserved_id](CallTraceIdSet& buffer) {
         buffer.insert(preserved_id);
     });
     
     // First process should contain the original trace
     u64 first_trace_id = 0;
-    storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+    storage->processTraces([&](const CallTraceSet& traces) {
         EXPECT_EQ(traces.size(), 2);
         CallTrace* first_trace = findTraceById(traces, original_trace_id);
         EXPECT_NE(first_trace, nullptr);
@@ -210,7 +210,7 @@ TEST_F(CallTraceStorageTest, TraceIdPreservation) {
     
     // Second process should still contain the preserved trace with SAME ID
     u64 preserved_trace_id = 0;
-    storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+    storage->processTraces([&](const CallTraceSet& traces) {
         EXPECT_EQ(traces.size(), 2);
         CallTrace* preserved_trace = findTraceById(traces, original_trace_id);
         EXPECT_NE(preserved_trace, nullptr);
@@ -237,7 +237,7 @@ TEST_F(CallTraceStorageTest, ClearMethod) {
     
     // Register a liveness checker (should be ignored by clear())
     u64 preserved_id = trace_id;
-    storage->registerLivenessChecker([&preserved_id](std::unordered_set<u64>& buffer) {
+    storage->registerLivenessChecker([&preserved_id](CallTraceIdSet& buffer) {
         buffer.insert(preserved_id);
     });
     
@@ -246,7 +246,7 @@ TEST_F(CallTraceStorageTest, ClearMethod) {
     
     // Should have no traces after clear, except for the dropped trace
     size_t traces_after_clear = 0;
-    storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+    storage->processTraces([&](const CallTraceSet& traces) {
         traces_after_clear = traces.size();
     });
     EXPECT_EQ(traces_after_clear, 1);
@@ -274,7 +274,7 @@ TEST_F(CallTraceStorageTest, ConcurrentClearAndPut) {
     // Either way, it shouldn't crash
     
     // Verify system is still functional  
-    storage->processTraces([](const std::unordered_set<CallTrace*>& traces) {
+    storage->processTraces([](const CallTraceSet& traces) {
         // No assertion on size since behavior during concurrent operations can vary
         // The key test is that we don't crash
     });
@@ -479,7 +479,7 @@ TEST_F(CallTraceStorageTest, RefCountGuardSynchronizationDuringSwap) {
         ProfiledThread::initCurrentThreadSignalSafe();
 
         // Start processing - this will swap storage
-        storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+        storage->processTraces([&](const CallTraceSet& traces) {
             collection_started = true;
 
             // Verify we have traces from the initial population
@@ -547,7 +547,7 @@ TEST_F(CallTraceStorageTest, RefCountGuardSynchronizationDuringSwap) {
 
     // Final verification: ensure we can still process traces
     std::atomic<int> final_trace_count{0};
-    storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+    storage->processTraces([&](const CallTraceSet& traces) {
         final_trace_count = static_cast<int>(traces.size());
     });
 
@@ -608,7 +608,7 @@ TEST_F(CallTraceStorageTest, UseAfterFreeInProcessTraces) {
     // This causes traces to be copied to SCRATCH during processTraces().
     // After rotation, SCRATCH becomes STANDBY, so the NEXT processTraces()
     // will have these traces in STANDBY where the bug manifests.
-    storage->registerLivenessChecker([&trace_ids](std::unordered_set<u64>& buffer) {
+    storage->registerLivenessChecker([&trace_ids](CallTraceIdSet& buffer) {
         for (u64 id : trace_ids) {
             buffer.insert(id);
         }
@@ -617,7 +617,7 @@ TEST_F(CallTraceStorageTest, UseAfterFreeInProcessTraces) {
     // First processTraces: traces are in ACTIVE, get collected and preserved to SCRATCH.
     // After rotation: SCRATCH becomes STANDBY (now contains preserved traces)
     int first_count = 0;
-    storage->processTraces([&first_count](const std::unordered_set<CallTrace*>& traces) {
+    storage->processTraces([&first_count](const CallTraceSet& traces) {
         first_count = traces.size();
         printf("First processTraces: %d traces collected\n", first_count);
     });
@@ -628,7 +628,7 @@ TEST_F(CallTraceStorageTest, UseAfterFreeInProcessTraces) {
     // 2. Standby traces are collected into _traces_buffer (raw pointers)
     // 3. original_standby->clear() - FREES the trace memory!
     // 4. processor(_traces_buffer) - accesses FREED memory (USE-AFTER-FREE!)
-    storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+    storage->processTraces([&](const CallTraceSet& traces) {
         int total_frames = 0;
         int total_bci_sum = 0;
         int trace_count = 0;
@@ -670,7 +670,7 @@ TEST_F(CallTraceStorageTest, UseAfterFreeInProcessTraces) {
 
     // Third processTraces: traces should still be preserved (copied to new scratch)
     // This further exercises the use-after-free if the bug exists
-    storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+    storage->processTraces([&](const CallTraceSet& traces) {
         int trace_count = 0;
         for (CallTrace* trace : traces) {
             if (trace == nullptr) continue;
@@ -782,7 +782,7 @@ TEST_F(CallTraceStorageTest, LivenessPreservationAcrossMultipleCycles) {
     }
 
     // Liveness checker marks every stored trace as live.
-    storage->registerLivenessChecker([&ids](std::unordered_set<u64>& buf) {
+    storage->registerLivenessChecker([&ids](CallTraceIdSet& buf) {
         for (u64 id : ids) buf.insert(id);
     });
 
@@ -791,7 +791,7 @@ TEST_F(CallTraceStorageTest, LivenessPreservationAcrossMultipleCycles) {
         std::atomic<bool> done{false};
         std::thread t([&] {
             ProfiledThread::initCurrentThreadSignalSafe();    
-            storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+            storage->processTraces([&](const CallTraceSet& traces) {
                 // All N preserved traces must be present, plus the dropped sentinel.
                 EXPECT_GE(traces.size(), static_cast<size_t>(N + 1))
                     << "cycle " << cycle << ": too few traces";
@@ -855,7 +855,7 @@ TEST_F(CallTraceStorageTest, ClearTableOnlyDisconnectsFullChain) {
     // processTraces() performs the rotation including clearTableOnly(); run it once
     // to expose defect C.
     int count = 0;
-    storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+    storage->processTraces([&](const CallTraceSet& traces) {
         count = static_cast<int>(traces.size());
     });
     // At least NUM_TRACES + the static dropped-trace sentinel should be present.
@@ -865,7 +865,7 @@ TEST_F(CallTraceStorageTest, ClearTableOnlyDisconnectsFullChain) {
     // This deterministically detects defect C — if clearTableOnly() left stale entries
     // in freed memory that somehow end up in the new table, count2 would be wrong.
     int count2 = 0;
-    storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+    storage->processTraces([&](const CallTraceSet& traces) {
         count2 = static_cast<int>(traces.size());
     });
     EXPECT_EQ(count2, 1);  // only the dropped-trace sentinel; no stale entries
@@ -889,7 +889,7 @@ TEST_F(CallTraceStorageTest, CollectFindsAllTracesAcrossExpandedChain) {
     }
 
     std::unordered_set<u64> seen_ids;
-    storage->processTraces([&](const std::unordered_set<CallTrace*>& traces) {
+    storage->processTraces([&](const CallTraceSet& traces) {
         for (CallTrace* t : traces) {
             if (t) seen_ids.insert(t->trace_id);
         }
