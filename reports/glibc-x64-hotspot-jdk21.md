@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk21
 
 ## glibc-x64-hotspot-jdk21 - ✅ PASS
 
-**Date:** 2026-08-13 05:46:07 EDT
+**Date:** 2026-08-13 06:03:05 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 471 |
-| Sample Rate | 7.85/sec |
-| Health Score | 491% |
-| Threads | 8 |
-| Allocations | 397 |
+| CPU Samples | 554 |
+| Sample Rate | 9.23/sec |
+| Health Score | 577% |
+| Threads | 9 |
+| Allocations | 366 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 590 |
-| Sample Rate | 9.83/sec |
-| Health Score | 614% |
-| Threads | 10 |
-| Allocations | 442 |
+| CPU Samples | 596 |
+| Sample Rate | 9.93/sec |
+| Health Score | 621% |
+| Threads | 9 |
+| Allocations | 475 |
 
 <details>
 <summary>CPU Timeline (2 unique values: 28-30 cores)</summary>
 
 ```
-1786614108 28
-1786614113 28
-1786614118 28
-1786614123 28
-1786614128 28
-1786614133 28
-1786614138 28
-1786614143 28
-1786614148 28
-1786614153 28
-1786614158 28
-1786614163 28
-1786614168 28
-1786614173 28
-1786614178 28
-1786614183 28
-1786614188 28
-1786614193 28
-1786614198 28
-1786614203 28
+1786615117 28
+1786615122 28
+1786615127 28
+1786615132 28
+1786615137 28
+1786615142 28
+1786615147 28
+1786615152 28
+1786615157 28
+1786615162 28
+1786615167 28
+1786615172 28
+1786615177 30
+1786615182 30
+1786615187 30
+1786615192 30
+1786615197 30
+1786615202 30
+1786615207 30
+1786615212 30
 ```
 </details>
 
