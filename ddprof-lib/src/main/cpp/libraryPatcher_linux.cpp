@@ -361,6 +361,7 @@ static int pthread_create_hook_spec(pthread_t* thread,
   }
   int ret = pthread_create(thread, attr, start_routine_wrapper_spec, (void*)thr);
   if (ret != 0) {
+    SignalBlocker blocker;
     delete thr;
   }
   return ret;
@@ -418,6 +419,7 @@ static int pthread_create_hook(pthread_t* thread,
   }
   int ret = pthread_create(thread, attr, start_routine_wrapper, (void*)thr);
   if (ret != 0) {
+    SignalBlocker blocker;
     delete thr;
   }
   return ret;

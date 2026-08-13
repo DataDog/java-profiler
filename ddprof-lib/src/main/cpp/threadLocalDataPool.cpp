@@ -36,22 +36,6 @@ ThreadLocalDataPool::ThreadLocalDataPool(uint16_t capacity)
     NativeMem::record(NM_THREAD_LOCAL, malloc_size + sizeof(ThreadLocalDataPool));
 }
 
-#ifdef UNIT_TEST
-ThreadLocalDataPool::~ThreadLocalDataPool() {
-    size_t size = 0;
-    if (_threads != nullptr) {
-        for (int index = 0; index < _capacity; index++) {
-            _threads[index].~ProfiledThread();
-        }
-        free(reinterpret_cast<void*>(_threads));
-        size += _capacity * sizeof(ProfiledThread);
-    }
-    size += sizeof(ThreadLocalDataPool);
-    NativeMem::record(NM_THREAD_LOCAL, -size);
-}
-#endif // UNIT_TEST
-
-
 ProfiledThread* ThreadLocalDataPool::claim(int tid) {
     if (_threads == nullptr) {
         return nullptr;

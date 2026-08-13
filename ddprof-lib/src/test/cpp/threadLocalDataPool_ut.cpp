@@ -102,3 +102,33 @@ TEST_F(ThreadLocalDataPoolTest, claimAtCapacityRejectsAndRecordsExhaustion) {
 
     ThreadLocalDataPool::destroyForTest(pool);
 }
+
+// Covers unclaimAndReset(): a slot handed to a new tid after a prior owner
+// released it must not carry over that owner's per-thread state. claimAcquire()
+// itself only ever sets _tid on the fast path (threadLocalData.inline.h) --
+// every other field's "clean" value is whatever unclaimAndReset() left behind,
+// so a reset that drops a field is invisible until a slot is actually reused.
+TEST_F(ThreadLocalDataPoolTest, reclaimedSlotHasResetState) {
+    ThreadLocalDataPool* pool = ThreadLocalDataPool::createForTest(1);
+
+    ProfiledThread* first = pool->claimForTest(100);
+    ASSERT_NE(first, nullptr);
+    EXPECT_EQ(first->tid(), 100);
+
+    // Dirty the fields unclaimAndReset() is responsible for restoring.
+    first->setFilterSlotId(7);
+    EXPECT_TRUE(first->tryEnterCriticalSection());
+
+    ASSERT_TRUE(pool->unclaimForTest(first));
+
+    ProfiledThread* second = pool->claimForTest(200);
+    ASSERT_EQ(second, first) << "capacity-1 pool must hand back the same slot";
+    EXPECT_EQ(second->tid(), 200);
+    EXPECT_EQ(second->filterSlotId(), -1);
+    // If _in_critical_section had leaked as true, this compare-and-swap would
+    // fail because the slot would already look "entered".
+    EXPECT_TRUE(second->tryEnterCriticalSection());
+    second->exitCriticalSection();
+
+    ThreadLocalDataPool::destroyForTest(pool);
+}

@@ -347,6 +347,9 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
 
   int tid = current != nullptr ? current->tid() : OS::threadId();
+  if (tid < 0) {
+    return;
+  }
 
   int origin_tid = JVMThread::nativeThreadId(env, origin);
   if (origin_tid < 0) {
@@ -1038,8 +1041,7 @@ Java_com_datadoghq_profiler_JavaProfiler_clearContextValue0(JNIEnv* env, jclass 
 // record directly via ProfiledThread::current() without mutating it. Introspection / test use.
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_copyContextTags0(JNIEnv* env, jclass unused, jintArray out) {
-  ProfiledThread* thrd = ProfiledThread::initCurrentThreadSignalSafe();
-  if (thrd == nullptr || out == nullptr) {
+  if (out == nullptr) {
     return;
   }
 
@@ -1049,11 +1051,13 @@ Java_com_datadoghq_profiler_JavaProfiler_copyContextTags0(JNIEnv* env, jclass un
   for (int i = 0; i < n; i++) {
     tmp[i] = 0;
   }
-  u32* enc = thrd->getOtelTagEncodingsPtr();
-  for (int i = 0; i < n; i++) {
-    tmp[i] = (jint)enc[i];
+  ProfiledThread* thrd = ProfiledThread::initCurrentThreadSignalSafe();
+  if (thrd != nullptr) {
+    u32* enc = thrd->getOtelTagEncodingsPtr();
+    for (int i = 0; i < n; i++) {
+      tmp[i] = (jint)enc[i];
+    }
   }
-
   if (n > 0) {
     env->SetIntArrayRegion(out, 0, n, tmp);
   }

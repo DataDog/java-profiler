@@ -24,13 +24,9 @@ private:
 
     ThreadLocalDataPool(const ThreadLocalDataPool&) = delete;
     ThreadLocalDataPool& operator=(const ThreadLocalDataPool&) = delete;
+    ~ThreadLocalDataPool() = delete;
 
     ThreadLocalDataPool(uint16_t capacity = DEFAULT_CAPACITY);
-#ifdef UNIT_TEST
-    ~ThreadLocalDataPool();
-#else
-    ~ThreadLocalDataPool() = delete;
-#endif // UNIT_TEST
     ProfiledThread* claim(int tid);
     bool unclaim(ProfiledThread* t);
 
@@ -47,14 +43,6 @@ public:
     static void initialize();
     static ProfiledThread* acquire(int tid);
     static bool release(ProfiledThread* t);
-    static inline bool containsThread(ProfiledThread* t) {
-        ThreadLocalDataPool* pool = __atomic_load_n(&_pool, __ATOMIC_ACQUIRE);
-        if (pool != nullptr) {
-            return pool->contains(t);
-        } else {
-            return false;
-        }
-    }
 
 #ifdef UNIT_TEST
     // Test-only: a pool isolated from the process-wide singleton (_pool), so

@@ -215,7 +215,7 @@ void WallClockASGCT::sharedSignalHandler(int signo, siginfo_t *siginfo,
   }
   Counters::increment(WALLCLOCK_SIGNAL_OWN);
 
-  SIGNAL_HANDLER_GUARD();
+  SIGNAL_HANDLER_GUARD_OR_DROP();
 
   WallClockASGCT *engine = reinterpret_cast<WallClockASGCT *>(Profiler::instance()->wallEngine());
   // Past the foreign-signal filter: any work below this point can write JFR.
@@ -226,15 +226,12 @@ void WallClockASGCT::sharedSignalHandler(int signo, siginfo_t *siginfo,
     return;
   }
   if (signo == SIGVTALRM) {
-    engine->signalHandler(signo, siginfo, ucontext, engine->_interval);
+    engine->signalHandler(signo, siginfo, ucontext, engine->_interval, SIGNAL_HANDLER_CURRENT_THREAD());
   }
 }
 
 void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext,
-                              u64 last_sample) {
-  // ProfiledThread must have been setup, or the sample already skipped
-  ProfiledThread* current = ProfiledThread::current();
-  assert(current != nullptr);
+                              u64 last_sample, ProfiledThread* current) {
   // Atomically try to enter critical section - prevents all reentrancy races
   CriticalSection cs;
   if (!cs.entered()) {
@@ -424,7 +421,7 @@ void WallClockJvmti::sharedSignalHandler(int signo, siginfo_t *siginfo,
     return;
   }
   Counters::increment(WALLCLOCK_SIGNAL_OWN);
-  SIGNAL_HANDLER_GUARD();
+  SIGNAL_HANDLER_GUARD_OR_DROP();
 
   WallClockJvmti *engine =
       reinterpret_cast<WallClockJvmti *>(Profiler::instance()->wallEngine());
@@ -436,19 +433,18 @@ void WallClockJvmti::sharedSignalHandler(int signo, siginfo_t *siginfo,
     return;
   }
   if (signo == SIGVTALRM) {
-    engine->signalHandler(signo, siginfo, ucontext, engine->_interval);
+    engine->signalHandler(signo, siginfo, ucontext, engine->_interval, SIGNAL_HANDLER_CURRENT_THREAD());
   }
 }
 
 void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
-                                   void *ucontext, u64 last_sample) {
+                                   void *ucontext, u64 last_sample,
+                                   ProfiledThread* current) {
   CriticalSection cs;
   if (!cs.entered()) {
     return;
   }
   int saved_errno = errno;
-  ProfiledThread *current = cs.current();
-  assert(current != nullptr && "Should have been set up at signal handler entry");
 
   if (JVMThread::current() == nullptr
       && current->inInitWindow()) {

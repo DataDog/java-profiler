@@ -49,8 +49,8 @@ bool isInTrackedSignalContext() {
     return pt != nullptr && pt->signalDepth() != 0;
 }
 
-SignalHandlerScope::SignalHandlerScope() : _current(nullptr), _active(true) {
-    ProfiledThread *pt = ProfiledThread::acquireCurrent();
+SignalHandlerScope::SignalHandlerScope(bool sampler) : _current(nullptr), _active(true) {
+    ProfiledThread *pt = sampler ? ProfiledThread::acquireCurrent() : ProfiledThread::current();
     if (pt != nullptr) {
         _current = pt;
         pt->enterSignalScope();

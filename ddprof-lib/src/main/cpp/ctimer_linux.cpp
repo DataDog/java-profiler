@@ -214,7 +214,7 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   }
   Counters::increment(CTIMER_SIGNAL_OWN);
 
-  SIGNAL_HANDLER_GUARD_WITH_ERRNO(saved_errno);
+  SIGNAL_HANDLER_GUARD_OR_DROP_WITH_ERRNO(saved_errno);
   InflightGuard inflight;
 
   CriticalSection cs;
@@ -266,7 +266,7 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   }
   Counters::increment(CTIMER_SIGNAL_OWN);
 
-  SIGNAL_HANDLER_GUARD();
+  SIGNAL_HANDLER_GUARD_OR_DROP();
   InflightGuard inflight;
   ProfiledThread* current = SIGNAL_HANDLER_CURRENT_THREAD();
   assert(current != nullptr);

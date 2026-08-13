@@ -51,9 +51,9 @@ void blockProfilingForExit();
 // nullptr when unset).
 //
 // When ProfiledThread is null or via thread priming on a thread
-// — uninstrumented JVM-internal threads now get a ProfiledThread via priming
-// when supportPriming() allows it (so isInTrackedSignalContext() does track them),
-// and that the no-ProfiledThread path only applies when priming is unavailable or
+// - Uninstrumented JVM-internal threads now get a ProfiledThread via priming when 
+// supportPriming() allows it, so isInTrackedSignalContext() does track them once primed. 
+// The no-ProfiledThread (returns false) path only applies when priming is unavailable or 
 // the pool is exhausted. The SignalHandlerScope guard is a no-op on those threads
 // (nothing to update), so isInTrackedSignalContext() returns false: production code
 // prefers synchronous refresh() on null-PT threads because (a) those
@@ -84,7 +84,7 @@ bool isInTrackedSignalContext();
 // Internal RAII type — do not instantiate directly; use the macros below.
 class SignalHandlerScope {
 public:
-    SignalHandlerScope();
+    SignalHandlerScope(bool sampler = true);
     ~SignalHandlerScope();
     void release();
     SignalHandlerScope(const SignalHandlerScope&)            = delete;
@@ -97,30 +97,32 @@ private:
     bool _active;
 };
 
+// Shared drop-path body for the SIGNAL_HANDLER_GUARD_OR_DROP* macros below.
+// extra_stmt runs after the dropped-sample counter increment and before the
+// return, so both macros stay in lockstep as the drop-accounting logic
+// evolves.
+#define SIGNAL_HANDLER_GUARD_OR_DROP_IMPL(extra_stmt)       \
+      SignalHandlerScope _signal_handler_scope(true);       \
+      if (!_signal_handler_scope.isActive()) {              \
+        Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);  \
+        extra_stmt;                                         \
+        return;                                             \
+      }
+
 // Declare a scope guard local that increments the depth on entry and
 // decrements on scope exit.  Use as the very first statement in every
 // installed sampler signal handler
-#define SIGNAL_HANDLER_GUARD()                              \
-      SignalHandlerScope _signal_handler_scope;             \
-      if (!_signal_handler_scope.isActive()) {              \
-        Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);  \
-        return;                                             \
-      }
-
-#define SIGNAL_HANDLER_GUARD_WITH_ERRNO(err)                \
-      SignalHandlerScope _signal_handler_scope;             \
-      if (!_signal_handler_scope.isActive()) {              \
-        Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);  \
-        errno = err;                                        \
-        return;                                             \
-      }
+#define SIGNAL_HANDLER_GUARD_OR_DROP() SIGNAL_HANDLER_GUARD_OR_DROP_IMPL((void)0)
+#define SIGNAL_HANDLER_GUARD_OR_DROP_WITH_ERRNO(err) SIGNAL_HANDLER_GUARD_OR_DROP_IMPL(errno = err)
 
 
 // Declare a scope guard local that increments the depth on entry and
-// decrements on scope exit.  Use as the very first statement in every
-// installed non-sampler signal handler
+// decrements on scope exit.  Use as the first statement after any 
+// foreign-signal-origin rejection check (see CTimer::signalHandler,
+// WallClockASGCT::sharedSignalHandler, PerfEvents::signalHandler for the pattern);
+// it must run before any other profiling-owned work.'
 #define SIGNAL_HANDLER_GUARD_NO_SAMPLE()                    \
-      SignalHandlerScope _signal_handler_scope;
+      SignalHandlerScope _signal_handler_scope(false);
 
 // Cheaper way to retrieve current ProfiledThread inside the scope
 #define SIGNAL_HANDLER_CURRENT_THREAD() _signal_handler_scope.current()

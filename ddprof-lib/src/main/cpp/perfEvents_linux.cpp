@@ -741,7 +741,7 @@ void PerfEvents::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     // Looks like an external signal; don't treat as a profiling event
     return;
   }
-  SIGNAL_HANDLER_GUARD();
+  SIGNAL_HANDLER_GUARD_OR_DROP();
   InflightGuard inflight;
 
   // A thread with no ProfiledThread attached must never enter the critical
