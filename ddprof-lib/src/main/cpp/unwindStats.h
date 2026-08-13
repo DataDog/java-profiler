@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #ifndef STUB_UNWIND_STATS_H
 #define STUB_UNWIND_STATS_H
 
