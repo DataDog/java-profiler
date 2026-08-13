@@ -1,6 +1,8 @@
 #ifndef STUB_UNWIND_STATS_H
 #define STUB_UNWIND_STATS_H
 
+#ifdef DEBUG
+
 #include "common.h"
 #include "nativeMem.h"
 #include "spinLock.h"
@@ -227,5 +229,7 @@ class UnwindStats
     _unwind_failures.clear();
   }
 };
+
+#endif // DEBUG
 
 #endif // STUB_UNWIND_STATS_H

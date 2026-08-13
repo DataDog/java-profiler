@@ -240,6 +240,12 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
         return 0;
     }
+    
+    // reset=false: the buffer only needs clearing after a failure was actually
+    // recorded into it (done below, right after merging into UnwindStats), not
+    // on every walk — clear() memsets ~288 KiB and this runs on the hot sample
+    // path in DEBUG/ASan/TSan builds.
+    DEBUG_ONLY(UnwindFailures* unwindFailures = prof_thread->unwindFailures(false);)
 
     HotspotStackFrame frame(ucontext);
     uintptr_t bottom = (uintptr_t)&frame + MAX_WALK_SIZE;
@@ -267,6 +273,12 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         if (depth < max_depth) {
             fillFrame(frames[depth++], BCI_ERROR, "break_not_walkable");
         }
+#ifdef DEBUG
+        if (unwindFailures) {
+            UnwindStats::recordFailures(unwindFailures);
+            unwindFailures->clear();
+        }
+#endif // DEBUG
         return depth;
     }
 
@@ -685,6 +697,19 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     pc = ((const void**)sp)[-FRAME_PC_SLOT];
                     continue;
                 }
+
+#ifdef DEBUG
+                if (unwindFailures) {
+                    unwindFailures->record(UNWIND_FAILURE_STUB, name);
+                }
+#endif // DEBUG
+                // Unconditional (not DEBUG-only): previously this path fell through with
+                // pc/sp/depth all unchanged, re-entering the enclosing
+                // `while (depth < actual_max_depth)` in the same state -- an infinite loop
+                // whenever a runtime-stub frame can't be unwound and the frameSize()
+                // fallback above isn't available. Terminate the walk explicitly instead.
+                fillFrame(frames[depth++], BCI_ERROR, "break_unwind_stub_failed");
+                break;
             }
         } else {
             // Resolve native frame (may use remote symbolication if enabled)
@@ -974,6 +999,13 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             }
         }
     }
+
+#ifdef DEBUG
+    if (unwindFailures && !unwindFailures->empty()) {
+        UnwindStats::recordFailures(unwindFailures);
+        unwindFailures->clear();
+    }
+#endif // DEBUG
 
     return depth;
 }

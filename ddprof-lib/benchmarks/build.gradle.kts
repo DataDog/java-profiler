@@ -31,7 +31,7 @@ if (shouldBuild) {
     description = "Compile the unwinding failures benchmark"
 
     this.compiler.set(compiler)
-    compilerArgs.set(listOf("-O2", "-g", "-std=c++17"))
+    compilerArgs.set(listOf("-O2", "-g", "-std=c++17", "-DDEBUG"))
     sources.from(file("src/unwindFailuresBenchmark.cpp"))
     includes.from(project(":ddprof-lib").file("src/main/cpp"))
     objectFileDir.set(file("${layout.buildDirectory.get()}/obj/benchmark"))

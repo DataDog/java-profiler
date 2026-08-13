@@ -6,6 +6,7 @@
 #ifndef THREAD_LOCAL_DATA_H
 #define THREAD_LOCAL_DATA_H
 
+#include "common.h"
 #include "context.h"
 #include "nativeMem.h"
 #include "otel_context.h"
@@ -81,7 +82,8 @@ private:
   int _filter_slot_id; // Slot ID for thread filtering
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
   uint8_t _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
-  UnwindFailures _unwind_failures;
+  // Debug only due to memory overhead
+  DEBUG_ONLY(UnwindFailures _unwind_failures;)
   bool _otel_ctx_initialized;
 #ifdef __FAULT_INJECTION__
   // xorshift64 PRNG state for compile-time fault injection (faultInjection.h).
@@ -271,12 +273,14 @@ public:
   inline void setFiRng(u64 seed) { _fi_rng = seed ? seed : 1; }
 #endif
 
+#ifdef DEBUG
   UnwindFailures* unwindFailures(bool reset = true) {
     if (reset) {
       _unwind_failures.clear();
     }
     return &_unwind_failures;
   }
+#endif // DEBUG
 
   int filterSlotId() { return _filter_slot_id; }
   void setFilterSlotId(int slotId) { _filter_slot_id = slotId; }
