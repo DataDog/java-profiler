@@ -736,11 +736,32 @@ u64 PerfEvents::readCounter(siginfo_t *siginfo, void *ucontext) {
   }
 }
 
+// PERF_EVENT_IOC_REFRESH is one-shot: the fd delivers exactly one more signal
+// per refresh and then stays silent until refreshed again. Re-arming it must
+// therefore happen on every exit from signalHandler, including the drop
+// paths below (TLS pool exhaustion, a busy critical section) -- otherwise a
+// single dropped sample permanently disables sampling on that thread's fd
+// instead of just losing that one sample.
+class PerfFdRearmGuard {
+public:
+  explicit PerfFdRearmGuard(int fd) : _fd(fd) {}
+  ~PerfFdRearmGuard() {
+    ioctl(_fd, PERF_EVENT_IOC_RESET, 0);
+    ioctl(_fd, PERF_EVENT_IOC_REFRESH, 1);
+  }
+  PerfFdRearmGuard(const PerfFdRearmGuard &) = delete;
+  PerfFdRearmGuard &operator=(const PerfFdRearmGuard &) = delete;
+
+private:
+  int _fd;
+};
+
 void PerfEvents::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   if (siginfo->si_code <= 0) {
     // Looks like an external signal; don't treat as a profiling event
     return;
   }
+  PerfFdRearmGuard rearm(siginfo->si_fd);
   SIGNAL_HANDLER_GUARD_OR_DROP();
   InflightGuard inflight;
 
@@ -772,9 +793,6 @@ void PerfEvents::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   } else {
     resetBuffer(tid);
   }
-
-  ioctl(siginfo->si_fd, PERF_EVENT_IOC_RESET, 0);
-  ioctl(siginfo->si_fd, PERF_EVENT_IOC_REFRESH, 1);
 }
 
 Error PerfEvents::check(Arguments &args) {

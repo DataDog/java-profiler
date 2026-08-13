@@ -44,10 +44,12 @@ class MallocTracer : public Engine {
     static PidController _pid;
 
     static u64 nextPoissonInterval();
-    static bool shouldSample(size_t size);
     static void updateConfiguration(u64 events, double time_coefficient);
 
   public:
+    // Public so the malloc hooks (mallocTracer.cpp) can gate on the sampling
+    // decision before touching thread-local state -- see maybeRecord().
+    static bool shouldSample(size_t size);
     const char* name() {
         return "MallocTracer";
     }

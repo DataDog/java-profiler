@@ -35,6 +35,10 @@ static int (*_orig_posix_memalign)(void**, size_t, size_t);
 static void* (*_orig_aligned_alloc)(size_t, size_t);
 
 // Inline helper to avoid repeating the running+ret+size guard in each hook.
+// shouldSample() runs first and needs no thread-local state, so an unsampled
+// allocation on a long-lived thread that has never touched TLS never claims
+// a slot from the fixed-size priming pool -- only allocations that are
+// actually going to be recorded pay for acquireCurrent().
 // CriticalSection prevents reentrancy: profiler-internal allocations triggered
 // inside recordMalloc (e.g. sample buffer allocation) re-enter these hooks via
 // the patched GOT; without the guard they would be double-counted.
@@ -42,7 +46,7 @@ static void* (*_orig_aligned_alloc)(size_t, size_t);
 // (SIGPROF/SIGVTALRM) for the duration of recordMalloc; this is acceptable
 // because the window is short.
 static inline void maybeRecord(void* ret, size_t size) {
-    if (MallocTracer::running() && ret && size) {
+    if (MallocTracer::running() && ret && size && MallocTracer::shouldSample(size)) {
         // Even we are not in a signal handler, we cannot malloc or
         // we may get into indefinite loop
         if (ProfiledThread::acquireCurrent() == nullptr) {
@@ -331,35 +335,36 @@ void MallocTracer::updateConfiguration(u64 events, double time_coefficient) {
     __atomic_store_n(&_interval, (u64)new_interval, __ATOMIC_RELEASE);
 }
 
+// Caller (maybeRecord) is responsible for the shouldSample() gate -- it must
+// run before this is reached so that unsampled allocations never pay for
+// acquireCurrent()/CriticalSection.
 void MallocTracer::recordMalloc(void* address, size_t size) {
-    if (shouldSample(size)) {
-        u64 current_interval = __atomic_load_n(&_interval, __ATOMIC_ACQUIRE);
-        MallocEvent event;
-        event._start_time = TSC::ticks();
-        event._address = (uintptr_t)address;
-        event._size = size;
-        // _interval == 0 means sample every allocation; weight is 1.0.
-        if (size == 0 || current_interval <= 1) {
-            event._weight = 1.0f;
-        } else {
-            event._weight = (float)(1.0 / (1.0 - exp(-(double)size / (double)current_interval)));
-        }
+    u64 current_interval = __atomic_load_n(&_interval, __ATOMIC_ACQUIRE);
+    MallocEvent event;
+    event._start_time = TSC::ticks();
+    event._address = (uintptr_t)address;
+    event._size = size;
+    // _interval == 0 means sample every allocation; weight is 1.0.
+    if (size == 0 || current_interval <= 1) {
+        event._weight = 1.0f;
+    } else {
+        event._weight = (float)(1.0 / (1.0 - exp(-(double)size / (double)current_interval)));
+    }
 
-        Profiler::instance()->recordSample(NULL, size, OS::threadId(), BCI_NATIVE_MALLOC, 0, &event);
+    Profiler::instance()->recordSample(NULL, size, OS::threadId(), BCI_NATIVE_MALLOC, 0, &event);
 
-        u64 current_samples = __atomic_add_fetch(&_sample_count, 1, __ATOMIC_RELAXED);
-        if ((current_samples % TARGET_SAMPLES_PER_WINDOW) == 0) {
-            u64 now = OS::nanotime();
-            u64 prev_ts = __atomic_load_n(&_last_config_update_ts, __ATOMIC_ACQUIRE);
-            u64 time_diff = now - prev_ts;
-            u64 check_period_ns = (u64)CONFIG_UPDATE_CHECK_PERIOD_SECS * 1000000000ULL;
-            if (time_diff > check_period_ns) {
-                if (__atomic_compare_exchange_n(&_last_config_update_ts, &prev_ts, now,
-                                               false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
-                    __atomic_fetch_sub(&_sample_count, current_samples, __ATOMIC_RELEASE);
-                    updateConfiguration(current_samples,
-                                        (double)check_period_ns / time_diff);
-                }
+    u64 current_samples = __atomic_add_fetch(&_sample_count, 1, __ATOMIC_RELAXED);
+    if ((current_samples % TARGET_SAMPLES_PER_WINDOW) == 0) {
+        u64 now = OS::nanotime();
+        u64 prev_ts = __atomic_load_n(&_last_config_update_ts, __ATOMIC_ACQUIRE);
+        u64 time_diff = now - prev_ts;
+        u64 check_period_ns = (u64)CONFIG_UPDATE_CHECK_PERIOD_SECS * 1000000000ULL;
+        if (time_diff > check_period_ns) {
+            if (__atomic_compare_exchange_n(&_last_config_update_ts, &prev_ts, now,
+                                           false, __ATOMIC_ACQ_REL, __ATOMIC_RELAXED)) {
+                __atomic_fetch_sub(&_sample_count, current_samples, __ATOMIC_RELEASE);
+                updateConfiguration(current_samples,
+                                    (double)check_period_ns / time_diff);
             }
         }
     }
