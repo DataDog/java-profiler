@@ -364,14 +364,14 @@ TEST_F(SignalOriginTest, WallclockGuardContract_ForeignCookieRejected) {
 // Regression test for the fix: when a foreign signal is handled,
 // SIGNAL_HANDLER_GUARD_RELEASE() must be called before forwardForeignSignal so
 // that a chained handler escaping via siglongjmp cannot leave _signal_depth
-// permanently incremented.  Verifies the SIGNAL_HANDLER_GUARD / release
+// permanently incremented.  Verifies the SIGNAL_HANDLER_GUARD_OR_DROP / release
 // contract directly: depth is 0 after an early release, and the destructor is
 // a no-op.
 TEST_F(SignalOriginTest, WallclockGuardContract_ForeignSignalReleasesGuard) {
     ProfiledThread::initCurrentThread();
     EXPECT_EQ(0, getInSignalDepth());
     {
-        SIGNAL_HANDLER_GUARD();
+        SIGNAL_HANDLER_GUARD_OR_DROP();
         EXPECT_EQ(1, getInSignalDepth());
         // Mirrors the fix: release before forwarding so a non-returning
         // chained handler cannot leave depth > 0.

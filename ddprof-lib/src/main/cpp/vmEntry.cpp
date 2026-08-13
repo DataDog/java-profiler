@@ -63,6 +63,7 @@ AsyncGetCallTrace VM::_asyncGetCallTrace;
 JVM_GetManagement VM::_getManagement;
 
 static void wakeupHandler(int signo) {
+  SIGNAL_HANDLER_GUARD_NO_SAMPLE();
   // Dummy handler for interrupting syscalls
 }
 
