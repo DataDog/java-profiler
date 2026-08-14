@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk8
 
 ## musl-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-08-14 05:49:17 EDT
+**Date:** 2026-08-14 08:29:03 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,8 +28,8 @@ title: musl-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 103 |
-| Sample Rate | 1.72/sec |
+| CPU Samples | 104 |
+| Sample Rate | 1.73/sec |
 | Health Score | 108% |
 | Threads | 9 |
 | Allocations | 0 |
@@ -38,36 +38,36 @@ title: musl-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 123 |
-| Sample Rate | 2.05/sec |
-| Health Score | 128% |
-| Threads | 11 |
+| CPU Samples | 473 |
+| Sample Rate | 7.88/sec |
+| Health Score | 492% |
+| Threads | 9 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
-1786700641 48
-1786700646 48
-1786700651 48
-1786700656 48
-1786700661 48
-1786700666 48
-1786700671 48
-1786700676 48
-1786700681 48
-1786700686 48
-1786700691 48
-1786700696 48
-1786700701 48
-1786700706 48
-1786700711 48
-1786700716 48
-1786700721 48
-1786700726 48
-1786700731 48
-1786700736 48
+1786710285 48
+1786710290 48
+1786710295 48
+1786710300 48
+1786710305 48
+1786710310 48
+1786710315 48
+1786710320 48
+1786710325 48
+1786710330 48
+1786710335 48
+1786710340 48
+1786710345 48
+1786710350 48
+1786710355 48
+1786710360 48
+1786710365 48
+1786710370 48
+1786710375 48
+1786710380 48
 ```
 </details>
 
