@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler.wallclock;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
@@ -6,12 +11,8 @@ import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.context.ContextExecutor;
 import com.datadoghq.profiler.context.Tracing;
 import org.junit.jupiter.api.Assumptions;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.common.unit.IQuantity;
-import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 
 import java.util.HashSet;
 import java.util.List;
@@ -83,7 +84,7 @@ final class BaseContextWallClockTest {
         Set<Long> method1SpanIds = new HashSet<>(methodsToSpanIds.get("method1Impl"));
         Set<Long> method2SpanIds = new HashSet<>(methodsToSpanIds.get("method2Impl"));
         Set<Long> method3SpanIds = new HashSet<>(methodsToSpanIds.get("method3Impl"));
-        IItemCollection events = test.verifyEvents("datadog.MethodSample");
+        JfrEvents events = test.verifyEvents("datadog.MethodSample");
         Set<String> states = new HashSet<>();
         Set<String> modes = new HashSet<>();
         // we have 100 method1, method2, and method3 calls, but can't guarantee we sampled them all
@@ -91,68 +92,60 @@ final class BaseContextWallClockTest {
         long method2Weight = 0;
         long method3Weight = 0;
         long unattributedWeight = 0;
-        for (IItemIterable wallclockSamples : events) {
-            IMemberAccessor<String, IItem> frameAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(wallclockSamples.getType());
-            IMemberAccessor<IQuantity, IItem> spanIdAccessor = SPAN_ID.getAccessor(wallclockSamples.getType());
-            IMemberAccessor<IQuantity, IItem> rootSpanIdAccessor = LOCAL_ROOT_SPAN_ID.getAccessor(wallclockSamples.getType());
-            IMemberAccessor<IQuantity, IItem> weightAccessor = WEIGHT.getAccessor(wallclockSamples.getType());
-            IMemberAccessor<String, IItem> stateAccessor = THREAD_STATE.getAccessor(wallclockSamples.getType());
-            IMemberAccessor<String, IItem> modeAccessor = THREAD_EXECUTION_MODE.getAccessor(wallclockSamples.getType());
-            for (IItem sample : wallclockSamples) {
-                String stackTrace = frameAccessor.getMember(sample);
-                long spanId = spanIdAccessor.getMember(sample).longValue();
-                long rootSpanId = rootSpanIdAccessor.getMember(sample).longValue();
-                long weight = weightAccessor.getMember(sample).longValue();
-                modes.add(modeAccessor.getMember(sample));
-                String state = stateAccessor.getMember(sample);
-                assertNotNull(state);
-                states.add(state);
+        for (JfrEvent sample : events) {
+            String stackTrace = sample.getStackTraceString();
+            long spanId = sample.getLong(SPAN_ID, 0);
+            long rootSpanId = sample.getLong(LOCAL_ROOT_SPAN_ID, 0);
+            long weight = sample.getLong(WEIGHT, 0);
+            modes.add(sample.getEnumName(THREAD_EXECUTION_MODE));
+            String state = sample.getEnumName(THREAD_STATE);
+            assertNotNull(state);
+            states.add(state);
 
-                // a lot fo care needs to be taken here with samples that fall between a context activation and
-                // a method call. E.g. not finding method2Impl in the stack trace doesn't mean the sample wasn't
-                // taken in the part of method2 between activation and invoking method2Impl, which complicates
-                // assertions when we only find method1Impl
-                boolean attributed = false;
-                if (stackTrace.contains("method3Impl")) {
-                    if (assertContext) {
-                        // method3 is scheduled after method2, and method1 blocks on it, so spanId == rootSpanId + 2
-                        assertEquals(rootSpanId + 2, spanId, stackTrace);
-                        assertTrue(spanId == 0 || method3SpanIds.contains(spanId), stackTrace);
-                    }
-                    method3Weight += weight;
-                    attributed = true;
-                } else if (stackTrace.contains("method2Impl")) {
-                    if (assertContext) {
-                        // method2 is called next, so spanId == rootSpanId + 1
-                        assertEquals(rootSpanId + 1, spanId, stackTrace);
-                        assertTrue(spanId == 0 || method2SpanIds.contains(spanId), stackTrace);
-                    }
-                    method2Weight += weight;
-                    attributed = true;
-                } else if (stackTrace.contains("method1Impl")
-                        && !stackTrace.contains("method2") && !stackTrace.contains("method3")
-                        && !stackTrace.contains("Object.wait")) {
-                    // Exclude Object.wait frames: while method1Impl is blocked in monitor.wait(),
-                    // method3 runs concurrently on the executor thread. The wall-clock profiler
-                    // samples all threads, so that same window produces method3Weight samples on
-                    // the executor AND method1Weight samples on the main thread. Counting the
-                    // main-thread double-dip inflates method1's share to ~40-55% instead of ~33%.
-                    if (assertContext) {
-                        // need to check this after method2 because method1 calls method2
-                        // it's the root so spanId == rootSpanId
-                        assertEquals(rootSpanId, spanId, stackTrace);
-                        assertTrue(spanId == 0 || method1SpanIds.contains(spanId), stackTrace);
-                    }
-                    method1Weight += weight;
-                    attributed = true;
+            // a lot fo care needs to be taken here with samples that fall between a context activation and
+            // a method call. E.g. not finding method2Impl in the stack trace doesn't mean the sample wasn't
+            // taken in the part of method2 between activation and invoking method2Impl, which complicates
+            // assertions when we only find method1Impl
+            boolean attributed = false;
+            if (stackTrace.contains("method3Impl")) {
+                if (assertContext) {
+                    // method3 is scheduled after method2, and method1 blocks on it, so spanId == rootSpanId + 2
+                    assertEquals(rootSpanId + 2, spanId, stackTrace);
+                    assertTrue(spanId == 0 || method3SpanIds.contains(spanId), stackTrace);
                 }
-                assertTrue(weight <= 10 && weight > 0);
-                // Only count as unattributed if spanId is 0 AND we couldn't attribute by stack trace
-                // This prevents double-counting samples that have valid stack traces but no context
-                // (e.g., JVMTI samples when using TLS context which can't be read cross-thread)
-                if (spanId == 0 && !attributed) {
-                    unattributedWeight += weight;
+                method3Weight += weight;
+                attributed = true;
+            } else if (stackTrace.contains("method2Impl")) {
+                if (assertContext) {
+                    // method2 is called next, so spanId == rootSpanId + 1
+                    assertEquals(rootSpanId + 1, spanId, stackTrace);
+                    assertTrue(spanId == 0 || method2SpanIds.contains(spanId), stackTrace);
                 }
+                method2Weight += weight;
+                attributed = true;
+            } else if (stackTrace.contains("method1Impl")
+                    && !stackTrace.contains("method2") && !stackTrace.contains("method3")
+                    && !stackTrace.contains("Object.wait")) {
+                // Exclude Object.wait frames: while method1Impl is blocked in monitor.wait(),
+                // method3 runs concurrently on the executor thread. The wall-clock profiler
+                // samples all threads, so that same window produces method3Weight samples on
+                // the executor AND method1Weight samples on the main thread. Counting the
+                // main-thread double-dip inflates method1's share to ~40-55% instead of ~33%.
+                if (assertContext) {
+                    // need to check this after method2 because method1 calls method2
+                    // it's the root so spanId == rootSpanId
+                    assertEquals(rootSpanId, spanId, stackTrace);
+                    assertTrue(spanId == 0 || method1SpanIds.contains(spanId), stackTrace);
+                }
+                method1Weight += weight;
+                attributed = true;
+            }
+            assertTrue(weight <= 10 && weight > 0);
+            // Only count as unattributed if spanId is 0 AND we couldn't attribute by stack trace
+            // This prevents double-counting samples that have valid stack traces but no context
+            // (e.g., JVMTI samples when using TLS context which can't be read cross-thread)
+            if (spanId == 0 && !attributed) {
+                unattributedWeight += weight;
             }
         }
 

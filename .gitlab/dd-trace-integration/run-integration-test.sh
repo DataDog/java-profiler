@@ -103,7 +103,7 @@ collect_system_metrics() {
   local cpu_count=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo "1")
   local cpu_quota=$(cat /sys/fs/cgroup/cpu/cpu.cfs_quota_us 2>/dev/null || echo "-1")
   local cpu_period=$(cat /sys/fs/cgroup/cpu/cpu.cfs_period_us 2>/dev/null || echo "-1")
-  local load_avg=$(uptime | awk -F'load average:' '{print $2}' | xargs)
+  local load_avg=$(command -v uptime >/dev/null 2>&1 && uptime | awk -F'load average:' '{print $2}' | xargs || echo "unavailable")
   local container=$(test -f /.dockerenv && echo "true" || echo "false")
 
   # Parse throttling stats
@@ -195,7 +195,7 @@ mkdir -p "${RESULTS_DIR}"
 
 log_info "Results directory: ${RESULTS_DIR}"
 log_info "Java version:"
-"${JAVA_HOME}/bin/java" -version 2>&1 | head -3
+"${JAVA_HOME}/bin/java" -version 2>&1 | head -3 || true
 
 # ========================================
 # Install Prerequisites
@@ -220,7 +220,7 @@ if ! command -v jbang &> /dev/null; then
   exit 1
 fi
 
-log_info "jbang version: $(jbang version 2>&1 | head -1)"
+log_info "jbang version: $(jbang version 2>&1 | head -1 || true)"
 
 # ========================================
 # Artifact Collection on Exit

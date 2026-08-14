@@ -23,6 +23,9 @@ import java.util.concurrent.atomic.LongAdder;
  *     <li>profiler [comma delimited profiler command list] - starts the profiler</li>
  *     <li>profiler-work:<expectedCpuTime> [comma delimited profiler command list] - starts the profiler and runs a CPU-intensive task</li>
  *     <li>profiler-virtual-thread - calls {@link JavaProfiler#getInstance()} for the first time from a virtual thread</li>
+ *     <li>profiler-sequence [';'-delimited steps] - runs a sequence of start/stop calls in this
+ *     process; each step is either the literal {@code STOP} (calls {@link JavaProfiler#stop()})
+ *     or a comma delimited profiler command list (calls {@link JavaProfiler#execute(String)})</li>
  * </ul>
  */
 public class ExternalLauncher {
@@ -64,6 +67,17 @@ public class ExternalLauncher {
                     String commands = args[1];
                     if (!commands.isEmpty()) {
                         instance.execute(commands);
+                    }
+                }
+            } else if (args[0].equals("profiler-sequence")) {
+                JavaProfiler instance = JavaProfiler.getInstance();
+                if (args.length == 2) {
+                    for (String step : args[1].split(";")) {
+                        if (step.equals("STOP")) {
+                            instance.stop();
+                        } else if (!step.isEmpty()) {
+                            instance.execute(step);
+                        }
                     }
                 }
             } else if (args[0].startsWith("profiler-work:")) {

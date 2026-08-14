@@ -470,7 +470,7 @@ u64 CallTraceHashTable::put(int num_frames, ASGCT_CallFrame *frames,
   }
 }
 
-void CallTraceHashTable::collect(std::unordered_set<CallTrace *> &traces, std::function<void(CallTrace*)> trace_hook) {
+void CallTraceHashTable::collect(CallTraceSet &traces, std::function<void(CallTrace*)> trace_hook) {
   // Lock-free collection for read-only tables.
   // Use ACQUIRE to pair with the ACQ_REL CAS in put()'s expansion path and the
   // RELEASE store in clearTableOnly(); ensures we see the fully-initialised table

@@ -38,7 +38,6 @@ private:
 public:
     static void initClassloaderInfo(JNIEnv* jni);
     
-    static void checkFault(ProfiledThread* thrd = nullptr);
     static int walkJavaStack(StackWalkRequest& request);
     static inline bool canUnwind(const StackFrame& frame, const void*& pc) {
         return HotspotStackFrame::unwindAtomicStub(frame, pc);
@@ -63,8 +62,11 @@ public:
     static jmethodID resolve(const void* method);
 
     // Store a Java frame captured from HotSpot metadata. A null jmethodID
-    // retains the raw Method* fallback; the rejected-ID sentinel is stored as
-    // an ordinary frame so it can be resolved to the shared unknown method.
+    // triggers the raw Method* fallback only when fjmethodid=false; with
+    // fjmethodid=true the sentinel is used instead to avoid deferring a
+    // raw Method* dereference to the dump thread. The rejected-ID sentinel
+    // is always stored as an ordinary frame, resolved to the shared unknown
+    // method at dump time.
     static void fillJavaFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci,
                               jmethodID method_id, const VMMethod* method);
 };

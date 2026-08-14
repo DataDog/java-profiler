@@ -672,22 +672,6 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   return mi;
 }
 
-void Lookup::initClassCache() {
-  // Snapshot _classes into _class_cache for use by resolveMethod(BCI_ALLOC).
-  // Must be called before writeStackTraces() so the snapshot covers all
-  // vtable-receiver classes (pre-registered before profiling starts).
-  // This snapshot is intentionally NOT used by writeClasses(): regular Java
-  // classes are inserted into _classes by fillJavaMethodInfo() during
-  // writeStackTraces/writeMethods, so writeClasses() must re-collect after
-  // those passes to obtain the complete class pool.
-  // standby() is the post-rotate snapshot of _classes; collect() copies its
-  // entries with no concurrent writers (rotate drained them).  The shared
-  // classMapSharedGuard is held for any concurrent #527 vtable readers that
-  // also touch _classes directly via lookup() on active.
-  auto guard = Profiler::instance()->classMapSharedGuard();
-  _classes->standby()->collect(_class_cache);
-}
-
 u32 Lookup::getPackage(const char *class_name) {
   const char *package = strrchr(class_name, '/');
   if (package == NULL) {
@@ -1145,7 +1129,35 @@ void Recording::writeHeader(Buffer *buf) {
   flushIfNeeded(buf);
 }
 
-void Recording::writeElement(Buffer *buf, const Element *e) {
+size_t Recording::countSerializableChildren(
+    const std::vector<const Element *> &children, int depth) {
+  // Children one level deeper than `depth` are what writeElement() would
+  // truncate on its own depth check, so exclude them here too, before being
+  // counted, so child_count always matches the number of children actually
+  // serialized below (an inflated count would make the metadata stream
+  // itself malformed).
+  bool truncate_children = depth + 1 > 10;
+
+  size_t child_count = 0;
+  for (size_t i = 0; i < children.size(); i++) {
+    if (children[i] == nullptr) {
+      Counters::increment(METADATA_TREE_NULL_CHILD);
+      fprintf(stderr, "[ddprof] [WARN] writeElement skipping null child at index %zu\n", i);
+    } else if (truncate_children) {
+      Counters::increment(METADATA_TREE_DEPTH_EXCEEDED);
+      fprintf(stderr, "[ddprof] [WARN] writeElement truncating child at index %zu, depth limit exceeded\n", i);
+    } else {
+      child_count++;
+    }
+  }
+  return child_count;
+}
+
+void Recording::writeElement(Buffer *buf, const Element *e, int depth) {
+  if (e == nullptr) {
+    return;
+  }
+
   buf->putVar64(e->_name);
 
   buf->putVar64(e->_attributes.size());
@@ -1155,10 +1167,18 @@ void Recording::writeElement(Buffer *buf, const Element *e) {
     buf->putVar64(e->_attributes[i]._value);
   }
 
-  buf->putVar64(e->_children.size());
-  for (size_t i = 0; i < e->_children.size(); i++) {
-    flushIfNeeded(buf);
-    writeElement(buf, e->_children[i]);
+  bool truncate_children = depth + 1 > 10;
+  size_t child_count = countSerializableChildren(e->_children, depth);
+
+  buf->putVar64(child_count);
+  if (!truncate_children) {
+    for (size_t i = 0; i < e->_children.size(); i++) {
+      if (e->_children[i] == nullptr) {
+        continue;
+      }
+      flushIfNeeded(buf);
+      writeElement(buf, e->_children[i], depth + 1);
+    }
   }
   flushIfNeeded(buf);
 }
@@ -1192,6 +1212,12 @@ void Recording::writeSettings(Buffer *buf, Arguments &args) {
                      Log::LEVEL_NAME[Log::level()]);
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "hotspot", VM::isHotspot());
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "openj9", VM::isOpenJ9());
+  writeBoolSetting(buf, T_ACTIVE_RECORDING, "sanityCheckFailed",
+                   Profiler::instance()->sanityCheckFailed());
+  if (Profiler::instance()->sanityCheckFailed()) {
+    writeStringSetting(buf, T_ACTIVE_RECORDING, "sanityCheckDetail",
+                       Profiler::instance()->sanityCheckMessage());
+  }
   for (auto attribute : args._context_attributes) {
     writeStringSetting(buf, T_ACTIVE_RECORDING, "contextattribute",
                        attribute.c_str());
@@ -1467,13 +1493,11 @@ int Recording::writeCpool(Buffer *buf, int *count_offset_in_cpool) {
   // Profiler::rotateDictsAndRun() rotates the three dictionaries before this
   // path runs, so classMap()->standby() returns an old-active snapshot stable
   // for the lifetime of writeCpool().
-  // initClassCache() seeds vtable-receiver class names for resolveMethod(BCI_ALLOC).
-  // writeClasses() then collects the COMPLETE class set from standby(): regular Java
+  // writeClasses() collects the COMPLETE class set from standby(): regular Java
   // classes are inserted into the new-active by fillJavaMethodInfo during
   // writeStackTraces/writeMethods, and those would not appear in the snapshot —
   // standby() captures the pre-rotation state which writeClasses extends.
   Lookup lookup(this, &_method_map, Profiler::instance()->classMap());
-  lookup.initClassCache();
   // CONSTANT pools: always non-empty, always emitted -> 5 sections.
   // writeThreads always emits: it inserts _tid unconditionally before checking.
   writeFrameTypes(buf);
@@ -1623,15 +1647,14 @@ int Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
   // via processCallTraces, but no T_STACK_TRACE section is emitted in that case.
   int trace_count = 0;
   // Use safe trace processing with guaranteed lifetime during callback execution
-  Profiler::instance()->processCallTraces([this, buf, lookup, &trace_count](const std::unordered_set<CallTrace*>& traces) {
+  Profiler::instance()->processCallTraces([this, buf, lookup, &trace_count](const CallTraceSet& traces) {
     if (traces.empty()) {
       return;
     }
     trace_count = (int)traces.size();
     buf->putVar64(T_STACK_TRACE);
     buf->putVar64(traces.size());
-    for (std::unordered_set<CallTrace *>::const_iterator it = traces.begin();
-         it != traces.end(); ++it) {
+    for (auto it = traces.begin(); it != traces.end(); ++it) {
       CallTrace *trace = *it;
       buf->putVar64(trace->trace_id);
       if (trace->num_frames > 0) {
@@ -1873,6 +1896,7 @@ void Recording::writeCounters(Buffer *buf) {
 }
 
 void Recording::writeUnwindFailures(Buffer *buf) {
+#ifdef DEBUG
   static UnwindFailures failures;
   UnwindStats::collectAndReset(failures);
 
@@ -1886,6 +1910,7 @@ void Recording::writeUnwindFailures(Buffer *buf) {
     writeEventSizePrefix(buf, start);
     flushIfNeeded(buf);
   });
+#endif // DEBUG
 }
 
 void Recording::writeContextSnapshot(Buffer *buf, Context &context) {

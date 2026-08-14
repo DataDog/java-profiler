@@ -10,16 +10,8 @@ import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.ProfilerOwnedBlockHooks;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
-import org.openjdk.jmc.common.item.Attribute;
-import org.openjdk.jmc.common.item.IAttribute;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.common.item.Aggregators;
-import org.openjdk.jmc.common.unit.IQuantity;
-import org.openjdk.jmc.common.unit.UnitLookup;
-import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -40,8 +32,6 @@ public class PrecheckTest extends AbstractProfilerTest {
     private static final int TAIL_WEIGHT_ITERATIONS = 50;
     private static final int TAIL_WEIGHT_SLEEP_MILLIS = 6;
     private static final long TAIL_WEIGHT_RUNNABLE_NANOS = 2_000_000L;
-    private static final IAttribute<IQuantity> WEIGHT =
-            Attribute.attr("weight", "Sample weight", UnitLookup.NUMBER);
     private static volatile int tailWeightSpinSink;
 
     @Test
@@ -62,7 +52,7 @@ public class PrecheckTest extends AbstractProfilerTest {
         stopProfiler();
 
         long sampleCount = verifyEvents("datadog.MethodSample", false)
-                .getAggregate(Aggregators.count()).longValue();
+                .count();
         // Explicitly owned once-per-run filter: entry signal emits, subsequent signals are
         // suppressed until blockExit clears the owned run.
         assertTrue(sampleCount < 10,
@@ -87,7 +77,7 @@ public class PrecheckTest extends AbstractProfilerTest {
         stopProfiler();
 
         long sampleCount = verifyEvents("datadog.MethodSample", false)
-                .getAggregate(Aggregators.count()).longValue();
+                .count();
         assertTrue(sampleCount >= 10,
                 "Unowned Thread.sleep must not be exact once-per-run suppressed; got: " + sampleCount);
     }
@@ -145,7 +135,7 @@ public class PrecheckTest extends AbstractProfilerTest {
         stopProfiler();
 
         long sampleCount = verifyEvents("datadog.MethodSample", false)
-                .getAggregate(Aggregators.count()).longValue();
+                .count();
         assertTrue(sampleCount >= 10,
                 "Expected normal MethodSample volume for traced sleep, got: " + sampleCount);
 
@@ -213,19 +203,11 @@ public class PrecheckTest extends AbstractProfilerTest {
     private WeightedSamples weightedSamplesForThread(String threadName) {
         long count = 0;
         long weight = 0;
-        IItemCollection events = verifyEvents("datadog.MethodSample", false);
-        for (IItemIterable batch : events) {
-            IMemberAccessor<String, IItem> threadNameAccessor =
-                    JdkAttributes.EVENT_THREAD_NAME.getAccessor(batch.getType());
-            IMemberAccessor<IQuantity, IItem> weightAccessor = WEIGHT.getAccessor(batch.getType());
-            if (threadNameAccessor == null || weightAccessor == null) {
-                continue;
-            }
-            for (IItem item : batch) {
-                if (threadName.equals(threadNameAccessor.getMember(item))) {
-                    count++;
-                    weight += weightAccessor.getMember(item).longValue();
-                }
+        JfrEvents events = verifyEvents("datadog.MethodSample", false);
+        for (JfrEvent item : events) {
+            if (threadName.equals(item.getThreadName("eventThread"))) {
+                count++;
+                weight += item.getLong(WEIGHT, 0);
             }
         }
         return new WeightedSamples(count, weight);

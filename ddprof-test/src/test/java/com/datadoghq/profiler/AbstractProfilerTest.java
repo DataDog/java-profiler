@@ -17,33 +17,18 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiConsumer;
+import java.util.function.Consumer;
+import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.TestInfo;
-import org.openjdk.jmc.common.IMCStackTrace;
-import org.openjdk.jmc.common.item.Attribute;
 
 import static org.junit.jupiter.api.Assertions.*;
-import static org.openjdk.jmc.common.item.Attribute.attr;
-import static org.openjdk.jmc.common.unit.UnitLookup.*;
-
-import org.openjdk.jmc.common.IMCType;
-import org.openjdk.jmc.common.item.IAttribute;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.common.item.IItemFilter;
-import org.openjdk.jmc.common.item.ItemFilters;
-import org.openjdk.jmc.common.item.IType;
-import org.openjdk.jmc.common.unit.IQuantity;
-import org.openjdk.jmc.common.unit.QuantityConversionException;
-import org.openjdk.jmc.common.unit.UnitLookup;
-import org.openjdk.jmc.flightrecorder.JfrLoaderToolkit;
-import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
 public abstract class AbstractProfilerTest {
   private static final boolean ALLOW_NATIVE_CSTACKS = true;
@@ -52,52 +37,38 @@ public abstract class AbstractProfilerTest {
   private Map<Path, Long> sanitizerLogSizesBefore = new HashMap<>();
 
   public static final String LAMBDA_QUALIFIER = Platform.isJavaVersionAtLeast(21) ? "$$Lambda." : "$$Lambda$";
-  public static final IQuantity ZERO_BYTES = BYTE.quantity(0);
-  public static final IAttribute<IQuantity> SIZE = attr("size", "size", "", BYTE.getContentType());
-  public static final IAttribute<IQuantity> WEIGHT = attr("weight", "weight", "weight", NUMBER);
-  
-  public static final IAttribute<IQuantity> SCALED_SIZE = new Attribute<IQuantity>("scaledSize", "scaled size", "", BYTE.getContentType()) {
-      @Override
-      public <U> IMemberAccessor<IQuantity, U> customAccessor(IType<U> type) {
-          IMemberAccessor<IQuantity, U> sizeAccessor = SIZE.getAccessor(type);
-          IMemberAccessor<IQuantity, U> weightAccessor = WEIGHT.getAccessor(type);
-          if (sizeAccessor == null || weightAccessor == null) {
-            return i -> ZERO_BYTES;
-          }
-          return i -> sizeAccessor.getMember(i).multiply(weightAccessor.getMember(i).doubleValue());
-      }
-  };
 
-  public static final IAttribute<IQuantity> LOCAL_ROOT_SPAN_ID = attr("localRootSpanId", "localRootSpanId",
-          "localRootSpanId", NUMBER);
-  public static final IAttribute<IQuantity> SPAN_ID = attr("spanId", "spanId",
-          "spanId", NUMBER);
+  // Field-name constants for the JFR fields tests commonly read via JfrEvent.getXxx(...).
+  // These replace the old JMC-typed IAttribute constants of the same names one-for-one, so
+  // subclasses keep referencing AbstractProfilerTest.SPAN_ID etc. unchanged - only the call
+  // pattern around them (JfrEvent.getLong(SPAN_ID) instead of SPAN_ID.getAccessor(type).getMember(item))
+  // changes at each site.
+  public static final String SIZE = "size";
+  public static final String WEIGHT = "weight";
+  public static final String LOCAL_ROOT_SPAN_ID = "localRootSpanId";
+  public static final String SPAN_ID = "spanId";
+  public static final String OPERATION = "operation";
+  public static final String THREAD_STATE = "state";
+  public static final String THREAD_EXECUTION_MODE = "mode";
+  public static final String TAG_1 = "tag1";
+  public static final String TAG_2 = "tag2";
+  public static final String TAG_3 = "tag3";
+  public static final String STACK_TRACE = "stackTrace";
+  public static final String CPU_INTERVAL = "cpuInterval";
+  public static final String CPU_ENGINE = "cpuEngine";
+  public static final String WALL_INTERVAL = "wallInterval";
+  public static final String NAME = "name";
+  public static final String COUNT = "count";
 
-  public static final IAttribute<String> OPERATION = attr("operation", "operation",
-          "operation", PLAIN_TEXT);
-
-
-
-  public static final IAttribute<String> THREAD_STATE =
-          attr("state", "state", "Thread State", PLAIN_TEXT);
-
-  public static final IAttribute<String> THREAD_EXECUTION_MODE =
-          attr("mode", "mode", "Execution Mode", PLAIN_TEXT);
-
-  public static final IAttribute<String> TAG_1 = attr("tag1", "", "", PLAIN_TEXT);
-  public static final IAttribute<String> TAG_2 = attr("tag2", "", "", PLAIN_TEXT);
-  public static final IAttribute<String> TAG_3 = attr("tag3", "", "", PLAIN_TEXT);
-
-  public static final IAttribute<IMCStackTrace> STACK_TRACE = attr("stackTrace", "stackTrace", "", UnitLookup.STACKTRACE);
-
-  public static final IAttribute<IQuantity> CPU_INTERVAL = attr("cpuInterval", "cpuInterval", "", TIMESPAN);
-  public static final IAttribute<String> CPU_ENGINE = attr("cpuEngine", "", "", PLAIN_TEXT);
-
-  public static final IAttribute<IQuantity> WALL_INTERVAL = attr("wallInterval", "wallInterval", "", TIMESPAN);
-
-  public static final IAttribute<String> NAME = attr("name", "", "", PLAIN_TEXT);
-
-  public static final IAttribute<IQuantity> COUNT = attr("count", "", "", NUMBER);
+  /**
+   * {@code size * weight}: an estimated true byte contribution of a subsampled allocation/
+   * liveness event, replacing JMC's computed {@code SCALED_SIZE} attribute. {@code weight} is
+   * stored as either an integer or float field depending on event type (see jfrMetadata.cpp),
+   * hence the {@code double} read.
+   */
+  public static double scaledSize(JfrEvent item) {
+    return item.getLong(SIZE, 0) * item.getDouble(WEIGHT, 1.0);
+  }
 
   protected JavaProfiler profiler;
   private Path jfrDump;
@@ -293,40 +264,28 @@ public abstract class AbstractProfilerTest {
   }
 
   private void checkConfig() {
-    try {
-      IItemCollection profilerConfig = verifyEvents("datadog.DatadogProfilerConfig");
-      for (IItemIterable items : profilerConfig) {
-        IMemberAccessor<IQuantity, IItem> cpuIntervalAccessor = CPU_INTERVAL.getAccessor(items.getType());
-        IMemberAccessor<IQuantity, IItem> wallIntervalAccessor = WALL_INTERVAL.getAccessor(items.getType());
-        for (IItem item : items) {
-          long cpuIntervalMillis = cpuIntervalAccessor.getMember(item).longValueIn(MILLISECOND);
-          long wallIntervalMillis = wallIntervalAccessor.getMember(item).longValueIn(MILLISECOND);
-          if (!Platform.isJ9() && Platform.isJavaVersionAtLeast(11)) {
-            // fixme J9 engine have weird defaults and need fixing
-            // Only assert intervals that were explicitly requested in the profiler
-            // command; engines not requested carry default intervals that do not
-            // match the (absent) command value.
-            if (cpuInterval.toMillis() > 0) {
-              assertEquals(cpuInterval.toMillis(), cpuIntervalMillis);
-            }
-            if (wallInterval.toMillis() > 0) {
-              assertEquals(wallInterval.toMillis(), wallIntervalMillis);
-            }
-          }
+    JfrEvents profilerConfig = verifyEvents("datadog.DatadogProfilerConfig");
+    for (JfrEvent item : profilerConfig) {
+      long cpuIntervalMillis = item.getLong(CPU_INTERVAL, 0);
+      long wallIntervalMillis = item.getLong(WALL_INTERVAL, 0);
+      if (!Platform.isJ9() && Platform.isJavaVersionAtLeast(11)) {
+        // fixme J9 engine have weird defaults and need fixing
+        // Only assert intervals that were explicitly requested in the profiler
+        // command; engines not requested carry default intervals that do not
+        // match the (absent) command value.
+        if (cpuInterval.toMillis() > 0) {
+          assertEquals(cpuInterval.toMillis(), cpuIntervalMillis);
+        }
+        if (wallInterval.toMillis() > 0) {
+          assertEquals(wallInterval.toMillis(), wallIntervalMillis);
         }
       }
-    } catch (QuantityConversionException e) {
-      Assertions.fail(e.getMessage());
     }
   }
 
-  protected static IItemFilter allocatedTypeFilter(String className) {
-    return type -> {
-      IMemberAccessor<IMCType, IItem> accessor = JdkAttributes.OBJECT_CLASS.getAccessor(type);
-      return iItem -> {
-        return accessor != null && accessor.getMember(iItem).getFullName().equals(className);
-      };
-    };
+  /** Matches allocation/liveness events whose sampled object's class full name equals {@code className}. */
+  protected static Predicate<JfrEvent> allocatedTypeFilter(String className) {
+    return item -> className.equals(item.getClassName("objectClass"));
   }
 
   protected void runTests(Runnable... runnables) throws InterruptedException {
@@ -412,47 +371,106 @@ public abstract class AbstractProfilerTest {
 
   protected abstract String getProfilerCommand();
 
-  
+
   protected void verifyEventsPresent(String... expectedEventTypes) {
     verifyEventsPresent(jfrDump, expectedEventTypes);
   }
 
   protected void verifyEventsPresent(Path recording, String... expectedEventTypes) {
     try {
-      IItemCollection events = JfrLoaderToolkit.loadEvents(Files.newInputStream(recording));
-      assertTrue(events.hasItems());
+      JfrEvents events = JfrEvents.load(recording, new HashSet<>(Arrays.asList(expectedEventTypes))::contains);
       for (String expectedEventType : expectedEventTypes) {
-        IItemCollection filtered = events.apply(ItemFilters.type(expectedEventType));
+        JfrEvents filtered = events.byType(expectedEventType);
         assertTrue(filtered.hasItems(),
                 expectedEventType + " was empty for " + getAmendedProfilerCommand());
-        System.out.println(expectedEventType + " count: " + filtered.stream().count());
+        System.out.println(expectedEventType + " count: " + filtered.count());
       }
     } catch (Throwable t) {
-      fail(getProfilerCommand() + " " + t.getMessage());
+      fail(getProfilerCommand() + " " + t.getMessage(), t);
     }
   }
 
-  public final IItemCollection verifyEvents(String eventType) {
+  /**
+   * Like {@link #verifyEventsPresent}, but for a single event type where the caller doesn't need
+   * the materialized collection back — stops parsing as soon as one matching event is found
+   * (see {@link JfrEvents#load(Path, Predicate, Predicate)}), instead of resolving every event of
+   * a possibly high-volume type just to confirm it's non-empty.
+   */
+  protected void verifyEventPresent(String eventType) {
+    verifyEventPresent(jfrDump, eventType);
+  }
+
+  protected void verifyEventPresent(Path recording, String eventType) {
+    try {
+      JfrEvents events = JfrEvents.load(recording, eventType::equals, item -> true);
+      assertTrue(events.hasItems(), eventType + " was empty for " + getAmendedProfilerCommand());
+    } catch (Throwable t) {
+      fail(getProfilerCommand() + " " + t, t);
+    }
+  }
+
+  /**
+   * Materializes every matching event, deep-resolved (including its stack trace, if the event
+   * type has one), into memory. For high-volume event types, prefer {@link #verifyEventPresent}
+   * (presence only), {@link #streamEvents} (per-event checks) or {@link #reduceEvents} (folding into an
+   * accumulator) to avoid exhausting the test heap.
+   */
+  public final JfrEvents verifyEvents(String eventType) {
     return verifyEvents(eventType, true);
   }
 
-  protected IItemCollection verifyEvents(String eventType, boolean failOnEmpty) {
+  protected JfrEvents verifyEvents(String eventType, boolean failOnEmpty) {
     return verifyEvents(jfrDump, eventType, failOnEmpty);
   }
 
-  protected IItemCollection verifyEvents(Path recording, String eventType, boolean failOnEmpty) {
+  protected JfrEvents verifyEvents(Path recording, String eventType, boolean failOnEmpty) {
     try {
-      IItemCollection events = JfrLoaderToolkit.loadEvents(Files.newInputStream(recording));
-      assertTrue(events.hasItems());
-      IItemCollection collection = events.apply(ItemFilters.type(eventType));
-      System.out.println(eventType + " count: " + collection.stream().flatMap(IItemIterable::stream).count());
+      JfrEvents collection = JfrEvents.load(recording, eventType);
+      System.out.println(eventType + " count: " + collection.count());
       if (failOnEmpty) {
         assertTrue(collection.hasItems(),
                 eventType + " was empty for " + getAmendedProfilerCommand());
       }
       return collection;
     } catch (Throwable t) {
-      fail(getProfilerCommand() + " " + t);
+      fail(getProfilerCommand() + " " + t, t);
+      return null;
+    }
+  }
+
+  /**
+   * Like {@link #verifyEvents(String)}, but for callers that only need per-event checks and/or a
+   * count (e.g. {@code NativememSampledProfilerTest}'s per-sample field validation) rather than
+   * the materialized {@link JfrEvents} collection — never holds more than one event in memory at
+   * a time. See {@link JfrEvents#forEach} for the idempotency requirement on {@code consumer}.
+   */
+  protected long streamEvents(String eventType, Consumer<JfrEvent> consumer) {
+    return streamEvents(jfrDump, eventType, consumer);
+  }
+
+  protected long streamEvents(Path recording, String eventType, Consumer<JfrEvent> consumer) {
+    try {
+      return JfrEvents.forEach(recording, eventType::equals, consumer);
+    } catch (Throwable t) {
+      fail(getProfilerCommand() + " " + t, t);
+      return 0;
+    }
+  }
+
+  /**
+   * Like {@link #streamEvents}, but for callers that fold matching events into an accumulator
+   * (e.g. {@code NativeLibrariesTest}'s per-mode/per-library sample counts) instead of running
+   * independent per-event checks. See {@link JfrEvents#reduce} for the per-attempt reset contract.
+   */
+  protected <T> T reduceEvents(String eventType, Supplier<T> initial, BiConsumer<T, JfrEvent> accumulator) {
+    return reduceEvents(jfrDump, eventType, initial, accumulator);
+  }
+
+  protected <T> T reduceEvents(Path recording, String eventType, Supplier<T> initial, BiConsumer<T, JfrEvent> accumulator) {
+    try {
+      return JfrEvents.reduce(recording, eventType::equals, initial, accumulator);
+    } catch (Throwable t) {
+      fail(getProfilerCommand() + " " + t, t);
       return null;
     }
   }
@@ -463,15 +481,11 @@ public abstract class AbstractProfilerTest {
       // not a forced cstack mode
       return;
     }
-    IItemCollection settings = verifyEvents("jdk.ActiveSetting");
-    for (IItemIterable settingEvents : settings) {
-      IMemberAccessor<String, IItem> nameAccessor = JdkAttributes.REC_SETTING_NAME.getAccessor(settingEvents.getType());
-      IMemberAccessor<String, IItem> valueAccessor = JdkAttributes.REC_SETTING_VALUE.getAccessor(settingEvents.getType());
-      for (IItem item : settingEvents) {
-        String name  = nameAccessor.getMember(item);
-        if (name.equals("cstack")) {
-          assertEquals(cstack, valueAccessor.getMember(item));
-        }
+    JfrEvents settings = verifyEvents("jdk.ActiveSetting");
+    for (JfrEvent item : settings) {
+      String name = item.getString("name");
+      if ("cstack".equals(name)) {
+        assertEquals(cstack, item.getString("value"));
       }
     }
   }
@@ -482,21 +496,20 @@ public abstract class AbstractProfilerTest {
 
   protected void verifyStackTraces(Path recording, String eventType, String... patterns) {
     Set<String> unmatched = new HashSet<>(Arrays.asList(patterns));
-    long cumulatedEvents = 0;
-    outer: for (IItemIterable sample : verifyEvents(recording, eventType, false)) {
-      cumulatedEvents += sample.getItemCount();
-      IMemberAccessor<String, IItem> stackTraceAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(sample.getType());
-      for (IItem item : sample) {
-        String stackTrace = stackTraceAccessor.getMember(item);
-        if (stackTrace != null) {
-          unmatched.removeIf(stackTrace::contains);
-          if (unmatched.isEmpty()) {
-            break outer;
-          }
-        }
-      }
+    long[] cumulatedEvents = {0};
+    try {
+      // Stops parsing once every pattern has matched, instead of materializing every event of
+      // eventType up front — see JfrEvents.load(Path, Predicate, Predicate).
+      JfrEvents.load(recording, eventType::equals, item -> {
+        cumulatedEvents[0]++;
+        String stackTrace = item.getStackTraceString();
+        unmatched.removeIf(stackTrace::contains);
+        return unmatched.isEmpty();
+      });
+    } catch (Throwable t) {
+      fail(getProfilerCommand() + " " + t, t);
     }
-    assertNotEquals(0, cumulatedEvents, "no events found for " + eventType);
+    assertNotEquals(0, cumulatedEvents[0], "no events found for " + eventType);
     assertTrue(unmatched.isEmpty(), "couldn't find " + eventType + " with " + unmatched);
   }
 
@@ -508,15 +521,11 @@ public abstract class AbstractProfilerTest {
    * @return the counter value, or -1 if no matching event is found
    */
   public long getRecordedCounterValue(String counterName) {
-    IItemCollection events = verifyEvents("datadog.ProfilerCounter", false);
-    for (IItemIterable iterable : events) {
-      IMemberAccessor<String, IItem> nameAccessor = NAME.getAccessor(iterable.getType());
-      IMemberAccessor<IQuantity, IItem> countAccessor = COUNT.getAccessor(iterable.getType());
-      if (nameAccessor == null || countAccessor == null) continue;
-      for (IItem item : iterable) {
-        if (counterName.equals(nameAccessor.getMember(item))) {
-          return countAccessor.getMember(item).longValue();
-        }
+    JfrEvents events = verifyEvents("datadog.ProfilerCounter", false);
+    for (JfrEvent item : events) {
+      String name = item.getString(NAME);
+      if (counterName.equals(name)) {
+        return item.getLong(COUNT, -1);
       }
     }
     return -1;

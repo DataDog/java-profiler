@@ -1,16 +1,16 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler.nativesocket;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
-import org.openjdk.jmc.common.item.Attribute;
-import org.openjdk.jmc.common.item.IAttribute;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.common.unit.UnitLookup;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -25,8 +25,7 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 public class NativeSocketRemoteAddressTest extends AbstractProfilerTest {
 
-    private static final IAttribute<String> REMOTE_ADDRESS =
-            Attribute.attr("remoteAddress", "remoteAddress", "Remote address", UnitLookup.PLAIN_TEXT);
+    private static final String REMOTE_ADDRESS = "remoteAddress";
 
     @Override
     protected boolean isPlatformSupported() {
@@ -50,24 +49,20 @@ public class NativeSocketRemoteAddressTest extends AbstractProfilerTest {
 
         stopProfiler();
 
-        IItemCollection events = verifyEvents("datadog.NativeSocketEvent");
+        JfrEvents events = verifyEvents("datadog.NativeSocketEvent");
         assertTrue(events.hasItems(), "No NativeSocketEvent events found");
 
         boolean foundMatchingAddress = false;
-        for (IItemIterable items : events) {
-            IMemberAccessor<String, IItem> addrAccessor =
-                    REMOTE_ADDRESS.getAccessor(items.getType());
-            assertNotNull(addrAccessor, "remoteAddress accessor must exist");
-            for (IItem item : items) {
-                String addr = addrAccessor.getMember(item);
-                assertNotNull(addr, "remoteAddress must not be null");
-                assertFalse(addr.isEmpty(), "remoteAddress must not be empty");
-                // Must match ip:port pattern
-                assertTrue(addr.matches("^[\\d.]+:\\d+$") || addr.matches("^\\[.*\\]:\\d+$"),
-                        "remoteAddress '" + addr + "' does not match expected ip:port format");
-                if (addr.endsWith(":" + serverPort)) {
-                    foundMatchingAddress = true;
-                }
+        for (JfrEvent item : events) {
+            assertTrue(item.has(REMOTE_ADDRESS), "remoteAddress field must exist");
+            String addr = item.getString(REMOTE_ADDRESS);
+            assertNotNull(addr, "remoteAddress must not be null");
+            assertFalse(addr.isEmpty(), "remoteAddress must not be empty");
+            // Must match ip:port pattern
+            assertTrue(addr.matches("^[\\d.]+:\\d+$") || addr.matches("^\\[.*\\]:\\d+$"),
+                    "remoteAddress '" + addr + "' does not match expected ip:port format");
+            if (addr.endsWith(":" + serverPort)) {
+                foundMatchingAddress = true;
             }
         }
         assertTrue(foundMatchingAddress,

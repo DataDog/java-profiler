@@ -9,11 +9,8 @@ import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -104,66 +101,55 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
 
         stopProfiler();
 
-        IItemCollection events = verifyEvents("datadog.MethodSample", false);
+        JfrEvents events = verifyEvents("datadog.MethodSample", false);
 
         long sleepSamples = 0, parkSamples = 0, objectWaitSamples = 0, runnableSamples = 0;
 
-        for (IItemIterable batch : events) {
-            IMemberAccessor<String, IItem> stackAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(batch.getType());
-            IMemberAccessor<String, IItem> stateAccessor = THREAD_STATE.getAccessor(batch.getType());
-            IMemberAccessor<String, IItem> threadNameAccessor =
-                    JdkAttributes.EVENT_THREAD_NAME.getAccessor(batch.getType());
-            if (stackAccessor == null && stateAccessor == null && threadNameAccessor == null) {
+        for (JfrEvent item : events) {
+            String threadName = item.getThreadName("eventThread");
+            if (EFFICIENCY_SLEEPING.equals(threadName)) {
+                sleepSamples++;
                 continue;
             }
-            for (IItem item : batch) {
-                if (threadNameAccessor != null) {
-                    String threadName = threadNameAccessor.getMember(item);
-                    if (EFFICIENCY_SLEEPING.equals(threadName)) {
+            if (EFFICIENCY_PARKED.equals(threadName)) {
+                parkSamples++;
+                continue;
+            }
+            if (EFFICIENCY_WAITING.equals(threadName)) {
+                objectWaitSamples++;
+                continue;
+            }
+            if (EFFICIENCY_WORKING.equals(threadName)) {
+                runnableSamples++;
+                continue;
+            }
+            String state = item.getEnumName(THREAD_STATE);
+            // CONDVAR_WAIT is written as "PARKED" in JFR metadata.
+            if (state != null && !state.isEmpty()) {
+                switch (state) {
+                    case "SLEEPING":
                         sleepSamples++;
                         continue;
-                    }
-                    if (EFFICIENCY_PARKED.equals(threadName)) {
+                    case "PARKED":
                         parkSamples++;
                         continue;
-                    }
-                    if (EFFICIENCY_WAITING.equals(threadName)) {
+                    case "WAITING":
                         objectWaitSamples++;
                         continue;
-                    }
-                    if (EFFICIENCY_WORKING.equals(threadName)) {
-                        runnableSamples++;
-                        continue;
-                    }
+                    default:
+                        break;
                 }
-                String state = stateAccessor != null ? stateAccessor.getMember(item) : null;
-                // CONDVAR_WAIT is written as "PARKED" in JFR metadata.
-                if (state != null && !state.isEmpty()) {
-                    switch (state) {
-                        case "SLEEPING":
-                            sleepSamples++;
-                            continue;
-                        case "PARKED":
-                            parkSamples++;
-                            continue;
-                        case "WAITING":
-                            objectWaitSamples++;
-                            continue;
-                        default:
-                            break;
-                    }
-                }
-                String stack = stackAccessor != null ? stackAccessor.getMember(item) : null;
-                if (stack != null && (stack.contains("Thread.sleep") || stack.contains("sleep0"))) {
-                    sleepSamples++;
-                } else if (stack != null && (stack.contains("LockSupport.park") || stack.contains("Unsafe.park")
-                        || stack.contains("parkNanos"))) {
-                    parkSamples++;
-                } else if (stack != null && (stack.contains("Object.wait") || stack.contains("wait0"))) {
-                    objectWaitSamples++;
-                } else {
-                    runnableSamples++;
-                }
+            }
+            String stack = item.getStackTraceString();
+            if (stack != null && (stack.contains("Thread.sleep") || stack.contains("sleep0"))) {
+                sleepSamples++;
+            } else if (stack != null && (stack.contains("LockSupport.park") || stack.contains("Unsafe.park")
+                    || stack.contains("parkNanos"))) {
+                parkSamples++;
+            } else if (stack != null && (stack.contains("Object.wait") || stack.contains("wait0"))) {
+                objectWaitSamples++;
+            } else {
+                runnableSamples++;
             }
         }
 
@@ -263,24 +249,20 @@ public class PrecheckEfficiencyTest extends AbstractProfilerTest {
 
         stopProfiler();
 
-        IItemCollection events = verifyEvents("datadog.MethodSample", false);
+        JfrEvents events = verifyEvents("datadog.MethodSample", false);
 
         long sleepSamples = 0, parkSamples = 0, otherSamples = 0;
 
-        for (IItemIterable batch : events) {
-            IMemberAccessor<String, IItem> stackAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(batch.getType());
-            if (stackAccessor == null) continue;
-            for (IItem item : batch) {
-                String stack = stackAccessor.getMember(item);
-                if (stack == null) {
-                    otherSamples++;
-                } else if (stack.contains("Thread.sleep") || stack.contains("sleep0")) {
-                    sleepSamples++;
-                } else if (stack.contains("LockSupport.park") || stack.contains("Unsafe.park")) {
-                    parkSamples++;
-                } else {
-                    otherSamples++;
-                }
+        for (JfrEvent item : events) {
+            String stack = item.getStackTraceString();
+            if (stack == null) {
+                otherSamples++;
+            } else if (stack.contains("Thread.sleep") || stack.contains("sleep0")) {
+                sleepSamples++;
+            } else if (stack.contains("LockSupport.park") || stack.contains("Unsafe.park")) {
+                parkSamples++;
+            } else {
+                otherSamples++;
             }
         }
 

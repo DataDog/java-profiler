@@ -9,8 +9,25 @@
 
 class NativeMemTest : public ::testing::Test {
 protected:
-    void SetUp() override { NativeMem::reset(); }
-    void TearDown() override { NativeMem::reset(); }
+    long long _baseline[NM_NUM_CATEGORIES];
+
+    // Real static-duration objects elsewhere in the binary (e.g.
+    // UnwindStats::_unwind_failures) record their legitimate allocations into
+    // these same categories before main() runs. Snapshot that baseline and
+    // restore it in TearDown so their eventual destructors (which decrement
+    // what they incremented) don't underflow a category this fixture zeroed.
+    void SetUp() override {
+        for (int c = 0; c < NM_NUM_CATEGORIES; c++) {
+            _baseline[c] = NativeMem::live((NativeMemCategory)c);
+        }
+        NativeMem::reset();
+    }
+    void TearDown() override {
+        NativeMem::reset();
+        for (int c = 0; c < NM_NUM_CATEGORIES; c++) {
+            NativeMem::setLive((NativeMemCategory)c, _baseline[c]);
+        }
+    }
 };
 
 // record() adds to and subtracts from the per-category live gauge, and the

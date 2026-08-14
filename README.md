@@ -283,6 +283,33 @@ Results are categorized as:
 - 🟡 **Moderate** - Error rate < 5.0%
 - 🔴 **Needs Work** - Error rate ≥ 5.0%
 
+## Versioning
+
+The profiler version is computed at build time from git tags — no version is
+stored in any file. The single source of truth is
+[`utils/compute-version.sh`](utils/compute-version.sh), which derives the
+version from the most recent reachable `v_X.Y.Z` tag.
+
+| Branch | Most recent tag | Computed version |
+|---|---|---|
+| `main` | `v_X.Y.Z` | `X.(Y+1).0-SNAPSHOT` |
+| `release/X.Y._` | `v_X.Y.Z` | `X.Y.(Z+1)-SNAPSHOT` |
+| Feature branch | (same as base) | snapshot + `-<branch>-SNAPSHOT` |
+| Tag commit | `v_X.Y.Z` | `X.Y.Z` (release) |
+
+On `release/X.Y._` branches, only tags matching `v_X.Y.*` are considered, so
+a merged mainline tag can't produce a wrong-series version.
+
+Gradle computes the version at configuration time via `providers.exec`. CI
+environments that pass `-Pddprof_version` skip the computation entirely.
+If no tags are available (e.g. CodeQL's shallow autobuild), the build falls
+back to `0.0.0-SNAPSHOT` with a visible warning — this never affects publish
+builds, which always set `-Pddprof_version`.
+
+Releases create only an annotated tag (and a release branch for minor/major).
+No file modifications, no bump PRs. See [`utils/README.md`](utils/README.md)
+for the release workflow.
+
 ## Release Builds and Debug Information
 
 ### Split Debug Information
@@ -465,6 +492,7 @@ The [`utils/`](utils/) directory contains helper scripts for common workflows. S
 | Script | Description |
 |--------|-------------|
 | `release.sh` | Trigger a validated release (major/minor/patch) via GitHub Actions |
+| `prepare-patch.sh` | Backport a batch of pending main PRs onto a release branch before a patch release |
 | `backport-pr.sh` | Cherry-pick a merged PR onto a release branch and open a backport PR |
 | `patch-dd-java-agent.sh` | Patch `dd-java-agent.jar` with a local ddprof build for quick testing |
 | `run-containers-tests.sh` | Run tests in containers (musl/glibc, multiple JDKs) |

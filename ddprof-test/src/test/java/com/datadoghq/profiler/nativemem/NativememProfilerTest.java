@@ -12,17 +12,11 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.TestTemplate;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.openjdk.jmc.common.item.IAttribute;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.common.unit.IQuantity;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.openjdk.jmc.common.item.Attribute.attr;
-import static org.openjdk.jmc.common.unit.UnitLookup.ADDRESS;
 
 /**
  * Smoke tests for native memory (malloc) profiling.
@@ -36,7 +30,7 @@ import static org.openjdk.jmc.common.unit.UnitLookup.ADDRESS;
  */
 public class NativememProfilerTest extends CStackAwareAbstractProfilerTest {
 
-    private static final IAttribute<IQuantity> MALLOC_ADDRESS = attr("address", "address", "", ADDRESS);
+    private static final String MALLOC_ADDRESS = "address";
 
     @BeforeAll
     static void preloadNativeLib() {
@@ -73,32 +67,27 @@ public class NativememProfilerTest extends CStackAwareAbstractProfilerTest {
 
         stopProfiler();
 
-        IItemCollection events = verifyEvents("datadog.NativeMemoryAllocation");
+        JfrEvents events = verifyEvents("datadog.NativeMemoryAllocation");
         boolean foundMinSize = false;
-        for (IItemIterable items : events) {
-            IMemberAccessor<IQuantity, IItem> sizeAccessor = SIZE.getAccessor(items.getType());
-            IMemberAccessor<IQuantity, IItem> weightAccessor = WEIGHT.getAccessor(items.getType());
-            IMemberAccessor<IQuantity, IItem> addrAccessor = MALLOC_ADDRESS.getAccessor(items.getType());
-            if (sizeAccessor == null) {
+        for (JfrEvent item : events) {
+            if (!item.has(SIZE)) {
                 continue;
             }
-            assertNotNull(addrAccessor, "datadog.NativeMemoryAllocation events must carry an address field");
-            assertNotNull(weightAccessor, "datadog.NativeMemoryAllocation events must carry a weight field");
-            for (IItem item : items) {
-                IQuantity size = sizeAccessor.getMember(item);
-                assertNotNull(size, "datadog.NativeMemoryAllocation event must have a non-null size field");
-                assertTrue(size.longValue() > 0, "allocation size must be positive");
-                if (size.longValue() >= 1024) {
-                    foundMinSize = true;
-                }
-                IQuantity addr = addrAccessor.getMember(item);
-                assertTrue(addr == null || addr.longValue() != 0, "malloc address must not be zero");
-                // nativemem=0 samples every allocation; weight must be exactly 1.0.
-                IQuantity weight = weightAccessor.getMember(item);
-                assertNotNull(weight, "datadog.NativeMemoryAllocation event must have a non-null weight field");
-                assertTrue(Math.abs(weight.doubleValue() - 1.0) < 1e-6,
-                    "weight must be 1.0 for nativemem=0 (all allocations sampled), got " + weight.doubleValue());
+            assertTrue(item.has(MALLOC_ADDRESS), "datadog.NativeMemoryAllocation events must carry an address field");
+            assertTrue(item.has(WEIGHT), "datadog.NativeMemoryAllocation events must carry a weight field");
+            Long size = item.getLong(SIZE);
+            assertNotNull(size, "datadog.NativeMemoryAllocation event must have a non-null size field");
+            assertTrue(size > 0, "allocation size must be positive");
+            if (size >= 1024) {
+                foundMinSize = true;
             }
+            Long addr = item.getLong(MALLOC_ADDRESS);
+            assertTrue(addr == null || addr != 0, "malloc address must not be zero");
+            // nativemem=0 samples every allocation; weight must be exactly 1.0.
+            Double weight = item.getDouble(WEIGHT);
+            assertNotNull(weight, "datadog.NativeMemoryAllocation event must have a non-null weight field");
+            assertTrue(Math.abs(weight - 1.0) < 1e-6,
+                "weight must be 1.0 for nativemem=0 (all allocations sampled), got " + weight);
         }
         assertTrue(foundMinSize, "expected at least one malloc event with size >= 1024 bytes");
 

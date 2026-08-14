@@ -16,6 +16,7 @@
 #include "jniHelper.h"
 #include "livenessTracker.h"
 #include "log.h"
+#include "nativeMem.h"
 #include "os.h"
 #include "profiler.h"
 #include "threadLocalData.h"
@@ -193,7 +194,7 @@ Error LivenessTracker::start(Arguments &args) {
   }
   
   // Self-register with the profiler for liveness checking
-  Profiler::instance()->registerLivenessChecker([this](std::unordered_set<u64>& buffer) {
+  Profiler::instance()->registerLivenessChecker([this](CallTraceIdSet& buffer) {
     this->getLiveTraceIds(buffer);
   });
   
@@ -277,6 +278,9 @@ Error LivenessTracker::initialize(Arguments &args) {
       std::min(2048, _table_max_cap); // with default 512k sampling interval, it's
                                    // enough for 1G of heap
   _table = (TrackingEntry *)malloc(sizeof(TrackingEntry) * _table_cap);
+  if (_table != NULL) {
+    NativeMem::record(NM_LIVENESS, (long long)sizeof(TrackingEntry) * _table_cap);
+  }
 
   _gc_epoch = 0;
   _last_gc_epoch = 0;
@@ -406,6 +410,8 @@ retry:
           TrackingEntry *tmp = (TrackingEntry *)realloc(
                 _table, sizeof(TrackingEntry) * newcap);
           if (tmp != nullptr) {
+              NativeMem::record(NM_LIVENESS,
+                  (long long)sizeof(TrackingEntry) * (newcap - _table_cap));
               _table = tmp;
               _table_cap = newcap;
               Log::debug(
@@ -450,7 +456,7 @@ void LivenessTracker::onGC() {
   }
 }
 
-void LivenessTracker::getLiveTraceIds(std::unordered_set<u64>& out_buffer) {
+void LivenessTracker::getLiveTraceIds(CallTraceIdSet& out_buffer) {
   out_buffer.clear();
   
   if (!_enabled || !_initialized) {

@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler.cpu;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
@@ -5,12 +10,8 @@ import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.context.ContextExecutor;
 import com.datadoghq.profiler.context.Tracing;
 import org.junit.jupiter.api.Assumptions;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.common.unit.IQuantity;
-import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 
 import java.util.HashSet;
 import java.util.List;
@@ -40,27 +41,21 @@ public class LightweightContextCpuTest extends AbstractProfilerTest {
         }
         stopProfiler();
         Set<Long> sampledSpanIds = profiledCode.allSampledSpanIds();
-        IItemCollection events = verifyEvents("datadog.ExecutionSample");
+        JfrEvents events = verifyEvents("datadog.ExecutionSample");
 
         int numNonZeroContexts = 0;
-        for (IItemIterable cpuSamples : events) {
-            IMemberAccessor<String, IItem> frameAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(cpuSamples.getType());
-            IMemberAccessor<IQuantity, IItem> spanIdAccessor = SPAN_ID.getAccessor(cpuSamples.getType());
-            IMemberAccessor<IQuantity, IItem> rootSpanIdAccessor = LOCAL_ROOT_SPAN_ID.getAccessor(cpuSamples.getType());
-            IMemberAccessor<String, IItem> stateAccessor = THREAD_STATE.getAccessor(cpuSamples.getType());
-            for (IItem sample : cpuSamples) {
-                String stackTrace = frameAccessor.getMember(sample);
-                assertNull(stackTrace);
-                long spanId = spanIdAccessor.getMember(sample).longValue();
-                long rootSpanId = rootSpanIdAccessor.getMember(sample).longValue();
-                numNonZeroContexts += (spanId != 0 && rootSpanId != 0 ? 1 : 0);
-                if (spanId > 0) {
-                    assertTrue(sampledSpanIds.contains(spanId));
-                }
-                String state = stateAccessor.getMember(sample);
-                assertDoesNotThrow(() -> Thread.State.valueOf(state));
-                assertEquals(Thread.State.RUNNABLE, Thread.State.valueOf(state));
+        for (JfrEvent sample : events) {
+            String stackTrace = sample.getStackTraceString();
+            assertNull(stackTrace);
+            long spanId = sample.getLong(SPAN_ID, 0);
+            long rootSpanId = sample.getLong(LOCAL_ROOT_SPAN_ID, 0);
+            numNonZeroContexts += (spanId != 0 && rootSpanId != 0 ? 1 : 0);
+            if (spanId > 0) {
+                assertTrue(sampledSpanIds.contains(spanId));
             }
+            String state = sample.getEnumName(THREAD_STATE);
+            assertDoesNotThrow(() -> Thread.State.valueOf(state));
+            assertEquals(Thread.State.RUNNABLE, Thread.State.valueOf(state));
         }
         assertTrue(numNonZeroContexts > 0, "no context");
         Map<String, Long> debugCounters = profiler.getDebugCounters();

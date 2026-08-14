@@ -147,6 +147,10 @@ private:
   u32 _num_context_attributes;
   bool _omit_stacktraces;
   bool _remote_symbolication;  // Enable remote symbolication for native frames
+  bool _sanity_check_failed;
+  // _sanity_check_message points into SanityChecker's static error buffer.
+  // That buffer has process lifetime, so the pointer stays valid.
+  const char *_sanity_check_message;
 
   // dlopen() hook support
   void **_dlopen_entry;
@@ -225,7 +229,8 @@ public:
         _max_stack_depth(0), _features(), _safe_mode(0), _cstack(CSTACK_NO),
         _thread_events_state(JVMTI_DISABLE), _libs(Libraries::instance()),
         _num_context_attributes(0), _omit_stacktraces(false),
-        _remote_symbolication(false), _dlopen_entry(NULL) {
+        _remote_symbolication(false), _sanity_check_failed(false),
+        _sanity_check_message(NULL), _dlopen_entry(NULL) {
 
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
       _calltrace_buffer[i] = NULL;
@@ -291,7 +296,6 @@ public:
   // insertions (Lookup::_classes->lookupDuringDump in flightRecorder.cpp)
   // must use this too so _class_map cannot grow past it via that path.
   static int maxClassMapSize() { return MAX_CLASS_MAP_SIZE; }
-  SharedLockGuard classMapSharedGuard() { return SharedLockGuard(&_class_map_lock); }
   StringDictionary *stringLabelMap() { return &_string_label_map; }
   StringDictionary *contextValueMap() { return &_context_value_map; }
   // Atomically reads and clears the "context value dictionary was reset" flag (see the member).
@@ -303,12 +307,12 @@ public:
 
   const char* cstack() const;
   int lookupClass(const char *key, size_t length);
-  void processCallTraces(std::function<void(const std::unordered_set<CallTrace*>&)> processor) {
+  void processCallTraces(std::function<void(const CallTraceSet&)> processor) {
     if (!_omit_stacktraces) {
       _call_trace_storage.processTraces(processor);
     } else {
       // If stack traces are omitted, call processor with empty set
-      static std::unordered_set<CallTrace*> empty_traces;
+      static CallTraceSet empty_traces;
       processor(empty_traces);
     }
   }
@@ -454,6 +458,8 @@ public:
   void writeHeapUsage(long value, bool live);
   int eventMask() const { return _event_mask; }
   bool isRemoteSymbolication() const { return _remote_symbolication; }
+  bool sanityCheckFailed() const { return _sanity_check_failed; }
+  const char *sanityCheckMessage() const { return _sanity_check_message; }
 
   const void *resolveSymbol(const char *name);
   const char *getLibraryName(const char *native_symbol);
@@ -462,6 +468,7 @@ public:
   static void segvHandler(int signo, siginfo_t *siginfo, void *ucontext);
   static void busHandler(int signo, siginfo_t *siginfo, void *ucontext);
   static void setupSignalHandlers();
+  static void checkFault(ProfiledThread* thrd, siginfo_t *siginfo, void *ucontext);
 
   static int registerThread(int tid);
   static void unregisterThread(int tid);
@@ -482,6 +489,16 @@ public:
     std::pair<std::shared_ptr<std::string>, u64> info = _thread_info.get(tid);
     return info.first != nullptr ? *info.first : std::string();
   }
+
+  // Overrides the profiler address range checkFault() uses to decide
+  // whether a recovered fault actually originated from profiler code.
+  // setupSignalHandlers() never runs in gtest binaries, so the real
+  // profiler_min_address/profiler_max_address stay 0 there and checkFault's
+  // range check short-circuits via its "not initialized" fallback -- these
+  // let tests install a real, non-zero range so the pc < min || pc >= max
+  // comparison itself gets exercised, instead of being skipped entirely.
+  static void setAddressRangeForTest(uintptr_t min, uintptr_t max);
+  static void resetAddressRangeForTest();
 #endif
 
 
@@ -496,14 +513,15 @@ public:
 
   // Keep backward compatibility with the upstream async-profiler
   inline CodeCache* findLibraryByAddress(const void *address) {
-  #ifdef DEBUG
+#ifdef DEBUG
     // we need this code to simulate segfault during stackwalking
     // this is a safe place to do it since this wrapper is used solely from the 'vm' stackwalker implementation
     if (force_stackwalk_crash_env) {
       TEST_LOG("FORCE_SIGSEGV");
-      raise(SIGSEGV);
+      int* p = nullptr;
+      *p = 1;
     }
-  #endif
+#endif
     return Libraries::instance()->findLibraryByAddress(address);
   }
 

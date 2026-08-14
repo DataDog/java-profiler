@@ -186,7 +186,7 @@ static void fillFrameTypes(ASGCT_CallFrame *frames, int num_frames, VMNMethod *n
 
 // Fill the frame with raw method pointer
 static void fillFrameRaw(ASGCT_CallFrame& frame, FrameTypeId type, int bci, const VMMethod* method) {
-    assert(method != nullptr);
+    NO_INJECTION_ASSERT(method != nullptr);
     frame.bci = FrameType::encode(type, bci, true /*raw method pointer*/);
     frame.method = static_cast<const void*>(method);
 }
@@ -194,15 +194,28 @@ static void fillFrameRaw(ASGCT_CallFrame& frame, FrameTypeId type, int bci, cons
 void HotspotSupport::fillJavaFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci,
                                    jmethodID method_id, const VMMethod* method) {
     if (method_id == JMETHODID_NOT_WALKABLE) {
-        // The Method* failed validation while walking. Preserve only the sentinel;
-        // retaining the Method* would defer a dereference of that invalid metadata
-        // until the dump thread resolves the frame.
+        // The Method* failed validation while walking (bad pointer chain or
+        // faulted load). Preserve only the sentinel; retaining the Method*
+        // would defer a dereference of invalid metadata until the dump thread
+        // resolves the frame.
         fillFrame(frame, type, bci, method_id);
     } else if (method_id != nullptr) {
         fillFrame(frame, type, bci, method_id);
-    } else {
-        assert(method != nullptr);
+    } else if (!VM::arguments()._force_jmethodID) {
+        // fjmethodid=false: the user opted into the raw Method* path. nullptr
+        // means no jmethodID is available — either the klass was deliberately
+        // not primed (ids == NULL) or the cache was shrunk by a redefine
+        // (num >= len). In both cases the raw Method* is the designed
+        // resolution path; the deferred-dereference race at dump time is
+        // inherent to this mode.
+        NO_INJECTION_ASSERT(method != nullptr);
         fillFrameRaw(frame, type, bci, method);
+    } else {
+        // fjmethodid=true: all jmethodIDs should be preloaded, so nullptr is
+        // unexpected — a transient invalidation window or a missed preload.
+        // Use the sentinel rather than deferring a raw Method* dereference to
+        // the dump thread, where the metadata may have been reclaimed.
+        fillFrame(frame, type, bci, JMETHODID_NOT_WALKABLE);
     }
 }
 
@@ -245,6 +258,12 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
         return 0;
     }
+    
+    // reset=false: the buffer only needs clearing after a failure was actually
+    // recorded into it (done below, right after merging into UnwindStats), not
+    // on every walk — clear() memsets ~288 KiB and this runs on the hot sample
+    // path in DEBUG/ASan/TSan builds.
+    DEBUG_ONLY(UnwindFailures* unwindFailures = prof_thread->unwindFailures(false);)
 
     HotspotStackFrame frame(ucontext);
     uintptr_t bottom = (uintptr_t)&frame + MAX_WALK_SIZE;
@@ -272,6 +291,12 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         if (depth < max_depth) {
             fillFrame(frames[depth++], BCI_ERROR, "break_not_walkable");
         }
+#ifdef DEBUG
+        if (unwindFailures) {
+            UnwindStats::recordFailures(unwindFailures);
+            unwindFailures->clear();
+        }
+#endif // DEBUG
         return depth;
     }
 
@@ -690,6 +715,19 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     pc = ((const void**)sp)[-FRAME_PC_SLOT];
                     continue;
                 }
+
+#ifdef DEBUG
+                if (unwindFailures) {
+                    unwindFailures->record(UNWIND_FAILURE_STUB, name);
+                }
+#endif // DEBUG
+                // Unconditional (not DEBUG-only): previously this path fell through with
+                // pc/sp/depth all unchanged, re-entering the enclosing
+                // `while (depth < actual_max_depth)` in the same state -- an infinite loop
+                // whenever a runtime-stub frame can't be unwound and the frameSize()
+                // fallback above isn't available. Terminate the walk explicitly instead.
+                fillFrame(frames[depth++], BCI_ERROR, "break_unwind_stub_failed");
+                break;
             }
         } else {
             // Resolve native frame (may use remote symbolication if enabled)
@@ -980,23 +1018,14 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         }
     }
 
+#ifdef DEBUG
+    if (unwindFailures && !unwindFailures->empty()) {
+        UnwindStats::recordFailures(unwindFailures);
+        unwindFailures->clear();
+    }
+#endif // DEBUG
+
     return depth;
-}
-
-void HotspotSupport::checkFault(ProfiledThread* thrd) {
-    // Should not get to here (?)
-    if (thrd == nullptr) {
-        return;
-    }
-
-    // Check if siglongjmp is set up for this thread
-    if (!thrd->isProtected()) {
-        return;
-    }
-
-    thrd->resetCrashHandler();
-    Counters::increment(WALKVM_LONGJMP_RECOVERED);
-    siglongjmp(*thrd->getJmpCtx(), 1);
 }
 
 int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
@@ -1076,7 +1105,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   JitWriteProtection jit(false);
   // AsyncGetCallTrace writes to ASGCT_CallFrame array
   ASGCT_CallTrace trace = {jni, 0, frames};
-  VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+  JVMSupport::jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
 
   if (trace.num_frames > 0) {
     frame.restore(saved_pc, saved_sp, saved_fp);
@@ -1097,7 +1126,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
       if (!(safe_mode & POP_STUB) &&
           frame.unwindStub((instruction_t *)stub->_start, stub->_name) &&
           isAddressInCode((const void *)frame.pc())) {
-        VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+        JVMSupport::jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
       }
     } else if (VMStructs::hasMethodStructs()) {
       VMNMethod *nmethod = CodeHeap::findNMethod((const void *)frame.pc());
@@ -1110,7 +1139,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
           }
           if (!(safe_mode & POP_METHOD) && frame.unwindCompiled(nmethod) &&
               isAddressInCode((const void *)frame.pc())) {
-            VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+            JVMSupport::jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
           }
           if ((safe_mode & PROBE_SP) && trace.num_frames < 0) {
             if (isValidJMethodID(method_id)) {
@@ -1118,7 +1147,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
             }
             for (int i = 0; trace.num_frames < 0 && i < PROBE_SP_LIMIT; i++) {
               frame.sp() += sizeof(void*);
-              VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+              JVMSupport::jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
             }
           }
         }
@@ -1130,7 +1159,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
         if (!(safe_mode & POP_STUB) &&
             frame.unwindStub(NULL, nmethod->name()) &&
             isAddressInCode((const void *)frame.pc())) {
-          VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+          JVMSupport::jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
         }
       }
     }
@@ -1157,9 +1186,9 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
             m->frameCompleteOffset() == -1) {
           m->setFrameCompleteOffset(0);
         }
-        VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+        JVMSupport::jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
       } else if (libs->findLibraryByAddress(pc) != NULL) {
-        VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+        JVMSupport::jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
       }
 
       anchor->setLastJavaPC(nullptr);
@@ -1177,7 +1206,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
       if (m != NULL && !m->isNMethod() && m->frameSize() > 0 &&
           m->frameCompleteOffset() == -1) {
         m->setFrameCompleteOffset(0);
-        VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+        JVMSupport::jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
       }
     }
   } else if (trace.num_frames == ticks_GC_active && !(safe_mode & GC_TRACES)) {
@@ -1218,7 +1247,36 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   bool* truncated = request.truncated;
   u32 lock_index = request.lock_index;
 
-  int java_frames = 0;
+  volatile int java_frames = 0;
+  // walkVM() installs its own sigsetjmp/siglongjmp crash protection (chained
+  // with any pre-existing jmp ctx, see the comment in walkVM), but the
+  // getJavaTraceAsync() path below runs without one: it dereferences
+  // VMThread/anchor state directly and calls into HotSpot's own
+  // AsyncGetCallTrace. Install a jmp ctx here too, so a SIGSEGV anywhere in
+  // walkJavaStack, except HotSpot's AsyncGetCallTrace call, is caught by
+  // Profiler::checkFault() and siglongjmp'd back here instead of crashing the process.
+  ProfiledThread* prof_thread = ProfiledThread::current();
+  const bool prev_unwinding_java = prof_thread != nullptr ? prof_thread->is_unwinding_Java() : false;
+  sigjmp_buf crash_protection_ctx;
+  sigjmp_buf* prev_jmp_buf = prof_thread != nullptr ? prof_thread->getJmpCtx() : nullptr;
+
+  if (prof_thread != nullptr && sigsetjmp(crash_protection_ctx, 1) != 0) {
+    // checkFault() does a siglongjmp from inside segvHandler, bypassing
+    // segvHandler's SignalHandlerScope destructor. Compensate.
+    SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
+    prof_thread->setJmpCtx(prev_jmp_buf);
+    // A recovered siglongjmp bypasses AsyncSampleMutex destructors, so restore
+    // the per-thread guard to its pre-walk value.
+    prof_thread->set_unwinding_Java(prev_unwinding_java);
+    if (truncated) {
+      *truncated = true;
+    }
+    return java_frames;
+  }
+  if (prof_thread != nullptr) {
+    prof_thread->setJmpCtx(&crash_protection_ctx);
+  }
+
   if (features.mixed) {
     java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
   } else if (isHookPrefixedSample(request.event_type)) {
@@ -1249,7 +1307,6 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
     if (cstack >= CSTACK_VM) {
         java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
     } else {
-        // Async events
         AsyncSampleMutex mutex(ProfiledThread::current());
         if (mutex.acquired()) {
             java_frames = getJavaTraceAsync(ucontext, frames, max_depth, java_ctx, truncated);
@@ -1260,8 +1317,6 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
                 }
             }
         }
-        // ASGCT stops at the continuation boundary for virtual threads (JDK 21+).
-        // Append a synthetic root frame so the UI does not show "Missing Frames".
         if (java_frames > 0 && VM::hotspot_version() >= 21 && java_frames < max_depth) {
             VMThread* carrier = VMThread::current();
             if (carrier != nullptr && carrier->isCarryingVirtualThread()) {
@@ -1273,7 +1328,11 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
         }
     }
   }
-  return java_frames; 
+
+  if (prof_thread != nullptr) {
+    prof_thread->setJmpCtx(prev_jmp_buf);
+  }
+  return java_frames;
 }
 
 static void patchClassLoaderData(JNIEnv* jni, jclass klass) {
@@ -1380,10 +1439,10 @@ bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jcl
 // This method only resolves methods that are loaded by system class loaders
 jmethodID HotspotSupport::resolve(const void* method) {
   assert(VM::isHotspot());
-  assert(method != nullptr);
-  // We packed not walkable method as a raw pointer,
-  // map it back to nullptr, as JMETHODID_NOT_WALKABLE is only
-  // known in hotspot.
+  NO_INJECTION_ASSERT(method != nullptr);
+  // fillJavaFrame stores the sentinel without the raw flag, so this should
+  // never reach the raw-pointer resolve path. Map it to nullptr so the dump
+  // thread serializes it as the shared unknown method.
   if ((jmethodID)method == JMETHODID_NOT_WALKABLE) {
     return nullptr;
   }

@@ -13,9 +13,11 @@
 # Requires:
 # - DDPROF_COMMIT_BRANCH: Branch name to find PR
 # - CI_PIPELINE_URL: Link to pipeline
-# - pr-commenter tool (available in CI images)
+# - dd-octo-sts CLI (for GitHub token exchange, via upsert-github-pr-comment.sh)
 
 set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Colors for logging
 GREEN='\033[0;32m'
@@ -28,55 +30,11 @@ log_warn() { echo -e "${YELLOW}[WARN]${NC} $*" >&2; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 RESULTS_DIR="${1:-integration-test-results}"
-REPO="DataDog/java-profiler"
 
 # Dashboard URL (GitHub Pages)
 DASHBOARD_URL="https://datadog.github.io/java-profiler/integration/"
 
-# Check required tools - try to get pr-commenter from benchmarking-platform if not available
-PR_COMMENTER_AVAILABLE=false
-if command -v pr-commenter >/dev/null 2>&1; then
-  PR_COMMENTER_AVAILABLE=true
-elif [ -n "${CI_JOB_TOKEN:-}" ]; then
-  # In CI, clone benchmarking-platform to get pr-commenter
-  log_info "pr-commenter not found, cloning benchmarking-platform..."
-  PLATFORM_DIR=$(mktemp -d)
-  trap "rm -rf ${PLATFORM_DIR}" EXIT
-  git config --global url."https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.ddbuild.io/DataDog/".insteadOf "https://github.com/DataDog/"
-  if git clone --depth 1 --branch dd-trace-go https://github.com/DataDog/benchmarking-platform "${PLATFORM_DIR}" 2>/dev/null; then
-    if [ -x "${PLATFORM_DIR}/tools/pr-commenter" ]; then
-      export PATH="${PLATFORM_DIR}/tools:${PATH}"
-      PR_COMMENTER_AVAILABLE=true
-      log_info "pr-commenter available from benchmarking-platform"
-    elif [ -f "${PLATFORM_DIR}/tools/pr-commenter.py" ]; then
-      # Try Python version
-      alias pr-commenter="python3 ${PLATFORM_DIR}/tools/pr-commenter.py"
-      PR_COMMENTER_AVAILABLE=true
-      log_info "pr-commenter.py available from benchmarking-platform"
-    else
-      log_warn "pr-commenter not found in benchmarking-platform"
-      ls -la "${PLATFORM_DIR}/tools/" 2>/dev/null || log_warn "No tools directory"
-    fi
-  else
-    log_warn "Failed to clone benchmarking-platform"
-  fi
-else
-  log_warn "pr-commenter not found and not in CI - will print comment instead"
-fi
-
-# Check required environment
-if [ -z "${DDPROF_COMMIT_BRANCH:-}" ]; then
-  log_warn "DDPROF_COMMIT_BRANCH not set - skipping comment"
-  exit 0
-fi
-
-# Skip for main/master branches (no PR)
-if [ "${DDPROF_COMMIT_BRANCH}" = "main" ] || [ "${DDPROF_COMMIT_BRANCH}" = "master" ]; then
-  log_info "Skipping PR comment for ${DDPROF_COMMIT_BRANCH} branch"
-  exit 0
-fi
-
-log_info "Posting comment for branch: ${DDPROF_COMMIT_BRANCH}"
+log_info "Collecting results for branch: ${DDPROF_COMMIT_BRANCH:-<unset>}"
 
 # Collect test results
 log_info "Collecting test results from ${RESULTS_DIR}..."
@@ -147,9 +105,12 @@ elif [ "${TOTAL_PASS}" -gt 0 ]; then
   STATUS_EMOJI=":white_check_mark:"
   STATUS_TEXT="PASSED"
 else
-  OVERALL_STATUS="neutral"
-  STATUS_EMOJI=":grey_question:"
-  STATUS_TEXT="NO RESULTS"
+  # No results at all usually means the test matrix never ran (setup/prerequisite
+  # failure) rather than a clean run — treat it as a failure so it isn't silently
+  # swallowed.
+  OVERALL_STATUS="failure"
+  STATUS_EMOJI=":rotating_light:"
+  STATUS_TEXT="COULD NOT RUN"
 fi
 
 log_info "Results: ${TOTAL_PASS} passed, ${TOTAL_FAIL} failed out of ${TOTAL} configurations"
@@ -162,6 +123,15 @@ if [ "${OVERALL_STATUS}" = "success" ]; then
   COMMENT_BODY=":white_check_mark: **All ${TOTAL} integration tests passed**
 
 :bar_chart: [Dashboard](${DASHBOARD_URL}) · :construction_worker: [Pipeline](${CI_PIPELINE_URL:-}) · :package: \`${DDPROF_SHA:0:8}\`"
+elif [ "${TOTAL}" -eq 0 ]; then
+  # No results produced at all - the test matrix itself never ran (e.g. a setup
+  # or prerequisite failure), not a clean pass/fail outcome.
+  COMMENT_BODY=":rotating_light: **Integration tests could not run — no results were produced**
+
+The test matrix in \`${RESULTS_DIR}\` is empty. This usually means a setup step
+(prerequisite installation, JDK provisioning, etc.) failed before any test could run.
+
+:construction_worker: [Pipeline](${CI_PIPELINE_URL:-}) · :package: \`${DDPROF_SHA:0:8}\`"
 else
   # Some failures or unknowns - show full matrix
   COMMENT_BODY="${STATUS_EMOJI} **${TOTAL_PASS}** passed, **${TOTAL_FAIL}** failed out of **${TOTAL}** configurations
@@ -205,27 +175,15 @@ $(echo -e "${FAILURES}")"
 - :package: Commit: \`${DDPROF_SHA}\`"
 fi
 
-# Post comment using pr-commenter
-if [ "${PR_COMMENTER_AVAILABLE}" = "true" ]; then
-  log_info "Posting comment via pr-commenter..."
-
-  if echo "${COMMENT_BODY}" | pr-commenter \
-      --for-repo="${REPO}" \
-      --for-pr="${DDPROF_COMMIT_BRANCH}" \
-      --header="Integration Tests" \
-      --on-duplicate=replace; then
-    log_info "Successfully posted comment"
-  else
-    log_error "Failed to post comment via pr-commenter"
-    log_info "Comment that would be posted:"
-    echo "${COMMENT_BODY}"
-    exit 1
-  fi
-else
-  log_info "Comment that would be posted to PR:"
-  echo ""
-  echo "${COMMENT_BODY}"
-  echo ""
+# Post comment via dd-octo-sts (upsert-github-pr-comment.sh handles missing
+# branch/PR/token gracefully, so a comment-posting problem never masks the
+# actual test outcome below).
+BODY_FILE=$(mktemp)
+trap 'rm -f "${BODY_FILE}"' EXIT
+echo "${COMMENT_BODY}" > "${BODY_FILE}"
+if ! "${HERE}/../scripts/upsert-github-pr-comment.sh" \
+    "dd-trace-integration-results" "${DDPROF_COMMIT_BRANCH:-}" "${BODY_FILE}"; then
+  log_error "Failed to post PR comment (transport failure) — continuing; only the test outcome below determines pipeline status"
 fi
 
 # Exit with failure if tests failed (makes pipeline fail)

@@ -190,6 +190,23 @@ class ProfilerTestPlugin : Plugin<Project> {
     }
 
     /**
+     * Task name for a given config, shared between the glibc Test task and the musl Exec task
+     * so both platforms expose the same testXxx/testSlowXxx naming.
+     */
+    private fun testTaskName(configName: String, slow: Boolean): String {
+        val capitalized = configName.replaceFirstChar { it.uppercase() }
+        return if (slow) "testSlow$capitalized" else "test$capitalized"
+    }
+
+    private fun testTaskDescription(configName: String, slow: Boolean, platformSuffix: String = ""): String {
+        return if (slow) {
+            "Runs the slow/e2e test suite with the $configName library variant$platformSuffix"
+        } else {
+            "Runs unit tests with the $configName library variant$platformSuffix"
+        }
+    }
+
+    /**
      * Create native Test task for glibc/macOS (normal path).
      * Uses Gradle's Test task with -Ptests property support.
      */
@@ -198,11 +215,13 @@ class ProfilerTestPlugin : Plugin<Project> {
         extension: ProfilerTestExtension,
         testConfig: TestTaskConfiguration,
         testCfg: Configuration,
-        sourceSets: SourceSetContainer
+        sourceSets: SourceSetContainer,
+        slow: Boolean = false
     ) {
-        project.tasks.register("test${testConfig.configName.replaceFirstChar { it.uppercase() }}", Test::class.java) {
+        val taskName = testTaskName(testConfig.configName, slow)
+        project.tasks.register(taskName, Test::class.java) {
             val testTask = this
-            testTask.description = "Runs unit tests with the ${testConfig.configName} library variant"
+            testTask.description = testTaskDescription(testConfig.configName, slow)
             testTask.group = "verification"
             testTask.onlyIf { testConfig.isActive && !project.hasProperty("skip-tests") }
 
@@ -216,7 +235,14 @@ class ProfilerTestPlugin : Plugin<Project> {
             testTask.classpath = testConfig.testClasspath
 
             // Use JUnit Platform
-            testTask.useJUnitPlatform()
+            testTask.useJUnitPlatform {
+                val platformOptions = this
+                if (slow) {
+                    platformOptions.includeTags("slow")
+                } else {
+                    platformOptions.excludeTags("slow")
+                }
+            }
 
             // Configure Java executable - bypasses toolchain system
             testTask.setExecutable(PlatformUtils.testJavaExecutable())
@@ -308,11 +334,13 @@ class ProfilerTestPlugin : Plugin<Project> {
         extension: ProfilerTestExtension,
         testConfig: TestTaskConfiguration,
         testCfg: Configuration,
-        sourceSets: SourceSetContainer
+        sourceSets: SourceSetContainer,
+        slow: Boolean = false
     ) {
-        project.tasks.register("test${testConfig.configName.replaceFirstChar { it.uppercase() }}", Exec::class.java) {
+        val taskName = testTaskName(testConfig.configName, slow)
+        project.tasks.register(taskName, Exec::class.java) {
             val execTask = this
-            execTask.description = "Runs unit tests with the ${testConfig.configName} library variant (musl workaround)"
+            execTask.description = testTaskDescription(testConfig.configName, slow, " (musl workaround)")
             execTask.group = "verification"
             execTask.onlyIf { testConfig.isActive && !project.hasProperty("skip-tests") }
 
@@ -344,6 +372,14 @@ class ProfilerTestPlugin : Plugin<Project> {
                 val testsFilter = project.findProperty("tests") as String?
                 if (testsFilter != null) {
                     allArgs.add("-Dtest.filter=$testsFilter")
+                }
+
+                // Carve out the "slow" suite the same way the glibc Test task does via
+                // useJUnitPlatform { includeTags/excludeTags }
+                if (slow) {
+                    allArgs.add("-Dtest.tags.include=slow")
+                } else {
+                    allArgs.add("-Dtest.tags.exclude=slow")
                 }
 
                 // Classpath (includes custom test runner)
@@ -449,9 +485,11 @@ class ProfilerTestPlugin : Plugin<Project> {
             if (isMuslSystem) {
                 project.logger.info("Creating Exec task for $configName (musl workaround, LIBC=${System.getenv("LIBC")})")
                 createExecTestTask(project, extension, testConfig, testCfg, sourceSets)
+                createExecTestTask(project, extension, testConfig, testCfg, sourceSets, slow = true)
             } else {
                 project.logger.info("Creating Test task for $configName (glibc/macOS, LIBC=${System.getenv("LIBC")})")
                 createTestTask(project, extension, testConfig, testCfg, sourceSets)
+                createTestTask(project, extension, testConfig, testCfg, sourceSets, slow = true)
             }
 
             // Create application tasks for specified configs
@@ -595,22 +633,25 @@ class ProfilerTestPlugin : Plugin<Project> {
             }
         }
 
-        // Wire up gtest -> test dependencies (C++ tests run before Java tests)
+        // Wire up gtest -> test dependencies (C++ tests run before Java tests).
+        // Both the regular and slow/e2e test tasks get the same gtest dependency: each is an
+        // independent Gradle invocation (e.g. a separate CI job), so gtest coverage from a
+        // "sibling" regular test job doesn't carry over to a testSlow-only invocation.
         project.gradle.projectsEvaluated {
             configNames.forEach { cfgName ->
                 val capitalizedCfgName = cfgName.replaceFirstChar { it.uppercaseChar() }
-                val testTaskName = "test$capitalizedCfgName"
-                val testTask = project.tasks.findByName(testTaskName)
                 val profilerLibProject = project.rootProject.findProject(profilerLibProjectPath)
+                val gtestTaskName = "gtest${capitalizedCfgName}"
 
-                if (profilerLibProject != null && testTask != null) {
-                    // gtest runs before test (C++ unit tests run before Java integration tests)
-                    val gtestTaskName = "gtest${capitalizedCfgName}"
-                    try {
-                        val gtestTask = profilerLibProject.tasks.named(gtestTaskName)
-                        testTask.dependsOn(gtestTask)
-                    } catch (e: org.gradle.api.UnknownTaskException) {
-                        project.logger.info("Task $gtestTaskName not found in $profilerLibProjectPath - gtest may not be available")
+                listOf("test$capitalizedCfgName", "testSlow$capitalizedCfgName").forEach { taskName ->
+                    val testTask = project.tasks.findByName(taskName)
+                    if (profilerLibProject != null && testTask != null) {
+                        try {
+                            val gtestTask = profilerLibProject.tasks.named(gtestTaskName)
+                            testTask.dependsOn(gtestTask)
+                        } catch (e: org.gradle.api.UnknownTaskException) {
+                            project.logger.info("Task $gtestTaskName not found in $profilerLibProjectPath - gtest may not be available")
+                        }
                     }
                 }
             }
