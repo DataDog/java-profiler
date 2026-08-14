@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk8
 
 ## musl-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-08-14 10:14:49 EDT
+**Date:** 2026-08-14 15:08:21 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 222 |
-| Sample Rate | 3.70/sec |
-| Health Score | 231% |
-| Threads | 7 |
+| CPU Samples | 168 |
+| Sample Rate | 2.80/sec |
+| Health Score | 175% |
+| Threads | 5 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 264 |
-| Sample Rate | 4.40/sec |
-| Health Score | 275% |
+| CPU Samples | 448 |
+| Sample Rate | 7.47/sec |
+| Health Score | 467% |
 | Threads | 9 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 30-32 cores)</summary>
+<summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1786716578 32
-1786716583 32
-1786716588 32
-1786716593 32
-1786716598 30
-1786716603 30
-1786716608 30
-1786716613 30
-1786716618 30
-1786716623 30
-1786716628 30
-1786716634 32
-1786716639 32
-1786716644 32
-1786716649 32
-1786716654 32
-1786716659 32
-1786716664 32
-1786716669 32
-1786716674 32
+1786734233 32
+1786734238 32
+1786734243 32
+1786734248 32
+1786734253 32
+1786734258 32
+1786734263 32
+1786734268 32
+1786734273 32
+1786734278 32
+1786734283 32
+1786734288 32
+1786734293 32
+1786734298 32
+1786734303 32
+1786734308 32
+1786734313 32
+1786734318 32
+1786734323 32
+1786734328 32
 ```
 </details>
 
