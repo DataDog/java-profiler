@@ -389,6 +389,7 @@ Error ReferenceChainTracker::start(Arguments &args) {
   // does not erase cost the current search has already incurred.
   _pain_budget = PainBudget(
       std::max(args._reference_chains_pain_budget_percent, 0) / 100.0);
+  _pain_budget_refill_rate = std::max(args._reference_chains_pain_budget_percent, 0) / 100.0;
 
   // Lazy-enable, matching LivenessTracker::start() (livenessTracker.cpp:194-196):
   // the GC callbacks are wired unconditionally in vmEntry.cpp, but the events
@@ -832,6 +833,11 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
 
   _pain_budget.spend(_search_pain_ms);
   _search_pain_ms = 0;
+  // Reset the pain budget entirely so a fresh test starts from zero debt,
+  // independent of how much wall-clock time has elapsed since the last
+  // test's spend(). Without this, a fast CI runner (musl, small heap,
+  // no GC pauses) may not have drained enough debt between tests.
+  _pain_budget = PainBudget(_pain_budget_refill_rate);
 
   if (_frontier != nullptr) {
     // Rebuilds the table at this test's own _configured_frontier_cap,

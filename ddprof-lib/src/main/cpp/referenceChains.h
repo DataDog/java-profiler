@@ -930,6 +930,9 @@ private:
   // rate in start(), mirroring _pause_pid's own placeholder-then-reconstruct
   // pattern.
   PainBudget _pain_budget;
+  // Cached refill rate from start(), reused by resetSearchStateForTest()
+  // so a test reset rebuilds the budget with the same rate.
+  double _pain_budget_refill_rate = 0.0;
   u64 _search_pain_ms;
 
   // The cache above is mutated on this tracker's own BFS scheduling thread
