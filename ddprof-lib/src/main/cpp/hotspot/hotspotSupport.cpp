@@ -194,15 +194,28 @@ static void fillFrameRaw(ASGCT_CallFrame& frame, FrameTypeId type, int bci, cons
 void HotspotSupport::fillJavaFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci,
                                    jmethodID method_id, const VMMethod* method) {
     if (method_id == JMETHODID_NOT_WALKABLE) {
-        // The Method* failed validation while walking. Preserve only the sentinel;
-        // retaining the Method* would defer a dereference of that invalid metadata
-        // until the dump thread resolves the frame.
+        // The Method* failed validation while walking (bad pointer chain or
+        // faulted load). Preserve only the sentinel; retaining the Method*
+        // would defer a dereference of invalid metadata until the dump thread
+        // resolves the frame.
         fillFrame(frame, type, bci, method_id);
     } else if (method_id != nullptr) {
         fillFrame(frame, type, bci, method_id);
-    } else {
+    } else if (!VM::arguments()._force_jmethodID) {
+        // fjmethodid=false: the user opted into the raw Method* path. nullptr
+        // means no jmethodID is available — either the klass was deliberately
+        // not primed (ids == NULL) or the cache was shrunk by a redefine
+        // (num >= len). In both cases the raw Method* is the designed
+        // resolution path; the deferred-dereference race at dump time is
+        // inherent to this mode.
         NO_INJECTION_ASSERT(method != nullptr);
         fillFrameRaw(frame, type, bci, method);
+    } else {
+        // fjmethodid=true: all jmethodIDs should be preloaded, so nullptr is
+        // unexpected — a transient invalidation window or a missed preload.
+        // Use the sentinel rather than deferring a raw Method* dereference to
+        // the dump thread, where the metadata may have been reclaimed.
+        fillFrame(frame, type, bci, JMETHODID_NOT_WALKABLE);
     }
 }
 
@@ -245,6 +258,12 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
         return 0;
     }
+    
+    // reset=false: the buffer only needs clearing after a failure was actually
+    // recorded into it (done below, right after merging into UnwindStats), not
+    // on every walk — clear() memsets ~288 KiB and this runs on the hot sample
+    // path in DEBUG/ASan/TSan builds.
+    DEBUG_ONLY(UnwindFailures* unwindFailures = prof_thread->unwindFailures(false);)
 
     HotspotStackFrame frame(ucontext);
     uintptr_t bottom = (uintptr_t)&frame + MAX_WALK_SIZE;
@@ -272,6 +291,12 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         if (depth < max_depth) {
             fillFrame(frames[depth++], BCI_ERROR, "break_not_walkable");
         }
+#ifdef DEBUG
+        if (unwindFailures) {
+            UnwindStats::recordFailures(unwindFailures);
+            unwindFailures->clear();
+        }
+#endif // DEBUG
         return depth;
     }
 
@@ -690,6 +715,19 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
                     pc = ((const void**)sp)[-FRAME_PC_SLOT];
                     continue;
                 }
+
+#ifdef DEBUG
+                if (unwindFailures) {
+                    unwindFailures->record(UNWIND_FAILURE_STUB, name);
+                }
+#endif // DEBUG
+                // Unconditional (not DEBUG-only): previously this path fell through with
+                // pc/sp/depth all unchanged, re-entering the enclosing
+                // `while (depth < actual_max_depth)` in the same state -- an infinite loop
+                // whenever a runtime-stub frame can't be unwound and the frameSize()
+                // fallback above isn't available. Terminate the walk explicitly instead.
+                fillFrame(frames[depth++], BCI_ERROR, "break_unwind_stub_failed");
+                break;
             }
         } else {
             // Resolve native frame (may use remote symbolication if enabled)
@@ -979,6 +1017,13 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             }
         }
     }
+
+#ifdef DEBUG
+    if (unwindFailures && !unwindFailures->empty()) {
+        UnwindStats::recordFailures(unwindFailures);
+        unwindFailures->clear();
+    }
+#endif // DEBUG
 
     return depth;
 }
@@ -1395,9 +1440,9 @@ bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jcl
 jmethodID HotspotSupport::resolve(const void* method) {
   assert(VM::isHotspot());
   NO_INJECTION_ASSERT(method != nullptr);
-  // We packed not walkable method as a raw pointer,
-  // map it back to nullptr, as JMETHODID_NOT_WALKABLE is only
-  // known in hotspot.
+  // fillJavaFrame stores the sentinel without the raw flag, so this should
+  // never reach the raw-pointer resolve path. Map it to nullptr so the dump
+  // thread serializes it as the shared unknown method.
   if ((jmethodID)method == JMETHODID_NOT_WALKABLE) {
     return nullptr;
   }

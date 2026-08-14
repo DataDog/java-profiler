@@ -1,6 +1,6 @@
 /*
  * Copyright The async-profiler authors
- * Copyright 2025, Datadog, Inc.
+ * Copyright 2025, 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -166,7 +166,7 @@ u64 CallTraceStorage::put(int num_frames, ASGCT_CallFrame* frames, bool truncate
  * This function is safe to call concurrently with put() operations.
  * It is not designed to be called concurrently with itself.
  */
-void CallTraceStorage::processTraces(std::function<void(const std::unordered_set<CallTrace*>&)> processor) {
+void CallTraceStorage::processTraces(std::function<void(const CallTraceSet&)> processor) {
     // PHASE 1: Collect liveness information with simple lock (rare operation)
     {
         SharedLockGuard lock(&_liveness_lock);

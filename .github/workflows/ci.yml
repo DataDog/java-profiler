@@ -28,6 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Validate release automation without network access
@@ -35,15 +36,11 @@ jobs:
           bash -n \
             .github/scripts/release.sh \
             .github/scripts/validate-trivial-approval.sh \
-            .github/scripts/validate-release-bump.sh \
-            .github/scripts/wait-release-bump.sh \
             utils/release.sh \
             .github/scripts/tests/test_release_automation.sh
           shellcheck \
           .github/scripts/release.sh \
           .github/scripts/validate-trivial-approval.sh \
-          .github/scripts/validate-release-bump.sh \
-          .github/scripts/wait-release-bump.sh \
           utils/release.sh \
             .github/scripts/tests/test_release_automation.sh
           .github/scripts/tests/test_release_automation.sh
@@ -75,6 +72,8 @@ jobs:
     if: needs.check-for-pr.outputs.skip != 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Setup Java
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
@@ -116,6 +115,8 @@ jobs:
     if: needs.check-for-pr.outputs.skip != 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Setup Java
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
@@ -215,6 +216,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Generate test summary
         env:
@@ -230,34 +233,6 @@ jobs:
           body-file: test-summary.md
           comment-id: ci-test-results
 
-  release-bump-ci:
-    needs: [release-automation-tests, check-formatting, check-javadoc, test-matrix]
-    if: >-
-      always() &&
-      github.event_name == 'pull_request' &&
-      startsWith(github.event.pull_request.head.ref, 'automated/bump-')
-    runs-on: ubuntu-22.04
-    permissions:
-      contents: read
-    steps:
-      - name: Require all selected release-bump CI jobs
-        env:
-          AUTOMATION_RESULT: ${{ needs.release-automation-tests.result }}
-          FORMATTING_RESULT: ${{ needs.check-formatting.result }}
-          JAVADOC_RESULT: ${{ needs.check-javadoc.result }}
-          TEST_RESULT: ${{ needs.test-matrix.result }}
-        run: |
-          for result in \
-            "$AUTOMATION_RESULT" \
-            "$FORMATTING_RESULT" \
-            "$JAVADOC_RESULT" \
-            "$TEST_RESULT"; do
-            if [ "$result" != "success" ]; then
-              echo "::error::A selected release-bump CI job completed with result: $result"
-              exit 1
-            fi
-          done
-
   fuzz:
     needs: [check-for-pr, compute-configurations]
     if: needs.check-for-pr.outputs.skip != 'true' && needs.compute-configurations.outputs.run_fuzz == 'true'
@@ -266,6 +241,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - name: Cache Gradle Wrapper Binaries
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

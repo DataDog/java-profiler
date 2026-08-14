@@ -1758,15 +1758,14 @@ int Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
   // via processCallTraces, but no T_STACK_TRACE section is emitted in that case.
   int trace_count = 0;
   // Use safe trace processing with guaranteed lifetime during callback execution
-  Profiler::instance()->processCallTraces([this, buf, lookup, &trace_count](const std::unordered_set<CallTrace*>& traces) {
+  Profiler::instance()->processCallTraces([this, buf, lookup, &trace_count](const CallTraceSet& traces) {
     if (traces.empty()) {
       return;
     }
     trace_count = (int)traces.size();
     buf->putVar64(T_STACK_TRACE);
     buf->putVar64(traces.size());
-    for (std::unordered_set<CallTrace *>::const_iterator it = traces.begin();
-         it != traces.end(); ++it) {
+    for (auto it = traces.begin(); it != traces.end(); ++it) {
       CallTrace *trace = *it;
       buf->putVar64(trace->trace_id);
       if (trace->num_frames > 0) {
@@ -2025,6 +2024,7 @@ void Recording::writeCounters(Buffer *buf) {
 }
 
 void Recording::writeUnwindFailures(Buffer *buf) {
+#ifdef DEBUG
   static UnwindFailures failures;
   UnwindStats::collectAndReset(failures);
 
@@ -2038,6 +2038,7 @@ void Recording::writeUnwindFailures(Buffer *buf) {
     writeEventSizePrefix(buf, start);
     flushIfNeeded(buf);
   });
+#endif // DEBUG
 }
 
 void Recording::writeContextSnapshot(Buffer *buf, Context &context) {
