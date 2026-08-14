@@ -134,6 +134,14 @@
   X(SAFECOPY_FAILED, "safecopy_failed")                                       \
   X(SAFEFETCH_FAILED, "safefetch_failed")                                     \
   X(STACKWALK_LONGJMP_RECOVERED, "stackwalk_longjmp_recovered")               \
+  /* Strict subset of SAMPLES_DROPPED_THREAD_LOCAL, not an independent count: \
+   * ThreadLocalDataPool::claim() increments this on capacity exhaustion, and \
+   * every acquireCurrent() caller that gets nullptr back -- for this or any  \
+   * other reason -- separately increments SAMPLES_DROPPED_THREAD_LOCAL too.  \
+   * So every pool-exhaustion drop bumps both counters together; the two     \
+   * should be subtracted (thread_local_pool_exhausted from                  \
+   * samples_dropped_thread_local) to isolate non-pool priming drops, never  \
+   * summed. */                                                              \
   X(SAMPLES_DROPPED_TLS_POOL_EXHAUSTED, "thread_local_pool_exhausted")        \
   /* writeElement() guards against a corrupted/dangling JfrMetadata tree.     \
    * Root cause is still unconfirmed, so these counters are the durable       \
