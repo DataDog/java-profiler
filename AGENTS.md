@@ -295,7 +295,7 @@ The profiler uses a sophisticated double-buffered storage system for call traces
 ### Sampler Safety
 - **Sampled thread**: The sampled thread must have a `ProfiledThread` in TLS, since it owns the `sigjmp_buf` used to recover via `siglongjmp()` if the stack walker crashes. If none is available, the sampler must drop the sample and report `SAMPLES_DROPPED_THREAD_LOCAL`.
 - **Samplers**: Every sampler must set up the `ProfiledThread` TLS before sampling, and skip the sample if it isn't available. Signal-based or allocation-adjacent hooks sampler (e.g. malloc/free interceptors) must use `ProfiledThread::acquireCurrent()`; non-signal-based samplers use `ProfiledThread::initCurrentThreadSignalSafe()`.
-- **Samplers**: Every sampler must set up the `ProfiledThread` TLS before sampling, and skip the sample if it isn't available. Signal-based or allocation-adjacent hooks sampler (e.g. malloc/free interceptors) must use use `ProfiledThread::acquireCurrent()`; non-signal-based samplers use `ProfiledThread::initCurrentThreadSignalSafe()`.
+- **Samplers**: Every sampler must set up the `ProfiledThread` TLS before sampling, and skip the sample if it isn't available. Signal-based samplers and allocation-adjacent hooks (e.g. malloc/free interceptors) must use `ProfiledThread::acquireCurrent()`; non-signal-based samplers use `ProfiledThread::initCurrentThreadSignalSafe()`.
 - **JNI/JVMTI callbacks**: Use `ProfiledThread::initCurrentThreadSignalSafe()` to set up `ProfiledThread` for the thread.
 
 ### Atomic Memory Ordering (Critical for arm64)
