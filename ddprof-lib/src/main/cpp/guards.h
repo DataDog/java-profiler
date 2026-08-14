@@ -120,7 +120,7 @@ private:
 // decrements on scope exit.  Use as the first statement after any 
 // foreign-signal-origin rejection check (see CTimer::signalHandler,
 // WallClockASGCT::sharedSignalHandler, PerfEvents::signalHandler for the pattern);
-// it must run before any other profiling-owned work.'
+// it must run before any other profiling-owned work.
 #define SIGNAL_HANDLER_GUARD_NO_SAMPLE()                    \
       SignalHandlerScope _signal_handler_scope(false);
 
