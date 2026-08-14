@@ -453,7 +453,7 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
     JNIEnv *env, jclass unused, jlong token) {
-   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
+  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
   if (current == nullptr) {
     return;
   }
