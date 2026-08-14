@@ -239,6 +239,7 @@ int pthread_create_wrapped_for_test(pthread_t* thread,
     }
     int ret = pthread_create(thread, nullptr, start_routine_for_test, ctx);
     if (ret != 0) {
+        SignalBlocker blocker;
         delete ctx;
     }
     return ret;

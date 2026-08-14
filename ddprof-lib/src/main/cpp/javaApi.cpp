@@ -79,12 +79,7 @@ Java_com_datadoghq_profiler_JavaProfiler_init0(JNIEnv *env, jclass unused) {
   // JavaVM* has already been stored when the native library was loaded so we can pass nullptr here
   if (VM::initProfilerBridge(nullptr, true)) {
     // Attach ProfiledThread
-    ProfiledThread* current = ProfiledThread::initCurrentThreadSignalSafe();
-    if (current == nullptr) {
-      throwNew(env, "java/lang/IllegalStateException", "Failed to initialize profiler thread-local state");
-      return JNI_FALSE;
-    }
-
+    ProfiledThread::initCurrentThreadSignalSafe();
     return JNI_TRUE;
   } else {
     return JNI_FALSE;
@@ -453,15 +448,17 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
     JNIEnv *env, jclass unused, jlong token) {
-   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  if (current == nullptr) {
-    return;
-  }
 
   u64 block_token = static_cast<u64>(token);
   if (block_token == 0) {
     return;
   }
+
+  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
+  if (current == nullptr) {
+    return;
+  }
+
   ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(block_token);
   if (current->filterSlotId() != slot_id) {
     return;
@@ -500,7 +497,7 @@ Java_com_datadoghq_profiler_JVMAccess_findStringJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
   ProfiledThread::initCurrentThreadSignalSafe();
- 
+
   JniString flag_str(env, flagName);
   VMFlag *f = VMFlag::find(flag_str.c_str(), {VMFlag::Type::String, VMFlag::Type::Stringlist});
   if (f) {
@@ -518,7 +515,7 @@ Java_com_datadoghq_profiler_JVMAccess_setStringJVMFlag0(JNIEnv *env,
                                                          jstring flagName,
                                                          jstring flagValue) {
   ProfiledThread::initCurrentThreadSignalSafe();
- 
+
   JniString flag_str(env, flagName);
   JniString value_str(env, flagValue);
   VMFlag *f = VMFlag::find(flag_str.c_str(), {VMFlag::Type::String, VMFlag::Type::Stringlist});
@@ -535,7 +532,7 @@ Java_com_datadoghq_profiler_JVMAccess_findBooleanJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
   ProfiledThread::initCurrentThreadSignalSafe();
- 
+
   JniString flag_str(env, flagName);
   VMFlag *f = VMFlag::find(flag_str.c_str(), {VMFlag::Type::Bool});
   if (f) {
@@ -553,7 +550,7 @@ Java_com_datadoghq_profiler_JVMAccess_setBooleanJVMFlag0(JNIEnv *env,
                                                          jstring flagName,
                                                          jboolean flagValue) {
   ProfiledThread::initCurrentThreadSignalSafe();
- 
+
   JniString flag_str(env, flagName);
   VMFlag *f = VMFlag::find(flag_str.c_str(), {VMFlag::Type::Bool});
   if (f) {
@@ -569,7 +566,7 @@ Java_com_datadoghq_profiler_JVMAccess_findIntJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
   ProfiledThread::initCurrentThreadSignalSafe();
- 
+
   JniString flag_str(env, flagName);
   VMFlag *f = VMFlag::find(flag_str.c_str(), {VMFlag::Type::Int, VMFlag::Type::Uint, VMFlag::Type::Intx, VMFlag::Type::Uintx, VMFlag::Type::Uint64_t, VMFlag::Type::Size_t});
   if (f) {
@@ -586,7 +583,7 @@ Java_com_datadoghq_profiler_JVMAccess_findFloatJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
   ProfiledThread::initCurrentThreadSignalSafe();
- 
+
   JniString flag_str(env, flagName);
   VMFlag *f = VMFlag::find(flag_str.c_str(),{ VMFlag::Type::Double});
   if (f) {
@@ -602,7 +599,6 @@ extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JVMAccess_healthCheck0(JNIEnv *env,
                                                          jobject unused) {
   ProfiledThread::initCurrentThreadSignalSafe();
- 
   return true;
 }
 
@@ -618,7 +614,7 @@ Java_com_datadoghq_profiler_OTelContext_setProcessCtx0(JNIEnv *env,
                                                          jobjectArray attribute_keys
                                                         ) {
   ProfiledThread::initCurrentThreadSignalSafe();
- 
+
   JniString env_str(env, env_data);
   JniString hostname_str(env, hostname);
   JniString runtime_id_str(env, runtime_id);
@@ -694,7 +690,7 @@ extern "C" DLLEXPORT jobject JNICALL
 Java_com_datadoghq_profiler_OTelContext_readProcessCtx0(JNIEnv *env, jclass unused) {
 #ifndef OTEL_PROCESS_CTX_NO_READ
  ProfiledThread::initCurrentThreadSignalSafe();
- 
+
   otel_process_ctx_read_result result = otel_process_ctx_read();
 
   if (!result.success) {
@@ -974,7 +970,7 @@ extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_setContextValue0(JNIEnv* env, jclass unused,
     jint slot, jint encoding, jbyteArray utf8) {
   ProfiledThread *thrd = ProfiledThread::initCurrentThreadSignalSafe();
-  
+
   if (thrd == nullptr || slot < 0 || slot >= (jint)DD_TAGS_CAPACITY) {
     return JNI_FALSE;
   }
@@ -1066,7 +1062,7 @@ Java_com_datadoghq_profiler_JavaProfiler_copyContextTags0(JNIEnv* env, jclass un
 extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_ContextValueCache_registerConstant0(JNIEnv* env, jclass unused, jstring value) {
   ProfiledThread::initCurrentThreadSignalSafe();
- 
+
   JniString value_str(env, value);
   u32 encoding = Profiler::instance()->contextValueMap()->bounded_lookup(
       value_str.c_str(), value_str.length(), 1 << 16);
@@ -1078,7 +1074,6 @@ Java_com_datadoghq_profiler_ContextValueCache_registerConstant0(JNIEnv* env, jcl
 extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_maxContextSlots0(JNIEnv* env, jclass unused) {
   ProfiledThread::initCurrentThreadSignalSafe();
- 
   return (jint)DD_TAGS_CAPACITY;
 }
 
@@ -1090,7 +1085,6 @@ Java_com_datadoghq_profiler_JavaProfiler_maxContextSlots0(JNIEnv* env, jclass un
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_consumeContextDictionaryReset0(JNIEnv* env, jclass unused) {
   ProfiledThread::initCurrentThreadSignalSafe();
- 
   return Profiler::instance()->consumeContextValueDictReset() ? JNI_TRUE : JNI_FALSE;
 }
 
@@ -1098,7 +1092,6 @@ Java_com_datadoghq_profiler_JavaProfiler_consumeContextDictionaryReset0(JNIEnv* 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_testlog(JNIEnv* env, jclass unused, jstring msg) {
   ProfiledThread::initCurrentThreadSignalSafe();
- 
   JniString msg_str(env, msg);
 
   TEST_LOG("%s", msg_str.c_str());
@@ -1107,7 +1100,6 @@ Java_com_datadoghq_profiler_JavaProfiler_testlog(JNIEnv* env, jclass unused, jst
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_dumpContext(JNIEnv* env, jclass unused) {
   ProfiledThread::initCurrentThreadSignalSafe();
- 
   u64 spanId = 0, rootSpanId = 0;
   ContextApi::get(spanId, rootSpanId);
   TEST_LOG("===> Context: tid:%lu, spanId=%lu, rootSpanId=%lu", OS::threadId(), spanId, rootSpanId);

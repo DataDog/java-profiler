@@ -49,8 +49,8 @@ bool isInTrackedSignalContext() {
     return pt != nullptr && pt->signalDepth() != 0;
 }
 
-SignalHandlerScope::SignalHandlerScope(bool sampler) : _current(nullptr), _active(true) {
-    ProfiledThread *pt = sampler ? ProfiledThread::acquireCurrent() : ProfiledThread::current();
+SignalHandlerScope::SignalHandlerScope(bool shouldPriming) : _current(nullptr), _active(true) {
+    ProfiledThread *pt = shouldPriming ? ProfiledThread::acquireCurrent() : ProfiledThread::current();
     if (pt != nullptr) {
         _current = pt;
         pt->enterSignalScope();
@@ -84,13 +84,16 @@ void signalHandlerUnwindAfterLongjmp() {
 }
 
 
-CriticalSection::CriticalSection() : _entered(false), _thread_ptr(nullptr) {
+CriticalSection::CriticalSection(ProfiledThread* pt) : _entered(false), _thread_ptr(pt) {
     // acquireCurrent() falls back to ThreadLocalDataPool::acquire() (a
     // pre-allocated, async-signal-safe pool) when the calling thread has
     // not been primed yet. _thread_ptr can still legitimately be nullptr
     // here if priming is unsupported (e.g. macOS) and the pool is
     // exhausted; treat that as "did not enter" rather than dereferencing.
-    _thread_ptr = ProfiledThread::acquireCurrent();
+    if (_thread_ptr == nullptr) {
+        _thread_ptr = ProfiledThread::acquireCurrent();
+    }
+
     if (_thread_ptr != nullptr) {
         _entered = _thread_ptr->tryEnterCriticalSection();
     }

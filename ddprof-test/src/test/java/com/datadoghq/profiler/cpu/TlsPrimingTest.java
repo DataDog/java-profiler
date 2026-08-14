@@ -35,9 +35,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * The presence of compiler-thread samples is itself the proof that priming
  * worked on those threads. CTimer::signalHandler (the engine behind "cpu=")
- * opens with SIGNAL_HANDLER_GUARD(), which returns before recordSample() is
- * ever reached whenever ProfiledThread::acquireCurrent() comes back null (see
- * ctimer_linux.cpp and guards.h). A compiler thread whose priming failed
+ * opens with SIGNAL_HANDLER_GUARD_OR_DROP_WITH_ERRNO(saved_errno), which
+ * returns before recordSample() is ever reached whenever
+ * ProfiledThread::acquireCurrent() comes back null (see ctimer_linux.cpp and
+ * guards.h). A compiler thread whose priming failed
  * therefore contributes no datadog.ExecutionSample at all, so counting those
  * samples is a direct, per-thread observation rather than a proxy.
  *
@@ -115,12 +116,19 @@ public class TlsPrimingTest extends AbstractProfilerTest {
         //  * it is absent entirely from builds without -DCOUNTERS, where
         //    getDebugCounters() hands back an empty map (javaApi.cpp/JavaProfiler);
         //  * it is shared with the mallocTracer, wallClock, nativeSocketSampler and
-        //    JVMTI recording paths, and with every SIGNAL_HANDLER_GUARD() -- including
-        //    the non-sampling wakeupHandler in vmEntry.cpp; and
+        //    JVMTI recording paths, and with every SIGNAL_HANDLER_GUARD_OR_DROP()/
+        //    SIGNAL_HANDLER_GUARD_OR_DROP_WITH_ERRNO() signal handler (perf, ctimer,
+        //    itimer) -- SIGNAL_HANDLER_GUARD_NO_SAMPLE(), used by the non-sampling
+        //    wakeupHandler in vmEntry.cpp, does not touch this counter; and
         //  * it also counts threads that merely lost the race for one of the pool's
         //    64 slots (ThreadLocalDataPool::DEFAULT_CAPACITY) rather than hitting a
-        //    priming bug, and plain capacity exhaustion does not set the
-        //    thread_local_pool_exhausted counter that would let us tell the two apart.
+        //    priming bug. Capacity exhaustion does separately increment
+        //    thread_local_pool_exhausted (ThreadLocalDataPool::claim()), but only for
+        //    drops that went through ProfiledThread::acquireCurrent() -- e.g.
+        //    NativeSocketSampler::recordEvent()'s initCurrentThreadSignalSafe() path
+        //    drops via samples_dropped_thread_local without ever touching the pool --
+        //    so a nonzero gap between the two counters still isn't proof of a real
+        //    priming bug rather than one of those other causes.
         // A systematic priming failure drops samples on the order of the sample count,
         // so bound it proportionally instead: that still catches a real regression
         // without failing on a machine whose JVM simply runs more threads than the pool

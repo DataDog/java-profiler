@@ -45,8 +45,11 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
     // falls inside this library while a jmp ctx is installed gets caught by
     // Profiler::checkFault() from the SEGV handler and siglongjmp'd back here,
     // instead of crashing the process.
-    ProfiledThread* prof_thread = ProfiledThread::current();
-    assert(prof_thread != nullptr && "Should have been set up at signal handler entry");
+    ProfiledThread* prof_thread = ProfiledThread::acquireCurrent();
+    if (prof_thread == nullptr) {
+        Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
+        return 0;
+    }
 
     sigjmp_buf crash_protection_ctx;
     sigjmp_buf* prev_jmp_buf = prof_thread->getJmpCtx();
@@ -130,8 +133,11 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
     // falls inside this library while a jmp ctx is installed gets caught by
     // Profiler::checkFault() from the SEGV handler and siglongjmp'd back here,
     // instead of crashing the process.
-    ProfiledThread* prof_thread = ProfiledThread::current();
-    assert(prof_thread != nullptr && "Should have been set up at signal handler entry");
+    ProfiledThread* prof_thread = ProfiledThread::acquireCurrent();
+    if (prof_thread == nullptr) {
+        Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
+        return 0;
+    }
 
     sigjmp_buf crash_protection_ctx;
     sigjmp_buf* prev_jmp_buf = prof_thread->getJmpCtx();

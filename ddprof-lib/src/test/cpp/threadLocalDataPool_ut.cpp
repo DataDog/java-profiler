@@ -132,3 +132,91 @@ TEST_F(ThreadLocalDataPoolTest, reclaimedSlotHasResetState) {
 
     ThreadLocalDataPool::destroyForTest(pool);
 }
+
+// Broader companion to reclaimedSlotHasResetState above, which only checks
+// filterSlotId and _in_critical_section. This dirties every field
+// unclaimAndReset() is responsible for and asserts the result matches a
+// freshly-constructed instance field-for-field, via the raw snapshot
+// (snapshotForTest()) so a field that's silently dropped from the reset
+// can't hide behind a getter that happens to read as "clean" anyway.
+// Uses forTid() directly rather than going through the pool -- unclaimAndReset()
+// doesn't care how the instance was created.
+TEST(ProfiledThreadTest, UnclaimAndResetMatchesFreshInstance) {
+    ProfiledThread* dirty = ProfiledThread::forTid(123);
+    // unclaimAndReset() always zeroes _tid, so the fresh reference instance
+    // must be constructed with 0 to be comparable (_tid is intentionally
+    // excluded from snapshotForTest() for this reason, but tid() is checked
+    // directly below).
+    ProfiledThread* fresh = ProfiledThread::forTid(0);
+
+    sigjmp_buf fake_jmp_buf;
+    dirty->set_unwinding_Java(true);
+    dirty->setJmpCtx(&fake_jmp_buf);
+    // Falls through to the cache-miss path (fresh _call_trace_id is 0),
+    // unconditionally dirtying pc/sp/span_id/recording_epoch/otel_local_root_span_id.
+    dirty->lookupWallclockCallTraceId(/*pc*/0x1000, /*sp*/0x2000, /*recording_epoch*/7,
+                                       /*context_valid*/true, /*span_id*/0x3000, /*root_span_id*/0x4000);
+    dirty->recordCallTraceId(0x5000);
+    dirty->noteCPUSample(9);
+    dirty->setJavaThread(true);
+    ASSERT_TRUE(dirty->parkEnter());
+    dirty->setParkBlockToken(0x1234);
+    dirty->setFilterSlotId(42);
+    dirty->startInitWindow();
+    dirty->enterSignalScope();
+    ASSERT_TRUE(dirty->tryEnterCriticalSection());
+    dirty->markContextInitialized();
+    ASSERT_TRUE(dirty->enterCrashHandler());
+    memset(dirty->getOtelContextRecord(), 0xAB, sizeof(OtelThreadContextRecord));
+    u32* tags = dirty->getOtelTagEncodingsPtr();
+    for (u32 i = 0; i < DD_TAGS_CAPACITY; i++) {
+        tags[i] = 0xAAAAAAAA;
+    }
+#ifdef DEBUG
+    dirty->unwindFailures()->record(UNWIND_FAILURE_STUB, "dirty");
+#endif
+
+    // Sanity-check the dirtying above actually took effect, so a broken
+    // mutator can't make the post-reset comparison pass vacuously.
+    ASSERT_NE(dirty->snapshotForTest().misc_flags, fresh->snapshotForTest().misc_flags);
+
+    dirty->unclaimAndResetForTest();
+
+    EXPECT_EQ(dirty->tid(), fresh->tid());
+
+    auto reset_snapshot = dirty->snapshotForTest();
+    auto fresh_snapshot = fresh->snapshotForTest();
+    EXPECT_EQ(reset_snapshot.unwinding_java, fresh_snapshot.unwinding_java);
+    EXPECT_EQ(reset_snapshot.jmp_buf, fresh_snapshot.jmp_buf);
+    EXPECT_EQ(reset_snapshot.pc, fresh_snapshot.pc);
+    EXPECT_EQ(reset_snapshot.sp, fresh_snapshot.sp);
+    EXPECT_EQ(reset_snapshot.span_id, fresh_snapshot.span_id);
+    EXPECT_EQ(reset_snapshot.crash_depth, fresh_snapshot.crash_depth);
+    EXPECT_EQ(reset_snapshot.cpu_epoch, fresh_snapshot.cpu_epoch);
+    // _wall_epoch has no public mutator anywhere in the codebase today, so
+    // this only confirms the trivial zero-stays-zero case.
+    EXPECT_EQ(reset_snapshot.wall_epoch, fresh_snapshot.wall_epoch);
+    EXPECT_EQ(reset_snapshot.call_trace_id, fresh_snapshot.call_trace_id);
+    EXPECT_EQ(reset_snapshot.recording_epoch, fresh_snapshot.recording_epoch);
+    EXPECT_EQ(reset_snapshot.misc_flags, fresh_snapshot.misc_flags);
+    EXPECT_EQ(reset_snapshot.park_block_token, fresh_snapshot.park_block_token);
+    EXPECT_EQ(reset_snapshot.filter_slot_id, fresh_snapshot.filter_slot_id);
+    EXPECT_EQ(reset_snapshot.init_window, fresh_snapshot.init_window);
+    EXPECT_EQ(reset_snapshot.signal_depth, fresh_snapshot.signal_depth);
+    EXPECT_EQ(reset_snapshot.in_critical_section, fresh_snapshot.in_critical_section);
+    EXPECT_EQ(reset_snapshot.otel_ctx_initialized, fresh_snapshot.otel_ctx_initialized);
+    EXPECT_EQ(reset_snapshot.otel_local_root_span_id, fresh_snapshot.otel_local_root_span_id);
+
+    OtelThreadContextRecord zero_record{};
+    EXPECT_EQ(memcmp(dirty->getOtelContextRecord(), &zero_record, sizeof(OtelThreadContextRecord)), 0);
+    for (u32 i = 0; i < DD_TAGS_CAPACITY; i++) {
+        EXPECT_EQ(dirty->getOtelTagEncoding(i), 0u);
+    }
+#ifdef DEBUG
+    EXPECT_EQ(dirty->unwindFailures(false)->findName("dirty"), -1);
+#endif
+
+    dirty->exitCriticalSection();
+    ProfiledThread::deleteForTest(dirty);
+    ProfiledThread::deleteForTest(fresh);
+}

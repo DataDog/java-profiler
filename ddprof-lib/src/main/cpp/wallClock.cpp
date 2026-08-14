@@ -232,8 +232,9 @@ void WallClockASGCT::sharedSignalHandler(int signo, siginfo_t *siginfo,
 
 void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext,
                               u64 last_sample, ProfiledThread* current) {
+  assert(current != nullptr);
   // Atomically try to enter critical section - prevents all reentrancy races
-  CriticalSection cs;
+  CriticalSection cs(current);
   if (!cs.entered()) {
     return;  // Another critical section is active, defer profiling
   }
@@ -440,7 +441,8 @@ void WallClockJvmti::sharedSignalHandler(int signo, siginfo_t *siginfo,
 void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
                                    void *ucontext, u64 last_sample,
                                    ProfiledThread* current) {
-  CriticalSection cs;
+  assert(current != nullptr);
+  CriticalSection cs(current);
   if (!cs.entered()) {
     return;
   }

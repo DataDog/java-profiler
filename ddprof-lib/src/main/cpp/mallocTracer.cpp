@@ -34,35 +34,9 @@ static void* (*_orig_realloc)(void*, size_t);
 static int (*_orig_posix_memalign)(void**, size_t, size_t);
 static void* (*_orig_aligned_alloc)(size_t, size_t);
 
-// Inline helper to avoid repeating the running+ret+size guard in each hook.
-// shouldSample() runs first and needs no thread-local state, so an unsampled
-// allocation on a long-lived thread that has never touched TLS never claims
-// a slot from the fixed-size priming pool -- only allocations that are
-// actually going to be recorded pay for acquireCurrent().
-// CriticalSection prevents reentrancy: profiler-internal allocations triggered
-// inside recordMalloc (e.g. sample buffer allocation) re-enter these hooks via
-// the patched GOT; without the guard they would be double-counted.
-// Acquiring the CS here also blocks concurrent same-thread timer samples
-// (SIGPROF/SIGVTALRM) for the duration of recordMalloc; this is acceptable
-// because the window is short.
-static inline void maybeRecord(void* ret, size_t size) {
-    if (MallocTracer::running() && ret && size && MallocTracer::shouldSample(size)) {
-        // Even we are not in a signal handler, we cannot malloc or
-        // we may get into indefinite loop
-        if (ProfiledThread::acquireCurrent() == nullptr) {
-            Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
-            return;
-        }
-        CriticalSection cs;
-        if (cs.entered()) {
-            MallocTracer::recordMalloc(ret, size);
-        }
-    }
-}
-
 extern "C" void* malloc_hook(size_t size) {
     void* ret = _orig_malloc(size);
-    maybeRecord(ret, size);
+    MallocTracer::maybeRecord(ret, size);
     return ret;
 }
 
@@ -72,7 +46,7 @@ extern "C" void* calloc_hook(size_t num, size_t size) {
     // to maybeRecord, which discards it when ret == NULL (the libc returns
     // NULL on overflow per POSIX).
     if (num && size) {
-        maybeRecord(ret, num * size);
+        MallocTracer::maybeRecord(ret, num * size);
     }
     return ret;
 }
@@ -86,7 +60,7 @@ extern "C" void* realloc_hook(void* addr, size_t size) {
     // detector: the prior sample (if any) ages out as the freed address is
     // never seen again, and missing the realloc entirely would leave a
     // phantom live allocation on the freed old address.
-    maybeRecord(ret, size);
+    MallocTracer::maybeRecord(ret, size);
     return ret;
 }
 
@@ -95,14 +69,14 @@ extern "C" int posix_memalign_hook(void** memptr, size_t alignment, size_t size)
     if (ret == 0 && memptr) {
         // POSIX guarantees *memptr is set to the allocated block when ret == 0;
         // maybeRecord is the sole NULL/size gate for non-conforming libc.
-        maybeRecord(*memptr, size);
+        MallocTracer::maybeRecord(*memptr, size);
     }
     return ret;
 }
 
 extern "C" void* aligned_alloc_hook(size_t alignment, size_t size) {
     void* ret = _orig_aligned_alloc(alignment, size);
-    maybeRecord(ret, size);
+    MallocTracer::maybeRecord(ret, size);
     return ret;
 }
 
@@ -325,6 +299,32 @@ bool MallocTracer::shouldSample(size_t size) {
     }
 }
 
+// shouldSample() runs first and needs no thread-local state, so an unsampled
+// allocation on a long-lived thread that has never touched TLS never claims
+// a slot from the fixed-size priming pool -- only allocations that are
+// actually going to be recorded pay for acquireCurrent().
+// CriticalSection prevents reentrancy: profiler-internal allocations triggered
+// inside recordMalloc (e.g. sample buffer allocation) re-enter these hooks via
+// the patched GOT; without the guard they would be double-counted.
+// Acquiring the CS here also blocks concurrent same-thread timer samples
+// (SIGPROF/SIGVTALRM) for the duration of recordMalloc; this is acceptable
+// because the window is short.
+void MallocTracer::maybeRecord(void* ret, size_t size) {
+    if (running() && ret && size) {
+        // Even we are not in a signal handler, we cannot malloc or
+        // we may get into indefinite loop
+        ProfiledThread* prof_thread = ProfiledThread::acquireCurrent();
+        if (prof_thread == nullptr) {
+            Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
+            return;
+        }
+        CriticalSection cs(prof_thread);
+        if (cs.entered() && shouldSample(size)) {
+            recordMalloc(ret, size, prof_thread->tid());
+        }
+    }
+}
+
 void MallocTracer::updateConfiguration(u64 events, double time_coefficient) {
     double signal = _pid.compute(events, time_coefficient);
     int64_t new_interval = (int64_t)__atomic_load_n(&_interval, __ATOMIC_ACQUIRE) - (int64_t)signal;
@@ -338,7 +338,7 @@ void MallocTracer::updateConfiguration(u64 events, double time_coefficient) {
 // Caller (maybeRecord) is responsible for the shouldSample() gate -- it must
 // run before this is reached so that unsampled allocations never pay for
 // acquireCurrent()/CriticalSection.
-void MallocTracer::recordMalloc(void* address, size_t size) {
+void MallocTracer::recordMalloc(void* address, size_t size, int tid) {
     u64 current_interval = __atomic_load_n(&_interval, __ATOMIC_ACQUIRE);
     MallocEvent event;
     event._start_time = TSC::ticks();
@@ -351,7 +351,7 @@ void MallocTracer::recordMalloc(void* address, size_t size) {
         event._weight = (float)(1.0 / (1.0 - exp(-(double)size / (double)current_interval)));
     }
 
-    Profiler::instance()->recordSample(NULL, size, OS::threadId(), BCI_NATIVE_MALLOC, 0, &event);
+    Profiler::instance()->recordSample(NULL, size, tid, BCI_NATIVE_MALLOC, 0, &event);
 
     u64 current_samples = __atomic_add_fetch(&_sample_count, 1, __ATOMIC_RELAXED);
     if ((current_samples % TARGET_SAMPLES_PER_WINDOW) == 0) {

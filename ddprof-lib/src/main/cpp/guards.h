@@ -26,10 +26,9 @@
 
 class ProfiledThread;
 
-// Block all profiling signal for thread exiting.
-// Blocking the signals prevent any future profiling signals from delievering,
-// which can result in allocation of ProfiledThread that can never
-// be released (leak).
+// Block all profiling signals while a thread is exiting. Without this,
+// a profiling signal delivered during the release()/pthread-teardown race
+// window can allocate a new ProfiledThread that can never be freed (leak).
 void blockProfilingForExit();
 
 // ---------------------------------------------------------------------------
@@ -84,7 +83,7 @@ bool isInTrackedSignalContext();
 // Internal RAII type — do not instantiate directly; use the macros below.
 class SignalHandlerScope {
 public:
-    SignalHandlerScope(bool sampler = true);
+    SignalHandlerScope(bool shouldPriming = true);
     ~SignalHandlerScope();
     void release();
     SignalHandlerScope(const SignalHandlerScope&)            = delete;
@@ -110,26 +109,24 @@ private:
       }
 
 // Declare a scope guard local that increments the depth on entry and
-// decrements on scope exit.  Use as the very first statement in every
-// installed sampler signal handler
+// decrements on scope exit.  Use as the first statement after any 
+// foreign-signal-origin rejection check, before any profiling-owned work
 #define SIGNAL_HANDLER_GUARD_OR_DROP() SIGNAL_HANDLER_GUARD_OR_DROP_IMPL((void)0)
 #define SIGNAL_HANDLER_GUARD_OR_DROP_WITH_ERRNO(err) SIGNAL_HANDLER_GUARD_OR_DROP_IMPL(errno = err)
 
 
 // Declare a scope guard local that increments the depth on entry and
-// decrements on scope exit.  Use as the first statement after any 
-// foreign-signal-origin rejection check (see CTimer::signalHandler,
-// WallClockASGCT::sharedSignalHandler, PerfEvents::signalHandler for the pattern);
-// it must run before any other profiling-owned work.'
+// decrements on scope exit.  Use as the first statement of non-profiling
+// signal handlers (segvHandler, busHandler and wakeupHandler) 
 #define SIGNAL_HANDLER_GUARD_NO_SAMPLE()                    \
       SignalHandlerScope _signal_handler_scope(false);
 
 // Cheaper way to retrieve current ProfiledThread inside the scope
 #define SIGNAL_HANDLER_CURRENT_THREAD() _signal_handler_scope.current()
 
-// Manually release the most recent SIGNAL_HANDLER_GUARD() before chaining to
-// another handler that may siglongjmp through us (e.g. J9's SIGSEGV null-pointer
-// check handler).  After release(), depth has already been decremented; the
+// Manually release the most recent SIGNAL_HANDLER_GUARD_OR_DROP()/SIGNAL_HANDLER_GUARD_NO_SAMPLE()
+// before chaining to another handler that may siglongjmp through us (e.g. J9's SIGSEGV
+// null-pointer check handler).  After release(), depth has already been decremented; the
 // destructor becomes a no-op.
 #define SIGNAL_HANDLER_GUARD_RELEASE() _signal_handler_scope.release()
 
@@ -182,7 +179,7 @@ private:
     ProfiledThread* _thread_ptr; // ProfiledThread captured at construction
 
 public:
-    CriticalSection();
+    CriticalSection(ProfiledThread* pt = nullptr);
     ~CriticalSection();
 
     // Non-copyable, non-movable
@@ -193,7 +190,6 @@ public:
 
     // Check if this instance successfully entered the critical section
     bool entered() const { return _entered; }
-    ProfiledThread* current() const { return _thread_ptr; }
 };
 
 /**

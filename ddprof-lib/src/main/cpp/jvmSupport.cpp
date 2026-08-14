@@ -42,11 +42,14 @@ bool JVMSupport::initialize() {
 
     // Check ProfiledThread key, it is critical for storing per-thread metadata
     bool validKey = ProfiledThread::isThreadKeyValid();
-
     if (validKey && ProfiledThread::supportPriming()) {
         ThreadLocalDataPool::initialize();
     } else {
-        LOG_WARN("Thread priming is not supported");
+        if (!validKey) {
+            LOG_WARN("ProfiledThread TLS key creation failed");
+        } else {
+            LOG_WARN("Thread TLS priming is not supported");
+        }
     }
 
     return validKey;

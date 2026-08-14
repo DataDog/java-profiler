@@ -13,7 +13,9 @@
 class ProfiledThread;
 
 class ThreadLocalDataPool {
-    
+    // TLS priming candidates are the JVM internal threads that start
+    // before pthread_create interceptor is initialized, they are not
+    // many, 64 slots should be plenty.
     static constexpr uint16_t DEFAULT_CAPACITY = 64;
 private:
     static ThreadLocalDataPool* _pool;
@@ -48,7 +50,7 @@ public:
     // Test-only: a pool isolated from the process-wide singleton (_pool), so
     // contains()/boundary tests don't disturb other tests' use of
     // initialize()/acquire()/release().
-    static ThreadLocalDataPool* createForTest(uint64_t capacity) {
+    static ThreadLocalDataPool* createForTest(uint16_t capacity) {
         return new ThreadLocalDataPool(capacity);
     }
     // ThreadLocalDataPool has no destructor definition (it's a process-lifetime

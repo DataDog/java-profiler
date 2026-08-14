@@ -254,7 +254,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     // VMStructs is only available for hotspot JVM 
     assert(VM::isHotspot());
 
-    ProfiledThread* prof_thread = ProfiledThread::current();
+    ProfiledThread* prof_thread = ProfiledThread::acquireCurrent();
     if (prof_thread == nullptr) {
         Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
         return 0;

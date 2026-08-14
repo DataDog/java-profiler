@@ -170,11 +170,15 @@ protected:
         // slot without allocating, which is what SignalHandlerScope relies on.
         // That pool is normally created by JVMSupport during agent startup, and
         // this binary has no JVM -- leaving _pool null, so acquireCurrent()
-        // returns null and CriticalSection's ctor trips its
-        // `_thread_ptr != nullptr` assertion (gtest builds keep asserts live).
-        // Create it here instead. initialize() is not idempotent -- it news a
-        // fresh pool and overwrites the singleton -- and SetUp() runs per test,
-        // so it must happen exactly once for the process.
+        // (and thus initCurrentThreadSignalSafe() below) returns null. That would
+        // trip this test's own `assert(pt != nullptr)`, and CallTraceStorage's
+        // put()/processTraces() (via CriticalSection) need a real attached
+        // ProfiledThread for their critical-section bookkeeping to mean anything
+        // -- CriticalSection itself tolerates a null thread pointer gracefully
+        // (entered() just stays false). Create the pool here instead.
+        // initialize() is not idempotent -- it news a fresh pool and overwrites
+        // the singleton -- and SetUp() runs per test, so it must happen exactly
+        // once for the process.
         static std::once_flag pool_once;
         std::call_once(pool_once, [] { ThreadLocalDataPool::initialize(); });
 
