@@ -291,6 +291,24 @@ public final class JavaProfiler {
     }
 
     /**
+     * Backward-compatible overload for callers compiled against the pre-1.45
+     * {@code setContextValue(int, CharSequence)} signature. Delegates to
+     * {@link #setContextValue(int, String)} after a cheap {@code toString()} —
+     * the value is immediately converted to UTF-8 by the cache either way, so
+     * there is no allocation or correctness cost beyond the (already
+     * unavoidable) boxing into the cache entry.
+     *
+     * @param slot custom attribute slot index in {@code [0, MAX_CONTEXT_SLOTS)}
+     * @param value the attribute value; {@code null} clears the slot
+     * @return true if the value was written; false if it was null, oversized, or the Dictionary is
+     *         full
+     * @throws IllegalArgumentException if {@code slot} is out of range
+     */
+    public boolean setContextValue(int slot, CharSequence value) {
+        return setContextValue(slot, value == null ? null : value.toString());
+    }
+
+    /**
      * Clears a single custom attribute slot on the native path.
      *
      * @param slot custom attribute slot index in {@code [0, MAX_CONTEXT_SLOTS)}
