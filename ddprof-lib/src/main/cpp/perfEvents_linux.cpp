@@ -775,7 +775,7 @@ void PerfEvents::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   assert(current != nullptr);
 
   // Atomically try to enter critical section - prevents all reentrancy races
-  CriticalSection cs;
+  CriticalSection cs(current);
   if (!cs.entered()) {
     return;  // Another critical section is active, defer profiling
   }

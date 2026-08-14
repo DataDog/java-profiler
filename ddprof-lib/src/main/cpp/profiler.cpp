@@ -540,7 +540,7 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
   }
 
   // Protect JVMTI sampling operations to prevent signal handler interference
-  CriticalSection cs;
+  CriticalSection cs(prof_thread);
   atomicIncRelaxed(_total_samples);
 
   u32 lock_index = getLockIndex(tid);
@@ -793,7 +793,7 @@ void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
   }
 
   // Protect external sampling operations to prevent signal handler interference
-  CriticalSection cs;
+  CriticalSection cs(current);
   atomicIncRelaxed(_total_samples);
 
   u32 lock_index = getLockIndex(tid);

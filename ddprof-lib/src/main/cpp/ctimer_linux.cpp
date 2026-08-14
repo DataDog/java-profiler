@@ -278,8 +278,6 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   if (!cs.entered()) {
     return;  // Another critical section is active, defer profiling
   }
-  // Save the current errno value
-  int saved_errno = errno;
   // we want to ensure memory order because of the possibility the instance gets
   // cleared
   if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {

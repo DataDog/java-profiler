@@ -47,7 +47,7 @@ void ITimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   ProfiledThread *current = SIGNAL_HANDLER_CURRENT_THREAD();
 
   // Atomically try to enter critical section - prevents all reentrancy races
-  CriticalSection cs;
+  CriticalSection cs(current);
   if (!cs.entered()) {
     return;  // Another critical section is active, defer profiling
   }
@@ -108,7 +108,7 @@ void ITimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   assert(current != nullptr);
 
   InflightGuard inflight;
-  CriticalSection cs;
+  CriticalSection cs(current);
   if (!cs.entered()) {
     errno = saved_errno;
     return;

@@ -448,7 +448,6 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
     JNIEnv *env, jclass unused, jlong token) {
-
   u64 block_token = static_cast<u64>(token);
   if (block_token == 0) {
     return;
