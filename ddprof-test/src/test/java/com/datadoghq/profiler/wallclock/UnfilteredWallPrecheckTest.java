@@ -10,6 +10,8 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.ProfilerOwnedBlockHooks;
 import java.util.concurrent.ExecutorService;
@@ -20,11 +22,6 @@ import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
 /** Verifies owned-block prechecks when legacy {@code filter=} samples every thread. */
 public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
@@ -269,17 +266,10 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
 
   private long samplesForThread(String threadName) {
     long count = 0;
-    IItemCollection events = verifyEvents("datadog.MethodSample", false);
-    for (IItemIterable batch : events) {
-      IMemberAccessor<String, IItem> threadNameAccessor =
-          JdkAttributes.EVENT_THREAD_NAME.getAccessor(batch.getType());
-      if (threadNameAccessor == null) {
-        continue;
-      }
-      for (IItem item : batch) {
-        if (threadName.equals(threadNameAccessor.getMember(item))) {
-          count++;
-        }
+    JfrEvents events = verifyEvents("datadog.MethodSample", false);
+    for (JfrEvent item : events) {
+      if (threadName.equals(item.getThreadName("eventThread"))) {
+        count++;
       }
     }
     return count;
