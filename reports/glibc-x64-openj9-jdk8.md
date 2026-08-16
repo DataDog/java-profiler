@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk8
 
 ## glibc-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-08-16 11:24:55 EDT
+**Date:** 2026-08-16 11:25:56 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 182 |
-| Sample Rate | 3.03/sec |
-| Health Score | 189% |
-| Threads | 6 |
+| CPU Samples | 357 |
+| Sample Rate | 5.95/sec |
+| Health Score | 372% |
+| Threads | 7 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 390 |
-| Sample Rate | 6.50/sec |
-| Health Score | 406% |
-| Threads | 9 |
+| CPU Samples | 209 |
+| Sample Rate | 3.48/sec |
+| Health Score | 217% |
+| Threads | 8 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 96-96 cores)</summary>
 
 ```
-1786893548 96
-1786893553 96
-1786893558 96
-1786893563 96
-1786893568 96
-1786893573 96
-1786893578 96
-1786893583 96
-1786893588 96
-1786893593 96
-1786893598 96
-1786893603 96
-1786893608 96
-1786893613 96
-1786893618 96
-1786893623 96
-1786893628 96
-1786893633 96
-1786893638 96
-1786893643 96
+1786893333 96
+1786893338 96
+1786893343 96
+1786893348 96
+1786893353 96
+1786893358 96
+1786893363 96
+1786893368 96
+1786893373 96
+1786893378 96
+1786893383 96
+1786893388 96
+1786893393 96
+1786893398 96
+1786893403 96
+1786893408 96
+1786893413 96
+1786893418 96
+1786893423 96
+1786893428 96
 ```
 </details>
 
