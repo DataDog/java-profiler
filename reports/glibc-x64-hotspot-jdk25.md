@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk25
 
 ## glibc-x64-hotspot-jdk25 - ✅ PASS
 
-**Date:** 2026-08-16 05:46:46 EDT
+**Date:** 2026-08-16 10:47:43 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-x64-hotspot-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 586 |
-| Sample Rate | 9.77/sec |
-| Health Score | 611% |
+| CPU Samples | 479 |
+| Sample Rate | 7.98/sec |
+| Health Score | 499% |
 | Threads | 9 |
 | Allocations | 393 |
 
@@ -38,36 +38,36 @@ title: glibc-x64-hotspot-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 674 |
-| Sample Rate | 11.23/sec |
-| Health Score | 702% |
+| CPU Samples | 568 |
+| Sample Rate | 9.47/sec |
+| Health Score | 592% |
 | Threads | 10 |
-| Allocations | 466 |
+| Allocations | 445 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 79-81 cores)</summary>
+<summary>CPU Timeline (1 unique values: 81-81 cores)</summary>
 
 ```
-1786873377 81
-1786873382 79
-1786873387 79
-1786873392 79
-1786873397 79
-1786873402 79
-1786873407 79
-1786873412 81
-1786873417 81
-1786873422 81
-1786873427 81
-1786873432 81
-1786873437 81
-1786873442 81
-1786873447 81
-1786873452 81
-1786873457 81
-1786873462 81
-1786873467 81
-1786873472 81
+1786891389 81
+1786891394 81
+1786891399 81
+1786891404 81
+1786891409 81
+1786891414 81
+1786891419 81
+1786891424 81
+1786891429 81
+1786891434 81
+1786891439 81
+1786891444 81
+1786891449 81
+1786891454 81
+1786891459 81
+1786891464 81
+1786891469 81
+1786891474 81
+1786891479 81
+1786891484 81
 ```
 </details>
 
