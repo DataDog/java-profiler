@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk21
 
 ## glibc-arm64-openj9-jdk21 - ✅ PASS
 
-**Date:** 2026-08-16 14:46:17 EDT
+**Date:** 2026-08-16 14:50:29 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-openj9-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 88 |
-| Sample Rate | 1.47/sec |
-| Health Score | 92% |
-| Threads | 9 |
-| Allocations | 77 |
+| CPU Samples | 87 |
+| Sample Rate | 1.45/sec |
+| Health Score | 91% |
+| Threads | 11 |
+| Allocations | 75 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 696 |
-| Sample Rate | 11.60/sec |
-| Health Score | 725% |
-| Threads | 10 |
-| Allocations | 466 |
+| CPU Samples | 129 |
+| Sample Rate | 2.15/sec |
+| Health Score | 134% |
+| Threads | 12 |
+| Allocations | 55 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 28-28 cores)</summary>
 
 ```
-1786905756 28
-1786905761 28
-1786905766 28
-1786905771 28
-1786905776 28
-1786905781 28
-1786905786 28
-1786905791 28
-1786905796 28
-1786905801 28
-1786905806 28
-1786905811 28
-1786905816 28
-1786905821 28
-1786905826 28
-1786905831 28
-1786905836 28
-1786905841 28
-1786905846 28
-1786905851 28
+1786906000 28
+1786906005 28
+1786906010 28
+1786906015 28
+1786906020 28
+1786906026 28
+1786906031 28
+1786906036 28
+1786906041 28
+1786906046 28
+1786906051 28
+1786906056 28
+1786906061 28
+1786906066 28
+1786906071 28
+1786906076 28
+1786906081 28
+1786906086 28
+1786906091 28
+1786906096 28
 ```
 </details>
 
