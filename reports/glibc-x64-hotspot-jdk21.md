@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk21
 
 ## glibc-x64-hotspot-jdk21 - ✅ PASS
 
-**Date:** 2026-08-16 14:42:43 EDT
+**Date:** 2026-08-16 14:46:17 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 434 |
-| Sample Rate | 7.23/sec |
-| Health Score | 452% |
+| CPU Samples | 409 |
+| Sample Rate | 6.82/sec |
+| Health Score | 426% |
 | Threads | 8 |
-| Allocations | 380 |
+| Allocations | 400 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 555 |
-| Sample Rate | 9.25/sec |
-| Health Score | 578% |
+| CPU Samples | 544 |
+| Sample Rate | 9.07/sec |
+| Health Score | 567% |
 | Threads | 8 |
-| Allocations | 442 |
+| Allocations | 458 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 9-9 cores)</summary>
 
 ```
-1786905525 9
-1786905530 9
-1786905535 9
-1786905540 9
-1786905545 9
-1786905550 9
-1786905555 9
-1786905560 9
-1786905565 9
-1786905570 9
-1786905575 9
-1786905580 9
-1786905585 9
-1786905590 9
-1786905595 9
-1786905600 9
-1786905605 9
-1786905610 9
-1786905615 9
-1786905620 9
+1786905736 9
+1786905741 9
+1786905746 9
+1786905751 9
+1786905756 9
+1786905761 9
+1786905766 9
+1786905771 9
+1786905776 9
+1786905781 9
+1786905786 9
+1786905791 9
+1786905796 9
+1786905801 9
+1786905806 9
+1786905811 9
+1786905816 9
+1786905821 9
+1786905826 9
+1786905831 9
 ```
 </details>
 
