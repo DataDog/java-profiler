@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk11
 
 ## glibc-arm64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-08-16 14:38:32 EDT
+**Date:** 2026-08-16 14:42:42 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 376 |
-| Sample Rate | 6.27/sec |
-| Health Score | 392% |
+| CPU Samples | 604 |
+| Sample Rate | 10.07/sec |
+| Health Score | 629% |
 | Threads | 8 |
-| Allocations | 344 |
+| Allocations | 353 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 594 |
-| Sample Rate | 9.90/sec |
-| Health Score | 619% |
-| Threads | 10 |
-| Allocations | 472 |
+| CPU Samples | 411 |
+| Sample Rate | 6.85/sec |
+| Health Score | 428% |
+| Threads | 14 |
+| Allocations | 129 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 18-18 cores)</summary>
 
 ```
-1786905295 18
-1786905300 18
-1786905305 18
-1786905310 18
-1786905315 18
-1786905320 18
-1786905325 18
-1786905330 18
-1786905335 18
-1786905340 18
-1786905345 18
-1786905350 18
-1786905355 18
-1786905360 18
-1786905365 18
-1786905370 18
-1786905375 18
-1786905380 18
-1786905385 18
-1786905390 18
+1786905562 18
+1786905567 18
+1786905572 18
+1786905577 18
+1786905582 18
+1786905587 18
+1786905592 18
+1786905597 18
+1786905602 18
+1786905607 18
+1786905612 18
+1786905617 18
+1786905622 18
+1786905627 18
+1786905632 18
+1786905637 18
+1786905642 18
+1786905647 18
+1786905652 18
+1786905657 18
 ```
 </details>
 
