@@ -18,7 +18,7 @@ import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.openjdk.jmc.common.item.IItemCollection;
+import com.datadoghq.profiler.JfrEvents;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -35,7 +35,7 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
     assertTrue(runEligibleBlock(BLOCKER));
     stopProfiler();
 
-    IItemCollection events = verifyEvents("datadog.TaskBlock");
+    JfrEvents events = verifyEvents("datadog.TaskBlock");
     TaskBlockAssertions.assertNoAnchorFields(events);
     TaskBlockAssertions.assertContainsStackTrace(events);
     TaskBlockAssertions.assertContainsJavaType(events, "JavaProfilerTaskBlockApiTest");
