@@ -11,8 +11,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
+import com.datadoghq.profiler.JfrEvents;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -56,8 +55,8 @@ public class JavaProfilerTaskBlockLightweightTest extends AbstractProfilerTest {
     assertTrue(recorded.get(), "Expected stackless TaskBlock event to be recorded");
 
     stopProfiler();
-    IItemCollection events = verifyEvents("datadog.TaskBlock");
-    assertEquals(1L, events.stream().flatMap(IItemIterable::stream).count());
+    JfrEvents events = verifyEvents("datadog.TaskBlock");
+    assertEquals(1L, events.count());
     TaskBlockAssertions.assertContainsNoStackTrace(events);
     TaskBlockAssertions.assertNoAnchorFields(events);
     TaskBlockAssertions.assertNoCorrelationId(events);

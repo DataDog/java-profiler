@@ -12,7 +12,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
-import org.openjdk.jmc.common.item.IItemCollection;
+import com.datadoghq.profiler.JfrEvents;
 
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -63,7 +63,7 @@ public class JavaProfilerTaskBlockPreExistingThreadTest extends AbstractProfiler
     assertTrue(recorded.get(5, TimeUnit.SECONDS));
     stopProfiler();
 
-    IItemCollection events = verifyEvents("datadog.TaskBlock");
+    JfrEvents events = verifyEvents("datadog.TaskBlock");
     TaskBlockAssertions.assertContainsStackTrace(events);
     TaskBlockAssertions.assertContains(
         events, 0L, 0L, BLOCKER, UNBLOCKING_SPAN_ID);
