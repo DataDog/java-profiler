@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk17
 
 ## glibc-x64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-08-17 11:56:09 EDT
+**Date:** 2026-08-17 12:12:01 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 430 |
-| Sample Rate | 7.17/sec |
-| Health Score | 448% |
+| CPU Samples | 440 |
+| Sample Rate | 7.33/sec |
+| Health Score | 458% |
 | Threads | 8 |
-| Allocations | 373 |
+| Allocations | 343 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 621 |
-| Sample Rate | 10.35/sec |
-| Health Score | 647% |
+| CPU Samples | 633 |
+| Sample Rate | 10.55/sec |
+| Health Score | 659% |
 | Threads | 9 |
-| Allocations | 434 |
+| Allocations | 449 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1786981950 32
-1786981955 32
-1786981960 32
-1786981965 32
-1786981970 32
-1786981975 32
-1786981980 32
-1786981985 32
-1786981990 32
-1786981995 32
-1786982000 32
-1786982005 32
-1786982010 32
-1786982015 32
-1786982020 32
-1786982025 32
-1786982030 32
-1786982035 32
-1786982040 32
-1786982045 32
+1786982809 32
+1786982814 32
+1786982819 32
+1786982824 32
+1786982829 32
+1786982834 32
+1786982839 32
+1786982844 32
+1786982849 32
+1786982854 32
+1786982859 32
+1786982864 32
+1786982869 32
+1786982874 32
+1786982879 32
+1786982884 32
+1786982889 32
+1786982894 32
+1786982899 32
+1786982904 32
 ```
 </details>
 

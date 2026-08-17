@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk21
 
 ## musl-x64-openj9-jdk21 - ✅ PASS
 
-**Date:** 2026-08-17 11:56:11 EDT
+**Date:** 2026-08-17 12:12:04 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 518 |
-| Sample Rate | 8.63/sec |
-| Health Score | 539% |
+| CPU Samples | 486 |
+| Sample Rate | 8.10/sec |
+| Health Score | 506% |
 | Threads | 8 |
-| Allocations | 389 |
+| Allocations | 369 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 598 |
-| Sample Rate | 9.97/sec |
-| Health Score | 623% |
-| Threads | 9 |
-| Allocations | 487 |
+| CPU Samples | 593 |
+| Sample Rate | 9.88/sec |
+| Health Score | 618% |
+| Threads | 8 |
+| Allocations | 500 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1786981928 32
-1786981933 32
-1786981938 32
-1786981943 32
-1786981948 32
-1786981953 32
-1786981958 32
-1786981963 32
-1786981968 32
-1786981973 32
-1786981978 32
-1786981983 32
-1786981988 32
-1786981993 32
-1786981998 32
-1786982003 32
-1786982008 32
-1786982013 32
-1786982018 32
-1786982023 32
+1786982783 32
+1786982788 32
+1786982793 32
+1786982798 32
+1786982803 32
+1786982808 32
+1786982813 32
+1786982818 32
+1786982823 32
+1786982828 32
+1786982833 32
+1786982838 32
+1786982843 32
+1786982848 32
+1786982853 32
+1786982858 32
+1786982863 32
+1786982868 32
+1786982873 32
+1786982878 32
 ```
 </details>
 
