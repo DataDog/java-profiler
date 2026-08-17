@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk21
 
 ## musl-arm64-hotspot-jdk21 - ✅ PASS
 
-**Date:** 2026-08-17 09:05:27 EDT
+**Date:** 2026-08-17 09:06:33 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-arm64-hotspot-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 76 |
-| Sample Rate | 1.27/sec |
-| Health Score | 79% |
-| Threads | 10 |
-| Allocations | 58 |
+| CPU Samples | 115 |
+| Sample Rate | 1.92/sec |
+| Health Score | 120% |
+| Threads | 9 |
+| Allocations | 69 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 279 |
-| Sample Rate | 4.65/sec |
-| Health Score | 291% |
-| Threads | 14 |
-| Allocations | 151 |
+| CPU Samples | 120 |
+| Sample Rate | 2.00/sec |
+| Health Score | 125% |
+| Threads | 10 |
+| Allocations | 45 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
 
 ```
-1786971568 64
-1786971573 64
-1786971578 64
-1786971583 64
-1786971588 64
-1786971593 64
-1786971598 64
-1786971603 64
-1786971608 64
-1786971613 64
-1786971618 64
-1786971624 64
-1786971629 64
-1786971634 64
-1786971639 64
-1786971644 64
-1786971649 64
-1786971654 64
-1786971659 64
-1786971664 64
+1786971596 64
+1786971601 64
+1786971606 64
+1786971611 64
+1786971616 64
+1786971621 64
+1786971626 64
+1786971631 64
+1786971636 64
+1786971641 64
+1786971646 64
+1786971651 64
+1786971656 64
+1786971661 64
+1786971666 64
+1786971671 64
+1786971676 64
+1786971681 64
+1786971686 64
+1786971691 64
 ```
 </details>
 
