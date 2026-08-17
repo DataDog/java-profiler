@@ -44,9 +44,8 @@ class MallocTracer : public Engine {
     static PidController _pid;
 
     static u64 nextPoissonInterval();
-    static void updateConfiguration(u64 events, double time_coefficient);
-
     static bool shouldSample(size_t size);
+    static void updateConfiguration(u64 events, double time_coefficient);
 
   public:
     const char* name() {

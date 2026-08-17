@@ -176,7 +176,7 @@ protected:
         // ProfiledThread for their critical-section bookkeeping to mean anything
         // -- CriticalSection itself tolerates a null thread pointer gracefully
         // (entered() just stays false). Create the pool here instead.
-        // initialize() is not idempotent -- it news a fresh pool and overwrites
+        // initialize() is not idempotent -- it creates a fresh pool and overwrites
         // the singleton -- and SetUp() runs per test, so it must happen exactly
         // once for the process.
         static std::once_flag pool_once;

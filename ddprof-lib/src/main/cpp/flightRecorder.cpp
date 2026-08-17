@@ -28,7 +28,6 @@
 #include "unwindStats.h"
 #include "symbols.h"
 #include "threadFilter.h"
-#include "threadLocalData.inline.h"
 #include "threadState.h"
 #include "tsc.h"
 #include "hotspot/vmStructs.h"

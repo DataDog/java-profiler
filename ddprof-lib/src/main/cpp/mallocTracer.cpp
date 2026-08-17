@@ -299,10 +299,9 @@ bool MallocTracer::shouldSample(size_t size) {
     }
 }
 
-// shouldSample() runs first and needs no thread-local state, so an unsampled
-// allocation on a long-lived thread that has never touched TLS never claims
-// a slot from the fixed-size priming pool -- only allocations that are
-// actually going to be recorded pay for acquireCurrent().
+// acquireCurrent() runs before shouldSample() is checked, so every allocation
+// that passes the running()/ret/size gate claims a thread-local slot from the
+// fixed-size priming pool on first touch, even if shouldSample() then rejects it.
 // CriticalSection prevents reentrancy: profiler-internal allocations triggered
 // inside recordMalloc (e.g. sample buffer allocation) re-enter these hooks via
 // the patched GOT; without the guard they would be double-counted.
@@ -336,8 +335,9 @@ void MallocTracer::updateConfiguration(u64 events, double time_coefficient) {
 }
 
 // Caller (maybeRecord) is responsible for the shouldSample() gate -- it must
-// run before this is reached so that unsampled allocations never pay for
-// acquireCurrent()/CriticalSection.
+// run before this is reached so that unsampled allocations never pay for the
+// cost of recordMalloc itself. acquireCurrent()/CriticalSection are already
+// paid by then, since maybeRecord acquires them before checking shouldSample().
 void MallocTracer::recordMalloc(void* address, size_t size, int tid) {
     u64 current_interval = __atomic_load_n(&_interval, __ATOMIC_ACQUIRE);
     MallocEvent event;
