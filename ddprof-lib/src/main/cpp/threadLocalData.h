@@ -135,6 +135,15 @@ public:
   static ProfiledThread *forTid(int tid) {
     ProfiledThread *pt = new ProfiledThread(tid);
     NativeMem::record(NM_THREAD_LOCAL, (long long)sizeof(ProfiledThread));
+#ifdef UNIT_TEST
+    // Lets a test simulate a malloc hook (e.g. nativemem profiling's
+    // MallocTracer::maybeRecord) reentering here via the `new` above, before
+    // initCurrentThread() has published `pt` to TLS — see initCurrentThread()
+    // in threadLocalData.cpp for the race this exists to reproduce.
+    if (forTidTestHook != nullptr) {
+      forTidTestHook();
+    }
+#endif
     return pt;
   }
   static bool isThreadKeyValid() {
@@ -144,6 +153,13 @@ public:
   static bool supportPriming();
 
 #ifdef UNIT_TEST
+  // Test-only hook invoked at the end of forTid(), see above.
+  static void (*forTidTestHook)();
+
+  // Exposes the private isClaimed() so a test can confirm a
+  // ThreadLocalDataPool slot was released rather than left orphaned.
+  bool isClaimedForTest() const { return isClaimed(); }
+
   // Simulates the moment inside release() after pthread_setspecific(NULL) but
   // before delete — the race window the clearCurrentThreadTLS fix covers.
   // Returns the detached pointer so the caller can delete it after assertions.

@@ -22,6 +22,10 @@
 // reads it.
 ThreadLocal<ProfiledThread*, nullptr, ProfiledThread::freeValue>  ProfiledThread::_current_thread;
 
+#ifdef UNIT_TEST
+void (*ProfiledThread::forTidTestHook)() = nullptr;
+#endif
+
 bool ProfiledThread::supportPriming() {
   // Key must be valid
   assert(_current_thread.isKeyValid());
@@ -49,6 +53,23 @@ ProfiledThread* ProfiledThread::initCurrentThread() {
   if (tls == nullptr) {
     int tid = OS::threadId();
     tls = ProfiledThread::forTid(tid);
+    // forTid()'s `new` can recurse into a malloc hook (e.g. nativemem
+    // profiling) that calls acquireCurrent() before we get here. Seeing TLS
+    // still unset, it claims a ThreadLocalDataPool slot and publishes it to
+    // TLS. Release that slot instead of silently clobbering it below, or it
+    // stays claimed forever and the pool leaks one slot per occurrence.
+    //
+    // Not a signal race: initCurrentThread() is documented above as callable
+    // only with profiling signals already blocked on this thread (the
+    // SignalBlocker in initCurrentThreadSignalSafe(), or an explicit one at
+    // the call site otherwise -- see e.g. libraryPatcher_linux.cpp's
+    // init_tls_and_register()). So no signal handler can run -- and
+    // therefore none can observe or act on the primed slot -- between the
+    // claim above and the release below.
+    ProfiledThread* primed = _current_thread.get();
+    if (primed != nullptr) {
+      ThreadLocalDataPool::release(primed);
+    }
     _current_thread.set(tls);
   }
   return tls;

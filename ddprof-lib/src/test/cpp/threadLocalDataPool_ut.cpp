@@ -9,7 +9,11 @@
 // pool header only forward-declares it).
 #include "threadLocalData.h"
 #include "threadLocalDataPool.h"
+#include "threadLocalData.inline.h"
 #include "counters.h"
+
+#include <mutex>
+#include <pthread.h>
 
 // Covers ThreadLocalDataPool::contains(), whose result feeds directly into
 // unclaim()'s double-release guard. Uses createForTest()/destroyForTest() to
@@ -208,4 +212,56 @@ TEST(ProfiledThreadTest, UnclaimAndResetMatchesFreshInstance) {
     dirty->exitCriticalSection();
     ProfiledThread::deleteForTest(dirty);
     ProfiledThread::deleteForTest(fresh);
+}
+
+// Regression for a ThreadLocalDataPool slot leak in
+// ProfiledThread::initCurrentThread(): forTid()'s `new ProfiledThread(tid)`
+// can recurse into a malloc hook (e.g. nativemem profiling's
+// MallocTracer::maybeRecord) before initCurrentThread() has published the new
+// instance to TLS. Seeing TLS still unset, the hook's acquireCurrent() claims
+// a pool slot and publishes it to TLS itself. initCurrentThread() then
+// unconditionally overwrites TLS with the heap-allocated instance, and
+// without the fix the pool slot is never released -- it stays claimed
+// forever, permanently shrinking the 64-slot pool by one.
+//
+// forTidTestHook (threadLocalData.h, UNIT_TEST-only) simulates that reentrant
+// call deterministically, without needing real malloc-hook plumbing.
+static std::once_flag g_priming_race_pool_init;
+static ProfiledThread* g_primed_during_fortid = nullptr;
+
+static void simulateNestedMallocHookPriming() {
+    g_primed_during_fortid = ProfiledThread::acquireCurrent();
+}
+
+static void* threadPrimingRaceBody(void*) {
+    std::call_once(g_priming_race_pool_init, [] { ThreadLocalDataPool::initialize(); });
+    EXPECT_EQ(nullptr, ProfiledThread::current());
+
+    g_primed_during_fortid = nullptr;
+    ProfiledThread::forTidTestHook = simulateNestedMallocHookPriming;
+    ProfiledThread* tls = ProfiledThread::initCurrentThread();
+    ProfiledThread::forTidTestHook = nullptr;
+
+    EXPECT_NE(nullptr, g_primed_during_fortid) << "hook did not simulate a nested claim";
+    EXPECT_NE(nullptr, tls);
+    if (tls == nullptr) {
+        return nullptr;
+    }
+    EXPECT_NE(tls, g_primed_during_fortid)
+        << "the heap-allocated thread and the nested pool claim must be distinct objects";
+    EXPECT_EQ(tls, ProfiledThread::current())
+        << "TLS must end up holding the heap-allocated thread, not the pool one";
+    if (g_primed_during_fortid != nullptr) {
+        EXPECT_FALSE(g_primed_during_fortid->isClaimedForTest())
+            << "pool slot claimed by the nested acquireCurrent() must be released, not orphaned";
+    }
+
+    ProfiledThread::release();
+    return nullptr;
+}
+
+TEST(ProfiledThreadTest, NestedPrimingDuringForTidReleasesPoolSlot) {
+    pthread_t t;
+    ASSERT_EQ(0, pthread_create(&t, nullptr, threadPrimingRaceBody, nullptr));
+    pthread_join(t, nullptr);
 }
