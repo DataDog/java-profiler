@@ -749,10 +749,22 @@ u64 PerfEvents::readCounter(siginfo_t *siginfo, void *ucontext) {
 // paths below (TLS pool exhaustion, a busy critical section) -- otherwise a
 // single dropped sample permanently disables sampling on that thread's fd
 // instead of just losing that one sample.
+//
+// resetBuffer() piggybacks on that same every-exit guarantee: the kernel
+// writes a PERF_RECORD_SAMPLE for this signal into this thread's kernel-ring
+// mmap page before delivering it, independently of whether signalHandler
+// goes on to consume it. If an exit path leaves that record undrained, its
+// data_tail is never advanced, and the next successful sample's walkKernel()
+// reads this stale record's callchain instead of its own. Running it here
+// unconditionally covers every drop path (and the success path, harmlessly
+// re-draining what walkKernel already drained) instead of requiring each
+// call site to remember it. resetBuffer() is a no-op if RING_KERNEL/mmap
+// isn't in use -- see its own NULL check.
 class PerfFdRearmGuard {
 public:
-  explicit PerfFdRearmGuard(int fd) : _fd(fd) {}
+  PerfFdRearmGuard(int fd, int tid) : _fd(fd), _tid(tid) {}
   ~PerfFdRearmGuard() {
+    PerfEvents::resetBuffer(_tid);
     ioctl(_fd, PERF_EVENT_IOC_RESET, 0);
     ioctl(_fd, PERF_EVENT_IOC_REFRESH, 1);
   }
@@ -761,6 +773,7 @@ public:
 
 private:
   int _fd;
+  int _tid;
 };
 
 void PerfEvents::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
@@ -768,7 +781,7 @@ void PerfEvents::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     // Looks like an external signal; don't treat as a profiling event
     return;
   }
-  PerfFdRearmGuard rearm(siginfo->si_fd);
+  PerfFdRearmGuard rearm(siginfo->si_fd, OS::threadId());
   SIGNAL_HANDLER_GUARD_OR_DROP();
   InflightGuard inflight;
 
@@ -797,8 +810,6 @@ void PerfEvents::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     Profiler::instance()->recordSample(ucontext, counter, tid, BCI_CPU, 0,
                                        &event);
     Shims::instance().setSighandlerTid(-1);
-  } else {
-    resetBuffer(tid);
   }
 }
 
