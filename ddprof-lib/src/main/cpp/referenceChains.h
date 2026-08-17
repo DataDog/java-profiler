@@ -1556,6 +1556,16 @@ public:
   ReferenceChainTracker &operator=(const ReferenceChainTracker &) = delete;
 
   Error start(Arguments &args);
+
+  // Scales unset referencechains defaults (budget, ttl, framecap,
+  // pausetarget, painbudget, firstpassbudget) from the process's max heap
+  // size and available processor count, so a large heap doesn't starve
+  // the BFS (the defaults are tuned for a small heap and abandon via
+  // TTL before making meaningful progress). Only overrides defaults
+  // that the operator did not set explicitly (tracked by
+  // args._reference_chains_tuned_mask). hop_cap is left alone: it bounds
+  // chain depth, not search breadth, and 200 is already generous.
+  void autoTuneDefaults(Arguments &args);
   void stop();
 
   // Spawns the BFS thread (threadEntry()/threadLoop()) if reference chain

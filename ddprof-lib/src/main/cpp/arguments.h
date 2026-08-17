@@ -23,6 +23,8 @@
 #include <string>
 #include <vector>
 
+#include "arch.h"
+
 const long DEFAULT_CPU_INTERVAL = 10 * 1000 * 1000;  // 10 ms
 const long DEFAULT_WALL_INTERVAL = 50 * 1000 * 1000; // 50 ms
 const long DEFAULT_ALLOC_INTERVAL = 524287;          // 512 KiB
@@ -44,6 +46,17 @@ const int DEFAULT_JSTACKDEPTH = 2048;
 // closest real-world precedent for "how many hops does a referrer-type
 // chain typically need" that this codebase can cite without measuring it
 // itself.
+// Sub-option bitmask for the auto-tuner: tracks which referencechains
+// sub-options were explicitly set by the operator, so the auto-tuner
+// only overrides defaults that weren't.
+constexpr u8 REF_CHAINS_TUNED_HOP_CAP = 1 << 0;
+constexpr u8 REF_CHAINS_TUNED_BUDGET = 1 << 1;
+constexpr u8 REF_CHAINS_TUNED_TTL = 1 << 2;
+constexpr u8 REF_CHAINS_TUNED_FRONTIER_CAP = 1 << 3;
+constexpr u8 REF_CHAINS_TUNED_PAUSE_TARGET = 1 << 4;
+constexpr u8 REF_CHAINS_TUNED_PAIN_BUDGET = 1 << 5;
+constexpr u8 REF_CHAINS_TUNED_FIRST_PASS_BUDGET = 1 << 6;
+
 const int DEFAULT_REFERENCE_CHAINS_HOP_CAP = 200;
 // Per-pass edge budget: no cited precedent gives a number for this (JFR's
 // leak profiler does not bound itself by a per-pass edge count - it runs to
@@ -290,6 +303,10 @@ public:
   long _reference_chains_pause_target_ms;
   int _reference_chains_pain_budget_percent;
   int _reference_chains_first_pass_budget;
+  // Bitmask of REF_CHAINS_TUNED_*: which sub-options were explicitly
+  // set by the operator, so the auto-tuner knows which defaults it may
+  // override. 0 = all defaults, none explicitly set.
+  u8 _reference_chains_tuned_mask;
   // Explicit opt-in for the legacy whole-graph JVMTI FollowReferences walk.
   long _nativemem;
   int  _jstackdepth;
@@ -341,6 +358,7 @@ public:
         _reference_chains_pause_target_ms(DEFAULT_REFERENCE_CHAINS_PAUSE_TARGET_MS),
         _reference_chains_pain_budget_percent(DEFAULT_REFERENCE_CHAINS_PAIN_BUDGET_PERCENT),
         _reference_chains_first_pass_budget(DEFAULT_REFERENCE_CHAINS_FIRST_PASS_BUDGET),
+        _reference_chains_tuned_mask(0),
         _nativemem(-1),
         _jstackdepth(DEFAULT_JSTACKDEPTH),
         _safe_mode(0),

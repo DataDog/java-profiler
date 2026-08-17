@@ -289,6 +289,106 @@ public:
 };
 } // namespace
 
+void ReferenceChainTracker::autoTuneDefaults(Arguments &args) {
+  // Only tune defaults the operator did not set explicitly.
+  const u8 tuned = args._reference_chains_tuned_mask;
+
+  // Max heap is resolved by LivenessTracker::initialize_table() at this
+  // point (ObjectSampler::start() -> LivenessTracker::start() runs
+  // before ReferenceChainTracker::start() in Profiler::start()).
+  jlong max_heap = LivenessTracker::instance()->maxHeapBytes();
+  if (max_heap <= 0) {
+    return; // can't tune without heap size
+  }
+
+  // Available processors from JVMTI (cached by FlightRecorder, but we
+  // can query JVMTI directly here).
+  jint nprocs = 1;
+  jvmtiEnv *jvmti = VM::jvmti();
+  if (jvmti != nullptr) {
+    jvmti->GetAvailableProcessors(&nprocs);
+  }
+  if (nprocs < 1) nprocs = 1;
+
+  // Heap size in MiB.
+  double heap_mib = (double)max_heap / (1024.0 * 1024.0);
+
+  // --- Budget (edges per BFS pass) ---
+  // Scale with sqrt(heap_mib): a 4 GiB heap gets 2x, a 16 GiB heap
+  // gets 4x, a 64 GiB heap gets 8x the default 1000. This keeps the
+  // per-pass safepoint pause proportional to sqrt(heap) — the
+  // number of edges explored per pass grows, but not quadratically.
+  if (!(tuned & REF_CHAINS_TUNED_BUDGET)) {
+    int scaled = (int)(DEFAULT_REFERENCE_CHAINS_BUDGET * std::sqrt(heap_mib / 512.0));
+    args._reference_chains_budget = std::max(DEFAULT_REFERENCE_CHAINS_BUDGET,
+        std::min(scaled, MAX_REFERENCE_CHAINS_BUDGET));
+  }
+
+  // --- First-pass budget ---
+  // The root enumeration pass is one-shot per search and can
+  // afford a much larger budget. Scale it 10x the per-pass budget
+  // so the first pass covers more roots.
+  if (!(tuned & REF_CHAINS_TUNED_FIRST_PASS_BUDGET)) {
+    int fpb = args._reference_chains_budget * 10;
+    args._reference_chains_first_pass_budget = std::min(fpb,
+        MAX_REFERENCE_CHAINS_FIRST_PASS_BUDGET);
+  }
+
+  // --- TTL (per-search wall-clock lifetime) ---
+  // The search needs enough time to cover the heap at the tuned
+  // budget. At ~1 pass/sec, TTL_seconds >= heap_edges / budget.
+  // We don't know heap_edges, but it scales with heap size. Use
+  // heap_mib as a proxy: TTL = base_ttl * (heap_mib / 512),
+  // clamped to [60s, 30min].
+  if (!(tuned & REF_CHAINS_TUNED_TTL)) {
+    long scaled_ttl = (long)(DEFAULT_REFERENCE_CHAINS_TTL_MS * (heap_mib / 512.0));
+    scaled_ttl = std::max(DEFAULT_REFERENCE_CHAINS_TTL_MS, std::min(scaled_ttl,
+        (long)(30 * 60 * 1000))); // 30 min max
+    args._reference_chains_ttl_ms = scaled_ttl;
+  }
+
+  // --- Frontier cap ---
+  // The frontier grows with the number of edges admitted per
+  // pass. Scale with budget so a larger budget doesn't
+  // immediately hit the cap.
+  if (!(tuned & REF_CHAINS_TUNED_FRONTIER_CAP)) {
+    int scaled_cap = DEFAULT_REFERENCE_CHAINS_FRONTIER_CAP *
+        (args._reference_chains_budget / DEFAULT_REFERENCE_CHAINS_BUDGET);
+    args._reference_chains_frontier_cap = std::max(
+        DEFAULT_REFERENCE_CHAINS_FRONTIER_CAP,
+        std::min(scaled_cap, MAX_REFERENCE_CHAINS_FRONTIER_CAP));
+  }
+
+  // --- Pause target ---
+  // More available processors = the JVM can afford a slightly
+  // longer per-pass safepoint without impacting application
+  // throughput. Scale linearly: 1 core = 5ms, 4 cores = 10ms,
+  // 8 cores = 15ms, capped at 50ms.
+  if (!(tuned & REF_CHAINS_TUNED_PAUSE_TARGET)) {
+    long scaled_pause = DEFAULT_REFERENCE_CHAINS_PAUSE_TARGET_MS *
+        (1 + (nprocs - 1) / 3);
+    args._reference_chains_pause_target_ms = std::min(scaled_pause, (long)50);
+  }
+
+  // --- Pain budget percent ---
+  // More cores = more spare capacity for background work.
+  // Scale: 1 core = 1%, 4 cores = 2%, 8 cores = 3%, capped at 5%.
+  if (!(tuned & REF_CHAINS_TUNED_PAIN_BUDGET)) {
+    int scaled_pain = DEFAULT_REFERENCE_CHAINS_PAIN_BUDGET_PERCENT *
+        (1 + (nprocs - 1) / 4);
+    args._reference_chains_pain_budget_percent = std::min(scaled_pain, 5);
+  }
+
+  Log::info("Reference chain auto-tuner: heap=%.0f MiB nprocs=%d -> "
+      "budget=%d ttl=%ldms framecap=%d pausetarget=%ldms painbudget=%d%% firstpassbudget=%d",
+      heap_mib, (int)nprocs,
+      args._reference_chains_budget, args._reference_chains_ttl_ms,
+      args._reference_chains_frontier_cap,
+      args._reference_chains_pause_target_ms,
+      args._reference_chains_pain_budget_percent,
+      args._reference_chains_first_pass_budget);
+}
+
 Error ReferenceChainTracker::start(Arguments &args) {
   _enabled = args._reference_chains;
 
@@ -296,6 +396,11 @@ Error ReferenceChainTracker::start(Arguments &args) {
     Log::info("Reference chain tracking is disabled");
     return Error::OK;
   }
+
+  // Auto-tune defaults that the operator did not set explicitly,
+  // based on max heap size and available processors. Must run before
+  // _configured_frontier_cap is read below.
+  autoTuneDefaults(args);
 
   Log::info("Reference chain tracking is enabled (hops=%d, budget=%d, "
             "ttl=%ldms, framecap=%d, pausetarget=%ldms, painbudget=%d%%)",

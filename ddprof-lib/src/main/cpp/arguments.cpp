@@ -528,22 +528,29 @@ Error Arguments::parse(const char *args) {
             if (strcasecmp(cursor, "hops") == 0) {
               _reference_chains_hop_cap =
                   std::min(std::max(atoi(eq), 1), MAX_REFERENCE_CHAINS_HOP_CAP);
+              _reference_chains_tuned_mask |= REF_CHAINS_TUNED_HOP_CAP;
             } else if (strcasecmp(cursor, "budget") == 0) {
               _reference_chains_budget =
                   std::min(std::max(atoi(eq), 1), MAX_REFERENCE_CHAINS_BUDGET);
+              _reference_chains_tuned_mask |= REF_CHAINS_TUNED_BUDGET;
             } else if (strcasecmp(cursor, "ttl") == 0) {
               _reference_chains_ttl_ms = std::max(atol(eq), 0L);
+              _reference_chains_tuned_mask |= REF_CHAINS_TUNED_TTL;
             } else if (strcasecmp(cursor, "framecap") == 0) {
               _reference_chains_frontier_cap = std::min(
                   std::max(atoi(eq), 1), MAX_REFERENCE_CHAINS_FRONTIER_CAP);
+              _reference_chains_tuned_mask |= REF_CHAINS_TUNED_FRONTIER_CAP;
             } else if (strcasecmp(cursor, "pausetarget") == 0) {
               _reference_chains_pause_target_ms = std::max(atol(eq), 0L);
+              _reference_chains_tuned_mask |= REF_CHAINS_TUNED_PAUSE_TARGET;
             } else if (strcasecmp(cursor, "painbudget") == 0) {
               _reference_chains_pain_budget_percent =
                   std::min(std::max(atoi(eq), 0), 100);
+              _reference_chains_tuned_mask |= REF_CHAINS_TUNED_PAIN_BUDGET;
             } else if (strcasecmp(cursor, "firstpassbudget") == 0) {
               _reference_chains_first_pass_budget = std::min(
                   std::max(atoi(eq), 0), MAX_REFERENCE_CHAINS_FIRST_PASS_BUDGET);
+              _reference_chains_tuned_mask |= REF_CHAINS_TUNED_FIRST_PASS_BUDGET;
             }
           }
           cursor = next;

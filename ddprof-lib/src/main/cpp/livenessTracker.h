@@ -258,6 +258,7 @@ private:
   // heap does not change at runtime, so a value resolved once stays valid.
   // -1 if never resolved (mirrors getMaxHeap()'s own sentinel).
   jlong _max_heap_bytes;
+
 #ifdef DEBUG
   // Atomic mirror used only by the setMaxHeapBytesForTest() seam so the
   // test thread's store is published to the BFS thread's secondsToOOM()
@@ -494,6 +495,10 @@ public:
     static LivenessTracker instance;
     return &instance;
   }
+
+  // Public read accessor for the auto-tuner (ReferenceChainTracker::autoTuneDefaults)
+  // and secondsToOOM(). See _max_heap_bytes's own comment above.
+  jlong maxHeapBytes() const { return _max_heap_bytes; }
   // Delete copy constructor and assignment operator to prevent copies
   LivenessTracker(const LivenessTracker&) = delete;
   LivenessTracker& operator=(const LivenessTracker&) = delete;
