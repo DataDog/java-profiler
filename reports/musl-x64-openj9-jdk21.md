@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk21
 
 ## musl-x64-openj9-jdk21 - ✅ PASS
 
-**Date:** 2026-08-17 09:07:55 EDT
+**Date:** 2026-08-17 09:09:14 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 476 |
-| Sample Rate | 7.93/sec |
-| Health Score | 496% |
+| CPU Samples | 552 |
+| Sample Rate | 9.20/sec |
+| Health Score | 575% |
 | Threads | 9 |
-| Allocations | 365 |
+| Allocations | 373 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 648 |
-| Sample Rate | 10.80/sec |
-| Health Score | 675% |
-| Threads | 11 |
-| Allocations | 473 |
+| CPU Samples | 664 |
+| Sample Rate | 11.07/sec |
+| Health Score | 692% |
+| Threads | 9 |
+| Allocations | 510 |
 
 <details>
 <summary>CPU Timeline (2 unique values: 94-96 cores)</summary>
 
 ```
-1786971585 96
-1786971590 96
-1786971595 96
-1786971600 96
-1786971605 96
-1786971610 96
-1786971615 96
-1786971620 96
-1786971625 96
-1786971630 96
-1786971635 96
-1786971640 96
-1786971645 96
-1786971650 96
-1786971655 96
-1786971660 96
-1786971665 96
-1786971670 96
-1786971675 96
-1786971680 96
+1786971638 96
+1786971643 94
+1786971648 94
+1786971653 94
+1786971658 94
+1786971663 94
+1786971668 94
+1786971673 94
+1786971678 94
+1786971683 94
+1786971688 94
+1786971693 94
+1786971698 96
+1786971703 96
+1786971708 96
+1786971713 96
+1786971718 96
+1786971723 96
+1786971728 96
+1786971733 96
 ```
 </details>
 
