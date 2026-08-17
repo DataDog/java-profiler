@@ -21,6 +21,10 @@ void ThreadLocalDataPool::initialize() {
 }
 
 
+bool ThreadLocalDataPool::isInitialized() {
+    return __atomic_load_n(&_pool, __ATOMIC_ACQUIRE) != nullptr;
+}
+
 ThreadLocalDataPool::ThreadLocalDataPool(uint16_t capacity)
     : _capacity(capacity), _used(0), _threads(nullptr) {
     const size_t malloc_size = capacity * sizeof(ProfiledThread);

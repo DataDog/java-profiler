@@ -5,9 +5,11 @@
 package com.datadoghq.profiler.cpu;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.JavaProfiler;
 import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
 import com.datadoghq.profiler.Platform;
+import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
 import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.MethodVisitor;
@@ -79,11 +81,20 @@ public class TlsPrimingTest extends AbstractProfilerTest {
         // its compiler threads don't use either the HotSpot ("C1 CompilerThre")
         // or OpenJ9 ("JIT Compilation Thread") naming this test's assertion
         // recognizes, so it would fail here even when priming works correctly.
+        //
+        // This is necessary but not sufficient: even on Linux/glibc, whether priming is
+        // actually active depends on where this process's ProfiledThread pthread key landed
+        // (see ProfiledThread::supportPriming()), which isn't known until the native library
+        // is loaded. That's checked separately below, once the profiler is up.
         return !Platform.isMac() && !Platform.isZing();
     }
 
     @RetryingTest(3)
     public void compilerThreadSamplesArePresent() throws Exception {
+        Assumptions.assumeTrue(JavaProfiler.testTlsPrimingAvailable(),
+                "TLS priming pool unavailable on this run (ProfiledThread key fell outside "
+                        + "glibc's preallocated key range -- see ProfiledThread::supportPriming())");
+
         triggerJitCompilation();
 
         stopProfiler();

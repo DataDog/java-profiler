@@ -43,6 +43,7 @@ private:
 
 public:
     static void initialize();
+    static bool isInitialized();
     static ProfiledThread* acquire(int tid);
     static bool release(ProfiledThread* t);
 

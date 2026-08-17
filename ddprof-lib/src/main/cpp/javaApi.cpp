@@ -1190,3 +1190,14 @@ Java_com_datadoghq_profiler_JavaProfiler_testIsContextValid0(JNIEnv* env, jclass
   OtelThreadContextRecord* record = thrd->getOtelContextRecord();
   return __atomic_load_n(&record->valid, __ATOMIC_ACQUIRE) ? JNI_TRUE : JNI_FALSE;
 }
+
+// Whether this process actually has a live TLS priming pool -- i.e. JVMSupport::initialize()
+// found a valid ProfiledThread key that also passed ProfiledThread::supportPriming() and so
+// created the pool (see jvmSupport.cpp). Tests that assert on priming having happened need this
+// rather than a platform check: on glibc, supportPriming() depends on where in the pthread key
+// space this process's key landed (see threadLocalData.cpp), which isn't determined by OS/libc
+// alone.
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_testTlsPrimingAvailable(JNIEnv* env, jclass unused) {
+  return ThreadLocalDataPool::isInitialized() ? JNI_TRUE : JNI_FALSE;
+}
