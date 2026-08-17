@@ -180,7 +180,14 @@ static int pthread_setspecific_hook(pthread_key_t key, const void *value) {
   }
 
   if (value != NULL) {
-    ProfiledThread::initCurrentThread();
+    // Must be signal-safe: initCurrentThread() itself is documented as
+    // callable only with profiling signals blocked, and this hook has no
+    // such guarantee from its caller (pthread_setspecific() can be invoked
+    // from arbitrary JVM/libc contexts). Without blocking, a SIGPROF/SIGVTALRM
+    // landing between initCurrentThread()'s "TLS is still unset" check and its
+    // final TLS publish would prime a ThreadLocalDataPool slot that gets
+    // silently overwritten and never released -- see threadLocalData.cpp.
+    ProfiledThread::initCurrentThreadSignalSafe();
     int result = pthread_setspecific(key, value);
     Profiler::registerThread(ProfiledThread::currentTid());
     return result;
