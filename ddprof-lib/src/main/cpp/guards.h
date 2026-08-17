@@ -83,7 +83,7 @@ bool isInTrackedSignalContext();
 // Internal RAII type — do not instantiate directly; use the macros below.
 class SignalHandlerScope {
 public:
-    SignalHandlerScope(bool shouldPriming = true);
+    SignalHandlerScope(bool shouldRunPriming = true);
     ~SignalHandlerScope();
     void release();
     SignalHandlerScope(const SignalHandlerScope&)            = delete;

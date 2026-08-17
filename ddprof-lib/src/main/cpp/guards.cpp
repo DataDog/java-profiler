@@ -49,8 +49,8 @@ bool isInTrackedSignalContext() {
     return pt != nullptr && pt->signalDepth() != 0;
 }
 
-SignalHandlerScope::SignalHandlerScope(bool shouldPriming) : _current(nullptr), _active(true) {
-    ProfiledThread *pt = shouldPriming ? ProfiledThread::acquireCurrent() : ProfiledThread::current();
+SignalHandlerScope::SignalHandlerScope(bool shouldRunPriming) : _current(nullptr), _active(true) {
+    ProfiledThread *pt = shouldRunPriming ? ProfiledThread::acquireCurrent() : ProfiledThread::current();
     if (pt != nullptr) {
         _current = pt;
         pt->enterSignalScope();
