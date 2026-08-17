@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk8
 
 ## glibc-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-08-17 12:12:02 EDT
+**Date:** 2026-08-17 14:10:25 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-openj9-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 17 |
-| CPU Cores (end) | 17 |
+| CPU Cores (start) | 24 |
+| CPU Cores (end) | 26 |
 | Throttling | 0% |
 
 ### Test Results
@@ -38,36 +38,36 @@ title: glibc-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 206 |
-| Sample Rate | 3.43/sec |
-| Health Score | 214% |
-| Threads | 8 |
+| CPU Samples | 194 |
+| Sample Rate | 3.23/sec |
+| Health Score | 202% |
+| Threads | 7 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 17-17 cores)</summary>
+<summary>CPU Timeline (2 unique values: 24-26 cores)</summary>
 
 ```
-1786982785 17
-1786982790 17
-1786982795 17
-1786982800 17
-1786982805 17
-1786982810 17
-1786982815 17
-1786982820 17
-1786982825 17
-1786982830 17
-1786982835 17
-1786982840 17
-1786982845 17
-1786982850 17
-1786982855 17
-1786982860 17
-1786982865 17
-1786982870 17
-1786982875 17
-1786982880 17
+1786989936 24
+1786989941 24
+1786989946 24
+1786989951 24
+1786989956 24
+1786989961 24
+1786989966 24
+1786989971 24
+1786989976 24
+1786989981 24
+1786989986 24
+1786989991 24
+1786989996 24
+1786990001 24
+1786990006 24
+1786990011 24
+1786990016 24
+1786990021 24
+1786990026 24
+1786990031 24
 ```
 </details>
 
