@@ -707,6 +707,23 @@ TEST_F(ThreadFilterTest, OwnedBlockSuppressesOnlyAfterSuccessfulWallSample) {
     EXPECT_FALSE(filter->isOwnedBlockSuppressionCandidate(entry));
 }
 
+TEST_F(ThreadFilterTest, ExitingOwnedBlockReenablesUnownedBlockedFallback) {
+    filter->init(nullptr, true);
+    int slot_id = filter->registerThread(1234);
+    ASSERT_GE(slot_id, 0);
+    ThreadFilter::Slot* slot = filter->slotForId(slot_id);
+    ASSERT_NE(nullptr, slot);
+    ASSERT_TRUE(slot->unownedBlockedFallbackEnabled());
+
+    u64 token = filter->enterBlockedRun(slot_id, OSThreadState::SLEEPING);
+    ASSERT_NE(0ULL, token);
+    EXPECT_FALSE(slot->unownedBlockedFallbackEnabled());
+
+    ASSERT_TRUE(filter->exitBlockedRun(
+        slot_id, ThreadFilter::tokenGeneration(token)));
+    EXPECT_TRUE(slot->unownedBlockedFallbackEnabled());
+}
+
 TEST_F(ThreadFilterTest, StaleSampleCompletionCannotSuppressNewBlockGeneration) {
     filter->init(nullptr, true);
     int slot_id = filter->registerThread(1234);
