@@ -447,6 +447,8 @@ Error ReferenceChainTracker::start(Arguments &args) {
   _effective_pause_target_ms = _pause_target_ms;
   _effective_budget = _budget;
   _effective_cadence_ns = PASS_CADENCE_NS;
+  _candidate_count = 0;
+  _candidate_found_bits = 0;
   // Budget-borrowing (referenceChains.h's _borrowed_budget comment): reset
   // alongside the rest of the pacing controller's state, so a restarted
   // search never inherits headroom earned by a previous one.
@@ -722,6 +724,38 @@ void ReferenceChainTracker::threadLoop() {
     // first one ever or a restart of a *terminal* one (shouldRunPass()'s own
     // canAffordNewSearch() call).
     u64 now_ns = OS::nanotime();
+
+    // Canary pre-tagging: tag each leaked candidate with a distinct
+    // marker tag (MARKER_TAG_BASE - i) so heapReferenceCallback()
+    // can prune at them. Runs on the BFS thread (same thread
+    // that calls FollowReferences). Only done once per search
+    // (when !_search_started and no candidates are tagged yet).
+    // Gated on gcGenerationsEnabled() because
+    // selectLeakCandidates() returns 0 without it.
+    if (!_search_started && _candidate_count == 0 &&
+        LivenessTracker::instance()->gcGenerationsEnabled()) {
+      KlassCandidate candidates[MAX_LEAK_CANDIDATES_FROM_LT];
+      int n = LivenessTracker::instance()->selectLeakCandidates(
+          candidates, MAX_LEAK_CANDIDATES_FROM_LT);
+      _candidate_count = n;
+      _candidate_found_bits = 0;
+      jvmtiEnv *jvmti = VM::jvmti();
+      JNIEnv *jni = VM::jni();
+      if (jvmti != nullptr && jni != nullptr) {
+        for (int i = 0; i < n; i++) {
+          jobject obj = jni->NewLocalRef(candidates[i].representative);
+          if (obj != nullptr) {
+            jlong tag = MARKER_TAG_BASE - i;
+            _candidate_tags[i] = tag;
+            jvmti->SetTag(obj, tag);
+          }
+          jni->DeleteLocalRef(obj);
+        }
+      }
+      TEST_LOG("ReferenceChainTracker::threadLoop canary pre-tagged %d candidates",
+               _candidate_count);
+    }
+
     bool should_run = shouldRunPass(now_ns);
     // Log the loop state only when a pass is actually going to run - the idle
     // wakes (should_run == false) are the common steady state and logging them
@@ -995,8 +1029,10 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   store(_last_pass_ns, (u64)0);
   store(_passes_run, 0);
   _passes_since_last_progress = 0;
-
-  // Unlike restartSearch(), which deliberately keeps _resolved_chains alive
+  _candidate_count = 0;
+  _candidate_found_bits = 0;
+  // _candidate_tags will be filled by pre-tagging in threadLoop().
+  // _candidate_frontier_tags will be filled at pruning time.
   // across a production restart, a test reset starts from a blank cache so
   // one test's resolved chains cannot leak into the next.
   _resolved_chains_lock.lock();
@@ -1361,6 +1397,43 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
     // therefore not yet negative. Same non-goal as above: never expand from
     // or admit a class object.
     return 0;
+  }
+
+  // Canary pruning: if this object is a pre-tagged leak
+  // candidate (marker tag MARKER_TAG_BASE - i, negative),
+  // record its chain link but do NOT enqueue its children
+  // (treat as a leaf). Do not return
+  // JVMTI_VISIT_ABORT -- that aborts the entire
+  // FollowReferences walk (JVMTI spec). Just skip
+  // admitObject() for this object.
+  if (*tag_ptr <= MARKER_TAG_BASE) {
+    int candidate_idx = (int)(MARKER_TAG_BASE - *tag_ptr);
+    if (candidate_idx >= 0 &&
+        candidate_idx < ctx->tracker->_candidate_count) {
+      jlong rtag = (referrer_tag_ptr != nullptr) ? *referrer_tag_ptr : 0;
+      if (rtag > 0) {
+        FrontierEntry parent{};
+        if (ctx->frontier->lookup(rtag, &parent)) {
+          // Use the marker tag as the frontier table key.
+          jlong frontier_tag = *tag_ptr;
+          ctx->frontier->insert(frontier_tag, rtag,
+                                  parent.referrer_klass,
+                                  parent.depth + 1,
+                                  FrontierEntryState::FRONTIER,
+                                  parent.root_kind);
+          ctx->tracker->_candidate_frontier_tags[candidate_idx] = frontier_tag;
+          ctx->tracker->_candidate_found_bits |= (1ULL << candidate_idx);
+          TEST_LOG("ReferenceChainTracker::heapReferenceCallback canary "
+                   "pruned candidate %d (tag=%lld frontier_tag=%lld)",
+                   candidate_idx, (long long)*tag_ptr,
+                   (long long)frontier_tag);
+        }
+      }
+      // Do NOT enqueue children for this object.
+      // Return 0 (continue the walk) -- NOT
+      // JVMTI_VISIT_ABORT.
+      return 0;
+    }
   }
 
   if (ctx->truncated) {
@@ -2496,6 +2569,12 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
     // the search must complete to find the leak before the app OOMs.
     store(_abandon_reason, (u8)SearchAbandonReason::TTL);
     storeRelease(_search_state, (u8)SearchState::ABANDONED);
+  } else if (_candidate_count > 0 &&
+             __builtin_popcountll(_candidate_found_bits) ==
+                 (u64)_candidate_count) {
+    // Canary early termination: all leaked candidates have been
+    // found -- the search is complete.
+    storeRelease(_search_state, (u8)SearchState::COMPLETED);
   }
 
   // Track progress: if the frontier grew this pass, reset the no-progress
@@ -2508,6 +2587,31 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
 
   if (load(_search_state) != SearchState::RUNNING) {
     _tags_released = releaseSearchTags(jvmti, jni);
+    // Release canary marker tags: use GetObjectsWithTags
+    // to find all live marker-tagged objects and clear
+    // them. DeleteLocalRef each object before
+    // Deallocate-ing the array (matches the
+    // existing pattern at referenceChains.cpp:2125-2133).
+    if (_candidate_count > 0) {
+      for (int i = 0; i < _candidate_count; i++) {
+        jlong tag = _candidate_tags[i];
+        jint count = 0;
+        jobject *objects = nullptr;
+        jlong *result_tags = nullptr;
+        jvmtiError cerr = jvmti->GetObjectsWithTags(
+            1, &tag, &count, &objects, &result_tags);
+        if (cerr == JVMTI_ERROR_NONE && count > 0) {
+          for (jint j = 0; j < count; j++) {
+            jvmti->SetTag(objects[j], 0);
+            jni->DeleteLocalRef(objects[j]);
+          }
+          jvmti->Deallocate((unsigned char *)objects);
+          jvmti->Deallocate((unsigned char *)result_tags);
+        }
+      }
+      _candidate_count = 0;
+      _candidate_found_bits = 0;
+    }
   }
 
   if (out_truncated != nullptr) {
@@ -2732,6 +2836,41 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
     // parent_tag/depth, referenceChains.h) skip it entirely the next time a
     // pass reached it.
     jlong tag = getTag(jvmti, obj);
+
+    // Canary search: if the candidate was pre-tagged with a marker
+    // tag (negative), use that tag directly for chain reconstruction.
+    // The marker tag is the key in the frontier table (inserted at
+    // pruning time in heapReferenceCallback()).
+    if (tag <= MARKER_TAG_BASE) {
+      // This is a canary candidate. Use the marker tag
+      // for buildChainEvent() lookup.
+      bool need_refresh = false;
+      _resolved_chains_lock.lock();
+      auto it = _resolved_chains.find(klass_id);
+      need_refresh = (it == _resolved_chains.end() ||
+                      it->second.source_tag != tag ||
+                      it->second.source_search_ns != current_search_ns);
+      _resolved_chains_lock.unlock();
+      TEST_LOG("ReferenceChainTracker::pollWatchedTargets canary candidate[%d] "
+               "klass_id=%u marker_tag=%lld needRefresh=%d",
+               i, klass_id, (long long)tag, need_refresh);
+      if (need_refresh) {
+        ReferenceChainEvent event;
+        bool built = buildChainEvent(tag, &event);
+        TEST_LOG("ReferenceChainTracker::pollWatchedTargets canary buildChainEvent(tag=%lld) -> %d",
+                 (long long)tag, built);
+        if (built) {
+          event._start_time = TSC::ticks();
+          cacheResolvedChain(klass_id, std::move(event), tag,
+                              current_search_ns);
+        }
+      }
+      jni->DeleteLocalRef(obj);
+      continue;
+    }
+
+    // Normal (non-canary) path: tag > 0 means the walk visited this
+    // object and assigned it a frontier tag.
 
     // Reconstruct only when this klass has no current chain cached: either
     // nothing cached yet, or what is cached was built from a different tag or

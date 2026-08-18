@@ -695,6 +695,23 @@ private:
   // stuck (not just slow) and is abandoned.
   int _passes_since_last_progress;
 
+  // Canary-search candidate set: pre-tagged with distinct
+  // marker tags (MARKER_TAG_BASE - i) before the walk.
+  // _candidate_found_bits is a packed bitmap (bit i = candidate i found).
+  // _candidate_tags[i] holds the marker tag for candidate i.
+  // _candidate_frontier_tags[i] holds the frontier tag assigned
+  // at pruning time for chain reconstruction.
+  // Reset by resetSearchStateForTest().
+  //
+  // MAX_LEAK_CANDIDATES_FROM_LT must match
+  // LivenessTracker::MAX_LEAK_CANDIDATES (livenessTracker.h:133).
+  // Duplicated here to avoid a heavy include chain.
+  static constexpr int MAX_LEAK_CANDIDATES_FROM_LT = 5;
+  int _candidate_count;
+  u64 _candidate_found_bits;
+  jlong _candidate_tags[MAX_LEAK_CANDIDATES_FROM_LT];
+  jlong _candidate_frontier_tags[MAX_LEAK_CANDIDATES_FROM_LT];
+
   // Pause-time pacing controller: the actual per-pass budget runPass() passes
   // to FollowReferences/expandFrontier(), replacing _budget's old role as a
   // literal per-pass value - _budget above becomes this controller's ceiling
@@ -1613,8 +1630,25 @@ public:
   // frontier stops growing entirely.
   static constexpr int NO_PROGRESS_PASS_LIMIT = 30;
 
+  // Base marker tag for canary-search candidates. Each candidate i
+  // gets MARKER_TAG_BASE - i (distinct negative values) so
+  // heapReferenceCallback() can tell which candidate was found.
+  // Negative to avoid collision with frontier tags (positive
+  // jlong from _next_tag, referenceChains.h:623). Class tags are
+  // always negative (nextClassTag() at referenceChains.h:1671),
+  // so a negative marker is disjoint from the frontier
+  // tag space.
+  static constexpr jlong MARKER_TAG_BASE = -(1LL << 62);
+
+  // Max candidates LivenessTracker::selectLeakCandidates() can return. Must match
+  // LivenessTracker::MAX_LEAK_CANDIDATES (livenessTracker.h:133). Duplicated here
+  // to avoid a heavy include chain (livenessTracker.h pulls jvmti.h).
+  // (Also declared in the private section above for field sizing.)
+
   // Test accessor for _passes_since_last_progress.
   int passesSinceLastProgressForTest() const { return _passes_since_last_progress; }
+  int candidateCountForTest() const { return _candidate_count; }
+  u64 candidateFoundBitsForTest() const { return _candidate_found_bits; }
 
   ReferenceChainTracker(const ReferenceChainTracker &) = delete;
   ReferenceChainTracker &operator=(const ReferenceChainTracker &) = delete;

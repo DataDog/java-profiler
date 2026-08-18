@@ -130,7 +130,7 @@ private:
   // min(max, MAX_LEAK_CANDIDATES, <number of positive-slope entries found>);
   // "no separate budget constant is needed" per the design doc, this top-N
   // cutoff doubles as the per-pass seeding cap.
-  constexpr static int MAX_LEAK_CANDIDATES = 5;
+  // (Moved to public section for ReferenceChainTracker access.)
 
   // --- Sustained-trend gate (hasQualifyingGrowth() below) ---
   // The original single-epoch test ("recent third's mean exceeds the
@@ -499,6 +499,8 @@ public:
   // Public read accessor for the auto-tuner (ReferenceChainTracker::autoTuneDefaults)
   // and secondsToOOM(). See _max_heap_bytes's own comment above.
   jlong maxHeapBytes() const { return _max_heap_bytes; }
+
+  constexpr static int MAX_LEAK_CANDIDATES = 5;
   // Delete copy constructor and assignment operator to prevent copies
   LivenessTracker(const LivenessTracker&) = delete;
   LivenessTracker& operator=(const LivenessTracker&) = delete;
