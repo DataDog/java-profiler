@@ -185,7 +185,7 @@ private:
 
   void lockAll();
   void unlockAll();
-  void beginTaskBlockRotation();
+  bool beginTaskBlockRotation();
   void endTaskBlockRotation();
 
   // Rotate all three dictionaries, then run jfr_op under lockAll().
@@ -507,7 +507,7 @@ public:
   static void unregisterThread(int tid);
 
 #ifdef UNIT_TEST
-  void beginTaskBlockRotationForTest() { beginTaskBlockRotation(); }
+  bool beginTaskBlockRotationForTest() { return beginTaskBlockRotation(); }
   void endTaskBlockRotationForTest() { endTaskBlockRotation(); }
   bool taskBlockRotationActiveForTest() const {
     return _task_block_rotation.load(std::memory_order_acquire);

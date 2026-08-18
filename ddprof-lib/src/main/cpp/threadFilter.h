@@ -266,7 +266,7 @@ public:
         inline void publishActiveBlockRun(OSThreadState state) {
             active_block_state.store(state, std::memory_order_release);
         }
-        inline void clearActiveBlockRun(OSThreadState) {
+        inline void clearActiveBlockRun() {
             active_block_state.store(OSThreadState::UNKNOWN, std::memory_order_release);
             resetSampledBlockGeneration();
             enableUnownedBlockedFallback();
@@ -340,6 +340,14 @@ public:
     bool activeOwnedBlockGeneration(const ThreadEntry& entry,
                                     u64& generation) const;
     bool isOwnedBlockSuppressionCandidate(const ThreadEntry& entry) const;
+    // Single-pass merge of activeOwnedBlockGeneration()/isOwnedBlockSuppressionCandidate():
+    // callers that need both the generation and the already-sampled state should use this
+    // instead of calling the two wrappers above in sequence, which would re-validate the
+    // same slot atomics twice.
+    bool ownedBlockDecision(const ThreadEntry& entry, bool& already_sampled,
+                            u64& generation) const {
+        return ownedBlockGeneration(entry, generation, already_sampled);
+    }
 
 #ifdef UNIT_TEST
     using SuppressionSnapshotHook = void (*)(void*);
@@ -406,7 +414,7 @@ public:
 
 private:
     bool ownedBlockGeneration(const ThreadEntry& entry, u64& generation,
-                              bool require_sampled) const;
+                              bool& already_sampled) const;
 
     // Lock-free free list using a stack-like structure
     struct FreeListNode {

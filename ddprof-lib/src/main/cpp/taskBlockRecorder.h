@@ -17,7 +17,6 @@ bool exceedsMinTaskBlockDuration(u64 start_ticks, u64 end_ticks);
 
 bool recordTaskBlockAtExit(ProfiledThread* current, ThreadFilter* thread_filter,
                            jthread thread, int start_depth, u64 block_token,
-                           ThreadFilter::SlotID slot_id, u64 generation,
                            u64 blocker, u64 unblocking_span_id);
 
 // Completes ThreadFilter lifecycle cleanup for an already-exited producer and

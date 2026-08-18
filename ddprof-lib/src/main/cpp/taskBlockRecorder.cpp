@@ -26,16 +26,10 @@ bool exceedsMinTaskBlockDuration(u64 start_ticks, u64 end_ticks) {
 
 bool recordTaskBlockAtExit(ProfiledThread* current, ThreadFilter* thread_filter,
                            jthread thread, int start_depth, u64 block_token,
-                           ThreadFilter::SlotID slot_id, u64 generation,
                            u64 blocker, u64 unblocking_span_id) {
   u64 start_ticks = 0;
   Context context{};
   if (!current->taskBlockExit(block_token, start_ticks, context)) {
-    return false;
-  }
-
-  if (slot_id != ThreadFilter::tokenSlotId(block_token) ||
-      generation != ThreadFilter::tokenGeneration(block_token)) {
     return false;
   }
 
@@ -51,7 +45,7 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
                            u64 unblocking_span_id) {
   Profiler* profiler = Profiler::instance();
   bool recording_enabled = profiler->taskBlockEnabled();
-  bool activity = profiler->tryEnterTaskBlockActivity();
+  TaskBlockActivity activity;
 
   ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(block_token);
   u64 generation = ThreadFilter::tokenGeneration(block_token);
@@ -63,23 +57,19 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
   bool exited = current_slot == slot_id &&
       thread_filter->snapshotAndExitBlockedRun(slot_id, generation, &snapshot);
 
-  if (!activity) {
-    Counters::increment(TASK_BLOCK_DROPPED_ROTATION);
+  if (!activity.active()) {
+    // TaskBlockActivity's constructor already incremented TASK_BLOCK_DROPPED_ROTATION.
     return false;
   }
   if (!recording_enabled || !exited) {
-    profiler->leaveTaskBlockActivity();
     return false;
   }
   if (!snapshot.context_eligible) {
     Counters::increment(TASK_BLOCK_SKIPPED_CONTEXT_WINDOW);
-    profiler->leaveTaskBlockActivity();
     return false;
   }
 
-  bool recorded = recordTaskBlockIfEligible(
+  return recordTaskBlockIfEligible(
       current->tid(), thread, start_depth, start_ticks, TSC::ticks(), context,
       blocker, unblocking_span_id, snapshot.active_state, true);
-  profiler->leaveTaskBlockActivity();
-  return recorded;
 }

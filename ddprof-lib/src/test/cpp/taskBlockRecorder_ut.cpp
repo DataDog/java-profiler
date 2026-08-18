@@ -137,6 +137,27 @@ TEST_F(TaskBlockRecorderTest, RotationWaitsForInflightActivity) {
   profiler->leaveTaskBlockActivity();
 }
 
+TEST_F(TaskBlockRecorderTest, RotationTimesOutOnStuckInflightActivity) {
+  Profiler* profiler = Profiler::instance();
+  ASSERT_TRUE(profiler->tryEnterTaskBlockActivity()); // leaked on purpose: simulates a stuck recorder
+  ASSERT_EQ(1, profiler->taskBlockInflightForTest());
+
+  auto start = std::chrono::steady_clock::now();
+  bool result = profiler->beginTaskBlockRotationForTest();
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  EXPECT_FALSE(result);
+  // Lower bound is deliberately looser than the 200ms timeout to avoid flakiness
+  // from clock/scheduling jitter around the deadline boundary.
+  EXPECT_GE(elapsed, std::chrono::milliseconds(150));
+  EXPECT_LT(elapsed, std::chrono::milliseconds(2000)); // sanity bound, not a tight timing assertion
+  EXPECT_FALSE(profiler->taskBlockRotationActiveForTest());
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_ROTATION_TIMEOUT));
+
+  profiler->leaveTaskBlockActivity(); // clean up the leaked inflight count for later tests
+  ASSERT_EQ(0, profiler->taskBlockInflightForTest());
+}
+
 TEST_F(TaskBlockRecorderTest, RotationRejectsEndWithoutStrandingLifecycle) {
   constexpr int tid = 12345;
   ThreadFilter filter;
@@ -157,9 +178,7 @@ TEST_F(TaskBlockRecorderTest, RotationRejectsEndWithoutStrandingLifecycle) {
   profiler->beginTaskBlockRotationForTest();
   std::future<bool> result = std::async(std::launch::async, [&]() {
     return recordTaskBlockAtExit(
-        current.get(), &filter, nullptr, 1, token,
-        ThreadFilter::tokenSlotId(token),
-        ThreadFilter::tokenGeneration(token), 0, 0);
+        current.get(), &filter, nullptr, 1, token, 0, 0);
   });
 
   std::future_status status = result.wait_for(std::chrono::seconds(1));

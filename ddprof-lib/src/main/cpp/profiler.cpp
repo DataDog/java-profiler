@@ -52,12 +52,14 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <errno.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/param.h>
+#include <time.h>
 #include <unistd.h>
 
 // The instance is not deleted on purpose, since profiler structures
@@ -863,11 +865,49 @@ void Profiler::leaveTaskBlockActivity() {
   _task_block_inflight.fetch_sub(1, std::memory_order_release);
 }
 
-void Profiler::beginTaskBlockRotation() {
+bool Profiler::beginTaskBlockRotation() {
+  static const long TASK_BLOCK_ROTATION_TIMEOUT_NS = 200000000L; // 200ms, matches SignalInflight::drain()
   _task_block_rotation.store(true, std::memory_order_release);
+  if (_task_block_inflight.load(std::memory_order_acquire) == 0) {
+    return true; // fast path: nothing in flight
+  }
+
+  struct timespec deadline;
+  if (clock_gettime(CLOCK_MONOTONIC, &deadline) != 0) {
+    Log::error("Profiler::beginTaskBlockRotation: clock_gettime(CLOCK_MONOTONIC) failed "
+               "(errno=%d). Skipping task-block rotation to avoid a stuck wait.", errno);
+    _task_block_rotation.store(false, std::memory_order_release);
+    return false;
+  }
+  deadline.tv_nsec += TASK_BLOCK_ROTATION_TIMEOUT_NS;
+  if (deadline.tv_nsec >= 1000000000L) {
+    deadline.tv_sec += 1;
+    deadline.tv_nsec -= 1000000000L;
+  }
+
   while (_task_block_inflight.load(std::memory_order_acquire) != 0) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+      Log::error("Profiler::beginTaskBlockRotation: clock_gettime(CLOCK_MONOTONIC) failed "
+                 "(errno=%d). Skipping task-block rotation to avoid a stuck wait.", errno);
+      _task_block_rotation.store(false, std::memory_order_release);
+      return false;
+    }
+    if (now.tv_sec > deadline.tv_sec ||
+        (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec)) {
+      u64 remaining = _task_block_inflight.load(std::memory_order_acquire);
+      Log::error("Profiler::beginTaskBlockRotation: timed out after %ldms waiting for "
+                 "%llu in-flight TaskBlock recording(s). Skipping task-block rotation; "
+                 "this indicates a stuck TaskBlock record path.",
+                 TASK_BLOCK_ROTATION_TIMEOUT_NS / 1000000L,
+                 (unsigned long long)remaining);
+      Counters::increment(TASK_BLOCK_ROTATION_TIMEOUT);
+      _task_block_rotation.store(false, std::memory_order_release);
+      return false;
+    }
     std::this_thread::yield();
   }
+  return true;
 }
 
 void Profiler::endTaskBlockRotation() {
@@ -1890,7 +1930,9 @@ Error Profiler::stop() {
   // Prevent existing paired intervals from recording during teardown. New
   // intervals were disabled above; this also drains endTaskBlock calls that
   // already entered their snapshot-and-record activity.
-  beginTaskBlockRotation();
+  if (!beginTaskBlockRotation()) {
+    return Error("task-block rotation did not drain; teardown skipped, retry stop()");
+  }
 
   if (_event_mask & EM_ALLOC)
     _alloc_engine->stop();
@@ -2055,12 +2097,15 @@ Error Profiler::dump(const char *path, const int length) {
     // dump (fences ASGCT/JNI writers to CallTraceStorage), then clearStandby()s
     // the rotated buffers.  StringDictionary's RefCountGuard protocol handles
     // its own writer/reader coordination.
-    beginTaskBlockRotation();
-    rotateDictsAndRun([&]{
-      err = _jfr.dump(path, length);
-      __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
-    });
-    endTaskBlockRotation();
+    if (beginTaskBlockRotation()) {
+      rotateDictsAndRun([&]{
+        err = _jfr.dump(path, length);
+        __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
+      });
+      endTaskBlockRotation();
+    } else {
+      err = Error("task-block rotation did not drain; dump skipped");
+    }
 
     _thread_info.clearAll(thread_ids);
     _thread_info.reportCounters();

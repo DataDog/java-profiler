@@ -24,4 +24,13 @@ public final class ProfilerOwnedBlockHooks {
     public static void blockExit(JavaProfiler profiler, long token) {
         profiler.blockExit(token);
     }
+
+    public static long beginTaskBlockForThread(JavaProfiler profiler, Thread thread) {
+        return profiler.beginTaskBlockForThread(thread);
+    }
+
+    public static boolean endTaskBlockForThread(JavaProfiler profiler, Thread thread, long token,
+            long blocker, long unblockingSpanId) {
+        return profiler.endTaskBlockForThread(thread, token, blocker, unblockingSpanId);
+    }
 }
