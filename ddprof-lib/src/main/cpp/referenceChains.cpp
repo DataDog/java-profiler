@@ -444,6 +444,7 @@ Error ReferenceChainTracker::start(Arguments &args) {
   // target is only known now, from args - same reason RateLimiter::start()
   // reconstructs its own _pid rather than mutating it in place.
   _pause_target_ms = args._reference_chains_pause_target_ms;
+  _effective_pause_target_ms = _pause_target_ms;
   _effective_budget = _budget;
   _effective_cadence_ns = PASS_CADENCE_NS;
   // Budget-borrowing (referenceChains.h's _borrowed_budget comment): reset
@@ -664,7 +665,32 @@ void ReferenceChainTracker::threadLoop() {
     // Fixed ~1s cadence, no early wake on GC (see onGCFinish()'s own
     // comment) - stopThread() still interrupts this via its own
     // pthread_kill so shutdown stays prompt.
-    OS::sleep(_effective_cadence_ns);
+    // Urgency-driven dynamic tuning: when secondsToOOM() signals the app
+    // is about to OOM, tighten cadence (passes run back-to-back) and
+    // raise the per-pass pause target so each pass explores more edges.
+    // The only SLO when urgent is the STW pause time (URGENT_PAUSE_TARGET_MS),
+    // not the configured TTL — runPass() suppresses TTL abandonment
+    // when isUrgent() for the same reason. Restored to the configured
+    // defaults once urgency clears. The PID controller is reconstructed
+    // whenever the target changes so its ceiling tracks the new value.
+    bool urgent = isUrgent();
+    long target_ms = urgent ? URGENT_PAUSE_TARGET_MS : _pause_target_ms;
+    if (target_ms != _effective_pause_target_ms) {
+      _effective_pause_target_ms = target_ms;
+      _pause_pid = PidController((u64)std::max(_effective_pause_target_ms, 0L),
+                                  10, 1, 2, 1, 5.0);
+      // When urgent, also raise the per-pass budget ceiling so the PID
+      // controller can let each pass explore more edges (fewer, longer
+      // passes instead of many short ones). The total STW time is the
+      // same, but the search converges faster.
+      if (urgent) {
+        _budget = std::min(_budget * 4, MAX_REFERENCE_CHAINS_BUDGET);
+      }
+      TEST_LOG("ReferenceChainTracker::threadLoop urgency=%d pauseTarget=%ldms budget=%d",
+               (int)urgent, _effective_pause_target_ms, _budget);
+    }
+    u64 cadence_ns = urgent ? URGENT_CADENCE_NS : _effective_cadence_ns;
+    OS::sleep(cadence_ns);
     if (!_running.load(std::memory_order_acquire)) {
       break;
     }
@@ -831,6 +857,11 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns) {
 // selectLeakCandidates() call - that one runs after runPass() in
 // threadLoop()'s own iteration and needs the *list* to poll each candidate's
 // tag; this only needs to know whether at least one exists.
+bool ReferenceChainTracker::isUrgent() const {
+  double seconds_to_oom = LivenessTracker::instance()->secondsToOOM();
+  return seconds_to_oom >= 0 && seconds_to_oom < OOM_URGENT_THRESHOLD_S;
+}
+
 bool ReferenceChainTracker::hasLeakSignal() {
   if (!LivenessTracker::instance()->gcGenerationsEnabled()) {
     // No population-trend signal to gate on at all - see this method's own
@@ -963,6 +994,7 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   _last_pass_gc_finish_epoch = 0;
   store(_last_pass_ns, (u64)0);
   store(_passes_run, 0);
+  _passes_since_last_progress = 0;
 
   // Unlike restartSearch(), which deliberately keeps _resolved_chains alive
   // across a production restart, a test reset starts from a blank cache so
@@ -1681,8 +1713,8 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   // own comment) - deliberately NOT applied to root/stack-ref enumeration
   // itself, which is instead cadence-gated by run_root_enum/
   // ROOT_ENUM_MIN_INTERVAL_NS.
-  _pass_deadline_ns = _pause_target_ms > 0
-                          ? OS::nanotime() + (u64)_pause_target_ms * 1000000ULL
+  _pass_deadline_ns = _effective_pause_target_ms > 0
+                          ? OS::nanotime() + (u64)_effective_pause_target_ms * 1000000ULL
                           : 0;
 
   *edges_admitted = 0;
@@ -2394,6 +2426,8 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   bool run_root_enum = manual_first_pass || _root_enum_truncated_last_time ||
                        (now_ns - _last_root_enum_ns >= ROOT_ENUM_MIN_INTERVAL_NS);
 
+  int frontier_size_before_pass = _frontier != nullptr ? _frontier->size() : 0;
+
   u64 call_start_ticks = TSC::ticks();
   runPassManualWalk(jvmti, jni, run_root_enum, _first_pass_budget,
                      _effective_budget, &edges_admitted, &truncated,
@@ -2445,15 +2479,31 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   // ordered CPU (e.g. arm64) where relaxed stores to two different atomics
   // carry no such guarantee.
   bool has_pending_frontier = truncated;
+  int frontier_size_after = _frontier->size();
   if (frontier_cap_hit) {
     store(_abandon_reason, (u8)SearchAbandonReason::FRONTIER_CAP);
     storeRelease(_search_state, (u8)SearchState::ABANDONED);
   } else if (!has_pending_frontier) {
     storeRelease(_search_state, (u8)SearchState::COMPLETED);
-  } else if (_ttl_ms > 0 &&
-             _last_pass_ns - _search_start_ns >= (u64)_ttl_ms * 1000000ULL) {
+  } else if (_passes_since_last_progress >= NO_PROGRESS_PASS_LIMIT &&
+             !isUrgent()) {
+    // The frontier hasn't grown for NO_PROGRESS_PASS_LIMIT consecutive
+    // passes — the search is genuinely stuck (not just slow), so
+    // abandon. A large heap takes more passes simply because
+    // there are more objects to explore; that is not "stuck".
+    // Only abandon when the frontier stops growing entirely.
+    // Suppressed when urgent (secondsToOOM() < OOM_URGENT_THRESHOLD_S):
+    // the search must complete to find the leak before the app OOMs.
     store(_abandon_reason, (u8)SearchAbandonReason::TTL);
     storeRelease(_search_state, (u8)SearchState::ABANDONED);
+  }
+
+  // Track progress: if the frontier grew this pass, reset the no-progress
+  // counter. Otherwise increment it.
+  if (frontier_size_after > frontier_size_before_pass) {
+    _passes_since_last_progress = 0;
+  } else {
+    _passes_since_last_progress++;
   }
 
   if (load(_search_state) != SearchState::RUNNING) {
@@ -2512,8 +2562,8 @@ void ReferenceChainTracker::updatePacing(u64 pass_wall_ticks) {
   // it immediately - _budget itself must stay the ceiling the instant this
   // search stops proving it has pause-time room to spare.
   bool comfortably_under_target =
-      _pause_target_ms > 0 &&
-      (double)pass_ms <= (double)_pause_target_ms * BORROW_UNDER_TARGET_FRACTION;
+      _effective_pause_target_ms > 0 &&
+      (double)pass_ms <= (double)_effective_pause_target_ms * BORROW_UNDER_TARGET_FRACTION;
   if (comfortably_under_target) {
     if (_consecutive_under_target_passes < BORROW_WARMUP_PASSES) {
       _consecutive_under_target_passes++;
@@ -2575,12 +2625,12 @@ void ReferenceChainTracker::updatePacing(u64 pass_wall_ticks) {
 // dispatch cost.
 void ReferenceChainTracker::maybeRevokeBorrowForRootEnumPass(
     u64 pass_wall_ticks) {
-  if (_pause_target_ms <= 0) {
+  if (_effective_pause_target_ms <= 0) {
     return;
   }
   u64 pass_ms = TSC::ticks_to_millis(pass_wall_ticks);
   bool comfortably_under_target =
-      (double)pass_ms <= (double)_pause_target_ms * BORROW_UNDER_TARGET_FRACTION;
+      (double)pass_ms <= (double)_effective_pause_target_ms * BORROW_UNDER_TARGET_FRACTION;
   if (!comfortably_under_target) {
     _consecutive_under_target_passes = 0;
     _borrowed_budget = 0;

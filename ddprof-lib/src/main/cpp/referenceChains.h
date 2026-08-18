@@ -681,6 +681,19 @@ private:
   // in start(); updatePacing() itself never reads it again, since it lives
   // inside _pause_pid's own _target once constructed.
   long _pause_target_ms;
+  // Runtime-adjusted pause target: when isUrgent(), this is bumped
+  // to URGENT_PAUSE_TARGET_MS so each pass can explore more edges.
+  // Restored to _pause_target_ms (the configured default) once
+  // urgency clears. The PID controller (_pause_pid) is
+  // reconstructed whenever this changes so its ceiling tracks
+  // the new target.
+  long _effective_pause_target_ms;
+  // Passes since the frontier last grew. Reset to 0 whenever
+  // _frontier->size() increases (new entries admitted).
+  // When this exceeds NO_PROGRESS_PASS_LIMIT without
+  // the frontier growing, the search is genuinely
+  // stuck (not just slow) and is abandoned.
+  int _passes_since_last_progress;
 
   // Pause-time pacing controller: the actual per-pass budget runPass() passes
   // to FollowReferences/expandFrontier(), replacing _budget's old role as a
@@ -974,6 +987,25 @@ private:
   // projected exhaustion, not measured against a real OOM race.
   static constexpr double OOM_URGENT_THRESHOLD_S = 300.0; // 5 minutes
 
+  // When urgency is detected (secondsToOOM() < OOM_URGENT_THRESHOLD_S),
+  // the search switches to an aggressive mode: TTL abandonment is
+  // suppressed (the search must complete before OOM), the
+  // per-pass pause target is raised (longer STW pauses are
+  // acceptable when the app is about to OOM anyway), and the
+  // cadence is tightened (passes run back-to-back). The
+  // only SLO is the STW pause time — bounded by
+  // URGENT_PAUSE_TARGET_MS, not the configured default.
+  static constexpr long URGENT_PAUSE_TARGET_MS = 50; // 50ms STW per pass when urgent
+  static constexpr u64 URGENT_CADENCE_NS = 10000000ULL;  // 10ms between passes when urgent
+
+  // Abandon the search after this many consecutive passes with
+  // zero new frontier entries admitted (genuinely stuck, not just slow).
+  // A large heap takes more passes simply because there are more
+  // objects to explore — that is not "stuck". Only abandon when the
+  // frontier stops growing entirely.
+
+  // True when LivenessTracker::secondsToOOM() projects exhaustion sooner
+
   // Auto-scaled default for _first_pass_budget when
   // Arguments::_reference_chains_first_pass_budget is unset (0) - see
   // _first_pass_budget's own comment for why plain _budget is the wrong
@@ -1163,6 +1195,7 @@ private:
         _gc_start_epoch(0),
         _gc_finish_epoch(0), _next_tag(1), _next_class_tag_magnitude(1),
         _hop_cap(0), _budget(0), _first_pass_budget(0), _ttl_ms(0), _pause_target_ms(0),
+        _effective_pause_target_ms(0), _passes_since_last_progress(0),
         _effective_budget(0), _effective_cadence_ns(PASS_CADENCE_NS),
         _pause_pid(1, 1.0, 1.0, 1.0, 1, 1.0), _search_started(false),
         _tags_released(true), _search_state(SearchState::RUNNING),
@@ -1212,6 +1245,27 @@ private:
   // this method, so a search already cooling down from a recent one's own
   // cost can still be deferred even while this returns true.
   bool hasLeakSignal();
+
+  // True when LivenessTracker::secondsToOOM() projects exhaustion sooner
+  // than OOM_URGENT_THRESHOLD_S. When true, runPass() suppresses TTL
+  // abandonment and threadLoop() tightens cadence + raises the pause
+  // target so the search completes before the app OOMs. The only SLO is
+  // the STW pause time, bounded by URGENT_PAUSE_TARGET_MS.
+  bool isUrgent() const;
+
+  // Abandon the search after this many consecutive passes with
+  // zero new frontier entries admitted (genuinely stuck, not just slow).
+  // A large heap takes more passes simply because there are more
+  // objects to explore — that is not "stuck". Only abandon when the
+  // frontier stops growing entirely.
+  // (Moved to public section for test access.)
+
+  // Abandon the search after this many consecutive passes with
+  // zero new frontier entries admitted (genuinely stuck, not just slow).
+  // A large heap takes more passes simply because there are more
+  // objects to explore — that is not "stuck". Only abandon when the
+  // frontier stops growing entirely.
+  // (Public for test access.)
 
   // Search restart gate (this class's own header comment): true once
   // _pain_budget has drained back to zero (canStartNow()) *and*
@@ -1551,6 +1605,16 @@ public:
     static ReferenceChainTracker instance;
     return &instance;
   }
+
+  // Abandon the search after this many consecutive passes with
+  // zero new frontier entries admitted (genuinely stuck, not just slow).
+  // A large heap takes more passes simply because there are more
+  // objects to explore — that is not "stuck". Only abandon when the
+  // frontier stops growing entirely.
+  static constexpr int NO_PROGRESS_PASS_LIMIT = 30;
+
+  // Test accessor for _passes_since_last_progress.
+  int passesSinceLastProgressForTest() const { return _passes_since_last_progress; }
 
   ReferenceChainTracker(const ReferenceChainTracker &) = delete;
   ReferenceChainTracker &operator=(const ReferenceChainTracker &) = delete;
