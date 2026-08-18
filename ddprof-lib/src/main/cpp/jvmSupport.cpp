@@ -6,10 +6,12 @@
 #include "jvmSupport.inline.h"
 
 #include "asyncSampleMutex.h"
+#include "common.h"
 #include "frames.h"
 #include "os.h"
 #include "profiler.h"
-#include "threadLocalData.h"
+#include "threadLocalData.inline.h"
+#include "threadLocalDataPool.h"
 #include "vmEntry.h"
 
 #include "hotspot/hotspotSupport.h"
@@ -39,7 +41,18 @@ bool JVMSupport::initialize() {
     }
 
     // Check ProfiledThread key, it is critical for storing per-thread metadata
-    return ProfiledThread::isThreadKeyValid();
+    bool validKey = ProfiledThread::isThreadKeyValid();
+    if (validKey && ProfiledThread::supportPriming()) {
+        ThreadLocalDataPool::initialize();
+    } else {
+        if (!validKey) {
+            LOG_WARN("ProfiledThread TLS key creation failed");
+        } else {
+            LOG_WARN("Thread TLS priming is not supported");
+        }
+    }
+
+    return validKey;
 }
 
 bool JVMSupport::isInitialized() {

@@ -19,6 +19,7 @@
 #include "arch.h"
 #include "arguments.h"
 #include "buffers.h"
+#include "common.h"
 #include "countingAllocator.h"
 #include "counters.h"
 #include "dictionary.h"

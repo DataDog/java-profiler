@@ -16,7 +16,10 @@
 
 #include "signalSafety.h"
 #include "threadLocalData.h"
+#include "threadLocalDataPool.h"
+#include "os.h"
 #include <gtest/gtest.h>
+#include <thread>
 
 class SignalSafetyTest : public ::testing::Test {
 protected:
@@ -164,4 +167,30 @@ TEST(SignalSafetyTestNoContext, NullProfiledThreadDepthIsZero) {
     // Mutation guard: getInSignalDepth() must return 0 on null PT, not a
     // sentinel that happens to equal zero today.
     EXPECT_EQ(0, getInSignalDepth());
+}
+
+// SIGNAL_HANDLER_GUARD_OR_DROP() relies on SignalHandlerScope(true) reporting
+// isActive()==false when ProfiledThread::acquireCurrent() cannot prime a
+// thread context (priming unsupported or the pool exhausted) — that is what
+// makes the sampler drop the sample instead of touching a null pointer.
+// This binary never calls ThreadLocalDataPool::initialize() (that only
+// happens via JVMSupport::initialize(), which nothing here invokes), so the
+// pool singleton stays null and acquireCurrent() is guaranteed to fail on a
+// fresh thread that hasn't run SetUp()'s initCurrentThread().
+TEST(SignalSafetyTestNoContext, PrimingFailureLeavesScopeInactive) {
+    std::thread t([] {
+        ASSERT_EQ(nullptr, ProfiledThread::current());
+        ASSERT_EQ(nullptr, ThreadLocalDataPool::acquire(OS::threadId()));
+
+        EXPECT_EQ(0, getInSignalDepth());
+        {
+            SignalHandlerScope scope(true);
+            EXPECT_FALSE(scope.isActive());
+            EXPECT_EQ(nullptr, scope.current());
+            // Depth is unaffected — the scope never touched any counter.
+            EXPECT_EQ(0, getInSignalDepth());
+        }
+        EXPECT_EQ(0, getInSignalDepth());
+    });
+    t.join();
 }

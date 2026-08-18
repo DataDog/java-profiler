@@ -3,18 +3,18 @@
  */
 
 #include <gtest/gtest.h>
-#include "../../main/cpp/stackWalker.h"
-#include "../../main/cpp/gtest_crash_handler.h"
+#include "stackWalker.h"
+#include "gtest_crash_handler.h"
 
 #ifdef __linux__
 #include <algorithm>
 #include <sys/mman.h>
 #include <ucontext.h>
-#include "../../main/cpp/counters.h"
-#include "../../main/cpp/os.h"
-#include "../../main/cpp/profiler.h"
-#include "../../main/cpp/stackFrame.h"
-#include "../../main/cpp/threadLocalData.h"
+#include "counters.h"
+#include "os.h"
+#include "profiler.h"
+#include "stackFrame.h"
+#include "threadLocalData.inline.h"
 
 [[maybe_unused]] static long long* _stackwalker_ut_counters_init = Counters::getCounters();
 #endif

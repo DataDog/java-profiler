@@ -27,6 +27,11 @@
 
 class ProfiledThread;
 
+// Block all profiling signals while a thread is exiting. Without this,
+// a profiling signal delivered during the release()/pthread-teardown race
+// window can allocate a new ProfiledThread that can never be freed (leak).
+void blockProfilingForExit();
+
 // ---------------------------------------------------------------------------
 // Signal-context depth tracking — always on.
 //
@@ -45,11 +50,12 @@ class ProfiledThread;
 // pthread_getspecific (POSIX guarantees it does not allocate; returns
 // nullptr when unset).
 //
-// When ProfiledThread is null on a thread we don't yet have a thread
-// context — uninstrumented JVM-internal threads (VM Thread, JIT, GC) fall
-// into this bucket too, and they can receive signals.  The
-// SignalHandlerScope guard is a no-op on those threads (nothing to
-// update), so isInTrackedSignalContext() returns false: production code
+// When ProfiledThread is null or via thread priming on a thread
+// - Uninstrumented JVM-internal threads now get a ProfiledThread via priming when 
+// supportPriming() allows it, so isInTrackedSignalContext() does track them once primed. 
+// The no-ProfiledThread (returns false) path only applies when priming is unavailable or 
+// the pool is exhausted. The SignalHandlerScope guard is a no-op on those threads
+// (nothing to update), so isInTrackedSignalContext() returns false: production code
 // prefers synchronous refresh() on null-PT threads because (a) those
 // threads regularly call dlopen during normal JVM operation, and (b)
 // wasmtime's broken sigaction patching depends on switchLibraryTrap
@@ -78,24 +84,51 @@ bool isInTrackedSignalContext();
 // Internal RAII type — do not instantiate directly; use the macros below.
 class SignalHandlerScope {
 public:
-    SignalHandlerScope();
+    SignalHandlerScope(bool shouldRunPriming = true);
     ~SignalHandlerScope();
     void release();
     SignalHandlerScope(const SignalHandlerScope&)            = delete;
     SignalHandlerScope& operator=(const SignalHandlerScope&) = delete;
+
+    bool isActive() const { return _active; }
+    ProfiledThread* current() const { return _current; }
 private:
+    ProfiledThread* _current;
     bool _active;
     DEBUG_ONLY(int _signal_depth;)
 };
 
-// Declare a scope guard local that increments the depth on entry and
-// decrements on scope exit.  Use as the very first statement in every
-// installed signal handler.
-#define SIGNAL_HANDLER_GUARD() SignalHandlerScope _signal_handler_scope
+// Shared drop-path body for the SIGNAL_HANDLER_GUARD_OR_DROP* macros below.
+// extra_stmt runs after the dropped-sample counter increment and before the
+// return, so both macros stay in lockstep as the drop-accounting logic
+// evolves.
+#define SIGNAL_HANDLER_GUARD_OR_DROP_IMPL(extra_stmt)       \
+      SignalHandlerScope _signal_handler_scope(true);       \
+      if (!_signal_handler_scope.isActive()) {              \
+        Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);  \
+        extra_stmt;                                         \
+        return;                                             \
+      }
 
-// Manually release the most recent SIGNAL_HANDLER_GUARD() before chaining to
-// another handler that may siglongjmp through us (e.g. J9's SIGSEGV null-pointer
-// check handler).  After release(), depth has already been decremented; the
+// Declare a scope guard local that increments the depth on entry and
+// decrements on scope exit.  Use as the first statement after any 
+// foreign-signal-origin rejection check, before any profiling-owned work
+#define SIGNAL_HANDLER_GUARD_OR_DROP() SIGNAL_HANDLER_GUARD_OR_DROP_IMPL((void)0)
+#define SIGNAL_HANDLER_GUARD_OR_DROP_WITH_ERRNO(err) SIGNAL_HANDLER_GUARD_OR_DROP_IMPL(errno = err)
+
+
+// Declare a scope guard local that increments the depth on entry and
+// decrements on scope exit.  Use as the first statement of non-profiling
+// signal handlers (segvHandler, busHandler and wakeupHandler) 
+#define SIGNAL_HANDLER_GUARD_NO_SAMPLE()                    \
+      SignalHandlerScope _signal_handler_scope(false);
+
+// Cheaper way to retrieve current ProfiledThread inside the scope
+#define SIGNAL_HANDLER_CURRENT_THREAD() _signal_handler_scope.current()
+
+// Manually release the most recent SIGNAL_HANDLER_GUARD_OR_DROP()/SIGNAL_HANDLER_GUARD_NO_SAMPLE()
+// before chaining to another handler that may siglongjmp through us (e.g. J9's SIGSEGV
+// null-pointer check handler).  After release(), depth has already been decremented; the
 // destructor becomes a no-op.
 #define SIGNAL_HANDLER_GUARD_RELEASE() _signal_handler_scope.release()
 
@@ -159,9 +192,13 @@ private:
 /**
  * Race-free critical section using atomic compare-and-swap.
  *
- * Hybrid implementation:
- * - Primary: Uses ProfiledThread storage when available (zero memory overhead)
- * - Fallback: Hash-based bitmap for stress tests and cases without ProfiledThread
+ * Backed by ProfiledThread::_in_critical_section (zero extra memory
+ * overhead). ProfiledThread::acquireCurrent() is used instead of current()
+ * so that a not-yet-primed thread can still get a ProfiledThread from
+ * ThreadLocalDataPool's pre-allocated pool. If priming is unsupported
+ * (e.g. macOS) and the pool is exhausted, acquireCurrent() returns
+ * nullptr and entered() is simply false — there is no unguarded thread
+ * pointer dereference in that case.
  *
  * This approach is async-signal-safe and avoids TLS allocation issues.
  *
@@ -190,21 +227,11 @@ private:
  */
 class CriticalSection {
 private:
-    static constexpr size_t FALLBACK_BITMAP_WORDS = 1024;  // 8KB for 64K bits
-    // Atomic bitmap for thread-safe critical section tracking without TLS
-    // Must be atomic because multiple signal handlers can run concurrently across
-    // different threads and attempt to set/clear bits simultaneously. Compare-and-swap
-    // operations ensure race-free bit manipulation even during signal interruption.
-    static uint64_t _fallback_bitmap[FALLBACK_BITMAP_WORDS];
-
     bool _entered;          // Track if this instance successfully entered
-    bool _using_fallback;   // Track which storage mechanism we're using
-    uint32_t _word_index;   // For fallback bitmap cleanup
-    uint64_t _bit_mask;     // For fallback bitmap cleanup
     ProfiledThread* _thread_ptr; // ProfiledThread captured at construction
 
 public:
-    CriticalSection();
+    CriticalSection(ProfiledThread* pt = nullptr);
     ~CriticalSection();
 
     // Non-copyable, non-movable
@@ -215,10 +242,6 @@ public:
 
     // Check if this instance successfully entered the critical section
     bool entered() const { return _entered; }
-
-private:
-    // Hash function to distribute thread IDs across bitmap words
-    static uint32_t hash_tid(int tid);
 };
 
 /**

@@ -72,7 +72,7 @@ private:
 };
 
 // RAII guard for signal-handler in-flight tracking. Construct as the first
-// statement (after SIGNAL_HANDLER_GUARD) of any signal handler that can
+// statement (after SIGNAL_HANDLER_GUARD_*) of any signal handler that can
 // write JFR; the counter is incremented on construction and decremented on
 // destruction, balancing automatically across every return path.
 class InflightGuard {

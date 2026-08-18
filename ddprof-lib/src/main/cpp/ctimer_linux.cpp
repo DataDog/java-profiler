@@ -27,6 +27,7 @@
 #include "log.h"
 #include "profiler.h"
 #include "signalCookie.h"
+#include "threadLocalData.inline.h"
 #include "threadState.inline.h"
 #include <assert.h>
 #include <errno.h>
@@ -205,7 +206,7 @@ Error CTimerJvmti::start(Arguments &args) {
 }
 
 void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
-  SIGNAL_HANDLER_GUARD();
+  int saved_errno = errno;
   if (!OS::shouldProcessSignal(siginfo, SI_TIMER, SignalCookie::cpu())) {
     Counters::increment(CTIMER_SIGNAL_FOREIGN);
     OS::forwardForeignSignal(signo, siginfo, ucontext);
@@ -213,32 +214,32 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   }
   Counters::increment(CTIMER_SIGNAL_OWN);
 
+  SIGNAL_HANDLER_GUARD_OR_DROP_WITH_ERRNO(saved_errno);
   InflightGuard inflight;
+  ProfiledThread *current = SIGNAL_HANDLER_CURRENT_THREAD();
+  assert(!current->isDeepCrashHandler());
 
-  CriticalSection cs;
+  CriticalSection cs(current);
   if (!cs.entered()) {
+    errno = saved_errno;
     return;
   }
-  int saved_errno = errno;
   if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
     errno = saved_errno;
     return;
   }
   int tid = 0;
-  ProfiledThread *current = ProfiledThread::current();
-  assert(current == nullptr || !current->isDeepCrashHandler());
-  if (current != nullptr && JVMThread::current() == nullptr
+
+  if (JVMThread::current() == nullptr
       && current->inInitWindow()) {
     current->tickInitWindow();
     errno = saved_errno;
     return;
   }
-  if (current != NULL) {
-    current->noteCPUSample(Profiler::instance()->recordingEpoch());
-    tid = current->tid();
-  } else {
-    tid = OS::threadId();
-  }
+
+  current->noteCPUSample(Profiler::instance()->recordingEpoch());
+  tid = current->tid();
+
   Shims::instance().setSighandlerTid(tid);
 
   ExecutionEvent event;
@@ -254,7 +255,8 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 }
 
 void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
-  SIGNAL_HANDLER_GUARD();
+  int saved_errno = errno;
+
   // Reject signals that did not originate from our timer_create timers.
   // This guards against Go's process-wide setitimer(ITIMER_PROF) and other
   // foreign SIGPROF sources that would otherwise drive our handler onto
@@ -266,39 +268,33 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   }
   Counters::increment(CTIMER_SIGNAL_OWN);
 
+  SIGNAL_HANDLER_GUARD_OR_DROP_WITH_ERRNO(saved_errno);
   InflightGuard inflight;
+  ProfiledThread* current = SIGNAL_HANDLER_CURRENT_THREAD();
+  assert(current != nullptr);
 
   // Atomically try to enter critical section - prevents all reentrancy races
-  CriticalSection cs;
+  CriticalSection cs(current);
   if (!cs.entered()) {
     return;  // Another critical section is active, defer profiling
   }
-  // Save the current errno value
-  int saved_errno = errno;
   // we want to ensure memory order because of the possibility the instance gets
   // cleared
   if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
     return;
   }
-  int tid = 0;
-  ProfiledThread *current = ProfiledThread::current();
-  assert(current == nullptr || !current->isDeepCrashHandler());
+  assert(!current->isDeepCrashHandler());
   // Guard against the race window between Profiler::registerThread() and
   // thread_native_entry setting JVM TLS (PROF-13072): skip at most one signal
   // per thread. Pure native threads (where JVMThread::current() is always null)
   // are allowed through once the one-shot window expires.
-  if (current != nullptr && JVMThread::current() == nullptr
-      && current->inInitWindow()) {
+  if (JVMThread::current() == nullptr && current->inInitWindow()) {
     current->tickInitWindow();
     errno = saved_errno;
     return;
   }
-  if (current != NULL) {
-    current->noteCPUSample(Profiler::instance()->recordingEpoch());
-    tid = current->tid();
-  } else {
-    tid = OS::threadId();
-  }
+  current->noteCPUSample(Profiler::instance()->recordingEpoch());
+  int tid = current->tid();
   Shims::instance().setSighandlerTid(tid);
 
   ExecutionEvent event;

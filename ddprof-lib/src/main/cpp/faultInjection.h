@@ -171,14 +171,7 @@ inline T injectValue(T orig, T faulty, u64 threshold, const char* fn) {
 #define INJECT_FAULT_ADDRESS_UNLIKELY(ptr) (ptr)
 #define INJECT_FAULT_ADDRESS_LIKELY(ptr)   (ptr)
 #define INJECT_FAULT_ADDRESS_HIGH(ptr)     (ptr)
-
-#define INJECT_FAULT_INT_RARE(v)     (v)
-#define INJECT_FAULT_INT_UNLIKELY(v) (v)
-#define INJECT_FAULT_INT_LIKELY(v)   (v)
-
-#define INJECT_FAULT_LONG_RARE(v)     (v)
-#define INJECT_FAULT_LONG_UNLIKELY(v) (v)
-#define INJECT_FAULT_LONG_LIKELY(v)   (v)
+#define INJECT_FAULT_ADDRESS_HIGH(ptr)     (ptr)
 
 #define INJECT_FAULT_BOOL_RARE(v)     (v)
 #define INJECT_FAULT_BOOL_UNLIKELY(v) (v)

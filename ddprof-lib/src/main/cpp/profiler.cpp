@@ -35,6 +35,7 @@
 #include "stackFrame.h"
 #include "stackWalker.h"
 #include "symbols.h"
+#include "threadLocalData.inline.h"
 #include "tsc.h"
 #include "utils.h"
 #include "wallClock.h"
@@ -120,7 +121,7 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     // close the window where a wall-clock/CPU signal could sample a
     // partially-torn-down thread (PROF-14674).
     {
-      SignalBlocker blocker;
+      blockProfilingForExit();
       _cpu_engine->unregisterThread(tid);
       _wall_engine->unregisterThread(tid);
       LivenessTracker::instance()->releaseThreadLocalState();
@@ -531,8 +532,15 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
 }
 
 u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event_type, Event *event, bool deferred) {
+  // Called from non-signal based sampler
+  ProfiledThread* prof_thread = ProfiledThread::initCurrentThreadSignalSafe();
+  if (prof_thread == nullptr) {
+    Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
+    return 0;
+  }
+
   // Protect JVMTI sampling operations to prevent signal handler interference
-  CriticalSection cs;
+  CriticalSection cs(prof_thread);
   atomicIncRelaxed(_total_samples);
 
   u32 lock_index = getLockIndex(tid);
@@ -777,8 +785,15 @@ void Profiler::recordQueueTime(int tid, QueueTimeEvent *event) {
 void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
                                     ASGCT_CallFrame *frames, bool truncated,
                                     jint event_type, Event *event) {
+  // This is a non-signal based sampler
+  ProfiledThread* current = ProfiledThread::initCurrentThreadSignalSafe();
+  if (current == nullptr) {
+    Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
+    return;
+  }
+
   // Protect external sampling operations to prevent signal handler interference
-  CriticalSection cs;
+  CriticalSection cs(current);
   atomicIncRelaxed(_total_samples);
 
   u32 lock_index = getLockIndex(tid);
@@ -891,10 +906,10 @@ bool Profiler::prewarmUnwinder() {
   // libgcc_s.so.1 has been the stable SONAME since 2002; a bump would
   // constitute a glibc/GCC C++ ABI break and is treated as a fixed contract.
   //
-  // INJECT_FAULT_BOOL_LIKELY lets fault-injection builds force this to
+  // INJECT_FAULT_BOOL_HIGH lets fault-injection builds force this to
   // report failure without the library actually being absent, so
   // checkState()'s "Missing libgcc_s.so" path can be exercised in CI.
-  return INJECT_FAULT_BOOL_LIKELY(dlopen("libgcc_s.so.1", RTLD_LAZY | RTLD_GLOBAL) != nullptr);
+  return INJECT_FAULT_BOOL_HIGH(dlopen("libgcc_s.so.1", RTLD_LAZY | RTLD_GLOBAL) != nullptr);
 #else
   return true;
 #endif
@@ -970,7 +985,7 @@ void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // the lesser of two evils — leaking depth on siglongjmp would silently
   // break the production deferred-refresh gate, while the sanitizer gap
   // is bounded to third-party signal handler code we don't own.
-  SIGNAL_HANDLER_GUARD();
+  SIGNAL_HANDLER_GUARD_NO_SAMPLE();
   if (crashHandlerInternal(signo, siginfo, ucontext)) {
     return;  // Handled — destructor decrements depth
   }
@@ -987,7 +1002,7 @@ void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 void Profiler::busHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // See segvHandler: release before chaining in case the chained handler
   // siglongjmps through us.
-  SIGNAL_HANDLER_GUARD();
+  SIGNAL_HANDLER_GUARD_NO_SAMPLE();
   if (crashHandlerInternal(signo, siginfo, ucontext)) {
     return;  // Handled — destructor decrements depth
   }
