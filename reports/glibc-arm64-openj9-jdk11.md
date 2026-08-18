@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk11
 
 ## glibc-arm64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-08-18 10:51:41 EDT
+**Date:** 2026-08-18 10:58:02 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 121 |
-| Sample Rate | 2.02/sec |
-| Health Score | 126% |
-| Threads | 11 |
-| Allocations | 61 |
+| CPU Samples | 132 |
+| Sample Rate | 2.20/sec |
+| Health Score | 138% |
+| Threads | 10 |
+| Allocations | 88 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 392 |
-| Sample Rate | 6.53/sec |
-| Health Score | 408% |
-| Threads | 13 |
-| Allocations | 153 |
+| CPU Samples | 871 |
+| Sample Rate | 14.52/sec |
+| Health Score | 907% |
+| Threads | 10 |
+| Allocations | 503 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 34-34 cores)</summary>
 
 ```
-1787064372 34
-1787064377 34
-1787064382 34
-1787064387 34
-1787064392 34
-1787064397 34
-1787064402 34
-1787064407 34
-1787064412 34
-1787064417 34
-1787064422 34
-1787064427 34
-1787064432 34
-1787064437 34
-1787064442 34
-1787064447 34
-1787064452 34
-1787064457 34
-1787064462 34
-1787064467 34
+1787064816 34
+1787064821 34
+1787064826 34
+1787064831 34
+1787064836 34
+1787064841 34
+1787064846 34
+1787064851 34
+1787064856 34
+1787064861 34
+1787064866 34
+1787064871 34
+1787064876 34
+1787064881 34
+1787064886 34
+1787064891 34
+1787064896 34
+1787064901 34
+1787064906 34
+1787064911 34
 ```
 </details>
 
