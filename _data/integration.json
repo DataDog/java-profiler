@@ -1,6 +1,29 @@
 {
   "runs": [
     {
+      "id": "131517864",
+      "timestamp": "2026-08-18T09:19:50Z",
+      "ddprof_branch": "main",
+      "ddprof_sha": "ea7f6dbf9a15ab1670ca2192e17174f61b698e13",
+      "ddprof_pr": null,
+      "pipeline": {
+        "id": "131517864",
+        "url": "https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/131517864"
+      },
+      "lib_version": "unknown",
+      "status": "passed",
+      "summary": {
+        "total_jobs": 40,
+        "passed_jobs": 40,
+        "failed_jobs": 0,
+        "total_scenarios": 80,
+        "passed_scenarios": 80,
+        "failed_scenarios": 0,
+        "unknown_scenarios": 0,
+        "failed_configs": []
+      }
+    },
+    {
       "id": "131490793",
       "timestamp": "2026-08-18T04:57:08Z",
       "ddprof_branch": "main",
@@ -197,29 +220,6 @@
       "pipeline": {
         "id": "131346449",
         "url": "https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/131346449"
-      },
-      "lib_version": "unknown",
-      "status": "passed",
-      "summary": {
-        "total_jobs": 40,
-        "passed_jobs": 40,
-        "failed_jobs": 0,
-        "total_scenarios": 80,
-        "passed_scenarios": 80,
-        "failed_scenarios": 0,
-        "unknown_scenarios": 0,
-        "failed_configs": []
-      }
-    },
-    {
-      "id": "131321900",
-      "timestamp": "2026-08-17T13:18:28Z",
-      "ddprof_branch": "main",
-      "ddprof_sha": "8242f1961e56ae1e48149c4ad3c1f1591cf20f1d",
-      "ddprof_pr": null,
-      "pipeline": {
-        "id": "131321900",
-        "url": "https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/131321900"
       },
       "lib_version": "unknown",
       "status": "passed",
