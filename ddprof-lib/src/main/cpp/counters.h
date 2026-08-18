@@ -83,6 +83,7 @@
   X(WC_SIGNAL_QUEUE_FULL, "wc_signals_queue_full")                             \
   X(TASK_BLOCK_EMITTED, "task_block_emitted")                                 \
   X(TASK_BLOCK_SKIPPED_TRACE_CONTEXT, "task_block_skipped_trace_context")     \
+  X(TASK_BLOCK_SKIPPED_CONTEXT_WINDOW, "task_block_skipped_context_window")   \
   X(TASK_BLOCK_SKIPPED_TOO_SHORT, "task_block_skipped_too_short")             \
   X(TASK_BLOCK_STACK_CAPTURE_FAILED, "task_block_stack_capture_failed")      \
   X(TASK_BLOCK_RECORD_FAILED, "task_block_record_failed")                     \

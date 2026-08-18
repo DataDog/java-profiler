@@ -269,7 +269,7 @@ public:
         inline void clearActiveBlockRun(OSThreadState) {
             active_block_state.store(OSThreadState::UNKNOWN, std::memory_order_release);
             resetSampledBlockGeneration();
-            resetUnownedBlockedSampling();
+            enableUnownedBlockedFallback();
             active_block_owner.store(static_cast<int>(BlockRunOwner::NONE), std::memory_order_release);
         }
         inline bool activeBlockRemainedOutsideContextWindow() const {

@@ -165,40 +165,6 @@ Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
 
 // some duplication between add and remove, though we want to avoid having an extra branch in the hot path
 
-static ThreadFilter::SlotID ensureCurrentThreadFilterSlot(
-    ThreadFilter *thread_filter, ProfiledThread *current) {
-  int tid = current->tid();
-  if (unlikely(tid < 0)) {
-    return -1;
-  }
-
-  ThreadFilter::SlotID slot_id = current->filterSlotId();
-  if (likely(slot_id >= 0)) {
-    if (likely(thread_filter->activeSlotForId(slot_id, tid) != nullptr)) {
-      return slot_id;
-    }
-    current->setFilterSlotId(-1);
-  }
-
-  // Startup can register this TID centrally, but it cannot update another
-  // pthread's TLS. registerThread(tid) reuses that existing slot.
-  //
-  // This is the only place a JavaCritical fast path (filterThreadAdd0,
-  // parkEnter0, blockEnter0) can block on _registry_lock. It's bounded to at
-  // most once per thread lifetime (cold TLS) plus once per recording-epoch
-  // transition this thread observes (stale cached slot) - not a per-call cost.
-  // THREAD_REGISTRY_JAVACRITICAL_REREGISTRATION makes that bound observable;
-  // if it starts firing per-sample rather than per-thread/per-recording, the
-  // "provably rare" assumption has broken and the JavaCritical dispatch should
-  // be revisited.
-  Counters::increment(THREAD_REGISTRY_JAVACRITICAL_REREGISTRATION);
-  slot_id = thread_filter->registerThread(tid);
-  if (slot_id >= 0) {
-    current->setFilterSlotId(slot_id);
-  }
-  return slot_id;
-}
-
 // JavaCritical is faster JNI, but more restrictive - parameters and return value have to be
 // primitives or arrays of primitive types.
 // We direct corresponding JNI calls to JavaCritical to make sure the parameters/return value
@@ -220,7 +186,7 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
     return;
   }
   
-  int slot_id = ensureCurrentThreadFilterSlot(thread_filter, current);
+  int slot_id = thread_filter->ensureCurrentThreadSlot(current);
   if (unlikely(slot_id < 0)) {
     return;  // Failed to register thread
   }
@@ -228,7 +194,7 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
     // The cached slot_id was rejected (lazy tid-index fallback failed under
     // this thread's own registry reset race, or the tid index is exhausted).
     // Clear the cache so the next filterThreadAdd0()/parkEnter0()/blockEnter0()
-    // call re-runs ensureCurrentThreadFilterSlot()'s registerThread() path
+    // call re-runs ensureCurrentThreadSlot()'s registerThread() path
     // instead of leaving this thread permanently outside the context window.
     current->setFilterSlotId(-1);
   }
@@ -432,7 +398,7 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) 
   bool first_park = current->parkEnter();
   ThreadFilter *tf = Profiler::instance()->threadFilter();
   if (first_park && tf->registryActive()) {
-    ThreadFilter::SlotID slot_id = ensureCurrentThreadFilterSlot(tf, current);
+    ThreadFilter::SlotID slot_id = tf->ensureCurrentThreadSlot(current);
     if (slot_id >= 0) {
       current->setParkBlockToken(
           tf->enterBlockedRun(slot_id, OSThreadState::CONDVAR_WAIT));
@@ -491,7 +457,7 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
   if (!profiler->taskBlockEnabled() && !tf->registryActive()) {
     return 0;
   }
-  ThreadFilter::SlotID slot_id = ensureCurrentThreadFilterSlot(tf, current);
+  ThreadFilter::SlotID slot_id = tf->ensureCurrentThreadSlot(current);
   if (slot_id < 0) return 0;
   return static_cast<jlong>(tf->enterBlockedRun(slot_id, decoded));
 }
@@ -533,7 +499,7 @@ Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
   }
   ThreadFilter *tf = profiler->threadFilter();
   if (!tf->unfilteredWallTrackingActive()) return 0;
-  ThreadFilter::SlotID slot_id = ensureCurrentThreadFilterSlot(tf, current);
+  ThreadFilter::SlotID slot_id = tf->ensureCurrentThreadSlot(current);
   if (slot_id < 0) return 0;
 
   Context context = ContextApi::snapshot();
