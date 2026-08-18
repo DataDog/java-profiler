@@ -26,7 +26,7 @@ import java.util.concurrent.atomic.LongAdder;
  *     <li>profiler-sequence [';'-delimited steps] - runs a sequence of start/stop calls in this
  *     process; each step is either the literal {@code STOP} (calls {@link JavaProfiler#stop()})
  *     or a comma delimited profiler command list (calls {@link JavaProfiler#execute(String)})</li>
- *     <li>entry-frames [comma delimited profiler command list] - starts the profiler, then burns
+ *     <li>entry-frames &lt;comma delimited profiler command list, required&gt; - starts the profiler, then burns
  *     CPU concurrently on the main thread, on a plain {@code new Thread(Runnable)} and on a
  *     two-level {@link Thread} subclass, and stops the profiler again. The resulting recording
  *     holds samples rooted at each of the three thread entry points; see {@code EntryFrameTest}</li>
@@ -107,9 +107,11 @@ public class ExternalLauncher {
     }
 
     private static void entryFrameBurn(long millis) {
-        long deadline = System.currentTimeMillis() + millis;
+        // nanoTime() is monotonic: a wall-clock adjustment mid-burn cannot cut the workload short
+        // (which would starve the recording of samples) or stretch it past the launcher's timeout.
+        long deadline = System.nanoTime() + millis * 1_000_000L;
         long acc = 0;
-        while (System.currentTimeMillis() < deadline) {
+        while (System.nanoTime() - deadline < 0) {
             for (int i = 0; i < 100000; i++) {
                 acc += i * 31 + (acc >>> 3);
             }
@@ -157,10 +159,15 @@ public class ExternalLauncher {
                     }
                 }
             } else if (args[0].equals("entry-frames")) {
-                JavaProfiler instance = JavaProfiler.getInstance();
-                if (args.length == 2 && !args[1].isEmpty()) {
-                    instance.execute(args[1]);
+                // Unlike the modes above, this one is only meaningful with a running profiler:
+                // silently skipping the start would leave the parent process parsing an empty
+                // recording and reporting a missing entry frame instead of a missing command.
+                if (args.length < 2 || args[1].isEmpty()) {
+                    throw new IllegalArgumentException(
+                            "entry-frames requires a profiler command list");
                 }
+                JavaProfiler instance = JavaProfiler.getInstance();
+                instance.execute(args[1]);
                 runEntryFrameWorkload();
                 // Stop explicitly rather than leaving it to JVM shutdown: the parent process
                 // starts reading the recording as soon as this process exits.

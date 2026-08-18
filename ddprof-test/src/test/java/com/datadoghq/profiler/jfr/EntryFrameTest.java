@@ -15,7 +15,6 @@ import org.junitpioneer.jupiter.RetryingTest;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -130,10 +129,14 @@ public class EntryFrameTest extends AbstractProcessProfilerTest {
         }
     }
 
+    /**
+     * Allocates the recording in the JVM's own temp directory ({@code java.io.tmpdir}) rather than
+     * a hard-coded {@code /tmp/recordings}, so the test carries no assumption about a POSIX
+     * filesystem layout or about {@code /tmp} being writable. The {@code finally} blocks above
+     * delete it either way.
+     */
     private Path newRecordingPath() throws Exception {
-        Path rootDir = Paths.get("/tmp/recordings");
-        Files.createDirectories(rootDir);
-        return Files.createTempFile(rootDir, "entry-frame-test", ".jfr");
+        return Files.createTempFile("entry-frame-test", ".jfr");
     }
 
     private void runWorkload(Path recording, String commands) throws Exception {
