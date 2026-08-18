@@ -123,7 +123,18 @@ ThreadFilter::SlotID ThreadFilter::registerThread(int tid) {
     if (!_registry_active.load(std::memory_order_acquire)) {
         return -1;
     }
+#ifdef UNIT_TEST
+    if (_post_active_check_hook != nullptr) {
+        _post_active_check_hook(_post_active_check_hook_arg);
+    }
+#endif
     std::lock_guard<std::mutex> lock(_registry_lock);
+    // Re-check under the lock: deactivateRecording()/init() serialize their
+    // admission-closing store on this same lock, so this recheck closes the
+    // TOCTOU window between the fast-path check above and lock acquisition.
+    if (!_registry_active.load(std::memory_order_acquire)) {
+        return -1;
+    }
 
     if (tid >= 0) {
         SlotID existing = lookupSlotIdByTid(tid);
@@ -148,9 +159,8 @@ ThreadFilter::SlotID ThreadFilter::registerThread(int tid) {
         slot->clearActiveBlockRun(OSThreadState::UNKNOWN);
         slot->tid.store(tid, std::memory_order_release);
         if (tid >= 0 && !indexSlot(reused_slot, tid)) {
-            slot->tid.store(-1, std::memory_order_release);
+            rollbackFailedIndex(*slot);
             pushToFreeList(reused_slot);
-            Counters::increment(THREAD_REGISTRY_INDEX_FAILURES);
             return -1;
         }
         if (epoch != 0) {
@@ -194,9 +204,8 @@ ThreadFilter::SlotID ThreadFilter::registerThread(int tid) {
     slot->clearActiveBlockRun(OSThreadState::UNKNOWN);
     slot->tid.store(tid, std::memory_order_release);
     if (tid >= 0 && !indexSlot(index, tid)) {
-        slot->tid.store(-1, std::memory_order_release);
+        rollbackFailedIndex(*slot);
         pushToFreeList(index);
-        Counters::increment(THREAD_REGISTRY_INDEX_FAILURES);
         return -1;
     }
     if (epoch != 0) {
@@ -214,7 +223,21 @@ void ThreadFilter::refreshSlotForRecording(Slot* slot, RecordingEpoch epoch) {
     // Make the retained identity ineligible before resetting its recording-local
     // payload, then publish the new epoch only after the reset is complete.
     slot->recording_epoch.store(0, std::memory_order_release);
-    slot->context_window_state.store(0, std::memory_order_relaxed);
+
+    // add()/remove() only ever act on the calling thread's own slot
+    // (ensureCurrentThreadFilterSlot uses current->tid()), and this method is
+    // only reached via registerThread() re-registering the calling thread's
+    // own tid, so no other thread can be transitioning this slot's context
+    // window concurrently. The CAS (instead of a plain store) is defensive:
+    // it detects rather than silently clobbers a concurrent transition if
+    // that invariant is ever broken.
+    u64 current = slot->context_window_state.load(std::memory_order_acquire);
+    while (current != 0 &&
+           !slot->context_window_state.compare_exchange_weak(
+               current, 0, std::memory_order_acq_rel, std::memory_order_acquire)) {
+        Counters::increment(THREAD_REGISTRY_CONTEXT_RESET_RACE_DETECTED);
+    }
+
     slot->clearActiveBlockRun(OSThreadState::UNKNOWN);
     slot->recording_epoch.store(epoch, std::memory_order_release);
 }
@@ -262,6 +285,11 @@ void ThreadFilter::unindexSlot(SlotID slot_id, int tid) {
     }
 }
 
+void ThreadFilter::rollbackFailedIndex(Slot& slot) {
+    slot.tid.store(-1, std::memory_order_release);
+    Counters::increment(THREAD_REGISTRY_INDEX_FAILURES);
+}
+
 ThreadFilter::SlotID ThreadFilter::lookupSlotIdByTid(int tid) const {
     if (tid < 0) return -1;
     unsigned start = hashTid(tid) & kTidIndexMask;
@@ -279,18 +307,31 @@ ThreadFilter::SlotID ThreadFilter::lookupSlotIdByTid(int tid) const {
     return -1;
 }
 
-ThreadFilter::Slot* ThreadFilter::lookupByTid(int tid) const {
+ThreadFilter::Slot* ThreadFilter::lookupByTid(int tid, SlotID* out_slot_id) const {
     SlotID slot_id = lookupSlotIdByTid(tid);
+    if (out_slot_id != nullptr) {
+        *out_slot_id = slot_id;
+    }
     return slot_id < 0 ? nullptr : slotForId(slot_id);
 }
 
-ThreadFilter::Slot* ThreadFilter::lookupByTid(int tid,
-                                             RecordingEpoch epoch) const {
+ThreadFilter::Slot* ThreadFilter::lookupByTid(int tid, RecordingEpoch epoch,
+                                             SlotID* out_slot_id) const {
+    if (out_slot_id != nullptr) {
+        *out_slot_id = -1;
+    }
     if (epoch == 0 || recordingEpoch() != epoch) {
         return nullptr;
     }
-    Slot* slot = lookupByTid(tid);
-    return slot != nullptr && slot->recordingEpoch() == epoch ? slot : nullptr;
+    SlotID slot_id = -1;
+    Slot* slot = lookupByTid(tid, &slot_id);
+    if (slot == nullptr || slot->recordingEpoch() != epoch) {
+        return nullptr;
+    }
+    if (out_slot_id != nullptr) {
+        *out_slot_id = slot_id;
+    }
+    return slot;
 }
 
 ThreadFilter::Slot* ThreadFilter::activeSlotForId(SlotID slot_id,
@@ -352,10 +393,20 @@ void ThreadFilter::add(int tid, SlotID slot_id) {
         if (slot.nativeTid() == -1) {
             std::lock_guard<std::mutex> lock(_registry_lock);
             if (slot.nativeTid() == -1) {
+                // Defensive: mirrors registerThread()'s dedup check. Under the
+                // current self-registration invariant (a thread only ever
+                // registers its own tid) and correct index cleanup on both
+                // resetRegistrationsLocked() and unregisterThreadLocked(), this
+                // branch should be unreachable in production; it guards against
+                // a stale/duplicate tid mapping if that invariant ever changes.
+                SlotID existing = lookupSlotIdByTid(tid);
+                if (existing >= 0 && existing != slot_id) {
+                    Counters::increment(THREAD_REGISTRY_INDEX_FAILURES);
+                    return;
+                }
                 slot.tid.store(tid, std::memory_order_release);
                 if (!indexSlot(slot_id, tid)) {
-                    slot.tid.store(-1, std::memory_order_release);
-                    Counters::increment(THREAD_REGISTRY_INDEX_FAILURES);
+                    rollbackFailedIndex(slot);
                     return;
                 }
             }
@@ -405,6 +456,13 @@ void ThreadFilter::unregisterThreadLocked(SlotID slot_id, int expected_tid) {
 }
 
 void ThreadFilter::unregisterThreadByTid(int tid) {
+    // Lock-free pre-check: avoids the mutex for the common case where this tid
+    // was never registered (e.g. plain CPU profiling, or filtered recordings
+    // where this thread never matched). A hit here is always re-confirmed
+    // under the lock before anything is mutated.
+    if (lookupSlotIdByTid(tid) < 0) {
+        return;
+    }
     std::lock_guard<std::mutex> lock(_registry_lock);
     SlotID slot_id = lookupSlotIdByTid(tid);
     if (slot_id >= 0) {
@@ -623,10 +681,7 @@ bool ThreadFilter::shouldSuppressOwnedBlock(const ThreadEntry& entry) const {
     bool sampled = slot->sampledThisRun();
     OSThreadState last_sampled_state =
         sampled ? slot->lastSampledState() : OSThreadState::UNKNOWN;
-    bool suppressible_state = state == OSThreadState::SLEEPING ||
-                              state == OSThreadState::CONDVAR_WAIT ||
-                              state == OSThreadState::OBJECT_WAIT ||
-                              state == OSThreadState::MONITOR_WAIT;
+    bool suppressible_state = isPrecheckSuppressionState(state);
     if (owner == BlockRunOwner::NONE || !context_eligible ||
         !suppressible_state || !sampled || state != last_sampled_state) {
         return false;
@@ -657,10 +712,14 @@ void ThreadFilter::init(const char* filter, bool track_unfiltered_wall) {
     // Close registration before clearing identities from a previous unfiltered
     // recording. Other threads retain only stale slot IDs; activeSlotForId()
     // rejects them until their next context or owned-block hook registers lazily.
-    _registry_active.store(false, std::memory_order_release);
-    if (unfiltered_tracking) {
+    // Serialized against registerThread()'s in-lock recheck of _registry_active
+    // so a thread can't publish a slot after admission has been closed here.
+    {
         std::lock_guard<std::mutex> lock(_registry_lock);
-        resetRegistrationsLocked();
+        _registry_active.store(false, std::memory_order_release);
+        if (unfiltered_tracking) {
+            resetRegistrationsLocked();
+        }
     }
     RecordingEpoch epoch = 0;
     if (unfiltered_tracking) {
@@ -698,7 +757,10 @@ ThreadFilter::RecordingEpoch ThreadFilter::recordingEpoch() const {
 void ThreadFilter::deactivateRecording() {
     // Close producer admission before invalidating the recording epoch.
     // Context-filtered recordings may retain slots; a new unfiltered recording
-    // resets them before reopening admission.
+    // resets them before reopening admission. Serialize against
+    // registerThread()'s in-lock recheck of _registry_active so a thread can't
+    // publish a slot after this admission-closing store has been observed.
+    std::lock_guard<std::mutex> lock(_registry_lock);
     _registry_active.store(false, std::memory_order_release);
     _enabled.store(false, std::memory_order_release);
     _track_unfiltered_wall.store(false, std::memory_order_release);

@@ -47,6 +47,15 @@ class BaseWallClock : public Engine {
     bool isEnabled() const;
     static bool inSyscall(void* ucontext);
 
+    // Shared by WallClockASGCT::timerLoop() and WallClockJvmti::timerLoop(): both
+    // engines resolve a registry slot, check precheck suppression, and send the
+    // sampling signal identically; only collectThreads() differs between them.
+    WallClockCandidateOutcome sampleThreadCommon(
+        ThreadEntry entry, int& num_failures, int& threads_already_exited,
+        int& permission_denied, int& registry_lookups, bool lookup_registry_slot,
+        bool precheck, ThreadFilter* thread_filter,
+        ThreadFilter::RecordingEpoch recording_epoch);
+
     template <typename ThreadType, typename CollectThreadsFunc, typename SampleThreadsFunc, typename CleanThreadFunc>
     void timerLoopCommon(CollectThreadsFunc collectThreads, SampleThreadsFunc sampleThreads,
                          CleanThreadFunc cleanThreads, int reservoirSize, u64 interval,
@@ -192,6 +201,15 @@ public:
 
     Error start(Arguments& args);
     void stop();
+
+#ifdef UNIT_TEST
+    static void setForceStartFailureForTest(bool force) {
+        _force_start_failure_for_test.store(force, std::memory_order_release);
+    }
+  private:
+    static std::atomic<bool> _force_start_failure_for_test;
+  public:
+#endif
 };
 
 class WallClockASGCT : public BaseWallClock {

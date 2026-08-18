@@ -290,6 +290,15 @@ public:
         _suppression_snapshot_hook = hook;
         _suppression_snapshot_hook_arg = arg;
     }
+
+    // Invoked by registerThread() right after the pre-lock _registry_active
+    // check passes, before _registry_lock is acquired - lets tests inject a
+    // deactivation into the exact TOCTOU window being fixed.
+    using PostActiveCheckHook = void (*)(void*);
+    void setPostActiveCheckHookForTest(PostActiveCheckHook hook, void* arg) {
+        _post_active_check_hook = hook;
+        _post_active_check_hook_arg = arg;
+    }
 #endif
 
     static inline u64 encodeBlockRunToken(SlotID slot_id, u32 generation) {
@@ -315,8 +324,8 @@ public:
     SlotID registerThread(int tid = -1);
     void unregisterThread(SlotID slot_id, int expected_tid = -1);
     void unregisterThreadByTid(int tid);
-    Slot* lookupByTid(int tid) const;
-    Slot* lookupByTid(int tid, RecordingEpoch epoch) const;
+    Slot* lookupByTid(int tid, SlotID* out_slot_id = nullptr) const;
+    Slot* lookupByTid(int tid, RecordingEpoch epoch, SlotID* out_slot_id = nullptr) const;
     Slot* activeSlotForId(SlotID slot_id, int tid) const;
     void deactivateRecording();
 
@@ -356,6 +365,8 @@ private:
 #ifdef UNIT_TEST
     SuppressionSnapshotHook _suppression_snapshot_hook = nullptr;
     void* _suppression_snapshot_hook_arg = nullptr;
+    PostActiveCheckHook _post_active_check_hook = nullptr;
+    void* _post_active_check_hook_arg = nullptr;
 #endif
 
     // Cache line aligned to prevent false sharing between shards
@@ -370,6 +381,7 @@ private:
     SlotID popFromFreeList();
     bool indexSlot(SlotID slot_id, int tid);
     void unindexSlot(SlotID slot_id, int tid);
+    void rollbackFailedIndex(Slot& slot);
     void refreshSlotForRecording(Slot* slot, RecordingEpoch epoch);
     void resetRegistrationsLocked();
     void unregisterThreadLocked(SlotID slot_id, int expected_tid = -1);

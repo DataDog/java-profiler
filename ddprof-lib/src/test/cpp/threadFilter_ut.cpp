@@ -624,6 +624,78 @@ TEST_F(ThreadRegistryTest, RegisteringKnownTidReturnsExistingSlotWithoutMutation
         slot_id, ThreadFilter::tokenGeneration(token)));
 }
 
+TEST_F(ThreadRegistryTest, UnregisterByTidForUnknownTidIsNoOp) {
+    constexpr int registered_tid = 1111;
+    constexpr int unknown_tid = 2222;
+    int slot_id = registry.registerThread(registered_tid);
+    ASSERT_GE(slot_id, 0);
+
+    registry.unregisterThreadByTid(unknown_tid);
+
+    // The unrelated, already-registered slot must be untouched.
+    EXPECT_NE(nullptr, registry.lookupByTid(registered_tid));
+    EXPECT_EQ(nullptr, registry.lookupByTid(unknown_tid));
+}
+
+TEST_F(ThreadRegistryTest, UnregisterByTidFreesTheMatchingSlot) {
+    constexpr int tid = 3333;
+    int slot_id = registry.registerThread(tid);
+    ASSERT_GE(slot_id, 0);
+    ASSERT_NE(nullptr, registry.lookupByTid(tid));
+
+    registry.unregisterThreadByTid(tid);
+
+    EXPECT_EQ(nullptr, registry.lookupByTid(tid));
+    // The freed slot must be available for reuse rather than leaked.
+    int reused_slot_id = registry.registerThread(tid + 1);
+    EXPECT_EQ(slot_id, reused_slot_id);
+}
+
+TEST_F(ThreadRegistryTest, LookupByTidPopulatesOutSlotId) {
+    constexpr int tid = 4444;
+    int slot_id = registry.registerThread(tid);
+    ASSERT_GE(slot_id, 0);
+
+    ThreadFilter::SlotID found_slot_id = -1;
+    ThreadFilter::Slot* slot = registry.lookupByTid(tid, &found_slot_id);
+    ASSERT_NE(nullptr, slot);
+    EXPECT_EQ(slot_id, found_slot_id);
+
+    found_slot_id = -1;
+    EXPECT_EQ(nullptr, registry.lookupByTid(tid + 1, &found_slot_id));
+    EXPECT_EQ(-1, found_slot_id);
+}
+
+// Exercises a defensive-only code path: under the current self-registration
+// invariant (a thread only ever registers/adds its own tid) and correct
+// _tid_index cleanup on both resetRegistrationsLocked() and
+// unregisterThreadLocked(), add() cannot observe a live duplicate-tid mapping
+// in production. This test drives that branch directly by forcing a slot's
+// cached tid back to -1 (simulating a slot invalidated out from under a stale
+// cached slot id) and confirms add() fails closed instead of letting a second
+// slot claim a tid another slot already owns.
+TEST_F(ThreadRegistryTest, AddRejectsDuplicateTidMappedToDifferentSlot) {
+    constexpr int tid = 5555;
+    int slot_a = registry.registerThread(tid);
+    ASSERT_GE(slot_a, 0);
+    ASSERT_EQ(registry.slotForId(slot_a), registry.lookupByTid(tid));
+
+    int slot_b = registry.registerThread(tid + 1);
+    ASSERT_GE(slot_b, 0);
+    ASSERT_NE(slot_a, slot_b);
+    ThreadFilter::Slot* slot_b_ptr = registry.slotForId(slot_b);
+    ASSERT_NE(nullptr, slot_b_ptr);
+    slot_b_ptr->tid.store(-1, std::memory_order_release);
+
+    long long failures_before = Counters::getCounter(THREAD_REGISTRY_INDEX_FAILURES);
+    registry.add(tid, slot_b);
+
+    // add() must not let slot_b claim a tid already owned by slot_a.
+    EXPECT_EQ(registry.slotForId(slot_a), registry.lookupByTid(tid));
+    EXPECT_FALSE(slot_b_ptr->inContextWindow());
+    EXPECT_GT(Counters::getCounter(THREAD_REGISTRY_INDEX_FAILURES), failures_before);
+}
+
 TEST_F(ThreadRegistryTest, ConcurrentSameTidRegistrationConvergesOnOneSlot) {
     constexpr int thread_count = 32;
     constexpr int tid = 8765;
@@ -924,4 +996,17 @@ TEST_F(ThreadRegistryTest, DeactivationMakesSlotsIneligibleWithoutClearingStorag
     EXPECT_EQ(nullptr, registry.lookupByTid(tid, epoch));
     EXPECT_EQ(slot, registry.lookupByTid(tid));
     EXPECT_EQ(-1, registry.registerThread(7777));
+}
+
+TEST_F(ThreadRegistryTest, RegisterThreadRechecksActiveAfterLockAcquired) {
+    // Simulates a concurrent deactivateRecording() landing in the window
+    // between registerThread()'s pre-lock _registry_active check and its
+    // acquisition of _registry_lock.
+    registry.setPostActiveCheckHookForTest(
+        [](void* arg) { static_cast<ThreadFilter*>(arg)->deactivateRecording(); },
+        &registry);
+    int slot_id = registry.registerThread(8888);
+    registry.setPostActiveCheckHookForTest(nullptr, nullptr);
+
+    EXPECT_EQ(-1, slot_id);
 }

@@ -1705,7 +1705,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   // A recoverable wall-engine failure must not leave registry work enabled for
   // unrelated engines that did start successfully.
   if (track_unfiltered_wall && (activated & EM_WALL) == 0) {
-    _thread_filter.init(filter, false);
+    _thread_filter.deactivateRecording();
   }
 
   if (activated) {

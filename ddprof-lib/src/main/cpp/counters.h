@@ -62,6 +62,7 @@
   X(THREAD_FILTER_BYTES, "thread_filter_bytes")                                \
   X(THREAD_REGISTRY_CAPACITY_EXHAUSTED, "thread_registry_capacity_exhausted")  \
   X(THREAD_REGISTRY_INDEX_FAILURES, "thread_registry_index_failures")          \
+  X(THREAD_REGISTRY_CONTEXT_RESET_RACE_DETECTED, "thread_registry_context_reset_race_detected") \
   X(JMETHODID_SKIPPED, "jmethodid_skipped_count")                              \
   X(CODECACHE_NATIVE_SIZE_BYTES, "codecache_native_size_bytes")                \
   X(CODECACHE_NATIVE_COUNT, "native_codecache_count")                          \
@@ -73,6 +74,7 @@
   X(SKIPPED_WALLCLOCK_UNWINDS, "skipped_wallclock_unwinds")                    \
   X(WC_SIGNAL_SUPPRESSED_SAMPLED_RUN, "wc_signals_suppressed_sampled_run")     \
   X(WC_PRECHECK_REGISTRY_LOOKUPS, "wc_precheck_registry_lookups")             \
+  X(WC_PRECHECK_SLOT_ID_RECOVERED, "wc_precheck_slot_id_recovered")           \
   X(WC_PRECHECK_CANDIDATES_REJECTED, "wc_precheck_candidates_rejected")       \
   X(WC_PRECHECK_LOOKUP_BUDGET_EXHAUSTED, "wc_precheck_lookup_budget_exhausted") \
   X(WC_UNOWNED_BLOCKED_SUPPRESSED, "wc_unowned_blocked_suppressed")            \
