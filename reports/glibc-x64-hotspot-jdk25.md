@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk25
 
 ## glibc-x64-hotspot-jdk25 - ✅ PASS
 
-**Date:** 2026-08-18 08:24:27 EDT
+**Date:** 2026-08-18 09:21:53 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 416 |
-| Sample Rate | 6.93/sec |
-| Health Score | 433% |
+| CPU Samples | 410 |
+| Sample Rate | 6.83/sec |
+| Health Score | 427% |
 | Threads | 9 |
-| Allocations | 374 |
+| Allocations | 373 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 513 |
-| Sample Rate | 8.55/sec |
-| Health Score | 534% |
+| CPU Samples | 521 |
+| Sample Rate | 8.68/sec |
+| Health Score | 542% |
 | Threads | 10 |
-| Allocations | 462 |
+| Allocations | 486 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 81-81 cores)</summary>
+<summary>CPU Timeline (2 unique values: 79-81 cores)</summary>
 
 ```
-1787055559 81
-1787055564 81
-1787055569 81
-1787055574 81
-1787055579 81
-1787055584 81
-1787055589 81
-1787055594 81
-1787055599 81
-1787055604 81
-1787055609 81
-1787055614 81
-1787055619 81
-1787055624 81
-1787055629 81
-1787055634 81
-1787055639 81
-1787055644 81
-1787055649 81
-1787055654 81
+1787059040 81
+1787059045 81
+1787059050 81
+1787059055 81
+1787059060 81
+1787059065 81
+1787059070 81
+1787059075 79
+1787059080 79
+1787059085 79
+1787059090 79
+1787059095 79
+1787059100 79
+1787059105 79
+1787059110 79
+1787059115 79
+1787059120 79
+1787059125 79
+1787059130 79
+1787059135 79
 ```
 </details>
 
