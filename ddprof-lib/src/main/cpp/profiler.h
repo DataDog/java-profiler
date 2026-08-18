@@ -240,6 +240,15 @@ public:
     for (int i = 0; i < CONCURRENCY_LEVEL; i++) {
       _calltrace_buffer[i] = NULL;
     }
+
+    // Protects wall-clock unowned-block fallback tail traces (cached in
+    // ThreadFilter::Slot) from being dropped by a chunk rotation before
+    // flushUnownedBlockedTail() emits them. ThreadFilter is process-lifetime,
+    // so this is registered once rather than per-recording.
+    registerLivenessChecker([this](CallTraceIdSet& buffer) {
+      _thread_filter.collectUnownedBlockedTraceIds(
+          [&buffer](u64 call_trace_id) { buffer.insert(call_trace_id); });
+    });
   }
 
   static inline Profiler *instance() {
