@@ -513,6 +513,24 @@ TEST_F(ThreadFilterTest, CollectMixedStates) {
     }
 }
 
+TEST_F(ThreadFilterTest, CollectUnownedBlockedTraceIdsFindsOnlyCachedSlots) {
+    int with_trace_id = filter->registerThread();
+    int without_trace_id = filter->registerThread();
+    ASSERT_GE(with_trace_id, 0);
+    ASSERT_GE(without_trace_id, 0);
+
+    ThreadFilter::Slot* slot = filter->slotForId(with_trace_id);
+    ASSERT_NE(slot, nullptr);
+    slot->recordUnownedBlockedSample(0xABCDULL, OSThreadState::SLEEPING);
+
+    std::set<u64> collected;
+    filter->collectUnownedBlockedTraceIds(
+        [&](u64 call_trace_id) { collected.insert(call_trace_id); });
+
+    EXPECT_EQ(collected.size(), 1u);
+    EXPECT_TRUE(collected.count(0xABCDULL));
+}
+
 TEST_F(ThreadFilterTest, ClearActiveDropsPreviousRecordingMembership) {
     int stale_slot = filter->registerThread();
     int current_slot = filter->registerThread();
