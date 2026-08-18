@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <functional>
 
 #include "arch.h"
 #include "threadState.h"
@@ -316,6 +317,13 @@ public:
     void remove(SlotID slot_id);
     void collect(std::vector<int>& tids) const;
     void collect(std::vector<ThreadEntry>& entries) const;
+    // Liveness hook for CallTraceStorage::processTraces: a slot may cache a
+    // call_trace_id for a still-blocked thread's weighted fallback tail
+    // (recordUnownedBlockedSample) well before flushUnownedBlockedTail() emits
+    // it. Without this, a chunk rotation racing that window drops the trace,
+    // and the eventual deferred sample references an id with no constant-pool
+    // entry in the chunk it lands in.
+    void collectUnownedBlockedTraceIds(const std::function<void(u64)>& visit) const;
     // Clears per-recording membership and suppression state while keeping
     // process-lifetime slot ownership intact. Threads must opt in again with add().
     void clearActive();

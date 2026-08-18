@@ -687,6 +687,24 @@ void ThreadFilter::collect(std::vector<ThreadEntry>& entries) const {
     }
 }
 
+void ThreadFilter::collectUnownedBlockedTraceIds(const std::function<void(u64)>& visit) const {
+    int num_chunks = _num_chunks.load(std::memory_order_relaxed);
+    for (int chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
+        ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
+        if (chunk == nullptr) {
+            continue;
+        }
+
+        for (const auto& slot : chunk->slots) {
+            u64 call_trace_id =
+                slot.unowned_blocked_call_trace_id.load(std::memory_order_acquire);
+            if (call_trace_id != 0) {
+                visit(call_trace_id);
+            }
+        }
+    }
+}
+
 void ThreadFilter::clearActive() {
     int num_chunks = _num_chunks.load(std::memory_order_acquire);
     for (int chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
