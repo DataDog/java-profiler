@@ -38,6 +38,19 @@ public:
 };
 static JvmSupportGlobalSetup jvm_support_global_setup;
 
+// ---------------------------------------------------------------------------
+// VMTestAccessor — friend of VM, lets tests swap VM::_jvmti/_hotspot for a
+// mock/forced value so JVM-vendor-dependent code paths can be exercised
+// deterministically without a live JVM.
+// ---------------------------------------------------------------------------
+class VMTestAccessor {
+public:
+    static jvmtiEnv* getJvmti() { return VM::_jvmti; }
+    static void setJvmti(jvmtiEnv* env) { VM::_jvmti = env; }
+    static bool getHotspot() { return VM::_hotspot; }
+    static void setHotspot(bool value) { VM::_hotspot = value; }
+};
+
 class JvmSupportThreadClassificationTest : public ::testing::Test {
 protected:
     using JniFunction = void (JNICALL*)();
@@ -55,6 +68,7 @@ protected:
     JNIEnv jni{};
     _jobject thread_object;
     jthread thread = &thread_object;
+    bool _orig_hotspot = false;
 
     static jint JNICALL getVersion(JNIEnv*) { return jni_version; }
 
@@ -65,6 +79,8 @@ protected:
     }
 
     void SetUp() override {
+        _orig_hotspot = VMTestAccessor::getHotspot();
+        VMTestAccessor::setHotspot(true);
         jni_version = 0x00150000;
         virtual_thread = JNI_FALSE;
         is_virtual_thread_calls = 0;
@@ -75,6 +91,10 @@ protected:
             reinterpret_cast<JniFunction>(&isVirtualThread);
         jni.functions =
             reinterpret_cast<const JNINativeInterface_*>(function_table);
+    }
+
+    void TearDown() override {
+        VMTestAccessor::setHotspot(_orig_hotspot);
     }
 };
 
@@ -160,14 +180,62 @@ TEST_F(JvmSupportThreadClassificationTest, MissingJni21FunctionFailsClosed) {
 }
 
 // ---------------------------------------------------------------------------
-// VMTestAccessor — friend of VM, lets tests swap VM::_jvmti for a mock so
-// JVMThread::currentThreadSlow() can be exercised without a live JVM.
+// JvmSupportNonHotspotTest — verifies isPlatformThread() short-circuits to
+// true on non-HotSpot JVMs at JNI>=19 without ever indexing the HotSpot-only
+// IsVirtualThread vtable slot (which may not even be a valid function
+// pointer there).
 // ---------------------------------------------------------------------------
-class VMTestAccessor {
-public:
-    static jvmtiEnv* getJvmti() { return VM::_jvmti; }
-    static void setJvmti(jvmtiEnv* env) { VM::_jvmti = env; }
+class JvmSupportNonHotspotTest : public ::testing::Test {
+protected:
+    using JniFunction = void (JNICALL*)();
+
+    static constexpr int GET_VERSION_INDEX = 4;
+    static constexpr int IS_VIRTUAL_THREAD_INDEX = 234;
+    static constexpr int FUNCTION_TABLE_SIZE = IS_VIRTUAL_THREAD_INDEX + 1;
+
+    inline static jint jni_version;
+    inline static int is_virtual_thread_calls;
+
+    JniFunction function_table[FUNCTION_TABLE_SIZE]{};
+    JNIEnv jni{};
+    _jobject thread_object;
+    jthread thread = &thread_object;
+    bool _orig_hotspot = false;
+
+    static jint JNICALL getVersion(JNIEnv*) { return jni_version; }
+    static jboolean JNICALL isVirtualThread(JNIEnv*, jobject) {
+        is_virtual_thread_calls++;
+        return JNI_TRUE;
+    }
+
+    void SetUp() override {
+        _orig_hotspot = VMTestAccessor::getHotspot();
+        VMTestAccessor::setHotspot(false);
+        jni_version = 0x00150000;
+        is_virtual_thread_calls = 0;
+        function_table[GET_VERSION_INDEX] =
+            reinterpret_cast<JniFunction>(&getVersion);
+        function_table[IS_VIRTUAL_THREAD_INDEX] =
+            reinterpret_cast<JniFunction>(&isVirtualThread);
+        jni.functions =
+            reinterpret_cast<const JNINativeInterface_*>(function_table);
+    }
+
+    void TearDown() override {
+        VMTestAccessor::setHotspot(_orig_hotspot);
+    }
 };
+
+TEST_F(JvmSupportNonHotspotTest, Jni21ThreadIsAcceptedWithoutIndexingVtable) {
+    EXPECT_TRUE(JVMSupport::isPlatformThread(&jni, thread));
+    EXPECT_EQ(0, is_virtual_thread_calls);
+}
+
+TEST_F(JvmSupportNonHotspotTest, PreJni19ThreadIsStillAccepted) {
+    jni_version = 0x000a0000;
+    EXPECT_TRUE(JVMSupport::isPlatformThread(&jni, thread));
+    EXPECT_EQ(0, is_virtual_thread_calls);
+}
 
 // ---------------------------------------------------------------------------
 // ProfilerTestAccessor — friend of Profiler, lets tests force the internal

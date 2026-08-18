@@ -40,6 +40,7 @@ bool JVMSupport::isPlatformThread(JNIEnv* jni, jthread thread) {
     jint jni_version = jni->GetVersion();
     if (jni_version <= 0) return false;
     if (jni_version < JNI_VERSION_19_VALUE) return true;
+    if (!VM::isHotspot()) return true;
 
     const JniFunction* functions =
         reinterpret_cast<const JniFunction*>(jni->functions);

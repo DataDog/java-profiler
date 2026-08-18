@@ -438,6 +438,20 @@ static bool decodeJavaBlockState(jint state, OSThreadState &decoded) {
   return false;
 }
 
+// beginTaskBlock0/endTaskBlock0 accept an explicit jthread for stack-walking and
+// classification; verify it actually identifies the calling thread, since the two
+// could otherwise diverge (e.g. a stale or mismatched jthread handle).
+static bool isCurrentJniThread(JNIEnv* env, jthread thread) {
+  if (thread == nullptr) return false;
+  jthread current_thread = nullptr;
+  if (VM::jvmti()->GetCurrentThread(&current_thread) != JVMTI_ERROR_NONE) {
+    return false;
+  }
+  bool same = env->IsSameObject(thread, current_thread);
+  env->DeleteLocalRef(current_thread);
+  return same;
+}
+
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
     JNIEnv *env, jclass unused, jint state) {
@@ -449,7 +463,9 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
   if (!decodeJavaBlockState(state, decoded)) {
     return 0;
   }
-  if (ContextApi::snapshot().spanId != 0) {
+  u64 span_id = 0, root_span_id = 0;
+  ContextApi::get(span_id, root_span_id);
+  if (span_id != 0) {
     return 0;
   }
   Profiler *profiler = Profiler::instance();
@@ -488,9 +504,6 @@ Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
     JNIEnv *env, jclass unused, jthread thread) {
-  if (!JVMSupport::isPlatformThread(env, thread)) {
-    return 0;
-  }
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
   Profiler *profiler = Profiler::instance();
   if (current == nullptr || !profiler->isRunning() ||
@@ -499,6 +512,13 @@ Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
   }
   ThreadFilter *tf = profiler->threadFilter();
   if (!tf->unfilteredWallTrackingActive()) return 0;
+  if (!isCurrentJniThread(env, thread)) {
+    Counters::increment(TASK_BLOCK_SKIPPED_THREAD_MISMATCH);
+    return 0;
+  }
+  if (!JVMSupport::isPlatformThread(env, thread)) {
+    return 0;
+  }
   ThreadFilter::SlotID slot_id = tf->ensureCurrentThreadSlot(current);
   if (slot_id < 0) return 0;
 
@@ -525,8 +545,14 @@ Java_com_datadoghq_profiler_JavaProfiler_endTaskBlock0(
   u64 block_token = static_cast<u64>(token);
   ThreadFilter::SlotID slot_id = -1;
   u64 generation = 0;
-  if (!ThreadFilter::decodeBlockRunToken(block_token, slot_id, generation) ||
-      !JVMSupport::isPlatformThread(env, thread)) {
+  if (!ThreadFilter::decodeBlockRunToken(block_token, slot_id, generation)) {
+    return JNI_FALSE;
+  }
+  if (!isCurrentJniThread(env, thread)) {
+    Counters::increment(TASK_BLOCK_SKIPPED_THREAD_MISMATCH);
+    return JNI_FALSE;
+  }
+  if (!JVMSupport::isPlatformThread(env, thread)) {
     return JNI_FALSE;
   }
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
@@ -534,8 +560,7 @@ Java_com_datadoghq_profiler_JavaProfiler_endTaskBlock0(
 
   bool recorded = recordTaskBlockAtExit(
       current, Profiler::instance()->threadFilter(), thread, 1, block_token,
-      slot_id, generation, static_cast<u64>(blocker),
-      static_cast<u64>(unblockingSpanId));
+      static_cast<u64>(blocker), static_cast<u64>(unblockingSpanId));
   return recorded ? JNI_TRUE : JNI_FALSE;
 }
 

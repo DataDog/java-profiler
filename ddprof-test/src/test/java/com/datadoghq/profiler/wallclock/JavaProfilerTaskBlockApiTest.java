@@ -19,6 +19,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import com.datadoghq.profiler.JfrEvents;
+import com.datadoghq.profiler.ProfilerOwnedBlockHooks;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -136,6 +137,32 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
     });
     assertEquals(0L, token.get(),
         "a traced interval must not arm timer-side suppression");
+  }
+
+  @Test
+  public void mismatchedThreadIsRejectedAtBeginAndEnd() throws Exception {
+    AtomicLong beginToken = new AtomicLong(-1L);
+    AtomicBoolean endResult = new AtomicBoolean(true);
+    AtomicLong ownToken = new AtomicLong();
+    Thread other = new Thread(() -> { }, "taskblock-mismatch-other");
+
+    runWorker(() -> {
+      beginToken.set(ProfilerOwnedBlockHooks.beginTaskBlockForThread(profiler, other));
+
+      ownToken.set(profiler.beginTaskBlock());
+      assertTrue(ownToken.get() != 0);
+      endResult.set(ProfilerOwnedBlockHooks.endTaskBlockForThread(
+          profiler, other, ownToken.get(), BLOCKER, UNBLOCKING_SPAN_ID));
+      profiler.endTaskBlock(ownToken.get(), BLOCKER, UNBLOCKING_SPAN_ID);
+    });
+
+    assertEquals(0L, beginToken.get(),
+        "beginTaskBlock0 must reject a jthread that does not identify the calling thread");
+    assertFalse(endResult.get(),
+        "endTaskBlock0 must reject a jthread that does not identify the calling thread");
+
+    stopProfiler();
+    assertTrue(getRecordedCounterValue("task_block_skipped_thread_mismatch") > 0);
   }
 
   @Test

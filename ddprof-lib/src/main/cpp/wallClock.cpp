@@ -119,13 +119,14 @@ static inline WallPrecheckResult prepareWallPrecheck(ProfiledThread* current,
 
   ThreadEntry entry{current->tid(), slot, slot->lifecycleGeneration(),
                     slot->recordingEpoch()};
-  if (registry->isOwnedBlockSuppressionCandidate(entry)) {
-    incrementSuppressedOwnedBlock();
-    result.suppress = true;
-    return result;
-  }
   u64 block_generation = 0;
-  if (registry->activeOwnedBlockGeneration(entry, block_generation)) {
+  bool already_sampled = false;
+  if (registry->ownedBlockDecision(entry, already_sampled, block_generation)) {
+    if (already_sampled) {
+      incrementSuppressedOwnedBlock();
+      result.suppress = true;
+      return result;
+    }
     // Arm only after recordSample succeeds. A skipped JFR write must leave the
     // run eligible so the next signal retries instead of losing its only stack.
     result.owned_block_slot = slot;

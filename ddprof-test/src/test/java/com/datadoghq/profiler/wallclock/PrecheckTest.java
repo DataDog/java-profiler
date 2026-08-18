@@ -64,6 +64,21 @@ public class PrecheckTest extends AbstractProfilerTest {
     }
 
     @Test
+    public void testBlockEnterRejectedWithActiveTraceContext() {
+        Assumptions.assumeTrue(!Platform.isJ9());
+        Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
+
+        profiler.setTraceContext(0x5100L, 0x5101L, 0L, 0x5101L, -1, null, -1, null);
+        try {
+            long token = ProfilerOwnedBlockHooks.blockEnter(profiler, OSTHREAD_STATE_SLEEPING);
+            assertEquals(0L, token,
+                    "Expected blockEnter to reject arming while an active trace context is set");
+        } finally {
+            profiler.clearTraceContext();
+        }
+    }
+
+    @Test
     public void unownedSleepingThreadIsNotExactOncePerRunSuppressed() throws Exception {
         Assumptions.assumeTrue(!Platform.isJ9());
         Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
