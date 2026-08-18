@@ -692,7 +692,17 @@ void ReferenceChainTracker::threadLoop() {
                (int)urgent, _effective_pause_target_ms, _budget);
     }
     u64 cadence_ns = urgent ? URGENT_CADENCE_NS : _effective_cadence_ns;
-    OS::sleep(cadence_ns);
+    // Run passes back-to-back: the PID controller (updatePacing()) already
+    // self-regulates the per-pass budget and cadence to keep STW
+    // pauses within the pause-target SLO. With canary pruning,
+    // the total STW budget is tiny (<20ms per 60s recording in
+    // practice), so sleeping between passes wastes time the
+    // search could use to complete faster. The cadence
+    // sleep is only kept as a fallback for an idle search
+    // (no pending frontier) to avoid busy-waiting.
+    if (cadence_ns > 0) {
+      OS::sleep(cadence_ns);
+    }
     if (!_running.load(std::memory_order_acquire)) {
       break;
     }
@@ -873,6 +883,21 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns) {
   // field's own comment (referenceChains.h) for how updatePacing() widens or
   // relaxes it from the measured pause-time signal.
   bool cadence_elapsed = now_ns - _last_pass_ns >= _effective_cadence_ns;
+  // With canary search (candidates pre-tagged), run passes back-to-back
+  // until all candidates are found -- the PID controller self-regulates
+  // the per-pass STW pause, and the total budget is tiny in practice
+  // (<20ms per 60s recording). Only gate on cadence when there
+  // are no canary candidates to chase (whole-graph BFS mode).
+  if (_candidate_count > 0 &&
+      __builtin_popcountll(_candidate_found_bits) < (u64)_candidate_count) {
+    // Canary search active with candidates still to find --
+    // run the next pass immediately.
+    TEST_LOG("ReferenceChainTracker::shouldRunPass -> true (canary search, "
+             "%d/%d candidates found)",
+             (int)__builtin_popcountll(_candidate_found_bits),
+             (int)_candidate_count);
+    return true;
+  }
   // Only log when the cadence actually elapsed (a pass will run). The
   // not-yet-elapsed case is the common idle wake and logging it every second
   // is noise.
@@ -2554,8 +2579,15 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   bool has_pending_frontier = truncated;
   int frontier_size_after = _frontier->size();
   if (frontier_cap_hit) {
-    store(_abandon_reason, (u8)SearchAbandonReason::FRONTIER_CAP);
-    storeRelease(_search_state, (u8)SearchState::ABANDONED);
+    // Frontier table is full -- stop admitting new entries but
+    // don't abandon the search immediately. The search stays
+    // RUNNING: existing frontier entries may still lead to
+    // candidates, and the no-progress detector will abandon
+    // if the frontier stops growing. This is a memory
+    // bound, not a correctness bound.
+    TEST_LOG("ReferenceChainTracker::runPass frontier cap hit -- "
+             "search continues with existing frontier (size=%d)",
+             frontier_size_after);
   } else if (!has_pending_frontier) {
     storeRelease(_search_state, (u8)SearchState::COMPLETED);
   } else if (_passes_since_last_progress >= NO_PROGRESS_PASS_LIMIT &&

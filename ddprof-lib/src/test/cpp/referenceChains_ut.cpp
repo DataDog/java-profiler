@@ -82,6 +82,9 @@ public:
         t->_last_pass_gc_finish_epoch = 0;
         t->_last_pass_ns = 0;
         t->_passes_run = 0;
+        t->_passes_since_last_progress = 0;
+        t->_candidate_count = 0;
+        t->_candidate_found_bits = 0;
         t->_resolved_chains.clear();
         t->_pain_budget = PainBudget();
         t->_search_pain_ms = 0;
@@ -1576,7 +1579,7 @@ TEST_F(ReferenceChainsBfsTest, MultiPassResumptionReconstructsChainAcrossPasses)
     tracker->stop();
 }
 
-TEST_F(ReferenceChainsBfsTest, FrontierCapAbandonsSearchAndReleasesTags) {
+TEST_F(ReferenceChainsBfsTest, FrontierCapHitDoesNotAbandonImmediately) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000:framecap=1"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
@@ -1594,35 +1597,18 @@ TEST_F(ReferenceChainsBfsTest, FrontierCapAbandonsSearchAndReleasesTags) {
     bool truncated = false;
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
     EXPECT_TRUE(truncated);
-    // Frontier-size cap, not just this pass's budget, was hit - the whole
-    // search is abandoned immediately (design doc's Termination section),
-    // rather than staying RUNNING for a later pass to retry.
-    ASSERT_EQ(SearchState::ABANDONED, tracker->searchState());
+    // Frontier-size cap hit -- the search does NOT abandon
+    // immediately. It stays RUNNING: existing frontier entries may
+    // still lead to candidates, and the no-progress detector will
+    // abandon if the frontier stops growing. This is a memory
+    // bound, not a correctness bound.
+    ASSERT_EQ(SearchState::RUNNING, tracker->searchState());
 
-    // Tag release on abandonment (design doc's Termination section; the
-    // exit criteria for this work: "an abandoned search cleans up its tags
-    // completely, no leak") - nodeA's tag was assigned in this same call,
-    // then released before runPass() returned.
+    // nodeA was admitted (frontier cap=1 allowed one entry).
     EXPECT_NE(0, tags_ever_assigned[nodeA]);
-    EXPECT_EQ(0, node_tags[nodeA]);
-    EXPECT_EQ(0, node_tags[nodeB]); // never admitted at all
-
-    // Abandonment reason and the JFR-event builder built from it.
-    EXPECT_EQ(SearchAbandonReason::FRONTIER_CAP, tracker->abandonReason());
-    ReferenceChainAbandonedEvent event;
-    ASSERT_TRUE(tracker->buildAbandonedEvent(&event));
-    EXPECT_EQ(SearchAbandonReason::FRONTIER_CAP, event._reason);
-    EXPECT_EQ(1, event._passes_run);
-    EXPECT_EQ(1, event._frontier_size); // the one slot framecap=1 allowed
-    EXPECT_EQ(64, event._hop_cap);
-    EXPECT_EQ(1000, event._budget);
-
-    // A further runPass() call is a no-op - the search already reached a
-    // terminal outcome (starting a new search once one ends is not
-    // implemented - see runPass()'s own comment).
-    int passesBefore = tracker->passesRun();
-    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
-    EXPECT_EQ(passesBefore, tracker->passesRun());
+    EXPECT_NE(0, node_tags[nodeA]);
+    // nodeB was never admitted (frontier cap hit).
+    EXPECT_EQ(0, node_tags[nodeB]);
 
     tracker->stop();
 }
@@ -1636,21 +1622,22 @@ TEST_F(ReferenceChainsBfsTest, FrontierCapAbandonsSearchAndReleasesTags) {
 // entirely).
 TEST_F(ReferenceChainsBfsTest, ReleaseSearchTagsFailureBlocksTagReuseUntilItSucceeds) {
     Arguments args;
-    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000:framecap=1"));
+    // framecap=1 with a cycle: pass 1 admits nodeA (frontier cap hit
+    // on nodeA->nodeA self-cycle). The search stays RUNNING (frontier
+    // cap is now a memory bound, not an abandon trigger). The no-progress
+    // detector will abandon after NO_PROGRESS_PASS_LIMIT stale passes.
+    // This test verifies that the tag release on abandonment works
+    // even when GetObjectsWithTags() fails.
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000:framecap=1:ttl=0"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
 
     int nodeA = addNode();
-    int nodeB = addNode();
-    // Both root references (not a nodeA->nodeB field edge): the manual
-    // walk's heapRootCallback() hits FRONTIER_CAP_HIT directly off
-    // IterateOverReachableObjects, with no GetObjectsWithTags call involved,
-    // so the mocked GetObjectsWithTags failure below is only ever observed
-    // by the release-tags call this abandonment triggers - not by discovery
-    // itself.
+    // nodeA -> nodeA self-cycle. With framecap=1, pass 1 admits
+    // nodeA and hits the frontier cap on nodeA->nodeA.
     script = {
-        {JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, nodeA, -1}, // fits (the one slot)
-        {JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, nodeB, -1}, // second root - frontier cap hit
+        {JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, nodeA, -1},
+        {JVMTI_HEAP_REFERENCE_FIELD, nodeA, nodeA, -1}, // self-cycle
     };
 
     long long failedBefore =
@@ -1658,14 +1645,25 @@ TEST_F(ReferenceChainsBfsTest, ReleaseSearchTagsFailureBlocksTagReuseUntilItSucc
 
     fail_get_objects_with_tags = true;
     bool truncated = false;
+    // Pass 1: admits nodeA, frontier cap hit on self-cycle.
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
-    // Frontier-cap abandonment itself is independent of whether the tag
-    // release that follows succeeds.
+    EXPECT_TRUE(truncated);
+    // Frontier cap hit -- search stays RUNNING (not abandoned).
+    ASSERT_EQ(SearchState::RUNNING, tracker->searchState());
+    EXPECT_NE(0, tags_ever_assigned[nodeA]);
+    EXPECT_NE(0, node_tags[nodeA]);
+
+    // Run enough stale passes to trigger no-progress abandonment.
+    for (int i = 1; i < ReferenceChainTracker::NO_PROGRESS_PASS_LIMIT + 1; i++) {
+      ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+      ASSERT_EQ(SearchState::RUNNING, tracker->searchState());
+    }
+    // The next pass should abandon via no-progress.
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
     ASSERT_EQ(SearchState::ABANDONED, tracker->searchState());
 
     // GetObjectsWithTags() failed - nodeA's still-live tag must NOT have been
-    // cleared, and the failure must be counted (previously silently
-    // swallowed).
+    // cleared, and the failure must be counted.
     EXPECT_NE(0, tags_ever_assigned[nodeA]);
     EXPECT_NE(0, node_tags[nodeA]) << "tag must not be cleared when the "
                                        "release batch itself failed";
@@ -1674,16 +1672,13 @@ TEST_F(ReferenceChainsBfsTest, ReleaseSearchTagsFailureBlocksTagReuseUntilItSucc
               Counters::getCounter(REFERENCE_CHAIN_TAG_RELEASE_FAILED));
 
     // While the release is still outstanding, shouldRunPass() must force a
-    // retry unconditionally - restartSearch()'s _next_tag reset must never
-    // run while a stale tag could still be live (see shouldRunPass()'s own
-    // comment).
+    // retry unconditionally.
     EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(1));
     EXPECT_EQ(SearchState::ABANDONED, tracker->searchState())
         << "must retry the release in place, not restart, while tags are "
            "still unreleased";
 
-    // A further runPass() call retries the release; still failing, it must
-    // still refuse to mark the tag released.
+    // A further runPass() call retries the release; still failing.
     int passesBefore = tracker->passesRun();
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
     EXPECT_EQ(passesBefore, tracker->passesRun());
@@ -1692,8 +1687,7 @@ TEST_F(ReferenceChainsBfsTest, ReleaseSearchTagsFailureBlocksTagReuseUntilItSucc
     EXPECT_EQ(failedBefore + 2,
               Counters::getCounter(REFERENCE_CHAIN_TAG_RELEASE_FAILED));
 
-    // Once GetObjectsWithTags() starts succeeding again, the very next
-    // runPass() call must actually clear the tag and confirm the release.
+    // Once GetObjectsWithTags() starts succeeding again.
     fail_get_objects_with_tags = false;
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
     EXPECT_EQ(0, node_tags[nodeA]);
