@@ -266,7 +266,7 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         // Clear any exceptions from the reflection calls above
         jniExceptionCheck(jni);
       } else if (strncmp(method_name, "main", 5) == 0 &&
-                 strncmp(method_sig, "(Ljava/lang/String;)V", 21)) {
+                 strncmp(method_sig, "([Ljava/lang/String;)V", 22) == 0) {
         // public static void main(String[] args) - 'public static' translates
         // to modifier bits 0 and 3, hence check for '9'
         entry = true;
