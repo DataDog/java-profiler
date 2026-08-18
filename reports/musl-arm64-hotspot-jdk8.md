@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk8
 
 ## musl-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-08-18 09:21:55 EDT
+**Date:** 2026-08-18 09:26:14 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,10 +28,10 @@ title: musl-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 101 |
-| Sample Rate | 1.68/sec |
-| Health Score | 105% |
-| Threads | 10 |
+| CPU Samples | 103 |
+| Sample Rate | 1.72/sec |
+| Health Score | 108% |
+| Threads | 9 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
@@ -41,13 +41,18 @@ title: musl-arm64-hotspot-jdk8
 | CPU Samples | 111 |
 | Sample Rate | 1.85/sec |
 | Health Score | 116% |
-| Threads | 12 |
+| Threads | 11 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
+1787058995 48
+1787059000 48
+1787059005 48
+1787059010 48
+1787059015 48
 1787059020 48
 1787059025 48
 1787059030 48
@@ -63,11 +68,6 @@ title: musl-arm64-hotspot-jdk8
 1787059080 48
 1787059085 48
 1787059090 48
-1787059095 48
-1787059100 48
-1787059105 48
-1787059110 48
-1787059115 48
 ```
 </details>
 

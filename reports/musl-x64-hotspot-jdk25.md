@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk25
 
 ## musl-x64-hotspot-jdk25 - ✅ PASS
 
-**Date:** 2026-08-18 09:21:56 EDT
+**Date:** 2026-08-18 09:26:15 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,11 +28,11 @@ title: musl-x64-hotspot-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 446 |
-| Sample Rate | 7.43/sec |
-| Health Score | 464% |
+| CPU Samples | 448 |
+| Sample Rate | 7.47/sec |
+| Health Score | 467% |
 | Threads | 9 |
-| Allocations | 389 |
+| Allocations | 379 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
@@ -42,32 +42,32 @@ title: musl-x64-hotspot-jdk25
 | Sample Rate | 9.47/sec |
 | Health Score | 592% |
 | Threads | 10 |
-| Allocations | 475 |
+| Allocations | 449 |
 
 <details>
 <summary>CPU Timeline (3 unique values: 86-94 cores)</summary>
 
 ```
-1787059026 92
-1787059031 92
-1787059036 94
-1787059041 94
-1787059046 94
-1787059051 94
-1787059056 94
-1787059061 86
-1787059066 86
-1787059071 86
-1787059076 86
-1787059081 86
-1787059086 86
-1787059091 86
-1787059096 86
-1787059101 86
-1787059106 86
-1787059111 86
-1787059116 86
-1787059121 86
+1787059032 92
+1787059037 94
+1787059042 94
+1787059047 94
+1787059052 94
+1787059057 86
+1787059062 86
+1787059067 86
+1787059072 86
+1787059077 86
+1787059082 86
+1787059087 86
+1787059092 86
+1787059097 86
+1787059102 86
+1787059107 86
+1787059112 86
+1787059117 86
+1787059122 86
+1787059127 86
 ```
 </details>
 
