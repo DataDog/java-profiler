@@ -13,6 +13,22 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 
 <details markdown="1">
 <summary>
+<strong>2026-08-18 14:31</strong> | ✅ | main | Pipeline [#131592647](https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/131592647)
+</summary>
+
+**Version:** unknown
+**Commit:** 8cc548ab
+
+| Metric | Value |
+|--------|-------|
+| Jobs | 40 |
+| Passed | 40 |
+| Failed | 0 |
+
+</details>
+
+<details markdown="1">
+<summary>
 <strong>2026-08-18 13:26</strong> | ✅ | main | Pipeline [#131568995](https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/131568995)
 </summary>
 
@@ -148,22 +164,6 @@ Tests dd-trace-java compatibility with ddprof across multiple JDK versions and p
 
 **Version:** unknown
 **Commit:** 0745da2f
-
-| Metric | Value |
-|--------|-------|
-| Jobs | 40 |
-| Passed | 40 |
-| Failed | 0 |
-
-</details>
-
-<details markdown="1">
-<summary>
-<strong>2026-08-18 01:38</strong> | ✅ | main | Pipeline [#131478341](https://gitlab.ddbuild.io/DataDog/java-profiler/-/pipelines/131478341)
-</summary>
-
-**Version:** unknown
-**Commit:** 69ce94b8
 
 | Metric | Value |
 |--------|-------|
