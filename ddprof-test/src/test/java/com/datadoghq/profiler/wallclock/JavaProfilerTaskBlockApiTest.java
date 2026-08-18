@@ -115,6 +115,12 @@ public class JavaProfilerTaskBlockApiTest extends AbstractProfilerTest {
     });
     assertTrue(tokenAfterWindow.get() != 0,
         "context rejection must still clear the prior lifecycle");
+
+    stopProfiler();
+    assertTrue(getRecordedCounterValue("task_block_skipped_context_window") > 0,
+        "context-window crossing must be counted separately from trace-context rejection");
+    assertEquals(0L, getRecordedCounterValue("task_block_skipped_trace_context"),
+        "context-window crossing must not be attributed to the trace-context counter");
   }
 
   @Test
