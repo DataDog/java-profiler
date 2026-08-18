@@ -253,11 +253,15 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
           strncmp(method_sig, "()V", 3) == 0) {
         jclass Thread_class = jni->FindClass("java/lang/Thread");
         if (Thread_class != nullptr) {
-          jmethodID isAssignableFrom = jni->GetMethodID(Thread_class, "isAssignableFrom", "(Ljava/lang/Class;)Z");
-          if (isAssignableFrom != nullptr) {
-            entry = jni->CallBooleanMethod(Thread_class, isAssignableFrom, method_class);
-            if (jniExceptionCheck(jni)) {
-              entry = false;
+          jclass Class_class = jni->FindClass("java/lang/Class");
+          if (Class_class != nullptr) {
+            jmethodID isAssignableFrom =
+                jni->GetMethodID(Class_class, "isAssignableFrom", "(Ljava/lang/Class;)Z");
+            if (isAssignableFrom != nullptr) {
+              entry = jni->CallBooleanMethod(Thread_class, isAssignableFrom, method_class);
+              if (jniExceptionCheck(jni)) {
+                entry = false;
+              }
             }
           }
         }
