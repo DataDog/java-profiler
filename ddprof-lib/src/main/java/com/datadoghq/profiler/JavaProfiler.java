@@ -459,6 +459,22 @@ public final class JavaProfiler {
     }
 
     /**
+     * Test-only hook exercising {@link #beginTaskBlock0} with an explicit {@code thread}, to cover
+     * the rejection path when it does not identify the calling thread.
+     */
+    long beginTaskBlockForThread(Thread thread) {
+        return beginTaskBlock0(thread);
+    }
+
+    /**
+     * Test-only hook exercising {@link #endTaskBlock0} with an explicit {@code thread}, to cover
+     * the rejection path when it does not identify the calling thread.
+     */
+    boolean endTaskBlockForThread(Thread thread, long token, long blocker, long unblockingSpanId) {
+        return endTaskBlock0(thread, token, blocker, unblockingSpanId);
+    }
+
+    /**
      * Get the ticks for the current thread.
      * @return ticks
      */
