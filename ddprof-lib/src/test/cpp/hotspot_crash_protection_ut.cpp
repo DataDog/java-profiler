@@ -30,7 +30,7 @@
  */
 
 #include <gtest/gtest.h>
-#include "threadLocalData.h"
+#include "threadLocalData.inline.h"
 #include "profiler.h"
 
 #include "asyncSampleMutex.h"

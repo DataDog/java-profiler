@@ -20,7 +20,7 @@
 
 #include "guards.h"
 #include "nativeMem.h"
-#include "threadLocalData.h"
+#include "threadLocalData.inline.h"
 
 #include <atomic>
 #include <pthread.h>
@@ -89,15 +89,21 @@ static void *t01_body(void *) {
 
   ProfiledThread::release();
 
-  g_t01_seen.store(kNotYetRun, std::memory_order_relaxed);
-  pthread_kill(pthread_self(), SIGVTALRM);
-  ProfiledThread *t01_post = g_t01_seen.load(std::memory_order_relaxed);
-  if (t01_post == kNotYetRun) {
-    ADD_FAILURE() << "SIGVTALRM handler must have run after release() (handler did not execute)";
-    return nullptr;
-  }
+  ProfiledThread *t01_post = ProfiledThread::current();
   EXPECT_EQ(nullptr, t01_post)
       << "current() must return null after release()";
+
+  // release() -> freeValue() -> blockProfilingForExit() masks SIGVTALRM (and
+  // SIGPROF) for this thread, so the signal below is left pending rather than
+  // delivered: the handler must not run at all post-release, closing the race
+  // window instead of merely surviving it.
+  g_t01_seen.store(kNotYetRun, std::memory_order_relaxed);
+  pthread_kill(pthread_self(), SIGVTALRM);
+  t01_post = g_t01_seen.load(std::memory_order_relaxed);
+  if (t01_post != kNotYetRun) {
+    ADD_FAILURE() << "SIGVTALRM handler must not run after release() (handler executed)";
+    return nullptr;
+  }
 
   return nullptr;
 }

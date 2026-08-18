@@ -13,7 +13,7 @@
 #include "os.h"
 #include "profiler.h"
 #include "reservoirSampler.h"
-#include "threadLocalData.h"
+#include "threadLocalData.inline.h"
 #include "threadFilter.h"
 #include "threadState.h"
 #include "tsc.h"
@@ -156,7 +156,7 @@ class WallClockASGCT : public BaseWallClock {
     bool _precheck;
 
     static void sharedSignalHandler(int signo, siginfo_t* siginfo, void* ucontext);
-    void signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64 last_sample);
+    void signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64 last_sample, ProfiledThread* current);
 
     void initialize(Arguments& args) override;
     void timerLoop() override;
@@ -177,7 +177,7 @@ class WallClockJvmti : public BaseWallClock {
     bool _precheck;
 
     static void sharedSignalHandler(int signo, siginfo_t* siginfo, void* ucontext);
-    void signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64 last_sample);
+    void signalHandler(int signo, siginfo_t* siginfo, void* ucontext, u64 last_sample, ProfiledThread* current);
 
     void initialize(Arguments& args) override;
     void timerLoop() override;

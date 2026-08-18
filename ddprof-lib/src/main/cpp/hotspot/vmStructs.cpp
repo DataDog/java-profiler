@@ -15,7 +15,7 @@
 #include "jvmThread.h"
 #include "safeAccess.h"
 #include "spinLock.h"
-#include "threadLocalData.h"
+#include "threadLocalData.inline.h"
 #include "threadState.h"
 
 CodeCache* VMStructs::_libjvm = nullptr;

@@ -23,7 +23,7 @@
 #include <signal.h>
 #include <ucontext.h>
 #ifdef DEBUG
-#include "threadLocalData.h"  // ProfiledThread::current / isProtected
+#include "threadLocalData.inline.h"  // ProfiledThread::current / isProtected
 #endif
 
 extern "C" int safefetch32_cont(int* adr, int errValue);

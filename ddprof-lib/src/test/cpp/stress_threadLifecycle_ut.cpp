@@ -16,7 +16,7 @@
 #include "callTraceStorage.h"
 #include "callTraceHashTable.h"
 #include "threadFilter.h"
-#include "threadLocalData.h"
+#include "threadLocalData.inline.h"
 #include "arch.h"
 #include "spinLock.h"
 
@@ -139,6 +139,7 @@ static void churn_worker(ThreadFilter* filter, bool with_dump) {
 // dump path where Profiler::rotateDictsAndRun() holds all shard locks while
 // writeStackTraces() calls processCallTraces().
 static void dump_thread() {
+  ProfiledThread::initCurrentThreadSignalSafe();
   while (g_run.load(std::memory_order_relaxed)) {
     lock_all();
     g_storage.processTraces([](const CallTraceSet& traces) {
@@ -155,6 +156,7 @@ static void dump_thread() {
 }
 
 TEST(StressThreadLifecycle, Smoke) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   CallTraceStorage storage;
   storage.clear();
   SUCCEED();
