@@ -148,6 +148,32 @@
    * signal for spotting a recurrence. */                                     \
   X(METADATA_TREE_NULL_CHILD, "metadata_tree_null_child")                     \
   X(METADATA_TREE_DEPTH_EXCEEDED, "metadata_tree_depth_exceeded")             \
+  /* A resolved datadog.ReferenceChain could not be cached in                 \
+   * ReferenceChainTracker::_resolved_chains (referenceChains.h): a brand-new \
+   * leak-candidate klass arrived with the cache already at                   \
+   * MAX_RESOLVED_CHAINS, so its chain is dropped rather than evicting some   \
+   * other still-live sample's chain. See that constant's own comment. */     \
+  X(REFERENCE_CHAIN_EVENTS_DROPPED, "reference_chain_events_dropped")         \
+  /* ReferenceChainTracker::releaseSearchTags() (referenceChains.cpp) failed  \
+   * to call GetObjectsWithTags() for at least one batch - the search's tag   \
+   * release is retried on a later call rather than proceeding, but this     \
+   * counts how often that retry path is taken. */                           \
+  X(REFERENCE_CHAIN_TAG_RELEASE_FAILED, "reference_chain_tag_release_failed") \
+  /* Profiler::writeReferenceChain() (profiler.cpp) could not acquire a       \
+   * sample-record lock within its bounded retry budget and dropped the      \
+   * already-dequeued datadog.ReferenceChain event for this dump - not       \
+   * permanently lost, since ReferenceChainTracker::_resolved_chains (see    \
+   * REFERENCE_CHAIN_EVENTS_DROPPED above) keeps the resolved chain cached   \
+   * and re-emits it on a later dump while the leak candidate is still      \
+   * live. */                                                                \
+  X(REFERENCE_CHAIN_WRITE_DROPPED, "reference_chain_write_dropped")            \
+  /* FrontierTable's own calloc/realloc-backed storage (referenceChains.cpp) -   \
+   * outside NMT's visibility since it bypasses os::malloc, so this is the only \
+   * way to attribute its native RSS contribution. */                          \
+  X(REFERENCE_CHAIN_FRONTIER_TABLE_BYTES, "reference_chain_frontier_table_bytes") \
+  X(REFERENCE_CHAIN_FRONTIER_TABLE_CAPACITY, "reference_chain_frontier_table_capacity") \
+  X(REFERENCE_CHAIN_CANDIDATE_COUNT, "reference_chain_candidate_count") \
+  X(REFERENCE_CHAIN_CANDIDATES_FOUND, "reference_chain_candidates_found") \
   DD_COUNTER_TABLE_FAULT_INJECTION(X)                                          \
   DD_COUNTER_TABLE_FI_DEBUG(X)                                                 \
   DD_COUNTER_TABLE_DEBUG(X)
