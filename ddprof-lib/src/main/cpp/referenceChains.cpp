@@ -1416,7 +1416,10 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
                                   FrontierEntryState::FRONTIER,
                                   parent.root_kind);
           ctx->tracker->_candidate_parent_tags[candidate_idx] = rtag;
-          ctx->tracker->_candidate_referrer_klasses[candidate_idx] = parent.referrer_klass;
+          // Store the candidate's OWN klass (class_tag from JVMTI,
+          // resolved to a u32 klass id), not the referrer's klass.
+          u32 candidate_klass = ctx->tracker->classTags()->resolve(class_tag);
+          ctx->tracker->_candidate_referrer_klasses[candidate_idx] = candidate_klass;
           ctx->tracker->_candidate_depths[candidate_idx] = parent.depth + 1;
           ctx->tracker->_candidate_found_bits |= (1ULL << candidate_idx);
           TEST_LOG("ReferenceChainTracker::heapReferenceCallback canary "
