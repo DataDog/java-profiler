@@ -40,6 +40,9 @@ enum class BlockRunOwner : int {
 
 struct BlockRunSnapshot {
     OSThreadState active_state{OSThreadState::UNKNOWN};
+    BlockRunOwner owner{BlockRunOwner::NONE};
+    u64 generation{0};
+    bool active{false};
     bool context_eligible{false};
 };
 
@@ -285,6 +288,10 @@ public:
         inline BlockRunSnapshot snapshotBlockRun() const {
             BlockRunSnapshot snapshot;
             snapshot.active_state = activeBlockState();
+            snapshot.owner = activeBlockOwner();
+            snapshot.generation = blockGeneration();
+            snapshot.active = snapshot.owner != BlockRunOwner::NONE &&
+                snapshot.active_state != OSThreadState::UNKNOWN;
             snapshot.context_eligible = activeBlockRemainedOutsideContextWindow();
             return snapshot;
         }
