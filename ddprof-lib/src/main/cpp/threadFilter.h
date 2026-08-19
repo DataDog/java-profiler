@@ -262,9 +262,16 @@ public:
     bool registryActive() const;
     bool unfilteredWallTrackingActive() const;
     RecordingEpoch recordingEpoch() const;
-    // Hot path methods - slot_id MUST be from registerThread(), undefined behavior otherwise
+    // Hot path methods - slot_id MUST be from registerThread(), undefined behavior otherwise.
+    // add() is lock-free in the common case (slot already indexed by registerThread()).
+    // It falls back to acquiring _registry_lock - no longer strictly lock-free - only
+    // when it observes the slot's tid cleared to -1 by a concurrent registry reset
+    // (e.g. a recording restart racing this call). Returns false if the thread could
+    // not be placed in the context window (e.g. the lazy indexSlot() fallback failed
+    // because the tid index is exhausted); callers must not assume membership on
+    // failure and should clear any cached slot id so it is re-derived.
     bool accept(SlotID slot_id) const;
-    void add(int tid, SlotID slot_id);
+    bool add(int tid, SlotID slot_id);
     void remove(SlotID slot_id);
     void collect(std::vector<int>& tids) const;
     void collect(std::vector<ThreadEntry>& entries) const;
@@ -382,6 +389,7 @@ private:
     bool indexSlot(SlotID slot_id, int tid);
     void unindexSlot(SlotID slot_id, int tid);
     void rollbackFailedIndex(Slot& slot);
+    bool indexOrRollback(Slot& slot, SlotID slot_id, int tid);
     void refreshSlotForRecording(Slot* slot, RecordingEpoch epoch);
     void resetRegistrationsLocked();
     void unregisterThreadLocked(SlotID slot_id, int expected_tid = -1);

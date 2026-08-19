@@ -157,9 +157,7 @@ ThreadFilter::SlotID ThreadFilter::registerThread(int tid) {
         slot->recording_epoch.store(0, std::memory_order_relaxed);
         slot->context_window_state.store(0, std::memory_order_relaxed);
         slot->clearActiveBlockRun(OSThreadState::UNKNOWN);
-        slot->tid.store(tid, std::memory_order_release);
-        if (tid >= 0 && !indexSlot(reused_slot, tid)) {
-            rollbackFailedIndex(*slot);
+        if (!indexOrRollback(*slot, reused_slot, tid)) {
             pushToFreeList(reused_slot);
             return -1;
         }
@@ -202,9 +200,7 @@ ThreadFilter::SlotID ThreadFilter::registerThread(int tid) {
     slot->recording_epoch.store(0, std::memory_order_relaxed);
     slot->context_window_state.store(0, std::memory_order_relaxed);
     slot->clearActiveBlockRun(OSThreadState::UNKNOWN);
-    slot->tid.store(tid, std::memory_order_release);
-    if (tid >= 0 && !indexSlot(index, tid)) {
-        rollbackFailedIndex(*slot);
+    if (!indexOrRollback(*slot, index, tid)) {
         pushToFreeList(index);
         return -1;
     }
@@ -288,6 +284,15 @@ void ThreadFilter::unindexSlot(SlotID slot_id, int tid) {
 void ThreadFilter::rollbackFailedIndex(Slot& slot) {
     slot.tid.store(-1, std::memory_order_release);
     Counters::increment(THREAD_REGISTRY_INDEX_FAILURES);
+}
+
+bool ThreadFilter::indexOrRollback(Slot& slot, SlotID slot_id, int tid) {
+    slot.tid.store(tid, std::memory_order_release);
+    if (tid >= 0 && !indexSlot(slot_id, tid)) {
+        rollbackFailedIndex(slot);
+        return false;
+    }
+    return true;
 }
 
 ThreadFilter::SlotID ThreadFilter::lookupSlotIdByTid(int tid) const {
@@ -378,10 +383,10 @@ bool ThreadFilter::accept(SlotID slot_id) const {
     return false;
 }
 
-void ThreadFilter::add(int tid, SlotID slot_id) {
+bool ThreadFilter::add(int tid, SlotID slot_id) {
     // PRECONDITION: slot_id must be from registerThread() or negative
     // Undefined behavior for invalid positive slot_ids (performance optimization)
-    if (slot_id < 0) return;
+    if (slot_id < 0) return false;
 
     int chunk_idx = slot_id >> kChunkShift;
     int slot_idx = slot_id & kChunkMask;
@@ -402,17 +407,17 @@ void ThreadFilter::add(int tid, SlotID slot_id) {
                 SlotID existing = lookupSlotIdByTid(tid);
                 if (existing >= 0 && existing != slot_id) {
                     Counters::increment(THREAD_REGISTRY_INDEX_FAILURES);
-                    return;
+                    return false;
                 }
-                slot.tid.store(tid, std::memory_order_release);
-                if (!indexSlot(slot_id, tid)) {
-                    rollbackFailedIndex(slot);
-                    return;
+                if (!indexOrRollback(slot, slot_id, tid)) {
+                    return false;
                 }
             }
         }
         slot.enterContextWindow();
+        return true;
     }
+    return false;
 }
 
 void ThreadFilter::remove(SlotID slot_id) {

@@ -1565,9 +1565,13 @@ Error Profiler::start(Arguments &args, bool reset) {
     _thread_filter.clearActive();
   }
 
-  // Preserve the context-filter fast path. Unfiltered Java threads are
-  // registered by ThreadStart callbacks after the engines are activated.
-  if (_thread_filter.enabled()) {
+  // Preserve the context-filter fast path, and extend it to unfiltered
+  // wall-precheck tracking: the calling thread must have a slot immediately,
+  // not only lazily via block/park/filterThreadAdd0 hooks. Other pre-existing
+  // Java threads are still registered lazily via those hooks or ThreadStart
+  // callbacks (both filter modes) - proactive registration here is only for
+  // the one thread that cannot update its own TLS from another thread's start().
+  if (_thread_filter.registryActive()) {
     ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
     assert(current != nullptr);
     int slot_id = current->filterSlotId();

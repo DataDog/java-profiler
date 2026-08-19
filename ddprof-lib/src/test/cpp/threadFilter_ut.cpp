@@ -688,7 +688,7 @@ TEST_F(ThreadRegistryTest, AddRejectsDuplicateTidMappedToDifferentSlot) {
     slot_b_ptr->tid.store(-1, std::memory_order_release);
 
     long long failures_before = Counters::getCounter(THREAD_REGISTRY_INDEX_FAILURES);
-    registry.add(tid, slot_b);
+    EXPECT_FALSE(registry.add(tid, slot_b));
 
     // add() must not let slot_b claim a tid already owned by slot_a.
     EXPECT_EQ(registry.slotForId(slot_a), registry.lookupByTid(tid));

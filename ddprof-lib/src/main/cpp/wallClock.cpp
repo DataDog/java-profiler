@@ -28,7 +28,7 @@
 #include <algorithm> // For std::sort and std::binary_search
 
 std::atomic<bool> BaseWallClock::_enabled{false};
-#ifdef UNIT_TEST
+#if defined(UNIT_TEST) || defined(DEBUG)
 std::atomic<bool> BaseWallClock::_force_start_failure_for_test{false};
 #endif
 
@@ -324,7 +324,7 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
 }
 
 Error BaseWallClock::start(Arguments &args) {
-#ifdef UNIT_TEST
+#if defined(UNIT_TEST) || defined(DEBUG)
   if (_force_start_failure_for_test.load(std::memory_order_acquire)) {
     return Error("Forced wall engine start failure (unit test)");
   }

@@ -202,7 +202,7 @@ public:
     Error start(Arguments& args);
     void stop();
 
-#ifdef UNIT_TEST
+#if defined(UNIT_TEST) || defined(DEBUG)
     static void setForceStartFailureForTest(bool force) {
         _force_start_failure_for_test.store(force, std::memory_order_release);
     }

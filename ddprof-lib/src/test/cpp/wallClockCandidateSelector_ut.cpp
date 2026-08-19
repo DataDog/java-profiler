@@ -171,3 +171,28 @@ TEST(WallClockCandidateSelectorTest, ExhaustingInputDoesNotReportVisitLimit) {
     EXPECT_EQ(3u, stats.precheck_rejected);
     EXPECT_FALSE(stats.visit_limit_reached);
 }
+
+TEST(WallClockCandidateSelectorTest, MixedAcceptRejectExhaustsPoolBelowTargetSize) {
+    std::vector<int> candidates = makeCandidates(20);
+    std::mt19937 generator(99);
+    std::set<int> selected;
+
+    // Accept every third candidate (0, 3, 6, ..., 18 -> 7 acceptances out of 20),
+    // so the full pool is visited (exhausted) without reaching target_size=10,
+    // and well within visit_limit=100 -- this is pool exhaustion, not budget
+    // truncation.
+    WallClockCandidateStats stats = selectWallClockCandidates(
+        candidates, 10, 100, generator, [&](int tid) {
+            if (tid % 3 != 0) {
+                return WallClockCandidateOutcome::PRECHECK_REJECTED;
+            }
+            selected.insert(tid);
+            return WallClockCandidateOutcome::SIGNAL_SENT;
+        });
+
+    EXPECT_EQ(20u, stats.visited);
+    EXPECT_EQ(7u, stats.slots_consumed);
+    EXPECT_EQ(13u, stats.precheck_rejected);
+    EXPECT_EQ(7u, selected.size());
+    EXPECT_FALSE(stats.visit_limit_reached);
+}

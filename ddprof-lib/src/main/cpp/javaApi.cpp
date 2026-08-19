@@ -34,6 +34,7 @@
 #include "threadLocalData.h"
 #include "tsc.h"
 #include "vmEntry.h"
+#include "wallClock.h"
 #include <errno.h>
 #include <fstream>
 #include <sstream>
@@ -155,6 +156,16 @@ static ThreadFilter::SlotID ensureCurrentThreadFilterSlot(
 
   // Startup can register this TID centrally, but it cannot update another
   // pthread's TLS. registerThread(tid) reuses that existing slot.
+  //
+  // This is the only place a JavaCritical fast path (filterThreadAdd0,
+  // parkEnter0, blockEnter0) can block on _registry_lock. It's bounded to at
+  // most once per thread lifetime (cold TLS) plus once per recording-epoch
+  // transition this thread observes (stale cached slot) - not a per-call cost.
+  // THREAD_REGISTRY_JAVACRITICAL_REREGISTRATION makes that bound observable;
+  // if it starts firing per-sample rather than per-thread/per-recording, the
+  // "provably rare" assumption has broken and the JavaCritical dispatch should
+  // be revisited.
+  Counters::increment(THREAD_REGISTRY_JAVACRITICAL_REREGISTRATION);
   slot_id = thread_filter->registerThread(tid);
   if (slot_id >= 0) {
     current->setFilterSlotId(slot_id);
@@ -187,7 +198,14 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
   if (unlikely(slot_id < 0)) {
     return;  // Failed to register thread
   }
-  thread_filter->add(tid, slot_id);
+  if (unlikely(!thread_filter->add(tid, slot_id))) {
+    // The cached slot_id was rejected (lazy tid-index fallback failed under
+    // this thread's own registry reset race, or the tid index is exhausted).
+    // Clear the cache so the next filterThreadAdd0()/parkEnter0()/blockEnter0()
+    // call re-runs ensureCurrentThreadFilterSlot()'s registerThread() path
+    // instead of leaving this thread permanently outside the context window.
+    current->setFilterSlotId(-1);
+  }
 }
 
 extern "C" DLLEXPORT void JNICALL
@@ -290,6 +308,20 @@ Java_com_datadoghq_profiler_JavaProfiler_describeDebugCounters0(
 #else
   return nullptr;
 #endif // COUNTERS
+}
+
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_setForceWallStartFailureForTest0(
+    JNIEnv *env, jclass unused, jboolean force) {
+#ifdef DEBUG
+  BaseWallClock::setForceStartFailureForTest(force);
+#endif // DEBUG
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_isThreadRegistryActiveForTest0(
+    JNIEnv *env, jclass unused) {
+  return Profiler::instance()->threadFilter()->registryActive();
 }
 
 extern "C" DLLEXPORT void JNICALL
