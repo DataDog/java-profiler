@@ -38,11 +38,6 @@ public:
 };
 static JvmSupportGlobalSetup jvm_support_global_setup;
 
-// ---------------------------------------------------------------------------
-// VMTestAccessor — friend of VM, lets tests swap VM::_jvmti/_hotspot for a
-// mock/forced value so JVM-vendor-dependent code paths can be exercised
-// deterministically without a live JVM.
-// ---------------------------------------------------------------------------
 class VMTestAccessor {
 public:
     static jvmtiEnv* getJvmti() { return VM::_jvmti; }
