@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk8
 
 ## musl-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-08-19 10:58:57 EDT
+**Date:** 2026-08-19 11:07:58 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-arm64-openj9-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 34 |
-| CPU Cores (end) | 34 |
+| CPU Cores (start) | 48 |
+| CPU Cores (end) | 48 |
 | Throttling | 0% |
 
 ### Test Results
@@ -38,36 +38,36 @@ title: musl-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 129 |
-| Sample Rate | 2.15/sec |
-| Health Score | 134% |
-| Threads | 12 |
+| CPU Samples | 60 |
+| Sample Rate | 1.00/sec |
+| Health Score | 62% |
+| Threads | 10 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 34-34 cores)</summary>
+<summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
-1787151240 34
-1787151245 34
-1787151250 34
-1787151255 34
-1787151260 34
-1787151265 34
-1787151270 34
-1787151275 34
-1787151280 34
-1787151285 34
-1787151290 34
-1787151295 34
-1787151300 34
-1787151305 34
-1787151310 34
-1787151315 34
-1787151320 34
-1787151325 34
-1787151330 34
-1787151335 34
+1787151682 48
+1787151687 48
+1787151692 48
+1787151697 48
+1787151702 48
+1787151707 48
+1787151712 48
+1787151717 48
+1787151722 48
+1787151727 48
+1787151732 48
+1787151737 48
+1787151742 48
+1787151747 48
+1787151752 48
+1787151757 48
+1787151762 48
+1787151767 48
+1787151772 48
+1787151777 48
 ```
 </details>
 
