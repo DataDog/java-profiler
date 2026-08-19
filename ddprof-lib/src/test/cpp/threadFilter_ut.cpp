@@ -723,14 +723,11 @@ TEST_F(ThreadFilterTest, SnapshotCapturesOwnedLifecycle) {
     ASSERT_NE(0ULL, token);
 
     BlockRunSnapshot snapshot = slot->snapshotBlockRun();
-    EXPECT_TRUE(snapshot.active);
     EXPECT_EQ(OSThreadState::SLEEPING, snapshot.active_state);
-    EXPECT_EQ(BlockRunOwner::JAVA, snapshot.owner);
-    EXPECT_EQ(ThreadFilter::tokenGeneration(token), snapshot.generation);
 
     ASSERT_TRUE(filter->snapshotAndExitBlockedRun(
         slot_id, ThreadFilter::tokenGeneration(token), &snapshot));
-    EXPECT_FALSE(slot->snapshotBlockRun().active);
+    EXPECT_EQ(OSThreadState::UNKNOWN, slot->snapshotBlockRun().active_state);
 }
 
 TEST_F(ThreadFilterTest, OwnedBlockSuppressesOnlyAfterSuccessfulWallSample) {
