@@ -172,6 +172,8 @@
    * way to attribute its native RSS contribution. */                          \
   X(REFERENCE_CHAIN_FRONTIER_TABLE_BYTES, "reference_chain_frontier_table_bytes") \
   X(REFERENCE_CHAIN_FRONTIER_TABLE_CAPACITY, "reference_chain_frontier_table_capacity") \
+  X(REFERENCE_CHAIN_CANDIDATE_COUNT, "reference_chain_candidate_count") \
+  X(REFERENCE_CHAIN_CANDIDATES_FOUND, "reference_chain_candidates_found") \
   DD_COUNTER_TABLE_FAULT_INJECTION(X)                                          \
   DD_COUNTER_TABLE_FI_DEBUG(X)                                                 \
   DD_COUNTER_TABLE_DEBUG(X)

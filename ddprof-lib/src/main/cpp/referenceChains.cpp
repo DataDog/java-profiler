@@ -764,6 +764,7 @@ void ReferenceChainTracker::threadLoop() {
       }
       TEST_LOG("ReferenceChainTracker::threadLoop canary pre-tagged %d candidates",
                _candidate_count);
+      Counters::increment(REFERENCE_CHAIN_CANDIDATE_COUNT, _candidate_count);
     }
 
     bool should_run = shouldRunPass(now_ns);
@@ -2610,6 +2611,8 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
     // Canary early termination: all leaked candidates have been
     // found -- the search is complete.
     storeRelease(_search_state, (u8)SearchState::COMPLETED);
+    Counters::increment(REFERENCE_CHAIN_CANDIDATES_FOUND,
+                             __builtin_popcountll(_candidate_found_bits));
   }
 
   // Track progress: if the frontier grew this pass, reset the no-progress
