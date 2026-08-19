@@ -1405,6 +1405,7 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
     if (candidate_idx >= 0 &&
         candidate_idx < ctx->tracker->_candidate_count) {
       jlong rtag = (referrer_tag_ptr != nullptr) ? *referrer_tag_ptr : 0;
+      u32 candidate_klass = ctx->tracker->classTags()->resolve(class_tag);
       if (rtag > 0) {
         FrontierEntry parent{};
         if (ctx->frontier->lookup(rtag, &parent)) {
@@ -1427,11 +1428,24 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
                    candidate_idx, (long long)*tag_ptr,
                    (long long)frontier_tag);
         }
+      } else {
+        // Root-referenced candidate: referrer_tag_ptr is nullptr,
+        // rtag == 0. The candidate is directly attached to a
+        // GC root. Record with parent_tag=0, depth=1,
+        // root_kind from this root reference (reference_kind).
+        jlong frontier_tag = *tag_ptr;
+        ctx->frontier->insert(frontier_tag, 0,
+                                candidate_klass, 1,
+                                FrontierEntryState::FRONTIER,
+                                (u8)reference_kind);
+        ctx->tracker->_candidate_parent_tags[candidate_idx] = 0;
+        ctx->tracker->_candidate_referrer_klasses[candidate_idx] = candidate_klass;
+        ctx->tracker->_candidate_depths[candidate_idx] = 1;
+        ctx->tracker->_candidate_found_bits |= (1ULL << candidate_idx);
+        TEST_LOG("ReferenceChainTracker::heapReferenceCallback canary "
+                 "pruned root-referenced candidate %d (tag=%lld)",
+                 candidate_idx, (long long)*tag_ptr);
       }
-      // Do NOT enqueue children for this object.
-      // Return 0 (continue the walk) -- NOT
-      // JVMTI_VISIT_ABORT.
-      return 0;
     }
   }
 

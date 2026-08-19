@@ -1819,27 +1819,38 @@ public:
       return false;
     }
     jlong parent_tag = _candidate_parent_tags[candidate_idx];
-    if (parent_tag <= 0) {
-      return false; // never pruned (candidate not reached)
-    }
+    u32 candidate_klass = _candidate_referrer_klasses[candidate_idx];
     std::vector<u32> chain;
     u8 root_kind = 0;
-    // Walk parent_tag back to root through the frontier table.
-    // parent_tag is positive (referrer's frontier tag), so lookup() works.
-    FrontierEntry entry{};
-    if (!_frontier->lookup(parent_tag, &entry)) {
-      return false;
-    }
-    root_kind = entry.root_kind;
-    for (jlong tag = parent_tag; tag > 0;) {
-      if (!_frontier->lookup(tag, &entry)) {
+    if (parent_tag > 0) {
+      // Walk parent_tag back to root through the frontier table.
+      FrontierEntry entry{};
+      if (!_frontier->lookup(parent_tag, &entry)) {
         return false;
       }
-      chain.push_back(entry.referrer_klass);
-      tag = entry.parent_tag;
+      root_kind = entry.root_kind;
+      for (jlong tag = parent_tag; tag > 0;) {
+        if (!_frontier->lookup(tag, &entry)) {
+          return false;
+        }
+        chain.push_back(entry.referrer_klass);
+        tag = entry.parent_tag;
+      }
+    } else if (parent_tag == 0) {
+      // Root-referenced candidate: chain is just [candidate_klass].
+      // root_kind was stored in the frontier entry at pruning time;
+      // re-read it from the frontier table (the candidate's own entry).
+      FrontierEntry entry{};
+      jlong frontier_tag = _candidate_tags[candidate_idx];
+      if (!_frontier->lookup(frontier_tag, &entry)) {
+        return false;
+      }
+      root_kind = entry.root_kind;
+    } else {
+      return false; // never pruned (candidate not reached)
     }
     // Prepend the candidate's own referrer_klass.
-    chain.push_back(_candidate_referrer_klasses[candidate_idx]);
+    chain.push_back(candidate_klass);
     // The chain was built root-to-parent; reverse to get candidate-to-root.
     std::reverse(chain.begin(), chain.end());
     out->_target_tag = (u64)_candidate_tags[candidate_idx];
