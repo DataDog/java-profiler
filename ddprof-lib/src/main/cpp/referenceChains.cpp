@@ -1057,7 +1057,8 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   _candidate_count = 0;
   _candidate_found_bits = 0;
   // _candidate_tags will be filled by pre-tagging in threadLoop().
-  // _candidate_frontier_tags will be filled at pruning time.
+  // _candidate_parent_tags/_candidate_referrer_klasses/_candidate_depths
+  // will be filled at pruning time.
   // across a production restart, a test reset starts from a blank cache so
   // one test's resolved chains cannot leak into the next.
   _resolved_chains_lock.lock();
@@ -1446,7 +1447,9 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
                                   parent.depth + 1,
                                   FrontierEntryState::FRONTIER,
                                   parent.root_kind);
-          ctx->tracker->_candidate_frontier_tags[candidate_idx] = frontier_tag;
+          ctx->tracker->_candidate_parent_tags[candidate_idx] = rtag;
+          ctx->tracker->_candidate_referrer_klasses[candidate_idx] = parent.referrer_klass;
+          ctx->tracker->_candidate_depths[candidate_idx] = parent.depth + 1;
           ctx->tracker->_candidate_found_bits |= (1ULL << candidate_idx);
           TEST_LOG("ReferenceChainTracker::heapReferenceCallback canary "
                    "pruned candidate %d (tag=%lld frontier_tag=%lld)",
@@ -2870,12 +2873,10 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
     jlong tag = getTag(jvmti, obj);
 
     // Canary search: if the candidate was pre-tagged with a marker
-    // tag (negative), use that tag directly for chain reconstruction.
-    // The marker tag is the key in the frontier table (inserted at
-    // pruning time in heapReferenceCallback()).
+    // tag (negative), use the canary chain reconstruction.
     if (tag <= MARKER_TAG_BASE) {
-      // This is a canary candidate. Use the marker tag
-      // for buildChainEvent() lookup.
+      // This is a canary candidate. Use the per-candidate
+      // chain link recorded at pruning time.
       bool need_refresh = false;
       _resolved_chains_lock.lock();
       auto it = _resolved_chains.find(klass_id);
@@ -2888,9 +2889,10 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
                i, klass_id, (long long)tag, need_refresh);
       if (need_refresh) {
         ReferenceChainEvent event;
-        bool built = buildChainEvent(tag, &event);
-        TEST_LOG("ReferenceChainTracker::pollWatchedTargets canary buildChainEvent(tag=%lld) -> %d",
-                 (long long)tag, built);
+        bool built = buildCanaryChainEvent(i, &event);
+        TEST_LOG("ReferenceChainTracker::pollWatchedTargets canary "
+                 "buildCanaryChainEvent(candidate=%d) -> %d",
+                 i, built);
         if (built) {
           event._start_time = TSC::ticks();
           cacheResolvedChain(klass_id, std::move(event), tag,

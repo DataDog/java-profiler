@@ -710,7 +710,14 @@ private:
   int _candidate_count;
   u64 _candidate_found_bits;
   jlong _candidate_tags[MAX_LEAK_CANDIDATES_FROM_LT];
-  jlong _candidate_frontier_tags[MAX_LEAK_CANDIDATES_FROM_LT];
+  // Per-candidate chain link recorded at pruning time:
+  // parent_tag (referrer's frontier tag, positive) and referrer_klass.
+  // Used by buildCanaryChainEvent() to reconstruct the
+  // chain without a frontier table lookup on the
+  // negative marker tag (which lookup() rejects).
+  jlong _candidate_parent_tags[MAX_LEAK_CANDIDATES_FROM_LT];
+  u32 _candidate_referrer_klasses[MAX_LEAK_CANDIDATES_FROM_LT];
+  u32 _candidate_depths[MAX_LEAK_CANDIDATES_FROM_LT];
 
   // Pause-time pacing controller: the actual per-pass budget runPass() passes
   // to FollowReferences/expandFrontier(), replacing _budget's old role as a
@@ -1797,6 +1804,51 @@ public:
     out->_depth = entry.depth;
     out->_root_kind = root_kind;
     out->_chain = std::move(chain);
+    return true;
+  }
+
+  // Canary-search chain reconstruction: builds the chain for a canary
+  // candidate from the per-candidate chain link recorded at
+  // pruning time (_candidate_parent_tags[] etc.), walking
+  // parent_tag through the frontier table (positive tags,
+  // so lookup() works). The candidate's own
+  // referrer_klass is prepended to the chain.
+  bool buildCanaryChainEvent(int candidate_idx, ReferenceChainEvent *out) {
+    if (_frontier == nullptr || out == nullptr ||
+        candidate_idx < 0 || candidate_idx >= _candidate_count) {
+      return false;
+    }
+    jlong parent_tag = _candidate_parent_tags[candidate_idx];
+    if (parent_tag <= 0) {
+      return false; // never pruned (candidate not reached)
+    }
+    std::vector<u32> chain;
+    u8 root_kind = 0;
+    // Walk parent_tag back to root through the frontier table.
+    // parent_tag is positive (referrer's frontier tag), so lookup() works.
+    FrontierEntry entry{};
+    if (!_frontier->lookup(parent_tag, &entry)) {
+      return false;
+    }
+    root_kind = entry.root_kind;
+    for (jlong tag = parent_tag; tag > 0;) {
+      if (!_frontier->lookup(tag, &entry)) {
+        return false;
+      }
+      chain.push_back(entry.referrer_klass);
+      tag = entry.parent_tag;
+    }
+    // Prepend the candidate's own referrer_klass.
+    chain.push_back(_candidate_referrer_klasses[candidate_idx]);
+    // The chain was built root-to-parent; reverse to get candidate-to-root.
+    std::reverse(chain.begin(), chain.end());
+    out->_target_tag = (u64)_candidate_tags[candidate_idx];
+    out->_depth = _candidate_depths[candidate_idx];
+    out->_root_kind = root_kind;
+    out->_chain = std::move(chain);
+    TEST_LOG("ReferenceChainTracker::buildCanaryChainEvent candidate=%d "
+             "parent_tag=%lld chain_size=%zu",
+             candidate_idx, (long long)parent_tag, chain.size());
     return true;
   }
 
