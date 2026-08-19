@@ -5,12 +5,23 @@
 
 #include <gtest/gtest.h>
 
+#include "../../main/cpp/counters.h"
 #include "../../main/cpp/flightRecorder.h"
 #include "../../main/cpp/hotspot/hotspotSupport.h"
 #include "../../main/cpp/hotspot/vmStructs.h"
+#include "../../main/cpp/os.h"
+#include "../../main/cpp/profiler.h"
+#include "../../main/cpp/threadLocalData.inline.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <new>
+
+#ifdef __linux__
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 // Test-only friend accessor for VM internals. It exists solely so this test
 // can exercise HotSpot's rejected-jmethodID handling.
@@ -43,6 +54,70 @@ public:
     }
 
     ~VMStructsTestAccessor() { _restore(_saved); }
+
+    // Offsets beyond the id() set, needed to walk a fake Method* all the way to
+    // its name/signature/class Symbols the way HotspotSupport::resolve() does.
+    struct SymbolOffsets {
+        int constmethod_name_index;
+        int constmethod_sig_index;
+        int klass_name;
+        int symbol_length;
+        int symbol_body;
+    };
+
+    // cast_or_null() / VMConstantPool::base() need non-zero type sizes, which
+    // normally come from gHotSpotVMTypes and therefore stay 0 without a live
+    // JVM. Every field is asserted > 0 by the code under test, so tests that
+    // reach cast_or_null must set them.
+    struct TypeSizes {
+        uint64_t method;
+        uint64_t const_method;
+        uint64_t constant_pool;
+        uint64_t klass;
+        uint64_t symbol;
+    };
+
+    // Scoped override for the symbol-walk offsets and the type sizes, kept
+    // separate from the ctor above so the existing id() tests are unaffected.
+    class SymbolLayout {
+    public:
+        SymbolLayout(const SymbolOffsets& o, const TypeSizes& t) {
+            _saved_offsets = {
+                VMStructs::_constmethod_name_index_offset,
+                VMStructs::_constmethod_sig_index_offset,
+                VMStructs::_klass_name_offset,
+                VMStructs::_symbol_length_offset,
+                VMStructs::_symbol_body_offset,
+            };
+            _saved_sizes = {
+                VMStructs::TYPE_SIZE_NAME(VMMethod),
+                VMStructs::TYPE_SIZE_NAME(VMConstMethod),
+                VMStructs::TYPE_SIZE_NAME(VMConstantPool),
+                VMStructs::TYPE_SIZE_NAME(VMKlass),
+                VMStructs::TYPE_SIZE_NAME(VMSymbol),
+            };
+            _apply(o, t);
+        }
+
+        ~SymbolLayout() { _apply(_saved_offsets, _saved_sizes); }
+
+    private:
+        SymbolOffsets _saved_offsets;
+        TypeSizes _saved_sizes;
+
+        static void _apply(const SymbolOffsets& o, const TypeSizes& t) {
+            VMStructs::_constmethod_name_index_offset = o.constmethod_name_index;
+            VMStructs::_constmethod_sig_index_offset = o.constmethod_sig_index;
+            VMStructs::_klass_name_offset = o.klass_name;
+            VMStructs::_symbol_length_offset = o.symbol_length;
+            VMStructs::_symbol_body_offset = o.symbol_body;
+            VMStructs::TYPE_SIZE_NAME(VMMethod) = t.method;
+            VMStructs::TYPE_SIZE_NAME(VMConstMethod) = t.const_method;
+            VMStructs::TYPE_SIZE_NAME(VMConstantPool) = t.constant_pool;
+            VMStructs::TYPE_SIZE_NAME(VMKlass) = t.klass;
+            VMStructs::TYPE_SIZE_NAME(VMSymbol) = t.symbol;
+        }
+    };
 
 private:
     struct SavedOffsets {
@@ -237,3 +312,307 @@ TEST(HotspotMethodIdTest, IdReturnsValidIdForPopulatedSlot) {
     VMMethod* vm_method = reinterpret_cast<VMMethod*>(&md.method);
     EXPECT_EQ(vm_method->id(), expected);
 }
+
+#ifdef __linux__
+
+// ---------------------------------------------------------------------------
+// HotspotSupport::resolve() crash protection
+//
+// resolve() turns a raw Method* captured at sample time into a jmethodID on the
+// JFR dump thread. GC or class unloading can free that metadata in between, so
+// every dereference in the walk (constMethod -> constants -> name/signature ->
+// holder -> klass->name, then Symbol length/body) can fault. resolve() installs
+// a sigsetjmp landing pad via JmpCtxScope so Profiler::checkFault() recovers and
+// resolve() reports the method as unresolved (nullptr) instead of taking the JVM
+// down mid-dump.
+//
+// checkFault() gates recovery on the faulting pc lying inside the profiler
+// library's address range. setupSignalHandlers() never runs in this gtest binary
+// (the library sources are linked straight into the executable), so the range
+// stays (0, 0) and checkFault takes its "not initialized" fallback, recovering
+// unconditionally without ever evaluating the comparison. SetUp() therefore
+// installs a fabricated range via the UNIT_TEST-only
+// Profiler::setAddressRangeForTest(), anchored on two exported symbols from
+// hotspotSupport.cpp so it brackets that translation unit's whole text --
+// including the file-static helpers, whose addresses a test cannot take. This
+// covers the acceptance half of the gate only; the rejection half is already
+// tested for real by
+// StackWalkerCrashRecoveryTest.CheckFaultRejectsFaultOutsideProfilerRange.
+//
+// In a DEBUG build these tests additionally pin the crashProtectionActive()
+// interaction (vmStructs.h:33-45): VMStructs::at() asserts
+// `crashProtectionActive() || SafeAccess::isReadable(ptr)`, which without an
+// installed jmp ctx raises SIGABRT -- uncatchable by crash protection -- so
+// DEBUG builds used to die here where release survived. Passing in both
+// gtestDebug_ and gtestRelease_ is the evidence that the two now converge.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Two adjacent pages; the second is PROT_NONE. Fake metadata lives at the start
+// of the first, so an offset of kPageSize lands on the guard page.
+constexpr size_t kPageSize = 4096;
+
+// Layout of the fake metadata used by the resolve() tests. Sizes are the values
+// VMConstantPool::base() and cast_or_null() need; they only have to be non-zero
+// and consistent with the struct layouts below.
+constexpr VMStructsTestAccessor::TypeSizes RESOLVE_TYPE_SIZES = {
+    /*method*/        sizeof(void*),
+    /*const_method*/  2 * sizeof(void*),
+    /*constant_pool*/ sizeof(void*),   // base() = cpool + this, i.e. &symbols[0]
+    /*klass*/         sizeof(void*),
+    /*symbol*/        8,
+};
+
+constexpr VMStructsTestAccessor::SymbolOffsets RESOLVE_SYMBOL_OFFSETS = {
+    /*constmethod_name_index*/ 8,
+    /*constmethod_sig_index*/  10,
+    /*klass_name*/             0,
+    /*symbol_length*/          0,
+    /*symbol_body*/            2,
+};
+
+// jmethod_ids deliberately points at a separate, always-null field rather than
+// aliasing klass_name at offset 0: VMMethod::id() reads the jmethodID cache
+// through that offset, and pointing it at the class-name Symbol would make id()
+// read a length and a "jmethodID" out of the Symbol's body. That value passes
+// isValidJMethodID(), so resolve() would early-return with garbage and never
+// reach the symbol-copy code these tests are about.
+constexpr VMStructsTestAccessor::Offsets RESOLVE_OFFSETS = {
+    /*method_constmethod*/    0,
+    /*constmethod_constants*/ 0,
+    /*constmethod_idnum*/     12,
+    /*pool_holder*/           0,
+    /*jmethod_ids*/           sizeof(void*),
+};
+
+// Mirrors RESOLVE_*_OFFSETS above. `symbols` must directly follow `holder`
+// because VMConstantPool::base() is `this + VMConstantPool::type_size()`.
+struct ResolveFakes {
+    struct Method {
+        void* const_method;
+    } method;
+    struct ConstMethod {
+        void* cpool;
+        uint16_t name_index;
+        uint16_t sig_index;
+        uint16_t idnum;
+        uint16_t pad;
+    } const_method;
+    struct ConstantPool {
+        void* holder;
+        intptr_t symbols[4];
+    } cpool;
+    struct Klass {
+        void* name_symbol;   // klass_name offset 0
+        void* jmethod_ids;   // stays null so VMMethod::id() reports "no cache"
+    } klass;
+    struct Symbol {
+        uint16_t length;
+        char body[64];
+    } name_sym, sig_sym, klass_sym;
+
+    // Wires the chain up so resolve() walks Method -> ConstMethod -> ConstantPool
+    // -> {name, signature} Symbols and ConstantPool -> Klass -> class-name Symbol.
+    void link() {
+        method.const_method = &const_method;
+        const_method.cpool = &cpool;
+        const_method.name_index = 1;
+        const_method.sig_index = 2;
+        const_method.idnum = 0;
+        cpool.holder = &klass;
+        cpool.symbols[1] = (intptr_t)&name_sym;
+        cpool.symbols[2] = (intptr_t)&sig_sym;
+        klass.name_symbol = &klass_sym;
+    }
+
+    static void setSymbol(Symbol& s, const char* text) {
+        s.length = (uint16_t)strlen(text);
+        memcpy(s.body, text, s.length);
+    }
+};
+
+} // namespace
+
+class HotspotResolveCrashProtectionTest : public ::testing::Test {
+protected:
+    // Generous enough to bracket hotspotSupport.cpp's compiled text in any build
+    // config, while staying far below the distance to unrelated libraries.
+    static constexpr uintptr_t kRangeMargin = 512 * 1024;
+
+    void SetUp() override {
+        ProfiledThread::initCurrentThread();
+        _pt = ProfiledThread::current();
+        ASSERT_NE(nullptr, _pt);
+        ASSERT_FALSE(_pt->isProtected());
+
+        _orig_segv = OS::replaceSigsegvHandler(Profiler::segvHandler);
+        _orig_bus = OS::replaceSigbusHandler(Profiler::busHandler);
+
+        _region = mmap(nullptr, 2 * kPageSize, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        ASSERT_NE(MAP_FAILED, _region);
+        ASSERT_EQ(0, mprotect((char*)_region + kPageSize, kPageSize, PROT_NONE));
+
+        // Two exported symbols from hotspotSupport.cpp, far apart in that TU.
+        uintptr_t a = (uintptr_t)&HotspotSupport::resolve;
+        uintptr_t b = (uintptr_t)&HotspotSupport::walkJavaStack;
+        _range_lo = std::min(a, b) - kRangeMargin;
+        _range_hi = std::max(a, b) + kRangeMargin;
+        Profiler::setAddressRangeForTest(_range_lo, _range_hi);
+    }
+
+    void TearDown() override {
+        Profiler::resetAddressRangeForTest();
+        munmap(_region, 2 * kPageSize);
+        OS::replaceSigsegvHandler(_orig_segv);
+        OS::replaceSigbusHandler(_orig_bus);
+        ProfiledThread::release();
+    }
+
+    ProfiledThread* _pt = nullptr;
+    void* _region = nullptr;
+    SigAction _orig_segv = nullptr;
+    SigAction _orig_bus = nullptr;
+    uintptr_t _range_lo = 0;
+    uintptr_t _range_hi = 0;
+};
+
+// The core guarantee: a SIGSEGV on stale metadata inside resolve() comes back as
+// nullptr ("unknown method") rather than killing the process.
+//
+// How this test fails if the protection is ever removed differs by config, so
+// don't read a clean release run as the only evidence: in DEBUG the at() assert
+// aborts, while in release neither orig_segvHandler nor OS::getSegvChainTarget()
+// is set in a gtest binary, so segvHandler returns, the faulting instruction
+// re-executes and the test hangs instead of failing.
+TEST_F(HotspotResolveCrashProtectionTest, ResolveRecoversFromFaultInsteadOfCrashing) {
+    HotspotMethodIdVMHotspotGuard hotspot;
+    // method_constmethod = kPageSize puts the very first raw dereference of the
+    // walk on the guard page. cast_or_null() still succeeds beforehand because it
+    // only validates [ptr, ptr + VMMethod::type_size()), which stays on the
+    // readable page -- the fault comes from the offset, not the pointer.
+    VMStructsTestAccessor::Offsets faulting = RESOLVE_OFFSETS;
+    faulting.method_constmethod = (int)kPageSize;
+    VMStructsTestAccessor offsets(faulting);
+    VMStructsTestAccessor::SymbolLayout layout(RESOLVE_SYMBOL_OFFSETS, RESOLVE_TYPE_SIZES);
+
+    long long before = Counters::getCounter(METHOD_RESOLVE_FAULT_RECOVERED);
+
+    // VMMethod::id() reads the same offset through SafeAccess first, so it
+    // returns the sentinel rather than faulting; resolve() then falls through to
+    // constMethod_or_null(), whose raw *(void**) deref is what actually faults.
+    EXPECT_EQ(nullptr, HotspotSupport::resolve(_region));
+
+    EXPECT_EQ(before + 1, Counters::getCounter(METHOD_RESOLVE_FAULT_RECOVERED));
+    // The landing pad must hand the previous (here: absent) context back.
+    EXPECT_FALSE(_pt->isProtected());
+}
+
+// Recovery must be repeatable: checkFault() calls resetCrashHandler() before
+// jumping precisely because the siglongjmp skips exitCrashHandler(), so a run of
+// faults must not exhaust CRASH_HANDLER_NESTING_LIMIT.
+TEST_F(HotspotResolveCrashProtectionTest, ResolveRecoversRepeatedly) {
+    HotspotMethodIdVMHotspotGuard hotspot;
+    VMStructsTestAccessor::Offsets faulting = RESOLVE_OFFSETS;
+    faulting.method_constmethod = (int)kPageSize;
+    VMStructsTestAccessor offsets(faulting);
+    VMStructsTestAccessor::SymbolLayout layout(RESOLVE_SYMBOL_OFFSETS, RESOLVE_TYPE_SIZES);
+
+    long long before = Counters::getCounter(METHOD_RESOLVE_FAULT_RECOVERED);
+    for (int i = 0; i < 10; i++) {
+        EXPECT_EQ(nullptr, HotspotSupport::resolve(_region));
+        EXPECT_FALSE(_pt->isProtected());
+    }
+    EXPECT_EQ(before + 10, Counters::getCounter(METHOD_RESOLVE_FAULT_RECOVERED));
+}
+
+// A Symbol whose body straddles the guard page is rejected by copySymbolBody's
+// SafeAccess::isReadableRange() probe before memcpy() is reached -- a fault
+// inside an out-of-line libc memcpy would have a pc outside the profiler range
+// and so would NOT be recoverable. No JNI is reached on this path, which is why
+// the test is safe without a live JVM.
+TEST_F(HotspotResolveCrashProtectionTest, ResolveReturnsNullForUnreadableSymbolBody) {
+    HotspotMethodIdVMHotspotGuard hotspot;
+    VMStructsTestAccessor offsets(RESOLVE_OFFSETS);
+    VMStructsTestAccessor::SymbolLayout layout(RESOLVE_SYMBOL_OFFSETS, RESOLVE_TYPE_SIZES);
+
+    ResolveFakes* f = new (_region) ResolveFakes{};
+    f->link();
+    ResolveFakes::setSymbol(f->name_sym, "someMethod");
+    ResolveFakes::setSymbol(f->sig_sym, "()V");
+    // Put the class-name Symbol's header flush against the end of the readable
+    // page: exactly VMSymbol::type_size() bytes, so VMSymbol::cast_or_null()'s
+    // own isReadableRange() check still passes and the rejection has to come from
+    // copySymbolBody(). The declared length then runs the body off the page.
+    char* edge = (char*)_region + kPageSize - RESOLVE_TYPE_SIZES.symbol;
+    *(uint16_t*)(edge + RESOLVE_SYMBOL_OFFSETS.symbol_length) = 100;
+    f->klass.name_symbol = edge;
+
+    long long before = Counters::getCounter(METHOD_RESOLVE_SYMBOL_UNREADABLE);
+    long long faults_before = Counters::getCounter(METHOD_RESOLVE_FAULT_RECOVERED);
+
+    EXPECT_EQ(nullptr, HotspotSupport::resolve(&f->method));
+
+    EXPECT_EQ(before + 1, Counters::getCounter(METHOD_RESOLVE_SYMBOL_UNREADABLE));
+    // Rejected by the readability probe, not by recovering from a real fault.
+    EXPECT_EQ(faults_before, Counters::getCounter(METHOD_RESOLVE_FAULT_RECOVERED));
+    EXPECT_FALSE(_pt->isProtected());
+}
+
+// A Symbol longer than the fixed dump-time buffer is reported as unresolved
+// rather than truncated or copied out of bounds. Pins the cap behaviour so a
+// future change to the buffer sizes is a deliberate test edit.
+TEST_F(HotspotResolveCrashProtectionTest, ResolveReturnsNullForOverlongSymbol) {
+    HotspotMethodIdVMHotspotGuard hotspot;
+    VMStructsTestAccessor offsets(RESOLVE_OFFSETS);
+    VMStructsTestAccessor::SymbolLayout layout(RESOLVE_SYMBOL_OFFSETS, RESOLVE_TYPE_SIZES);
+
+    ResolveFakes* f = new (_region) ResolveFakes{};
+    f->link();
+    ResolveFakes::setSymbol(f->sig_sym, "()V");
+    ResolveFakes::setSymbol(f->klass_sym, "java/lang/Object");
+    f->name_sym.length = 0xFFFF;  // far above MAX_METHOD_NAME_LEN
+
+    long long before = Counters::getCounter(METHOD_RESOLVE_SYMBOL_UNREADABLE);
+
+    EXPECT_EQ(nullptr, HotspotSupport::resolve(&f->method));
+
+    EXPECT_EQ(before + 1, Counters::getCounter(METHOD_RESOLVE_SYMBOL_UNREADABLE));
+    EXPECT_FALSE(_pt->isProtected());
+}
+
+// An empty Symbol means the slot has been recycled; treat it as unresolvable
+// rather than handing FindClass an empty string.
+TEST_F(HotspotResolveCrashProtectionTest, ResolveReturnsNullForEmptySymbol) {
+    HotspotMethodIdVMHotspotGuard hotspot;
+    VMStructsTestAccessor offsets(RESOLVE_OFFSETS);
+    VMStructsTestAccessor::SymbolLayout layout(RESOLVE_SYMBOL_OFFSETS, RESOLVE_TYPE_SIZES);
+
+    ResolveFakes* f = new (_region) ResolveFakes{};
+    f->link();
+    ResolveFakes::setSymbol(f->sig_sym, "()V");
+    ResolveFakes::setSymbol(f->klass_sym, "java/lang/Object");
+    f->name_sym.length = 0;
+
+    long long before = Counters::getCounter(METHOD_RESOLVE_SYMBOL_UNREADABLE);
+
+    EXPECT_EQ(nullptr, HotspotSupport::resolve(&f->method));
+
+    EXPECT_EQ(before + 1, Counters::getCounter(METHOD_RESOLVE_SYMBOL_UNREADABLE));
+    EXPECT_FALSE(_pt->isProtected());
+}
+
+// The sentinel is mapped to nullptr before any metadata is touched, so it must
+// not acquire a ProfiledThread or install a landing pad at all.
+TEST_F(HotspotResolveCrashProtectionTest, ResolveShortCircuitsSentinelWithoutProtection) {
+    HotspotMethodIdVMHotspotGuard hotspot;
+    long long before = Counters::getCounter(METHOD_RESOLVE_FAULT_RECOVERED);
+
+    EXPECT_EQ(nullptr, HotspotSupport::resolve((const void*)JMETHODID_NOT_WALKABLE));
+
+    EXPECT_EQ(before, Counters::getCounter(METHOD_RESOLVE_FAULT_RECOVERED));
+    EXPECT_FALSE(_pt->isProtected());
+}
+
+#endif // __linux__

@@ -104,3 +104,39 @@ CriticalSection::~CriticalSection() {
         _thread_ptr->exitCriticalSection();
     }
 }
+
+
+// Reads the currently installed landing pad, asserting the non-null contract
+// *before* the pointer is dereferenced. This lives in a helper rather than the
+// constructor body because the mem-initialiser for _prev runs first, so an
+// assert in the body would only fire after the deref it is meant to guard.
+static sigjmp_buf* prevJmpCtxOf(ProfiledThread* pt) {
+    assert(pt != nullptr);
+    return pt->getJmpCtx();
+}
+
+JmpCtxScope::JmpCtxScope(ProfiledThread* pt) : _pt(pt), _prev(prevJmpCtxOf(pt)) {}
+
+// Unconditional store, deliberately not guarded by an "already restored" flag;
+// see restore().
+JmpCtxScope::~JmpCtxScope() {
+    _pt->setJmpCtx(_prev);
+}
+
+void JmpCtxScope::install(sigjmp_buf* ctx) {
+    _pt->setJmpCtx(ctx);
+}
+
+// Idempotent with the destructor by construction: _prev is const, so this is
+// the same store every time it runs. No mutable "restored" flag is used -- and
+// none may be added -- because this object is an automatic local of the frame
+// that owns the sigjmp_buf, so any member mutated between sigsetjmp() and
+// siglongjmp() would have an indeterminate value at the landing pad.
+//
+// Nesting stays correct without a flag: scopes are automatic objects, so
+// construction/destruction is strictly LIFO and each constructor snapshots
+// getJmpCtx() at its own construction time. An outer scope's destructor can
+// therefore never clobber a context installed by an inner one.
+void JmpCtxScope::restore() {
+    _pt->setJmpCtx(_prev);
+}
