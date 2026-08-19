@@ -457,6 +457,16 @@ public:
   // RequestStackTrace as user_data.
   bool recordSampleDelegated(void *ucontext, u64 weight, int tid,
                              jint event_type, Event *event);
+  // Shared by recordJVMTISample()/recordTaskBlock(): performs the JVMTI stack walk for
+  // `thread` starting at `start_depth`, converts to ASGCT format, and applies the
+  // JDK21+ virtual-thread continuation-boundary fixup (a real stack, from a carrier's
+  // perspective, that GetStackTrace on a VT truncates at the continuation boundary).
+  // Caller must already hold _locks[lock_index] and pass a buffer sized for
+  // _max_stack_depth frames. Returns the number of frames written into
+  // buffer->_asgct_frames, or 0 if JVMTI failed to produce any frame — callers differ
+  // on whether that is a hard failure or a valid empty trace, so this function does
+  // not decide that, and does not call _call_trace_storage.put() itself.
+  int captureJVMTIFrames(jthread thread, int start_depth, CallTraceBuffer* buffer);
   u64 recordJVMTISample(u64 weight, int tid, jthread thread, jint event_type, Event *event, bool deferred);
   void recordDeferredSample(int tid, u64 call_trace_id, jint event_type, Event *event);
   void recordExternalSample(u64 weight, int tid, int num_frames,

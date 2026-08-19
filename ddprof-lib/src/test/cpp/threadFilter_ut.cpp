@@ -597,6 +597,61 @@ TEST_F(ThreadFilterTest, NewGenerationRejectsStaleToken) {
     EXPECT_TRUE(filter->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(current_token)));
 }
 
+TEST_F(ThreadFilterTest, SaturatedGenerationIsCountedAndRecoversAfterSlotReuse) {
+    int slot_id = filter->registerThread();
+    ASSERT_GE(slot_id, 0);
+    filter->add(3333, slot_id);
+
+    ThreadFilter::Slot *slot = filter->slotForId(slot_id);
+    ASSERT_NE(nullptr, slot);
+#ifdef UNIT_TEST
+    slot->setBlockGenerationForTest(ThreadFilter::kMaxBlockRunGeneration);
+#endif
+
+#ifdef COUNTERS
+    long long saturated_before =
+        Counters::getCounter(THREAD_REGISTRY_BLOCK_GENERATION_SATURATED);
+#endif
+    EXPECT_EQ(0ULL, filter->enterBlockedRun(slot_id, OSThreadState::SLEEPING));
+#ifdef COUNTERS
+    EXPECT_EQ(saturated_before + 1,
+              Counters::getCounter(THREAD_REGISTRY_BLOCK_GENERATION_SATURATED));
+#endif
+
+    filter->unregisterThread(slot_id);
+    int reused_slot_id = filter->registerThread();
+    ASSERT_EQ(slot_id, reused_slot_id)
+        << "test relies on the free list handing back the just-freed slot";
+    filter->add(3334, reused_slot_id);
+
+    ThreadFilter::Slot *reused_slot = filter->slotForId(reused_slot_id);
+    ASSERT_NE(nullptr, reused_slot);
+    EXPECT_EQ(0ULL, reused_slot->blockGeneration());
+
+    u64 token = filter->enterBlockedRun(reused_slot_id, OSThreadState::SLEEPING);
+    EXPECT_NE(0ULL, token);
+    EXPECT_TRUE(filter->exitBlockedRun(reused_slot_id, ThreadFilter::tokenGeneration(token)));
+}
+
+TEST_F(ThreadFilterTest, UnregisterWhileBlockRunActiveIsCounted) {
+    int slot_id = filter->registerThread();
+    ASSERT_GE(slot_id, 0);
+    filter->add(4444, slot_id);
+
+    u64 token = filter->enterBlockedRun(slot_id, OSThreadState::SLEEPING);
+    ASSERT_NE(0ULL, token);
+
+#ifdef COUNTERS
+    long long before =
+        Counters::getCounter(THREAD_REGISTRY_UNREGISTER_ACTIVE_BLOCK_RUN);
+#endif
+    filter->unregisterThread(slot_id);
+#ifdef COUNTERS
+    EXPECT_EQ(before + 1,
+              Counters::getCounter(THREAD_REGISTRY_UNREGISTER_ACTIVE_BLOCK_RUN));
+#endif
+}
+
 TEST_F(ThreadFilterTest, TokenRoundTripPreservesNegativeJavaLongBitPattern) {
     ThreadFilter::SlotID slot_id = 7;
     u64 generation = 1ULL << 52;

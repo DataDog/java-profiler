@@ -64,6 +64,8 @@
   X(THREAD_REGISTRY_INDEX_FAILURES, "thread_registry_index_failures")          \
   X(THREAD_REGISTRY_CONTEXT_RESET_RACE_DETECTED, "thread_registry_context_reset_race_detected") \
   X(THREAD_REGISTRY_JAVACRITICAL_REREGISTRATION, "thread_registry_javacritical_reregistration") \
+  X(THREAD_REGISTRY_BLOCK_GENERATION_SATURATED, "thread_registry_block_generation_saturated") \
+  X(THREAD_REGISTRY_UNREGISTER_ACTIVE_BLOCK_RUN, "thread_registry_unregister_active_block_run") \
   X(JMETHODID_SKIPPED, "jmethodid_skipped_count")                              \
   X(CODECACHE_NATIVE_SIZE_BYTES, "codecache_native_size_bytes")                \
   X(CODECACHE_NATIVE_COUNT, "native_codecache_count")                          \
