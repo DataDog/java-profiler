@@ -1437,15 +1437,20 @@ bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jcl
     return JVMSupport::loadMethodIDsImpl(jvmti, jni, klass);
 }
 
-// Fixed dump-time buffers, replacing the malloc/free trio this function used to
-// carry. HotSpot's Symbol length field is a u2, so the VM permits up to 65535
-// bytes; these caps trade that theoretical maximum for zero heap traffic on the
-// dump path and, more importantly, for having no cleanup obligation inside the
-// crash-protected region -- a siglongjmp out of resolve() cannot leak anything.
-// 4096 mirrors Lookup::resolveVTableReceiverCached (flightRecorder.cpp), which
-// reads the same Symbol bodies on the same thread. A symbol over its cap reports
-// METHOD_RESOLVE_SYMBOL_UNREADABLE and serializes as "unknown" -- the same
-// outcome as a class FindClass cannot see.
+// Fixed-size fast-path buffers for the common case, sized so that a
+// realistic name/signature/class name never needs to allocate. 4096 mirrors
+// Lookup::resolveVTableReceiverCached (flightRecorder.cpp), which reads the
+// same Symbol bodies on the same thread; it is a precedent to stay
+// consistent with, not a JVM-spec limit.
+// HotSpot's Symbol length field is a u2, so the VM permits up to 65535 bytes.
+// A name/descriptor that overflows its fixed buffer falls back to malloc
+// (see ResolvedNames::setImpl), up to MAX_SYMBOL_LEN below; beyond that it is
+// rejected and the frame serializes as "unknown" -- METHOD_RESOLVE_SYMBOL_UNREADABLE
+// makes that visible if it bites. Unlike the old stack-only design, the malloc
+// fallback means this is no longer a leak-proof region: siglongjmp out of
+// resolve() bypasses ~ResolvedNames(), so the fault-recovery path must call
+// ResolvedNames::release() explicitly (see resolve()) to free any buffer
+// allocated before the fault.
 static const size_t MAX_KLASS_NAME_LEN  = 4096;  // internal names; realistically < 256
 static const size_t MAX_METHOD_NAME_LEN =  512;  // realistically < 64
 // A descriptor can in principle exceed this (255 argument *slots*, each able to
@@ -1454,37 +1459,124 @@ static const size_t MAX_METHOD_NAME_LEN =  512;  // realistically < 64
 // truncated. METHOD_RESOLVE_SYMBOL_UNREADABLE makes it visible if that bites.
 static const size_t MAX_SIGNATURE_LEN   = 4096;
 
-// Copies a Symbol's body into a fixed buffer, NUL-terminating it.
-// Must be called with crash protection installed: length() and body()
-// dereference the Symbol directly with no safefetch.
-static bool copySymbolBody(VMSymbol* sym, char* dst, size_t cap) {
+// The three names resolve() needs, owned by resolve()'s frame. Each name has
+// a fixed-size inline buffer for the common case, with a malloc'd fallback
+// (up to MAX_SYMBOL_LEN) for names that don't fit -- see release() for why
+// that fallback needs explicit cleanup on the crash-recovery path.
+class ResolvedNames {
+  // Hard ceiling for the malloc fallback in setImpl(), independent of which
+  // field is being resolved. Not a JVM/class-file limit (Symbol::length() is
+  // a u2, so up to 65535 is legal) -- chosen to match MAX_KLASS_NAME_LEN and
+  // MAX_SIGNATURE_LEN above, so a name that would already have been rejected
+  // as too long for those fields' fixed buffers doesn't get an unbounded
+  // allocation just because it went through the malloc path instead.
+  static constexpr size_t MAX_SYMBOL_LEN = 4 * 1024;
+private:
+  char*     _long_method_name;
+  char*     _long_method_signature;
+  char*     _long_klass_name;
+
+  char _method_name[MAX_METHOD_NAME_LEN];
+  char _method_signature[MAX_SIGNATURE_LEN];
+  char _klass_name[MAX_KLASS_NAME_LEN];
+
+  bool setImpl(char* short_name, char*& long_name, size_t short_limit, VMSymbol* sym);
+public:
+  ResolvedNames();
+  ~ResolvedNames();
+  void release();
+
+  bool setMethodName(VMSymbol* sym);
+  bool setMethodSignature(VMSymbol* sym);
+  bool setKlassName(VMSymbol* sym);
+
+  const char* methodName() const {
+    return _long_method_name != nullptr ? _long_method_name : _method_name;
+  }
+
+  const char* methodSignature() const {
+    return _long_method_signature != nullptr ? _long_method_signature : _method_signature;
+  }
+
+  const char* klassName() const {
+    return _long_klass_name != nullptr ? _long_klass_name : _klass_name;
+  }
+};
+
+ResolvedNames::ResolvedNames() :
+  _long_method_name(nullptr),
+  _long_method_signature(nullptr),
+  _long_klass_name(nullptr) {
+}
+
+ResolvedNames::~ResolvedNames() {
+    release();
+}
+
+void ResolvedNames::release() {
+  // Must be idempotent: resolve()'s fault-recovery path calls this explicitly
+  // (siglongjmp bypasses ~ResolvedNames()), and then the destructor runs it
+  // again on the same object when resolve() returns normally afterward.
+  // Nulling out each pointer after freeing makes the second call a no-op
+  // instead of a double free.
+  if (_long_method_name != nullptr) {
+    free(_long_method_name);
+    _long_method_name = nullptr;
+  }
+  if (_long_method_signature != nullptr) {
+    free(_long_method_signature);
+    _long_method_signature = nullptr;
+  }
+  if (_long_klass_name != nullptr) {
+    free(_long_klass_name);
+    _long_klass_name = nullptr;
+  }
+}
+
+bool ResolvedNames::setImpl(char* short_name, char*& long_name, size_t short_limit, VMSymbol* sym) {
   unsigned len = sym->length();  // raw u2 deref; PC stays inside this library
   // A method name, descriptor or class name is never empty; 0 means the Symbol
   // slot has been recycled. `>=` leaves room for the NUL.
-  if (len == 0 || len >= cap) {
+  if (len == 0 || len >= MAX_SYMBOL_LEN) {
     return false;
   }
-  const char* body = sym->body();
-  if (!SafeAccess::safeCopy(dst, body, len)) {
+
+  char* dest = short_name;
+  if (len >= short_limit) {
+    long_name = (char*)malloc(len + 1);
+    dest = long_name;
+  }
+
+  if (SafeAccess::safeCopy(dest, sym->body(), len)) {
+    dest[len] = '\0';
+    return true;
+  } else {
     return false;
   }
-  dst[len] = '\0';
-  return true;
 }
 
-// The three names resolve() needs, owned by resolve()'s frame so that the
-// metadata walk has no cleanup obligation of its own.
-struct ResolvedNames {
-  char method_name[MAX_METHOD_NAME_LEN];
-  char method_signature[MAX_SIGNATURE_LEN];
-  char klass_name[MAX_KLASS_NAME_LEN];
-};
+bool ResolvedNames::setMethodName(VMSymbol* sym) {
+  return setImpl(_method_name, _long_method_name, MAX_METHOD_NAME_LEN, sym);
+
+}
+bool ResolvedNames::setMethodSignature(VMSymbol* sym) {
+  return setImpl(_method_signature, _long_method_signature, MAX_SIGNATURE_LEN, sym);
+}
+
+bool ResolvedNames::setKlassName(VMSymbol* sym) {
+  return setImpl(_klass_name, _long_klass_name, MAX_KLASS_NAME_LEN, sym);
+}
+
 
 // PHASE 1 -- the raw HotSpot metadata walk. MUST run with a jmp ctx installed:
 // every step is a raw *(void**)(this + offset) whose target may have been freed
 // by GC or class unloading since the sample was taken. Deliberately contains no
-// JNI, no JVMTI and no allocation, so the whole protected region stays inside
-// this library, where Profiler::checkFault() can actually recover.
+// JNI and no JVMTI, so the whole protected region stays inside this library,
+// where Profiler::checkFault() can actually recover. It can allocate, via
+// ResolvedNames::setImpl()'s malloc fallback for over-sized names -- that
+// allocation is self-contained (glibc malloc doesn't call back into JNI/JVMTI),
+// but it does mean a fault after the allocation needs explicit freeing, since
+// siglongjmp out of this scope bypasses ~ResolvedNames() (see resolve()).
 //
 // Returns false if the metadata is unusable. On success either *out_id holds an
 // already-valid jmethodID (and `names` is untouched), or *out_id is null and
@@ -1530,9 +1622,7 @@ static bool readMethodNames(const void* method, VMMethod** out_vm_method,
     return false;
   }
 
-  if (!copySymbolBody(name_sym, names->method_name, sizeof(names->method_name)) ||
-      !copySymbolBody(sig_sym, names->method_signature, sizeof(names->method_signature)) ||
-      !copySymbolBody(klass_sym, names->klass_name, sizeof(names->klass_name))) {
+  if (!names->setMethodName(name_sym) || !names->setMethodSignature(sig_sym) || !names->setKlassName(klass_sym)) {
     Counters::increment(METHOD_RESOLVE_SYMBOL_UNREADABLE);
     return false;
   }
@@ -1554,9 +1644,9 @@ static bool readMethodNames(const void* method, VMMethod** out_vm_method,
 // vm_method->validatedId() below is safefetch-based, so it is safe unprotected.
 jmethodID lookupMethodIdViaJni(VMMethod* vm_method, const ResolvedNames& names) {
   jmethodID method_id = nullptr;
-  const char* method_name = names.method_name;
-  const char* method_signature = names.method_signature;
-  const char* klass_name = names.klass_name;
+  const char* method_name = names.methodName();
+  const char* method_signature = names.methodSignature();
+  const char* klass_name = names.klassName();
 
   JNIEnv *jni = VM::jni();
   jclass clz = jni->FindClass(klass_name);
@@ -1625,10 +1715,6 @@ jmethodID HotspotSupport::resolve(const void* method) {
     return nullptr;
   }
 
-  // Buffers live in this frame so phase 1 has nothing to clean up. None of the
-  // locals below are read on the recovery path, so none of them need to be
-  // volatile despite being assigned between sigsetjmp() and a possible
-  // siglongjmp.
   ResolvedNames names;
   VMMethod* vm_method = nullptr;
   jmethodID existing_id = nullptr;
@@ -1650,6 +1736,11 @@ jmethodID HotspotSupport::resolve(const void* method) {
       // before touching anything that could fault again.
       SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
       jmp_scope.restore();
+      // siglongjmp bypasses ~ResolvedNames(), so a name that was already
+      // malloc'd (in setImpl()'s over-sized-name fallback) before the fault
+      // would otherwise leak. release() is idempotent, so it's safe that the
+      // destructor also runs it when resolve() returns below.
+      names.release();
       Counters::increment(METHOD_RESOLVE_FAULT_RECOVERED);
       return nullptr;
     }
