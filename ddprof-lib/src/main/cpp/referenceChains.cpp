@@ -1389,6 +1389,49 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
     return JVMTI_VISIT_ABORT;
   }
 
+  // Canary pruning: if this object is a pre-tagged leak
+  // candidate (marker tag MARKER_TAG_BASE - i, negative),
+  // record its chain link but do NOT enqueue its children
+  // (treat as a leaf). Do not return
+  // JVMTI_VISIT_ABORT -- that aborts the entire
+  // FollowReferences walk (JVMTI spec). Just skip
+  // admitObject() for this object.
+  //
+  // MUST run before the *tag_ptr < 0 class-tag check below, since
+  // marker tags are negative and would be caught by that
+  // check first (returning 0 without recording the chain link).
+  if (ctx->tracker->_candidate_count > 0 && *tag_ptr <= MARKER_TAG_BASE) {
+    int candidate_idx = (int)(MARKER_TAG_BASE - *tag_ptr);
+    if (candidate_idx >= 0 &&
+        candidate_idx < ctx->tracker->_candidate_count) {
+      jlong rtag = (referrer_tag_ptr != nullptr) ? *referrer_tag_ptr : 0;
+      if (rtag > 0) {
+        FrontierEntry parent{};
+        if (ctx->frontier->lookup(rtag, &parent)) {
+          // Use the marker tag as the frontier table key.
+          jlong frontier_tag = *tag_ptr;
+          ctx->frontier->insert(frontier_tag, rtag,
+                                  parent.referrer_klass,
+                                  parent.depth + 1,
+                                  FrontierEntryState::FRONTIER,
+                                  parent.root_kind);
+          ctx->tracker->_candidate_parent_tags[candidate_idx] = rtag;
+          ctx->tracker->_candidate_referrer_klasses[candidate_idx] = parent.referrer_klass;
+          ctx->tracker->_candidate_depths[candidate_idx] = parent.depth + 1;
+          ctx->tracker->_candidate_found_bits |= (1ULL << candidate_idx);
+          TEST_LOG("ReferenceChainTracker::heapReferenceCallback canary "
+                   "pruned candidate %d (tag=%lld frontier_tag=%lld)",
+                   candidate_idx, (long long)*tag_ptr,
+                   (long long)frontier_tag);
+        }
+      }
+      // Do NOT enqueue children for this object.
+      // Return 0 (continue the walk) -- NOT
+      // JVMTI_VISIT_ABORT.
+      return 0;
+    }
+  }
+
   if (*tag_ptr < 0) {
     if (ctx->static_field_seed &&
         reference_kind == JVMTI_HEAP_REFERENCE_ARRAY_ELEMENT &&
@@ -1424,45 +1467,6 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
     // therefore not yet negative. Same non-goal as above: never expand from
     // or admit a class object.
     return 0;
-  }
-
-  // Canary pruning: if this object is a pre-tagged leak
-  // candidate (marker tag MARKER_TAG_BASE - i, negative),
-  // record its chain link but do NOT enqueue its children
-  // (treat as a leaf). Do not return
-  // JVMTI_VISIT_ABORT -- that aborts the entire
-  // FollowReferences walk (JVMTI spec). Just skip
-  // admitObject() for this object.
-  if (*tag_ptr <= MARKER_TAG_BASE) {
-    int candidate_idx = (int)(MARKER_TAG_BASE - *tag_ptr);
-    if (candidate_idx >= 0 &&
-        candidate_idx < ctx->tracker->_candidate_count) {
-      jlong rtag = (referrer_tag_ptr != nullptr) ? *referrer_tag_ptr : 0;
-      if (rtag > 0) {
-        FrontierEntry parent{};
-        if (ctx->frontier->lookup(rtag, &parent)) {
-          // Use the marker tag as the frontier table key.
-          jlong frontier_tag = *tag_ptr;
-          ctx->frontier->insert(frontier_tag, rtag,
-                                  parent.referrer_klass,
-                                  parent.depth + 1,
-                                  FrontierEntryState::FRONTIER,
-                                  parent.root_kind);
-          ctx->tracker->_candidate_parent_tags[candidate_idx] = rtag;
-          ctx->tracker->_candidate_referrer_klasses[candidate_idx] = parent.referrer_klass;
-          ctx->tracker->_candidate_depths[candidate_idx] = parent.depth + 1;
-          ctx->tracker->_candidate_found_bits |= (1ULL << candidate_idx);
-          TEST_LOG("ReferenceChainTracker::heapReferenceCallback canary "
-                   "pruned candidate %d (tag=%lld frontier_tag=%lld)",
-                   candidate_idx, (long long)*tag_ptr,
-                   (long long)frontier_tag);
-        }
-      }
-      // Do NOT enqueue children for this object.
-      // Return 0 (continue the walk) -- NOT
-      // JVMTI_VISIT_ABORT.
-      return 0;
-    }
   }
 
   if (ctx->truncated) {
