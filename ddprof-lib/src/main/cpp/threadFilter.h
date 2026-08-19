@@ -118,27 +118,29 @@ public:
         inline u64 contextWindowEpoch() const {
             return context_window_state.load(std::memory_order_acquire) >> 1;
         }
+        // add()/remove() (and therefore these) are only ever called by the slot's
+        // own owning thread transitioning its own context window, so there is no
+        // writer-writer race to protect against here. A CAS is unnecessary: the
+        // load and store below are never interleaved with another writer's RMW,
+        // only observed by concurrent readers via the acquire load in
+        // inContextWindow()/contextWindowEpoch(), for which the release store is
+        // sufficient. (unregisterThreadLocked()/resetRegistrationsLocked() can
+        // also zero this field from another thread, but only as part of tearing
+        // down or resetting the slot entirely, a case where clobbering an
+        // in-flight transition from the exiting/reset thread is already
+        // tolerated.) Avoiding the CAS turns a locked RMW into a plain store on
+        // every context-filtered enter/exit.
         inline bool enterContextWindow() {
-            u64 current = context_window_state.load(std::memory_order_acquire);
-            while ((current & 1) == 0) {
-                if (context_window_state.compare_exchange_weak(
-                        current, current + 3, std::memory_order_acq_rel,
-                        std::memory_order_acquire)) {
-                    return true;
-                }
-            }
-            return false;
+            u64 current = context_window_state.load(std::memory_order_relaxed);
+            if ((current & 1) != 0) return false;
+            context_window_state.store(current + 3, std::memory_order_release);
+            return true;
         }
         inline bool exitContextWindow() {
-            u64 current = context_window_state.load(std::memory_order_acquire);
-            while ((current & 1) != 0) {
-                if (context_window_state.compare_exchange_weak(
-                        current, current + 1, std::memory_order_acq_rel,
-                        std::memory_order_acquire)) {
-                    return true;
-                }
-            }
-            return false;
+            u64 current = context_window_state.load(std::memory_order_relaxed);
+            if ((current & 1) == 0) return false;
+            context_window_state.store(current + 1, std::memory_order_release);
+            return true;
         }
 
         inline bool sampledThisRun() const {

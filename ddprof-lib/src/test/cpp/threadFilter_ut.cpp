@@ -451,6 +451,35 @@ TEST_F(ThreadFilterTest, PerformanceRegression) {
     // Should be fast - less than 200ns per operation is reasonable for this complex test
     EXPECT_LT(duration.count() * 1000.0 / num_operations, 200.0);  // 200ns per op max
 }
+
+// Isolates the cost of add()/remove() (i.e. Slot::enterContextWindow()/
+// exitContextWindow()) from accept()'s TID hashing, since this pair runs on
+// every context-window transition for every context-filtered recording.
+TEST_F(ThreadFilterTest, ContextWindowEnterExitPerformance) {
+    const int num_operations = 1000000;
+
+    int slot_id = filter->registerThread();
+    ASSERT_GE(slot_id, 0);
+
+    auto start = std::chrono::high_resolution_clock::now();
+
+    for (int i = 0; i < num_operations; i++) {
+        filter->add(i, slot_id);
+        filter->remove(slot_id);
+    }
+
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+    double ns_per_op = (double)duration.count() * 1000.0 / (num_operations * 2);
+
+    fprintf(stderr, "ContextWindow enter/exit: %d pairs in %ld microseconds (%.2f ns/op)\n",
+            num_operations, duration.count(), ns_per_op);
+
+    // A plain load + release store per call should stay well under a locked
+    // RMW's cost; this is a loose ceiling to catch a regression back to CAS
+    // or worse, not a tight performance contract.
+    EXPECT_LT(ns_per_op, 50.0);
+}
 #endif // NDEBUG
 
 // Collect behavior with mixed states
