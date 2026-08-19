@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk8
 
 ## glibc-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-08-19 06:56:25 EDT
+**Date:** 2026-08-19 07:58:57 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 186 |
-| Sample Rate | 3.10/sec |
-| Health Score | 194% |
+| CPU Samples | 200 |
+| Sample Rate | 3.33/sec |
+| Health Score | 208% |
 | Threads | 6 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: glibc-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 194 |
-| Sample Rate | 3.23/sec |
-| Health Score | 202% |
-| Threads | 8 |
+| CPU Samples | 216 |
+| Sample Rate | 3.60/sec |
+| Health Score | 225% |
+| Threads | 9 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 96-96 cores)</summary>
+<summary>CPU Timeline (3 unique values: 89-96 cores)</summary>
 
 ```
-1787136715 96
-1787136720 96
-1787136725 96
-1787136730 96
-1787136735 96
-1787136740 96
-1787136745 96
-1787136750 96
-1787136755 96
-1787136760 96
-1787136765 96
-1787136770 96
-1787136775 96
-1787136780 96
-1787136785 96
-1787136790 96
-1787136795 96
-1787136800 96
-1787136805 96
-1787136810 96
+1787140469 96
+1787140474 96
+1787140479 96
+1787140484 89
+1787140489 89
+1787140494 89
+1787140499 89
+1787140504 89
+1787140509 89
+1787140514 91
+1787140519 91
+1787140524 91
+1787140529 91
+1787140534 91
+1787140539 91
+1787140544 91
+1787140549 91
+1787140554 91
+1787140559 96
+1787140564 96
 ```
 </details>
 
