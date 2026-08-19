@@ -132,6 +132,15 @@ class JavaVersionAccess {
    static int get_hotspot_version(char* prop_value);
 };
 
+// The profiler bridge is process-wide and initialized exactly once. Later Java
+// API initialization may reuse it only with the same requested Object.wait
+// ownership, independently of native monitor-event availability.
+enum class ProfilerBridgeInitResult {
+  SUCCESS,
+  FAILURE,
+  MONITOR_EVENTS_DELEGATION_CONFLICT,
+};
+
 class VM {
   friend class VMTestAccessor;
 
@@ -147,6 +156,9 @@ private:
   static bool _zing;
   static bool _can_sample_objects;
   static bool _can_intercept_binding;
+  static bool _monitor_wait_events_delegated;
+  static bool _native_monitor_events_available;
+  static bool _profiler_bridge_initialized;
   static bool _is_adaptive_gc_boundary_flag_set;
   static CodeCache *_libjvm;
 
@@ -168,6 +180,7 @@ private:
   static void *getLibraryHandle(const char *name);
 
   static bool initShared(JavaVM *vm);
+  static void configureMonitorEvents(bool delegateMonitorWaitEvents);
   static void probeJFRRequestStackTrace();
 
   static CodeCache* openJvmLibrary();
@@ -183,7 +196,8 @@ public:
   static JVM_GetManagement _getManagement;
 
   static bool initLibrary(JavaVM *vm);
-  static bool initProfilerBridge(JavaVM *vm, bool attach);
+  static ProfilerBridgeInitResult initProfilerBridge(
+      JavaVM *vm, bool attach, bool delegateMonitorWaitEvents = false);
 
   static jvmtiEnv *jvmti() { return _jvmti; }
 
@@ -217,6 +231,15 @@ public:
   static bool isHotspot() { return _hotspot; }
 
   static bool canSampleObjects() { return _can_sample_objects; }
+
+  static bool monitorWaitEventsDelegated() {
+    return _monitor_wait_events_delegated;
+  }
+
+  static bool nativeMonitorEventsAvailable() {
+    return _native_monitor_events_available;
+  }
+  static bool setNativeMonitorEventsEnabled(bool enabled);
 
   static bool isZing() { return _zing; }
 

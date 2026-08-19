@@ -148,6 +148,7 @@ private:
   // onThreadStart()/onThreadEnd() on JVMTI thread-lifecycle callbacks.
   std::atomic<bool> _reference_chains_active{false};
   std::atomic<bool> _task_block_enabled{false};
+  std::atomic<bool> _task_block_monitor_events_enabled{false};
   std::atomic<bool> _task_block_rotation{false};
   std::atomic<u64> _task_block_inflight{0};
 
@@ -213,6 +214,7 @@ private:
   bool recordSampleImpl(void *ucontext, u64 weight, int tid, jint event_type,
                         u64 call_trace_id, Event *event,
                         WallClockBlockTracker::BlockState *unowned_slot);
+  void setTaskBlockEnabled(bool enabled);
   bool beginTaskBlockRotation();
   void endTaskBlockRotation();
 
@@ -551,6 +553,9 @@ public:
   void leaveTaskBlockActivity();
   bool taskBlockEnabled() const {
     return _task_block_enabled.load(std::memory_order_acquire);
+  }
+  bool nativeMonitorTaskBlockEnabled() const {
+    return _task_block_monitor_events_enabled.load(std::memory_order_acquire);
   }
   void writeLog(LogLevel level, const char *message);
   void writeLog(LogLevel level, const char *message, size_t len);

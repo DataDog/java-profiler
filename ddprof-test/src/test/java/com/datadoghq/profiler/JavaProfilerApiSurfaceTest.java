@@ -17,6 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+/** Locks the supported public boundary and package-scoped producer hooks. */
 public class JavaProfilerApiSurfaceTest {
     @Test
     public void taskBlockApiIsPublicButInternalHooksRemainPackageScoped() throws Exception {
@@ -61,6 +62,15 @@ public class JavaProfilerApiSurfaceTest {
         }
         assertEquals(REFERENCE_CHAIN_TEST_SEAMS, found,
                 "every listed reference-chain test seam must still exist on JavaProfiler");
+    }
+
+    @Test
+    public void monitorWaitOwnershipIsExplicitPublicApi() throws Exception {
+        assertTrue(Modifier.isPublic(JavaProfiler.class
+                .getDeclaredMethod("getInstance", String.class, String.class, boolean.class)
+                .getModifiers()));
+        assertTrue(Modifier.isPublic(JavaProfiler.class
+                .getDeclaredMethod("isMonitorWaitEventsDelegated").getModifiers()));
     }
 
     private static void assertNotPublic(Method method) {
