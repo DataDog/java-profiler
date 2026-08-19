@@ -25,6 +25,7 @@
 #include <functional>
 
 #include "arch.h"
+#include "counters.h"
 #include "threadState.h"
 
 class ProfiledThread;
@@ -168,6 +169,11 @@ public:
         inline u64 blockGeneration() const {
             return block_generation.load(std::memory_order_acquire);
         }
+#ifdef UNIT_TEST
+        inline void setBlockGenerationForTest(u64 value) {
+            block_generation.store(value, std::memory_order_relaxed);
+        }
+#endif
         inline u64 sampledBlockGeneration() const {
             return sampled_block_generation.load(std::memory_order_acquire);
         }
@@ -253,6 +259,7 @@ public:
             if (generation == kMaxBlockRunGeneration) {
                 active_block_owner.store(static_cast<int>(BlockRunOwner::NONE),
                                          std::memory_order_release);
+                Counters::increment(THREAD_REGISTRY_BLOCK_GENERATION_SATURATED);
                 return false;
             }
             generation++;

@@ -164,6 +164,7 @@ ThreadFilter::SlotID ThreadFilter::registerThread(int tid) {
     if (reused_slot >= 0) {
         Slot* slot = slotForId(reused_slot);
         slot->lifecycle_generation.fetch_add(1, std::memory_order_acq_rel);
+        slot->block_generation.store(0, std::memory_order_relaxed);
         slot->recording_epoch.store(0, std::memory_order_relaxed);
         slot->context_window_state.store(0, std::memory_order_relaxed);
         slot->enableUnownedBlockedFallback();
@@ -539,6 +540,14 @@ void ThreadFilter::unregisterThreadLocked(SlotID slot_id, int expected_tid) {
     int tid = slot->nativeTid();
     if (expected_tid >= 0 && tid != expected_tid) return;
     unindexSlot(slot_id, tid);
+    if (slot->activeBlockOwner() != BlockRunOwner::NONE) {
+        // A thread should never unregister while still holding an active block
+        // run (its own synchronous begin/end pair must complete on the same
+        // still-live thread first). If this ever fires, block_generation resets
+        // on the next reuse of this slot are relying on an invariant that just
+        // broke -- investigate immediately rather than trusting the reset is safe.
+        Counters::increment(THREAD_REGISTRY_UNREGISTER_ACTIVE_BLOCK_RUN);
+    }
     slot->recording_epoch.store(0, std::memory_order_release);
     slot->tid.store(-1, std::memory_order_release);
     slot->context_window_state.store(0, std::memory_order_release);
@@ -572,6 +581,7 @@ void ThreadFilter::resetRegistrationsLocked() {
             if (slot.nativeTid() != -1) {
                 slot.lifecycle_generation.fetch_add(1, std::memory_order_acq_rel);
             }
+            slot.block_generation.store(0, std::memory_order_relaxed);
             slot.recording_epoch.store(0, std::memory_order_release);
             slot.tid.store(-1, std::memory_order_release);
             slot.context_window_state.store(0, std::memory_order_release);

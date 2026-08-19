@@ -546,6 +546,34 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
   return depth;
 }
 
+int Profiler::captureJVMTIFrames(jthread thread, int start_depth,
+                                 CallTraceBuffer* buffer) {
+  ASGCT_CallFrame *frames = buffer->_asgct_frames;
+  jvmtiFrameInfo *jvmti_frames = buffer->_jvmti_frames;
+  jint num_frames = 0;
+  if (VM::jvmti()->GetStackTrace(thread, start_depth, _max_stack_depth,
+                                 jvmti_frames, &num_frames) != JVMTI_ERROR_NONE ||
+      num_frames <= 0) {
+    return 0;
+  }
+  copyJvmtiFrames(frames, jvmti_frames, num_frames);
+  // See recordJVMTISample's original comment: GetStackTrace on a JDK21+ virtual
+  // thread returns only the VT's logical stack, stopping at the continuation
+  // boundary. Append a synthetic root frame so the UI doesn't report it as
+  // "Missing Frames".
+  if (VM::isHotspot() && VM::hotspot_version() >= 21 &&
+      num_frames < _max_stack_depth) {
+    VMThread* carrier = VMThread::current();
+    if (carrier != nullptr && carrier->isCarryingVirtualThread()) {
+      frames[num_frames].bci = BCI_NATIVE_FRAME;
+      frames[num_frames].method_id = (jmethodID) "JVM Continuation";
+      LP64_ONLY(frames[num_frames].padding = 0;)
+      num_frames++;
+    }
+  }
+  return num_frames;
+}
+
 u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event_type, Event *event, bool deferred) {
   // Called from non-signal based sampler
   ProfiledThread* prof_thread = ProfiledThread::initCurrentThreadSignalSafe();
@@ -581,37 +609,8 @@ u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event
 #ifdef COUNTERS
     u64 startTime = TSC::ticks();
 #endif // COUNTERS
-    ASGCT_CallFrame *frames = buf->_asgct_frames;
-    jvmtiFrameInfo *jvmti_frames = buf->_jvmti_frames;
-
-    int num_frames = 0;
-
-    if (VM::jvmti()->GetStackTrace(thread, 0, _max_stack_depth, jvmti_frames, &num_frames) == JVMTI_ERROR_NONE && num_frames > 0) {
-      // Convert to AsyncGetCallTrace format.
-      // Note: jvmti_frames and frames may overlap.
-      copyJvmtiFrames(frames, jvmti_frames, num_frames);
-      // On JDK 21+, GetStackTrace on a virtual thread returns only the VT's
-      // logical stack; it stops at the continuation boundary and never includes
-      // carrier-thread frames.  Without a synthetic root the trace appears
-      // truncated to the UI backend, which attributes it to "Missing Frames".
-      // Detect the VT case via JavaThread::_cont_entry being non-null on the
-      // carrier.  This field is in gHotSpotVMStructs on all JDK 21+ builds so
-      // isCarryingVirtualThread() works regardless of JDK version.  Append a
-      // synthetic "JVM Continuation" root frame to mark the boundary
-      // explicitly, matching the behaviour of walkVM without carrier_frames.
-      if (VM::isHotspot() && VM::hotspot_version() >= 21 &&
-          num_frames < _max_stack_depth) {
-        VMThread* carrier = VMThread::current();
-        if (carrier != nullptr && carrier->isCarryingVirtualThread()) {
-          frames[num_frames].bci = BCI_NATIVE_FRAME;
-          frames[num_frames].method_id = (jmethodID) "JVM Continuation";
-          LP64_ONLY(frames[num_frames].padding = 0;)
-          num_frames++;
-        }
-      }
-    }
-
-    call_trace_id = _call_trace_storage.put(num_frames, frames, false, counter);
+    int num_frames = captureJVMTIFrames(thread, 0, buf);
+    call_trace_id = _call_trace_storage.put(num_frames, buf->_asgct_frames, false, counter);
 #ifdef COUNTERS
     u64 duration = TSC::ticks() - startTime;
     if (duration > 0) {
@@ -816,22 +815,17 @@ Profiler::TaskBlockRecordResult Profiler::recordTaskBlock(
     }
 
     CallTraceBuffer *buffer = _calltrace_buffer[lock_index];
-    ASGCT_CallFrame *frames = buffer->_asgct_frames;
-    jvmtiFrameInfo *jvmti_frames = buffer->_jvmti_frames;
-    jint num_frames = 0;
 #ifdef COUNTERS
     u64 stack_start = TSC::ticks();
 #endif
-    jvmtiError error = VM::jvmti()->GetStackTrace(
-        thread, start_depth, _max_stack_depth, jvmti_frames, &num_frames);
-    if (error != JVMTI_ERROR_NONE || num_frames <= 0) {
+    int num_frames = captureJVMTIFrames(thread, start_depth, buffer);
+    if (num_frames <= 0) {
       _locks[lock_index].unlock();
       return TaskBlockRecordResult::STACK_CAPTURE_FAILED;
     }
 
-    copyJvmtiFrames(frames, jvmti_frames, num_frames);
     u64 call_trace_id =
-        _call_trace_storage.put(num_frames, frames, false, 1);
+        _call_trace_storage.put(num_frames, buffer->_asgct_frames, false, 1);
 #ifdef COUNTERS
     u64 stack_duration = TSC::ticks() - stack_start;
     if (stack_duration > 0) {
