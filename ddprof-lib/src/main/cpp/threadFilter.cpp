@@ -546,7 +546,12 @@ void ThreadFilter::resetRegistrationsLocked() {
             if (slot.nativeTid() != -1) {
                 slot.lifecycle_generation.fetch_add(1, std::memory_order_acq_rel);
             }
-            slot.block_generation.store(0, std::memory_order_relaxed);
+            // block_generation is intentionally left untouched here, mirroring
+            // unregisterThreadLocked(): it must stay monotonic for the life of
+            // the slot so a stale token from before a stop/restart can never
+            // numerically collide with a token issued after. Resetting it to 0
+            // is what previously let a pre-restart token satisfy the
+            // post-restart blockGeneration() check.
             slot.recording_epoch.store(0, std::memory_order_release);
             slot.tid.store(-1, std::memory_order_release);
             slot.context_window_state.store(0, std::memory_order_release);
