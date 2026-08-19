@@ -1586,6 +1586,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   _cpu_engine = selectCpuEngine(args);
   _wall_engine = selectWallEngine(args);
   _cstack = args._cstack;
+  _force_jmethodID = args._force_jmethodID;
   if (_cstack == CSTACK_DEFAULT) {
     if (VMStructs::hasStackStructs() && OS::isLinux()) {
       _cstack = CSTACK_VM;

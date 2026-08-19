@@ -202,7 +202,7 @@ void HotspotSupport::fillJavaFrame(ASGCT_CallFrame& frame, FrameTypeId type, int
         fillFrame(frame, type, bci, method_id);
     } else if (method_id != nullptr) {
         fillFrame(frame, type, bci, method_id);
-    } else if (!VM::arguments()._force_jmethodID) {
+    } else if (!Profiler::instance()->forceJmethodID()) {
         // fjmethodid=false: the user opted into the raw Method* path. nullptr
         // means no jmethodID is available — either the klass was deliberately
         // not primed (ids == NULL) or the cache was shrunk by a redefine
@@ -1411,7 +1411,7 @@ bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jcl
         jobject cl = nullptr;
         // Hidden/lambda classes can be unloaded, fallback to use jmethodIDs, so preload them.
         if (!isHiddenClass(jvmti, klass) &&
-            jvmti->GetClassLoader(klass, &cl) == JVMTI_ERROR_NONE && 
+            jvmti->GetClassLoader(klass, &cl) == JVMTI_ERROR_NONE &&
             isSystemClassLoader(jni, cl)) {
             char* signature_ptr = nullptr;
             if (jvmti->GetClassSignature(klass, &signature_ptr, nullptr) == JVMTI_ERROR_NONE) {
@@ -1552,7 +1552,7 @@ static bool readMethodNames(const void* method, VMMethod** out_vm_method,
 //     local frame and unbalanced safepoint state -- trading a crash for a
 //     JVM-wide deadlock.
 // vm_method->validatedId() below is safefetch-based, so it is safe unprotected.
-static jmethodID lookupMethodIdViaJni(VMMethod* vm_method, const ResolvedNames& names) {
+jmethodID lookupMethodIdViaJni(VMMethod* vm_method, const ResolvedNames& names) {
   jmethodID method_id = nullptr;
   const char* method_name = names.method_name;
   const char* method_signature = names.method_signature;
@@ -1571,20 +1571,20 @@ static jmethodID lookupMethodIdViaJni(VMMethod* vm_method, const ResolvedNames& 
         jni->ExceptionClear();
         // JNI GetMethodID/GetStaticMethodID cannot look up <clinit> because
         // the JVM intentionally hides class initializers from JNI callers.
-        // Fall back to JVMTI GetClassMethods, which covers all methods
-        // including <clinit> and forces jmethodID slot allocation for them.
+        // Fall back to loadMethodIDsIfNeededImpl(), which covers all methods
+        // including <clinit> and forces jmethodID slot allocation for them
+        // (going through this helper, rather than calling GetClassMethods
+        // directly, ensures the JDK-8062116 patchClassLoaderData() workaround
+        // is applied here too, same as every other jmethodID-preload path).
         // After the call, re-read the ID directly from VM metadata.
         if (strcmp(method_name, "<clinit>") == 0) {
           jvmtiEnv* jvmti = VM::jvmti();
           if (jvmti != nullptr) {
-            jint count = 0;
-            jmethodID* methods = nullptr;
-            if (jvmti->GetClassMethods(clz, &count, &methods) == JVMTI_ERROR_NONE) {
+            if (HotspotSupport::loadMethodIDsIfNeededImpl(jvmti, jni, clz, true /*load all*/)) {
               jmethodID validated = vm_method->validatedId();
               if (isValidJMethodID(validated)) {
                 method_id = validated;
               }
-              jvmti->Deallocate((unsigned char*)methods);
             }
           }
         }
