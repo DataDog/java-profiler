@@ -254,26 +254,19 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         jclass Thread_class = jni->FindClass("java/lang/Thread");
         jclass Class_class = jni->FindClass("java/lang/Class");
         if (Thread_class != nullptr && Class_class != nullptr) {
-          jmethodID equals = jni->GetMethodID(Class_class,
-                                              "equals", "(Ljava/lang/Object;)Z");
-          if (equals != nullptr) {
-            jclass klass = method_class;
-            do {
-              entry = jni->CallBooleanMethod(Thread_class, equals, klass);
-              if (jniExceptionCheck(jni)) {
-                entry = false;
-                break;
-              }
-              if (entry) {
-                break;
-              }
-            } while ((klass = jni->GetSuperclass(klass)) != NULL);
+          jmethodID isAssignableFrom =
+              jni->GetMethodID(Class_class, "isAssignableFrom", "(Ljava/lang/Class;)Z");
+          if (isAssignableFrom != nullptr) {
+            entry = jni->CallBooleanMethod(Thread_class, isAssignableFrom, method_class);
+            if (jniExceptionCheck(jni)) {
+              entry = false;
+            }
           }
         }
         // Clear any exceptions from the reflection calls above
         jniExceptionCheck(jni);
       } else if (strncmp(method_name, "main", 5) == 0 &&
-                 strncmp(method_sig, "(Ljava/lang/String;)V", 21)) {
+                 strncmp(method_sig, "([Ljava/lang/String;)V", 22) == 0) {
         // public static void main(String[] args) - 'public static' translates
         // to modifier bits 0 and 3, hence check for '9'
         entry = true;

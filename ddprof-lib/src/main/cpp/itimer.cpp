@@ -16,13 +16,14 @@
  */
 
 #include "itimer.h"
+#include "counters.h"
 #include "debugSupport.h"
 #include "jvmThread.h"
 #include "os.h"
 #include "profiler.h"
 #include "signalInflight.h"
 #include "stackWalker.h"
-#include "threadLocalData.h"
+#include "threadLocalData.inline.h"
 #include "threadState.inline.h"
 #include "guards.h"
 #include <sys/time.h>
@@ -32,7 +33,7 @@ long ITimer::_interval;
 CStack ITimer::_cstack;
 
 void ITimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
-  SIGNAL_HANDLER_GUARD();
+  SIGNAL_HANDLER_GUARD_OR_DROP();
   // NOTE: ITimer uses setitimer(ITIMER_PROF) which delivers signals with
   // si_code==SI_KERNEL — no sival payload is available. The signal-origin
   // check implemented in CTimer/WallClock cannot be applied here. ITimer
@@ -42,20 +43,16 @@ void ITimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   InflightGuard inflight;
   if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE))
     return;
-  
+
+  ProfiledThread *current = SIGNAL_HANDLER_CURRENT_THREAD();
+
   // Atomically try to enter critical section - prevents all reentrancy races
-  CriticalSection cs;
+  CriticalSection cs(current);
   if (!cs.entered()) {
     return;  // Another critical section is active, defer profiling
   }
-  int tid = 0;
-  ProfiledThread *current = ProfiledThread::current();
-  if (current != NULL) {
-    current->noteCPUSample(Profiler::instance()->recordingEpoch());
-    tid = current->tid();
-  } else {
-    tid = OS::threadId();
-  }
+  current->noteCPUSample(Profiler::instance()->recordingEpoch());
+  int tid = current->tid();
   Shims::instance().setSighandlerTid(tid);
 
   ExecutionEvent event;
@@ -105,28 +102,29 @@ bool ITimerJvmti::_enabled = false;
 long ITimerJvmti::_interval = 0;
 
 void ITimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
-  SIGNAL_HANDLER_GUARD();
+  int saved_errno = errno;
+  SIGNAL_HANDLER_GUARD_OR_DROP_WITH_ERRNO(saved_errno);
+  ProfiledThread *current = SIGNAL_HANDLER_CURRENT_THREAD();
+  assert(current != nullptr);
+
   InflightGuard inflight;
-  CriticalSection cs;
+  CriticalSection cs(current);
   if (!cs.entered()) {
+    errno = saved_errno;
     return;
   }
-  int saved_errno = errno;
   if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
     errno = saved_errno;
     return;
   }
-  ProfiledThread *current = ProfiledThread::current();
-  if (current != nullptr && JVMThread::current() == nullptr
+  if (JVMThread::current() == nullptr
       && current->inInitWindow()) {
     current->tickInitWindow();
     errno = saved_errno;
     return;
   }
-  int tid = current ? current->tid() : OS::threadId();
-  if (current) {
-    current->noteCPUSample(Profiler::instance()->recordingEpoch());
-  }
+  int tid = current->tid();
+  current->noteCPUSample(Profiler::instance()->recordingEpoch());
   Shims::instance().setSighandlerTid(tid);
 
   ExecutionEvent event;

@@ -91,7 +91,7 @@ public:
 // musl/aarch64 where the deopt blob may corrupt the wrapper's stack guard.
 __attribute__((noinline))
 static void unregister_and_release() {
-    SignalBlocker blocker;
+    blockProfilingForExit();
     int tid = ProfiledThread::currentTid();
     Profiler::unregisterThread(tid);
     ProfiledThread::release();

@@ -541,6 +541,15 @@ public final class JavaProfiler {
 
     public static native void dumpContext();
 
+    /**
+     * Test-only: whether this process's TLS priming pool actually exists, i.e. whether
+     * {@code JVMSupport::initialize()} found a valid {@code ProfiledThread} key that also
+     * passed {@code ProfiledThread::supportPriming()} (see jvmSupport.cpp). On glibc this can be
+     * false even outside macOS/Zing, since it depends on where in the process's pthread key
+     * space this profiler's key happened to land.
+     */
+    public static native boolean testTlsPrimingAvailable();
+
     // ---- Test-only reads of the current thread's OTEP record ----------------------------------
     // Each resolves the current carrier's record directly (like the write primitives above) with
     // no cached buffer and no per-thread Java object; introspection/test use only.

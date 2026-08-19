@@ -17,7 +17,19 @@
 #include "guards.h"
 #include "common.h"
 #include "os.h"
-#include "threadLocalData.h"
+#include "threadLocalData.inline.h"
+
+#include <cassert>
+
+void blockProfilingForExit() {
+    sigset_t prof_signals, old_signals;
+    sigemptyset(&prof_signals);
+    sigaddset(&prof_signals, SIGPROF);     // Used by ITimer and CTimer
+    sigaddset(&prof_signals, SIGVTALRM);   // Used by WallClock
+
+    int rc= pthread_sigmask(SIG_BLOCK, &prof_signals, &old_signals);
+    assert(rc == 0);
+}
 
 // Signal-context tracking — backed by ProfiledThread::_signal_depth; see
 // the comment block in guards.h for the rationale (initial-exec TLS was
@@ -30,15 +42,17 @@ int getInSignalDepth() {
 
 bool isInTrackedSignalContext() {
     ProfiledThread *pt = ProfiledThread::current();
-    // null ProfiledThread = no thread context; the SignalHandlerScope
-    // never ran, so we have no positive evidence of a signal frame.
+    // null ProfiledThread = no thread context;
+    // the SignalHandlerScope never ran, so we have no positive evidence
+    // of a signal frame.
     // See header comment for the rationale of returning false here.
     return pt != nullptr && pt->signalDepth() != 0;
 }
 
-SignalHandlerScope::SignalHandlerScope() : _active(true) {
-    ProfiledThread *pt = ProfiledThread::current();
+SignalHandlerScope::SignalHandlerScope(bool shouldRunPriming) : _current(nullptr), _active(true) {
+    ProfiledThread *pt = shouldRunPriming ? ProfiledThread::acquireCurrent() : ProfiledThread::current();
     if (pt != nullptr) {
+        _current = pt;
         pt->enterSignalScope();
     } else {
         // No thread context: nothing to update; mark inactive so destructor
@@ -49,17 +63,15 @@ SignalHandlerScope::SignalHandlerScope() : _active(true) {
 
 SignalHandlerScope::~SignalHandlerScope() {
     if (!_active) return;
-    ProfiledThread *pt = ProfiledThread::current();
-    if (pt != nullptr) {
-        pt->exitSignalScope();
+    if (_current != nullptr) {
+        _current->exitSignalScope();
     }
 }
 
 void SignalHandlerScope::release() {
     if (!_active) return;
-    ProfiledThread *pt = ProfiledThread::current();
-    if (pt != nullptr) {
-        pt->exitSignalScope();
+    if (_current != nullptr) {
+        _current->exitSignalScope();
     }
     _active = false;
 }
@@ -71,46 +83,24 @@ void signalHandlerUnwindAfterLongjmp() {
     }
 }
 
-// Static bitmap storage for fallback cases
-uint64_t CriticalSection::_fallback_bitmap[CriticalSection::FALLBACK_BITMAP_WORDS] = {};
 
-CriticalSection::CriticalSection() : _entered(false), _using_fallback(false), _word_index(0), _bit_mask(0), _thread_ptr(nullptr) {
-    _thread_ptr = ProfiledThread::current();
+CriticalSection::CriticalSection(ProfiledThread* pt) : _entered(false), _thread_ptr(pt) {
+    // acquireCurrent() falls back to ThreadLocalDataPool::acquire() (a
+    // pre-allocated, async-signal-safe pool) when the calling thread has
+    // not been primed yet. _thread_ptr can still legitimately be nullptr
+    // here if priming is unsupported (e.g. macOS) and the pool is
+    // exhausted; treat that as "did not enter" rather than dereferencing.
+    if (_thread_ptr == nullptr) {
+        _thread_ptr = ProfiledThread::acquireCurrent();
+    }
+
     if (_thread_ptr != nullptr) {
-        // Primary path: Use ProfiledThread storage (fast and memory-efficient)
         _entered = _thread_ptr->tryEnterCriticalSection();
-    } else {
-        // Fallback path: Use hash-based bitmap for stress tests and edge cases
-        _using_fallback = true;
-        int tid = OS::threadId();
-
-        // Hash TID to distribute across bitmap words, reducing clustering
-        // We are OK with false collision for the fallback - it should be used only for testing when we don't have full profiler initialized
-        _word_index = hash_tid(tid) % FALLBACK_BITMAP_WORDS;
-        uint32_t bit_index = tid % 64;
-        _bit_mask = 1ULL << bit_index;
-
-        // Use ACQUIRE ordering to ensure visibility of protected data after acquiring critical section
-        uint64_t old_word = __atomic_fetch_or(&_fallback_bitmap[_word_index], _bit_mask, __ATOMIC_ACQUIRE);
-        _entered = !(old_word & _bit_mask);  // Success if bit was previously 0
     }
 }
 
 CriticalSection::~CriticalSection() {
-    if (_entered) {
-        if (_using_fallback) {
-            // Clear the bit atomically for fallback bitmap
-            // Use RELEASE ordering to ensure protected data writes are visible before releasing
-            __atomic_fetch_and(&_fallback_bitmap[_word_index], ~_bit_mask, __ATOMIC_RELEASE);
-        } else {
-            // Release ProfiledThread flag using the pointer captured at construction
-            if (_thread_ptr != nullptr) {
-                _thread_ptr->exitCriticalSection();
-            }
-        }
+    if (_entered && _thread_ptr != nullptr) {
+        _thread_ptr->exitCriticalSection();
     }
-}
-
-uint32_t CriticalSection::hash_tid(int tid) {
-    return static_cast<uint32_t>(tid * KNUTH_MULTIPLICATIVE_CONSTANT);
 }
