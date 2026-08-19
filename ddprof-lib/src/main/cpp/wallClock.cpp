@@ -351,6 +351,18 @@ Error BaseWallClock::start(Arguments &args) {
 
 void BaseWallClock::stop() {
   _running.store(false);
+  // start() can return before pthread_create() runs (e.g. the forced-failure
+  // test hook, or an early Error return for a bad interval), leaving _thread
+  // at its constructor sentinel of 0. Profiler::stop() calls every engine's
+  // stop() whenever its event mask bit was requested, regardless of whether
+  // start() actually activated it, so this guard must live here rather than
+  // at the call site. Skipping it crashes on musl: musl's pthread_kill/
+  // pthread_join dereference the thread descriptor unconditionally, so a
+  // zero-valued pthread_t segfaults instead of returning an error like glibc
+  // does.
+  if (_thread == 0) {
+    return;
+  }
   // the thread join ensures we wait for the thread to finish before returning
   // (and possibly removing the object)
   pthread_kill(_thread, WAKEUP_SIGNAL);
@@ -358,6 +370,7 @@ void BaseWallClock::stop() {
   if (res != 0) {
     Log::warn("Unable to join WallClock thread on stop %d", res);
   }
+  _thread = 0;
 }
 
 bool BaseWallClock::isEnabled() const {
