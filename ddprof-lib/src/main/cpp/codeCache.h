@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <jvmti.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <vector>
@@ -28,6 +29,8 @@ const int MAX_NATIVE_LIBS = 2048;
 
 enum ImportId {
   im_dlopen,
+  im_dup2,
+  im_dup3,
   im_pthread_create,
   im_pthread_exit,
   im_pthread_setspecific,
@@ -43,13 +46,18 @@ enum ImportId {
   im_recv,
   im_write,
   im_read,
+  im_close,
+  im_connect,
+  im_accept,
+  im_accept4,
+  im_recvfrom,
+  im_recvmsg,
+  im_epoll_wait,
+  im_epoll_pwait,
+  im_ppoll,
+  im_select,
+  im_pselect,
   NUM_IMPORTS
-};
-
-enum ImportType {
-    PRIMARY,
-    SECONDARY,
-    NUM_IMPORT_TYPES
 };
 
 enum Mark {
@@ -137,6 +145,13 @@ public:
 
 class CodeCache {
 private:
+  static_assert(NUM_IMPORTS <= 64, "import completeness mask must cover every import");
+
+  struct ImportLocation {
+    ImportId _id;
+    void** _location;
+  };
+
   char *_name;
   short _lib_index;
   const void *_min_address;
@@ -152,7 +167,10 @@ private:
   size_t _build_id_len;      // Build-id length in bytes (raw, not hex string length)
   uintptr_t _load_bias;      // Load bias (image_base - file_base address)
 
-  void **_imports[NUM_IMPORTS][NUM_IMPORT_TYPES];
+  std::vector<ImportLocation> _imports;
+  size_t _import_offsets[NUM_IMPORTS + 1];
+  u64 _incomplete_imports;
+  bool _imports_finalized;
   bool _imports_patchable;
   bool _debug_symbols;
 
@@ -177,7 +195,8 @@ private:
   std::atomic<bool> _published;
 
   void expand();
-  void makeImportsPatchable();
+  void finalizeImports();
+  bool makeImportsPatchable();
   void saveImport(ImportId id, void** entry);
   void copyFrom(const CodeCache& other);
 
@@ -264,8 +283,11 @@ public:
   }
 
   void addImport(void **entry, const char *name);
-  void **findImport(ImportId id);
-  void patchImport(ImportId, void *hook_func);
+  size_t importCount(ImportId id);
+  bool importsComplete(ImportId id) const;
+  bool prepareImportsForPatch();
+  void **findImport(ImportId id, size_t index = 0);
+  bool patchImport(ImportId, void *hook_func);
 
   CodeBlob *findBlob(const char *name);
   CodeBlob *findBlobByAddress(const void *address);

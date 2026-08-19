@@ -12,6 +12,8 @@ import com.datadoghq.profiler.JfrFrame;
 import java.util.HashSet;
 import java.util.Set;
 
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -23,6 +25,8 @@ final class TaskBlockAssertions {
   private static final String SUPPRESSED_SAMPLE_COUNT = "suppressedSampleCount";
   private static final String OBSERVED_BLOCKING_STATE = "observedBlockingState";
   private static final String CORRELATION_ID = "correlationId";
+  private static final String EVENT_THREAD = "eventThread";
+  private static final String DURATION = "duration";
 
   private TaskBlockAssertions() {}
 
@@ -90,7 +94,8 @@ final class TaskBlockAssertions {
 
   static void assertNoCorrelationId(JfrEvents events) {
     for (JfrEvent item : events) {
-      assertNull(item.get(CORRELATION_ID));
+      assertTrue(item.getLong(CORRELATION_ID, Long.MIN_VALUE) == 0,
+          "Direct-stack TaskBlock must have correlationId=0");
     }
   }
 
@@ -99,5 +104,76 @@ final class TaskBlockAssertions {
       assertNull(item.get(ANCHOR_SAMPLE_ID));
       assertNull(item.get(SUPPRESSED_SAMPLE_COUNT));
     }
+  }
+
+  static boolean containsObservedStateForEventThread(
+      JfrEvents events, String observedState, String threadName) {
+    for (JfrEvent item : events) {
+      if (observedState.equals(item.getString(OBSERVED_BLOCKING_STATE))
+          && threadName.equals(item.getThreadName(EVENT_THREAD))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static boolean containsEventThread(JfrEvents events, String threadName) {
+    for (JfrEvent item : events) {
+      if (threadName.equals(item.getThreadName(EVENT_THREAD))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static int countEventsForThread(JfrEvents events, String threadName) {
+    int count = 0;
+    for (JfrEvent item : events) {
+      if (threadName.equals(item.getThreadName(EVENT_THREAD))) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  static double durationNanosForThread(JfrEvents events, String threadName) {
+    double durationNanos = 0;
+    for (JfrEvent item : events) {
+      if (threadName.equals(item.getThreadName(EVENT_THREAD))) {
+        durationNanos += item.getLong(DURATION, 0L);
+      }
+    }
+    return durationNanos;
+  }
+
+  static boolean containsSpan(JfrEvents events, long spanId) {
+    for (JfrEvent item : events) {
+      if (item.getLong(AbstractProfilerTest.SPAN_ID, Long.MIN_VALUE) == spanId) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  static void assertBlockerEventThreadDiffers(
+      JfrEvents events, long blocker, long logicalThreadId) {
+    int checked = 0;
+    for (JfrEvent item : events) {
+      if (item.getLong(BLOCKER, Long.MIN_VALUE) != blocker) continue;
+      Long eventThreadId = item.getThreadJavaId(EVENT_THREAD);
+      assertNotNull(eventThreadId, "TaskBlock eventThread must not be null");
+      assertNotEquals(Long.valueOf(logicalThreadId), eventThreadId,
+          "Native TaskBlock must identify the physical carrier, not the virtual thread");
+      checked++;
+    }
+    assertTrue(checked > 0, "Expected TaskBlock eventThread for blocker=" + blocker);
+  }
+
+  static Set<Long> distinctBlockers(JfrEvents events) {
+    Set<Long> blockers = new HashSet<>();
+    for (JfrEvent item : events) {
+      blockers.add(item.getLong(BLOCKER, Long.MIN_VALUE));
+    }
+    return blockers;
   }
 }

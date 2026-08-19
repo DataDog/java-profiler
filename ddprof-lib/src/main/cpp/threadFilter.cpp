@@ -798,7 +798,8 @@ bool ThreadFilter::ownedBlockGeneration(const ThreadEntry& entry,
     bool suppressible_state = state == OSThreadState::SLEEPING ||
                               state == OSThreadState::CONDVAR_WAIT ||
                               state == OSThreadState::OBJECT_WAIT ||
-                              state == OSThreadState::MONITOR_WAIT;
+                              state == OSThreadState::MONITOR_WAIT ||
+                              state == OSThreadState::IO_WAIT;
     if (!suppressible_state) return false;
 
     RecordingEpoch epoch = recordingEpoch();
@@ -833,7 +834,13 @@ bool ThreadFilter::ownedBlockGeneration(const ThreadEntry& entry,
         return false;
     }
     generation = block_generation;
-    already_sampled = sampled_generation == block_generation;
+    // Native hooks own TaskBlock recording at completion, so waiting for a
+    // MethodSample would let the first wall signal interrupt the syscall and
+    // end this generation before suppression can take effect. Java and JVMTI
+    // owners retain their first successful MethodSample.
+    already_sampled = owner == BlockRunOwner::NATIVE
+                           ? true
+                           : sampled_generation == block_generation;
     return true;
 }
 

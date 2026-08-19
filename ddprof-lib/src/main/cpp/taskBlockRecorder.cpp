@@ -58,19 +58,29 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
   bool exited = current_slot == slot_id &&
       thread_filter->snapshotAndExitBlockedRun(slot_id, generation, &snapshot);
 
+  profiler->completeTaskBlockRun(slot_id, generation, end_ticks, blocker,
+                                 unblocking_span_id);
+
   if (!activity.active()) {
     // TaskBlockActivity's constructor already incremented TASK_BLOCK_DROPPED_ROTATION.
+    profiler->clearTaskBlockRun(slot_id, generation);
     return false;
   }
   if (!recording_enabled || !exited) {
+    profiler->clearTaskBlockRun(slot_id, generation);
     return false;
   }
   if (!snapshot.context_eligible) {
-    Counters::increment(TASK_BLOCK_SKIPPED_CONTEXT_WINDOW);
+    Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
+    profiler->clearTaskBlockRun(slot_id, generation);
     return false;
   }
 
-  return recordTaskBlockIfEligible(
-      current->tid(), thread, start_depth, start_ticks, end_ticks, context,
+  u64 segment_start = profiler->taskBlockSegmentStart(slot_id, generation);
+  if (segment_start == 0) segment_start = start_ticks;
+  bool recorded = recordTaskBlockIfEligible(
+      current->tid(), thread, start_depth, segment_start, end_ticks, context,
       blocker, unblocking_span_id, snapshot.active_state, true);
+  profiler->clearTaskBlockRun(slot_id, generation);
+  return recorded;
 }
