@@ -354,7 +354,7 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
     } else {
       Counters::increment(JMETHODID_SKIPPED);
       class_name_id = _classes->lookupDuringDump("", 0, Profiler::maxClassMapSize());
-      method_name_id = _symbols.lookup("jvmtiError");
+      method_name_id = _symbols.lookup("<unloaded>");
       method_sig_id = _symbols.lookup("()L;");
     }
 
