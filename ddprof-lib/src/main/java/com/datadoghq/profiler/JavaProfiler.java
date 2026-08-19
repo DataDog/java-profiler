@@ -522,7 +522,6 @@ public final class JavaProfiler {
     public static native void dumpContext();
 
     /**
-<<<<<<< HEAD
      * Test-only: whether this process's TLS priming pool actually exists, i.e. whether
      * {@code JVMSupport::initialize()} found a valid {@code ProfiledThread} key that also
      * passed {@code ProfiledThread::supportPriming()} (see jvmSupport.cpp). On glibc this can be
@@ -530,7 +529,8 @@ public final class JavaProfiler {
      * space this profiler's key happened to land.
      */
     public static native boolean testTlsPrimingAvailable();
-=======
+
+    /**
      * Test seam (debug native builds only - a no-op returning {@code false}/{@code 0}/an
      * empty array in release builds): decouples LivenessTracker's leak-candidate
      * detection from ReferenceChainTracker's chain reconstruction, each independently
@@ -645,7 +645,6 @@ public final class JavaProfiler {
      * position as a fraction of the current backlog.
      */
     public static native long getReferenceChainPendingSizeForTest0();
->>>>>>> 4267dc125 (Implement reference chains for surviving live-heap samples)
 
     /**
      * Test seam (debug native builds only): seeds one heap-floor-ring sample - the input to
