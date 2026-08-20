@@ -81,6 +81,10 @@ public final class JavaProfiler {
      * Get a {@linkplain JavaProfiler} instance backed by the bundled native library and using
      * the default temp directory as the scratch where the bundled library will be exploded
      * before linking.
+     *
+     * <p>This overload expresses no preference about monitor-event ownership: when the
+     * process-wide instance already exists it is returned unchanged, whatever its
+     * {@code delegateMonitorWaitEvents} setting is.
      */
     public static JavaProfiler getInstance() throws IOException {
         return getInstance(null, null);
@@ -91,6 +95,10 @@ public final class JavaProfiler {
      * the given directory as the scratch where the bundled library will be exploded
      * before linking.
      * @param scratchDir directory where the bundled library will be exploded before linking
+     *
+     * <p>This overload expresses no preference about monitor-event ownership: when the
+     * process-wide instance already exists it is returned unchanged, whatever its
+     * {@code delegateMonitorWaitEvents} setting is.
      */
     public static JavaProfiler getInstance(String scratchDir) throws IOException {
         return getInstance(null, scratchDir);
@@ -102,8 +110,18 @@ public final class JavaProfiler {
      * before linking.
      * @param libLocation the path to the native library to be used instead of the bundled one
      * @param scratchDir directory where the bundled library will be exploded before linking; ignored when 'libLocation' is {@literal null}
+     *
+     * <p>This overload expresses no preference about monitor-event ownership: when the
+     * process-wide instance already exists it is returned unchanged, whatever its
+     * {@code delegateMonitorWaitEvents} setting is. Only the explicit three-argument
+     * overload enforces the ownership-conflict check.
      */
     public static synchronized JavaProfiler getInstance(String libLocation, String scratchDir) throws IOException {
+        // No preference expressed: an already-initialized singleton is acceptable as-is.
+        if (instance != null) {
+            return instance;
+        }
+        // 'false' is the default for the *first* initialization only.
         return getInstance(libLocation, scratchDir, false);
     }
 
@@ -439,7 +457,8 @@ public final class JavaProfiler {
      * @return {@code true} when this call owns a park interval that must be closed
      */
     boolean parkEnter() {
-        return parkEnter0(Thread.currentThread());
+        Thread thread = Thread.currentThread();
+        return parkEnter0(thread, isVirtualThread(thread));
     }
 
     /**
@@ -447,7 +466,8 @@ public final class JavaProfiler {
      * {@code blocker} and {@code unblockingSpanId} are reserved for park instrumentation.
      */
     void parkExit(long blocker, long unblockingSpanId) {
-        parkExit0(Thread.currentThread(), blocker, unblockingSpanId);
+        Thread thread = Thread.currentThread();
+        parkExit0(thread, isVirtualThread(thread), blocker, unblockingSpanId);
     }
 
     /**
@@ -459,14 +479,16 @@ public final class JavaProfiler {
      * @return an opaque token to pass to {@link #blockExit(long)}, or 0 if no state was armed
      */
     long blockEnter(int state) {
-        return blockEnter0(Thread.currentThread(), state);
+        Thread thread = Thread.currentThread();
+        return blockEnter0(thread, isVirtualThread(thread), state);
     }
 
     /**
      * Clears a blocked interval previously armed by {@link #blockEnter(int)}.
      */
     void blockExit(long token) {
-        blockExit0(Thread.currentThread(), token);
+        Thread thread = Thread.currentThread();
+        blockExit0(thread, isVirtualThread(thread), token);
     }
 
     /**
@@ -580,13 +602,13 @@ public final class JavaProfiler {
 
     private static native void recordQueueEnd0(long startTicks, long endTicks, String task, String scheduler, Thread origin, String queueType, int queueLength);
 
-    private static native boolean parkEnter0(Thread thread);
+    private static native boolean parkEnter0(Thread thread, boolean isVirtual);
 
-    private static native void parkExit0(Thread thread, long blocker, long unblockingSpanId);
+    private static native void parkExit0(Thread thread, boolean isVirtual, long blocker, long unblockingSpanId);
 
-    private static native long blockEnter0(Thread thread, int state);
+    private static native long blockEnter0(Thread thread, boolean isVirtual, int state);
 
-    private static native void blockExit0(Thread thread, long token);
+    private static native void blockExit0(Thread thread, boolean isVirtual, long token);
 
     private static native long beginTaskBlock0(Thread thread);
 

@@ -406,8 +406,10 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
 
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
-    JNIEnv *env, jclass unused, jthread thread) {
-  if (!JVMSupport::isPlatformThread(env, thread)) {
+    JNIEnv *env, jclass unused, jthread thread, jboolean isVirtual) {
+  // Virtuality is resolved once on the Java side; re-deriving it here would cost a
+  // GetVersion() plus an IsVirtualThread() JNI round-trip on every park.
+  if (isVirtual != JNI_FALSE) {
     return JNI_FALSE;
   }
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
@@ -434,9 +436,9 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
-    JNIEnv *env, jclass unused, jthread thread, jlong blocker,
-    jlong unblockingSpanId) {
-  if (!JVMSupport::isPlatformThread(env, thread)) {
+    JNIEnv *env, jclass unused, jthread thread, jboolean isVirtual,
+    jlong blocker, jlong unblockingSpanId) {
+  if (isVirtual != JNI_FALSE) {
     return;
   }
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
@@ -481,10 +483,10 @@ static bool isCurrentJniThread(JNIEnv* env, jthread thread) {
 
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
-    JNIEnv *env, jclass unused, jthread thread, jint state) {
+    JNIEnv *env, jclass unused, jthread thread, jboolean isVirtual,
+    jint state) {
   OSThreadState decoded;
-  if (!decodeJavaBlockState(state, decoded) ||
-      !JVMSupport::isPlatformThread(env, thread)) {
+  if (!decodeJavaBlockState(state, decoded) || isVirtual != JNI_FALSE) {
     return 0;
   }
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
@@ -508,9 +510,10 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
-    JNIEnv *env, jclass unused, jthread thread, jlong token) {
+    JNIEnv *env, jclass unused, jthread thread, jboolean isVirtual,
+    jlong token) {
   u64 block_token = static_cast<u64>(token);
-  if (block_token == 0 || !JVMSupport::isPlatformThread(env, thread)) {
+  if (block_token == 0 || isVirtual != JNI_FALSE) {
     return;
   }
 

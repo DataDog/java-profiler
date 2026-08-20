@@ -86,8 +86,12 @@ static u64 monitorBlockerHash(jvmtiEnv *jvmti, jobject object) {
   return static_cast<u64>(static_cast<uint32_t>(hash));
 }
 
-static void monitorBlockEnter(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
-                              jobject object, OSThreadState state) {
+// Deliberately takes no jvmtiEnv: no JVMTI call may run on this hot path. The
+// blocker identity hash is resolved lazily in monitorBlockExit, and only for
+// intervals that pass the minimum-duration filter (GetObjectHashCode mutates the
+// object's mark word on HotSpot).
+static void monitorBlockEnter(JNIEnv *jni, jthread thread,
+                              OSThreadState state) {
   Profiler *profiler = Profiler::instance();
   if (!profiler->taskBlockEnabled() ||
       !profiler->nativeMonitorTaskBlockEnabled() ||
@@ -102,8 +106,7 @@ static void monitorBlockEnter(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
     return;
   }
 
-  if (!current->monitorEnter(TSC::ticks(), context,
-                             monitorBlockerHash(jvmti, object), state)) {
+  if (!current->monitorEnter(TSC::ticks(), context, /*blocker=*/0, state)) {
     u64 token = current->monitorBlockToken();
     ThreadFilter *tf = profiler->threadFilter();
     bool current_owner = false;
@@ -123,8 +126,7 @@ static void monitorBlockEnter(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
       return;
     }
     current->clearMonitorBlock();
-    if (!current->monitorEnter(TSC::ticks(), context,
-                               monitorBlockerHash(jvmti, object), state)) {
+    if (!current->monitorEnter(TSC::ticks(), context, /*blocker=*/0, state)) {
       return;
     }
   }
@@ -148,13 +150,15 @@ static void monitorBlockEnter(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
   current->setMonitorBlockToken(token);
 }
 
-static void monitorBlockExit(JNIEnv *jni, jthread thread, OSThreadState state) {
+static void monitorBlockExit(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+                             jobject object, OSThreadState state) {
   if (!JVMSupport::isPlatformThread(jni, thread)) return;
   ProfiledThread *current = ProfiledThread::current();
   if (current == nullptr) return;
 
   u64 start_ticks = 0;
   Context context{};
+  // The entry side no longer records a blocker; it is resolved lazily below.
   u64 blocker = 0;
   u64 token = 0;
   if (!current->monitorExit(state, start_ticks, context, blocker, token) ||
@@ -162,32 +166,42 @@ static void monitorBlockExit(JNIEnv *jni, jthread thread, OSThreadState state) {
     return;
   }
 
+  // Resolve the blocker identity hash only for intervals that will actually pass
+  // the eligibility filter. GetObjectHashCode mutates the object's mark word on
+  // HotSpot, so it must not run for short, high-frequency contention that gets
+  // discarded anyway. These conditions mirror taskBlockPassesBasicEligibility, and
+  // the same end_ticks is handed down so there is no boundary drift.
+  u64 end_ticks = TSC::ticks();
+  if (context.spanId == 0 && exceedsMinTaskBlockDuration(start_ticks, end_ticks)) {
+    blocker = monitorBlockerHash(jvmti, object);
+  }
+
   Profiler *profiler = Profiler::instance();
   finishTaskBlockAtExit(current, profiler->threadFilter(), thread, 0, token,
-                        start_ticks, context, blocker, 0);
+                        start_ticks, context, blocker, 0, end_ticks);
 }
 
 static void JNICALL MonitorContendedEnter(jvmtiEnv *jvmti, JNIEnv *jni,
                                           jthread thread, jobject object) {
-  monitorBlockEnter(jvmti, jni, thread, object, OSThreadState::MONITOR_WAIT);
+  monitorBlockEnter(jni, thread, OSThreadState::MONITOR_WAIT);
 }
 
 static void JNICALL MonitorContendedEntered(jvmtiEnv *jvmti, JNIEnv *jni,
                                             jthread thread, jobject object) {
-  monitorBlockExit(jni, thread, OSThreadState::MONITOR_WAIT);
+  monitorBlockExit(jvmti, jni, thread, object, OSThreadState::MONITOR_WAIT);
 }
 
 static void JNICALL MonitorWait(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                                 jobject object, jlong timeout) {
   if (!VM::monitorWaitEventsDelegated()) {
-    monitorBlockEnter(jvmti, jni, thread, object, OSThreadState::OBJECT_WAIT);
+    monitorBlockEnter(jni, thread, OSThreadState::OBJECT_WAIT);
   }
 }
 
 static void JNICALL MonitorWaited(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
                                   jobject object, jboolean timed_out) {
   if (!VM::monitorWaitEventsDelegated()) {
-    monitorBlockExit(jni, thread, OSThreadState::OBJECT_WAIT);
+    monitorBlockExit(jvmti, jni, thread, object, OSThreadState::OBJECT_WAIT);
   }
 }
 

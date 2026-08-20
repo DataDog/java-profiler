@@ -43,6 +43,7 @@ import java.util.concurrent.atomic.LongAdder;
  *     <li>profiler-java-default-delegation-conflict - verifies delegated ownership conflicts after default initialization</li>
  *     <li>profiler-java-delegation-reuse:&lt;delegated&gt; - verifies compatible Java singleton ownership reuse</li>
  *     <li>profiler-java-delegation-conflict:&lt;initial&gt;:&lt;requested&gt; - verifies conflicting Java singleton ownership requests</li>
+ *     <li>profiler-java-delegation-legacy-reuse:&lt;initial&gt; - verifies the legacy no-preference overloads reuse the existing singleton</li>
  *     <li>profiler-preexisting-monitor-wait - exercises Object.wait on a thread created before profiler initialization</li>
  *     <li>profiler-preexisting-monitor-contention - exercises monitor contention on a thread created before profiler initialization</li>
  * </ul>
@@ -250,6 +251,20 @@ public class ExternalLauncher {
                 JavaProfiler reused = JavaProfiler.getInstance(null, null, delegated);
                 System.out.println("[java-delegation-reuse] "
                         + (initial == reused) + " " + reused.isMonitorWaitEventsDelegated());
+            } else if (args[0].startsWith("profiler-java-delegation-legacy-reuse:")) {
+                // A legacy overload expresses no preference about monitor-event ownership:
+                // it must return the existing singleton whatever its delegation setting is,
+                // never throw IllegalStateException. An escaping ISE is the failure signal.
+                boolean initialDelegation = Boolean.parseBoolean(args[0].substring(
+                        "profiler-java-delegation-legacy-reuse:".length()));
+                JavaProfiler initial =
+                        JavaProfiler.getInstance(null, null, initialDelegation);
+                JavaProfiler reused = JavaProfiler.getInstance();
+                JavaProfiler reused2 = JavaProfiler.getInstance(null, null);
+                System.out.println("[java-delegation-legacy-reuse] "
+                        + (initial == reused) + " "
+                        + (initial == reused2) + " "
+                        + initial.isMonitorWaitEventsDelegated());
             } else if (args[0].startsWith("profiler-java-delegation-conflict:")) {
                 String[] delegationModes = args[0].split(":");
                 boolean initialDelegation = Boolean.parseBoolean(delegationModes[1]);

@@ -237,6 +237,36 @@ public class JavaProfilerTest extends AbstractProcessProfilerTest {
         assertJavaSingletonDelegationReuse(true);
     }
 
+    @Test
+    void legacyGetInstanceOverloadsReuseAnyExistingSingleton() throws Exception {
+        // A legacy overload expresses no preference about monitor-event ownership, so it must
+        // return the existing singleton instead of throwing - including when that singleton was
+        // initialized with delegateMonitorWaitEvents=true.
+        assertJavaSingletonLegacyReuse(true);
+        assertJavaSingletonLegacyReuse(false);
+    }
+
+    /** Launches a fresh JVM and verifies the legacy overloads never conflict with the singleton. */
+    private void assertJavaSingletonLegacyReuse(boolean initialDelegation) throws Exception {
+        AtomicReference<String> resultLine = new AtomicReference<>();
+        LaunchResult result = launch(
+                "profiler-java-delegation-legacy-reuse:" + initialDelegation,
+                Collections.emptyList(), "", line -> {
+                    if (line.startsWith("[java-delegation-legacy-reuse]")) {
+                        resultLine.set(line);
+                        return LineConsumerResult.STOP;
+                    }
+                    return LineConsumerResult.CONTINUE;
+                }, null);
+
+        assertTrue(result.inTime);
+        // An IllegalStateException escaping the launcher shows up here as a non-zero exit,
+        // distinguishing a thrown exception from a missing-output flake.
+        assertEquals(0, result.exitCode);
+        assertEquals("[java-delegation-legacy-reuse] true true " + initialDelegation,
+                resultLine.get());
+    }
+
     /** Launches a fresh JVM and verifies that repeated ownership returns the same singleton. */
     private void assertJavaSingletonDelegationReuse(boolean delegated) throws Exception {
         AtomicReference<String> resultLine = new AtomicReference<>();
