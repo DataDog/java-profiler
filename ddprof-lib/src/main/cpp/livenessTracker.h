@@ -147,7 +147,16 @@ private:
   // oscillation's floor returns to its starting level every cycle while a
   // real leak's floor only rises.
   constexpr static double LEAK_GROWTH_REL_MIN = 0.15;
-  constexpr static int LEAK_GROWTH_ABS_MIN = 5;
+  // Absolute floor for the growth bar: the slope must exceed
+  // max(LEAK_GROWTH_REL_MIN * earliest_mean, LEAK_GROWTH_ABS_MIN).
+  // The absolute floor of 5 was too high for large-population
+  // klasses (e.g. byte[] with thousands of instances): a slope of
+  // 0.5 instances/epoch is significant for a klass with 10 instances,
+  // but far below 5. Lowered to 1 so only klasses with very small
+  // populations (< 7 instances, where 0.15 * 7 = 1.05) need an absolute
+  // floor. This still rejects noise (single-instance oscillations)
+  // while allowing real leaks in large-population klasses.
+  constexpr static int LEAK_GROWTH_ABS_MIN = 1;
   constexpr static double LEAK_FLOOR_REL_MIN = 0.10;
   constexpr static int LEAK_FLOOR_ABS_MIN = 4;
 

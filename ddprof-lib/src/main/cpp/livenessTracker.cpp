@@ -906,9 +906,13 @@ Error LivenessTracker::initialize(Arguments &args) {
   _is_zgc_jdk26_plus = false;
   if (args._gc_generations) {
     VMFlag* zgc = VMFlag::find("UseZGC", {VMFlag::Type::Bool});
-    _is_zgc_jdk26_plus = (zgc != nullptr && zgc->get() && VM::hotspot_version() >= 26);
+    bool is_zgc = (zgc != nullptr && zgc->get());
+    _is_zgc_jdk26_plus = (is_zgc && VM::hotspot_version() >= 26);
+    TEST_LOG("LivenessTracker::initialize UseZGC=%d (flag=%p) hotspot_version=%d _is_zgc_jdk26_plus=%d",
+             (int)is_zgc, (void*)zgc, VM::hotspot_version(), (int)_is_zgc_jdk26_plus);
+  } else {
+    TEST_LOG("LivenessTracker::initialize gc_generations=false, skipping ZGC check");
   }
-  TEST_LOG("LivenessTracker::initialize _is_zgc_jdk26_plus=%d", (int)_is_zgc_jdk26_plus);
 
   if (!_enabled) {
     return Error::OK;
