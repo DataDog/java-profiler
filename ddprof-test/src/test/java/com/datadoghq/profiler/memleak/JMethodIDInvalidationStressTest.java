@@ -15,6 +15,8 @@
  */
 package com.datadoghq.profiler.memleak;
 
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrFrame;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -33,6 +35,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -188,6 +191,22 @@ public class JMethodIDInvalidationStressTest extends AbstractDynamicClassTest {
               + "churn, not just that the JVM didn't crash; if this keeps getting skipped, the "
               + "churn isn't racing unload against resolveMethod/fillJavaMethodInfo tightly "
               + "enough (consider more churn threads or a longer window).");
+
+      // The jmethodid_skipped_count counter is incremented in the exact branch of
+      // Lookup::fillJavaMethodInfo (the JVMTI-resolution-failure 'else') that serializes a
+      // stale-jmethodID frame as '<unloaded>'. line_number_table_unreadable is a separate,
+      // mutually-exclusive branch where the jmethodID *did* resolve to a real method/class name
+      // and only the line-number-table copy failed -- it never produces '<unloaded>'. So the
+      // recording assertion below is only meaningful when skippedDelta > 0; a run that only
+      // triggered the line-table race would otherwise fail spuriously. Gate it accordingly.
+      Assumptions.assumeTrue(skippedDelta > 0,
+          "Churn window hit only the line-number-table race (line_number_table_unreadable delta="
+              + unreadableLineTableDelta + ", jmethodid_skipped_count delta=" + skippedDelta
+              + ") -- the '<unloaded>' label assertion is only meaningful when the"
+              + " JVMTI-resolution-failure branch ran; skipping to avoid a spurious failure.");
+      // Assert that the recording produced by that branch uses the '<unloaded>' label and
+      // never the legacy 'jvmtiError' one -- this fails if the label is reverted to 'jvmtiError'.
+      assertUnloadedFrameLabel(dumpFile);
     } finally {
       running.set(false);
       for (Thread t : churnThreads) {
@@ -215,6 +234,47 @@ public class JMethodIDInvalidationStressTest extends AbstractDynamicClassTest {
       } catch (IOException ignored) {
       }
     }
+  }
+
+  /**
+   * Asserts that the JFR recording produced by the churn window serializes stale-jmethodID
+   * frames as {@code "<unloaded>"} and never as the legacy {@code "jvmtiError"} label.
+   * This is the regression guard for the flightRecorder.cpp remap: reverting the label to
+   * {@code "jvmtiError"} makes this assertion fail. Only stack-trace-bearing event types
+   * are inspected; events without a {@code stackTrace} field are skipped.
+   */
+  private void assertUnloadedFrameLabel(Path recording) throws Exception {
+    AtomicBoolean foundUnloaded = new AtomicBoolean();
+    AtomicBoolean foundLegacy = new AtomicBoolean();
+    AtomicReference<String> legacySample = new AtomicReference<>();
+    for (String eventType : new String[]{"datadog.ExecutionSample", "datadog.AllocationSample"}) {
+      streamEvents(recording, eventType, event -> {
+        if (!event.has(STACK_TRACE)) {
+          return;
+        }
+        for (JfrFrame frame : event.getStackTrace().frames()) {
+          String name = frame.methodName();
+          if (name == null) {
+            continue;
+          }
+          if (name.equals("<unloaded>")) {
+            foundUnloaded.set(true);
+          } else if (name.equals("jvmtiError")) {
+            foundLegacy.set(true);
+            if (legacySample.get() == null) {
+              legacySample.set(event.getStackTraceString());
+            }
+          }
+        }
+      });
+    }
+    assertTrue(foundUnloaded.get(),
+        "Expected at least one frame serialized as '<unloaded>' in " + recording
+            + " (jmethodid_skipped_count fired, so the stale-jmethodID branch ran), "
+            + "but none was found -- the remap to '<unloaded>' may have been reverted.");
+    assertTrue(!foundLegacy.get(),
+        "Found a frame serialized as the legacy 'jvmtiError' label in " + recording
+            + "; expected '<unloaded>'. First offending sample: " + legacySample.get());
   }
 
   private void churnLoop(AtomicBoolean running) {
