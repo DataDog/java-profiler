@@ -1451,13 +1451,13 @@ bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jcl
 // resolve() bypasses ~ResolvedNames(), so the fault-recovery path must call
 // ResolvedNames::release() explicitly (see resolve()) to free any buffer
 // allocated before the fault.
-static const size_t MAX_KLASS_NAME_LEN  = 4096;  // internal names; realistically < 256
+static const size_t MAX_KLASS_NAME_LEN  = 1024;  // internal names; realistically < 256
 static const size_t MAX_METHOD_NAME_LEN =  512;  // realistically < 64
 // A descriptor can in principle exceed this (255 argument *slots*, each able to
 // carry an arbitrarily long L...; type name), so this cap is a fidelity choice,
 // not a proof: over-cap descriptors serialize as "unknown" rather than being
 // truncated. METHOD_RESOLVE_SYMBOL_UNREADABLE makes it visible if that bites.
-static const size_t MAX_SIGNATURE_LEN   = 4096;
+static const size_t MAX_SIGNATURE_LEN   = 1024;
 
 // The three names resolve() needs, owned by resolve()'s frame. Each name has
 // a fixed-size inline buffer for the common case, with a malloc'd fallback
@@ -1472,15 +1472,22 @@ class ResolvedNames {
   // allocation just because it went through the malloc path instead.
   static constexpr size_t MAX_SYMBOL_LEN = 4 * 1024;
 private:
-  char*     _long_method_name;
-  char*     _long_method_signature;
-  char*     _long_klass_name;
+  // volatile: resolve() mutates these (via setMethodName/setMethodSignature/
+  // setKlassName, called through readMethodNames()) between sigsetjmp() and a
+  // possible siglongjmp() out of a fault, then release() reads them back at
+  // the landing pad to decide what to free. Per the setjmp/longjmp rules
+  // (C11 7.13.2.1p3, inherited by C++), a non-volatile automatic local
+  // modified in that window has an indeterminate value after longjmp;
+  // volatile is what makes release()'s reads on the recovery path defined.
+  char* volatile _long_method_name;
+  char* volatile _long_method_signature;
+  char* volatile _long_klass_name;
 
   char _method_name[MAX_METHOD_NAME_LEN];
   char _method_signature[MAX_SIGNATURE_LEN];
   char _klass_name[MAX_KLASS_NAME_LEN];
 
-  bool setImpl(char* short_name, char*& long_name, size_t short_limit, VMSymbol* sym);
+  bool setImpl(char* short_name, char* volatile& long_name, size_t short_limit, VMSymbol* sym);
 public:
   ResolvedNames();
   ~ResolvedNames();
@@ -1533,7 +1540,7 @@ void ResolvedNames::release() {
   }
 }
 
-bool ResolvedNames::setImpl(char* short_name, char*& long_name, size_t short_limit, VMSymbol* sym) {
+bool ResolvedNames::setImpl(char* short_name, char* volatile& long_name, size_t short_limit, VMSymbol* sym) {
   unsigned len = sym->length();  // raw u2 deref; PC stays inside this library
   // A method name, descriptor or class name is never empty; 0 means the Symbol
   // slot has been recycled. `>=` leaves room for the NUL.
