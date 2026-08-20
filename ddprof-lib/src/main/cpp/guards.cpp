@@ -120,7 +120,7 @@ JmpCtxScope::JmpCtxScope(ProfiledThread* pt) : _pt(pt), _prev(prevJmpCtxOf(pt)) 
 // Unconditional store, deliberately not guarded by an "already restored" flag;
 // see restore().
 JmpCtxScope::~JmpCtxScope() {
-    _pt->setJmpCtx(_prev);
+   restore();
 }
 
 void JmpCtxScope::install(sigjmp_buf* ctx) {

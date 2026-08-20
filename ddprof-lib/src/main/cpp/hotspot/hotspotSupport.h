@@ -18,7 +18,7 @@
 
 class ProfiledThread;
 class VMMethod;
-struct ResolvedNames;
+class ResolvedNames;
 
 class HotspotSupport {
     friend class JVMSupport;
