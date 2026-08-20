@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk8
 
 ## glibc-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-08-20 06:18:38 EDT
+**Date:** 2026-08-20 06:47:20 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 263 |
-| Sample Rate | 4.38/sec |
-| Health Score | 274% |
-| Threads | 10 |
+| CPU Samples | 268 |
+| Sample Rate | 4.47/sec |
+| Health Score | 279% |
+| Threads | 7 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 52 |
-| Sample Rate | 0.87/sec |
-| Health Score | 54% |
-| Threads | 9 |
+| CPU Samples | 118 |
+| Sample Rate | 1.97/sec |
+| Health Score | 123% |
+| Threads | 15 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 34-34 cores)</summary>
 
 ```
-1787220884 34
-1787220889 34
-1787220894 34
-1787220899 34
-1787220904 34
-1787220909 34
-1787220914 34
-1787220919 34
-1787220924 34
-1787220929 34
-1787220934 34
-1787220939 34
-1787220944 34
-1787220949 34
-1787220954 34
-1787220959 34
-1787220964 34
-1787220969 34
-1787220974 34
-1787220979 34
+1787222550 34
+1787222555 34
+1787222560 34
+1787222565 34
+1787222570 34
+1787222575 34
+1787222580 34
+1787222585 34
+1787222590 34
+1787222595 34
+1787222600 34
+1787222605 34
+1787222610 34
+1787222615 34
+1787222620 34
+1787222625 34
+1787222630 34
+1787222635 34
+1787222640 34
+1787222645 34
 ```
 </details>
 
