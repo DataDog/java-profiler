@@ -501,8 +501,12 @@ bool LivenessTracker::hasQualifyingGrowth(KlassPopulationEntry &entry) const {
 }
 
 void LivenessTracker::recordHeapFloorSample(u64 used, u64 timestamp_ns) {
+  TEST_LOG("LivenessTracker::recordHeapFloorSample called used=%llu disabled=%d",
+           (unsigned long long)used,
+           (int)_heap_floor_recording_disabled_for_test.load(std::memory_order_acquire));
 #ifdef DEBUG
   if (_heap_floor_recording_disabled_for_test.load(std::memory_order_acquire)) {
+    TEST_LOG("LivenessTracker::recordHeapFloorSample SKIPPED (disabled for test)");
     return;
   }
 #endif
