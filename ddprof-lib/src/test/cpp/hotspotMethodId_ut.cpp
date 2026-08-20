@@ -350,8 +350,15 @@ TEST(HotspotMethodIdTest, IdReturnsValidIdForPopulatedSlot) {
 namespace {
 
 // Two adjacent pages; the second is PROT_NONE. Fake metadata lives at the start
-// of the first, so an offset of kPageSize lands on the guard page.
-constexpr size_t kPageSize = 4096;
+// of the first, so an offset of kPageSize() lands on the guard page.
+// Must be the real OS page size, not a hardcoded 4096: mmap()/mprotect() need
+// page-aligned addresses and sizes, and on arm64 Linux the page size can be
+// 16384 or 65536, not 4096. A function rather than a namespace-scope const:
+// OS::page_size is itself a dynamically-initialized static in another
+// translation unit, and cross-TU static init order is unspecified, so caching
+// it in another static here could read it before it's set. Calling through a
+// function defers the read to test-run time, well after all static init.
+size_t kPageSize() { return OS::page_size; }
 
 // Layout of the fake metadata used by the resolve() tests. Sizes are the values
 // VMConstantPool::base() and cast_or_null() need; they only have to be non-zero
@@ -449,10 +456,10 @@ protected:
         _orig_segv = OS::replaceSigsegvHandler(Profiler::segvHandler);
         _orig_bus = OS::replaceSigbusHandler(Profiler::busHandler);
 
-        _region = mmap(nullptr, 2 * kPageSize, PROT_READ | PROT_WRITE,
+        _region = mmap(nullptr, 2 * kPageSize(), PROT_READ | PROT_WRITE,
                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
         ASSERT_NE(MAP_FAILED, _region);
-        ASSERT_EQ(0, mprotect((char*)_region + kPageSize, kPageSize, PROT_NONE));
+        ASSERT_EQ(0, mprotect((char*)_region + kPageSize(), kPageSize(), PROT_NONE));
 
         // Two exported symbols from hotspotSupport.cpp, far apart in that TU.
         uintptr_t a = (uintptr_t)&HotspotSupport::resolve;
@@ -464,7 +471,7 @@ protected:
 
     void TearDown() override {
         Profiler::resetAddressRangeForTest();
-        munmap(_region, 2 * kPageSize);
+        munmap(_region, 2 * kPageSize());
         OS::replaceSigsegvHandler(_orig_segv);
         OS::replaceSigbusHandler(_orig_bus);
         ProfiledThread::release();
@@ -493,7 +500,7 @@ TEST_F(HotspotResolveCrashProtectionTest, ResolveRecoversFromFaultInsteadOfCrash
     // only validates [ptr, ptr + VMMethod::type_size()), which stays on the
     // readable page -- the fault comes from the offset, not the pointer.
     VMStructsTestAccessor::Offsets faulting = RESOLVE_OFFSETS;
-    faulting.method_constmethod = (int)kPageSize;
+    faulting.method_constmethod = (int)kPageSize();
     VMStructsTestAccessor offsets(faulting);
     VMStructsTestAccessor::SymbolLayout layout(RESOLVE_SYMBOL_OFFSETS, RESOLVE_TYPE_SIZES);
 
@@ -515,7 +522,7 @@ TEST_F(HotspotResolveCrashProtectionTest, ResolveRecoversFromFaultInsteadOfCrash
 TEST_F(HotspotResolveCrashProtectionTest, ResolveRecoversRepeatedly) {
     HotspotMethodIdVMHotspotGuard hotspot;
     VMStructsTestAccessor::Offsets faulting = RESOLVE_OFFSETS;
-    faulting.method_constmethod = (int)kPageSize;
+    faulting.method_constmethod = (int)kPageSize();
     VMStructsTestAccessor offsets(faulting);
     VMStructsTestAccessor::SymbolLayout layout(RESOLVE_SYMBOL_OFFSETS, RESOLVE_TYPE_SIZES);
 
@@ -545,7 +552,7 @@ TEST_F(HotspotResolveCrashProtectionTest, ResolveReturnsNullForUnreadableSymbolB
     // page: exactly VMSymbol::type_size() bytes, so VMSymbol::cast_or_null()'s
     // own isReadableRange() check still passes and the rejection has to come from
     // copySymbolBody(). The declared length then runs the body off the page.
-    char* edge = (char*)_region + kPageSize - RESOLVE_TYPE_SIZES.symbol;
+    char* edge = (char*)_region + kPageSize() - RESOLVE_TYPE_SIZES.symbol;
     *(uint16_t*)(edge + RESOLVE_SYMBOL_OFFSETS.symbol_length) = 100;
     f->klass.name_symbol = edge;
 
