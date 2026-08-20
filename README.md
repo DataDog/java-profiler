@@ -516,3 +516,4 @@ DD_SERVICE=your-service DD_TRACE_DEBUG=true java -javaagent:./temp/dd-java-agent
 
 For dd-trace-java you just need to set the `ddprof.jar` project property.
 Eg. you can run the gradle build like this - ./gradlew clean -Pddprof.jar=file://<path-to-artifact.jar> :dd-java-agent:shadowJar` - which will result in a custom `dd-java-agent.jar` build containing your test version of Java profiler.
+
