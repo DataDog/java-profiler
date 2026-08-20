@@ -54,7 +54,10 @@ public final class JfrStackTrace {
         return new JfrStackTrace(frames, truncated);
     }
 
-    /** This stack trace's frames, outermost (root) frame first. */
+    /**
+     * This stack trace's frames in the order {@code Recording::writeStackTraces} wrote them:
+     * topmost (leaf) frame first, so the thread entry point is the <em>last</em> element.
+     */
     public List<JfrFrame> frames() {
         return frames;
     }
