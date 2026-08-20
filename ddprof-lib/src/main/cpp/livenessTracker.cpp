@@ -1156,8 +1156,21 @@ size_t LivenessTracker::resolvePostGcHeapUsage(bool *out_is_last_gc) {
   size_t used = isLastGc ? HeapUsage::get()._used_at_last_gc
                         : loadAcquire(_used_after_last_gc);
   if (used == 0) {
-    used = HeapUsage::get()._used;
+    used = HeapUsage::get(false)._used;
     isLastGc = false;
+  }
+  // On JDK 26+ with generational ZGC, _used_at_last_gc
+  // (read from CollectedHeap via VMStructs) reports the committed
+  // heap size, not the used bytes — the heap floor would
+  // appear flat even as the real used bytes grow.
+  // In that case, fall back to HeapUsage::get(false)._used
+  // (the JMX path, which always returns correct used bytes).
+  if (isLastGc) {
+    VMFlag* zgc = VMFlag::find("UseZGC", {VMFlag::Type::Bool});
+    if (zgc != NULL && zgc->get() && VM::hotspot_version() >= 26) {
+      used = HeapUsage::get(false)._used;
+      isLastGc = false;
+    }
   }
   if (out_is_last_gc != nullptr) {
     *out_is_last_gc = isLastGc;
