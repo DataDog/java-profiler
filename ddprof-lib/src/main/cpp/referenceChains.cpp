@@ -735,14 +735,18 @@ void ReferenceChainTracker::threadLoop() {
     // canAffordNewSearch() call).
     u64 now_ns = OS::nanotime();
 
-    // Canary pre-tagging: tag each leaked candidate with a distinct
+    // Pre-tag candidates: tag each leaked candidate with a distinct
     // marker tag (MARKER_TAG_BASE - i) so heapReferenceCallback()
     // can prune at them. Runs on the BFS thread (same thread
-    // that calls FollowReferences). Only done once per search
-    // (when !_search_started and no candidates are tagged yet).
-    // Gated on gcGenerationsEnabled() because
-    // selectLeakCandidates() returns 0 without it.
-    if (!_search_started && _candidate_count == 0 &&
+    // that calls FollowReferences). Done when _candidate_count == 0
+    // (no candidates are currently tagged) AND there are
+    // candidates available from selectLeakCandidates().
+    // This handles the case where the search starts before
+    // any candidates exist (generations just enabled, no
+    // positive-slope klass yet) -- candidates appear
+    // later, and pre-tagging must run at that point,
+    // not only on the first threadLoop iteration.
+    if (_candidate_count == 0 &&
         LivenessTracker::instance()->gcGenerationsEnabled()) {
       KlassCandidate candidates[MAX_LEAK_CANDIDATES_FROM_LT];
       int n = LivenessTracker::instance()->selectLeakCandidates(
