@@ -460,6 +460,10 @@ bool LivenessTracker::hasQualifyingGrowth(KlassPopulationEntry &entry) const {
           entry.ring_head, entry.ring_fill, KLASS_POPULATION_RING_SIZE,
           KLASS_POPULATION_MIN_FILL_FOR_TREND,
           [&entry](int i) { return (double)entry.count_ring[i]; }, &stats)) {
+    TEST_LOG("LivenessTracker::hasQualifyingGrowth klass_id=%u ring_fill=%u "
+             "INSUFFICIENT_FILL (need %d)",
+             entry.klass_id, entry.ring_fill,
+             KLASS_POPULATION_MIN_FILL_FOR_TREND);
     return false;
   }
 
@@ -473,8 +477,9 @@ bool LivenessTracker::hasQualifyingGrowth(KlassPopulationEntry &entry) const {
     growth_bar = LEAK_GROWTH_ABS_MIN;
   }
   if (entry.cached_slope < growth_bar) {
-    // Mean didn't rise enough - either flat/shrinking, or a rise too small
-    // to be worth trusting yet.
+    TEST_LOG("LivenessTracker::hasQualifyingGrowth klass_id=%u "
+             "SLOPE_TOO_SMALL slope=%f growth_bar=%f",
+             entry.klass_id, entry.cached_slope, growth_bar);
     return false;
   }
 
@@ -485,7 +490,14 @@ bool LivenessTracker::hasQualifyingGrowth(KlassPopulationEntry &entry) const {
   if (floor_bar < LEAK_FLOOR_ABS_MIN) {
     floor_bar = LEAK_FLOOR_ABS_MIN;
   }
-  return (stats.recent_min - stats.earliest_min) >= floor_bar;
+  bool floor_rising = (stats.recent_min - stats.earliest_min) >= floor_bar;
+  TEST_LOG("LivenessTracker::hasQualifyingGrowth klass_id=%u "
+           "SLOPE_OK slope=%f growth_bar=%f recent_min=%f earliest_min=%f "
+           "floor_bar=%f floor_rising=%d",
+           entry.klass_id, entry.cached_slope, growth_bar,
+           stats.recent_min, stats.earliest_min,
+           floor_bar, (int)floor_rising);
+  return floor_rising;
 }
 
 void LivenessTracker::recordHeapFloorSample(u64 used, u64 timestamp_ns) {
