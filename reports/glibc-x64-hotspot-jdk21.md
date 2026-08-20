@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk21
 
 ## glibc-x64-hotspot-jdk21 - ✅ PASS
 
-**Date:** 2026-08-20 05:30:43 EDT
+**Date:** 2026-08-20 05:42:39 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 491 |
-| Sample Rate | 8.18/sec |
-| Health Score | 511% |
+| CPU Samples | 501 |
+| Sample Rate | 8.35/sec |
+| Health Score | 522% |
 | Threads | 9 |
-| Allocations | 385 |
+| Allocations | 366 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 664 |
-| Sample Rate | 11.07/sec |
-| Health Score | 692% |
-| Threads | 10 |
-| Allocations | 470 |
+| CPU Samples | 592 |
+| Sample Rate | 9.87/sec |
+| Health Score | 617% |
+| Threads | 11 |
+| Allocations | 443 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 49-49 cores)</summary>
 
 ```
-1787217992 49
-1787217997 49
-1787218002 49
-1787218007 49
-1787218012 49
-1787218017 49
-1787218022 49
-1787218027 49
-1787218032 49
-1787218037 49
-1787218042 49
-1787218047 49
-1787218052 49
-1787218057 49
-1787218062 49
-1787218067 49
-1787218072 49
-1787218077 49
-1787218082 49
-1787218087 49
+1787218624 49
+1787218629 49
+1787218634 49
+1787218639 49
+1787218644 49
+1787218649 49
+1787218654 49
+1787218659 49
+1787218664 49
+1787218669 49
+1787218674 49
+1787218679 49
+1787218684 49
+1787218689 49
+1787218694 49
+1787218699 49
+1787218704 49
+1787218709 49
+1787218714 49
+1787218719 49
 ```
 </details>
 
