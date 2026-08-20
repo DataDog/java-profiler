@@ -57,42 +57,42 @@ bool ringThirdsStats(int head, int fill, int ring_size, int min_fill,
   if (fill < min_fill) {
     return false;
   }
-  // Chronological (oldest-first) index of the window's first sample: while
-  // the ring hasn't wrapped yet (fill < ring_size), head == fill and the
-  // oldest sample sits at physical index 0; once wrapped, head is exactly
-  // the oldest (next-to-be-overwritten) slot. Both cases collapse to the
-  // same modular formula.
+  // Chronological (oldest-first) index of the window's first sample.
   int start = (head - fill + ring_size) % ring_size;
-  // Integer division deliberately drops the remainder into an untouched
-  // middle third when fill isn't a multiple of 3 - "earliest third vs
-  // recent third" is already a cheap approximation (design doc's own
-  // rationale for not using least-squares), so this extra imprecision is
-  // consistent with that choice rather than a bug to round away.
-  int third = fill / 3;
-  if (third == 0) {
+  // Full-window least-squares linear regression: y = a + b*x.
+  // x = sample position within the window (0 = oldest, fill-1 = newest),
+  // y = population count. This uses all samples (not just first/last
+  // halves or thirds) and is far more robust for oscillating-but-
+  // growing trends than comparing two sub-windows. O(fill) = O(30) per
+  // klass per scan — negligible.
+  int n = fill;
+  if (n < 2) {
     return false;
   }
-
-  double earliest_sum = 0, recent_sum = 0;
+  double sum_x = 0, sum_y = 0, sum_xx = 0, sum_xy = 0;
   double earliest_min = std::numeric_limits<double>::max();
   double recent_min = std::numeric_limits<double>::max();
-  for (int i = 0; i < third; i++) {
+  for (int i = 0; i < n; i++) {
     double v = read((start + i) % ring_size);
-    earliest_sum += v;
+    sum_x += i;
+    sum_y += v;
+    sum_xx += (double)i * i;
+    sum_xy += (double)i * v;
     if (v < earliest_min) {
       earliest_min = v;
     }
-  }
-  for (int i = fill - third; i < fill; i++) {
-    double v = read((start + i) % ring_size);
-    recent_sum += v;
-    if (v < recent_min) {
+    if (i >= n / 2 && v < recent_min) {
       recent_min = v;
     }
   }
-
-  out->earliest_mean = earliest_sum / third;
-  out->recent_mean = recent_sum / third;
+  double denom = (double)n * sum_xx - sum_x * sum_x;
+  if (denom == 0) {
+    return false;
+  }
+  double slope = ((double)n * sum_xy - sum_x * sum_y) / denom;
+  double intercept = (sum_y - slope * sum_x) / n;
+  out->earliest_mean = intercept;
+  out->recent_mean = intercept + slope * (n - 1);
   out->earliest_min = earliest_min;
   out->recent_min = recent_min;
   return true;

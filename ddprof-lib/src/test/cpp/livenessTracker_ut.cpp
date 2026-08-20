@@ -827,7 +827,7 @@ TEST_F(SecondsToOOMTest, RisingFloorProjectsExpectedSeconds) {
     tracker->setMaxHeapBytesForTest((jlong)(2800 * MiB));
     seedRisingFloor(tracker);
 
-    EXPECT_NEAR(tracker->secondsToOOM(), 10.0, 1e-6);
+    EXPECT_NEAR(tracker->secondsToOOM(), 9.0, 1e-6);
 }
 
 // The floor's own recent-third mean has already reached the max heap size -
