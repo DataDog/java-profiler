@@ -1437,28 +1437,6 @@ bool HotspotSupport::loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jcl
     return JVMSupport::loadMethodIDsImpl(jvmti, jni, klass);
 }
 
-// Fixed-size fast-path buffers for the common case, sized so that a
-// realistic name/signature/class name never needs to allocate. 4096 mirrors
-// Lookup::resolveVTableReceiverCached (flightRecorder.cpp), which reads the
-// same Symbol bodies on the same thread; it is a precedent to stay
-// consistent with, not a JVM-spec limit.
-// HotSpot's Symbol length field is a u2, so the VM permits up to 65535 bytes.
-// A name/descriptor that overflows its fixed buffer falls back to malloc
-// (see ResolvedNames::setImpl), up to MAX_SYMBOL_LEN below; beyond that it is
-// rejected and the frame serializes as "unknown" -- METHOD_RESOLVE_SYMBOL_UNREADABLE
-// makes that visible if it bites. Unlike the old stack-only design, the malloc
-// fallback means this is no longer a leak-proof region: siglongjmp out of
-// resolve() bypasses ~ResolvedNames(), so the fault-recovery path must call
-// ResolvedNames::release() explicitly (see resolve()) to free any buffer
-// allocated before the fault.
-static const size_t MAX_KLASS_NAME_LEN  = 1024;  // internal names; realistically < 256
-static const size_t MAX_METHOD_NAME_LEN =  512;  // realistically < 64
-// A descriptor can in principle exceed this (255 argument *slots*, each able to
-// carry an arbitrarily long L...; type name), so this cap is a fidelity choice,
-// not a proof: over-cap descriptors serialize as "unknown" rather than being
-// truncated. METHOD_RESOLVE_SYMBOL_UNREADABLE makes it visible if that bites.
-static const size_t MAX_SIGNATURE_LEN   = 1024;
-
 // The three names resolve() needs, owned by resolve()'s frame. Each name has
 // a fixed-size inline buffer for the common case, with a malloc'd fallback
 // (up to MAX_SYMBOL_LEN) for names that don't fit -- see release() for why
@@ -1466,12 +1444,34 @@ static const size_t MAX_SIGNATURE_LEN   = 1024;
 class ResolvedNames {
   // Hard ceiling for the malloc fallback in setImpl(), independent of which
   // field is being resolved. Not a JVM/class-file limit (Symbol::length() is
-  // a u2, so up to 65535 is legal) -- chosen to match MAX_KLASS_NAME_LEN and
-  // MAX_SIGNATURE_LEN above, so a name that would already have been rejected
+  // a u2, so up to 65535 is legal) -- a name that would already have been rejected
   // as too long for those fields' fixed buffers doesn't get an unbounded
   // allocation just because it went through the malloc path instead.
-  static constexpr size_t MAX_SYMBOL_LEN = 4 * 1024;
-private:
+  static constexpr size_t MAX_SYMBOL_LEN = 64 * 1024;
+
+  // Fixed-size fast-path buffers for the common case, sized so that a
+  // realistic name/signature/class name never needs to allocate. 4096 mirrors
+  // Lookup::resolveVTableReceiverCached (flightRecorder.cpp), which reads the
+  // same Symbol bodies on the same thread; it is a precedent to stay
+  // consistent with, not a JVM-spec limit.
+  // HotSpot's Symbol length field is a u2, so the VM permits up to 65535 bytes.
+  // A name/descriptor that overflows its fixed buffer falls back to malloc
+  // (see ResolvedNames::setImpl), up to MAX_SYMBOL_LEN below; beyond that it is
+  // rejected and the frame serializes as "unknown" -- METHOD_RESOLVE_SYMBOL_UNREADABLE
+  // makes that visible if it bites. Unlike the old stack-only design, the malloc
+  // fallback means this is no longer a leak-proof region: siglongjmp out of
+  // resolve() bypasses ~ResolvedNames(), so the fault-recovery path must call
+  // ResolvedNames::release() explicitly (see resolve()) to free any buffer
+  // allocated before the fault.
+  static constexpr size_t MAX_KLASS_NAME_LEN  = 1024;  // internal names; realistically < 256
+  static constexpr size_t MAX_METHOD_NAME_LEN =  512;  // realistically < 64
+  // A descriptor can in principle exceed this (255 argument *slots*, each able to
+  // carry an arbitrarily long L...; type name), so this cap is a fidelity choice,
+  // not a proof: over-cap descriptors serialize as "unknown" rather than being
+  // truncated. METHOD_RESOLVE_SYMBOL_UNREADABLE makes it visible if that bites.
+  static constexpr size_t MAX_SIGNATURE_LEN   = 1024;
+
+  private:
   // volatile: resolve() mutates these (via setMethodName/setMethodSignature/
   // setKlassName, called through readMethodNames()) between sigsetjmp() and a
   // possible siglongjmp() out of a fault, then release() reads them back at
