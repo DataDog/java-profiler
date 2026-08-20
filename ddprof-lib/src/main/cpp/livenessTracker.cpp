@@ -510,6 +510,8 @@ void LivenessTracker::recordHeapFloorSample(u64 used, u64 timestamp_ns) {
 }
 
 void LivenessTracker::recordHeapFloorSampleUnchecked(u64 used, u64 timestamp_ns) {
+  TEST_LOG("LivenessTracker::recordHeapFloorSample used=%llu timestamp_ns=%llu",
+           (unsigned long long)used, (unsigned long long)timestamp_ns);
   // Lock-free, single-writer-at-a-time - see _heap_floor_ring's own comment
   // (livenessTracker.h) for why onGC() cannot take _table_lock here.
   //
@@ -585,15 +587,14 @@ double LivenessTracker::secondsToOOM() const {
   jlong max_heap = _max_heap_bytes;
 #endif
   if (!_gc_generations.load(std::memory_order_relaxed) || max_heap <= 0) {
-    // No heap-floor history is ever recorded outside _gc_generations (onGC()'s
-    // own gate), and a projection is meaningless without a resolved max heap.
+    TEST_LOG("LivenessTracker::secondsToOOM -> -1 (gc_generations=%d max_heap=%lld)",
+             (int)_gc_generations.load(std::memory_order_relaxed), (long long)max_heap);
     return -1;
   }
 
-  // Matches heapFloorRising()'s own acquire/scan pattern - same rings, same
-  // single-writer/lock-free discipline (recordHeapFloorSample()'s comment).
   u8 fill = loadAcquire(_heap_floor_ring_fill);
   u8 head = loadAcquire(_heap_floor_ring_head);
+  TEST_LOG("LivenessTracker::secondsToOOM ring fill=%d head=%d", (int)fill, (int)head);
 
   RingThirdsStats byte_stats;
   if (!ringThirdsStats(
@@ -601,11 +602,10 @@ double LivenessTracker::secondsToOOM() const {
           KLASS_POPULATION_MIN_FILL_FOR_TREND,
           [this](int i) { return (double)load(_heap_floor_ring[i]); },
           &byte_stats)) {
+    TEST_LOG("LivenessTracker::secondsToOOM -> -1 (INSUFFICIENT_FILL fill=%d need=%d)",
+             (int)fill, KLASS_POPULATION_MIN_FILL_FOR_TREND);
     return -1;
   }
-  // Same head/fill as byte_stats above - both rings are only ever pushed
-  // together by recordHeapFloorSample(), so this call cannot disagree with
-  // byte_stats' window and its own min-fill check cannot fail differently.
   RingThirdsStats time_stats;
   ringThirdsStats(
       head, fill, KLASS_POPULATION_RING_SIZE, KLASS_POPULATION_MIN_FILL_FOR_TREND,
@@ -614,9 +614,14 @@ double LivenessTracker::secondsToOOM() const {
 
   double bytes_delta = byte_stats.recent_mean - byte_stats.earliest_mean;
   double time_delta_ns = time_stats.recent_mean - time_stats.earliest_mean;
+  TEST_LOG("LivenessTracker::secondsToOOM bytes_delta=%.0f time_delta_ns=%.0f "
+           "earliest_mean=%.0f recent_mean=%.0f earliest_min=%.0f recent_min=%.0f",
+           bytes_delta, time_delta_ns,
+           byte_stats.earliest_mean, byte_stats.recent_mean,
+           byte_stats.earliest_min, byte_stats.recent_min);
   if (bytes_delta <= 0 || time_delta_ns <= 0) {
-    // Floor isn't rising (or the two windows have no time separation at all,
-    // which should not happen once min-fill is satisfied) - no projection.
+    TEST_LOG("LivenessTracker::secondsToOOM -> -1 (NOT_RISING bytes_delta=%.0f time_delta_ns=%.0f)",
+             bytes_delta, time_delta_ns);
     return -1;
   }
 
@@ -703,7 +708,9 @@ int LivenessTracker::selectLeakCandidates(KlassCandidate *out, int max) {
     }
   }
   _table_lock.unlockShared();
-
+  TEST_LOG("LivenessTracker::selectLeakCandidates returning %d candidates (required_hysteresis=%d, heapFloorRising=%d)",
+           count, required_hysteresis,
+           (int)heapFloorRising());
   return count;
 }
 
@@ -1173,8 +1180,12 @@ void LivenessTracker::onGC() {
     // recordHeapFloorSample() itself checks _heap_floor_recording_disabled_for_test
     // (debug-only) so a test can seed the ring exclusively.
     size_t used = resolvePostGcHeapUsage(nullptr);
+    TEST_LOG("LivenessTracker::onGC recording heap floor used=%zu gc_epoch=%llu",
+             used, (unsigned long long)load(_gc_epoch));
     if (used > 0) {
       recordHeapFloorSample((u64)used, OS::nanotime());
+    } else {
+      TEST_LOG("LivenessTracker::onGC used<=0, skipping heap floor record");
     }
   }
 }

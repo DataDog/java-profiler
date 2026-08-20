@@ -946,7 +946,10 @@ bool ReferenceChainTracker::hasLeakSignal() {
     return true;
   }
   KlassCandidate probe[1];
-  return LivenessTracker::instance()->selectLeakCandidates(probe, 1) > 0;
+  int n = LivenessTracker::instance()->selectLeakCandidates(probe, 1);
+  TEST_LOG("ReferenceChainTracker::hasLeakSignal -> %s (secondsToOOM=%.1f, candidates=%d)",
+           n > 0 ? "true" : "false", seconds_to_oom, n);
+  return n > 0;
 }
 
 bool ReferenceChainTracker::canAffordNewSearch(u64 now_ns) {
