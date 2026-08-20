@@ -282,6 +282,10 @@ private:
   // still be reading it from a session that persists across a restart.
   std::atomic<bool> _gc_generations;
 
+  // Cached at initialize() time: true if UseZGC is enabled and hotspot_version >= 26.
+  // JVM flags don't change at runtime, so this is read once and reused.
+  bool _is_zgc_jdk26_plus = false;
+
   // Per-klass population history table (see KlassPopulationEntry above).
   // Populated only from cleanup_table()'s GC-epoch-advance pass, never from
   // track() (the allocation sampling hot path) - see

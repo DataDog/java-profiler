@@ -903,6 +903,12 @@ Error LivenessTracker::initialize(Arguments &args) {
   // started with, even though the tracking table itself persists across
   // recordings.
   _gc_generations.store(args._gc_generations, std::memory_order_relaxed);
+  _is_zgc_jdk26_plus = false;
+  if (args._gc_generations) {
+    VMFlag* zgc = VMFlag::find("UseZGC", {VMFlag::Type::Bool});
+    _is_zgc_jdk26_plus = (zgc != nullptr && zgc->get() && VM::hotspot_version() >= 26);
+  }
+  TEST_LOG("LivenessTracker::initialize _is_zgc_jdk26_plus=%d", (int)_is_zgc_jdk26_plus);
 
   if (!_enabled) {
     return Error::OK;
@@ -1155,9 +1161,13 @@ size_t LivenessTracker::resolvePostGcHeapUsage(bool *out_is_last_gc) {
   bool isLastGc = HeapUsage::isLastGCUsageSupported();
   size_t used = isLastGc ? HeapUsage::get()._used_at_last_gc
                         : loadAcquire(_used_after_last_gc);
+  TEST_LOG("LivenessTracker::resolvePostGcHeapUsage isLastGc=%d used_at_last_gc=%zu",
+           (int)isLastGc, used);
   if (used == 0) {
     used = HeapUsage::get(false)._used;
     isLastGc = false;
+    TEST_LOG("LivenessTracker::resolvePostGcHeapUsage used==0, falling back to HeapUsage::get(false)._used=%zu",
+             used);
   }
   // On JDK 26+ with generational ZGC, _used_at_last_gc
   // (read from CollectedHeap via VMStructs) reports the committed
@@ -1166,10 +1176,11 @@ size_t LivenessTracker::resolvePostGcHeapUsage(bool *out_is_last_gc) {
   // In that case, fall back to HeapUsage::get(false)._used
   // (the JMX path, which always returns correct used bytes).
   if (isLastGc) {
-    VMFlag* zgc = VMFlag::find("UseZGC", {VMFlag::Type::Bool});
-    if (zgc != NULL && zgc->get() && VM::hotspot_version() >= 26) {
+    if (_is_zgc_jdk26_plus) {
       used = HeapUsage::get(false)._used;
       isLastGc = false;
+      TEST_LOG("LivenessTracker::resolvePostGcHeapUsage ZGC JDK26+ fallback to JMX used=%zu",
+               used);
     }
   }
   if (out_is_last_gc != nullptr) {
