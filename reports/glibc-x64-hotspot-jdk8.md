@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk8
 
 ## glibc-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-08-19 22:04:17 EDT
+**Date:** 2026-08-20 01:00:54 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 171 |
-| Sample Rate | 2.85/sec |
-| Health Score | 178% |
+| CPU Samples | 181 |
+| Sample Rate | 3.02/sec |
+| Health Score | 189% |
 | Threads | 6 |
 | Allocations | 0 |
 
@@ -38,9 +38,9 @@ title: glibc-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 434 |
-| Sample Rate | 7.23/sec |
-| Health Score | 452% |
+| CPU Samples | 233 |
+| Sample Rate | 3.88/sec |
+| Health Score | 242% |
 | Threads | 9 |
 | Allocations | 0 |
 
@@ -48,26 +48,26 @@ title: glibc-x64-hotspot-jdk8
 <summary>CPU Timeline (1 unique values: 81-81 cores)</summary>
 
 ```
-1787191157 81
-1787191162 81
-1787191167 81
-1787191172 81
-1787191177 81
-1787191182 81
-1787191187 81
-1787191192 81
-1787191197 81
-1787191202 81
-1787191207 81
-1787191212 81
-1787191217 81
-1787191222 81
-1787191227 81
-1787191232 81
-1787191237 81
-1787191242 81
-1787191247 81
-1787191252 81
+1787201759 81
+1787201764 81
+1787201769 81
+1787201774 81
+1787201779 81
+1787201784 81
+1787201789 81
+1787201794 81
+1787201799 81
+1787201804 81
+1787201809 81
+1787201814 81
+1787201819 81
+1787201824 81
+1787201829 81
+1787201834 81
+1787201839 81
+1787201844 81
+1787201849 81
+1787201854 81
 ```
 </details>
 
