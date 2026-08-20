@@ -1555,10 +1555,13 @@ void Profiler::setTaskBlockEnabled(bool enabled) {
   }
 
   _task_block_enabled.store(false, std::memory_order_release);
-  if (_task_block_monitor_events_enabled.exchange(
-          false, std::memory_order_acq_rel)) {
-    VM::setNativeMonitorEventsEnabled(false);
-  }
+  // Clear the admission flag first so no consumer can observe enabled events, then
+  // always attempt teardown. A previous enable whose setup AND rollback both failed
+  // left the flag false while JVMTI events stayed on; retrying unconditionally is the
+  // only way that leak is ever reclaimed. setNativeMonitorEventsEnabled(false) is
+  // documented as a no-op when the capability was never enabled.
+  _task_block_monitor_events_enabled.exchange(false, std::memory_order_acq_rel);
+  VM::setNativeMonitorEventsEnabled(false);
 }
 
 Error Profiler::start(Arguments &args, bool reset) {

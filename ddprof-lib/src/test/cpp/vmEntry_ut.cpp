@@ -469,13 +469,18 @@ TEST_F(NativeMonitorEventsTest,
   }
 }
 
-TEST_F(NativeMonitorEventsTest,
-       NativeAdmissionRemainsClosedWhenSetupAndRollbackFail) {
+// Guards the "leaked JVMTI monitor events" defect: when the enable partially fails
+// *and* its own rollback fails, the events stay enabled with no consumer. The disable
+// path must therefore retry the teardown unconditionally instead of skipping it because
+// the monitor-events flag was already stored false.
+TEST_F(NativeMonitorEventsTest, FailedRollbackIsRetriedOnDisable) {
   fail(JVMTI_ENABLE, JVMTI_EVENT_MONITOR_WAIT);
   fail_all_disables = true;
 
   ProfilerTestAccessor::setTaskBlockEnabled(profiler, true);
 
+  // Pre-disable state: the leak is still present, the fix does not repair a failed
+  // rollback in place.
   EXPECT_TRUE(profiler->taskBlockEnabled());
   EXPECT_FALSE(profiler->nativeMonitorTaskBlockEnabled());
   EXPECT_FALSE(ProfilerTestAccessor::monitorEventsEnabled(profiler));
@@ -483,6 +488,26 @@ TEST_F(NativeMonitorEventsTest,
   EXPECT_TRUE(eventIsEnabled(JVMTI_EVENT_MONITOR_CONTENDED_ENTERED));
   EXPECT_FALSE(eventIsEnabled(JVMTI_EVENT_MONITOR_WAIT));
   EXPECT_TRUE(eventIsEnabled(JVMTI_EVENT_MONITOR_WAITED));
+
+  // The fixture is sticky across calls, so stop forcing disables to fail explicitly.
+  inject_failure = false;
+  fail_all_disables = false;
+  calls.clear();
+
+  ProfilerTestAccessor::setTaskBlockEnabled(profiler, false);
+
+  // The disable path retried the teardown and reclaimed the leaked events.
+  EXPECT_FALSE(profiler->taskBlockEnabled());
+  EXPECT_FALSE(ProfilerTestAccessor::monitorEventsEnabled(profiler));
+  for (jvmtiEvent event : MONITOR_EVENTS) {
+    EXPECT_FALSE(eventIsEnabled(event)) << "event " << event << " left enabled";
+  }
+
+  // Admission still closes before native teardown.
+  ASSERT_FALSE(calls.empty());
+  for (const EventCall& call : calls) {
+    EXPECT_FALSE(call.task_block_enabled);
+  }
 }
 
 TEST_F(NativeMonitorEventsTest, AdmissionClosesBeforeNativeTeardown) {

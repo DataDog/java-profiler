@@ -85,6 +85,8 @@ public class ParkTaskBlockTest extends AbstractProfilerTest {
     virtual.join(5_000);
     assertFalse(virtual.isAlive());
 
+    // Positive control on a platform thread, well above the 1ms threshold: proves the park
+    // producer is alive, so the virtual-thread short-circuit assertion is not vacuous.
     ProfilerOwnedBlockHooks.parkEnter(profiler);
     try {
       parkForMillis(200);
@@ -94,7 +96,10 @@ public class ParkTaskBlockTest extends AbstractProfilerTest {
     stopProfiler();
 
     JfrEvents events = verifyEvents("datadog.TaskBlock");
-    assertFalse(TaskBlockAssertions.containsBlocker(events, virtualBlocker));
+    assertTrue(TaskBlockAssertions.containsBlocker(events, BLOCKER),
+        "platform control park was not produced");
+    assertFalse(TaskBlockAssertions.containsBlocker(events, virtualBlocker),
+        "virtual-thread park must not reach the carrier producer");
     TaskBlockAssertions.assertContains(events, 0, 0, BLOCKER, UNBLOCKING_SPAN_ID);
   }
 
