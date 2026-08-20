@@ -552,7 +552,11 @@ bool LivenessTracker::heapFloorRising() const {
   if (growth_bar < (double)HEAP_FLOOR_GROWTH_ABS_MIN) {
     growth_bar = (double)HEAP_FLOOR_GROWTH_ABS_MIN;
   }
-  if ((stats.recent_mean - stats.earliest_mean) < growth_bar) {
+  bool mean_rising = (stats.recent_mean - stats.earliest_mean) >= growth_bar;
+  if (!mean_rising) {
+    TEST_LOG("LivenessTracker::heapFloorRising MEAN_NOT_RISING "
+             "recent_mean=%.0f earliest_mean=%.0f growth_bar=%.0f",
+             stats.recent_mean, stats.earliest_mean, growth_bar);
     return false;
   }
 
@@ -560,7 +564,15 @@ bool LivenessTracker::heapFloorRising() const {
   if (floor_bar < (double)HEAP_FLOOR_FLOOR_ABS_MIN) {
     floor_bar = (double)HEAP_FLOOR_FLOOR_ABS_MIN;
   }
-  return (stats.recent_min - stats.earliest_min) >= floor_bar;
+  bool floor_rising = (stats.recent_min - stats.earliest_min) >= floor_bar;
+  TEST_LOG("LivenessTracker::heapFloorRising %s "
+           "recent_mean=%.0f earliest_mean=%.0f recent_min=%.0f earliest_min=%.0f "
+           "floor_bar=%.0f floor_rising=%d",
+           floor_rising ? "FLOOR_RISING" : "FLOOR_NOT_RISING",
+           stats.recent_mean, stats.earliest_mean,
+           stats.recent_min, stats.earliest_min,
+           floor_bar, (int)floor_rising);
+  return floor_rising;
 }
 
 double LivenessTracker::secondsToOOM() const {
