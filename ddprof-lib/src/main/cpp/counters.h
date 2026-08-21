@@ -136,24 +136,31 @@
   /* Every siglongjmp recovery, from any protected window, counted centrally  \
    * in Profiler::checkFault(). */                                            \
   X(STACKWALK_LONGJMP_RECOVERED, "stackwalk_longjmp_recovered")               \
-  /* Subset of the above: recoveries that landed in Lookup::resolveMethod(),  \
-   * i.e. faults while symbolicating at dump time rather than while walking a \
-   * stack in a signal handler. Counted separately because the two have       \
-   * different root causes (stale jmethodID / class unload vs. a bad frame    \
-   * pointer) and would otherwise be indistinguishable. */                    \
+  /* Dump-time raw-Method* resolution (HotspotSupport::resolve, reached only    \
+   * for cstack=vm + fjmethodid=false frames). NOT additive with               \
+   * STACKWALK_LONGJMP_RECOVERED: checkFault() bumps that one unconditionally  \
+   * before every siglongjmp, so each fault counted here is counted there too. \
+   * Subtract, never sum. Non-zero means stale HotSpot metadata (GC or class   \
+   * unloading) reached the dump thread; the frame serializes as "unknown". */ \
+  X(METHOD_RESOLVE_FAULT_RECOVERED, "method_resolve_fault_recovered")         \
+  /* Subset of the above: recoveries that landed in Lookup::resolveMethod()   \
+   * (flightRecorder.cpp), i.e. faults while symbolicating a Java frame at    \
+   * dump time via fillMethod() rather than during HotspotSupport::resolve()'s\
+   * raw-Method* walk. Counted separately because the two protected windows   \
+   * cover different code and have different root causes. */                 \
   X(METHOD_RESOLVE_LONGJMP_RECOVERED, "method_resolve_longjmp_recovered")     \
-  /* Lookup::resolveMethod() calls that ran without siglongjmp protection     \
-   * because no ProfiledThread could be allocated for the dump thread (OOM):  \
-   * there is nowhere to publish a landing pad. Expected to stay at 0. */     \
-  X(METHOD_RESOLVE_UNPROTECTED, "method_resolve_unprotected")                 \
+  /* Symbol length/body rejected during the same resolution: unreadable,       \
+   * empty, or longer than the fixed dump-time buffers in hotspotSupport.cpp.  \
+   * The frame serializes as "unknown". */                                     \
+  X(METHOD_RESOLVE_SYMBOL_UNREADABLE, "method_resolve_symbol_unreadable")     \
   /* Strict subset of SAMPLES_DROPPED_THREAD_LOCAL, not an independent count: \
    * ThreadLocalDataPool::claim() increments this on capacity exhaustion, and \
    * every acquireCurrent() caller that gets nullptr back -- for this or any  \
    * other reason -- separately increments SAMPLES_DROPPED_THREAD_LOCAL too.  \
-   * So every pool-exhaustion drop bumps both counters together; the two      \
-   * should be subtracted (thread_local_pool_exhausted from                   \
-   * samples_dropped_thread_local) to isolate non-pool priming drops, never   \
-   * summed. */                                                               \
+   * So every pool-exhaustion drop bumps both counters together; the two     \
+   * should be subtracted (thread_local_pool_exhausted from                  \
+   * samples_dropped_thread_local) to isolate non-pool priming drops, never  \
+   * summed. */                                                              \
   X(SAMPLES_DROPPED_TLS_POOL_EXHAUSTED, "thread_local_pool_exhausted")        \
   /* writeElement() guards against a corrupted/dangling JfrMetadata tree.     \
    * Root cause is still unconfirmed, so these counters are the durable       \

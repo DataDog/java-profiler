@@ -624,14 +624,14 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   // initCurrentThreadSignalSafe() can only fail on OOM.
   ProfiledThread *prof_thread = ProfiledThread::initCurrentThreadSignalSafe();
   if (prof_thread == nullptr) {
-    // No thread context means nowhere to publish a landing pad. Resolve
-    // unprotected rather than returning nullptr: both call sites in
-    // writeStackTraces() dereference the result unconditionally, so a nullptr
-    // return would convert a transient allocation failure into a SIGSEGV on the
-    // dump thread. Unprotected is also exactly what this code did before the
-    // protection was added.
-    Counters::increment(METHOD_RESOLVE_UNPROTECTED);
-    return fillMethod(frame, method_id, bci);
+    // No thread context means nowhere to publish a landing pad. Resolve to
+    // the shared unknown row rather than touching VM metadata unprotected --
+    // both call sites in writeStackTraces() dereference the result
+    // unconditionally, so a nullptr return would convert a transient
+    // allocation failure into a SIGSEGV on the dump thread. Same counter
+    // HotspotSupport::resolve() uses for the identical no-landing-pad case.
+    Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
+    return unknownMethod();
   }
 
   // Fill the shared "unknown" row *before* arming. The recovery branch below
@@ -648,15 +648,17 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   JmpCtxScope jmp_scope(prof_thread);
 
   sigjmp_buf crash_protection_ctx;
+  // savemask must be 1: the siglongjmp originates inside segvHandler, where
+  // the kernel has SIGSEGV blocked, so without restoring the saved mask the
+  // signal would stay blocked and the next fault on this thread would be
+  // fatal.
   if (sigsetjmp(crash_protection_ctx, 1) != 0) {
-    // checkFault() absorbed a fault raised somewhere in fillMethod() and jumped
-    // back here, bypassing the SIGNAL_HANDLER_GUARD() destructor in
+    // checkFault() absorbed a fault raised somewhere in fillMethod() and
+    // jumped back here, bypassing the SIGNAL_HANDLER_GUARD() destructor in
     // segvHandler()/busHandler(); compensate for it, then disarm before
     // touching anything else.
     SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
     jmp_scope.restore();
-    // Note: the counter cannot be reported accurately, see the comments in
-    // finishChunk() just above the writeCounters() call.
     Counters::increment(METHOD_RESOLVE_LONGJMP_RECOVERED);
     // A member, already filled above -- no map lookup, no allocation, and no
     // reliance on a local surviving siglongjmp (the value of a non-volatile
@@ -664,6 +666,7 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     return &_unknown_method;
   }
   jmp_scope.install(&crash_protection_ctx);
+
   return fillMethod(frame, method_id, bci);
 }
 
@@ -672,19 +675,12 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
   // Resolve native method
   if (FrameType::isRawPointer(bci)) {
     method_id = JVMSupport::resolve(frame.method);
+    if (method_id == nullptr) {
+        return unknownMethod();
+    }
   }
 
-  // Inject fault to test siglongjmp protection. Sits inside the window
-  // resolveMethod() arms around this function, which is the point: this is
-  // never compiled into a production build (it needs -PenableFaultInjection).
-  INJECT_CRASH_LIKELY();
-
-  // JVMSupport::resolve() above can yield null for a raw-pointer frame whose
-  // Method* no longer resolves; resolveMethod() screened out the null it was
-  // handed, but not this one.
-  if (method_id == nullptr) {
-    return unknownMethod();
-  }
+  assert(method_id != nullptr && "Already filtered by caller");
 
   // BCI_VTABLE_RECEIVER: method holds a VMSymbol* (see vmEntry.h). Resolve
   // to a class_id via the per-dump cache once, then key MethodMap by the

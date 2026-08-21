@@ -89,17 +89,6 @@ void signalHandlerUnwindAfterLongjmp() {
     }
 }
 
-JmpCtxScope::JmpCtxScope(ProfiledThread *pt) : _pt(pt), _prev(pt->getJmpCtx()) {
-    assert(pt != nullptr);
-}
-
-JmpCtxScope::~JmpCtxScope() { _pt->setJmpCtx(_prev); }
-
-void JmpCtxScope::install(sigjmp_buf *ctx) { _pt->setJmpCtx(ctx); }
-
-void JmpCtxScope::restore() { _pt->setJmpCtx(_prev); }
-
-
 CriticalSection::CriticalSection(ProfiledThread* pt) : _entered(false), _thread_ptr(pt) {
     // acquireCurrent() falls back to ThreadLocalDataPool::acquire() (a
     // pre-allocated, async-signal-safe pool) when the calling thread has
@@ -119,4 +108,40 @@ CriticalSection::~CriticalSection() {
     if (_entered && _thread_ptr != nullptr) {
         _thread_ptr->exitCriticalSection();
     }
+}
+
+
+// Reads the currently installed landing pad, asserting the non-null contract
+// *before* the pointer is dereferenced. This lives in a helper rather than the
+// constructor body because the mem-initialiser for _prev runs first, so an
+// assert in the body would only fire after the deref it is meant to guard.
+static sigjmp_buf* prevJmpCtxOf(ProfiledThread* pt) {
+    assert(pt != nullptr);
+    return pt->getJmpCtx();
+}
+
+JmpCtxScope::JmpCtxScope(ProfiledThread* pt) : _pt(pt), _prev(prevJmpCtxOf(pt)) {}
+
+// Unconditional store, deliberately not guarded by an "already restored" flag;
+// see restore().
+JmpCtxScope::~JmpCtxScope() {
+    restore();
+}
+
+void JmpCtxScope::install(sigjmp_buf* ctx) {
+    _pt->setJmpCtx(ctx);
+}
+
+// Idempotent with the destructor by construction: _prev is const, so this is
+// the same store every time it runs. No mutable "restored" flag is used -- and
+// none may be added -- because this object is an automatic local of the frame
+// that owns the sigjmp_buf, so any member mutated between sigsetjmp() and
+// siglongjmp() would have an indeterminate value at the landing pad.
+//
+// Nesting stays correct without a flag: scopes are automatic objects, so
+// construction/destruction is strictly LIFO and each constructor snapshots
+// getJmpCtx() at its own construction time. An outer scope's destructor can
+// therefore never clobber a context installed by an inner one.
+void JmpCtxScope::restore() {
+    _pt->setJmpCtx(_prev);
 }
