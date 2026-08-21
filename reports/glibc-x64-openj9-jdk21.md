@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk21
 
 ## glibc-x64-openj9-jdk21 - ✅ PASS
 
-**Date:** 2026-08-21 09:26:26 EDT
+**Date:** 2026-08-21 10:02:49 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 729 |
-| Sample Rate | 12.15/sec |
-| Health Score | 759% |
+| CPU Samples | 588 |
+| Sample Rate | 9.80/sec |
+| Health Score | 612% |
 | Threads | 9 |
-| Allocations | 361 |
+| Allocations | 366 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 749 |
-| Sample Rate | 12.48/sec |
-| Health Score | 780% |
+| CPU Samples | 695 |
+| Sample Rate | 11.58/sec |
+| Health Score | 724% |
 | Threads | 11 |
-| Allocations | 433 |
+| Allocations | 499 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 96-96 cores)</summary>
 
 ```
-1787318481 96
-1787318486 96
-1787318491 96
-1787318496 96
-1787318501 96
-1787318506 96
-1787318511 96
-1787318516 96
-1787318521 96
-1787318526 96
-1787318531 96
-1787318536 96
-1787318541 96
-1787318546 96
-1787318551 96
-1787318556 96
-1787318561 96
-1787318566 96
-1787318571 96
-1787318576 96
+1787320592 96
+1787320597 96
+1787320602 96
+1787320607 96
+1787320612 96
+1787320617 96
+1787320622 96
+1787320627 96
+1787320632 96
+1787320637 96
+1787320642 96
+1787320647 96
+1787320652 96
+1787320657 96
+1787320662 96
+1787320667 96
+1787320672 96
+1787320677 96
+1787320682 96
+1787320687 96
 ```
 </details>
 
