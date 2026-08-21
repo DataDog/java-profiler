@@ -696,11 +696,16 @@ private:
   int _passes_since_last_progress;
 
   // Canary-search candidate set: pre-tagged with distinct
-  // marker tags (MARKER_TAG_BASE - i) before the walk.
+  // marker tags (MARKER_TAG_BASE - i) before the walk, applied to each
+  // candidate's specific representative object (identity match) - matching
+  // by class alone would let the walk record a chain for an unrelated,
+  // possibly short-lived, instance of the same class instead of the one
+  // LivenessTracker actually flagged as growing.
   // _candidate_found_bits is a packed bitmap (bit i = candidate i found).
-  // _candidate_tags[i] holds the klass ID of candidate i (for class-tag matching).
+  // _candidate_tags[i] holds the marker tag (MARKER_TAG_BASE - i) for candidate i.
   // _candidate_frontier_tags[i] holds the frontier tag assigned by
-  // heapReferenceCallback() when it pruned the candidate.
+  // heapReferenceCallback() when it pruned the candidate (equal to the
+  // marker tag itself, since the marker is already a unique table key).
   // Reset by resetSearchStateForTest().
   //
   // MAX_LEAK_CANDIDATES_FROM_LT must match

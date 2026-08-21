@@ -1038,7 +1038,7 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   _passes_since_last_progress = 0;
   _candidate_count = 0;
   _candidate_found_bits = 0;
-  // _candidate_tags will be filled by pre-tagging in threadLoop().
+  // _candidate_tags will be filled by pre-tagging in pollWatchedTargets().
   // _candidate_parent_tags/_candidate_referrer_klasses/_candidate_depths
   // will be filled at pruning time.
   // across a production restart, a test reset starts from a blank cache so
@@ -1372,65 +1372,66 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
     return JVMTI_VISIT_ABORT;
   }
 
-  // Canary pruning: if this object's class matches a leaked candidate
-  // klass, record its chain link but do NOT enqueue
-  // its children (treat as a leaf). Do not return
-  // JVMTI_VISIT_ABORT -- that aborts the entire
-  // FollowReferences walk (JVMTI spec). Just skip
-  // admitObject() for this object.
+  // Canary pruning: if this object is the pre-tagged representative of a
+  // leaked candidate (marker tag MARKER_TAG_BASE - i, negative), record its
+  // chain link but do NOT enqueue its children (treat as a leaf). Do not
+  // return JVMTI_VISIT_ABORT -- that aborts the entire FollowReferences walk
+  // (JVMTI spec). Just skip admitObject() for this object.
   //
-  // Match by class_tag (the klass of the referent) against the
-  // candidate klass IDs stored in _candidate_tags[]. This avoids
-  // pre-tagging objects with marker tags.
-  if (ctx->tracker->_candidate_count > 0) {
-    u32 klass_id = ctx->tracker->classTags()->resolve(class_tag);
-    for (int i = 0; i < ctx->tracker->_candidate_count; i++) {
-      if ((jlong)klass_id == ctx->tracker->_candidate_tags[i]) {
-        jlong rtag = (referrer_tag_ptr != nullptr) ? *referrer_tag_ptr : 0;
-        if (rtag > 0) {
-          FrontierEntry parent{};
-          if (ctx->frontier->lookup(rtag, &parent)) {
-            jlong frontier_tag = ctx->tracker->nextTag();
-            ctx->frontier->insert(frontier_tag, rtag,
-                                    parent.referrer_klass,
-                                    parent.depth + 1,
-                                    FrontierEntryState::FRONTIER,
-                                    parent.root_kind);
-            ctx->tracker->_candidate_parent_tags[i] = rtag;
-            ctx->tracker->_candidate_frontier_tags[i] = frontier_tag;
-            ctx->tracker->_candidate_referrer_klasses[i] = klass_id;
-            ctx->tracker->_candidate_depths[i] = parent.depth + 1;
-            ctx->tracker->_candidate_found_bits |= (1ULL << i);
-            // Persist frontier_tag onto the object itself so
-            // pollWatchedTargets()'s getTag(obj) > 0 check (the only thing
-            // that triggers buildCanaryChainEvent()) can ever see this
-            // candidate as found.
-            *tag_ptr = frontier_tag;
-            TEST_LOG("ReferenceChainTracker::heapReferenceCallback canary "
-                   "pruned candidate %d (klass_id=%u frontier_tag=%lld)",
-                   i, klass_id, (long long)frontier_tag);
-          }
-        } else {
-          // Root-referenced candidate.
-          jlong frontier_tag = ctx->tracker->nextTag();
-          ctx->frontier->insert(frontier_tag, 0,
-                                  klass_id, 1,
+  // MUST run before the *tag_ptr < 0 class-tag check below, since marker
+  // tags are negative and would be caught by that check first (returning 0
+  // without recording the chain link).
+  //
+  // Matches by object identity (the marker tag SetTag() put on this exact
+  // representative object in pollWatchedTargets()), not by class: matching
+  // by class alone would record a chain for whichever instance of that class
+  // the walk happens to visit first, which for a common class (e.g. byte[])
+  // is almost certainly an unrelated, possibly short-lived object - not the
+  // specific instance LivenessTracker flagged as growing.
+  if (ctx->tracker->_candidate_count > 0 &&
+      *tag_ptr <= ReferenceChainTracker::MARKER_TAG_BASE) {
+    int candidate_idx = (int)(ReferenceChainTracker::MARKER_TAG_BASE - *tag_ptr);
+    if (candidate_idx >= 0 && candidate_idx < ctx->tracker->_candidate_count) {
+      jlong rtag = (referrer_tag_ptr != nullptr) ? *referrer_tag_ptr : 0;
+      u32 candidate_klass = ctx->tracker->classTags()->resolve(class_tag);
+      if (rtag > 0) {
+        FrontierEntry parent{};
+        if (ctx->frontier->lookup(rtag, &parent)) {
+          // Use the marker tag itself as the frontier table key - it is
+          // already a unique per-candidate value, so no nextTag() is needed.
+          jlong frontier_tag = *tag_ptr;
+          ctx->frontier->insert(frontier_tag, rtag,
+                                  parent.referrer_klass,
+                                  parent.depth + 1,
                                   FrontierEntryState::FRONTIER,
-                                  (u8)reference_kind);
-          ctx->tracker->_candidate_parent_tags[i] = 0;
-          ctx->tracker->_candidate_frontier_tags[i] = frontier_tag;
-          ctx->tracker->_candidate_referrer_klasses[i] = klass_id;
-          ctx->tracker->_candidate_depths[i] = 1;
-          ctx->tracker->_candidate_found_bits |= (1ULL << i);
-          // Same as above: mark the object itself as found.
-          *tag_ptr = frontier_tag;
+                                  parent.root_kind);
+          ctx->tracker->_candidate_parent_tags[candidate_idx] = rtag;
+          ctx->tracker->_candidate_frontier_tags[candidate_idx] = frontier_tag;
+          ctx->tracker->_candidate_referrer_klasses[candidate_idx] = candidate_klass;
+          ctx->tracker->_candidate_depths[candidate_idx] = parent.depth + 1;
+          ctx->tracker->_candidate_found_bits |= (1ULL << candidate_idx);
           TEST_LOG("ReferenceChainTracker::heapReferenceCallback canary "
-                   "pruned root-referenced candidate %d (klass_id=%u)",
-                   i, klass_id);
+                 "pruned candidate %d (klass_id=%u frontier_tag=%lld)",
+                 candidate_idx, candidate_klass, (long long)frontier_tag);
         }
-        // Do NOT enqueue children for this object.
-        return 0;
+      } else {
+        // Root-referenced candidate.
+        jlong frontier_tag = *tag_ptr;
+        ctx->frontier->insert(frontier_tag, 0,
+                                candidate_klass, 1,
+                                FrontierEntryState::FRONTIER,
+                                (u8)reference_kind);
+        ctx->tracker->_candidate_parent_tags[candidate_idx] = 0;
+        ctx->tracker->_candidate_frontier_tags[candidate_idx] = frontier_tag;
+        ctx->tracker->_candidate_referrer_klasses[candidate_idx] = candidate_klass;
+        ctx->tracker->_candidate_depths[candidate_idx] = 1;
+        ctx->tracker->_candidate_found_bits |= (1ULL << candidate_idx);
+        TEST_LOG("ReferenceChainTracker::heapReferenceCallback canary "
+                 "pruned root-referenced candidate %d (klass_id=%u)",
+                 candidate_idx, candidate_klass);
       }
+      // Do NOT enqueue children for this object.
+      return 0;
     }
   }
 
@@ -2850,12 +2851,24 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
     if (_candidate_count == 0) {
       _candidate_count = candidate_count;
       _candidate_found_bits = 0;
-      // Store the candidate klass IDs set so heapReferenceCallback()
-      // can identify candidates by class_tag without pre-tagging.
+      // Tag each candidate's specific representative object with a distinct
+      // marker tag (MARKER_TAG_BASE - i) so heapReferenceCallback() can
+      // identify that exact object by identity when the walk reaches it -
+      // matching by class alone would record a chain for whichever instance
+      // of that class the walk happens to visit, not necessarily the one
+      // LivenessTracker flagged as growing.
       for (int i = 0; i < candidate_count; i++) {
-        _candidate_tags[i] = (jlong)candidates[i].klass_id;
+        jlong tag = MARKER_TAG_BASE - i;
+        _candidate_tags[i] = tag;
+        jobject obj = LivenessTracker::instance()->resolveCandidateRepresentative(
+            jni, candidates[i].klass_id);
+        if (obj != nullptr) {
+          jvmti->SetTag(obj, tag);
+          jni->DeleteLocalRef(obj);
+        }
       }
-      TEST_LOG("ReferenceChainTracker::pollWatchedTargets canary: %d candidates (by klass_id)",
+      TEST_LOG("ReferenceChainTracker::pollWatchedTargets canary: %d candidates pre-tagged "
+               "with marker tags",
                _candidate_count);
       Counters::increment(REFERENCE_CHAIN_CANDIDATE_COUNT, _candidate_count);
     }
@@ -2918,10 +2931,14 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
     // pass reached it.
     jlong tag = getTag(jvmti, obj);
 
-    // Canary search: if the walk visited this candidate (tag > 0 = frontier
-    // tag assigned by heapReferenceCallback when it pruned at it),
-    // use the canary chain reconstruction.
-    if (tag > 0) {
+    // Canary search: if this candidate was pre-tagged with a marker tag
+    // (negative, set above), use the canary chain reconstruction. The
+    // marker tag itself stays on the representative for the whole search
+    // (heapReferenceCallback() never overwrites it), so this stays true
+    // regardless of whether the walk has actually reached it yet this pass -
+    // buildCanaryChainEvent() below is what distinguishes "found" (parent_tag
+    // or frontier_tag populated) from "not yet pruned".
+    if (tag <= MARKER_TAG_BASE) {
       bool need_refresh = false;
       _resolved_chains_lock.lock();
       auto it = _resolved_chains.find(klass_id);
@@ -2930,7 +2947,7 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
                       it->second.source_search_ns != current_search_ns);
       _resolved_chains_lock.unlock();
       TEST_LOG("ReferenceChainTracker::pollWatchedTargets canary candidate[%d] "
-               "klass_id=%u frontier_tag=%lld needRefresh=%d",
+               "klass_id=%u marker_tag=%lld needRefresh=%d",
                i, klass_id, (long long)tag, need_refresh);
       if (need_refresh) {
         ReferenceChainEvent event;

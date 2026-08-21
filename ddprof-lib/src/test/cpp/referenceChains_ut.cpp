@@ -1882,6 +1882,7 @@ protected:
         jvmti_tbl = jvmtiInterface_1_{};
         jvmti_tbl.SetEventNotificationMode = &mock_SetEventNotificationMode;
         jvmti_tbl.GetTag = &mock_GetTag;
+        jvmti_tbl.SetTag = &mock_SetTag;
         jvmti_tbl.GetClassSignature = &mock_GetClassSignature;
         jvmti_tbl.Deallocate = &mock_Deallocate;
         mock_jvmti.functions = &jvmti_tbl;
@@ -1905,6 +1906,11 @@ protected:
     static jvmtiError JNICALL mock_GetTag(jvmtiEnv *, jobject object, jlong *tag_ptr) {
         auto it = active_fixture->tags.find(object);
         *tag_ptr = it != active_fixture->tags.end() ? it->second : 0;
+        return JVMTI_ERROR_NONE;
+    }
+
+    static jvmtiError JNICALL mock_SetTag(jvmtiEnv *, jobject object, jlong tag) {
+        active_fixture->tags[object] = tag;
         return JVMTI_ERROR_NONE;
     }
 
