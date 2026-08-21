@@ -1657,6 +1657,7 @@ public:
   int passesSinceLastProgressForTest() const { return _passes_since_last_progress; }
   int candidateCountForTest() const { return _candidate_count; }
   u64 candidateFoundBitsForTest() const { return _candidate_found_bits; }
+  void setCandidateFrontierTagForTest(int idx, jlong tag) { _candidate_frontier_tags[idx] = tag; }
 
   ReferenceChainTracker(const ReferenceChainTracker &) = delete;
   ReferenceChainTracker &operator=(const ReferenceChainTracker &) = delete;

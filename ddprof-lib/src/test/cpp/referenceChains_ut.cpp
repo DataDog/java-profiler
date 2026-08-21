@@ -108,6 +108,10 @@ public:
         ReferenceChainTracker::instance()->_search_pain_ms = ms;
     }
 
+    static void setCandidateFrontierTagForTest(int idx, jlong tag) {
+        ReferenceChainTracker::instance()->setCandidateFrontierTagForTest(idx, tag);
+    }
+
     static u64 searchPainMs() {
         return ReferenceChainTracker::instance()->_search_pain_ms;
     }
@@ -1949,6 +1953,9 @@ TEST_F(PollWatchedTargetsTest, EmitsEventForAlreadyDiscoveredCandidate) {
         /*tag=*/7, /*parent_tag=*/0, /*referrer_klass=*/1, /*depth=*/0,
         FrontierEntryState::EDGE));
     tags[obj] = 7;
+    // With class-tag matching, _candidate_frontier_tags must be set
+    // so buildCanaryChainEvent() can reconstruct the chain.
+    ReferenceChainsTestAccessor::setCandidateFrontierTagForTest(0, 7);
 
     tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
 
@@ -1990,6 +1997,7 @@ TEST_F(PollWatchedTargetsTest, NoDuplicateOnRepeatPoll) {
     ASSERT_TRUE(tracker->frontierTable()->insert(
         7, 0, 1, 0, FrontierEntryState::EDGE));
     tags[obj] = 7;
+    ReferenceChainsTestAccessor::setCandidateFrontierTagForTest(0, 7);
 
     tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
     ASSERT_EQ(1u, ReferenceChainsTestAccessor::resolvedChainCount());
@@ -2048,6 +2056,7 @@ TEST_F(PollWatchedTargetsTest, PruneStopsReemittingAfterRepresentativeDies) {
     ASSERT_TRUE(tracker->frontierTable()->insert(
         7, 0, 1, 0, FrontierEntryState::EDGE));
     tags[obj] = 7;
+    ReferenceChainsTestAccessor::setCandidateFrontierTagForTest(0, 7);
 
     tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
     ASSERT_EQ(1u, ReferenceChainsTestAccessor::resolvedChainCount());
