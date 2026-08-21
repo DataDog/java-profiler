@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 Datadog, Inc
+ * Copyright 2023, 2026 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -82,18 +82,22 @@ public:
   size_t _used_at_last_gc;
 };
 
-// First HotSpot version carrying JDK-8356848's CollectedHeap layout change.
+// First JDK version carrying JDK-8356848's CollectedHeap layout change.
+// Gate on the Java (JDK) major version, not on hotspot_version(): JDK 8 GA
+// reports java.vm.version="25.0-b70", which get_hotspot_version() misparses
+// as 25 (the prop_value[3] > '0' guard fails for '0'), so a hotspot_version
+// gate would wrongly apply this layout to a JDK 8 object.
 const int COLLECTED_HEAP_METASPACE_LOG_MIN_VERSION = 25;
 
-inline size_t collectedHeapUsedAtLastGc(void *collected_heap, int hotspot_version) {
-  if (hotspot_version >= COLLECTED_HEAP_METASPACE_LOG_MIN_VERSION) {
+inline size_t collectedHeapUsedAtLastGc(void *collected_heap, int java_version) {
+  if (java_version >= COLLECTED_HEAP_METASPACE_LOG_MIN_VERSION) {
     return ((CollectedHeapWrapperV25Plus *)collected_heap)->_used_at_last_gc;
   }
   return ((CollectedHeapWrapperPre25 *)collected_heap)->_used_at_last_gc;
 }
 
-inline size_t collectedHeapCapacityAtLastGc(void *collected_heap, int hotspot_version) {
-  if (hotspot_version >= COLLECTED_HEAP_METASPACE_LOG_MIN_VERSION) {
+inline size_t collectedHeapCapacityAtLastGc(void *collected_heap, int java_version) {
+  if (java_version >= COLLECTED_HEAP_METASPACE_LOG_MIN_VERSION) {
     return ((CollectedHeapWrapperV25Plus *)collected_heap)->_capacity_at_last_gc;
   }
   return ((CollectedHeapWrapperPre25 *)collected_heap)->_capacity_at_last_gc;

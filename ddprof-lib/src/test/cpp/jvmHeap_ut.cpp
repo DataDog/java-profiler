@@ -60,10 +60,27 @@ TEST(CollectedHeapAccessorTest, MissingVersionGateMisreadsCapacityAsUsed) {
     // Correct: version-gated read on a JDK 25+ heap returns the real used bytes.
     EXPECT_EQ(jdk25_heap._used_at_last_gc, collectedHeapUsedAtLastGc(&jdk25_heap, 25));
 
-    // Buggy: reading the same JDK 25+ heap with a pre-25 hotspot_version()
+    // Buggy: reading the same JDK 25+ heap with a pre-25 java_version
     // reproduces the reported bug - capacity comes back where used was expected.
     EXPECT_EQ(jdk25_heap._capacity_at_last_gc, collectedHeapUsedAtLastGc(&jdk25_heap, 24));
     EXPECT_NE(jdk25_heap._used_at_last_gc, collectedHeapUsedAtLastGc(&jdk25_heap, 24));
+}
+
+// Regression test for the JDK 8 GA version-parsing trap: get_hotspot_version()
+// misparses java.vm.version="25.0-b70" as 25 (the prop_value[3] > '0' guard
+// fails for '0'), so a hotspot_version gate would apply the V25+ layout to a
+// JDK 8 CollectedHeap. Gating on java_version() instead avoids this: JDK 8
+// (java_version == 8) selects the pre-25 layout regardless of the misparsed
+// hotspot_version.
+TEST(CollectedHeapAccessorTest, Jdk8GaUsesPre25LayoutDespiteMisparsedHotspotVersion) {
+    CollectedHeapWrapperPre25 heap;
+    heap._capacity_at_last_gc = 4096;
+    heap._used_at_last_gc = 1024;
+
+    // java_version == 8 must select the pre-25 layout even though
+    // hotspot_version() would have returned 25 on JDK 8 GA ("25.0-b70").
+    EXPECT_EQ(1024u, collectedHeapUsedAtLastGc(&heap, 8));
+    EXPECT_EQ(4096u, collectedHeapCapacityAtLastGc(&heap, 8));
 }
 
 // Sanity: used-at-last-gc must never exceed capacity-at-last-gc - this is a
