@@ -163,12 +163,6 @@
    * samples_dropped_thread_local) to isolate non-pool priming drops, never  \
    * summed. */                                                              \
   X(SAMPLES_DROPPED_TLS_POOL_EXHAUSTED, "thread_local_pool_exhausted")        \
-  /* Subset of the above: recoveries that landed in Lookup::resolveMethod(),  \
-   * i.e. faults while symbolicating at dump time rather than while walking a \
-   * stack in a signal handler. Counted separately because the two have       \
-   * different root causes (stale jmethodID / class unload vs. a bad frame    \
-   * pointer) and would otherwise be indistinguishable. */                    \
-  X(METHOD_RESOLVE_LONGJMP_RECOVERED, "method_resolve_longjmp_recovered")     \
   /* Lookup::resolveMethod() calls that ran without siglongjmp protection     \
    * because no ProfiledThread could be allocated for the dump thread (OOM):  \
    * there is nowhere to publish a landing pad. Expected to stay at 0. */     \

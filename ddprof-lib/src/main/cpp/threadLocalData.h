@@ -192,7 +192,7 @@ public:
     u64 park_block_token;
     int filter_slot_id;
     uint8_t init_window;
-    uint8_t signal_depth;
+    int  signal_depth;
     bool in_critical_section;
     bool otel_ctx_initialized;
     u64 otel_local_root_span_id;
