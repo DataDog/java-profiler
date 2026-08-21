@@ -735,46 +735,17 @@ void ReferenceChainTracker::threadLoop() {
     // canAffordNewSearch() call).
     u64 now_ns = OS::nanotime();
 
-    // Pre-tag candidates: tag each leaked candidate with a distinct
-    // marker tag (MARKER_TAG_BASE - i) so heapReferenceCallback()
-    // can prune at them. Runs on the BFS thread (same thread
-    // that calls FollowReferences). Done when _candidate_count == 0
-    // (no candidates are currently tagged) AND there are
-    // candidates available from selectLeakCandidates().
-    // This handles the case where the search starts before
-    // any candidates exist (generations just enabled, no
-    // positive-slope klass yet) -- candidates appear
-    // later, and pre-tagging must run at that point,
-    // not only on the first threadLoop iteration.
-    if (_candidate_count == 0 &&
-        LivenessTracker::instance()->gcGenerationsEnabled()) {
-      TEST_LOG("ReferenceChainTracker::threadLoop pre-tagging: _candidate_count=%d, checking for candidates...",
-             (int)_candidate_count);
-      KlassCandidate candidates[MAX_LEAK_CANDIDATES_FROM_LT];
-      int n = LivenessTracker::instance()->selectLeakCandidates(
-          candidates, MAX_LEAK_CANDIDATES_FROM_LT);
-      TEST_LOG("ReferenceChainTracker::threadLoop selectLeakCandidates returned n=%d", n);
-      _candidate_count = n;
-      _candidate_found_bits = 0;
-      jvmtiEnv *jvmti = VM::jvmti();
-      JNIEnv *jni = VM::jni();
-      if (jvmti != nullptr && jni != nullptr) {
-        for (int i = 0; i < n; i++) {
-          jobject obj = jni->NewLocalRef(candidates[i].representative);
-          if (obj != nullptr) {
-            jlong tag = MARKER_TAG_BASE - i;
-            _candidate_tags[i] = tag;
-            jvmti->SetTag(obj, tag);
-          }
-          jni->DeleteLocalRef(obj);
-        }
-      }
-      TEST_LOG("ReferenceChainTracker::threadLoop canary pre-tagged %d candidates",
-               _candidate_count);
-      Counters::increment(REFERENCE_CHAIN_CANDIDATE_COUNT, _candidate_count);
-    }
-
     bool should_run = shouldRunPass(now_ns);
+    // Only sleep when idle (no pass will run). When a canary
+    // search is active or a pass is about to run, skip the
+    // sleep to run passes back-to-back.
+    if (!should_run && cadence_ns > 0) {
+      OS::sleep(cadence_ns);
+      if (!_running.load(std::memory_order_acquire)) {
+        break;
+      }
+      now_ns = OS::nanotime();
+    }
     // Log the loop state only when a pass is actually going to run - the idle
     // wakes (should_run == false) are the common steady state and logging them
     // every second is pure noise.

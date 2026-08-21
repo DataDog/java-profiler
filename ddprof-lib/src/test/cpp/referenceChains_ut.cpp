@@ -2314,7 +2314,7 @@ TEST_F(ReferenceChainsTest, PacingGrowsBudgetBackAndRelaxesCadenceWhenUnderCeili
     // smaller-magnitude error, muddying this test's per-step "moves in the
     // correct direction every step" assertions with a transient this test
     // is not about.
-    ReferenceChainsTestAccessor::setEffectiveBudget(200);
+    ReferenceChainsTestAccessor::setEffectiveBudget(600);
     ReferenceChainsTestAccessor::setEffectiveCadenceNs(
         2 * ReferenceChainsTestAccessor::baselineCadenceNs());
     ReferenceChainsTestAccessor::resetPacingController();

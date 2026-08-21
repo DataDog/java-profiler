@@ -1073,7 +1073,7 @@ private:
   // than this floor - see updatePacing()). Not 0: a floor of 0 would let a
   // single pathological pass shrink the search to "admit nothing, ever",
   // stalling all progress instead of just slowing it.
-  static constexpr int MIN_EFFECTIVE_BUDGET = 50;
+  static constexpr int MIN_EFFECTIVE_BUDGET = 500;
 
   // Bounds for _effective_cadence_ns. The lower bound is not 0: threadLoop()
   // sleeps for exactly this many nanoseconds each loop iteration (below), so
