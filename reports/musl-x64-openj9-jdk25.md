@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk25
 
 ## musl-x64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-08-20 21:04:09 EDT
+**Date:** 2026-08-21 03:04:25 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 422 |
-| Sample Rate | 7.03/sec |
-| Health Score | 439% |
+| CPU Samples | 448 |
+| Sample Rate | 7.47/sec |
+| Health Score | 467% |
 | Threads | 9 |
-| Allocations | 370 |
+| Allocations | 410 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 522 |
-| Sample Rate | 8.70/sec |
-| Health Score | 544% |
-| Threads | 10 |
-| Allocations | 502 |
+| CPU Samples | 565 |
+| Sample Rate | 9.42/sec |
+| Health Score | 589% |
+| Threads | 11 |
+| Allocations | 469 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 79-81 cores)</summary>
+<summary>CPU Timeline (1 unique values: 81-81 cores)</summary>
 
 ```
-1787273652 81
-1787273657 81
-1787273662 81
-1787273667 81
-1787273672 81
-1787273677 81
-1787273682 81
-1787273687 81
-1787273692 81
-1787273697 79
-1787273702 79
-1787273707 79
-1787273712 79
-1787273717 81
-1787273722 81
-1787273727 81
-1787273732 81
-1787273737 81
-1787273742 81
-1787273747 81
+1787295600 81
+1787295605 81
+1787295610 81
+1787295615 81
+1787295620 81
+1787295625 81
+1787295630 81
+1787295635 81
+1787295640 81
+1787295645 81
+1787295650 81
+1787295655 81
+1787295660 81
+1787295665 81
+1787295670 81
+1787295675 81
+1787295680 81
+1787295685 81
+1787295690 81
+1787295695 81
 ```
 </details>
 
