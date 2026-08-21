@@ -52,7 +52,21 @@ static const char* library_basename(const char* path) {
 
 static SocketPatchTarget socket_patch_target_for_library(
     CodeCache* lib, const char* name, bool in_jdk_directory) {
-  if (lib == nullptr || name == nullptr || !in_jdk_directory) {
+  if (lib == nullptr || name == nullptr) {
+    return SOCKET_PATCH_NONE;
+  }
+
+  // Netty's native epoll transport ships its own .so outside the JDK's lib
+  // directory, so it is checked ahead of the in_jdk_directory gate below.
+  // Detection is by exported symbol rather than basename because the .so
+  // filename is relocated under shading (e.g. grpc-netty-shaded), while the
+  // JNI_OnLoad_/JNI_OnUnload_ suffix is not.
+  if (lib->findSymbol("JNI_OnLoad_netty_transport_native_epoll") != nullptr &&
+      lib->findSymbol("JNI_OnUnload_netty_transport_native_epoll") != nullptr) {
+    return SOCKET_PATCH_NETTY_NATIVE_EPOLL;
+  }
+
+  if (!in_jdk_directory) {
     return SOCKET_PATCH_NONE;
   }
 
