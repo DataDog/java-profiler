@@ -86,7 +86,7 @@ typedef struct KlassPopulationEntry {
   // created entry) whenever ring_fill < KLASS_POPULATION_MIN_FILL_FOR_TREND
   // - callers must check ring_fill first, exactly as before this field
   // existed.
-  double cached_slope;
+  mutable double cached_slope;
   u64 last_updated_epoch; // _gc_epoch value as of the last write, for LRU
                           // eviction when the table is full
 } KlassPopulationEntry;
@@ -471,7 +471,7 @@ private:
   // directly), so KlassPopulationEntry::consecutive_positive/cached_slope
   // are always kept in sync with the ring they summarize, regardless of
   // caller.
-  bool hasQualifyingGrowth(KlassPopulationEntry &entry) const;
+  bool hasQualifyingGrowth(const KlassPopulationEntry &entry) const;
 
   // Pushes `used`/`timestamp_ns` into _heap_floor_ring/_heap_floor_time_ring -
   // see those members' own comments for why this is lock-free rather than

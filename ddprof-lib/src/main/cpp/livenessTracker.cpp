@@ -468,7 +468,7 @@ void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch,
   _klass_count_scratch_size = 0;
 }
 
-bool LivenessTracker::hasQualifyingGrowth(KlassPopulationEntry &entry) const {
+bool LivenessTracker::hasQualifyingGrowth(const KlassPopulationEntry &entry) const {
   RingThirdsStats stats;
   if (!ringThirdsStats(
           entry.ring_head, entry.ring_fill, KLASS_POPULATION_RING_SIZE,
