@@ -698,9 +698,9 @@ private:
   // Canary-search candidate set: pre-tagged with distinct
   // marker tags (MARKER_TAG_BASE - i) before the walk.
   // _candidate_found_bits is a packed bitmap (bit i = candidate i found).
-  // _candidate_tags[i] holds the marker tag for candidate i.
-  // _candidate_frontier_tags[i] holds the frontier tag assigned
-  // at pruning time for chain reconstruction.
+  // _candidate_tags[i] holds the klass ID of candidate i (for class-tag matching).
+  // _candidate_frontier_tags[i] holds the frontier tag assigned by
+  // heapReferenceCallback() when it pruned the candidate.
   // Reset by resetSearchStateForTest().
   //
   // MAX_LEAK_CANDIDATES_FROM_LT must match
@@ -710,6 +710,7 @@ private:
   int _candidate_count;
   u64 _candidate_found_bits;
   jlong _candidate_tags[MAX_LEAK_CANDIDATES_FROM_LT];
+  jlong _candidate_frontier_tags[MAX_LEAK_CANDIDATES_FROM_LT];
   // Per-candidate chain link recorded at pruning time:
   // parent_tag (referrer's frontier tag, positive) and referrer_klass.
   // Used by buildCanaryChainEvent() to reconstruct the
@@ -1820,6 +1821,7 @@ public:
     }
     jlong parent_tag = _candidate_parent_tags[candidate_idx];
     u32 candidate_klass = _candidate_referrer_klasses[candidate_idx];
+    jlong frontier_tag = _candidate_frontier_tags[candidate_idx];
     std::vector<u32> chain;
     u8 root_kind = 0;
     if (parent_tag > 0) {
@@ -1836,12 +1838,11 @@ public:
         chain.push_back(entry.referrer_klass);
         tag = entry.parent_tag;
       }
-    } else if (parent_tag == 0) {
+    } else if (parent_tag == 0 && frontier_tag > 0) {
       // Root-referenced candidate: chain is just [candidate_klass].
       // root_kind was stored in the frontier entry at pruning time;
       // re-read it from the frontier table (the candidate's own entry).
       FrontierEntry entry{};
-      jlong frontier_tag = _candidate_tags[candidate_idx];
       if (!_frontier->lookup(frontier_tag, &entry)) {
         return false;
       }
@@ -1853,7 +1854,7 @@ public:
     chain.push_back(candidate_klass);
     // The chain was built root-to-parent; reverse to get candidate-to-root.
     std::reverse(chain.begin(), chain.end());
-    out->_target_tag = (u64)_candidate_tags[candidate_idx];
+    out->_target_tag = (u64)frontier_tag;
     out->_depth = _candidate_depths[candidate_idx];
     out->_root_kind = root_kind;
     out->_chain = std::move(chain);

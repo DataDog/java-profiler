@@ -1399,62 +1399,57 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
     return JVMTI_VISIT_ABORT;
   }
 
-  // Canary pruning: if this object is a pre-tagged leak
-  // candidate (marker tag MARKER_TAG_BASE - i, negative),
-  // record its chain link but do NOT enqueue its children
-  // (treat as a leaf). Do not return
+  // Canary pruning: if this object's class matches a leaked candidate
+  // klass, record its chain link but do NOT enqueue
+  // its children (treat as a leaf). Do not return
   // JVMTI_VISIT_ABORT -- that aborts the entire
   // FollowReferences walk (JVMTI spec). Just skip
   // admitObject() for this object.
   //
-  // MUST run before the *tag_ptr < 0 class-tag check below, since
-  // marker tags are negative and would be caught by that
-  // check first (returning 0 without recording the chain link).
-  if (ctx->tracker->_candidate_count > 0 && *tag_ptr <= MARKER_TAG_BASE) {
-    int candidate_idx = (int)(MARKER_TAG_BASE - *tag_ptr);
-    if (candidate_idx >= 0 &&
-        candidate_idx < ctx->tracker->_candidate_count) {
-      jlong rtag = (referrer_tag_ptr != nullptr) ? *referrer_tag_ptr : 0;
-      u32 candidate_klass = ctx->tracker->classTags()->resolve(class_tag);
-      if (rtag > 0) {
-        FrontierEntry parent{};
-        if (ctx->frontier->lookup(rtag, &parent)) {
-          // Use the marker tag as the frontier table key.
-          jlong frontier_tag = *tag_ptr;
-          ctx->frontier->insert(frontier_tag, rtag,
-                                  parent.referrer_klass,
-                                  parent.depth + 1,
+  // Match by class_tag (the klass of the referent) against the
+  // candidate klass IDs stored in _candidate_tags[]. This avoids
+  // pre-tagging objects with marker tags.
+  if (ctx->tracker->_candidate_count > 0) {
+    u32 klass_id = ctx->tracker->classTags()->resolve(class_tag);
+    for (int i = 0; i < ctx->tracker->_candidate_count; i++) {
+      if ((jlong)klass_id == ctx->tracker->_candidate_tags[i]) {
+        jlong rtag = (referrer_tag_ptr != nullptr) ? *referrer_tag_ptr : 0;
+        if (rtag > 0) {
+          FrontierEntry parent{};
+          if (ctx->frontier->lookup(rtag, &parent)) {
+            jlong frontier_tag = ctx->tracker->nextTag();
+            ctx->frontier->insert(frontier_tag, rtag,
+                                    parent.referrer_klass,
+                                    parent.depth + 1,
+                                    FrontierEntryState::FRONTIER,
+                                    parent.root_kind);
+            ctx->tracker->_candidate_parent_tags[i] = rtag;
+            ctx->tracker->_candidate_frontier_tags[i] = frontier_tag;
+            ctx->tracker->_candidate_referrer_klasses[i] = klass_id;
+            ctx->tracker->_candidate_depths[i] = parent.depth + 1;
+            ctx->tracker->_candidate_found_bits |= (1ULL << i);
+            TEST_LOG("ReferenceChainTracker::heapReferenceCallback canary "
+                   "pruned candidate %d (klass_id=%u frontier_tag=%lld)",
+                   i, klass_id, (long long)frontier_tag);
+          }
+        } else {
+          // Root-referenced candidate.
+          jlong frontier_tag = ctx->tracker->nextTag();
+          ctx->frontier->insert(frontier_tag, 0,
+                                  klass_id, 1,
                                   FrontierEntryState::FRONTIER,
-                                  parent.root_kind);
-          ctx->tracker->_candidate_parent_tags[candidate_idx] = rtag;
-          // Store the candidate's OWN klass (class_tag from JVMTI,
-          // resolved to a u32 klass id), not the referrer's klass.
-          u32 candidate_klass = ctx->tracker->classTags()->resolve(class_tag);
-          ctx->tracker->_candidate_referrer_klasses[candidate_idx] = candidate_klass;
-          ctx->tracker->_candidate_depths[candidate_idx] = parent.depth + 1;
-          ctx->tracker->_candidate_found_bits |= (1ULL << candidate_idx);
+                                  (u8)reference_kind);
+          ctx->tracker->_candidate_parent_tags[i] = 0;
+          ctx->tracker->_candidate_frontier_tags[i] = frontier_tag;
+          ctx->tracker->_candidate_referrer_klasses[i] = klass_id;
+          ctx->tracker->_candidate_depths[i] = 1;
+          ctx->tracker->_candidate_found_bits |= (1ULL << i);
           TEST_LOG("ReferenceChainTracker::heapReferenceCallback canary "
-                   "pruned candidate %d (tag=%lld frontier_tag=%lld)",
-                   candidate_idx, (long long)*tag_ptr,
-                   (long long)frontier_tag);
+                   "pruned root-referenced candidate %d (klass_id=%u)",
+                   i, klass_id);
         }
-      } else {
-        // Root-referenced candidate: referrer_tag_ptr is nullptr,
-        // rtag == 0. The candidate is directly attached to a
-        // GC root. Record with parent_tag=0, depth=1,
-        // root_kind from this root reference (reference_kind).
-        jlong frontier_tag = *tag_ptr;
-        ctx->frontier->insert(frontier_tag, 0,
-                                candidate_klass, 1,
-                                FrontierEntryState::FRONTIER,
-                                (u8)reference_kind);
-        ctx->tracker->_candidate_parent_tags[candidate_idx] = 0;
-        ctx->tracker->_candidate_referrer_klasses[candidate_idx] = candidate_klass;
-        ctx->tracker->_candidate_depths[candidate_idx] = 1;
-        ctx->tracker->_candidate_found_bits |= (1ULL << candidate_idx);
-        TEST_LOG("ReferenceChainTracker::heapReferenceCallback canary "
-                 "pruned root-referenced candidate %d (tag=%lld)",
-                 candidate_idx, (long long)*tag_ptr);
+        // Do NOT enqueue children for this object.
+        return 0;
       }
     }
   }
@@ -2864,6 +2859,26 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
   // noise for the common idle case.
   if (candidate_count > 0) {
     TEST_LOG("ReferenceChainTracker::pollWatchedTargets candidate_count=%d", candidate_count);
+    // Pre-tag candidates with marker tags so heapReferenceCallback()
+    // can prune at them. This runs here (not in threadLoop()
+    // before shouldRunPass) because selectLeakCandidates() may
+    // return 0 early on (before consecutive_positive reaches the
+    // hysteresis threshold) and only start returning
+    // candidates later, after enough GC epochs.
+    // Use resolveCandidateRepresentative() (re-reads under lock)
+    // instead of candidates[i].representative (stale jweak).
+    if (_candidate_count == 0) {
+      _candidate_count = candidate_count;
+      _candidate_found_bits = 0;
+      // Store the candidate klass IDs set so heapReferenceCallback()
+      // can identify candidates by class_tag without pre-tagging.
+      for (int i = 0; i < candidate_count; i++) {
+        _candidate_tags[i] = (jlong)candidates[i].klass_id;
+      }
+      TEST_LOG("ReferenceChainTracker::pollWatchedTargets canary: %d candidates (by klass_id)",
+               _candidate_count);
+      Counters::increment(REFERENCE_CHAIN_CANDIDATE_COUNT, _candidate_count);
+    }
   }
 
   for (int i = 0; i < candidate_count; i++) {
@@ -2906,11 +2921,10 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
     // pass reached it.
     jlong tag = getTag(jvmti, obj);
 
-    // Canary search: if the candidate was pre-tagged with a marker
-    // tag (negative), use the canary chain reconstruction.
-    if (tag <= MARKER_TAG_BASE) {
-      // This is a canary candidate. Use the per-candidate
-      // chain link recorded at pruning time.
+    // Canary search: if the walk visited this candidate (tag > 0 = frontier
+    // tag assigned by heapReferenceCallback when it pruned at it),
+    // use the canary chain reconstruction.
+    if (tag > 0) {
       bool need_refresh = false;
       _resolved_chains_lock.lock();
       auto it = _resolved_chains.find(klass_id);
@@ -2919,7 +2933,7 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
                       it->second.source_search_ns != current_search_ns);
       _resolved_chains_lock.unlock();
       TEST_LOG("ReferenceChainTracker::pollWatchedTargets canary candidate[%d] "
-               "klass_id=%u marker_tag=%lld needRefresh=%d",
+               "klass_id=%u frontier_tag=%lld needRefresh=%d",
                i, klass_id, (long long)tag, need_refresh);
       if (need_refresh) {
         ReferenceChainEvent event;
@@ -2929,7 +2943,8 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
                  i, built);
         if (built) {
           event._start_time = TSC::ticks();
-          cacheResolvedChain(klass_id, std::move(event), tag,
+          cacheResolvedChain(klass_id, std::move(event),
+                              _candidate_frontier_tags[i],
                               current_search_ns);
         }
       }
