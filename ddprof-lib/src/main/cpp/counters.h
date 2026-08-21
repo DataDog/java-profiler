@@ -135,7 +135,7 @@
   X(SAFEFETCH_FAILED, "safefetch_failed")                                     \
   /* Every siglongjmp recovery, from any protected window, counted centrally  \
    * in Profiler::checkFault(). */                                            \
-  X(STACKWALK_LONGJMP_RECOVERED, "stackwalk_longjmp_recovered")               \   
+  X(STACKWALK_LONGJMP_RECOVERED, "stackwalk_longjmp_recovered")               \
   X(METHOD_RESOLUTION_FAILED, "method_resolution_failed")                     \
   /* Dump-time raw-Method* resolution (HotspotSupport::resolve, reached only  \
    * for cstack=vm + fjmethodid=false frames). NOT additive with               \
