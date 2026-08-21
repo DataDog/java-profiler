@@ -47,11 +47,11 @@ TEST(CollectedHeapAccessorTest, FromVersion25UsesV25PlusLayout) {
     EXPECT_EQ(2ull * 1024 * 1024 * 1024, collectedHeapUsedAtLastGc(&heap, 30));
 }
 
-// Reproduces the exact symptom from PROF-15803: a JDK 25+ CollectedHeap read
-// through the pre-25 layout (i.e. without the version gate) reports its real
-// capacity where used-at-last-gc is expected, because the pre-25 layout is
-// missing the _metaspace_log field the real struct has ahead of these two
-// counters. This is the regression the version gate exists to prevent.
+// Reproduces the reported symptom: a JDK 25+ CollectedHeap read through the
+// pre-25 layout (i.e. without the version gate) reports its real capacity
+// where used-at-last-gc is expected, because the pre-25 layout is missing
+// the _metaspace_log field the real struct has ahead of these two counters.
+// This is the regression the version gate exists to prevent.
 TEST(CollectedHeapAccessorTest, MissingVersionGateMisreadsCapacityAsUsed) {
     CollectedHeapWrapperV25Plus jdk25_heap;
     jdk25_heap._capacity_at_last_gc = 7500ull * 1024 * 1024; // ~7.5GB, observed symptom
