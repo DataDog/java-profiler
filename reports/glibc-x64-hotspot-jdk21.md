@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk21
 
 ## glibc-x64-hotspot-jdk21 - ✅ PASS
 
-**Date:** 2026-08-21 10:44:43 EDT
+**Date:** 2026-08-21 10:47:58 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 441 |
-| Sample Rate | 7.35/sec |
-| Health Score | 459% |
+| CPU Samples | 473 |
+| Sample Rate | 7.88/sec |
+| Health Score | 492% |
 | Threads | 9 |
-| Allocations | 360 |
+| Allocations | 383 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 654 |
-| Sample Rate | 10.90/sec |
-| Health Score | 681% |
-| Threads | 11 |
-| Allocations | 513 |
+| CPU Samples | 565 |
+| Sample Rate | 9.42/sec |
+| Health Score | 589% |
+| Threads | 10 |
+| Allocations | 454 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 76-76 cores)</summary>
 
 ```
-1787323180 76
-1787323185 76
-1787323190 76
-1787323195 76
-1787323200 76
-1787323205 76
-1787323210 76
-1787323215 76
-1787323220 76
-1787323225 76
-1787323230 76
-1787323235 76
-1787323240 76
-1787323245 76
-1787323250 76
-1787323255 76
-1787323260 76
-1787323265 76
-1787323270 76
-1787323275 76
+1787323357 76
+1787323362 76
+1787323367 76
+1787323372 76
+1787323377 76
+1787323382 76
+1787323387 76
+1787323392 76
+1787323397 76
+1787323402 76
+1787323407 76
+1787323412 76
+1787323417 76
+1787323422 76
+1787323427 76
+1787323432 76
+1787323437 76
+1787323442 76
+1787323447 76
+1787323452 76
 ```
 </details>
 
