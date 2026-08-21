@@ -394,16 +394,18 @@ public final class JavaProfiler {
     }
 
     /**
-     * Internal hook called before {@code LockSupport.park}. This remains package-scoped
-     * until PR2 wires production TaskBlock instrumentation.
+     * Internal hook called before {@code LockSupport.park}. Park-specific TaskBlock
+     * production is intentionally separate from the public paired API.
+     *
+     * @return {@code true} when this call owns a park interval that must be closed
      */
-    void parkEnter() {
-        parkEnter0();
+    boolean parkEnter() {
+        return parkEnter0();
     }
 
     /**
      * Internal hook called after {@code LockSupport.park}. Clears the parked flag.
-     * {@code blocker} and {@code unblockingSpanId} are reserved for PR2 TaskBlock use.
+     * {@code blocker} and {@code unblockingSpanId} are reserved for park instrumentation.
      */
     void parkExit(long blocker, long unblockingSpanId) {
         parkExit0(blocker, unblockingSpanId);
@@ -411,7 +413,7 @@ public final class JavaProfiler {
 
     /**
      * Internal hook marking the current platform thread as entering an explicitly instrumented
-     * blocked interval. This is not public API in this PR; production TaskBlock wiring lands in PR2.
+     * blocked interval. The public paired API is {@link #beginTaskBlock()}.
      *
      * @param state native {@code OSThreadState} value for the blocked interval;
      *     currently only {@code SLEEPING} is armed
@@ -426,6 +428,50 @@ public final class JavaProfiler {
      */
     void blockExit(long token) {
         blockExit0(token);
+    }
+
+    /**
+     * Begins an explicitly instrumented {@link Thread#sleep(long) sleeping} interval on the current
+     * platform thread. The resulting {@code TaskBlock} event is classified as {@code SLEEPING}.
+     * The returned token is bound to the current thread and must be passed to {@link
+     * #endTaskBlock(long, long, long)}.
+     *
+     * @return an opaque token, or {@code 0} when the interval could not be armed or the current
+     *         thread is virtual; any non-zero value, including a negative value, is valid
+     */
+    public long beginTaskBlock() {
+        return beginTaskBlock0(Thread.currentThread());
+    }
+
+    /**
+     * Ends a blocking interval created by {@link #beginTaskBlock()} and records its
+     * {@code TaskBlock} event when it satisfies the profiler's eligibility rules.
+     * Lifecycle state is cleared even when no event is recorded.
+     *
+     * @param token opaque token returned by {@link #beginTaskBlock()}; {@code 0} is the only
+     *     invalid sentinel
+     * @param blocker stable identifier describing the blocking resource
+     * @param unblockingSpanId span responsible for unblocking the interval, or {@code 0}
+     * @return {@code true} when an event was recorded; virtual threads always return {@code false}
+     */
+    public boolean endTaskBlock(long token, long blocker, long unblockingSpanId) {
+        return endTaskBlock0(Thread.currentThread(), token, blocker, unblockingSpanId);
+    }
+
+    /**
+     * Test-only hook exercising {@link #beginTaskBlock0} with an explicit {@code thread}, to cover
+     * the rejection path when it does not identify the calling thread.
+     */
+    long beginTaskBlockForThread(Thread thread) {
+        return beginTaskBlock0(thread);
+    }
+
+    /**
+     * Test-only hook exercising {@link #endTaskBlock0} with an explicit {@code thread}, to cover
+     * the rejection path when it does not identify the calling thread.
+     */
+    boolean endTaskBlockForThread(Thread thread, long token, long blocker, long unblockingSpanId) {
+        return endTaskBlock0(thread, token, blocker, unblockingSpanId);
     }
 
     /**
@@ -494,13 +540,18 @@ public final class JavaProfiler {
 
     private static native void recordQueueEnd0(long startTicks, long endTicks, String task, String scheduler, Thread origin, String queueType, int queueLength);
 
-    private static native void parkEnter0();
+    private static native boolean parkEnter0();
 
     private static native void parkExit0(long blocker, long unblockingSpanId);
 
     private static native long blockEnter0(int state);
 
     private static native void blockExit0(long token);
+
+    private static native long beginTaskBlock0(Thread thread);
+
+    private static native boolean endTaskBlock0(Thread thread, long token, long blocker,
+            long unblockingSpanId);
 
     private static native long currentTicks0();
 

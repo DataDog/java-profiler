@@ -31,6 +31,7 @@
 #include "os.h"
 #include "otel_process_ctx.h"
 #include "profiler.h"
+#include "taskBlockRecorder.h"
 #include "threadLocalData.inline.h"
 #include "tsc.h"
 #include "vmEntry.h"
@@ -164,40 +165,6 @@ Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
 
 // some duplication between add and remove, though we want to avoid having an extra branch in the hot path
 
-static ThreadFilter::SlotID ensureCurrentThreadFilterSlot(
-    ThreadFilter *thread_filter, ProfiledThread *current) {
-  int tid = current->tid();
-  if (unlikely(tid < 0)) {
-    return -1;
-  }
-
-  ThreadFilter::SlotID slot_id = current->filterSlotId();
-  if (likely(slot_id >= 0)) {
-    if (likely(thread_filter->activeSlotForId(slot_id, tid) != nullptr)) {
-      return slot_id;
-    }
-    current->setFilterSlotId(-1);
-  }
-
-  // Startup can register this TID centrally, but it cannot update another
-  // pthread's TLS. registerThread(tid) reuses that existing slot.
-  //
-  // This is the only place a JavaCritical fast path (filterThreadAdd0,
-  // parkEnter0, blockEnter0) can block on _registry_lock. It's bounded to at
-  // most once per thread lifetime (cold TLS) plus once per recording-epoch
-  // transition this thread observes (stale cached slot) - not a per-call cost.
-  // THREAD_REGISTRY_JAVACRITICAL_REREGISTRATION makes that bound observable;
-  // if it starts firing per-sample rather than per-thread/per-recording, the
-  // "provably rare" assumption has broken and the JavaCritical dispatch should
-  // be revisited.
-  Counters::increment(THREAD_REGISTRY_JAVACRITICAL_REREGISTRATION);
-  slot_id = thread_filter->registerThread(tid);
-  if (slot_id >= 0) {
-    current->setFilterSlotId(slot_id);
-  }
-  return slot_id;
-}
-
 // JavaCritical is faster JNI, but more restrictive - parameters and return value have to be
 // primitives or arrays of primitive types.
 // We direct corresponding JNI calls to JavaCritical to make sure the parameters/return value
@@ -219,7 +186,7 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
     return;
   }
   
-  int slot_id = ensureCurrentThreadFilterSlot(thread_filter, current);
+  int slot_id = thread_filter->ensureCurrentThreadSlot(current);
   if (unlikely(slot_id < 0)) {
     return;  // Failed to register thread
   }
@@ -227,7 +194,7 @@ JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
     // The cached slot_id was rejected (lazy tid-index fallback failed under
     // this thread's own registry reset race, or the tid index is exhausted).
     // Clear the cache so the next filterThreadAdd0()/parkEnter0()/blockEnter0()
-    // call re-runs ensureCurrentThreadFilterSlot()'s registerThread() path
+    // call re-runs ensureCurrentThreadSlot()'s registerThread() path
     // instead of leaving this thread permanently outside the context window.
     current->setFilterSlotId(-1);
   }
@@ -421,22 +388,23 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
   Profiler::instance()->recordQueueTime(tid, &event);
 }
 
-extern "C" DLLEXPORT void JNICALL
+extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) {
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
   if (current == nullptr) {
-    return;
+    return JNI_FALSE;
   }
 
   bool first_park = current->parkEnter();
   ThreadFilter *tf = Profiler::instance()->threadFilter();
   if (first_park && tf->registryActive()) {
-    ThreadFilter::SlotID slot_id = ensureCurrentThreadFilterSlot(tf, current);
+    ThreadFilter::SlotID slot_id = tf->ensureCurrentThreadSlot(current);
     if (slot_id >= 0) {
       current->setParkBlockToken(
           tf->enterBlockedRun(slot_id, OSThreadState::CONDVAR_WAIT));
     }
   }
+  return first_park ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" DLLEXPORT void JNICALL
@@ -470,6 +438,20 @@ static bool decodeJavaBlockState(jint state, OSThreadState &decoded) {
   return false;
 }
 
+// beginTaskBlock0/endTaskBlock0 accept an explicit jthread for stack-walking and
+// classification; verify it actually identifies the calling thread, since the two
+// could otherwise diverge (e.g. a stale or mismatched jthread handle).
+static bool isCurrentJniThread(JNIEnv* env, jthread thread) {
+  if (thread == nullptr) return false;
+  jthread current_thread = nullptr;
+  if (VM::jvmti()->GetCurrentThread(&current_thread) != JVMTI_ERROR_NONE) {
+    return false;
+  }
+  bool same = env->IsSameObject(thread, current_thread);
+  env->DeleteLocalRef(current_thread);
+  return same;
+}
+
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
     JNIEnv *env, jclass unused, jint state) {
@@ -477,19 +459,22 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
   if (current == nullptr) {
     return 0;
   }
-
   OSThreadState decoded;
   if (!decodeJavaBlockState(state, decoded)) {
     return 0;
   }
-  ThreadFilter *tf = Profiler::instance()->threadFilter();
-  if (!tf->registryActive()) {
+  u64 span_id = 0, root_span_id = 0;
+  ContextApi::get(span_id, root_span_id);
+  if (span_id != 0) {
     return 0;
   }
-  ThreadFilter::SlotID slot_id = ensureCurrentThreadFilterSlot(tf, current);
-  if (slot_id < 0) {
+  Profiler *profiler = Profiler::instance();
+  ThreadFilter *tf = profiler->threadFilter();
+  if (!profiler->taskBlockEnabled() && !tf->registryActive()) {
     return 0;
   }
+  ThreadFilter::SlotID slot_id = tf->ensureCurrentThreadSlot(current);
+  if (slot_id < 0) return 0;
   return static_cast<jlong>(tf->enterBlockedRun(slot_id, decoded));
 }
 
@@ -514,6 +499,69 @@ Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
   if (tf->registryActive()) {
     tf->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(block_token));
   }
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
+    JNIEnv *env, jclass unused, jthread thread) {
+  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
+  Profiler *profiler = Profiler::instance();
+  if (current == nullptr || !profiler->isRunning() ||
+      !profiler->taskBlockEnabled()) {
+    return 0;
+  }
+  ThreadFilter *tf = profiler->threadFilter();
+  if (!tf->unfilteredWallTrackingActive()) return 0;
+  if (!isCurrentJniThread(env, thread)) {
+    Counters::increment(TASK_BLOCK_SKIPPED_THREAD_MISMATCH);
+    return 0;
+  }
+  if (!JVMSupport::isPlatformThread(env, thread)) {
+    return 0;
+  }
+  ThreadFilter::SlotID slot_id = tf->ensureCurrentThreadSlot(current);
+  if (slot_id < 0) return 0;
+
+  Context context = ContextApi::snapshot();
+  if (context.spanId != 0) {
+    Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
+    return 0;
+  }
+  u64 token = tf->enterBlockedRun(
+      slot_id, OSThreadState::SLEEPING, BlockRunOwner::JAVA);
+  if (!current->taskBlockEnter(token, TSC::ticks(), context)) {
+    if (token != 0) {
+      tf->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(token));
+    }
+    return 0;
+  }
+  return static_cast<jlong>(token);
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_endTaskBlock0(
+    JNIEnv *env, jclass unused, jthread thread, jlong token, jlong blocker,
+    jlong unblockingSpanId) {
+  u64 block_token = static_cast<u64>(token);
+  ThreadFilter::SlotID slot_id = -1;
+  u64 generation = 0;
+  if (!ThreadFilter::decodeBlockRunToken(block_token, slot_id, generation)) {
+    return JNI_FALSE;
+  }
+  if (!isCurrentJniThread(env, thread)) {
+    Counters::increment(TASK_BLOCK_SKIPPED_THREAD_MISMATCH);
+    return JNI_FALSE;
+  }
+  if (!JVMSupport::isPlatformThread(env, thread)) {
+    return JNI_FALSE;
+  }
+  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
+  if (current == nullptr) return JNI_FALSE;
+
+  bool recorded = recordTaskBlockAtExit(
+      current, Profiler::instance()->threadFilter(), thread, 1, block_token,
+      static_cast<u64>(blocker), static_cast<u64>(unblockingSpanId));
+  return recorded ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" DLLEXPORT jlong JNICALL
