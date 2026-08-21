@@ -18,9 +18,16 @@
 
 class ProfiledThread;
 class VMMethod;
+class ResolvedNames;
 
 class HotspotSupport {
     friend class JVMSupport;
+    friend class HotspotSupportTestAccessor;
+    // lookupMethodIdViaJni() is a free function (not a HotspotSupport member)
+    // so that HotspotSupport::resolve() can install/tear down crash protection
+    // around it without exposing that split as public API; it still needs
+    // loadMethodIDsIfNeededImpl() for the <clinit> fallback below.
+    friend jmethodID lookupMethodIdViaJni(VMMethod* vm_method, const ResolvedNames& names);
 
 private:
     static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,

@@ -25,6 +25,8 @@
  *   A. ProfiledThread thread-type classification (isJavaThread fast path)
  *   B. Crash-handler nesting depth (ProfiledThread crash handler state)
  *   C. sigjmp_buf chaining across nested/interrupted walkVM() calls
+ *  C2. JmpCtxScope, the RAII form of that protocol (used by
+ *      HotspotSupport::resolve())
  *   F. HotspotSupport::walkJavaStack()'s AsyncSampleMutex release on a
  *      recovered fault
  */
@@ -34,6 +36,7 @@
 #include "profiler.h"
 
 #include "asyncSampleMutex.h"
+#include "guards.h"
 #include "jvmThread.h"
 #include "safeAccess.h"
 #include "os.h"
@@ -325,6 +328,161 @@ TEST_F(JmpCtxChainingTest, FaultInInnerFrameDoesNotDisturbOuterFrame) {
     EXPECT_EQ(1, inner_landed);
     EXPECT_EQ(0, outer_landed) << "the fault must not have unwound past the inner frame";
     EXPECT_FALSE(_pt->isProtected());
+}
+
+// ---------------------------------------------------------------------------
+// C2. JmpCtxScope — the RAII form of the protocol section C tests by hand.
+//
+// HotspotSupport::resolve() uses it; walkVM/walkJavaStack/walkFP/walkDwarf still
+// hand-roll the same save/install/restore. These tests assert the guard
+// reproduces that protocol store-for-store, which is what makes migrating those
+// four call sites a mechanical change rather than a risky one.
+//
+// The class's members are both const by design (guards.h): they are initialised
+// before the owning frame calls sigsetjmp() and are never written afterwards, so
+// reading them from a landing pad is well defined -- unlike a plain non-volatile
+// local assigned in between, whose value after siglongjmp is indeterminate.
+// ---------------------------------------------------------------------------
+
+// Construction only snapshots the current landing pad; it must not arm anything.
+TEST_F(JmpCtxChainingTest, JmpCtxScopeCtorDoesNotInstall) {
+    sigjmp_buf ctx;
+    {
+        JmpCtxScope scope(_pt);
+        EXPECT_FALSE(_pt->isProtected());
+        EXPECT_EQ(nullptr, _pt->getJmpCtx());
+        scope.install(&ctx);
+        EXPECT_EQ(&ctx, _pt->getJmpCtx());
+    }
+    EXPECT_FALSE(_pt->isProtected());
+}
+
+// The whole point of the guard: scope exit reinstates the previous context even
+// though no explicit restore() call was written.
+TEST_F(JmpCtxChainingTest, JmpCtxScopeExitRestoresWithoutExplicitCall) {
+    sigjmp_buf outer;
+    _pt->setJmpCtx(&outer);
+
+    {
+        sigjmp_buf inner;
+        JmpCtxScope scope(_pt);
+        scope.install(&inner);
+        EXPECT_EQ(&inner, _pt->getJmpCtx());
+    }
+
+    EXPECT_EQ(&outer, _pt->getJmpCtx());
+    _pt->setJmpCtx(nullptr);
+}
+
+// restore() and the destructor must be interchangeable and safe to run in
+// sequence: _prev is const, so both make the identical store.
+TEST_F(JmpCtxChainingTest, JmpCtxScopeRestoreThenDtorIsIdempotent) {
+    sigjmp_buf outer;
+    _pt->setJmpCtx(&outer);
+
+    {
+        sigjmp_buf inner;
+        JmpCtxScope scope(_pt);
+        scope.install(&inner);
+        scope.restore();
+        EXPECT_EQ(&outer, _pt->getJmpCtx());
+        scope.restore();  // explicitly redundant
+        EXPECT_EQ(&outer, _pt->getJmpCtx());
+    }  // destructor makes the same store a third time
+
+    EXPECT_EQ(&outer, _pt->getJmpCtx());
+    _pt->setJmpCtx(nullptr);
+}
+
+// Nested scopes must unwind strictly LIFO, each handing back exactly the context
+// that was live when it was constructed.
+TEST_F(JmpCtxChainingTest, JmpCtxScopeNestedScopesUnwindLIFO) {
+    sigjmp_buf outer_ctx;
+    sigjmp_buf inner_ctx;
+
+    {
+        JmpCtxScope outer(_pt);
+        outer.install(&outer_ctx);
+        EXPECT_EQ(&outer_ctx, _pt->getJmpCtx());
+
+        {
+            JmpCtxScope inner(_pt);
+            inner.install(&inner_ctx);
+            EXPECT_EQ(&inner_ctx, _pt->getJmpCtx());
+        }
+
+        EXPECT_EQ(&outer_ctx, _pt->getJmpCtx())
+            << "inner scope must hand the outer's context back";
+    }
+
+    EXPECT_FALSE(_pt->isProtected());
+}
+
+// Real sigsetjmp/siglongjmp: the RAII port of
+// FaultInInnerFrameDoesNotDisturbOuterFrame above.
+TEST_F(JmpCtxChainingTest, JmpCtxScopeFaultInInnerScopeDoesNotDisturbOuter) {
+    sigjmp_buf outer_ctx;
+    int outer_landed = 0;
+    int inner_landed = 0;
+
+    JmpCtxScope outer_scope(_pt);
+    if (sigsetjmp(outer_ctx, 1) != 0) {
+        outer_landed++;
+        outer_scope.restore();
+    } else {
+        outer_scope.install(&outer_ctx);
+
+        // --- inner protected call, interrupted mid-flight by a fault ---
+        {
+            sigjmp_buf inner_ctx;
+            JmpCtxScope inner_scope(_pt);
+            if (sigsetjmp(inner_ctx, 1) != 0) {
+                inner_landed++;
+                inner_scope.restore();
+            } else {
+                inner_scope.install(&inner_ctx);
+                // Simulate checkFault(): siglongjmp through whatever is
+                // installed. This must land in the inner frame, not the outer.
+                siglongjmp(*_pt->getJmpCtx(), 1);
+                FAIL() << "unreachable: siglongjmp does not return";
+            }
+        }
+
+        EXPECT_EQ(&outer_ctx, _pt->getJmpCtx())
+            << "outer frame's context must survive the inner frame's fault";
+        outer_scope.restore();
+    }
+
+    EXPECT_EQ(1, inner_landed);
+    EXPECT_EQ(0, outer_landed) << "the fault must not have unwound past the inner frame";
+    EXPECT_FALSE(_pt->isProtected());
+}
+
+// The failure mode the guard exists to prevent: a landing pad that forgets to
+// disarm. checkFault() would happily jump into a landing pad whose frame has
+// already been popped, so the destructor must cover the omission.
+TEST_F(JmpCtxChainingTest, JmpCtxScopeDestructorAloneRestoresAfterLongjmp) {
+    sigjmp_buf outer;
+    _pt->setJmpCtx(&outer);
+    int landed = 0;
+
+    {
+        sigjmp_buf ctx;
+        JmpCtxScope scope(_pt);
+        if (sigsetjmp(ctx, 1) != 0) {
+            landed++;
+            // Deliberately no scope.restore() here.
+        } else {
+            scope.install(&ctx);
+            siglongjmp(*_pt->getJmpCtx(), 1);
+            FAIL() << "unreachable: siglongjmp does not return";
+        }
+    }
+
+    EXPECT_EQ(1, landed);
+    EXPECT_EQ(&outer, _pt->getJmpCtx())
+        << "destructor must disarm even when the landing pad did not";
+    _pt->setJmpCtx(nullptr);
 }
 
 // ---------------------------------------------------------------------------
