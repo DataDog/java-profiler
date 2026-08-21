@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk25
 
 ## glibc-arm64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-08-21 07:33:14 EDT
+**Date:** 2026-08-21 07:48:12 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 84 |
-| Sample Rate | 1.40/sec |
-| Health Score | 87% |
+| CPU Samples | 135 |
+| Sample Rate | 2.25/sec |
+| Health Score | 141% |
 | Threads | 10 |
-| Allocations | 69 |
+| Allocations | 79 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 682 |
-| Sample Rate | 11.37/sec |
-| Health Score | 711% |
-| Threads | 10 |
-| Allocations | 492 |
+| CPU Samples | 91 |
+| Sample Rate | 1.52/sec |
+| Health Score | 95% |
+| Threads | 14 |
+| Allocations | 38 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 22-22 cores)</summary>
 
 ```
-1787311657 22
-1787311662 22
-1787311667 22
-1787311672 22
-1787311677 22
-1787311682 22
-1787311687 22
-1787311692 22
-1787311697 22
-1787311702 22
-1787311707 22
-1787311712 22
-1787311717 22
-1787311722 22
-1787311727 22
-1787311732 22
-1787311737 22
-1787311742 22
-1787311747 22
-1787311752 22
+1787312654 22
+1787312659 22
+1787312664 22
+1787312669 22
+1787312674 22
+1787312679 22
+1787312684 22
+1787312689 22
+1787312694 22
+1787312699 22
+1787312704 22
+1787312709 22
+1787312714 22
+1787312719 22
+1787312724 22
+1787312729 22
+1787312734 22
+1787312739 22
+1787312744 22
+1787312749 22
 ```
 </details>
 
