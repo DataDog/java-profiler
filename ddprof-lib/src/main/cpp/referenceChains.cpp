@@ -2890,6 +2890,23 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
       continue; // candidate died, or was evicted, since LivenessTracker flagged it
     }
 
+    {
+      jclass obj_klass = jni->GetObjectClass(obj);
+      char *obj_class_name = nullptr;
+      if (obj_klass != nullptr &&
+          jvmti->GetClassSignature(obj_klass, &obj_class_name, nullptr) ==
+              JVMTI_ERROR_NONE &&
+          obj_class_name != nullptr) {
+        TEST_LOG("ReferenceChainTracker::pollWatchedTargets candidate[%d] "
+                 "klass_id=%u class_name=%s",
+                 i, klass_id, obj_class_name);
+        jvmti->Deallocate((unsigned char *)obj_class_name);
+      }
+      if (obj_klass != nullptr) {
+        jni->DeleteLocalRef(obj_klass);
+      }
+    }
+
     // Corrected mechanism (the plan doc's own correction to the design doc's
     // original proposal): a READ, never a SetTag
     // seed. runPass()'s whole-graph walk is the only thing that ever

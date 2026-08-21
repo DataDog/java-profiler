@@ -1882,6 +1882,8 @@ protected:
         jvmti_tbl = jvmtiInterface_1_{};
         jvmti_tbl.SetEventNotificationMode = &mock_SetEventNotificationMode;
         jvmti_tbl.GetTag = &mock_GetTag;
+        jvmti_tbl.GetClassSignature = &mock_GetClassSignature;
+        jvmti_tbl.Deallocate = &mock_Deallocate;
         mock_jvmti.functions = &jvmti_tbl;
         orig_jvmti = VMTestAccessor::getJvmti();
         VMTestAccessor::setJvmti(&mock_jvmti);
@@ -1889,6 +1891,7 @@ protected:
         jni_tbl = JNINativeInterface_{};
         jni_tbl.NewLocalRef = &mock_NewLocalRef;
         jni_tbl.DeleteLocalRef = &mock_DeleteLocalRef;
+        jni_tbl.GetObjectClass = &mock_GetObjectClass;
         mock_jni.functions = &jni_tbl;
     }
 
@@ -1914,6 +1917,30 @@ protected:
 
     static void JNICALL mock_DeleteLocalRef(JNIEnv *, jobject) {
         // no-op: this fixture's fake jobject values are not real JNI refs.
+    }
+
+    // pollWatchedTargets()'s diagnostic class-name lookup on the candidate's
+    // representative: this fixture's fake jobjects carry no real class
+    // identity, so a fixed non-null jclass plus a fixed signature is all
+    // GetObjectClass()/GetClassSignature() need to return for that lookup to
+    // complete without touching a real JVM.
+    static jclass JNICALL mock_GetObjectClass(JNIEnv *, jobject) {
+        return (jclass)0xC1A55;
+    }
+
+    static jvmtiError JNICALL mock_GetClassSignature(jvmtiEnv *, jclass,
+                                                       char **signature_ptr,
+                                                       char **generic_ptr) {
+        *signature_ptr = strdup("Ltest/FakeKlass;");
+        if (generic_ptr != nullptr) {
+            *generic_ptr = nullptr;
+        }
+        return JVMTI_ERROR_NONE;
+    }
+
+    static jvmtiError JNICALL mock_Deallocate(jvmtiEnv *, unsigned char *mem) {
+        free(mem);
+        return JVMTI_ERROR_NONE;
     }
 
     // Seeds LivenessTracker's real population table with a growing series
