@@ -238,6 +238,27 @@ void ThreadFilter::refreshSlotForRecording(Slot* slot, RecordingEpoch epoch) {
     slot->recording_epoch.store(epoch, std::memory_order_release);
 }
 
+// _tid_index is an open-addressing hash table mapping tid -> slot_id, used to
+// dedupe registrations and support fast tid -> slot lookups (lookupSlotIdByTid).
+// Each entry is one of:
+//   0            empty — either never used, or reclaimed from a tombstone by
+//                unindexSlot() once provably safe (see below)
+//  -1            tombstone (previously occupied, now deleted; probing must
+//                continue past it, since a live entry may have landed
+//                further along the same probe chain while this slot was
+//                still occupied)
+//  slot_id + 1   occupied (offset by 1 so slot_id 0 doesn't collide with the
+//                "empty" sentinel)
+// Invariant: a slot holds 0 only when no live entry's probe sequence can ever
+// need to continue past it. indexSlot/unindexSlot/lookupSlotIdByTid all
+// linearly probe from hashTid(tid) & kTidIndexMask, wrapping around the
+// kTidIndexSize-slot table, but stop differently: indexSlot inserts at the
+// first free slot it meets (value <= 0, i.e. empty or tombstone — it doesn't
+// need to search past a tombstone, since callers already deduped via
+// lookupSlotIdByTid under the same lock); lookupSlotIdByTid/unindexSlot must
+// instead treat tombstones as transparent and keep probing past them,
+// stopping only at a true empty slot (value == 0, by the invariant above) or
+// a match.
 bool ThreadFilter::indexSlot(SlotID slot_id, int tid) {
     unsigned start = hashTid(tid) & kTidIndexMask;
     for (int probe = 0; probe < kTidIndexSize; ++probe) {
@@ -265,11 +286,25 @@ void ThreadFilter::unindexSlot(SlotID slot_id, int tid) {
         int value = _tid_index[index].load(std::memory_order_acquire);
         if (value == 0) return;
         if (value == slot_id + 1) {
+            // Deleting `index`: by the invariant above, `next == 0` already
+            // means no live entry needs to probe past `next` — and therefore
+            // none needs to probe past `index` either — so it's safe to clear
+            // `index` straight to 0 instead of leaving a tombstone (-1).
+            // Otherwise `next` is occupied or itself a tombstone, so some
+            // entry may still rely on probing through `index` to reach it;
+            // `index` must stay a tombstone (-1) in that case.
             int next = (index + 1) & kTidIndexMask;
             int replacement =
                 _tid_index[next].load(std::memory_order_acquire) == 0 ? 0 : -1;
             _tid_index[index].store(replacement, std::memory_order_release);
             if (replacement == 0) {
+                // `index` is now 0, satisfying the invariant for it. Walk
+                // backward and reclaim any run of tombstones (-1) immediately
+                // preceding it into 0 too: each such tombstone only needed to
+                // stay non-zero to let probing reach `index` (or beyond), and
+                // that's no longer required now that `index` itself is 0.
+                // This keeps probe chains from growing unboundedly long as
+                // tids churn.
                 int previous = (index - 1) & kTidIndexMask;
                 while (_tid_index[previous].load(std::memory_order_acquire) == -1) {
                     _tid_index[previous].store(0, std::memory_order_release);
@@ -395,7 +430,7 @@ bool ThreadFilter::add(int tid, SlotID slot_id) {
     ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
     if (likely(chunk != nullptr)) {
         Slot& slot = chunk->slots[slot_idx];
-        if (slot.nativeTid() == -1) {
+        if (unlikely(slot.nativeTid() == -1)) {
             std::lock_guard<std::mutex> lock(_registry_lock);
             if (slot.nativeTid() == -1) {
                 // Defensive: mirrors registerThread()'s dedup check. Under the
@@ -693,7 +728,12 @@ bool ThreadFilter::shouldSuppressOwnedBlock(const ThreadEntry& entry) const {
     }
 
     // The payload is spread across independent atomics. Accept it only if the
-    // slot still represents the lifecycle and block run captured by the timer.
+    // slot still represents the lifecycle and block run captured earlier in
+    // this wall-clock timer-thread pass, when `entry` was populated — either
+    // by ThreadFilter::collect() (inside timerLoop()'s collectThreads lambda)
+    // or by the lazy registry lookup at the top of sampleThreadCommon() —
+    // both in wallClock.cpp/.h (BaseWallClock::timerLoopCommon() itself is a
+    // template defined in wallClock.h).
     if (slot->activeBlockOwner() != owner ||
         slot->blockGeneration() != block_generation ||
         slot->nativeTid() != entry.tid ||

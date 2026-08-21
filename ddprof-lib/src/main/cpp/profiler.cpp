@@ -1571,7 +1571,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   const bool track_unfiltered_wall =
       (_event_mask & EM_WALL) != 0 && args._wall_precheck &&
       args._filter != nullptr && args._filter[0] == '\0' &&
-      _wall_engine->supportsUnfilteredWallPrecheck();
+      _wall_engine->supportsUnfilteredThreadRegistryTracking();
   _thread_filter.init(filter, track_unfiltered_wall);
 
   // Unfiltered init resets registrations before publishing registry admission.

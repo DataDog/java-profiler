@@ -28,6 +28,17 @@ struct WallClockCandidateStats {
 // Visits a uniformly randomized prefix without replacement. A precheck rejection
 // is the only outcome that does not consume target capacity. This runs only on
 // the wall-clock timer thread.
+//
+// Randomization matters because ThreadFilter::collect() (the source of
+// `candidates` in unfiltered lazy-backfill mode) always returns registered
+// threads in the same stable order (by chunk/slot index) every timer pass.
+// visit_limit bounds how far into that list we're willing to walk to backfill
+// past PRECHECK_REJECTED candidates, so it will not reach the entire pool when
+// the pool is large. Walking a fixed-order prefix every interval would
+// systematically favor whichever threads happen to sort first (e.g.
+// earliest-registered) and starve others of ever being sampled. Reshuffling
+// the visited prefix each pass instead gives every currently-registered
+// thread roughly equal odds of being sampled over time.
 template <typename T, typename URBG, typename Visitor>
 WallClockCandidateStats selectWallClockCandidates(std::vector<T>& candidates,
                                                   size_t target_size,

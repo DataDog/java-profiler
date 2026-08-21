@@ -15,10 +15,10 @@ TEST(WallPrecheckCapabilityTest, OnlySupportingWallEnginesAdvertiseUnfilteredTra
     WallClockASGCT asgct;
     WallClockJvmti jvmti;
 
-    EXPECT_FALSE(engine.supportsUnfilteredWallPrecheck());
-    EXPECT_FALSE(j9.supportsUnfilteredWallPrecheck());
-    EXPECT_TRUE(asgct.supportsUnfilteredWallPrecheck());
-    EXPECT_TRUE(jvmti.supportsUnfilteredWallPrecheck());
+    EXPECT_FALSE(engine.supportsUnfilteredThreadRegistryTracking());
+    EXPECT_FALSE(j9.supportsUnfilteredThreadRegistryTracking());
+    EXPECT_TRUE(asgct.supportsUnfilteredThreadRegistryTracking());
+    EXPECT_TRUE(jvmti.supportsUnfilteredThreadRegistryTracking());
 }
 
 TEST(WallPrecheckArgsTest, DefaultsToDisabled) {

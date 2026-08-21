@@ -52,8 +52,10 @@ public:
   virtual void stop();
   virtual long interval() const { return 0L; }
 
-  // Whether empty-filter wall prechecks can consume ThreadFilter registry state.
-  virtual bool supportsUnfilteredWallPrecheck() const { return false; }
+  // Whether this engine can keep the ThreadFilter registry populated and
+  // tracked even with no explicit filter (e.g. to support wall-clock
+  // prechecks).
+  virtual bool supportsUnfilteredThreadRegistryTracking() const { return false; }
 
   virtual int registerThread(int tid) { return -1; }
   virtual void unregisterThread(int tid) {}

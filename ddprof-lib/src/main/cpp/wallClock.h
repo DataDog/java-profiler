@@ -228,7 +228,7 @@ class WallClockASGCT : public BaseWallClock {
     const char* name() override {
         return "WallClock (ASGCT)";
     }
-    bool supportsUnfilteredWallPrecheck() const override { return true; }
+    bool supportsUnfilteredThreadRegistryTracking() const override { return true; }
 };
 
 // Wall-clock engine that uses BaseWallClock's pthread reservoir sampling loop
@@ -250,7 +250,7 @@ class WallClockJvmti : public BaseWallClock {
     const char* name() override {
         return "WallClock (JVMTI)";
     }
-    bool supportsUnfilteredWallPrecheck() const override { return true; }
+    bool supportsUnfilteredThreadRegistryTracking() const override { return true; }
 };
 
 #endif // _WALLCLOCK_H

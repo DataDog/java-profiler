@@ -453,22 +453,6 @@ public final class JavaProfiler {
         return counters;
     }
 
-    /**
-     * Test-only hook (debug builds only): forces the next wall-clock engine
-     * start() call to fail. No-op in release builds. For whitebox testing.
-     */
-    public void setForceWallStartFailureForTest(boolean force) {
-        setForceWallStartFailureForTest0(force);
-    }
-
-    /**
-     * Test-only accessor: whether the thread registry currently admits new
-     * registrations. For whitebox testing.
-     */
-    public boolean isThreadRegistryActiveForTest() {
-        return isThreadRegistryActiveForTest0();
-    }
-
     private static native boolean init0();
     private native void stop0() throws IllegalStateException;
     private native String execute0(String command) throws IllegalArgumentException, IllegalStateException, IOException;
@@ -485,10 +469,6 @@ public final class JavaProfiler {
     private static native ByteBuffer getDebugCounters0();
 
     private static native String[] describeDebugCounters0();
-
-    private static native void setForceWallStartFailureForTest0(boolean force);
-
-    private static native boolean isThreadRegistryActiveForTest0();
 
     private static native void recordSettingEvent0(String name, String value, String unit);
 

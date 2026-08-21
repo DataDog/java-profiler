@@ -8,6 +8,7 @@ package com.datadoghq.profiler.wallclock;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.JavaProfilerTestSupport;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -22,7 +23,7 @@ public class UnfilteredWallPrecheckFallbackTest extends AbstractProfilerTest {
   protected void beforeProfilerStart() throws Exception {
     super.beforeProfilerStart();
     // In effect only for this test's start() call; cleared at the top of the test method below.
-    profiler.setForceWallStartFailureForTest(true);
+    JavaProfilerTestSupport.setForceWallStartFailureForTest(true);
   }
 
   @Override
@@ -39,9 +40,9 @@ public class UnfilteredWallPrecheckFallbackTest extends AbstractProfilerTest {
 
   @Test
   public void wallEngineFailureClosesRegistryAdmission() {
-    profiler.setForceWallStartFailureForTest(false);
+    JavaProfilerTestSupport.setForceWallStartFailureForTest(false);
     assertFalse(
-        profiler.isThreadRegistryActiveForTest(),
+        JavaProfilerTestSupport.isThreadRegistryActiveForTest(),
         "wall engine failed to activate in unfiltered-wall-precheck mode; registry admission"
             + " must be closed so unrelated engines (cpu=) don't keep paying registry overhead");
   }
