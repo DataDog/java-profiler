@@ -49,7 +49,11 @@ bool isInTrackedSignalContext() {
     // null ProfiledThread = no thread context; the SignalHandlerScope
     // never ran, so we have no positive evidence of a signal frame.
     // See header comment for the rationale of returning false here.
-    return pt != nullptr && pt->signalDepth() != 0;
+    // `> 0` rather than `!= 0`: a negative depth is a pairing bug (an
+    // unmatched signalHandlerUnwindAfterLongjmp()), not evidence of being in
+    // a signal handler, and must not pin dlopen_hook to the deferred-refresh
+    // path for the rest of the thread's life.
+    return pt != nullptr && pt->signalDepth() > 0;
 }
 
 SignalHandlerScope::SignalHandlerScope(bool shouldRunPriming) : _current(nullptr), _active(true) {
