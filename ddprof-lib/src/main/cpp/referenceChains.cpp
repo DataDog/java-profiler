@@ -1245,6 +1245,8 @@ void ReferenceChainTracker::resolveLoadedClasses(jvmtiEnv *jvmti,
                                                       &name_len)) {
             int id = Profiler::instance()->lookupClass(name_slice, name_len);
             if (id != -1) {
+              TEST_LOG("ReferenceChainTracker::resolveClassMap id=%d name=%.*s",
+                       id, (int)name_len, name_slice);
               // Reuse the existing tag if this class was already tagged by a
               // prior generation - only the resolved id needs refreshing,
               // not the tag identity heapReferenceCallback() keys off of.
@@ -1399,6 +1401,11 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
             ctx->tracker->_candidate_referrer_klasses[i] = klass_id;
             ctx->tracker->_candidate_depths[i] = parent.depth + 1;
             ctx->tracker->_candidate_found_bits |= (1ULL << i);
+            // Persist frontier_tag onto the object itself so
+            // pollWatchedTargets()'s getTag(obj) > 0 check (the only thing
+            // that triggers buildCanaryChainEvent()) can ever see this
+            // candidate as found.
+            *tag_ptr = frontier_tag;
             TEST_LOG("ReferenceChainTracker::heapReferenceCallback canary "
                    "pruned candidate %d (klass_id=%u frontier_tag=%lld)",
                    i, klass_id, (long long)frontier_tag);
@@ -1415,6 +1422,8 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
           ctx->tracker->_candidate_referrer_klasses[i] = klass_id;
           ctx->tracker->_candidate_depths[i] = 1;
           ctx->tracker->_candidate_found_bits |= (1ULL << i);
+          // Same as above: mark the object itself as found.
+          *tag_ptr = frontier_tag;
           TEST_LOG("ReferenceChainTracker::heapReferenceCallback canary "
                    "pruned root-referenced candidate %d (klass_id=%u)",
                    i, klass_id);
