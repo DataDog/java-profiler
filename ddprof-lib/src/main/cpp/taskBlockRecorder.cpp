@@ -42,7 +42,8 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
                            ThreadFilter* thread_filter, jthread thread,
                            int start_depth, u64 block_token, u64 start_ticks,
                            const Context& context, u64 blocker,
-                           u64 unblocking_span_id) {
+                           u64 unblocking_span_id, u64 end_ticks) {
+  if (end_ticks == 0) end_ticks = TSC::ticks();
   Profiler* profiler = Profiler::instance();
   bool recording_enabled = profiler->taskBlockEnabled();
   TaskBlockActivity activity;
@@ -70,6 +71,6 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
   }
 
   return recordTaskBlockIfEligible(
-      current->tid(), thread, start_depth, start_ticks, TSC::ticks(), context,
+      current->tid(), thread, start_depth, start_ticks, end_ticks, context,
       blocker, unblocking_span_id, snapshot.active_state, true);
 }

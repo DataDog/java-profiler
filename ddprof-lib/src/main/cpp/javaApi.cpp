@@ -70,7 +70,8 @@ public:
 };
 
 extern "C" DLLEXPORT jboolean JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_init0(JNIEnv *env, jclass unused) {
+Java_com_datadoghq_profiler_JavaProfiler_init0(
+    JNIEnv *env, jclass unused, jboolean delegateMonitorWaitEvents) {
   Error error = Profiler::instance()->init();
   if (error) {
     throwNew(env, "java/lang/IllegalStateException", error.message());
@@ -79,13 +80,22 @@ Java_com_datadoghq_profiler_JavaProfiler_init0(JNIEnv *env, jclass unused) {
 
 
   // JavaVM* has already been stored when the native library was loaded so we can pass nullptr here
-  if (VM::initProfilerBridge(nullptr, true)) {
-    // Attach ProfiledThread
-    ProfiledThread::initCurrentThreadSignalSafe();
-    return JNI_TRUE;
-  } else {
+  ProfilerBridgeInitResult result =
+      VM::initProfilerBridge(nullptr, true, delegateMonitorWaitEvents);
+  if (result == ProfilerBridgeInitResult::MONITOR_EVENTS_DELEGATION_CONFLICT) {
+    throwNew(env, "java/lang/IllegalStateException",
+             "Monitor-event ownership conflicts with the profiler's "
+             "process-wide initialization");
     return JNI_FALSE;
   }
+  if (result != ProfilerBridgeInitResult::SUCCESS) {
+    throwNew(env, "java/lang/IllegalStateException",
+             "Failed to initialize the profiler bridge");
+    return JNI_FALSE;
+  }
+  // Attach ProfiledThread
+  ProfiledThread::initCurrentThreadSignalSafe();
+  return JNI_TRUE;
 }
 
 extern "C" DLLEXPORT void JNICALL
@@ -108,6 +118,12 @@ Java_com_datadoghq_profiler_JavaProfiler_getTid0(JNIEnv *env, jclass unused) {
   }
 
   return OS::threadId();
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_monitorWaitEventsDelegated0(
+    JNIEnv *env, jclass unused) {
+  return VM::monitorWaitEventsDelegated();
 }
 
 extern "C" DLLEXPORT jstring JNICALL
@@ -389,44 +405,57 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
 }
 
 extern "C" DLLEXPORT jboolean JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) {
+Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
+    JNIEnv *env, jclass unused, jthread thread, jboolean isVirtual) {
+  // Virtuality is resolved once on the Java side; re-deriving it here would cost a
+  // GetVersion() plus an IsVirtualThread() JNI round-trip on every park.
+  if (isVirtual != JNI_FALSE) {
+    return JNI_FALSE;
+  }
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
   if (current == nullptr) {
     return JNI_FALSE;
   }
+  Context context = ContextApi::snapshot();
+  if (!current->parkEnter(TSC::ticks(), context)) {
+    return JNI_FALSE;
+  }
 
-  bool first_park = current->parkEnter();
-  ThreadFilter *tf = Profiler::instance()->threadFilter();
-  if (first_park && tf->registryActive()) {
+  Profiler *profiler = Profiler::instance();
+  ThreadFilter *tf = profiler->threadFilter();
+  if (context.spanId == 0 && tf->registryActive() &&
+      (profiler->taskBlockEnabled() || tf->enabled())) {
     ThreadFilter::SlotID slot_id = tf->ensureCurrentThreadSlot(current);
     if (slot_id >= 0) {
-      current->setParkBlockToken(
-          tf->enterBlockedRun(slot_id, OSThreadState::CONDVAR_WAIT));
+      current->setParkBlockToken(tf->enterBlockedRun(
+          slot_id, OSThreadState::CONDVAR_WAIT, BlockRunOwner::JAVA));
     }
   }
-  return first_park ? JNI_TRUE : JNI_FALSE;
+  return JNI_TRUE;
 }
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_parkExit0(
-    JNIEnv *env, jclass unused, jlong blocker, jlong unblockingSpanId) {
+    JNIEnv *env, jclass unused, jthread thread, jboolean isVirtual,
+    jlong blocker, jlong unblockingSpanId) {
+  if (isVirtual != JNI_FALSE) {
+    return;
+  }
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
   if (current == nullptr) {
     return;
   }
-
+  u64 start_ticks = 0;
   u64 park_block_token = 0;
-  if (!current->parkExit(park_block_token) || park_block_token == 0) {
+  Context context{};
+  if (!current->parkExit(start_ticks, context, park_block_token) ||
+      park_block_token == 0) {
     return;
   }
-  ThreadFilter *tf = Profiler::instance()->threadFilter();
-  if (tf->registryActive()) {
-    ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(park_block_token);
-    if (tf->activeSlotForId(current->filterSlotId(), current->tid()) != nullptr &&
-        current->filterSlotId() == slot_id) {
-      tf->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(park_block_token));
-    }
-  }
+  finishTaskBlockAtExit(current, Profiler::instance()->threadFilter(), thread,
+                        1, park_block_token, start_ticks, context,
+                        static_cast<u64>(blocker),
+                        static_cast<u64>(unblockingSpanId));
 }
 
 static bool decodeJavaBlockState(jint state, OSThreadState &decoded) {
@@ -454,13 +483,14 @@ static bool isCurrentJniThread(JNIEnv* env, jthread thread) {
 
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
-    JNIEnv *env, jclass unused, jint state) {
-  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  if (current == nullptr) {
+    JNIEnv *env, jclass unused, jthread thread, jboolean isVirtual,
+    jint state) {
+  OSThreadState decoded;
+  if (!decodeJavaBlockState(state, decoded) || isVirtual != JNI_FALSE) {
     return 0;
   }
-  OSThreadState decoded;
-  if (!decodeJavaBlockState(state, decoded)) {
+  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
+  if (current == nullptr) {
     return 0;
   }
   u64 span_id = 0, root_span_id = 0;
@@ -480,9 +510,10 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
-    JNIEnv *env, jclass unused, jlong token) {
+    JNIEnv *env, jclass unused, jthread thread, jboolean isVirtual,
+    jlong token) {
   u64 block_token = static_cast<u64>(token);
-  if (block_token == 0) {
+  if (block_token == 0 || isVirtual != JNI_FALSE) {
     return;
   }
 
