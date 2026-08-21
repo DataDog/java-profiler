@@ -827,6 +827,105 @@ TEST_F(ThreadFilterTest, ContextScopeNeverSuppressesOwnedBlock) {
     EXPECT_FALSE(filter->isOwnedBlockSuppressionCandidate(entry));
 }
 
+TEST_F(ThreadFilterTest, OwnedNativeIoSuppressesBeforeAnyWallSample) {
+    filter->init(nullptr, true);
+    int slot_id = filter->registerThread(1234);
+    ASSERT_GE(slot_id, 0);
+    ThreadFilter::Slot* slot = filter->slotForId(slot_id);
+    ASSERT_NE(nullptr, slot);
+    u64 token = filter->enterBlockedRun(
+        slot_id, OSThreadState::IO_WAIT, BlockRunOwner::NATIVE);
+    ASSERT_NE(0ULL, token);
+
+    ThreadEntry entry{1234, slot, slot->lifecycleGeneration(),
+                      slot->recordingEpoch()};
+    u64 generation = ThreadFilter::tokenGeneration(token);
+    EXPECT_EQ(0u, slot->sampledBlockGeneration());
+    EXPECT_TRUE(filter->isOwnedBlockSuppressionCandidate(entry));
+    EXPECT_FALSE(filter->isOwnedBlockSuppressionCandidate(
+        {1235, slot, slot->lifecycleGeneration(), slot->recordingEpoch()}));
+    EXPECT_FALSE(filter->isOwnedBlockSuppressionCandidate(
+        {1234, slot, slot->lifecycleGeneration() + 1,
+         slot->recordingEpoch()}));
+
+    ASSERT_TRUE(filter->exitBlockedRun(slot_id, generation));
+    EXPECT_FALSE(filter->isOwnedBlockSuppressionCandidate(entry));
+}
+
+TEST_F(ThreadFilterTest, ConcurrentNativeExitInvalidatesSuppressionSnapshot) {
+    filter->init(nullptr, true);
+    int slot_id = filter->registerThread(1234);
+    ASSERT_GE(slot_id, 0);
+    ThreadFilter::Slot* slot = filter->slotForId(slot_id);
+    ASSERT_NE(nullptr, slot);
+    u64 token = filter->enterBlockedRun(
+        slot_id, OSThreadState::IO_WAIT, BlockRunOwner::NATIVE);
+    ASSERT_NE(0ULL, token);
+
+    ThreadEntry entry{1234, slot, slot->lifecycleGeneration(),
+                      slot->recordingEpoch()};
+    struct SnapshotPause {
+        std::atomic<bool> reached{false};
+        std::atomic<bool> resume{false};
+    } pause;
+    filter->setSuppressionSnapshotHookForTest(
+        [](void* raw) {
+            SnapshotPause* pause = static_cast<SnapshotPause*>(raw);
+            pause->reached.store(true, std::memory_order_release);
+            while (!pause->resume.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+        },
+        &pause);
+
+    std::atomic<bool> suppressed{true};
+    std::thread reader([&] {
+        suppressed.store(filter->isOwnedBlockSuppressionCandidate(entry),
+                         std::memory_order_release);
+    });
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (!pause.reached.load(std::memory_order_acquire) &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    if (!pause.reached.load(std::memory_order_acquire)) {
+        pause.resume.store(true, std::memory_order_release);
+        reader.join();
+        filter->setSuppressionSnapshotHookForTest(nullptr, nullptr);
+        GTEST_FAIL() << "Suppression reader did not reach the snapshot barrier";
+    }
+
+    EXPECT_TRUE(filter->exitBlockedRun(
+        slot_id, ThreadFilter::tokenGeneration(token)));
+    pause.resume.store(true, std::memory_order_release);
+    reader.join();
+    filter->setSuppressionSnapshotHookForTest(nullptr, nullptr);
+
+    EXPECT_FALSE(suppressed.load(std::memory_order_acquire));
+}
+
+TEST_F(ThreadFilterTest, OwnedJvmtiBlockSuppressesOnlyAfterSuccessfulWallSample) {
+    filter->init(nullptr, true);
+    int slot_id = filter->registerThread(1234);
+    ASSERT_GE(slot_id, 0);
+    ThreadFilter::Slot* slot = filter->slotForId(slot_id);
+    ASSERT_NE(nullptr, slot);
+    u64 token = filter->enterBlockedRun(
+        slot_id, OSThreadState::MONITOR_WAIT, BlockRunOwner::JVMTI);
+    ASSERT_NE(0ULL, token);
+
+    ThreadEntry entry{1234, slot, slot->lifecycleGeneration(),
+                      slot->recordingEpoch()};
+    u64 generation = ThreadFilter::tokenGeneration(token);
+    EXPECT_FALSE(filter->isOwnedBlockSuppressionCandidate(entry));
+
+    slot->markBlockGenerationSampled(generation);
+    EXPECT_TRUE(filter->isOwnedBlockSuppressionCandidate(entry));
+
+    ASSERT_TRUE(filter->exitBlockedRun(slot_id, generation));
+    EXPECT_FALSE(filter->isOwnedBlockSuppressionCandidate(entry));
+}
+
 TEST_F(ThreadFilterTest, ContextEpochDisablesOwnedBlockSuppression) {
     filter->init(nullptr, true);
     int slot_id = filter->registerThread(1234);

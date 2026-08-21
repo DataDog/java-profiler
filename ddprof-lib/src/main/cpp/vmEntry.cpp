@@ -106,7 +106,8 @@ static void monitorBlockEnter(JNIEnv *jni, jthread thread,
     return;
   }
 
-  if (!current->monitorEnter(TSC::ticks(), context, /*blocker=*/0, state)) {
+  u64 start_ticks = TSC::ticks();
+  if (!current->monitorEnter(start_ticks, context, /*blocker=*/0, state)) {
     u64 token = current->monitorBlockToken();
     ThreadFilter *tf = profiler->threadFilter();
     bool current_owner = false;
@@ -126,7 +127,8 @@ static void monitorBlockEnter(JNIEnv *jni, jthread thread,
       return;
     }
     current->clearMonitorBlock();
-    if (!current->monitorEnter(TSC::ticks(), context, /*blocker=*/0, state)) {
+    start_ticks = TSC::ticks();
+    if (!current->monitorEnter(start_ticks, context, /*blocker=*/0, state)) {
       return;
     }
   }
@@ -144,6 +146,13 @@ static void monitorBlockEnter(JNIEnv *jni, jthread thread,
     if (slot != nullptr && slot->inContextWindow()) {
       Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
     }
+    current->clearMonitorBlock();
+    return;
+  }
+  if (!profiler->registerTaskBlockRun(
+          slot_id, ThreadFilter::tokenGeneration(token), current->tid(),
+          start_ticks, context, /*blocker=*/0, state)) {
+    tf->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(token));
     current->clearMonitorBlock();
     return;
   }

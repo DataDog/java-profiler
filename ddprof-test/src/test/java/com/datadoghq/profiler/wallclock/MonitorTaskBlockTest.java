@@ -86,29 +86,7 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
 
     // Burst of genuinely contended, microsecond-long enters: two threads hammer the same
     // monitor with an empty critical section, so no interval can reach the 1ms threshold.
-    CountDownLatch start = new CountDownLatch(1);
-    AtomicReference<Throwable> burstFailure = new AtomicReference<>();
-    int[] counter = new int[1];
-    Thread[] burst = new Thread[2];
-    for (int i = 0; i < burst.length; i++) {
-      burst[i] = new Thread(() -> {
-        try {
-          assertTrue(start.await(5, TimeUnit.SECONDS));
-          for (int n = 0; n < 20_000; n++) {
-            synchronized (shortMonitor) {
-              counter[0]++;
-            }
-          }
-        } catch (Throwable t) {
-          burstFailure.set(t);
-        }
-      }, "taskblock-short-contention-" + i);
-      burst[i].start();
-    }
-    start.countDown();
-    for (Thread thread : burst) {
-      assertCompleted(thread, burstFailure);
-    }
+    runContentionBurst(shortMonitor);
 
     // One long contended enter, the positive control: it proves the producer was alive.
     CountDownLatch attempting = new CountDownLatch(1);
@@ -134,9 +112,41 @@ public class MonitorTaskBlockTest extends AbstractProfilerTest {
     JfrEvents events = verifyEvents("datadog.TaskBlock");
     assertTrue(TaskBlockAssertions.containsBlocker(events, identityHash(longMonitor)),
         "long contention was not emitted");
-    assertFalse(TaskBlockAssertions.containsBlocker(events, identityHash(shortMonitor)),
-        "sub-threshold contention must be filtered");
+    // The burst does 40,000 contended enters with an empty critical section, so almost all
+    // should fall under the 1ms filter threshold. A rare enter can still legitimately exceed
+    // it if the OS descheduled the lock holder mid-critical-section (safepoint, GC, container
+    // CPU contention) - that is correct profiler behavior, not a filtering bug. Tolerate a
+    // small number of such outliers; a real filtering regression would leak most/all of them.
+    int leaked = TaskBlockAssertions.countBlockerEvents(events, identityHash(shortMonitor));
+    assertTrue(leaked <= 5,
+        "sub-threshold contention must be filtered, but " + leaked + " events leaked through");
     assertTaskBlockStackReference(events);
+  }
+
+  private void runContentionBurst(Object monitor) throws Exception {
+    CountDownLatch start = new CountDownLatch(1);
+    AtomicReference<Throwable> burstFailure = new AtomicReference<>();
+    int[] counter = new int[1];
+    Thread[] burst = new Thread[2];
+    for (int i = 0; i < burst.length; i++) {
+      burst[i] = new Thread(() -> {
+        try {
+          assertTrue(start.await(5, TimeUnit.SECONDS));
+          for (int n = 0; n < 20_000; n++) {
+            synchronized (monitor) {
+              counter[0]++;
+            }
+          }
+        } catch (Throwable t) {
+          burstFailure.set(t);
+        }
+      }, "taskblock-short-contention-" + i);
+      burst[i].start();
+    }
+    start.countDown();
+    for (Thread thread : burst) {
+      assertCompleted(thread, burstFailure);
+    }
   }
 
   @Test

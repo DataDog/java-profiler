@@ -1,9 +1,15 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #ifdef __linux__
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include "codeCache.h"
+#include "common.h"
 #include "libraries.h"
 #include "symbols.h"
 #include "symbols_linux.h"
@@ -116,6 +122,22 @@ TEST_F(ElfReladyn, resolveFromRela_dyn_R_GLOB_DAT) {
 TEST_F(ElfReladyn, resolveFromRela_dyn_R_ABS64) {
     void* sym = libreladyn()->findImport(im_pthread_exit);
     ASSERT_THAT(sym, ::testing::NotNull());
+}
+
+TEST_F(ElfReladyn, resolvesEveryLocationForTheSameImport) {
+    ASSERT_EQ(3u, libreladyn()->importCount(im_read));
+
+    void** first = libreladyn()->findImport(im_read, 0);
+    void** second = libreladyn()->findImport(im_read, 1);
+    void** third = libreladyn()->findImport(im_read, 2);
+
+    ASSERT_THAT(first, ::testing::NotNull());
+    ASSERT_THAT(second, ::testing::NotNull());
+    ASSERT_THAT(third, ::testing::NotNull());
+    EXPECT_NE(first, second);
+    EXPECT_NE(first, third);
+    EXPECT_NE(second, third);
+    EXPECT_THAT(libreladyn()->findImport(im_read, 3), ::testing::IsNull());
 }
 
 class ElfTest : public ::testing::Test {
@@ -319,6 +341,12 @@ INSTANTIATE_TEST_SUITE_P(
 
 #else
 TEST_P(ElfTestParam, invalidElfSmallMappingAfterUnmap) {
+#if defined(TSAN_ENABLED)
+    // This stress test deliberately overlaps dlclose's writes to the DSO mapping
+    // with ELF parser reads. That intentional test mechanism is a data race, so
+    // TSan must report it even when the mapping remains valid for the read.
+    GTEST_SKIP() << "concurrent dlclose stress is incompatible with TSan";
+#endif
     char cwd[PATH_MAX - 64];
     if (getcwd(cwd, sizeof(cwd)) == nullptr) {
         exit(1);

@@ -99,6 +99,48 @@ TEST_F(TaskBlockRecorderTest, RotationRejectsNewActivity) {
   profiler->leaveTaskBlockActivity();
 }
 
+TEST_F(TaskBlockRecorderTest, RunRegistryPreservesFirstAnchorAndResetsAtBoundary) {
+  Profiler* profiler = Profiler::instance();
+  bool previous = profiler->setTaskBlockEnabledForTest(true);
+  constexpr ThreadFilter::SlotID slot_id = 7;
+  constexpr u64 generation = 42;
+  Context context{};
+  context.rootSpanId = 123;
+
+  ASSERT_TRUE(profiler->registerTaskBlockRun(
+      slot_id, generation, 999, 1000, context, 0,
+      OSThreadState::SLEEPING));
+  profiler->recordTaskBlockAnchor(slot_id, generation, 111, 0);
+  profiler->recordTaskBlockAnchor(slot_id, generation, 222, 0);
+  EXPECT_EQ(111ULL, profiler->taskBlockRunCallTraceForTest(slot_id));
+  EXPECT_EQ(0ULL, profiler->taskBlockRunCorrelationForTest(slot_id));
+
+  profiler->commitTaskBlockBoundaryForTest(2000);
+  EXPECT_EQ(generation, profiler->taskBlockRunGenerationForTest(slot_id));
+  EXPECT_EQ(2000ULL, profiler->taskBlockRunSegmentStartForTest(slot_id));
+  EXPECT_EQ(0ULL, profiler->taskBlockRunCallTraceForTest(slot_id));
+
+  profiler->recordTaskBlockAnchor(slot_id, generation, 0, 333);
+  EXPECT_EQ(333ULL, profiler->taskBlockRunCorrelationForTest(slot_id));
+  profiler->completeTaskBlockRun(slot_id, generation, 2500, 17, 19);
+  EXPECT_EQ(2500ULL, profiler->taskBlockRunEndForTest(slot_id));
+  profiler->clearTaskBlockRun(slot_id, generation);
+  EXPECT_EQ(0ULL, profiler->taskBlockRunGenerationForTest(slot_id));
+  profiler->setTaskBlockEnabledForTest(previous);
+}
+
+TEST_F(TaskBlockRecorderTest, RunRegistryRejectsEntryDuringRotation) {
+  Profiler* profiler = Profiler::instance();
+  bool previous = profiler->setTaskBlockEnabledForTest(true);
+  profiler->beginTaskBlockRotationForTest();
+  Context context{};
+  EXPECT_FALSE(profiler->registerTaskBlockRun(
+      8, 43, 1000, 100, context, 0, OSThreadState::SLEEPING));
+  EXPECT_EQ(0ULL, profiler->taskBlockRunGenerationForTest(8));
+  profiler->endTaskBlockRotationForTest();
+  profiler->setTaskBlockEnabledForTest(previous);
+}
+
 TEST_F(TaskBlockRecorderTest, RotationWaitsForInflightActivity) {
   Profiler* profiler = Profiler::instance();
   ASSERT_TRUE(profiler->tryEnterTaskBlockActivity());

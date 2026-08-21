@@ -9,6 +9,7 @@
 #include "common.h"
 #include "context.h"
 #include "nativeMem.h"
+#include "context_api.h"
 #include "otel_context.h"
 #include "os.h"
 #include "threadLocal.h"
@@ -58,6 +59,10 @@ public:
   static constexpr u32 FLAG_PARKED = 0x4u; // next free bit after TYPE_MASK (0x1|0x2)
   static constexpr u32 FLAG_CLAIMED = 0x8u; // Used by ThreadLocalDataPool only
   static constexpr u32 FLAG_MONITOR_BLOCKED = 0x10u;
+  // Set once at JVMTI ThreadStart for threads whose runtime class is
+  // jdk.internal.misc.InnocuousThread (e.g. Read-Poller/Write-Poller,
+  // Common-Cleaner): JDK housekeeping threads, never application "task" work.
+  static constexpr u32 FLAG_JVM_INTERNAL_THREAD = 0x20u;
 
   // We are allowing several levels of nesting because we can be
   // eg. in a crash handler when wallclock signal kicks in,
@@ -410,6 +415,18 @@ public:
     return static_cast<ThreadType>(flags & TYPE_MASK);
   }
 
+  inline void setJvmInternalThread(bool is_internal) {
+    if (is_internal) {
+      __atomic_fetch_or(&_misc_flags, FLAG_JVM_INTERNAL_THREAD, __ATOMIC_RELEASE);
+    } else {
+      __atomic_fetch_and(&_misc_flags, ~FLAG_JVM_INTERNAL_THREAD, __ATOMIC_ACQ_REL);
+    }
+  }
+
+  inline bool isJvmInternalThread() const {
+    return (__atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE) & FLAG_JVM_INTERNAL_THREAD) != 0;
+  }
+
   // JFR tag encoding sidecar — populated by JNI thread, read by signal handler
   // (flightRecorder.cpp writeCurrentContext / wallClock.cpp collapsing).
   inline u32* getOtelTagEncodingsPtr() { return _otel_tag_encodings; }
@@ -422,6 +439,25 @@ public:
     memset(_otel_tag_encodings, 0, sizeof(_otel_tag_encodings));
     _otel_local_root_span_id = 0;
   }
+
+#ifdef UNIT_TEST
+  void setContextForTest(u64 span_id, u64 root_span_id) {
+    ContextApi::initializeContextTLS(this);
+    for (int i = 7; i >= 0; i--) {
+      _otel_ctx_record.span_id[i] = static_cast<uint8_t>(span_id & 0xff);
+      span_id >>= 8;
+    }
+    _otel_local_root_span_id = root_span_id;
+    __atomic_store_n(&_otel_ctx_record.valid, 1, __ATOMIC_RELEASE);
+  }
+
+  void clearContextForTest() {
+    if (_otel_ctx_initialized) {
+      __atomic_store_n(&_otel_ctx_record.valid, 0, __ATOMIC_RELEASE);
+    }
+    clearOtelSidecar();
+  }
+#endif
 
   inline bool parkEnter(u64 start_ticks, const Context& context) {
     u32 flags = __atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE);
