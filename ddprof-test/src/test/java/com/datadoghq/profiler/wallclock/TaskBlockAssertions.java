@@ -39,6 +39,16 @@ final class TaskBlockAssertions {
     return false;
   }
 
+  static int countBlockerEvents(JfrEvents events, long blocker) {
+    int count = 0;
+    for (JfrEvent item : events) {
+      if (item.getLong(BLOCKER, Long.MIN_VALUE) == blocker) {
+        count++;
+      }
+    }
+    return count;
+  }
+
   static void assertContains(JfrEvents events, long rootSpanId, long spanId,
       long blocker, long unblockingSpanId) {
     for (JfrEvent item : events) {

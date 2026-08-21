@@ -83,6 +83,31 @@ static ITimerJvmti itimer_jvmti;
 static CTimer ctimer;
 static CTimerJvmti ctimer_jvmti;
 
+// jdk.internal.misc.InnocuousThread is the JDK's own marker class for its
+// security-context-free housekeeping threads (Read-Poller/Write-Poller,
+// Common-Cleaner, VirtualThread-unblocker). These are JVM plumbing, never
+// application "task" work, so TaskBlock producers must not attribute
+// blocking activity to them.
+static bool isJvmInternalThread(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
+  jclass cls = jni->GetObjectClass(thread);
+  if (cls == nullptr) {
+    if (jni->ExceptionCheck()) {
+      jni->ExceptionClear();
+    }
+    return false;
+  }
+  char *sig = nullptr;
+  bool result = false;
+  if (jvmti->GetClassSignature(cls, &sig, nullptr) == 0 && sig != nullptr) {
+    result = strcmp(sig, "Ljdk/internal/misc/InnocuousThread;") == 0;
+  }
+  if (sig != nullptr) {
+    jvmti->Deallocate(reinterpret_cast<unsigned char *>(sig));
+  }
+  jni->DeleteLocalRef(cls);
+  return result;
+}
+
 void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   // JVMTI callback - outside signal handler
   ProfiledThread* current = ProfiledThread::initCurrentThreadSignalSafe();
@@ -91,6 +116,7 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
   }
 
   current->setJavaThread(true);
+  current->setJvmInternalThread(thread != NULL && isJvmInternalThread(jvmti, jni, thread));
   int tid = current->tid();
   // Java lifecycle callbacks own registry allocation. The wall timer only
   // looks up these entries and must never allocate slots for arbitrary OS

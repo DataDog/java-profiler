@@ -58,10 +58,11 @@ public:
   OSThreadState _thread_state;
   ExecutionMode _execution_mode;
   u64 _weight;
+  u64 _call_trace_id;
 
   ExecutionEvent()
       : Event(), _thread_state(OSThreadState::RUNNABLE), _execution_mode(ExecutionMode::UNKNOWN),
-        _weight(1) {}
+        _weight(1), _call_trace_id(0) {}
 };
 
 class AllocEvent : public Event {

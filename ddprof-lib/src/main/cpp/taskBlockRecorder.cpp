@@ -71,7 +71,7 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
     return false;
   }
   if (!snapshot.context_eligible) {
-    Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
+    Counters::increment(TASK_BLOCK_SKIPPED_CONTEXT_WINDOW);
     profiler->clearTaskBlockRun(slot_id, generation);
     return false;
   }

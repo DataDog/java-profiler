@@ -59,6 +59,12 @@ NativeBlockScope::NativeBlockScope(NativeBlockKind kind, int blocker_id,
     return;
   }
 
+  if (current->isJvmInternalThread()) {
+    Counters::increment(TASK_BLOCK_SKIPPED_JVM_INTERNAL_THREAD);
+    errno = saved_errno;
+    return;
+  }
+
   ThreadFilter::SlotID slot_id = current->filterSlotId();
   if (slot_id < 0) {
     errno = saved_errno;

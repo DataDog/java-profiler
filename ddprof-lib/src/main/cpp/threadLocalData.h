@@ -59,6 +59,10 @@ public:
   static constexpr u32 FLAG_PARKED = 0x4u; // next free bit after TYPE_MASK (0x1|0x2)
   static constexpr u32 FLAG_CLAIMED = 0x8u; // Used by ThreadLocalDataPool only
   static constexpr u32 FLAG_MONITOR_BLOCKED = 0x10u;
+  // Set once at JVMTI ThreadStart for threads whose runtime class is
+  // jdk.internal.misc.InnocuousThread (e.g. Read-Poller/Write-Poller,
+  // Common-Cleaner): JDK housekeeping threads, never application "task" work.
+  static constexpr u32 FLAG_JVM_INTERNAL_THREAD = 0x20u;
 
   // We are allowing several levels of nesting because we can be
   // eg. in a crash handler when wallclock signal kicks in,
@@ -409,6 +413,18 @@ public:
   inline enum ThreadType threadType() const {
     u32 flags = __atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE);
     return static_cast<ThreadType>(flags & TYPE_MASK);
+  }
+
+  inline void setJvmInternalThread(bool is_internal) {
+    if (is_internal) {
+      __atomic_fetch_or(&_misc_flags, FLAG_JVM_INTERNAL_THREAD, __ATOMIC_RELEASE);
+    } else {
+      __atomic_fetch_and(&_misc_flags, ~FLAG_JVM_INTERNAL_THREAD, __ATOMIC_ACQ_REL);
+    }
+  }
+
+  inline bool isJvmInternalThread() const {
+    return (__atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE) & FLAG_JVM_INTERNAL_THREAD) != 0;
   }
 
   // JFR tag encoding sidecar — populated by JNI thread, read by signal handler

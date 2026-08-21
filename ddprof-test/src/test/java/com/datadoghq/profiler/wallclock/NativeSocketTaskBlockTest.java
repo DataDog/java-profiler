@@ -252,6 +252,12 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
             assertCompleted(virtual, error);
         }
 
+        // Positive control: a platform thread blocking on the same native path proves the
+        // producer is alive, so the check below isn't vacuously true. Virtual-thread I/O alone
+        // legitimately emits no TaskBlock: it never enters epoll_wait itself, and the JDK's
+        // internal Read-Poller thread that does is excluded from attribution.
+        runBlockingSocketReadOnce();
+
         stopProfiler();
         JfrEvents taskBlocks = verifyEvents("datadog.TaskBlock");
         long virtualThreadId = virtualThreadRef.get().getId();
@@ -313,6 +319,58 @@ public class NativeSocketTaskBlockTest extends AbstractProfilerTest {
                 "Traced socket I/O must retain MethodSample wall-clock data for the worker");
         assertTrue(TaskBlockAssertions.containsSpan(methodSamples, 0x5101L),
                 "Traced socket MethodSample must retain its span context");
+    }
+
+    @Test
+    public void virtualThreadReadPollerDoesNotEmitTaskBlock() throws Exception {
+        Method startVirtualThread;
+        try {
+            startVirtualThread = Thread.class.getMethod("startVirtualThread", Runnable.class);
+        } catch (NoSuchMethodException unavailableBeforeJdk21) {
+            Assumptions.assumeTrue(false, "virtual threads require JDK 21");
+            return;
+        }
+
+        CountDownLatch readAttempted = new CountDownLatch(1);
+        AtomicReference<Throwable> error = new AtomicReference<>();
+
+        try (ServerSocket server = new ServerSocket(0)) {
+            Runnable task = () -> {
+                try {
+                    try (Socket socket = new Socket("127.0.0.1", server.getLocalPort())) {
+                        InputStream input = socket.getInputStream();
+                        readAttempted.countDown();
+                        int value = input.read();
+                        if (value != 1) {
+                            throw new AssertionError("unexpected socket byte: " + value);
+                        }
+                    }
+                } catch (Throwable t) {
+                    error.set(t);
+                }
+            };
+            // Starting a virtual thread that performs blocking socket I/O causes the JDK
+            // to spin up its internal Read-Poller (jdk.internal.misc.InnocuousThread), which
+            // then loops calling epoll_wait for the remainder of the JVM's lifetime.
+            Thread virtual = (Thread) startVirtualThread.invoke(null, task);
+            try (Socket accepted = server.accept()) {
+                assertTrue(readAttempted.await(5, TimeUnit.SECONDS), "reader did not enter socket read");
+                Thread.sleep(BLOCK_HOLD_MILLIS);
+                OutputStream output = accepted.getOutputStream();
+                output.write(1);
+                output.flush();
+            }
+            assertCompleted(virtual, error);
+        }
+
+        // Give Read-Poller a chance to cycle through epoll_wait a few times while the
+        // profiler is still running, so a pre-fix build would have emitted TaskBlocks for it.
+        Thread.sleep(BLOCK_HOLD_MILLIS);
+
+        stopProfiler();
+        JfrEvents taskBlocks = verifyEvents("datadog.TaskBlock", false);
+        assertFalse(TaskBlockAssertions.containsEventThread(taskBlocks, "Read-Poller"),
+                "JDK-internal Read-Poller thread must not emit TaskBlock events");
     }
 
     @Override

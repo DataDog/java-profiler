@@ -424,7 +424,8 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
 
   Profiler *profiler = Profiler::instance();
   ThreadFilter *tf = profiler->threadFilter();
-  if (context.spanId == 0 && tf->registryActive() &&
+  if (context.spanId == 0 && !current->isJvmInternalThread() &&
+      tf->registryActive() &&
       (profiler->taskBlockEnabled() || tf->enabled())) {
     ThreadFilter::SlotID slot_id = tf->ensureCurrentThreadSlot(current);
     if (slot_id >= 0) {
@@ -440,6 +441,8 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(
         tf->exitBlockedRun(slot_id, ThreadFilter::tokenGeneration(token));
       }
     }
+  } else if (context.spanId == 0 && current->isJvmInternalThread()) {
+    Counters::increment(TASK_BLOCK_SKIPPED_JVM_INTERNAL_THREAD);
   }
   return JNI_TRUE;
 }
@@ -503,6 +506,10 @@ Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
   if (current == nullptr) {
     return 0;
   }
+  if (current->isJvmInternalThread()) {
+    Counters::increment(TASK_BLOCK_SKIPPED_JVM_INTERNAL_THREAD);
+    return 0;
+  }
   u64 span_id = 0, root_span_id = 0;
   ContextApi::get(span_id, root_span_id);
   if (span_id != 0) {
@@ -549,6 +556,10 @@ Java_com_datadoghq_profiler_JavaProfiler_beginTaskBlock0(
   Profiler *profiler = Profiler::instance();
   if (current == nullptr || !profiler->isRunning() ||
       !profiler->taskBlockEnabled()) {
+    return 0;
+  }
+  if (current->isJvmInternalThread()) {
+    Counters::increment(TASK_BLOCK_SKIPPED_JVM_INTERNAL_THREAD);
     return 0;
   }
   ThreadFilter *tf = profiler->threadFilter();

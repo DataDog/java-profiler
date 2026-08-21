@@ -166,6 +166,20 @@ TEST_F(NativeBlockScopeTest, NonJavaThreadGateLeavesScopeInactiveAndPreservesErr
   EXPECT_EQ(E2BIG, errno);
 }
 
+TEST_F(NativeBlockScopeTest, JvmInternalThreadGateLeavesScopeInactiveAndPreservesErrno) {
+  CurrentThreadScope current;
+  ScopedTaskBlockEnabled task_block_enabled(true);
+  registerCurrentJavaThread(current.thread());
+  current.thread()->setJvmInternalThread(true);
+
+  errno = E2BIG;
+  NativeBlockScope scope(NativeBlockKind::STREAM_SOCKET, 17);
+
+  EXPECT_FALSE(scope.active());
+  EXPECT_EQ(E2BIG, errno);
+  EXPECT_EQ(1, Counters::getCounter(TASK_BLOCK_SKIPPED_JVM_INTERNAL_THREAD));
+}
+
 TEST_F(NativeBlockScopeTest, MissingSlotGateLeavesScopeInactiveAndPreservesErrno) {
   CurrentThreadScope current;
   ScopedTaskBlockEnabled task_block_enabled(true);
