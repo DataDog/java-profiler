@@ -51,18 +51,52 @@ public:
 };
 
 /**
- * This class only defines a layout compatible with the JDKs CollectedHeap
- * class and particularly its subclasses
+ * These classes only define layouts compatible with the JDKs CollectedHeap
+ * class and particularly its subclasses.
+ *
+ * JDK-8356848 ("Separate Metaspace and GC printing"), first released in
+ * JDK 25, inserted a new GCMetaspaceLog* field between the heap-log pointer
+ * and the historic capacity/used-at-last-gc fields, shifting the latter by
+ * one pointer width on 64-bit builds. CollectedHeapWrapperPre25 matches the
+ * layout on JDK <= 24; CollectedHeapWrapperV25Plus matches JDK 25+.
  */
-class CollectedHeapWrapper {
+class CollectedHeapWrapperPre25 {
 private:
   void *vptr; // only 1-st level subclasses are used so we need to define the
               // 'synthetic' vptr field here
-  void *_gc_heap_log; // ignored
+  void *_gc_heap_log; // GCHeapLog* _heap_log; ignored
 public:
   // Historic gc information
   size_t _capacity_at_last_gc;
   size_t _used_at_last_gc;
 };
+
+class CollectedHeapWrapperV25Plus {
+private:
+  void *vptr;
+  void *_gc_heap_log;  // GCHeapLog* _heap_log; ignored
+  void *_metaspace_log; // GCMetaspaceLog* _metaspace_log (added by JDK-8356848); ignored
+public:
+  // Historic gc information
+  size_t _capacity_at_last_gc;
+  size_t _used_at_last_gc;
+};
+
+// First HotSpot version carrying JDK-8356848's CollectedHeap layout change.
+const int COLLECTED_HEAP_METASPACE_LOG_MIN_VERSION = 25;
+
+inline size_t collectedHeapUsedAtLastGc(void *collected_heap, int hotspot_version) {
+  if (hotspot_version >= COLLECTED_HEAP_METASPACE_LOG_MIN_VERSION) {
+    return ((CollectedHeapWrapperV25Plus *)collected_heap)->_used_at_last_gc;
+  }
+  return ((CollectedHeapWrapperPre25 *)collected_heap)->_used_at_last_gc;
+}
+
+inline size_t collectedHeapCapacityAtLastGc(void *collected_heap, int hotspot_version) {
+  if (hotspot_version >= COLLECTED_HEAP_METASPACE_LOG_MIN_VERSION) {
+    return ((CollectedHeapWrapperV25Plus *)collected_heap)->_capacity_at_last_gc;
+  }
+  return ((CollectedHeapWrapperPre25 *)collected_heap)->_capacity_at_last_gc;
+}
 
 #endif // _JVMHEAP_H

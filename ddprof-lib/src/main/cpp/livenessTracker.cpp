@@ -15,6 +15,7 @@
 #include "context.h"
 #include "context_api.h"
 #include "hotspot/vmStructs.h"
+#include "hotspot/vmStructs.inline.h"
 #include "incbin.h"
 #include "jniHelper.h"
 #include "livenessTracker.h"
@@ -222,7 +223,7 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
             klass_id = _table[target].cached_klass_id;
           }
           if (klass_id != 0) {
-            accumulateKlassCount(klass_id, _table[target].ref);
+            accumulateKlassCount(klass_id, _table[target].age, _table[target].ref);
           }
         }
       } else {
@@ -284,19 +285,32 @@ u32 LivenessTracker::resolveKlassId(JNIEnv *env, jobject ref) {
   return id;
 }
 
-void LivenessTracker::accumulateKlassCount(u32 klass_id, jweak sample_source) {
+void LivenessTracker::accumulateKlassCount(u32 klass_id, jlong age, jweak sample_source) {
+  // Count distinct GC ages (generations) per klass: group surviving
+  // tracked objects by klass, then for each klass count the
+  // number of unique age values. This is the "generation
+  // count" — if new instances keep arriving while old ones
+  // survive, the number of distinct ages grows.
   for (int i = 0; i < _klass_count_scratch_size; i++) {
     if (_klass_count_scratch[i].klass_id == klass_id) {
-      if (_klass_count_scratch[i].count < UINT32_MAX) {
-        _klass_count_scratch[i].count++;
+      // Track distinct ages in a small sorted set.
+      // MAX_KLASS_POPULATION_ENTRIES is 256, so at most 256 ages
+      // per klass per epoch — a linear scan over the scratch entry's
+      // age set is cheap.
+      auto &entry = _klass_count_scratch[i];
+      for (u32 a : entry.ages) {
+        if (a == (u32)age) {
+          return; // age already counted
+        }
       }
+      entry.ages.push_back((u32)age);
       return;
     }
   }
   if (_klass_count_scratch_size < MAX_KLASS_POPULATION_ENTRIES) {
     KlassCountScratch &slot = _klass_count_scratch[_klass_count_scratch_size++];
     slot.klass_id = klass_id;
-    slot.count = 1;
+    slot.ages.push_back((u32)age);
     slot.sample_source = sample_source;
   }
   // else: this epoch's scratch snapshot already holds
@@ -383,11 +397,11 @@ void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch,
            (unsigned long long)epoch, _klass_count_scratch_size);
   for (int i = 0; i < _klass_count_scratch_size; i++) {
     KlassCountScratch &s = _klass_count_scratch[i];
-    TEST_LOG("LivenessTracker::foldKlassCountsLocked scratch[%d] klass_id=%u count=%u", i,
-             s.klass_id, s.count);
+    TEST_LOG("LivenessTracker::foldKlassCountsLocked scratch[%d] klass_id=%u gen_count=%zu", i,
+             s.klass_id, s.ages.size());
     int slot;
     bool created;
-    jweak evicted = recordKlassPopulationSampleLocked(s.klass_id, s.count,
+    jweak evicted = recordKlassPopulationSampleLocked(s.klass_id, (u32)s.ages.size(),
                                                        epoch, &slot, &created);
     if (evicted != nullptr) {
       env->DeleteWeakGlobalRef(evicted);
@@ -483,21 +497,10 @@ bool LivenessTracker::hasQualifyingGrowth(KlassPopulationEntry &entry) const {
     return false;
   }
 
-  // The floor check: an oscillation whose current peak happens to satisfy
-  // the growth-magnitude test above still returns to its earlier baseline
-  // every cycle, so its minimum does not rise the way a real leak's does.
-  double floor_bar = LEAK_FLOOR_REL_MIN * stats.earliest_min;
-  if (floor_bar < LEAK_FLOOR_ABS_MIN) {
-    floor_bar = LEAK_FLOOR_ABS_MIN;
-  }
-  bool floor_rising = (stats.recent_min - stats.earliest_min) >= floor_bar;
   TEST_LOG("LivenessTracker::hasQualifyingGrowth klass_id=%u "
-           "SLOPE_OK slope=%f growth_bar=%f recent_min=%f earliest_min=%f "
-           "floor_bar=%f floor_rising=%d",
-           entry.klass_id, entry.cached_slope, growth_bar,
-           stats.recent_min, stats.earliest_min,
-           floor_bar, (int)floor_rising);
-  return floor_rising;
+           "SLOPE_OK slope=%f growth_bar=%f",
+           entry.klass_id, entry.cached_slope, growth_bar);
+  return true;
 }
 
 void LivenessTracker::recordHeapFloorSample(u64 used, u64 timestamp_ns) {
@@ -903,16 +906,6 @@ Error LivenessTracker::initialize(Arguments &args) {
   // started with, even though the tracking table itself persists across
   // recordings.
   _gc_generations.store(args._gc_generations, std::memory_order_relaxed);
-  _is_zgc_jdk26_plus = false;
-  if (args._gc_generations) {
-    VMFlag* zgc = VMFlag::find("UseZGC", {VMFlag::Type::Bool});
-    bool is_zgc = (zgc != nullptr && zgc->get());
-    _is_zgc_jdk26_plus = (is_zgc && VM::hotspot_version() >= 26);
-    TEST_LOG("LivenessTracker::initialize UseZGC=%d (flag=%p) hotspot_version=%d _is_zgc_jdk26_plus=%d",
-             (int)is_zgc, (void*)zgc, VM::hotspot_version(), (int)_is_zgc_jdk26_plus);
-  } else {
-    TEST_LOG("LivenessTracker::initialize gc_generations=false, skipping ZGC check");
-  }
 
   if (!_enabled) {
     return Error::OK;
@@ -1172,20 +1165,6 @@ size_t LivenessTracker::resolvePostGcHeapUsage(bool *out_is_last_gc) {
     isLastGc = false;
     TEST_LOG("LivenessTracker::resolvePostGcHeapUsage used==0, falling back to HeapUsage::get(false)._used=%zu",
              used);
-  }
-  // On JDK 26+ with generational ZGC, _used_at_last_gc
-  // (read from CollectedHeap via VMStructs) reports the committed
-  // heap size, not the used bytes — the heap floor would
-  // appear flat even as the real used bytes grow.
-  // In that case, fall back to HeapUsage::get(false)._used
-  // (the JMX path, which always returns correct used bytes).
-  if (isLastGc) {
-    if (_is_zgc_jdk26_plus) {
-      used = HeapUsage::get(false)._used;
-      isLastGc = false;
-      TEST_LOG("LivenessTracker::resolvePostGcHeapUsage ZGC JDK26+ fallback to JMX used=%zu",
-               used);
-    }
   }
   if (out_is_last_gc != nullptr) {
     *out_is_last_gc = isLastGc;

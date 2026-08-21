@@ -60,11 +60,10 @@ typedef struct KlassPopulationEntry {
                           // foldKlassCountsLocked()'s comment for why aliasing
                           // would leave a dangling handle once cleanup_table()
                           // reaps the original TrackingEntry).
-  u32 count_ring[30];     // ring buffer of per-epoch live population counts.
-                          // u32, not u16: a single klass's surviving count in
-                          // one epoch can reach _table_max_cap
-                          // (MAX_TRACKING_TABLE_SIZE = 262144), which u16
-                          // cannot represent losslessly.
+  u32 count_ring[30];     // ring buffer of per-epoch generation counts: the
+                          // number of distinct GC ages among a klass's
+                          // surviving tracked instances that epoch (see
+                          // accumulateKlassCount(), livenessTracker.cpp).
   u8 ring_head;           // next slot to write
   u8 ring_fill;           // samples written so far, caps at 30
   // Number of consecutive epochs (most recent first) for which
@@ -133,32 +132,26 @@ private:
   // (Moved to public section for ReferenceChainTracker access.)
 
   // --- Sustained-trend gate (hasQualifyingGrowth() below) ---
-  // The original single-epoch test ("recent third's mean exceeds the
-  // earliest third's") has no magnitude floor: a population merely
-  // oscillating with no net growth satisfies it on roughly half of all
-  // epochs, so it gets reported as a leak candidate almost as often as a
-  // real leak does. Two independent, both-required conditions replace it:
-  // the recent third's mean must exceed the earliest third's by a
-  // meaningful margin (LEAK_GROWTH_REL_MIN/LEAK_GROWTH_ABS_MIN, whichever is
-  // larger), AND the recent third's *minimum* must exceed the earliest
-  // third's minimum by a meaningful margin (LEAK_FLOOR_REL_MIN/
-  // LEAK_FLOOR_ABS_MIN) - the floor check is what an oscillation still
-  // fails even if its current peak happens to look like growth, since an
-  // oscillation's floor returns to its starting level every cycle while a
-  // real leak's floor only rises.
+  // count_ring holds, per epoch, the number of distinct GC ages
+  // (generations) among a klass's surviving tracked instances
+  // (accumulateKlassCount(), livenessTracker.cpp) rather than the raw
+  // surviving instance count: a klass whose survivors keep spanning more
+  // distinct allocation cohorts over time is one where old instances are
+  // not dying as new ones arrive, which is the leak shape this gate looks
+  // for. The gate itself is a single condition - the recent third's mean
+  // generation count must exceed the earliest third's by a meaningful
+  // margin (LEAK_GROWTH_REL_MIN/LEAK_GROWTH_ABS_MIN, whichever is larger).
+  // An earlier revision of this gate also required the recent third's
+  // *minimum* to exceed the earliest third's minimum (a floor-rise check,
+  // to reject oscillations whose peak alone passes the growth test) - that
+  // check was tuned for raw population counts (which can run into the
+  // thousands) and does not transfer to generation counts, which are small
+  // integers bounded by how many distinct cohorts a klass can realistically
+  // accumulate; it was dropped rather than re-tuned.
   constexpr static double LEAK_GROWTH_REL_MIN = 0.15;
   // Absolute floor for the growth bar: the slope must exceed
   // max(LEAK_GROWTH_REL_MIN * earliest_mean, LEAK_GROWTH_ABS_MIN).
-  // The absolute floor of 5 was too high for large-population
-  // klasses (e.g. byte[] with thousands of instances): a slope of
-  // 0.5 instances/epoch is significant for a klass with 10 instances,
-  // but far below 5. Lowered to 1 so only klasses with very small
-  // populations (< 7 instances, where 0.15 * 7 = 1.05) need an absolute
-  // floor. This still rejects noise (single-instance oscillations)
-  // while allowing real leaks in large-population klasses.
   constexpr static int LEAK_GROWTH_ABS_MIN = 1;
-  constexpr static double LEAK_FLOOR_REL_MIN = 0.10;
-  constexpr static int LEAK_FLOOR_ABS_MIN = 4;
 
   // Required number of consecutive qualifying epochs
   // (KlassPopulationEntry::consecutive_positive) before selectLeakCandidates()
@@ -291,10 +284,6 @@ private:
   // still be reading it from a session that persists across a restart.
   std::atomic<bool> _gc_generations;
 
-  // Cached at initialize() time: true if UseZGC is enabled and hotspot_version >= 26.
-  // JVM flags don't change at runtime, so this is read once and reused.
-  bool _is_zgc_jdk26_plus = false;
-
   // Per-klass population history table (see KlassPopulationEntry above).
   // Populated only from cleanup_table()'s GC-epoch-advance pass, never from
   // track() (the allocation sampling hot path) - see
@@ -313,7 +302,10 @@ private:
   // end of the pass.
   typedef struct KlassCountScratch {
     u32 klass_id;
-    u32 count; // matches count_ring's width - see that field's own comment.
+    // Distinct GC ages (generations) of surviving tracked instances
+    // of this klass at this epoch. The size of this vector
+    // is the klass' generation count.
+    std::vector<u32> ages;
     jweak sample_source; // the original TrackingEntry::ref of the first
                           // surviving instance of this klass seen this
                           // epoch; consulted only by foldKlassCountsLocked()
@@ -405,7 +397,7 @@ private:
   // epoch. No-op if the scratch table is already full and klass_id is not
   // present - the same fixed-capacity/best-effort tradeoff
   // _klass_population's own table already accepts, one level up.
-  void accumulateKlassCount(u32 klass_id, jweak sample_source);
+  void accumulateKlassCount(u32 klass_id, jlong age, jweak sample_source);
 
   // Pushes `count` into klass_id's ring buffer, creating the entry (evicting
   // the least-recently-updated entry first if the table is already at

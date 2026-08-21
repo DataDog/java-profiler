@@ -748,9 +748,12 @@ void ReferenceChainTracker::threadLoop() {
     // not only on the first threadLoop iteration.
     if (_candidate_count == 0 &&
         LivenessTracker::instance()->gcGenerationsEnabled()) {
+      TEST_LOG("ReferenceChainTracker::threadLoop pre-tagging: _candidate_count=%d, checking for candidates...",
+             (int)_candidate_count);
       KlassCandidate candidates[MAX_LEAK_CANDIDATES_FROM_LT];
       int n = LivenessTracker::instance()->selectLeakCandidates(
           candidates, MAX_LEAK_CANDIDATES_FROM_LT);
+      TEST_LOG("ReferenceChainTracker::threadLoop selectLeakCandidates returned n=%d", n);
       _candidate_count = n;
       _candidate_found_bits = 0;
       jvmtiEnv *jvmti = VM::jvmti();
