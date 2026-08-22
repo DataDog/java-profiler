@@ -24,11 +24,14 @@ bool recordTaskBlockAtExit(ProfiledThread* current, ThreadFilter* thread_filter,
 // Cleanup is deliberately performed even when admission is rejected so an
 // application thread never waits for rotation and suppression cannot be left
 // armed.
+// 'end_ticks' lets a caller that already had to sample the clock (e.g. to decide
+// whether the interval is worth resolving a blocker identity for) share the exact
+// same end timestamp with the eligibility check; 0 means "sample it here".
 bool finishTaskBlockAtExit(ProfiledThread* current,
                            ThreadFilter* thread_filter, jthread thread,
                            int start_depth, u64 block_token, u64 start_ticks,
                            const Context& context, u64 blocker,
-                           u64 unblocking_span_id);
+                           u64 unblocking_span_id, u64 end_ticks = 0);
 
 class TaskBlockActivity {
  private:

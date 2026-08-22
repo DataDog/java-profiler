@@ -1541,6 +1541,29 @@ Error Profiler::init() {
   return Error::OK;
 }
 
+void Profiler::setTaskBlockEnabled(bool enabled) {
+  if (enabled) {
+    // Keep callback admission closed until native setup has either completed
+    // or rolled back, so partial event enablement cannot create paired state.
+    bool monitor_events_enabled =
+        VM::nativeMonitorEventsAvailable() &&
+        VM::setNativeMonitorEventsEnabled(true);
+    _task_block_monitor_events_enabled.store(monitor_events_enabled,
+                                             std::memory_order_release);
+    _task_block_enabled.store(true, std::memory_order_release);
+    return;
+  }
+
+  _task_block_enabled.store(false, std::memory_order_release);
+  // Clear the admission flag first so no consumer can observe enabled events, then
+  // always attempt teardown. A previous enable whose setup AND rollback both failed
+  // left the flag false while JVMTI events stayed on; retrying unconditionally is the
+  // only way that leak is ever reclaimed. setNativeMonitorEventsEnabled(false) is
+  // documented as a no-op when the capability was never enabled.
+  _task_block_monitor_events_enabled.exchange(false, std::memory_order_acq_rel);
+  VM::setNativeMonitorEventsEnabled(false);
+}
+
 Error Profiler::start(Arguments &args, bool reset) {
   MutexLocker ml(_state_lock);
   Error error = checkState();
@@ -1876,9 +1899,8 @@ Error Profiler::start(Arguments &args, bool reset) {
     // Paired with drainInflight() on the stop side.
     _cpu_engine->enableEvents(true);
 
-    _task_block_enabled.store(
-        (activated & EM_WALL) && args._wall_precheck && track_unfiltered_wall,
-        std::memory_order_release);
+    setTaskBlockEnabled(
+        (activated & EM_WALL) && args._wall_precheck && track_unfiltered_wall);
     _state.store(RUNNING, std::memory_order_release);
     _start_time = time(NULL);
     __atomic_add_fetch(&_epoch, 1, __ATOMIC_RELAXED);
@@ -1903,7 +1925,7 @@ Error Profiler::stop() {
   if (state() != RUNNING) {
     return Error("Profiler is not active");
   }
-  _task_block_enabled.store(false, std::memory_order_release);
+  setTaskBlockEnabled(false);
 
   // Order matters: disable engines first so the _enabled check inside signal
   // handlers will fail for any new signal delivered from now on. drain() then
@@ -2090,7 +2112,9 @@ Error Profiler::dump(const char *path, const int length) {
     // rotateDictsAndRun rotates the dictionaries, takes lockAll() around the
     // dump (fences ASGCT/JNI writers to CallTraceStorage), then clearStandby()s
     // the rotated buffers.  StringDictionary's RefCountGuard protocol handles
-    // its own writer/reader coordination.
+    // its own writer/reader coordination; #527's classMapSharedGuard readers
+    // (deferred vtable receiver resolution) are coordinated through
+    // _class_map_lock.
     if (beginTaskBlockRotation()) {
       rotateDictsAndRun([&]{
         err = _jfr.dump(path, length);

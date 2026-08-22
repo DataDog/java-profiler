@@ -133,6 +133,7 @@ private:
   alignas(DEFAULT_CACHE_LINE_SIZE) u64 _failures[ASGCT_FAILURE_TYPES];
   bool _wall_precheck = false;
   std::atomic<bool> _task_block_enabled{false};
+  std::atomic<bool> _task_block_monitor_events_enabled{false};
   std::atomic<bool> _task_block_rotation{false};
   std::atomic<u64> _task_block_inflight{0};
 
@@ -185,6 +186,7 @@ private:
 
   void lockAll();
   void unlockAll();
+  void setTaskBlockEnabled(bool enabled);
   bool beginTaskBlockRotation();
   void endTaskBlockRotation();
 
@@ -493,6 +495,9 @@ public:
   void leaveTaskBlockActivity();
   bool taskBlockEnabled() const {
     return _task_block_enabled.load(std::memory_order_acquire);
+  }
+  bool nativeMonitorTaskBlockEnabled() const {
+    return _task_block_monitor_events_enabled.load(std::memory_order_acquire);
   }
   void writeLog(LogLevel level, const char *message);
   void writeLog(LogLevel level, const char *message, size_t len);
