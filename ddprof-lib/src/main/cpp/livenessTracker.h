@@ -234,6 +234,15 @@ private:
   // time, but secondsToOOM() below needs it to turn the ring's byte growth
   // into a rate rather than just a magnitude.
   u64 _heap_floor_time_ring[KLASS_POPULATION_RING_SIZE];
+  // Container (cgroup) memory usage, one sample per GC epoch, pushed to the
+  // same head/fill index as _heap_floor_ring/_heap_floor_time_ring above by
+  // the same recordHeapFloorSample() call - so this ring shares
+  // _heap_floor_time_ring's timestamps rather than needing its own. Exists
+  // because container memory can grow from causes _heap_floor_ring never
+  // sees at all (native/off-heap allocations - direct buffers, JNI/native
+  // libraries) - see secondsToOOM()'s own comment for how this ring and
+  // _heap_floor_ring are used as two independent OOM boundaries.
+  u64 _container_mem_ring[KLASS_POPULATION_RING_SIZE];
   volatile u8 _heap_floor_ring_head;
   volatile u8 _heap_floor_ring_fill;
 
@@ -269,6 +278,21 @@ private:
   // initialize_table(), before the BFS thread starts, so no cross-thread
   // visibility issue there).
   std::atomic<jlong> _max_heap_bytes_for_test{-1};
+#endif
+
+  // OS::getContainerMemoryLimit(), resolved once by initialize_table() next
+  // to _max_heap_bytes above (same call site, same "resolved once, does not
+  // change at runtime" reasoning) and cached here so secondsToOOM() does not
+  // re-walk the cgroup hierarchy on every poll. -1 if never resolved, or if
+  // this process is not running under a memory-limited cgroup (bare metal,
+  // macOS, cgroups disabled) - secondsToOOM() treats -1 as "unbounded" so
+  // this boundary never wins over the heap-based one.
+  jlong _container_memory_limit;
+
+#ifdef DEBUG
+  // Mirrors _max_heap_bytes_for_test above for the same reason: lets a test
+  // exercise secondsToOOM()'s container boundary without a real cgroup.
+  std::atomic<jlong> _container_memory_limit_for_test{-1};
 #endif
 
   // Gates the per-klass population tracking below. Set from
@@ -473,20 +497,21 @@ private:
   // caller.
   bool hasQualifyingGrowth(const KlassPopulationEntry &entry) const;
 
-  // Pushes `used`/`timestamp_ns` into _heap_floor_ring/_heap_floor_time_ring -
-  // see those members' own comments for why this is lock-free rather than
-  // _table_lock-guarded. Called only from onGC() (single-writer-at-a-time,
-  // same comment), which supplies OS::nanotime() explicitly rather than this
-  // method calling it internally - keeps this method itself deterministic
-  // for the heapFloorRecordForTest() test seam below.
-  void recordHeapFloorSample(u64 used, u64 timestamp_ns);
+  // Pushes `used`/`timestamp_ns`/`container_used` into _heap_floor_ring/
+  // _heap_floor_time_ring/_container_mem_ring - see those members' own
+  // comments for why this is lock-free rather than _table_lock-guarded.
+  // Called only from onGC() (single-writer-at-a-time, same comment), which
+  // supplies OS::nanotime() and OS::getContainerMemoryUsage() explicitly
+  // rather than this method calling them internally - keeps this method
+  // itself deterministic for the heapFloorRecordForTest() test seam below.
+  void recordHeapFloorSample(u64 used, u64 timestamp_ns, u64 container_used);
 
-  // Internal: pushes to the ring without checking
+  // Internal: pushes to the rings without checking
   // _heap_floor_recording_disabled_for_test. Called by
   // recordHeapFloorSample() (after the debug-only flag check) and by
   // heapFloorRecordForTest() (which bypasses the check so a test can
-  // seed the ring even while real GC recording is disabled).
-  void recordHeapFloorSampleUnchecked(u64 used, u64 timestamp_ns);
+  // seed the rings even while real GC recording is disabled).
+  void recordHeapFloorSampleUnchecked(u64 used, u64 timestamp_ns, u64 container_used);
 
   // Reads whether the aggregate post-GC live heap has itself shown a
   // sustained rise over _heap_floor_ring's horizon - see
@@ -517,7 +542,7 @@ public:
         _Class_getName(0), _gc_epoch(0), _last_gc_epoch(0),
         _last_cleanup_ns(0), _used_after_last_gc(0),
         _heap_floor_ring_head(0), _heap_floor_ring_fill(0),
-        _max_heap_bytes(-1),
+        _max_heap_bytes(-1), _container_memory_limit(-1),
         _gc_generations(false),
         _klass_population_size(0), _klass_count_scratch_size(0),
         _last_class_map_generation(0) {}
@@ -586,35 +611,45 @@ public:
     return _gc_generations.load(std::memory_order_relaxed);
   }
 
-  // Heap-wide time-to-OOM projection, fed by the same _heap_floor_ring
-  // heapFloorRising() reads (aggregate post-GC heap usage, one sample per GC
-  // epoch) plus _heap_floor_time_ring's paired timestamps. Exists because
-  // selectLeakCandidates()'s per-klass gate (KLASS_POPULATION_MIN_FILL_FOR_TREND
-  // ring samples plus LEAK_TREND_HYSTERESIS_BASE/CORROBORATED consecutive
-  // qualifying epochs) can take longer to trust a candidate than a fast,
-  // heap-wide leak has left before OOM - this gives
-  // ReferenceChainTracker::hasLeakSignal() an independent, rate-based signal
-  // to start a search immediately instead of waiting on that gate. Same
-  // "mean of thirds" rate estimate every other trend check here uses
-  // (allocation-free, one ring scan), extrapolated linearly to
-  // _max_heap_bytes - not a claim that heap growth stays linear, only that a
+  // Time-to-OOM projection against whichever of two independent boundaries
+  // is tighter: the JVM heap (_heap_floor_ring vs _max_heap_bytes) or the
+  // container/cgroup memory limit (_container_mem_ring vs
+  // _container_memory_limit). The two rings are pushed together (same
+  // head/fill index, shared _heap_floor_time_ring timestamps - see
+  // _container_mem_ring's own comment) so this compares _max_heap_bytes
+  // against _container_memory_limit up front (the latter treated as
+  // unbounded when unavailable) and runs the "mean of thirds" rate
+  // extrapolation (allocation-free, one ring scan) only once, against
+  // whichever limit is smaller - not once per boundary. This matters
+  // because container memory can grow from causes the heap-floor ring never
+  // sees at all (native/off-heap allocations), so a heap-only projection can
+  // under-warn right up until an OOM-kill from container memory pressure
+  // that had nothing to do with heap occupancy.
+  //
+  // Exists because selectLeakCandidates()'s per-klass gate
+  // (KLASS_POPULATION_MIN_FILL_FOR_TREND ring samples plus
+  // LEAK_TREND_HYSTERESIS_BASE/CORROBORATED consecutive qualifying epochs)
+  // can take longer to trust a candidate than a fast leak has left before
+  // OOM - this gives ReferenceChainTracker::hasLeakSignal() an independent,
+  // rate-based signal to start a search immediately instead of waiting on
+  // that gate. Not a claim that growth stays linear, only that a
   // short-horizon linear extrapolation is a reasonable urgency signal.
-  // Returns a negative value if the heap-floor ring is not filled enough yet
-  // (gcGenerationsEnabled() is off, or too few GC epochs have happened), the
-  // floor is not rising, or _max_heap_bytes was never resolved - callers
-  // must treat any non-positive return as "no projection available", not
-  // "zero seconds". Returns 0 if the floor's own recent mean has already
-  // reached _max_heap_bytes.
+  // Returns a negative value if the chosen ring is not filled enough yet
+  // (gcGenerationsEnabled() is off, or too few GC epochs have happened), not
+  // rising, or neither _max_heap_bytes nor _container_memory_limit was ever
+  // resolved - callers must treat any non-positive return as "no projection
+  // available", not "zero seconds". Returns 0 if the chosen ring's recent
+  // mean has already reached its limit.
   //
   // Known limitation, inherited from heapFloorRising() rather than
   // introduced here: cleanup_table()'s class-map-reset branch clears
-  // _klass_population but never _heap_floor_ring/_heap_floor_time_ring, so a
-  // stop()/start() gap with a real wall-clock pause in between can still mix
-  // pre-gap and post-gap samples into the same window. heapFloorRising()
-  // only risked a magnitude error from this; this method additionally
-  // divides by elapsed time, so the same gap understates the growth rate
-  // (overstates the projected time-to-OOM) rather than the reverse - not
-  // solved here.
+  // _klass_population but never _heap_floor_ring/_heap_floor_time_ring/
+  // _container_mem_ring, so a stop()/start() gap with a real wall-clock
+  // pause in between can still mix pre-gap and post-gap samples into the
+  // same window. heapFloorRising() only risked a magnitude error from this;
+  // this method additionally divides by elapsed time, so the same gap
+  // understates the growth rate (overstates the projected time-to-OOM)
+  // rather than the reverse - not solved here.
   double secondsToOOM() const;
 
   // Third trigger for cleanup_table(), alongside track()'s table-overflow
@@ -725,8 +760,12 @@ public:
   // heapFloorRising()/heapFloorRisingForTest() (which never reads the time
   // ring) - a test exercising secondsToOOM() must pass real, increasing
   // values explicitly.
-  void heapFloorRecordForTest(u64 used, u64 timestamp_ns = 0) {
-    recordHeapFloorSampleUnchecked(used, timestamp_ns);
+  // container_used defaults to 0 for existing callers that only exercise
+  // heapFloorRising()/heapFloorRisingForTest() (which never reads
+  // _container_mem_ring) - a test exercising secondsToOOM()'s container
+  // boundary must pass real, increasing values explicitly.
+  void heapFloorRecordForTest(u64 used, u64 timestamp_ns = 0, u64 container_used = 0) {
+    recordHeapFloorSampleUnchecked(used, timestamp_ns, container_used);
   }
   bool heapFloorRisingForTest() const { return heapFloorRising(); }
   // Bypasses initialize_table()'s JNI-dependent HeapUsage::getMaxHeap() call
@@ -737,6 +776,18 @@ public:
     _max_heap_bytes_for_test.store(v, std::memory_order_release);
 #else
     _max_heap_bytes = v;
+#endif
+  }
+
+  // Mirrors setMaxHeapBytesForTest() above, for secondsToOOM()'s container
+  // boundary - bypasses initialize_table()'s real OS::getContainerMemoryLimit()
+  // call so a test can exercise the container-vs-heap comparison with a
+  // fake, deterministic limit.
+  void setContainerMemoryLimitForTest(jlong v) {
+#ifdef DEBUG
+    _container_memory_limit_for_test.store(v, std::memory_order_release);
+#else
+    _container_memory_limit = v;
 #endif
   }
 

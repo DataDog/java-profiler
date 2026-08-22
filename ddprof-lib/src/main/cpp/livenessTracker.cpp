@@ -503,7 +503,7 @@ bool LivenessTracker::hasQualifyingGrowth(const KlassPopulationEntry &entry) con
   return true;
 }
 
-void LivenessTracker::recordHeapFloorSample(u64 used, u64 timestamp_ns) {
+void LivenessTracker::recordHeapFloorSample(u64 used, u64 timestamp_ns, u64 container_used) {
   TEST_LOG("LivenessTracker::recordHeapFloorSample called used=%llu disabled=%d",
            (unsigned long long)used,
            (int)_heap_floor_recording_disabled_for_test.load(std::memory_order_acquire));
@@ -513,12 +513,13 @@ void LivenessTracker::recordHeapFloorSample(u64 used, u64 timestamp_ns) {
     return;
   }
 #endif
-  recordHeapFloorSampleUnchecked(used, timestamp_ns);
+  recordHeapFloorSampleUnchecked(used, timestamp_ns, container_used);
 }
 
-void LivenessTracker::recordHeapFloorSampleUnchecked(u64 used, u64 timestamp_ns) {
-  TEST_LOG("LivenessTracker::recordHeapFloorSample used=%llu timestamp_ns=%llu",
-           (unsigned long long)used, (unsigned long long)timestamp_ns);
+void LivenessTracker::recordHeapFloorSampleUnchecked(u64 used, u64 timestamp_ns, u64 container_used) {
+  TEST_LOG("LivenessTracker::recordHeapFloorSample used=%llu timestamp_ns=%llu container_used=%llu",
+           (unsigned long long)used, (unsigned long long)timestamp_ns,
+           (unsigned long long)container_used);
   // Lock-free, single-writer-at-a-time - see _heap_floor_ring's own comment
   // (livenessTracker.h) for why onGC() cannot take _table_lock here.
   //
@@ -530,12 +531,13 @@ void LivenessTracker::recordHeapFloorSampleUnchecked(u64 used, u64 timestamp_ns)
   // (The previous version had this backwards - storeRelease() on the
   // payload with a plain store on the index - which does not establish any
   // ordering between "the index says this slot is valid" and "the payload
-  // for that slot is visible".) _heap_floor_time_ring's payload write below
-  // is a plain store for the same reason - it precedes the same
-  // storeRelease() in program order.
+  // for that slot is visible".) _heap_floor_time_ring's and
+  // _container_mem_ring's payload writes below are plain stores for the
+  // same reason - they precede the same storeRelease() in program order.
   u8 head = load(_heap_floor_ring_head);
   store(_heap_floor_ring[head], used);
   store(_heap_floor_time_ring[head], timestamp_ns);
+  store(_container_mem_ring[head], container_used);
   storeRelease(_heap_floor_ring_head, (u8)((head + 1) % KLASS_POPULATION_RING_SIZE));
   u8 fill = load(_heap_floor_ring_fill);
   if (fill < KLASS_POPULATION_RING_SIZE) {
@@ -590,8 +592,13 @@ double LivenessTracker::secondsToOOM() const {
   if (max_heap <= 0) {
     max_heap = _max_heap_bytes;
   }
+  jlong container_limit = _container_memory_limit_for_test.load(std::memory_order_acquire);
+  if (container_limit <= 0) {
+    container_limit = _container_memory_limit;
+  }
 #else
   jlong max_heap = _max_heap_bytes;
+  jlong container_limit = _container_memory_limit;
 #endif
   if (!_gc_generations.load(std::memory_order_relaxed) || max_heap <= 0) {
     TEST_LOG("LivenessTracker::secondsToOOM -> -1 (gc_generations=%d max_heap=%lld)",
@@ -599,16 +606,35 @@ double LivenessTracker::secondsToOOM() const {
     return -1;
   }
 
+  // Project against whichever of the JVM heap or the container memory
+  // limit is tighter, rather than projecting both and comparing results -
+  // an unavailable container limit (bare metal, macOS, cgroups disabled) is
+  // treated as unbounded so it never wins this comparison. See this
+  // method's own comment (livenessTracker.h) for why the two are
+  // independent boundaries worth checking at all.
+  jlong effective_container_limit =
+      container_limit > 0 ? container_limit : std::numeric_limits<jlong>::max();
+  bool use_container = effective_container_limit < max_heap;
+  jlong limit = use_container ? container_limit : max_heap;
+
   u8 fill = loadAcquire(_heap_floor_ring_fill);
   u8 head = loadAcquire(_heap_floor_ring_head);
-  TEST_LOG("LivenessTracker::secondsToOOM ring fill=%d head=%d", (int)fill, (int)head);
+  TEST_LOG("LivenessTracker::secondsToOOM ring fill=%d head=%d source=%s limit=%lld",
+           (int)fill, (int)head, use_container ? "container" : "heap", (long long)limit);
 
   RingThirdsStats byte_stats;
-  if (!ringThirdsStats(
-          head, fill, KLASS_POPULATION_RING_SIZE,
-          KLASS_POPULATION_MIN_FILL_FOR_TREND,
-          [this](int i) { return (double)load(_heap_floor_ring[i]); },
-          &byte_stats)) {
+  bool have_byte_stats = use_container
+      ? ringThirdsStats(
+            head, fill, KLASS_POPULATION_RING_SIZE,
+            KLASS_POPULATION_MIN_FILL_FOR_TREND,
+            [this](int i) { return (double)load(_container_mem_ring[i]); },
+            &byte_stats)
+      : ringThirdsStats(
+            head, fill, KLASS_POPULATION_RING_SIZE,
+            KLASS_POPULATION_MIN_FILL_FOR_TREND,
+            [this](int i) { return (double)load(_heap_floor_ring[i]); },
+            &byte_stats);
+  if (!have_byte_stats) {
     TEST_LOG("LivenessTracker::secondsToOOM -> -1 (INSUFFICIENT_FILL fill=%d need=%d)",
              (int)fill, KLASS_POPULATION_MIN_FILL_FOR_TREND);
     return -1;
@@ -633,10 +659,10 @@ double LivenessTracker::secondsToOOM() const {
   }
 
   double bytes_per_ns = bytes_delta / time_delta_ns;
-  double remaining_bytes = (double)max_heap - byte_stats.recent_mean;
+  double remaining_bytes = (double)limit - byte_stats.recent_mean;
   if (remaining_bytes <= 0) {
-    // The floor's own recent mean has already reached (or passed) the max
-    // heap size - exhaustion is not "in N seconds", it's now.
+    // The chosen ring's own recent mean has already reached (or passed) its
+    // limit - exhaustion is not "in N seconds", it's now.
     return 0;
   }
   return (remaining_bytes / bytes_per_ns) / 1e9; // ns -> seconds
@@ -842,6 +868,11 @@ Error LivenessTracker::initialize_table(JNIEnv *jni, int sampling_interval) {
   // (livenessTracker.h) for why this is resolved once here rather than
   // re-querying HeapUsage::getMaxHeap() on every projection.
   _max_heap_bytes = max_heap;
+  // Cached the same way and for the same reason - see _container_memory_limit's
+  // own comment (livenessTracker.h). -1 (unavailable) is a valid outcome
+  // here, unlike max_heap above: not every JVM runs under a memory-limited
+  // cgroup.
+  _container_memory_limit = OS::getContainerMemoryLimit();
 
   int required_table_capacity =
       sampling_interval > 0 ? max_heap / sampling_interval : max_heap;
@@ -1194,7 +1225,17 @@ void LivenessTracker::onGC() {
     TEST_LOG("LivenessTracker::onGC recording heap floor used=%zu gc_epoch=%llu",
              used, (unsigned long long)load(_gc_epoch));
     if (used > 0) {
-      recordHeapFloorSample((u64)used, OS::nanotime());
+      // A failed read (-1, e.g. transient /sys/fs/cgroup access error) is
+      // recorded as 0 rather than skipping the sample outright - see
+      // _container_mem_ring's own comment (livenessTracker.h) for why this
+      // ring must stay index-aligned with _heap_floor_ring/
+      // _heap_floor_time_ring. Harmless when _container_memory_limit is
+      // itself unavailable (secondsToOOM() never selects this ring then),
+      // and a rare, self-correcting blip otherwise (the next successful
+      // read re-establishes the real growth rate).
+      long container_usage = OS::getContainerMemoryUsage();
+      recordHeapFloorSample((u64)used, OS::nanotime(),
+                             container_usage >= 0 ? (u64)container_usage : 0);
     } else {
       TEST_LOG("LivenessTracker::onGC used<=0, skipping heap floor record");
     }
