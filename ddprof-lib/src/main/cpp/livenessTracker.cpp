@@ -658,6 +658,33 @@ double LivenessTracker::secondsToOOM() const {
     return -1;
   }
 
+  // Corroborate with a fit over just the most recent half of the window
+  // (HEAP_FLOOR_RECENT_HALF_MIN_FILL's own comment) - a one-time step
+  // change that has already plateaued still passes the full-window check
+  // above for as long as any of its samples remain in the window, but its
+  // own recent half is flat.
+  int half_fill = fill / 2;
+  RingThirdsStats recent_half_stats;
+  bool have_recent_half = use_container
+      ? ringThirdsStats(
+            head, half_fill, KLASS_POPULATION_RING_SIZE,
+            HEAP_FLOOR_RECENT_HALF_MIN_FILL,
+            [this](int i) { return (double)load(_container_mem_ring[i]); },
+            &recent_half_stats)
+      : ringThirdsStats(
+            head, half_fill, KLASS_POPULATION_RING_SIZE,
+            HEAP_FLOOR_RECENT_HALF_MIN_FILL,
+            [this](int i) { return (double)load(_heap_floor_ring[i]); },
+            &recent_half_stats);
+  double recent_half_delta =
+      have_recent_half ? recent_half_stats.recent_mean - recent_half_stats.earliest_mean : 0;
+  if (!have_recent_half || recent_half_delta <= 0) {
+    TEST_LOG("LivenessTracker::secondsToOOM -> -1 (RECENT_HALF_FLAT "
+             "half_fill=%d have_recent_half=%d recent_half_delta=%.0f)",
+             half_fill, (int)have_recent_half, recent_half_delta);
+    return -1;
+  }
+
   double bytes_per_ns = bytes_delta / time_delta_ns;
   double remaining_bytes = (double)limit - byte_stats.recent_mean;
   if (remaining_bytes <= 0) {

@@ -123,6 +123,18 @@ private:
   // window has a minimum fill (e.g. ≥10 samples) to avoid noise right after
   // a klass starts being tracked."
   constexpr static int KLASS_POPULATION_MIN_FILL_FOR_TREND = 10;
+  // secondsToOOM() below corroborates the full-window heap-floor regression
+  // with a second regression over just the most recent half of the same
+  // ring, and requires both to show a positive slope. Guards against a
+  // one-time step change that immediately plateaus (e.g. a cache warming up
+  // once at startup) - the full-window fit alone stays "rising" for as long
+  // as the step's samples remain in the window, but the recent half's own
+  // slope collapses back to ~0 as soon as growth actually stops, well
+  // before the full window ages the step out. fill/2 is always >=
+  // HEAP_FLOOR_RECENT_HALF_MIN_FILL once the full-window fit itself has
+  // cleared KLASS_POPULATION_MIN_FILL_FOR_TREND (10), so this never blocks
+  // a reading the full-window check wouldn't already have blocked.
+  constexpr static int HEAP_FLOOR_RECENT_HALF_MIN_FILL = 5;
   // Design doc's Open Question 3 proposal: "seed only the top 3-5 by trend
   // magnitude" - this is the upper end of that range. selectLeakCandidates()
   // also honors the caller-supplied `max`, so the effective cutoff is
