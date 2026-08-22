@@ -492,15 +492,19 @@ Error ReferenceChainTracker::start(Arguments &args) {
                                    // cadence one
   );
 
-  // Search restart (this class's own header comment): (re)seed _pain_budget
+  // Search restart (this class's own header comment): (re)seed _safepoint_pain_budget
   // from the configured refill rate, mirroring _pause_pid's own
   // reconstruct-in-start() pattern above. A search's already-accumulated
   // _search_pain_ms is deliberately left untouched here - only restartSearch()
   // spends it, so a start()/stop() cycle mid-search (if that ever happens)
   // does not erase cost the current search has already incurred.
-  _pain_budget = PainBudget(
+  _safepoint_pain_budget = PainBudget(
       std::max(args._reference_chains_pain_budget_percent, 0) / 100.0);
   _pain_budget_refill_rate = std::max(args._reference_chains_pain_budget_percent, 0) / 100.0;
+  // Same refill rate as _safepoint_pain_budget above - one operator-facing
+  // "how much background cost is acceptable" percentage covers both
+  // leaky buckets (see _cpu_pain_budget's own comment, referenceChains.h).
+  _cpu_pain_budget = PainBudget(_pain_budget_refill_rate);
 
   // Lazy-enable, matching LivenessTracker::start() (livenessTracker.cpp:194-196):
   // the GC callbacks are wired unconditionally in vmEntry.cpp, but the events
@@ -850,6 +854,14 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns) {
     // logging it is pure per-second noise (see threadLoop()).
     return false;
   }
+  // Non-safepoint CPU-time budget (_cpu_pain_budget's own comment,
+  // referenceChains.h): applies uniformly ahead of every other trigger below
+  // - GC-finish, cadence, and the canary-search cadence bypass alike - since
+  // none of those signals has any visibility into the non-safepoint
+  // bookkeeping cost this budget tracks.
+  if (!_cpu_pain_budget.canStartNow(now_ns)) {
+    return false;
+  }
   u64 gc_finish_epoch = gcFinishEpoch();
   if (gc_finish_epoch != _last_pass_gc_finish_epoch) {
     // Triggering section: "a GC just happened, a pass may be worth running
@@ -930,7 +942,7 @@ bool ReferenceChainTracker::hasLeakSignal() {
 }
 
 bool ReferenceChainTracker::canAffordNewSearch(u64 now_ns) {
-  if (!_pain_budget.canStartNow(now_ns)) {
+  if (!_safepoint_pain_budget.canStartNow(now_ns)) {
     return false; // still cooling down from the last search's own cost
   }
   return hasLeakSignal();
@@ -955,7 +967,7 @@ void ReferenceChainTracker::restartSearch() {
   // Spend the finishing search's own cost before clearing the accumulator -
   // canAffordNewSearch()'s *next* call must see this search's cost, not a
   // reset-to-zero balance.
-  _pain_budget.spend(_search_pain_ms);
+  _safepoint_pain_budget.spend(_search_pain_ms);
   _search_pain_ms = 0;
 
   if (_frontier != nullptr) {
@@ -1011,13 +1023,16 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   }
   _tags_released = true;
 
-  _pain_budget.spend(_search_pain_ms);
+  _safepoint_pain_budget.spend(_search_pain_ms);
   _search_pain_ms = 0;
   // Reset the pain budget entirely so a fresh test starts from zero debt,
   // independent of how much wall-clock time has elapsed since the last
   // test's spend(). Without this, a fast CI runner (musl, small heap,
   // no GC pauses) may not have drained enough debt between tests.
-  _pain_budget = PainBudget(_pain_budget_refill_rate);
+  _safepoint_pain_budget = PainBudget(_pain_budget_refill_rate);
+  // Mirror the reset for the non-safepoint budget - same test-isolation
+  // rationale as _safepoint_pain_budget above.
+  _cpu_pain_budget = PainBudget(_pain_budget_refill_rate);
 
   if (_frontier != nullptr) {
     // Rebuilds the table at this test's own _configured_frontier_cap,
@@ -1816,11 +1831,14 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
                                                int expand_budget,
                                                int *edges_admitted,
                                                bool *truncated,
-                                               bool *frontier_cap_hit) {
+                                               bool *frontier_cap_hit,
+                                               u64 *safepoint_ticks) {
   assert(!t_inGCCallback &&
          "IterateOverReachableObjects/FollowReferences are JVMTI "
          "Heap-category calls and must not be made from "
          "GarbageCollectionStart/Finish");
+
+  *safepoint_ticks = 0;
 
   // Shared wall-clock ceiling for this whole call's static-field sweep,
   // expandFrontier(), and rotation sub-calls below (see _pass_deadline_ns's
@@ -1867,9 +1885,11 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
     ctx.truncated = false;
     ctx.frontier_cap_hit = false;
 
+    u64 root_enum_start_ticks = TSC::ticks();
     jvmtiError root_err = jvmti->IterateOverReachableObjects(
         heapRootCallback, stackRefCallback, /*object_ref_callback=*/nullptr,
         &ctx);
+    *safepoint_ticks += TSC::ticks() - root_enum_start_ticks;
 
     // expand_budget is spent independently of root_enum_budget below (see
     // ROOT_ENUM_MIN_INTERVAL_NS's own comment) - ctx.edges_admitted is
@@ -1923,7 +1943,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
     int static_field_budget = std::max(budget - expand_phase_edges_admitted, 0);
     admitStaticFieldRoots(jvmti, jni, _hop_cap, static_field_budget,
                           &static_field_edges_admitted, &static_field_truncated,
-                          &static_field_frontier_cap_hit);
+                          &static_field_frontier_cap_hit, safepoint_ticks);
     expand_phase_edges_admitted += static_field_edges_admitted;
     *edges_admitted += static_field_edges_admitted;
     if (static_field_truncated) {
@@ -1953,7 +1973,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   int remaining_budget = std::max(budget - expand_phase_edges_admitted, 0);
   expandFrontier(jvmti, jni, _hop_cap, remaining_budget,
                  &expand_edges_admitted, &expand_truncated,
-                 &expand_frontier_cap_hit);
+                 &expand_frontier_cap_hit, safepoint_ticks);
   expand_phase_edges_admitted += expand_edges_admitted;
   *edges_admitted += expand_edges_admitted;
   *truncated = *truncated || expand_truncated;
@@ -2005,7 +2025,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   bool rotation_frontier_cap_hit = false;
   expandFrontier(jvmti, jni, _hop_cap, rotation_budget,
                  &rotation_edges_admitted, &rotation_truncated,
-                 &rotation_frontier_cap_hit);
+                 &rotation_frontier_cap_hit, safepoint_ticks);
   *edges_admitted += rotation_edges_admitted;
   // OR, not overwrite: the ordinary expand phase above may have already set
   // these to true (real truncation/cap-hit left in _pending_expand), and a
@@ -2036,7 +2056,8 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
                                             int hop_cap, int budget,
                                             int *edges_admitted,
                                             bool *truncated,
-                                            bool *frontier_cap_hit) {
+                                            bool *frontier_cap_hit,
+                                            u64 *safepoint_ticks) {
   assert(!t_inGCCallback &&
          "GetObjectsWithTags/FollowReferences are JVMTI Heap-category calls "
          "and must not be made from GarbageCollectionStart/Finish");
@@ -2202,8 +2223,10 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
           // heap); heapReferenceCallback() returns "descend" for the array's
           // elements (the boundary objects, in batch_tags) and "no descend" for
           // their children, so exactly one hop past the boundary is explored.
+          u64 follow_start_ticks = TSC::ticks();
           jvmtiError follow_err =
               jvmti->FollowReferences(0, nullptr, holder, &callbacks, &ctx);
+          *safepoint_ticks += TSC::ticks() - follow_start_ticks;
           if (follow_err != JVMTI_ERROR_NONE) {
             ctx.truncated = true;
           }
@@ -2274,7 +2297,8 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
                                                    int hop_cap, int budget,
                                                    int *edges_admitted,
                                                    bool *truncated,
-                                                   bool *frontier_cap_hit) {
+                                                   bool *frontier_cap_hit,
+                                                   u64 *safepoint_ticks) {
   assert(!t_inGCCallback &&
          "GetLoadedClasses/FollowReferences are JVMTI Heap-category calls "
          "and must not be made from GarbageCollectionStart/Finish");
@@ -2377,8 +2401,10 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
   jvmtiHeapCallbacks callbacks;
   memset(&callbacks, 0, sizeof(callbacks));
   callbacks.heap_reference_callback = heapReferenceCallback;
+  u64 follow_start_ticks = TSC::ticks();
   jvmtiError follow_err =
       jvmti->FollowReferences(0, nullptr, holder, &callbacks, &ctx);
+  *safepoint_ticks += TSC::ticks() - follow_start_ticks;
   jni->DeleteLocalRef(holder);
   if (follow_err != JVMTI_ERROR_NONE) {
     return;
@@ -2498,18 +2524,30 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   bool truncated = false;
   bool frontier_cap_hit = false;
   jvmtiError err;
-  // Wall-clock duration of the actual safepoint-triggering JVMTI call below
-  // (FollowReferences or, inside expandFrontier(), FollowReferences preceded
-  // by GetObjectsWithTags) - the measured signal updatePacing() below feeds
-  // into _pause_pid. Deliberately scoped to just that call, not this whole
-  // method, so resolveLoadedClasses()'s own JNI/JVMTI cost and this method's
-  // own bookkeeping are not mistaken for safepoint time. Measured via
-  // TSC::ticks() rather than OS::nanotime(), matching this codebase's other
-  // interval-timing call sites (LivenessTracker::track(), pollWatchedTargets()
-  // below); TSC::ticks() itself falls back to OS::nanotime() when the TSC is
-  // unavailable/disabled, so this is a strict upgrade with no behavior change
-  // on hosts without a usable timestamp counter.
+  // Whole-call wall-clock duration of runPassManualWalk() below - includes
+  // root/stack-ref enumeration dispatch, frontier-table bookkeeping, and
+  // rotation-candidate collection, in addition to the actual in-safepoint
+  // JVMTI calls. Used only to derive non_safepoint_ticks below for
+  // _cpu_pain_budget; NOT fed to updatePacing()/_pause_pid directly (see
+  // safepoint_ticks below for that). Measured via TSC::ticks() rather than
+  // OS::nanotime(), matching this codebase's other interval-timing call
+  // sites (LivenessTracker::track(), pollWatchedTargets() below);
+  // TSC::ticks() itself falls back to OS::nanotime() when the TSC is
+  // unavailable/disabled, so this is a strict upgrade with no behavior
+  // change on hosts without a usable timestamp counter.
   u64 pass_wall_ticks = 0;
+  // Genuine in-safepoint cost of this pass, accumulated by
+  // runPassManualWalk() across every IterateOverReachableObjects/
+  // FollowReferences call it makes (root enum, static-field sweep, ordinary
+  // expansion, rotation re-expansion) - explicitly excluding
+  // GetObjectsWithTags (not a safepoint call) and every bookkeeping line in
+  // between. This, not pass_wall_ticks, is what updatePacing()/
+  // maybeRevokeBorrowForRootEnumPass() below actually regulate: JFR
+  // (jdk.ExecuteVMOperation[operation=HeapWalkOperation]) confirmed the two
+  // can differ substantially - a pass's non-safepoint bookkeeping must not
+  // be mistaken for pause-time-SLO pressure and throttle the PID controller
+  // on its behalf.
+  u64 safepoint_ticks = 0;
 
   // Every pass is driven by the manual walk (runPassManualWalk() -
   // IterateOverReachableObjects for roots, then a batched array-holder
@@ -2545,8 +2583,15 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   u64 call_start_ticks = TSC::ticks();
   runPassManualWalk(jvmti, jni, run_root_enum, _first_pass_budget,
                      _effective_budget, &edges_admitted, &truncated,
-                     &frontier_cap_hit);
+                     &frontier_cap_hit, &safepoint_ticks);
   pass_wall_ticks = TSC::ticks() - call_start_ticks;
+  // TSC::ticks() is monotonic but not necessarily free of measurement noise
+  // between the outer call_start_ticks snapshot and the several inner
+  // TSC::ticks() snapshots safepoint_ticks is built from - clamp rather than
+  // underflow if the accumulated safepoint portion ever reads back larger
+  // than the whole-call wall time it's a subset of.
+  u64 non_safepoint_ticks =
+      pass_wall_ticks > safepoint_ticks ? pass_wall_ticks - safepoint_ticks : 0;
   err = JVMTI_ERROR_NONE;
 
   store(_passes_run, load(_passes_run) + 1);
@@ -2559,21 +2604,29 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
     // cheap, per-node expansion calls), so feeding it in here would
     // throttle _effective_budget down for every one of those unrelated
     // later passes based on a single, deliberately oversized outlier.
-    updatePacing(pass_wall_ticks);
+    updatePacing(safepoint_ticks);
   } else {
     // Excluded from the budget/cadence controller above, but not from the
     // borrow ceiling's revocation check (see maybeRevokeBorrowForRootEnumPass()'s
-    // own comment) - a root-enum pass's wall-clock cost is real pause time
+    // own comment) - a root-enum pass's in-safepoint cost is real pause time
     // and must still be able to revoke a borrowed-budget grant the pacing
     // controller would otherwise keep believing is safe.
-    maybeRevokeBorrowForRootEnumPass(pass_wall_ticks);
+    maybeRevokeBorrowForRootEnumPass(safepoint_ticks);
   }
   // Search restart (this class's own header comment): accumulate this
-  // pass's own cost toward the running total restartSearch() will spend into
-  // _pain_budget once the search reaches a terminal state - same
-  // TSC::ticks_to_millis() conversion updatePacing() already uses for its
-  // own pass-duration signal.
-  _search_pain_ms += TSC::ticks_to_millis(pass_wall_ticks);
+  // pass's own in-safepoint cost toward the running total restartSearch()
+  // will spend into _safepoint_pain_budget once the search reaches a terminal state -
+  // same TSC::ticks_to_millis() conversion updatePacing() already uses for
+  // its own pass-duration signal.
+  _search_pain_ms += TSC::ticks_to_millis(safepoint_ticks);
+  // Independent leaky bucket for the non-safepoint remainder of this pass
+  // (root/stack-ref enumeration dispatch, frontier-table admission,
+  // rotation-candidate collection) - see _cpu_pain_budget's own comment
+  // (referenceChains.h) for why this needs to be tracked separately from
+  // both _safepoint_pain_budget above and _pause_pid's safepoint_ticks signal.
+  // Spent every pass, root-enum or not: none of this cost is
+  // cadence-gated the way root enum's in-safepoint dispatch is.
+  _cpu_pain_budget.spend(TSC::ticks_to_millis(non_safepoint_ticks));
 
   // Design doc's Termination section, decided in priority order:
   //   1. Frontier-size cap hit -> abandon immediately, regardless of TTL.

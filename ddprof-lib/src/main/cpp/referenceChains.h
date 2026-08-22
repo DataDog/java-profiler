@@ -118,7 +118,7 @@
 // candidate-driven trigger exactly like a first-ever search.
 //
 // Restarting is still an expensive full-heap walk, so canAffordNewSearch()
-// also gates it on _pain_budget (PainBudget, painBudget.h) - a leaky bucket
+// also gates it on _safepoint_pain_budget (PainBudget, painBudget.h) - a leaky bucket
 // over the wall-clock cost of past searches, not a fixed cooldown, so a
 // search that finished cheaply can restart again soon while an expensive one
 // has to wait proportionally longer. shouldRunPass() reuses this same
@@ -968,15 +968,29 @@ private:
   // may take its first pass - see PainBudget's own comment (painBudget.h)
   // and canAffordNewSearch() below. _search_pain_ms accumulates the current
   // search's own cost (each pass's pass_wall_ticks, converted to ms) as it
-  // runs; restartSearch() spends the total into _pain_budget and zeroes this
+  // runs; restartSearch() spends the total into _safepoint_pain_budget and zeroes this
   // back out for the next search. Constructed with the configured refill
   // rate in start(), mirroring _pause_pid's own placeholder-then-reconstruct
   // pattern.
-  PainBudget _pain_budget;
+  PainBudget _safepoint_pain_budget;
   // Cached refill rate from start(), reused by resetSearchStateForTest()
   // so a test reset rebuilds the budget with the same rate.
   double _pain_budget_refill_rate = 0.0;
   u64 _search_pain_ms;
+
+  // Non-safepoint CPU-time pain budget: gates shouldRunPass() independently
+  // of both _safepoint_pain_budget above (which only cools down *restarts*, spent once
+  // per finished search) and _pause_pid's per-pass signal (updatePacing(),
+  // now fed only the genuine in-safepoint portion of each pass - see
+  // runPass()'s own comment). Spent every pass, root-enum or not, with the
+  // wall-clock cost of runPassManualWalk() *outside* its actual JVMTI calls
+  // - root/stack-ref enumeration dispatch, frontier-table admission,
+  // rotation-candidate collection - none of which the pause-time PID has any
+  // visibility into. Seeded from the same configured refill rate as
+  // _safepoint_pain_budget (_reference_chains_pain_budget_percent) rather than a
+  // separate knob - one operator-facing "how much background cost is
+  // acceptable" percentage covers both leaky buckets.
+  PainBudget _cpu_pain_budget;
 
   // The cache above is mutated on this tracker's own BFS scheduling thread
   // (pollWatchedTargets()) and read on whatever thread calls Profiler::dump()
@@ -1235,7 +1249,7 @@ private:
         _last_pass_gc_finish_epoch(0), _last_pass_ns(0),
         _passes_run(0),
         _root_kind_rotation_cursor(1),
-        _pain_budget(0.0), _search_pain_ms(0),
+        _safepoint_pain_budget(0.0), _search_pain_ms(0), _cpu_pain_budget(0.0),
         _thread(), _running(false), _abort_pass_requested(false) {}
 
   void onGCStart();
@@ -1300,7 +1314,7 @@ private:
   // (Public for test access.)
 
   // Search restart gate (this class's own header comment): true once
-  // _pain_budget has drained back to zero (canStartNow()) *and*
+  // _safepoint_pain_budget has drained back to zero (canStartNow()) *and*
   // hasLeakSignal() above reports at least one leak candidate. Also reused by
   // shouldRunPass() to gate the very first search, not just restarts - the
   // pain-budget half is always a no-op there (nothing has been spent yet).
@@ -1317,7 +1331,7 @@ private:
   // (runPass() calls releaseSearchTags() itself before returning, so that
   // has always already happened by the time this runs) and
   // canAffordNewSearch() has approved a restart. Spends the finishing
-  // search's accumulated cost into _pain_budget first, so the *next*
+  // search's accumulated cost into _safepoint_pain_budget first, so the *next*
   // restart's gate reflects what this one actually cost. Does not touch
   // _class_tags/_next_class_tag_magnitude - classes do not change identity
   // across searches, so their resolved names stay valid and do not need
@@ -1360,9 +1374,17 @@ private:
   // fails, *truncated is set (there is pending work, just not resolvable
   // this call) so runPass() does not mistake that for the search having
   // reached natural completion.
+  // safepoint_ticks: added to (not overwritten - callers may invoke this
+  // more than once per pass, e.g. ordinary expansion then rotation) with the
+  // TSC::ticks() duration of just this call's FollowReferences invocation(s)
+  // - the genuine in-safepoint VM_HeapWalkOperation cost, excluding
+  // GetObjectsWithTags (not a safepoint call - its own comment above) and
+  // every other bookkeeping line in this function. See runPass()'s own
+  // comment for why this needed splitting out from the whole call's
+  // wall-clock time.
   void expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni, int hop_cap, int budget,
                        int *edges_admitted, bool *truncated,
-                       bool *frontier_cap_hit);
+                       bool *frontier_cap_hit, u64 *safepoint_ticks);
 
   // Static-field counterpart to heapRootCallback()'s GC-root enumeration:
   // IterateOverReachableObjects's root/stack-ref callbacks never report a
@@ -1385,9 +1407,13 @@ private:
   // JVMTI error) this simply skips the sweep for this pass rather than
   // treating it as this pass's own truncation - it is discovery on top of
   // the manual walk, not part of its budget/frontier-cap accounting.
+  // safepoint_ticks: same accumulate-not-overwrite contract as
+  // expandFrontier()'s own parameter above - added to with just this call's
+  // FollowReferences duration.
   void admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni, int hop_cap,
                               int budget, int *edges_admitted,
-                              bool *truncated, bool *frontier_cap_hit);
+                              bool *truncated, bool *frontier_cap_hit,
+                              u64 *safepoint_ticks);
 
   // Clears the live JVMTI tag (via clearTag(), i.e. SetTag(obj, 0)) for
   // every FrontierTable entry this search has not already marked ABANDONED -
@@ -1622,10 +1648,15 @@ private:
   // `run_root_enum`/`root_enum_budget`; when false, this call takes the
   // cheap expandFrontier()-only path over whatever the last enumeration
   // already admitted into the frontier.
+  // *safepoint_ticks is zeroed here, then accumulated (via
+  // IterateOverReachableObjects's own timing below plus
+  // admitStaticFieldRoots()/expandFrontier()'s additive parameters) with just
+  // the genuine in-safepoint JVMTI call cost this pass incurred - runPass()
+  // uses it (not this whole call's wall-clock time) as the pacing signal.
   void runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni, bool run_root_enum,
                           int root_enum_budget, int expand_budget,
                           int *edges_admitted, bool *truncated,
-                          bool *frontier_cap_hit);
+                          bool *frontier_cap_hit, u64 *safepoint_ticks);
 
   // Inserts (or refreshes) klass_id's resolved chain in _resolved_chains,
   // recording the source_tag/source_search_ns it was reconstructed from so a

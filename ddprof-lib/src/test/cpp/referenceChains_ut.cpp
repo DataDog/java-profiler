@@ -86,7 +86,8 @@ public:
         t->_candidate_count = 0;
         t->_candidate_found_bits = 0;
         t->_resolved_chains.clear();
-        t->_pain_budget = PainBudget();
+        t->_safepoint_pain_budget = PainBudget();
+        t->_cpu_pain_budget = PainBudget();
         t->_search_pain_ms = 0;
         t->_root_kind_rotation_cursor = 1;
         t->_borrowed_budget = 0;
@@ -2663,7 +2664,7 @@ TEST_F(SearchRestartTest, PainBudgetBlocksARestartUntilItDrains) {
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, nullptr));
     ASSERT_EQ(SearchState::COMPLETED, tracker->searchState());
 
-    // Restart #1: _pain_budget has never had anything spent into it yet, so
+    // Restart #1: _safepoint_pain_budget has never had anything spent into it yet, so
     // this is always immediately affordable regardless of this first
     // search's own cost - the cost a search incurs only debits the *next*
     // restart's affordability (restartSearch()'s own spend-then-reset
@@ -2679,7 +2680,7 @@ TEST_F(SearchRestartTest, PainBudgetBlocksARestartUntilItDrains) {
     // accumulated into _search_pain_ms on its own.
     ReferenceChainsTestAccessor::setSearchPainMs(1000);
 
-    // Restart #2: approved (nothing spent into _pain_budget yet), and its
+    // Restart #2: approved (nothing spent into _safepoint_pain_budget yet), and its
     // own spend() call debits 1000ms into the balance for the *next*
     // restart to contend with.
     ASSERT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(2));
