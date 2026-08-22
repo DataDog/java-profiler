@@ -674,31 +674,43 @@ void ReferenceChainTracker::threadLoop() {
     // Fixed ~1s cadence, no early wake on GC (see onGCFinish()'s own
     // comment) - stopThread() still interrupts this via its own
     // pthread_kill so shutdown stays prompt.
-    // Urgency-driven dynamic tuning: when secondsToOOM() signals the app
-    // is about to OOM, tighten cadence (passes run back-to-back) and
-    // raise the per-pass pause target so each pass explores more edges.
-    // The only SLO when urgent is the STW pause time (URGENT_PAUSE_TARGET_MS),
-    // not the configured TTL — runPass() suppresses TTL abandonment
-    // when isUrgent() for the same reason. Restored to the configured
-    // defaults once urgency clears. The PID controller is reconstructed
-    // whenever the target changes so its ceiling tracks the new value.
-    bool urgent = isUrgent();
-    long target_ms = urgent ? URGENT_PAUSE_TARGET_MS : _pause_target_ms;
+    // Urgency-driven dynamic tuning: as secondsToOOM() falls within
+    // OOM_RAMP_START_S of projected exhaustion, ramp the per-pass pause
+    // target and cadence exponentially toward their ceilings (see
+    // OOM_RAMP_START_S/URGENT_PAUSE_TARGET_MS/URGENT_CADENCE_NS's own
+    // comments) - slow at the 30-minute mark, aggressive right before OOM.
+    // secondsToOOM() itself already gates on a confirmed rising trend (its
+    // NOT_RISING check), so a non-negative value here is real growth, not
+    // noise. Restored to the configured defaults once out of the ramp
+    // window. The PID controller is reconstructed whenever the (rounded)
+    // target changes so its ceiling tracks the new value.
+    double seconds_to_oom = LivenessTracker::instance()->secondsToOOM();
+    bool urgent = seconds_to_oom >= 0 && seconds_to_oom < OOM_RAMP_START_S;
+    long target_ms = _pause_target_ms;
+    u64 cadence_ns = _effective_cadence_ns;
+    if (urgent) {
+      double x = 1.0 - seconds_to_oom / OOM_RAMP_START_S; // 0 at 30min out, 1 at OOM
+      target_ms = std::lround(_pause_target_ms *
+          std::pow((double)URGENT_PAUSE_TARGET_MS / std::max(_pause_target_ms, 1L), x));
+      cadence_ns = (u64)std::llround(_effective_cadence_ns *
+          std::pow((double)URGENT_CADENCE_NS / std::max(_effective_cadence_ns, (u64)1), x));
+    }
     if (target_ms != _effective_pause_target_ms) {
       _effective_pause_target_ms = target_ms;
       _pause_pid = PidController((u64)std::max(_effective_pause_target_ms, 0L),
                                   10, 1, 2, 1, 5.0);
-      // When urgent, also raise the per-pass budget ceiling so the PID
-      // controller can let each pass explore more edges (fewer, longer
-      // passes instead of many short ones). The total STW time is the
-      // same, but the search converges faster.
+      // Once in the ramp window, hold the budget ceiling raised for its
+      // entire duration rather than only right before OOM: the process is
+      // likely to die anyway, so it's worth spending whatever budget it
+      // takes to collect good diagnostic data for as long as we have.
       if (urgent) {
         _budget = std::min(_budget * 4, MAX_REFERENCE_CHAINS_BUDGET);
       }
-      TEST_LOG("ReferenceChainTracker::threadLoop urgency=%d pauseTarget=%ldms budget=%d",
-               (int)urgent, _effective_pause_target_ms, _budget);
+      TEST_LOG("ReferenceChainTracker::threadLoop urgency=%d pauseTarget=%ldms "
+               "cadence=%lluns budget=%d",
+               (int)urgent, _effective_pause_target_ms,
+               (unsigned long long)cadence_ns, _budget);
     }
-    u64 cadence_ns = urgent ? URGENT_CADENCE_NS : _effective_cadence_ns;
     // Run passes back-to-back: the PID controller (updatePacing()) already
     // self-regulates the per-pass budget and cadence to keep STW
     // pauses within the pause-target SLO. With canary pruning,

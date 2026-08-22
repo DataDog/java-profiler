@@ -1031,16 +1031,26 @@ private:
   // projected exhaustion, not measured against a real OOM race.
   static constexpr double OOM_URGENT_THRESHOLD_S = 300.0; // 5 minutes
 
-  // When urgency is detected (secondsToOOM() < OOM_URGENT_THRESHOLD_S),
-  // the search switches to an aggressive mode: TTL abandonment is
-  // suppressed (the search must complete before OOM), the
-  // per-pass pause target is raised (longer STW pauses are
-  // acceptable when the app is about to OOM anyway), and the
-  // cadence is tightened (passes run back-to-back). The
-  // only SLO is the STW pause time — bounded by
-  // URGENT_PAUSE_TARGET_MS, not the configured default.
-  static constexpr long URGENT_PAUSE_TARGET_MS = 50; // 50ms STW per pass when urgent
-  static constexpr u64 URGENT_CADENCE_NS = 10000000ULL;  // 10ms between passes when urgent
+  // Horizon over which threadLoop() ramps the pause target and cadence
+  // toward their urgent ceilings as secondsToOOM() falls, once it reports a
+  // confirmed rising trend (see secondsToOOM()'s own NOT_RISING gate — a
+  // non-negative value already means real growth, not noise). Profiles are
+  // flushed once per minute by default, so a search that only ramps up in
+  // the last OOM_URGENT_THRESHOLD_S (5 minutes) may not get enough elevated
+  // passes recorded in a JFR before the process dies. 30 minutes gives it
+  // ~30 recording rotations to actually land a chain. Separate from
+  // OOM_URGENT_THRESHOLD_S, which still gates hasLeakSignal()'s forced
+  // search start and runPass()'s TTL-abandonment suppression.
+  static constexpr double OOM_RAMP_START_S = 6000.0; // TESTING ONLY: 100 minutes, revert to 1800.0 (30 min) before shipping
+
+  // Ceilings the pause target and cadence ramp toward as secondsToOOM()
+  // approaches zero within OOM_RAMP_START_S: the ramp is exponential (slow
+  // near OOM_RAMP_START_S out, aggressive near OOM) since the process is
+  // likely to die anyway and diagnostic data collected right before that is
+  // worth spending STW time and CPU on. TTL abandonment is suppressed
+  // whenever isUrgent() (see OOM_URGENT_THRESHOLD_S).
+  static constexpr long URGENT_PAUSE_TARGET_MS = 100; // ceiling STW ms per pass
+  static constexpr u64 URGENT_CADENCE_NS = 10000000ULL;  // 10ms floor between passes
 
   // Abandon the search after this many consecutive passes with
   // zero new frontier entries admitted (genuinely stuck, not just slow).
