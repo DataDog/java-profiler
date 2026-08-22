@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk8
 
 ## musl-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-08-22 11:45:52 EDT
+**Date:** 2026-08-22 13:05:53 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: musl-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 186 |
-| Sample Rate | 3.10/sec |
-| Health Score | 194% |
+| CPU Samples | 192 |
+| Sample Rate | 3.20/sec |
+| Health Score | 200% |
 | Threads | 6 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: musl-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 202 |
-| Sample Rate | 3.37/sec |
-| Health Score | 211% |
-| Threads | 8 |
+| CPU Samples | 184 |
+| Sample Rate | 3.07/sec |
+| Health Score | 192% |
+| Threads | 10 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 66-66 cores)</summary>
 
 ```
-1787413227 66
-1787413232 66
-1787413237 66
-1787413242 66
-1787413247 66
-1787413252 66
-1787413257 66
-1787413262 66
-1787413267 66
-1787413272 66
-1787413277 66
-1787413282 66
-1787413287 66
-1787413292 66
-1787413297 66
-1787413302 66
-1787413307 66
-1787413312 66
-1787413317 66
-1787413322 66
+1787418091 66
+1787418096 66
+1787418101 66
+1787418106 66
+1787418111 66
+1787418116 66
+1787418121 66
+1787418126 66
+1787418131 66
+1787418136 66
+1787418141 66
+1787418146 66
+1787418151 66
+1787418156 66
+1787418161 66
+1787418166 66
+1787418171 66
+1787418176 66
+1787418181 66
+1787418186 66
 ```
 </details>
 
