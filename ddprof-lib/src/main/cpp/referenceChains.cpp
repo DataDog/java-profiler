@@ -681,8 +681,7 @@ void ReferenceChainTracker::threadLoop() {
     // comments) - slow at the 30-minute mark, aggressive right before OOM.
     // secondsToOOM() itself already gates on a confirmed rising trend (its
     // NOT_RISING check), so a non-negative value here is real growth, not
-    // noise. Restored to the configured defaults once out of the ramp
-    // window. The PID controller is reconstructed whenever the (rounded)
+    // noise. The PID controller is reconstructed whenever the (rounded)
     // target changes so its ceiling tracks the new value.
     double seconds_to_oom = LivenessTracker::instance()->secondsToOOM();
     bool urgent = seconds_to_oom >= 0 && seconds_to_oom < OOM_RAMP_START_S;
@@ -692,8 +691,19 @@ void ReferenceChainTracker::threadLoop() {
       double x = 1.0 - seconds_to_oom / OOM_RAMP_START_S; // 0 at 30min out, 1 at OOM
       target_ms = std::lround(_pause_target_ms *
           std::pow((double)URGENT_PAUSE_TARGET_MS / std::max(_pause_target_ms, 1L), x));
-      cadence_ns = (u64)std::llround(_effective_cadence_ns *
-          std::pow((double)URGENT_CADENCE_NS / std::max(_effective_cadence_ns, (u64)1), x));
+      // Ramp from the fixed configured cadence, not the currently-adaptive
+      // _effective_cadence_ns - using the live value as the ramp's own
+      // moving anchor would compound the exponent across iterations instead
+      // of tracking urgency directly from a stable baseline.
+      cadence_ns = (u64)std::llround((double)PASS_CADENCE_NS *
+          std::pow((double)URGENT_CADENCE_NS / (double)PASS_CADENCE_NS, x));
+      // While urgent, the ramp owns _effective_cadence_ns outright so
+      // shouldRunPass()'s cadence gate and the per-pass log actually
+      // reflect it. updatePacing()'s own overflow-driven widen/narrow
+      // adjustment (see _effective_cadence_ns's header comment) resumes
+      // sole ownership the instant urgency clears - this block simply stops
+      // touching the field then, so there is nothing to snap back from.
+      _effective_cadence_ns = cadence_ns;
     }
     if (target_ms != _effective_pause_target_ms) {
       _effective_pause_target_ms = target_ms;
