@@ -16,6 +16,15 @@
 
 #include "faultInjection.h"
 
+#include <stdint.h>
+
+void crashNow() {
+   volatile uintptr_t* p = (volatile uintptr_t*)nullptr;
+   *p = 0xBAD;
+   __builtin_unreachable();  // the store above never returns.
+}
+
+
 // The whole translation unit is empty unless fault injection is enabled, so a
 // normal build links a no-op object file.
 #ifdef __FAULT_INJECTION__

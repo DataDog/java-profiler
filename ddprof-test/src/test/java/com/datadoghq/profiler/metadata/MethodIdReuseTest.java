@@ -62,6 +62,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * out and get erased) while touching a DIFFERENT persistent set plus brand-new lambdas (which draw
  * recycled ids). The oracle asserts no {@code jdk.types.Method} id maps to two distinct method
  * definitions within any chunk.
+ *
+ * <p>The same raw-chunk walk also enforces the complementary property: method-pool
+ * <em>referential integrity</em> — every method id a stack frame points at was actually emitted in
+ * that chunk's method pool. A missing entry is the mirror image of a duplicate one and is equally
+ * invisible to lenient parsers (jafar returns {@code null} and the frame renders nameless rather
+ * than failing), so this is the only place it is checked. See
+ * {@link Chunk#danglingMethodRefs()}.
  */
 public class MethodIdReuseTest extends AbstractProfilerTest {
 
@@ -238,18 +245,33 @@ public class MethodIdReuseTest extends AbstractProfilerTest {
             System.out.println("[PROF-15130]   " + p.toAbsolutePath());
         }
 
-        // Oracle: across every chunk in every dump, no method-pool id maps to two distinct method
-        // definitions.
+        // Two oracles over every chunk in every dump:
+        //  1. no method-pool id maps to two distinct method definitions (PROF-15130);
+        //  2. every method id a stack frame references was actually emitted in that chunk's method
+        //     pool. This is referential integrity of the method pool, and the same raw-chunk walk
+        //     answers it for free -- see Chunk.danglingMethodRefs() for why no other test can.
         int totalDuplicates = 0;
+        List<String> allDangling = new ArrayList<>();
         for (Path dump : dumps) {
-            int dups = countDuplicateMethodIds(dump);
-            System.out.println("[PROF-15130] " + dump.getFileName() + " duplicate method-pool ids: " + dups);
-            totalDuplicates += dups;
+            PoolAudit audit = auditMethodPools(dump);
+            System.out.println("[PROF-15130] " + dump.getFileName()
+                    + " duplicate method-pool ids: " + audit.duplicateIds
+                    + ", dangling frame->method refs: " + audit.danglingRefs.size());
+            for (String d : audit.danglingRefs) {
+                System.out.println("[PROF-15130]   DANGLING " + d);
+            }
+            totalDuplicates += audit.duplicateIds;
+            allDangling.addAll(audit.danglingRefs);
         }
 
         assertEquals(0, totalDuplicates,
                 "Found " + totalDuplicates + " jdk.types.Method constant-pool id(s) mapping to two "
                         + "distinct method definitions (PROF-15130). See stdout for the dump files.");
+
+        assertEquals(0, allDangling.size(),
+                "Found " + allDangling.size() + " stack frame reference(s) to a jdk.types.Method id "
+                        + "that the chunk's method constant pool never emitted, which lenient "
+                        + "parsers render as a nameless frame instead of rejecting: " + allDangling);
     }
 
     @Override
@@ -267,8 +289,15 @@ public class MethodIdReuseTest extends AbstractProfilerTest {
     // two DISTINCT method definitions within the same chunk. This is the precise duplicate-id
     // oracle (JMC's last-wins loader would silently hide it).
 
-    /** @return number of method-pool ids in the file that map to &gt;1 distinct definition. */
-    static int countDuplicateMethodIds(Path file) throws IOException {
+    /** Findings from auditing every chunk's method constant pool in one file. */
+    static final class PoolAudit {
+        /** Method-pool ids mapping to &gt;1 distinct definition (PROF-15130). */
+        int duplicateIds;
+        /** Human-readable description of each stack frame reference with no pool entry. */
+        final List<String> danglingRefs = new ArrayList<>();
+    }
+
+    static PoolAudit auditMethodPools(Path file) throws IOException {
         byte[] all;
         try (FileChannel ch = FileChannel.open(file, StandardOpenOption.READ)) {
             long size = ch.size();
@@ -276,8 +305,9 @@ public class MethodIdReuseTest extends AbstractProfilerTest {
             while (bb.hasRemaining() && ch.read(bb) > 0) { /* read fully */ }
             all = bb.array();
         }
-        int duplicates = 0;
+        PoolAudit audit = new PoolAudit();
         long pos = 0;
+        int chunkIndex = 0;
         while (pos + 8 <= all.length) {
             // Chunk magic "FLR\0"
             if (!(all[(int) pos] == 'F' && all[(int) pos + 1] == 'L' && all[(int) pos + 2] == 'R'
@@ -285,13 +315,19 @@ public class MethodIdReuseTest extends AbstractProfilerTest {
                 break;
             }
             Chunk chunk = new Chunk(all, (int) pos);
-            duplicates += chunk.countDuplicateMethodIds();
+            audit.duplicateIds += chunk.countDuplicateMethodIds();
+            for (Long missing : chunk.danglingMethodRefs()) {
+                audit.danglingRefs.add(file.getFileName() + " chunk#" + chunkIndex
+                        + " frame references method id=" + missing
+                        + " which the chunk's method pool never emitted");
+            }
             if (chunk.chunkSize <= 0) {
                 break;
             }
             pos += chunk.chunkSize;
+            chunkIndex++;
         }
-        return duplicates;
+        return audit;
     }
 
     private static final class Chunk {
@@ -322,6 +358,15 @@ public class MethodIdReuseTest extends AbstractProfilerTest {
         // id -> set of DISTINCT raw [type,name,descriptor] ref-tuples seen for that method id.
         // size() > 1 ⇒ the id carried two different method definitions in this chunk ⇒ the bug.
         private final Map<Long, Set<String>> methodRefTuples = new LinkedHashMap<>();
+        // Every jdk.types.Method id referenced by a stack frame in this chunk. Any id in here but
+        // NOT in methodRefTuples.keySet() is a dangling reference: the frame points at a method
+        // constant-pool entry the chunk never emitted.
+        private final Set<Long> referencedMethodIds = new HashSet<>();
+        // Set when an unknown class layout forced the checkpoint walk to stop early. The method
+        // pool is written AFTER the stack-trace pool (writeCpool: writeStackTraces then
+        // writeMethods), so a truncated walk can see frame references without their definitions —
+        // which looks exactly like a dangling reference. Suppress that check rather than report it.
+        private boolean walkTruncated;
 
         int countDuplicateMethodIds() {
             // Follow the checkpoint delta chain.
@@ -344,6 +389,7 @@ public class MethodIdReuseTest extends AbstractProfilerTest {
                     ClassDef cd = classes.get(classId);
                     if (cd == null) {
                         // Unknown layout — cannot safely parse further in this checkpoint.
+                        walkTruncated = true;
                         return duplicateCount();
                     }
                     boolean isMethod = classId == methodTypeId;
@@ -391,6 +437,29 @@ public class MethodIdReuseTest extends AbstractProfilerTest {
             return duplicateCount();
         }
 
+        /**
+         * Method ids referenced by a stack frame in this chunk with no matching entry in the
+         * chunk's method constant pool. Empty when the walk was truncated (see walkTruncated).
+         *
+         * <p>A dangling reference is invisible to lenient parsers: jafar's ConstantPool.get()
+         * returns null, so the frame silently renders with no class/method name instead of failing.
+         * That makes this raw-chunk check the only reliable oracle for it. It is what catches a
+         * MethodInfo being handed to writeStackTraces() but never serialized by writeMethods() —
+         * e.g. a row that lives outside MethodMap, or one left unmarked by a mid-fill failure.
+         */
+        List<Long> danglingMethodRefs() {
+            List<Long> missing = new ArrayList<>();
+            if (walkTruncated) {
+                return missing;
+            }
+            for (Long ref : referencedMethodIds) {
+                if (!methodRefTuples.containsKey(ref)) {
+                    missing.add(ref);
+                }
+            }
+            return missing;
+        }
+
         private int duplicateCount() {
             int dups = 0;
             for (Map.Entry<Long, Set<String>> en : methodRefTuples.entrySet()) {
@@ -436,7 +505,16 @@ public class MethodIdReuseTest extends AbstractProfilerTest {
 
         private Object readScalar(long[] p, FieldDef fd) {
             if (fd.constantPool) {
-                return readVarLong(p); // a constant-pool reference id
+                long ref = readVarLong(p); // a constant-pool reference id
+                // Every reference to jdk.types.Method from anywhere in the chunk, whatever the
+                // enclosing type. In practice that is jdk.types.StackFrame.method (see
+                // jfrMetadata.cpp), reached through the generic skip-this-entry path below.
+                // Keying off the field's declared type rather than the enclosing type means this
+                // keeps working if another type ever gains a method reference. Ref 0 is JFR's null.
+                if (fd.typeId == methodTypeId && ref != 0) {
+                    referencedMethodIds.add(ref);
+                }
+                return ref;
             }
             ClassDef t = classes.get(fd.typeId);
             String tn = t != null ? t.name : null;

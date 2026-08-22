@@ -14,6 +14,7 @@
 #include "counters.h"
 #include "nativeMem.h"
 #include "dictionary.h"
+#include "faultInjection.h"
 #include "flightRecorder.inline.h"
 #include "incbin.h"
 #include "jfrMetadata.h"
@@ -547,9 +548,42 @@ u32 Lookup::resolveVTableReceiverCached(void *sym) {
   return class_id;
 }
 
+static const char *const UNKNOWN_METHOD_NAME = "unknown";
+
+// _mark doubles as "already filled in for this chunk" (writeMethods() clears it
+// after serializing), exactly as it does for a MethodMap row.
+MethodInfo *Lookup::unknownMethod() {
+  if (!_unknown_method._mark) {
+    _unknown_method._key = _method_map->unknownMethodId();
+    fillNativeMethodInfo(&_unknown_method, UNKNOWN_METHOD_NAME, nullptr);
+    _unknown_method._mark = true; // last; see the note in fillMethod()
+  }
+  return &_unknown_method;
+}
+
+unsigned long Lookup::methodKey(const ASGCT_CallFrame &frame,
+                                jmethodID method_id, jint bci,
+                                u32 vtable_class_id) {
+  // A null method_id never reaches here -- both callers divert it to
+  // unknownMethod(), which is not a map entry and so has no key.
+  assert(method_id != nullptr);
+  if (bci == BCI_ERROR || bci == BCI_NATIVE_FRAME) {
+    return MethodMap::makeKey(frame.native_function_name);
+  }
+  if (bci == BCI_NATIVE_FRAME_REMOTE) {
+    return MethodMap::makeKey(frame.packed_remote_frame);
+  }
+  if (bci == BCI_VTABLE_RECEIVER) {
+    return MethodMap::makeVTableReceiverKey(vtable_class_id);
+  }
+  [[maybe_unused]] FrameTypeId frame_type = FrameType::decode(bci);
+  assert(frame_type == FRAME_INTERPRETED || frame_type == FRAME_JIT_COMPILED ||
+         frame_type == FRAME_INLINED || frame_type == FRAME_C1_COMPILED ||
+         VM::isOpenJ9()); // OpenJ9 may have bugs that produce invalid frame types
+  return MethodMap::makeKey(method_id);
+}
+
 MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
-  static const char* UNKNOWN = "unknown";
-  unsigned long key;
   jint bci = frame.bci;
   jmethodID method_id = frame.method_id;
 
@@ -561,10 +595,97 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     method_id = nullptr;
   }
 
+  // Nothing to symbolicate and nothing that can fault, so no protection is
+  // armed for this case at all.
+  if (method_id == nullptr) {
+    return unknownMethod();
+  }
+
+  // Fast path, deliberately unprotected. For anything but a raw-pointer or
+  // BCI_VTABLE_RECEIVER frame, methodKey() reads no VM metadata (see its
+  // comment) and an already-marked row needs no symbolication -- there is
+  // nothing here that can fault, hence nothing to recover from. Worth
+  // special-casing because it is the common case once a chunk is warm, and
+  // arming the protection below is not free: initCurrentThreadSignalSafe()
+  // blocks and unblocks signals and sigsetjmp(..., 1) reads the signal mask,
+  // three syscalls on a loop that runs once per frame per trace.
+  if (!FrameType::isRawPointer(bci) && bci != BCI_VTABLE_RECEIVER) {
+    MethodMap::iterator it = _method_map->find(methodKey(frame, method_id, bci, 0));
+    if (it != _method_map->end() && it->second._mark) {
+      return &it->second;
+    }
+  }
+
+  // Slow path: symbolication reads VM metadata that a concurrent class unload
+  // may already have freed, so wrap it in a siglongjmp window that
+  // Profiler::checkFault() jumps back through on SIGSEGV/SIGBUS.
+  //
+  // Runs on the dump thread (finishChunk), never in a signal handler, so
+  // initCurrentThreadSignalSafe() can only fail on OOM.
+  ProfiledThread *prof_thread = ProfiledThread::initCurrentThreadSignalSafe();
+  if (prof_thread == nullptr) {
+    // No thread context means nowhere to publish a landing pad. Resolve
+    // unprotected rather than returning nullptr: both call sites in
+    // writeStackTraces() dereference the result unconditionally, so a nullptr
+    // return would convert a transient allocation failure into a SIGSEGV on the
+    // dump thread. Unprotected is also exactly what this code did before the
+    // protection was added.
+    Counters::increment(METHOD_RESOLVE_UNPROTECTED);
+    return fillMethod(frame, method_id, bci);
+  }
+
+  // Fill the shared "unknown" row *before* arming. The recovery branch below
+  // runs with protection already disarmed, so it must not allocate -- a second
+  // fault there would be unrecoverable -- and filling the row does allocate
+  // (symbol/class dictionary inserts). Once filled it stays filled for the rest
+  // of the chunk, so this costs one flag test per call after the first.
+  unknownMethod();
+
+  // Reinstates the thread's previous landing pad on every exit from this frame,
+  // including a std::bad_alloc thrown by one of the map or dictionary inserts
+  // underneath. Leaving ours installed past the end of this frame would leave
+  // checkFault() jumping into a dead stack frame.
+  JmpCtxScope jmp_scope(prof_thread);
+
+  sigjmp_buf crash_protection_ctx;
+  // savemask must be 1: the siglongjmp originates inside segvHandler, where
+  // the kernel has SIGSEGV blocked, so without restoring the saved mask the
+  // signal would stay blocked and the next fault on this thread would be
+  // fatal.
+  if (sigsetjmp(crash_protection_ctx, 1) != 0) {
+    // checkFault() absorbed a fault raised somewhere in fillMethod() and
+    // jumped back here, bypassing the SIGNAL_HANDLER_GUARD() destructor in
+    // segvHandler()/busHandler(); compensate for it, then disarm before
+    // touching anything else.
+    SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
+    jmp_scope.restore();
+    Counters::increment(METHOD_RESOLVE_LONGJMP_RECOVERED);
+    // A member, already filled above -- no map lookup, no allocation, and no
+    // reliance on a local surviving siglongjmp (the value of a non-volatile
+    // local assigned after sigsetjmp() is indeterminate here).
+    return &_unknown_method;
+  }
+  jmp_scope.install(&crash_protection_ctx);
+  return fillMethod(frame, method_id, bci);
+}
+
+MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
+                               jint bci) {
   // Resolve native method
   if (FrameType::isRawPointer(bci)) {
     method_id = JVMSupport::resolve(frame.method);
+    if (method_id == nullptr) {
+        return unknownMethod();
+    }
   }
+
+  assert(method_id != nullptr && "Already filtered by caller");
+
+  // Inject fault to test siglongjmp protection. Sits inside the window
+  // resolveMethod() arms around this function, which is the point: this is
+  // never compiled into a production build (it needs -PenableFaultInjection).
+  INJECT_CRASH_LIKELY();
+
 
   // BCI_VTABLE_RECEIVER: method holds a VMSymbol* (see vmEntry.h). Resolve
   // to a class_id via the per-dump cache once, then key MethodMap by the
@@ -576,26 +697,9 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     vtable_class_id = resolveVTableReceiverCached((void *)method_id);
   }
 
-  if (method_id == nullptr) {
-    key = MethodMap::makeKey(UNKNOWN);
-  } else if (bci == BCI_ERROR || bci == BCI_NATIVE_FRAME) {
-    key = MethodMap::makeKey(frame.native_function_name);
-  } else if (bci == BCI_NATIVE_FRAME_REMOTE) {
-    key = MethodMap::makeKey(frame.packed_remote_frame);
-  } else if (bci == BCI_VTABLE_RECEIVER) {
-    key = MethodMap::makeVTableReceiverKey(vtable_class_id);
-  } else {
-    FrameTypeId frame_type = FrameType::decode(bci);
-    assert(frame_type == FRAME_INTERPRETED || frame_type == FRAME_JIT_COMPILED ||
-           frame_type == FRAME_INLINED || frame_type == FRAME_C1_COMPILED ||
-           VM::isOpenJ9()); // OpenJ9 may have bugs that produce invalid frame types
-    key = MethodMap::makeKey(method_id);
-  }
-
-  MethodInfo *mi = &(*_method_map)[key];
+  MethodInfo *mi = &(*_method_map)[methodKey(frame, method_id, bci, vtable_class_id)];
 
   if (!mi->_mark) {
-    mi->_mark = true;
     bool first_time = mi->_key == 0;
     if (first_time) {
       // Allocate a method-pool id that is unique among live methods. Must not
@@ -605,9 +709,7 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
       // (PROF-15130). The allocator recycles ids freed on erase instead.
       mi->_key = _method_map->allocId();
     }
-    if (method_id == nullptr) {
-      fillNativeMethodInfo(mi, UNKNOWN, nullptr);
-    } else if (bci == BCI_ERROR) {
+    if (bci == BCI_ERROR) {
       fillNativeMethodInfo(mi, (const char *)method_id, nullptr);
     } else if (bci == BCI_NATIVE_FRAME) {
       const char *name = (const char *)method_id;
@@ -660,8 +762,18 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     } else {
       fillJavaMethodInfo(mi, method_id, first_time);
     }
+    // Mark last, never before the fill above. The fill walks VM metadata that a
+    // concurrent class unload may have freed, so it can siglongjmp straight out
+    // of this function (and fillJavaMethodInfo() also returns early when
+    // PushLocalFrame fails). Marking up front would leave the row marked but
+    // still default-constructed: writeMethods() serializes any marked row, so
+    // the chunk would gain a method with an empty class/name/sig typed as
+    // FRAME_INTERPRETED, and every later frame with this key would reuse it.
+    // Left unmarked, the row is skipped by writeMethods(), retried by the next
+    // frame that needs it, and eventually aged out by
+    // cleanupUnreferencedMethods(), which recycles its _key.
+    mi->_mark = true;
   }
-
   return mi;
 }
 
@@ -1685,6 +1797,18 @@ int Recording::writeStackTraces(Buffer *buf, Lookup *lookup) {
   return trace_count > 0 ? 1 : 0;
 }
 
+// Serializes one method-pool entry and clears its mark, so the next chunk
+// re-resolves it (symbol/class ids are per-chunk).
+static void writeMethodEntry(Buffer *buf, MethodInfo &mi) {
+  mi._mark = false;
+  buf->putVar64(mi._key);
+  buf->putVar64(mi._class);
+  buf->putVar64(mi._name);
+  buf->putVar64(mi._sig);
+  buf->putVar64(mi._modifiers);
+  buf->putVar64(mi.isHidden());
+}
+
 int Recording::writeMethods(Buffer *buf, Lookup *lookup) {
   MethodMap *method_map = lookup->_method_map;
 
@@ -1694,6 +1818,13 @@ int Recording::writeMethods(Buffer *buf, Lookup *lookup) {
     if (it->second._mark) {
       marked_count++;
     }
+  }
+  // Lookup::_unknown_method is deliberately not a map entry (see its
+  // declaration), so the walk above cannot see it. It still has to be emitted:
+  // writeStackTraces() wrote its _key for every frame that resolved to it, and a
+  // _key absent from this pool is a dangling reference in the chunk.
+  if (lookup->_unknown_method._mark) {
+    marked_count++;
   }
 
   if (marked_count == 0) {
@@ -1706,15 +1837,13 @@ int Recording::writeMethods(Buffer *buf, Lookup *lookup) {
        ++it) {
     MethodInfo &mi = it->second;
     if (mi._mark) {
-      mi._mark = false;
-      buf->putVar64(mi._key);
-      buf->putVar64(mi._class);
-      buf->putVar64(mi._name);
-      buf->putVar64(mi._sig);
-      buf->putVar64(mi._modifiers);
-      buf->putVar64(mi.isHidden());
+      writeMethodEntry(buf, mi);
       flushIfNeeded(buf);
     }
+  }
+  if (lookup->_unknown_method._mark) {
+    writeMethodEntry(buf, lookup->_unknown_method);
+    flushIfNeeded(buf);
   }
   return 1;
 }
@@ -2185,6 +2314,7 @@ void FlightRecorder::stop() {
 }
 
 Error FlightRecorder::dump(const char *filename, const int length) {
+  TEST_LOG("Dump jfr to file: %s", filename);
   DEBUG_ASSERT_NOT_IN_SIGNAL();
   assert(length >= 0);
   ExclusiveLockGuard locker(&_rec_lock);

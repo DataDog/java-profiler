@@ -16,6 +16,7 @@
 #include "stringDictionary.h"
 #include "engine.h"
 #include "event.h"
+#include "faultInjection.h"
 #include "flightRecorder.h"
 #include "guards.h"
 #include "libraries.h"
@@ -140,6 +141,7 @@ private:
   StackWalkFeatures _features;
   int _safe_mode;
   CStack _cstack;
+  bool _force_jmethodID;
 
   volatile jvmtiEventMode _thread_events_state;
 
@@ -227,6 +229,7 @@ public:
         _start_time(0), _stop_time(0), _epoch(0), _timer_id(NULL),
         _total_samples(0), _sample_seq(0), _failures(), _class_map_lock(),
         _max_stack_depth(0), _features(), _safe_mode(0), _cstack(CSTACK_NO),
+        _force_jmethodID(true),
         _thread_events_state(JVMTI_DISABLE), _libs(Libraries::instance()),
         _num_context_attributes(0), _omit_stacktraces(false),
         _remote_symbolication(false), _sanity_check_failed(false),
@@ -276,6 +279,10 @@ public:
 
   inline CStack cstackMode() const {
     return _cstack;
+  }
+
+  inline bool forceJmethodID() const {
+    return _force_jmethodID;
   }
 
   inline const StackWalkFeatures& stackWalkFeatures() const {
@@ -519,8 +526,7 @@ public:
     // this is a safe place to do it since this wrapper is used solely from the 'vm' stackwalker implementation
     if (force_stackwalk_crash_env) {
       TEST_LOG("FORCE_SIGSEGV");
-      int* p = nullptr;
-      *p = 1;
+      crashNow();
     }
 #endif
     return Libraries::instance()->findLibraryByAddress(address);
