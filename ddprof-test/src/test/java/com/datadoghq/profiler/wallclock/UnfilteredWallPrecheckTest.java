@@ -5,7 +5,6 @@
 
 package com.datadoghq.profiler.wallclock;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -28,14 +27,14 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
   private static final int OSTHREAD_STATE_SLEEPING = 7;
   private static final long SLEEP_MILLIS = 300;
   private static final String PRE_EXISTING_THREAD_NAME = "unfiltered-precheck-existing";
-  private static final String SUPPRESSED_RUN_COUNTER = "wc_signals_suppressed_sampled_run";
-  private static final String UNOWNED_SUPPRESSED_COUNTER = "wc_unowned_blocked_suppressed";
+  private static final String SUPPRESSED_OWNED_BLOCK_COUNTER =
+      "wc_signals_suppressed_owned_block";
 
   private ExecutorService preExistingWorker;
   private Thread preExistingThread;
 
   /**
-   * Verifies that an untraced thread's owned sleeping run is sampled once and then suppressed.
+   * Verifies that an untraced thread's owned sleeping run is suppressed.
    *
    * @throws Exception if the worker cannot complete
    */
@@ -95,11 +94,9 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
    */
   @RetryingTest(3)
   public void unownedSleepAfterOwnedBlockUsesNormalSampling() throws Exception {
-    long unownedSuppressedBefore = unownedSuppressedSignals();
     assertTrue(
         runPreExistingUnownedSleepingWorker() != 0,
         "Expected the setup block to register the worker");
-    long unownedSuppressedAfter = unownedSuppressedSignals();
 
     stopProfiler();
 
@@ -107,28 +104,25 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
     assertTrue(
         sampleCount >= 10,
         "Expected normal MethodSample volume for an unowned sleep, got: " + sampleCount);
-    if (unownedSuppressedBefore >= 0) {
-      assertEquals(
-          unownedSuppressedBefore,
-          unownedSuppressedAfter,
-          "Unfiltered mode must not use observation-only unowned suppression");
-    }
   }
 
   /**
-   * Retains coverage for post-start threads, whose owned-block hook must register a slot lazily.
+   * Retains coverage for threads whose registry slot is installed by a post-start ThreadStart
+   * event.
    *
    * @throws Exception if the worker cannot complete
    */
   @RetryingTest(3)
-  public void postStartSleepingThreadLazilyRegistersOwnedBlock() throws Exception {
+  public void postStartSleepingThreadUsesThreadStartSlot() throws Exception {
     String threadName = "unfiltered-precheck-post-start";
+    long suppressedBefore = suppressedSignals();
     assertTrue(
         runPostStartSleepingWorker(threadName) != 0,
-        "Expected the owned-block hook to register and arm SLEEPING state");
+        "Expected ThreadStart registration to arm SLEEPING state");
 
     stopProfiler();
     assertSuppressedSamples(threadName);
+    assertOwnedBlockSuppressionObserved(suppressedBefore);
   }
 
   @Override
@@ -249,19 +243,18 @@ public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
   }
 
   private long suppressedSignals() {
-    return profiler.getDebugCounters().getOrDefault(SUPPRESSED_RUN_COUNTER, -1L);
-  }
-
-  private long unownedSuppressedSignals() {
-    return profiler.getDebugCounters().getOrDefault(UNOWNED_SUPPRESSED_COUNTER, -1L);
+    return profiler.getDebugCounters().getOrDefault(SUPPRESSED_OWNED_BLOCK_COUNTER, -1L);
   }
 
   private void assertSuppressedSamples(String threadName) {
     long sampleCount = samplesForThread(threadName);
-    assertTrue(sampleCount > 0, "Expected the owned block run to be sampled once");
+    assertTrue(
+        sampleCount >= 1,
+        "Expected the owned block's first MethodSample to be retained");
     assertTrue(
         sampleCount < 10,
-        "Expected nearly no samples from owned block thread, got: " + sampleCount);
+        "Expected samples after the first owned-block sample to be suppressed, got: "
+            + sampleCount);
   }
 
   private long samplesForThread(String threadName) {
