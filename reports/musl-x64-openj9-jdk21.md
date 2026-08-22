@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk21
 
 ## musl-x64-openj9-jdk21 - ✅ PASS
 
-**Date:** 2026-08-21 19:10:11 EDT
+**Date:** 2026-08-21 20:15:10 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk21
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 511 |
-| Sample Rate | 8.52/sec |
-| Health Score | 532% |
+| CPU Samples | 522 |
+| Sample Rate | 8.70/sec |
+| Health Score | 544% |
 | Threads | 9 |
-| Allocations | 374 |
+| Allocations | 376 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 660 |
-| Sample Rate | 11.00/sec |
-| Health Score | 688% |
+| CPU Samples | 603 |
+| Sample Rate | 10.05/sec |
+| Health Score | 628% |
 | Threads | 10 |
-| Allocations | 486 |
+| Allocations | 517 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 79-81 cores)</summary>
+<summary>CPU Timeline (1 unique values: 81-81 cores)</summary>
 
 ```
-1787353526 81
-1787353531 81
-1787353536 81
-1787353541 81
-1787353546 81
-1787353551 81
-1787353556 81
-1787353561 81
-1787353566 81
-1787353571 81
-1787353576 81
-1787353581 81
-1787353586 81
-1787353591 81
-1787353596 81
-1787353601 81
-1787353606 81
-1787353611 81
-1787353616 81
-1787353621 79
+1787357469 81
+1787357474 81
+1787357479 81
+1787357484 81
+1787357489 81
+1787357494 81
+1787357499 81
+1787357504 81
+1787357509 81
+1787357514 81
+1787357519 81
+1787357524 81
+1787357529 81
+1787357534 81
+1787357539 81
+1787357544 81
+1787357549 81
+1787357554 81
+1787357559 81
+1787357564 81
 ```
 </details>
 
