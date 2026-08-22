@@ -21,6 +21,7 @@
 
 #include "threadFilter.h"
 #include "arch.h"
+#include "counters.h"
 #include "nativeMem.h"
 #include "os.h"
 #include "threadLocalData.h"
@@ -33,12 +34,16 @@
 
 ThreadFilter::ShardHead ThreadFilter::_free_heads[ThreadFilter::kShardCount] {};
 
-ThreadFilter::ThreadFilter() : _enabled(false) {
+ThreadFilter::ThreadFilter()
+    : _enabled(false), _registry_active(false), _track_unfiltered_wall(false) {
     // Initialize chunk pointers to null (lazy allocation)
     for (int i = 0; i < kMaxChunks; ++i) {
         _chunks[i].store(nullptr, std::memory_order_relaxed);
     }
     _free_list = std::make_unique<FreeListNode[]>(kFreeListSize);
+    for (auto& entry : _tid_index) {
+        entry.store(0, std::memory_order_relaxed);
+    }
     NativeMem::record(NM_THREAD_FILTER,
                       (long long)(kFreeListSize * sizeof(FreeListNode)));
 
@@ -54,6 +59,9 @@ ThreadFilter::ThreadFilter() : _enabled(false) {
 ThreadFilter::~ThreadFilter() {
     // Make the filter inert for any concurrent readers
     _enabled.store(false, std::memory_order_release);
+    _registry_active.store(false, std::memory_order_release);
+    _track_unfiltered_wall.store(false, std::memory_order_release);
+    _recording_epoch.store(0, std::memory_order_release);
     // Reset free-list heads and nodes first
     for (int s = 0; s < kShardCount; ++s) {
         _free_heads[s].head.store(-1, std::memory_order_relaxed);
@@ -61,6 +69,9 @@ ThreadFilter::~ThreadFilter() {
     for (int i = 0; i < kFreeListSize; ++i) {
         _free_list[i].value.store(-1, std::memory_order_relaxed);
         _free_list[i].next.store(-1, std::memory_order_relaxed);
+    }
+    for (auto& entry : _tid_index) {
+        entry.store(0, std::memory_order_relaxed);
     }
     // Publish 0 chunks to stop range scans (collect)
     _num_chunks.store(0, std::memory_order_release);
@@ -91,7 +102,9 @@ void ThreadFilter::initializeChunk(int chunk_idx) {
     // Allocate and initialize new chunk completely before swapping
     ChunkStorage* new_chunk = new ChunkStorage();
     for (auto& slot : new_chunk->slots) {
-        slot.value.store(-1, std::memory_order_relaxed);
+        slot.tid.store(-1, std::memory_order_relaxed);
+        slot.recording_epoch.store(0, std::memory_order_relaxed);
+        slot.context_window_state.store(0, std::memory_order_relaxed);
         slot.active_block_state.store(OSThreadState::UNKNOWN, std::memory_order_relaxed);
     }
 
@@ -106,15 +119,51 @@ void ThreadFilter::initializeChunk(int chunk_idx) {
     }
 }
 
-ThreadFilter::SlotID ThreadFilter::registerThread() {
-    // If disabled, block new registrations
-    if (!_enabled.load(std::memory_order_acquire)) {
+ThreadFilter::SlotID ThreadFilter::registerThread(int tid) {
+    if (!_registry_active.load(std::memory_order_acquire)) {
         return -1;
     }
+#ifdef UNIT_TEST
+    if (_post_active_check_hook != nullptr) {
+        _post_active_check_hook(_post_active_check_hook_arg);
+    }
+#endif
+    std::lock_guard<std::mutex> lock(_registry_lock);
+    // Re-check under the lock: deactivateRecording()/init() serialize their
+    // admission-closing store on this same lock, so this recheck closes the
+    // TOCTOU window between the fast-path check above and lock acquisition.
+    if (!_registry_active.load(std::memory_order_acquire)) {
+        return -1;
+    }
+
+    if (tid >= 0) {
+        SlotID existing = lookupSlotIdByTid(tid);
+        if (existing >= 0) {
+            RecordingEpoch epoch = recordingEpoch();
+            if (epoch != 0) {
+                refreshSlotForRecording(slotForId(existing), epoch);
+            }
+            return existing;
+        }
+    }
+
+    RecordingEpoch epoch = recordingEpoch();
 
     // First, try to get a slot from the free list (lock-free stack)
     SlotID reused_slot = popFromFreeList();
     if (reused_slot >= 0) {
+        Slot* slot = slotForId(reused_slot);
+        slot->lifecycle_generation.fetch_add(1, std::memory_order_acq_rel);
+        slot->recording_epoch.store(0, std::memory_order_relaxed);
+        slot->context_window_state.store(0, std::memory_order_relaxed);
+        slot->clearActiveBlockRun(OSThreadState::UNKNOWN);
+        if (!indexOrRollback(*slot, reused_slot, tid)) {
+            pushToFreeList(reused_slot);
+            return -1;
+        }
+        if (epoch != 0) {
+            slot->recording_epoch.store(epoch, std::memory_order_release);
+        }
         return reused_slot;
     }
 
@@ -123,6 +172,7 @@ ThreadFilter::SlotID ThreadFilter::registerThread() {
     if (index >= kMaxThreads) {
         // Revert the increment and return failure
         _next_index.fetch_sub(1, std::memory_order_relaxed);
+        Counters::increment(THREAD_REGISTRY_CAPACITY_EXHAUSTED);
         return -1;
     }
 
@@ -145,7 +195,196 @@ ThreadFilter::SlotID ThreadFilter::registerThread() {
     // Initialize the chunk if needed
     initializeChunk(chunk_idx);
 
+    Slot* slot = slotForId(index);
+    slot->lifecycle_generation.fetch_add(1, std::memory_order_acq_rel);
+    slot->recording_epoch.store(0, std::memory_order_relaxed);
+    slot->context_window_state.store(0, std::memory_order_relaxed);
+    slot->clearActiveBlockRun(OSThreadState::UNKNOWN);
+    if (!indexOrRollback(*slot, index, tid)) {
+        pushToFreeList(index);
+        return -1;
+    }
+    if (epoch != 0) {
+        slot->recording_epoch.store(epoch, std::memory_order_release);
+    }
+
     return index;
+}
+
+void ThreadFilter::refreshSlotForRecording(Slot* slot, RecordingEpoch epoch) {
+    if (slot == nullptr || epoch == 0 || slot->recordingEpoch() == epoch) {
+        return;
+    }
+
+    // Make the retained identity ineligible before resetting its recording-local
+    // payload, then publish the new epoch only after the reset is complete.
+    slot->recording_epoch.store(0, std::memory_order_release);
+
+    // add()/remove() only ever act on the calling thread's own slot
+    // (ensureCurrentThreadFilterSlot uses current->tid()), and this method is
+    // only reached via registerThread() re-registering the calling thread's
+    // own tid, so no other thread can be transitioning this slot's context
+    // window concurrently. The CAS (instead of a plain store) is defensive:
+    // it detects rather than silently clobbers a concurrent transition if
+    // that invariant is ever broken.
+    u64 current = slot->context_window_state.load(std::memory_order_acquire);
+    while (current != 0 &&
+           !slot->context_window_state.compare_exchange_weak(
+               current, 0, std::memory_order_acq_rel, std::memory_order_acquire)) {
+        Counters::increment(THREAD_REGISTRY_CONTEXT_RESET_RACE_DETECTED);
+    }
+
+    slot->clearActiveBlockRun(OSThreadState::UNKNOWN);
+    slot->recording_epoch.store(epoch, std::memory_order_release);
+}
+
+// _tid_index is an open-addressing hash table mapping tid -> slot_id, used to
+// dedupe registrations and support fast tid -> slot lookups (lookupSlotIdByTid).
+// Each entry is one of:
+//   0            empty — either never used, or reclaimed from a tombstone by
+//                unindexSlot() once provably safe (see below)
+//  -1            tombstone (previously occupied, now deleted; probing must
+//                continue past it, since a live entry may have landed
+//                further along the same probe chain while this slot was
+//                still occupied)
+//  slot_id + 1   occupied (offset by 1 so slot_id 0 doesn't collide with the
+//                "empty" sentinel)
+// Invariant: a slot holds 0 only when no live entry's probe sequence can ever
+// need to continue past it. indexSlot/unindexSlot/lookupSlotIdByTid all
+// linearly probe from hashTid(tid) & kTidIndexMask, wrapping around the
+// kTidIndexSize-slot table, but stop differently: indexSlot inserts at the
+// first free slot it meets (value <= 0, i.e. empty or tombstone — it doesn't
+// need to search past a tombstone, since callers already deduped via
+// lookupSlotIdByTid under the same lock); lookupSlotIdByTid/unindexSlot must
+// instead treat tombstones as transparent and keep probing past them,
+// stopping only at a true empty slot (value == 0, by the invariant above) or
+// a match.
+bool ThreadFilter::indexSlot(SlotID slot_id, int tid) {
+    unsigned start = hashTid(tid) & kTidIndexMask;
+    for (int probe = 0; probe < kTidIndexSize; ++probe) {
+        int index = (start + probe) & kTidIndexMask;
+        int value = _tid_index[index].load(std::memory_order_acquire);
+        if (value <= 0) {
+            _tid_index[index].store(slot_id + 1, std::memory_order_release);
+            return true;
+        }
+        if (value > 0) {
+            Slot* slot = slotForId(value - 1);
+            if (slot != nullptr && slot->nativeTid() == tid) {
+                return value - 1 == slot_id;
+            }
+        }
+    }
+    return false;
+}
+
+void ThreadFilter::unindexSlot(SlotID slot_id, int tid) {
+    if (tid < 0) return;
+    unsigned start = hashTid(tid) & kTidIndexMask;
+    for (int probe = 0; probe < kTidIndexSize; ++probe) {
+        int index = (start + probe) & kTidIndexMask;
+        int value = _tid_index[index].load(std::memory_order_acquire);
+        if (value == 0) return;
+        if (value == slot_id + 1) {
+            // Deleting `index`: by the invariant above, `next == 0` already
+            // means no live entry needs to probe past `next` — and therefore
+            // none needs to probe past `index` either — so it's safe to clear
+            // `index` straight to 0 instead of leaving a tombstone (-1).
+            // Otherwise `next` is occupied or itself a tombstone, so some
+            // entry may still rely on probing through `index` to reach it;
+            // `index` must stay a tombstone (-1) in that case.
+            int next = (index + 1) & kTidIndexMask;
+            int replacement =
+                _tid_index[next].load(std::memory_order_acquire) == 0 ? 0 : -1;
+            _tid_index[index].store(replacement, std::memory_order_release);
+            if (replacement == 0) {
+                // `index` is now 0, satisfying the invariant for it. Walk
+                // backward and reclaim any run of tombstones (-1) immediately
+                // preceding it into 0 too: each such tombstone only needed to
+                // stay non-zero to let probing reach `index` (or beyond), and
+                // that's no longer required now that `index` itself is 0.
+                // This keeps probe chains from growing unboundedly long as
+                // tids churn.
+                int previous = (index - 1) & kTidIndexMask;
+                while (_tid_index[previous].load(std::memory_order_acquire) == -1) {
+                    _tid_index[previous].store(0, std::memory_order_release);
+                    previous = (previous - 1) & kTidIndexMask;
+                }
+            }
+            return;
+        }
+    }
+}
+
+void ThreadFilter::rollbackFailedIndex(Slot& slot) {
+    slot.tid.store(-1, std::memory_order_release);
+    Counters::increment(THREAD_REGISTRY_INDEX_FAILURES);
+}
+
+bool ThreadFilter::indexOrRollback(Slot& slot, SlotID slot_id, int tid) {
+    slot.tid.store(tid, std::memory_order_release);
+    if (tid >= 0 && !indexSlot(slot_id, tid)) {
+        rollbackFailedIndex(slot);
+        return false;
+    }
+    return true;
+}
+
+ThreadFilter::SlotID ThreadFilter::lookupSlotIdByTid(int tid) const {
+    if (tid < 0) return -1;
+    unsigned start = hashTid(tid) & kTidIndexMask;
+    for (int probe = 0; probe < kTidIndexSize; ++probe) {
+        int index = (start + probe) & kTidIndexMask;
+        int value = _tid_index[index].load(std::memory_order_acquire);
+        if (value == 0) return -1;
+        if (value > 0) {
+            Slot* slot = slotForId(value - 1);
+            if (slot != nullptr && slot->nativeTid() == tid) {
+                return value - 1;
+            }
+        }
+    }
+    return -1;
+}
+
+ThreadFilter::Slot* ThreadFilter::lookupByTid(int tid, SlotID* out_slot_id) const {
+    SlotID slot_id = lookupSlotIdByTid(tid);
+    if (out_slot_id != nullptr) {
+        *out_slot_id = slot_id;
+    }
+    return slot_id < 0 ? nullptr : slotForId(slot_id);
+}
+
+ThreadFilter::Slot* ThreadFilter::lookupByTid(int tid, RecordingEpoch epoch,
+                                             SlotID* out_slot_id) const {
+    if (out_slot_id != nullptr) {
+        *out_slot_id = -1;
+    }
+    if (epoch == 0 || recordingEpoch() != epoch) {
+        return nullptr;
+    }
+    SlotID slot_id = -1;
+    Slot* slot = lookupByTid(tid, &slot_id);
+    if (slot == nullptr || slot->recordingEpoch() != epoch) {
+        return nullptr;
+    }
+    if (out_slot_id != nullptr) {
+        *out_slot_id = slot_id;
+    }
+    return slot;
+}
+
+ThreadFilter::Slot* ThreadFilter::activeSlotForId(SlotID slot_id,
+                                                  int tid) const {
+    Slot* slot = slotForId(slot_id);
+    if (slot == nullptr || slot->nativeTid() != tid) {
+        return nullptr;
+    }
+    RecordingEpoch epoch = recordingEpoch();
+    if (epoch != 0 && slot->recordingEpoch() != epoch) {
+        return nullptr;
+    }
+    return slot;
 }
 
 void ThreadFilter::initFreeList() {
@@ -174,15 +413,15 @@ bool ThreadFilter::accept(SlotID slot_id) const {
     // This is not a fast path like the add operation.
     ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
     if (likely(chunk != nullptr)) {
-        return chunk->slots[slot_idx].value.load(std::memory_order_relaxed) != -1;
+        return chunk->slots[slot_idx].inContextWindow();
     }
     return false;
 }
 
-void ThreadFilter::add(int tid, SlotID slot_id) {
+bool ThreadFilter::add(int tid, SlotID slot_id) {
     // PRECONDITION: slot_id must be from registerThread() or negative
     // Undefined behavior for invalid positive slot_ids (performance optimization)
-    if (slot_id < 0) return;
+    if (slot_id < 0) return false;
 
     int chunk_idx = slot_id >> kChunkShift;
     int slot_idx = slot_id & kChunkMask;
@@ -190,8 +429,30 @@ void ThreadFilter::add(int tid, SlotID slot_id) {
     // Fast path: assume valid slot_id from registerThread()
     ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
     if (likely(chunk != nullptr)) {
-        chunk->slots[slot_idx].value.store(tid, std::memory_order_release);
+        Slot& slot = chunk->slots[slot_idx];
+        if (unlikely(slot.nativeTid() == -1)) {
+            std::lock_guard<std::mutex> lock(_registry_lock);
+            if (slot.nativeTid() == -1) {
+                // Defensive: mirrors registerThread()'s dedup check. Under the
+                // current self-registration invariant (a thread only ever
+                // registers its own tid) and correct index cleanup on both
+                // resetRegistrationsLocked() and unregisterThreadLocked(), this
+                // branch should be unreachable in production; it guards against
+                // a stale/duplicate tid mapping if that invariant ever changes.
+                SlotID existing = lookupSlotIdByTid(tid);
+                if (existing >= 0 && existing != slot_id) {
+                    Counters::increment(THREAD_REGISTRY_INDEX_FAILURES);
+                    return false;
+                }
+                if (!indexOrRollback(slot, slot_id, tid)) {
+                    return false;
+                }
+            }
+        }
+        slot.enterContextWindow();
+        return true;
     }
+    return false;
 }
 
 void ThreadFilter::remove(SlotID slot_id) {
@@ -212,14 +473,64 @@ void ThreadFilter::remove(SlotID slot_id) {
         return;
     }
 
-    chunk->slots[slot_idx].value.store(-1, std::memory_order_release);
+    chunk->slots[slot_idx].exitContextWindow();
 }
 
-void ThreadFilter::unregisterThread(SlotID slot_id) {
+void ThreadFilter::unregisterThread(SlotID slot_id, int expected_tid) {
+    std::lock_guard<std::mutex> lock(_registry_lock);
+    unregisterThreadLocked(slot_id, expected_tid);
+}
+
+void ThreadFilter::unregisterThreadLocked(SlotID slot_id, int expected_tid) {
     if (slot_id < 0) return;
-    remove(slot_id);
-    resetSlotRunState(slot_id);
+    Slot* slot = slotForId(slot_id);
+    if (slot == nullptr) return;
+    int tid = slot->nativeTid();
+    if (expected_tid >= 0 && tid != expected_tid) return;
+    unindexSlot(slot_id, tid);
+    slot->recording_epoch.store(0, std::memory_order_release);
+    slot->tid.store(-1, std::memory_order_release);
+    slot->context_window_state.store(0, std::memory_order_release);
+    slot->clearActiveBlockRun(OSThreadState::UNKNOWN);
     pushToFreeList(slot_id);
+}
+
+void ThreadFilter::unregisterThreadByTid(int tid) {
+    // Lock-free pre-check: avoids the mutex for the common case where this tid
+    // was never registered (e.g. plain CPU profiling, or filtered recordings
+    // where this thread never matched). A hit here is always re-confirmed
+    // under the lock before anything is mutated.
+    if (lookupSlotIdByTid(tid) < 0) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(_registry_lock);
+    SlotID slot_id = lookupSlotIdByTid(tid);
+    if (slot_id >= 0) {
+        unregisterThreadLocked(slot_id);
+    }
+}
+
+void ThreadFilter::resetRegistrationsLocked() {
+    int num_chunks = _num_chunks.load(std::memory_order_acquire);
+    for (int chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
+        ChunkStorage* chunk = _chunks[chunk_idx].load(std::memory_order_acquire);
+        if (chunk == nullptr) continue;
+        for (int slot_idx = 0; slot_idx < kChunkSize; ++slot_idx) {
+            Slot& slot = chunk->slots[slot_idx];
+            if (slot.nativeTid() != -1) {
+                slot.lifecycle_generation.fetch_add(1, std::memory_order_acq_rel);
+            }
+            slot.recording_epoch.store(0, std::memory_order_release);
+            slot.tid.store(-1, std::memory_order_release);
+            slot.context_window_state.store(0, std::memory_order_release);
+            slot.clearActiveBlockRun(OSThreadState::UNKNOWN);
+        }
+    }
+    for (auto& entry : _tid_index) {
+        entry.store(0, std::memory_order_relaxed);
+    }
+    _next_index.store(0, std::memory_order_relaxed);
+    initFreeList();
 }
 
 bool ThreadFilter::pushToFreeList(SlotID slot_id) {
@@ -288,8 +599,8 @@ void ThreadFilter::collect(std::vector<int>& tids) const {
         }
 
         for (const auto& slot : chunk->slots) {
-            int slot_tid = slot.value.load(std::memory_order_relaxed);
-            if (slot_tid != -1) {
+            int slot_tid = slot.nativeTid();
+            if (slot_tid != -1 && slot.inContextWindow()) {
                 tids.push_back(slot_tid);
             }
         }
@@ -313,9 +624,10 @@ void ThreadFilter::collect(std::vector<ThreadEntry>& entries) const {
         }
 
         for (auto& slot : chunk->slots) {
-            int slot_tid = slot.value.load(std::memory_order_acquire);
-            if (slot_tid != -1) {
-                entries.push_back({slot_tid, &slot});
+            int slot_tid = slot.nativeTid();
+            if (slot_tid != -1 && slot.inContextWindow()) {
+                entries.push_back({slot_tid, &slot, slot.lifecycleGeneration(),
+                                   slot.recordingEpoch()});
             }
         }
     }
@@ -330,7 +642,7 @@ void ThreadFilter::clearActive() {
         }
 
         for (auto& slot : chunk->slots) {
-            slot.value.store(-1, std::memory_order_release);
+            slot.exitContextWindow();
             slot.clearActiveBlockRun(OSThreadState::UNKNOWN);
         }
     }
@@ -353,7 +665,8 @@ u64 ThreadFilter::enterBlockedRun(SlotID slot_id, OSThreadState state,
     Slot* s = slotForId(slot_id);
     if (s != nullptr) {
         u32 generation = 0;
-        if (!s->trySetActiveBlockRun(state, owner, &generation)) {
+        if (!s->trySetActiveBlockRun(state, owner, &generation,
+                                     unfilteredWallTrackingActive())) {
             return 0;
         }
         return encodeBlockRunToken(slot_id, generation);
@@ -377,14 +690,124 @@ bool ThreadFilter::exitBlockedRun(SlotID slot_id, u32 generation) {
     return true;
 }
 
-void ThreadFilter::init(const char* filter) {
-    // Simple logic: any filter value (including "0") enables filtering
-    // Only explicitly registered threads via addThread() will be sampled
-    // Previously we had a syntax where we could manually force some thread IDs.
-    // This is no longer supported.
-    _enabled.store(filter != nullptr && strlen(filter) > 0, std::memory_order_release);
+bool ThreadFilter::shouldSuppressOwnedBlock(const ThreadEntry& entry) const {
+    Slot* slot = entry.slot;
+    if (slot == nullptr || slot->nativeTid() != entry.tid ||
+        slot->lifecycleGeneration() != entry.lifecycle_generation) {
+        return false;
+    }
+
+    const bool unfiltered_tracking = unfilteredWallTrackingActive();
+    RecordingEpoch epoch = 0;
+    if (unfiltered_tracking) {
+        epoch = recordingEpoch();
+        if (epoch == 0 || entry.recording_epoch != epoch ||
+            slot->recordingEpoch() != epoch) {
+            return false;
+        }
+    }
+
+#ifdef UNIT_TEST
+    if (_suppression_snapshot_hook != nullptr) {
+        _suppression_snapshot_hook(_suppression_snapshot_hook_arg);
+    }
+#endif
+
+    u32 block_generation = slot->blockGeneration();
+    BlockRunOwner owner = slot->activeBlockOwner();
+    OSThreadState state = slot->activeBlockState();
+    bool context_eligible =
+        !unfiltered_tracking || slot->activeBlockRemainedOutsideContextWindow();
+    bool sampled = slot->sampledThisRun();
+    OSThreadState last_sampled_state =
+        sampled ? slot->lastSampledState() : OSThreadState::UNKNOWN;
+    bool suppressible_state = isPrecheckSuppressionState(state);
+    if (owner == BlockRunOwner::NONE || !context_eligible ||
+        !suppressible_state || !sampled || state != last_sampled_state) {
+        return false;
+    }
+
+    // The payload is spread across independent atomics. Accept it only if the
+    // slot still represents the lifecycle and block run captured earlier in
+    // this wall-clock timer-thread pass, when `entry` was populated — either
+    // by ThreadFilter::collect() (inside timerLoop()'s collectThreads lambda)
+    // or by the lazy registry lookup at the top of sampleThreadCommon() —
+    // both in wallClock.cpp/.h (BaseWallClock::timerLoopCommon() itself is a
+    // template defined in wallClock.h).
+    if (slot->activeBlockOwner() != owner ||
+        slot->blockGeneration() != block_generation ||
+        slot->nativeTid() != entry.tid ||
+        slot->lifecycleGeneration() != entry.lifecycle_generation) {
+        return false;
+    }
+    if (unfiltered_tracking &&
+        (recordingEpoch() != epoch || slot->recordingEpoch() != epoch ||
+         !slot->activeBlockRemainedOutsideContextWindow())) {
+        return false;
+    }
+    return true;
+}
+
+void ThreadFilter::init(const char* filter, bool track_unfiltered_wall) {
+    // Preserve the legacy filter contract: every non-empty value, including
+    // "0", enables context filtering. Empty filter disables filtering; the
+    // extra flag only retains metadata for unfiltered wall prechecks.
+    bool context_filter = filter != nullptr && strlen(filter) > 0;
+    bool unfiltered_tracking = track_unfiltered_wall && !context_filter;
+    // Close registration before clearing identities from a previous unfiltered
+    // recording. Other threads retain only stale slot IDs; activeSlotForId()
+    // rejects them until their next context or owned-block hook registers lazily.
+    // Serialized against registerThread()'s in-lock recheck of _registry_active
+    // so a thread can't publish a slot after admission has been closed here.
+    {
+        std::lock_guard<std::mutex> lock(_registry_lock);
+        _registry_active.store(false, std::memory_order_release);
+        if (unfiltered_tracking) {
+            resetRegistrationsLocked();
+        }
+    }
+    RecordingEpoch epoch = 0;
+    if (unfiltered_tracking) {
+        epoch = _next_recording_epoch.fetch_add(1, std::memory_order_acq_rel) + 1;
+        if (epoch == 0) {
+            // Zero is reserved for inactive state. This can occur only after
+            // 2^64 recording starts; skip it rather than publishing ambiguity.
+            epoch = _next_recording_epoch.fetch_add(1, std::memory_order_acq_rel) + 1;
+        }
+    }
+    _recording_epoch.store(epoch, std::memory_order_release);
+    _track_unfiltered_wall.store(unfiltered_tracking,
+                                 std::memory_order_release);
+    _registry_active.store(unfiltered_tracking || context_filter,
+                           std::memory_order_release);
+    _enabled.store(context_filter, std::memory_order_release);
 }
 
 bool ThreadFilter::enabled() const {
     return _enabled.load(std::memory_order_acquire);
+}
+
+bool ThreadFilter::registryActive() const {
+    return _registry_active.load(std::memory_order_acquire);
+}
+
+bool ThreadFilter::unfilteredWallTrackingActive() const {
+    return _track_unfiltered_wall.load(std::memory_order_acquire);
+}
+
+ThreadFilter::RecordingEpoch ThreadFilter::recordingEpoch() const {
+    return _recording_epoch.load(std::memory_order_acquire);
+}
+
+void ThreadFilter::deactivateRecording() {
+    // Close producer admission before invalidating the recording epoch.
+    // Context-filtered recordings may retain slots; a new unfiltered recording
+    // resets them before reopening admission. Serialize against
+    // registerThread()'s in-lock recheck of _registry_active so a thread can't
+    // publish a slot after this admission-closing store has been observed.
+    std::lock_guard<std::mutex> lock(_registry_lock);
+    _registry_active.store(false, std::memory_order_release);
+    _enabled.store(false, std::memory_order_release);
+    _track_unfiltered_wall.store(false, std::memory_order_release);
+    _recording_epoch.store(0, std::memory_order_release);
 }

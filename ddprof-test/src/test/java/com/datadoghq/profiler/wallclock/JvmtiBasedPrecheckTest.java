@@ -59,6 +59,6 @@ public class JvmtiBasedPrecheckTest extends PrecheckTest {
 
     @Override
     protected String getPrecheckDisabledProfilerCommand() {
-        return "wall=1ms,wallprecheck=false,filter=0,jvmtistacks=true";
+        return "wall=1ms,wallprecheck=false,jvmtistacks=true";
     }
 }
