@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk8
 
 ## glibc-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-08-22 09:23:13 EDT
+**Date:** 2026-08-22 11:45:51 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 167 |
-| Sample Rate | 2.78/sec |
-| Health Score | 174% |
+| CPU Samples | 177 |
+| Sample Rate | 2.95/sec |
+| Health Score | 184% |
 | Threads | 5 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: glibc-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 209 |
-| Sample Rate | 3.48/sec |
-| Health Score | 217% |
-| Threads | 6 |
+| CPU Samples | 240 |
+| Sample Rate | 4.00/sec |
+| Health Score | 250% |
+| Threads | 10 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 66-66 cores)</summary>
+<summary>CPU Timeline (2 unique values: 64-66 cores)</summary>
 
 ```
-1787404772 66
-1787404777 66
-1787404782 66
-1787404787 66
-1787404792 66
-1787404797 66
-1787404802 66
-1787404807 66
-1787404812 66
-1787404817 66
-1787404822 66
-1787404827 66
-1787404832 66
-1787404837 66
-1787404842 66
-1787404847 66
-1787404852 66
-1787404857 66
-1787404862 66
-1787404867 66
+1787413233 66
+1787413238 66
+1787413243 66
+1787413248 66
+1787413253 66
+1787413258 66
+1787413263 66
+1787413268 66
+1787413273 64
+1787413278 64
+1787413283 64
+1787413288 64
+1787413293 64
+1787413298 64
+1787413303 64
+1787413308 64
+1787413313 64
+1787413318 66
+1787413323 66
+1787413328 66
 ```
 </details>
 

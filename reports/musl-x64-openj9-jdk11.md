@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk11
 
 ## musl-x64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-08-22 09:23:15 EDT
+**Date:** 2026-08-22 11:45:52 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 523 |
-| Sample Rate | 8.72/sec |
-| Health Score | 545% |
+| CPU Samples | 536 |
+| Sample Rate | 8.93/sec |
+| Health Score | 558% |
 | Threads | 8 |
-| Allocations | 411 |
+| Allocations | 416 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 756 |
-| Sample Rate | 12.60/sec |
-| Health Score | 787% |
-| Threads | 10 |
-| Allocations | 548 |
+| CPU Samples | 758 |
+| Sample Rate | 12.63/sec |
+| Health Score | 789% |
+| Threads | 11 |
+| Allocations | 557 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 66-66 cores)</summary>
 
 ```
-1787404756 66
-1787404762 66
-1787404767 66
-1787404772 66
-1787404777 66
-1787404782 66
-1787404787 66
-1787404792 66
-1787404797 66
-1787404802 66
-1787404807 66
-1787404812 66
-1787404817 66
-1787404822 66
-1787404827 66
-1787404832 66
-1787404837 66
-1787404842 66
-1787404847 66
-1787404852 66
+1787413226 66
+1787413231 66
+1787413236 66
+1787413241 66
+1787413246 66
+1787413251 66
+1787413256 66
+1787413261 66
+1787413266 66
+1787413271 66
+1787413276 66
+1787413281 66
+1787413286 66
+1787413291 66
+1787413296 66
+1787413301 66
+1787413306 66
+1787413311 66
+1787413316 66
+1787413321 66
 ```
 </details>
 
