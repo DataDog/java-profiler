@@ -1208,8 +1208,10 @@ private:
   u64 _last_root_enum_ns = 0;
 
   // Set true when the most recent root/stack-ref enumeration attempt ended
-  // via BUDGET_EXHAUSTED (not FRONTIER_CAP_HIT, which abandons the search
-  // outright) - runPass() treats this as grounds to retry root enumeration
+  // via BUDGET_EXHAUSTED (not FRONTIER_CAP_HIT, which stops admitting new
+  // frontier entries but leaves the search RUNNING - see runPass()'s
+  // frontier_cap_hit handling) - runPass() treats this as grounds to retry
+  // root enumeration
   // on the very next pass regardless of ROOT_ENUM_MIN_INTERVAL_NS, so a
   // still-incomplete attempt is not left waiting out the full interval
   // before continuing. Cleared as soon as an attempt completes without
@@ -1497,7 +1499,11 @@ private:
     ALREADY_ADMITTED, // *tag_ptr != 0: nothing to do, not a truncation
     HOP_CAP,          // depth >= hop_cap: not admitted, not a truncation
     BUDGET_EXHAUSTED,  // edges_admitted >= budget: this pass's cap
-    FRONTIER_CAP_HIT,  // FrontierTable::insert() itself is full: abandon-worthy
+    FRONTIER_CAP_HIT,  // FrontierTable::insert() itself is full: stops
+                       // admitting new entries but does not itself abandon
+                       // the search (see runPass()'s frontier_cap_hit
+                       // handling - the no-progress detector abandons only
+                       // if the frontier then stops growing)
     ADMITTED,
   };
 

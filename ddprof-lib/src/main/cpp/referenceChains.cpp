@@ -350,10 +350,13 @@ void ReferenceChainTracker::autoTuneDefaults(Arguments &args) {
   // --- Frontier cap ---
   // The frontier grows with the number of edges admitted per
   // pass. Scale with budget so a larger budget doesn't
-  // immediately hit the cap.
+  // immediately hit the cap. Use a floating-point ratio - integer
+  // division here would truncate the scale factor (e.g. a budget
+  // of 3741 against a default of 1000 would floor to a 3x
+  // multiplier instead of ~3.74x, undershooting the cap by ~20%).
   if (!(tuned & REF_CHAINS_TUNED_FRONTIER_CAP)) {
-    int scaled_cap = DEFAULT_REFERENCE_CHAINS_FRONTIER_CAP *
-        (args._reference_chains_budget / DEFAULT_REFERENCE_CHAINS_BUDGET);
+    int scaled_cap = (int)(DEFAULT_REFERENCE_CHAINS_FRONTIER_CAP *
+        ((double)args._reference_chains_budget / DEFAULT_REFERENCE_CHAINS_BUDGET));
     args._reference_chains_frontier_cap = std::max(
         DEFAULT_REFERENCE_CHAINS_FRONTIER_CAP,
         std::min(scaled_cap, MAX_REFERENCE_CHAINS_FRONTIER_CAP));
@@ -1534,8 +1537,10 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
       // without partially writing) - stop admitting new entries and report
       // the truncation (design doc: "stop admitting new entries ... report
       // it"), rather than silently dropping this object and continuing.
-      // Distinct from ordinary budget exhaustion above - runPass() abandons
-      // the whole search for this, not just this pass.
+      // Distinct from ordinary budget exhaustion above - runPass() keeps
+      // the search RUNNING on this, deferring to the no-progress detector
+      // to abandon only if the frontier then stops growing (see runPass()'s
+      // frontier_cap_hit handling).
       ctx->truncated = true;
       ctx->frontier_cap_hit = true;
       return JVMTI_VISIT_ABORT;
