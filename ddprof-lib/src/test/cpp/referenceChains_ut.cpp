@@ -90,6 +90,7 @@ public:
         t->_cpu_pain_budget = PainBudget();
         t->_search_pain_ms = 0;
         t->_root_kind_rotation_cursor = 1;
+        t->_stale_expanded_rotation_cursor = 1;
         t->_borrowed_budget = 0;
         t->_consecutive_under_target_passes = 0;
     }
@@ -297,6 +298,17 @@ public:
     // expandFrontier()/JVMTI round-trip to produce one.
     static void pushPriorityExpand(jlong tag) {
         ReferenceChainTracker::instance()->_priority_expand.push_back(tag);
+    }
+
+    // Simulates expandFrontier() having fully drained _priority_expand at the
+    // end of a pass (the common case: rotation's whole selection fit within
+    // that pass's rotation_budget slice) - see
+    // StaleExpandedRotationStarvesHighTagEntryBehindLowTagPopulation below,
+    // which needs this to model collectStaleExpandedEntriesForRotation()
+    // being called fresh on each of several simulated passes, the way
+    // runPassManualWalk() actually does it once per real pass.
+    static void clearPriorityExpand() {
+        ReferenceChainTracker::instance()->_priority_expand.clear();
     }
 
     static void setRootKindRotationCursor(jlong tag) {
@@ -2984,6 +2996,200 @@ TEST_F(ReferenceChainsBfsTest, StaleExpandedRotationSkipsPreexistingQueueEntries
 
     std::vector<jlong> queued = ReferenceChainsTestAccessor::priorityExpandContents();
     EXPECT_EQ((std::vector<jlong>{1}), queued);
+
+    tracker->stop();
+}
+
+// End-to-end proof of the prof-analyzer-hotdog-jb pod's actual leak shape:
+// a static-field-rooted collection (like ProfileAnalyzer.LEAK_BUFFER) whose
+// owning node is admitted and fully EXPANDED once, then has a *new* element
+// appended to it afterward - mirroring a Java List field being mutated in
+// place, never reassigned, well after admitStaticFieldRoots()'s one-time
+// sweep. The critical property under test is that this new element is
+// discovered by collectStaleExpandedEntriesForRotation()'s rotation without
+// the overall search ever reaching SearchState::COMPLETED - i.e. without
+// requiring a full heap walk to finish, which on a multi-GiB heap can take
+// far longer than the pod can tolerate between the leaked field's own
+// growth events. A large distractor root chain (never fully drained within
+// this test's bounded pass loops) keeps the search perpetually RUNNING so
+// this property is exercised directly, not sidestepped by letting the
+// search finish and then trivially re-discovering everything from scratch.
+TEST_F(ReferenceChainsBfsTest, RotationDiscoversLateElementOfExpandedStaticFieldCollectionWithoutSearchCompleting) {
+    Arguments args;
+    // budget=8 -> rotation_reserved_budget = min(8/2, 272) = 4, ordinary = 4:
+    // both slices non-zero, unlike a budget=1 pattern which would zero out
+    // rotation's reserved slice entirely (min(0, 272) == 0).
+    ASSERT_FALSE(args.parse("referencechains=true:hops=5000:budget=8:firstpassbudget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    int classNode = addNode();
+    int listNode = addNode();
+    int seedChildNode = addNode();
+    int lateChildNode = addNode();
+
+    // Distractor chain: a long, independently root-seeded chain that never
+    // fully drains within this test's bounded pass loops below, so the
+    // overall search always has forward progress available and never
+    // reaches SearchState::COMPLETED (nor NO_PROGRESS_PASS_LIMIT-triggered
+    // ABANDONED) purely as a side effect of this test's own loop bounds.
+    const int kDistractorNodes = 500;
+    std::vector<int> distractor(kDistractorNodes);
+    for (int i = 0; i < kDistractorNodes; i++) {
+        distractor[i] = addNode();
+    }
+
+    // addClass() captures classNode's address in node_tags' backing storage -
+    // must come after every addNode() call above (including the distractor
+    // loop), or a later push_back reallocating node_tags would silently
+    // leave this pointer dangling (indexOfNode() would then never match it).
+    addClass((void *)&node_tags[classNode], "Lcom/rc/statics/GrowingListHolder;");
+
+    script = {
+        // listNode is retained only via classNode's static field - the same
+        // shape as DiscoversObjectRetainedOnlyByStaticField above.
+        {JVMTI_HEAP_REFERENCE_STATIC_FIELD, classNode, listNode, -1},
+        // listNode's one pre-existing element, discovered the first time
+        // listNode itself is expanded.
+        {JVMTI_HEAP_REFERENCE_FIELD, listNode, seedChildNode, -1},
+        {JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, distractor[0], -1},
+    };
+    for (int i = 0; i + 1 < kDistractorNodes; i++) {
+        script.push_back({JVMTI_HEAP_REFERENCE_FIELD, distractor[i], distractor[i + 1], -1});
+    }
+
+    // Phase 1: run passes until listNode has been fully expanded (its one
+    // pre-existing child discovered), without ever letting the search
+    // complete.
+    bool truncated = true;
+    FrontierEntry listEntry{};
+    bool listExpanded = false;
+    for (int i = 0; i < 200 && !listExpanded; i++) {
+        ASSERT_EQ(SearchState::RUNNING, tracker->searchState());
+        ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+        jlong listTag = tags_ever_assigned[listNode];
+        if (listTag != 0 && tracker->frontierTable()->lookup(listTag, &listEntry)
+                && listEntry.state == FrontierEntryState::EXPANDED) {
+            listExpanded = true;
+        }
+    }
+    ASSERT_TRUE(listExpanded);
+    ASSERT_NE(0, tags_ever_assigned[seedChildNode]);
+    ASSERT_EQ(SearchState::RUNNING, tracker->searchState());
+
+    // Phase 2: simulate a new element appended to the leaking static
+    // field's list *after* listNode's one-time expansion - the exact
+    // "growing collection" shape found in the real pod's leak generator.
+    script.push_back({JVMTI_HEAP_REFERENCE_FIELD, listNode, lateChildNode, -1});
+
+    for (int i = 0; i < 200 && tags_ever_assigned[lateChildNode] == 0; i++) {
+        ASSERT_EQ(SearchState::RUNNING, tracker->searchState());
+        ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    }
+
+    // The late element was discovered purely via rotation re-expanding
+    // listNode - and, critically, without the search ever completing (no
+    // dependency on a full heap walk finishing).
+    ASSERT_NE(0, tags_ever_assigned[lateChildNode]);
+    EXPECT_EQ(SearchState::RUNNING, tracker->searchState());
+
+    std::vector<u32> chain;
+    ASSERT_TRUE(tracker->frontierTable()->reconstructChain(
+            tags_ever_assigned[lateChildNode], &chain));
+    FrontierEntry lateEntry{};
+    ASSERT_TRUE(tracker->frontierTable()->lookup(
+            tags_ever_assigned[lateChildNode], &lateEntry));
+    EXPECT_EQ(tags_ever_assigned[listNode], lateEntry.parent_tag);
+
+    tracker->stop();
+}
+
+// Proof of the fix for the actual prof-analyzer-hotdog-jb stall:
+// collectStaleExpandedEntriesForRotation() (referenceChains.cpp) used to
+// always rescan FrontierTable slots starting from tag 1, unlike its sibling
+// collectStaleRootKindEntriesForRotation() which already carried its own
+// persistent cursor. isQueuedForRotation()'s dedup check only looks at the
+// CURRENT pass's _priority_expand (drained by expandFrontier() at the end of
+// that same pass - see clearPriorityExpand()'s own comment), so without a
+// cursor, later passes had no memory of what earlier passes already
+// selected: whenever a real heap's frontier table held
+// STALE_EXPANDED_ROTATION_BUDGET (256) or more low-tag EXPANDED entries that
+// stay EXPANDED forever (long-lived infrastructure objects - exactly what
+// the sweep's own comment says it favors), that population alone filled the
+// sweep's 256-entry-per-pass cap on every single call, permanently starving
+// any EXPANDED entry with a higher tag (e.g. a static field's collection
+// node, admitted only once its owning class first loads, well after
+// startup) of ever being re-queued - a bug proved directly, before the fix,
+// by this same test (then named
+// StaleExpandedRotationStarvesHighTagEntryBehindLowTagPopulation).
+//
+// _stale_expanded_rotation_cursor now makes collectStaleExpandedEntriesForRotation()
+// resume from where the previous call left off instead of always restarting
+// at tag 1, the same wrapping-cursor guarantee
+// RotationCoversAllEntriesWithinCeilNOverR above already proves for
+// collectStaleRootKindEntriesForRotation(): every entry, including one
+// sitting behind an arbitrarily large low-tag population, gets a turn within
+// ceil(table_size / max_count) calls.
+//
+// Driven directly against collectStaleExpandedEntriesForRotation() (the same
+// unit-level style as RotationCoversAllEntriesWithinCeilNOverR above) rather
+// than through a full JVMTI-mocked BFS walk: this property is intrinsic to
+// the selection function's own tag-order scan, so it needs neither a real
+// graph nor runPass()'s pacing/budget machinery to demonstrate.
+TEST_F(ReferenceChainsBfsTest, StaleExpandedRotationCoversHighTagEntryBehindLowTagPopulationWithinBoundedPasses) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    const int lowTagBudget = ReferenceChainsTestAccessor::staleExpandedRotationBudget();
+    // Comfortably above the 256-entry cap, so the low-tag population alone
+    // would fill every sweep before an always-from-1 scan could ever reach
+    // the high-tag entry below - mirrors a real multi-GiB heap's frontier
+    // table, which accumulates far more than 256 long-lived, perpetually-
+    // EXPANDED entries (bootstrap classes, caches, etc.) well before any one
+    // leak-candidate class even loads.
+    const int lowTagPopulation = lowTagBudget + 50;
+    for (jlong tag = 1; tag <= lowTagPopulation; tag++) {
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, tag, 0, 0, FrontierEntryState::EXPANDED,
+            JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    }
+
+    // The leak candidate's own owning node - e.g. LEAK_BUFFER's list, admitted
+    // via a static field only once its class loads, well after the JVM's own
+    // bootstrap population already occupies every low tag number.
+    const jlong highTag = lowTagPopulation + 1;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, highTag, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+
+    // Several simulated passes: each iteration mirrors one real pass -
+    // collectStaleExpandedEntriesForRotation() runs once, then
+    // clearPriorityExpand() mirrors expandFrontier() having drained whatever
+    // it selected before the next pass's sweep resumes from the cursor.
+    const int table_size = lowTagPopulation + 1;
+    const int calls = (table_size + lowTagBudget - 1) / lowTagBudget;
+    bool highTagSelected = false;
+    std::unordered_set<jlong> covered;
+    for (int pass = 0; pass < calls && !highTagSelected; pass++) {
+        std::vector<jlong> selected =
+            ReferenceChainsTestAccessor::collectStaleExpandedEntriesForRotation(
+                lowTagBudget);
+        for (jlong tag : selected) {
+            covered.insert(tag);
+            if (tag == highTag) {
+                highTagSelected = true;
+            }
+        }
+        ReferenceChainsTestAccessor::clearPriorityExpand();
+    }
+
+    EXPECT_TRUE(highTagSelected)
+        << "highTag was never selected within ceil(table_size / max_count) "
+           "passes - the fix's coverage guarantee does not hold";
+    EXPECT_EQ((size_t)table_size, covered.size());
 
     tracker->stop();
 }

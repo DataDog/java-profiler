@@ -1715,12 +1715,21 @@ ReferenceChainTracker::collectStaleExpandedEntriesForRotation(
   if (max_count <= 0 || table_size <= 0) {
     return selected;
   }
-  // Always sweep from the lowest tag, instead of resuming from where the
-  // last call left off: low tags are the earliest-admitted entries, which
-  // tend to be long-lived infrastructure objects (caches, maps) closest to
-  // a GC root, while a round-robin cursor gives every entry equal turn and
-  // takes O(table_size / max_count) passes to cycle back to any one of
-  // them - far too slow once the table holds tens of thousands of entries.
+  if (_stale_expanded_rotation_cursor <= 0 ||
+      _stale_expanded_rotation_cursor > table_size) {
+    _stale_expanded_rotation_cursor = 1;
+  }
+  // Resume scanning from _stale_expanded_rotation_cursor rather than always
+  // restarting at tag 1: a frontier table can accumulate far more than
+  // max_count entries that are EXPANDED and stay that way forever
+  // (long-lived infrastructure objects - caches, maps, bootstrap classes).
+  // An always-from-1 scan would let that low-tag population fill this
+  // sweep's entire cap on every single call, permanently starving any
+  // EXPANDED entry with a higher tag (e.g. a static field's collection,
+  // admitted only once its class loads well after startup) of ever being
+  // re-queued. A wrapping cursor, like collectStaleRootKindEntriesForRotation()
+  // above already uses, guarantees every entry gets a turn within
+  // ceil(table_size / max_count) calls instead of never.
   //
   // This scan's own EXPANDED criterion is a strict superset of
   // collectStaleRootKindEntriesForRotation()'s (which additionally requires
@@ -1737,19 +1746,25 @@ ReferenceChainTracker::collectStaleExpandedEntriesForRotation(
   // per-tag SpinLock acquisition/release would double the cost of this
   // O(table_size) sweep under a large frontier table (the exact scenario -
   // tens of thousands of entries - this rotation mechanism targets).
-  jlong tag = 1;
+  jlong start_tag = _stale_expanded_rotation_cursor;
+  jlong tag = start_tag;
   _frontier->withSharedLock([&](const FrontierTable *frontier) {
-    while (tag <= table_size && (int)selected.size() < max_count) {
+    do {
       FrontierEntry entry{};
       if (frontier->lookupLocked(tag, &entry) &&
           entry.state == FrontierEntryState::EXPANDED &&
           !isQueuedForRotation(tag)) {
         selected.push_back(tag);
         _priority_expand.push_back(tag);
+        if ((int)selected.size() >= max_count) {
+          tag = tag % table_size + 1;
+          break;
+        }
       }
-      tag++;
-    }
+      tag = tag % table_size + 1;
+    } while (tag != start_tag);
   });
+  _stale_expanded_rotation_cursor = tag;
   return selected;
 }
 

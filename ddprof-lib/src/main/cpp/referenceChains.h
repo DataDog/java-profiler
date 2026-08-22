@@ -874,6 +874,17 @@ private:
   // problem.
   jlong _root_kind_rotation_cursor;
 
+  // Same role as _root_kind_rotation_cursor above, but for
+  // collectStaleExpandedEntriesForRotation(): without its own persistent
+  // cursor, that sweep always restarted from tag 1 on every call, so a
+  // frontier table holding >= STALE_EXPANDED_ROTATION_BUDGET low-tag entries
+  // that stay EXPANDED forever (long-lived infrastructure objects) filled
+  // its entire per-pass cap from that population alone, every pass,
+  // permanently starving any EXPANDED entry with a higher tag (e.g. a
+  // static field's collection, admitted only once its class loads well
+  // after startup) of ever being re-queued.
+  jlong _stale_expanded_rotation_cursor;
+
   // Per-pass cap on how many transient-root_kind entries
   // collectStaleRootKindEntriesForRotation() selects - round, provisional
   // like this subsystem's other unbenchmarked constants (see e.g.
@@ -1259,6 +1270,7 @@ private:
         _last_pass_gc_finish_epoch(0), _last_pass_ns(0),
         _passes_run(0),
         _root_kind_rotation_cursor(1),
+        _stale_expanded_rotation_cursor(1),
         _safepoint_pain_budget(0.0), _search_pain_ms(0), _cpu_pain_budget(0.0),
         _thread(), _running(false), _abort_pass_requested(false) {}
 
@@ -1624,10 +1636,14 @@ private:
   // back into _priority_expand so expandFrontier() re-runs FollowReferences
   // on them and observes their current field values. Already-admitted
   // children are ALREADY_ADMITTED no-ops (admitObject()'s own idempotency);
-  // only a genuinely new edge (i.e. a mutated field) is admitted. Always
-  // sweeps from the lowest tag rather than round-robin cursor: see this
-  // method's own comment in referenceChains.cpp for why low tags (the
-  // earliest-admitted, most likely long-lived entries) get priority.
+  // only a genuinely new edge (i.e. a mutated field) is admitted. Scans
+  // FrontierTable slots in tag order starting from
+  // _stale_expanded_rotation_cursor, wrapping at size() - same rationale as
+  // collectStaleRootKindEntriesForRotation() above: a fixed always-from-1
+  // scan lets a large, permanently-EXPANDED low-tag population (long-lived
+  // infrastructure objects) monopolize every pass's cap forever, starving
+  // any higher-tag entry (e.g. a static field's collection, admitted only
+  // once its class loads) of ever being re-queued.
   std::vector<jlong> collectStaleExpandedEntriesForRotation(int max_count);
 
   // jvmtiHeapRootCallback/jvmtiStackReferenceCallback for runPassManualWalk()'s
