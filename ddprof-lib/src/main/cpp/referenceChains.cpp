@@ -2648,14 +2648,18 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   bool has_pending_frontier = truncated;
   int frontier_size_after = _frontier->size();
   if (frontier_cap_hit) {
-    // Frontier table is full -- stop admitting new entries but
-    // don't abandon the search immediately. The search stays
-    // RUNNING: existing frontier entries may still lead to
-    // candidates, and the no-progress detector will abandon
-    // if the frontier stops growing. This is a memory
-    // bound, not a correctness bound.
+    // Frontier table is full -- no new entries can ever be admitted, so
+    // frontier_size_after can never exceed frontier_size_before_pass again.
+    // Deferring to the no-progress detector below (as a prior version of
+    // this branch did) would never actually reach it: this same `if` would
+    // keep matching every subsequent pass, permanently short-circuiting the
+    // else-if chain before _passes_since_last_progress is ever read. Abandon
+    // immediately instead, matching this function's own design-doc priority
+    // list above (frontier-size cap hit abandons regardless of TTL).
+    store(_abandon_reason, (u8)SearchAbandonReason::FRONTIER_CAP);
+    storeRelease(_search_state, (u8)SearchState::ABANDONED);
     TEST_LOG("ReferenceChainTracker::runPass frontier cap hit -- "
-             "search continues with existing frontier (size=%d)",
+             "abandoning search (size=%d)",
              frontier_size_after);
   } else if (!has_pending_frontier) {
     storeRelease(_search_state, (u8)SearchState::COMPLETED);

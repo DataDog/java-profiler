@@ -1584,7 +1584,7 @@ TEST_F(ReferenceChainsBfsTest, MultiPassResumptionReconstructsChainAcrossPasses)
     tracker->stop();
 }
 
-TEST_F(ReferenceChainsBfsTest, FrontierCapHitDoesNotAbandonImmediately) {
+TEST_F(ReferenceChainsBfsTest, FrontierCapHitAbandonsImmediately) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000:framecap=1"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
@@ -1602,16 +1602,20 @@ TEST_F(ReferenceChainsBfsTest, FrontierCapHitDoesNotAbandonImmediately) {
     bool truncated = false;
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
     EXPECT_TRUE(truncated);
-    // Frontier-size cap hit -- the search does NOT abandon
-    // immediately. It stays RUNNING: existing frontier entries may
-    // still lead to candidates, and the no-progress detector will
-    // abandon if the frontier stops growing. This is a memory
-    // bound, not a correctness bound.
-    ASSERT_EQ(SearchState::RUNNING, tracker->searchState());
+    // Frontier-size cap hit -- the search abandons immediately (design
+    // doc's Termination-section priority 1). Once the table is full, no
+    // new entry can ever be admitted, so the frontier can never grow
+    // again -- deferring to a separate no-progress counter would never
+    // actually observe that counter, since this same condition matches
+    // every subsequent pass too.
+    ASSERT_EQ(SearchState::ABANDONED, tracker->searchState());
+    ASSERT_EQ(SearchAbandonReason::FRONTIER_CAP, tracker->abandonReason());
 
-    // nodeA was admitted (frontier cap=1 allowed one entry).
+    // nodeA was admitted (frontier cap=1 allowed one entry), then its tag
+    // was released as part of this same pass's abandon handling (the mock
+    // GetObjectsWithTags() succeeds by default).
     EXPECT_NE(0, tags_ever_assigned[nodeA]);
-    EXPECT_NE(0, node_tags[nodeA]);
+    EXPECT_EQ(0, node_tags[nodeA]);
     // nodeB was never admitted (frontier cap hit).
     EXPECT_EQ(0, node_tags[nodeB]);
 
@@ -1627,19 +1631,21 @@ TEST_F(ReferenceChainsBfsTest, FrontierCapHitDoesNotAbandonImmediately) {
 // entirely).
 TEST_F(ReferenceChainsBfsTest, ReleaseSearchTagsFailureBlocksTagReuseUntilItSucceeds) {
     Arguments args;
-    // framecap=1 with a cycle: pass 1 admits nodeA (frontier cap hit
-    // on nodeA->nodeA self-cycle). The search stays RUNNING (frontier
-    // cap is now a memory bound, not an abandon trigger). The no-progress
-    // detector will abandon after NO_PROGRESS_PASS_LIMIT stale passes.
-    // This test verifies that the tag release on abandonment works
-    // even when GetObjectsWithTags() fails.
+    // framecap=1 with a self-cycle: pass 1 admits nodeA (the frontier's
+    // only slot); the nodeA->nodeA edge then finds nodeA
+    // ALREADY_ADMITTED rather than hitting the frontier cap (no new slot
+    // is needed for an edge back to an already-tagged object), so the
+    // search stays RUNNING and only the no-progress detector - after
+    // NO_PROGRESS_PASS_LIMIT stale passes - can abandon it. This test
+    // verifies that the tag release on that abandonment works even when
+    // GetObjectsWithTags() fails.
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000:framecap=1:ttl=0"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
 
     int nodeA = addNode();
-    // nodeA -> nodeA self-cycle. With framecap=1, pass 1 admits
-    // nodeA and hits the frontier cap on nodeA->nodeA.
+    // nodeA -> nodeA self-cycle. With framecap=1, pass 1 admits nodeA;
+    // the self-cycle edge is ALREADY_ADMITTED, not a fresh frontier slot.
     script = {
         {JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, nodeA, -1},
         {JVMTI_HEAP_REFERENCE_FIELD, nodeA, nodeA, -1}, // self-cycle
@@ -1650,10 +1656,10 @@ TEST_F(ReferenceChainsBfsTest, ReleaseSearchTagsFailureBlocksTagReuseUntilItSucc
 
     fail_get_objects_with_tags = true;
     bool truncated = false;
-    // Pass 1: admits nodeA, frontier cap hit on self-cycle.
+    // Pass 1: admits nodeA; the self-cycle keeps the pass truncated
+    // without growing the frontier further.
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
     EXPECT_TRUE(truncated);
-    // Frontier cap hit -- search stays RUNNING (not abandoned).
     ASSERT_EQ(SearchState::RUNNING, tracker->searchState());
     EXPECT_NE(0, tags_ever_assigned[nodeA]);
     EXPECT_NE(0, node_tags[nodeA]);
