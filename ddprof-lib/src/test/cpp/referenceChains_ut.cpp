@@ -2277,13 +2277,13 @@ TEST_F(ResolvedChainCacheTest, OverflowDropsNewKlassButAllowsRefresh) {
 
 TEST_F(ReferenceChainsTest, PacingHoldsSteadyWhenPassesLandExactlyOnCeiling) {
     Arguments args;
-    ASSERT_FALSE(args.parse("referencechains=true:budget=1000:pausetarget=5"));
+    ASSERT_FALSE(args.parse("referencechains=true:budget=4000:pausetarget=5"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
 
     int startBudget = ReferenceChainsTestAccessor::effectiveBudget();
     u64 startCadence = ReferenceChainsTestAccessor::effectiveCadenceNs();
-    ASSERT_EQ(1000, startBudget); // starts pinned at the configured ceiling
+    ASSERT_EQ(4000, startBudget); // starts pinned at the configured ceiling
 
     // A pass landing exactly on the pause-time target is a zero error every
     // call - the controller should never move away from its starting point,
@@ -2299,7 +2299,7 @@ TEST_F(ReferenceChainsTest, PacingHoldsSteadyWhenPassesLandExactlyOnCeiling) {
 
 TEST_F(ReferenceChainsTest, PacingShrinksBudgetAndWidensCadenceWhenOverCeiling) {
     Arguments args;
-    ASSERT_FALSE(args.parse("referencechains=true:budget=1000:pausetarget=5"));
+    ASSERT_FALSE(args.parse("referencechains=true:budget=4000:pausetarget=5"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
 
@@ -2334,7 +2334,7 @@ TEST_F(ReferenceChainsTest, PacingShrinksBudgetAndWidensCadenceWhenOverCeiling) 
 
 TEST_F(ReferenceChainsTest, PacingGrowsBudgetBackAndRelaxesCadenceWhenUnderCeiling) {
     Arguments args;
-    ASSERT_FALSE(args.parse("referencechains=true:budget=1000:pausetarget=5"));
+    ASSERT_FALSE(args.parse("referencechains=true:budget=4000:pausetarget=5"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
 
@@ -2347,7 +2347,7 @@ TEST_F(ReferenceChainsTest, PacingGrowsBudgetBackAndRelaxesCadenceWhenUnderCeili
     // smaller-magnitude error, muddying this test's per-step "moves in the
     // correct direction every step" assertions with a transient this test
     // is not about.
-    ReferenceChainsTestAccessor::setEffectiveBudget(600);
+    ReferenceChainsTestAccessor::setEffectiveBudget(2400);
     ReferenceChainsTestAccessor::setEffectiveCadenceNs(
         2 * ReferenceChainsTestAccessor::baselineCadenceNs());
     ReferenceChainsTestAccessor::resetPacingController();
@@ -2355,14 +2355,17 @@ TEST_F(ReferenceChainsTest, PacingGrowsBudgetBackAndRelaxesCadenceWhenUnderCeili
     u64 widenedCadence = ReferenceChainsTestAccessor::effectiveCadenceNs();
 
     // Now feed passes comfortably under the ceiling, repeatedly (a constant
-    // input, to check convergence rather than oscillation). 50 iterations -
+    // input, to check convergence rather than oscillation). 200 iterations -
     // more than PacingShrinksBudgetAndWidensCadenceWhenOverCeiling needs -
     // because this scenario's error magnitude (pausetarget=5 vs. an
     // effectively-instant 0ms pass) is smaller, so the cadence side takes
-    // more iterations to fully unwind down to MIN_EFFECTIVE_CADENCE_NS.
+    // more iterations to fully unwind down to MIN_EFFECTIVE_CADENCE_NS, and
+    // because the borrowed-budget distance to close (configured budget *
+    // (BORROW_CEILING_MULTIPLIER - 1)) scales with the configured budget
+    // while the PID's per-pass step size does not.
     int lastBudget = shrunkBudget;
     u64 lastCadence = widenedCadence;
-    for (int i = 0; i < 50; i++) {
+    for (int i = 0; i < 200; i++) {
         ReferenceChainsTestAccessor::updatePacing(0); // effectively instant
         int budget = ReferenceChainsTestAccessor::effectiveBudget();
         u64 cadence = ReferenceChainsTestAccessor::effectiveCadenceNs();
@@ -2378,7 +2381,7 @@ TEST_F(ReferenceChainsTest, PacingGrowsBudgetBackAndRelaxesCadenceWhenUnderCeili
     // the borrowed ceiling (configured budget * multiplier) instead of
     // stalling at the plain configured budget.
     EXPECT_GT(lastBudget, shrunkBudget);
-    EXPECT_EQ(1000 * ReferenceChainsTestAccessor::borrowCeilingMultiplier(), lastBudget);
+    EXPECT_EQ(4000 * ReferenceChainsTestAccessor::borrowCeilingMultiplier(), lastBudget);
     EXPECT_LT(lastCadence, widenedCadence);
     // ...and converged: one more identical input produces no further change.
     ReferenceChainsTestAccessor::updatePacing(0);
