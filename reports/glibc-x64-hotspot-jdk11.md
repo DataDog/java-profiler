@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk11
 
 ## glibc-x64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-08-22 05:27:13 EDT
+**Date:** 2026-08-22 08:14:27 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 475 |
-| Sample Rate | 7.92/sec |
-| Health Score | 495% |
-| Threads | 8 |
-| Allocations | 388 |
+| CPU Samples | 511 |
+| Sample Rate | 8.52/sec |
+| Health Score | 532% |
+| Threads | 9 |
+| Allocations | 369 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 663 |
-| Sample Rate | 11.05/sec |
-| Health Score | 691% |
+| CPU Samples | 758 |
+| Sample Rate | 12.63/sec |
+| Health Score | 789% |
 | Threads | 9 |
-| Allocations | 445 |
+| Allocations | 464 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 51-51 cores)</summary>
 
 ```
-1787390482 51
-1787390487 51
-1787390492 51
-1787390497 51
-1787390502 51
-1787390507 51
-1787390512 51
-1787390517 51
-1787390522 51
-1787390527 51
-1787390532 51
-1787390537 51
-1787390542 51
-1787390547 51
-1787390552 51
-1787390557 51
-1787390562 51
-1787390567 51
-1787390572 51
-1787390577 51
+1787400585 51
+1787400590 51
+1787400595 51
+1787400600 51
+1787400605 51
+1787400610 51
+1787400615 51
+1787400620 51
+1787400625 51
+1787400630 51
+1787400635 51
+1787400640 51
+1787400645 51
+1787400650 51
+1787400655 51
+1787400660 51
+1787400665 51
+1787400670 51
+1787400675 51
+1787400680 51
 ```
 </details>
 
