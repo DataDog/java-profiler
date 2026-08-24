@@ -10,6 +10,7 @@
 #include "libraryPatcher.h"
 #include "log.h"
 #include "mallocTracer.h"
+#include "nativeMem.h"
 #include "os.h"
 #include "profiler.h"
 #include "symbols.h"
@@ -60,6 +61,19 @@ end:
 void Libraries::updateSymbols(bool kernel_symbols) {
   Symbols::parseLibraries(&_native_libs, kernel_symbols);
   LibraryPatcher::patch_libraries();
+  // Refresh the native-symbol memory gauge here, where the tables it measures
+  // actually change. This is the only function that grows _native_libs, and a
+  // published CodeCache is immutable -- add(), expand() and setDwarfTable() all
+  // assert they run before publication -- so recomputing at this point is
+  // sufficient for the gauge to be accurate at any later instant.
+  //
+  // Previously NM_NATIVE_SYMBOLS was written only by
+  // Profiler::updateNativeLibMemStats(), which runs solely from Profiler::stop()
+  // and Profiler::dump(). Neither fires during a recording, so the gauge read 0
+  // for the entire life of a profiled process while these tables really held
+  // ~10 MB, making the profiler under-report its own native memory by that much
+  // at every steady-state sample point.
+  NativeMem::setLive(NM_NATIVE_SYMBOLS, (long long)_native_libs.memoryUsage());
 }
 
 void Libraries::refresh() {
