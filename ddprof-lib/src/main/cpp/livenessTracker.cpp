@@ -362,6 +362,11 @@ jweak LivenessTracker::recordKlassPopulationSampleLocked(u32 klass_id,
     _klass_population[slot].ring_fill = 0;
     _klass_population[slot].consecutive_positive = 0;
     _klass_population[slot].cached_slope = 0.0;
+    // A reused (evicted) slot's PREVIOUS class's stable tag must not leak
+    // onto the new one - see KlassPopulationEntry::stable_class_tag's own
+    // comment. Minted lazily in foldKlassCountsLocked() once a live
+    // instance is available to resolve the class from.
+    _klass_population[slot].stable_class_tag = 0;
   }
 
   KlassPopulationEntry &entry = _klass_population[slot];
@@ -389,6 +394,29 @@ jweak LivenessTracker::recordKlassPopulationSampleLocked(u32 klass_id,
   *out_slot = slot;
   *out_created = created;
   return evicted_ref;
+}
+
+void LivenessTracker::mintStableClassTagIfNeeded(JNIEnv *env, int slot,
+                                                  jobject instance) {
+  if (slot < 0 || slot >= _klass_population_size || instance == nullptr ||
+      _klass_population[slot].stable_class_tag != 0) {
+    return;
+  }
+  jvmtiEnv *jvmti = VM::jvmti();
+  jclass klass = env->GetObjectClass(instance);
+  if (jvmti != nullptr && klass != nullptr) {
+    jlong tag = 0;
+    if (jvmti->GetTag(klass, &tag) == JVMTI_ERROR_NONE) {
+      if (tag == 0) {
+        tag = ClassTagAllocator::next();
+        jvmti->SetTag(klass, tag);
+      }
+      _klass_population[slot].stable_class_tag = tag;
+    }
+  }
+  if (klass != nullptr) {
+    env->DeleteLocalRef(klass);
+  }
 }
 
 void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch,
@@ -457,6 +485,7 @@ void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch,
       jobject strong = env->NewLocalRef(s.sample_source);
       if (strong != nullptr) {
         _klass_population[slot].representative = env->NewWeakGlobalRef(strong);
+        mintStableClassTagIfNeeded(env, slot, strong);
         env->DeleteLocalRef(strong);
       }
       // else: this epoch's surviving instance for this klass died before we
@@ -774,6 +803,55 @@ int LivenessTracker::selectLeakCandidates(KlassCandidate *out, int max) {
   return count;
 }
 
+int LivenessTracker::topKlassesByGenerationCount(u32 *out, int max) {
+  int cap = max < MAX_LEAK_CANDIDATES ? max : MAX_LEAK_CANDIDATES;
+  if (cap <= 0) {
+    return 0;
+  }
+
+  // Same insertion-sort-style top-k selection as selectLeakCandidates()
+  // above (small, fixed cap - cheaper than collecting everything and
+  // sorting), ranked by most-recent count_ring sample instead of slope, and
+  // with no hysteresis/trend gate at all - see this method's own header
+  // comment (livenessTracker.h).
+  u32 best_counts[MAX_LEAK_CANDIDATES];
+  int count = 0;
+
+  _table_lock.lockShared();
+  for (int i = 0; i < _klass_population_size; i++) {
+    const KlassPopulationEntry &entry = _klass_population[i];
+    if (entry.ring_fill == 0 || entry.stable_class_tag == 0) {
+      // Never sampled, or a live instance has not been resolved yet to mint
+      // its stable_class_tag from (foldKlassCountsLocked()'s own comment) -
+      // nothing usable to rank or return in either case.
+      continue;
+    }
+    // ring_head is "next slot to write" (recordKlassPopulationSampleLocked(),
+    // livenessTracker.cpp) - the most recently written slot is one behind it,
+    // wrapping.
+    u32 latest = entry.count_ring[(entry.ring_head + KLASS_POPULATION_RING_SIZE - 1) %
+                                   KLASS_POPULATION_RING_SIZE];
+    if (count == cap && latest <= best_counts[cap - 1]) {
+      continue;
+    }
+    int pos = count < cap ? count++ : cap - 1;
+    best_counts[pos] = latest;
+    out[pos] = (u32)entry.stable_class_tag;
+    while (pos > 0 && best_counts[pos - 1] < best_counts[pos]) {
+      u32 tmp_count = best_counts[pos - 1];
+      best_counts[pos - 1] = best_counts[pos];
+      best_counts[pos] = tmp_count;
+      u32 tmp_id = out[pos - 1];
+      out[pos - 1] = out[pos];
+      out[pos] = tmp_id;
+      pos--;
+    }
+  }
+  _table_lock.unlockShared();
+  TEST_LOG("LivenessTracker::topKlassesByGenerationCount returning %d klass_ids", count);
+  return count;
+}
+
 jobject LivenessTracker::resolveCandidateRepresentative(JNIEnv *env, u32 klass_id) {
   // Shared lock excludes cleanup_table()'s exclusive lock (the only writer,
   // and the only place that can DeleteWeakGlobalRef() an entry's
@@ -983,6 +1061,26 @@ Error LivenessTracker::initialize(Arguments &args) {
     return _stored_error;
   }
   _initialized = true;
+
+  // Sync the class-map-generation baseline to what it already is by this
+  // point, rather than leaving it at the constructor's 0 sentinel (see
+  // _last_class_map_generation's own comment, livenessTracker.h). By the time
+  // this runs, ObjectSampler::start() -> LivenessTracker::start() has already
+  // happened strictly after Profiler::start()'s own _class_map.clearAll()
+  // (referenceChains.cpp's own comment on this same ordering) - so
+  // classMap()->generation() here already reflects this process's first
+  // recording, not the pre-clearAll() baseline the 0 sentinel implies.
+  // Without this, cleanup_table()'s class-map-reset branch always sees a
+  // spurious mismatch (0 vs. whatever generation() has already reached) the
+  // very first time it runs after ANY start() - regardless of how much
+  // genuinely post-reset, still-valid population/leak-tracking history has
+  // already accumulated in _klass_population by then - and wipes it all,
+  // found the hard way via StaticFieldGrowingCollectionScenario silently
+  // losing its seeded candidate the moment the first post-start GC finished.
+  // A real subsequent generation bump (a later recording's own clearAll())
+  // still trips the mismatch correctly, since by then this field holds
+  // whatever value cleanup_table() last actually observed, not this sentinel.
+  _last_class_map_generation = Profiler::instance()->classMap()->generation();
 
   if (VM::hotspot_version() < 11) {
     Log::warn("Liveness tracking requires Java 11+");

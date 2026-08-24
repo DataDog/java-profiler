@@ -6,6 +6,7 @@
 package com.datadoghq.profiler;
 
 import com.datadoghq.profiler.referencechains.LeakingCacheScenario;
+import com.datadoghq.profiler.referencechains.StaticFieldGrowingCollectionScenario;
 
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
@@ -38,6 +39,11 @@ import java.util.concurrent.atomic.LongAdder;
  *     this module uses - see that scenario's own class comment for why a *separate* process is
  *     load-bearing here (the one-shot root-seeded BFS walk is a process-wide, once-ever
  *     resource).</li>
+ *     <li>leak-static-field "&lt;start command&gt;|||&lt;scratch dump path&gt;" - same packing and
+ *     lifecycle as {@code leak-cache} above, but runs {@link StaticFieldGrowingCollectionScenario}
+ *     instead: a {@code static final List<byte[]>} field appended to (never reassigned) after
+ *     its owning class has already been swept once by {@code admitStaticFieldRoots()} -
+ *     mirroring the real leak generator found in the {@code prof-analyzer-hotdog-jb} pod.</li>
  * </ul>
  */
 public class ExternalLauncher {
@@ -144,6 +150,20 @@ public class ExternalLauncher {
                 // "[ready]" + stdin-signal handshake below: this mode runs to completion in one
                 // shot (no live back-and-forth with the parent needed) and its own result line
                 // has already been printed by LeakingCacheScenario.run().
+                System.exit(0);
+            } else if (args[0].equals("leak-static-field")) {
+                // Same "<start command>|||<scratch dump path>" packing as leak-cache above.
+                String packed = args.length == 2 ? args[1] : "";
+                int sep = packed.indexOf("|||");
+                if (sep < 0) {
+                    throw new IllegalArgumentException(
+                        "leak-static-field requires \"<start command>|||<scratch dump path>\", got: " + packed);
+                }
+                String commands = packed.substring(0, sep);
+                String scratchPath = packed.substring(sep + "|||".length());
+                JavaProfiler instance = JavaProfiler.getInstance();
+                StaticFieldGrowingCollectionScenario.run(instance, commands, Paths.get(scratchPath));
+                System.out.flush();
                 System.exit(0);
             }
         } finally {

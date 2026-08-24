@@ -1296,6 +1296,18 @@ Java_com_datadoghq_profiler_JavaProfiler_shouldRunPassForTest0(JNIEnv *env,
              : JNI_FALSE;
 }
 
+// Exposes ReferenceChainTracker::passesRun() directly - not itself DEBUG-gated on the native side
+// (used by production JFR event fields too), but exposed here only for test use: lets a test note
+// the current pass count before creating an object, then wait for that count to advance before
+// trusting any match against it - the only way to be certain a match came from a pass whose own
+// expandFrontier() (and therefore collectStaleExpandedEntriesForRotation()) ran strictly after the
+// object existed, rather than from the same pass racing the object's creation.
+extern "C" DLLEXPORT jint JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_referenceChainPassesRunForTest0(
+    JNIEnv *env, jclass unused) {
+  return (jint)ReferenceChainTracker::instance()->passesRun();
+}
+
 #endif // DEBUG
 
 // ---- Test-only reads of the current thread's OTEP record -----------------------------------

@@ -133,7 +133,9 @@ public:
         t->_frontier = nullptr;
         t->_class_tags = ClassTagTable();
         t->_next_tag = 1;
-        t->_next_class_tag_magnitude = 1;
+        // Shared with LivenessTracker (classTagAllocator.h) - process-wide,
+        // not per-ReferenceChainTracker-instance.
+        ClassTagAllocator::resetForTest();
         t->_search_started = false;
         t->_search_state = SearchState::RUNNING;
         t->_abandon_reason = SearchAbandonReason::NONE;

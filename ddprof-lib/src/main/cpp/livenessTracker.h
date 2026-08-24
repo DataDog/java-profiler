@@ -8,6 +8,7 @@
 
 #include "arch.h"
 #include "callTraceHashTable.h"
+#include "classTagAllocator.h"
 #include "context.h"
 #include "engine.h"
 #include "event.h"
@@ -89,6 +90,23 @@ typedef struct KlassPopulationEntry {
   mutable double cached_slope;
   u64 last_updated_epoch; // _gc_epoch value as of the last write, for LRU
                           // eviction when the table is full
+  // Stable per-class identifier, from the process-wide, negative-tag
+  // allocator shared with ReferenceChainTracker (classTagAllocator.h) - NOT
+  // the same value as klass_id above. klass_id (Profiler::classMap()'s
+  // dictionary id) can end up different for the exact same class depending
+  // on when/which subsystem resolves it, because that dictionary can be
+  // compacted/regenerated independently of this table - found the hard way
+  // correlating ReferenceChainTracker::FrontierEntry::referrer_klass values
+  // (also a classMap id, resolved at a different time by a different
+  // subsystem) against a LivenessTracker-reported growing klass_id: the
+  // exact same class ("[B" in the reproducing case) resolved to two
+  // different classMap ids depending on which subsystem asked. This field
+  // exists specifically so cross-subsystem klass matching (referenceChains.h's
+  // own _watched_leak_klass_ids) has something both sides can agree on
+  // regardless of classMap's own housekeeping. 0 until minted (see
+  // foldKlassCountsLocked()'s own comment for when that happens) - always
+  // negative once minted (ClassTagAllocator::next()'s own convention).
+  jlong stable_class_tag;
 } KlassPopulationEntry;
 
 // One leak-candidate result from selectLeakCandidates() below: the klass to
@@ -365,10 +383,20 @@ private:
   // before a reset would silently collide with whatever unrelated class the
   // new generation reassigns that same id to. cleanup_table() compares this
   // against Profiler::instance()->classMap()->generation() and, on a
-  // mismatch, drops every such cached id before resuming. Initialized to 0
-  // (StringDictionary's own initial generation), not a sentinel, since a
-  // cleanup_table() call before any clearAll() has ever run must NOT treat
-  // that as a mismatch.
+  // mismatch, drops every such cached id before resuming. Constructor-
+  // initialized to 0 (StringDictionary's own initial generation) but
+  // immediately re-synced in initialize() to whatever generation() already is
+  // by then - NOT left at 0, despite 0 also being correct for a
+  // never-yet-reset classMap in isolation: ObjectSampler::start() ->
+  // LivenessTracker::start() always runs strictly after Profiler::start()'s
+  // own _class_map.clearAll() (referenceChains.cpp's comment on this same
+  // ordering), so by the time initialize() runs, generation() has *already*
+  // bumped once for this process's first recording. Leaving the 0 sentinel
+  // in place here would make cleanup_table()'s very first call always see a
+  // spurious mismatch against that already-happened bump, discarding
+  // whatever genuinely post-reset population history had already
+  // accumulated by then - found the hard way (see initialize()'s own
+  // comment).
   u64 _last_class_map_generation;
 
   Error initialize(Arguments &args);
@@ -483,6 +511,17 @@ private:
   // (see the retry-condition comment in livenessTracker.cpp).
   void foldKlassCountsLocked(JNIEnv *env, u64 epoch, bool allow_resolve);
 
+  // Get-or-mints slot's stable_class_tag (see that field's own comment) from
+  // `instance`'s class, if not already minted for this slot's current
+  // occupant. Shared by foldKlassCountsLocked() (the production allocation-
+  // sampling path) and klassPopulationSetRepresentativeForTest() (the
+  // debug-only test seam StaticFieldGrowingCollectionScenario-style
+  // external-process tests drive instead of real sampling) - both hand this
+  // a live representative instance to resolve the class from, so neither
+  // needs its own copy of the GetObjectClass/GetTag/SetTag sequence. No-op
+  // if slot is out of range, instance is null, or a tag is already minted.
+  void mintStableClassTagIfNeeded(JNIEnv *env, int slot, jobject instance);
+
   // --- Slope computation and candidate ranking (selectLeakCandidates() below) ---
 
   // The sustained-trend gate (this class's own header comment above,
@@ -594,6 +633,30 @@ public:
   // resolveCandidateRepresentative() below instead, which re-reads the
   // table's current value for klass_id atomically with the resolve.
   int selectLeakCandidates(KlassCandidate *out, int max);
+
+  // Reads _klass_population and writes up to `max` STABLE CLASS TAGS
+  // (KlassPopulationEntry::stable_class_tag - NOT the classMap dictionary
+  // klass_id selectLeakCandidates() above deals in; see that field's own
+  // comment for why the distinction matters) into `out`, ranked by MOST
+  // RECENT count_ring sample (the "generation count" - accumulateKlassCount()'s
+  // own comment: the number of distinct GC ages among a klass's surviving
+  // tracked instances - livenessTracker.cpp) descending, capped at
+  // MAX_LEAK_CANDIDATES. Unlike selectLeakCandidates() above, this applies
+  // NO trend/hysteresis gate at all (no ring_fill minimum beyond "at least
+  // one sample", no consecutive_positive requirement, no positive-slope
+  // requirement) - it is meant to be called only once
+  // ReferenceChainTracker::hasLeakSignal() has ALREADY fired via the
+  // slower, hysteresis-gated selectLeakCandidates() path, as a faster,
+  // broader follow-up ranking that does not itself need to wait out that
+  // same hysteresis a second time for ReferenceChainTracker's own rotation-
+  // priority use (see referenceChains.h's own comment on
+  // _watched_leak_klass_ids for why). Same shared-lock read pattern as
+  // selectLeakCandidates(); a klass whose ring is entirely empty (never
+  // sampled) or whose stable_class_tag has not been minted yet (no live
+  // instance resolved so far - foldKlassCountsLocked()'s own comment) is
+  // skipped, since neither has anything usable to rank or return. Returns
+  // the number of tags written.
+  int topKlassesByGenerationCount(u32 *out, int max);
 
   // Re-reads klass_id's current representative from _klass_population and
   // resolves it to a fresh JNI local ref, both under the same _table_lock
@@ -707,10 +770,24 @@ public:
     }
     return false;
   }
+  // recordKlassPopulationSampleLocked()'s own precondition is "_table_lock is
+  // held (by cleanup_table(), the only production caller)" - this seam is
+  // called from a Java/test thread while the BFS thread
+  // (ReferenceChainTracker::threadLoop()) may concurrently be inside
+  // cleanup_table()'s epoch-advance pass, which holds _table_lock while
+  // mutating the very same _klass_population/_klass_population_size fields
+  // (including its class-map-generation-reset branch, which can wipe the
+  // whole table). Without taking the lock here too, a seeded sample could
+  // race that wipe and silently vanish moments after being recorded. Mirrors
+  // klassPopulationSetRepresentativeForTest() below, which already does this
+  // correctly.
   jweak klassPopulationRecordForTest(u32 klass_id, u32 count, u64 epoch,
                                       int *out_slot, bool *out_created) {
-    return recordKlassPopulationSampleLocked(klass_id, count, epoch, out_slot,
-                                              out_created);
+    _table_lock.lock();
+    jweak evicted = recordKlassPopulationSampleLocked(klass_id, count, epoch,
+                                                        out_slot, out_created);
+    _table_lock.unlock();
+    return evicted;
   }
   // Sets an entry's representative directly - production code only ever
   // does this via foldKlassCountsLocked()'s JNI-dependent minting step
@@ -734,11 +811,48 @@ public:
       if (_klass_population[i].klass_id == klass_id) {
         jweak prev = _klass_population[i].representative;
         _klass_population[i].representative = rep;
+        // Mint stable_class_tag from this same representative if this slot
+        // has not gotten one yet - this seam is how live-JVM,
+        // StaticFieldGrowingCollectionScenario-style tests seed a candidate
+        // instead of real allocation sampling (foldKlassCountsLocked()),
+        // which would otherwise never run for them, leaving
+        // stable_class_tag permanently unminted and
+        // topKlassesByGenerationCount() unable to report this klass at all -
+        // found the hard way, exactly the failure this comment is warning
+        // about.
+        // env is nullptr in some gtest call sites that only exercise the
+        // representative-swap bookkeeping above and don't care about
+        // stable_class_tag - guard against it rather than crash.
+        jobject strong =
+            (env != nullptr && rep != nullptr) ? env->NewLocalRef(rep) : nullptr;
+        if (strong != nullptr) {
+          mintStableClassTagIfNeeded(env, i, strong);
+          env->DeleteLocalRef(strong);
+        }
         _table_lock.unlock();
         if (prev != nullptr) {
           env->DeleteWeakGlobalRef(prev);
         }
         return;
+      }
+    }
+    _table_lock.unlock();
+  }
+  // Sets an entry's stable_class_tag directly - production code only ever
+  // mints this via foldKlassCountsLocked()'s JVMTI-dependent get-or-assign
+  // step (out of gtest's reach, same rationale as
+  // klassPopulationSetRepresentativeForTest() above), so tests that exercise
+  // topKlassesByGenerationCount() via klassPopulationRecordForTest() (which
+  // bypasses foldKlassCountsLocked() entirely) need this seam - without it,
+  // stable_class_tag would stay 0 (never minted) and
+  // topKlassesByGenerationCount() would skip every entry. No-op if klass_id
+  // is not present.
+  void klassPopulationSetStableClassTagForTest(u32 klass_id, jlong tag) {
+    _table_lock.lock();
+    for (int i = 0; i < _klass_population_size; i++) {
+      if (_klass_population[i].klass_id == klass_id) {
+        _klass_population[i].stable_class_tag = tag;
+        break;
       }
     }
     _table_lock.unlock();

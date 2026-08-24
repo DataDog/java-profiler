@@ -126,4 +126,73 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
       Files.deleteIfExists(continuousJfrPath);
     }
   }
+
+  /**
+   * Mirrors {@link #shouldReconstructReferrerChainInSeparateProcess()}, but against {@link
+   * StaticFieldGrowingCollectionScenario} instead of {@link LeakingCacheScenario}: a {@code
+   * static final List<byte[]>} field appended to (never reassigned) after its owning class has
+   * already been swept once by {@code admitStaticFieldRoots()} (referenceChains.cpp) - the exact
+   * shape found in the {@code prof-analyzer-hotdog-jb} pod's real leak generator, as opposed to
+   * {@code LeakingCacheScenario}'s local-variable (stack-root) cache. Local, fast reproduction of
+   * whether {@code collectStaleExpandedEntriesForRotation()}'s rotation mechanism actually
+   * re-expands an already-{@code EXPANDED} static-field-rooted collection to pick up elements
+   * added after its one-time sweep.
+   */
+  @Test
+  void shouldReconstructReferrerChainForGrowingStaticFieldCollection() throws Exception {
+    assumeFalse(Platform.isJavaVersion(8));
+    assumeFalse(Platform.isJ9());
+    assumeFalse(Platform.isZing());
+
+    Path scratchDumpPath = Files.createTempFile("referencechains-static-field-external-process", ".jfr");
+    Files.deleteIfExists(scratchDumpPath);
+    Path continuousJfrPath = Files.createTempFile("referencechains-static-field-external-process-continuous", ".jfr");
+    try {
+      // See ExternalProcessReferenceChainTest.shouldReconstructReferrerChainInSeparateProcess()'s
+      // own comment for why budget/pausetarget are raised this far above the in-process test's
+      // defaults for a genuinely fresh, cold external JVM.
+      String startCommand = "start,memory=64:l,generations=true,"
+          + "referencechains=true:hops=64:budget=200000:ttl=120000:framecap=2000000:pausetarget=60000"
+          + ",jfr,file=" + continuousJfrPath.toAbsolutePath();
+      String packedCommand = startCommand + "|||" + scratchDumpPath.toAbsolutePath();
+
+      List<String> jvmArgs = Collections.singletonList(
+          "-Dddprof_test.config=" + System.getProperty("ddprof_test.config"));
+
+      AtomicReference<String> resultLine = new AtomicReference<>();
+      LaunchResult result = launch("leak-static-field", jvmArgs, packedCommand,
+          Collections.emptyMap(),
+          // Wider than shouldReconstructReferrerChainInSeparateProcess()'s 90s: this scenario's
+          // own tail wait (StaticFieldGrowingCollectionScenario.run()) needs up to ~60s on top of
+          // the round loop for a cold JVM's first full pass to actually complete - see that
+          // method's own comment.
+          150,
+          line -> {
+            if (line.startsWith(StaticFieldGrowingCollectionScenario.FOUND_MARKER)
+                || line.equals(StaticFieldGrowingCollectionScenario.NOT_FOUND_MARKER)) {
+              resultLine.set(line);
+            }
+            return LineConsumerResult.CONTINUE;
+          },
+          null);
+
+      assertTrue(result.inTime, "Child process did not exit within the wait timeout");
+      assertEquals(0, result.exitCode, "Child process exited with a non-zero code");
+      assertNotNull(resultLine.get(),
+          "Child process never printed a recognizable result marker on stdout");
+      assertEquals(
+          // "byte[]", not byte[].class.getName()'s "[B": StaticFieldGrowingCollectionScenario
+          // prints match.chain.get(0).getFullName(), and JMC's IMCType renders array types in
+          // Java source notation, not JVM signature notation - see
+          // ReferenceChainAssertions.jmcStyleName()'s own comment for why matching required the
+          // same distinction.
+          StaticFieldGrowingCollectionScenario.FOUND_MARKER + "byte[]",
+          resultLine.get(),
+          "Expected a successfully reconstructed chain to a byte[] chunk appended to the static "
+              + "field's list after its one-time admitStaticFieldRoots() sweep - got: " + resultLine.get());
+    } finally {
+      Files.deleteIfExists(scratchDumpPath);
+      Files.deleteIfExists(continuousJfrPath);
+    }
+  }
 }

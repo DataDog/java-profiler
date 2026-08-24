@@ -683,6 +683,16 @@ public final class JavaProfiler {
      */
     public static native boolean shouldRunPassForTest0();
 
+    /**
+     * Test seam (debug native builds only): the number of BFS passes run for the current/most
+     * recent reference-chain search. Lets a test note this count before creating an object, then
+     * wait for it to advance before trusting a match against that object - the only way to be
+     * certain the match came from a pass whose own {@code expandFrontier()} (and therefore {@code
+     * collectStaleExpandedEntriesForRotation()}) ran strictly after the object existed, rather
+     * than from the same pass racing the object's creation.
+     */
+    public static native int referenceChainPassesRunForTest0();
+
     // ---- Test-only reads of the current thread's OTEP record ----------------------------------
     // Each resolves the current carrier's record directly (like the write primitives above) with
     // no cached buffer and no per-thread Java object; introspection/test use only.

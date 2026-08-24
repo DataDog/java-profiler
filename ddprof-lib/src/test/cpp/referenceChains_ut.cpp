@@ -71,7 +71,10 @@ public:
         t->_class_tags = ClassTagTable();
         t->_last_resolved_class_count = 0;
         t->_next_tag = 1;
-        t->_next_class_tag_magnitude = 1;
+        // Shared with LivenessTracker (classTagAllocator.h) - process-wide,
+        // not per-ReferenceChainTracker-instance, so it needs its own reset
+        // seam rather than being a plain member write.
+        ClassTagAllocator::resetForTest();
         t->_search_started = false;
         t->_tags_released = true;
         t->_search_state = SearchState::RUNNING;
@@ -91,6 +94,10 @@ public:
         t->_search_pain_ms = 0;
         t->_root_kind_rotation_cursor = 1;
         t->_stale_expanded_rotation_cursor = 1;
+        t->_watched_leak_klass_count = 0;
+        t->_leak_signature_totals.clear();
+        t->_leak_signature_prev_totals.clear();
+        t->_leak_parent_fanout.clear();
         t->_borrowed_budget = 0;
         t->_consecutive_under_target_passes = 0;
     }
@@ -258,9 +265,10 @@ public:
     // only mock rationale).
     static bool insertFrontierEntry(FrontierTable *frontier, jlong tag,
                                      jlong parent_tag, u32 depth, u8 state,
-                                     u8 root_kind) {
-        return frontier->insert(tag, parent_tag, /*referrer_klass=*/0, depth,
-                                 state, root_kind);
+                                     u8 root_kind, u32 referrer_klass = 0,
+                                     jlong class_tag = 0) {
+        return frontier->insert(tag, parent_tag, referrer_klass, depth,
+                                 state, root_kind, class_tag);
     }
 
     static bool maybeUpgradeRootAttachedRootKind(FrontierTable *frontier,
@@ -329,6 +337,55 @@ public:
 
     static size_t priorityExpandSize() {
         return ReferenceChainTracker::instance()->_priority_expand.size();
+    }
+
+    // Leak-accumulation rotation test seams (collectLeakAccumulationCandidatesForRotation()).
+    static void setWatchedLeakKlassIdsForTest(const std::vector<u32> &ids) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        int n = (int)std::min(ids.size(),
+                               (size_t)ReferenceChainTracker::MAX_WATCHED_LEAK_KLASSES);
+        for (int i = 0; i < n; i++) {
+            t->_watched_leak_klass_ids[i] = ids[i];
+        }
+        t->_watched_leak_klass_count = n;
+    }
+
+    static void trackLeakAccumulation(FrontierTable *frontier, u32 referrer_klass,
+                                       jlong parent_tag, jlong tag) {
+        ReferenceChainTracker::instance()->trackLeakAccumulation(
+            frontier, referrer_klass, parent_tag, tag);
+    }
+
+    static std::vector<jlong> collectLeakAccumulationCandidatesForRotation(
+        int max_count) {
+        return ReferenceChainTracker::instance()
+            ->collectLeakAccumulationCandidatesForRotation(max_count);
+    }
+
+    static int leakAccumulationRotationBudget() {
+        return ReferenceChainTracker::LEAK_ACCUMULATION_ROTATION_BUDGET;
+    }
+
+    static u32 leakSignatureTotal(u32 leaf_klass_id, u32 parent_class_id) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        u64 key = t->leakSignatureKey(leaf_klass_id, parent_class_id);
+        auto it = t->_leak_signature_totals.find(key);
+        return it != t->_leak_signature_totals.end() ? it->second : 0;
+    }
+
+    static u32 leakParentFanout(jlong parent_tag) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        auto it = t->_leak_parent_fanout.find(parent_tag);
+        return it != t->_leak_parent_fanout.end() ? it->second.fanout : 0;
+    }
+
+    static size_t leakSignatureCount() {
+        return ReferenceChainTracker::instance()->_leak_signature_totals.size();
+    }
+
+    static void seedLeakAccumulationForNewlyWatchedKlass(u32 klass_id) {
+        ReferenceChainTracker::instance()
+            ->seedLeakAccumulationForNewlyWatchedKlass(klass_id);
     }
 };
 
@@ -3190,6 +3247,462 @@ TEST_F(ReferenceChainsBfsTest, StaleExpandedRotationCoversHighTagEntryBehindLowT
         << "highTag was never selected within ceil(table_size / max_count) "
            "passes - the fix's coverage guarantee does not hold";
     EXPECT_EQ((size_t)table_size, covered.size());
+
+    tracker->stop();
+}
+
+// ---------------------------------------------------------------------------
+// trackLeakAccumulation() - the admission-time hook (called from
+// admitObject(), the single shared admission path) that aggregates by
+// (leaf_class_tag, parent_class_tag) signature and by individual parent
+// fanout - stable JVMTI class tags (classTagAllocator.h), not classMap
+// dictionary ids, precisely because that dictionary can be compacted/
+// regenerated independently, silently reassigning the same class a
+// different id at different times (found via the external-process test -
+// see class_tag's own comment, referenceChains.h). Driven directly, pure
+// FrontierTable/map logic with no JVMTI dependency of its own.
+// ---------------------------------------------------------------------------
+
+TEST_F(ReferenceChainsBfsTest, TrackLeakAccumulationAggregatesBySignatureAndFanout) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    constexpr u32 kLeafKlass = 987;
+    constexpr u32 kParent1Klass = 100, kParent2Klass = 200;
+    ReferenceChainsTestAccessor::setWatchedLeakKlassIdsForTest({kLeafKlass});
+
+    jlong parent1Tag = 1, parent2Tag = 2;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, parent1Tag, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/0, kParent1Klass));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, parent2Tag, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/0, kParent2Klass));
+
+    // 3 children of the watched leaf klass under parent1, 1 under parent2 -
+    // each call simulates one admission (the childTag argument is only used
+    // by production code for logging/future use, not read by this method).
+    ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass, parent1Tag, 10);
+    ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass, parent1Tag, 11);
+    ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass, parent1Tag, 12);
+    ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass, parent2Tag, 20);
+
+    EXPECT_EQ(3u, ReferenceChainsTestAccessor::leakSignatureTotal(kLeafKlass, kParent1Klass));
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::leakSignatureTotal(kLeafKlass, kParent2Klass));
+    EXPECT_EQ(3u, ReferenceChainsTestAccessor::leakParentFanout(parent1Tag));
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::leakParentFanout(parent2Tag));
+
+    tracker->stop();
+}
+
+TEST_F(ReferenceChainsBfsTest, TrackLeakAccumulationSkipsUnwatchedKlass) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    ReferenceChainsTestAccessor::setWatchedLeakKlassIdsForTest({987});
+    jlong parentTag = 1;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, parentTag, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/0, /*class_tag=*/100));
+
+    ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, /*class_tag=*/555,
+                                                        parentTag, 10);
+
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::leakSignatureCount());
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::leakParentFanout(parentTag));
+
+    tracker->stop();
+}
+
+TEST_F(ReferenceChainsBfsTest, TrackLeakAccumulationSkipsRootAttachedChild) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    ReferenceChainsTestAccessor::setWatchedLeakKlassIdsForTest({987});
+
+    // parent_tag == 0 - a root-attached leaf itself, nothing to attribute a
+    // container to.
+    ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, 987, /*parent_tag=*/0, 10);
+
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::leakSignatureCount());
+
+    tracker->stop();
+}
+
+TEST_F(ReferenceChainsBfsTest, TrackLeakAccumulationSkipsWhenParentNotFound) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    ReferenceChainsTestAccessor::setWatchedLeakKlassIdsForTest({987});
+
+    // parent_tag=99 was never inserted - graceful no-op, not a crash.
+    ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, 987, /*parent_tag=*/99, 10);
+
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::leakSignatureCount());
+
+    tracker->stop();
+}
+
+// Proof of the actual bug this design was found fixing: the classMap
+// dictionary id (referrer_klass) for the exact same class can differ
+// depending on which subsystem/generation resolved it (see class_tag's own
+// comment, referenceChains.h, for the real-world case - "[B" resolving to
+// two different classMap ids for LivenessTracker vs. ReferenceChainTracker).
+// Matching must work via class_tag regardless of what referrer_klass says.
+TEST_F(ReferenceChainsBfsTest, TrackLeakAccumulationMatchesByClassTagEvenWhenReferrerKlassDiffers) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    constexpr u32 kLeafClassTag = 987;
+    constexpr u32 kParentClassTag = 100;
+    // Deliberately different, "wrong" classMap ids - simulating exactly the
+    // compaction/regeneration scenario that broke referrer_klass-based
+    // matching. If matching used referrer_klass at all, this test would fail.
+    constexpr u32 kParentStaleReferrerKlass = 555555;
+    ReferenceChainsTestAccessor::setWatchedLeakKlassIdsForTest({kLeafClassTag});
+
+    jlong parentTag = 1;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, parentTag, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD, kParentStaleReferrerKlass,
+        kParentClassTag));
+
+    ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafClassTag,
+                                                        parentTag, 10);
+
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::leakSignatureTotal(kLeafClassTag,
+                                                                   kParentClassTag));
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::leakParentFanout(parentTag));
+
+    tracker->stop();
+}
+
+// ---------------------------------------------------------------------------
+// collectLeakAccumulationCandidatesForRotation() - the two-tier design
+// itself (see its own header comment, referenceChains.cpp, for the full
+// rationale). Driven directly against the aggregation state
+// trackLeakAccumulation() above populates, the same unit-level style as the
+// other rotation collectors.
+// ---------------------------------------------------------------------------
+
+// The central discriminating test for the whole design (per the "ubiquitous
+// common leaf class held by many small unrelated parents" concern this
+// design exists to solve): a signature with a LARGE but FLAT total (many
+// unrelated parents, e.g. a common leaf class scattered across a real
+// classpath) must NOT outrank a signature with a SMALLER but GROWING total
+// (the actual leak) once a growth history exists - retained-size-style
+// ranking alone would pick the wrong one every time.
+TEST_F(ReferenceChainsBfsTest, LeakAccumulationRotationPrioritizesGrowingSignatureOverLargeFlatOne) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    constexpr u32 kLeafKlass = 987;
+    constexpr u32 kGrowingParentKlass = 100;  // signature A: the real leak
+    constexpr u32 kUbiquitousParentKlass = 999; // signature B: common, but flat
+    ReferenceChainsTestAccessor::setWatchedLeakKlassIdsForTest({kLeafKlass});
+
+    // Signature A: one parent, growing.
+    jlong growingParentTag = 1;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, growingParentTag, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/0, kGrowingParentKlass));
+
+    // Signature B: 20 distinct, unrelated parents, each holding just 1-2
+    // instances of the same common leaf klass - a much LARGER total than A,
+    // but it will not grow between passes.
+    constexpr int kUbiquitousParentCount = 20;
+    std::vector<jlong> ubiquitousParentTags;
+    for (int i = 0; i < kUbiquitousParentCount; i++) {
+        jlong tag = 100 + i;
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, tag, 0, 0, FrontierEntryState::EXPANDED,
+            JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/0, kUbiquitousParentKlass));
+        ubiquitousParentTags.push_back(tag);
+        ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass, tag, 1000 + i);
+    }
+    // Pass 1: A has fanout 5, B has total 20 (20 parents x 1 each) - B is
+    // larger. First-ever call has no prior snapshot, so both deltas equal
+    // their totals; B legitimately wins this one call (nothing to compare
+    // growth against yet).
+    for (int i = 0; i < 5; i++) {
+        ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass,
+                                                            growingParentTag, 2000 + i);
+    }
+    ReferenceChainsTestAccessor::collectLeakAccumulationCandidatesForRotation(
+        ReferenceChainsTestAccessor::leakAccumulationRotationBudget());
+
+    // Pass 2: B stays exactly flat (no new admissions); A grows from 5 to 8.
+    for (int i = 0; i < 3; i++) {
+        ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass,
+                                                            growingParentTag, 3000 + i);
+    }
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectLeakAccumulationCandidatesForRotation(
+            ReferenceChainsTestAccessor::leakAccumulationRotationBudget());
+
+    ASSERT_EQ(1u, selected.size());
+    EXPECT_EQ(growingParentTag, selected[0])
+        << "the growing signature's parent must be selected, even though "
+           "the flat-but-larger signature has a much bigger absolute total";
+
+    tracker->stop();
+}
+
+TEST_F(ReferenceChainsBfsTest, LeakAccumulationRotationRanksByFanoutWithinWinningSignature) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    constexpr u32 kLeafKlass = 987, kParentKlass = 100;
+    ReferenceChainsTestAccessor::setWatchedLeakKlassIdsForTest({kLeafKlass});
+
+    jlong lowFanoutTag = 1, highFanoutTag = 2;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, lowFanoutTag, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/0, kParentKlass));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, highFanoutTag, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/0, kParentKlass));
+
+    ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass, lowFanoutTag, 10);
+    for (int i = 0; i < 5; i++) {
+        ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass,
+                                                            highFanoutTag, 20 + i);
+    }
+
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectLeakAccumulationCandidatesForRotation(10);
+    ASSERT_EQ(2u, selected.size());
+    EXPECT_EQ(highFanoutTag, selected[0]) << "higher fanout ranks first";
+    EXPECT_EQ(lowFanoutTag, selected[1]);
+
+    tracker->stop();
+}
+
+TEST_F(ReferenceChainsBfsTest, LeakAccumulationRotationRespectsMaxCountAndDedup) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    constexpr u32 kLeafKlass = 987, kParentKlass = 100;
+    ReferenceChainsTestAccessor::setWatchedLeakKlassIdsForTest({kLeafKlass});
+
+    jlong tag1 = 1, tag2 = 2, tag3 = 3;
+    for (jlong tag : {tag1, tag2, tag3}) {
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, tag, 0, 0, FrontierEntryState::EXPANDED,
+            JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/0, kParentKlass));
+        ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass, tag, 10);
+    }
+    // tag2 already queued from an earlier collector this same pass - must
+    // be skipped even though it qualifies structurally.
+    ReferenceChainsTestAccessor::pushPriorityExpand(tag2);
+
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectLeakAccumulationCandidatesForRotation(
+            /*max_count=*/1);
+    EXPECT_EQ(1u, selected.size()) << "capped at max_count";
+    EXPECT_NE(tag2, selected[0]) << "already-queued tag must not be re-selected";
+
+    tracker->stop();
+}
+
+TEST_F(ReferenceChainsBfsTest, LeakAccumulationRotationOnlySelectsExpandedEntries) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    constexpr u32 kLeafKlass = 987, kParentKlass = 100;
+    ReferenceChainsTestAccessor::setWatchedLeakKlassIdsForTest({kLeafKlass});
+
+    jlong notYetExpandedTag = 1;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, notYetExpandedTag, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/0, kParentKlass));
+    ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass,
+                                                        notYetExpandedTag, 10);
+
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectLeakAccumulationCandidatesForRotation(10);
+    EXPECT_TRUE(selected.empty())
+        << "a FRONTIER (not yet EXPANDED) entry has nothing to re-expand yet";
+
+    tracker->stop();
+}
+
+TEST_F(ReferenceChainsBfsTest, LeakAccumulationRotationReturnsEmptyWhenNothingHasGrownSincePreviousPass) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    constexpr u32 kLeafKlass = 987, kParentKlass = 100;
+    ReferenceChainsTestAccessor::setWatchedLeakKlassIdsForTest({kLeafKlass});
+
+    jlong parentTag = 1;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, parentTag, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/0, kParentKlass));
+    ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass, parentTag, 10);
+
+    // First call establishes the baseline (delta == total, since there is no
+    // prior snapshot) and selects it.
+    std::vector<jlong> firstPass =
+        ReferenceChainsTestAccessor::collectLeakAccumulationCandidatesForRotation(10);
+    ASSERT_EQ(1u, firstPass.size());
+    ReferenceChainsTestAccessor::clearPriorityExpand();
+
+    // Second call, nothing new admitted - delta is now 0 for every
+    // signature, so nothing should be selected.
+    std::vector<jlong> secondPass =
+        ReferenceChainsTestAccessor::collectLeakAccumulationCandidatesForRotation(10);
+    EXPECT_TRUE(secondPass.empty())
+        << "no signature grew since the previous pass's snapshot";
+
+    tracker->stop();
+}
+
+TEST_F(ReferenceChainsBfsTest, LeakAccumulationRotationReturnsEmptyWhenNoSignaturesTracked) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectLeakAccumulationCandidatesForRotation(10);
+    EXPECT_TRUE(selected.empty());
+
+    tracker->stop();
+}
+
+// ---------------------------------------------------------------------------
+// seedLeakAccumulationForNewlyWatchedKlass() - the cold-start fix: retroactively
+// seeds the aggregation from entries ALREADY admitted before a klass_id
+// started being watched, since trackLeakAccumulation() alone only ever sees
+// admissions happening after watching starts, and the container that
+// actually needs re-expansion is typically already fully admitted by then
+// (found via the external-process test: the delegate ArrayList sits one hop
+// below the root-attached wrapper, and admitStaticFieldRoots()'s own sweep
+// admits both in the same call, long before any leak signal can plausibly
+// have fired).
+// ---------------------------------------------------------------------------
+
+TEST_F(ReferenceChainsBfsTest, SeedLeakAccumulationPopulatesFromAlreadyAdmittedEntries) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    constexpr u32 kLeafKlass = 987, kParentKlass = 100;
+    // Entries inserted directly (as if admitted by an earlier pass), with no
+    // watched klass_id set at all yet at insertion time - trackLeakAccumulation()
+    // was never called for any of these.
+    jlong parentTag = 1;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, parentTag, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/0, kParentKlass));
+    for (int i = 0; i < 4; i++) {
+        jlong childTag = 10 + i;
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, childTag, parentTag, 1, FrontierEntryState::EXPANDED,
+            /*root_kind=*/0, /*referrer_klass=*/0, kLeafKlass));
+    }
+    ASSERT_EQ(0u, ReferenceChainsTestAccessor::leakSignatureCount())
+        << "nothing tracked yet - trackLeakAccumulation() was never called";
+
+    ReferenceChainsTestAccessor::seedLeakAccumulationForNewlyWatchedKlass(kLeafKlass);
+
+    EXPECT_EQ(4u, ReferenceChainsTestAccessor::leakSignatureTotal(kLeafKlass, kParentKlass));
+    EXPECT_EQ(4u, ReferenceChainsTestAccessor::leakParentFanout(parentTag));
+
+    tracker->stop();
+}
+
+TEST_F(ReferenceChainsBfsTest, SeedLeakAccumulationSkipsNonMatchingAndNonExpandedEntries) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    constexpr u32 kLeafKlass = 987, kOtherKlass = 555, kParentKlass = 100;
+    jlong parentTag = 1;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, parentTag, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/0, kParentKlass));
+    // Wrong class - must not be counted.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 10, parentTag, 1, FrontierEntryState::EXPANDED,
+        /*root_kind=*/0, /*referrer_klass=*/0, kOtherKlass));
+    // Right class, but still FRONTIER (not yet EXPANDED) - must not be counted.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 11, parentTag, 1, FrontierEntryState::FRONTIER,
+        /*root_kind=*/0, /*referrer_klass=*/0, kLeafKlass));
+    // Right class, root-attached (no real parent) - must not be counted.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 12, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/0, kLeafKlass));
+
+    ReferenceChainsTestAccessor::seedLeakAccumulationForNewlyWatchedKlass(kLeafKlass);
+
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::leakSignatureCount());
+
+    tracker->stop();
+}
+
+TEST_F(ReferenceChainsBfsTest, SeedLeakAccumulationComposesWithOngoingIncrementalUpdates) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    constexpr u32 kLeafKlass = 987, kParentKlass = 100;
+    jlong parentTag = 1;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, parentTag, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/0, kParentKlass));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 10, parentTag, 1, FrontierEntryState::EXPANDED,
+        /*root_kind=*/0, /*referrer_klass=*/0, kLeafKlass));
+
+    // Retroactive seed sees the one pre-existing child.
+    ReferenceChainsTestAccessor::seedLeakAccumulationForNewlyWatchedKlass(kLeafKlass);
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::leakParentFanout(parentTag));
+
+    // A genuinely new admission after watching starts must add on top of the
+    // retroactive baseline, not reset or double it.
+    ReferenceChainsTestAccessor::setWatchedLeakKlassIdsForTest({kLeafKlass});
+    ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass, parentTag, 11);
+
+    EXPECT_EQ(2u, ReferenceChainsTestAccessor::leakParentFanout(parentTag));
+    EXPECT_EQ(2u, ReferenceChainsTestAccessor::leakSignatureTotal(kLeafKlass, kParentKlass));
 
     tracker->stop();
 }

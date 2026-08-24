@@ -728,6 +728,130 @@ TEST_F(SelectLeakCandidatesTest, EmptyTableReturnsZero) {
 }
 
 // ---------------------------------------------------------------------------
+// topKlassesByGenerationCount() - ranks by most-recent count_ring sample,
+// with NO trend/hysteresis gate at all (unlike selectLeakCandidates() above)
+// - see its own header comment (livenessTracker.h) for why: it exists to run
+// AFTER hasLeakSignal() has already fired via the slower, hysteresis-gated
+// path, as a faster follow-up ranking for ReferenceChainTracker's rotation
+// priority. Reuses SelectLeakCandidatesTest's fixture/seedSeries() seam -
+// same table, same seeding mechanism, different read method under test.
+//
+// Returns stable_class_tag, NOT klass_id (the classMap dictionary id) - see
+// that field's own comment (livenessTracker.h) for why the two are
+// deliberately different values. klassPopulationRecordForTest() (seedSeries()'s
+// own underlying seam) bypasses foldKlassCountsLocked() entirely, so it never
+// mints a stable_class_tag - tests seed it explicitly via
+// klassPopulationSetStableClassTagForTest(), using a value distinct from
+// klass_id in each test below specifically so a test that accidentally
+// asserted against klass_id instead would fail loudly, not silently pass by
+// coincidence.
+// ---------------------------------------------------------------------------
+
+// A single sample (ring_fill == 1, far below selectLeakCandidates()'s
+// KLASS_POPULATION_MIN_FILL_FOR_TREND) is enough to rank - the whole point
+// of skipping the hysteresis gate.
+TEST_F(SelectLeakCandidatesTest, TopKlassesByGenerationCountNeedsOnlyOneSample) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    const u16 single[1] = {42};
+    seedSeries(tracker, /*klass_id=*/7, single, 1, /*start_epoch=*/1);
+    tracker->klassPopulationSetStableClassTagForTest(7, -700);
+
+    u32 out[5];
+    int count = tracker->topKlassesByGenerationCount(out, 5);
+
+    ASSERT_EQ(count, 1);
+    EXPECT_EQ(out[0], (u32)-700);
+}
+
+// A klass with samples but no minted stable_class_tag yet (no live instance
+// resolved so far - foldKlassCountsLocked()'s own comment) has nothing
+// usable to return and must be skipped, not reported with a bogus 0 tag.
+TEST_F(SelectLeakCandidatesTest, TopKlassesByGenerationCountSkipsUnmintedStableClassTag) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    const u16 single[1] = {42};
+    seedSeries(tracker, /*klass_id=*/7, single, 1, /*start_epoch=*/1);
+    // Deliberately no klassPopulationSetStableClassTagForTest() call.
+
+    u32 out[5];
+    int count = tracker->topKlassesByGenerationCount(out, 5);
+
+    EXPECT_EQ(count, 0);
+}
+
+// Ranking is by the MOST RECENT sample, not the peak or the mean - a klass
+// whose count has since fallen still ranks by where it is NOW.
+TEST_F(SelectLeakCandidatesTest, TopKlassesByGenerationCountUsesMostRecentSampleNotPeak) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    const u16 peakedThenFell[4] = {100, 5, 5, 5}; // peak 100, now 5
+    const u16 steady[4] = {10, 10, 10, 10};       // never peaked, now 10
+    seedSeries(tracker, /*klass_id=*/1, peakedThenFell, 4, /*start_epoch=*/1);
+    seedSeries(tracker, /*klass_id=*/2, steady, 4, /*start_epoch=*/1);
+    tracker->klassPopulationSetStableClassTagForTest(1, -100);
+    tracker->klassPopulationSetStableClassTagForTest(2, -200);
+
+    u32 out[5];
+    int count = tracker->topKlassesByGenerationCount(out, 5);
+
+    ASSERT_EQ(count, 2);
+    EXPECT_EQ(out[0], (u32)-200) << "klass 2 (currently 10) should outrank "
+                                    "klass 1 (currently 5, despite an "
+                                    "earlier peak of 100)";
+    EXPECT_EQ(out[1], (u32)-100);
+}
+
+// A flat or shrinking population - which selectLeakCandidates() would
+// exclude entirely (zero/negative slope) - still ranks here: this method
+// applies no growth-direction requirement, only magnitude.
+TEST_F(SelectLeakCandidatesTest, TopKlassesByGenerationCountIncludesFlatAndShrinkingPopulations) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    const u16 flat[3] = {50, 50, 50};
+    const u16 shrinking[3] = {30, 20, 10};
+    seedSeries(tracker, /*klass_id=*/1, flat, 3, /*start_epoch=*/1);
+    seedSeries(tracker, /*klass_id=*/2, shrinking, 3, /*start_epoch=*/1);
+    tracker->klassPopulationSetStableClassTagForTest(1, -100);
+    tracker->klassPopulationSetStableClassTagForTest(2, -200);
+
+    u32 out[5];
+    int count = tracker->topKlassesByGenerationCount(out, 5);
+
+    ASSERT_EQ(count, 2);
+    EXPECT_EQ(out[0], (u32)-100) << "flat-at-50 outranks shrinking-to-10";
+    EXPECT_EQ(out[1], (u32)-200);
+}
+
+TEST_F(SelectLeakCandidatesTest, TopKlassesByGenerationCountCapsAtMaxLeakCandidates) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    for (u32 klass_id = 1; klass_id <= 8; klass_id++) {
+        const u16 sample[1] = {(u16)(klass_id * 10)};
+        seedSeries(tracker, klass_id, sample, 1, /*start_epoch=*/1);
+        tracker->klassPopulationSetStableClassTagForTest(klass_id, -(jlong)(klass_id * 100));
+    }
+
+    u32 out[10];
+    int count = tracker->topKlassesByGenerationCount(out, 10);
+
+    EXPECT_EQ(count, 5) << "capped at MAX_LEAK_CANDIDATES regardless of the "
+                           "caller-supplied max";
+    // Descending by most-recent count: klass 8 (count 80, tag -800) first.
+    EXPECT_EQ(out[0], (u32)-800);
+    EXPECT_EQ(out[4], (u32)-400);
+}
+
+TEST_F(SelectLeakCandidatesTest, TopKlassesByGenerationCountEmptyTableReturnsZero) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    u32 out[5];
+    int count = tracker->topKlassesByGenerationCount(out, 5);
+
+    EXPECT_EQ(count, 0);
+}
+
+// ---------------------------------------------------------------------------
 // Heap-wide time-to-OOM projection (secondsToOOM()) - the aggressive-leak gap
 // selectLeakCandidates()'s per-klass ring-fill/hysteresis gate leaves open:
 // that gate can take longer to trust a candidate than a fast, heap-wide leak

@@ -82,6 +82,7 @@ public final class ReferenceChainAssertions {
         throw new IllegalStateException("No accessor for 'chain' field on datadog.ReferenceChain");
       }
 
+      String targetName = jmcStyleName(targetClass);
       for (IItem item : iterable) {
         Object chainValue = chainAccessor.getMember(item);
         if (!(chainValue instanceof Object[])) {
@@ -90,7 +91,7 @@ public final class ReferenceChainAssertions {
         }
         Object[] rawChain = (Object[]) chainValue;
         if (rawChain.length == 0 || !(rawChain[0] instanceof IMCType)
-            || !targetClass.getName().equals(((IMCType) rawChain[0]).getFullName())) {
+            || !targetName.equals(((IMCType) rawChain[0]).getFullName())) {
           continue;
         }
         List<IMCType> chain = new ArrayList<>(rawChain.length);
@@ -113,6 +114,7 @@ public final class ReferenceChainAssertions {
     if (events == null || !events.hasItems()) {
       return null;
     }
+    String targetName = jmcStyleName(targetClass);
     for (JfrEvent item : events) {
       Object chainValue = item.get("chain");
       if (!(chainValue instanceof Object[])) {
@@ -120,7 +122,7 @@ public final class ReferenceChainAssertions {
             "'chain' field resolved to " + chainValue + ", expected an array");
       }
       Object[] rawChain = (Object[]) chainValue;
-      if (rawChain.length == 0 || !targetClass.getName().equals(classFullName(rawChain[0]))) {
+      if (rawChain.length == 0 || !targetName.equals(classFullName(rawChain[0]))) {
         continue;
       }
       List<String> chain = new ArrayList<>(rawChain.length);
@@ -132,6 +134,34 @@ public final class ReferenceChainAssertions {
       return new JfrChainMatch(chain, targetTag, depth);
     }
     return null;
+  }
+
+  /**
+   * {@code targetClass}'s name in the same format {@code IMCType.getFullName()} uses for array
+   * types - found the hard way: {@code Class.getName()} renders {@code byte[].class} as {@code
+   * "[B"} (JVM internal signature notation), but JMC's chunk parser renders the same array class's
+   * {@code IMCType.getFullName()} as {@code "byte[]"} (Java source notation), so comparing {@link
+   * Class#getName()} directly against {@code getFullName()} - as both {@code findMatchForClass}
+   * overloads above used to - can never match an array-typed leaf class, even when the correct
+   * event is genuinely present in the recording. Only affects array {@code targetClass} values
+   * (e.g. {@code byte[].class}); a non-array class's {@code getName()} already matches {@code
+   * getFullName()} as-is.
+   */
+  private static String jmcStyleName(Class<?> targetClass) {
+    int dimensions = 0;
+    Class<?> component = targetClass;
+    while (component.isArray()) {
+      dimensions++;
+      component = component.getComponentType();
+    }
+    if (dimensions == 0) {
+      return targetClass.getName();
+    }
+    StringBuilder name = new StringBuilder(component.getName());
+    for (int i = 0; i < dimensions; i++) {
+      name.append("[]");
+    }
+    return name.toString();
   }
 
   /**
