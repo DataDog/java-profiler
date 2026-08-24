@@ -167,7 +167,7 @@ void Lookup::cutArguments(char *func) {
 }
 
 void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
-                                bool first_time, bool& framePushed) {
+                                bool first_time, volatile bool& framePushed) {
   JNIEnv *jni = VM::jni();
   if (jni->PushLocalFrame(64) != 0) {
     return;
@@ -639,7 +639,7 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
   // underneath. Leaving ours installed past the end of this frame would leave
   // checkFault() jumping into a dead stack frame.
   JmpCtxScope jmp_scope(prof_thread);
-  bool framePushed = false;
+  volatile bool framePushed = false;
 
   sigjmp_buf crash_protection_ctx;
   // savemask must be 1: the siglongjmp originates inside segvHandler, where
@@ -1809,7 +1809,7 @@ int Recording::writeMethods(Buffer *buf, Lookup *lookup) {
   // declaration), so the walk above cannot see it. It still has to be emitted:
   // writeStackTraces() wrote its _key for every frame that resolved to it, and a
   // _key absent from this pool is a dangling reference in the chunk.
-  if (marked_count > 0 && lookup->_unknown_method._mark) {
+  if (lookup->_unknown_method._mark) {
     marked_count++;
   }
 

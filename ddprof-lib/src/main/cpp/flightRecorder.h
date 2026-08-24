@@ -411,7 +411,7 @@ private:
                             const char *lib_name);
   void fillRemoteFrameInfo(MethodInfo *mi, const RemoteFrameInfo *rfi);
   void cutArguments(char *func);
-  void fillJavaMethodInfo(MethodInfo *mi, jmethodID method, bool first_time, bool& framePushed);
+  void fillJavaMethodInfo(MethodInfo *mi, jmethodID method, bool first_time, volatile bool& framePushed);
   bool has_prefix(const char *str, const char *prefix) const {
     return strncmp(str, prefix, strlen(prefix)) == 0;
   }
