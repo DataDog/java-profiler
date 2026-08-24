@@ -117,24 +117,23 @@ void ITimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     errno = saved_errno;
     return;
   }
-  if (JVMThread::current() == nullptr
-      && current->inInitWindow()) {
-    current->tickInitWindow();
+  if (tickInitWindowIfNeeded(current)) {
     errno = saved_errno;
     return;
   }
   int tid = current->tid();
   current->noteCPUSample(Profiler::instance()->recordingEpoch());
-  Shims::instance().setSighandlerTid(tid);
 
-  ExecutionEvent event;
-  event._execution_mode = getThreadExecutionMode();
-  // setitimer(ITIMER_PROF) delivers SIGPROF to an arbitrary thread chosen by
-  // the OS, so ucontext may be from a JVM-internal thread.  Pass nullptr to
-  // force the JVM into safepoint-based stack walking instead.
-  Profiler::instance()->recordSampleDelegated(nullptr, _interval, tid,
-                                               BCI_CPU, &event);
-  Shims::instance().setSighandlerTid(-1);
+  {
+    SighandlerTidScope sighandlerTid(tid);
+    ExecutionEvent event;
+    event._execution_mode = getThreadExecutionMode();
+    // setitimer(ITIMER_PROF) delivers SIGPROF to an arbitrary thread chosen by
+    // the OS, so ucontext may be from a JVM-internal thread.  Pass nullptr to
+    // force the JVM into safepoint-based stack walking instead.
+    Profiler::instance()->recordSampleDelegated(nullptr, _interval, tid,
+                                                 BCI_CPU, &event);
+  }
   errno = saved_errno;
 }
 

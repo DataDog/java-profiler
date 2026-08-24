@@ -230,9 +230,7 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   }
   int tid = 0;
 
-  if (JVMThread::current() == nullptr
-      && current->inInitWindow()) {
-    current->tickInitWindow();
+  if (tickInitWindowIfNeeded(current)) {
     errno = saved_errno;
     return;
   }
@@ -240,17 +238,17 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   current->noteCPUSample(Profiler::instance()->recordingEpoch());
   tid = current->tid();
 
-  Shims::instance().setSighandlerTid(tid);
-
-  ExecutionEvent event;
-  event._execution_mode = getThreadExecutionMode();
-  // Opted into JVMTI delegation; drop the sample if the JVM rejects the
-  // request (WRONG_PHASE if JFR is not recording, NOT_AVAILABLE if
-  // jdk.StackTraceRequest is disabled). recordSampleDelegated() bumps the
-  // failure counters; there is no fallback to ASGCT in this engine.
-  Profiler::instance()->recordSampleDelegated(ucontext, _interval, tid,
-                                               BCI_CPU, &event);
-  Shims::instance().setSighandlerTid(-1);
+  {
+    SighandlerTidScope sighandlerTid(tid);
+    ExecutionEvent event;
+    event._execution_mode = getThreadExecutionMode();
+    // Opted into JVMTI delegation; drop the sample if the JVM rejects the
+    // request (WRONG_PHASE if JFR is not recording, NOT_AVAILABLE if
+    // jdk.StackTraceRequest is disabled). recordSampleDelegated() bumps the
+    // failure counters; there is no fallback to ASGCT in this engine.
+    Profiler::instance()->recordSampleDelegated(ucontext, _interval, tid,
+                                                 BCI_CPU, &event);
+  }
   errno = saved_errno;
 }
 
@@ -276,32 +274,30 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // Atomically try to enter critical section - prevents all reentrancy races
   CriticalSection cs(current);
   if (!cs.entered()) {
+    errno = saved_errno;
     return;  // Another critical section is active, defer profiling
   }
   // we want to ensure memory order because of the possibility the instance gets
   // cleared
   if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
+    errno = saved_errno;
     return;
   }
   assert(!current->isDeepCrashHandler());
-  // Guard against the race window between Profiler::registerThread() and
-  // thread_native_entry setting JVM TLS (PROF-13072): skip at most one signal
-  // per thread. Pure native threads (where JVMThread::current() is always null)
-  // are allowed through once the one-shot window expires.
-  if (JVMThread::current() == nullptr && current->inInitWindow()) {
-    current->tickInitWindow();
+  if (tickInitWindowIfNeeded(current)) {
     errno = saved_errno;
     return;
   }
   current->noteCPUSample(Profiler::instance()->recordingEpoch());
   int tid = current->tid();
-  Shims::instance().setSighandlerTid(tid);
 
-  ExecutionEvent event;
-  event._execution_mode = getThreadExecutionMode();
-  Profiler::instance()->recordSample(ucontext, _interval, tid, BCI_CPU, 0,
-                                     &event);
-  Shims::instance().setSighandlerTid(-1);
+  {
+    SighandlerTidScope sighandlerTid(tid);
+    ExecutionEvent event;
+    event._execution_mode = getThreadExecutionMode();
+    Profiler::instance()->recordSample(ucontext, _interval, tid, BCI_CPU, 0,
+                                       &event);
+  }
   // we need to avoid spoiling the value of errno (tsan report)
   errno = saved_errno;
 }

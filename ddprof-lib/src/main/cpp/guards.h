@@ -23,6 +23,7 @@
 #include <pthread.h>
 
 #include "counters.h"
+#include "debugSupport.h"
 
 class ProfiledThread;
 
@@ -248,6 +249,32 @@ public:
   // Non-copyable
   SignalBlocker(const SignalBlocker&) = delete;
   SignalBlocker& operator=(const SignalBlocker&) = delete;
+};
+
+/**
+ * RAII guard around the span of a signal handler during which the current
+ * thread is the one being sampled. Sets Shims::instance().setSighandlerTid(tid)
+ * on construction and resets it to -1 on destruction, guaranteeing the reset
+ * happens on every return path out of the guarded scope.
+ *
+ * Must be scoped narrowly around exactly the existing set/reset span (right
+ * before recordSample and right after) rather than wrapped around the whole
+ * handler: widening the scope would change the window during which the
+ * sighandler tid is observably set for other consumers of Shims (e.g.
+ * crash-handler / re-entrant stack-walking code).
+ */
+class SighandlerTidScope {
+public:
+  explicit SighandlerTidScope(int tid) {
+    Shims::instance().setSighandlerTid(tid);
+  }
+  ~SighandlerTidScope() {
+    Shims::instance().setSighandlerTid(-1);
+  }
+
+  // Non-copyable
+  SighandlerTidScope(const SighandlerTidScope&) = delete;
+  SighandlerTidScope& operator=(const SighandlerTidScope&) = delete;
 };
 
 #endif // _GUARDS_H
