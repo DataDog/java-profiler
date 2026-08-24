@@ -35,6 +35,7 @@
 #include "vmEntry.h"
 
 class VMSymbol;  // hotspot/vmStructs.h
+class ProfiledThread;
 
 const u64 MAX_JLONG = 0x7fffffffffffffffULL;
 const u64 MIN_JLONG = 0x8000000000000000ULL;
@@ -410,7 +411,7 @@ private:
                             const char *lib_name);
   void fillRemoteFrameInfo(MethodInfo *mi, const RemoteFrameInfo *rfi);
   void cutArguments(char *func);
-  void fillJavaMethodInfo(MethodInfo *mi, jmethodID method, bool first_time);
+  void fillJavaMethodInfo(MethodInfo *mi, jmethodID method, bool first_time, bool& framePushed);
   bool has_prefix(const char *str, const char *prefix) const {
     return strncmp(str, prefix, strlen(prefix)) == 0;
   }
@@ -453,7 +454,8 @@ private:
   // Resolves and fills in the MethodInfo for `frame`. This is the part that
   // reads VM metadata and may therefore fault; resolveMethod() wraps it in the
   // sigsetjmp/siglongjmp window.
-  MethodInfo *fillMethod(ASGCT_CallFrame &frame, jmethodID method_id, jint bci);
+  MethodInfo *fillMethod(ASGCT_CallFrame &frame, jmethodID method_id, jint bci,
+                         ProfiledThread* const prof_thread);
 
   // Materializes _unknown_method for this dump (filling it on first use) and
   // returns it.

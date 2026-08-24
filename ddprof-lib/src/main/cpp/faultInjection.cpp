@@ -23,8 +23,6 @@ void crashNow() {
   __builtin_unreachable();  // the store above never returns.
 }
 
-// The whole translation unit is empty unless fault injection is enabled, so a
-// normal build links a no-op object file.
 #ifdef __FAULT_INJECTION__
 
 #include "counters.h"          // Counters::increment (FAULTS_INJECTED)

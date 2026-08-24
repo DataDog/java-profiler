@@ -167,11 +167,13 @@ void Lookup::cutArguments(char *func) {
 }
 
 void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
-                                bool first_time) {
+                                bool first_time, bool& framePushed) {
   JNIEnv *jni = VM::jni();
   if (jni->PushLocalFrame(64) != 0) {
     return;
   }
+  framePushed = true;
+
   jvmtiEnv *jvmti = VM::jvmti();
 
   jvmtiPhase phase;
@@ -190,10 +192,9 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
   jvmti->GetPhase(&phase);
   if ((phase & (JVMTI_PHASE_START | JVMTI_PHASE_LIVE)) != 0) {
     bool entry = false;
-    bool readable = false;
-    const size_t probe_len = 256;
+    bool valid_method = false;
     if (VMMethod::check_jmethodID(method) &&
-        jvmti->GetMethodDeclaringClass(method, &method_class) == 0 &&
+        jvmti->GetMethodDeclaringClass(method, &method_class) == JVMTI_ERROR_NONE &&
         // GetMethodDeclaringClass may return a jclass wrapping a stale/garbage oop when the class was
         // unloaded between sample capture and dump (TOCTOU race with class unloading). Guard against
         // null handles before calling GetClassSignature.
@@ -205,28 +206,11 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         // when a classloader is unloaded, the jmethodIDs are not freed, but instead marked as -1.
         // The check below mitigates these crashes on J9.
         (!VM::isOpenJ9() || method_class != reinterpret_cast<jclass>(-1)) &&
-        jvmti->GetClassSignature(method_class, &class_name, NULL) == 0 &&
-        jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == 0) {
-      // The JVMTI strings should be non-null and mapped per spec, but crash
-      // telemetry shows both `strncmp` and `jvmti_Deallocate` faulting on them.
-      // Probe each pointer over a range covering the longest prefix
-      // compared below (~50 bytes) plus headroom for strlen, and NULL any that
-      // fails so the unconditional Deallocate block at end of this function
-      // skips it (os::free faults on an unmapped pointer just like strncmp).
-      // Accept a small leak on the corruption path. Probes run independently
-      // so a single bad pointer does not leak its siblings. Best-effort only:
-      // a concurrent munmap between probe and use can still fault; the SIGSEGV
-      // handler is the second line of defence.
-      auto probe = [&](char*& ptr) -> bool {
-        if (ptr == nullptr || !SafeAccess::isReadableRange(ptr, probe_len)) {
-          ptr = nullptr;
-          return false;
-        }
-        return true;
-      };
-      readable = probe(class_name) & probe(method_name) & probe(method_sig);
+        jvmti->GetClassSignature(method_class, &class_name, NULL) == JVMTI_ERROR_NONE &&
+        jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == JVMTI_ERROR_NONE) {
+      valid_method = (class_name != nullptr) && (method_name != nullptr) && (method_sig != nullptr);
     }
-    if (readable) {
+    if (valid_method) {
       const size_t class_name_len = strnlen(class_name, 65536);
       const char* normalized_class_name =
           class_name_len >= 2 ? class_name + 1 : "";
@@ -634,11 +618,28 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     return unknown_method;
   }
 
-  // Reinstates the thread's previous landing pad on every exit from this frame,
+  return fillMethod(frame, method_id, bci, prof_thread);
+}
+
+MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
+                               jint bci, ProfiledThread* const prof_thread) {
+
+  assert(prof_thread != nullptr);
+                                  // Resolve native method
+  if (FrameType::isRawPointer(bci)) {
+    method_id = JVMSupport::resolve(frame.method);
+    if (method_id == nullptr) {
+      return unknownMethod();
+    }
+  }
+
+  assert(method_id != nullptr && "Already filtered by caller");
+    // Reinstates the thread's previous landing pad on every exit from this frame,
   // including a std::bad_alloc thrown by one of the map or dictionary inserts
   // underneath. Leaving ours installed past the end of this frame would leave
   // checkFault() jumping into a dead stack frame.
   JmpCtxScope jmp_scope(prof_thread);
+  bool framePushed = false;
 
   sigjmp_buf crash_protection_ctx;
   // savemask must be 1: the siglongjmp originates inside segvHandler, where
@@ -653,26 +654,18 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
     jmp_scope.restore();
     Counters::increment(METHOD_RESOLVE_LONGJMP_RECOVERED);
+
+    if (framePushed) {
+      JNIEnv* jni = VM::jni();
+      jni->PopLocalFrame(nullptr);
+    }
     // A member, already filled above -- no map lookup, no allocation, and no
     // reliance on a local surviving siglongjmp (the value of a non-volatile
     // local assigned after sigsetjmp() is indeterminate here).
     return &_unknown_method;
   }
   jmp_scope.install(&crash_protection_ctx);
-  return fillMethod(frame, method_id, bci);
-}
 
-MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
-                               jint bci) {
-  // Resolve native method
-  if (FrameType::isRawPointer(bci)) {
-    method_id = JVMSupport::resolve(frame.method);
-    if (method_id == nullptr) {
-      return unknownMethod();
-    }
-  }
-
-  assert(method_id != nullptr && "Already filtered by caller");
 
   // Inject fault to test siglongjmp protection. Sits inside the window
   // resolveMethod() arms around this function, which is the point: this is
@@ -693,14 +686,6 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
 
   if (!mi->_mark) {
     bool first_time = mi->_key == 0;
-    if (first_time) {
-      // Allocate a method-pool id that is unique among live methods. Must not
-      // be derived from the map size: cleanupUnreferencedMethods() erases
-      // entries, so size()+1 would reissue an id still owned by a surviving
-      // method, producing duplicate ids in the chunk's method constant pool
-      // (PROF-15130). The allocator recycles ids freed on erase instead.
-      mi->_key = _method_map->allocId();
-    }
     if (bci == BCI_ERROR) {
       fillNativeMethodInfo(mi, (const char *)method_id, nullptr);
     } else if (bci == BCI_NATIVE_FRAME) {
@@ -752,7 +737,15 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
       mi->_type = FRAME_NATIVE;
       mi->_is_entry = false;
     } else {
-      fillJavaMethodInfo(mi, method_id, first_time);
+      fillJavaMethodInfo(mi, method_id, first_time, framePushed);
+    }
+    if (first_time) {
+      // Allocate a method-pool id that is unique among live methods. Must not
+      // be derived from the map size: cleanupUnreferencedMethods() erases
+      // entries, so size()+1 would reissue an id still owned by a surviving
+      // method, producing duplicate ids in the chunk's method constant pool
+      // (PROF-15130). The allocator recycles ids freed on erase instead.
+      mi->_key = _method_map->allocId();
     }
     // Mark last, never before the fill above. The fill walks VM metadata that a
     // concurrent class unload may have freed, so it can siglongjmp straight out
@@ -1816,7 +1809,7 @@ int Recording::writeMethods(Buffer *buf, Lookup *lookup) {
   // declaration), so the walk above cannot see it. It still has to be emitted:
   // writeStackTraces() wrote its _key for every frame that resolved to it, and a
   // _key absent from this pool is a dangling reference in the chunk.
-  if (lookup->_unknown_method._mark) {
+  if (marked_count > 0 && lookup->_unknown_method._mark) {
     marked_count++;
   }
 
