@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk25
 
 ## musl-arm64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-08-23 21:25:22 EDT
+**Date:** 2026-08-24 00:57:22 EDT
 
 ### Configuration
 | Setting | Value |
@@ -32,42 +32,42 @@ title: musl-arm64-openj9-jdk25
 | Sample Rate | 8.53/sec |
 | Health Score | 533% |
 | Threads | 9 |
-| Allocations | 355 |
+| Allocations | 390 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 254 |
-| Sample Rate | 4.23/sec |
+| CPU Samples | 253 |
+| Sample Rate | 4.22/sec |
 | Health Score | 264% |
-| Threads | 11 |
-| Allocations | 138 |
+| Threads | 9 |
+| Allocations | 153 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
 
 ```
-1787534391 64
-1787534396 64
-1787534401 64
-1787534406 64
-1787534411 64
-1787534416 64
-1787534421 64
-1787534426 64
-1787534431 64
-1787534436 64
-1787534441 64
-1787534446 64
-1787534451 64
-1787534456 64
-1787534461 64
-1787534466 64
-1787534471 64
-1787534477 64
-1787534482 64
-1787534487 64
+1787547200 64
+1787547205 64
+1787547210 64
+1787547215 64
+1787547220 64
+1787547225 64
+1787547230 64
+1787547235 64
+1787547240 64
+1787547245 64
+1787547250 64
+1787547255 64
+1787547260 64
+1787547265 64
+1787547270 64
+1787547275 64
+1787547280 64
+1787547285 64
+1787547290 64
+1787547295 64
 ```
 </details>
 
