@@ -26,6 +26,8 @@
   X(PERF, "perf")                                                              \
   X(THREAD_LOCAL, "thread_local")                                              \
   X(JFR_BUFFERS, "jfr_buffers")                                                \
+  X(METHOD_MAP, "method_map")                                                  \
+  X(LIVENESS, "liveness")                                                      \
   X(MISC, "misc")
 
 #define X_NM_ENUM(a, b) NM_##a,

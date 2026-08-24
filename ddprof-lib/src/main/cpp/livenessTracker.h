@@ -7,6 +7,7 @@
 #define _LIVENESSTRACKER_H
 
 #include "arch.h"
+#include "callTraceHashTable.h"
 #include "context.h"
 #include "engine.h"
 #include "event.h"
@@ -104,7 +105,7 @@ public:
   static void JNICALL GarbageCollectionFinish(jvmtiEnv *jvmti_env);
 
 private:
-  void getLiveTraceIds(std::unordered_set<u64>& out_buffer);
+  void getLiveTraceIds(CallTraceIdSet& out_buffer);
 };
 
 #endif // _LIVENESSTRACKER_H

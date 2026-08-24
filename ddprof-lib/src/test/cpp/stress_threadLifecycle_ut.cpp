@@ -141,7 +141,7 @@ static void churn_worker(ThreadFilter* filter, bool with_dump) {
 static void dump_thread() {
   while (g_run.load(std::memory_order_relaxed)) {
     lock_all();
-    g_storage.processTraces([](const std::unordered_set<CallTrace*>& traces) {
+    g_storage.processTraces([](const CallTraceSet& traces) {
       volatile size_t n = 0;
       for (CallTrace* t : traces) {
         if (t && t != CallTraceSample::PREPARING) {

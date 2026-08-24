@@ -34,8 +34,12 @@ DDPROF_LIB="${DDPROF_LIB:-$(find "$REPO_ROOT/ddprof-lib/build/lib/main/release" 
 DDPROF_JAVA_API="${DDPROF_JAVA_API:-$REPO_ROOT/ddprof-lib/build/classes/java/main}"
 JAVA_BIN="${JAVA_BIN:-java}"
 JAVA_HOME_DIR="$("$JAVA_BIN" -XshowSettings:properties -version 2>&1 | awk -F'= ' '/java.home/{print $2}')"
-JAVAC_BIN="${JAVAC_BIN:-$(command -v javac || echo "$JAVA_HOME_DIR/bin/javac")}"
-JCMD_BIN="${JCMD_BIN:-$(command -v jcmd || echo "$JAVA_HOME_DIR/bin/jcmd")}"
+# Default to the same JDK as JAVA_BIN (via its reported java.home), not
+# whatever javac/jcmd happen to be first on PATH -- those can silently belong
+# to a different JDK than the one being swept, compiling classes at the wrong
+# bytecode level or misreading NMT output.
+JAVAC_BIN="${JAVAC_BIN:-$JAVA_HOME_DIR/bin/javac}"
+JCMD_BIN="${JCMD_BIN:-$JAVA_HOME_DIR/bin/jcmd}"
 WORKDIR="${WORKDIR:-/tmp/memsweep_fixedheap_${N}}"
 
 if [ -z "$DDPROF_LIB" ] || [ ! -f "$DDPROF_LIB" ]; then

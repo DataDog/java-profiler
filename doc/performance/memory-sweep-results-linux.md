@@ -932,6 +932,178 @@ this pass, not localization; see "Caveats and open questions" for what a
 follow-up mechanism hunt (e.g. a full smaps region inventory, with vs.
 without) would need to do next.
 
+### Instrumenting the remaining allocation sites directly (negative result)
+
+The five techniques above each ruled something out by inference — none
+directly instrumented the allocation sites they suspected. This pass adds
+real `NativeMem` counters at the eight sites identified as plausible
+contributors (a `CountingAllocator<T, Category>` wrapping `::operator
+new`/`delete` for STL containers, plus direct `record()`/`setLive()` calls
+for raw-`malloc` structures), giving two new categories —
+`NM_METHOD_MAP` (`Recording::_method_map`) and `NM_LIVENESS`
+(`LivenessTracker::_table`) — alongside additions to the existing
+`NM_THREAD_LOCAL` (`UnwindFailures`, `ThreadInfo`'s two maps),
+`NM_JFR_BUFFERS` (`Lookup::_vtable_receiver_cache`), `NM_CALLTRACE`
+(`CallTraceStorage`'s two working buffers), and `NM_MISC` (wall-clock's
+thread-reservoir vector, `setLive`-gauged rather than allocator-wrapped).
+A `CodeCache::setDwarfTable()` fix trims the DWARF/SFrame `FrameDesc` table
+to its exact length via `realloc`, eliminating the capacity-doubling slack
+that previously lingered in real RSS undetected.
+
+Re-running the same `classes 150000`, `wall=~1ms` workload with this
+instrumentation and reading the counters directly, instead of estimating:
+
+| Category | Value | Note |
+|---|---|---|
+| `NM_THREAD_LOCAL` | 5.92 MB | includes `UnwindFailures`'s fixed +294,912 B, previously invisible |
+| `NM_MISC` | 8,192 B | wall-clock reservoir vector capacity, previously always 0 (no call sites) |
+| `NM_CALLTRACE` | 50.89 MB | ~33 KB above the pre-instrumentation baseline (50,858,496 B) — `CallTraceStorage`'s two working buffers are real but tiny |
+| `NM_JFR_BUFFERS` | 1.21 MB | unchanged from baseline — `_vtable_receiver_cache` stays empty for this workload (no `BCI_ALLOC` frames) |
+| `NM_LIVENESS` | 0 | expected: `LivenessTracker` is an allocation-profiling feature, inactive for this wall-clock-only workload |
+| `NM_METHOD_MAP` | 0 in a single-chunk read; **13.15 MB** with a forced mid-run `dump()` | see below |
+
+**The newly-instrumented sites add at most ~340 KB to steady-state
+accounting** (dominated by `UnwindFailures`'s fixed 288 KiB table) — about
+1% of the ~34.6 MiB residual. This is a genuine negative result: the plan's
+premise — that these eight sites were plausible hiding places for the
+residual — turns out to be wrong for seven of the eight. They're real,
+newly-visible allocations, just not big ones.
+
+**`NM_METHOD_MAP` is the one site large enough to matter, and it doesn't
+count either — but for a timing reason, not a magnitude reason.**
+`Recording::_method_map` is only populated by `Lookup::resolveMethod()`
+during `writeCpool()`, which runs *after* that same chunk's `NM_*` counter
+snapshot (`flightRecorder.cpp`'s `finishChunk()`: `updateNativeMemStats()`/
+`writeNativeMem()` at lines ~820/822, `writeCpool()` at line ~835) — the
+exact same deferred-write pattern already documented above for
+`NM_DICTIONARY`. A single continuous recording (this profiler's default)
+only ever runs that path once, at process exit, so `_method_map` is
+essentially empty at the moment the fixed-heap protocol's RSS/NMT snapshot
+is taken (~1 second before the workload's own deadline, well before
+process exit). Forcing an intermediate `dump()` at 177s of a 180s run (the
+same technique already validated for `NM_DICTIONARY`, reproducing its
+prior ~236 MB reading to within ~0.6%) makes the growth visible in the
+final chunk: **13.15 MB**, in the same neighborhood as the earlier
+`mallinfo2()` probe's ~16.02 MB estimate (the gap is plausibly the same
+~56% stack-trace coverage at N=150,000 already documented above — not
+every generated method necessarily gets resolved into a stack trace
+that survives to the forced dump). Either way, **this memory is real, but
+it materializes at JFR chunk-flush time, not during steady-state
+execution** — it's temporally disjoint from the residual being measured,
+not a hidden contributor to it.
+
+**The `CodeCache` fix doesn't show up in `NM_NATIVE_SYMBOLS` either, for a
+related reason: `memoryUsage()`'s formula is `length * sizeof(FrameDesc)`
+regardless of whether the underlying buffer was shrunk to match.** Reverting
+the `realloc`-shrink and rebuilding confirmed this directly — `NM_NATIVE_SYMBOLS`
+read 12,481,568 B without the fix vs. 12,481,616 B with it, a 48-byte
+difference that's clearly noise, not the ~30-50% overallocation the fix
+targets. The fix's real effect is on the actual malloc'd block size, which
+this gauge was never computing from in the first place. A single unpaired
+comparison of total process RSS between the two builds (2,132,604 KB
+without the fix vs. 2,116,940 KB with it, same workload, default
+unfixed-heap ergonomics) suggested ~15 MB lower RSS with the fix applied —
+directionally consistent with removing doubling slack — but this wasn't run
+under the fixed-heap protocol that cut per-condition noise from ~89 MB to
+~6-11 MB elsewhere in this document, so it isn't strong evidence on its
+own. The fix is real and correct (it makes the accounting formula and the
+actual allocation agree, and can only reduce real RSS, never increase it),
+but this pass doesn't produce a rigorously confirmed magnitude for it.
+
+**Net conclusion: the ~34.6 MiB (±3.9 MiB) residual remains unexplained.**
+This pass closes out the plan's premise rather than confirming it — all
+eight identified sites are now instrumented with real, byte-exact counters,
+and none of them turn out to be sitting in the residual's steady-state
+window. The residual's mechanism is still open; per the "Caveats" section
+below, a full `smaps` region inventory (with vs. without the agent) remains
+the most direct next step, since it doesn't depend on guessing which
+category to instrument next.
+
+### Ruling out arena-level fragmentation as the residual's mechanism (malloc_info + malloc_trim)
+
+The eight-site instrumentation pass above closed out every allocation site
+anyone had a concrete hypothesis for, but left the ~34.6 MiB residual's
+mechanism unknown. A remaining possibility: maybe it isn't a missing
+*counter* at all, but a mismatch between what any byte-counting
+instrumentation can see (logical requested bytes, which is all
+`CountingAllocator` or any `malloc`-request-counting shim can ever measure)
+and what glibc actually holds resident — chunk headers, 16-byte alignment,
+per-thread arena reservation, fragmentation. Three techniques tested this,
+all under the fixed-heap `classes 150000` protocol:
+
+1. **`MALLOC_ARENA_MAX=1` differential (8 clean paired reps).** Forcing
+   glibc to a single process-wide arena eliminates any per-thread-arena
+   proliferation effect. Paired RSS delta: 70.61 MiB (±2.73 MiB SE, n=8) vs.
+   the established unrestricted-arena baseline of 78.77 MiB (±3.86 MiB SE,
+   n=12) — an ~8 MiB (~10%) reduction, only ~1.7σ given the combined SE, so
+   suggestive but not conclusive on its own. (A follow-up batch of 4 more
+   reps was accidentally run concurrently with an unrelated background job
+   and was discarded: one rep showed a physically impossible negative
+   with-vs-without delta — proof of CPU-contention corruption — so the
+   whole batch was untrustworthy by association and not merged in.)
+
+2. **`/proc/<pid>/smaps` region inventory (single with/without pair, default
+   arenas).** Java heap (510 MiB), metaspace/class-space (220.75 MiB), and
+   CodeCache (116.31 MiB) regions were byte-identical between conditions,
+   confirming the fixed-heap protocol controls what it should. The entire
+   RSS delta for this pair (65.9 MiB) lived in additional/larger anonymous
+   mmap regions. The count of large (~60-64 MiB, glibc-arena-sized)
+   committed regions was similar between conditions (~11 vs. ~9-10) —
+   arguing against simple arena-*count* proliferation. One ~91 MiB
+   fully-resident anonymous region was unique to the "with" condition, but
+   `smaps` can't name anonymous regions, so it couldn't be attributed to
+   anything specific from this alone.
+
+3. **`malloc_info()` + `malloc_trim(0)` direct probe (single with/without
+   pair, default arenas) — decisive.** Built a small LD_PRELOAD shim
+   (`doc/performance/memsweep/malloc_info_probe.c`) that, on receiving
+   `SIGRTMIN+10`, dumps `malloc_info()` to a file, calls `malloc_trim(0)`,
+   then dumps `malloc_info()` again. (`SIGRTMIN+10` was chosen after
+   `SIGUSR2` silently failed — HotSpot claims `SIGUSR2` as its own
+   suspend/resume signal on Linux and intercepted it before the LD_PRELOAD
+   handler ever ran, confirmed via the JVM's own "stray SR signal"
+   warning.) Findings:
+   - Arena count: 44 (with) vs. 42 (without) — not a meaningful
+     proliferation.
+   - Total committed arena memory (`system` bytes): 441.65 MiB (with) vs.
+     373.54 MiB (without), a 68.11 MiB delta, concentrated almost entirely
+     in one arena (344.9 MiB vs. 274.83 MiB, a 70.07 MiB difference by
+     itself) — plausibly the main arena.
+   - Free bytes sitting in bins (`fast`+`rest` totals) were nearly
+     identical between conditions (~65.7 MiB vs. ~71.4 MiB), both before
+     and after the trim.
+   - **`malloc_trim(0)` changed `system_current` by ~0.01 MiB in both
+     conditions.** Since `malloc_trim` can only release memory the
+     allocator has already determined is unused (unconsolidated top-chunk
+     tail, some free-list consolidation), a near-zero effect means the
+     ~68-70 MiB gap is **live, in-use allocated memory — not reclaimable
+     slack or fragmentation waste.**
+
+**Conclusion: the RSS-vs-counters alignment/fragmentation/arena-waste
+hypothesis is ruled out.** The gap between conditions is real, live,
+currently-allocated memory that glibc itself considers in use, not a
+phantom accounting artifact. This is consistent with (not contradictory
+to) everything measured earlier: HotSpot's own NMT-tracked categories
+(Internal, Class, etc. — the already-explained ~35 MiB portion of the total
+delta) also allocate via `os::malloc`, which routes through the same glibc
+arenas, so this arena-level delta plausibly represents "already-known
+NMT-visible allocations (~35 MiB) + the still-unexplained residual
+(~34.6 MiB)" landing in the same arena — not a new, separate ~70 MiB
+mystery on top of everything else measured so far.
+
+**Where this leaves the investigation:** the residual is a real, live,
+currently-unidentified allocation (or set of allocations) that goes through
+plain `malloc`/`new` without being wrapped by any of the `NativeMem`
+counters checked so far (the eight sites from the prior pass are all
+confirmed <1 MB combined at steady state). `malloc_info()` cannot identify
+*which* call site is responsible — it only histograms free (not in-use)
+chunks, by construction. The next tool that could actually attribute live
+bytes to a call site would be a `malloc`/`free` LD_PRELOAD shim keyed by
+captured backtrace (heavier than anything tried so far, since it has to
+survive being invoked from inside libc's own allocator), or an external
+tool like `heaptrack`/`valgrind --tool=massif` if available in the
+environment — neither has been tried yet.
+
 ## Practical implications
 
 1. **Thread count (total distinct threads over the profiling session, not
@@ -1034,14 +1206,31 @@ without) would need to do next.
 - **The exact mechanism for the ~34.6 MB (±3.9 MB SE) unattributed
   remainder is still unknown**, despite five independent lines of
   investigation (all detailed under "Investigating the unattributed
-  remainder" above) plus a sixth pass that tightened the magnitude's
-  precision without localizing it further. The pattern across the five
-  mechanism checks — each either ruled out or shown to already be counted
-  elsewhere — suggests the residual is unlikely to be additional
-  profiler-`.so`-attributed `malloc`/`new` activity, glibc fragmentation, or
-  JIT code-cache growth. Worth checking next: whether other profiler
-  structures use `OS::safeAlloc` (raw `mmap`, sparse-residency-prone) the
-  way `CallTraceStorage` does, since their counters would have the same
+  remainder" above), a sixth pass that tightened the magnitude's precision
+  without localizing it further, and a seventh pass ("Instrumenting the
+  remaining allocation sites directly") that added real byte-exact counters
+  at all eight previously-uninstrumented allocation sites identified as
+  plausible contributors — all eight are now ruled out (seven contribute
+  well under 1 MB combined at steady state; the eighth, `NM_METHOD_MAP`, is
+  real but only materializes at JFR chunk-flush time, outside the residual's
+  measurement window). The pattern across all these checks — each either
+  ruled out or shown to already be counted elsewhere — suggests the residual
+  is unlikely to be additional profiler-`.so`-attributed `malloc`/`new`
+  activity from any currently-known allocation site, glibc fragmentation, or
+  JIT code-cache growth. An eighth/ninth/tenth pass ("Ruling out arena-level
+  fragmentation" above) then directly tested the RSS-vs-counters angle via
+  `MALLOC_ARENA_MAX=1`, a `/proc/<pid>/smaps` region inventory, and an
+  in-process `malloc_info()`/`malloc_trim(0)` probe — the last one decisive:
+  the with/without gap is real, live, in-use memory (`malloc_trim` reclaimed
+  ~0 of it), not fragmentation or arena-count proliferation. So the residual
+  is a genuine, currently-unattributed live allocation, and the remaining
+  open question is purely "which call site" — `malloc_info()` can't answer
+  that (it only histograms *free* chunks). Worth checking next: a
+  `malloc`/`free` LD_PRELOAD shim keyed by captured backtrace (heavier than
+  anything tried so far), or `heaptrack`/`valgrind --tool=massif` if
+  available in the environment; whether other profiler structures use
+  `OS::safeAlloc` (raw `mmap`, sparse-residency-prone) the way
+  `CallTraceStorage` does, since their counters would have the same
   logical-vs-resident gap that complicated the `NM_CALLTRACE` analysis;
   and/or tracing the per-thread/shard `StringDictionaryBuffer` buffering
   mechanism directly to understand why the chunk-flush burst is an order of

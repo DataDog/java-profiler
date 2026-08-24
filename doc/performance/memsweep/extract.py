@@ -23,6 +23,8 @@ keys = [
     "native_mem_live_bytes.native_symbols",
     "native_mem_live_bytes.line_tables",
     "native_mem_live_bytes.jfr_buffers",
+    "native_mem_live_bytes.method_map",
+    "native_mem_live_bytes.liveness",
     "native_mem_live_bytes.perf",
     "native_mem_live_bytes.misc",
 ]
