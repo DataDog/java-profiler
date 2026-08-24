@@ -1449,11 +1449,11 @@ class ResolvedNames {
   // allocation just because it went through the malloc path instead.
   static constexpr size_t MAX_SYMBOL_LEN = 64 * 1024;
 
-  // Fixed-size fast-path buffers for the common case, sized so that a
-  // realistic name/signature/class name never needs to allocate. 4096 mirrors
-  // Lookup::resolveVTableReceiverCached (flightRecorder.cpp), which reads the
-  // same Symbol bodies on the same thread; it is a precedent to stay
-  // consistent with, not a JVM-spec limit.
+  // Fixed-size fast-path buffers for the common case, sized generously above
+  // the realistic common-case length for each field (see the per-field
+  // comments below) but deliberately not so generous that the malloc
+  // fallback in setImpl() never engages -- these caps are meant to be hit
+  // occasionally so that path stays exercised.
   // HotSpot's Symbol length field is a u2, so the VM permits up to 65535 bytes.
   // A name/descriptor that overflows its fixed buffer falls back to malloc
   // (see ResolvedNames::setImpl), up to MAX_SYMBOL_LEN below; beyond that it is
@@ -1551,6 +1551,9 @@ bool ResolvedNames::setImpl(char* short_name, char* volatile& long_name, size_t 
   char* dest = short_name;
   if (len >= short_limit) {
     long_name = (char*)malloc(len + 1);
+    if (long_name == nullptr) {
+        return false;   // caller bumps METHOD_RESOLVE_SYMBOL_UNREADABLE
+    }
     dest = long_name;
   }
 
@@ -1649,7 +1652,22 @@ static bool readMethodNames(const void* method, VMMethod** out_vm_method,
 //     local frame and unbalanced safepoint state -- trading a crash for a
 //     JVM-wide deadlock.
 // vm_method->validatedId() below is safefetch-based, so it is safe unprotected.
-jmethodID lookupMethodIdViaJni(VMMethod* vm_method, const ResolvedNames& names) {
+//
+// A plain, TU-local helper -- like readMethodNames() -- rather than a
+// HotspotSupport member or friend: it never touches HotspotSupport's private
+// state directly, so nothing about it, including ResolvedNames (a type
+// defined entirely in this file with no header of its own), needs to be
+// declared in hotspotSupport.h. The <clinit> fallback needs the private
+// HotspotSupport::loadMethodIDsIfNeededImpl(), so resolve() -- which does
+// have access, being a member -- passes it in as a plain function pointer
+// instead of this function calling it directly.
+//
+// Returns a jmethodID valid for as long as the declaring class stays loaded
+// (the same ownership/lifetime jmethodIDs always have in this codebase -- no
+// release call is needed), or nullptr if the method could not be found via
+// JNI/JVMTI.
+static jmethodID lookupMethodIdViaJni(VMMethod* vm_method, const ResolvedNames& names,
+                                       bool (*loadMethodIDsIfNeededImpl)(jvmtiEnv*, JNIEnv*, jclass, bool)) {
   jmethodID method_id = nullptr;
   const char* method_name = names.methodName();
   const char* method_signature = names.methodSignature();
@@ -1677,7 +1695,7 @@ jmethodID lookupMethodIdViaJni(VMMethod* vm_method, const ResolvedNames& names) 
         if (strcmp(method_name, "<clinit>") == 0) {
           jvmtiEnv* jvmti = VM::jvmti();
           if (jvmti != nullptr) {
-            if (HotspotSupport::loadMethodIDsIfNeededImpl(jvmti, jni, clz, true /*load all*/)) {
+            if (loadMethodIDsIfNeededImpl(jvmti, jni, clz, true /*load all*/)) {
               jmethodID validated = vm_method->validatedId();
               if (isValidJMethodID(validated)) {
                 method_id = validated;
@@ -1763,5 +1781,5 @@ jmethodID HotspotSupport::resolve(const void* method) {
   if (existing_id != nullptr) {
     return existing_id;
   }
-  return lookupMethodIdViaJni(vm_method, names);
+  return lookupMethodIdViaJni(vm_method, names, &HotspotSupport::loadMethodIDsIfNeededImpl);
 }

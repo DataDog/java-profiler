@@ -250,10 +250,12 @@ protected:
     JNINativeInterface_ jni_tbl{};
     JNIEnv_ mock_jni{};
     bool _orig_hotspot;
+    JVMSupportTestAccessor::LoadState _orig_load_state;
 
     void SetUp() override {
         _orig_hotspot = VMTestAccessor::getHotspot();
         VMTestAccessor::setHotspot(true);
+        _orig_load_state = JVMSupportTestAccessor::getLoadState();
         JVMSupportTestAccessor::setLoadState(JVMSupportTestAccessor::NoLoaded());
 
         jvmti_tbl = jvmtiInterface_1_{};
@@ -270,6 +272,7 @@ protected:
 
     void TearDown() override {
         VMTestAccessor::setHotspot(_orig_hotspot);
+        JVMSupportTestAccessor::setLoadState(_orig_load_state);
     }
 };
 
@@ -286,8 +289,7 @@ TEST_F(JVMSupportRestartTest, SecondStartWithPartialPreloadIsNotBlockedByStaleFu
 
     JVMSupport::initExecution(partial_args, &mock_jvmti, reinterpret_cast<JNIEnv*>(&mock_jni));
 
-    // Fails today: the stale Fully_loaded state short-circuits initExecution()
-    // before shouldPreloadJmethodIDs(partial_args) is ever evaluated, so the
-    // state incorrectly stays Fully_loaded instead of downgrading.
+    // Regression: before the fix, a stale Fully_loaded state short-circuited initExecution()...
+    // so the state stayed Fully_loaded instead of downgrading.
     EXPECT_EQ(JVMSupportTestAccessor::PartialLoaded(), JVMSupportTestAccessor::getLoadState());
 }

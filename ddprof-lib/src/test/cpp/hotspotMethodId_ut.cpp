@@ -12,11 +12,13 @@
 #include "../../main/cpp/os.h"
 #include "../../main/cpp/profiler.h"
 #include "../../main/cpp/threadLocalData.inline.h"
+#include "../../main/cpp/vmEntry.h"
 
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <new>
+#include <string>
 
 #ifdef __linux__
 #include <sys/mman.h>
@@ -29,6 +31,8 @@ class VMTestAccessor {
 public:
     static bool getHotspot() { return VM::_hotspot; }
     static void setHotspot(bool value) { VM::_hotspot = value; }
+    static JavaVM* getVm() { return VM::_vm; }
+    static void setVm(JavaVM* vm) { VM::_vm = vm; }
 };
 
 // Test-only friend accessor for VMStructs protected static offsets.
@@ -439,6 +443,73 @@ struct ResolveFakes {
     }
 };
 
+// Minimal fake JavaVM/JNIEnv so HotspotSupport::resolve()'s unprotected JNI
+// phase (lookupMethodIdViaJni) can run to completion without a live JVM.
+// FindClass always reports success against an opaque, never-dereferenced
+// jclass; GetMethodID/GetStaticMethodID record the name/signature they were
+// called with and report "not found" -- the same real-world path resolve()
+// takes for a method it can't find -- so nothing beyond that is exercised.
+// Recording the arguments is what lets a test prove the malloc-fallback path
+// copied the right bytes, rather than just checking resolve() didn't crash.
+class ScopedFakeJni {
+public:
+    ScopedFakeJni() : _saved_vm(VMTestAccessor::getVm()) {
+        _jni_tbl = JNINativeInterface_{};
+        _jni_tbl.FindClass = &findClass;
+        _jni_tbl.ExceptionClear = &exceptionClear;
+        _jni_tbl.GetMethodID = &getMethodId;
+        _jni_tbl.GetStaticMethodID = &getMethodId;
+        _jni_tbl.DeleteLocalRef = &deleteLocalRef;
+        _jni_env.functions = &_jni_tbl;
+
+        _vm_tbl = JNIInvokeInterface_{};
+        _vm_tbl.GetEnv = &getEnv;
+        _vm.functions = &_vm_tbl;
+
+        s_instance = this;
+        VMTestAccessor::setVm(reinterpret_cast<JavaVM*>(&_vm));
+    }
+
+    ~ScopedFakeJni() {
+        VMTestAccessor::setVm(_saved_vm);
+        s_instance = nullptr;
+    }
+
+    int getMethodIdCalls() const { return _get_method_id_calls; }
+    const std::string& lastMethodName() const { return _last_method_name; }
+    const std::string& lastMethodSignature() const { return _last_method_sig; }
+
+private:
+    static jclass JNICALL findClass(JNIEnv*, const char*) {
+        return reinterpret_cast<jclass>(&s_instance->_fake_class);
+    }
+    static jmethodID JNICALL getMethodId(JNIEnv*, jclass, const char* name, const char* sig) {
+        s_instance->_get_method_id_calls++;
+        s_instance->_last_method_name = name != nullptr ? name : "";
+        s_instance->_last_method_sig = sig != nullptr ? sig : "";
+        return nullptr;
+    }
+    static void JNICALL exceptionClear(JNIEnv*) {}
+    static void JNICALL deleteLocalRef(JNIEnv*, jobject) {}
+    static jint JNICALL getEnv(JavaVM*, void** penv, jint) {
+        *penv = reinterpret_cast<JNIEnv*>(&s_instance->_jni_env);
+        return JNI_OK;
+    }
+
+    static ScopedFakeJni* s_instance;
+
+    JavaVM* _saved_vm;
+    JNINativeInterface_ _jni_tbl{};
+    JNIEnv_ _jni_env{};
+    JNIInvokeInterface_ _vm_tbl{};
+    JavaVM_ _vm{};
+    int _fake_class = 0;  // address-only sentinel; never dereferenced
+    int _get_method_id_calls = 0;
+    std::string _last_method_name;
+    std::string _last_method_sig;
+};
+ScopedFakeJni* ScopedFakeJni::s_instance = nullptr;
+
 } // namespace
 
 class HotspotResolveCrashProtectionTest : public ::testing::Test {
@@ -567,10 +638,12 @@ TEST_F(HotspotResolveCrashProtectionTest, ResolveReturnsNullForUnreadableSymbolB
     EXPECT_FALSE(_pt->isProtected());
 }
 
-// A Symbol longer than the fixed dump-time buffer is reported as unresolved
-// rather than truncated or copied out of bounds. Pins the cap behaviour so a
-// future change to the buffer sizes is a deliberate test edit.
-TEST_F(HotspotResolveCrashProtectionTest, ResolveReturnsNullForOverlongSymbol) {
+// A method name longer than the fixed inline buffer (MAX_METHOD_NAME_LEN,
+// 512 bytes) but fully readable must take ResolvedNames::setImpl()'s malloc
+// fallback and still resolve successfully through to the JNI phase, with the
+// full, correctly NUL-terminated name -- not get rejected the way a name
+// this size would be by the *unreadable*-body case below.
+TEST_F(HotspotResolveCrashProtectionTest, ResolveUsesMallocFallbackForOversizedButReadableName) {
     HotspotMethodIdVMHotspotGuard hotspot;
     VMStructsTestAccessor offsets(RESOLVE_OFFSETS);
     VMStructsTestAccessor::SymbolLayout layout(RESOLVE_SYMBOL_OFFSETS, RESOLVE_TYPE_SIZES);
@@ -579,7 +652,73 @@ TEST_F(HotspotResolveCrashProtectionTest, ResolveReturnsNullForOverlongSymbol) {
     f->link();
     ResolveFakes::setSymbol(f->sig_sym, "()V");
     ResolveFakes::setSymbol(f->klass_sym, "java/lang/Object");
-    f->name_sym.length = 0xFFFF;  // far above MAX_METHOD_NAME_LEN
+
+    // Longer than MAX_METHOD_NAME_LEN (512) but well under the 16-bit range a
+    // real Symbol::length() can report, and fully readable. Written past
+    // ResolveFakes' own footprint in the same mapped page so it doesn't
+    // clobber sig_sym/klass_sym, then wired in as the name Symbol in place of
+    // f->name_sym (whose fixed body[64] is too small to hold it).
+    const std::string long_name(600, 'm');
+    char* long_symbol = (char*)_region + 1024;
+    *(uint16_t*)(long_symbol + RESOLVE_SYMBOL_OFFSETS.symbol_length) = (uint16_t)long_name.size();
+    memcpy(long_symbol + RESOLVE_SYMBOL_OFFSETS.symbol_body, long_name.data(), long_name.size());
+    f->cpool.symbols[1] = (intptr_t)long_symbol;  // name_index slot, see link()
+
+    ScopedFakeJni fake_jni;
+
+    long long unreadable_before = Counters::getCounter(METHOD_RESOLVE_SYMBOL_UNREADABLE);
+    long long fault_before = Counters::getCounter(METHOD_RESOLVE_FAULT_RECOVERED);
+
+    // The fake JNI's GetMethodID reports "not found", so resolve() itself
+    // still returns nullptr -- the point of this test is what it does on the
+    // way there, checked below.
+    EXPECT_EQ(nullptr, HotspotSupport::resolve(&f->method));
+
+    // Phase 1 accepted the name via the malloc fallback (no rejection, no
+    // fault) and reached phase 2, which called GetMethodID with the fully
+    // copied name -- proof the fallback copied all 600 bytes and
+    // NUL-terminated them correctly rather than truncating to the inline
+    // buffer or leaving it uninitialized.
+    EXPECT_EQ(unreadable_before, Counters::getCounter(METHOD_RESOLVE_SYMBOL_UNREADABLE));
+    EXPECT_EQ(fault_before, Counters::getCounter(METHOD_RESOLVE_FAULT_RECOVERED));
+    // GetMethodID and GetStaticMethodID share this mock and both report "not
+    // found", so lookupMethodIdViaJni() falls through from one to the other --
+    // two calls, both carrying the same (correct) captured name/signature.
+    EXPECT_EQ(2, fake_jni.getMethodIdCalls());
+    EXPECT_EQ(long_name, fake_jni.lastMethodName());
+    EXPECT_EQ("()V", fake_jni.lastMethodSignature());
+    EXPECT_FALSE(_pt->isProtected());
+}
+
+// NOTE for reviewers: a companion test asserting the *hard* MAX_SYMBOL_LEN
+// ceiling (`len >= MAX_SYMBOL_LEN` in ResolvedNames::setImpl) rejects a
+// symbol is intentionally not included here. VMSymbol::length() returns
+// `unsigned short` (vmStructs.h), so the largest value it can ever produce is
+// 65535 -- which is already below MAX_SYMBOL_LEN (64 * 1024 = 65536). That
+// branch cannot be reached through a real Symbol length field as currently
+// typed; forging a >=65536 "length" in the test would require bypassing the
+// u2 width the fake is deliberately modeling, which would pin a value that
+// can't occur in production rather than real cap behavior. Flagging this as
+// a probable dead branch (or a MAX_SYMBOL_LEN that should be 65536 -> 65535,
+// or the comparison that should be `>` semantics some other way) rather than
+// writing a test around it -- worth confirming with whoever added the check
+// what it was meant to guard against.
+//
+// What *is* pinned below is the related, reachable case: a Symbol at the
+// largest value the field can actually hold (0xFFFF) whose body is not fully
+// readable is rejected by the SafeAccess probe in copySymbolBody(), the same
+// mechanism as ResolveReturnsNullForUnreadableSymbolBody above, just at the
+// boundary length instead of a short one.
+TEST_F(HotspotResolveCrashProtectionTest, ResolveRejectsUnreadableSymbolAtMaxLength) {
+    HotspotMethodIdVMHotspotGuard hotspot;
+    VMStructsTestAccessor offsets(RESOLVE_OFFSETS);
+    VMStructsTestAccessor::SymbolLayout layout(RESOLVE_SYMBOL_OFFSETS, RESOLVE_TYPE_SIZES);
+
+    ResolveFakes* f = new (_region) ResolveFakes{};
+    f->link();
+    ResolveFakes::setSymbol(f->sig_sym, "()V");
+    ResolveFakes::setSymbol(f->klass_sym, "java/lang/Object");
+    f->name_sym.length = 0xFFFF;  // max value a real u2 length field can hold
 
     long long before = Counters::getCounter(METHOD_RESOLVE_SYMBOL_UNREADABLE);
 
