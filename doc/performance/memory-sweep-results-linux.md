@@ -1338,6 +1338,39 @@ iteration and correctly uses `threads.capacity()` rather than `size()`, and
 _table_cap)` — a capacity difference, not a usable-size one. No miscounting was
 found at any instrumented site.
 
+### Fixing the gauge: counter coverage goes from 37 % to 96 %
+
+`Libraries::updateSymbols()` is the only function that grows `_native_libs`,
+and a published `CodeCache` is immutable — `add()`, `expand()` and
+`setDwarfTable()` each assert they run before publication. So the gauge does
+not need polling: recomputing it at the point the tables change is sufficient
+for it to be accurate at any later instant. One line at the end of
+`updateSymbols()` (`libraries.cpp`) does it, and it covers every path that can
+change the tables — agent load (`vmEntry.cpp:263`), profiler start
+(`profiler.cpp:1524`), the background refresher's `refresh()`, and the
+kernel-symbol parse.
+
+Re-measured with the same protocol; both reps byte-identical again:
+
+| | before | after |
+| --- | --- | --- |
+| `NM_NATIVE_SYMBOLS` | 0.00 MiB | **13.03 MiB** |
+| sum of malloc-backed counters | 8.30 MiB | **21.32 MiB** |
+| measured, attributed to `libjavaProfiler.so` | 22.21 MiB | 22.21 MiB |
+| **uncounted** | **13.91 MiB (63 %)** | **0.88 MiB (4 %)** |
+
+With the library loaded but profiling not started, uncounted falls from
+13.30 MiB to **0.27 MiB** (98.6 % coverage). The fix also closes most of the
+3.64 MiB that had resolved only to the private `operator new`: those were
+`new CodeBlob[_capacity]` array allocations, which `memoryUsage()` accounts for
+via its `_capacity * sizeof(CodeBlob)` term.
+
+No measurable cost: class-load time is 12-14 s both before and after, the same
+range as every earlier run. RSS is unchanged within noise — the with-agent
+figure was identical (2021.4 MiB) across the two builds, and the baseline moved
+10 MiB, well inside the ±8.5 MiB per-condition sd established over 7 pairs.
+This is a counter-only change; it allocates nothing.
+
 **Open.** 3.64 MiB in 34 large allocations still resolves only to the private
 `operator new`; the unwinder recovered the caller for most sites but not these.
 And the audit covers malloc-backed categories only — it says nothing about
