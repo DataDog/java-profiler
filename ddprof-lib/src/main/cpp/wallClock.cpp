@@ -443,12 +443,13 @@ void WallClockJvmti::sharedSignalHandler(int signo, siginfo_t *siginfo,
 void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
                                    void *ucontext, u64 last_sample,
                                    ProfiledThread* current) {
+  int saved_errno = errno;
   assert(current != nullptr);
   CriticalSection cs(current);
   if (!cs.entered()) {
+    errno = saved_errno;
     return;
   }
-  int saved_errno = errno;
 
   if (tickInitWindowIfNeeded(current)) {
     errno = saved_errno;
