@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk25
 
 ## glibc-x64-hotspot-jdk25 - ✅ PASS
 
-**Date:** 2026-08-24 15:44:29 EDT
+**Date:** 2026-08-24 17:08:23 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-x64-hotspot-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 385 |
-| Sample Rate | 6.42/sec |
-| Health Score | 401% |
+| CPU Samples | 489 |
+| Sample Rate | 8.15/sec |
+| Health Score | 509% |
 | Threads | 9 |
 | Allocations | 369 |
 
@@ -38,36 +38,36 @@ title: glibc-x64-hotspot-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 472 |
-| Sample Rate | 7.87/sec |
-| Health Score | 492% |
-| Threads | 10 |
-| Allocations | 463 |
+| CPU Samples | 534 |
+| Sample Rate | 8.90/sec |
+| Health Score | 556% |
+| Threads | 11 |
+| Allocations | 454 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 96-96 cores)</summary>
 
 ```
-1787600209 96
-1787600214 96
-1787600219 96
-1787600224 96
-1787600229 96
-1787600234 96
-1787600239 96
-1787600244 96
-1787600249 96
-1787600254 96
-1787600259 96
-1787600264 96
-1787600269 96
-1787600274 96
-1787600279 96
-1787600284 96
-1787600289 96
-1787600294 96
-1787600299 96
-1787600304 96
+1787605409 96
+1787605414 96
+1787605419 96
+1787605424 96
+1787605429 96
+1787605434 96
+1787605439 96
+1787605444 96
+1787605449 96
+1787605454 96
+1787605459 96
+1787605465 96
+1787605470 96
+1787605475 96
+1787605480 96
+1787605485 96
+1787605490 96
+1787605495 96
+1787605500 96
+1787605505 96
 ```
 </details>
 
