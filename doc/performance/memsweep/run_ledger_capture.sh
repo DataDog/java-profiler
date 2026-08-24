@@ -74,6 +74,11 @@ if [ -f "$DDPROF_DEBUG" ]; then
   NMLIVE_OFF=$(nm --defined-only "$DDPROF_DEBUG" 2>/dev/null \
     | awk '$3=="_ZN9NativeMem5_liveE"{print "0x"$1}')
 fi
+NMMAX_OFF=""
+if [ -f "$DDPROF_DEBUG" ]; then
+  NMMAX_OFF=$(nm --defined-only "$DDPROF_DEBUG" 2>/dev/null \
+    | awk '$3=="_ZN9NativeMem4_maxE"{print "0x"$1}')
+fi
 NMLIVE_NCAT=$(awk '/define DD_NATIVE_MEM_CATEGORY_TABLE/,/MISC/' \
   "$REPO_ROOT/ddprof-lib/src/main/cpp/nativeMem.h" | grep -c '^  X(')
 # libjavaProfiler.so statically links libstdc++ and does not export operator
@@ -127,6 +132,7 @@ run_one() {
 
   LD_PRELOAD="$PROBE_SO" PROBE_OUTDIR="$dumpdir" \
     PROBE_NMLIVE_OFF="$NMLIVE_OFF" PROBE_NMLIVE_NCAT="$NMLIVE_NCAT" \
+    PROBE_NMMAX_OFF="$NMMAX_OFF" \
     PROBE_OPNEW_OFF="$OPNEW_LO" PROBE_OPNEW_SIZE="$OPNEW_SIZE" \
     "$JAVA_BIN" $HEAP_FLAGS $NMT_FLAG "${agent[@]}" \
     -Dmemsweep.libpath="$DDPROF_LIB" \

@@ -1039,6 +1039,19 @@ static void dump_now(void) {
         fprintf(f, "nm_live[%ld] %lld\n", i, v);
       }
       fprintf(f, "nm_live_sum %lld\n", sum);
+    }
+    // The per-category peaks, maintained at allocation time by
+    // NativeMem::record() and never reset in production (NativeMem::reset()
+    // has no callers outside init/tests), so these are lifetime high-water
+    // marks rather than per-chunk figures.
+    const char *max_s = getenv("PROBE_NMMAX_OFF");
+    if (prof_base && max_s) {
+      unsigned long moff = strtoul(max_s, NULL, 0);
+      const volatile long long *mx =
+          (const volatile long long *)(prof_base + moff);
+      for (long i = 0; i < ncat; i++) {
+        fprintf(f, "nm_max[%ld] %lld\n", i, mx[i]);
+      }
     } else {
       fprintf(f, "unavailable base=%lx off=%s\n", (unsigned long)prof_base,
               off_s ? off_s : "(unset)");

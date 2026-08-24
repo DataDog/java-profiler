@@ -21,6 +21,7 @@
 #include "buffers.h"
 #include "countingAllocator.h"
 #include "counters.h"
+#include "nativeMem.h"
 #include "dictionary.h"
 #include "stringDictionary.h"
 #include "event.h"
@@ -311,6 +312,25 @@ public:
 
   void updateNativeMemStats();
   void writeNativeMem(Buffer *buf);
+
+  // Per-category NativeMem state captured immediately AFTER writeCpool(), and
+  // emitted by the following chunk.
+  //
+  // The chunk's own counters are necessarily sampled before serialization: the
+  // chunk header records cpool_offset as the boundary between the event section
+  // and the constant pool, so no event may be appended once writeCpool() has
+  // run. But writeCpool() is where the method map is built and the dictionary
+  // grows -- by two orders of magnitude in a large recording -- so a consumer
+  // reading only the in-chunk values never sees the cost of serialization.
+  //
+  // native_mem_max_bytes does eventually reflect it, because record() raises
+  // the peak at allocation time and nothing ever resets it, but only one chunk
+  // late and only as a lifetime maximum: after several flushes it can no longer
+  // say which flush was responsible. These snapshots give the per-flush figure.
+  bool _has_post_flush;
+  long long _post_flush_live[NM_NUM_CATEGORIES];
+  long long _post_flush_max[NM_NUM_CATEGORIES];
+  void capturePostFlushNativeMem();
 
   void writeUnwindFailures(Buffer *buf);
 

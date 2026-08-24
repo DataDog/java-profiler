@@ -1376,17 +1376,64 @@ serialization allocation is never reported at all.
 **This cannot be fixed by reordering.** `cpool_offset` is recorded in the chunk
 header as the boundary between the event section and the constant pool, so no
 event may be appended after `writeCpool()` returns; moving `writeNativeMem()`
-past it would corrupt the chunk. The options are therefore to refresh the
-JNI-visible `Counters::` mirrors after `writeCpool()` (which helps a live
-process across `dump()`, since `getDebugCounters0` hands Java a direct view of
-that array, but buys nothing at exit), or to emit the previous flush's
-post-serialization values under distinct counter names in the following chunk —
-a schema addition, and the only option that surfaces the serialization spike in
-JFR itself. Neither is implemented here.
+past it would corrupt the chunk.
+
+#### What a forced mid-run flush actually costs
+
+Measured by triggering `JavaProfiler.dump()` part-way through a steady-state run
+(`-Dmemsweep.dumpAfterMs`, new and opt-in) and reading `NativeMem::_live[]` and
+`_max[]` directly out of process memory either side of it:
+
+| category | live before | live after | max before | max after |
+| --- | --- | --- | --- | --- |
+| `NM_DICTIONARY` | 4.55 | **162.46** | 4.55 | **216.62** |
+| `NM_METHOD_MAP` | 0.00 | 13.32 | 0.00 | 13.32 |
+| `NM_CALLTRACE` | 40.53 | 27.95 | 40.53 | 59.96 |
+| `NM_LINE_TABLES` | 0.00 | 4.16 | 0.00 | 4.16 |
+
+A single flush takes the dictionary from 4.55 MiB to a 216.62 MiB peak, settling
+at 162.46 MiB that it then keeps. This is a direct-counter confirmation of the
+~210-230 MB serialization burst documented earlier in this file, and it
+independently confirms that `NM_METHOD_MAP`'s steady-state zero was correct.
+
+#### Post-flush counters
+
+`native_mem_max_bytes` *does* eventually reflect the spike, because `record()`
+raises the peak at allocation time and nothing resets it — but only one chunk
+late, and only as a lifetime maximum, so after several flushes it can no longer
+say which one was responsible. And in a single-chunk recording it is never
+emitted at all.
+
+`Recording::capturePostFlushNativeMem()` therefore snapshots per-category `live`
+and `max` immediately after `writeCpool()`, and the following chunk emits them
+as `native_mem_post_flush_live_bytes.<category>` and
+`native_mem_post_flush_max_bytes.<category>` (22 extra counter events per chunk,
+absent from the first chunk since no flush has happened). The same capture point
+refreshes the JNI-visible `Counters::` mirrors, so a live process reading
+`getDebugCounters0()` after a `dump()` sees post-serialization values.
+
+Verified end to end on a two-chunk recording, and cross-checked against the
+direct memory read above:
+
+| category | in-chunk live | in-chunk max | post-flush live | post-flush max |
+| --- | --- | --- | --- | --- |
+| dictionary | 240.02 | 240.02 | **161.53** | **215.27** |
+| method_map | 13.27 | 13.27 | 13.27 | 13.27 |
+| calltrace | 27.95 | 59.96 | 27.95 | 59.96 |
+
+Without these, chunk 2 reports dictionary live 240.02 and max 240.02 and there
+is no way to tell that the preceding flush peaked at 215.27 and left 161.53
+behind.
 
 Note that `NativeMem::sample()` must **not** simply be called a second time per
 chunk to paper over this: it advances a 64-tick moving-average window, so
-calling it twice would silently redefine `avg()` as a 32-chunk mean.
+calling it twice would silently redefine `avg()` as a 32-chunk mean. The capture
+deliberately does not call it.
+
+**Still not covered:** the final chunk. Its own serialization is emitted
+nowhere, because there is no following chunk — only the refreshed `Counters::`
+mirrors can be read, and only by something running before the JVM finishes
+tearing down.
 
 ### Fixing the gauge: counter coverage goes from 37 % to 96 %
 

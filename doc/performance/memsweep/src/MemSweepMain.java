@@ -41,6 +41,34 @@ public class MemSweepMain {
         JavaProfiler profiler = JavaProfiler.getInstance(libPath, scratchDir);
         profiler.addThread();
 
+        // Optional mid-run dump, off unless -Dmemsweep.dumpAfterMs is set.
+        // finishChunk() -- and therefore writeCpool(), which is what populates
+        // the method map and grows the dictionary -- runs only at process exit
+        // for a single continuous recording. Forcing a rotation part-way
+        // through is the only way to observe a flush while the process is
+        // still alive and can be sampled.
+        String dumpAfter = System.getProperty("memsweep.dumpAfterMs");
+        if (dumpAfter != null) {
+            long delayMs = Long.parseLong(dumpAfter);
+            String dumpPath = System.getProperty("memsweep.dumpPath",
+                    scratchDir + "/memsweep-middump.jfr");
+            Thread t = new Thread(() -> {
+                try {
+                    Thread.sleep(delayMs);
+                    System.out.println("MEMSWEEP_DUMP_BEGIN " + System.currentTimeMillis());
+                    System.out.flush();
+                    profiler.dump(java.nio.file.Paths.get(dumpPath));
+                    System.out.println("MEMSWEEP_DUMP_END " + System.currentTimeMillis());
+                    System.out.flush();
+                } catch (Throwable e) {
+                    System.out.println("MEMSWEEP_DUMP_FAILED " + e);
+                    System.out.flush();
+                }
+            }, "memsweep-dumper");
+            t.setDaemon(true);
+            t.start();
+        }
+
         switch (mode) {
             case "threads": runThreads(n, durationMs, profiler); break;
             case "traces": runTraces(n, durationMs, genDir); break;
