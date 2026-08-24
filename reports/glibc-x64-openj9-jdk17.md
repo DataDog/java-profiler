@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk17
 
 ## glibc-x64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-08-23 21:22:03 EDT
+**Date:** 2026-08-23 21:23:19 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 494 |
-| Sample Rate | 8.23/sec |
-| Health Score | 514% |
+| CPU Samples | 421 |
+| Sample Rate | 7.02/sec |
+| Health Score | 439% |
 | Threads | 8 |
-| Allocations | 356 |
+| Allocations | 337 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 561 |
-| Sample Rate | 9.35/sec |
-| Health Score | 584% |
+| CPU Samples | 599 |
+| Sample Rate | 9.98/sec |
+| Health Score | 624% |
 | Threads | 9 |
-| Allocations | 510 |
+| Allocations | 475 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 17-17 cores)</summary>
 
 ```
-1787534303 17
-1787534308 17
-1787534313 17
-1787534318 17
-1787534323 17
-1787534328 17
-1787534333 17
-1787534338 17
-1787534343 17
-1787534348 17
-1787534353 17
-1787534358 17
-1787534363 17
-1787534368 17
-1787534373 17
-1787534378 17
-1787534383 17
-1787534388 17
-1787534393 17
-1787534398 17
+1787534375 17
+1787534380 17
+1787534385 17
+1787534390 17
+1787534395 17
+1787534400 17
+1787534405 17
+1787534410 17
+1787534415 17
+1787534420 17
+1787534425 17
+1787534430 17
+1787534435 17
+1787534440 17
+1787534445 17
+1787534450 17
+1787534455 17
+1787534460 17
+1787534465 17
+1787534470 17
 ```
 </details>
 

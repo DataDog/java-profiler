@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk11
 
 ## musl-x64-openj9-jdk11 - ✅ PASS
 
-**Date:** 2026-08-23 21:22:05 EDT
+**Date:** 2026-08-23 21:23:20 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 533 |
-| Sample Rate | 8.88/sec |
-| Health Score | 555% |
+| CPU Samples | 524 |
+| Sample Rate | 8.73/sec |
+| Health Score | 546% |
 | Threads | 8 |
-| Allocations | 383 |
+| Allocations | 392 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 681 |
-| Sample Rate | 11.35/sec |
-| Health Score | 709% |
+| CPU Samples | 738 |
+| Sample Rate | 12.30/sec |
+| Health Score | 769% |
 | Threads | 9 |
-| Allocations | 526 |
+| Allocations | 462 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 17-17 cores)</summary>
 
 ```
-1787534294 17
-1787534299 17
-1787534304 17
-1787534309 17
-1787534314 17
-1787534319 17
-1787534324 17
-1787534329 17
-1787534334 17
-1787534339 17
-1787534344 17
-1787534349 17
-1787534354 17
-1787534359 17
-1787534364 17
-1787534369 17
-1787534374 17
-1787534379 17
-1787534384 17
-1787534389 17
+1787534362 17
+1787534367 17
+1787534372 17
+1787534377 17
+1787534382 17
+1787534387 17
+1787534392 17
+1787534397 17
+1787534402 17
+1787534407 17
+1787534412 17
+1787534417 17
+1787534422 17
+1787534427 17
+1787534432 17
+1787534437 17
+1787534442 17
+1787534447 17
+1787534452 17
+1787534457 17
 ```
 </details>
 
