@@ -1079,7 +1079,26 @@ all under the fixed-heap `classes 150000` protocol:
      ~68-70 MiB gap is **live, in-use allocated memory — not reclaimable
      slack or fragmentation waste.**
 
-**Conclusion: the RSS-vs-counters alignment/fragmentation/arena-waste
+> **CORRECTION (superseded — see "Closing the residual" below).** The
+> conclusion drawn in this section is wrong in two ways, both found when the
+> allocation-ledger probe measured directly what this test could only infer.
+>
+> 1. `malloc_trim(0)` releases only the heap *top* and pages that are
+>    *entirely* free. Free chunks interleaved with live ones are unreclaimable
+>    by construction, so "trim changed nothing" does **not** mean "there is no
+>    free arena memory". `malloc_info` in these very dumps reports 61-74 MiB of
+>    free-but-held bytes, and the with/without *delta* of that quantity is
+>    ~+13.8 MiB — a real component of the gap that this section concluded was
+>    absent.
+> 2. Per-chunk headers and alignment padding sit on **live** chunks, so trim
+>    can never move them either; that half of the hypothesis was never tested.
+>    Measured directly, it contributes ~+6.4 MiB (NMT off).
+>
+> The reconciliation below ("68.11 MiB arena delta ~= 35 known + 34.6
+> residual") also compares a chunk-inclusive number against a logical-bytes
+> sum, so its agreement is a coincidence of magnitude, not a confirmation.
+
+**Conclusion (SUPERSEDED): the RSS-vs-counters alignment/fragmentation/arena-waste
 hypothesis is ruled out.** The gap between conditions is real, live,
 currently-allocated memory that glibc itself considers in use, not a
 phantom accounting artifact. This is consistent with (not contradictory
@@ -1103,6 +1122,134 @@ captured backtrace (heavier than anything tried so far, since it has to
 survive being invoked from inside libc's own allocator), or an external
 tool like `heaptrack`/`valgrind --tool=massif` if available in the
 environment — neither has been tried yet.
+
+### Closing the residual: a full allocation ledger (RSS accounted without remainder)
+
+Nine prior passes each picked a hypothesis, tested it, and ruled it out,
+leaving a ~34.6 MiB (±3.9 MiB SE) residual with no mechanism. This pass
+inverted the approach: instead of guessing which call site to instrument
+next, measure *every* allocation the process makes and see what the RSS
+delta actually consists of.
+
+**Instrument.** `memsweep/alloc_ledger_probe.c` is an `LD_PRELOAD` shim that
+tracks, for the whole process, live `malloc` bytes three ways — requested
+(logical), `malloc_usable_size` (chunk), and allocation count — plus an
+append-only log of every mapping event with its caller. Three things it does
+that a naive shim does not, each of which silently loses most of the signal
+(details in `memsweep/alloc_ledger_probe.c`'s header):
+
+* interposes **`mmap64`**, which is what `libjvm.so` actually imports — an
+  `mmap`-only shim sees exactly one JVM mapping;
+* interposes **`syscall()`**, because `OS::safeAlloc`/`safeFree`
+  (`os_linux.cpp:658-670`) use a naked syscall *specifically* to be
+  uninterceptable, and that is where `NM_CALLTRACE`'s arena comes from;
+* **names its own mappings** via `prctl(PR_SET_VMA_ANON_NAME)` so its side
+  tables can be subtracted exactly — they are resident in proportion to
+  allocation count, hence larger in the with-agent condition, and would
+  otherwise manufacture part of the delta being measured.
+
+**Validation.** Ground-truth self-test (a known population of 17-byte
+allocations plus known mappings) reproduces every quantity exactly. Against
+glibc's own independent view — `system.current - (fast + rest) + mmap` from
+`malloc_info` — the probe agrees to **0.26 %** absolute and to **0.01 MiB** on
+the with/without delta. `malloc_insert_fail`, `free_untracked`, and
+`ev_overflow` are zero in all ten runs, so no leg is silently degraded.
+
+The glibc chunk formula was measured rather than assumed: a normal chunk costs
+`usable + 8`, an mmap'd chunk `usable + 16`, and `usable + 16 ==
+align4096(req + 16)` **exactly** — page rounding is already inside
+`malloc_usable_size`, so adding a separate page-rounding term would double
+count.
+
+**Protocol.** N=150,000 `classes`, fixed heap, JDK 21, conditions run
+*sequentially* (not concurrently as in `run_mallocinfo_capture.sh` — CPU
+contention has corrupted a batch in this investigation before), sampled 165 s
+after the workload announces `MEMSWEEP_LOADED`. That marker is new: class
+loading is completion-bounded while the measured loop is time-bounded, and the
+agent loads measurably slower, so a launch-relative sample can catch the two
+conditions at different lifecycle stages.
+
+**Result — the RSS delta decomposes with a near-zero remainder.** 7 paired
+runs, NMT off (means, with SE over pairs):
+
+| quantity | Δ (MiB) | SE |
+| --- | --- | --- |
+| RSS, net of the probe's own footprint | **+60.2** | 3.2 |
+| anonymous (glibc arena) residency | +41.1 | 3.2 |
+| `OS::safeAlloc` arena residency | +19.9 | 1.5 |
+| *(+24.0 MiB virtual, exactly, in every run)* | | |
+
+The partition above is exact by construction. The real test is whether the
+anonymous bucket's residency — measured from smaps — matches what the malloc
+instruments say independently:
+
+| anon residency, from the other side | Δ (MiB) | SE |
+| --- | --- | --- |
+| live malloc chunk bytes | +33.6 | 2.4 |
+| free-but-held glibc arena pages | +7.6 | 3.0 |
+| **disagreement with the smaps figure** | **-0.06** | **0.16** |
+
+Across all 9 pairs (both NMT settings) that disagreement never exceeds
+0.66 MiB in either direction, on deltas of 50-77 MiB. Two instruments that
+share no code and no data source agree to well under a megabyte. That is what
+"the RSS delta is accounted for" means here.
+
+Three mechanisms, none of them a missing allocation site:
+
+1. **Chunk overhead our counters cannot see: +6.44 MiB (SE 0.10).** `NativeMem`
+   records logical bytes; RSS pays for chunks. At a mean allocation size of
+   ~83 B the agent's ~650,000 extra live allocations carry ~17 % inflation.
+   This is the most reproducible term in the whole study — sd 0.27 MiB over
+   7 pairs.
+2. **Free-but-held arena pages: +7.6 MiB, but SE 3.0 and range -7.2 to +17.2.**
+   Memory glibc holds and cannot return, in no counter of any kind, and — as
+   the correction above explains — provably not reclaimable by `malloc_trim`.
+   It is *real* rather than an artifact: the smaps anon bucket independently
+   requires it, tracking it even into the two runs where it went negative. But
+   it is a genuinely variable quantity that depends on arena fragmentation
+   state at the sampling instant, so **its mean should be treated as
+   ~2.5 sigma, not as a settled constant.** Do not quote +7.6 MiB as a fixed
+   cost.
+3. **`NM_CALLTRACE` reports capacity, not residency.** The counter's
+   deterministic 48.5 MiB is virtual; the measured resident delta is
+   +19.9 MiB against a virtual delta of exactly +24.0 MiB in all 9 runs.
+   Note the direction: this error makes the counter *overstate* real memory, so
+   correcting it makes the old residual larger, not smaller — which is part of
+   why earlier reconciliations kept landing near the right magnitude for the
+   wrong reasons.
+
+**NMT is an asymmetric bias, and it is large.** NMT's per-allocation header
+scales with JVM allocation count, and the agent causes many more allocations,
+so enabling NMT inflates the with-agent condition specifically. Measured:
+logical malloc delta +26.9 MiB (NMT off) vs +33.3 MiB (NMT on); chunk
+inflation +6.4 MiB vs +12.4 MiB — NMT roughly **doubles** the apparent
+inflation. Every prior sweep in this document ran with
+`-XX:NativeMemoryTracking=summary` in both conditions, which is symmetric in
+*intent* but not in *effect*.
+
+**Caveats.**
+
+* The "without" baseline is not agent-free: `MemSweepMain` calls
+  `JavaProfiler.getInstance()` unconditionally, so the library is loaded and
+  has already taken 24 MiB of `safeAlloc` arena. The delta therefore measures
+  *profiling activity*, not total agent cost — this is inherited from the
+  established harness, and it means every RSS delta in this document
+  understates the full cost of attaching the profiler.
+* Per-module residency is prorated across merged VMAs and is good to about a
+  MiB, not exact. One pair (rep 3) closes at -8.7 MiB rather than ~-1, and the
+  cause is that approximation: the kernel merged an 8 MiB `safeAlloc` chunk
+  into a 71.9 MiB anonymous region. Naming the profiler's own mappings would
+  make this exact.
+* n=3 (NMT off) and n=2 (NMT on); the free-but-held term in particular needs
+  more reps before its magnitude should be quoted precisely.
+
+**What this does and does not settle.** It settles the *composition* of the
+RSS delta: it is chunk overhead, arena slack, and virtual-vs-resident
+counting, not an unfound allocation site. It does **not** yet verify that the
+profiler's own `NativeMem` counters sum to the +26.9 MiB logical malloc delta
+measured here — that comparison needs the counter read path fixed first
+(`finishChunk()` snapshots `NM_*` before `writeCpool()` runs, a defect already
+found twice), and is the natural next step.
 
 ## Practical implications
 

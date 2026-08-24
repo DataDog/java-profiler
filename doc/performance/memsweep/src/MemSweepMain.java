@@ -104,6 +104,14 @@ public class MemSweepMain {
             methods.add(c.getMethod("compute", long.class));
         }
 
+        // Class loading above is completion-bounded while the loop below is
+        // time-bounded, and the agent makes loading measurably slower. A
+        // launch-relative sample point can therefore catch the with/without
+        // conditions at different lifecycle stages. Announce entry into the
+        // steady-state loop so harnesses can sample relative to *that* instead.
+        System.out.println("MEMSWEEP_LOADED " + System.currentTimeMillis());
+        System.out.flush();
+
         long deadline = System.currentTimeMillis() + durationMs;
         long sink = 0;
         while (System.currentTimeMillis() < deadline) {
@@ -128,6 +136,9 @@ public class MemSweepMain {
             for (int m = 0; m < methodsPerClass; m++) ms[m] = c.getMethod("m" + m, long.class);
             methodsByClass.add(ms);
         }
+
+        System.out.println("MEMSWEEP_LOADED " + System.currentTimeMillis());
+        System.out.flush();
 
         long deadline = System.currentTimeMillis() + durationMs;
         long sink = 0;
