@@ -691,7 +691,10 @@ char *Recording::_jvm_flags = NULL;
 char *Recording::_java_command = NULL;
 
 Recording::Recording(int fd, Arguments &args)
-    : _fd(fd), _method_map() {
+    : _fd(fd), _method_map(), _has_post_flush(false) {
+
+  memset(_post_flush_live, 0, sizeof(_post_flush_live));
+  memset(_post_flush_max, 0, sizeof(_post_flush_max));
 
   args.save(_args);
   _chunk_start = lseek(_fd, 0, SEEK_END);
@@ -833,6 +836,12 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   _buf->put8(0, (char)pool_count);
   result = pwrite(_fd, _buf->data(), 1, cpool_offset + count_offset_in_cpool);
   (void)result;
+
+  // Serialization is complete: the method map is built and the dictionary has
+  // grown. Capture that state now for the next chunk to emit, and refresh the
+  // JNI-visible counter mirrors so a live process reading getDebugCounters0()
+  // after a dump() sees post-serialization values rather than pre-.
+  capturePostFlushNativeMem();
 
   off_t chunk_end = lseek(_fd, 0, SEEK_CUR);
 
@@ -1809,6 +1818,20 @@ void Recording::writeLogLevels(Buffer *buf) {
   }
 }
 
+void Recording::capturePostFlushNativeMem() {
+  for (int c = 0; c < NM_NUM_CATEGORIES; c++) {
+    NativeMemCategory cat = (NativeMemCategory)c;
+    _post_flush_live[c] = NativeMem::live(cat);
+    _post_flush_max[c] = NativeMem::max(cat);
+  }
+  _has_post_flush = true;
+  // Deliberately NOT NativeMem::sample(): that advances a 64-tick moving
+  // average window, so calling it a second time per chunk would silently
+  // redefine avg() as a 32-chunk mean.
+  Counters::set(NATIVE_MEM_LIVE_BYTES, NativeMem::liveTotal());
+  Counters::set(NATIVE_MEM_MAX_BYTES, NativeMem::maxTotal());
+}
+
 void Recording::updateNativeMemStats() {
   // Refresh the moving-window averages and the observed total peak. Per-category
   // peaks are maintained precisely at allocation time, so they are not sampled
@@ -1863,6 +1886,21 @@ void Recording::writeNativeMem(Buffer *buf) {
       char label[64];
       snprintf(label, sizeof(label), "%s%s", m.prefix, name);
       emit(label, m.value);
+    }
+  }
+
+  // State immediately after the PREVIOUS chunk's writeCpool(), which is the
+  // only way to see what serialization itself costs -- the in-chunk values
+  // above are necessarily sampled before it runs. Absent on the first chunk,
+  // since no flush has happened yet.
+  if (_has_post_flush) {
+    for (int c = 0; c < NM_NUM_CATEGORIES; c++) {
+      const char *name = NativeMem::categoryName((NativeMemCategory)c);
+      char label[64];
+      snprintf(label, sizeof(label), "native_mem_post_flush_live_bytes.%s", name);
+      emit(label, _post_flush_live[c]);
+      snprintf(label, sizeof(label), "native_mem_post_flush_max_bytes.%s", name);
+      emit(label, _post_flush_max[c]);
     }
   }
 
