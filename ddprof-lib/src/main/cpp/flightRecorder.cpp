@@ -595,10 +595,17 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
     method_id = nullptr;
   }
 
+  // Fill the shared "unknown" row *before* arming. The recovery branch below
+  // runs with protection already disarmed, so it must not allocate -- a second
+  // fault there would be unrecoverable -- and filling the row does allocate
+  // (symbol/class dictionary inserts). Once filled it stays filled for the rest
+  // of the chunk, so this costs one flag test per call after the first.
+  MethodInfo* unknown_method = unknownMethod();
+
   // Nothing to symbolicate and nothing that can fault, so no protection is
   // armed for this case at all.
   if (method_id == nullptr) {
-    return unknownMethod();
+    return unknown_method;
   }
 
   // Fast path, deliberately unprotected. For anything but a raw-pointer or
@@ -624,22 +631,9 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   // initCurrentThreadSignalSafe() can only fail on OOM.
   ProfiledThread *prof_thread = ProfiledThread::initCurrentThreadSignalSafe();
   if (prof_thread == nullptr) {
-    // No thread context means nowhere to publish a landing pad. Resolve
-    // unprotected rather than returning nullptr: both call sites in
-    // writeStackTraces() dereference the result unconditionally, so a nullptr
-    // return would convert a transient allocation failure into a SIGSEGV on the
-    // dump thread. Unprotected is also exactly what this code did before the
-    // protection was added.
-    Counters::increment(METHOD_RESOLVE_UNPROTECTED);
-    return fillMethod(frame, method_id, bci);
+    Counters::increment(METHOD_RESOLUTION_DROPPED_TLS);
+    return unknown_method;
   }
-
-  // Fill the shared "unknown" row *before* arming. The recovery branch below
-  // runs with protection already disarmed, so it must not allocate -- a second
-  // fault there would be unrecoverable -- and filling the row does allocate
-  // (symbol/class dictionary inserts). Once filled it stays filled for the rest
-  // of the chunk, so this costs one flag test per call after the first.
-  unknownMethod();
 
   // Reinstates the thread's previous landing pad on every exit from this frame,
   // including a std::bad_alloc thrown by one of the map or dictionary inserts

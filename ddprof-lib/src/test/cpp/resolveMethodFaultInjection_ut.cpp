@@ -5,15 +5,15 @@
 
 #include <gtest/gtest.h>
 
-#include "../../main/cpp/flightRecorder.h"
-#include "../../main/cpp/counters.h"
-#include "../../main/cpp/faultInjection.h"
-#include "../../main/cpp/guards.h"
-#include "../../main/cpp/os.h"
-#include "../../main/cpp/profiler.h"
-#include "../../main/cpp/safeAccess.h"
-#include "../../main/cpp/threadLocalData.h"
-#include "../../main/cpp/gtest_crash_handler.h"
+#include "flightRecorder.h"
+#include "counters.h"
+#include "faultInjection.h"
+#include "guards.h"
+#include "os.h"
+#include "profiler.h"
+#include "safeAccess.h"
+#include "threadLocalData.inline.h"
+#include "gtest_crash_handler.h"
 
 // Only meaningful in a fault-injection build (-PenableFaultInjection): that is
 // the only configuration where INJECT_CRASH_LIKELY() in
@@ -33,13 +33,13 @@ static void (*orig_segv)(int, siginfo_t*, void*);
 static void (*orig_bus)(int, siginfo_t*, void*);
 
 static void resolveMethodFiHandler(int signo, siginfo_t* siginfo, void* context) {
-  // Every installed signal handler in production opens a SIGNAL_HANDLER_GUARD()
+  // Every installed signal handler in production opens a SIGNAL_HANDLER_GUARD_NO_SAMPLE()
   // scope (see Profiler::segvHandler/busHandler). resolveMethod()'s recovery
   // branch calls SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP() to compensate for that
   // scope's destructor being skipped by the siglongjmp out of this handler --
   // without opening the scope here first, that compensation underflows
   // ProfiledThread::_signal_depth and trips its debug assert.
-  SIGNAL_HANDLER_GUARD();
+  SIGNAL_HANDLER_GUARD_NO_SAMPLE();
   if (SafeAccess::handle_safefetch(signo, context)) {
     return;
   }

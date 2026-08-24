@@ -163,10 +163,10 @@
    * samples_dropped_thread_local) to isolate non-pool priming drops, never  \
    * summed. */                                                              \
   X(SAMPLES_DROPPED_TLS_POOL_EXHAUSTED, "thread_local_pool_exhausted")        \
-  /* Lookup::resolveMethod() calls that ran without siglongjmp protection     \
+  /* Lookup::resolveMethod() calls that dropped method resolution,            \
    * because no ProfiledThread could be allocated for the dump thread (OOM):  \
    * there is nowhere to publish a landing pad. Expected to stay at 0. */     \
-  X(METHOD_RESOLVE_UNPROTECTED, "method_resolve_unprotected")                 \
+  X(METHOD_RESOLUTION_DROPPED_TLS, "method_resolution_dropped_tls")           \
   /* writeElement() guards against a corrupted/dangling JfrMetadata tree.     \
    * Root cause is still unconfirmed, so these counters are the durable       \
    * signal for spotting a recurrence. */                                     \
