@@ -49,9 +49,63 @@ PROBE_SO="${PROBE_SO:-/tmp/alloc_ledger_probe.so}"
 [ -n "$DDPROF_LIB" ] && [ -f "$DDPROF_LIB" ] || { echo "ERROR: no libjavaProfiler under $REPO_ROOT/ddprof-lib/build/lib/main/release" >&2; exit 1; }
 [ -d "$GENDIR" ] || { echo "ERROR: $GENDIR missing -- generate the classes first" >&2; exit 1; }
 
-if [ ! -f "$PROBE_SO" ] || [ "$SCRIPT_DIR/alloc_ledger_probe.c" -nt "$PROBE_SO" ]; then
+# Two translation units: the C probe, plus a C++ one defining the replaceable
+# global operator new/delete. The latter is not optional -- without it every
+# `new`/STL/CountingAllocator byte is attributed to libstdc++ instead of to the
+# profiler, because that is where the return address lands.
+if [ ! -f "$PROBE_SO" ] \
+   || [ "$SCRIPT_DIR/alloc_ledger_probe.c" -nt "$PROBE_SO" ] \
+   || [ "$SCRIPT_DIR/alloc_ledger_newops.cpp" -nt "$PROBE_SO" ]; then
   echo "[$(date +%T)] building $PROBE_SO"
-  gcc -shared -fPIC -O2 -o "$PROBE_SO" "$SCRIPT_DIR/alloc_ledger_probe.c" -ldl || exit 1
+  tmpd=$(mktemp -d)
+  gcc -c -fPIC -O2 -o "$tmpd/probe.o" "$SCRIPT_DIR/alloc_ledger_probe.c" || exit 1
+  g++ -c -fPIC -O2 -std=c++17 -o "$tmpd/newops.o" "$SCRIPT_DIR/alloc_ledger_newops.cpp" || exit 1
+  g++ -shared -o "$PROBE_SO" "$tmpd/probe.o" "$tmpd/newops.o" -ldl || exit 1
+  rm -rf "$tmpd"
+fi
+
+# NativeMem::_live[] is a file-local static, so it cannot be dlsym'd. Recover
+# its link-time offset from the debug object's symbol table and hand it to the
+# probe, which adds the runtime load base. Recomputed every run so it cannot go
+# stale against a rebuilt library.
+DDPROF_DEBUG="${DDPROF_DEBUG:-$(dirname "$DDPROF_LIB")/debug/$(basename "$DDPROF_LIB").debug}"
+NMLIVE_OFF=""
+if [ -f "$DDPROF_DEBUG" ]; then
+  NMLIVE_OFF=$(nm --defined-only "$DDPROF_DEBUG" 2>/dev/null \
+    | awk '$3=="_ZN9NativeMem5_liveE"{print "0x"$1}')
+fi
+NMLIVE_NCAT=$(awk '/define DD_NATIVE_MEM_CATEGORY_TABLE/,/MISC/' \
+  "$REPO_ROOT/ddprof-lib/src/main/cpp/nativeMem.h" | grep -c '^  X(')
+# libjavaProfiler.so statically links libstdc++ and does not export operator
+# new, so its internal `new` calls bind to its own private copy and the probe's
+# LD_PRELOAD override never sees them -- every such allocation would be
+# attributed to one opaque frame. Hand the probe that copy's address range so it
+# can unwind out of it to the real call site.
+OPNEW_LO=""; OPNEW_SIZE=""
+if [ -f "$DDPROF_DEBUG" ]; then
+  # Portable hex arithmetic: mawk has no strtonum(), so fold in bash instead.
+  lo=0; hi=0
+  while read -r a sz _t _n; do
+    ai=$((16#$a)); hi_i=$((ai + 16#$sz))
+    [ "$lo" -eq 0 ] || [ "$ai" -lt "$lo" ] && lo=$ai
+    [ "$hi_i" -gt "$hi" ] && hi=$hi_i
+    # .cold fragments live far away in a separate section; including them would
+    # stretch the span across hundreds of KB of unrelated code and cause real
+    # call sites to be mistaken for operator new.
+  done < <(nm -S --defined-only "$DDPROF_DEBUG" 2>/dev/null \
+           | grep -E ' _Zn[wa]m' | grep -v '\.cold')
+  if [ "$lo" -ne 0 ]; then
+    OPNEW_LO=$(printf "0x%x" "$lo")
+    OPNEW_SIZE=$(printf "0x%x" $((hi - lo)))
+  fi
+  [ -n "$OPNEW_LO" ] && echo "[$(date +%T)] private operator new range $OPNEW_LO +$OPNEW_SIZE"
+fi
+
+if [ -z "$NMLIVE_OFF" ]; then
+  echo "WARNING: could not find _ZN9NativeMem5_liveE in $DDPROF_DEBUG -- the" >&2
+  echo "         profiler's own counters will not be captured." >&2
+else
+  echo "[$(date +%T)] NativeMem::_live offset $NMLIVE_OFF, $NMLIVE_NCAT categories"
 fi
 
 NMT_FLAG=""
@@ -72,6 +126,8 @@ run_one() {
   fi
 
   LD_PRELOAD="$PROBE_SO" PROBE_OUTDIR="$dumpdir" \
+    PROBE_NMLIVE_OFF="$NMLIVE_OFF" PROBE_NMLIVE_NCAT="$NMLIVE_NCAT" \
+    PROBE_OPNEW_OFF="$OPNEW_LO" PROBE_OPNEW_SIZE="$OPNEW_SIZE" \
     "$JAVA_BIN" $HEAP_FLAGS $NMT_FLAG "${agent[@]}" \
     -Dmemsweep.libpath="$DDPROF_LIB" \
     -cp "$CLASSDIR:$DDPROF_JAVA_API" MemSweepMain classes "$N" "$DURATION_MS" "$GENDIR" \

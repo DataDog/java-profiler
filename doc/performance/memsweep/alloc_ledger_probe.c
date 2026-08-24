@@ -68,6 +68,8 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
+#include <link.h>
+#include <unwind.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -160,6 +162,7 @@ static int is_boot(const void *p) {
 typedef struct {
   uintptr_t key; // 0 = empty, TOMB = deleted, else the pointer
   uint64_t req;
+  uint64_t caller; // return address of whoever asked for these bytes
 } malloc_slot;
 
 // Mapping activity is recorded as an append-only event log rather than a live
@@ -206,7 +209,7 @@ static inline uint64_t mix(uintptr_t p) {
 // A pointer is unique among live allocations, and we always remove an entry
 // *before* handing the chunk back to glibc, so a key can never be inserted
 // twice concurrently. That is what makes this lock-free table safe here.
-static void mtab_insert(void *p, size_t req) {
+static void mtab_insert(void *p, size_t req, uintptr_t caller) {
   if (!mtab) {
     return;
   }
@@ -219,6 +222,7 @@ static void mtab_insert(void *p, size_t req) {
       if (__atomic_compare_exchange_n(&mtab[idx].key, &k, (uintptr_t)p, 0,
                                       __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
         mtab[idx].req = req;
+        mtab[idx].caller = caller;
         return;
       }
     }
@@ -404,6 +408,28 @@ static void init_once(void) {
   in_init = 0;
 }
 
+static uintptr_t prof_base;
+static char prof_path[512];
+static uintptr_t opnew_lo, opnew_hi;
+static __thread int in_unwind;
+static int find_profiler_cb(struct dl_phdr_info *info, size_t size, void *data);
+
+// Resolve the private operator new's address range once the profiler is
+// loaded. Offsets come from the runner via nm on the debug object.
+static void init_opnew_range(void) {
+  const char *off_s = getenv("PROBE_OPNEW_OFF");
+  const char *sz_s = getenv("PROBE_OPNEW_SIZE");
+  if (!off_s || !sz_s) {
+    return;
+  }
+  dl_iterate_phdr(find_profiler_cb, NULL);
+  if (!prof_base) {
+    return;
+  }
+  opnew_lo = prof_base + strtoul(off_s, NULL, 0);
+  opnew_hi = opnew_lo + strtoul(sz_s, NULL, 0);
+}
+
 __attribute__((constructor)) static void probe_start(void) {
   init_once();
 
@@ -443,7 +469,51 @@ static inline int chunk_is_mmapped_glibc(const void *p) {
   return (int)((*((const size_t *)p - 1) >> 1) & 1u);
 }
 
-static void note_alloc(void *p, size_t req) {
+// libjavaProfiler.so statically links libstdc++ and does not export
+// operator new, so its internal `new` binds to its own private copy and the
+// LD_PRELOAD override in alloc_ledger_newops.cpp never sees those calls. The
+// malloc interposer still catches the bytes, but the return address it sees is
+// that private operator new -- one opaque frame hiding every real call site.
+//
+// When a caller lands in that range, walk out of it with the libgcc unwinder
+// (which uses .eh_frame, so it works despite -O2 omitting frame pointers) and
+// take the first frame that is elsewhere. The unwind runs only for those
+// allocations, and a thread-local guard stops the unwinder's own allocations
+// from re-entering.
+
+typedef struct {
+  uintptr_t found;
+  int depth;
+} unwind_ctx;
+
+static _Unwind_Reason_Code unwind_cb(struct _Unwind_Context *ctx, void *arg) {
+  unwind_ctx *u = (unwind_ctx *)arg;
+  uintptr_t ip = (uintptr_t)_Unwind_GetIP(ctx);
+  if (u->depth++ > 8) {
+    return _URC_END_OF_STACK;
+  }
+  if (ip && !(ip >= opnew_lo && ip < opnew_hi)) {
+    // Skip our own frames, then take the first frame outside operator new.
+    if (u->depth > 2) {
+      u->found = ip;
+      return _URC_END_OF_STACK;
+    }
+  }
+  return _URC_NO_REASON;
+}
+
+static uintptr_t pierce_opnew(uintptr_t caller) {
+  if (!opnew_lo || caller < opnew_lo || caller >= opnew_hi || in_unwind) {
+    return caller;
+  }
+  in_unwind = 1;
+  unwind_ctx u = {0, 0};
+  _Unwind_Backtrace(unwind_cb, &u);
+  in_unwind = 0;
+  return u.found ? u.found : caller;
+}
+
+static void note_alloc(void *p, size_t req, uintptr_t caller) {
   if (!p) {
     return;
   }
@@ -456,7 +526,7 @@ static void note_alloc(void *p, size_t req) {
   ADD(c_alloc_calls, 1);
   if (track_req) {
     ADD(c_live_requested, req);
-    mtab_insert(p, req);
+    mtab_insert(p, req, pierce_opnew(caller));
   }
 }
 
@@ -466,7 +536,7 @@ void *malloc(size_t n) {
     return boot_alloc(n);
   }
   void *p = real_malloc(n);
-  note_alloc(p, n);
+  note_alloc(p, n, (uintptr_t)__builtin_return_address(0));
   return p;
 }
 
@@ -476,7 +546,7 @@ void *calloc(size_t nmemb, size_t size) {
     return boot_alloc(nmemb * size);
   }
   void *p = real_calloc(nmemb, size);
-  note_alloc(p, nmemb * size);
+  note_alloc(p, nmemb * size, (uintptr_t)__builtin_return_address(0));
   return p;
 }
 
@@ -521,7 +591,7 @@ void *realloc(void *p, size_t n) {
     if (np) {
       size_t avail = (size_t)(boot_arena + sizeof(boot_arena) - (char *)p);
       memcpy(np, p, n < avail ? n : avail);
-      note_alloc(np, n);
+      note_alloc(np, n, (uintptr_t)__builtin_return_address(0));
     }
     return np;
   }
@@ -533,7 +603,7 @@ void *realloc(void *p, size_t n) {
   if (!np && n != 0) {
     // Failure: the old block is still live, so put it back exactly as it was.
     if (p && track_req && old_req != UINT64_MAX) {
-      mtab_insert(p, old_req);
+      mtab_insert(p, old_req, (uintptr_t)__builtin_return_address(0));
     }
     return NULL;
   }
@@ -552,7 +622,7 @@ void *realloc(void *p, size_t n) {
       }
     }
   }
-  note_alloc(np, n);
+  note_alloc(np, n, (uintptr_t)__builtin_return_address(0));
   return np;
 }
 
@@ -568,7 +638,7 @@ int posix_memalign(void **out, size_t align, size_t n) {
   }
   int rc = real_posix_memalign(out, align, n);
   if (rc == 0) {
-    note_alloc(*out, n);
+    note_alloc(*out, n, (uintptr_t)__builtin_return_address(0));
   }
   return rc;
 }
@@ -579,7 +649,7 @@ void *memalign(size_t align, size_t n) {
     return boot_alloc(n);
   }
   void *p = real_memalign(align, n);
-  note_alloc(p, n);
+  note_alloc(p, n, (uintptr_t)__builtin_return_address(0));
   return p;
 }
 
@@ -589,7 +659,7 @@ void *aligned_alloc(size_t align, size_t n) {
     return boot_alloc(n);
   }
   void *p = real_aligned_alloc(align, n);
-  note_alloc(p, n);
+  note_alloc(p, n, (uintptr_t)__builtin_return_address(0));
   return p;
 }
 
@@ -698,6 +768,103 @@ long syscall(long number, ...) {
   return r;
 }
 
+// --------------------------------------------- hooks for operator new/delete
+//
+// These exist because attribution would otherwise be useless. libstdc++'s
+// operator new reaches malloc through its own PLT, so the return address seen
+// inside the malloc interposer is inside libstdc++.so.6, not inside the
+// profiler. Since essentially the profiler's whole allocation surface is
+// `new`, STL containers, and CountingAllocator (which wraps ::operator new),
+// every byte would be attributed to libstdc++.
+//
+// alloc_ledger_newops.cpp defines the replaceable global operator new/delete
+// family and forwards here with its own return address. These call
+// real_malloc/real_free *directly*, never the interposed wrappers, so
+// libstdc++'s operator new is never reached and double counting is
+// structurally impossible.
+
+void *probe_new_impl(size_t n, void *caller) {
+  ENSURE();
+  if (!READY()) {
+    return boot_alloc(n);
+  }
+  void *p = real_malloc(n);
+  note_alloc(p, n, (uintptr_t)caller);
+  return p;
+}
+
+void *probe_new_aligned_impl(size_t n, size_t align, void *caller) {
+  ENSURE();
+  if (!READY()) {
+    return boot_alloc(n);
+  }
+  void *p = NULL;
+  if (real_aligned_alloc) {
+    // aligned_alloc requires a size that is a multiple of the alignment.
+    size_t rounded = (n + align - 1) & ~(align - 1);
+    p = real_aligned_alloc(align, rounded);
+  } else if (real_posix_memalign) {
+    if (real_posix_memalign(&p, align, n) != 0) {
+      p = NULL;
+    }
+  }
+  note_alloc(p, n, (uintptr_t)caller);
+  return p;
+}
+
+void probe_delete_impl(void *p) {
+  ENSURE();
+  if (!p || is_boot(p)) {
+    return;
+  }
+  if (!READY()) {
+    return;
+  }
+  size_t u = real_usable(p);
+  if (chunk_is_mmapped_glibc(p)) {
+    ADD(c_live_count_mmapped, -1);
+  }
+  uint64_t req = track_req ? mtab_remove(p) : UINT64_MAX;
+  ADD(c_live_usable, -(long long)u);
+  ADD(c_live_count, -1);
+  if (track_req) {
+    if (req == UINT64_MAX) {
+      ADD(c_free_untracked, 1);
+      ADD(c_free_untracked_usable, u);
+    } else {
+      ADD(c_live_requested, -(long long)req);
+    }
+  }
+  real_free(p);
+}
+
+// ------------------------------------------- reading the profiler's counters
+//
+// NativeMem::_live[] is a file-local static (nm shows it as 'b'), so it is not
+// dlsym-able. Its link-time offset is passed in via PROBE_NMLIVE_OFF, computed
+// by the runner with nm on libjavaProfiler.so.debug so it survives rebuilds.
+// Adding the load base found here gives the live array's address.
+//
+// Reading it here rather than from JFR is the point: flightRecorder.cpp's
+// finishChunk() snapshots the NM_* counters at line ~820 but runs writeCpool()
+// at ~835, so anything allocated during constant-pool serialisation lands in
+// the *next* chunk's numbers (the source says so in a comment). Reading the
+// array directly gives the counters at the same instant as every other figure
+// in the dump.
+
+static int find_profiler_cb(struct dl_phdr_info *info, size_t size, void *data) {
+  (void)size;
+  (void)data;
+  if (info->dlpi_name && strstr(info->dlpi_name, "libjavaProfiler")) {
+    prof_base = (uintptr_t)info->dlpi_addr;
+    snprintf(prof_path, sizeof(prof_path), "%s", info->dlpi_name);
+    return 1;
+  }
+  return 0;
+}
+
+#define NM_MAX_CATEGORIES 32
+
 // ------------------------------------------------------------------- dump
 
 static void copy_file(const char *src, const char *dst) {
@@ -797,6 +964,88 @@ static void dump_now(void) {
     fclose(f);
   }
 
+  // Live bytes grouped by allocating call site. Aggregated here, from the
+  // live table, so the offline step only has to resolve addresses to symbols.
+  if (mtab && track_req) {
+    snprintf(path, sizeof(path), "%s/%d.callers.txt", dir, pid);
+    f = fopen(path, "w");
+    if (f) {
+      enum { CAGG = 1 << 16 };
+      static uint64_t agg_key[CAGG];
+      static uint64_t agg_bytes[CAGG];
+      static uint64_t agg_count[CAGG];
+      memset(agg_key, 0, sizeof(agg_key));
+      memset(agg_bytes, 0, sizeof(agg_bytes));
+      memset(agg_count, 0, sizeof(agg_count));
+      long long dropped = 0;
+      for (size_t i = 0; i < mtab_slots; i++) {
+        uintptr_t k = __atomic_load_n(&mtab[i].key, __ATOMIC_RELAXED);
+        if (k == 0 || k == TOMB) {
+          continue;
+        }
+        uint64_t c = mtab[i].caller;
+        size_t h = (size_t)mix((uintptr_t)c) & (CAGG - 1);
+        size_t j = 0;
+        for (; j < 64; j++) {
+          size_t idx = (h + j) & (CAGG - 1);
+          if (agg_key[idx] == 0 || agg_key[idx] == c) {
+            agg_key[idx] = c;
+            agg_bytes[idx] += mtab[i].req;
+            agg_count[idx] += 1;
+            break;
+          }
+        }
+        if (j == 64) {
+          dropped++;
+        }
+      }
+      fprintf(f, "# caller live_requested_bytes live_count\n");
+      fprintf(f, "# dropped %lld\n", dropped);
+      for (size_t i = 0; i < CAGG; i++) {
+        if (agg_key[i]) {
+          fprintf(f, "0x%lx %lu %lu\n", (unsigned long)agg_key[i],
+                  (unsigned long)agg_bytes[i], (unsigned long)agg_count[i]);
+        }
+      }
+      fclose(f);
+    }
+  }
+
+  // The profiler's own NativeMem::_live[] counters, read at this same instant.
+  snprintf(path, sizeof(path), "%s/%d.nativemem.txt", dir, pid);
+  f = fopen(path, "w");
+  if (f) {
+    dl_iterate_phdr(find_profiler_cb, NULL);
+    const char *off_s = getenv("PROBE_NMLIVE_OFF");
+    long ncat = 0;
+    const char *ncat_s = getenv("PROBE_NMLIVE_NCAT");
+    if (ncat_s) {
+      ncat = strtol(ncat_s, NULL, 0);
+    }
+    if (ncat <= 0 || ncat > NM_MAX_CATEGORIES) {
+      ncat = 11;
+    }
+    fprintf(f, "profiler_base 0x%lx\n", (unsigned long)prof_base);
+    fprintf(f, "profiler_path %s\n", prof_path[0] ? prof_path : "(not found)");
+    if (prof_base && off_s) {
+      unsigned long off = strtoul(off_s, NULL, 0);
+      const volatile long long *live =
+          (const volatile long long *)(prof_base + off);
+      fprintf(f, "nmlive_off 0x%lx\n", off);
+      long long sum = 0;
+      for (long i = 0; i < ncat; i++) {
+        long long v = live[i];
+        sum += v;
+        fprintf(f, "nm_live[%ld] %lld\n", i, v);
+      }
+      fprintf(f, "nm_live_sum %lld\n", sum);
+    } else {
+      fprintf(f, "unavailable base=%lx off=%s\n", (unsigned long)prof_base,
+              off_s ? off_s : "(unset)");
+    }
+    fclose(f);
+  }
+
   // Same-instant snapshots so the ledger can be reconciled without skew.
   snprintf(path, sizeof(path), "%s/%d.smaps.txt", dir, pid);
   copy_file("/proc/self/smaps", path);
@@ -815,6 +1064,18 @@ static void dump_now(void) {
 
 static void *dumper_thread(void *arg) {
   (void)arg;
+  // Resolve the profiler's private operator new range here rather than from an
+  // allocation: dl_iterate_phdr takes the loader lock, and calling it from
+  // inside malloc can deadlock against the loader allocating while it holds
+  // that lock. The library arrives via -agentpath early in JVM startup, so this
+  // normally succeeds within the first second; dumps are minutes away.
+  for (int i = 0; i < 300 && !opnew_lo; i++) {
+    init_opnew_range();
+    if (opnew_lo) {
+      break;
+    }
+    usleep(200000);
+  }
   for (;;) {
     char b;
     ssize_t n = read(dump_pipe[0], &b, 1);

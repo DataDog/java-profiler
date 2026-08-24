@@ -1251,6 +1251,99 @@ measured here — that comparison needs the counter read path fixed first
 (`finishChunk()` snapshots `NM_*` before `writeCpool()` runs, a defect already
 found twice), and is the natural next step.
 
+### Auditing the counters themselves (a whole category reads zero)
+
+The ledger above established what the RSS delta is *made of*. It did not
+establish whether the profiler's own `NativeMem` counters are correct, which is
+a separate question. This pass answers it by attributing every live allocation
+to its call site and comparing against the counters read at the same instant.
+
+**Method.** Two additions to the probe. First, it now records each
+allocation's calling return address. That required defining the replaceable
+global `operator new`/`delete` family
+(`memsweep/alloc_ledger_newops.cpp`): libstdc++'s `operator new` reaches
+`malloc` through its own PLT, so a malloc-only interposer sees a return address
+inside `libstdc++.so.6`, and since the profiler's allocation surface is almost
+entirely `new`, STL containers, and `CountingAllocator`, every byte would have
+been attributed to libstdc++.
+
+A second layer was needed because **`libjavaProfiler.so` statically links
+libstdc++ and does not export `operator new`** (`nm -D` shows no `_Znwm`), so
+its internal `new` binds to its own private copy and the override never sees
+it. The probe is given that copy's address range and unwinds out of it with
+libgcc's `.eh_frame` unwinder to recover the real call site.
+
+Second, the counters are read directly out of the running process:
+`NativeMem::_live[]` is a file-local static, so its link-time offset is
+recovered with `nm` on the debug object and added to the load base found via
+`dl_iterate_phdr`. This deliberately bypasses the JFR path, which is known to
+snapshot at the wrong moment (`finishChunk()` calls `updateNativeMemStats()` at
+`flightRecorder.cpp:820` but `writeCpool()` at 835, with a source comment
+admitting the resulting counts are wrong).
+
+**The read is validated** against a quantity known independently:
+`NM_CALLTRACE` reads 48.53 MiB while the probe measures 48.00 MiB of live
+`syscall(SYS_mmap)` — matching the deterministic 48.5 MiB documented earlier in
+this file. `NM_CALLTRACE` is excluded from the malloc comparison for exactly
+that reason: it is `OS::safeAlloc`-backed, never malloc-backed.
+
+**Result** (N=150,000, steady state; both reps byte-identical, these are
+structural allocations rather than sampling-dependent ones):
+
+| | profiling active | library loaded, idle |
+| --- | --- | --- |
+| measured malloc, attributed to `libjavaProfiler.so` | 22.21 MiB | 18.74 MiB |
+| sum of malloc-backed `NativeMem` counters | 8.30 MiB | 5.44 MiB |
+| **uncounted** | **13.91 MiB** | **13.30 MiB** |
+
+**Roughly 63 % of the profiler's own malloc bytes are invisible to its
+counters**, and — note the second column — almost all of it is already present
+before profiling starts. It is a fixed cost of loading the library, not a cost
+of profiling.
+
+**Where it goes.** The uncounted bytes are dominated by the native-symbol
+tables:
+
+| site | bytes | allocations |
+| --- | --- | --- |
+| `CodeCache::setDwarfTable` | 4.52 MiB | 22 |
+| `CodeCache::add` | 5.09 MiB | 92,747 |
+| `CodeCache::CodeCache` | 0.30 MiB | 13 |
+| unresolved behind the private `operator new` | 3.64 MiB | 34 |
+
+**Root cause: `NM_NATIVE_SYMBOLS` is a `setLive()` gauge that never runs during
+a recording.** It is written in exactly one place, `profiler.cpp:1807` in
+`Profiler::updateNativeLibMemStats()`, and that function is called from exactly
+two: `Profiler::stop()` (`profiler.cpp:1698`) and `Profiler::dump()`
+(`profiler.cpp:1827`). Neither fires during steady-state profiling, so the
+counter holds its initial 0 for the entire life of the process while
+`CodeCache` really holds ~9.9 MiB. `CodeCache::memoryUsage()` itself is sound —
+it uses `_capacity`, walks the per-symbol name strings via
+`NativeFunc::allocSize`, and documents why the build-id is excluded. The
+formula is fine; it is simply never evaluated.
+
+This is the **third** instance of one defect class in this investigation, after
+`NM_DICTIONARY` and `NM_METHOD_MAP`: a counter whose value is correct only at a
+moment that never coincides with when anyone reads it. The suggested fix is to
+refresh `updateNativeLibMemStats()` periodically — the wall-clock sampler loop
+already refreshes its own gauge every iteration and is a natural home.
+
+**The sites that are instrumented count correctly.** Every one checked matches
+its category: `StringDictionary` 4.50 MiB against `NM_DICTIONARY` 4.55;
+`FlightRecorder::start` 1.16 MiB against `NM_JFR_BUFFERS` 1.16;
+`ProfiledThread::forTid` 2.25 MiB against `NM_THREAD_LOCAL` 2.54. The other
+`setLive()` gauge (`wallClock.h:83`, `NM_MISC`) is refreshed every sampling
+iteration and correctly uses `threads.capacity()` rather than `size()`, and
+`LivenessTracker`'s realloc records `sizeof(TrackingEntry) * (newcap -
+_table_cap)` — a capacity difference, not a usable-size one. No miscounting was
+found at any instrumented site.
+
+**Open.** 3.64 MiB in 34 large allocations still resolves only to the private
+`operator new`; the unwinder recovered the caller for most sites but not these.
+And the audit covers malloc-backed categories only — it says nothing about
+whether mmap-backed `NM_CALLTRACE` is sized appropriately, only that it is
+counted accurately.
+
 ## Practical implications
 
 1. **Thread count (total distinct threads over the profiling session, not
