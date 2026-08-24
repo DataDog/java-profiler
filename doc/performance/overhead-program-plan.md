@@ -48,11 +48,18 @@ An initial empirical investigation (this repository,
 current, has the full detail behind everything summarized here)) has
 produced real findings and reusable tooling:
 
-- **The profiler's own tracked accounting badly understates true
-  overhead.** At 150,000 distinct classes, `NM_CALLTRACE`'s own growth is
-  15–25 MB, but the actual with/without-agent RSS delta is ~102 MB
-  (10-rep measured, not inferred). The counters are useful signal, not a
-  complete accounting.
+- **The profiler's own accounting is now trustworthy — it was not before.**
+  An audit attributing every live allocation to its call site found the
+  counters covered only 37 % of what the profiler actually allocates, because
+  `NM_NATIVE_SYMBOLS` was a gauge that never ran during a recording and read 0
+  while `CodeCache` held ~13 MB. Fixed; coverage is now **96 %**, with no
+  miscounting at any instrumented site. This matters for Phase 2: continuous
+  tracking can now be built on these counters rather than on RSS alone.
+- **The counters still do not equal RSS, for understood reasons.** They record
+  logical bytes while RSS pays for malloc chunks (~17 % inflation at this
+  allocation profile), glibc holds unreclaimable free arena pages, and
+  `NM_CALLTRACE` reports virtual capacity roughly 2× its resident use. Those
+  three account for the difference; see the results doc.
 - **Overhead is not flat and not a simple step function. It's roughly
   linear in the number of distinct *methods* (equivalently, call-trace
   shapes) actually appearing in sampled stacks — not classes, not raw
@@ -71,13 +78,15 @@ produced real findings and reusable tooling:
   preallocates jmethodIDs for every prepared class, which AsyncGetCallTrace's
   signal-handler safety requires. Confirmed with a toggle test: disabling
   the mechanism collapses the relevant NMT category deltas to noise.
-- **The remaining ~42–57 MB is real, agent-attributable memory whose
-  mechanism we haven't pinned down**, despite five independent
-  investigations (dictionary/`MethodMap` growth, direct allocation-site
-  attribution, glibc fragmentation, JIT code-cache growth, and a
-  from-scratch NMT recalibration) — each either ruled out or turned out to
-  already be counted elsewhere. Full detail in the results doc. This gap
-  is the single biggest open item in the memory track.
+- **The rest is accounted for, and it is not a missing allocation site.** A
+  whole-process allocation ledger showed the RSS delta decomposes with no
+  meaningful remainder — two independent instruments disagreeing by
+  −0.06 MiB (SE 0.16) over 9 paired runs. It is malloc chunk overhead
+  invisible to logical counters (+6.4 MiB, the most reproducible figure in
+  the study), unreclaimable glibc arena slack (real but variable), and
+  `NM_CALLTRACE` reporting virtual capacity rather than residency. This was
+  the biggest open item in the memory track and is now closed; full detail
+  in the results doc.
 - **A separate, additive cost exists at JFR chunk write time.** Wall-clock
   sampling's class-name dictionary growth is only reflected in the
   *following* chunk's counter reading, by design — so the steady-state
@@ -102,8 +111,9 @@ produced real findings and reusable tooling:
   methodology.
 - **Known measurement gaps**: `NM_PERF` unverifiable in the sandboxed test
   environment (needs a root-accessible host with relaxed `kptr_restrict`);
-  `nativemem=` (native malloc tracing) only smoke-tested; the exact
-  mechanism behind the ~42–57 MB gap above.
+  `nativemem=` (native malloc tracing) only smoke-tested; ~0.9 MB of the
+  profiler's own malloc still unattributed; the final JFR chunk's own
+  serialization cost is emitted nowhere.
 
 ## Where we are today: CPU and latency
 
@@ -180,15 +190,17 @@ one invented from scratch.
      test, but that metric is too noisy (~240 MB swing across 5 same-
      condition reps) to attribute either way at a practical rep count;
      would need many more reps or a less noisy measurement approach.
-   - The ~42–57 MB unattributed remainder needs a genuinely new angle,
-     distinct from the five already tried (see "Where we are today:
-     memory" and the results doc for what's been ruled out). Worth
-     checking whether other profiler structures use the same raw-`mmap`
-     backing allocator `CallTraceStorage` does (their counters would have
-     the same logical-vs-resident measurement gap that complicated the
-     `NM_CALLTRACE` analysis), and tracing the dictionary's per-thread/
-     shard buffering mechanism directly to explain why the chunk-flush
-     burst is far larger than raw string content would predict.
+   - **RESOLVED: the unattributed remainder.** A whole-process allocation
+     ledger showed the RSS delta decomposes with no meaningful remainder
+     (two independent instruments disagreeing by −0.06 MiB, SE 0.16, over
+     9 paired runs). It was never a missing allocation site: it is malloc
+     chunk overhead invisible to logical counters, unreclaimable glibc arena
+     slack, and `NM_CALLTRACE` reporting capacity rather than residency. See
+     "Where the RSS delta goes" in the results doc.
+   - Still open and worth tracing: why the chunk-flush burst (~200 MB peak at
+     N=150,000) so far exceeds the ~2 MB of raw string content, plausibly
+     per-thread/shard `StringDictionaryBuffer` copies accumulating before
+     consolidation.
    - Get `NM_PERF` verified on a non-sandboxed host (root, relaxed
      `kptr_restrict`) — currently unverifiable by construction, not by
      absence of effort.
@@ -460,14 +472,11 @@ breakdown illustrates — the biggest memory lever might not be
 1. Get access to the dd-trace-doe run(s)/config that produced the reported
    150–250 MB figure (Phase 1.3, first task — everything else in
    reconciliation depends on knowing what was actually measured).
-2. Find a new angle on the ~42–57 MB unattributed memory gap — not another
-   single-hypothesis test in the style of the five already tried (see
-   "Where we are today: memory"). Two concrete candidates: check whether
-   other profiler structures share `CallTraceStorage`'s raw-`mmap` backing
-   allocator (same logical-vs-resident measurement gap likely applies), and
-   trace the class-name dictionary's per-thread/shard buffering mechanism
-   directly to explain why chunk-flush growth so far exceeds raw string
-   content.
+2. Trace the class-name dictionary's per-thread/shard buffering to explain
+   why chunk-flush growth (~200 MB peak at N=150,000) so far exceeds the
+   ~2 MB of raw string content. This is now the largest single unexplained
+   memory behaviour, the former ~42–57 MB steady-state gap having been
+   resolved (see Phase 1 above).
 3. Kick off Phase 1.2 for CPU and latency: pick 1–2 of the candidate
    hypotheses above, build the smallest synthetic microbenchmark that
    isolates one, and get a first with/without-agent number — the goal at
