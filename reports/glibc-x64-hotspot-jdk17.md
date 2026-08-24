@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk17
 
 ## glibc-x64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-08-23 21:23:18 EDT
+**Date:** 2026-08-23 21:24:27 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 596 |
-| Sample Rate | 9.93/sec |
-| Health Score | 621% |
+| CPU Samples | 505 |
+| Sample Rate | 8.42/sec |
+| Health Score | 526% |
 | Threads | 9 |
-| Allocations | 347 |
+| Allocations | 355 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 882 |
-| Sample Rate | 14.70/sec |
-| Health Score | 919% |
+| CPU Samples | 672 |
+| Sample Rate | 11.20/sec |
+| Health Score | 700% |
 | Threads | 11 |
-| Allocations | 464 |
+| Allocations | 448 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 51-51 cores)</summary>
 
 ```
-1787534386 51
-1787534391 51
-1787534396 51
-1787534401 51
-1787534406 51
-1787534411 51
-1787534416 51
-1787534421 51
-1787534426 51
-1787534431 51
-1787534436 51
-1787534441 51
-1787534446 51
-1787534451 51
-1787534456 51
-1787534461 51
-1787534466 51
-1787534471 51
-1787534476 51
-1787534481 51
+1787534407 51
+1787534412 51
+1787534417 51
+1787534422 51
+1787534427 51
+1787534432 51
+1787534437 51
+1787534442 51
+1787534447 51
+1787534452 51
+1787534457 51
+1787534462 51
+1787534467 51
+1787534472 51
+1787534477 51
+1787534482 51
+1787534487 51
+1787534492 51
+1787534497 51
+1787534502 51
 ```
 </details>
 
