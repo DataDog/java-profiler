@@ -192,7 +192,8 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
   jvmti->GetPhase(&phase);
   if ((phase & (JVMTI_PHASE_START | JVMTI_PHASE_LIVE)) != 0) {
     bool entry = false;
-    bool valid_method = false;
+    bool readable = false;
+    const size_t probe_len = 256;
     if (VMMethod::check_jmethodID(method) &&
         jvmti->GetMethodDeclaringClass(method, &method_class) == JVMTI_ERROR_NONE &&
         // GetMethodDeclaringClass may return a jclass wrapping a stale/garbage oop when the class was
@@ -208,9 +209,25 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         (!VM::isOpenJ9() || method_class != reinterpret_cast<jclass>(-1)) &&
         jvmti->GetClassSignature(method_class, &class_name, NULL) == JVMTI_ERROR_NONE &&
         jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == JVMTI_ERROR_NONE) {
-      valid_method = (class_name != nullptr) && (method_name != nullptr) && (method_sig != nullptr);
-    }
-    if (valid_method) {
+      // The JVMTI strings should be non-null and mapped per spec, but crash
+      // telemetry shows both `strncmp` and `jvmti_Deallocate` faulting on them.
+      // Probe each pointer over a range covering the longest prefix
+      // compared below (~50 bytes) plus headroom for strlen, and NULL any that
+      // fails so the unconditional Deallocate block at end of this function
+      // skips it (os::free faults on an unmapped pointer just like strncmp).
+      // Accept a small leak on the corruption path. Probes run independently
+      // so a single bad pointer does not leak its siblings. Best-effort only:
+      // a concurrent munmap between probe and use can still fault; the SIGSEGV
+      // handler is the second line of defence.
+      auto probe = [&](char*& ptr) -> bool {
+        if (ptr == nullptr || !SafeAccess::isReadableRange(ptr, probe_len)) {
+          ptr = nullptr;
+          return false;
+        }
+        return true;
+      };
+      readable = probe(class_name) & probe(method_name) & probe(method_sig);    }
+    if (readable) {
       const size_t class_name_len = strnlen(class_name, 65536);
       const char* normalized_class_name =
           class_name_len >= 2 ? class_name + 1 : "";
