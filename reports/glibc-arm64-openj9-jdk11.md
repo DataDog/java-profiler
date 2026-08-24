@@ -3,9 +3,9 @@ layout: default
 title: glibc-arm64-openj9-jdk11
 ---
 
-## glibc-arm64-openj9-jdk11 - ✅ PASS
+## glibc-arm64-openj9-jdk11 - ❌ FAIL
 
-**Date:** 2026-08-24 09:28:57 EDT
+**Date:** 2026-08-24 13:07:02 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-openj9-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 587 |
-| Sample Rate | 9.78/sec |
-| Health Score | 611% |
-| Threads | 8 |
-| Allocations | 345 |
+| CPU Samples | 445 |
+| Sample Rate | 7.42/sec |
+| Health Score | 464% |
+| Threads | 10 |
+| Allocations | 222 |
 
-#### Scenario 2: Tracer+Profiler ✅
+#### Scenario 2: Tracer+Profiler ❌
 | Metric | Value |
 |--------|-------|
-| Status | PASS |
-| CPU Samples | 120 |
-| Sample Rate | 2.00/sec |
-| Health Score | 125% |
-| Threads | 11 |
-| Allocations | 66 |
+| Status | FAIL |
+| CPU Samples | 0 |
+| Sample Rate | 0.00/sec |
+| Health Score | 0% |
+| Threads | 0 |
+| Allocations | 178 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
-1787577828 48
-1787577833 48
-1787577838 48
-1787577843 48
-1787577848 48
-1787577853 48
-1787577858 48
-1787577863 48
-1787577868 48
-1787577873 48
-1787577878 48
-1787577883 48
-1787577888 48
-1787577893 48
-1787577898 48
-1787577903 48
-1787577908 48
-1787577913 48
-1787577918 48
-1787577923 48
+1787590937 48
+1787590942 48
+1787590947 48
+1787590952 48
+1787590957 48
+1787590962 48
+1787590967 48
+1787590972 48
+1787590977 48
+1787590982 48
+1787590987 48
+1787590992 48
+1787590997 48
+1787591002 48
+1787591007 48
+1787591012 48
+1787591017 48
+1787591022 48
+1787591027 48
+1787591032 48
 ```
 </details>
 
