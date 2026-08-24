@@ -197,10 +197,15 @@ one invented from scratch.
      chunk overhead invisible to logical counters, unreclaimable glibc arena
      slack, and `NM_CALLTRACE` reporting capacity rather than residency. See
      "Where the RSS delta goes" in the results doc.
-   - Still open and worth tracing: why the chunk-flush burst (~200 MB peak at
-     N=150,000) so far exceeds the ~2 MB of raw string content, plausibly
-     per-thread/shard `StringDictionaryBuffer` copies accumulating before
-     consolidation.
+   - **RESOLVED: why the chunk-flush burst is ~80x raw string content.** It is
+     `StringDictionary`'s overflow chaining, not string storage: 154.98 MiB of
+     the growth arrives as 26,450 allocations of exactly `sizeof(SBTable)`
+     (6,144 B) from `StringDictionaryBuffer::insert_with_id`. A row holds 3
+     keys; the fourth chains a whole 128-row table for it. It does not fall
+     back afterwards because `rotate()` copies the interned set forward by
+     design, so the grown buffer is the live dictionary. This is now an
+     optimization opportunity rather than an open question — see "Chunk-flush
+     cost" in the results doc.
    - Get `NM_PERF` verified on a non-sandboxed host (root, relaxed
      `kptr_restrict`) — currently unverifiable by construction, not by
      absence of effort.
@@ -472,11 +477,13 @@ breakdown illustrates — the biggest memory lever might not be
 1. Get access to the dd-trace-doe run(s)/config that produced the reported
    150–250 MB figure (Phase 1.3, first task — everything else in
    reconciliation depends on knowing what was actually measured).
-2. Trace the class-name dictionary's per-thread/shard buffering to explain
-   why chunk-flush growth (~200 MB peak at N=150,000) so far exceeds the
-   ~2 MB of raw string content. This is now the largest single unexplained
-   memory behaviour, the former ~42–57 MB steady-state gap having been
-   resolved (see Phase 1 above).
+2. Decide whether to act on the chunk-flush burst, now that its mechanism is
+   known: `StringDictionary` chains a whole 6 KB `SBTable` per collision
+   cluster, giving ~10.2 M allocated slots for a few hundred thousand interned
+   strings. Growing by rehashing into a larger table, or raising `CELLS` from
+   3, would cut the ~200 MB peak substantially. This is a scoped optimization,
+   not an investigation — the memory track no longer has an open
+   root-cause question.
 3. Kick off Phase 1.2 for CPU and latency: pick 1–2 of the candidate
    hypotheses above, build the smallest synthetic microbenchmark that
    isolates one, and get a first with/without-agent number — the goal at

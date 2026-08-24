@@ -474,10 +474,39 @@ deliberately exclude. Measured by forcing a mid-run `dump()` and reading
 | `NM_LINE_TABLES` | 0.00 | 4.16 | 0.00 | 4.16 |
 
 One flush peaks the dictionary at 216.62 MiB and leaves 162.46 MiB behind.
-Raw string content for 150,000 short class names is only ~2 MB, so something
-beyond string storage inflates this — plausibly per-thread/shard
-`StringDictionaryBuffer` copies accumulating before consolidation, not traced
-further.
+Raw string content for 150,000 short class names is only ~2 MB. Both the 80×
+amplification and the fact that it does not fall back are now explained.
+
+**The growth is overflow tables, not strings.** Caller attribution during a
+flush is unambiguous: **154.98 MiB across 26,450 allocations from
+`StringDictionaryBuffer::insert_with_id`**, which is 6,144 bytes each —
+exactly `sizeof(SBTable)` (`ROWS`=128 rows × 48 B per `SBRow`: `keys[3]` +
+`ids[3]` + `next`). Essentially all of the growth is hash-table structure.
+
+The dictionary resolves collisions by chaining **a whole 6 KB table off a
+single overflowing row**. A row holds `CELLS`=3 keys; the fourth key hashing
+there allocates a full 128-row `SBTable` of which that key occupies one cell.
+The per-level rehash is a 32-bit rotate-right by `ROW_BITS`=7 with the row
+picked as `h % ROWS`, so there are only ⌈32/7⌉ ≈ 5 non-overlapping 7-bit
+slices before bit ranges start repeating (full repetition at 32 levels) —
+keys that collide once tend to keep colliding down the chain, and each link
+buys about 3 usable slots for 6 KB. Net: 26,450 tables × 384 slots ≈ 10.2 M
+slots allocated for a few hundred thousand interned strings, low single-digit
+percent occupancy.
+
+**It does not fall back because the grown buffer is the live dictionary, not
+garbage.** `rotate()` performs a two-phase ID-preserving copy (active →
+clearTarget, then old_active → new_active) so IDs stay stable across chunks,
+and during serialization `lookupDuringDump(key)` inserts each newly resolved
+name into *both* the dump buffer and the new active. When the flush completes,
+the new active holds the full cumulative interned set by design. Only the old
+generation is released by `clearStandby()` — which is what the 216.62 → 162.46
+MiB step is: one buffer of the triple-buffered set (active / dump /
+clearTarget) being freed, not the structure shrinking.
+
+**Implication for optimization:** growing by rehashing into a larger table, or
+simply raising `CELLS`, would cut this dramatically. The current design pays
+6 KB per collision cluster regardless of how few keys land in it.
 
 Note `NM_CALLTRACE`'s live value *falls* across the rotation while the
 dictionary's persists: **call-trace memory is bounded per rotation window,
@@ -561,6 +590,9 @@ silently redefines `avg()` as a 32-chunk mean.
 - **`NM_CALLTRACE` is counted accurately but may not be sized appropriately** —
   48.5 MiB of capacity for ~19.9 MiB of resident use is a sizing question this
   document does not answer.
+- **`StringDictionary`'s overflow chaining is the flush burst's mechanism and
+  looks improvable** (6 KB per collision cluster; see "Chunk-flush cost"). Not
+  an open *question* any more, but an open *opportunity*.
 - **`NM_PERF` remains unverified in practice** (understood reason above); needs
   a host with relaxed `kptr_restrict`.
 - **`allocs` is lightly calibrated** (two points — enough for the

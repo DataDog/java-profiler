@@ -118,7 +118,12 @@ Two effects are large and are not additive terms in the formula below.
 **JFR chunk-flush burst.** Serialization is expensive and transient-plus-sticky:
 one flush at 150,000 classes takes `NM_DICTIONARY` from 4.55 MiB to a
 **216.62 MiB peak, settling at 162.46 MiB that it keeps**, and builds
-`NM_METHOD_MAP` from nothing to 13.32 MiB. This is *not* included in any
+`NM_METHOD_MAP` from nothing to 13.32 MiB. Almost all of that is
+`StringDictionary` overflow tables rather than string bytes — a whole 6 KB
+`SBTable` is chained per collision cluster — and it does not fall back because
+`rotate()` copies the interned set forward into the new active buffer by
+design. The model has no term for this because it scales with hash-collision
+behaviour, not with a workload property. This is *not* included in any
 steady-state number here. For the default single-continuous-recording mode it
 is paid once, at process exit, with no effect on the running process; any
 configuration that rotates chunks periodically pays it per rotation. Note the
