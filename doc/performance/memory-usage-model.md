@@ -160,12 +160,43 @@ Then add the chunk-flush burst if the deployment rotates JFR chunks, and the
 ~15–20 % counter-to-RSS gap if you are predicting RSS rather than counter
 totals.
 
-Worked example at the calibration point: 43 (baseline) + 84,640 × 1.24 KB
-(≈105 MB) ≈ 148 MB predicted against ~102 MB of measured *delta* — the model
-over-predicts here because the 43 MiB baseline is present in both the with- and
-without-agent conditions of that comparison and so cancels out of the delta.
-**Use the baseline term when sizing absolute footprint; drop it when comparing
-against a with/without-agent measurement.**
+### Absolute footprint vs. measured deltas
+
+The published with/without-agent deltas **do not include the baseline**, and
+the reason is a property of the harness rather than of the profiler:
+`MemSweepMain` calls `JavaProfiler.getInstance()` unconditionally, because it
+needs a handle to call `addThread()`. That `System.load()`s the library and
+runs its constructors in *both* conditions. The `-agentpath` flag only adds
+`start,...`. So the comparison is really **"library loaded, profiling stopped"
+vs "library loaded, profiling running"**, and it measures the cost of
+profiling *activity*, not of attaching the profiler.
+
+Measured directly, with the library loaded but not profiling:
+
+| | loaded, not profiling | profiling active |
+|---|---|---|
+| `NM_CALLTRACE` | 24.03 | 48.53 |
+| `NM_NATIVE_SYMBOLS` | 13.03 | 13.03 |
+| `NM_DICTIONARY` | 4.55 | 4.55 |
+| `NM_THREAD_LOCAL` | 0.85 | 2.54 |
+| `NM_JFR_BUFFERS` | 0.00 | 1.16 |
+| **total** | **42.49 MiB** | **69.86 MiB** |
+
+In a genuinely agent-free JVM none of the 42.49 MiB exists, so it is real
+profiler cost — merely cost that this harness's subtraction cancels. Only
+`NM_JFR_BUFFERS` (and the call-trace table's resize) actually arrive with
+`start`.
+
+**So: use the baseline term for absolute footprint. Drop it only when
+comparing against a delta whose baseline condition also loaded the library** —
+which is true of every delta in these docs, and would not be true of a
+comparison against a JVM run with no profiler at all.
+
+Worked example at the calibration point: 43 + 84,640 × 1.24 KB ≈ **148 MB
+predicted**, against a measured absolute of ~102 MB (delta) + 42.5 (baseline)
+≈ **145 MB** — within a few percent. Against the lower-noise fixed-heap redo
+(~79 MiB delta) the same prediction is ~20 % high. The model is a
+right-ballpark estimator for absolute footprint, not a precise one.
 
 ## Practical implications for workload characterization
 

@@ -105,10 +105,15 @@ rounding is **already inside** `malloc_usable_size`, so adding a separate
 page-rounding term double counts.
 
 **The "without agent" baseline is not agent-free.** `MemSweepMain` calls
-`JavaProfiler.getInstance()` unconditionally, so the library is loaded and has
-already taken 24 MiB of `safeAlloc` arena and ~13 MiB of native-symbol tables.
-**Every RSS delta in this document therefore understates the total cost of
-attaching the profiler**; it measures the cost of profiling *activity*.
+`JavaProfiler.getInstance()` unconditionally — it needs a handle for
+`addThread()` — which `System.load()`s the library and runs its constructors in
+*both* conditions; `-agentpath` only adds `start,...`. Measured, the library
+loaded but not profiling already holds **42.49 MiB** (`NM_CALLTRACE` 24.03,
+`NM_NATIVE_SYMBOLS` 13.03, `NM_DICTIONARY` 4.55, `NM_THREAD_LOCAL` 0.85)
+against 69.86 MiB while profiling; only `NM_JFR_BUFFERS` and the call-trace
+table's resize actually arrive with `start`. **Every RSS delta in this document
+therefore understates the total cost of attaching the profiler by roughly
+42 MiB**; what they measure is the cost of profiling *activity*.
 
 **NMT is an asymmetric bias.** Its per-allocation header scales with JVM
 allocation count, which the agent inflates, so `-XX:NativeMemoryTracking`
