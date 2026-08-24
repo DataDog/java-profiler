@@ -1322,11 +1322,12 @@ it uses `_capacity`, walks the per-symbol name strings via
 `NativeFunc::allocSize`, and documents why the build-id is excluded. The
 formula is fine; it is simply never evaluated.
 
-This is the **third** instance of one defect class in this investigation, after
-`NM_DICTIONARY` and `NM_METHOD_MAP`: a counter whose value is correct only at a
-moment that never coincides with when anyone reads it. The suggested fix is to
-refresh `updateNativeLibMemStats()` periodically — the wall-clock sampler loop
-already refreshes its own gauge every iteration and is a natural home.
+**This is not the same defect as `NM_DICTIONARY`/`NM_METHOD_MAP`, despite an
+earlier section of this document grouping all three together.** That grouping
+was wrong, and this audit is what disproves it — see "The dictionary and
+method-map counters are not wrong" below. `NM_NATIVE_SYMBOLS` reported 0 for
+memory that was allocated and resident; the other two report 0 for memory that
+does not exist yet. Only the first is a counter bug.
 
 **The sites that are instrumented count correctly.** Every one checked matches
 its category: `StringDictionary` 4.50 MiB against `NM_DICTIONARY` 4.55;
@@ -1337,6 +1338,55 @@ iteration and correctly uses `threads.capacity()` rather than `size()`, and
 `LivenessTracker`'s realloc records `sizeof(TrackingEntry) * (newcap -
 _table_cap)` — a capacity difference, not a usable-size one. No miscounting was
 found at any instrumented site.
+
+### The dictionary and method-map counters are not wrong
+
+Earlier passes concluded that `NM_DICTIONARY` and `NM_METHOD_MAP` suffered the
+same defect as `NM_NATIVE_SYMBOLS`, because `finishChunk()` snapshots the
+counters at `flightRecorder.cpp:820` while `writeCpool()` — which populates
+both — runs at 835. The counter-audit data disproves that.
+
+`NM_METHOD_MAP` reads 0.00 MiB at steady state while **total** uncounted
+profiler memory is 0.88 MiB. Had the method map really held the ~13 MB
+attributed to it, the audit would have surfaced ~13 MB unaccounted — which is
+precisely how it caught `NM_NATIVE_SYMBOLS`. It did not. `NM_DICTIONARY` reads
+4.55 MiB against 4.50 MiB of measured `StringDictionary` allocation. **Both
+counters are accurate whenever the memory exists.** The method map is
+legitimately empty at steady state: it is built during serialization and did
+not exist at the sample instant.
+
+The distinction matters. `NM_NATIVE_SYMBOLS` reported 0 for memory that was
+allocated and resident — a real bug, now fixed. These two report 0 for memory
+that has not been allocated yet — correct behaviour.
+
+**The error was in the inference, not the counter.** The investigation's own
+protocol sampled at a point where the method map was legitimately empty, then
+read the counter's zero as evidence of a broken counter. That is the same error
+shape as the `malloc_trim` conclusion corrected earlier in this document:
+treating "the instrument reads zero" as "the instrument is broken" rather than
+"there is nothing there".
+
+**What is genuinely still missing** is narrower: memory allocated *during*
+`writeCpool()` is never reported by the chunk that allocates it. Both
+`native_mem_live_bytes.*` and `native_mem_max_bytes.*` are read at line 820, so
+each lags its own chunk's serialization by one flush — and for a single
+continuous recording `finishChunk()` runs only at process exit, so that final
+serialization allocation is never reported at all.
+
+**This cannot be fixed by reordering.** `cpool_offset` is recorded in the chunk
+header as the boundary between the event section and the constant pool, so no
+event may be appended after `writeCpool()` returns; moving `writeNativeMem()`
+past it would corrupt the chunk. The options are therefore to refresh the
+JNI-visible `Counters::` mirrors after `writeCpool()` (which helps a live
+process across `dump()`, since `getDebugCounters0` hands Java a direct view of
+that array, but buys nothing at exit), or to emit the previous flush's
+post-serialization values under distinct counter names in the following chunk —
+a schema addition, and the only option that surfaces the serialization spike in
+JFR itself. Neither is implemented here.
+
+Note that `NativeMem::sample()` must **not** simply be called a second time per
+chunk to paper over this: it advances a 64-tick moving-average window, so
+calling it twice would silently redefine `avg()` as a 32-chunk mean.
 
 ### Fixing the gauge: counter coverage goes from 37 % to 96 %
 
