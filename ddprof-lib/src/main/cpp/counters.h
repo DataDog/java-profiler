@@ -134,6 +134,19 @@
   X(SAFECOPY_FAILED, "safecopy_failed")                                       \
   X(SAFEFETCH_FAILED, "safefetch_failed")                                     \
   X(STACKWALK_LONGJMP_RECOVERED, "stackwalk_longjmp_recovered")               \
+  /* Dump-time raw-Method* resolution (HotspotSupport::resolve, reached only    \
+   * for cstack=vm + fjmethodid=false frames). NOT additive with               \
+   * STACKWALK_LONGJMP_RECOVERED: checkFault() bumps that one unconditionally  \
+   * before every siglongjmp, so each fault counted here is counted there too. \
+   * Subtract, never sum. Non-zero means stale HotSpot metadata (GC or class   \
+   * unloading) reached the dump thread; the frame serializes as "unknown". */ \
+  X(METHOD_RESOLVE_FAULT_RECOVERED, "method_resolve_fault_recovered")         \
+  /* Symbol length/body rejected during the same resolution: unreadable body,  \
+   * empty (recycled slot), or over MAX_SYMBOL_LEN. A name that merely exceeds \
+   * the fixed inline buffers in hotspotSupport.cpp's ResolvedNames still      \
+   * resolves via its malloc fallback and does not land here. The frame        \
+   * serializes as "unknown". */                                               \
+  X(METHOD_RESOLVE_SYMBOL_UNREADABLE, "method_resolve_symbol_unreadable")     \
   /* Strict subset of SAMPLES_DROPPED_THREAD_LOCAL, not an independent count: \
    * ThreadLocalDataPool::claim() increments this on capacity exhaustion, and \
    * every acquireCurrent() caller that gets nullptr back -- for this or any  \

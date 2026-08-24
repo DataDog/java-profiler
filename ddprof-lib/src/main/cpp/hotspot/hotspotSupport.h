@@ -21,12 +21,13 @@ class VMMethod;
 
 class HotspotSupport {
     friend class JVMSupport;
+    friend class HotspotSupportTestAccessor;
 
 private:
     static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                       StackWalkFeatures features, EventType event_type,
                       const void* pc, uintptr_t sp, uintptr_t fp, int lock_index, bool* truncated);
-    static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth, 
+    static int walkVM(void* ucontext, ASGCT_CallFrame* frames, int max_depth,
                       StackWalkFeatures features, EventType event_type,
                       int lock_index, bool* truncated = nullptr);
 
