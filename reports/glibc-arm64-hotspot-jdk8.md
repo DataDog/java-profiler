@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk8
 
 ## glibc-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-08-24 17:08:23 EDT
+**Date:** 2026-08-24 18:13:25 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 81 |
-| Sample Rate | 1.35/sec |
-| Health Score | 84% |
-| Threads | 13 |
+| CPU Samples | 69 |
+| Sample Rate | 1.15/sec |
+| Health Score | 72% |
+| Threads | 10 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 22 |
-| Sample Rate | 0.37/sec |
-| Health Score | 23% |
-| Threads | 8 |
+| CPU Samples | 116 |
+| Sample Rate | 1.93/sec |
+| Health Score | 121% |
+| Threads | 7 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 34-34 cores)</summary>
+<summary>CPU Timeline (2 unique values: 33-34 cores)</summary>
 
 ```
-1787605375 34
-1787605380 34
-1787605385 34
-1787605390 34
-1787605395 34
-1787605400 34
-1787605405 34
-1787605410 34
-1787605415 34
-1787605420 34
-1787605425 34
-1787605430 34
-1787605435 34
-1787605440 34
-1787605445 34
-1787605450 34
-1787605455 34
-1787605460 34
-1787605465 34
-1787605470 34
+1787609381 34
+1787609386 34
+1787609391 34
+1787609396 34
+1787609401 34
+1787609406 34
+1787609411 34
+1787609416 33
+1787609421 33
+1787609426 33
+1787609431 33
+1787609436 33
+1787609441 33
+1787609446 33
+1787609451 33
+1787609456 33
+1787609461 33
+1787609466 33
+1787609471 33
+1787609476 34
 ```
 </details>
 
