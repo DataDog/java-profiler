@@ -1889,8 +1889,18 @@ Error Profiler::check(Arguments &args) {
 
 void Profiler::updateNativeLibMemStats() {
   // CodeCache here is the profiler's native-symbol tables (not the JVM code
-  // cache). memoryUsage() is a recomputed gauge; read it once and publish the
-  // counters plus the NativeMem gauge (NATIVE_SYMBOLS) as absolutes.
+  // cache). memoryUsage() is now an O(1) read of each library's running
+  // total (see CodeCache::_memory_usage), not a rescan, so reading it here
+  // for the Counters:: mirrors below is cheap even though this itself is
+  // only called from stop()/dump().
+  //
+  // Deliberately does NOT also write NM_NATIVE_SYMBOLS here: that gauge is
+  // maintained incrementally at publish time (CodeCacheArray::add(), an
+  // atomic add per library). Overwriting it with a fresh recompute from this
+  // function -- which can run concurrently with the background refresher
+  // thread publishing a new library, since neither takes a common lock --
+  // would reintroduce exactly the stale-overwrite race the publish-time
+  // accounting was built to avoid.
   const CodeCacheArray& native_libs = _libs->native_libs();
   long long usage = (long long)native_libs.memoryUsage();
   Counters::set(CODECACHE_NATIVE_COUNT, native_libs.count());
@@ -1900,7 +1910,6 @@ void Profiler::updateNativeLibMemStats() {
   // behind the VM abstraction (0 on J9/Zing).
   Counters::set(CODECACHE_RUNTIME_STUBS_SIZE_BYTES,
                 JVMSupport::runtimeStubsMemoryUsage());
-  NativeMem::setLive(NM_NATIVE_SYMBOLS, usage);
 }
 
 Error Profiler::dump(const char *path, const int length) {

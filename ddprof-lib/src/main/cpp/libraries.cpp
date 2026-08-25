@@ -10,7 +10,6 @@
 #include "libraryPatcher.h"
 #include "log.h"
 #include "mallocTracer.h"
-#include "nativeMem.h"
 #include "os.h"
 #include "profiler.h"
 #include "symbols.h"
@@ -61,19 +60,21 @@ end:
 void Libraries::updateSymbols(bool kernel_symbols) {
   Symbols::parseLibraries(&_native_libs, kernel_symbols);
   LibraryPatcher::patch_libraries();
-  // Refresh the native-symbol memory gauge here, where the tables it measures
-  // actually change. This is the only function that grows _native_libs, and a
-  // published CodeCache is immutable -- add(), expand() and setDwarfTable() all
-  // assert they run before publication -- so recomputing at this point is
-  // sufficient for the gauge to be accurate at any later instant.
+  // NM_NATIVE_SYMBOLS accounting happens per-library, at the moment each
+  // CodeCache is published (CodeCacheArray::add(), codeCache.h) -- not here.
   //
-  // Previously NM_NATIVE_SYMBOLS was written only by
-  // Profiler::updateNativeLibMemStats(), which runs solely from Profiler::stop()
-  // and Profiler::dump(). Neither fires during a recording, so the gauge read 0
-  // for the entire life of a profiled process while these tables really held
-  // ~10 MB, making the profiler under-report its own native memory by that much
-  // at every steady-state sample point.
-  NativeMem::setLive(NM_NATIVE_SYMBOLS, (long long)_native_libs.memoryUsage());
+  // An earlier version of this fix recomputed and overwrote the whole gauge
+  // from this function on every call (each dlopen refresh, not just
+  // stop()/dump() as before it existed at all -- see git history for why the
+  // gauge previously read 0 for a recording's entire lifetime). Two review
+  // findings on that approach: it turned every dlopen into an O(total symbols
+  // across every loaded library) rescan instead of O(new symbols only), and a
+  // dump()-triggered refresh could race the background refresher thread's own
+  // refresh() and overwrite a newer total with a stale smaller one (neither
+  // path takes a common lock). The publish-time NativeMem::record() approach
+  // has neither problem: each publish is an O(1) atomic add of that one
+  // library's already-computed total, so there is nothing to rescan and
+  // nothing to race.
 }
 
 void Libraries::refresh() {
