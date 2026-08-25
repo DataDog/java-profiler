@@ -140,6 +140,15 @@ private:
   StackWalkFeatures _features;
   int _safe_mode;
   CStack _cstack;
+  // Set once, immediately after start() resolves _cstack (CSTACK_DEFAULT ->
+  // a concrete mode) and before any sampling begins. _cstack's constructor
+  // default is CSTACK_NO -- a real, user-selectable mode, not a
+  // distinguishable "not yet decided" sentinel -- so code that must tell
+  // "not yet resolved" apart from "resolved, and it's CSTACK_NO" (e.g.
+  // ElfParser::parseDwarfInfo() deciding whether a library parsed before
+  // start() might still need a DWARF table once resolution happens) needs
+  // this, not just cstackMode().
+  std::atomic<bool> _cstack_resolved;
   bool _force_jmethodID;
 
   volatile jvmtiEventMode _thread_events_state;
@@ -228,6 +237,7 @@ public:
         _start_time(0), _stop_time(0), _epoch(0), _timer_id(NULL),
         _total_samples(0), _sample_seq(0), _failures(), _class_map_lock(),
         _max_stack_depth(0), _features(), _safe_mode(0), _cstack(CSTACK_NO),
+        _cstack_resolved(false),
         _force_jmethodID(true),
         _thread_events_state(JVMTI_DISABLE), _libs(Libraries::instance()),
         _num_context_attributes(0), _omit_stacktraces(false),
@@ -278,6 +288,14 @@ public:
 
   inline CStack cstackMode() const {
     return _cstack;
+  }
+
+  // True once start() has resolved _cstack from a request (including
+  // CSTACK_DEFAULT) to the concrete mode it will use for this session. See
+  // the comment on _cstack_resolved for why cstackMode() alone can't tell
+  // "not yet decided" apart from "decided, and it's CSTACK_NO".
+  inline bool cstackResolved() const {
+    return _cstack_resolved.load(std::memory_order_acquire);
   }
 
   inline bool forceJmethodID() const {

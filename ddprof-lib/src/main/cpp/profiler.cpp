@@ -1609,6 +1609,12 @@ Error Profiler::start(Arguments &args, bool reset) {
   }
 
   args._cstack = _cstack;
+  // From here on, cstackMode() reflects this session's final, resolved mode.
+  // Anything parsed before this point (e.g. ElfParser::parseDwarfInfo() for
+  // the handful of libraries loaded at JVMTI Agent_OnLoad, before this
+  // start() call) must not trust cstackMode() yet -- see cstackResolved()'s
+  // declaration for why.
+  _cstack_resolved.store(true, std::memory_order_release);
   // Prepare JVMSupport for execution
   JVMSupport::initExecution(args, VM::jvmti(), VM::jni());
 
