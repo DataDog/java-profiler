@@ -26,6 +26,7 @@
 #include "threadLocalData.inline.h"
 #include "threadState.inline.h"
 #include "guards.h"
+#include <errno.h>
 #include <sys/time.h>
 
 bool ITimer::_enabled = false;
@@ -33,7 +34,8 @@ long ITimer::_interval;
 CStack ITimer::_cstack;
 
 void ITimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
-  SIGNAL_HANDLER_GUARD_OR_DROP();
+  int saved_errno = errno;
+  SIGNAL_HANDLER_GUARD_OR_DROP_WITH_ERRNO(saved_errno);
   // NOTE: ITimer uses setitimer(ITIMER_PROF) which delivers signals with
   // si_code==SI_KERNEL — no sival payload is available. The signal-origin
   // check implemented in CTimer/WallClock cannot be applied here. ITimer
@@ -41,25 +43,31 @@ void ITimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // feature addresses. Use CTimer (the default) when signal-origin
   // validation is required.
   InflightGuard inflight;
-  if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE))
+  if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
+    errno = saved_errno;
     return;
+  }
 
   ProfiledThread *current = SIGNAL_HANDLER_CURRENT_THREAD();
+  assert(current != nullptr);
 
   // Atomically try to enter critical section - prevents all reentrancy races
   CriticalSection cs(current);
   if (!cs.entered()) {
+    errno = saved_errno;
     return;  // Another critical section is active, defer profiling
   }
   current->noteCPUSample(Profiler::instance()->recordingEpoch());
   int tid = current->tid();
-  Shims::instance().setSighandlerTid(tid);
 
-  ExecutionEvent event;
-  event._execution_mode = getThreadExecutionMode();
-  Profiler::instance()->recordSample(ucontext, _interval, tid, BCI_CPU, 0,
-                                     &event);
-  Shims::instance().setSighandlerTid(-1);
+  {
+    SighandlerTidScope sighandlerTid(tid);
+    ExecutionEvent event;
+    event._execution_mode = getThreadExecutionMode();
+    Profiler::instance()->recordSample(ucontext, _interval, tid, BCI_CPU, 0,
+                                       &event);
+  }
+  errno = saved_errno;
 }
 
 Error ITimer::check(Arguments &args) {
