@@ -88,6 +88,10 @@ public:
   char* volatile _method_name;
   char* volatile _method_signature;
 
+  // Non-copyable
+  ResolveMethodState(const ResolveMethodState&) = delete;
+  ResolveMethodState& operator=(const ResolveMethodState&) = delete;
+
   ResolveMethodState();
   ~ResolveMethodState();
   void release();
@@ -215,11 +219,11 @@ void Lookup::cutArguments(char *func) {
   }
 }
 
-void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
+bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
                                 bool first_time, ResolveMethodState& state) {
   JNIEnv *jni = VM::jni();
   if (jni->PushLocalFrame(64) != 0) {
-    return;
+    return false;
   }
   state._framePushed = true;
 
@@ -276,7 +280,8 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         }
         return true;
       };
-      readable = probe(class_name) & probe(method_name) & probe(method_sig);    }
+      readable = probe(class_name) & probe(method_name) & probe(method_sig);
+    }
     if (readable) {
       const size_t class_name_len = strnlen(class_name, 65536);
       const char* normalized_class_name =
@@ -440,7 +445,20 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         // before an unprotected copy.
         owned_table = malloc(bytes);
         if (owned_table != nullptr) {
-          if (!SafeAccess::safeCopy(owned_table, line_number_table, bytes)) {
+          if (SafeAccess::safeCopy(owned_table, line_number_table, bytes)) {
+            // Hand ownership to mi->_line_number_table immediately, before the
+            // Deallocate() call below (a real, unprotected JVMTI call that can
+            // itself fault on the same possibly-stale jmethodID). mi lives in
+            // *_method_map, which survives a siglongjmp out of this function,
+            // so once owned_table is attached here it can no longer leak even
+            // if the rest of this block never finishes.
+            mi->_line_number_table = std::make_shared<SharedLineNumberTable>(
+                line_number_table_size, owned_table);
+            owned_table = nullptr; // ownership transferred; nothing left to free below
+            Counters::increment(LINE_NUMBER_TABLES);
+            NativeMem::record(NM_LINE_TABLES, (long long)((size_t)line_number_table_size *
+                                                          sizeof(jvmtiLineNumberEntry)));
+          } else {
             free(owned_table);
             owned_table = nullptr;
             line_number_table = nullptr; // make sure the invalid address is not used for jvmti->Deallocate
@@ -464,16 +482,15 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         jvmtiError dealloc_err = jvmti->Deallocate((unsigned char *)line_number_table);
         assert(dealloc_err == JVMTI_ERROR_NONE && "Unexpected error while deallocating linenumber table");
       }
-      if (owned_table != nullptr) {
-        mi->_line_number_table = std::make_shared<SharedLineNumberTable>(
-            line_number_table_size, owned_table);
-        // Increment counter for tracking live line number tables
-        Counters::increment(LINE_NUMBER_TABLES);
-        NativeMem::record(NM_LINE_TABLES, (long long)((size_t)line_number_table_size *
-                                                      sizeof(jvmtiLineNumberEntry)));
-      }
     }
+    return true;
   }
+  // Phase is neither START nor LIVE (e.g. a record-on-shutdown dump after the
+  // JVM has moved into JVMTI_PHASE_DEAD): none of mi's fields were touched
+  // above, unlike the "readable == false" case inside the branch above (which
+  // still fills mi with the deliberate "<unloaded>" sentinel and returns true
+  // via the return above).
+  return false;
 }
 
 bool Lookup::resolveVTableReceiver(VMSymbol *sym, char *buf, size_t bufsize,
@@ -709,8 +726,9 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
     // touching anything else.
     SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
     jmp_scope.restore();
-    Counters::increment(METHOD_RESOLVE_LONGJMP_RECOVERED);
-
+    Counters::increment(METHOD_RESOLVE_FAULT_RECOVERED);
+    // state.release() may fault. Unfortunately, it faults outside of profiler
+    // code where checkFault() can not absorbs.
     state.release();
     // A member, already filled above -- no map lookup, no allocation, and no
     // reliance on a local surviving siglongjmp (the value of a non-volatile
@@ -739,6 +757,7 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
 
   if (!mi->_mark) {
     bool first_time = mi->_key == 0;
+    bool filled = true;
     if (bci == BCI_ERROR) {
       fillNativeMethodInfo(mi, (const char *)method_id, nullptr, state);
     } else if (bci == BCI_NATIVE_FRAME) {
@@ -790,27 +809,46 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
       mi->_type = FRAME_NATIVE;
       mi->_is_entry = false;
     } else {
-      fillJavaMethodInfo(mi, method_id, first_time, state);
+      filled = fillJavaMethodInfo(mi, method_id, first_time, state);
     }
-    if (first_time) {
-      // Allocate a method-pool id that is unique among live methods. Must not
-      // be derived from the map size: cleanupUnreferencedMethods() erases
-      // entries, so size()+1 would reissue an id still owned by a surviving
-      // method, producing duplicate ids in the chunk's method constant pool
-      // (PROF-15130). The allocator recycles ids freed on erase instead.
-      mi->_key = _method_map->allocId();
+    // Mark last, never before the fill above, and only when the fill actually
+    // ran to completion. Two distinct ways the fill can not reach here:
+    //   1. It can siglongjmp straight out of this whole function (fillMethod)
+    //      on stale VM metadata -- ordering alone handles that, since the
+    //      unwind skips this statement (and everything below it) entirely.
+    //   2. fillJavaMethodInfo() can return normally without touching mi at
+    //      all (PushLocalFrame failed, or the JVM isn't in JVMTI_PHASE_START/
+    //      JVMTI_PHASE_LIVE) -- control returns here just like the success
+    //      case, so ordering alone does NOT catch this one; its `filled`
+    //      return value does.
+    // Marking (or allocating a key for) an unfilled row would leave it
+    // permanently stuck as an empty class/name/sig typed FRAME_INTERPRETED:
+    // writeMethods() serializes any marked row, and every later frame with
+    // this key would reuse it via the _mark fast path in resolveMethod(),
+    // rather than retrying the fill. Left unmarked, the row is retried by the
+    // next frame that needs it, and eventually aged out by
+    // cleanupUnreferencedMethods() if nothing ever fills it.
+    if (filled) {
+      if (first_time) {
+        // Allocate a method-pool id that is unique among live methods. Must not
+        // be derived from the map size: cleanupUnreferencedMethods() erases
+        // entries, so size()+1 would reissue an id still owned by a surviving
+        // method, producing duplicate ids in the chunk's method constant pool
+        // (PROF-15130). The allocator recycles ids freed on erase instead.
+        mi->_key = _method_map->allocId();
+      }
+      mi->_mark = true;
+    } else {
+      // Unfilled: mi stays unmarked (see above) for a future frame to retry,
+      // but *this* frame still needs a valid, already-marked row to reference
+      // right now -- the shared unknown-method row, same as every other
+      // resolution-failed path in this function (nullptr method_id above,
+      // raw-pointer resolve failure, the siglongjmp recovery branch).
+      // Returning mi itself here would hand the caller a key of 0 (never
+      // allocated) for a row writeMethods() will never emit, a dangling
+      // method-pool reference in the chunk.
+      return unknownMethod();
     }
-    // Mark last, never before the fill above. The fill walks VM metadata that a
-    // concurrent class unload may have freed, so it can siglongjmp straight out
-    // of this function (and fillJavaMethodInfo() also returns early when
-    // PushLocalFrame fails). Marking up front would leave the row marked but
-    // still default-constructed: writeMethods() serializes any marked row, so
-    // the chunk would gain a method with an empty class/name/sig typed as
-    // FRAME_INTERPRETED, and every later frame with this key would reuse it.
-    // Left unmarked, the row is skipped by writeMethods(), retried by the next
-    // frame that needs it, and eventually aged out by
-    // cleanupUnreferencedMethods(), which recycles its _key.
-    mi->_mark = true;
   }
 
   return mi;

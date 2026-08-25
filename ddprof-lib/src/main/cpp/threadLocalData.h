@@ -316,7 +316,10 @@ public:
   // Atomic operations to prevent another signal interrupt load-modify-store.
   inline int signalDepth() const { return __atomic_load_n(&_signal_depth, __ATOMIC_RELAXED); }
   inline void enterSignalScope()    { __atomic_fetch_add(&_signal_depth, 1, __ATOMIC_RELAXED); }
-  inline void exitSignalScope()     { if (signalDepth() > 0) __atomic_fetch_sub(&_signal_depth, 1, __ATOMIC_RELAXED); }
+  inline void exitSignalScope()     {
+    int depth = __atomic_fetch_sub(&_signal_depth, 1, __ATOMIC_RELAXED);
+    assert(depth > 0 && "Unmatched exitSignalScope");
+  }
 
 #ifdef __FAULT_INJECTION__
   // One xorshift64 step (Marsaglia 2003), matching PoissonSampler::nextExp.

@@ -1489,6 +1489,10 @@ class ResolvedNames {
 
   bool setImpl(char* short_name, char* volatile& long_name, size_t short_limit, VMSymbol* sym);
 public:
+  // Non-copyable
+  ResolvedNames(const ResolvedNames&) = delete;
+  ResolvedNames& operator=(const ResolvedNames&) = delete;
+ 
   ResolvedNames();
   ~ResolvedNames();
   void release();

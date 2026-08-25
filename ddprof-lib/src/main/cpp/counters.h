@@ -136,19 +136,8 @@
   /* Every siglongjmp recovery, from any protected window, counted centrally  \
    * in Profiler::checkFault(). */                                            \
   X(STACKWALK_LONGJMP_RECOVERED, "stackwalk_longjmp_recovered")               \
-  /* Dump-time raw-Method* resolution (HotspotSupport::resolve, reached only    \
-   * for cstack=vm + fjmethodid=false frames). NOT additive with               \
-   * STACKWALK_LONGJMP_RECOVERED: checkFault() bumps that one unconditionally  \
-   * before every siglongjmp, so each fault counted here is counted there too. \
-   * Subtract, never sum. Non-zero means stale HotSpot metadata (GC or class   \
-   * unloading) reached the dump thread; the frame serializes as "unknown". */ \
+  /* Dump-time method resolution failures. The frame serializes as "unknown". */ \
   X(METHOD_RESOLVE_FAULT_RECOVERED, "method_resolve_fault_recovered")         \
-  /* Subset of the above: recoveries that landed in Lookup::resolveMethod()   \
-   * (flightRecorder.cpp), i.e. faults while symbolicating a Java frame at    \
-   * dump time via fillMethod() rather than during HotspotSupport::resolve()'s\
-   * raw-Method* walk. Counted separately because the two protected windows   \
-   * cover different code and have different root causes. */                 \
-  X(METHOD_RESOLVE_LONGJMP_RECOVERED, "method_resolve_longjmp_recovered")    \
   /* Symbol length/body rejected during the same resolution: unreadable body,  \
    * empty (recycled slot), or over MAX_SYMBOL_LEN. A name that merely exceeds \
    * the fixed inline buffers in hotspotSupport.cpp's ResolvedNames still      \

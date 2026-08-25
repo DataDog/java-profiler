@@ -161,7 +161,6 @@ inline T injectValue(T orig, T faulty, u64 threshold, const char* fn) {
     ::faultinj::injectCrash(::faultinj::PROB_LIKELY, __func__)
 #define INJECT_CRASH_HIGH() \
     ::faultinj::injectCrash(::faultinj::PROB_HIGH, __func__)
-#define INJECT_CRASH_ALWAYS() crashNow()
 
 #else  // __FAULT_INJECTION__ not defined — strict identity, zero cost.
 

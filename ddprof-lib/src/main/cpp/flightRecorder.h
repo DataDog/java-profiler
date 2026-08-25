@@ -412,7 +412,12 @@ private:
                             const char *lib_name, ResolveMethodState& state);
   void fillRemoteFrameInfo(MethodInfo *mi, const RemoteFrameInfo *rfi);
   void cutArguments(char *func);
-  void fillJavaMethodInfo(MethodInfo *mi, jmethodID method, bool first_time, ResolveMethodState& state);
+  // Returns false without writing any of mi's fields when there was nothing
+  // to fill (JNI PushLocalFrame failed, or the JVM isn't in JVMTI_PHASE_START/
+  // JVMTI_PHASE_LIVE) -- callers must not mark/allocate a key for mi in that
+  // case. Every other path (including the "<unloaded>" stale-jmethodID
+  // sentinel) fully populates mi and returns true.
+  bool fillJavaMethodInfo(MethodInfo *mi, jmethodID method, bool first_time, ResolveMethodState& state);
   bool has_prefix(const char *str, const char *prefix) const {
     return strncmp(str, prefix, strlen(prefix)) == 0;
   }
