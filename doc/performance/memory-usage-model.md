@@ -39,9 +39,26 @@ activity.
 | Native-lib pointer table | `MAX_NATIVE_LIBS`=2048 × 8 B | `codeCache.h:27` | 16 KiB *(from source)* |
 | Per-shard spinlocks | `CONCURRENCY_LEVEL`=16 × 64 B | `flightRecorder.h:47` | ~1 KiB *(from source)* |
 | Compiled agent binary | — | build output | 1.31 MiB |
+| Thread-local-data pool | `DEFAULT_CAPACITY`=64 × `sizeof(ProfiledThread)` | `threadLocalDataPool.cpp` | **~50.7 KB** (measured) |
 
 **Baseline total: ~43 MiB**, present before a single application thread is
 profiled.
+
+**New in this baseline as of the `origin/main` merge:** `ThreadLocalDataPool::initialize()`
+runs unconditionally from `JVMSupport::initialize()` (i.e. as soon as
+`JavaProfiler.getInstance()` is called, in both the with- and without-agent
+harness conditions — see "Absolute footprint vs. measured deltas" below),
+pre-allocating and placement-constructing 64 `ProfiledThread` instances
+(`64 × 792 B + sizeof(ThreadLocalDataPool)` = 50,688+ B) up front. This pool
+exists to give a thread sampled from signal context *before* it explicitly
+registers via `addThread()` a safe way to get a `ProfiledThread` without
+allocating from the signal handler (`ProfiledThread::acquireCurrent()`,
+`threadLocalData.inline.h`) — it does not change the per-thread marginal
+cost for explicitly-registered threads (still `sizeof(ProfiledThread)` per
+thread; see "Thread count / thread churn" below), and confirmed via the
+`thread_local_pool_exhausted` counter to be untouched (reads 0) by every
+sweep in this document, since `MemSweepMain`'s worker threads all register
+explicitly.
 
 Two things this corrects. The call-trace line is not the 65,536-slot hash
 table (~1.05 MiB) but the **8 MiB arena chunks backing it**, triple-buffered —

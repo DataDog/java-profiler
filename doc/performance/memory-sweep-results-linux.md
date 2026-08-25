@@ -15,6 +15,28 @@ chronicle the sequence of investigations that produced it — `git log` on this
 file has that. What it does keep are the measurement traps that produced wrong
 answers along the way, because anyone re-running this work will hit them too.
 
+## Re-verification after the `origin/main` merge
+
+This branch merged 51 upstream commits (see the branch's own history around
+that merge commit). Every measurement below was re-run against the merged
+tree to check for drift; results are folded into the relevant sections
+in-place rather than kept as a separate report. Summary:
+
+| Check | Result |
+|---|---|
+| Counter audit (coverage, new uninstrumented sites) | Unchanged: ~95.5% coverage (was ~96%), +0.89 MiB unaccounted (was 0.88 MiB). One new tiny site (`ThreadLocalDataPool::initialize()`, 0.05 MiB), already inside the known residual. |
+| Baseline footprint | 41.70 MiB (was 42.49 MiB) — `UnwindFailures` removal (−0.8 MiB) plus a new fixed `ThreadLocalDataPool` cost (+50.7 KB); see "Thread count" and `memory-usage-model.md`. Every other category unchanged. |
+| Thread-count marginal cost | Confirmed ~792 B/thread (`sizeof(ProfiledThread)`, post-`UnwindFailures`-fix), matching prediction exactly. |
+| Call-trace diversity | Unchanged: 24.53→40.53 MiB at N=2,000→60,000 traces (was 24.5→40.5 MiB). |
+| Touched-methods RSS delta | 74.38 ± 10.37 MB (n=3) at N=150,000, fixed-heap — matches the historical ~79 MiB within noise. |
+| Allocation diversity | Unchanged: `NM_DICTIONARY` 6.04→6.04 MiB and 6.03→6.05 MiB at the two calibration points; RSS 717→696.5 MiB and 680→681.7 MiB. |
+| Chunk-flush burst mechanism | Confirmed still present and still "settles high, doesn't fall back": one forced rotation at N=150,000 took `NM_DICTIONARY` to a 115.25 MiB post-flush peak, settling live at 86.22 MiB, growing further to 127.06 MiB by the next (final) flush. Magnitude isn't directly comparable to the historical 216.62/162.46 MiB figures — that measurement's exact timing parameters (how long before the forced dump) aren't recorded, and this driver is inherently duration/coverage-sensitive (see the open question on that below) — but the *mechanism* (spike shows in `max`, persists in `live`, doesn't revert) is unchanged. |
+| `parseDwarfInfo()` gating | Unchanged: still unconditional while `walkDwarf`/`findFrameDesc` remain gated to `CSTACK_DWARF` — the low-hanging-fruit item is still live on the merged tree. |
+
+The one genuinely new mechanism the merge introduced — the `ThreadLocalDataPool`
+fixed baseline cost — is detailed in `memory-usage-model.md`'s baseline table,
+not duplicated here.
+
 ## Summary
 
 **What drives memory overhead.** Thread count costs the profiler itself
