@@ -375,6 +375,7 @@ private:
   void cleanupUnreferencedMethods();
 };
 
+class ResolveMethodState;
 class Lookup {
 public:
   Recording *_rec;
@@ -408,10 +409,10 @@ public:
 
 private:
   void fillNativeMethodInfo(MethodInfo *mi, const char *name,
-                            const char *lib_name);
+                            const char *lib_name, ResolveMethodState& state);
   void fillRemoteFrameInfo(MethodInfo *mi, const RemoteFrameInfo *rfi);
   void cutArguments(char *func);
-  void fillJavaMethodInfo(MethodInfo *mi, jmethodID method, bool first_time, volatile bool& framePushed);
+  void fillJavaMethodInfo(MethodInfo *mi, jmethodID method, bool first_time, ResolveMethodState& state);
   bool has_prefix(const char *str, const char *prefix) const {
     return strncmp(str, prefix, strlen(prefix)) == 0;
   }

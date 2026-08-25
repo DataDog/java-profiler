@@ -80,9 +80,56 @@ SharedLineNumberTable::~SharedLineNumberTable() {
                                                    sizeof(jvmtiLineNumberEntry)));
   }
 }
+class ResolveMethodState {
+public:
+  volatile bool _framePushed;
+  char* volatile _demangled;
+  char* volatile _class_name;
+  char* volatile _method_name;
+  char* volatile _method_signature;
+
+  ResolveMethodState();
+  ~ResolveMethodState();
+  void release();
+};
+
+ResolveMethodState::ResolveMethodState() :
+  _framePushed(false), _demangled(nullptr), _class_name(nullptr), _method_name(nullptr),
+  _method_signature(nullptr) {
+}
+
+ResolveMethodState::~ResolveMethodState() {
+  release();
+}
+
+void ResolveMethodState::release() {
+  if (_framePushed) {
+    JNIEnv* jni = VM::jni();
+    jni->PopLocalFrame(nullptr);
+    _framePushed = false;
+  }
+
+  if (_demangled != nullptr) {
+    free(_demangled);
+    _demangled = nullptr;
+  }
+  jvmtiEnv* jvmti = VM::jvmti();
+  if (_method_name != nullptr) {
+    jvmti->Deallocate((unsigned char*)_method_name);
+    _method_name = nullptr;
+  }
+  if (_method_signature != nullptr) {
+    jvmti->Deallocate((unsigned char*)_method_signature);
+    _method_signature = nullptr;
+  }
+  if (_class_name != nullptr) {
+    jvmti->Deallocate((unsigned char*)_class_name);
+    _class_name = nullptr;
+  }
+}
 
 void Lookup::fillNativeMethodInfo(MethodInfo *mi, const char *name,
-                                  const char *lib_name) {
+                                  const char *lib_name, ResolveMethodState& state) {
   mi->_class = _classes->lookupDuringDump("", 0, Profiler::maxClassMapSize());
   // TODO return the library name once we figured out how to cooperate with the
   // backend
@@ -100,20 +147,22 @@ void Lookup::fillNativeMethodInfo(MethodInfo *mi, const char *name,
 
   if (name[0] == '_' && name[1] == 'Z') {
     int status;
-    char *demangled = abi::__cxa_demangle(name, NULL, NULL, &status);
-    if (demangled != NULL) {
-      cutArguments(demangled);
+    
+    state._demangled = abi::__cxa_demangle(name, NULL, NULL, &status);
+    if (state._demangled != NULL) {
+      cutArguments(state._demangled);
       mi->_sig = _symbols.lookup("()L;");
       mi->_type = FRAME_CPP;
 
       // Rust legacy demangling
-      if (RustDemangler::is_probably_rust_legacy(demangled)) {
-        std::string rust_demangled = RustDemangler::demangle(demangled);
+      if (RustDemangler::is_probably_rust_legacy(state._demangled)) {
+        std::string rust_demangled = RustDemangler::demangle(state._demangled);
         mi->_name = _symbols.lookup(rust_demangled.c_str());
       } else {
-        mi->_name = _symbols.lookup(demangled);
+        mi->_name = _symbols.lookup(state._demangled);
       }
-      free(demangled);
+      free(state._demangled);
+      state._demangled = nullptr;
       return;
     }
   }
@@ -167,27 +216,28 @@ void Lookup::cutArguments(char *func) {
 }
 
 void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
-                                bool first_time, volatile bool& framePushed) {
+                                bool first_time, ResolveMethodState& state) {
   JNIEnv *jni = VM::jni();
   if (jni->PushLocalFrame(64) != 0) {
     return;
   }
-  framePushed = true;
+  state._framePushed = true;
 
   jvmtiEnv *jvmti = VM::jvmti();
 
   jvmtiPhase phase;
   jclass method_class = NULL;
   // invariant: these strings must remain null, or be assigned by JVMTI
-  char *class_name = nullptr;
-  char *method_name = nullptr;
-  char *method_sig = nullptr;
+  char* volatile &class_name = state._class_name;
+  char* volatile &method_name = state._method_name;
+  char* volatile &method_sig = state._method_signature;
   u32 class_name_id = 0;
   u32 method_name_id = 0;
   u32 method_sig_id = 0;
 
   jint line_number_table_size = 0;
   jvmtiLineNumberEntry *line_number_table = NULL;
+
 
   jvmti->GetPhase(&phase);
   if ((phase & (JVMTI_PHASE_START | JVMTI_PHASE_LIVE)) != 0) {
@@ -207,8 +257,8 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         // when a classloader is unloaded, the jmethodIDs are not freed, but instead marked as -1.
         // The check below mitigates these crashes on J9.
         (!VM::isOpenJ9() || method_class != reinterpret_cast<jclass>(-1)) &&
-        jvmti->GetClassSignature(method_class, &class_name, NULL) == JVMTI_ERROR_NONE &&
-        jvmti->GetMethodName(method, &method_name, &method_sig, NULL) == JVMTI_ERROR_NONE) {
+        jvmti->GetClassSignature(method_class, (char**)&class_name, NULL) == JVMTI_ERROR_NONE &&
+        jvmti->GetMethodName(method, (char**)&method_name, (char**)&method_sig, NULL) == JVMTI_ERROR_NONE) {
       // The JVMTI strings should be non-null and mapped per spec, but crash
       // telemetry shows both `strncmp` and `jvmti_Deallocate` faulting on them.
       // Probe each pointer over a range covering the longest prefix
@@ -219,7 +269,7 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
       // so a single bad pointer does not leak its siblings. Best-effort only:
       // a concurrent munmap between probe and use can still fault; the SIGSEGV
       // handler is the second line of defence.
-      auto probe = [&](char*& ptr) -> bool {
+      auto probe = [&](char* volatile & ptr) -> bool {
         if (ptr == nullptr || !SafeAccess::isReadableRange(ptr, probe_len)) {
           ptr = nullptr;
           return false;
@@ -423,19 +473,7 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
                                                       sizeof(jvmtiLineNumberEntry)));
       }
     }
-
-    // strings are null or came from JVMTI
-    if (method_name) {
-      jvmti->Deallocate((unsigned char *)method_name);
-    }
-    if (method_sig) {
-      jvmti->Deallocate((unsigned char *)method_sig);
-    }
-    if (class_name) {
-      jvmti->Deallocate((unsigned char *)class_name);
-    }
   }
-  jni->PopLocalFrame(NULL);
 }
 
 bool Lookup::resolveVTableReceiver(VMSymbol *sym, char *buf, size_t bufsize,
@@ -554,8 +592,9 @@ static const char *const UNKNOWN_METHOD_NAME = "unknown";
 // after serializing), exactly as it does for a MethodMap row.
 MethodInfo *Lookup::unknownMethod() {
   if (!_unknown_method._mark) {
+    ResolveMethodState state;
     _unknown_method._key = _method_map->unknownMethodId();
-    fillNativeMethodInfo(&_unknown_method, UNKNOWN_METHOD_NAME, nullptr);
+    fillNativeMethodInfo(&_unknown_method, UNKNOWN_METHOD_NAME, nullptr, state);
     _unknown_method._mark = true; // last; see the note in fillMethod()
   }
   return &_unknown_method;
@@ -656,7 +695,7 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
   // underneath. Leaving ours installed past the end of this frame would leave
   // checkFault() jumping into a dead stack frame.
   JmpCtxScope jmp_scope(prof_thread);
-  volatile bool framePushed = false;
+  ResolveMethodState state;
 
   sigjmp_buf crash_protection_ctx;
   // savemask must be 1: the siglongjmp originates inside segvHandler, where
@@ -672,10 +711,7 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
     jmp_scope.restore();
     Counters::increment(METHOD_RESOLVE_LONGJMP_RECOVERED);
 
-    if (framePushed) {
-      JNIEnv* jni = VM::jni();
-      jni->PopLocalFrame(nullptr);
-    }
+    state.release();
     // A member, already filled above -- no map lookup, no allocation, and no
     // reliance on a local surviving siglongjmp (the value of a non-volatile
     // local assigned after sigsetjmp() is indeterminate here).
@@ -704,11 +740,11 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
   if (!mi->_mark) {
     bool first_time = mi->_key == 0;
     if (bci == BCI_ERROR) {
-      fillNativeMethodInfo(mi, (const char *)method_id, nullptr);
+      fillNativeMethodInfo(mi, (const char *)method_id, nullptr, state);
     } else if (bci == BCI_NATIVE_FRAME) {
       const char *name = (const char *)method_id;
       fillNativeMethodInfo(mi, name,
-                           Profiler::instance()->getLibraryName(name));
+                           Profiler::instance()->getLibraryName(name), state);
     } else if (bci == BCI_NATIVE_FRAME_REMOTE) {
       // Unpack remote symbolication data using utility struct
       // Layout: pc_offset (44 bits) | mark (3 bits) | lib_index (15 bits)
@@ -736,10 +772,10 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
         const char* basename = strrchr(s, '/');
         if (basename) basename++; else basename = s;
         snprintf(name_buf, sizeof(name_buf), "[%s+0x%" PRIxPTR "]", basename, pc_offset);
-        fillNativeMethodInfo(mi, name_buf, nullptr);
+        fillNativeMethodInfo(mi, name_buf, nullptr, state);
       } else {
         TEST_LOG("WARNING: Library lookup failed for index %u", lib_index);
-        fillNativeMethodInfo(mi, "unknown_library", nullptr);
+        fillNativeMethodInfo(mi, "unknown_library", nullptr, state);
       }
     } else if (bci == BCI_VTABLE_RECEIVER) {
       // Synthetic vtable-receiver frame: method_id holds a VMSymbol*
@@ -754,7 +790,7 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
       mi->_type = FRAME_NATIVE;
       mi->_is_entry = false;
     } else {
-      fillJavaMethodInfo(mi, method_id, first_time, framePushed);
+      fillJavaMethodInfo(mi, method_id, first_time, state);
     }
     if (first_time) {
       // Allocate a method-pool id that is unique among live methods. Must not
