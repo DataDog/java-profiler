@@ -264,13 +264,13 @@ one invented from scratch.
 5. **Identify low-hanging fruit and larger improvement opportunities**
    (deliberately sequenced *after* the above, since fixing things you don't
    understand yet risks fixing the wrong thing). Memory candidates, ranked
-   by confidence: **top of the list — adopt `origin/main`'s `#ifdef DEBUG`
-   gate on `ProfiledThread`'s `UnwindFailures` field** (`e1de4cf08`, #734).
-   Confirmed by direct measurement to cost ~296 KB per distinct thread ever
-   profiled on this branch's current release builds (`memory-usage-model.md`,
-   "Thread count / thread churn"); main already did the fix, so this is a
-   near-zero-effort port, not new engineering. Next, jmethodID preloading
-   strategy — confirmed driver of a
+   by confidence: **DONE — ported `origin/main`'s `#ifdef DEBUG` gate on
+   `ProfiledThread`'s `UnwindFailures` field** (`e1de4cf08`, #734, cherry-picked
+   with zero conflicts). Was confirmed by direct measurement to cost ~296 KB
+   per distinct thread ever profiled on this branch's release builds
+   (`memory-usage-model.md`, "Thread count / thread churn"); the port also
+   fixes a real infinite-loop bug in `HotspotSupport::walkVM` for unwindable
+   stub frames. Next, jmethodID preloading strategy — confirmed driver of a
    real ~36 MB chunk of overhead at high class diversity (this specific
    mechanism fires per loaded class, independent of sampling, so "class"
    is the mechanistically accurate word here even though the *aggregate*

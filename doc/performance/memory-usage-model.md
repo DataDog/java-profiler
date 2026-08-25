@@ -63,19 +63,21 @@ it for RSS purposes.
 
 ### 1. Thread count / thread churn — O(threads ever seen)
 
-- `ProfiledThread` (thread-local): **~296 KB/thread** (measured directly —
-  three independent methods agreeing to 0.04%; see
-  [memory-sweep-results-linux.md](memory-sweep-results-linux.md#thread-count)).
-  A prior revision of this document said 824 B/thread; that number was
-  measured before `bff61c47c` instrumented `UnwindFailures`'s allocation and
-  was never re-checked afterward. `sizeof(ProfiledThread)` itself really is
-  ~824 B — the rest (294,912 B) is an embedded `UnwindFailures` table
-  (`unwindStats.h`) that every `ProfiledThread` allocates unconditionally,
-  whether or not that thread ever has an unwind failure to record.
-  **`origin/main` already fixed this** (`e1de4cf08` / #734): the class and
-  member are gated behind `#ifdef DEBUG` there, so release builds pay
-  nothing. This is the highest-value fix identified anywhere in this model —
-  adopting it removes ~296 KB × (distinct threads ever profiled).
+- `ProfiledThread` (thread-local): **~824 B/thread** (`sizeof(ProfiledThread)`,
+  release build). For a window this branch actually shipped, the true cost
+  was **~296 KB/thread** — measured directly, three independent methods
+  agreeing to 0.04% — because `ProfiledThread` embedded an `UnwindFailures`
+  table (`unwindStats.h`) that allocated unconditionally, whether or not a
+  thread ever had an unwind failure to record. `bff61c47c` only added
+  accounting for that cost; it did not remove it, and the thread-count sweep
+  that reported "824 B/thread" predated that commit and was never re-run
+  against it. **Fixed** by porting `origin/main`'s `e1de4cf08` (#734), which
+  gates the class and member behind `#ifdef DEBUG` — release builds now
+  allocate nothing for it, confirmed by rebuilding and re-measuring
+  (`sizeof(ProfiledThread)` 824 → 792 B post-fix; live sweep confirms the
+  release build no longer pays the 288 KiB). See
+  [memory-sweep-results-linux.md](memory-sweep-results-linux.md#thread-count)
+  for the full before/after.
 - `ThreadFilter::Slot` — allocated in 256-slot chunks (`kChunkSize`), capped
   hard at `kMaxThreads` = 2048 (`threadFilter.h:42-45`). Observed stepping
   40 → 72 → 136 KiB.
@@ -83,11 +85,11 @@ it for RSS purposes.
   alive — so thread-per-request styles and recreated executor pools accumulate
   over process lifetime.
 
-Observed RSS grows ~400-410 KB/thread. The profiler's own contribution
-(~296 KB/thread) now accounts for roughly 70-75% of that — not "1/460th, all
-JVM/OS machinery" as a prior revision claimed. That conclusion was inverted:
-most of the per-thread RSS growth *is* agent cost, and it is the one
-concretely fixable by adopting main's DEBUG gate above.
+Observed RSS grows ~400-410 KB/thread (pre-fix). The profiler's own
+contribution (~296 KB/thread, pre-fix) accounted for roughly 70-75% of
+that — not "1/460th, all JVM/OS machinery" as a prior revision of this
+document claimed. That conclusion was inverted: most of the per-thread RSS
+growth *was* agent cost, and it is now fixed.
 
 ### 2. Distinct methods in sampled stacks — the dominant term
 
@@ -158,7 +160,7 @@ Additive, ignoring interaction effects and doubling thresholds:
 
 ```
 Memory(MiB) ≈ Baseline
-            + Threads        × C_thread    (~296 KB/thread, measured — see note)
+            + Threads        × C_thread    (~824 B/thread, measured)
             + TouchedMethods × C_method    (~0.8-1.4 KB/method, measured)
 ```
 
@@ -170,12 +172,12 @@ Where:
 - **TouchedMethods** = distinct methods actually appearing in *sampled stacks* —
   not methods loaded, and not classes. Below ~2,000 this term is ~0.
 
-`C_thread` is dominated by the unconditional `UnwindFailures` allocation
-(~294,912 of the 295,736 B), not by `ProfiledThread` itself — see
-"Thread count / thread churn" above. On a tree with main's `e1de4cf08` DEBUG
-gate applied, `C_thread` drops back to ~824 B and this term becomes
-negligible below a few thousand threads, same as this document previously
-(incorrectly) assumed for *all* builds.
+`C_thread` is negligible below a few thousand threads, as this document
+originally assumed. That assumption briefly did not hold on this branch: an
+unconditional `UnwindFailures` allocation (see "Thread count / thread churn"
+above) pushed `C_thread` to ~296 KB/thread for a window between `bff61c47c`
+(which instrumented the cost without removing it) and the fix below. Now
+fixed by porting main's `e1de4cf08` DEBUG gate.
 
 Then add the chunk-flush burst if the deployment rotates JFR chunks, and the
 ~15–20 % counter-to-RSS gap if you are predicting RSS rather than counter
@@ -229,11 +231,10 @@ In rough order of impact:
    independently of load; a high-throughput service with a narrow hot path
    does not.
 2. **Total distinct thread IDs** created over the profiling window, including
-   churn — **~296 KB/thread on this branch's release builds** (not small; see
-   above), linear and unbounded in churn-heavy designs, entirely attributable
-   to the unfixed `UnwindFailures` allocation. Thread-per-request styles and
-   recreated executor pools are the workloads this hits hardest. Adopting
-   main's DEBUG gate collapses this back to ~824 B/thread, negligible.
+   churn — ~824 B/thread, small and linear. (This branch briefly shipped
+   ~296 KB/thread here via an unconditional `UnwindFailures` allocation,
+   hitting thread-per-request and recreated-executor-pool workloads hardest;
+   fixed by porting main's `e1de4cf08` DEBUG gate — see above.)
 3. **Whether the deployment rotates JFR chunks**, which decides whether the
    flush burst is a one-off at exit or a recurring cost.
 4. **How many native libraries the process loads**, which sets the
