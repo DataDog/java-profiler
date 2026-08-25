@@ -2197,8 +2197,8 @@ void Recording::recordReferenceChainAbandoned(
   // SearchAbandonReason (referenceChains.h) - kept as a small fixed table
   // here rather than a T_XXX enum type, mirroring NativeSocketEvent's
   // _operation -> kOpNames string mapping above.
-  static const char *const kReasons[] = {"none", "frontier_cap", "ttl"};
-  buf->putUtf8(event->_reason < 3 ? kReasons[event->_reason] : "unknown");
+  static const char *const kReasons[] = {"none", "frontier_cap", "ttl", "canary_stuck"};
+  buf->putUtf8(event->_reason < 4 ? kReasons[event->_reason] : "unknown");
   buf->putVar32(event->_passes_run);
   buf->putVar32(event->_frontier_size);
   buf->putVar32(event->_hop_cap);

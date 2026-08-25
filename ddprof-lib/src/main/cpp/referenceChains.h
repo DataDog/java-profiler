@@ -179,6 +179,11 @@ namespace SearchAbandonReason {
 constexpr u8 NONE = 0;         // not (yet) abandoned
 constexpr u8 FRONTIER_CAP = 1; // frontier-size cap hit
 constexpr u8 TTL = 2;          // wall-clock TTL exceeded with work still pending
+// Canary candidate-discovery has made no progress for
+// NO_PROGRESS_PASS_LIMIT consecutive passes. Unlike TTL above, this fires
+// even while isUrgent() holds - see CANARY_NO_PROGRESS_PASS_LIMIT's own
+// comment for why the ordinary TTL's !isUrgent() guard must not apply here.
+constexpr u8 CANARY_STUCK = 3;
 } // namespace SearchAbandonReason
 
 // Frontier/EdgeStore record (design doc: "Data structures" /
@@ -705,6 +710,31 @@ private:
   // the frontier growing, the search is genuinely
   // stuck (not just slow) and is abandoned.
   int _passes_since_last_progress;
+  // Passes since _candidate_found_bits last changed (a candidate was newly
+  // found, or a new candidate was admitted into a slot). Distinct from
+  // _passes_since_last_progress above: that one tracks whole-graph frontier
+  // growth, which keeps resetting to 0 for as long as there is any unvisited
+  // reachable object left, regardless of whether the canary's specific
+  // candidates are ever pruned - so it never reflects "the canary search
+  // itself is stuck", only "the graph walk is stuck". Read by runPass()'s
+  // canary-stuck check, which (unlike the ordinary TTL check just above it)
+  // is deliberately NOT suppressed by isUrgent(): the isUrgent() TTL
+  // suppression exists so a search that's still making real progress isn't
+  // killed just because the process is close to OOM, but a canary search
+  // that has made zero candidate-discovery progress for
+  // CANARY_NO_PROGRESS_PASS_LIMIT consecutive passes is provably not
+  // converging - continuing to run it at urgency-boosted budget/cadence only
+  // burns STW pause budget the rest of the process needs during the same
+  // OOM approach this search was launched to diagnose.
+  int _passes_since_last_candidate_progress;
+  // candidate_count + popcount(found_bits) as of the last pass this was
+  // updated. A monotonic non-decreasing marker: _candidate_count only grows
+  // (pollWatchedTargets()'s admission loop never retires a slot) and
+  // found_bits only gains bits (heapReferenceCallback() only ever ORs a bit
+  // in) for as long as a search is RUNNING, so a rising sum means real
+  // canary progress happened since the last check; an unchanged sum means
+  // none did.
+  int _last_candidate_progress_mark;
 
   // Canary-search candidate set: pre-tagged with distinct
   // marker tags (MARKER_TAG_BASE - i) before the walk, applied to each
@@ -733,6 +763,13 @@ private:
   static constexpr int MAX_WATCHED_LEAK_KLASSES = 5;
   int _candidate_count;
   u64 _candidate_found_bits;
+  // klass_id occupying each slot, so pollWatchedTargets() can tell whether a
+  // klass_id selectLeakCandidates() returns this poll already has a slot
+  // (and must not be re-tagged/re-admitted) or is new (and should be
+  // admitted into the next free slot). Slots are never retired or reused
+  // once assigned for the lifetime of a search - see pollWatchedTargets()'s
+  // admission loop for why.
+  u32 _candidate_klass_ids[MAX_LEAK_CANDIDATES_FROM_LT];
   jlong _candidate_tags[MAX_LEAK_CANDIDATES_FROM_LT];
   jlong _candidate_frontier_tags[MAX_LEAK_CANDIDATES_FROM_LT];
   // Per-candidate chain link recorded at pruning time:
@@ -1399,6 +1436,7 @@ private:
         _gc_finish_epoch(0), _next_tag(1),
         _hop_cap(0), _budget(0), _first_pass_budget(0), _ttl_ms(0), _pause_target_ms(0),
         _effective_pause_target_ms(0), _passes_since_last_progress(0),
+        _passes_since_last_candidate_progress(0), _last_candidate_progress_mark(0),
         _effective_budget(0), _effective_cadence_ns(PASS_CADENCE_NS),
         _pause_pid(1, 1.0, 1.0, 1.0, 1, 1.0), _search_started(false),
         _tags_released(true), _urgent_latched(false),
@@ -1912,6 +1950,17 @@ public:
   // objects to explore — that is not "stuck". Only abandon when the
   // frontier stops growing entirely.
   static constexpr int NO_PROGRESS_PASS_LIMIT = 30;
+
+  // Abandon a canary search after this many consecutive passes with no
+  // change to _candidate_found_bits (no candidate newly found, no new
+  // candidate admitted into a slot) - see
+  // _passes_since_last_candidate_progress's own comment for why this is a
+  // separate counter/limit from NO_PROGRESS_PASS_LIMIT above, and why the
+  // check built on it is not suppressed by isUrgent(). Same value as
+  // NO_PROGRESS_PASS_LIMIT: both represent "genuinely stuck, not just slow"
+  // at the BFS thread's fixed per-second tick rate, so there is no reason
+  // for them to differ.
+  static constexpr int CANARY_NO_PROGRESS_PASS_LIMIT = 30;
 
   // Base marker tag for canary-search candidates. Each candidate i
   // gets MARKER_TAG_BASE - i (distinct negative values) so

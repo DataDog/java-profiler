@@ -454,6 +454,8 @@ Error ReferenceChainTracker::start(Arguments &args) {
   _effective_cadence_ns = PASS_CADENCE_NS;
   _candidate_count = 0;
   _candidate_found_bits = 0;
+  _passes_since_last_candidate_progress = 0;
+  _last_candidate_progress_mark = 0;
   // Budget-borrowing (referenceChains.h's _borrowed_budget comment): reset
   // alongside the rest of the pacing controller's state, so a restarted
   // search never inherits headroom earned by a previous one.
@@ -1153,6 +1155,8 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   store(_last_pass_ns, (u64)0);
   store(_passes_run, 0);
   _passes_since_last_progress = 0;
+  _passes_since_last_candidate_progress = 0;
+  _last_candidate_progress_mark = 0;
   _candidate_count = 0;
   _candidate_found_bits = 0;
   // _candidate_tags will be filled by pre-tagging in pollWatchedTargets().
@@ -3106,6 +3110,22 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
     storeRelease(_search_state, (u8)SearchState::COMPLETED);
     Counters::increment(REFERENCE_CHAIN_CANDIDATES_FOUND,
                              __builtin_popcountll(_candidate_found_bits));
+  } else if (_candidate_count > 0 &&
+             _passes_since_last_candidate_progress >=
+                 CANARY_NO_PROGRESS_PASS_LIMIT) {
+    // Canary-specific stuck detector - deliberately NOT suppressed by
+    // isUrgent() (contrast the ordinary TTL check above). The ordinary
+    // check's !isUrgent() guard protects a search that's still making real
+    // (whole-graph) progress from being killed just because the process is
+    // close to OOM; but _passes_since_last_candidate_progress only advances
+    // when NO candidate has been newly found and NO new candidate has been
+    // admitted, which frontier growth elsewhere in the graph does not
+    // affect. A canary that has made zero discovery progress for this many
+    // passes is provably not converging regardless of urgency, so letting
+    // isUrgent() keep it RUNNING would only burn urgency-boosted STW pause
+    // budget during the same OOM approach this search exists to diagnose.
+    store(_abandon_reason, (u8)SearchAbandonReason::CANARY_STUCK);
+    storeRelease(_search_state, (u8)SearchState::ABANDONED);
   }
 
   // Track progress: if the frontier grew this pass, reset the no-progress
@@ -3114,6 +3134,18 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
     _passes_since_last_progress = 0;
   } else {
     _passes_since_last_progress++;
+  }
+
+  // Track canary-specific progress separately - see
+  // _passes_since_last_candidate_progress's own comment for why frontier
+  // growth above does not substitute for this.
+  int candidate_progress_mark =
+      _candidate_count + (int)__builtin_popcountll(_candidate_found_bits);
+  if (candidate_progress_mark > _last_candidate_progress_mark) {
+    _last_candidate_progress_mark = candidate_progress_mark;
+    _passes_since_last_candidate_progress = 0;
+  } else {
+    _passes_since_last_candidate_progress++;
   }
 
   if (load(_search_state) != SearchState::RUNNING) {
@@ -3142,6 +3174,8 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
       }
       _candidate_count = 0;
       _candidate_found_bits = 0;
+      _passes_since_last_candidate_progress = 0;
+      _last_candidate_progress_mark = 0;
     }
   }
 
@@ -3364,37 +3398,60 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
   // noise for the common idle case.
   if (candidate_count > 0) {
     TEST_LOG("ReferenceChainTracker::pollWatchedTargets candidate_count=%d", candidate_count);
-    // Pre-tag candidates with marker tags so heapReferenceCallback()
-    // can prune at them. This runs here (not in threadLoop()
-    // before shouldRunPass) because selectLeakCandidates() may
-    // return 0 early on (before consecutive_positive reaches the
-    // hysteresis threshold) and only start returning
-    // candidates later, after enough GC epochs.
+    // Admit any candidate selectLeakCandidates() returns this poll that
+    // doesn't already occupy a slot, into the next free slot. This runs on
+    // every poll (not gated to "only the first time") because
+    // selectLeakCandidates()'s result set can change across polls - a new
+    // klass_id can start qualifying well after the search began. Slots are
+    // never retired or reassigned once occupied: a klass_id that stops
+    // qualifying just keeps whatever slot it has (and can still be found
+    // there), it is never freed for reuse by a different klass_id. That
+    // keeps the marker tag (MARKER_TAG_BASE - slot) a stable, search-lifetime
+    // identity for heapReferenceCallback()'s decode (referenceChains.cpp,
+    // near the *tag_ptr <= MARKER_TAG_BASE check) - reusing a slot mid-search
+    // would let a live marker tag on one object suddenly decode to a
+    // different klass_id's bookkeeping.
     // Use resolveCandidateRepresentative() (re-reads under lock)
     // instead of candidates[i].representative (stale jweak).
-    if (_candidate_count == 0) {
-      _candidate_count = candidate_count;
-      _candidate_found_bits = 0;
-      // Tag each candidate's specific representative object with a distinct
-      // marker tag (MARKER_TAG_BASE - i) so heapReferenceCallback() can
+    for (int i = 0; i < candidate_count; i++) {
+      u32 klass_id = candidates[i].klass_id;
+      bool already_tracked = false;
+      for (int s = 0; s < _candidate_count; s++) {
+        if (_candidate_klass_ids[s] == klass_id) {
+          already_tracked = true;
+          break;
+        }
+      }
+      if (already_tracked) {
+        continue;
+      }
+      if (_candidate_count >= MAX_LEAK_CANDIDATES_FROM_LT) {
+        TEST_LOG("ReferenceChainTracker::pollWatchedTargets canary: klass_id=%u "
+                 "qualifies but all %d slots are occupied - not tracked this search",
+                 klass_id, MAX_LEAK_CANDIDATES_FROM_LT);
+        continue;
+      }
+      // Tag this candidate's specific representative object with a distinct
+      // marker tag (MARKER_TAG_BASE - slot) so heapReferenceCallback() can
       // identify that exact object by identity when the walk reaches it -
       // matching by class alone would record a chain for whichever instance
       // of that class the walk happens to visit, not necessarily the one
       // LivenessTracker flagged as growing.
-      for (int i = 0; i < candidate_count; i++) {
-        jlong tag = MARKER_TAG_BASE - i;
-        _candidate_tags[i] = tag;
-        jobject obj = LivenessTracker::instance()->resolveCandidateRepresentative(
-            jni, candidates[i].klass_id);
-        if (obj != nullptr) {
-          jvmti->SetTag(obj, tag);
-          jni->DeleteLocalRef(obj);
-        }
+      int slot = _candidate_count;
+      jlong tag = MARKER_TAG_BASE - slot;
+      _candidate_klass_ids[slot] = klass_id;
+      _candidate_tags[slot] = tag;
+      jobject obj = LivenessTracker::instance()->resolveCandidateRepresentative(
+          jni, klass_id);
+      if (obj != nullptr) {
+        jvmti->SetTag(obj, tag);
+        jni->DeleteLocalRef(obj);
       }
-      TEST_LOG("ReferenceChainTracker::pollWatchedTargets canary: %d candidates pre-tagged "
-               "with marker tags",
-               _candidate_count);
-      Counters::increment(REFERENCE_CHAIN_CANDIDATE_COUNT, _candidate_count);
+      _candidate_count = slot + 1;
+      TEST_LOG("ReferenceChainTracker::pollWatchedTargets canary: admitted klass_id=%u "
+               "into slot=%d (candidate_count now %d)",
+               klass_id, slot, _candidate_count);
+      Counters::increment(REFERENCE_CHAIN_CANDIDATE_COUNT, 1);
     }
   }
 
@@ -3463,6 +3520,21 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
     // buildCanaryChainEvent() below is what distinguishes "found" (parent_tag
     // or frontier_tag populated) from "not yet pruned".
     if (tag <= MARKER_TAG_BASE) {
+      // The marker tag encodes the slot this object was pre-tagged at
+      // (MARKER_TAG_BASE - slot, mirroring heapReferenceCallback()'s own
+      // decode at referenceChains.cpp:1510). Decode it from the tag itself
+      // rather than reusing the loop index `i`: selectLeakCandidates() is
+      // not guaranteed to return candidates in the same order across polls,
+      // so `i` can drift from the slot this object was actually tagged at.
+      int candidate_slot = (int)(MARKER_TAG_BASE - tag);
+      if (candidate_slot < 0 || candidate_slot >= _candidate_count) {
+        TEST_LOG("ReferenceChainTracker::pollWatchedTargets canary candidate[%d] "
+                 "klass_id=%u marker_tag=%lld decodes to out-of-range slot=%d "
+                 "(candidate_count=%d) - skipping",
+                 i, klass_id, (long long)tag, candidate_slot, _candidate_count);
+        jni->DeleteLocalRef(obj);
+        continue;
+      }
       bool need_refresh = false;
       _resolved_chains_lock.lock();
       auto it = _resolved_chains.find(klass_id);
@@ -3471,18 +3543,18 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
                       it->second.source_search_ns != current_search_ns);
       _resolved_chains_lock.unlock();
       TEST_LOG("ReferenceChainTracker::pollWatchedTargets canary candidate[%d] "
-               "klass_id=%u marker_tag=%lld needRefresh=%d",
-               i, klass_id, (long long)tag, need_refresh);
+               "klass_id=%u marker_tag=%lld slot=%d needRefresh=%d",
+               i, klass_id, (long long)tag, candidate_slot, need_refresh);
       if (need_refresh) {
         ReferenceChainEvent event;
-        bool built = buildCanaryChainEvent(i, &event);
+        bool built = buildCanaryChainEvent(candidate_slot, &event);
         TEST_LOG("ReferenceChainTracker::pollWatchedTargets canary "
-                 "buildCanaryChainEvent(candidate=%d) -> %d",
-                 i, built);
+                 "buildCanaryChainEvent(slot=%d) -> %d",
+                 candidate_slot, built);
         if (built) {
           event._start_time = TSC::ticks();
           cacheResolvedChain(klass_id, std::move(event),
-                              _candidate_frontier_tags[i],
+                              _candidate_frontier_tags[candidate_slot],
                               current_search_ns);
         }
       }
