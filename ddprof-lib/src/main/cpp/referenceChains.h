@@ -634,6 +634,35 @@ private:
   // equal) so the very first pass always runs the sweep once.
   int _last_static_field_class_count;
 
+  // Index into the (per-call, app-classes-first-partitioned) loaded-class
+  // list that admitStaticFieldRoots() resumes from on its next call - see
+  // that method's own comment for why a single FollowReferences over every
+  // loaded class at once (no cursor) could never finish within one pass's
+  // safepoint deadline on a JVM with tens of thousands of loaded classes.
+  // Wrapped back to 0 once a chunk reaches the end of the current
+  // GetLoadedClasses() count. Clamped to 0 if the loaded-class count shrinks
+  // below the cursor (classes unloaded) rather than reading out of range.
+  int _static_field_sweep_cursor;
+
+  // Set when any chunk within the current lap (the cursor's walk from 0
+  // back to 0) truncates. Read when the cursor wraps: a lap that truncated
+  // even once must not mark _last_static_field_class_count as done - the
+  // next lap starts immediately (cursor is already back at 0) to keep
+  // retrying, same "no silent truncation" contract the untruncated case
+  // documents. Cleared at the start of each new lap.
+  bool _static_field_sweep_cycle_truncated;
+
+  // Per-call cap on how many classes admitStaticFieldRoots() includes in one
+  // FollowReferences call - see that method's own comment. Provisional and
+  // unbenchmarked like this subsystem's other per-pass caps (e.g.
+  // ROOT_KIND_ROTATION_BUDGET): small enough that building the holder array
+  // and walking one chunk's static fields fits comfortably inside the 5-50ms
+  // per-pass safepoint deadline even when a class in the chunk has an
+  // unusually large static-field graph, large enough that a JVM with a
+  // realistic loaded-class count (tens of thousands) completes a full lap in
+  // well under a minute of wall-clock passes.
+  static constexpr int STATIC_FIELD_SWEEP_CHUNK_CLASSES = 512;
+
   // "GC just happened" signals. Bumped only from onGCStart()/onGCFinish();
   // gcFinishEpoch() is now read by shouldRunPass() as one of the
   // two pass-scheduling triggers (design doc's Triggering section).
@@ -1469,6 +1498,8 @@ private:
         _last_class_map_generation(0),
         _last_resolved_class_count(0),
         _last_static_field_class_count(-1),
+        _static_field_sweep_cursor(0),
+        _static_field_sweep_cycle_truncated(false),
         _gc_start_epoch(0),
         _gc_finish_epoch(0), _next_tag(1),
         _hop_cap(0), _budget(0), _first_pass_budget(0), _ttl_ms(0), _pause_target_ms(0),
@@ -1651,10 +1682,34 @@ private:
   // safepoint_ticks: same accumulate-not-overwrite contract as
   // expandFrontier()'s own parameter above - added to with just this call's
   // FollowReferences duration.
+  //
+  // Chunked and resumable via _static_field_sweep_cursor
+  // (STATIC_FIELD_SWEEP_CHUNK_CLASSES classes per call, not every loaded
+  // class at once): a JVM with tens of thousands of loaded classes cannot
+  // have its entire static-field graph walked by one FollowReferences call
+  // within a single pass's 5-50ms safepoint deadline (confirmed on a live
+  // pod - see doc/temp/ investigation notes - truncated=1 on 275/275
+  // observed passes, 0-1 edges admitted out of ~34k classes' worth of
+  // static fields). Restarting from class 0 every truncated attempt, as a
+  // single-call sweep must, means whichever classes come after wherever the
+  // deadline hits are structurally unreachable no matter how many times it
+  // retries. Chunking instead makes guaranteed forward progress through the
+  // loaded-class list across passes regardless of any one chunk truncating,
+  // at the cost of only *that* chunk's static fields being incompletely
+  // admitted for the pass that truncated - the same "best-effort, not
+  // truncation-worthy for the whole search" trade-off this method's
+  // best-effort failure paths already make above. Each call also
+  // reprioritizes the loaded-class list app-classes-first before selecting
+  // its chunk (see the .cpp body) so a likely leak source is reached within
+  // the first several chunks instead of only after every JDK/platform class
+  // has been swept. *cycle_complete is set when this call's chunk reaches
+  // the end of the loaded-class list (a full lap), which the caller uses
+  // in place of the old single-call "not truncated" check to decide whether
+  // to update _last_static_field_class_count.
   void admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni, int hop_cap,
                               int budget, int *edges_admitted,
                               bool *truncated, bool *frontier_cap_hit,
-                              u64 *safepoint_ticks);
+                              bool *cycle_complete, u64 *safepoint_ticks);
 
   // Clears the live JVMTI tag (via clearTag(), i.e. SetTag(obj, 0)) for
   // every FrontierTable entry this search has not already marked ABANDONED -

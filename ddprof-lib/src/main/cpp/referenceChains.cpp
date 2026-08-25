@@ -1159,6 +1159,18 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   _passes_since_last_candidate_progress = 0;
   _last_candidate_progress_mark = 0;
   _canary_stuck_restart_count = 0;
+  // Same "just-constructed values" contract resetForRestart() already
+  // documents for these two fields - without it, a prior test's fully-swept
+  // (or partially-swept) state survives in this process-wide singleton
+  // (ReferenceChainTracker::instance()) and can wrongly skip
+  // admitStaticFieldRoots() entirely on this test's first pass if its
+  // resolved class count happens to match whatever an earlier test last
+  // left behind (found via a real gtest-suite-order failure, not
+  // hypothetical).
+  _last_resolved_class_count = 0;
+  _last_static_field_class_count = -1;
+  _static_field_sweep_cursor = 0;
+  _static_field_sweep_cycle_truncated = false;
   _candidate_count = 0;
   _candidate_found_bits = 0;
   // _candidate_tags will be filled by pre-tagging in pollWatchedTargets().
@@ -2306,22 +2318,27 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
     int static_field_edges_admitted = 0;
     bool static_field_truncated = false;
     bool static_field_frontier_cap_hit = false;
+    bool static_field_cycle_complete = false;
     int static_field_budget = std::max(budget - expand_phase_edges_admitted, 0);
     admitStaticFieldRoots(jvmti, jni, _hop_cap, static_field_budget,
                           &static_field_edges_admitted, &static_field_truncated,
-                          &static_field_frontier_cap_hit, safepoint_ticks);
+                          &static_field_frontier_cap_hit,
+                          &static_field_cycle_complete, safepoint_ticks);
     expand_phase_edges_admitted += static_field_edges_admitted;
     *edges_admitted += static_field_edges_admitted;
     // TEMP DIAGNOSTIC (see doc/temp/ investigation notes): split out how much
-    // of this pass's budget/deadline the static-field sweep alone consumed,
-    // and whether it completed - to distinguish "sweep never finishes a
-    // large classlist within the per-pass deadline" from "sweep finishes but
-    // rotation/expansion still can't find the target".
+    // of this pass's budget/deadline the static-field sweep's current chunk
+    // alone consumed, and whether that chunk completed / the lap wrapped -
+    // to distinguish "a chunk never finishes within the per-pass deadline"
+    // from "chunks finish but rotation/expansion still can't find the
+    // target".
     TEST_LOG("ReferenceChainTracker::runPassManualWalk static_field_phase "
              "edges_admitted=%d truncated=%d frontier_cap_hit=%d "
+             "cycle_complete=%d sweep_cursor=%d "
              "last_resolved_class_count=%d last_static_field_class_count=%d",
              static_field_edges_admitted, (int)static_field_truncated,
-             (int)static_field_frontier_cap_hit, _last_resolved_class_count,
+             (int)static_field_frontier_cap_hit, (int)static_field_cycle_complete,
+             _static_field_sweep_cursor, _last_resolved_class_count,
              _last_static_field_class_count);
     if (static_field_truncated) {
       *truncated = true;
@@ -2334,11 +2351,15 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
         // ordinary expansion below.
         return;
       }
-    } else {
-      // Sweep completed (possibly discovering nothing, if every static field
-      // it saw was already ALREADY_ADMITTED) - remember the class count it
-      // covered so a later pass with no new classes can skip re-running it.
-      // Left unset on a truncated sweep (above) so the next pass retries
+    }
+    if (static_field_cycle_complete) {
+      // The chunk cursor completed a full lap over the loaded-class list
+      // with no chunk truncating along the way (possibly discovering
+      // nothing, if every static field seen was already ALREADY_ADMITTED) -
+      // remember the class count it covered so a later pass with no new
+      // classes can skip re-running the sweep entirely. Left unset if any
+      // chunk in the lap truncated (admitStaticFieldRoots() already started
+      // the next lap immediately in that case) so passes keep retrying
       // instead of wrongly treating a still-incomplete sweep as done.
       _last_static_field_class_count = _last_resolved_class_count;
     }
@@ -2704,6 +2725,7 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
                                                    int *edges_admitted,
                                                    bool *truncated,
                                                    bool *frontier_cap_hit,
+                                                   bool *cycle_complete,
                                                    u64 *safepoint_ticks) {
   assert(!t_inGCCallback &&
          "GetLoadedClasses/FollowReferences are JVMTI Heap-category calls "
@@ -2711,6 +2733,7 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
   *edges_admitted = 0;
   *truncated = false;
   *frontier_cap_hit = false;
+  *cycle_complete = false;
 
   if (jni == nullptr) {
     // No JNIEnv to build the holder array on (some test seams) - see
@@ -2731,6 +2754,41 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
     }
     return;
   }
+
+  // GetLoadedClasses() gives no ordering guarantee across separate calls, so
+  // the cursor below is only meaningful as an index into THIS call's array -
+  // reprioritize it every call rather than trying to cache an ordering.
+  // Application/library classes (any non-bootstrap classloader) are moved to
+  // the front so a chunked sweep (below) reaches a likely leak source within
+  // its first several chunks instead of only after every JDK/platform class
+  // (typically the majority of a real JVM's loaded-class count) has been
+  // swept first. In-place two-way partition, no extra allocation.
+  jint app_boundary = 0;
+  for (jint i = 0; i < class_count; i++) {
+    jobject loader = nullptr;
+    jvmtiError loader_err = jvmti->GetClassLoader(classes[i], &loader);
+    bool is_app_class = (loader_err == JVMTI_ERROR_NONE) && (loader != nullptr);
+    if (loader != nullptr) {
+      jni->DeleteLocalRef(loader);
+    }
+    if (is_app_class) {
+      if (i != app_boundary) {
+        std::swap(classes[i], classes[app_boundary]);
+      }
+      app_boundary++;
+    }
+  }
+
+  if (_static_field_sweep_cursor >= class_count) {
+    // Loaded-class count shrank since the last chunk (classes unloaded) -
+    // restart the lap rather than reading out of range.
+    _static_field_sweep_cursor = 0;
+    _static_field_sweep_cycle_truncated = false;
+  }
+  jint chunk_start = _static_field_sweep_cursor;
+  jint chunk_end =
+      std::min(chunk_start + STATIC_FIELD_SWEEP_CHUNK_CLASSES, class_count);
+  jint chunk_count = chunk_end - chunk_start;
 
   // Same java/lang/Object element-type cache expandFrontier() uses for its
   // own frontier-holder array - shared across both call sites on this same
@@ -2754,7 +2812,7 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
     return;
   }
 
-  jobjectArray holder = jni->NewObjectArray(class_count, object_class, nullptr);
+  jobjectArray holder = jni->NewObjectArray(chunk_count, object_class, nullptr);
   if (jniExceptionCheck(jni)) {
     // OutOfMemoryError (or any other exception) building the holder -
     // clear it rather than let it survive into the DeleteLocalRef() calls
@@ -2763,8 +2821,8 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
     holder = nullptr;
   }
   if (holder != nullptr) {
-    for (jint i = 0; i < class_count; i++) {
-      jni->SetObjectArrayElement(holder, i, classes[i]);
+    for (jint i = 0; i < chunk_count; i++) {
+      jni->SetObjectArrayElement(holder, i, classes[chunk_start + i]);
       if (jniExceptionCheck(jni)) {
         holder = nullptr;
         break;
@@ -2772,6 +2830,8 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
     }
   }
 
+  // GetLoadedClasses() returned a local ref for every class regardless of
+  // chunk selection - free all of them here, not just the chunk.
   for (jint i = 0; i < class_count; i++) {
     jni->DeleteLocalRef(classes[i]);
   }
@@ -2819,6 +2879,23 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
   *edges_admitted = ctx.edges_admitted;
   *truncated = ctx.truncated;
   *frontier_cap_hit = ctx.frontier_cap_hit;
+
+  if (ctx.truncated) {
+    _static_field_sweep_cycle_truncated = true;
+  }
+  // Advance unconditionally, truncated or not: a class whose own static
+  // fields alone exhaust a chunk's budget/deadline must not block every
+  // later class in the list from ever being attempted - see this method's
+  // own header comment. The chunk that truncated may have admitted an
+  // incomplete set of that chunk's static fields; the cycle-truncated flag
+  // below is what keeps a lap with any incomplete chunk from being mistaken
+  // for a clean, fully-covered sweep.
+  _static_field_sweep_cursor = chunk_end;
+  if (_static_field_sweep_cursor >= class_count) {
+    *cycle_complete = !_static_field_sweep_cycle_truncated;
+    _static_field_sweep_cursor = 0;
+    _static_field_sweep_cycle_truncated = false;
+  }
 }
 
 bool ReferenceChainTracker::releaseSearchTags(jvmtiEnv *jvmti, JNIEnv *jni) {

@@ -70,6 +70,16 @@ public:
         t->_frontier = nullptr;
         t->_class_tags = ClassTagTable();
         t->_last_resolved_class_count = 0;
+        // Without these two, a prior test's fully-swept (or
+        // partially-swept) admitStaticFieldRoots() state survives in this
+        // process-wide singleton and can wrongly skip the sweep entirely on
+        // this test's first pass if its resolved class count happens to
+        // match whatever an earlier test last left behind - see
+        // resetForRestart()'s identical reset of these same fields for the
+        // production-restart equivalent of this same contract.
+        t->_last_static_field_class_count = -1;
+        t->_static_field_sweep_cursor = 0;
+        t->_static_field_sweep_cycle_truncated = false;
         t->_next_tag = 1;
         // Shared with LivenessTracker (classTagAllocator.h) - process-wide,
         // not per-ReferenceChainTracker-instance, so it needs its own reset
@@ -966,6 +976,7 @@ protected:
         jvmti_tbl.SetTag = &mock_SetTag;
         jvmti_tbl.GetTag = &mock_GetTag;
         jvmti_tbl.GetLoadedClasses = &mock_GetLoadedClasses;
+        jvmti_tbl.GetClassLoader = &mock_GetClassLoader;
         jvmti_tbl.GetClassSignature = &mock_GetClassSignature;
         jvmti_tbl.Deallocate = &mock_Deallocate;
         jvmti_tbl.FollowReferences = &mock_FollowReferences;
@@ -1065,6 +1076,16 @@ protected:
         for (size_t i = 0; i < classes.size(); i++) {
             (*classes_ptr)[i] = (jclass)classes[i].klass;
         }
+        return JVMTI_ERROR_NONE;
+    }
+
+    // admitStaticFieldRoots()'s app-classes-first partition (referenceChains.cpp)
+    // calls this for every loaded class. Every fixture class is "bootstrap"
+    // (null classloader) so the partition is a no-op and this suite's
+    // scripted class order/indices stay exactly as each test set them up.
+    static jvmtiError JNICALL mock_GetClassLoader(jvmtiEnv *, jclass,
+                                                   jobject *classloader_ptr) {
+        *classloader_ptr = nullptr;
         return JVMTI_ERROR_NONE;
     }
 
