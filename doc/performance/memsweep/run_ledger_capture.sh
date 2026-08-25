@@ -24,6 +24,17 @@
 #    leaving NMT on biases the with-agent condition upward. Run with NMT=on to
 #    measure that bias term explicitly as a separate comparison.
 #
+#  * duration_ms must be comfortably larger than STEADY_S (default 60s), not
+#    just larger. The dump signal fires at (load-marker + STEADY_S); if that
+#    lands within a few seconds of the workload's own (load-marker +
+#    duration_ms) exit deadline, the JVM can already be gone by the time the
+#    signal arrives and the probe never writes its dump -- watch for
+#    "kill: (PID): No such process" in the output (it prints visibly; it is
+#    NOT swallowed by the first kill attempt's `2>/dev/null`, which only
+#    covers the separate zsh-vs-SIGRTMIN+10 compat fallback and is silent on
+#    every run, success or failure). A duration_ms within ~60s of STEADY_S is
+#    the failure zone; give it several minutes of margin.
+#
 # Usage: run_ledger_capture.sh [N] [duration_ms] [reps] [nmt(on|off)]
 # Env:   WORKDIR must already contain compiled classes (see run_repeated_sweep_fixedheap.sh).
 set -u
