@@ -50,7 +50,6 @@
 #include <memory>
 #include <set>
 #include <string>
-#include <thread>
 #include <vector>
 #include <errno.h>
 #include <signal.h>
@@ -899,7 +898,7 @@ bool Profiler::beginTaskBlockRotation() {
       _task_block_rotation.store(false, std::memory_order_release);
       return false;
     }
-    std::this_thread::yield();
+    OS::sleep(200000); // 200us; this is the dump/stop JNI path, not signal context
   }
   return true;
 }
