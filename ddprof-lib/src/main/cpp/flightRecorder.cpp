@@ -87,6 +87,14 @@ public:
   char* volatile _class_name;
   char* volatile _method_name;
   char* volatile _method_signature;
+  // GetLineNumberTable()'s JVMTI-owned result, pending Deallocate(). Tracked
+  // here for the same reason as the strings above: it is assigned between
+  // sigsetjmp() and a possible siglongjmp() out of a fault raised by a later
+  // JVMTI/JNI call in fillJavaMethodInfo() (Thread.run/main's FindClass/
+  // GetMethodID/CallBooleanMethod, or this function's own trailing
+  // Deallocate()), so release() must be able to free it on that recovery
+  // path too, not just the strings.
+  unsigned char* volatile _line_number_table;
 
   // Non-copyable
   ResolveMethodState(const ResolveMethodState&) = delete;
@@ -99,7 +107,7 @@ public:
 
 ResolveMethodState::ResolveMethodState() :
   _framePushed(false), _demangled(nullptr), _class_name(nullptr), _method_name(nullptr),
-  _method_signature(nullptr) {
+  _method_signature(nullptr), _line_number_table(nullptr) {
 }
 
 ResolveMethodState::~ResolveMethodState() {
@@ -129,6 +137,10 @@ void ResolveMethodState::release() {
   if (_class_name != nullptr) {
     jvmti->Deallocate((unsigned char*)_class_name);
     _class_name = nullptr;
+  }
+  if (_line_number_table != nullptr) {
+    jvmti->Deallocate(_line_number_table);
+    _line_number_table = nullptr;
   }
 }
 
@@ -292,15 +304,29 @@ bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
       if (first_time) {
         jvmtiError line_table_error = jvmti->GetLineNumberTable(method, &line_number_table_size,
                                   &line_number_table);
+        // Mirror into state immediately, before anything else in this
+        // function runs: a later JVMTI/JNI call below (Thread.run/main's
+        // FindClass/GetMethodID/CallBooleanMethod, or this function's own
+        // trailing Deallocate() further down) can fault and siglongjmp out
+        // before line_number_table is otherwise handled, and this local
+        // variable is not tracked by anything the landing pad can see.
+        // state.release() is what frees it on that recovery path.
+        state._line_number_table = (unsigned char *)line_number_table;
+        bool is_table_readable = true;
         // Defensive: if GetLineNumberTable failed, clean up any potentially allocated memory
         // Some buggy JVMTI implementations might allocate despite returning an error
-        if (line_table_error != JVMTI_ERROR_NONE) {
-          if (line_number_table != nullptr) {
+        if (line_table_error != JVMTI_ERROR_NONE ||
+            (line_number_table != nullptr && 
+             !(is_table_readable = SafeAccess::isReadableRange(line_number_table, line_number_table_size * sizeof(jvmtiLineNumberEntry))))) {
+
+          // If the table is not readable, don't try to deallocate it, because it can result in crash.
+          if (line_number_table != nullptr && is_table_readable) {
             // Try to deallocate to prevent leak from buggy JVM
             jvmti->Deallocate((unsigned char *)line_number_table);
           }
           line_number_table = nullptr;
           line_number_table_size = 0;
+          state._line_number_table = nullptr; // already deallocated above, if it was non-null
         }
       }
 
@@ -419,70 +445,12 @@ bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
     mi->_sig = method_sig_id;
     mi->_type = FRAME_INTERPRETED;
     mi->_is_entry = entry;
-    if (line_number_table != nullptr) {
-      // Detach from JVMTI lifetime: copy into our own buffer and deallocate
-      // the JVMTI-allocated memory immediately. This keeps _ptr valid even
-      // after the underlying class is unloaded.
-      void *owned_table = nullptr;
-      if (line_number_table_size > 0 &&
-          line_number_table_size <= MAX_LINE_NUMBER_TABLE_ENTRIES) {
-        size_t bytes = (size_t)line_number_table_size * sizeof(jvmtiLineNumberEntry);
-        // GetLineNumberTable() is called on the same possibly-stale jmethodID
-        // that GetMethodDeclaringClass/GetClassSignature/GetMethodName above
-        // were probed for -- the TOCTOU race documented above (class
-        // unloaded between sample capture and dump) applies here just as
-        // much as to those calls, and crash telemetry already showed those
-        // sibling calls returning JVMTI_ERROR_NONE with unmapped string
-        // pointers despite the spec saying the returned array should be a
-        // fresh, caller-owned allocation. A genuinely-valid returned table is
-        // fully decoupled from jmethodID lifetime per the JVMTI spec and
-        // can't be invalidated later by class unload; the actual risk is a
-        // corrupted pointer that happens to alias other live memory at
-        // check-time and stops being mapped moments later. A separate
-        // isReadableRange() probe followed by a plain memcpy() would still
-        // race that window, so copy via safeCopy() instead: it fault-protects
-        // each read as it happens rather than trusting a point-in-time check
-        // before an unprotected copy.
-        owned_table = malloc(bytes);
-        if (owned_table != nullptr) {
-          if (SafeAccess::safeCopy(owned_table, line_number_table, bytes)) {
-            // Hand ownership to mi->_line_number_table immediately, before the
-            // Deallocate() call below (a real, unprotected JVMTI call that can
-            // itself fault on the same possibly-stale jmethodID). mi lives in
-            // *_method_map, which survives a siglongjmp out of this function,
-            // so once owned_table is attached here it can no longer leak even
-            // if the rest of this block never finishes.
-            mi->_line_number_table = std::make_shared<SharedLineNumberTable>(
-                line_number_table_size, owned_table);
-            owned_table = nullptr; // ownership transferred; nothing left to free below
-            Counters::increment(LINE_NUMBER_TABLES);
-            NativeMem::record(NM_LINE_TABLES, (long long)((size_t)line_number_table_size *
-                                                          sizeof(jvmtiLineNumberEntry)));
-          } else {
-            free(owned_table);
-            owned_table = nullptr;
-            line_number_table = nullptr; // make sure the invalid address is not used for jvmti->Deallocate
-            Counters::increment(LINE_NUMBER_TABLE_UNREADABLE);
-          }
-        } else {
-          TEST_LOG("Failed to allocate %zu bytes for line number table copy", bytes);
-        }
-      } else if (line_number_table_size != 0) {
-        // A corrupted size out-param alongside a corrupted pointer is exactly
-        // as plausible as the corrupted-pointer case above (both come from
-        // the same GetLineNumberTable() call on the same stale jmethodID);
-        // an implausible entry count -- including a negative one, since this
-        // is a signed jint and a corrupted value can fall on either side of
-        // zero -- means the pointer can't be trusted for Deallocate() either,
-        // so treat it the same as the unreadable case.
-        line_number_table = nullptr;
-        Counters::increment(LINE_NUMBER_TABLE_UNREADABLE);
-      }
-      if (line_number_table != nullptr) {
-        jvmtiError dealloc_err = jvmti->Deallocate((unsigned char *)line_number_table);
-        assert(dealloc_err == JVMTI_ERROR_NONE && "Unexpected error while deallocating linenumber table");
-      }
-    }
+    mi->_line_number_table = std::make_shared<SharedLineNumberTable>(
+                line_number_table_size, line_number_table);
+    // Increment counter for tracking live line number tables
+    Counters::increment(LINE_NUMBER_TABLES);
+    NativeMem::record(NM_LINE_TABLES, (long long)((size_t)line_number_table_size * sizeof(jvmtiLineNumberEntry)));
+    state._line_number_table = nullptr;
     return true;
   }
   // Phase is neither START nor LIVE (e.g. a record-on-shutdown dump after the

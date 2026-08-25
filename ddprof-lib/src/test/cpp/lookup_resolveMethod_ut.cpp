@@ -33,6 +33,7 @@
 #include <gtest/gtest.h>
 
 #include "../../main/cpp/flightRecorder.h"
+#include "../../main/cpp/flightRecorder.inline.h"
 #include "../../main/cpp/gtest_crash_handler.h"
 #include "../../main/cpp/threadLocalData.inline.h"
 #include "../../main/cpp/vmEntry.h"
@@ -128,6 +129,9 @@ struct FakeJvmCounters {
     // (matching JNI's real contract) instead of succeeding -- drives
     // fillJavaMethodInfo()'s early "nothing to fill" return.
     bool fail_push_local_frame = false;
+    // When set, getLineNumberTable() hands back a real (malloc'd) table
+    // instead of JVMTI_ERROR_ABSENT_INFORMATION.
+    bool provide_line_number_table = false;
 };
 
 class ScopedFakeJvmAndJni {
@@ -214,11 +218,20 @@ private:
         }
         return JVMTI_ERROR_NONE;
     }
-    static jvmtiError JNICALL getLineNumberTable(jvmtiEnv*, jmethodID, jint*, jvmtiLineNumberEntry**) {
-        // No line table: exercises the (very common) "unavailable" path
-        // without needing a second malloc'd buffer and a matching
-        // Deallocate() for it.
-        return JVMTI_ERROR_ABSENT_INFORMATION;
+    static jvmtiError JNICALL getLineNumberTable(jvmtiEnv*, jmethodID, jint* entry_count_ptr,
+                                                 jvmtiLineNumberEntry** table_ptr) {
+        if (!s_instance->counters.provide_line_number_table) {
+            // No line table: exercises the (very common) "unavailable" path
+            // without needing a second malloc'd buffer and a matching
+            // Deallocate() for it.
+            return JVMTI_ERROR_ABSENT_INFORMATION;
+        }
+        auto* table = (jvmtiLineNumberEntry*)malloc(sizeof(jvmtiLineNumberEntry));
+        table[0].start_location = 0;
+        table[0].line_number = 42;
+        *entry_count_ptr = 1;
+        *table_ptr = table;
+        return JVMTI_ERROR_NONE;
     }
     static jvmtiError JNICALL deallocate(jvmtiEnv*, unsigned char* mem) {
         s_instance->counters.deallocate++;
