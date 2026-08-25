@@ -20,6 +20,16 @@ public final class JavaProfilerTestSupport {
     }
 
     /**
+     * Test-only accessor: whether the forced wall-engine start-failure toggle is
+     * currently armed. Returns {@code false} in release builds (where the setter
+     * is a no-op), so callers can self-skip via {@code Assumptions.assumeTrue}.
+     * For whitebox testing.
+     */
+    public static boolean isForceWallStartFailureArmedForTest() {
+        return isForceWallStartFailureArmedForTest0();
+    }
+
+    /**
      * Test-only accessor: whether the thread registry currently admits new
      * registrations. For whitebox testing.
      */
@@ -28,6 +38,8 @@ public final class JavaProfilerTestSupport {
     }
 
     private static native void setForceWallStartFailureForTest0(boolean force);
+
+    private static native boolean isForceWallStartFailureArmedForTest0();
 
     private static native boolean isThreadRegistryActiveForTest0();
 }

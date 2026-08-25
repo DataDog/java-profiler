@@ -9,6 +9,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JavaProfilerTestSupport;
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -24,6 +25,15 @@ public class UnfilteredWallPrecheckFallbackTest extends AbstractProfilerTest {
     super.beforeProfilerStart();
     // In effect only for this test's start() call; cleared at the top of the test method below.
     JavaProfilerTestSupport.setForceWallStartFailureForTest(true);
+    // The forced-start-failure toggle is a DEBUG-only native hook (no-op in
+    // release builds). Self-skip when it isn't armed so the test doesn't fail
+    // spuriously in release: without a real wall-engine start failure, registry
+    // admission stays open and the assertion below cannot hold.
+    Assumptions.assumeTrue(
+        JavaProfilerTestSupport.isForceWallStartFailureArmedForTest(),
+        "force-wall-start-failure test hook is a no-op outside DEBUG native builds;"
+            + " the Profiler::start() fallback under test only fires when the wall engine"
+            + " can be made to fail, which requires the DEBUG-only hook -- skipping");
   }
 
   @Override

@@ -349,6 +349,20 @@ Java_com_datadoghq_profiler_JavaProfilerTestSupport_setForceWallStartFailureForT
 }
 
 extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfilerTestSupport_isForceWallStartFailureArmedForTest0(
+    JNIEnv *env, jclass unused) {
+#ifdef DEBUG
+  return BaseWallClock::isForceStartFailureForTest() ? JNI_TRUE : JNI_FALSE;
+#else
+  // The setForceWallStartFailureForTest0 hook above is a no-op outside DEBUG,
+  // so the forced-failure toggle can never be armed here. Returning false lets
+  // callers (e.g. UnfilteredWallPrecheckFallbackTest) self-skip via
+  // Assumptions.assumeTrue rather than fail spuriously in release builds.
+  return JNI_FALSE;
+#endif // DEBUG
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfilerTestSupport_isThreadRegistryActiveForTest0(
     JNIEnv *env, jclass unused) {
   return Profiler::instance()->threadFilter()->registryActive();

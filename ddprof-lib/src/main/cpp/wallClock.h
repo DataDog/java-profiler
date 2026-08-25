@@ -206,6 +206,9 @@ public:
     static void setForceStartFailureForTest(bool force) {
         _force_start_failure_for_test.store(force, std::memory_order_release);
     }
+    static bool isForceStartFailureForTest() {
+        return _force_start_failure_for_test.load(std::memory_order_acquire);
+    }
   private:
     static std::atomic<bool> _force_start_failure_for_test;
   public:
