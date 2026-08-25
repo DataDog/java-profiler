@@ -35,11 +35,13 @@
 #include "stackFrame.h"
 #include "stackWalker.h"
 #include "symbols.h"
+#include "threadLocalData.inline.h"
 #include "tsc.h"
 #include "utils.h"
 #include "wallClock.h"
 #include "wallClockCounters.h"
 #include "frames.h"
+#include "sanityCheck.h"
 
 #include <algorithm>
 #include <dlfcn.h>
@@ -119,7 +121,7 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     // close the window where a wall-clock/CPU signal could sample a
     // partially-torn-down thread (PROF-14674).
     {
-      SignalBlocker blocker;
+      blockProfilingForExit();
       _cpu_engine->unregisterThread(tid);
       _wall_engine->unregisterThread(tid);
       LivenessTracker::instance()->releaseThreadLocalState();
@@ -530,8 +532,15 @@ int Profiler::convertNativeTrace(int native_frames, const void **callchain,
 }
 
 u64 Profiler::recordJVMTISample(u64 counter, int tid, jthread thread, jint event_type, Event *event, bool deferred) {
+  // Called from non-signal based sampler
+  ProfiledThread* prof_thread = ProfiledThread::initCurrentThreadSignalSafe();
+  if (prof_thread == nullptr) {
+    Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
+    return 0;
+  }
+
   // Protect JVMTI sampling operations to prevent signal handler interference
-  CriticalSection cs;
+  CriticalSection cs(prof_thread);
   atomicIncRelaxed(_total_samples);
 
   u32 lock_index = getLockIndex(tid);
@@ -776,8 +785,15 @@ void Profiler::recordQueueTime(int tid, QueueTimeEvent *event) {
 void Profiler::recordExternalSample(u64 weight, int tid, int num_frames,
                                     ASGCT_CallFrame *frames, bool truncated,
                                     jint event_type, Event *event) {
+  // This is a non-signal based sampler
+  ProfiledThread* current = ProfiledThread::initCurrentThreadSignalSafe();
+  if (current == nullptr) {
+    Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);
+    return;
+  }
+
   // Protect external sampling operations to prevent signal handler interference
-  CriticalSection cs;
+  CriticalSection cs(current);
   atomicIncRelaxed(_total_samples);
 
   u32 lock_index = getLockIndex(tid);
@@ -845,12 +861,37 @@ void Profiler::writeHeapUsage(long value, bool live) {
 
 bool Profiler::prewarmUnwinder() {
 #ifdef __linux__
-  // J9 on aarch64 (and other JVMs) lazily loads libgcc_s.so.1 from its DWARF
-  // unwinder during stack walks. When that happens inside a signal handler
-  // frame, our dlopen_hook fires from signal context and tries to refresh the
-  // library list — Mutex::lock and malloc on a signal stack.  By forcing the
-  // load here, before any signal handler is installed, subsequent calls find
-  // libgcc_s already mapped and the lazy-load path never runs.
+  // Force libgcc_s.so.1 to load now and report whether that succeeded. This
+  // closes two separate lazy-load landmines that happen to share the same
+  // library and the same fix:
+  //
+  // 1. J9's DWARF unwinder can lazily dlopen libgcc_s.so.1 while walking a
+  //    stack (e.g. on aarch64). Our sampling stack walks run from a signal
+  //    handler, so that dlopen call can fire our PLT-patched dlopen_hook()
+  //    from signal context, where it does Mutex::lock/malloc — both
+  //    AS-unsafe. Other JVM-internal lazy loads (observed under Graal on
+  //    aarch64) can trigger the same path. Forcing the load here, before any
+  //    signal handler is installed, means the JVM's later resolve finds
+  //    libgcc_s already mapped and this lazy-load path never runs.
+  //
+  // 2. Separately, glibc's pthread_exit()/pthread_cancel() call
+  //    __pthread_unwind(), which invokes _Unwind_ForcedUnwind()
+  //    unconditionally. glibc does not hard-link libgcc_s into
+  //    libc/libpthread; it lazily resolves that symbol via its own private
+  //    __libc_dlopen(LIBGCC_S_SO) the first time a thread exits or is
+  //    cancelled — including our own worker/sampler threads, whose
+  //    start_routine_wrapper (libraryPatcher_linux.cpp) calls pthread_exit().
+  //    If that lazy load fails, glibc itself calls __libc_fatal("libgcc_s.
+  //    so.1 must be installed for pthread_exit to work\n"), aborting the
+  //    whole process — observed in production on hardened/distroless images
+  //    that ship without libgcc_s.so.1.
+  //    __libc_dlopen is glibc's private loader, not the public PLT-visible
+  //    dlopen, so unlike (1) this does not route through dlopen_hook().
+  //
+  // Whether a load failure here is actually fatal is decided by the caller
+  // (see checkState()): only landmine (2) is glibc-specific, so a musl host
+  // missing libgcc_s.so.1 is not at risk and should not fail profiler
+  // startup over it.
   //
   // The handle is intentionally leaked: keeping the refcount > 0 prevents the
   // library from being unmapped for the remainder of the process lifetime.
@@ -865,10 +906,10 @@ bool Profiler::prewarmUnwinder() {
   // libgcc_s.so.1 has been the stable SONAME since 2002; a bump would
   // constitute a glibc/GCC C++ ABI break and is treated as a fixed contract.
   //
-  // INJECT_FAULT_BOOL_LIKELY lets fault-injection builds force this to
+  // INJECT_FAULT_BOOL_HIGH lets fault-injection builds force this to
   // report failure without the library actually being absent, so
   // checkState()'s "Missing libgcc_s.so" path can be exercised in CI.
-  return INJECT_FAULT_BOOL_LIKELY(dlopen("libgcc_s.so.1", RTLD_LAZY | RTLD_GLOBAL) != nullptr);
+  return INJECT_FAULT_BOOL_HIGH(dlopen("libgcc_s.so.1", RTLD_LAZY | RTLD_GLOBAL) != nullptr);
 #else
   return true;
 #endif
@@ -944,7 +985,7 @@ void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // the lesser of two evils — leaking depth on siglongjmp would silently
   // break the production deferred-refresh gate, while the sanitizer gap
   // is bounded to third-party signal handler code we don't own.
-  SIGNAL_HANDLER_GUARD();
+  SIGNAL_HANDLER_GUARD_NO_SAMPLE();
   if (crashHandlerInternal(signo, siginfo, ucontext)) {
     return;  // Handled — destructor decrements depth
   }
@@ -961,7 +1002,7 @@ void Profiler::segvHandler(int signo, siginfo_t *siginfo, void *ucontext) {
 void Profiler::busHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // See segvHandler: release before chaining in case the chained handler
   // siglongjmps through us.
-  SIGNAL_HANDLER_GUARD();
+  SIGNAL_HANDLER_GUARD_NO_SAMPLE();
   if (crashHandlerInternal(signo, siginfo, ucontext)) {
     return;  // Handled — destructor decrements depth
   }
@@ -1017,13 +1058,13 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
     return 1;  // handled
   }
 
+  // Profiler::checkFault has its own check if we're in a protected stack walk.
+  // If the fault is from our protected walk, it will siglongjmp and never return.
+  // If it returns, the fault wasn't from our code.
+  Profiler::checkFault(thrd, siginfo, ucontext);
+
   if (VM::isHotspot()) {
     // the following checks require vmstructs and therefore HotSpot
-
-    // HotspotSupport::checkFault has its own check if we're in a protected stack walk.
-    // If the fault is from our protected walk, it will siglongjmp and never return.
-    // If it returns, the fault wasn't from our code.
-    HotspotSupport::checkFault(thrd);
 
     // Workaround for JDK-8313796 if needed. Setting cstack=dwarf also helps
     if (_need_JDK_8313796_workaround &&
@@ -1042,19 +1083,52 @@ int Profiler::crashHandlerInternal(int signo, siginfo_t *siginfo, void *ucontext
   return 0;  // not handled, safe to chain
 }
 
+static std::atomic<uintptr_t> profiler_min_address{0};
+static std::atomic<uintptr_t> profiler_max_address{0};
+
+#ifdef UNIT_TEST
+void Profiler::setAddressRangeForTest(uintptr_t min, uintptr_t max) {
+  profiler_min_address.store(min, std::memory_order_relaxed);
+  profiler_max_address.store(max, std::memory_order_relaxed);
+}
+
+void Profiler::resetAddressRangeForTest() {
+  profiler_min_address.store(0, std::memory_order_relaxed);
+  profiler_max_address.store(0, std::memory_order_relaxed);
+}
+#endif
+
 void Profiler::setupSignalHandlers() {
   // Do not re-run the signal setup (run only when VM has not been loaded yet)
   if (__sync_bool_compare_and_swap(&_signals_initialized, false, true)) {
+      // Initialize infrastructure before enabling signal handler
+
       // Eagerly initialize the Counters singleton off the signal path, before any
       // handler that increments counters is installed. The crash handler
       // (crashHandlerInternal -> SafeAccess::handle_safefetch) bumps
       // SAFEFETCH_FAILED / SAFECOPY_FAILED, and other async handlers bump the
-      // WALKVM_* counters. The first touch of the singleton lazily runs
+      // STACKWALK* counters. The first touch of the singleton lazily runs
       // aligned_alloc + memset and takes the C++ static-init guard lock — none of
       // which are async-signal-safe. Forcing that construction here guarantees the
       // signal path only ever performs lock-free atomic increments on the
       // already-allocated array.
       (void)Counters::getCounters();
+
+      // Get address range of java profiler library
+      Libraries* libs = Libraries::instance();
+      CodeCache* prof_lib = libs->findLibraryByAddress((const void*)&Profiler::setupSignalHandlers);
+      assert(prof_lib != nullptr);
+      profiler_min_address = reinterpret_cast<uintptr_t>(prof_lib->minAddress());
+      profiler_max_address = reinterpret_cast<uintptr_t>(prof_lib->maxAddress());
+      // Prevents the compiler from moving profiler_min_address/profiler_max_address stores pass
+      // signal handler setup.
+      std::atomic_signal_fence(std::memory_order_release);
+
+      #ifdef __FAULT_INJECTION__
+      // Reserve the PROT_NONE guard region used to poison memory-access sites.
+      // Done here (off the signal path) once handlers are installed.
+      faultinj::init();
+      #endif
 
       if (VM::isHotspot() || VM::isOpenJ9()) {
         // HotSpot and J9 tolerate interposed SIGSEGV/SIGBUS handler; other JVMs probably not
@@ -1068,11 +1142,6 @@ void Profiler::setupSignalHandlers() {
         // Patch sigaction GOT in libraries with broken signal handlers (already loaded)
         LibraryPatcher::patch_sigaction();
       }
-#ifdef __FAULT_INJECTION__
-      // Reserve the PROT_NONE guard region used to poison memory-access sites.
-      // Done here (off the signal path) once handlers are installed.
-      faultinj::init();
-#endif
   }
 }
 
@@ -1297,9 +1366,12 @@ Error Profiler::checkState() {
   if (s == ERROR) {
     return Error("Profiler encountered fatal error");
   } else if (s == NEW) {
-    // Force libgcc_s to load now (idempotent dlopen) so the JVM's DWARF
-    // unwinder cannot lazy-load it later from signal context.
-    if (!prewarmUnwinder()) {
+    // prewarmUnwinder() closes a glibc-specific pthread_exit/pthread_cancel
+    // landmine (see its comment) by force-loading libgcc_s.so.1 up front.
+    // A failure only matters on glibc, where that landmine is real; musl
+    // never hits the code path that needs libgcc_s, so a missing library
+    // there is not a reason to fail profiler startup.
+    if (!prewarmUnwinder() && !OS::isMusl()) {
       _state.store(ERROR, std::memory_order_release);
       return Error("Missing libgcc_s.so.1");
     }
@@ -1350,6 +1422,30 @@ Error Profiler::start(Arguments &args, bool reset) {
     return error;
   }
 
+  // Sanity checks run at most once per process, across start and stop cycles.
+  // Profiler::start() sets sanity_checked to true before it checks
+  // _skip_sanity_checks, not after. If it set the flag only when the checks
+  // ran, a nosanity start would leave sanity_checked false. A later start
+  // without nosanity would then run the checks unexpectedly and could fail.
+  //
+  // A failed check does not abort startup. The resource estimate is
+  // inherently approximate, so Profiler::start() logs a warning and records
+  // the failure as a JFR setting (see Recording::writeSettings) instead of
+  // refusing to profile.
+  static bool sanity_checked = false;
+  if (!sanity_checked) {
+    sanity_checked = true;
+    if (!args._skip_sanity_checks) {
+      Error sanity_result = SanityChecker::runChecks(args);
+      if (sanity_result) {
+        _sanity_check_failed = true;
+        _sanity_check_message = sanity_result.message();
+        LOG_WARN("Continuing to start profiler despite failed sanity check "
+                 "(see JFR settings for details).");
+      }
+    }
+  }
+
   error = checkJvmCapabilities();
   if (error) {
     return error;
@@ -1396,10 +1492,8 @@ Error Profiler::start(Arguments &args, bool reset) {
     memset(_failures, 0, sizeof(_failures));
 
     // Reset dictionaries. StringDictionary::clearAll() manages its own
-    // synchronisation (RefCountGuard drain). The exclusive _class_map_lock
-    // additionally fences out shared-lock readers introduced by #527
-    // (deferred vtable receiver resolution) so they cannot observe a
-    // half-cleared class map.
+    // synchronisation (RefCountGuard drain) internally; _class_map_lock is
+    // held exclusively here for the duration of the reset.
     {
       ExclusiveLockGuard guard(&_class_map_lock);
       _class_map.clearAll();
@@ -1492,6 +1586,7 @@ Error Profiler::start(Arguments &args, bool reset) {
   _cpu_engine = selectCpuEngine(args);
   _wall_engine = selectWallEngine(args);
   _cstack = args._cstack;
+  _force_jmethodID = args._force_jmethodID;
   if (_cstack == CSTACK_DEFAULT) {
     if (VMStructs::hasStackStructs() && OS::isLinux()) {
       _cstack = CSTACK_VM;
@@ -1517,7 +1612,8 @@ Error Profiler::start(Arguments &args, bool reset) {
   // Prepare JVMSupport for execution
   JVMSupport::initExecution(args, VM::jvmti(), VM::jni());
 
-
+  // Must precede the first updateSymbols(): it is what allows LibraryPatcher to
+  // start patching, and the hooks it installs assume a running profiler.
   LibraryPatcher::initialize();
 
   // Kernel symbols are useful only for perf_events without --all-user
@@ -1830,9 +1926,7 @@ Error Profiler::dump(const char *path, const int length) {
     // rotateDictsAndRun rotates the dictionaries, takes lockAll() around the
     // dump (fences ASGCT/JNI writers to CallTraceStorage), then clearStandby()s
     // the rotated buffers.  StringDictionary's RefCountGuard protocol handles
-    // its own writer/reader coordination; #527's classMapSharedGuard readers
-    // (deferred vtable receiver resolution) are coordinated through
-    // _class_map_lock.
+    // its own writer/reader coordination.
     rotateDictsAndRun([&]{
       err = _jfr.dump(path, length);
       __atomic_add_fetch(&_epoch, 1, __ATOMIC_SEQ_CST);
@@ -1990,4 +2084,30 @@ int Profiler::status(char* status, int max_len) {
     _cpu_engine != nullptr ? _cpu_engine->name() : "None",
     _wall_engine != nullptr ? _wall_engine->name() : "None",
     _alloc_engine != nullptr ? _alloc_engine->name() : "None");
+}
+
+void Profiler::checkFault(ProfiledThread* thrd, siginfo_t *siginfo, void *ucontext) {
+    (void)siginfo;
+    // Check if siglongjmp is setup for this thread
+    if (thrd == nullptr || !thrd->isProtected()) {
+        return;
+    }
+
+    // Check if the fault is originated from java profiler
+    const uintptr_t pc = (uintptr_t)StackFrame(ucontext).pc();
+    const uintptr_t min = profiler_min_address.load(std::memory_order_relaxed);
+    const uintptr_t max = profiler_max_address.load(std::memory_order_relaxed);
+
+    // If the profiler address range is not initialized (e.g. unit tests), fall back
+    // to recovering unconditionally when a protection context is installed.
+    #if !defined(UNIT_TEST)
+      assert(min != 0 && max != 0);
+    #endif
+    if ((min != 0 && max != 0) && (pc < min || pc >= max)) {
+      return;
+    }
+
+    thrd->resetCrashHandler();
+    Counters::increment(STACKWALK_LONGJMP_RECOVERED);
+    siglongjmp(*thrd->getJmpCtx(), 1);
 }

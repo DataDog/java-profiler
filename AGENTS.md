@@ -250,6 +250,9 @@ all supported platforms, and library-loading metadata. Build output layout and t
 `META-INF/native-libs/{os}-{arch}/` packaging structure: see
 [doc/build/NativeBuildPlugin.md](doc/build/NativeBuildPlugin.md).
 
+Version is computed from git tags at build time: see
+[doc/build/Versioning.md](doc/build/Versioning.md).
+
 ## Core Architecture Components
 
 ### Double-Buffered Call Trace Storage
@@ -287,6 +290,13 @@ The profiler uses a sophisticated double-buffered storage system for call traces
 - **Thread-local Buffers**: Per-thread recording buffers minimize contention
 - **Atomic Operations**: Instance ID management and counter updates use atomics
 - **Memory Allocation**: Minimize malloc() in hot paths, use pre-allocated containers
+- **Thread termination**: A thread must call `blockProfilingForExit()` before releasing its `ProfiledThread` on exit — otherwise a profiling signal can race the release and allocate a new `ProfiledThread` that can never be freed (leak).
+
+### Sampler Safety
+- **Sampled thread**: The sampled thread must have a `ProfiledThread` in TLS, since it owns the `sigjmp_buf` used to recover via `siglongjmp()` if the stack walker crashes. If none is available, the sampler must drop the sample and report `SAMPLES_DROPPED_THREAD_LOCAL`.
+- **Samplers**: Every sampler must set up the `ProfiledThread` TLS before sampling, and skip the sample if it isn't available. Signal-based or allocation-adjacent hooks sampler (e.g. malloc/free interceptors) must use `ProfiledThread::acquireCurrent()`; non-signal-based samplers use `ProfiledThread::initCurrentThreadSignalSafe()`.
+- **Samplers**: Every sampler must set up the `ProfiledThread` TLS before sampling, and skip the sample if it isn't available. Signal-based samplers and allocation-adjacent hooks (e.g. malloc/free interceptors) must use `ProfiledThread::acquireCurrent()`; non-signal-based samplers use `ProfiledThread::initCurrentThreadSignalSafe()`.
+- **JNI/JVMTI callbacks**: Use `ProfiledThread::initCurrentThreadSignalSafe()` to set up `ProfiledThread` for the thread.
 
 ### Atomic Memory Ordering (Critical for arm64)
 arm64 has a weakly-ordered memory model (unlike x86 TSO). Incorrect ordering causes real lockups on arm64 that never reproduce on x86.

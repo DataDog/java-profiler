@@ -3,13 +3,15 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-#include "jvmSupport.h"
+#include "jvmSupport.inline.h"
 
 #include "asyncSampleMutex.h"
+#include "common.h"
 #include "frames.h"
 #include "os.h"
 #include "profiler.h"
-#include "threadLocalData.h"
+#include "threadLocalData.inline.h"
+#include "threadLocalDataPool.h"
 #include "vmEntry.h"
 
 #include "hotspot/hotspotSupport.h"
@@ -39,7 +41,18 @@ bool JVMSupport::initialize() {
     }
 
     // Check ProfiledThread key, it is critical for storing per-thread metadata
-    return ProfiledThread::isThreadKeyValid();
+    bool validKey = ProfiledThread::isThreadKeyValid();
+    if (validKey && ProfiledThread::supportPriming()) {
+        ThreadLocalDataPool::initialize();
+    } else {
+        if (!validKey) {
+            LOG_WARN("ProfiledThread TLS key creation failed");
+        } else {
+            LOG_WARN("Thread TLS priming is not supported");
+        }
+    }
+
+    return validKey;
 }
 
 bool JVMSupport::isInitialized() {
@@ -58,10 +71,6 @@ void JVMSupport::setLoadState(JMethodIDLoadStats state) {
 
 void JVMSupport::initExecution(Arguments& args, jvmtiEnv* jvmti, JNIEnv* jni) {
     JMethodIDLoadStats current_state = getLoadState();
-    // Already setup by previous execution
-    if (current_state == Fully_loaded) {
-        return;
-    }
 
     bool load_all = true;
     if (VM::isHotspot()) {
@@ -106,10 +115,11 @@ int JVMSupport::asyncGetCallTrace(ASGCT_CallFrame *frames, int max_depth, void* 
         return 0;
     }
   
+
     JitWriteProtection jit(false);
     // AsyncGetCallTrace writes to ASGCT_CallFrame array
     ASGCT_CallTrace trace = {jni, 0, frames};
-    VM::_asyncGetCallTrace(&trace, max_depth, ucontext);
+    jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
     if (trace.num_frames > 0) {
         return trace.num_frames;
     }

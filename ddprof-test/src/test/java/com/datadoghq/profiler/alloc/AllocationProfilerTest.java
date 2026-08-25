@@ -1,11 +1,15 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler.alloc;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.Platform;
 import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
-import org.openjdk.jmc.common.item.Aggregators;
-import org.openjdk.jmc.common.item.IItemCollection;
 import org.openjdk.jol.info.GraphLayout;
 
 import java.util.Random;
@@ -35,23 +39,43 @@ public class AllocationProfilerTest extends AbstractProfilerTest {
     AllocatingTarget target1 = new AllocatingTarget();
     AllocatingTarget target2 = new AllocatingTarget();
     runTests(target1, target2);
-    IItemCollection allocations = verifyEvents("datadog.ObjectSample");
+
+    // A million-iteration allocation loop produces millions of datadog.ObjectSample events;
+    // materializing all of them (each deep-resolved down to its full stack trace) OOMs the test
+    // heap, so this reduces per-event in a single streaming pass instead.
+    String intArrayName = int[].class.getName();
+    String integerArrayName = Integer[].class.getName();
+    RecordedSizes recorded = reduceEvents("datadog.ObjectSample", RecordedSizes::new, (acc, item) -> {
+      acc.total++;
+      String className = item.getClassName("objectClass");
+      if (intArrayName.equals(className)) {
+        acc.intArray += (long) scaledSize(item);
+      } else if (integerArrayName.equals(className)) {
+        acc.integerArray += (long) scaledSize(item);
+      }
+    });
+    assertTrue(recorded.total > 0, "datadog.ObjectSample was empty");
+
     // FIXME when more tests are ported to this structure
     if (!Platform.isMusl()) {
       // JOL on musl seems to be locking up randomly
-      assertAllocations(allocations, int[].class, target1, target2);
-      assertAllocations(allocations, Integer[].class, target1, target2);
+      assertAllocations(recorded.intArray, int[].class, target1, target2);
+      assertAllocations(recorded.integerArray, Integer[].class, target1, target2);
     }
   }
 
-  private static void assertAllocations(IItemCollection allocations, Class<?> clazz, AllocatingTarget... targets) {
+  private static final class RecordedSizes {
+    long total;
+    long intArray;
+    long integerArray;
+  }
+
+  private static void assertAllocations(long recorded, Class<?> clazz, AllocatingTarget... targets) {
     long allocated = 0;
     for (AllocatingTarget target : targets) {
       allocated += target.getAllocated(clazz);
     }
-    IItemCollection allocationsByType = allocations.apply(allocatedTypeFilter(clazz.getCanonicalName()));
-    assertTrue(allocationsByType.hasItems());
-    long recorded = allocationsByType.getAggregate(Aggregators.sum(SCALED_SIZE)).longValue();
+    assertTrue(recorded > 0, "no allocation samples recorded for " + clazz.getCanonicalName());
     double error = Math.abs(recorded - allocated) / (double)allocated;
     assertTrue(error <= 0.50,
         String.format("allocation samples should be within 10pct tolerance of allocated memory (recorded %d, allocated %d :: %4.2f)",

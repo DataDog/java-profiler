@@ -41,6 +41,17 @@
   variables:
     KUBERNETES_SERVICE_ACCOUNT_OVERWRITE: java-profiler
 
+# Skip a job on release/* branches. build-artifact/deploy-artifact don't run
+# there, so anything that needs: them must also skip there or pipeline
+# creation fails. Splice into a job's own rules with:
+#   rules:
+#     - !reference [.skip-on-release, rules]
+#     - ...
+.skip-on-release:
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /^release\//'
+      when: never
+
 # Install gh and crane when not already present in the image.
 # Extend this in before_script for jobs that need GitHub CLI or crane.
 .bootstrap-gh-tools:

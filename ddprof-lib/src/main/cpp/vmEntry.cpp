@@ -63,7 +63,7 @@ AsyncGetCallTrace VM::_asyncGetCallTrace;
 JVM_GetManagement VM::_getManagement;
 
 static void wakeupHandler(int signo) {
-  SIGNAL_HANDLER_GUARD();
+  SIGNAL_HANDLER_GUARD_NO_SAMPLE();
   // Dummy handler for interrupting syscalls
 }
 
@@ -217,6 +217,9 @@ CodeCache* VM::openJvmLibrary() {
   lib = isOpenJ9()
         ? libraries->findJvmLibrary("libj9vm")
         : libraries->findLibraryByAddress((const void *)_asyncGetCallTrace);
+  // The library must have been loaded. Otherwise, we cannot get to here due
+  // to JVM initialization
+  assert(lib != nullptr && "JVM library must be loaded");
   __atomic_store_n(&_libjvm, lib, __ATOMIC_RELEASE);
   return lib;
 }
@@ -637,7 +640,9 @@ void JNICALL VM::ClassLoad(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
 void JNICALL VM::VMInit(jvmtiEnv* jvmti, JNIEnv* jni, jthread thread) {
     ready(jvmti, jni);
 
-    // initialize the heap usage tracking only after the VM is ready
+    ProfiledThread::initCurrentThreadSignalSafe();
+
+  // initialize the heap usage tracking only after the VM is ready
     HeapUsage::initJMXUsage(VM::jni());
 
     // Delayed start of profiler if agent has been loaded at VM bootstrap
@@ -652,6 +657,7 @@ Arguments& VM::arguments() {
 }
 
 void JNICALL VM::VMDeath(jvmtiEnv *jvmti, JNIEnv *jni) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   Profiler::instance()->shutdown(_agent_args);
 }
 

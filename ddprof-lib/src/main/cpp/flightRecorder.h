@@ -1,6 +1,6 @@
 /*
  * Copyright The async-profiler authors
- * Copyright 2025, Datadog, Inc.
+ * Copyright 2025, 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -19,6 +19,7 @@
 #include "arch.h"
 #include "arguments.h"
 #include "buffers.h"
+#include "common.h"
 #include "countingAllocator.h"
 #include "counters.h"
 #include "nativeMem.h"
@@ -180,12 +181,25 @@ class Recording {
   friend ObjectSampler;
   friend Profiler;
   friend Lookup;
+  // Grants gtest access to the private countSerializableChildren() helper below,
+  // since Recording itself can't be constructed in a plain gtest binary (its
+  // constructor needs a live JVMTI environment). Same pattern as
+  // VMTestAccessor/ProfilerTestAccessor in the test sources.
+  friend class RecordingTestAccessor;
 
 private:
   static char *_agent_properties;
   static char *_jvm_args;
   static char *_jvm_flags;
   static char *_java_command;
+
+  // Determines how many of `children` writeElement() will actually serialize
+  // at the given depth, applying the same null-child and depth-limit skip
+  // rules the recursive writer uses. Both the child_count written to the
+  // buffer and the recursion in writeElement() call this single function, so
+  // the encoded count can never diverge from what actually gets serialized.
+  static size_t countSerializableChildren(
+      const std::vector<const Element *> &children, int depth);
 
   RecordingBuffer _buf[CONCURRENCY_LEVEL];
   // we have several tables to avoid lock contention
@@ -242,7 +256,7 @@ public:
 
   void writeMetadata(Buffer *buf);
 
-  void writeElement(Buffer *buf, const Element *e);
+  void writeElement(Buffer *buf, const Element *e, int depth = 0);
 
   void writeEventSizePrefix(Buffer *buf, int start);
 
@@ -370,7 +384,6 @@ public:
   Recording *_rec;
   MethodMap *_method_map;
   StringDictionary *_classes;
-  std::map<u32, const char*> _class_cache;  // snapshot of _classes->standby() at dump time
   // Per-dump VMSymbol* -> resolved class_id cache for BCI_VTABLE_RECEIVER
   // frames. Two purposes: (1) amortise the SafeAccess work to once per
   // distinct Symbol pointer per dump; (2) the resolved class_id is used
@@ -420,14 +433,6 @@ public:
   Lookup(Recording *rec, MethodMap *method_map, StringDictionary *classes)
       : _rec(rec), _method_map(method_map), _classes(classes), _packages(),
         _symbols() {}
-
-  // Call once before writeStackTraces.  Populates _class_cache from
-  // _classes->standby() under the shared lock.  NOTE: _class_cache is
-  // currently write-only — writeClasses() re-collects from standby() and
-  // resolveMethod() inserts via lookupDuringDump() rather than reading
-  // this cache.  Kept for compatibility with #527's API and as a hook
-  // for future readers; safe to remove if no consumer materialises.
-  void initClassCache();
 
   MethodInfo *resolveMethod(ASGCT_CallFrame &frame);
   u32 getPackage(const char *class_name);

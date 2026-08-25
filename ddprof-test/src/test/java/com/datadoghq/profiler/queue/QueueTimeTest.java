@@ -1,26 +1,20 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler.queue;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
 import com.datadoghq.profiler.JavaProfiler;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 import org.junit.jupiter.api.Test;
-import org.openjdk.jmc.common.IMCThread;
-import org.openjdk.jmc.common.IMCType;
-import org.openjdk.jmc.common.item.IAttribute;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.common.unit.IQuantity;
-import org.openjdk.jmc.common.unit.IRange;
-import org.openjdk.jmc.flightrecorder.JfrAttributes;
-import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
 import java.util.concurrent.ArrayBlockingQueue;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.openjdk.jmc.common.item.Attribute.attr;
-import static org.openjdk.jmc.common.unit.UnitLookup.*;
 
 public class QueueTimeTest extends AbstractProfilerTest {
     @Override
@@ -41,14 +35,13 @@ public class QueueTimeTest extends AbstractProfilerTest {
         }
 
         @Override
-        @SuppressWarnings("deprecation")
         public void run() {
-            profiler.setContext(1, 2);
+            profiler.setTraceContext(2, 1, 0, 1, -1, null, -1, null);
             long now = profiler.getCurrentTicks();
             if (profiler.isThresholdExceeded(9, start, now)) {
                 profiler.recordQueueTime(start, now, getClass(), QueueTimeTest.class, ArrayBlockingQueue.class, 10, origin);
             }
-            profiler.clearContext();
+            profiler.clearTraceContext();
         }
     }
 
@@ -63,41 +56,29 @@ public class QueueTimeTest extends AbstractProfilerTest {
         thread.join();
         stopProfiler();
 
-        IAttribute<IQuantity> startTimeAttr = attr("startTime", "", "", TIMESTAMP);
-        IAttribute<IMCThread> originAttr = attr("origin", "", "", THREAD);
-        IAttribute<IMCType> taskAttr = attr("task", "", "", CLASS);
-        IAttribute<IMCType> schedulerAttr = attr("scheduler", "", "", CLASS);
-        IAttribute<IMCType> queueTypeAttr = attr("queueType", "", "", CLASS);
-        IAttribute<IQuantity> queueLengthAttr = attr("queueLength", "", "", NUMBER);
-
-        IItemCollection activeSettings = verifyEvents("jdk.ActiveSetting");
-        for (IItemIterable activeSetting : activeSettings) {
-            IMemberAccessor<String, IItem> nameAccessor = JdkAttributes.REC_SETTING_NAME.getAccessor(activeSetting.getType());
-            IMemberAccessor<String, IItem> valueAccessor = JdkAttributes.REC_SETTING_VALUE.getAccessor(activeSetting.getType());
-            for (IItem item : activeSetting) {
-                String name = nameAccessor.getMember(item);
-                if ("tscfrequency".equals(name)) {
-                    String frequency = valueAccessor.getMember(item);
-                    assertTrue(Long.valueOf(frequency) > 0, frequency);
-                }
+        JfrEvents activeSettings = verifyEvents("jdk.ActiveSetting");
+        for (JfrEvent item : activeSettings) {
+            String name = item.getString("name");
+            if ("tscfrequency".equals(name)) {
+                String frequency = item.getString("value");
+                assertTrue(Long.valueOf(frequency) > 0, frequency);
             }
         }
 
-        IItemCollection events = verifyEvents("datadog.QueueTime");
-        for (IItemIterable it : events) {
-            for (IItem item : it) {
-                assertTrue(startTimeAttr.getAccessor(it.getType()).getMember(item).longValueIn(EPOCH_NS) > 0);
-                IRange<IQuantity> lifetime = JfrAttributes.LIFETIME.getAccessor(it.getType()).getMember(item);
-                long duration = lifetime.getEnd().longValueIn(EPOCH_MS) - lifetime.getStart().longValueIn(EPOCH_MS);
-                assertTrue(duration >= 9);
-                assertEquals(task.getClass().getName(), taskAttr.getAccessor(it.getType()).getMember(item).getTypeName());
-                assertEquals(getClass().getName(), schedulerAttr.getAccessor(it.getType()).getMember(item).getTypeName());
-                assertEquals(1, SPAN_ID.getAccessor(it.getType()).getMember(item).longValue());
-                assertEquals(2, LOCAL_ROOT_SPAN_ID.getAccessor(it.getType()).getMember(item).longValue());
-                assertEquals("origin", originAttr.getAccessor(it.getType()).getMember(item).getThreadName());
-                assertEquals(ArrayBlockingQueue.class.getName(), queueTypeAttr.getAccessor(it.getType()).getMember(item).getTypeName());
-                assertEquals(10, queueLengthAttr.getAccessor(it.getType()).getMember(item).longValue());
-            }
+        JfrEvents events = verifyEvents("datadog.QueueTime");
+        for (JfrEvent item : events) {
+            assertTrue(item.getLong("startTime") > 0);
+            // startTime/duration are TICKS-annotated so jafar auto-converts them to
+            // epoch nanos / duration nanos respectively.
+            long durationMillis = item.getLong("duration") / 1_000_000;
+            assertTrue(durationMillis >= 9);
+            assertEquals(task.getClass().getName(), item.getClassName("task"));
+            assertEquals(getClass().getName(), item.getClassName("scheduler"));
+            assertEquals(1, item.getLong(SPAN_ID));
+            assertEquals(2, item.getLong(LOCAL_ROOT_SPAN_ID));
+            assertEquals("origin", item.getThreadName("origin"));
+            assertEquals(ArrayBlockingQueue.class.getName(), item.getClassName("queueType"));
+            assertEquals(10, item.getLong("queueLength"));
         }
     }
 }

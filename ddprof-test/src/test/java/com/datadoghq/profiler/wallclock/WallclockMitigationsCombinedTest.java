@@ -12,11 +12,8 @@ import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.ProfilerOwnedBlockHooks;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.Test;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -62,7 +59,7 @@ public class WallclockMitigationsCombinedTest extends AbstractProfilerTest {
                             registerCurrentThreadForWallClockProfiling();
                             long spanId = 0x1111L;
                             long rootSpanId = 0x2222L;
-                            profiler.setContext(rootSpanId, spanId, 0, 0);
+                            profiler.setTraceContext(rootSpanId, spanId, 0, 0, -1, null, -1, null);
                             ready.countDown();
                             ProfilerOwnedBlockHooks.parkEnter(profiler);
                             long parkedUntil = System.nanoTime() + 280_000_000L;
@@ -71,7 +68,7 @@ public class WallclockMitigationsCombinedTest extends AbstractProfilerTest {
                             }
                             ProfilerOwnedBlockHooks.parkExit(
                                     profiler, System.identityHashCode(this), 0L);
-                            profiler.clearContext();
+                            profiler.clearTraceContext();
                         },
                         "combined-parked");
 
@@ -132,18 +129,11 @@ public class WallclockMitigationsCombinedTest extends AbstractProfilerTest {
 
     private Map<String, Long> samplesByThreadName() {
         Map<String, Long> samplesByThread = new HashMap<>();
-        IItemCollection events = verifyEvents("datadog.MethodSample", false);
-        for (IItemIterable batch : events) {
-            IMemberAccessor<String, IItem> threadNameAccessor =
-                    JdkAttributes.EVENT_THREAD_NAME.getAccessor(batch.getType());
-            if (threadNameAccessor == null) {
-                continue;
-            }
-            for (IItem item : batch) {
-                String threadName = threadNameAccessor.getMember(item);
-                if (threadName != null) {
-                    samplesByThread.merge(threadName, 1L, Long::sum);
-                }
+        JfrEvents events = verifyEvents("datadog.MethodSample", false);
+        for (JfrEvent item : events) {
+            String threadName = item.getThreadName("eventThread");
+            if (threadName != null) {
+                samplesByThread.merge(threadName, 1L, Long::sum);
             }
         }
         return samplesByThread;

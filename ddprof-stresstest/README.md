@@ -92,18 +92,6 @@ Measure end-to-end profiling engine performance including signal handlers, stack
 
 **Documentation**: See `doc/architecture/CallTraceStorage.md` for detailed CallTraceStorage architecture, benchmark results analysis, and optimization recommendations.
 
-### ThreadContext Benchmarks
-
-Compare performance of JNI-based native vs DirectByteBuffer-based Java implementations for thread context storage.
-
-```bash
-./gradlew :ddprof-stresstest:jmh \
-  -Pjmh.prof='com.datadoghq.profiler.stresstest.WhiteboxProfiler' \
-  ThreadContextBenchmark
-```
-
-Tests various thread counts to measure both single-threaded overhead and multi-threaded contention.
-
 ### ThreadFilter Benchmarks
 
 Measure thread filtering performance and overhead.
@@ -264,7 +252,7 @@ ddprof-stresstest/
 │       └── scenarios/
 │           ├── throughput/             # Raw performance benchmarks
 │           │   ├── ProfilerThroughput* # End-to-end profiling engine suite
-│           │   ├── ThreadContext*      # ThreadContext benchmarks
+│           │   ├── ContextCombinedBenchmark # All-native context write API perf guard
 │           │   └── ThreadFilter*       # ThreadFilter benchmarks
 │           └── counters/               # Feature-specific benchmarks
 │               ├── TracedParallelWork  # Distributed tracing overhead

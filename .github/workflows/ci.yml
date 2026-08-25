@@ -20,6 +20,31 @@ permissions:
   actions: read
 
 jobs:
+  release-automation-tests:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate release automation without network access
+        run: |
+          bash -n \
+            .github/scripts/release.sh \
+            .github/scripts/validate-trivial-approval.sh \
+            utils/release.sh \
+            .github/scripts/tests/test_release_automation.sh
+          shellcheck \
+          .github/scripts/release.sh \
+          .github/scripts/validate-trivial-approval.sh \
+          utils/release.sh \
+            .github/scripts/tests/test_release_automation.sh
+          .github/scripts/tests/test_release_automation.sh
+
   check-for-pr:
     runs-on: ubuntu-latest
     outputs:
@@ -47,9 +72,11 @@ jobs:
     if: needs.check-for-pr.outputs.skip != 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Setup Java
-        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: 'zulu'
           java-version: '21'
@@ -88,9 +115,11 @@ jobs:
     if: needs.check-for-pr.outputs.skip != 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Setup Java
-        uses: actions/setup-java@03ad4de0992f5dab5e18fcb136590ce7c4a0ac95 # v5.6.0
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
         with:
           distribution: 'zulu'
           java-version: '21'
@@ -187,6 +216,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Generate test summary
         env:
@@ -210,6 +241,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - name: Cache Gradle Wrapper Binaries
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

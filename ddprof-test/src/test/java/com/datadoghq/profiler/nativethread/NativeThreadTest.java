@@ -20,10 +20,7 @@ import com.datadoghq.profiler.Platform;
 import com.datadoghq.profiler.nativethread.NativeThreadCreator;
 
 import org.junitpioneer.jupiter.RetryingTest;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
+import com.datadoghq.profiler.JfrEvent;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -61,28 +58,23 @@ public class NativeThreadTest extends AbstractProfilerTest {
       int totalSamples = 0;
       boolean stacktrace_printed = false;
 
-      for (IItemIterable cpuSamples : verifyEvents("datadog.ExecutionSample")) {
-          IMemberAccessor<String, IItem> stacktraceAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(cpuSamples.getType());
-          IMemberAccessor<String, IItem> modeAccessor = THREAD_EXECUTION_MODE.getAccessor(cpuSamples.getType());
+      for (JfrEvent item : verifyEvents("datadog.ExecutionSample")) {
+          String stacktrace = item.getStackTraceString();
+          totalSamples++;
 
-          for (IItem item : cpuSamples) {
-              String stacktrace = stacktraceAccessor.getMember(item);
-              totalSamples++;
+          if (stacktrace != null && stacktrace.indexOf("do_primes()") != -1) {
+            // Native thread sample: must not contain break_no_anchor
+            // (non-Java threads have no JavaFrameAnchor — that error is inapplicable)
+            // break_no_symbol is expected when DWARF CFI is incomplete
+            assertFalse(stacktrace.contains("break_no_anchor"),
+                "Found break_no_anchor in native thread sample: " + stacktrace);
 
-              if (stacktrace.indexOf("do_primes()") != -1) {
-                // Native thread sample: must not contain break_no_anchor
-                // (non-Java threads have no JavaFrameAnchor — that error is inapplicable)
-                // break_no_symbol is expected when DWARF CFI is incomplete
-                assertFalse(stacktrace.contains("break_no_anchor"),
-                    "Found break_no_anchor in native thread sample: " + stacktrace);
-
-                if (!stacktrace_printed) {
-                    stacktrace_printed = true;
-                    System.out.println("Native thread stack:");
-                    System.out.println(stacktrace);
-                }
-                count++;
-              }
+            if (!stacktrace_printed) {
+                stacktrace_printed = true;
+                System.out.println("Native thread stack:");
+                System.out.println(stacktrace);
+            }
+            count++;
           }
       }
 

@@ -31,7 +31,7 @@
 #include "os.h"
 #include "otel_process_ctx.h"
 #include "profiler.h"
-#include "threadLocalData.h"
+#include "threadLocalData.inline.h"
 #include "tsc.h"
 #include "vmEntry.h"
 #include <errno.h>
@@ -75,12 +75,21 @@ Java_com_datadoghq_profiler_JavaProfiler_init0(JNIEnv *env, jclass unused) {
     return JNI_FALSE;
   }
 
+
   // JavaVM* has already been stored when the native library was loaded so we can pass nullptr here
-  return VM::initProfilerBridge(nullptr, true);
+  if (VM::initProfilerBridge(nullptr, true)) {
+    // Attach ProfiledThread
+    ProfiledThread::initCurrentThreadSignalSafe();
+    return JNI_TRUE;
+  } else {
+    return JNI_FALSE;
+  }
 }
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_stop0(JNIEnv *env, jobject unused) {
+  // Attach ProfiledThread
+  ProfiledThread::initCurrentThreadSignalSafe();
   Error error = Profiler::instance()->stop();
 
   if (error) {
@@ -90,6 +99,12 @@ Java_com_datadoghq_profiler_JavaProfiler_stop0(JNIEnv *env, jobject unused) {
 
 extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getTid0(JNIEnv *env, jclass unused) {
+  // Attach ProfiledThread
+  ProfiledThread* current =  ProfiledThread::initCurrentThreadSignalSafe();
+  if (current != nullptr) {
+    return current->tid();
+  }
+
   return OS::threadId();
 }
 
@@ -108,6 +123,10 @@ Java_com_datadoghq_profiler_JavaProfiler_execute0(JNIEnv *env, jobject unused,
   Log::open(args);
 
   std::ostringstream out;
+
+  // Attach ProfiledThread
+  ProfiledThread::initCurrentThreadSignalSafe();
+
   error = Profiler::instance()->runInternal(args, out);
   if (!error) {
     if (out.tellp() >= 0x3fffffff) {
@@ -126,6 +145,9 @@ extern "C" DLLEXPORT jstring JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getStatus0(JNIEnv* env,
                                                     jclass unused) {
   char msg[2048];
+  // Attach ProfiledThread
+  ProfiledThread::initCurrentThreadSignalSafe();
+
   Profiler::instance()->status((char*)msg, sizeof(msg) - 1);
   return env->NewStringUTF(msg);
 }
@@ -133,6 +155,9 @@ Java_com_datadoghq_profiler_JavaProfiler_getStatus0(JNIEnv* env,
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_getSamples(JNIEnv *env,
                                                     jclass unused) {
+  // Attach ProfiledThread
+  ProfiledThread::initCurrentThreadSignalSafe();
+
   return (jlong)Profiler::instance()->total_samples();
 }
 
@@ -146,7 +171,7 @@ extern "C" DLLEXPORT void JNICALL
 JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadAdd0() {
   // Initialize thread TLS if it has not yet done
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  if(current == nullptr) {
+  if (current == nullptr) {
     return;
   }
 
@@ -180,10 +205,9 @@ extern "C" DLLEXPORT void JNICALL
 JavaCritical_com_datadoghq_profiler_JavaProfiler_filterThreadRemove0() {
   // Initialize thread TLS if it has not yet done
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  if(current == nullptr) {
+  if (current == nullptr) {
     return;
   }
-
   int tid = current->tid();
   if (unlikely(tid < 0)) {
     return;
@@ -244,6 +268,9 @@ Java_com_datadoghq_profiler_JavaProfiler_recordTrace0(
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_dump0(JNIEnv *env, jclass unused,
                                                jstring path) {
+  // Initialize thread TLS if it has not yet done
+  ProfiledThread::initCurrentThreadSignalSafe();
+
   JniString path_str(env, path);
   Profiler::instance()->dump(path_str.c_str(), path_str.length());
 }
@@ -263,6 +290,9 @@ extern "C" DLLEXPORT jobjectArray JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_describeDebugCounters0(
     JNIEnv *env, jclass unused) {
 #ifdef COUNTERS
+  // Initialize thread TLS if it has not yet done
+  ProfiledThread::initCurrentThreadSignalSafe();
+
   std::vector<const char *> counter_names = Counters::describeCounters();
   jobjectArray array = (jobjectArray)env->NewObjectArray(
       counter_names.size(), env->FindClass("java/lang/String"),
@@ -281,9 +311,9 @@ extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_recordSettingEvent0(
     JNIEnv *env, jclass unused, jstring name, jstring value, jstring unit) {
   // Initialize thread TLS if it has not yet done
-  ProfiledThread::initCurrentThreadSignalSafe();
+  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
+  int tid = current != nullptr ? current->tid() : OS::threadId();
 
-  int tid = ProfiledThread::currentTid();
   if (tid < 0) {
     return;
   }
@@ -309,12 +339,13 @@ Java_com_datadoghq_profiler_JavaProfiler_recordQueueEnd0(
     jstring scheduler, jthread origin, jstring queueType, jint queueLength) {
 
   // Initialize thread TLS if it has not yet done
-  ProfiledThread::initCurrentThreadSignalSafe();
+  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
 
-  int tid = ProfiledThread::currentTid();
+  int tid = current != nullptr ? current->tid() : OS::threadId();
   if (tid < 0) {
     return;
   }
+
   int origin_tid = JVMThread::nativeThreadId(env, origin);
   if (origin_tid < 0) {
     return;
@@ -349,6 +380,7 @@ Java_com_datadoghq_profiler_JavaProfiler_parkEnter0(JNIEnv *env, jclass unused) 
   if (current == nullptr) {
     return;
   }
+
   bool first_park = current->parkEnter();
   ThreadFilter *tf = Profiler::instance()->threadFilter();
   if (first_park && tf->enabled()) {
@@ -393,12 +425,13 @@ static bool decodeJavaBlockState(jint state, OSThreadState &decoded) {
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_blockEnter0(
     JNIEnv *env, jclass unused, jint state) {
-  OSThreadState decoded;
-  if (!decodeJavaBlockState(state, decoded)) {
-    return 0;
-  }
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
   if (current == nullptr) {
+    return 0;
+  }
+
+  OSThreadState decoded;
+  if (!decodeJavaBlockState(state, decoded)) {
     return 0;
   }
   ThreadFilter *tf = Profiler::instance()->threadFilter();
@@ -419,10 +452,12 @@ Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
   if (block_token == 0) {
     return;
   }
+
   ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
   if (current == nullptr) {
     return;
   }
+
   ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(block_token);
   if (current->filterSlotId() != slot_id) {
     return;
@@ -436,12 +471,15 @@ Java_com_datadoghq_profiler_JavaProfiler_blockExit0(
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_currentTicks0(JNIEnv *env,
                                                        jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+
   return TSC::ticks();
 }
 
 extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_tscFrequency0(JNIEnv *env,
                                                        jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   return TSC::frequency();
 }
 
@@ -449,6 +487,7 @@ extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_mallocArenaMax0(JNIEnv *env,
                                                          jclass unused,
                                                          jint maxArenas) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   OS::mallocArenaMax(maxArenas);
 }
 
@@ -456,6 +495,8 @@ extern "C" DLLEXPORT jstring JNICALL
 Java_com_datadoghq_profiler_JVMAccess_findStringJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+
   JniString flag_str(env, flagName);
   VMFlag *f = VMFlag::find(flag_str.c_str(), {VMFlag::Type::String, VMFlag::Type::Stringlist});
   if (f) {
@@ -472,6 +513,8 @@ Java_com_datadoghq_profiler_JVMAccess_setStringJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName,
                                                          jstring flagValue) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+
   JniString flag_str(env, flagName);
   JniString value_str(env, flagValue);
   VMFlag *f = VMFlag::find(flag_str.c_str(), {VMFlag::Type::String, VMFlag::Type::Stringlist});
@@ -487,6 +530,8 @@ extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JVMAccess_findBooleanJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+
   JniString flag_str(env, flagName);
   VMFlag *f = VMFlag::find(flag_str.c_str(), {VMFlag::Type::Bool});
   if (f) {
@@ -503,6 +548,8 @@ Java_com_datadoghq_profiler_JVMAccess_setBooleanJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName,
                                                          jboolean flagValue) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+
   JniString flag_str(env, flagName);
   VMFlag *f = VMFlag::find(flag_str.c_str(), {VMFlag::Type::Bool});
   if (f) {
@@ -517,6 +564,8 @@ extern "C" DLLEXPORT jlong JNICALL
 Java_com_datadoghq_profiler_JVMAccess_findIntJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+
   JniString flag_str(env, flagName);
   VMFlag *f = VMFlag::find(flag_str.c_str(), {VMFlag::Type::Int, VMFlag::Type::Uint, VMFlag::Type::Intx, VMFlag::Type::Uintx, VMFlag::Type::Uint64_t, VMFlag::Type::Size_t});
   if (f) {
@@ -532,6 +581,8 @@ extern "C" DLLEXPORT jdouble JNICALL
 Java_com_datadoghq_profiler_JVMAccess_findFloatJVMFlag0(JNIEnv *env,
                                                          jobject unused,
                                                          jstring flagName) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+
   JniString flag_str(env, flagName);
   VMFlag *f = VMFlag::find(flag_str.c_str(),{ VMFlag::Type::Double});
   if (f) {
@@ -546,6 +597,7 @@ Java_com_datadoghq_profiler_JVMAccess_findFloatJVMFlag0(JNIEnv *env,
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JVMAccess_healthCheck0(JNIEnv *env,
                                                          jobject unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   return true;
 }
 
@@ -560,6 +612,8 @@ Java_com_datadoghq_profiler_OTelContext_setProcessCtx0(JNIEnv *env,
                                                          jstring tracer_version,
                                                          jobjectArray attribute_keys
                                                         ) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+
   JniString env_str(env, env_data);
   JniString hostname_str(env, hostname);
   JniString runtime_id_str(env, runtime_id);
@@ -634,6 +688,8 @@ Java_com_datadoghq_profiler_OTelContext_setProcessCtx0(JNIEnv *env,
 extern "C" DLLEXPORT jobject JNICALL
 Java_com_datadoghq_profiler_OTelContext_readProcessCtx0(JNIEnv *env, jclass unused) {
 #ifndef OTEL_PROCESS_CTX_NO_READ
+ ProfiledThread::initCurrentThreadSignalSafe();
+
   otel_process_ctx_read_result result = otel_process_ctx_read();
 
   if (!result.success) {
@@ -710,51 +766,6 @@ Java_com_datadoghq_profiler_OTelContext_readProcessCtx0(JNIEnv *env, jclass unus
 #endif
 }
 
-extern "C" DLLEXPORT jobject JNICALL
-Java_com_datadoghq_profiler_JavaProfiler_initializeContextTLS0(JNIEnv* env, jclass unused, jlongArray metadata) {
-  // Initialize thread TLS if it has not yet done
-  ProfiledThread* thrd = ProfiledThread::initCurrentThreadSignalSafe();
-  assert(thrd != nullptr);
-
-  if (!thrd->isContextInitialized()) {
-    ContextApi::initializeContextTLS(thrd);
-  }
-
-  OtelThreadContextRecord* record = thrd->getOtelContextRecord();
-
-  // Contiguity of record + tag_encodings + LRS is enforced by alignas(8) on _otel_ctx_record
-  // plus sizeof(OtelThreadContextRecord) being a multiple of 8 (see thread.h).
-  // Compile-time alignment check always runs; runtime pointer-layout check is debug-only.
-  static_assert(DD_TAGS_CAPACITY * sizeof(u32) % alignof(u64) == 0,
-      "tag encodings array size must be aligned to u64 for contiguous sidecar layout");
-#ifdef DEBUG
-  uint8_t* record_start = reinterpret_cast<uint8_t*>(record);
-  uint8_t* sidecar_start = reinterpret_cast<uint8_t*>(thrd->getOtelTagEncodingsPtr());
-  assert(sidecar_start == record_start + OTEL_MAX_RECORD_SIZE
-         && "_otel_ctx_record and _otel_tag_encodings must be contiguous");
-#endif
-
-  // Fill metadata[6]: [VALID_OFFSET, TRACE_ID_OFFSET, SPAN_ID_OFFSET,
-  //                    ATTRS_DATA_SIZE_OFFSET, ATTRS_DATA_OFFSET, LRS_OFFSET].
-  // All offsets are absolute within the unified buffer returned below.
-  if (metadata != nullptr && env->GetArrayLength(metadata) >= 6) {
-    jlong meta[6];
-    meta[0] = (jlong)offsetof(OtelThreadContextRecord, valid);
-    meta[1] = (jlong)offsetof(OtelThreadContextRecord, trace_id);
-    meta[2] = (jlong)offsetof(OtelThreadContextRecord, span_id);
-    meta[3] = (jlong)offsetof(OtelThreadContextRecord, attrs_data_size);
-    meta[4] = (jlong)offsetof(OtelThreadContextRecord, attrs_data);
-    meta[5] = (jlong)(OTEL_MAX_RECORD_SIZE + DD_TAGS_CAPACITY * sizeof(u32));
-    env->SetLongArrayRegion(metadata, 0, 6, meta);
-  }
-
-  // Single contiguous view over [record | tag_encodings | LRS] — used for per-field
-  // access and for bulk snapshot/restore. All three regions are in one ProfiledThread
-  // memory block.
-  size_t totalSize = OTEL_MAX_RECORD_SIZE + DD_TAGS_CAPACITY * sizeof(u32) + sizeof(u64);
-  return env->NewDirectByteBuffer((void*)record, (jlong)totalSize);
-}
-
 // ---------------------------------------------------------------------------
 // All-native context write API (OTEP #4947).
 //
@@ -762,25 +773,21 @@ Java_com_datadoghq_profiler_JavaProfiler_initializeContextTLS0(JNIEnv* env, jcla
 // ProfiledThread::current(). Because a JNI native frame pins a mounted virtual thread to its
 // carrier for the duration of the call (the continuation cannot freeze across a native frame),
 // the record resolved here is guaranteed live and cannot migrate mid-write — there is no cached
-// per-thread buffer to dangle. This replaces the DirectByteBuffer path (see ThreadContext),
-// eliminating the virtual-thread use-after-free.
+// per-thread buffer to dangle, and hence no virtual-thread use-after-free.
 //
 // Signal-safety / reader coherence: the sampler (ContextApi::get, wallClock.cpp) reads the same
-// record on the same carrier, gated on record->valid. Each write follows the detach -> mutate ->
-// attach protocol used by ThreadContext: store valid=0, release fence, mutate, release fence,
-// store valid=1. On x86 the release fence is a compiler barrier; on aarch64 it is a real barrier
-// pairing with the sampler's acquire load of valid in ContextApi::get.
+// record on the same carrier, gated on record->valid. Each write follows a detach -> mutate ->
+// attach protocol: store valid=0, release fence, mutate, release fence, store valid=1. On x86 the
+// release fence is a compiler barrier; on aarch64 it is a real barrier pairing with the sampler's
+// acquire load of valid in ContextApi::get.
 // ---------------------------------------------------------------------------
 
-// Byte layout constants shared with ThreadContext (see otel_context.h / ThreadContext.java).
 static const int OTEL_LRS_ENTRY_SIZE = 18; // fixed attrs_data[0] entry: key(1)+len(1)+16 hex bytes
 
 // Writes the full fixed LRS attrs_data entry: header (key_index=0, length=16) at attrs_data[0..2)
 // plus the 16 hex value bytes at attrs_data[2..18). The combined write/clear entry points
-// (setTraceContext0 / clearTraceContext0) call this so they establish the LRS entry themselves
-// rather than relying on the ThreadContext ctor — i.e. they work on a record that only saw the
-// ProfiledThread zero-init, the phase-2 pure-native case where no DirectByteBuffer / ThreadContext
-// was ever created. Mirrors ThreadContext's LRS entry layout.
+// (setTraceContext0 / clearTraceContext0) establish this entry themselves on a record that only
+// ever saw the ProfiledThread zero-init.
 //
 // Note: the single-attribute path (setContextValue0) does NOT write this entry; it assumes a
 // preceding setTraceContext0 has already established it (the production order — app tags are set
@@ -800,7 +807,7 @@ static inline void otelWriteLrsEntry(OtelThreadContextRecord* record, u64 v) {
 }
 
 // Compacts out the attrs_data entry with the given OTEP key index; returns the new size.
-// Mirrors ThreadContext.compactOtepAttribute. Record must be detached.
+// Record must be detached.
 static int otelCompactAttr(OtelThreadContextRecord* record, int otepKeyIndex) {
   int currentSize = record->attrs_data_size;
   uint8_t* d = record->attrs_data;
@@ -825,7 +832,7 @@ static int otelCompactAttr(OtelThreadContextRecord* record, int otepKeyIndex) {
 }
 
 // Replaces/inserts an attribute value in attrs_data (record must be detached). Returns false on
-// attrs_data overflow (nothing appended). Mirrors ThreadContext.replaceOtepAttribute.
+// attrs_data overflow (nothing appended).
 static bool otelReplaceAttr(OtelThreadContextRecord* record, int otepKeyIndex,
                             const uint8_t* utf8, int valueLen) {
   int currentSize = otelCompactAttr(record, otepKeyIndex);
@@ -878,18 +885,19 @@ extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_setTraceContext0(JNIEnv* env, jclass unused,
     jlong localRootSpanId, jlong spanId, jlong traceIdHigh, jlong traceIdLow,
     jint slot0, jint enc0, jbyteArray utf0, jint slot1, jint enc1, jbyteArray utf1) {
-  ProfiledThread* thrd = ProfiledThread::initCurrentThreadSignalSafe();
+  ProfiledThread *thrd = ProfiledThread::initCurrentThreadSignalSafe();
   if (thrd == nullptr) {
     return;
   }
+
   // Contract: this is the activation path and requires a non-zero span; clearing is
   // clearTraceContext0. The public setTraceContext wrapper enforces this by throwing
   // IllegalArgumentException, so a zero span reaching here is a direct-JNI/contract violation.
   assert(spanId != 0 && "setTraceContext0 requires a non-zero span; use clearTraceContext0 to clear");
-  // Publish the OTEP TLS pointer and mark the thread initialized on first native write, exactly
-  // as the DirectByteBuffer path does in initializeContextTLS0. Without this a thread that only
-  // ever uses the all-native API writes a record that ContextApi::get / the wallclock sampler
-  // ignore (both gate on isContextInitialized) and that external OTEP readers can't discover.
+  // Publish the OTEP TLS pointer and mark the thread initialized on first native write. Without
+  // this a thread that never explicitly initializes context writes a record that ContextApi::get
+  // / the wallclock sampler ignore (both gate on isContextInitialized) and that external OTEP
+  // readers can't discover.
   if (!thrd->isContextInitialized()) {
     ContextApi::initializeContextTLS(thrd);
   }
@@ -931,13 +939,14 @@ Java_com_datadoghq_profiler_JavaProfiler_setTraceContext0(JNIEnv* env, jclass un
 }
 
 // Combined per-deactivation clear: zeros scalar context + custom slots and leaves the record
-// detached (valid=0), mirroring the DBB clear path (setContext(0,0,0,0) + clearContextValue*).
+// detached (valid=0).
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_clearTraceContext0(JNIEnv* env, jclass unused) {
   ProfiledThread* thrd = ProfiledThread::initCurrentThreadSignalSafe();
   if (thrd == nullptr) {
     return;
   }
+
   OtelThreadContextRecord* record = thrd->getOtelContextRecord();
   u32* enc = thrd->getOtelTagEncodingsPtr();
   u64* lrs = reinterpret_cast<u64*>(enc + DD_TAGS_CAPACITY);
@@ -951,7 +960,7 @@ Java_com_datadoghq_profiler_JavaProfiler_clearTraceContext0(JNIEnv* env, jclass 
   *lrs = 0;
   record->attrs_data_size = (uint16_t)OTEL_LRS_ENTRY_SIZE;
   otelWriteLrsEntry(record, 0);
-  // clear path leaves valid=0 (no attach), mirroring ThreadContext.clearContextDirect.
+  // clear path leaves valid=0 (no attach) — a cleared context is not "active".
 }
 
 // Single pre-resolved attribute write (sidecar encoding + attrs_data value) in one detach/attach
@@ -959,7 +968,8 @@ Java_com_datadoghq_profiler_JavaProfiler_clearTraceContext0(JNIEnv* env, jclass 
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_setContextValue0(JNIEnv* env, jclass unused,
     jint slot, jint encoding, jbyteArray utf8) {
-  ProfiledThread* thrd = ProfiledThread::initCurrentThreadSignalSafe();
+  ProfiledThread *thrd = ProfiledThread::initCurrentThreadSignalSafe();
+
   if (thrd == nullptr || slot < 0 || slot >= (jint)DD_TAGS_CAPACITY) {
     return JNI_FALSE;
   }
@@ -977,10 +987,9 @@ Java_com_datadoghq_profiler_JavaProfiler_setContextValue0(JNIEnv* env, jclass un
   // Publish the record (valid=1) after the write: setting a value means "make it visible", so an
   // attribute is observable to the sampler even with no active span (zero trace/span). This is the
   // app-context-independent-of-span model dd-trace-java relies on — app-owned attributes (e.g.
-  // http.route) and the reapply-after-deactivation path stay visible between spans. Mirrors the DBB
-  // single-attribute setter ThreadContext.setContextAttributeDirect, which likewise always
-  // re-attaches. (clearContextValue0, by contrast, preserves the prior valid: removing a value must
-  // not resurrect a deactivated record.)
+  // http.route) and the reapply-after-deactivation path stay visible between spans.
+  // (clearContextValue0, by contrast, preserves the prior valid: removing a value must not
+  // resurrect a deactivated record.)
   __atomic_store_n(&record->valid, (uint8_t)0, __ATOMIC_RELAXED);
   __atomic_thread_fence(__ATOMIC_RELEASE);
 
@@ -999,10 +1008,12 @@ Java_com_datadoghq_profiler_JavaProfiler_setContextValue0(JNIEnv* env, jclass un
 // Clears a single attribute slot (zeros the sidecar encoding, compacts it out of attrs_data).
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_clearContextValue0(JNIEnv* env, jclass unused, jint slot) {
-  ProfiledThread* thrd = ProfiledThread::current();
+  ProfiledThread *thrd = ProfiledThread::initCurrentThreadSignalSafe();
+
   if (thrd == nullptr || slot < 0 || slot >= (jint)DD_TAGS_CAPACITY) {
     return;
   }
+
   OtelThreadContextRecord* record = thrd->getOtelContextRecord();
   u32* enc = thrd->getOtelTagEncodingsPtr();
 
@@ -1022,22 +1033,20 @@ Java_com_datadoghq_profiler_JavaProfiler_clearContextValue0(JNIEnv* env, jclass 
 }
 
 // Copies the current thread's custom-attribute sidecar tag encodings (enc[]) into out, reading the
-// record directly via ProfiledThread::current() — no ThreadContext / DirectByteBuffer, so it does
-// NOT reset the record the way the deprecated DBB copyTags does. This lets a caller observe
-// encodings written through the all-native setContextValue path (introspection / tests); the DBB
-// read went through ThreadContext, whose ctor resets the record and would clobber native writes.
+// record directly via ProfiledThread::current() without mutating it. Introspection / test use.
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_copyContextTags0(JNIEnv* env, jclass unused, jintArray out) {
   if (out == nullptr) {
     return;
   }
+
   jint len = env->GetArrayLength(out);
   int n = len < (jint)DD_TAGS_CAPACITY ? (int)len : (int)DD_TAGS_CAPACITY;
   jint tmp[DD_TAGS_CAPACITY];
   for (int i = 0; i < n; i++) {
     tmp[i] = 0;
   }
-  ProfiledThread* thrd = ProfiledThread::current();
+  ProfiledThread* thrd = ProfiledThread::initCurrentThreadSignalSafe();
   if (thrd != nullptr) {
     u32* enc = thrd->getOtelTagEncodingsPtr();
     for (int i = 0; i < n; i++) {
@@ -1050,7 +1059,9 @@ Java_com_datadoghq_profiler_JavaProfiler_copyContextTags0(JNIEnv* env, jclass un
 }
 
 extern "C" DLLEXPORT jint JNICALL
-Java_com_datadoghq_profiler_ThreadContext_registerConstant0(JNIEnv* env, jclass unused, jstring value) {
+Java_com_datadoghq_profiler_ContextValueCache_registerConstant0(JNIEnv* env, jclass unused, jstring value) {
+  ProfiledThread::initCurrentThreadSignalSafe();
+
   JniString value_str(env, value);
   u32 encoding = Profiler::instance()->contextValueMap()->bounded_lookup(
       value_str.c_str(), value_str.length(), 1 << 16);
@@ -1061,6 +1072,7 @@ Java_com_datadoghq_profiler_ThreadContext_registerConstant0(JNIEnv* env, jclass 
 // MAX_CONTEXT_SLOTS constant has not drifted from DD_TAGS_CAPACITY (see MaxContextSlotsTest).
 extern "C" DLLEXPORT jint JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_maxContextSlots0(JNIEnv* env, jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   return (jint)DD_TAGS_CAPACITY;
 }
 
@@ -1071,12 +1083,14 @@ Java_com_datadoghq_profiler_JavaProfiler_maxContextSlots0(JNIEnv* env, jclass un
 // re-parsing in Java.
 extern "C" DLLEXPORT jboolean JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_consumeContextDictionaryReset0(JNIEnv* env, jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   return Profiler::instance()->consumeContextValueDictReset() ? JNI_TRUE : JNI_FALSE;
 }
 
 // ---- test and debug utilities
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_testlog(JNIEnv* env, jclass unused, jstring msg) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   JniString msg_str(env, msg);
 
   TEST_LOG("%s", msg_str.c_str());
@@ -1084,7 +1098,106 @@ Java_com_datadoghq_profiler_JavaProfiler_testlog(JNIEnv* env, jclass unused, jst
 
 extern "C" DLLEXPORT void JNICALL
 Java_com_datadoghq_profiler_JavaProfiler_dumpContext(JNIEnv* env, jclass unused) {
+  ProfiledThread::initCurrentThreadSignalSafe();
   u64 spanId = 0, rootSpanId = 0;
   ContextApi::get(spanId, rootSpanId);
   TEST_LOG("===> Context: tid:%lu, spanId=%lu, rootSpanId=%lu", OS::threadId(), spanId, rootSpanId);
+}
+
+// ---- Test-only reads of the current thread's OTEP record -----------------------------------
+// Each reads the current carrier's record directly via ProfiledThread::current(), with no
+// detach/attach (diagnostic-only, not on any signal-handler or hot write path).
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_testGetSpanId0(JNIEnv* env, jclass unused) {
+  ProfiledThread* thrd = ProfiledThread::initCurrentThreadSignalSafe();
+  if (thrd == nullptr) {
+    return 0;
+  }
+
+  OtelThreadContextRecord* record = thrd->getOtelContextRecord();
+  uint64_t beSpan;
+  memcpy(&beSpan, record->span_id, 8);
+  return (jlong)__builtin_bswap64(beSpan);
+}
+
+extern "C" DLLEXPORT jlong JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_testGetRootSpanId0(JNIEnv* env, jclass unused) {
+  ProfiledThread* thrd = ProfiledThread::initCurrentThreadSignalSafe();
+  if (thrd == nullptr) {
+    return 0;
+  }
+  u32* enc = thrd->getOtelTagEncodingsPtr();
+  u64* lrs = reinterpret_cast<u64*>(enc + DD_TAGS_CAPACITY);
+  return (jlong)*lrs;
+}
+
+extern "C" DLLEXPORT jstring JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_testReadTraceId0(JNIEnv* env, jclass unused) {
+  ProfiledThread* thrd = ProfiledThread::initCurrentThreadSignalSafe();
+  if(thrd == nullptr) {
+    return nullptr;
+  }
+
+  OtelThreadContextRecord* record = thrd->getOtelContextRecord();
+  static const char HEXD[16] =
+      {'0','1','2','3','4','5','6','7','8','9','a','b','c','d','e','f'};
+  char hex[33];
+  for (int i = 0; i < 16; i++) {
+    uint8_t b = record->trace_id[i];
+    hex[i * 2] = HEXD[b >> 4];
+    hex[i * 2 + 1] = HEXD[b & 0xF];
+  }
+  hex[32] = '\0';
+  return env->NewStringUTF(hex);
+}
+
+extern "C" DLLEXPORT jstring JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_testReadContextAttribute0(JNIEnv* env, jclass unused, jint slot) {
+  ProfiledThread *thrd = ProfiledThread::initCurrentThreadSignalSafe();
+  if (thrd == nullptr || slot < 0 || slot >= (jint)DD_TAGS_CAPACITY) {
+    return nullptr;
+  }
+
+  OtelThreadContextRecord* record = thrd->getOtelContextRecord();
+  int targetKey = slot + 1;
+  int size = record->attrs_data_size;
+  uint8_t* d = record->attrs_data;
+  int pos = 0;
+  while (pos + 2 <= size) {
+    int k = d[pos];
+    int len = d[pos + 1];
+    if (pos + 2 + len > size) {
+      break;
+    }
+    if (k == targetKey) {
+      char buf[256];
+      memcpy(buf, d + pos + 2, len);
+      buf[len] = '\0';
+      return env->NewStringUTF(buf);
+    }
+    pos += 2 + len;
+  }
+  return nullptr;
+}
+
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_testIsContextValid0(JNIEnv* env, jclass unused) {
+  ProfiledThread* thrd = ProfiledThread::initCurrentThreadSignalSafe();
+  if (thrd == nullptr) {
+    return JNI_FALSE;
+  }
+  OtelThreadContextRecord* record = thrd->getOtelContextRecord();
+  return __atomic_load_n(&record->valid, __ATOMIC_ACQUIRE) ? JNI_TRUE : JNI_FALSE;
+}
+
+// Whether this process actually has a live TLS priming pool -- i.e. JVMSupport::initialize()
+// found a valid ProfiledThread key that also passed ProfiledThread::supportPriming() and so
+// created the pool (see jvmSupport.cpp). Tests that assert on priming having happened need this
+// rather than a platform check: on glibc, supportPriming() depends on where in the pthread key
+// space this process's key landed (see threadLocalData.cpp), which isn't determined by OS/libc
+// alone.
+extern "C" DLLEXPORT jboolean JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_testTlsPrimingAvailable(JNIEnv* env, jclass unused) {
+  return ThreadLocalDataPool::isInitialized() ? JNI_TRUE : JNI_FALSE;
 }

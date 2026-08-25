@@ -38,6 +38,15 @@ public:
 };
 
 class ProfiledThread : public ThreadLocalData {
+  friend class ThreadLocalDataPool;
+
+  // PTHREAD_KEY_2NDLEVEL_SIZE is an internal macro set to 32 in the GNU C Library (glibc) NPTL
+  // implementation. Slot indexes less than PTHREAD_KEY_2NDLEVEL_SIZE are pre-allocated.
+  // glibc-specific: only meaningful under the __GLIBC__ branch of supportPriming()
+  // (threadLocalData.cpp). Other libcs (musl, macOS libpthread) don't share this
+  // layout and must not be routed through this constant.
+  static constexpr int PTHREAD_KEY_2NDLEVEL_SIZE = 32;
+
 public:
   enum ThreadType : u32 {
     TYPE_UNKNOWN = 0,
@@ -47,6 +56,7 @@ public:
   };
 
   static constexpr u32 FLAG_PARKED = 0x4u; // next free bit after TYPE_MASK (0x1|0x2)
+  static constexpr u32 FLAG_CLAIMED = 0x8u; // Used by ThreadLocalDataPool only 
 
   // We are allowing several levels of nesting because we can be
   // eg. in a crash handler when wallclock signal kicks in,
@@ -60,10 +70,8 @@ private:
 
   static ThreadLocal<ProfiledThread*, nullptr, freeValue>  _current_thread;
   // siglongjmp buffer. Used by hotspot only at this moment.
-  // Published in walkVM() and consumed in checkFault() from an asynchronous
-  // SEGV-handler context on the same thread; atomic makes the publish/observe
-  // ordering explicit instead of relying on plain load/store, matching how
-  // _crash_depth is hardened below.
+  // Published in HotspotSupport::walkVM()/walkJavaStack() and StackWalker::walkFP()/walkDwarf() (all VMs),
+  // consumed in Profiler::checkFault() from an asynchronous SEGV-handler context on the same thread
   std::atomic<sigjmp_buf*> _jmp_buf;
 
   u64 _pc;
@@ -77,28 +85,24 @@ private:
   u32 _wall_epoch;
   u64 _call_trace_id;
   u32 _recording_epoch;
-  u32 _misc_flags;
+  volatile u32 _misc_flags;
   u64 _park_block_token;
   int _filter_slot_id; // Slot ID for thread filtering
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
-  uint8_t _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
+  volatile uint8_t _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
   // Debug only due to memory overhead
   DEBUG_ONLY(UnwindFailures _unwind_failures;)
-  bool _otel_ctx_initialized;
-#ifdef __FAULT_INJECTION__
   // xorshift64 PRNG state for compile-time fault injection (faultInjection.h).
   // Per-thread, so the signal-path draw needs no lock/atomic; must never be 0.
-  u64 _fi_rng;
-#endif
+  FAULT_INJECTION_ONLY(u64 _fi_rng;)
+
+  bool _otel_ctx_initialized;
   // alignas(8) + sizeof(OtelThreadContextRecord)==640 (multiple of 8) guarantee
   // _otel_tag_encodings sits at +640 with no padding, so the three fields form one
-  // 688-byte contiguous region exposed as a combined DirectByteBuffer.
+  // 688-byte contiguous region.
   alignas(8) OtelThreadContextRecord _otel_ctx_record;
-  // These two fields MUST be contiguous and 8-byte aligned — the JNI layer
-  // exposes them as a single DirectByteBuffer (sidecar), and VarHandle long
-  // views require 8-byte alignment for the buffer base address.
+  // 8-byte aligned so VarHandle long views over this region require no unaligned access.
   // Read invariant: sidecar readers must gate on record->valid (see ContextApi::get).
-  // ThreadContext.restore() relies on this to perform a bulk memcpy under valid=0.
   alignas(8) u32 _otel_tag_encodings[DD_TAGS_CAPACITY];
   u64 _otel_local_root_span_id;
 
@@ -119,36 +123,94 @@ private:
   };
 
   virtual ~ProfiledThread() { }
+
+  inline bool isClaimed() const {
+    return (__atomic_load_n(&_misc_flags, __ATOMIC_RELAXED) & FLAG_CLAIMED) == FLAG_CLAIMED;
+  }
+
+  void unclaimAndReset();
+  
+  inline bool claimAcquire(int tid);
 public:
   static ProfiledThread *forTid(int tid) {
     ProfiledThread *pt = new ProfiledThread(tid);
     NativeMem::record(NM_THREAD_LOCAL, (long long)sizeof(ProfiledThread));
+#ifdef UNIT_TEST
+    // Lets a test simulate a malloc hook (e.g. nativemem profiling's
+    // MallocTracer::maybeRecord) reentering here via the `new` above, before
+    // initCurrentThread() has published `pt` to TLS — see initCurrentThread()
+    // in threadLocalData.cpp for the race this exists to reproduce.
+    if (forTidTestHook != nullptr) {
+      forTidTestHook();
+    }
+#endif
     return pt;
   }
   static bool isThreadKeyValid() {
     return _current_thread.isKeyValid();
   }
 
+  static bool supportPriming();
+
 #ifdef UNIT_TEST
+  // Test-only hook invoked at the end of forTid(), see above.
+  static void (*forTidTestHook)();
+
+  // Exposes the private isClaimed() so a test can confirm a
+  // ThreadLocalDataPool slot was released rather than left orphaned.
+  bool isClaimedForTest() const { return isClaimed(); }
+
   // Simulates the moment inside release() after pthread_setspecific(NULL) but
   // before delete — the race window the clearCurrentThreadTLS fix covers.
   // Returns the detached pointer so the caller can delete it after assertions.
-  static ProfiledThread* clearCurrentThreadTLS() {
-    assert(isThreadKeyValid() && "Should not reach here - profiling should have been disabled");
-    ProfiledThread* pt = _current_thread.get();
-    _current_thread.set(nullptr);
-    return pt;
-  }
+  static ProfiledThread* clearCurrentThreadTLS();
   // Deletes a ProfiledThread returned by clearCurrentThreadTLS().
   // Needed because the destructor is private. This stands in for the delete
   // that freeValue() performs in production, so it mirrors freeValue()'s
   // NM_THREAD_LOCAL decrement to keep the accounting balanced in tests.
-  static void deleteForTest(ProfiledThread *pt) {
-    delete pt;
-    NativeMem::record(NM_THREAD_LOCAL, -(long long)sizeof(ProfiledThread));
+  static void deleteForTest(ProfiledThread *pt);
+
+  // Exposes unclaimAndReset() directly, without needing a ThreadLocalDataPool
+  // round-trip (see threadLocalDataPool_ut.cpp's reclaimedSlotHasResetState
+  // for the pool-mediated equivalent).
+  void unclaimAndResetForTest() { unclaimAndReset(); }
+
+  // Snapshot of every field unclaimAndReset() is responsible for, so a test
+  // can assert its output matches a freshly-constructed instance's state.
+  // _tid is deliberately excluded: it's reseeded by claimAcquire() on the
+  // next claim, not by unclaimAndReset(), so it's 0 post-reset regardless of
+  // the tid a freshly-constructed instance was given.
+  struct ResetStateForTest {
+    bool unwinding_java;
+    sigjmp_buf* jmp_buf;
+    u64 pc, sp, span_id;
+    u32 crash_depth;
+    u32 cpu_epoch, wall_epoch;
+    u64 call_trace_id;
+    u32 recording_epoch;
+    u32 misc_flags;
+    u64 park_block_token;
+    int filter_slot_id;
+    uint8_t init_window;
+    uint8_t signal_depth;
+    bool in_critical_section;
+    bool otel_ctx_initialized;
+    u64 otel_local_root_span_id;
+  };
+
+  ResetStateForTest snapshotForTest() const {
+    return ResetStateForTest{
+      _unwinding_Java, _jmp_buf.load(), _pc, _sp, _span_id,
+      __atomic_load_n(&_crash_depth, __ATOMIC_RELAXED),
+      _cpu_epoch, _wall_epoch, _call_trace_id, _recording_epoch,
+      __atomic_load_n(&_misc_flags, __ATOMIC_RELAXED),
+      _park_block_token, _filter_slot_id, _init_window,
+      __atomic_load_n(&_signal_depth, __ATOMIC_RELAXED),
+      _in_critical_section, _otel_ctx_initialized, _otel_local_root_span_id
+    };
   }
 #endif
-  // initCurrentThread() and release() are not async-signal-safe: 
+  // initCurrentThread() and release() are not async-signal-safe:
   // must be called outside of a signal handler with signal blocked
   static ProfiledThread* initCurrentThread();
   static void release();
@@ -161,12 +223,10 @@ public:
   static ProfiledThread* initCurrentThreadSignalSafe();
 
   // Signal-handler friendly (no allocation): returns existing TLS or nullptr.
-  static inline ProfiledThread *current() {
-    if (!isThreadKeyValid()) {
-      return nullptr;
-    }
-    return _current_thread.get();
-  }
+  static inline ProfiledThread *current();
+  // signal-handler friendly with priming: return existing TLS or acquire and set
+  // ProfiledThread from ThreadLocalDataPool.
+  static inline ProfiledThread* acquireCurrent();
 
   static int currentTid();
   inline int tid() { return _tid; }
@@ -252,13 +312,11 @@ public:
     return _jmp_buf != nullptr;
   }
 
-  // Signal-handler depth counter used by SignalHandlerScope (guards.h).  All
-  // access happens on the owning thread (signal handlers are delivered to the
-  // thread that's interrupted), so plain reads/writes are AS-safe — no locks,
-  // no malloc, no syscalls.  See guards.h for the public API.
-  inline uint8_t signalDepth() const { return _signal_depth; }
-  inline void enterSignalScope()    { ++_signal_depth; }
-  inline void exitSignalScope()     { if (_signal_depth > 0) --_signal_depth; }
+  // Signal-handler depth counter used by SignalHandlerScope (guards.h).
+  // Atomic operations to prevent another signal interrupt load-modify-store.
+  inline uint8_t signalDepth() const { return __atomic_load_n(&_signal_depth, __ATOMIC_RELAXED); }
+  inline void enterSignalScope()    { __atomic_fetch_add(&_signal_depth, 1, __ATOMIC_RELAXED); }
+  inline void exitSignalScope()     { if (signalDepth() > 0) __atomic_fetch_sub(&_signal_depth, 1, __ATOMIC_RELAXED); }
 
 #ifdef __FAULT_INJECTION__
   // One xorshift64 step (Marsaglia 2003), matching PoissonSampler::nextExp.

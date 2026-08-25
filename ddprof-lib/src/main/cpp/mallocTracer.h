@@ -63,7 +63,11 @@ class MallocTracer : public Engine {
         MallocHooker::installHooks();
     }
 
-    static void recordMalloc(void* address, size_t size);
+    static void recordMalloc(void* address, size_t size, int tid);
+
+    // Entry point for the malloc hooks (mallocTracer.cpp): gates on the
+    // sampling decision before touching thread-local state.
+    static void maybeRecord(void* ret, size_t size);
 };
 
 #endif // _MALLOCTRACER_H

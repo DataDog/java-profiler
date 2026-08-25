@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026 Datadog, Inc
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 #ifndef STUB_UNWIND_STATS_H
 #define STUB_UNWIND_STATS_H
 
@@ -28,27 +33,14 @@ class UnwindFailures {
    volatile u64 (*_counters)[UNWIND_FAILURE_ANY + 1];
 
  public:
-   UnwindFailures() : _nameCount(0) {
-     _names = new char[MAX_UNWIND_FAILURE_NAMES][MAX_NAME_LENGTH];
-     _counters = new u64[MAX_UNWIND_FAILURE_NAMES][UNWIND_FAILURE_ANY + 1];
-     memset((void*)_names, 0, MAX_UNWIND_FAILURE_NAMES * MAX_NAME_LENGTH);
-     memset((void*)_counters, 0, MAX_UNWIND_FAILURE_NAMES * (UNWIND_FAILURE_ANY + 1) * sizeof(u64));
-     NativeMem::record(NM_THREAD_LOCAL,
-         (long long)(MAX_UNWIND_FAILURE_NAMES * MAX_NAME_LENGTH) +
-         (long long)(MAX_UNWIND_FAILURE_NAMES * (UNWIND_FAILURE_ANY + 1) * sizeof(u64)));
-   }
-
-   ~UnwindFailures() {
-     NativeMem::record(NM_THREAD_LOCAL,
-         -((long long)(MAX_UNWIND_FAILURE_NAMES * MAX_NAME_LENGTH) +
-           (long long)(MAX_UNWIND_FAILURE_NAMES * (UNWIND_FAILURE_ANY + 1) * sizeof(u64))));
-     delete[] _names;
-     delete[] _counters;
-   }
+   UnwindFailures();
+   ~UnwindFailures();
 
    // Disable copy constructor and assignment operator
    UnwindFailures(const UnwindFailures&) = delete;
    UnwindFailures& operator=(const UnwindFailures&) = delete;
+
+   void reset();
 
    void record(UnwindFailureKind kind, const char *name) {
      if (!name) return;
@@ -165,36 +157,6 @@ class UnwindFailures {
    }
 };
 
-class ExclusiveLock {
- private:
-  SpinLock &_lock;
- public:
-  ExclusiveLock(SpinLock &lock) : _lock(lock) {
-    _lock.lock();
-  }
-  ~ExclusiveLock() {
-    _lock.unlock();
-  }
-
-  ExclusiveLock(const ExclusiveLock &) = delete;
-  ExclusiveLock &operator=(const ExclusiveLock &) = delete;
-};
-
-class SharedLock {
- private:
-  SpinLock &_lock;
- public:
-  SharedLock(SpinLock &lock) : _lock(lock) {
-    _lock.lockShared();
-  }
-  ~SharedLock() {
-    _lock.unlockShared();
-  }
-
-  SharedLock(const SharedLock &) = delete;
-  SharedLock &operator=(const SharedLock &) = delete;
-};
-
 class UnwindStats
 {
  private:
@@ -215,17 +177,17 @@ class UnwindStats
   }
 
   static u64 countFailures(const char* name, UnwindFailureKind kind = UNWIND_FAILURE_ANY) {
-    SharedLock l(_lock);
+    SharedLockGuard l(&_lock);
     return _unwind_failures.count(name, kind);
   }
 
   static void collectAndReset(UnwindFailures& result) {
-    ExclusiveLock l(_lock);
+    ExclusiveLockGuard l(&_lock);
     result.swap(_unwind_failures);
   }
 
   static void reset() {
-    ExclusiveLock l(_lock);
+    ExclusiveLockGuard l(&_lock);
     _unwind_failures.clear();
   }
 };

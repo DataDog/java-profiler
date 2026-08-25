@@ -19,7 +19,7 @@
 #include "guards.h"
 #include "otel_context.h"
 #include "profiler.h"
-#include "threadLocalData.h"
+#include "threadLocalData.inline.h"
 #include <cstring>
 
 /**

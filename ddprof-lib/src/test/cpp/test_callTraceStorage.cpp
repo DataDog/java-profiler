@@ -1,5 +1,5 @@
 /*
- * Copyright 2025, Datadog, Inc.
+ * Copyright 2025, 2026, Datadog, Inc.
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -16,6 +16,7 @@
 #include "gtest_crash_handler.h"
 #include "arch.h"
 #include "counters.h"
+#include "threadLocalData.h"
 
 // Test name for crash handler
 static constexpr char TEST_NAME[] = "CallTraceStorageTest";
@@ -48,6 +49,8 @@ protected:
 };
 
 TEST_F(CallTraceStorageTest, BasicFunctionality) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+
     // Create a simple call frame
     ASGCT_CallFrame frame;
     frame.bci = 10;
@@ -66,6 +69,8 @@ TEST_F(CallTraceStorageTest, BasicFunctionality) {
 }
 
 TEST_F(CallTraceStorageTest, LivenessCheckerRegistration) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+
     // Store multiple traces first
     ASGCT_CallFrame frames[4];
     frames[0].bci = 10; frames[0].method_id = (jmethodID)0x1111;
@@ -118,6 +123,8 @@ TEST_F(CallTraceStorageTest, LivenessCheckerRegistration) {
 }
 
 TEST_F(CallTraceStorageTest, MultipleLivenessCheckers) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+
     // Store multiple traces with more variety
     ASGCT_CallFrame frames[5];
     frames[0].bci = 10; frames[0].method_id = (jmethodID)0x1111;
@@ -174,6 +181,8 @@ TEST_F(CallTraceStorageTest, MultipleLivenessCheckers) {
 }
 
 TEST_F(CallTraceStorageTest, TraceIdPreservation) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+
     // Create a simple frame
     ASGCT_CallFrame frame;
     frame.bci = 10;
@@ -218,6 +227,8 @@ TEST_F(CallTraceStorageTest, TraceIdPreservation) {
 }
 
 TEST_F(CallTraceStorageTest, ClearMethod) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+
     // Store a trace
     ASGCT_CallFrame frame;
     frame.bci = 10;
@@ -242,6 +253,8 @@ TEST_F(CallTraceStorageTest, ClearMethod) {
 }
 
 TEST_F(CallTraceStorageTest, ConcurrentClearAndPut) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+
     // Test concurrent access patterns that might cause NULL dereferences
     ASGCT_CallFrame frame;
     frame.bci = 10; 
@@ -268,6 +281,8 @@ TEST_F(CallTraceStorageTest, ConcurrentClearAndPut) {
 }
 
 TEST_F(CallTraceStorageTest, ConcurrentTableExpansionRegression) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+
     // Regression test for the crash during table expansion in CallTraceHashTable::put
     // The crash occurred at __sync_bool_compare_and_swap(&_current_table, table, new_table)
     // when multiple threads triggered table expansion simultaneously
@@ -365,6 +380,8 @@ TEST_F(CallTraceStorageTest, ConcurrentTableExpansionRegression) {
  * to the original_active after the active area swap.
  */
 TEST_F(CallTraceStorageTest, RefCountGuardSynchronizationDuringSwap) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+
     // Synchronization primitives for coordinating the test
     std::atomic<bool> swap_can_proceed{false};
     std::atomic<bool> put_threads_ready{false};
@@ -428,6 +445,7 @@ TEST_F(CallTraceStorageTest, RefCountGuardSynchronizationDuringSwap) {
             put_threads_ready_count.fetch_add(1);
         }
         ready_cv.notify_all();
+        ProfiledThread::initCurrentThreadSignalSafe();
 
         // Wait for permission to proceed
         std::unique_lock<std::mutex> lock(swap_mutex);
@@ -458,6 +476,8 @@ TEST_F(CallTraceStorageTest, RefCountGuardSynchronizationDuringSwap) {
 
     // Perform processTraces in separate thread to trigger the storage swap
     std::thread process_thread([&]() {
+        ProfiledThread::initCurrentThreadSignalSafe();
+
         // Start processing - this will swap storage
         storage->processTraces([&](const CallTraceSet& traces) {
             collection_started = true;
@@ -562,6 +582,8 @@ TEST_F(CallTraceStorageTest, RefCountGuardSynchronizationDuringSwap) {
  * This test should FAIL (crash or ASan error) before the fix and PASS after.
  */
 TEST_F(CallTraceStorageTest, UseAfterFreeInProcessTraces) {
+    ProfiledThread::initCurrentThreadSignalSafe();
+
     // Create multiple traces with varying frame counts to increase memory footprint
     const int NUM_TRACES = 100;
     const int MAX_FRAMES = 20;
@@ -743,6 +765,7 @@ TEST_F(CallTraceStorageTest, PutWithExistingIdNoInfiniteLoopWhenFull) {
 TEST_F(CallTraceStorageTest, LivenessPreservationAcrossMultipleCycles) {
     const int N = 200;
 
+    ProfiledThread::initCurrentThreadSignalSafe();
     // Insert N unique traces and record their IDs and frame values for later checks.
     std::vector<u64> ids;
     std::vector<int> bcis;
@@ -767,6 +790,7 @@ TEST_F(CallTraceStorageTest, LivenessPreservationAcrossMultipleCycles) {
     for (int cycle = 0; cycle < CYCLES; cycle++) {
         std::atomic<bool> done{false};
         std::thread t([&] {
+            ProfiledThread::initCurrentThreadSignalSafe();
             storage->processTraces([&](const CallTraceSet& traces) {
                 // All N preserved traces must be present, plus the dropped sentinel.
                 EXPECT_GE(traces.size(), static_cast<size_t>(N + 1))
@@ -817,6 +841,7 @@ TEST_F(CallTraceStorageTest, ClearTableOnlyDisconnectsFullChain) {
     const int NUM_TRACES = 50000;
     std::vector<u64> ids;
     ids.reserve(NUM_TRACES);
+    ProfiledThread::initCurrentThreadSignalSafe();
 
     for (int i = 0; i < NUM_TRACES; i++) {
         ASGCT_CallFrame frame;
@@ -852,6 +877,7 @@ TEST_F(CallTraceStorageTest, ClearTableOnlyDisconnectsFullChain) {
 TEST_F(CallTraceStorageTest, CollectFindsAllTracesAcrossExpandedChain) {
     const int NUM_TRACES = 50000;
     std::unordered_set<u64> inserted_ids;
+    ProfiledThread::initCurrentThreadSignalSafe();
 
     for (int i = 0; i < NUM_TRACES; i++) {
         ASGCT_CallFrame frame;

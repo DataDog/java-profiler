@@ -34,7 +34,7 @@ env:
   # jdk1.8.0_361
   JAVA_8_ORACLE_URL: "https://javadl.oracle.com/webapps/download/AutoDL?BundleId=247926_0ae14417abb444ebb02b9815e2103550"
 
-  JAVA_8_IBM_URL: "https://public.dhe.ibm.com/ibmdl/export/pub/systems/cloud/runtimes/java/8.0.8.60/linux/x86_64/ibm-java-jre-8.0-8.60-linux-x86_64.tgz"
+  JAVA_8_IBM_URL: "https://public.dhe.ibm.com/ibmdl/export/pub/systems/cloud/runtimes/java/8.0.8.70/linux/x86_64/ibm-java-jre-8.0-8.70-linux-x86_64.tgz"
 
   # FIXME: Azul pulled public CDN access to Zing/Prime downloads - all URLs return 404
   # JAVA_8_ZING_URL         : "https://cdn.azul.com/zing-zvm/ZVM23.05.0.0/zing23.05.0.0-2-jdk8.0.372-linux_x64.tar.gz"
@@ -152,6 +152,8 @@ jobs:
         java_variant: [ "8", "8-orcl", "8-j9", "8-ibm", "11", "11-j9", "17", "17-j9", "17-graal", "21", "21-j9", "21-graal", "25", "25-graal" ]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - name: Try restore cache JDK ${{ matrix.java_variant }}
         id: cache-jdk
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -193,7 +195,7 @@ jobs:
 
       - name: Save JDK ${{ matrix.java_variant }} cache
         if: steps.check-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
@@ -211,6 +213,8 @@ jobs:
         java_variant: [ "8-librca", "11-librca", "17-librca", "21-librca", "25-librca" ]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - name: Setup OS
         run: |
           # This needs to be done early because alpine does not have bash and tar is also iffy
@@ -243,7 +247,7 @@ jobs:
 
       - name: Save JDK ${{ matrix.java_variant }} cache
         if: steps.check-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
@@ -263,6 +267,8 @@ jobs:
         java_variant: [ "8", "8-j9", "11", "11-j9", "17", "17-j9", "17-graal", "21", "21-j9", "21-graal", "25", "25-graal" ]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - name: Cache JDK ${{ matrix.java_variant }}
         id: cache-jdk
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -303,7 +309,7 @@ jobs:
 
       - name: Save JDK ${{ matrix.java_variant }} cache
         if: steps.check-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}
@@ -320,6 +326,8 @@ jobs:
         java_variant: [ "8-librca", "11-librca", "17-librca", "21-librca", "25-librca" ]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - name: Setup OS
         run: |
           # This needs to be done early because alpine does not have bash and tar is also iffy
@@ -352,7 +360,7 @@ jobs:
 
       - name: Save JDK ${{ matrix.java_variant }} cache
         if: steps.check-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ${{ env.JDKS_DIR }}/jdk${{ matrix.java_variant }}

@@ -23,7 +23,7 @@
 #include <signal.h>
 #include <ucontext.h>
 #ifdef DEBUG
-#include "threadLocalData.h"  // ProfiledThread::current / isProtected
+#include "threadLocalData.inline.h"  // ProfiledThread::current / isProtected
 #endif
 
 extern "C" int safefetch32_cont(int* adr, int errValue);
@@ -60,10 +60,10 @@ static void verify_safecopy_range() {
 #endif // DEBUG
 
 #ifdef __APPLE__
+    #define DU3_PREFIX(s, m) __ ## s.__ ## m
     #if defined(__x86_64__)
-      #define current_pc context_rip
+      #define current_pc uc_mcontext->DU3_PREFIX(ss,rip)
     #elif defined(__aarch64__)
-      #define DU3_PREFIX(s, m) __ ## s.__ ## m
       #define current_pc uc_mcontext->DU3_PREFIX(ss,pc)
     #endif
 #else

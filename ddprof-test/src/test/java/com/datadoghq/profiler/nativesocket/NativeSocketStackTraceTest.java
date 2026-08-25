@@ -1,3 +1,8 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler.nativesocket;
 
 import com.datadoghq.profiler.CStackAwareAbstractProfilerTest;
@@ -7,11 +12,8 @@ import com.datadoghq.profiler.junit.RetryTest;
 import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.TestTemplate;
 import org.junit.jupiter.params.provider.ValueSource;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -62,18 +64,13 @@ public class NativeSocketStackTraceTest extends CStackAwareAbstractProfilerTest 
         // whatever frames happened to be on the stack.
         verifyStackTraces("datadog.NativeSocketEvent", "doTcpTransfer");
 
-        IItemCollection events = verifyEvents("datadog.NativeSocketEvent");
-        for (IItemIterable items : events) {
-            IMemberAccessor<String, IItem> stackTraceAccessor =
-                    JdkAttributes.STACK_TRACE_STRING.getAccessor(items.getType());
-            if (stackTraceAccessor == null) continue;
-            for (IItem item : items) {
-                String st = stackTraceAccessor.getMember(item);
-                if (st == null) continue;
-                for (String hookFrame : new String[] {"send_hook", "recv_hook", "write_hook", "read_hook"}) {
-                    assertFalse(st.contains(hookFrame),
-                            "profiler-internal hook frame " + hookFrame + " leaked into stack trace: " + st);
-                }
+        JfrEvents events = verifyEvents("datadog.NativeSocketEvent");
+        for (JfrEvent item : events) {
+            String st = item.getStackTraceString();
+            if (st == null) continue;
+            for (String hookFrame : new String[] {"send_hook", "recv_hook", "write_hook", "read_hook"}) {
+                assertFalse(st.contains(hookFrame),
+                        "profiler-internal hook frame " + hookFrame + " leaked into stack trace: " + st);
             }
         }
     }

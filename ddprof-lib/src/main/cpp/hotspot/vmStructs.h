@@ -465,6 +465,8 @@ class VMStructs {
         return (T)((uintptr_t)ptr & ~(sizeof(T) - 1));
     }
 
+    friend class VMStructsTestAccessor;
+
   public:
     static void init(CodeCache* libjvm);
     static void ready();

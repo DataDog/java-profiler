@@ -1,12 +1,14 @@
+/*
+ * Copyright 2026, Datadog, Inc.
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 package com.datadoghq.profiler.metadata;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.JfrEvent;
+import com.datadoghq.profiler.JfrEvents;
 import org.junit.jupiter.api.Test;
-import org.openjdk.jmc.common.item.IItem;
-import org.openjdk.jmc.common.item.IItemCollection;
-import org.openjdk.jmc.common.item.IItemIterable;
-import org.openjdk.jmc.common.item.IMemberAccessor;
-import org.openjdk.jmc.flightrecorder.jdk.JdkAttributes;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
@@ -45,7 +47,7 @@ public class MetadataNormalisationTest extends AbstractProfilerTest {
         }
         System.out.println(count);
         stopProfiler();
-        IItemCollection executionSamples = verifyEvents("datadog.ExecutionSample");
+        JfrEvents executionSamples = verifyEvents("datadog.ExecutionSample");
         Matcher[] forbiddenPatternMatchers = Stream.of(
                 "MH.*0x[A-Fa-f0-9]{3}", // method handles
                         "GeneratedConstructorAccessor\\d+",
@@ -53,14 +55,11 @@ public class MetadataNormalisationTest extends AbstractProfilerTest {
                 )
                 .map(regex -> Pattern.compile(regex).matcher(""))
                 .toArray(Matcher[]::new);
-        for (IItemIterable samples : executionSamples) {
-            IMemberAccessor<String, IItem> stacktraceAccessor = JdkAttributes.STACK_TRACE_STRING.getAccessor(samples.getType());
-            for (IItem item : samples) {
-                String stacktrace = stacktraceAccessor.getMember(item);
-                for (Matcher matcher : forbiddenPatternMatchers) {
-                    matcher.reset(stacktrace);
-                    assertFalse(matcher.find(), () -> matcher.pattern() + "\n" + stacktrace);
-                }
+        for (JfrEvent item : executionSamples) {
+            String stacktrace = item.getStackTraceString();
+            for (Matcher matcher : forbiddenPatternMatchers) {
+                matcher.reset(stacktrace);
+                assertFalse(matcher.find(), () -> matcher.pattern() + "\n" + stacktrace);
             }
         }
     }

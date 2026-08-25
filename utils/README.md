@@ -1,5 +1,7 @@
 # Utility Scripts
 
+<!-- Copyright 2026, Datadog, Inc -->
+
 This directory contains utility scripts for managing the java-profiler project.
 
 ---
@@ -12,7 +14,9 @@ Triggers the Validated Release workflow using GitHub CLI to create a new release
 
 **Prerequisites:**
 - [GitHub CLI](https://cli.github.com/) installed and authenticated
+- [jq](https://jqlang.github.io/jq/) installed
 - Git repository is up to date
+- The authenticated user has write, maintain, or admin repository access
 - You are on the correct branch for the release type
 
 **Usage:**
@@ -36,12 +40,40 @@ Triggers the Validated Release workflow using GitHub CLI to create a new release
 
 **Release flow:**
 1. Validates inputs and branch rules
-2. Interactive commit selection (or use `--commit`)
-3. Triggers GitHub Actions "Validated Release" workflow
-4. Workflow runs pre-release tests, creates annotated git tag
-5. Tag push triggers GitLab build pipeline
-6. GitLab builds multi-platform artifacts and publishes to Maven Central
-7. GitHub workflows create release with assets
+2. Fetches and verifies the selected branch is up to date with
+   `origin` (a checked-out local branch that's behind or ahead of origin
+   fails fast with pull instructions)
+3. For patch releases, asks whether to pick PRs from `main` to backport onto
+   the release branch first; if you accept, you select which PRs, a combined
+   backport PR is opened, and the script exits so you can merge it and re-run
+4. Interactive commit selection (or use `--commit`)
+5. Triggers GitHub Actions "Validated Release" workflow
+6. Workflow runs pre-release tests, then creates the annotated tag on the
+   selected commit (and a release branch for minor/major releases)
+7. Tag push triggers GitLab, which publishes the Maven artifacts, and the
+   GitHub release workflows attach the release assets
+
+No file modifications or version-bump PRs are needed — the version is
+computed from git tags at build time. The next build from `main` (or the
+release branch) automatically sees the new tag and computes the next
+snapshot version.
+
+Interactive pickers (branch and commit selection) support ↑/↓/Enter, and
+can be cancelled at any time with `q` or Ctrl-C.
+
+A dry run never creates a tag, pushes a branch, or triggers GitLab.
+
+### Testing release automation
+
+`.github/scripts/tests/test_release_automation.sh` is a single hermetic shell
+test. It validates release tag/branch creation, version computation, and
+trivial-PR authorization using temporary local git fixtures. It does not
+load credentials or invoke `gh`, so it cannot publish, tag, push, or merge
+anything remotely.
+
+```bash
+.github/scripts/tests/test_release_automation.sh
+```
 
 ---
 
@@ -71,6 +103,35 @@ Cherry-picks a merged PR onto a release branch, pushes the backport branch, and 
 ./utils/backport-pr.sh 1.9._ 420
 ./utils/backport-pr.sh 420          # interactive branch selection
 ./utils/backport-pr.sh --dry-run 1.9._ 420
+```
+
+### `prepare-patch.sh`
+
+Finds PRs merged to `main` since a release branch diverged, lets you
+multi-select which ones to backport, cherry-picks them onto a single new
+branch off the release branch, runs `./gradlew buildDebug` to catch a
+combination that doesn't build before pushing, and opens one combined PR.
+Also invoked interactively from `release.sh` when preparing a patch release.
+
+**Prerequisites:**
+- [GitHub CLI](https://cli.github.com/) installed and authenticated
+- [jq](https://jqlang.github.io/jq/) installed
+- Clean working tree
+
+**Usage:**
+```bash
+./utils/prepare-patch.sh [--branch release/X.Y._] [--no-dry-run]
+```
+
+**Options:**
+- `--branch <name>`: Release branch to prepare. If omitted, an interactive picker is shown.
+- `--no-dry-run`: Actually cherry-pick, push, and open the PR (default is dry-run).
+
+**Examples:**
+```bash
+./utils/prepare-patch.sh --branch release/1.9._            # dry-run, preview only
+./utils/prepare-patch.sh                                   # interactive branch selection, dry-run
+./utils/prepare-patch.sh --no-dry-run --branch release/1.9._
 ```
 
 ---

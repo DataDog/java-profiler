@@ -47,7 +47,7 @@ echo "Chaos run: runtime=${RUNTIME}s config=${CONFIG} allocator=${ALLOCATOR}"
 # doesn't match what's already active; otherwise just use `java` as found.
 if [ -n "${CHAOS_JDK:-}" ]; then
   JDK_MAJOR="${CHAOS_JDK%%.*}"
-  ACTIVE_MAJOR=$(java -version 2>&1 | head -1 | grep -oE '"[0-9]+' | tr -d '"')
+  ACTIVE_MAJOR=$(java -version 2>&1 | grep -m1 'version "' | grep -oE '"[0-9]+' | tr -d '"')
   if [ "${ACTIVE_MAJOR}" != "${JDK_MAJOR}" ]; then
     JDK_ARCH=$(uname -m | sed 's/x86_64/x64/')
     JDK_INSTALL_DIR="${CHAOS_JDK_DIR:-${WORK_DIR}/jdk-${CHAOS_JDK}}"
@@ -73,7 +73,7 @@ if ! command -v java >/dev/null 2>&1; then
   echo "FAIL:no java on PATH (set CHAOS_JDK to have one downloaded)" >&2
   exit 1
 fi
-echo "Using: $(java -version 2>&1 | head -1)"
+echo "Using: $(java -version 2>&1 | grep -m1 'version "')"
 
 # --- ddprof jar --------------------------------------------------------------
 # Prefer a local build artifact. If absent and CURRENT_VERSION is set (CI
@@ -136,14 +136,12 @@ fi
 case $CONFIG in
   profiler)
     ENABLEMENT="-Ddd.profiling.enabled=true -Ddd.trace.enabled=false"
-    # @Trace is a no-op without the tracer, so trace-context and
-    # vthread-context-cascade (which is driven entirely by @Trace-annotated
-    # methods) are excluded here.
-    DEFAULT_ANTAGONISTS="thread-churn,alloc-storm,vthread-churn,classloader-churn,bounded-pool,context-hop,consumer-group,hidden-class-churn,direct-memory,weakref-wave,dump-storm"
+    # @Trace is a no-op without the tracer, so trace-context is excluded here.
+    DEFAULT_ANTAGONISTS="thread-churn,alloc-storm,vthread-churn,classloader-churn,bounded-pool,context-hop,consumer-group,hidden-class-churn,direct-memory,weakref-wave,dump-storm,reapply-context-value"
     ;;
   profiler+tracer)
     ENABLEMENT="-Ddd.profiling.enabled=true -Ddd.trace.enabled=true"
-    DEFAULT_ANTAGONISTS="thread-churn,alloc-storm,vthread-churn,classloader-churn,trace-context,vthread-context-cascade,bounded-pool,context-hop,consumer-group,hidden-class-churn,direct-memory,weakref-wave,dump-storm"
+    DEFAULT_ANTAGONISTS="thread-churn,alloc-storm,vthread-churn,classloader-churn,trace-context,bounded-pool,context-hop,consumer-group,hidden-class-churn,direct-memory,weakref-wave,dump-storm,reapply-context-value"
     ;;
   *)
     echo "Unknown configuration: $CONFIG (valid: profiler, profiler+tracer)" >&2
@@ -163,7 +161,7 @@ case $ALLOCATOR in
     # Logged so a glibc-detected corruption abort can be reproduced with the
     # same perturb byte (the value is otherwise random per run).
     echo "MALLOC_PERTURB_=${MALLOC_PERTURB_}"
-    # thread-churn/dump-storm/vthread-context-cascade cycle many short-lived
+    # thread-churn/dump-storm/vthread-churn cycle many short-lived
     # threads; glibc's per-thread arenas are slow to trim back to the OS,
     # which was inflating container RSS past the OOM limit on aarch64
     # (mirrors the tcmalloc/jemalloc tuning below).
@@ -251,7 +249,6 @@ CHAOS_START=$(date +%s)
 timeout "$((RUNTIME + 300))" \
 java -javaagent:${PATCHED_AGENT} \
      --add-opens java.base/java.lang=ALL-UNNAMED \
-     --add-exports java.base/jdk.internal.misc=ALL-UNNAMED \
      ${ENABLEMENT} \
      -Ddd.profiling.upload.period=10 \
      -Ddd.profiling.start-force-first=true \

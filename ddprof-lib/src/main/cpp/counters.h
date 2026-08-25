@@ -1,5 +1,5 @@
 /*
- * Copyright 2023 Datadog, Inc
+ * Copyright 2023, 2026 Datadog, Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -133,7 +133,34 @@
   X(SAMPLES_DROPPED_THREAD_LOCAL, "samples_dropped_thread_local")             \
   X(SAFECOPY_FAILED, "safecopy_failed")                                       \
   X(SAFEFETCH_FAILED, "safefetch_failed")                                     \
-  X(WALKVM_LONGJMP_RECOVERED, "walkvm_longjmp_recovered")                     \
+  X(STACKWALK_LONGJMP_RECOVERED, "stackwalk_longjmp_recovered")               \
+  /* Dump-time raw-Method* resolution (HotspotSupport::resolve, reached only    \
+   * for cstack=vm + fjmethodid=false frames). NOT additive with               \
+   * STACKWALK_LONGJMP_RECOVERED: checkFault() bumps that one unconditionally  \
+   * before every siglongjmp, so each fault counted here is counted there too. \
+   * Subtract, never sum. Non-zero means stale HotSpot metadata (GC or class   \
+   * unloading) reached the dump thread; the frame serializes as "unknown". */ \
+  X(METHOD_RESOLVE_FAULT_RECOVERED, "method_resolve_fault_recovered")         \
+  /* Symbol length/body rejected during the same resolution: unreadable body,  \
+   * empty (recycled slot), or over MAX_SYMBOL_LEN. A name that merely exceeds \
+   * the fixed inline buffers in hotspotSupport.cpp's ResolvedNames still      \
+   * resolves via its malloc fallback and does not land here. The frame        \
+   * serializes as "unknown". */                                               \
+  X(METHOD_RESOLVE_SYMBOL_UNREADABLE, "method_resolve_symbol_unreadable")     \
+  /* Strict subset of SAMPLES_DROPPED_THREAD_LOCAL, not an independent count: \
+   * ThreadLocalDataPool::claim() increments this on capacity exhaustion, and \
+   * every acquireCurrent() caller that gets nullptr back -- for this or any  \
+   * other reason -- separately increments SAMPLES_DROPPED_THREAD_LOCAL too.  \
+   * So every pool-exhaustion drop bumps both counters together; the two     \
+   * should be subtracted (thread_local_pool_exhausted from                  \
+   * samples_dropped_thread_local) to isolate non-pool priming drops, never  \
+   * summed. */                                                              \
+  X(SAMPLES_DROPPED_TLS_POOL_EXHAUSTED, "thread_local_pool_exhausted")        \
+  /* writeElement() guards against a corrupted/dangling JfrMetadata tree.     \
+   * Root cause is still unconfirmed, so these counters are the durable       \
+   * signal for spotting a recurrence. */                                     \
+  X(METADATA_TREE_NULL_CHILD, "metadata_tree_null_child")                     \
+  X(METADATA_TREE_DEPTH_EXCEEDED, "metadata_tree_depth_exceeded")             \
   DD_COUNTER_TABLE_FAULT_INJECTION(X)                                          \
   DD_COUNTER_TABLE_FI_DEBUG(X)                                                 \
   DD_COUNTER_TABLE_DEBUG(X)

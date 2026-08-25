@@ -474,16 +474,10 @@ void CodeCache::setDwarfTable(FrameDesc *table, int length, const FrameDesc &def
   // _dwarf_table_length lock-free at dump time, so this must not run afterwards.
   assert(!_published.load(std::memory_order_acquire) &&
          "setDwarfTable() on a published CodeCache races memoryUsage()");
-  // The parser (SFrameParser/DwarfParser) builds this table with capacity-doubling
-  // malloc/realloc, so the incoming allocation is typically larger than length
-  // entries. Shrink it to the exact size so memoryUsage()'s length-based formula
-  // isn't an undercount, and so the doubling slack doesn't linger in real RSS.
-  if (length > 0) {
-    FrameDesc *trimmed = (FrameDesc *)realloc(table, length * sizeof(FrameDesc));
-    if (trimmed != NULL) {
-      table = trimmed;
-    }
-  }
+  // The parser (SFrameParser/DwarfParser) already shrinks its capacity-doubled
+  // buffer to exactly `length` entries before returning it from table(), so
+  // memoryUsage()'s length-based formula matches the real allocation with no
+  // trim step needed here.
   _dwarf_table = table;
   _dwarf_table_length = length;
   _default_frame = &default_frame;

@@ -254,26 +254,19 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         jclass Thread_class = jni->FindClass("java/lang/Thread");
         jclass Class_class = jni->FindClass("java/lang/Class");
         if (Thread_class != nullptr && Class_class != nullptr) {
-          jmethodID equals = jni->GetMethodID(Class_class,
-                                              "equals", "(Ljava/lang/Object;)Z");
-          if (equals != nullptr) {
-            jclass klass = method_class;
-            do {
-              entry = jni->CallBooleanMethod(Thread_class, equals, klass);
-              if (jniExceptionCheck(jni)) {
-                entry = false;
-                break;
-              }
-              if (entry) {
-                break;
-              }
-            } while ((klass = jni->GetSuperclass(klass)) != NULL);
+          jmethodID isAssignableFrom =
+              jni->GetMethodID(Class_class, "isAssignableFrom", "(Ljava/lang/Class;)Z");
+          if (isAssignableFrom != nullptr) {
+            entry = jni->CallBooleanMethod(Thread_class, isAssignableFrom, method_class);
+            if (jniExceptionCheck(jni)) {
+              entry = false;
+            }
           }
         }
         // Clear any exceptions from the reflection calls above
         jniExceptionCheck(jni);
       } else if (strncmp(method_name, "main", 5) == 0 &&
-                 strncmp(method_sig, "(Ljava/lang/String;)V", 21)) {
+                 strncmp(method_sig, "([Ljava/lang/String;)V", 22) == 0) {
         // public static void main(String[] args) - 'public static' translates
         // to modifier bits 0 and 3, hence check for '9'
         entry = true;
@@ -361,7 +354,7 @@ void Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
     } else {
       Counters::increment(JMETHODID_SKIPPED);
       class_name_id = _classes->lookupDuringDump("", 0, Profiler::maxClassMapSize());
-      method_name_id = _symbols.lookup("jvmtiError");
+      method_name_id = _symbols.lookup("<unloaded>");
       method_sig_id = _symbols.lookup("()L;");
     }
 
@@ -560,6 +553,14 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   jint bci = frame.bci;
   jmethodID method_id = frame.method_id;
 
+  // HotSpot's VM stack walker uses this sentinel when it could not validate a
+  // Method*. It is not a JNI/JVMTI jmethodID and must never reach
+  // fillJavaMethodInfo(). Keep the frame structurally intact, but serialize it
+  // as the shared unknown method.
+  if (VM::isHotspot() && method_id == JMETHODID_NOT_WALKABLE) {
+    method_id = nullptr;
+  }
+
   // Resolve native method
   if (FrameType::isRawPointer(bci)) {
     method_id = JVMSupport::resolve(frame.method);
@@ -662,22 +663,6 @@ MethodInfo *Lookup::resolveMethod(ASGCT_CallFrame &frame) {
   }
 
   return mi;
-}
-
-void Lookup::initClassCache() {
-  // Snapshot _classes into _class_cache for use by resolveMethod(BCI_ALLOC).
-  // Must be called before writeStackTraces() so the snapshot covers all
-  // vtable-receiver classes (pre-registered before profiling starts).
-  // This snapshot is intentionally NOT used by writeClasses(): regular Java
-  // classes are inserted into _classes by fillJavaMethodInfo() during
-  // writeStackTraces/writeMethods, so writeClasses() must re-collect after
-  // those passes to obtain the complete class pool.
-  // standby() is the post-rotate snapshot of _classes; collect() copies its
-  // entries with no concurrent writers (rotate drained them).  The shared
-  // classMapSharedGuard is held for any concurrent #527 vtable readers that
-  // also touch _classes directly via lookup() on active.
-  auto guard = Profiler::instance()->classMapSharedGuard();
-  _classes->standby()->collect(_class_cache);
 }
 
 u32 Lookup::getPackage(const char *class_name) {
@@ -1146,7 +1131,35 @@ void Recording::writeHeader(Buffer *buf) {
   flushIfNeeded(buf);
 }
 
-void Recording::writeElement(Buffer *buf, const Element *e) {
+size_t Recording::countSerializableChildren(
+    const std::vector<const Element *> &children, int depth) {
+  // Children one level deeper than `depth` are what writeElement() would
+  // truncate on its own depth check, so exclude them here too, before being
+  // counted, so child_count always matches the number of children actually
+  // serialized below (an inflated count would make the metadata stream
+  // itself malformed).
+  bool truncate_children = depth + 1 > 10;
+
+  size_t child_count = 0;
+  for (size_t i = 0; i < children.size(); i++) {
+    if (children[i] == nullptr) {
+      Counters::increment(METADATA_TREE_NULL_CHILD);
+      fprintf(stderr, "[ddprof] [WARN] writeElement skipping null child at index %zu\n", i);
+    } else if (truncate_children) {
+      Counters::increment(METADATA_TREE_DEPTH_EXCEEDED);
+      fprintf(stderr, "[ddprof] [WARN] writeElement truncating child at index %zu, depth limit exceeded\n", i);
+    } else {
+      child_count++;
+    }
+  }
+  return child_count;
+}
+
+void Recording::writeElement(Buffer *buf, const Element *e, int depth) {
+  if (e == nullptr) {
+    return;
+  }
+
   buf->putVar64(e->_name);
 
   buf->putVar64(e->_attributes.size());
@@ -1156,10 +1169,18 @@ void Recording::writeElement(Buffer *buf, const Element *e) {
     buf->putVar64(e->_attributes[i]._value);
   }
 
-  buf->putVar64(e->_children.size());
-  for (size_t i = 0; i < e->_children.size(); i++) {
-    flushIfNeeded(buf);
-    writeElement(buf, e->_children[i]);
+  bool truncate_children = depth + 1 > 10;
+  size_t child_count = countSerializableChildren(e->_children, depth);
+
+  buf->putVar64(child_count);
+  if (!truncate_children) {
+    for (size_t i = 0; i < e->_children.size(); i++) {
+      if (e->_children[i] == nullptr) {
+        continue;
+      }
+      flushIfNeeded(buf);
+      writeElement(buf, e->_children[i], depth + 1);
+    }
   }
   flushIfNeeded(buf);
 }
@@ -1193,6 +1214,12 @@ void Recording::writeSettings(Buffer *buf, Arguments &args) {
                      Log::LEVEL_NAME[Log::level()]);
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "hotspot", VM::isHotspot());
   writeBoolSetting(buf, T_ACTIVE_RECORDING, "openj9", VM::isOpenJ9());
+  writeBoolSetting(buf, T_ACTIVE_RECORDING, "sanityCheckFailed",
+                   Profiler::instance()->sanityCheckFailed());
+  if (Profiler::instance()->sanityCheckFailed()) {
+    writeStringSetting(buf, T_ACTIVE_RECORDING, "sanityCheckDetail",
+                       Profiler::instance()->sanityCheckMessage());
+  }
   for (auto attribute : args._context_attributes) {
     writeStringSetting(buf, T_ACTIVE_RECORDING, "contextattribute",
                        attribute.c_str());
@@ -1468,13 +1495,11 @@ int Recording::writeCpool(Buffer *buf, int *count_offset_in_cpool) {
   // Profiler::rotateDictsAndRun() rotates the three dictionaries before this
   // path runs, so classMap()->standby() returns an old-active snapshot stable
   // for the lifetime of writeCpool().
-  // initClassCache() seeds vtable-receiver class names for resolveMethod(BCI_ALLOC).
-  // writeClasses() then collects the COMPLETE class set from standby(): regular Java
+  // writeClasses() collects the COMPLETE class set from standby(): regular Java
   // classes are inserted into the new-active by fillJavaMethodInfo during
   // writeStackTraces/writeMethods, and those would not appear in the snapshot —
   // standby() captures the pre-rotation state which writeClasses extends.
   Lookup lookup(this, &_method_map, Profiler::instance()->classMap());
-  lookup.initClassCache();
   // CONSTANT pools: always non-empty, always emitted -> 5 sections.
   // writeThreads always emits: it inserts _tid unconditionally before checking.
   writeFrameTypes(buf);

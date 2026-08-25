@@ -3,6 +3,7 @@ package com.datadoghq.profiler.jfr;
 import com.datadoghq.profiler.Platform;
 
 import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.TestTemplate;
@@ -10,6 +11,7 @@ import org.junit.jupiter.api.TestTemplate;
 import com.datadoghq.profiler.junit.CStack;
 import com.datadoghq.profiler.junit.RetryTest;
 
+@Tag("slow")
 public class ObjectSampleDumpSmokeTest extends JfrDumpTest {
     public ObjectSampleDumpSmokeTest(@CStack String cstack) {
         super(cstack);
