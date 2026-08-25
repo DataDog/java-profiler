@@ -78,6 +78,15 @@ public:
     drain(now_ns);
     return _balance_ms;
   }
+
+  // Changes the refill rate without resetting accumulated debt - unlike
+  // assigning a freshly-constructed PainBudget(rate), which would zero
+  // _balance_ms. Drains at the *old* rate up to now_ns first, so the rate
+  // change only affects time elapsed after this call.
+  void setRefillRate(double refill_rate, u64 now_ns) {
+    drain(now_ns);
+    _refill_rate = refill_rate;
+  }
 };
 
 #endif // _PAINBUDGET_H

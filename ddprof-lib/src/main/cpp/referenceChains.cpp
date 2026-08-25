@@ -725,21 +725,6 @@ void ReferenceChainTracker::threadLoop() {
                (int)urgent, _effective_pause_target_ms,
                (unsigned long long)cadence_ns, _budget);
     }
-    // Run passes back-to-back: the PID controller (updatePacing()) already
-    // self-regulates the per-pass budget and cadence to keep STW
-    // pauses within the pause-target SLO. With canary pruning,
-    // the total STW budget is tiny (<20ms per 60s recording in
-    // practice), so sleeping between passes wastes time the
-    // search could use to complete faster. The cadence
-    // sleep is only kept as a fallback for an idle search
-    // (no pending frontier) to avoid busy-waiting.
-    if (cadence_ns > 0) {
-      OS::sleep(cadence_ns);
-    }
-    if (!_running.load(std::memory_order_acquire)) {
-      break;
-    }
-
     // Third trigger for LivenessTracker::cleanup_table() (see
     // LivenessTracker::maybeForceCleanup()'s own comment): track()'s
     // table-overflow branch and flush_table()'s JFR cadence can both starve
@@ -885,11 +870,27 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns) {
     // logging it is pure per-second noise (see threadLoop()).
     return false;
   }
+  // Canary search active with candidates still to find - computed ahead of
+  // the pain-budget check below (CANARY_PAIN_BUDGET_REFILL_MULTIPLIER's own
+  // comment) so the escalation and the bypass branch further down agree on
+  // the same snapshot of _candidate_found_bits.
+  bool canary_active = _candidate_count > 0 &&
+      __builtin_popcountll(_candidate_found_bits) < (u64)_candidate_count;
   // Non-safepoint CPU-time budget (_cpu_pain_budget's own comment,
-  // referenceChains.h): applies uniformly ahead of every other trigger below
-  // - GC-finish, cadence, and the canary-search cadence bypass alike - since
-  // none of those signals has any visibility into the non-safepoint
-  // bookkeeping cost this budget tracks.
+  // referenceChains.h): applies ahead of every other trigger below -
+  // GC-finish and cadence alike - since neither has any visibility into the
+  // non-safepoint bookkeeping cost this budget tracks. Escalated while a
+  // canary search is active and unresolved (CANARY_PAIN_BUDGET_REFILL_MULTIPLIER)
+  // so this conservative background-cost bound, sized for an idle
+  // whole-graph BFS, does not also stall a targeted canary search
+  // indefinitely; reverts to the configured rate the moment canary_active
+  // goes false (recomputed every call, nothing to reset).
+  _cpu_pain_budget.setRefillRate(
+      canary_active ? std::min(_pain_budget_refill_rate *
+                                    CANARY_PAIN_BUDGET_REFILL_MULTIPLIER,
+                                1.0)
+                    : _pain_budget_refill_rate,
+      now_ns);
   if (!_cpu_pain_budget.canStartNow(now_ns)) {
     return false;
   }
@@ -913,8 +914,7 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns) {
   // the per-pass STW pause, and the total budget is tiny in practice
   // (<20ms per 60s recording). Only gate on cadence when there
   // are no canary candidates to chase (whole-graph BFS mode).
-  if (_candidate_count > 0 &&
-      __builtin_popcountll(_candidate_found_bits) < (u64)_candidate_count) {
+  if (canary_active) {
     // Canary search active with candidates still to find --
     // run the next pass immediately.
     TEST_LOG("ReferenceChainTracker::shouldRunPass -> true (canary search, "
@@ -1167,6 +1167,9 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   _resolved_chains_lock.lock();
   _resolved_chains.clear();
   _resolved_chains_lock.unlock();
+  _pending_abandoned_events_lock.lock();
+  _pending_abandoned_events.clear();
+  _pending_abandoned_events_lock.unlock();
 
   // Restart the BFS thread against this freshly reset state - startThread()
   // itself clears _abort_pass_requested, so the new thread's very first
@@ -3063,6 +3066,7 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
     // list above (frontier-size cap hit abandons regardless of TTL).
     store(_abandon_reason, (u8)SearchAbandonReason::FRONTIER_CAP);
     storeRelease(_search_state, (u8)SearchState::ABANDONED);
+    enqueuePendingAbandonedEvent();
     TEST_LOG("ReferenceChainTracker::runPass frontier cap hit -- "
              "abandoning search (size=%d)",
              frontier_size_after);
@@ -3102,6 +3106,7 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
     // the search must complete to find the leak before the app OOMs.
     store(_abandon_reason, (u8)SearchAbandonReason::TTL);
     storeRelease(_search_state, (u8)SearchState::ABANDONED);
+    enqueuePendingAbandonedEvent();
   } else if (_candidate_count > 0 &&
              __builtin_popcountll(_candidate_found_bits) ==
                  (u64)_candidate_count) {
@@ -3126,6 +3131,7 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
     // budget during the same OOM approach this search exists to diagnose.
     store(_abandon_reason, (u8)SearchAbandonReason::CANARY_STUCK);
     storeRelease(_search_state, (u8)SearchState::ABANDONED);
+    enqueuePendingAbandonedEvent();
   }
 
   // Track progress: if the frontier grew this pass, reset the no-progress
@@ -3687,5 +3693,50 @@ void ReferenceChainTracker::drainPendingChainEvents(
   }
   _resolved_chains_lock.unlock();
   TEST_LOG("ReferenceChainTracker::drainPendingChainEvents re-emitted=%d",
+           (int)out->size());
+}
+
+void ReferenceChainTracker::enqueuePendingAbandonedEvent() {
+  // Called right after runPass() (referenceChains.cpp) writes
+  // SearchState::ABANDONED, on the same thread, before shouldRunPass() gets
+  // a chance to call restartSearch() - so buildAbandonedEvent()'s live read
+  // of _search_state/_abandon_reason/etc. is guaranteed to still succeed
+  // here even though it cannot be trusted to succeed later, from dump()'s
+  // independent clock (see _pending_abandoned_events' own comment).
+  ReferenceChainAbandonedEvent event;
+  if (!buildAbandonedEvent(&event)) {
+    return;
+  }
+  _pending_abandoned_events_lock.lock();
+  if ((int)_pending_abandoned_events.size() >= MAX_PENDING_ABANDONED_EVENTS) {
+    _pending_abandoned_events_lock.unlock();
+    Counters::increment(REFERENCE_CHAIN_EVENTS_DROPPED);
+    TEST_LOG("ReferenceChainTracker::enqueuePendingAbandonedEvent dropped, "
+             "queue full (at MAX_PENDING_ABANDONED_EVENTS=%d)",
+             MAX_PENDING_ABANDONED_EVENTS);
+    return;
+  }
+  _pending_abandoned_events.push_back(event);
+  TEST_LOG("ReferenceChainTracker::enqueuePendingAbandonedEvent reason=%d "
+           "queue_size=%d",
+           (int)event._reason, (int)_pending_abandoned_events.size());
+  _pending_abandoned_events_lock.unlock();
+}
+
+void ReferenceChainTracker::drainPendingAbandonedEvents(
+    std::vector<ReferenceChainAbandonedEvent> *out) {
+  if (out == nullptr) {
+    return;
+  }
+  // True drain, unlike drainPendingChainEvents() above: each queued event
+  // describes a discrete past occurrence, not an ongoing live sample, so
+  // once Profiler::dump() (profiler.cpp) has emitted it there is nothing
+  // left to re-report on the next dump.
+  _pending_abandoned_events_lock.lock();
+  out->insert(out->end(), _pending_abandoned_events.begin(),
+              _pending_abandoned_events.end());
+  _pending_abandoned_events.clear();
+  _pending_abandoned_events_lock.unlock();
+  TEST_LOG("ReferenceChainTracker::drainPendingAbandonedEvents drained=%d",
            (int)out->size());
 }

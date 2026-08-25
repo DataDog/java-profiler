@@ -2047,18 +2047,23 @@ Error Profiler::dump(const char *path, const int length) {
     // flag so an opted-out recording does not keep re-reporting a dead
     // session's abandoned search or stale resolved chains.
     if (ReferenceChainTracker::instance()->enabled()) {
-      // If ReferenceChainTracker's search has ended in ABANDONED (Termination
-      // section, referenceChains.h), report it via a datadog.ReferenceChainAbandoned
-      // event. Mirrors the flush() call directly above; unlike that table this
-      // read does not clear any state, so a dump taken again after this point
-      // re-reports the same abandoned search rather than losing it.
-      if (ReferenceChainTracker::instance()->searchState() ==
-          SearchState::ABANDONED) {
-        ReferenceChainAbandonedEvent rc_event;
-        if (ReferenceChainTracker::instance()->buildAbandonedEvent(&rc_event)) {
-          rc_event._start_time = TSC::ticks();
-          writeReferenceChainAbandoned(&rc_event);
-        }
+      // ReferenceChainTracker's BFS thread restarts an ABANDONED search on
+      // its own ~1s cadence (referenceChains.cpp shouldRunPass() ->
+      // restartSearch()), which clears the very state
+      // buildAbandonedEvent() needs. A live re-read of searchState() here
+      // would almost always miss that ~1s window against dump()'s much
+      // slower JFR-chunk-rotation cadence. Instead each abandon is
+      // snapshotted into a queue at the moment it happens
+      // (enqueuePendingAbandonedEvent(), called from runPass()) and drained
+      // here - a true drain, unlike drainPendingChainEvents() below, since
+      // an abandon is a one-off past occurrence rather than an ongoing live
+      // sample.
+      std::vector<ReferenceChainAbandonedEvent> pending_abandoned_events;
+      ReferenceChainTracker::instance()->drainPendingAbandonedEvents(
+          &pending_abandoned_events);
+      for (auto &rc_event : pending_abandoned_events) {
+        rc_event._start_time = TSC::ticks();
+        writeReferenceChainAbandoned(&rc_event);
       }
 
       // Re-emit every currently-cached datadog.ReferenceChain pollWatchedTargets()

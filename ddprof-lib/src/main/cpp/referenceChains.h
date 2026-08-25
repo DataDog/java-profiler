@@ -1130,6 +1130,33 @@ private:
   std::unordered_map<u32, CachedChain> _resolved_chains;
   SpinLock _resolved_chains_lock;
 
+  // Abandoned-search events awaiting Profiler::dump() (profiler.cpp).
+  // Populated synchronously by runPass() (referenceChains.cpp), at the exact
+  // point it writes SearchState::ABANDONED, by building a
+  // ReferenceChainAbandonedEvent from the fields that are only valid right
+  // then. Reading those fields lazily later (buildAbandonedEvent(), a live
+  // re-read of _search_state/_abandon_reason/etc.) does not work in
+  // production: shouldRunPass() (this class's own header comment) can call
+  // restartSearch() as soon as the very next BFS-thread loop iteration
+  // (~1s later), which both flips _search_state back to RUNNING and clears
+  // _abandon_reason/_search_start_ns/_passes_run - while Profiler::dump()
+  // only samples this tracker's state on JFR chunk rotation, an independent
+  // and much slower clock (tens of seconds). A dump landing outside that
+  // ~1s window previously saw nothing to report at all, silently dropping
+  // every abandoned-search event. Queueing the fully-built event at the
+  // moment of abandon removes the race entirely: dump() drains whatever
+  // accumulated since its last call, however long that took.
+  //
+  // Bounded like _resolved_chains above: an abandon queued between two
+  // dumps should be rare (dump cadence is normally much shorter than how
+  // long a search takes to get stuck), so hitting the cap and dropping
+  // (counted via REFERENCE_CHAIN_EVENTS_DROPPED, "no silent truncation")
+  // signals abandons happening far faster than normal, worth surfacing
+  // rather than growing without bound.
+  static constexpr int MAX_PENDING_ABANDONED_EVENTS = 16;
+  std::vector<ReferenceChainAbandonedEvent> _pending_abandoned_events;
+  SpinLock _pending_abandoned_events_lock;
+
   // Search restart (this class's own header comment): leaky bucket over the
   // wall-clock cost of past searches, gating how soon a *restarted* search
   // may take its first pass - see PainBudget's own comment (painBudget.h)
@@ -1938,6 +1965,15 @@ private:
   void cacheResolvedChain(u32 klass_id, ReferenceChainEvent &&event,
                           jlong source_tag, u64 source_search_ns);
 
+  // Snapshots the just-abandoned search into _pending_abandoned_events -
+  // called from runPass() (referenceChains.cpp) immediately after it writes
+  // SearchState::ABANDONED, while buildAbandonedEvent()'s source fields are
+  // still valid (see _pending_abandoned_events' own comment for why this
+  // cannot be deferred to dump()-time). A no-op (dropped, counted via
+  // REFERENCE_CHAIN_EVENTS_DROPPED) if the queue is already at
+  // MAX_PENDING_ABANDONED_EVENTS.
+  void enqueuePendingAbandonedEvent();
+
 public:
   static ReferenceChainTracker *instance() {
     static ReferenceChainTracker instance;
@@ -1961,6 +1997,14 @@ public:
   // at the BFS thread's fixed per-second tick rate, so there is no reason
   // for them to differ.
   static constexpr int CANARY_NO_PROGRESS_PASS_LIMIT = 30;
+
+  // While a canary search has candidates still unresolved, shouldRunPass()
+  // escalates _cpu_pain_budget's refill rate by this factor (capped at
+  // 100%/wall-clock) so the same conservative background-cost bound that
+  // protects an idle whole-graph BFS does not also stall a targeted canary
+  // search indefinitely. Same 4x factor _budget's own urgency ramp already
+  // uses (threadLoop()) - no reason for canary escalation to differ.
+  static constexpr double CANARY_PAIN_BUDGET_REFILL_MULTIPLIER = 4.0;
 
   // Base marker tag for canary-search candidates. Each candidate i
   // gets MARKER_TAG_BASE - i (distinct negative values) so
@@ -2254,6 +2298,19 @@ public:
   // is currently empty. The name is retained from the drain-once era for its
   // stable call site; the semantics are now snapshot-and-keep.
   void drainPendingChainEvents(std::vector<ReferenceChainEvent> *out);
+
+  // Appends every abandoned-search event queued since the last call and
+  // clears the queue - a true drain, unlike drainPendingChainEvents() above:
+  // an abandoned search is a discrete past occurrence, not an ongoing live
+  // sample, so there is nothing left to re-report once Profiler::dump()
+  // (profiler.cpp) has emitted it. Exists because searchState()/
+  // buildAbandonedEvent() alone cannot be read reliably from dump()'s thread
+  // (see _pending_abandoned_events' own comment): each event here was
+  // snapshotted synchronously, on the BFS thread, at the exact moment the
+  // search abandoned - before shouldRunPass() gets a chance to call
+  // restartSearch() and clear the live fields buildAbandonedEvent() would
+  // otherwise have read.
+  void drainPendingAbandonedEvents(std::vector<ReferenceChainAbandonedEvent> *out);
 
   static void JNICALL GarbageCollectionStart(jvmtiEnv *jvmti_env);
   static void JNICALL GarbageCollectionFinish(jvmtiEnv *jvmti_env);
