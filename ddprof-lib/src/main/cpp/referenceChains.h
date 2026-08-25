@@ -736,6 +736,16 @@ private:
   // none did.
   int _last_candidate_progress_mark;
 
+  // How many consecutive times in a row runPass()'s canary-stuck check
+  // (CANARY_NO_PROGRESS_PASS_LIMIT below) has abandoned this same
+  // candidate-chase sequence. Never reset by restartSearch() - it must
+  // survive across restarts to make the escalation in
+  // canaryStuckPassLimit() actually widen with repeated failures. Reset to
+  // 0 whenever a search leaves RUNNING for a reason other than
+  // CANARY_STUCK (natural completion, candidate-complete, frontier cap,
+  // TTL) - see the terminal-state block in runPass().
+  int _canary_stuck_restart_count;
+
   // Canary-search candidate set: pre-tagged with distinct
   // marker tags (MARKER_TAG_BASE - i) before the walk, applied to each
   // candidate's specific representative object (identity match) - matching
@@ -1464,6 +1474,7 @@ private:
         _hop_cap(0), _budget(0), _first_pass_budget(0), _ttl_ms(0), _pause_target_ms(0),
         _effective_pause_target_ms(0), _passes_since_last_progress(0),
         _passes_since_last_candidate_progress(0), _last_candidate_progress_mark(0),
+        _canary_stuck_restart_count(0),
         _effective_budget(0), _effective_cadence_ns(PASS_CADENCE_NS),
         _pause_pid(1, 1.0, 1.0, 1.0, 1, 1.0), _search_started(false),
         _tags_released(true), _urgent_latched(false),
@@ -1987,16 +1998,40 @@ public:
   // frontier stops growing entirely.
   static constexpr int NO_PROGRESS_PASS_LIMIT = 30;
 
-  // Abandon a canary search after this many consecutive passes with no
-  // change to _candidate_found_bits (no candidate newly found, no new
-  // candidate admitted into a slot) - see
-  // _passes_since_last_candidate_progress's own comment for why this is a
-  // separate counter/limit from NO_PROGRESS_PASS_LIMIT above, and why the
-  // check built on it is not suppressed by isUrgent(). Same value as
-  // NO_PROGRESS_PASS_LIMIT: both represent "genuinely stuck, not just slow"
-  // at the BFS thread's fixed per-second tick rate, so there is no reason
-  // for them to differ.
+  // Base limit for the canary-specific stuck detector: candidate-discovery
+  // must show no progress (no change to _candidate_found_bits, no new
+  // candidate admitted into a slot) for this many consecutive passes AND
+  // the whole-graph frontier must also have stalled for NO_PROGRESS_PASS_LIMIT
+  // passes (see runPass()'s CANARY_STUCK branch) before a canary search is
+  // abandoned. The whole-graph requirement was added after live evidence
+  // showed the frontier still growing tens of thousands of entries deep
+  // while chasing a specific, confirmed-reachable candidate - a canary
+  // search is not "stuck" just because it hasn't found its candidate yet
+  // if the graph walk itself is still making real progress toward it.
+  // canaryStuckPassLimit() escalates this base value across consecutive
+  // CANARY_STUCK restarts of the same candidate-chase sequence (see
+  // _canary_stuck_restart_count), since a fixed cutoff cannot distinguish
+  // "genuinely unreachable within any reasonable budget" from "reachable,
+  // but deeper than one restart cycle can cover" - a large/deep heap
+  // legitimately needs more passes, not a smaller one.
   static constexpr int CANARY_NO_PROGRESS_PASS_LIMIT = 30;
+
+  // Upper bound on how many times canaryStuckPassLimit() doubles the base
+  // limit (2^8 = 256x -> 7680 passes at the default base of 30) - bounds
+  // the escalation so a search that is ACTUALLY stuck forever (as opposed
+  // to merely deep) still gets abandoned in finite time rather than
+  // growing its patience without limit.
+  static constexpr int MAX_CANARY_STUCK_BACKOFF_SHIFT = 8;
+
+  // The canary-stuck pass limit for the *current* restart attempt:
+  // CANARY_NO_PROGRESS_PASS_LIMIT doubled once per consecutive CANARY_STUCK
+  // restart of this candidate-chase sequence, capped at
+  // MAX_CANARY_STUCK_BACKOFF_SHIFT doublings.
+  int canaryStuckPassLimit() const {
+    return CANARY_NO_PROGRESS_PASS_LIMIT
+           << std::min(_canary_stuck_restart_count,
+                        MAX_CANARY_STUCK_BACKOFF_SHIFT);
+  }
 
   // While a canary search has candidates still unresolved, shouldRunPass()
   // escalates _cpu_pain_budget's refill rate by this factor (capped at
@@ -2024,8 +2059,11 @@ public:
   // Test accessor for _passes_since_last_progress.
   int passesSinceLastProgressForTest() const { return _passes_since_last_progress; }
   int candidateCountForTest() const { return _candidate_count; }
+  void setCandidateCountForTest(int n) { _candidate_count = n; }
   u64 candidateFoundBitsForTest() const { return _candidate_found_bits; }
   void setCandidateFrontierTagForTest(int idx, jlong tag) { _candidate_frontier_tags[idx] = tag; }
+  int passesSinceLastCandidateProgressForTest() const { return _passes_since_last_candidate_progress; }
+  int canaryStuckRestartCountForTest() const { return _canary_stuck_restart_count; }
 
   ReferenceChainTracker(const ReferenceChainTracker &) = delete;
   ReferenceChainTracker &operator=(const ReferenceChainTracker &) = delete;

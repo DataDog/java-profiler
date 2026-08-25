@@ -456,6 +456,7 @@ Error ReferenceChainTracker::start(Arguments &args) {
   _candidate_found_bits = 0;
   _passes_since_last_candidate_progress = 0;
   _last_candidate_progress_mark = 0;
+  _canary_stuck_restart_count = 0;
   // Budget-borrowing (referenceChains.h's _borrowed_budget comment): reset
   // alongside the rest of the pacing controller's state, so a restarted
   // search never inherits headroom earned by a previous one.
@@ -1157,6 +1158,7 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   _passes_since_last_progress = 0;
   _passes_since_last_candidate_progress = 0;
   _last_candidate_progress_mark = 0;
+  _canary_stuck_restart_count = 0;
   _candidate_count = 0;
   _candidate_found_bits = 0;
   // _candidate_tags will be filled by pre-tagging in pollWatchedTargets().
@@ -3116,8 +3118,9 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
     Counters::increment(REFERENCE_CHAIN_CANDIDATES_FOUND,
                              __builtin_popcountll(_candidate_found_bits));
   } else if (_candidate_count > 0 &&
+             _passes_since_last_progress >= NO_PROGRESS_PASS_LIMIT &&
              _passes_since_last_candidate_progress >=
-                 CANARY_NO_PROGRESS_PASS_LIMIT) {
+                 canaryStuckPassLimit()) {
     // Canary-specific stuck detector - deliberately NOT suppressed by
     // isUrgent() (contrast the ordinary TTL check above). The ordinary
     // check's !isUrgent() guard protects a search that's still making real
@@ -3129,9 +3132,20 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
     // passes is provably not converging regardless of urgency, so letting
     // isUrgent() keep it RUNNING would only burn urgency-boosted STW pause
     // budget during the same OOM approach this search exists to diagnose.
+    //
+    // Also requires the whole-graph frontier to have stalled
+    // (_passes_since_last_progress >= NO_PROGRESS_PASS_LIMIT): a search
+    // whose frontier is still growing is making real progress toward
+    // eventually reaching the candidate even if it hasn't yet, so it is
+    // not "stuck" in the sense this detector exists to catch - see
+    // canaryStuckPassLimit()'s own comment for why the pass limit itself
+    // also escalates across consecutive restarts of the same chase.
     store(_abandon_reason, (u8)SearchAbandonReason::CANARY_STUCK);
     storeRelease(_search_state, (u8)SearchState::ABANDONED);
     enqueuePendingAbandonedEvent();
+    if (_canary_stuck_restart_count < MAX_CANARY_STUCK_BACKOFF_SHIFT) {
+      _canary_stuck_restart_count++;
+    }
   }
 
   // Track progress: if the frontier grew this pass, reset the no-progress
@@ -3182,6 +3196,13 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
       _candidate_found_bits = 0;
       _passes_since_last_candidate_progress = 0;
       _last_candidate_progress_mark = 0;
+    }
+    // Only CANARY_STUCK should keep escalating canaryStuckPassLimit() -
+    // any other terminal reason (natural completion, all candidates found,
+    // frontier cap, TTL) is an unrelated outcome for this chase sequence,
+    // so a fresh restart afterward should start back at the base limit.
+    if (load(_abandon_reason) != SearchAbandonReason::CANARY_STUCK) {
+      _canary_stuck_restart_count = 0;
     }
   }
 

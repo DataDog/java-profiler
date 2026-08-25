@@ -88,6 +88,9 @@ public:
         t->_passes_since_last_progress = 0;
         t->_candidate_count = 0;
         t->_candidate_found_bits = 0;
+        t->_passes_since_last_candidate_progress = 0;
+        t->_last_candidate_progress_mark = 0;
+        t->_canary_stuck_restart_count = 0;
         t->_resolved_chains.clear();
         t->_safepoint_pain_budget = PainBudget();
         t->_cpu_pain_budget = PainBudget();
@@ -119,6 +122,18 @@ public:
 
     static void setCandidateFrontierTagForTest(int idx, jlong tag) {
         ReferenceChainTracker::instance()->setCandidateFrontierTagForTest(idx, tag);
+    }
+
+    static void setCandidateCountForTest(int n) {
+        ReferenceChainTracker::instance()->setCandidateCountForTest(n);
+    }
+
+    static int passesSinceLastCandidateProgress() {
+        return ReferenceChainTracker::instance()->passesSinceLastCandidateProgressForTest();
+    }
+
+    static int canaryStuckRestartCount() {
+        return ReferenceChainTracker::instance()->canaryStuckRestartCountForTest();
     }
 
     static u64 searchPainMs() {
@@ -1775,6 +1790,75 @@ TEST_F(ReferenceChainsBfsTest, ReleaseSearchTagsFailureBlocksTagReuseUntilItSucc
     EXPECT_EQ(failedBefore + 2,
               Counters::getCounter(REFERENCE_CHAIN_TAG_RELEASE_FAILED))
         << "a successful release must not itself count as a failure";
+
+    tracker->stop();
+}
+
+// Regression test for the CANARY_STUCK/frontier-wipe convergence bug: prior
+// to this fix, runPass()'s canary-stuck branch fired purely off
+// _passes_since_last_candidate_progress, so a search whose candidate simply
+// had not been found yet was abandoned - and its frontier destructively
+// wiped by the next restartSearch() - after only CANARY_NO_PROGRESS_PASS_LIMIT
+// passes, even while the whole-graph frontier was still growing every single
+// pass. Live on-pod evidence showed exactly this: a frontier that had grown
+// to 12k-16k entries got wiped roughly every 20s while chasing a
+// confirmed-reachable candidate. The fix requires the whole-graph frontier to
+// ALSO have stalled (_passes_since_last_progress >= NO_PROGRESS_PASS_LIMIT)
+// before CANARY_STUCK can fire - see CANARY_NO_PROGRESS_PASS_LIMIT's and
+// canaryStuckPassLimit()'s own comments.
+TEST_F(ReferenceChainsBfsTest, CanaryStuckRequiresWholeGraphFrontierAlsoStalled) {
+    Arguments args;
+    // budget=1: exactly one new frontier admission per pass, so the frontier
+    // grows every single pass for as long as the chain has unexplored nodes
+    // left - _passes_since_last_progress never leaves 0.
+    ASSERT_FALSE(args.parse(
+        "referencechains=true:hops=200:budget=1:ttl=0:firstpassbudget=1"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    // A chain longer than the number of passes driven below, so the frontier
+    // still has pending work - and is still growing one node per pass - at
+    // every pass this test checks.
+    constexpr int kChainLength = 50;
+    std::vector<int> nodes;
+    for (int i = 0; i < kChainLength; i++) {
+        nodes.push_back(addNode());
+    }
+    script.push_back({JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, nodes[0], -1});
+    for (int i = 1; i < kChainLength; i++) {
+        script.push_back(
+            {JVMTI_HEAP_REFERENCE_FIELD, nodes[i - 1], nodes[i], -1});
+    }
+
+    // A canary candidate that this graph never actually contains (no node is
+    // ever tagged with the candidate's marker tag) - the candidate-specific
+    // stuck counter (_passes_since_last_candidate_progress) climbs every pass
+    // with zero discovery progress, exactly like the live-pod scenario
+    // chasing a candidate deeper than the old fixed
+    // CANARY_NO_PROGRESS_PASS_LIMIT (30) passes could reach.
+    ReferenceChainsTestAccessor::setCandidateCountForTest(1);
+
+    bool truncated = true;
+    // One more pass than the old fixed CANARY_NO_PROGRESS_PASS_LIMIT: long
+    // enough that the pre-fix single-condition check would already have
+    // abandoned the search, but short enough that the 40-node chain still has
+    // unexplored work left, so the frontier is still genuinely growing every
+    // pass.
+    for (int i = 0; i < ReferenceChainTracker::CANARY_NO_PROGRESS_PASS_LIMIT + 2;
+         i++) {
+        ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+        ASSERT_EQ(0, tracker->passesSinceLastProgressForTest())
+            << "pass " << i << ": frontier must still be growing every pass";
+        ASSERT_EQ(SearchState::RUNNING, tracker->searchState())
+            << "pass " << i
+            << ": a canary search must not be abandoned while the "
+               "whole-graph frontier is still growing, even if its specific "
+               "candidate has not yet been found";
+    }
+    // The narrower candidate-stuck counter climbed the whole time - this is
+    // what the old, single-condition check would have abandoned on alone.
+    EXPECT_GE(ReferenceChainsTestAccessor::passesSinceLastCandidateProgress(),
+              ReferenceChainTracker::CANARY_NO_PROGRESS_PASS_LIMIT);
 
     tracker->stop();
 }
