@@ -63,8 +63,19 @@ it for RSS purposes.
 
 ### 1. Thread count / thread churn — O(threads ever seen)
 
-- `ProfiledThread` (thread-local): **824 B/thread** (measured; ~650 B was the
-  earlier struct-layout estimate). Linear and highly predictable.
+- `ProfiledThread` (thread-local): **~296 KB/thread** (measured directly —
+  three independent methods agreeing to 0.04%; see
+  [memory-sweep-results-linux.md](memory-sweep-results-linux.md#thread-count)).
+  A prior revision of this document said 824 B/thread; that number was
+  measured before `bff61c47c` instrumented `UnwindFailures`'s allocation and
+  was never re-checked afterward. `sizeof(ProfiledThread)` itself really is
+  ~824 B — the rest (294,912 B) is an embedded `UnwindFailures` table
+  (`unwindStats.h`) that every `ProfiledThread` allocates unconditionally,
+  whether or not that thread ever has an unwind failure to record.
+  **`origin/main` already fixed this** (`e1de4cf08` / #734): the class and
+  member are gated behind `#ifdef DEBUG` there, so release builds pay
+  nothing. This is the highest-value fix identified anywhere in this model —
+  adopting it removes ~296 KB × (distinct threads ever profiled).
 - `ThreadFilter::Slot` — allocated in 256-slot chunks (`kChunkSize`), capped
   hard at `kMaxThreads` = 2048 (`threadFilter.h:42-45`). Observed stepping
   40 → 72 → 136 KiB.
@@ -72,8 +83,11 @@ it for RSS purposes.
   alive — so thread-per-request styles and recreated executor pools accumulate
   over process lifetime.
 
-Note that observed RSS grows ~400 KB/thread, roughly 460× the profiler's own
-824 B. That difference is JVM/OS thread machinery, not agent cost.
+Observed RSS grows ~400-410 KB/thread. The profiler's own contribution
+(~296 KB/thread) now accounts for roughly 70-75% of that — not "1/460th, all
+JVM/OS machinery" as a prior revision claimed. That conclusion was inverted:
+most of the per-thread RSS growth *is* agent cost, and it is the one
+concretely fixable by adopting main's DEBUG gate above.
 
 ### 2. Distinct methods in sampled stacks — the dominant term
 
@@ -144,7 +158,7 @@ Additive, ignoring interaction effects and doubling thresholds:
 
 ```
 Memory(MiB) ≈ Baseline
-            + Threads        × C_thread    (824 B/thread, measured)
+            + Threads        × C_thread    (~296 KB/thread, measured — see note)
             + TouchedMethods × C_method    (~0.8-1.4 KB/method, measured)
 ```
 
@@ -155,6 +169,13 @@ Where:
   (the `ThreadFilter` component alone caps at 2048)
 - **TouchedMethods** = distinct methods actually appearing in *sampled stacks* —
   not methods loaded, and not classes. Below ~2,000 this term is ~0.
+
+`C_thread` is dominated by the unconditional `UnwindFailures` allocation
+(~294,912 of the 295,736 B), not by `ProfiledThread` itself — see
+"Thread count / thread churn" above. On a tree with main's `e1de4cf08` DEBUG
+gate applied, `C_thread` drops back to ~824 B and this term becomes
+negligible below a few thousand threads, same as this document previously
+(incorrectly) assumed for *all* builds.
 
 Then add the chunk-flush burst if the deployment rotates JFR chunks, and the
 ~15–20 % counter-to-RSS gap if you are predicting RSS rather than counter
@@ -208,7 +229,11 @@ In rough order of impact:
    independently of load; a high-throughput service with a narrow hot path
    does not.
 2. **Total distinct thread IDs** created over the profiling window, including
-   churn — small per thread, but linear and unbounded in churn-heavy designs.
+   churn — **~296 KB/thread on this branch's release builds** (not small; see
+   above), linear and unbounded in churn-heavy designs, entirely attributable
+   to the unfixed `UnwindFailures` allocation. Thread-per-request styles and
+   recreated executor pools are the workloads this hits hardest. Adopting
+   main's DEBUG gate collapses this back to ~824 B/thread, negligible.
 3. **Whether the deployment rotates JFR chunks**, which decides whether the
    flush burst is a one-off at exit or a recurring cost.
 4. **How many native libraries the process loads**, which sets the

@@ -17,15 +17,18 @@ answers along the way, because anyone re-running this work will hit them too.
 
 ## Summary
 
-**What drives memory overhead.** Thread count adds a small, linear cost
-(~824 B/thread inside the profiler); the much larger ~400 KB/thread RSS
-growth beside it is JVM/OS thread machinery the profiler neither causes nor
-can see into. The dimension that actually matters for customer-facing sizing
-is **the number of distinct *methods* appearing in sampled stacks** — not
-classes, not threads. A narrow call graph costs close to nothing at any
-scale; a wide one (framework-heavy, generics/lambda-heavy, microservice-style
-code) costs ~0.8–1.4 KB per touched method, reaching ~102 MB at 150,000
-touched methods.
+**What drives memory overhead.** Thread count costs the profiler itself
+**~296 KB/thread** — not ~824 B as an earlier revision of this document
+claimed (that figure was measured before `bff61c47c` instrumented the
+`UnwindFailures` allocation into `NM_THREAD_LOCAL`, and the doc was never
+re-run afterward; see "Thread count" below). That ~296 KB/thread accounts for
+most — not 1/460th — of the ~400 KB/thread total RSS growth per thread. The
+dimension that actually matters for customer-facing sizing is **the number of
+distinct *methods* appearing in sampled stacks** — not classes, and thread
+count now matters more than previously stated too. A narrow call graph costs
+close to nothing at any scale; a wide one (framework-heavy,
+generics/lambda-heavy, microservice-style code) costs ~0.8–1.4 KB per touched
+method, reaching ~102 MB at 150,000 touched methods.
 
 **Where the profiler's RSS delta goes.** Measured with a whole-process
 allocation ledger, the delta decomposes with no meaningful remainder:
@@ -86,6 +89,16 @@ not exist yet — confirmed by the allocation ledger, which finds only 0.88 MiB
 total unattributed. Contrast `NM_NATIVE_SYMBOLS`, which read 0 for memory
 that *was* allocated and resident; that was a real bug. "The instrument says
 zero" and "the instrument is broken" are different claims.
+
+**A doc's "measured" number goes stale the moment the instrumentation it read
+changes, silently.** The "824 B/thread" figure this document carried for
+`NM_THREAD_LOCAL` was correct when captured — but a later commit
+(`bff61c47c`) added `NativeMem::record` calls to `UnwindFailures`'s
+constructor, adding ~296 KB/thread to that same category, and the thread-count
+sweep was never re-run. The stale number survived three more rounds of doc
+consolidation because nothing about it looked wrong in isolation. There is no
+tooling fix for this — only re-running the sweep whenever an instrumented
+site's allocation behavior changes, not just when its doc prose changes.
 
 **`malloc_trim(0)` reclaiming nothing does not mean there is no free arena
 memory.** Trim releases only the heap top and pages that are *entirely* free;
@@ -185,22 +198,48 @@ only way to observe a chunk flush while the process is still alive.
 
 ### Thread count
 
-| N threads | max RSS | `NM_THREAD_LOCAL` (all N alive) | `NM_THREAD_FILTER` |
-|---|---|---|---|
-| 1 | 70 MiB | 6,592 B | 40 KiB |
-| 16 | 76 MiB | 18,952 B | 40 KiB |
-| 64 | 99 MiB | 68,392 B | 40 KiB |
-| 256 | 172 MiB | 226,600 B | 72 KiB |
-| 1000 | 442 MiB | 839,656 B | 136 KiB |
+**Correction (re-measured after `bff61c47c`).** The table and conclusion
+below this paragraph are stale: they were captured before that commit added
+`NativeMem::record` calls to `UnwindFailures`'s constructor/destructor
+(`unwindStats.h`), and were never re-run afterward — an instance of exactly
+the "did we measure wrong" risk this document's audit was meant to catch.
+`ProfiledThread` (`threadLocalData.h`) embeds a `UnwindFailures` member whose
+constructor unconditionally allocates two buffers totaling
+`1024 × 256 + 1024 × 4 × 8` = **294,912 bytes (288 KiB)**, regardless of
+whether that thread ever has an unwind failure to record. Re-measured
+directly (current tree, `run_threadlocal_live.sh` / a standalone
+`forTid()` harness, three independent methods agreeing to 0.04%):
 
-`NM_THREAD_LOCAL` scales linearly at **824.0 B/thread**, matching
-`sizeof(ProfiledThread)` (its OTel context record alone is ~688 B per the
-layout comment in `threadLocalData.h`). `NM_THREAD_FILTER` steps at 256-slot
-chunk boundaries. `NM_CALLTRACE`/`NM_DICTIONARY`/`NM_NATIVE_SYMBOLS` are flat
-across the whole sweep — no call-trace or class-name diversity here.
+| N threads | `NM_THREAD_LOCAL` (all N alive) | VmRSS |
+|---|---|---|
+| 1 | 2,662,720 B | 71,864 kB |
+| 8 | 4,733,712 B | — |
+| 32 | 11,834,256 B | 84,452 kB |
+| 64 | 24,851,344 B (reproducible at 5 s and 15 s hold) | 101,524 kB |
 
-RSS grows ~381 KB/thread, about 460× the profiler's own contribution. That
-gap is JVM/OS thread machinery.
+`NM_THREAD_LOCAL` scales at **~295,856 B/thread** (N=1→32), matching
+`sizeof(ProfiledThread)` + the `UnwindFailures` buffers (824 + 294,912 =
+295,736) almost exactly. N=32→64 comes in higher, at ~406,784 B/thread —
+reproducible, not a dump-timing artifact (unchanged across hold durations),
+but not explained; treat the ~296 KB/thread figure as the reliable one and
+this super-linearity above N≈32 as an open question. `NM_THREAD_FILTER`
+still steps at 256-slot chunk boundaries and is unaffected.
+
+RSS grows **~406 KB/thread** (N=1→32) — meaning the profiler's own
+`NM_THREAD_LOCAL` growth (~296 KB/thread) now accounts for roughly
+**70–75 %** of that, not "1/460th, all JVM/OS machinery" as the original
+table claimed. That original conclusion is inverted: most of the per-thread
+RSS growth *is* the profiler's own allocation, driven by the `UnwindFailures`
+table every profiled thread carries.
+
+**The fix already exists upstream, unrelated to this investigation.**
+`origin/main`'s `e1de4cf08` ("Make ProfiledThread's UnwindFailures field
+debug only", #734) gates the entire `UnwindFailures` class and the
+`ThreadLocalData` member behind `#ifdef DEBUG` — release builds allocate
+nothing at all for it, rather than allocating it and merely accounting for
+it (which is all `bff61c47c` did on this branch). Adopting that change is the
+single highest-impact fix identified in this whole investigation: it removes
+~296 KB × (distinct threads ever profiled) from every release build.
 
 Measured with `LiveThreadLocalSweep.java`, which forces a JFR chunk write
 while all N threads are still alive — necessary because `NM_THREAD_LOCAL` is
@@ -553,31 +592,41 @@ silently redefines `avg()` as a 32-chunk mean.
 ## Practical implications
 
 1. **Thread count** (total distinct threads over the session, not peak
-   concurrency) costs a confirmed ~824 B/thread inside the profiler — linear
-   and predictable. The ~400 KB/thread beside it is JVM/OS overhead that
-   cannot be optimized from the profiler's side.
-2. **Call-graph breadth drives the cost that matters, and the variable is
+   concurrency) costs a confirmed **~296 KB/thread inside the profiler** —
+   not the ~824 B this document previously claimed (stale pre-instrumentation
+   measurement; see "Thread count" above). This is *not* JVM/OS overhead the
+   profiler can't help — it's `ProfiledThread`'s embedded `UnwindFailures`
+   table, unconditionally allocated per thread. It already accounts for most
+   of the observed ~400 KB/thread RSS growth, and it is directly fixable: see
+   next point.
+2. **Adopt upstream's `#ifdef DEBUG` gate on `UnwindFailures`** (`main`'s
+   `e1de4cf08`, #734) instead of this branch's `bff61c47c` approach of merely
+   counting the allocation. This is the single highest-impact fix this
+   investigation found — it removes ~296 KB per distinct thread ever
+   profiled, in every release build, at essentially zero engineering cost
+   (main already did the work).
+3. **Call-graph breadth drives the cost that matters, and the variable is
    distinct *methods* appearing in sampled stacks.** ~0 MB at 2,000 touched
    methods, ~102 MB at 150,000, at ~0.8–1.4 KB each. A workload with a narrow
    call graph stays cheap regardless of class count or thread count; a wide
    one does not. **This is the question to ask a customer before quoting a
    number.**
-3. **Steady-state and flush costs are additive, not overlapping.** The
+4. **Steady-state and flush costs are additive, not overlapping.** The
    per-touched-method number is sampled while the process runs, before any
    chunk write. A configuration that rotates JFR chunks pays the flush cost
    (~200 MB peak at N=150,000) *per rotation* on top. For the default
    single-continuous-recording mode it is paid once, at exit, with no effect
    on the running process.
-4. **Don't read a flat `NM_DICTIONARY` in a single-chunk wall-clock session as
+5. **Don't read a flat `NM_DICTIONARY` in a single-chunk wall-clock session as
    "no class-name cost"** — the cost may simply not have been incurred yet.
    The new `native_mem_post_flush_*` counters make it visible from the second
    chunk onward.
-5. **Roughly a fifth of the profiler's steady-state RSS cost is not
+6. **Roughly a fifth of the profiler's steady-state RSS cost is not
    attributable to any allocation site.** Chunk overhead on many small
    allocations (~17 % inflation at ~83 B mean) and unreclaimable arena slack
    are properties of using glibc malloc at this allocation profile, not bugs.
    Reducing allocation *count* would attack the first directly.
-6. **`NM_CALLTRACE` overstates real memory by roughly 2×** — it reports
+7. **`NM_CALLTRACE` overstates real memory by roughly 2×** — it reports
    virtual capacity, and its arena is sparsely resident. Sizing decisions
    using it should use residency.
 

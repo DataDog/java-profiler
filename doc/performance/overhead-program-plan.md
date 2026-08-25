@@ -264,7 +264,13 @@ one invented from scratch.
 5. **Identify low-hanging fruit and larger improvement opportunities**
    (deliberately sequenced *after* the above, since fixing things you don't
    understand yet risks fixing the wrong thing). Memory candidates, ranked
-   by confidence: jmethodID preloading strategy — confirmed driver of a
+   by confidence: **top of the list — adopt `origin/main`'s `#ifdef DEBUG`
+   gate on `ProfiledThread`'s `UnwindFailures` field** (`e1de4cf08`, #734).
+   Confirmed by direct measurement to cost ~296 KB per distinct thread ever
+   profiled on this branch's current release builds (`memory-usage-model.md`,
+   "Thread count / thread churn"); main already did the fix, so this is a
+   near-zero-effort port, not new engineering. Next, jmethodID preloading
+   strategy — confirmed driver of a
    real ~36 MB chunk of overhead at high class diversity (this specific
    mechanism fires per loaded class, independent of sampling, so "class"
    is the mechanistically accurate word here even though the *aggregate*
@@ -388,13 +394,19 @@ memory work, not just a general preference for agile-sounding language:
 - We started the memory investigation assuming (per the static-analysis
   model in `memory-usage-model.md`) that thread count and the
   `NM_CALLTRACE` hash-table resize were likely the dominant costs. Empirical
-  testing found thread count is close to noise, `NM_CALLTRACE`'s own resize
-  is a small fraction (15–25 MB) of the actual overhead (~102 MB), and the
-  real dominant driver (distinct methods/call-trace shapes actually
-  *sampled* — not distinct classes, which the first benchmark design
-  couldn't distinguish from methods since it gave every class exactly one)
-  only emerged after several rounds of "measure, get a confusing result,
-  dig into source, re-measure."
+  testing at the time found thread count close to noise — but that
+  measurement itself turned out stale (see `memory-usage-model.md`'s "Thread
+  count / thread churn" section): a later commit added an unconditional
+  ~296 KB/thread allocation (`UnwindFailures`) that the thread-count sweep
+  was never re-run against, so "thread count is noise" held only until it
+  didn't. `NM_CALLTRACE`'s own resize is a small fraction (15–25 MB) of the
+  actual overhead (~102 MB), and the real dominant driver (distinct
+  methods/call-trace shapes actually *sampled* — not distinct classes, which
+  the first benchmark design couldn't distinguish from methods since it gave
+  every class exactly one) only emerged after several rounds of "measure, get
+  a confusing result, dig into source, re-measure." Even that process needed
+  a later re-check to catch a stale sub-result — which is itself further
+  evidence for this section's point, not against it.
 - A single-pair with/without-agent comparison at realistic scale was off by
   2x+ from the true value; getting a trustworthy number required building
   new tooling (`run_repeated_sweep.sh`) *during* the investigation, not
