@@ -290,7 +290,20 @@ one invented from scratch.
    correctly, not worth the added complexity now. Submitted and closed
    without merging as
    [DataDog/java-profiler#755](https://github.com/DataDog/java-profiler/pull/755)
-   for reference. No CPU/latency candidates exist yet — they're a product of
+   for reference. **SIZED, NOT YET ATTEMPTED — `MethodMap`'s node-per-method
+   `std::map`.** Confirmed 96 B logical / 112 B real RSS per node (two
+   independent measurements agreeing exactly); a flat/open-addressing
+   alternative barely changes the per-entry byte count (~98.5 B with
+   load-factor headroom) but would eliminate per-node chunk-header overhead
+   and the fragmentation this structure's continuous insert/prune cycle
+   causes across chunk rotations (see `memory-sweep-results-linux.md`'s
+   `MethodMap` section for the full sizing and the growth-strategy design
+   notes — needs the `CallTraceHashTable` doubling pattern, not
+   `SBTable`'s chaining pattern, plus a deletion story neither existing
+   precedent has). More engineering than the two items above; worth
+   returning to only if `MethodMap`'s growth becomes a measured problem in
+   a real long-running/many-rotation deployment, which this document's
+   single-flush tests can't observe. No CPU/latency candidates exist yet — they're a product of
    item 2's investigation, not knowable in advance. Output: a ranked backlog
    (effort vs. expected impact) feeding Phase 4.
 

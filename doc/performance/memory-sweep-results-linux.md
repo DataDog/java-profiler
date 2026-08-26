@@ -627,6 +627,78 @@ class-name dictionary memory accumulates across rotations** up to
 `MAX_CLASS_MAP_SIZE` (262,144 entries). Materially different long-term
 profiles for two structures that otherwise look alike.
 
+### `MethodMap`: a node-per-method `std::map`, sized against a flat alternative
+
+`MethodMap` (`flightRecorder.h`) is `std::map<unsigned long, MethodInfo, ...>` —
+one red-black-tree node individually `malloc`'d per distinct method, the same
+shape of cost as `SBTable` chaining above but at a much smaller constant per
+entry. Measured, not assumed:
+
+- `sizeof(MethodInfo)` = 56 B, `sizeof(pair<const u64, MethodInfo>)` = 64 B.
+- Actual `operator new` request per node = **96 B** (64 B pair + 32 B
+  libstdc++ `_Rb_tree_node` bookkeeping — parent/left/right pointers + color).
+  Confirmed via a standalone harness reading `NativeMem`'s own recorded byte
+  count, then independently confirmed live: a debug-build mid-run dump logged
+  `MethodMap: 54,762 methods after cleanup` via the pre-existing `TEST_LOG`
+  (`flightRecorder.cpp:898`), and that exact chunk's
+  `native_mem_live_bytes.method_map` was 5,257,152 B — **5,257,152 ÷ 54,762 =
+  exactly 96.0**.
+- Real glibc chunk footprint per node: 96 B usable-requested → glibc rounds to
+  104 B usable → **112 B** including the chunk header. (An earlier internal
+  note quoted "~165 B/entry" from dividing the 13.32 MiB chunk-flush figure
+  above by 84,640 — a *different* experiment's touched-method count. At the
+  confirmed 96 B/entry, that run must have held ~145,500 live methods, not
+  84,640; the two numbers were never meant to be paired.)
+
+**Flat/open-addressing alternative.** The keys (`jmethodID`/native addresses,
+high 2 bits used for type tagging) aren't dense, so "flat" means a hash table,
+not a literal indexed array — the same family as `StringDictionary`'s own
+row/cell design. Per-slot cost would be `sizeof(u64) + sizeof(MethodInfo)` =
+**64 B**, no per-entry allocation; with load-factor headroom (~65% target)
+that's an effective **~98.5 B/entry** — barely different from the current
+96 B *logical* figure. The case for doing it isn't the per-entry byte count;
+it's structural:
+
+1. **Chunk-header overhead paid once for the table, not once per node** —
+   directly attacks the same "~650,000 extra live allocations, ~17% chunk
+   inflation" mechanism as the RSS-delta reconciliation above.
+2. **No fragmentation for this structure.** `MethodMap` survives across chunk
+   rotations with continuous age-based pruning (`cleanupUnreferencedMethods`),
+   so individually-freed rb-tree nodes scatter unreclaimable holes that
+   compound across rotations — the same "free-but-held" mechanism from the
+   RSS-delta reconciliation, but specific to this structure and specific to
+   long-running, many-rotation deployments (a single-flush test like the one
+   above can't show the compounding).
+3. Fewer pointer-chases per lookup, and ~54,000+ fewer individual
+   malloc/free calls — a secondary CPU benefit, not the memory story.
+
+**Sizing it needs a growth strategy, not an upfront estimate.** Touched-method
+count is workload-dependent and not predictable from loaded-class count (the
+central finding of this whole document), so there's no reliable a-priori
+size. Two precedents already exist in this codebase for the same class of
+problem, pointing in opposite directions:
+
+- **Follow:** `CallTraceHashTable` — fixed initial capacity, doubles at 75%
+  fill. The right model for unknown-in-advance-count hash tables.
+- **Avoid:** `SBTable`'s overflow chaining (above) — "grow by chaining a
+  whole new large block" is the exact mechanism behind the 200 MB chunk-flush
+  burst. A flat `MethodMap` must rehash-and-grow, not chain.
+
+The one wrinkle `CallTraceHashTable` doesn't have: `MethodMap` deletes
+continuously (age-based pruning), and plain open-addressing deletion is
+broken (clearing a slot can sever another entry's probe chain). Two ways to
+handle it: tombstones with a periodic full-rehash to reclaim them (new
+complexity), or reuse `Profiler::rotateDictsAndRun()`'s existing
+triple-buffer pattern (`profiler.h`) — rebuild the live table from the
+currently-referenced set each cycle instead of erasing in place, avoiding the
+tombstone problem by reusing an already-proven mechanism. That rebuild
+cadence would also give a free, already-computed sizing signal for the next
+cycle's table (size to ~1.3-1.5× the previous cycle's peak) even though no
+upfront guess is possible for a session's first chunk.
+
+Not yet implemented or measured end-to-end; this is a sized, honest
+candidate, not a quick fix.
+
 ### Why a chunk cannot report its own serialization
 
 `cpool_offset` is recorded in the chunk header as the boundary between the
