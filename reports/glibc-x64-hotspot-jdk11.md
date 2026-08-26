@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk11
 
 ## glibc-x64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-08-25 20:57:23 EDT
+**Date:** 2026-08-26 01:04:20 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 503 |
-| Sample Rate | 8.38/sec |
-| Health Score | 524% |
+| CPU Samples | 479 |
+| Sample Rate | 7.98/sec |
+| Health Score | 499% |
 | Threads | 8 |
-| Allocations | 350 |
+| Allocations | 367 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 663 |
-| Sample Rate | 11.05/sec |
-| Health Score | 691% |
+| CPU Samples | 620 |
+| Sample Rate | 10.33/sec |
+| Health Score | 646% |
 | Threads | 9 |
-| Allocations | 490 |
+| Allocations | 444 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 81-81 cores)</summary>
 
 ```
-1787705554 81
-1787705559 81
-1787705564 81
-1787705569 81
-1787705574 81
-1787705579 81
-1787705584 81
-1787705589 81
-1787705594 81
-1787705599 81
-1787705604 81
-1787705609 81
-1787705614 81
-1787705619 81
-1787705624 81
-1787705629 81
-1787705634 81
-1787705639 81
-1787705644 81
-1787705649 81
+1787720265 81
+1787720270 81
+1787720275 81
+1787720280 81
+1787720285 81
+1787720290 81
+1787720295 81
+1787720300 81
+1787720305 81
+1787720310 81
+1787720315 81
+1787720320 81
+1787720325 81
+1787720330 81
+1787720335 81
+1787720340 81
+1787720345 81
+1787720350 81
+1787720355 81
+1787720360 81
 ```
 </details>
 

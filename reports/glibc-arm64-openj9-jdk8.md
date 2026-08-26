@@ -5,7 +5,7 @@ title: glibc-arm64-openj9-jdk8
 
 ## glibc-arm64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-08-25 20:57:23 EDT
+**Date:** 2026-08-26 01:04:20 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 68 |
-| Sample Rate | 1.13/sec |
-| Health Score | 71% |
+| CPU Samples | 58 |
+| Sample Rate | 0.97/sec |
+| Health Score | 61% |
 | Threads | 9 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: glibc-arm64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 301 |
-| Sample Rate | 5.02/sec |
-| Health Score | 314% |
-| Threads | 9 |
+| CPU Samples | 61 |
+| Sample Rate | 1.02/sec |
+| Health Score | 64% |
+| Threads | 12 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
-1787705552 48
-1787705557 48
-1787705562 48
-1787705567 48
-1787705572 48
-1787705577 48
-1787705582 48
-1787705587 48
-1787705592 48
-1787705597 48
-1787705602 48
-1787705607 48
-1787705612 48
-1787705617 48
-1787705622 48
-1787705627 48
-1787705632 48
-1787705637 48
-1787705642 48
-1787705647 48
+1787720247 48
+1787720252 48
+1787720257 48
+1787720262 48
+1787720267 48
+1787720272 48
+1787720277 48
+1787720282 48
+1787720287 48
+1787720292 48
+1787720297 48
+1787720302 48
+1787720307 48
+1787720312 48
+1787720317 48
+1787720322 48
+1787720327 48
+1787720332 48
+1787720337 48
+1787720342 48
 ```
 </details>
 
