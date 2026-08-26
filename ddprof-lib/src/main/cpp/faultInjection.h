@@ -54,11 +54,13 @@
 
 #include <cassert>
 
+#if defined(__FAULT_INJECTION__) || defined(DEBUG) 
 // Deliberately dereferences nullptr to raise a real SIGSEGV right now,
 // unconditionally (no probability gate, no shouldFire() draw). For exercising
 // crash-handler / recovery paths on demand (e.g. from a test), never from a
 // production code path.
 [[noreturn]] void crashNow();
+#endif 
 
 #ifdef __FAULT_INJECTION__
 
@@ -181,7 +183,6 @@ inline T injectValue(T orig, T faulty, u64 threshold, const char* fn) {
 #define INJECT_CRASH_UNLIKELY() ((void)0)
 #define INJECT_CRASH_LIKELY()   ((void)0)
 #define INJECT_CRASH_HIGH()     ((void)0)
-#define INJECT_CRASH_ALWAYS()   ((void)0)
 
 #define NO_INJECTION_ASSERT(a) (assert(a))
 

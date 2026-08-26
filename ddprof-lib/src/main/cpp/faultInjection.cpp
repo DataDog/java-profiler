@@ -16,12 +16,15 @@
 
 #include "faultInjection.h"
 
+#if defined(__FAULT_INJECTION__) || defined(DEBUG) 
+
 #include <stdint.h>
 void crashNow() {
   volatile uintptr_t* p = (volatile uintptr_t*)nullptr;
   *p = 0xBAD;
   __builtin_unreachable();  // the store above never returns.
 }
+#endif
 
 #ifdef __FAULT_INJECTION__
 

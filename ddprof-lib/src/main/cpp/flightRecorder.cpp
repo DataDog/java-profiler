@@ -121,6 +121,8 @@ ResolveMethodState::~ResolveMethodState() {
   release();
 }
 
+// Don't expect following JNI and JVMTI calls to fail, as they are public APIs
+// of JVM
 void ResolveMethodState::release() {
   if (_framePushed) {
     JNIEnv* jni = VM::jni();
@@ -312,13 +314,23 @@ bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         jvmtiError line_table_error = jvmti->GetLineNumberTable(method, &line_number_table_size,
                                   &line_number_table);
         
-        bool is_table_readable = line_number_table != nullptr &&
-                                 SafeAccess::isReadableRange(line_number_table, line_number_table_size * sizeof(jvmtiLineNumberEntry));
+        bool is_table_valid = (line_number_table_size >= 0 && line_number_table_size <= MAX_LINE_NUMBER_TABLE_ENTRIES);
+        bool is_table_readable =  (line_number_table != nullptr && is_table_valid &&
+                                   (line_number_table_size > 0 ?
+                                    SafeAccess::isReadableRange(line_number_table, line_number_table_size * sizeof(jvmtiLineNumberEntry)) :
+                                    SafeAccess::isReadable(line_number_table)));
         if (line_table_error != JVMTI_ERROR_NONE ||
-          // On Hotspot, it returns a malloc'd pointer even table size = 0, but there is no point to keep it
-          line_number_table_size == 0) {
-            if (is_table_readable && line_number_table != nullptr) {
+            // On Hotspot, it returns a malloc'd pointer even table size = 0, but there is no point to keep it
+            line_number_table_size == 0 ||
+            // a corrupted table 
+            !is_table_valid ||
+            !is_table_readable) {
+            if (is_table_readable) {
               jvmti->Deallocate((unsigned char*)line_number_table);
+            }
+
+            if (!is_table_valid || !is_table_readable) {
+              Counters::increment(LINE_NUMBER_TABLE_UNREADABLE);
             }
             line_number_table = nullptr;
             line_number_table_size = 0;
