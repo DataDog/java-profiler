@@ -1474,6 +1474,14 @@ struct PassContext {
   // comment. Newly admitted children inherit the fast lane so the whole
   // re-discovered subtree, not just the immediate child, skips the backlog.
   bool admit_priority = false;
+
+  // TEMP DIAGNOSTIC (see doc/temp/ investigation notes): per-jvmtiHeapReference
+  // Kind callback tally for admitStaticFieldRoots()'s current chunk, to find
+  // which reference kind actually drives per-chunk callback volume (e.g.
+  // static fields vs. constant-pool entries vs. interfaces). Null everywhere
+  // else - only admitStaticFieldRoots() sets this to a non-null, zeroed,
+  // stack-local array sized for the full jvmtiHeapReferenceKind range.
+  int *kind_counts = nullptr;
 };
 } // namespace
 
@@ -1483,6 +1491,15 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
     jlong referrer_class_tag, jlong size, jlong *tag_ptr,
     jlong *referrer_tag_ptr, jint length, void *user_data) {
   PassContext *ctx = (PassContext *)user_data;
+
+  // TEMP DIAGNOSTIC (see doc/temp/ investigation notes): tally every callback
+  // by kind before any early-return below, so an aborted/truncated chunk
+  // still reports what it actually saw. kind_counts is only non-null for
+  // admitStaticFieldRoots()'s call - zero overhead elsewhere.
+  if (ctx->kind_counts != nullptr && (int)reference_kind >= 0 &&
+      (int)reference_kind < 32) {
+    ctx->kind_counts[(int)reference_kind]++;
+  }
 
   if (ctx->tracker->_abort_pass_requested.load(std::memory_order_relaxed)) {
     // stopThread() has set this right before pthread_kill()/pthread_join() -
@@ -2863,6 +2880,11 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
   // reaches each class's static fields instead of stopping at the
   // negative-tagged class object itself.
   ctx.static_field_seed = true;
+  // TEMP DIAGNOSTIC (see doc/temp/ investigation notes): see PassContext::
+  // kind_counts's own comment.
+  int kind_counts[32];
+  memset(kind_counts, 0, sizeof(kind_counts));
+  ctx.kind_counts = kind_counts;
 
   jvmtiHeapCallbacks callbacks;
   memset(&callbacks, 0, sizeof(callbacks));
@@ -2872,6 +2894,15 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
       jvmti->FollowReferences(0, nullptr, holder, &callbacks, &ctx);
   *safepoint_ticks += TSC::ticks() - follow_start_ticks;
   jni->DeleteLocalRef(holder);
+  // TEMP DIAGNOSTIC (see doc/temp/ investigation notes): kind indices per
+  // jvmti.h's jvmtiHeapReferenceKind - 1=CLASS 2=FIELD 3=ARRAY_ELEMENT
+  // 4=CLASS_LOADER 5=SIGNERS 6=PROTECTION_DOMAIN 7=INTERFACE 8=STATIC_FIELD
+  // 9=CONSTANT_POOL 10=SUPERCLASS (21-27 are root kinds, not expected here).
+  TEST_LOG("ReferenceChainTracker::admitStaticFieldRoots kind_counts "
+           "k1=%d k2=%d k3=%d k4=%d k5=%d k6=%d k7=%d k8=%d k9=%d k10=%d",
+           kind_counts[1], kind_counts[2], kind_counts[3], kind_counts[4],
+           kind_counts[5], kind_counts[6], kind_counts[7], kind_counts[8],
+           kind_counts[9], kind_counts[10]);
   if (follow_err != JVMTI_ERROR_NONE) {
     return;
   }
