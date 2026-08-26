@@ -1490,6 +1490,14 @@ struct PassContext {
   // than skipping to chunk_end and losing the rest of the chunk.
   int _classes_in_chunk_visited = 0;
 
+  // TEMP DIAGNOSTIC: cumulative TSC ticks spent inside heapReferenceCallback()
+  // during this admitStaticFieldRoots() call. Compared against the total
+  // FollowReferences wall-time (*safepoint_ticks) to split "our callback
+  // code" vs "FollowReferences' own heap-walking overhead". Only
+  // accumulated when static_field_seed is true (the static-field sweep);
+  // zero everywhere else.
+  u64 _callback_ticks = 0;
+
   // Amortizes tracker->_pass_deadline_ns's OS::nanotime() check (heapReference
   // Callback()/heapRootCallback() run once per visited edge/root - checking
   // wall-clock on literally every call would add real overhead on a large
@@ -1513,6 +1521,21 @@ struct PassContext {
   // stack-local array sized for the full jvmtiHeapReferenceKind range.
   int *kind_counts = nullptr;
 };
+
+// TEMP DIAGNOSTIC: RAII guard that accumulates TSC ticks spent inside
+// heapReferenceCallback() into PassContext::_callback_ticks. Only active
+// during the static-field sweep (static_field_seed=true); a no-op
+// (no rdtsc) everywhere else. ~20ns overhead per callback when active.
+struct ScopedCallbackTimer {
+  u64 _start;
+  u64 *_accum;
+  bool _active;
+  explicit ScopedCallbackTimer(bool active, u64 *accum)
+      : _start(active ? TSC::ticks() : 0), _accum(accum), _active(active) {}
+  ~ScopedCallbackTimer() {
+    if (_active) *_accum += TSC::ticks() - _start;
+  }
+};
 } // namespace
 
 jint JNICALL ReferenceChainTracker::heapReferenceCallback(
@@ -1521,6 +1544,11 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
     jlong referrer_class_tag, jlong size, jlong *tag_ptr,
     jlong *referrer_tag_ptr, jint length, void *user_data) {
   PassContext *ctx = (PassContext *)user_data;
+
+  // TEMP DIAGNOSTIC: measure cumulative time spent in this callback during
+  // the static-field sweep, to split our code cost vs FollowReferences'
+  // own heap-walking overhead. See ScopedCallbackTimer's own comment.
+  ScopedCallbackTimer _cb_timer(ctx->static_field_seed, &ctx->_callback_ticks);
 
   // TEMP DIAGNOSTIC (see doc/temp/ investigation notes): tally every callback
   // by kind before any early-return below, so an aborted/truncated chunk
@@ -2306,6 +2334,9 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   _pass_deadline_ns = _effective_pause_target_ms > 0
                           ? OS::nanotime() + (u64)_effective_pause_target_ms * 1000000ULL
                           : 0;
+  // TEMP DIAGNOSTIC: temporarily bump deadline to 200ms to measure the
+  // callback-vs-FollowReferences overhead split without truncating.
+  _pass_deadline_ns = OS::nanotime() + 200ULL * 1000000ULL;
 
   *edges_admitted = 0;
   *truncated = false;
@@ -2989,6 +3020,27 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
            kind_counts[1], kind_counts[2], kind_counts[3], kind_counts[4],
            kind_counts[5], kind_counts[6], kind_counts[7], kind_counts[8],
            kind_counts[9], kind_counts[10]);
+  // TEMP DIAGNOSTIC: split our callback time vs FollowReferences' own
+  // heap-walking overhead. follow_ticks = total FollowReferences wall-time
+  // (already accumulated into *safepoint_ticks above); callback_ticks =
+  // cumulative time inside heapReferenceCallback() (our code). The
+  // difference is JVMTI's own object-iteration/metadata-walk cost.
+  u64 follow_ticks = TSC::ticks() - follow_start_ticks;
+  u64 callback_ticks = ctx._callback_ticks;
+  u64 jvmti_overhead_ticks = follow_ticks > callback_ticks
+                                 ? follow_ticks - callback_ticks
+                                 : 0;
+  TEST_LOG("ReferenceChainTracker::admitStaticFieldRoots timing "
+           "follow_ms=%llu callback_ms=%llu jvmti_ms=%llu "
+           "callback_pct=%llu callback_count=%d",
+           (unsigned long long)TSC::ticks_to_millis(follow_ticks),
+           (unsigned long long)TSC::ticks_to_millis(callback_ticks),
+           (unsigned long long)TSC::ticks_to_millis(jvmti_overhead_ticks),
+           follow_ticks > 0 ? (100ULL * callback_ticks / follow_ticks) : 0,
+           kind_counts[1] + kind_counts[2] + kind_counts[3] +
+               kind_counts[4] + kind_counts[5] + kind_counts[6] +
+               kind_counts[7] + kind_counts[8] + kind_counts[9] +
+               kind_counts[10]);
   if (follow_err != JVMTI_ERROR_NONE) {
     return;
   }
