@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk8
 
 ## glibc-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-08-26 10:30:26 EDT
+**Date:** 2026-08-26 14:48:35 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 353 |
-| Sample Rate | 5.88/sec |
-| Health Score | 368% |
+| CPU Samples | 185 |
+| Sample Rate | 3.08/sec |
+| Health Score | 192% |
 | Threads | 7 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: glibc-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 178 |
-| Sample Rate | 2.97/sec |
-| Health Score | 186% |
-| Threads | 7 |
+| CPU Samples | 407 |
+| Sample Rate | 6.78/sec |
+| Health Score | 424% |
+| Threads | 10 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 96-96 cores)</summary>
 
 ```
-1787754283 96
-1787754288 96
-1787754293 96
-1787754298 96
-1787754303 96
-1787754308 96
-1787754313 96
-1787754318 96
-1787754323 96
-1787754328 96
-1787754333 96
-1787754338 96
-1787754343 96
-1787754348 96
-1787754353 96
-1787754358 96
-1787754363 96
-1787754368 96
-1787754373 96
-1787754378 96
+1787769797 96
+1787769802 96
+1787769807 96
+1787769812 96
+1787769817 96
+1787769822 96
+1787769827 96
+1787769832 96
+1787769837 96
+1787769842 96
+1787769847 96
+1787769852 96
+1787769857 96
+1787769862 96
+1787769867 96
+1787769872 96
+1787769877 96
+1787769882 96
+1787769887 96
+1787769892 96
 ```
 </details>
 
