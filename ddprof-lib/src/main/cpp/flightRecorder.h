@@ -68,9 +68,11 @@ struct CpuTimes {
 class SharedLineNumberTable {
 public:
   int _size;
-  // Owned malloc'd buffer holding a copy of the JVMTI line number table.
-  // Owning the memory (instead of holding the JVMTI-allocated pointer
-  // directly) keeps lifetime independent of class unload.
+  // The buffer jvmti->GetLineNumberTable() returned, held directly (not a
+  // copy) and freed via jvmti->Deallocate() (see ~SharedLineNumberTable())
+  // so native-memory-tracking accounting stays correct. Per the JVMTI spec
+  // this array is a fresh, caller-owned allocation decoupled from the
+  // Method's lifetime, so holding onto it is safe across class unload.
   void *_ptr;
 
   SharedLineNumberTable(int size, void *ptr) : _size(size), _ptr(ptr) {}

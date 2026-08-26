@@ -68,11 +68,16 @@ static inline u64 safeDuration(u64 start_time, u64 end_time) {
 }
 
 SharedLineNumberTable::~SharedLineNumberTable() {
-  // _ptr is a malloc'd copy of the JVMTI line number table (see
-  // Lookup::fillJavaMethodInfo). Freeing here is independent of class
-  // unload, preventing use-after-free in ~SharedLineNumberTable and getLineNumber.
+  // _ptr is the buffer jvmti->GetLineNumberTable() itself returned (see
+  // Lookup::fillJavaMethodInfo), not a copy -- freed here via
+  // jvmti->Deallocate(), not plain free(). On HotSpot, JvmtiEnv
+  // Allocate()/Deallocate() are os::malloc()/os::free(), which route through
+  // MemTracker so native-memory-tracking accounting stays correct; freeing
+  // with plain free() instead would desync NMT's byte count from what's
+  // actually live whenever -XX:NativeMemoryTracking is enabled, even though
+  // the underlying memory itself would still be freed correctly.
   if (_ptr != nullptr) {
-    free(_ptr);
+    VM::jvmti()->Deallocate((unsigned char *)_ptr);
     Counters::decrement(LINE_NUMBER_TABLES);
     // _size is the JVMTI entry count passed at construction (see
     // fillJavaMethodInfo), so the byte size matches the allocation.
@@ -87,13 +92,16 @@ public:
   char* volatile _class_name;
   char* volatile _method_name;
   char* volatile _method_signature;
-  // GetLineNumberTable()'s JVMTI-owned result, pending Deallocate(). Tracked
-  // here for the same reason as the strings above: it is assigned between
-  // sigsetjmp() and a possible siglongjmp() out of a fault raised by a later
-  // JVMTI/JNI call in fillJavaMethodInfo() (Thread.run/main's FindClass/
-  // GetMethodID/CallBooleanMethod, or this function's own trailing
-  // Deallocate()), so release() must be able to free it on that recovery
-  // path too, not just the strings.
+  // GetLineNumberTable()'s result. Tracked here for the same reason as the
+  // strings above: it is assigned between sigsetjmp() and a possible
+  // siglongjmp() out of a fault raised by a later JVMTI/JNI call in
+  // fillJavaMethodInfo() (Thread.run/main's FindClass/GetMethodID/
+  // CallBooleanMethod), and until then this local has no other owner.
+  // release() frees it via jvmti->Deallocate() on that recovery path, and on
+  // the "rejected as unreadable/erroring" path fillJavaMethodInfo() also
+  // handles inline -- but never on the success path, where ownership passes
+  // to mi->_line_number_table instead (also freed via jvmti->Deallocate(),
+  // just later; see SharedLineNumberTable) and this field is nulled out.
   unsigned char* volatile _line_number_table;
 
   // Non-copyable
@@ -445,12 +453,21 @@ bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
     mi->_sig = method_sig_id;
     mi->_type = FRAME_INTERPRETED;
     mi->_is_entry = entry;
-    mi->_line_number_table = std::make_shared<SharedLineNumberTable>(
-                line_number_table_size, line_number_table);
-    // Increment counter for tracking live line number tables
-    Counters::increment(LINE_NUMBER_TABLES);
-    NativeMem::record(NM_LINE_TABLES, (long long)((size_t)line_number_table_size * sizeof(jvmtiLineNumberEntry)));
-    state._line_number_table = nullptr;
+    // Only touch mi->_line_number_table when a table was actually fetched
+    // this call (first_time, and GetLineNumberTable succeeded with a
+    // readable result -- see above). Every other call leaves
+    // line_number_table/line_number_table_size at their initial NULL/0,
+    // and mi->_key persists across chunks while only _mark gets cleared, so
+    // a re-fill of an already-known method must not clobber the real table
+    // fetched on its first chunk with an empty one.
+    if (line_number_table != nullptr) {
+      mi->_line_number_table = std::make_shared<SharedLineNumberTable>(
+                  line_number_table_size, line_number_table);
+      // Increment counter for tracking live line number tables
+      Counters::increment(LINE_NUMBER_TABLES);
+      NativeMem::record(NM_LINE_TABLES, (long long)((size_t)line_number_table_size * sizeof(jvmtiLineNumberEntry)));
+      state._line_number_table = nullptr;
+    }
     return true;
   }
   // Phase is neither START nor LIVE (e.g. a record-on-shutdown dump after the

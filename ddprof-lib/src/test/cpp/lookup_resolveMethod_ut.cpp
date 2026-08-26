@@ -355,4 +355,50 @@ TEST_F(LookupResolveMethodJavaFrameTest, PushLocalFrameFailureFallsBackToUnknown
     EXPECT_EQ(0u, it->second._key);
 }
 
+// Regression test: a method's line-number table, fetched once on its first
+// resolve (first_time -- see the `if (first_time)` guard around
+// GetLineNumberTable() in fillJavaMethodInfo()), must survive being
+// re-resolved in a later chunk. writeMethods() clears only mi->_mark between
+// chunks and leaves mi->_key (and thus first_time) alone, so a later resolve
+// of the same jmethodID never calls GetLineNumberTable() again -- the local
+// line_number_table stays null that time, and the assignment into
+// mi->_line_number_table must be skipped rather than clobbering the real
+// table with an empty SharedLineNumberTable(0, nullptr).
+TEST_F(LookupResolveMethodJavaFrameTest, LineNumberTableSurvivesReResolveInALaterChunk) {
+    ScopedFakeJvmAndJni fake;
+    fake.counters.provide_line_number_table = true;
+    VMTestAccessor::setJvmti(fake.jvmti());
+
+    MethodMap method_map;
+    StringDictionary classes;
+    Lookup lookup(/*rec=*/nullptr, &method_map, &classes);
+
+    int fake_method_storage = 0;
+    jmethodID fake_method = reinterpret_cast<jmethodID>(&fake_method_storage);
+    ASGCT_CallFrame frame{};
+    frame.bci = FrameType::encode(FRAME_INTERPRETED, /*bci=*/0);
+    frame.method_id = fake_method;
+
+    MethodInfo* mi = lookup.resolveMethod(frame);
+    ASSERT_NE(nullptr, mi);
+    ASSERT_NE(nullptr, mi->_line_number_table);
+    ASSERT_EQ(42, mi->getLineNumber(0));
+    u32 key_after_first_resolve = mi->_key;
+
+    // Simulate writeMethods() moving to the next chunk: it clears _mark on
+    // every marked row it serializes, but never touches _key.
+    mi->_mark = false;
+
+    MethodInfo* mi_again = lookup.resolveMethod(frame);
+
+    ASSERT_EQ(mi, mi_again) << "same jmethodID must resolve to the same MethodMap row";
+    EXPECT_TRUE(mi_again->_mark);
+    EXPECT_EQ(key_after_first_resolve, mi_again->_key)
+        << "first_time must be false on this second resolve";
+    ASSERT_NE(nullptr, mi_again->_line_number_table)
+        << "the table fetched on the first resolve must not be discarded "
+           "just because this call didn't re-fetch one";
+    EXPECT_EQ(42, mi_again->getLineNumber(0));
+}
+
 } // namespace
