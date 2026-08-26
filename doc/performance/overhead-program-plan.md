@@ -282,8 +282,16 @@ one invented from scratch.
    calltrace/dictionary initial-capacity tuning for high-diversity
    workloads, a stronger candidate given the confirmed real (if not yet
    precisely quantified under normal conditions) chunk-flush dictionary
-   growth. No CPU/latency candidates exist yet — they're a product of item
-   2's investigation, not knowable in advance. Output: a ranked backlog
+   growth. **INVESTIGATED AND CLOSED — unconditional `parseDwarfInfo()`
+   table-building.** Implemented and tested (fixing a real correctness bug
+   along the way — a naive gate would have silently broken DWARF unwinding
+   for `libjvm.so` itself; see `memory-sweep-results-linux.md`), but the
+   measured benefit on our benchmark dropped to ~0.07 MiB once fixed
+   correctly, not worth the added complexity now. Submitted and closed
+   without merging as
+   [DataDog/java-profiler#755](https://github.com/DataDog/java-profiler/pull/755)
+   for reference. No CPU/latency candidates exist yet — they're a product of
+   item 2's investigation, not knowable in advance. Output: a ranked backlog
    (effort vs. expected impact) feeding Phase 4.
 
 ### Which use cases are good to measure overhead with?

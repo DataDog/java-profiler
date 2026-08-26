@@ -31,11 +31,49 @@ in-place rather than kept as a separate report. Summary:
 | Touched-methods RSS delta | 74.38 ± 10.37 MB (n=3) at N=150,000, fixed-heap — matches the historical ~79 MiB within noise. |
 | Allocation diversity | Unchanged: `NM_DICTIONARY` 6.04→6.04 MiB and 6.03→6.05 MiB at the two calibration points; RSS 717→696.5 MiB and 680→681.7 MiB. |
 | Chunk-flush burst mechanism | Confirmed still present and still "settles high, doesn't fall back": one forced rotation at N=150,000 took `NM_DICTIONARY` to a 115.25 MiB post-flush peak, settling live at 86.22 MiB, growing further to 127.06 MiB by the next (final) flush. Magnitude isn't directly comparable to the historical 216.62/162.46 MiB figures — that measurement's exact timing parameters (how long before the forced dump) aren't recorded, and this driver is inherently duration/coverage-sensitive (see the open question on that below) — but the *mechanism* (spike shows in `max`, persists in `live`, doesn't revert) is unchanged. |
-| `parseDwarfInfo()` gating | Unchanged: still unconditional while `walkDwarf`/`findFrameDesc` remain gated to `CSTACK_DWARF` — the low-hanging-fruit item is still live on the merged tree. |
+| `parseDwarfInfo()` gating | Investigated and closed, not fixed — see below. |
 
 The one genuinely new mechanism the merge introduced — the `ThreadLocalDataPool`
 fixed baseline cost — is detailed in `memory-usage-model.md`'s baseline table,
 not duplicated here.
+
+### `parseDwarfInfo()`: investigated, fixed, and closed without merging
+
+The `ElfParser::parseDwarfInfo()` low-hanging-fruit item from the original
+investigation (SFrame/DWARF unwind tables built unconditionally for every
+parsed native library, even though they're read only by
+`StackWalker::walkDwarf()` under `CSTACK_DWARF` — measured at 4.52 MiB across
+22 allocations at 150,000 loaded classes) was implemented, and turned out to
+need more care than expected. `Profiler::_cstack`'s constructor default is
+`CSTACK_NO` — a real, user-selectable mode, not a distinguishable "not yet
+resolved" sentinel — so a naive `cstackMode() != CSTACK_DWARF` gate would
+have **permanently and silently skipped building the table for the handful of
+libraries parsed at JVMTI `Agent_OnLoad`** (before the later
+`VM::VMInit()`-triggered `Profiler::start()` resolves cstack mode), including
+`libjvm.so` itself — degrading native-frame unwind quality in an actual
+`CSTACK_DWARF` session with no visible error, since libraries are parsed
+exactly once and never re-parsed. The correct fix needs a dedicated
+`Profiler::_cstack_resolved` flag to disambiguate "not yet decided" from
+"decided, and it's `CSTACK_NO`".
+
+After fixing that, re-measuring turned up a second finding: on this
+investigation's `classes` benchmark, the *real* savings are only **~0.07 MiB**
+(13.03 → 12.96 MiB), not the original 4.52 MiB — because almost the entire
+native-library set for that workload loads before `Profiler::start()` runs,
+where the gate must conservatively always build. Only a handful of
+JDK-internal libraries that load lazily after start (`libmanagement.so`,
+`libnet.so`, `libnio.so`, etc.) actually benefit. The fix should have more
+value for workloads that `dlopen` native libraries *while actively profiling*
+in a non-DWARF mode (JNI-heavy applications, dynamically-attached native
+agents) — but no workload measured in this investigation exercises that, so
+the benefit there is unquantified, not just small.
+
+Given the added complexity (a new `Profiler` field threaded through a
+lifecycle-ordering invariant) isn't clearly justified by a measured benefit,
+the fix was implemented, tested, and submitted as
+[DataDog/java-profiler#755](https://github.com/DataDog/java-profiler/pull/755),
+then **closed without merging** — left as a complete, tested reference for
+anyone with a workload where this actually matters.
 
 ## Summary
 
