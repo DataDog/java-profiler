@@ -174,6 +174,19 @@
   X(REFERENCE_CHAIN_FRONTIER_TABLE_CAPACITY, "reference_chain_frontier_table_capacity") \
   X(REFERENCE_CHAIN_CANDIDATE_COUNT, "reference_chain_candidate_count") \
   X(REFERENCE_CHAIN_CANDIDATES_FOUND, "reference_chain_candidates_found") \
+  /* admitStaticFieldRoots() per-class non-static quota: non-STATIC_FIELD \
+   * edges (CONSTANT_POOL, INTERFACE, SUPERCLASS, CLASS_LOADER, ...) that \
+   * were dropped because the class already hit \
+   * STATIC_FIELD_SWEEP_NON_STATIC_CAP_PER_CLASS. Total drops across all \
+   * classes/laps — compare against kind_counts (k9 total) to gauge how \
+   * much CP pressure the quota is absorbing. */ \
+  X(REFERENCE_CHAIN_STATIC_SWEEP_NON_STATIC_DROPPED, "reference_chain_static_sweep_non_static_dropped") \
+  /* Incremented once per class that hit the non-static cap at least once \
+   * in a lap (on the first drop for that class). Distinguishes "a few fat \
+   * outlier classes dropping many edges" from "systematic drops across \
+   * almost all classes" — if this tracks the total class count per lap, \
+   * the cap is too low; if it stays near zero, the cap is fine. */ \
+  X(REFERENCE_CHAIN_STATIC_SWEEP_CLASSES_CAPPED, "reference_chain_static_sweep_classes_capped") \
   DD_COUNTER_TABLE_FAULT_INJECTION(X)                                          \
   DD_COUNTER_TABLE_FI_DEBUG(X)                                                 \
   DD_COUNTER_TABLE_DEBUG(X)

@@ -663,6 +663,16 @@ private:
   // well under a minute of wall-clock passes.
   static constexpr int STATIC_FIELD_SWEEP_CHUNK_CLASSES = 512;
 
+  // Per-class cap on non-STATIC_FIELD edges admitted during one
+  // admitStaticFieldRoots() lap. STATIC_FIELD edges are always admitted
+  // (high-priority leak root); non-static edges (CONSTANT_POOL, INTERFACE,
+  // SUPERCLASS, CLASS_LOADER, ...) are admitted up to this many per class,
+  // then dropped for the rest of that class this lap. 32 covers a typical
+  // class's full constant-pool/interface set; outlier classes are bounded
+  // so they cannot blow the chunk's safepoint deadline. See
+  // PassContext::_class_other_cap's own comment for the admission logic.
+  static constexpr int STATIC_FIELD_SWEEP_NON_STATIC_CAP_PER_CLASS = 32;
+
   // "GC just happened" signals. Bumped only from onGCStart()/onGCFinish();
   // gcFinishEpoch() is now read by shouldRunPass() as one of the
   // two pass-scheduling triggers (design doc's Triggering section).
@@ -1694,15 +1704,17 @@ private:
   // single-call sweep must, means whichever classes come after wherever the
   // deadline hits are structurally unreachable no matter how many times it
   // retries. Chunking instead makes guaranteed forward progress through the
-  // loaded-class list across passes regardless of any one chunk truncating,
-  // at the cost of only *that* chunk's static fields being incompletely
-  // admitted for the pass that truncated - the same "best-effort, not
-  // truncation-worthy for the whole search" trade-off this method's
-  // best-effort failure paths already make above. Each call also
-  // reprioritizes the loaded-class list app-classes-first before selecting
-  // its chunk (see the .cpp body) so a likely leak source is reached within
-  // the first several chunks instead of only after every JDK/platform class
-  // has been swept. *cycle_complete is set when this call's chunk reaches
+  // loaded-class list across passes regardless of any one chunk truncating.
+  // The holder array is filled in reversed order so HotSpot's LIFO
+  // FollowReferences descent visits classes in ascending original index
+  // order; on truncation the cursor resumes at the class that was being
+  // processed (not chunk_end), so classes after the interruption point are
+  // reached on the next pass rather than skipped for the rest of the lap.
+  // Each call also reprioritizes the loaded-class list app-classes-first
+  // before selecting its chunk (see the .cpp body) so a likely leak source
+  // is reached within the first several chunks instead of only after every
+  // JDK/platform class has been swept. *cycle_complete is set when this
+  // call's chunk reaches
   // the end of the loaded-class list (a full lap), which the caller uses
   // in place of the old single-call "not truncated" check to decide whether
   // to update _last_static_field_class_count.

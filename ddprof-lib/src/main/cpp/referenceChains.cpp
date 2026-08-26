@@ -1460,6 +1460,36 @@ struct PassContext {
   // negative-tagged referee must never be descended into.
   bool static_field_seed = false;
 
+  // PER-CLASS NON-STATIC QUOTA (admitStaticFieldRoots() only). JVMTI
+  // reports a class's entire metadata graph through the same
+  // static_field_seed opening - CONSTANT_POOL (resolved String/Class/
+  // MethodHandle/MethodType/CallSite constants), INTERFACE, SUPERCLASS,
+  // CLASS_LOADER, ... - not just its STATIC_FIELD edges. CONSTANT_POOL
+  // alone is 5-15x STATIC_FIELD volume per class, systemically. Admitting
+  // all of them would burn the per-chunk callback/deadline budget on
+  // non-static-field edges and starve static-field discovery; dropping
+  // them entirely would exclude a real (if rarer) leak category. Instead,
+  // STATIC_FIELD edges are always admitted and non-STATIC_FIELD edges from
+  // a class are admitted up to _class_other_cap per class, then dropped
+  // for the rest of that class this lap. The cap resets on class
+  // boundary (detected by referrer tag change), so one fat class cannot
+  // exhaust the quota for any other. admitStaticFieldRoots() sets
+  // _class_other_cap from STATIC_FIELD_SWEEP_NON_STATIC_CAP_PER_CLASS;
+  // everywhere else these are zero/unused.
+  jlong _seed_class_tag = 0;     // negative tag of the class currently
+                                // being descended (0 before the first
+                                // class edge is seen)
+  int _class_other_admitted = 0; // non-STATIC_FIELD edges admitted for
+                                // the current class this lap
+  int _class_other_cap = 0;      // per-class cap; 0 disables the quota
+                                // (admit all) when not in seed sweep
+  // Number of distinct classes entered so far in this chunk's descent
+  // (incremented on each class-boundary tag change). Used by
+  // admitStaticFieldRoots() to compute the resumable cursor on truncation:
+  // resume at chunk_start + count - 1 (redo the partial class) rather
+  // than skipping to chunk_end and losing the rest of the chunk.
+  int _classes_in_chunk_visited = 0;
+
   // Amortizes tracker->_pass_deadline_ns's OS::nanotime() check (heapReference
   // Callback()/heapRootCallback() run once per visited edge/root - checking
   // wall-clock on literally every call would add real overhead on a large
@@ -1667,6 +1697,43 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
     // expand further from it - enforced here rather than
     // discovering-then-discarding, per the plan.
     return 0;
+  }
+
+  if (ctx->static_field_seed && referrer_tag_ptr != nullptr &&
+      *referrer_tag_ptr < 0) {
+    // Referrer is the class object opened by the static_field_seed branch
+    // above. JVMTI reports that class's entire metadata reference graph
+    // through this same opening, not just its static fields - CONSTANT_POOL
+    // (resolved String/Class/MethodHandle/MethodType/CallSite constants),
+    // INTERFACE, SUPERCLASS, CLASS_LOADER, ... Those are real reachability
+    // edges, just lower-priority for this static-field-root sweep than
+    // STATIC_FIELD. Admit STATIC_FIELD unconditionally; admit non-STATIC_FIELD
+    // up to the per-class cap (PassContext::_class_other_cap) so one fat
+    // class cannot starve the rest, then drop further non-static edges for
+    // this class this lap. Track the current class tag for
+    // admitStaticFieldRoots()'s resumable cursor (see that method's own
+    // comment) and reset the cap counter on class boundary.
+    if (*referrer_tag_ptr != ctx->_seed_class_tag) {
+      ctx->_seed_class_tag = *referrer_tag_ptr;
+      ctx->_class_other_admitted = 0;
+      ctx->_classes_in_chunk_visited++;
+    }
+    if (reference_kind != JVMTI_HEAP_REFERENCE_STATIC_FIELD) {
+      if (ctx->_class_other_cap > 0 &&
+          ctx->_class_other_admitted >= ctx->_class_other_cap) {
+        // Quota exhausted for this class - drop the edge. Count every
+        // drop, and count the first drop for this class separately so
+        // the two counters together distinguish "a few fat outlier
+        // classes dropping many edges" from "systematic drops across
+        // almost all classes" (cap too low).
+        Counters::increment(REFERENCE_CHAIN_STATIC_SWEEP_NON_STATIC_DROPPED);
+        if (ctx->_class_other_admitted == ctx->_class_other_cap) {
+          Counters::increment(REFERENCE_CHAIN_STATIC_SWEEP_CLASSES_CAPPED);
+        }
+        return 0;
+      }
+      ctx->_class_other_admitted++;
+    }
   }
 
   if (*tag_ptr == 0) {
@@ -2838,8 +2905,20 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
     holder = nullptr;
   }
   if (holder != nullptr) {
+    // Fill in REVERSE chunk order: holder[0] = classes[chunk_end-1], ...,
+    // holder[chunk_count-1] = classes[chunk_start]. HotSpot's
+    // FollowReferences visits the initial_object (the holder array) by
+    // pushing it on a LIFO visit_stack and popping (jvmtiTagMap.cpp:
+    // iterate_over_array pushes elements 0..n-1 in order, the while-loop
+    // pops LIFO), so classes are descended in REVERSE holder order.
+    // Reversing the fill makes the descent visit classes in ASCENDING
+    // original index order (chunk_start first), which is what
+    // admitStaticFieldRoots()'s resumable cursor below assumes: an abort
+    // at class p means classes chunk_start..p-1 are done and p+1..chunk_end-1
+    // are pending, so the cursor resumes at p (redoing the partial class)
+    // without re-walking completed classes.
     for (jint i = 0; i < chunk_count; i++) {
-      jni->SetObjectArrayElement(holder, i, classes[chunk_start + i]);
+      jni->SetObjectArrayElement(holder, i, classes[chunk_end - 1 - i]);
       if (jniExceptionCheck(jni)) {
         holder = nullptr;
         break;
@@ -2880,6 +2959,13 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
   // reaches each class's static fields instead of stopping at the
   // negative-tagged class object itself.
   ctx.static_field_seed = true;
+  // Per-class non-STATIC_FIELD admission cap (see PassContext::_class_other_cap's
+  // own comment). STATIC_FIELD edges are always admitted; non-static edges
+  // (CONSTANT_POOL, INTERFACE, SUPERCLASS, CLASS_LOADER, ...) are admitted
+  // up to this many per class per lap, then dropped for the rest of that
+  // class. 32 covers a typical class's full constant-pool/interface set;
+  // outlier classes are bounded so they cannot blow the chunk's deadline.
+  ctx._class_other_cap = STATIC_FIELD_SWEEP_NON_STATIC_CAP_PER_CLASS;
   // TEMP DIAGNOSTIC (see doc/temp/ investigation notes): see PassContext::
   // kind_counts's own comment.
   int kind_counts[32];
@@ -2913,15 +2999,28 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
 
   if (ctx.truncated) {
     _static_field_sweep_cycle_truncated = true;
+    // Resumable cursor: instead of skipping to chunk_end (losing every
+    // class after the interruption point for the rest of this lap), resume
+    // at the class we were inside when the walk aborted. The holder was
+    // filled in reversed order so descent visits classes in ascending
+    // original index order; _classes_in_chunk_visited counts how many
+    // classes were entered before the abort. Resume at chunk_start + count
+    // - 1 to redo the partial class (its already-admitted edges hit
+    // ALREADY_ADMITTED cheaply; with the per-class quota its non-static
+    // edges complete within the cap). Classes before it are done; classes
+    // after it are pending and will be reached on the next pass.
+    if (ctx._classes_in_chunk_visited > 0) {
+      _static_field_sweep_cursor =
+          chunk_start + ctx._classes_in_chunk_visited - 1;
+    } else {
+      // Aborted before any class's own edges were seen (e.g. during the
+      // holder->class seed edges) - redo the whole chunk.
+      _static_field_sweep_cursor = chunk_start;
+    }
+  } else {
+    // Full advance: every class in the chunk was processed.
+    _static_field_sweep_cursor = chunk_end;
   }
-  // Advance unconditionally, truncated or not: a class whose own static
-  // fields alone exhaust a chunk's budget/deadline must not block every
-  // later class in the list from ever being attempted - see this method's
-  // own header comment. The chunk that truncated may have admitted an
-  // incomplete set of that chunk's static fields; the cycle-truncated flag
-  // below is what keeps a lap with any incomplete chunk from being mistaken
-  // for a clean, fully-covered sweep.
-  _static_field_sweep_cursor = chunk_end;
   if (_static_field_sweep_cursor >= class_count) {
     *cycle_complete = !_static_field_sweep_cycle_truncated;
     _static_field_sweep_cursor = 0;
