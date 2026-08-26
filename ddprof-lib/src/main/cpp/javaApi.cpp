@@ -463,6 +463,10 @@ static bool decodeJavaBlockState(jint state, OSThreadState &decoded) {
     decoded = OSThreadState::SLEEPING;
     return true;
   }
+  if (state == static_cast<jint>(OSThreadState::OBJECT_WAIT)) {
+    decoded = OSThreadState::OBJECT_WAIT;
+    return true;
+  }
   decoded = OSThreadState::UNKNOWN;
   return false;
 }

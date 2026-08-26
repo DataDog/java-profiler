@@ -28,6 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 public class PrecheckTest extends AbstractProfilerTest {
     private static final int OSTHREAD_STATE_SLEEPING = 7;
+    private static final int OSTHREAD_STATE_OBJECT_WAIT = 5;
     private static final String TAIL_WEIGHT_THREAD = "precheck-tail-weight";
     private static final int TAIL_WEIGHT_ITERATIONS = 50;
     private static final int TAIL_WEIGHT_SLEEP_MILLIS = 6;
@@ -61,6 +62,17 @@ public class PrecheckTest extends AbstractProfilerTest {
             assertTrue(counters.get("wc_signals_suppressed_owned_block") > 0,
                     "wc_signals_suppressed_owned_block should be > 0 for a 300 ms Thread.sleep()");
         }
+    }
+
+    @Test
+    public void testBlockEnterArmsObjectWaitState() {
+        Assumptions.assumeTrue(!Platform.isJ9());
+        Assumptions.assumeTrue(Platform.isJavaVersionAtLeast(11));
+        leaveClearedInitializedContext();
+
+        long token = ProfilerOwnedBlockHooks.blockEnter(profiler, OSTHREAD_STATE_OBJECT_WAIT);
+        assertTrue(token != 0, "Expected native blockEnter to arm OBJECT_WAIT state");
+        ProfilerOwnedBlockHooks.blockExit(profiler, token);
     }
 
     @Test
