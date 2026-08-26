@@ -73,9 +73,9 @@ public:
   // so native-memory-tracking accounting stays correct. Per the JVMTI spec
   // this array is a fresh, caller-owned allocation decoupled from the
   // Method's lifetime, so holding onto it is safe across class unload.
-  void *_ptr;
+  jvmtiLineNumberEntry* _table;
 
-  SharedLineNumberTable(int size, void *ptr) : _size(size), _ptr(ptr) {}
+  SharedLineNumberTable(int size, jvmtiLineNumberEntry *ptr) : _size(size), _table(ptr) {}
   ~SharedLineNumberTable();
 };
 

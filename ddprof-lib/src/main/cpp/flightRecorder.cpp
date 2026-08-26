@@ -72,12 +72,11 @@ SharedLineNumberTable::~SharedLineNumberTable() {
   // Lookup::fillJavaMethodInfo), not a copy -- freed here via
   // jvmti->Deallocate(), not plain free(). On HotSpot, JvmtiEnv
   // Allocate()/Deallocate() are os::malloc()/os::free(), which route through
-  // MemTracker so native-memory-tracking accounting stays correct; freeing
-  // with plain free() instead would desync NMT's byte count from what's
-  // actually live whenever -XX:NativeMemoryTracking is enabled, even though
-  // the underlying memory itself would still be freed correctly.
-  if (_ptr != nullptr) {
-    VM::jvmti()->Deallocate((unsigned char *)_ptr);
+  // native memory tracking; freeing with plain free() can result in crash
+  // whenever -XX:NativeMemoryTracking is enabled, because native memory tracking
+  // adds a header to malloc'd block.
+  if (_table != nullptr) {
+    VM::jvmti()->Deallocate((unsigned char *)_table);
     Counters::decrement(LINE_NUMBER_TABLES);
     // _size is the JVMTI entry count passed at construction (see
     // fillJavaMethodInfo), so the byte size matches the allocation.
@@ -102,7 +101,7 @@ public:
   // handles inline -- but never on the success path, where ownership passes
   // to mi->_line_number_table instead (also freed via jvmti->Deallocate(),
   // just later; see SharedLineNumberTable) and this field is nulled out.
-  unsigned char* volatile _line_number_table;
+  jvmtiLineNumberEntry* volatile _line_number_table;
 
   // Non-copyable
   ResolveMethodState(const ResolveMethodState&) = delete;
@@ -147,7 +146,7 @@ void ResolveMethodState::release() {
     _class_name = nullptr;
   }
   if (_line_number_table != nullptr) {
-    jvmti->Deallocate(_line_number_table);
+    jvmti->Deallocate((unsigned char*)_line_number_table);
     _line_number_table = nullptr;
   }
 }
@@ -312,6 +311,18 @@ bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
       if (first_time) {
         jvmtiError line_table_error = jvmti->GetLineNumberTable(method, &line_number_table_size,
                                   &line_number_table);
+        
+        bool is_table_readable = line_number_table != nullptr &&
+                                 SafeAccess::isReadableRange(line_number_table, line_number_table_size * sizeof(jvmtiLineNumberEntry));
+        if (line_table_error != JVMTI_ERROR_NONE ||
+          // On Hotspot, it returns a malloc'd pointer even table size = 0, but there is no point to keep it
+          line_number_table_size == 0) {
+            if (is_table_readable && line_number_table != nullptr) {
+              jvmti->Deallocate((unsigned char*)line_number_table);
+            }
+            line_number_table = nullptr;
+            line_number_table_size = 0;
+        }
         // Mirror into state immediately, before anything else in this
         // function runs: a later JVMTI/JNI call below (Thread.run/main's
         // FindClass/GetMethodID/CallBooleanMethod, or this function's own
@@ -319,23 +330,7 @@ bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
         // before line_number_table is otherwise handled, and this local
         // variable is not tracked by anything the landing pad can see.
         // state.release() is what frees it on that recovery path.
-        state._line_number_table = (unsigned char *)line_number_table;
-        bool is_table_readable = true;
-        // Defensive: if GetLineNumberTable failed, clean up any potentially allocated memory
-        // Some buggy JVMTI implementations might allocate despite returning an error
-        if (line_table_error != JVMTI_ERROR_NONE ||
-            (line_number_table != nullptr && 
-             !(is_table_readable = SafeAccess::isReadableRange(line_number_table, line_number_table_size * sizeof(jvmtiLineNumberEntry))))) {
-
-          // If the table is not readable, don't try to deallocate it, because it can result in crash.
-          if (line_number_table != nullptr && is_table_readable) {
-            // Try to deallocate to prevent leak from buggy JVM
-            jvmti->Deallocate((unsigned char *)line_number_table);
-          }
-          line_number_table = nullptr;
-          line_number_table_size = 0;
-          state._line_number_table = nullptr; // already deallocated above, if it was non-null
-        }
+        state._line_number_table = line_number_table;
       }
 
       // Check if the frame is Thread.run or inherits from it
@@ -1147,7 +1142,7 @@ void Recording::cleanupUnreferencedMethods() {
       if (mi._age >= AGE_THRESHOLD) {
         // Method hasn't been used for N chunks, safe to remove
         // SharedLineNumberTable will be automatically deallocated via shared_ptr destructor
-        bool has_line_table = (mi._line_number_table != nullptr && mi._line_number_table->_ptr != nullptr);
+        bool has_line_table = (mi._line_number_table != nullptr && mi._line_number_table->_table != nullptr);
         if (has_line_table) {
           removed_with_line_tables++;
         }
