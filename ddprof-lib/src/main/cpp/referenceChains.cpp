@@ -1490,14 +1490,6 @@ struct PassContext {
   // than skipping to chunk_end and losing the rest of the chunk.
   int _classes_in_chunk_visited = 0;
 
-  // TEMP DIAGNOSTIC: cumulative TSC ticks spent inside heapReferenceCallback()
-  // during this admitStaticFieldRoots() call. Compared against the total
-  // FollowReferences wall-time (*safepoint_ticks) to split "our callback
-  // code" vs "FollowReferences' own heap-walking overhead". Only
-  // accumulated when static_field_seed is true (the static-field sweep);
-  // zero everywhere else.
-  u64 _callback_ticks = 0;
-
   // Amortizes tracker->_pass_deadline_ns's OS::nanotime() check (heapReference
   // Callback()/heapRootCallback() run once per visited edge/root - checking
   // wall-clock on literally every call would add real overhead on a large
@@ -1521,21 +1513,6 @@ struct PassContext {
   // stack-local array sized for the full jvmtiHeapReferenceKind range.
   int *kind_counts = nullptr;
 };
-
-// TEMP DIAGNOSTIC: RAII guard that accumulates TSC ticks spent inside
-// heapReferenceCallback() into PassContext::_callback_ticks. Only active
-// during the static-field sweep (static_field_seed=true); a no-op
-// (no rdtsc) everywhere else. ~20ns overhead per callback when active.
-struct ScopedCallbackTimer {
-  u64 _start;
-  u64 *_accum;
-  bool _active;
-  explicit ScopedCallbackTimer(bool active, u64 *accum)
-      : _start(active ? TSC::ticks() : 0), _accum(accum), _active(active) {}
-  ~ScopedCallbackTimer() {
-    if (_active) *_accum += TSC::ticks() - _start;
-  }
-};
 } // namespace
 
 jint JNICALL ReferenceChainTracker::heapReferenceCallback(
@@ -1544,11 +1521,6 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
     jlong referrer_class_tag, jlong size, jlong *tag_ptr,
     jlong *referrer_tag_ptr, jint length, void *user_data) {
   PassContext *ctx = (PassContext *)user_data;
-
-  // TEMP DIAGNOSTIC: measure cumulative time spent in this callback during
-  // the static-field sweep, to split our code cost vs FollowReferences'
-  // own heap-walking overhead. See ScopedCallbackTimer's own comment.
-  ScopedCallbackTimer _cb_timer(ctx->static_field_seed, &ctx->_callback_ticks);
 
   // TEMP DIAGNOSTIC (see doc/temp/ investigation notes): tally every callback
   // by kind before any early-return below, so an aborted/truncated chunk
@@ -2334,9 +2306,6 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   _pass_deadline_ns = _effective_pause_target_ms > 0
                           ? OS::nanotime() + (u64)_effective_pause_target_ms * 1000000ULL
                           : 0;
-  // TEMP DIAGNOSTIC: temporarily bump deadline to 200ms to measure the
-  // callback-vs-FollowReferences overhead split without truncating.
-  _pass_deadline_ns = OS::nanotime() + 200ULL * 1000000ULL;
 
   *edges_admitted = 0;
   *truncated = false;
@@ -2484,11 +2453,6 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   bool expand_truncated = false;
   bool expand_frontier_cap_hit = false;
   int remaining_budget = std::max(budget - expand_phase_edges_admitted, 0);
-  // TEMP DIAGNOSTIC: how much of the 200ms deadline is left when expand starts?
-  u64 expand_start_ns = OS::nanotime();
-  u64 deadline_remaining_ns = _pass_deadline_ns > expand_start_ns
-                                ? _pass_deadline_ns - expand_start_ns
-                                : 0;
   expandFrontier(jvmti, jni, _hop_cap, remaining_budget,
                  &expand_edges_admitted, &expand_truncated,
                  &expand_frontier_cap_hit, safepoint_ticks);
@@ -2496,14 +2460,11 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   *edges_admitted += expand_edges_admitted;
   *truncated = *truncated || expand_truncated;
   *frontier_cap_hit = expand_frontier_cap_hit;
-  // TEMP DIAGNOSTIC (see static_field_phase log above).
   TEST_LOG("ReferenceChainTracker::runPassManualWalk expand_phase "
            "edges_admitted=%d truncated=%d frontier_cap_hit=%d "
-           "remaining_budget=%d deadline_remaining_ms=%llu expand_elapsed_ms=%llu",
+           "remaining_budget=%d",
            expand_edges_admitted, (int)expand_truncated,
-           (int)expand_frontier_cap_hit, remaining_budget,
-           (unsigned long long)(deadline_remaining_ns / 1000000ULL),
-           (unsigned long long)((OS::nanotime() - expand_start_ns) / 1000000ULL));
+           (int)expand_frontier_cap_hit, remaining_budget);
 
   // Note: unlike a hard truncation during root/stack-ref enumeration or the
   // static-field sweep above (which return early - the pass never even
@@ -2656,7 +2617,6 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
   jclass object_class = _cached_object_class;
 
   bool progress = true;
-  u64 follow_elapsed_ns = 0;  // TEMP DIAGNOSTIC
   while (!ctx.truncated && progress && object_class != nullptr) {
     progress = false;
 
@@ -2672,27 +2632,36 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
       break; // nothing pending
     }
 
-    // Same batch-sizing rationale as before: at most `budget` pending tags
-    // per level so GetObjectsWithTags()'s cost stays proportional to what we
-    // will actually expand this iteration, not to the whole backlog.
-    // Additionally capped at the configured steady per-pass budget
-    // (_budget), independent of how large `budget` itself is: the first
-    // pass's caller-supplied budget is _first_pass_budget, which can be
-    // (and by design, for a whole-JVM root enumeration, routinely is) far
-    // larger than the actual pending backlog - e.g. 200000 vs. 81672 roots
-    // enumerated. Without this second cap, batch_size collapses to the
-    // entire backlog in one shot, building one huge holder array and
-    // spending this pass's whole expansion budget on a single
-    // FollowReferences call that can fail outright (JNI local-capacity/OOM)
-    // with zero progress, stalling every root at the front of
-    // _pending_expand for however many later, budget-capped passes it takes
-    // to drain that same backlog before any real expansion happens. Capping
-    // at _budget keeps every batch - first pass or not - the same size this
-    // array-holder mechanism is already proven to handle on every other
-    // pass.
+    // SELF-CALIBRATING ADAPTIVE BATCH SIZE for GetObjectsWithTags.
+    // GetObjectsWithTags is O(tag_map_size × batch_size) — a quadratic
+    // cost (HotSpot's TagObjectCollector::do_entry does a linear scan of
+    // the search array for every entry in the tag map). With a 163k-entry
+    // tag map and batch_size ~3400, that's 554M comparisons = 226ms per
+    // call, eating the entire per-pass deadline and starving BFS to 3-4
+    // edges/pass.
+    //
+    // Instead of a fixed batch_size, self-calibrate from measured
+    // GetObjectsWithTags elapsed time: after each call, update an EMA of
+    // cost-per-tag, then derive the next batch_size from a CPU-overhead
+    // budget (NOT a safepoint budget — GetObjectsWithTags is not a
+    // safepoint call). Adapts automatically to the machine's CPU speed
+    // and to tag-map growth. See _gotw_ema_cost_per_tag_ns's own comment.
+    //
+    // Still capped at `budget` and `_budget` for the original reasons
+    // (first-pass budget can be far larger than the backlog; a single
+    // huge batch risks JNI local-capacity/OOM with zero progress).
+    size_t gotw_batch_size;
+    if (_gotw_ema_cost_per_tag_ns == 0) {
+      // First call — no measurement yet. Conservative default.
+      gotw_batch_size = GOTW_INITIAL_BATCH_SIZE;
+    } else {
+      gotw_batch_size = (size_t)std::max(
+          (int64_t)1, (int64_t)(GOTW_CPU_BUDGET_NS / _gotw_ema_cost_per_tag_ns));
+    }
     size_t batch_size = std::min(
         source.size(),
-        (size_t)std::max(std::min(budget, _budget), 1));
+        std::min((size_t)std::max(std::min(budget, _budget), 1),
+                 gotw_batch_size));
     std::vector<jlong> candidate_tags(source.begin(),
                                        source.begin() + batch_size);
 
@@ -2705,12 +2674,26 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
     jint resolved_count = 0;
     jobject *resolved_objects = nullptr;
     jlong *resolved_tags = nullptr;
-    // TEMP DIAGNOSTIC: time GetObjectsWithTags separately from FollowReferences
     u64 gotw_start_ns = OS::nanotime();
     jvmtiError resolve_err = jvmti->GetObjectsWithTags(
         (jint)candidate_tags.size(), candidate_tags.data(), &resolved_count,
         &resolved_objects, &resolved_tags);
     u64 gotw_elapsed_ns = OS::nanotime() - gotw_start_ns;
+    // Self-calibrate: update the EMA of cost-per-tag from this call's
+    // measured elapsed time. cost_per_tag = elapsed / batch_size captures
+    // the per-tag-map-entry × per-search-tag comparison cost, which stays
+    // roughly stable across calls (tag-map growth is reflected in the
+    // absolute cost, not the per-tag rate). The EMA smooths jitter from
+    // GC/scheduler interference on individual calls.
+    if (batch_size > 0 && gotw_elapsed_ns > 0) {
+      u64 measured_cost_per_tag = gotw_elapsed_ns / batch_size;
+      if (_gotw_ema_cost_per_tag_ns == 0) {
+        _gotw_ema_cost_per_tag_ns = measured_cost_per_tag;
+      } else {
+        _gotw_ema_cost_per_tag_ns =
+            _gotw_ema_cost_per_tag_ns * 4 / 5 + measured_cost_per_tag / 5;
+      }
+    }
     if (resolve_err != JVMTI_ERROR_NONE) {
       ctx.truncated = true;
       break;
@@ -2780,9 +2763,6 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
           jvmtiError follow_err =
               jvmti->FollowReferences(0, nullptr, holder, &callbacks, &ctx);
           *safepoint_ticks += TSC::ticks() - follow_start_ticks;
-          // TEMP DIAGNOSTIC: track FollowReferences wall-time for the
-          // per-iteration timing log below
-          follow_elapsed_ns = OS::nanotime() - gotw_start_ns - gotw_elapsed_ns;
           if (follow_err != JVMTI_ERROR_NONE) {
             ctx.truncated = true;
           }
@@ -2810,18 +2790,6 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
     // idempotent - already-admitted children are ALREADY_ADMITTED (not
     // re-counted, not descended), so a retry only admits the remaining
     // children. The while condition (!ctx.truncated) ends the loop here.
-
-    // TEMP DIAGNOSTIC: log per-iteration timing and truncation cause
-    TEST_LOG("ReferenceChainTracker::expandFrontier iter "
-             "batch_size=%zu resolved=%d edges=%d truncated=%d "
-             "gotw_ms=%llu follow_ms=%llu deadline_left_ms=%llu",
-             batch_size, resolved_count, ctx.edges_admitted,
-             (int)ctx.truncated,
-             (unsigned long long)(gotw_elapsed_ns / 1000000ULL),
-             (unsigned long long)(follow_elapsed_ns / 1000000ULL),
-             _pass_deadline_ns > 0
-                 ? (unsigned long long)((_pass_deadline_ns - OS::nanotime()) / 1000000ULL)
-                 : 0);
 
     if (holder != nullptr) {
       jni->DeleteLocalRef(holder);
@@ -3046,27 +3014,6 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
            kind_counts[1], kind_counts[2], kind_counts[3], kind_counts[4],
            kind_counts[5], kind_counts[6], kind_counts[7], kind_counts[8],
            kind_counts[9], kind_counts[10]);
-  // TEMP DIAGNOSTIC: split our callback time vs FollowReferences' own
-  // heap-walking overhead. follow_ticks = total FollowReferences wall-time
-  // (already accumulated into *safepoint_ticks above); callback_ticks =
-  // cumulative time inside heapReferenceCallback() (our code). The
-  // difference is JVMTI's own object-iteration/metadata-walk cost.
-  u64 follow_ticks = TSC::ticks() - follow_start_ticks;
-  u64 callback_ticks = ctx._callback_ticks;
-  u64 jvmti_overhead_ticks = follow_ticks > callback_ticks
-                                 ? follow_ticks - callback_ticks
-                                 : 0;
-  TEST_LOG("ReferenceChainTracker::admitStaticFieldRoots timing "
-           "follow_ms=%llu callback_ms=%llu jvmti_ms=%llu "
-           "callback_pct=%llu callback_count=%d",
-           (unsigned long long)TSC::ticks_to_millis(follow_ticks),
-           (unsigned long long)TSC::ticks_to_millis(callback_ticks),
-           (unsigned long long)TSC::ticks_to_millis(jvmti_overhead_ticks),
-           follow_ticks > 0 ? (100ULL * callback_ticks / follow_ticks) : 0,
-           kind_counts[1] + kind_counts[2] + kind_counts[3] +
-               kind_counts[4] + kind_counts[5] + kind_counts[6] +
-               kind_counts[7] + kind_counts[8] + kind_counts[9] +
-               kind_counts[10]);
   if (follow_err != JVMTI_ERROR_NONE) {
     return;
   }

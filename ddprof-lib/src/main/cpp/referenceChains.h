@@ -953,6 +953,35 @@ private:
   // RateLimiter::start()).
   PidController _pause_pid;
 
+  // Self-calibrating adaptive batch sizing for GetObjectsWithTags (see
+  // expandFrontier()'s own comment). GetObjectsWithTags is O(tag_map_size
+  // × batch_size) — a quadratic cost that, with a 163k-entry tag map and
+  // batch_size ~3400, takes 226ms per call and starves BFS to 3-4
+  // edges/pass. Instead of a fixed batch_size, we self-calibrate from
+  // measured GetObjectsWithTags elapsed time: after each call, update an
+  // exponential moving average of cost-per-tag, then derive the next
+  // batch_size from a CPU-overhead budget (not a safepoint budget —
+  // GetObjectsWithTags is NOT a safepoint call). Adapts automatically to
+  // the machine's CPU speed and to tag-map growth. Starts at 0 (unset);
+  // expandFrontier() uses a conservative small default until the first
+  // measurement populates it.
+  //   ema_cost_per_tag = ema × 0.8 + measured × 0.2
+  //   batch_size = max(1, cpu_budget_ns / ema_cost_per_tag)
+  u64 _gotw_ema_cost_per_tag_ns = 0;  // 0 = unset, use default
+
+  // CPU overhead budget for GetObjectsWithTags per expandFrontier() call.
+  // Not a safepoint/STW budget (GetObjectsWithTags is not a safepoint
+  // call) — a throughput target. ~25ms per pass at ~2-4 passes/sec is
+  // ~50-100ms/sec of CPU overhead on one core, acceptable for a
+  // background search thread on a multi-core machine.
+  static constexpr u64 GOTW_CPU_BUDGET_NS = 25000000; // 25ms
+
+  // Conservative initial batch_size before the first GetObjectsWithTags
+  // measurement populates the EMA. Small enough to be safe on any machine
+  // regardless of tag-map size, large enough to make meaningful progress
+  // per FollowReferences call.
+  static constexpr int GOTW_INITIAL_BATCH_SIZE = 64;
+
   // Search lifecycle state. _search_started distinguishes a search's first
   // pass (seed FollowReferences from the heap roots) from a resumed pass
   // (expand the persisted frontier, see expandFrontier()) - runPass() below.
