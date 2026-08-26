@@ -499,6 +499,16 @@ class VMStructs {
         return _has_native_thread_id;
     }
 
+    // True when JavaThread::_cont_entry offset is available (JDK 27+ via
+    // gHotSpotVMStructs, JDK-8378985). The continuation-entry linked-list
+    // walk (contEntry()/parent()) requires this offset; without it the
+    // walker must fall back to fp-derivation even if ContinuationEntry
+    // type_size() is known (some JDK 26 backports export the type but not
+    // the field).
+    static bool hasContEntryOffset() {
+        return _cont_entry_offset >= 0;
+    }
+
     static bool isInterpretedFrameValidFunc(const void* pc) {
         return pc >= _interpreted_frame_valid_start && pc < _interpreted_frame_valid_end;
     }

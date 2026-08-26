@@ -379,11 +379,16 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
         uintptr_t entry_fp;
 
-        if (VMContinuationEntry::type_size() > 0) {
-            // ContinuationEntry is known via vmStructs (JDK 27+, added by
-            // JDK-8378985).  Walk the linked list of entries for nested-
-            // continuation support and derive the enterSpecial frame FP from
-            // the struct layout (entry + type_size).
+        if (VMContinuationEntry::type_size() > 0 && VMStructs::hasContEntryOffset()) {
+            // ContinuationEntry layout and JavaThread::_cont_entry offset are
+            // both known via vmStructs (JDK 27+, added by JDK-8378985). Walk
+            // the linked list of entries for nested-continuation support and
+            // derive the enterSpecial frame FP from the struct layout
+            // (entry + type_size). Some JDK 26 backports export
+            // ContinuationEntry in gHotSpotVMTypes (type_size() > 0) without
+            // the _cont_entry field; in that case contEntry() returns null and
+            // this path cannot work, so fall through to the fp-derivation
+            // fallback below.
             cont_entry = (cont_entry != nullptr) ? cont_entry->parent() : vm_thread->contEntry();
             if (cont_entry == nullptr) {
                 Counters::increment(WALKVM_CONT_ENTRY_NULL);
@@ -392,8 +397,10 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
             }
             entry_fp = cont_entry->entryFP();
         } else {
-            // ContinuationEntry absent from vmStructs (JDK 21-26).
-            // Derive the enterSpecial frame FP from the current fp:
+            // ContinuationEntry layout or JavaThread::_cont_entry offset is
+            // unavailable (JDK 21-26, or JDK 26 backports that export the
+            // type but not the field). Derive the enterSpecial frame FP from
+            // the current fp:
             //   all frames thawed (pc == cont_entry_return_pc): fp IS the
             //     enterSpecial frame FP.
             //   frozen frames remain (pc == cont_returnBarrier): the saved

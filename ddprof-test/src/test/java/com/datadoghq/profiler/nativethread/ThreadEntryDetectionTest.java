@@ -16,7 +16,9 @@
 package com.datadoghq.profiler.nativethread;
 
 import com.datadoghq.profiler.AbstractProfilerTest;
+import com.datadoghq.profiler.Platform;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junitpioneer.jupiter.RetryingTest;
 import com.datadoghq.profiler.JfrEvent;
 import com.datadoghq.profiler.JfrEvents;
@@ -44,6 +46,13 @@ public class ThreadEntryDetectionTest extends AbstractProfilerTest {
 
     @RetryingTest(3)
     public void testThreadEntryDetection() throws Exception {
+        // On Linux, CTimer registers all OS threads (including native pthreads)
+        // with per-thread CPU timers, so native threads receive SIGPROF directly.
+        // On macOS, CTimer is unavailable and the engine falls back to ITimer
+        // (process-wide setitimer); native threads lack a ProfiledThread TLS
+        // entry, so the handler drops their samples. Skip on non-Linux.
+        Assumptions.assumeTrue(Platform.isLinux(),
+            "native thread CPU profiling requires per-thread timers (Linux only)");
         // Create more threads than standard test to increase likelihood
         // of capturing thread startup samples
         int numThreads = 16;

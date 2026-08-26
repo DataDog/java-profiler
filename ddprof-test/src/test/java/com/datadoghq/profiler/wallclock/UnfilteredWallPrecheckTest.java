@@ -25,7 +25,7 @@ import org.junitpioneer.jupiter.RetryingTest;
 /** Verifies owned-block prechecks when legacy {@code filter=} samples every thread. */
 public class UnfilteredWallPrecheckTest extends AbstractProfilerTest {
   private static final int OSTHREAD_STATE_SLEEPING = 7;
-  private static final long SLEEP_MILLIS = 300;
+  private static final long SLEEP_MILLIS = 1000;
   private static final String PRE_EXISTING_THREAD_NAME = "unfiltered-precheck-existing";
   private static final String SUPPRESSED_OWNED_BLOCK_COUNTER =
       "wc_signals_suppressed_owned_block";
