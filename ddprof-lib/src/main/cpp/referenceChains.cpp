@@ -2699,6 +2699,13 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
       break;
     }
 
+    // TEMP DIAGNOSTIC: verify adaptive batch_size is working
+    TEST_LOG("ReferenceChainTracker::expandFrontier gotw "
+             "batch_size=%zu resolved=%d edges=%d gotw_ms=%llu ema=%llu",
+             batch_size, resolved_count, ctx.edges_admitted,
+             (unsigned long long)(gotw_elapsed_ns / 1000000ULL),
+             (unsigned long long)_gotw_ema_cost_per_tag_ns);
+
     std::unordered_map<jlong, jobject> live;
     for (jint i = 0; i < resolved_count; i++) {
       live[resolved_tags[i]] = resolved_objects[i];
