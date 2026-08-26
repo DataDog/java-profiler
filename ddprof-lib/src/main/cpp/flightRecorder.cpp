@@ -329,7 +329,13 @@ bool Lookup::fillJavaMethodInfo(MethodInfo *mi, jmethodID method,
               jvmti->Deallocate((unsigned char*)line_number_table);
             }
 
-            if (!is_table_valid || !is_table_readable) {
+            // Only a genuinely corrupt/unreadable table output should count
+            // here: JVMTI_ERROR_ABSENT_INFORMATION (compiled without debug
+            // line info) and other non-success errors are ordinary, expected
+            // outcomes with no table to speak of, not corruption -- counting
+            // them would swamp this signal with normal methods and mask real
+            // stale/corrupted-jmethodID failures.
+            if (line_table_error == JVMTI_ERROR_NONE && (!is_table_valid || !is_table_readable)) {
               Counters::increment(LINE_NUMBER_TABLE_UNREADABLE);
             }
             line_number_table = nullptr;
