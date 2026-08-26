@@ -2504,8 +2504,6 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
            (int)expand_frontier_cap_hit, remaining_budget,
            (unsigned long long)(deadline_remaining_ns / 1000000ULL),
            (unsigned long long)((OS::nanotime() - expand_start_ns) / 1000000ULL));
-           expand_edges_admitted, (int)expand_truncated,
-           (int)expand_frontier_cap_hit, remaining_budget);
 
   // Note: unlike a hard truncation during root/stack-ref enumeration or the
   // static-field sweep above (which return early - the pass never even
