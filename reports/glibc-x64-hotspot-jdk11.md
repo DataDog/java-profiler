@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk11
 
 ## glibc-x64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-08-26 01:04:20 EDT
+**Date:** 2026-08-26 06:37:53 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: glibc-x64-hotspot-jdk11
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 81 |
-| CPU Cores (end) | 81 |
+| CPU Cores (start) | 76 |
+| CPU Cores (end) | 76 |
 | Throttling | 0% |
 
 ### Test Results
@@ -28,9 +28,9 @@ title: glibc-x64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 479 |
-| Sample Rate | 7.98/sec |
-| Health Score | 499% |
+| CPU Samples | 521 |
+| Sample Rate | 8.68/sec |
+| Health Score | 542% |
 | Threads | 8 |
 | Allocations | 367 |
 
@@ -42,32 +42,32 @@ title: glibc-x64-hotspot-jdk11
 | Sample Rate | 10.33/sec |
 | Health Score | 646% |
 | Threads | 9 |
-| Allocations | 444 |
+| Allocations | 492 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 81-81 cores)</summary>
+<summary>CPU Timeline (1 unique values: 76-76 cores)</summary>
 
 ```
-1787720265 81
-1787720270 81
-1787720275 81
-1787720280 81
-1787720285 81
-1787720290 81
-1787720295 81
-1787720300 81
-1787720305 81
-1787720310 81
-1787720315 81
-1787720320 81
-1787720325 81
-1787720330 81
-1787720335 81
-1787720340 81
-1787720345 81
-1787720350 81
-1787720355 81
-1787720360 81
+1787740384 76
+1787740389 76
+1787740394 76
+1787740399 76
+1787740404 76
+1787740409 76
+1787740414 76
+1787740419 76
+1787740424 76
+1787740429 76
+1787740434 76
+1787740439 76
+1787740444 76
+1787740449 76
+1787740454 76
+1787740459 76
+1787740464 76
+1787740469 76
+1787740474 76
+1787740479 76
 ```
 </details>
 
