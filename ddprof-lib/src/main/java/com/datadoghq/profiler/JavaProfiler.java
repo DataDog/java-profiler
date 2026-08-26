@@ -475,7 +475,7 @@ public final class JavaProfiler {
      * blocked interval. The public paired API is {@link #beginTaskBlock()}.
      *
      * @param state native {@code OSThreadState} value for the blocked interval;
-     *     currently only {@code SLEEPING} is armed
+     *     currently {@code SLEEPING} and {@code OBJECT_WAIT} are armed
      * @return an opaque token to pass to {@link #blockExit(long)}, or 0 if no state was armed
      */
     long blockEnter(int state) {
