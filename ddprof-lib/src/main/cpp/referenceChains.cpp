@@ -2484,6 +2484,11 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   bool expand_truncated = false;
   bool expand_frontier_cap_hit = false;
   int remaining_budget = std::max(budget - expand_phase_edges_admitted, 0);
+  // TEMP DIAGNOSTIC: how much of the 200ms deadline is left when expand starts?
+  u64 expand_start_ns = OS::nanotime();
+  u64 deadline_remaining_ns = _pass_deadline_ns > expand_start_ns
+                                ? _pass_deadline_ns - expand_start_ns
+                                : 0;
   expandFrontier(jvmti, jni, _hop_cap, remaining_budget,
                  &expand_edges_admitted, &expand_truncated,
                  &expand_frontier_cap_hit, safepoint_ticks);
@@ -2494,7 +2499,11 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   // TEMP DIAGNOSTIC (see static_field_phase log above).
   TEST_LOG("ReferenceChainTracker::runPassManualWalk expand_phase "
            "edges_admitted=%d truncated=%d frontier_cap_hit=%d "
-           "remaining_budget=%d",
+           "remaining_budget=%d deadline_remaining_ms=%llu expand_elapsed_ms=%llu",
+           expand_edges_admitted, (int)expand_truncated,
+           (int)expand_frontier_cap_hit, remaining_budget,
+           (unsigned long long)(deadline_remaining_ns / 1000000ULL),
+           (unsigned long long)((OS::nanotime() - expand_start_ns) / 1000000ULL));
            expand_edges_admitted, (int)expand_truncated,
            (int)expand_frontier_cap_hit, remaining_budget);
 
@@ -2649,6 +2658,7 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
   jclass object_class = _cached_object_class;
 
   bool progress = true;
+  u64 follow_elapsed_ns = 0;  // TEMP DIAGNOSTIC
   while (!ctx.truncated && progress && object_class != nullptr) {
     progress = false;
 
@@ -2697,9 +2707,12 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
     jint resolved_count = 0;
     jobject *resolved_objects = nullptr;
     jlong *resolved_tags = nullptr;
+    // TEMP DIAGNOSTIC: time GetObjectsWithTags separately from FollowReferences
+    u64 gotw_start_ns = OS::nanotime();
     jvmtiError resolve_err = jvmti->GetObjectsWithTags(
         (jint)candidate_tags.size(), candidate_tags.data(), &resolved_count,
         &resolved_objects, &resolved_tags);
+    u64 gotw_elapsed_ns = OS::nanotime() - gotw_start_ns;
     if (resolve_err != JVMTI_ERROR_NONE) {
       ctx.truncated = true;
       break;
@@ -2769,6 +2782,9 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
           jvmtiError follow_err =
               jvmti->FollowReferences(0, nullptr, holder, &callbacks, &ctx);
           *safepoint_ticks += TSC::ticks() - follow_start_ticks;
+          // TEMP DIAGNOSTIC: track FollowReferences wall-time for the
+          // per-iteration timing log below
+          follow_elapsed_ns = OS::nanotime() - gotw_start_ns - gotw_elapsed_ns;
           if (follow_err != JVMTI_ERROR_NONE) {
             ctx.truncated = true;
           }
@@ -2796,6 +2812,18 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
     // idempotent - already-admitted children are ALREADY_ADMITTED (not
     // re-counted, not descended), so a retry only admits the remaining
     // children. The while condition (!ctx.truncated) ends the loop here.
+
+    // TEMP DIAGNOSTIC: log per-iteration timing and truncation cause
+    TEST_LOG("ReferenceChainTracker::expandFrontier iter "
+             "batch_size=%zu resolved=%d edges=%d truncated=%d "
+             "gotw_ms=%llu follow_ms=%llu deadline_left_ms=%llu",
+             batch_size, resolved_count, ctx.edges_admitted,
+             (int)ctx.truncated,
+             (unsigned long long)(gotw_elapsed_ns / 1000000ULL),
+             (unsigned long long)(follow_elapsed_ns / 1000000ULL),
+             _pass_deadline_ns > 0
+                 ? (unsigned long long)((_pass_deadline_ns - OS::nanotime()) / 1000000ULL)
+                 : 0);
 
     if (holder != nullptr) {
       jni->DeleteLocalRef(holder);
