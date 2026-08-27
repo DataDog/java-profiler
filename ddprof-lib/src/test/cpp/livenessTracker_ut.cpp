@@ -344,7 +344,7 @@ TEST_F(KlassPopulationTest, InsertCreatesNewEntry) {
     EXPECT_EQ(entry.ring_head, 1);
     EXPECT_EQ(entry.count_ring[0], 5);
     EXPECT_EQ(entry.last_updated_epoch, 1u);
-    EXPECT_EQ(entry.representative, nullptr);
+    EXPECT_EQ(entry.representative_count, 0);
 }
 
 // A second sample for an already-known klass_id updates the same slot in
@@ -429,11 +429,16 @@ TEST_F(KlassPopulationTest, EvictsLeastRecentlyUpdatedEntryWhenFull) {
 
     int slot;
     bool created;
-    jweak evicted = tracker->klassPopulationRecordForTest(
-        /*klass_id=*/CAP + 1, /*count=*/1, /*epoch=*/CAP + 1, &slot, &created);
+    // Eviction now returns evicted refs via output array, not return value.
+    jweak evicted[KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS];
+    int evicted_count = 0;
+    tracker->klassPopulationRecordForTest(
+        /*klass_id=*/CAP + 1, /*count=*/1, /*epoch=*/CAP + 1, &slot, &created,
+        evicted, &evicted_count, KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS);
 
     EXPECT_TRUE(created);
-    EXPECT_EQ(evicted, victim_ref);
+    ASSERT_EQ(evicted_count, 1);
+    EXPECT_EQ(evicted[0], victim_ref);
     // Table stays at capacity - the evicted slot was reused, not appended.
     EXPECT_EQ(tracker->klassPopulationSizeForTest(), CAP);
 
@@ -443,7 +448,7 @@ TEST_F(KlassPopulationTest, EvictsLeastRecentlyUpdatedEntryWhenFull) {
 
     KlassPopulationEntry new_entry;
     ASSERT_TRUE(tracker->klassPopulationLookupForTest(CAP + 1, &new_entry));
-    EXPECT_EQ(new_entry.representative, nullptr);
+    EXPECT_EQ(new_entry.representative_count, 0);
     EXPECT_EQ(new_entry.ring_fill, 1);
 }
 

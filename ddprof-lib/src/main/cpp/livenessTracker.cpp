@@ -148,9 +148,11 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
       _table[i].cached_klass_id = 0;
     }
     for (int i = 0; i < _klass_population_size; i++) {
-      jweak rep = _klass_population[i].representative;
-      if (rep != nullptr) {
-        env->DeleteWeakGlobalRef(rep);
+      for (int r = 0; r < _klass_population[i].representative_count; r++) {
+        jweak rep = _klass_population[i].representatives[r];
+        if (rep != nullptr) {
+          env->DeleteWeakGlobalRef(rep);
+        }
       }
     }
     _klass_population_size = 0;
@@ -285,6 +287,30 @@ u32 LivenessTracker::resolveKlassId(JNIEnv *env, jobject ref) {
   return id;
 }
 
+// Inserts (sample_source, age) into scratch.oldest[], sorted by age
+// descending, capped at MAX_OLDEST_SAMPLES. Called from accumulateKlassCount()
+// to bias representative selection toward long-lived instances.
+void LivenessTracker::insertOldestSample(KlassCountScratch &scratch,
+                                          jweak sample_source, u32 age) {
+  int pos = scratch.oldest_count;
+  for (int i = 0; i < scratch.oldest_count; i++) {
+    if (age > scratch.oldest[i].age) {
+      pos = i;
+      break;
+    }
+  }
+  if (pos < KlassCountScratch::MAX_OLDEST_SAMPLES) {
+    if (scratch.oldest_count < KlassCountScratch::MAX_OLDEST_SAMPLES) {
+      scratch.oldest_count++;
+    }
+    for (int i = scratch.oldest_count - 1; i > pos; i--) {
+      scratch.oldest[i] = scratch.oldest[i - 1];
+    }
+    scratch.oldest[pos].ref = sample_source;
+    scratch.oldest[pos].age = age;
+  }
+}
+
 void LivenessTracker::accumulateKlassCount(u32 klass_id, jlong age, jweak sample_source) {
   // Count distinct GC ages (generations) per klass: group surviving
   // tracked objects by klass, then for each klass count the
@@ -304,6 +330,11 @@ void LivenessTracker::accumulateKlassCount(u32 klass_id, jlong age, jweak sample
         }
       }
       entry.ages.push_back((u32)age);
+      // Track top-N oldest instances (Lindy bias): insert this sample
+      // into the oldest[] array, sorted by age descending, capped at
+      // MAX_OLDEST_SAMPLES. This biases representative selection toward
+      // long-lived instances, which are more likely to be leaks.
+      insertOldestSample(entry, sample_source, (u32)age);
       return;
     }
   }
@@ -311,7 +342,8 @@ void LivenessTracker::accumulateKlassCount(u32 klass_id, jlong age, jweak sample
     KlassCountScratch &slot = _klass_count_scratch[_klass_count_scratch_size++];
     slot.klass_id = klass_id;
     slot.ages.push_back((u32)age);
-    slot.sample_source = sample_source;
+    slot.oldest_count = 0;
+    insertOldestSample(slot, sample_source, (u32)age);
   }
   // else: this epoch's scratch snapshot already holds
   // MAX_KLASS_POPULATION_ENTRIES distinct surviving klasses - klass_id's
@@ -320,11 +352,9 @@ void LivenessTracker::accumulateKlassCount(u32 klass_id, jlong age, jweak sample
   // already accepts.
 }
 
-jweak LivenessTracker::recordKlassPopulationSampleLocked(u32 klass_id,
-                                                           u32 count,
-                                                           u64 epoch,
-                                                           int *out_slot,
-                                                           bool *out_created) {
+jweak LivenessTracker::recordKlassPopulationSampleLocked(
+    u32 klass_id, u32 count, u64 epoch, int *out_slot, bool *out_created,
+    jweak *out_evicted, int *out_evicted_count, int max_evicted) {
   // Linear scan is fine: MAX_KLASS_POPULATION_ENTRIES is small enough that a
   // full scan is cheap, the same shape NativeSocketSampler's fd LRU
   // (nativeSocketSampler.h:141-142) and this class's own cleanup_table()
@@ -354,10 +384,21 @@ jweak LivenessTracker::recordKlassPopulationSampleLocked(u32 klass_id,
       // guaranteed set here since MAX_KLASS_POPULATION_ENTRIES > 0 implies
       // at least one iteration of the loop above ran).
       slot = evict_slot;
-      evicted_ref = _klass_population[slot].representative;
+      // Return evicted representatives to caller for DeleteWeakGlobalRef.
+      // recordKlassPopulationSampleLocked has no JNIEnv*, so it cannot
+      // delete them itself. The caller (foldKlassCountsLocked) has env.
+      // At most MAX_REPRESENTATIVES_PER_KLASS refs to return.
+      if (out_evicted != nullptr) {
+        for (int r = 0; r < _klass_population[slot].representative_count &&
+                *out_evicted_count < max_evicted; r++) {
+          out_evicted[(*out_evicted_count)++] =
+              _klass_population[slot].representatives[r];
+        }
+      }
     }
     _klass_population[slot].klass_id = klass_id;
-    _klass_population[slot].representative = nullptr;
+    _klass_population[slot].representative_count = 0;
+    memset(_klass_population[slot].representatives, 0, sizeof(_klass_population[slot].representatives));
     _klass_population[slot].ring_head = 0;
     _klass_population[slot].ring_fill = 0;
     _klass_population[slot].consecutive_positive = 0;
@@ -429,10 +470,16 @@ void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch,
              s.klass_id, s.ages.size());
     int slot;
     bool created;
-    jweak evicted = recordKlassPopulationSampleLocked(s.klass_id, (u32)s.ages.size(),
-                                                       epoch, &slot, &created);
-    if (evicted != nullptr) {
-      env->DeleteWeakGlobalRef(evicted);
+    jweak evicted[KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS];
+    int evicted_count = 0;
+    recordKlassPopulationSampleLocked(s.klass_id, (u32)s.ages.size(),
+                                       epoch, &slot, &created,
+                                       evicted, &evicted_count,
+                                       KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS);
+    for (int r = 0; r < evicted_count; r++) {
+      if (evicted[r] != nullptr) {
+        env->DeleteWeakGlobalRef(evicted[r]);
+      }
     }
     if (!allow_resolve) {
       // track()'s table-overflow branch calls cleanup_table(true, false)
@@ -445,53 +492,65 @@ void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch,
       // right below picks it up again on the next allow_resolve=true sweep.
       continue;
     }
-    // Also retry minting when an existing entry's representative is stale:
-    // either the field itself is still nullptr (a klass whose first-epoch
-    // sample_source died in the brief window between cleanup_table()'s
-    // survival check and the mint attempt below), or the field holds a jweak
-    // handle whose referent has since died - a jweak's own pointer value
-    // never becomes nullptr just because its referent was collected, so a
-    // representative pinned to one specific instance that later dies (while
-    // other instances of the same still-growing klass keep surviving, so
-    // this entry keeps being re-selected as a leak candidate) would
-    // otherwise be left permanently unresolvable: the `created ||
-    // representative == nullptr` check alone can only ever be true once per
-    // slot. last_updated_epoch keeps advancing every epoch this klass has
-    // survivors (right below), so it is never the LRU eviction victim that
-    // would otherwise let a fresh entry (and a fresh mint attempt) replace
-    // it. Resolving here every epoch bounds any given gap to "one epoch with
+    // Also retry minting when an existing entry's representatives are
+    // stale: either the count is zero, or all stored jweaks refer to
+    // collected objects. A jweak's pointer value never becomes nullptr
+    // just because its referent was collected, so we must probe each one.
+    // Resolving here every epoch bounds any given gap to "one epoch with
     // no representative", not permanent.
-    jweak current_rep = _klass_population[slot].representative;
-    bool stale = false;
-    if (current_rep != nullptr) {
-      jobject probe = env->NewLocalRef(current_rep);
-      stale = (probe == nullptr);
-      if (probe != nullptr) {
-        env->DeleteLocalRef(probe);
+    //
+    // Mint up to MAX_REPRESENTATIVES_PER_KLASS representatives from the
+    // oldest surviving instances (Lindy bias: oldest = most likely to be
+    // leaks). Fresh independent jweaks are minted rather than reusing
+    // s.oldest[].ref directly — those are TrackingEntry jweaks that get
+    // deleted when cleanup_table() reaps the original entry.
+    bool need_mint = created ||
+        _klass_population[slot].representative_count == 0;
+    if (!need_mint) {
+      // Check if all representatives are stale
+      bool any_live = false;
+      for (int r = 0; r < _klass_population[slot].representative_count; r++) {
+        jweak rep = _klass_population[slot].representatives[r];
+        if (rep != nullptr) {
+          jobject probe = env->NewLocalRef(rep);
+          if (probe != nullptr) {
+            any_live = true;
+            env->DeleteLocalRef(probe);
+            break;
+          }
+          env->DeleteLocalRef(probe);
+        }
       }
+      need_mint = !any_live;
     }
-    if (created || current_rep == nullptr || stale) {
-      if (stale) {
-        env->DeleteWeakGlobalRef(current_rep);
-        _klass_population[slot].representative = nullptr;
+    if (need_mint) {
+      // Clean up old representatives
+      for (int r = 0; r < _klass_population[slot].representative_count; r++) {
+        if (_klass_population[slot].representatives[r] != nullptr) {
+          env->DeleteWeakGlobalRef(_klass_population[slot].representatives[r]);
+          _klass_population[slot].representatives[r] = nullptr;
+        }
       }
-      // Mint a fresh, independent representative jweak rather than reusing
-      // s.sample_source directly - s.sample_source is the corresponding
-      // TrackingEntry's own weak ref, and that table slot's jweak gets
-      // deleted via DeleteWeakGlobalRef (this file's cleanup_table(), the
-      // "else" branch above) the moment the tracked object dies, which
-      // would leave _klass_population holding a dangling handle if it
-      // aliased the same jweak instead.
-      jobject strong = env->NewLocalRef(s.sample_source);
-      if (strong != nullptr) {
-        _klass_population[slot].representative = env->NewWeakGlobalRef(strong);
-        mintStableClassTagIfNeeded(env, slot, strong);
-        env->DeleteLocalRef(strong);
+      _klass_population[slot].representative_count = 0;
+      // Mint fresh representatives from the oldest surviving instances
+      bool minted_any = false;
+      for (int r = 0; r < s.oldest_count &&
+              r < KlassCountScratch::MAX_OLDEST_SAMPLES; r++) {
+        jobject strong = env->NewLocalRef(s.oldest[r].ref);
+        if (strong != nullptr) {
+          jweak rep = env->NewWeakGlobalRef(strong);
+          int idx = _klass_population[slot].representative_count++;
+          _klass_population[slot].representatives[idx] = rep;
+          if (!minted_any) {
+            mintStableClassTagIfNeeded(env, slot, strong);
+            minted_any = true;
+          }
+          env->DeleteLocalRef(strong);
+        }
       }
-      // else: this epoch's surviving instance for this klass died before we
-      // could mint a representative for it - the entry is left with
-      // representative == nullptr for this epoch and retried on the next one
-      // (see the retry condition's own comment above).
+      // else: all surviving instances for this klass died before we
+      // could mint a representative - left with representative_count=0
+      // for this epoch, retried on the next one.
     }
   }
   _klass_count_scratch_size = 0;
@@ -768,9 +827,9 @@ int LivenessTracker::selectLeakCandidates(KlassCandidate *out, int max) {
     bool has_trend = entry.ring_fill >= KLASS_POPULATION_MIN_FILL_FOR_TREND;
     double slope = entry.cached_slope;
     TEST_LOG("LivenessTracker::selectLeakCandidates entry[%d] klass_id=%u ring_fill=%u "
-             "has_trend=%d slope=%f consecutive_positive=%u required=%d representative=%p",
+             "has_trend=%d slope=%f consecutive_positive=%u required=%d rep_count=%d",
              i, entry.klass_id, entry.ring_fill, has_trend, has_trend ? slope : 0.0,
-             entry.consecutive_positive, required_hysteresis, (void *)entry.representative);
+             entry.consecutive_positive, required_hysteresis, entry.representative_count);
     if (!has_trend || slope <= 0 || entry.consecutive_positive < required_hysteresis) {
       // Not enough history yet, flat/shrinking, or hasn't shown a
       // qualifying rise (hasQualifyingGrowth()) for enough consecutive
@@ -785,7 +844,7 @@ int LivenessTracker::selectLeakCandidates(KlassCandidate *out, int max) {
 
     int pos = count < cap ? count++ : cap - 1;
     best_slopes[pos] = slope;
-    out[pos] = KlassCandidate{entry.klass_id, entry.representative};
+    out[pos] = KlassCandidate{entry.klass_id, entry.representative_count > 0 ? entry.representatives[0] : nullptr};
     while (pos > 0 && best_slopes[pos - 1] < best_slopes[pos]) {
       double tmp_slope = best_slopes[pos - 1];
       best_slopes[pos - 1] = best_slopes[pos];
@@ -855,23 +914,62 @@ int LivenessTracker::topKlassesByGenerationCount(u32 *out, int max) {
 jobject LivenessTracker::resolveCandidateRepresentative(JNIEnv *env, u32 klass_id) {
   // Shared lock excludes cleanup_table()'s exclusive lock (the only writer,
   // and the only place that can DeleteWeakGlobalRef() an entry's
-  // representative via foldKlassCountsLocked()'s eviction path above) for
+  // representatives via foldKlassCountsLocked()'s eviction path above) for
   // the whole lookup+resolve, so the value NewLocalRef() runs on here is
   // always the table's current one for klass_id, never a snapshot that
   // eviction could have invalidated in the meantime - see
   // selectLeakCandidates()'s own comment for the race this closes.
+  //
+  // Returns the first live representative (oldest first, per the Lindy
+  // bias in KlassCountScratch::oldest[]). Callers that need all live
+  // representatives (e.g. pollWatchedTargets() tagging all of them)
+  // use resolveCandidateRepresentatives() instead.
   _table_lock.lockShared();
   jobject obj = nullptr;
   for (int i = 0; i < _klass_population_size; i++) {
     if (_klass_population[i].klass_id == klass_id) {
-      if (_klass_population[i].representative != nullptr) {
-        obj = env->NewLocalRef(_klass_population[i].representative);
+      for (int r = 0; r < _klass_population[i].representative_count; r++) {
+        jweak rep = _klass_population[i].representatives[r];
+        if (rep != nullptr) {
+          obj = env->NewLocalRef(rep);
+          if (obj != nullptr) {
+            break;
+          }
+        }
       }
       break;
     }
   }
   _table_lock.unlockShared();
   return obj;
+}
+
+int LivenessTracker::resolveCandidateRepresentatives(
+    JNIEnv *env, u32 klass_id, jobject *out, int max_out) {
+  // Returns all live representatives for klass_id, oldest first.
+  // Used by pollWatchedTargets() to tag all representatives with marker
+  // tags so the canary mechanism has multiple chances to find a
+  // long-lived instance. See KlassCountScratch::oldest's comment for
+  // why multiple representatives matter.
+  _table_lock.lockShared();
+  int count = 0;
+  for (int i = 0; i < _klass_population_size; i++) {
+    if (_klass_population[i].klass_id == klass_id) {
+      for (int r = 0; r < _klass_population[i].representative_count &&
+              count < max_out; r++) {
+        jweak rep = _klass_population[i].representatives[r];
+        if (rep != nullptr) {
+          jobject obj = env->NewLocalRef(rep);
+          if (obj != nullptr) {
+            out[count++] = obj;
+          }
+        }
+      }
+      break;
+    }
+  }
+  _table_lock.unlockShared();
+  return count;
 }
 
 void LivenessTracker::flush(std::set<int> &tracked_thread_ids) {

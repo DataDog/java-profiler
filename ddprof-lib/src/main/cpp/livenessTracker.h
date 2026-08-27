@@ -55,12 +55,14 @@ typedef struct KlassPopulationEntry {
   u32 klass_id;          // StringDictionary id; 0 means "unused slot" (0 is
                           // also StringDictionary's own "no entry" sentinel,
                           // so a real id is never 0 - see resolveKlassId()).
-  jweak representative;   // a currently-live instance of this klass, owned by
-                          // this table (its own weak global ref, deliberately
-                          // NOT aliasing any TrackingEntry::ref - see
-                          // foldKlassCountsLocked()'s comment for why aliasing
-                          // would leave a dangling handle once cleanup_table()
-                          // reaps the original TrackingEntry).
+  // Up to MAX_REPRESENTATIVES_PER_KLASS representative instances of this
+  // klass, biased toward the oldest surviving instances (highest GC age).
+  // The first live one is used by resolveCandidateRepresentative(); all live
+  // ones are tagged by pollWatchedTargets(). See KlassCountScratch::oldest's
+  // comment for why multiple representatives matter.
+  static constexpr int MAX_REPRESENTATIVES_PER_KLASS = 3;
+  jweak representatives[MAX_REPRESENTATIVES_PER_KLASS];
+  int representative_count;
   u32 count_ring[30];     // ring buffer of per-epoch generation counts: the
                           // number of distinct GC ages among a klass's
                           // surviving tracked instances that epoch (see
@@ -360,14 +362,18 @@ private:
     // of this klass at this epoch. The size of this vector
     // is the klass' generation count.
     std::vector<u32> ages;
-    jweak sample_source; // the original TrackingEntry::ref of the first
-                          // surviving instance of this klass seen this
-                          // epoch; consulted only by foldKlassCountsLocked()
-                          // when klass_id turns out to need a brand new
-                          // KlassPopulationEntry, to derive a fresh,
-                          // independent representative jweak (see that
-                          // method's comment for why the original handle
-                          // cannot be reused directly).
+    // Top-N oldest surviving instances of this klass seen this epoch,
+    // sorted by age descending. Used by foldKlassCountsLocked() to mint
+    // representatives biased toward long-lived instances (Lindy effect:
+    // the oldest surviving instances are the most likely to be leaks).
+    // Fixed-size to avoid heap allocation in the GC callback path.
+    static constexpr int MAX_OLDEST_SAMPLES = 3;
+    struct OldestSample {
+      jweak ref;
+      u32 age;
+    };
+    OldestSample oldest[MAX_OLDEST_SAMPLES];
+    int oldest_count;
   } KlassCountScratch;
   KlassCountScratch _klass_count_scratch[MAX_KLASS_POPULATION_ENTRIES];
   int _klass_count_scratch_size;
@@ -462,6 +468,8 @@ private:
   // present - the same fixed-capacity/best-effort tradeoff
   // _klass_population's own table already accepts, one level up.
   void accumulateKlassCount(u32 klass_id, jlong age, jweak sample_source);
+  void insertOldestSample(KlassCountScratch &scratch, jweak sample_source,
+                           u32 age);
 
   // Pushes `count` into klass_id's ring buffer, creating the entry (evicting
   // the least-recently-updated entry first if the table is already at
@@ -483,7 +491,10 @@ private:
   // Precondition: _table_lock is held (by cleanup_table(), the only
   // production caller).
   jweak recordKlassPopulationSampleLocked(u32 klass_id, u32 count, u64 epoch,
-                                           int *out_slot, bool *out_created);
+                                           int *out_slot, bool *out_created,
+                                           jweak *out_evicted = nullptr,
+                                           int *out_evicted_count = nullptr,
+                                           int max_evicted = 0);
 
   // Drains _klass_count_scratch into _klass_population for the epoch that
   // just finished, minting a fresh representative jweak (from each entry's
@@ -674,6 +685,8 @@ public:
   // jweak returns null in that case, JNI spec). Mirrors the shared-lock read
   // pattern selectLeakCandidates()/getLiveTraceIds() already use.
   jobject resolveCandidateRepresentative(JNIEnv *env, u32 klass_id);
+  int resolveCandidateRepresentatives(JNIEnv *env, u32 klass_id,
+                                       jobject *out, int max_out);
 
   // Exposes the _gc_generations gate (see that member's own comment) so a
   // caller outside this class - ReferenceChainTracker::pollWatchedTargets()
@@ -782,10 +795,16 @@ public:
   // klassPopulationSetRepresentativeForTest() below, which already does this
   // correctly.
   jweak klassPopulationRecordForTest(u32 klass_id, u32 count, u64 epoch,
-                                      int *out_slot, bool *out_created) {
+                                      int *out_slot, bool *out_created,
+                                      jweak *out_evicted = nullptr,
+                                      int *out_evicted_count = nullptr,
+                                      int max_evicted = 0) {
     _table_lock.lock();
     jweak evicted = recordKlassPopulationSampleLocked(klass_id, count, epoch,
-                                                        out_slot, out_created);
+                                                        out_slot, out_created,
+                                                        out_evicted,
+                                                        out_evicted_count,
+                                                        max_evicted);
     _table_lock.unlock();
     return evicted;
   }
@@ -809,8 +828,18 @@ public:
     _table_lock.lock();
     for (int i = 0; i < _klass_population_size; i++) {
       if (_klass_population[i].klass_id == klass_id) {
-        jweak prev = _klass_population[i].representative;
-        _klass_population[i].representative = rep;
+        // Clean up old representatives
+        for (int r = 0; r < _klass_population[i].representative_count; r++) {
+          jweak prev = _klass_population[i].representatives[r];
+          if (prev != nullptr && env != nullptr) {
+            env->DeleteWeakGlobalRef(prev);
+          }
+        }
+        _klass_population[i].representative_count = 0;
+        if (rep != nullptr) {
+          _klass_population[i].representatives[0] = rep;
+          _klass_population[i].representative_count = 1;
+        }
         // Mint stable_class_tag from this same representative if this slot
         // has not gotten one yet - this seam is how live-JVM,
         // StaticFieldGrowingCollectionScenario-style tests seed a candidate
@@ -830,9 +859,6 @@ public:
           env->DeleteLocalRef(strong);
         }
         _table_lock.unlock();
-        if (prev != nullptr) {
-          env->DeleteWeakGlobalRef(prev);
-        }
         return;
       }
     }

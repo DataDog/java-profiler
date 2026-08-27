@@ -3851,16 +3851,21 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
       jlong tag = MARKER_TAG_BASE - slot;
       _candidate_klass_ids[slot] = klass_id;
       _candidate_tags[slot] = tag;
-      jobject obj = LivenessTracker::instance()->resolveCandidateRepresentative(
-          jni, klass_id);
-      if (obj != nullptr) {
-        jvmti->SetTag(obj, tag);
-        jni->DeleteLocalRef(obj);
+      // Tag all live representatives of this candidate with the same
+      // marker tag. Multiple representatives (biased toward oldest
+      // surviving instances) give the canary multiple chances to find a
+      // long-lived instance — see KlassCountScratch::oldest's comment.
+      jobject reps[KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS];
+      int nreps = LivenessTracker::instance()->resolveCandidateRepresentatives(
+          jni, klass_id, reps, KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS);
+      for (int r = 0; r < nreps; r++) {
+        jvmti->SetTag(reps[r], tag);
+        jni->DeleteLocalRef(reps[r]);
       }
       _candidate_count = slot + 1;
       TEST_LOG("ReferenceChainTracker::pollWatchedTargets canary: admitted klass_id=%u "
-               "into slot=%d (candidate_count now %d)",
-               klass_id, slot, _candidate_count);
+               "into slot=%d (candidate_count now %d, reps_tagged=%d)",
+               klass_id, slot, _candidate_count, nreps);
       Counters::increment(REFERENCE_CHAIN_CANDIDATE_COUNT, 1);
     }
   }
