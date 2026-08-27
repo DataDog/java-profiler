@@ -1449,6 +1449,21 @@ struct PassContext {
   // root enumeration, which keep the unconditional-descend behavior.
   std::unordered_set<jlong> *batch_tags = nullptr;
 
+  // Rolling resume cursor for expandFrontier(): tracks the tag of the last
+  // batch entry that FollowReferences visited (the callback at the
+  // batch_tags descent-gate updates this). After FollowReferences returns
+  // truncated, expandFrontier() uses this to pop fully-processed entries
+  // from the source queue (mark EXPANDED) and leave only the
+  // partially-processed and unvisited entries for the next pass — same
+  // resumable-cursor pattern as admitStaticFieldRoots()'s sweep cursor.
+  // Without this, a truncated batch is retried in its entirety next pass:
+  // GetObjectsWithTags + FollowReferences re-walks already-expanded
+  // entries (their children are ALREADY_ADMITTED, so idempotent but
+  // wasteful — re-paying the full O(tag_map × batch) GOTW cost and the
+  // FollowReferences STW for entries that need no work). 0 = no batch
+  // entry visited yet this FollowReferences call.
+  jlong _last_visited_batch_tag = 0;
+
   // Set only by admitStaticFieldRoots(): the seed holder array for that
   // sweep holds loaded-class objects (negative-tagged by
   // resolveLoadedClasses(), see the *tag_ptr < 0 branch below), and the
@@ -1781,6 +1796,9 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
     // re-traversed.
     jlong my_tag = *tag_ptr;
     if (my_tag > 0 && ctx->batch_tags->count(my_tag) != 0) {
+      // Track this batch entry as visited for the rolling resume cursor
+      // (see _last_visited_batch_tag's own comment).
+      ctx->_last_visited_batch_tag = my_tag;
       return JVMTI_VISIT_OBJECTS;
     }
     return 0;
@@ -2453,6 +2471,14 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   bool expand_truncated = false;
   bool expand_frontier_cap_hit = false;
   int remaining_budget = std::max(budget - expand_phase_edges_admitted, 0);
+  // Give expand its own fresh deadline so the static-field sweep's
+  // FollowReferences calls don't eat expand's time. Each sub-operation
+  // (sweep, expand, rotation) gets its own _effective_pause_target_ms
+  // wall-clock budget — the cumulative rate is still capped by the pass
+  // cadence (effectiveCadenceNs). See q-safepoint-budget-model.
+  _pass_deadline_ns = _effective_pause_target_ms > 0
+                          ? OS::nanotime() + (u64)_effective_pause_target_ms * 1000000ULL
+                          : 0;
   expandFrontier(jvmti, jni, _hop_cap, remaining_budget,
                  &expand_edges_admitted, &expand_truncated,
                  &expand_frontier_cap_hit, safepoint_ticks);
@@ -2526,6 +2552,10 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   int rotation_budget = expand_budget - expand_phase_edges_admitted;
   int rotation_edges_admitted = 0;
   bool rotation_truncated = false;
+  // Give rotation its own fresh deadline, same as expand above.
+  _pass_deadline_ns = _effective_pause_target_ms > 0
+                          ? OS::nanotime() + (u64)_effective_pause_target_ms * 1000000ULL
+                          : 0;
   bool rotation_frontier_cap_hit = false;
   expandFrontier(jvmti, jni, _hop_cap, rotation_budget,
                  &rotation_edges_admitted, &rotation_truncated,
@@ -2766,6 +2796,7 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
           // heap); heapReferenceCallback() returns "descend" for the array's
           // elements (the boundary objects, in batch_tags) and "no descend" for
           // their children, so exactly one hop past the boundary is explored.
+          ctx._last_visited_batch_tag = 0; // reset rolling cursor
           u64 follow_start_ticks = TSC::ticks();
           jvmtiError follow_err =
               jvmti->FollowReferences(0, nullptr, holder, &callbacks, &ctx);
@@ -2791,12 +2822,39 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
         source.pop_front();
       }
       progress = true;
+    } else if (ctx._last_visited_batch_tag != 0) {
+      // ROLLING RESUME: FollowReferences truncated mid-batch, but we know
+      // which batch entry was being visited when it stopped (tracked by
+      // the callback's batch_tags descent-gate). Pop entries that were
+      // fully processed BEFORE that entry (mark live ones EXPANDED, clear
+      // dead ones), and leave the partially-processed entry and everything
+      // after it at the front of the source queue for the next pass to
+      // retry. Same resumable-cursor pattern as admitStaticFieldRoots()'s
+      // sweep cursor — avoids re-walking already-expanded entries (and
+      // re-paying GetObjectsWithTags's O(tag_map × batch) cost for them)
+      // on every retry.
+      //
+      // The partially-visited entry (at _last_visited_batch_tag) stays:
+      // some of its children may have been admitted before the truncation,
+      // and the rest are discovered on retry (admitObject is idempotent —
+      // already-admitted children return ALREADY_ADMITTED).
+      for (size_t i = 0; i < candidate_tags.size(); i++) {
+        if (candidate_tags[i] == ctx._last_visited_batch_tag) {
+          break; // stop at the partially-visited entry
+        }
+        jlong tag = candidate_tags[i];
+        if (live.find(tag) == live.end()) {
+          _frontier->clear(tag);
+        } else {
+          _frontier->markExpanded(tag);
+        }
+        source.pop_front();
+      }
     }
-    // else truncated (budget/frontier-cap/JVMTI error): leave the batch at
-    // the front of the source queue for a later pass to retry. Re-walking is
-    // idempotent - already-admitted children are ALREADY_ADMITTED (not
-    // re-counted, not descended), so a retry only admits the remaining
-    // children. The while condition (!ctx.truncated) ends the loop here.
+    // else truncated with no batch entry visited (e.g. GetObjectsWithTags
+    // error, holder allocation failure, or truncation before the first
+    // batch entry was reached): leave the entire batch at the front of the
+    // source queue for a later pass to retry, same as before.
 
     if (holder != nullptr) {
       jni->DeleteLocalRef(holder);

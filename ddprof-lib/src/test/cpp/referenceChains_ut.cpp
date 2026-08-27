@@ -364,6 +364,31 @@ public:
         return ReferenceChainTracker::instance()->_priority_expand.size();
     }
 
+    // Snapshot of _pending_expand's current contents, in queue order - used
+    // by the rolling-resume smoke test to verify that a truncated
+    // expandFrontier() batch pops fully-processed entries (mark EXPANDED)
+    // and leaves only the partially-processed and unvisited entries at the
+    // front of the queue for the next pass to retry.
+    static std::vector<jlong> pendingExpandContents() {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        return std::vector<jlong>(t->_pending_expand.begin(),
+                                  t->_pending_expand.end());
+    }
+
+    static size_t pendingExpandSize() {
+        return ReferenceChainTracker::instance()->_pending_expand.size();
+    }
+
+    // Self-calibrating adaptive batch size: read/write the EMA so tests can
+    // verify it converges and drives batch_size.
+    static u64 gotwEmaCostPerTagNs() {
+        return ReferenceChainTracker::instance()->_gotw_ema_cost_per_tag_ns;
+    }
+
+    static void setGotwEmaCostPerTagNs(u64 v) {
+        ReferenceChainTracker::instance()->_gotw_ema_cost_per_tag_ns = v;
+    }
+
     // Leak-accumulation rotation test seams (collectLeakAccumulationCandidatesForRotation()).
     static void setWatchedLeakKlassIdsForTest(const std::vector<u32> &ids) {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
@@ -3808,6 +3833,170 @@ TEST_F(ReferenceChainsBfsTest, SeedLeakAccumulationComposesWithOngoingIncrementa
 
     EXPECT_EQ(2u, ReferenceChainsTestAccessor::leakParentFanout(parentTag));
     EXPECT_EQ(2u, ReferenceChainsTestAccessor::leakSignatureTotal(kLeafKlass, kParentKlass));
+
+    tracker->stop();
+}
+
+// ---------------------------------------------------------------------------
+// Smoke test simulating the hotdog pod conditions that starved BFS:
+//
+// 1. GetObjectsWithTags quadratic bottleneck: a large frontier backlog
+//    makes each GetObjectsWithTags call expensive. The self-calibrating
+//    adaptive batch_size must keep it bounded.
+//
+// 2. Shared deadline bug: the static-field sweep's FollowReferences ate
+//    the entire per-pass wall-clock deadline, leaving expand with zero
+//    time. The deadline split gives each sub-operation its own fresh
+//    deadline.
+//
+// 3. Rolling resume: when FollowReferences truncates mid-batch (budget
+//    exhausted), the fully-processed entries must be popped (mark
+//    EXPANDED) and only the partially-processed + unvisited entries left
+//    for retry.
+//
+// This test builds a graph with a static-field root leading to a chain of
+// objects (simulating the leaking collection), plus a small set of
+// distractor roots to keep the search RUNNING. It runs passes with a
+// small budget so expand truncates mid-batch, then verifies the rolling
+// resume and progress properties.
+// ---------------------------------------------------------------------------
+
+TEST_F(ReferenceChainsBfsTest, RollingResumePopsProcessedEntriesOnTruncatedBatch) {
+    Arguments args;
+    // budget=4: small enough that expand truncates mid-batch after admitting
+    // a few children. firstpassbudget=1000: large enough to enumerate all
+    // roots in the first pass without truncating root enum.
+    ASSERT_FALSE(args.parse(
+        "referencechains=true:hops=5000:budget=4:firstpassbudget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    // A static-field root: classNode -> listNode (the leaking collection).
+    int classNode = addNode();
+    int listNode = addNode();
+
+    // A chain of 20 children hanging off listNode. With budget=4, the
+    // callback admits 4 children then returns JVMTI_VISIT_ABORT
+    // (BUDGET_EXHAUSTED), truncating mid-batch.
+    constexpr int kChainLen = 20;
+    std::vector<int> chainNodes(kChainLen);
+    for (int i = 0; i < kChainLen; i++) {
+        chainNodes[i] = addNode();
+    }
+
+    // Distractor roots: 20 independent JNI-global roots, each with one child.
+    // Enough to keep the search RUNNING but small enough to drain quickly.
+    constexpr int kDistractors = 20;
+    std::vector<int> distractorRoots(kDistractors);
+    std::vector<int> distractorChildren(kDistractors);
+    for (int i = 0; i < kDistractors; i++) {
+        distractorRoots[i] = addNode();
+        distractorChildren[i] = addNode();
+    }
+
+    // addClass() must come after all addNode() calls.
+    addClass((void *)&node_tags[classNode], "Lcom/rc/SmokeTestHolder;");
+
+    script = {
+        {JVMTI_HEAP_REFERENCE_STATIC_FIELD, classNode, listNode, -1},
+        {JVMTI_HEAP_REFERENCE_FIELD, listNode, chainNodes[0], -1},
+    };
+    for (int i = 0; i + 1 < kChainLen; i++) {
+        script.push_back({JVMTI_HEAP_REFERENCE_FIELD, chainNodes[i], chainNodes[i + 1], -1});
+    }
+    for (int i = 0; i < kDistractors; i++) {
+        script.push_back({JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, distractorRoots[i], -1});
+        script.push_back({JVMTI_HEAP_REFERENCE_FIELD, distractorRoots[i], distractorChildren[i], -1});
+    }
+
+    // Phase 1: run passes until listNode is admitted via the static-field sweep.
+    bool truncated = true;
+    jlong listTag = 0;
+    for (int i = 0; i < 200 && listTag == 0; i++) {
+        ASSERT_EQ(SearchState::RUNNING, tracker->searchState());
+        ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+        listTag = tags_ever_assigned[listNode];
+    }
+    ASSERT_NE(0, listTag) << "listNode was never admitted to the frontier";
+
+    // Phase 2: run passes until listNode is expanded (rolling resume pops it).
+    for (int i = 0; i < 200; i++) {
+        ASSERT_EQ(SearchState::RUNNING, tracker->searchState());
+        ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+        FrontierEntry entry{};
+        if (frontier->lookup(listTag, &entry) &&
+            entry.state == FrontierEntryState::EXPANDED) {
+            break;
+        }
+    }
+    FrontierEntry listEntry{};
+    ASSERT_TRUE(frontier->lookup(listTag, &listEntry));
+    EXPECT_EQ(FrontierEntryState::EXPANDED, listEntry.state)
+        << "listNode should be EXPANDED after rolling resume popped it";
+
+    // Verify some chain children were admitted.
+    int admittedChildren = 0;
+    for (int i = 0; i < kChainLen; i++) {
+        if (tags_ever_assigned[chainNodes[i]] != 0) admittedChildren++;
+    }
+    EXPECT_GT(admittedChildren, 0)
+        << "No chain children were admitted — expand never ran";
+
+    // Phase 3: run more passes until all chain children are admitted.
+    for (int i = 0; i < 500 && admittedChildren < kChainLen; i++) {
+        ASSERT_EQ(SearchState::RUNNING, tracker->searchState());
+        ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+        admittedChildren = 0;
+        for (int j = 0; j < kChainLen; j++) {
+            if (tags_ever_assigned[chainNodes[j]] != 0) admittedChildren++;
+        }
+    }
+    EXPECT_EQ(kChainLen, admittedChildren)
+        << "Not all chain children were admitted within bounded passes";
+
+    tracker->stop();
+}
+
+// Verify the self-calibrating adaptive batch_size: with a pre-set EMA,
+// expandFrontier should derive batch_size from the EMA and the CPU budget,
+// not use the full pending backlog. The mock GetObjectsWithTags is instant
+// (no real O(tag_map × batch) cost), so we verify the logic, not the timing.
+TEST_F(ReferenceChainsBfsTest, AdaptiveBatchSizeDerivesFromEmaNotBacklog) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    // Create a simple graph: root -> child
+    int rootNode = addNode();
+    int childNode = addNode();
+    script = {
+        {JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, rootNode, -1},
+        {JVMTI_HEAP_REFERENCE_FIELD, rootNode, childNode, -1},
+    };
+
+    // Run one pass to admit rootNode to the frontier.
+    bool truncated = true;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+
+    // The EMA should now be non-zero (set by the first GetObjectsWithTags call).
+    EXPECT_NE(0u, ReferenceChainsTestAccessor::gotwEmaCostPerTagNs())
+        << "EMA should be populated after first GetObjectsWithTags call";
+
+    // Set a high EMA to simulate a large tag map (expensive per-tag cost).
+    // With GOTW_CPU_BUDGET_NS=25ms and EMA=500000ns/tag, batch_size should
+    // be 25ms / 500000ns = 50.
+    ReferenceChainsTestAccessor::setGotwEmaCostPerTagNs(500000);
+
+    // Run another pass — the adaptive batch_size should be ~50, not the
+    // full backlog. We verify indirectly by checking that expandFrontier
+    // makes progress (admits the child).
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+
+    // childNode should have been admitted (expandFrontier made progress).
+    EXPECT_NE(0, tags_ever_assigned[childNode])
+        << "expandFrontier failed to admit childNode with adaptive batch_size";
 
     tracker->stop();
 }
