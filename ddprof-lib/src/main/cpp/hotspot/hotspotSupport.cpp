@@ -279,7 +279,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     // then we end up with multiple HotspotSupport::walkVM() calls on stack,
     // each one sets up sigjmp_buf, they need to be chained to jump back to
     // correct location.
-    sigjmp_buf* prev_jmp_buf = prof_thread->getJmpCtx();
+    JmpCtxScope jmp_scope(prof_thread);
     // Should be preserved across sigsetjmp/siglongjmp
     volatile int depth = 0;
     int actual_max_depth = truncated ? max_depth + 1 : max_depth;
@@ -288,7 +288,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         // checkFault() does a siglongjmp from inside segvHandler, bypassing
         // segvHandler's SignalHandlerScope destructor.  Compensate.
         SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
-        prof_thread->setJmpCtx(prev_jmp_buf);
+        jmp_scope.restore();
         if (depth < max_depth) {
             fillFrame(frames[depth++], BCI_ERROR, "break_not_walkable");
         }
@@ -301,7 +301,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         return depth;
     }
 
-    prof_thread->setJmpCtx(&crash_protection_ctx);
+    jmp_scope.install(&crash_protection_ctx);
     VMThread* vm_thread = VMThread::current();
     if (vm_thread != NULL && !vm_thread->isThreadAccessible()) {
         Counters::increment(WALKVM_THREAD_INACCESSIBLE);
@@ -991,7 +991,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
     }
 
     done:
-    prof_thread->setJmpCtx(prev_jmp_buf);
+    jmp_scope.restore();
 
     // Drop unknown leaf frame - it provides no useful information and breaks
     // aggregation by lumping unrelated samples under a single "unknown" entry
@@ -1263,13 +1263,13 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   }
   const bool prev_unwinding_java = prof_thread->is_unwinding_Java();
   sigjmp_buf crash_protection_ctx;
-  sigjmp_buf* prev_jmp_buf = prof_thread->getJmpCtx();
+  JmpCtxScope jmp_scope(prof_thread);
 
   if (sigsetjmp(crash_protection_ctx, 1) != 0) {
     // checkFault() does a siglongjmp from inside segvHandler, bypassing
     // segvHandler's SignalHandlerScope destructor. Compensate.
     SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
-    prof_thread->setJmpCtx(prev_jmp_buf);
+    jmp_scope.restore();
     // A recovered siglongjmp bypasses AsyncSampleMutex destructors, so restore
     // the per-thread guard to its pre-walk value.
     prof_thread->set_unwinding_Java(prev_unwinding_java);
@@ -1278,7 +1278,7 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
     }
     return java_frames;
   }
-  prof_thread->setJmpCtx(&crash_protection_ctx);
+  jmp_scope.install(&crash_protection_ctx);
 
   if (features.mixed) {
     java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
@@ -1332,7 +1332,6 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
     }
   }
 
-  prof_thread->setJmpCtx(prev_jmp_buf);
   return java_frames;
 }
 
