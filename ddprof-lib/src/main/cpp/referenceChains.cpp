@@ -367,8 +367,9 @@ void ReferenceChainTracker::autoTuneDefaults(Arguments &args) {
   // --- Pause target ---
   // More available processors = the JVM can afford a slightly
   // longer per-pass safepoint without impacting application
-  // throughput. Scale linearly: 1 core = 5ms, 4 cores = 10ms,
-  // 8 cores = 15ms, capped at 50ms.
+  // throughput. Scale linearly: 1 core = 50ms, 4 cores = 100ms,
+  // 8 cores = 150ms, capped at 50ms (the per-call STW cap from the
+  // safepoint budget model).
   if (!(tuned & REF_CHAINS_TUNED_PAUSE_TARGET)) {
     long scaled_pause = DEFAULT_REFERENCE_CHAINS_PAUSE_TARGET_MS *
         (1 + (nprocs - 1) / 3);

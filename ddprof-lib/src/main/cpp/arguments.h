@@ -91,7 +91,7 @@ const int DEFAULT_REFERENCE_CHAINS_FRONTIER_CAP = 65536; // max live frontier en
 // measurement question (design doc's Open Question 2), not a value to guess
 // here; this only exists so the feedback loop this ceiling drives has
 // something to target end-to-end before that measurement happens.
-const long DEFAULT_REFERENCE_CHAINS_PAUSE_TARGET_MS = 5; // ms per pass
+const long DEFAULT_REFERENCE_CHAINS_PAUSE_TARGET_MS = 50; // ms per pass
 // Pain budget refill rate (ReferenceChainTracker::PainBudget, painBudget.h):
 // the fraction of wall-clock time a *restarted* search is allowed to spend
 // inside FollowReferences/GetObjectsWithTags safepoints, on average, before a
