@@ -3886,11 +3886,41 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
       TEST_LOG("ReferenceChainTracker::pollWatchedTargets candidate[%d] klass_id=%u "
                "representative could not be resolved (died/evicted)",
                i, klass_id);
-      // The sample this klass's cached chain describes is gone - stop
-      // re-emitting it (this poll's own prune contract).
-      _resolved_chains_lock.lock();
-      _resolved_chains.erase(klass_id);
-      _resolved_chains_lock.unlock();
+      // The representative died, but the canary chain (if the candidate
+      // was pruned by BFS before the representative died) only needs the
+      // frontier table — not the live representative. Try to build it
+      // before erasing the cached chain and skipping this candidate.
+      bool built_from_canary = false;
+      for (int s = 0; s < _candidate_count; s++) {
+        if (_candidate_klass_ids[s] != klass_id) continue;
+        if ((_candidate_found_bits & (1ULL << s)) &&
+            _candidate_frontier_tags[s] != 0) {
+          _resolved_chains_lock.lock();
+          bool need = (_resolved_chains.find(klass_id) == _resolved_chains.end());
+          _resolved_chains_lock.unlock();
+          if (need) {
+            ReferenceChainEvent event;
+            built_from_canary = buildCanaryChainEvent(s, &event);
+            TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
+                     "buildCanaryChainEvent(dead rep, slot=%d) -> %d",
+                     s, (int)built_from_canary);
+            if (built_from_canary) {
+              event._start_time = TSC::ticks();
+              cacheResolvedChain(klass_id, std::move(event),
+                                  _candidate_frontier_tags[s],
+                                  current_search_ns);
+            }
+          }
+        }
+        break;
+      }
+      if (!built_from_canary) {
+        // The sample this klass's cached chain describes is gone - stop
+        // re-emitting it (this poll's own prune contract).
+        _resolved_chains_lock.lock();
+        _resolved_chains.erase(klass_id);
+        _resolved_chains_lock.unlock();
+      }
       continue; // candidate died, or was evicted, since LivenessTracker flagged it
     }
 
