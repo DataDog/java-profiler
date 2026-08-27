@@ -833,7 +833,10 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns) {
     // always a no-op here (nothing has ever been spent yet), so this reduces
     // to hasLeakSignal() in practice, but sharing the one gate keeps both
     // call sites from drifting apart.
-    if (!canAffordNewSearch(now_ns)) {
+    bool afford = canAffordNewSearch(now_ns);
+    TEST_LOG("ReferenceChainTracker::shouldRunPass search_not_started "
+             "canAffordNewSearch=%d", (int)afford);
+    if (!afford) {
       return false;
     }
     // This episode's one urgency-authorized search (_urgent_search_spent's
@@ -871,6 +874,11 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns) {
     // No log here: a terminal search waiting for a restart to become
     // warranted is the common idle state, re-evaluated every second, so
     // logging it is pure per-second noise (see threadLoop()).
+    TEST_LOG("ReferenceChainTracker::shouldRunPass terminal_blocked "
+             "tags_released=%d safepoint_pain=%d search_state=%d",
+             (int)_tags_released,
+             (int)_safepoint_pain_budget.canStartNow(now_ns),
+             (int)_search_state);
     return false;
   }
   // Canary search active with candidates still to find - computed ahead of
