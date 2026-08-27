@@ -447,9 +447,9 @@ private:
   // increments VTABLE_RECEIVER_RESOLVE_FAILED.
   u32 resolveVTableReceiverCached(void *sym);
 
-  // The MethodMap row `frame` belongs to. Factored out so resolveMethod()'s
+  // The MethodMap entry `frame` belongs to. Factored out so resolveMethod()'s
   // unprotected fast path and fillMethod()'s protected slow path can never
-  // disagree about which row a frame maps to -- ASGCT_CallFrame's method_id /
+  // disagree about which entry a frame maps to -- ASGCT_CallFrame's method_id /
   // native_function_name / packed_remote_frame / method fields are a union, so
   // the bci branching below is the only thing that gives the payload a meaning.
   //

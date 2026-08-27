@@ -705,7 +705,7 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
   }
 
   assert(method_id != nullptr && "Already filtered by caller");
-    // Reinstates the thread's previous landing pad on every exit from this frame,
+  // Reinstates the thread's previous landing pad on every exit from this frame,
   // including a std::bad_alloc thrown by one of the map or dictionary inserts
   // underneath. Leaving ours installed past the end of this frame would leave
   // checkFault() jumping into a dead stack frame.
@@ -726,7 +726,7 @@ MethodInfo *Lookup::fillMethod(ASGCT_CallFrame &frame, jmethodID method_id,
     jmp_scope.restore();
     Counters::increment(METHOD_RESOLVE_FAULT_RECOVERED);
     // state.release() may fault. Unfortunately, it faults outside of profiler
-    // code where checkFault() can not absorbs.
+    // code where checkFault() can not absorb.
     state.release();
     // A member, already filled above -- no map lookup, no allocation, and no
     // reliance on a local surviving siglongjmp (the value of a non-volatile
