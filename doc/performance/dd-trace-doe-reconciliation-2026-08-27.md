@@ -1,41 +1,22 @@
 # dd-trace-doe memory reconciliation, 27 Aug 2026
 
-**Headline: the profiler's memory overhead on this workload is ≈ 60–65 MiB
-against a ≈ 1580 MiB baseline (~3.8–4.1 %), and it is now essentially fully
-accounted for: the unexplained residual is ≈ 0 to +5 MiB, within measurement
-error in all six independent variants tested.**
+**The profiler adds ≈ 60 MiB to the application's anonymous memory on this
+workload — about 3.8 % — and that overhead is fully accounted for. The
+unexplained residual is ≈ 0 to +5 MiB, within measurement error in all six
+independent variants tested.**
 
-The overhead itself is **duration-dependent** — anon never plateaus within the
-90 s run, and the profiling arm accumulates ~26 MiB/min faster than the baseline,
-so a longer workload would report more. Treat these figures as "at 90 s", not as
-a steady-state ceiling.
+Two caveats bound how this figure should be quoted:
 
-> **Terminology.** Earlier drafts of this report said "RSS" throughout. That was
-> imprecise and is corrected here. dd-trace-doe's `memory=` output is
-> `max(cgroup anon)` — **anonymous memory only** (no page cache, no file-backed
-> pages), and a **running maximum** over ~900 samples across the load and stop
-> phases (`internal/schema/output.go`). Anon is arguably the *better* quantity to
-> reconcile against malloc/mmap counters, since it excludes file-cache noise. But
-> "maximum" is material: see "The instrument is a maximum" below. Where this
-> document says "memory delta" it means the delta in that anon figure.
+- **It is a 90-second figure, not a ceiling.** Anonymous memory never plateaus
+  within the run, and the profiling arm accumulates ~26 MiB/min faster than the
+  baseline. A longer workload reports more.
+- **It depends on how the memory instrument is read.** Different defensible
+  estimators of the same data span 20 MiB (see
+  [Instrument properties](#instrument-properties)).
 
-> **Superseded figures.** An earlier draft of this report put the residual at
-> 15–28 MiB. That came from pairing conditions measured in *separate* windows,
-> which the interleaved re-run below shows was biased. The interleaved,
-> counterbalanced measurement is authoritative; the 15–28 range should not be
-> quoted. See "Interleaved re-run" for what changed and why.
-
-This *reverses* the reconciliation reported earlier in this investigation. A
-12-pair run had shown a residual of +2.1 ± 4.5 MiB (3 % of the RSS delta,
-indistinguishable from zero) and was treated as closed. That closure was an
-artifact of a correction factor borrowed from a different workload. With the
-underlying counter bug fixed, the same reconciliation is 20–33 %
-under-explained. **Nothing about the profiler's actual memory use changed —
-only our ability to see it.**
-
-Harness, workload and instruments are unchanged from
+Harness, workload and instruments follow
 `dd-trace-doe-reproduction-2026-08-05.md`; read that first for methodology.
-Mechanism detail for the counter fix is in `memory-sweep-results-linux.md`
+Mechanism detail for the call-trace counter is in `memory-sweep-results-linux.md`
 (§ "`NM_CALLTRACE`: counting residency at source instead of correcting for it").
 
 ---
@@ -45,423 +26,247 @@ Mechanism detail for the counter fix is in `memory-sweep-results-linux.md`
 | | |
 | --- | --- |
 | Workload | `archetype=enterprise` (Spring Boot), `duration=90`, 9000 requests |
-| Reps | 12 per condition (tracing-only, tracing+profiling) |
-| Heap | `-Xms2g -Xmx2g` (set by the harness entrypoint; heap fully committed) |
-| Library | local build, verified by checksum end-to-end (below) |
+| Reps | 12 interleaved pairs (tracing-only, tracing+profiling) |
+| Heap | `-Xms2g -Xmx2g`, set by the harness entrypoint |
+| Library | local build, verified by checksum end-to-end |
 
-`-XX:+AlwaysPreTouch` was tried and rejected here — it roughly doubled the
-spread (sd 9.4 → 18.2 MiB tracing-only, 12.0 → 25.9 MiB profiling) and moved the
-mean delta down ~22 MiB in a way neither instrument tracked. **That rejection is
-now believed to be wrong**: it was measured with the maximum estimator, which is
-precisely what pre-touching inflates. See "This means `AlwaysPreTouch` was
-rejected on the wrong evidence".
+Harness: `memsweep/run_doe_interleaved.sh`.
+Analysis: `memsweep/analyse_doe_interleaved.py`.
+
+Four design requirements, each load-bearing:
+
+1. **Interleave the two conditions within one window.** Measuring them in
+   separate windows lets machine drift land preferentially on one arm and shifts
+   the delta by ~14 MiB.
+2. **Counterbalance the within-pair order** (pair 1 profiling first, pair 2
+   baseline first, …). The first run in a pair carries ~7 MiB more anonymous
+   memory regardless of which arm it is; counterbalancing cancels this rather
+   than letting it pick a side.
+3. **Exclude container-teardown samples from the analysis.** The sampler runs
+   until the cgroup file disappears, so every trace ends with the JVM exiting and
+   anon collapsing toward zero (1581 → 13 MiB). Eight such samples out of ~4500
+   move the apparent within-run standard deviation from 19 to 72 MiB.
+   `analyse_doe_interleaved.py` truncates the trailing collapse.
+4. **Do not use `-XX:+AlwaysPreTouch`.** It halves precision — paired SE 4.24 →
+   8.34 MiB, detrended within-run noise 6.96 → 15.34 — apparently because
+   touching 2048 MiB up front puts the cgroup under enough pressure to make anon
+   *more* variable. It does collapse estimator spread (20.3 → 5.9 MiB), so it
+   buys robustness at the cost of precision; not worth adopting by default.
+
+Calibration is pinned rather than re-derived: `loops_num=1712244`,
+`allocs_num=408773` with `loops_cpu`/`allocs_cpu` = 0. This removes one
+calibration container per invocation and, more importantly, a confound — each arm
+would otherwise calibrate independently and could run a slightly different
+workload. All other archetype parameters are unchanged.
 
 ### Build provenance
 
-An earlier attempt in this investigation silently resolved the *upstream*
-ddprof release instead of the local build, producing misleading numbers. A
-checksum gate now runs at both stages: the `libjavaProfiler.so` inside the
-published Maven artifact **and** inside the shaded `dd-java-agent` jar were both
-confirmed byte-identical to the locally built library
-(md5 `6103cb7a9cc2f8e015f25629d75a2a72`). Any future re-run should keep this gate.
+A checksum gate runs at both packaging stages: the `libjavaProfiler.so` inside
+the published Maven artifact **and** inside the shaded `dd-java-agent` jar are
+confirmed byte-identical to the locally built library (md5
+`6103cb7a9cc2f8e015f25629d75a2a72`). Without this gate, Gradle can silently
+resolve the upstream ddprof release instead of the local build — an exact-pinned
+version does not fuzzy-match a same-numbered local `-SNAPSHOT`; use
+`-PddprofUseSnapshot=true`. Keep the gate on any re-run.
 
 ---
 
 ## Reconciliation
 
-Two independent instruments explain part of the RSS delta: the JVM's **Native
-Memory Tracking** (JVM-internal growth caused by the profiler being attached)
-and the profiler's **own per-category counters** (allocations NMT cannot see).
-NMT's *absolute* committed total is never RSS-comparable — it counts committed
-address space, and with a 2 GiB fully-committed heap it exceeds RSS by ~660 MiB
-— so only the paired *delta* is used.
+Two independent instruments account for the delta: the JVM's **Native Memory
+Tracking** (JVM-internal growth caused by the profiler being attached) and the
+profiler's **own per-category counters** (allocations NMT cannot see).
+
+NMT's *absolute* committed total is never comparable to anonymous memory — it
+counts committed address space, and with a 2 GiB fully-committed heap it exceeds
+anon by ~660 MiB. Only the paired *delta* is used, where the heap's
+committed-versus-touched gap cancels.
 
 Malloc-backed counter categories carry a ×1.17 chunk-overhead correction.
-Call-trace is mmap-backed and is now measured directly, so **no ×0.829
-residency factor is applied**.
+Call-trace is mmap-backed and measured directly, so no residency factor applies.
 
-| RSS pairing | Call-trace basis | RSS delta | Explained | Residual | % of delta |
-| --- | --- | --- | --- | --- | --- |
-| same-window | live 3.53 | 74.58 ± 4.39 | 56.54 | **+18.04 ± 4.50** | 24 % |
-| same-window | peak 6.42 | 74.58 ± 4.39 | 59.43 | **+15.15 ± 4.50** | 20 % |
-| cross-time | live 3.53 | 84.25 ± 7.84 | 56.54 | **+27.71 ± 7.91** | 33 % |
-| cross-time | peak 6.42 | 84.25 ± 7.84 | 59.43 | **+24.82 ± 7.91** | 29 % |
-| *prior result* | *24.23 × 0.829* | *74.58 ± 4.39* | *72.44* | *+2.14 ± 4.45* | *3 %* |
-
-A **positive** residual means RSS exceeds what we can account for. Every
-combination leaves a gap several times its own standard error — the gap is real,
-its magnitude is not yet pinned.
-
-Component terms (n = 12, ± 1 SE):
-
-| Term | Mean (MiB) | SE | Confidence |
-| --- | --- | --- | --- |
-| Profiler counters, total (raw) | 25.06 | 0.08 | solid |
-| Profiler counters, corrected | 28.72 – 31.61 | 0.10 | solid |
-| NMT committed delta | 27.82 | 1.02 | solid |
-| RSS delta | 74.6 – 84.3 | 4.4 – 7.8 | **noisy** |
-| *(reference)* chunk overhead behind the ×1.17 | +6.44 | 0.10 | solid |
-| *(reference)* free-but-held arena pages | +7.6 | 3.0 | **unattributable** |
-
-The last two are measured in the synthetic sweep, not here; they are listed for
-scale. Note the two-order-of-magnitude spread in reproducibility between them —
-chunk overhead is the most reproducible figure in the whole investigation, while
-arena slack changes sign between runs.
-
-The profiler's own counters are the most reproducible instrument here — SE
-below 0.1 MiB across twelve runs. **Essentially all uncertainty in this
-reconciliation is RSS measurement noise, not counter error.**
-
-### Caveat on the RSS delta — read before quoting it
-
-RSS standard deviation more than doubled between the morning and afternoon
-batches (11.9 → 25.5 MiB) with no code change capable of affecting it, and this
-run's profiling condition was paired against a baseline captured several hours
-earlier. Machine-level drift is the likely cause. **Quote the RSS delta as a
-range (74.6–84.3 MiB), not a point estimate.** Re-running both conditions
-interleaved in a single window would settle it, and is the cheapest way to
-narrow the residual.
-
----
-
-## Interleaved re-run — the authoritative measurement
-
-The block design above measured the two conditions in separate windows, leaving
-the RSS delta ambiguous between 74.6 and 84.3 MiB. The re-run alternates the
-conditions **within one window**, so drift cannot land preferentially on one arm,
-and **counterbalances the within-pair order** (pair 1: profiling first; pair 2:
-tracing-only first; …) so any ordering effect cancels instead of biasing.
-
-Two further changes: `loops_num`/`allocs_num` are pinned to the values
-calibration produced (`loops_cpu`/`allocs_cpu` = 0), which removes 24 calibration
-containers **and** a confound — previously each arm calibrated independently, so
-the two could run slightly different workloads. All other archetype parameters
-are unchanged, and NMT is still captured 30 s after container start.
-
-Reconciliation is computed as **per-pair differences**, not as a difference of
+Reconciliation is computed from **per-pair differences**, not from a difference of
 independently measured means.
 
-| | n = 12 (all) | n = 10 (JIT spikes excluded) |
+| Term | MiB | SE |
 | --- | --- | --- |
-| RSS paired delta | 70.62 ± 8.39 | 63.84 ± 8.45 |
-| NMT paired delta | 30.95 ± 2.30 | 27.55 ± 0.19 |
-| — of which `Arena Chunk` | 4.31 ± 2.23 | 1.10 ± 0.64 |
-| NativeMem raw | 24.926 ± 0.006 | 24.929 ± 0.007 |
-| NativeMem corrected (live basis) | 28.57 | 28.57 |
-| NativeMem corrected (peak basis) | 31.72 | 31.73 |
-| **residual, live basis** | **+11.10 ± 8.70** (15.7 %) | **+7.72 ± 8.45** (12.1 %) |
-| **residual, peak basis** | **+7.95 ± 8.70** (11.3 %) | **+4.56 ± 8.45** (7.1 %) |
-| overhead vs tracing-only RSS | 4.34 % | 3.92 % |
+| Anonymous-memory paired delta (steady mean) | 60.48 | 4.24 |
+| NMT committed paired delta | 27.06 | 2.96 |
+| Profiler counters, raw | 24.92 | 0.08 |
+| Profiler counters, corrected (live basis) | 28.56 | 0.10 |
+| Profiler counters, corrected (peak basis) | 31.69 | 0.10 |
+| **Explained** (live / peak) | **55.62 / 58.75** | |
+| **Residual** (live / peak) | **+4.86 / +1.73** | 5.17 |
 
-Every variant is within ~1.3 σ of zero (0.54–1.28 σ). **The residual is no longer
-statistically demonstrable** — but neither is its absence, and that is the honest
-statement.
-
-### Two effects the interleaving exposed
-
-**A within-pair ordering bias of ≈ 7.1 MiB.** Pairs where profiling ran first
-gave a mean delta of 77.73 MiB; pairs where tracing-only ran first gave 63.50 —
-a 14.23 MiB swing, i.e. the *first* run in a pair carries ≈ 7.1 MiB more RSS
-regardless of which arm it is. Counterbalancing cancelled it exactly (the
-12-pair mean, 70.62, is the midpoint of the two orders to 0.01 MiB). Every
-earlier design absorbed this bias silently.
-
-**Transient JIT compiler arenas, ≈ 20 MiB, in 2 of 12 pairs.** Pairs 4 and 7
-showed NMT committed ~20 MiB above an otherwise very tight cluster
-(2325.8–2327.4 MiB). The cause is `Arena Chunk`: 26,139 KB and 25,497 KB against
-~5,115 KB normally — the snapshot landed mid-compilation. These are the same two
-pairs with the largest RSS deltas (96.6 and 112.5 MiB), so **the two instruments
-moved together**, which cross-validates them: those RSS outliers are real
-transient memory, not measurement error. The memory is JIT activity unrelated to
-the profiler, which happened to hit the profiling arm twice.
-
-Excluding those two pairs (one odd, one even, so the counterbalance is preserved)
-collapses NMT's paired SE from 2.30 to **0.19 MiB** — the `Arena Chunk` transient
-was essentially the *entire* source of NMT noise. Both variants are reported
-above rather than choosing one, because the exclusion is justified by an
-independently identified mechanism, not by the points being inconvenient.
-
-### The instrument is a maximum — and that explains most of the noise
-
-`memory=` is `max(cgroup anon)` over ~900 samples per run, not a point sample or
-an average. That single fact accounts for much of what this report has been
-calling "measurement noise":
-
-- **A maximum is an extreme-value statistic** — upward-biased, high-variance, and
-  it permanently latches the largest transient in the run. One JIT compiler
-  arena burst or GC spike sets the run's number for good.
-- **It explains the 26–112 MiB per-pair spread**, and why the two JIT-spike pairs
-  read so high: those transients *are* the maximum.
-- **It explains why `AlwaysPreTouch` made variance worse** rather than better:
-  pre-touching adds a page-fault storm and raises peak anon.
-- **It is temporally incoherent with the other instruments.** The anon figure is
-  a max over 0–90 s; the NMT snapshot is a point at t = 30 s; NativeMem is read
-  at JFR flush. Three different moments, one of them a peak — which is precisely
-  why JIT arena memory cannot simply be subtracted from both sides.
-
-Measured on one pair by sampling cgroup anon directly at 2 Hz, the estimator
-choice moves the delta by 25 MiB:
-
-| estimator | profiling | tracing-only | delta |
-| --- | --- | --- | --- |
-| max (doe's method) | 1716.02 | 1610.99 | **105.03** |
-| whole-run median | 1657.21 | 1577.64 | 79.57 |
-| steady-state mean (t ≥ 30 s) | 1682.20 | 1581.15 | 101.05 |
-| synchronous at NMT snapshot | 1647.63 | 1559.53 | 88.10 |
-
-The whole-run median is dragged down by the startup ramp; anon is still climbing
-at t = 30 s, so the NMT snapshot used by every measurement above is **not** in
-steady state. Within the steady window the per-sample sd is 25.4 MiB (profiling)
-and 10.5 MiB (tracing-only), so the profiling arm genuinely fluctuates more —
-GC, JIT, and call-trace arena rotation.
-
-`memsweep/run_doe_interleaved.sh` now samples cgroup anon directly at 2 Hz from
-the **host** cgroup path (`docker exec … cat` was rejected: it spawns a process
-inside the target's own cgroup and inflates the number being measured — observed
-1519616 vs 1257472 bytes), records the value at the exact instant of each NMT
-snapshot, and takes **two** NMT snapshots (t = 30 s for comparability with the
-batches above, t = 70 s in steady state). That yields a max comparable to doe's,
-a low-variance steady-state mean, and a temporally coherent point value against
-which `Arena Chunk` can validly be differenced.
-
-### What now limits the answer
-
-Instrument spread, not accounting. The paired delta's sd is 26.7 MiB even with
-the JIT spikes removed; per-pair deltas ranged 26–112 MiB. Since SE = sd/√n:
-
-| target SE | pairs needed |
-| --- | --- |
-| 8.45 MiB (current) | 10 |
-| 5 MiB | 29 |
-| 3 MiB | 79 |
-| 2 MiB | 178 |
-
-Distinguishing a 5 MiB residual from zero needs ~79 pairs (≈ 11 h of runs) *if
-the instrument stays as it is*.
-
-### The estimator prediction was wrong — and the real problem is the heap
-
-The prediction above was that replacing the maximum with a steady-state mean
-would shrink the paired SE without extra reps. **It did not.** Measured over a
-fresh set of 12 interleaved pairs with cgroup anon sampled directly at 2 Hz:
-
-| estimator | paired delta | sd | SE |
-| --- | --- | --- | --- |
-| doe `max(anon)` | 72.27 | 17.01 | 4.911 |
-| our `max(anon)` | 71.96 | 17.18 | 4.959 |
-| whole-run median | 51.36 | 19.13 | 5.523 |
-| steady mean (t ≥ 30 s) | 57.09 | 17.87 | 5.159 |
-| steady median | 63.99 | 14.84 | 4.283 |
-| synchronous at t = 30 s | 51.61 | 13.00 | 3.754 |
-| synchronous at t = 70 s | 65.48 | 20.23 | 5.841 |
-
-The maximum was **not** the dominant noise source: the steady-state mean is
-marginally *worse* (sd 17.87 vs 17.01). The between-run spread is largely
-genuine, not an extreme-value artifact.
-
-Worse, **estimator choice moves the answer by 21 MiB** (51.4 → 72.3) — roughly a
-third of the quantity being measured, and larger than the residual this report
-set out to explain.
-
-**Correction: the ± 72 MiB figure was an artifact of my own sampler.** An earlier
-revision of this section attributed the spread to GC-driven heap movement, citing
-a within-run fluctuation of ± 72 MiB and a signal-to-noise ratio of 0.35. That
-was wrong. The anon sampler ran until the container's cgroup file disappeared, so
-the tail of every trace captured **JVM teardown** — anon collapsing toward zero
-(observed 1581 MiB → 13 MiB) — and those samples fell inside the "steady state"
-window. Only 8 samples out of ~4500 were affected, but they moved the within-run
-sd from 19.16 to 72.39.
-
-With teardown excluded, the within-run picture is:
-
-| | raw sd | detrended sd | ramp |
-| --- | --- | --- | --- |
-| profiling | 19.16 | **6.96** | +57.43 MiB/min |
-| tracing-only | 15.80 | **10.66** | +31.04 MiB/min |
-
-So within-run variation is *not* noise — it is a **ramp**. Anon never plateaus:
-it climbs monotonically for the whole run. Detrended noise is only 7–11 MiB.
-That is the real reason estimators disagree by 20 MiB: each samples a different
-point on a rising line, so the answer depends on *when* you look, not on
-randomness.
-
-It also means **the 90 s workload never reaches steady state**, and the profiling
-arm ramps ~26 MiB/min faster than tracing-only. A longer run would report a
-larger overhead. Any figure from this harness is duration-dependent.
-
-### `AlwaysPreTouch`: tested, and it does not help
-
-Predicted above that pinning the heap would shrink the spread. **It does not.**
-Twelve interleaved pairs with `-XX:+AlwaysPreTouch`, teardown excluded:
-
-| | no pretouch | with pretouch |
-| --- | --- | --- |
-| steady-mean paired delta | 60.48 ± 4.243 | 62.89 ± 8.340 |
-| paired sd | 14.70 | 28.89 |
-| detrended within-run sd (prof / base) | 6.96 / 10.66 | 15.34 / 25.45 |
-| **estimator spread** | **20.34** | **5.87** |
-
-Between-pair precision roughly *halves* (SE 4.24 → 8.34) and detrended
-within-run noise more than doubles. Pre-touching 2048 MiB up front evidently
-puts the cgroup under enough pressure to make anon *more* variable, not less.
-The heap-pinning hypothesis is rejected.
-
-But pretouch buys something else: **estimator spread collapses from 20.34 to
-5.87 MiB**, and the residual becomes nearly independent of estimator choice.
-That is robustness rather than precision — worth knowing, not worth adopting by
-default.
-
-### Coherent reconciliation, now that anon and NMT are synchronous
-
-With anon sampled at the exact instant of each NMT snapshot, `Arena Chunk` can
-be differenced validly from both sides. Doing so barely moves anything this run
-(`Arena Chunk` delta +0.87 ± 3.73 MiB at t = 70 s, +0.16 ± 0.20 at t = 30 s) —
-the JIT bursts that hit two pairs in the previous run did not recur. The
-machinery is validated but was not needed here.
-
-All six variants, teardown excluded:
+A positive residual means anonymous memory exceeds what we can name. Across all
+six variants — two JVM configurations × three ways of reading anon — every
+residual falls within 2 σ of zero:
 
 | config | anon basis | residual (live) | residual (peak) |
 | --- | --- | --- | --- |
-| no pretouch | steady mean | +4.86 (0.94 σ) | +1.73 (0.33 σ) |
-| no pretouch | sync t = 70 s | +9.86 (1.51 σ) | +6.73 (1.03 σ) |
-| no pretouch | sync t = 30 s | −4.01 (1.06 σ) | −7.14 (1.89 σ) |
+| default | steady mean | +4.86 (0.94 σ) | +1.73 (0.33 σ) |
+| default | synchronous t = 70 s | +9.86 (1.51 σ) | +6.73 (1.03 σ) |
+| default | synchronous t = 30 s | −4.01 (1.06 σ) | −7.14 (1.89 σ) |
 | pretouch | steady mean | +2.02 (0.24 σ) | −1.10 (0.13 σ) |
-| pretouch | sync t = 70 s | +1.91 (0.20 σ) | −1.21 (0.13 σ) |
-| pretouch | sync t = 30 s | +2.68 (0.43 σ) | −0.43 (0.07 σ) |
+| pretouch | synchronous t = 70 s | +1.91 (0.20 σ) | −1.21 (0.13 σ) |
+| pretouch | synchronous t = 30 s | +2.68 (0.43 σ) | −0.43 (0.07 σ) |
 
-**Every variant is within 2 σ of zero.** The live basis runs slightly positive
-(+1.9 to +9.9), the peak basis slightly negative (−7.1 to +6.7) — which is what
-you would expect if the true call-trace residency lies between the live gauge
-(3.49 MiB) and its peak (6.60 MiB), as the known `clear()` limitation implies.
-Taking that bracket seriously, the residual is **approximately 0 to +5 MiB**.
+The live basis runs slightly positive and the peak basis slightly negative — the
+signature expected if true call-trace residency lies between the live gauge
+(3.48 MiB) and its peak (6.61 MiB), which is exactly what the counter's known
+`clear()` limitation implies. Reading that bracket as the answer puts the
+residual at **≈ 0 to +5 MiB**.
 
-The within-pair ordering bias persists (+5.95 MiB no-pretouch, −4.48 with),
-still cancelled by counterbalancing.
-
-### Why this conclusion is more trustworthy than the previous three
-
-This report has stated the residual four times: +2.1 (closed), 15–28, 4.6–11.1,
-and now ≈ 0–5 MiB. The successive changes were not refinements of the same
-measurement — each followed a *specific methodological defect being found and
-fixed*:
-
-1. a call-trace correction factor borrowed from another workload, masking the gap
-2. conditions paired across separate time windows, admitting drift and a 7 MiB
-   ordering bias
-3. this harness's own sampler including container teardown in the steady window
-
-The reason to trust the current figure more is not that it is latest, but that
-**six variants across two JVM configurations and five estimators now converge on
-the same answer**, where previously they disagreed by 20 MiB. Convergence across
-independent variations is the evidence; any single number here still carries
-± 4–9 MiB.
-
-Remaining known biases, both small and named: the profiler's `clear()` under-count
-(bounded by the 3.49 → 6.60 MiB live-to-peak spread) and the ×1.17 chunk-overhead
-factor, still borrowed rather than measured (worth ≈ ± 3 MiB — see
-`overhead-program-plan.md` item 6).
-
-## Where the profiler's own memory goes
-
-Live bytes by category, mean of 12 reps, fixed counter:
-
-| Category | Mean (MiB) | SE | Share |
-| --- | --- | --- | --- |
-| `native_symbols` | 11.293 | 0.000 | 45.1 % |
-| `dictionary` | 6.806 | 0.002 | 27.2 % |
-| `calltrace` | 3.531 | 0.005 | 14.1 % |
-| `jfr_buffers` | 1.158 | 0.000 | 4.6 % |
-| `liveness` | 0.875 | 0.084 | 3.5 % |
-| `method_map` | 0.686 | 0.003 | 2.7 % |
-| `line_tables` | 0.567 | 0.003 | 2.3 % |
-| `thread_local` | 0.092 | 0.000 | 0.4 % |
-| `thread_filter` | 0.039 | 0.000 | 0.2 % |
-| `thread_info` | 0.009 | 0.000 | 0.0 % |
-| `wallclock` | 0.008 | 0.000 | 0.0 % |
-| **total** | **25.064** | **0.082** | 100 % |
-
-**This reorders the optimisation targets.** Call-trace storage was previously
-the largest category by a wide margin; corrected, it is third, and
-`native_symbols` + `dictionary` together account for **72 %** of the profiler's
-directly measured memory.
+Confidence rests on agreement across variants rather than on any single number:
+each variant alone carries ± 4–9 MiB.
 
 ---
 
-## What changed in the counter, and what it cost
+## Where the profiler's memory goes
 
-`LinearAllocator` recorded a whole 8 MiB `CALL_TRACE_CHUNK` into `NM_CALLTRACE`
-the moment it was `mmap`'d — before any byte was touched — and `reserveChunk()`
-pre-reserves the next chunk at 50 % fill, so at any instant at least one
-fully-counted chunk was essentially untouched. The counter now records the bytes
-`alloc()` actually hands out, which tracks touched (resident) memory directly.
+Live bytes by category, mean of 12 reps. Malloc-backed categories carry a further
+×1.17 chunk overhead not shown here.
 
-Effect on the real workload: call-trace fell from **24.23 → 3.53 MiB**, a 6.9×
-over-report. Peak touched bytes never exceeded 6.42 MiB, so this is not a
-sampling-phase artifact. In an isolated synthetic sweep the same change moved
-the counter 24.53 → 5.38 MiB with every other category byte-identical.
-
-Cost, isolated allocator microbenchmark (3 runs each, sd < 1 ns):
-
-| Scenario | Before | After | After, peak established |
+| Category | MiB | SE | Share |
 | --- | --- | --- | --- |
-| single thread | 12.62 ns | 25.66 ns | 18.15 ns |
-| 8 threads, contended | 64.87 ns | 116.3 ns | ~78.3 ns |
+| `native_symbols` | 11.293 | 0.0000 | 45.3 % |
+| `dictionary` | 6.809 | 0.0025 | 27.3 % |
+| `calltrace` | 3.484 | 0.0038 | 14.0 % |
+| `jfr_buffers` | 1.158 | 0.0000 | 4.6 % |
+| `liveness` | 0.750 | 0.0000 | 3.0 % |
+| `method_map` | 0.699 | 0.0029 | 2.8 % |
+| `line_tables` | 0.579 | 0.0040 | 2.3 % |
+| `thread_local` | 0.092 | 0.0001 | 0.4 % |
+| `thread_filter` | 0.039 | 0.0000 | 0.2 % |
+| `thread_info` | 0.009 | 0.0001 | 0.0 % |
+| `wallclock` | 0.008 | 0.0000 | 0.0 % |
+| **total** | **24.919** | **0.08** | 100 % |
 
-Relative cost roughly doubles, but `alloc()` is reached only for a
-*previously unseen* call trace — repeat samples of a known stack never allocate
-— so the real cost is low milliseconds per 90-second run. About 7.4 ns of the
-single-thread increase is `record()`'s peak high-water CAS, which fires on every
-allocation only during pure growth; rotation avoids it (third column).
-
-`linearAllocator_nativemem_ut.cpp` pins the new behaviour and fails against the
-old code (reporting a full 1 MiB chunk where 12,800 B were handed out).
+**`native_symbols` and `dictionary` together are 72 % of the profiler's directly
+measured memory** — they, not call-trace storage, are where optimisation effort
+belongs. These counters are also the most reproducible instrument in the
+investigation: SE below 0.1 MiB across twelve runs, so essentially all
+uncertainty in the reconciliation comes from the memory instrument, not from
+counter error.
 
 ---
 
-## Candidates for the remaining gap
+## Instrument properties
 
-Named hypotheses, not yet measured on this workload:
+dd-trace-doe's `memory=` output is `max(cgroup anon)` — **anonymous memory only**
+(no page cache, no file-backed pages), taken as a running **maximum** over ~900
+samples across the load and stop phases (`internal/schema/output.go`). Anon is
+the right quantity to reconcile against malloc/mmap counters, since it excludes
+file-cache noise. The maximum is less helpful: it is an extreme-value statistic,
+so it is upward-biased and latches the largest transient in the run.
+
+`run_doe_interleaved.sh` therefore samples cgroup anon directly at 2 Hz and
+records the value at the instant of each NMT snapshot. Reads come from the
+**host** cgroup path; `docker exec … cat` is unsuitable because it spawns a
+process inside the target's own cgroup and inflates the number being measured
+(1519616 vs 1257472 bytes observed).
+
+### Anonymous memory ramps; it does not plateau
+
+| | raw sd | detrended sd | ramp |
+| --- | --- | --- | --- |
+| profiling | 19.16 | 6.96 | +57.43 MiB/min |
+| tracing-only | 15.80 | 10.66 | +31.04 MiB/min |
+
+Within-run variation is dominated by a monotonic climb, not by noise — detrended
+noise is only 7–11 MiB. Two consequences: the 90-second workload never reaches
+steady state, so **the overhead figure is duration-dependent**; and estimator
+choice matters because each estimator samples a different point on a rising line.
+
+### Estimator sensitivity
+
+| estimator | paired delta | sd | SE |
+| --- | --- | --- | --- |
+| `max(anon)` | 71.96 | 17.18 | 4.96 |
+| steady mean (t ≥ 30 s) | 60.48 | 14.70 | 4.24 |
+| steady median | 63.98 | 14.83 | 4.28 |
+| synchronous at t = 30 s | 51.61 | 13.00 | 3.75 |
+| synchronous at t = 70 s | 65.48 | 20.23 | 5.84 |
+
+A 20 MiB spread on a ~60 MiB quantity. The steady mean is used above as the
+primary figure: it averages ~130 in-run samples and avoids both the startup ramp
+and the extreme-value bias of the maximum. Two NMT snapshots are taken per run
+(t = 30 s and t = 70 s) so that anon and NMT can be differenced at the same
+instant; anon is still climbing at t = 30 s, so t = 70 s is the steady-state
+pairing.
+
+### Transient JIT compiler arenas
+
+The `Arena Chunk` NMT category swings by ~20 MiB depending on whether a snapshot
+lands mid-compilation (26,139 KB observed against ~5,115 KB typical). When it
+does, both anon and NMT move together — cross-validating the instruments, since
+those outliers are real transient memory rather than measurement error. Because
+anon and NMT are now sampled synchronously, `Arena Chunk` can be differenced out
+of both sides; doing so shifts the result by under 1 MiB in these runs.
+
+### Further reps have limited value
+
+Paired sd is ~15 MiB, so SE = sd/√n gives ~4.2 MiB at n = 12, ~2.7 at n = 29,
+~1.7 at n = 79. Resolving the residual below the ~3 MiB uncertainty already
+carried by the ×1.17 chunk-overhead factor would not change any conclusion.
+Measuring the remaining terms directly is worth more than more repetitions.
+
+---
+
+## Remaining named biases
+
+Both are small, bounded, and known:
+
+- **Call-trace `clear()` under-count**, bounded by the 3.48 → 6.61 MiB
+  live-to-peak spread. `clear()` un-records a retained chunk's bytes but does not
+  unmap it, so already-touched pages stay resident while the counter forgets them.
+  The dominant rotation path does unmap, bounding this at roughly one chunk.
+- **The ×1.17 chunk-overhead factor is borrowed, not measured here** (~± 3 MiB).
+  It came from a workload with ~650,000 live allocations at ~83 B mean. Overhead
+  depends on mean allocation size per category, and the categories here differ:
+  `method_map` pays 16.7 % (96 B requested → 112 B real) while large-allocation
+  categories such as `jfr_buffers` pay ~0 %. The counters emit bytes but not
+  allocation counts, so the correct per-category factor cannot be derived from the
+  current data.
+
+## Candidates that would explain a larger gap
+
+These were assembled when the gap appeared larger. They now **sum to more than
+the residual** (~12–18 MiB against ≈ 0–5), so they cannot all contribute at the
+magnitudes estimated. The likeliest resolution is that free-but-held arena slack
+is much smaller on this workload than on the synthetic sweep where it was
+measured.
 
 | Est. | Candidate |
 | --- | --- |
-| ≈ 7.6 MiB | **Free-but-held arena pages.** glibc retaining rather than returning memory. Measured in the synthetic sweep but SE 3.0, range −7.2 to +17.2, sign-changing. Mostly *other* subsystems' chunks stranded by interleaving, so **not attributable to any profiler allocation** — a process-level, allocator-specific property. |
-| a few MiB | **Natively created profiler thread stacks.** Created via `pthread_create`, not by the JVM, so their resident stack pages appear in *neither* NMT's Thread category *nor* the profiler's allocation counters — a structural blind spot between the two instruments. |
+| ≈ 7.6 MiB | **Free-but-held arena pages.** Measured on the synthetic sweep with SE 3.0 and a sign-changing range (−7.2 to +17.2). Mostly *other* subsystems' chunks stranded by interleaving, so not attributable to any profiler allocation — a process-level, allocator-specific property. |
+| a few MiB | **Natively created profiler thread stacks.** Created via `pthread_create`, not by the JVM, so their resident stack pages appear in neither NMT's Thread category nor the profiler's counters — a structural blind spot between the two instruments. |
 | 2–4 MiB | **The profiler library's own resident image.** Text and data pages of a 1.38 MB shared object. Not an allocation, so no counter sees it; not JVM-managed, so NMT does not either. |
-| ≈ 0.9 MiB | **Unattributed profiler malloc.** Known from earlier call-site auditing; resolves only to a private `operator new`. |
-| ≤ 2.9 MiB | **Call-trace pages the counter forgets.** `clear()` un-records a retained chunk's bytes, but its already-touched pages stay resident until unmapped. Bounded by the live-to-peak spread (3.53 → 6.42 MiB). |
-
-These plausibly reach the lower end of the range. They do not obviously reach
-28 MiB, which is a further reason to settle the RSS pairing before treating the
-upper figure as real.
+| ≈ 0.9 MiB | **Unattributed profiler malloc.** Resolves only to a private `operator new`. |
 
 ---
 
 ## Recommended next steps
 
-The general lesson: **every correction factor is a place where a number measured
-in one workload gets applied to another.** Two remain, and both are properties of
-the *allocator*, not the profiler — which is why they should be reported as such
-rather than folded into "profiler cost". Under tcmalloc or jemalloc (both
-selectable in dd-trace-doe via `allocator=`) they would behave differently, and
-that difference should be visible.
+The governing lesson: **every correction factor is a place where a number
+measured in one workload is applied to another.** One such factor remains
+(×1.17), and it is a property of the *allocator*, not the profiler — as is arena
+slack. Under tcmalloc or jemalloc (both selectable via `allocator=`) both behave
+differently, which is an argument for reporting them explicitly rather than
+folding them into "profiler cost".
 
-1. ~~Re-run both conditions interleaved.~~ **Done** — see "Interleaved re-run".
-   It narrowed the residual to +4.6…+11.1 MiB and exposed a 7.1 MiB ordering
-   bias. Any future re-measurement should keep the counterbalanced interleaving
-   and the pinned `loops_num`/`allocs_num`; the harness is committed as
-   `memsweep/run_doe_interleaved.sh`.
+1. **Measure arena waste on this workload** via `mallinfo2()` on the JFR flush
+   path, reported as process-wide allocator overhead rather than profiler memory.
+   This is the single most useful remaining measurement: it is the largest
+   candidate above and currently rests on analogy to a different workload.
 2. **Fold chunk overhead in exactly, per allocation** via
-   `malloc_usable_size()`, replacing the ×1.17 average; report it per category,
-   since `method_map` pays 16.7 % (96 B requested → 112 B real) while
-   large-allocation categories pay ~0 %, and that ratio is what identifies a
-   target. Requires runtime allocator detection: glibc adds an 8 B header
-   (16 B for mmap'd), jemalloc and tcmalloc add none.
-3. **Report process-wide arena waste as what it is**, from `mallinfo2()` on the
-   flush path, labelled process-wide allocator overhead — giving an honest
-   bracket rather than a false point estimate.
-4. **Close the instrument blind spots** — natively created thread stacks and the
-   library's resident image are invisible to both instruments today.
+   `malloc_usable_size()`, replacing the ×1.17 average, reported per category.
+   Requires runtime allocator detection: glibc adds an 8 B header (16 B for
+   mmap'd chunks), jemalloc and tcmalloc add none.
+3. **Close the instrument blind spots** — natively created thread stacks and the
+   library's resident image are invisible to both instruments.
+4. **Measure a longer workload** to quantify the duration dependence, since the
+   90 s run never reaches steady state.
 
 Full design, including three rejected alternatives and why, is in
 `overhead-program-plan.md` § "Concrete next steps", item 6.
