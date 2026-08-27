@@ -1798,13 +1798,20 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
     if (result == ReferenceChainTracker::AdmitResult::ADMITTED &&
         ctx->tracker->_candidate_count > 0) {
       u32 klass_id = ctx->tracker->classTags()->resolve(class_tag);
-      for (int s = 0; s < ctx->tracker->_candidate_count; s++) {
-        if (ctx->tracker->_candidate_klass_ids[s] == klass_id &&
-            ctx->tracker->_candidate_discovered_count[s] <
+      if (klass_id != 0) {
+        for (int s = 0; s < ctx->tracker->_candidate_count; s++) {
+          if (ctx->tracker->_candidate_klass_ids[s] == klass_id) {
+            if (ctx->tracker->_candidate_discovered_count[s] <
                 ReferenceChainTracker::MAX_DISCOVERED_INSTANCES_PER_CLASS) {
-          ctx->tracker->_candidate_discovered_tags[s]
-              [ctx->tracker->_candidate_discovered_count[s]++] = *tag_ptr;
-          break;
+              ctx->tracker->_candidate_discovered_tags[s]
+                  [ctx->tracker->_candidate_discovered_count[s]++] = *tag_ptr;
+              TEST_LOG("ReferenceChainTracker::auto-mark slot=%d klass_id=%u "
+                       "tag=%lld discovered_count=%d",
+                       s, klass_id, (long long)*tag_ptr,
+                       ctx->tracker->_candidate_discovered_count[s]);
+            }
+            break;
+          }
         }
       }
     }
