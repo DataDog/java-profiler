@@ -324,6 +324,9 @@ public:
   void writeCounters(Buffer *buf);
 
   void updateNativeMemStats();
+  // Process-wide malloc arena state (glibc mallinfo2). Flush path only --
+  // takes every arena lock, so not async-signal-safe. No-op off glibc 2.33+.
+  void updateMallocArenaStats();
   void writeNativeMem(Buffer *buf);
 
   void writeUnwindFailures(Buffer *buf);

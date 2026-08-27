@@ -7,6 +7,15 @@
 #include <assert.h>
 #include <inttypes.h>
 
+// mallinfo2() replaced the int-based mallinfo() in glibc 2.33; the older struct
+// silently truncates past 2 GiB, so it is not a usable fallback for byte
+// accounting. Absent on musl and macOS, where the arena counters stay zero.
+#if defined(__linux__) && defined(__GLIBC__) &&                                \
+    (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 33))
+  #include <malloc.h>
+  #define DD_HAVE_MALLINFO2 1
+#endif
+
 #include "buffers.h"
 #include "callTraceHashTable.h"
 #include "context.h"
@@ -1809,11 +1818,45 @@ void Recording::writeLogLevels(Buffer *buf) {
   }
 }
 
+// Snapshot the process-wide malloc arena state from glibc's own accounting.
+//
+// This is NOT profiler memory. Free-but-held arena pages are mostly other
+// subsystems' chunks stranded by interleaving, so they cannot be attributed to
+// any profiler allocation -- reporting them separately keeps them out of the
+// per-category figures while still making the allocator's overhead visible.
+// The numbers also differ substantially between glibc, tcmalloc and jemalloc,
+// which is exactly what a reader comparing allocators needs to see.
+//
+// Only safe on the flush path: mallinfo2() walks every arena taking each arena
+// lock, so it is neither cheap nor async-signal-safe. Must never be reached
+// from the sampling signal handler. Once per JFR chunk is negligible.
+void Recording::updateMallocArenaStats() {
+#ifdef DD_HAVE_MALLINFO2
+  struct mallinfo2 mi = mallinfo2();
+  // arena:    bytes obtained from the OS via brk, excluding mmap'd chunks
+  // uordblks: bytes currently handed out to callers
+  // fordblks: bytes free but retained in the arenas -- the waste term
+  // keepcost: the trimmable top block, i.e. what malloc_trim could return;
+  //           separating it distinguishes trim-threshold policy from genuine
+  //           fragmentation, which trimming cannot reclaim
+  // hblkhd:   bytes in mmap'd chunks, which are returned to the OS on free
+  Counters::set(MALLOC_ARENA_BYTES, (long long)mi.arena);
+  Counters::set(MALLOC_IN_USE_BYTES, (long long)mi.uordblks);
+  Counters::set(MALLOC_FREE_HELD_BYTES, (long long)mi.fordblks);
+  Counters::set(MALLOC_TRIMMABLE_BYTES, (long long)mi.keepcost);
+  Counters::set(MALLOC_MMAP_BYTES, (long long)mi.hblkhd);
+#endif
+}
+
 void Recording::updateNativeMemStats() {
   // Refresh the moving-window averages and the observed total peak. Per-category
   // peaks are maintained precisely at allocation time, so they are not sampled
   // here; the total peak is bracketed instead (see writeNativeMem).
   NativeMem::sample();
+
+  // Process-wide allocator state, sampled at the same instant as the
+  // per-category figures so the two can be compared coherently.
+  updateMallocArenaStats();
 
   // Mirror the totals into the flat counter table so they flow out through the
   // existing counter path (JFR T_DATADOG_COUNTER events and the JNI debug
