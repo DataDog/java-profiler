@@ -1,10 +1,19 @@
 # dd-trace-doe memory reconciliation, 27 Aug 2026
 
-**Headline: the profiler's RSS overhead on this workload is 3.9–4.3 % of total
-process RSS (≈ 64–71 MiB against a ≈ 1630 MiB baseline). The unexplained
-residual is +4.6 to +11.1 MiB — statistically indistinguishable from zero, but
-also indistinguishable from ~15 MiB, because RSS measurement noise (± 8.5 MiB)
-now dominates.**
+**Headline: the profiler's memory overhead on this workload is 3.9–4.3 % of the
+application's anonymous memory (≈ 64–71 MiB against a ≈ 1630 MiB baseline). The
+unexplained residual is +4.6 to +11.1 MiB — statistically indistinguishable from
+zero, but also indistinguishable from ~15 MiB, because the memory instrument's
+own spread (± 8.5 MiB) now dominates.**
+
+> **Terminology.** Earlier drafts of this report said "RSS" throughout. That was
+> imprecise and is corrected here. dd-trace-doe's `memory=` output is
+> `max(cgroup anon)` — **anonymous memory only** (no page cache, no file-backed
+> pages), and a **running maximum** over ~900 samples across the load and stop
+> phases (`internal/schema/output.go`). Anon is arguably the *better* quantity to
+> reconcile against malloc/mmap counters, since it excludes file-cache noise. But
+> "maximum" is material: see "The instrument is a maximum" below. Where this
+> document says "memory delta" it means the delta in that anon figure.
 
 > **Superseded figures.** An earlier draft of this report put the residual at
 > 15–28 MiB. That came from pairing conditions measured in *separate* windows,
@@ -36,10 +45,12 @@ Mechanism detail for the counter fix is in `memory-sweep-results-linux.md`
 | Heap | `-Xms2g -Xmx2g` (set by the harness entrypoint; heap fully committed) |
 | Library | local build, verified by checksum end-to-end (below) |
 
-`-XX:+AlwaysPreTouch` was tried and **rejected** — it roughly doubled RSS
-variance rather than reducing it (sd 9.4 → 18.2 MiB tracing-only,
-12.0 → 25.9 MiB profiling) and moved the mean RSS delta down ~22 MiB in a way
-neither instrument tracked. Recorded as a negative result; not used here.
+`-XX:+AlwaysPreTouch` was tried and rejected here — it roughly doubled the
+spread (sd 9.4 → 18.2 MiB tracing-only, 12.0 → 25.9 MiB profiling) and moved the
+mean delta down ~22 MiB in a way neither instrument tracked. **That rejection is
+now believed to be wrong**: it was measured with the maximum estimator, which is
+precisely what pre-touching inflates. See "This means `AlwaysPreTouch` was
+rejected on the wrong evidence".
 
 ### Build provenance
 
@@ -166,10 +177,53 @@ was essentially the *entire* source of NMT noise. Both variants are reported
 above rather than choosing one, because the exclusion is justified by an
 independently identified mechanism, not by the points being inconvenient.
 
+### The instrument is a maximum — and that explains most of the noise
+
+`memory=` is `max(cgroup anon)` over ~900 samples per run, not a point sample or
+an average. That single fact accounts for much of what this report has been
+calling "measurement noise":
+
+- **A maximum is an extreme-value statistic** — upward-biased, high-variance, and
+  it permanently latches the largest transient in the run. One JIT compiler
+  arena burst or GC spike sets the run's number for good.
+- **It explains the 26–112 MiB per-pair spread**, and why the two JIT-spike pairs
+  read so high: those transients *are* the maximum.
+- **It explains why `AlwaysPreTouch` made variance worse** rather than better:
+  pre-touching adds a page-fault storm and raises peak anon.
+- **It is temporally incoherent with the other instruments.** The anon figure is
+  a max over 0–90 s; the NMT snapshot is a point at t = 30 s; NativeMem is read
+  at JFR flush. Three different moments, one of them a peak — which is precisely
+  why JIT arena memory cannot simply be subtracted from both sides.
+
+Measured on one pair by sampling cgroup anon directly at 2 Hz, the estimator
+choice moves the delta by 25 MiB:
+
+| estimator | profiling | tracing-only | delta |
+| --- | --- | --- | --- |
+| max (doe's method) | 1716.02 | 1610.99 | **105.03** |
+| whole-run median | 1657.21 | 1577.64 | 79.57 |
+| steady-state mean (t ≥ 30 s) | 1682.20 | 1581.15 | 101.05 |
+| synchronous at NMT snapshot | 1647.63 | 1559.53 | 88.10 |
+
+The whole-run median is dragged down by the startup ramp; anon is still climbing
+at t = 30 s, so the NMT snapshot used by every measurement above is **not** in
+steady state. Within the steady window the per-sample sd is 25.4 MiB (profiling)
+and 10.5 MiB (tracing-only), so the profiling arm genuinely fluctuates more —
+GC, JIT, and call-trace arena rotation.
+
+`memsweep/run_doe_interleaved.sh` now samples cgroup anon directly at 2 Hz from
+the **host** cgroup path (`docker exec … cat` was rejected: it spawns a process
+inside the target's own cgroup and inflates the number being measured — observed
+1519616 vs 1257472 bytes), records the value at the exact instant of each NMT
+snapshot, and takes **two** NMT snapshots (t = 30 s for comparability with the
+batches above, t = 70 s in steady state). That yields a max comparable to doe's,
+a low-variance steady-state mean, and a temporally coherent point value against
+which `Arena Chunk` can validly be differenced.
+
 ### What now limits the answer
 
-RSS noise, not accounting. The paired delta's sd is 26.7 MiB even with the JIT
-spikes removed; per-pair deltas ranged 26–112 MiB. Since SE = sd/√n:
+Instrument spread, not accounting. The paired delta's sd is 26.7 MiB even with
+the JIT spikes removed; per-pair deltas ranged 26–112 MiB. Since SE = sd/√n:
 
 | target SE | pairs needed |
 | --- | --- |
@@ -178,10 +232,82 @@ spikes removed; per-pair deltas ranged 26–112 MiB. Since SE = sd/√n:
 | 3 MiB | 79 |
 | 2 MiB | 178 |
 
-Distinguishing a 5 MiB residual from zero needs ~79 pairs (≈ 11 h of runs).
-`-XX:+AlwaysPreTouch` was the obvious lever on per-run RSS variance and it made
-things *worse* (see Conditions). So the practical options are more reps, or a
-lower-variance RSS instrument — not further correction factors.
+Distinguishing a 5 MiB residual from zero needs ~79 pairs (≈ 11 h of runs) *if
+the instrument stays as it is*.
+
+### The estimator prediction was wrong — and the real problem is the heap
+
+The prediction above was that replacing the maximum with a steady-state mean
+would shrink the paired SE without extra reps. **It did not.** Measured over a
+fresh set of 12 interleaved pairs with cgroup anon sampled directly at 2 Hz:
+
+| estimator | paired delta | sd | SE |
+| --- | --- | --- | --- |
+| doe `max(anon)` | 72.27 | 17.01 | 4.911 |
+| our `max(anon)` | 71.96 | 17.18 | 4.959 |
+| whole-run median | 51.36 | 19.13 | 5.523 |
+| steady mean (t ≥ 30 s) | 57.09 | 17.87 | 5.159 |
+| steady median | 63.99 | 14.84 | 4.283 |
+| synchronous at t = 30 s | 51.61 | 13.00 | 3.754 |
+| synchronous at t = 70 s | 65.48 | 20.23 | 5.841 |
+
+The maximum was **not** the dominant noise source: the steady-state mean is
+marginally *worse* (sd 17.87 vs 17.01). The between-run spread is largely
+genuine, not an extreme-value artifact.
+
+Worse, **estimator choice moves the answer by 21 MiB** (51.4 → 72.3) — roughly a
+third of the quantity being measured, and larger than the residual this report
+set out to explain.
+
+**The reason is that anon is mostly Java heap.** The heap is 2048 MiB committed
+(`-Xms2g -Xmx2g`), and the tracing-only steady-state anon is ≈ 1580 MiB — so anon
+is dominated by *touched heap pages*, and it moves with GC activity. Measured
+within-run steady-state fluctuation is **± 72 MiB** on the profiling arm (± 37 on
+tracing-only), against a profiler native footprint of ≈ 25 MiB. Signal-to-noise
+is about **0.35**: the instrument is measuring the heap's GC dynamics far more
+than it is measuring the profiler.
+
+That is why every estimator disagrees. They are each sampling a different part
+of a large, GC-driven oscillation.
+
+### This means `AlwaysPreTouch` was rejected on the wrong evidence
+
+`-XX:+AlwaysPreTouch` was dismissed earlier because it doubled the spread — but
+that was measured with the **maximum** estimator, which is exactly what
+pre-touching inflates (it adds a startup page-fault storm that sets a high max).
+
+With the heap diagnosis above, pre-touching should *help* decisively: it pins
+touched heap pages at the full 2048 MiB from startup, so GC can no longer move
+them, removing the dominant noise term. `AlwaysPreTouch` **plus** a steady-state
+estimator is plausibly the combination that makes this measurable — the pairing
+never tried, because the flag was judged against the one estimator guaranteed to
+punish it.
+
+**Recommended next experiment**, before spending 79 pairs on the current setup:
+12 interleaved pairs with `-XX:+AlwaysPreTouch` and a steady-state estimator. If
+the heap term is pinned, the paired sd should fall from ~17 MiB toward the
+non-heap variation alone, and a 5–10 MiB residual becomes resolvable at n = 12
+rather than n = 79.
+
+### Coherent reconciliation, now that anon and NMT are synchronous
+
+With anon sampled at the exact instant of each NMT snapshot, `Arena Chunk` can
+be differenced validly from both sides. Doing so barely moves anything this run
+(`Arena Chunk` delta +0.87 ± 3.73 MiB at t = 70 s, +0.16 ± 0.20 at t = 30 s) —
+the JIT bursts that hit two pairs in the previous run did not recur. The
+machinery is validated but was not needed here.
+
+| anon basis | NMT | residual (live) | residual (peak) |
+| --- | --- | --- | --- |
+| steady mean | t = 70 s | **+1.47 ± 5.95** (0.25 σ) | −1.66 ± 5.95 (0.28 σ) |
+| synchronous | t = 70 s | +9.86 ± 6.55 (1.51 σ) | +6.73 ± 6.55 (1.03 σ) |
+| synchronous | t = 30 s | −4.01 ± 3.77 (1.06 σ) | −7.14 ± 3.77 (1.89 σ) |
+
+Every variant is within 2 σ of zero, but they span −7.1 to +9.9 MiB. **The
+residual cannot be pinned more tightly than the instrument allows**, and the
+instrument is currently limited by heap/GC noise, not by accounting. The
+within-pair ordering bias also persists at +5.95 MiB (was +7.11), still
+cancelled by counterbalancing.
 
 ## Where the profiler's own memory goes
 

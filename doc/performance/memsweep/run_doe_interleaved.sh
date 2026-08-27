@@ -1,39 +1,79 @@
 #!/bin/bash
-# Interleaved paired doe runs: alternates tracing-only and tracing+profiling
-# within a single window, so machine-level drift cannot land preferentially on
-# one condition. Replaces the previous design (12 reps of one condition, then 12
-# of the other, hours apart), which left the RSS delta ambiguous between
-# 74.6 and 84.3 MiB.
+# Interleaved paired doe runs for the profiler memory reconciliation.
 #
-# Two deliberate changes from run_batch.sh:
-#   * loops_num/allocs_num are pinned to the values calibration produced, with
-#     loops_cpu/allocs_cpu=0, so NeedsCalibration() is false. This removes 24
-#     calibration containers AND removes a confound -- previously each condition
-#     calibrated independently, so the two arms could run slightly different
-#     workloads. Every other archetype parameter is unchanged.
-#   * Within-pair order is counterbalanced (pair 1: prof,base; pair 2:
-#     base,prof; ...) so any linear drift across a pair cancels rather than
-#     always favouring whichever arm goes first.
+# WHY INTERLEAVED: measuring the two conditions in separate windows let
+# machine-level drift land preferentially on one arm, which left the memory
+# delta ambiguous between 74.6 and 84.3 MiB. Alternating within one window
+# removes that. The within-pair order is also counterbalanced (pair 1:
+# profiling first; pair 2: tracing-only first; ...) because the first run in a
+# pair carries ~7.1 MiB more anon memory regardless of which arm it is;
+# counterbalancing cancels that bias instead of letting it pick a side.
 #
-# With calibration off there is exactly ONE "app container started" per
-# invocation, so no calibration container has to be skipped.
+# WHY WE SAMPLE ANON OURSELVES: doe's own `memory=` output is
+# max(cgroup anon) over the whole load+stop phase -- an extreme-value
+# statistic. A maximum is upward-biased, high-variance, and permanently
+# latches any transient (JIT compiler arenas, GC bursts), which is most of why
+# per-pair deltas span 26-112 MiB. It is also temporally incoherent with the
+# other instruments: doe's figure is a max over 0-90 s, the NMT snapshot is a
+# point at t=30 s, and NativeMem is read at JFR flush -- three different
+# moments, so JIT arena memory cannot be validly subtracted from both sides.
 #
-# Usage: run_interleaved.sh <out_dir> [pairs]
+# This harness therefore samples cgroup anon directly, on a timestamped
+# schedule, and records the value at the exact instant of the NMT snapshot.
+# That yields max (comparable to doe's), mean/median (low variance), and a
+# synchronous point value that CAN be differenced against NMT coherently.
+#
+# Read from the host cgroup path rather than `docker exec ... cat`, because
+# exec spawns a process inside the target's own cgroup and inflates the very
+# number being measured (observed: 1519616 vs 1257472 bytes).
+#
+# WHY CALIBRATION IS PINNED: loops_num/allocs_num are fixed to the values
+# calibration produced, with loops_cpu/allocs_cpu=0, so NeedsCalibration() is
+# false. This drops one calibration container per invocation AND removes a
+# confound -- each arm previously calibrated independently and could end up
+# running a slightly different workload. All other archetype parameters are
+# unchanged.
+#
+# Usage: run_doe_interleaved.sh <out_dir> [pairs]
 set -u
 OUT="$1"
 PAIRS="${2:-12}"
-DOE_REPO=/home/bits/go/src/github.com/DataDog/dd-trace-doe
+DOE_REPO="${DOE_REPO:-/home/bits/go/src/github.com/DataDog/dd-trace-doe}"
+DOE_BIN="${DOE_BIN:-/tmp/doe}"
+SAMPLE_INTERVAL="${SAMPLE_INTERVAL:-0.5}"
+# Two NMT snapshots per run. t=30 s matches the earlier batches so those numbers
+# stay comparable; t=70 s lands in steady state, since anon is still climbing its
+# startup ramp at 30 s (measured: whole-run median 1657 MiB vs steady-state
+# median 1682 MiB on the same run). The steady-state snapshot is the one whose
+# Arena Chunk value can be meaningfully differenced against a steady-state anon
+# reading.
+NMT_DELAYS="${NMT_DELAYS:-30 70}"
 
-mkdir -p "$OUT/nmt" "$OUT/jfr" "$OUT/logs"
+mkdir -p "$OUT/nmt" "$OUT/jfr" "$OUT/logs" "$OUT/anon"
 
 COMMON="archetype=enterprise language=java library_version=local agent=false \
 duration=90 loops_cpu=0 allocs_cpu=0 loops_num=1712244 allocs_num=408773"
+
+# Timestamped cgroup-anon sampler. Emits "<epoch_ms> <bytes>" per line, plus a
+# "<epoch_ms> <bytes> NMT" marked line at the NMT snapshot instant.
+sample_anon() {
+  local cid="$1" outfile="$2"
+  local stat="/sys/fs/cgroup/docker/${cid}/memory.stat"
+  while [ -r "$stat" ]; do
+    local v
+    v=$(awk '/^anon /{print $2; exit}' "$stat" 2>/dev/null) || break
+    [ -n "$v" ] && printf '%s %s\n' "$(date +%s%3N)" "$v" >> "$outfile"
+    sleep "$SAMPLE_INTERVAL"
+  done
+}
 
 run_one() {
   local prof="$1" pair="$2"
   local tag="pair$(printf '%02d' "$pair")_prof${prof}"
   local log="$OUT/logs/${tag}.log"
   local jfrdir="$OUT/jfr/${tag}"
+  local anonfile="$OUT/anon/${tag}.txt"
+  : > "$anonfile"
 
   local jto="-XX:NativeMemoryTracking=summary"
   local -a envs=()
@@ -44,31 +84,47 @@ run_one() {
   fi
   envs+=(DOE_DEBUG_JAVA_TOOL_OPTIONS="$jto")
 
-  ( cd "$DOE_REPO" && env "${envs[@]}" /tmp/doe run $COMMON \
+  ( cd "$DOE_REPO" && env "${envs[@]}" "$DOE_BIN" run $COMMON \
       tracing=true profiling="$prof" -n 1 -f > "$log" 2>&1 ) &
   local pid=$!
 
-  # Wait for the app container, then snapshot NMT 30 s in (matches the timing
-  # used by the earlier batches, so the numbers stay comparable).
+  # With calibration pinned there is exactly one app container per invocation,
+  # so no calibration container has to be skipped.
   local cid=""
   while kill -0 "$pid" 2>/dev/null; do
     cid=$(grep -oP 'app container started.*container_id=\K[a-f0-9]+' "$log" 2>/dev/null | head -1)
     [ -n "$cid" ] && break
     sleep 2
   done
+
+  local sampler_pid=""
   if [ -n "$cid" ]; then
-    ( sleep 30
-      docker run --rm --pid=container:"$cid" eclipse-temurin:21-jdk \
-        jcmd 1 VM.native_memory summary > "$OUT/nmt/${tag}.txt" 2>&1 ) &
+    sample_anon "$cid" "$anonfile" &
+    sampler_pid=$!
+    for d in $NMT_DELAYS; do
+      ( sleep "$d"
+        # Mark the synchronous anon reading FIRST, so it is as close as possible
+        # to the NMT snapshot that follows.
+        local stat="/sys/fs/cgroup/docker/${cid}/memory.stat"
+        local v
+        v=$(awk '/^anon /{print $2; exit}' "$stat" 2>/dev/null)
+        [ -n "$v" ] && printf '%s %s NMT%s\n' "$(date +%s%3N)" "$v" "$d" >> "$anonfile"
+        docker run --rm --pid=container:"$cid" eclipse-temurin:21-jdk \
+          jcmd 1 VM.native_memory summary > "$OUT/nmt/${tag}_t${d}.txt" 2>&1 ) &
+    done
   else
     echo "  WARN: no container id for $tag"
   fi
 
   wait "$pid"
-  wait                      # let the NMT sidecar finish
+  [ -n "$sampler_pid" ] && kill "$sampler_pid" 2>/dev/null
+  wait 2>/dev/null
+
   local mem
   mem=$(grep -oP 'memory=\K[0-9]+' "$log" | tail -1)
-  echo "  $tag memory=${mem:-MISSING}"
+  local n_samples
+  n_samples=$(wc -l < "$anonfile")
+  echo "  $tag doe_max=${mem:-MISSING} anon_samples=${n_samples}"
   echo "${tag} ${mem:-MISSING}" >> "$OUT/rss.txt"
 }
 
