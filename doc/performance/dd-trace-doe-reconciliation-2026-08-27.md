@@ -7,13 +7,13 @@ independent variants tested.**
 
 Two caveats bound how this figure should be quoted:
 
-- **It is stable within the run, with one caveat.** The paired delta is flat at
-  ≈ 51 MiB through t = 50 s, steps up ~15 MiB at the first JFR chunk flush, then
-  is flat again within noise. There is no sign of unbounded growth: the
-  profiler's own counters grow only +1.5 MiB per chunk, `native_symbols` is
-  exactly saturated, and `calltrace` *falls* as rotation reclaims. What is not
-  established is whether the flush step recurs or grows over many more flushes
-  than a 90 s run contains.
+- **The overhead is bounded — there is no leak and no per-flush growth.**
+  Confirmed over a 20-minute run with 10 observed flushes: see
+  [Long-run behaviour](#long-run-behaviour). Anonymous memory plateaus by
+  t ≈ 180 s and the paired delta is flat from t ≈ 60 s onward.
+- **Between-run variance is the dominant uncertainty**, larger than any term in
+  the reconciliation. Per-pair deltas span 26–112 MiB, so single runs are not
+  informative about the absolute figure.
 - **It depends on how the memory instrument is read.** Different defensible
   estimators of the same data span 20 MiB (see
   [Instrument properties](#instrument-properties)).
@@ -261,6 +261,50 @@ those outliers are real transient memory rather than measurement error. Because
 anon and NMT are now sampled synchronously, `Arena Chunk` can be differenced out
 of both sides; doing so shifts the result by under 1 MiB in these runs.
 
+### Long-run behaviour
+
+A 20-minute paired run (one pair, `AlwaysPreTouch`, ~10 JFR flushes per arm)
+settles three questions the 90-second runs could not.
+
+**No leak.** The profiler's own counters are flat after the first flush and
+several are byte-identical across every subsequent one:
+
+| | first flush | flushes 2–10 |
+| --- | --- | --- |
+| total | 23.413 | bounded 23.98 – 24.98 |
+| `dictionary` | 4.576 | **6.803 in every flush** |
+| `native_symbols` | 11.293 | **11.293 in every flush** |
+| `calltrace` | 5.499 | ~3.35 (falls, then flat) |
+| `method_map`, `line_tables` | rise | *decline* after t = 180 s |
+
+**No per-flush cost.** Anonymous memory plateaus by t ≈ 180 s and shows no step
+at any 60-second flush boundary: t = 180 → 660 s moves 2500.8 → 2506.1 MiB, i.e.
++0.66 MiB/min over eight minutes. The ~15 MiB step visible at t ≈ 60 s in short
+runs is part of the startup transient — class loading, JIT, first flush — not a
+recurring cost.
+
+**The startup ramp cancels between arms.** The paired delta is 104.2 MiB at
+t = 60 s and 104.33 at plateau — essentially unchanged. Sampling before the
+plateau therefore does *not* bias the delta, because both arms ramp together.
+
+**Measuring at plateau nearly eliminates estimator sensitivity**, which is the
+main methodological gain:
+
+| | 90 s runs | at plateau (t ≥ 240 s) |
+| --- | --- | --- |
+| estimator spread | 20.34 MiB | **2.69 MiB** |
+| within-run sd of the delta | — | **0.47 MiB** (n = 193 samples) |
+
+**What this run does not establish.** Its plateau delta is 104.33 MiB against a
+12-pair mean of 62.89 ± 8.34, and its residual works out at +47.6 MiB rather
+than ≈ 0. That is **not** a long-duration effect: the same gap is already present
+at t = 60 s, before the two configurations diverge in any way, so it is
+between-run variance — and 104 sits at the top of the 26–112 MiB per-pair range
+already observed. With n = 1 there is no way to separate the two, and the
+within-run sd of 0.47 MiB is *not* a substitute for a between-pair standard
+error. No overhead figure or residual should be quoted from this run; the
+12-pair result stands as the estimate.
+
 ### Further reps have limited value
 
 Paired sd is ~15 MiB, so SE = sd/√n gives ~4.2 MiB at n = 12, ~2.7 at n = 29,
@@ -322,14 +366,19 @@ folding them into "profiler cost".
    mmap'd chunks), jemalloc and tcmalloc add none.
 3. **Close the instrument blind spots** — natively created thread stacks and the
    library's resident image are invisible to both instruments.
-4. **Measure a longer workload — to test the flush step, not a leak.** The
-   within-run evidence shows no unbounded growth, and `native_symbols` is exactly
-   saturated. The open question is narrower: the paired delta steps ~15 MiB at the
-   first JFR chunk flush, and a 90 s run contains only one or two flushes. A
-   10–30 minute run would show whether that step is one-time (a fixed cost of
-   reaching serialization) or recurs per flush, which is the difference between a
-   constant overhead and a growing one.
-5. **Confirm `-XX:+AlwaysPreTouch` with a 2×2 interleaved design** (pretouch and
+4. ~~Measure a longer workload to test the flush step.~~ **Done** — see
+   [Long-run behaviour](#long-run-behaviour). No leak, no per-flush growth,
+   plateau by t ≈ 180 s. **Adopt ~5-minute runs sampled at t ≥ 240 s** for future
+   measurement: that reaches plateau, where estimator spread falls from 20.3 to
+   2.7 MiB, while keeping 12 pairs affordable (~2 h rather than the ~8 h that
+   20-minute pairs would cost).
+5. **Attack between-run variance — now the dominant uncertainty.** Per-pair
+   deltas span 26–112 MiB while the within-run delta is stable to 0.47 MiB, so
+   the variance lives in run-level factors (host state, JIT decisions, container
+   placement), not in sampling. It exceeds every term in the reconciliation, so
+   until it is reduced or averaged down, no refinement of the counters will
+   sharpen the headline figure.
+6. **Confirm `-XX:+AlwaysPreTouch` with a 2×2 interleaved design** (pretouch and
    no-pretouch alternating within one window). It is already the recommended
    default on the strength of estimator-independence; what remains is to check
    whether the apparent precision cost is real or a cross-window artifact.
