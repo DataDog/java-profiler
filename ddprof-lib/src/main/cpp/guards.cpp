@@ -37,21 +37,30 @@ void blockProfilingForExit() {
 
 int getInSignalDepth() {
     ProfiledThread *pt = ProfiledThread::current();
-    return pt != nullptr ? static_cast<int>(pt->signalDepth()) : 0;
+    // Deliberately returns the raw counter, negative values included, so a
+    // pairing bug is visible to tests and diagnostics rather than clamped away.
+    int depth = pt != nullptr ? pt->signalDepth() : 0;
+    assert(depth >= 0 && "Mismatched signal scope");
+    return depth;
 }
 
 bool isInTrackedSignalContext() {
     ProfiledThread *pt = ProfiledThread::current();
-    // null ProfiledThread = no thread context;
-    // the SignalHandlerScope never ran, so we have no positive evidence
-    // of a signal frame.
+    // null ProfiledThread = no thread context; the SignalHandlerScope
+    // never ran, so we have no positive evidence of a signal frame.
+
     // See header comment for the rationale of returning false here.
-    return pt != nullptr && pt->signalDepth() != 0;
+    // `> 0` rather than `!= 0`: a negative depth is a pairing bug (an
+    // unmatched signalHandlerUnwindAfterLongjmp()), not evidence of being in
+    // a signal handler, and must not pin dlopen_hook to the deferred-refresh
+    // path for the rest of the thread's life.
+    return pt != nullptr && pt->signalDepth() > 0;
 }
 
 SignalHandlerScope::SignalHandlerScope(bool shouldRunPriming) : _current(nullptr), _active(true) {
     ProfiledThread *pt = shouldRunPriming ? ProfiledThread::acquireCurrent() : ProfiledThread::current();
     if (pt != nullptr) {
+        DEBUG_ONLY(_signal_depth = pt->signalDepth();)
         _current = pt;
         pt->enterSignalScope();
     } else {
@@ -62,16 +71,14 @@ SignalHandlerScope::SignalHandlerScope(bool shouldRunPriming) : _current(nullptr
 }
 
 SignalHandlerScope::~SignalHandlerScope() {
-    if (!_active) return;
-    if (_current != nullptr) {
-        _current->exitSignalScope();
-    }
+    release();
 }
 
 void SignalHandlerScope::release() {
     if (!_active) return;
     if (_current != nullptr) {
         _current->exitSignalScope();
+        DEBUG_ONLY(assert(_signal_depth == _current->signalDepth());)
     }
     _active = false;
 }
@@ -82,7 +89,6 @@ void signalHandlerUnwindAfterLongjmp() {
         pt->exitSignalScope();
     }
 }
-
 
 CriticalSection::CriticalSection(ProfiledThread* pt) : _entered(false), _thread_ptr(pt) {
     // acquireCurrent() falls back to ThreadLocalDataPool::acquire() (a

@@ -23,6 +23,7 @@
 #include <signal.h>
 #include <pthread.h>
 
+#include "common.h"
 #include "counters.h"
 
 class ProfiledThread;
@@ -95,6 +96,7 @@ public:
 private:
     ProfiledThread* _current;
     bool _active;
+    DEBUG_ONLY(int _signal_depth;)
 };
 
 // Shared drop-path body for the SIGNAL_HANDLER_GUARD_OR_DROP* macros below.
