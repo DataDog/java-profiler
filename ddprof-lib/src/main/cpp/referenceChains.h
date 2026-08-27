@@ -830,6 +830,23 @@ private:
   u32 _candidate_referrer_klasses[MAX_LEAK_CANDIDATES_FROM_LT];
   u32 _candidate_depths[MAX_LEAK_CANDIDATES_FROM_LT];
 
+  // Auto-marked instances: when the BFS walk discovers ANY object whose
+  // class matches a watched leak class (not just the pre-tagged
+  // representative), its frontier tag is recorded here so pollWatchedTargets()
+  // can build chain events for all of them. A leaking class typically has
+  // many live instances, and each one's reference chain is independently
+  // useful for diagnosis — the pre-tagged representative is just one sample,
+  // and its chain may differ from other instances' chains (different parents,
+  // different retention paths). Fixed-size per slot to avoid heap allocation
+  // in the callback (safepoint context). When the per-slot array fills,
+  // further instances are silently dropped (the representative + up to
+  // MAX_DISCOVERED_INSTANCES_PER_CLASS others is still far more coverage
+  // than the single-representative design it replaces).
+  static constexpr int MAX_DISCOVERED_INSTANCES_PER_CLASS = 8;
+  jlong _candidate_discovered_tags[MAX_LEAK_CANDIDATES_FROM_LT]
+                                   [MAX_DISCOVERED_INSTANCES_PER_CLASS];
+  int _candidate_discovered_count[MAX_LEAK_CANDIDATES_FROM_LT];
+
   // klass_ids from LivenessTracker::topKlassesByGenerationCount() (a faster,
   // un-hysteresis-gated ranking than the canary candidate set above - see
   // that method's own comment), refreshed once per BFS-thread tick but only

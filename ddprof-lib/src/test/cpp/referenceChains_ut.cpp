@@ -98,6 +98,7 @@ public:
         t->_passes_since_last_progress = 0;
         t->_candidate_count = 0;
         t->_candidate_found_bits = 0;
+        memset(t->_candidate_discovered_count, 0, sizeof(t->_candidate_discovered_count));
         t->_passes_since_last_candidate_progress = 0;
         t->_last_candidate_progress_mark = 0;
         t->_canary_stuck_restart_count = 0;

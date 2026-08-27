@@ -454,6 +454,7 @@ Error ReferenceChainTracker::start(Arguments &args) {
   _effective_cadence_ns = PASS_CADENCE_NS;
   _candidate_count = 0;
   _candidate_found_bits = 0;
+  memset(_candidate_discovered_count, 0, sizeof(_candidate_discovered_count));
   _passes_since_last_candidate_progress = 0;
   _last_candidate_progress_mark = 0;
   _canary_stuck_restart_count = 0;
@@ -1173,7 +1174,7 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   _static_field_sweep_cycle_truncated = false;
   _candidate_count = 0;
   _candidate_found_bits = 0;
-  // _candidate_tags will be filled by pre-tagging in pollWatchedTargets().
+  memset(_candidate_discovered_count, 0, sizeof(_candidate_discovered_count));
   // _candidate_parent_tags/_candidate_referrer_klasses/_candidate_depths
   // will be filled at pruning time.
   // across a production restart, a test reset starts from a blank cache so
@@ -1783,6 +1784,29 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
       // hop-cap check above already returned before this branch, and
       // *tag_ptr == 0 rules out ALREADY_ADMITTED) - nothing further to do.
       break;
+    }
+    // Auto-mark: if this object's class matches a watched leak class,
+    // record its frontier tag so pollWatchedTargets() can build a chain
+    // event for it. A leaking class typically has many live instances,
+    // and each one's reference chain is independently useful — the
+    // pre-tagged representative is just one sample, and its representative
+    // may change (LRU-evicted) between polls. Recording all discovered
+    // instances ensures we emit chain events for all of them, not just
+    // whichever single object happened to be the representative when the
+    // canary slot was first filled. See _candidate_discovered_tags's own
+    // comment.
+    if (result == ReferenceChainTracker::AdmitResult::ADMITTED &&
+        ctx->tracker->_candidate_count > 0) {
+      u32 klass_id = ctx->tracker->classTags()->resolve(class_tag);
+      for (int s = 0; s < ctx->tracker->_candidate_count; s++) {
+        if (ctx->tracker->_candidate_klass_ids[s] == klass_id &&
+            ctx->tracker->_candidate_discovered_count[s] <
+                ReferenceChainTracker::MAX_DISCOVERED_INSTANCES_PER_CLASS) {
+          ctx->tracker->_candidate_discovered_tags[s]
+              [ctx->tracker->_candidate_discovered_count[s]++] = *tag_ptr;
+          break;
+        }
+      }
     }
   }
 
@@ -3491,8 +3515,8 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
       }
       _candidate_count = 0;
       _candidate_found_bits = 0;
+      memset(_candidate_discovered_count, 0, sizeof(_candidate_discovered_count));
       _passes_since_last_candidate_progress = 0;
-      _last_candidate_progress_mark = 0;
     }
     // Only CANARY_STUCK should keep escalating canaryStuckPassLimit() -
     // any other terminal reason (natural completion, all candidates found,
@@ -3918,8 +3942,56 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
         cacheResolvedChain(klass_id, std::move(event), tag, current_search_ns);
       }
     }
-    // tag == 0: not yet discovered by any pass - retry on the next poll,
-    // once a pass has had a chance to reach it (this method's own comment).
+    // tag == 0: The representative object has no tag. Two cases:
+    //   (a) The walk hasn't reached it yet — retry on the next poll.
+    //   (b) The representative changed (LRU-evicted since the marker tag
+    //       was set on the old one) — the new representative has no marker
+    //       tag. Re-tag it so the canary mechanism can find it on the next
+    //       walk pass. This is critical for classes like [B where many
+    //       instances are leaking and the representative keeps changing.
+    if (tag == 0) {
+      // Find the slot for this klass_id and re-tag the new representative.
+      for (int s = 0; s < _candidate_count; s++) {
+        if (_candidate_klass_ids[s] == klass_id) {
+          jlong marker_tag = MARKER_TAG_BASE - s;
+          jvmti->SetTag(obj, marker_tag);
+          TEST_LOG("ReferenceChainTracker::pollWatchedTargets re-tagged "
+                   "candidate[%d] klass_id=%u slot=%d (representative changed)",
+                   i, klass_id, s);
+          break;
+        }
+      }
+    }
+
+    // Build chain events for auto-marked discovered instances of this class.
+    // These are objects the BFS walk admitted whose class matched this
+    // candidate slot — each one has a frontier tag and a chain in the
+    // frontier table. We build chain events for all of them (up to
+    // MAX_DISCOVERED_INSTANCES_PER_CLASS) so the JFR output includes
+    // chains for all leaking instances, not just the representative.
+    for (int s = 0; s < _candidate_count; s++) {
+      if (_candidate_klass_ids[s] != klass_id) continue;
+      for (int d = 0; d < _candidate_discovered_count[s]; d++) {
+        jlong disc_tag = _candidate_discovered_tags[s][d];
+        if (disc_tag == 0) continue;
+        _resolved_chains_lock.lock();
+        bool need_disc = (_resolved_chains.find(klass_id) == _resolved_chains.end());
+        _resolved_chains_lock.unlock();
+        if (!need_disc) break; // already have a chain for this class
+        ReferenceChainEvent event;
+        bool built = buildChainEvent(disc_tag, &event);
+        if (built) {
+          event._start_time = TSC::ticks();
+          cacheResolvedChain(klass_id, std::move(event), disc_tag,
+                              current_search_ns);
+          TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
+                   "auto-marked chain for klass_id=%u tag=%lld",
+                   klass_id, (long long)disc_tag);
+          break; // one chain per class is enough for the cache
+        }
+      }
+      break;
+    }
 
     jni->DeleteLocalRef(obj);
   }
