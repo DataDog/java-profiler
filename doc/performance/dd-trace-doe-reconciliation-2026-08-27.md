@@ -1,8 +1,16 @@
 # dd-trace-doe memory reconciliation, 27 Aug 2026
 
-**Headline: the profiler's RSS overhead on this workload is 4.6–5.2 % of total
-process RSS (≈ 75–84 MiB against a ≈ 1636 MiB baseline), and roughly 15–28 MiB
-of it is still unexplained.**
+**Headline: the profiler's RSS overhead on this workload is 3.9–4.3 % of total
+process RSS (≈ 64–71 MiB against a ≈ 1630 MiB baseline). The unexplained
+residual is +4.6 to +11.1 MiB — statistically indistinguishable from zero, but
+also indistinguishable from ~15 MiB, because RSS measurement noise (± 8.5 MiB)
+now dominates.**
+
+> **Superseded figures.** An earlier draft of this report put the residual at
+> 15–28 MiB. That came from pairing conditions measured in *separate* windows,
+> which the interleaved re-run below shows was biased. The interleaved,
+> counterbalanced measurement is authoritative; the 15–28 range should not be
+> quoted. See "Interleaved re-run" for what changed and why.
 
 This *reverses* the reconciliation reported earlier in this investigation. A
 12-pair run had shown a residual of +2.1 ± 4.5 MiB (3 % of the RSS delta,
@@ -101,6 +109,80 @@ narrow the residual.
 
 ---
 
+## Interleaved re-run — the authoritative measurement
+
+The block design above measured the two conditions in separate windows, leaving
+the RSS delta ambiguous between 74.6 and 84.3 MiB. The re-run alternates the
+conditions **within one window**, so drift cannot land preferentially on one arm,
+and **counterbalances the within-pair order** (pair 1: profiling first; pair 2:
+tracing-only first; …) so any ordering effect cancels instead of biasing.
+
+Two further changes: `loops_num`/`allocs_num` are pinned to the values
+calibration produced (`loops_cpu`/`allocs_cpu` = 0), which removes 24 calibration
+containers **and** a confound — previously each arm calibrated independently, so
+the two could run slightly different workloads. All other archetype parameters
+are unchanged, and NMT is still captured 30 s after container start.
+
+Reconciliation is computed as **per-pair differences**, not as a difference of
+independently measured means.
+
+| | n = 12 (all) | n = 10 (JIT spikes excluded) |
+| --- | --- | --- |
+| RSS paired delta | 70.62 ± 8.39 | 63.84 ± 8.45 |
+| NMT paired delta | 30.95 ± 2.30 | 27.55 ± 0.19 |
+| — of which `Arena Chunk` | 4.31 ± 2.23 | 1.10 ± 0.64 |
+| NativeMem raw | 24.926 ± 0.006 | 24.929 ± 0.007 |
+| NativeMem corrected (live basis) | 28.57 | 28.57 |
+| NativeMem corrected (peak basis) | 31.72 | 31.73 |
+| **residual, live basis** | **+11.10 ± 8.70** (15.7 %) | **+7.72 ± 8.45** (12.1 %) |
+| **residual, peak basis** | **+7.95 ± 8.70** (11.3 %) | **+4.56 ± 8.45** (7.1 %) |
+| overhead vs tracing-only RSS | 4.34 % | 3.92 % |
+
+Every variant is within ~1.3 σ of zero (0.54–1.28 σ). **The residual is no longer
+statistically demonstrable** — but neither is its absence, and that is the honest
+statement.
+
+### Two effects the interleaving exposed
+
+**A within-pair ordering bias of ≈ 7.1 MiB.** Pairs where profiling ran first
+gave a mean delta of 77.73 MiB; pairs where tracing-only ran first gave 63.50 —
+a 14.23 MiB swing, i.e. the *first* run in a pair carries ≈ 7.1 MiB more RSS
+regardless of which arm it is. Counterbalancing cancelled it exactly (the
+12-pair mean, 70.62, is the midpoint of the two orders to 0.01 MiB). Every
+earlier design absorbed this bias silently.
+
+**Transient JIT compiler arenas, ≈ 20 MiB, in 2 of 12 pairs.** Pairs 4 and 7
+showed NMT committed ~20 MiB above an otherwise very tight cluster
+(2325.8–2327.4 MiB). The cause is `Arena Chunk`: 26,139 KB and 25,497 KB against
+~5,115 KB normally — the snapshot landed mid-compilation. These are the same two
+pairs with the largest RSS deltas (96.6 and 112.5 MiB), so **the two instruments
+moved together**, which cross-validates them: those RSS outliers are real
+transient memory, not measurement error. The memory is JIT activity unrelated to
+the profiler, which happened to hit the profiling arm twice.
+
+Excluding those two pairs (one odd, one even, so the counterbalance is preserved)
+collapses NMT's paired SE from 2.30 to **0.19 MiB** — the `Arena Chunk` transient
+was essentially the *entire* source of NMT noise. Both variants are reported
+above rather than choosing one, because the exclusion is justified by an
+independently identified mechanism, not by the points being inconvenient.
+
+### What now limits the answer
+
+RSS noise, not accounting. The paired delta's sd is 26.7 MiB even with the JIT
+spikes removed; per-pair deltas ranged 26–112 MiB. Since SE = sd/√n:
+
+| target SE | pairs needed |
+| --- | --- |
+| 8.45 MiB (current) | 10 |
+| 5 MiB | 29 |
+| 3 MiB | 79 |
+| 2 MiB | 178 |
+
+Distinguishing a 5 MiB residual from zero needs ~79 pairs (≈ 11 h of runs).
+`-XX:+AlwaysPreTouch` was the obvious lever on per-run RSS variance and it made
+things *worse* (see Conditions). So the practical options are more reps, or a
+lower-variance RSS instrument — not further correction factors.
+
 ## Where the profiler's own memory goes
 
 Live bytes by category, mean of 12 reps, fixed counter:
@@ -185,8 +267,11 @@ rather than folded into "profiler cost". Under tcmalloc or jemalloc (both
 selectable in dd-trace-doe via `allocator=`) they would behave differently, and
 that difference should be visible.
 
-1. **Re-run both conditions interleaved** in one window — cheapest way to
-   remove the cross-time pairing weakness and narrow the residual.
+1. ~~Re-run both conditions interleaved.~~ **Done** — see "Interleaved re-run".
+   It narrowed the residual to +4.6…+11.1 MiB and exposed a 7.1 MiB ordering
+   bias. Any future re-measurement should keep the counterbalanced interleaving
+   and the pinned `loops_num`/`allocs_num`; the harness is committed as
+   `memsweep/run_doe_interleaved.sh`.
 2. **Fold chunk overhead in exactly, per allocation** via
    `malloc_usable_size()`, replacing the ×1.17 average; report it per category,
    since `method_map` pays 16.7 % (96 B requested → 112 B real) while
