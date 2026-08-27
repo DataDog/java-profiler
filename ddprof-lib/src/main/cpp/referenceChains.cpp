@@ -3906,8 +3906,10 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
                               current_search_ns);
         }
       }
-      jni->DeleteLocalRef(obj);
-      continue;
+      // Fall through to discovered-instances check below — the canary
+      // representative may not have been reached by BFS yet, but other
+      // instances of the same class may have been admitted and their
+      // chains can be built now.
     }
 
     // Normal (non-canary) path: tag > 0 means the walk visited this
@@ -3969,28 +3971,32 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
     // frontier table. We build chain events for all of them (up to
     // MAX_DISCOVERED_INSTANCES_PER_CLASS) so the JFR output includes
     // chains for all leaking instances, not just the representative.
-    for (int s = 0; s < _candidate_count; s++) {
-      if (_candidate_klass_ids[s] != klass_id) continue;
-      for (int d = 0; d < _candidate_discovered_count[s]; d++) {
-        jlong disc_tag = _candidate_discovered_tags[s][d];
-        if (disc_tag == 0) continue;
-        _resolved_chains_lock.lock();
-        bool need_disc = (_resolved_chains.find(klass_id) == _resolved_chains.end());
-        _resolved_chains_lock.unlock();
-        if (!need_disc) break; // already have a chain for this class
-        ReferenceChainEvent event;
-        bool built = buildChainEvent(disc_tag, &event);
-        if (built) {
-          event._start_time = TSC::ticks();
-          cacheResolvedChain(klass_id, std::move(event), disc_tag,
-                              current_search_ns);
-          TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
-                   "auto-marked chain for klass_id=%u tag=%lld",
-                   klass_id, (long long)disc_tag);
-          break; // one chain per class is enough for the cache
+    // This runs for BOTH the canary and non-canary paths: the canary
+    // representative may not have been reached by BFS yet, but other
+    // instances of the same class may have been admitted already.
+    _resolved_chains_lock.lock();
+    bool no_chain_cached = (_resolved_chains.find(klass_id) == _resolved_chains.end());
+    _resolved_chains_lock.unlock();
+    if (no_chain_cached) {
+      for (int s = 0; s < _candidate_count; s++) {
+        if (_candidate_klass_ids[s] != klass_id) continue;
+        for (int d = 0; d < _candidate_discovered_count[s]; d++) {
+          jlong disc_tag = _candidate_discovered_tags[s][d];
+          if (disc_tag == 0) continue;
+          ReferenceChainEvent event;
+          bool built = buildChainEvent(disc_tag, &event);
+          if (built) {
+            event._start_time = TSC::ticks();
+            cacheResolvedChain(klass_id, std::move(event), disc_tag,
+                                current_search_ns);
+            TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
+                     "auto-marked chain for klass_id=%u tag=%lld",
+                     klass_id, (long long)disc_tag);
+            break;
+          }
         }
+        break;
       }
-      break;
     }
 
     jni->DeleteLocalRef(obj);
