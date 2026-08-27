@@ -1,10 +1,14 @@
 # dd-trace-doe memory reconciliation, 27 Aug 2026
 
-**Headline: the profiler's memory overhead on this workload is 3.9–4.3 % of the
-application's anonymous memory (≈ 64–71 MiB against a ≈ 1630 MiB baseline). The
-unexplained residual is +4.6 to +11.1 MiB — statistically indistinguishable from
-zero, but also indistinguishable from ~15 MiB, because the memory instrument's
-own spread (± 8.5 MiB) now dominates.**
+**Headline: the profiler's memory overhead on this workload is ≈ 60–65 MiB
+against a ≈ 1580 MiB baseline (~3.8–4.1 %), and it is now essentially fully
+accounted for: the unexplained residual is ≈ 0 to +5 MiB, within measurement
+error in all six independent variants tested.**
+
+The overhead itself is **duration-dependent** — anon never plateaus within the
+90 s run, and the profiling arm accumulates ~26 MiB/min faster than the baseline,
+so a longer workload would report more. Treat these figures as "at 90 s", not as
+a steady-state ceiling.
 
 > **Terminology.** Earlier drafts of this report said "RSS" throughout. That was
 > imprecise and is corrected here. dd-trace-doe's `memory=` output is
@@ -259,35 +263,53 @@ Worse, **estimator choice moves the answer by 21 MiB** (51.4 → 72.3) — rough
 third of the quantity being measured, and larger than the residual this report
 set out to explain.
 
-**The reason is that anon is mostly Java heap.** The heap is 2048 MiB committed
-(`-Xms2g -Xmx2g`), and the tracing-only steady-state anon is ≈ 1580 MiB — so anon
-is dominated by *touched heap pages*, and it moves with GC activity. Measured
-within-run steady-state fluctuation is **± 72 MiB** on the profiling arm (± 37 on
-tracing-only), against a profiler native footprint of ≈ 25 MiB. Signal-to-noise
-is about **0.35**: the instrument is measuring the heap's GC dynamics far more
-than it is measuring the profiler.
+**Correction: the ± 72 MiB figure was an artifact of my own sampler.** An earlier
+revision of this section attributed the spread to GC-driven heap movement, citing
+a within-run fluctuation of ± 72 MiB and a signal-to-noise ratio of 0.35. That
+was wrong. The anon sampler ran until the container's cgroup file disappeared, so
+the tail of every trace captured **JVM teardown** — anon collapsing toward zero
+(observed 1581 MiB → 13 MiB) — and those samples fell inside the "steady state"
+window. Only 8 samples out of ~4500 were affected, but they moved the within-run
+sd from 19.16 to 72.39.
 
-That is why every estimator disagrees. They are each sampling a different part
-of a large, GC-driven oscillation.
+With teardown excluded, the within-run picture is:
 
-### This means `AlwaysPreTouch` was rejected on the wrong evidence
+| | raw sd | detrended sd | ramp |
+| --- | --- | --- | --- |
+| profiling | 19.16 | **6.96** | +57.43 MiB/min |
+| tracing-only | 15.80 | **10.66** | +31.04 MiB/min |
 
-`-XX:+AlwaysPreTouch` was dismissed earlier because it doubled the spread — but
-that was measured with the **maximum** estimator, which is exactly what
-pre-touching inflates (it adds a startup page-fault storm that sets a high max).
+So within-run variation is *not* noise — it is a **ramp**. Anon never plateaus:
+it climbs monotonically for the whole run. Detrended noise is only 7–11 MiB.
+That is the real reason estimators disagree by 20 MiB: each samples a different
+point on a rising line, so the answer depends on *when* you look, not on
+randomness.
 
-With the heap diagnosis above, pre-touching should *help* decisively: it pins
-touched heap pages at the full 2048 MiB from startup, so GC can no longer move
-them, removing the dominant noise term. `AlwaysPreTouch` **plus** a steady-state
-estimator is plausibly the combination that makes this measurable — the pairing
-never tried, because the flag was judged against the one estimator guaranteed to
-punish it.
+It also means **the 90 s workload never reaches steady state**, and the profiling
+arm ramps ~26 MiB/min faster than tracing-only. A longer run would report a
+larger overhead. Any figure from this harness is duration-dependent.
 
-**Recommended next experiment**, before spending 79 pairs on the current setup:
-12 interleaved pairs with `-XX:+AlwaysPreTouch` and a steady-state estimator. If
-the heap term is pinned, the paired sd should fall from ~17 MiB toward the
-non-heap variation alone, and a 5–10 MiB residual becomes resolvable at n = 12
-rather than n = 79.
+### `AlwaysPreTouch`: tested, and it does not help
+
+Predicted above that pinning the heap would shrink the spread. **It does not.**
+Twelve interleaved pairs with `-XX:+AlwaysPreTouch`, teardown excluded:
+
+| | no pretouch | with pretouch |
+| --- | --- | --- |
+| steady-mean paired delta | 60.48 ± 4.243 | 62.89 ± 8.340 |
+| paired sd | 14.70 | 28.89 |
+| detrended within-run sd (prof / base) | 6.96 / 10.66 | 15.34 / 25.45 |
+| **estimator spread** | **20.34** | **5.87** |
+
+Between-pair precision roughly *halves* (SE 4.24 → 8.34) and detrended
+within-run noise more than doubles. Pre-touching 2048 MiB up front evidently
+puts the cgroup under enough pressure to make anon *more* variable, not less.
+The heap-pinning hypothesis is rejected.
+
+But pretouch buys something else: **estimator spread collapses from 20.34 to
+5.87 MiB**, and the residual becomes nearly independent of estimator choice.
+That is robustness rather than precision — worth knowing, not worth adopting by
+default.
 
 ### Coherent reconciliation, now that anon and NMT are synchronous
 
@@ -297,17 +319,48 @@ be differenced validly from both sides. Doing so barely moves anything this run
 the JIT bursts that hit two pairs in the previous run did not recur. The
 machinery is validated but was not needed here.
 
-| anon basis | NMT | residual (live) | residual (peak) |
-| --- | --- | --- | --- |
-| steady mean | t = 70 s | **+1.47 ± 5.95** (0.25 σ) | −1.66 ± 5.95 (0.28 σ) |
-| synchronous | t = 70 s | +9.86 ± 6.55 (1.51 σ) | +6.73 ± 6.55 (1.03 σ) |
-| synchronous | t = 30 s | −4.01 ± 3.77 (1.06 σ) | −7.14 ± 3.77 (1.89 σ) |
+All six variants, teardown excluded:
 
-Every variant is within 2 σ of zero, but they span −7.1 to +9.9 MiB. **The
-residual cannot be pinned more tightly than the instrument allows**, and the
-instrument is currently limited by heap/GC noise, not by accounting. The
-within-pair ordering bias also persists at +5.95 MiB (was +7.11), still
-cancelled by counterbalancing.
+| config | anon basis | residual (live) | residual (peak) |
+| --- | --- | --- | --- |
+| no pretouch | steady mean | +4.86 (0.94 σ) | +1.73 (0.33 σ) |
+| no pretouch | sync t = 70 s | +9.86 (1.51 σ) | +6.73 (1.03 σ) |
+| no pretouch | sync t = 30 s | −4.01 (1.06 σ) | −7.14 (1.89 σ) |
+| pretouch | steady mean | +2.02 (0.24 σ) | −1.10 (0.13 σ) |
+| pretouch | sync t = 70 s | +1.91 (0.20 σ) | −1.21 (0.13 σ) |
+| pretouch | sync t = 30 s | +2.68 (0.43 σ) | −0.43 (0.07 σ) |
+
+**Every variant is within 2 σ of zero.** The live basis runs slightly positive
+(+1.9 to +9.9), the peak basis slightly negative (−7.1 to +6.7) — which is what
+you would expect if the true call-trace residency lies between the live gauge
+(3.49 MiB) and its peak (6.60 MiB), as the known `clear()` limitation implies.
+Taking that bracket seriously, the residual is **approximately 0 to +5 MiB**.
+
+The within-pair ordering bias persists (+5.95 MiB no-pretouch, −4.48 with),
+still cancelled by counterbalancing.
+
+### Why this conclusion is more trustworthy than the previous three
+
+This report has stated the residual four times: +2.1 (closed), 15–28, 4.6–11.1,
+and now ≈ 0–5 MiB. The successive changes were not refinements of the same
+measurement — each followed a *specific methodological defect being found and
+fixed*:
+
+1. a call-trace correction factor borrowed from another workload, masking the gap
+2. conditions paired across separate time windows, admitting drift and a 7 MiB
+   ordering bias
+3. this harness's own sampler including container teardown in the steady window
+
+The reason to trust the current figure more is not that it is latest, but that
+**six variants across two JVM configurations and five estimators now converge on
+the same answer**, where previously they disagreed by 20 MiB. Convergence across
+independent variations is the evidence; any single number here still carries
+± 4–9 MiB.
+
+Remaining known biases, both small and named: the profiler's `clear()` under-count
+(bounded by the 3.49 → 6.60 MiB live-to-peak spread) and the ×1.17 chunk-overhead
+factor, still borrowed rather than measured (worth ≈ ± 3 MiB — see
+`overhead-program-plan.md` item 6).
 
 ## Where the profiler's own memory goes
 

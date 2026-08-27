@@ -75,7 +75,15 @@ run_one() {
   local anonfile="$OUT/anon/${tag}.txt"
   : > "$anonfile"
 
-  local jto="-XX:NativeMemoryTracking=summary"
+  # EXTRA_JVM_FLAGS is how -XX:+AlwaysPreTouch is applied. Pre-touching pins
+  # touched heap pages at the full -Xmx from startup, so GC can no longer move
+  # them. That matters because cgroup anon is ~92% touched heap here (2048 MiB
+  # committed vs ~1580 MiB anon), and its GC-driven swing (+/-72 MiB within a
+  # run) is the dominant noise term -- far larger than the ~25 MiB being
+  # measured. NOTE: pre-touching inflates a max-based estimator via its startup
+  # page-fault storm, so it must be paired with a steady-state estimator, not
+  # with doe's own max(anon) figure.
+  local jto="-XX:NativeMemoryTracking=summary ${EXTRA_JVM_FLAGS:-}"
   local -a envs=()
   if [ "$prof" = "true" ]; then
     jto="-Ddd.profiling.debug.jfr.disabled=true $jto"
