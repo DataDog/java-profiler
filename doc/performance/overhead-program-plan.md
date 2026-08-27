@@ -528,3 +528,60 @@ breakdown illustrates — the biggest memory lever might not be
    only dimension far enough along to make this decision concretely.
 5. Scope Phase 3's telemetry additions against what's already technically
    adjacent to existing counters, to estimate effort before committing.
+6. **Make the allocator's own overhead measurable instead of corrected for.**
+   Agreed design, not yet implemented. `NM_CALLTRACE` has already been fixed
+   at source (it now counts bump-allocated bytes rather than reserved chunk
+   capacity — see `memory-sweep-results-linux.md`), which removes the ×0.829
+   residency factor. The two remaining correction factors are both properties
+   of the *allocator*, not of the profiler, and should be surfaced as such —
+   under tcmalloc or jemalloc (both selectable in dd-trace-doe via
+   `allocator=`) they would behave differently, and that difference should be
+   visible rather than folded into a constant:
+   - **Per-category chunk overhead, as its own counter.** Capture
+     `malloc_usable_size(p)` at record time and report the overhead
+     *separately* from logical bytes, so `native_mem_live_bytes` stays
+     comparable against `sizeof()` arithmetic. Keep it per-category: that is
+     where the actionable signal lives (`MethodMap` is 96 B requested → 104
+     usable → 112 real, 16.7 %, while large-allocation categories round to
+     ~0 %; an aggregate hides exactly the ratio that motivates flattening).
+     This replaces the blanket ×1.17.
+   - **Runtime allocator detection** driving the header term: glibc adds 8 B
+     per normal chunk (16 B for mmap'd, ≳128 KB), while jemalloc and tcmalloc
+     have no per-object header at all — size-class metadata is out-of-band, so
+     footprint ≈ `usable`. Hardcoding +8 would invent ~5.2 MB of overhead that
+     does not exist on those allocators at the ~650,000-live-allocation scale
+     measured here. The header cannot simply be dropped either: of the
+     measured 10.4 B/alloc mean overhead, ~8 B is header and only ~2.4 B is
+     16-byte alignment rounding. Probe via `dlsym` and emit the detected
+     allocator name alongside the counters.
+   - **Process-wide arena waste from `mallinfo2()`**, sampled on the JFR flush
+     path only (it takes arena locks; never async-signal-safe). Report it
+     honestly as *process-wide allocator overhead*, NOT as profiler cost:
+     free-but-held arena pages are mostly other subsystems' chunks stranded by
+     interleaving, so they are not attributable to any profiler allocation.
+     Together with the profiler-only counters this yields a bracket — lower
+     bound = profiler counters + chunk overhead; upper bound = that plus
+     `fordblks` (worst case, every retained free byte in the process blamed on
+     the profiler). Wide, but rigorous and honestly labelled.
+
+   Rejected alternatives, with reasons: an *arithmetic estimate* of arena
+   slack (it is a function of allocation history and arena/thread assignment,
+   not of current live state — measured SE 3.0 on a mean of 7.6 MiB, range
+   −7.2 to +17.2, sign-changing, so no formula over current state can predict
+   it); *proportional attribution* of process slack by the profiler's share of
+   live bytes (assumes slack accrues uniformly per byte, but it depends on
+   size-class mix, and the profiler's ~83 B mean profile differs sharply from
+   the JVM's — systematically wrong in an unknown direction); and using
+   `max − live` as an upper bound on stranded profiler bytes (empirically
+   fails by ~500×: the fixed build shows `max − live` = 0.015 MiB against
+   measured arena slack of +7.6 MiB, because the slack consists of bytes the
+   profiler never owned).
+
+   Before landing: benchmark `malloc_usable_size` on the `CountingAllocator`
+   path rather than assuming it is free. The `NM_CALLTRACE` work is the
+   cautionary precedent — `record()` looked like a cheap relaxed atomic add,
+   but its peak-update CAS turned out to be 7.4 ns of a 13 ns increase.
+   Open when picking this up: whether `keepcost` deserves separate reporting
+   (it separates glibc's trim-threshold retention from genuine fragmentation),
+   and whether to emit `fordblks` from the tracing-only side too, so the
+   paired-delta attribution is visible.

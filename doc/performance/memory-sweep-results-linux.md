@@ -518,6 +518,78 @@ one run the kernel merged an 8 MiB `safeAlloc` chunk into a 71.9 MiB anonymous
 region. The malloc-vs-smaps check above carries the argument precisely because
 it is unaffected by that.
 
+### `NM_CALLTRACE`: counting residency at source instead of correcting for it
+
+Mechanism 3 above (`NM_CALLTRACE` reports capacity, not residency) was a
+*counter* bug, not a memory bug, and it is now fixed at source rather than
+corrected after the fact.
+
+`LinearAllocator::allocateChunk()` recorded the whole `CALL_TRACE_CHUNK`
+(8 MiB, `callTraceHashTable.cpp`) into `NM_CALLTRACE` the instant the chunk was
+`mmap`'d — before any byte in it was touched. Chunks are then filled
+incrementally by `alloc()`'s bump pointer, and `reserveChunk()` eagerly
+reserves the *next* chunk once the current one crosses 50 % fill, so at any
+snapshot at least one fully-counted chunk was mostly or entirely untouched.
+The counter therefore moved in 8 MiB steps regardless of real use.
+
+The fix moves the accounting into `alloc()`, recording exactly the bytes handed
+out. Because the bump pointer advances monotonically and every returned pointer
+is written into immediately by its caller, cumulative bump-allocated bytes
+track touched bytes directly — no separate residency measurement, and no
+correction factor. `freeChunk()`/`freeChunks()` decrement each chunk's consumed
+extent (captured *before* `safeFree` unmaps it), and `clear()` un-records the
+retained `_tail`'s extent explicitly, since no `freeChunk()` runs for it.
+
+**Measured, `classes` 150,000 / 60 s, same build, only the accounting differing:**
+
+| | `NM_CALLTRACE` | `live_total` |
+| --- | --- | --- |
+| capacity accounting (before) | 25,725,744 B = 24.53 MiB | 42.23 MiB |
+| residency accounting (after) | 5,642,032 B = 5.38 MiB | 23.07 MiB |
+
+Every other category was byte-identical across the pair (`dictionary`
+4,774,032; `native_symbols` 12,453,944), so the entire 19.15 MiB difference is
+this one counter. `linearAllocator_nativemem_ut.cpp` pins the new behaviour and
+fails against the old code, reporting a whole 1 MiB chunk where 12,800 B had
+been handed out.
+
+**Cost.** `alloc()` is reached only from the `key_value == 0` branch of
+`CallTraceHashTable::put()` — i.e. only for a call trace not already in the
+table; repeat samples of a known stack take `findCallTrace()` and never
+allocate. So this is a per-*distinct*-trace cost, not a per-sample one.
+Microbenchmarked on the isolated allocator (3 runs each, sd < 1 ns):
+
+| | before | after | after, peak already established |
+| --- | --- | --- | --- |
+| single-thread | 12.62 ns | 25.66 ns | 18.15 ns |
+| 8 threads, contended | 64.87 ns | 116.3 ns | ~78.3 ns |
+
+Roughly 7.4 ns of the single-thread increase is `record()`'s peak high-water
+CAS, whose comment notes it fires rarely "since `_max` is monotonic" — true for
+the old once-per-chunk call site, but during a pure-growth phase at a per-alloc
+call site every allocation sets a new high-water and the CAS fires every time.
+Real rotation makes live oscillate below an established peak, which is the
+third column. In absolute terms the per-run cost is milliseconds.
+
+**Why this beats the ×0.829 correction.** That factor was legitimately derived
+(a resident delta of +19.9 MiB against a virtual delta of exactly +24.0 MiB,
+all 9 runs) but it is a *ratio measured in one workload*. The fill ratio here
+is 5.38/24.53 ≈ 0.22, nothing like 0.83 — the fraction of reserved capacity
+actually touched depends on where in the fill/rotation cycle the chunk is
+emitted and on how many distinct traces the workload produces. A constant
+cannot carry that. Counting at source removes the need for one.
+
+**Open, and the reason this is not yet called closed:** bump-allocated bytes are
+a *lower* bound on residency. `clear()` resets `offs` and un-records, but does
+not `munmap` the retained `_tail`, so pages it already touched stay resident
+while the counter forgets them; a chunk re-filled after `clear()` re-counts
+pages that were never released. The dominant rotation path
+(`detachChunks()` → `freeChunks()`) does genuinely `munmap`, so this is bounded
+by roughly one chunk — but it has not been measured against `mincore`/smaps
+residency, and it is the remaining gap between "counts touched bytes" and
+"equals RSS". Tracking a per-chunk touched high-water (kept across `clear()`,
+dropped only on real `munmap`) would close it.
+
 ## Counter accuracy
 
 `audit_counters.py` attributes every live allocation to its call site and
