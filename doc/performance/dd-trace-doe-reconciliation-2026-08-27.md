@@ -7,9 +7,10 @@ independent variants tested.**
 
 Two caveats bound how this figure should be quoted:
 
-- **It is a 90-second figure, not a ceiling.** Anonymous memory never plateaus
-  within the run, and the profiling arm accumulates ~26 MiB/min faster than the
-  baseline. A longer workload reports more.
+- **It is a 90-second figure and a lower bound, not a ceiling.** The application
+  approaches steady state within the run but the profiler does not: at t = 70–95 s
+  the baseline has flattened to +10 MiB/min while the profiling arm is still
+  accumulating at +38.8. A long-running service would show more.
 - **It depends on how the memory instrument is read.** Different defensible
   estimators of the same data span 20 MiB (see
   [Instrument properties](#instrument-properties)).
@@ -47,11 +48,19 @@ Four design requirements, each load-bearing:
    anon collapsing toward zero (1581 → 13 MiB). Eight such samples out of ~4500
    move the apparent within-run standard deviation from 19 to 72 MiB.
    `analyse_doe_interleaved.py` truncates the trailing collapse.
-4. **Do not use `-XX:+AlwaysPreTouch`.** It halves precision — paired SE 4.24 →
-   8.34 MiB, detrended within-run noise 6.96 → 15.34 — apparently because
-   touching 2048 MiB up front puts the cgroup under enough pressure to make anon
-   *more* variable. It does collapse estimator spread (20.3 → 5.9 MiB), so it
-   buys robustness at the cost of precision; not worth adopting by default.
+4. **`-XX:+AlwaysPreTouch`: effect unresolved, do not assume either way.** A
+   12-pair run with it showed worse precision (paired SE 4.24 → 8.34 MiB) but
+   **that comparison is confounded**: the two configurations ran in separate time
+   windows (14:51–15:30 vs 15:52–16:31), which is the same cross-window flaw
+   requirement 1 exists to prevent. The variance difference is also only
+   marginally significant (F = 3.86 against 3.47 critical at n = 12). No
+   mechanism for harm is evident either — the container sets no memory limit, the
+   host had 21 GB of 63 GB free, and swap was untouched, so there is no reclaim
+   pressure to make anon more variable. Pre-touching *should* be neutral or
+   helpful on first principles. Settling it requires interleaving pretouch
+   against no-pretouch within one window (a 2×2 design), which has not been run.
+   The one robust observation: with pretouch, estimator spread collapses from
+   20.3 to 5.9 MiB.
 
 Calibration is pinned rather than re-derived: `loops_num=1712244`,
 `allocs_num=408773` with `loops_cpu`/`allocs_cpu` = 0. This removes one
@@ -166,17 +175,39 @@ records the value at the instant of each NMT snapshot. Reads come from the
 process inside the target's own cgroup and inflates the number being measured
 (1519616 vs 1257472 bytes observed).
 
-### Anonymous memory ramps; it does not plateau
+### Anonymous memory ramps; the profiler's share has not saturated at 90 s
 
-| | raw sd | detrended sd | ramp |
+| | raw sd | detrended sd | mean ramp |
 | --- | --- | --- | --- |
 | profiling | 19.16 | 6.96 | +57.43 MiB/min |
 | tracing-only | 15.80 | 10.66 | +31.04 MiB/min |
 
 Within-run variation is dominated by a monotonic climb, not by noise — detrended
-noise is only 7–11 MiB. Two consequences: the 90-second workload never reaches
-steady state, so **the overhead figure is duration-dependent**; and estimator
-choice matters because each estimator samples a different point on a rising line.
+noise is only 7–11 MiB. Estimator choice therefore matters because each estimator
+samples a different point on a rising line, not because of randomness.
+
+Splitting the ramp by window shows the two arms behaving differently:
+
+| | t = 30–50 s | t = 50–70 s | t = 70–95 s |
+| --- | --- | --- | --- |
+| tracing-only | +67.4 | +37.6 | **+10.0** MiB/min |
+| profiling | +65.4 | +92.3 | **+38.8** MiB/min |
+
+**The application approaches steady state; the profiler does not.** The baseline
+flattens to +10 MiB/min by end of run, while the profiling arm is still
+accumulating at +38.8 — roughly 29 MiB/min of ongoing divergence. That is
+consistent with `native_symbols` and `dictionary` growing as more classes and
+methods are observed, which continues for as long as the application loads
+classes. (The elevated middle window on the profiling arm is likely JFR
+chunk-flush structure rather than smooth growth.)
+
+**Consequences for how the headline figure may be used.** The comparison is valid
+and reproducible in a specific sense: both arms are sampled at the same point
+under an identical workload, so the delta is a well-defined "extra memory
+accumulated by t = 90 s", with SE 4.2 MiB. It is **not** the overhead of a
+long-running service — for that it is a *lower bound*, and the terminal ramp
+difference (~29 MiB/min) is the more informative quantity. Establishing where the
+profiler's growth saturates requires a longer run.
 
 ### Estimator sensitivity
 
@@ -265,8 +296,16 @@ folding them into "profiler cost".
    mmap'd chunks), jemalloc and tcmalloc add none.
 3. **Close the instrument blind spots** — natively created thread stacks and the
    library's resident image are invisible to both instruments.
-4. **Measure a longer workload** to quantify the duration dependence, since the
-   90 s run never reaches steady state.
+4. **Measure a longer workload.** This is now more than a caveat: the profiler is
+   still accumulating ~29 MiB/min faster than the baseline when the 90 s run ends,
+   so the headline figure is a lower bound and the saturation point is unknown.
+   A 10–30 minute run would establish whether `native_symbols` and `dictionary`
+   plateau once the class and method universe is exhausted, which is the number a
+   long-running service actually needs.
+5. **Settle `-XX:+AlwaysPreTouch` with a 2×2 interleaved design** (pretouch and
+   no-pretouch alternating within one window). The current comparison is
+   confounded across time windows, and first principles suggest pre-touching
+   should not hurt.
 
 Full design, including three rejected alternatives and why, is in
 `overhead-program-plan.md` § "Concrete next steps", item 6.
