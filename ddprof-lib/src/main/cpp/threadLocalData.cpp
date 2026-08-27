@@ -94,6 +94,16 @@ void ProfiledThread::freeValue(void* value) {
   // ProfiledThread that cannot be released - memory leak
   blockProfilingForExit();
 
+  // otel_thread_ctx_v1 is a genuine thread_local pointer (not the custom
+  // ThreadLocal above) that external OTel profilers dereference directly via
+  // its exported address (see otel_context.h). It points into this
+  // ProfiledThread's embedded OtelThreadContextRecord, which the pool
+  // release/delete below may zero, hand to a different thread, or free.
+  // Null it first -- while still running on this (dying) thread, with our
+  // own profiling signals already blocked above -- so a racing external
+  // reader observes "no context" instead of dereferencing that memory.
+  otel_thread_ctx_v1 = nullptr;
+
   ProfiledThread* pt = reinterpret_cast<ProfiledThread*>(value);
   if (!ThreadLocalDataPool::release(pt)) {
     // Sole deletion site for a ProfiledThread (invoked by the ThreadLocal
