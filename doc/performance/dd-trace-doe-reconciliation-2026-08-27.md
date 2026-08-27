@@ -7,10 +7,13 @@ independent variants tested.**
 
 Two caveats bound how this figure should be quoted:
 
-- **It is a 90-second figure and a lower bound, not a ceiling.** The application
-  approaches steady state within the run but the profiler does not: at t = 70–95 s
-  the baseline has flattened to +10 MiB/min while the profiling arm is still
-  accumulating at +38.8. A long-running service would show more.
+- **It is stable within the run, with one caveat.** The paired delta is flat at
+  ≈ 51 MiB through t = 50 s, steps up ~15 MiB at the first JFR chunk flush, then
+  is flat again within noise. There is no sign of unbounded growth: the
+  profiler's own counters grow only +1.5 MiB per chunk, `native_symbols` is
+  exactly saturated, and `calltrace` *falls* as rotation reclaims. What is not
+  established is whether the flush step recurs or grows over many more flushes
+  than a 90 s run contains.
 - **It depends on how the memory instrument is read.** Different defensible
   estimators of the same data span 20 MiB (see
   [Instrument properties](#instrument-properties)).
@@ -48,19 +51,32 @@ Four design requirements, each load-bearing:
    anon collapsing toward zero (1581 → 13 MiB). Eight such samples out of ~4500
    move the apparent within-run standard deviation from 19 to 72 MiB.
    `analyse_doe_interleaved.py` truncates the trailing collapse.
-4. **`-XX:+AlwaysPreTouch`: effect unresolved, do not assume either way.** A
-   12-pair run with it showed worse precision (paired SE 4.24 → 8.34 MiB) but
-   **that comparison is confounded**: the two configurations ran in separate time
-   windows (14:51–15:30 vs 15:52–16:31), which is the same cross-window flaw
-   requirement 1 exists to prevent. The variance difference is also only
-   marginally significant (F = 3.86 against 3.47 critical at n = 12). No
-   mechanism for harm is evident either — the container sets no memory limit, the
-   host had 21 GB of 63 GB free, and swap was untouched, so there is no reclaim
-   pressure to make anon more variable. Pre-touching *should* be neutral or
-   helpful on first principles. Settling it requires interleaving pretouch
-   against no-pretouch within one window (a 2×2 design), which has not been run.
-   The one robust observation: with pretouch, estimator spread collapses from
-   20.3 to 5.9 MiB.
+4. **Use `-XX:+AlwaysPreTouch`.** `-Xms2g -Xmx2g` fixes the heap's *committed*
+   size, but anon counts *touched* pages, so the heap's contribution is still
+   time-varying. Pre-touching makes it **constant by construction** instead of
+   assumed-small, which is the point: it removes a confound rather than bounding
+   it. The measured effects support this — with pretouch, the answer becomes far
+   less dependent on *when* you sample:
+
+   | | no pretouch | pretouch |
+   | --- | --- | --- |
+   | estimator spread | 20.34 MiB | **5.87 MiB** |
+   | residual across 6 variants, mean \|σ\| | 1.13 | **0.20** |
+   | residual across 6 variants, max \|σ\| | 1.89 | **0.43** |
+   | baseline ramp | +31.04 MiB/min | +27.71 MiB/min |
+
+   The one figure pointing the other way — paired sd 14.70 → 28.89 — is not
+   trustworthy: the two configurations ran in separate time windows (14:51–15:30
+   vs 15:52–16:31), the same cross-window flaw requirement 1 exists to prevent,
+   and the difference is only marginally significant (F = 3.86 against 3.47
+   critical at n = 12). No mechanism for harm exists either: the container sets
+   no memory limit, the host had 21 GB of 63 GB free, and swap was untouched, so
+   there is no reclaim pressure to make anon more variable.
+
+   **Still to confirm:** whether pretouch genuinely costs paired precision. That
+   needs pretouch interleaved *against* no-pretouch within one window (a 2×2
+   design). Until then, prefer pretouch for the estimator-independence, and treat
+   the sd comparison as unresolved.
 
 Calibration is pinned rather than re-derived: `loops_num=1712244`,
 `allocs_num=408773` with `loops_cpu`/`allocs_cpu` = 0. This removes one
@@ -186,28 +202,38 @@ Within-run variation is dominated by a monotonic climb, not by noise — detrend
 noise is only 7–11 MiB. Estimator choice therefore matters because each estimator
 samples a different point on a rising line, not because of randomness.
 
-Splitting the ramp by window shows the two arms behaving differently:
+**The ramp is not profiler overhead — it is shared JVM growth.** NMT's committed
+total grows +18.77 MiB between t = 30 s and t = 70 s (≈ 28 MiB/min) and that
+growth is **identical in both arms** (difference −0.00 MiB), concentrated in
+`Arena Chunk` (+14.4), `Code` (+3.3) and `Metaspace` (+0.5) — JIT compilation and
+code-cache fill. The observed baseline ramp (+31.0 MiB/min) matches it closely.
+Despite `-Xms2g -Xmx2g` fixing the heap's *committed* size, anon counts *touched*
+pages, so heap growth was a plausible contributor; it turns out to be small —
+pre-touching the heap changes the baseline ramp only from +31.0 to +27.7 MiB/min.
 
-| | t = 30–50 s | t = 50–70 s | t = 70–95 s |
-| --- | --- | --- | --- |
-| tracing-only | +67.4 | +37.6 | **+10.0** MiB/min |
-| profiling | +65.4 | +92.3 | **+38.8** MiB/min |
+Because the ramp is shared, it **cancels in the paired delta**, which is the
+statistic that matters:
 
-**The application approaches steady state; the profiler does not.** The baseline
-flattens to +10 MiB/min by end of run, while the profiling arm is still
-accumulating at +38.8 — roughly 29 MiB/min of ongoing divergence. That is
-consistent with `native_symbols` and `dictionary` growing as more classes and
-methods are observed, which continues for as long as the application loads
-classes. (The elevated middle window on the profiling arm is likely JFR
-chunk-flush structure rather than smooth growth.)
+| t (s) | paired delta (MiB) | SE |
+| --- | --- | --- |
+| 30 | 51.61 | 3.75 |
+| 40 | 50.23 | 6.51 |
+| 50 | 51.60 | 5.40 |
+| 60 | 66.21 | 4.54 |
+| 70 | 65.48 | 5.84 |
+| 80 | 66.86 | 5.00 |
+| 90 | 68.84 | 5.06 |
 
-**Consequences for how the headline figure may be used.** The comparison is valid
-and reproducible in a specific sense: both arms are sampled at the same point
-under an identical workload, so the delta is a well-defined "extra memory
-accumulated by t = 90 s", with SE 4.2 MiB. It is **not** the overhead of a
-long-running service — for that it is a *lower bound*, and the terminal ramp
-difference (~29 MiB/min) is the more informative quantity. Establishing where the
-profiler's growth saturates requires a longer run.
+The delta is flat at ≈ 51 MiB through t = 50 s, **steps up ~15 MiB at t ≈ 60 s**,
+then is flat again within noise (+2.6 MiB over the final 30 s, against SE ≈ 5).
+The step coincides with the first JFR chunk flush. The profiler's own counters
+account for only ~3.5 MiB of it (`line_tables` 0 → 0.579, `method_map` 0 → 0.699,
+`dictionary` +2.2), so the step's full mechanism is not pinned; what is clear is
+that it is a **one-time event, not sustained growth**.
+
+Fitting slopes to each arm separately is misleading here: it measures the shared
+JVM ramp rather than anything profiler-attributable. The paired delta is the
+correct statistic.
 
 ### Estimator sensitivity
 
@@ -296,16 +322,17 @@ folding them into "profiler cost".
    mmap'd chunks), jemalloc and tcmalloc add none.
 3. **Close the instrument blind spots** — natively created thread stacks and the
    library's resident image are invisible to both instruments.
-4. **Measure a longer workload.** This is now more than a caveat: the profiler is
-   still accumulating ~29 MiB/min faster than the baseline when the 90 s run ends,
-   so the headline figure is a lower bound and the saturation point is unknown.
-   A 10–30 minute run would establish whether `native_symbols` and `dictionary`
-   plateau once the class and method universe is exhausted, which is the number a
-   long-running service actually needs.
-5. **Settle `-XX:+AlwaysPreTouch` with a 2×2 interleaved design** (pretouch and
-   no-pretouch alternating within one window). The current comparison is
-   confounded across time windows, and first principles suggest pre-touching
-   should not hurt.
+4. **Measure a longer workload — to test the flush step, not a leak.** The
+   within-run evidence shows no unbounded growth, and `native_symbols` is exactly
+   saturated. The open question is narrower: the paired delta steps ~15 MiB at the
+   first JFR chunk flush, and a 90 s run contains only one or two flushes. A
+   10–30 minute run would show whether that step is one-time (a fixed cost of
+   reaching serialization) or recurs per flush, which is the difference between a
+   constant overhead and a growing one.
+5. **Confirm `-XX:+AlwaysPreTouch` with a 2×2 interleaved design** (pretouch and
+   no-pretouch alternating within one window). It is already the recommended
+   default on the strength of estimator-independence; what remains is to check
+   whether the apparent precision cost is real or a cross-window artifact.
 
 Full design, including three rejected alternatives and why, is in
 `overhead-program-plan.md` § "Concrete next steps", item 6.
