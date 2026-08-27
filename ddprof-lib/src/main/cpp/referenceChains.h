@@ -2306,15 +2306,22 @@ public:
   // directly once that feed exists.
   bool buildChainEvent(jlong target_tag, ReferenceChainEvent *out) {
     if (_frontier == nullptr || out == nullptr) {
+      TEST_LOG("ReferenceChainTracker::buildChainEvent false: "
+               "frontier=%p out=%p", (void*)_frontier, (void*)out);
       return false;
     }
     FrontierEntry entry{};
     if (!_frontier->lookup(target_tag, &entry)) {
+      TEST_LOG("ReferenceChainTracker::buildChainEvent false: "
+               "target_tag=%lld not in frontier", (long long)target_tag);
       return false;
     }
     std::vector<u32> chain;
     u8 root_kind = 0;
     if (!_frontier->reconstructChain(target_tag, &chain, &root_kind)) {
+      TEST_LOG("ReferenceChainTracker::buildChainEvent false: "
+               "reconstructChain failed for target_tag=%lld",
+               (long long)target_tag);
       return false;
     }
     TEST_LOG("ReferenceChainTracker::buildChainEvent target_tag=%lld chain_size=%zu "
@@ -2337,6 +2344,10 @@ public:
   bool buildCanaryChainEvent(int candidate_idx, ReferenceChainEvent *out) {
     if (_frontier == nullptr || out == nullptr ||
         candidate_idx < 0 || candidate_idx >= _candidate_count) {
+      TEST_LOG("ReferenceChainTracker::buildCanaryChainEvent false: "
+               "frontier=%p out=%p idx=%d count=%d",
+               (void*)_frontier, (void*)out,
+               candidate_idx, _candidate_count);
       return false;
     }
     jlong parent_tag = _candidate_parent_tags[candidate_idx];
@@ -2348,11 +2359,17 @@ public:
       // Walk parent_tag back to root through the frontier table.
       FrontierEntry entry{};
       if (!_frontier->lookup(parent_tag, &entry)) {
+        TEST_LOG("ReferenceChainTracker::buildCanaryChainEvent false: "
+                 "parent_tag=%lld not in frontier (candidate=%d)",
+                 (long long)parent_tag, candidate_idx);
         return false;
       }
       root_kind = entry.root_kind;
       for (jlong tag = parent_tag; tag > 0;) {
         if (!_frontier->lookup(tag, &entry)) {
+          TEST_LOG("ReferenceChainTracker::buildCanaryChainEvent false: "
+                   "chain walk: tag=%lld not in frontier (candidate=%d)",
+                   (long long)tag, candidate_idx);
           return false;
         }
         chain.push_back(entry.referrer_klass);
@@ -2364,10 +2381,17 @@ public:
       // re-read it from the frontier table (the candidate's own entry).
       FrontierEntry entry{};
       if (!_frontier->lookup(frontier_tag, &entry)) {
+        TEST_LOG("ReferenceChainTracker::buildCanaryChainEvent false: "
+                 "frontier_tag=%lld not in frontier (candidate=%d)",
+                 (long long)frontier_tag, candidate_idx);
         return false;
       }
       root_kind = entry.root_kind;
     } else {
+      TEST_LOG("ReferenceChainTracker::buildCanaryChainEvent false: "
+               "never pruned (candidate=%d parent_tag=%lld frontier_tag=%lld)",
+               candidate_idx, (long long)parent_tag,
+               (long long)frontier_tag);
       return false; // never pruned (candidate not reached)
     }
     // Prepend the candidate's own referrer_klass.

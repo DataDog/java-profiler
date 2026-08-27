@@ -903,6 +903,13 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns) {
                     : _pain_budget_refill_rate,
       now_ns);
   if (!_cpu_pain_budget.canStartNow(now_ns)) {
+    TEST_LOG("ReferenceChainTracker::shouldRunPass blocked by cpu_pain_budget "
+             "balance=%.1fms refill_rate=%.4f canary_active=%d",
+             _cpu_pain_budget.balanceMs(now_ns),
+             canary_active ? std::min(_pain_budget_refill_rate *
+                                 CANARY_PAIN_BUDGET_REFILL_MULTIPLIER, 1.0)
+                           : _pain_budget_refill_rate,
+             (int)canary_active);
     return false;
   }
   u64 gc_finish_epoch = gcFinishEpoch();
@@ -1034,6 +1041,10 @@ bool ReferenceChainTracker::hasLeakSignal() {
 
 bool ReferenceChainTracker::canAffordNewSearch(u64 now_ns) {
   if (!_safepoint_pain_budget.canStartNow(now_ns)) {
+    TEST_LOG("ReferenceChainTracker::canAffordNewSearch blocked by "
+             "safepoint_pain_budget balance=%.1fms refill_rate=%.4f",
+             _safepoint_pain_budget.balanceMs(now_ns),
+             _pain_budget_refill_rate);
     return false; // still cooling down from the last search's own cost
   }
   return hasLeakSignal();
@@ -1329,6 +1340,11 @@ void ReferenceChainTracker::resolveLoadedClasses(jvmtiEnv *jvmti,
   u64 current_generation = Profiler::instance()->classMap()->generation();
   bool class_map_reset = current_generation != _last_class_map_generation;
   if (class_map_reset) {
+    TEST_LOG("ReferenceChainTracker::resolveLoadedClasses class_map generation "
+             "changed: old=%llu new=%llu - clearing _class_tags and "
+             "candidate klass_ids may be stale",
+             (unsigned long long)_last_class_map_generation,
+             (unsigned long long)current_generation);
     _class_tags.clear();
     // Force the scan below to run even if GetLoadedClasses()'s count happens
     // to match the last-seen count - -1 can never equal `class_count`
@@ -1807,9 +1823,19 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
     if (result == ReferenceChainTracker::AdmitResult::ADMITTED &&
         ctx->tracker->_candidate_count > 0) {
       u32 klass_id = ctx->tracker->classTags()->resolve(class_tag);
-      if (klass_id != 0) {
+      if (klass_id == 0) {
+        // class_tag not in _class_tags - either class map rotated
+        // (resolveLoadedClasses hasn't re-resolved yet) or this class
+        // was never tagged. Log once per pass to diagnose class-map
+        // rotation issues.
+        TEST_LOG("ReferenceChainTracker::auto-mark class_tag=%lld "
+                 "unresolved (not in _class_tags)",
+                 (long long)class_tag);
+      } else {
+        bool matched = false;
         for (int s = 0; s < ctx->tracker->_candidate_count; s++) {
           if (ctx->tracker->_candidate_klass_ids[s] == klass_id) {
+            matched = true;
             if (ctx->tracker->_candidate_discovered_count[s] <
                 ReferenceChainTracker::MAX_DISCOVERED_INSTANCES_PER_CLASS) {
               ctx->tracker->_candidate_discovered_tags[s]
@@ -1821,6 +1847,18 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
             }
             break;
           }
+        }
+        if (!matched && klass_id != 0) {
+          // klass_id resolved but doesn't match any candidate - likely
+          // class map rotation made candidate klass_ids stale
+          TEST_LOG("ReferenceChainTracker::auto-mark klass_id=%u "
+                   "resolved but no candidate match (candidates=[%u,%u,%u,%u,%u])",
+                   klass_id,
+                   ctx->tracker->_candidate_count > 0 ? ctx->tracker->_candidate_klass_ids[0] : 0,
+                   ctx->tracker->_candidate_count > 1 ? ctx->tracker->_candidate_klass_ids[1] : 0,
+                   ctx->tracker->_candidate_count > 2 ? ctx->tracker->_candidate_klass_ids[2] : 0,
+                   ctx->tracker->_candidate_count > 3 ? ctx->tracker->_candidate_klass_ids[3] : 0,
+                   ctx->tracker->_candidate_count > 4 ? ctx->tracker->_candidate_klass_ids[4] : 0);
         }
       }
     }
@@ -3549,10 +3587,18 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
 
   TEST_LOG("ReferenceChainTracker::runPass done: err=%d edges_admitted=%d truncated=%d "
            "frontier_cap_hit=%d searchState=%d abandonReason=%d frontierSize=%d "
-           "effectiveBudget=%d effectiveCadenceNs=%llu",
+           "effectiveBudget=%d effectiveCadenceNs=%llu pendingExpand=%zu priorityExpand=%zu "
+           "candidateFound=%d/%d discoveredCounts=[%d,%d,%d,%d,%d]",
            (int)err, edges_admitted, truncated, frontier_cap_hit, (int)load(_search_state),
            (int)_abandon_reason, _frontier->size(), _effective_budget,
-           (unsigned long long)_effective_cadence_ns);
+           (unsigned long long)_effective_cadence_ns,
+           _pending_expand.size(), _priority_expand.size(),
+           (int)__builtin_popcountll(_candidate_found_bits), _candidate_count,
+           _candidate_count > 0 ? _candidate_discovered_count[0] : 0,
+           _candidate_count > 1 ? _candidate_discovered_count[1] : 0,
+           _candidate_count > 2 ? _candidate_discovered_count[2] : 0,
+           _candidate_count > 3 ? _candidate_discovered_count[3] : 0,
+           _candidate_count > 4 ? _candidate_discovered_count[4] : 0);
 
   return err == JVMTI_ERROR_NONE;
 }
@@ -3996,6 +4042,11 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
     if (no_chain_cached) {
       for (int s = 0; s < _candidate_count; s++) {
         if (_candidate_klass_ids[s] != klass_id) continue;
+        if (_candidate_discovered_count[s] == 0) {
+          TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
+                   "no discovered instances for klass_id=%u slot=%d",
+                   klass_id, s);
+        }
         for (int d = 0; d < _candidate_discovered_count[s]; d++) {
           jlong disc_tag = _candidate_discovered_tags[s][d];
           if (disc_tag == 0) continue;
@@ -4009,6 +4060,11 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
                      "auto-marked chain for klass_id=%u tag=%lld",
                      klass_id, (long long)disc_tag);
             break;
+          } else {
+            TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
+                     "buildChainEvent failed for discovered tag=%lld "
+                     "klass_id=%u slot=%d disc_idx=%d",
+                     (long long)disc_tag, klass_id, s, d);
           }
         }
         break;
