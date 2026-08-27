@@ -31,7 +31,7 @@ public:
   u64 rootSpanId;
   Tag tags[DD_TAGS_CAPACITY];
 
-  Tag get_tag(int i) { return tags[i]; }
+  Tag get_tag(int i) { return i >= 0 && (u32)i < DD_TAGS_CAPACITY ? tags[i] : Tag{0}; }
 };
 
 #endif /* _CONTEXT_H */
