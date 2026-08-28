@@ -186,17 +186,17 @@ jobs:
             exit 1
           fi
       - name: Generate Unwinding Report
-        if: success() && matrix.config == 'debug'
+        if: success() && matrix.config == 'debug' && steps.set_enabled.outputs.enabled == 'true'
         run: |
           ./gradlew -PCI :ddprof-test:unwindingReport --no-daemon
       - name: Add Unwinding Report to Job Summary
-        if: success() && matrix.config == 'debug' && hashFiles('ddprof-test/build/reports/unwinding-summary.md') != ''
+        if: success() && matrix.config == 'debug' && steps.set_enabled.outputs.enabled == 'true' && hashFiles('ddprof-test/build/reports/unwinding-summary.md') != ''
         run: |
           echo "## 🔧 Unwinding Quality Report - ${{ matrix.java_version }} (amd64)" >> $GITHUB_STEP_SUMMARY
           cat ddprof-test/build/reports/unwinding-summary.md >> $GITHUB_STEP_SUMMARY
       - name: Upload build artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: success()
+        if: success() && steps.set_enabled.outputs.enabled == 'true'
         with:
           name: (build) test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
           path: build/
