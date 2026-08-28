@@ -226,6 +226,30 @@ void FrontierTable::updateRootKind(jlong tag, u8 root_kind) {
   _table_lock.unlock();
 }
 
+void FrontierTable::improveChain(jlong tag, jlong parent_tag,
+                                  u32 referrer_klass, u32 depth,
+                                  u8 root_kind) {
+  // Replace a shallow root-attached entry (parent_tag == 0, depth == 0)
+  // with a deeper chain-attached entry when the object is reached via a
+  // longer path. This fixes the "depth=1 chain with no holder" problem:
+  // an object first admitted as a JNI-local root (parent_tag == 0) gets
+  // its frontier entry overwritten when the static-field → ... → object
+  // path reaches it later with a non-zero parent_tag.
+  if (tag <= 0 || tag - 1 > (jlong)INT_MAX) {
+    return;
+  }
+  int idx = (int)(tag - 1);
+
+  _table_lock.lock();
+  if (idx < _table_size && depth > _table[idx].depth) {
+    _table[idx].parent_tag = parent_tag;
+    _table[idx].referrer_klass = referrer_klass;
+    _table[idx].depth = depth;
+    _table[idx].root_kind = root_kind;
+  }
+  _table_lock.unlock();
+}
+
 bool FrontierTable::reconstructChain(jlong target_tag,
                                       std::vector<u32> *out_chain,
                                       u8 *out_root_kind) {
@@ -1890,6 +1914,16 @@ ReferenceChainTracker::AdmitResult ReferenceChainTracker::admitObject(
     jlong *tag_ptr, jlong parent_tag, u32 referrer_klass, u32 depth,
     u8 root_kind, jlong class_tag, bool priority) {
   if (*tag_ptr != 0) {
+    // Already admitted. If this new path is deeper (has a non-zero
+    // parent_tag), improve the chain — replace the shallow root-attached
+    // entry with the deeper chain-attached entry. This fixes the
+    // "depth=1 chain with no holder" problem: an object first admitted
+    // as a JNI-local root (parent_tag == 0) gets its frontier entry
+    // improved when the static-field → ... → object path reaches it.
+    if (parent_tag != 0 && *tag_ptr > 0) {
+      frontier->improveChain(*tag_ptr, parent_tag, referrer_klass,
+                               depth, root_kind);
+    }
     return AdmitResult::ALREADY_ADMITTED;
   }
   if (depth >= (u32)hop_cap) {

@@ -426,6 +426,13 @@ public:
   // caller) for how this is enforced.
   void updateRootKind(jlong tag, u8 root_kind);
 
+  // Replace a shallow root-attached entry with a deeper chain-attached
+  // entry when the same object is reached via a longer path. See
+  // improveChain() in referenceChains.cpp for the "depth=1 chain with
+  // no holder" problem this solves.
+  void improveChain(jlong tag, jlong parent_tag, u32 referrer_klass,
+                     u32 depth, u8 root_kind);
+
   // Walks parent_tag links starting at `target_tag` back to a root-attached
   // entry (parent_tag == 0), appending each visited entry's referrer_klass
   // to *out_chain in leaf-to-root order, and marking each visited entry
