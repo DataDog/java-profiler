@@ -11,14 +11,25 @@ PAIRS = list(range(1, 13))
 WARMUP = float(os.environ.get("WARMUP", "30"))
 
 def load_trace(path):
-    """Return (rel_times, values, marks) with container-TEARDOWN samples removed.
+    """Return (rel_times, values, marks, n_dropped) with container TEARDOWN removed.
 
-    The sampler runs until the cgroup file vanishes, so the tail of every trace
-    contains the JVM exiting -- anon collapsing toward zero (observed: 1581 MiB
-    -> 13 MiB). Those samples were previously inside the 'steady state' window,
-    which inflated the within-run sd (140 MiB in one run) and dragged means
-    down. Truncate the trailing collapse: walk back from the end while the
-    value is below half the run's peak.
+    The sampler runs until the cgroup file vanishes, so every trace ends with the
+    JVM exiting and anon collapsing toward zero. Those samples must not reach the
+    measurement window: a single one inflates a run's standard deviation by two
+    orders of magnitude and drags its mean by ~9 MiB.
+
+    The collapse is only sometimes a clean drop to near-zero -- often a sample
+    lands part-way down (observed: 1328.9 MiB against a 2506 MiB plateau). So the
+    cut is made relative to the *median of the measurement window*, which is a
+    robust estimate of the settled level, rather than to the run's peak: walk back
+    from the end while samples sit below 98 % of that median. Only trailing
+    samples are removed, so a genuine startup ramp earlier in the trace is kept
+    (its samples lie above the window median, not below it).
+
+    The 2 % band is far wider than real variation -- a plateau is flat to
+    sd ~0.4 MiB, i.e. under 0.02 % -- yet tight enough to catch a partial
+    teardown sample at 90 % of the settled level, which a looser threshold lets
+    through.
     """
     ts, vals, marks = [], [], {}
     for line in open(path):
@@ -26,13 +37,14 @@ def load_trace(path):
         ts.append(int(p[0])); vals.append(int(p[1])/MIB)
         if len(p) > 2 and p[2].startswith("NMT"):
             marks[p[2]] = int(p[1])/MIB
-    peak = max(vals)
-    cut = len(vals)
-    while cut > 1 and vals[cut-1] < 0.5*peak:
-        cut -= 1
     t0 = ts[0]
-    rel = [(t-t0)/1000.0 for t in ts[:cut]]
-    return rel, vals[:cut], marks, len(vals)-cut
+    rel_all = [(t-t0)/1000.0 for t in ts]
+    window = [v for r, v in zip(rel_all, vals) if r >= WARMUP] or vals
+    reference = statistics.median(window)
+    cut = len(vals)
+    while cut > 1 and vals[cut-1] < 0.98*reference:
+        cut -= 1
+    return rel_all[:cut], vals[:cut], marks, len(vals)-cut
 
 def st(xs):
     n = len(xs); mu = statistics.mean(xs)
