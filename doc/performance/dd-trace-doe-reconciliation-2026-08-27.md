@@ -1,8 +1,8 @@
 # dd-trace-doe memory reconciliation, 27 Aug 2026
 
-**The profiler adds 62.6 ± 5.3 MiB to the application's anonymous memory on this
-workload — about 2.6 % — and that overhead is accounted for. The unexplained
-residual is +2 to +8 MiB, within 1.6 σ of zero in every variant tested.**
+**The profiler adds 59.3 ± 9.0 MiB to the application's anonymous memory on this
+workload — about 2.5 % — and that overhead is accounted for with no correction
+factors: the residual is +4.3 MiB, 0.48 σ from zero.**
 
 Measured over 12 interleaved counterbalanced pairs, sampled after anonymous
 memory plateaus, where the choice of estimator changes the answer by 1.0 MiB
@@ -14,7 +14,7 @@ same absolute overhead reads as ~3.9 % against a ~1580 MiB baseline. The
 denominator is a measurement choice, so the percentage is not a property of the
 profiler.
 
-Two caveats bound how this figure should be quoted:
+Three caveats bound how this figure should be quoted:
 
 - **The overhead is bounded — there is no leak and no per-flush growth.**
   Confirmed over a 20-minute run with 10 observed flushes: see
@@ -38,8 +38,8 @@ Mechanism detail for the call-trace counter is in `memory-sweep-results-linux.md
 
 | | |
 | --- | --- |
-| Workload | `archetype=enterprise` (Spring Boot), `duration=90`, 9000 requests |
-| Reps | 12 interleaved pairs (tracing-only, tracing+profiling) |
+| Workload | `archetype=enterprise` (Spring Boot), `duration=300`, 30000 requests |
+| Reps | 12 interleaved counterbalanced pairs, sampled at t ≥ 240 s (plateau) |
 | Heap | `-Xms2g -Xmx2g`, set by the harness entrypoint |
 | Library | local build, verified by checksum end-to-end |
 
@@ -98,7 +98,7 @@ workload. All other archetype parameters are unchanged.
 A checksum gate runs at both packaging stages: the `libjavaProfiler.so` inside
 the published Maven artifact **and** inside the shaded `dd-java-agent` jar are
 confirmed byte-identical to the locally built library (md5
-`6103cb7a9cc2f8e015f25629d75a2a72`). Without this gate, Gradle can silently
+`cea2dd31108c059ff39a68eb7ddfb509`). Without this gate, Gradle can silently
 resolve the upstream ddprof release instead of the local build — an exact-pinned
 version does not fuzzy-match a same-numbered local `-SNAPSHOT`; use
 `-PddprofUseSnapshot=true`. Keep the gate on any re-run.
@@ -116,50 +116,76 @@ counts committed address space, and with a 2 GiB fully-committed heap it exceeds
 anon by ~660 MiB. Only the paired *delta* is used, where the heap's
 committed-versus-touched gap cancels.
 
-Malloc-backed counter categories carry a ×1.17 chunk-overhead correction.
-Call-trace is mmap-backed and measured directly, so no residency factor applies.
+**No correction factors are applied.** Allocator overhead is measured per
+allocation and reported by the profiler as
+`native_mem_chunk_overhead_bytes.<category>`; call-trace residency is counted at
+source. The ×1.17 multiplier this reconciliation previously used over-credited
+the explained total by 2.5 MiB — see
+[Measured allocator overhead](#measured-allocator-overhead).
 
 Reconciliation is computed from **per-pair differences**, not from a difference of
 independently measured means.
 
 | Term | MiB | SE |
 | --- | --- | --- |
-| Anonymous-memory paired delta (plateau mean) | 62.62 | 5.25 |
-| NMT committed paired delta | 29.84 | — |
-| Profiler counters, raw | 23.82 | — |
-| Profiler counters, corrected (live basis) | 27.32 | — |
-| Profiler counters, corrected (peak basis) | 30.70 | — |
-| **Explained** (live / peak) | **57.16 / 60.54** | |
-| **Residual** (live / peak) | **+5.46 / +2.09** | 5.3 |
+| Anonymous-memory paired delta (plateau mean) | 59.29 | 8.95 |
+| NMT committed paired delta | 30.24 | 0.11 |
+| Profiler counters, logical bytes | 23.83 | — |
+| Profiler counters, measured allocator overhead | 0.97 | — |
+| **Explained** | **55.04** | |
+| **Residual** | **+4.25** | 8.95 |
 
-A positive residual means anonymous memory exceeds what we can name. Every
-variant — three ways of reading anon × the live/peak call-trace bracket — falls
-within 1.6 σ of zero:
+A positive residual means anonymous memory exceeds what we can name. At
+**0.48 σ** it is not distinguishable from zero.
 
-| anon basis | residual (live) | residual (peak) |
-| --- | --- | --- |
-| plateau mean | +5.46 (1.04 σ) | +2.09 (0.40 σ) |
-| synchronous t = 290 s | +5.56 (1.06 σ) | +2.18 (0.42 σ) |
-| synchronous t = 250 s | +8.02 (1.52 σ) | +4.64 (0.88 σ) |
+Every term is now measured. The NMT delta in particular is reproducible to
+± 0.11 MiB with both snapshots taken inside the plateau, so essentially all
+remaining uncertainty is the anon delta's between-run variance.
 
-The live basis runs higher than the peak basis because true call-trace residency
-lies between the live gauge (3.24 MiB) and its peak (6.62 MiB) — the counter's
-known `clear()` limitation. Reading that bracket as the answer puts the residual
-at **+2 to +8 MiB**.
+Sampling mid-ramp reproduces the same delta with worse precision and 20× the
+estimator sensitivity, so it is not used.
 
-Sampling mid-ramp instead reproduces the same delta (62.89 ± 8.34 over 12 pairs
-at 90 s) with worse precision and 20× the estimator sensitivity, so it is not
-used here.
+### Measured allocator overhead
 
-Confidence rests on agreement across variants rather than on any single number:
-each carries ± 5 MiB.
+| category | logical MiB | measured overhead | % |
+| --- | --- | --- | --- |
+| `native_symbols` | 11.298 | 0.9125 | 8.08 |
+| `dictionary` | 6.803 | 0.0088 | 0.13 |
+| `calltrace` | 3.235 | 0.0062 | 0.19 |
+| `jfr_buffers` | 1.158 | — | not instrumented |
+| `liveness` | 0.750 | — | not instrumented |
+| `line_tables` | 0.226 | — | not instrumented |
+| `method_map` | 0.220 | 0.0382 | **17.36** |
+| `thread_info` | 0.008 | 0.0013 | 16.10 |
+| **total** | **23.828** | **0.9669** | **4.06** |
+
+The blanket ×1.17 would have charged **3.499 MiB** against **0.967 MiB
+measured** — an over-credit of 2.5 MiB, on a residual of a few MiB.
+
+The reason a single factor cannot work is visible in the spread: `method_map`
+pays 17.36 % (small tree nodes, and the one category the old factor fitted),
+while `dictionary` pays 0.13 % (512 KB chunks). Overhead is a function of
+per-allocation size, and these categories differ by four orders of magnitude in
+allocation size.
+
+Removing the over-credit **widens** the gap, as expected. Holding the anon delta
+at the previous run's 62.62 MiB for comparability, the residual moves from
++5.46 to +7.58 MiB — a +2.1 MiB shift matching the 2.5 MiB over-credit. The
+figure reported above is lower only because this run's anon delta happened to be
+3.3 MiB smaller, which is between-run variance rather than a change in accounting.
+
+**Coverage is partial**, so 0.967 MiB is a lower bound: `jfr_buffers`,
+`liveness`, `line_tables`, `thread_local`, `thread_filter` and `wallclock` record
+through plain `record()` and report zero. Together they are ~2.2 MiB of logical
+bytes, so at the rates seen above the unmeasured remainder is ~0.2–0.4 MiB.
 
 ---
 
 ## Where the profiler's memory goes
 
-Live bytes by category, mean of 12 reps. Malloc-backed categories carry a further
-×1.17 chunk overhead not shown here.
+Live bytes by category, mean of 12 reps — logical bytes only. The allocator
+overhead each category additionally pays is measured and reported separately, in
+[Measured allocator overhead](#measured-allocator-overhead).
 
 | Category | MiB | SE | Share |
 | --- | --- | --- | --- |
@@ -352,9 +378,10 @@ error. No overhead figure or residual should be quoted from this run; the
 ### Further reps have limited value
 
 Paired sd is ~15 MiB, so SE = sd/√n gives ~4.2 MiB at n = 12, ~2.7 at n = 29,
-~1.7 at n = 79. Resolving the residual below the ~3 MiB uncertainty already
-carried by the ×1.17 chunk-overhead factor would not change any conclusion.
-Measuring the remaining terms directly is worth more than more repetitions.
+~1.7 at n = 79. With the correction factors now replaced by measurements, the
+binding constraint is the anon delta's between-run variance rather than any
+accounting term — and attributing arena waste is worth more than more
+repetitions.
 
 ---
 
@@ -366,13 +393,44 @@ Both are small, bounded, and known:
   live-to-peak spread. `clear()` un-records a retained chunk's bytes but does not
   unmap it, so already-touched pages stay resident while the counter forgets them.
   The dominant rotation path does unmap, bounding this at roughly one chunk.
-- **The ×1.17 chunk-overhead factor is borrowed, not measured here** (~± 3 MiB).
-  It came from a workload with ~650,000 live allocations at ~83 B mean. Overhead
-  depends on mean allocation size per category, and the categories here differ:
-  `method_map` pays 16.7 % (96 B requested → 112 B real) while large-allocation
-  categories such as `jfr_buffers` pay ~0 %. The counters emit bytes but not
+- **Allocator-overhead coverage is partial** (~0.2–0.4 MiB unmeasured).
+  `jfr_buffers`, `liveness`, `line_tables`, `thread_local`, `thread_filter` and
+  `wallclock` still record through plain `record()` and report zero overhead. The
+  measured total is therefore a lower bound. The counters emit bytes but not
   allocation counts, so the correct per-category factor cannot be derived from the
   current data.
+
+## Process-wide arena waste
+
+The profiler now reports glibc's own arena accounting (`mallinfo2`) on the flush
+path. Mean over the 12 profiling-arm runs:
+
+| counter | MiB |
+| --- | --- |
+| `malloc_arena_bytes` | 270.67 |
+| `malloc_in_use_bytes` | 82.36 |
+| **`malloc_free_held_bytes`** | **188.31** |
+| `malloc_trimmable_bytes` | 0.13 |
+| `malloc_mmap_bytes` | 50.34 |
+
+`in_use + free_held = arena` exactly, which is a useful internal check on the
+readings. Only **0.13 MiB is trimmable**, so `malloc_trim` could reclaim almost
+none of the 188 MiB: this is genuine fragmentation, not trim-threshold
+retention — consistent with the interleaving mechanism, where live allocations
+scattered among freed ones prevent free chunks coalescing to the arena top.
+
+**This is process-wide, not profiler memory**, and is dominated by the JVM's own
+allocations. It is reported to make the allocator's overhead visible rather than
+to attribute it. Its relevance to the residual is one of scale: the residual
+(+4.25 MiB) is **2.3 %** of process-wide arena waste, so a small profiler-caused
+increase in fragmentation would account for it comfortably.
+
+**It cannot be attributed from these counters.** They are emitted through the
+profiler's own JFR, so the tracing-only arm produces none, and no paired delta
+can be formed. Attribution needs the same figure from both arms, which
+`memsweep/malloc_info_probe.c` (an LD_PRELOAD allocator-state probe, driven by
+`run_mallocinfo_capture.sh`) can supply for a process with or without the
+profiler attached. That is the next measurement.
 
 ## Candidates that would explain a larger gap
 
@@ -394,20 +452,27 @@ measured.
 ## Recommended next steps
 
 The governing lesson: **every correction factor is a place where a number
-measured in one workload is applied to another.** One such factor remains
-(×1.17), and it is a property of the *allocator*, not the profiler — as is arena
-slack. Under tcmalloc or jemalloc (both selectable via `allocator=`) both behave
-differently, which is an argument for reporting them explicitly rather than
-folding them into "profiler cost".
+measured in one workload is applied to another.** Both factors this
+reconciliation once used are now measurements. Both were properties of the
+*allocator* rather than the profiler — under tcmalloc or jemalloc (selectable via
+`allocator=`) they behave differently — which is why they are reported explicitly
+instead of folded into "profiler cost". What remains is attribution, not
+estimation.
 
-1. **Measure arena waste on this workload** via `mallinfo2()` on the JFR flush
-   path, reported as process-wide allocator overhead rather than profiler memory.
-   This is the single most useful remaining measurement: it is the largest
-   candidate above and currently rests on analogy to a different workload.
-2. **Fold chunk overhead in exactly, per allocation** via
-   `malloc_usable_size()`, replacing the ×1.17 average, reported per category.
-   Requires runtime allocator detection: glibc adds an 8 B header (16 B for
-   mmap'd chunks), jemalloc and tcmalloc add none.
+1. **Attribute arena waste to the profiler.** The absolute figure is now
+   measured (188.31 MiB process-wide, see
+   [Process-wide arena waste](#process-wide-arena-waste)), but it cannot be
+   attributed from these counters: they are emitted through the profiler's own
+   JFR, so the tracing-only arm produces none and no paired delta exists. Use
+   `memsweep/malloc_info_probe.c` with `run_mallocinfo_capture.sh` (LD_PRELOAD,
+   works with or without the profiler) to get the figure for both arms.
+2. ~~Fold chunk overhead in exactly, per allocation.~~ **Done** — reported as
+   `native_mem_chunk_overhead_bytes.<category>`, measured via
+   `malloc_usable_size()` with the per-chunk header probed at runtime rather than
+   assumed. The ×1.17 multiplier is retired. Remaining work is coverage:
+   `jfr_buffers`, `liveness`, `line_tables`, `thread_local`, `thread_filter` and
+   `wallclock` still record through plain `record()` and report zero overhead
+   (~0.2–0.4 MiB unmeasured).
 3. **Close the instrument blind spots** — natively created thread stacks and the
    library's resident image are invisible to both instruments.
 4. ~~Measure a longer workload to test the flush step.~~ **Done** — see
