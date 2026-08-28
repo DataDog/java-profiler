@@ -51,8 +51,16 @@ NMT_DELAYS="${NMT_DELAYS:-30 70}"
 
 mkdir -p "$OUT/nmt" "$OUT/jfr" "$OUT/logs" "$OUT/anon"
 
+DURATION="${DURATION:-90}"
+# DOE_ARGS exists so a long-running experiment can pass --no-build. The agent jar
+# is baked into the image (`COPY binaries/ /binaries/`), so a running container is
+# unaffected by host-side rebuilds -- but without --no-build a later invocation
+# would rebuild the image and silently swap the profiler mid-experiment. Pass
+# --no-build for anything running alongside profiler development work.
+DOE_ARGS="${DOE_ARGS:-}"
+
 COMMON="archetype=enterprise language=java library_version=local agent=false \
-duration=90 loops_cpu=0 allocs_cpu=0 loops_num=1712244 allocs_num=408773"
+duration=${DURATION} loops_cpu=0 allocs_cpu=0 loops_num=1712244 allocs_num=408773"
 
 # Timestamped cgroup-anon sampler. Emits "<epoch_ms> <bytes>" per line, plus a
 # "<epoch_ms> <bytes> NMT" marked line at the NMT snapshot instant.
@@ -92,7 +100,21 @@ run_one() {
   fi
   envs+=(DOE_DEBUG_JAVA_TOOL_OPTIONS="$jto")
 
-  ( cd "$DOE_REPO" && env "${envs[@]}" "$DOE_BIN" run $COMMON \
+  # MALLINFO_SO, when set, LD_PRELOADs the passive arena sampler
+  # (memsweep/mallinfo_sampler.c) into BOTH arms. The profiler reports
+  # mallinfo2 itself, but only through its own JFR -- so the tracing-only arm
+  # emits nothing and arena waste cannot be attributed. This can, because
+  # LD_PRELOAD does not care whether the profiler is attached.
+  if [ -n "${MALLINFO_SO:-}" ]; then
+    mkdir -p "$OUT/mallinfo/${tag}"
+    envs+=(DOE_DEBUG_EXTRA_MOUNT_SRC="$OUT/mallinfo/${tag}")
+    envs+=(DOE_DEBUG_EXTRA_MOUNT_DST=/mallinfo)
+    envs+=(DOE_DEBUG_EXTRA_ENV="LD_PRELOAD=${MALLINFO_SO_IN_CONTAINER:-/mallinfo/sampler.so};MALLINFO_OUT=/mallinfo;MALLINFO_INTERVAL_MS=${MALLINFO_INTERVAL_MS:-1000}")
+    cp "$MALLINFO_SO" "$OUT/mallinfo/${tag}/sampler.so"
+    chmod 755 "$OUT/mallinfo/${tag}/sampler.so"
+  fi
+
+  ( cd "$DOE_REPO" && env "${envs[@]}" "$DOE_BIN" run $COMMON $DOE_ARGS \
       tracing=true profiling="$prof" -n 1 -f > "$log" 2>&1 ) &
   local pid=$!
 

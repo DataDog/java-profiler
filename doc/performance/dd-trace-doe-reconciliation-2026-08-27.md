@@ -145,6 +145,12 @@ remaining uncertainty is the anon delta's between-run variance.
 Sampling mid-ramp reproduces the same delta with worse precision and 20× the
 estimator sensitivity, so it is not used.
 
+**Reproduced.** A second, independent 12-pair run (the one carrying the
+LD_PRELOAD arena sampler) gives anon delta **58.83 ± 8.53**, NMT delta
+**30.00 ± 0.18**, counters **23.85 + 0.96**, explained **54.82**, residual
+**+4.02 ± 8.53** (0.47 σ). Two independent measurements agreeing to 0.46 MiB on
+the delta and 0.23 MiB on the residual.
+
 ### Measured allocator overhead
 
 | category | logical MiB | measured overhead | % |
@@ -420,17 +426,49 @@ retention — consistent with the interleaving mechanism, where live allocations
 scattered among freed ones prevent free chunks coalescing to the arena top.
 
 **This is process-wide, not profiler memory**, and is dominated by the JVM's own
-allocations. It is reported to make the allocator's overhead visible rather than
-to attribute it. Its relevance to the residual is one of scale: the residual
-(+4.25 MiB) is **2.3 %** of process-wide arena waste, so a small profiler-caused
-increase in fragmentation would account for it comfortably.
+allocations. The profiler's counters cannot attribute it — they ride the
+profiler's own JFR, so the tracing-only arm emits none and no paired delta
+exists.
 
-**It cannot be attributed from these counters.** They are emitted through the
-profiler's own JFR, so the tracing-only arm produces none, and no paired delta
-can be formed. Attribution needs the same figure from both arms, which
-`memsweep/malloc_info_probe.c` (an LD_PRELOAD allocator-state probe, driven by
-`run_mallocinfo_capture.sh`) can supply for a process with or without the
-profiler attached. That is the next measurement.
+### Arena waste, attributed — and ruled out
+
+`memsweep/mallinfo_sampler.c` closes that: an LD_PRELOAD shim that samples
+`mallinfo2()` from **either** arm, since it does not care whether the profiler is
+attached. Unlike `malloc_info_probe.c` it never calls `malloc_trim` (that would
+alter the state being measured) and its sampling loop is allocation-free, so it
+does not perturb the arena it observes.
+
+Paired deltas over 12 pairs, plateau-sampled (65 samples/run):
+
+| glibc term | profiling | baseline | paired Δ | SE |
+| --- | --- | --- | --- | --- |
+| `arena` (brk address space) | 268.36 | 210.63 | **+57.73** | 8.43 |
+| — of which in use (`uordblks`) | 82.32 | 47.56 | **+34.76** | 0.51 |
+| — of which free-held (`fordblks`) | 186.04 | 163.07 | **+22.97** | 8.47 |
+| trimmable (`keepcost`) | 0.13 | 0.13 | +0.00 | 0.00 |
+| mmap-served (`hblkhd`) | 49.96 | 27.21 | **+22.74** | 0.51 |
+
+So **+22.97 ± 8.47 MiB of free-but-held arena space is attributable to the
+profiler** (2.71 σ) — the first time this term has been measured rather than
+carried over by analogy.
+
+**But it does not explain the residual, because it is not resident.** `uordblks`
+excludes mmap-served chunks (verified: `uordblks + fordblks = arena` exactly,
+while an 8 MB allocation lands wholly in `hblkhd`), so the profiler's total
+malloc *address space* delta is 57.73 + 22.74 = **80.47 MiB** — against an anon
+delta of only **58.83 MiB**. The 21.6 MiB excess matches the 22.97 MiB free-held
+delta almost exactly.
+
+That identity is the result: the free-but-held space is allocator bookkeeping over
+address space whose pages are **not backed**. `fordblks` counts what the allocator
+could hand out again, not what the process is paying for in RSS. Meanwhile
+malloc's *in-use* delta (34.76 + 22.74 = 57.50 MiB) sits within 1.3 MiB of the
+anon delta, which is where the resident cost actually lives.
+
+**Consequence for the reconciliation:** arena waste must not be added as an
+explanatory term, and the residual is *in-use* malloc memory that neither
+instrument attributes — not fragmentation. This removes the largest remaining
+candidate.
 
 ## Candidates that would explain a larger gap
 
@@ -442,7 +480,7 @@ measured.
 
 | Est. | Candidate |
 | --- | --- |
-| ≈ 7.6 MiB | **Free-but-held arena pages.** Measured on the synthetic sweep with SE 3.0 and a sign-changing range (−7.2 to +17.2). Mostly *other* subsystems' chunks stranded by interleaving, so not attributable to any profiler allocation — a process-level, allocator-specific property. |
+| ~~≈ 7.6 MiB~~ **0** | ~~Free-but-held arena pages.~~ **Ruled out.** Now measured at +22.97 ± 8.47 MiB attributable, but shown to be non-resident — see [Arena waste, attributed](#arena-waste-attributed--and-ruled-out). It is address space the allocator retains, not pages the process pays for. |
 | a few MiB | **Natively created profiler thread stacks.** Created via `pthread_create`, not by the JVM, so their resident stack pages appear in neither NMT's Thread category nor the profiler's counters — a structural blind spot between the two instruments. |
 | 2–4 MiB | **The profiler library's own resident image.** Text and data pages of a 1.38 MB shared object. Not an allocation, so no counter sees it; not JVM-managed, so NMT does not either. |
 | ≈ 0.9 MiB | **Unattributed profiler malloc.** Resolves only to a private `operator new`. |
