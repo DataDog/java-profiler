@@ -522,8 +522,13 @@ void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch,
            (unsigned long long)epoch, _klass_count_scratch_size);
   for (int i = 0; i < _klass_count_scratch_size; i++) {
     KlassCountScratch &s = _klass_count_scratch[i];
-    TEST_LOG("LivenessTracker::foldKlassCountsLocked scratch[%d] klass_id=%u gen_count=%zu", i,
-             s.klass_id, s.ages.size());
+    TEST_LOG("LivenessTracker::foldKlassCountsLocked scratch[%d] klass_id=%u gen_count=%zu "
+             "thread_count=%d oldest_count=%d",
+             i, s.klass_id, s.ages.size(), s.thread_count, s.oldest_count);
+    for (int ti = 0; ti < s.thread_count; ti++) {
+      TEST_LOG("  thread[%d] tid=%d age_count=%u", ti, (int)s.threads[ti].tid,
+               s.threads[ti].age_count);
+    }
     int slot;
     bool created;
     jweak evicted[KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS];
