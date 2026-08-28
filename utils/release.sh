@@ -646,6 +646,14 @@ echo ""
 print_info "Triggering GitHub Actions workflow..."
 REQUEST_ID="release-$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
 
+# In retry mode, don't pass source_sha — the branch HEAD may have moved since
+# the original run, and the workflow rejects SHA mismatches.
+if [ -n "$RETRY_RUN_ID" ]; then
+    SOURCE_SHA_FIELD=""
+else
+    SOURCE_SHA_FIELD="--field source_sha=$COMMIT_SHA"
+fi
+
 # Trigger the workflow
 WORKFLOW_OUTPUT=$(mktemp)
 WORKFLOW_ERROR=$(mktemp)
@@ -656,7 +664,7 @@ if gh workflow run release-validated.yml \
     --field dry_run="$DRY_RUN" \
     --field skip_tests="$SKIP_TESTS" \
     --field request_id="$REQUEST_ID" \
-    --field source_sha="$COMMIT_SHA" > "$WORKFLOW_OUTPUT" 2> "$WORKFLOW_ERROR"; then
+    ${SOURCE_SHA_FIELD:-} > "$WORKFLOW_OUTPUT" 2> "$WORKFLOW_ERROR"; then
 
     WORKFLOW_SUCCESS=true
     echo ""
@@ -673,8 +681,7 @@ if gh workflow run release-validated.yml \
                 | map(select(
                     (.display_title | contains(\"$REQUEST_ID\")) and
                     .actor.login == \"$ACTOR\" and
-                    .head_branch == \"$BRANCH\" and
-                    .head_sha == \"$COMMIT_SHA\"
+                    .head_branch == \"$BRANCH\"
                 ))
                 | if length == 1 then .[0].id else empty end")
         if [ -n "$RUN_ID" ]; then
