@@ -371,9 +371,27 @@ private:
     struct OldestSample {
       jweak ref;
       u32 age;
+      u64 call_trace_id;  // allocation site of this instance
     };
     OldestSample oldest[MAX_OLDEST_SAMPLES];
     int oldest_count;
+    // Per-allocation-site generation tracking (Cork/Swat heuristic):
+    // track distinct surviving GC ages per allocation site within this
+    // klass. The site with the most distinct surviving generations is
+    // the strongest leak signal — it reuses the same generation-count
+    // signal that selectLeakCandidates() uses per-class, applied at
+    // per-site granularity within a class. A site with 12 distinct
+    // surviving ages (continuous leak) outscores a site with 1 age
+    // (one-time burst), regardless of raw instance count or size.
+    static constexpr int MAX_SITES_PER_KLASS = 16;
+    static constexpr int MAX_AGES_PER_SITE = 32;
+    struct SiteGens {
+      u64 call_trace_id;
+      u32 ages[MAX_AGES_PER_SITE];  // sorted distinct ages
+      u32 age_count;
+    };
+    SiteGens sites[MAX_SITES_PER_KLASS];
+    int site_count;
   } KlassCountScratch;
   KlassCountScratch _klass_count_scratch[MAX_KLASS_POPULATION_ENTRIES];
   int _klass_count_scratch_size;
@@ -467,9 +485,12 @@ private:
   // epoch. No-op if the scratch table is already full and klass_id is not
   // present - the same fixed-capacity/best-effort tradeoff
   // _klass_population's own table already accepts, one level up.
-  void accumulateKlassCount(u32 klass_id, jlong age, jweak sample_source);
+  void accumulateKlassCount(u32 klass_id, jlong age, jweak sample_source,
+                           u64 call_trace_id);
   void insertOldestSample(KlassCountScratch &scratch, jweak sample_source,
-                           u32 age);
+                           u32 age, u64 call_trace_id);
+  void insertSiteGen(KlassCountScratch &scratch, u64 call_trace_id,
+                       u32 age);
 
   // Pushes `count` into klass_id's ring buffer, creating the entry (evicting
   // the least-recently-updated entry first if the table is already at
