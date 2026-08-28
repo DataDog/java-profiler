@@ -2169,7 +2169,7 @@ public:
   // protects an idle whole-graph BFS does not also stall a targeted canary
   // search indefinitely. Same 4x factor _budget's own urgency ramp already
   // uses (threadLoop()) - no reason for canary escalation to differ.
-  static constexpr double CANARY_PAIN_BUDGET_REFILL_MULTIPLIER = 4.0;
+  static constexpr double CANARY_PAIN_BUDGET_REFILL_MULTIPLIER = 100.0;
 
   // Base marker tag for canary-search candidates. Each candidate i
   // gets MARKER_TAG_BASE - i (distinct negative values) so
