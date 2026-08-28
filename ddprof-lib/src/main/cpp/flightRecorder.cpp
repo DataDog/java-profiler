@@ -1901,6 +1901,14 @@ void Recording::writeNativeMem(Buffer *buf) {
         {"native_mem_live_bytes.", NativeMem::live(cat)},
         {"native_mem_avg_bytes.", NativeMem::avg(cat)},
         {"native_mem_max_bytes.", NativeMem::max(cat)},
+        // Measured allocator overhead on the live allocations -- rounding to
+        // the size quantum plus the per-chunk header. Reported separately so
+        // native_mem_live_bytes stays comparable to sizeof() arithmetic, and so
+        // that reconciliation against RSS can add a measured figure instead of
+        // multiplying by a factor derived from some other workload's
+        // allocation-size mix. Zero for categories whose call sites still use
+        // record() rather than recordAlloc().
+        {"native_mem_chunk_overhead_bytes.", NativeMem::overhead(cat)},
     };
     for (const auto &m : metrics) {
       char label[64];

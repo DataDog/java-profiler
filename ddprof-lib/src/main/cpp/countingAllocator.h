@@ -25,12 +25,18 @@ public:
 
   T *allocate(std::size_t n) {
     T *p = static_cast<T *>(::operator new(n * sizeof(T)));
-    NativeMem::record(Cat, (long long)(n * sizeof(T)));
+    // recordAlloc rather than record: STL nodes are small, so the allocator's
+    // rounding and per-chunk header are a large fraction of their real cost
+    // (a 96-byte MethodMap node occupies 112 bytes -- 16.7 %). Logical bytes
+    // still land in the live gauge; the extra goes to the overhead gauge.
+    NativeMem::recordAlloc(Cat, p, n * sizeof(T));
     return p;
   }
 
   void deallocate(T *p, std::size_t n) noexcept {
-    NativeMem::record(Cat, -(long long)(n * sizeof(T)));
+    // Must run before operator delete: the overhead is read back off the live
+    // chunk.
+    NativeMem::recordFreeBefore(Cat, p, n * sizeof(T));
     ::operator delete(p);
   }
 

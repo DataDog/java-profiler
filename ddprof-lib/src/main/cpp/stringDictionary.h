@@ -86,7 +86,11 @@ class StringArena {
         // gates the diagnostic DICTIONARY_BYTES counter). Keys are bump-allocated
         // inside these chunks, so they must not be counted separately.
         if (c != nullptr) {
-            NativeMem::record(NM_DICTIONARY, (long long)sizeof(Chunk));
+            // recordAlloc measures the allocator overhead rather than assuming
+            // it. These chunks are ~512 KB, so glibc serves them by mmap and the
+            // overhead is ~16 bytes -- about 0.003 %, not the double-digit
+            // percentage a small-allocation-derived blanket factor would imply.
+            NativeMem::recordAlloc(NM_DICTIONARY, c, sizeof(Chunk));
         }
         return c;
     }
@@ -143,8 +147,9 @@ public:
         Chunk* c = _first;
         while (c) {
             Chunk* n = c->next;
+            // Before free(): the overhead is read back off the live chunk.
+            NativeMem::recordFreeBefore(NM_DICTIONARY, c, sizeof(Chunk));
             free(c);
-            NativeMem::record(NM_DICTIONARY, -(long long)sizeof(Chunk));
             c = n;
         }
     }
@@ -182,8 +187,9 @@ public:
         int freed = 0;
         while (c) {
             Chunk* n = c->next;
+            // Before free(): the overhead is read back off the live chunk.
+            NativeMem::recordFreeBefore(NM_DICTIONARY, c, sizeof(Chunk));
             free(c);
-            NativeMem::record(NM_DICTIONARY, -(long long)sizeof(Chunk));
             c = n;
             ++freed;
         }
