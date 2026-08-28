@@ -3,7 +3,12 @@ import zstandard as zstd
 
 MIB = 1024*1024
 PAIRS = list(range(1, 13))
-WARMUP = 30.0
+# Seconds of startup to exclude. Anonymous memory plateaus at t ~ 180 s, so a
+# measurement sampled after that is on a flat curve, where estimator choice
+# barely matters (spread 2.7 MiB vs 20.3 MiB when sampling mid-ramp). Set
+# WARMUP=240 for runs long enough to reach plateau; 30 only makes sense for
+# short runs that never get there, where the figure is ramp-dependent.
+WARMUP = float(os.environ.get("WARMUP", "30"))
 
 def load_trace(path):
     """Return (rel_times, values, marks) with container-TEARDOWN samples removed.
