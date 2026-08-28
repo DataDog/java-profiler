@@ -46,6 +46,14 @@ LinearAllocator::~LinearAllocator() {
 }
 
 void LinearAllocator::clear() {
+  // Both pointers are NULL only after detachChunks() could not allocate a
+  // replacement chunk, which leaves the allocator deliberately unusable rather
+  // than risking a double free. Bail out here so the whole function is
+  // null-safe: it dereferences _reserve immediately below and _tail at the end,
+  // so guarding either one alone would leave the other exposed.
+  if (_tail == NULL || _reserve == NULL) {
+    return;
+  }
   // OS::safeAlloc/safeFree use raw syscalls not intercepted by TSan, so TSan
   // never clears shadow memory on munmap.  Add explicit acquire/release around
   // every plain prev-field read so the happens-before chain from freeChunk's
