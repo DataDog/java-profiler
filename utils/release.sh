@@ -347,55 +347,14 @@ for arg in "$@"; do
     fi
 done
 
-RELEASE_TYPE=$1
-shift
+if [[ "$1" == "--retry" ]]; then
+    if [ -z "$2" ]; then
+        print_error "--retry requires a run ID"
+        exit 1
+    fi
+    RETRY_RUN_ID="$2"
+    shift 2
 
-while [ $# -gt 0 ]; do
-    case "$1" in
-        --no-dry-run)
-            DRY_RUN="false"
-            shift
-            ;;
-        --skip-tests)
-            SKIP_TESTS="true"
-            shift
-            ;;
-        --branch)
-            if [ -z "$2" ]; then
-                print_error "--branch requires a branch name"
-                exit 1
-            fi
-            BRANCH="$2"
-            shift 2
-            ;;
-        --commit)
-            if [ -z "$2" ]; then
-                print_error "--commit requires a commit SHA"
-                exit 1
-            fi
-            COMMIT_SHA="$2"
-            shift 2
-            ;;
-        --retry)
-            if [ -z "$2" ]; then
-                print_error "--retry requires a run ID"
-                exit 1
-            fi
-            RETRY_RUN_ID="$2"
-            shift 2
-            ;;
-        *)
-            print_error "Unknown option: $1"
-            show_usage
-            exit 1
-            ;;
-    esac
-done
-
-# ── Retry mode ──────────────────────────────────────────────────────────
-# Re-dispatch a failed release run with the same parameters extracted from
-# the original workflow run. Skips all interactive selection.
-if [ -n "$RETRY_RUN_ID" ]; then
     check_gh_auth
 
     print_info "Fetching original run $RETRY_RUN_ID..."
@@ -447,12 +406,46 @@ if [ -n "$RETRY_RUN_ID" ]; then
             exit 0
         fi
     fi
-
-    # Jump straight to the trigger section
-    goto_trigger=true
 else
-    goto_trigger=false
-fi
+
+RELEASE_TYPE=$1
+shift
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --no-dry-run)
+            DRY_RUN="false"
+            shift
+            ;;
+        --skip-tests)
+            SKIP_TESTS="true"
+            shift
+            ;;
+        --branch)
+            if [ -z "$2" ]; then
+                print_error "--branch requires a branch name"
+                exit 1
+            fi
+            BRANCH="$2"
+            shift 2
+            ;;
+        --commit)
+            if [ -z "$2" ]; then
+                print_error "--commit requires a commit SHA"
+                exit 1
+            fi
+            COMMIT_SHA="$2"
+            shift 2
+            ;;
+        *)
+            print_error "Unknown option: $1"
+            show_usage
+            exit 1
+            ;;
+    esac
+done
+
+goto_trigger=false
 
 if [ "$goto_trigger" != "true" ]; then
 
@@ -646,6 +639,8 @@ else
 fi
 
 fi  # end of normal-mode block (goto_trigger != true)
+
+fi  # end of else from --retry intercept
 
 echo ""
 print_info "Triggering GitHub Actions workflow..."
