@@ -226,7 +226,7 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
           }
           if (klass_id != 0) {
             accumulateKlassCount(klass_id, _table[target].age, _table[target].ref,
-                                 _table[target].call_trace_id);
+                                 _table[target].tid);
           }
         }
       } else {
@@ -293,7 +293,7 @@ u32 LivenessTracker::resolveKlassId(JNIEnv *env, jobject ref) {
 // to bias representative selection toward long-lived instances.
 void LivenessTracker::insertOldestSample(KlassCountScratch &scratch,
                                           jweak sample_source, u32 age,
-                                          u64 call_trace_id) {
+                                          jint tid) {
   int pos = scratch.oldest_count;
   for (int i = 0; i < scratch.oldest_count; i++) {
     if (age > scratch.oldest[i].age) {
@@ -310,53 +310,53 @@ void LivenessTracker::insertOldestSample(KlassCountScratch &scratch,
     }
     scratch.oldest[pos].ref = sample_source;
     scratch.oldest[pos].age = age;
-    scratch.oldest[pos].call_trace_id = call_trace_id;
+    scratch.oldest[pos].tid = tid;
   }
 }
 
-void LivenessTracker::insertSiteGen(KlassCountScratch &scratch,
-                                     u64 call_trace_id, u32 age) {
-  // Find or create the site entry for this call_trace_id
-  for (int i = 0; i < scratch.site_count; i++) {
-    if (scratch.sites[i].call_trace_id == call_trace_id) {
-      // Insert age into the site's sorted distinct-age array
-      auto &site = scratch.sites[i];
-      for (u32 j = 0; j < site.age_count; j++) {
-        if (site.ages[j] == age) {
-          return; // age already counted for this site
+void LivenessTracker::insertThreadGen(KlassCountScratch &scratch,
+                                      jint tid, u32 age) {
+  // Find or create the thread entry for this tid
+  for (int i = 0; i < scratch.thread_count; i++) {
+    if (scratch.threads[i].tid == tid) {
+      // Insert age into the thread's sorted distinct-age array
+      auto &t = scratch.threads[i];
+      for (u32 j = 0; j < t.age_count; j++) {
+        if (t.ages[j] == age) {
+          return; // age already counted for this thread
         }
       }
-      if (site.age_count < KlassCountScratch::MAX_AGES_PER_SITE) {
+      if (t.age_count < KlassCountScratch::MAX_AGES_PER_THREAD) {
         // Insert sorted (small array, linear scan + shift)
-        u32 pos = site.age_count;
-        for (u32 j = 0; j < site.age_count; j++) {
-          if (age < site.ages[j]) {
+        u32 pos = t.age_count;
+        for (u32 j = 0; j < t.age_count; j++) {
+          if (age < t.ages[j]) {
             pos = j;
             break;
           }
         }
-        for (u32 j = site.age_count; j > pos; j--) {
-          site.ages[j] = site.ages[j - 1];
+        for (u32 j = t.age_count; j > pos; j--) {
+          t.ages[j] = t.ages[j - 1];
         }
-        site.ages[pos] = age;
-        site.age_count++;
+        t.ages[pos] = age;
+        t.age_count++;
       }
       return;
     }
   }
-  if (scratch.site_count < KlassCountScratch::MAX_SITES_PER_KLASS) {
-    int idx = scratch.site_count++;
-    scratch.sites[idx].call_trace_id = call_trace_id;
-    scratch.sites[idx].ages[0] = age;
-    scratch.sites[idx].age_count = 1;
+  if (scratch.thread_count < KlassCountScratch::MAX_THREADS_PER_KLASS) {
+    int idx = scratch.thread_count++;
+    scratch.threads[idx].tid = tid;
+    scratch.threads[idx].ages[0] = age;
+    scratch.threads[idx].age_count = 1;
   }
-  // else: site table full — additional sites are not tracked, but the
-  // oldest[] array still captures instances from all sites.
+  // else: thread table full — additional threads are not tracked, but
+  // the oldest[] array still captures instances from all threads.
 }
 
 void LivenessTracker::accumulateKlassCount(u32 klass_id, jlong age,
                                            jweak sample_source,
-                                           u64 call_trace_id) {
+                                           jint tid) {
   // Count distinct GC ages (generations) per klass: group surviving
   // tracked objects by klass, then for each klass count the
   // number of unique age values. This is the "generation
@@ -382,13 +382,13 @@ void LivenessTracker::accumulateKlassCount(u32 klass_id, jlong age,
       // Track top-N oldest instances (Lindy bias): insert this sample
       // into the oldest[] array, sorted by age descending, capped at
       // MAX_OLDEST_SAMPLES. Runs for every object, not just new ages.
-      insertOldestSample(entry, sample_source, (u32)age, call_trace_id);
-      // Track per-allocation-site distinct surviving generations (Cork/
-      // Swat heuristic): add this object's age to its site's age set.
-      // Runs for every object — the site's generation cardinality is
+      insertOldestSample(entry, sample_source, (u32)age, tid);
+      // Track per-thread distinct surviving generations (Cork/Swat
+      // heuristic): add this object's age to its thread's age set.
+      // Runs for every object — the thread's generation cardinality is
       // the leak signal, and it must see all surviving objects to be
       // accurate.
-      insertSiteGen(entry, call_trace_id, (u32)age);
+      insertThreadGen(entry, tid, (u32)age);
       return;
     }
   }
@@ -397,9 +397,9 @@ void LivenessTracker::accumulateKlassCount(u32 klass_id, jlong age,
     slot.klass_id = klass_id;
     slot.ages.push_back((u32)age);
     slot.oldest_count = 0;
-    slot.site_count = 0;
-    insertOldestSample(slot, sample_source, (u32)age, call_trace_id);
-    insertSiteGen(slot, call_trace_id, (u32)age);
+    slot.thread_count = 0;
+    insertOldestSample(slot, sample_source, (u32)age, tid);
+    insertThreadGen(slot, tid, (u32)age);
   }
   // else: this epoch's scratch snapshot already holds
   // MAX_KLASS_POPULATION_ENTRIES distinct surviving klasses - klass_id's
@@ -588,34 +588,38 @@ void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch,
         }
       }
       _klass_population[slot].representative_count = 0;
-      // Find the dominant allocation site (highest generation
+      // Find the dominant allocating thread (highest generation
       // cardinality — most distinct surviving GC ages). This reuses
       // the same generation-count signal that selectLeakCandidates()
-      // uses per-class, applied at per-site granularity within a class.
-      // A site with 12 distinct surviving ages (continuous leak)
-      // outscores a site with 1 age (one-time burst), regardless of
-      // raw instance count or size (Cork/Swat heuristic).
-      u64 dominant_site = 0;
+      // uses per-class, applied at per-thread granularity within a
+      // class. A thread with 12 distinct surviving ages (continuous
+      // leak) outscores a thread with 1 age (one-time burst),
+      // regardless of raw instance count or size (Cork/Swat
+      // heuristic). Thread ID is used instead of call_trace_id because
+      // lambdas fragment call_trace_id — synthetic methods produce
+      // slightly different stack hashes for what is logically one
+      // allocation site.
+      jint dominant_tid = 0;
       u32 dominant_gens = 0;
-      for (int si = 0; si < s.site_count; si++) {
-        if (s.sites[si].age_count > dominant_gens) {
-          dominant_gens = s.sites[si].age_count;
-          dominant_site = s.sites[si].call_trace_id;
+      for (int ti = 0; ti < s.thread_count; ti++) {
+        if (s.threads[ti].age_count > dominant_gens) {
+          dominant_gens = s.threads[ti].age_count;
+          dominant_tid = s.threads[ti].tid;
         }
       }
       // Mint fresh representatives, preferring instances from the
-      // dominant allocation site. If the dominant site has fewer than
-      // MAX_REPRESENTATIVES_PER_KLASS instances in oldest[], fill the
-      // remaining slots with other oldest instances.
+      // dominant allocating thread. If the dominant thread has fewer
+      // than MAX_REPRESENTATIVES_PER_KLASS instances in oldest[], fill
+      // the remaining slots with other oldest instances.
       bool minted_any = false;
       int minted = 0;
-      // First pass: instances from the dominant site (only if it has
-      // >1 distinct generation — otherwise all sites are equally
+      // First pass: instances from the dominant thread (only if it has
+      // >1 distinct generation — otherwise all threads are equally
       // uninteresting and pure oldest-first is fine)
       if (dominant_gens > 1) {
         for (int r = 0; r < s.oldest_count &&
                 minted < KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS; r++) {
-          if (s.oldest[r].call_trace_id != dominant_site) continue;
+          if (s.oldest[r].tid != dominant_tid) continue;
           jobject strong = env->NewLocalRef(s.oldest[r].ref);
           if (strong != nullptr) {
             jweak rep = env->NewWeakGlobalRef(strong);
@@ -633,7 +637,7 @@ void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch,
       // Second pass: fill remaining slots with other oldest instances
       for (int r = 0; r < s.oldest_count &&
               minted < KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS; r++) {
-        if (dominant_gens > 1 && s.oldest[r].call_trace_id == dominant_site) continue;
+        if (dominant_gens > 1 && s.oldest[r].tid == dominant_tid) continue;
         jobject strong = env->NewLocalRef(s.oldest[r].ref);
         if (strong != nullptr) {
           jweak rep = env->NewWeakGlobalRef(strong);
@@ -651,9 +655,8 @@ void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch,
       // could mint a representative - left with representative_count=0
       // for this epoch, retried on the next one.
       TEST_LOG("LivenessTracker::foldKlassCountsLocked minted=%d for klass_id=%u "
-               "dominant_site=%llu dominant_gens=%u",
-               minted, s.klass_id,
-               (unsigned long long)dominant_site, dominant_gens);
+               "dominant_tid=%d dominant_gens=%u",
+               minted, s.klass_id, (int)dominant_tid, dominant_gens);
     }
   }
   _klass_count_scratch_size = 0;

@@ -371,27 +371,34 @@ private:
     struct OldestSample {
       jweak ref;
       u32 age;
-      u64 call_trace_id;  // allocation site of this instance
+      jint tid;  // allocating thread of this instance
     };
     OldestSample oldest[MAX_OLDEST_SAMPLES];
     int oldest_count;
-    // Per-allocation-site generation tracking (Cork/Swat heuristic):
-    // track distinct surviving GC ages per allocation site within this
-    // klass. The site with the most distinct surviving generations is
-    // the strongest leak signal — it reuses the same generation-count
-    // signal that selectLeakCandidates() uses per-class, applied at
-    // per-site granularity within a class. A site with 12 distinct
-    // surviving ages (continuous leak) outscores a site with 1 age
-    // (one-time burst), regardless of raw instance count or size.
-    static constexpr int MAX_SITES_PER_KLASS = 16;
-    static constexpr int MAX_AGES_PER_SITE = 32;
-    struct SiteGens {
-      u64 call_trace_id;
-      u32 ages[MAX_AGES_PER_SITE];  // sorted distinct ages
+    // Per-thread generation tracking (Cork/Swat heuristic adapted):
+    // track distinct surviving GC ages per allocating thread (tid)
+    // within this klass. The thread with the most distinct surviving
+    // generations is the strongest leak signal — it reuses the same
+    // generation-count signal that selectLeakCandidates() uses
+    // per-class, applied at per-thread granularity within a class.
+    // A thread with 12 distinct surviving ages (continuous leak)
+    // outscores a thread with 1 age (one-time burst).
+    //
+    // Thread ID is used instead of call_trace_id because lambdas
+    // fragment call_trace_id — synthetic methods produce slightly
+    // different stack hashes for what is logically one allocation
+    // site, yielding N sites × 1 generation instead of 1 site × N
+    // generations. Thread ID is stable and naturally separates leak
+    // threads from noise threads.
+    static constexpr int MAX_THREADS_PER_KLASS = 16;
+    static constexpr int MAX_AGES_PER_THREAD = 32;
+    struct ThreadGens {
+      jint tid;
+      u32 ages[MAX_AGES_PER_THREAD];  // sorted distinct ages
       u32 age_count;
     };
-    SiteGens sites[MAX_SITES_PER_KLASS];
-    int site_count;
+    ThreadGens threads[MAX_THREADS_PER_KLASS];
+    int thread_count;
   } KlassCountScratch;
   KlassCountScratch _klass_count_scratch[MAX_KLASS_POPULATION_ENTRIES];
   int _klass_count_scratch_size;
@@ -486,11 +493,10 @@ private:
   // present - the same fixed-capacity/best-effort tradeoff
   // _klass_population's own table already accepts, one level up.
   void accumulateKlassCount(u32 klass_id, jlong age, jweak sample_source,
-                           u64 call_trace_id);
+                           jint tid);
   void insertOldestSample(KlassCountScratch &scratch, jweak sample_source,
-                           u32 age, u64 call_trace_id);
-  void insertSiteGen(KlassCountScratch &scratch, u64 call_trace_id,
-                       u32 age);
+                           u32 age, jint tid);
+  void insertThreadGen(KlassCountScratch &scratch, jint tid, u32 age);
 
   // Pushes `count` into klass_id's ring buffer, creating the entry (evicting
   // the least-recently-updated entry first if the table is already at
