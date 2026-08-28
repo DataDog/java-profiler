@@ -36,6 +36,7 @@ SKIP_TESTS="false"
 BRANCH=""
 RELEASE_TYPE=""
 COMMIT_SHA=""
+RETRY_RUN_ID=""
 
 # Function to print colored output
 print_error() {
@@ -248,10 +249,47 @@ select_commit() {
     done
 }
 
+# Function to verify GitHub CLI installation, authentication, and repo permissions.
+# Sets globals: REPO, REPO_URL, ACTOR.
+check_gh_auth() {
+    print_info "Checking GitHub CLI installation..."
+    if ! command -v gh &> /dev/null; then
+        print_error "GitHub CLI (gh) is not installed"
+        echo "Install it from: https://cli.github.com/"
+        exit 1
+    fi
+
+    print_info "Checking GitHub authentication..."
+    # Note: gh auth status may return non-zero even when authenticated, so check the output
+    AUTH_STATUS=$(gh auth status 2>&1 || true)
+    if ! echo "$AUTH_STATUS" | grep -q "Logged in"; then
+        print_error "Not authenticated with GitHub CLI"
+        echo "Run: gh auth login"
+        echo ""
+        echo "Current auth status:"
+        echo "$AUTH_STATUS"
+        exit 1
+    fi
+    print_info "GitHub authentication verified"
+
+    REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
+    REPO_URL=$(gh repo view --json url --jq '.url')
+    VIEWER_PERMISSION=$(gh repo view --json viewerPermission --jq '.viewerPermission')
+    case "$VIEWER_PERMISSION" in
+        WRITE|MAINTAIN|ADMIN) ;;
+        *)
+            print_error "Release execution requires write, maintain, or admin access to $REPO"
+            exit 1
+            ;;
+    esac
+    ACTOR=$(gh api user --jq '.login')
+}
+
 # Function to show usage
 show_usage() {
     cat << EOF
 Usage: $0 <release_type> [options]
+       $0 --retry <run_id>
 
 Arguments:
   release_type       Type of release: major, minor, or patch
@@ -261,6 +299,9 @@ Options:
   --skip-tests       Skip pre-release tests (emergency releases only)
   --branch <name>    Specify branch to release from (default: current branch)
   --commit <sha>     Specify commit SHA to release (default: interactive selection)
+  --retry <run_id>   Retry a failed release run by re-dispatching with the same
+                     parameters (release_type, dry_run, skip_tests, source_sha)
+                     extracted from the original workflow run
   --help             Show this help message
 
 Examples:
@@ -272,6 +313,7 @@ Examples:
   $0 patch --skip-tests           # Emergency patch without tests (dry-run)
   $0 patch --no-dry-run --skip-tests  # Emergency patch without tests (real)
   $0 major --branch main          # Specify branch explicitly
+  $0 --retry 33177365160          # Retry failed release run 33177365160
 
 Release Flow:
   1. Validates inputs and branch rules
@@ -334,6 +376,14 @@ while [ $# -gt 0 ]; do
             COMMIT_SHA="$2"
             shift 2
             ;;
+        --retry)
+            if [ -z "$2" ]; then
+                print_error "--retry requires a run ID"
+                exit 1
+            fi
+            RETRY_RUN_ID="$2"
+            shift 2
+            ;;
         *)
             print_error "Unknown option: $1"
             show_usage
@@ -341,6 +391,70 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+# ── Retry mode ──────────────────────────────────────────────────────────
+# Re-dispatch a failed release run with the same parameters extracted from
+# the original workflow run. Skips all interactive selection.
+if [ -n "$RETRY_RUN_ID" ]; then
+    check_gh_auth
+
+    print_info "Fetching original run $RETRY_RUN_ID..."
+    RUN_JSON=$(gh run view "$RETRY_RUN_ID" --repo "$REPO" --json displayTitle,headBranch,headSha 2>&1) || {
+        print_error "Could not fetch run $RETRY_RUN_ID"
+        echo "$RUN_JSON"
+        exit 1
+    }
+
+    BRANCH=$(echo "$RUN_JSON" | jq -r '.headBranch')
+    COMMIT_SHA=$(echo "$RUN_JSON" | jq -r '.headSha')
+    DISPLAY_TITLE=$(echo "$RUN_JSON" | jq -r '.displayTitle')
+    SHORT_SHA="${COMMIT_SHA:0:8}"
+
+    # Infer release_type from the display title (the workflow embeds it)
+    if echo "$DISPLAY_TITLE" | grep -qi 'major'; then
+        RELEASE_TYPE="major"
+    elif echo "$DISPLAY_TITLE" | grep -qi 'patch'; then
+        RELEASE_TYPE="patch"
+    else
+        RELEASE_TYPE="minor"
+    fi
+
+    # Infer dry_run from the display title
+    if echo "$DISPLAY_TITLE" | grep -qi 'dry-run'; then
+        DRY_RUN="true"
+    else
+        DRY_RUN="false"
+    fi
+
+    echo ""
+    print_info "═══════════════════════════════════════════════════════"
+    print_info "  Retry Configuration (from run $RETRY_RUN_ID)"
+    print_info "═══════════════════════════════════════════════════════"
+    echo "  Release Type: $RELEASE_TYPE (inferred from title)"
+    echo "  Branch: $BRANCH"
+    echo "  Commit: $SHORT_SHA"
+    echo "  Dry Run: $DRY_RUN"
+    echo "  Skip Tests: $SKIP_TESTS"
+    echo "  Original: $DISPLAY_TITLE"
+    print_info "═══════════════════════════════════════════════════════"
+    echo ""
+
+    if [ "$DRY_RUN" == "false" ]; then
+        print_warning "This will perform an ACTUAL release (retry)!"
+        read -p "Are you sure you want to continue? (yes/no): " -r </dev/tty
+        if [[ ! $REPLY =~ ^[Yy][Ee][Ss]$ ]]; then
+            print_info "Retry cancelled"
+            exit 0
+        fi
+    fi
+
+    # Jump straight to the trigger section
+    goto_trigger=true
+else
+    goto_trigger=false
+fi
+
+if [ "$goto_trigger" != "true" ]; then
 
 # Validate release type
 if [[ ! "$RELEASE_TYPE" =~ ^(major|minor|patch)$ ]]; then
@@ -497,39 +611,7 @@ COMMIT_DATE=$(git log -1 --pretty=format:"%ar" "$COMMIT_SHA" 2>&1) || {
 }
 
 # NOW check GitHub CLI authentication (after commit selection)
-# Check if gh CLI is installed
-print_info "Checking GitHub CLI installation..."
-if ! command -v gh &> /dev/null; then
-    print_error "GitHub CLI (gh) is not installed"
-    echo "Install it from: https://cli.github.com/"
-    exit 1
-fi
-
-# Check if user is authenticated
-print_info "Checking GitHub authentication..."
-# Note: gh auth status may return non-zero even when authenticated, so check the output
-AUTH_STATUS=$(gh auth status 2>&1 || true)
-if ! echo "$AUTH_STATUS" | grep -q "Logged in"; then
-    print_error "Not authenticated with GitHub CLI"
-    echo "Run: gh auth login"
-    echo ""
-    echo "Current auth status:"
-    echo "$AUTH_STATUS"
-    exit 1
-fi
-print_info "GitHub authentication verified"
-
-REPO=$(gh repo view --json nameWithOwner --jq '.nameWithOwner')
-REPO_URL=$(gh repo view --json url --jq '.url')
-VIEWER_PERMISSION=$(gh repo view --json viewerPermission --jq '.viewerPermission')
-case "$VIEWER_PERMISSION" in
-    WRITE|MAINTAIN|ADMIN) ;;
-    *)
-        print_error "Release execution requires write, maintain, or admin access to $REPO"
-        exit 1
-        ;;
-esac
-ACTOR=$(gh api user --jq '.login')
+check_gh_auth
 
 # Branch validation already done earlier (before commit selection)
 
@@ -562,6 +644,8 @@ if [ "$DRY_RUN" == "false" ]; then
 else
     print_info "Running in DRY-RUN mode (no changes will be made)"
 fi
+
+fi  # end of normal-mode block (goto_trigger != true)
 
 echo ""
 print_info "Triggering GitHub Actions workflow..."
