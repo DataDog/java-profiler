@@ -62,6 +62,7 @@ typedef struct KlassPopulationEntry {
   // comment for why multiple representatives matter.
   static constexpr int MAX_REPRESENTATIVES_PER_KLASS = 3;
   jweak representatives[MAX_REPRESENTATIVES_PER_KLASS];
+  jint rep_tids[MAX_REPRESENTATIVES_PER_KLASS]; // tid each rep was minted from
   int representative_count;
   u32 count_ring[30];     // ring buffer of per-epoch generation counts: the
                           // number of distinct GC ages among a klass's

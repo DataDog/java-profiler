@@ -456,6 +456,7 @@ jweak LivenessTracker::recordKlassPopulationSampleLocked(
     _klass_population[slot].klass_id = klass_id;
     _klass_population[slot].representative_count = 0;
     memset(_klass_population[slot].representatives, 0, sizeof(_klass_population[slot].representatives));
+    memset(_klass_population[slot].rep_tids, 0, sizeof(_klass_population[slot].rep_tids));
     _klass_population[slot].ring_head = 0;
     _klass_population[slot].ring_fill = 0;
     _klass_population[slot].consecutive_positive = 0;
@@ -585,20 +586,46 @@ void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch,
       }
       need_mint = !any_live;
     }
-    // Diagnostic: log existing rep status and dominant thread for this klass
-    if (!need_mint && s.thread_count > 0) {
-      jint dom_tid = 0;
-      u32 dom_gens = 0;
-      for (int ti = 0; ti < s.thread_count; ti++) {
-        if (s.threads[ti].age_count > dom_gens) {
-          dom_gens = s.threads[ti].age_count;
-          dom_tid = s.threads[ti].tid;
+    // Compute the dominant allocating thread (highest generation
+    // cardinality — most distinct surviving GC ages). This reuses
+    // the same generation-count signal that selectLeakCandidates()
+    // uses per-class, applied at per-thread granularity within a
+    // class. A thread with 12 distinct surviving ages (continuous
+    // leak) outscores a thread with 1 age (one-time burst),
+    // regardless of raw instance count or size (Cork/Swat
+    // heuristic). Thread ID is used instead of call_trace_id because
+    // lambdas fragment call_trace_id — synthetic methods produce
+    // slightly different stack hashes for what is logically one
+    // allocation site.
+    jint dominant_tid = 0;
+    u32 dominant_gens = 0;
+    for (int ti = 0; ti < s.thread_count; ti++) {
+      if (s.threads[ti].age_count > dominant_gens) {
+        dominant_gens = s.threads[ti].age_count;
+        dominant_tid = s.threads[ti].tid;
+      }
+    }
+    // Re-mint if the dominant thread has >1 generation AND none of
+    // the current reps were minted from it. This handles the startup-
+    // cache problem: reps minted from noise threads during startup
+    // stay live even after the real leak thread becomes dominant,
+    // blocking re-selection because need_mint=false. By checking
+    // whether reps match the dominant thread, we replace stale reps
+    // with instances from the actual leak thread.
+    if (!need_mint && dominant_gens > 1) {
+      bool rep_matches_dominant = false;
+      for (int r = 0; r < _klass_population[slot].representative_count; r++) {
+        if (_klass_population[slot].rep_tids[r] == dominant_tid) {
+          rep_matches_dominant = true;
+          break;
         }
       }
-      TEST_LOG("LivenessTracker::foldKlassCountsLocked klass_id=%u reps=%d "
-               "dominant_tid=%d dominant_gens=%u (no re-mint needed)",
-               s.klass_id, _klass_population[slot].representative_count,
-               (int)dom_tid, dom_gens);
+      if (!rep_matches_dominant) {
+        need_mint = true;
+        TEST_LOG("LivenessTracker::foldKlassCountsLocked re-minting klass_id=%u: "
+                 "dominant_tid=%d dominant_gens=%u but no rep matches",
+                 s.klass_id, (int)dominant_tid, dominant_gens);
+      }
     }
     if (need_mint) {
       // Clean up old representatives
@@ -607,27 +634,9 @@ void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch,
           env->DeleteWeakGlobalRef(_klass_population[slot].representatives[r]);
           _klass_population[slot].representatives[r] = nullptr;
         }
+        _klass_population[slot].rep_tids[r] = 0;
       }
       _klass_population[slot].representative_count = 0;
-      // Find the dominant allocating thread (highest generation
-      // cardinality — most distinct surviving GC ages). This reuses
-      // the same generation-count signal that selectLeakCandidates()
-      // uses per-class, applied at per-thread granularity within a
-      // class. A thread with 12 distinct surviving ages (continuous
-      // leak) outscores a thread with 1 age (one-time burst),
-      // regardless of raw instance count or size (Cork/Swat
-      // heuristic). Thread ID is used instead of call_trace_id because
-      // lambdas fragment call_trace_id — synthetic methods produce
-      // slightly different stack hashes for what is logically one
-      // allocation site.
-      jint dominant_tid = 0;
-      u32 dominant_gens = 0;
-      for (int ti = 0; ti < s.thread_count; ti++) {
-        if (s.threads[ti].age_count > dominant_gens) {
-          dominant_gens = s.threads[ti].age_count;
-          dominant_tid = s.threads[ti].tid;
-        }
-      }
       // Mint fresh representatives, preferring instances from the
       // dominant allocating thread. If the dominant thread has fewer
       // than MAX_REPRESENTATIVES_PER_KLASS instances in oldest[], fill
@@ -646,6 +655,7 @@ void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch,
             jweak rep = env->NewWeakGlobalRef(strong);
             int idx = _klass_population[slot].representative_count++;
             _klass_population[slot].representatives[idx] = rep;
+            _klass_population[slot].rep_tids[idx] = dominant_tid;
             if (!minted_any) {
               mintStableClassTagIfNeeded(env, slot, strong);
               minted_any = true;
@@ -664,6 +674,7 @@ void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch,
           jweak rep = env->NewWeakGlobalRef(strong);
           int idx = _klass_population[slot].representative_count++;
           _klass_population[slot].representatives[idx] = rep;
+          _klass_population[slot].rep_tids[idx] = s.oldest[r].tid;
           if (!minted_any) {
             mintStableClassTagIfNeeded(env, slot, strong);
             minted_any = true;
