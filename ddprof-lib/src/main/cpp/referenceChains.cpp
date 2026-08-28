@@ -4121,12 +4121,22 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
       }
       for (int d = 0; d < _candidate_discovered_count[s]; d++) {
         jlong disc_tag = _candidate_discovered_tags[s][d];
-        if (disc_tag == 0) continue;
+        if (disc_tag == 0) {
+          TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
+                   "disc_tag=0 at idx=%d for klass_id=%u slot=%d",
+                   d, klass_id, s);
+          continue;
+        }
         // Skip if already cached for this instance
         _resolved_chains_lock.lock();
         bool already_cached = (_resolved_chains.find(disc_tag) != _resolved_chains.end());
         _resolved_chains_lock.unlock();
-        if (already_cached) continue;
+        if (already_cached) {
+          TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
+                   "already_cached disc_tag=%lld klass_id=%u slot=%d idx=%d",
+                   (long long)disc_tag, klass_id, s, d);
+          continue;
+        }
         ReferenceChainEvent event;
         bool built = buildChainEvent(disc_tag, &event);
         if (built) {
