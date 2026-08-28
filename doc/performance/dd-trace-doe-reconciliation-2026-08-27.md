@@ -1,9 +1,18 @@
 # dd-trace-doe memory reconciliation, 27 Aug 2026
 
-**The profiler adds ≈ 60 MiB to the application's anonymous memory on this
-workload — about 3.8 % — and that overhead is fully accounted for. The
-unexplained residual is ≈ 0 to +5 MiB, within measurement error in all six
-independent variants tested.**
+**The profiler adds 62.6 ± 5.3 MiB to the application's anonymous memory on this
+workload — about 2.6 % — and that overhead is accounted for. The unexplained
+residual is +2 to +8 MiB, within 1.6 σ of zero in every variant tested.**
+
+Measured over 12 interleaved counterbalanced pairs, sampled after anonymous
+memory plateaus, where the choice of estimator changes the answer by 1.0 MiB
+rather than 20.
+
+**Quote the absolute figure, not the percentage.** The baseline here is 2405 MiB
+because `AlwaysPreTouch` pins all 2048 MiB of heap as touched; without it the
+same absolute overhead reads as ~3.9 % against a ~1580 MiB baseline. The
+denominator is a measurement choice, so the percentage is not a property of the
+profiler.
 
 Two caveats bound how this figure should be quoted:
 
@@ -115,35 +124,35 @@ independently measured means.
 
 | Term | MiB | SE |
 | --- | --- | --- |
-| Anonymous-memory paired delta (steady mean) | 60.48 | 4.24 |
-| NMT committed paired delta | 27.06 | 2.96 |
-| Profiler counters, raw | 24.92 | 0.08 |
-| Profiler counters, corrected (live basis) | 28.56 | 0.10 |
-| Profiler counters, corrected (peak basis) | 31.69 | 0.10 |
-| **Explained** (live / peak) | **55.62 / 58.75** | |
-| **Residual** (live / peak) | **+4.86 / +1.73** | 5.17 |
+| Anonymous-memory paired delta (plateau mean) | 62.62 | 5.25 |
+| NMT committed paired delta | 29.84 | — |
+| Profiler counters, raw | 23.82 | — |
+| Profiler counters, corrected (live basis) | 27.32 | — |
+| Profiler counters, corrected (peak basis) | 30.70 | — |
+| **Explained** (live / peak) | **57.16 / 60.54** | |
+| **Residual** (live / peak) | **+5.46 / +2.09** | 5.3 |
 
-A positive residual means anonymous memory exceeds what we can name. Across all
-six variants — two JVM configurations × three ways of reading anon — every
-residual falls within 2 σ of zero:
+A positive residual means anonymous memory exceeds what we can name. Every
+variant — three ways of reading anon × the live/peak call-trace bracket — falls
+within 1.6 σ of zero:
 
-| config | anon basis | residual (live) | residual (peak) |
-| --- | --- | --- | --- |
-| default | steady mean | +4.86 (0.94 σ) | +1.73 (0.33 σ) |
-| default | synchronous t = 70 s | +9.86 (1.51 σ) | +6.73 (1.03 σ) |
-| default | synchronous t = 30 s | −4.01 (1.06 σ) | −7.14 (1.89 σ) |
-| pretouch | steady mean | +2.02 (0.24 σ) | −1.10 (0.13 σ) |
-| pretouch | synchronous t = 70 s | +1.91 (0.20 σ) | −1.21 (0.13 σ) |
-| pretouch | synchronous t = 30 s | +2.68 (0.43 σ) | −0.43 (0.07 σ) |
+| anon basis | residual (live) | residual (peak) |
+| --- | --- | --- |
+| plateau mean | +5.46 (1.04 σ) | +2.09 (0.40 σ) |
+| synchronous t = 290 s | +5.56 (1.06 σ) | +2.18 (0.42 σ) |
+| synchronous t = 250 s | +8.02 (1.52 σ) | +4.64 (0.88 σ) |
 
-The live basis runs slightly positive and the peak basis slightly negative — the
-signature expected if true call-trace residency lies between the live gauge
-(3.48 MiB) and its peak (6.61 MiB), which is exactly what the counter's known
-`clear()` limitation implies. Reading that bracket as the answer puts the
-residual at **≈ 0 to +5 MiB**.
+The live basis runs higher than the peak basis because true call-trace residency
+lies between the live gauge (3.24 MiB) and its peak (6.62 MiB) — the counter's
+known `clear()` limitation. Reading that bracket as the answer puts the residual
+at **+2 to +8 MiB**.
+
+Sampling mid-ramp instead reproduces the same delta (62.89 ± 8.34 over 12 pairs
+at 90 s) with worse precision and 20× the estimator sensitivity, so it is not
+used here.
 
 Confidence rests on agreement across variants rather than on any single number:
-each variant alone carries ± 4–9 MiB.
+each carries ± 5 MiB.
 
 ---
 
@@ -260,6 +269,41 @@ does, both anon and NMT move together — cross-validating the instruments, sinc
 those outliers are real transient memory rather than measurement error. Because
 anon and NMT are now sampled synchronously, `Arena Chunk` can be differenced out
 of both sides; doing so shifts the result by under 1 MiB in these runs.
+
+### Plateau measurement (12 pairs, 5-minute runs)
+
+The headline figures above come from 12 interleaved counterbalanced pairs of
+5-minute runs with `AlwaysPreTouch`, sampled over t ≥ 240 s — after anonymous
+memory has plateaued. Anon is sampled at 2 Hz (130 samples per run in the
+window) and NMT twice per run, both inside the plateau.
+
+**Estimator choice is no longer material.** On a flat curve every reasonable
+estimator agrees:
+
+| estimator | delta (MiB) | sd | SE |
+| --- | --- | --- | --- |
+| `max(anon)` | 63.53 | 19.46 | 5.62 |
+| plateau mean | 62.62 | 18.20 | 5.25 |
+| plateau median | 62.64 | 18.18 | 5.25 |
+| synchronous t = 250 s | 62.52 | 18.22 | 5.26 |
+| synchronous t = 290 s | 62.72 | 18.16 | 5.24 |
+| **spread** | **1.00** | | |
+
+The spread was 20.34 MiB when sampling mid-ramp. Within-run plateau sd is
+0.30–0.47 MiB in every run, so the anon signal itself is essentially noiseless
+once settled — all remaining uncertainty is between runs.
+
+The residual figures are in [Reconciliation](#reconciliation).
+
+Per-pair deltas: 76.7, 62.4, 78.4, 38.9, 86.9, 53.7, 43.1, 83.9, 53.5, 74.8,
+66.4, 32.8 — a 32.8–86.9 MiB range against a within-run sd of 0.35. **The
+uncertainty is entirely between-run, not measurement.** The within-pair ordering
+bias persists at +9.73 MiB and is cancelled by counterbalancing.
+
+The NMT delta differs slightly between the two plateau snapshots (29.84 MiB at
+t = 290 s, 27.19 at t = 250 s), which is why the t = 250 s variants show a larger
+residual: JVM-internal structures are still settling marginally even once anon
+has flattened. The later snapshot is the better pairing.
 
 ### Long-run behaviour
 
