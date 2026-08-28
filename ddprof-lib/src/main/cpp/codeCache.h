@@ -10,6 +10,7 @@
 #include "common.h"
 #include "counters.h"
 #include "dwarf.h"
+#include "mallocFootprint.h"
 #include "utils.h"
 
 #include <atomic>
@@ -83,6 +84,18 @@ public:
       return 0;
     }
     return align_up(sizeof(NativeFunc) + 1 + strlen(name), sizeof(NativeFunc *));
+  }
+
+  // Allocator overhead on that allocation -- rounding to the size quantum plus
+  // the per-chunk header, measured rather than assumed. Lives here because only
+  // NativeFunc knows the real allocation base: `name` points *into* the block at
+  // offset sizeof(NativeFunc), so querying the allocator with `name` itself
+  // would be undefined. 0 if null.
+  static size_t nameOverhead(const char *name) {
+    if (name == nullptr) {
+      return 0;
+    }
+    return MallocFootprint::overheadOf(from(name), allocSize(name));
   }
 
   static short libIndex(const char *name) {
@@ -286,7 +299,9 @@ public:
   // — it is mutated by the background refresher and negligible in size (see the
   // definition). Const and lock-free: reads only fields that are stable once the
   // library is published.
-  long long memoryUsage() const;
+  // overhead_out, when non-null, receives the measured allocator overhead on
+  // the name allocations counted here (see NativeFunc::nameOverhead).
+  long long memoryUsage(long long *overhead_out = nullptr) const;
 
   int count() { return _count; }
   CodeBlob* blob(int idx) {
@@ -357,14 +372,18 @@ public:
   // cached at add() time. (Libraries are populated before being registered and
   // not grown afterwards.) The array is append-only, so iterating the published
   // prefix is safe alongside concurrent add()s.
-  size_t memoryUsage() const {
+  size_t memoryUsage(long long *overhead_out = nullptr) const {
     size_t total = 0;
+    long long overhead = 0;
     int n = count();
     for (int i = 0; i < n; i++) {
       CodeCache *lib = at(i);
       if (lib != nullptr) {
-        total += (size_t)lib->memoryUsage();
+        total += (size_t)lib->memoryUsage(overhead_out != nullptr ? &overhead : nullptr);
       }
+    }
+    if (overhead_out != nullptr) {
+      *overhead_out = overhead;
     }
     return total;
   }

@@ -158,7 +158,7 @@ CodeCache::~CodeCache() {
   free(_build_id);  // Free build-id memory
 }
 
-long long CodeCache::memoryUsage() const {
+long long CodeCache::memoryUsage(long long *overhead_out) const {
   // The blob array: _capacity entries of CodeBlob.
   long long total = (long long)_capacity * sizeof(CodeBlob);
 
@@ -175,6 +175,25 @@ long long CodeCache::memoryUsage() const {
   total += (long long)NativeFunc::allocSize(_name);
   for (int i = 0; i < _count; i++) {
     total += (long long)NativeFunc::allocSize(_blobs[i]._name);
+  }
+
+  // Measured allocator overhead on those name allocations, accumulated in the
+  // same pass. Name strings are numerous and short, so this is where the
+  // overhead lives: a blanket percentage derived from one workload's size mix
+  // cannot stand in for it.
+  //
+  // The _blobs array itself is deliberately excluded. It is one allocation per
+  // library, large enough that its overhead is a rounding error, and it comes
+  // from new CodeBlob[] -- whose returned pointer is not guaranteed to be the
+  // allocator's block base, so querying the allocator with it would be
+  // unsound. Excluding it understates by a negligible amount rather than
+  // risking a wrong reading.
+  if (overhead_out != nullptr) {
+    long long overhead = (long long)NativeFunc::nameOverhead(_name);
+    for (int i = 0; i < _count; i++) {
+      overhead += (long long)NativeFunc::nameOverhead(_blobs[i]._name);
+    }
+    *overhead_out += overhead;
   }
 
   // The DWARF unwind table, when present (length only — no pointer deref).

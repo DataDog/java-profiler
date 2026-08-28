@@ -131,6 +131,12 @@ public:
     record(category, -(long long)requested);
   }
 
+  // Gauge-style overhead setter, for categories whose size is recomputed as an
+  // absolute rather than tracked via alloc/free deltas (see setLive).
+  static void setOverhead(NativeMemCategory category, long long value) {
+    store(_overhead[category], value);
+  }
+
   static long long overhead(NativeMemCategory category) {
     return load(_overhead[category]);
   }

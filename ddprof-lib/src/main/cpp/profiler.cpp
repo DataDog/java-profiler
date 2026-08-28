@@ -1892,7 +1892,8 @@ void Profiler::updateNativeLibMemStats() {
   // cache). memoryUsage() is a recomputed gauge; read it once and publish the
   // counters plus the NativeMem gauge (NATIVE_SYMBOLS) as absolutes.
   const CodeCacheArray& native_libs = _libs->native_libs();
-  long long usage = (long long)native_libs.memoryUsage();
+  long long symbols_overhead = 0;
+  long long usage = (long long)native_libs.memoryUsage(&symbols_overhead);
   Counters::set(CODECACHE_NATIVE_COUNT, native_libs.count());
   Counters::set(CODECACHE_NATIVE_SIZE_BYTES, usage);
   // The runtime-stubs cache is a distinct HotSpot cache, not the native-symbol
@@ -1901,6 +1902,11 @@ void Profiler::updateNativeLibMemStats() {
   Counters::set(CODECACHE_RUNTIME_STUBS_SIZE_BYTES,
                 JVMSupport::runtimeStubsMemoryUsage());
   NativeMem::setLive(NM_NATIVE_SYMBOLS, usage);
+  // Measured, not assumed: the symbol tables are many short name strings, so
+  // the allocator's rounding and per-chunk header are a material fraction of
+  // their real cost. Gauge-style to match setLive above -- memoryUsage()
+  // recomputes an absolute rather than tracking deltas.
+  NativeMem::setOverhead(NM_NATIVE_SYMBOLS, symbols_overhead);
 }
 
 Error Profiler::dump(const char *path, const int length) {
