@@ -3753,7 +3753,8 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
   // klass_ids resolved (and therefore already pruned-if-dead) by the
   // candidate loop below, so the prune pass afterwards skips re-resolving
   // them - it only needs to cover cached klasses that are no longer flagged.
-  std::unordered_set<u32> handled;
+  // Per-instance caching: no per-klass prune needed (see comment below
+  // where the prune logic used to be).
 
   // Sized generously above LivenessTracker::selectLeakCandidates()'s own
   // private MAX_LEAK_CANDIDATES cap (design doc: top 3-5) - that method
@@ -3883,8 +3884,8 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
     // result. resolveCandidateRepresentative() re-reads the table's current
     // value for this klass_id and resolves it atomically under the same
     // lock, so it is always safe to call from here.
+    // Per-instance caching: no per-klass prune needed.
     const u32 klass_id = candidates[i].klass_id;
-    handled.insert(klass_id);
     jobject obj = LivenessTracker::instance()->resolveCandidateRepresentative(
         jni, klass_id);
     if (obj == nullptr) {
@@ -3900,8 +3901,9 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
         if (_candidate_klass_ids[s] != klass_id) continue;
         if ((_candidate_found_bits & (1ULL << s)) &&
             _candidate_frontier_tags[s] != 0) {
+          jlong canary_ftag = _candidate_frontier_tags[s];
           _resolved_chains_lock.lock();
-          bool need = (_resolved_chains.find(klass_id) == _resolved_chains.end());
+          bool need = (_resolved_chains.find(canary_ftag) == _resolved_chains.end());
           _resolved_chains_lock.unlock();
           if (need) {
             ReferenceChainEvent event;
@@ -3911,20 +3913,18 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
                      s, (int)built_from_canary);
             if (built_from_canary) {
               event._start_time = TSC::ticks();
-              cacheResolvedChain(klass_id, std::move(event),
-                                  _candidate_frontier_tags[s],
-                                  current_search_ns);
+              cacheResolvedChain(canary_ftag, std::move(event),
+                                  canary_ftag, current_search_ns);
             }
           }
         }
         break;
       }
       if (!built_from_canary) {
-        // The sample this klass's cached chain describes is gone - stop
-        // re-emitting it (this poll's own prune contract).
-        _resolved_chains_lock.lock();
-        _resolved_chains.erase(klass_id);
-        _resolved_chains_lock.unlock();
+        // The representative died. Per-instance caching means we don't erase
+        // by klass_id — chains for other instances of this class may still
+        // be valid. The dead representative's chain (if any) will expire
+        // when the search restarts and the frontier is wiped.
       }
       continue; // candidate died, or was evicted, since LivenessTracker flagged it
     }
@@ -3981,10 +3981,10 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
         continue;
       }
       bool need_refresh = false;
+      jlong canary_ftag = _candidate_frontier_tags[candidate_slot];
       _resolved_chains_lock.lock();
-      auto it = _resolved_chains.find(klass_id);
+      auto it = _resolved_chains.find(canary_ftag);
       need_refresh = (it == _resolved_chains.end() ||
-                      it->second.source_tag != tag ||
                       it->second.source_search_ns != current_search_ns);
       _resolved_chains_lock.unlock();
       TEST_LOG("ReferenceChainTracker::pollWatchedTargets canary candidate[%d] "
@@ -3998,9 +3998,8 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
                  candidate_slot, built);
         if (built) {
           event._start_time = TSC::ticks();
-          cacheResolvedChain(klass_id, std::move(event),
-                              _candidate_frontier_tags[candidate_slot],
-                              current_search_ns);
+          cacheResolvedChain(canary_ftag, std::move(event),
+                              canary_ftag, current_search_ns);
         }
       }
       // Fall through to discovered-instances check below — the canary
@@ -4020,9 +4019,8 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
     bool need_refresh = false;
     if (tag > 0) {
       _resolved_chains_lock.lock();
-      auto it = _resolved_chains.find(klass_id);
+      auto it = _resolved_chains.find(tag);
       need_refresh = (it == _resolved_chains.end() ||
-                      it->second.source_tag != tag ||
                       it->second.source_search_ns != current_search_ns);
       _resolved_chains_lock.unlock();
     }
@@ -4038,7 +4036,7 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
         // Provisional stamp; drainPendingChainEvents() re-stamps each copy at
         // dump time so the event lands in that chunk's window.
         event._start_time = TSC::ticks();
-        cacheResolvedChain(klass_id, std::move(event), tag, current_search_ns);
+        cacheResolvedChain(tag, std::move(event), tag, current_search_ns);
       }
     }
     // tag == 0: The representative object has no tag. Two cases:
@@ -4071,78 +4069,56 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
     // This runs for BOTH the canary and non-canary paths: the canary
     // representative may not have been reached by BFS yet, but other
     // instances of the same class may have been admitted already.
-    _resolved_chains_lock.lock();
-    bool no_chain_cached = (_resolved_chains.find(klass_id) == _resolved_chains.end());
-    _resolved_chains_lock.unlock();
-    if (no_chain_cached) {
-      for (int s = 0; s < _candidate_count; s++) {
-        if (_candidate_klass_ids[s] != klass_id) continue;
-        if (_candidate_discovered_count[s] == 0) {
-          TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
-                   "no discovered instances for klass_id=%u slot=%d",
-                   klass_id, s);
-        }
-        for (int d = 0; d < _candidate_discovered_count[s]; d++) {
-          jlong disc_tag = _candidate_discovered_tags[s][d];
-          if (disc_tag == 0) continue;
-          ReferenceChainEvent event;
-          bool built = buildChainEvent(disc_tag, &event);
-          if (built) {
-            event._start_time = TSC::ticks();
-            cacheResolvedChain(klass_id, std::move(event), disc_tag,
-                                current_search_ns);
-            TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
-                     "auto-marked chain for klass_id=%u tag=%lld",
-                     klass_id, (long long)disc_tag);
-            break;
-          } else {
-            TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
-                     "buildChainEvent failed for discovered tag=%lld "
-                     "klass_id=%u slot=%d disc_idx=%d",
-                     (long long)disc_tag, klass_id, s, d);
-          }
-        }
-        break;
+    //
+    // Per-instance caching: each discovered instance gets its own chain
+    // entry keyed by its frontier tag. The profiling backend aggregates
+    // by class. This ensures the first chain found (which may be noise —
+    // a shallow JNI-local instance) does not block chains for deeper,
+    // actually-leaking instances.
+    for (int s = 0; s < _candidate_count; s++) {
+      if (_candidate_klass_ids[s] != klass_id) continue;
+      if (_candidate_discovered_count[s] == 0) {
+        TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
+                 "no discovered instances for klass_id=%u slot=%d",
+                 klass_id, s);
       }
+      for (int d = 0; d < _candidate_discovered_count[s]; d++) {
+        jlong disc_tag = _candidate_discovered_tags[s][d];
+        if (disc_tag == 0) continue;
+        // Skip if already cached for this instance
+        _resolved_chains_lock.lock();
+        bool already_cached = (_resolved_chains.find(disc_tag) != _resolved_chains.end());
+        _resolved_chains_lock.unlock();
+        if (already_cached) continue;
+        ReferenceChainEvent event;
+        bool built = buildChainEvent(disc_tag, &event);
+        if (built) {
+          event._start_time = TSC::ticks();
+          cacheResolvedChain(disc_tag, std::move(event), disc_tag,
+                              current_search_ns);
+          TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
+                   "auto-marked chain for klass_id=%u tag=%lld",
+                   klass_id, (long long)disc_tag);
+        } else {
+          TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
+                   "buildChainEvent failed for discovered tag=%lld "
+                   "klass_id=%u slot=%d disc_idx=%d",
+                   (long long)disc_tag, klass_id, s, d);
+        }
+      }
+      break;
     }
 
     jni->DeleteLocalRef(obj);
   }
 
-  // Prune cached chains for samples that are gone but were not visited by the
-  // candidate loop above (a klass that stopped being flagged but may still be
-  // alive). Snapshot the keys under lock, resolve each without holding it
-  // (resolveCandidateRepresentative() takes LivenessTracker's own lock and
-  // calls JNI), then erase the ones whose representative no longer resolves.
-  std::vector<u32> cached_keys;
-  _resolved_chains_lock.lock();
-  cached_keys.reserve(_resolved_chains.size());
-  for (const auto &kv : _resolved_chains) {
-    cached_keys.push_back(kv.first);
-  }
-  _resolved_chains_lock.unlock();
-
-  std::vector<u32> dead_keys;
-  for (u32 k : cached_keys) {
-    if (handled.find(k) != handled.end()) {
-      continue; // candidate loop already resolved (and pruned if dead) this one
-    }
-    jobject o = LivenessTracker::instance()->resolveCandidateRepresentative(jni, k);
-    if (o == nullptr) {
-      dead_keys.push_back(k);
-    } else {
-      jni->DeleteLocalRef(o);
-    }
-  }
-  if (!dead_keys.empty()) {
-    _resolved_chains_lock.lock();
-    for (u32 k : dead_keys) {
-      _resolved_chains.erase(k);
-    }
-    _resolved_chains_lock.unlock();
-    TEST_LOG("ReferenceChainTracker::pollWatchedTargets pruned=%d stale cached chains",
-             (int)dead_keys.size());
-  }
+  // Per-instance caching: chains are keyed by frontier tag, not klass_id.
+  // There is no per-klass prune — chains for dead instances are harmless
+  // (they describe a reference path that was valid at resolution time) and
+  // expire naturally when the search restarts (frontier is wiped, all tags
+  // become invalid, _resolved_chains is cleared in restartSearch()).
+  // The backend can filter stale chains by cross-referencing with
+  // HeapLiveObject events from the same chunk.
 }
 
 // Inserts or refreshes klass_id's resolved chain - see _resolved_chains'
@@ -4153,28 +4129,27 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
 // still-live sample's chain. Split out of pollWatchedTargets() so
 // ResolvedChainCacheTest (referenceChains_ut.cpp) can drive the overflow path
 // directly, without standing up hundreds of real LivenessTracker candidates.
-void ReferenceChainTracker::cacheResolvedChain(u32 klass_id,
+void ReferenceChainTracker::cacheResolvedChain(jlong source_tag,
                                                ReferenceChainEvent &&event,
-                                               jlong source_tag,
+                                               jlong source_tag_val,
                                                u64 source_search_ns) {
   _resolved_chains_lock.lock();
-  auto it = _resolved_chains.find(klass_id);
+  auto it = _resolved_chains.find(source_tag);
   if (it == _resolved_chains.end() &&
       (int)_resolved_chains.size() >= MAX_RESOLVED_CHAINS) {
     _resolved_chains_lock.unlock();
     Counters::increment(REFERENCE_CHAIN_EVENTS_DROPPED);
-    TEST_LOG("ReferenceChainTracker::cacheResolvedChain dropped new klass_id=%u, "
+    TEST_LOG("ReferenceChainTracker::cacheResolvedChain dropped new source_tag=%lld, "
              "cache full (at MAX_RESOLVED_CHAINS=%d)",
-             klass_id, MAX_RESOLVED_CHAINS);
+             (long long)source_tag, MAX_RESOLVED_CHAINS);
     return;
   }
-  CachedChain &slot = _resolved_chains[klass_id];
+  CachedChain &slot = _resolved_chains[source_tag];
   slot.event = std::move(event);
-  slot.source_tag = source_tag;
+  slot.source_tag = source_tag_val;
   slot.source_search_ns = source_search_ns;
-  TEST_LOG("ReferenceChainTracker::cacheResolvedChain klass_id=%u source_tag=%lld "
-           "cache_size=%d",
-           klass_id, (long long)source_tag, (int)_resolved_chains.size());
+  TEST_LOG("ReferenceChainTracker::cacheResolvedChain source_tag=%lld cache_size=%d",
+           (long long)source_tag, (int)_resolved_chains.size());
   _resolved_chains_lock.unlock();
 }
 

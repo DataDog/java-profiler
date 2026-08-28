@@ -154,7 +154,7 @@ public:
     // Resolved-chain cache: read-only size peek and a pass-through to the
     // private snapshot (drainPendingChainEvents()) and insert
     // (cacheResolvedChain()), for ResolvedChainCacheTest below - same
-    // rationale as hasResolvedChainForKlass()/resolvedChainCount() below.
+    // rationale as hasResolvedChainForTag()/resolvedChainCount() below.
     static size_t resolvedChainCount() {
         return ReferenceChainTracker::instance()->_resolved_chains.size();
     }
@@ -163,10 +163,10 @@ public:
         ReferenceChainTracker::instance()->drainPendingChainEvents(out);
     }
 
-    static void cacheChain(u32 klass_id, ReferenceChainEvent event,
-                           jlong source_tag, u64 source_search_ns) {
+    static void cacheChain(jlong source_tag, ReferenceChainEvent event,
+                           jlong source_tag_val, u64 source_search_ns) {
         ReferenceChainTracker::instance()->cacheResolvedChain(
-            klass_id, std::move(event), source_tag, source_search_ns);
+            source_tag, std::move(event), source_tag_val, source_search_ns);
     }
 
     static int maxResolvedChains() {
@@ -176,14 +176,14 @@ public:
     // Target-selection bridging step: read-only peeks into the resolved-chain
     // cache, for asserting exactly which klass a chain was resolved for and
     // the tag it was reconstructed from - see PollWatchedTargetsTest below.
-    static bool hasResolvedChainForKlass(u32 klass_id) {
+    static bool hasResolvedChainForTag(jlong tag) {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
-        return t->_resolved_chains.find(klass_id) != t->_resolved_chains.end();
+        return t->_resolved_chains.find(tag) != t->_resolved_chains.end();
     }
 
-    static jlong resolvedChainSourceTag(u32 klass_id) {
+    static jlong resolvedChainSourceTag(jlong tag) {
         ReferenceChainTracker *t = ReferenceChainTracker::instance();
-        auto it = t->_resolved_chains.find(klass_id);
+        auto it = t->_resolved_chains.find(tag);
         return it == t->_resolved_chains.end() ? 0 : it->second.source_tag;
     }
 
@@ -191,7 +191,7 @@ public:
     // derived values, and
     // a pass-through to the private updatePacing() itself, for
     // ReferenceChainsPacingTest below - same rationale as
-    // hasResolvedChainForKlass()/resolvedChainCount() above (the target-selection bridging step): private state a test needs to drive/
+    // hasResolvedChainForTag()/resolvedChainCount() above (the target-selection bridging step): private state a test needs to drive/
     // observe directly, exposed via this existing friend accessor rather
     // than adding public getters/setters to ReferenceChainTracker itself.
     static int effectiveBudget() {
@@ -2184,7 +2184,7 @@ TEST_F(PollWatchedTargetsTest, EmitsEventForAlreadyDiscoveredCandidate) {
 
     int fake_object_storage = 0;
     jobject obj = reinterpret_cast<jobject>(&fake_object_storage);
-    seedGrowingCandidate(/*klass_id=*/1, /*rep=*/(jweak)obj);
+    seedGrowingCandidate(/*source_tag=*/1, /*rep=*/(jweak)obj);
 
     // Model "already discovered by an ordinary runPass()": a root-level
     // FrontierTable entry plus a matching GetTag() result, mirroring
@@ -2200,8 +2200,8 @@ TEST_F(PollWatchedTargetsTest, EmitsEventForAlreadyDiscoveredCandidate) {
     tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
 
     EXPECT_EQ(1u, ReferenceChainsTestAccessor::resolvedChainCount());
-    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForKlass(1));
-    EXPECT_EQ(7, ReferenceChainsTestAccessor::resolvedChainSourceTag(1));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(7));
+    EXPECT_EQ(7, ReferenceChainsTestAccessor::resolvedChainSourceTag(7));
 
     tracker->stop();
 }
@@ -2214,7 +2214,7 @@ TEST_F(PollWatchedTargetsTest, NoEventForNotYetDiscoveredCandidate) {
 
     int fake_object_storage = 0;
     jobject obj = reinterpret_cast<jobject>(&fake_object_storage);
-    seedGrowingCandidate(/*klass_id=*/1, /*rep=*/(jweak)obj);
+    seedGrowingCandidate(/*source_tag=*/1, /*rep=*/(jweak)obj);
     // GetTag() reports 0 (default) - no pass has reached this object yet.
 
     tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
@@ -2232,7 +2232,7 @@ TEST_F(PollWatchedTargetsTest, NoDuplicateOnRepeatPoll) {
 
     int fake_object_storage = 0;
     jobject obj = reinterpret_cast<jobject>(&fake_object_storage);
-    seedGrowingCandidate(/*klass_id=*/1, /*rep=*/(jweak)obj);
+    seedGrowingCandidate(/*source_tag=*/1, /*rep=*/(jweak)obj);
 
     ASSERT_TRUE(tracker->frontierTable()->insert(
         7, 0, 1, 0, FrontierEntryState::EDGE));
@@ -2248,8 +2248,8 @@ TEST_F(PollWatchedTargetsTest, NoDuplicateOnRepeatPoll) {
     tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
     tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
     EXPECT_EQ(1u, ReferenceChainsTestAccessor::resolvedChainCount());
-    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForKlass(1));
-    EXPECT_EQ(7, ReferenceChainsTestAccessor::resolvedChainSourceTag(1));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(7));
+    EXPECT_EQ(7, ReferenceChainsTestAccessor::resolvedChainSourceTag(7));
 
     tracker->stop();
 }
@@ -2262,7 +2262,7 @@ TEST_F(PollWatchedTargetsTest, SkipsCandidateWhoseWeakReferenceDied) {
 
     int fake_object_storage = 0;
     jobject obj = reinterpret_cast<jobject>(&fake_object_storage);
-    seedGrowingCandidate(/*klass_id=*/1, /*rep=*/(jweak)obj);
+    seedGrowingCandidate(/*source_tag=*/1, /*rep=*/(jweak)obj);
     dead_refs.insert(obj); // NewLocalRef(rep) -> NULL, as if GC'd
 
     ASSERT_TRUE(tracker->frontierTable()->insert(
@@ -2283,7 +2283,7 @@ TEST_F(PollWatchedTargetsTest, SkipsCandidateWhoseWeakReferenceDied) {
 // _resolved_chains rather than leaving a dump keep re-emitting a chain for a
 // sample that is gone (see _resolved_chains' own comment, referenceChains.h,
 // and pollWatchedTargets()'s "candidate died, or was evicted" branch).
-TEST_F(PollWatchedTargetsTest, PruneStopsReemittingAfterRepresentativeDies) {
+TEST_F(PollWatchedTargetsTest, ChainPersistsAfterRepresentativeDies) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
@@ -2291,7 +2291,7 @@ TEST_F(PollWatchedTargetsTest, PruneStopsReemittingAfterRepresentativeDies) {
 
     int fake_object_storage = 0;
     jobject obj = reinterpret_cast<jobject>(&fake_object_storage);
-    seedGrowingCandidate(/*klass_id=*/1, /*rep=*/(jweak)obj);
+    seedGrowingCandidate(/*source_tag=*/1, /*rep=*/(jweak)obj);
 
     ASSERT_TRUE(tracker->frontierTable()->insert(
         7, 0, 1, 0, FrontierEntryState::EDGE));
@@ -2300,17 +2300,20 @@ TEST_F(PollWatchedTargetsTest, PruneStopsReemittingAfterRepresentativeDies) {
 
     tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
     ASSERT_EQ(1u, ReferenceChainsTestAccessor::resolvedChainCount());
-    ASSERT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForKlass(1));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(7));
 
-    // The sample is gone: its representative no longer resolves.
+    // The representative died. Per-instance caching: the chain persists
+    // (it describes a reference path that was valid at resolution time).
+    // It expires naturally when the search restarts and the frontier is
+    // wiped. The backend can filter stale chains via HeapLiveObject events.
     dead_refs.insert(obj);
 
     tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
 
-    EXPECT_EQ(0u, ReferenceChainsTestAccessor::resolvedChainCount())
-        << "a dead representative's cached chain must be pruned, not kept "
-           "re-emitting into every later dump";
-    EXPECT_FALSE(ReferenceChainsTestAccessor::hasResolvedChainForKlass(1));
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::resolvedChainCount())
+        << "per-instance chains persist after representative dies; "
+           "they expire on search restart, not on representative death";
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(7));
 
     tracker->stop();
 }
@@ -2328,7 +2331,7 @@ TEST_F(PollWatchedTargetsTest, NoOpWhenGcGenerationsDisabled) {
 
     int fake_object_storage = 0;
     jobject obj = reinterpret_cast<jobject>(&fake_object_storage);
-    seedGrowingCandidate(/*klass_id=*/1, /*rep=*/(jweak)obj);
+    seedGrowingCandidate(/*source_tag=*/1, /*rep=*/(jweak)obj);
     ASSERT_TRUE(tracker->frontierTable()->insert(
         7, 0, 1, 0, FrontierEntryState::EDGE));
     tags[obj] = 7;
@@ -2378,7 +2381,7 @@ protected:
 // intervening change must BOTH return the cached chain, and the cache must
 // stay populated afterwards (unlike the old queue, which emptied on drain).
 TEST_F(ResolvedChainCacheTest, SnapshotReEmitsOnEveryDumpWithoutClearing) {
-    ReferenceChainsTestAccessor::cacheChain(/*klass_id=*/1, makeEvent(7),
+    ReferenceChainsTestAccessor::cacheChain(/*source_tag=*/1, makeEvent(7),
                                             /*source_tag=*/7, /*search_ns=*/0);
 
     std::vector<ReferenceChainEvent> firstDump;
@@ -2445,7 +2448,7 @@ TEST_F(ResolvedChainCacheTest, OverflowDropsNewKlassButAllowsRefresh) {
     long long droppedBefore = Counters::getCounter(REFERENCE_CHAIN_EVENTS_DROPPED);
 
     for (int i = 0; i < cap; i++) {
-        ReferenceChainsTestAccessor::cacheChain((u32)i, makeEvent((u64)i),
+        ReferenceChainsTestAccessor::cacheChain((jlong)i, makeEvent((jlong)i),
                                                 (jlong)i, 0);
     }
     ASSERT_EQ((size_t)cap, ReferenceChainsTestAccessor::resolvedChainCount());
@@ -2453,16 +2456,16 @@ TEST_F(ResolvedChainCacheTest, OverflowDropsNewKlassButAllowsRefresh) {
         << "filling exactly to capacity must not drop anything yet";
 
     // A brand-new klass at capacity is dropped and counted.
-    ReferenceChainsTestAccessor::cacheChain((u32)cap, makeEvent((u64)cap),
+    ReferenceChainsTestAccessor::cacheChain((jlong)cap, makeEvent((jlong)cap),
                                             (jlong)cap, 0);
     EXPECT_EQ((size_t)cap, ReferenceChainsTestAccessor::resolvedChainCount())
         << "cache must stay capped, not grow past MAX_RESOLVED_CHAINS";
     EXPECT_EQ(droppedBefore + 1, Counters::getCounter(REFERENCE_CHAIN_EVENTS_DROPPED));
-    EXPECT_FALSE(ReferenceChainsTestAccessor::hasResolvedChainForKlass((u32)cap));
+    EXPECT_FALSE(ReferenceChainsTestAccessor::hasResolvedChainForTag((u32)cap));
 
     // Refreshing an already-cached klass at capacity must still succeed - it
     // reuses that klass's existing slot rather than needing a free one.
-    ReferenceChainsTestAccessor::cacheChain(/*klass_id=*/0, makeEvent(999),
+    ReferenceChainsTestAccessor::cacheChain(/*source_tag=*/0, makeEvent(999),
                                             /*source_tag=*/999, 0);
     EXPECT_EQ((size_t)cap, ReferenceChainsTestAccessor::resolvedChainCount());
     EXPECT_EQ(999, ReferenceChainsTestAccessor::resolvedChainSourceTag(0));
@@ -2477,7 +2480,7 @@ TEST_F(ResolvedChainCacheTest, OverflowDropsNewKlassButAllowsRefresh) {
 // tests drive updatePacing() directly with a synthetic sequence of "pass
 // took Xms" wall-clock durations via ReferenceChainsTestAccessor (this
 // file's existing pattern for reaching a private method/state - see the
-// target-selection bridging step's hasResolvedChainForKlass()/resolvedChainCount() above),
+// target-selection bridging step's hasResolvedChainForTag()/resolvedChainCount() above),
 // reusing the ReferenceChainsTest fixture since updatePacing() itself makes
 // no JVMTI calls.
 // ---------------------------------------------------------------------------
@@ -2802,7 +2805,7 @@ TEST_F(SearchRestartTest, GenerationsEnabledButNoCandidateBlocksFirstSearch) {
     EXPECT_EQ(0, tracker->passesRun());
 
     int fake_object_storage = 0;
-    seedGrowingCandidate(/*klass_id=*/1, /*rep=*/(jweak)&fake_object_storage);
+    seedGrowingCandidate(/*source_tag=*/1, /*rep=*/(jweak)&fake_object_storage);
 
     EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(2));
 
@@ -2838,7 +2841,7 @@ TEST_F(SearchRestartTest, RestartsOnceACandidateAppearsAndResetsPerSearchState) 
     ASSERT_EQ(1, tracker->passesRun());
 
     int fake_object_storage = 0;
-    seedGrowingCandidate(/*klass_id=*/1, /*rep=*/(jweak)&fake_object_storage);
+    seedGrowingCandidate(/*source_tag=*/1, /*rep=*/(jweak)&fake_object_storage);
 
     EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(1)); // restartSearch() runs inline
     EXPECT_EQ(SearchState::RUNNING, tracker->searchState());
@@ -2861,7 +2864,7 @@ TEST_F(SearchRestartTest, PainBudgetBlocksARestartUntilItDrains) {
     ASSERT_FALSE(tracker->start(args));
 
     int fake_object_storage = 0;
-    seedGrowingCandidate(/*klass_id=*/1, /*rep=*/(jweak)&fake_object_storage);
+    seedGrowingCandidate(/*source_tag=*/1, /*rep=*/(jweak)&fake_object_storage);
 
     // First-ever search: called via runPass() directly here, bypassing
     // shouldRunPass()'s canAffordNewSearch() gate entirely - the candidate

@@ -1210,19 +1210,20 @@ private:
     jlong source_tag;
     u64 source_search_ns;
   };
-  // Bounded like the queue it replaces: distinct leak klasses are already
-  // capped by LivenessTracker's own MAX_KLASS_POPULATION_ENTRIES (256), and
-  // pruning drops dead ones, so the eviction path below should never be
-  // reached under an ordinary dump cadence - but a new klass arriving while
-  // the cache is full drops (counted via REFERENCE_CHAIN_EVENTS_DROPPED)
-  // rather than growing without bound.
-  static constexpr int MAX_RESOLVED_CHAINS = 256;
-  // Keyed by klass_id, not by object/sample identity: at most one
-  // representative CachedChain is kept per leak-candidate klass. A newly
-  // resolved chain for a klass_id already present overwrites the existing
-  // entry rather than being added alongside it, so multiple live samples of
-  // the same klass collapse onto whichever one was most recently resolved.
-  std::unordered_map<u32, CachedChain> _resolved_chains;
+  // Bounded by the number of discovered instances across all candidate
+  // slots: MAX_LEAK_CANDIDATES_FROM_LT * MAX_DISCOVERED_INSTANCES_PER_CLASS
+  // = 5 * 8 = 40, plus up to 5 canary chains. 128 gives headroom for
+  // chains from the normal (non-canary) path too.
+  static constexpr int MAX_RESOLVED_CHAINS = 128;
+  // Keyed by frontier tag (individual instance identity), NOT by klass_id.
+  // For common classes like [B or [Ljava/lang/String; there may be many
+  // live instances with different reference chains — the first chain found
+  // may be noise (a shallow JNI-local instance), while the actual leak is
+  // a deep static-field-held instance. Caching per-instance ensures all
+  // chains are emitted to JFR and the profiling backend can aggregate them
+  // by class. Chains expire when the search restarts (frontier is wiped,
+  // all tags become invalid).
+  std::unordered_map<jlong, CachedChain> _resolved_chains;
   SpinLock _resolved_chains_lock;
 
   // Abandoned-search events awaiting Profiler::dump() (profiler.cpp).
@@ -2086,8 +2087,8 @@ private:
   // REFERENCE_CHAIN_EVENTS_DROPPED) rather than evicting when a brand-new
   // klass_id arrives with the cache already at MAX_RESOLVED_CHAINS - see that
   // constant's own comment and this method's definition (referenceChains.cpp).
-  void cacheResolvedChain(u32 klass_id, ReferenceChainEvent &&event,
-                          jlong source_tag, u64 source_search_ns);
+  void cacheResolvedChain(jlong source_tag, ReferenceChainEvent &&event,
+                          jlong source_tag_val, u64 source_search_ns);
 
   // Snapshots the just-abandoned search into _pending_abandoned_events -
   // called from runPass() (referenceChains.cpp) immediately after it writes
