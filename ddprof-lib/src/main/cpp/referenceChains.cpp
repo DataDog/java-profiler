@@ -4111,6 +4111,9 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
     // actually-leaking instances.
     for (int s = 0; s < _candidate_count; s++) {
       if (_candidate_klass_ids[s] != klass_id) continue;
+      TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
+               "discovered loop: klass_id=%u slot=%d discovered_count=%d",
+               klass_id, s, _candidate_discovered_count[s]);
       if (_candidate_discovered_count[s] == 0) {
         TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
                  "no discovered instances for klass_id=%u slot=%d",
