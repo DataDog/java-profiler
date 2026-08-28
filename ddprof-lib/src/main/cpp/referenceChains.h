@@ -426,11 +426,14 @@ public:
   // caller) for how this is enforced.
   void updateRootKind(jlong tag, u8 root_kind);
 
-  // Replace a shallow root-attached entry with a deeper chain-attached
-  // entry when the same object is reached via a longer path. See
-  // improveChain() in referenceChains.cpp for the "depth=1 chain with
-  // no holder" problem this solves.
-  void improveChain(jlong tag, jlong parent_tag, u32 referrer_klass,
+  // Replace a shallow root-attached entry (parent_tag == 0, depth == 0)
+  // with a deeper chain-attached entry when the object is reached via a
+  // longer path. This fixes the "depth=1 chain with no holder" problem:
+  // an object first admitted as a JNI-local root (parent_tag == 0) gets
+  // its frontier entry overwritten when the static-field → ... → object
+  // path reaches it later with a non-zero parent_tag.
+  // Returns true if the entry was actually improved (new depth > old).
+  bool improveChain(jlong tag, jlong parent_tag, u32 referrer_klass,
                      u32 depth, u8 root_kind);
 
   // Walks parent_tag links starting at `target_tag` back to a root-attached
@@ -2096,6 +2099,12 @@ private:
   // constant's own comment and this method's definition (referenceChains.cpp).
   void cacheResolvedChain(jlong source_tag, ReferenceChainEvent &&event,
                           jlong source_tag_val, u64 source_search_ns);
+
+  // Remove a cached chain so pollWatchedTargets rebuilds it on the next
+  // poll. Called when improveChain updates a frontier entry with a
+  // deeper path — the cached chain (built from the old shallow entry)
+  // must be discarded so the deeper chain is emitted instead.
+  void invalidateResolvedChain(jlong source_tag);
 
   // Snapshots the just-abandoned search into _pending_abandoned_events -
   // called from runPass() (referenceChains.cpp) immediately after it writes

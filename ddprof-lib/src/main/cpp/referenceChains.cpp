@@ -226,7 +226,7 @@ void FrontierTable::updateRootKind(jlong tag, u8 root_kind) {
   _table_lock.unlock();
 }
 
-void FrontierTable::improveChain(jlong tag, jlong parent_tag,
+bool FrontierTable::improveChain(jlong tag, jlong parent_tag,
                                   u32 referrer_klass, u32 depth,
                                   u8 root_kind) {
   // Replace a shallow root-attached entry (parent_tag == 0, depth == 0)
@@ -235,19 +235,23 @@ void FrontierTable::improveChain(jlong tag, jlong parent_tag,
   // an object first admitted as a JNI-local root (parent_tag == 0) gets
   // its frontier entry overwritten when the static-field → ... → object
   // path reaches it later with a non-zero parent_tag.
+  // Returns true if the entry was actually improved (new depth > old).
   if (tag <= 0 || tag - 1 > (jlong)INT_MAX) {
-    return;
+    return false;
   }
   int idx = (int)(tag - 1);
 
   _table_lock.lock();
+  bool improved = false;
   if (idx < _table_size && depth > _table[idx].depth) {
     _table[idx].parent_tag = parent_tag;
     _table[idx].referrer_klass = referrer_klass;
     _table[idx].depth = depth;
     _table[idx].root_kind = root_kind;
+    improved = true;
   }
   _table_lock.unlock();
+  return improved;
 }
 
 bool FrontierTable::reconstructChain(jlong target_tag,
@@ -1844,8 +1848,12 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
     // the *tag_ptr == 0 path above handles first admission.
     if (*tag_ptr != 0 && parent_tag != 0 && *tag_ptr > 0) {
       u32 referrer_klass = ctx->tracker->classTags()->resolve(class_tag);
-      ctx->frontier->improveChain(*tag_ptr, parent_tag, referrer_klass,
-                                   depth, 0);
+      if (ctx->frontier->improveChain(*tag_ptr, parent_tag, referrer_klass,
+                                       depth, 0)) {
+        // Chain was improved — invalidate any cached chain for this tag
+        // so pollWatchedTargets rebuilds it with the deeper path.
+        ctx->tracker->invalidateResolvedChain(*tag_ptr);
+      }
     }
     // Auto-mark: if this object's class matches a watched leak class,
     // record its frontier tag so pollWatchedTargets() can build a chain
@@ -4200,6 +4208,17 @@ void ReferenceChainTracker::cacheResolvedChain(jlong source_tag,
   slot.source_search_ns = source_search_ns;
   TEST_LOG("ReferenceChainTracker::cacheResolvedChain source_tag=%lld cache_size=%d",
            (long long)source_tag, (int)_resolved_chains.size());
+  _resolved_chains_lock.unlock();
+}
+
+void ReferenceChainTracker::invalidateResolvedChain(jlong source_tag) {
+  _resolved_chains_lock.lock();
+  auto it = _resolved_chains.find(source_tag);
+  if (it != _resolved_chains.end()) {
+    _resolved_chains.erase(it);
+    TEST_LOG("ReferenceChainTracker::invalidateResolvedChain source_tag=%lld",
+             (long long)source_tag);
+  }
   _resolved_chains_lock.unlock();
 }
 
