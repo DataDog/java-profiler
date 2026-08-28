@@ -1834,6 +1834,19 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
       // *tag_ptr == 0 rules out ALREADY_ADMITTED) - nothing further to do.
       break;
     }
+    // Already-tagged object reached via a new edge. If this new path
+    // is deeper (non-zero parent_tag), improve the chain — replace the
+    // shallow root-attached entry with the deeper chain-attached entry.
+    // This fixes the "depth=1 chain with no holder" problem: an object
+    // first admitted as a JNI-local root (parent_tag == 0) gets its
+    // frontier entry improved when the static-field → ... → object path
+    // reaches it. Only runs when *tag_ptr != 0 (already admitted);
+    // the *tag_ptr == 0 path above handles first admission.
+    if (*tag_ptr != 0 && parent_tag != 0 && *tag_ptr > 0) {
+      u32 referrer_klass = ctx->tracker->classTags()->resolve(class_tag);
+      ctx->frontier->improveChain(*tag_ptr, parent_tag, referrer_klass,
+                                   depth, 0);
+    }
     // Auto-mark: if this object's class matches a watched leak class,
     // record its frontier tag so pollWatchedTargets() can build a chain
     // event for it. A leaking class typically has many live instances,
@@ -1914,16 +1927,6 @@ ReferenceChainTracker::AdmitResult ReferenceChainTracker::admitObject(
     jlong *tag_ptr, jlong parent_tag, u32 referrer_klass, u32 depth,
     u8 root_kind, jlong class_tag, bool priority) {
   if (*tag_ptr != 0) {
-    // Already admitted. If this new path is deeper (has a non-zero
-    // parent_tag), improve the chain — replace the shallow root-attached
-    // entry with the deeper chain-attached entry. This fixes the
-    // "depth=1 chain with no holder" problem: an object first admitted
-    // as a JNI-local root (parent_tag == 0) gets its frontier entry
-    // improved when the static-field → ... → object path reaches it.
-    if (parent_tag != 0 && *tag_ptr > 0) {
-      frontier->improveChain(*tag_ptr, parent_tag, referrer_klass,
-                               depth, root_kind);
-    }
     return AdmitResult::ALREADY_ADMITTED;
   }
   if (depth >= (u32)hop_cap) {
