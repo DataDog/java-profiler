@@ -395,6 +395,7 @@ void LivenessTracker::accumulateKlassCount(u32 klass_id, jlong age,
   if (_klass_count_scratch_size < MAX_KLASS_POPULATION_ENTRIES) {
     KlassCountScratch &slot = _klass_count_scratch[_klass_count_scratch_size++];
     slot.klass_id = klass_id;
+    slot.ages.clear();
     slot.ages.push_back((u32)age);
     slot.oldest_count = 0;
     slot.thread_count = 0;
@@ -583,6 +584,21 @@ void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch,
         }
       }
       need_mint = !any_live;
+    }
+    // Diagnostic: log existing rep status and dominant thread for this klass
+    if (!need_mint && s.thread_count > 0) {
+      jint dom_tid = 0;
+      u32 dom_gens = 0;
+      for (int ti = 0; ti < s.thread_count; ti++) {
+        if (s.threads[ti].age_count > dom_gens) {
+          dom_gens = s.threads[ti].age_count;
+          dom_tid = s.threads[ti].tid;
+        }
+      }
+      TEST_LOG("LivenessTracker::foldKlassCountsLocked klass_id=%u reps=%d "
+               "dominant_tid=%d dominant_gens=%u (no re-mint needed)",
+               s.klass_id, _klass_population[slot].representative_count,
+               (int)dom_tid, dom_gens);
     }
     if (need_mint) {
       // Clean up old representatives
