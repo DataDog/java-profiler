@@ -2166,7 +2166,7 @@ public:
   // "genuinely unreachable within any reasonable budget" from "reachable,
   // but deeper than one restart cycle can cover" - a large/deep heap
   // legitimately needs more passes, not a smaller one.
-  static constexpr int CANARY_NO_PROGRESS_PASS_LIMIT = 30;
+  static constexpr int CANARY_NO_PROGRESS_PASS_LIMIT = 3; // TEMP: was 30, lowered for testing
 
   // Upper bound on how many times canaryStuckPassLimit() doubles the base
   // limit (2^8 = 256x -> 7680 passes at the default base of 30) - bounds
