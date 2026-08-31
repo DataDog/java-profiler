@@ -202,7 +202,8 @@ void JfrMetadata::initialize(
                   << field("size", T_LONG, "Original Size", F_BYTES)
                   << field("weight", T_FLOAT, "Sample weight")
                   << field("spanId", T_LONG, "Span ID")
-                  << field("localRootSpanId", T_LONG, "Local Root Span ID") ||
+                  << field("localRootSpanId", T_LONG, "Local Root Span ID")
+                  << field("leakTag", T_LONG, "Leak Tag", F_UNSIGNED) ||
               contextAttributes)
 
           << (type("datadog.ReferenceChain", T_REFERENCE_CHAIN,

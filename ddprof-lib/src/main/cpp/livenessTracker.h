@@ -29,6 +29,7 @@ typedef struct TrackingEntry {
   jint tid;
   jlong time;
   jlong age;
+  jlong leak_tag;  // 0 = untagged; otherwise a tag from the leak tag pool
   Context ctx;
   // Set by cleanup_table()'s survivor loop via resolveKlassId() when
   // _gc_generations is enabled (0 otherwise, or if resolution failed - 0 is
@@ -431,6 +432,28 @@ private:
   // comment).
   u64 _last_class_map_generation;
 
+  // --- Leak tag pool ---
+  // Reusable pool of JVMTI tags for directly tagging tracked leaking
+  // objects. Tags are in range [LEAK_TAG_BASE, LEAK_TAG_BASE+POOL_SIZE).
+  // When a tracked object is GC'd, its tag is returned to the pool.
+  // This lets the BFS find the exact leaking objects (not just any
+  // instance of the same class) and correlate chains with HeapLiveObject.
+  static constexpr int LEAK_TAG_POOL_SIZE = 256;
+  static constexpr jlong LEAK_TAG_BASE = 0x40000000LL;
+  int _leak_tag_free_list[LEAK_TAG_POOL_SIZE];
+  int _leak_tag_free_count;
+  // Side table: for each tag in the pool, the (call_trace_id, tid) of
+  // the tracked object it was assigned to. Used by ReferenceChainTracker
+  // for coverage tracking (adaptive CPU budget).
+  struct LeakTagInfo {
+    u64 call_trace_id;
+    jint tid;
+  };
+  LeakTagInfo _leak_tag_info[LEAK_TAG_POOL_SIZE];
+
+  jlong acquireLeakTag(u64 call_trace_id, jint tid);
+  void releaseLeakTag(jlong tag);
+
   Error initialize(Arguments &args);
   Error initialize_table(JNIEnv *jni, int sampling_interval);
 
@@ -635,7 +658,8 @@ public:
         _max_heap_bytes(-1), _container_memory_limit(-1),
         _gc_generations(false),
         _klass_population_size(0), _klass_count_scratch_size(0),
-        _last_class_map_generation(0) {}
+        _last_class_map_generation(0),
+        _leak_tag_free_count(LEAK_TAG_POOL_SIZE) {}
 
   Error start(Arguments &args);
   void stop();
@@ -672,6 +696,22 @@ public:
   // resolveCandidateRepresentative() below instead, which re-reads the
   // table's current value for klass_id atomically with the resolve.
   int selectLeakCandidates(KlassCandidate *out, int max);
+
+  // Tag ALL tracked instances of the given leak candidate classes with
+  // JVMTI tags from the leak tag pool. Called by pollWatchedTargets()
+  // instead of the old single-representative marker-tag approach. The BFS
+  // recognizes these tags by range check (isLeakTag) and admits the
+  // specific objects into the frontier, storing the leak tag for
+  // correlation with HeapLiveObject events. Returns the number of tags
+  // assigned.
+  int tagLeakInstances(jvmtiEnv *jvmti, const u32 *klass_ids,
+                       int klass_count);
+
+  // Look up the (call_trace_id, tid) recorded for a leak tag. Returns
+  // false if the tag is not a valid leak tag or has been returned to the
+  // pool. Used by ReferenceChainTracker for coverage tracking.
+  bool getLeakTagInfo(jlong tag, u64 *out_call_trace_id,
+                      jint *out_tid) const;
 
   // Reads _klass_population and writes up to `max` STABLE CLASS TAGS
   // (KlassPopulationEntry::stable_class_tag - NOT the classMap dictionary

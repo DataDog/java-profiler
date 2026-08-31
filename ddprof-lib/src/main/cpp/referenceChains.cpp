@@ -131,6 +131,7 @@ bool FrontierTable::insert(jlong tag, jlong parent_tag, u32 referrer_klass,
   _table[idx].state = state;
   _table[idx].root_kind = root_kind;
   _table[idx].class_tag = class_tag;
+  _table[idx].leak_tag = 0;
   _table_lock.unlock();
 
   int sz = _table_size.load(std::memory_order_relaxed);
@@ -915,29 +916,32 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns) {
   // the same snapshot of _candidate_found_bits.
   bool canary_active = _candidate_count > 0 &&
       __builtin_popcountll(_candidate_found_bits) < (u64)_candidate_count;
-  // Non-safepoint CPU-time budget (_cpu_pain_budget's own comment,
-  // referenceChains.h): applies ahead of every other trigger below -
-  // GC-finish and cadence alike - since neither has any visibility into the
-  // non-safepoint bookkeeping cost this budget tracks. Escalated while a
-  // canary search is active and unresolved (CANARY_PAIN_BUDGET_REFILL_MULTIPLIER)
-  // so this conservative background-cost bound, sized for an idle
-  // whole-graph BFS, does not also stall a targeted canary search
-  // indefinitely; reverts to the configured rate the moment canary_active
-  // goes false (recomputed every call, nothing to reset).
+  // Adaptive CPU budget: 100x for emergency (canary stuck, no progress),
+  // 15x for uncovered but making progress, 1x when all leak tags resolved.
+  bool all_covered = _leak_tags_assigned > 0 &&
+      _leak_tags_resolved >= _leak_tags_assigned;
+  bool emergency = canary_active && _passes_since_last_progress > 0 &&
+      _passes_since_last_progress >= CANARY_NO_PROGRESS_PASS_LIMIT;
+  double multiplier;
+  if (all_covered) {
+    multiplier = 1.0;
+  } else if (emergency) {
+    multiplier = CANARY_PAIN_BUDGET_REFILL_MULTIPLIER;
+  } else if (canary_active) {
+    multiplier = CANARY_PAIN_BUDGET_COVERING_MULTIPLIER;
+  } else {
+    multiplier = 1.0;
+  }
   _cpu_pain_budget.setRefillRate(
-      canary_active ? std::min(_pain_budget_refill_rate *
-                                    CANARY_PAIN_BUDGET_REFILL_MULTIPLIER,
-                                1.0)
-                    : _pain_budget_refill_rate,
+      std::min(_pain_budget_refill_rate * multiplier, 1.0),
       now_ns);
   if (!_cpu_pain_budget.canStartNow(now_ns)) {
     TEST_LOG("ReferenceChainTracker::shouldRunPass blocked by cpu_pain_budget "
-             "balance=%.1fms refill_rate=%.4f canary_active=%d",
+             "balance=%.1fms refill_rate=%.4f canary_active=%d all_covered=%d "
+             "emergency=%d multiplier=%.1f",
              _cpu_pain_budget.balanceMs(now_ns),
-             canary_active ? std::min(_pain_budget_refill_rate *
-                                 CANARY_PAIN_BUDGET_REFILL_MULTIPLIER, 1.0)
-                           : _pain_budget_refill_rate,
-             (int)canary_active);
+             std::min(_pain_budget_refill_rate * multiplier, 1.0),
+             (int)canary_active, (int)all_covered, (int)emergency, multiplier);
     return false;
   }
   u64 gc_finish_epoch = gcFinishEpoch();
@@ -1124,6 +1128,8 @@ void ReferenceChainTracker::restartSearch() {
   _leak_signature_totals.clear();
   _leak_signature_prev_totals.clear();
   _leak_parent_fanout.clear();
+  _leak_tags_assigned = 0;
+  _leak_tags_resolved = 0;
   _last_pass_gc_finish_epoch = 0;
   store(_last_pass_ns, (u64)0);
   store(_passes_run, 0);
@@ -1201,6 +1207,8 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   _leak_signature_totals.clear();
   _leak_signature_prev_totals.clear();
   _leak_parent_fanout.clear();
+  _leak_tags_assigned = 0;
+  _leak_tags_resolved = 0;
   _last_pass_gc_finish_epoch = 0;
   store(_last_pass_ns, (u64)0);
   store(_passes_run, 0);
@@ -1803,6 +1811,49 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
       }
       ctx->_class_other_admitted++;
     }
+  }
+
+  // Leak tag: this object was directly tagged by LivenessTracker's
+  // tagLeakInstances() because it's a tracked leaking object. Convert
+  // the leak tag to a frontier tag so the BFS can build its chain, and
+  // store the leak tag in the frontier entry for correlation with
+  // HeapLiveObject events.
+  if (isLeakTag(*tag_ptr)) {
+    jlong leak_tag = *tag_ptr;
+    // Allocate a frontier tag for this object
+    jlong frontier_tag = ctx->tracker->nextTag();
+    u32 referrer_klass = ctx->tracker->classTags()->resolve(class_tag);
+    u8 root_kind = parent_tag == 0 ? (u8)reference_kind : 0;
+    if (ctx->frontier->insert(frontier_tag, parent_tag, referrer_klass,
+                               depth, FrontierEntryState::FRONTIER,
+                               root_kind, class_tag)) {
+      // Store the leak tag in the frontier entry
+      ctx->frontier->setLeakTag(frontier_tag, leak_tag);
+      *tag_ptr = frontier_tag;
+      ctx->edges_admitted++;
+      ctx->tracker->trackLeakAccumulation(ctx->frontier, class_tag,
+                                             parent_tag, frontier_tag);
+      // Auto-mark: record this as a discovered instance
+      if (ctx->tracker->_candidate_count > 0) {
+        u32 klass_id = ctx->tracker->classTags()->resolve(class_tag);
+        for (int s = 0; s < ctx->tracker->_candidate_count; s++) {
+          if (ctx->tracker->_candidate_klass_ids[s] == klass_id) {
+            if (ctx->tracker->_candidate_discovered_count[s] <
+                ReferenceChainTracker::MAX_DISCOVERED_INSTANCES_PER_CLASS) {
+              ctx->tracker->_candidate_discovered_tags[s]
+                  [ctx->tracker->_candidate_discovered_count[s]++] = frontier_tag;
+            }
+            break;
+          }
+        }
+      }
+    } else {
+      // Frontier cap hit
+      ctx->truncated = true;
+      ctx->frontier_cap_hit = true;
+      return JVMTI_VISIT_ABORT;
+    }
+    return JVMTI_VISIT_OBJECTS;
   }
 
   if (*tag_ptr == 0) {
@@ -3894,25 +3945,29 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
       // of that class the walk happens to visit, not necessarily the one
       // LivenessTracker flagged as growing.
       int slot = _candidate_count;
-      jlong tag = MARKER_TAG_BASE - slot;
       _candidate_klass_ids[slot] = klass_id;
-      _candidate_tags[slot] = tag;
-      // Tag all live representatives of this candidate with the same
-      // marker tag. Multiple representatives (biased toward oldest
-      // surviving instances) give the canary multiple chances to find a
-      // long-lived instance — see KlassCountScratch::oldest's comment.
-      jobject reps[KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS];
-      int nreps = LivenessTracker::instance()->resolveCandidateRepresentatives(
-          jni, klass_id, reps, KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS);
-      for (int r = 0; r < nreps; r++) {
-        jvmti->SetTag(reps[r], tag);
-        jni->DeleteLocalRef(reps[r]);
-      }
+      _candidate_tags[slot] = 0; // no marker tags — using leak tags now
       _candidate_count = slot + 1;
       TEST_LOG("ReferenceChainTracker::pollWatchedTargets canary: admitted klass_id=%u "
-               "into slot=%d (candidate_count now %d, reps_tagged=%d)",
-               klass_id, slot, _candidate_count, nreps);
+               "into slot=%d (candidate_count now %d)",
+               klass_id, slot, _candidate_count);
       Counters::increment(REFERENCE_CHAIN_CANDIDATE_COUNT, 1);
+    }
+    // Tag all tracked instances of all candidate classes with leak tags.
+    // This replaces the old single-representative marker-tag approach —
+    // the BFS will find these specific leaking objects by tag, not by
+    // class match, eliminating noise from unrelated instances of the same
+    // class.
+    u32 klass_ids[MAX_LEAK_CANDIDATES_FROM_LT];
+    for (int s = 0; s < _candidate_count; s++) {
+      klass_ids[s] = _candidate_klass_ids[s];
+    }
+    int tagged = LivenessTracker::instance()->tagLeakInstances(
+        jvmti, klass_ids, _candidate_count);
+    _leak_tags_assigned = tagged;
+    _leak_tags_resolved = 0; // reset on each tagging round
+    TEST_LOG("ReferenceChainTracker::pollWatchedTargets tagLeakInstances tagged=%d",
+             tagged);
     }
   }
 
@@ -4154,9 +4209,14 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
           event._start_time = TSC::ticks();
           cacheResolvedChain(disc_tag, std::move(event), disc_tag,
                               current_search_ns);
+          // Track coverage for adaptive CPU budget
+          if (event._target_tag >= (u64)LEAK_TAG_BASE) {
+            _leak_tags_resolved++;
+          }
           TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
-                   "auto-marked chain for klass_id=%u tag=%lld",
-                   klass_id, (long long)disc_tag);
+                   "auto-marked chain for klass_id=%u tag=%lld leak_tag=%llu",
+                   klass_id, (long long)disc_tag,
+                   (unsigned long long)event._target_tag);
         } else {
           TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
                    "buildChainEvent failed for discovered tag=%lld "

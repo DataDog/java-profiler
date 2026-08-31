@@ -200,6 +200,14 @@ typedef struct FrontierEntry {
   u32 referrer_klass;  // StringDictionary id, 0 = unresolved/none
   u32 depth;           // hop count from the frontier's seed, for the hop cap
   u8 state;            // one of FrontierEntryState's constants
+  // The leak tag assigned by LivenessTracker to this specific tracked
+  // object, copied from the JVMTI tag at admission time. 0 = not a
+  // leak-tagged object (ordinary BFS admission). When non-zero, this is
+  // the stable correlation ID written into both ReferenceChain.targetTag
+  // and HeapLiveObject.leakTag — the backend joins on this field to
+  // match a reference chain to the specific leaking heap object it
+  // describes.
+  jlong leak_tag;
   // jvmtiHeapReferenceKind of the edge that admitted this entry, but only
   // meaningful when parent_tag == 0 (this entry is root-attached) - 0 (no
   // JVMTI_HEAP_REFERENCE_* value is 0) for every other entry, since a
@@ -425,6 +433,20 @@ public:
   // ReferenceChainTracker::maybeUpgradeRootAttachedRootKind() (the sole
   // caller) for how this is enforced.
   void updateRootKind(jlong tag, u8 root_kind);
+
+  // Set the leak tag on a frontier entry (the JVMTI tag assigned by
+  // LivenessTracker to this specific tracked leaking object).
+  void setLeakTag(jlong tag, jlong leak_tag) {
+    if (tag <= 0 || tag - 1 > (jlong)INT_MAX) {
+      return;
+    }
+    int idx = (int)(tag - 1);
+    _table_lock.lock();
+    if (idx < _table_size) {
+      _table[idx].leak_tag = leak_tag;
+    }
+    _table_lock.unlock();
+  }
 
   // Replace a shallow root-attached entry (parent_tag == 0, depth == 0)
   // with a deeper chain-attached entry when the object is reached via a
@@ -2170,6 +2192,13 @@ public:
   // search indefinitely. Same 4x factor _budget's own urgency ramp already
   // uses (threadLoop()) - no reason for canary escalation to differ.
   static constexpr double CANARY_PAIN_BUDGET_REFILL_MULTIPLIER = 100.0;
+  // Multiplier for uncovered-but-not-emergency (canary active, making progress)
+  static constexpr double CANARY_PAIN_BUDGET_COVERING_MULTIPLIER = 15.0;
+
+  // Coverage tracking: how many leak tags have been assigned vs resolved.
+  // When all assigned tags are resolved (have chains), drop to 1x.
+  int _leak_tags_assigned = 0;
+  int _leak_tags_resolved = 0;
 
   // Base marker tag for canary-search candidates. Each candidate i
   // gets MARKER_TAG_BASE - i (distinct negative values) so
@@ -2180,6 +2209,21 @@ public:
   // so a negative marker is disjoint from the frontier
   // tag space.
   static constexpr jlong MARKER_TAG_BASE = -(1LL << 62);
+
+  // Leak tags are positive JVMTI tags in a dedicated range, assigned by
+  // LivenessTracker's tag pool to specific tracked leaking objects. The
+  // BFS recognizes them by range check and admits the object into the
+  // frontier, storing the leak tag in FrontierEntry::leak_tag for
+  // correlation with HeapLiveObject events. Unlike marker tags (one per
+  // candidate class), leak tags are per-instance — each tracked leaking
+  // object gets its own tag from a reusable pool.
+  static constexpr jlong LEAK_TAG_BASE = 0x40000000LL;
+  static constexpr int LEAK_TAG_POOL_SIZE = 256;
+
+  // Check whether a JVMTI tag is a leak tag (from LivenessTracker's pool).
+  static bool isLeakTag(jlong tag) {
+    return tag >= LEAK_TAG_BASE && tag < LEAK_TAG_BASE + LEAK_TAG_POOL_SIZE;
+  }
 
   // Max candidates LivenessTracker::selectLeakCandidates() can return. Must match
   // LivenessTracker::MAX_LEAK_CANDIDATES (livenessTracker.h:133). Duplicated here
@@ -2333,6 +2377,14 @@ public:
                "target_tag=%lld not in frontier", (long long)target_tag);
       return false;
     }
+    // Filter: skip depth==0 chains (object admitted as root, no holder).
+    // These are noise — the chain is just [object] with no referrer path.
+    // The backend can't use a chain that doesn't explain retention.
+    if (entry.depth == 0) {
+      TEST_LOG("ReferenceChainTracker::buildChainEvent filtered: "
+               "target_tag=%lld depth=0 (no holder)", (long long)target_tag);
+      return false;
+    }
     std::vector<u32> chain;
     u8 root_kind = 0;
     if (!_frontier->reconstructChain(target_tag, &chain, &root_kind)) {
@@ -2342,10 +2394,10 @@ public:
       return false;
     }
     TEST_LOG("ReferenceChainTracker::buildChainEvent target_tag=%lld chain_size=%zu "
-             "chain[0]=%u depth=%u root_kind=%u",
+             "chain[0]=%u depth=%u root_kind=%u leak_tag=%lld",
              (long long)target_tag, chain.size(), chain.empty() ? 0u : chain[0],
-             entry.depth, (unsigned)root_kind);
-    out->_target_tag = (u64)target_tag;
+             entry.depth, (unsigned)root_kind, (long long)entry.leak_tag);
+    out->_target_tag = entry.leak_tag != 0 ? (u64)entry.leak_tag : (u64)target_tag;
     out->_depth = entry.depth;
     out->_root_kind = root_kind;
     out->_chain = std::move(chain);

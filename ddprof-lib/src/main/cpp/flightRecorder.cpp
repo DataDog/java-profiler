@@ -2092,6 +2092,7 @@ void Recording::recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
                 event->_alloc._size
           : 0);
   writeContextSnapshot(buf, event->_ctx);
+  buf->putVar64(event->leak_tag);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }

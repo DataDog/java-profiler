@@ -234,6 +234,10 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
         _table[i].ref = nullptr;
         env->DeleteWeakGlobalRef(tmpRef);
         _table[i].call_trace_id = 0;
+        if (_table[i].leak_tag != 0) {
+          releaseLeakTag(_table[i].leak_tag);
+          _table[i].leak_tag = 0;
+        }
       }
     }
 
@@ -312,6 +316,100 @@ void LivenessTracker::insertOldestSample(KlassCountScratch &scratch,
     scratch.oldest[pos].age = age;
     scratch.oldest[pos].tid = tid;
   }
+}
+
+jlong LivenessTracker::acquireLeakTag(u64 call_trace_id, jint tid) {
+  if (_leak_tag_free_count <= 0) {
+    return 0; // pool exhausted
+  }
+  int idx = _leak_tag_free_list[--_leak_tag_free_count];
+  _leak_tag_info[idx].call_trace_id = call_trace_id;
+  _leak_tag_info[idx].tid = tid;
+  return LEAK_TAG_BASE + idx;
+}
+
+void LivenessTracker::releaseLeakTag(jlong tag) {
+  if (tag < LEAK_TAG_BASE || tag >= LEAK_TAG_BASE + LEAK_TAG_POOL_SIZE) {
+    return;
+  }
+  int idx = (int)(tag - LEAK_TAG_BASE);
+  _leak_tag_info[idx].call_trace_id = 0;
+  _leak_tag_info[idx].tid = 0;
+  _leak_tag_free_list[_leak_tag_free_count++] = idx;
+}
+
+bool LivenessTracker::getLeakTagInfo(jlong tag, u64 *out_call_trace_id,
+                                     jint *out_tid) const {
+  if (tag < LEAK_TAG_BASE || tag >= LEAK_TAG_BASE + LEAK_TAG_POOL_SIZE) {
+    return false;
+  }
+  int idx = (int)(tag - LEAK_TAG_BASE);
+  if (idx >= _leak_tag_free_count &&
+      _leak_tag_info[idx].call_trace_id == 0) {
+    return false; // tag is in free list
+  }
+  // Check if tag is still in use (not in free list)
+  // Simple check: if call_trace_id is 0 and tid is 0, it's been released
+  if (_leak_tag_info[idx].call_trace_id == 0 && _leak_tag_info[idx].tid == 0) {
+    return false;
+  }
+  *out_call_trace_id = _leak_tag_info[idx].call_trace_id;
+  *out_tid = _leak_tag_info[idx].tid;
+  return true;
+}
+
+int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti, const u32 *klass_ids,
+                                       int klass_count) {
+  if (!_enabled || _table == nullptr) {
+    return 0;
+  }
+  JNIEnv *env = VM::jni();
+  int tagged = 0;
+  _table_lock.lockShared();
+  u32 sz = _table_size;
+  for (u32 i = 0; i < sz; i++) {
+    if (_table[i].ref == nullptr) {
+      continue;
+    }
+    // Check if this entry's class matches any candidate
+    u32 kid = _table[i].cached_klass_id;
+    if (kid == 0) {
+      continue;
+    }
+    bool match = false;
+    for (int k = 0; k < klass_count; k++) {
+      if (klass_ids[k] == kid) {
+        match = true;
+        break;
+      }
+    }
+    if (!match) {
+      continue;
+    }
+    // Already tagged?
+    if (_table[i].leak_tag != 0) {
+      tagged++;
+      continue;
+    }
+    // Acquire a tag from the pool
+    jlong tag = acquireLeakTag(_table[i].call_trace_id, _table[i].tid);
+    if (tag == 0) {
+      break; // pool exhausted
+    }
+    // Set the JVMTI tag on the object
+    jobject ref = env->NewLocalRef(_table[i].ref);
+    if (ref != nullptr) {
+      jvmti->SetTag(ref, tag);
+      _table[i].leak_tag = tag;
+      tagged++;
+      env->DeleteLocalRef(ref);
+    } else {
+      // Object was collected between the null check and now
+      releaseLeakTag(tag);
+    }
+  }
+  _table_lock.unlockShared();
+  return tagged;
 }
 
 void LivenessTracker::insertThreadGen(KlassCountScratch &scratch,
@@ -1142,6 +1240,7 @@ void LivenessTracker::flush_table(std::set<int> *tracked_thread_ids) {
       event._alloc = _table[i].alloc;
       event._skipped = _table[i].skipped;
       event._ctx = _table[i].ctx;
+      event.leak_tag = _table[i].leak_tag;
 
       int class_id = 0;
       if (_table[i].cached_klass_id != 0) {
@@ -1238,6 +1337,13 @@ Error LivenessTracker::start(Arguments &args) {
   if (err) {
     return err;
   }
+  // Initialize leak tag free list
+  for (int i = 0; i < LEAK_TAG_POOL_SIZE; i++) {
+    _leak_tag_free_list[i] = i;
+    _leak_tag_info[i].call_trace_id = 0;
+    _leak_tag_info[i].tid = 0;
+  }
+  _leak_tag_free_count = LEAK_TAG_POOL_SIZE;
   if (!_enabled) {
     // disabled
     return Error::OK;
@@ -1460,6 +1566,7 @@ retry:
     skipped.set(0);
     _table[idx].age = 0;
     _table[idx].call_trace_id = call_trace_id;
+    _table[idx].leak_tag = 0;
     _table[idx].ctx = ContextApi::snapshot();
     _table[idx].cached_klass_id = 0;
   }
