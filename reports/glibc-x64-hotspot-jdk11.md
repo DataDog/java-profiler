@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk11
 
 ## glibc-x64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-08-31 06:37:58 EDT
+**Date:** 2026-08-31 06:39:03 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 654 |
-| Sample Rate | 10.90/sec |
-| Health Score | 681% |
-| Threads | 8 |
-| Allocations | 344 |
+| CPU Samples | 599 |
+| Sample Rate | 9.98/sec |
+| Health Score | 624% |
+| Threads | 9 |
+| Allocations | 362 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 729 |
-| Sample Rate | 12.15/sec |
-| Health Score | 759% |
+| CPU Samples | 746 |
+| Sample Rate | 12.43/sec |
+| Health Score | 777% |
 | Threads | 10 |
-| Allocations | 455 |
+| Allocations | 523 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 96-96 cores)</summary>
 
 ```
-1788172324 96
-1788172329 96
-1788172334 96
-1788172339 96
-1788172344 96
-1788172349 96
-1788172354 96
-1788172359 96
-1788172364 96
-1788172369 96
-1788172374 96
-1788172379 96
-1788172384 96
-1788172389 96
-1788172394 96
-1788172399 96
-1788172404 96
-1788172409 96
-1788172414 96
-1788172419 96
+1788172536 96
+1788172541 96
+1788172546 96
+1788172551 96
+1788172556 96
+1788172561 96
+1788172566 96
+1788172571 96
+1788172576 96
+1788172581 96
+1788172586 96
+1788172591 96
+1788172596 96
+1788172601 96
+1788172606 96
+1788172611 96
+1788172616 96
+1788172621 96
+1788172626 96
+1788172631 96
 ```
 </details>
 
