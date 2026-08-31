@@ -85,10 +85,26 @@ proposed per-chunk high-water fix, which is not needed.
 reconciliation were being compared on different bases. Residency factors are now
 measured per term — see [Residency factors](#residency-factors).
 
+**4. The non-resident `hblkhd` term is the profiler's own allocation** —
++25.41 ± 0.01 MiB, with `libjvm` contributing exactly 0.00. Measured by running
+the allocation ledger cross-condition on this workload. This closes the last open
+question in the reconciliation, and it also corrects an intermediate claim made
+*during* this revision: that most of `hblkhd` was induced JVM or tracer
+allocation. That came from ledger dumps on the **memsweep** workload and does not
+transfer. See [Who owns the mmap-served term](#who-owns-the-mmap-served-term).
+
 One hypothesis was raised during this revision and **refuted**, recorded so it is
 not re-proposed: that `native_symbols` and `dictionary` over-state their RSS cost
 by being mmap-served. Both are arena-served and resident. See
 [Which categories are mmap-served](#which-categories-are-mmap-served).
+
+**A note on the pattern.** Three of these four corrections came from the same
+mistake: reading a *mean* agreement as confirmation when the data could not
+discriminate between competing explanations. The arena reversal, the `hblkhd`
+misattribution, and the residual's apparent smallness all survived until
+something with discriminating power was applied — a variance comparison, a
+different workload, or a proper error bar. Mean-matching is weak evidence here
+and should not be treated as settling anything.
 
 ## Conditions
 
@@ -922,18 +938,76 @@ so a doubling array is counted fuller than it is touched. Real, but immaterial
 here: the array is arena-served, and arena pages measure ~96 % resident whether
 or not the caller wrote to them.
 
-Of ~22 MiB of profiler malloc, only **~7.7 MiB is mmap-served** — `jfr_buffers`
-1.16 MiB (one allocation, matching its counter exactly), ~4.5 MiB across three
-512 KiB × 3 sites, and ~2.0 MiB in `otel_process_ctx.cpp`. So Δ`hblkhd` = +22.56
-is mostly **not** the profiler's instrumented allocation; where the rest comes
-from is open.
+Of ~22 MiB of profiler malloc on **the memsweep workload**, only ~7.7 MiB is
+mmap-served — `jfr_buffers` 1.16 MiB (one allocation, matching its counter
+exactly), ~4.5 MiB across three 512 KiB × 3 sites, and ~2.0 MiB in
+`otel_process_ctx.cpp`.
+
+> **Do not carry that 7.7 MiB across to dd-trace-doe — it does not transfer.**
+> This section originally concluded from it that Δ`hblkhd` was "mostly not the
+> profiler's instrumented allocation". **On the doe workload that is wrong**, and
+> the caveat below about workload difference turned out to be the decisive point
+> rather than a formality. See
+> [Who owns the mmap-served term](#who-owns-the-mmap-served-term).
 
 **Two caveats on this analysis.** The ledger dumps are the **memsweep** workload
-(N = 150,000 classes), not dd-trace-doe, so the structural conclusion should
-transfer but the split may not. And `addr2line` returns a function but no file
-for most sites in this release build, so attribution is nearest-symbol only —
-three distinct 512 KiB sites all resolve to `Profiler::stop()`, which is
-certainly wrong. **Ranking by size is reliable; naming the allocator is not.**
+(N = 150,000 classes), not dd-trace-doe — and that difference proved to matter,
+not just in magnitude but in the conclusion. And `addr2line` returns a function
+but no file for most sites in this release build, so attribution is
+nearest-symbol only — three distinct 512 KiB sites all resolve to
+`Profiler::stop()`, which is certainly wrong. **Ranking by size is reliable;
+naming the allocator is not.**
+
+## Who owns the mmap-served term
+
+Measured directly, on the workload the number came from. The allocation ledger
+was run cross-condition on dd-trace-doe — LD_PRELOADed into *both* arms, so a
+paired delta exists — and caller addresses joined against each dump's own smaps
+for a per-library split. 3 pairs:
+
+| library | Δ total MiB | Δ mmap-served | SE |
+| --- | --- | --- | --- |
+| **`libjavaProfiler.so`** | +37.50 | **+25.41** | 0.01 |
+| `libjvm.so` | +16.03 | **+0.00** | 0.02 |
+| `libzip.so` | +0.03 | −2.29 | 0.01 |
+| **total** | **+53.56** | **+23.12** | |
+
+**The non-resident mmap-served term is the profiler's own allocation.** `libjvm`
+does allocate +16.03 MiB more under profiling, but none of it is mmap-served —
+it is arena-backed and therefore resident.
+
+Why this is trustworthy rather than one lucky batch:
+
+- **SE 0.01–0.02 MiB over 3 pairs**, with allocation counts reproducing to ~0.1 %
+  (400,727 / 401,066 / 400,323 in the profiling arm). Counting allocations is a
+  far lower-variance measurement than counting resident pages.
+- **Robust to the mmap threshold.** At floors of 0 / 128 / 256 / 512 KiB the
+  profiler's share is +25.41 / +25.34 / +21.25 / +21.25 and `libjvm` stays at
+  exactly 0.00. This matters: the empirically located thresholds (62 and 32 KiB)
+  came out *below* glibc's 128 KiB minimum and are not fully trustworthy.
+- **Validated within-run.** glibc's own `mallocinfo`, from the same dumps, gives
+  Δ`hblkhd` = **+26.82 MiB**; the ledger attributes +23.12 of it, 86 %. The mmap
+  counts (42 profiling / 29 tracing) match the ledger's
+  `malloc_live_count_mmapped` exactly.
+
+**Consequence.** The profiler's counters count ~23–25 MiB of allocation that
+costs **no RSS**, because it is mmap-served and never touched. There is no
+unattributed JVM memory in play — the counters simply over-state the profiler's
+resident cost, and because the allocation is the profiler's own it is
+addressable.
+
+*Caveats.* The probe perturbs the workload: this batch shows Δ`hblkhd` +26.82
+against the unprobed batch's +22.56 ± 0.57, so magnitudes shift under
+measurement even though the attribution does not. Attribution is library-level;
+naming the call site *inside* the profiler needs `PROBE_OPNEW_OFF` wired up so
+allocations through its private `operator new` resolve past that frame.
+
+Tooling: `memsweep/run_ledger_doe.sh`, `analyse_ledger_doe.py`. Two traps worth
+knowing before re-running: `doe` hashes `duration` into its image tag, so
+changing it breaks `--no-build` with "No such image" before any container
+starts; and dd-trace-java extracts the `.so` to a fresh temp name each run, so
+aggregating across pairs without normalising that name splits one library into
+several and divides its mean by the pair count.
 
 Tooling: `memsweep/alloc_size_histogram.py`.
 
@@ -946,7 +1020,7 @@ non-resident, which is now measured to be false. The table below is corrected.
 | Est. | Candidate |
 | --- | --- |
 | **+22.9 to +37.1** | **Free-but-held arena pages — CONFIRMED, and the largest term here.** ~~Ruled out as non-resident.~~ That was wrong: residency measures **1.0119 ± 0.0066** (20 pairs) and per-mapping `smaps` agrees. It is a real RSS cost and it varies between batches, which is why the total is irreproducible. See [Arena waste, attributed](#arena-waste-attributed--and-confirmed-resident). |
-| ≈ 0 (inferred) | **Mmap-served malloc chunks (`hblkhd`), +22.6 MiB of address space.** The likeliest home for the address space that genuinely is not backed. Note this is *inferred under collinearity*, not measured independently: `hblkhd` and `arena` correlate at r = 0.925, so only `f_arena + 0.274 × f_hblkhd ≈ 0.911` is determined. The profile prefers ≈ 0 monotonically and the mean arithmetic agrees (80.47 − 58.86 = 21.61 against Δ`hblkhd` 22.74), but the two factors cannot be separated. Only ~7.7 MiB of it is profiler-instrumented allocation, so most is induced JVM/tracer allocation — currently unattributed. |
+| ≈ 0 (inferred) | **Mmap-served malloc chunks (`hblkhd`), +22.6 MiB of address space.** The likeliest home for the address space that genuinely is not backed. Note this is *inferred under collinearity*, not measured independently: `hblkhd` and `arena` correlate at r = 0.925, so only `f_arena + 0.274 × f_hblkhd ≈ 0.911` is determined. The profile prefers ≈ 0 monotonically and the mean arithmetic agrees (80.47 − 58.86 = 21.61 against Δ`hblkhd` 22.74), but the two factors cannot be separated. **Now attributed:** the cross-condition ledger run puts +25.41 ± 0.01 MiB of it on `libjavaProfiler` and exactly 0.00 on `libjvm` — see [Who owns the mmap-served term](#who-owns-the-mmap-served-term). |
 | a few MiB | **Natively created profiler thread stacks.** Created via `pthread_create`, not by the JVM, so their resident stack pages appear in neither NMT's Thread category nor the profiler's counters — a structural blind spot between the two instruments. |
 | 2–4 MiB | **The profiler library's own resident image.** Text and data pages of a 1.38 MB shared object. Not an allocation, so no counter sees it; not JVM-managed, so NMT does not either. |
 | ≈ 0.9 MiB | **Unattributed profiler malloc.** Resolves only to a private `operator new`. |
@@ -993,12 +1067,14 @@ estimation.
    trade at 873 pairs for SE = 1 MiB. See
    [Where the variance comes from](#where-the-variance-comes-from).
 
-   *Remaining, and the one open question of substance:* Δ`hblkhd` is +22.6 MiB of
-   allocated-but-untouched address space, of which only ~7.7 MiB is
-   profiler-instrumented. The rest is induced JVM or tracer allocation and is
-   currently unattributed. A cross-condition run of the alloc ledger on **this**
-   workload would attribute it to call sites; the existing audit deliberately
-   compares within one condition only.
+   ~~*Remaining, and the one open question of substance:* Δ`hblkhd` is +22.6 MiB
+   of allocated-but-untouched address space … currently unattributed.~~
+   **Done.** The cross-condition ledger run on this workload attributes it: it is
+   the profiler's own allocation (+25.41 ± 0.01 MiB), with `libjvm` contributing
+   exactly zero. See [Who owns the mmap-served term](#who-owns-the-mmap-served-term).
+   What remains is a *footprint* question, not a measurement one — which profiler
+   call site, and whether ~23–25 MiB of never-touched mmap-served allocation is
+   worth reducing.
 6. **Confirm `-XX:+AlwaysPreTouch` with a 2×2 interleaved design** (pretouch and
    no-pretouch alternating within one window). It is already the recommended
    default on the strength of estimator-independence; what remains is to check
