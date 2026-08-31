@@ -842,6 +842,32 @@ public:
   // foldKlassCountsLocked()'s representative-minting step, which needs a
   // live JVM and is therefore out of gtest's reach.
   int klassPopulationSizeForTest() const { return _klass_population_size; }
+
+  // Leak-tag pool test seams - same "for testing only" rationale as the
+  // klass-population seams above: the pool acquire/release/info mechanics
+  // are JNI-free pure logic, so they are directly testable; only
+  // tagLeakInstances() itself needs a live JVM (SetTag/NewLocalRef) and stays
+  // out of gtest's reach.
+  void leakTagPoolResetForTest() {
+    for (int i = 0; i < LEAK_TAG_POOL_SIZE; i++) {
+      _leak_tag_free_list[i] = i;
+      _leak_tag_info[i].call_trace_id = 0;
+      _leak_tag_info[i].tid = 0;
+    }
+    _leak_tag_free_count = LEAK_TAG_POOL_SIZE;
+  }
+
+  jlong acquireLeakTagForTest(u64 call_trace_id, jint tid) {
+    return acquireLeakTag(call_trace_id, tid);
+  }
+
+  void releaseLeakTagForTest(jlong tag) { releaseLeakTag(tag); }
+
+  int leakTagFreeCountForTest() const { return _leak_tag_free_count; }
+
+  static jlong leakTagBaseForTest() { return LEAK_TAG_BASE; }
+
+  static int leakTagPoolSizeForTest() { return LEAK_TAG_POOL_SIZE; }
   bool klassPopulationLookupForTest(u32 klass_id, KlassPopulationEntry *out) const {
     for (int i = 0; i < _klass_population_size; i++) {
       if (_klass_population[i].klass_id == klass_id) {

@@ -187,6 +187,43 @@ public:
         return it == t->_resolved_chains.end() ? 0 : it->second.source_tag;
     }
 
+    // Leak-tag correlation (design C): read a frontier entry's stored leak
+    // tag, and a pass-through to the private buildChainEvent(), for
+    // LeakTagInterceptionTest below - same friend-accessor rationale as
+    // hasResolvedChainForTag() above. Returns -1 when the tag is not in the
+    // frontier table.
+    static jlong frontierLeakTag(jlong tag) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        FrontierEntry entry{};
+        if (t->_frontier == nullptr || !t->_frontier->lookup(tag, &entry)) {
+            return -1;
+        }
+        return entry.leak_tag;
+    }
+
+    static bool buildChainEventForTest(jlong tag, ReferenceChainEvent *out) {
+        return ReferenceChainTracker::instance()->buildChainEvent(tag, out);
+    }
+
+    // Direct expandFrontier() drive for the AIMD batch test: a full runPass()
+    // drains a small graph to completion and its rotation phase adds extra
+    // GetObjectsWithTags calls, so per-call AIMD assertions cannot be made
+    // deterministic through runPass(). Seeding _pending_expand and calling
+    // expandFrontier() directly runs exactly one batch (one AIMD update).
+    static void pushPendingExpandForTest(jlong tag) {
+        ReferenceChainTracker::instance()->_pending_expand.push_back(tag);
+    }
+
+    static void expandFrontierForTest(jvmtiEnv *jvmti, JNIEnv *jni,
+                                      int *edges_admitted) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        bool truncated = false;
+        bool cap_hit = false;
+        u64 safepoint_ticks = 0;
+        t->expandFrontier(jvmti, jni, t->_hop_cap, 1000, edges_admitted,
+                          &truncated, &cap_hit, &safepoint_ticks);
+    }
+
     // Pause-time pacing controller: read-only peeks at the controller's
     // derived values, and
     // a pass-through to the private updatePacing() itself, for
@@ -380,14 +417,42 @@ public:
         return ReferenceChainTracker::instance()->_pending_expand.size();
     }
 
-    // Self-calibrating adaptive batch size: read/write the EMA so tests can
-    // verify it converges and drives batch_size.
-    static u64 gotwEmaCostPerTagNs() {
-        return ReferenceChainTracker::instance()->_gotw_ema_cost_per_tag_ns;
+    // Self-calibrating adaptive batch size (AIMD): read/write the per-call
+    // EMA and live batch size so tests can verify the AIMD dynamics.
+    static u64 gotwEmaCallNs() {
+        return ReferenceChainTracker::instance()->_gotw_ema_call_ns;
     }
 
-    static void setGotwEmaCostPerTagNs(u64 v) {
-        ReferenceChainTracker::instance()->_gotw_ema_cost_per_tag_ns = v;
+    static void setGotwEmaCallNs(u64 v) {
+        ReferenceChainTracker::instance()->_gotw_ema_call_ns = v;
+    }
+
+    static size_t gotwBatchSize() {
+        return ReferenceChainTracker::instance()->_gotw_batch_size;
+    }
+
+    static void setGotwBatchSize(size_t v) {
+        ReferenceChainTracker::instance()->_gotw_batch_size = v;
+    }
+
+    // Read-only peeks at the AIMD constants (private statics - friendship
+    // applies inside this class's methods, not in test bodies).
+    static u64 gotwCpuBudgetNs() {
+        return ReferenceChainTracker::GOTW_CPU_BUDGET_NS;
+    }
+
+    static size_t gotwInitialBatchSize() {
+        return (size_t)ReferenceChainTracker::GOTW_INITIAL_BATCH_SIZE;
+    }
+
+    static size_t gotwBatchIncreaseStep() {
+        return ReferenceChainTracker::GOTW_BATCH_INCREASE_STEP;
+    }
+
+    // Leak-tag pool range base (private static) - same friend-access
+    // rationale as the AIMD constants above.
+    static jlong leakTagBase() {
+        return ReferenceChainTracker::LEAK_TAG_BASE;
     }
 
     // Leak-accumulation rotation test seams (collectLeakAccumulationCandidatesForRotation()).
@@ -3962,45 +4027,153 @@ TEST_F(ReferenceChainsBfsTest, RollingResumePopsProcessedEntriesOnTruncatedBatch
     tracker->stop();
 }
 
-// Verify the self-calibrating adaptive batch_size: with a pre-set EMA,
-// expandFrontier should derive batch_size from the EMA and the CPU budget,
-// not use the full pending backlog. The mock GetObjectsWithTags is instant
-// (no real O(tag_map × batch) cost), so we verify the logic, not the timing.
-TEST_F(ReferenceChainsBfsTest, AdaptiveBatchSizeDerivesFromEmaNotBacklog) {
+// Verify the AIMD adaptive batch_size: with the per-call EMA over the CPU
+// budget, expandFrontier should multiplicatively decrease the batch; under
+// the budget it should additively increase toward the cap. The mock
+// GetObjectsWithTags is instant (no real tag-map cost), so we drive the EMA
+// by hand and verify the AIMD response, not the timing.
+TEST_F(ReferenceChainsBfsTest, AdaptiveBatchSizeAimdDecreaseAndIncrease) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
 
-    // Create a simple graph: root -> child
+    // Reset the AIMD state explicitly: ReferenceChainsTestAccessor::reset()
+    // (SetUp) does not cover it, and a prior test in this suite that drove
+    // expansion leaves a non-zero EMA/batch behind, breaking the exact
+    // per-phase arithmetic below.
+    ReferenceChainsTestAccessor::setGotwEmaCallNs(0);
+    ReferenceChainsTestAccessor::setGotwBatchSize(0);
+
+    // Seed a frontier root manually (mirrors PollWatchedTargetsTest's
+    // seeding style): node carries frontier tag 1, pending expansion has
+    // exactly that tag. No runPass() - a pass would drain the tiny graph to
+    // COMPLETED and release all tags, and its rotation phase adds extra
+    // GetObjectsWithTags calls, both of which break per-call AIMD
+    // arithmetic. The script stays empty until the admission-sanity phase
+    // below, so each expandFrontier() drive runs exactly one batch (one
+    // AIMD update) and admits nothing.
     int rootNode = addNode();
     int childNode = addNode();
+    node_tags[rootNode] = 1;
+    ASSERT_TRUE(tracker->frontierTable()->insert(
+        1, 0, 1, 0, FrontierEntryState::EDGE));
+    ReferenceChainsTestAccessor::pushPendingExpandForTest(1);
+    int edges = 0;
+
+    // --- Populate phase: first GetObjectsWithTags call. The EMA should be
+    // non-zero afterwards, and the batch (unset before) should land at the
+    // conservative initial default after the additive increase (0 + step
+    // clamped... the very first call uses the initial default and AIMD then
+    // applies to the still-unset 0 state, landing at 0 + step).
+    ReferenceChainsTestAccessor::expandFrontierForTest(&mock_jvmti,
+                                                       &mock_jni, &edges);
+    EXPECT_NE(0u, ReferenceChainsTestAccessor::gotwEmaCallNs())
+        << "per-call EMA should be populated after first GetObjectsWithTags";
+    EXPECT_EQ(ReferenceChainsTestAccessor::gotwBatchIncreaseStep(),
+              ReferenceChainsTestAccessor::gotwBatchSize())
+        << "instant mock call under budget should additively increase batch";
+
+    // --- Decrease phase: EMA over the CPU budget -> halve the batch.
+    ReferenceChainsTestAccessor::setGotwEmaCallNs(
+        ReferenceChainsTestAccessor::gotwCpuBudgetNs() * 2);
+    ReferenceChainsTestAccessor::setGotwBatchSize(512);
+    ReferenceChainsTestAccessor::pushPendingExpandForTest(1);
+    ReferenceChainsTestAccessor::expandFrontierForTest(&mock_jvmti,
+                                                       &mock_jni, &edges);
+    // EMA after the call: 2x budget x 0.8 + ~0 (mock) = 1.6x budget, still
+    // over -> multiplicative decrease 512 -> 256.
+    EXPECT_EQ((size_t)256, ReferenceChainsTestAccessor::gotwBatchSize())
+        << "EMA over budget should halve the batch (512 -> 256)";
+
+    // --- Increase phase: EMA under budget -> additive increase.
+    ReferenceChainsTestAccessor::setGotwEmaCallNs(
+        ReferenceChainsTestAccessor::gotwCpuBudgetNs() / 2);
+    ReferenceChainsTestAccessor::pushPendingExpandForTest(1);
+    ReferenceChainsTestAccessor::expandFrontierForTest(&mock_jvmti,
+                                                       &mock_jni, &edges);
+    // EMA after the call: 0.5x budget x 0.8 + ~0 = 0.4x budget, under ->
+    // additive increase 256 + 64 = 320.
+    EXPECT_EQ(256 + ReferenceChainsTestAccessor::gotwBatchIncreaseStep(),
+              ReferenceChainsTestAccessor::gotwBatchSize())
+        << "EMA under budget should additively increase the batch";
+
+    // --- Admission sanity: expansion still walks the graph. Root -> child
+    // edge, one more drive, child must be admitted.
+    script.push_back({JVMTI_HEAP_REFERENCE_FIELD, rootNode, childNode, -1});
+    ReferenceChainsTestAccessor::pushPendingExpandForTest(1);
+    ReferenceChainsTestAccessor::expandFrontierForTest(&mock_jvmti,
+                                                       &mock_jni, &edges);
+    EXPECT_NE(0, tags_ever_assigned[childNode])
+        << "expandFrontier failed to admit childNode with adaptive batch_size";
+
+    tracker->stop();
+}
+
+// Leak-tag interception (design A + C): an object pre-tagged with a leak tag
+// (as LivenessTracker::tagLeakInstances() would have set on a tracked leaking
+// instance) must be admitted by converting the leak tag to a frontier tag,
+// with the leak tag preserved in the frontier entry so buildChainEvent()
+// emits it as target_tag - the ReferenceChain <-> HeapLiveObject correlation
+// key. An untagged sibling of the same class must get an ordinary admit with
+// no leak tag.
+TEST_F(ReferenceChainsBfsTest, LeakTagInterceptionConvertsToFrontierTagAndCorrelates) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    const jlong leak_tag = ReferenceChainsTestAccessor::leakTagBase();
+
+    int rootNode = addNode();
+    int leakChild = addNode();
+    int plainChild = addNode();
+    // Simulate tagLeakInstances(): the tracked leaking instance already
+    // carries a leak tag; the sibling does not.
+    node_tags[leakChild] = leak_tag;
     script = {
         {JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, rootNode, -1},
-        {JVMTI_HEAP_REFERENCE_FIELD, rootNode, childNode, -1},
+        {JVMTI_HEAP_REFERENCE_FIELD, rootNode, leakChild, -1},
+        {JVMTI_HEAP_REFERENCE_FIELD, rootNode, plainChild, -1},
     };
 
-    // Run one pass to admit rootNode to the frontier.
+    // A single pass drains this tiny graph to completion, and a completed
+    // search releases all JVMTI tags (releaseSearchTags(), "tagsReleased"
+    // in runPass's own log) - so read the tags from tags_ever_assigned,
+    // which records each tag at assignment time and is never reset (see
+    // its own comment), not from node_tags (which reads 0 after release).
     bool truncated = true;
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
 
-    // The EMA should now be non-zero (set by the first GetObjectsWithTags call).
-    EXPECT_NE(0u, ReferenceChainsTestAccessor::gotwEmaCostPerTagNs())
-        << "EMA should be populated after first GetObjectsWithTags call";
+    // The leak-tagged child's tag was REPLACED by a frontier tag (small
+    // positive, outside the leak range).
+    jlong leak_ftag = tags_ever_assigned[leakChild];
+    ASSERT_NE(leak_tag, leak_ftag)
+        << "leak tag was never intercepted - BFS did not reach the object";
+    ASSERT_GT(leak_ftag, 0);
+    EXPECT_LT(leak_ftag, leak_tag) << "frontier tag must be outside leak range";
 
-    // Set a high EMA to simulate a large tag map (expensive per-tag cost).
-    // With GOTW_CPU_BUDGET_NS=25ms and EMA=500000ns/tag, batch_size should
-    // be 25ms / 500000ns = 50.
-    ReferenceChainsTestAccessor::setGotwEmaCostPerTagNs(500000);
+    // The frontier entry preserves the leak tag for correlation.
+    EXPECT_EQ(leak_tag, ReferenceChainsTestAccessor::frontierLeakTag(leak_ftag));
 
-    // Run another pass — the adaptive batch_size should be ~50, not the
-    // full backlog. We verify indirectly by checking that expandFrontier
-    // makes progress (admits the child).
-    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    // The untagged sibling got an ordinary admit: frontier tag assigned, but
+    // no leak tag stored.
+    jlong plain_ftag = tags_ever_assigned[plainChild];
+    ASSERT_GT(plain_ftag, 0);
+    EXPECT_EQ(0, ReferenceChainsTestAccessor::frontierLeakTag(plain_ftag));
 
-    // childNode should have been admitted (expandFrontier made progress).
-    EXPECT_NE(0, tags_ever_assigned[childNode])
-        << "expandFrontier failed to admit childNode with adaptive batch_size";
+    // Design C: buildChainEvent() reports the leak tag as target_tag for the
+    // leak-tagged instance, and the plain frontier tag for the sibling.
+    ReferenceChainEvent event;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::buildChainEventForTest(leak_ftag, &event));
+    EXPECT_EQ((u64)leak_tag, event._target_tag)
+        << "chain target tag must be the leak tag (correlation key)";
+    EXPECT_GE(event._depth, 1u) << "leak child sits behind the root, not at it";
+
+    ReferenceChainEvent plain_event;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::buildChainEventForTest(plain_ftag, &plain_event));
+    EXPECT_EQ((u64)plain_ftag, plain_event._target_tag)
+        << "untagged instance must keep the frontier tag as target tag";
 
     tracker->stop();
 }

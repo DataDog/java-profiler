@@ -1004,20 +1004,25 @@ private:
   PidController _pause_pid;
 
   // Self-calibrating adaptive batch sizing for GetObjectsWithTags (see
-  // expandFrontier()'s own comment). GetObjectsWithTags is O(tag_map_size
-  // × batch_size) — a quadratic cost that, with a 163k-entry tag map and
-  // batch_size ~3400, takes 226ms per call and starves BFS to 3-4
-  // edges/pass. Instead of a fixed batch_size, we self-calibrate from
-  // measured GetObjectsWithTags elapsed time: after each call, update an
-  // exponential moving average of cost-per-tag, then derive the next
-  // batch_size from a CPU-overhead budget (not a safepoint budget —
-  // GetObjectsWithTags is NOT a safepoint call). Adapts automatically to
-  // the machine's CPU speed and to tag-map growth. Starts at 0 (unset);
-  // expandFrontier() uses a conservative small default until the first
-  // measurement populates it.
-  //   ema_cost_per_tag = ema × 0.8 + measured × 0.2
-  //   batch_size = max(1, cpu_budget_ns / ema_cost_per_tag)
-  u64 _gotw_ema_cost_per_tag_ns = 0;  // 0 = unset, use default
+  // expandFrontier()'s own comment). GetObjectsWithTags iterates the whole
+  // JVMTI tag map per call, so its cost has a batch-independent floor that
+  // grows with the frontier (~20ms at a 225k-entry map, measured live on
+  // hotdog) plus a small per-searched-tag component. An earlier design
+  // calibrated batch_size from a per-TAG EMA (ema = elapsed / batch_size),
+  // which collapses: the floor dominates at small batch sizes, so a smaller
+  // batch INFLATES the per-tag cost, which shrinks the batch further —
+  // positive feedback observed live driving batch_size from ~400 down to 2
+  // and BFS throughput from ~2000 edges/pass to ~100. Instead, AIMD directly
+  // on the batch size against the measured PER-CALL time: multiplicative
+  // decrease when the call overran the budget, additive increase when it
+  // came in under. The per-call cost is what actually matters and is
+  // batch-insensitive in the floor-dominated regime, so this converges to
+  // the largest affordable batch instead of collapsing.
+  //   ema_call_ns = ema × 0.8 + measured × 0.2   (per-CALL, not per-tag)
+  //   ema > budget  -> batch /= 2   (multiplicative decrease)
+  //   ema <= budget -> batch += 64  (additive increase, up to GOTW_MAX_BATCH)
+  size_t _gotw_batch_size = 0; // 0 = unset, use GOTW_INITIAL_BATCH_SIZE
+  u64 _gotw_ema_call_ns = 0;    // EMA of per-call elapsed, 0 = unset
 
   // CPU overhead budget for GetObjectsWithTags per expandFrontier() call.
   // Not a safepoint/STW budget (GetObjectsWithTags is not a safepoint
@@ -1027,10 +1032,18 @@ private:
   static constexpr u64 GOTW_CPU_BUDGET_NS = 25000000; // 25ms
 
   // Conservative initial batch_size before the first GetObjectsWithTags
-  // measurement populates the EMA. Small enough to be safe on any machine
-  // regardless of tag-map size, large enough to make meaningful progress
-  // per FollowReferences call.
+  // measurement. Small enough to be safe on any machine regardless of
+  // tag-map size, large enough to make meaningful progress per
+  // FollowReferences call.
   static constexpr int GOTW_INITIAL_BATCH_SIZE = 64;
+  // AIMD bounds for the adaptive batch. The cap bounds JNI local refs
+  // (resolved objects + holder array) per call; the floor keeps a
+  // degenerate tiny batch from making each FollowReferences call
+  // resolve a single object (observed live: batch=2 collapsed BFS
+  // throughput ~20x while per-call cost stayed ~20ms).
+  static constexpr size_t GOTW_MAX_BATCH = 512;
+  static constexpr size_t GOTW_MIN_BATCH = 8;
+  static constexpr size_t GOTW_BATCH_INCREASE_STEP = 64;
 
   // Search lifecycle state. _search_started distinguishes a search's first
   // pass (seed FollowReferences from the heap roots) from a resumed pass

@@ -968,3 +968,79 @@ TEST_F(SecondsToOOMTest, FloorAtMaxHeapReturnsZero) {
 
     EXPECT_EQ(tracker->secondsToOOM(), 0.0);
 }
+
+// ---------------------------------------------------------------------------
+// Leak tag pool (design A: direct tagging of leaking objects)
+// ---------------------------------------------------------------------------
+// The pool hands out JVMTI tags in [LEAK_TAG_BASE, LEAK_TAG_BASE + 256) and
+// recycles them when the tracked object dies. These tests exercise the pure
+// pool mechanics (acquire/release/info); tagLeakInstances() itself needs a
+// live JVM (SetTag) and is verified on-pod.
+
+class LeakTagPoolTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        LivenessTracker::instance()->leakTagPoolResetForTest();
+    }
+};
+
+TEST_F(LeakTagPoolTest, AcquireReturnsTagsInLeakRange) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    jlong base = tracker->leakTagBaseForTest();
+    for (int i = 0; i < tracker->leakTagPoolSizeForTest(); i++) {
+        jlong tag = tracker->acquireLeakTagForTest(/*call_trace_id=*/100 + i,
+                                                  /*tid=*/7 + i);
+        EXPECT_GE(tag, base) << "tag below pool range at acquire " << i;
+        EXPECT_LT(tag, base + tracker->leakTagPoolSizeForTest())
+            << "tag above pool range at acquire " << i;
+    }
+    // Pool exhausted: further acquires fail with 0.
+    EXPECT_EQ(0, tracker->acquireLeakTagForTest(1, 1));
+    EXPECT_EQ(0, tracker->leakTagFreeCountForTest());
+}
+
+TEST_F(LeakTagPoolTest, ReleaseReturnsTagToPoolAndInfoIsInvalidated) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    int pool_size = tracker->leakTagPoolSizeForTest();
+
+    jlong tag = tracker->acquireLeakTagForTest(42, 99);
+    ASSERT_GE(tag, tracker->leakTagBaseForTest());
+
+    u64 call_trace_id = 0;
+    jint tid = 0;
+    EXPECT_TRUE(tracker->getLeakTagInfo(tag, &call_trace_id, &tid));
+    EXPECT_EQ(42u, call_trace_id);
+    EXPECT_EQ(99, tid);
+
+    tracker->releaseLeakTagForTest(tag);
+    // Released tags must not report stale info.
+    u64 stale_ctid = 12345;
+    jint stale_tid = 12345;
+    EXPECT_FALSE(tracker->getLeakTagInfo(tag, &stale_ctid, &stale_tid))
+        << "released tag still reports info";
+
+    // The released tag can be acquired again (reusable pool), and the free
+    // count was restored: pool_size-1 after the acquire, back to pool_size
+    // after the release, pool_size-1 again after the re-acquire.
+    EXPECT_EQ(pool_size, tracker->leakTagFreeCountForTest());
+    jlong re_tag = tracker->acquireLeakTagForTest(43, 100);
+    EXPECT_EQ(tag, re_tag) << "released tag should be recycled first (LIFO)";
+    EXPECT_EQ(pool_size - 1, tracker->leakTagFreeCountForTest());
+}
+
+TEST_F(LeakTagPoolTest, ReleaseOutsidePoolRangeIsIgnored) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    jlong base = tracker->leakTagBaseForTest();
+    int free_before = tracker->leakTagFreeCountForTest();
+
+    // Tags outside [base, base+pool): frontier tags (small positive), class
+    // tags (negative), and one-past-the-end must all be rejected.
+    tracker->releaseLeakTagForTest(1);
+    tracker->releaseLeakTagForTest(-1);
+    tracker->releaseLeakTagForTest(0);
+    tracker->releaseLeakTagForTest(base + tracker->leakTagPoolSizeForTest());
+    tracker->releaseLeakTagForTest(base - 1);
+
+    EXPECT_EQ(free_before, tracker->leakTagFreeCountForTest())
+        << "out-of-range releases must not corrupt the free list";
+}

@@ -920,8 +920,14 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns) {
   // 15x for uncovered but making progress, 1x when all leak tags resolved.
   bool all_covered = _leak_tags_assigned > 0 &&
       _leak_tags_resolved >= _leak_tags_assigned;
-  bool emergency = canary_active && _passes_since_last_progress > 0 &&
-      _passes_since_last_progress >= CANARY_NO_PROGRESS_PASS_LIMIT;
+  // Emergency = the canary's CANDIDATES are stuck, not the frontier: the
+  // frontier grows on virtually every pass for as long as any unvisited
+  // object exists, so frontier progress would make emergency unreachable
+  // (observed live: emergency=0 for the entire run while 0/1 candidates were
+  // found). _passes_since_last_candidate_progress counts passes without any
+  // candidate discovery/refresh - the same signal CANARY_STUCK abandons on.
+  bool emergency = canary_active &&
+      _passes_since_last_candidate_progress >= CANARY_NO_PROGRESS_PASS_LIMIT;
   double multiplier;
   if (all_covered) {
     multiplier = 1.0;
@@ -1831,6 +1837,11 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
       ctx->frontier->setLeakTag(frontier_tag, leak_tag);
       *tag_ptr = frontier_tag;
       ctx->edges_admitted++;
+      TEST_LOG("ReferenceChainTracker::heapReferenceCallback leak-tag "
+               "intercepted: leak_tag=%lld -> frontier_tag=%lld depth=%u "
+               "parent_tag=%lld",
+               (long long)leak_tag, (long long)frontier_tag, depth,
+               (long long)parent_tag);
       ctx->tracker->trackLeakAccumulation(ctx->frontier, class_tag,
                                              parent_tag, frontier_tag);
       // Auto-mark: record this as a discovered instance
@@ -2822,6 +2833,17 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
 
   bool progress = true;
   while (!ctx.truncated && progress && object_class != nullptr) {
+    // Wall-clock deadline check per iteration: GetObjectsWithTags runs OUTSIDE
+    // any FollowReferences callback, so heapReferenceCallback()'s amortized
+    // deadline check never sees its cost. Measured live on hotdog: a
+    // collapsed batch (batch=2) let ~1400 unchecked GetObjectsWithTags calls
+    // (~20ms each) run in one expand phase, spending 10.4s of CPU and ~30s of
+    // wall time in a single pass. Checking here bounds each phase to
+    // _effective_pause_target_ms regardless of batch health.
+    if (_pass_deadline_ns != 0 && OS::nanotime() >= _pass_deadline_ns) {
+      ctx.truncated = true;
+      break;
+    }
     progress = false;
 
     // Drain _priority_expand ahead of the ordinary backlog (see its own
@@ -2837,31 +2859,20 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
     }
 
     // SELF-CALIBRATING ADAPTIVE BATCH SIZE for GetObjectsWithTags.
-    // GetObjectsWithTags is O(tag_map_size × batch_size) — a quadratic
-    // cost (HotSpot's TagObjectCollector::do_entry does a linear scan of
-    // the search array for every entry in the tag map). With a 163k-entry
-    // tag map and batch_size ~3400, that's 554M comparisons = 226ms per
-    // call, eating the entire per-pass deadline and starving BFS to 3-4
-    // edges/pass.
-    //
-    // Instead of a fixed batch_size, self-calibrate from measured
-    // GetObjectsWithTags elapsed time: after each call, update an EMA of
-    // cost-per-tag, then derive the next batch_size from a CPU-overhead
-    // budget (NOT a safepoint budget — GetObjectsWithTags is not a
-    // safepoint call). Adapts automatically to the machine's CPU speed
-    // and to tag-map growth. See _gotw_ema_cost_per_tag_ns's own comment.
+    // GetObjectsWithTags iterates the whole JVMTI tag map per call, so its
+    // cost has a batch-independent floor that grows with the frontier
+    // (measured live: ~20ms at a 225k-entry map regardless of batch_size).
+    // Calibrating batch_size from a per-tag EMA collapses in that regime
+    // (small batch inflates per-tag cost, which shrinks the batch further —
+    // observed live driving batch from ~400 to 2). Instead, AIMD directly on
+    // batch size against the measured per-CALL time vs GOTW_CPU_BUDGET_NS —
+    // see _gotw_batch_size's own comment.
     //
     // Still capped at `budget` and `_budget` for the original reasons
     // (first-pass budget can be far larger than the backlog; a single
     // huge batch risks JNI local-capacity/OOM with zero progress).
-    size_t gotw_batch_size;
-    if (_gotw_ema_cost_per_tag_ns == 0) {
-      // First call — no measurement yet. Conservative default.
-      gotw_batch_size = GOTW_INITIAL_BATCH_SIZE;
-    } else {
-      gotw_batch_size = (size_t)std::max(
-          (int64_t)1, (int64_t)(GOTW_CPU_BUDGET_NS / _gotw_ema_cost_per_tag_ns));
-    }
+    size_t gotw_batch_size =
+        _gotw_batch_size != 0 ? _gotw_batch_size : GOTW_INITIAL_BATCH_SIZE;
     size_t batch_size = std::min(
         source.size(),
         std::min((size_t)std::max(std::min(budget, _budget), 1),
@@ -2883,19 +2894,23 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
         (jint)candidate_tags.size(), candidate_tags.data(), &resolved_count,
         &resolved_objects, &resolved_tags);
     u64 gotw_elapsed_ns = OS::nanotime() - gotw_start_ns;
-    // Self-calibrate: update the EMA of cost-per-tag from this call's
-    // measured elapsed time. cost_per_tag = elapsed / batch_size captures
-    // the per-tag-map-entry × per-search-tag comparison cost, which stays
-    // roughly stable across calls (tag-map growth is reflected in the
-    // absolute cost, not the per-tag rate). The EMA smooths jitter from
-    // GC/scheduler interference on individual calls.
+    // Self-calibrate (AIMD): update the EMA of PER-CALL elapsed time, then
+    // adjust the batch — multiplicative decrease when the EMA overran the
+    // CPU budget, additive increase when it came in under. See
+    // _gotw_batch_size's own comment for why per-call (not per-tag).
     if (batch_size > 0 && gotw_elapsed_ns > 0) {
-      u64 measured_cost_per_tag = gotw_elapsed_ns / batch_size;
-      if (_gotw_ema_cost_per_tag_ns == 0) {
-        _gotw_ema_cost_per_tag_ns = measured_cost_per_tag;
+      if (_gotw_ema_call_ns == 0) {
+        _gotw_ema_call_ns = gotw_elapsed_ns;
       } else {
-        _gotw_ema_cost_per_tag_ns =
-            _gotw_ema_cost_per_tag_ns * 4 / 5 + measured_cost_per_tag / 5;
+        _gotw_ema_call_ns = _gotw_ema_call_ns * 4 / 5 + gotw_elapsed_ns / 5;
+      }
+      if (_gotw_ema_call_ns > GOTW_CPU_BUDGET_NS) {
+        _gotw_batch_size =
+            std::max(_gotw_batch_size / 2, GOTW_MIN_BATCH);
+      } else {
+        _gotw_batch_size =
+            std::min(_gotw_batch_size + GOTW_BATCH_INCREASE_STEP,
+                     GOTW_MAX_BATCH);
       }
     }
     if (resolve_err != JVMTI_ERROR_NONE) {
@@ -2905,10 +2920,13 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
 
     // TEMP DIAGNOSTIC: verify adaptive batch_size is working
     TEST_LOG("ReferenceChainTracker::expandFrontier gotw "
-             "batch_size=%zu resolved=%d edges=%d gotw_ms=%llu ema=%llu",
+             "batch_size=%zu resolved=%d edges=%d gotw_ms=%llu ema_call_ms=%llu "
+             "next_batch=%llu",
              batch_size, resolved_count, ctx.edges_admitted,
              (unsigned long long)(gotw_elapsed_ns / 1000000ULL),
-             (unsigned long long)_gotw_ema_cost_per_tag_ns);
+             (unsigned long long)(_gotw_ema_call_ns / 1000000ULL),
+             (unsigned long long)(_gotw_batch_size != 0 ? _gotw_batch_size
+                                                       : GOTW_INITIAL_BATCH_SIZE));
 
     std::unordered_map<jlong, jobject> live;
     for (jint i = 0; i < resolved_count; i++) {
@@ -4138,26 +4156,15 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
         cacheResolvedChain(tag, std::move(event), tag, current_search_ns);
       }
     }
-    // tag == 0: The representative object has no tag. Two cases:
-    //   (a) The walk hasn't reached it yet — retry on the next poll.
-    //   (b) The representative changed (LRU-evicted since the marker tag
-    //       was set on the old one) — the new representative has no marker
-    //       tag. Re-tag it so the canary mechanism can find it on the next
-    //       walk pass. This is critical for classes like [B where many
-    //       instances are leaking and the representative keeps changing.
-    if (tag == 0) {
-      // Find the slot for this klass_id and re-tag the new representative.
-      for (int s = 0; s < _candidate_count; s++) {
-        if (_candidate_klass_ids[s] == klass_id) {
-          jlong marker_tag = MARKER_TAG_BASE - s;
-          jvmti->SetTag(obj, marker_tag);
-          TEST_LOG("ReferenceChainTracker::pollWatchedTargets re-tagged "
-                   "candidate[%d] klass_id=%u slot=%d (representative changed)",
-                   i, klass_id, s);
-          break;
-        }
-      }
-    }
+    // tag == 0: The representative object has no tag — the BFS walk
+    // hasn't reached it yet AND it is not yet leak-tagged. No action here:
+    // tagLeakInstances() (earlier in this same poll) tags every tracked
+    // instance of candidate classes from the reusable pool, so the next
+    // tagLeakInstances round or the next walk pass will pick it up. The
+    // old marker-tag re-tag path is gone — marker tags are no longer the
+    // candidate discovery mechanism (leak tags are), and re-tagging with
+    // a marker tag here would resurrect the dead mechanism on objects the
+    // leak-tag pool has not yet reached.
 
     // Build chain events for auto-marked discovered instances of this class.
     // These are objects the BFS walk admitted whose class matched this

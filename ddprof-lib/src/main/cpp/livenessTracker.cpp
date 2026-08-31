@@ -365,6 +365,24 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti, const u32 *klass_ids,
   }
   JNIEnv *env = VM::jni();
   int tagged = 0;
+  // Tagging priority: instances from allocation sites (tids) with the
+  // clearest surviving-age diversity go first, then oldest within a tid.
+  // A continuously-leaking site keeps instances alive across many distinct
+  // GC generations (many distinct surviving ages), while a one-time burst
+  // or noise site survives at few distinct ages regardless of how old its
+  // oldest instance is. If the pool is contended or GC churn races the
+  // tagging, this ordering makes sure the strongest leak signal keeps the
+  // tags rather than whichever entry the table scan happens to reach first.
+  struct TagCandidate {
+    u32 table_idx;
+    jint tid;
+    u32 age;
+    int distinct_ages; // age diversity of this entry's tid (computed below)
+  };
+  // Stack scratch: matching entries are bounded by the tracking table's
+  // small live population (~hundreds); tag in scan order beyond capacity.
+  TagCandidate scratch[512];
+  int n_candidates = 0;
   _table_lock.lockShared();
   u32 sz = _table_size;
   for (u32 i = 0; i < sz; i++) {
@@ -386,11 +404,81 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti, const u32 *klass_ids,
     if (!match) {
       continue;
     }
-    // Already tagged?
+    // Already tagged? Count it, but no need to re-acquire
     if (_table[i].leak_tag != 0) {
       tagged++;
       continue;
     }
+    if (n_candidates < (int)(sizeof(scratch) / sizeof(scratch[0]))) {
+      scratch[n_candidates].table_idx = i;
+      scratch[n_candidates].tid = _table[i].tid;
+      scratch[n_candidates].age = _table[i].age;
+      scratch[n_candidates].distinct_ages = 0;
+      n_candidates++;
+    }
+  }
+  // Compute per-tid distinct surviving ages (matching entries only - the
+  // same diversity signal the epoch fold uses for clustering, computed here
+  // directly from the tracked entries so the ranking reflects exactly the
+  // population being tagged). Distinct-tid count is bounded by
+  // MAX_THREADS_PER_KLASS logic elsewhere but here just use a small array;
+  // beyond 32 tids, extras share the lowest priority tier.
+  struct TidAges {
+    jint tid;
+    u32 ages[32];
+    int age_count;
+  } tid_ages[32];
+  int tid_count = 0;
+  for (int c = 0; c < n_candidates; c++) {
+    TidAges *t = nullptr;
+    for (int ti = 0; ti < tid_count; ti++) {
+      if (tid_ages[ti].tid == scratch[c].tid) {
+        t = &tid_ages[ti];
+        break;
+      }
+    }
+    if (t == nullptr && tid_count < (int)(sizeof(tid_ages) / sizeof(tid_ages[0]))) {
+      t = &tid_ages[tid_count++];
+      t->tid = scratch[c].tid;
+      t->age_count = 0;
+    }
+    if (t != nullptr) {
+      bool seen = false;
+      for (int a = 0; a < t->age_count; a++) {
+        if (t->ages[a] == scratch[c].age) {
+          seen = true;
+          break;
+        }
+      }
+      if (!seen && t->age_count < (int)(sizeof(t->ages) / sizeof(t->ages[0]))) {
+        t->ages[t->age_count++] = scratch[c].age;
+      }
+    }
+  }
+  for (int c = 0; c < n_candidates; c++) {
+    for (int ti = 0; ti < tid_count; ti++) {
+      if (tid_ages[ti].tid == scratch[c].tid) {
+        scratch[c].distinct_ages = tid_ages[ti].age_count;
+        break;
+      }
+    }
+  }
+  // Sort: highest age diversity first, then oldest age. Small n, insertion
+  // sort is fine (n <= 512 but in practice tens).
+  for (int c = 1; c < n_candidates; c++) {
+    TagCandidate key = scratch[c];
+    int j = c - 1;
+    while (j >= 0 &&
+           (scratch[j].distinct_ages < key.distinct_ages ||
+            (scratch[j].distinct_ages == key.distinct_ages &&
+             scratch[j].age < key.age))) {
+      scratch[j + 1] = scratch[j];
+      j--;
+    }
+    scratch[j + 1] = key;
+  }
+  for (int c = 0; c < n_candidates; c++) {
+    u32 i = scratch[c].table_idx;
     // Acquire a tag from the pool
     jlong tag = acquireLeakTag(_table[i].call_trace_id, _table[i].tid);
     if (tag == 0) {

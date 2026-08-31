@@ -2091,8 +2091,13 @@ void Recording::recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
           ? ((event->_alloc._weight * event->_alloc._size) + event->_skipped) /
                 event->_alloc._size
           : 0);
-  writeContextSnapshot(buf, event->_ctx);
+  // leak_tag precedes the context snapshot to match the metadata field
+  // order (jfrMetadata.cpp: leakTag is declared between weight and spanId,
+  // before || contextAttributes) - a field written on the opposite side of
+  // writeContextSnapshot() than where the metadata declares it makes every
+  // parser read it from the first context-attribute byte.
   buf->putVar64(event->leak_tag);
+  writeContextSnapshot(buf, event->_ctx);
   writeEventSizePrefix(buf, start);
   flushIfNeeded(buf);
 }
