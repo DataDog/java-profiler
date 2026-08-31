@@ -88,7 +88,7 @@ public:
   u64 _skipped;
   u64 _start_time;
   u64 _age;
-  jlong leak_tag;  // 0 = untagged; leak tag from LivenessTracker pool
+  int64_t leak_tag;  // 0 = untagged; leak tag from LivenessTracker pool
   Context _ctx;
 };
 
