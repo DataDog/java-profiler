@@ -109,6 +109,22 @@ most reproducible figure in this document), free-but-held glibc arena pages
 established, magnitude not**), and `NM_CALLTRACE` reporting virtual capacity
 (48.5 MiB) rather than residency (~19.9 MiB).
 
+> **Confirmed 31 Aug 2026 — and this document had it right.** Counting
+> free-but-held arena pages on the *resident* side of that reconciliation was
+> correct. Their residency is now measured directly: regressing the paired anon
+> delta on Δ`fordblks` over 20 pairs gives a slope of **1.0119 ± 0.0066**
+> (R² = 0.9992), i.e. ~100 % resident, confirmed independently by per-mapping
+> `smaps` Rss. The magnitude question flagged above is also answered — the term
+> is +22.86 ± 8.47 MiB (12 pairs) and +36.90 ± 7.72 (8 pairs) on the dd-trace-doe
+> workload, and its run-to-run variation is the sole source of the variance in
+> the paired anon delta.
+>
+> Note for anyone reconciling the two documents:
+> `dd-trace-doe-reconciliation-2026-08-27.md` briefly concluded the opposite —
+> that arena waste was non-resident and "costs no RSS" — on a mean-matching
+> argument. That was a regression against this document's finding and has been
+> retracted there.
+
 **Counter accuracy.** The profiler's own counters accounted for 37 % of what
 it actually allocated, because `NM_NATIVE_SYMBOLS` was a gauge that never ran
 during a recording. Fixed; coverage is now **96 %** (99 % with the library
@@ -226,6 +242,20 @@ memsweep/
 ├── analyze_ledger.py              # RSS/malloc/mmap reconciliation
 ├── audit_counters.py              # NativeMem counters vs measured allocations
 ├── malloc_info_probe.c            # malloc_info + malloc_trim probe
+├── alloc_size_histogram.py        # per-call-site alloc sizes vs the *observed*
+│                                  #   mmap threshold -> which categories are
+│                                  #   mmap-served (and so non-resident)
+├── run_doe_interleaved.sh         # interleaved counterbalanced paired doe runs
+├── analyse_doe_interleaved.py     # plateau estimators + reconciliation
+├── mallinfo_sampler.c             # allocation-free LD_PRELOAD arena sampler,
+│                                  #   works in BOTH arms (the profiler's own
+│                                  #   mallinfo counters ride its JFR, so the
+│                                  #   tracing-only arm would emit nothing)
+├── run_smaps_snapshot.sh          # single-pair per-mapping residency snapshot
+├── run_smaps_paired.sh            # 8-pair version, two snapshots per run
+├── analyse_smaps.py               # classifies mappings, Rss vs Size per class
+├── analyse_smaps_paired.py        # per-class resident deltas + residency slope
+├── derive_residency.py            # residency factor per accounting term
 └── extract.py                     # parses `jfr print --json` for native_mem_*
 ```
 
@@ -579,16 +609,30 @@ actually touched depends on where in the fill/rotation cycle the chunk is
 emitted and on how many distinct traces the workload produces. A constant
 cannot carry that. Counting at source removes the need for one.
 
-**Open, and the reason this is not yet called closed:** bump-allocated bytes are
-a *lower* bound on residency. `clear()` resets `offs` and un-records, but does
-not `munmap` the retained `_tail`, so pages it already touched stay resident
-while the counter forgets them; a chunk re-filled after `clear()` re-counts
-pages that were never released. The dominant rotation path
-(`detachChunks()` → `freeChunks()`) does genuinely `munmap`, so this is bounded
-by roughly one chunk — but it has not been measured against `mincore`/smaps
-residency, and it is the remaining gap between "counts touched bytes" and
-"equals RSS". Tracking a per-chunk touched high-water (kept across `clear()`,
-dropped only on real `munmap`) would close it.
+**~~Open, and the reason this is not yet called closed:~~ RETRACTED.** This
+paragraph previously named `LinearAllocator::clear()` as the remaining gap
+between "counts touched bytes" and "equals RSS": `clear()` resets `offs` and
+un-records but does not `munmap` the retained `_tail`, so pages it already
+touched stay resident while the counter forgets them, and a chunk re-filled
+after `clear()` re-counts pages that were never released.
+
+Every clause of that is an accurate description of what `clear()` does. The
+error was treating it as a code path. **`clear()` is reachable only from
+`~LinearAllocator()`**, so it never runs in a live profiler; the production
+reset is `detachChunks()` + `freeChunks()`, and `freeChunks()` calls
+`OS::safeFree` (`munmap`) on every chunk while decrementing exactly the byte
+count `alloc()` recorded for it. Pages are genuinely returned to the kernel and
+cgroup `anon` drops with them. The "bounded by roughly one chunk" framing implied
+a production path that does not exist, and the proposed fix — tracking a
+per-chunk touched high-water kept across `clear()` — is therefore **not needed
+and should not be built.**
+
+The real under-counts in this path are the 64-byte chunk header, page rounding
+of the bump pointer, and the reserve chunk's touched first page: together well
+under 0.1 MiB, not one chunk. What *does* remain is a sampling-phase artefact
+rather than an accounting one — `live` is read after serialization has already
+rotated the arena, so it reports the trough of the cycle. See **Remaining named
+biases** in `dd-trace-doe-reconciliation-2026-08-27.md`.
 
 ## Counter accuracy
 
@@ -845,8 +889,14 @@ silently redefines `avg()` as a 32-chunk mean.
 - **The final chunk's own serialization is emitted nowhere** — there is no
   following chunk to carry the post-flush counters, so only the refreshed
   `Counters::` mirrors hold it, readable only before JVM teardown completes.
-- **The free-but-held arena term needs more reps** before its magnitude is
-  quoted; its existence is established, its ~7.6 MiB mean is ~2.5σ.
+- ~~**The free-but-held arena term needs more reps** before its magnitude is
+  quoted; its existence is established, its ~7.6 MiB mean is ~2.5σ.~~
+  **Resolved 31 Aug 2026.** Magnitude on the dd-trace-doe workload is
+  +22.86 ± 8.47 MiB (12 pairs) / +36.90 ± 7.72 (8 pairs), and residency measures
+  1.0119 ± 0.0066 — the pages are resident. More reps will *not* tighten it: the
+  term is intrinsically variable and is the sole source of the paired delta's
+  variance, so reaching SE = 1 MiB would take ~873 pairs. Report it as a separate
+  term rather than averaging it down.
 - **`NM_CALLTRACE` is counted accurately but may not be sized appropriately** —
   48.5 MiB of capacity for ~19.9 MiB of resident use is a sizing question this
   document does not answer.

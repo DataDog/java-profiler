@@ -1,12 +1,25 @@
 # dd-trace-doe memory reconciliation, 27 Aug 2026
 
-**The profiler adds 59.3 ± 9.0 MiB to the application's anonymous memory on this
-workload — about 2.5 % — and that overhead is accounted for with no correction
-factors: the residual is +4.3 MiB, 0.48 σ from zero.**
+> **Revised 31 Aug 2026.** The single-number headline this document previously
+> carried ("59.3 ± 9.0 MiB, residual +4.3 MiB at 0.48 σ") is superseded, and two
+> of its conclusions are retracted outright — see
+> [What changed in the 31 Aug revision](#what-changed-in-the-31-aug-revision).
 
-Measured over 12 interleaved counterbalanced pairs, sampled after anonymous
-memory plateaus, where the choice of estimator changes the answer by 1.0 MiB
-rather than 20.
+**The profiler's anonymous-memory cost is not one number. It is a reproducible
+term of 35.98 ± 0.26 MiB, plus glibc free-but-held arena waste which is fully
+resident, is a real RSS cost, and varies from run to run:**
+
+```
+Δanon = 35.98 ± 0.26  +  1.0119 ± 0.0066 × Δfordblks
+        R² = 0.9992,  residual SD 0.77 MiB,  20 pairs in two batches
+```
+
+The practical consequence is that **the raw total is not a stable quantity.** Two
+independently measured batches gave anon deltas of **58.86 ± 8.53** (12 pairs)
+and **73.90 ± 7.88** (8 pairs) — 15 MiB apart — because Δ`fordblks` moved from
++22.86 to +37.09 between them. Their *stable* terms agreed to **0.4 MiB**. Quote
+the two terms separately; a single total inherits the arena term's variance and
+cannot be reproduced.
 
 **Quote the absolute figure, not the percentage.** The baseline here is 2405 MiB
 because `AlwaysPreTouch` pins all 2048 MiB of heap as touched; without it the
@@ -14,18 +27,25 @@ same absolute overhead reads as ~3.9 % against a ~1580 MiB baseline. The
 denominator is a measurement choice, so the percentage is not a property of the
 profiler.
 
-Three caveats bound how this figure should be quoted:
+Four caveats bound how these figures should be quoted:
 
 - **The overhead is bounded — there is no leak and no per-flush growth.**
   Confirmed over a 20-minute run with 10 observed flushes: see
   [Long-run behaviour](#long-run-behaviour). Anonymous memory plateaus by
   t ≈ 180 s and the paired delta is flat from t ≈ 60 s onward.
-- **Between-run variance is the dominant uncertainty**, larger than any term in
-  the reconciliation. Per-pair deltas span 26–112 MiB, so single runs are not
-  informative about the absolute figure.
-- **It depends on how the memory instrument is read.** Different defensible
-  estimators of the same data span 20 MiB (see
-  [Instrument properties](#instrument-properties)).
+- **All the run-to-run variance is the arena term.** It is not measurement
+  noise and not JVM settling in general: within a plateau a run's anon level is
+  reproducible to **0.13 MiB**, while paired deltas scatter with SD 29.56 MiB.
+  Δ`fordblks` explains that scatter at R² = 0.999.
+- **±8.53 is the standard error of a 12-pair mean, not a per-pair SD** (that is
+  29.56). So the old residual of +4.02 MiB carried a 95 % CI of
+  **[−12.7, +20.7]**, and the smallest residual this design could detect at 95 %
+  was **16.7 MiB**. "Not distinguishable from zero" was true but half the story:
+  a ~20 MiB gap could not have been excluded either.
+- **Counted bytes are not resident bytes.** NMT reports committed address space
+  and the profiler's counters report bytes requested, while anon counts pages
+  touched. Comparing them requires a residency factor per term — see
+  [Residency factors](#residency-factors).
 
 Harness, workload and instruments follow
 `dd-trace-doe-reproduction-2026-08-05.md`; read that first for methodology.
@@ -33,6 +53,42 @@ Mechanism detail for the call-trace counter is in `memory-sweep-results-linux.md
 (§ "`NM_CALLTRACE`: counting residency at source instead of correcting for it").
 
 ---
+
+## What changed in the 31 Aug revision
+
+Three corrections, two of them reversals of stated conclusions. All are measured,
+and where a previous claim was wrong the mechanism that made it wrong is given so
+the same reasoning is not repeated.
+
+**1. Free-but-held arena memory is resident. It was ruled out as non-resident;
+that was wrong.** The original argument was that total malloc address space
+(`arena` + `hblkhd` = 80.47 MiB) exceeds the anon delta (58.83) by 21.6 MiB,
+matching Δ`fordblks` (22.97) almost exactly, so free-held pages must be unbacked.
+The arithmetic is right and the inference does not follow: Δ`arena` (57.73) and
+Δ(`uordblks`+`hblkhd`) (57.50) happen to coincide in that dataset, so matching the
+*mean* cannot discriminate the two models. The *variance* can, and it is decisive
+— Δ(`uordblks`+`hblkhd`) has SD 0.16 MiB against anon's 29.56 and correlates
+−0.005 with it, so that model cannot explain why anon moves between pairs at all.
+Regressing anon on Δ`fordblks` gives a slope of **1.0119 ± 0.0066** (20 pairs),
+1.8 σ from 1.0 and 153 σ from 0. Per-mapping `smaps` confirms it independently:
+glibc arena regions hold 214.9 MiB Rss against 78.7 MiB of in-use arena bytes.
+**The residency split was also inverted** — the 21.6 MiB of unbacked address
+space is `hblkhd`, whose mmap-served chunks measure ~0 resident.
+
+**2. `LinearAllocator::clear()` is not a source of under-counting.** It is
+reachable only from `~LinearAllocator()` and never runs in a live profiler. Full
+retraction in [Remaining named biases](#remaining-named-biases); the same claim
+in `memory-sweep-results-linux.md` is retracted there too, along with the
+proposed per-chunk high-water fix, which is not needed.
+
+**3. Counted bytes are not resident bytes**, and the two sides of the
+reconciliation were being compared on different bases. Residency factors are now
+measured per term — see [Residency factors](#residency-factors).
+
+One hypothesis was raised during this revision and **refuted**, recorded so it is
+not re-proposed: that `native_symbols` and `dictionary` over-state their RSS cost
+by being mmap-served. Both are arena-served and resident. See
+[Which categories are mmap-served](#which-categories-are-mmap-served).
 
 ## Conditions
 
@@ -138,9 +194,28 @@ independently measured means.
 A positive residual means anonymous memory exceeds what we can name. At
 **0.48 σ** it is not distinguishable from zero.
 
+> **Read this table with two corrections (31 Aug).**
+>
+> *The σ is the standard error of the 12-pair mean, not a per-pair SD* (29.56).
+> So the residual's 95 % CI is **[−12.7, +20.7] MiB** and the smallest detectable
+> residual is **16.7 MiB**. The table cannot distinguish a residual of 0 from one
+> of +18; "0.48 σ from zero" should not be read as "small".
+>
+> *The two sides use different bases.* "Explained" sums NMT **committed** address
+> space and profiler **requested** bytes; "anonymous-memory paired delta" counts
+> **resident** pages. They are only comparable after a residency factor is applied
+> per term — see [Residency factors](#residency-factors). Applied at the resident
+> level, the model closes to ~4 MiB on the 8-pair batch (predicted 77.9 against
+> measured 73.95), so the table's apparent 4.25 MiB residual and that ~4 MiB gap
+> are not the same quantity and should not be equated.
+
 Every term is now measured. The NMT delta in particular is reproducible to
 ± 0.11 MiB with both snapshots taken inside the plateau, so essentially all
 remaining uncertainty is the anon delta's between-run variance.
+
+**And that variance has a single named source (31 Aug).** It is glibc arena
+growth, not host state or JIT decisions as previously supposed. See
+[Where the variance comes from](#where-the-variance-comes-from).
 
 Sampling mid-ramp reproduces the same delta with worse precision and 20× the
 estimator sensitivity, so it is not used.
@@ -159,6 +234,14 @@ the parts sum exactly to the whole. All figures are paired deltas
 profiling* — the same workload without it does not pay them.
 
 **Total: 58.83 ± 8.53 MiB**
+
+> **The percentages below are batch-specific, not properties of the profiler
+> (31 Aug).** They are shares of *this* batch's 58.83 MiB total. A second batch
+> measured 73.90 MiB on the same workload, so the same absolute terms would read
+> as 41 % / 34 % rather than 51 % / 42 %. The difference is entirely the arena
+> term. The A/B/C split also predates the finding that arena waste is resident,
+> so it omits the largest varying term altogether — quote the two-term model in
+> the header instead, and treat A and B as a breakdown of the *stable* side.
 
 ### A. JVM-internal — 30.00 MiB (51 %)
 
@@ -205,20 +288,54 @@ starts here — it is the only part of the total that the profiler itself owns.
 
 ### C. Residual — 4.02 MiB (6.8 %)
 
-30.00 + 24.81 + 4.02 = 58.83. At 0.47 σ the residual is not distinguishable from
-zero, and it is comfortably covered by known small gaps:
+**Superseded (31 Aug) — see the retraction note at the end of this section.**
+
+30.00 + 24.81 + 4.02 = 58.83. **At 0.47 σ the residual is not distinguishable
+from zero, so no mechanism is required to explain it** — that, not the table
+below, is the load-bearing statement. The candidates below are gaps we know
+exist and whose signs are right; only the last two are quantified tightly enough
+to sum, so treat the table as an argument that the residual is unsurprising, not
+as an accounting of it:
 
 | candidate | bound |
 | --- | --- |
-| `calltrace` `clear()` under-count (live 3.23 → peak 6.62) | up to 3.36 |
+| `calltrace` flush-phase sampling bias (live 3.37, all-time peak 6.59) | ≤ 3.22, loose ¹ |
 | uninstrumented allocator overhead | ~0.2–0.4 |
 | natively created profiler thread stacks (invisible to NMT *and* to the counters) | ~0.1–0.5 |
 | the profiler `.so`'s writable pages | < 1 |
 
-**It is not free-but-held arena memory.** That was measured and ruled out — see
-[Arena waste, attributed](#arena-waste-attributed--and-ruled-out). Arena waste is
-real and attributable (+22.97 ± 8.47 MiB) but **non-resident**, so it costs no
-RSS.
+¹ **This bound is loose and must not be read as a point estimate.** It is
+`max − live`, and `NativeMem::_max[]` is an all-time latch — nothing resets it in
+production (`NativeMem::reset()` is tests-only). Measured across all 12 runs, the
+`calltrace` peak is set during chunk 2 and then never moves again:
+
+```
+live:  5.53  3.55  3.36  3.36  3.34  3.24
+max :  5.53  6.64  6.64  6.64  6.64  6.64
+```
+
+So 6.59–6.64 MiB is a high-water from the startup ramp, not the crest of the
+steady-state rotation cycle — and because `max` stops moving after chunk 2, the
+steady-state crest is strictly *below* it, by an unmeasured margin. The true
+cycle amplitude, and hence the real size of this bias, needs the
+`native_mem_post_flush_*` counters. See
+[Remaining named biases](#remaining-named-biases).
+
+> **FREE-BUT-HELD ARENA MEMORY IS RESIDENT (31 Aug).** It is a real RSS cost of
+> +22.9 to +37.1 MiB — one of the two largest terms in this reconciliation. Residency measures **1.0119 ± 0.0066** over 20 pairs
+> (R² = 0.9992), confirmed independently by per-mapping `smaps`. See
+> [Arena waste, attributed](#arena-waste-attributed--and-confirmed-resident).
+>
+> **This section previously concluded the opposite** — that arena waste, though
+> real and attributable, did not cost RSS — and that conclusion is **retracted**.
+>
+> That reverses this section's premise rather than adjusting it. With arena waste
+> included, the accounting no longer under-explains by 4.02 MiB — on a
+> committed basis it *over*-explains, and the two sides are not comparable until
+> residency factors are applied to each term. The corrected accounting is the
+> two-term model in the header; the candidate table above remains valid only as a
+> list of small known gaps, not as an explanation of a 4.02 MiB residual that is
+> no longer the right quantity to explain.
 
 ### Measured allocator overhead
 
@@ -462,12 +579,65 @@ repetitions.
 
 ## Remaining named biases
 
-Both are small, bounded, and known:
+All three are bounded and known. The first two are defects in the *measurement*,
+not in the footprint — they are the kind of gap this exercise exists to close:
 
-- **Call-trace `clear()` under-count**, bounded by the 3.48 → 6.61 MiB
-  live-to-peak spread. `clear()` un-records a retained chunk's bytes but does not
-  unmap it, so already-touched pages stay resident while the counter forgets them.
-  The dominant rotation path does unmap, bounding this at roughly one chunk.
+- **Flush-phase sampling bias on the rotating call-trace arena**, loosely bounded
+  by the 3.37 → 6.59 MiB live-to-peak spread (12 runs, steady-state chunks only)
+  — loosely, because that peak is an all-time latch set during the startup ramp,
+  not the crest of the steady-state cycle; see the footnote under
+  [Residual](#c-residual--402-mib-68-).
+
+  *This supersedes an earlier claim in this document that the bias came from
+  `LinearAllocator::clear()` failing to unmap already-touched pages. That claim
+  was wrong and is retracted: `clear()` is reachable only from
+  `~LinearAllocator()` and is never called in a running profiler. The production
+  reset is `detachChunks()` + `freeChunks()`, and `freeChunks()` calls
+  `OS::safeFree` (`munmap`) on every chunk while decrementing exactly the byte
+  count `alloc()` recorded for it. Pages are genuinely returned to the kernel and
+  cgroup `anon` drops with them, so nothing stays resident behind the counter.
+  The real per-chunk under-counts in that path — the 64-byte chunk header, page
+  rounding of the bump pointer, and the reserve chunk's touched first page — total
+  well under 0.1 MiB.*
+
+  The bias that *does* exist is in when the gauges are read, not in what they
+  count. `NativeMem`'s `live` and `avg` are both read once per JFR chunk from
+  `updateNativeMemStats()`, which runs **after** the constant pool has been
+  serialized — and serializing the stack-trace pool is what rotates
+  `CallTraceStorage` and unmaps its standby chunks. Every reading is therefore
+  taken at the trough of the rotation cycle, which is why `calltrace` reports
+  3.37 MiB live against a 6.59 MiB peak. The anon figure it is differenced
+  against is a plateau **median** — a time average across the whole cycle — so
+  charging `calltrace` at its flush-instant value under-credits it by up to the
+  live-to-peak spread.
+
+  `avg` is not the fix: `NativeMem::sample()` is driven from the same per-chunk
+  call, so its 64-tick window averages readings that all sit at the same phase.
+  Measured across the 12 profiling runs, steady-state chunks only, total `avg` is
+  24.41 MiB against total `live` 24.53 MiB — re-charging every category at `avg`
+  moves the residual by −0.12 MiB, the wrong direction and two orders too small.
+  Pinning the true time average down needs the `native_mem_post_flush_*`
+  counters, which postdate the build used here.
+- **`linear_allocator_bytes` and `linear_allocator_chunks` read 0 in production**,
+  in every chunk of every run, even though `CallTraceStorage` holds three
+  `CallTraceHashTable`s that each keep a live 8 MiB chunk. Verified not to be a
+  build or emitter problem: the counter name strings are in the shipped `.so`,
+  `allocateChunk` carries the increments in the disassembly (`lock add $chunk_size,
+  0xf00(%rcx)` / `lock incq 0xf80(%rcx)`), and the emitter indexes the same slots
+  the writers do. The cause is ordering in `Profiler::start()`: it calls
+  `_call_trace_storage.clear()` — which decrements for every freed chunk and
+  re-increments for the fresh one each allocator then holds — and *only then*
+  calls `Counters::reset()`, zeroing the table while those chunks are still
+  mapped. The gauge is de-based by exactly the live population, so it reports the
+  delta from that baseline rather than the absolute count, and it reads exactly 0
+  whenever the population returns to its post-reset size — which is the state at
+  every flush, for the same reason `calltrace` reads its trough there. Cumulative
+  event counters are unharmed by `Counters::reset()`; live gauges like these two
+  are, and can go negative if the population ever drops below the baseline.
+  Consequence for reconciliation: the arena's *virtual* footprint (≥ 24 MiB) is
+  invisible in production JFR. Its *resident* footprint is not affected — that is
+  carried by `NM_CALLTRACE`, which has its own state and is not touched by
+  `Counters::reset()`.
 - **Allocator-overhead coverage is partial** (~0.2–0.4 MiB unmeasured).
   `jfr_buffers`, `liveness`, `line_tables`, `thread_local`, `thread_filter` and
   `wallclock` still record through plain `record()` and report zero overhead. The
@@ -540,7 +710,7 @@ allocations. The profiler's counters cannot attribute it — they ride the
 profiler's own JFR, so the tracing-only arm emits none and no paired delta
 exists.
 
-### Arena waste, attributed — and ruled out
+### Arena waste, attributed — and confirmed resident
 
 `memsweep/mallinfo_sampler.c` closes that: an LD_PRELOAD shim that samples
 `mallinfo2()` from **either** arm, since it does not care whether the profiler is
@@ -562,35 +732,221 @@ So **+22.97 ± 8.47 MiB of free-but-held arena space is attributable to the
 profiler** (2.71 σ) — the first time this term has been measured rather than
 carried over by analogy.
 
-**But it does not explain the residual, because it is not resident.** `uordblks`
-excludes mmap-served chunks (verified: `uordblks + fordblks = arena` exactly,
-while an 8 MB allocation lands wholly in `hblkhd`), so the profiler's total
-malloc *address space* delta is 57.73 + 22.74 = **80.47 MiB** — against an anon
-delta of only **58.83 MiB**. The 21.6 MiB excess matches the 22.97 MiB free-held
-delta almost exactly.
+### Free-but-held arena memory is resident — and is one of the two largest terms
 
-That identity is the result: the free-but-held space is allocator bookkeeping over
-address space whose pages are **not backed**. `fordblks` counts what the allocator
-could hand out again, not what the process is paying for in RSS. Meanwhile
-malloc's *in-use* delta (34.76 + 22.74 = 57.50 MiB) sits within 1.3 MiB of the
-anon delta, which is where the resident cost actually lives.
+**+22.9 to +37.1 MiB of real RSS cost.** Residency measures **1.0119 ± 0.0066**
+over 20 pairs, R² = 0.9992, confirmed independently by per-mapping `smaps`.
 
-**Consequence for the reconciliation:** arena waste must not be added as an
-explanatory term, and the residual is *in-use* malloc memory that neither
-instrument attributes — not fragmentation. This removes the largest remaining
-candidate.
+> **Retraction.** This section previously carried the heading "But it does not
+> explain the residual, because it is not resident" and concluded that arena
+> waste cost no RSS. That is **wrong and withdrawn.** The argument is preserved
+> below, marked as retracted, because the way it failed is instructive — but
+> nothing in it should be quoted as a current finding.
+
+*The retracted argument.* `uordblks` excludes mmap-served chunks (verified:
+`uordblks + fordblks = arena` exactly, while an 8 MB allocation lands wholly in
+`hblkhd`), so the profiler's total malloc *address space* delta is
+57.73 + 22.74 = **80.47 MiB** against an anon delta of only **58.83 MiB**. The
+21.6 MiB excess matches the 22.97 MiB free-held delta almost exactly — therefore,
+it concluded, free-held pages are unbacked, and malloc's *in-use* delta
+(34.76 + 22.74 = 57.50 MiB) sitting within 1.3 MiB of the anon delta is where the
+resident cost actually lives.
+
+*Why it fails.* Both models fit the mean, so the mean cannot choose between them:
+Δ`arena` is 57.73 and Δ(`uordblks`+`hblkhd`) is 57.50, a coincidence of this
+dataset. The variance discriminates, and it is not close:
+
+| model for Δanon | mean | SD | corr with Δanon |
+| --- | --- | --- | --- |
+| `arena` (in-use **+ free-held**) | +57.73 | 29.21 | **0.998** |
+| `uordblks` + `hblkhd` (in use only) | +57.61 | **0.16** | **−0.005** |
+| Δanon, measured | +58.86 | 29.56 | — |
+
+The in-use-only model predicts anon should be near-constant across pairs. It
+varies by 29.56 MiB, and only the model including free-held tracks it.
+
+*Two independent confirmations.* Regressing Δanon on Δ`fordblks` over 20 pairs
+gives a slope of **1.0119 ± 0.0066** — the residency fraction of free-held
+memory — which is 1.8 σ from 1.0 and **153 σ from 0**, at R² = 0.9992. And
+per-mapping `smaps` measures glibc arena regions holding **214.9 MiB Rss against
+78.7 MiB of `uordblks`**, so ≥136 MiB of resident arena memory is free-held. The
+two instruments share no code and no data source.
+
+*The split was inverted.* The 21.6 MiB of address space that genuinely is not
+backed is **`hblkhd`**, not free-held arena: 80.47 − 58.86 = 21.61 against
+Δ`hblkhd` = 22.74, within 1.1 MiB, and the fitted residency factor for `hblkhd`
+is ~0 against ~0.96 for the arena.
+
+*Note on `malloc_trim`.* It is **not** a valid test of this. `keepcost` is
+0.13 MiB in every run, so essentially nothing is trimmable regardless of whether
+those pages are resident — a trim experiment would show no drop under either
+model, and the free-held space is mid-arena fragmentation rather than
+trim-threshold retention.
+
+**Consequence for the reconciliation:** arena waste must be *added* as an
+explanatory term, not excluded — the opposite of what this section previously
+concluded. Because it is also the entire source of the run-to-run variance, it is
+the term that makes a single-number total irreproducible.
+
+## Where the variance comes from
+
+The run-to-run variance is **not** measurement noise, and not host state or JIT
+decisions in general as this document previously supposed. It is one term.
+
+Within a single run's plateau, anon is extremely stable: the median over the
+first half of the plateau and over the second half agree to **0.13 MiB**
+(split-half, 24 runs), with an IQR of 0.55–0.82 MiB. Yet paired deltas scatter
+with **SD 29.56 MiB**. A ratio of ~230× has no instrument-noise explanation —
+each run pins its own anon level to about a tenth of a megabyte, and different
+runs settle tens of megabytes apart.
+
+Δ`fordblks` accounts for that scatter completely: R² = 0.9992 with a residual SD
+of 0.77 MiB across 20 pairs. Nothing else needs to be invoked.
+
+Three consequences:
+
+- **More repetitions are a poor lever.** At SD 29.56, reaching SE = 1 MiB needs
+  **873 pairs**, roughly 4–5 days of machine time, and SE only falls as √n.
+- **A within-process design would not help.** The arena term would still be
+  drawn per process, so it would not cancel.
+- **Report the two terms separately instead.** The stable term is already known
+  to ±0.26 MiB with the pairs in hand; it was only ever obscured by being summed
+  with the arena term.
+
+Two candidate mechanisms for the arena term itself were considered:
+
+- **Secondary-arena count.** glibc creates arenas as 64 MiB-aligned mmap'd heaps,
+  so a per-run "how many arenas" lottery would produce quantised deltas.
+  **Ruled out:** the 24 absolute arena values (174–295 MiB) have consecutive gaps
+  of 1–9 MiB with no 64 MiB steps.
+- **C2 compiler-arena churn.** HotSpot's `Arena` chunks go through `os::malloc`,
+  so C2's bursty allocate/free is a plausible driver of free-held growth.
+  Untested. A single `-XX:TieredStopAtLevel=1` pair would be a cheap mechanism
+  check, but it is *not* a measurement configuration: C1-only changes the
+  compiled-method population and therefore the profiler's own symbol and
+  call-trace load. The same caveat applies to a GC change and to
+  `mallopt(M_ARENA_MAX)` — all of them change the thing being measured.
+
+## Residency factors
+
+NMT reports **committed** address space; the profiler's counters report bytes
+**requested**; cgroup anon counts pages **touched**. These are three different
+quantities and the reconciliation was comparing them directly. Each accounting
+term needs a residency factor first.
+
+The decomposition must be non-overlapping, and the trap is that NMT's
+per-category `committed` mixes mmap'd regions with malloc'd bytes — and those
+malloc'd bytes are served by glibc, so they are *already inside* mallinfo's
+`arena`/`hblkhd`. Summing NMT committed alongside mallinfo terms double-counts
+them. NMT reports the split per category, so JVM terms use **mmap-committed
+only**. `Shared class space` is excluded as file-backed (CDS archive).
+
+Derived from 32 run-snapshots (8 pairs × 2 arms × 2 plateau snapshots):
+
+| term | factor | how |
+| --- | --- | --- |
+| Java heap | **1.000** ± 0.000 | measured (`AlwaysPreTouch`) |
+| JIT code cache | **0.992** ± 0.000 | measured; matches NMT `Code` exactly |
+| thread stacks | **0.875** ± 0.015 | measured, against NMT's `stack:` line |
+| glibc arena | **0.957** ± 0.016 | fitted |
+| `hblkhd` (mmap-served) | **≈ 0** | fitted, bounded |
+| metaspace / class / GC | — | **not identifiable**, see below |
+
+**Two identifiability traps, both real and both worth avoiding on a re-run:**
+
+1. *Metaspace, Class and GC cannot be fitted as free terms.* NMT `GC` mmap is
+   byte-identical across arms (Δ = +0.00) and metaspace barely moves, so their
+   columns are effectively constant. A first fit returned metaspace **−7.55** and
+   GC **+7.25** — both physically impossible — cancelling to something plausible.
+   They belong in an intercept (109.9 ± 2.1 MiB, the constant JVM mmap baseline).
+2. *`arena` and `hblkhd` are collinear at r = +0.925*, so ordinary least squares
+   pushed `hblkhd` to −0.170. Only the **combination
+   `f_arena + 0.274 × f_hblkhd ≈ 0.911`** is determined; the two factors are not
+   separately identifiable. Profiling `f_hblkhd` over [0, 1] and refitting is
+   monotone — residual SD 1.49 at 0 rising to 5.36 at 1 — so the data prefers
+   ≈ 0. **Do not quote 0.957 as a standalone measured constant.**
+
+*Why the average arena factor (0.91–0.96) sits below the marginal free-held slope
+(1.0119 ± 0.0066):* mallinfo's `arena` counts each arena's grown extent including
+an untouched top chunk — `smaps` shows arena Rss/Size ≈ 0.79. That is a roughly
+constant overhead absorbed by the intercept, while *marginal* growth is fully
+touched. Both numbers are correct.
+
+*Validation.* Leave-one-pair-out prediction of Δanon is out of sample: mean error
+**−0.29 MiB**, SD 3.26, max |error| 6.92. (An in-sample agreement of +0.11 MiB
+also appears in the tool output; it is meaningless on its own — same data fitted
+and predicted.)
+
+**Two routes to the free-held magnitude, and they disagree — use the mallinfo
+one.** `analyse_smaps_paired.py` also reports a "resident free-held arena" paired
+delta of **+14.10 ± 7.91 MiB**, computed as arena Rss minus `uordblks`. That
+**undercounts**: the strict 64 MiB-shape arena detector misses arenas whose
+mappings the kernel split or merged, and they land in the generic
+`anon 1MiB-512MiB` bucket instead. The leak is quantified — Δ(secondary arena
+Rss) +49.41 plus Δ(`anon 1MiB-512MiB` Rss) +23.32 = +72.73 reproduces
+Δ`arena` = +72.21, while the arena class alone does not. The authoritative
+magnitude is the mallinfo term (+22.86 / +36.90); the *residency* comes from the
+Δ`fordblks` slope, which needs no classification at all.
+
+Tooling: `memsweep/run_smaps_paired.sh`, `analyse_smaps.py`,
+`analyse_smaps_paired.py`, `derive_residency.py`. Validation worth noting: smaps
+`Anonymous` totals equal cgroup `anon` to **0.0 MiB** in both arms.
+
+## Which categories are mmap-served
+
+Because mmap-served chunks measure ~0 resident, a category whose allocations
+exceed glibc's mmap threshold would over-state its RSS cost. **A hypothesis that
+`native_symbols` and `dictionary` do so was tested and refuted.**
+
+The threshold cannot be assumed: glibc's `M_MMAP_THRESHOLD` is **dynamic**,
+adapting upward from its 128 KiB default toward 32 MiB as mmap'd blocks are
+freed. It was located empirically instead — ranking call sites by allocation size
+until `malloc_live_count_mmapped` (14–15 live) is accounted for — and comes out at
+**256 KiB**.
+
+| category | total MiB | mmap-served | % |
+| --- | --- | --- | --- |
+| `native_symbols` | 9.19 / 9.22 / 9.90 | **0.00** | **0 %** |
+| `jfr_buffers` | 1.16 | 1.16 | 100 % |
+
+`native_symbols` is 0 % mmap-served in all three dumps. Its largest site,
+`CodeCache::findSymbolByPrefix` at 4.52 MiB over 22 allocations = **210 KiB
+mean**, sits just *below* the 256 KiB threshold, so it is arena-served and at
+0.957 essentially all resident. `dictionary` likewise: `DictTable` is 128 rows ×
+32 B ≈ 4 KiB, far below threshold, and a 4 KiB `calloc` is memset so its pages
+are touched.
+
+`CodeCache` does count `_memory_usage += _capacity * sizeof(CodeBlob)` —
+*capacity*, not count — while `new CodeBlob[n]` leaves POD members uninitialised,
+so a doubling array is counted fuller than it is touched. Real, but immaterial
+here: the array is arena-served, and arena pages measure ~96 % resident whether
+or not the caller wrote to them.
+
+Of ~22 MiB of profiler malloc, only **~7.7 MiB is mmap-served** — `jfr_buffers`
+1.16 MiB (one allocation, matching its counter exactly), ~4.5 MiB across three
+512 KiB × 3 sites, and ~2.0 MiB in `otel_process_ctx.cpp`. So Δ`hblkhd` = +22.56
+is mostly **not** the profiler's instrumented allocation; where the rest comes
+from is open.
+
+**Two caveats on this analysis.** The ledger dumps are the **memsweep** workload
+(N = 150,000 classes), not dd-trace-doe, so the structural conclusion should
+transfer but the split may not. And `addr2line` returns a function but no file
+for most sites in this release build, so attribution is nearest-symbol only —
+three distinct 512 KiB sites all resolve to `Profiler::stop()`, which is
+certainly wrong. **Ranking by size is reliable; naming the allocator is not.**
+
+Tooling: `memsweep/alloc_size_histogram.py`.
 
 ## Candidates that would explain a larger gap
 
-These were assembled when the gap appeared larger. They now **sum to more than
-the residual** (~12–18 MiB against ≈ 0–5), so they cannot all contribute at the
-magnitudes estimated. The likeliest resolution is that free-but-held arena slack
-is much smaller on this workload than on the synthetic sweep where it was
-measured.
+These were assembled when the gap appeared larger, and the arithmetic that
+dismissed them is superseded: it rested on free-held arena space being
+non-resident, which is now measured to be false. The table below is corrected.
 
 | Est. | Candidate |
 | --- | --- |
-| ~~≈ 7.6 MiB~~ **0** | ~~Free-but-held arena pages.~~ **Ruled out.** Now measured at +22.97 ± 8.47 MiB attributable, but shown to be non-resident — see [Arena waste, attributed](#arena-waste-attributed--and-ruled-out). It is address space the allocator retains, not pages the process pays for. |
+| **+22.9 to +37.1** | **Free-but-held arena pages — CONFIRMED, and the largest term here.** ~~Ruled out as non-resident.~~ That was wrong: residency measures **1.0119 ± 0.0066** (20 pairs) and per-mapping `smaps` agrees. It is a real RSS cost and it varies between batches, which is why the total is irreproducible. See [Arena waste, attributed](#arena-waste-attributed--and-confirmed-resident). |
+| ≈ 0 (inferred) | **Mmap-served malloc chunks (`hblkhd`), +22.6 MiB of address space.** The likeliest home for the address space that genuinely is not backed. Note this is *inferred under collinearity*, not measured independently: `hblkhd` and `arena` correlate at r = 0.925, so only `f_arena + 0.274 × f_hblkhd ≈ 0.911` is determined. The profile prefers ≈ 0 monotonically and the mean arithmetic agrees (80.47 − 58.86 = 21.61 against Δ`hblkhd` 22.74), but the two factors cannot be separated. Only ~7.7 MiB of it is profiler-instrumented allocation, so most is induced JVM/tracer allocation — currently unattributed. |
 | a few MiB | **Natively created profiler thread stacks.** Created via `pthread_create`, not by the JVM, so their resident stack pages appear in neither NMT's Thread category nor the profiler's counters — a structural blind spot between the two instruments. |
 | 2–4 MiB | **The profiler library's own resident image.** Text and data pages of a 1.38 MB shared object. Not an allocation, so no counter sees it; not JVM-managed, so NMT does not either. |
 | ≈ 0.9 MiB | **Unattributed profiler malloc.** Resolves only to a private `operator new`. |
@@ -607,13 +963,13 @@ reconciliation once used are now measurements. Both were properties of the
 instead of folded into "profiler cost". What remains is attribution, not
 estimation.
 
-1. **Attribute arena waste to the profiler.** The absolute figure is now
-   measured (188.31 MiB process-wide, see
-   [Process-wide arena waste](#process-wide-arena-waste)), but it cannot be
-   attributed from these counters: they are emitted through the profiler's own
-   JFR, so the tracing-only arm produces none and no paired delta exists. Use
-   `memsweep/malloc_info_probe.c` with `run_mallocinfo_capture.sh` (LD_PRELOAD,
-   works with or without the profiler) to get the figure for both arms.
+1. ~~Attribute arena waste to the profiler.~~ **Done, and it changed the
+   conclusion.** Attributed at +22.86 ± 8.47 (12 pairs) and +36.90 ± 7.72
+   (8 pairs) via the LD_PRELOAD sampler, and — contrary to the first reading —
+   measured to be **fully resident**. It is now the largest single term and the
+   sole source of the run-to-run variance. See
+   [Arena waste, attributed](#arena-waste-attributed--and-confirmed-resident) and
+   [Where the variance comes from](#where-the-variance-comes-from).
 2. ~~Fold chunk overhead in exactly, per allocation.~~ **Done** — reported as
    `native_mem_chunk_overhead_bytes.<category>`, measured via
    `malloc_usable_size()` with the per-chunk header probed at runtime rather than
@@ -629,12 +985,20 @@ estimation.
    measurement: that reaches plateau, where estimator spread falls from 20.3 to
    2.7 MiB, while keeping 12 pairs affordable (~2 h rather than the ~8 h that
    20-minute pairs would cost).
-5. **Attack between-run variance — now the dominant uncertainty.** Per-pair
-   deltas span 26–112 MiB while the within-run delta is stable to 0.47 MiB, so
-   the variance lives in run-level factors (host state, JIT decisions, container
-   placement), not in sampling. It exceeds every term in the reconciliation, so
-   until it is reduced or averaged down, no refinement of the counters will
-   sharpen the headline figure.
+5. ~~Attack between-run variance — now the dominant uncertainty.~~ **Diagnosed.**
+   It is not "run-level factors (host state, JIT decisions, container placement)"
+   as guessed here — it is entirely glibc arena growth (R² = 0.9992). The fix is
+   not to reduce it but to **stop summing it into the headline**: report the
+   stable term (35.98 ± 0.26) and the arena term separately. Brute force is a bad
+   trade at 873 pairs for SE = 1 MiB. See
+   [Where the variance comes from](#where-the-variance-comes-from).
+
+   *Remaining, and the one open question of substance:* Δ`hblkhd` is +22.6 MiB of
+   allocated-but-untouched address space, of which only ~7.7 MiB is
+   profiler-instrumented. The rest is induced JVM or tracer allocation and is
+   currently unattributed. A cross-condition run of the alloc ledger on **this**
+   workload would attribute it to call sites; the existing audit deliberately
+   compares within one condition only.
 6. **Confirm `-XX:+AlwaysPreTouch` with a 2×2 interleaved design** (pretouch and
    no-pretouch alternating within one window). It is already the recommended
    default on the strength of estimator-independence; what remains is to check
