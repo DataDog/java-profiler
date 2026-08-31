@@ -151,6 +151,75 @@ LD_PRELOAD arena sampler) gives anon delta **58.83 ± 8.53**, NMT delta
 **+4.02 ± 8.53** (0.47 σ). Two independent measurements agreeing to 0.46 MiB on
 the delta and 0.23 MiB on the residual.
 
+## Full breakdown
+
+Everything below is from a single 12-pair interleaved run, plateau-sampled, so
+the parts sum exactly to the whole. All figures are paired deltas
+(tracing+profiling **minus** tracing-only), i.e. the cost of *enabling
+profiling* — the same workload without it does not pay them.
+
+**Total: 58.83 ± 8.53 MiB**
+
+### A. JVM-internal — 30.00 MiB (51 %)
+
+| NMT category | Δ MiB | |
+| --- | --- | --- |
+| `Tracing` | **+15.17** | JFR subsystem initialised — **no recording running** |
+| `Code` | +8.36 | code cache; profiling-specific Java being JIT-compiled |
+| `Metaspace` | +2.18 | |
+| `Class` | +1.33 | |
+| `Internal` | +1.20 | |
+| `Thread` | +0.59 | JVM-created threads only |
+| `Native Memory Tracking` | +0.53 | NMT's own bookkeeping |
+| `Symbol` | +0.46 | |
+
+This is memory the JVM allocates, but it appears **only when profiling is
+enabled**, so it is profiler-caused overhead. What the distinction changes is who
+can act on it: none of it is the native profiler's own allocation.
+
+The `Tracing` term is JFR machinery initialised without a recording — see
+[Why JFR is initialised](#why-jfr-is-initialised). It is not an artifact of this
+benchmark's configuration, and in production, where JFR runs a real recording,
+the cost is likely higher rather than lower.
+
+The tracer's own bytecode-instrumentation cost does **not** appear here: both
+arms run `tracing=true`, so it cancels. (For scale, it is much larger — the
+tracing step alone adds ~17.6 MiB of `Code` and ~22.1 MiB of `Metaspace`.)
+
+### B. The profiler's own allocations — 24.81 MiB (42 %)
+
+| category | Δ MiB | measured allocator overhead |
+| --- | --- | --- |
+| `native_symbols` | 11.32 | +0.91 |
+| `dictionary` | 6.81 | +0.01 |
+| `calltrace` | 3.23 | +0.01 |
+| `jfr_buffers` | 1.16 | not instrumented |
+| `liveness` | 0.75 | not instrumented |
+| `line_tables` | 0.22 | not instrumented |
+| `method_map` | 0.22 | +0.04 |
+| `thread_local`, `thread_filter` | 0.12 | |
+| **allocator overhead, total** | **0.96** | |
+
+`native_symbols` and `dictionary` are 73 % of this. Any real reduction work
+starts here — it is the only part of the total that the profiler itself owns.
+
+### C. Residual — 4.02 MiB (6.8 %)
+
+30.00 + 24.81 + 4.02 = 58.83. At 0.47 σ the residual is not distinguishable from
+zero, and it is comfortably covered by known small gaps:
+
+| candidate | bound |
+| --- | --- |
+| `calltrace` `clear()` under-count (live 3.23 → peak 6.62) | up to 3.36 |
+| uninstrumented allocator overhead | ~0.2–0.4 |
+| natively created profiler thread stacks (invisible to NMT *and* to the counters) | ~0.1–0.5 |
+| the profiler `.so`'s writable pages | < 1 |
+
+**It is not free-but-held arena memory.** That was measured and ruled out — see
+[Arena waste, attributed](#arena-waste-attributed--and-ruled-out). Arena waste is
+real and attributable (+22.97 ± 8.47 MiB) but **non-resident**, so it costs no
+RSS.
+
 ### Measured allocator overhead
 
 | category | logical MiB | measured overhead | % |
@@ -232,7 +301,7 @@ records the value at the instant of each NMT snapshot. Reads come from the
 process inside the target's own cgroup and inflates the number being measured
 (1519616 vs 1257472 bytes observed).
 
-### Anonymous memory ramps; the profiler's share has not saturated at 90 s
+### Anonymous memory ramps during startup, then plateaus
 
 | | raw sd | detrended sd | mean ramp |
 | --- | --- | --- | --- |
@@ -405,6 +474,47 @@ Both are small, bounded, and known:
   measured total is therefore a lower bound. The counters emit bytes but not
   allocation counts, so the correct per-category factor cannot be derived from the
   current data.
+
+## Why JFR is initialised
+
+`Tracing` (`mtTracing`) is the JFR category — confirmed by construction, not
+assumed: a plain JVM has no `Tracing` category at all, while
+`-XX:StartFlightRecording` produces 15,572 KB against our profiling arm's
+15,570 KB.
+
+**No recording is running, though.** Interrogated on a live container at the same
+instant: `jcmd JFR.check` reports *"No available recordings"*, `-Xlog:jfr*=debug`
+produces an empty log, yet `Tracing` holds 15,570 KB (`malloc=15506KB #221`) and
+241 `jdk.jfr` classes are loaded, including `PlatformRecorder` and
+`MetadataLoader`. So the JFR *subsystem* is initialised — metadata parsed,
+recorder machinery constructed — without any recording being started.
+
+The trigger is in `ProfilingAgent`, which runs before the JFR-disable flag is
+ever consulted:
+
+```java
+JFRAccess.setup(inst);
+Timestamper.override(JFRAccess.instance());
+ControllerContext context = new ControllerContext();
+final Controller controller = CompositeController.build(configProvider, context);
+```
+
+`dd.profiling.debug.jfr.disabled` gates `OpenJdkController` *inside*
+`CompositeController.build()`, which runs afterwards — so it cannot prevent this.
+Class-load order confirms it: the first `jdk.jfr` class loads immediately after
+`JFRAccess$Factory` → `Timestamper$1` → `SimpleJFRAccess` → `JPMSJFRAccess` →
+`InvocationTargetException` → `jdk.jfr.Event`.
+
+**Priority: low.** The flag is a debugging aid, not a production setting.
+Production enables JFR anyway, so this memory is paid regardless and there is
+nothing here to "fix". The finding matters for two other reasons:
+
+1. **It corrects how this benchmark's headline should be read.** Setting
+   `jfr.disabled=true` was intended to measure ddprof standalone; it does not,
+   and ~15.2 MiB of JVM JFR machinery sits inside the measured total.
+2. **It relocates the largest single line item.** A quarter of the overhead is
+   JFR initialised for a timestamp source, and it is not the native profiler's
+   to reduce.
 
 ## Process-wide arena waste
 
