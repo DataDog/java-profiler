@@ -1024,12 +1024,6 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   result = pwrite(_fd, _buf->data(), 1, cpool_offset + count_offset_in_cpool);
   (void)result;
 
-  // Serialization is complete: the method map is built and the dictionary has
-  // grown. Capture that state now for the next chunk to emit, and refresh the
-  // JNI-visible counter mirrors so a live process reading getDebugCounters0()
-  // after a dump() sees post-serialization values rather than pre-.
-  capturePostFlushNativeMem();
-
   off_t chunk_end = lseek(_fd, 0, SEEK_CUR);
 
   // // Workaround for JDK-8191415: compute actual TSC frequency, in case JFR is
@@ -1064,6 +1058,14 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
   if (do_cleanup) {
     cleanupUnreferencedMethods();
   }
+
+  // Serialization (and, on this path, method-map cleanup) is complete: the
+  // dictionary has grown and any memory cleanupUnreferencedMethods() just
+  // freed is already reflected in NativeMem. Capture that state now for the
+  // next chunk to emit, and refresh the JNI-visible counter mirrors so a live
+  // process reading getDebugCounters0() after a dump() sees post-serialization
+  // values rather than pre-.
+  capturePostFlushNativeMem();
 
   if (!err) {
     // delete all local references
@@ -2031,8 +2033,14 @@ void Recording::capturePostFlushNativeMem() {
   _has_post_flush = true;
   // Deliberately NOT NativeMem::sample(): that advances a 64-tick moving
   // average window, so calling it a second time per chunk would silently
-  // redefine avg() as a 32-chunk mean.
+  // redefine avg() as a 32-chunk mean. NATIVE_MEM_AVG_BYTES is refreshed here
+  // too (to the unchanged avgTotal() from the last sample() tick, not
+  // recomputed) purely so the three JNI-visible mirrors stay a coherent
+  // triple -- callers must still be aware avg reflects the last sampled tick,
+  // not this instant, since it cannot be advanced without a second
+  // window-mutating sample().
   Counters::set(NATIVE_MEM_LIVE_BYTES, NativeMem::liveTotal());
+  Counters::set(NATIVE_MEM_AVG_BYTES, NativeMem::avgTotal());
   Counters::set(NATIVE_MEM_MAX_BYTES, NativeMem::maxTotal());
 }
 
