@@ -16,6 +16,7 @@
 #include "spinLock.h"
 #include <algorithm>
 #include <atomic>
+#include <climits>
 #include <deque>
 #include <jni.h>
 #include <jvmti.h>
@@ -2375,14 +2376,6 @@ public:
     if (!_frontier->lookup(target_tag, &entry)) {
       TEST_LOG("ReferenceChainTracker::buildChainEvent false: "
                "target_tag=%lld not in frontier", (long long)target_tag);
-      return false;
-    }
-    // Filter: skip depth==0 chains (object admitted as root, no holder).
-    // These are noise — the chain is just [object] with no referrer path.
-    // The backend can't use a chain that doesn't explain retention.
-    if (entry.depth == 0) {
-      TEST_LOG("ReferenceChainTracker::buildChainEvent filtered: "
-               "target_tag=%lld depth=0 (no holder)", (long long)target_tag);
       return false;
     }
     std::vector<u32> chain;

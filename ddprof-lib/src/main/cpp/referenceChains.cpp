@@ -3968,7 +3968,6 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
     _leak_tags_resolved = 0; // reset on each tagging round
     TEST_LOG("ReferenceChainTracker::pollWatchedTargets tagLeakInstances tagged=%d",
              tagged);
-    }
   }
 
   for (int i = 0; i < candidate_count; i++) {
@@ -4205,6 +4204,16 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
         }
         ReferenceChainEvent event;
         bool built = buildChainEvent(disc_tag, &event);
+        // Filter: skip depth==0 chains (object admitted as root, no holder).
+        // These are noise — the chain is just [object] with no referrer
+        // path. The backend can't use a chain that doesn't explain
+        // retention. Only applies to discovered instances, not canary.
+        if (built && event._depth == 0) {
+          TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
+                   "filtered depth=0 disc_tag=%lld klass_id=%u",
+                   (long long)disc_tag, klass_id);
+          built = false;
+        }
         if (built) {
           event._start_time = TSC::ticks();
           cacheResolvedChain(disc_tag, std::move(event), disc_tag,
