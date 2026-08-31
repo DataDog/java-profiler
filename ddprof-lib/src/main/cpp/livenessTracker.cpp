@@ -19,6 +19,7 @@
 #include "incbin.h"
 #include "jniHelper.h"
 #include "livenessTracker.h"
+#include "referenceChains.h"
 #include "log.h"
 #include "nativeMem.h"
 #include "os.h"
@@ -378,6 +379,7 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti, const u32 *klass_ids,
     jint tid;
     u32 age;
     int distinct_ages; // age diversity of this entry's tid (computed below)
+    bool leak_tag_recorded; // record already holds a pool tag (reused below)
   };
   // Stack scratch: matching entries are bounded by the tracking table's
   // small live population (~hundreds); tag in scan order beyond capacity.
@@ -404,16 +406,16 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti, const u32 *klass_ids,
     if (!match) {
       continue;
     }
-    // Already tagged? Count it, but no need to re-acquire
-    if (_table[i].leak_tag != 0) {
-      tagged++;
-      continue;
-    }
+    // Entries whose record already holds a pool tag are still collected:
+    // their tag survives the JVMTI tag only until the object is admitted
+    // or the search restarts, and the state machine below must re-act on
+    // the CURRENT JVMTI tag (re-establish, correlate, or leave alone).
     if (n_candidates < (int)(sizeof(scratch) / sizeof(scratch[0]))) {
       scratch[n_candidates].table_idx = i;
       scratch[n_candidates].tid = _table[i].tid;
       scratch[n_candidates].age = _table[i].age;
       scratch[n_candidates].distinct_ages = 0;
+      scratch[n_candidates].leak_tag_recorded = _table[i].leak_tag != 0;
       n_candidates++;
     }
   }
@@ -463,38 +465,92 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti, const u32 *klass_ids,
       }
     }
   }
-  // Sort: highest age diversity first, then oldest age. Small n, insertion
-  // sort is fine (n <= 512 but in practice tens).
+  // Sort: entries whose record already holds a pool tag first (they cost
+  // no pool resources - their work below is correlate-or-re-establish, not
+  // acquire), then highest age diversity, then oldest age. Small n,
+  // insertion sort is fine (n <= 512 but in practice tens).
   for (int c = 1; c < n_candidates; c++) {
     TagCandidate key = scratch[c];
     int j = c - 1;
     while (j >= 0 &&
-           (scratch[j].distinct_ages < key.distinct_ages ||
-            (scratch[j].distinct_ages == key.distinct_ages &&
-             scratch[j].age < key.age))) {
+           ((!scratch[j].leak_tag_recorded && key.leak_tag_recorded) ||
+            (scratch[j].leak_tag_recorded == key.leak_tag_recorded &&
+             (scratch[j].distinct_ages < key.distinct_ages ||
+              (scratch[j].distinct_ages == key.distinct_ages &&
+               scratch[j].age < key.age))))) {
       scratch[j + 1] = scratch[j];
       j--;
     }
     scratch[j + 1] = key;
   }
+  // Per-candidate state machine on the object's CURRENT JVMTI tag. The
+  // tag on the object is shared state with ReferenceChainTracker's BFS
+  // (frontier tags) and must never be blindly overwritten: an object
+  // admitted by the BFS carries its FRONTIER tag on the object, and a
+  // SetTag(leak_tag) here would orphan that frontier entry (the BFS could
+  // never resolve it again) while making correlation depend on a parent
+  // re-walk ever happening. Instead:
+  //   - leak tag on object: already waiting for interception - just make
+  //     sure the record knows it;
+  //   - frontier tag on object: already admitted - correlate the entry
+  //     (ReferenceChainTracker stores the leak tag ON the entry and marks
+  //     the instance discovered), never retag;
+  //   - no tag: plain SetTag (first tagging, or re-establishing after a
+  //     search restart wiped all tags via releaseSearchTags()).
   for (int c = 0; c < n_candidates; c++) {
     u32 i = scratch[c].table_idx;
-    // Acquire a tag from the pool
-    jlong tag = acquireLeakTag(_table[i].call_trace_id, _table[i].tid);
-    if (tag == 0) {
-      break; // pool exhausted
-    }
-    // Set the JVMTI tag on the object
     jobject ref = env->NewLocalRef(_table[i].ref);
-    if (ref != nullptr) {
-      jvmti->SetTag(ref, tag);
-      _table[i].leak_tag = tag;
-      tagged++;
-      env->DeleteLocalRef(ref);
-    } else {
-      // Object was collected between the null check and now
-      releaseLeakTag(tag);
+    if (ref == nullptr) {
+      // Object was collected between the null check and now - its record's
+      // tag (if any) is released by the GC cleanup path, nothing to do.
+      continue;
     }
+    jlong existing = 0;
+    jvmtiError tag_err = jvmti->GetTag(ref, &existing);
+    jlong leak_tag = 0;
+    bool need_set = false;
+    if (tag_err == JVMTI_ERROR_NONE && existing >= LEAK_TAG_BASE) {
+      // Already carries a leak tag (ours, or one adopted below) - waiting
+      // for the BFS interception. Make sure the record remembers it.
+      leak_tag = _table[i].leak_tag != 0 ? _table[i].leak_tag : existing;
+    } else if (tag_err == JVMTI_ERROR_NONE && existing > 0) {
+      // Frontier tag: the BFS already admitted this object. Correlate the
+      // existing entry rather than retagging - see the block comment above.
+      leak_tag = _table[i].leak_tag;
+      if (leak_tag == 0) {
+        leak_tag = acquireLeakTag(_table[i].call_trace_id, _table[i].tid);
+        if (leak_tag == 0) {
+          env->DeleteLocalRef(ref);
+          continue; // pool exhausted - other candidates may still correlate
+        }
+      }
+      if (!ReferenceChainTracker::instance()->correlateAdmittedLeakTag(
+              existing, leak_tag, _table[i].cached_klass_id)) {
+        // Not a live frontier tag after all (search just restarted) -
+        // fall back to plain tagging.
+        need_set = true;
+      }
+    } else {
+      // No tag: first tagging, or re-establishment after a restart wiped
+      // all tags (releaseSearchTags() clears every JVMTI tag while the
+      // record keeps its pool tag - reusing it keeps pool accounting
+      // stable across restarts).
+      leak_tag = _table[i].leak_tag;
+      if (leak_tag == 0) {
+        leak_tag = acquireLeakTag(_table[i].call_trace_id, _table[i].tid);
+        if (leak_tag == 0) {
+          env->DeleteLocalRef(ref);
+          break; // pool exhausted
+        }
+      }
+      need_set = true;
+    }
+    if (need_set) {
+      jvmti->SetTag(ref, leak_tag);
+    }
+    _table[i].leak_tag = leak_tag;
+    tagged++;
+    env->DeleteLocalRef(ref);
   }
   _table_lock.unlockShared();
   return tagged;

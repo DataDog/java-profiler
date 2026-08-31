@@ -459,6 +459,22 @@ public:
   bool improveChain(jlong tag, jlong parent_tag, u32 referrer_klass,
                      u32 depth, u8 root_kind);
 
+  // Equal-depth re-parenting, the one case improveChain() above cannot
+  // express: a depth-1 entry whose current parent is a TRANSIENT root
+  // (stack local / JNI local - a momentarily-live frame) is re-parented to
+  // a DURABLE root-attached parent (static field, JNI global, thread) when
+  // one is seen admitting the same object at the same depth. The retention
+  // explanation of a depth-1 chain is entirely its root hop, so a transient
+  // root makes the chain noise even though the depth is legitimate for the
+  // real static path (the actual hotdog shape: a singleton collection is a
+  // depth-0 static root, its elements depth 1 - equal depth means
+  // improveChain() sees no improvement and the noise path would stick
+  // forever). Only depth-1 targets qualify: at deeper depths judging root
+  // durability would require walking both chains, not just two lookups.
+  // Returns true if the parent was swapped.
+  bool reparentToDurableRoot(jlong tag, jlong new_parent_tag,
+                              u32 referrer_klass);
+
   // Walks parent_tag links starting at `target_tag` back to a root-attached
   // entry (parent_tag == 0), appending each visited entry's referrer_klass
   // to *out_chain in leaf-to-root order, and marking each visited entry
@@ -948,6 +964,14 @@ private:
   };
   std::unordered_map<jlong, LeakParentFanoutEntry> _leak_parent_fanout;
 
+  // Rotating skip-count over _leak_parent_fanout's iteration order for
+  // collectStaleExpandedEntriesForRotation()'s leak-parent-priority tier -
+  // advances by the number of parents selected each pass so, across passes,
+  // every fanout parent gets re-walked within ceil(fanout_size/budget)
+  // passes instead of only whichever entries the hash iteration happens to
+  // yield first. Same single-BFS-thread access as the fanout map itself.
+  u64 _leak_parent_rotation_cursor = 0;
+
   // Pause-time pacing controller: the actual per-pass budget runPass() passes
   // to FollowReferences/expandFrontier(), replacing _budget's old role as a
   // literal per-pass value - _budget above becomes this controller's ceiling
@@ -1142,7 +1166,30 @@ private:
   // entries deep, so the re-admitted chain would never visibly progress
   // within any reasonable search window. Same single-BFS-thread-only
   // access as _pending_expand, no locking needed.
+  //
+  // HARD CAP (PRIORITY_EXPAND_CAP): the rotation collectors enqueue up to
+  // STALE_EXPANDED_ROTATION_BUDGET+ROOT_KIND_ROTATION_BUDGET entries per
+  // pass, but each phase's wall-clock deadline admits only ~2-3
+  // GetObjectsWithTags calls (~50-200 entries) of drain per pass, so an
+  // uncapped queue grows without bound - observed live: 39k->103k in 20
+  // minutes while _pending_expand (the BFS frontier itself) was never
+  // drained once, because expandFrontier() drains this queue first. The
+  // cap bounds both the memory and isQueuedForRotation()'s linear scan;
+  // collectors and admitObject() skip pushing when full, which throttles
+  // rotation to whatever the drain can actually consume.
+  //
+  // expandFrontier() alternates batches between this queue and
+  // _pending_expand when both are non-empty (see its own comment) - the
+  // original priority-first drain is what let this queue starve the
+  // ordinary backlog above.
   std::deque<jlong> _priority_expand;
+
+  // Upper bound on _priority_expand above. 1024 holds a few passes' worth of
+  // rotation selection (budgets sum to ~272/pass) so a truncating rotation
+  // phase still has work waiting next pass, while keeping
+  // isQueuedForRotation()'s per-selection linear scan at ~262k comparisons
+  // worst case per pass (256 selections x 1024 entries) - sub-millisecond.
+  static constexpr size_t PRIORITY_EXPAND_CAP = 1024;
 
   // java/lang/Object jclass cache for expandFrontier()'s frontier-holder
   // array element type (referenceChains.cpp) - resolved via FindClass() once
@@ -1974,6 +2021,37 @@ private:
   void trackLeakAccumulation(FrontierTable *frontier, jlong class_tag,
                               jlong parent_tag, jlong tag);
 
+  // Record a discovered instance for a watched candidate class: store its
+  // frontier tag in the class's discovery slots so pollWatchedTargets() can
+  // build its chain event. Shared by the ordinary auto-mark path
+  // (heapReferenceCallback on admission), the leak-tag interception path,
+  // and correlateAdmittedLeakTag() below - the latter two pass
+  // leak_correlated=true, which lets them EVICT a slot held by an
+  // uncorrelated (noise) instance when all slots are full. Slots are bounded
+  // by MAX_DISCOVERED_INSTANCES_PER_CLASS and noise instances can fill them
+  // before the leak-tagged ones are ever reached - without preferential
+  // eviction the tracked leak instances would be silently discarded
+  // (observed live: 8 depth-1 jni_local/stack_local noise instances
+  // permanently occupying all slots of the watched [B class).
+  // Single-thread: only called from the pass thread (heapReferenceCallback)
+  // and the tracker's own thread (correlateAdmittedLeakTag via
+  // tagLeakInstances from pollWatchedTargets) - never concurrently.
+  void recordDiscoveredInstance(u32 klass_id, jlong frontier_tag,
+                                bool leak_correlated);
+
+  // Correlate a leak tag with an instance the BFS admitted BEFORE
+  // tagLeakInstances() tagged it (its JVMTI tag is a frontier tag, its
+  // frontier entry has leak_tag == 0). Sets the entry's leak_tag so chain
+  // events emit targetTag = the leak tag (the HeapLiveObject correlation
+  // key), and records the instance as discovered. Returns false if the tag
+  // resolves to no live frontier entry (caller should treat the object as
+  // un-tagged). Idempotent: an entry that already carries a leak tag just
+  // returns true. Also handles post-restart re-admission: the new entry for
+  // a re-admitted instance gets the SAME leak tag the pool already holds
+  // for it (LivenessTracker's record survives the search restart).
+  // Public: LivenessTracker::tagLeakInstances() (livenessTracker.cpp)
+  // calls it - see the public section below for the declaration.
+
   // One-time retroactive catch-up for a klass_id the moment it FIRST enters
   // _watched_leak_klass_ids (pollWatchedTargets() calls this only for the
   // newly-added ids in each refresh, never for ones already being watched).
@@ -2157,6 +2235,19 @@ public:
     return &instance;
   }
 
+  // Correlate a leak tag with an instance the BFS admitted BEFORE
+  // tagLeakInstances() tagged it (its JVMTI tag is a frontier tag, its
+  // frontier entry has leak_tag == 0). Sets the entry's leak_tag so chain
+  // events emit targetTag = the leak tag (the HeapLiveObject correlation
+  // key), and records the instance as discovered. Returns false if the tag
+  // resolves to no live frontier entry (caller should treat the object as
+  // un-tagged). Idempotent: an entry that already carries a leak tag just
+  // returns true. Also handles post-restart re-admission: the new entry for
+  // a re-admitted instance gets the SAME leak tag the pool already holds
+  // for it (LivenessTracker's record survives the search restart).
+  bool correlateAdmittedLeakTag(jlong frontier_tag, jlong leak_tag,
+                                u32 klass_id);
+
   // Abandon the search after this many consecutive passes with
   // zero new frontier entries admitted (genuinely stuck, not just slow).
   // A large heap takes more passes simply because there are more
@@ -2248,6 +2339,15 @@ public:
   int passesSinceLastProgressForTest() const { return _passes_since_last_progress; }
   int candidateCountForTest() const { return _candidate_count; }
   void setCandidateCountForTest(int n) { _candidate_count = n; }
+  void setCandidateKlassIdForTest(int idx, u32 klass_id) {
+    _candidate_klass_ids[idx] = klass_id;
+  }
+  jlong candidateDiscoveredTagForTest(int slot, int idx) const {
+    return _candidate_discovered_tags[slot][idx];
+  }
+  int candidateDiscoveredCountForTest(int slot) const {
+    return _candidate_discovered_count[slot];
+  }
   u64 candidateFoundBitsForTest() const { return _candidate_found_bits; }
   void setCandidateFrontierTagForTest(int idx, jlong tag) { _candidate_frontier_tags[idx] = tag; }
   int passesSinceLastCandidateProgressForTest() const { return _passes_since_last_candidate_progress; }

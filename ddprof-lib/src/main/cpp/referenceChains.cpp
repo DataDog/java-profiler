@@ -255,6 +255,43 @@ bool FrontierTable::improveChain(jlong tag, jlong parent_tag,
   return improved;
 }
 
+bool FrontierTable::reparentToDurableRoot(jlong tag, jlong new_parent_tag,
+                                          u32 referrer_klass) {
+  // See the declaration's own comment (referenceChains.h) for why this
+  // exists as a sibling of improveChain(): equal-depth depth-1 noise->real
+  // re-parenting. All lookups happen under one lock - three index reads,
+  // no allocation, O(1).
+  if (tag <= 0 || tag - 1 > (jlong)INT_MAX || new_parent_tag <= 0 ||
+      new_parent_tag - 1 > (jlong)INT_MAX) {
+    return false;
+  }
+  int idx = (int)(tag - 1);
+  int new_par_idx = (int)(new_parent_tag - 1);
+
+  _table_lock.lock();
+  bool swapped = false;
+  if (idx < _table_size && _table[idx].depth == 1 &&
+      _table[idx].parent_tag > 0 && _table[idx].parent_tag != new_parent_tag) {
+    int old_par_idx = (int)(_table[idx].parent_tag - 1);
+    if (old_par_idx >= 0 && old_par_idx < _table_size &&
+        new_par_idx < _table_size &&
+        _table[new_par_idx].parent_tag == 0 &&
+        _table[new_par_idx].root_kind != 0 &&
+        !isTransientRootKind(_table[new_par_idx].root_kind) &&
+        _table[old_par_idx].parent_tag == 0 &&
+        isTransientRootKind(_table[old_par_idx].root_kind)) {
+      // New parent is a root-attached DURABLE root (static field, JNI
+      // global, thread) and the current parent is a root-attached TRANSIENT
+      // one - same depth, strictly better retention explanation.
+      _table[idx].parent_tag = new_parent_tag;
+      _table[idx].referrer_klass = referrer_klass;
+      swapped = true;
+    }
+  }
+  _table_lock.unlock();
+  return swapped;
+}
+
 bool FrontierTable::reconstructChain(jlong target_tag,
                                       std::vector<u32> *out_chain,
                                       u8 *out_root_kind) {
@@ -1844,19 +1881,11 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
                (long long)parent_tag);
       ctx->tracker->trackLeakAccumulation(ctx->frontier, class_tag,
                                              parent_tag, frontier_tag);
-      // Auto-mark: record this as a discovered instance
+      // Auto-mark: record this as a discovered instance, with eviction
+      // rights over uncorrelated noise slots (see recordDiscoveredInstance).
       if (ctx->tracker->_candidate_count > 0) {
         u32 klass_id = ctx->tracker->classTags()->resolve(class_tag);
-        for (int s = 0; s < ctx->tracker->_candidate_count; s++) {
-          if (ctx->tracker->_candidate_klass_ids[s] == klass_id) {
-            if (ctx->tracker->_candidate_discovered_count[s] <
-                ReferenceChainTracker::MAX_DISCOVERED_INSTANCES_PER_CLASS) {
-              ctx->tracker->_candidate_discovered_tags[s]
-                  [ctx->tracker->_candidate_discovered_count[s]++] = frontier_tag;
-            }
-            break;
-          }
-        }
+        ctx->tracker->recordDiscoveredInstance(klass_id, frontier_tag, true);
       }
     } else {
       // Frontier cap hit
@@ -1915,6 +1944,12 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
         // Chain was improved — invalidate any cached chain for this tag
         // so pollWatchedTargets rebuilds it with the deeper path.
         ctx->tracker->invalidateResolvedChain(*tag_ptr);
+      } else if (ctx->frontier->reparentToDurableRoot(*tag_ptr, parent_tag,
+                                                    referrer_klass)) {
+        // Equal-depth re-parent from a transient root to a durable one
+        // (improveChain() cannot express it - see its declaration) - same
+        // cache invalidation so the rebuilt chain uses the durable root.
+        ctx->tracker->invalidateResolvedChain(*tag_ptr);
       }
     }
     // Auto-mark: if this object's class matches a watched leak class,
@@ -1943,15 +1978,8 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
         for (int s = 0; s < ctx->tracker->_candidate_count; s++) {
           if (ctx->tracker->_candidate_klass_ids[s] == klass_id) {
             matched = true;
-            if (ctx->tracker->_candidate_discovered_count[s] <
-                ReferenceChainTracker::MAX_DISCOVERED_INSTANCES_PER_CLASS) {
-              ctx->tracker->_candidate_discovered_tags[s]
-                  [ctx->tracker->_candidate_discovered_count[s]++] = *tag_ptr;
-              TEST_LOG("ReferenceChainTracker::auto-mark slot=%d klass_id=%u "
-                       "tag=%lld discovered_count=%d",
-                       s, klass_id, (long long)*tag_ptr,
-                       ctx->tracker->_candidate_discovered_count[s]);
-            }
+            ctx->tracker->recordDiscoveredInstance(klass_id, *tag_ptr,
+                                                   false);
             break;
           }
         }
@@ -2016,9 +2044,12 @@ ReferenceChainTracker::AdmitResult ReferenceChainTracker::admitObject(
   // _pending_expand's/_priority_expand's own declaration comments for why
   // this replaces a scan over the admitted range, and for why a
   // rotation-discovered child (priority=true) skips the ordinary backlog.
-  if (priority) {
+  if (priority && _priority_expand.size() < PRIORITY_EXPAND_CAP) {
     _priority_expand.push_back(tag);
   } else {
+    // Priority lane full: the rotation backpressure falls back to the
+    // ordinary backlog rather than silently dropping the re-discovered
+    // subtree (see PRIORITY_EXPAND_CAP's own comment).
     _pending_expand.push_back(tag);
   }
   trackLeakAccumulation(frontier, class_tag, parent_tag, tag);
@@ -2188,7 +2219,8 @@ ReferenceChainTracker::collectStaleRootKindEntriesForRotation(
       if (frontier->lookupLocked(tag, &entry) &&
           entry.state == FrontierEntryState::EXPANDED &&
           entry.parent_tag == 0 && isTransientRootKind(entry.root_kind) &&
-          !isQueuedForRotation(tag)) {
+          !isQueuedForRotation(tag) &&
+          _priority_expand.size() < PRIORITY_EXPAND_CAP) {
         selected.push_back(tag);
         _priority_expand.push_back(tag);
         if ((int)selected.size() >= max_count) {
@@ -2211,6 +2243,51 @@ ReferenceChainTracker::collectStaleExpandedEntriesForRotation(
   int table_size = _frontier->size();
   if (max_count <= 0 || table_size <= 0) {
     return selected;
+  }
+  // LEAK-PARENT PRIORITY: _leak_parent_fanout knows the EXPANDED parents
+  // that actually lead to watched leak-klass children - re-walking one of
+  // those re-sees its current children (improveChain() upgrades children
+  // first admitted via a shallower path, leak-tag interception for the
+  // tagged ones) and catches elements added since its expansion, which is
+  // exactly the mutation this rotation exists to observe. The blind table
+  // lap below reaches a given parent only every ~table_size/max_count
+  // passes (hundreds, observed live at ~680) and the leak-accumulation tier
+  // above needs signature GROWTH - which itself requires exactly these
+  // re-walks to have happened - so in steady state neither reaches the
+  // leak holders. The fanout is orders of magnitude smaller than the
+  // table; select from it first (rotating via _leak_parent_rotation_cursor
+  // for coverage), then fill the remainder from the blind lap. Each pass
+  // iterates at most cursor-skip + max_count map entries and performs at
+  // most max_count frontier lookups - bounded and cheap.
+  if (!_leak_parent_fanout.empty() &&
+      _priority_expand.size() < PRIORITY_EXPAND_CAP) {
+    size_t fanout_size = _leak_parent_fanout.size();
+    u64 skip = _leak_parent_rotation_cursor % fanout_size;
+    for (const auto &kv : _leak_parent_fanout) {
+      if ((int)selected.size() >= max_count ||
+          _priority_expand.size() >= PRIORITY_EXPAND_CAP) {
+        break;
+      }
+      if (skip > 0) {
+        skip--;
+        continue;
+      }
+      jlong parent_tag = kv.first;
+      if (isQueuedForRotation(parent_tag)) {
+        continue;
+      }
+      FrontierEntry entry{};
+      if (!_frontier->lookup(parent_tag, &entry) ||
+          entry.state != FrontierEntryState::EXPANDED) {
+        continue;
+      }
+      selected.push_back(parent_tag);
+      _priority_expand.push_back(parent_tag);
+    }
+    _leak_parent_rotation_cursor += selected.size() + 1;
+    if ((int)selected.size() >= max_count) {
+      return selected;
+    }
   }
   if (_stale_expanded_rotation_cursor <= 0 ||
       _stale_expanded_rotation_cursor > table_size) {
@@ -2270,7 +2347,8 @@ ReferenceChainTracker::collectStaleExpandedEntriesForRotation(
       FrontierEntry entry{};
       if (frontier->lookupLocked(tag, &entry) &&
           entry.state == FrontierEntryState::EXPANDED &&
-          !isQueuedForRotation(tag)) {
+          !isQueuedForRotation(tag) &&
+          _priority_expand.size() < PRIORITY_EXPAND_CAP) {
         selected.push_back(tag);
         _priority_expand.push_back(tag);
         if ((int)selected.size() >= max_count) {
@@ -2382,7 +2460,8 @@ ReferenceChainTracker::collectLeakAccumulationCandidatesForRotation(
               return a.second > b.second;
             });
   for (const auto &c : candidates) {
-    if ((int)selected.size() >= max_count) {
+    if ((int)selected.size() >= max_count ||
+        _priority_expand.size() >= PRIORITY_EXPAND_CAP) {
       break;
     }
     selected.push_back(c.first);
@@ -2832,6 +2911,19 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
   jclass object_class = _cached_object_class;
 
   bool progress = true;
+  // FAIR-SHARE DRAIN: alternate batches between _priority_expand and
+  // _pending_expand whenever both are non-empty (priority still takes the
+  // first batch of each call). The original strict priority-first drain
+  // starved the ordinary backlog whenever rotation's inflow
+  // (~STALE_EXPANDED_ROTATION_BUDGET+ROOT_KIND_ROTATION_BUDGET per pass)
+  // exceeded the deadline-bounded drain (~2-3 GetObjectsWithTags calls per
+  // phase) - observed live on hotdog: _priority_expand grew 39k->103k in 20
+  // minutes while the BFS's own _pending_expand (66k entries) was never
+  // drained by a single batch, freezing all new-territory crawl.
+  // Alternation guarantees the ordinary frontier at least every other
+  // batch regardless of queue depths; an empty lane falls back to the
+  // other one.
+  bool prefer_priority = true;
   while (!ctx.truncated && progress && object_class != nullptr) {
     // Wall-clock deadline check per iteration: GetObjectsWithTags runs OUTSIDE
     // any FollowReferences callback, so heapReferenceCallback()'s amortized
@@ -2846,16 +2938,23 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
     }
     progress = false;
 
-    // Drain _priority_expand ahead of the ordinary backlog (see its own
-    // declaration comment) - a rotation-selected parent's re-discovered
-    // children must not queue behind however much of _pending_expand is
-    // still outstanding, or the re-discovery never visibly progresses.
-    bool from_priority = !_priority_expand.empty();
+    // Alternate lanes (see FAIR-SHARE DRAIN above); priority still goes
+    // first so a rotation-selected parent's re-discovery keeps its
+    // head-of-queue property, but no lane can monopolize the drain.
+    bool from_priority;
+    if (_priority_expand.empty()) {
+      from_priority = false;
+    } else if (_pending_expand.empty()) {
+      from_priority = true;
+    } else {
+      from_priority = prefer_priority;
+      prefer_priority = !prefer_priority;
+    }
     std::deque<jlong> &source =
         from_priority ? _priority_expand : _pending_expand;
     ctx.admit_priority = from_priority;
     if (source.empty()) {
-      break; // nothing pending
+      break; // nothing pending in either lane
     }
 
     // SELF-CALIBRATING ADAPTIVE BATCH SIZE for GetObjectsWithTags.
@@ -4211,15 +4310,35 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
         }
         ReferenceChainEvent event;
         bool built = buildChainEvent(disc_tag, &event);
-        // Filter: skip depth==0 chains (object admitted as root, no holder).
-        // These are noise — the chain is just [object] with no referrer
-        // path. The backend can't use a chain that doesn't explain
-        // retention. Only applies to discovered instances, not canary.
-        if (built && event._depth == 0) {
+        // Retention-explanation filter. Only applies to discovered
+        // instances, not canary. Suppress:
+        //   - depth==0: the instance IS the root (chain is just [object],
+        //     no holder to explain anything);
+        //   - depth==1 rooted at a TRANSIENT root (stack local / JNI
+        //     local): the observed noise shape - a momentarily-live
+        //     frame's variable holding the instance. The chain explains a
+        //     retention that evaporates when the frame dies.
+        // A depth==1 chain whose root is DURABLE (static field, JNI
+        // global, thread) is a REAL direct-retention chain - the actual
+        // hotdog leak shape is exactly that (a singleton collection is a
+        // depth-0 static root; its elements are depth 1) - so it must NOT
+        // be caught by a blanket depth>1 filter. Anything deeper passes
+        // regardless of root kind (at depth >= 2 the chain has at least one
+        // real holder hop).
+        if (built && (event._depth == 0 ||
+                      (event._depth < 2 &&
+                       isTransientRootKind(event._root_kind)))) {
           TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
-                   "filtered depth=0 disc_tag=%lld klass_id=%u",
+                   "filtered depth=%u root_kind=%d disc_tag=%lld klass_id=%u",
+                   event._depth, (int)event._root_kind,
                    (long long)disc_tag, klass_id);
           built = false;
+          // Also drop any chain cached for this tag before the filter
+          // existed (or before an improveChain/reparent upgraded it) -
+          // drainPendingChainEvents() re-emits cached chains
+          // unconditionally, so suppressing only the build would leave the
+          // noise chains re-emitting forever.
+          invalidateResolvedChain(disc_tag);
         }
         if (built) {
           event._start_time = TSC::ticks();
@@ -4296,6 +4415,83 @@ void ReferenceChainTracker::invalidateResolvedChain(jlong source_tag) {
              (long long)source_tag);
   }
   _resolved_chains_lock.unlock();
+}
+
+void ReferenceChainTracker::recordDiscoveredInstance(u32 klass_id,
+                                                     jlong frontier_tag,
+                                                     bool leak_correlated) {
+  // See the declaration's own comment (referenceChains.h) for the
+  // noise-eviction rationale. Bounded: at most MAX_DISCOVERED_INSTANCES-
+  // PER_CLASS frontier lookups when evicting, zero allocation (slots are
+  // fixed arrays).
+  for (int s = 0; s < _candidate_count; s++) {
+    if (_candidate_klass_ids[s] != klass_id) {
+      continue;
+    }
+    if (_candidate_discovered_count[s] < MAX_DISCOVERED_INSTANCES_PER_CLASS) {
+      _candidate_discovered_tags[s][_candidate_discovered_count[s]++] =
+          frontier_tag;
+      TEST_LOG("ReferenceChainTracker::recordDiscoveredInstance slot=%d "
+               "klass_id=%u tag=%lld leak_correlated=%d count=%d",
+               s, klass_id, (long long)frontier_tag, (int)leak_correlated,
+               _candidate_discovered_count[s]);
+      return;
+    }
+    if (!leak_correlated) {
+      return; // full - noise never displaces anything
+    }
+    // All slots full and this instance is leak-correlated: evict the first
+    // slot held by an entry with no leak tag (a noise instance). Also drop
+    // the evicted instance's cached chain so it stops re-emitting - the
+    // discovered-loop gate below suppresses new noise builds, but a chain
+    // cached before that gate keeps draining forever.
+    for (int d = 0; d < _candidate_discovered_count[s]; d++) {
+      jlong victim = _candidate_discovered_tags[s][d];
+      FrontierEntry victim_entry{};
+      if (_frontier == nullptr ||
+          !_frontier->lookup(victim, &victim_entry) ||
+          victim_entry.leak_tag == 0) {
+        _candidate_discovered_tags[s][d] = frontier_tag;
+        invalidateResolvedChain(victim);
+        TEST_LOG("ReferenceChainTracker::recordDiscoveredInstance evicted "
+                 "noise slot=%d idx=%d victim_tag=%lld for leak tag=%lld",
+                 s, d, (long long)victim, (long long)frontier_tag);
+        return;
+      }
+    }
+    TEST_LOG("ReferenceChainTracker::recordDiscoveredInstance all slots "
+             "leak-correlated, dropping tag=%lld klass_id=%u",
+             (long long)frontier_tag, klass_id);
+    return;
+  }
+}
+
+bool ReferenceChainTracker::correlateAdmittedLeakTag(jlong frontier_tag,
+                                                      jlong leak_tag,
+                                                      u32 klass_id) {
+  // See the declaration's own comment (referenceChains.h). Called from
+  // LivenessTracker::tagLeakInstances() on this same thread
+  // (pollWatchedTargets -> tagLeakInstances), so _candidate_* slot access
+  // here never races heapReferenceCallback's auto-mark path.
+  if (_frontier == nullptr) {
+    return false;
+  }
+  FrontierEntry entry{};
+  if (!_frontier->lookup(frontier_tag, &entry)) {
+    return false; // not a live frontier tag (or the search restarted)
+  }
+  if (entry.leak_tag != 0) {
+    // Already correlated (idempotent) - e.g. a second tagLeakInstances
+    // round after a post-restart re-admission.
+    return true;
+  }
+  _frontier->setLeakTag(frontier_tag, leak_tag);
+  TEST_LOG("ReferenceChainTracker::correlateAdmittedLeakTag "
+           "frontier_tag=%lld leak_tag=%lld depth=%u parent_tag=%lld",
+           (long long)frontier_tag, (long long)leak_tag, entry.depth,
+           (long long)entry.parent_tag);
+  recordDiscoveredInstance(klass_id, frontier_tag, true);
+  return true;
 }
 
 void ReferenceChainTracker::drainPendingChainEvents(
