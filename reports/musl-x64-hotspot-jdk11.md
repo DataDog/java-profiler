@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk11
 
 ## musl-x64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-08-31 00:49:32 EDT
+**Date:** 2026-08-31 00:55:02 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 533 |
-| Sample Rate | 8.88/sec |
-| Health Score | 555% |
+| CPU Samples | 489 |
+| Sample Rate | 8.15/sec |
+| Health Score | 509% |
 | Threads | 8 |
-| Allocations | 372 |
+| Allocations | 416 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 713 |
-| Sample Rate | 11.88/sec |
-| Health Score | 742% |
-| Threads | 9 |
-| Allocations | 480 |
+| CPU Samples | 708 |
+| Sample Rate | 11.80/sec |
+| Health Score | 738% |
+| Threads | 8 |
+| Allocations | 512 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 81-81 cores)</summary>
 
 ```
-1788151509 81
-1788151514 81
-1788151519 81
-1788151524 81
-1788151529 81
-1788151534 81
-1788151539 81
-1788151544 81
-1788151549 81
-1788151554 81
-1788151559 81
-1788151564 81
-1788151569 81
-1788151574 81
-1788151579 81
-1788151584 81
-1788151589 81
-1788151594 81
-1788151599 81
-1788151604 81
+1788151846 81
+1788151851 81
+1788151856 81
+1788151861 81
+1788151866 81
+1788151871 81
+1788151876 81
+1788151881 81
+1788151886 81
+1788151891 81
+1788151896 81
+1788151901 81
+1788151906 81
+1788151911 81
+1788151916 81
+1788151921 81
+1788151926 81
+1788151931 81
+1788151936 81
+1788151941 81
 ```
 </details>
 
