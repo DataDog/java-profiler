@@ -69,6 +69,18 @@ public final class LeakingCacheScenario {
   // startCommand needs to authorize the BFS thread's first real pass at all.
   private static final int SEED_EPOCHS_FOR_HYSTERESIS = 15;
 
+  /**
+   * Durable holder for the cache fixture. The discovered-chain gate suppresses
+   * chains shallower than the first real holder hop that are rooted at a TRANSIENT
+   * root (stack/JNI local) - a frame-held "leak" is by definition not a leak, so the
+   * cache must be retained through a static field (the real singleton-collection
+   * shape) rather than only {@code run()}'s own local, which is exactly the
+   * transient-rooted shape the gate suppresses. {@code run()}'s local {@code cache}
+   * variable below aliases this static; the durable root is what makes the emitted
+   * chain durable-rooted.
+   */
+  private static final Map<String, CachedPayload> CACHE = new HashMap<>();
+
   /** Printed to stdout, followed by the matched leaf class's name, on success. */
   public static final String FOUND_MARKER = "[chain-found] ";
 
@@ -107,7 +119,7 @@ public final class LeakingCacheScenario {
    * here, not in {@code ExternalLauncher}, specifically so {@code cache} can be seeded first.
    */
   public static void run(JavaProfiler profiler, String startCommand, Path scratchDumpPath) throws Exception {
-    Map<String, CachedPayload> cache = new HashMap<>();
+    Map<String, CachedPayload> cache = CACHE;
     seedInitialBatch(cache, 300);
     System.out.println("[debug] startCommand=" + startCommand);
     System.out.println("[debug] scratchDumpPath=" + scratchDumpPath);
@@ -146,13 +158,17 @@ public final class LeakingCacheScenario {
         // some earlier pass has already tagged anything. "seed-0" (from seedInitialBatch()) is
         // reachable via cache for the scenario's entire lifetime, so it is a safe, always-valid
         // representative regardless of which round this fires on.
+        // Representative BEFORE seeding: setKlassPopulationRepresentativeForTest0
+        // resolves the representative's real klass id and aliases the synthetic id
+        // to it, so the hysteresis seeds below land in the real population entry
+        // (candidate matching is real-id keyed since the leak-tag pool redesign).
+        JavaProfiler.setKlassPopulationRepresentativeForTest0(CACHED_PAYLOAD_TEST_KLASS_ID, cache.get("seed-0"));
         if (!seededTestKlassTrend) {
           for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
             JavaProfiler.seedKlassPopulationSample0(CACHED_PAYLOAD_TEST_KLASS_ID, epoch * 10, epoch);
           }
           seededTestKlassTrend = true;
         }
-        JavaProfiler.setKlassPopulationRepresentativeForTest0(CACHED_PAYLOAD_TEST_KLASS_ID, cache.get("seed-0"));
         JavaProfiler.pollReferenceChainTargets0();
         profiler.dump(scratchDumpPath);
         match = findMatch(scratchDumpPath);

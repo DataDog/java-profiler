@@ -36,10 +36,28 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  */
 public class ReferenceChainTestSeamsTest extends AbstractProfilerTest {
 
-  // Arbitrary, test-chosen klass ids - LivenessTracker's population table treats them as opaque
-  // keys (see KlassPopulationEntry's own comment), so these need not resolve to any real class.
+  // Arbitrary, test-chosen klass ids - opaque keys for the population table, EXCEPT
+  // where a representative is involved: setKlassPopulationRepresentativeForTest() now
+  // aliases the representative's REAL class id onto the seeded synthetic id (the
+  // leak-tag redesign keys every consumer by real ids), so shouldReconstructChainForDirectlyTaggedRoot()
+  // must target a class whose real population entry does not already exist - a unique
+  // nested class, not java.lang.Object - otherwise the real entry's genuine (noisy)
+  // history outranks the seeded ramp and the target never becomes a candidate.
   private static final int SLOPE_TEST_KLASS_ID = 987001;
   private static final int CHAIN_TEST_KLASS_ID = 987002;
+
+  /** Unique class for {@link #shouldReconstructChainForDirectlyTaggedRoot()}'s target. */
+  private static final class ChainTarget {}
+
+  /**
+   * Durable root for {@link #shouldReconstructChainForDirectlyTaggedRoot()}'s target: the
+   * noise gate (suppressChainEvent) intentionally drops depth&lt;2 chains whose root is
+   * transient (stack local / JNI local) - a method-local target is transient BY DESIGN, so
+   * holding it statically (the canonical leak shape: static field) is required for the
+   * chain event to be emitted at all. Shared-JVM hygiene: nulled in a finally below so the
+   * next test in this no-forkEvery JVM does not inherit the reference.
+   */
+  private static Object chainTargetHolder;
 
   @Override
   protected String getProfilerCommand() {
@@ -121,27 +139,51 @@ public class ReferenceChainTestSeamsTest extends AbstractProfilerTest {
     // fail against a table this test never sized itself.
     JavaProfiler.resetReferenceChainSearchForTest0();
 
-    Object target = new Object();
+    // The target is referenced ONLY through the static holder - never bound to a
+    // live local of this frame. A local `target` variable would make the object a
+    // STACK_LOCAL GC root for the whole test body, and the noise gate (rightly)
+    // suppresses depth-0 chains rooted in a transient stack slot: the durable
+    // roots this fixture wants (the static holder, plus the JNI-global-weak-ref
+    // root LivenessTracker's representative itself creates) then lose the
+    // durability race only if a stack-local root exists at all. Accessing the
+    // object only via the static field leaves its frame slots empty between
+    // calls, so no stack root is ever enumerated.
+    chainTargetHolder = new ChainTarget();
 
-    long tag = JavaProfiler.tagAsReferenceChainRoot0(target);
+    long tag = JavaProfiler.tagAsReferenceChainRoot0(chainTargetHolder);
     assertTrue(tag > 0, "Expected tagAsReferenceChainRoot0 to assign a valid frontier tag");
+
+    // Representative BEFORE seeding: with the aliasing seam, setting the representative is
+    // what registers the synthetic->real id alias, so the seeding below lands re-keyed under
+    // the target's real class id (seeding first still works - the synthetic entry gets
+    // re-keyed at representative-set time - but rep-first is the documented load-bearing order).
+    JavaProfiler.setKlassPopulationRepresentativeForTest0(CHAIN_TEST_KLASS_ID, chainTargetHolder);
 
     // See shouldSelectSeededKlassAsLeakCandidateOnPositiveSlope()'s comment above for why 20
     // (not just KLASS_POPULATION_MIN_FILL_FOR_TREND = 10) is needed to clear the hysteresis gate.
     for (int epoch = 1; epoch <= 20; epoch++) {
       JavaProfiler.seedKlassPopulationSample0(CHAIN_TEST_KLASS_ID, epoch * 10, epoch);
     }
-    JavaProfiler.setKlassPopulationRepresentativeForTest0(CHAIN_TEST_KLASS_ID, target);
 
-    boolean sawPassRun = JavaProfiler.runReferenceChainPass0();
-    assertTrue(sawPassRun, "Expected runReferenceChainPass0 to run (reference chains enabled)");
-
-    JavaProfiler.pollReferenceChainTargets0();
-
-    int eventCount = JavaProfiler.drainReferenceChainEventCount0();
+    // Drive pass+poll cycles until the chain event lands. One pass is NOT enough:
+    // admitStaticFieldRoots() sweeps loaded classes in chunks (a few hundred per pass,
+    // bounded by the budget) and the first pass truncates before reaching this test's
+    // class - the durable (static-field) root discovery that upgrades the target's
+    // root_kind only happens on the pass whose chunk covers ChainTarget's holder class.
+    // The bound (40) gives the full sweep lap (~10 passes for ~4000 loaded classes)
+    // several round trips of headroom; the BFS thread is excluded from racing these
+    // calls by the engine lock (runPassSerialized/pollWatchedTargetsSerialized).
+    int eventCount = 0;
+    for (int pass = 0; pass < 40 && eventCount == 0; pass++) {
+      boolean sawPassRun = JavaProfiler.runReferenceChainPass0();
+      assertTrue(sawPassRun || pass > 0,
+          "Expected the first runReferenceChainPass0 to run (reference chains enabled)");
+      JavaProfiler.pollReferenceChainTargets0();
+      eventCount = JavaProfiler.drainReferenceChainEventCount0();
+    }
     assertTrue(eventCount > 0,
         "Expected pollWatchedTargets() to have queued at least one chain event for the "
             + "directly-tagged, seeded-representative target");
-    assertTrue(!target.equals(null)); // keeps target reachable until here
+    chainTargetHolder = null; // shared-JVM hygiene
   }
 }

@@ -114,6 +114,16 @@ public:
         t->_leak_parent_fanout.clear();
         t->_borrowed_budget = 0;
         t->_consecutive_under_target_passes = 0;
+        // Adaptive batch + lane state: NOT covered by anything above, and a
+        // prior test that drove expansion leaves a non-zero EMA, a live
+        // batch size, a stale pass deadline, and/or a mid-alternation lane
+        // toggle behind - all of which silently change the next test's
+        // expandFrontier() arithmetic (exact-value asserts on batch sizing
+        // only pass standalone otherwise).
+        t->_gotw_ema_call_ns = 0;
+        t->_gotw_batch_size = 0;
+        t->_pass_deadline_ns = 0;
+        t->_expand_lane_prefer_priority = true;
     }
 
     // Search restart + pain budget (SearchRestartTest below) - same
@@ -463,8 +473,8 @@ public:
         ReferenceChainTracker::instance()->_gotw_batch_size = v;
     }
 
-    // Read-only peeks at the AIMD constants (private statics - friendship
-    // applies inside this class's methods, not in test bodies).
+    // Read-only peeks at the batch-control constants (private statics -
+    // friendship applies inside this class's methods, not in test bodies).
     static u64 gotwCpuBudgetNs() {
         return ReferenceChainTracker::GOTW_CPU_BUDGET_NS;
     }
@@ -473,8 +483,20 @@ public:
         return (size_t)ReferenceChainTracker::GOTW_INITIAL_BATCH_SIZE;
     }
 
-    static size_t gotwBatchIncreaseStep() {
-        return ReferenceChainTracker::GOTW_BATCH_INCREASE_STEP;
+    static size_t gotwMinBatch() {
+        return ReferenceChainTracker::GOTW_MIN_BATCH;
+    }
+
+    static size_t gotwMaxBatch() {
+        return ReferenceChainTracker::GOTW_MAX_BATCH;
+    }
+
+    static void setPassDeadlineNs(u64 v) {
+        ReferenceChainTracker::instance()->_pass_deadline_ns = v;
+    }
+
+    static bool expandLanePreferPriority() {
+        return ReferenceChainTracker::instance()->_expand_lane_prefer_priority;
     }
 
     // Leak-tag pool range base (private static) - same friend-access
@@ -1066,6 +1088,13 @@ protected:
     // failing to resolve (dead_tags above).
     bool fail_get_objects_with_tags = false;
 
+    // When non-zero, mock_GetObjectsWithTags() below busy-waits this many
+    // nanoseconds. The mock call is otherwise ~free, so a pass deadline set
+    // to a fraction of this value bounds an expandFrontier() invocation to
+    // exactly ONE batch - the production regime (one real ~25-30ms call of
+    // a 50ms window), needed by the lane-alternation test.
+    u64 gotw_delay_ns = 0;
+
     // Synthetic frontier-holder arrays for expandFrontier()'s array-holder
     // walk: mock_NewObjectArray() hands back an opaque handle,
     // mock_SetObjectArrayElement() records its elements here, and
@@ -1108,6 +1137,7 @@ protected:
         jni_tbl = JNINativeInterface_{};
         jni_tbl.DeleteLocalRef = &mock_DeleteLocalRef;
         jni_tbl.FindClass = &mock_FindClass;
+        jni_tbl.NewGlobalRef = &mock_NewGlobalRef;
         jni_tbl.EnsureLocalCapacity = &mock_EnsureLocalCapacity;
         jni_tbl.NewObjectArray = &mock_NewObjectArray;
         jni_tbl.SetObjectArrayElement = &mock_SetObjectArrayElement;
@@ -1233,11 +1263,19 @@ protected:
         // local refs.
     }
 
-    // expandFrontier() resolves java/lang/Object once per call as the holder
-    // array's element type - a non-null fake jclass is all it needs (the type
-    // is never introspected, only passed to NewObjectArray()).
+    // expandFrontier()/admitStaticFieldRoots() resolve java/lang/Object once
+    // as the holder array's element type - a non-null fake jclass is all it
+    // needs (the type is never introspected, only passed to NewObjectArray()).
     static jclass JNICALL mock_FindClass(JNIEnv *, const char *) {
         return (jclass)0xC1A55;
+    }
+
+    // The production code wraps that fake jclass in a global ref (a real
+    // local ref would dangle across JNI-entered test seams - see
+    // _cached_object_class's own comment). This fixture's "refs" are raw
+    // fake pointers with no JNI lifetime, so identity is the correct mock.
+    static jobject JNICALL mock_NewGlobalRef(JNIEnv *, jobject obj) {
+        return obj;
     }
 
     static jint JNICALL mock_EnsureLocalCapacity(JNIEnv *, jint) {
@@ -1320,6 +1358,14 @@ protected:
             // untouched - a real failed JVMTI call makes no promise about
             // them, and releaseSearchTags() must not read them on this path.
             return JVMTI_ERROR_OUT_OF_MEMORY;
+        }
+        if (active_fixture->gotw_delay_ns != 0) {
+            u64 until = OS::nanotime() + active_fixture->gotw_delay_ns;
+            while (OS::nanotime() < until) {
+                // busy-wait: a sleep could overshoot by scheduler latency,
+                // and the overshoot direction matters for the one-batch
+                // deadline arithmetic the callers of this knob rely on.
+            }
         }
         std::vector<jobject> objs;
         std::vector<jlong> found;
@@ -4060,27 +4106,26 @@ TEST_F(ReferenceChainsBfsTest, RollingResumePopsProcessedEntriesOnTruncatedBatch
 // the budget it should additively increase toward the cap. The mock
 // GetObjectsWithTags is instant (no real tag-map cost), so we drive the EMA
 // by hand and verify the AIMD response, not the timing.
-TEST_F(ReferenceChainsBfsTest, AdaptiveBatchSizeAimdDecreaseAndIncrease) {
+TEST_F(ReferenceChainsBfsTest, AdaptiveBatchSizeProportionalToWindow) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
     ASSERT_FALSE(tracker->start(args));
 
-    // Reset the AIMD state explicitly: ReferenceChainsTestAccessor::reset()
-    // (SetUp) does not cover it, and a prior test in this suite that drove
-    // expansion leaves a non-zero EMA/batch behind, breaking the exact
-    // per-phase arithmetic below.
+    // Adaptive-batch state is zeroed by reset() (SetUp) but zeroed here too
+    // for the same reason as before: exact per-phase arithmetic below.
     ReferenceChainsTestAccessor::setGotwEmaCallNs(0);
     ReferenceChainsTestAccessor::setGotwBatchSize(0);
+    ReferenceChainsTestAccessor::setPassDeadlineNs(0);
 
     // Seed a frontier root manually (mirrors PollWatchedTargetsTest's
     // seeding style): node carries frontier tag 1, pending expansion has
     // exactly that tag. No runPass() - a pass would drain the tiny graph to
     // COMPLETED and release all tags, and its rotation phase adds extra
-    // GetObjectsWithTags calls, both of which break per-call AIMD
-    // arithmetic. The script stays empty until the admission-sanity phase
-    // below, so each expandFrontier() drive runs exactly one batch (one
-    // AIMD update) and admits nothing.
+    // GetObjectsWithTags calls, both of which break per-call arithmetic.
+    // The script stays empty until the admission-sanity phase below, so
+    // each expandFrontier() drive runs exactly one batch (one control
+    // update) and admits nothing.
     int rootNode = addNode();
     int childNode = addNode();
     node_tags[rootNode] = 1;
@@ -4088,43 +4133,70 @@ TEST_F(ReferenceChainsBfsTest, AdaptiveBatchSizeAimdDecreaseAndIncrease) {
         1, 0, 1, 0, FrontierEntryState::EDGE));
     ReferenceChainsTestAccessor::pushPendingExpandForTest(1);
     int edges = 0;
+    const u64 budget = ReferenceChainsTestAccessor::gotwCpuBudgetNs();
 
     // --- Populate phase: first GetObjectsWithTags call. The EMA should be
-    // non-zero afterwards, and the batch (unset before) should land at the
-    // conservative initial default after the additive increase (0 + step
-    // clamped... the very first call uses the initial default and AIMD then
-    // applies to the still-unset 0 state, landing at 0 + step).
+    // non-zero afterwards, and the near-zero mock call time means the
+    // window (nominal budget, no deadline) fits ~unbounded many calls -
+    // the proportion scales the batch all the way to the cap.
     ReferenceChainsTestAccessor::expandFrontierForTest(&mock_jvmti,
                                                        &mock_jni, &edges);
     EXPECT_NE(0u, ReferenceChainsTestAccessor::gotwEmaCallNs())
         << "per-call EMA should be populated after first GetObjectsWithTags";
-    EXPECT_EQ(ReferenceChainsTestAccessor::gotwBatchIncreaseStep(),
+    EXPECT_EQ(ReferenceChainsTestAccessor::gotwMaxBatch(),
               ReferenceChainsTestAccessor::gotwBatchSize())
-        << "instant mock call under budget should additively increase batch";
+        << "near-free call should scale the batch to the cap";
 
-    // --- Decrease phase: EMA over the CPU budget -> halve the batch.
-    ReferenceChainsTestAccessor::setGotwEmaCallNs(
-        ReferenceChainsTestAccessor::gotwCpuBudgetNs() * 2);
+    // --- Shrink phase: EMA at 2x the window with no deadline -> batch
+    // halves (512 x 1 / 1.6 after the EMA update).
+    ReferenceChainsTestAccessor::setGotwEmaCallNs(budget * 2);
     ReferenceChainsTestAccessor::setGotwBatchSize(512);
     ReferenceChainsTestAccessor::pushPendingExpandForTest(1);
     ReferenceChainsTestAccessor::expandFrontierForTest(&mock_jvmti,
                                                        &mock_jni, &edges);
-    // EMA after the call: 2x budget x 0.8 + ~0 (mock) = 1.6x budget, still
-    // over -> multiplicative decrease 512 -> 256.
-    EXPECT_EQ((size_t)256, ReferenceChainsTestAccessor::gotwBatchSize())
-        << "EMA over budget should halve the batch (512 -> 256)";
+    // EMA after the call: 2x window x 0.8 + mock elapsed/5 - slightly
+    // above 1.6x window, so the exact expectation is computed from the
+    // actual EMA the same way the control law does (window = nominal
+    // budget, no deadline): next = 512 x window / ema.
+    EXPECT_EQ((size_t)(512ULL * budget /
+                       std::max(ReferenceChainsTestAccessor::gotwEmaCallNs(),
+                                1ULL)),
+              ReferenceChainsTestAccessor::gotwBatchSize())
+        << "EMA at ~1.6x the window should scale the batch to 512/1.6";
 
-    // --- Increase phase: EMA under budget -> additive increase.
-    ReferenceChainsTestAccessor::setGotwEmaCallNs(
-        ReferenceChainsTestAccessor::gotwCpuBudgetNs() / 2);
+    // --- Grow phase: EMA at half the window -> batch scales up 2.5x,
+    // i.e. the floor-dominated regime GROWS the batch (the whole point of
+    // the proportional law - the old AIMD could not grow past a fixed
+    // budget even when bigger batches were nearly free).
+    ReferenceChainsTestAccessor::setGotwBatchSize(64);
+    ReferenceChainsTestAccessor::setGotwEmaCallNs(budget / 2);
     ReferenceChainsTestAccessor::pushPendingExpandForTest(1);
     ReferenceChainsTestAccessor::expandFrontierForTest(&mock_jvmti,
                                                        &mock_jni, &edges);
-    // EMA after the call: 0.5x budget x 0.8 + ~0 = 0.4x budget, under ->
-    // additive increase 256 + 64 = 320.
-    EXPECT_EQ(256 + ReferenceChainsTestAccessor::gotwBatchIncreaseStep(),
+    // Same computation from the actual post-call EMA (~0.4x window):
+    // next = 64 x window / ema.
+    EXPECT_EQ((size_t)(64ULL * budget /
+                       std::max(ReferenceChainsTestAccessor::gotwEmaCallNs(),
+                                1ULL)),
               ReferenceChainsTestAccessor::gotwBatchSize())
-        << "EMA under budget should additively increase the batch";
+        << "EMA under the window should scale the batch up proportionally";
+
+    // --- Deadline-window phase: with a live pass deadline the window is the
+    // REMAINING time, not the nominal budget. A deadline 10x the budget out
+    // with EMA ~ 1x budget scales the batch 10x/0.8 - past the cap, so the
+    // clamp holds it at GOTW_MAX_BATCH (robust to the nanoseconds the call
+    // itself consumes).
+    ReferenceChainsTestAccessor::setPassDeadlineNs(
+        OS::nanotime() + budget * 10);
+    ReferenceChainsTestAccessor::setGotwBatchSize(64);
+    ReferenceChainsTestAccessor::setGotwEmaCallNs(budget);
+    ReferenceChainsTestAccessor::pushPendingExpandForTest(1);
+    ReferenceChainsTestAccessor::expandFrontierForTest(&mock_jvmti,
+                                                       &mock_jni, &edges);
+    EXPECT_EQ(ReferenceChainsTestAccessor::gotwMaxBatch(),
+              ReferenceChainsTestAccessor::gotwBatchSize())
+        << "a wide remaining deadline should grow the batch to the cap";
+    ReferenceChainsTestAccessor::setPassDeadlineNs(0);
 
     // --- Admission sanity: expansion still walks the graph. Root -> child
     // edge, one more drive, child must be admitted.
@@ -4137,6 +4209,116 @@ TEST_F(ReferenceChainsBfsTest, AdaptiveBatchSizeAimdDecreaseAndIncrease) {
 
     tracker->stop();
 }
+
+// FAIR-SHARE DRAIN persistence: the lane toggle must survive across
+// expandFrontier() invocations. With per-invocation deadlines bounding an
+// invocation to a single batch (the production regime: one ~25-30ms
+// GetObjectsWithTags call of a 50ms window), a per-invocation reset to
+// "priority first" made priority win EVERY invocation and the ordinary
+// pending lane was never drained - observed live on hotdog (pending grew
+// 109k->113k over 260 passes, every call edges=0 stale re-walks). Here:
+// invocation 1 drains the priority lane, the toggle flips to pending;
+// priority is refilled (rotation would) and invocation 2 must still drain
+// the PENDING lane despite priority being non-empty.
+TEST_F(ReferenceChainsBfsTest, FairShareLaneAlternationPersistsAcrossInvocations) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    int rootNode = addNode();
+    int otherRoot = addNode();
+    // Two live boundary objects: tag 1 in pending, tag 2 in priority.
+    node_tags[rootNode] = 1;
+    node_tags[otherRoot] = 2;
+    ASSERT_TRUE(tracker->frontierTable()->insert(
+        1, 0, 1, 0, FrontierEntryState::EDGE));
+    ASSERT_TRUE(tracker->frontierTable()->insert(
+        2, 0, 1, 0, FrontierEntryState::EDGE));
+    ReferenceChainsTestAccessor::pushPendingExpandForTest(1);
+    ReferenceChainsTestAccessor::pushPriorityExpand(2);
+    int edges = 0;
+
+    // Mock GetObjectsWithTags calls are ~free, so without a deadline a
+    // single expandFrontier() invocation would drain BOTH lanes in one
+    // loop. A delayed mock call (gotw_delay_ns below) plus a deadline set
+    // to a fraction of that delay bounds each invocation to exactly ONE
+    // batch: the first iteration's top-of-loop check passes (the deadline
+    // is ~200us away), the delayed call burns past it, and the second
+    // iteration's check breaks - the production regime, where one real
+    // ~25-30ms call consumes a 50ms window.
+    gotw_delay_ns = 1 * 1000 * 1000; // 1ms
+    ReferenceChainsTestAccessor::setPassDeadlineNs(OS::nanotime() + 200 * 1000);
+
+    // Invocation 1: priority first (the standing preference).
+    ReferenceChainsTestAccessor::expandFrontierForTest(&mock_jvmti,
+                                                       &mock_jni, &edges);
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::priorityExpandSize())
+        << "first invocation should drain the priority lane";
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::pendingExpandSize())
+        << "first invocation must leave the pending lane for the next one";
+    EXPECT_FALSE(ReferenceChainsTestAccessor::expandLanePreferPriority());
+
+    // Rotation refills the priority lane; invocation 2 must STILL prefer
+    // the pending lane - the toggle persists, it is not reset per call.
+    ReferenceChainsTestAccessor::pushPriorityExpand(2);
+    ReferenceChainsTestAccessor::setPassDeadlineNs(OS::nanotime() + 200 * 1000);
+    ReferenceChainsTestAccessor::expandFrontierForTest(&mock_jvmti,
+                                                       &mock_jni, &edges);
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::pendingExpandSize())
+        << "second invocation should drain the pending lane";
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::priorityExpandSize())
+        << "second invocation must leave the refilled priority lane alone";
+    EXPECT_TRUE(ReferenceChainsTestAccessor::expandLanePreferPriority());
+
+    tracker->stop();
+}
+// FANOUT HYGIENE: a _leak_parent_fanout entry whose parent no longer
+// resolves in the frontier (pruned: dead object, or a search-restart wipe)
+// can never be re-walked, so collectStaleExpandedEntriesForRotation() must
+// erase it during selection rather than skip it forever - without the
+// erase, the fanout grows monotonically with corpses (observed live at
+// ~11k entries of overwhelmingly-dead old backing arrays), which both
+// bloats the selection scan and turns the fanout cursor's lap arithmetic
+// into mostly wasted skips.
+TEST_F(ReferenceChainsBfsTest, StaleRotationEvictsDeadFanoutParents) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    constexpr u32 kLeafKlass = 987;
+    ReferenceChainsTestAccessor::setWatchedLeakKlassIdsForTest({kLeafKlass});
+    FrontierTable *frontier = tracker->frontierTable();
+
+    // Live fanout parent 1 and dead fanout parent 5 (frontier entry pruned).
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 1, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/0,
+        /*class_tag=*/42));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 5, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/0,
+        /*class_tag=*/43));
+    ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass, 1, 10);
+    ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass, 5, 20);
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::leakParentFanout(1));
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::leakParentFanout(5));
+
+    frontier->clear(5); // parent 5's object died / search restart pruned it
+
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectStaleExpandedEntriesForRotation(4);
+    ASSERT_EQ(1u, selected.size());
+    EXPECT_EQ((jlong)1, selected[0]);
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::leakParentFanout(5))
+        << "dead fanout parent must be erased during selection";
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::leakParentFanout(1))
+        << "live fanout parent must survive";
+
+    tracker->stop();
+}
+
 
 // Leak-tag interception (design A + C): an object pre-tagged with a leak tag
 // (as LivenessTracker::tagLeakInstances() would have set on a tracked leaking
@@ -4469,11 +4651,24 @@ TEST_F(PollWatchedTargetsTest, DiscoveredChainGateSuppressesTransientDepthOne) {
     // Deeper chain through the transient root: passes on depth alone.
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, 10, 7, 2, FrontierEntryState::EXPANDED, /*root_kind=*/0));
+    // Depth-0 transient root: the candidate instance itself held by a live
+    // frame - suppressed like the depth-1 transient shape.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 11, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    // Depth-0 durable root: the candidate instance IS the static field's
+    // value (the singleton-collection-itself shape) - a real direct-retention
+    // chain, NOT suppressible as noise.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 12, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
 
     ReferenceChainsTestAccessor::recordDiscoveredInstanceForTest(3, 7, false);
     ReferenceChainsTestAccessor::recordDiscoveredInstanceForTest(3, 9, false);
     ReferenceChainsTestAccessor::recordDiscoveredInstanceForTest(3, 10, false);
-    ASSERT_EQ(3, ReferenceChainsTestAccessor::candidateDiscoveredCountForTest(0));
+    ReferenceChainsTestAccessor::recordDiscoveredInstanceForTest(3, 11, false);
+    ReferenceChainsTestAccessor::recordDiscoveredInstanceForTest(3, 12, false);
+    ASSERT_EQ(5, ReferenceChainsTestAccessor::candidateDiscoveredCountForTest(0));
 
     tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
 
@@ -4484,6 +4679,11 @@ TEST_F(PollWatchedTargetsTest, DiscoveredChainGateSuppressesTransientDepthOne) {
            "direct-retention chain";
     EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(10))
         << "depth-2 chain passes the gate regardless of root kind";
+    EXPECT_FALSE(ReferenceChainsTestAccessor::hasResolvedChainForTag(11))
+        << "depth-0 chain rooted at a transient (stack local) root is noise";
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(12))
+        << "depth-0 chain rooted at a durable (static field) root is the "
+           "direct-retention shape the search exists to report";
 
     tracker->stop();
 }

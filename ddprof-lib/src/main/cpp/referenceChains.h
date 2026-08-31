@@ -14,6 +14,7 @@
 #include "painBudget.h"
 #include "pidController.h"
 #include "spinLock.h"
+#include "mutex.h"
 #include <algorithm>
 #include <atomic>
 #include <climits>
@@ -1030,29 +1031,40 @@ private:
   // Self-calibrating adaptive batch sizing for GetObjectsWithTags (see
   // expandFrontier()'s own comment). GetObjectsWithTags iterates the whole
   // JVMTI tag map per call, so its cost has a batch-independent floor that
-  // grows with the frontier (~20ms at a 225k-entry map, measured live on
-  // hotdog) plus a small per-searched-tag component. An earlier design
-  // calibrated batch_size from a per-TAG EMA (ema = elapsed / batch_size),
-  // which collapses: the floor dominates at small batch sizes, so a smaller
-  // batch INFLATES the per-tag cost, which shrinks the batch further —
-  // positive feedback observed live driving batch_size from ~400 down to 2
-  // and BFS throughput from ~2000 edges/pass to ~100. Instead, AIMD directly
-  // on the batch size against the measured PER-CALL time: multiplicative
-  // decrease when the call overran the budget, additive increase when it
-  // came in under. The per-call cost is what actually matters and is
-  // batch-insensitive in the floor-dominated regime, so this converges to
-  // the largest affordable batch instead of collapsing.
+  // grows with the frontier (~20-25ms at a 225-245k-entry map, measured live
+  // on hotdog) plus a small per-searched-tag component (measured live:
+  // batch 8 -> 27.4ms, batch 72 -> 36.1ms, i.e. ~0.12ms per extra tag on a
+  // ~25ms floor). Two earlier designs both collapsed:
+  //  - per-TAG EMA (ema = elapsed / batch_size): the floor dominates at
+  //    small batch sizes, so a smaller batch INFLATES the per-tag cost,
+  //    shrinking the batch further (observed live: ~400 -> 2).
+  //  - per-CALL AIMD against a FIXED budget: once the map grows enough that
+  //    the floor alone exceeds the budget (25ms budget vs ~27ms floor at a
+  //    243k-entry map), every call "overran" regardless of batch size, so
+  //    AIMD ratcheted to GOTW_MIN_BATCH and stayed there - measured live
+  //    batch=8 on every call while batch=72 cost only +36% for 9x the
+  //    objects.
+  // In the floor-dominated regime the right move is the OPPOSITE of
+  // shrinking: a bigger batch amortizes the floor. The control law is a
+  // direct proportion - scale the batch so ONE call fills the remaining
+  // wall-clock window:
   //   ema_call_ns = ema × 0.8 + measured × 0.2   (per-CALL, not per-tag)
-  //   ema > budget  -> batch /= 2   (multiplicative decrease)
-  //   ema <= budget -> batch += 64  (additive increase, up to GOTW_MAX_BATCH)
+  //   window_ns   = remaining _pass_deadline_ns (nominal GOTW_CPU_BUDGET_NS
+  //                 when no deadline is set)
+  //   batch       = clamp(batch × window_ns / ema_call_ns, MIN, MAX)
+  // Converges upward while calls come in under the window (a near-free
+  // call scales the batch to GOTW_MAX_BATCH), shrinks as the window
+  // drains so tail calls still fit, and tracks the floor automatically
+  // as the tag map grows or shrinks.
   size_t _gotw_batch_size = 0; // 0 = unset, use GOTW_INITIAL_BATCH_SIZE
   u64 _gotw_ema_call_ns = 0;    // EMA of per-call elapsed, 0 = unset
 
-  // CPU overhead budget for GetObjectsWithTags per expandFrontier() call.
-  // Not a safepoint/STW budget (GetObjectsWithTags is not a safepoint
-  // call) — a throughput target. ~25ms per pass at ~2-4 passes/sec is
-  // ~50-100ms/sec of CPU overhead on one core, acceptable for a
-  // background search thread on a multi-core machine.
+  // Nominal per-call window for the proportional batch control above when
+  // no phase deadline is set (expandFrontier()'s window is the REMAINING
+  // deadline, which the phases refresh per invocation). Also doubles as a
+  // CPU-overhead sanity target: ~25ms per call at ~2-4 calls/pass is
+  // ~50-100ms/sec of CPU overhead on one core, acceptable for a background
+  // search thread on a multi-core machine.
   static constexpr u64 GOTW_CPU_BUDGET_NS = 25000000; // 25ms
 
   // Conservative initial batch_size before the first GetObjectsWithTags
@@ -1067,7 +1079,6 @@ private:
   // throughput ~20x while per-call cost stayed ~20ms).
   static constexpr size_t GOTW_MAX_BATCH = 512;
   static constexpr size_t GOTW_MIN_BATCH = 8;
-  static constexpr size_t GOTW_BATCH_INCREASE_STEP = 64;
 
   // Search lifecycle state. _search_started distinguishes a search's first
   // pass (seed FollowReferences from the heap roots) from a resumed pass
@@ -1184,6 +1195,18 @@ private:
   // ordinary backlog above.
   std::deque<jlong> _priority_expand;
 
+  // Which lane the NEXT expandFrontier() batch comes from when both lanes
+  // are non-empty (the alternation toggle). Deliberately a MEMBER, not a
+  // local: the phase deadlines bound a typical expandFrontier() invocation
+  // to ONE batch (a single GetObjectsWithTags costs ~25-30ms of a 50ms
+  // window at a ~240k-entry tag map), and a per-invocation local reset to
+  // "priority first" made priority win EVERY invocation - observed live on
+  // hotdog, the ordinary _pending_expand lane (109k entries) was never
+  // drained by a single batch while the priority lane livelocked on stale
+  // re-walks. Persisting the toggle across invocations makes the two
+  // phases of each pass (expand + rotation) drain alternating lanes.
+  bool _expand_lane_prefer_priority = true;
+
   // Upper bound on _priority_expand above. 1024 holds a few passes' worth of
   // rotation selection (budgets sum to ~272/pass) so a truncating rotation
   // phase still has work waiting next pass, while keeping
@@ -1191,18 +1214,19 @@ private:
   // worst case per pass (256 selections x 1024 entries) - sub-millisecond.
   static constexpr size_t PRIORITY_EXPAND_CAP = 1024;
 
-  // java/lang/Object jclass cache for expandFrontier()'s frontier-holder
-  // array element type (referenceChains.cpp) - resolved via FindClass() once
-  // per attached JNIEnv and reused across every subsequent expandFrontier()
-  // call on that same attach, instead of re-resolving it on every BFS pass.
-  // _cached_object_class_jni records which JNIEnv the cached local ref
-  // belongs to, so a fresh attach (a new JNIEnv*) invalidates the cache
-  // rather than reusing a local ref from a different (and possibly already
-  // detached) JNI attach. Only ever touched from the single BFS thread that
-  // calls expandFrontier(), so no locking is needed - same as
-  // _pending_expand above.
+  // java/lang/Object jclass cache for expandFrontier()'s and
+  // admitStaticFieldRoots()'s holder-array element type (referenceChains.cpp)
+  // - resolved once via FindClass()+NewGlobalRef() and reused for the
+  // tracker's lifetime. MUST be a GLOBAL ref, not a local one: callers
+  // include JNI-entered test seams (runReferenceChainPass0), and a local
+  // ref is freed the moment its creating JNI invocation returns to Java -
+  // caching one across invocations crashed in NewObjectArray() on the
+  // second pass (observed). A global ref is also valid across the BFS
+  // thread's detach/attach cycles, so no JNIEnv* keying or detach-time
+  // invalidation is needed. Never freed: java/lang/Object is a bootstrap
+  // class (never unloaded) and this tracker is a process-lifetime
+  // singleton, so the single ref is reclaimed with the JVM.
   jclass _cached_object_class = nullptr;
-  JNIEnv *_cached_object_class_jni = nullptr;
 
   // Rotation cursor for collectStaleRootKindEntriesForRotation() (Phase 5
   // item 3): 1-based tag to resume scanning from on the next call, so
@@ -2397,6 +2421,12 @@ public:
   // heapReferenceCallback() (the heap-walk engine) to drive FrontierTable's tag-indexed
   // slots.
   jlong nextTag() { return atomicIncRelaxed(_next_tag, (jlong)1); }
+
+  // Serializes runPass()+pollWatchedTargets() between threadLoop() and the
+  // test seams - see runPassForTest()'s comment. A full pthread mutex, not
+  // a spin lock: the critical section is a whole BFS pass (tens of ms), far
+  // too long to spin, and neither holder is ever a signal context.
+  Mutex _engine_lock;
   jlong tagObject(jvmtiEnv *jvmti, jobject obj);
   jlong getTag(jvmtiEnv *jvmti, jobject obj);
   void clearTag(jvmtiEnv *jvmti, jobject obj);
@@ -2446,6 +2476,26 @@ public:
   // _search_started is false again and this method takes the first-pass
   // branch exactly as it would for a brand-new tracker.
   bool runPass(jvmtiEnv *jvmti, JNIEnv *jni, bool *out_truncated = nullptr);
+
+  // Serialized entry points for the two engine drivers: the real BFS thread
+  // (threadLoop(), below) and the debug seams (javaApi.cpp's
+  // runReferenceChainPass0()/pollReferenceChainTargets0()). The engine's
+  // non-frontier maps (_class_tags, _candidate_*, _leak_parent_fanout, ...)
+  // are plain containers with no cross-thread locking, so a seam-driven
+  // pass on a test thread while threadLoop() is mid-pass is a genuine data
+  // race - observed: SIGSEGV in ClassTagTable::insert's unordered_map
+  // rehash from a test thread inside resolveLoadedClasses() while the BFS
+  // thread was mid-pass of its own. Taking _engine_lock at both entry
+  // points makes the two drivers mutually exclusive while either can run.
+  bool runPassSerialized(jvmtiEnv *jvmti, JNIEnv *jni) {
+    MutexLocker engine_guard(_engine_lock);
+    return runPass(jvmti, jni);
+  }
+
+  void pollWatchedTargetsSerialized(jvmtiEnv *jvmti, JNIEnv *jni) {
+    MutexLocker engine_guard(_engine_lock);
+    pollWatchedTargets(jvmti, jni);
+  }
 
   // Search-level outcome (SearchState's constants) - see runPass()'s comment
   // for exactly when this leaves RUNNING. Acquire-loaded, pairing with
@@ -2636,6 +2686,24 @@ public:
   // so a test can call this directly without a live JVM attached, the same
   // way referenceChains_ut.cpp already does for runPass()).
   void pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni);
+
+  // Targeted holder re-walk: enqueues `tag`'s chain-root entry (the
+  // root-attached ancestor of its frontier chain) onto _priority_expand so
+  // the next rotation/expand pass re-walks the holder that retains
+  // everything below `tag`. Rationale (observed live in the correlation
+  // scenario): a container that replaces its internals (growing ArrayList,
+  // resized HashMap) never appears in the fanout as the direct parent of
+  // anything watched - the watched instances' direct parents are the DEAD
+  // old internals - and the blind lap over a large frontier is far too slow
+  // to reach the holder in any realistic window, so new internals are never
+  // admitted and tagged leak instances below them are never intercepted.
+  // The holder chain's root, however, is exactly what a candidate's chain
+  // reconstruction already walks; requeueing it per poll (bounded by
+  // MAX_LEAK_CANDIDATES pushes, de-duplicated by isQueuedForRotation) makes
+  // the holder's CURRENT children - including each new backing array -
+  // admitted promptly. See _leak_parent_fanout's own comment for the
+  // complementary (probabilistic) ancestor coverage.
+  void requeueChainRootForRotation(jlong tag);
 
   // Appends a copy of every currently-cached resolved chain to *out,
   // re-stamped with a fresh _start_time so it lands in the dumping chunk's

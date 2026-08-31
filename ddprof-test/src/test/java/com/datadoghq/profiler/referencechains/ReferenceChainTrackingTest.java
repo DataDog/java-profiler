@@ -94,6 +94,21 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
   private static final int CHAIN_LINK_TEST_KLASS_ID = 987201;
   private static final int CACHED_PAYLOAD_TEST_KLASS_ID = 987202;
 
+  // Durable (static-field) holder for the gc-root fixture below. The
+  // discovered-chain gate suppresses chains shallower than the first real
+  // holder hop that are rooted at a TRANSIENT root (stack/JNI local) - a
+  // frame-held "leak" is by definition not a leak - and
+  // shouldReconstructReferrerChainToGcRoot()'s ChainLink instances sit at
+  // depth 1 of a locally-held list, exactly the transient-rooted shape the
+  // gate exists to suppress. A static field gives them the real
+  // unmaintained-singleton-collection retention shape instead. (The cache
+  // fixture below needs no such change: its CachedPayload chains are three
+  // hops deep through HashMap's own internals, which the gate correctly
+  // lets through regardless of root kind.) Cleared in the test's finally:
+  // this is a shared, no-forkEvery test JVM, and a leftover holder would
+  // keep its entire population reachable for every later test here.
+  private static List<Object> gcRootHolder;
+
   // LivenessTracker's own hysteresis gate (livenessTracker.h's
   // KLASS_POPULATION_MIN_FILL_FOR_TREND=10 / LEAK_TREND_HYSTERESIS_BASE=5;
   // livenessTracker.cpp's recordKlassPopulationSampleLocked()/hasQualifyingGrowth()) only starts
@@ -300,7 +315,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
     // addAll()/grow() copies all prior elements (including this one) into the new array, so
     // whichever array the walk happens to snapshot when it expands the node, index 0 is always
     // present in it.
-    List<Object> gcRootHolder = new ArrayList<>();
+    gcRootHolder = new ArrayList<>();
     gcRootHolder.add(new ChainLink("gc-root-seed"));
     if ("debug".equals(System.getProperty("ddprof_test.config"))) {
       // Being pinned to run first *within this class* (this class's own header comment, "Why
@@ -418,13 +433,19 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
           // positive-slope signal selectLeakCandidates() needs). Only the poll+dump recheck below
           // needs to repeat across rounds - not the seeding - to give the background pass, or a
           // lock-contended dump(), more rounds to resolve.
+          // Representative BEFORE seeding: setKlassPopulationRepresentativeForTest0
+          // resolves the representative's real klass id and aliases the synthetic
+          // id to it, so the hysteresis seeds below land in the real population
+          // entry (candidate matching is real-id keyed since the leak-tag pool
+          // redesign; seeds under a bare synthetic id authorize only
+          // hasLeakSignal()'s candidate-count check and match nothing else).
+          JavaProfiler.setKlassPopulationRepresentativeForTest0(CHAIN_LINK_TEST_KLASS_ID, gcRootHolder.get(0));
           if (!seededTestKlassTrend) {
             for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
               JavaProfiler.seedKlassPopulationSample0(CHAIN_LINK_TEST_KLASS_ID, epoch * 10, epoch);
             }
             seededTestKlassTrend = true;
           }
-          JavaProfiler.setKlassPopulationRepresentativeForTest0(CHAIN_LINK_TEST_KLASS_ID, gcRootHolder.get(0));
           JavaProfiler.pollReferenceChainTargets0();
           dump(scratchDumpPath);
           match = ReferenceChainAssertions.findMatchForClass(verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false), ChainLink.class);
@@ -477,6 +498,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       assertTrue(match.depth >= 0, "depth should be a non-negative hop count");
       assertTrue(!gcRootHolder.isEmpty()); // keeps every allocated ChainLink reachable until here
     } finally {
+      gcRootHolder = null; // shared-JVM hygiene - see the static holder's own comment
       Files.deleteIfExists(scratchDumpPath);
     }
   }
@@ -607,13 +629,15 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
           // guarantees on this call). Seed exactly once - see that method's own comment for why
           // reseeding the same ramp on a later round would corrupt the ring into a non-monotonic
           // sawtooth and destroy the positive-slope signal instead of just re-establishing it.
+          // Representative BEFORE seeding - same real-id aliasing rationale as
+          // shouldReconstructReferrerChainToGcRoot()'s own comment above.
+          JavaProfiler.setKlassPopulationRepresentativeForTest0(CACHED_PAYLOAD_TEST_KLASS_ID, cache.get(keys[0]));
           if (!seededTestKlassTrend) {
             for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
               JavaProfiler.seedKlassPopulationSample0(CACHED_PAYLOAD_TEST_KLASS_ID, epoch * 10, epoch);
             }
             seededTestKlassTrend = true;
           }
-          JavaProfiler.setKlassPopulationRepresentativeForTest0(CACHED_PAYLOAD_TEST_KLASS_ID, cache.get(keys[0]));
           JavaProfiler.pollReferenceChainTargets0();
           dump(scratchDumpPath);
           JfrEvents events2 = verifyEvents(scratchDumpPath, "datadog.ReferenceChain", false);

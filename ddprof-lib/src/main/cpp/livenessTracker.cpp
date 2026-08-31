@@ -19,6 +19,8 @@
 #include "incbin.h"
 #include "jniHelper.h"
 #include "livenessTracker.h"
+#include "objectSampler.h"
+#include "vmEntry.h"
 #include "referenceChains.h"
 #include "log.h"
 #include "nativeMem.h"
@@ -260,35 +262,47 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
 }
 
 u32 LivenessTracker::resolveKlassId(JNIEnv *env, jobject ref) {
-  // Mirrors flush_table()'s own class-name resolution below (GetObjectClass +
-  // Class.getName() + Profiler::lookupClass()) - kept duplicated rather than
-  // factored out because flush_table() also needs to build an
-  // ObjectLivenessEvent around the result, which this call site does not.
-  // Unlike flush_table(), this call site also DeleteLocalRef()s name_str: it
-  // runs once per surviving TrackingEntry per GC epoch (cleanup_table()'s
-  // survivor loop above) rather than once per JFR flush, so an unreleased
-  // local ref here accumulates far faster within whatever native frame is
-  // driving cleanup_table().
+  // Deliberately NOT flush_table()'s own Class.getName()-based resolution
+  // below: the ids this returns are the CANDIDATE klass ids that
+  // ReferenceChainTracker matches discovered instances' classes against, and
+  // RCT resolves those with the GetClassSignature +
+  // ObjectSampler::normalizeClassSignature() + lookupClass() sequence
+  // (resolveClassMap(), referenceChains.cpp). StringDictionary keys its
+  // entries by the exact string, and getName()'s "com.foo.Bar" (dot
+  // notation) is a DIFFERENT key from the signature's "com/foo/Bar" (slash
+  // notation) - so a getName()-based id can never equal the signature-based
+  // id the same class resolves to on the RCT side, and every candidate vs
+  // discovered-instance comparison failed (observed live on the pod: every
+  // auto-mark "resolved but no candidate match", and locally:
+  // LivenessTracker id 63 vs ReferenceChainTracker id 2 for the same class;
+  // only array classes accidentally matched, since "[B" is notation-
+  // identical). Same sequence as ObjectSampler::recordAllocation()
+  // therefore - the third user of it, after recordAllocation() and
+  // resolveClassMap(). Also strictly cheaper than the old getName() path:
+  // a plain JVMTI call instead of a Class.getName() JNI upcall that could
+  // allocate.
   jclass clz = env->GetObjectClass(ref);
-  jstring name_str = (jstring)env->CallObjectMethod(clz, _Class_getName);
-  env->DeleteLocalRef(clz);
-  jniExceptionCheck(env);
   u32 id = 0;
-  // getName() can return null (and leave name_str null) if the call above
-  // threw and jniExceptionCheck() cleared the pending exception rather than
-  // propagating it - GetStringUTFChars()/ReleaseStringUTFChars() require a
-  // non-null jstring, so guard both calls on name_str rather than passing a
-  // possibly-null reference into them.
-  if (name_str != nullptr) {
-    const char *name = env->GetStringUTFChars(name_str, nullptr);
-    if (name != nullptr) {
-      int lookup_id = Profiler::instance()->lookupClass(name, strlen(name));
-      if (lookup_id > 0) {
-        id = (u32)lookup_id;
+  jvmtiEnv *jvmti = VM::jvmti();
+  if (clz != nullptr && jvmti != nullptr) {
+    char *class_name = nullptr;
+    if (jvmti->GetClassSignature(clz, &class_name, nullptr) ==
+            JVMTI_ERROR_NONE &&
+        class_name != nullptr) {
+      const char *name_slice = nullptr;
+      size_t name_len = 0;
+      if (ObjectSampler::normalizeClassSignature(class_name, &name_slice,
+                                                  &name_len)) {
+        int lookup_id = Profiler::instance()->lookupClass(name_slice, name_len);
+        if (lookup_id > 0) {
+          id = (u32)lookup_id;
+        }
       }
-      env->ReleaseStringUTFChars(name_str, name);
+      jvmti->Deallocate((unsigned char *)class_name);
     }
-    env->DeleteLocalRef(name_str);
+  }
+  if (clz != nullptr) {
+    env->DeleteLocalRef(clz);
   }
   return id;
 }
@@ -550,6 +564,17 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti, const u32 *klass_ids,
     }
     _table[i].leak_tag = leak_tag;
     tagged++;
+    // TEMP DIAGNOSTIC: which instances won the tagging priority - the
+    // allocation size distinguishes a scenario's deliberately-big leaked
+    // chunks from JVM-machinery survivors of the same class (observed:
+    // tagged=5 stable across every poll with ZERO interceptions, because
+    // the age-priority kept re-selecting old machinery byte[]s while the
+    // young leak chunks churned out of the tracking table first).
+    TEST_LOG("LivenessTracker::tagLeakInstances tagged leak_tag=%llu "
+             "klass_id=%u tid=%d age=%lld size=%llu need_set=%d",
+             (unsigned long long)leak_tag, _table[i].cached_klass_id,
+             (int)_table[i].tid, (long long)_table[i].age,
+             (unsigned long long)(_table[i].alloc._size), (int)need_set);
     env->DeleteLocalRef(ref);
   }
   _table_lock.unlockShared();

@@ -628,22 +628,6 @@ void ReferenceChainTracker::startThread() {
   // this new cycle's very first pass instantly.
   _abort_pass_requested.store(false, std::memory_order_relaxed);
 
-  // Same reasoning as _abort_pass_requested above, for a different stale-state
-  // hazard: expandFrontier()'s _cached_object_class[_jni] is keyed on JNIEnv*
-  // identity to detect a fresh attach, but a new pthread's VM::attachThread()
-  // (threadLoop(), below) can be handed back a JNIEnv* the JVM already freed
-  // and is now reusing for this new session - the pointer value alone cannot
-  // distinguish "still this session" from "coincidentally the same address as
-  // a prior, already-detached session". A prior session's now-dangling local
-  // ref would then look "cached and valid" to that identity check and get
-  // passed straight into NewObjectArray(). stopThread() already joined that
-  // prior session's thread before this method can run (Profiler::stop()/
-  // start() always pair stopThread()+start() sequentially), so it is safe to
-  // force the cache to re-resolve unconditionally on this new session's first
-  // expandFrontier() call rather than trust the old JNIEnv* comparison.
-  _cached_object_class = nullptr;
-  _cached_object_class_jni = nullptr;
-
   // Publish _running=true *before* creating the thread, not after. If the
   // OS schedules the new thread ahead of the parent, threadLoop()'s startup
   // check (`while (_running.load(...))`) would otherwise be racing against
@@ -707,19 +691,11 @@ void ReferenceChainTracker::threadLoop() {
   struct Cleanup {
     ReferenceChainTracker *tracker;
     ~Cleanup() {
-      // Drop the cached java/lang/Object local ref (and the JNIEnv* it was
-      // resolved on) before detaching: DetachCurrentThread() invalidates
-      // every local ref this attach ever created, but _cached_object_class
-      // and _cached_object_class_jni are tracker-lifetime fields that
-      // survive into the next start()'s brand-new BFS thread/attach. If the
-      // JVM happens to hand that next attach the same JNIEnv* address (JNIEnv
-      // structs are heap-allocated per attach and can be reused once freed),
-      // the "_cached_object_class_jni != jni" check in expandFrontier()
-      // would wrongly treat the now-dangling local ref as still valid.
-      // Clearing both here forces an unconditional FindClass() on the first
-      // expandFrontier() call of the next attach instead.
-      tracker->_cached_object_class = nullptr;
-      tracker->_cached_object_class_jni = nullptr;
+      // No cached-class cleanup needed before detaching:
+      // _cached_object_class is a global ref, deliberately valid across
+      // attach/detach cycles (see its own comment in referenceChains.h) -
+      // unlike the per-attach local ref it replaced, which this destructor
+      // used to have to clear here.
       VM::detachThread();
     }
   } cleanup{this};
@@ -844,7 +820,7 @@ void ReferenceChainTracker::threadLoop() {
                (unsigned long long)_effective_cadence_ns, _effective_budget,
                (unsigned long long)gcFinishEpoch(), (unsigned long long)_last_pass_gc_finish_epoch,
                (unsigned long long)(now_ns - _last_pass_ns));
-      runPass(jvmti, jni, nullptr);
+      runPassSerialized(jvmti, jni);
     }
     // Target-selection bridging step: poll once per scheduling cycle, after
     // runPass() - so this poll always sees the most recent pass's tagging (see
@@ -852,7 +828,7 @@ void ReferenceChainTracker::threadLoop() {
     // shouldRunPass()'s decision above: a candidate discovered by an
     // earlier pass may still be waiting for its first poll even on a cycle
     // where this cycle's own pass was skipped.
-    pollWatchedTargets(jvmti, jni);
+    pollWatchedTargetsSerialized(jvmti, jni);
   }
 }
 
@@ -1354,31 +1330,31 @@ jlong ReferenceChainTracker::tagAsRootForTest(jvmtiEnv *jvmti, JNIEnv *jni,
       obj == nullptr) {
     return 0;
   }
-  // Resolves the klass_id the same way LivenessTracker::resolveKlassId()
-  // does (GetObjectClass + Class.getName() + Profiler::lookupClass()) -
-  // this is a test-only, off-hot-path call so caching _Class/_Class_getName
-  // like LivenessTracker does is not worth the extra state.
+  // Resolves the klass_id via the same GetClassSignature +
+  // normalizeClassSignature + Profiler::lookupClass sequence every
+  // consumer in this subsystem uses (ObjectSampler::recordAllocation(),
+  // LivenessTracker::resolveKlassId(), resolveClassMap() above) - the
+  // id space is load-bearing here: pollWatchedTargets() matches frontier
+  // entries against leak candidates by klass_id, and the candidate ids
+  // come from that signature-notation space (Class.getName()'s dot form
+  // is a DIFFERENT StringDictionary key - see
+  // find-klass-id-notation-mismatch). Test-only, off-hot-path.
   u32 klass_id = 0;
   jclass klass = jni->GetObjectClass(obj);
-  jclass class_class = jni->FindClass("java/lang/Class");
-  if (class_class != nullptr) {
-    jmethodID get_name =
-        jni->GetMethodID(class_class, "getName", "()Ljava/lang/String;");
-    if (get_name != nullptr) {
-      jstring name_str = (jstring)jni->CallObjectMethod(klass, get_name);
-      if (name_str != nullptr) {
-        const char *name = jni->GetStringUTFChars(name_str, nullptr);
-        if (name != nullptr) {
-          int id = Profiler::instance()->lookupClass(name, strlen(name));
-          if (id > 0) {
-            klass_id = (u32)id;
-          }
-          jni->ReleaseStringUTFChars(name_str, name);
-        }
-        jni->DeleteLocalRef(name_str);
+  char *class_name = nullptr;
+  if (jvmti->GetClassSignature(klass, &class_name, nullptr) ==
+          JVMTI_ERROR_NONE &&
+      class_name != nullptr) {
+    const char *name_slice = nullptr;
+    size_t name_len = 0;
+    if (ObjectSampler::normalizeClassSignature(class_name, &name_slice,
+                                                &name_len)) {
+      int id = Profiler::instance()->lookupClass(name_slice, name_len);
+      if (id != -1) {
+        klass_id = (u32)id;
       }
     }
-    jni->DeleteLocalRef(class_class);
+    jvmti->Deallocate((unsigned char *)class_name);
   }
   jni->DeleteLocalRef(klass);
 
@@ -1952,6 +1928,27 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
         ctx->tracker->invalidateResolvedChain(*tag_ptr);
       }
     }
+    if (*tag_ptr != 0 && parent_tag == 0 && *tag_ptr > 0) {
+      // Already-admitted entry reached via a NEW root-like edge
+      // (parent_tag == 0): the static-field sweep's class -> field edge
+      // reports the class as the referrer with a negative tag, which the
+      // rtag < 0 branch above treats as root-like (class objects are never
+      // frontier entries), and heap-root references arrive here with
+      // referrer_tag_ptr == nullptr. Without this, an entry first admitted
+      // through a stack local keeps its transient classification forever
+      // even after a later static-field sweep proves the same object is
+      // the direct value of a static field - exactly the durable-root
+      // discovery maybeUpgradeRootAttachedRootKind() exists for (same
+      // tie-break heapRootCallback() applies on its own ALREADY_ADMITTED
+      // case), so reuse it: upgrade only when this edge's kind is strictly
+      // more durable, and drop any cached chain so it is rebuilt with the
+      // upgraded root kind.
+      if (ctx->tracker->maybeUpgradeRootAttachedRootKind(ctx->frontier,
+                                                          *tag_ptr,
+                                                          (u8)reference_kind)) {
+        ctx->tracker->invalidateResolvedChain(*tag_ptr);
+      }
+    }
     // Auto-mark: if this object's class matches a watched leak class,
     // record its frontier tag so pollWatchedTargets() can build a chain
     // event for it. A leaking class typically has many live instances,
@@ -2101,6 +2098,10 @@ void ReferenceChainTracker::trackLeakAccumulation(FrontierTable *frontier,
   _leak_signature_totals[key]++;
   auto it = _leak_parent_fanout.find(parent_tag);
   if (it == _leak_parent_fanout.end()) {
+    TEST_LOG("ReferenceChainTracker::trackLeakAccumulation fanout-insert "
+             "parent_tag=%lld parent_class_tag=%lld child_class_tag=%lld",
+             (long long)parent_tag, (long long)parent_entry.class_tag,
+             (long long)class_tag);
     _leak_parent_fanout.emplace(parent_tag, LeakParentFanoutEntry{key, 1});
   } else {
     // The signature key for a given parent_tag is fixed once recorded
@@ -2113,6 +2114,33 @@ void ReferenceChainTracker::trackLeakAccumulation(FrontierTable *frontier,
     // recently observed watched klass_id for this parent).
     it->second.signature_key = key;
     it->second.fanout++;
+  }
+  // ANCESTOR FANOUT: the direct parent is not necessarily the part of the
+  // holder chain that STAYS LIVE. A container that replaces its internals
+  // (the canonical unmaintained-singleton leak: a growing ArrayList swaps
+  // elementData on growth, a HashMap resizes its table) leaves the watched
+  // instances' direct parents dead - observed live: the fanout filled with
+  // old backing arrays while the live holder was never re-walked, its new
+  // internals never admitted, and zero tagged chunks ever intercepted.
+  // The ancestors up to the root ARE the durable holders, so record every
+  // hop of the holder chain, not just the last one. Bounded: this only runs
+  // for watched-klass admissions (rare - leak-candidate classes only), and
+  // the walk stops at the root-attached entry (parent_tag == 0), typically
+  // a handful of lookups.
+  jlong ancestor = parent_entry.parent_tag;
+  int hops = 0;
+  while (ancestor != 0 && hops++ < _hop_cap) {
+    FrontierEntry ancestor_entry{};
+    if (!_frontier->lookup(ancestor, &ancestor_entry)) {
+      break;
+    }
+    if (_leak_parent_fanout.find(ancestor) == _leak_parent_fanout.end()) {
+      _leak_parent_fanout.emplace(ancestor, LeakParentFanoutEntry{key, 1});
+    }
+    if (ancestor_entry.parent_tag == 0) {
+      break; // root-attached: the holder chain ends here
+    }
+    ancestor = ancestor_entry.parent_tag;
   }
 }
 
@@ -2190,6 +2218,9 @@ bool ReferenceChainTracker::maybeUpgradeRootAttachedRootKind(
     return false;
   }
   frontier->updateRootKind(tag, new_root_kind);
+  TEST_LOG("ReferenceChainTracker::maybeUpgradeRootAttachedRootKind tag=%lld "
+           "old_root_kind=%d -> new_root_kind=%d",
+           (long long)tag, (int)entry.root_kind, (int)new_root_kind);
   return true;
 }
 
@@ -2244,48 +2275,89 @@ ReferenceChainTracker::collectStaleExpandedEntriesForRotation(
   if (max_count <= 0 || table_size <= 0) {
     return selected;
   }
-  // LEAK-PARENT PRIORITY: _leak_parent_fanout knows the EXPANDED parents
-  // that actually lead to watched leak-klass children - re-walking one of
-  // those re-sees its current children (improveChain() upgrades children
-  // first admitted via a shallower path, leak-tag interception for the
-  // tagged ones) and catches elements added since its expansion, which is
-  // exactly the mutation this rotation exists to observe. The blind table
-  // lap below reaches a given parent only every ~table_size/max_count
-  // passes (hundreds, observed live at ~680) and the leak-accumulation tier
-  // above needs signature GROWTH - which itself requires exactly these
-  // re-walks to have happened - so in steady state neither reaches the
-  // leak holders. The fanout is orders of magnitude smaller than the
-  // table; select from it first (rotating via _leak_parent_rotation_cursor
-  // for coverage), then fill the remainder from the blind lap. Each pass
-  // iterates at most cursor-skip + max_count map entries and performs at
-  // most max_count frontier lookups - bounded and cheap.
+  // LEAK-PARENT PRIORITY, FAIR-SHARED WITH THE BLIND LAP: _leak_parent_fanout
+  // knows the EXPANDED parents that actually lead to watched leak-klass
+  // children - re-walking one of those re-sees its current children
+  // (improveChain() upgrades children first admitted via a shallower path,
+  // leak-tag interception for the tagged ones) and catches elements added
+  // since its expansion, which is exactly the mutation this rotation exists
+  // to observe. The fanout is orders of magnitude smaller than the table;
+  // select from it first (rotating via _leak_parent_rotation_cursor for
+  // coverage), up to HALF the budget (ceil) - then the blind table lap below
+  // fills the remainder.
+  //
+  // Why capped at half rather than fanout-first-until-exhausted (the
+  // original design, observed broken live): the fanout only ever contains
+  // parents of watched instances ALREADY ADMITTED as their direct children -
+  // and for a container that REPLACES its internals (the canonical
+  // unmaintained-singleton case: a growing ArrayList swaps elementData on
+  // growth), the watched instances' direct parents are the OLD, now-dead
+  // backing arrays, while the live holder's new internals are never in the
+  // fanout at all (the holder's own direct children are non-watched
+  // container internals). Re-walking the LIVE holder is what admits each
+  // new backing array; only the blind lap selects an arbitrary EXPANDED
+  // holder. With an unbounded fanout-first policy and a fanout grown to
+  // ~11k entries, the fanout filled ALL 256 selections every pass
+  // (observed live: rotation edges admitted in only 4 of 206 passes, the
+  // sink's resized backing arrays never admitted, zero interceptions) and
+  // the lap never ran - the exact starvation this rotation was built to
+  // prevent, reproduced one level down. A half/half split guarantees both
+  // tiers make progress every pass.
+  //
+  // FANOUT HYGIENE: entries whose parent no longer resolves in the
+  // frontier (pruned: dead object, search-restart wipe) can never be
+  // re-walked again, yet accumulate forever without this erase - observed
+  // live as an 11k-entry fanout of overwhelmingly-dead old backing arrays,
+  // which both bloats this scan and makes _leak_parent_rotation_cursor's
+  // lap arithmetic cover mostly corpses. Entries that exist but are not
+  // EXPANDED yet (still pending expansion) are kept - their children have
+  // not even been seen once.
   if (!_leak_parent_fanout.empty() &&
       _priority_expand.size() < PRIORITY_EXPAND_CAP) {
+    int fanout_budget = (max_count + 1) / 2;
     size_t fanout_size = _leak_parent_fanout.size();
     u64 skip = _leak_parent_rotation_cursor % fanout_size;
-    for (const auto &kv : _leak_parent_fanout) {
-      if ((int)selected.size() >= max_count ||
+    auto it = _leak_parent_fanout.begin();
+    while (it != _leak_parent_fanout.end()) {
+      if ((int)selected.size() >= fanout_budget ||
           _priority_expand.size() >= PRIORITY_EXPAND_CAP) {
         break;
       }
       if (skip > 0) {
         skip--;
+        ++it;
         continue;
       }
-      jlong parent_tag = kv.first;
+      jlong parent_tag = it->first;
       if (isQueuedForRotation(parent_tag)) {
+        ++it;
         continue;
       }
       FrontierEntry entry{};
+      // Dead parent: either the frontier slot is gone entirely, or it was
+      // clear()'d (dead object / restart wipe) - clear() marks the slot
+      // ABANDONED rather than removing it, so both conditions must erase
+      // (tags are never reused within a search and the fanout is wiped on
+      // restart, so an ABANDONED parent can never come back to life).
       if (!_frontier->lookup(parent_tag, &entry) ||
-          entry.state != FrontierEntryState::EXPANDED) {
+          entry.state == FrontierEntryState::ABANDONED) {
+        it = _leak_parent_fanout.erase(it);
+        continue;
+      }
+      if (entry.state != FrontierEntryState::EXPANDED) {
+        ++it;
         continue;
       }
       selected.push_back(parent_tag);
       _priority_expand.push_back(parent_tag);
+      ++it;
     }
     _leak_parent_rotation_cursor += selected.size() + 1;
     if ((int)selected.size() >= max_count) {
+      // Budget exhausted by the fanout alone (only possible for
+      // max_count == 1, where the fanout's ceil-half share is the whole
+      // budget) - fanout-priority preserved, and the lap below has nothing
+      // left to do this pass.
       return selected;
     }
   }
@@ -2680,6 +2752,10 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   // cadence, even once every loaded class's static fields have already been
   // swept and no new class has appeared to introduce new ones.
   int expand_phase_edges_admitted = 0;
+  TEST_LOG("ReferenceChainTracker::runPassManualWalk static_sweep_gate "
+           "resolved=%d swept=%d cursor=%d",
+           _last_resolved_class_count, _last_static_field_class_count,
+           _static_field_sweep_cursor);
   if (_last_resolved_class_count != _last_static_field_class_count) {
     int static_field_edges_admitted = 0;
     bool static_field_truncated = false;
@@ -2896,17 +2972,14 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
   // a JNIEnv (some test seams) the array-holder path cannot run; a JNIEnv
   // change (fresh attach) invalidates the cache since the previous call's
   // local ref is only guaranteed valid for that attach's lifetime.
-  if (jni != nullptr) {
-    if (_cached_object_class_jni != jni) {
-      _cached_object_class = jni->FindClass("java/lang/Object");
-      if (jniExceptionCheck(jni)) {
-        _cached_object_class = nullptr;
-      }
-      _cached_object_class_jni = jni;
+  if (jni != nullptr && _cached_object_class == nullptr) {
+    jclass local = jni->FindClass("java/lang/Object");
+    if (!jniExceptionCheck(jni) && local != nullptr) {
+      _cached_object_class = (jclass)jni->NewGlobalRef(local);
     }
-  } else {
-    _cached_object_class = nullptr;
-    _cached_object_class_jni = nullptr;
+    if (local != nullptr) {
+      jni->DeleteLocalRef(local);
+    }
   }
   jclass object_class = _cached_object_class;
 
@@ -2922,8 +2995,12 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
   // drained by a single batch, freezing all new-territory crawl.
   // Alternation guarantees the ordinary frontier at least every other
   // batch regardless of queue depths; an empty lane falls back to the
-  // other one.
-  bool prefer_priority = true;
+  // other one. The toggle is the _expand_lane_prefer_priority MEMBER
+  // (not a local of this invocation): the phase deadlines bound a typical
+  // invocation to a single batch, so a per-invocation reset made priority
+  // win every invocation - observed live on hotdog with round 3's build,
+  // where _pending_expand GREW 109k->113k across 260 passes while every
+  // gotw call drained the priority lane's stale re-walks (edges=0).
   while (!ctx.truncated && progress && object_class != nullptr) {
     // Wall-clock deadline check per iteration: GetObjectsWithTags runs OUTSIDE
     // any FollowReferences callback, so heapReferenceCallback()'s amortized
@@ -2947,8 +3024,8 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
     } else if (_pending_expand.empty()) {
       from_priority = true;
     } else {
-      from_priority = prefer_priority;
-      prefer_priority = !prefer_priority;
+      from_priority = _expand_lane_prefer_priority;
+      _expand_lane_prefer_priority = !_expand_lane_prefer_priority;
     }
     std::deque<jlong> &source =
         from_priority ? _priority_expand : _pending_expand;
@@ -2993,24 +3070,44 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
         (jint)candidate_tags.size(), candidate_tags.data(), &resolved_count,
         &resolved_objects, &resolved_tags);
     u64 gotw_elapsed_ns = OS::nanotime() - gotw_start_ns;
-    // Self-calibrate (AIMD): update the EMA of PER-CALL elapsed time, then
-    // adjust the batch — multiplicative decrease when the EMA overran the
-    // CPU budget, additive increase when it came in under. See
-    // _gotw_batch_size's own comment for why per-call (not per-tag).
+    // Self-calibrate (PROPORTIONAL batch control): update the EMA of
+    // PER-CALL elapsed time, then scale the batch so ONE call fills the
+    // remaining wall-clock window. This replaces the earlier per-call AIMD
+    // (fixed budget, halve/add-64): measured live on hotdog, the tag map
+    // grew until the per-call floor alone (~27ms at a 243k-entry map)
+    // exceeded the fixed 25ms budget, so AIMD ratcheted to GOTW_MIN_BATCH
+    // and stayed there (batch=8 forever) even though batch=72 cost only
+    // +36% for 9x the objects - the floor-dominated regime in which a
+    // BIGGER batch is the right move, and only a proportion against the
+    // remaining deadline can see that. See _gotw_batch_size's own
+    // comment for the full history (incl. the earlier per-tag collapse).
     if (batch_size > 0 && gotw_elapsed_ns > 0) {
       if (_gotw_ema_call_ns == 0) {
         _gotw_ema_call_ns = gotw_elapsed_ns;
       } else {
         _gotw_ema_call_ns = _gotw_ema_call_ns * 4 / 5 + gotw_elapsed_ns / 5;
       }
-      if (_gotw_ema_call_ns > GOTW_CPU_BUDGET_NS) {
-        _gotw_batch_size =
-            std::max(_gotw_batch_size / 2, GOTW_MIN_BATCH);
-      } else {
-        _gotw_batch_size =
-            std::min(_gotw_batch_size + GOTW_BATCH_INCREASE_STEP,
-                     GOTW_MAX_BATCH);
-      }
+      u64 now_ns = OS::nanotime();
+      u64 window_ns =
+          _pass_deadline_ns != 0 && _pass_deadline_ns > now_ns
+              ? _pass_deadline_ns - now_ns
+              : GOTW_CPU_BUDGET_NS;
+      // window_ns / ema_call_ns == how many such calls fit the window;
+      // scaling the CURRENT calibration batch by that ratio sizes the next
+      // call to consume the whole window in one go. Extrapolate from the
+      // stored _gotw_batch_size (the intended size), not from batch_size:
+      // batch_size is capped by the lane depth (min(source.size(), ...)),
+      // and a shallow lane would calibrate the stored size toward its own
+      // depth even though the stored size is what the next deep-lane call
+      // will use. Integer division biases the next batch slightly small -
+      // safe (an under-filled window just runs a second call; an
+      // over-filled one overruns the deadline).
+      size_t calib_batch =
+          _gotw_batch_size != 0 ? _gotw_batch_size : GOTW_INITIAL_BATCH_SIZE;
+      size_t next_batch = (size_t)((u64)calib_batch * window_ns /
+                                   std::max(_gotw_ema_call_ns, 1ULL));
+      _gotw_batch_size = std::min(std::max(next_batch, GOTW_MIN_BATCH),
+                                  GOTW_MAX_BATCH);
     }
     if (resolve_err != JVMTI_ERROR_NONE) {
       ctx.truncated = true;
@@ -3258,12 +3355,14 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
   // Same java/lang/Object element-type cache expandFrontier() uses for its
   // own frontier-holder array - shared across both call sites on this same
   // attached JNIEnv rather than a second FindClass() per pass.
-  if (_cached_object_class_jni != jni) {
-    _cached_object_class = jni->FindClass("java/lang/Object");
-    if (jniExceptionCheck(jni)) {
-      _cached_object_class = nullptr;
+  if (_cached_object_class == nullptr) {
+    jclass local = jni->FindClass("java/lang/Object");
+    if (!jniExceptionCheck(jni) && local != nullptr) {
+      _cached_object_class = (jclass)jni->NewGlobalRef(local);
     }
-    _cached_object_class_jni = jni;
+    if (local != nullptr) {
+      jni->DeleteLocalRef(local);
+    }
   }
   jclass object_class = _cached_object_class;
 
@@ -3941,6 +4040,68 @@ void ReferenceChainTracker::maybeRevokeBorrowForRootEnumPass(
 // doc's "Correction to the design doc's Open Question 3 mechanism").
 // ---------------------------------------------------------------------------
 
+void ReferenceChainTracker::requeueChainRootForRotation(jlong tag) {
+  if (_frontier == nullptr || tag <= 0) {
+    return;
+  }
+  // Walk the parent chain up to the root-attached entry - the same links
+  // reconstructChain() walks, but we only need the tag, not the class ids.
+  // Bounded by _hop_cap (the frontier's own invariant: depth <= hop_cap),
+  // so a corrupt cycle cannot spin here.
+  jlong root_tag = tag;
+  FrontierEntry entry{};
+  int hops = 0;
+  while (hops++ < _hop_cap) {
+    if (!_frontier->lookup(root_tag, &entry) || entry.parent_tag == 0) {
+      break;
+    }
+    root_tag = entry.parent_tag;
+  }
+  if (root_tag == tag) {
+    return; // tag IS the root - nothing above it to requeue
+  }
+  if (!_frontier->lookup(root_tag, &entry) ||
+      entry.state != FrontierEntryState::EXPANDED) {
+    return; // root pruned or still pending expansion - nothing to re-walk
+  }
+  if (isQueuedForRotation(root_tag) ||
+      _priority_expand.size() >= PRIORITY_EXPAND_CAP) {
+    return;
+  }
+  TEST_LOG("ReferenceChainTracker::requeueChainRootForRotation root_tag=%lld "
+           "target_tag=%lld",
+           (long long)root_tag, (long long)tag);
+  _priority_expand.push_back(root_tag);
+}
+
+namespace {
+
+// The discovered-chain gate's suppression predicate, shared by EVERY site
+// that caches a resolved chain - the poll's discovered-instances loop AND
+// both representative build paths (the canary/marker path and the
+// normal-tag path). Chains shallower than the first real holder hop
+// (depth < 2) rooted at a TRANSIENT root (stack local / JNI local) are the
+// observed noise shape - a momentarily-live frame's variable holding the
+// instance - whose retention explanation evaporates when the frame dies.
+// Everything else is real: a depth==1 chain rooted at a durable root is the
+// singleton-collection leak shape (a depth-0 static root's elements are
+// depth 1), and a depth==0 chain rooted at a durable root is the
+// direct-retention shape (the root-retained object itself - e.g. a static
+// field's value, or a Thread object for thread-local leaks) - suppressing
+// those unconditionally would drop exactly the retention categories the
+// search exists to report. Anything deeper passes regardless of root kind
+// (at depth >= 2 the chain has at least one real holder hop).
+// Representative-driven builds used to bypass this check entirely (found
+// live: the canary path cached a stack-local-rooted depth-1 chain for a
+// seeded noise-class representative and snapshot-and-keep re-emitted it
+// forever) - every cacheResolvedChain() call site in pollWatchedTargets()
+// must pass this gate.
+bool suppressChainEvent(const ReferenceChainEvent &event) {
+  return event._depth < 2 && isTransientRootKind(event._root_kind);
+}
+
+}  // namespace
+
 void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
   if (!_enabled || jvmti == nullptr || jni == nullptr ||
       !LivenessTracker::instance()->gcGenerationsEnabled()) {
@@ -4127,7 +4288,15 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
             TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
                      "buildCanaryChainEvent(dead rep, slot=%d) -> %d",
                      s, (int)built_from_canary);
-            if (built_from_canary) {
+            if (built_from_canary && suppressChainEvent(event)) {
+              TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
+                       "filtered depth=%u root_kind=%d canary_ftag=%lld "
+                       "klass_id=%u (dead-rep path)",
+                       event._depth, (int)event._root_kind,
+                       (long long)canary_ftag, klass_id);
+              built_from_canary = false;
+              invalidateResolvedChain(canary_ftag);
+            } else if (built_from_canary) {
               event._start_time = TSC::ticks();
               cacheResolvedChain(canary_ftag, std::move(event),
                                   canary_ftag, current_search_ns);
@@ -4212,6 +4381,15 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
         TEST_LOG("ReferenceChainTracker::pollWatchedTargets canary "
                  "buildCanaryChainEvent(slot=%d) -> %d",
                  candidate_slot, built);
+        if (built && suppressChainEvent(event)) {
+          TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
+                   "filtered depth=%u root_kind=%d canary_ftag=%lld "
+                   "klass_id=%u (canary path)",
+                   event._depth, (int)event._root_kind,
+                   (long long)canary_ftag, klass_id);
+          built = false;
+          invalidateResolvedChain(canary_ftag);
+        }
         if (built) {
           event._start_time = TSC::ticks();
           cacheResolvedChain(canary_ftag, std::move(event),
@@ -4226,6 +4404,15 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
 
     // Normal (non-canary) path: tag > 0 means the walk visited this
     // object and assigned it a frontier tag.
+
+    // Keep the holder chain's root warm in the rotation queue: a growing
+    // container's current internals are only reachable via the holder's
+    // re-walk (requeueChainRootForRotation()'s own comment). Every poll,
+    // not just on cache refresh - the holder must be re-walked CONTINUOUSLY
+    // to observe each resize as it happens.
+    if (tag > 0) {
+      requeueChainRootForRotation(tag);
+    }
 
     // Reconstruct only when this klass has no current chain cached: either
     // nothing cached yet, or what is cached was built from a different tag or
@@ -4248,6 +4435,15 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
       bool built = buildChainEvent(tag, &event);
       TEST_LOG("ReferenceChainTracker::pollWatchedTargets buildChainEvent(tag=%lld) -> %d",
                (long long)tag, built);
+      if (built && suppressChainEvent(event)) {
+        TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
+                 "filtered depth=%u root_kind=%d rep_tag=%lld klass_id=%u "
+                 "(representative path)",
+                 event._depth, (int)event._root_kind, (long long)tag,
+                 klass_id);
+        built = false;
+        invalidateResolvedChain(tag);
+      }
       if (built) {
         // Provisional stamp; drainPendingChainEvents() re-stamps each copy at
         // dump time so the event lands in that chunk's window.
@@ -4318,16 +4514,16 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
         //     local): the observed noise shape - a momentarily-live
         //     frame's variable holding the instance. The chain explains a
         //     retention that evaporates when the frame dies.
-        // A depth==1 chain whose root is DURABLE (static field, JNI
-        // global, thread) is a REAL direct-retention chain - the actual
-        // hotdog leak shape is exactly that (a singleton collection is a
-        // depth-0 static root; its elements are depth 1) - so it must NOT
-        // be caught by a blanket depth>1 filter. Anything deeper passes
-        // regardless of root kind (at depth >= 2 the chain has at least one
-        // real holder hop).
-        if (built && (event._depth == 0 ||
-                      (event._depth < 2 &&
-                       isTransientRootKind(event._root_kind)))) {
+        // Both durable-rooted shapes are REAL direct-retention chains and
+        // must NOT be caught by a blanket depth filter: depth==1 rooted at
+        // a static field is the singleton-collection leak shape (a depth-0
+        // static root's elements are depth 1), and depth==0 rooted at a
+        // durable root is the root-retained object itself (a static field's
+        // value, a Thread object for thread-local leaks) - the actual
+        // retention categories the search exists to report. Anything
+        // deeper passes regardless of root kind (at depth >= 2 the chain
+        // has at least one real holder hop).
+        if (built && suppressChainEvent(event)) {
           TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
                    "filtered depth=%u root_kind=%d disc_tag=%lld klass_id=%u",
                    event._depth, (int)event._root_kind,
@@ -4349,7 +4545,7 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
             _leak_tags_resolved++;
           }
           TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
-                   "auto-marked chain for klass_id=%u tag=%lld leak_tag=%llu",
+                   "auto-marked chain for klass_id=%u tag=%lld target_tag=%llu",
                    klass_id, (long long)disc_tag,
                    (unsigned long long)event._target_tag);
         } else {

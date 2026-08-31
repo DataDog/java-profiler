@@ -5,6 +5,7 @@
 
 package com.datadoghq.profiler;
 
+import com.datadoghq.profiler.referencechains.LeakTagCorrelationScenario;
 import com.datadoghq.profiler.referencechains.LeakingCacheScenario;
 import com.datadoghq.profiler.referencechains.StaticFieldGrowingCollectionScenario;
 
@@ -44,6 +45,12 @@ import java.util.concurrent.atomic.LongAdder;
  *     instead: a {@code static final List<byte[]>} field appended to (never reassigned) after
  *     its owning class has already been swept once by {@code admitStaticFieldRoots()} -
  *     mirroring the real leak generator found in the {@code prof-analyzer-hotdog-jb} pod.</li>
+ *     <li>leak-correlation "&lt;start command&gt;|||&lt;scratch dump path&gt;" - same packing and
+ *     lifecycle as {@code leak-cache} above, but runs {@link LeakTagCorrelationScenario}
+ *     instead: a static-collection leak coexisting with ephemeral stack-local noise of another
+ *     class and a large live filler graph, asserting the emitted chain's targetTag is a
+ *     leak-tag-pool tag matching a HeapLiveObject's leakTag - the chain-to-live-heap-sample
+ *     correlation use case.</li>
  * </ul>
  */
 public class ExternalLauncher {
@@ -163,6 +170,20 @@ public class ExternalLauncher {
                 String scratchPath = packed.substring(sep + "|||".length());
                 JavaProfiler instance = JavaProfiler.getInstance();
                 StaticFieldGrowingCollectionScenario.run(instance, commands, Paths.get(scratchPath));
+                System.out.flush();
+                System.exit(0);
+            } else if (args[0].equals("leak-correlation")) {
+                // Same "<start command>|||<scratch dump path>" packing as leak-cache above.
+                String packed = args.length == 2 ? args[1] : "";
+                int sep = packed.indexOf("|||");
+                if (sep < 0) {
+                    throw new IllegalArgumentException(
+                        "leak-correlation requires \"<start command>|||<scratch dump path>\", got: " + packed);
+                }
+                String commands = packed.substring(0, sep);
+                String scratchPath = packed.substring(sep + "|||".length());
+                JavaProfiler instance = JavaProfiler.getInstance();
+                LeakTagCorrelationScenario.run(instance, commands, Paths.get(scratchPath));
                 System.out.flush();
                 System.exit(0);
             }

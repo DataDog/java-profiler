@@ -59,3 +59,21 @@ one expandFrontier call per phase via test seams (a full runPass drains a
 small graph AND adds rotation-phase gotw calls, making per-call AIMD
 arithmetic unverifiable). AIMD state is NOT covered by
 ReferenceChainsTestAccessor::reset() — tests must zero it explicitly.
+
+## SUPERSeded by proportional batch control (this session, verified locally)
+
+The AIMD fix (per-call EMA vs fixed 25ms budget) survived only until the
+tag map's batch-independent floor (~27ms at 243k entries) exceeded the
+fixed budget - measured live on the pod round 4: batch=8 forever while
+batch=72 cost only 36ms for 9x objects. The EWMA itself was never the
+problem (it survives, alpha=0.8); the FIXED THRESHOLD below the floor was.
+Current law: same per-call EMA, `next = batch x remaining_deadline / ema`,
+clamped [MIN,MAX] - sizes one call to fill the pause window; converges up
+while calls are cheap, shrinks as the window drains, tracks the floor as
+the map grows/shrinks. Verified on a real JVM locally: batch 270 ->
+next 512, gotw 16-18ms. Unit: AdaptiveBatchSizeProportionalToWindow
+(replaces the AIMD test). Also fixed in the same round: the fair-share
+lane toggle must PERSIST across expandFrontier invocations (a local reset
+made priority win every invocation - observed live: pending 109k->113k
+never drained); FairShareLaneAlternationPersistsAcrossInvocations covers
+it (mock gotw busy-wait knob bounds one batch per invocation).

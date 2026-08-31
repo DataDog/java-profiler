@@ -888,12 +888,66 @@ public:
   // race that wipe and silently vanish moments after being recorded. Mirrors
   // klassPopulationSetRepresentativeForTest() below, which already does this
   // correctly.
+  // TEST-ONLY synthetic-to-real klass-id aliasing. Since the leak-tag pool
+  // redesign, every consumer of a candidate klass id keys on the REAL id
+  // space of Profiler::lookupClass()/ReferenceChainTracker's class tags:
+  // tagLeakInstances() scans the live-heap tracking table's cached_klass_id,
+  // and discovered-instance recording resolves an admitted object's class
+  // to the same space. A purely synthetic seeded id matches none of those
+  // (observed live: tagged=0 for every poll, "resolved but no candidate
+  // match" for every auto-mark, no chains ever built). The scenarios' debug
+  // seams therefore alias each synthetic id to the representative's real
+  // class id, established by klassPopulationSetRepresentativeForTest()
+  // below (the only seam holding an actual instance) and applied by
+  // klassPopulationRecordForTest() above.
+  struct TestKlassAlias {
+    u32 synthetic;
+    u32 real;
+  };
+  static constexpr int MAX_TEST_KLASS_ALIASES = 8;
+  TestKlassAlias _test_klass_aliases[MAX_TEST_KLASS_ALIASES];
+  int _test_klass_alias_count = 0;
+
+  // All three below require _table_lock held (same as every other
+  // _klass_population mutator).
+  u32 resolveTestKlassAliasLocked(u32 klass_id) const {
+    for (int i = 0; i < _test_klass_alias_count; i++) {
+      if (_test_klass_aliases[i].synthetic == klass_id) {
+        return _test_klass_aliases[i].real;
+      }
+    }
+    return klass_id;
+  }
+
+  void registerTestKlassAliasLocked(u32 synthetic, u32 real) {
+    for (int i = 0; i < _test_klass_alias_count; i++) {
+      if (_test_klass_aliases[i].synthetic == synthetic) {
+        _test_klass_aliases[i].real = real;
+        return;
+      }
+    }
+    if (_test_klass_alias_count < MAX_TEST_KLASS_ALIASES) {
+      _test_klass_aliases[_test_klass_alias_count++] = {synthetic, real};
+    }
+  }
+
+  void removeKlassPopulationEntryLocked(int slot) {
+    if (slot < 0 || slot >= _klass_population_size) {
+      return;
+    }
+    memmove(&_klass_population[slot], &_klass_population[slot + 1],
+            sizeof(KlassPopulationEntry) *
+                (size_t)(_klass_population_size - slot - 1));
+    _klass_population_size--;
+  }
+
   jweak klassPopulationRecordForTest(u32 klass_id, u32 count, u64 epoch,
                                       int *out_slot, bool *out_created,
                                       jweak *out_evicted = nullptr,
                                       int *out_evicted_count = nullptr,
                                       int max_evicted = 0) {
     _table_lock.lock();
+    klass_id = resolveTestKlassAliasLocked(klass_id);
     jweak evicted = recordKlassPopulationSampleLocked(klass_id, count, epoch,
                                                         out_slot, out_created,
                                                         out_evicted,
@@ -919,44 +973,111 @@ public:
   // otherwise repeated calls for the same klass_id leak a JNI weak global
   // ref per call.
   void klassPopulationSetRepresentativeForTest(JNIEnv *env, u32 klass_id, jweak rep) {
+    // ALIAS RESOLUTION (see _test_klass_aliases' own comment above): resolve
+    // the representative's real klass id BEFORE taking _table_lock, so the
+    // Class.getName() JNI upcall never runs under the lock. Needs a live JVM
+    // (a valid Class.getName methodID and a resolvable representative); in
+    // gtest (env == nullptr or _Class_getName == 0) the alias is skipped and
+    // the old synthetic-only behavior applies.
+    u32 real_id = klass_id;
+    jobject strong = nullptr;
+    if (env != nullptr && rep != nullptr && _Class_getName != nullptr) {
+      strong = env->NewLocalRef(rep);
+      if (strong != nullptr) {
+        u32 resolved = resolveKlassId(env, strong);
+        if (resolved != 0 && resolved != klass_id) {
+          real_id = resolved;
+        }
+      }
+    }
     _table_lock.lock();
+    if (real_id != klass_id) {
+      registerTestKlassAliasLocked(klass_id, real_id);
+      // Re-key any already-seeded synthetic entry to the real id so its
+      // ring history (hysteresis ramp included) survives the alias. If a
+      // real-keyed entry already exists too (real allocation sampling
+      // already folded genuine samples for this same class), the real
+      // entry wins and the synthetic one is dropped: genuine history for
+      // the same class outranks seeded history.
+      int syn_slot = -1;
+      int real_slot = -1;
+      for (int i = 0; i < _klass_population_size; i++) {
+        if (_klass_population[i].klass_id == klass_id) {
+          syn_slot = i;
+        } else if (_klass_population[i].klass_id == real_id) {
+          real_slot = i;
+        }
+      }
+      if (syn_slot >= 0 && real_slot < 0) {
+        _klass_population[syn_slot].klass_id = real_id;
+      } else if (syn_slot >= 0 && real_slot >= 0) {
+        removeKlassPopulationEntryLocked(syn_slot);
+      }
+    }
+    // Find-or-create the entry under real_id (previously a silent no-op
+    // when absent - but with aliasing, set-representative-first is the
+    // load-bearing order: scenarios must establish the alias BEFORE any
+    // seeding, and with no entry yet there is nothing to store the
+    // representative into. Creating via a count-0, epoch-0 ring sample
+    // reuses recordKlassPopulationSampleLocked()'s own creation branch
+    // exactly; the seeded rising ramp that follows still clears
+    // hasQualifyingGrowth() (a single 0 at the ring's start only lowers the
+    // earliest-third mean, which RAISES the slope).
+    int slot = -1;
     for (int i = 0; i < _klass_population_size; i++) {
-      if (_klass_population[i].klass_id == klass_id) {
-        // Clean up old representatives
-        for (int r = 0; r < _klass_population[i].representative_count; r++) {
-          jweak prev = _klass_population[i].representatives[r];
-          if (prev != nullptr && env != nullptr) {
-            env->DeleteWeakGlobalRef(prev);
+      if (_klass_population[i].klass_id == real_id) {
+        slot = i;
+        break;
+      }
+    }
+    if (slot < 0) {
+      jweak evicted[KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS];
+      int evicted_count = 0;
+      bool created = false;
+      recordKlassPopulationSampleLocked(real_id, 0, 0, &slot, &created,
+                                         evicted, &evicted_count,
+                                         KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS);
+      if (env != nullptr) {
+        for (int r = 0; r < evicted_count; r++) {
+          if (evicted[r] != nullptr) {
+            env->DeleteWeakGlobalRef(evicted[r]);
           }
         }
-        _klass_population[i].representative_count = 0;
-        if (rep != nullptr) {
-          _klass_population[i].representatives[0] = rep;
-          _klass_population[i].representative_count = 1;
+      }
+    }
+    if (slot >= 0) {
+      // Clean up old representatives
+      for (int r = 0; r < _klass_population[slot].representative_count; r++) {
+        jweak prev = _klass_population[slot].representatives[r];
+        if (prev != nullptr && env != nullptr) {
+          env->DeleteWeakGlobalRef(prev);
         }
-        // Mint stable_class_tag from this same representative if this slot
-        // has not gotten one yet - this seam is how live-JVM,
-        // StaticFieldGrowingCollectionScenario-style tests seed a candidate
-        // instead of real allocation sampling (foldKlassCountsLocked()),
-        // which would otherwise never run for them, leaving
-        // stable_class_tag permanently unminted and
-        // topKlassesByGenerationCount() unable to report this klass at all -
-        // found the hard way, exactly the failure this comment is warning
-        // about.
-        // env is nullptr in some gtest call sites that only exercise the
-        // representative-swap bookkeeping above and don't care about
-        // stable_class_tag - guard against it rather than crash.
-        jobject strong =
-            (env != nullptr && rep != nullptr) ? env->NewLocalRef(rep) : nullptr;
-        if (strong != nullptr) {
-          mintStableClassTagIfNeeded(env, i, strong);
-          env->DeleteLocalRef(strong);
-        }
-        _table_lock.unlock();
-        return;
+      }
+      _klass_population[slot].representative_count = 0;
+      if (rep != nullptr) {
+        _klass_population[slot].representatives[0] = rep;
+        _klass_population[slot].representative_count = 1;
+      }
+      // Mint stable_class_tag from this same representative if this slot
+      // has not gotten one yet - this seam is how live-JVM,
+      // StaticFieldGrowingCollectionScenario-style tests seed a candidate
+      // instead of real allocation sampling (foldKlassCountsLocked()),
+      // which would otherwise never run for them, leaving
+      // stable_class_tag permanently unminted and
+      // topKlassesByGenerationCount() unable to report this klass at all -
+      // found the hard way, exactly the failure this comment is warning
+      // about.
+      // env is nullptr in some gtest call sites that only exercise the
+      // representative-swap bookkeeping above and don't care about
+      // stable_class_tag - guard against it rather than crash.
+      if (strong != nullptr) {
+        mintStableClassTagIfNeeded(env, slot, strong);
       }
     }
     _table_lock.unlock();
+    if (strong != nullptr) {
+      env->DeleteLocalRef(strong);
+    }
   }
   // Sets an entry's stable_class_tag directly - production code only ever
   // mints this via foldKlassCountsLocked()'s JVMTI-dependent get-or-assign
@@ -986,6 +1107,7 @@ public:
   void klassPopulationResetForTest() {
     _table_lock.lock();
     _klass_population_size = 0;
+    _test_klass_alias_count = 0;
     _table_lock.unlock();
     // Also reset the heap-floor ring: it is a sibling piece of the same
     // _gc_generations-gated feature, read by every selectLeakCandidates()

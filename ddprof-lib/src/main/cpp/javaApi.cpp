@@ -1192,7 +1192,7 @@ Java_com_datadoghq_profiler_JavaProfiler_runReferenceChainPass0(
   if (jvmti == nullptr) {
     return JNI_FALSE;
   }
-  return ReferenceChainTracker::instance()->runPass(jvmti, env);
+  return ReferenceChainTracker::instance()->runPassSerialized(jvmti, env);
 }
 
 extern "C" DLLEXPORT void JNICALL
@@ -1202,7 +1202,7 @@ Java_com_datadoghq_profiler_JavaProfiler_pollReferenceChainTargets0(
   if (jvmti == nullptr) {
     return;
   }
-  ReferenceChainTracker::instance()->pollWatchedTargets(jvmti, env);
+  ReferenceChainTracker::instance()->pollWatchedTargetsSerialized(jvmti, env);
 }
 
 extern "C" DLLEXPORT jint JNICALL

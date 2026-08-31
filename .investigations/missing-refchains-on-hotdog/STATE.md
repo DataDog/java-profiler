@@ -16,36 +16,57 @@ representatives are re-tagged and all discovered instances auto-marked,
 chains are cached per-instance (not per-class). JFR analysis confirmed 2
 ReferenceChain events emitted — but one was for a noise [B instance.
 
-## Current focus: leak-tag redesign round 2 verification
+## Current focus: local repro green, THEN one pod confirmation
 
-Round 1 on-pod (build `1ce2b4f03`, see `ev-leaktag-onpod-round1`) proved
-the pipeline end-to-end (tagged=28, chains cached and drained) but exposed
-three defects, all fixed in round 2 (`0db70994d`):
+The hotdog deploy loop is replaced by the local E2E
+(`LeakTagCorrelationReferenceChainTest`, slow suite; see
+`ev-leaktag-correlation-local-repro`). This session the harness caught and
+fixed, locally, what would each have cost a pod roundtrip:
 
-1. `find-ema-batch-collapse` — per-tag EMA calibration collapsed the BFS
-   batch to 2 (3 passes/15min, 10.4s CPU/pass), so the BFS never reached
-   the leak-tagged 78MB [B; the 8 emitted chains are depth=1 noise.
-   Fixed: AIMD on per-call EMA + per-iteration deadline check.
-2. `find-leaktag-jfr-field-misalignment` — leakTag read from the first
-   context-attribute byte (75/50 garbage). Fixed: field order on both sides.
-3. Emergency multiplier unreachable (wrong progress counter). Fixed:
-   `_passes_since_last_candidate_progress`.
+1. `find-gate-bypass-representative-paths` - canary/rep chain paths
+   bypassed the noise gate (the pod's re-emitted-noise symptom); depth-0
+   durable suppression corrected (predicate now depth<2 && transient).
+2. `find-klass-id-notation-mismatch` - PRODUCTION: dot vs slash
+   StringDictionary keys made every candidate/discovered comparison fail
+   (the pod's universal "resolved but no candidate match"); only arrays
+   matched accidentally.
+3. `find-test-seam-aliasing` - the redesign had broken all synthetic-id
+   test seams (3 pre-existing scenarios were silently broken since the
+   redesign; none had been run); real-id aliasing in the debug seams
+   revived them, plus rep-before-seed order + per-round trend maintenance.
+4. `find-rotation-resize-blindspot` - user's challenge was correct:
+   growing containers' new internals were structurally invisible. Fix
+   set: fair-share fanout/lap rotation, fanout hygiene, ancestor fanout,
+   requeueChainRootForRotation (per-poll holder-root requeue - the
+   profiler-native version of the parked
+   `q-resize-instrumentation-rescan-priority` idea).
+5. Round-4 completion: proportional batch control (AIMD's fixed budget
+   sat below the measured gotw floor; EWMA retained, law now
+   batch x remaining_window / ema) + lane-toggle persistence across
+   expandFrontier invocations (local reset starved pending, observed
+   109k->113k on-pod).
 
-Plus user-directed improvements: `tagLeakInstances` tags by per-tid
-age-diversity priority (leak thread first), marker re-tag removed,
-interception TEST_LOG added. Tests: pool (3), AIMD, interception —
-all green in suite.
+All 539 gtests green (new: proportional-batch, lane persistence, gate
+depth-0 cases, fanout hygiene). Slow suite: external scenarios + in-process
+chain tests green; the correlation test's FINAL verification run was
+interrupted mid-run by the checkpoint.
 
-## Next step: deploy `0db70994d` and verify on-pod
+## Next step: finish the interrupted run, then commit
 
-1. `leakTag` populated on the 78MB [B rows (in [0x40000000, 0x40000100)),
-   no garbage values.
-2. `expandFrontier gotw` shows batch_size recovering toward 512 and
-   edges/pass back in the ~1000s; passes bounded (~3 sub-ops × pause target).
-3. `leak-tag intercepted` TEST_LOG fires; chains for 78MB [B with
-   `targetTag ≥ 0x40000000` and depth > 1.
-4. Emergency (100×) fires after 3 candidate-less passes, then 15×, then
-   1× once all leak tags resolved.
+1. Re-run `:ddprof-test:testSlowDebug -Ptests=LeakTagCorrelationReferenceChainTest`
+   (the per-round-seeding scenario edit is already applied but unverified).
+2. If red: read the child diagnostics from the failure message (they are
+   in-build now - no pod needed) and continue the trail.
+3. When green: run the whole slow suite + testDebug (ReferenceChainTrackingTest),
+   `spotlessApply`, commit everything as one coherent chunk (round-4
+   completion + gate fixes + notation fix + seam aliasing + rotation
+   fix set + the local repro harness), push.
+4. Only THEN one pod confirmation (deploy; expect: `intercepted:` lines,
+   `requeueChainRootForRotation` lines, correlated chains with
+   targetTag >= 0x40000000 in the merged upload).
+5. TEMP to revert before finalizing: CANARY_NO_PROGRESS_PASS_LIMIT 3,
+   tagLeakInstances per-tag log, fanout-insert log, requeue log, and the
+   other round-4 temp diagnostics.
 
 ## TEMP — MUST REVERT before finalizing
 
@@ -85,6 +106,7 @@ all green in suite.
 25. **`q-coverage-tracking-per-combination`** — coverage is per-object; user wants per-(call_trace_id, tid). Refine after on-pod verification.
 26. **`find-ema-batch-collapse`** — round-1 regression: batch 400→2, passes 10.4s CPU. FIXED with AIMD + deadline check (0db70994d).
 27. **`find-leaktag-jfr-field-misalignment`** — leakTag parsed from attribute byte. FIXED (0db70994d). Field-order invariant recorded.
+28. **`find-priority-queue-starves-bfs-crawl`** — round-3 root cause chain (priority flood + slot exhaustion + tag overwrite + dead growth tier). FIXED (f4c73ba0f). Key insight: a cap alone does NOT fix starvation — a capped-but-pinned priority queue still never empties; fair-share alternation is what restores the pending drain.
 
 ## Ruled out (do NOT re-investigate)
 
@@ -98,9 +120,13 @@ all green in suite.
 ## Reproduction handle
 
 Pod `prof-analyzer-hotdog-jb-86d8bf5854-zng9s` in `profiling-stg`,
-container `prof-analyzer`, PID 32849 (build `1ce2b4f03`, round 1
-verified, see `ev-leaktag-onpod-round1`). Needs redeploy with
-`0db70994d` (round-2 fixes). Pod clock is UTC (2h behind local).
+container `prof-analyzer`, PID 48355 (build `0db70994d`, round 2
+verified, see `ev-leaktag-onpod-round2`). Needs redeploy with
+`f4c73ba0f` (round-3 fixes). Pod clock is UTC (2h behind local).
+Verify the deployed build via a per-iteration log field (e.g.
+`ema_call_ms=` in every gotw line) BEFORE interpreting event-driven
+logs — round 3 saw one stale-build deploy (JVM 44624 ran the old
+build; the redeploy as JVM 48355 had the right one).
 
 JFR: use `kubectl cp` from `/tmp/ddprof_root/pid_XXX/jfr/` (NOT jcmd).
 Or use profiling toolkit `download.py` for uploaded profiles.
