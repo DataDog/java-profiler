@@ -14,12 +14,24 @@ resident, is a real RSS cost, and varies from run to run:**
         R² = 0.9992,  residual SD 0.77 MiB,  20 pairs in two batches
 ```
 
-The practical consequence is that **the raw total is not a stable quantity.** Two
-independently measured batches gave anon deltas of **58.86 ± 8.53** (12 pairs)
-and **73.90 ± 7.88** (8 pairs) — 15 MiB apart — because Δ`fordblks` moved from
-+22.86 to +37.09 between them. Their *stable* terms agreed to **0.4 MiB**. Quote
-the two terms separately; a single total inherits the arena term's variance and
-cannot be reproduced.
+> **35.98 MiB is NOT the total overhead — it is one of the two terms.** The
+> total is the sum, and on this workload it measures **≈ 59–74 MiB**:
+>
+> | batch | stable term | + arena term | = measured Δanon |
+> | --- | --- | --- | --- |
+> | arena12, 12 pairs | 35.98 | 1.0119 × 22.86 = 23.1 | **58.86 ± 8.53** |
+> | smaps8, 8 pairs | 35.98 | 1.0119 × 37.09 = 37.5 | **73.90 ± 7.88** |
+>
+> Nothing about the profiler's cost got smaller in the 31 Aug revision. What
+> changed is that a single irreproducible number was split into a part known to
+> ±0.26 MiB and a part that carries all of the scatter. **Do not quote 35.98 as
+> the overhead.**
+
+The practical consequence is that **the raw total is not a stable quantity.** The
+two batches above are 15 MiB apart because Δ`fordblks` moved from +22.86 to
++37.09 between them, while their *stable* terms agreed to **0.4 MiB**. Quote the
+two terms separately, or quote the total with its ±8 MiB error bar and the batch
+it came from — but a single total is not reproducible on its own.
 
 **Quote the absolute figure, not the percentage.** The baseline here is 2405 MiB
 because `AlwaysPreTouch` pins all 2048 MiB of heap as touched; without it the
