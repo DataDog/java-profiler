@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk17
 
 ## musl-x64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-08-30 21:22:08 EDT
+**Date:** 2026-08-30 21:23:44 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-hotspot-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 523 |
-| Sample Rate | 8.72/sec |
-| Health Score | 545% |
+| CPU Samples | 563 |
+| Sample Rate | 9.38/sec |
+| Health Score | 586% |
 | Threads | 9 |
-| Allocations | 353 |
+| Allocations | 384 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 744 |
-| Sample Rate | 12.40/sec |
-| Health Score | 775% |
-| Threads | 11 |
-| Allocations | 528 |
+| CPU Samples | 759 |
+| Sample Rate | 12.65/sec |
+| Health Score | 791% |
+| Threads | 10 |
+| Allocations | 467 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 96-96 cores)</summary>
+<summary>CPU Timeline (2 unique values: 87-96 cores)</summary>
 
 ```
-1788139080 96
-1788139085 96
-1788139090 96
-1788139095 96
-1788139100 96
-1788139105 96
-1788139110 96
-1788139115 96
-1788139120 96
-1788139125 96
-1788139130 96
-1788139135 96
-1788139140 96
-1788139145 96
-1788139150 96
-1788139155 96
-1788139160 96
-1788139165 96
-1788139170 96
-1788139175 96
+1788139043 96
+1788139048 96
+1788139053 96
+1788139058 87
+1788139063 87
+1788139068 87
+1788139073 87
+1788139078 87
+1788139083 87
+1788139088 87
+1788139093 87
+1788139098 87
+1788139103 87
+1788139108 96
+1788139113 96
+1788139118 96
+1788139123 96
+1788139128 96
+1788139133 96
+1788139139 96
 ```
 </details>
 

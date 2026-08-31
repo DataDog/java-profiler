@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk8
 
 ## glibc-x64-openj9-jdk8 - ✅ PASS
 
-**Date:** 2026-08-30 21:22:07 EDT
+**Date:** 2026-08-30 21:23:44 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 180 |
-| Sample Rate | 3.00/sec |
-| Health Score | 188% |
+| CPU Samples | 205 |
+| Sample Rate | 3.42/sec |
+| Health Score | 214% |
 | Threads | 6 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: glibc-x64-openj9-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 194 |
-| Sample Rate | 3.23/sec |
-| Health Score | 202% |
-| Threads | 8 |
+| CPU Samples | 462 |
+| Sample Rate | 7.70/sec |
+| Health Score | 481% |
+| Threads | 11 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 81-81 cores)</summary>
 
 ```
-1788139083 81
-1788139088 81
-1788139093 81
-1788139098 81
-1788139103 81
-1788139108 81
-1788139113 81
-1788139118 81
-1788139123 81
-1788139128 81
-1788139133 81
-1788139138 81
-1788139143 81
-1788139148 81
-1788139153 81
-1788139158 81
-1788139163 81
-1788139168 81
-1788139173 81
-1788139178 81
+1788139069 81
+1788139074 81
+1788139079 81
+1788139084 81
+1788139089 81
+1788139094 81
+1788139099 81
+1788139104 81
+1788139109 81
+1788139114 81
+1788139119 81
+1788139124 81
+1788139129 81
+1788139134 81
+1788139139 81
+1788139144 81
+1788139149 81
+1788139154 81
+1788139159 81
+1788139164 81
 ```
 </details>
 
