@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk25
 
 ## glibc-x64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-08-31 00:55:01 EDT
+**Date:** 2026-08-31 05:50:55 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 397 |
-| Sample Rate | 6.62/sec |
-| Health Score | 414% |
+| CPU Samples | 379 |
+| Sample Rate | 6.32/sec |
+| Health Score | 395% |
 | Threads | 9 |
-| Allocations | 357 |
+| Allocations | 370 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 486 |
-| Sample Rate | 8.10/sec |
-| Health Score | 506% |
+| CPU Samples | 538 |
+| Sample Rate | 8.97/sec |
+| Health Score | 561% |
 | Threads | 10 |
-| Allocations | 473 |
+| Allocations | 454 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 81-81 cores)</summary>
 
 ```
-1788151872 81
-1788151877 81
-1788151882 81
-1788151887 81
-1788151892 81
-1788151897 81
-1788151902 81
-1788151907 81
-1788151912 81
-1788151917 81
-1788151922 81
-1788151927 81
-1788151932 81
-1788151937 81
-1788151942 81
-1788151947 81
-1788151952 81
-1788151957 81
-1788151963 81
-1788151968 81
+1788169426 81
+1788169431 81
+1788169436 81
+1788169441 81
+1788169446 81
+1788169451 81
+1788169456 81
+1788169461 81
+1788169466 81
+1788169471 81
+1788169476 81
+1788169481 81
+1788169486 81
+1788169491 81
+1788169496 81
+1788169501 81
+1788169506 81
+1788169511 81
+1788169516 81
+1788169521 81
 ```
 </details>
 
