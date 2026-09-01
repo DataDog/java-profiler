@@ -58,6 +58,7 @@ public:
   static constexpr u32 FLAG_PARKED = 0x4u; // next free bit after TYPE_MASK (0x1|0x2)
   static constexpr u32 FLAG_CLAIMED = 0x8u; // Used by ThreadLocalDataPool only
   static constexpr u32 FLAG_MONITOR_BLOCKED = 0x10u;
+  static constexpr u32 FLAG_TASK_BLOCKED = 0x20u;
 
   // We are allowing several levels of nesting because we can be
   // eg. in a crash handler when wallclock signal kicks in,
@@ -87,17 +88,20 @@ private:
   u64 _call_trace_id;
   u32 _recording_epoch;
   volatile u32 _misc_flags;
-  u64 _park_start_ticks;
-  u64 _park_block_token;
-  Context _park_context;
-  u64 _task_block_start_ticks;
-  u64 _task_block_token;
-  Context _task_block_context;
-  u64 _monitor_start_ticks;
-  Context _monitor_context;
-  u64 _monitor_blocker;
-  u64 _monitor_block_token;
-  OSThreadState _monitor_block_state;
+  // Shared payload for the blocked-interval state machines (park/generic
+  // task-block/monitor). Each machine owns a dedicated FLAG_* bit in
+  // _misc_flags that gates access to its slot; see blockSlotEnter()/
+  // blockSlotExit() below.
+  struct BlockSlot {
+    u64 start_ticks{0};
+    Context context{};
+    u64 blocker{0};
+    u64 block_token{0};
+    OSThreadState block_state{OSThreadState::UNKNOWN};
+  };
+  BlockSlot _park_slot;
+  BlockSlot _task_block_slot;
+  BlockSlot _monitor_slot;
   int _filter_slot_id; // Slot ID for thread filtering
   uint8_t _init_window; // Countdown for JVM thread init race window (PROF-13072)
   volatile uint8_t _signal_depth; // Nested signal-handler depth (see SignalHandlerScope)
@@ -120,10 +124,7 @@ private:
   ProfiledThread(int tid)
       : ThreadLocalData(), _jmp_buf(nullptr), _pc(0), _sp(0), _span_id(0), _crash_depth(0), _tid(tid), _cpu_epoch(0),
         _wall_epoch(0), _call_trace_id(0), _recording_epoch(0), _misc_flags(0),
-        _park_start_ticks(0), _park_block_token(0), _park_context{},
-        _task_block_start_ticks(0), _task_block_token(0), _task_block_context{},
-        _monitor_start_ticks(0), _monitor_context{}, _monitor_blocker(0),
-        _monitor_block_token(0), _monitor_block_state(OSThreadState::UNKNOWN),
+        _park_slot{}, _task_block_slot{}, _monitor_slot{},
         _filter_slot_id(-1),
         _init_window(0),
         _signal_depth(0),
@@ -220,7 +221,7 @@ public:
       __atomic_load_n(&_crash_depth, __ATOMIC_RELAXED),
       _cpu_epoch, _wall_epoch, _call_trace_id, _recording_epoch,
       __atomic_load_n(&_misc_flags, __ATOMIC_RELAXED),
-      _park_block_token, _filter_slot_id, _init_window,
+      _park_slot.block_token, _filter_slot_id, _init_window,
       __atomic_load_n(&_signal_depth, __ATOMIC_RELAXED),
       _in_critical_section, _otel_ctx_initialized, _otel_local_root_span_id
     };
@@ -424,17 +425,8 @@ public:
   }
 
   inline bool parkEnter(u64 start_ticks, const Context& context) {
-    u32 flags = __atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE);
-    while ((flags & FLAG_PARKED) == 0) {
-      _park_start_ticks = start_ticks;
-      _park_context = context;
-      if (__atomic_compare_exchange_n(&_misc_flags, &flags,
-                                      flags | FLAG_PARKED, true,
-                                      __ATOMIC_RELEASE, __ATOMIC_ACQUIRE)) {
-        return true;
-      }
-    }
-    return false;
+    return blockSlotEnter<FLAG_PARKED>(_park_slot, start_ticks, context,
+                                       /*blocker=*/0, OSThreadState::UNKNOWN);
   }
 
 #ifdef UNIT_TEST
@@ -442,38 +434,44 @@ public:
 #endif
 
   inline void setParkBlockToken(u64 token) {
-    _park_block_token = token;
+    _park_slot.block_token = token;
   }
 
   inline bool taskBlockEnter(u64 token, u64 start_ticks,
                              const Context& context) {
-    if (token == 0 || _task_block_token != 0) return false;
-    _task_block_start_ticks = start_ticks;
-    _task_block_context = context;
-    _task_block_token = token;
+    if (token == 0) return false;
+    if (!blockSlotEnter<FLAG_TASK_BLOCKED>(_task_block_slot, start_ticks,
+                                          context, /*blocker=*/0,
+                                          OSThreadState::UNKNOWN)) {
+      return false;
+    }
+    _task_block_slot.block_token = token;
     return true;
   }
 
   inline bool taskBlockExit(u64 token, u64& start_ticks, Context& context) {
-    if (token == 0 || _task_block_token != token) return false;
-    start_ticks = _task_block_start_ticks;
-    context = _task_block_context;
-    _task_block_token = 0;
-    return true;
+    if (token == 0 || _task_block_slot.block_token != token) return false;
+    u64 blocker_unused, token_unused;
+    return blockSlotExit<FLAG_TASK_BLOCKED>(_task_block_slot,
+                                            OSThreadState::UNKNOWN,
+                                            start_ticks, context,
+                                            blocker_unused, token_unused);
+  }
+
+  inline u64 taskBlockToken() const { return _task_block_slot.block_token; }
+
+  inline void clearTaskBlock() {
+    __atomic_fetch_and(&_misc_flags, ~FLAG_TASK_BLOCKED, __ATOMIC_ACQ_REL);
+    _task_block_slot.block_token = 0;
   }
 
   // Returns false if the thread was not parked (idempotent).
   inline bool parkExit(u64& start_ticks, Context& context,
                        u64& park_block_token) {
-    u32 prev = __atomic_fetch_and(&_misc_flags, ~FLAG_PARKED, __ATOMIC_ACQ_REL);
-    if ((prev & FLAG_PARKED) == 0) {
-      return false;
-    }
-    start_ticks = _park_start_ticks;
-    context = _park_context;
-    park_block_token = _park_block_token;
-    _park_block_token = 0;
-    return true;
+    u64 blocker_unused;
+    return blockSlotExit<FLAG_PARKED>(_park_slot, OSThreadState::UNKNOWN,
+                                      start_ticks, context, blocker_unused,
+                                      park_block_token);
   }
 
 #ifdef UNIT_TEST
@@ -488,52 +486,79 @@ public:
   // reacquisition. A nested contention callback must not overwrite that state.
   inline bool monitorEnter(u64 start_ticks, const Context& context, u64 blocker,
                            OSThreadState state) {
-    u32 flags = __atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE);
-    if ((flags & FLAG_MONITOR_BLOCKED) != 0) return false;
-    _monitor_start_ticks = start_ticks;
-    _monitor_context = context;
-    _monitor_blocker = blocker;
-    _monitor_block_token = 0;
-    _monitor_block_state = state;
-    __atomic_fetch_or(&_misc_flags, FLAG_MONITOR_BLOCKED, __ATOMIC_RELEASE);
-    return true;
+    return blockSlotEnter<FLAG_MONITOR_BLOCKED>(_monitor_slot, start_ticks,
+                                                context, blocker, state);
   }
 
   inline void setMonitorBlockToken(u64 token) {
-    _monitor_block_token = token;
+    _monitor_slot.block_token = token;
   }
 
-  inline u64 monitorBlockToken() const { return _monitor_block_token; }
+  inline u64 monitorBlockToken() const { return _monitor_slot.block_token; }
 
   inline void clearMonitorBlock() {
     __atomic_fetch_and(&_misc_flags, ~FLAG_MONITOR_BLOCKED, __ATOMIC_ACQ_REL);
-    _monitor_block_token = 0;
-    _monitor_block_state = OSThreadState::UNKNOWN;
+    _monitor_slot.block_token = 0;
+    _monitor_slot.block_state = OSThreadState::UNKNOWN;
   }
 
   inline bool monitorExit(OSThreadState expected_state, u64& start_ticks,
                           Context& context, u64& blocker,
                           u64& monitor_block_token) {
-    u32 flags = __atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE);
-    if ((flags & FLAG_MONITOR_BLOCKED) == 0 ||
-        _monitor_block_state != expected_state) {
-      return false;
-    }
-    u32 prev = __atomic_fetch_and(&_misc_flags, ~FLAG_MONITOR_BLOCKED,
-                                  __ATOMIC_ACQ_REL);
-    if ((prev & FLAG_MONITOR_BLOCKED) == 0) return false;
-    start_ticks = _monitor_start_ticks;
-    context = _monitor_context;
-    blocker = _monitor_blocker;
-    monitor_block_token = _monitor_block_token;
-    _monitor_block_token = 0;
-    _monitor_block_state = OSThreadState::UNKNOWN;
-    return true;
+    return blockSlotExit<FLAG_MONITOR_BLOCKED>(_monitor_slot, expected_state,
+                                               start_ticks, context, blocker,
+                                               monitor_block_token);
   }
 
   Context snapshotContext(size_t numAttrs);
 
 private:
+  // Shared enter/exit for the blocked-interval state machines above. FLAG is
+  // the caller's dedicated bit in _misc_flags; expected_state == UNKNOWN in
+  // blockSlotExit() means "don't gate the clear on the stored state" (only
+  // monitorExit needs that gate, to avoid a nested contention callback
+  // clobbering an in-progress Object.wait interval).
+  template <u32 FLAG>
+  inline bool blockSlotEnter(BlockSlot& slot, u64 start_ticks,
+                             const Context& context, u64 blocker,
+                             OSThreadState state) {
+    u32 flags = __atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE);
+    while ((flags & FLAG) == 0) {
+      slot.start_ticks = start_ticks;
+      slot.context = context;
+      slot.blocker = blocker;
+      slot.block_token = 0;
+      slot.block_state = state;
+      if (__atomic_compare_exchange_n(&_misc_flags, &flags, flags | FLAG,
+                                      true, __ATOMIC_RELEASE,
+                                      __ATOMIC_ACQUIRE)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  template <u32 FLAG>
+  inline bool blockSlotExit(BlockSlot& slot, OSThreadState expected_state,
+                            u64& start_ticks, Context& context, u64& blocker,
+                            u64& block_token) {
+    u32 flags = __atomic_load_n(&_misc_flags, __ATOMIC_ACQUIRE);
+    if ((flags & FLAG) == 0) return false;
+    if (expected_state != OSThreadState::UNKNOWN &&
+        slot.block_state != expected_state) {
+      return false;
+    }
+    u32 prev = __atomic_fetch_and(&_misc_flags, ~FLAG, __ATOMIC_ACQ_REL);
+    if ((prev & FLAG) == 0) return false;
+    start_ticks = slot.start_ticks;
+    context = slot.context;
+    blocker = slot.blocker;
+    block_token = slot.block_token;
+    slot.block_token = 0;
+    slot.block_state = OSThreadState::UNKNOWN;
+    return true;
+  }
+
   // Atomic flag for signal handler reentrancy protection within the same thread
   // Must be atomic because a signal handler can interrupt normal execution mid-instruction,
   // and both contexts may attempt to enter the critical section. Without atomic exchange(),

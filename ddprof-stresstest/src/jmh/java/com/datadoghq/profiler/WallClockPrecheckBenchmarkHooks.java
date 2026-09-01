@@ -16,6 +16,6 @@ public final class WallClockPrecheckBenchmarkHooks {
 
   /** Closes an interval returned by {@link #enterSleeping(JavaProfiler)}. */
   public static void exit(JavaProfiler profiler, long token) {
-    profiler.blockExit(token);
+    profiler.blockExit(token, 0, 0);
   }
 }

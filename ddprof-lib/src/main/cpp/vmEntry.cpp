@@ -52,14 +52,14 @@ bool VM::_hotspot = false;
 bool VM::_zing = false;
 bool VM::_can_sample_objects = false;
 bool VM::_can_intercept_binding = false;
-bool VM::_monitor_wait_events_delegated = false;
-bool VM::_native_monitor_events_available = false;
-bool VM::_profiler_bridge_initialized = false;
+NegotiatedSetting<bool> VM::_monitor_wait_events_delegated{};
+std::atomic<bool> VM::_native_monitor_events_available{false};
+std::atomic<bool> VM::_profiler_bridge_initialized{false};
 bool VM::_is_adaptive_gc_boundary_flag_set = false;
 
 // Serializes the one-time bridge installation and ownership negotiation.
-// Callback readers need no synchronization because ownership is assigned
-// before callbacks can be enabled and is never changed afterward.
+// The flags above are still std::atomic because setNativeMonitorEventsEnabled()
+// and the Java-facing getters read them without holding this lock.
 static Mutex profiler_bridge_init_lock;
 
 jvmtiExtensionFunction VM::_request_stack_trace = nullptr;
@@ -77,132 +77,6 @@ JVM_GetManagement VM::_getManagement;
 static void wakeupHandler(int signo) {
   SIGNAL_HANDLER_GUARD_NO_SAMPLE();
   // Dummy handler for interrupting syscalls
-}
-
-static u64 monitorBlockerHash(jvmtiEnv *jvmti, jobject object) {
-  if (object == NULL) return 0;
-  jint hash = 0;
-  if (jvmti->GetObjectHashCode(object, &hash) != JVMTI_ERROR_NONE) return 0;
-  return static_cast<u64>(static_cast<uint32_t>(hash));
-}
-
-// Deliberately takes no jvmtiEnv: no JVMTI call may run on this hot path. The
-// blocker identity hash is resolved lazily in monitorBlockExit, and only for
-// intervals that pass the minimum-duration filter (GetObjectHashCode mutates the
-// object's mark word on HotSpot).
-static void monitorBlockEnter(JNIEnv *jni, jthread thread,
-                              OSThreadState state) {
-  Profiler *profiler = Profiler::instance();
-  if (!profiler->taskBlockEnabled() ||
-      !profiler->nativeMonitorTaskBlockEnabled() ||
-      !JVMSupport::isPlatformThread(jni, thread)) {
-    return;
-  }
-  ProfiledThread *current = ProfiledThread::initCurrentThreadSignalSafe();
-  if (current == nullptr) return;
-  Context context = ContextApi::snapshot();
-  if (context.spanId != 0) {
-    Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
-    return;
-  }
-
-  if (!current->monitorEnter(TSC::ticks(), context, /*blocker=*/0, state)) {
-    u64 token = current->monitorBlockToken();
-    ThreadFilter *tf = profiler->threadFilter();
-    bool current_owner = false;
-    if (token != 0) {
-      ThreadFilter::SlotID slot_id = ThreadFilter::tokenSlotId(token);
-      ThreadFilter::Slot *slot = current->filterSlotId() == slot_id
-          ? tf->activeSlotForId(slot_id, current->tid())
-          : nullptr;
-      if (slot != nullptr) {
-        BlockRunSnapshot snapshot = slot->snapshotBlockRun();
-        current_owner = snapshot.active &&
-            snapshot.owner == BlockRunOwner::JVMTI &&
-            snapshot.generation == ThreadFilter::tokenGeneration(token);
-      }
-    }
-    if (current_owner) {
-      return;
-    }
-    current->clearMonitorBlock();
-    if (!current->monitorEnter(TSC::ticks(), context, /*blocker=*/0, state)) {
-      return;
-    }
-  }
-
-  ThreadFilter *tf = profiler->threadFilter();
-  ThreadFilter::SlotID slot_id = tf->ensureCurrentThreadSlot(current);
-  if (!tf->unfilteredWallTrackingActive() || slot_id < 0) {
-    current->clearMonitorBlock();
-    return;
-  }
-  u64 token =
-      tf->enterBlockedRun(slot_id, state, BlockRunOwner::JVMTI);
-  if (token == 0) {
-    ThreadFilter::Slot *slot = tf->slotForId(slot_id);
-    if (slot != nullptr && slot->inContextWindow()) {
-      Counters::increment(TASK_BLOCK_SKIPPED_TRACE_CONTEXT);
-    }
-    current->clearMonitorBlock();
-    return;
-  }
-  current->setMonitorBlockToken(token);
-}
-
-static void monitorBlockExit(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
-                             jobject object, OSThreadState state) {
-  if (!JVMSupport::isPlatformThread(jni, thread)) return;
-  ProfiledThread *current = ProfiledThread::current();
-  if (current == nullptr) return;
-
-  u64 start_ticks = 0;
-  Context context{};
-  // The entry side no longer records a blocker; it is resolved lazily below.
-  u64 blocker = 0;
-  u64 token = 0;
-  if (!current->monitorExit(state, start_ticks, context, blocker, token) ||
-      token == 0) {
-    return;
-  }
-
-  // Resolve the blocker identity hash only for intervals that will actually pass
-  // the eligibility filter. GetObjectHashCode mutates the object's mark word on
-  // HotSpot, so it must not run for short, high-frequency contention that gets
-  // discarded anyway. These conditions mirror taskBlockPassesBasicEligibility, and
-  // the same end_ticks is handed down so there is no boundary drift.
-  u64 end_ticks = TSC::ticks();
-  if (context.spanId == 0 && exceedsMinTaskBlockDuration(start_ticks, end_ticks)) {
-    blocker = monitorBlockerHash(jvmti, object);
-  }
-
-  Profiler *profiler = Profiler::instance();
-  finishTaskBlockAtExit(current, profiler->threadFilter(), thread, 0, token,
-                        start_ticks, context, blocker, 0, end_ticks);
-}
-
-static void JNICALL MonitorContendedEnter(jvmtiEnv *jvmti, JNIEnv *jni,
-                                          jthread thread, jobject object) {
-  monitorBlockEnter(jni, thread, OSThreadState::MONITOR_WAIT);
-}
-
-static void JNICALL MonitorContendedEntered(jvmtiEnv *jvmti, JNIEnv *jni,
-                                            jthread thread, jobject object) {
-  monitorBlockExit(jvmti, jni, thread, object, OSThreadState::MONITOR_WAIT);
-}
-
-static void JNICALL MonitorWait(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
-                                jobject object, jlong timeout) {
-  if (!VM::monitorWaitEventsDelegated()) {
-    monitorBlockEnter(jni, thread, OSThreadState::OBJECT_WAIT);
-  }
-}
-
-static void JNICALL MonitorWaited(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
-                                  jobject object, jboolean timed_out) {
-  if (!VM::monitorWaitEventsDelegated()) {
-    monitorBlockExit(jvmti, jni, thread, object, OSThreadState::OBJECT_WAIT);
-  }
 }
 
 static bool isVmRuntimeEntry(const char* blob_name) {
@@ -524,7 +398,7 @@ bool VM::initShared(JavaVM* vm) {
 
 bool VM::initLibrary(JavaVM *vm) {
   MutexLocker init_locker(profiler_bridge_init_lock);
-  if (_profiler_bridge_initialized) {
+  if (_profiler_bridge_initialized.load(std::memory_order_acquire)) {
     return true;
   }
 
@@ -588,17 +462,21 @@ bool VM::initializeRequestStackTrace() {
 
 void VM::configureMonitorEvents(bool delegateMonitorWaitEvents) {
   jvmtiCapabilities actual_capabilities = {0};
-  _jvmti->GetCapabilities(&actual_capabilities);
-  _native_monitor_events_available =
-      actual_capabilities.can_generate_monitor_events;
-  _monitor_wait_events_delegated = delegateMonitorWaitEvents;
+  jvmtiError rc = _jvmti->GetCapabilities(&actual_capabilities);
+  if (rc != JVMTI_ERROR_NONE) {
+    Log::warn("GetCapabilities failed: %d; native monitor events treated as unavailable", rc);
+  }
+  _native_monitor_events_available.store(
+      rc == JVMTI_ERROR_NONE && actual_capabilities.can_generate_monitor_events,
+      std::memory_order_release);
+  _monitor_wait_events_delegated.set(delegateMonitorWaitEvents);
 }
 
 ProfilerBridgeInitResult VM::initProfilerBridge(JavaVM *vm, bool attach,
                                                 bool delegateMonitorWaitEvents) {
   MutexLocker init_locker(profiler_bridge_init_lock);
-  if (_profiler_bridge_initialized) {
-    return delegateMonitorWaitEvents == _monitor_wait_events_delegated
+  if (_profiler_bridge_initialized.load(std::memory_order_acquire)) {
+    return _monitor_wait_events_delegated.matches(delegateMonitorWaitEvents)
         ? ProfilerBridgeInitResult::SUCCESS
         : ProfilerBridgeInitResult::MONITOR_EVENTS_DELEGATION_CONFLICT;
   }
@@ -682,7 +560,7 @@ ProfilerBridgeInitResult VM::initProfilerBridge(JavaVM *vm, bool attach,
   callbacks.SampledObjectAlloc = ObjectSampler::SampledObjectAlloc;
   callbacks.GarbageCollectionFinish = LivenessTracker::GarbageCollectionFinish;
   callbacks.NativeMethodBind = VMStructs::NativeMethodBind;
-  if (_native_monitor_events_available) {
+  if (_native_monitor_events_available.load(std::memory_order_acquire)) {
     callbacks.MonitorContendedEnter = MonitorContendedEnter;
     callbacks.MonitorContendedEntered = MonitorContendedEntered;
     callbacks.MonitorWait = MonitorWait;
@@ -740,17 +618,18 @@ ProfilerBridgeInitResult VM::initProfilerBridge(JavaVM *vm, bool attach,
 
   OS::installSignalHandler(WAKEUP_SIGNAL, NULL, wakeupHandler);
 
-  _profiler_bridge_initialized = true;
+  _profiler_bridge_initialized.store(true, std::memory_order_release);
   return ProfilerBridgeInitResult::SUCCESS;
 }
 
 bool VM::setNativeMonitorEventsEnabled(bool enabled) {
-  if (!_native_monitor_events_available) return false;
+  if (!_native_monitor_events_available.load(std::memory_order_acquire)) return false;
 
   jvmtiError enter = JVMTI_ERROR_NONE;
   jvmtiError entered = JVMTI_ERROR_NONE;
   jvmtiError wait = JVMTI_ERROR_NONE;
   jvmtiError waited = JVMTI_ERROR_NONE;
+  bool delegated = _monitor_wait_events_delegated.value();
 
   if (enabled) {
     // JVMTI enables each event independently and does not queue events that
@@ -760,7 +639,7 @@ bool VM::setNativeMonitorEventsEnabled(bool enabled) {
         JVMTI_ENABLE, JVMTI_EVENT_MONITOR_CONTENDED_ENTERED, NULL);
     if (entered != JVMTI_ERROR_NONE) goto enable_failed;
 
-    if (!_monitor_wait_events_delegated) {
+    if (!delegated) {
       waited = _jvmti->SetEventNotificationMode(
           JVMTI_ENABLE, JVMTI_EVENT_MONITOR_WAITED, NULL);
       if (waited != JVMTI_ERROR_NONE) goto enable_failed;
@@ -770,7 +649,7 @@ bool VM::setNativeMonitorEventsEnabled(bool enabled) {
         JVMTI_ENABLE, JVMTI_EVENT_MONITOR_CONTENDED_ENTER, NULL);
     if (enter != JVMTI_ERROR_NONE) goto enable_failed;
 
-    if (!_monitor_wait_events_delegated) {
+    if (!delegated) {
       wait = _jvmti->SetEventNotificationMode(
           JVMTI_ENABLE, JVMTI_EVENT_MONITOR_WAIT, NULL);
       if (wait != JVMTI_ERROR_NONE) goto enable_failed;
@@ -778,8 +657,15 @@ bool VM::setNativeMonitorEventsEnabled(bool enabled) {
     return true;
 
 enable_failed:
-    Log::warn("Unable to enable JVMTI monitor events: %d/%d/%d/%d",
-              enter, entered, wait, waited);
+    // wait/waited are skipped (left JVMTI_ERROR_NONE) rather than attempted
+    // when delegated is true; log that explicitly so a 0 there isn't read as success.
+    if (delegated) {
+      Log::warn("Unable to enable JVMTI monitor events: enter=%d/entered=%d "
+                "(wait/waited skipped: delegated to Java)", enter, entered);
+    } else {
+      Log::warn("Unable to enable JVMTI monitor events: enter=%d/entered=%d/wait=%d/waited=%d",
+                enter, entered, wait, waited);
+    }
     setNativeMonitorEventsEnabled(false);
     return false;
   }

@@ -147,6 +147,9 @@ public final class JavaProfiler {
             boolean delegateMonitorWaitEvents) throws IOException {
         if (instance != null) {
             if (monitorWaitEventsDelegated0() != delegateMonitorWaitEvents) {
+                // Keep this message identical to the one javaApi.cpp's init0 throws for the
+                // analogous native-bridge conflict; there is no shared constant across the
+                // JNI boundary, so both call sites must be updated together.
                 throw new IllegalStateException(
                         "Monitor-event ownership conflicts with the profiler's "
                                 + "process-wide initialization");
@@ -480,15 +483,19 @@ public final class JavaProfiler {
      */
     long blockEnter(int state) {
         Thread thread = Thread.currentThread();
-        return blockEnter0(thread, isVirtualThread(thread), state);
+        return blockEnter0(isVirtualThread(thread), state);
     }
 
     /**
-     * Clears a blocked interval previously armed by {@link #blockEnter(int)}.
+     * Clears a blocked interval previously armed by {@link #blockEnter(int)} and records its
+     * {@code TaskBlock} event when it satisfies the profiler's eligibility rules.
+     *
+     * @param blocker stable identifier describing the blocking resource, or {@code 0}
+     * @param unblockingSpanId span responsible for unblocking the interval, or {@code 0}
      */
-    void blockExit(long token) {
+    void blockExit(long token, long blocker, long unblockingSpanId) {
         Thread thread = Thread.currentThread();
-        blockExit0(thread, isVirtualThread(thread), token);
+        blockExit0(isVirtualThread(thread), token, blocker, unblockingSpanId);
     }
 
     /**
@@ -586,9 +593,10 @@ public final class JavaProfiler {
 
     private static native void parkExit0(Thread thread, boolean isVirtual, long blocker, long unblockingSpanId);
 
-    private static native long blockEnter0(Thread thread, boolean isVirtual, int state);
+    private static native long blockEnter0(boolean isVirtual, int state);
 
-    private static native void blockExit0(Thread thread, boolean isVirtual, long token);
+    private static native void blockExit0(boolean isVirtual, long token, long blocker,
+            long unblockingSpanId);
 
     private static native long beginTaskBlock0(Thread thread);
 

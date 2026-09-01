@@ -33,6 +33,24 @@ bool finishTaskBlockAtExit(ProfiledThread* current,
                            const Context& context, u64 blocker,
                            u64 unblocking_span_id, u64 end_ticks = 0);
 
+// JVMTI event callbacks for the native monitor-contention/Object.wait task-block
+// producer. Registered directly into jvmtiEventCallbacks by vmEntry.cpp.
+void JNICALL MonitorContendedEnter(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+                                   jobject object);
+void JNICALL MonitorContendedEntered(jvmtiEnv *jvmti, JNIEnv *jni,
+                                     jthread thread, jobject object);
+void JNICALL MonitorWait(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+                         jobject object, jlong timeout);
+void JNICALL MonitorWaited(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread,
+                           jobject object, jboolean timed_out);
+
+// Enables/disables the native monitor-contention/Object.wait JVMTI events that
+// back the MonitorContendedEnter/Entered/Wait/Waited callbacks above. Returns
+// whether the events ended up enabled after the attempt; callers use this to
+// gate their own admission flag rather than assuming success. Disabling is a
+// no-op when the capability was never enabled.
+bool setNativeMonitorTaskBlockEventsEnabled(bool enabled);
+
 class TaskBlockActivity {
  private:
   Profiler* _profiler;

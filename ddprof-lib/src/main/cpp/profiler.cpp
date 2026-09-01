@@ -1545,9 +1545,7 @@ void Profiler::setTaskBlockEnabled(bool enabled) {
   if (enabled) {
     // Keep callback admission closed until native setup has either completed
     // or rolled back, so partial event enablement cannot create paired state.
-    bool monitor_events_enabled =
-        VM::nativeMonitorEventsAvailable() &&
-        VM::setNativeMonitorEventsEnabled(true);
+    bool monitor_events_enabled = setNativeMonitorTaskBlockEventsEnabled(true);
     _task_block_monitor_events_enabled.store(monitor_events_enabled,
                                              std::memory_order_release);
     _task_block_enabled.store(true, std::memory_order_release);
@@ -1558,10 +1556,10 @@ void Profiler::setTaskBlockEnabled(bool enabled) {
   // Clear the admission flag first so no consumer can observe enabled events, then
   // always attempt teardown. A previous enable whose setup AND rollback both failed
   // left the flag false while JVMTI events stayed on; retrying unconditionally is the
-  // only way that leak is ever reclaimed. setNativeMonitorEventsEnabled(false) is
+  // only way that leak is ever reclaimed. setNativeMonitorTaskBlockEventsEnabled(false) is
   // documented as a no-op when the capability was never enabled.
   _task_block_monitor_events_enabled.exchange(false, std::memory_order_acq_rel);
-  VM::setNativeMonitorEventsEnabled(false);
+  setNativeMonitorTaskBlockEventsEnabled(false);
 }
 
 Error Profiler::start(Arguments &args, bool reset) {
@@ -2111,10 +2109,10 @@ Error Profiler::dump(const char *path, const int length) {
     Error err = Error::OK;
     // rotateDictsAndRun rotates the dictionaries, takes lockAll() around the
     // dump (fences ASGCT/JNI writers to CallTraceStorage), then clearStandby()s
-    // the rotated buffers.  StringDictionary's RefCountGuard protocol handles
-    // its own writer/reader coordination; #527's classMapSharedGuard readers
-    // (deferred vtable receiver resolution) are coordinated through
-    // _class_map_lock.
+    // the rotated buffers. StringDictionary's rotate()/standby()/clearStandby()
+    // protocol handles the dump's own writer/reader coordination for each
+    // dictionary, including _class_map (see flightRecorder.cpp's writeCpool:
+    // classMap()->standby() stays stable for the dump's lifetime).
     if (beginTaskBlockRotation()) {
       rotateDictsAndRun([&]{
         err = _jfr.dump(path, length);
