@@ -13,10 +13,17 @@
 // per-category live byte gauges partition the total: sum(category) == total,
 // with no double counting.
 //
-// The "reserved vs used vs wasted" breakdowns exposed by the existing counters
-// (CALLTRACE_STORAGE_BYTES is the used slice of the CALLTRACE arena;
-// DICTIONARY_ARENA_WASTE_BYTES is the wasted slice of the DICTIONARY arena) are
-// a separate, nested dimension. They are intentionally NOT summed in here.
+// These gauges track memory that is actually touched (and therefore resident),
+// not address space that has merely been reserved. NM_CALLTRACE in particular
+// counts the bytes LinearAllocator::alloc() has bump-allocated, NOT the
+// capacity of the 8 MiB chunks backing them -- see linearAllocator.cpp.
+//
+// Consequently NM_CALLTRACE is no longer an "arena reserved" figure with
+// CALLTRACE_STORAGE_BYTES as its used slice: both now count touched bytes, and
+// their small difference is the call-trace hash tables (also bump-allocated),
+// not chunk slack. Do not compute arena waste as the difference between them.
+// DICTIONARY_ARENA_WASTE_BYTES remains a genuine nested waste figure for the
+// DICTIONARY arena. None of these nested counters are summed in here.
 #define DD_NATIVE_MEM_CATEGORY_TABLE(X)                                        \
   X(CALLTRACE, "calltrace")                                                    \
   X(DICTIONARY, "dictionary")                                                  \

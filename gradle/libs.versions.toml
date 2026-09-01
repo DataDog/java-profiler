@@ -3,7 +3,7 @@
 [versions]
 cpp-standard = "17"
 kotlin = "1.9.22"
-spotless = "8.9.0"
+spotless = "8.10.1"
 
 # Testing
 junit = "5.9.3"
@@ -16,7 +16,7 @@ jmc = "8.3.1"
 jol = "0.17"
 lz4 = "1.11.2"
 snappy = "1.1.10.8"
-zstd = "1.5.7-13"
+zstd = "1.5.7-15"
 
 # JFR parsing for test verification (replaces JMC's FlightRecordingLoader, which can hang
 # forever if one of its internal parallel chunk-parsing workers dies from OOM)

@@ -40,9 +40,13 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * <ol>
  *   <li>cleanupUnreferencedMethods() is now called inside finishChunk(), before
  *       DeleteLocalRef releases the GetLoadedClasses pins.</li>
- *   <li>fillJavaMethodInfo() copies the JVMTI line-number-table into a malloc'd buffer
- *       and immediately calls jvmti-&gt;Deallocate() on the original; cleanup calls free()
- *       on the malloc'd copy, which is safe regardless of class-unload state.</li>
+ *   <li>fillJavaMethodInfo() validates the JVMTI-returned (pointer, size) pair once, at
+ *       capture time (a sanity bound on the size plus a SafeAccess readability probe),
+ *       then holds that exact buffer directly in SharedLineNumberTable -- no private
+ *       copy. Per the JVMTI spec, GetLineNumberTable()'s returned array is a fresh,
+ *       caller-owned allocation decoupled from the Method's lifetime, so once validated
+ *       it stays safe to free with jvmti-&gt;Deallocate() (not free()) regardless of
+ *       class-unload state, whenever cleanup finally evicts the row.</li>
  * </ol>
  *
  * <p>This test reproduces the crash scenario:
