@@ -1126,8 +1126,8 @@ HeapUsage HeapUsage::get(bool allow_jmx) {
         if (_heap_usage_func != NULL) {
             // this is the JDK 17+ path
             usage = _heap_usage_func(*(char**)_collected_heap_addr);
-            usage._used_at_last_gc =
-                ((CollectedHeapWrapper *)*(char**)_collected_heap_addr)->_used_at_last_gc;
+            usage._used_at_last_gc = collectedHeapUsedAtLastGc(
+                *(char**)_collected_heap_addr, VM::java_version());
         } else if (_gc_heap_summary_func != NULL) {
             // this is the JDK 11 path
             // we need to collect GCHeapSummary information first
