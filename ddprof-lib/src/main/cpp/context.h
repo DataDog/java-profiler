@@ -40,7 +40,9 @@ public:
   
   void setTag(int i, u32 value) {
     assert(i >= 0 && (u32)i < DD_TAGS_CAPACITY);
-    tags[i].value = value;
+    if (i >= 0 && (u32)i < DD_TAGS_CAPACITY) {
+      tags[i].value = value;
+    }
   }
 };
 
