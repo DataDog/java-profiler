@@ -648,10 +648,14 @@ REQUEST_ID="release-$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
 
 # In retry mode, don't pass source_sha — the branch HEAD may have moved since
 # the original run, and the workflow rejects SHA mismatches.
-if [ -n "$RETRY_RUN_ID" ]; then
-    SOURCE_SHA_FIELD=""
-else
-    SOURCE_SHA_FIELD="--field source_sha=$COMMIT_SHA"
+#
+# This must stay an array. A quoted scalar collapses "--field" and its
+# key=value argument into one argv token, which gh rejects with
+# "unknown flag: --field source_sha"; an unquoted scalar would silently
+# word-split and also emit a stray empty argument in retry mode.
+SOURCE_SHA_ARGS=()
+if [ -z "$RETRY_RUN_ID" ]; then
+    SOURCE_SHA_ARGS=(--field "source_sha=$COMMIT_SHA")
 fi
 
 # Trigger the workflow
@@ -664,7 +668,7 @@ if gh workflow run release-validated.yml \
     --field dry_run="$DRY_RUN" \
     --field skip_tests="$SKIP_TESTS" \
     --field request_id="$REQUEST_ID" \
-    "${SOURCE_SHA_FIELD:-}" > "$WORKFLOW_OUTPUT" 2> "$WORKFLOW_ERROR"; then
+    "${SOURCE_SHA_ARGS[@]}" > "$WORKFLOW_OUTPUT" 2> "$WORKFLOW_ERROR"; then
 
     WORKFLOW_SUCCESS=true
     echo ""
