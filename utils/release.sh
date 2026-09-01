@@ -664,7 +664,7 @@ if gh workflow run release-validated.yml \
     --field dry_run="$DRY_RUN" \
     --field skip_tests="$SKIP_TESTS" \
     --field request_id="$REQUEST_ID" \
-    ${SOURCE_SHA_FIELD:-} > "$WORKFLOW_OUTPUT" 2> "$WORKFLOW_ERROR"; then
+    "${SOURCE_SHA_FIELD:-}" > "$WORKFLOW_OUTPUT" 2> "$WORKFLOW_ERROR"; then
 
     WORKFLOW_SUCCESS=true
     echo ""
