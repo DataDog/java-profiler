@@ -480,7 +480,13 @@ protected:
     // at `start_epoch`) into klass_id's ring buffer via the same
     // recordKlassPopulationSampleLocked() path production code drives from
     // cleanup_table()'s epoch-advance pass (klassPopulationRecordForTest() is
-    // a direct pass-through to it, see its header comment).
+    // a direct pass-through to it, see its header comment). ALSO seeds a
+    // qualifying per-tid trend for the same epochs (a linear 1..n ramp on a
+    // fixed synthetic tid) - selectLeakCandidates() now requires a qualifying
+    // allocating thread on top of the klass-level ramp, so a series seeded
+    // through this helper represents a genuinely thread-concentrated leak.
+    // Tests that specifically exercise the per-tid gate itself seed the
+    // tid trends (or their absence) directly via tidTrendRecordForTest().
     static void seedSeries(LivenessTracker *tracker, u32 klass_id,
                             const u16 *counts, int n, u64 start_epoch) {
         for (int i = 0; i < n; i++) {
@@ -489,6 +495,8 @@ protected:
             tracker->klassPopulationRecordForTest(klass_id, counts[i],
                                                    start_epoch + i, &slot,
                                                    &created);
+            tracker->tidTrendRecordForTest(klass_id, /*tid=*/42,
+                                            (u32)(i + 1), start_epoch + i);
         }
     }
 };
@@ -636,6 +644,110 @@ TEST_F(SelectLeakCandidatesTest, HeapFloorCorroborationLowersRequiredHysteresis)
     ASSERT_TRUE(tracker->heapFloorRisingForTest());
 
     EXPECT_EQ(tracker->selectLeakCandidates(out, 5), 1);
+}
+
+// --- Per-(klass, tid) qualification gate (TidTrend, livenessTracker.h) ---
+// The disjoint-tagged-vs-frontier pod finding: a whole-klass rising
+// generation count can come from churn spread across MANY allocating
+// threads, each retaining a STABLE handful of instances. A klass with a
+// qualifying klass-level trend but NO thread whose own trend qualifies is
+// NOT a leak candidate.
+TEST_F(SelectLeakCandidatesTest, KlassTrendWithoutQualifyingTidIsNotSelected) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    // Klass-level ramp only - no per-tid trend seeded at all (the raw seam
+    // loop, not seedSeries(), which would seed a qualifying tid too).
+    u16 growing[20];
+    for (int i = 0; i < 20; i++) {
+        growing[i] = (u16)(i + 1);
+        int slot;
+        bool created;
+        tracker->klassPopulationRecordForTest(/*klass_id=*/1, growing[i],
+                                                /*epoch=*/i + 1, &slot, &created);
+    }
+
+    KlassCandidate out[5];
+    EXPECT_EQ(tracker->selectLeakCandidates(out, 5), 0)
+        << "a klass-level rise with no qualifying allocating thread is the "
+           "machinery-churn shape observed on the hotdog pod - it must not "
+           "become a candidate";
+}
+
+// A klass trend plus a tid trend that is FLAT (machinery: stable small
+// retained set, no rising age span, below the retained-count bar) does
+// not qualify either - each discriminator is necessary, not just one of
+// them being absent.
+TEST_F(SelectLeakCandidatesTest, FlatTidTrendDoesNotQualify) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    u16 growing[20];
+    for (int i = 0; i < 20; i++) {
+        growing[i] = (u16)(i + 1);
+        int slot;
+        bool created;
+        tracker->klassPopulationRecordForTest(/*klass_id=*/1, growing[i],
+                                                /*epoch=*/i + 1, &slot, &created);
+        // Constant 2 surviving tracked instances, every epoch: below the
+        // retained-count bar and no rising age-cardinality trend.
+        tracker->tidTrendRecordForTest(/*klass_id=*/1, /*tid=*/7, /*count=*/2,
+                                        /*epoch=*/i + 1);
+    }
+
+    KlassCandidate out[5];
+    EXPECT_EQ(tracker->selectLeakCandidates(out, 5), 0);
+}
+
+// The retained-count bar (TID_RETAINED_COUNT_BAR) qualifies a tid whose
+// instances all share one age (one-cohort-per-thread accumulation - each
+// one-shot worker thread's distinct-age count stays 1 forever) as long as
+// it retains enough tracked instances - the discriminator that covers
+// LeakingCacheScenario's allocator-thread shape.
+TEST_F(SelectLeakCandidatesTest, RetainedCountBarQualifiesOneCohortShape) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    u16 growing[20];
+    for (int i = 0; i < 20; i++) {
+        growing[i] = (u16)(i + 1);
+        int slot;
+        bool created;
+        tracker->klassPopulationRecordForTest(/*klass_id=*/1, growing[i],
+                                                /*epoch=*/i + 1, &slot, &created);
+        // 12 > TID_RETAINED_COUNT_BAR (8), flat every epoch: the age trend
+        // alone would never qualify (no rise), the bar does.
+        tracker->tidTrendRecordForTest(/*klass_id=*/1, /*tid=*/7, /*count=*/12,
+                                        /*epoch=*/i + 1);
+    }
+
+    KlassCandidate out[5];
+    ASSERT_EQ(tracker->selectLeakCandidates(out, 5), 1);
+    ASSERT_GE(out[0].qualifying_tid_count, 1);
+    EXPECT_EQ(out[0].qualifying_tids[0], 7);
+}
+
+// A rising per-tid trend alone (below the retained-count bar) qualifies:
+// small leaks grow their age span long before their count clears the bar -
+// the hotdog pod's simulated-memory-leak thread (12 tracked [B instances,
+// age_count rising 2->3) is exactly this shape.
+TEST_F(SelectLeakCandidatesTest, RisingTidTrendQualifiesBelowCountBar) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    u16 growing[20];
+    for (int i = 0; i < 20; i++) {
+        growing[i] = (u16)(i + 1);
+        int slot;
+        bool created;
+        tracker->klassPopulationRecordForTest(/*klass_id=*/1, growing[i],
+                                                /*epoch=*/i + 1, &slot, &created);
+        // Rising, but capped at 6 tracked instances (below the bar of 8).
+        u32 tid_count = (u32)((i / 3) + 1) > 6 ? 6 : (u32)((i / 3) + 1);
+        tracker->tidTrendRecordForTest(/*klass_id=*/1, /*tid=*/9, tid_count,
+                                        /*epoch=*/i + 1);
+    }
+
+    KlassCandidate out[5];
+    ASSERT_EQ(tracker->selectLeakCandidates(out, 5), 1);
+    ASSERT_GE(out[0].qualifying_tid_count, 1);
+    EXPECT_EQ(out[0].qualifying_tids[0], 9);
 }
 
 // Multiple positive-slope klasses must come back sorted by slope magnitude

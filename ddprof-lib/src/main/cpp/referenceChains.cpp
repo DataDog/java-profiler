@@ -4252,17 +4252,18 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
                klass_id, slot, _candidate_count);
       Counters::increment(REFERENCE_CHAIN_CANDIDATE_COUNT, 1);
     }
-    // Tag all tracked instances of all candidate classes with leak tags.
+    // Tag the tracked instances of THIS poll's candidates with leak tags.
     // This replaces the old single-representative marker-tag approach —
     // the BFS will find these specific leaking objects by tag, not by
     // class match, eliminating noise from unrelated instances of the same
-    // class.
-    u32 klass_ids[MAX_LEAK_CANDIDATES_FROM_LT];
-    for (int s = 0; s < _candidate_count; s++) {
-      klass_ids[s] = _candidate_klass_ids[s];
-    }
+    // class. Passing the per-poll candidates (not the ever-occupied
+    // _candidate_klass_ids slots) is deliberate: the candidates carry the
+    // qualifying tids selectLeakCandidates() just computed, and a klass
+    // whose per-tid trend stopped qualifying should stop consuming pool
+    // tags even though its slot persists (tagLeakInstances()'s own
+    // comment, livenessTracker.h).
     int tagged = LivenessTracker::instance()->tagLeakInstances(
-        jvmti, klass_ids, _candidate_count);
+        jvmti, candidates, candidate_count);
     _leak_tags_assigned = tagged;
     _leak_tags_resolved = 0; // reset on each tagging round
     TEST_LOG("ReferenceChainTracker::pollWatchedTargets tagLeakInstances tagged=%d",
@@ -4474,9 +4475,12 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
     }
     // tag == 0: The representative object has no tag — the BFS walk
     // hasn't reached it yet AND it is not yet leak-tagged. No action here:
-    // tagLeakInstances() (earlier in this same poll) tags every tracked
-    // instance of candidate classes from the reusable pool, so the next
-    // tagLeakInstances round or the next walk pass will pick it up. The
+    // tagLeakInstances() (earlier in this same poll) tags the tracked
+    // instances of candidate classes' QUALIFYING tids from the reusable
+    // pool, so the next tagLeakInstances round or the next walk pass will
+    // pick it up (a representative of a klass whose candidates all carry
+    // the rep's tid - foldKlassCountsLocked()'s dominant-tid rep bias - is
+    // in scope by construction). The
     // old marker-tag re-tag path is gone — marker tags are no longer the
     // candidate discovery mechanism (leak tags are), and re-tagging with
     // a marker tag here would resurrect the dead mechanism on objects the

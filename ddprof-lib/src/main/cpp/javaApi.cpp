@@ -1134,6 +1134,17 @@ Java_com_datadoghq_profiler_JavaProfiler_seedKlassPopulationSample0(
       (u32)klassId, (u16)count, (u64)epoch, &slot, &created);
 }
 
+// Seeds one per-(klass, tid) trend sample - see tidTrendRecordForTest()'s
+// own comment (livenessTracker.h) for the synthetic-flag exemption and the
+// real-tid requirement scenarios must honor.
+extern "C" DLLEXPORT void JNICALL
+Java_com_datadoghq_profiler_JavaProfiler_seedTidTrendSample0(
+    JNIEnv *env, jclass unused, jint klassId, jint tid, jint count,
+    jlong epoch) {
+  LivenessTracker::instance()->tidTrendRecordForTest(
+      (u32)klassId, (jint)tid, (u32)count, (u64)epoch);
+}
+
 // Wires a real, caller-chosen live object in as klassId's leak-candidate
 // representative, so a test-seeded slope signal (seedKlassPopulationSample0
 // above) and a directly-tagged frontier root (tagAsReferenceChainRoot0

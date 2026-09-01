@@ -128,8 +128,16 @@ public final class LeakTagCorrelationScenario {
    */
   private static final class NoiseHandoff {
     volatile NoisePayload representative;
+    // The noise thread's own profiler tid - published alongside the payload so
+    // the seeding below can qualify exactly that thread for the noise klass
+    // (selectLeakCandidates()'s per-(klass, tid) gate matches the tid that
+    // actually allocated the noise instances, and that is this thread).
+    volatile int tid;
 
-    void publish(NoisePayload payload) {
+    void publish(NoisePayload payload, int tid) {
+      // tid FIRST (volatile ordering): a caller that sees `representative` set
+      // is then also guaranteed to see the tid published with it.
+      this.tid = tid;
       representative = payload;
     }
 
@@ -208,7 +216,9 @@ public final class LeakTagCorrelationScenario {
       for (int i = 0; i < held.length; i++) {
         held[i] = new NoisePayload();
       }
-      handoff.publish(held[0]);
+      // The tid must be captured on THIS thread: the per-(klass, tid) seeding below
+      // qualifies the allocating thread, and the noise instances are all allocated here.
+      handoff.publish(held[0], JavaProfiler.getTid());
       long slot = 0;
       while (true) {
         try {
@@ -229,6 +239,10 @@ public final class LeakTagCorrelationScenario {
     }
 
     boolean debugBuild = "debug".equals(System.getProperty("ddprof_test.config"));
+    // Declared at method scope: the per-round and final-attempt maintenance
+    // seeding below (in their own debugBuild blocks) reuse these tids.
+    int leakTid = 0;
+    int noiseTid = 0;
     if (debugBuild) {
       // Representatives FIRST, seeds second: since the leak-tag pool redesign, candidate
       // matching, leak-tag assignment (tagLeakInstances scanning the live-heap tracking
@@ -243,9 +257,21 @@ public final class LeakTagCorrelationScenario {
       // leak candidate and the other a gate test.
       JavaProfiler.setKlassPopulationRepresentativeForTest0(LEAK_KLASS_ID, LEAK_SINK.get(0));
       JavaProfiler.setKlassPopulationRepresentativeForTest0(NOISE_KLASS_ID, handoff.take());
+      // Per-(klass, tid) qualification seeds: selectLeakCandidates() now also
+      // requires a qualifying ALLOCATING THREAD, and tagLeakInstances() scopes leak
+      // tags to exactly those tids' instances - so the seeded qualification must
+      // name the REAL allocating tids (this thread for the leak chunks, the noise
+      // thread for the noise payloads) or no tracked instance would ever match
+      // the tagging scope. Same epoch-aligned ramp shape as the klass seeds
+      // (scaled to fit the per-tid u8 ring); the synthetic flag keeps these
+      // ramps immune to the real fold's absent-tid decay between rounds.
+      leakTid = JavaProfiler.getTid();
+      noiseTid = handoff.tid;
       for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
         JavaProfiler.seedKlassPopulationSample0(LEAK_KLASS_ID, epoch * 10, epoch);
         JavaProfiler.seedKlassPopulationSample0(NOISE_KLASS_ID, epoch * 10, epoch);
+        JavaProfiler.seedTidTrendSample0(LEAK_KLASS_ID, leakTid, epoch * 3, epoch);
+        JavaProfiler.seedTidTrendSample0(NOISE_KLASS_ID, noiseTid, epoch * 3, epoch);
       }
       // Wait for the BFS thread to fully complete its first pass (static sweep AND frontier
       // expansion) before any growth round - same load-bearing wait and rationale as
@@ -282,6 +308,10 @@ public final class LeakTagCorrelationScenario {
             LEAK_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
         JavaProfiler.seedKlassPopulationSample0(
             NOISE_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
+        JavaProfiler.seedTidTrendSample0(
+            LEAK_KLASS_ID, leakTid, hysteresisEpoch * 3, hysteresisEpoch);
+        JavaProfiler.seedTidTrendSample0(
+            NOISE_KLASS_ID, noiseTid, hysteresisEpoch * 3, hysteresisEpoch);
       }
       System.gc();
       profiler.dump(scratchDumpPath);
@@ -313,6 +343,10 @@ public final class LeakTagCorrelationScenario {
             LEAK_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
         JavaProfiler.seedKlassPopulationSample0(
             NOISE_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
+        JavaProfiler.seedTidTrendSample0(
+            LEAK_KLASS_ID, leakTid, hysteresisEpoch * 3, hysteresisEpoch);
+        JavaProfiler.seedTidTrendSample0(
+            NOISE_KLASS_ID, noiseTid, hysteresisEpoch * 3, hysteresisEpoch);
       }
       Thread.sleep(1000);
       System.gc();

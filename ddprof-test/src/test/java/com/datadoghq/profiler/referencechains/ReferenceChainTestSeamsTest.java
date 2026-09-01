@@ -103,6 +103,12 @@ public class ReferenceChainTestSeamsTest extends AbstractProfilerTest {
     // samples are needed; 20 gives headroom.
     for (int epoch = 1; epoch <= 20; epoch++) {
       JavaProfiler.seedKlassPopulationSample0(SLOPE_TEST_KLASS_ID, epoch * 10, epoch);
+      // Per-(klass, tid) qualification: selectLeakCandidates() now requires a
+      // qualifying allocating thread on top of the klass-level ramp. This test
+      // only asserts the klass makes it into the candidate list - it has no
+      // tracked instances whose tid a tagging scope would need to match - so a
+      // fixed synthetic tid suffices here.
+      JavaProfiler.seedTidTrendSample0(SLOPE_TEST_KLASS_ID, 4242, epoch * 3, epoch);
     }
 
     int[] candidates = JavaProfiler.selectLeakCandidateKlassIds0();
@@ -163,6 +169,14 @@ public class ReferenceChainTestSeamsTest extends AbstractProfilerTest {
     // (not just KLASS_POPULATION_MIN_FILL_FOR_TREND = 10) is needed to clear the hysteresis gate.
     for (int epoch = 1; epoch <= 20; epoch++) {
       JavaProfiler.seedKlassPopulationSample0(CHAIN_TEST_KLASS_ID, epoch * 10, epoch);
+      // Per-(klass, tid) qualification, seeded with THIS thread's real
+      // profiler tid: the target was allocated here, so if any path in the
+      // pass/poll cycle below does hinge on leak tagging of the target as a
+      // tracked instance, the qualifying tid matches it. (The chain's primary
+      // path is the directly-tagged frontier root + seeded representative, so
+      // this is belt-and-braces, not a proven requirement.)
+      JavaProfiler.seedTidTrendSample0(
+          CHAIN_TEST_KLASS_ID, JavaProfiler.getTid(), epoch * 3, epoch);
     }
 
     // Drive pass+poll cycles until the chain event lands. One pass is NOT enough:

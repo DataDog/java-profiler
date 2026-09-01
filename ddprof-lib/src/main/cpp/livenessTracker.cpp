@@ -373,8 +373,9 @@ bool LivenessTracker::getLeakTagInfo(jlong tag, u64 *out_call_trace_id,
   return true;
 }
 
-int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti, const u32 *klass_ids,
-                                       int klass_count) {
+int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti,
+                                       const KlassCandidate *candidates,
+                                       int candidate_count) {
   if (!_enabled || _table == nullptr) {
     return 0;
   }
@@ -388,6 +389,14 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti, const u32 *klass_ids,
   // oldest instance is. If the pool is contended or GC churn races the
   // tagging, this ordering makes sure the strongest leak signal keeps the
   // tags rather than whichever entry the table scan happens to reach first.
+  // The (klass, tid) MATCH below scopes this whole ranking to the leak site
+  // itself: each candidate only claims tracked instances its qualifying
+  // tids allocated (selectLeakCandidates()'s per-tid gate, livenessTracker.h),
+  // so machinery survivors of the same class from other threads never
+  // enter the ranking at all - observed on hotdog, klass-wide matching spent
+  // 247 pool tags on flat-retention machinery byte[]s with zero
+  // interceptions while the real leak-site instances churned out of the
+  // tracking table untagged.
   struct TagCandidate {
     u32 table_idx;
     jint tid;
@@ -405,15 +414,26 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti, const u32 *klass_ids,
     if (_table[i].ref == nullptr) {
       continue;
     }
-    // Check if this entry's class matches any candidate
+    // Check if this entry's (class, allocating thread) matches any
+    // candidate: class alone is not enough - only the instances a
+    // candidate's QUALIFYING tids allocated are in tagging scope.
     u32 kid = _table[i].cached_klass_id;
     if (kid == 0) {
       continue;
     }
     bool match = false;
-    for (int k = 0; k < klass_count; k++) {
-      if (klass_ids[k] == kid) {
-        match = true;
+    for (int k = 0; k < candidate_count; k++) {
+      if (candidates[k].klass_id != kid ||
+          candidates[k].qualifying_tid_count <= 0) {
+        continue;
+      }
+      for (int q = 0; q < candidates[k].qualifying_tid_count; q++) {
+        if (candidates[k].qualifying_tids[q] == _table[i].tid) {
+          match = true;
+          break;
+        }
+      }
+      if (match) {
         break;
       }
     }
@@ -588,6 +608,10 @@ void LivenessTracker::insertThreadGen(KlassCountScratch &scratch,
     if (scratch.threads[i].tid == tid) {
       // Insert age into the thread's sorted distinct-age array
       auto &t = scratch.threads[i];
+      // Every surviving object counts toward the per-tid retained-count
+      // bar (TID_RETAINED_COUNT_BAR) BEFORE the age-dedup early return
+      // below: the count is per-instance, the ages are per-cohort.
+      t.count++;
       for (u32 j = 0; j < t.age_count; j++) {
         if (t.ages[j] == age) {
           return; // age already counted for this thread
@@ -616,6 +640,7 @@ void LivenessTracker::insertThreadGen(KlassCountScratch &scratch,
     scratch.threads[idx].tid = tid;
     scratch.threads[idx].ages[0] = age;
     scratch.threads[idx].age_count = 1;
+    scratch.threads[idx].count = 1; // this object is the tid's first this epoch
   }
   // else: thread table full — additional threads are not tracked, but
   // the oldest[] array still captures instances from all threads.
@@ -728,6 +753,9 @@ jweak LivenessTracker::recordKlassPopulationSampleLocked(
     _klass_population[slot].ring_fill = 0;
     _klass_population[slot].consecutive_positive = 0;
     _klass_population[slot].cached_slope = 0.0;
+    // A reused (evicted) slot's previous class's per-tid trends must not
+    // leak onto the new one, same as the fields above.
+    _klass_population[slot].tid_trend_count = 0;
     // A reused (evicted) slot's PREVIOUS class's stable tag must not leak
     // onto the new one - see KlassPopulationEntry::stable_class_tag's own
     // comment. Minted lazily in foldKlassCountsLocked() once a live
@@ -806,6 +834,10 @@ void LivenessTracker::foldKlassCountsLocked(JNIEnv *env, u64 epoch,
                                        epoch, &slot, &created,
                                        evicted, &evicted_count,
                                        KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS);
+    // Per-(klass,tid) qualification fold - see recordTidTrendSamplesLocked()'s
+    // own comment: pure table work, no JNIEnv, so unlike the representative
+    // minting below it runs regardless of allow_resolve.
+    recordTidTrendSamplesLocked(slot, s);
     for (int r = 0; r < evicted_count; r++) {
       if (evicted[r] != nullptr) {
         env->DeleteWeakGlobalRef(evicted[r]);
@@ -994,6 +1026,153 @@ bool LivenessTracker::hasQualifyingGrowth(const KlassPopulationEntry &entry) con
            "SLOPE_OK slope=%f growth_bar=%f",
            entry.klass_id, entry.cached_slope, growth_bar);
   return true;
+}
+
+bool LivenessTracker::hasQualifyingTidGrowth(
+    const KlassPopulationEntry::TidTrend &trend) const {
+  RingThirdsStats stats;
+  if (!ringThirdsStats(
+          trend.ring_head, trend.ring_fill,
+          KlassPopulationEntry::TID_TREND_RING_SIZE,
+          TID_TREND_MIN_FILL_FOR_TREND,
+          [&trend](int i) { return (double)trend.ring[i]; }, &stats)) {
+    return false;
+  }
+  // Same growth bar as the klass gate (LEAK_GROWTH_REL_MIN/ABS_MIN):
+  // per-tid age-cardinality is the same small-integer signal the klass gate
+  // already applies these thresholds to, so they transfer unchanged.
+  double growth_bar = LEAK_GROWTH_REL_MIN * stats.earliest_mean;
+  if (growth_bar < LEAK_GROWTH_ABS_MIN) {
+    growth_bar = LEAK_GROWTH_ABS_MIN;
+  }
+  return (stats.recent_mean - stats.earliest_mean) >= growth_bar;
+}
+
+bool LivenessTracker::tidPushQualifies(
+    const KlassPopulationEntry::TidTrend &trend, u32 current_count) const {
+  // Second discriminator before the (usually cheaper) ring re-scan: a
+  // count over the bar qualifies without any history at all.
+  if (current_count >= TID_RETAINED_COUNT_BAR) {
+    return true;
+  }
+  return hasQualifyingTidGrowth(trend);
+}
+
+void LivenessTracker::recordTidTrendSamplesLocked(
+    int slot, const KlassCountScratch &scratch) {
+  if (slot < 0 || slot >= _klass_population_size) {
+    return;
+  }
+  KlassPopulationEntry &entry = _klass_population[slot];
+  // Present tids first: find-or-create their trend and push this epoch's
+  // distinct-age count. (KlassCountScratch threads always carry >=1
+  // surviving instance, so every scratch thread has a real claim on a
+  // slot; a zero-count tid never reaches this fold.)
+  for (int ti = 0; ti < scratch.thread_count; ti++) {
+    jint tid = scratch.threads[ti].tid;
+    KlassPopulationEntry::TidTrend *trend = nullptr;
+    for (int i = 0; i < entry.tid_trend_count; i++) {
+      if (entry.tid_trends[i].tid == tid) {
+        trend = &entry.tid_trends[i];
+        break;
+      }
+    }
+    if (trend != nullptr && trend->synthetic) {
+      // Seam-owned history: the test maintains this ramp itself
+      // (seedTidTrendSample0), and a real fold interleaving its own low
+      // count for the same tid would reset the trend's hysteresis every
+      // System.gc() the scenario runs between rounds. Production data has
+      // no synthetic trends, so this exemption is inert there.
+      continue;
+    }
+    if (trend == nullptr) {
+      if (entry.tid_trend_count < KlassPopulationEntry::MAX_TID_TRENDS) {
+        trend = &entry.tid_trends[entry.tid_trend_count++];
+      } else {
+        // Full: evict the WEAKEST non-synthetic trend (lowest
+        // consecutive_positive, then lowest ring_fill) - a genuinely rising
+        // leak tid accumulates hysteresis fast and resists eviction, while
+        // machinery tids never build any. Synthetic (test-seeded) trends
+        // are never evicted by real data. If every slot is synthetic, the
+        // new tid is simply dropped - production data never marks
+        // anything synthetic, so this only caps a scenario's own seeding.
+        int victim = -1;
+        for (int i = 0; i < entry.tid_trend_count; i++) {
+          if (entry.tid_trends[i].synthetic) {
+            continue;
+          }
+          if (victim < 0 ||
+              (entry.tid_trends[i].consecutive_positive <
+               entry.tid_trends[victim].consecutive_positive) ||
+              (entry.tid_trends[i].consecutive_positive ==
+                   entry.tid_trends[victim].consecutive_positive &&
+               entry.tid_trends[i].ring_fill <
+                   entry.tid_trends[victim].ring_fill)) {
+            victim = i;
+          }
+        }
+        if (victim < 0) {
+          continue; // all slots synthetic - drop this tid's sample
+        }
+        trend = &entry.tid_trends[victim];
+      }
+      trend->tid = tid;
+      trend->ring_head = 0;
+      trend->ring_fill = 0;
+      trend->consecutive_positive = 0;
+      trend->synthetic = false;
+    }
+    trend->ring[trend->ring_head] = (u8)scratch.threads[ti].age_count;
+    trend->count_ring[trend->ring_head] =
+        (u8)std::min<u32>(scratch.threads[ti].count, UINT8_MAX);
+    trend->ring_head = (u8)((trend->ring_head + 1) %
+                            KlassPopulationEntry::TID_TREND_RING_SIZE);
+    if (trend->ring_fill < KlassPopulationEntry::TID_TREND_RING_SIZE) {
+      trend->ring_fill++;
+    }
+    if (tidPushQualifies(*trend, scratch.threads[ti].count)) {
+      if (trend->consecutive_positive < UINT8_MAX) {
+        trend->consecutive_positive++;
+      }
+    } else {
+      trend->consecutive_positive = 0;
+    }
+  }
+  // Tracked tids ABSENT this epoch: a thread whose instances all died
+  // must not keep a stale rising ring - push 0 so the next
+  // hasQualifyingTidGrowth() fails and the trend's hysteresis resets (the
+  // per-tid analogue of the population simply stopping). Synthetic
+  // (test-seeded) trends are exempt: scenarios interleave real
+  // System.gc()-driven folds with their seeded ramps, and without the
+  // exemption every real fold would wipe the seeded qualification before
+  // the test could ever use it (see TidTrend::synthetic's own comment).
+  for (int i = 0; i < entry.tid_trend_count; i++) {
+    KlassPopulationEntry::TidTrend &trend = entry.tid_trends[i];
+    if (trend.synthetic) {
+      continue;
+    }
+    bool present = false;
+    for (int ti = 0; ti < scratch.thread_count; ti++) {
+      if (scratch.threads[ti].tid == trend.tid) {
+        present = true;
+        break;
+      }
+    }
+    if (present) {
+      continue;
+    }
+    trend.ring[trend.ring_head] = 0;
+    trend.count_ring[trend.ring_head] = 0;
+    trend.ring_head = (u8)((trend.ring_head + 1) %
+                          KlassPopulationEntry::TID_TREND_RING_SIZE);
+    if (trend.ring_fill < KlassPopulationEntry::TID_TREND_RING_SIZE) {
+      trend.ring_fill++;
+    }
+    // A 0-count epoch cannot qualify as a rise - reset now rather than
+    // deferring to the next push, so a long-absent tid does not keep
+    // hysteresis from before its population died.
+    trend.consecutive_positive = 0;
+  }
 }
 
 void LivenessTracker::recordHeapFloorSample(u64 used, u64 timestamp_ns, u64 container_used) {
@@ -1241,6 +1420,31 @@ int LivenessTracker::selectLeakCandidates(KlassCandidate *out, int max) {
       // epochs yet to trust it over sampling/oscillation noise.
       continue;
     }
+    // (klass,tid) qualification: the klass-level rise above is also
+    // produced by churn spread across many threads each retaining a
+    // stable handful of instances (observed live on hotdog - see
+    // KlassPopulationEntry::TidTrend's own comment), so a klass only
+    // becomes a candidate if at least ONE allocating thread's own per-tid
+    // trend has held a qualifying rise for the same hysteresis. The
+    // qualifying tids are handed to the caller so tagLeakInstances() can
+    // scope its pool tags to the leak-site instances only.
+    jint qualifying_tids[KlassPopulationEntry::MAX_TID_TRENDS];
+    int qualifying_tid_count = 0;
+    for (int t = 0; t < entry.tid_trend_count &&
+                    qualifying_tid_count <
+                        (int)(sizeof(qualifying_tids) /
+                              sizeof(qualifying_tids[0])); t++) {
+      if (entry.tid_trends[t].consecutive_positive >=
+          (u8)required_hysteresis) {
+        qualifying_tids[qualifying_tid_count++] = entry.tid_trends[t].tid;
+      }
+    }
+    if (qualifying_tid_count == 0) {
+      TEST_LOG("LivenessTracker::selectLeakCandidates entry[%d] klass_id=%u "
+               "klass trend OK but no qualifying tid - skipped",
+               i, entry.klass_id);
+      continue;
+    }
     if (count == cap && slope <= best_slopes[cap - 1]) {
       // Already holding `cap` stronger (or equal) candidates - this one
       // doesn't make the cut.
@@ -1249,7 +1453,13 @@ int LivenessTracker::selectLeakCandidates(KlassCandidate *out, int max) {
 
     int pos = count < cap ? count++ : cap - 1;
     best_slopes[pos] = slope;
-    out[pos] = KlassCandidate{entry.klass_id, entry.representative_count > 0 ? entry.representatives[0] : nullptr};
+    KlassCandidate &cand = out[pos];
+    cand.klass_id = entry.klass_id;
+    cand.representative =
+        entry.representative_count > 0 ? entry.representatives[0] : nullptr;
+    cand.qualifying_tid_count = qualifying_tid_count;
+    memcpy(cand.qualifying_tids, qualifying_tids,
+           sizeof(jint) * (size_t)qualifying_tid_count);
     while (pos > 0 && best_slopes[pos - 1] < best_slopes[pos]) {
       double tmp_slope = best_slopes[pos - 1];
       best_slopes[pos - 1] = best_slopes[pos];

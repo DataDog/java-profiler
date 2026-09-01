@@ -84,6 +84,9 @@ public final class StaticFieldGrowingCollectionScenario {
 
     boolean debugBuild = "debug".equals(System.getProperty("ddprof_test.config"));
     int hysteresisEpoch = 0;
+    // Declared at method scope: the per-round maintenance seeding below (in
+    // its own debugBuild block) reuses this tid.
+    int leakTid = 0;
     // Snapshotted BEFORE seeding anything, while the BFS thread's search has not run a single
     // pass yet (referenceChainPassesRunForTest0() reads 0 here) - see the wait loop below for why
     // this exact value, not just "nonzero", is what the wait needs to advance past.
@@ -98,8 +101,14 @@ public final class StaticFieldGrowingCollectionScenario {
       // passesRun() advancing below is load-bearing, found the hard way: a pass only ever runs
       // once shouldRunPass() sees a leak signal - waiting on passesRun() before seeding anything is
       // a deadlock, not just a slow path.
+      // Per-(klass, tid) qualification seeds (see LeakTagCorrelationScenario's own
+      // seeding block for the rationale): the qualifying tid must be the thread that
+      // allocates the tracked instances - this thread allocates every LEAK_BUFFER
+      // chunk, including the lateChunk this scenario watches.
+      leakTid = JavaProfiler.getTid();
       for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
         JavaProfiler.seedKlassPopulationSample0(LEAK_BUFFER_TEST_KLASS_ID, epoch * 10, epoch);
+        JavaProfiler.seedTidTrendSample0(LEAK_BUFFER_TEST_KLASS_ID, leakTid, epoch * 3, epoch);
       }
       hysteresisEpoch = SEED_EPOCHS_FOR_HYSTERESIS;
     }
@@ -199,6 +208,8 @@ public final class StaticFieldGrowingCollectionScenario {
         hysteresisEpoch++;
         JavaProfiler.seedKlassPopulationSample0(
             LEAK_BUFFER_TEST_KLASS_ID, hysteresisEpoch * 10, hysteresisEpoch);
+        JavaProfiler.seedTidTrendSample0(
+            LEAK_BUFFER_TEST_KLASS_ID, leakTid, hysteresisEpoch * 3, hysteresisEpoch);
         JavaProfiler.setKlassPopulationRepresentativeForTest0(LEAK_BUFFER_TEST_KLASS_ID, lateChunk);
         JavaProfiler.pollReferenceChainTargets0();
 

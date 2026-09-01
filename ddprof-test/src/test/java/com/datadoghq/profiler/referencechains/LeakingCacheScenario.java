@@ -164,8 +164,16 @@ public final class LeakingCacheScenario {
         // (candidate matching is real-id keyed since the leak-tag pool redesign).
         JavaProfiler.setKlassPopulationRepresentativeForTest0(CACHED_PAYLOAD_TEST_KLASS_ID, cache.get("seed-0"));
         if (!seededTestKlassTrend) {
+          // Per-(klass, tid) qualification seeds: the qualifying tid is THIS
+          // thread's - the creator of "seed-0", the always-reachable representative
+          // the seeded ramp and the match below hang off. (The per-round allocator
+          // threads are one-shot, so no single one of their tids carries a sustained
+          // per-tid signal - exactly the one-cohort-per-thread shape the retained-
+          // count bar / synthetic seeds exist to keep qualifying.)
+          int leakTid = JavaProfiler.getTid();
           for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
             JavaProfiler.seedKlassPopulationSample0(CACHED_PAYLOAD_TEST_KLASS_ID, epoch * 10, epoch);
+            JavaProfiler.seedTidTrendSample0(CACHED_PAYLOAD_TEST_KLASS_ID, leakTid, epoch * 3, epoch);
           }
           seededTestKlassTrend = true;
         }

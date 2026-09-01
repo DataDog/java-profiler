@@ -441,8 +441,14 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
           // hasLeakSignal()'s candidate-count check and match nothing else).
           JavaProfiler.setKlassPopulationRepresentativeForTest0(CHAIN_LINK_TEST_KLASS_ID, gcRootHolder.get(0));
           if (!seededTestKlassTrend) {
+            // Per-(klass, tid) qualification seeds - this test thread allocated
+            // the ChainLink instances the fixture hangs off the GC root, so its
+            // real tid is the qualifying one (same rationale as the scenarios'
+            // own seeding blocks).
+            int leakTid = JavaProfiler.getTid();
             for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
               JavaProfiler.seedKlassPopulationSample0(CHAIN_LINK_TEST_KLASS_ID, epoch * 10, epoch);
+              JavaProfiler.seedTidTrendSample0(CHAIN_LINK_TEST_KLASS_ID, leakTid, epoch * 3, epoch);
             }
             seededTestKlassTrend = true;
           }
@@ -633,8 +639,13 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
           // shouldReconstructReferrerChainToGcRoot()'s own comment above.
           JavaProfiler.setKlassPopulationRepresentativeForTest0(CACHED_PAYLOAD_TEST_KLASS_ID, cache.get(keys[0]));
           if (!seededTestKlassTrend) {
+            // Per-(klass, tid) qualification seeds - see LeakingCacheScenario's
+            // own seeding block for why this thread's tid (the representative's
+            // creator) is the qualifying one for the one-cohort-per-round shape.
+            int leakTid = JavaProfiler.getTid();
             for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
               JavaProfiler.seedKlassPopulationSample0(CACHED_PAYLOAD_TEST_KLASS_ID, epoch * 10, epoch);
+              JavaProfiler.seedTidTrendSample0(CACHED_PAYLOAD_TEST_KLASS_ID, leakTid, epoch * 3, epoch);
             }
             seededTestKlassTrend = true;
           }
@@ -785,8 +796,14 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
         Files.deleteIfExists(warmupDumpPath);
       }
       JavaProfiler.resetKlassPopulationForTest0();
+      // Per-(klass, tid) qualification seeds - gate-only usage (this test
+      // drives the search to ABANDONED and asserts on the abandon marker, no
+      // tagged instance needs to match), so the tid is this thread's real one
+      // but any distinct tid would do.
+      int abandonTid = JavaProfiler.getTid();
       for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
         JavaProfiler.seedKlassPopulationSample0(ABANDON_TEST_KLASS_ID, epoch * 10, epoch);
+        JavaProfiler.seedTidTrendSample0(ABANDON_TEST_KLASS_ID, abandonTid, epoch * 3, epoch);
       }
       JavaProfiler.resetReferenceChainSearchForTest0();
     }

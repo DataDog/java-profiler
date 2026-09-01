@@ -111,17 +111,71 @@ typedef struct KlassPopulationEntry {
   // foldKlassCountsLocked()'s own comment for when that happens) - always
   // negative once minted (ClassTagAllocator::next()'s own convention).
   jlong stable_class_tag;
+  // Per-(klass,tid) trend qualification (the disjoint-tagged-vs-frontier
+  // pod finding: a whole-klass rising generation count can come from churn
+  // spread across MANY allocating threads, each of which retains a STABLE
+  // handful of instances - observed live on the hotdog pod where the only
+  // qualifying [B candidate's tagged instances were 24-16KB machinery
+  // byte[]s whose per-site retention never rose). Each TidTrend holds one
+  // allocating thread's per-epoch count of distinct surviving GC ages (the
+  // same generation-cardinality signal the klass ring above uses, at
+  // per-thread granularity), and selectLeakCandidates() only reports the
+  // klass as a candidate if at least one tid here shows a sustained rise of
+  // its own - continuous retention concentrated in one thread is the leak
+  // shape; retention spread thinly and stably across threads is machinery.
+  // A real leak filled from many threads still qualifies: every thread that
+  // keeps adding surviving instances grows its own per-tid age span. The
+  // age trend alone cannot see one-cohort-per-thread accumulation (each
+  // one-shot thread's instances share one age, so its distinct-age count
+  // stays 1 forever), which is why qualification is that trend OR the
+  // retained-count bar (TID_RETAINED_COUNT_BAR): machinery threads retain
+  // neither rising age spans nor a large surviving count, and fail both.
+  static constexpr int MAX_TID_TRENDS = 8;
+  static constexpr int TID_TREND_RING_SIZE = 16;
+  struct TidTrend {
+    jint tid;   // allocating thread id (TrackingEntry::tid's space)
+    u8 ring[TID_TREND_RING_SIZE]; // per-epoch distinct surviving age counts
+    u8 count_ring[TID_TREND_RING_SIZE]; // per-epoch surviving tracked-
+                             // instance counts (same head/fill as ring -
+                             // always pushed together; feeds the
+                             // TID_RETAINED_COUNT_BAR discriminator)
+    u8 ring_head;
+    u8 ring_fill;
+    u8 consecutive_positive; // sustained-qualification hysteresis, same
+                             // push-time update pattern as the klass
+                             // consecutive_positive above
+    // Seeded by tidTrendRecordForTest() only: the real fold
+    // (recordTidTrendSamplesLocked()) never marks entries synthetic, and
+    // exempts synthetic entries from both its zero-pushes-for-absent-tids
+    // decay and its slot-eviction search - a scenario's seeded ramp would
+    // otherwise be wiped/reset by the very next real GC's fold. Production
+    // data has no synthetic entries, so the exemption is inert there.
+    bool synthetic;
+  };
+  TidTrend tid_trends[MAX_TID_TRENDS];
+  int tid_trend_count;
 } KlassPopulationEntry;
 
 // One leak-candidate result from selectLeakCandidates() below: the klass to
-// chase and a currently-live representative instance of it, ready to hand to
+// chase, a currently-live representative instance of it, and the threads
+// whose per-tid trends qualified it - ready to hand to
 // referenceChains.cpp's pollWatchedTargets() (the design doc's Open Question
 // 3 bridging step). Deliberately excludes the slope/rank that produced the
 // ranking - the caller only needs identity, matching the design doc's own
-// "KlassCandidate { u32 klass_id; jweak representative; }" sketch exactly.
+// "KlassCandidate { u32 klass_id; jweak representative; }" sketch, extended
+// with the qualifying tids selectLeakCandidates() now requires.
 typedef struct KlassCandidate {
   u32 klass_id;
   jweak representative;
+  // The tids whose per-tid trends cleared the same hysteresis gate that
+  // qualified this klass (selectLeakCandidates() fills this; empty never
+  // happens for a returned candidate). tagLeakInstances() only tags
+  // tracked instances of klass_id allocated by one of these threads -
+  // the per-(klass,tid) tagging scope that keeps machinery churn of the
+  // same class from consuming the leak-tag pool.
+  static constexpr int MAX_QUALIFYING_TIDS = KlassPopulationEntry::MAX_TID_TRENDS;
+  jint qualifying_tids[MAX_QUALIFYING_TIDS];
+  int qualifying_tid_count;
 } KlassCandidate;
 
 // Aligned to satisfy SpinLock member alignment requirement (64 bytes)
@@ -145,6 +199,28 @@ private:
   // window has a minimum fill (e.g. ≥10 samples) to avoid noise right after
   // a klass starts being tracked."
   constexpr static int KLASS_POPULATION_MIN_FILL_FOR_TREND = 10;
+  // Per-tid trend gate's own minimum fill (see KlassPopulationEntry::
+  // TidTrend): 6 samples of the 16-slot ring leaves a 2-3 sample thirds
+  // comparison, small enough that a per-tid qualification (6 pushes +
+  // the 3-5 hysteresis epochs, ~9-11) completes no later than the klass
+  // gate's own ~13-15-epoch latency, keeping the klass ring the sole
+  // latency driver for candidate emergence.
+  constexpr static int TID_TREND_MIN_FILL_FOR_TREND = 6;
+  // Per-tid qualification's second discriminator, OR-ed with the age
+  // trend: a thread whose surviving tracked-instance count of THIS ONE
+  // klass clears this bar qualifies without waiting out the trend/hysteresis
+  // latency. Covers the shape the age-trend gate structurally cannot see -
+  // one-cohort-per-thread accumulation (each one-shot worker thread's
+  // instances all share one age, so its distinct-age count stays 1 forever,
+  // but it retains hundreds of instances - LeakingCacheScenario's exact
+  // shape), and shortens qualification for any big per-thread retained set.
+  // 8 tracked survivors of a single class from one thread is roughly an
+  // order of magnitude above the machinery shapes this gate exists to
+  // exclude (buffer/thread pools retain 1-5 tracked per class/thread,
+  // observed on the hotdog pod's tagged machinery byte[]s); the live-heap
+  // subsample makes real instance counts ~10x the tracked count, so the bar
+  // corresponds to ~80+ retained same-class instances from one thread.
+  constexpr static u32 TID_RETAINED_COUNT_BAR = 8;
   // secondsToOOM() below corroborates the full-window heap-floor regression
   // with a second regression over just the most recent half of the same
   // ring, and requires both to show a positive slope. Guards against a
@@ -398,6 +474,10 @@ private:
       jint tid;
       u32 ages[MAX_AGES_PER_THREAD];  // sorted distinct ages
       u32 age_count;
+      u32 count;  // surviving tracked instances of this klass this epoch
+                  // (increments per object, before the age-dedup early
+                  // return below) - feeds the per-tid retained-count bar
+                  // (TID_RETAINED_COUNT_BAR)
     };
     ThreadGens threads[MAX_THREADS_PER_KLASS];
     int thread_count;
@@ -586,6 +666,49 @@ private:
 
   // --- Slope computation and candidate ranking (selectLeakCandidates() below) ---
 
+  // Per-tid sustained-trend gate half #1: the same mean-of-thirds growth
+  // test hasQualifyingGrowth() below applies to a klass's ring, at
+  // KlassPopulationEntry::TidTrend granularity (TID_TREND_MIN_FILL_FOR_TREND
+  // samples of that smaller ring, same LEAK_GROWTH_REL_MIN/ABS_MIN growth
+  // bar - per-tid age-cardinality is the same small-integer signal the
+  // klass gate already uses, so the same bar transfers). Pure read over the
+  // trend's ring; no cached slope (nothing ranks tids against each other by
+  // slope - tagLeakInstances ranks its candidates by the live tracking
+  // table's own age diversity, not by this history).
+  bool hasQualifyingTidGrowth(const KlassPopulationEntry::TidTrend &trend) const;
+
+  // Per-tid qualification for ONE epoch push: the age-trend test above OR
+  // the just-pushed surviving-instance count clearing
+  // TID_RETAINED_COUNT_BAR (the one-cohort-per-thread accumulation shape
+  // the age trend structurally cannot see - see that constant's own
+  // comment). The caller applies the result to the trend's own
+  // consecutive_positive, the same push-time pattern
+  // recordKlassPopulationSampleLocked() uses for the klass-level counter;
+  // the required hysteresis then makes both discriminators SUSTAINED
+  // (a thread over the bar must stay over it for required_hysteresis
+  // consecutive epochs - a transient burst that GCs away resets).
+  bool tidPushQualifies(const KlassPopulationEntry::TidTrend &trend,
+                        u32 current_count) const;
+
+  // Folds one epoch's per-thread scratch (KlassCountScratch::threads -
+  // per-tid distinct surviving GC ages, already maintained by
+  // accumulateKlassCount()/insertThreadGen()) into slot's per-tid trend
+  // rings: present tids push their epoch count; tracked tids ABSENT this
+  // epoch push 0 (a thread whose instances all died must not keep a stale
+  // rising ring - the 0 push fails hasQualifyingTidGrowth() and resets that
+  // trend's consecutive_positive, the per-tid analogue of the population
+  // simply stopping); synthetic (test-seeded) trends are exempt from that
+  // decay and from eviction. New tids beyond MAX_TID_TRENDS evict the
+  // non-synthetic trend with the lowest consecutive_positive (then the
+  // lowest ring_fill) - a genuinely rising leak tid accumulates hysteresis
+  // fast and resists eviction, machinery tids never do. Best-effort caveat:
+  // KlassCountScratch caps per-klass threads at 16 > MAX_TID_TRENDS, so a
+  // klass with more than 16 allocating threads in one epoch can miss a
+  // tracked tid from the scratch and push it a spurious 0 - the same
+  // fixed-capacity best-effort the scratch itself already accepts.
+  // _table_lock held exclusively by the caller (foldKlassCountsLocked()).
+  void recordTidTrendSamplesLocked(int slot, const KlassCountScratch &scratch);
+
   // The sustained-trend gate (this class's own header comment above,
   // "Sustained-trend gate") - both-required growth-magnitude and floor-rise
   // tests, design doc's explicit "mean of thirds" choice over full
@@ -697,15 +820,23 @@ public:
   // table's current value for klass_id atomically with the resolve.
   int selectLeakCandidates(KlassCandidate *out, int max);
 
-  // Tag ALL tracked instances of the given leak candidate classes with
+  // Tag the tracked instances of the given leak candidates - only the
+  // instances allocated by a candidate's QUALIFYING tids
+  // (KlassCandidate::qualifying_tids, filled by selectLeakCandidates()
+  // from the per-tid trends that cleared the same hysteresis gate) - with
   // JVMTI tags from the leak tag pool. Called by pollWatchedTargets()
-  // instead of the old single-representative marker-tag approach. The BFS
-  // recognizes these tags by range check (isLeakTag) and admits the
-  // specific objects into the frontier, storing the leak tag for
-  // correlation with HeapLiveObject events. Returns the number of tags
-  // assigned.
-  int tagLeakInstances(jvmtiEnv *jvmti, const u32 *klass_ids,
-                       int klass_count);
+  // with this poll's candidate list. The tid scope is the fix for the
+  // disjoint-tagged-vs-frontier pod finding's pool-economy half: a leak
+  // klass's tracked population also contains machinery instances of the
+  // same class from other threads, and klass-wide tagging spent pool tags
+  // on those (observed on hotdog: 247 tagged, all machinery byte[]s with
+  // flat per-site retention, zero ever intercepted) while the real
+  // leak-site instances churned out of the pool. The BFS recognizes these
+  // tags by range check (isLeakTag) and admits the specific objects into
+  // the frontier, storing the leak tag for correlation with HeapLiveObject
+  // events. Returns the number of tags assigned.
+  int tagLeakInstances(jvmtiEnv *jvmti, const KlassCandidate *candidates,
+                       int candidate_count);
 
   // Look up the (call_trace_id, tid) recorded for a leak tag. Returns
   // false if the tag is not a valid leak tag or has been returned to the
@@ -955,6 +1086,84 @@ public:
                                                         max_evicted);
     _table_lock.unlock();
     return evicted;
+  }
+
+  // Seeds one per-tid trend sample for tests/scenarios: pushes `count` as
+  // tid's epoch sample on klass_id's KlassPopulationEntry, marking the
+  // trend SYNTHETIC (exempt from the real fold's absent-tid decay and slot
+  // eviction - see TidTrend::synthetic's own comment) so a scenario's ramp
+  // survives the interleaved real GC folds that the same test's
+  // System.gc() churn triggers. The tid MUST be the allocating thread's real
+  // profiler tid (ProfiledThread::currentTid()'s space -
+  // JavaProfiler.getTid() on the leaking thread) whenever the test also
+  // relies on tagLeakInstances() tagging real tracked instances: the
+  // production tagging scope is exactly the qualifying-tid set, and a fake
+  // tid matches no tracked instance. Creates the klass entry if absent
+  // (count-0/epoch-0 first sample, same creation branch
+  // klassPopulationSetRepresentativeForTest() relies on) and resolves the
+  // synthetic-id aliasing exactly like klassPopulationRecordForTest()
+  // above. Out of gtest's reach in one respect: gtest call sites have no
+  // live tracked instances to tag anyway (they exercise the qualification
+  // gate only), so a distinct gtest-chosen tid is fine there.
+  void tidTrendRecordForTest(u32 klass_id, jint tid, u32 count, u64 epoch) {
+    _table_lock.lock();
+    klass_id = resolveTestKlassAliasLocked(klass_id);
+    int slot = -1;
+    for (int i = 0; i < _klass_population_size; i++) {
+      if (_klass_population[i].klass_id == klass_id) {
+        slot = i;
+        break;
+      }
+    }
+    if (slot < 0) {
+      int out_slot;
+      bool created;
+      recordKlassPopulationSampleLocked(klass_id, 0, 0, &out_slot, &created);
+      slot = out_slot;
+    }
+    KlassPopulationEntry &entry = _klass_population[slot];
+    KlassPopulationEntry::TidTrend *trend = nullptr;
+    for (int i = 0; i < entry.tid_trend_count; i++) {
+      if (entry.tid_trends[i].tid == tid) {
+        trend = &entry.tid_trends[i];
+        break;
+      }
+    }
+    if (trend == nullptr && entry.tid_trend_count <
+        KlassPopulationEntry::MAX_TID_TRENDS) {
+      trend = &entry.tid_trends[entry.tid_trend_count++];
+      trend->tid = tid;
+      trend->ring_head = 0;
+      trend->ring_fill = 0;
+      trend->consecutive_positive = 0;
+    }
+    if (trend != nullptr) {
+      trend->synthetic = true;
+      // The one seeded value lands in BOTH the age ring and the retained-
+      // count ring, so a test can qualify a tid either way the production
+      // gate does: a rising small-value ramp exercises the age-trend
+      // discriminator, while one flat value over TID_RETAINED_COUNT_BAR
+      // exercises the retained-count bar (the one-cohort-per-thread
+      // accumulation shape - see that constant's own comment).
+      trend->ring[trend->ring_head] = (u8)count;
+      trend->count_ring[trend->ring_head] = (u8)count;
+      trend->ring_head = (u8)((trend->ring_head + 1) %
+                             KlassPopulationEntry::TID_TREND_RING_SIZE);
+      if (trend->ring_fill < KlassPopulationEntry::TID_TREND_RING_SIZE) {
+        trend->ring_fill++;
+      }
+      if (tidPushQualifies(*trend, count)) {
+        if (trend->consecutive_positive < UINT8_MAX) {
+          trend->consecutive_positive++;
+        }
+      } else {
+        trend->consecutive_positive = 0;
+      }
+      (void)epoch; // the per-tid ring is push-ordered like the klass ring;
+                   // recordKlassPopulationSampleLocked()'s own callers
+                   // likewise only use epoch for last_updated_epoch LRU
+    }
+    _table_lock.unlock();
   }
   // Sets an entry's representative directly - production code only ever
   // does this via foldKlassCountsLocked()'s JNI-dependent minting step

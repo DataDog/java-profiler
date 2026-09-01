@@ -2313,6 +2313,13 @@ protected:
         for (u16 i = 1; i <= 20; i++) {
             LivenessTracker::instance()->klassPopulationRecordForTest(
                 klass_id, i, i, &slot, &created);
+            // Per-(klass, tid) qualification: selectLeakCandidates() also
+            // requires a qualifying allocating thread. These fixtures have
+            // no real tracked instances (mock JVMTI, no live heap), so a
+            // fixed synthetic tid exercises the gate without pretending to
+            // match any instance's real tid.
+            LivenessTracker::instance()->tidTrendRecordForTest(
+                klass_id, /*tid=*/4242, (u32)i, (u64)i);
         }
         LivenessTracker::instance()->klassPopulationSetRepresentativeForTest(nullptr, klass_id, rep);
     }
@@ -2907,6 +2914,13 @@ protected:
         for (u16 i = 1; i <= 20; i++) {
             LivenessTracker::instance()->klassPopulationRecordForTest(
                 klass_id, i, i, &slot, &created);
+            // Per-(klass, tid) qualification: selectLeakCandidates() also
+            // requires a qualifying allocating thread. These fixtures have
+            // no real tracked instances (mock JVMTI, no live heap), so a
+            // fixed synthetic tid exercises the gate without pretending to
+            // match any instance's real tid.
+            LivenessTracker::instance()->tidTrendRecordForTest(
+                klass_id, /*tid=*/4242, (u32)i, (u64)i);
         }
         LivenessTracker::instance()->klassPopulationSetRepresentativeForTest(nullptr, klass_id, rep);
     }

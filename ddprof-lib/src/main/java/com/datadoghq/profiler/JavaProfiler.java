@@ -462,6 +462,19 @@ public final class JavaProfiler {
 
     private static native int getTid0();
 
+    /**
+     * Test seam (debug native builds only): returns the calling thread's profiler tid
+     * (ProfiledThread::currentTid()'s value on the native side - the same tid space
+     * {@code seedTidTrendSample0} matches tracked instances' allocating threads
+     * against). Scenarios seeding per-(klass, tid) trend ramps must call this ON
+     * the leaking thread and pass the result to {@code seedTidTrendSample0}, or
+     * the qualifying tid will match no tracked instance and no leak tag will
+     * ever be assigned to the scenario's real instances.
+     */
+    public static int getTid() {
+        return getTid0();
+    }
+
     private static native boolean recordTrace0(long rootSpanId, String endpoint, String operation, int sizeLimit);
 
     private static native void dump0(String recordingFilePath);
@@ -553,6 +566,18 @@ public final class JavaProfiler {
      * chosen klass id without waiting on real GC epochs.
      */
     public static native void seedKlassPopulationSample0(int klassId, int count, long epoch);
+
+    /**
+     * Test seam (debug native builds only): seeds one epoch's worth of per-tid trend
+     * history for {@code klassId}, the (klass, tid) qualification
+     * selectLeakCandidates() now requires on top of the klass-level ramp seeded by
+     * {@link #seedKlassPopulationSample0}. Repeated calls with the same rising shape
+     * (and the same {@code tid}) build the sustained rise that qualifies {@code tid}
+     * as a leak-site thread. {@code tid} must be the leaking thread's real profiler
+     * tid from {@link #getTid()} whenever the scenario also relies on leak tagging
+     * of real tracked instances; see that method's own comment.
+     */
+    public static native void seedTidTrendSample0(int klassId, int tid, int count, long epoch);
 
     /**
      * Test seam (debug native builds only): wires {@code representative} in as {@code klassId}'s
