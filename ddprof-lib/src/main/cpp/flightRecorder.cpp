@@ -2115,7 +2115,7 @@ void Recording::writeContextSnapshot(Buffer *buf, Context &context) {
   buf->putVar64(context.rootSpanId);
 
   for (size_t i = 0; i < Profiler::instance()->numContextAttributes(); i++) {
-    buf->putVar32(context.get_tag(i).value);
+    buf->putVar32(context.getTag(i));
   }
 }
 
