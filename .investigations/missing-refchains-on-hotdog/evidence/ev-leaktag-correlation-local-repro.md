@@ -55,3 +55,20 @@ assertion message (queue depths, gotw batches, interception lines).
 Also verified locally: proportional batch control behaves on a real JVM
 (batch 270, next 512, gotw 16-18ms) and the fair-share lane drain +
 `filtered depth=1 root_kind=24` gate lines fire in a real run.
+
+## FINAL RESULT (this session): PASSED, committed
+
+`[correlation-found] 1073742077` - the scenario passes end-to-end through
+the GROWING ArrayList (per-round trend maintenance was the last mile:
+a one-shot seeded ramp ages out of LivenessTracker's hysteresis and the
+byte[] candidate dropped right after the first interceptions, stranding
+the correlated discoveries).
+
+The post-green full testDebug run then exposed, via the seams test,
+three more real defects (all fixed, all nodes): the dangling jclass
+local-ref cache crash, the seam-vs-BFS-thread engine race, and the
+depth-0 durable-root upgrade gap. Suites at commit 663784137:
+539 gtests green, slow suite 16/16, seams test green; the 7 remaining
+testDebug failures are pre-existing environment failures (proven at
+base via stash for CollapsingSleepTest; wallclock/nativethread/vtable/
+lifecycle subsystems untouched by this branch).

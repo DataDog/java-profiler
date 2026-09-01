@@ -47,3 +47,13 @@ user of it. Also strictly cheaper (plain JVMTI call vs Class.getName()
 JNI upcall that could allocate). flush_table()'s getName()-based
 resolution for JFR event class names is deliberately unchanged (dot-form
 rendering preserved).
+
+## Third dot-form user found this session
+
+`ReferenceChainTracker::tagAsRootForTest()` resolved klass ids via
+`Class.getName()` too - the seam's entries were in dot space while the
+aliased population entries (candidates) were in signature space, so no
+candidate could ever match the seam's frontier entries. Same fix applied
+(GetClassSignature + normalizeClassSignature + lookupClass). The mock
+gtest fixture needed no change (its GetClassSignature mock already feeds
+signature-form names).

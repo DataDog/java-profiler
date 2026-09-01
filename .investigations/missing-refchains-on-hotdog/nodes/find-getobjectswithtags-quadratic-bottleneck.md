@@ -170,3 +170,14 @@ edges/pass vs 3-4 before). `GetObjectsWithTags` bounded at 20-35ms
 0 candidates at time of verification because JVM restarted and liveness
 tracker needs warmup (`heapFloorRising=0`, `required_hysteresis=5`).
 Monitoring for candidates to appear once enough GC generations pass.
+
+## Semantics clarification (this session, jdk21 source + pod)
+
+GetObjectsWithTags is NOT a VM op (jvmtiTagMap.cpp:1305): it scans the
+whole tag map under the tag-map mutex, O(tag-map size) per call
+regardless of tags requested - it blocks other tag users but does not
+stop the world. Measured on hotdog JVM 75258: 18-21ms/call at ~200k
+entries, ~5 calls/pass at ~88 passes/min = ~100ms of tag-map-locked
+scanning per pass - the dominant per-pass cost, vs the walk VM op's
+bounded ~15ms STW. See find-jvmti-heap-walk-stw-vmop for the full
+pause-vs-lock picture.

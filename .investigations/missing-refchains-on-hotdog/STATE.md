@@ -16,57 +16,37 @@ representatives are re-tagged and all discovered instances auto-marked,
 chains are cached per-instance (not per-class). JFR analysis confirmed 2
 ReferenceChain events emitted — but one was for a noise [B instance.
 
-## Current focus: local repro green, THEN one pod confirmation
+## Current focus: option C + isQueuedForRotation fix implemented; all suites green; pod round 4 pending
 
-The hotdog deploy loop is replaced by the local E2E
-(`LeakTagCorrelationReferenceChainTest`, slow suite; see
-`ev-leaktag-correlation-local-repro`). This session the harness caught and
-fixed, locally, what would each have cost a pod roundtrip:
+Implemented this session (uncommitted):
+- PriorityExpandSet (O(1) isQueuedForRotation; was ~200M comparisons per
+  rotation pass at a 199k frontier - user-flagged profile hotspot).
+- Option C: (klass, tid) qualification. selectLeakCandidates() requires a
+  qualifying allocating thread (age-trend OR retained-count bar 8);
+  KlassCandidate carries qualifying tids; tagLeakInstances() tags only
+  those tids' instances. Pod effect: tagging scoped to hotdog's
+  simulated-memory-leak thread (its per-tid signal is real and rising),
+  machinery byte[]s out of scope by construction.
+- All suites green: 543 gtests (4 new per-tid gate tests), slow suite 8/8
+  ([correlation-found] through the per-tid-scoped production tagging
+  path), testDebug failures unchanged (5, pre-existing env-flaky).
+- spotless applied.
 
-1. `find-gate-bypass-representative-paths` - canary/rep chain paths
-   bypassed the noise gate (the pod's re-emitted-noise symptom); depth-0
-   durable suppression corrected (predicate now depth<2 && transient).
-2. `find-klass-id-notation-mismatch` - PRODUCTION: dot vs slash
-   StringDictionary keys made every candidate/discovered comparison fail
-   (the pod's universal "resolved but no candidate match"); only arrays
-   matched accidentally.
-3. `find-test-seam-aliasing` - the redesign had broken all synthetic-id
-   test seams (3 pre-existing scenarios were silently broken since the
-   redesign; none had been run); real-id aliasing in the debug seams
-   revived them, plus rep-before-seed order + per-round trend maintenance.
-4. `find-rotation-resize-blindspot` - user's challenge was correct:
-   growing containers' new internals were structurally invisible. Fix
-   set: fair-share fanout/lap rotation, fanout hygiene, ancestor fanout,
-   requeueChainRootForRotation (per-poll holder-root requeue - the
-   profiler-native version of the parked
-   `q-resize-instrumentation-rescan-priority` idea).
-5. Round-4 completion: proportional batch control (AIMD's fixed budget
-   sat below the measured gotw floor; EWMA retained, law now
-   batch x remaining_window / ema) + lane-toggle persistence across
-   expandFrontier invocations (local reset starved pending, observed
-   109k->113k on-pod).
+## Next steps
 
-All 539 gtests green (new: proportional-batch, lane persistence, gate
-depth-0 cases, fanout hygiene). Slow suite: external scenarios + in-process
-chain tests green; the correlation test's FINAL verification run was
-interrupted mid-run by the checkpoint.
-
-## Next step: finish the interrupted run, then commit
-
-1. Re-run `:ddprof-test:testSlowDebug -Ptests=LeakTagCorrelationReferenceChainTest`
-   (the per-round-seeding scenario edit is already applied but unverified).
-2. If red: read the child diagnostics from the failure message (they are
-   in-build now - no pod needed) and continue the trail.
-3. When green: run the whole slow suite + testDebug (ReferenceChainTrackingTest),
-   `spotlessApply`, commit everything as one coherent chunk (round-4
-   completion + gate fixes + notation fix + seam aliasing + rotation
-   fix set + the local repro harness), push.
-4. Only THEN one pod confirmation (deploy; expect: `intercepted:` lines,
-   `requeueChainRootForRotation` lines, correlated chains with
-   targetTag >= 0x40000000 in the merged upload).
-5. TEMP to revert before finalizing: CANARY_NO_PROGRESS_PASS_LIMIT 3,
-   tagLeakInstances per-tag log, fanout-insert log, requeue log, and the
-   other round-4 temp diagnostics.
+1. Pod round 4 (after commit/push): copy binary + pkill java, verify build
+   via marker strings + ema_call_ms logs, then check:
+   - tagLeakInstances tagged lines carry the simulated-leak thread's tid
+     (not the old machinery tids); pool economy (fewer stable need_set=0
+     waiters);
+   - interception/recordDiscoveredInstance/requeueChainRootForRotation
+     firing (tagged objects now live under the leak site the crawl
+     rotates to);
+   - ReferenceChain emission with targetTag correlating to
+     HeapLiveObject.leakTag; cadence/shouldRunPass behavior.
+2. Commit once pod-confirmed (logical chunks: rotation-set fix; per-tid
+   qualification; seams/scenario wiring).
+3. TEMP reverts before finalizing (list below).
 
 ## TEMP — MUST REVERT before finalizing
 
@@ -74,6 +54,13 @@ interrupted mid-run by the checkpoint.
   testing.
 - Temp diagnostics still in code (kind_counts, gotw logs, blocking logs,
   discovered-loop logs) — remove before production.
+- TEST_LOG in `maybeUpgradeRootAttachedRootKind` (upgrade attempts) —
+  added this session.
+- TEST_LOG `static_sweep_gate` in `runPassManualWalk` (per-pass sweep gate
+  decision) — added this session.
+- Per-tag TEST_LOG in `tagLeakInstances`, `fanout-insert` log in
+  `trackLeakAccumulation`, `requeueChainRootForRotation` log — from the
+  repro round.
 - Old marker-tag decode in heapReferenceCallback is now unused — confirm
   and remove.
 

@@ -47,3 +47,24 @@ first is now the load-bearing order - previously a no-op when absent).
   fixtures needing chains must retain via static fields (gcRootHolder
   became static; the in-process cache test's HashMap chains are depth>=3
   so gate-legal as a local).
+
+## Seams-test fixture rules (ReferenceChainTestSeamsTest, this session)
+
+The seams test itself tripped three fixture-vs-mechanism traps, worth
+recording because any future seam-driven test will hit them:
+- A one-shot `runReferenceChainPass0` is not enough: admitStaticFieldRoots
+  sweeps loaded classes in budget-bounded chunks (~376/pass here); drive a
+  pass+poll loop until the event lands (bounded, e.g. 40 laps' worth).
+- The target must not live in a local of the test frame: a live local IS
+  a STACK_LOCAL root, and the noise gate correctly suppresses the
+  resulting depth-0 transient chain. Reference the target only through
+  the static holder (all access via the static field) - the representative
+  jweak's own JNI-global root then makes the chain gate-legal even before
+  the static sweep reaches it.
+- A unique nested class as target: java.lang.Object (or any common class)
+  collides with a real population entry, which outranks the seeded ramp.
+- `new Object()`/stack-held targets make the chain event depend on
+  discovery ORDER (root enum's stack-local win vs the sweep's later
+  static win) - the upgraded root-kind now closes that gap
+  (find-depth0-durable-root-upgrade-gap), but deterministic fixtures
+  should still avoid the order dependence.
