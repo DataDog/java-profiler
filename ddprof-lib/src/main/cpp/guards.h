@@ -19,6 +19,7 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <cerrno>
 #include <signal.h>
 #include <pthread.h>
 
@@ -97,23 +98,19 @@ private:
     bool _active;
 };
 
-// Shared drop-path body for the SIGNAL_HANDLER_GUARD_OR_DROP* macros below.
-// extra_stmt runs after the dropped-sample counter increment and before the
-// return, so both macros stay in lockstep as the drop-accounting logic
-// evolves.
-#define SIGNAL_HANDLER_GUARD_OR_DROP_IMPL(extra_stmt)       \
+// Declare a scope guard local that increments the depth on entry and
+// decrements on scope exit.  Use as the first statement after any
+// foreign-signal-origin rejection check, before any profiling-owned work.
+// If the handler also needs to preserve errno across its early returns,
+// declare an ErrnoPreserver before this macro -- it must be the
+// first-declared local in the handler so it destructs last, after every
+// other guard (including this one) has had a chance to touch errno.
+#define SIGNAL_HANDLER_GUARD_OR_DROP()                      \
       SignalHandlerScope _signal_handler_scope(true);       \
       if (!_signal_handler_scope.isActive()) {              \
         Counters::increment(SAMPLES_DROPPED_THREAD_LOCAL);  \
-        extra_stmt;                                         \
         return;                                             \
       }
-
-// Declare a scope guard local that increments the depth on entry and
-// decrements on scope exit.  Use as the first statement after any 
-// foreign-signal-origin rejection check, before any profiling-owned work
-#define SIGNAL_HANDLER_GUARD_OR_DROP() SIGNAL_HANDLER_GUARD_OR_DROP_IMPL((void)0)
-#define SIGNAL_HANDLER_GUARD_OR_DROP_WITH_ERRNO(err) SIGNAL_HANDLER_GUARD_OR_DROP_IMPL(errno = err)
 
 
 // Declare a scope guard local that increments the depth on entry and
@@ -275,6 +272,35 @@ public:
   // Non-copyable
   SighandlerTidScope(const SighandlerTidScope&) = delete;
   SighandlerTidScope& operator=(const SighandlerTidScope&) = delete;
+};
+
+/**
+ * RAII guard that saves errno on construction and restores it on
+ * destruction, regardless of which return path is taken in between.
+ *
+ * Replaces the previous pattern of `int saved_errno = errno;` at handler
+ * entry paired with a manual `errno = saved_errno;` before every return --
+ * a pattern that is easy to miss on a newly added return and, even when
+ * done consistently, still leaves a gap: any destructor that runs after
+ * the manual restore (e.g. a signal-scope guard making a syscall) can
+ * clobber errno again before the handler actually exits.
+ *
+ * To close that gap, declare the ErrnoPreserver as the *first* local in
+ * the guarded function: C++ destroys locals in reverse declaration order,
+ * so it destructs last, after every other guard's destructor has already
+ * run.
+ */
+class ErrnoPreserver {
+public:
+  ErrnoPreserver() : _errno(errno) { }
+  ~ErrnoPreserver() { errno = _errno; }
+
+  // Non-copyable
+  ErrnoPreserver(const ErrnoPreserver&) = delete;
+  ErrnoPreserver& operator=(const ErrnoPreserver&) = delete;
+
+private:
+  int _errno;
 };
 
 #endif // _GUARDS_H

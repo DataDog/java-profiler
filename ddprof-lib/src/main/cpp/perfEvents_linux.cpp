@@ -764,14 +764,11 @@ class PerfFdRearmGuard {
 public:
   PerfFdRearmGuard(int fd, int tid) : _fd(fd), _tid(tid) {}
   ~PerfFdRearmGuard() {
-    // Constructed first among signalHandler's locals, so this destructs
-    // last -- after any errno restore the handler body performs. Save and
-    // restore errno here too, otherwise these calls silently clobber it.
-    int saved_errno = errno;
+    // These calls must not leak an errno change to the caller.
+    ErrnoPreserver errno_preserver;
     PerfEvents::resetBuffer(_tid);
     ioctl(_fd, PERF_EVENT_IOC_RESET, 0);
     ioctl(_fd, PERF_EVENT_IOC_REFRESH, 1);
-    errno = saved_errno;
   }
   PerfFdRearmGuard(const PerfFdRearmGuard &) = delete;
   PerfFdRearmGuard &operator=(const PerfFdRearmGuard &) = delete;
@@ -782,13 +779,13 @@ private:
 };
 
 void PerfEvents::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
-  int saved_errno = errno;
+  ErrnoPreserver errno_preserver;
   if (siginfo->si_code <= 0) {
     // Looks like an external signal; don't treat as a profiling event
     return;
   }
   PerfFdRearmGuard rearm(siginfo->si_fd, OS::threadId());
-  SIGNAL_HANDLER_GUARD_OR_DROP_WITH_ERRNO(saved_errno);
+  SIGNAL_HANDLER_GUARD_OR_DROP();
   InflightGuard inflight;
 
   // A thread with no ProfiledThread attached must never enter the critical
@@ -803,7 +800,6 @@ void PerfEvents::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // Atomically try to enter critical section - prevents all reentrancy races
   CriticalSection cs(current);
   if (!cs.entered()) {
-    errno = saved_errno;
     return;  // Another critical section is active, defer profiling
   }
   current->noteCPUSample(Profiler::instance()->recordingEpoch());
@@ -817,7 +813,6 @@ void PerfEvents::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     Profiler::instance()->recordSample(ucontext, counter, tid, BCI_CPU, 0,
                                        &event);
   }
-  errno = saved_errno;
 }
 
 Error PerfEvents::check(Arguments &args) {

@@ -232,16 +232,14 @@ void WallClockASGCT::sharedSignalHandler(int signo, siginfo_t *siginfo,
 
 void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext,
                               u64 last_sample, ProfiledThread* current) {
-  int saved_errno = errno;
+  ErrnoPreserver errno_preserver;
   assert(current != nullptr);
   // Atomically try to enter critical section - prevents all reentrancy races
   CriticalSection cs(current);
   if (!cs.entered()) {
-    errno = saved_errno;
     return;  // Another critical section is active, defer profiling
   }
   if (tickInitWindowIfNeeded(current)) {
-    errno = saved_errno;
     return;
   }
   // Once-per-run filter (wallprecheck=true): for untraced threads, exact
@@ -252,7 +250,6 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   // sampling instead of arming sampled_this_run.
   WallPrecheckResult precheck = prepareWallPrecheck(current, _precheck);
   if (precheck.suppress) {
-    errno = saved_errno;
     return;
   }
   int tid = current->tid();
@@ -300,7 +297,6 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
     finishWallPrecheck(precheck, recorded, recorded_call_trace_id);
     emitUnownedBlockedTailForWallPrecheck(tid, precheck);
   }
-  errno = saved_errno;
 }
 
 Error BaseWallClock::start(Arguments &args) {
@@ -443,22 +439,19 @@ void WallClockJvmti::sharedSignalHandler(int signo, siginfo_t *siginfo,
 void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
                                    void *ucontext, u64 last_sample,
                                    ProfiledThread* current) {
-  int saved_errno = errno;
+  ErrnoPreserver errno_preserver;
   assert(current != nullptr);
   CriticalSection cs(current);
   if (!cs.entered()) {
-    errno = saved_errno;
     return;
   }
 
   if (tickInitWindowIfNeeded(current)) {
-    errno = saved_errno;
     return;
   }
 
   WallPrecheckResult precheck = prepareWallPrecheck(current, _precheck);
   if (precheck.suppress) {
-    errno = saved_errno;
     return;
   }
   int tid = current->tid();
@@ -489,7 +482,6 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
         nullptr, last_sample, tid, BCI_WALL, &event);
     finishWallPrecheck(precheck, recorded);
   }
-  errno = saved_errno;
 }
 
 void WallClockJvmti::initialize(Arguments &args) {

@@ -34,8 +34,8 @@ long ITimer::_interval;
 CStack ITimer::_cstack;
 
 void ITimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
-  int saved_errno = errno;
-  SIGNAL_HANDLER_GUARD_OR_DROP_WITH_ERRNO(saved_errno);
+  ErrnoPreserver errno_preserver;
+  SIGNAL_HANDLER_GUARD_OR_DROP();
   // NOTE: ITimer uses setitimer(ITIMER_PROF) which delivers signals with
   // si_code==SI_KERNEL — no sival payload is available. The signal-origin
   // check implemented in CTimer/WallClock cannot be applied here. ITimer
@@ -44,7 +44,6 @@ void ITimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // validation is required.
   InflightGuard inflight;
   if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
-    errno = saved_errno;
     return;
   }
 
@@ -54,7 +53,6 @@ void ITimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // Atomically try to enter critical section - prevents all reentrancy races
   CriticalSection cs(current);
   if (!cs.entered()) {
-    errno = saved_errno;
     return;  // Another critical section is active, defer profiling
   }
   current->noteCPUSample(Profiler::instance()->recordingEpoch());
@@ -67,7 +65,6 @@ void ITimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     Profiler::instance()->recordSample(ucontext, _interval, tid, BCI_CPU, 0,
                                        &event);
   }
-  errno = saved_errno;
 }
 
 Error ITimer::check(Arguments &args) {
@@ -110,23 +107,20 @@ bool ITimerJvmti::_enabled = false;
 long ITimerJvmti::_interval = 0;
 
 void ITimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
-  int saved_errno = errno;
-  SIGNAL_HANDLER_GUARD_OR_DROP_WITH_ERRNO(saved_errno);
+  ErrnoPreserver errno_preserver;
+  SIGNAL_HANDLER_GUARD_OR_DROP();
   ProfiledThread *current = SIGNAL_HANDLER_CURRENT_THREAD();
   assert(current != nullptr);
 
   InflightGuard inflight;
   CriticalSection cs(current);
   if (!cs.entered()) {
-    errno = saved_errno;
     return;
   }
   if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
-    errno = saved_errno;
     return;
   }
   if (tickInitWindowIfNeeded(current)) {
-    errno = saved_errno;
     return;
   }
   int tid = current->tid();
@@ -142,7 +136,6 @@ void ITimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     Profiler::instance()->recordSampleDelegated(nullptr, _interval, tid,
                                                  BCI_CPU, &event);
   }
-  errno = saved_errno;
 }
 
 Error ITimerJvmti::check(Arguments &args) {

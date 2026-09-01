@@ -206,7 +206,7 @@ Error CTimerJvmti::start(Arguments &args) {
 }
 
 void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
-  int saved_errno = errno;
+  ErrnoPreserver errno_preserver;
   if (!OS::shouldProcessSignal(siginfo, SI_TIMER, SignalCookie::cpu())) {
     Counters::increment(CTIMER_SIGNAL_FOREIGN);
     OS::forwardForeignSignal(signo, siginfo, ucontext);
@@ -214,24 +214,21 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   }
   Counters::increment(CTIMER_SIGNAL_OWN);
 
-  SIGNAL_HANDLER_GUARD_OR_DROP_WITH_ERRNO(saved_errno);
+  SIGNAL_HANDLER_GUARD_OR_DROP();
   InflightGuard inflight;
   ProfiledThread *current = SIGNAL_HANDLER_CURRENT_THREAD();
   assert(!current->isDeepCrashHandler());
 
   CriticalSection cs(current);
   if (!cs.entered()) {
-    errno = saved_errno;
     return;
   }
   if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
-    errno = saved_errno;
     return;
   }
   int tid = 0;
 
   if (tickInitWindowIfNeeded(current)) {
-    errno = saved_errno;
     return;
   }
 
@@ -249,11 +246,10 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     Profiler::instance()->recordSampleDelegated(ucontext, _interval, tid,
                                                  BCI_CPU, &event);
   }
-  errno = saved_errno;
 }
 
 void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
-  int saved_errno = errno;
+  ErrnoPreserver errno_preserver;
 
   // Reject signals that did not originate from our timer_create timers.
   // This guards against Go's process-wide setitimer(ITIMER_PROF) and other
@@ -266,7 +262,7 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   }
   Counters::increment(CTIMER_SIGNAL_OWN);
 
-  SIGNAL_HANDLER_GUARD_OR_DROP_WITH_ERRNO(saved_errno);
+  SIGNAL_HANDLER_GUARD_OR_DROP();
   InflightGuard inflight;
   ProfiledThread* current = SIGNAL_HANDLER_CURRENT_THREAD();
   assert(current != nullptr);
@@ -274,18 +270,15 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // Atomically try to enter critical section - prevents all reentrancy races
   CriticalSection cs(current);
   if (!cs.entered()) {
-    errno = saved_errno;
     return;  // Another critical section is active, defer profiling
   }
   // we want to ensure memory order because of the possibility the instance gets
   // cleared
   if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
-    errno = saved_errno;
     return;
   }
   assert(!current->isDeepCrashHandler());
   if (tickInitWindowIfNeeded(current)) {
-    errno = saved_errno;
     return;
   }
   current->noteCPUSample(Profiler::instance()->recordingEpoch());
@@ -298,8 +291,6 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     Profiler::instance()->recordSample(ucontext, _interval, tid, BCI_CPU, 0,
                                        &event);
   }
-  // we need to avoid spoiling the value of errno (tsan report)
-  errno = saved_errno;
 }
 
 #endif // __linux__
