@@ -14,7 +14,7 @@
 
 class VMTestAccessor {
  public:
-  static jvmtiEnv* jvmti() { return VM::_jvmti; }
+  static jvmtiEnv* getJvmti() { return VM::_jvmti; }
   static void setJvmti(jvmtiEnv* jvmti) { VM::_jvmti = jvmti; }
 
   static bool nativeMonitorEventsAvailable() {
@@ -25,10 +25,10 @@ class VMTestAccessor {
   }
 
   static bool monitorWaitEventsDelegated() {
-    return VM::_monitor_wait_events_delegated;
+    return VM::_monitor_wait_events_delegated.value();
   }
   static void setMonitorWaitEventsDelegated(bool delegated) {
-    VM::_monitor_wait_events_delegated = delegated;
+    VM::_monitor_wait_events_delegated.set(delegated);
   }
 
   static bool profilerBridgeInitialized() {
@@ -85,7 +85,7 @@ class MonitorEventConfigurationTest : public ::testing::Test {
   }
 
   void SetUp() override {
-    original_jvmti = VMTestAccessor::jvmti();
+    original_jvmti = VMTestAccessor::getJvmti();
     original_initialized = VMTestAccessor::profilerBridgeInitialized();
     original_available = VMTestAccessor::nativeMonitorEventsAvailable();
     original_delegated = VMTestAccessor::monitorWaitEventsDelegated();
@@ -241,7 +241,7 @@ class NativeMonitorEventsTest : public ::testing::Test {
   }
 
   void SetUp() override {
-    original_jvmti = VMTestAccessor::jvmti();
+    original_jvmti = VMTestAccessor::getJvmti();
     original_available = VMTestAccessor::nativeMonitorEventsAvailable();
     original_delegated = VMTestAccessor::monitorWaitEventsDelegated();
     original_task_block_enabled = profiler->taskBlockEnabled();

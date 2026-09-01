@@ -169,10 +169,9 @@ void ProfiledThread::unclaimAndReset() {
   _wall_epoch = 0;
   _call_trace_id = 0;
   _recording_epoch = 0;
-  _park_block_token = 0;
-  _task_block_start_ticks = 0;
-  _task_block_token = 0;
-  _task_block_context = {};
+  _park_slot = {};
+  _task_block_slot = {};
+  _monitor_slot = {};
   _filter_slot_id = -1;
   _init_window = 0;
   _signal_depth = 0;
