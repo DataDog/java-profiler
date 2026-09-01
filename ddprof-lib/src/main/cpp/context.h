@@ -32,15 +32,19 @@ public:
   u64 rootSpanId;
 private:
   Tag tags[DD_TAGS_CAPACITY];
+
+  static bool isValidIndex(int i) {
+    return i >= 0 && (u32)i < DD_TAGS_CAPACITY;
+  }
 public:
   u32 getTag(int i) {
-    assert(i >= 0 && (u32)i < DD_TAGS_CAPACITY);
-    return i >= 0 && (u32)i < DD_TAGS_CAPACITY ? tags[i].value : 0;
+    assert(isValidIndex(i));
+    return isValidIndex(i) ? tags[i].value : 0;
   }
   
   void setTag(int i, u32 value) {
-    assert(i >= 0 && (u32)i < DD_TAGS_CAPACITY);
-    if (i >= 0 && (u32)i < DD_TAGS_CAPACITY) {
+    assert(isValidIndex(i));
+    if (isValidIndex(i)) {
       tags[i].value = value;
     }
   }
