@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <atomic>
 #include <climits>
+#include <cstring>
 #include <deque>
 #include <jni.h>
 #include <jvmti.h>
@@ -1209,10 +1210,85 @@ private:
 
   // Upper bound on _priority_expand above. 1024 holds a few passes' worth of
   // rotation selection (budgets sum to ~272/pass) so a truncating rotation
-  // phase still has work waiting next pass, while keeping
-  // isQueuedForRotation()'s per-selection linear scan at ~262k comparisons
-  // worst case per pass (256 selections x 1024 entries) - sub-millisecond.
+  // phase still has work waiting next pass.
   static constexpr size_t PRIORITY_EXPAND_CAP = 1024;
+
+  // O(1) membership index over _priority_expand, backing
+  // isQueuedForRotation(): the rotation collectors run that check for
+  // EVERY FrontierTable slot they visit (~199k EXPANDED entries on a
+  // large heap), and the original linear scan over the deque cost up to
+  // ~200M comparisons per rotation pass at the cap - observed prominently
+  // in profiles. Fixed-capacity open addressing with no allocation after
+  // construction: PRIORITY_EXPAND_CAP (1024) live entries in a
+  // 2*PRIORITY_EXPAND_SLOT_SHIFT-power-of-two slot table at <=0.5 load
+  // factor, linear probing over Fibonacci-hashed tags (frontier tags are
+  // near-sequential, so a plain (tag % slots) index would cluster).
+  // Deletion needs NO tombstones: expandFrontier() pops a batch off the
+  // deque's front and rebuildFrom() re-derives the index from the deque's
+  // remaining contents - a full rebuild is <=1024 inserts, a few
+  // microseconds, against the ~20ms GetObjectsWithTags call the same
+  // batch already paid. The deque remains the drain-order source of
+  // truth; this index only answers membership. All mutation happens on
+  // the engine thread under the _engine_lock mutex (pushes in the
+  // collectors/admitObject()/requeueChainRootForRotation(), pops in
+  // expandFrontier()/markAllFrontierExpanded(), clears in
+  // startSearch()/restartSearch()), so plain non-atomic access is safe.
+  class PriorityExpandSet {
+   private:
+    // 2^11 == 2 * PRIORITY_EXPAND_CAP == 2048 slots. The shift below
+    // derives from it; keep both in sync.
+    static constexpr u64 SLOT_SHIFT = 11;
+    static constexpr u64 SLOT_MASK = (1ULL << SLOT_SHIFT) - 1;
+    jlong _keys[1ULL << SLOT_SHIFT];
+    u8 _used[1ULL << SLOT_SHIFT]; // 0 = empty, 1 = occupied
+
+    static u64 mix(jlong tag) {
+      // Fibonacci hashing: spreads near-sequential integer tags evenly
+      // across the table's power-of-two slot space.
+      return (u64)tag * 0x9E3779B97F4A7C15ULL;
+    }
+
+   public:
+    bool contains(jlong tag) const {
+      u64 i = mix(tag) >> (64 - SLOT_SHIFT);
+      while (_used[i]) {
+        if (_keys[i] == tag) {
+          return true;
+        }
+        i = (i + 1) & SLOT_MASK;
+      }
+      return false;
+    }
+
+    // Idempotent: returns false if `tag` is already indexed.
+    bool insert(jlong tag) {
+      u64 i = mix(tag) >> (64 - SLOT_SHIFT);
+      while (_used[i]) {
+        if (_keys[i] == tag) {
+          return false;
+        }
+        i = (i + 1) & SLOT_MASK;
+      }
+      _used[i] = 1;
+      _keys[i] = tag;
+      return true;
+    }
+
+    void clear() {
+      memset(_used, 0, sizeof(_used));
+    }
+
+    // Re-derives the index from the deque's CURRENT contents. Call after
+    // any pops so membership matches the queue exactly again; the
+    // deque's own size is the only bound needed here (the engine thread
+    // guarantees it stays <= PRIORITY_EXPAND_CAP by construction).
+    template <typename Deque> void rebuildFrom(const Deque &queue) {
+      clear();
+      for (jlong tag : queue) {
+        insert(tag);
+      }
+    }
+  } _priority_expand_set;
 
   // java/lang/Object jclass cache for expandFrontier()'s and
   // admitStaticFieldRoots()'s holder-array element type (referenceChains.cpp)
@@ -2127,14 +2203,16 @@ private:
   // from a prior pass's truncated batch (expandFrontier() leaves those at
   // the front of the queue for a later retry rather than popping them).
   // Shared by both rotation collectors below so neither can push a tag
-  // that's already pending re-expansion; a linear scan is deliberate over
-  // building a hash set - _priority_expand is bounded by
-  // ROOT_KIND_ROTATION_BUDGET + STALE_EXPANDED_ROTATION_BUDGET (a few
-  // hundred entries at most), where a linear scan is cheaper than hashing
-  // and allocating a table for every rotation-collecting pass.
+  // that's already pending re-expansion. O(1) via _priority_expand_set -
+  // the rotation collectors run this check for EVERY FrontierTable slot
+  // they visit (~199k EXPANDED entries on a large heap), so the original
+  // linear scan over the deque was ~200M comparisons per rotation pass at
+  // the PRIORITY_EXPAND_CAP (observed prominently in profiles); the
+  // "sub-millisecond" claim its original comment made only held for the
+  // per-SELECTION calls it was written for, not the per-slot visits the
+  // collectors actually make.
   bool isQueuedForRotation(jlong tag) const {
-    return std::find(_priority_expand.begin(), _priority_expand.end(),
-                      tag) != _priority_expand.end();
+    return _priority_expand_set.contains(tag);
   }
 
   // Bounded rotating re-expansion (design doc's closing section / Phase 5

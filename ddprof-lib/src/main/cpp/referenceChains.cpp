@@ -1137,6 +1137,7 @@ void ReferenceChainTracker::restartSearch() {
   store(_search_start_ns, (u64)0);
   _pending_expand.clear();
   _priority_expand.clear();
+  _priority_expand_set.clear();
   // Both keyed by frontier tags this restart is about to invalidate (fresh
   // tags start again from 1) - a stale entry surviving past a restart would
   // be compared against whatever unrelated object the new search has since
@@ -1222,6 +1223,7 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   store(_search_start_ns, (u64)0);
   _pending_expand.clear();
   _priority_expand.clear();
+  _priority_expand_set.clear();
   // Same reset rationale as restartSearch()'s own comment.
   _leak_signature_totals.clear();
   _leak_signature_prev_totals.clear();
@@ -2043,6 +2045,7 @@ ReferenceChainTracker::AdmitResult ReferenceChainTracker::admitObject(
   // rotation-discovered child (priority=true) skips the ordinary backlog.
   if (priority && _priority_expand.size() < PRIORITY_EXPAND_CAP) {
     _priority_expand.push_back(tag);
+    _priority_expand_set.insert(tag);
   } else {
     // Priority lane full: the rotation backpressure falls back to the
     // ordinary backlog rather than silently dropping the re-discovered
@@ -2254,6 +2257,7 @@ ReferenceChainTracker::collectStaleRootKindEntriesForRotation(
           _priority_expand.size() < PRIORITY_EXPAND_CAP) {
         selected.push_back(tag);
         _priority_expand.push_back(tag);
+        _priority_expand_set.insert(tag);
         if ((int)selected.size() >= max_count) {
           tag = tag % table_size + 1;
           break;
@@ -2350,6 +2354,7 @@ ReferenceChainTracker::collectStaleExpandedEntriesForRotation(
       }
       selected.push_back(parent_tag);
       _priority_expand.push_back(parent_tag);
+      _priority_expand_set.insert(parent_tag);
       ++it;
     }
     _leak_parent_rotation_cursor += selected.size() + 1;
@@ -2423,6 +2428,7 @@ ReferenceChainTracker::collectStaleExpandedEntriesForRotation(
           _priority_expand.size() < PRIORITY_EXPAND_CAP) {
         selected.push_back(tag);
         _priority_expand.push_back(tag);
+        _priority_expand_set.insert(tag);
         if ((int)selected.size() >= max_count) {
           tag = tag % table_size + 1;
           break;
@@ -2538,6 +2544,7 @@ ReferenceChainTracker::collectLeakAccumulationCandidatesForRotation(
     }
     selected.push_back(c.first);
     _priority_expand.push_back(c.first);
+    _priority_expand_set.insert(c.first);
   }
   return selected;
 }
@@ -2926,6 +2933,7 @@ void ReferenceChainTracker::markAllFrontierExpanded() {
     _frontier->markExpanded(_priority_expand.front());
     _priority_expand.pop_front();
   }
+  _priority_expand_set.clear();
   while (!_pending_expand.empty()) {
     _frontier->markExpanded(_pending_expand.front());
     _pending_expand.pop_front();
@@ -3243,6 +3251,18 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
     // error, holder allocation failure, or truncation before the first
     // batch entry was reached): leave the entire batch at the front of the
     // source queue for a later pass to retry, same as before.
+
+    if (from_priority) {
+      // This batch popped entries off _priority_expand's front (or, on
+      // truncation, was left untouched) - re-derive the membership index
+      // from the deque's current contents either way so
+      // isQueuedForRotation() stays exact for the rotation collectors that
+      // run later in this same pass. A full rebuild is <=
+      // PRIORITY_EXPAND_CAP inserts, a few microseconds against the ~20ms
+      // GetObjectsWithTags call this batch already paid
+      // (PriorityExpandSet's own comment, referenceChains.h).
+      _priority_expand_set.rebuildFrom(_priority_expand);
+    }
 
     if (holder != nullptr) {
       jni->DeleteLocalRef(holder);
@@ -4072,6 +4092,7 @@ void ReferenceChainTracker::requeueChainRootForRotation(jlong tag) {
            "target_tag=%lld",
            (long long)root_tag, (long long)tag);
   _priority_expand.push_back(root_tag);
+  _priority_expand_set.insert(root_tag);
 }
 
 namespace {

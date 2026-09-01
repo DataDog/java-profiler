@@ -92,6 +92,7 @@ public:
         t->_search_start_ns = 0;
         t->_pending_expand.clear();
         t->_priority_expand.clear();
+        t->_priority_expand_set.clear();
         t->_last_pass_gc_finish_epoch = 0;
         t->_last_pass_ns = 0;
         t->_passes_run = 0;
@@ -406,7 +407,9 @@ public:
     // source queue for a later pass to retry" comment) without driving a full
     // expandFrontier()/JVMTI round-trip to produce one.
     static void pushPriorityExpand(jlong tag) {
-        ReferenceChainTracker::instance()->_priority_expand.push_back(tag);
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        t->_priority_expand.push_back(tag);
+        t->_priority_expand_set.insert(tag);
     }
 
     // Simulates expandFrontier() having fully drained _priority_expand at the
@@ -417,7 +420,9 @@ public:
     // being called fresh on each of several simulated passes, the way
     // runPassManualWalk() actually does it once per real pass.
     static void clearPriorityExpand() {
-        ReferenceChainTracker::instance()->_priority_expand.clear();
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        t->_priority_expand.clear();
+        t->_priority_expand_set.clear();
     }
 
     static void setRootKindRotationCursor(jlong tag) {
