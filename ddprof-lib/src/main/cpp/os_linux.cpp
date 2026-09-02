@@ -472,9 +472,8 @@ bool OS::shouldProcessSignal(siginfo_t* siginfo, int expected_si_code, void* exp
 
 void OS::forwardForeignSignal(int signo, siginfo_t* siginfo, void* ucontext) {
     // Preserve errno: syscall(rt_sigprocmask) on the slow path (and any
-    // chained handler) may set errno. Callers that save errno AFTER
-    // forwardForeignSignal (e.g. CTimer::signalHandler) would see a clobbered
-    // value without this guard.
+    // chained handler) may set errno. Without this guard, that clobbered
+    // value would leak to the code that was interrupted by the signal.
     ErrnoPreserver errno_preserver;
     if (signo <= 0 || signo >= MAX_SIGNALS) {
         return;

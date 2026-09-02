@@ -205,6 +205,7 @@ bool BaseWallClock::inSyscall(void *ucontext) {
 
 void WallClockASGCT::sharedSignalHandler(int signo, siginfo_t *siginfo,
                                     void *ucontext) {
+  ErrnoPreserver errno_preserver;
   // Reject any SIGVTALRM that did not originate from our rt_tgsigqueueinfo
   // send. Defends against stray in-process tgkill / external sigqueue that
   // would otherwise drive our wallclock sampling path.
@@ -232,7 +233,6 @@ void WallClockASGCT::sharedSignalHandler(int signo, siginfo_t *siginfo,
 
 void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext,
                               u64 last_sample, ProfiledThread* current) {
-  ErrnoPreserver errno_preserver;
   assert(current != nullptr);
   // Atomically try to enter critical section - prevents all reentrancy races
   CriticalSection cs(current);
@@ -411,6 +411,7 @@ void WallClockASGCT::timerLoop() {
 
 void WallClockJvmti::sharedSignalHandler(int signo, siginfo_t *siginfo,
                                          void *ucontext) {
+  ErrnoPreserver errno_preserver;
   // Reject any SIGVTALRM that did not originate from our rt_tgsigqueueinfo
   // send (mirrors WallClockASGCT). Defends against stray in-process tgkill or
   // external sigqueue driving the JVMTI RequestStackTrace path.
@@ -439,7 +440,6 @@ void WallClockJvmti::sharedSignalHandler(int signo, siginfo_t *siginfo,
 void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
                                    void *ucontext, u64 last_sample,
                                    ProfiledThread* current) {
-  ErrnoPreserver errno_preserver;
   assert(current != nullptr);
   CriticalSection cs(current);
   if (!cs.entered()) {

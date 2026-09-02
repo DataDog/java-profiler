@@ -764,8 +764,9 @@ class PerfFdRearmGuard {
 public:
   PerfFdRearmGuard(int fd, int tid) : _fd(fd), _tid(tid) {}
   ~PerfFdRearmGuard() {
-    // These calls must not leak an errno change to the caller.
-    ErrnoPreserver errno_preserver;
+    // Errno changes made here are caught by the handler-level
+    // ErrnoPreserver, which is declared before this guard and therefore
+    // destructs after it.
     PerfEvents::resetBuffer(_tid);
     ioctl(_fd, PERF_EVENT_IOC_RESET, 0);
     ioctl(_fd, PERF_EVENT_IOC_REFRESH, 1);

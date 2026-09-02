@@ -226,14 +226,13 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
     return;
   }
-  int tid = 0;
 
   if (tickInitWindowIfNeeded(current)) {
     return;
   }
 
   current->noteCPUSample(Profiler::instance()->recordingEpoch());
-  tid = current->tid();
+  int tid = current->tid();
 
   {
     SighandlerTidScope sighandlerTid(tid);
