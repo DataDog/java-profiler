@@ -8,6 +8,7 @@ package com.datadoghq.profiler;
 import com.datadoghq.profiler.referencechains.LeakTagCorrelationScenario;
 import com.datadoghq.profiler.referencechains.LeakingCacheScenario;
 import com.datadoghq.profiler.referencechains.StaticFieldGrowingCollectionScenario;
+import com.datadoghq.profiler.referencechains.ThreadLocalLeakScenario;
 
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
@@ -184,6 +185,20 @@ public class ExternalLauncher {
                 String scratchPath = packed.substring(sep + "|||".length());
                 JavaProfiler instance = JavaProfiler.getInstance();
                 LeakTagCorrelationScenario.run(instance, commands, Paths.get(scratchPath));
+                System.out.flush();
+                System.exit(0);
+            } else if (args[0].equals("threadlocal-leak")) {
+                // Same "<start command>|||<scratch dump path>" packing as leak-cache above.
+                String packed = args.length == 2 ? args[1] : "";
+                int sep = packed.indexOf("|||");
+                if (sep < 0) {
+                    throw new IllegalArgumentException(
+                        "threadlocal-leak requires \"<start command>|||<scratch dump path>\", got: " + packed);
+                }
+                String commands = packed.substring(0, sep);
+                String scratchPath = packed.substring(sep + "|||".length());
+                JavaProfiler instance = JavaProfiler.getInstance();
+                ThreadLocalLeakScenario.run(instance, commands, Paths.get(scratchPath));
                 System.out.flush();
                 System.exit(0);
             }
