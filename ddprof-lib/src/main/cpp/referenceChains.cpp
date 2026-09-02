@@ -2523,12 +2523,40 @@ ReferenceChainTracker::collectLeakAccumulationCandidatesForRotation(
   // by their own fanout - collected first, then partially sorted, since
   // _leak_parent_fanout's total size is what bounds this method's cost (not
   // table_size), and is expected to be small (see that map's own comment).
+  //
+  // Two parent states qualify:
+  //  - EXPANDED: the ranking's original case - the parent's children were
+  //    admitted once and its EXPANDED state is stale (it has since
+  //    accumulated more children that were never observed), so re-expanding
+  //    it admits the new ones.
+  //  - FRONTIER: the parent is a known holder of watched-klass children
+  //    that has never been expanded at all. Measured live on hotdog (round
+  //    4, ev-leaktag-onpod-round4): with a 126,895-entry _pending_expand
+  //    backlog draining at ~120-200 objects/min, the growing holders (an
+  //    elementData-sized Object[] of the leaking collection) stay FRONTIER
+  //    for hours, and an EXPANDED-only filter made this tier select ZERO
+  //    every pass while holding 51k known parent candidates
+  //    (leak_accumulation_tags=0 on all 183 passes) - the targeted tier
+  //    going dead in exactly the regime it exists for. Allowing FRONTIER
+  //    parents means a first expansion, and it must JUMP the backlog
+  //    rather than join it: selections are pushed to the FRONT of
+  //    _priority_expand so the next expandFrontier() batch reaches them
+  //    (that deque already held ~1016 stale re-walk entries on the same
+  //    pod; push_back would queue the targeted holder behind all of them).
+  //
+  // A FRONTIER-state selection may still have a stale copy sitting in
+  // _pending_expand (queued there at admission time); the pending-lane
+  // drain eventually pops that copy and re-expands an already-EXPANDED
+  // object - one wasted expansion, deduped to edges=0 by the
+  // ALREADY_ADMITTED check. Bounded (once per selection) and harmless next
+  // to the value of reaching the holder at all.
   std::vector<std::pair<jlong, u32>> candidates; // (parent_tag, fanout)
   for (const auto &kv : _leak_parent_fanout) {
     if (kv.second.signature_key == winning_key && !isQueuedForRotation(kv.first)) {
       FrontierEntry entry{};
       if (_frontier->lookup(kv.first, &entry) &&
-          entry.state == FrontierEntryState::EXPANDED) {
+          (entry.state == FrontierEntryState::EXPANDED ||
+           entry.state == FrontierEntryState::FRONTIER)) {
         candidates.emplace_back(kv.first, kv.second.fanout);
       }
     }
@@ -2543,8 +2571,22 @@ ReferenceChainTracker::collectLeakAccumulationCandidatesForRotation(
       break;
     }
     selected.push_back(c.first);
-    _priority_expand.push_back(c.first);
     _priority_expand_set.insert(c.first);
+    FrontierEntry state_entry{};
+    bool is_expanded = _frontier->lookup(c.first, &state_entry) &&
+                       state_entry.state == FrontierEntryState::EXPANDED;
+    TEST_LOG("ReferenceChainTracker::"
+             "collectLeakAccumulationCandidatesForRotation selected "
+             "parent_tag=%lld state=%s fanout=%u",
+             (long long)c.first, is_expanded ? "EXPANDED" : "FRONTIER",
+             c.second);
+  }
+  // Place the whole selection at the head of the priority lane, keeping
+  // the fanout ranking order (see the FRONTIER-state case in the Tier 2
+  // comment above for why the head and not the tail): push_front reverses,
+  // so insert back-to-front.
+  for (auto it = selected.rbegin(); it != selected.rend(); ++it) {
+    _priority_expand.push_front(*it);
   }
   return selected;
 }
@@ -3097,9 +3139,11 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
       }
       u64 now_ns = OS::nanotime();
       u64 window_ns =
-          _pass_deadline_ns != 0 && _pass_deadline_ns > now_ns
-              ? _pass_deadline_ns - now_ns
-              : GOTW_CPU_BUDGET_NS;
+          gotwWindowNs(
+              _pass_deadline_ns != 0 && _pass_deadline_ns > now_ns
+                  ? _pass_deadline_ns - now_ns
+                  : 0,
+              source.size());
       // window_ns / ema_call_ns == how many such calls fit the window;
       // scaling the CURRENT calibration batch by that ratio sizes the next
       // call to consume the whole window in one go. Extrapolate from the

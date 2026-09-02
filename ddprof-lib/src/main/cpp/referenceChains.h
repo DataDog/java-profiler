@@ -1057,6 +1057,10 @@ private:
   // call scales the batch to GOTW_MAX_BATCH), shrinks as the window
   // drains so tail calls still fit, and tracks the floor automatically
   // as the tag map grows or shrinks.
+  //
+  // The window itself is computed by gotwWindowNs() below, which widens it
+  // under backlog pressure when the measured per-call floor already
+  // exceeds the remaining pass window - see that method's own comment.
   size_t _gotw_batch_size = 0; // 0 = unset, use GOTW_INITIAL_BATCH_SIZE
   u64 _gotw_ema_call_ns = 0;    // EMA of per-call elapsed, 0 = unset
 
@@ -1067,6 +1071,50 @@ private:
   // ~50-100ms/sec of CPU overhead on one core, acceptable for a background
   // search thread on a multi-core machine.
   static constexpr u64 GOTW_CPU_BUDGET_NS = 25000000; // 25ms
+
+  // Effective window for the proportional batch control (expandFrontier()
+  // calls this with the remaining pass deadline and the depth of the lane
+  // the next GetObjectsWithTags call will drain). The remaining-deadline
+  // window can be SMALLER than the measured per-call floor - measured live
+  // on hotdog (round 4, ev-leaktag-onpod-round4): a ~10ms expand window vs
+  // a 14-41ms floor at a 242k-entry tag map collapsed the proportional law
+  // to GOTW_MIN_BATCH on every call (batch=8 forever) while the lane it
+  // was draining held 127k entries - a self-inflicted ~120-200
+  // objects/min drain. In that regime the floor is paid by EVERY call
+  // regardless of batch size, so the right move is to AMORTIZE it: when
+  // the lane is deeper than GOTW_BACKLOG_MIN_DEPTH and the floor exceeds
+  // the remaining window, widen the window to EMA x
+  // GOTW_BACKLOG_WINDOW_MULT so the proportional law sizes the batch UP
+  // (batch = calib x window/ema = calib x MULT - the floor's per-tag
+  // surcharge, ~0.12ms/tag measured, stays the real limit). The widening
+  // only sizes the NEXT batch; _pass_deadline_ns itself is unchanged, so
+  // the per-pass overrun is bounded by one widened call, and it never
+  // applies to shallow lanes (rotation fast-lane batches stay
+  // deadline-sized, keeping targeted re-walks cheap and frequent).
+  u64 gotwWindowNs(u64 remaining_ns, size_t lane_depth) const {
+    u64 window_ns = remaining_ns != 0 ? remaining_ns : GOTW_CPU_BUDGET_NS;
+    if (lane_depth >= GOTW_BACKLOG_MIN_DEPTH &&
+        _gotw_ema_call_ns > window_ns) {
+      window_ns = std::max(window_ns,
+                            _gotw_ema_call_ns * GOTW_BACKLOG_WINDOW_MULT);
+    }
+    return window_ns;
+  }
+
+  // Lane depth beyond which gotwWindowNs()'s backlog widening applies.
+  // Above this, the lane itself proves that draining it matters more than
+  // keeping each pass strictly inside its remaining window; below it the
+  // ordinary proportional law applies unchanged. Chosen an order of
+  // magnitude above the rotation inflow per pass (~25-64 entries) so
+  // ordinary rotation cycling never widens the window.
+  static constexpr size_t GOTW_BACKLOG_MIN_DEPTH = 4096;
+
+  // How many measured per-call floors one widened window may cost - see
+  // gotwWindowNs() above. 3x converges the batch upward by 3x per call in
+  // the floor regime (8 -> 24 -> 72 -> 216 -> GOTW_MAX_BATCH) while keeping
+  // a single call's overrun bounded to a small multiple of what the floor
+  // already forced.
+  static constexpr u64 GOTW_BACKLOG_WINDOW_MULT = 3;
 
   // Conservative initial batch_size before the first GetObjectsWithTags
   // measurement. Small enough to be safe on any machine regardless of

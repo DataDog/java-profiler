@@ -496,6 +496,21 @@ public:
         return ReferenceChainTracker::GOTW_MAX_BATCH;
     }
 
+    static size_t gotwBacklogMinDepth() {
+        return ReferenceChainTracker::GOTW_BACKLOG_MIN_DEPTH;
+    }
+
+    static u64 gotwBacklogWindowMult() {
+        return ReferenceChainTracker::GOTW_BACKLOG_WINDOW_MULT;
+    }
+
+    // gotwWindowNs() is a pure function of (remaining window, lane depth)
+    // and the seeded EMA - directly unit-testable without a mock JVMTI call.
+    static u64 gotwWindowNs(u64 remaining_ns, size_t lane_depth) {
+        return ReferenceChainTracker::instance()->gotwWindowNs(remaining_ns,
+                                                                lane_depth);
+    }
+
     static void setPassDeadlineNs(u64 v) {
         ReferenceChainTracker::instance()->_pass_deadline_ns = v;
     }
@@ -3821,7 +3836,15 @@ TEST_F(ReferenceChainsBfsTest, LeakAccumulationRotationRespectsMaxCountAndDedup)
     tracker->stop();
 }
 
-TEST_F(ReferenceChainsBfsTest, LeakAccumulationRotationOnlySelectsExpandedEntries) {
+// Reversed on round-4 pod evidence (ev-leaktag-onpod-round4): the previous
+// EXPANDED-only selection made the targeted tier select ZERO every pass
+// on a live leak - the growing holders are un-expanded FRONTIER-state
+// backlog entries that the starved pending lane never reaches (a 127k
+// backlog at ~120-200 objects/min). A FRONTIER-state parent must be
+// selected AND placed at the head of the priority lane so the next
+// expandFrontier() batch reaches it ahead of the stale re-walks already
+// queued (the same pod's priority deque held ~1016 entries).
+TEST_F(ReferenceChainsBfsTest, LeakAccumulationRotationSelectsUnexpandedFrontierParentAheadOfBacklog) {
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=64"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
@@ -3831,17 +3854,42 @@ TEST_F(ReferenceChainsBfsTest, LeakAccumulationRotationOnlySelectsExpandedEntrie
     constexpr u32 kLeafKlass = 987, kParentKlass = 100;
     ReferenceChainsTestAccessor::setWatchedLeakKlassIdsForTest({kLeafKlass});
 
-    jlong notYetExpandedTag = 1;
+    // Stale re-walks already sitting in the priority lane (push_back, as
+    // the other two collectors do).
+    ReferenceChainsTestAccessor::pushPriorityExpand(900);
+    ReferenceChainsTestAccessor::pushPriorityExpand(901);
+
+    jlong notYetExpandedTag = 1, expandedLowFanoutTag = 2;
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, notYetExpandedTag, 0, 0, FrontierEntryState::FRONTIER,
         JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/0, kParentKlass));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, expandedLowFanoutTag, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD, /*referrer_klass=*/0, kParentKlass));
+    for (int i = 0; i < 10; i++) {
+        ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass,
+                                                            notYetExpandedTag, 10 + i);
+    }
     ReferenceChainsTestAccessor::trackLeakAccumulation(frontier, kLeafKlass,
-                                                        notYetExpandedTag, 10);
+                                                        expandedLowFanoutTag, 100);
 
     std::vector<jlong> selected =
         ReferenceChainsTestAccessor::collectLeakAccumulationCandidatesForRotation(10);
-    EXPECT_TRUE(selected.empty())
-        << "a FRONTIER (not yet EXPANDED) entry has nothing to re-expand yet";
+    ASSERT_EQ(2u, selected.size());
+    EXPECT_EQ(notYetExpandedTag, selected[0])
+        << "the FRONTIER-state parent qualifies and outranks the "
+           "lower-fanout EXPANDED one";
+    EXPECT_EQ(expandedLowFanoutTag, selected[1]);
+
+    std::vector<jlong> queue = ReferenceChainsTestAccessor::priorityExpandContents();
+    ASSERT_GE(queue.size(), 4u);
+    EXPECT_EQ(notYetExpandedTag, queue[0])
+        << "the targeted un-expanded holder must JUMP the backlog, not "
+           "queue behind the stale re-walks";
+    EXPECT_EQ(expandedLowFanoutTag, queue[1])
+        << "selection order must be preserved at the head (fanout rank)";
+    EXPECT_EQ(900, queue[2]);
+    EXPECT_EQ(901, queue[3]);
 
     tracker->stop();
 }
@@ -4226,6 +4274,110 @@ TEST_F(ReferenceChainsBfsTest, AdaptiveBatchSizeProportionalToWindow) {
     EXPECT_NE(0, tags_ever_assigned[childNode])
         << "expandFrontier failed to admit childNode with adaptive batch_size";
 
+    tracker->stop();
+}
+
+// gotwWindowNs() backlog-pressure widening, unit level: the pod regime is
+// a remaining pass window (~10ms) smaller than the measured per-call floor
+// (~22-40ms at a 242k-entry tag map), against a lane 127k deep. In that
+// regime the previous window math handed the proportional law a window
+// smaller than one unavoidable call, collapsing the batch to
+// GOTW_MIN_BATCH forever (batch=8 live on every call while the backlog
+// drained at ~120-200 objects/min). The widening makes the law size the
+// batch UP instead - but ONLY under real backlog depth, so rotation
+// fast-lane batches stay deadline-sized.
+TEST_F(ReferenceChainsBfsTest, GotwWindowWidensOnlyUnderBacklogPressure) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    const u64 budget = ReferenceChainsTestAccessor::gotwCpuBudgetNs();
+    const size_t depth = ReferenceChainsTestAccessor::gotwBacklogMinDepth();
+    const u64 mult = ReferenceChainsTestAccessor::gotwBacklogWindowMult();
+    const u64 floor = budget * 2; // any floor above the nominal window
+
+    // No deadline and no EMA yet: the nominal budget window.
+    ReferenceChainsTestAccessor::setGotwEmaCallNs(0);
+    EXPECT_EQ(budget, ReferenceChainsTestAccessor::gotwWindowNs(0, depth));
+
+    ReferenceChainsTestAccessor::setGotwEmaCallNs(floor);
+
+    // Floor above the remaining window but a SHALLOW lane: no widening -
+    // the remaining window stands (rotation fast-lane stays cheap).
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::gotwWindowNs(1, 1));
+
+    // Floor above the remaining window and a DEEP lane: widened to
+    // EMA x mult, never below the remaining window itself.
+    EXPECT_EQ(floor * mult,
+              ReferenceChainsTestAccessor::gotwWindowNs(1, depth));
+
+    // Floor BELOW the remaining window: no widening even at depth -
+    // the ordinary proportional law already fits the call in the window.
+    ReferenceChainsTestAccessor::setGotwEmaCallNs(budget / 2);
+    EXPECT_EQ(budget,
+              ReferenceChainsTestAccessor::gotwWindowNs(budget, depth));
+    ReferenceChainsTestAccessor::setGotwEmaCallNs(floor);
+
+    // Floor above the NOMINAL window (deadline already passed, the exact
+    // pod's post-call state) at depth: still widened - the floor is paid
+    // by the next call regardless, so the batch must amortize it.
+    EXPECT_EQ(floor * mult,
+              ReferenceChainsTestAccessor::gotwWindowNs(0, depth));
+
+    tracker->stop();
+}
+
+// The widened window in action through the real control loop: one
+// GetObjectsWithTags call whose floor (simulated by the mock's busy-wait)
+// exceeds both the remaining pass deadline and the nominal window, with
+// a backlog deeper than GOTW_BACKLOG_MIN_DEPTH, must GROW the calibrated
+// batch (calib x mult, exactly - the window scales with the measured EMA)
+// instead of collapsing it to GOTW_MIN_BATCH. This is the round-4 pod
+// failure reproduced mechanically: pre-widening, next = calib x nominal /
+// ema < calib clamps to MIN forever.
+TEST_F(ReferenceChainsBfsTest, AdaptiveBatchGrowsWhenFloorExceedsWindowUnderDeepBacklog) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    // A pass deadline a fraction of the simulated per-call floor: the call
+    // overruns it (exactly the pod's 10ms window vs 22-40ms floor), so after
+    // the call the loop's deadline check stops the invocation with ONE
+    // control update - deterministic arithmetic for the assertion below.
+    gotw_delay_ns = ReferenceChainsTestAccessor::gotwCpuBudgetNs(); // 25ms floor
+    ReferenceChainsTestAccessor::setPassDeadlineNs(OS::nanotime() + 5000000ULL);
+    ReferenceChainsTestAccessor::setGotwBatchSize(ReferenceChainsTestAccessor::gotwMinBatch());
+    ReferenceChainsTestAccessor::setGotwEmaCallNs(0); // seeded by the call below
+
+    // A pending lane deep enough to cross GOTW_BACKLOG_MIN_DEPTH. The tags
+    // are unresolvable (never assigned to a node): each batch resolves
+    // nothing, which is fine - this test drives the control law, not
+    // admissions.
+    const size_t depth = ReferenceChainsTestAccessor::gotwBacklogMinDepth() + 1;
+    for (size_t i = 0; i < depth; i++) {
+        ReferenceChainsTestAccessor::pushPendingExpandForTest(
+            (jlong)(1000000 + i));
+    }
+
+    int edges = 0;
+    ReferenceChainsTestAccessor::expandFrontierForTest(&mock_jvmti,
+                                                       &mock_jni, &edges);
+
+    // EMA after the call = the busy-wait floor (~25ms). The pass deadline is
+    // long past, so the window is widened to EMA x GOTW_BACKLOG_WINDOW_MULT,
+    // and the control law computes calib x window / ema = calib x mult -
+    // exactly, because the window is a whole multiple of the same EMA it
+    // divides by.
+    EXPECT_EQ(ReferenceChainsTestAccessor::gotwMinBatch() *
+                  ReferenceChainsTestAccessor::gotwBacklogWindowMult(),
+              ReferenceChainsTestAccessor::gotwBatchSize())
+        << "the floor-dominated deep-backlog regime must GROW the batch, "
+           "not clamp it to GOTW_MIN_BATCH";
+
+    ReferenceChainsTestAccessor::setPassDeadlineNs(0);
+    gotw_delay_ns = 0;
     tracker->stop();
 }
 
