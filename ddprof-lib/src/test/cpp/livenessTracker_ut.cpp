@@ -1156,3 +1156,129 @@ TEST_F(LeakTagPoolTest, ReleaseOutsidePoolRangeIsIgnored) {
     EXPECT_EQ(free_before, tracker->leakTagFreeCountForTest())
         << "out-of-range releases must not corrupt the free list";
 }
+
+// ---------------------------------------------------------------------------
+// Chase-phase admission boost (admitForTracking()/noteSelectedCandidates()/
+// setUrgentTracking() - see livenessTracker.h). Same "exercise the singleton
+// directly" rationale as KlassPopulationTest above: the admission gate is
+// JNI-free pure logic (atomic reads + the per-thread RNG draw), so it is
+// testable without a live JVM; only track() beyond the gate needs a JNIEnv.
+//
+// Determinism: admissionResetForTest() forces _subsample_ratio to 0 and resets
+// this thread's RNG ThreadLocal, so an unboosted tid's draw always comes from
+// a freshly default-seeded mt19937 whose first draw is strictly in (0,1) -
+// ratio 0 can never admit. That pins the fall-through case without asserting
+// on RNG internals.
+class AdmissionBoostTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        installGtestCrashHandler<LIVENESS_TRACKER_TEST_NAME>();
+        LivenessTracker::instance()->admissionResetForTest();
+    }
+
+    void TearDown() override {
+        // Leave the singleton clean for any test that follows in the same
+        // process (watched tids / urgency would 100%-admit unrelated tids).
+        LivenessTracker::instance()->admissionResetForTest();
+        LivenessTracker::instance()->setSubsampleRatioForTest(0.1);
+        restoreDefaultSignalHandlers();
+    }
+
+    static void fillCandidate(KlassCandidate *kc, jint tid) {
+        kc->klass_id = 1;
+        kc->representative = reinterpret_cast<jweak>(0x1);
+        kc->qualifying_tids[0] = tid;
+        kc->qualifying_tid_count = 1;
+    }
+};
+
+// A watched tid is admitted even though the configured ratio (0) would
+// deterministically reject it - the boost precedes the ratio draw.
+TEST_F(AdmissionBoostTest, WatchedTidAdmittedDespiteRejectingRatio) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    KlassCandidate kc;
+    fillCandidate(&kc, /*tid=*/42);
+    tracker->noteSelectedCandidates(&kc, 1);
+
+    EXPECT_TRUE(tracker->admitForTrackingForTest(42));
+    // An unwatched tid on the same thread falls through to the ratio draw and
+    // is rejected (ratio 0).
+    EXPECT_FALSE(tracker->admitForTrackingForTest(43));
+}
+
+// Urgency admits everything - any tid, watched or not.
+TEST_F(AdmissionBoostTest, UrgencyAdmitsAllTids) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setUrgentTracking(true);
+    EXPECT_TRUE(tracker->admitForTrackingForTest(1234));
+    EXPECT_TRUE(tracker->admitForTrackingForTest(5678));
+
+    // Releasing urgency restores the ratio gate: unwatched tids reject again,
+    // watched tids stay boosted.
+    tracker->setUrgentTracking(false);
+    EXPECT_FALSE(tracker->admitForTrackingForTest(1234));
+    KlassCandidate kc;
+    fillCandidate(&kc, 1234);
+    tracker->noteSelectedCandidates(&kc, 1);
+    EXPECT_TRUE(tracker->admitForTrackingForTest(1234));
+}
+
+// noteSelectedCandidates() dedupes tids shared across candidates and caps
+// the watched set at MAX_QUALIFYING_TIDS.
+TEST_F(AdmissionBoostTest, WatchedTidsAreDedupedAndCapped) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    constexpr int kMax = KlassCandidate::MAX_QUALIFYING_TIDS;  // 8
+
+    // Two candidates: 5 tids each, tids 3 and 4 shared -> union is 1..7, in
+    // candidate order (candidates are rank-ordered, so a later candidate's
+    // tids only append what the earlier ones did not cover).
+    KlassCandidate kc[2];
+    for (int t = 0; t < 5; t++) {
+        kc[0].qualifying_tids[t] = 1 + t;  // 1..5
+        kc[1].qualifying_tids[t] = 3 + t;  // 3..7 -> adds 6,7
+    }
+    for (int c = 0; c < 2; c++) {
+        kc[c].klass_id = 1 + c;
+        kc[c].representative = reinterpret_cast<jweak>(0x1 + c);
+        kc[c].qualifying_tid_count = 5;
+    }
+    tracker->noteSelectedCandidates(kc, 2);
+    ASSERT_EQ(7, tracker->watchedTidCountForTest());
+    for (int i = 0; i < 7; i++) {
+        EXPECT_EQ(i + 1, tracker->watchedTidForTest(i))
+            << "shared tids must not duplicate; union stays in order";
+    }
+
+    // A poll whose union exceeds the cap (1..8 from candidate 1, 9 from
+    // candidate 2) keeps the earlier candidates' tids and drops the overflow
+    // tid - and that overflow tid is not admitted.
+    KlassCandidate over[2];
+    for (int t = 0; t < kMax; t++) {
+        over[0].qualifying_tids[t] = 1 + t;  // 1..8
+    }
+    over[0].qualifying_tid_count = kMax;
+    over[0].klass_id = 1;
+    over[0].representative = reinterpret_cast<jweak>(0x1);
+    fillCandidate(&over[1], /*tid=*/9);
+    tracker->noteSelectedCandidates(over, 2);
+    ASSERT_EQ(kMax, tracker->watchedTidCountForTest());
+    for (int i = 0; i < kMax; i++) {
+        EXPECT_EQ(i + 1, tracker->watchedTidForTest(i));
+    }
+    EXPECT_FALSE(tracker->admitForTrackingForTest(9));
+    EXPECT_TRUE(tracker->admitForTrackingForTest(8));
+}
+
+// A zero-candidate poll clears the watched set - a tid left watched after the
+// chase ends would keep admitting that thread at 100% across OS tid reuse.
+TEST_F(AdmissionBoostTest, ZeroCandidatePollClearsWatchedSet) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    KlassCandidate kc;
+    fillCandidate(&kc, 77);
+    tracker->noteSelectedCandidates(&kc, 1);
+    EXPECT_TRUE(tracker->admitForTrackingForTest(77));
+
+    tracker->noteSelectedCandidates(nullptr, 0);
+    EXPECT_EQ(tracker->watchedTidCountForTest(), 0);
+    EXPECT_FALSE(tracker->admitForTrackingForTest(77));
+}

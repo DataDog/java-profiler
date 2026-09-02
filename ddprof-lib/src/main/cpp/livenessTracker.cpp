@@ -1836,6 +1836,11 @@ Error LivenessTracker::initialize(Arguments &args) {
 
   _subsample_ratio = args._live_samples_ratio;
 
+  // Fresh recording: no chase is open, so no watched tids and no urgency
+  // boost may leak in from a previous recording's lifecycle.
+  __atomic_store_n(&_watched_tid_count, 0, __ATOMIC_RELEASE);
+  __atomic_store_n(&_urgent_tracking, false, __ATOMIC_RELEASE);
+
   _table_size = 0;
   _table_cap =
       std::min(2048, _table_max_cap); // with default 512k sampling interval, it's
@@ -1889,6 +1894,107 @@ static ThreadLocal<std::mt19937*, create_mt19937, free_mt19937> gen;
 static ThreadLocal<std::uniform_real_distribution<>*, create_uniform_real_distribution, free_uniform_real_distribution> dis;
 static ThreadLocal<double> skipped;
 
+// track()'s admission gate: chase-phase admission boost (see
+// admitForTracking()'s declaration comment in livenessTracker.h). Both boost
+// paths precede the configured-ratio draw, so a boosted allocation never
+// consumes an RNG draw and the non-boosted path keeps the exact
+// reject-on-draw > ratio semantics (and per-thread RNG stream position drift
+// only when boosts actually happen - harmless, the streams are independent
+// per thread and probabilistic by design).
+bool LivenessTracker::admitForTracking(jint tid) {
+  if (__atomic_load_n(&_urgent_tracking, __ATOMIC_ACQUIRE)) {
+    return true;
+  }
+  // Count+array two-phase publish (noteSelectedCandidates() writes the
+  // slots before release-storing the count): the acquire load pairs with
+  // that release store so every slot read below is at least as fresh as the
+  // count observed here - see the project's atomic memory ordering rule
+  // for why RELAXED is not an option on arm64.
+  int n = __atomic_load_n(&_watched_tid_count, __ATOMIC_ACQUIRE);
+  for (int i = 0; i < n; i++) {
+    if (_watched_tids[i] == tid) {
+      return true;
+    }
+  }
+  if (_subsample_ratio >= 1.0) {
+    return true;
+  }
+  std::mt19937* genp = gen.get();
+  std::uniform_real_distribution<>* disp = dis.get();
+  return disp->operator()(*genp) <= _subsample_ratio;
+}
+
+// Publishes the current poll's qualifying tids as track()'s watched-admission
+// set. Called from ReferenceChainTracker's pollWatchedTargets() with the FULL
+// candidate selection (never the hasLeakSignal() max=1 probe - that one's
+// partial view could drop tids of other still-active candidates), including
+// the zero-candidate case, which clears the set: a tid left watched after the
+// chase ends would keep admitting that thread at 100% forever (tids get
+// recycled by the OS into unrelated threads), so the set must track the
+// candidate selection exactly, poll by poll.
+void LivenessTracker::noteSelectedCandidates(const KlassCandidate *candidates,
+                                              int count) {
+  jint tids[KlassCandidate::MAX_QUALIFYING_TIDS];
+  int n = 0;
+  if (candidates != nullptr && count > 0) {
+    for (int i = 0; i < count; i++) {
+      const KlassCandidate &kc = candidates[i];
+      for (int j = 0; j < kc.qualifying_tid_count; j++) {
+        jint tid = kc.qualifying_tids[j];
+        bool dup = false;
+        for (int k = 0; k < n && !dup; k++) {
+          dup = (tids[k] == tid);
+        }
+        if (!dup) {
+          tids[n++] = tid;
+          if (n == KlassCandidate::MAX_QUALIFYING_TIDS) {
+            goto full;
+          }
+        }
+      }
+    }
+  }
+full:
+  // Copy into the live array before publishing the count (two-phase
+  // publish mirrored by admitForTracking()'s acquire load). A reader
+  // mid-scan may transiently mix old and new slot values below the OLD
+  // count - harmless: admission is advisory, and the worst case is one
+  // allocation admitted per the previous poll's set.
+  for (int i = 0; i < n; i++) {
+    _watched_tids[i] = tids[i];
+  }
+  __atomic_store_n(&_watched_tid_count, n, __ATOMIC_RELEASE);
+  if (n > 0) {
+    // TEST_LOG, not Log::debug: one line per poll on the reference-chain
+    // thread (never the allocation hot path), and pod-side verification of
+    // the boost engaging needs the tid list in the extracted lib's logs.
+    TEST_LOG("LivenessTracker::noteSelectedCandidates watched tids[%d]:",
+             n);
+    for (int i = 0; i < n; i++) {
+      TEST_LOG("  watched tid=%d", _watched_tids[i]);
+    }
+  }
+}
+
+void LivenessTracker::setUrgentTracking(bool urgent) {
+  // Transition-only TEST_LOG (same pattern as ReferenceChainTracker::isUrgent()'s
+  // latch/release logging): the setter runs every threadLoop() iteration, so
+  // per-call logging would repeat the steady-state value line indefinitely.
+  bool prev = __atomic_exchange_n(&_urgent_tracking, urgent, __ATOMIC_ACQ_REL);
+  if (prev != urgent) {
+    TEST_LOG("LivenessTracker::setUrgentTracking urgent=%d", (int)urgent);
+  }
+}
+
+void LivenessTracker::admissionResetForTest() {
+  __atomic_store_n(&_urgent_tracking, false, __ATOMIC_RELEASE);
+  __atomic_store_n(&_watched_tid_count, 0, __ATOMIC_RELEASE);
+  _subsample_ratio = 0.0;
+  gen.clear();
+  dis.clear();
+  skipped.set(0);
+}
+
 void LivenessTracker::releaseThreadLocalState() {
   gen.clear();
   dis.clear();
@@ -1906,13 +2012,9 @@ void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
     return;
   }
 
-  if (_subsample_ratio < 1.0) {
-    std::mt19937* genp = gen.get();
-    std::uniform_real_distribution<>* disp = dis.get();
-    if (disp->operator()(*genp) > _subsample_ratio) {
-      skipped.set(skipped.get() + static_cast<double>(event._weight) * event._size);
-      return;
-    }
+  if (!admitForTracking(tid)) {
+    skipped.set(skipped.get() + static_cast<double>(event._weight) * event._size);
+    return;
   }
 
   jweak ref = env->NewWeakGlobalRef(object);

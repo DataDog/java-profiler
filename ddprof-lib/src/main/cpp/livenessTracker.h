@@ -306,6 +306,14 @@ private:
 
   double _subsample_ratio;
 
+  // Chase-phase admission-boost state (admitForTracking()'s declaration
+  // comment below). _watched_tids is two-phase-published: slots first, then
+  // _watched_tid_count with RELEASE (admitForTracking()'s ACQUIRE load pairs
+  // with it) - a reader never trusts a slot beyond the count it observed.
+  jint _watched_tids[KlassCandidate::MAX_QUALIFYING_TIDS];
+  volatile int _watched_tid_count;
+  volatile bool _urgent_tracking;
+
   bool _record_heap_usage;
 
   jclass _Class;
@@ -774,7 +782,8 @@ public:
   LivenessTracker()
       : _initialized(false), _enabled(false), _stored_error(Error::OK),
         _table_size(0), _table_cap(0), _table_max_cap(0), _table(NULL),
-        _subsample_ratio(0.1), _record_heap_usage(false), _Class(NULL),
+        _subsample_ratio(0.1), _watched_tid_count(0), _urgent_tracking(false),
+        _record_heap_usage(false), _Class(NULL),
         _Class_getName(0), _gc_epoch(0), _last_gc_epoch(0),
         _last_cleanup_ns(0), _used_after_last_gc(0),
         _heap_floor_ring_head(0), _heap_floor_ring_fill(0),
@@ -787,6 +796,44 @@ public:
   Error start(Arguments &args);
   void stop();
   void track(JNIEnv *env, AllocEvent &event, jint tid, jobject object, u64 call_trace_id);
+
+  // track()'s admission gate: a chase-phase raise of the live-samples
+  // tracking probability over the configured _subsample_ratio (default 10% -
+  // a 90% probabilistic drop whose thinning of small per-(klass, tid)
+  // populations was observed live as the intermittent zero-tag runs in
+  // LeakTagCorrelationReferenceChainTest - see that test's own comment for
+  // the full lottery analysis). Two independent raises, both advisory-only
+  // (a missed raise just falls back to the configured ratio's behavior):
+  //  - watched tids: noteSelectedCandidates() publishes
+  //    selectLeakCandidates()'s qualifying tids - exactly the (klass, tid)
+  //    scope tagLeakInstances() tags and the reference-chain chase intercepts
+  //    - and admitForTracking() admits them at 100%. Bounded by the candidate
+  //    threads' own allocation rate (at most MAX_QUALIFYING_TIDS threads), so
+  //    the tracking table's volume/cleanup cost scales with the leak's own
+  //    threads, not the process's whole allocation rate.
+  //  - urgency: setUrgentTracking() from ReferenceChainTracker::threadLoop()'s
+  //    seconds_to_oom ramp admits everything. Under the OOM ramp the process
+  //    is expected to die soon; maximizing what the last chapter captures
+  //    outweighs the tracking table's transient volume.
+  // Fail-open by construction: the boost only ever adds admissions on top of
+  // the configured ratio - a stale or missed boost cannot drop an allocation
+  // that the ratio would have admitted.
+  bool admitForTracking(jint tid);
+
+  // Publishes the current candidate poll's qualifying tids as the watched
+  // set above. Called from ReferenceChainTracker's full poll
+  // (pollWatchedTargets()) every wake - including the zero-candidate case,
+  // which clears the set (a tid left watched after the chase ends would keep
+  // admitting that thread at 100% across OS tid reuse). NOT called from
+  // hasLeakSignal()'s max=1 probe: that partial view could silently drop
+  // other still-active candidates' tids.
+  void noteSelectedCandidates(const KlassCandidate *candidates, int count);
+
+  // Urgency raise toggle - see admitForTracking()'s comment above. Set every
+  // threadLoop() iteration with that iteration's urgency computation, so the
+  // boost tracks the ramp exactly (both engaging and releasing).
+  void setUrgentTracking(bool urgent);
+
   void flush(std::set<int> &tracked_thread_ids);
 
   // Frees this thread's subsampling RNG state (track()'s gen/dis/skipped
@@ -995,6 +1042,28 @@ public:
   void releaseLeakTagForTest(jlong tag) { releaseLeakTag(tag); }
 
   int leakTagFreeCountForTest() const { return _leak_tag_free_count; }
+
+  // Admission-boost test seams - same "for testing only" rationale as the
+  // leak-tag pool seams above: admitForTracking()/noteSelectedCandidates()
+  // are JNI-free pure logic (atomic reads + the per-thread RNG draw), so they
+  // are directly testable; only track() beyond the gate needs a live JNIEnv
+  // (NewWeakGlobalRef) and stays out of gtest's reach.
+  bool admitForTrackingForTest(jint tid) { return admitForTracking(tid); }
+
+  void setSubsampleRatioForTest(double ratio) { _subsample_ratio = ratio; }
+
+  // Reset for tests: clears both boost paths, forces ratio=0 (deterministic
+  // reject for unboosted tids), and resets this thread's RNG ThreadLocal so
+  // the next admitForTracking() draw comes from a freshly-seeded stream
+  // (mt19937's default seed's first draw is strictly in (0,1), so a ratio of
+  // 0 can never admit).
+  void admissionResetForTest();
+
+  int watchedTidCountForTest() const {
+    return __atomic_load_n(&_watched_tid_count, __ATOMIC_ACQUIRE);
+  }
+
+  jint watchedTidForTest(int i) const { return _watched_tids[i]; }
 
   static jlong leakTagBaseForTest() { return LEAK_TAG_BASE; }
 

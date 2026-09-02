@@ -4206,6 +4206,15 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
   int candidate_count = LivenessTracker::instance()->selectLeakCandidates(
       candidates, kMaxWatchedCandidates);
 
+  // Publish this poll's qualifying tids as LivenessTracker's watched-admission
+  // set (see noteSelectedCandidates()'s own comment, livenessTracker.h):
+  // exactly the (klass, tid) scope tagLeakInstances() tags and this chase
+  // intercepts gets its allocations admitted at 100% instead of the default
+  // 10% ratio lottery. Includes the candidate_count == 0 case, which clears
+  // the set - the boost must track the candidate selection poll by poll.
+  LivenessTracker::instance()->noteSelectedCandidates(candidates,
+                                                       candidate_count);
+
   // Refresh the faster, un-hysteresis-gated klass_id ranking rotation
   // priority uses (see _watched_leak_klass_ids' own comment) - but only
   // once selectLeakCandidates() above has ALREADY found at least one
