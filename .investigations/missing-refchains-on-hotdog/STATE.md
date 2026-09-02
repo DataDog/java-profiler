@@ -16,32 +16,43 @@ representatives are re-tagged and all discovered instances auto-marked,
 chains are cached per-instance (not per-class). JFR analysis confirmed 2
 ReferenceChain events emitted — but one was for a noise [B instance.
 
-## Current focus: ToGcRoot root-caused and fixed (1+2); improving fix 2's organic qualification
+## Current focus: Option C (candidate-scoped reach) IMPLEMENTED - both prongs, all suites green, NOT yet committed/deployed
 
-ToGcRoot root cause CLOSED (find-togcroot-orphaned-slot-stranding,
-answers q-togcroot-acceptance-paths): slot stranding. Fix 1
-(buildDiscoveredInstanceChains + orphan sweep, gtest, 551 green) is the
-load-bearing guarantee - suite green twice at load 28.7/53 (was failing
-at load 3). Fix 2 (persistent allocator thread + allocator-tid seeds)
-landed but the candidate still ages out mid-run (54 zero-candidate
-polls in the green run) - shared-JVM GC-epoch noise resets
-consecutive_positive between the test's own GCs. ACTIVE THREAD: improve
-fix 2 so qualification survives the noise (candidates re-qualify
-organically instead of relying on the orphan sweep).
+Round-6 verdict made Option C a correctness requirement (breadth-
+first FIFO over a rising heap can never drain; pendingExpand net-growing).
+User decision: implement BOTH prongs, taxonomy-driven, explicitly NOT
+shaped by probing hotdog's simulator ("we don't want to overfit this
+particular scenario"). Design + implementation in
+find-option-c-descend-walk-design (unified bounded descend-walk
+mechanism, both prongs reuse heapReferenceCallback's whole admission
+chain so interception = complete chain in one bounded STW):
+- Prong 1 walkCandidateThreadLocals: qualifying tids' Thread objects,
+  anchor-gated to ThreadLocalMap, no-descend set (ClassLoader/ThreadGroup/
+  ProtectionDomain), own deadline slice before the static sweep.
+- Prong 2 collectStaticFieldAnchorsForRotation + walkStaticFieldAnchors:
+  root-attached STATIC_FIELD holders, wrapping cursor, batched GOTW
+  resolve, descend walks at the head of rotation's slice.
+- tid->jthread registry: onThreadStart/onThreadEnd hooks PLUS a
+  one-time registerExistingThreads() sweep at Profiler::start() (a leak
+  thread is typically alive since before the recording - the first
+  ThreadLocalLeakScenario run caught this: walked=0 with the thread
+  unregistered; the sweep must live in profiler.cpp's lifecycle, NOT in
+  RCT::start(), or the JFR-roundtrip gtest's partial mock env crashes
+  on the null GetAllThreads slot).
+Verification: 553 gtests green (incl. 2 new descend-walk gtests);
+reference-chain slow family 9/9 green (incl. NEW
+ThreadLocalLeakReferenceChainTest - the missing thread-local taxonomy
+scenario, found correlation live with the thread walk engaging:
+walked=1 edges=18); spotlessApply clean.
 
 ## Next steps
 
-1. Improve fix 2 (see above): understand exactly why consecutive_positive
-   resets between the test's own rounds (other-GC epoch samples with
-   flat retained counts land in the ring between rounds) and choose:
-   test-side (fewer external GCs / stronger per-round growth) vs
-   engine-side (hysteresis tolerance to flat epochs - production-
-   relevant: real leaks also see flat epochs) vs leaving it as-is
-   (fix 1 already guarantees the test).
-2. Commit when user asks (chunks: orphan sweep + gtest; test thread
-   rework; memory).
-3. Pod round 5 checklist unchanged (STATE below).
-4. TEMP reverts before finalizing (list below).
+1. Commit when user asks (chunks: descend-walk core + gtests; thread
+   registry + start sweep; Java ThreadLocal scenario + test; memory).
+2. Pod round 7: deploy and verify both prongs live on hotdog
+   (walkCandidateThreadLocals/walkStaticFieldAnchors per-pass lines;
+   watch interception count - the one remaining correctness gap).
+3. TEMP reverts before finalizing (list below).
 
 ## TEMP — MUST REVERT before finalizing
 
