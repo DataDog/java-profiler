@@ -100,9 +100,13 @@ public class ReferenceChainJfrParserTest {
     for (IItemIterable iterable : chainEvents) {
       IType<IItem> type = iterable.getType();
       IMemberAccessor<?, IItem> chainAccessor = findAccessor(type, "chain");
+      IMemberAccessor<?, IItem> edgesAccessor = findAccessor(type, "edges");
       IMemberAccessor<?, IItem> targetTagAccessor = findAccessor(type, "targetTag");
       IMemberAccessor<?, IItem> depthAccessor = findAccessor(type, "depth");
       assertNotNull(chainAccessor, "No accessor for 'chain' field on " + EVENT_TYPE);
+      assertNotNull(edgesAccessor, "No accessor for 'edges' field on " + EVENT_TYPE
+          + " - the new retention-edge label array (T_STRING|F_ARRAY) did not make it "
+          + "into the recorded metadata");
 
       for (IItem item : iterable) {
         Object chainValue = chainAccessor.getMember(item);
@@ -122,6 +126,25 @@ public class ReferenceChainJfrParserTest {
           chain.add((IMCType) element);
         }
         resolvedChain = chain;
+        // Retention-edge labels: one per chain hop, aligned with it (the
+        // gtest seeds kind labels because its JNIEnv is null - the label
+        // DECODE is skipped; the Java side validates the ARRAY FIELD parses,
+        // not the decode itself, which referenceChains_ut covers natively).
+        Object edgesValue = edgesAccessor.getMember(item);
+        assertNotNull(edgesValue, "'edges' field resolved to null");
+        assertTrue(edgesValue instanceof Object[],
+            "'edges' field resolved to " + edgesValue.getClass()
+                + ", expected an array");
+        Object[] rawEdges = (Object[]) edgesValue;
+        assertEquals(3, rawEdges.length, "edges must align with the chain, one label per hop");
+        for (Object e : rawEdges) {
+          assertTrue(e instanceof String,
+              "edges[] element resolved to " + (e == null ? "null" : e.getClass())
+                  + ", expected a String");
+        }
+        assertEquals("field", rawEdges[0]);
+        assertEquals("element", rawEdges[1]);
+        assertEquals("jni_global", rawEdges[2]);
         if (targetTagAccessor != null) {
           Object v = targetTagAccessor.getMember(item);
           if (v instanceof Number) {

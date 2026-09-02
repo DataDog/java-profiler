@@ -19,6 +19,7 @@
 #include <cassert>
 #include <climits>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <unordered_set>
@@ -109,7 +110,8 @@ bool FrontierTable::growLocked(int required_cap) {
 
 bool FrontierTable::insert(jlong tag, jlong parent_tag, u32 referrer_klass,
                             u32 depth, u8 state, u8 root_kind,
-                            jlong class_tag) {
+                            jlong class_tag, jint referrer_field_index,
+                            u8 edge_kind, jlong referrer_class_tag) {
   if (tag <= 0 || tag - 1 > (jlong)INT_MAX) {
     return false;
   }
@@ -133,6 +135,9 @@ bool FrontierTable::insert(jlong tag, jlong parent_tag, u32 referrer_klass,
   _table[idx].root_kind = root_kind;
   _table[idx].class_tag = class_tag;
   _table[idx].leak_tag = 0;
+  _table[idx].referrer_field_index = referrer_field_index;
+  _table[idx].edge_kind = edge_kind;
+  _table[idx].referrer_class_tag = referrer_class_tag;
   _table_lock.unlock();
 
   int sz = _table_size.load(std::memory_order_relaxed);
@@ -230,7 +235,8 @@ void FrontierTable::updateRootKind(jlong tag, u8 root_kind) {
 
 bool FrontierTable::improveChain(jlong tag, jlong parent_tag,
                                   u32 referrer_klass, u32 depth,
-                                  u8 root_kind) {
+                                  u8 root_kind, jint referrer_field_index,
+                                  u8 edge_kind, jlong referrer_class_tag) {
   // Replace a shallow root-attached entry (parent_tag == 0, depth == 0)
   // with a deeper chain-attached entry when the object is reached via a
   // longer path. This fixes the "depth=1 chain with no holder" problem:
@@ -250,6 +256,9 @@ bool FrontierTable::improveChain(jlong tag, jlong parent_tag,
     _table[idx].referrer_klass = referrer_klass;
     _table[idx].depth = depth;
     _table[idx].root_kind = root_kind;
+    _table[idx].referrer_field_index = referrer_field_index;
+    _table[idx].edge_kind = edge_kind;
+    _table[idx].referrer_class_tag = referrer_class_tag;
     improved = true;
   }
   _table_lock.unlock();
@@ -257,7 +266,9 @@ bool FrontierTable::improveChain(jlong tag, jlong parent_tag,
 }
 
 bool FrontierTable::reparentToDurableRoot(jlong tag, jlong new_parent_tag,
-                                          u32 referrer_klass) {
+                                          u32 referrer_klass,
+                                          jint referrer_field_index,
+                                          u8 edge_kind) {
   // See the declaration's own comment (referenceChains.h) for why this
   // exists as a sibling of improveChain(): equal-depth depth-1 noise->real
   // re-parenting. All lookups happen under one lock - three index reads,
@@ -286,6 +297,8 @@ bool FrontierTable::reparentToDurableRoot(jlong tag, jlong new_parent_tag,
       // one - same depth, strictly better retention explanation.
       _table[idx].parent_tag = new_parent_tag;
       _table[idx].referrer_klass = referrer_klass;
+      _table[idx].referrer_field_index = referrer_field_index;
+      _table[idx].edge_kind = edge_kind;
       swapped = true;
     }
   }
@@ -295,13 +308,15 @@ bool FrontierTable::reparentToDurableRoot(jlong tag, jlong new_parent_tag,
 
 bool FrontierTable::reconstructChain(jlong target_tag,
                                       std::vector<u32> *out_chain,
-                                      u8 *out_root_kind) {
+                                      u8 *out_root_kind,
+                                      std::vector<ChainHopEdge> *out_edges) {
   FrontierEntry entry{};
   if (!lookup(target_tag, &entry)) {
     return false;
   }
 
   std::vector<u32> chain;
+  std::vector<ChainHopEdge> edges;
   jlong tag = target_tag;
   u8 root_kind = 0;
   // Bounded by maxCapacity(): every tag maps to a distinct slot (this table's
@@ -316,6 +331,25 @@ bool FrontierTable::reconstructChain(jlong target_tag,
       return false;
     }
     chain.push_back(entry.referrer_klass);
+    if (out_edges != nullptr) {
+      // edges[i] describes the edge INTO chain[i]: the entry's own recorded
+      // edge identity, plus the referrer's class tag - the parent entry's
+      // own class for interior hops, the declaring class for root-attached
+      // static edges (FrontierEntry::referrer_class_tag, filled only there,
+      // since a class-object referrer has no parent entry to read from).
+      ChainHopEdge hop{};
+      hop.field_index = entry.referrer_field_index;
+      if (entry.parent_tag == 0) {
+        hop.edge_kind = entry.root_kind;
+        hop.referrer_class_tag = entry.referrer_class_tag;
+      } else {
+        hop.edge_kind = entry.edge_kind;
+        FrontierEntry parent_entry{};
+        hop.referrer_class_tag =
+            lookup(entry.parent_tag, &parent_entry) ? parent_entry.class_tag : 0;
+      }
+      edges.push_back(hop);
+    }
     markEdge(tag);
     root_kind = entry.root_kind;
     tag = entry.parent_tag;
@@ -328,6 +362,9 @@ bool FrontierTable::reconstructChain(jlong target_tag,
   }
 
   *out_chain = std::move(chain);
+  if (out_edges != nullptr) {
+    *out_edges = std::move(edges);
+  }
   if (out_root_kind != nullptr) {
     // The loop's last iteration is always the root-attached entry (the one
     // whose parent_tag == 0 that just ended the loop), so root_kind here is
@@ -1149,6 +1186,12 @@ void ReferenceChainTracker::restartSearch() {
     _frontier->resetForRestart();
   }
   _next_tag = 1;
+  // Hop-edge label cache: keyed by raw class tags, which survive a restart
+  // (the shared class-tag allocator is deliberately not reset - see this
+  // method's own declaration comment) - but the frontier entries referencing
+  // them do not, and a restart is the natural bounded clear point for a
+  // cache capped by HOP_LABEL_CLASS_CACHE_CAP wholesale.
+  _hop_label_cache.clear();
   // The shared class-tag counter (classTagAllocator.h)/_class_tags
   // intentionally untouched - see this method's own declaration comment
   // (referenceChains.h).
@@ -1712,6 +1755,28 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
     return JVMTI_VISIT_ABORT;
   }
 
+  // Retention-edge identity for every admission site below: the JVMTI
+  // heap callback's field ordinal (the JVMTI-SPECIFICATION numbering over
+  // the referrer's flattened field space - see FrontierEntry::
+  // referrer_field_index's own comment) for FIELD/STATIC_FIELD edges, -1
+  // otherwise; and the referrer's class tag when the referrer is a
+  // CLASS OBJECT (root-attached static edges - interior hops get their
+  // referrer class from the parent entry at chain-reconstruction time,
+  // so only the parent_tag==0 case needs it recorded here). Captured
+  // here, before the early-return branches, because a live heap callback
+  // cannot be replayed after the fact - the same reason FrontierEntry::
+  // class_tag is stored at admission.
+  jint edge_field_index = -1;
+  if (reference_info != nullptr &&
+      (reference_kind == JVMTI_HEAP_REFERENCE_FIELD ||
+       reference_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD)) {
+    edge_field_index = reference_info->field.index;
+  }
+  jlong edge_referrer_class_tag = 0;
+  if (referrer_tag_ptr != nullptr && *referrer_tag_ptr < 0) {
+    edge_referrer_class_tag = *referrer_tag_ptr;
+  }
+
   // Canary pruning: if this object is the pre-tagged representative of a
   // leaked candidate (marker tag MARKER_TAG_BASE - i, negative), record its
   // chain link but do NOT enqueue its children (treat as a leaf). Do not
@@ -1744,7 +1809,9 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
                                   parent.referrer_klass,
                                   parent.depth + 1,
                                   FrontierEntryState::FRONTIER,
-                                  parent.root_kind);
+                                  parent.root_kind,
+                                  /*class_tag=*/0, edge_field_index,
+                                  (u8)reference_kind);
           ctx->tracker->_candidate_parent_tags[candidate_idx] = rtag;
           ctx->tracker->_candidate_frontier_tags[candidate_idx] = frontier_tag;
           ctx->tracker->_candidate_referrer_klasses[candidate_idx] = candidate_klass;
@@ -1760,7 +1827,9 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
         ctx->frontier->insert(frontier_tag, 0,
                                 candidate_klass, 1,
                                 FrontierEntryState::FRONTIER,
-                                (u8)reference_kind);
+                                (u8)reference_kind,
+                                /*class_tag=*/0, edge_field_index,
+                                /*edge_kind=*/0, edge_referrer_class_tag);
         ctx->tracker->_candidate_parent_tags[candidate_idx] = 0;
         ctx->tracker->_candidate_frontier_tags[candidate_idx] = frontier_tag;
         ctx->tracker->_candidate_referrer_klasses[candidate_idx] = candidate_klass;
@@ -1904,7 +1973,9 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
     u8 root_kind = parent_tag == 0 ? (u8)reference_kind : 0;
     if (ctx->frontier->insert(frontier_tag, parent_tag, referrer_klass,
                                depth, FrontierEntryState::FRONTIER,
-                               root_kind, class_tag)) {
+                               root_kind, class_tag, edge_field_index,
+                               (u8)reference_kind,
+                               parent_tag == 0 ? edge_referrer_class_tag : 0)) {
       // Store the leak tag in the frontier entry
       ctx->frontier->setLeakTag(frontier_tag, leak_tag);
       *tag_ptr = frontier_tag;
@@ -1969,7 +2040,8 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
     ReferenceChainTracker::AdmitResult result = ctx->tracker->admitObject(
         ctx->frontier, ctx->hop_cap, ctx->budget, &ctx->edges_admitted,
         tag_ptr, parent_tag, referrer_klass, depth, root_kind, class_tag,
-        ctx->admit_priority);
+        ctx->admit_priority, edge_field_index, (u8)reference_kind,
+        parent_tag == 0 ? edge_referrer_class_tag : 0);
     switch (result) {
     case ReferenceChainTracker::AdmitResult::BUDGET_EXHAUSTED:
       ctx->truncated = true;
@@ -2003,12 +2075,14 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
     if (*tag_ptr != 0 && parent_tag != 0 && *tag_ptr > 0) {
       u32 referrer_klass = ctx->tracker->classTags()->resolve(class_tag);
       if (ctx->frontier->improveChain(*tag_ptr, parent_tag, referrer_klass,
-                                       depth, 0)) {
+                                       depth, 0, edge_field_index,
+                                       (u8)reference_kind)) {
         // Chain was improved — invalidate any cached chain for this tag
         // so pollWatchedTargets rebuilds it with the deeper path.
         ctx->tracker->invalidateResolvedChain(*tag_ptr);
-      } else if (ctx->frontier->reparentToDurableRoot(*tag_ptr, parent_tag,
-                                                    referrer_klass)) {
+      } else if (ctx->frontier->reparentToDurableRoot(
+                     *tag_ptr, parent_tag, referrer_klass, edge_field_index,
+                     (u8)reference_kind)) {
         // Equal-depth re-parent from a transient root to a durable one
         // (improveChain() cannot express it - see its declaration) - same
         // cache invalidation so the rebuilt chain uses the durable root.
@@ -2107,7 +2181,10 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
 ReferenceChainTracker::AdmitResult ReferenceChainTracker::admitObject(
     FrontierTable *frontier, int hop_cap, int budget, int *edges_admitted,
     jlong *tag_ptr, jlong parent_tag, u32 referrer_klass, u32 depth,
-    u8 root_kind, jlong class_tag, bool priority) {
+    u8 root_kind, jlong class_tag, bool priority,
+    jint edge_field_index, u8 edge_kind, jlong edge_referrer_class_tag) {
+  // edge_* default-declared in the header; heapRootCallback() passes the
+  // defaults (a root reference is not a field edge) unchanged.
   if (*tag_ptr != 0) {
     return AdmitResult::ALREADY_ADMITTED;
   }
@@ -2119,7 +2196,8 @@ ReferenceChainTracker::AdmitResult ReferenceChainTracker::admitObject(
   }
   jlong tag = nextTag();
   if (!frontier->insert(tag, parent_tag, referrer_klass, depth,
-                         FrontierEntryState::FRONTIER, root_kind, class_tag)) {
+                         FrontierEntryState::FRONTIER, root_kind, class_tag,
+                         edge_field_index, edge_kind, edge_referrer_class_tag)) {
     return AdmitResult::FRONTIER_CAP_HIT;
   }
   *tag_ptr = tag;
@@ -2674,6 +2752,279 @@ ReferenceChainTracker::collectLeakAccumulationCandidatesForRotation(
     _priority_expand.push_front(*it);
   }
   return selected;
+}
+
+// ---------------------------------------------------------------------------
+// Retention-edge labels: naming the field each chain hop is retained
+// through, from the JVMTI-specification field ordinal captured at
+// admission (see FrontierEntry::referrer_field_index's own comment).
+// ---------------------------------------------------------------------------
+namespace {
+
+// Fallback label for a hop whose edge is not a field reference (or whose
+// field ordinal could not be decoded) - the edge KIND, never a fabricated
+// name. Numbering per jvmti.h's jvmtiHeapReferenceKind.
+const char *hopEdgeKindLabel(u8 kind) {
+  switch (kind) {
+  case JVMTI_HEAP_REFERENCE_CLASS:
+    return "class";
+  case JVMTI_HEAP_REFERENCE_FIELD:
+    return "field";
+  case JVMTI_HEAP_REFERENCE_ARRAY_ELEMENT:
+    return "element";
+  case JVMTI_HEAP_REFERENCE_CLASS_LOADER:
+    return "class_loader";
+  case JVMTI_HEAP_REFERENCE_SIGNERS:
+    return "signers";
+  case JVMTI_HEAP_REFERENCE_PROTECTION_DOMAIN:
+    return "protection_domain";
+  case JVMTI_HEAP_REFERENCE_INTERFACE:
+    return "interface";
+  case JVMTI_HEAP_REFERENCE_STATIC_FIELD:
+    return "static_field";
+  case JVMTI_HEAP_REFERENCE_CONSTANT_POOL:
+    return "constant_pool";
+  case JVMTI_HEAP_REFERENCE_SUPERCLASS:
+    return "superclass";
+  case JVMTI_HEAP_REFERENCE_JNI_GLOBAL:
+    return "jni_global";
+  case JVMTI_HEAP_REFERENCE_SYSTEM_CLASS:
+    return "system_class";
+  case JVMTI_HEAP_REFERENCE_MONITOR:
+    return "monitor";
+  case JVMTI_HEAP_REFERENCE_STACK_LOCAL:
+    return "stack_local";
+  case JVMTI_HEAP_REFERENCE_JNI_LOCAL:
+    return "jni_local";
+  case JVMTI_HEAP_REFERENCE_THREAD:
+    return "thread";
+  case JVMTI_HEAP_REFERENCE_OTHER:
+    return "other";
+  default:
+    return "unknown";
+  }
+}
+
+// Appends the own-declared field names of `cls` to *out, in GetClassFields()
+// order. Does NOT delete `cls`'s local ref - the caller owns every jclass
+// local ref it passes in and deletes them on all paths exactly once.
+// Returns false on any JVMTI failure (caller treats the whole class
+// as undecodable - partial lists would silently MISNAME ordinals).
+bool appendClassFieldNames(jvmtiEnv *jvmti, JNIEnv *jni, jclass cls,
+                            std::vector<std::string> *out) {
+  jint count = 0;
+  jfieldID *fields = nullptr;
+  if (jvmti->GetClassFields(cls, &count, &fields) != JVMTI_ERROR_NONE) {
+    return false;
+  }
+  bool ok = true;
+  for (jint i = 0; i < count; i++) {
+    char *name = nullptr;
+    if (jvmti->GetFieldName(cls, fields[i], &name, nullptr, nullptr) !=
+            JVMTI_ERROR_NONE ||
+        name == nullptr) {
+      ok = false;
+      break;
+    }
+    out->emplace_back(name);
+    jvmti->Deallocate((unsigned char *)name);
+  }
+  jvmti->Deallocate((unsigned char *)fields);
+  return ok;
+}
+
+// Sums the own-declared field counts of every interface transitively
+// implemented/extended by `cls`, each counted once (a diamond interface graph
+// shared by two branches must not double-count - the spec's ordinal space
+// counts interface fields once each, and HotSpot's transitive_interfaces
+// array contains each interface exactly once). `seen` dedupes by raw class
+// tag. Returns -1 on JVMTI failure.
+jlong interfaceFieldCount(jvmtiEnv *jvmti, JNIEnv *jni, jclass cls,
+                          std::unordered_set<jlong> *seen) {
+  // GetTag is safe on any jclass; the shared class-tag allocator
+  // (classTagAllocator.h) tags every class resolveLoadedClasses() sees, and
+  // classes here always come from that set.
+  jlong tag = 0;
+  if (jvmti->GetTag(cls, &tag) != JVMTI_ERROR_NONE || tag == 0) {
+    // Untagged interface: cannot dedupe reliably - fail the whole decode
+    // rather than risk double counting.
+    return -1;
+  }
+  if (!seen->insert(tag).second) {
+    return 0; // already counted this interface (a shared subinterface)
+  }
+  jint iface_count = 0;
+  jclass *ifaces = nullptr;
+  if (jvmti->GetImplementedInterfaces(cls, &iface_count, &ifaces) !=
+      JVMTI_ERROR_NONE) {
+    return -1;
+  }
+  jlong total = 0;
+  for (jint i = 0; i < iface_count; i++) {
+    if (ifaces[i] == nullptr) {
+      continue;
+    }
+    // An interface's own fields count toward any implementor's ordinal
+    // base - matching the spec's "count of the fields in all the interfaces
+    // implemented by C" (jvmtiHeapReferenceInfoField).
+    jint field_count = 0;
+    jfieldID *fields = nullptr;
+    if (jvmti->GetClassFields(ifaces[i], &field_count, &fields) ==
+        JVMTI_ERROR_NONE) {
+      total += field_count;
+      jvmti->Deallocate((unsigned char *)fields);
+    }
+    total += interfaceFieldCount(jvmti, jni, ifaces[i], seen);
+    if (total < 0) {
+      return -1;
+    }
+    jni->DeleteLocalRef(ifaces[i]);
+  }
+  jvmti->Deallocate((unsigned char *)ifaces);
+  return total;
+}
+
+} // namespace
+
+const ReferenceChainTracker::HopLabelClass *
+ReferenceChainTracker::hopLabelClassFor(jvmtiEnv *jvmti, JNIEnv *jni,
+                                        jlong class_tag) {
+  auto it = _hop_label_cache.find(class_tag);
+  if (it != _hop_label_cache.end()) {
+    return &it->second;
+  }
+  // Bounded: chains reference few distinct referrer classes; a wholesale
+  // clear at the cap (rather than LRU eviction) keeps this O(1) and is
+  // correct because the cache is purely derived state - any cleared entry
+  // is transparently rebuilt on its next hop.
+  if (_hop_label_cache.size() >= HOP_LABEL_CLASS_CACHE_CAP) {
+    _hop_label_cache.clear();
+  }
+  HopLabelClass entry{};
+  entry.class_tag = class_tag;
+  entry.decode_failed = true; // until proven otherwise
+  do {
+    // GetSuperclass is a JNI (not JVMTI) function - modern JVMTI dropped it
+    // (the spec delivers superclass references via heap callbacks,
+    // jvmti.xml's JVMTI_HEAP_REFERENCE_SUPERCLASS note); the rest are JVMTI
+    // slots. Partial function tables (gtest mock environments stub only
+    // the slots their tests drive) degrade to kind labels rather than
+    // calling a null slot.
+    if (jvmti->functions->GetObjectsWithTags == nullptr ||
+        jvmti->functions->IsInterface == nullptr ||
+        jvmti->functions->GetImplementedInterfaces == nullptr ||
+        jvmti->functions->GetClassFields == nullptr ||
+        jvmti->functions->GetFieldName == nullptr ||
+        jni->functions->GetSuperclass == nullptr) {
+      break;
+    }
+    // Resolve the class object from its raw tag (negative - the shared
+    // allocator's class tags; GetObjectsWithTags accepts any tag value).
+    jint count = 0;
+    jobject *objects = nullptr;
+    jlong *tags = nullptr;
+    if (jvmti->GetObjectsWithTags(1, &class_tag, &count, &objects, &tags) !=
+            JVMTI_ERROR_NONE ||
+        count != 1 || objects == nullptr || objects[0] == nullptr) {
+      break;
+    }
+    jclass cls = (jclass)objects[0];
+    jboolean is_interface = JNI_FALSE;
+    std::vector<std::string> names;
+    bool ok = false;
+    if (jvmti->IsInterface(cls, &is_interface) == JVMTI_ERROR_NONE) {
+      if (is_interface) {
+        // The spec's INTERFACE branch: base = fields of all superinterfaces
+        // of I, then I's own fields (jvmtiHeapReferenceInfoField).
+        std::unordered_set<jlong> seen;
+        jlong base = interfaceFieldCount(jvmti, jni, cls, &seen);
+        if (base >= 0) {
+          names.resize((size_t)base); // positioned but unnamed: ordinal [0,
+                                     // base) is interface fields, only
+                                     // reachable through an interface
+                                     // branch decode of a superinterface
+          ok = appendClassFieldNames(jvmti, jni, cls, &names);
+        }
+      } else {
+        // The spec's CLASS branch: base = fields of all interfaces
+        // implemented by C, then the superclass chain root-first
+        // (java.lang.Object's fields first, C's own last), each class's
+        // fields in GetClassFields() order.
+        std::unordered_set<jlong> seen;
+        jlong base = interfaceFieldCount(jvmti, jni, cls, &seen);
+        if (base >= 0) {
+          names.resize((size_t)base);
+          // GetSuperclass walks UP, so gather then append in reverse
+          // (root first). supers[] holds local refs of every class along
+          // the way, cls included - deleted together below, exactly once.
+          jclass supers[128];
+          int depth = 0;
+          jclass k = cls;
+          while (k != nullptr &&
+                 depth < (int)(sizeof(supers) / sizeof(supers[0]))) {
+            supers[depth++] = k;
+            k = jni->GetSuperclass(k);
+          }
+          ok = (k == nullptr); // deeper than 128 classes: fail rather than
+                              // misname
+          for (int i = depth - 1; ok && i >= 0; i--) {
+            ok = appendClassFieldNames(jvmti, jni, supers[i], &names);
+          }
+          for (int i = 0; i < depth; i++) {
+            jni->DeleteLocalRef(supers[i]);
+          }
+        }
+      }
+    }
+    jni->DeleteLocalRef(cls);
+    if (!ok) {
+      break;
+    }
+    entry.field_names = std::move(names);
+    entry.decode_failed = false;
+  } while (false);
+  auto inserted = _hop_label_cache.emplace(class_tag, std::move(entry));
+  return &inserted.first->second;
+}
+
+void ReferenceChainTracker::resolveHopEdgeLabel(jvmtiEnv *jvmti, JNIEnv *jni,
+                                                ChainHopEdge edge, char *out,
+                                                size_t out_cap) {
+  if (jvmti != nullptr && jni != nullptr &&
+      (edge.edge_kind == JVMTI_HEAP_REFERENCE_FIELD ||
+       edge.edge_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD) &&
+      edge.field_index >= 0 && edge.referrer_class_tag != 0 && out_cap > 0) {
+    const HopLabelClass *labels =
+        hopLabelClassFor(jvmti, jni, edge.referrer_class_tag);
+    if (labels != nullptr && !labels->decode_failed &&
+        (size_t)edge.field_index < labels->field_names.size()) {
+      const std::string &name =
+          labels->field_names[(size_t)edge.field_index];
+      if (!name.empty()) {
+        size_t n = name.size() < out_cap - 1 ? name.size() : out_cap - 1;
+        memcpy(out, name.data(), n);
+        out[n] = '\0';
+        return;
+      }
+      // Empty positioned slot (an interface-field ordinal below the
+      // class's own base) - fall through to the kind label.
+    }
+  }
+  if (out_cap > 0) {
+    snprintf(out, out_cap, "%s", hopEdgeKindLabel(edge.edge_kind));
+  }
+}
+
+void ReferenceChainTracker::fillHopEdgeLabels(
+    jvmtiEnv *jvmti, JNIEnv *jni, const std::vector<ChainHopEdge> &edges,
+    std::vector<std::string> *out) {
+  out->clear();
+  out->reserve(edges.size());
+  char label[MAX_HOP_EDGE_LABEL + 1];
+  for (ChainHopEdge edge : edges) {
+    resolveHopEdgeLabel(jvmti, jni, edge, label, sizeof(label));
+    out->emplace_back(label);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -5105,7 +5456,7 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
              i, klass_id, (long long)tag, need_refresh);
     if (need_refresh) {
       ReferenceChainEvent event;
-      bool built = buildChainEvent(tag, &event);
+      bool built = buildChainEvent(jvmti, jni, tag, &event);
       TEST_LOG("ReferenceChainTracker::pollWatchedTargets buildChainEvent(tag=%lld) -> %d",
                (long long)tag, built);
       if (built && suppressChainEvent(event)) {
@@ -5142,7 +5493,7 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
     // comment for why it is slot-driven (the orphan fix), and the
     // per-poll-candidate call plus the slot sweep below for the two
     // call sites.
-    buildDiscoveredInstanceChains(klass_id, current_search_ns);
+    buildDiscoveredInstanceChains(jvmti, jni, klass_id, current_search_ns);
 
     jni->DeleteLocalRef(obj);
   }
@@ -5176,7 +5527,7 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
                "sweep: slot=%d klass_id=%u not in poll candidates - building "
                "its discovered chains",
                s, slot_klass);
-      buildDiscoveredInstanceChains(slot_klass, current_search_ns);
+      buildDiscoveredInstanceChains(jvmti, jni, slot_klass, current_search_ns);
     }
   }
 
@@ -5251,7 +5602,9 @@ void ReferenceChainTracker::invalidateResolvedChain(jlong source_tag) {
 // already cached for the current search generation, so calling both
 // paths for the same slot in one poll is safe - the sweep simply never
 // overlaps the per-candidate call for the same klass.
-void ReferenceChainTracker::buildDiscoveredInstanceChains(u32 klass_id,
+void ReferenceChainTracker::buildDiscoveredInstanceChains(jvmtiEnv *jvmti,
+                                                           JNIEnv *jni,
+                                                           u32 klass_id,
                                                            u64 current_search_ns) {
 for (int s = 0; s < _candidate_count; s++) {
   if (_candidate_klass_ids[s] != klass_id) continue;
@@ -5282,7 +5635,7 @@ for (int s = 0; s < _candidate_count; s++) {
       continue;
     }
     ReferenceChainEvent event;
-    bool built = buildChainEvent(disc_tag, &event);
+    bool built = buildChainEvent(jvmti, jni, disc_tag, &event);
     // Retention-explanation filter. Only applies to discovered
     // instances, not canary. Suppress:
     //   - depth==0: the instance IS the root (chain is just [object],

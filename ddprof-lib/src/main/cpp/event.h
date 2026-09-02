@@ -24,6 +24,7 @@
 #include <cstring>
 #include <memory>
 #include <stdint.h>
+#include <string>
 #include <vector>
 using namespace std;
 
@@ -106,6 +107,12 @@ public:
 // flightRecorder.cpp) rather than a synthetic node in `_chain` itself,
 // since that array is a T_CLASS cpool array with no room for a
 // non-class placeholder.
+// Byte cap for one hop's retention-edge label in ReferenceChainEvent::_edges
+// (fillHopEdgeLabels truncates to this; recordReferenceChain() reserves
+// against it) - a shared constant so the collector and the writer cannot
+// drift apart on the worst-case event size.
+static constexpr size_t MAX_REFERENCE_CHAIN_EDGE_LABEL = 96;
+
 class ReferenceChainEvent : public Event {
 public:
   u64 _start_time;
@@ -113,6 +120,13 @@ public:
   u32 _depth;
   u8 _root_kind;
   std::vector<u32> _chain;
+  // Retention-edge label per hop, ALIGNED with _chain's leaf-to-root order
+  // (_edges[i] = the edge by which _chain[i] is retained - the field name of
+  // its parent hop for FIELD/STATIC_FIELD edges, the edge-kind label
+  // otherwise; ReferenceChainTracker::fillHopEdgeLabels). Empty for events
+  // built before the edge-label change or when label resolution is
+  // unavailable (partial mock environments).
+  std::vector<std::string> _edges;
 
   ReferenceChainEvent()
       : Event(), _start_time(0), _target_tag(0), _depth(0), _root_kind(0) {}

@@ -344,17 +344,38 @@ TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent)
     // entry only - exercises the new rootKind field end to end through
     // buildChainEvent()/recordReferenceChain(), mirroring how
     // heapReferenceCallback() only ever sets it on a parent_tag==0 entry.
+    // Edge kinds on the interior hops (ARRAY_ELEMENT into the middle node,
+    // FIELD into the leaf) - with the null JNIEnv below, the field-name
+    // decode is skipped and each label degrades to its edge KIND, which is
+    // exactly what the Java-side parser test (ReferenceChainJfrParserTest)
+    // asserts this recording's new "edges" field contains.
     ASSERT_TRUE(frontier->insert(1, 0, (u32)rootKlass, 0,
                                  FrontierEntryState::EDGE, /*root_kind=*/21));
-    ASSERT_TRUE(frontier->insert(2, 1, (u32)middleKlass, 1, FrontierEntryState::EDGE));
-    ASSERT_TRUE(frontier->insert(3, 2, (u32)leafKlass, 2, FrontierEntryState::EDGE));
+    ASSERT_TRUE(frontier->insert(2, 1, (u32)middleKlass, 1,
+                                 FrontierEntryState::EDGE, /*root_kind=*/0,
+                                 /*class_tag=*/0,
+                                 /*referrer_field_index=*/-1,
+                                 JVMTI_HEAP_REFERENCE_ARRAY_ELEMENT));
+    ASSERT_TRUE(frontier->insert(3, 2, (u32)leafKlass, 2,
+                                 FrontierEntryState::EDGE, /*root_kind=*/0,
+                                 /*class_tag=*/0,
+                                 /*referrer_field_index=*/-1,
+                                 JVMTI_HEAP_REFERENCE_FIELD));
 
     ReferenceChainEvent event;
-    ASSERT_TRUE(tracker->buildChainEvent(/*target_tag=*/3, &event));
+    // Null JNIEnv: edge labels degrade to kind labels (fillHopEdgeLabels'
+    // own guard) - this binary's mock JVMTI table does not stub the name
+    // resolution slots, so a live decode would crash on them.
+    ASSERT_TRUE(tracker->buildChainEvent(&mock_jvmti, /*jni=*/nullptr,
+                                          /*target_tag=*/3, &event));
     ASSERT_EQ(3u, event._chain.size());
     EXPECT_EQ((u32)leafKlass, event._chain[0]);
     EXPECT_EQ((u32)middleKlass, event._chain[1]);
     EXPECT_EQ((u32)rootKlass, event._chain[2]);
+    ASSERT_EQ(3u, event._edges.size());
+    EXPECT_STREQ("field", event._edges[0].c_str());
+    EXPECT_STREQ("element", event._edges[1].c_str());
+    EXPECT_STREQ("jni_global", event._edges[2].c_str());
     EXPECT_EQ(21u, event._root_kind);
     event._start_time = TSC::ticks();
 

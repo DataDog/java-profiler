@@ -23,6 +23,7 @@
 #include <jni.h>
 #include <jvmti.h>
 #include <pthread.h>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -234,7 +235,57 @@ typedef struct FrontierEntry {
   // JVMTI callback cannot be replayed after the fact. 0 = unresolved/none,
   // same convention as referrer_klass.
   jlong class_tag;
+
+  // Retention-edge identity of the edge that admitted THIS entry, captured
+  // at admission time for the same cannot-replay-the-callback reason as
+  // class_tag above: it lets the emitted datadog.ReferenceChain name the
+  // field each hop is retained through, turning the bare class list into a
+  // readable path ("LeakHolder.SINK -> HashMap.table -> Entry.value") -
+  // which is the diagnostic point of the whole feature.
+  //
+  // referrer_field_index: for a FIELD/STATIC_FIELD admitting edge, the
+  // JVMTI-SPECIFICATION field ordinal of that field in the REFERRER's
+  // flattened field space - the ordinal space the heap callbacks' reference
+  // reference_info->field.index is defined over (JVMTI spec,
+  // jvmtiHeapReferenceInfoField: interface-implemented fields, then the
+  // superclass chain root-first, then the class's own fields, each in
+  // GetClassFields order - verified against HotSpot's implementation,
+  // jvmtiTagMap.cpp ClassFieldMap::create_map_of_*). NOT a position in any
+  // one GetClassFields result alone - the referrer class's FULL hierarchy is
+  // needed to decode it (resolveFieldEdgeName(), below). -1 = the admitting
+  // edge was not a field/static-field reference (or reference_info was
+  // unavailable).
+  jint referrer_field_index;
+
+  // jvmtiHeapReferenceKind of the admitting edge for an INTERIOR hop (an
+  // entry with parent_tag != 0 - "this object was reached from its parent
+  // via this kind of edge"). Root-attached entries do not use this field
+  // (their edge kind IS root_kind by definition). 0 = not recorded.
+  u8 edge_kind;
+
+  // Referrer's class tag when the referrer is a CLASS OBJECT rather than a
+  // frontier entry (a root-attached static-field admission - the referrer
+  // is the declaring class, parent_tag == 0 so there is no parent entry to
+  // read a class from). Interior hops leave 0 (their referrer class is the
+  // parent entry's own class_tag). Needed at emission to know WHICH
+  // hierarchy the referrer_field_index ordinal is defined over.
+  jlong referrer_class_tag;
 } FrontierEntry;
+
+// Per-hop retention-edge identity collected by reconstructChain() alongside
+// the class chain: everything needed at emission to label HOW chain[i] is
+// retained (the field of chain[i+1] pointing at it, or the root edge for the
+// last hop). Aligned with the leaf-to-root chain order - edges[i] describes
+// the edge INTO chain[i].
+typedef struct ChainHopEdge {
+  // FrontierEntry::referrer_field_index/edge_kind of the entry for chain[i]
+  jint field_index; // -1 = not a field/static-field edge
+  u8 edge_kind;      // admitting edge kind (root hops: root_kind)
+  // The referrer's raw class tag: the PARENT entry's class_tag for interior
+  // hops, FrontierEntry::referrer_class_tag for root-attached hops. 0 =
+  // unknown (label degrades to the edge kind, never a fabricated name).
+  jlong referrer_class_tag;
+} ChainHopEdge;
 
 // Durability ranking for FrontierEntry::root_kind (design doc's "Fix for
 // root-attribution staleness" point 1 / this plan's Phase 5 item 1): higher
@@ -373,7 +424,9 @@ public:
   // need no change.
   bool insert(jlong tag, jlong parent_tag, u32 referrer_klass, u32 depth,
               u8 state = FrontierEntryState::FRONTIER, u8 root_kind = 0,
-              jlong class_tag = 0);
+              jlong class_tag = 0,
+              jint referrer_field_index = -1, u8 edge_kind = 0,
+              jlong referrer_class_tag = 0);
 
   // Reads the slot for `tag` into *out. Returns false (leaving *out
   // untouched) if `tag` is not positive or has never been inserted.
@@ -459,7 +512,8 @@ public:
   // path reaches it later with a non-zero parent_tag.
   // Returns true if the entry was actually improved (new depth > old).
   bool improveChain(jlong tag, jlong parent_tag, u32 referrer_klass,
-                     u32 depth, u8 root_kind);
+                     u32 depth, u8 root_kind, jint referrer_field_index = -1,
+                     u8 edge_kind = 0, jlong referrer_class_tag = 0);
 
   // Equal-depth re-parenting, the one case improveChain() above cannot
   // express: a depth-1 entry whose current parent is a TRANSIENT root
@@ -475,7 +529,8 @@ public:
   // durability would require walking both chains, not just two lookups.
   // Returns true if the parent was swapped.
   bool reparentToDurableRoot(jlong tag, jlong new_parent_tag,
-                              u32 referrer_klass);
+                              u32 referrer_klass,
+                              jint referrer_field_index = -1, u8 edge_kind = 0);
 
   // Walks parent_tag links starting at `target_tag` back to a root-attached
   // entry (parent_tag == 0), appending each visited entry's referrer_klass
@@ -497,7 +552,8 @@ public:
   // chain with why it is reachable at all (JNI global, thread stack, static
   // field, ...) instead of just how (the referrer_klass hops in *out_chain).
   bool reconstructChain(jlong target_tag, std::vector<u32> *out_chain,
-                        u8 *out_root_kind = nullptr);
+                        u8 *out_root_kind = nullptr,
+                        std::vector<ChainHopEdge> *out_edges = nullptr);
 
   // Search restart (ReferenceChainTracker::restartSearch(), this class's own
   // header comment): marks every slot unoccupied again without releasing
@@ -2263,7 +2319,9 @@ private:
                            int *edges_admitted, jlong *tag_ptr,
                            jlong parent_tag, u32 referrer_klass, u32 depth,
                            u8 root_kind, jlong class_tag,
-                           bool priority = false);
+                           bool priority = false,
+                           jint edge_field_index = -1, u8 edge_kind = 0,
+                           jlong edge_referrer_class_tag = 0);
 
   // Called by admitObject() on every successful ADMITTED result (root or
   // non-root, ordinary or priority) - the single shared admission path, so
@@ -2302,7 +2360,8 @@ private:
   // a candidate still qualified are not stranded when it stops qualifying
   // (see the definition's own comment in referenceChains.cpp for the observed
   // live failure this closes and the two call sites).
-  void buildDiscoveredInstanceChains(u32 klass_id, u64 current_search_ns);
+  void buildDiscoveredInstanceChains(jvmtiEnv *jvmti, JNIEnv *jni,
+                                    u32 klass_id, u64 current_search_ns);
 
   void recordDiscoveredInstance(u32 klass_id, jlong frontier_tag,
                                 bool leak_correlated);
@@ -2882,7 +2941,68 @@ public:
   // that feed rather than reuse one. A future consumer that knows which
   // tag it is chasing (e.g. an ObjectSampler-driven target) calls this
   // directly once that feed exists.
-  bool buildChainEvent(jlong target_tag, ReferenceChainEvent *out) {
+  // Resolves one chain hop's retention-edge label into `out` (NUL-
+  // terminated, at most out_cap bytes incl. the NUL). For a FIELD/STATIC_FIELD
+  // edge with a resolvable referrer class, the label is the field's NAME,
+  // decoded per the JVMTI specification's field-ordinal scheme (see
+  // FrontierEntry::referrer_field_index's own comment - the full scheme, with
+  // the interface-branch and class-branch rules of jvmtiHeapReferenceInfoField).
+  // Any other edge kind, or any decode failure (class gone, ordinal out of
+  // the computed range, JVMTI call failure), degrades to the edge KIND label
+  // ("element", "constant_pool", ...) - never a fabricated name: a wrong
+  // numbering on an unverified JVM would silently degrade to kind labels,
+  // not lie. HotSpot's numbering is source-verified (jvmtiTagMap.cpp
+  // ClassFieldMap::create_map_of_static_fields/instance_fields build exactly
+  // the spec's ordinal space); J9's compliance is INFERRED from the spec
+  // definition only (its walker arithmetic not yet source-verified - see
+  // find-field-name-decoding node).
+  // Legal only OUTSIDE heap callbacks (FindClass/GetClassFields/GetFieldName
+  // are not callable during heap iteration) - buildChainEvent() calls it on
+  // the BFS thread between walks.
+  void resolveHopEdgeLabel(jvmtiEnv *jvmti, JNIEnv *jni, ChainHopEdge edge,
+                           char *out, size_t out_cap);
+
+  // Fills *out with one label per chain hop, aligned with the chain's
+  // leaf-to-root order (edges[i] = the retention edge INTO chain[i]), via
+  // resolveHopEdgeLabel() above. Truncates labels to
+  // MAX_REFERENCE_CHAIN_EDGE_LABEL (event.h) bytes. Safe with null jvmti/jni
+  // (every label degrades to the edge kind) and against partial JVMTI
+  // function tables (gtest mock environments - the required slots are
+  // null-checked before use, same defensive rule the JFR-roundtrip crash
+  // taught for RCT::start()).
+  static constexpr size_t MAX_HOP_EDGE_LABEL =
+      MAX_REFERENCE_CHAIN_EDGE_LABEL;
+  // Per-referrer-class ordinal->name list cache behind
+  // resolveHopEdgeLabel(): decoding the spec ordinal requires walking the
+  // class's whole interface closure + superclass chain (GetClassFields +
+  // GetFieldName per field), and chains re-emit on every dump, so the decoded
+  // ordinal space of each chain-relevant class is built once here. Keyed by
+  // the referrer's raw class tag (stable per loaded class). Bounded by
+  // HOP_LABEL_CLASS_CACHE_CAP (cleared whole on search restart - the frontier
+  // and its class tags do not survive a restart, so nothing here may).
+  static constexpr size_t HOP_LABEL_CLASS_CACHE_CAP = 1024;
+  struct HopLabelClass {
+    jlong class_tag;
+    // One entry per ordinal in the class's flattened field space - the
+    // i-th element is the name of ordinal i. Empty when decoding failed
+    // (all hops through this class degrade to kind labels).
+    std::vector<std::string> field_names;
+    bool decode_failed;
+  };
+  std::unordered_map<jlong, HopLabelClass> _hop_label_cache;
+
+  // Cache lookup/decode behind resolveHopEdgeLabel() - see HopLabelClass's
+  // own comment. Never returns null (a failed decode is cached as
+  // decode_failed and re-reported as kind labels).
+  const HopLabelClass *hopLabelClassFor(jvmtiEnv *jvmti, JNIEnv *jni,
+                                        jlong class_tag);
+
+  void fillHopEdgeLabels(jvmtiEnv *jvmti, JNIEnv *jni,
+                         const std::vector<ChainHopEdge> &edges,
+                         std::vector<std::string> *out);
+
+  bool buildChainEvent(jvmtiEnv *jvmti, JNIEnv *jni, jlong target_tag,
+                       ReferenceChainEvent *out) {
     if (_frontier == nullptr || out == nullptr) {
       TEST_LOG("ReferenceChainTracker::buildChainEvent false: "
                "frontier=%p out=%p", (void*)_frontier, (void*)out);
@@ -2895,8 +3015,10 @@ public:
       return false;
     }
     std::vector<u32> chain;
+    std::vector<ChainHopEdge> edges;
     u8 root_kind = 0;
-    if (!_frontier->reconstructChain(target_tag, &chain, &root_kind)) {
+    if (!_frontier->reconstructChain(target_tag, &chain, &root_kind,
+                                      &edges)) {
       TEST_LOG("ReferenceChainTracker::buildChainEvent false: "
                "reconstructChain failed for target_tag=%lld",
                (long long)target_tag);
@@ -2910,6 +3032,8 @@ public:
     out->_depth = entry.depth;
     out->_root_kind = root_kind;
     out->_chain = std::move(chain);
+    // Retention-edge labels, aligned with _chain (see fillHopEdgeLabels()).
+    fillHopEdgeLabels(jvmti, jni, edges, &out->_edges);
     return true;
   }
 

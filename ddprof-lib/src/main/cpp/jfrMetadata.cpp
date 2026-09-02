@@ -216,7 +216,9 @@ void JfrMetadata::initialize(
               << field("totalHops", T_INT,
                        "Total Chain Length Before Truncation")
               << field("chain", T_CLASS, "Referrer Chain (Leaf to Root)",
-                       F_CPOOL | F_ARRAY))
+                       F_CPOOL | F_ARRAY)
+              << field("edges", T_STRING,
+                       "Retention Edge per Hop (Leaf to Root)", F_ARRAY))
 
           << (type("datadog.ReferenceChainAbandoned",
                    T_REFERENCE_CHAIN_ABANDONED,

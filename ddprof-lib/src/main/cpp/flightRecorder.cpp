@@ -2164,13 +2164,28 @@ void Recording::recordReferenceChain(Buffer *buf, ReferenceChainEvent *event) {
   // 32 bytes for its putUtf8() length prefix + payload rather than computing
   // strlen() up front.
   const char *root_kind_name = rootKindName(event->_root_kind);
+  // Per-hop edge labels: same emitted_size as the chain, each bounded by
+  // MAX_REFERENCE_CHAIN_EDGE_LABEL (event.h) + putUtf8's 1-byte encoding
+  // tag and up to 5-byte varint length prefix.
+  const u32 edge_count =
+      event->_edges.size() == emitted_size ? emitted_size : 0;
+  const char *edge_labels[MAX_REFERENCE_CHAIN_EVENT_HOPS];
+  for (u32 i = 0; i < edge_count; i++) {
+    edge_labels[i] = event->_edges[i].c_str();
+  }
   flushIfNeeded(
       buf, RECORDING_BUFFER_LIMIT -
                (MAX_VAR32_LENGTH /* multi-byte size prefix, below */ +
                 3 * MAX_VAR64_LENGTH /* type id, start_time, target_tag */ +
                 3 * MAX_VAR32_LENGTH /* depth, totalHops, chain count */ +
                 32 /* rootKind string */ +
-                (int)emitted_size * MAX_VAR32_LENGTH));
+                (int)emitted_size * MAX_VAR32_LENGTH +
+                (edge_count > 0
+                     ? MAX_VAR32_LENGTH /* edges count */ +
+                           (int)edge_count *
+                               (MAX_REFERENCE_CHAIN_EDGE_LABEL + 6)
+                     : MAX_VAR32_LENGTH /* edges count, empty array */)));
+
   // Multi-byte size prefix (like writeDatadogSetting() above), not
   // writeEventSizePrefix()'s single byte - this event's size can exceed
   // MAX_JFR_EVENT_SIZE (255) once the chain is more than a few dozen hops.
@@ -2190,6 +2205,15 @@ void Recording::recordReferenceChain(Buffer *buf, ReferenceChainEvent *event) {
   buf->putVar32(emitted_size);
   for (u32 i = 0; i < emitted_size; i++) {
     buf->putVar32(event->_chain[i]);
+  }
+  // Edges array, LAST so its metadata position (after "chain", jfrMetadata.cpp)
+  // matches the write order - the leakTag field-order invariant
+  // (find-leaktag-jfr-field-misalignment) generalized. Empty count when the
+  // chain was truncated deeper than the collected edges (or the event predates
+  // label collection) rather than emitting a misaligned array.
+  buf->putVar32(edge_count);
+  for (u32 i = 0; i < edge_count; i++) {
+    buf->putUtf8(edge_labels[i]);
   }
   buf->putVar32(start, (u32)(buf->offset() - start));
   flushIfNeeded(buf);

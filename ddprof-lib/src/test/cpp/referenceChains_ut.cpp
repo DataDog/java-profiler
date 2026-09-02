@@ -113,6 +113,7 @@ public:
         t->_thread_walk_anchor_cursor = 0;
         memset(t->_candidate_qualifying_tid_count, 0,
                sizeof(t->_candidate_qualifying_tid_count));
+        t->_hop_label_cache.clear();
         t->_watched_leak_klass_count = 0;
         t->_leak_signature_totals.clear();
         t->_leak_signature_prev_totals.clear();
@@ -260,8 +261,10 @@ public:
         return ReferenceChainTracker::MAX_DISCOVERED_INSTANCES_PER_CLASS;
     }
 
-    static bool buildChainEventForTest(jlong tag, ReferenceChainEvent *out) {
-        return ReferenceChainTracker::instance()->buildChainEvent(tag, out);
+    static bool buildChainEventForTest(jvmtiEnv *jvmti, JNIEnv *jni,
+                                      jlong tag, ReferenceChainEvent *out) {
+        return ReferenceChainTracker::instance()->buildChainEvent(jvmti, jni,
+                                                                   tag, out);
     }
 
     // Direct expandFrontier() drive for the AIMD batch test: a full runPass()
@@ -388,9 +391,14 @@ public:
     static bool insertFrontierEntry(FrontierTable *frontier, jlong tag,
                                      jlong parent_tag, u32 depth, u8 state,
                                      u8 root_kind, u32 referrer_klass = 0,
-                                     jlong class_tag = 0) {
+                                     jlong class_tag = 0,
+                                     jint referrer_field_index = -1,
+                                     u8 edge_kind = 0,
+                                     jlong referrer_class_tag = 0) {
         return frontier->insert(tag, parent_tag, referrer_klass, depth,
-                                 state, root_kind, class_tag);
+                                 state, root_kind, class_tag,
+                                 referrer_field_index, edge_kind,
+                                 referrer_class_tag);
     }
 
     static bool maybeUpgradeRootAttachedRootKind(FrontierTable *frontier,
@@ -1150,6 +1158,22 @@ struct ScriptedClass {
     const char *signature; // JVMTI class signature, e.g. "Lcom/example/Foo;"
 };
 
+// Retention-edge label decode fixtures (ReferenceChainsBfsTest's
+// field_decode_hierarchy + the hierarchy-introspection mock slots): a fake
+// class hierarchy the slots read, mirroring just enough JVMTI class shape
+// for the spec-ordinal decoder (own-declared fields in GetClassFields
+// order, direct superclass, directly implemented/extended interfaces).
+struct FakeField {
+    void *id;       // fake jfieldID
+    const char *name;
+};
+struct FakeClass {
+    bool is_interface;
+    void *super;                     // fake jclass, or nullptr
+    std::vector<void *> interfaces;  // directly implemented/extended
+    std::vector<FakeField> fields;   // own-declared, GetClassFields order
+};
+
 } // namespace
 
 class ReferenceChainsBfsTest : public ::testing::Test {
@@ -1240,6 +1264,11 @@ protected:
         jvmti_tbl.FollowReferences = &mock_FollowReferences;
         jvmti_tbl.IterateOverReachableObjects = &mock_IterateOverReachableObjects;
         jvmti_tbl.GetObjectsWithTags = &mock_GetObjectsWithTags;
+        // Retention-edge label decode path (hopLabelClassFor()).
+        jvmti_tbl.IsInterface = &mock_IsInterface;
+        jvmti_tbl.GetImplementedInterfaces = &mock_GetImplementedInterfaces;
+        jvmti_tbl.GetClassFields = &mock_GetClassFields;
+        jvmti_tbl.GetFieldName = &mock_GetFieldName;
         mock_jvmti.functions = &jvmti_tbl;
         orig_jvmti = VMTestAccessor::getJvmti();
         VMTestAccessor::setJvmti(&mock_jvmti);
@@ -1248,6 +1277,7 @@ protected:
         jni_tbl.DeleteLocalRef = &mock_DeleteLocalRef;
         jni_tbl.FindClass = &mock_FindClass;
         jni_tbl.GetObjectClass = &mock_GetObjectClass;
+        jni_tbl.GetSuperclass = &mock_JniGetSuperclass;
         jni_tbl.NewGlobalRef = &mock_NewGlobalRef;
         jni_tbl.EnsureLocalCapacity = &mock_EnsureLocalCapacity;
         jni_tbl.NewObjectArray = &mock_NewObjectArray;
@@ -1388,14 +1418,94 @@ protected:
         // local refs.
     }
 
+    // Retention-edge label decode fixtures (fillHopEdgeLabels()/
+    // hopLabelClassFor()): a fake class hierarchy the hierarchy-introspection
+    // slots below read, plus a tag -> fake jclass map (the decoder resolves
+    // the referrer class from its raw tag via GetObjectsWithTags - the test
+    // populates field_decode_classes from resolveLoadedClasses()-minted
+    // tags, and mock_GetObjectsWithTags consults it first).
+    std::unordered_map<jlong, void *> field_decode_classes;
+    std::unordered_map<void *, FakeClass> field_decode_hierarchy;
+
+    // The hierarchy-introspection slots the decoder needs (IsInterface/
+    // GetImplementedInterfaces/GetClassFields/GetFieldName on the JVMTI
+    // table, GetSuperclass on the JNI table - modern JVMTI dropped its own
+    // GetSuperclass). All lookups go through field_decode_hierarchy; an
+    // unregistered class returns a failure code so the decoder marks the
+    // class undecodable and degrades to kind labels - the exact production
+    // fail-safe shape.
+    static jvmtiError JNICALL mock_IsInterface(jvmtiEnv *, jclass cls,
+                                               jboolean *is_interface_ptr) {
+        auto it = active_fixture->field_decode_hierarchy.find(cls);
+        if (it == active_fixture->field_decode_hierarchy.end()) {
+            return JVMTI_ERROR_INVALID_CLASS;
+        }
+        *is_interface_ptr = it->second.is_interface ? JNI_TRUE : JNI_FALSE;
+        return JVMTI_ERROR_NONE;
+    }
+    static jclass JNICALL mock_JniGetSuperclass(JNIEnv *, jclass cls) {
+        auto it = active_fixture->field_decode_hierarchy.find(cls);
+        return it == active_fixture->field_decode_hierarchy.end()
+                       ? nullptr
+                       : (jclass)it->second.super;
+    }
+    static jvmtiError JNICALL mock_GetImplementedInterfaces(
+            jvmtiEnv *, jclass cls, jint *count_ptr, jclass **ifaces_ptr) {
+        auto it = active_fixture->field_decode_hierarchy.find(cls);
+        if (it == active_fixture->field_decode_hierarchy.end()) {
+            return JVMTI_ERROR_INVALID_CLASS;
+        }
+        const std::vector<void *> &ifaces = it->second.interfaces;
+        *count_ptr = (jint)ifaces.size();
+        *ifaces_ptr = ifaces.empty()
+                ? nullptr
+                : (jclass *)malloc(sizeof(jclass) * ifaces.size());
+        for (size_t i = 0; i < ifaces.size(); i++) {
+            (*ifaces_ptr)[i] = (jclass)ifaces[i];
+        }
+        return JVMTI_ERROR_NONE;
+    }
+    static jvmtiError JNICALL mock_GetClassFields(
+            jvmtiEnv *, jclass cls, jint *count_ptr, jfieldID **fields_ptr) {
+        auto it = active_fixture->field_decode_hierarchy.find(cls);
+        if (it == active_fixture->field_decode_hierarchy.end()) {
+            return JVMTI_ERROR_INVALID_CLASS;
+        }
+        const std::vector<FakeField> &fields = it->second.fields;
+        *count_ptr = (jint)fields.size();
+        *fields_ptr = fields.empty()
+                ? nullptr
+                : (jfieldID *)malloc(sizeof(jfieldID) * fields.size());
+        for (size_t i = 0; i < fields.size(); i++) {
+            (*fields_ptr)[i] = (jfieldID)fields[i].id;
+        }
+        return JVMTI_ERROR_NONE;
+    }
+    static jvmtiError JNICALL mock_GetFieldName(
+            jvmtiEnv *, jclass, jfieldID field, char **name_ptr,
+            char ** /*signature_ptr*/, char ** /*generic_ptr*/) {
+        for (const auto &kv : active_fixture->field_decode_hierarchy) {
+            for (const FakeField &f : kv.second.fields) {
+                if (f.id == (void *)field) {
+                    size_t len = strlen(f.name) + 1;
+                    char *name = (char *)malloc(len);
+                    memcpy(name, f.name, len);
+                    *name_ptr = name;
+                    return JVMTI_ERROR_NONE;
+                }
+            }
+        }
+        return JVMTI_ERROR_INVALID_FIELDID;
+    }
+
     // expandFrontier()/admitStaticFieldRoots() resolve java/lang/Object once
     // as the holder array's element type - a non-null fake jclass is all it
     // needs (the type is never introspected, only passed to NewObjectArray()).
     // descendFromAnchor()'s class resolution (resolveNoDescendClassTags()/
     // resolveThreadLocalMapClassTag()) additionally needs NAME lookup - the
-    // find_classes registry (registerClassForFindClass() below) maps a
-    // FindClass name to a class registered via addClass() so those
-    // resolutions see the same tagged fake class the scripted graph uses.
+    // find_classes registry maps a FindClass name to a class registered via
+    // addClass() so those resolutions see the same tagged fake class the
+    // scripted graph uses.
     static jclass JNICALL mock_FindClass(JNIEnv *, const char *name) {
         auto it = active_fixture->find_classes.find(name);
         if (it != active_fixture->find_classes.end()) {
@@ -1516,6 +1626,15 @@ protected:
             jlong want = req_tags[i];
             if (want == 0 || active_fixture->dead_tags.count(want) > 0) {
                 continue;
+            }
+            // The decoder resolves a referrer CLASS from its raw (negative)
+            // tag - no node carries one, so the tag -> fake jclass map
+            // (field_decode_classes, see its own comment) serves it.
+            auto fd = active_fixture->field_decode_classes.find(want);
+            if (fd != active_fixture->field_decode_classes.end()) {
+                objs.push_back((jobject)fd->second);
+                found.push_back(want);
+                break;
             }
             for (size_t idx = 0; idx < active_fixture->node_tags.size(); idx++) {
                 if (active_fixture->node_tags[idx] == want) {
@@ -1707,7 +1826,8 @@ TEST_F(ReferenceChainsBfsTest, ReconstructsChainForSyntheticGraph) {
     // (flightRecorder.cpp) expects - same chain/order, plus the target's own
     // depth from FrontierEntry.
     ReferenceChainEvent event;
-    ASSERT_TRUE(tracker->buildChainEvent(targetTag, &event));
+    ASSERT_TRUE(tracker->buildChainEvent(&mock_jvmti, &mock_jni, targetTag,
+                                          &event));
     EXPECT_EQ((u64)targetTag, event._target_tag);
     EXPECT_EQ(2u, event._depth); // root(A, depth0) -> B(depth1) -> Target(depth2)
     ASSERT_EQ(chain, event._chain);
@@ -1722,7 +1842,8 @@ TEST_F(ReferenceChainsBfsTest, BuildChainEventFailsForUnknownTag) {
     ASSERT_FALSE(tracker->start(args));
 
     ReferenceChainEvent event;
-    EXPECT_FALSE(tracker->buildChainEvent(12345, &event));
+    EXPECT_FALSE(tracker->buildChainEvent(&mock_jvmti, &mock_jni, 12345,
+                                          &event));
 
     tracker->stop();
 }
@@ -4762,13 +4883,15 @@ TEST_F(ReferenceChainsBfsTest, LeakTagInterceptionConvertsToFrontierTagAndCorrel
     // Design C: buildChainEvent() reports the leak tag as target_tag for the
     // leak-tagged instance, and the plain frontier tag for the sibling.
     ReferenceChainEvent event;
-    ASSERT_TRUE(ReferenceChainsTestAccessor::buildChainEventForTest(leak_ftag, &event));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::buildChainEventForTest(
+        &mock_jvmti, &mock_jni, leak_ftag, &event));
     EXPECT_EQ((u64)leak_tag, event._target_tag)
         << "chain target tag must be the leak tag (correlation key)";
     EXPECT_GE(event._depth, 1u) << "leak child sits behind the root, not at it";
 
     ReferenceChainEvent plain_event;
-    ASSERT_TRUE(ReferenceChainsTestAccessor::buildChainEventForTest(plain_ftag, &plain_event));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::buildChainEventForTest(
+        &mock_jvmti, &mock_jni, plain_ftag, &plain_event));
     EXPECT_EQ((u64)plain_ftag, plain_event._target_tag)
         << "untagged instance must keep the frontier tag as target tag";
 
@@ -4992,6 +5115,125 @@ TEST_F(ReferenceChainsBfsTest, StaticAnchorRotationWalksRootAttachedStaticHolder
     ASSERT_TRUE(frontier->lookup(chunk_ftag, &chunk_entry));
     EXPECT_EQ(entry_ftag, chunk_entry.parent_tag);
     EXPECT_EQ(3u, chunk_entry.depth);
+
+    tracker->stop();
+}
+
+// Retention-edge labels (fillHopEdgeLabels()/hopLabelClassFor()): the
+// emitted chain's per-hop labels must decode the JVMTI-SPECIFICATION field
+// ordinal captured at admission - the interface offset, the superclass-chain
+// order, the interface-referrer branch - and degrade to the edge KIND on any
+// undecodable hop, never a fabricated name (the fail-safe contract: a wrong
+// numbering on an unverified JVM degrades, it does not lie).
+TEST_F(ReferenceChainsBfsTest, HopEdgeLabelsDecodeSpecFieldOrdinals) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    // Hierarchy mirroring the spec's own numbering example shape:
+    //   interface IBase                { int p; }         1 own field
+    //   interface ISub extends IBase   { int x; }         1 own field
+    //   class Base                     { int base_f; }    1 own field, no super
+    //   class Holder extends Base implements ISub
+    //                                  { int holder_a; Object leakList; }
+    //   interface ISink                { Object CONST_A; Object CONST_B; }
+    // Spec ordinal spaces (jvmtiHeapReferenceInfoField):
+    //   Holder (class branch): base = ISub(1) + IBase(1) = 2 (transitive
+    //     interfaces, each once); then the superclass chain root-first:
+    //     base_f@2; then own fields in GetClassFields order:
+    //     holder_a@3, leakList@4.
+    //   ISink (interface branch): base = superinterfaces' fields = 0; own
+    //     fields in GetClassFields order: CONST_A@0, CONST_B@1.
+    void *ibase = (void *)0x5001, *isub = (void *)0x5002, *base = (void *)0x5003,
+         *holder = (void *)0x5004, *isink = (void *)0x5005;
+    addClass(ibase, "Lcom/rc/labels/IBase;");
+    addClass(isub, "Lcom/rc/labels/ISub;");
+    addClass(base, "Lcom/rc/labels/Base;");
+    addClass(holder, "Lcom/rc/labels/Holder;");
+    addClass(isink, "Lcom/rc/labels/ISink;");
+    ReferenceChainsTestAccessor::resolveLoadedClasses(&mock_jvmti, &mock_jni);
+    // resolveLoadedClasses minted each class's raw (negative) tag via the
+    // mock's tag map - read them back for the decoder's tag->class lookup
+    // and the entries' referrer_class_tag values.
+    auto tagOf = [&](void *k) -> jlong { return tags[k]; };
+    field_decode_classes[tagOf(holder)] = holder;
+    field_decode_classes[tagOf(isink)] = isink;
+    field_decode_classes[tagOf(base)] = base;
+    // ibase deliberately NOT registered into field_decode_classes: an
+    // unresolvable referrer class below must degrade to a kind label.
+    field_decode_hierarchy[ibase] = {true, nullptr, {}, {{(void *)0x6001, "p"}}};
+    field_decode_hierarchy[isub] =
+            {true, nullptr, {ibase}, {{(void *)0x6002, "x"}}};
+    field_decode_hierarchy[base] = {false, nullptr, {}, {{(void *)0x6003, "base_f"}}};
+    field_decode_hierarchy[holder] =
+            {false, base, {isub},
+             {{(void *)0x6004, "holder_a"}, {(void *)0x6005, "leakList"}}};
+    field_decode_hierarchy[isink] =
+            {true, nullptr, {},
+             {{(void *)0x6006, "CONST_A"}, {(void *)0x6007, "CONST_B"}}};
+
+    FrontierTable *frontier = tracker->frontierTable();
+    // Chain: [chunk(3)] <- Base.base_f(ordinal 0 over Base's space) <-
+    // [value2(2), class Base] <- Holder.leakList(ordinal 4, the static root
+    // edge with the declaring class as referrer) <- [static value(1), class
+    // Holder]. Interior hops decode against the PARENT entry's class_tag.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 1, 0, 0, FrontierEntryState::EDGE,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD,
+        /*referrer_klass=*/0, /*class_tag=*/tagOf(holder),
+        /*referrer_field_index=*/4, /*edge_kind=*/0,
+        /*referrer_class_tag=*/tagOf(holder)));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 2, 1, 1, FrontierEntryState::EDGE, /*root_kind=*/0,
+        /*referrer_klass=*/0, /*class_tag=*/tagOf(base),
+        /*referrer_field_index=*/3, JVMTI_HEAP_REFERENCE_FIELD));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 3, 2, 2, FrontierEntryState::EDGE, /*root_kind=*/0,
+        /*referrer_klass=*/0, /*class_tag=*/tagOf(holder),
+        /*referrer_field_index=*/0, JVMTI_HEAP_REFERENCE_FIELD));
+
+    ReferenceChainEvent event;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::buildChainEventForTest(
+        &mock_jvmti, &mock_jni, /*target_tag=*/3, &event));
+    ASSERT_EQ(3u, event._chain.size());
+    ASSERT_EQ(3u, event._edges.size())
+        << "edge labels must align with the chain, one per hop";
+    // Leaf first: chunk is retained via Base.base_f (parent entry's class is
+    // Base, ordinal 0 in Base's own space), then value2 via Holder's
+    // holder_a (ordinal 3 = interface offset 2 + Base's 1 + own position 0),
+    // then the static root edge's field name leakList (ordinal 4).
+    EXPECT_EQ("base_f", event._edges[0]);
+    EXPECT_EQ("holder_a", event._edges[1]);
+    EXPECT_EQ("leakList", event._edges[2]);
+
+    // Interface-referrer branch: ISink's own-field ordinals have NO
+    // superclass-chain component (base = superinterfaces' fields only).
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 4, 0, 0, FrontierEntryState::EDGE,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD,
+        /*referrer_klass=*/0, /*class_tag=*/tagOf(isink),
+        /*referrer_field_index=*/1, /*edge_kind=*/0,
+        /*referrer_class_tag=*/tagOf(isink)));
+    ReferenceChainEvent iface_event;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::buildChainEventForTest(
+        &mock_jvmti, &mock_jni, /*target_tag=*/4, &iface_event));
+    ASSERT_EQ(1u, iface_event._edges.size());
+    EXPECT_EQ("CONST_B", iface_event._edges[0]);
+
+    // Fail-safe: a referrer class that cannot be resolved degrades to the
+    // edge KIND label, never a fabricated name.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 5, 0, 0, FrontierEntryState::EDGE,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD,
+        /*referrer_klass=*/0, /*class_tag=*/tagOf(holder),
+        /*referrer_field_index=*/0, /*edge_kind=*/0,
+        /*referrer_class_tag=*/tagOf(ibase)));
+    ReferenceChainEvent degraded_event;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::buildChainEventForTest(
+        &mock_jvmti, &mock_jni, /*target_tag=*/5, &degraded_event));
+    ASSERT_EQ(1u, degraded_event._edges.size());
+    EXPECT_EQ("static_field", degraded_event._edges[0]);
 
     tracker->stop();
 }
