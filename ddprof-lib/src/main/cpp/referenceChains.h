@@ -1536,12 +1536,17 @@ private:
   // walk's anchor the walk may admit. A static Map -> table[] -> Entry ->
   // leaked chunk is 3-4 hops below its root-attached holder; a Thread ->
   // ThreadLocalMap -> table[] -> Entry -> value -> holder -> chunk is 5-6
-  // below the Thread object, so 6 covers both taxonomy shapes' canonical
-  // chains. Deeper-than-intended descent via pre-existing frontier entries
-  // (whose subtree depth is the global, not anchor-relative, depth) stays
-  // bounded by the ordinary hop cap plus the pass deadline (see
-  // descendFromAnchor()'s own comment).
-  static constexpr int DESCENT_HOPS = 6;
+  // below the Thread object. Raised 6 -> 16 after pod round 7: with both
+  // prongs live, interception stayed zero while the static-anchor walks
+  // admitted whole executor-task subgraphs (3000+ edges in single walks)
+  // - the holder interior is reachable but the tagged chunks sit one or
+  // more hops PAST the 6-hop cap (the static-ExecutorService -> queue ->
+  // task -> accumulator -> list -> chunk shape is ~7 deep). The walk is
+  // deadline-bounded per slice either way, so the cap's cost model does
+  // not change - a deeper cap just lets each bounded walk cover the whole
+  // holder interior instead of stopping mid-way, and already-admitted
+  // entries are skipped so repeated passes march deeper each time.
+  static constexpr int DESCENT_HOPS = 16;
 
   // Per-pass cap on how many candidate threads walkCandidateThreadLocals()
   // descend-walks. Each anchor walk is a whole bounded FollowReferences
@@ -2548,14 +2553,19 @@ private:
                                  int *edges_admitted, bool *truncated,
                                  bool *frontier_cap_hit, u64 *safepoint_ticks);
 
-  // Prong 2 (static-retained taxonomy): select up to `max_count` root-
-  // attached static-holder entries (parent_tag == 0, root_kind ==
-  // STATIC_FIELD, FRONTIER or EXPANDED) with a wrapping cursor -
-  // collectStaticFieldAnchorsForRotation() - and descend-walk each via
-  // walkStaticFieldAnchors(). A static Map/List's leaked chunks sit 3-4
-  // hops below its root-attached holder, deeper than the one-hop Tier-2
-  // rotation can reach from an un-expanded FRONTIER holder; a descend walk
-  // covers the holder's whole internal structure in one bounded call.
+  // Prong 2 (durable-root-retained taxonomy): select up to `max_count` root-
+  // attached entries held by a DURABLE root kind (parent_tag == 0,
+  // root_kind STATIC_FIELD or JNI_GLOBAL, FRONTIER or EXPANDED) with a
+  // wrapping cursor - collectStaticFieldAnchorsForRotation() - and
+  // descend-walk each via walkStaticFieldAnchors(). A static Map/List's
+  // leaked chunks sit 3-4 hops below its root-attached holder, deeper
+  // than the one-hop Tier-2 rotation can reach from an un-expanded
+  // FRONTIER holder; a descend walk covers the holder's whole internal
+  // structure in one bounded call. JNI_GLOBAL joined the filter after pod
+  // round 7 (interception zero with statics fully walked): a leaking
+  // holder retained through a JNI global is the same taxonomy shape and
+  // the same walk covers it - covering it in the SAME rebuild avoids a
+  // second deploy cycle if the pod's holder turns out to be one.
   std::vector<jlong> collectStaticFieldAnchorsForRotation(int max_count);
   void walkStaticFieldAnchors(jvmtiEnv *jvmti, JNIEnv *jni,
                               const std::vector<jlong> &anchor_tags,

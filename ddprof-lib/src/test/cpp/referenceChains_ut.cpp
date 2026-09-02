@@ -5076,11 +5076,12 @@ TEST_F(ReferenceChainsBfsTest, StaticAnchorRotationWalksRootAttachedStaticHolder
     };
 
     // Seed the frontier exactly as the static sweep admits a static field's
-    // value: root-attached, STATIC_FIELD root kind, FRONTIER state. Plus
-    // decoys the collector must skip: a JNI_GLOBAL root-attached entry and
-    // a chain-attached child (table entries only - deliberately NOT
-    // mirrored into node_tags, so the walk below freshly admits those
-    // nodes instead of tripping ALREADY_ADMITTED on stale scripted tags).
+    // value: root-attached, STATIC_FIELD root kind, FRONTIER state. Plus a
+    // second durable-root anchor (JNI_GLOBAL - the pod-round-7 filter
+    // extension), a TRANSIENT-root decoy the collector must skip, and a
+    // chain-attached child (table entries only - deliberately NOT mirrored
+    // into node_tags, so the walk below freshly admits those nodes instead
+    // of tripping ALREADY_ADMITTED on stale scripted tags).
     FrontierTable *frontier = tracker->frontierTable();
     node_tags[holderNode] = 101; // mock_GetObjectsWithTags' resolvable tag
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
@@ -5088,21 +5089,29 @@ TEST_F(ReferenceChainsBfsTest, StaticAnchorRotationWalksRootAttachedStaticHolder
         JVMTI_HEAP_REFERENCE_STATIC_FIELD));
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, 102, 0, 0, FrontierEntryState::FRONTIER,
-        JVMTI_HEAP_REFERENCE_JNI_GLOBAL));
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, 103, 101, 1, FrontierEntryState::FRONTIER, 0));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 104, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_JNI_GLOBAL));
 
     std::vector<jlong> selected =
         ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
             4);
-    ASSERT_EQ(1u, selected.size());
+    // Both DURABLE root kinds are selected (STATIC_FIELD 101, JNI_GLOBAL
+    // 104, in cursor/tag order); the transient-root decoy and the child are
+    // not. The walk below drives only 101 (the resolvable node).
+    ASSERT_EQ(2u, selected.size());
     EXPECT_EQ(101, selected[0]);
+    EXPECT_EQ(104, selected[1]);
+    std::vector<jlong> walk_selected = {selected[0]};
 
     // The static anchor's whole internal structure is admitted by one
     // bounded walk, intercepting the leak tag at depth 3 below the holder.
     int edges = 0;
     ReferenceChainsTestAccessor::walkStaticFieldAnchorsForTest(
-        &mock_jvmti, &mock_jni, selected, 1000, &edges);
+        &mock_jvmti, &mock_jni, walk_selected, 1000, &edges);
     jlong table_ftag = tags_ever_assigned[tableNode];
     jlong entry_ftag = tags_ever_assigned[entryNode];
     jlong chunk_ftag = tags_ever_assigned[leakChunk];

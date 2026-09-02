@@ -3170,7 +3170,8 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
       }
       FrontierEntry entry{};
       if (frontier->lookupLocked(tag, &entry) && entry.parent_tag == 0 &&
-          entry.root_kind == (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD &&
+          (entry.root_kind == (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD ||
+           entry.root_kind == (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL) &&
           (entry.state == FrontierEntryState::FRONTIER ||
            entry.state == FrontierEntryState::EXPANDED) &&
           !isQueuedForRotation(tag)) {
