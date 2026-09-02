@@ -71,6 +71,42 @@ _pending_expand does not matter, the chain entries exist at admission time.
 - runPass + pollWatchedTargets both run on threadLoop serialized - retained
   qualifying tids are safe to read in the walk phase.
 
+## Round-7 follow-up (user-picked option 2, commit c6635fe0e)
+
+Pod round 7 (ev-leaktag-onpod-round7): both prongs live, interception
+still zero - the tagged chunks sit past the 6-hop descend cap (static
+anchor walks admitted whole 3000+-edge task subgraphs but stopped
+short) or under an uncovered root kind. Fixes in ONE rebuild:
+- DESCENT_HOPS 6 -> 16: the walk is deadline-bounded per slice either
+  way; already-admitted entries are skipped so repeated passes march
+  deeper each pass.
+- collectStaticFieldAnchorsForRotation now also selects root-attached
+  JNI_GLOBAL entries (the remaining durable root kind - same collector,
+  same wrapping cursor, same bounded walks).
+- Round 8 = deploy 9d3d0afe6 and watch the same three lines
+  (walk engagement, leak-tag intercepted, first chain's edges names).
+
+## Round-8 verdict (ev-leaktag-onpod-round8): BOTH fixes live, interception STILL zero
+
+Both hypotheses from round 7 are REFUTED as sufficient explanations:
+16-hop walks complete un-truncated over all 4 root-attached static
+anchors (per-pass edges 10→3608, rotation cycling different anchors),
+JNI_GLOBAL anchors selected in the same tier — zero interceptions. The
+app's actual retention shape (found in its bytecode, diagnosis-only):
+ProfileAnalyzer.LEAK_BUFFER, a static final List<byte[]> wrapped in
+Collections.unmodifiableList, 3-4 hops from the root static — textbook
+prong-2 taxonomy, well inside the cap. The local scenario intercepts
+the identical shape, so the walk mechanism is sound in-process. The
+remaining suspect is tier MEMBERSHIP on the pod: the
+Collections$UnmodifiableList wrapper (a) never admitted root-attached,
+(b) root_kind misclassified, or (c) admitted root-attached then
+replaced by a chain-attached entry (improveChain / reparentToDurableRoot
+both produce parent_tag!=0 entries — plausible: the wrapper is reachable
+via many chains and improveChain favors deeper chain-attached entries).
+TEMP per-anchor diagnostic (c9a57f681) logs every walked anchor's class
+signature + parent/root_kind/state — round 9 = deploy it and read the
+wrapper's tier state directly.
+
 ## New machinery
 
 - tid -> jthread global-ref registry in ReferenceChainTracker, fed from

@@ -16,7 +16,7 @@ representatives are re-tagged and all discovered instances auto-marked,
 chains are cached per-instance (not per-class). JFR analysis confirmed 2
 ReferenceChain events emitted — but one was for a noise [B instance.
 
-## Current focus: Option C (candidate-scoped reach) COMMITTED+PUSHED - both prongs, all suites green, NOT yet deployed (pod round 7 pending)
+## Current focus: round 8 VERIFIED zero-interception over textbook prong-2 shape — per-anchor diagnostic committed (c9a57f681), round 9 = deploy it
 
 Round-6 verdict made Option C a correctness requirement (breadth-
 first FIFO over a rising heap can never drain; pendingExpand net-growing).
@@ -50,17 +50,36 @@ walked=1 edges=18); spotlessApply clean.
 1. DONE this session: committed (186468437 descend-walk core +
    gtests; 01c591eea ThreadLocal scenario; 93868362e memory sync) and
    pushed to origin/jb/reference-chains-pi.
-1b. ALSO this session (NOT yet committed): per-hop retention-edge
-   field names in ReferenceChain events (find-field-name-decoding node) -
-   "edges" string array, spec-ordinal capture + fail-safe decode, all
-   suites green (554 gtests, slow family 9/9, JMC parser test). Commit
-   when the user says so; deploy together with the descend-walk commits.
-2. Pod round 7: deploy and verify both prongs live on hotdog
-   (walkCandidateThreadLocals/walkStaticFieldAnchors per-pass lines;
-   watch interception count - the one remaining correctness gap; the
-   edges array will name the retention fields directly in the emitted
-   chains).
-3. TEMP reverts before finalizing (list below).
+1b. DONE this session, committed+pushed: per-hop retention-edge field
+   names (4d473e727) + memory sync; pod round 7 verified both prongs
+   live with interception still zero (ev-leaktag-onpod-round7) and the
+   user-picked fixes implemented and pushed (c6635fe0e: DESCENT_HOPS
+   6->16 + JNI_GLOBAL anchors in the rotation tier; 9d3d0afe6 memory
+   sync). One slow-suite failure en route was the known intermittent
+   hysteresis family (candidate never qualified; green on rerun).
+2. DONE (previous session, checkpointed now): pod round 8 verified on
+   RENAMED pod prof-analyzer-hotdog-jb1-668df5bcff-f75l8 (JVM 4445,
+   agent 1.66.0-SNAPSHOT~e188d0ff7f): both prongs live, walks
+   un-truncated at 16 hops (per-pass edges 10→3608, rotation cycling
+   different anchors), tagging healthy (klass_id=5 tid=4655 tagged=8
+   max_size=78MB), interception STILL ZERO — and the app's retention
+   shape was found in its bytecode: ProfileAnalyzer.LEAK_BUFFER, a
+   static final List<byte[]> wrapped in Collections.unmodifiableList,
+   3-4 hops from the root static = textbook prong-2 (see
+   ev-leaktag-onpod-round8). Local scenario intercepts the identical
+   shape, so the machinery is sound in-process — the suspect is WHICH
+   anchors enter the anchor tier (wrapper never admitted root-attached /
+   root_kind misclassified / root-attached entry replaced by a
+   chain-attached one via improveChain).
+3. Round 9: user deploys c9a57f681 (per-anchor TEMP diagnostic,
+   gtest-verified); watch the new `walkStaticFieldAnchors anchor
+   tag=... class=... parent= root_kind= state= field_index=` lines —
+   they name the LEAK_BUFFER wrapper's tier membership directly.
+   Evidence windows via `kubectl logs -f` streaming (retention ~30s).
+   DO NOT jcmd GC.heap_dump in-pod (evicted the last pod). When pulling
+   JFR chunks, also grep the ProfilerSetting memory= line for the
+   HeapLiveObject question (q-heapliveobject-absent-on-pod-chunks).
+4. TEMP reverts before finalizing (list below).
 
 ## TEMP — MUST REVERT before finalizing
 
@@ -81,6 +100,9 @@ walked=1 edges=18); spotlessApply clean.
   `requeueChainRootForRotation` log — from the repro round.
 - Old marker-tag decode in heapReferenceCallback is now unused — confirm
   and remove.
+- TEMP per-anchor diagnostic in walkStaticFieldAnchors (c9a57f681):
+  class signature + chain shape per walked anchor — remove once round 9
+  names the tier-membership answer.
 
 ## Confirmed findings (do NOT re-derive)
 
@@ -124,10 +146,10 @@ walked=1 edges=18); spotlessApply clean.
 
 ## Reproduction handle
 
-Pod `prof-analyzer-hotdog-jb-86d8bf5854-zng9s` in `profiling-stg`,
-container `prof-analyzer`, PID 48355 (build `0db70994d`, round 2
-verified, see `ev-leaktag-onpod-round2`). Needs redeploy with
-`f4c73ba0f` (round-3 fixes). Pod clock is UTC (2h behind local).
+Pod `prof-analyzer-hotdog-jb1-668df5bcff-f75l8` in `profiling-stg`,
+container `prof-analyzer`, JVM 4445 (round 8 verified, see
+`ev-leaktag-onpod-round8`; needs redeploy with c9a57f681 for round 9).
+Pod clock is UTC (2h behind local).
 Verify the deployed build via a per-iteration log field (e.g.
 `ema_call_ms=` in every gotw line) BEFORE interpreting event-driven
 logs — round 3 saw one stale-build deploy (JVM 44624 ran the old

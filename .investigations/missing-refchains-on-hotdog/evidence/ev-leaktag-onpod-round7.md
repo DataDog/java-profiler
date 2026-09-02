@@ -58,14 +58,22 @@ survive GCs, ages to 236).
 2. A root kind outside both prongs (JNI_GLOBAL / MONITOR / another
    thread's stack root) - no current evidence for or against.
 
-## Fix candidates (presented, NOT picked)
+## Fix candidates (user picked BOTH - implemented in c6635fe0e, pending round 8)
 
-- Minimal, taxonomy-consistent: raise DESCENT_HOPS (6 -> 12-16); the
+- Minimal, taxonomy-consistent: raise DESCENT_HOPS (6 -> 16); the
   walk is already deadline-bounded per slice, so cost is unchanged
   structurally - this is a one-constant rebuild+redeploy.
-- Same-pattern extension if that does not close it: extend
-  collectStaticFieldAnchorsForRotation's filter to other durable
-  root kinds (JNI_GLOBAL), same wrapping-cursor bounded walks.
+- Same-pattern extension: extend
+  collectStaticFieldAnchorsForRotation's filter to JNI_GLOBAL roots,
+  same wrapping-cursor bounded walks.
+
+En route to that deploy, one slow-suite run failed
+shouldReconstructReferrerChainThroughUnboundedCacheLeak with
+candidateFound=0/0 and ZERO tagLeakInstances calls - the candidate never
+qualified at all, which the walk changes cannot influence (they only act
+after a candidate exists). Green on rerun and in the full family pass:
+the KNOWN intermittent hysteresis family (q-togcroot-acceptance-paths),
+not a regression.
 
 Pod log retention is ~30s at current volume (3.2M lines/6min) - use
 kubectl logs -f streaming for evidence windows, not --since.
