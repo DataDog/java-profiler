@@ -1399,24 +1399,27 @@ static void patchClassLoaderData(JNIEnv* jni, jclass klass) {
             return;
           }
           state.lock(cld);
-          // Re-check under cld's lock: the GetTag() above is not serialized
-          // against a concurrent patchClassLoaderData() call for the same
-          // class (e.g. RetransformClasses on one thread racing the <clinit>
-          // fallback on the JFR dump thread), so another caller may have
-          // already patched (and updated the tag) while this thread was
-          // waiting for the lock. Only the mutation below is exclusive, so
-          // the decision to mutate must be re-validated inside it.
-          if (jvmti == nullptr || jvmti->GetTag(klass, &already_patched) != JVMTI_ERROR_NONE) {
-            already_patched = 0;
+          int i;
+          for (i = (int) already_patched; i < method_count; i += MethodList::SIZE) {
+            *cld->methodList() = new MethodList(*cld->methodList());
           }
-          if (method_count > already_patched) {
-            int i;
-            for (i = (int) already_patched; i < method_count; i += MethodList::SIZE) {
-              *cld->methodList() = new MethodList(*cld->methodList());
-            }
-            if (jvmti != nullptr) {
-              jvmti->SetTag(klass, i);
-            }
+          // Release cld's lock before touching the JVMTI tag: cld->lock()
+          // resolves to HotSpot's Monitor::lock_without_safepoint_check(), and
+          // GetTag()/SetTag() are full JVMTI entry points that do participate
+          // in safepoint polling -- calling them while holding a
+          // safepoint-check-suppressing lock is a JVM-deadlock hazard on its
+          // own, independent of any fault/siglongjmp path.
+          state.reset();
+          // This SetTag() is not serialized against a concurrent
+          // patchClassLoaderData() call for the same class (e.g.
+          // RetransformClasses on one thread racing the <clinit> fallback on
+          // the JFR dump thread): both can read the same stale tag and both
+          // patch. That only wastes one extra round of preallocated blocks in
+          // the rare concurrent case -- unlike the unguarded original, it
+          // cannot grow unboundedly, since the racing calls all still need a
+          // fresh method_count increase to trigger another round.
+          if (jvmti != nullptr) {
+            jvmti->SetTag(klass, i);
           }
         }
       }
