@@ -1,0 +1,35 @@
+# Tests whose failures do not turn CI red.
+#
+# FORMAT — one entry per line, six fields separated by "|", whitespace around
+# each field ignored. Blank lines and lines starting with "#" are ignored.
+#
+#   test | ticket | added | review_by | cells | reason
+#
+#   test       Fully qualified <class>.<method>. A trailing ".*" covers every
+#              method in the class.
+#   ticket     PROF-<number>. Required — a quarantine without a ticket is just
+#              a test nobody runs.
+#   added      YYYY-MM-DD, the day it went in.
+#   review_by  YYYY-MM-DD. CI FAILS once this date passes, so staying
+#              quarantined is a decision somebody renews rather than the
+#              default. 90 days is the usual span.
+#   cells      Comma-separated globs against the cell name
+#              (<libc>-<jdk>-<config>-<arch>), e.g. "*arm64*" or
+#              "musl-*,*-asan-*". Leave as "-" to quarantine everywhere; prefer
+#              narrowing it, so the same test breaking elsewhere still gates.
+#   reason     Free text — what is unreliable and how often. Last field, so it
+#              may contain anything but "|".
+#
+# A quarantined test STILL RUNS and still reports; only the gating is
+# suspended. That keeps the pass rate visible, which is how you find out the
+# test got fixed, or that a "flake" has quietly become permanently broken.
+#
+# Quarantine is for a test that fails intermittently and that nobody has time
+# to fix right now. It is not for a test that is simply wrong — fix or delete
+# that one. The intended exit from this file is a fix and a deleted line.
+#
+# When CI sees a flake it prints a ready-made line in the PR comment. The
+# ticket and the judgement are still yours.
+#
+# Example (delete when the first real entry lands):
+# com.datadoghq.profiler.cpu.CpuSamplingTest.testSampling | PROF-12345 | 2026-09-02 | 2026-12-02 | *arm64* | Under-samples on emulated arm64; 2 of 40 runs

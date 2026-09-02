@@ -45,6 +45,24 @@ jobs:
             .github/scripts/tests/test_release_automation.sh
           .github/scripts/tests/test_release_automation.sh
 
+  # Fails when a quarantine entry is malformed, ticketless, or past its
+  # review_by date. Without this the list only ever grows, and a quarantine
+  # becomes a permanent mute rather than tracked debt.
+  validate-quarantine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Validate the test quarantine list
+        run: |
+          bash -n .github/scripts/run_tests_with_retry.sh
+          python3 .github/scripts/quarantine.py validate
+          .github/scripts/tests/test_quarantine.sh
+
   check-for-pr:
     runs-on: ubuntu-latest
     outputs:
