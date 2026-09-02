@@ -150,6 +150,22 @@ public:
         ReferenceChainTracker::instance()->setCandidateCountForTest(n);
     }
 
+    // Canary-lane backoff state wrappers - see _canary_backoff_mult's own
+    // comment (referenceChains.h).
+    static int canaryBackoffMult() {
+        return ReferenceChainTracker::instance()->canaryBackoffMultForTest();
+    }
+    static u64 lastCanaryPassNs() {
+        return ReferenceChainTracker::instance()->lastCanaryPassNsForTest();
+    }
+    static void setCanaryBackoffForTest(int mult, u64 ema_ms, u64 last_pass_ns) {
+        ReferenceChainTracker::instance()->setCanaryBackoffForTest(mult, ema_ms,
+                                                                   last_pass_ns);
+    }
+    static void setOomRampActive(bool active) {
+        ReferenceChainTracker::instance()->setOomRampActiveForTest(active);
+    }
+
     static int passesSinceLastCandidateProgress() {
         return ReferenceChainTracker::instance()->passesSinceLastCandidateProgressForTest();
     }
@@ -2065,6 +2081,99 @@ TEST_F(ReferenceChainsBfsTest, CanaryStuckRequiresWholeGraphFrontierAlsoStalled)
     // what the old, single-condition check would have abandoned on alone.
     EXPECT_GE(ReferenceChainsTestAccessor::passesSinceLastCandidateProgress(),
               ReferenceChainTracker::CANARY_NO_PROGRESS_PASS_LIMIT);
+
+    tracker->stop();
+}
+
+// Canary-lane backoff pacing (option A): a chase with unresolved candidates
+// runs back-to-back only while it is fresh or making candidate progress;
+// each pass with NO candidate progress doubles the spacing multiplier
+// (_canary_backoff_mult) up to CANARY_BACKOFF_MULT_MAX, progress resets it
+// to 1, and the OOM urgency ramp overrides the gate entirely. Live evidence
+// this bounds (hotdog rounds 3-4): an un-findable candidate held the chase
+// open for 32 minutes at ~88 passes/min - a full core - because canary_active
+// bypassed every cadence check and threadLoop() skips its sleep whenever a
+// pass will run. Work-scaled rather than a fixed cap: hotdog's own passes
+// ran 0.7-4s, so any fixed cap below that would have changed nothing at all
+// - the loop is work-bound when the pass exceeds the cap - while a fixed 1s
+// cap starved ReferenceChainTrackingTest's deep ~200-pass chase outright.
+TEST_F(ReferenceChainsBfsTest, CanaryLaneBacksOffWithoutProgressAndResetsOnProgress) {
+    Arguments args;
+    // Same shape as CanaryStuckRequiresWholeGraphFrontierAlsoStalled above:
+    // budget=1 with a long chain keeps the frontier growing one node per
+    // pass, so the CANARY_STUCK detector (which also requires a stalled
+    // frontier) never fires and the chase stays RUNNING through the whole
+    // loop below.
+    ASSERT_FALSE(args.parse(
+        "referencechains=true:hops=200:budget=1:ttl=0:firstpassbudget=1"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    constexpr int kChainLength = 50;
+    std::vector<int> nodes;
+    for (int i = 0; i < kChainLength; i++) {
+        nodes.push_back(addNode());
+    }
+    script.push_back({JVMTI_HEAP_REFERENCE_JNI_GLOBAL, -1, nodes[0], -1});
+    for (int i = 1; i < kChainLength; i++) {
+        script.push_back(
+            {JVMTI_HEAP_REFERENCE_FIELD, nodes[i - 1], nodes[i], -1});
+    }
+
+    ReferenceChainsTestAccessor::setCandidateCountForTest(1);
+    bool truncated = true;
+
+    // Pass 1: the candidate admission itself raises the progress mark
+    // (0 -> 1), so this counts as progress and the multiplier stays at 1 -
+    // back-to-back.
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_EQ(1, ReferenceChainsTestAccessor::canaryBackoffMult());
+    EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(OS::nanotime()))
+        << "a fresh chase must be allowed to run back-to-back";
+
+    // Pass 2: no candidate progress -> first doubling (1 -> 2). Seed a
+    // deterministic pass-cost EMA (mock passes are sub-ms, so the real EMA
+    // decays to 0) and a fresh pass timestamp so the spacing arithmetic is
+    // exact: spacing = 2 x 100ms.
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_EQ(2, ReferenceChainsTestAccessor::canaryBackoffMult());
+    ReferenceChainsTestAccessor::setCanaryBackoffForTest(
+        /*mult=*/2, /*ema_ms=*/100, OS::nanotime());
+    EXPECT_FALSE(ReferenceChainsTestAccessor::shouldRunPass(OS::nanotime()))
+        << "a no-progress canary pass must hold off the next one";
+    // Beyond the spacing, the chase is allowed again - the backoff paces,
+    // it never abandons.
+    EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(
+        ReferenceChainsTestAccessor::lastCanaryPassNs() +
+        2ULL * 100ULL * 1000000ULL + 1))
+        << "elapsed spacing must re-admit the canary pass";
+
+    // The OOM urgency ramp overrides the backoff gate entirely.
+    ReferenceChainsTestAccessor::setOomRampActive(true);
+    EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(OS::nanotime()))
+        << "urgency must bypass the canary backoff";
+    ReferenceChainsTestAccessor::setOomRampActive(false);
+
+    // Consecutive no-progress passes double the multiplier up to the cap
+    // (seeded at 8 so one more pass reaches it, the next holds it).
+    ReferenceChainsTestAccessor::setCanaryBackoffForTest(
+        /*mult=*/8, /*ema_ms=*/100, OS::nanotime());
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_EQ(ReferenceChainTracker::CANARY_BACKOFF_MULT_MAX,
+              ReferenceChainsTestAccessor::canaryBackoffMult());
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_EQ(ReferenceChainTracker::CANARY_BACKOFF_MULT_MAX,
+              ReferenceChainsTestAccessor::canaryBackoffMult())
+        << "the multiplier must hold at its cap, not grow past it";
+
+    // Candidate progress (a new candidate admitted into a slot) resets the
+    // lane to back-to-back.
+    ReferenceChainsTestAccessor::setCandidateCountForTest(2);
+    ReferenceChainsTestAccessor::setCandidateKlassIdForTest(1, /*klass_id=*/987);
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+    EXPECT_EQ(1, ReferenceChainsTestAccessor::canaryBackoffMult())
+        << "candidate progress must reset the spacing multiplier to 1";
+    EXPECT_TRUE(ReferenceChainsTestAccessor::shouldRunPass(OS::nanotime()));
 
     tracker->stop();
 }

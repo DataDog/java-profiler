@@ -524,6 +524,11 @@ Error ReferenceChainTracker::start(Arguments &args) {
   memset(_candidate_discovered_count, 0, sizeof(_candidate_discovered_count));
   _passes_since_last_candidate_progress = 0;
   _last_candidate_progress_mark = 0;
+  // Fresh chase gets a fresh back-to-back spacing allowance (see
+  // _canary_backoff_mult's own comment).
+  _canary_backoff_mult = 1;
+  _canary_pass_ema_ms = 0;
+  _last_canary_pass_ns = 0;
   _canary_stuck_restart_count = 0;
   // Budget-borrowing (referenceChains.h's _borrowed_budget comment): reset
   // alongside the rest of the pacing controller's state, so a restarted
@@ -798,6 +803,16 @@ void ReferenceChainTracker::threadLoop() {
     // canAffordNewSearch() call).
     u64 now_ns = OS::nanotime();
 
+    // Hand this iteration's ramp state to shouldRunPass() before it decides
+    // - the canary-backoff gate is bypassed while the OOM urgency ramp is
+    // active (see _oom_ramp_active's own comment) - and raise
+    // LivenessTracker's tracking admission to 100% for the same ramp
+    // (see setUrgentTracking()'s own comment, livenessTracker.h): same state,
+    // same iteration, so the boost tracks the ramp exactly, engaging and
+    // releasing together.
+    _oom_ramp_active = urgent;
+    LivenessTracker::instance()->setUrgentTracking(urgent);
+
     bool should_run = shouldRunPass(now_ns);
     // Only sleep when idle (no pass will run). When a canary
     // search is active or a pass is about to run, skip the
@@ -924,44 +939,62 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns) {
     return false;
   }
   // Canary search active with candidates still to find - computed ahead of
-  // the pain-budget check below (CANARY_PAIN_BUDGET_REFILL_MULTIPLIER's own
-  // comment) so the escalation and the bypass branch further down agree on
-  // the same snapshot of _candidate_found_bits.
+  // the pain-budget check below so the refill-rate raise and the backoff
+  // gate further down agree on the same snapshot of _candidate_found_bits.
   bool canary_active = _candidate_count > 0 &&
       __builtin_popcountll(_candidate_found_bits) < (u64)_candidate_count;
-  // Adaptive CPU budget: 100x for emergency (canary stuck, no progress),
-  // 15x for uncovered but making progress, 1x when all leak tags resolved.
-  bool all_covered = _leak_tags_assigned > 0 &&
-      _leak_tags_resolved >= _leak_tags_assigned;
-  // Emergency = the canary's CANDIDATES are stuck, not the frontier: the
-  // frontier grows on virtually every pass for as long as any unvisited
-  // object exists, so frontier progress would make emergency unreachable
-  // (observed live: emergency=0 for the entire run while 0/1 candidates were
-  // found). _passes_since_last_candidate_progress counts passes without any
-  // candidate discovery/refresh - the same signal CANARY_STUCK abandons on.
-  bool emergency = canary_active &&
-      _passes_since_last_candidate_progress >= CANARY_NO_PROGRESS_PASS_LIMIT;
-  double multiplier;
-  if (all_covered) {
-    multiplier = 1.0;
-  } else if (emergency) {
-    multiplier = CANARY_PAIN_BUDGET_REFILL_MULTIPLIER;
-  } else if (canary_active) {
-    multiplier = CANARY_PAIN_BUDGET_COVERING_MULTIPLIER;
-  } else {
-    multiplier = 1.0;
-  }
+  // Adaptive CPU budget: 100x refill while a canary chase is open - NOT a
+  // rate control (the canary lane's rate is bounded by _canary_backoff_ns's
+  // progress-driven exponential backoff, see its own comment) but a
+  // double-throttle guard: the base refill rate is tuned for the ordinary
+  // ~1 pass/s whole-graph cadence and would otherwise starve a chase the
+  // backoff has already paced. 1x in every other mode.
+  double multiplier =
+      canary_active ? CANARY_PAIN_BUDGET_REFILL_MULTIPLIER : 1.0;
   _cpu_pain_budget.setRefillRate(
       std::min(_pain_budget_refill_rate * multiplier, 1.0),
       now_ns);
   if (!_cpu_pain_budget.canStartNow(now_ns)) {
     TEST_LOG("ReferenceChainTracker::shouldRunPass blocked by cpu_pain_budget "
-             "balance=%.1fms refill_rate=%.4f canary_active=%d all_covered=%d "
-             "emergency=%d multiplier=%.1f",
+             "balance=%.1fms refill_rate=%.4f canary_active=%d "
+             "multiplier=%.1f",
              _cpu_pain_budget.balanceMs(now_ns),
              std::min(_pain_budget_refill_rate * multiplier, 1.0),
-             (int)canary_active, (int)all_covered, (int)emergency, multiplier);
+             (int)canary_active, multiplier);
     return false;
+  }
+  if (canary_active) {
+    // Canary-lane pacing: the chase's rate bound - work-scaled spacing
+    // (_canary_backoff_mult's own comment for the law and the live burn it
+    // bounds). Deliberately placed ABOVE the gc-finish-epoch trigger below:
+    // a GC-heavy workload bumps the epoch on virtually every wake (minor
+    // young GCs included), so letting the epoch trigger bypass the backoff
+    // would make the backoff unreachable exactly on the GC-churning
+    // deployments that burn the most. The pass that eventually runs sees
+    // whatever the graph looks like then - freshness is not lost, only
+    // re-checked at the paced rate. The OOM urgency ramp is the one
+    // override (see _oom_ramp_active's own comment).
+    u64 spacing_ns =
+        (u64)_canary_backoff_mult * _canary_pass_ema_ms * 1000000ULL;
+    // mult == 1 (fresh chase, or last pass made progress) means the gate is
+    // OFF - the chase runs at its natural pass rate, one pass starting as
+    // soon as the last ended.
+    if (!_oom_ramp_active && _canary_backoff_mult > 1 &&
+        now_ns - _last_canary_pass_ns < spacing_ns) {
+      TEST_LOG("ReferenceChainTracker::shouldRunPass held off by canary "
+               "backoff mult=%d ema_ms=%llu since_last_pass=%llums",
+               _canary_backoff_mult,
+               (unsigned long long)_canary_pass_ema_ms,
+               (unsigned long long)((now_ns - _last_canary_pass_ns) /
+                                   1000000ULL));
+      return false;
+    }
+    TEST_LOG("ReferenceChainTracker::shouldRunPass -> true (canary search, "
+             "%d/%d candidates found, backoff_mult=%d ema_ms=%llu)",
+             (int)__builtin_popcountll(_candidate_found_bits),
+             (int)_candidate_count, _canary_backoff_mult,
+             (unsigned long long)_canary_pass_ema_ms);
+    return true;
   }
   u64 gc_finish_epoch = gcFinishEpoch();
   if (gc_finish_epoch != _last_pass_gc_finish_epoch) {
@@ -978,20 +1011,6 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns) {
   // field's own comment (referenceChains.h) for how updatePacing() widens or
   // relaxes it from the measured pause-time signal.
   bool cadence_elapsed = now_ns - _last_pass_ns >= _effective_cadence_ns;
-  // With canary search (candidates pre-tagged), run passes back-to-back
-  // until all candidates are found -- the PID controller self-regulates
-  // the per-pass STW pause, and the total budget is tiny in practice
-  // (<20ms per 60s recording). Only gate on cadence when there
-  // are no canary candidates to chase (whole-graph BFS mode).
-  if (canary_active) {
-    // Canary search active with candidates still to find --
-    // run the next pass immediately.
-    TEST_LOG("ReferenceChainTracker::shouldRunPass -> true (canary search, "
-             "%d/%d candidates found)",
-             (int)__builtin_popcountll(_candidate_found_bits),
-             (int)_candidate_count);
-    return true;
-  }
   // Only log when the cadence actually elapsed (a pass will run). The
   // not-yet-elapsed case is the common idle wake and logging it every second
   // is noise.
@@ -1236,6 +1255,9 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   _passes_since_last_progress = 0;
   _passes_since_last_candidate_progress = 0;
   _last_candidate_progress_mark = 0;
+  _canary_backoff_mult = 1;
+  _canary_pass_ema_ms = 0;
+  _last_canary_pass_ns = 0;
   _canary_stuck_restart_count = 0;
   // Same "just-constructed values" contract resetForRestart() already
   // documents for these two fields - without it, a prior test's fully-swept
@@ -3910,13 +3932,37 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
   // Track canary-specific progress separately - see
   // _passes_since_last_candidate_progress's own comment for why frontier
   // growth above does not substitute for this.
+  // Pass-cost EMA for the canary lane's work-scaled backoff (see
+  // _canary_pass_ema_ms's own comment) - updated from every pass's whole-
+  // call wall duration so it is warm before the first held-off decision.
+  // 0.8/0.2, same smoothing as _gotw_ema_call_ns.
+  {
+    u64 pass_wall_ms = (u64)TSC::ticks_to_millis(pass_wall_ticks);
+    _canary_pass_ema_ms = _canary_pass_ema_ms == 0
+        ? pass_wall_ms
+        : _canary_pass_ema_ms * 4 / 5 + pass_wall_ms / 5;
+  }
   int candidate_progress_mark =
       _candidate_count + (int)__builtin_popcountll(_candidate_found_bits);
   if (candidate_progress_mark > _last_candidate_progress_mark) {
     _last_candidate_progress_mark = candidate_progress_mark;
     _passes_since_last_candidate_progress = 0;
+    // Real chase progress (a candidate found or a new one admitted) - the
+    // canary lane gets its back-to-back spacing back (multiplier 1, see
+    // _canary_backoff_mult's own comment).
+    _canary_backoff_mult = 1;
   } else {
     _passes_since_last_candidate_progress++;
+    // No chase progress: double the canary lane's work-scaled spacing
+    // multiplier, capped. Only while a chase is actually open - an
+    // all-found or candidate-free pass should not accumulate backoff for
+    // a chase that no longer exists.
+    if (_candidate_count > 0 &&
+        __builtin_popcountll(_candidate_found_bits) < (u64)_candidate_count) {
+      _canary_backoff_mult =
+          std::min(_canary_backoff_mult * 2, CANARY_BACKOFF_MULT_MAX);
+      _last_canary_pass_ns = OS::nanotime();
+    }
   }
 
   if (load(_search_state) != SearchState::RUNNING) {

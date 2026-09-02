@@ -826,6 +826,44 @@ private:
   // none did.
   int _last_candidate_progress_mark;
 
+  // Canary-lane pass pacing, work-scaled: the chase's inter-pass spacing is
+  // _canary_backoff_mult x _canary_pass_ema_ms - a multiple of what a pass
+  // actually COSTS, not a fixed wall-clock constant. The multiplier starts
+  // at 1 (back-to-back: the next pass starts as soon as the last one ended,
+  // which a cheap pass makes harmless by construction), doubles on each
+  // pass with NO candidate progress up to CANARY_BACKOFF_MULT_MAX, and
+  // resets to 1 on any candidate progress (a candidate found or a new
+  // candidate admitted). shouldRunPass() holds a canary pass off while
+  // now - _last_canary_pass_ns is below the spacing.
+  //
+  // Why work-scaled rather than a fixed cap: a fixed cap only binds when
+  // it exceeds the pass's own duration - measured live on hotdog (rounds
+  // 3-4), an un-findable candidate held the chase open for 32 minutes at
+  // ~88 passes/min (a full core; round 4's passes ran 0.7-4s each, so a 1s
+  // cap would have changed nothing at all - the loop is work-bound, never
+  // sleep-bound, when the pass itself exceeds the cap). Scaled against the
+  // pass's measured cost, the burn bound is structural: at the multiplier
+  // cap the chase spends <= 1/CANARY_BACKOFF_MULT_MAX of a core on pass
+  // work, whatever that work is - ~6% on the pod, and proportionally less
+  // blocking for a deep-but-cheap chase whose passes cost milliseconds
+  // (those keep a dense, fast-resolving chase at the same multiplier).
+  int _canary_backoff_mult;
+  // 0.8/0.2 EMA of each pass's whole-call wall duration in ms
+  // (TSC::ticks_to_millis(pass_wall_ticks), runPass()), updated every pass
+  // - kept warm regardless of canary state so a chase that opens on a
+  // known-cost crawl sizes correctly from its first held-off decision.
+  u64 _canary_pass_ema_ms;
+  // End-of-pass timestamp of the last pass that ran with a canary chase
+  // still open (the reference point for the spacing above). 0 = no canary
+  // pass has run since the search (re)started.
+  u64 _last_canary_pass_ns;
+  // Whether threadLoop()'s OOM urgency ramp is currently active, set each
+  // loop iteration BEFORE shouldRunPass() (same thread, no atomics
+  // needed). While set, shouldRunPass()'s canary-backoff gate is bypassed:
+  // imminent OOM is the one regime where the chase is deliberately allowed
+  // to burn budget back-to-back, exactly as before the backoff existed.
+  bool _oom_ramp_active;
+
   // How many consecutive times in a row runPass()'s canary-stuck check
   // (CANARY_NO_PROGRESS_PASS_LIMIT below) has abandoned this same
   // candidate-chase sequence. Never reset by restartSearch() - it must
@@ -1803,6 +1841,8 @@ private:
         _hop_cap(0), _budget(0), _first_pass_budget(0), _ttl_ms(0), _pause_target_ms(0),
         _effective_pause_target_ms(0), _passes_since_last_progress(0),
         _passes_since_last_candidate_progress(0), _last_candidate_progress_mark(0),
+        _canary_backoff_mult(1), _canary_pass_ema_ms(0),
+        _last_canary_pass_ns(0), _oom_ramp_active(false),
         _canary_stuck_restart_count(0),
         _effective_budget(0), _effective_cadence_ns(PASS_CADENCE_NS),
         _pause_pid(1, 1.0, 1.0, 1.0, 1, 1.0), _search_started(false),
@@ -2440,15 +2480,26 @@ public:
                         MAX_CANARY_STUCK_BACKOFF_SHIFT);
   }
 
+  // Multiplier cap for the canary lane's work-scaled backoff (see
+  // _canary_backoff_mult's own comment). 16 bounds a stuck chase's steady
+  // burn to ~1/16 of a core on pass work while keeping a deep-but-cheap
+  // (ms-scale passes) chase dense enough to resolve within a scenario's
+  // round window - measured against ReferenceChainTrackingTest's ~200-pass
+  // deep chase, which a fixed 1s cap starved outright (held-off wakes
+  // outpaced the test window). Abandonment is not this knob's job
+  // (CANARY_STUCK's frontier-aware detector owns that); this only paces.
+  static constexpr int CANARY_BACKOFF_MULT_MAX = 16;
+
   // While a canary search has candidates still unresolved, shouldRunPass()
-  // escalates _cpu_pain_budget's refill rate by this factor (capped at
-  // 100%/wall-clock) so the same conservative background-cost bound that
-  // protects an idle whole-graph BFS does not also stall a targeted canary
-  // search indefinitely. Same 4x factor _budget's own urgency ramp already
-  // uses (threadLoop()) - no reason for canary escalation to differ.
+  // raises _cpu_pain_budget's refill rate by this factor (capped at
+  // 100%/wall-clock). With the canary lane's rate now bounded by
+  // _canary_backoff_mult (above), this is no longer a rate control at all -
+  // it exists only so the conservative base refill tuned for the ordinary
+  // ~1 pass/s whole-graph cadence does not double-throttle a chase the
+  // backoff has already paced. The old covering (15x) vs emergency (100x)
+  // distinction is gone: both existed to feed the back-to-back mode the
+  // backoff replaces.
   static constexpr double CANARY_PAIN_BUDGET_REFILL_MULTIPLIER = 100.0;
-  // Multiplier for uncovered-but-not-emergency (canary active, making progress)
-  static constexpr double CANARY_PAIN_BUDGET_COVERING_MULTIPLIER = 15.0;
 
   // Coverage tracking: how many leak tags have been assigned vs resolved.
   // When all assigned tags are resolved (have chains), drop to 1x.
@@ -2487,6 +2538,16 @@ public:
 
   // Test accessor for _passes_since_last_progress.
   int passesSinceLastProgressForTest() const { return _passes_since_last_progress; }
+  // Canary-lane backoff state - see _canary_backoff_mult's own comment.
+  int canaryBackoffMultForTest() const { return _canary_backoff_mult; }
+  u64 canaryPassEmaMsForTest() const { return _canary_pass_ema_ms; }
+  u64 lastCanaryPassNsForTest() const { return _last_canary_pass_ns; }
+  void setCanaryBackoffForTest(int mult, u64 ema_ms, u64 last_pass_ns) {
+    _canary_backoff_mult = mult;
+    _canary_pass_ema_ms = ema_ms;
+    _last_canary_pass_ns = last_pass_ns;
+  }
+  void setOomRampActiveForTest(bool active) { _oom_ramp_active = active; }
   int candidateCountForTest() const { return _candidate_count; }
   void setCandidateCountForTest(int n) { _candidate_count = n; }
   void setCandidateKlassIdForTest(int idx, u32 klass_id) {
