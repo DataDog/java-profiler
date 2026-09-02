@@ -7,6 +7,7 @@
 #include "common.h"
 #include "counters.h"
 #include "jniHelper.h"
+#include "jvmThread.h"
 #include "livenessTracker.h"
 #include "log.h"
 #include "objectSampler.h"
@@ -522,6 +523,8 @@ Error ReferenceChainTracker::start(Arguments &args) {
   _candidate_count = 0;
   _candidate_found_bits = 0;
   memset(_candidate_discovered_count, 0, sizeof(_candidate_discovered_count));
+  memset(_candidate_qualifying_tid_count, 0,
+         sizeof(_candidate_qualifying_tid_count));
   _passes_since_last_candidate_progress = 0;
   _last_candidate_progress_mark = 0;
   // Fresh chase gets a fresh back-to-back spacing allowance (see
@@ -1274,6 +1277,8 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   _candidate_count = 0;
   _candidate_found_bits = 0;
   memset(_candidate_discovered_count, 0, sizeof(_candidate_discovered_count));
+  memset(_candidate_qualifying_tid_count, 0,
+         sizeof(_candidate_qualifying_tid_count));
   // _candidate_parent_tags/_candidate_referrer_klasses/_candidate_depths
   // will be filled at pruning time.
   // across a production restart, a test reset starts from a blank cache so
@@ -1632,6 +1637,36 @@ struct PassContext {
   // else - only admitStaticFieldRoots() sets this to a non-null, zeroed,
   // stack-local array sized for the full jvmtiHeapReferenceKind range.
   int *kind_counts = nullptr;
+
+  // DESCEND-WALK controls (descendFromAnchor()'s calls only; null/0
+  // everywhere else, so every gate below is a no-op for the ordinary
+  // walk phases):
+  //
+  // _no_descend_class_tags: exact class tags to neither admit nor descend
+  // into for the duration of this walk. The fat-metadata classes whose
+  // graphs would otherwise turn a bounded anchor walk into sweep-scale
+  // cost (java.lang.ClassLoader from Thread.contextClassLoader reaching
+  // every loaded class, java.lang.ThreadGroup reaching every thread,
+  // java.security.ProtectionDomain). Exact tag match only - a SUBCLASS of
+  // one of these is a distinct class tag and is descended into normally
+  // (documented limitation: subclass instances are ordinary app objects,
+  // and an is-a hierarchy walk is not affordable per callback).
+  //
+  // _descent_anchor_tag/_anchor_descend_class_tag: when non-zero, the
+  // ANCHOR object's own outgoing edges are gated to descend only into
+  // referees of that exact class (walkCandidateThreadLocals() passes
+  // java.lang.ThreadLocal$ThreadLocalMap - the value type of BOTH of
+  // Thread's threadLocals and inheritableThreadLocals fields - so the walk
+  // never enumerates the Thread's other instance fields; the class gate
+  // is used instead of jvmtiHeapReferenceInfoField.index because the
+  // index-vs-GetClassFields-order correspondence is a spec subtlety this
+  // design has no need to depend on). Below the anchor, descent is gated
+  // by _no_descend_class_tags as above.
+  static constexpr int NO_DESCEND_CLASS_CAP = 8;
+  jlong _no_descend_class_tags[NO_DESCEND_CLASS_CAP] = {0};
+  int _no_descend_class_tag_count = 0;
+  jlong _descent_anchor_tag = 0;
+  jlong _anchor_descend_class_tag = 0;
 };
 } // namespace
 
@@ -1894,6 +1929,34 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
       return JVMTI_VISIT_ABORT;
     }
     return JVMTI_VISIT_OBJECTS;
+  }
+
+  // DESCEND-WALK GATES (no-ops on every ordinary walk - the PassContext
+  // fields below are zero-initialized and only descendFromAnchor() sets
+  // them). Deliberately placed AFTER the leak-tag interception branch
+  // above: a leak-tagged instance of a no-descend class (e.g. a leaking
+  // ClassLoader - a classic leak category) must still be intercepted and
+  // correlated; only its own subtree is not descended into. Returning 0
+  // skips admission AND descent for this edge, which also skips the
+  // improveChain/root-upgrade branches below - correct for this walk: a
+  // descend walk's purpose is reaching tagged instances below the anchor,
+  // not re-attributing metadata objects the ordinary BFS already owns.
+  if (ctx->_no_descend_class_tag_count > 0) {
+    for (int i = 0; i < ctx->_no_descend_class_tag_count; i++) {
+      if (ctx->_no_descend_class_tags[i] == class_tag) {
+        return 0;
+      }
+    }
+  }
+  if (ctx->_descent_anchor_tag != 0 && ctx->_anchor_descend_class_tag != 0 &&
+      referrer_tag_ptr != nullptr &&
+      *referrer_tag_ptr == ctx->_descent_anchor_tag &&
+      class_tag != ctx->_anchor_descend_class_tag) {
+    // This descend walk's ANCHOR object's own edge, and the referee is not
+    // the gate class (see PassContext::_anchor_descend_class_tag's own
+    // comment - e.g. walkCandidateThreadLocals() walks ONLY the Thread's
+    // ThreadLocalMap edges, never enumerating the Thread's other fields).
+    return 0;
   }
 
   if (*tag_ptr == 0) {
@@ -2614,6 +2677,395 @@ ReferenceChainTracker::collectLeakAccumulationCandidatesForRotation(
 }
 
 // ---------------------------------------------------------------------------
+// Candidate-scoped reach: bounded descend walks from anchor objects (see
+// descendFromAnchor()'s declaration comment, referenceChains.h). Reaching
+// the tagged leak instances is a correctness requirement, not a
+// throughput optimization: breadth-first FIFO expansion over a rising
+// heap can never drain (pod rounds 5-6), so the tagged instances sit
+// under holders the ordinary crawl reaches only after hours.
+// ---------------------------------------------------------------------------
+namespace {
+
+// Class tags to neither admit nor descend into during a descend walk (see
+// PassContext::_no_descend_class_tags' own comment). All three are
+// bootstrap-resolvable, so FindClass works from any JNI context; a class
+// not yet tagged by resolveLoadedClasses() (tag 0) is simply not added -
+// the gate then stays off for that class until a later pass re-resolves.
+const char *const kNoDescendClassNames[] = {
+    "java/lang/ClassLoader", "java/lang/ThreadGroup",
+    "java/security/ProtectionDomain",
+};
+
+int resolveNoDescendClassTags(jvmtiEnv *jvmti, JNIEnv *jni,
+                               jlong *out, int cap) {
+  int count = 0;
+  for (const char *name : kNoDescendClassNames) {
+    if (count >= cap) {
+      break;
+    }
+    jclass cls = jni->FindClass(name);
+    if (cls == nullptr) {
+      // Not loadable in this JVM (e.g. java.security classes stripped by a
+      // minimal runtime) - skip; the gate simply does not cover it.
+      jni->ExceptionClear();
+      continue;
+    }
+    jlong tag = 0;
+    if (jvmti->GetTag(cls, &tag) == JVMTI_ERROR_NONE && tag != 0) {
+      out[count++] = tag;
+    }
+    jni->DeleteLocalRef(cls);
+  }
+  return count;
+}
+
+// java.lang.ThreadLocal$ThreadLocalMap's class tag for
+// walkCandidateThreadLocals()'s anchor gate (see PassContext::
+// _anchor_descend_class_tag's own comment): the value type of BOTH of
+// Thread's threadLocals and inheritableThreadLocals fields, and its exact
+// class tag is what the anchor gate compares against. The class is
+// package-private but already loaded in any JVM that has ever touched a
+// ThreadLocal (FindClass resolves by name regardless of access), and the
+// class name is stable across JDK 8-26. Returns 0 if not resolvable (not
+// yet loaded / FindClass refused) - the caller then walks the Thread's
+// edges generically, gated only by the no-descend class set + hop cap,
+// rather than skipping the walk entirely.
+jlong resolveThreadLocalMapClassTag(jvmtiEnv *jvmti, JNIEnv *jni) {
+  jlong tag = 0;
+  jclass cls = jni->FindClass("java/lang/ThreadLocal$ThreadLocalMap");
+  if (cls == nullptr) {
+    jni->ExceptionClear();
+    return 0;
+  }
+  jvmti->GetTag(cls, &tag);
+  jni->DeleteLocalRef(cls);
+  return tag;
+}
+
+} // namespace
+
+void ReferenceChainTracker::descendFromAnchor(
+    jvmtiEnv *jvmti, JNIEnv *jni, jobject anchor, jlong anchor_tag,
+    u32 anchor_depth, jlong anchor_descend_class_tag, int budget,
+    int *edges_admitted, bool *truncated, bool *frontier_cap_hit,
+    u64 *safepoint_ticks) {
+  PassContext ctx;
+  ctx.tracker = this;
+  ctx.frontier = _frontier;
+  // Bound admission to DESCENT_HOPS below the anchor, still subject to the
+  // global hop cap. Caveat (accepted, bounded): a pre-existing frontier
+  // entry reachable inside the subgraph carries its GLOBAL depth (from
+  // whatever path first admitted it), so the walk can descend more than
+  // DESCENT_HOPS below the anchor through such an entry - never past
+  // _hop_cap + the pass deadline though, the same bounds every other walk
+  // phase lives under.
+  int descent_cap = (int)anchor_depth + DESCENT_HOPS;
+  ctx.hop_cap = descent_cap < _hop_cap ? descent_cap : _hop_cap;
+  ctx.budget = budget;
+  ctx.edges_admitted = 0;
+  ctx.truncated = false;
+  ctx.frontier_cap_hit = false;
+
+  ctx._no_descend_class_tag_count =
+      resolveNoDescendClassTags(jvmti, jni, ctx._no_descend_class_tags,
+                                PassContext::NO_DESCEND_CLASS_CAP);
+  if (anchor_descend_class_tag != 0) {
+    ctx._descent_anchor_tag = anchor_tag;
+    ctx._anchor_descend_class_tag = anchor_descend_class_tag;
+  }
+
+  jvmtiHeapCallbacks callbacks;
+  memset(&callbacks, 0, sizeof(callbacks));
+  callbacks.heap_reference_callback = heapReferenceCallback;
+  u64 follow_start_ticks = TSC::ticks();
+  jvmti->FollowReferences(0, nullptr, anchor, &callbacks, &ctx);
+  *safepoint_ticks += TSC::ticks() - follow_start_ticks;
+  *edges_admitted += ctx.edges_admitted;
+  *truncated = *truncated || ctx.truncated;
+  *frontier_cap_hit = *frontier_cap_hit || ctx.frontier_cap_hit;
+}
+
+std::vector<jlong>
+ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
+  std::vector<jlong> selected;
+  if (max_count <= 0) {
+    return selected;
+  }
+  jlong table_size = _frontier->size();
+  if (table_size <= 0) {
+    return selected;
+  }
+  if (_static_anchor_rotation_cursor <= 0 ||
+      _static_anchor_rotation_cursor > table_size) {
+    _static_anchor_rotation_cursor = 1;
+  }
+  // Same wrapping-cursor + amortized deadline-check pattern as
+  // collectStaleExpandedEntriesForRotation() above (its own comment explains
+  // both) - without the cursor, an always-from-1 scan would let the
+  // low-tag root-attached population (holders admitted by the earliest
+  // sweep laps) monopolize every pass's cap. No _priority_expand
+  // bookkeeping here: unlike the queue-push rotation tiers, the selected
+  // anchors are walked DIRECTLY by walkStaticFieldAnchors() in the same
+  // pass (a multi-hop descend walk, not a one-hop re-queue).
+  int deadline_check_counter = 0;
+  jlong start_tag = _static_anchor_rotation_cursor;
+  jlong tag = start_tag;
+  _frontier->withSharedLock([&](const FrontierTable *frontier) {
+    do {
+      if (_pass_deadline_ns != 0 &&
+          (++deadline_check_counter & 0xFFF) == 0 &&
+          OS::nanotime() >= _pass_deadline_ns) {
+        break;
+      }
+      FrontierEntry entry{};
+      if (frontier->lookupLocked(tag, &entry) && entry.parent_tag == 0 &&
+          entry.root_kind == (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD &&
+          (entry.state == FrontierEntryState::FRONTIER ||
+           entry.state == FrontierEntryState::EXPANDED) &&
+          !isQueuedForRotation(tag)) {
+        selected.push_back(tag);
+        if ((int)selected.size() >= max_count) {
+          tag = tag % table_size + 1;
+          break;
+        }
+      }
+      tag = tag % table_size + 1;
+    } while (tag != start_tag);
+  });
+  _static_anchor_rotation_cursor = tag;
+  return selected;
+}
+
+void ReferenceChainTracker::walkStaticFieldAnchors(
+    jvmtiEnv *jvmti, JNIEnv *jni, const std::vector<jlong> &anchor_tags,
+    int budget, int *edges_admitted, bool *truncated, bool *frontier_cap_hit,
+    u64 *safepoint_ticks) {
+  if (anchor_tags.empty()) {
+    return;
+  }
+  // Resolve all anchors with ONE GetObjectsWithTags call - the call's
+  // O(tag_map) cost is the dominant term on a large tag map (pod round 4:
+  // 14-41ms floor), exactly why expandFrontier() batches its own resolves.
+  jint resolved_count = 0;
+  jobject *objects = nullptr;
+  jlong *resolved_tags = nullptr;
+  if (jvmti->GetObjectsWithTags((jint)anchor_tags.size(), anchor_tags.data(),
+                              &resolved_count, &objects,
+                              &resolved_tags) != JVMTI_ERROR_NONE) {
+    return;
+  }
+  int walked = 0;
+  for (jint i = 0; i < resolved_count; i++) {
+    FrontierEntry entry{};
+    if (!_frontier->lookup(resolved_tags[i], &entry)) {
+      // Dead-or-stale between selection and here - skip; release machinery
+      // owns dead-entry cleanup, never here.
+      jni->DeleteLocalRef(objects[i]);
+      continue;
+    }
+    int remaining = budget - *edges_admitted;
+    if (remaining <= 0) {
+      jni->DeleteLocalRef(objects[i]);
+      break;
+    }
+    descendFromAnchor(jvmti, jni, objects[i], resolved_tags[i], entry.depth,
+                      /*anchor_descend_class_tag=*/0, remaining, edges_admitted,
+                      truncated, frontier_cap_hit, safepoint_ticks);
+    walked++;
+    jni->DeleteLocalRef(objects[i]);
+    if (*truncated && !*frontier_cap_hit) {
+      // Budget/deadline exhausted mid-set - remaining anchors keep their
+      // rotation turn via the cursor next pass (the wrapping cursor already
+      // tolerates a short selection).
+      break;
+    }
+    if (*frontier_cap_hit) {
+      break;
+    }
+  }
+  jvmti->Deallocate((unsigned char *)objects);
+  jvmti->Deallocate((unsigned char *)resolved_tags);
+  TEST_LOG("ReferenceChainTracker::walkStaticFieldAnchors selected=%zu "
+           "walked=%d edges_admitted=%d truncated=%d frontier_cap_hit=%d",
+           anchor_tags.size(), walked, *edges_admitted, (int)*truncated,
+           (int)*frontier_cap_hit);
+}
+
+void ReferenceChainTracker::walkCandidateThreadLocals(
+    jvmtiEnv *jvmti, JNIEnv *jni, int budget, int *edges_admitted,
+    bool *truncated, bool *frontier_cap_hit, u64 *safepoint_ticks) {
+  if (_candidate_count <= 0) {
+    return;
+  }
+  // Flatten the per-slot qualifying-tid snapshot into (slot, tid) pairs,
+  // then walk up to THREAD_WALK_MAX_ANCHORS of them per pass, rotating via
+  // _thread_walk_anchor_cursor so every qualifying tid gets a turn within
+  // ceil(total / THREAD_WALK_MAX_ANCHORS) passes instead of always walking
+  // the first candidates' tids.
+  int slot[MAX_CANDIDATE_QUALIFYING_TIDS * MAX_LEAK_CANDIDATES_FROM_LT];
+  jint tid[sizeof(slot) / sizeof(slot[0])];
+  int total = 0;
+  for (int s = 0; s < _candidate_count; s++) {
+    for (int q = 0; q < _candidate_qualifying_tid_count[s]; q++) {
+      if (total >= (int)(sizeof(slot) / sizeof(slot[0]))) {
+        break;
+      }
+      slot[total] = s;
+      tid[total] = _candidate_qualifying_tids[s][q];
+      total++;
+    }
+  }
+  if (total == 0) {
+    return;
+  }
+  jlong descend_class_tag = resolveThreadLocalMapClassTag(jvmti, jni);
+  if (_thread_walk_anchor_cursor < 0 ||
+      _thread_walk_anchor_cursor >= total) {
+    _thread_walk_anchor_cursor = 0;
+  }
+  int walked = 0;
+  const int start = _thread_walk_anchor_cursor;
+  int i = start;
+  do {
+    jobject thread_obj;
+    {
+      MutexLocker ml(_thread_objects_lock);
+      auto it = _thread_objects.find(tid[i]);
+      if (it == _thread_objects.end()) {
+        thread_obj = nullptr; // Thread died/never registered - skip
+      } else {
+        thread_obj = it->second;
+      }
+    }
+    if (thread_obj != nullptr) {
+      // Anchor admission, idempotent across passes: a tag that still maps
+      // to a live entry is reused as-is (the Thread object is commonly
+      // root-attached by root enumeration already); a stale positive tag
+      // (search restart reissued tags from 1, releaseSearchTags() did not
+      // clear this object because release only touches FrontierTable
+      // entries) must be re-minted, otherwise the walk would parent new
+      // children onto a dead table slot or, worse, onto the entry a
+      // reissued tag now belongs to.
+      jlong anchor_tag = getTag(jvmti, thread_obj);
+      u32 anchor_depth = 0;
+      FrontierEntry anchor_entry{};
+      if (anchor_tag > 0 && _frontier->lookup(anchor_tag, &anchor_entry)) {
+        anchor_depth = anchor_entry.depth;
+      } else {
+        jclass thread_class = jni->GetObjectClass(thread_obj);
+        jlong class_tag = 0;
+        jvmti->GetTag(thread_class, &class_tag);
+        u32 referrer_klass = classTags()->resolve(class_tag);
+        jlong fresh_tag = tagObject(jvmti, thread_obj);
+        if (fresh_tag != 0 &&
+            _frontier->insert(fresh_tag, 0, referrer_klass, 0,
+                             FrontierEntryState::FRONTIER,
+                             (u8)JVMTI_HEAP_REFERENCE_THREAD, class_tag)) {
+          anchor_tag = fresh_tag;
+        } else {
+          anchor_tag = 0;
+        }
+        jni->DeleteLocalRef(thread_class);
+      }
+      if (anchor_tag != 0) {
+        int remaining = budget - *edges_admitted;
+        if (remaining > 0) {
+          descendFromAnchor(jvmti, jni, thread_obj, anchor_tag, anchor_depth,
+                            descend_class_tag, remaining, edges_admitted,
+                            truncated, frontier_cap_hit, safepoint_ticks);
+          walked++;
+        }
+      }
+    }
+    i = (i + 1) % total;
+    if (*frontier_cap_hit || walked >= THREAD_WALK_MAX_ANCHORS ||
+        budget - *edges_admitted <= 0) {
+      break;
+    }
+  } while (i != start);
+  _thread_walk_anchor_cursor = i;
+  TEST_LOG("ReferenceChainTracker::walkCandidateThreadLocals candidates=%d "
+           "tids=%d walked=%d edges_admitted=%d truncated=%d "
+           "frontier_cap_hit=%d",
+           _candidate_count, total, walked, *edges_admitted, (int)*truncated,
+           (int)*frontier_cap_hit);
+}
+
+void ReferenceChainTracker::registerExistingThreads(jvmtiEnv *jvmti,
+                                                     JNIEnv *jni) {
+  if (!_enabled || jvmti == nullptr || jni == nullptr) {
+    return;
+  }
+  // Register PRE-EXISTING threads into the tid -> Thread-object registry
+  // (see _thread_objects' own comment): Profiler::onThreadStart() only sees
+  // threads started after the recording began, and a leaking thread is
+  // typically alive since well before the profiler attached (observed live:
+  // ThreadLocalLeakScenario's leak thread - started before the profiler to
+  // seed the fixture - stayed unregistered, walkCandidateThreadLocals()
+  // reporting walked=0 while the only thing standing between the walk and
+  // the tagged chunks was the registry lookup). Same native-tid mapping the
+  // profiler's own thread-name refresh uses for these same pre-existing
+  // threads (Profiler::updateThreadName -> JVMThread::nativeThreadId,
+  // profiler.cpp). Best-effort per thread: a thread whose native tid cannot
+  // be resolved is simply skipped - a later ThreadEnd unregister for it is
+  // a harmless no-op lookup miss. Runs from Profiler::start() rather than
+  // this class's own start() so gtest binaries that call start() directly
+  // with partial mock JVMTI tables (no GetAllThreads slot) never reach the
+  // real-call path - only the real profiler lifecycle guarantees a fully
+  // populated JVMTI table here.
+  jint thread_count = 0;
+  jthread *thread_objects = nullptr;
+  if (jvmti->GetAllThreads(&thread_count, &thread_objects) != JVMTI_ERROR_NONE) {
+    return;
+  }
+  for (jint i = 0; i < thread_count; i++) {
+    jthread thread = thread_objects[i];
+    if (thread == nullptr) {
+      continue;
+    }
+    int tid = JVMThread::nativeThreadId(jni, thread);
+    if (jni->ExceptionCheck()) {
+      jni->ExceptionClear();
+      continue;
+    }
+    if (tid >= 0) {
+      registerThreadObject(jni, tid, thread);
+    }
+    jni->DeleteLocalRef(thread);
+  }
+  jvmti->Deallocate((unsigned char *)thread_objects);
+}
+
+void ReferenceChainTracker::registerThreadObject(JNIEnv *jni, int tid,
+                                                 jthread thread) {
+  if (!_enabled || jni == nullptr || thread == nullptr) {
+    return;
+  }
+  jobject ref = jni->NewGlobalRef(thread);
+  if (ref == nullptr) {
+    return;
+  }
+  MutexLocker ml(_thread_objects_lock);
+  auto it = _thread_objects.find(tid);
+  if (it != _thread_objects.end()) {
+    jni->DeleteGlobalRef(it->second);
+  }
+  _thread_objects[tid] = ref;
+}
+
+void ReferenceChainTracker::unregisterThreadObject(JNIEnv *jni, int tid) {
+  if (jni == nullptr) {
+    return;
+  }
+  MutexLocker ml(_thread_objects_lock);
+  auto it = _thread_objects.find(tid);
+  if (it != _thread_objects.end()) {
+    jni->DeleteGlobalRef(it->second);
+    _thread_objects.erase(it);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Manual walk driver - IterateOverReachableObjects root/stack-ref enumeration
 // plus expandFrontier()'s batched array-holder FollowReferences hop expansion.
 // The only path driven by runPass() below.
@@ -2805,6 +3257,45 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
     _root_enum_truncated_last_time = false;
   }
 
+  int expand_phase_edges_admitted = 0;
+
+  // Candidate-scoped reach, prong 1: descend-walk the current candidates'
+  // qualifying threads' ThreadLocalMap subgraphs BEFORE any breadth-first
+  // work this pass - reaching the tagged instances under a thread-retained
+  // holder must not queue behind the ordinary backlog (see
+  // walkCandidateThreadLocals()'s own comment). Own deadline slice
+  // (per-sub-op reset, same as expand/rotation below) and its own budget
+  // draw from the ordinary expand slice; a truncation here behaves exactly
+  // like a truncated static sweep below (search stays RUNNING, remaining
+  // work resumes next pass).
+  if (_candidate_count > 0) {
+    int thread_walk_edges_admitted = 0;
+    bool thread_walk_truncated = false;
+    bool thread_walk_frontier_cap_hit = false;
+    // Give the thread walk its own fresh deadline so the root-enum walk
+    // above never eats its slice (per-sub-op reset rationale, see expand
+    // below).
+    _pass_deadline_ns = _effective_pause_target_ms > 0
+                            ? OS::nanotime() +
+                                  (u64)_effective_pause_target_ms * 1000000ULL
+                            : 0;
+    walkCandidateThreadLocals(jvmti, jni, budget, &thread_walk_edges_admitted,
+                              &thread_walk_truncated,
+                              &thread_walk_frontier_cap_hit, safepoint_ticks);
+    expand_phase_edges_admitted += thread_walk_edges_admitted;
+    *edges_admitted += thread_walk_edges_admitted;
+    if (thread_walk_frontier_cap_hit) {
+      // Frontier-cap mid-thread-walk is the same search-abandonment grounds
+      // as anywhere else - do not spend more of this pass's budget.
+      *truncated = true;
+      *frontier_cap_hit = true;
+      return;
+    }
+    if (thread_walk_truncated) {
+      *truncated = true;
+    }
+  }
+
   // Static-field roots (SomeClass.staticField -> obj) are not reachable via
   // IterateOverReachableObjects' root/stack-ref callbacks above - see
   // admitStaticFieldRoots()'s own comment - so this pass would otherwise
@@ -2822,7 +3313,6 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   // HeapWalkOperation - on every pass, forever, at the per-second pass
   // cadence, even once every loaded class's static fields have already been
   // swept and no new class has appeared to introduce new ones.
-  int expand_phase_edges_admitted = 0;
   TEST_LOG("ReferenceChainTracker::runPassManualWalk static_sweep_gate "
            "resolved=%d swept=%d cursor=%d",
            _last_resolved_class_count, _last_static_field_class_count,
@@ -2939,15 +3429,23 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   // collectStaleExpandedEntriesForRotation()'s own comment.
   std::vector<jlong> stale_expanded_tags =
       collectStaleExpandedEntriesForRotation(STALE_EXPANDED_ROTATION_BUDGET);
+  // Candidate-scoped reach, prong 2: root-attached static holders are
+  // descend-walked directly (see collectStaticFieldAnchorsForRotation()/
+  // walkStaticFieldAnchors()'s own comments) - not pushed onto the priority
+  // lane, so they are independent of the queue tiers above.
+  std::vector<jlong> static_anchor_tags =
+      collectStaticFieldAnchorsForRotation(STATIC_ANCHOR_ROTATION_BUDGET);
   // TEMP DIAGNOSTIC (see static_field_phase log above).
   TEST_LOG("ReferenceChainTracker::runPassManualWalk rotation_candidates "
            "root_kind_tags=%zu leak_accumulation_tags=%zu stale_expanded_tags=%zu "
-           "watched_leak_klass_count=%d leak_signatures=%zu leak_parents=%zu",
+           "static_anchor_tags=%zu watched_leak_klass_count=%d "
+           "leak_signatures=%zu leak_parents=%zu",
            rotation_tags.size(), leak_accumulation_tags.size(),
-           stale_expanded_tags.size(), _watched_leak_klass_count,
+           stale_expanded_tags.size(), static_anchor_tags.size(),
+           _watched_leak_klass_count,
            _leak_signature_totals.size(), _leak_parent_fanout.size());
   if (rotation_tags.empty() && leak_accumulation_tags.empty() &&
-      stale_expanded_tags.empty()) {
+      stale_expanded_tags.empty() && static_anchor_tags.empty()) {
     return;
   }
   // rotation_reserved_budget + max(budget - expand_phase_edges_admitted, 0) is
@@ -2968,9 +3466,37 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
                           ? OS::nanotime() + (u64)_effective_pause_target_ms * 1000000ULL
                           : 0;
   bool rotation_frontier_cap_hit = false;
+  // Prong 2 static-anchor descend walks run FIRST inside rotation's slice:
+  // they are the highest-value rotation work (bounded, targeted, and the
+  // only rotation tier that can reach a collection-shaped static holder's
+  // internals in one pass), and their edges draw down the same rotation
+  // budget the queue-tier batch below uses - a pass whose anchor walks admit
+  // the holder's whole internal structure needs less one-hop rotation work,
+  // not more.
+  if (!static_anchor_tags.empty() && rotation_budget > 0) {
+    int static_anchor_edges_admitted = 0;
+    bool static_anchor_truncated = false;
+    bool static_anchor_frontier_cap_hit = false;
+    walkStaticFieldAnchors(jvmti, jni, static_anchor_tags, rotation_budget,
+                           &static_anchor_edges_admitted,
+                           &static_anchor_truncated,
+                           &static_anchor_frontier_cap_hit, safepoint_ticks);
+    rotation_edges_admitted += static_anchor_edges_admitted;
+    rotation_budget -= static_anchor_edges_admitted;
+    *truncated = *truncated || static_anchor_truncated;
+    if (static_anchor_frontier_cap_hit) {
+      *frontier_cap_hit = true;
+      return;
+    }
+  }
+  // expandFrontier() SETS (does not add into) its edges output - see its
+  // entry - so the anchor walks' edges are kept in a separate counter and
+  // summed here.
+  int queue_tier_edges_admitted = 0;
   expandFrontier(jvmti, jni, _hop_cap, rotation_budget,
-                 &rotation_edges_admitted, &rotation_truncated,
+                 &queue_tier_edges_admitted, &rotation_truncated,
                  &rotation_frontier_cap_hit, safepoint_ticks);
+  rotation_edges_admitted += queue_tier_edges_admitted;
   *edges_admitted += rotation_edges_admitted;
   // TEMP DIAGNOSTIC (see static_field_phase log above).
   TEST_LOG("ReferenceChainTracker::runPassManualWalk rotation_phase "
@@ -3992,6 +4518,8 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
       _candidate_count = 0;
       _candidate_found_bits = 0;
       memset(_candidate_discovered_count, 0, sizeof(_candidate_discovered_count));
+      memset(_candidate_qualifying_tid_count, 0,
+             sizeof(_candidate_qualifying_tid_count));
       _passes_since_last_candidate_progress = 0;
     }
     // Only CANARY_STUCK should keep escalating canaryStuckPassLimit() -
@@ -4350,6 +4878,30 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
                "into slot=%d (candidate_count now %d)",
                klass_id, slot, _candidate_count);
       Counters::increment(REFERENCE_CHAIN_CANDIDATE_COUNT, 1);
+    }
+    // Refresh the per-slot qualifying-tid snapshot the walk phases read
+    // (walkCandidateThreadLocals()): zero every slot first, then fill from
+    // THIS poll's candidates - a klass whose per-tid trend stopped
+    // qualifying must stop having its tids walked, exactly like it stops
+    // consuming pool tags (tagLeakInstances() below keeps the same
+    // per-poll-candidates scope for the same reason).
+    memset(_candidate_qualifying_tid_count, 0,
+           sizeof(_candidate_qualifying_tid_count));
+    for (int i = 0; i < candidate_count; i++) {
+      for (int s = 0; s < _candidate_count; s++) {
+        if (_candidate_klass_ids[s] != candidates[i].klass_id) {
+          continue;
+        }
+        int n = candidates[i].qualifying_tid_count;
+        if (n > MAX_CANDIDATE_QUALIFYING_TIDS) {
+          n = MAX_CANDIDATE_QUALIFYING_TIDS;
+        }
+        for (int q = 0; q < n; q++) {
+          _candidate_qualifying_tids[s][q] = candidates[i].qualifying_tids[q];
+        }
+        _candidate_qualifying_tid_count[s] = n;
+        break;
+      }
     }
     // Tag the tracked instances of THIS poll's candidates with leak tags.
     // This replaces the old single-representative marker-tag approach —

@@ -111,6 +111,11 @@ void Profiler::onThreadEnd(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     // ProfiledThread is alive - do full cleanup and use efficient tid access
     int slot_id = current->filterSlotId();
     tid = current->tid();
+    // NOT gated on reference-chains enabled: a thread registered while a
+    // recording ran must release its global ref when it ends, even if the
+    // recording has since stopped (see unregisterThreadObject()'s comment,
+    // referenceChains.h).
+    ReferenceChainTracker::instance()->unregisterThreadObject(jni, tid);
     
     if (_thread_filter.enabled()) {
       _thread_filter.unregisterThread(slot_id);
@@ -1838,6 +1843,12 @@ Error Profiler::start(Arguments &args, bool reset) {
       // ReferenceChainTracker::start()'s own comment (referenceChains.cpp)
       // for why this is not called from inside start() itself.
       ReferenceChainTracker::instance()->startThread();
+      // Pre-existing threads (alive since before this recording began)
+      // never fired onThreadStart() - same lifecycle rationale as
+      // startThread() above for why this runs here rather than inside
+      // ReferenceChainTracker::start().
+      ReferenceChainTracker::instance()->registerExistingThreads(
+          VM::jvmti(), VM::jni());
     }
 
     _state.store(RUNNING, std::memory_order_release);

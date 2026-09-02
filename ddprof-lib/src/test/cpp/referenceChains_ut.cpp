@@ -109,6 +109,10 @@ public:
         t->_search_pain_ms = 0;
         t->_root_kind_rotation_cursor = 1;
         t->_stale_expanded_rotation_cursor = 1;
+        t->_static_anchor_rotation_cursor = 1;
+        t->_thread_walk_anchor_cursor = 0;
+        memset(t->_candidate_qualifying_tid_count, 0,
+               sizeof(t->_candidate_qualifying_tid_count));
         t->_watched_leak_klass_count = 0;
         t->_leak_signature_totals.clear();
         t->_leak_signature_prev_totals.clear();
@@ -406,6 +410,66 @@ public:
         int max_count) {
         return ReferenceChainTracker::instance()
             ->collectStaleExpandedEntriesForRotation(max_count);
+    }
+
+    // Candidate-scoped reach (descendFromAnchor()/walkCandidateThreadLocals()/
+    // walkStaticFieldAnchors()): direct drives for the same reason as
+    // expandFrontierForTest() above - a full runPass() drains a small graph
+    // to completion and its other phases add interference, so the walk
+    // phases are exercised on their own.
+    static void walkCandidateThreadLocalsForTest(jvmtiEnv *jvmti, JNIEnv *jni,
+                                                 int budget,
+                                                 int *edges_admitted) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        bool truncated = false;
+        bool cap_hit = false;
+        u64 safepoint_ticks = 0;
+        t->walkCandidateThreadLocals(jvmti, jni, budget, edges_admitted,
+                                     &truncated, &cap_hit, &safepoint_ticks);
+    }
+
+    static void walkStaticFieldAnchorsForTest(jvmtiEnv *jvmti, JNIEnv *jni,
+                                               const std::vector<jlong> &tags,
+                                               int budget,
+                                               int *edges_admitted) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        bool truncated = false;
+        bool cap_hit = false;
+        u64 safepoint_ticks = 0;
+        t->walkStaticFieldAnchors(jvmti, jni, tags, budget, edges_admitted,
+                                  &truncated, &cap_hit, &safepoint_ticks);
+    }
+
+    static std::vector<jlong>
+    collectStaticFieldAnchorsForRotationForTest(int max_count) {
+        return ReferenceChainTracker::instance()
+            ->collectStaticFieldAnchorsForRotation(max_count);
+    }
+
+    // Direct candidate-slot seeding (the production path fills these via
+    // pollWatchedTargets()'s snapshot loop - see _candidate_qualifying_tids'
+    // own comment): the walk phase tests need exactly one (slot, klass, tid)
+    // combination without driving LivenessTracker's hysteresis machinery.
+    static void seedCandidateSlotForTest(int slot, u32 klass_id,
+                                          const jint *tids, int tid_count) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        t->_candidate_klass_ids[slot] = klass_id;
+        for (int i = 0; i < tid_count; i++) {
+            t->_candidate_qualifying_tids[slot][i] = tids[i];
+        }
+        t->_candidate_qualifying_tid_count[slot] = tid_count;
+        if (slot + 1 > t->_candidate_count) {
+            t->_candidate_count = slot + 1;
+        }
+    }
+
+    static int candidateQualifyingTidCountForTest(int slot) {
+        return ReferenceChainTracker::instance()
+            ->_candidate_qualifying_tid_count[slot];
+    }
+
+    static jlong getTagForTest(jvmtiEnv *jvmti, jobject obj) {
+        return ReferenceChainTracker::instance()->getTag(jvmti, obj);
     }
 
     // Snapshot of _priority_expand's current contents, in queue order - used
@@ -1140,6 +1204,16 @@ protected:
     std::unordered_map<jobject, std::vector<jobject>> holders;
     uintptr_t next_holder = 0xF00D0000;
 
+    // FindClass(name) -> registered fake class (see mock_FindClass' own
+    // comment): names descendFromAnchor()'s resolutions look up
+    // ("java/lang/ClassLoader", "java/lang/ThreadGroup",
+    // "java/security/ProtectionDomain",
+    // "java/lang/ThreadLocal$ThreadLocalMap", "java/lang/Thread").
+    std::unordered_map<std::string, void *> find_classes;
+    // Fake class returned by mock_GetObjectClass() for unregistered objects
+    // (walkCandidateThreadLocals()'s fresh-anchor admission path).
+    void *thread_class = nullptr;
+
     jvmtiEnv *orig_jvmti = nullptr;
 
     static ReferenceChainsBfsTest *active_fixture;
@@ -1173,6 +1247,7 @@ protected:
         jni_tbl = JNINativeInterface_{};
         jni_tbl.DeleteLocalRef = &mock_DeleteLocalRef;
         jni_tbl.FindClass = &mock_FindClass;
+        jni_tbl.GetObjectClass = &mock_GetObjectClass;
         jni_tbl.NewGlobalRef = &mock_NewGlobalRef;
         jni_tbl.EnsureLocalCapacity = &mock_EnsureLocalCapacity;
         jni_tbl.NewObjectArray = &mock_NewObjectArray;
@@ -1193,6 +1268,20 @@ protected:
     int addClass(void *klass, const char *signature) {
         classes.push_back({klass, signature});
         return (int)classes.size() - 1;
+    }
+
+    // addClass() + a mock_FindClass(name) registry entry in one step, for
+    // the classes descendFromAnchor()'s resolution helpers look up by
+    // name (see find_classes' own comment). `name` uses FindClass's
+    // binary-name form ("java/lang/ClassLoader"), `signature` the
+    // class-signature form resolveLoadedClasses() interns
+    // ("Ljava/lang/ClassLoader;") - the production code passes each to
+    // exactly one of the two APIs.
+    int registerClassForFindClass(void *klass, const char *name,
+                                   const char *signature) {
+        int idx = addClass(klass, signature);
+        find_classes[name] = klass;
+        return idx;
     }
 
     // Adds an as-yet-untagged frontier node, returning its index into
@@ -1302,9 +1391,27 @@ protected:
     // expandFrontier()/admitStaticFieldRoots() resolve java/lang/Object once
     // as the holder array's element type - a non-null fake jclass is all it
     // needs (the type is never introspected, only passed to NewObjectArray()).
-    static jclass JNICALL mock_FindClass(JNIEnv *, const char *) {
+    // descendFromAnchor()'s class resolution (resolveNoDescendClassTags()/
+    // resolveThreadLocalMapClassTag()) additionally needs NAME lookup - the
+    // find_classes registry (registerClassForFindClass() below) maps a
+    // FindClass name to a class registered via addClass() so those
+    // resolutions see the same tagged fake class the scripted graph uses.
+    static jclass JNICALL mock_FindClass(JNIEnv *, const char *name) {
+        auto it = active_fixture->find_classes.find(name);
+        if (it != active_fixture->find_classes.end()) {
+            return (jclass)it->second;
+        }
         return (jclass)0xC1A55;
     }
+
+    // walkCandidateThreadLocals()'s fresh-anchor admission calls
+    // GetObjectClass(thread) - unregistered classes return the fixture's
+    // fake Thread class (set_thread_class) so the anchor entry's class tag
+    // resolves through the same mocked GetTag/tagging path.
+    static jclass JNICALL mock_GetObjectClass(JNIEnv *, jobject) {
+        return (jclass)active_fixture->thread_class;
+    }
+
 
     // The production code wraps that fake jclass in a global ref (a real
     // local ref would dangle across JNI-entered test seams - see
@@ -4664,6 +4771,227 @@ TEST_F(ReferenceChainsBfsTest, LeakTagInterceptionConvertsToFrontierTagAndCorrel
     ASSERT_TRUE(ReferenceChainsTestAccessor::buildChainEventForTest(plain_ftag, &plain_event));
     EXPECT_EQ((u64)plain_ftag, plain_event._target_tag)
         << "untagged instance must keep the frontier tag as target tag";
+
+    tracker->stop();
+}
+
+// Candidate-scoped reach, prong 1 (walkCandidateThreadLocals()): a leak
+// held through the leaking thread's ThreadLocalMap must be intercepted
+// with its full chain by ONE bounded walk from the Thread object, no
+// matter what the ordinary BFS backlog state is - and the walk's gates
+// must keep it off the Thread's non-thread-local fields entirely.
+TEST_F(ReferenceChainsBfsTest, ThreadWalkDescendsOnlyThreadLocalMapAndInterceptsLeak) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    // The classes descendFromAnchor()'s resolutions look up by FindClass
+    // name (see registerClassForFindClass' own comment) + the scripted
+    // graph's own classes. resolveLoadedClasses() below tags every
+    // registered class, which is what makes the class-tag gates resolvable.
+    void *threadCls = (void *)0x3001, *tlmapCls = (void *)0x3002,
+         *loaderCls = (void *)0x3003, *holderCls = (void *)0x3004,
+         *chunkCls = (void *)0x3005;
+    int tlmapIdx =
+        registerClassForFindClass(tlmapCls,
+                                  "java/lang/ThreadLocal$ThreadLocalMap",
+                                  "Ljava/lang/ThreadLocal$ThreadLocalMap;");
+    int loaderIdx =
+        registerClassForFindClass(loaderCls, "java/lang/ClassLoader",
+                                  "Ljava/lang/ClassLoader;");
+    registerClassForFindClass(threadCls, "java/lang/Thread",
+                               "Ljava/lang/Thread;");
+    int holder = addClass(holderCls, "Lcom/rc/descendwalk/Holder;");
+    int chunk = addClass(chunkCls, "Lcom/rc/descendwalk/LeakChunk;");
+    thread_class = threadCls;
+    ReferenceChainsTestAccessor::resolveLoadedClasses(&mock_jvmti, &mock_jni);
+
+    int threadNode = addNode();
+    int threadNode2 = addNode(); // second candidate thread: fresh-admission path
+    int tlmapNode = addNode();
+    int loaderNode = addNode();   // Thread's contextClassLoader: anchor gate
+    int loaderNode2 = addNode();  // a ClassLoader below the gate: no-descend
+    int holderNode = addNode();
+    int leakChunk = addNode();
+
+    const jlong leak_tag = ReferenceChainsTestAccessor::leakTagBase();
+    node_tags[leakChunk] = leak_tag;
+
+    // Topological order (mock_FollowReferences replays edges in script
+    // order, expanding only refs the production callback said to descend
+    // into).
+    script = {
+        {JVMTI_HEAP_REFERENCE_FIELD, threadNode, tlmapNode,
+         /*class_idx=*/-1},
+        {JVMTI_HEAP_REFERENCE_FIELD, threadNode, loaderNode,
+         /*class_idx=*/-1},
+        {JVMTI_HEAP_REFERENCE_FIELD, tlmapNode, holderNode, holder},
+        {JVMTI_HEAP_REFERENCE_FIELD, tlmapNode, loaderNode2,
+         /*class_idx=*/-1},
+        {JVMTI_HEAP_REFERENCE_FIELD, holderNode, leakChunk, chunk},
+    };
+    // The anchor gate compares the REFEREE's class tag, so the thread
+    // edges' class_idx values matter: the tlmap edge carries
+    // ThreadLocalMap's tag, and the loader edges ClassLoader's.
+    script[0].class_idx = tlmapIdx;
+    script[1].class_idx = loaderIdx;
+    script[3].class_idx = loaderIdx;
+
+    // The first thread walks the REUSE path: its Thread object is already
+    // admitted (root-attached THREAD entry + JVMTI tag) exactly as it is
+    // in production after the first walk pass or root enumeration. The
+    // mock keeps the scripted tag array (node_tags, what callbacks see as
+    // tag_ptr) separate from the pointer-keyed tag map (what GetTag/SetTag
+    // see), so the pre-anchored tag must be mirrored into both.
+    FrontierTable *frontier = tracker->frontierTable();
+    jlong anchor_tag =
+        tracker->tagObject(&mock_jvmti,
+                           reinterpret_cast<jobject>(&node_tags[threadNode]));
+    ASSERT_GT(anchor_tag, 0);
+    node_tags[threadNode] = anchor_tag;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, anchor_tag, 0, 0, FrontierEntryState::FRONTIER,
+        (u8)JVMTI_HEAP_REFERENCE_THREAD));
+
+    // Two candidate slots, two qualifying tids: tid 777's thread is
+    // pre-anchored (reuse path), tid 778's is untagged (fresh-admission
+    // path - GetObjectClass + tagObject + insert, the path a never-walked
+    // thread takes in production).
+    jint tids0[] = {777};
+    jint tids1[] = {778};
+    ReferenceChainsTestAccessor::seedCandidateSlotForTest(
+        /*slot=*/0, /*klass_id=*/6, tids0, 1);
+    ReferenceChainsTestAccessor::seedCandidateSlotForTest(
+        /*slot=*/1, /*klass_id=*/6, tids1, 1);
+    tracker->registerThreadObject(
+        &mock_jni, 777, reinterpret_cast<jthread>(&node_tags[threadNode]));
+    tracker->registerThreadObject(
+        &mock_jni, 778, reinterpret_cast<jthread>(&node_tags[threadNode2]));
+
+    int edges = 0;
+    ReferenceChainsTestAccessor::walkCandidateThreadLocalsForTest(
+        &mock_jvmti, &mock_jni, 1000, &edges);
+
+    // The ThreadLocalMap-held chain was admitted end-to-end and the
+    // leak-tagged chunk was intercepted (tag replaced by a frontier tag,
+    // leak tag preserved for correlation).
+    jlong thread_ftag = anchor_tag;
+    jlong tlmap_ftag = tags_ever_assigned[tlmapNode];
+    ASSERT_GT(tlmap_ftag, 0) << "anchor gate did not descend into ThreadLocalMap";
+    jlong holder_ftag = tags_ever_assigned[holderNode];
+    ASSERT_GT(holder_ftag, 0) << "walk did not descend below ThreadLocalMap";
+    jlong chunk_ftag = tags_ever_assigned[leakChunk];
+    ASSERT_NE(chunk_ftag, leak_tag)
+        << "leak-tagged chunk under the ThreadLocalMap was never intercepted";
+    ASSERT_GT(chunk_ftag, 0);
+    EXPECT_EQ(leak_tag, ReferenceChainsTestAccessor::frontierLeakTag(chunk_ftag));
+
+    // Chain shape: Thread (root-attached, THREAD root kind) -> ThreadLocalMap
+    // -> holder -> chunk.
+    FrontierEntry thread_entry{};
+    ASSERT_TRUE(frontier->lookup(thread_ftag, &thread_entry));
+    EXPECT_EQ(0, thread_entry.parent_tag);
+    EXPECT_EQ((u8)JVMTI_HEAP_REFERENCE_THREAD, thread_entry.root_kind);
+    FrontierEntry chunk_entry{};
+    ASSERT_TRUE(frontier->lookup(chunk_ftag, &chunk_entry));
+    EXPECT_EQ(holder_ftag, chunk_entry.parent_tag);
+    EXPECT_EQ(3u, chunk_entry.depth);
+
+    // The gates kept the walk off the metadata branches: neither the
+    // Thread's own contextClassLoader edge (anchor gate) nor a ClassLoader
+    // below ThreadLocalMap (no-descend gate) was admitted.
+    EXPECT_EQ(0, tags_ever_assigned[loaderNode])
+        << "anchor gate must not admit the Thread's non-ThreadLocalMap fields";
+    EXPECT_EQ(0, tags_ever_assigned[loaderNode2])
+        << "no-descend gate must not admit fat-metadata classes below the anchor";
+
+    // The second thread took the fresh-admission path (no prior tag/entry):
+    // its Thread object was admitted root-attached with the THREAD root
+    // kind. (Its scripted tag array entry was never set, so the minted tag
+    // is read back through the pointer-keyed tag map via getTag.)
+    jlong thread2_ftag = ReferenceChainsTestAccessor::getTagForTest(
+        &mock_jvmti, reinterpret_cast<jobject>(&node_tags[threadNode2]));
+    ASSERT_GT(thread2_ftag, 0) << "fresh thread anchor was never admitted";
+    FrontierEntry thread2_entry{};
+    ASSERT_TRUE(frontier->lookup(thread2_ftag, &thread2_entry));
+    EXPECT_EQ(0, thread2_entry.parent_tag);
+    EXPECT_EQ((u8)JVMTI_HEAP_REFERENCE_THREAD, thread2_entry.root_kind);
+
+    tracker->stop();
+}
+
+// Candidate-scoped reach, prong 2 (collectStaticFieldAnchorsForRotation()/
+// walkStaticFieldAnchors()): the collector selects exactly the root-attached
+// static-holder entries with a wrapping cursor, and the walk reaches a leak
+// held 3-4 hops inside a static collection in one bounded call - the shape
+// the one-hop Tier-2 rotation demonstrably cannot reach from an un-expanded
+// FRONTIER holder on a rising heap (pod rounds 5-6).
+TEST_F(ReferenceChainsBfsTest, StaticAnchorRotationWalksRootAttachedStaticHolders) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    void *holderCls = (void *)0x4001, *chunkCls = (void *)0x4002;
+    addClass(holderCls, "Lcom/rc/descendwalk/StaticHolder;");
+    int chunk = addClass(chunkCls, "Lcom/rc/descendwalk/StaticChunk;");
+
+    int holderNode = addNode();
+    int tableNode = addNode();
+    int entryNode = addNode();
+    int leakChunk = addNode();
+    const jlong leak_tag = ReferenceChainsTestAccessor::leakTagBase();
+    node_tags[leakChunk] = leak_tag;
+
+    // Static Map -> table -> Entry -> chunk: the collection-shaped static
+    // holder's internals, deeper than one hop.
+    script = {
+        {JVMTI_HEAP_REFERENCE_FIELD, holderNode, tableNode, -1},
+        {JVMTI_HEAP_REFERENCE_ARRAY_ELEMENT, tableNode, entryNode, -1},
+        {JVMTI_HEAP_REFERENCE_FIELD, entryNode, leakChunk, chunk},
+    };
+
+    // Seed the frontier exactly as the static sweep admits a static field's
+    // value: root-attached, STATIC_FIELD root kind, FRONTIER state. Plus
+    // decoys the collector must skip: a JNI_GLOBAL root-attached entry and
+    // a chain-attached child (table entries only - deliberately NOT
+    // mirrored into node_tags, so the walk below freshly admits those
+    // nodes instead of tripping ALREADY_ADMITTED on stale scripted tags).
+    FrontierTable *frontier = tracker->frontierTable();
+    node_tags[holderNode] = 101; // mock_GetObjectsWithTags' resolvable tag
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 101, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 102, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_JNI_GLOBAL));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 103, 101, 1, FrontierEntryState::FRONTIER, 0));
+
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
+            4);
+    ASSERT_EQ(1u, selected.size());
+    EXPECT_EQ(101, selected[0]);
+
+    // The static anchor's whole internal structure is admitted by one
+    // bounded walk, intercepting the leak tag at depth 3 below the holder.
+    int edges = 0;
+    ReferenceChainsTestAccessor::walkStaticFieldAnchorsForTest(
+        &mock_jvmti, &mock_jni, selected, 1000, &edges);
+    jlong table_ftag = tags_ever_assigned[tableNode];
+    jlong entry_ftag = tags_ever_assigned[entryNode];
+    jlong chunk_ftag = tags_ever_assigned[leakChunk];
+    ASSERT_GT(table_ftag, 0) << "table array was not reached by the anchor walk";
+    ASSERT_GT(entry_ftag, 0) << "Entry was not reached one hop below table";
+    ASSERT_NE(chunk_ftag, leak_tag)
+        << "leak-tagged chunk inside the static holder was never intercepted";
+    EXPECT_EQ(leak_tag, ReferenceChainsTestAccessor::frontierLeakTag(chunk_ftag));
+    FrontierEntry chunk_entry{};
+    ASSERT_TRUE(frontier->lookup(chunk_ftag, &chunk_entry));
+    EXPECT_EQ(entry_ftag, chunk_entry.parent_tag);
+    EXPECT_EQ(3u, chunk_entry.depth);
 
     tracker->stop();
 }

@@ -919,6 +919,38 @@ private:
   u32 _candidate_referrer_klasses[MAX_LEAK_CANDIDATES_FROM_LT];
   u32 _candidate_depths[MAX_LEAK_CANDIDATES_FROM_LT];
 
+  // Per-SLOT snapshot of the qualifying allocating-thread tids
+  // LivenessTracker::selectLeakCandidates() reported for that slot's klass
+  // this poll, refreshed by pollWatchedTargets() (zeroed first, then filled
+  // from the poll's candidates so a klass that stops qualifying stops
+  // walking its tids too). The BFS-thread walk phases run between polls
+  // under the same engine serialization and read this snapshot to reach
+  // the exact (klass, tid) scope tagLeakInstances() tags - see
+  // walkCandidateThreadLocals()'s own comment for why that reach matters.
+  // Sized generously above LivenessTracker's
+  // KlassCandidate::MAX_QUALIFYING_TIDS (= 8, itself
+  // KlassPopulationEntry::MAX_TID_TRENDS): the snapshot loop clamps, so
+  // this bound only needs to be "large enough" (same pattern as
+  // kMaxWatchedCandidates in pollWatchedTargets()).
+  static constexpr int MAX_CANDIDATE_QUALIFYING_TIDS = 16;
+  jint _candidate_qualifying_tids[MAX_LEAK_CANDIDATES_FROM_LT]
+                                [MAX_CANDIDATE_QUALIFYING_TIDS];
+  int _candidate_qualifying_tid_count[MAX_LEAK_CANDIDATES_FROM_LT];
+
+  // tid -> JNI global reference to the live java.lang.Thread object, fed
+  // from Profiler::onThreadStart/onThreadEnd
+  // (registerThreadObject()/unregisterThreadObject()). A strong global
+  // reference to a live thread's Thread object does not distort reachability
+  // (a running thread's Thread object is reachable via the VM anyway) and is
+  // released at ThreadEnd, so it cannot outlive the thread. Walked by
+  // walkCandidateThreadLocals() as the FollowReferences initial object of a
+  // bounded descend walk - the candidate-scoped reach mechanism (see
+  // descendFromAnchor()'s own comment). Mutex-guarded rather than relying
+  // on the engine lock: ThreadStart/End fire on arbitrary JVM threads,
+  // outside the engine serialization the walk phases run under.
+  Mutex _thread_objects_lock;
+  std::unordered_map<jint, jobject> _thread_objects;
+
   // Auto-marked instances: when the BFS walk discovers ANY object whose
   // class matches a watched leak class (not just the pre-tagged
   // representative), its frontier tag is recorded here so pollWatchedTargets()
@@ -1443,6 +1475,46 @@ private:
   // doesn't need a faster guarantee - eventual coverage is enough.
   static constexpr int STALE_EXPANDED_ROTATION_BUDGET = 256;
 
+  // Candidate-scoped reach (see descendFromAnchor()/walkCandidateThreadLocals()/
+  // walkStaticFieldAnchors()'s own comments): how many hops BELOW a descend
+  // walk's anchor the walk may admit. A static Map -> table[] -> Entry ->
+  // leaked chunk is 3-4 hops below its root-attached holder; a Thread ->
+  // ThreadLocalMap -> table[] -> Entry -> value -> holder -> chunk is 5-6
+  // below the Thread object, so 6 covers both taxonomy shapes' canonical
+  // chains. Deeper-than-intended descent via pre-existing frontier entries
+  // (whose subtree depth is the global, not anchor-relative, depth) stays
+  // bounded by the ordinary hop cap plus the pass deadline (see
+  // descendFromAnchor()'s own comment).
+  static constexpr int DESCENT_HOPS = 6;
+
+  // Per-pass cap on how many candidate threads walkCandidateThreadLocals()
+  // descend-walks. Each anchor walk is a whole bounded FollowReferences
+  // call, so unlike queue-push rotation tiers, this cap is the real cost
+  // control next to the deadline; a per-pass rotation of 4 gives every
+  // qualifying tid a turn within a few passes (qualifying tid sets are
+  // small - bounded by MAX_QUALIFYING_TIDS per candidate, and typically 1-2).
+  static constexpr int THREAD_WALK_MAX_ANCHORS = 4;
+
+  // Per-pass cap on how many root-attached static holders
+  // walkStaticFieldAnchors() resolve + descend-walk. Same "the cap IS the
+  // cost control" reasoning as THREAD_WALK_MAX_ANCHORS (each anchor is a
+  // bounded FollowReferences call); the wrapping cursor in
+  // collectStaticFieldAnchorsForRotation() guarantees full coverage of the
+  // root-attached population within ceil(matches / this) passes.
+  static constexpr int STATIC_ANCHOR_ROTATION_BUDGET = 4;
+
+  // Rotation cursor for collectStaticFieldAnchorsForRotation(): same
+  // wrapping-cursor role as _stale_expanded_rotation_cursor above - an
+  // always-from-1 scan would permanently favor low-tag static holders
+  // (admitted by early sweep laps) over ones admitted later.
+  jlong _static_anchor_rotation_cursor;
+
+  // Cursor over the flattened (slot, tid) enumeration of
+  // _candidate_qualifying_tids above, so walkCandidateThreadLocals()'s
+  // THREAD_WALK_MAX_ANCHORS-per-pass cap rotates fairly instead of always
+  // walking the same first candidates' tids.
+  int _thread_walk_anchor_cursor;
+
   // Per-pass cap on how many EXPANDED entries
   // collectLeakAccumulationCandidatesForRotation() re-queues - see that
   // method's own comment. Small and fixed like the other two tiers'
@@ -1854,6 +1926,7 @@ private:
         _passes_run(0),
         _root_kind_rotation_cursor(1),
         _stale_expanded_rotation_cursor(1),
+        _static_anchor_rotation_cursor(1), _thread_walk_anchor_cursor(0),
         _safepoint_pain_budget(0.0), _search_pain_ms(0), _cpu_pain_budget(0.0),
         _thread(), _running(false), _abort_pass_requested(false) {}
 
@@ -2364,6 +2437,72 @@ private:
   std::vector<jlong> collectLeakAccumulationCandidatesForRotation(
       int max_count);
 
+  // CANDIDATE-SCOPED REACH: bounded descend walk from an anchor object.
+  // FollowReferences(initial_object=anchor) with batch_tags == nullptr so
+  // descent is gated only by hop_cap + the pass deadline, reusing
+  // heapReferenceCallback() unchanged - leak-tag interception, canary
+  // pruning, auto-mark and improveChain all work as-is, and every admitted
+  // child chains back to the anchor's own frontier entry, so an interception
+  // during the walk yields the complete root->...->chunk chain in ONE
+  // bounded STW call. The walk's ctx.hop_cap is lowered to
+  // min(_hop_cap, anchor_depth + DESCENT_HOPS), bounding admission to a few
+  // hops below the anchor. Motivation (pod rounds 5-6,
+  // ev-leaktag-onpod-round5/6): breadth-first FIFO expansion over a rising
+  // heap can never drain (_pending_expand net-growing, per-lap sweep
+  // re-admissions replenishing it), so the tagged leak instances sit under
+  // holders the crawl reaches only after hours - candidate-scoped walks
+  // make the reach independent of the backlog. The walk prunes descent
+  // (and admission) into a small fixed set of fat-metadata classes
+  // (java.lang.ClassLoader, java.lang.ThreadGroup,
+  // java.security.ProtectionDomain - exact class-tag match) resolved fresh
+  // per call: without this, a Thread anchor's contextClassLoader edge would
+  // descend into every loaded class and its statics, sweep-scale cost per
+  // thread per pass. When `anchor_descend_class_tag` is non-zero, the
+  // ANCHOR's own outgoing edges are additionally gated to descend only
+  // into referees of that exact class (used by walkCandidateThreadLocals()
+  // to descend only into ThreadLocal$ThreadLocalMap - the value type of
+  // BOTH of Thread's threadLocals and inheritableThreadLocals fields),
+  // letting the walk skip the Thread's other (transient, metadata-heavy)
+  // instance fields entirely. Deliberately a class-tag comparison, NOT
+  // jvmtiHeapReferenceInfoField.index matching: that index is a jint field
+  // ordinal whose correspondence to GetClassFields() order the design has
+  // no need to depend on.
+  void descendFromAnchor(jvmtiEnv *jvmti, JNIEnv *jni, jobject anchor,
+                         jlong anchor_tag, u32 anchor_depth,
+                         jlong anchor_descend_class_tag, int budget,
+                         int *edges_admitted, bool *truncated,
+                         bool *frontier_cap_hit, u64 *safepoint_ticks);
+
+  // Prong 1 of the candidate-scoped reach design (thread-retained taxonomy:
+  // ThreadLocal-held caches and thread-owned collections): per pass, walk
+  // up to THREAD_WALK_MAX_ANCHORS of the current candidates' qualifying
+  // tids' live Thread objects (registerThreadObject()'s map above) with
+  // descendFromAnchor() (anchor-gated to ThreadLocalMap, see above). A
+  // thread-local accumulation's holder chain
+  // is entirely inside the Thread object's own ThreadLocalMap subgraph, so
+  // the walk reaches the tagged instances regardless of the ordinary
+  // BFS backlog - which the whole-heap crawl demonstrably never does in a
+  // rising heap. Anchor admission is idempotent across passes (GetTag +
+  // FrontierTable lookup, reuse-or-retag), so re-walking a thread per pass
+  // is cheap and ALREADY_ADMITTED-safe.
+  void walkCandidateThreadLocals(jvmtiEnv *jvmti, JNIEnv *jni, int budget,
+                                 int *edges_admitted, bool *truncated,
+                                 bool *frontier_cap_hit, u64 *safepoint_ticks);
+
+  // Prong 2 (static-retained taxonomy): select up to `max_count` root-
+  // attached static-holder entries (parent_tag == 0, root_kind ==
+  // STATIC_FIELD, FRONTIER or EXPANDED) with a wrapping cursor -
+  // collectStaticFieldAnchorsForRotation() - and descend-walk each via
+  // walkStaticFieldAnchors(). A static Map/List's leaked chunks sit 3-4
+  // hops below its root-attached holder, deeper than the one-hop Tier-2
+  // rotation can reach from an un-expanded FRONTIER holder; a descend walk
+  // covers the holder's whole internal structure in one bounded call.
+  std::vector<jlong> collectStaticFieldAnchorsForRotation(int max_count);
+  void walkStaticFieldAnchors(jvmtiEnv *jvmti, JNIEnv *jni,
+                              const std::vector<jlong> &anchor_tags,
+                              int budget, int *edges_admitted, bool *truncated,
+                              bool *frontier_cap_hit, u64 *safepoint_ticks);
+
   // jvmtiHeapRootCallback/jvmtiStackReferenceCallback for runPassManualWalk()'s
   // IterateOverReachableObjects call (referenceChains.cpp). `user_data` is a
   // PassContext* (the same private-to-the-.cpp type heapReferenceCallback()
@@ -2431,6 +2570,26 @@ public:
     static ReferenceChainTracker instance;
     return &instance;
   }
+
+  // tid -> java.lang.Thread global-ref registry (see _thread_objects).
+  // registerThreadObject() no-ops while !_enabled (Profiler::onThreadStart
+  // calls it unconditionally); unregisterThreadObject() is deliberately NOT
+  // gated on _enabled - a thread that started while enabled must release
+  // its global ref even after the recording stopped, otherwise the ref
+  // leaks for the JVM's lifetime.
+  void registerThreadObject(JNIEnv *jni, int tid, jthread thread);
+  void unregisterThreadObject(JNIEnv *jni, int tid);
+
+  // One-time sweep over the JVM's CURRENTLY LIVE threads at recording start,
+  // registering each into the same tid -> Thread-object registry via
+  // JVMThread::nativeThreadId(). Profiler::onThreadStart() cannot cover this
+  // population: those threads started before the recording began, and a
+  // leaking thread is typically among them (alive since process start).
+  // Called from Profiler::start(), not this class's own start(): gtest
+  // binaries call start() directly against partial mock JVMTI tables without
+  // a GetAllThreads slot, and only the real profiler lifecycle guarantees a
+  // fully populated JVMTI/JNI environment.
+  void registerExistingThreads(jvmtiEnv *jvmti, JNIEnv *jni);
 
   // Correlate a leak tag with an instance the BFS admitted BEFORE
   // tagLeakInstances() tagged it (its JVMTI tag is a frontier tag, its
