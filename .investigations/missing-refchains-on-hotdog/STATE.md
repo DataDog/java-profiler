@@ -53,9 +53,13 @@ organically instead of relying on the orphan sweep).
   added this session.
 - TEST_LOG `static_sweep_gate` in `runPassManualWalk` (per-pass sweep gate
   decision) — added this session.
-- Per-tag TEST_LOG in `tagLeakInstances`, `fanout-insert` log in
-  `trackLeakAccumulation`, `requeueChainRootForRotation` log — from the
-  repro round.
+- Per-tag TEST_LOG in `tagLeakInstances` RETIRED BY DESIGN (round-5
+  follow-up): replaced by the per-poll per-(klass, tid) summary line
+  ("tagLeakInstances summary klass_id=... tid=... tagged=... need_set=...
+  min_age/max_age/max_size") - the per-instance flood rotated the pod's
+  10MB container log inside a verification window. Still TEMP:
+  `fanout-insert` log in `trackLeakAccumulation`,
+  `requeueChainRootForRotation` log — from the repro round.
 - Old marker-tag decode in heapReferenceCallback is now unused — confirm
   and remove.
 
