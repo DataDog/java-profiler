@@ -2224,6 +2224,13 @@ private:
   // Single-thread: only called from the pass thread (heapReferenceCallback)
   // and the tracker's own thread (correlateAdmittedLeakTag via
   // tagLeakInstances from pollWatchedTargets) - never concurrently.
+  // Builds and caches chain events for every discovered instance recorded
+  // against a slot holding klass_id - slot-driven so instances recorded while
+  // a candidate still qualified are not stranded when it stops qualifying
+  // (see the definition's own comment in referenceChains.cpp for the observed
+  // live failure this closes and the two call sites).
+  void buildDiscoveredInstanceChains(u32 klass_id, u64 current_search_ns);
+
   void recordDiscoveredInstance(u32 klass_id, jlong frontier_tag,
                                 bool leak_correlated);
 

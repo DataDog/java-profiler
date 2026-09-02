@@ -4967,3 +4967,53 @@ TEST_F(PollWatchedTargetsTest, DiscoveredChainGateSuppressesTransientDepthOne) {
 
     tracker->stop();
 }
+
+// Orphan slot sweep: a candidate that qualified long enough for the walk to
+// record discovered instances, then stopped qualifying (its trend aged out
+// of the poll's candidate list), must still get chains built for those
+// instances. The slot persists by design precisely so the klass "can still
+// be found there" - before the sweep, nothing iterated it once the klass
+// left the poll candidates, stranding every instance recorded while it
+// qualified (observed live: 8 discovered instances recorded the pass
+// after the candidate's trend aged out were never built across the
+// remaining 116 passes of the run).
+TEST_F(PollWatchedTargetsTest, OrphanedSlotBuildsDiscoveredChainsAfterCandidateDropsOut) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    int fake_object_storage = 0;
+    jobject obj = reinterpret_cast<jobject>(&fake_object_storage);
+    seedGrowingCandidate(/*klass_id=*/3, /*rep=*/(jweak)obj);
+
+    // First poll admits klass 3 into candidate slot 0 (nothing discovered
+    // yet, so nothing is built here).
+    tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
+    ASSERT_EQ(0, ReferenceChainsTestAccessor::candidateDiscoveredCountForTest(0));
+
+    // The walk discovered an instance while the candidate still
+    // qualified: the real direct-retention shape (static-field root ->
+    // depth-1 instance), which the discovered-chain gate lets through.
+    FrontierTable *frontier = tracker->frontierTable();
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 9, 0, 0, FrontierEntryState::EXPANDED,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 8, 9, 1, FrontierEntryState::EXPANDED, /*root_kind=*/0));
+    ReferenceChainsTestAccessor::recordDiscoveredInstanceForTest(3, 8, false);
+    ASSERT_EQ(1, ReferenceChainsTestAccessor::candidateDiscoveredCountForTest(0));
+
+    // The candidate stops qualifying: LivenessTracker's population table
+    // is wiped, so selectLeakCandidates() returns 0 on every poll from
+    // here on. Before the orphan sweep, this poll would leave the recorded
+    // instance permanently unbuildable.
+    LivenessTracker::instance()->klassPopulationResetForTest();
+    tracker->pollWatchedTargets(&mock_jvmti, &mock_jni);
+
+    EXPECT_TRUE(ReferenceChainsTestAccessor::hasResolvedChainForTag(8))
+        << "discovered instances recorded while the candidate qualified must "
+           "still get chains built after it stops qualifying";
+
+    tracker->stop();
+}

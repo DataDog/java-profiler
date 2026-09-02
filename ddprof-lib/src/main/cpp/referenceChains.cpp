@@ -4586,103 +4586,46 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
     // leak-tag pool has not yet reached.
 
     // Build chain events for auto-marked discovered instances of this class.
-    // These are objects the BFS walk admitted whose class matched this
-    // candidate slot — each one has a frontier tag and a chain in the
-    // frontier table. We build chain events for all of them (up to
-    // MAX_DISCOVERED_INSTANCES_PER_CLASS) so the JFR output includes
-    // chains for all leaking instances, not just the representative.
-    // This runs for BOTH the canary and non-canary paths: the canary
-    // representative may not have been reached by BFS yet, but other
-    // instances of the same class may have been admitted already.
-    //
-    // Per-instance caching: each discovered instance gets its own chain
-    // entry keyed by its frontier tag. The profiling backend aggregates
-    // by class. This ensures the first chain found (which may be noise —
-    // a shallow JNI-local instance) does not block chains for deeper,
-    // actually-leaking instances.
-    for (int s = 0; s < _candidate_count; s++) {
-      if (_candidate_klass_ids[s] != klass_id) continue;
-      TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
-               "discovered loop: klass_id=%u slot=%d discovered_count=%d",
-               klass_id, s, _candidate_discovered_count[s]);
-      if (_candidate_discovered_count[s] == 0) {
-        TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
-                 "no discovered instances for klass_id=%u slot=%d",
-                 klass_id, s);
-      }
-      for (int d = 0; d < _candidate_discovered_count[s]; d++) {
-        jlong disc_tag = _candidate_discovered_tags[s][d];
-        if (disc_tag == 0) {
-          TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
-                   "disc_tag=0 at idx=%d for klass_id=%u slot=%d",
-                   d, klass_id, s);
-          continue;
-        }
-        // Skip if already cached for this instance
-        _resolved_chains_lock.lock();
-        bool already_cached = (_resolved_chains.find(disc_tag) != _resolved_chains.end());
-        _resolved_chains_lock.unlock();
-        if (already_cached) {
-          TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
-                   "already_cached disc_tag=%lld klass_id=%u slot=%d idx=%d",
-                   (long long)disc_tag, klass_id, s, d);
-          continue;
-        }
-        ReferenceChainEvent event;
-        bool built = buildChainEvent(disc_tag, &event);
-        // Retention-explanation filter. Only applies to discovered
-        // instances, not canary. Suppress:
-        //   - depth==0: the instance IS the root (chain is just [object],
-        //     no holder to explain anything);
-        //   - depth==1 rooted at a TRANSIENT root (stack local / JNI
-        //     local): the observed noise shape - a momentarily-live
-        //     frame's variable holding the instance. The chain explains a
-        //     retention that evaporates when the frame dies.
-        // Both durable-rooted shapes are REAL direct-retention chains and
-        // must NOT be caught by a blanket depth filter: depth==1 rooted at
-        // a static field is the singleton-collection leak shape (a depth-0
-        // static root's elements are depth 1), and depth==0 rooted at a
-        // durable root is the root-retained object itself (a static field's
-        // value, a Thread object for thread-local leaks) - the actual
-        // retention categories the search exists to report. Anything
-        // deeper passes regardless of root kind (at depth >= 2 the chain
-        // has at least one real holder hop).
-        if (built && suppressChainEvent(event)) {
-          TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
-                   "filtered depth=%u root_kind=%d disc_tag=%lld klass_id=%u",
-                   event._depth, (int)event._root_kind,
-                   (long long)disc_tag, klass_id);
-          built = false;
-          // Also drop any chain cached for this tag before the filter
-          // existed (or before an improveChain/reparent upgraded it) -
-          // drainPendingChainEvents() re-emits cached chains
-          // unconditionally, so suppressing only the build would leave the
-          // noise chains re-emitting forever.
-          invalidateResolvedChain(disc_tag);
-        }
-        if (built) {
-          event._start_time = TSC::ticks();
-          cacheResolvedChain(disc_tag, std::move(event), disc_tag,
-                              current_search_ns);
-          // Track coverage for adaptive CPU budget
-          if (event._target_tag >= (u64)LEAK_TAG_BASE) {
-            _leak_tags_resolved++;
-          }
-          TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
-                   "auto-marked chain for klass_id=%u tag=%lld target_tag=%llu",
-                   klass_id, (long long)disc_tag,
-                   (unsigned long long)event._target_tag);
-        } else {
-          TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
-                   "buildChainEvent failed for discovered tag=%lld "
-                   "klass_id=%u slot=%d disc_idx=%d",
-                   (long long)disc_tag, klass_id, s, d);
-        }
-      }
-      break;
-    }
+    // Runs via buildDiscoveredInstanceChains() - see that method's own
+    // comment for why it is slot-driven (the orphan fix), and the
+    // per-poll-candidate call plus the slot sweep below for the two
+    // call sites.
+    buildDiscoveredInstanceChains(klass_id, current_search_ns);
 
     jni->DeleteLocalRef(obj);
+  }
+
+  // Orphan fix: slots whose klass is NOT among this poll's candidates. A
+  // candidate that qualified long enough for the walk to record discovered
+  // instances, then stops qualifying (per-tid trend decay, thread switch -
+  // the exact shape observed live: the walk recorded 8 discovered
+  // instances the pass AFTER the candidate's seeded trend aged out, and
+  // nothing ever built their chains for the remaining 116 passes, because
+  // the per-candidate loop above only iterates the CURRENT poll's
+  // candidates), must not strand those instances: the slot persists by
+  // design precisely so the klass "can still be found there"
+  // (_candidate_klass_ids' own comment above) - this sweep is what finds
+  // them. Slots whose klass IS a poll candidate are skipped here to avoid
+  // double-processing (the loop above already handled them) - the build
+  // itself is idempotent either way (already-cached chains are skipped
+  // under the same source_search_ns check), this is purely to keep the
+  // per-poll log volume unchanged for still-qualifying candidates.
+  for (int s = 0; s < _candidate_count; s++) {
+    u32 slot_klass = _candidate_klass_ids[s];
+    bool in_poll = false;
+    for (int i = 0; i < candidate_count; i++) {
+      if (candidates[i].klass_id == slot_klass) {
+        in_poll = true;
+        break;
+      }
+    }
+    if (!in_poll && slot_klass != 0) {
+      TEST_LOG("ReferenceChainTracker::pollWatchedTargets orphan slot "
+               "sweep: slot=%d klass_id=%u not in poll candidates - building "
+               "its discovered chains",
+               s, slot_klass);
+      buildDiscoveredInstanceChains(slot_klass, current_search_ns);
+    }
   }
 
   // Per-instance caching: chains are keyed by frontier tag, not klass_id.
@@ -4735,6 +4678,110 @@ void ReferenceChainTracker::invalidateResolvedChain(jlong source_tag) {
              (long long)source_tag);
   }
   _resolved_chains_lock.unlock();
+}
+
+// Builds and caches chain events for every auto-marked discovered
+// instance recorded against a slot holding klass_id (see the auto-mark
+// block in heapReferenceCallback() for how instances get recorded).
+//
+// Slot-driven, deliberately NOT poll-candidate-driven: the slots persist
+// for the whole search ("a klass_id that stops qualifying just keeps
+// whatever slot it has ... it is never freed for reuse",
+// pollWatchedTargets()'s own slot-admission comment) specifically so the
+// klass can still be found after it stops qualifying - a candidate that
+// qualified long enough for the walk to record discovered instances and
+// then stopped qualifying (per-tid trend decay, thread switch) must not
+// strand them. Two call sites make that true: the per-poll-candidate loop
+// (klass still qualifying - chains build as fresh as possible, before the
+// trend can age out) and the orphan slot sweep (klass no longer in this
+// poll's candidates - the recorded instances still get their chains).
+// Idempotent per instance: buildDiscoveredInstanceChains skips any tag
+// already cached for the current search generation, so calling both
+// paths for the same slot in one poll is safe - the sweep simply never
+// overlaps the per-candidate call for the same klass.
+void ReferenceChainTracker::buildDiscoveredInstanceChains(u32 klass_id,
+                                                           u64 current_search_ns) {
+for (int s = 0; s < _candidate_count; s++) {
+  if (_candidate_klass_ids[s] != klass_id) continue;
+  TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
+           "discovered loop: klass_id=%u slot=%d discovered_count=%d",
+           klass_id, s, _candidate_discovered_count[s]);
+  if (_candidate_discovered_count[s] == 0) {
+    TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
+             "no discovered instances for klass_id=%u slot=%d",
+             klass_id, s);
+  }
+  for (int d = 0; d < _candidate_discovered_count[s]; d++) {
+    jlong disc_tag = _candidate_discovered_tags[s][d];
+    if (disc_tag == 0) {
+      TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
+               "disc_tag=0 at idx=%d for klass_id=%u slot=%d",
+               d, klass_id, s);
+      continue;
+    }
+    // Skip if already cached for this instance
+    _resolved_chains_lock.lock();
+    bool already_cached = (_resolved_chains.find(disc_tag) != _resolved_chains.end());
+    _resolved_chains_lock.unlock();
+    if (already_cached) {
+      TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
+               "already_cached disc_tag=%lld klass_id=%u slot=%d idx=%d",
+               (long long)disc_tag, klass_id, s, d);
+      continue;
+    }
+    ReferenceChainEvent event;
+    bool built = buildChainEvent(disc_tag, &event);
+    // Retention-explanation filter. Only applies to discovered
+    // instances, not canary. Suppress:
+    //   - depth==0: the instance IS the root (chain is just [object],
+    //     no holder to explain anything);
+    //   - depth==1 rooted at a TRANSIENT root (stack local / JNI
+    //     local): the observed noise shape - a momentarily-live
+    //     frame's variable holding the instance. The chain explains a
+    //     retention that evaporates when the frame dies.
+    // Both durable-rooted shapes are REAL direct-retention chains and
+    // must NOT be caught by a blanket depth filter: depth==1 rooted at
+    // a static field is the singleton-collection leak shape (a depth-0
+    // static root's elements are depth 1), and depth==0 rooted at a
+    // durable root is the root-retained object itself (a static field's
+    // value, a Thread object for thread-local leaks) - the actual
+    // retention categories the search exists to report. Anything
+    // deeper passes regardless of root kind (at depth >= 2 the chain
+    // has at least one real holder hop).
+    if (built && suppressChainEvent(event)) {
+      TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
+               "filtered depth=%u root_kind=%d disc_tag=%lld klass_id=%u",
+               event._depth, (int)event._root_kind,
+               (long long)disc_tag, klass_id);
+      built = false;
+      // Also drop any chain cached for this tag before the filter
+      // existed (or before an improveChain/reparent upgraded it) -
+      // drainPendingChainEvents() re-emits cached chains
+      // unconditionally, so suppressing only the build would leave the
+      // noise chains re-emitting forever.
+      invalidateResolvedChain(disc_tag);
+    }
+    if (built) {
+      event._start_time = TSC::ticks();
+      cacheResolvedChain(disc_tag, std::move(event), disc_tag,
+                          current_search_ns);
+      // Track coverage for adaptive CPU budget
+      if (event._target_tag >= (u64)LEAK_TAG_BASE) {
+        _leak_tags_resolved++;
+      }
+      TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
+               "auto-marked chain for klass_id=%u tag=%lld target_tag=%llu",
+               klass_id, (long long)disc_tag,
+               (unsigned long long)event._target_tag);
+    } else {
+      TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
+               "buildChainEvent failed for discovered tag=%lld "
+               "klass_id=%u slot=%d disc_idx=%d",
+               (long long)disc_tag, klass_id, s, d);
+    }
+  }
+  break;
+}
 }
 
 void ReferenceChainTracker::recordDiscoveredInstance(u32 klass_id,
