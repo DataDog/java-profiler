@@ -18,6 +18,9 @@ import org.junit.jupiter.api.TestMethodOrder;
 import org.junitpioneer.jupiter.RetryingTest;
 
 import java.nio.file.Files;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicLong;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -108,6 +111,14 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
   // this is a shared, no-forkEvery test JVM, and a leftover holder would
   // keep its entire population reachable for every later test here.
   private static List<Object> gcRootHolder;
+
+  // The current round's allocation batch, handed to the persistent allocator
+  // thread below. Volatile: written here, read by the allocator thread every
+  // round - the request queue's happens-before (offer after set, take before
+  // read) already covers it, but the visibility of a plain field handed
+  // across threads is kept explicit rather than relying on queue semantics
+  // alone.
+  private static volatile List<Object> currentBatch;
 
   // LivenessTracker's own hysteresis gate (livenessTracker.h's
   // KLASS_POPULATION_MIN_FILL_FOR_TREND=10 / LEAK_TREND_HYSTERESIS_BASE=5;
@@ -350,6 +361,46 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       JavaProfiler.resetKlassPopulationForTest0();
       JavaProfiler.resetReferenceChainSearchForTest0();
     }
+      // One persistent allocator thread, reused by every round - NOT a fresh
+      // spawned thread per round. Same JVMTI property the per-round spawn
+      // relied on (SampledObjectAlloc never fires for this JUnit worker
+      // thread's own allocations, but reliably fires for threads created
+      // after Profiler::start() already ran), plus the decisive per-tid
+      // consequence: LivenessTracker's per-(klass, tid) qualification trend
+      // accumulates REAL samples for this one thread's tid every round
+      // (foldKlassCountsLocked() folds each tracked instance's tid), so
+      // qualification is organic and cannot age out mid-test. The previous
+      // per-round spawns gave every round a DIFFERENT short-lived tid, so
+      // the seeded (klass, worker-tid) qualification ramp was the only
+      // qualifying signal - and once its ring slots aged out (observed
+      // live: slope decayed to ~0 at ring_fill=22, consecutive_positive
+      // reset, the candidate never returned again) the candidate dropped
+      // out of selectLeakCandidates() with the whole crawl still unfinished.
+      LinkedBlockingQueue<Integer> allocRequests = new LinkedBlockingQueue<>();
+      Semaphore roundDone = new Semaphore(0);
+      AtomicLong allocatorTid = new AtomicLong(-1);
+      Thread allocator = new Thread(() -> {
+        allocatorTid.set(JavaProfiler.getTid());
+        try {
+          Integer requested;
+          while ((requested = allocRequests.take()) != null) {
+            List<Object> batch = currentBatch;
+            for (int i = 0; i < requested; i++) {
+              batch.add(new ChainLink("leak-" + requested + "-" + i));
+            }
+            roundDone.release();
+          }
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt(); // test shutdown - see finally below
+        }
+      }, "togcroot-leak-allocator");
+      allocator.start();
+      // The seeding block below needs the allocator's tid; the thread publishes
+      // its own tid as its first action, so this wait is bounded by thread start.
+      while (allocatorTid.get() == -1) {
+        Thread.sleep(1);
+      }
+
     Path scratchDumpPath = Paths.get("referencechains-population-scratch.jfr");
     try {
       // Up to 16 rounds: selectLeakCandidates()'s KLASS_POPULATION_MIN_FILL_FOR_TREND = 10
@@ -394,20 +445,9 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       for (int round = 1; round <= totalRounds && match == null; round++) {
         int newInstances = Math.min(round, 10) * 600;
         List<Object> newLinks = new ArrayList<>(newInstances);
-        // Allocates on a freshly spawned thread, joined before continuing, matching
-        // GCGenerationsTest.MemLeakTarget's own pattern (memleak/GCGenerationsTest.java):
-        // JVMTI's SampledObjectAlloc callback never fired for any ChainLink allocated directly on
-        // this JUnit worker thread during this test's own development, even at many megabytes of
-        // total ChainLink allocation, but reliably fires for allocations on a thread created after
-        // Profiler::start() already ran.
-        int roundNumber = round;
-        Thread allocator = new Thread(() -> {
-          for (int i = 0; i < newInstances; i++) {
-            newLinks.add(new ChainLink("leak-" + roundNumber + "-" + i));
-          }
-        });
-        allocator.start();
-        allocator.join();
+        currentBatch = newLinks; // published before the request - see the allocator's loop
+        allocRequests.offer(newInstances);
+        roundDone.acquireUninterruptibly();
         gcRootHolder.addAll(newLinks);
         System.gc();
         dump(scratchDumpPath);
@@ -451,14 +491,29 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
           // hasLeakSignal()'s candidate-count check and match nothing else).
           JavaProfiler.setKlassPopulationRepresentativeForTest0(CHAIN_LINK_TEST_KLASS_ID, gcRootHolder.get(0));
           if (!seededTestKlassTrend) {
-            // Per-(klass, tid) qualification seeds - this test thread allocated
-            // the ChainLink instances the fixture hangs off the GC root, so its
-            // real tid is the qualifying one (same rationale as the scenarios'
-            // own seeding blocks).
-            int leakTid = JavaProfiler.getTid();
+            // Per-(klass, tid) qualification seeds - the persistent allocator
+            // thread owns every ChainLink allocation, so ITS tid is the
+            // qualifying one; the seeds accelerate the organic per-tid growth
+            // its own tracked instances produce every round (see the
+            // allocator block's own comment for why qualification aging out
+            // stranded the crawl before this thread existed).
+            int leakTid = (int) allocatorTid.get();
+            // Seed counts scale as the organic ramp itself (+1 per epoch),
+            // NOT some inflated multiple: the ring is one continuous series
+            // of seeds followed by the real folds, and hasQualifyingGrowth()
+            // takes the difference of third-window MEANS over that whole
+            // series. Seeds of epoch*10 (10..150) dwarf the real generation
+            // counts (the real ramp is +1 per epoch, ~1..15 by test end), so
+            // the moment real samples displace the seeded tail the slope
+            // went NEGATIVE (-20..-40 observed live: the "transition cliff")
+            // and the candidate never returned again. With matched-scale
+            // seeds the series is [1..15, 1, 2, 3, ...] and every third-
+            // window pairing across the transition still yields a positive
+            // slope - the candidate keeps qualifying organically the whole
+            // run, the real signal seamlessly taking over from the seeds.
             for (int epoch = 1; epoch <= SEED_EPOCHS_FOR_HYSTERESIS; epoch++) {
-              JavaProfiler.seedKlassPopulationSample0(CHAIN_LINK_TEST_KLASS_ID, epoch * 10, epoch);
-              JavaProfiler.seedTidTrendSample0(CHAIN_LINK_TEST_KLASS_ID, leakTid, epoch * 3, epoch);
+              JavaProfiler.seedKlassPopulationSample0(CHAIN_LINK_TEST_KLASS_ID, epoch, epoch);
+              JavaProfiler.seedTidTrendSample0(CHAIN_LINK_TEST_KLASS_ID, leakTid, epoch, epoch);
             }
             seededTestKlassTrend = true;
           }
@@ -515,6 +570,12 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       assertTrue(!gcRootHolder.isEmpty()); // keeps every allocated ChainLink reachable until here
     } finally {
       gcRootHolder = null; // shared-JVM hygiene - see the static holder's own comment
+      currentBatch = null;
+      // Shut the persistent allocator thread down before leaving: this is a
+      // shared, no-forkEvery test JVM, and a leftover allocation thread would
+      // keep allocating (and keep its tid trend alive) into every later test.
+      allocator.interrupt();
+      allocator.join(1000);
       Files.deleteIfExists(scratchDumpPath);
     }
   }
