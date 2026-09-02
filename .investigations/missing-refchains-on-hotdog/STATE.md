@@ -16,7 +16,7 @@ representatives are re-tagged and all discovered instances auto-marked,
 chains are cached per-instance (not per-class). JFR analysis confirmed 2
 ReferenceChain events emitted — but one was for a noise [B instance.
 
-## Current focus: Option C (candidate-scoped reach) IMPLEMENTED - both prongs, all suites green, NOT yet committed/deployed
+## Current focus: Option C (candidate-scoped reach) COMMITTED+PUSHED - both prongs, all suites green, NOT yet deployed (pod round 7 pending)
 
 Round-6 verdict made Option C a correctness requirement (breadth-
 first FIFO over a rising heap can never drain; pendingExpand net-growing).
@@ -47,11 +47,19 @@ walked=1 edges=18); spotlessApply clean.
 
 ## Next steps
 
-1. Commit when user asks (chunks: descend-walk core + gtests; thread
-   registry + start sweep; Java ThreadLocal scenario + test; memory).
+1. DONE this session: committed (186468437 descend-walk core +
+   gtests; 01c591eea ThreadLocal scenario; 93868362e memory sync) and
+   pushed to origin/jb/reference-chains-pi.
+1b. ALSO this session (NOT yet committed): per-hop retention-edge
+   field names in ReferenceChain events (find-field-name-decoding node) -
+   "edges" string array, spec-ordinal capture + fail-safe decode, all
+   suites green (554 gtests, slow family 9/9, JMC parser test). Commit
+   when the user says so; deploy together with the descend-walk commits.
 2. Pod round 7: deploy and verify both prongs live on hotdog
    (walkCandidateThreadLocals/walkStaticFieldAnchors per-pass lines;
-   watch interception count - the one remaining correctness gap).
+   watch interception count - the one remaining correctness gap; the
+   edges array will name the retention fields directly in the emitted
+   chains).
 3. TEMP reverts before finalizing (list below).
 
 ## TEMP — MUST REVERT before finalizing

@@ -1,7 +1,7 @@
 ---
 id: find-option-c-descend-walk-design
 type: design
-status: verified
+status: committed
 depends_on: [ev-leaktag-onpod-round5, ev-leaktag-onpod-round6]
 related: [find-priority-queue-starves-bfs-crawl, find-per-tid-qualification-design, find-rotation-resize-blindspot]
 tags: [option-C, descend-walk, thread-local, static-holder, referenceChains, NEW-THIS-SESSION]
@@ -115,3 +115,13 @@ _pending_expand does not matter, the chain entries exist at admission time.
 - The pod only CONFIRMS the taxonomy coverage; it does not steer it (no
   probing of hotdog's simulator shape - user's explicit constraint).
   Pod round 7 = deploy and watch interception count.
+
+## Commits (pushed to origin/jb/reference-chains-pi)
+
+- 186468437: descend-walk core (both prongs, gates, phase wiring,
+  tid->Thread registry + start sweep) + the 2 gtests.
+- 01c591eea: ThreadLocalLeakScenario + ThreadLocalLeakReferenceChainTest
+  + threadlocal-leak launcher mode.
+- 93868362e: memory sync (this node).
+
+Deploy handle: build 93868362e.
