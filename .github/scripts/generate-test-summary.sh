@@ -77,6 +77,8 @@ declare -A job_url=()
 job_url["__init__"]=1; unset 'job_url[__init__]'
 declare -A job_duration=()
 job_duration["__init__"]=1; unset 'job_duration[__init__]'
+declare -A job_cell=()
+job_cell["__init__"]=1; unset 'job_cell[__init__]'
 declare -a failed_jobs=()
 declare -a all_platforms=()
 declare -a all_java_versions=()
@@ -116,6 +118,8 @@ while IFS= read -r job; do
         job_status["$key"]="$conclusion"
         job_url["$key"]="$html_url"
         job_duration["$key"]="$duration"
+        # Matches the cell label run_tests_with_retry.sh names its report after.
+        job_cell["$key"]="${libc}-${java_version}-${config}-${arch}"
 
         # Track failed jobs
         if [[ "$conclusion" == "failure" ]]; then
@@ -176,51 +180,30 @@ done
 declare -A failure_details=()
 failure_details["__init__"]=1; unset 'failure_details[__init__]'
 
-if ((failed_count > 0)); then
-    log "Downloading failure artifacts..."
-    mkdir -p ./failure-artifacts
+# Per-cell outcome reports, written by run_tests_with_retry.sh and uploaded
+# whether the cell passed or failed. A cell that only went green on a retry
+# produces no failure artifact at all, so this is the one place its flaky test
+# is recorded.
+OUTCOME_DIR="./ci-outcome-artifacts"
+log "Downloading CI outcome reports..."
+mkdir -p "$OUTCOME_DIR"
+gh run download "$RUN_ID" --pattern '(ci-outcome)*' --dir "$OUTCOME_DIR" 2>/dev/null || true
 
-    # Try to download test reports
-    gh run download "$RUN_ID" --pattern '(test-reports)*' --dir ./failure-artifacts 2>/dev/null || true
+for key in "${failed_jobs[@]}"; do
+    cell="${job_cell[$key]:-}"
+    [[ -n "$cell" ]] || continue
 
-    # Parse JUnit XML for failure details
-    for key in "${failed_jobs[@]}"; do
-        IFS='|' read -r platform java_version <<< "$key"
+    failures=""
+    while IFS= read -r report; do
+        while IFS=$'\t' read -r test_id message; do
+            [[ -n "$test_id" ]] || continue
+            short_name="${test_id#"${test_id%.*.*}."}"
+            failures+="| \`${short_name}\` | ${message:-Test failed} |"$'\n'
+        done < <(jq -r '.persistent[] | [.test, .message] | @tsv' "$report" 2>/dev/null || true)
+    done < <(find "$OUTCOME_DIR" -name "${cell}.json" 2>/dev/null)
 
-        # Find matching test report directory
-        # Pattern: (test-reports) test-linux-{libc}-{arch} ({java}, {config})
-        IFS='/' read -r libc_arch config <<< "$platform"
-        report_pattern="./failure-artifacts/*${libc_arch}*${java_version}*${config}*"
-
-        failures=""
-        for report_dir in $report_pattern; do
-            if [[ -d "$report_dir" ]]; then
-                # Parse JUnit XML files
-                for xml_file in "$report_dir"/**/TEST-*.xml; do
-                    if [[ -f "$xml_file" ]]; then
-                        # Extract failed test cases
-                        while IFS= read -r testcase; do
-                            classname=$(echo "$testcase" | grep -oP 'classname="\K[^"]+' || echo "")
-                            testname=$(echo "$testcase" | grep -oP 'name="\K[^"]+' || echo "")
-                            # Get failure message (first line only, truncated)
-                            failure_msg=$(echo "$testcase" | grep -oP '<failure[^>]*message="\K[^"]*' | head -c 100 || echo "")
-
-                            if [[ -n "$classname" && -n "$testname" ]]; then
-                                short_class="${classname##*.}"
-                                failures+="| \`${short_class}.${testname}\` | ${failure_msg:-Test failed} |"$'\n'
-                            fi
-                        done < <(grep -Pzo '(?s)<testcase[^>]*>.*?</testcase>' "$xml_file" 2>/dev/null | tr '\0' '\n' | grep -E '<(failure|error)' || true)
-                    fi
-                done
-            fi
-        done
-
-        failure_details["$key"]="$failures"
-    done
-
-    # Cleanup
-    rm -rf ./failure-artifacts
-fi
+    failure_details["$key"]="$failures"
+done
 
 # --- Generate markdown ---
 log "Generating markdown summary..."
@@ -284,6 +267,11 @@ log "Generating markdown summary..."
         echo ""
     fi
 
+    # Flaky and failing tests, grouped by test rather than by cell. One flaky
+    # test reddens a dozen cells and so does a dozen unrelated breakages; only
+    # grouping by test tells those apart.
+    python3 "$(dirname "$0")/flake_summary.py" --dir "$OUTCOME_DIR" || true
+
     # Failed tests details
     if ((failed_count > 0)); then
         echo "### Failed Tests"
@@ -330,6 +318,8 @@ log "Generating markdown summary..."
     echo "*Updated: $(date -u '+%Y-%m-%d %H:%M:%S UTC')*"
 
 } > "$OUTPUT_FILE"
+
+rm -rf "$OUTCOME_DIR"
 
 log "Summary written to $OUTPUT_FILE"
 log "Total jobs: $total_jobs, Passed: $passed_jobs, Failed: $failed_count"

@@ -12,6 +12,10 @@ cp ddprof-test/javacore*.txt test-reports/ || true
 cp ddprof-test/build/hs_err* test-reports/ || true
 cp -r ddprof-lib/build/tmp test-reports/native_build || true
 cp -r ddprof-test/build/reports/tests test-reports/tests || true
+# The JUnit XML, not just the rendered HTML: it is what names the failed tests
+# for the PR summary, and what flake_report.py compares between retry attempts.
+cp -r ddprof-test/build/test-results test-reports/test-results || true
+cp -r flake-evidence test-reports/flake-evidence || true
 cp build/logs/gdb-watchdog.log test-reports/ || true
 cp -r /tmp/recordings test-reports/recordings || true
 find ddprof-lib/build -name 'libjavaProfiler.*' -exec cp {} test-reports/ \; || true
