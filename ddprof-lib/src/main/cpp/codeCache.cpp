@@ -71,6 +71,10 @@ CodeCache::CodeCache(const char *name, short lib_index,
   _count = 0;
   _blobs = new CodeBlob[_capacity];
 
+  _memory_usage = (long long)_capacity * sizeof(CodeBlob) +
+                  (long long)NativeFunc::allocSize(_name);
+  _name_overhead = (long long)NativeFunc::nameOverhead(_name);
+
   _published.store(false, std::memory_order_relaxed);
 }
 
@@ -125,6 +129,15 @@ void CodeCache::copyFrom(const CodeCache& other) {
     }
   }
 
+  // Identical content to `other`, so its running total transfers as-is --
+  // no need to recompute (and `other` may itself already be published, whose
+  // _blobs this copy must not depend on after construction).
+  _memory_usage = other._memory_usage;
+  // Likewise for the overhead: the name strings above are fresh allocations,
+  // but of exactly the same sizes, and overhead is a function of the requested
+  // size, so `other`'s total describes this copy just as well.
+  _name_overhead = other._name_overhead;
+
   // A copy is a fresh, not-yet-registered cache.
   _published.store(false, std::memory_order_relaxed);
 }
@@ -158,55 +171,20 @@ CodeCache::~CodeCache() {
   free(_build_id);  // Free build-id memory
 }
 
-long long CodeCache::memoryUsage(long long *overhead_out) const {
-  // The blob array: _capacity entries of CodeBlob.
-  long long total = (long long)_capacity * sizeof(CodeBlob);
-
-  // This cache's own name, plus each symbol's name string. Each is a
-  // variable-length allocation whose size depends on the name length
-  // (see NativeFunc::allocSize). The lock-free read here is safe only for caches
-  // registered in a CodeCacheArray (Libraries::native_libs): their _blobs array
-  // and name pointers are fixed once published (add()/expand()/setDwarfTable()
-  // run only pre-publish — asserted via _published), which is the same read the
-  // symbolication fast path relies on. It must NOT be called on a continuously
-  // mutated, unpublished cache such as JitCodeCache::_runtime_stubs without
-  // holding JitCodeCache::_stubs_lock (shared), since a concurrent add()/expand()
-  // would free _blobs underneath the reader.
-  total += (long long)NativeFunc::allocSize(_name);
-  for (int i = 0; i < _count; i++) {
-    total += (long long)NativeFunc::allocSize(_blobs[i]._name);
-  }
-
-  // Measured allocator overhead on those name allocations, accumulated in the
-  // same pass. Name strings are numerous and short, so this is where the
-  // overhead lives: a blanket percentage derived from one workload's size mix
-  // cannot stand in for it.
+long long CodeCache::memoryUsage() const {
+  // O(1): _memory_usage is updated incrementally by the constructor, add(),
+  // expand(), and setDwarfTable() -- the same pre-publication mutators that
+  // used to be re-summed here on every call. Safe to read lock-free once
+  // published (Libraries::native_libs) because those mutators never run
+  // afterwards (asserted via _published), same invariant the old per-call
+  // rescan relied on.
   //
-  // The _blobs array itself is deliberately excluded. It is one allocation per
-  // library, large enough that its overhead is a rounding error, and it comes
-  // from new CodeBlob[] -- whose returned pointer is not guaranteed to be the
-  // allocator's block base, so querying the allocator with it would be
-  // unsound. Excluding it understates by a negligible amount rather than
-  // risking a wrong reading.
-  if (overhead_out != nullptr) {
-    long long overhead = (long long)NativeFunc::nameOverhead(_name);
-    for (int i = 0; i < _count; i++) {
-      overhead += (long long)NativeFunc::nameOverhead(_blobs[i]._name);
-    }
-    *overhead_out += overhead;
-  }
-
-  // The DWARF unwind table, when present (length only — no pointer deref).
-  total += (long long)_dwarf_table_length * sizeof(FrameDesc);
-
-  // The build-id string is intentionally NOT counted here: the background
-  // library refresher (Libraries::updateBuildIds) frees and replaces _build_id
-  // on already-published caches under _build_id_lock, which dump does not hold,
-  // so dereferencing it here would race. It is negligible (~tens of bytes per
-  // library) next to the symbol tables, so excluding it costs no meaningful
-  // accuracy while keeping this read lock-free.
-
-  return total;
+  // Deliberately excludes the build-id string: the background library
+  // refresher (Libraries::updateBuildIds) frees and replaces _build_id on
+  // already-published caches under _build_id_lock, which dump does not hold,
+  // so folding it into this running total would race. It is negligible
+  // (~tens of bytes per library) next to the symbol tables.
+  return _memory_usage;
 }
 
 void CodeCache::expand() {
@@ -219,6 +197,8 @@ void CodeCache::expand() {
 
   memcpy(new_blobs, old_blobs, _count * sizeof(CodeBlob));
 
+  // Delta is exactly the current (pre-doubling) capacity's worth of blobs.
+  _memory_usage += (long long)_capacity * sizeof(CodeBlob);
   _capacity *= 2;
   _blobs = new_blobs;
   delete[] old_blobs;
@@ -233,6 +213,10 @@ void CodeCache::add(const void *start, int length, const char *name,
   assert(!_published.load(std::memory_order_acquire) &&
          "add() on a published CodeCache races memoryUsage()");
   char *name_copy = NativeFunc::create(name, _lib_index);
+  _memory_usage += (long long)NativeFunc::allocSize(name);
+  // Measured off the block just handed back, while the pointer is in hand: the
+  // gauge is published as a total at add() time, with no pointer left to probe.
+  _name_overhead += (long long)NativeFunc::nameOverhead(name_copy);
   // Replace non-printable characters
   for (char *s = name_copy; *s != 0; s++) {
     if (*s < ' ')
@@ -497,6 +481,7 @@ void CodeCache::setDwarfTable(FrameDesc *table, int length, const FrameDesc &def
   // buffer to exactly `length` entries before returning it from table(), so
   // memoryUsage()'s length-based formula matches the real allocation with no
   // trim step needed here.
+  _memory_usage += (long long)length * sizeof(FrameDesc);
   _dwarf_table = table;
   _dwarf_table_length = length;
   _default_frame = &default_frame;

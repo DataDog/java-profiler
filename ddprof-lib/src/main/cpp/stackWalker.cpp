@@ -8,6 +8,7 @@
 #include "stackWalker.inline.h"
 #include "dwarf.h"
 #include "faultInjection.h"
+#include "guards.h"
 #include "profiler.h"
 #include "stackFrame.h"
 #include "symbols.h"
@@ -52,13 +53,13 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
     }
 
     sigjmp_buf crash_protection_ctx;
-    sigjmp_buf* prev_jmp_buf = prof_thread->getJmpCtx();
+    JmpCtxScope jmp_scope(prof_thread);
 
     if (sigsetjmp(crash_protection_ctx, 1) != 0) {
         // checkFault() does a siglongjmp from inside segvHandler, bypassing
         // segvHandler's SignalHandlerScope destructor. Compensate.
         SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
-        prof_thread->setJmpCtx(prev_jmp_buf);
+        jmp_scope.restore();
         if (truncated) {
             *truncated = true;
             if (depth > max_depth) {
@@ -67,7 +68,7 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
         }
         return depth;
     }
-    prof_thread->setJmpCtx(&crash_protection_ctx);
+    jmp_scope.install(&crash_protection_ctx);
 
     // Walk until the bottom of the stack or until the first Java frame
     while (depth < actual_max_depth) {
@@ -97,8 +98,6 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
         sp = fp + (FRAME_PC_SLOT + 1) * sizeof(void*);
         fp = (uintptr_t)SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)fp));
     }
-
-    prof_thread->setJmpCtx(prev_jmp_buf);
 
     if (truncated && depth > max_depth) {
         *truncated = true;
@@ -140,13 +139,13 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
     }
 
     sigjmp_buf crash_protection_ctx;
-    sigjmp_buf* prev_jmp_buf = prof_thread->getJmpCtx();
+    JmpCtxScope jmp_scope(prof_thread);
 
     if (sigsetjmp(crash_protection_ctx, 1) != 0) {
         // checkFault() does a siglongjmp from inside segvHandler, bypassing
         // segvHandler's SignalHandlerScope destructor. Compensate.
         SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
-        prof_thread->setJmpCtx(prev_jmp_buf);
+        jmp_scope.restore();
         if (truncated) {
             *truncated = true;
             if (depth > max_depth) {
@@ -155,7 +154,7 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
         }
         return depth;
     }
-    prof_thread->setJmpCtx(&crash_protection_ctx);
+    jmp_scope.install(&crash_protection_ctx);
 
     // Walk until the bottom of the stack or until the first Java frame
     while (depth < actual_max_depth) {
@@ -232,8 +231,6 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
             break;
         }
     }
-
-    prof_thread->setJmpCtx(prev_jmp_buf);
 
     if (truncated && depth > max_depth) {
         *truncated = true;

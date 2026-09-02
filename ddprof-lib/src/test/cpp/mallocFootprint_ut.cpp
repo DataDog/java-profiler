@@ -59,8 +59,11 @@ TEST_F(MallocFootprintTest, HeaderProbeReturnsSaneValue) {
   void *p = malloc(96);
   ASSERT_NE(nullptr, p);
   size_t fp = MallocFootprint::of(p, 96);
-  printf("[FOOTPRINT] request=96 usable=%zu footprint=%zu\n",
-         malloc_usable_size(p), fp);
+  // Reported via MallocFootprint rather than the allocator call directly: the
+  // usable-size entry point is named differently per platform, and the class
+  // already owns that distinction.
+  printf("[FOOTPRINT] request=96 footprint=%zu overhead=%zu\n", fp,
+         MallocFootprint::overheadOf(p, 96));
   EXPECT_GE(fp, 96u) << "footprint cannot be below the requested size";
   free(p);
 }

@@ -14,10 +14,17 @@
 // per-category live byte gauges partition the total: sum(category) == total,
 // with no double counting.
 //
-// The "reserved vs used vs wasted" breakdowns exposed by the existing counters
-// (CALLTRACE_STORAGE_BYTES is the used slice of the CALLTRACE arena;
-// DICTIONARY_ARENA_WASTE_BYTES is the wasted slice of the DICTIONARY arena) are
-// a separate, nested dimension. They are intentionally NOT summed in here.
+// These gauges track memory that is actually touched (and therefore resident),
+// not address space that has merely been reserved. NM_CALLTRACE in particular
+// counts the bytes LinearAllocator::alloc() has bump-allocated, NOT the
+// capacity of the 8 MiB chunks backing them -- see linearAllocator.cpp.
+//
+// Consequently NM_CALLTRACE is no longer an "arena reserved" figure with
+// CALLTRACE_STORAGE_BYTES as its used slice: both now count touched bytes, and
+// their small difference is the call-trace hash tables (also bump-allocated),
+// not chunk slack. Do not compute arena waste as the difference between them.
+// DICTIONARY_ARENA_WASTE_BYTES remains a genuine nested waste figure for the
+// DICTIONARY arena. None of these nested counters are summed in here.
 #define DD_NATIVE_MEM_CATEGORY_TABLE(X)                                        \
   X(CALLTRACE, "calltrace")                                                    \
   X(DICTIONARY, "dictionary")                                                  \
@@ -65,7 +72,8 @@ private:
   // plus the per-chunk header. Kept SEPARATE from _live rather than folded in,
   // so _live stays directly comparable to sizeof() arithmetic while the amount
   // RSS additionally pays stays visible. Maintained only by recordAlloc/
-  // recordFreeBefore; call sites using plain record() contribute nothing here.
+  // recordFreeBefore/recordOverhead; call sites using plain record()
+  // contribute nothing here.
   static volatile long long _overhead[NM_NUM_CATEGORIES];
 
   // sample()-owned state; touched only from the single-threaded sampling path.
@@ -131,10 +139,13 @@ public:
     record(category, -(long long)requested);
   }
 
-  // Gauge-style overhead setter, for categories whose size is recomputed as an
-  // absolute rather than tracked via alloc/free deltas (see setLive).
-  static void setOverhead(NativeMemCategory category, long long value) {
-    store(_overhead[category], value);
+  // Account for already-measured overhead, for call sites that hold the figure
+  // but no longer the pointer -- CodeCacheArray::add() sums a library's name
+  // allocations as they are created and records the total once at publication.
+  // Same relaxed atomic add as record(), so concurrent publishers cannot clobber
+  // each other's contribution.
+  static void recordOverhead(NativeMemCategory category, long long delta) {
+    atomicIncRelaxed(_overhead[category], delta);
   }
 
   static long long overhead(NativeMemCategory category) {

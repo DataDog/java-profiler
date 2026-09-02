@@ -147,13 +147,10 @@
   X(SAMPLES_DROPPED_THREAD_LOCAL, "samples_dropped_thread_local")             \
   X(SAFECOPY_FAILED, "safecopy_failed")                                       \
   X(SAFEFETCH_FAILED, "safefetch_failed")                                     \
+  /* Every siglongjmp recovery, from any protected window, counted centrally  \
+   * in Profiler::checkFault(). */                                            \
   X(STACKWALK_LONGJMP_RECOVERED, "stackwalk_longjmp_recovered")               \
-  /* Dump-time raw-Method* resolution (HotspotSupport::resolve, reached only    \
-   * for cstack=vm + fjmethodid=false frames). NOT additive with               \
-   * STACKWALK_LONGJMP_RECOVERED: checkFault() bumps that one unconditionally  \
-   * before every siglongjmp, so each fault counted here is counted there too. \
-   * Subtract, never sum. Non-zero means stale HotSpot metadata (GC or class   \
-   * unloading) reached the dump thread; the frame serializes as "unknown". */ \
+  /* Dump-time method resolution failures. The frame serializes as "unknown". */ \
   X(METHOD_RESOLVE_FAULT_RECOVERED, "method_resolve_fault_recovered")         \
   /* Symbol length/body rejected during the same resolution: unreadable body,  \
    * empty (recycled slot), or over MAX_SYMBOL_LEN. A name that merely exceeds \
@@ -170,6 +167,10 @@
    * samples_dropped_thread_local) to isolate non-pool priming drops, never  \
    * summed. */                                                              \
   X(SAMPLES_DROPPED_TLS_POOL_EXHAUSTED, "thread_local_pool_exhausted")        \
+  /* Lookup::resolveMethod() calls that dropped method resolution,            \
+   * because no ProfiledThread could be allocated for the dump thread (OOM):  \
+   * there is nowhere to publish a landing pad. Expected to stay at 0. */     \
+  X(METHOD_RESOLUTION_DROPPED_TLS, "method_resolution_dropped_tls")           \
   /* writeElement() guards against a corrupted/dangling JfrMetadata tree.     \
    * Root cause is still unconfirmed, so these counters are the durable       \
    * signal for spotting a recurrence. */                                     \

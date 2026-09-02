@@ -11,6 +11,7 @@
 #include "counters.h"
 #include "dwarf.h"
 #include "mallocFootprint.h"
+#include "nativeMem.h"
 #include "utils.h"
 
 #include <atomic>
@@ -177,6 +178,28 @@ private:
   int _count;
   CodeBlob *_blobs;
 
+  // Running total of memoryUsage()'s formula, updated incrementally by the
+  // same pre-publication mutators (constructor, add(), expand(),
+  // setDwarfTable()) instead of recomputed by iterating _blobs. Safe because
+  // every contributing field is fixed before publication (see _published
+  // below) -- there is no point after construction-and-population where this
+  // total could be stale relative to a fresh recompute.
+  long long _memory_usage;
+
+  // Measured allocator overhead -- rounding to the size quantum plus the
+  // per-chunk header -- on the name allocations counted in _memory_usage.
+  // Tracked incrementally alongside it, by the same mutators, because overhead
+  // is a function of *per-allocation* size and so cannot be recovered later
+  // from a byte total: a 512 KB chunk pays ~0.003 %, a 96-byte node 16.7 %.
+  //
+  // The _blobs array is deliberately excluded. It is one allocation per
+  // library, large enough that its overhead is a rounding error, and it comes
+  // from new CodeBlob[] -- whose returned pointer is not guaranteed to be the
+  // allocator's block base, so querying the allocator with it would be unsound.
+  // Excluding it understates by a negligible amount rather than risking a wrong
+  // reading.
+  long long _name_overhead;
+
   // Set once the cache is registered into a CodeCacheArray (see markPublished()).
   // After that, memoryUsage() may be read lock-free from another thread (dump),
   // so the mutators that touch the fields it reads (add()/expand()/
@@ -294,14 +317,16 @@ public:
 
   // Live size of what this CodeCache owns on the heap: the blob array, the
   // per-symbol name strings (variable length), this cache's own name, and the
-  // DWARF unwind table. Recomputed on demand (called only at dump time), so it
-  // reflects the current contents. The build-id string is deliberately excluded
-  // — it is mutated by the background refresher and negligible in size (see the
-  // definition). Const and lock-free: reads only fields that are stable once the
-  // library is published.
-  // overhead_out, when non-null, receives the measured allocator overhead on
-  // the name allocations counted here (see NativeFunc::nameOverhead).
-  long long memoryUsage(long long *overhead_out = nullptr) const;
+  // DWARF unwind table. An O(1) read of a running total (see _memory_usage).
+  // The build-id string is deliberately excluded — it is mutated by the
+  // background refresher and negligible in size (see the definition). Const and
+  // lock-free: reads only fields that are stable once the library is published.
+  long long memoryUsage() const;
+
+  // Measured allocator overhead on the name allocations that memoryUsage()
+  // counts (see _name_overhead). Same O(1) running-total read, same lock-free
+  // guarantees.
+  long long nameOverhead() const { return _name_overhead; }
 
   int count() { return _count; }
   CodeBlob* blob(int idx) {
@@ -343,6 +368,21 @@ public:
     } while (!__atomic_compare_exchange_n(&_reserved, &slot, slot + 1,
                                           true, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
     assert(__atomic_load_n(&_libs[slot], __ATOMIC_RELAXED) == nullptr);
+    // Record this library's contribution to NM_NATIVE_SYMBOLS exactly once,
+    // right here at publication -- not via a periodic recompute-and-overwrite
+    // elsewhere. A cache that fails to publish (the overflow branch above) is
+    // simply never recorded, so there is no corresponding decrement to get
+    // right on the parse-failure/duplicate discard path in
+    // Symbols::parseLibraries (which deletes an unpublished cache directly).
+    // Because record() is a relaxed atomic add, concurrent publishers from
+    // different threads (or a publish racing Profiler::dump()'s read of the
+    // aggregate) can never clobber each other's contribution -- unlike the
+    // read-modify-write a periodic setLive(sum-of-everything) would need.
+    NativeMem::record(NM_NATIVE_SYMBOLS, lib->memoryUsage());
+    // The allocator overhead on those same allocations, measured rather than
+    // assumed, recorded at the same instant and by the same relaxed-atomic add
+    // so it stays consistent with the logical bytes above.
+    NativeMem::recordOverhead(NM_NATIVE_SYMBOLS, lib->nameOverhead());
     // Mark published before the RELEASE store makes the pointer visible, so any
     // later add()/expand()/setDwarfTable() on this cache trips the assert (its
     // _blobs would then be read lock-free by memoryUsage() at dump time).
@@ -366,24 +406,20 @@ public:
     return __atomic_load_n(&_libs[index], __ATOMIC_ACQUIRE);
   }
 
-  // Sum the live memory of all registered libraries. Recomputed on demand
-  // (called only at dump time) so it reflects each library's fully-populated
-  // state at that point — the accurate per-library formula rather than a value
-  // cached at add() time. (Libraries are populated before being registered and
-  // not grown afterwards.) The array is append-only, so iterating the published
+  // Sum the live memory of all registered libraries. Each lib->memoryUsage()
+  // is now an O(1) read of a running total (see CodeCache::_memory_usage),
+  // not a rescan of its symbol table, so this whole sum is O(libraries) --
+  // still only called at dump time, but no longer the reason to avoid calling
+  // it more often. The array is append-only, so iterating the published
   // prefix is safe alongside concurrent add()s.
-  size_t memoryUsage(long long *overhead_out = nullptr) const {
+  size_t memoryUsage() const {
     size_t total = 0;
-    long long overhead = 0;
     int n = count();
     for (int i = 0; i < n; i++) {
       CodeCache *lib = at(i);
       if (lib != nullptr) {
-        total += (size_t)lib->memoryUsage(overhead_out != nullptr ? &overhead : nullptr);
+        total += (size_t)lib->memoryUsage();
       }
-    }
-    if (overhead_out != nullptr) {
-      *overhead_out = overhead;
     }
     return total;
   }
