@@ -408,6 +408,27 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti,
   // small live population (~hundreds); tag in scan order beyond capacity.
   TagCandidate scratch[512];
   int n_candidates = 0;
+  // Per-poll (klass_id, tid) tag summary - the per-instance logging this
+  // replaces re-logged every stable pool tag on every poll (256 lines/poll
+  // once the pool saturates with real leak instances), which flooded the
+  // pod's container log hard enough to rotate its 10MB cap inside a
+  // verification window (round 5: ~600k lines in 20 min, costing log-head
+  // from the same window). One summary line per tagged (klass, tid) group
+  // carries the same diagnostics - allocation size distinguishing real
+  // leaked chunks from machinery survivors, the age range showing the
+  // site's surviving-age diversity - at constant volume per poll.
+  struct TagSummary {
+    u32 klass_id;
+    jint tid;
+    int tagged;
+    int need_set;
+    u64 min_age;
+    u64 max_age;
+    u64 max_size;
+  };
+  TagSummary summary[16];
+  int summary_count = 0;
+  int summary_overflow = 0;
   _table_lock.lockShared();
   u32 sz = _table_size;
   for (u32 i = 0; i < sz; i++) {
@@ -584,20 +605,62 @@ int LivenessTracker::tagLeakInstances(jvmtiEnv *jvmti,
     }
     _table[i].leak_tag = leak_tag;
     tagged++;
-    // TEMP DIAGNOSTIC: which instances won the tagging priority - the
-    // allocation size distinguishes a scenario's deliberately-big leaked
-    // chunks from JVM-machinery survivors of the same class (observed:
-    // tagged=5 stable across every poll with ZERO interceptions, because
-    // the age-priority kept re-selecting old machinery byte[]s while the
-    // young leak chunks churned out of the tracking table first).
-    TEST_LOG("LivenessTracker::tagLeakInstances tagged leak_tag=%llu "
-             "klass_id=%u tid=%d age=%lld size=%llu need_set=%d",
-             (unsigned long long)leak_tag, _table[i].cached_klass_id,
-             (int)_table[i].tid, (long long)_table[i].age,
-             (unsigned long long)(_table[i].alloc._size), (int)need_set);
+    // Accumulate into the per-poll summary above instead of logging per
+    // instance - one stable-pool poll re-logged all 256 tags' identical
+    // lines every 1.4s before this.
+    u32 tagged_kid = _table[i].cached_klass_id;
+    jint tagged_tid = _table[i].tid;
+    u64 tagged_age = _table[i].age;
+    u64 tagged_size = _table[i].alloc._size;
+    int g = 0;
+    while (g < summary_count &&
+           (summary[g].klass_id != tagged_kid || summary[g].tid != tagged_tid)) {
+      g++;
+    }
+    if (g == summary_count && summary_count >=
+            (int)(sizeof(summary) / sizeof(summary[0]))) {
+      // Bounded groups exceeded (candidates are <= 5, qualifying tids <= 8
+      // each - 16 covers every realistic (klass, tid) pair; overflow lumps).
+      summary_overflow++;
+    } else if (g == summary_count) {
+      summary[g].klass_id = tagged_kid;
+      summary[g].tid = tagged_tid;
+      summary[g].tagged = 1;
+      summary[g].need_set = (int)need_set;
+      summary[g].min_age = tagged_age;
+      summary[g].max_age = tagged_age;
+      summary[g].max_size = tagged_size;
+      summary_count++;
+    } else {
+      summary[g].tagged++;
+      summary[g].need_set += (int)need_set;
+      if (tagged_age < summary[g].min_age) {
+        summary[g].min_age = tagged_age;
+      }
+      if (tagged_age > summary[g].max_age) {
+        summary[g].max_age = tagged_age;
+      }
+      if (tagged_size > summary[g].max_size) {
+        summary[g].max_size = tagged_size;
+      }
+    }
     env->DeleteLocalRef(ref);
   }
   _table_lock.unlockShared();
+  for (int g = 0; g < summary_count; g++) {
+    TEST_LOG("LivenessTracker::tagLeakInstances summary klass_id=%u "
+             "tid=%d tagged=%d need_set=%d min_age=%llu max_age=%llu "
+             "max_size=%llu",
+             summary[g].klass_id, (int)summary[g].tid, summary[g].tagged,
+             summary[g].need_set, (unsigned long long)summary[g].min_age,
+             (unsigned long long)summary[g].max_age,
+             (unsigned long long)summary[g].max_size);
+  }
+  if (summary_overflow > 0) {
+    TEST_LOG("LivenessTracker::tagLeakInstances summary overflow=%d "
+             "(groups beyond %d)",
+             summary_overflow, (int)(sizeof(summary) / sizeof(summary[0])));
+  }
   return tagged;
 }
 
