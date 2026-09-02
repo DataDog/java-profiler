@@ -1,7 +1,7 @@
 ---
 id: q-togcroot-acceptance-paths
 type: question
-status: open
+status: answered
 depends_on: [find-canary-lane-backoff-design, find-default-live-samples-ratio-lottery]
 related: [find-canary-continue-skips-discovered-instances, find-representative-changes-lose-canary, find-shared-deadline-starves-expand]
 tags: [flakiness, tests, canary, pacing, open, NEW-THIS-SESSION]
@@ -10,6 +10,11 @@ updated: 20260901
 ---
 
 # ToGcRoot/UnboundedCache flakiness: multiple acceptance paths x canary pacing - what actually closes it?
+
+ANSWERED by find-togcroot-orphaned-slot-stranding: slot stranding, not
+pass starvation or path multiplicity. Fixes 1+2 landed; suite green at
+load 28.7 and 53. Fix 2's organic-qualification improvement is the
+remaining thread.
 
 The remaining intermittent slow-suite failures (ReferenceChainTrackingTest
 shouldReconstructReferrerChainToGcRoot, sometimes UnboundedCacheLeak) are

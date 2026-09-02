@@ -16,57 +16,32 @@ representatives are re-tagged and all discovered instances auto-marked,
 chains are cached per-instance (not per-class). JFR analysis confirmed 2
 ReferenceChain events emitted — but one was for a noise [B instance.
 
-## Current focus: canary backoff + sampler-dead lottery fixed; A+B+backoff ready for pod round 5
+## Current focus: ToGcRoot root-caused and fixed (1+2); improving fix 2's organic qualification
 
-This session (uncommitted):
-- Chase-phase admission boost (find-admission-boost-implementation,
-  user option A): tracked-allocation admission raised to 100% for
-  candidate qualifying tids (poll-refreshed) and everything under the
-  OOM urgency ramp. 550 gtests green; slow suite green except the
-  known ToGcRoot family (q-togcroot-acceptance-paths, both failing
-  runs hit exactly 124 passes - structural pass-budget ceiling).
-- All four :l reference-chain test sites now pass the explicit
-  ratio=1.0 (see find-default-live-samples-ratio-lottery).
-- Option A (user point 3): work-scaled canary backoff (see
-  find-canary-lane-backoff-design). Pod chase burn structurally
-  bounded to <= ~1/16 core at the multiplier cap.
-- Sampler-dead interaction (user-asked chase) CLOSED
-  (find-default-live-samples-ratio-lottery): default 10% live-sample
-  ratio + tiny scenario cohort = Bernoulli lottery; test now passes
-  memory=64:l:1.0. All TEMP diagnostics added for the chase were
-  fully reverted (referenceChains backoff state + its gtest remain).
-- Doc: ReferenceChains-SignalsExplained.md sections 4/8/11 updated
-  per user's points 1+2+3.
-- 546 gtests green; slow suite: leak-correlation green (2/2 variants),
-  ToGcRoot/UnboundedCache remain load-sensitive (separate family:
-  in-process passes ~4.4s under 5s pausetarget at load 25+, work-scaled
-  spacing follows them - timing, not a correctness bug; verify on a
-  quiet box before judging).
+ToGcRoot root cause CLOSED (find-togcroot-orphaned-slot-stranding,
+answers q-togcroot-acceptance-paths): slot stranding. Fix 1
+(buildDiscoveredInstanceChains + orphan sweep, gtest, 551 green) is the
+load-bearing guarantee - suite green twice at load 28.7/53 (was failing
+at load 3). Fix 2 (persistent allocator thread + allocator-tid seeds)
+landed but the candidate still ages out mid-run (54 zero-candidate
+polls in the green run) - shared-JVM GC-epoch noise resets
+consecutive_positive between the test's own GCs. ACTIVE THREAD: improve
+fix 2 so qualification survives the noise (candidates re-qualify
+organically instead of relying on the orphan sweep).
 
 ## Next steps
 
-1. Pod round 5 (user redeploying with A+B+backoff build): verify
-   - `held off by canary backoff mult=... ema_ms=...` lines; stuck
-     chase pacing; burn drop vs round 3-4;
-   - Tier-2 FRONTIER-holder rotation (A) engaging:
-     `collectLeakAccumulationCandidatesForRotation selected
-     parent_tag=... state=FRONTIER`;
-   - interception/correlation: leak-tag intercepted -> buildChainEvent
-     with pool-range targetTag matching HeapLiveObject.leakTag;
-   - batch growth under backlog pressure (B):
-     expandFrontier next_batch beyond MIN under deep backlog.
-2. Commit chunk-wise once pod-confirmed (backoff; A+B; test ratio fix;
-   doc; memory).
-3. TEMP reverts still due before finalizing (list below) - note the
-   sampler-dead chase's diagnostics are already reverted.
-4. Open: ToGcRoot/UnboundedCache flakiness - NOT the ratio lottery
-   (the explicit :l:1.0 is now on ALL four :l reference-chain test
-   sites; rep-died symptom gone) and not pure load (fail at load 3).
-   See q-togcroot-acceptance-paths for the confusing 13-pass-green vs
-   124-pass-fail data and the candidate factors (backoff EMA polluted
-   by root-enum passes; Tier-2 coverage of the marker's parent;
-   non-canary acceptance path). Parked: pod pass-wall decomposition
-   (static sweep lap share).
+1. Improve fix 2 (see above): understand exactly why consecutive_positive
+   resets between the test's own rounds (other-GC epoch samples with
+   flat retained counts land in the ring between rounds) and choose:
+   test-side (fewer external GCs / stronger per-round growth) vs
+   engine-side (hysteresis tolerance to flat epochs - production-
+   relevant: real leaks also see flat epochs) vs leaving it as-is
+   (fix 1 already guarantees the test).
+2. Commit when user asks (chunks: orphan sweep + gtest; test thread
+   rework; memory).
+3. Pod round 5 checklist unchanged (STATE below).
+4. TEMP reverts before finalizing (list below).
 
 ## TEMP — MUST REVERT before finalizing
 
