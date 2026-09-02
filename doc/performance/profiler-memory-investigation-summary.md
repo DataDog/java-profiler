@@ -12,19 +12,44 @@ and [`memory-sweep-results-linux.md`](memory-sweep-results-linux.md).
 | Overhead measured | **59–74 MiB** of anonymous memory |
 | Stable component | **35.98 ± 0.26 MiB** |
 | Accounting now closes to | **±0.77 MiB** (R² 0.999) |
-| Profiler memory costing nothing | **~⅔** of its own heap allocation |
+| Requested but never actually used | **~25 MiB** of profiler allocation |
+
+---
+
+## Two terms worth pinning down
+
+Both of these do real work below, and neither means quite what it sounds like.
+
+**Anonymous memory** is the memory a program allocates for itself as it runs — as
+opposed to memory that mirrors a file on disk. It is the part that grows when a
+program does more work, and the part a container's memory limit counts. When this
+document says the profiler "adds 59–74 MiB", this is what it adds.
+
+**Resident** means *actually occupying physical RAM right now*. This is the crucial
+distinction, because **asking the operating system for memory and actually using it
+are two different things.** Linux hands over real memory only when a program first
+writes to a page. Memory that has been requested but never written to is not
+resident: it has an address, but no RAM behind it.
+
+That gap between *requested* and *resident* is where most of this investigation's
+surprises lived — in both directions.
 
 ---
 
 ## The problem
 
-Turning the profiler on adds memory to the application. Measuring *that* was never
-hard. Explaining it was.
+Turning the profiler on adds memory to the application. Getting a *trustworthy number*
+for how much has never been easy — it is the reason the dd-trace-doe project exists, a
+harness for running controlled, repeatable A/B comparisons on realistic application
+workloads instead of ad-hoc measurements that cannot be compared with each other.
 
-Two difficulties compounded each other. The accounting had a gap no instrument
-claimed — a residual of a few megabytes. And the total itself moved: run the same
-experiment twice and get answers tens of megabytes apart. With both problems live,
-there was no way to tell a genuine regression from ordinary scatter.
+This investigation began from that harness, and ran into two further problems. The
+accounting had a gap no instrument claimed — a residual of a few megabytes. And even
+with a purpose-built harness the total still moved: run the same experiment twice and
+get answers tens of megabytes apart. With both problems live, there was no way to tell
+a genuine regression from ordinary scatter.
+
+Both are now resolved, and the second turned out to have a single, nameable cause.
 
 **The goal was never to shrink the footprint.** It was to be able to account for it —
 to name every megabyte, so that a future change costing 20 MiB shows up as a 20 MiB
@@ -32,9 +57,14 @@ change instead of disappearing into the noise.
 
 ## The approach
 
-Every measurement is a paired A/B: identical workload, profiling on versus off, the
-two arms **interleaved and counterbalanced** so machine drift and run-order effects
-cannot land preferentially on one side. Roughly forty such pairs underpin the
+The workload and the A/B mechanism come from dd-trace-doe. This investigation added
+two things on top of it: a stricter experimental design, and instrument redundancy.
+
+On design — the two arms are **interleaved and counterbalanced**, so that machine
+drift and run-order effects cannot land preferentially on one side, and sampling
+happens only after memory has plateaued. Both mattered: measuring the arms in separate
+windows shifts the answer by ~14 MiB, and the first run of a pair carries ~7 MiB more
+than the second regardless of which arm it is. Roughly forty pairs underpin the
 findings.
 
 The methodological rule that did the real work: **no single instrument settles
@@ -43,7 +73,7 @@ data source.
 
 | Instrument | What it sees |
 | --- | --- |
-| cgroup `anon` | What the kernel says the container occupies — the ground truth being explained |
+| Container memory usage | What the kernel reports the container occupying (cgroup `anon`) — the ground truth being explained |
 | JVM NMT | The JVM's own account of memory it commits on the profiler's behalf |
 | Profiler counters | The profiler's per-category record of what it allocates |
 | glibc `mallinfo` | The C allocator's view: in use, free-but-retained, mmap-served |
@@ -126,14 +156,41 @@ of it. Every term now carries a measured residency factor:
 Tracing every allocation back to the code that made it settled who owns that last row,
 and the answer was not what we expected:
 
-| Allocated by | Total added | Of which costs no memory |
+| Allocated by | Total requested | Of which never written to |
 | --- | --- | --- |
 | The profiler | +37.5 MiB | **+25.4 MiB** |
 | The JVM itself | +16.0 MiB | 0.0 MiB |
 
-**Roughly two-thirds of the profiler's own heap allocation is never touched** and costs
-no physical memory at all. The JVM's additional allocation, by contrast, is fully
-resident. Reproducible to ±0.01 MiB across three paired runs.
+**Roughly two-thirds of the profiler's own heap allocation is requested and then never
+written to.** The JVM's additional allocation, by contrast, is fully resident.
+Reproducible to ±0.01 MiB across three paired runs.
+
+### What "never written to" actually means here
+
+It is worth being exact, because the phrase sounds either impossible or unimportant
+and is neither.
+
+**What it does not cost.** Those 25 MiB occupy no physical RAM. They do not count
+toward the container's memory limit, do not appear in the process's memory footprint,
+and cannot contribute to an out-of-memory kill. On a 64-bit system the address space
+they consume is not a meaningful resource. In the sense that matters operationally,
+they are free.
+
+**What it does cost.** Two things, both real:
+
+- **It makes our own numbers wrong.** The profiler's internal counters report what it
+  *requested*, so they overstate its actual memory footprint by roughly this amount.
+  That is a reporting defect, not a memory defect — but it is precisely the kind of
+  thing that made the overhead hard to account for in the first place.
+- **It is latent, not absent.** These pages become real the moment anything writes to
+  them. Today's cost is zero because the memory goes unused, not because it was
+  cheaply obtained.
+
+**Why allocate it at all, then?** Because it is a side effect rather than a decision.
+When a program asks for a large enough block, the C library satisfies it with a fresh
+region from the operating system rather than from its recycled pool. Ask for more than
+you go on to fill, and the remainder is simply never touched. Nobody chose to reserve
+25 MiB; it is the accumulated tail of many generously-sized requests.
 
 ---
 
