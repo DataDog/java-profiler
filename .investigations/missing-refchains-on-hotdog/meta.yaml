@@ -2,7 +2,7 @@ name: missing-refchains-on-hotdog
 description: Why prof-analyzer-hotdog-jb emits zero datadog.ReferenceChain events
 status: active
 created: 2026-08-24
-updated: 2026-09-01
+updated: 2026-09-02
 completed: null
-last_commit:
+last_commit: 14add8140b76f8145fb2651a7f98a8e8d2afec0f
 last_session: ba63d601-cc22-4d19-800a-71da2dd1d079

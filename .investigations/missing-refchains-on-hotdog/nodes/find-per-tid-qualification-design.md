@@ -71,3 +71,17 @@ rising-below-bar qualify); slow suite 8/8 including
 LeakTagCorrelationReferenceChainTest's [correlation-found] through the
 per-tid-scoped production tagging path; testDebug unchanged (5
 pre-existing env failures).
+
+## Inference (not verified) + commits
+
+LeakingCacheScenario's CachedPayload allocations are far below the
+allocation-sampling floor (300 small objects per round vs a ~512KiB
+interval), so its chain most likely comes from the representative
+machinery (seed-0 via setKlassPopulationRepresentativeForTest0), not
+leak tagging - its main-tid seeding is therefore gate-only in practice.
+Inferred from the sampling floor + the scenario passing with zero
+interception mechanics observed; not directly instrumented.
+
+Commits: 5d498811f (PriorityExpandSet), c5490156e (per-tid
+qualification), 14add8140 (memory sync), pushed as
+1a5055548..14add8140 on jb/reference-chains-pi.

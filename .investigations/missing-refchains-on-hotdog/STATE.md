@@ -16,37 +16,57 @@ representatives are re-tagged and all discovered instances auto-marked,
 chains are cached per-instance (not per-class). JFR analysis confirmed 2
 ReferenceChain events emitted — but one was for a noise [B instance.
 
-## Current focus: option C + isQueuedForRotation fix implemented; all suites green; pod round 4 pending
+## Current focus: canary backoff + sampler-dead lottery fixed; A+B+backoff ready for pod round 5
 
-Implemented this session (uncommitted):
-- PriorityExpandSet (O(1) isQueuedForRotation; was ~200M comparisons per
-  rotation pass at a 199k frontier - user-flagged profile hotspot).
-- Option C: (klass, tid) qualification. selectLeakCandidates() requires a
-  qualifying allocating thread (age-trend OR retained-count bar 8);
-  KlassCandidate carries qualifying tids; tagLeakInstances() tags only
-  those tids' instances. Pod effect: tagging scoped to hotdog's
-  simulated-memory-leak thread (its per-tid signal is real and rising),
-  machinery byte[]s out of scope by construction.
-- All suites green: 543 gtests (4 new per-tid gate tests), slow suite 8/8
-  ([correlation-found] through the per-tid-scoped production tagging
-  path), testDebug failures unchanged (5, pre-existing env-flaky).
-- spotless applied.
+This session (uncommitted):
+- Chase-phase admission boost (find-admission-boost-implementation,
+  user option A): tracked-allocation admission raised to 100% for
+  candidate qualifying tids (poll-refreshed) and everything under the
+  OOM urgency ramp. 550 gtests green; slow suite green except the
+  known ToGcRoot family (q-togcroot-acceptance-paths, both failing
+  runs hit exactly 124 passes - structural pass-budget ceiling).
+- All four :l reference-chain test sites now pass the explicit
+  ratio=1.0 (see find-default-live-samples-ratio-lottery).
+- Option A (user point 3): work-scaled canary backoff (see
+  find-canary-lane-backoff-design). Pod chase burn structurally
+  bounded to <= ~1/16 core at the multiplier cap.
+- Sampler-dead interaction (user-asked chase) CLOSED
+  (find-default-live-samples-ratio-lottery): default 10% live-sample
+  ratio + tiny scenario cohort = Bernoulli lottery; test now passes
+  memory=64:l:1.0. All TEMP diagnostics added for the chase were
+  fully reverted (referenceChains backoff state + its gtest remain).
+- Doc: ReferenceChains-SignalsExplained.md sections 4/8/11 updated
+  per user's points 1+2+3.
+- 546 gtests green; slow suite: leak-correlation green (2/2 variants),
+  ToGcRoot/UnboundedCache remain load-sensitive (separate family:
+  in-process passes ~4.4s under 5s pausetarget at load 25+, work-scaled
+  spacing follows them - timing, not a correctness bug; verify on a
+  quiet box before judging).
 
 ## Next steps
 
-1. Pod round 4 (after commit/push): copy binary + pkill java, verify build
-   via marker strings + ema_call_ms logs, then check:
-   - tagLeakInstances tagged lines carry the simulated-leak thread's tid
-     (not the old machinery tids); pool economy (fewer stable need_set=0
-     waiters);
-   - interception/recordDiscoveredInstance/requeueChainRootForRotation
-     firing (tagged objects now live under the leak site the crawl
-     rotates to);
-   - ReferenceChain emission with targetTag correlating to
-     HeapLiveObject.leakTag; cadence/shouldRunPass behavior.
-2. Commit once pod-confirmed (logical chunks: rotation-set fix; per-tid
-   qualification; seams/scenario wiring).
-3. TEMP reverts before finalizing (list below).
+1. Pod round 5 (user redeploying with A+B+backoff build): verify
+   - `held off by canary backoff mult=... ema_ms=...` lines; stuck
+     chase pacing; burn drop vs round 3-4;
+   - Tier-2 FRONTIER-holder rotation (A) engaging:
+     `collectLeakAccumulationCandidatesForRotation selected
+     parent_tag=... state=FRONTIER`;
+   - interception/correlation: leak-tag intercepted -> buildChainEvent
+     with pool-range targetTag matching HeapLiveObject.leakTag;
+   - batch growth under backlog pressure (B):
+     expandFrontier next_batch beyond MIN under deep backlog.
+2. Commit chunk-wise once pod-confirmed (backoff; A+B; test ratio fix;
+   doc; memory).
+3. TEMP reverts still due before finalizing (list below) - note the
+   sampler-dead chase's diagnostics are already reverted.
+4. Open: ToGcRoot/UnboundedCache flakiness - NOT the ratio lottery
+   (the explicit :l:1.0 is now on ALL four :l reference-chain test
+   sites; rep-died symptom gone) and not pure load (fail at load 3).
+   See q-togcroot-acceptance-paths for the confusing 13-pass-green vs
+   124-pass-fail data and the candidate factors (backoff EMA polluted
+   by root-enum passes; Tier-2 coverage of the marker's parent;
+   non-canary acceptance path). Parked: pod pass-wall decomposition
+   (static sweep lap share).
 
 ## TEMP — MUST REVERT before finalizing
 
