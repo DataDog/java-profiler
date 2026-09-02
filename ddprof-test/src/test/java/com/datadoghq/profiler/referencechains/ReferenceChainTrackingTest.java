@@ -194,7 +194,17 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
       // enumeration attempt (the first pass, and any later one ROOT_ENUM_MIN_INTERVAL_NS gates
       // back in - see that constant's own comment) enough headroom to reach this thread's stack
       // without slowing down the steady-state expansion passes that follow.
-      return "memory=64:l,generations=true,"
+      // memory=64:l:1.0 - the explicit 100% live-sample ratio is load-bearing:
+      // without a ratio segment the default is 10% (arguments.h's
+      // _live_samples_ratio) and LivenessTracker::track() drops 90% of
+      // tracked instances probabilistically, thinning the pool the
+      // representative-minting and candidate trend rings draw from -
+      // observed live as the intermittent "representative died/evicted"
+      // and zero-tag runs (see LeakTagCorrelationReferenceChainTest's own
+      // comment for the full lottery analysis). Total tracking volume is
+      // still capped by the 256KiB sampling-interval floor, not the ratio,
+      // so 100% keeps the tracking table tiny.
+      return "memory=64:l:1.0,generations=true,"
           + "referencechains=true:hops=64:budget=4000:ttl=120000:framecap=2000000:pausetarget=5000:painbudget=100:firstpassbudget=200000";
     }
     // shouldReportAbandonedSearchOnTinyFrontierCap needs the frontier table (not the

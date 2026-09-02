@@ -78,7 +78,12 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
       // scenario's own cache before the test's own timeout. _budget is the pacing controller's
       // hard ceiling (see updatePacing()'s own comment, referenceChains.cpp) - pausetarget alone
       // cannot compensate for a ceiling set too low, only pacing *within* it.
-      String startCommand = "start,memory=64:l,generations=true,"
+      // memory=64:l:1.0 - the explicit 100% live-sample ratio removes the
+      // default 10% subsampling lottery from the tracked-instance pool
+      // (see LeakTagCorrelationReferenceChainTest's own comment for the
+      // full analysis); total volume stays capped by the 256KiB interval
+      // floor, so the tracking table remains tiny.
+      String startCommand = "start,memory=64:l:1.0,generations=true,"
           + "referencechains=true:hops=64:budget=200000:ttl=120000:framecap=2000000:pausetarget=60000"
           + ",jfr,file=" + continuousJfrPath.toAbsolutePath();
       // Packed into one args[1] string - see ExternalLauncher's own "leak-cache" mode comment
@@ -151,7 +156,12 @@ public class ExternalProcessReferenceChainTest extends AbstractProcessProfilerTe
       // See ExternalProcessReferenceChainTest.shouldReconstructReferrerChainInSeparateProcess()'s
       // own comment for why budget/pausetarget are raised this far above the in-process test's
       // defaults for a genuinely fresh, cold external JVM.
-      String startCommand = "start,memory=64:l,generations=true,"
+      // memory=64:l:1.0 - the explicit 100% live-sample ratio removes the
+      // default 10% subsampling lottery from the tracked-instance pool
+      // (see LeakTagCorrelationReferenceChainTest's own comment for the
+      // full analysis); total volume stays capped by the 256KiB interval
+      // floor, so the tracking table remains tiny.
+      String startCommand = "start,memory=64:l:1.0,generations=true,"
           + "referencechains=true:hops=64:budget=200000:ttl=120000:framecap=2000000:pausetarget=60000"
           + ",jfr,file=" + continuousJfrPath.toAbsolutePath();
       String packedCommand = startCommand + "|||" + scratchDumpPath.toAbsolutePath();
