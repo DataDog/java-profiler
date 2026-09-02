@@ -3215,6 +3215,28 @@ void ReferenceChainTracker::walkStaticFieldAnchors(
       jni->DeleteLocalRef(objects[i]);
       continue;
     }
+    // TEMP DIAGNOSTIC (pod round 8: interception still zero over 16-hop
+    // walks of every selected anchor): name WHICH
+    // anchor objects are actually being walked, with their recorded chain
+    // shape, so a holder that never makes it into this tier (wrong
+    // root_kind / chain-attached / never-admitted) is distinguishable from
+    // one that gets walked without reaching the tagged chunks.
+    {
+      char *sig = nullptr;
+      if (jni->GetObjectClass(objects[i]) != nullptr) {
+        jvmti->GetClassSignature(jni->GetObjectClass(objects[i]), &sig,
+                                 nullptr);
+      }
+      TEST_LOG("ReferenceChainTracker::walkStaticFieldAnchors anchor "
+               "tag=%lld class=%s parent=%lld root_kind=%u state=%u "
+               "field_index=%d",
+               (long long)resolved_tags[i], sig != nullptr ? sig : "<unresolved>",
+               (long long)entry.parent_tag, (unsigned)entry.root_kind,
+               (unsigned)entry.state, (int)entry.referrer_field_index);
+      if (sig != nullptr) {
+        jvmti->Deallocate((unsigned char *)sig);
+      }
+    }
     int remaining = budget - *edges_admitted;
     if (remaining <= 0) {
       jni->DeleteLocalRef(objects[i]);
