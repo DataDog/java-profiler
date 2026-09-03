@@ -33,6 +33,14 @@
 #   tracer    = tracer - baseline
 #   profiler  = both   - tracer
 #
+# NO --no-build. doe folds `tracing=` and `profiling=` into the input hash it
+# derives the image tag from, so each of the three conditions needs its own
+# image and the baseline (tracing=false profiling=false) has never been built.
+# With --no-build the run dies with "No such image" before a container starts --
+# it produced "no container id" on the first attempt here. Building is safe: the
+# agent jar is fixed on disk (chmod 444) and its profiler .so was verified
+# byte-identical to the build under test, so a rebuild cannot swap the profiler.
+#
 # Usage: run_doe_full_apm.sh <out_dir> [rounds]
 set -u
 OUT="$1"
@@ -67,7 +75,7 @@ run_one() {
   : > "$anonfile"
 
   ( cd "$DOE_REPO" && env DOE_DEBUG_JAVA_TOOL_OPTIONS="-XX:+AlwaysPreTouch" \
-      "$DOE_BIN" run $COMMON --no-build \
+      "$DOE_BIN" run $COMMON \
       tracing="$tracing" profiling="$profiling" -n 1 -f > "$log" 2>&1 ) &
   local pid=$!
 
