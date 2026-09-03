@@ -1084,8 +1084,15 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   JVMJavaThreadState state = vm_thread->state();
   bool in_java = (state == _thread_in_Java || state == _thread_in_Java_trans);
   if (in_java && java_ctx->sp != 0) {
-    // skip ahead to the Java frames before calling AGCT
-    frame.restore((uintptr_t)java_ctx->pc, java_ctx->sp, java_ctx->fp);
+    // skip ahead to the Java frames before calling AGCT.
+    // java_ctx was populated by an earlier, separately-protected walk; fault-
+    // inject its values here to exercise walkJavaStack's ucontext-restore-on-
+    // recovered-fault path -- frame.restore() writes straight into the real
+    // ucontext, and this is one of the few sites that can hand it an
+    // outright invalid pc/sp/fp.
+    frame.restore((uintptr_t)INJECT_FAULT_ADDRESS_UNLIKELY(java_ctx->pc),
+                  INJECT_FAULT_ADDRESS_UNLIKELY(java_ctx->sp),
+                  INJECT_FAULT_ADDRESS_UNLIKELY(java_ctx->fp));
   } else if (state != _thread_uninitialized) {
     VMJavaFrameAnchor* a = vm_thread->anchor();
     if (a == nullptr || a->lastJavaSP() == 0) {
@@ -1147,7 +1154,10 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
               trace.frames--;
             }
             for (int i = 0; trace.num_frames < 0 && i < PROBE_SP_LIMIT; i++) {
-              frame.sp() += sizeof(void*);
+              // PROBE_SP walks past the real frame boundary by design;
+              // fault-inject the probed sp so a poisoned value exercises the
+              // same recovered-fault path a genuinely bad guess would hit.
+              frame.sp() = INJECT_FAULT_ADDRESS_UNLIKELY(frame.sp() + sizeof(void*));
               JVMSupport::jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
             }
           }
@@ -1172,8 +1182,12 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
     const void* pc = anchor->lastJavaPC();
     if (sp != 0 && pc == NULL) {
       // We have the last Java frame anchor, but it is not marked as walkable.
-      // Make it walkable here
-      pc = ((const void**)sp)[-1];
+      // Make it walkable here.
+      // sp comes straight from the anchor with no validation; fault-inject it
+      // so the unguarded dereference below exercises the sigsetjmp/siglongjmp
+      // recovery path installed by the caller (walkJavaStack) instead of only
+      // ever running against a known-good sp.
+      pc = ((const void**)INJECT_FAULT_ADDRESS_UNLIKELY(sp))[-1];
       anchor->setLastJavaPC(pc);
 
       VMNMethod *m = CodeHeap::findNMethod(pc);

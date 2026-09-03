@@ -29,6 +29,8 @@
  *      HotspotSupport::resolve())
  *   F. HotspotSupport::walkJavaStack()'s AsyncSampleMutex release on a
  *      recovered fault
+ *   G. HotspotSupport::walkJavaStack()'s ucontext restore on a recovered
+ *      fault
  */
 
 #include <gtest/gtest.h>
@@ -40,6 +42,7 @@
 #include "jvmThread.h"
 #include "safeAccess.h"
 #include "os.h"
+#include "stackFrame.h"
 
 #ifdef __linux__
 
@@ -574,6 +577,120 @@ TEST_F(SafeFetch64TocTouGuardTest, ZeroReturnMeansGiveUp) {
     EXPECT_EQ(nullptr, klass);
 
     munmap(page, 4096);
+}
+
+// ---------------------------------------------------------------------------
+// G. HotspotSupport::walkJavaStack()'s ucontext restore on a recovered fault
+//
+// getJavaTraceAsync() mutates the real signal ucontext's pc/sp/fp in place --
+// StackFrame::pc()/sp()/fp() are references straight into uc_mcontext -- while
+// probing AsyncGetCallTrace (e.g. the PROBE_SP retry loop's `frame.sp() +=
+// sizeof(void*)`, or unwindStub()/unwindCompiled() writing pc()/sp()/fp() by
+// reference), and restores them itself on every normal-exit path. But a
+// SIGSEGV that strikes mid-mutation is caught by checkFault(), which
+// siglongjmp's straight past those restores to walkJavaStack's own
+// sigsetjmp. Since this ucontext is the exact one the kernel uses to resume
+// the sampled thread when the signal handler returns, walkJavaStack snapshots
+// it before installing its jmp ctx and restores it again in the recovery
+// branch -- otherwise a fault mid-walk would leave the sampled thread's real
+// register state corrupted for sigreturn.
+//
+// This gtest binary has no live JVM attached, so walkJavaStack() and
+// getJavaTraceAsync() can't be invoked directly (they assert VM::isHotspot()
+// and dereference VMThread state). This test replicates walkJavaStack's exact
+// save/install/mutate/recover protocol against a real ucontext_t obtained via
+// getcontext() -- no JVM needed -- to lock down the fix's contract: whatever
+// is left in the ucontext at the moment of a recovered fault must be exactly
+// what was there before the protected region began.
+// ---------------------------------------------------------------------------
+
+class WalkJavaStackUcontextRestoreTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        ProfiledThread::initCurrentThread();
+        _pt = ProfiledThread::current();
+        ASSERT_NE(nullptr, _pt);
+        ASSERT_EQ(0, getcontext(&_ctx));
+    }
+
+    void TearDown() override {
+        ProfiledThread::release();
+    }
+
+    ProfiledThread* _pt = nullptr;
+    ucontext_t _ctx;
+};
+
+// Mirrors walkJavaStack(): snapshot pc/sp/fp, install the jmp ctx, mutate the
+// ucontext mid-"walk" the way getJavaTraceAsync does, then take a fault before
+// it gets a chance to restore. The recovery branch's frame.restore() must undo
+// the mutation -- if that call were ever dropped (the bug this fixes), the
+// EXPECT_EQ calls below would see the corrupted values instead.
+TEST_F(WalkJavaStackUcontextRestoreTest, FaultMidMutationRestoresOriginalRegisters) {
+    StackFrame frame(&_ctx);
+    uintptr_t saved_pc = frame.pc();
+    uintptr_t saved_sp = frame.sp();
+    uintptr_t saved_fp = frame.fp();
+
+    sigjmp_buf crash_protection_ctx;
+    JmpCtxScope jmp_scope(_pt);
+    int recovered = 0;
+
+    if (sigsetjmp(crash_protection_ctx, 1) != 0) {
+        recovered++;
+        jmp_scope.restore();
+        // The fix under test.
+        frame.restore(saved_pc, saved_sp, saved_fp);
+    } else {
+        jmp_scope.install(&crash_protection_ctx);
+
+        // Simulate getJavaTraceAsync() mutating the real ucontext mid-walk
+        // (PROBE_SP loop / unwindStub / unwindCompiled all write pc()/sp()/
+        // fp() directly).
+        frame.sp() += sizeof(void*);
+        frame.fp() = saved_sp;
+        frame.pc() = saved_pc + 0x1234;
+
+        // A fault strikes before getJavaTraceAsync reaches its own restore.
+        // Simulate checkFault(): siglongjmp through whatever is installed.
+        siglongjmp(*_pt->getJmpCtx(), 1);
+        FAIL() << "unreachable: siglongjmp does not return";
+    }
+
+    EXPECT_EQ(1, recovered);
+    EXPECT_EQ(saved_pc, frame.pc());
+    EXPECT_EQ(saved_sp, frame.sp());
+    EXPECT_EQ(saved_fp, frame.fp());
+    EXPECT_FALSE(_pt->isProtected());
+}
+
+// walkJavaStack guards the restore with `if (ucontext != NULL)`, since
+// ucontext can legitimately be null (e.g. malloc/socket hooks sampled outside
+// any signal context). The recovery branch must not dereference a null
+// StackFrame in that case.
+TEST_F(WalkJavaStackUcontextRestoreTest, NullUcontextSkipsRestoreWithoutCrashing) {
+    void* ucontext = nullptr;
+    StackFrame frame(ucontext);
+    uintptr_t saved_pc = 0, saved_sp = 0, saved_fp = 0;
+
+    sigjmp_buf crash_protection_ctx;
+    JmpCtxScope jmp_scope(_pt);
+    int recovered = 0;
+
+    if (sigsetjmp(crash_protection_ctx, 1) != 0) {
+        recovered++;
+        jmp_scope.restore();
+        if (ucontext != nullptr) {
+            frame.restore(saved_pc, saved_sp, saved_fp);
+        }
+    } else {
+        jmp_scope.install(&crash_protection_ctx);
+        siglongjmp(*_pt->getJmpCtx(), 1);
+        FAIL() << "unreachable: siglongjmp does not return";
+    }
+
+    EXPECT_EQ(1, recovered);
+    EXPECT_FALSE(_pt->isProtected());
 }
 
 #endif  // __linux__
