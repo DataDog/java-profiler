@@ -80,16 +80,37 @@ a no-APM baseline of 1514 MB peak RSS, the **tracer accounted for ~136 MB and th
 profiler for ~104 MB**. So the profiler's share of the headline number was never 250 —
 it was around 104 MB.
 
-This document measures 59–74 MiB (≈62–78 MB) for that same share. The remaining
-difference is the estimator, not the profiler: **peak RSS permanently latches
-transients** — JIT compiler arenas, GC bursts — that a plateau measurement excludes,
-and RSS counts file-backed pages that anonymous memory does not.
+This document measures 59–74 MiB (≈62–78 MB) for that same share. Three things
+plausibly account for the remaining difference, and they are **not equally well
+established** — which matters, because the temptation is to read the gap as the
+profiler having got cheaper.
 
-> **Nothing got cheaper.** No profiler code changed between those measurements. The
-> number became *narrower in scope* (the profiler alone, not all of APM) and *more
-> precise* (a steady-state measurement rather than a high-water mark). If you need the
-> number a customer would experience for enabling APM as a whole, the overview figure
-> is still the right one to quote.
+**1. The older runs never reached steady state.** *Verified.* They were **90 seconds
+long**, with NMT captured about 40 s in. This investigation established that anonymous
+memory does not plateau until **t ≈ 180 s**. A 90 s run therefore ends before memory
+has settled — and `memory=` reports the *maximum* over that window, so it captures the
+peak of the startup ramp rather than the level the application actually runs at.
+Estimator choice alone moves the answer by up to 20 MiB when sampling mid-ramp.
+
+**2. The profiler may genuinely have improved in the interval.** *Suspected, not
+proven.* Real work landed on the profiler between the two measurements and some of it
+plausibly reduced footprint. Nothing in this investigation isolates that, so it cannot
+be claimed — but it cannot be ruled out either, and an earlier draft of this document
+wrongly asserted that nothing had changed.
+
+**3. Scope and method.** Profiler-only rather than tracer-plus-profiler; anonymous
+memory rather than total RSS, which also counts file-backed pages; and a considerably
+more precise attribution of what belongs to whom.
+
+> **How to settle (2), if it matters.** Run the *current* build under the *old*
+> methodology — 90 s, peak RSS, no-APM baseline — and see whether the profiler's share
+> still comes out near 104 MB. If it does, the whole gap is measurement. If it comes
+> out lower, the difference is a real improvement and can be claimed as one. A couple
+> of hours of machine time; nobody has done it.
+
+What can be said without qualification: the two figures are **answers to different
+questions**, and the newer one is not a replacement. For "what does enabling APM cost
+a customer", the overview figure remains the one to quote.
 
 ## The approach
 
