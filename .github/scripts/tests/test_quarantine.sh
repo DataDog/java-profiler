@@ -119,11 +119,11 @@ pass "the committed quarantine list is valid"
 
 echo "== quarantine.py match =="
 
-write_list "$LIST" "$(entry a.B.c PROF-1 "$(day_offset 30)" '*arm64*')"
+write_list "$LIST" "$(entry a.B.c PROF-1 "$(day_offset 30)" '*aarch64*')"
 
-result=$(printf 'a.B.c\n' | python3 "$SCRIPTS/quarantine.py" --list "$LIST" match --cell "glibc-17-debug-arm64")
+result=$(printf 'a.B.c\n' | python3 "$SCRIPTS/quarantine.py" --list "$LIST" match --cell "glibc-17-debug-aarch64")
 echo "$result" | grep -q '"quarantined": \["a.B.c"\]' \
-  || fail "expected a.B.c quarantined on an arm64 cell, got: $result"
+  || fail "expected a.B.c quarantined on an aarch64 cell, got: $result"
 pass "a cell glob matches the cells it names"
 
 result=$(printf 'a.B.c\n' | python3 "$SCRIPTS/quarantine.py" --list "$LIST" match --cell "glibc-17-debug-amd64")
@@ -218,12 +218,129 @@ output=$(cd "$CASE" && "$SCRIPTS/run_tests_with_retry.sh" --list list.txt "glibc
 rc=$?
 set -e
 [ "$rc" -ne 0 ] || fail "a malformed list must not yield a green job (got exit $rc)"
-pass "a list that cannot be read fails the job instead of passing silently"
-# A malformed line is skipped rather than fatal, so the flake is still caught;
-# either way the job must be red.
-echo "$output" | grep -q "Flaky test\|Could not classify" \
-  || fail "expected the flake or the classifier failure to be reported, got: $output"
+pass "a list with a malformed line still fails the job"
+# A malformed line is skipped rather than fatal, so here the flake is what
+# gates. The classifier-failure path is a separate case below.
+echo "$output" | grep -q "Flaky test" \
+  || fail "expected the flake to be reported, got: $output"
 pass "the reason for the red is reported"
+
+# The guard above only bites when flake_report.py itself exits non-zero, which
+# a merely malformed line does not do. Point --list at a directory so the
+# classifier genuinely fails: the suite passes on its retry, so without the
+# REPORT_STATUS guard this job would be green.
+CASE="$TEMP_DIR/case-unreadable-list"
+make_flaky_suite "$CASE"
+mkdir -p "$CASE/list.txt"
+set +e
+output=$(cd "$CASE" && "$SCRIPTS/run_tests_with_retry.sh" --list list.txt "glibc-17-debug-amd64" -- ./suite.sh 2>&1)
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "a classifier that could not run must not yield a green job (got exit $rc)"
+echo "$output" | grep -q "Could not classify results for" \
+  || fail "expected the classifier failure to be named, got: $output"
+pass "a classifier that cannot run fails the job rather than passing unexamined"
+
+# Quarantine excuses the tests it names, never the build around them. A suite
+# whose only named failure is quarantined but which also failed a non-test
+# Gradle task must stay red.
+CASE="$TEMP_DIR/case-quarantined-plus-build-failure"
+mkdir -p "$CASE"
+cat > "$CASE/suite.sh" <<EOS
+#!/usr/bin/env bash
+OUT=ddprof-test/build/test-results/testDebug
+mkdir -p "\$OUT"
+$(declare -f write_failure_xml)
+write_failure_xml "\$OUT" "com.dd.WobblyTest" "sometimesFails" "got 2 samples, wanted 50"
+echo "> Task :ddprof-lib:verifyNative FAILED"
+echo "Execution failed for task ':ddprof-lib:verifyNative'."
+exit 1
+EOS
+chmod +x "$CASE/suite.sh"
+write_list "$CASE/list.txt" "$(entry 'com.dd.WobblyTest.*' PROF-1 "$(day_offset 30)")"
+set +e
+output=$(cd "$CASE" && MAX_ATTEMPTS=1 "$SCRIPTS/run_tests_with_retry.sh" --list list.txt "glibc-17-debug-amd64" -- ./suite.sh 2>&1)
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "a non-test task failure must not be excused by quarantine (got exit $rc)"
+echo "$output" | grep -q "verifyNative" \
+  || fail "expected the offending task to be named, got: $output"
+pass "quarantine excuses the tests it names, not a build failure alongside them"
+
+# A test missing from the retry never re-ran, so it is not evidence of a flake.
+CASE="$TEMP_DIR/case-absent-is-not-passed"
+mkdir -p "$CASE/flake-evidence/attempt-1" "$CASE/flake-evidence/attempt-2"
+write_failure_xml "$CASE/flake-evidence/attempt-1" "com.dd.GoneTest" "vanishes" "boom"
+write_pass_xml "$CASE/flake-evidence/attempt-2" "com.dd.OtherTest" "unrelated"
+write_list "$CASE/list.txt"
+python3 "$SCRIPTS/flake_report.py" --list "$CASE/list.txt" report \
+  --cell "glibc-17-debug-amd64" --evidence-dir "$CASE/flake-evidence" \
+  --final-status fail --out "$CASE/out.json" >/dev/null 2>&1
+python3 -c "
+import json,sys
+d = json.load(open(sys.argv[1]))
+assert not d['flaky'], 'a test absent from the retry must not be called flaky: %r' % d['flaky']
+assert len(d['persistent']) == 1, d
+" "$CASE/out.json" || fail "absence from a later attempt was treated as a pass"
+pass "a test missing from the retry is not mistaken for a flake"
+
+# A stray attempt-* directory must not abort classification.
+CASE="$TEMP_DIR/case-stray-attempt"
+mkdir -p "$CASE/flake-evidence/attempt-tmp"
+write_failure_xml "$CASE/flake-evidence/attempt-1" "com.dd.WobblyTest" "sometimesFails" "boom"
+write_list "$CASE/list.txt"
+python3 "$SCRIPTS/flake_report.py" --list "$CASE/list.txt" report \
+  --cell "glibc-17-debug-amd64" --evidence-dir "$CASE/flake-evidence" \
+  --final-status fail --out "$CASE/out.json" >/dev/null 2>&1 \
+  || fail "a non-numeric attempt directory must be ignored, not fatal"
+pass "a stray attempt directory is ignored"
+
+echo "== validate rejects unmatchable cell globs =="
+
+write_list "$LIST" "$(entry a.B.c PROF-1 "$(day_offset 30)" '*arm64*')"
+if python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate >/dev/null 2>&1; then
+  fail "a cell glob naming an architecture CI never builds should be rejected"
+fi
+pass "an unmatchable cell glob is rejected"
+
+write_list "$LIST" "$(entry a.B.c PROF-1 "$(day_offset 30)" '*aarch64*')"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate >/dev/null \
+  || fail "a real cell glob should be accepted"
+pass "a real cell glob is accepted"
+
+if python3 "$SCRIPTS/quarantine.py" --list "$TEMP_DIR/does-not-exist.txt" validate >/dev/null 2>&1; then
+  fail "validating a missing list should fail rather than report success"
+fi
+pass "a missing list fails validation instead of reporting zero problems"
+
+# Two entries for one test are legitimate when they cover different cells.
+write_list "$LIST" \
+  "$(entry a.B.c PROF-1 "$(day_offset 30)" '*aarch64*')" \
+  "$(entry a.B.c PROF-2 "$(day_offset 30)" '*amd64*')"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate >/dev/null \
+  || fail "the same test on disjoint cells should be allowed"
+pass "one test may have separate entries for separate cells"
+
+echo "== flake_summary.py renders =="
+
+CASE="$TEMP_DIR/case-summary"
+mkdir -p "$CASE/outcomes"
+cat > "$CASE/outcomes/glibc-17-debug-aarch64.json" <<'EOS'
+{"cell": "glibc-17-debug-aarch64", "attempts": 2, "status": "fail",
+ "flaky": [{"test": "com.dd.WobblyTest.sometimesFails", "failed_attempts": [1],
+            "passed_attempts": [2], "message": "got 2 | wanted 50",
+            "flaky": true, "quarantined": false, "ticket": null}],
+ "persistent": [], "quarantined": [], "gating_count": 1, "failure_count": 1}
+EOS
+summary=$(python3 "$SCRIPTS/flake_summary.py" --dir "$CASE/outcomes") \
+  || fail "flake_summary.py must render without error"
+echo "$summary" | grep -q "sometimesFails" \
+  || fail "expected the flaky test in the summary, got: $summary"
+echo "$summary" | grep -q "PROF-XXXXX" \
+  || fail "expected a paste-ready quarantine proposal, got: $summary"
+echo "$summary" | grep -q 'got 2 \\| wanted 50' \
+  || fail "expected the pipe in the message to be escaped, got: $summary"
+pass "the PR summary renders the flaky table and a proposal"
 
 echo
 echo "All $TESTS quarantine tests passed."

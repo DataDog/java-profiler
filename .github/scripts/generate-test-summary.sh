@@ -195,11 +195,23 @@ for key in "${failed_jobs[@]}"; do
 
     failures=""
     while IFS= read -r report; do
+        # Flaky as well as persistent: a job that went red purely because an
+        # un-quarantined test failed once and passed on the retry is exactly
+        # the case this machinery creates, and it would otherwise render as
+        # "no detailed failure information".
+        if ! rows=$(jq -r '(.persistent + .flaky)[] | [.test, .message] | @tsv' "$report" 2>&1); then
+            log "WARNING: could not parse outcome report $report: $rows"
+            failures+="| _unreadable outcome report_ | \`$(basename "$report")\` could not be parsed; see the job log |"$'\n'
+            continue
+        fi
         while IFS=$'\t' read -r test_id message; do
             [[ -n "$test_id" ]] || continue
             short_name="${test_id#"${test_id%.*.*}."}"
+            # A pipe in a failure message would split the row into extra
+            # columns and break the table, the way flake_summary.py escapes it.
+            message="${message//|/\\|}"
             failures+="| \`${short_name}\` | ${message:-Test failed} |"$'\n'
-        done < <(jq -r '.persistent[] | [.test, .message] | @tsv' "$report" 2>/dev/null || true)
+        done <<< "$rows"
     done < <(find "$OUTCOME_DIR" -name "${cell}.json" 2>/dev/null)
 
     failure_details["$key"]="$failures"
@@ -270,7 +282,8 @@ log "Generating markdown summary..."
     # Flaky and failing tests, grouped by test rather than by cell. One flaky
     # test reddens a dozen cells and so does a dozen unrelated breakages; only
     # grouping by test tells those apart.
-    python3 "$(dirname "$0")/flake_summary.py" --dir "$OUTCOME_DIR" || true
+    python3 "$(dirname "$0")/flake_summary.py" --dir "$OUTCOME_DIR" \
+    || echo "_Could not render the flaky-test summary; see the job log._"
 
     # Failed tests details
     if ((failed_count > 0)); then

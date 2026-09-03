@@ -14,7 +14,7 @@
 #              quarantined is a decision somebody renews rather than the
 #              default. 90 days is the usual span.
 #   cells      Comma-separated globs against the cell name
-#              (<libc>-<jdk>-<config>-<arch>), e.g. "*arm64*" or
+#              (<libc>-<jdk>-<config>-<arch>), e.g. "*aarch64*" or
 #              "musl-*,*-asan-*". Leave as "-" to quarantine everywhere; prefer
 #              narrowing it, so the same test breaking elsewhere still gates.
 #   reason     Free text — what is unreliable and how often. Last field, so it
@@ -32,4 +32,4 @@
 # ticket and the judgement are still yours.
 #
 # Example (delete when the first real entry lands):
-# com.datadoghq.profiler.cpu.CpuSamplingTest.testSampling | PROF-12345 | 2026-09-02 | 2026-12-02 | *arm64* | Under-samples on emulated arm64; 2 of 40 runs
+# com.datadoghq.profiler.cpu.CpuSamplingTest.testSampling | PROF-12345 | 2026-09-02 | 2026-12-02 | *aarch64* | Under-samples on emulated aarch64; 2 of 40 runs

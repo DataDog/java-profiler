@@ -79,11 +79,11 @@ def render_table(grouped, cell_limit=4, row_limit=25, ticket_column=False):
 def cells_glob(cells):
     """A glob covering these cells, when they share an obvious axis.
 
-    Suggesting `*arm64*` for something that only ever failed on arm64 is more
+    Suggesting `*aarch64*` for something that only ever failed on aarch64 is more
     useful than listing four cell names, and narrower than quarantining
     everywhere -- which would hide the same test breaking on x64 tomorrow.
     """
-    for axis in ("arm64", "aarch64", "musl", "asan", "tsan"):
+    for axis in ("aarch64", "amd64", "musl", "asan", "tsan"):
         if all(axis in c for c in cells):
             return ["*{}*".format(axis)]
     return None

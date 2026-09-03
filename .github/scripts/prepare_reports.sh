@@ -12,8 +12,9 @@ cp ddprof-test/javacore*.txt test-reports/ || true
 cp ddprof-test/build/hs_err* test-reports/ || true
 cp -r ddprof-lib/build/tmp test-reports/native_build || true
 cp -r ddprof-test/build/reports/tests test-reports/tests || true
-# The JUnit XML, not just the rendered HTML: it is what names the failed tests
-# for the PR summary, and what flake_report.py compares between retry attempts.
+# The JUnit XML of the final attempt, not just the rendered HTML, for reading
+# by hand. Each attempt starts by deleting this directory, so the per-attempt
+# evidence flake_report.py compares lives in flake-evidence/ (copied below).
 cp -r ddprof-test/build/test-results test-reports/test-results || true
 cp -r flake-evidence test-reports/flake-evidence || true
 cp build/logs/gdb-watchdog.log test-reports/ || true
