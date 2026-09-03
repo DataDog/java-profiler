@@ -22,12 +22,26 @@
 #include "threadLocalData.inline.h"
 
 namespace {
+// One pthread key for the whole binary, created on first use and never
+// deleted -- mirroring the ThreadLocal instances in threadLocal_ut.cpp,
+// which are kept alive for the binary's lifetime rather than
+// created/deleted per test to avoid exhausting pthread keys. Sharing the key
+// across tests is safe here: each test still drives it with its own unique
+// marker (see nextUniqueMarker()) to verify the scan below finds it.
+pthread_key_t sharedTestKey() {
+    static pthread_key_t key = [] {
+        pthread_key_t k = 0;
+        if (pthread_key_create(&k, nullptr) != 0) {
+            ADD_FAILURE() << "pthread_key_create failed";
+        }
+        return k;
+    }();
+    return key;
+}
+
 // A marker value guaranteed unique across the whole test binary run, so the
-// initializeKey() scan below can never land on a stale key from an earlier
-// test. Using `this` here would not be safe: successive TickInitWindowTest
-// instances are allocated and freed by gtest between tests, so the allocator
-// commonly hands the same address back out, and an earlier test's key (never
-// deleted -- see TearDown) would still hold that now-reused address.
+// initializeKey() scan below can never land on a stale value from an
+// earlier test that happens to still be sitting in sharedTestKey().
 void* nextUniqueMarker() {
     static std::atomic<uintptr_t> counter{1};
     return reinterpret_cast<void*>(counter.fetch_add(1));
@@ -48,7 +62,7 @@ protected:
         _pt = ProfiledThread::current();
         ASSERT_NE(nullptr, _pt);
 
-        ASSERT_EQ(0, pthread_key_create(&_key, nullptr));
+        _key = sharedTestKey();
         _marker = nextUniqueMarker();
         ASSERT_EQ(0, pthread_setspecific(_key, _marker));
         ASSERT_TRUE(JVMThreadTestAccessor::initializeKey(_marker));
@@ -60,11 +74,10 @@ protected:
     }
 
     void TearDown() override {
-        // Deliberately not calling pthread_key_delete(_key): JVMThread::_jvm_thread
-        // is a static that keeps using whatever key the next test's SetUp scans
-        // into it, mirroring the real (JVM-owned, never-deleted) key it normally
-        // reflects. Deleting it here would leave that static holding a dangling
-        // key for the brief window before the next SetUp re-scans it.
+        // _key is the binary-lifetime sharedTestKey(), not deleted here (see
+        // its comment). JVMThread::_jvm_thread also keeps using whatever key
+        // was last scanned into it, which is fine since that's always this
+        // same shared key.
         ProfiledThread::release();
     }
 
