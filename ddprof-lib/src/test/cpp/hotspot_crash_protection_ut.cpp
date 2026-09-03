@@ -598,10 +598,10 @@ TEST_F(SafeFetch64TocTouGuardTest, ZeroReturnMeansGiveUp) {
 // This gtest binary has no live JVM attached, so walkJavaStack() and
 // getJavaTraceAsync() can't be invoked directly (they assert VM::isHotspot()
 // and dereference VMThread state). This test replicates walkJavaStack's exact
-// save/install/mutate/recover protocol against a real ucontext_t obtained via
-// getcontext() -- no JVM needed -- to lock down the fix's contract: whatever
-// is left in the ucontext at the moment of a recovered fault must be exactly
-// what was there before the protected region began.
+// save/install/mutate/recover protocol against a ucontext_t to lock down the
+// fix's contract: whatever is left in the ucontext at the moment of a
+// recovered fault must be exactly what was there before the protected region
+// began.
 // ---------------------------------------------------------------------------
 
 class WalkJavaStackUcontextRestoreTest : public ::testing::Test {
@@ -610,7 +610,11 @@ protected:
         ProfiledThread::initCurrentThread();
         _pt = ProfiledThread::current();
         ASSERT_NE(nullptr, _pt);
-        ASSERT_EQ(0, getcontext(&_ctx));
+        // Zero-initialized rather than populated via getcontext() -- musl
+        // doesn't provide getcontext(), and this test only round-trips
+        // arbitrary values through StackFrame::pc()/sp()/fp() (references
+        // into uc_mcontext), so a real, live context is unnecessary here.
+        _ctx = ucontext_t{};
     }
 
     void TearDown() override {
