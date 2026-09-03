@@ -40,7 +40,11 @@ protected:
     }
 
     void TearDown() override {
-        pthread_key_delete(_key);
+        // Deliberately not calling pthread_key_delete(_key): JVMThread::_jvm_thread
+        // is a static that keeps using whatever key the next test's SetUp scans
+        // into it, mirroring the real (JVM-owned, never-deleted) key it normally
+        // reflects. Deleting it here would leave that static holding a dangling
+        // key for the brief window before the next SetUp re-scans it.
         ProfiledThread::release();
     }
 
