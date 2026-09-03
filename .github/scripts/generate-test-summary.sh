@@ -91,18 +91,26 @@ while IFS= read -r job; do
     started_at=$(echo "$job" | jq -r '.started_at')
     completed_at=$(echo "$job" | jq -r '.completed_at')
 
-    # Only process test jobs (match pattern: test-linux-{libc}-{arch} ({java}, {config}))
+    # Only process test jobs (match pattern:
+    # test-linux-{libc}-{arch} ({java}, {config}, {slow|regular}))
     # Note: regex stored in variable to avoid bash parsing issues with ) character
     # Note: No ^ anchor because reusable workflow jobs are prefixed with caller job name
-    #       e.g., "test-matrix / test-linux-glibc-amd64 (8, debug)"
-    test_job_pattern='test-linux-([a-z]+)-([a-z0-9]+) \(([^,]+), ([^)]+)\)$'
+    #       e.g., "test-matrix / test-linux-glibc-amd64 (8, debug, regular)"
+    # The trailing slow/regular comes from a workflow input, not a matrix axis,
+    # so it has to be captured here too -- test_workflow.yml is called twice
+    # with overlapping configs in the same run (nightly, release-validated),
+    # and without it two different jobs collapse onto the same cell.
+    test_job_pattern='test-linux-([a-z]+)-([a-z0-9]+) \(([^,]+), ([^,]+), (slow|regular)\)$'
     if [[ "$name" =~ $test_job_pattern ]]; then
         libc="${BASH_REMATCH[1]}"
         arch="${BASH_REMATCH[2]}"
         java_version="${BASH_REMATCH[3]}"
         config="${BASH_REMATCH[4]}"
+        suite="${BASH_REMATCH[5]}"
+        suite_suffix=""
+        [[ "$suite" == "slow" ]] && suite_suffix="-slow"
 
-        platform="${libc}-${arch}/${config}"
+        platform="${libc}-${arch}/${config}${suite_suffix}"
 
         # Calculate duration
         if [[ -n "$started_at" && "$started_at" != "null" && -n "$completed_at" && "$completed_at" != "null" ]]; then
@@ -119,7 +127,7 @@ while IFS= read -r job; do
         job_url["$key"]="$html_url"
         job_duration["$key"]="$duration"
         # Matches the cell label run_tests_with_retry.sh names its report after.
-        job_cell["$key"]="${libc}-${java_version}-${config}-${arch}"
+        job_cell["$key"]="${libc}-${java_version}-${config}-${arch}${suite_suffix}"
 
         # Track failed jobs
         if [[ "$conclusion" == "failure" ]]; then

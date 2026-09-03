@@ -16,6 +16,7 @@ import datetime
 import glob
 import json
 import os
+import re
 import sys
 from collections import OrderedDict
 
@@ -24,18 +25,47 @@ import quarantine  # noqa: E402
 
 DEFAULT_REVIEW_DAYS = quarantine.DEFAULT_REVIEW_DAYS
 
+# Test ids and failure messages come from the PR's own test code, not from
+# anything CI controls, and this comment is rendered as markdown and offered
+# up as a ready-to-paste quarantine entry. Neither may carry markdown, HTML, or
+# a fence-breaking ``` sequence into that render.
+_SAFE_TEST_ID_RE = re.compile(r"[^A-Za-z0-9_.$-]")
+
+
+def sanitize_test_id(test_id):
+    return _SAFE_TEST_ID_RE.sub("_", test_id)
+
+
+def sanitize_inline(text):
+    """Strip newlines and backticks so text can't break a table row, a code
+    span, or the ``` fence around the quarantine proposals."""
+    return text.replace("`", "'").replace("\n", " ").replace("\r", " ")
+
 
 def load_reports(root_dir):
+    """(reports, files found, files skipped).
+
+    Skipped covers anything that looked like a report but wasn't usable: JSON
+    that failed to parse, or parsed into something that isn't a report at all.
+    Distinguishing "found nothing" from "found reports, all clean" from "found
+    reports, some unreadable" is the point -- a total artifact-download failure
+    must not render the same as a spotless run.
+    """
     reports = []
-    for path in sorted(glob.glob(os.path.join(root_dir, "**", "*.json"), recursive=True)):
+    skipped = 0
+    paths = sorted(glob.glob(os.path.join(root_dir, "**", "*.json"), recursive=True))
+    for path in paths:
         try:
             with open(path) as handle:
                 data = json.load(handle)
         except (OSError, ValueError):
+            skipped += 1
             continue
         if isinstance(data, dict) and "cell" in data:
             reports.append(data)
-    return reports
+        else:
+            skipped += 1
+    return reports, len(paths), skipped
 
 
 def group_by_test(reports, key):
@@ -67,9 +97,11 @@ def render_table(grouped, cell_limit=4, row_limit=25, ticket_column=False):
         shown = ", ".join("`{}`".format(c) for c in cells[:cell_limit])
         if len(cells) > cell_limit:
             shown += " _+{} more_".format(len(cells) - cell_limit)
-        message = (info["message"] or "").replace("|", "\\|")[:120]
+        message = sanitize_inline((info["message"] or "").replace("|", "\\|"))[:120]
+        message_cell = "`{}`".format(message) if message else ""
         ticket = "{} | ".format(info.get("ticket") or "—") if ticket_column else ""
-        lines.append("| `{}` | {} | {}{} |".format(short_name(test_id), shown, ticket, message))
+        lines.append("| `{}` | {} | {}{} |".format(
+            sanitize_test_id(short_name(test_id)), shown, ticket, message_cell))
     if len(grouped) > row_limit:
         lines.append("")
         lines.append("_...and {} more. See the job logs._".format(len(grouped) - row_limit))
@@ -112,12 +144,12 @@ def render_proposals(flaky):
         "# test | ticket | added | review_by | cells | reason",
     ]
     for test_id, info in flaky.items():
-        reason = "{} (seen in: {})".format(
+        reason = sanitize_inline("{} (seen in: {})".format(
             info["message"] or "intermittent failure",
             ", ".join(sorted(set(info["cells"]))[:4]),
-        ).replace("|", "/")
+        )).replace("|", "/")
         out.append(quarantine.format_entry(
-            test_id,
+            sanitize_test_id(test_id),
             "PROF-XXXXX",
             today.isoformat(),
             review_by,
@@ -136,8 +168,18 @@ def main():
     parser.add_argument("--dir", required=True, help="directory of downloaded ci-outcome artifacts")
     args = parser.parse_args()
 
-    reports = load_reports(args.dir)
+    reports, files_found, files_skipped = load_reports(args.dir)
+    if not files_found:
+        # Distinct from "reports loaded, all clean": this is what a total
+        # ci-outcome artifact-download failure looks like, and it must not
+        # render as a silent, spotless run.
+        sys.stdout.write("_No CI outcome reports were found for this run._\n")
+        return 0
     if not reports:
+        if files_skipped:
+            sys.stdout.write(
+                "_{} CI outcome report(s) were found but could not be parsed._\n"
+                .format(files_skipped))
         return 0
 
     flaky = group_by_test(reports, "flaky")
@@ -145,6 +187,10 @@ def main():
     quarantined = group_by_test(reports, "quarantined")
 
     out = []
+    if files_skipped:
+        out.append("_{} of {} CI outcome report(s) could not be parsed and were skipped._".format(
+            files_skipped, files_found))
+        out.append("")
     if flaky:
         out.append("### :warning: Flaky tests — failed, then passed on retry")
         out.append("")

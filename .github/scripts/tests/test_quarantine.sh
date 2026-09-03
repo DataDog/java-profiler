@@ -160,6 +160,35 @@ EOS
   chmod +x "$dir/suite.sh"
 }
 
+# A clean run on the first attempt must exit 0 and report nothing gating.
+# Every other case in this section starts from a failure; without this one, a
+# regression that made a clean run report a gating failure would leave every
+# other assertion here passing.
+CASE="$TEMP_DIR/case-green"
+mkdir -p "$CASE"
+cat > "$CASE/suite.sh" <<EOS
+#!/usr/bin/env bash
+OUT=ddprof-test/build/test-results/testDebug
+mkdir -p "\$OUT"
+$(declare -f write_pass_xml)
+write_pass_xml "\$OUT" "com.dd.SteadyTest" "alwaysPasses"
+exit 0
+EOS
+chmod +x "$CASE/suite.sh"
+write_list "$CASE/list.txt"
+set +e
+(cd "$CASE" && "$SCRIPTS/run_tests_with_retry.sh" --list list.txt "glibc-17-debug-amd64" -- ./suite.sh >/dev/null 2>&1)
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "a suite that passes on the first attempt must exit 0 (got exit $rc)"
+python3 -c "
+import json,sys
+d = json.load(open(sys.argv[1]))
+assert d['gating_count'] == 0 and d['failure_count'] == 0, d
+assert not d['flaky'] and not d['persistent'], d
+" "$CASE/ci-outcome/glibc-17-debug-amd64.json" || fail "a clean run was not reported as clean"
+pass "a suite that passes on the first attempt is green and reports no failures"
+
 # Not quarantined: passing on the retry must not rescue the job.
 CASE="$TEMP_DIR/case-gating"
 make_flaky_suite "$CASE"
@@ -267,6 +296,37 @@ echo "$output" | grep -q "verifyNative" \
   || fail "expected the offending task to be named, got: $output"
 pass "quarantine excuses the tests it names, not a build failure alongside them"
 
+# Regression: a failure aggregated from an EARLIER attempt must never rescue a
+# FINAL attempt that failed for a reason naming no test at all (here: nothing
+# that prints "Execution failed for task", so the non_test_task_failures grep
+# alone would miss it). Attempt 1 fails a named, quarantined test; attempt 2
+# aborts before writing any JUnit XML, the way a docker or JVM-init failure
+# would. The job must stay red even though every named failure is quarantined.
+CASE="$TEMP_DIR/case-final-attempt-no-tests"
+mkdir -p "$CASE"
+cat > "$CASE/suite.sh" <<EOS
+#!/usr/bin/env bash
+n=\$(( \$(cat .n 2>/dev/null || echo 0) + 1 )); echo \$n > .n
+OUT=ddprof-test/build/test-results/testDebug
+mkdir -p "\$OUT"
+if [ "\$n" -eq 1 ]; then
+$(declare -f write_failure_xml)
+  write_failure_xml "\$OUT" "com.dd.WobblyTest" "sometimesFails" "got 2 samples, wanted 50"
+  exit 1
+fi
+rm -rf "\$OUT"
+echo "docker: Error response from daemon: OCI runtime create failed"
+exit 1
+EOS
+chmod +x "$CASE/suite.sh"
+write_list "$CASE/list.txt" "$(entry com.dd.WobblyTest.sometimesFails PROF-1 "$(day_offset 30)")"
+set +e
+output=$(cd "$CASE" && "$SCRIPTS/run_tests_with_retry.sh" --list list.txt "glibc-17-debug-amd64" -- ./suite.sh 2>&1)
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "a final attempt that named no test must not be excused by an earlier attempt's quarantined failure (got exit $rc)"
+pass "a final attempt naming no test is never excused by an earlier attempt's quarantine hit"
+
 # A test missing from the retry never re-ran, so it is not evidence of a flake.
 CASE="$TEMP_DIR/case-absent-is-not-passed"
 mkdir -p "$CASE/flake-evidence/attempt-1" "$CASE/flake-evidence/attempt-2"
@@ -275,7 +335,7 @@ write_pass_xml "$CASE/flake-evidence/attempt-2" "com.dd.OtherTest" "unrelated"
 write_list "$CASE/list.txt"
 python3 "$SCRIPTS/flake_report.py" --list "$CASE/list.txt" report \
   --cell "glibc-17-debug-amd64" --evidence-dir "$CASE/flake-evidence" \
-  --final-status fail --out "$CASE/out.json" >/dev/null 2>&1
+  --final-attempt 2 --out "$CASE/out.json" >/dev/null 2>&1
 python3 -c "
 import json,sys
 d = json.load(open(sys.argv[1]))
@@ -284,16 +344,24 @@ assert len(d['persistent']) == 1, d
 " "$CASE/out.json" || fail "absence from a later attempt was treated as a pass"
 pass "a test missing from the retry is not mistaken for a flake"
 
-# A stray attempt-* directory must not abort classification.
+# A stray attempt-* directory must not abort classification, and attempt-1
+# must still be read as the (only, and so final) real attempt.
 CASE="$TEMP_DIR/case-stray-attempt"
 mkdir -p "$CASE/flake-evidence/attempt-tmp"
 write_failure_xml "$CASE/flake-evidence/attempt-1" "com.dd.WobblyTest" "sometimesFails" "boom"
 write_list "$CASE/list.txt"
 python3 "$SCRIPTS/flake_report.py" --list "$CASE/list.txt" report \
   --cell "glibc-17-debug-amd64" --evidence-dir "$CASE/flake-evidence" \
-  --final-status fail --out "$CASE/out.json" >/dev/null 2>&1 \
+  --final-attempt 1 --out "$CASE/out.json" >/dev/null 2>&1 \
   || fail "a non-numeric attempt directory must be ignored, not fatal"
 pass "a stray attempt directory is ignored"
+python3 -c "
+import json,sys
+d = json.load(open(sys.argv[1]))
+assert d['attempts'] == 1, d
+assert d['persistent'] and d['persistent'][0]['test'] == 'com.dd.WobblyTest.sometimesFails', d
+" "$CASE/out.json" || fail "attempt-1 was not read back despite the stray attempt-tmp"
+pass "attempt-1 is still read as evidence while the stray directory is skipped"
 
 echo "== validate rejects unmatchable cell globs =="
 

@@ -56,9 +56,19 @@ OUTCOME_FILE="ci-outcome/${CELL}.json"
 # classification entirely -- silently, since both used to discard their errors.
 make_results_readable() {
   [ -d "$RESULTS_DIR" ] || return 0
-  [ -w "$RESULTS_DIR" ] && return 0
+  # The permission problem this exists to fix is per-file (Docker writes the
+  # XML as root while the directory it lands in stays host-owned), so a
+  # directory-level writability check would miss it. Probe by ownership rather
+  # than with find's -writable, which busybox does not implement -- there the
+  # test would fail open into a silent no-op, which is the failure this whole
+  # function exists to stop. A probe that cannot decide takes ownership anyway.
+  if foreign=$(find "$RESULTS_DIR" ! -user "$(id -u)" -print 2>/dev/null | head -n 1); then
+    [ -n "$foreign" ] || { [ -w "$RESULTS_DIR" ] && [ -w "$(dirname "$RESULTS_DIR")" ] && return 0; }
+  fi
   command -v sudo >/dev/null 2>&1 || return 0
-  sudo chmod -R a+rwX "$RESULTS_DIR" 2>/dev/null \
+  # Include the parent so the pre-attempt `rm -rf "$RESULTS_DIR"` below (which
+  # needs to unlink the directory itself, not just its contents) can succeed.
+  sudo chmod -R a+rwX "$(dirname "$RESULTS_DIR")" 2>/dev/null \
     || echo "::warning::Could not take ownership of ${RESULTS_DIR}; flake evidence may be incomplete"
 }
 
@@ -78,7 +88,7 @@ snapshot() {
 # the quarantine list has any business excusing.
 TEST_TASK_PATTERN="${TEST_TASK_PATTERN:-:ddprof-test:test}"
 
-# g-0's guard: task failures the quarantine list must never wave through.
+# Task failures the quarantine list must never wave through.
 non_test_task_failures() {
   local log="$1"
   [ -f "$log" ] || return 0
@@ -98,7 +108,8 @@ ATTEMPT_LOG=""
 for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
   mkdir -p build/logs
   make_results_readable
-  rm -rf "$RESULTS_DIR"
+  rm -rf "$RESULTS_DIR" \
+    || echo "::warning::Could not clear ${RESULTS_DIR} before attempt ${attempt}; it may inherit the previous attempt's results and a flake will look persistent"
   ATTEMPT_LOG="build/logs/attempt-${attempt}.log"
 
   "$@" 2>&1 \
@@ -147,16 +158,10 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
   ./gradlew --stop 2>/dev/null || true
 done
 
-if [ "$EXIT_CODE" -eq 0 ]; then
-  FINAL_STATUS=pass
-else
-  FINAL_STATUS=fail
-fi
-
 python3 "${HERE}/flake_report.py" --list "$QUARANTINE_LIST" report \
   --cell "$CELL" \
   --evidence-dir "$EVIDENCE_DIR" \
-  --final-status "$FINAL_STATUS" \
+  --final-attempt "$attempt" \
   --out "$OUTCOME_FILE"
 REPORT_STATUS=$?
 
@@ -174,8 +179,14 @@ fi
 #                                  nobody has quarantined is still a failure;
 #                                  letting the retry excuse it is how flakes get
 #                                  tolerated for years.
-#   every failure quarantined   -> green. That is what the list is for, and the
-#                                  entry behind it carries a ticket and a date.
+#   every failure quarantined   -> green, but only when the *final* attempt is
+#                                  the one vouching for that: failures
+#                                  aggregated across every attempt can all be
+#                                  quarantined while the final attempt itself
+#                                  failed for a reason that named no test at
+#                                  all (a docker or Gradle failure, an
+#                                  OOM-killed daemon, an ASan init abort), and
+#                                  the list has no business excusing that.
 #   no test named               -> keep the command's own exit code: a compile
 #                                  error or a dead runner is nothing to do with
 #                                  quarantine.
@@ -183,33 +194,52 @@ if [ -f "$OUTCOME_FILE" ]; then
   summary=$(python3 -c "
 import json, sys
 d = json.load(open(sys.argv[1]))
-print(d['gating_count'], d['failure_count'])
+final_gating = d['final_attempt_gating_count']
+print(d['gating_count'], d['failure_count'], int(d['final_attempt_ran']),
+      final_gating if final_gating is not None else -1)
 " "$OUTCOME_FILE") || {
     echo "::error::Could not read ${OUTCOME_FILE}; failing the job rather than guessing whether its failures gate"
     exit 1
   }
-  read -r gating failures <<< "$summary"
-  case "${gating}:${failures}" in
-    *[!0-9:]*|:*|*:)
-      echo "::error::${OUTCOME_FILE} did not yield two counts (got '${summary}'); failing the job"
+  read -r gating failures final_ran final_gating <<< "$summary"
+  case "${gating}:${failures}:${final_ran}" in
+    *[!0-9:]*|:*|*:|*::*)
+      echo "::error::${OUTCOME_FILE} did not yield usable counts (got '${summary}'); failing the job"
       exit 1
+      ;;
+  esac
+  case "$final_gating" in
+    -1|*[!0-9]*)
+      [ "$final_gating" = "-1" ] || {
+        echo "::error::${OUTCOME_FILE} did not yield a usable final-attempt gating count (got '${summary}'); failing the job"
+        exit 1
+      }
       ;;
   esac
 
   if [ "$gating" -gt 0 ]; then
     EXIT_CODE=1
   elif [ "$failures" -gt 0 ]; then
-    # Quarantine excuses the tests it names. It does not excuse the build:
-    # if this same invocation also failed a compile, a native gtest or a
-    # verification task, that failure has nothing to do with the list and
-    # zeroing the exit code here would bury it.
-    other=$(non_test_task_failures "$ATTEMPT_LOG")
-    if [ -n "$other" ]; then
-      echo "::error::All ${failures} failing test(s) in ${CELL} are quarantined, but the build also failed in $(echo "$other" | tr '\n' ' ')— failing the job"
+    if [ "$final_ran" -ne 1 ] || [ "$final_gating" -ne 0 ]; then
+      # The final attempt either produced no test results of its own (a
+      # build or infrastructure failure, not something quarantine speaks to)
+      # or still has its own named failures unquarantined -- either way the
+      # list has nothing to say about why this attempt is red.
+      echo "::error::${CELL}'s final attempt did not itself pass with only quarantined failures (ran=${final_ran}, its own gating count=${final_gating}); failing the job rather than trusting failures from an earlier attempt"
       EXIT_CODE=1
     else
-      echo "::warning::All ${failures} failing test(s) in ${CELL} are quarantined; not failing the job"
-      EXIT_CODE=0
+      # Quarantine excuses the tests it names. It does not excuse the build:
+      # if this same invocation also failed a compile, a native gtest or a
+      # verification task, that failure has nothing to do with the list and
+      # zeroing the exit code here would bury it.
+      other=$(non_test_task_failures "$ATTEMPT_LOG")
+      if [ -n "$other" ]; then
+        echo "::error::All ${failures} failing test(s) in ${CELL} are quarantined, but the build also failed in $(echo "$other" | tr '\n' ' ')— failing the job"
+        EXIT_CODE=1
+      else
+        echo "::warning::All ${failures} failing test(s) in ${CELL} are quarantined; not failing the job"
+        EXIT_CODE=0
+      fi
     fi
   fi
 fi

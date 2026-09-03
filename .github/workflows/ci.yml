@@ -66,6 +66,7 @@ jobs:
                                 .github/scripts/flake_summary.py
           python3 .github/scripts/quarantine.py validate
           .github/scripts/tests/test_quarantine.sh
+          .github/scripts/tests/test_generate_test_summary.sh
 
   check-for-pr:
     runs-on: ubuntu-latest
