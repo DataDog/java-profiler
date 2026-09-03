@@ -1,4 +1,4 @@
-# Where the profiler's memory goes
+# Where the profiler's memory overhead goes
 
 *A summary of the Java profiler memory investigation, Aug–Sep 2026.*
 
@@ -14,6 +14,13 @@ and [`memory-sweep-results-linux.md`](memory-sweep-results-linux.md).
 | Accounting now closes to | **±0.77 MiB** (R² 0.999) |
 | Requested but never actually used | **~25 MiB** of profiler allocation |
 
+> **A note on what is being counted.** Everything in this document is *memory
+> overhead caused by enabling the profiler* — the difference between running with it
+> and without it. That is deliberately broader than "memory the profiler allocates".
+> Only about a third of it is memory the profiler itself holds; the rest is memory it
+> *causes* — the JVM commits more, and the C allocator retains more. All of it goes
+> away when profiling is switched off, so all of it counts.
+
 ---
 
 ## Two terms worth pinning down
@@ -23,7 +30,7 @@ Both of these do real work below, and neither means quite what it sounds like.
 **Anonymous memory** is the memory a program allocates for itself as it runs — as
 opposed to memory that mirrors a file on disk. It is the part that grows when a
 program does more work, and the part a container's memory limit counts. When this
-document says the profiler "adds 59–74 MiB", this is what it adds.
+document says profiling "costs 59–74 MiB", this is what it costs.
 
 **Resident** means *actually occupying physical RAM right now*. This is the crucial
 distinction, because **asking the operating system for memory and actually using it
@@ -96,8 +103,13 @@ they behave nothing like each other:
 
 | | What it is | How big | How stable |
 | --- | --- | --- | --- |
-| **Term 1** — the profiler's actual working set | Memory the profiler genuinely uses, plus the extra memory the JVM commits because profiling is switched on | **35.98 MiB** | ± 0.26 MiB — essentially fixed |
+| **Term 1** — memory directly in use | What the profiler itself occupies, **plus** the extra the JVM commits because profiling is switched on | **35.98 MiB** | ± 0.26 MiB — essentially fixed |
 | **Term 2** — allocator retention | Memory the C library took from the operating system while serving those allocations, then held onto for reuse instead of giving back (see Finding 2) | **23–37 MiB** | different in every batch |
+
+> **Both terms are the cost of enabling the profiler.** Term 2 is not background
+> noise that happens to coincide — it exists *because* of the profiler's allocation
+> pattern, it is real physical memory (Finding 3), and it disappears when profiling
+> is off. It is an indirect cost rather than a smaller one.
 
 **Add them together and you get the range in the summary table:**
 
@@ -122,6 +134,26 @@ memory added  =  35.98 ± 0.26 MiB  +  1.01 × (allocator retention)
 The 1.01 multiplier matters more than it looks: it says allocator retention converts
 to real memory very nearly one-for-one. That was not the prior belief, and Finding 3
 is about how it was established.
+
+### How much of Term 1 is actually the profiler?
+
+Less than you would guess. Attributing every allocation to the code that made it
+(Finding 4) splits Term 1 roughly one-third / two-thirds:
+
+| | MiB | Share of Term 1 |
+| --- | --- | --- |
+| The profiler's own resident memory | **12.1** | 33 % |
+| Extra memory the JVM commits because profiling is on | **24.7** | 67 % |
+| *sum* | *36.8* | *vs 35.98 measured — agrees to 0.8 MiB* |
+
+The JVM-side share is JIT code cache the profiler causes to grow, plus the JVM's own
+bookkeeping for the instrumentation it is now running. So of the ~59–74 MiB
+total, only about **12 MiB is memory the profiler itself occupies**. The rest is
+memory it *causes* — the JVM commits it, or the C allocator retains it.
+
+*Indicative rather than exact: the allocation-ledger figures come from probe-instrumented
+runs and the code-cache figure from a different batch, which is why the split closes to
+0.8 MiB rather than exactly.*
 
 > **A caution, because this is easy to misread.** Splitting the number in two did not
 > make the profiler cheaper. The overhead is still 59–74 MiB — both terms are real
@@ -222,7 +254,7 @@ you go on to fill, and the remainder is simply never touched. Nobody chose to re
 ## Conclusions for Java
 
 **Quote the overhead as two terms, or with its error bar.** On a realistic Spring Boot
-workload the profiler adds 59–74 MiB of anonymous memory. A bare single figure is not
+workload, enabling the profiler causes 59–74 MiB of additional anonymous memory. A bare single figure is not
 reproducible — the two batches differ by 15 MiB — so quote either the two components,
 or the total together with its ±8 MiB bar and the batch it came from.
 
