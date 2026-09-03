@@ -9,7 +9,8 @@ and [`memory-sweep-results-linux.md`](memory-sweep-results-linux.md).
 
 | | |
 | --- | --- |
-| Overhead measured | **59–74 MiB** of anonymous memory |
+| Profiler overhead (on top of tracing) | **59–74 MiB** of anonymous memory |
+| Full APM overhead (tracer + profiler) | **~170 MB**, re-measured — not ~240 |
 | Stable component | **35.98 ± 0.26 MiB** |
 | Accounting now closes to | **±0.77 MiB** (R² 0.999) |
 | Requested but never actually used | **~25 MiB** of profiler allocation |
@@ -23,11 +24,15 @@ and [`memory-sweep-results-linux.md`](memory-sweep-results-linux.md).
 >
 > **The tracer is not in these numbers, and the tracer is the bigger cost.** Every
 > measurement here compares *tracing + profiling* against *tracing only*, so
-> dd-trace-java's own overhead runs in both arms and cancels out entirely. For scale:
-> on this same workload the tracer costs roughly **136 MB** against a no-APM baseline,
-> against the profiler's ~104 MB by that same older measurement. So if someone asks
-> "what does APM cost", the answer is not in this document — this only covers the
-> profiler's marginal share on top of a tracer that is already running.
+> dd-trace-java's own overhead runs in both arms and cancels out entirely. On this
+> workload the tracer costs about **103 MB** against a bare baseline — more than the
+> profiler's ~67 MB by the same measurement.
+>
+> So there are two different questions, and this document answers both. *"What does
+> the profiler add on top of a tracer that is already running?"* — 59–74 MiB, which is
+> what most of this document is about. *"What does enabling APM cost from nothing?"* —
+> **≈170 MB**, tracer and profiler together; see
+> [If you have "150–250 MB" in your head](#if-you-have-150250-mb-in-your-head).
 
 ---
 
@@ -80,7 +85,7 @@ something broader, in three ways at once:
 | | The reported figure | This document |
 | --- | --- | --- |
 | **What is included** | Tracer **and** profiler together | Profiler only, on top of tracing |
-| **What is measured** | Peak RSS over the whole run | Anonymous memory once it has plateaued |
+| **What is measured** | A maximum over the whole run, which was only 90 s | Anonymous memory once it has plateaued, at 300 s |
 | **Compared against** | Nothing attached | Tracing already on |
 
 The August reproduction confirmed the ~250 MB figure end-to-end and split it: against
@@ -88,37 +93,57 @@ a no-APM baseline of 1514 MB peak RSS, the **tracer accounted for ~136 MB and th
 profiler for ~104 MB**. So the profiler's share of the headline number was never 250 —
 it was around 104 MB.
 
-This document measures 59–74 MiB (≈62–78 MB) for that same share. Three things
-plausibly account for the remaining difference, and they are **not equally well
-established** — which matters, because the temptation is to read the gap as the
-profiler having got cheaper.
+This document measures 59–74 MiB (≈62–78 MB) for that same share. **Both questions
+have since been re-measured on the current build**, so the gap no longer has to be
+argued about:
 
-**1. The older runs never reached steady state.** *Verified.* They were **90 seconds
-long**, with NMT captured about 40 s in. This investigation established that anonymous
-memory does not plateau until **t ≈ 180 s**. A 90 s run therefore ends before memory
-has settled — and `memory=` reports the *maximum* over that window, so it captures the
-peak of the startup ramp rather than the level the application actually runs at.
-Estimator choice alone moves the answer by up to 20 MiB when sampling mid-ramp.
+| | full APM | tracer | profiler |
+| --- | --- | --- | --- |
+| Aug 2026, original method | ~240 | +136.1 | +104.3 |
+| Current build, **original** method (90 s, no pre-touch, doe's max) | +199.2 ± 7.0 | +112.6 ± 5.0 | +86.6 ± 6.0 |
+| Current build, **improved** method (300 s, pre-touch, plateau) | **+169.9 ± 4.8** | **+102.6 ± 7.5** | **+67.3 ± 5.8** |
 
-**2. The profiler may genuinely have improved in the interval.** *Suspected, not
-proven.* Real work landed on the profiler between the two measurements and some of it
-plausibly reduced footprint. Nothing in this investigation isolates that, so it cannot
-be claimed — but it cannot be ruled out either, and an earlier draft of this document
-wrongly asserted that nothing had changed.
+*MB, against a ~1500 MB no-APM baseline. Five and six repetitions respectively, with
+the profiler binary verified byte-identical between them.*
 
-**3. Scope and method.** Profiler-only rather than tracer-plus-profiler; anonymous
-memory rather than total RSS, which also counts file-backed pages; and a considerably
-more precise attribution of what belongs to whom.
+**The customer-facing number is therefore ≈170 MB for tracer and profiler together**
+on this workload — not 240. Of that, the tracer is ~103 MB and the profiler ~67 MB.
 
-> **How to settle (2), if it matters.** Run the *current* build under the *old*
-> methodology — 90 s, peak RSS, no-APM baseline — and see whether the profiler's share
-> still comes out near 104 MB. If it does, the whole gap is measurement. If it comes
-> out lower, the difference is a real improvement and can be claimed as one. A couple
-> of hours of machine time; nobody has done it.
+The profiler's 104.3 → 67.3 decomposes into three parts, all now measured:
 
-What can be said without qualification: the two figures are **answers to different
-questions**, and the newer one is not a replacement. For "what does enabling APM cost
-a customer", the overview figure remains the one to quote.
+**1. Run duration and heap pre-touching — 20.7 MB. The dominant factor.** Holding the
+estimator constant (doe's own maximum in both), moving from 90 s without
+`AlwaysPreTouch` to 300 s with it drops the profiler's share from 86.6 to 65.9 MB. A
+90 s run never reaches the plateau — anonymous memory does not settle until
+**t ≈ 180 s** — and without pre-touching, the heap's own touched-page count is a large
+moving target that a maximum simply latches onto.
+
+**2. The estimator itself — essentially nothing.** *This corrects an earlier version of
+this document*, which blamed "peak RSS latching transients". On identical runs, doe's
+maximum and the plateau median agree to **1.4 MB** (65.9 against 67.3). A maximum is
+only a bad estimator when the run is too short and the heap is unpinned; fix those and
+the choice of statistic stops mattering.
+
+**3. A genuine profiler improvement — not supported.** *This was previously listed as
+suspected but unproven; it has now been tested and it does not hold.* Under the
+original method the current build gives +86.6 MB against the historical +104.3 — lower,
+but the tracer and the total fall by the **same proportion** while the baseline barely
+moves:
+
+| | Aug 2026 | now | ratio |
+| --- | --- | --- | --- |
+| baseline | 1514.3 | 1498.7 | 0.990 |
+| tracer | +136.1 | +112.6 | **0.827** |
+| profiler | +104.3 | +86.6 | **0.830** |
+| full APM | ~240 | +199.2 | **0.830** |
+
+A profiler-specific improvement would put its ratio well below the tracer's. All three
+sit at 0.83, which points to a common cause — different host, JDK or harness version,
+or simply that the historical figures came from few runs (single-run peak RSS has an
+SD of 13–16 MB here, so being 18–24 MB high is ordinary noise).
+
+Also in the gap, and the largest single piece: **scope.** The historical figure
+includes the tracer's ~136 MB; this document's 59–74 MiB excludes it entirely.
 
 ## The approach
 
@@ -317,11 +342,13 @@ single figure is not reproducible — the two batches differ by 15 MiB — so qu
 the two components, or the total together with its ±8 MiB bar and the batch it came
 from.
 
-**Do not set this against the 150–250 MB APM figure as though one replaced the other.**
-That figure covers tracer *and* profiler, as peak RSS, against a no-APM baseline; the
-profiler's share of it was ~104 MB. The 59–74 MiB here is that same share measured at
-steady state. Both are correct answers to different questions — for "what does enabling
-APM cost a customer", the overview figure is still the one to quote. See
+**For "what does APM cost a customer", the answer is ~170 MB, not ~240.** That is
+tracer plus profiler against a bare workload, re-measured on the current build with a
+methodology that reproduces (±4.8 MB over six rounds): tracer ~103 MB, profiler ~67 MB.
+The older ~240 MB figure is high mainly because its runs were too short to reach steady
+state and did not pin the heap — not because anything has got cheaper. Do not set the
+59–74 MiB against it as though one replaced the other; that number is the profiler's
+marginal share only. See
 [If you have "150–250 MB" in your head](#if-you-have-150250-mb-in-your-head).
 
 **Quote absolute megabytes, never a percentage.** The same overhead reads as 2.5 % or
