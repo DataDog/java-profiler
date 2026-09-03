@@ -25,6 +25,7 @@
 #include "threadLocalData.inline.h"
 #include "threadState.inline.h"
 #include "guards.h"
+#include <cassert>
 #include <sys/time.h>
 
 bool ITimer::_enabled = false;

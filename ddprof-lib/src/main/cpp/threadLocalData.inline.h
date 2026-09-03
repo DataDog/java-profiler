@@ -52,6 +52,17 @@ inline bool ProfiledThread::claimAcquire(int tid) {
     return false;
 }
 
+// Core logic of tickInitWindowIfNeeded(), split out so unit tests can drive
+// has_jvm_thread directly with a plain bool instead of needing a live
+// JVMThread::current(). See tickInitWindow_ut.cpp.
+static inline bool tickInitWindowIfNeededImpl(bool has_jvm_thread, ProfiledThread* current) {
+    if (!has_jvm_thread && current->inInitWindow()) {
+        current->tickInitWindow();
+        return true;
+    }
+    return false;
+}
+
 // Shared init-window guard used by the CPU/wall profiling signal handlers.
 // Guards against the race window between Profiler::registerThread() and
 // thread_native_entry setting JVM TLS (PROF-13072): a pure native thread
@@ -61,11 +72,7 @@ inline bool ProfiledThread::claimAcquire(int tid) {
 // sites are signal handlers holding an ErrnoPreserver, so no manual errno
 // handling is needed on this return path.
 static inline bool tickInitWindowIfNeeded(ProfiledThread* current) {
-    if (JVMThread::current() == nullptr && current->inInitWindow()) {
-        current->tickInitWindow();
-        return true;
-    }
-    return false;
+    return tickInitWindowIfNeededImpl(JVMThread::current() != nullptr, current);
 }
 
 #endif // THREADLOCALDATA_INLINE_H

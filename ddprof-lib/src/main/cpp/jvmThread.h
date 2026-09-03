@@ -16,7 +16,6 @@
  */
 class JVMThread {
 private:
-    friend class JVMThreadTestAccessor;
     static jfieldID _tid;
     static ThreadLocal<JVMThread*> _jvm_thread;
 
