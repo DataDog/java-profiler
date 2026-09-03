@@ -50,23 +50,60 @@ OUTCOME_FILE="ci-outcome/${CELL}.json"
 
 # Snapshot this attempt's JUnit XML before the next one overwrites it -- the
 # whole point is to compare attempts, and Gradle reuses the same directory.
+# The Alpine aarch64 suite runs as root inside Docker while this script runs as
+# the host user, so the XML it writes is root-owned. Without this the snapshot
+# and the next attempt's cleanup both fail, and the cell loses flake
+# classification entirely -- silently, since both used to discard their errors.
+make_results_readable() {
+  [ -d "$RESULTS_DIR" ] || return 0
+  [ -w "$RESULTS_DIR" ] && return 0
+  command -v sudo >/dev/null 2>&1 || return 0
+  sudo chmod -R a+rwX "$RESULTS_DIR" 2>/dev/null \
+    || echo "::warning::Could not take ownership of ${RESULTS_DIR}; flake evidence may be incomplete"
+}
+
 snapshot() {
   local attempt="$1"
   local dest="${EVIDENCE_DIR}/attempt-${attempt}"
-  rm -rf "$dest"
+  make_results_readable
+  rm -rf "$dest" || echo "::warning::Could not clear ${dest}; attempt ${attempt} evidence may be stale"
   mkdir -p "$dest"
   if [ -d "$RESULTS_DIR" ]; then
-    cp -r "$RESULTS_DIR"/. "$dest"/ 2>/dev/null || true
+    cp -r "$RESULTS_DIR"/. "$dest"/ \
+      || echo "::warning::Could not snapshot ${RESULTS_DIR} for attempt ${attempt}; flake classification for this cell will be incomplete"
   fi
 }
 
+# Which Gradle tasks are the tests. A failure in anything else is not something
+# the quarantine list has any business excusing.
+TEST_TASK_PATTERN="${TEST_TASK_PATTERN:-:ddprof-test:test}"
+
+# g-0's guard: task failures the quarantine list must never wave through.
+non_test_task_failures() {
+  local log="$1"
+  [ -f "$log" ] || return 0
+  grep -oE "Execution failed for task '[^']+'" "$log" 2>/dev/null \
+    | sed -E "s/^Execution failed for task '//; s/'$//" \
+    | grep -v -F "$TEST_TASK_PATTERN" \
+    | sort -u
+}
+
+# Self-contained state: a leftover attempt-2 from an earlier run on a reused
+# workspace would be read back as this run's evidence, inflating the attempt
+# count and importing failures that never happened here.
+rm -rf "$EVIDENCE_DIR" "$(dirname "$OUTCOME_FILE")"
+
 EXIT_CODE=1
+ATTEMPT_LOG=""
 for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
   mkdir -p build/logs
+  make_results_readable
   rm -rf "$RESULTS_DIR"
+  ATTEMPT_LOG="build/logs/attempt-${attempt}.log"
 
   "$@" 2>&1 \
     | tee -a build/test-raw.log \
+    | tee "$ATTEMPT_LOG" \
     | python3 -u "${HERE}/filter_gradle_log.py"
   EXIT_CODE=${PIPESTATUS[0]}
 
@@ -80,7 +117,16 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
     break
   fi
 
-  failed=$(python3 "${HERE}/flake_report.py" count --dir "${EVIDENCE_DIR}/attempt-${attempt}")
+  failed=$(python3 "${HERE}/flake_report.py" count --dir "${EVIDENCE_DIR}/attempt-${attempt}") || failed=""
+  case "$failed" in
+    ''|*[!0-9]*)
+      # Every guard below is a numeric comparison; on a non-number they would
+      # all quietly evaluate false and retry the very failures meant to be
+      # taken at face value.
+      echo "::warning::Could not count test failures for attempt ${attempt}; not retrying"
+      break
+      ;;
+  esac
   if [ "$failed" -eq 0 ] && [ "$RETRY_ON_NO_TEST_FAILURES" != "1" ]; then
     # No test was named, so the suite did not get far enough to have one fail:
     # a compile error, a missing toolchain, a runner that ran out of disk. None
@@ -134,17 +180,37 @@ fi
 #                                  error or a dead runner is nothing to do with
 #                                  quarantine.
 if [ -f "$OUTCOME_FILE" ]; then
-  read -r gating failures <<< "$(python3 -c "
+  summary=$(python3 -c "
 import json, sys
 d = json.load(open(sys.argv[1]))
 print(d['gating_count'], d['failure_count'])
-" "$OUTCOME_FILE")"
+" "$OUTCOME_FILE") || {
+    echo "::error::Could not read ${OUTCOME_FILE}; failing the job rather than guessing whether its failures gate"
+    exit 1
+  }
+  read -r gating failures <<< "$summary"
+  case "${gating}:${failures}" in
+    *[!0-9:]*|:*|*:)
+      echo "::error::${OUTCOME_FILE} did not yield two counts (got '${summary}'); failing the job"
+      exit 1
+      ;;
+  esac
 
-  if [ "${gating:-0}" -gt 0 ]; then
+  if [ "$gating" -gt 0 ]; then
     EXIT_CODE=1
-  elif [ "${failures:-0}" -gt 0 ]; then
-    echo "::warning::All ${failures} failing test(s) in ${CELL} are quarantined; not failing the job"
-    EXIT_CODE=0
+  elif [ "$failures" -gt 0 ]; then
+    # Quarantine excuses the tests it names. It does not excuse the build:
+    # if this same invocation also failed a compile, a native gtest or a
+    # verification task, that failure has nothing to do with the list and
+    # zeroing the exit code here would bury it.
+    other=$(non_test_task_failures "$ATTEMPT_LOG")
+    if [ -n "$other" ]; then
+      echo "::error::All ${failures} failing test(s) in ${CELL} are quarantined, but the build also failed in $(echo "$other" | tr '\n' ' ')— failing the job"
+      EXIT_CODE=1
+    else
+      echo "::warning::All ${failures} failing test(s) in ${CELL} are quarantined; not failing the job"
+      EXIT_CODE=0
+    fi
   fi
 fi
 

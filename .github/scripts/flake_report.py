@@ -28,9 +28,28 @@ def _attempt_number(path):
     return int(path.rsplit("-", 1)[1])
 
 
-def failed_tests(root_dir):
-    """Map of "class.test" -> first line of the failure message, for JUnit XML
-    anywhere under root_dir."""
+def _numbered_attempt_dirs(evidence_dir):
+    """attempt-<n> directories, numeric suffixes only.
+
+    A stray `attempt-tmp` left by a tool must not raise out of sorted() and
+    take the whole classification -- and with it the job -- down with it.
+    """
+    found = []
+    for path in glob.glob(os.path.join(evidence_dir, "attempt-*")):
+        suffix = path.rsplit("-", 1)[1]
+        if suffix.isdigit():
+            found.append(path)
+    return sorted(found, key=_attempt_number)
+
+
+def attempt_results(root_dir):
+    """(observed test ids, {failed test id: message}) from JUnit XML under root_dir.
+
+    `observed` is every testcase the attempt recorded a result for, pass or
+    fail. Knowing a test ran and passed is what distinguishes a flake from a
+    test that simply never got reached on the retry.
+    """
+    observed = set()
     failures = {}
     pattern = os.path.join(root_dir, "**", "TEST-*.xml")
     for path in glob.glob(pattern, recursive=True):
@@ -42,21 +61,37 @@ def failed_tests(root_dir):
             # named test either, so it is left to the exit code to report.
             continue
         for case in tree.iter("testcase"):
+            test_id = "{}.{}".format(case.get("classname") or "", case.get("name") or "")
+            if case.find("skipped") is None:
+                observed.add(test_id)
             problem = case.find("failure")
             if problem is None:
                 problem = case.find("error")
             if problem is None:
                 continue
-            test_id = "{}.{}".format(case.get("classname") or "", case.get("name") or "")
             message = (problem.get("message") or problem.get("type") or "").strip()
             failures[test_id] = message.splitlines()[0][:200] if message else "failed"
-    return failures
+    return observed, failures
+
+
+def failed_tests(root_dir):
+    """Just the failures, for callers that do not care what else ran."""
+    return attempt_results(root_dir)[1]
 
 
 def collect_attempts(evidence_dir):
-    """[(attempt number, failures)] ordered by attempt."""
-    dirs = glob.glob(os.path.join(evidence_dir, "attempt-*"))
-    return [(_attempt_number(d), failed_tests(d)) for d in sorted(dirs, key=_attempt_number)]
+    """[(attempt number, observed, failures)] ordered by attempt.
+
+    An attempt that recorded no testcase at all is dropped: it tells us nothing
+    about any individual test, and counting it would make every failure from
+    the other attempts look as though it had passed somewhere.
+    """
+    attempts = []
+    for path in _numbered_attempt_dirs(evidence_dir):
+        observed, failures = attempt_results(path)
+        if observed:
+            attempts.append((_attempt_number(path), observed, failures))
+    return attempts
 
 
 def cmd_count(args):
@@ -70,19 +105,20 @@ def cmd_report(args):
     entries = quarantine.load(args.list)
 
     results = []
-    for test_id in sorted({t for _, f in attempts for t in f}):
-        failed_in = [n for n, f in attempts if test_id in f]
-        hit = next(
-            (e for e in entries if quarantine.covers(e, test_id) and quarantine.applies_to(e, args.cell)),
-            None,
-        )
+    for test_id in sorted({t for _, _, f in attempts for t in f}):
+        failed_in = [n for n, _, f in attempts if test_id in f]
+        # Flaky means seen both ways: failed here, ran and passed there. A test
+        # that is merely missing from the retry never re-ran -- an attempt that
+        # aborted early, a filtered suite -- and claiming that as a pass would
+        # hand out quarantine proposals for tests nobody has cleared.
+        passed_in = [n for n, seen, f in attempts if test_id in seen and test_id not in f]
+        hit = quarantine.find_entry(entries, test_id, args.cell)
         results.append({
             "test": test_id,
             "failed_attempts": failed_in,
-            "message": next(f[test_id] for _, f in attempts if test_id in f),
-            # Passing on any attempt is what makes it flaky, so a test that
-            # failed in fewer attempts than were run has passed at least once.
-            "flaky": len(failed_in) < ran,
+            "passed_attempts": passed_in,
+            "message": next(f[test_id] for _, _, f in attempts if test_id in f),
+            "flaky": bool(passed_in),
             "quarantined": hit is not None,
             "ticket": hit.get("ticket") if hit else None,
         })

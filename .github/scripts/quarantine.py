@@ -30,6 +30,16 @@ FIELDS = ("test", "ticket", "added", "review_by", "cells", "reason")
 # neither the release it was added in nor the memory of why.
 DEFAULT_REVIEW_DAYS = 90
 
+# Cell names are <libc>-<jdk>-<config>-<arch>. Only libc and arch are a closed
+# set -- jdk and config come from the workflow inputs and grow without warning
+# -- so those two are the only axes worth checking a glob against.
+KNOWN_ARCHES = ("amd64", "aarch64")
+KNOWN_LIBCS = ("glibc", "musl")
+# Anything that reads like an architecture. A glob naming one that CI never
+# builds silently quarantines nothing, which is how "*arm64*" shipped in this
+# file's own example: the arch is spelled aarch64.
+ARCH_LIKE_RE = re.compile(r"(?:x86|x64|amd|arm|aarch|i386|ppc|s390)[\w_]*")
+
 
 def parse(path):
     """([entry], [(line number, message)]) — entries and malformed lines.
@@ -81,6 +91,18 @@ def covers(entry, test_id):
     return test_id == pattern
 
 
+def find_entry(entries, test_id, cell):
+    """The first entry quarantining this test on this cell, or None.
+
+    Every caller that decides whether a failure gates goes through here, so the
+    matching rule cannot drift between the subcommand and flake_report.py.
+    """
+    return next(
+        (e for e in entries if covers(e, test_id) and applies_to(e, cell)),
+        None,
+    )
+
+
 def format_entry(test, ticket, added, review_by, cells, reason):
     return " | ".join([test, ticket, added, review_by, ",".join(cells) or "-", reason])
 
@@ -91,10 +113,7 @@ def cmd_match(args):
 
     gating, quarantined = [], []
     for test_id in failures:
-        hit = next(
-            (e for e in entries if covers(e, test_id) and applies_to(e, args.cell)),
-            None,
-        )
+        hit = find_entry(entries, test_id, args.cell)
         (quarantined if hit else gating).append(test_id)
 
     json.dump({"gating": gating, "quarantined": quarantined}, sys.stdout)
@@ -103,6 +122,14 @@ def cmd_match(args):
 
 
 def cmd_validate(args):
+    # parse() tolerates a missing file so that matching still works before the
+    # first entry lands. Validation must not: "0 quarantined test(s), all
+    # valid" for a list that has been renamed or deleted would report success
+    # at the exact moment gating silently stopped applying everywhere.
+    if not os.path.exists(args.list):
+        print("::error::quarantine list '{}' does not exist".format(args.list))
+        return 1
+
     entries, problems = parse(args.list)
     today = datetime.date.today()
     seen = {}
@@ -120,9 +147,16 @@ def cmd_validate(args):
             if not entry[field]:
                 complain(line, "field '{}' is empty".format(field))
 
-        if name in seen:
-            complain(line, "'{}' is already quarantined on line {}".format(name, seen[name]))
-        seen[name] = line
+        # Two entries for one test are fine when they cover different cells --
+        # that is what narrowing by cell is for. Two that cover the same cells
+        # are a copy-paste, and the second one's ticket and review_by never
+        # take effect.
+        key = (name, tuple(sorted(entry["cells"])))
+        if key in seen:
+            where = ", ".join(entry["cells"]) or "every cell"
+            complain(line, "'{}' is already quarantined for {} on line {}".format(
+                name, where, seen[key]))
+        seen[key] = line
 
         if entry["ticket"] and not TICKET_RE.match(entry["ticket"]):
             complain(line, "ticket '{}' is not a PROF-<number>".format(entry["ticket"]))
@@ -130,6 +164,19 @@ def cmd_validate(args):
         for field in ("added", "review_by"):
             if entry[field] and not DATE_RE.match(entry[field]):
                 complain(line, "{} '{}' is not YYYY-MM-DD".format(field, entry[field]))
+
+        for pattern in entry["cells"]:
+            for token in ARCH_LIKE_RE.findall(pattern):
+                if token not in KNOWN_ARCHES:
+                    complain(line, (
+                        "cell glob '{}' names architecture '{}', which CI never "
+                        "builds (cells end in {}); it would quarantine nothing"
+                    ).format(pattern, token, " or ".join(KNOWN_ARCHES)))
+            head = pattern.split("-", 1)[0]
+            if head and "*" not in head and "?" not in head and head not in KNOWN_LIBCS:
+                complain(line, (
+                    "cell glob '{}' starts with '{}'; cell names start with {}"
+                ).format(pattern, head, " or ".join(KNOWN_LIBCS)))
 
         if DATE_RE.match(entry["review_by"]):
             due = datetime.date.fromisoformat(entry["review_by"])

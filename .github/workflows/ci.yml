@@ -60,6 +60,10 @@ jobs:
       - name: Validate the test quarantine list
         run: |
           bash -n .github/scripts/run_tests_with_retry.sh
+          bash -n .github/scripts/generate-test-summary.sh
+          python3 -m py_compile .github/scripts/quarantine.py \
+                                .github/scripts/flake_report.py \
+                                .github/scripts/flake_summary.py
           python3 .github/scripts/quarantine.py validate
           .github/scripts/tests/test_quarantine.sh
 
