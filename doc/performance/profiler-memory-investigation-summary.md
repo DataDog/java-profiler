@@ -62,6 +62,35 @@ Both are now resolved, and the second turned out to have a single, nameable caus
 to name every megabyte, so that a future change costing 20 MiB shows up as a 20 MiB
 change instead of disappearing into the noise.
 
+### If you have "150–250 MB" in your head
+
+Many people do — that is the figure in the
+[APM overhead overview](https://benchmarks.datadoghq.com/notebook/14677323/apm-overhead-overview),
+and it is where this work started. It does not contradict 59–74 MiB. It measures
+something broader, in three ways at once:
+
+| | The reported figure | This document |
+| --- | --- | --- |
+| **What is included** | Tracer **and** profiler together | Profiler only, on top of tracing |
+| **What is measured** | Peak RSS over the whole run | Anonymous memory once it has plateaued |
+| **Compared against** | Nothing attached | Tracing already on |
+
+The August reproduction confirmed the ~250 MB figure end-to-end and split it: against
+a no-APM baseline of 1514 MB peak RSS, the **tracer accounted for ~136 MB and the
+profiler for ~104 MB**. So the profiler's share of the headline number was never 250 —
+it was around 104 MB.
+
+This document measures 59–74 MiB (≈62–78 MB) for that same share. The remaining
+difference is the estimator, not the profiler: **peak RSS permanently latches
+transients** — JIT compiler arenas, GC bursts — that a plateau measurement excludes,
+and RSS counts file-backed pages that anonymous memory does not.
+
+> **Nothing got cheaper.** No profiler code changed between those measurements. The
+> number became *narrower in scope* (the profiler alone, not all of APM) and *more
+> precise* (a steady-state measurement rather than a high-water mark). If you need the
+> number a customer would experience for enabling APM as a whole, the overview figure
+> is still the right one to quote.
+
 ## The approach
 
 The workload and the A/B mechanism come from dd-trace-doe. This investigation added
@@ -254,9 +283,17 @@ you go on to fill, and the remainder is simply never touched. Nobody chose to re
 ## Conclusions for Java
 
 **Quote the overhead as two terms, or with its error bar.** On a realistic Spring Boot
-workload, enabling the profiler causes 59–74 MiB of additional anonymous memory. A bare single figure is not
-reproducible — the two batches differ by 15 MiB — so quote either the two components,
-or the total together with its ±8 MiB bar and the batch it came from.
+workload, enabling the profiler causes 59–74 MiB of additional anonymous memory. A bare
+single figure is not reproducible — the two batches differ by 15 MiB — so quote either
+the two components, or the total together with its ±8 MiB bar and the batch it came
+from.
+
+**Do not set this against the 150–250 MB APM figure as though one replaced the other.**
+That figure covers tracer *and* profiler, as peak RSS, against a no-APM baseline; the
+profiler's share of it was ~104 MB. The 59–74 MiB here is that same share measured at
+steady state. Both are correct answers to different questions — for "what does enabling
+APM cost a customer", the overview figure is still the one to quote. See
+[If you have "150–250 MB" in your head](#if-you-have-150250-mb-in-your-head).
 
 **Quote absolute megabytes, never a percentage.** The same overhead reads as 2.5 % or
 3.9 % depending purely on how the baseline heap is configured. The denominator is a
