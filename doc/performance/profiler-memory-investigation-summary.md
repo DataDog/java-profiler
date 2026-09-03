@@ -87,21 +87,46 @@ overturned had looked convincing because an *average* matched.
 
 ## Finding 1 — The overhead is two things, not one
 
-The single number never reproduced because it was never a single quantity:
+The profiler's memory cost had always been reported as **one figure with a wide error
+bar** — "about 59 MiB, give or take 9". That figure would not reproduce. Measure it
+again, changing nothing about the profiler or the workload, and you get 74 MiB.
+
+It would not reproduce because it was never one quantity. It is the sum of two, and
+they behave nothing like each other:
+
+| | What it is | How big | How stable |
+| --- | --- | --- | --- |
+| **Term 1** — the profiler's actual working set | Memory the profiler genuinely uses, plus the extra memory the JVM commits because profiling is switched on | **35.98 MiB** | ± 0.26 MiB — essentially fixed |
+| **Term 2** — allocator retention | Memory the C library took from the operating system while serving those allocations, then held onto for reuse instead of giving back (see Finding 2) | **23–37 MiB** | different in every batch |
+
+**Add them together and you get the range in the summary table:**
 
 ```
-memory added  =  35.98 ± 0.26 MiB  +  1.01 × (allocator waste)
+             Term 1     Term 2        predicted     actually measured
+
+  batch 1     35.98  +   23.1     =     59.1  MiB        58.9  MiB
+  batch 2     35.98  +   37.5     =     73.5  MiB        73.9  MiB
 ```
 
-This fits 20 paired runs across two independent batches to within 0.77 MiB
-(R² = 0.9992).
+That is the entire story of the irreproducible number. Term 1 is stable to a quarter
+of a megabyte across two batches measured days apart. Term 2 moved by 14 MiB between
+them. **All of the apparent instability was Term 2** — and none of it was the
+profiler's own behaviour changing.
 
-The two batches disagreed on the total by 15 MiB — 58.9 against 73.9 MiB — while
-agreeing on the stable component to 0.4 MiB. The scatter was never in the profiler.
-It was entirely in the allocator term.
+Stated precisely, the relationship holds across 20 paired runs to within 0.77 MiB:
 
-> **The total did not get smaller.** It is still 59–74 MiB. 35.98 is one of two
-> terms, and quoting it alone understates the cost by roughly half.
+```
+memory added  =  35.98 ± 0.26 MiB  +  1.01 × (allocator retention)
+```
+
+The 1.01 multiplier matters more than it looks: it says allocator retention converts
+to real memory very nearly one-for-one. That was not the prior belief, and Finding 3
+is about how it was established.
+
+> **A caution, because this is easy to misread.** Splitting the number in two did not
+> make the profiler cheaper. The overhead is still 59–74 MiB — both terms are real
+> memory the application pays for. **35.98 MiB is one of two terms, not the total**,
+> and quoting it on its own understates the cost by roughly half.
 
 ## Finding 2 — All the variance is the C allocator
 
