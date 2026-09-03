@@ -61,7 +61,13 @@ def attempt_results(root_dir):
             # named test either, so it is left to the exit code to report.
             continue
         for case in tree.iter("testcase"):
-            test_id = "{}.{}".format(case.get("classname") or "", case.get("name") or "")
+            name = case.get("name")
+            if not name:
+                # A testcase element with no name cannot be attributed to any
+                # real test; "Class." is not a test id worth counting, tabling
+                # or proposing for quarantine.
+                continue
+            test_id = "{}.{}".format(case.get("classname") or "", name)
             if case.find("skipped") is None:
                 observed.add(test_id)
             problem = case.find("failure")
@@ -116,7 +122,6 @@ def cmd_report(args):
         results.append({
             "test": test_id,
             "failed_attempts": failed_in,
-            "passed_attempts": passed_in,
             "message": next(f[test_id] for _, _, f in attempts if test_id in f),
             "flaky": bool(passed_in),
             "quarantined": hit is not None,
@@ -125,15 +130,33 @@ def cmd_report(args):
 
     gating = [r for r in results if not r["quarantined"]]
 
+    # The caller's exit-code decision must never be made from failures
+    # aggregated across every attempt: those can all be quarantined while the
+    # final attempt itself failed for a reason that named no test at all (a
+    # docker or Gradle configuration failure, an OOM-killed daemon, an ASan
+    # init abort). Report the final attempt's own standing separately so the
+    # caller can require it to have actually produced test results, with every
+    # one of its own named failures quarantined, before trusting the list.
+    final = attempts[-1] if attempts else None
+    final_attempt_ran = final is not None and final[0] == args.final_attempt
+    final_attempt_gating_count = None
+    if final_attempt_ran:
+        _, _, final_failures = final
+        final_attempt_gating_count = sum(
+            1 for test_id in final_failures
+            if quarantine.find_entry(entries, test_id, args.cell) is None
+        )
+
     report = {
         "cell": args.cell,
         "attempts": ran,
-        "status": args.final_status,
         "flaky": [r for r in results if r["flaky"] and not r["quarantined"]],
         "persistent": [r for r in results if not r["flaky"] and not r["quarantined"]],
         "quarantined": [r for r in results if r["quarantined"]],
         "gating_count": len(gating),
         "failure_count": len(results),
+        "final_attempt_ran": final_attempt_ran,
+        "final_attempt_gating_count": final_attempt_gating_count,
     }
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
@@ -169,7 +192,8 @@ def main():
     report = sub.add_parser("report", help="classify failures and decide gating")
     report.add_argument("--cell", required=True)
     report.add_argument("--evidence-dir", required=True)
-    report.add_argument("--final-status", required=True, choices=["pass", "fail"])
+    report.add_argument("--final-attempt", required=True, type=int,
+                         help="the attempt number the caller actually ran last")
     report.add_argument("--out", required=True)
     report.set_defaults(func=cmd_report)
 

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """The quarantine list: which failing tests do not turn CI red.
 
-Three jobs, one per subcommand:
+Two jobs, one per subcommand:
 
   match     split a cell's failures into gating and quarantined
   validate  enforce the format, the ticket, and the review_by date
-  propose   print an entry ready to paste for a test CI thinks is flaky
+
+The paste-ready entry a PR comment proposes for a flaky test is rendered by
+flake_summary.py's own call to format_entry() below, not by this module's CLI.
 
 The list is a plain text table (see ddprof-test/quarantine.txt) rather than
 JSON or YAML: it is edited by hand far more often than by machine, so real
@@ -39,6 +41,38 @@ KNOWN_LIBCS = ("glibc", "musl")
 # builds silently quarantines nothing, which is how "*arm64*" shipped in this
 # file's own example: the arch is spelled aarch64.
 ARCH_LIKE_RE = re.compile(r"(?:x86|x64|amd|arm|aarch|i386|ppc|s390)[\w_]*")
+
+# A synthetic universe of cell names, used only to ask whether two entries'
+# cell globs could both match the same real cell. Wide enough to catch a glob
+# written against any axis (jdk, config, or the libc/arch pair) without having
+# to enumerate the workflow's actual, ever-growing matrix.
+_SYNTHETIC_JDKS = ("8", "8-graal", "11", "17", "17-graal", "21", "25")
+_SYNTHETIC_CONFIGS = ("debug", "release", "asan", "tsan")
+SYNTHETIC_CELLS = tuple(
+    "{}-{}-{}-{}".format(libc, jdk, config, arch)
+    for libc in KNOWN_LIBCS
+    for jdk in _SYNTHETIC_JDKS
+    for config in _SYNTHETIC_CONFIGS
+    for arch in KNOWN_ARCHES
+)
+
+
+def cells_overlap(globs_a, globs_b):
+    """Could some real cell match both sets of globs? No globs means every cell.
+
+    Equal glob lists always overlap without needing the synthetic universe,
+    which matters when a glob names an axis (like a jdk or config) that
+    SYNTHETIC_CELLS does not model.
+    """
+    if not globs_a or not globs_b:
+        return True
+    if sorted(globs_a) == sorted(globs_b):
+        return True
+    return any(
+        any(fnmatch.fnmatch(cell, g) for g in globs_a)
+        and any(fnmatch.fnmatch(cell, g) for g in globs_b)
+        for cell in SYNTHETIC_CELLS
+    )
 
 
 def parse(path):
@@ -132,7 +166,7 @@ def cmd_validate(args):
 
     entries, problems = parse(args.list)
     today = datetime.date.today()
-    seen = {}
+    seen_by_name = {}
 
     def complain(line, message):
         problems.append((line, message))
@@ -147,16 +181,18 @@ def cmd_validate(args):
             if not entry[field]:
                 complain(line, "field '{}' is empty".format(field))
 
-        # Two entries for one test are fine when they cover different cells --
-        # that is what narrowing by cell is for. Two that cover the same cells
-        # are a copy-paste, and the second one's ticket and review_by never
-        # take effect.
-        key = (name, tuple(sorted(entry["cells"])))
-        if key in seen:
-            where = ", ".join(entry["cells"]) or "every cell"
-            complain(line, "'{}' is already quarantined for {} on line {}".format(
-                name, where, seen[key]))
-        seen[key] = line
+        # Two entries for one test are fine when they cover disjoint cells --
+        # that is what narrowing by cell is for. Two whose cell globs overlap
+        # are a copy-paste, and find_entry() only ever returns the first
+        # match, so the second one's ticket and review_by never take effect
+        # on the cells the two share.
+        for prior in seen_by_name.get(name, []):
+            if cells_overlap(prior["cells"], entry["cells"]):
+                where = ", ".join(entry["cells"]) or "every cell"
+                complain(line, "'{}' is already quarantined for {} on line {}".format(
+                    name, where, prior["_line"]))
+                break
+        seen_by_name.setdefault(name, []).append(entry)
 
         if entry["ticket"] and not TICKET_RE.match(entry["ticket"]):
             complain(line, "ticket '{}' is not a PROF-<number>".format(entry["ticket"]))
@@ -179,14 +215,19 @@ def cmd_validate(args):
                 ).format(pattern, head, " or ".join(KNOWN_LIBCS)))
 
         if DATE_RE.match(entry["review_by"]):
-            due = datetime.date.fromisoformat(entry["review_by"])
-            if due < today:
-                complain(line, (
-                    "'{}' has been quarantined since {} and its review was due {} "
-                    "({} days ago). Fix the test and delete this line, or renew "
-                    "review_by with a note on {}."
-                ).format(name, entry["added"], entry["review_by"],
-                         (today - due).days, entry["ticket"] or "the ticket"))
+            try:
+                due = datetime.date.fromisoformat(entry["review_by"])
+            except ValueError:
+                complain(line, "review_by '{}' is not a real calendar date".format(
+                    entry["review_by"]))
+            else:
+                if due < today:
+                    complain(line, (
+                        "'{}' has been quarantined since {} and its review was due {} "
+                        "({} days ago). Fix the test and delete this line, or renew "
+                        "review_by with a note on {}."
+                    ).format(name, entry["added"], entry["review_by"],
+                             (today - due).days, entry["ticket"] or "the ticket"))
 
     for line, message in sorted(problems):
         print("::error file={},line={}::{}".format(args.list, line, message))
@@ -196,19 +237,6 @@ def cmd_validate(args):
         return 1
 
     print("{}: {} quarantined test(s), all valid".format(args.list, len(entries)))
-    return 0
-
-
-def cmd_propose(args):
-    today = datetime.date.today()
-    print(format_entry(
-        args.test,
-        "PROF-XXXXX",
-        today.isoformat(),
-        (today + datetime.timedelta(days=DEFAULT_REVIEW_DAYS)).isoformat(),
-        args.cells or [],
-        args.reason,
-    ))
     return 0
 
 
@@ -223,12 +251,6 @@ def main():
 
     validate = sub.add_parser("validate", help="check the list's format and review dates")
     validate.set_defaults(func=cmd_validate)
-
-    propose = sub.add_parser("propose", help="print a paste-ready entry")
-    propose.add_argument("--test", required=True)
-    propose.add_argument("--reason", required=True)
-    propose.add_argument("--cells", nargs="*")
-    propose.set_defaults(func=cmd_propose)
 
     args = parser.parse_args()
     return args.func(args)

@@ -43,6 +43,11 @@ jobs:
           echo "configs=$configs" >> $GITHUB_OUTPUT
   test-linux-glibc-amd64:
     needs: cache-jdks
+    # The default job name has no room for slow_tests -- it is a workflow
+    # input, not a matrix axis -- so two calls to this workflow in the same
+    # run (one regular, one slow) would otherwise show identical job names
+    # and be indistinguishable to generate-test-summary.sh.
+    name: test-linux-glibc-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
     strategy:
       fail-fast: false
       matrix:
@@ -155,22 +160,30 @@ jobs:
             exit 0
           fi
 
-          # The slow/e2e suite already runs the best part of an hour, so a retry
-          # would risk the 180-minute job timeout. It records failures without
-          # re-running them.
-          export MAX_ATTEMPTS=${{ inputs.slow_tests && 1 || 2 }}
-
-          # ASan init can nondeterministically collide with the JVM's
-          # ASLR-influenced mmap layout (google/sanitizers#856). The JVM aborts
-          # before any test runs, so that failure names no test and would
-          # otherwise be classed as a build error and left unretried.
+          # Default: a failure naming no test is a build error, not worth a
+          # retry.
           export RETRY_ON_NO_TEST_FAILURES=0
           if [[ "${{ matrix.config }}" == "asan" ]]; then
+            # ASan init can nondeterministically collide with the JVM's
+            # ASLR-influenced mmap layout (google/sanitizers#856). The JVM
+            # aborts before any test runs, so that failure names no test and
+            # would otherwise be classed as a build error and left unretried.
             export RETRY_ON_NO_TEST_FAILURES=1
           fi
 
+          # The slow/e2e suite already runs the best part of an hour, so a
+          # retry would risk the 180-minute job timeout, and it records
+          # failures without re-running them. That rationale does not hold
+          # under ASan: the retry above fires on an init abort that costs
+          # seconds, not a full slow run, so ASan keeps its second attempt
+          # even when slow.
+          export MAX_ATTEMPTS=2
+          if [[ "${{ inputs.slow_tests }}" == "true" && "${{ matrix.config }}" != "asan" ]]; then
+            export MAX_ATTEMPTS=1
+          fi
+
           .github/scripts/run_tests_with_retry.sh \
-            "glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64" -- \
+            "glibc-${{ matrix.java_version }}-${{ matrix.config }}-amd64${{ inputs.slow_tests && '-slow' || '' }}" -- \
             ${GRADLEW_PREFIX} ./gradlew -PCI -PkeepJFRs ${{ inputs.skip_gtest == true && '-Pskip-gtest' || '' }} :ddprof-test:test${{ inputs.slow_tests && 'Slow' || '' }}${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
           EXIT_CODE=$?
 
@@ -248,6 +261,8 @@ jobs:
   test-linux-musl-amd64:
     needs: [cache-jdks, filter-musl-configs]
     if: needs.filter-musl-configs.outputs.has_configs == 'true'
+    # See the comment on test-linux-glibc-amd64's name above.
+    name: test-linux-musl-amd64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
     strategy:
      fail-fast: false
      matrix:
@@ -321,7 +336,7 @@ jobs:
           export MAX_ATTEMPTS=${{ inputs.slow_tests && 1 || 2 }}
 
           .github/scripts/run_tests_with_retry.sh \
-            "musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64" -- \
+            "musl-${{ matrix.java_version }}-${{ matrix.config }}-amd64${{ inputs.slow_tests && '-slow' || '' }}" -- \
             ./gradlew -PCI -PkeepJFRs :ddprof-test:test${{ inputs.slow_tests && 'Slow' || '' }}${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
           EXIT_CODE=$?
 
@@ -393,6 +408,8 @@ jobs:
 
   test-linux-glibc-aarch64:
     needs: cache-jdks
+    # See the comment on test-linux-glibc-amd64's name above.
+    name: test-linux-glibc-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
     strategy:
       fail-fast: false
       matrix:
@@ -502,22 +519,30 @@ jobs:
             exit 0
           fi
 
-          # The slow/e2e suite already runs the best part of an hour, so a retry
-          # would risk the 180-minute job timeout. It records failures without
-          # re-running them.
-          export MAX_ATTEMPTS=${{ inputs.slow_tests && 1 || 2 }}
-
-          # ASan init can nondeterministically collide with the JVM's
-          # ASLR-influenced mmap layout (google/sanitizers#856). The JVM aborts
-          # before any test runs, so that failure names no test and would
-          # otherwise be classed as a build error and left unretried.
+          # Default: a failure naming no test is a build error, not worth a
+          # retry.
           export RETRY_ON_NO_TEST_FAILURES=0
           if [[ "${{ matrix.config }}" == "asan" ]]; then
+            # ASan init can nondeterministically collide with the JVM's
+            # ASLR-influenced mmap layout (google/sanitizers#856). The JVM
+            # aborts before any test runs, so that failure names no test and
+            # would otherwise be classed as a build error and left unretried.
             export RETRY_ON_NO_TEST_FAILURES=1
           fi
 
+          # The slow/e2e suite already runs the best part of an hour, so a
+          # retry would risk the 180-minute job timeout, and it records
+          # failures without re-running them. That rationale does not hold
+          # under ASan: the retry above fires on an init abort that costs
+          # seconds, not a full slow run, so ASan keeps its second attempt
+          # even when slow.
+          export MAX_ATTEMPTS=2
+          if [[ "${{ inputs.slow_tests }}" == "true" && "${{ matrix.config }}" != "asan" ]]; then
+            export MAX_ATTEMPTS=1
+          fi
+
           .github/scripts/run_tests_with_retry.sh \
-            "glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64" -- \
+            "glibc-${{ matrix.java_version }}-${{ matrix.config }}-aarch64${{ inputs.slow_tests && '-slow' || '' }}" -- \
             ${GRADLEW_PREFIX} ./gradlew -PCI -PkeepJFRs ${{ inputs.skip_gtest == true && '-Pskip-gtest' || '' }} :ddprof-test:test${{ inputs.slow_tests && 'Slow' || '' }}${{ matrix.config }} --no-daemon --parallel --build-cache --no-watch-fs
           EXIT_CODE=$?
 
@@ -595,6 +620,8 @@ jobs:
   test-linux-musl-aarch64:
      needs: [cache-jdks, filter-musl-configs]
      if: needs.filter-musl-configs.outputs.has_configs == 'true'
+     # See the comment on test-linux-glibc-amd64's name above.
+     name: test-linux-musl-aarch64 (${{ matrix.java_version }}, ${{ matrix.config }}, ${{ inputs.slow_tests && 'slow' || 'regular' }})
      strategy:
        fail-fast: false
        matrix:
@@ -638,7 +665,7 @@ jobs:
            export MAX_ATTEMPTS=${{ inputs.slow_tests && 1 || 2 }}
 
            .github/scripts/run_tests_with_retry.sh \
-             "musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64" -- \
+             "musl-${{ matrix.java_version }}-${{ matrix.config }}-aarch64${{ inputs.slow_tests && '-slow' || '' }}" -- \
              docker run --cpus 4 --rm -v /tmp:/tmp -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}" -w "${GITHUB_WORKSPACE}" alpine:3.21 /bin/sh -c "
                \"$GITHUB_WORKSPACE/.github/scripts/test_alpine_aarch64.sh\" \
                \"${{ github.sha }}\" \"musl/${{ matrix.java_version }}-${{ matrix.config }}-aarch64\" \
