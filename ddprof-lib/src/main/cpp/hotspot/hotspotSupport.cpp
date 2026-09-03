@@ -1085,14 +1085,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   bool in_java = (state == _thread_in_Java || state == _thread_in_Java_trans);
   if (in_java && java_ctx->sp != 0) {
     // skip ahead to the Java frames before calling AGCT.
-    // java_ctx was populated by an earlier, separately-protected walk; fault-
-    // inject its values here to exercise walkJavaStack's ucontext-restore-on-
-    // recovered-fault path -- frame.restore() writes straight into the real
-    // ucontext, and this is one of the few sites that can hand it an
-    // outright invalid pc/sp/fp.
-    frame.restore((uintptr_t)INJECT_FAULT_ADDRESS_UNLIKELY(java_ctx->pc),
-                  INJECT_FAULT_ADDRESS_UNLIKELY(java_ctx->sp),
-                  INJECT_FAULT_ADDRESS_UNLIKELY(java_ctx->fp));
+    frame.restore((uintptr_t)java_ctx->pc, java_ctx->sp, java_ctx->fp);
   } else if (state != _thread_uninitialized) {
     VMJavaFrameAnchor* a = vm_thread->anchor();
     if (a == nullptr || a->lastJavaSP() == 0) {
@@ -1155,9 +1148,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
             }
             for (int i = 0; trace.num_frames < 0 && i < PROBE_SP_LIMIT; i++) {
               // PROBE_SP walks past the real frame boundary by design;
-              // fault-inject the probed sp so a poisoned value exercises the
-              // same recovered-fault path a genuinely bad guess would hit.
-              frame.sp() = INJECT_FAULT_ADDRESS_UNLIKELY(frame.sp() + sizeof(void*));
+              frame.sp() = frame.sp() + sizeof(void*);
               JVMSupport::jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
             }
           }
