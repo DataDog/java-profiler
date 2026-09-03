@@ -1262,6 +1262,24 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
     return 0;
   }
   const bool prev_unwinding_java = prof_thread->is_unwinding_Java();
+
+  // getJavaTraceAsync() mutates the real ucontext's pc/sp/fp in place (its
+  // pc()/sp()/fp() are references into uc_mcontext) and restores them itself
+  // on every normal exit path. But a SIGSEGV that strikes mid-mutation (e.g.
+  // the PROBE_SP retry loop, or inside unwindStub/unwindCompiled) is caught
+  // by checkFault() and siglongjmp's straight here, skipping those restores.
+  // Since this ucontext is the same one the kernel will use to resume the
+  // sampled thread when this signal handler returns, snapshot it before the
+  // risky work and restore it here too, or the thread resumes with a
+  // corrupted PC/SP/FP.
+  HotspotStackFrame ctx_frame(ucontext);
+  uintptr_t saved_ctx_pc = 0, saved_ctx_sp = 0, saved_ctx_fp = 0;
+  if (ucontext != NULL) {
+    saved_ctx_pc = ctx_frame.pc();
+    saved_ctx_sp = ctx_frame.sp();
+    saved_ctx_fp = ctx_frame.fp();
+  }
+
   sigjmp_buf crash_protection_ctx;
   JmpCtxScope jmp_scope(prof_thread);
 
@@ -1273,6 +1291,9 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
     // A recovered siglongjmp bypasses AsyncSampleMutex destructors, so restore
     // the per-thread guard to its pre-walk value.
     prof_thread->set_unwinding_Java(prev_unwinding_java);
+    if (ucontext != NULL) {
+      ctx_frame.restore(saved_ctx_pc, saved_ctx_sp, saved_ctx_fp);
+    }
     if (truncated) {
       *truncated = true;
     }
