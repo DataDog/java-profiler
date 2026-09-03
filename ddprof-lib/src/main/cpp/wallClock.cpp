@@ -11,7 +11,6 @@
 #include "context.h"
 #include "context_api.h"
 #include "debugSupport.h"
-#include "jvmThread.h"
 #include "libraries.h"
 #include "log.h"
 #include "otel_context.h"

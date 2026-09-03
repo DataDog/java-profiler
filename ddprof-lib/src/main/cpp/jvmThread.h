@@ -10,7 +10,6 @@
 #include <jvmti.h>
 
 #include "threadLocal.h"
-#include "threadLocalData.h"
 
 /**
  * JVMThread represents a native JVM thread that is JVM implementation agnostic
@@ -54,21 +53,5 @@ public:
 private:
     static void* currentThreadSlow();
 };
-
-// Shared init-window guard used by the CPU/wall profiling signal handlers.
-// Guards against the race window between Profiler::registerThread() and
-// thread_native_entry setting JVM TLS (PROF-13072): a pure native thread
-// (where JVMThread::current() is always null) is allowed through once its
-// one-shot init window has ticked down. Returns true if the caller should
-// tick-and-return, in which case the tick has already happened. All call
-// sites are signal handlers holding an ErrnoPreserver, so no manual errno
-// handling is needed on this return path.
-static inline bool tickInitWindowIfNeeded(ProfiledThread* current) {
-    if (JVMThread::current() == nullptr && current->inInitWindow()) {
-        current->tickInitWindow();
-        return true;
-    }
-    return false;
-}
 
 #endif // _JVMTHREAD_H

@@ -22,7 +22,6 @@
 #include "ctimer.h"
 #include "signalInflight.h"
 #include "debugSupport.h"
-#include "jvmThread.h"
 #include "libraries.h"
 #include "log.h"
 #include "profiler.h"

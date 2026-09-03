@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// Unit tests for tickInitWindowIfNeeded() (jvmThread.h).
+// Unit tests for tickInitWindowIfNeeded() (threadLocalData.inline.h).
 //
 // This gtest binary has no live JVM attached, so JVMThread::_jvm_thread's
 // pthread key is never established by the normal path (see jvmSupport_ut.cpp
@@ -16,8 +16,23 @@
 
 #include <gtest/gtest.h>
 #include <pthread.h>
+#include <atomic>
+#include <cstdint>
 #include "jvmThread.h"
 #include "threadLocalData.inline.h"
+
+namespace {
+// A marker value guaranteed unique across the whole test binary run, so the
+// initializeKey() scan below can never land on a stale key from an earlier
+// test. Using `this` here would not be safe: successive TickInitWindowTest
+// instances are allocated and freed by gtest between tests, so the allocator
+// commonly hands the same address back out, and an earlier test's key (never
+// deleted -- see TearDown) would still hold that now-reused address.
+void* nextUniqueMarker() {
+    static std::atomic<uintptr_t> counter{1};
+    return reinterpret_cast<void*>(counter.fetch_add(1));
+}
+}  // namespace
 
 class JVMThreadTestAccessor {
 public:
@@ -34,9 +49,14 @@ protected:
         ASSERT_NE(nullptr, _pt);
 
         ASSERT_EQ(0, pthread_key_create(&_key, nullptr));
-        void* marker = reinterpret_cast<void*>(this);
-        ASSERT_EQ(0, pthread_setspecific(_key, marker));
-        ASSERT_TRUE(JVMThreadTestAccessor::initializeKey(marker));
+        _marker = nextUniqueMarker();
+        ASSERT_EQ(0, pthread_setspecific(_key, _marker));
+        ASSERT_TRUE(JVMThreadTestAccessor::initializeKey(_marker));
+        // initializeKey() scans all live pthread keys for one holding `marker`;
+        // guard against it landing on some other stale slot that happens to
+        // hold the same pointer value, which would make current()/
+        // setJvmThreadCurrent() disagree on which key they're touching.
+        ASSERT_EQ(_key, JVMThread::key());
     }
 
     void TearDown() override {
@@ -55,6 +75,7 @@ protected:
 
     ProfiledThread* _pt = nullptr;
     pthread_key_t _key = 0;
+    void* _marker = nullptr;
 };
 
 // JVMThread::current() == nullptr, not in window -> false.
@@ -79,7 +100,7 @@ TEST_F(TickInitWindowTest, NoJvmThreadInWindowReturnsTrueAndTicks) {
 
 // JVMThread::current() != nullptr, not in window -> false.
 TEST_F(TickInitWindowTest, HasJvmThreadNotInWindowReturnsFalse) {
-    setJvmThreadCurrent(reinterpret_cast<void*>(this));
+    setJvmThreadCurrent(_marker);
     ASSERT_FALSE(_pt->inInitWindow());
 
     EXPECT_FALSE(tickInitWindowIfNeeded(_pt));
@@ -89,7 +110,7 @@ TEST_F(TickInitWindowTest, HasJvmThreadNotInWindowReturnsFalse) {
 // JVM already knows about must never take the init-window bypass. This is
 // the case that would break if && were mutated to ||.
 TEST_F(TickInitWindowTest, HasJvmThreadInWindowReturnsFalse) {
-    setJvmThreadCurrent(reinterpret_cast<void*>(this));
+    setJvmThreadCurrent(_marker);
     _pt->startInitWindow();
     ASSERT_TRUE(_pt->inInitWindow());
 

@@ -18,7 +18,6 @@
 #include "itimer.h"
 #include "counters.h"
 #include "debugSupport.h"
-#include "jvmThread.h"
 #include "os.h"
 #include "profiler.h"
 #include "signalInflight.h"

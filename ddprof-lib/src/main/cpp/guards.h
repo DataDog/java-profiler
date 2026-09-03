@@ -102,12 +102,16 @@ private:
 };
 
 // Declare a scope guard local that increments the depth on entry and
-// decrements on scope exit.  Use as the first statement after any
-// foreign-signal-origin rejection check, before any profiling-owned work.
-// If the handler also needs to preserve errno across its early returns,
-// declare an ErrnoPreserver before this macro -- it must be the
+// decrements on scope exit.  In the common case, use as the first statement
+// after any foreign-signal-origin rejection check, before any profiling-owned
+// work. If the handler also needs to preserve errno across its early
+// returns, declare an ErrnoPreserver before this macro -- it must be the
 // first-declared local in the handler so it destructs last, after every
-// other guard (including this one) has had a chance to touch errno.
+// other guard (including this one) has had a chance to touch errno. The same
+// ordering applies to any other guard whose cleanup must still run on the
+// drop path below (e.g. PerfEvents::signalHandler's PerfFdRearmGuard):
+// declare it before this macro too, so its destructor still fires when
+// SIGNAL_HANDLER_GUARD_OR_DROP() returns early.
 #define SIGNAL_HANDLER_GUARD_OR_DROP()                      \
       SignalHandlerScope _signal_handler_scope(true);       \
       if (!_signal_handler_scope.isActive()) {              \
