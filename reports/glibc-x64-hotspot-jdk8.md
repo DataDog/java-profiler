@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk8
 
 ## glibc-x64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-09-03 05:48:53 EDT
+**Date:** 2026-09-03 09:41:20 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 168 |
-| Sample Rate | 2.80/sec |
-| Health Score | 175% |
-| Threads | 5 |
+| CPU Samples | 231 |
+| Sample Rate | 3.85/sec |
+| Health Score | 241% |
+| Threads | 6 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 158 |
-| Sample Rate | 2.63/sec |
-| Health Score | 164% |
-| Threads | 7 |
+| CPU Samples | 212 |
+| Sample Rate | 3.53/sec |
+| Health Score | 221% |
+| Threads | 8 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 96-96 cores)</summary>
 
 ```
-1788428673 96
-1788428678 96
-1788428683 96
-1788428688 96
-1788428693 96
-1788428698 96
-1788428703 96
-1788428708 96
-1788428713 96
-1788428718 96
-1788428723 96
-1788428728 96
-1788428733 96
-1788428738 96
-1788428743 96
-1788428748 96
-1788428753 96
-1788428758 96
-1788428763 96
-1788428768 96
+1788442529 96
+1788442534 96
+1788442539 96
+1788442544 96
+1788442549 96
+1788442554 96
+1788442559 96
+1788442564 96
+1788442569 96
+1788442574 96
+1788442579 96
+1788442584 96
+1788442589 96
+1788442594 96
+1788442599 96
+1788442604 96
+1788442609 96
+1788442614 96
+1788442620 96
+1788442625 96
 ```
 </details>
 
