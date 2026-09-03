@@ -20,6 +20,14 @@ and [`memory-sweep-results-linux.md`](memory-sweep-results-linux.md).
 > Only about a third of it is memory the profiler itself holds; the rest is memory it
 > *causes* — the JVM commits more, and the C allocator retains more. All of it goes
 > away when profiling is switched off, so all of it counts.
+>
+> **The tracer is not in these numbers, and the tracer is the bigger cost.** Every
+> measurement here compares *tracing + profiling* against *tracing only*, so
+> dd-trace-java's own overhead runs in both arms and cancels out entirely. For scale:
+> on this same workload the tracer costs roughly **136 MB** against a no-APM baseline,
+> against the profiler's ~104 MB by that same older measurement. So if someone asks
+> "what does APM cost", the answer is not in this document — this only covers the
+> profiler's marginal share on top of a tracer that is already running.
 
 ---
 
