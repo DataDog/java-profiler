@@ -52,6 +52,14 @@ public:
     // ucontext is the exact one the kernel uses to resume the sampled
     // thread when the signal handler returns.
     //
+    // `partial_result`, if non-null, is the caller's own accumulator for
+    // whatever `work` has already committed to the output buffer (e.g.
+    // walkJavaStack's java_frames): getJavaTraceAsync() can fault *after*
+    // already returning a valid frame count and filling `frames` (e.g. inside
+    // fillFrameTypes()/isCarryingVirtualThread()'s follow-up work), and that
+    // partial progress must come back as a truncated-but-valid count rather
+    // than being discarded as zero frames.
+    //
     // Extracted into one place, rather than hand-rolled separately in
     // walkJavaStack(), so production and its regression test invoke the
     // identical recovery branch -- see hotspot_crash_protection_ut.cpp's
@@ -59,7 +67,7 @@ public:
     // std::function<int()> so the hot sample path pays no allocation for
     // captures.
     template <typename Fn>
-    static int withUcontextFaultRecovery(void* ucontext, ProfiledThread* prof_thread, bool* truncated, Fn&& work) {
+    static int withUcontextFaultRecovery(void* ucontext, ProfiledThread* prof_thread, bool* truncated, Fn&& work, volatile int* partial_result = nullptr) {
         const bool prev_unwinding_java = prof_thread->is_unwinding_Java();
         StackFrame::RegisterSnapshot ctx_snapshot(ucontext);
 
@@ -78,7 +86,7 @@ public:
             if (truncated) {
                 *truncated = true;
             }
-            return 0;
+            return partial_result ? *partial_result : 0;
         }
         jmp_scope.install(&crash_protection_ctx);
         return work();

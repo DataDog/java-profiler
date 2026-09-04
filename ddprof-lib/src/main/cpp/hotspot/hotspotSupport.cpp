@@ -1148,7 +1148,6 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
               trace.frames--;
             }
             for (int i = 0; trace.num_frames < 0 && i < PROBE_SP_LIMIT; i++) {
-              // PROBE_SP walks past the real frame boundary by design;
               frame.sp() = frame.sp() + sizeof(void*);
               JVMSupport::jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
             }
@@ -1270,8 +1269,8 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   // AsyncGetCallTrace call) is caught by Profiler::checkFault() and
   // recovered instead of crashing the process -- see its own comment for why
   // it also restores the ucontext.
+  volatile int java_frames = 0;
   return withUcontextFaultRecovery(ucontext, prof_thread, truncated, [&]() -> int {
-    int java_frames = 0;
     if (features.mixed) {
       java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
     } else if (isHookPrefixedSample(request.event_type)) {
@@ -1324,7 +1323,7 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
       }
     }
     return java_frames;
-  });
+  }, &java_frames);
 }
 
 static void patchClassLoaderData(JNIEnv* jni, jclass klass) {

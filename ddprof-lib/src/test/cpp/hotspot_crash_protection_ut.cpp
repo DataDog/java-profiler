@@ -645,6 +645,17 @@ protected:
         // arbitrary values through StackFrame::pc()/sp()/fp() (references
         // into uc_mcontext), so a real, live context is unnecessary here.
         _ctx = ucontext_t{};
+
+        // Seed with distinct non-zero values so the restore assertions below
+        // are actually exercised. A zeroed ucontext makes fp's mutation
+        // (`frame.fp() = saved_sp`, mirroring getJavaTraceAsync) a no-op --
+        // saved_sp is 0, same as fp's own untouched value -- so a broken
+        // restore()/no-restore-at-all would pass EXPECT_EQ(saved_fp,
+        // frame.fp()) by coincidence rather than by actually restoring.
+        StackFrame seed(&_ctx);
+        seed.pc() = 0xAAAA1000;
+        seed.sp() = 0xBBBB2000;
+        seed.fp() = 0xCCCC3000;
     }
 
     void TearDown() override {
