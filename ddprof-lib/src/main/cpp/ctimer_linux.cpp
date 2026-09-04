@@ -216,6 +216,7 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   SIGNAL_HANDLER_GUARD_OR_DROP();
   InflightGuard inflight;
   ProfiledThread *current = SIGNAL_HANDLER_CURRENT_THREAD();
+  assert(current != nullptr);
   assert(!current->isDeepCrashHandler());
 
   CriticalSection cs(current);
@@ -231,10 +232,10 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   }
 
   current->noteCPUSample(Profiler::instance()->recordingEpoch());
-  int tid = current->tid();
 
   {
-    SighandlerTidScope sighandlerTid(tid);
+    int tid = current->tid();
+    SighandlerTidScope sighandler_tid(tid);
     ExecutionEvent event;
     event._execution_mode = getThreadExecutionMode();
     // Opted into JVMTI delegation; drop the sample if the JVM rejects the
@@ -280,10 +281,10 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     return;
   }
   current->noteCPUSample(Profiler::instance()->recordingEpoch());
-  int tid = current->tid();
 
   {
-    SighandlerTidScope sighandlerTid(tid);
+    int tid = current->tid();
+    SighandlerTidScope sighandler_tid(tid);
     ExecutionEvent event;
     event._execution_mode = getThreadExecutionMode();
     Profiler::instance()->recordSample(ucontext, _interval, tid, BCI_CPU, 0,

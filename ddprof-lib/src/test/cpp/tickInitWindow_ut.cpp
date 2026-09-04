@@ -20,10 +20,14 @@
 
 #include <gtest/gtest.h>
 #include "threadLocalData.inline.h"
+#include "gtest_crash_handler.h"
+
+static constexpr char TICKINITWINDOW_TEST_NAME[] = "TickInitWindowImplTest";
 
 class TickInitWindowImplTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        installGtestCrashHandler<TICKINITWINDOW_TEST_NAME>();
         ProfiledThread::initCurrentThread();
         _pt = ProfiledThread::current();
         ASSERT_NE(nullptr, _pt);
@@ -31,6 +35,7 @@ protected:
 
     void TearDown() override {
         ProfiledThread::release();
+        restoreDefaultSignalHandlers();
     }
 
     ProfiledThread* _pt = nullptr;

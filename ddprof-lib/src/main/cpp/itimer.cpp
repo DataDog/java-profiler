@@ -54,11 +54,14 @@ void ITimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   if (!cs.entered()) {
     return;  // Another critical section is active, defer profiling
   }
+  // The init-window guard (tickInitWindowIfNeeded()) that the CTimer/WallClock
+  // handlers run here is deliberately not applied: this engine never had it,
+  // and adding it would be a behaviour change beyond a boilerplate extraction.
   current->noteCPUSample(Profiler::instance()->recordingEpoch());
-  int tid = current->tid();
 
   {
-    SighandlerTidScope sighandlerTid(tid);
+    int tid = current->tid();
+    SighandlerTidScope sighandler_tid(tid);
     ExecutionEvent event;
     event._execution_mode = getThreadExecutionMode();
     Profiler::instance()->recordSample(ucontext, _interval, tid, BCI_CPU, 0,
@@ -122,11 +125,11 @@ void ITimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   if (tickInitWindowIfNeeded(current)) {
     return;
   }
-  int tid = current->tid();
   current->noteCPUSample(Profiler::instance()->recordingEpoch());
 
   {
-    SighandlerTidScope sighandlerTid(tid);
+    int tid = current->tid();
+    SighandlerTidScope sighandler_tid(tid);
     ExecutionEvent event;
     event._execution_mode = getThreadExecutionMode();
     // setitimer(ITIMER_PROF) delivers SIGPROF to an arbitrary thread chosen by

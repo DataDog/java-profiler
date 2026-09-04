@@ -11,6 +11,7 @@
 #include "os.h"
 #include "threadLocalData.h"
 #include "threadLocalDataPool.h"
+#include <cassert>
 
 inline ProfiledThread* ProfiledThread::current() {
     if (!isThreadKeyValid()) {
@@ -55,7 +56,9 @@ inline bool ProfiledThread::claimAcquire(int tid) {
 // Core logic of tickInitWindowIfNeeded(), split out so unit tests can drive
 // has_jvm_thread directly with a plain bool instead of needing a live
 // JVMThread::current(). See tickInitWindow_ut.cpp.
-static inline bool tickInitWindowIfNeededImpl(bool has_jvm_thread, ProfiledThread* current) {
+// `current` must not be null.
+inline bool tickInitWindowIfNeededImpl(bool has_jvm_thread, ProfiledThread* current) {
+    assert(current != nullptr);
     if (!has_jvm_thread && current->inInitWindow()) {
         current->tickInitWindow();
         return true;
@@ -65,13 +68,23 @@ static inline bool tickInitWindowIfNeededImpl(bool has_jvm_thread, ProfiledThrea
 
 // Shared init-window guard used by the CPU/wall profiling signal handlers.
 // Guards against the race window between Profiler::registerThread() and
-// thread_native_entry setting JVM TLS (PROF-13072): a pure native thread
-// (where JVMThread::current() is always null) is allowed through once its
-// one-shot init window has ticked down. Returns true if the caller should
-// tick-and-return, in which case the tick has already happened. All call
-// sites are signal handlers holding an ErrnoPreserver, so no manual errno
-// handling is needed on this return path.
-static inline bool tickInitWindowIfNeeded(ProfiledThread* current) {
+// thread_native_entry setting JVM TLS: a pure native thread (where
+// JVMThread::current() is always null) is allowed through once its one-shot
+// init window has ticked down. Returns true if the caller should
+// tick-and-return, in which case the tick has already happened.
+//
+// Preconditions: `current` must not be null, and the caller must be a signal
+// handler with an ErrnoPreserver live in its own frame or an enclosing one --
+// this return path does no manual errno handling. (For the wallclock engines
+// that guard lives one frame up, in sharedSignalHandler.)
+inline bool tickInitWindowIfNeeded(ProfiledThread* current) {
+    // Cheap per-thread byte first: the window is closed for the rest of the
+    // thread's life after the first signal, so this keeps the pthread TLS
+    // lookup off the hot path. The full condition is a conjunction, so the
+    // ordering is semantically neutral.
+    if (!current->inInitWindow()) {
+        return false;
+    }
     return tickInitWindowIfNeededImpl(JVMThread::current() != nullptr, current);
 }
 

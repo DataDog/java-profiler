@@ -254,7 +254,7 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   int tid = current->tid();
 
   {
-    SighandlerTidScope sighandlerTid(tid);
+    SighandlerTidScope sighandler_tid(tid);
     u64 call_trace_id = 0;
     if (_collapsing) {
       StackFrame frame(ucontext);
@@ -456,7 +456,7 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
   int tid = current->tid();
 
   {
-    SighandlerTidScope sighandlerTid(tid);
+    SighandlerTidScope sighandler_tid(tid);
     ExecutionEvent event;
     OSThreadState state =
         precheck.observed_state_valid ? precheck.observed_state : getOSThreadState();

@@ -313,14 +313,20 @@ public:
 /**
  * RAII guard around the span of a signal handler during which the current
  * thread is the one being sampled. Sets Shims::instance().setSighandlerTid(tid)
- * on construction and resets it to -1 on destruction, guaranteeing the reset
- * happens on every return path out of the guarded scope.
+ * on construction and resets it to -1 on destruction, so the reset happens on
+ * every normal return path out of the guarded scope. A siglongjmp that unwinds
+ * past this frame (see the chained-handler note in Profiler::segvHandler)
+ * bypasses the destructor and leaves the tid pinned, matching the behaviour of
+ * the manual set/reset statements this guard replaces.
  *
- * Must be scoped narrowly around exactly the existing set/reset span (right
- * before recordSample and right after) rather than wrapped around the whole
- * handler: widening the scope would change the window during which the
- * sighandler tid is observably set for other consumers of Shims (e.g.
- * crash-handler / re-entrant stack-walking code).
+ * Not nesting-safe: the destructor restores a hardcoded -1 rather than the
+ * previous tid. Every current call site sits inside a CriticalSection, which
+ * rules out a second live guard on the same thread.
+ *
+ * Must be scoped narrowly around the recordSample call rather than wrapped
+ * around the whole handler: widening the scope would change the window during
+ * which the sighandler tid is observably set for other consumers of Shims
+ * (e.g. crash-handler / re-entrant stack-walking code).
  */
 class SighandlerTidScope {
 public:
@@ -338,19 +344,14 @@ public:
 
 /**
  * RAII guard that saves errno on construction and restores it on
- * destruction, regardless of which return path is taken in between.
+ * destruction, regardless of which normal return path is taken in between.
+ * (A siglongjmp past this frame bypasses the destructor, as it does for any
+ * RAII guard here.)
  *
- * Replaces the previous pattern of `int saved_errno = errno;` at handler
- * entry paired with a manual `errno = saved_errno;` before every return --
- * a pattern that is easy to miss on a newly added return and, even when
- * done consistently, still leaves a gap: any destructor that runs after
- * the manual restore (e.g. a signal-scope guard making a syscall) can
- * clobber errno again before the handler actually exits.
- *
- * To close that gap, declare the ErrnoPreserver as the *first* local in
- * the guarded function: C++ destroys locals in reverse declaration order,
- * so it destructs last, after every other guard's destructor has already
- * run.
+ * Declare it as the *first* local in the guarded function, ahead of every
+ * other guard whose cleanup may touch errno: C++ destroys locals in reverse
+ * declaration order, so it then destructs last and its restore is the final
+ * word on errno.
  */
 class ErrnoPreserver {
 public:

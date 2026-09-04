@@ -780,11 +780,15 @@ private:
 };
 
 void PerfEvents::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
-  ErrnoPreserver errno_preserver;
   if (siginfo->si_code <= 0) {
-    // Looks like an external signal; don't treat as a profiling event
+    // Looks like an external signal; don't treat as a profiling event.
+    // Nothing profiler-owned has run yet, so errno cannot have been touched
+    // and this path needs no ErrnoPreserver.
     return;
   }
+  // Must precede PerfFdRearmGuard so it destructs after it and restores the
+  // errno that the guard's ioctl()/resetBuffer() calls clobber.
+  ErrnoPreserver errno_preserver;
   PerfFdRearmGuard rearm(siginfo->si_fd, OS::threadId());
   SIGNAL_HANDLER_GUARD_OR_DROP();
   InflightGuard inflight;
@@ -803,10 +807,13 @@ void PerfEvents::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   if (!cs.entered()) {
     return;  // Another critical section is active, defer profiling
   }
+  // The init-window guard (tickInitWindowIfNeeded()) that the CTimer/WallClock
+  // handlers run here is deliberately not applied: this engine never had it,
+  // and adding it would be a behaviour change beyond a boilerplate extraction.
   current->noteCPUSample(Profiler::instance()->recordingEpoch());
   int tid = current->tid();
   if (__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
-    SighandlerTidScope sighandlerTid(tid);
+    SighandlerTidScope sighandler_tid(tid);
 
     u64 counter = readCounter(siginfo, ucontext);
     ExecutionEvent event;
