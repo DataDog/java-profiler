@@ -77,8 +77,6 @@ declare -A job_url=()
 job_url["__init__"]=1; unset 'job_url[__init__]'
 declare -A job_duration=()
 job_duration["__init__"]=1; unset 'job_duration[__init__]'
-declare -A job_cell=()
-job_cell["__init__"]=1; unset 'job_cell[__init__]'
 declare -a failed_jobs=()
 declare -a all_platforms=()
 declare -a all_java_versions=()
@@ -126,8 +124,6 @@ while IFS= read -r job; do
         job_status["$key"]="$conclusion"
         job_url["$key"]="$html_url"
         job_duration["$key"]="$duration"
-        # Matches the cell label run_tests_with_retry.sh names its report after.
-        job_cell["$key"]="${libc}-${java_version}-${config}-${arch}${suite_suffix}"
 
         # Track failed jobs
         if [[ "$conclusion" == "failure" ]]; then
@@ -184,10 +180,7 @@ for key in "${!job_status[@]}"; do
     fi
 done
 
-# --- Download failure artifacts (if any failures) ---
-declare -A failure_details=()
-failure_details["__init__"]=1; unset 'failure_details[__init__]'
-
+# --- Download outcome artifacts (for flake_summary.py below) ---
 # Per-cell outcome reports, written by run_tests_with_retry.sh and uploaded
 # whether the cell passed or failed. A cell that only went green on a retry
 # produces no failure artifact at all, so this is the one place its flaky test
@@ -196,34 +189,6 @@ OUTCOME_DIR="./ci-outcome-artifacts"
 log "Downloading CI outcome reports..."
 mkdir -p "$OUTCOME_DIR"
 gh run download "$RUN_ID" --pattern '(ci-outcome)*' --dir "$OUTCOME_DIR" 2>/dev/null || true
-
-for key in "${failed_jobs[@]}"; do
-    cell="${job_cell[$key]:-}"
-    [[ -n "$cell" ]] || continue
-
-    failures=""
-    while IFS= read -r report; do
-        # Flaky as well as persistent: a job that went red purely because an
-        # un-quarantined test failed once and passed on the retry is exactly
-        # the case this machinery creates, and it would otherwise render as
-        # "no detailed failure information".
-        if ! rows=$(jq -r '(.persistent + .flaky)[] | [.test, .message] | @tsv' "$report" 2>&1); then
-            log "WARNING: could not parse outcome report $report: $rows"
-            failures+="| _unreadable outcome report_ | \`$(basename "$report")\` could not be parsed; see the job log |"$'\n'
-            continue
-        fi
-        while IFS=$'\t' read -r test_id message; do
-            [[ -n "$test_id" ]] || continue
-            short_name="${test_id#"${test_id%.*.*}."}"
-            # A pipe in a failure message would split the row into extra
-            # columns and break the table, the way flake_summary.py escapes it.
-            message="${message//|/\\|}"
-            failures+="| \`${short_name}\` | ${message:-Test failed} |"$'\n'
-        done <<< "$rows"
-    done < <(find "$OUTCOME_DIR" -name "${cell}.json" 2>/dev/null)
-
-    failure_details["$key"]="$failures"
-done
 
 # --- Generate markdown ---
 log "Generating markdown summary..."
@@ -293,35 +258,23 @@ log "Generating markdown summary..."
     python3 "$(dirname "$0")/flake_summary.py" --dir "$OUTCOME_DIR" \
     || echo "_Could not render the flaky-test summary; see the job log._"
 
-    # Failed tests details
-    if ((failed_count > 0)); then
-        echo "### Failed Tests"
+    # Failed jobs, linked to their logs. Which tests failed and why is the
+    # flaky/persistent/quarantined tables above -- rendering it a second time
+    # here, grouped by job instead of by test, only gave the same failure two
+    # different messages if the two renderers' sanitizing ever drifted.
+    if ((${#failed_jobs[@]} > 0)); then
+        echo "### Failed Jobs"
         echo ""
-
         for key in "${failed_jobs[@]}"; do
             IFS='|' read -r platform java_version <<< "$key"
             url="${job_url[$key]:-}"
-            details="${failure_details[$key]:-}"
-
-            echo "<details>"
-            echo "<summary><b>${platform} / ${java_version}</b></summary>"
-            echo ""
             if [[ -n "$url" ]]; then
-                echo "**Job:** [View logs]($url)"
-                echo ""
-            fi
-
-            if [[ -n "$details" ]]; then
-                echo "| Test | Error |"
-                echo "|------|-------|"
-                echo -n "$details"
+                echo "- **${platform} / ${java_version}** — [view logs]($url)"
             else
-                echo "_No detailed failure information available. Check the job logs._"
+                echo "- **${platform} / ${java_version}**"
             fi
-            echo ""
-            echo "</details>"
-            echo ""
         done
+        echo ""
     fi
 
     # Summary statistics (single line)

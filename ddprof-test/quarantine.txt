@@ -14,9 +14,12 @@
 #              quarantined is a decision somebody renews rather than the
 #              default. 90 days is the usual span.
 #   cells      Comma-separated globs against the cell name
-#              (<libc>-<jdk>-<config>-<arch>), e.g. "*aarch64*" or
-#              "musl-*,*-asan-*". Leave as "-" to quarantine everywhere; prefer
-#              narrowing it, so the same test breaking elsewhere still gates.
+#              (<libc>-<jdk>-<config>-<arch>[-slow]) -- the slow/e2e suite gets
+#              its own cells, suffixed "-slow", distinct from the regular
+#              suite's -- e.g. "*aarch64*", "musl-*,*-asan-*", or "*-slow" to
+#              target only the slow suite. Leave as "-" to quarantine
+#              everywhere; prefer narrowing it, so the same test breaking
+#              elsewhere still gates.
 #   reason     Free text — what is unreliable and how often. Last field, so it
 #              may contain anything but "|".
 #

@@ -117,24 +117,38 @@ python3 "$SCRIPTS/quarantine.py" --list "$ROOT/ddprof-test/quarantine.txt" valid
   || fail "the committed quarantine list is invalid"
 pass "the committed quarantine list is valid"
 
-echo "== quarantine.py match =="
+echo "== quarantine.find_entry (the rule the gating decision actually uses) =="
 
 write_list "$LIST" "$(entry a.B.c PROF-1 "$(day_offset 30)" '*aarch64*')"
 
-result=$(printf 'a.B.c\n' | python3 "$SCRIPTS/quarantine.py" --list "$LIST" match --cell "glibc-17-debug-aarch64")
-echo "$result" | grep -q '"quarantined": \["a.B.c"\]' \
-  || fail "expected a.B.c quarantined on an aarch64 cell, got: $result"
+result=$(python3 -c "
+import sys; sys.path.insert(0, '$SCRIPTS')
+import quarantine
+entries = quarantine.load('$LIST')
+print('hit' if quarantine.find_entry(entries, 'a.B.c', 'glibc-17-debug-aarch64') else 'miss')
+")
+[ "$result" = "hit" ] || fail "expected a.B.c quarantined on an aarch64 cell, got: $result"
 pass "a cell glob matches the cells it names"
 
-result=$(printf 'a.B.c\n' | python3 "$SCRIPTS/quarantine.py" --list "$LIST" match --cell "glibc-17-debug-amd64")
-echo "$result" | grep -q '"gating": \["a.B.c"\]' \
-  || fail "expected a.B.c gating on an amd64 cell, got: $result"
+result=$(python3 -c "
+import sys; sys.path.insert(0, '$SCRIPTS')
+import quarantine
+entries = quarantine.load('$LIST')
+print('hit' if quarantine.find_entry(entries, 'a.B.c', 'glibc-17-debug-amd64') else 'miss')
+")
+[ "$result" = "miss" ] || fail "expected a.B.c gating (not quarantined) on an amd64 cell, got: $result"
 pass "a cell glob does not match other cells"
 
 write_list "$LIST" "$(entry 'a.B.*' PROF-1 "$(day_offset 30)")"
-result=$(printf 'a.B.c\na.B.d\na.C.e\n' | python3 "$SCRIPTS/quarantine.py" --list "$LIST" match --cell "any")
-echo "$result" | grep -q '"gating": \["a.C.e"\]' \
-  || fail "expected only a.C.e to gate under a class wildcard, got: $result"
+result=$(python3 -c "
+import sys; sys.path.insert(0, '$SCRIPTS')
+import quarantine
+entries = quarantine.load('$LIST')
+tests = ['a.B.c', 'a.B.d', 'a.C.e']
+gating = [t for t in tests if quarantine.find_entry(entries, t, 'any') is None]
+print(','.join(gating))
+")
+[ "$result" = "a.C.e" ] || fail "expected only a.C.e to gate under a class wildcard, got: $result"
 pass "a class wildcard covers that class only"
 
 echo "== gating: run_tests_with_retry.sh =="
@@ -327,6 +341,112 @@ set -e
 [ "$rc" -ne 0 ] || fail "a final attempt that named no test must not be excused by an earlier attempt's quarantined failure (got exit $rc)"
 pass "a final attempt naming no test is never excused by an earlier attempt's quarantine hit"
 
+# Regression: a final attempt that crashes part-way through still writes JUnit
+# XML for the tests it got to, and those all passed -- so it names no failure
+# of its own and every aggregated failure is quarantined. Gradle blames the
+# abort on the test task itself, so the non-test-task check cannot see it
+# either. Only the attempt's own non-zero exit distinguishes this from the
+# ordinary flaky-then-passed case, and it must stay red.
+CASE="$TEMP_DIR/case-final-attempt-crashed-mid-run"
+mkdir -p "$CASE"
+cat > "$CASE/suite.sh" <<EOS
+#!/usr/bin/env bash
+n=\$(( \$(cat .n 2>/dev/null || echo 0) + 1 )); echo \$n > .n
+OUT=ddprof-test/build/test-results/testDebug
+mkdir -p "\$OUT"
+$(declare -f write_failure_xml)
+$(declare -f write_pass_xml)
+if [ "\$n" -eq 1 ]; then
+  write_failure_xml "\$OUT" "com.dd.WobblyTest" "sometimesFails" "got 2 samples, wanted 50"
+  exit 1
+fi
+write_pass_xml "\$OUT" "com.dd.WobblyTest" "sometimesFails"
+echo "# A fatal error has been detected by the Java Runtime Environment: SIGSEGV"
+echo "Execution failed for task ':ddprof-test:test'."
+echo "> Process 'Gradle Test Executor 3' finished with non-zero exit value 134"
+exit 134
+EOS
+chmod +x "$CASE/suite.sh"
+write_list "$CASE/list.txt" "$(entry com.dd.WobblyTest.sometimesFails PROF-1 "$(day_offset 30)")"
+set +e
+output=$(cd "$CASE" && "$SCRIPTS/run_tests_with_retry.sh" --list list.txt "glibc-17-debug-amd64" -- ./suite.sh 2>&1)
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "a final attempt that crashed after recording only passes must not be excused by quarantine (got exit $rc)"
+pass "a final attempt that crashed mid-run is not read as a quarantined pass"
+
+# The counterpart: the same shape without the crash is the ordinary
+# flaky-then-passed case a quarantine entry exists to excuse, and must be
+# green. Without this the guard above could be satisfied by gating everything.
+CASE="$TEMP_DIR/case-quarantined-flake-recovers"
+mkdir -p "$CASE"
+cat > "$CASE/suite.sh" <<EOS
+#!/usr/bin/env bash
+n=\$(( \$(cat .n 2>/dev/null || echo 0) + 1 )); echo \$n > .n
+OUT=ddprof-test/build/test-results/testDebug
+mkdir -p "\$OUT"
+$(declare -f write_failure_xml)
+$(declare -f write_pass_xml)
+if [ "\$n" -eq 1 ]; then
+  write_failure_xml "\$OUT" "com.dd.WobblyTest" "sometimesFails" "got 2 samples, wanted 50"
+  exit 1
+fi
+write_pass_xml "\$OUT" "com.dd.WobblyTest" "sometimesFails"
+exit 0
+EOS
+chmod +x "$CASE/suite.sh"
+write_list "$CASE/list.txt" "$(entry com.dd.WobblyTest.sometimesFails PROF-1 "$(day_offset 30)")"
+set +e
+output=$(cd "$CASE" && "$SCRIPTS/run_tests_with_retry.sh" --list list.txt "glibc-17-debug-amd64" -- ./suite.sh 2>&1)
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "a quarantined flake that passed on retry must stay green (got exit $rc): $output"
+pass "a quarantined flake that recovers on a clean retry is still excused"
+
+# ...but only when the evidence it rests on is complete. Docker writes the
+# JUnit XML as root; if this user cannot take ownership of it, the snapshot is
+# partial, and a partial snapshot is indistinguishable from an attempt whose
+# missing tests all passed. make_results_readable() must report that rather
+# than fail open, and the run must go red.
+CASE="$TEMP_DIR/case-unreadable-results"
+mkdir -p "$CASE/stub-bin"
+cat > "$CASE/stub-bin/find" <<'EOS'
+#!/usr/bin/env bash
+for a in "$@"; do
+  if [ "$a" = "-user" ]; then echo "/root-owned/TEST-Foo.xml"; exit 0; fi
+done
+exec /usr/bin/find "$@"
+EOS
+cat > "$CASE/stub-bin/sudo" <<'EOS'
+#!/usr/bin/env bash
+exit 1
+EOS
+chmod +x "$CASE/stub-bin/find" "$CASE/stub-bin/sudo"
+cat > "$CASE/suite.sh" <<EOS
+#!/usr/bin/env bash
+n=\$(( \$(cat .n 2>/dev/null || echo 0) + 1 )); echo \$n > .n
+OUT=ddprof-test/build/test-results/testDebug
+mkdir -p "\$OUT"
+$(declare -f write_failure_xml)
+$(declare -f write_pass_xml)
+if [ "\$n" -eq 1 ]; then
+  write_failure_xml "\$OUT" "com.dd.WobblyTest" "sometimesFails" "got 2 samples, wanted 50"
+  exit 1
+fi
+write_pass_xml "\$OUT" "com.dd.WobblyTest" "sometimesFails"
+exit 0
+EOS
+chmod +x "$CASE/suite.sh"
+write_list "$CASE/list.txt" "$(entry com.dd.WobblyTest.sometimesFails PROF-1 "$(day_offset 30)")"
+set +e
+output=$(cd "$CASE" && PATH="$CASE/stub-bin:$PATH" "$SCRIPTS/run_tests_with_retry.sh" --list list.txt "glibc-17-debug-amd64" -- ./suite.sh 2>&1)
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "results that could not be made readable must not be excused by quarantine (got exit $rc)"
+echo "$output" | grep -q "suspect" \
+  || fail "expected the suspect evidence to be named as the reason, got: $output"
+pass "evidence that could not be made readable is never excused by the quarantine list"
+
 # A test missing from the retry never re-ran, so it is not evidence of a flake.
 CASE="$TEMP_DIR/case-absent-is-not-passed"
 mkdir -p "$CASE/flake-evidence/attempt-1" "$CASE/flake-evidence/attempt-2"
@@ -343,6 +463,35 @@ assert not d['flaky'], 'a test absent from the retry must not be called flaky: %
 assert len(d['persistent']) == 1, d
 " "$CASE/out.json" || fail "absence from a later attempt was treated as a pass"
 pass "a test missing from the retry is not mistaken for a flake"
+
+# A <testcase> missing name or classname cannot be attributed to any real
+# test; it must be skipped rather than counted as a failure or crashing the
+# classifier, while a properly-identified failure alongside it still counts.
+CASE="$TEMP_DIR/case-unnamed-testcase"
+mkdir -p "$CASE/flake-evidence/attempt-1"
+cat > "$CASE/flake-evidence/attempt-1/TEST-com.dd.Weird.xml" <<'EOS'
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.dd.Weird" tests="2" failures="2">
+  <testcase classname="com.dd.Weird">
+    <failure message="no name attribute" type="AssertionError"/>
+  </testcase>
+  <testcase name="realFailure" classname="com.dd.Weird">
+    <failure message="boom" type="AssertionError"/>
+  </testcase>
+</testsuite>
+EOS
+write_list "$CASE/list.txt"
+python3 "$SCRIPTS/flake_report.py" --list "$CASE/list.txt" report \
+  --cell "glibc-17-debug-amd64" --evidence-dir "$CASE/flake-evidence" \
+  --final-attempt 1 --out "$CASE/out.json" >/dev/null 2>&1 \
+  || fail "a testcase with no name attribute must not crash the classifier"
+python3 -c "
+import json,sys
+d = json.load(open(sys.argv[1]))
+assert d['failure_count'] == 1, d
+assert d['persistent'] and d['persistent'][0]['test'] == 'com.dd.Weird.realFailure', d
+" "$CASE/out.json" || fail "the unnamed testcase was not ignored, or the real failure was missed"
+pass "a testcase with no name attribute is ignored, not mistaken for a failure"
 
 # A stray attempt-* directory must not abort classification, and attempt-1
 # must still be read as the (only, and so final) real attempt.
@@ -394,11 +543,14 @@ echo "== flake_summary.py renders =="
 CASE="$TEMP_DIR/case-summary"
 mkdir -p "$CASE/outcomes"
 cat > "$CASE/outcomes/glibc-17-debug-aarch64.json" <<'EOS'
-{"cell": "glibc-17-debug-aarch64", "attempts": 2, "status": "fail",
+{"cell": "glibc-17-debug-aarch64", "attempts": 2, "attempts_run": 2,
  "flaky": [{"test": "com.dd.WobblyTest.sometimesFails", "failed_attempts": [1],
-            "passed_attempts": [2], "message": "got 2 | wanted 50",
+            "message": "got 2 | wanted 50",
             "flaky": true, "quarantined": false, "ticket": null}],
- "persistent": [], "quarantined": [], "gating_count": 1, "failure_count": 1}
+ "persistent": [], "quarantined": [], "gating_count": 1, "failure_count": 1,
+ "final_attempt_ran": true, "final_attempt_gating_count": 0,
+ "final_attempt_failure_count": 0, "other_task_failures": [],
+ "gates": true, "gate_reason": "1 un-quarantined failure(s)"}
 EOS
 summary=$(python3 "$SCRIPTS/flake_summary.py" --dir "$CASE/outcomes") \
   || fail "flake_summary.py must render without error"

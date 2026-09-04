@@ -43,10 +43,25 @@ MAX_ATTEMPTS="${MAX_ATTEMPTS:-2}"
 MAX_FAILURES_TO_RETRY="${MAX_FAILURES_TO_RETRY:-3}"
 RETRY_ON_NO_TEST_FAILURES="${RETRY_ON_NO_TEST_FAILURES:-0}"
 
+case "$MAX_ATTEMPTS" in
+  ''|*[!0-9]*|0)
+    echo "::error::MAX_ATTEMPTS must be a positive integer, got '${MAX_ATTEMPTS}'"
+    exit 1
+    ;;
+esac
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RESULTS_DIR="ddprof-test/build/test-results"
+# Overridable so a caller outside :ddprof-test's own Gradle layout can point
+# this at its own results directory instead of silently classifying an empty,
+# never-populated evidence set as "no observed tests".
+RESULTS_DIR="${RESULTS_DIR:-ddprof-test/build/test-results}"
 EVIDENCE_DIR="flake-evidence"
 OUTCOME_FILE="ci-outcome/${CELL}.json"
+# Set when an attempt's evidence cannot be trusted as belonging to that
+# attempt alone (e.g. a stale RESULTS_DIR that could not be cleared) -- the
+# quarantine excuse must never fire on suspect evidence, no matter what the
+# counts say.
+EVIDENCE_SUSPECT=0
 
 # Snapshot this attempt's JUnit XML before the next one overwrites it -- the
 # whole point is to compare attempts, and Gradle reuses the same directory.
@@ -65,17 +80,35 @@ make_results_readable() {
   if foreign=$(find "$RESULTS_DIR" ! -user "$(id -u)" -print 2>/dev/null | head -n 1); then
     [ -n "$foreign" ] || { [ -w "$RESULTS_DIR" ] && [ -w "$(dirname "$RESULTS_DIR")" ] && return 0; }
   fi
-  command -v sudo >/dev/null 2>&1 || return 0
-  # Include the parent so the pre-attempt `rm -rf "$RESULTS_DIR"` below (which
-  # needs to unlink the directory itself, not just its contents) can succeed.
-  sudo chmod -R a+rwX "$(dirname "$RESULTS_DIR")" 2>/dev/null \
-    || echo "::warning::Could not take ownership of ${RESULTS_DIR}; flake evidence may be incomplete"
+  # Returning non-zero here is the whole contract: the tree holds files this
+  # user cannot read, so any snapshot taken from it is partial, and a partial
+  # snapshot is exactly what lets a final attempt's missing failures read back
+  # as a quarantined pass. The caller turns that into EVIDENCE_SUSPECT.
+  if ! command -v sudo >/dev/null 2>&1; then
+    echo "::warning::${RESULTS_DIR} has files not owned by $(id -un) and sudo is unavailable to fix that; flake evidence may be incomplete"
+    return 1
+  fi
+  # Non-recursive on the parent: it only needs its own write bit so the
+  # pre-attempt `rm -rf "$RESULTS_DIR"` below can unlink the directory itself.
+  # Recursing over the whole module build tree (classes, jars, native libs,
+  # kept JFRs) would be orders of magnitude more inodes than needed and makes
+  # unrelated build output world-writable.
+  local ok=0
+  sudo chmod a+rwX "$(dirname "$RESULTS_DIR")" 2>/dev/null \
+    || { ok=1; echo "::warning::Could not make $(dirname "$RESULTS_DIR") writable; flake evidence may be incomplete"; }
+  sudo chmod -R a+rwX "$RESULTS_DIR" 2>/dev/null \
+    || { ok=1; echo "::warning::Could not take ownership of ${RESULTS_DIR}; flake evidence may be incomplete"; }
+  return "$ok"
 }
 
 snapshot() {
   local attempt="$1"
   local dest="${EVIDENCE_DIR}/attempt-${attempt}"
-  make_results_readable
+  # The XML being snapshotted was written by the command that just ran, after
+  # the loop-top make_results_readable() -- under Docker it lands root-owned,
+  # so read access has to be taken again here or the cp below fails and the
+  # cell silently loses its flake evidence.
+  make_results_readable || EVIDENCE_SUSPECT=1
   rm -rf "$dest" || echo "::warning::Could not clear ${dest}; attempt ${attempt} evidence may be stale"
   mkdir -p "$dest"
   if [ -d "$RESULTS_DIR" ]; then
@@ -88,29 +121,29 @@ snapshot() {
 # the quarantine list has any business excusing.
 TEST_TASK_PATTERN="${TEST_TASK_PATTERN:-:ddprof-test:test}"
 
-# Task failures the quarantine list must never wave through.
-non_test_task_failures() {
-  local log="$1"
-  [ -f "$log" ] || return 0
-  grep -oE "Execution failed for task '[^']+'" "$log" 2>/dev/null \
-    | sed -E "s/^Execution failed for task '//; s/'$//" \
-    | grep -v -F "$TEST_TASK_PATTERN" \
-    | sort -u
-}
-
 # Self-contained state: a leftover attempt-2 from an earlier run on a reused
 # workspace would be read back as this run's evidence, inflating the attempt
 # count and importing failures that never happened here.
 rm -rf "$EVIDENCE_DIR" "$(dirname "$OUTCOME_FILE")"
 
 EXIT_CODE=1
-ATTEMPT_LOG=""
+# A single, per-attempt-truncated log: only the final attempt's is ever read
+# (by flake_report.py's non-test-task-failure check below), and keeping one
+# copy per attempt on disk earned nothing but wasted space.
+ATTEMPT_LOG="build/logs/attempt.log"
 for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
   mkdir -p build/logs
-  make_results_readable
-  rm -rf "$RESULTS_DIR" \
-    || echo "::warning::Could not clear ${RESULTS_DIR} before attempt ${attempt}; it may inherit the previous attempt's results and a flake will look persistent"
-  ATTEMPT_LOG="build/logs/attempt-${attempt}.log"
+  make_results_readable || EVIDENCE_SUSPECT=1
+  if ! rm -rf "$RESULTS_DIR"; then
+    echo "::warning::Could not clear ${RESULTS_DIR} before attempt ${attempt}; it may inherit the previous attempt's results and a flake will look persistent"
+    # A stale RESULTS_DIR here means this attempt's snapshot can end up being
+    # the *previous* attempt's JUnit XML, which would let a final attempt that
+    # actually crashed without running a single test be read back as having
+    # "passed with only quarantined failures". Never let the quarantine excuse
+    # fire on evidence that might not be this attempt's own.
+    EVIDENCE_SUSPECT=1
+  fi
+  : > "$ATTEMPT_LOG"
 
   "$@" 2>&1 \
     | tee -a build/test-raw.log \
@@ -118,7 +151,14 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
     | python3 -u "${HERE}/filter_gradle_log.py"
   EXIT_CODE=${PIPESTATUS[0]}
 
-  snapshot "$attempt"
+  # A first-attempt pass has no prior attempt to compare against, so its
+  # snapshot could only ever yield an empty flake report; skip the find
+  # traversal, possible sudo chmod, and recursive copy that nobody will read.
+  # A later-attempt pass still needs its snapshot -- that is the evidence that
+  # proves the earlier failure was a flake.
+  if [ "$EXIT_CODE" -ne 0 ] || [ "$attempt" -gt 1 ]; then
+    snapshot "$attempt"
+  fi
 
   if [ "$EXIT_CODE" -eq 0 ]; then
     break
@@ -158,11 +198,17 @@ for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
   ./gradlew --stop 2>/dev/null || true
 done
 
-python3 "${HERE}/flake_report.py" --list "$QUARANTINE_LIST" report \
-  --cell "$CELL" \
-  --evidence-dir "$EVIDENCE_DIR" \
-  --final-attempt "$attempt" \
+REPORT_ARGS=(--list "$QUARANTINE_LIST" report
+  --cell "$CELL"
+  --evidence-dir "$EVIDENCE_DIR"
+  --final-attempt "$attempt"
   --out "$OUTCOME_FILE"
+  --attempt-log "$ATTEMPT_LOG"
+  --final-attempt-exit-code "$EXIT_CODE"
+  --test-task-pattern "$TEST_TASK_PATTERN")
+[ "$EVIDENCE_SUSPECT" = "1" ] && REPORT_ARGS+=(--evidence-suspect)
+
+python3 "${HERE}/flake_report.py" "${REPORT_ARGS[@]}"
 REPORT_STATUS=$?
 
 # A classifier that did not run cannot vouch for a green suite: it is the only
@@ -173,75 +219,47 @@ if [ "$REPORT_STATUS" -ne 0 ]; then
   exit 1
 fi
 
-# The quarantine list, not the retry, decides whether the job goes red.
-#
-#   any un-quarantined failure  -> red, even if the retry passed. A flake that
-#                                  nobody has quarantined is still a failure;
-#                                  letting the retry excuse it is how flakes get
-#                                  tolerated for years.
-#   every failure quarantined   -> green, but only when the *final* attempt is
-#                                  the one vouching for that: failures
-#                                  aggregated across every attempt can all be
-#                                  quarantined while the final attempt itself
-#                                  failed for a reason that named no test at
-#                                  all (a docker or Gradle failure, an
-#                                  OOM-killed daemon, an ASan init abort), and
-#                                  the list has no business excusing that.
-#   no test named               -> keep the command's own exit code: a compile
-#                                  error or a dead runner is nothing to do with
-#                                  quarantine.
+# flake_report.py owns the gating verdict -- it has every count and the
+# quarantine list in hand, so re-deriving the decision here (as this script
+# used to, with an inline python, two case sanity checks, and a bash
+# if/elif chain) is one more independent reader of the outcome-JSON schema
+# for no benefit. "gates" is true/false to override EXIT_CODE, or the string
+# "none" when there is no failure to have an opinion about, in which case the
+# command's own exit code stands (a compile error or a dead runner is nothing
+# to do with quarantine).
 if [ -f "$OUTCOME_FILE" ]; then
-  summary=$(python3 -c "
+  decision=$(python3 -c "
 import json, sys
-d = json.load(open(sys.argv[1]))
-final_gating = d['final_attempt_gating_count']
-print(d['gating_count'], d['failure_count'], int(d['final_attempt_ran']),
-      final_gating if final_gating is not None else -1)
+try:
+    d = json.load(open(sys.argv[1]))
+    if 'gates' not in d:
+        sys.exit('missing key: gates')
+except Exception as e:
+    sys.exit(str(e))
+gates = d['gates']
+print('none' if gates is None else ('true' if gates else 'false'))
+print(d.get('gate_reason') or '')
 " "$OUTCOME_FILE") || {
-    echo "::error::Could not read ${OUTCOME_FILE}; failing the job rather than guessing whether its failures gate"
+    echo "::error::Could not read ${OUTCOME_FILE} (${decision:-no output}); failing the job rather than guessing whether its failures gate"
     exit 1
   }
-  read -r gating failures final_ran final_gating <<< "$summary"
-  case "${gating}:${failures}:${final_ran}" in
-    *[!0-9:]*|:*|*:|*::*)
-      echo "::error::${OUTCOME_FILE} did not yield usable counts (got '${summary}'); failing the job"
+  gates=$(echo "$decision" | sed -n '1p')
+  reason=$(echo "$decision" | sed -n '2p')
+  case "$gates" in
+    true)
+      echo "::error::${CELL} fails: ${reason}"
+      EXIT_CODE=1
+      ;;
+    false)
+      echo "::warning::${CELL} is not failing the job: ${reason}"
+      EXIT_CODE=0
+      ;;
+    none) ;;
+    *)
+      echo "::error::${OUTCOME_FILE} did not yield a usable gating decision (got '${gates}'); failing the job"
       exit 1
       ;;
   esac
-  case "$final_gating" in
-    -1|*[!0-9]*)
-      [ "$final_gating" = "-1" ] || {
-        echo "::error::${OUTCOME_FILE} did not yield a usable final-attempt gating count (got '${summary}'); failing the job"
-        exit 1
-      }
-      ;;
-  esac
-
-  if [ "$gating" -gt 0 ]; then
-    EXIT_CODE=1
-  elif [ "$failures" -gt 0 ]; then
-    if [ "$final_ran" -ne 1 ] || [ "$final_gating" -ne 0 ]; then
-      # The final attempt either produced no test results of its own (a
-      # build or infrastructure failure, not something quarantine speaks to)
-      # or still has its own named failures unquarantined -- either way the
-      # list has nothing to say about why this attempt is red.
-      echo "::error::${CELL}'s final attempt did not itself pass with only quarantined failures (ran=${final_ran}, its own gating count=${final_gating}); failing the job rather than trusting failures from an earlier attempt"
-      EXIT_CODE=1
-    else
-      # Quarantine excuses the tests it names. It does not excuse the build:
-      # if this same invocation also failed a compile, a native gtest or a
-      # verification task, that failure has nothing to do with the list and
-      # zeroing the exit code here would bury it.
-      other=$(non_test_task_failures "$ATTEMPT_LOG")
-      if [ -n "$other" ]; then
-        echo "::error::All ${failures} failing test(s) in ${CELL} are quarantined, but the build also failed in $(echo "$other" | tr '\n' ' ')— failing the job"
-        EXIT_CODE=1
-      else
-        echo "::warning::All ${failures} failing test(s) in ${CELL} are quarantined; not failing the job"
-        EXIT_CODE=0
-      fi
-    fi
-  fi
 fi
 
 exit "$EXIT_CODE"
