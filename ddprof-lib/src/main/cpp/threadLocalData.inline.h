@@ -78,6 +78,7 @@ inline bool tickInitWindowIfNeededImpl(bool has_jvm_thread, ProfiledThread* curr
 // this return path does no manual errno handling. (For the wallclock engines
 // that guard lives one frame up, in sharedSignalHandler.)
 inline bool tickInitWindowIfNeeded(ProfiledThread* current) {
+    assert(current != nullptr);
     // Cheap per-thread byte first: the window is closed for the rest of the
     // thread's life after the first signal, so this keeps the pthread TLS
     // lookup off the hot path. The full condition is a conjunction, so the
