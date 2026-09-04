@@ -7,9 +7,11 @@
 #define THREADLOCALDATA_INLINE_H
 
 #include "guards.h"
+#include "jvmThread.h"
 #include "os.h"
 #include "threadLocalData.h"
 #include "threadLocalDataPool.h"
+#include <cassert>
 
 inline ProfiledThread* ProfiledThread::current() {
     if (!isThreadKeyValid()) {
@@ -51,5 +53,40 @@ inline bool ProfiledThread::claimAcquire(int tid) {
     return false;
 }
 
+// Core logic of tickInitWindowIfNeeded(), split out so unit tests can drive
+// has_jvm_thread directly with a plain bool instead of needing a live
+// JVMThread::current(). See tickInitWindow_ut.cpp.
+// `current` must not be null.
+inline bool tickInitWindowIfNeededImpl(bool has_jvm_thread, ProfiledThread* current) {
+    assert(current != nullptr);
+    if (!has_jvm_thread && current->inInitWindow()) {
+        current->tickInitWindow();
+        return true;
+    }
+    return false;
+}
+
+// Shared init-window guard used by the CPU/wall profiling signal handlers.
+// Guards against the race window between Profiler::registerThread() and
+// thread_native_entry setting JVM TLS: a pure native thread (where
+// JVMThread::current() is always null) is allowed through once its one-shot
+// init window has ticked down. Returns true if the caller should
+// tick-and-return, in which case the tick has already happened.
+//
+// Preconditions: `current` must not be null, and the caller must be a signal
+// handler with an ErrnoPreserver live in its own frame or an enclosing one --
+// this return path does no manual errno handling. (For the wallclock engines
+// that guard lives one frame up, in sharedSignalHandler.)
+inline bool tickInitWindowIfNeeded(ProfiledThread* current) {
+    assert(current != nullptr);
+    // Cheap per-thread byte first: the window is closed for the rest of the
+    // thread's life after the first signal, so this keeps the pthread TLS
+    // lookup off the hot path. The full condition is a conjunction, so the
+    // ordering is semantically neutral.
+    if (!current->inInitWindow()) {
+        return false;
+    }
+    return tickInitWindowIfNeededImpl(JVMThread::current() != nullptr, current);
+}
 
 #endif // THREADLOCALDATA_INLINE_H

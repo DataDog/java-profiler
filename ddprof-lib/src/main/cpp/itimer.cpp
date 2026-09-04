@@ -18,7 +18,6 @@
 #include "itimer.h"
 #include "counters.h"
 #include "debugSupport.h"
-#include "jvmThread.h"
 #include "os.h"
 #include "profiler.h"
 #include "signalInflight.h"
@@ -26,6 +25,7 @@
 #include "threadLocalData.inline.h"
 #include "threadState.inline.h"
 #include "guards.h"
+#include <cassert>
 #include <sys/time.h>
 
 bool ITimer::_enabled = false;
@@ -33,6 +33,7 @@ long ITimer::_interval;
 CStack ITimer::_cstack;
 
 void ITimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
+  ErrnoPreserver errno_preserver;
   SIGNAL_HANDLER_GUARD_OR_DROP();
   // NOTE: ITimer uses setitimer(ITIMER_PROF) which delivers signals with
   // si_code==SI_KERNEL — no sival payload is available. The signal-origin
@@ -41,25 +42,31 @@ void ITimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // feature addresses. Use CTimer (the default) when signal-origin
   // validation is required.
   InflightGuard inflight;
-  if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE))
+  if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
     return;
+  }
 
   ProfiledThread *current = SIGNAL_HANDLER_CURRENT_THREAD();
+  assert(current != nullptr);
 
   // Atomically try to enter critical section - prevents all reentrancy races
   CriticalSection cs(current);
   if (!cs.entered()) {
     return;  // Another critical section is active, defer profiling
   }
+  // The init-window guard (tickInitWindowIfNeeded()) that the CTimer/WallClock
+  // handlers run here is deliberately not applied: this engine never had it,
+  // and adding it would be a behaviour change beyond a boilerplate extraction.
   current->noteCPUSample(Profiler::instance()->recordingEpoch());
-  int tid = current->tid();
-  Shims::instance().setSighandlerTid(tid);
 
-  ExecutionEvent event;
-  event._execution_mode = getThreadExecutionMode();
-  Profiler::instance()->recordSample(ucontext, _interval, tid, BCI_CPU, 0,
-                                     &event);
-  Shims::instance().setSighandlerTid(-1);
+  {
+    int tid = current->tid();
+    SighandlerTidScope sighandler_tid(tid);
+    ExecutionEvent event;
+    event._execution_mode = getThreadExecutionMode();
+    Profiler::instance()->recordSample(ucontext, _interval, tid, BCI_CPU, 0,
+                                       &event);
+  }
 }
 
 Error ITimer::check(Arguments &args) {
@@ -102,40 +109,35 @@ bool ITimerJvmti::_enabled = false;
 long ITimerJvmti::_interval = 0;
 
 void ITimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
-  int saved_errno = errno;
-  SIGNAL_HANDLER_GUARD_OR_DROP_WITH_ERRNO(saved_errno);
+  ErrnoPreserver errno_preserver;
+  SIGNAL_HANDLER_GUARD_OR_DROP();
   ProfiledThread *current = SIGNAL_HANDLER_CURRENT_THREAD();
   assert(current != nullptr);
 
   InflightGuard inflight;
   CriticalSection cs(current);
   if (!cs.entered()) {
-    errno = saved_errno;
     return;
   }
   if (!__atomic_load_n(&_enabled, __ATOMIC_ACQUIRE)) {
-    errno = saved_errno;
     return;
   }
-  if (JVMThread::current() == nullptr
-      && current->inInitWindow()) {
-    current->tickInitWindow();
-    errno = saved_errno;
+  if (tickInitWindowIfNeeded(current)) {
     return;
   }
-  int tid = current->tid();
   current->noteCPUSample(Profiler::instance()->recordingEpoch());
-  Shims::instance().setSighandlerTid(tid);
 
-  ExecutionEvent event;
-  event._execution_mode = getThreadExecutionMode();
-  // setitimer(ITIMER_PROF) delivers SIGPROF to an arbitrary thread chosen by
-  // the OS, so ucontext may be from a JVM-internal thread.  Pass nullptr to
-  // force the JVM into safepoint-based stack walking instead.
-  Profiler::instance()->recordSampleDelegated(nullptr, _interval, tid,
-                                               BCI_CPU, &event);
-  Shims::instance().setSighandlerTid(-1);
-  errno = saved_errno;
+  {
+    int tid = current->tid();
+    SighandlerTidScope sighandler_tid(tid);
+    ExecutionEvent event;
+    event._execution_mode = getThreadExecutionMode();
+    // setitimer(ITIMER_PROF) delivers SIGPROF to an arbitrary thread chosen by
+    // the OS, so ucontext may be from a JVM-internal thread.  Pass nullptr to
+    // force the JVM into safepoint-based stack walking instead.
+    Profiler::instance()->recordSampleDelegated(nullptr, _interval, tid,
+                                                 BCI_CPU, &event);
+  }
 }
 
 Error ITimerJvmti::check(Arguments &args) {

@@ -11,7 +11,6 @@
 #include "context.h"
 #include "context_api.h"
 #include "debugSupport.h"
-#include "jvmThread.h"
 #include "libraries.h"
 #include "log.h"
 #include "otel_context.h"
@@ -205,6 +204,7 @@ bool BaseWallClock::inSyscall(void *ucontext) {
 
 void WallClockASGCT::sharedSignalHandler(int signo, siginfo_t *siginfo,
                                     void *ucontext) {
+  ErrnoPreserver errno_preserver;
   // Reject any SIGVTALRM that did not originate from our rt_tgsigqueueinfo
   // send. Defends against stray in-process tgkill / external sigqueue that
   // would otherwise drive our wallclock sampling path.
@@ -238,12 +238,7 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
   if (!cs.entered()) {
     return;  // Another critical section is active, defer profiling
   }
-  // Guard against the race window between Profiler::registerThread() and
-  // thread_native_entry setting JVM TLS (PROF-13072): skip at most one signal
-  // per thread. Pure native threads (where JVMThread::current() is always null)
-  // are allowed through once the one-shot window expires.
-  if (JVMThread::current() == nullptr && current->inInitWindow()) {
-    current->tickInitWindow();
+  if (tickInitWindowIfNeeded(current)) {
     return;
   }
   // Once-per-run filter (wallprecheck=true): for untraced threads, exact
@@ -257,48 +252,50 @@ void WallClockASGCT::signalHandler(int signo, siginfo_t *siginfo, void *ucontext
     return;
   }
   int tid = current->tid();
-  Shims::instance().setSighandlerTid(tid);
-  u64 call_trace_id = 0;
-  if (_collapsing) {
-    StackFrame frame(ucontext);
-    u64 spanId = 0, rootSpanId = 0;
-    // contextValid is not redundant with (spanId==0 && rootSpanId==0): a cleared
-    // context has spanId=0 and contextValid=true, while an uninitialized/mid-write
-    // thread has spanId=0 and contextValid=false. lookupWallclockCallTraceId uses
-    // contextValid to decide whether to update the sidecar _otel_local_root_span_id.
-    bool contextValid = ContextApi::get(spanId, rootSpanId);
-    call_trace_id = current->lookupWallclockCallTraceId(
-        (u64)frame.pc(), (u64)frame.sp(),
-        Profiler::instance()->recordingEpoch(),
-        contextValid, spanId, rootSpanId);
-    if (call_trace_id != 0) {
-      Counters::increment(SKIPPED_WALLCLOCK_UNWINDS);
-    }
-  }
 
-  ExecutionEvent event;
-  OSThreadState state =
-      precheck.observed_state_valid ? precheck.observed_state : getOSThreadState();
-  ExecutionMode mode = getThreadExecutionMode();
-  if (state == OSThreadState::UNKNOWN) {
-    if (inSyscall(ucontext)) {
-      state = OSThreadState::SYSCALL;
-      mode = ExecutionMode::SYSCALL;
-    } else {
-      state = OSThreadState::RUNNABLE;
+  {
+    SighandlerTidScope sighandler_tid(tid);
+    u64 call_trace_id = 0;
+    if (_collapsing) {
+      StackFrame frame(ucontext);
+      u64 spanId = 0, rootSpanId = 0;
+      // contextValid is not redundant with (spanId==0 && rootSpanId==0): a cleared
+      // context has spanId=0 and contextValid=true, while an uninitialized/mid-write
+      // thread has spanId=0 and contextValid=false. lookupWallclockCallTraceId uses
+      // contextValid to decide whether to update the sidecar _otel_local_root_span_id.
+      bool contextValid = ContextApi::get(spanId, rootSpanId);
+      call_trace_id = current->lookupWallclockCallTraceId(
+          (u64)frame.pc(), (u64)frame.sp(),
+          Profiler::instance()->recordingEpoch(),
+          contextValid, spanId, rootSpanId);
+      if (call_trace_id != 0) {
+        Counters::increment(SKIPPED_WALLCLOCK_UNWINDS);
+      }
     }
+
+    ExecutionEvent event;
+    OSThreadState state =
+        precheck.observed_state_valid ? precheck.observed_state : getOSThreadState();
+    ExecutionMode mode = getThreadExecutionMode();
+    if (state == OSThreadState::UNKNOWN) {
+      if (inSyscall(ucontext)) {
+        state = OSThreadState::SYSCALL;
+        mode = ExecutionMode::SYSCALL;
+      } else {
+        state = OSThreadState::RUNNABLE;
+      }
+    }
+    event._thread_state = state;
+    event._execution_mode = mode;
+    event._weight = precheck.unowned_weight;
+    u64 recorded_call_trace_id = 0;
+    bool recorded = Profiler::instance()->recordSample(ucontext, last_sample, tid,
+                                                       BCI_WALL, call_trace_id,
+                                                       &event,
+                                                       &recorded_call_trace_id);
+    finishWallPrecheck(precheck, recorded, recorded_call_trace_id);
+    emitUnownedBlockedTailForWallPrecheck(tid, precheck);
   }
-  event._thread_state = state;
-  event._execution_mode = mode;
-  event._weight = precheck.unowned_weight;
-  u64 recorded_call_trace_id = 0;
-  bool recorded = Profiler::instance()->recordSample(ucontext, last_sample, tid,
-                                                     BCI_WALL, call_trace_id,
-                                                     &event,
-                                                     &recorded_call_trace_id);
-  finishWallPrecheck(precheck, recorded, recorded_call_trace_id);
-  emitUnownedBlockedTailForWallPrecheck(tid, precheck);
-  Shims::instance().setSighandlerTid(-1);
 }
 
 Error BaseWallClock::start(Arguments &args) {
@@ -413,6 +410,7 @@ void WallClockASGCT::timerLoop() {
 
 void WallClockJvmti::sharedSignalHandler(int signo, siginfo_t *siginfo,
                                          void *ucontext) {
+  ErrnoPreserver errno_preserver;
   // Reject any SIGVTALRM that did not originate from our rt_tgsigqueueinfo
   // send (mirrors WallClockASGCT). Defends against stray in-process tgkill or
   // external sigqueue driving the JVMTI RequestStackTrace path.
@@ -446,48 +444,43 @@ void WallClockJvmti::signalHandler(int signo, siginfo_t *siginfo,
   if (!cs.entered()) {
     return;
   }
-  int saved_errno = errno;
 
-  if (JVMThread::current() == nullptr
-      && current->inInitWindow()) {
-    current->tickInitWindow();
-    errno = saved_errno;
+  if (tickInitWindowIfNeeded(current)) {
     return;
   }
 
   WallPrecheckResult precheck = prepareWallPrecheck(current, _precheck);
   if (precheck.suppress) {
-    errno = saved_errno;
     return;
   }
   int tid = current->tid();
-  Shims::instance().setSighandlerTid(tid);
 
-  ExecutionEvent event;
-  OSThreadState state =
-      precheck.observed_state_valid ? precheck.observed_state : getOSThreadState();
-  ExecutionMode mode = getThreadExecutionMode();
-  if (state == OSThreadState::UNKNOWN) {
-    if (inSyscall(ucontext)) {
-      state = OSThreadState::SYSCALL;
-      mode = ExecutionMode::SYSCALL;
-    } else {
-      state = OSThreadState::RUNNABLE;
+  {
+    SighandlerTidScope sighandler_tid(tid);
+    ExecutionEvent event;
+    OSThreadState state =
+        precheck.observed_state_valid ? precheck.observed_state : getOSThreadState();
+    ExecutionMode mode = getThreadExecutionMode();
+    if (state == OSThreadState::UNKNOWN) {
+      if (inSyscall(ucontext)) {
+        state = OSThreadState::SYSCALL;
+        mode = ExecutionMode::SYSCALL;
+      } else {
+        state = OSThreadState::RUNNABLE;
+      }
     }
+    event._thread_state = state;
+    event._execution_mode = mode;
+    event._weight = precheck.unowned_weight;
+    // Pass nullptr ucontext so the JVM uses safepoint-based stack walking.
+    // Passing the signal-frame PC causes the extension to reject samples where
+    // the thread is currently inside JVM-internal (non-Java) code.
+    // JVMTI-delegated samples carry a correlation_id, not a call_trace_id, so
+    // unowned tail flushing remains limited to the ASGCT wall engine.
+    bool recorded = Profiler::instance()->recordSampleDelegated(
+        nullptr, last_sample, tid, BCI_WALL, &event);
+    finishWallPrecheck(precheck, recorded);
   }
-  event._thread_state = state;
-  event._execution_mode = mode;
-  event._weight = precheck.unowned_weight;
-  // Pass nullptr ucontext so the JVM uses safepoint-based stack walking.
-  // Passing the signal-frame PC causes the extension to reject samples where
-  // the thread is currently inside JVM-internal (non-Java) code.
-  // JVMTI-delegated samples carry a correlation_id, not a call_trace_id, so
-  // unowned tail flushing remains limited to the ASGCT wall engine.
-  bool recorded = Profiler::instance()->recordSampleDelegated(
-      nullptr, last_sample, tid, BCI_WALL, &event);
-  finishWallPrecheck(precheck, recorded);
-  Shims::instance().setSighandlerTid(-1);
-  errno = saved_errno;
 }
 
 void WallClockJvmti::initialize(Arguments &args) {
