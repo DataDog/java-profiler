@@ -12,7 +12,7 @@ junit-pioneer = "1.9.1"
 slf4j = "2.0.18"
 
 # Profiler runtime
-jmc = "8.3.1"
+jmc = "9.1.2"
 jol = "0.17"
 lz4 = "1.11.2"
 snappy = "1.1.10.8"
