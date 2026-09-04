@@ -33,6 +33,42 @@ class StackFrame {
         }
     }
 
+    // Captures pc/sp/fp for a later restore() -- the null-safe save/restore
+    // boilerplate needed around code that mutates the real ucontext in place
+    // (e.g. HotspotSupport::getJavaTraceAsync()'s PROBE_SP loop, or
+    // unwindStub()/unwindCompiled() writing pc()/sp()/fp() by reference).
+    // Capturing is a no-op when ucontext is null (pc()/sp()/fp() themselves
+    // are not null-safe); restore() delegates to StackFrame::restore() above,
+    // which already is.
+    //
+    // Must be restored via an explicit restore() call, never a destructor:
+    // Profiler::checkFault()'s siglongjmp bypasses destructors, so RAII alone
+    // can't reach code here -- the same reason JmpCtxScope::restore() must be
+    // called explicitly (see guards.h).
+    class RegisterSnapshot {
+      public:
+        explicit RegisterSnapshot(void* ucontext) : _ucontext(ucontext) {
+            if (_ucontext != nullptr) {
+                StackFrame frame(_ucontext);
+                _pc = frame.pc();
+                _sp = frame.sp();
+                _fp = frame.fp();
+            }
+        }
+
+        void restore() const {
+            StackFrame(_ucontext).restore(_pc, _sp, _fp);
+        }
+
+        uintptr_t pc() const { return _pc; }
+        uintptr_t sp() const { return _sp; }
+        uintptr_t fp() const { return _fp; }
+
+      private:
+        void* _ucontext;
+        uintptr_t _pc = 0, _sp = 0, _fp = 0;
+    };
+
     uintptr_t stackAt(int slot) {
         return ((uintptr_t*)sp())[slot];
     }

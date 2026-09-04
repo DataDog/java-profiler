@@ -581,7 +581,9 @@ TEST_F(SafeFetch64TocTouGuardTest, ZeroReturnMeansGiveUp) {
 }
 
 // ---------------------------------------------------------------------------
-// G. HotspotSupport::walkJavaStack()'s ucontext restore on a recovered fault
+// G. HotspotSupport::withUcontextFaultRecovery()'s ucontext restore on a
+//    recovered fault -- the crash-protection wrapper walkJavaStack() uses
+//    around getJavaTraceAsync()
 //
 // getJavaTraceAsync() mutates the real signal ucontext's pc/sp/fp in place --
 // StackFrame::pc()/sp()/fp() are references straight into uc_mcontext -- while
@@ -589,30 +591,36 @@ TEST_F(SafeFetch64TocTouGuardTest, ZeroReturnMeansGiveUp) {
 // sizeof(void*)`, or unwindStub()/unwindCompiled() writing pc()/sp()/fp() by
 // reference), and restores them itself on every normal-exit path. But a
 // SIGSEGV that strikes mid-mutation is caught by checkFault(), which
-// siglongjmp's straight past those restores to walkJavaStack's own
+// siglongjmp's straight past those restores to withUcontextFaultRecovery()'s
 // sigsetjmp. Since this ucontext is the exact one the kernel uses to resume
-// the sampled thread when the signal handler returns, walkJavaStack snapshots
-// it before installing its jmp ctx and restores it again in the recovery
-// branch -- otherwise a fault mid-walk would leave the sampled thread's real
-// register state corrupted for sigreturn.
+// the sampled thread when the signal handler returns, withUcontextFaultRecovery()
+// snapshots it before running the protected work and restores it again in the
+// recovery branch -- otherwise a fault mid-walk would leave the sampled
+// thread's real register state corrupted for sigreturn.
 //
-// This gtest binary has no live JVM attached, so walkJavaStack() and
-// getJavaTraceAsync() can't be invoked directly (they assert VM::isHotspot()
-// and dereference VMThread state). These tests replicate walkJavaStack's
-// exact save/install/mutate/recover protocol against a ucontext_t, but drive
-// recovery through the REAL Profiler::checkFault() -- not a hand-rolled
-// siglongjmp -- so its `pc < min || pc >= max` address-range gate
+// These tests call HotspotSupport::withUcontextFaultRecovery() directly --
+// the exact function walkJavaStack() delegates to -- rather than replicating
+// its sigsetjmp/restore protocol by hand: walkJavaStack() itself can't be
+// invoked here (this gtest binary has no live JVM, and its dispatch asserts
+// VM::isHotspot() / dereferences VMThread state), but the fault-recovery
+// wrapper it calls has no such dependency, so calling it directly means a
+// regression to the real recovery branch (e.g. dropping its ctx_snapshot.
+// restore() call) fails these tests too, instead of only a hand-rolled copy
+// of the same logic.
+//
+// Recovery is driven through the REAL Profiler::checkFault() -- not a
+// simulated siglongjmp -- so its `pc < min || pc >= max` address-range gate
 // (profiler_min_address/_max_address, see stackWalker_ut.cpp's
 // StackWalkerCrashRecoveryTest for the same pattern) is exercised for real.
 // That gate matters here specifically: a fault raised while HotSpot's own
 // AsyncGetCallTrace (libjvm.so) dereferences a poisoned sp/pc/fp has its
 // faulting instruction *inside libjvm.so*, not inside this library, so
 // checkFault() correctly refuses to recover it -- which means
-// walkJavaStack's frame.restore() fix is never reached, and the mutated
+// withUcontextFaultRecovery()'s restore is never reached, and the mutated
 // ucontext stays corrupted. SetUp() installs a real range via the
 // UNIT_TEST-only Profiler::setAddressRangeForTest() so both sides of that
 // gate -- recovered (pc inside range) and rejected (pc outside range) -- are
-// exercised, rather than only the hand-simulated "always recovers" path.
+// exercised, rather than only the "always recovers" path.
 // ---------------------------------------------------------------------------
 
 class WalkJavaStackUcontextRestoreTest : public ::testing::Test {
@@ -650,32 +658,24 @@ protected:
     uintptr_t _range_hi = 0;
 };
 
-// Mirrors walkJavaStack(): snapshot pc/sp/fp, install the jmp ctx, mutate the
-// ucontext mid-"walk" the way getJavaTraceAsync does, then take a fault whose
-// own faulting instruction lands inside this library (e.g. a direct
-// dereference of the poisoned sp, as walkVM's existing
-// INJECT_FAULT_ADDRESS_UNLIKELY sites do) -- so checkFault() must recover.
-// The recovery branch's frame.restore() must undo the mutation -- if that
-// call were ever dropped (the bug this fixes), the EXPECT_EQ calls below
-// would see the corrupted values instead.
+// Drives HotspotSupport::withUcontextFaultRecovery() -- the real production
+// function, not a replica -- with `work` mutating the ucontext mid-"walk" the
+// way getJavaTraceAsync does, then taking a fault whose own faulting
+// instruction lands inside this library (e.g. a direct dereference of the
+// poisoned sp, as walkVM's existing INJECT_FAULT_ADDRESS_UNLIKELY sites do)
+// -- so checkFault() must recover. The recovery branch's ctx_snapshot.
+// restore() must undo the mutation -- if that call were ever dropped (the bug
+// this fixes), the EXPECT_EQ calls below would see the corrupted values
+// instead, because they're reading back through the very ucontext
+// withUcontextFaultRecovery() owns.
 TEST_F(WalkJavaStackUcontextRestoreTest, FaultInsideProfilerRangeRecoversAndRestoresUcontext) {
     StackFrame frame(&_ctx);
     uintptr_t saved_pc = frame.pc();
     uintptr_t saved_sp = frame.sp();
     uintptr_t saved_fp = frame.fp();
+    bool truncated = false;
 
-    sigjmp_buf crash_protection_ctx;
-    JmpCtxScope jmp_scope(_pt);
-    int recovered = 0;
-
-    if (sigsetjmp(crash_protection_ctx, 1) != 0) {
-        recovered++;
-        jmp_scope.restore();
-        // The fix under test.
-        frame.restore(saved_pc, saved_sp, saved_fp);
-    } else {
-        jmp_scope.install(&crash_protection_ctx);
-
+    int result = HotspotSupport::withUcontextFaultRecovery(&_ctx, _pt, &truncated, [&]() -> int {
         // Simulate getJavaTraceAsync() mutating the real ucontext mid-walk
         // (PROBE_SP loop / unwindStub / unwindCompiled all write pc()/sp()/
         // fp() directly).
@@ -690,11 +690,22 @@ TEST_F(WalkJavaStackUcontextRestoreTest, FaultInsideProfilerRangeRecoversAndRest
 
         siginfo_t si{};
         si.si_addr = reinterpret_cast<void*>(1);
+        // A real SIGSEGV delivery enters this via segvHandler's
+        // SignalHandlerScope before reaching checkFault(); calling checkFault()
+        // directly (no real fault, deterministic pc) means mimicking that
+        // entry ourselves, so SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP()'s
+        // compensating exitSignalScope() -- run inside the recovery branch
+        // below -- has a matching enter to unwind instead of underflowing.
+        _pt->enterSignalScope();
         Profiler::checkFault(_pt, &si, &fault_uc);
-        FAIL() << "unreachable: checkFault() must siglongjmp for an in-range pc";
-    }
+        // Not FAIL(): that macro does a bare `return;`, which doesn't
+        // compile in a lambda declared to return int.
+        ADD_FAILURE() << "unreachable: checkFault() must siglongjmp for an in-range pc";
+        return -1;
+    });
 
-    EXPECT_EQ(1, recovered);
+    EXPECT_EQ(0, result);
+    EXPECT_TRUE(truncated);
     EXPECT_EQ(saved_pc, frame.pc());
     EXPECT_EQ(saved_sp, frame.sp());
     EXPECT_EQ(saved_fp, frame.fp());
@@ -705,78 +716,78 @@ TEST_F(WalkJavaStackUcontextRestoreTest, FaultInsideProfilerRangeRecoversAndRest
 // alone can't catch: a fault whose instruction pointer falls OUTSIDE the
 // profiler's own range -- standing in for a fault raised deep inside
 // libjvm.so while AsyncGetCallTrace dereferences a poisoned sp/pc/fp (see
-// getJavaTraceAsync's java_ctx-restore and PROBE_SP-loop fault-injection
-// sites). checkFault() must not recover such a fault, which means
-// walkJavaStack's frame.restore() fix never runs and the mutated ucontext is
-// left exactly as corrupted as the injection left it.
+// getJavaTraceAsync's anchor-derived fault-injection site). checkFault() must
+// not recover such a fault, which means withUcontextFaultRecovery()'s restore
+// never runs and the mutated ucontext is left exactly as corrupted as the
+// injection left it -- `work()` runs to completion and its return value comes
+// straight back out, proving checkFault() truly fell through rather than
+// recovering.
 TEST_F(WalkJavaStackUcontextRestoreTest, FaultOutsideProfilerRangeIsNotRecoveredAndLeavesUcontextCorrupted) {
     StackFrame frame(&_ctx);
     uintptr_t saved_pc = frame.pc();
     uintptr_t saved_sp = frame.sp();
+    bool truncated = false;
+    uintptr_t mutated_pc = 0, mutated_sp = 0, mutated_fp = 0;
 
-    sigjmp_buf crash_protection_ctx;
-    JmpCtxScope jmp_scope(_pt);
-    ASSERT_EQ(0, sigsetjmp(crash_protection_ctx, 1))
-        << "must not have recovered -- this branch only runs once, forward";
-    jmp_scope.install(&crash_protection_ctx);
+    int result = HotspotSupport::withUcontextFaultRecovery(&_ctx, _pt, &truncated, [&]() -> int {
+        // Same mutation getJavaTraceAsync() performs right before handing
+        // sp/pc/fp to jvmAsyncGetCallTrace().
+        frame.sp() += sizeof(void*);
+        frame.fp() = saved_sp;
+        frame.pc() = saved_pc + 0x1234;
 
-    // Same mutation getJavaTraceAsync() performs right before handing
-    // sp/pc/fp to jvmAsyncGetCallTrace().
-    frame.sp() += sizeof(void*);
-    frame.fp() = saved_sp;
-    frame.pc() = saved_pc + 0x1234;
+        mutated_pc = frame.pc();
+        mutated_sp = frame.sp();
+        mutated_fp = frame.fp();
 
-    uintptr_t mutated_pc = frame.pc();
-    uintptr_t mutated_sp = frame.sp();
-    uintptr_t mutated_fp = frame.fp();
+        // The SIGSEGV's own delivery ucontext, standing in for a fault
+        // inside libjvm.so -- its pc sits 256MB past the installed range,
+        // far beyond kRangeMargin regardless of build config.
+        ucontext_t fault_uc{};
+        StackFrame(&fault_uc).pc() = _range_hi + (256u * 1024 * 1024);
 
-    // The SIGSEGV's own delivery ucontext, standing in for a fault inside
-    // libjvm.so -- its pc sits 256MB past the installed range, far beyond
-    // kRangeMargin regardless of build config.
-    ucontext_t fault_uc{};
-    StackFrame(&fault_uc).pc() = _range_hi + (256u * 1024 * 1024);
+        siginfo_t si{};
+        si.si_addr = reinterpret_cast<void*>(1);
+        Profiler::checkFault(_pt, &si, &fault_uc);
+        // Falls through: checkFault must not recover a pc outside the range.
+        return 42;  // sentinel proving work() ran to completion, unrecovered
+    });
 
-    siginfo_t si{};
-    si.si_addr = reinterpret_cast<void*>(1);
-    Profiler::checkFault(_pt, &si, &fault_uc);
-    // Must fall through to here -- checkFault must not siglongjmp for a pc
-    // outside the installed range.
-
-    jmp_scope.restore();
-
+    EXPECT_EQ(42, result) << "checkFault must not have recovered an out-of-range fault";
+    EXPECT_FALSE(truncated);
     EXPECT_EQ(mutated_pc, frame.pc())
         << "an unrecovered fault must leave the mutated ucontext untouched -- "
-           "walkJavaStack's frame.restore() fix is never reached in this case";
+           "withUcontextFaultRecovery's restore is never reached in this case";
     EXPECT_EQ(mutated_sp, frame.sp());
     EXPECT_EQ(mutated_fp, frame.fp());
+    EXPECT_FALSE(_pt->isProtected());
 }
 
-// walkJavaStack guards the restore with `if (ucontext != NULL)`, since
-// ucontext can legitimately be null (e.g. malloc/socket hooks sampled outside
-// any signal context). The recovery branch must not dereference a null
-// StackFrame in that case.
+// withUcontextFaultRecovery() must not dereference a null ucontext in its
+// recovery branch, since ucontext can legitimately be null (e.g. malloc/
+// socket hooks sampled outside any signal context).
 TEST_F(WalkJavaStackUcontextRestoreTest, NullUcontextSkipsRestoreWithoutCrashing) {
-    void* ucontext = nullptr;
-    StackFrame frame(ucontext);
-    uintptr_t saved_pc = 0, saved_sp = 0, saved_fp = 0;
+    bool truncated = false;
 
-    sigjmp_buf crash_protection_ctx;
-    JmpCtxScope jmp_scope(_pt);
-    int recovered = 0;
+    int result = HotspotSupport::withUcontextFaultRecovery(nullptr, _pt, &truncated, [&]() -> int {
+        // A fault whose pc is inside the installed range, same as the
+        // "recovers" test above, but with a null ucontext -- the recovery
+        // branch's ctx_snapshot.restore() must be a safe no-op here rather
+        // than dereferencing a null StackFrame.
+        ucontext_t fault_uc{};
+        StackFrame(&fault_uc).pc() = _range_lo + kRangeMargin;
 
-    if (sigsetjmp(crash_protection_ctx, 1) != 0) {
-        recovered++;
-        jmp_scope.restore();
-        if (ucontext != nullptr) {
-            frame.restore(saved_pc, saved_sp, saved_fp);
-        }
-    } else {
-        jmp_scope.install(&crash_protection_ctx);
-        siglongjmp(*_pt->getJmpCtx(), 1);
-        FAIL() << "unreachable: siglongjmp does not return";
-    }
+        siginfo_t si{};
+        si.si_addr = reinterpret_cast<void*>(1);
+        // See the matching comment in FaultInsideProfilerRangeRecoversAndRestoresUcontext.
+        _pt->enterSignalScope();
+        Profiler::checkFault(_pt, &si, &fault_uc);
+        ADD_FAILURE() << "unreachable: checkFault() must siglongjmp for an in-range pc";
+        return -1;
+    });
 
-    EXPECT_EQ(1, recovered);
+    EXPECT_EQ(0, result);
+    EXPECT_TRUE(truncated);
     EXPECT_FALSE(_pt->isProtected());
 }
 
