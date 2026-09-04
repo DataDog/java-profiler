@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk8
 
 ## musl-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-09-03 18:51:24 EDT
+**Date:** 2026-09-04 01:03:35 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,7 +18,7 @@ title: musl-arm64-hotspot-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 64 |
+| CPU Cores (start) | 59 |
 | CPU Cores (end) | 64 |
 | Throttling | 0% |
 
@@ -28,9 +28,9 @@ title: musl-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 406 |
-| Sample Rate | 6.77/sec |
-| Health Score | 423% |
+| CPU Samples | 111 |
+| Sample Rate | 1.85/sec |
+| Health Score | 116% |
 | Threads | 11 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: musl-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 123 |
-| Sample Rate | 2.05/sec |
-| Health Score | 128% |
-| Threads | 13 |
+| CPU Samples | 98 |
+| Sample Rate | 1.63/sec |
+| Health Score | 102% |
+| Threads | 11 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 64-64 cores)</summary>
+<summary>CPU Timeline (2 unique values: 59-64 cores)</summary>
 
 ```
-1788475561 64
-1788475566 64
-1788475571 64
-1788475576 64
-1788475581 64
-1788475586 64
-1788475591 64
-1788475596 64
-1788475601 64
-1788475606 64
-1788475611 64
-1788475616 64
-1788475621 64
-1788475626 64
-1788475631 64
-1788475636 64
-1788475641 64
-1788475646 64
-1788475651 64
-1788475656 64
+1788497971 59
+1788497976 59
+1788497981 59
+1788497986 59
+1788497991 59
+1788497996 59
+1788498001 59
+1788498006 59
+1788498011 59
+1788498016 59
+1788498021 59
+1788498026 59
+1788498031 59
+1788498036 59
+1788498041 59
+1788498046 59
+1788498051 59
+1788498056 59
+1788498061 64
+1788498066 64
 ```
 </details>
 
