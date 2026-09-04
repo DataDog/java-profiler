@@ -10,6 +10,7 @@
 #include "common.h"
 #include "counters.h"
 #include "dwarf.h"
+#include "mallocFootprint.h"
 #include "nativeMem.h"
 #include "utils.h"
 
@@ -84,6 +85,18 @@ public:
       return 0;
     }
     return align_up(sizeof(NativeFunc) + 1 + strlen(name), sizeof(NativeFunc *));
+  }
+
+  // Allocator overhead on that allocation -- rounding to the size quantum plus
+  // the per-chunk header, measured rather than assumed. Lives here because only
+  // NativeFunc knows the real allocation base: `name` points *into* the block at
+  // offset sizeof(NativeFunc), so querying the allocator with `name` itself
+  // would be undefined. 0 if null.
+  static size_t nameOverhead(const char *name) {
+    if (name == nullptr) {
+      return 0;
+    }
+    return MallocFootprint::overheadOf(from(name), allocSize(name));
   }
 
   static short libIndex(const char *name) {
@@ -172,6 +185,20 @@ private:
   // below) -- there is no point after construction-and-population where this
   // total could be stale relative to a fresh recompute.
   long long _memory_usage;
+
+  // Measured allocator overhead -- rounding to the size quantum plus the
+  // per-chunk header -- on the name allocations counted in _memory_usage.
+  // Tracked incrementally alongside it, by the same mutators, because overhead
+  // is a function of *per-allocation* size and so cannot be recovered later
+  // from a byte total: a 512 KB chunk pays ~0.003 %, a 96-byte node 16.7 %.
+  //
+  // The _blobs array is deliberately excluded. It is one allocation per
+  // library, large enough that its overhead is a rounding error, and it comes
+  // from new CodeBlob[] -- whose returned pointer is not guaranteed to be the
+  // allocator's block base, so querying the allocator with it would be unsound.
+  // Excluding it understates by a negligible amount rather than risking a wrong
+  // reading.
+  long long _name_overhead;
 
   // Set once the cache is registered into a CodeCacheArray (see markPublished()).
   // After that, memoryUsage() may be read lock-free from another thread (dump),
@@ -290,12 +317,16 @@ public:
 
   // Live size of what this CodeCache owns on the heap: the blob array, the
   // per-symbol name strings (variable length), this cache's own name, and the
-  // DWARF unwind table. Recomputed on demand (called only at dump time), so it
-  // reflects the current contents. The build-id string is deliberately excluded
-  // — it is mutated by the background refresher and negligible in size (see the
-  // definition). Const and lock-free: reads only fields that are stable once the
-  // library is published.
+  // DWARF unwind table. An O(1) read of a running total (see _memory_usage).
+  // The build-id string is deliberately excluded — it is mutated by the
+  // background refresher and negligible in size (see the definition). Const and
+  // lock-free: reads only fields that are stable once the library is published.
   long long memoryUsage() const;
+
+  // Measured allocator overhead on the name allocations that memoryUsage()
+  // counts (see _name_overhead). Same O(1) running-total read, same lock-free
+  // guarantees.
+  long long nameOverhead() const { return _name_overhead; }
 
   int count() { return _count; }
   CodeBlob* blob(int idx) {
@@ -348,6 +379,10 @@ public:
     // aggregate) can never clobber each other's contribution -- unlike the
     // read-modify-write a periodic setLive(sum-of-everything) would need.
     NativeMem::record(NM_NATIVE_SYMBOLS, lib->memoryUsage());
+    // The allocator overhead on those same allocations, measured rather than
+    // assumed, recorded at the same instant and by the same relaxed-atomic add
+    // so it stays consistent with the logical bytes above.
+    NativeMem::recordOverhead(NM_NATIVE_SYMBOLS, lib->nameOverhead());
     // Mark published before the RELEASE store makes the pointer visible, so any
     // later add()/expand()/setDwarfTable() on this cache trips the assert (its
     // _blobs would then be read lock-free by memoryUsage() at dump time).
