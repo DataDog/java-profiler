@@ -173,13 +173,19 @@ jobs:
 
           # The slow/e2e suite already runs the best part of an hour, so a
           # retry would risk the 180-minute job timeout, and it records
-          # failures without re-running them. That rationale does not hold
-          # under ASan: the retry above fires on an init abort that costs
-          # seconds, not a full slow run, so ASan keeps its second attempt
-          # even when slow.
+          # failures without re-running them. ASan keeps its second attempt
+          # even when slow, but only for the init abort above (0 named
+          # failures): MAX_FAILURES_TO_RETRY=0 stops a slow ASan run that
+          # actually failed named tests from being retried too, which would
+          # re-run the full slow suite a second time and risk that same
+          # timeout.
           export MAX_ATTEMPTS=2
-          if [[ "${{ inputs.slow_tests }}" == "true" && "${{ matrix.config }}" != "asan" ]]; then
-            export MAX_ATTEMPTS=1
+          if [[ "${{ inputs.slow_tests }}" == "true" ]]; then
+            if [[ "${{ matrix.config }}" == "asan" ]]; then
+              export MAX_FAILURES_TO_RETRY=0
+            else
+              export MAX_ATTEMPTS=1
+            fi
           fi
 
           .github/scripts/run_tests_with_retry.sh \
@@ -532,13 +538,19 @@ jobs:
 
           # The slow/e2e suite already runs the best part of an hour, so a
           # retry would risk the 180-minute job timeout, and it records
-          # failures without re-running them. That rationale does not hold
-          # under ASan: the retry above fires on an init abort that costs
-          # seconds, not a full slow run, so ASan keeps its second attempt
-          # even when slow.
+          # failures without re-running them. ASan keeps its second attempt
+          # even when slow, but only for the init abort above (0 named
+          # failures): MAX_FAILURES_TO_RETRY=0 stops a slow ASan run that
+          # actually failed named tests from being retried too, which would
+          # re-run the full slow suite a second time and risk that same
+          # timeout.
           export MAX_ATTEMPTS=2
-          if [[ "${{ inputs.slow_tests }}" == "true" && "${{ matrix.config }}" != "asan" ]]; then
-            export MAX_ATTEMPTS=1
+          if [[ "${{ inputs.slow_tests }}" == "true" ]]; then
+            if [[ "${{ matrix.config }}" == "asan" ]]; then
+              export MAX_FAILURES_TO_RETRY=0
+            else
+              export MAX_ATTEMPTS=1
+            fi
           fi
 
           .github/scripts/run_tests_with_retry.sh \

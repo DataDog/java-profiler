@@ -77,10 +77,10 @@ EOJ
 
 echo "== generate-test-summary.sh: outcome report parsing =="
 
-# A well-formed, failing outcome report must be rendered as a real failure
-# row -- not swallowed into the "unreadable outcome report" fallback. This is
-# the path a mutated `if ! rows=$(jq ...)` (dropping the `!`) would break: jq
-# succeeding on valid JSON would then take the branch meant for jq failing.
+# A well-formed, failing outcome report must render its real failure via
+# flake_summary.py's own table -- the one place this failure is rendered, now
+# that generate-test-summary.sh no longer re-parses ci-outcome JSON itself
+# and duplicates that table under each job.
 CASE="$TEMP_DIR/case-valid-report"
 mkdir -p "$CASE/jobs" "$CASE/outcomes" "$CASE/work"
 write_jobs_fixture "$CASE/jobs/jobs.json" failure
@@ -101,13 +101,15 @@ echo "$summary" | grep -q "FooTest.bar" \
   || fail "expected the real failing test in the summary, got: $summary"
 echo "$summary" | grep -q "assertion failed: boom" \
   || fail "expected the real failure message in the summary, got: $summary"
-if echo "$summary" | grep -q "_unreadable outcome report_"; then
-  fail "a valid outcome report was rendered as unreadable, got: $summary"
-fi
-pass "a valid outcome report renders its real failure, not the unreadable fallback"
+echo "$summary" | grep -q "Failed Jobs" \
+  || fail "expected the failed job to be listed and linked, got: $summary"
+echo "$summary" | grep -q "https://example.invalid/job/1" \
+  || fail "expected the failed job's log link, got: $summary"
+pass "a valid outcome report renders its real failure via flake_summary.py, and the job is linked"
 
-# A malformed outcome report (invalid JSON) must be rendered as unreadable,
-# not silently dropped or fed further down the pipeline as if it were rows.
+# A malformed outcome report (invalid JSON) must be flagged rather than
+# silently dropped -- this is now flake_summary.py's own "could not be
+# parsed" fallback, the one reader of ci-outcome JSON left in this pipeline.
 CASE="$TEMP_DIR/case-malformed-report"
 mkdir -p "$CASE/jobs" "$CASE/outcomes" "$CASE/work"
 write_jobs_fixture "$CASE/jobs/jobs.json" failure
@@ -119,9 +121,30 @@ printf 'this is not json\n' > "$CASE/outcomes/glibc-17-debug-amd64.json"
   "$SCRIPT" 12345 "$CASE/work/summary.md"
 ) || fail "generate-test-summary.sh exited non-zero on a malformed outcome report"
 summary=$(cat "$CASE/work/summary.md")
-echo "$summary" | grep -q "_unreadable outcome report_" \
+echo "$summary" | grep -q "could not be parsed" \
   || fail "expected a malformed outcome report to be flagged unreadable, got: $summary"
 pass "a malformed outcome report is flagged unreadable rather than silently ignored"
+
+# A run where every test job passed must not print an empty "Failed Jobs"
+# section -- that guard is what stands between a green run and a stray,
+# empty heading (or, on a bash whose indexed-array expansion under `set -u`
+# minds an empty array, a hard failure).
+CASE="$TEMP_DIR/case-all-green"
+mkdir -p "$CASE/jobs" "$CASE/outcomes" "$CASE/work"
+write_jobs_fixture "$CASE/jobs/jobs.json" success
+(
+  cd "$CASE/work"
+  export GH_JOBS_FIXTURE="$CASE/jobs/jobs.json" GH_OUTCOME_FIXTURE_DIR="$CASE/outcomes"
+  export GITHUB_REPOSITORY="DataDog/java-profiler" GITHUB_SHA="deadbeefcafef00dfeedfacebeefcafebeefcafe"
+  "$SCRIPT" 12345 "$CASE/work/summary.md"
+) || fail "generate-test-summary.sh exited non-zero on an all-passing run"
+summary=$(cat "$CASE/work/summary.md")
+if echo "$summary" | grep -q "Failed Jobs"; then
+  fail "an all-passing run must not print a Failed Jobs section, got: $summary"
+fi
+echo "$summary" | grep -q "All 1 test jobs passed" \
+  || fail "expected the all-passed banner, got: $summary"
+pass "an all-passing run prints no Failed Jobs section"
 
 echo
 echo "All $TESTS generate-test-summary tests passed."

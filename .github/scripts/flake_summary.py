@@ -31,9 +31,35 @@ DEFAULT_REVIEW_DAYS = quarantine.DEFAULT_REVIEW_DAYS
 # a fence-breaking ``` sequence into that render.
 _SAFE_TEST_ID_RE = re.compile(r"[^A-Za-z0-9_.$-]")
 
+# The one place a failure message is truncated for display. flake_report.py
+# stores messages at a wider cap (200 chars) for anyone reading the raw JSON;
+# every renderer of this data (this module's tables, generate-test-summary.sh's
+# per-job table) uses this same, narrower display width so the same failure
+# does not render at two different lengths in one PR comment.
+MESSAGE_DISPLAY_WIDTH = 120
+
 
 def sanitize_test_id(test_id):
     return _SAFE_TEST_ID_RE.sub("_", test_id)
+
+
+def sanitize_quarantine_test_pattern(test_id):
+    """Sanitize a test id for the *paste-ready quarantine entry*, not display.
+
+    sanitize_test_id() is safe for markdown but rewrites JUnit's parameterized-
+    and dynamic-test punctuation (brackets, parens, commas) to '_', producing a
+    pattern quarantine.covers() (exact string equality, or a trailing '.*')
+    can never match against the real id. When the method name would need that
+    rewriting to render safely, fall back to the class-wide '.*' pattern
+    instead, which is still an exact, matchable pattern and rendering-safe as
+    is (it contains no character _SAFE_TEST_ID_RE would touch).
+    """
+    if not _SAFE_TEST_ID_RE.search(test_id):
+        return test_id
+    classname = test_id.rsplit(".", 1)[0]
+    if classname and not _SAFE_TEST_ID_RE.search(classname):
+        return classname + ".*"
+    return sanitize_test_id(test_id)
 
 
 def sanitize_inline(text):
@@ -69,7 +95,13 @@ def load_reports(root_dir):
 
 
 def group_by_test(reports, key):
-    """OrderedDict of test id -> {cells, message, ticket}."""
+    """OrderedDict of test id -> {cells, message, ticket, tickets}.
+
+    quarantine.py deliberately allows the same test to carry different
+    tickets on disjoint cell globs, so this keeps every ticket seen (not just
+    the first report's) and every message, rather than collapsing them to
+    whichever report happened to load first.
+    """
     grouped = OrderedDict()
     for report in reports:
         for entry in report.get(key, []):
@@ -77,8 +109,16 @@ def group_by_test(reports, key):
                 "cells": [],
                 "message": entry.get("message", ""),
                 "ticket": entry.get("ticket"),
+                "tickets": [],
+                "messages": [],
             })
             slot["cells"].append(report["cell"])
+            ticket = entry.get("ticket")
+            if ticket and ticket not in slot["tickets"]:
+                slot["tickets"].append(ticket)
+            message = entry.get("message", "")
+            if message and message not in slot["messages"]:
+                slot["messages"].append(message)
     return grouped
 
 
@@ -94,12 +134,22 @@ def render_table(grouped, cell_limit=4, row_limit=25, ticket_column=False):
     lines = [header, rule]
     for test_id, info in list(grouped.items())[:row_limit]:
         cells = info["cells"]
-        shown = ", ".join("`{}`".format(c) for c in cells[:cell_limit])
+        # cell names come from this PR's own workflow file and must go
+        # through the same sanitizer as everything else rendered here.
+        shown = ", ".join("`{}`".format(sanitize_test_id(c)) for c in cells[:cell_limit])
         if len(cells) > cell_limit:
             shown += " _+{} more_".format(len(cells) - cell_limit)
-        message = sanitize_inline((info["message"] or "").replace("|", "\\|"))[:120]
+        message = sanitize_inline((info["message"] or "").replace("|", "\\|"))[:MESSAGE_DISPLAY_WIDTH]
         message_cell = "`{}`".format(message) if message else ""
-        ticket = "{} | ".format(info.get("ticket") or "—") if ticket_column else ""
+        if ticket_column:
+            # ticket comes from this PR's own quarantine.txt line and is
+            # rendered into the same PR comment -- it must not be trusted
+            # unescaped any more than the test id or the message are.
+            tickets = info.get("tickets") or ([info["ticket"]] if info.get("ticket") else [])
+            ticket_text = ", ".join(sanitize_test_id(t) for t in tickets) or "—"
+            ticket = "{} | ".format(ticket_text)
+        else:
+            ticket = ""
         lines.append("| `{}` | {} | {}{} |".format(
             sanitize_test_id(short_name(test_id)), shown, ticket, message_cell))
     if len(grouped) > row_limit:
@@ -109,19 +159,23 @@ def render_table(grouped, cell_limit=4, row_limit=25, ticket_column=False):
 
 
 def cells_glob(cells):
-    """A glob covering these cells, when they share an obvious axis.
+    """A glob covering these cells, when they share one or more obvious axes.
 
     Suggesting `*aarch64*` for something that only ever failed on aarch64 is more
     useful than listing four cell names, and narrower than quarantining
     everywhere -- which would hide the same test breaking on x64 tomorrow.
+    Every shared axis narrows the glob further: a test failing only on
+    musl+aarch64 gets `*musl*aarch64*` rather than the wider `*aarch64*`
+    (which would also cover glibc aarch64).
     """
-    for axis in ("aarch64", "amd64", "musl", "asan", "tsan"):
-        if all(axis in c for c in cells):
-            return ["*{}*".format(axis)]
-    return None
+    axes = ["aarch64", "amd64", "musl", "glibc", "asan", "tsan", "slow"]
+    shared = [axis for axis in axes if all(axis in c for c in cells)]
+    if not shared:
+        return None
+    return ["*" + "*".join(shared) + "*"]
 
 
-def render_proposals(flaky):
+def render_proposals(flaky, proposal_limit=25):
     today = datetime.date.today()
     review_by = (today + datetime.timedelta(days=DEFAULT_REVIEW_DAYS)).isoformat()
     out = [
@@ -143,19 +197,22 @@ def render_proposals(flaky):
         "```",
         "# test | ticket | added | review_by | cells | reason",
     ]
-    for test_id, info in flaky.items():
+    items = list(flaky.items())
+    for test_id, info in items[:proposal_limit]:
         reason = sanitize_inline("{} (seen in: {})".format(
             info["message"] or "intermittent failure",
             ", ".join(sorted(set(info["cells"]))[:4]),
         )).replace("|", "/")
         out.append(quarantine.format_entry(
-            sanitize_test_id(test_id),
+            sanitize_quarantine_test_pattern(test_id),
             "PROF-XXXXX",
             today.isoformat(),
             review_by,
             cells_glob(info["cells"]) or [],
             reason,
         ))
+    if len(items) > proposal_limit:
+        out.append("# ...and {} more. See the job logs.".format(len(items) - proposal_limit))
     out.append("```")
     out.append("")
     out.append("</details>")
@@ -214,7 +271,11 @@ def main():
         out.extend(render_table(quarantined, ticket_column=True))
         out.append("")
 
-    retried = [r for r in reports if r.get("attempts", 1) > 1]
+    # attempts_run counts every attempt the runner actually executed;
+    # `attempts` counts only attempts that produced JUnit results, which
+    # undercounts a cell whose first attempt aborted before writing any XML
+    # (e.g. an ASan init abort) and only produced results on the retry.
+    retried = [r for r in reports if r.get("attempts_run", r.get("attempts", 1)) > 1]
     if retried:
         out.append("_Retried {} of {} cells._".format(len(retried), len(reports)))
         out.append("")
