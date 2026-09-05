@@ -144,7 +144,7 @@ public:
 
   const char *message() { return _message; }
 
-  operator bool() { return _message != NULL; }
+  operator bool() const { return _message != NULL; }
 };
 
 class Arguments {
