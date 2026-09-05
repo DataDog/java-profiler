@@ -67,13 +67,176 @@ else
   echo "✖ Gradle failed with status $status. Full log at: $LOG"
 fi
 
-# Hand over to your logs analyst agent — keep the main session output tiny.
+# Generate the summary artifacts deterministically — no LLM, no claude spawn.
 echo
-echo "Delegating to gradle-logs-analyst agent…"
-# If your CLI supports non-streaming, set it here to avoid verbose output.
-# Example (uncomment if supported): export CLAUDE_NO_STREAM=1
+echo "Generating gradle summary…"
+python3 - "$LOG" <<'PYEOF' || echo "⚠ gradle summary generation failed — full log at: $LOG"
+import json, os, re, sys
 
-# Sub-agents would inherit the full parent env, including CLAUDECODE, which
-# apparently causes problems with some versions of Claude (e.g. 4.6).
-unset CLAUDECODE
-claude "Act as the gradle-logs-analyst agent to parse the build log at: $LOG. Generate the required Gradle summary artifacts as specified in the gradle-logs-analyst agent definition."
+log_path = sys.argv[1] if len(sys.argv) > 1 else ""
+OUT_DIR = os.path.join("build", "reports", "claude")
+MD = os.path.join(OUT_DIR, "gradle-summary.md")
+JS = os.path.join(OUT_DIR, "gradle-summary.json")
+
+status, total_time, cur_task, cur_test_task = "UNKNOWN", None, None, None
+failed_tasks, headlines, dep_issues, test_failures = [], [], [], []
+warnings, seen_warnings = [], set()
+tests = {"total": 0, "failed": 0, "skipped": 0, "modules": {}}
+
+RE_STATUS      = re.compile(r"^BUILD (SUCCESSFUL|FAILED)(?: in (.+?))?\s*$")
+RE_TASK        = re.compile(r"^> Task (\S+)")
+RE_TEST_TASK   = re.compile(r"(?i)test|gtest")
+RE_GSUM        = re.compile(r"(\d+) tests? (successful|failed|skipped)")
+RE_COMP        = re.compile(r"(\d+) tests? completed(?:, (\d+) failed)?(?:, (\d+) skipped)?")
+RE_GTEST_P     = re.compile(r"\[  PASSED  \] (\d+) tests?")
+RE_GTEST_F     = re.compile(r"\[  FAILED  \] (\d+) tests?")
+RE_DEP         = re.compile(r"Could not (?:resolve|find|get)|timed out|status code: 40[13]|artifact .* not found", re.I)
+RE_WARN        = re.compile(r"\bw: |warning:|deprecat", re.I)
+RE_FAILURE     = re.compile(r"^FAILURE: Build (failed with an exception|completed with \d+ failures)")
+RE_TASK_IN_MSG = re.compile(r"task '(:[^']+)'")
+
+def mod(name):
+    return tests["modules"].setdefault(name, {"total": 0, "failed": 0, "skipped": 0})
+
+def add_counts(name, ok, failed, skipped):
+    m = mod(name)
+    m["total"] += ok + failed + skipped
+    m["failed"] += failed
+    m["skipped"] += skipped
+    tests["total"] += ok + failed + skipped
+    tests["failed"] += failed
+    tests["skipped"] += skipped
+
+if not log_path or not os.path.isfile(log_path) or os.path.getsize(log_path) == 0:
+    why = f"log not found: {log_path!r}" if not log_path or not os.path.isfile(log_path) else "log is empty"
+    os.makedirs(OUT_DIR, exist_ok=True)
+    open(MD, "w").write(f"# Gradle Summary\n\n- Status: UNKNOWN ({why})\n\nFull log unavailable or empty.\n")
+    json.dump({"status": "UNKNOWN", "totalTime": None, "failedTasks": [], "warnings": [],
+               "tests": tests, "slowTasks": [], "depIssues": [why], "actions": []}, open(JS, "w"), indent=1)
+    print(f"Gradle log unusable ({why}); wrote {MD} and {JS}")
+    sys.exit(0)
+
+grab_headline = False
+collecting_headline = False
+with open(log_path, encoding="utf-8", errors="replace") as f:
+    for line in f:
+        line = line.rstrip("\n")
+        m = RE_STATUS.match(line)
+        if m:
+            status = m.group(1)
+            total_time = m.group(2)
+            continue
+        m = RE_TASK.match(line)
+        if m:
+            cur_task = m.group(1)
+            if RE_TEST_TASK.search(cur_task):
+                cur_test_task = cur_task
+            if line.endswith("FAILED") and m.group(1) not in failed_tasks:
+                failed_tasks.append(m.group(1))
+            continue
+        if RE_FAILURE.search(line):
+            grab_headline = True
+            continue
+        if grab_headline and line.strip().startswith("* What went wrong"):
+            headlines.append("")
+            collecting_headline = True
+            continue
+        if grab_headline and collecting_headline:
+            s = line.strip()
+            if s.startswith("*") or not s:
+                collecting_headline = False
+                continue
+            if headlines and len(headlines[-1]) < 200:
+                headlines[-1] += (" " if headlines[-1] else "") + s
+            continue
+        m = RE_COMP.search(line)
+        if m:
+            total = int(m.group(1))
+            failed = int(m.group(2) or 0)
+            skipped = int(m.group(3) or 0)
+            add_counts(cur_test_task or cur_task or "(unknown)", total - failed - skipped, failed, skipped)
+            continue
+        m = RE_GSUM.search(line)
+        if m:
+            n, verb = int(m.group(1)), m.group(2)
+            mm = mod(cur_test_task or cur_task or "(unknown)")
+            mm["total"] += n
+            tests["total"] += n
+            if verb == "failed":
+                mm["failed"] += n
+                tests["failed"] += n
+            elif verb == "skipped":
+                mm["skipped"] += n
+                tests["skipped"] += n
+            continue
+        m = RE_GTEST_P.search(line)
+        if m:
+            add_counts(cur_test_task or cur_task or "(gtest)", int(m.group(1)), 0, 0)
+            continue
+        m = RE_GTEST_F.search(line)
+        if m:
+            add_counts(cur_test_task or cur_task or "(gtest)", 0, int(m.group(1)), 0)
+            continue
+        if re.search(r" > \S+(?:\.\S+)+.* FAILED$", line) or re.search(r"\[  FAILED  \] (\S+)", line):
+            test_failures.append(line.strip())
+            continue
+        if RE_DEP.search(line) and len(dep_issues) < 20:
+            if line not in dep_issues:
+                dep_issues.append(line.strip())
+            continue
+        wm = RE_WARN.search(line)
+        if wm and len(warnings) < 40:
+            key = line.strip()[:160]
+            if key not in seen_warnings:
+                seen_warnings.add(key)
+                warnings.append(key)
+
+headline_by_task = {}
+for h in headlines:
+    tm = RE_TASK_IN_MSG.search(h)
+    if tm and tm.group(1) in failed_tasks:
+        headline_by_task[tm.group(1)] = h
+# Fallback for single-failure builds where the headline never names its task explicitly.
+if not headline_by_task and len(failed_tasks) == 1 and headlines:
+    headline_by_task[failed_tasks[0]] = headlines[0]
+failed = [t + (" — " + headline_by_task[t] if t in headline_by_task else "") for t in failed_tasks]
+data = {"status": status, "totalTime": total_time, "failedTasks": failed, "warnings": warnings,
+        "tests": tests, "slowTasks": [], "depIssues": dep_issues, "actions": []}
+
+os.makedirs(OUT_DIR, exist_ok=True)
+with open(JS, "w") as f:
+    json.dump(data, f, indent=1)
+
+L = ["# Gradle Summary\n", f"- Status: {status}", f"- Total time: {total_time or 'UNKNOWN'}",
+     f"- Log: {log_path}\n"]
+if failed:
+    L.append("## Failing Tasks")
+    L += [f"- {t}" for t in failed]
+    L.append("")
+if headlines:
+    L.append("## Primary Failure")
+    L += [f"```text\n{h}\n```" for h in headlines[:3] if h]
+    L.append("")
+if tests["total"]:
+    L.append("## Tests")
+    L.append(f"- Total: {tests['total']}, failed: {tests['failed']}, skipped: {tests['skipped']}")
+    for name, m in tests["modules"].items():
+        L.append(f"  - {name}: {m['total']} total, {m['failed']} failed, {m['skipped']} skipped")
+    if test_failures:
+        L.append("- Top failing tests:")
+        L += [f"  - {t}" for t in test_failures[:10]]
+    L.append("")
+if warnings:
+    L.append("## Warnings")
+    L += [f"- {w}" for w in warnings[:20]]
+    L.append("")
+if dep_issues:
+    L.append("## Dependency / Network Issues")
+    L += [f"- {d}" for d in dep_issues[:10]]
+    L.append("")
+L.append("- Per-task durations are not present in plain `-i` console logs; slowTasks omitted.")
+open(MD, "w").write("\n".join(L) + "\n")
+
+print(f"{status} (time: {total_time or 'n/a'}); {len(failed)} failing task(s), {tests['failed']} test failure(s)")
+print(f"Wrote {MD} and {JS}")
+PYEOF
