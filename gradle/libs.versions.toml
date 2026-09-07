@@ -3,13 +3,13 @@
 [versions]
 cpp-standard = "17"
 kotlin = "1.9.22"
-spotless = "8.10.1"
+spotless = "8.10.2"
 
 # Testing
 junit = "5.9.3"
 junit-platform = "1.9.3"  # JUnit Platform version corresponding to JUnit Jupiter 5.9.2
 junit-pioneer = "1.9.1"
-slf4j = "2.0.18"
+slf4j = "2.0.19"
 
 # Profiler runtime
 jmc = "8.3.1"
