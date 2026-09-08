@@ -1894,9 +1894,10 @@ void Profiler::updateNativeLibMemStats() {
   // for the Counters:: mirrors below is cheap even though this itself is
   // only called from stop()/dump().
   //
-  // Deliberately does NOT also write NM_NATIVE_SYMBOLS here: that gauge is
-  // maintained incrementally at publish time (CodeCacheArray::add(), an
-  // atomic add per library). Overwriting it with a fresh recompute from this
+  // Deliberately does NOT also write NM_NATIVE_SYMBOLS, or its allocator
+  // overhead, here: both are maintained incrementally at publish time
+  // (CodeCacheArray::add(), an atomic add per library). Overwriting either with
+  // a fresh recompute from this
   // function -- which can run concurrently with the background refresher
   // thread publishing a new library, since neither takes a common lock --
   // would reintroduce exactly the stale-overwrite race the publish-time

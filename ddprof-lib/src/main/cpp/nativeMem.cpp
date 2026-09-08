@@ -5,6 +5,7 @@
 #include "nativeMem.h"
 
 volatile long long NativeMem::_live[NM_NUM_CATEGORIES] = {};
+volatile long long NativeMem::_overhead[NM_NUM_CATEGORIES] = {};
 volatile long long NativeMem::_max[NM_NUM_CATEGORIES] = {};
 long long NativeMem::_window[NM_NUM_CATEGORIES][NativeMem::WINDOW] = {};
 long long NativeMem::_total_window[NativeMem::WINDOW] = {};
@@ -13,6 +14,17 @@ int NativeMem::_window_count = 0;
 long long NativeMem::_avg[NM_NUM_CATEGORIES] = {};
 long long NativeMem::_total_avg = 0;
 long long NativeMem::_total_max_observed = 0;
+
+long long NativeMem::overheadTotal() {
+  long long total = 0;
+  for (int c = 0; c < NM_NUM_CATEGORIES; c++) {
+    long long v = load(_overhead[c]);
+    if (v > 0) {
+      total += v;
+    }
+  }
+  return total;
+}
 
 long long NativeMem::liveTotal() {
   long long total = 0;
@@ -84,6 +96,7 @@ void NativeMem::reset() {
   for (int c = 0; c < NM_NUM_CATEGORIES; c++) {
     store(_live[c], (long long)0);
     store(_max[c], (long long)0);
+    store(_overhead[c], (long long)0);
     _avg[c] = 0;
     for (int i = 0; i < WINDOW; i++) {
       _window[c][i] = 0;
