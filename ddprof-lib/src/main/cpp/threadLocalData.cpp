@@ -140,7 +140,7 @@ Context ProfiledThread::snapshotContext(size_t numAttrs) {
     ctx.rootSpanId = root_span_id;
     size_t count = numAttrs < DD_TAGS_CAPACITY ? numAttrs : DD_TAGS_CAPACITY;
     for (size_t i = 0; i < count; i++) {
-      ctx.tags[i].value = _otel_tag_encodings[i];
+      ctx.setTag(i, _otel_tag_encodings[i]);
     }
   }
   return ctx;

@@ -18,6 +18,7 @@
 #define _CONTEXT_H
 
 #include "arch.h"
+#include <cassert>
 
 static const u32 DD_TAGS_CAPACITY = 10;
 
@@ -29,9 +30,24 @@ class alignas(DEFAULT_CACHE_LINE_SIZE) Context {
 public:
   u64 spanId;
   u64 rootSpanId;
+private:
   Tag tags[DD_TAGS_CAPACITY];
 
-  Tag get_tag(int i) { return tags[i]; }
+  static bool isValidIndex(int i) {
+    return i >= 0 && (u32)i < DD_TAGS_CAPACITY;
+  }
+public:
+  u32 getTag(int i) {
+    assert(isValidIndex(i));
+    return isValidIndex(i) ? tags[i].value : 0;
+  }
+  
+  void setTag(int i, u32 value) {
+    assert(isValidIndex(i));
+    if (isValidIndex(i)) {
+      tags[i].value = value;
+    }
+  }
 };
 
 #endif /* _CONTEXT_H */
