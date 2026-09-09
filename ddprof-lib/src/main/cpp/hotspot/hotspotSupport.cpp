@@ -1181,7 +1181,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
       // so the unguarded dereference below exercises the sigsetjmp/siglongjmp
       // recovery path installed by the caller (walkJavaStack) instead of only
       // ever running against a known-good sp.
-      pc = ((const void**)INJECT_FAULT_ADDRESS_UNLIKELY(sp))[-1];
+      pc = *(const void**)INJECT_FAULT_ADDRESS_UNLIKELY((const void**)sp - 1);
       anchor->setLastJavaPC(pc);
 
       VMNMethod *m = CodeHeap::findNMethod(pc);
