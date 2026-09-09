@@ -17,8 +17,19 @@ public:
 
     class RegisterSnapshot : public StackFrame::RegisterSnapshot {
         private:
-            VMJavaFrameAnchor* _anchor;
-            const void*        _anchor_pc;
+            // volatile: storeJavaAnchor() mutates these (called from
+            // getJavaTraceAsync(), reached through
+            // HotspotSupport::withUcontextFaultRecovery()'s work(ctx_snapshot))
+            // between that function's sigsetjmp() and a possible siglongjmp()
+            // out of a recovered fault; restore() then reads them back at the
+            // landing pad to decide whether/how to restore the JavaThread
+            // anchor. Per the setjmp/longjmp rules (C11 7.13.2.1p3, inherited
+            // by C++), a non-volatile automatic local modified in that window
+            // has an indeterminate value after longjmp -- the same hazard
+            // ResolvedNames::_long_method_name (hotspotSupport.cpp) guards
+            // against for an analogous fault-recovery readback.
+            VMJavaFrameAnchor* volatile _anchor;
+            const void* volatile        _anchor_pc;
         public:
             explicit RegisterSnapshot(void* ucontext) : StackFrame::RegisterSnapshot(ucontext),
                 _anchor(nullptr), _anchor_pc(nullptr) {
@@ -30,7 +41,7 @@ public:
                 _anchor_pc = pc;
             }
 
-            void restore() {
+            virtual void restore() {
                 StackFrame::RegisterSnapshot::restore();
                 if (_anchor != nullptr) {
                     _anchor->setLastJavaPC(_anchor_pc);

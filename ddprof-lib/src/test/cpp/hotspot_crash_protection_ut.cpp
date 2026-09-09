@@ -59,6 +59,19 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+// Test-only friend accessor for VMStructs' protected static offsets (see the
+// `friend class VMStructsTestAccessor;` declaration in vmStructs.h) -- lets
+// FaultInsideProfilerRangeRecoversAndRestoresJavaThreadAnchor below fake a
+// VMJavaFrameAnchor layout without a live JVM. Mirrors the same-named
+// accessor already used for this purpose in hotspotMethodId_ut.cpp -- each
+// is a separate translation-unit-local definition; friendship is granted by
+// name+scope, not by a single shared type.
+class VMStructsTestAccessor {
+public:
+    static offset getAnchorPcOffset() { return VMStructs::_anchor_pc_offset; }
+    static void setAnchorPcOffset(offset value) { VMStructs::_anchor_pc_offset = value; }
+};
+
 // ---------------------------------------------------------------------------
 // A. ProfiledThread thread-type classification (isJavaThread fast path)
 //
@@ -737,6 +750,69 @@ TEST_F(WalkJavaStackUcontextRestoreTest, FaultInsideProfilerRangeRecoversAndRest
     EXPECT_EQ(saved_pc, frame.pc());
     EXPECT_EQ(saved_sp, frame.sp());
     EXPECT_EQ(saved_fp, frame.fp());
+    EXPECT_FALSE(_pt->isProtected());
+}
+
+// The anchor-restore counterpart of the pc/sp/fp test above: getJavaTraceAsync()'s
+// ticks_unknown_not_Java/ticks_not_walkable_not_Java branches also mutate the
+// real JavaThread's VMJavaFrameAnchor (anchor->setLastJavaPC()) via
+// ctx_snapshot.storeJavaAnchor(), and HotspotStackFrame::RegisterSnapshot::restore()
+// must undo that mutation too on a recovered fault -- the test above never
+// calls storeJavaAnchor(), so it exercises only the base StackFrame::RegisterSnapshot
+// half of restore(), not the derived anchor-restore branch.
+//
+// This gtest binary has no live JVM, so VMStructs::_anchor_pc_offset (and every
+// other vmStructs offset) is never resolved -- it stays at its unresolved
+// default of -1. A fake VMJavaFrameAnchor is built by pointing that offset at 0
+// and reinterpreting a local pointer-sized variable's address as the
+// "anchor": VMJavaFrameAnchor has no data members of its own (only static
+// vmStructs offsets), so its accessors are pure pointer arithmetic over
+// whatever memory they're pointed at -- the same "view over raw memory, never
+// actually constructed" contract every VMStructs-derived type in this codebase
+// relies on (see cast_to<T>()).
+TEST_F(WalkJavaStackUcontextRestoreTest, FaultInsideProfilerRangeRecoversAndRestoresJavaThreadAnchor) {
+    struct RestoreAnchorPcOffset {
+        offset saved = VMStructsTestAccessor::getAnchorPcOffset();
+        ~RestoreAnchorPcOffset() { VMStructsTestAccessor::setAnchorPcOffset(saved); }
+    } restore_anchor_pc_offset;
+    VMStructsTestAccessor::setAnchorPcOffset(0);
+
+    const void* original_pc = reinterpret_cast<const void*>(0x1111);
+    const void* fake_anchor_storage = original_pc;
+    VMJavaFrameAnchor* anchor = reinterpret_cast<VMJavaFrameAnchor*>(&fake_anchor_storage);
+
+    bool truncated = false;
+    volatile int partial = 0;
+
+    int result = HotspotSupport::withUcontextFaultRecovery(&_ctx, _pt, &truncated, partial, [&](HotspotStackFrame::RegisterSnapshot& ctx_snapshot) {
+        // Mirrors getJavaTraceAsync()'s ticks_unknown_not_Java branch: capture
+        // the anchor's pre-mutation pc via storeJavaAnchor() before patching
+        // it to a new value (hotspotSupport.cpp:1176/1183).
+        ctx_snapshot.storeJavaAnchor(anchor, original_pc);
+        anchor->setLastJavaPC(reinterpret_cast<const void*>(0xDEAD1234));
+        EXPECT_EQ(reinterpret_cast<const void*>(0xDEAD1234), anchor->lastJavaPC())
+            << "setLastJavaPC() itself must have taken effect before the fault, "
+               "otherwise the restore assertion below would hold trivially";
+
+        // The SIGSEGV's own delivery ucontext -- a distinct object from _ctx
+        // above -- whose faulting pc sits inside the installed range.
+        ucontext_t fault_uc{};
+        StackFrame(&fault_uc).pc() = _range_lo + kRangeMargin;
+
+        siginfo_t si{};
+        si.si_addr = reinterpret_cast<void*>(1);
+        // See the matching comment in FaultInsideProfilerRangeRecoversAndRestoresUcontext.
+        _pt->enterSignalScope();
+        Profiler::checkFault(_pt, &si, &fault_uc);
+        ADD_FAILURE() << "unreachable: checkFault() must siglongjmp for an in-range pc";
+    });
+
+    EXPECT_EQ(0, result);
+    EXPECT_TRUE(truncated);
+    EXPECT_EQ(original_pc, anchor->lastJavaPC())
+        << "a recovered fault must restore the JavaThread anchor's lastJavaPC "
+           "to what it was before storeJavaAnchor() captured it, not leave it "
+           "at the value setLastJavaPC() patched in mid-walk";
     EXPECT_FALSE(_pt->isProtected());
 }
 
