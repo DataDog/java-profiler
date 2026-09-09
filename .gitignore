@@ -41,6 +41,10 @@ datadog/maven/resources
 # Temporary documentation and work state
 doc/temp/
 
+# Working state left by run_tests_with_retry.sh
+/flake-evidence/
+/ci-outcome/
+
 # CLAUDE.md is auto-generated from AGENTS.md bootstrap instructions
 CLAUDE.md
 

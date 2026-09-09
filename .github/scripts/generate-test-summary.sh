@@ -89,18 +89,26 @@ while IFS= read -r job; do
     started_at=$(echo "$job" | jq -r '.started_at')
     completed_at=$(echo "$job" | jq -r '.completed_at')
 
-    # Only process test jobs (match pattern: test-linux-{libc}-{arch} ({java}, {config}))
+    # Only process test jobs (match pattern:
+    # test-linux-{libc}-{arch} ({java}, {config}, {slow|regular}))
     # Note: regex stored in variable to avoid bash parsing issues with ) character
     # Note: No ^ anchor because reusable workflow jobs are prefixed with caller job name
-    #       e.g., "test-matrix / test-linux-glibc-amd64 (8, debug)"
-    test_job_pattern='test-linux-([a-z]+)-([a-z0-9]+) \(([^,]+), ([^)]+)\)$'
+    #       e.g., "test-matrix / test-linux-glibc-amd64 (8, debug, regular)"
+    # The trailing slow/regular comes from a workflow input, not a matrix axis,
+    # so it has to be captured here too -- test_workflow.yml is called twice
+    # with overlapping configs in the same run (nightly, release-validated),
+    # and without it two different jobs collapse onto the same cell.
+    test_job_pattern='test-linux-([a-z]+)-([a-z0-9]+) \(([^,]+), ([^,]+), (slow|regular)\)$'
     if [[ "$name" =~ $test_job_pattern ]]; then
         libc="${BASH_REMATCH[1]}"
         arch="${BASH_REMATCH[2]}"
         java_version="${BASH_REMATCH[3]}"
         config="${BASH_REMATCH[4]}"
+        suite="${BASH_REMATCH[5]}"
+        suite_suffix=""
+        [[ "$suite" == "slow" ]] && suite_suffix="-slow"
 
-        platform="${libc}-${arch}/${config}"
+        platform="${libc}-${arch}/${config}${suite_suffix}"
 
         # Calculate duration
         if [[ -n "$started_at" && "$started_at" != "null" && -n "$completed_at" && "$completed_at" != "null" ]]; then
@@ -172,55 +180,15 @@ for key in "${!job_status[@]}"; do
     fi
 done
 
-# --- Download failure artifacts (if any failures) ---
-declare -A failure_details=()
-failure_details["__init__"]=1; unset 'failure_details[__init__]'
-
-if ((failed_count > 0)); then
-    log "Downloading failure artifacts..."
-    mkdir -p ./failure-artifacts
-
-    # Try to download test reports
-    gh run download "$RUN_ID" --pattern '(test-reports)*' --dir ./failure-artifacts 2>/dev/null || true
-
-    # Parse JUnit XML for failure details
-    for key in "${failed_jobs[@]}"; do
-        IFS='|' read -r platform java_version <<< "$key"
-
-        # Find matching test report directory
-        # Pattern: (test-reports) test-linux-{libc}-{arch} ({java}, {config})
-        IFS='/' read -r libc_arch config <<< "$platform"
-        report_pattern="./failure-artifacts/*${libc_arch}*${java_version}*${config}*"
-
-        failures=""
-        for report_dir in $report_pattern; do
-            if [[ -d "$report_dir" ]]; then
-                # Parse JUnit XML files
-                for xml_file in "$report_dir"/**/TEST-*.xml; do
-                    if [[ -f "$xml_file" ]]; then
-                        # Extract failed test cases
-                        while IFS= read -r testcase; do
-                            classname=$(echo "$testcase" | grep -oP 'classname="\K[^"]+' || echo "")
-                            testname=$(echo "$testcase" | grep -oP 'name="\K[^"]+' || echo "")
-                            # Get failure message (first line only, truncated)
-                            failure_msg=$(echo "$testcase" | grep -oP '<failure[^>]*message="\K[^"]*' | head -c 100 || echo "")
-
-                            if [[ -n "$classname" && -n "$testname" ]]; then
-                                short_class="${classname##*.}"
-                                failures+="| \`${short_class}.${testname}\` | ${failure_msg:-Test failed} |"$'\n'
-                            fi
-                        done < <(grep -Pzo '(?s)<testcase[^>]*>.*?</testcase>' "$xml_file" 2>/dev/null | tr '\0' '\n' | grep -E '<(failure|error)' || true)
-                    fi
-                done
-            fi
-        done
-
-        failure_details["$key"]="$failures"
-    done
-
-    # Cleanup
-    rm -rf ./failure-artifacts
-fi
+# --- Download outcome artifacts (for flake_summary.py below) ---
+# Per-cell outcome reports, written by run_tests_with_retry.sh and uploaded
+# whether the cell passed or failed. A cell that only went green on a retry
+# produces no failure artifact at all, so this is the one place its flaky test
+# is recorded.
+OUTCOME_DIR="./ci-outcome-artifacts"
+log "Downloading CI outcome reports..."
+mkdir -p "$OUTCOME_DIR"
+gh run download "$RUN_ID" --pattern '(ci-outcome)*' --dir "$OUTCOME_DIR" 2>/dev/null || true
 
 # --- Generate markdown ---
 log "Generating markdown summary..."
@@ -284,35 +252,29 @@ log "Generating markdown summary..."
         echo ""
     fi
 
-    # Failed tests details
-    if ((failed_count > 0)); then
-        echo "### Failed Tests"
-        echo ""
+    # Flaky and failing tests, grouped by test rather than by cell. One flaky
+    # test reddens a dozen cells and so does a dozen unrelated breakages; only
+    # grouping by test tells those apart.
+    python3 "$(dirname "$0")/flake_summary.py" --dir "$OUTCOME_DIR" \
+    || echo "_Could not render the flaky-test summary; see the job log._"
 
+    # Failed jobs, linked to their logs. Which tests failed and why is the
+    # flaky/persistent/quarantined tables above -- rendering it a second time
+    # here, grouped by job instead of by test, only gave the same failure two
+    # different messages if the two renderers' sanitizing ever drifted.
+    if ((${#failed_jobs[@]} > 0)); then
+        echo "### Failed Jobs"
+        echo ""
         for key in "${failed_jobs[@]}"; do
             IFS='|' read -r platform java_version <<< "$key"
             url="${job_url[$key]:-}"
-            details="${failure_details[$key]:-}"
-
-            echo "<details>"
-            echo "<summary><b>${platform} / ${java_version}</b></summary>"
-            echo ""
             if [[ -n "$url" ]]; then
-                echo "**Job:** [View logs]($url)"
-                echo ""
-            fi
-
-            if [[ -n "$details" ]]; then
-                echo "| Test | Error |"
-                echo "|------|-------|"
-                echo -n "$details"
+                echo "- **${platform} / ${java_version}** — [view logs]($url)"
             else
-                echo "_No detailed failure information available. Check the job logs._"
+                echo "- **${platform} / ${java_version}**"
             fi
-            echo ""
-            echo "</details>"
-            echo ""
         done
+        echo ""
     fi
 
     # Summary statistics (single line)
@@ -330,6 +292,8 @@ log "Generating markdown summary..."
     echo "*Updated: $(date -u '+%Y-%m-%d %H:%M:%S UTC')*"
 
 } > "$OUTPUT_FILE"
+
+rm -rf "$OUTCOME_DIR"
 
 log "Summary written to $OUTPUT_FILE"
 log "Total jobs: $total_jobs, Passed: $passed_jobs, Failed: $failed_count"
