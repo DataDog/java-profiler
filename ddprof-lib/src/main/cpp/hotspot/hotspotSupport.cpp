@@ -1281,7 +1281,7 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
       if (cstack >= CSTACK_VM) {
         java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
       } else {
-          AsyncSampleMutex mutex(ProfiledThread::current());
+          AsyncSampleMutex mutex(prof_thread);
           if (mutex.acquired()) {
               java_frames = getJavaTraceAsync(ucontext, frames, max_depth, java_ctx, truncated, ctx_snapshot);
               if (java_frames > 0 && java_ctx->pc != NULL && VMStructs::hasMethodStructs()) {
