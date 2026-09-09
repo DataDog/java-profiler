@@ -1247,6 +1247,41 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   return trace.frames - frames + 1;
 }
 
+int HotspotSupport::asyncJavaTraceWithPostProcessing(void* ucontext, ASGCT_CallFrame* frames,
+                                                      int max_depth, StackContext* java_ctx,
+                                                      bool* truncated, ProfiledThread* prof_thread) {
+  // getJavaTraceAsync() dereferences VMThread/anchor state directly, calls
+  // into HotSpot's own AsyncGetCallTrace, and mutates the real ucontext's
+  // pc/sp/fp (and, via storeJavaAnchor(), the JavaThread anchor) in place
+  // while doing so, with no crash protection of its own. withUcontextFaultRecovery()
+  // installs a jmp ctx around just that path, so a SIGSEGV there (except
+  // inside HotSpot's own AsyncGetCallTrace call) is caught by
+  // Profiler::checkFault() and recovered instead of crashing the process --
+  // see its own comment for why it also restores the ucontext.
+  volatile int partial = 0;
+  return withUcontextFaultRecovery(ucontext, prof_thread, truncated, partial, [&](HotspotStackFrame::RegisterSnapshot& ctx_snapshot) {
+      AsyncSampleMutex mutex(prof_thread);
+      if (mutex.acquired()) {
+          partial = getJavaTraceAsync(ucontext, frames, max_depth, java_ctx, truncated, ctx_snapshot);
+          if (partial > 0 && java_ctx->pc != NULL && VMStructs::hasMethodStructs()) {
+              VMNMethod* nmethod = CodeHeap::findNMethod(java_ctx->pc);
+              if (nmethod != NULL) {
+                  fillFrameTypes(frames, partial, nmethod);
+              }
+          }
+      }
+      if (partial > 0 && VM::hotspot_version() >= 21 && partial < max_depth) {
+          VMThread* carrier = VMThread::current();
+          if (carrier != nullptr && carrier->isCarryingVirtualThread()) {
+              frames[partial].bci = BCI_NATIVE_FRAME;
+              frames[partial].method_id = (jmethodID) "JVM Continuation";
+              LP64_ONLY(frames[partial].padding = 0;)
+              partial++;
+          }
+      }
+  });
+}
+
 int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   CStack cstack = Profiler::instance()->cstackMode();
   StackWalkFeatures features = Profiler::instance()->stackWalkFeatures();
@@ -1270,77 +1305,24 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   // walkVM's own recovery branch, never propagated here. It's dispatched
   // directly, with no withUcontextFaultRecovery() wrapper: constructing that
   // wrapper's RegisterSnapshot would be pure overhead on this path -- pc/sp/fp
-  // reads into uc_mcontext with nothing to ever restore.
+  // reads into uc_mcontext with nothing to ever restore. asyncJavaTraceWithPostProcessing()
+  // (see its own comment) is the getJavaTraceAsync() counterpart, wrapped
+  // because that path does mutate the ucontext with no crash protection of
+  // its own.
   //
-  // getJavaTraceAsync() is different: it dereferences VMThread/anchor state
-  // directly, calls into HotSpot's own AsyncGetCallTrace, and mutates the
-  // real ucontext's pc/sp/fp (and, via storeJavaAnchor(), the JavaThread
-  // anchor) in place while doing so, with no crash protection of its own.
-  // withUcontextFaultRecovery() installs a jmp ctx around just that path, so
-  // a SIGSEGV there (except inside HotSpot's own AsyncGetCallTrace call) is
-  // caught by Profiler::checkFault() and recovered instead of crashing the
-  // process -- see its own comment for why it also restores the ucontext.
-  int java_frames = 0;
+  // isHookPrefixedSample()/BCI_CPU/BCI_WALL samples share the exact same
+  // walkVM-vs-async dispatch, just gated on different event types, so they're
+  // collapsed into one branch here rather than duplicated per event type.
   if (features.mixed) {
-    java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
-  } else if (isHookPrefixedSample(request.event_type)) {
-    if (cstack >= CSTACK_VM) {
-      java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
-    } else {
-      volatile int partial = 0;
-      java_frames = withUcontextFaultRecovery(ucontext, prof_thread, truncated, [&](HotspotStackFrame::RegisterSnapshot& ctx_snapshot) -> int {
-          AsyncSampleMutex mutex(prof_thread);
-          if (mutex.acquired()) {
-              partial = getJavaTraceAsync(ucontext, frames, max_depth, java_ctx, truncated, ctx_snapshot);
-              if (partial > 0 && java_ctx->pc != NULL && VMStructs::hasMethodStructs()) {
-                  VMNMethod* nmethod = CodeHeap::findNMethod(java_ctx->pc);
-                  if (nmethod != NULL) {
-                      fillFrameTypes(frames, partial, nmethod);
-                  }
-              }
-          }
-          if (partial > 0 && VM::hotspot_version() >= 21 && partial < max_depth) {
-              VMThread* carrier = VMThread::current();
-              if (carrier != nullptr && carrier->isCarryingVirtualThread()) {
-                  frames[partial].bci = BCI_NATIVE_FRAME;
-                  frames[partial].method_id = (jmethodID) "JVM Continuation";
-                  LP64_ONLY(frames[partial].padding = 0;)
-                  partial++;
-              }
-          }
-          return partial;
-      }, &partial);
-    }
-  } else if (request.event_type == BCI_CPU || request.event_type == BCI_WALL) {
-    if (cstack >= CSTACK_VM) {
-      java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
-    } else {
-      volatile int partial = 0;
-      java_frames = withUcontextFaultRecovery(ucontext, prof_thread, truncated, [&](HotspotStackFrame::RegisterSnapshot& ctx_snapshot) -> int {
-          AsyncSampleMutex mutex(ProfiledThread::current());
-          if (mutex.acquired()) {
-              partial = getJavaTraceAsync(ucontext, frames, max_depth, java_ctx, truncated, ctx_snapshot);
-              if (partial > 0 && java_ctx->pc != NULL && VMStructs::hasMethodStructs()) {
-                  VMNMethod* nmethod = CodeHeap::findNMethod(java_ctx->pc);
-                  if (nmethod != NULL) {
-                      fillFrameTypes(frames, partial, nmethod);
-                  }
-              }
-          }
-          if (partial > 0 && VM::hotspot_version() >= 21 && partial < max_depth) {
-              VMThread* carrier = VMThread::current();
-              if (carrier != nullptr && carrier->isCarryingVirtualThread()) {
-                  frames[partial].bci = BCI_NATIVE_FRAME;
-                  frames[partial].method_id = (jmethodID) "JVM Continuation";
-                  LP64_ONLY(frames[partial].padding = 0;)
-                  partial++;
-              }
-          }
-          return partial;
-      }, &partial);
-    }
+    return walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
   }
-  return java_frames;
+  if (isHookPrefixedSample(request.event_type) || request.event_type == BCI_CPU || request.event_type == BCI_WALL) {
+    if (cstack >= CSTACK_VM) {
+      return walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
+    }
+    return asyncJavaTraceWithPostProcessing(ucontext, frames, max_depth, java_ctx, truncated, prof_thread);
+  }
+  return 0;
 }
 
 static void patchClassLoaderData(JNIEnv* jni, jclass klass) {

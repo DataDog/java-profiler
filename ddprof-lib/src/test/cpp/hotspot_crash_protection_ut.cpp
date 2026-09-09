@@ -704,8 +704,9 @@ TEST_F(WalkJavaStackUcontextRestoreTest, FaultInsideProfilerRangeRecoversAndRest
     uintptr_t saved_sp = frame.sp();
     uintptr_t saved_fp = frame.fp();
     bool truncated = false;
+    volatile int partial = 0;
 
-    int result = HotspotSupport::withUcontextFaultRecovery(&_ctx, _pt, &truncated, [&](HotspotStackFrame::RegisterSnapshot&) -> int {
+    int result = HotspotSupport::withUcontextFaultRecovery(&_ctx, _pt, &truncated, partial, [&](HotspotStackFrame::RegisterSnapshot&) {
         // Simulate getJavaTraceAsync() mutating the real ucontext mid-walk
         // (PROBE_SP loop / unwindStub / unwindCompiled all write pc()/sp()/
         // fp() directly).
@@ -728,10 +729,7 @@ TEST_F(WalkJavaStackUcontextRestoreTest, FaultInsideProfilerRangeRecoversAndRest
         // below -- has a matching enter to unwind instead of underflowing.
         _pt->enterSignalScope();
         Profiler::checkFault(_pt, &si, &fault_uc);
-        // Not FAIL(): that macro does a bare `return;`, which doesn't
-        // compile in a lambda declared to return int.
         ADD_FAILURE() << "unreachable: checkFault() must siglongjmp for an in-range pc";
-        return -1;
     });
 
     EXPECT_EQ(0, result);
@@ -748,8 +746,10 @@ TEST_F(WalkJavaStackUcontextRestoreTest, FaultInsideProfilerRangeRecoversAndRest
 // inside libjvm.so while AsyncGetCallTrace dereferences a poisoned sp/pc/fp
 // (see getJavaTraceAsync's anchor-derived fault-injection site) -- must not be
 // recovered by checkFault(). On this path checkFault() never siglongjmps, so
-// `work()` simply runs to completion and its return value comes straight back
-// out of withUcontextFaultRecovery() via `return work(ctx_snapshot);`; none of
+// `work()` simply runs to completion, and withUcontextFaultRecovery() returns
+// whatever `partial` (below) was last set to -- both the normal-completion and
+// recovery paths read the same `partial_result` reference back, so there's no
+// separate "work's return value" channel to fall through to instead; none of
 // the wrapper's own sigsetjmp / JmpCtxScope / RegisterSnapshot /
 // set_unwinding_Java restore logic executes. Every EXPECT_ below would still
 // hold even if that logic were deleted outright -- this test only pins that
@@ -765,8 +765,9 @@ TEST_F(WalkJavaStackUcontextRestoreTest, FaultOutsideProfilerRangeIsNotRecovered
     uintptr_t saved_sp = frame.sp();
     bool truncated = false;
     uintptr_t mutated_pc = 0, mutated_sp = 0, mutated_fp = 0;
+    volatile int partial = 0;
 
-    int result = HotspotSupport::withUcontextFaultRecovery(&_ctx, _pt, &truncated, [&](HotspotStackFrame::RegisterSnapshot&) -> int {
+    int result = HotspotSupport::withUcontextFaultRecovery(&_ctx, _pt, &truncated, partial, [&](HotspotStackFrame::RegisterSnapshot&) {
         // Same mutation getJavaTraceAsync() performs right before handing
         // sp/pc/fp to jvmAsyncGetCallTrace().
         frame.sp() += sizeof(void*);
@@ -787,7 +788,7 @@ TEST_F(WalkJavaStackUcontextRestoreTest, FaultOutsideProfilerRangeIsNotRecovered
         si.si_addr = reinterpret_cast<void*>(1);
         Profiler::checkFault(_pt, &si, &fault_uc);
         // Falls through: checkFault must not recover a pc outside the range.
-        return 42;  // sentinel proving work() ran to completion, unrecovered
+        partial = 42;  // sentinel proving work() ran to completion, unrecovered
     });
 
     EXPECT_EQ(42, result) << "checkFault must not have recovered an out-of-range fault";
@@ -805,8 +806,9 @@ TEST_F(WalkJavaStackUcontextRestoreTest, FaultOutsideProfilerRangeIsNotRecovered
 // socket hooks sampled outside any signal context).
 TEST_F(WalkJavaStackUcontextRestoreTest, NullUcontextSkipsRestoreWithoutCrashing) {
     bool truncated = false;
+    volatile int partial = 0;
 
-    int result = HotspotSupport::withUcontextFaultRecovery(nullptr, _pt, &truncated, [&](HotspotStackFrame::RegisterSnapshot&) -> int {
+    int result = HotspotSupport::withUcontextFaultRecovery(nullptr, _pt, &truncated, partial, [&](HotspotStackFrame::RegisterSnapshot&) {
         // A fault whose pc is inside the installed range, same as the
         // "recovers" test above, but with a null ucontext -- the recovery
         // branch's ctx_snapshot.restore() must be a safe no-op here rather
@@ -820,7 +822,6 @@ TEST_F(WalkJavaStackUcontextRestoreTest, NullUcontextSkipsRestoreWithoutCrashing
         _pt->enterSignalScope();
         Profiler::checkFault(_pt, &si, &fault_uc);
         ADD_FAILURE() << "unreachable: checkFault() must siglongjmp for an in-range pc";
-        return -1;
     });
 
     EXPECT_EQ(0, result);

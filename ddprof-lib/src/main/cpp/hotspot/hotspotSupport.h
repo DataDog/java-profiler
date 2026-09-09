@@ -44,6 +44,16 @@ private:
                                  bool *truncated, HotspotStackFrame::RegisterSnapshot& ctx_snapshot);
 
     static bool loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool load_all);
+
+    // Runs getJavaTraceAsync() under withUcontextFaultRecovery(), then layers
+    // on its two post-processing steps: resolving frame types for the top
+    // Java frame via fillFrameTypes(), and appending a synthetic "JVM
+    // Continuation" frame when the sampled thread is carrying a virtual
+    // thread. Shared by both of walkJavaStack()'s dispatch arms that reach
+    // getJavaTraceAsync() -- previously duplicated verbatim in each.
+    static int asyncJavaTraceWithPostProcessing(void* ucontext, ASGCT_CallFrame* frames,
+                                                int max_depth, StackContext* java_ctx,
+                                                bool* truncated, ProfiledThread* prof_thread);
 public:
     static void initClassloaderInfo(JNIEnv* jni);
 
@@ -59,16 +69,25 @@ public:
     // ucontext is the exact one the kernel uses to resume the sampled
     // thread when the signal handler returns.
     //
-    // `partial_result`, if non-null, is the caller's own accumulator for
-    // whatever `work` has already committed to the output buffer (e.g.
-    // walkJavaStack's java_frames): getJavaTraceAsync() can fault *after*
-    // already returning a valid frame count and filling `frames` (e.g. inside
-    // fillFrameTypes()/isCarryingVirtualThread()'s follow-up work). Before this
-    // recovery logic was extracted into a shared helper, walkJavaStack()
-    // already reported that case as a truncated-but-valid count by reading
-    // back its own `volatile int java_frames` local from the recovery branch
-    // -- `partial_result` is how that pre-existing behavior is preserved now
-    // that the branch lives here instead, not a new fix on top of it.
+    // `partial_result` is the caller's own accumulator for whatever `work`
+    // has already committed to the output buffer (e.g. walkJavaStack's
+    // java_frames): getJavaTraceAsync() can fault *after* already returning a
+    // valid frame count and filling `frames` (e.g. inside
+    // fillFrameTypes()/isCarryingVirtualThread()'s follow-up work). `work` is
+    // void-returning and writes only into `partial_result` (by capturing it,
+    // not by a return value) -- the wrapper reads `partial_result` back on
+    // both the normal-completion path and the recovery path, so there is a
+    // single channel for the result rather than two that a caller could wire
+    // to different objects, or forget to wire at all (a plain return value
+    // whose default became 0 on a recovered fault was exactly the
+    // "recovered fault discards an already-valid partial trace" shape this
+    // wrapper exists to avoid). The caller must initialize `partial_result`
+    // itself before the call (normally to 0); before this recovery logic was
+    // extracted into a shared helper, walkJavaStack() already reported the
+    // fault-after-partial-progress case as a truncated-but-valid count by
+    // reading back its own `volatile int java_frames` local from the recovery
+    // branch -- this parameter is how that pre-existing behavior is preserved
+    // now that the branch lives here instead, not a new fix on top of it.
     //
     // `work` receives ctx_snapshot by reference so that getJavaTraceAsync()
     // (via its own storeJavaAnchor() call, above) can record a JavaThread
@@ -83,13 +102,13 @@ public:
     // walkJavaStack(), so production and its regression test invoke the
     // identical recovery branch -- see hotspot_crash_protection_ut.cpp's
     // WalkJavaStackUcontextRestoreTest. A template rather than
-    // std::function<int()> so the hot sample path pays no allocation for
+    // std::function<void()> so the hot sample path pays no allocation for
     // captures. Must stay defined here (not in hotspotSupport.cpp): as a
     // template, its body needs to be visible wherever it's instantiated --
     // both walkJavaStack() and the regression test's own call sites, which
     // each pass a distinct closure type.
     template <typename Fn>
-    static int withUcontextFaultRecovery(void* ucontext, ProfiledThread* prof_thread, bool* truncated, Fn&& work, volatile int* partial_result = nullptr) {
+    static int withUcontextFaultRecovery(void* ucontext, ProfiledThread* prof_thread, bool* truncated, volatile int& partial_result, Fn&& work) {
         const bool prev_unwinding_java = prof_thread->is_unwinding_Java();
         HotspotStackFrame::RegisterSnapshot ctx_snapshot(ucontext);
 
@@ -108,10 +127,11 @@ public:
             if (truncated) {
                 *truncated = true;
             }
-            return partial_result ? *partial_result : 0;
+            return partial_result;
         }
         jmp_scope.install(&crash_protection_ctx);
-        return work(ctx_snapshot);
+        work(ctx_snapshot);
+        return partial_result;
     }
 
     static int walkJavaStack(StackWalkRequest& request);
