@@ -1031,7 +1031,7 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
 
 int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
                                 int max_depth, StackContext *java_ctx,
-                                bool *truncated) {
+                                bool *truncated, HotspotStackFrame::RegisterSnapshot& ctx_snapshot) {
   // Workaround for JDK-8132510: it's not safe to call GetEnv() inside a signal
   // handler since JDK 9, so we do it only for threads already registered in
   // ThreadLocalStorage
@@ -1049,12 +1049,14 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   }
 
   HotspotStackFrame frame(ucontext);
-  // Snapshot pc/sp/fp before this function starts feeding them to HotSpot's
-  // own AsyncGetCallTrace below (it mutates them in place via frame.restore()
-  // / frame.unwindStub() / frame.unwindCompiled() to try alternate frames),
-  // so they can be put back once AGCT is done. Shared with walkJavaStack()'s
-  // fault-recovery restore -- see StackFrame::RegisterSnapshot.
-  StackFrame::RegisterSnapshot ctx_snapshot(ucontext);
+  // ctx_snapshot (passed in by the caller) snapshotted pc/sp/fp before this
+  // function starts feeding them to HotSpot's own AsyncGetCallTrace below (it
+  // mutates them in place via frame.restore() / frame.unwindStub() /
+  // frame.unwindCompiled() to try alternate frames), so they can be put back
+  // once AGCT is done. It's the same instance withUcontextFaultRecovery()
+  // restores on a recovered fault -- see its own comment -- which is also why
+  // any JavaThread anchor mutation below must be recorded on it via
+  // storeJavaAnchor() rather than tracked locally.
   if (ucontext != NULL) {
     if (JitCodeCache::isCallStub((const void *)ctx_snapshot.pc())) {
        // call_stub is unsafe to walk
@@ -1148,7 +1150,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
               trace.frames--;
             }
             for (int i = 0; trace.num_frames < 0 && i < PROBE_SP_LIMIT; i++) {
-              frame.sp() = frame.sp() + sizeof(void*);
+              frame.sp() += sizeof(void*);
               JVMSupport::jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
             }
           }
@@ -1171,6 +1173,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
     if (anchor == NULL) return 0;
     uintptr_t sp = anchor->lastJavaSP();
     const void* pc = anchor->lastJavaPC();
+    ctx_snapshot.storeJavaAnchor(anchor, pc);
     if (sp != 0 && pc == NULL) {
       // We have the last Java frame anchor, but it is not marked as walkable.
       // Make it walkable here.
@@ -1205,6 +1208,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
     if (anchor == NULL) return 0;
     uintptr_t sp = anchor->lastJavaSP();
     const void* pc = anchor->lastJavaPC();
+    ctx_snapshot.storeJavaAnchor(anchor, pc);
     if (sp != 0 && pc != NULL) {
       // Similar to the above: last Java frame is set,
       // but points to a Runtime Stub with an invalid _frame_complete_offset
@@ -1270,7 +1274,7 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   // recovered instead of crashing the process -- see its own comment for why
   // it also restores the ucontext.
   volatile int java_frames = 0;
-  return withUcontextFaultRecovery(ucontext, prof_thread, truncated, [&]() -> int {
+  return withUcontextFaultRecovery(ucontext, prof_thread, truncated, [&](HotspotStackFrame::RegisterSnapshot& ctx_snapshot) -> int {
     if (features.mixed) {
       java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
     } else if (isHookPrefixedSample(request.event_type)) {
@@ -1279,7 +1283,7 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
       } else {
           AsyncSampleMutex mutex(ProfiledThread::current());
           if (mutex.acquired()) {
-              java_frames = getJavaTraceAsync(ucontext, frames, max_depth, java_ctx, truncated);
+              java_frames = getJavaTraceAsync(ucontext, frames, max_depth, java_ctx, truncated, ctx_snapshot);
               if (java_frames > 0 && java_ctx->pc != NULL && VMStructs::hasMethodStructs()) {
                   VMNMethod* nmethod = CodeHeap::findNMethod(java_ctx->pc);
                   if (nmethod != NULL) {
@@ -1303,7 +1307,7 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
       } else {
           AsyncSampleMutex mutex(ProfiledThread::current());
           if (mutex.acquired()) {
-              java_frames = getJavaTraceAsync(ucontext, frames, max_depth, java_ctx, truncated);
+              java_frames = getJavaTraceAsync(ucontext, frames, max_depth, java_ctx, truncated, ctx_snapshot);
               if (java_frames > 0 && java_ctx->pc != NULL && VMStructs::hasMethodStructs()) {
                   VMNMethod* nmethod = CodeHeap::findNMethod(java_ctx->pc);
                   if (nmethod != NULL) {

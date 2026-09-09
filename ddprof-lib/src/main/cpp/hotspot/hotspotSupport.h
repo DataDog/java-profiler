@@ -32,9 +32,16 @@ private:
                       StackWalkFeatures features, EventType event_type,
                       int lock_index, bool* truncated = nullptr);
 
+    // ctx_snapshot is owned by the caller's withUcontextFaultRecovery() scope
+    // (hotspotSupport.cpp), not constructed locally: getJavaTraceAsync() must
+    // record the JavaThread anchor mutation it's about to make (see
+    // storeJavaAnchor() below) on the exact same RegisterSnapshot instance
+    // whose restore() runs on a recovered SIGSEGV, or the anchor never gets
+    // restored -- a fault siglongjmps past this whole function's frame,
+    // skipping any local snapshot it might otherwise have owned.
     static int getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
                                  int max_depth, StackContext *java_ctx,
-                                 bool *truncated);
+                                 bool *truncated, HotspotStackFrame::RegisterSnapshot& ctx_snapshot);
 
     static bool loadMethodIDsIfNeededImpl(jvmtiEnv *jvmti, JNIEnv *jni, jclass klass, bool load_all);
 public:
@@ -60,16 +67,28 @@ public:
     // partial progress must come back as a truncated-but-valid count rather
     // than being discarded as zero frames.
     //
+    // `work` receives ctx_snapshot by reference so that getJavaTraceAsync()
+    // (via its own storeJavaAnchor() call, above) can record a JavaThread
+    // anchor mutation on this exact instance -- the one whose restore()
+    // actually runs below on a recovered fault. A local snapshot inside
+    // getJavaTraceAsync() would be useless: a siglongjmp from a fault there
+    // jumps straight back to this sigsetjmp, skipping getJavaTraceAsync's
+    // entire stack frame (and anything it owned) without running any of its
+    // code.
+    //
     // Extracted into one place, rather than hand-rolled separately in
     // walkJavaStack(), so production and its regression test invoke the
     // identical recovery branch -- see hotspot_crash_protection_ut.cpp's
     // WalkJavaStackUcontextRestoreTest. A template rather than
     // std::function<int()> so the hot sample path pays no allocation for
-    // captures.
+    // captures. Must stay defined here (not in hotspotSupport.cpp): as a
+    // template, its body needs to be visible wherever it's instantiated --
+    // both walkJavaStack() and the regression test's own call sites, which
+    // each pass a distinct closure type.
     template <typename Fn>
     static int withUcontextFaultRecovery(void* ucontext, ProfiledThread* prof_thread, bool* truncated, Fn&& work, volatile int* partial_result = nullptr) {
         const bool prev_unwinding_java = prof_thread->is_unwinding_Java();
-        StackFrame::RegisterSnapshot ctx_snapshot(ucontext);
+        HotspotStackFrame::RegisterSnapshot ctx_snapshot(ucontext);
 
         sigjmp_buf crash_protection_ctx;
         JmpCtxScope jmp_scope(prof_thread);
@@ -89,7 +108,7 @@ public:
             return partial_result ? *partial_result : 0;
         }
         jmp_scope.install(&crash_protection_ctx);
-        return work();
+        return work(ctx_snapshot);
     }
 
     static int walkJavaStack(StackWalkRequest& request);

@@ -44,6 +44,14 @@
 #include "os.h"
 #include "stackFrame.h"
 #include "hotspot/hotspotSupport.h"
+// HotspotStackFrame::RegisterSnapshot::restore() (constructed inside
+// withUcontextFaultRecovery(), instantiated here) conditionally calls
+// VMJavaFrameAnchor::setLastJavaPC(), which is inline in vmStructs.h but
+// bottoms out in VMStructs::at()/crashProtectionActive(), defined in
+// vmStructs.inline.h. Without this include, assertion-enabled builds (the
+// gtest targets) leave those symbols unresolved at link time -- see the same
+// note in hotspotStackFrame_aarch64.cpp.
+#include "hotspot/vmStructs.inline.h"
 
 #ifdef __linux__
 
@@ -686,7 +694,7 @@ TEST_F(WalkJavaStackUcontextRestoreTest, FaultInsideProfilerRangeRecoversAndRest
     uintptr_t saved_fp = frame.fp();
     bool truncated = false;
 
-    int result = HotspotSupport::withUcontextFaultRecovery(&_ctx, _pt, &truncated, [&]() -> int {
+    int result = HotspotSupport::withUcontextFaultRecovery(&_ctx, _pt, &truncated, [&](HotspotStackFrame::RegisterSnapshot&) -> int {
         // Simulate getJavaTraceAsync() mutating the real ucontext mid-walk
         // (PROBE_SP loop / unwindStub / unwindCompiled all write pc()/sp()/
         // fp() directly).
@@ -740,7 +748,7 @@ TEST_F(WalkJavaStackUcontextRestoreTest, FaultOutsideProfilerRangeIsNotRecovered
     bool truncated = false;
     uintptr_t mutated_pc = 0, mutated_sp = 0, mutated_fp = 0;
 
-    int result = HotspotSupport::withUcontextFaultRecovery(&_ctx, _pt, &truncated, [&]() -> int {
+    int result = HotspotSupport::withUcontextFaultRecovery(&_ctx, _pt, &truncated, [&](HotspotStackFrame::RegisterSnapshot&) -> int {
         // Same mutation getJavaTraceAsync() performs right before handing
         // sp/pc/fp to jvmAsyncGetCallTrace().
         frame.sp() += sizeof(void*);
@@ -780,7 +788,7 @@ TEST_F(WalkJavaStackUcontextRestoreTest, FaultOutsideProfilerRangeIsNotRecovered
 TEST_F(WalkJavaStackUcontextRestoreTest, NullUcontextSkipsRestoreWithoutCrashing) {
     bool truncated = false;
 
-    int result = HotspotSupport::withUcontextFaultRecovery(nullptr, _pt, &truncated, [&]() -> int {
+    int result = HotspotSupport::withUcontextFaultRecovery(nullptr, _pt, &truncated, [&](HotspotStackFrame::RegisterSnapshot&) -> int {
         // A fault whose pc is inside the installed range, same as the
         // "recovers" test above, but with a null ucontext -- the recovery
         // branch's ctx_snapshot.restore() must be a safe no-op here rather

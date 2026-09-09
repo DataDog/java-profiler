@@ -56,7 +56,7 @@ class StackFrame {
             }
         }
 
-        void restore() const {
+        void restore() {
             StackFrame(_ucontext).restore(_pc, _sp, _fp);
         }
 
