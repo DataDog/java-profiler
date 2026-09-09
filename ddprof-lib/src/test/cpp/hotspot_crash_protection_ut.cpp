@@ -629,6 +629,17 @@ TEST_F(SafeFetch64TocTouGuardTest, ZeroReturnMeansGiveUp) {
 // UNIT_TEST-only Profiler::setAddressRangeForTest() so both sides of that
 // gate -- recovered (pc inside range) and rejected (pc outside range) -- are
 // exercised, rather than only the "always recovers" path.
+//
+// Only FaultInsideProfilerRangeRecoversAndRestoresUcontext below actually
+// pins withUcontextFaultRecovery()'s own recovery branch (its sigsetjmp,
+// JmpCtxScope, RegisterSnapshot and set_unwinding_Java restore all run on
+// that path). FaultOutsideProfilerRangeIsNotRecoveredAndLeavesUcontextCorrupted
+// is a negative control for checkFault()'s range gate, not regression
+// coverage for the wrapper: on that path checkFault() never siglongjmps, so
+// `work()` just runs to completion and withUcontextFaultRecovery() falls
+// straight through to `return work(ctx_snapshot);` -- every assertion in
+// that test would still pass if the wrapper's own sigsetjmp/JmpCtxScope/
+// RegisterSnapshot/set_unwinding_Java logic were deleted entirely.
 // ---------------------------------------------------------------------------
 
 class WalkJavaStackUcontextRestoreTest : public ::testing::Test {
@@ -731,16 +742,23 @@ TEST_F(WalkJavaStackUcontextRestoreTest, FaultInsideProfilerRangeRecoversAndRest
     EXPECT_FALSE(_pt->isProtected());
 }
 
-// The counterpart that FaultInsideProfilerRangeRecoversAndRestoresUcontext
-// alone can't catch: a fault whose instruction pointer falls OUTSIDE the
-// profiler's own range -- standing in for a fault raised deep inside
-// libjvm.so while AsyncGetCallTrace dereferences a poisoned sp/pc/fp (see
-// getJavaTraceAsync's anchor-derived fault-injection site). checkFault() must
-// not recover such a fault, which means withUcontextFaultRecovery()'s restore
-// never runs and the mutated ucontext is left exactly as corrupted as the
-// injection left it -- `work()` runs to completion and its return value comes
-// straight back out, proving checkFault() truly fell through rather than
-// recovering.
+// A negative control for checkFault()'s address-range gate, not for
+// withUcontextFaultRecovery() itself: a fault whose instruction pointer falls
+// OUTSIDE the profiler's own range -- standing in for a fault raised deep
+// inside libjvm.so while AsyncGetCallTrace dereferences a poisoned sp/pc/fp
+// (see getJavaTraceAsync's anchor-derived fault-injection site) -- must not be
+// recovered by checkFault(). On this path checkFault() never siglongjmps, so
+// `work()` simply runs to completion and its return value comes straight back
+// out of withUcontextFaultRecovery() via `return work(ctx_snapshot);`; none of
+// the wrapper's own sigsetjmp / JmpCtxScope / RegisterSnapshot /
+// set_unwinding_Java restore logic executes. Every EXPECT_ below would still
+// hold even if that logic were deleted outright -- this test only pins that
+// checkFault() correctly refuses to recover an out-of-range pc, proving the
+// range gate actually distinguishes the two cases rather than always
+// recovering (which is what makes
+// FaultInsideProfilerRangeRecoversAndRestoresUcontext's "recovered" result
+// meaningful). See the suite-level comment above for the test that actually
+// exercises the wrapper's recovery branch.
 TEST_F(WalkJavaStackUcontextRestoreTest, FaultOutsideProfilerRangeIsNotRecoveredAndLeavesUcontextCorrupted) {
     StackFrame frame(&_ctx);
     uintptr_t saved_pc = frame.pc();
