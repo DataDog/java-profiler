@@ -1150,7 +1150,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
               trace.frames--;
             }
             for (int i = 0; trace.num_frames < 0 && i < PROBE_SP_LIMIT; i++) {
-              frame.sp() += sizeof(void*);
+              frame.sp() = frame.sp() + sizeof(void*);
               JVMSupport::jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
             }
           }
@@ -1275,6 +1275,7 @@ int HotspotSupport::walkJavaStack(StackWalkRequest& request) {
   // it also restores the ucontext.
   volatile int java_frames = 0;
   return withUcontextFaultRecovery(ucontext, prof_thread, truncated, [&](HotspotStackFrame::RegisterSnapshot& ctx_snapshot) -> int {
+    assert(prof_thread != nullptr);
     if (features.mixed) {
       java_frames = walkVM(ucontext, frames, max_depth, features, eventTypeFromBCI(request.event_type), lock_index, truncated);
     } else if (isHookPrefixedSample(request.event_type)) {

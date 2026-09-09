@@ -63,9 +63,12 @@ public:
     // whatever `work` has already committed to the output buffer (e.g.
     // walkJavaStack's java_frames): getJavaTraceAsync() can fault *after*
     // already returning a valid frame count and filling `frames` (e.g. inside
-    // fillFrameTypes()/isCarryingVirtualThread()'s follow-up work), and that
-    // partial progress must come back as a truncated-but-valid count rather
-    // than being discarded as zero frames.
+    // fillFrameTypes()/isCarryingVirtualThread()'s follow-up work). Before this
+    // recovery logic was extracted into a shared helper, walkJavaStack()
+    // already reported that case as a truncated-but-valid count by reading
+    // back its own `volatile int java_frames` local from the recovery branch
+    // -- `partial_result` is how that pre-existing behavior is preserved now
+    // that the branch lives here instead, not a new fix on top of it.
     //
     // `work` receives ctx_snapshot by reference so that getJavaTraceAsync()
     // (via its own storeJavaAnchor() call, above) can record a JavaThread
