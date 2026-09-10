@@ -35,7 +35,7 @@ private:
     // ctx_snapshot is owned by the caller's withUcontextFaultRecovery() scope
     // (hotspotSupport.cpp), not constructed locally: getJavaTraceAsync() must
     // record the JavaThread anchor mutation it's about to make (see
-    // storeJavaAnchor() below) on the exact same RegisterSnapshot instance
+    // saveJavaAnchor() below) on the exact same RegisterSnapshot instance
     // whose restore() runs on a recovered SIGSEGV, or the anchor never gets
     // restored -- a fault siglongjmps past this whole function's frame,
     // skipping any local snapshot it might otherwise have owned.
@@ -90,7 +90,7 @@ public:
     // now that the branch lives here instead, not a new fix on top of it.
     //
     // `work` receives ctx_snapshot by reference so that getJavaTraceAsync()
-    // (via its own storeJavaAnchor() call, above) can record a JavaThread
+    // (via its own saveJavaAnchor() call, above) can record a JavaThread
     // anchor mutation on this exact instance -- the one whose restore()
     // actually runs below on a recovered fault. A local snapshot inside
     // getJavaTraceAsync() would be useless: a siglongjmp from a fault there

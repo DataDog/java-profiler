@@ -17,7 +17,7 @@ public:
 
     class RegisterSnapshot : public StackFrame::RegisterSnapshot {
         private:
-            // volatile: storeJavaAnchor() mutates these (called from
+            // volatile: saveJavaAnchor() mutates these (called from
             // getJavaTraceAsync(), reached through
             // HotspotSupport::withUcontextFaultRecovery()'s work(ctx_snapshot))
             // between that function's sigsetjmp() and a possible siglongjmp()
@@ -35,16 +35,22 @@ public:
                 _anchor(nullptr), _anchor_pc(nullptr) {
             }
 
-            void storeJavaAnchor(VMJavaFrameAnchor* anchor, const void* pc) {
+            virtual ~RegisterSnapshot() {
+                restore();
+            }
+
+            void saveJavaAnchor(VMJavaFrameAnchor* anchor, const void* pc) {
                 assert(anchor != nullptr);
                 _anchor = anchor;
                 _anchor_pc = pc;
             }
 
-            virtual void restore() {
+            virtual void restore() override {
                 StackFrame::RegisterSnapshot::restore();
                 if (_anchor != nullptr) {
-                    _anchor->setLastJavaPC(_anchor_pc);
+                    // Safe store, cannot fault
+                    bool ret = _anchor->setLastJavaPC<true /*safe store*/>(_anchor_pc);
+                    assert(ret && "Failed to restore lastJavaPC");
                     _anchor = nullptr;
                 }
         }

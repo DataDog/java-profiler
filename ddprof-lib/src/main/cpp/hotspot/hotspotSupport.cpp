@@ -1056,7 +1056,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   // once AGCT is done. It's the same instance withUcontextFaultRecovery()
   // restores on a recovered fault -- see its own comment -- which is also why
   // any JavaThread anchor mutation below must be recorded on it via
-  // storeJavaAnchor() rather than tracked locally.
+  // saveJavaAnchor() rather than tracked locally.
   if (ucontext != NULL) {
     if (JitCodeCache::isCallStub((const void *)ctx_snapshot.pc())) {
        // call_stub is unsafe to walk
@@ -1170,10 +1170,12 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   } else if (trace.num_frames == ticks_unknown_not_Java &&
              !(safe_mode & LAST_JAVA_PC)) {
     VMJavaFrameAnchor* anchor = vm_thread->anchor();
-    if (anchor == NULL) return 0;
+    if (anchor == NULL) {
+      ctx_snapshot.restore();
+      return 0;
+    }
     uintptr_t sp = anchor->lastJavaSP();
     const void* pc = anchor->lastJavaPC();
-    ctx_snapshot.storeJavaAnchor(anchor, pc);
     if (sp != 0 && pc == NULL) {
       // We have the last Java frame anchor, but it is not marked as walkable.
       // Make it walkable here.
@@ -1182,7 +1184,8 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
       // recovery path installed by the caller (walkJavaStack) instead of only
       // ever running against a known-good sp.
       pc = *(const void**)INJECT_FAULT_ADDRESS_UNLIKELY((const void**)sp - 1);
-      anchor->setLastJavaPC(pc);
+      ctx_snapshot.saveJavaAnchor(anchor, NULL);
+      anchor->setLastJavaPC<false /* plain store */>(pc);
 
       VMNMethod *m = CodeHeap::findNMethod(pc);
       const Libraries* libs = Profiler::instance()->libraries();
@@ -1199,16 +1202,16 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
       } else if (libs->findLibraryByAddress(pc) != NULL) {
         JVMSupport::jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
       }
-
-      anchor->setLastJavaPC(nullptr);
     }
   } else if (trace.num_frames == ticks_not_walkable_not_Java &&
              !(safe_mode & LAST_JAVA_PC)) {
     VMJavaFrameAnchor* anchor = vm_thread->anchor();
-    if (anchor == NULL) return 0;
+    if (anchor == NULL) {
+      ctx_snapshot.restore();
+      return 0;
+    }
     uintptr_t sp = anchor->lastJavaSP();
     const void* pc = anchor->lastJavaPC();
-    ctx_snapshot.storeJavaAnchor(anchor, pc);
     if (sp != 0 && pc != NULL) {
       // Similar to the above: last Java frame is set,
       // but points to a Runtime Stub with an invalid _frame_complete_offset
@@ -1252,7 +1255,7 @@ int HotspotSupport::asyncJavaTraceWithPostProcessing(void* ucontext, ASGCT_CallF
                                                       bool* truncated, ProfiledThread* prof_thread) {
   // getJavaTraceAsync() dereferences VMThread/anchor state directly, calls
   // into HotSpot's own AsyncGetCallTrace, and mutates the real ucontext's
-  // pc/sp/fp (and, via storeJavaAnchor(), the JavaThread anchor) in place
+  // pc/sp/fp (and, via saveJavaAnchor(), the JavaThread anchor) in place
   // while doing so, with no crash protection of its own. withUcontextFaultRecovery()
   // installs a jmp ctx around just that path, so a SIGSEGV there (except
   // inside HotSpot's own AsyncGetCallTrace call) is caught by

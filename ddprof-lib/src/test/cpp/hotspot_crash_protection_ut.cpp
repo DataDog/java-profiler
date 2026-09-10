@@ -754,12 +754,12 @@ TEST_F(WalkJavaStackUcontextRestoreTest, FaultInsideProfilerRangeRecoversAndRest
 }
 
 // The anchor-restore counterpart of the pc/sp/fp test above: getJavaTraceAsync()'s
-// ticks_unknown_not_Java/ticks_not_walkable_not_Java branches also mutate the
-// real JavaThread's VMJavaFrameAnchor (anchor->setLastJavaPC()) via
-// ctx_snapshot.storeJavaAnchor(), and HotspotStackFrame::RegisterSnapshot::restore()
-// must undo that mutation too on a recovered fault -- the test above never
-// calls storeJavaAnchor(), so it exercises only the base StackFrame::RegisterSnapshot
-// half of restore(), not the derived anchor-restore branch.
+// ticks_unknown_not_Java branch also mutates the real JavaThread's
+// VMJavaFrameAnchor (anchor->setLastJavaPC()) via ctx_snapshot.saveJavaAnchor(),
+// and HotspotStackFrame::RegisterSnapshot::restore() must undo that mutation too
+// on a recovered fault -- the test above never calls saveJavaAnchor(), so it
+// exercises only the base StackFrame::RegisterSnapshot half of restore(), not
+// the derived anchor-restore branch.
 //
 // This gtest binary has no live JVM, so VMStructs::_anchor_pc_offset (and every
 // other vmStructs offset) is never resolved -- it stays at its unresolved
@@ -786,9 +786,9 @@ TEST_F(WalkJavaStackUcontextRestoreTest, FaultInsideProfilerRangeRecoversAndRest
 
     int result = HotspotSupport::withUcontextFaultRecovery(&_ctx, _pt, &truncated, partial, [&](HotspotStackFrame::RegisterSnapshot& ctx_snapshot) {
         // Mirrors getJavaTraceAsync()'s ticks_unknown_not_Java branch: capture
-        // the anchor's pre-mutation pc via storeJavaAnchor() before patching
+        // the anchor's pre-mutation pc via saveJavaAnchor() before patching
         // it to a new value (hotspotSupport.cpp:1176/1183).
-        ctx_snapshot.storeJavaAnchor(anchor, original_pc);
+        ctx_snapshot.saveJavaAnchor(anchor, original_pc);
         anchor->setLastJavaPC(reinterpret_cast<const void*>(0xDEAD1234));
         EXPECT_EQ(reinterpret_cast<const void*>(0xDEAD1234), anchor->lastJavaPC())
             << "setLastJavaPC() itself must have taken effect before the fault, "
@@ -811,7 +811,7 @@ TEST_F(WalkJavaStackUcontextRestoreTest, FaultInsideProfilerRangeRecoversAndRest
     EXPECT_TRUE(truncated);
     EXPECT_EQ(original_pc, anchor->lastJavaPC())
         << "a recovered fault must restore the JavaThread anchor's lastJavaPC "
-           "to what it was before storeJavaAnchor() captured it, not leave it "
+           "to what it was before saveJavaAnchor() captured it, not leave it "
            "at the value setLastJavaPC() patched in mid-walk";
     EXPECT_FALSE(_pt->isProtected());
 }
@@ -823,22 +823,27 @@ TEST_F(WalkJavaStackUcontextRestoreTest, FaultInsideProfilerRangeRecoversAndRest
 // (see getJavaTraceAsync's anchor-derived fault-injection site) -- must not be
 // recovered by checkFault(). On this path checkFault() never siglongjmps, so
 // `work()` simply runs to completion, and withUcontextFaultRecovery() returns
-// whatever `partial` (below) was last set to -- both the normal-completion and
-// recovery paths read the same `partial_result` reference back, so there's no
-// separate "work's return value" channel to fall through to instead; none of
-// the wrapper's own sigsetjmp / JmpCtxScope / RegisterSnapshot /
-// set_unwinding_Java restore logic executes. Every EXPECT_ below would still
-// hold even if that logic were deleted outright -- this test only pins that
-// checkFault() correctly refuses to recover an out-of-range pc, proving the
-// range gate actually distinguishes the two cases rather than always
-// recovering (which is what makes
-// FaultInsideProfilerRangeRecoversAndRestoresUcontext's "recovered" result
-// meaningful). See the suite-level comment above for the test that actually
-// exercises the wrapper's recovery branch.
-TEST_F(WalkJavaStackUcontextRestoreTest, FaultOutsideProfilerRangeIsNotRecoveredAndLeavesUcontextCorrupted) {
+// whatever `partial` (below) was last set to through its normal-completion
+// path (hotspotSupport.h's `return partial_result;` after `work(ctx_snapshot)`),
+// not its sigsetjmp recovery branch -- proving the range gate actually
+// distinguishes the two cases rather than always recovering (which is what
+// makes FaultInsideProfilerRangeRecoversAndRestoresUcontext's "recovered"
+// result meaningful).
+//
+// Either way, though, `ctx_snapshot` is a local of withUcontextFaultRecovery
+// itself, and RegisterSnapshot's destructor unconditionally calls restore()
+// on scope exit -- so by the time withUcontextFaultRecovery returns here, the
+// mutation `work()` made has already been undone regardless of which of its
+// two return statements ran. That's a stronger guarantee than "the recovery
+// branch remembers to call restore()": it also covers this unrecovered path,
+// and any future exit from `work()` that forgets to restore explicitly. See
+// the suite-level comment above for the test that exercises the recovery
+// branch itself.
+TEST_F(WalkJavaStackUcontextRestoreTest, FaultOutsideProfilerRangeIsNotRecoveredButUcontextIsStillRestored) {
     StackFrame frame(&_ctx);
     uintptr_t saved_pc = frame.pc();
     uintptr_t saved_sp = frame.sp();
+    uintptr_t saved_fp = frame.fp();
     bool truncated = false;
     uintptr_t mutated_pc = 0, mutated_sp = 0, mutated_fp = 0;
     volatile int partial = 0;
@@ -869,11 +874,16 @@ TEST_F(WalkJavaStackUcontextRestoreTest, FaultOutsideProfilerRangeIsNotRecovered
 
     EXPECT_EQ(42, result) << "checkFault must not have recovered an out-of-range fault";
     EXPECT_FALSE(truncated);
-    EXPECT_EQ(mutated_pc, frame.pc())
-        << "an unrecovered fault must leave the mutated ucontext untouched -- "
-           "withUcontextFaultRecovery's restore is never reached in this case";
-    EXPECT_EQ(mutated_sp, frame.sp());
-    EXPECT_EQ(mutated_fp, frame.fp());
+    // Sanity: the mutation above actually took effect before ctx_snapshot's
+    // destructor could undo it.
+    EXPECT_NE(saved_pc, mutated_pc);
+    EXPECT_NE(saved_sp, mutated_sp);
+    EXPECT_NE(saved_fp, mutated_fp);
+    EXPECT_EQ(saved_pc, frame.pc())
+        << "ctx_snapshot's destructor restores the ucontext when "
+           "withUcontextFaultRecovery returns, even on this unrecovered path";
+    EXPECT_EQ(saved_sp, frame.sp());
+    EXPECT_EQ(saved_fp, frame.fp());
     EXPECT_FALSE(_pt->isProtected());
 }
 

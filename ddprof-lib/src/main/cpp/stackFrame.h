@@ -55,8 +55,11 @@ class StackFrame {
                 _fp = frame.fp();
             }
         }
+        virtual ~RegisterSnapshot() {
+            restore();
+        }
 
-        void restore() {
+       virtual void restore() {
             StackFrame(_ucontext).restore(_pc, _sp, _fp);
         }
 
