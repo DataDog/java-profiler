@@ -610,14 +610,20 @@ TEST_F(SafeFetch64TocTouGuardTest, ZeroReturnMeansGiveUp) {
 // StackFrame::pc()/sp()/fp() are references straight into uc_mcontext -- while
 // probing AsyncGetCallTrace (e.g. the PROBE_SP retry loop's `frame.sp() +=
 // sizeof(void*)`, or unwindStub()/unwindCompiled() writing pc()/sp()/fp() by
-// reference), and restores them itself on every normal-exit path. But a
-// SIGSEGV that strikes mid-mutation is caught by checkFault(), which
-// siglongjmp's straight past those restores to withUcontextFaultRecovery()'s
-// sigsetjmp. Since this ucontext is the exact one the kernel uses to resume
-// the sampled thread when the signal handler returns, withUcontextFaultRecovery()
-// snapshots it before running the protected work and restores it again in the
-// recovery branch -- otherwise a fault mid-walk would leave the sampled
-// thread's real register state corrupted for sigreturn.
+// reference). It never restores them itself: `ctx_snapshot` is a local of
+// withUcontextFaultRecovery() (hotspotSupport.h), not of getJavaTraceAsync(),
+// and RegisterSnapshot's destructor unconditionally restores pc/sp/fp (and
+// any JavaThread anchor mutation, hotspotStackFrame.h) when that local goes
+// out of scope -- covering every one of getJavaTraceAsync()'s return paths
+// the same way it covers a recovered fault. A SIGSEGV that strikes
+// mid-mutation is caught by checkFault(), which siglongjmp's straight past
+// getJavaTraceAsync() to withUcontextFaultRecovery()'s sigsetjmp; that
+// recovery branch also calls ctx_snapshot.restore() explicitly (ahead of the
+// destructor, since some of its own bookkeeping -- e.g. `*truncated = true`
+// -- must happen before returning too). Since this ucontext is the exact one
+// the kernel uses to resume the sampled thread when the signal handler
+// returns, either way -- normal completion or recovered fault --
+// withUcontextFaultRecovery() must not return with it left mutated.
 //
 // These tests call HotspotSupport::withUcontextFaultRecovery() directly --
 // the exact function walkJavaStack() delegates to -- rather than replicating
@@ -637,22 +643,25 @@ TEST_F(SafeFetch64TocTouGuardTest, ZeroReturnMeansGiveUp) {
 // AsyncGetCallTrace (libjvm.so) dereferences a poisoned sp/pc/fp has its
 // faulting instruction *inside libjvm.so*, not inside this library, so
 // checkFault() correctly refuses to recover it -- which means
-// withUcontextFaultRecovery()'s restore is never reached, and the mutated
-// ucontext stays corrupted. SetUp() installs a real range via the
-// UNIT_TEST-only Profiler::setAddressRangeForTest() so both sides of that
-// gate -- recovered (pc inside range) and rejected (pc outside range) -- are
-// exercised, rather than only the "always recovers" path.
+// withUcontextFaultRecovery()'s sigsetjmp recovery branch (and its own
+// explicit ctx_snapshot.restore() call) is never reached. SetUp() installs a
+// real range via the UNIT_TEST-only Profiler::setAddressRangeForTest() so
+// both sides of that gate -- recovered (pc inside range) and rejected (pc
+// outside range) -- are exercised, rather than only the "always recovers"
+// path.
 //
-// Only FaultInsideProfilerRangeRecoversAndRestoresUcontext below actually
-// pins withUcontextFaultRecovery()'s own recovery branch (its sigsetjmp,
+// FaultInsideProfilerRangeRecoversAndRestoresUcontext below pins
+// withUcontextFaultRecovery()'s own recovery branch (its sigsetjmp,
 // JmpCtxScope, RegisterSnapshot and set_unwinding_Java restore all run on
-// that path). FaultOutsideProfilerRangeIsNotRecoveredAndLeavesUcontextCorrupted
-// is a negative control for checkFault()'s range gate, not regression
-// coverage for the wrapper: on that path checkFault() never siglongjmps, so
-// `work()` just runs to completion and withUcontextFaultRecovery() falls
-// straight through to `return work(ctx_snapshot);` -- every assertion in
-// that test would still pass if the wrapper's own sigsetjmp/JmpCtxScope/
-// RegisterSnapshot/set_unwinding_Java logic were deleted entirely.
+// that path). FaultOutsideProfilerRangeIsNotRecoveredButUcontextIsStillRestored
+// is a negative control for checkFault()'s range gate, not for the recovery
+// branch: on that path checkFault() never siglongjmps, so `work()` just runs
+// to completion and withUcontextFaultRecovery() returns through its normal
+// `work(ctx_snapshot); return partial_result;` path instead. But `ctx_snapshot`
+// still restores the ucontext there too, via its destructor firing on that
+// same return -- so that test's assertions pin RegisterSnapshot's destructor
+// specifically, not the sigsetjmp/JmpCtxScope/checkFault machinery the
+// recovered-fault test above already covers.
 // ---------------------------------------------------------------------------
 
 class WalkJavaStackUcontextRestoreTest : public ::testing::Test {
