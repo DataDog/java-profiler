@@ -1056,7 +1056,11 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   // once AGCT is done. It's the same instance withUcontextFaultRecovery()
   // restores on a recovered fault -- see its own comment -- which is also why
   // any JavaThread anchor mutation below must be recorded on it via
-  // saveJavaAnchor() rather than tracked locally.
+  // saveJavaAnchor() rather than tracked locally. None of this function's own
+  // return paths need to call ctx_snapshot.restore() themselves: it's a local
+  // of withUcontextFaultRecovery, and RegisterSnapshot's destructor
+  // unconditionally restores on scope exit -- covering every return here,
+  // the same way it covers a recovered fault.
   if (ucontext != NULL) {
     if (JitCodeCache::isCallStub((const void *)ctx_snapshot.pc())) {
        // call_stub is unsafe to walk
@@ -1112,7 +1116,6 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
   JVMSupport::jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
 
   if (trace.num_frames > 0) {
-    ctx_snapshot.restore();
     return trace.num_frames;
   }
 
@@ -1171,7 +1174,6 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
              !(safe_mode & LAST_JAVA_PC)) {
     VMJavaFrameAnchor* anchor = vm_thread->anchor();
     if (anchor == NULL) {
-      ctx_snapshot.restore();
       return 0;
     }
     uintptr_t sp = anchor->lastJavaSP();
@@ -1207,7 +1209,6 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
              !(safe_mode & LAST_JAVA_PC)) {
     VMJavaFrameAnchor* anchor = vm_thread->anchor();
     if (anchor == NULL) {
-      ctx_snapshot.restore();
       return 0;
     }
     uintptr_t sp = anchor->lastJavaSP();
@@ -1227,12 +1228,9 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
     if (anchor == NULL || anchor->lastJavaSP() == 0) {
       // Do not add 'GC_active' for threads with no Java frames, e.g. Compiler
       // threads
-      ctx_snapshot.restore();
       return 0;
     }
   }
-
-  ctx_snapshot.restore();
 
   if (trace.num_frames > 0) {
     return trace.num_frames + (trace.frames - frames);
