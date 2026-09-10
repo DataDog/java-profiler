@@ -29,14 +29,17 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
     uintptr_t bottom = (uintptr_t)&sp + MAX_WALK_SIZE;
 
     StackFrame frame(ucontext);
+    bool pc_is_ra;
     if (ucontext == NULL) {
         pc = callerPC();
         fp = (uintptr_t)callerFP();
         sp = (uintptr_t)callerSP();
+        pc_is_ra = CALLER_PC_IS_RETURN_ADDRESS;
     } else {
         pc = (const void*)frame.pc();
         fp = frame.fp();
         sp = frame.sp();
+        pc_is_ra = false;
     }
 
     volatile int depth = 0;
@@ -78,7 +81,8 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
             break;
         }
 
-        callchain[depth++] = pc;
+        const void* attribution_pc = attributionPC(pc, pc_is_ra);
+        callchain[depth++] = attribution_pc;
 
         // Check if the next frame is below on the current stack
         if (fp < sp || fp >= sp + MAX_FRAME_SIZE || fp >= bottom) {
@@ -91,6 +95,7 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
         }
 
         pc = stripPointer(SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)fp + FRAME_PC_SLOT)));
+        pc_is_ra = true;
         if (inDeadZone(pc)) {
             break;
         }
@@ -114,14 +119,17 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
     uintptr_t bottom = (uintptr_t)&sp + MAX_WALK_SIZE;
 
     StackFrame frame(ucontext);
+    bool pc_is_ra;
     if (ucontext == NULL) {
         pc = callerPC();
         fp = (uintptr_t)callerFP();
         sp = (uintptr_t)callerSP();
+        pc_is_ra = CALLER_PC_IS_RETURN_ADDRESS;
     } else {
         pc = (const void*)frame.pc();
         fp = frame.fp();
         sp = frame.sp();
+        pc_is_ra = false;
     }
 
     volatile int depth = 0;
@@ -166,11 +174,12 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
             break;
         }
 
-        callchain[depth++] = pc;
+        const void* attribution_pc = attributionPC(pc, pc_is_ra);
+        callchain[depth++] = attribution_pc;
 
         uintptr_t prev_sp = sp;
-        CodeCache* cc = profiler->findLibraryByAddress(pc);
-        FrameDesc f = cc != NULL ? cc->findFrameDesc(pc) : FrameDesc::fallback_default_frame();
+        CodeCache* cc = profiler->findLibraryByAddress(attribution_pc);
+        FrameDesc f = cc != NULL ? cc->findFrameDesc(attribution_pc) : FrameDesc::fallback_default_frame();
 
         u8 cfa_reg = (u8)f.cfa;
         int cfa_off = f.cfa >> 8;
@@ -179,7 +188,7 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
         } else if (cfa_reg == DW_REG_FP) {
             sp = fp + cfa_off;
         } else if (cfa_reg == DW_REG_PLT) {
-            sp += ((uintptr_t)pc & 15) >= 11 ? cfa_off * 2 : cfa_off;
+            sp += ((uintptr_t)attribution_pc & 15) >= 11 ? cfa_off * 2 : cfa_off;
         } else {
             break;
         }
@@ -196,7 +205,11 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
 
         const void* prev_pc = pc;
         if (f.fp_off & DW_PC_OFFSET) {
+            // The DW_CFA_val_expression on the RA column always yields the
+            // caller's return address, regardless of whether the current pc
+            // was one.
             pc = (const char*)pc + (f.fp_off >> 1);
+            pc_is_ra = true;
         } else {
             if (f.fp_off != DW_SAME_FP && f.fp_off < MAX_FRAME_SIZE && f.fp_off > -MAX_FRAME_SIZE) {
                 uintptr_t fp_addr = sp + f.fp_off;
@@ -212,8 +225,10 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
                     break;
                 }
                 pc = stripPointer(SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)pc_addr)));
+                pc_is_ra = true;
             } else if (depth == 1) {
                 pc = (const void*)frame.link();
+                pc_is_ra = true;
             } else {
                 break;
             }

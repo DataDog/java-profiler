@@ -47,4 +47,15 @@ inline void fillFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci, jmethod
     frame.method_id = method;
 }
 
+// A return address is the address of the instruction *after* the call, so it
+// does not reliably fall inside the calling function or the DWARF/SFrame row
+// that describes the call site. Any byte inside the call instruction resolves
+// correctly on both variable-width (x86_64) and fixed-width ISAs, so callers
+// that consume `pc` for symbolication or FDE lookup must use this adjusted
+// value; callers that need the exact resume/executed address (JIT handoff,
+// no-progress guards, pc arithmetic) must keep using the raw walking pc.
+inline const void* attributionPC(const void* pc, bool pc_is_return_address) {
+    return pc_is_return_address ? (const void*)((const char*)pc - 1) : pc;
+}
+
 #endif // _STACKWALKER_INLINE_H

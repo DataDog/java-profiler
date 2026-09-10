@@ -104,6 +104,8 @@ const int PERF_REG_PC = 8;  // PERF_REG_X86_IP
 #define callerFP()        __builtin_frame_address(1)
 #define callerSP()        ((void**)__builtin_frame_address(0) + 2)
 
+const bool CALLER_PC_IS_RETURN_ADDRESS = true;
+
 #elif defined(__arm__) || defined(__thumb__)
 
 typedef unsigned int instruction_t;
@@ -126,6 +128,8 @@ const int PERF_REG_PC = 15;  // PERF_REG_ARM_PC
 #define callerFP()        __builtin_frame_address(1)
 #define callerSP()        __builtin_frame_address(1)
 
+const bool CALLER_PC_IS_RETURN_ADDRESS = true;
+
 #elif defined(__aarch64__)
 
 typedef unsigned int instruction_t;
@@ -146,6 +150,8 @@ const int PERF_REG_PC = 32;  // PERF_REG_ARM64_PC
 #define callerPC()        ({ void* pc; asm volatile("adr %0, ."  : "=r"(pc)); pc; })
 #define callerFP()        ({ void* fp; asm volatile("mov %0, fp" : "=r"(fp)); fp; })
 #define callerSP()        ({ void* sp; asm volatile("mov %0, sp" : "=r"(sp)); sp; })
+
+const bool CALLER_PC_IS_RETURN_ADDRESS = false;
 
 #elif defined(__PPC64__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
 
@@ -169,6 +175,8 @@ const int PERF_REG_PC = 32;  // PERF_REG_POWERPC_NIP
 #define callerPC()        __builtin_return_address(0)
 #define callerFP()        __builtin_frame_address(1)
 #define callerSP()        __builtin_frame_address(0)
+
+const bool CALLER_PC_IS_RETURN_ADDRESS = true;
 
 #elif defined(__riscv) && (__riscv_xlen == 64)
 
@@ -195,6 +203,8 @@ const int PERF_REG_PC = 0;      // PERF_REG_RISCV_PC
 #define callerFP()        __builtin_frame_address(1)
 #define callerSP()        __builtin_frame_address(0)
 
+const bool CALLER_PC_IS_RETURN_ADDRESS = true;
+
 #elif defined(__loongarch_lp64)
 
 typedef unsigned int instruction_t;
@@ -215,6 +225,8 @@ const int PERF_REG_PC = 0;      // PERF_REG_LOONGARCH_PC
 #define callerPC()        __builtin_return_address(0)
 #define callerFP()        __builtin_frame_address(1)
 #define callerSP()        __builtin_frame_address(0)
+
+const bool CALLER_PC_IS_RETURN_ADDRESS = true;
 
 #else
 
