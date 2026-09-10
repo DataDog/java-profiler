@@ -248,9 +248,8 @@ extern "C" void prof_ra_collect(void) {
     StackContext dw_ctx{};
     g_ra1_dw_depth = StackWalker::walkDwarf(nullptr, g_ra1_dw_chain, 16, &dw_ctx, &g_ra1_dw_truncated);
 
-    // Ucontext-path variants: callerPC/FP/SP(), evaluated here at the top of
-    // prof_ra_collect, describe exactly the same boundary return address
-    // (into prof_ra_caller, landing on prof_ra_next's first byte --
+    // Ucontext-path variants: describe exactly the same boundary return
+    // address (into prof_ra_caller, landing on prof_ra_next's first byte --
     // g_ra1_captured_retaddr above) and the same live prof_ra_caller frame
     // that the nullptr-path walk above unwinds into one level further in.
     // Feeding that same pc/fp/sp through a ucontext instead drives the walk
@@ -258,19 +257,36 @@ extern "C" void prof_ra_collect(void) {
     // where pc_is_ra is unconditionally false for the leaf -- against a
     // real, live multi-frame stack, not the single fabricated, zeroed frame
     // Test2a uses.
+    //
+    // callerPC()/callerFP()/callerSP() are NOT used here: those macros are
+    // the walker's own "am I at the entry point" protocol (see the frame
+    // index map comment above) and are deliberately asymmetric across
+    // arches -- on aarch64 they describe prof_ra_collect's OWN frame
+    // (callerPC() = "adr %0, ." is an address inside prof_ra_collect itself,
+    // not a return address; callerFP()/callerSP() read the current, not the
+    // caller's, registers), unlike x86_64 where they happen to describe the
+    // caller's frame. Reusing them for this second, independent purpose
+    // silently broke on aarch64. Instead walk the frame-pointer chain
+    // explicitly via FRAME_PC_SLOT, which is arch-neutral and matches what
+    // the production walker itself does.
+    void** own_fp = (void**)__builtin_frame_address(0);
+    void* caller_pc = own_fp[FRAME_PC_SLOT];
+    void* caller_fp = own_fp[0];
+    void* caller_sp = (void*)(own_fp + FRAME_PC_SLOT + 1);
+
     ucontext_t uc_fp{};
     StackFrame frame_fp(&uc_fp);
-    frame_fp.pc() = (uintptr_t)callerPC();
-    frame_fp.fp() = (uintptr_t)callerFP();
-    frame_fp.sp() = (uintptr_t)callerSP();
+    frame_fp.pc() = (uintptr_t)caller_pc;
+    frame_fp.fp() = (uintptr_t)caller_fp;
+    frame_fp.sp() = (uintptr_t)caller_sp;
     StackContext fp_uc_ctx{};
     g_ra1_fp_uc_depth = StackWalker::walkFP(&uc_fp, g_ra1_fp_uc_chain, 16, &fp_uc_ctx, &g_ra1_fp_uc_truncated);
 
     ucontext_t uc_dw{};
     StackFrame frame_dw(&uc_dw);
-    frame_dw.pc() = (uintptr_t)callerPC();
-    frame_dw.fp() = (uintptr_t)callerFP();
-    frame_dw.sp() = (uintptr_t)callerSP();
+    frame_dw.pc() = (uintptr_t)caller_pc;
+    frame_dw.fp() = (uintptr_t)caller_fp;
+    frame_dw.sp() = (uintptr_t)caller_sp;
     StackContext dw_uc_ctx{};
     g_ra1_dw_uc_depth = StackWalker::walkDwarf(&uc_dw, g_ra1_dw_uc_chain, 16, &dw_uc_ctx, &g_ra1_dw_uc_truncated);
 
