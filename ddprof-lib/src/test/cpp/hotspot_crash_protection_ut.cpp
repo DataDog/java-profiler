@@ -753,6 +753,46 @@ TEST_F(WalkJavaStackUcontextRestoreTest, FaultInsideProfilerRangeRecoversAndRest
     EXPECT_FALSE(_pt->isProtected());
 }
 
+// withUcontextFaultRecovery()'s recovery branch returns `partial_result`
+// (hotspotSupport.h), not a hardcoded 0 -- the whole point being that a fault
+// *after* `work` has already committed some progress (e.g. getJavaTraceAsync
+// filling in frames before a later PROBE_SP-loop fault) must surface as a
+// truncated-but-valid count, not get discarded. Every test above leaves
+// `partial` at its initial 0 for the whole call, so a regression that
+// hardcoded `return 0;` in the recovery branch instead of
+// `return partial_result;` would still pass all of them. Set it to a
+// distinguishing non-zero value before faulting to actually pin the
+// read-back this parameter exists for.
+TEST_F(WalkJavaStackUcontextRestoreTest, FaultInsideProfilerRangeRecoversAndPreservesPartialResult) {
+    bool truncated = false;
+    volatile int partial = 0;
+
+    int result = HotspotSupport::withUcontextFaultRecovery(&_ctx, _pt, &truncated, partial, [&](HotspotStackFrame::RegisterSnapshot&) {
+        // Stand in for getJavaTraceAsync() having already committed 3 frames
+        // to the output buffer before a later fault (e.g. inside the
+        // PROBE_SP retry loop) -- the recovery branch must read this back.
+        partial = 3;
+
+        // The SIGSEGV's own delivery ucontext -- a distinct object from
+        // _ctx above -- whose faulting pc sits inside the installed range.
+        ucontext_t fault_uc{};
+        StackFrame(&fault_uc).pc() = _range_lo + kRangeMargin;
+
+        siginfo_t si{};
+        si.si_addr = reinterpret_cast<void*>(1);
+        // See the matching comment in FaultInsideProfilerRangeRecoversAndRestoresUcontext.
+        _pt->enterSignalScope();
+        Profiler::checkFault(_pt, &si, &fault_uc);
+        ADD_FAILURE() << "unreachable: checkFault() must siglongjmp for an in-range pc";
+    });
+
+    EXPECT_EQ(3, result)
+        << "a recovered fault must return the partial progress work() already "
+           "committed, not discard it back to 0";
+    EXPECT_TRUE(truncated);
+    EXPECT_FALSE(_pt->isProtected());
+}
+
 // The anchor-restore counterpart of the pc/sp/fp test above: getJavaTraceAsync()'s
 // ticks_unknown_not_Java branch also mutates the real JavaThread's
 // VMJavaFrameAnchor (anchor->setLastJavaPC()) via ctx_snapshot.saveJavaAnchor(),
