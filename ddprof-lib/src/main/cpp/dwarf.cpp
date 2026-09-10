@@ -310,14 +310,12 @@ void DwarfParser::parseFde() {
 
   if (_ptr + 4 > fde_end) return;
   u32 cie_offset = get32();
-  if (_count == 0) {
-    if (cie_offset > (size_t)(fde_start - _section_start)) {
-      return;
-    }
-    _ptr = fde_start - cie_offset;
-    parseCie();
-    _ptr = fde_start + 4;
+  if (cie_offset > (size_t)(fde_start - _section_start)) {
+    return;
   }
+  _ptr = fde_start - cie_offset;
+  parseCie();
+  _ptr = fde_start + 4;
 
   if (_ptr + 8 > fde_end) return;
   u32 range_start = getPtr() - _image_base;
