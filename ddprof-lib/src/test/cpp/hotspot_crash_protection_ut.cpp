@@ -27,10 +27,12 @@
  *   C. sigjmp_buf chaining across nested/interrupted walkVM() calls
  *  C2. JmpCtxScope, the RAII form of that protocol (used by
  *      HotspotSupport::resolve())
- *   F. HotspotSupport::walkJavaStack()'s AsyncSampleMutex release on a
- *      recovered fault
+ *   D. Profiler::checkFault() guard clauses
+ *   E. VTable-stub null-klass and safeFetch64==0 TOCTOU guards
  *   G. HotspotSupport::walkJavaStack()'s ucontext restore on a recovered
  *      fault
+ *   H. macOS arm64: JitWriteProtection's W^X (APCTL) restore when its guard
+ *      outlives the recovered withUcontextFaultRecovery() call
  */
 
 #include <gtest/gtest.h>
@@ -965,3 +967,182 @@ TEST_F(WalkJavaStackUcontextRestoreTest, NullUcontextSkipsRestoreWithoutCrashing
 }
 
 #endif  // __linux__
+
+#if defined(__APPLE__) && defined(__aarch64__)
+
+// ---------------------------------------------------------------------------
+// H. macOS arm64: JitWriteProtection's W^X (APCTL) restore when its guard
+//    outlives the recovered withUcontextFaultRecovery() call
+//
+// asyncJavaTraceWithPostProcessing() (hotspotSupport.cpp) constructs
+// AsyncSampleMutex + JitWriteProtection ABOVE withUcontextFaultRecovery()
+// precisely so their destructors still run when a SIGSEGV is recovered by
+// checkFault()'s siglongjmp: the landing pad lives in
+// withUcontextFaultRecovery()'s own (callee) frame, so the recovered
+// siglongjmp never unwinds the caller's frame, and the guards' destructors
+// fire when that caller returns -- including from the recovery branch.
+// Before that hoist, the guards lived inside work()'s lambda, whose frame
+// the recovered siglongjmp skips -- leaving APCTL write-enabled when the
+// signal handler returns the thread to the JVM, with nothing in this library
+// left to restore it: ~JitWriteProtection (os_macos.cpp) is the restorer.
+//
+// This section pins that layout on the only platform where
+// JitWriteProtection actually does something: on Linux (os_linux.cpp) and
+// macOS x64 the class is inert, so no __linux__-gated test above can catch a
+// regression that moves the guard back inside work(). The register read
+// below (mrs s3_6_c15_c1_5) and the comm-page values mirror
+// JitWriteProtection's own implementation in os_macos.cpp -- there is no
+// public getter for the W^X state. If this ever drifts from os_macos.cpp,
+// os_macos.cpp wins.
+// ---------------------------------------------------------------------------
+
+// The W^X register JitWriteProtection manages -- the same read its
+// constructor uses to snapshot the previous state (os_macos.cpp).
+static u64 readApctl() {
+    u64 v;
+    asm volatile("mrs %0, s3_6_c15_c1_5" : "=r"(v) : :);
+    return v;
+}
+
+class WxRestoreOnRecoveryTest : public ::testing::Test {
+protected:
+    // Same margin as WalkJavaStackUcontextRestoreTest above: comfortably
+    // covers the library's code range in any build config.
+    static constexpr uintptr_t kRangeMargin = 256 * 1024;
+
+    void SetUp() override {
+        ProfiledThread::initCurrentThread();
+        _pt = ProfiledThread::current();
+        ASSERT_NE(nullptr, _pt);
+
+        uintptr_t self_pc = reinterpret_cast<uintptr_t>(&HotspotSupport::walkJavaStack);
+        _range_lo = self_pc - kRangeMargin;
+        _range_hi = self_pc + kRangeMargin;
+        Profiler::setAddressRangeForTest(_range_lo, _range_hi);
+
+        // Zero-initialized rather than populated via getcontext(), exactly
+        // as in WalkJavaStackUcontextRestoreTest::SetUp -- only pc/sp/fp
+        // round-trip through StackFrame's references here. One macOS-only
+        // difference: uc_mcontext is a *pointer* (Linux embeds the struct),
+        // and StackFrame::pc()/sp()/fp() dereference it
+        // (stackFrame_aarch64.cpp), so _ctx must be backed with real
+        // storage or the RegisterSnapshot capture at the top of
+        // withUcontextFaultRecovery() would itself null-deref.
+        _ctx = ucontext_t{};
+        _ctx.uc_mcontext = &_ctx_mctx;
+        StackFrame seed(&_ctx);
+        seed.pc() = 0xAAAA1000;
+        seed.sp() = 0xBBBB2000;
+        seed.fp() = 0xCCCC3000;
+    }
+
+    void TearDown() override {
+        Profiler::resetAddressRangeForTest();
+        ProfiledThread::release();
+    }
+
+    ProfiledThread* _pt = nullptr;
+    ucontext_t _ctx;
+    _STRUCT_MCONTEXT _ctx_mctx{};  // backing storage for _ctx.uc_mcontext
+    uintptr_t _range_lo = 0;
+    uintptr_t _range_hi = 0;
+};
+
+// Mirrors asyncJavaTraceWithPostProcessing()'s guard layout (the exact
+// production ordering: AsyncSampleMutex, acquired early-return, then
+// JitWriteProtection, all above the withUcontextFaultRecovery() call), and
+// pins that the guards' destructors still fire after a recovered siglongjmp:
+// the enclosing scope's exit must leave APCTL exactly as it was before the
+// walk. If the guard were moved back inside work()'s lambda (the original
+// bug layout), the recovered siglongjmp would skip ~JitWriteProtection and
+// the final EXPECT_EQ(before, after) below would fail with APCTL still
+// write-enabled when the signal handler returns.
+TEST_F(WxRestoreOnRecoveryTest, GuardsOutsideRecoveryRegionRestoreApctlAfterRecoveredFault) {
+    // JitWriteProtection's own support check (os_macos.cpp): without APRR
+    // the class is inert on this system and the W^X hazard cannot exist.
+    if (!*(volatile char*)0xfffffc10c) {
+        GTEST_SKIP() << "no APRR support on this system: JitWriteProtection is inert";
+    }
+    // The comm-page register values JitWriteProtection itself writes for
+    // enable(true) / enable(false) (os_macos.cpp).
+    const u64 protected_val = *(volatile u64*)0xfffffc118;
+    const u64 unprotected_val = *(volatile u64*)0xfffffc110;
+    ASSERT_NE(protected_val, unprotected_val)
+        << "comm page must provide distinct APCTL values for protected/unprotected";
+
+    StackFrame frame(&_ctx);
+    uintptr_t saved_pc = frame.pc();
+    uintptr_t saved_sp = frame.sp();
+    uintptr_t saved_fp = frame.fp();
+
+    const u64 before = readApctl();
+    ASSERT_EQ(before, protected_val)
+        << "precondition: a non-JIT process must start write-protected";
+
+    u64 after = 0;
+    bool truncated = false;
+    volatile int partial = 0;
+
+    {
+        // Production ordering from asyncJavaTraceWithPostProcessing()
+        // (hotspotSupport.cpp): the mutex gates re-entrant walks, the JIT
+        // guard flips W^X for the AGCT path, and both outlive the wrapper.
+        AsyncSampleMutex mutex(_pt);
+        ASSERT_TRUE(mutex.acquired());
+        JitWriteProtection jit(false);
+
+        u64 under_guard = 0;
+        int result = HotspotSupport::withUcontextFaultRecovery(
+            &_ctx, _pt, &truncated, partial,
+            [&](HotspotStackFrame::RegisterSnapshot&) {
+                // While the guard is live, APCTL must read back the
+                // write-allowed value -- pinning non-vacuity: if
+                // JitWriteProtection failed to toggle here, the restore
+                // assertion below would pass for the wrong reason.
+                under_guard = readApctl();
+
+                // Fault with a delivery pc inside the installed range, the
+                // same pattern as FaultInsideProfilerRangeRecoversAndRestores
+                // Ucontext above: enterSignalScope() pairs with the recovery
+                // branch's SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP()
+                // compensation (see the matching comment there). The
+                // delivery ucontext is backed with real mcontext storage for
+                // the same reason as _ctx in SetUp above.
+                ucontext_t fault_uc{};
+                _STRUCT_MCONTEXT fault_mctx{};
+                fault_uc.uc_mcontext = &fault_mctx;
+                StackFrame(&fault_uc).pc() = _range_lo + kRangeMargin;
+
+                siginfo_t si{};
+                si.si_addr = reinterpret_cast<void*>(1);
+                _pt->enterSignalScope();
+                Profiler::checkFault(_pt, &si, &fault_uc);
+                ADD_FAILURE() << "unreachable: checkFault() must siglongjmp for an in-range pc";
+            });
+
+        EXPECT_EQ(0, result);
+        EXPECT_TRUE(truncated);
+        EXPECT_EQ(unprotected_val, under_guard)
+            << "non-vacuity: JitWriteProtection must have toggled APCTL inside work()";
+        EXPECT_EQ(unprotected_val, readApctl())
+            << "the recovery branch itself must not have restored APCTL -- the "
+               "restore belongs to the guard's destructor at scope exit";
+    }  // ~JitWriteProtection + ~AsyncSampleMutex run here, as they would at
+       // asyncJavaTraceWithPostProcessing()'s return on the recovery path.
+
+    after = readApctl();
+    EXPECT_FALSE(_pt->is_unwinding_Java())
+        << "AsyncSampleMutex must clear the per-thread guard at scope exit";
+
+    EXPECT_EQ(before, after)
+        << "W^X (APCTL) state must be restored when the guards' scope exits "
+           "after a recovered fault";
+
+    // The recovery branch ran and restored the ucontext as in section G.
+    EXPECT_EQ(saved_pc, frame.pc());
+    EXPECT_EQ(saved_sp, frame.sp());
+    EXPECT_EQ(saved_fp, frame.fp());
+    EXPECT_FALSE(_pt->isProtected());
+}
+
+#endif  // __APPLE__ && __aarch64__

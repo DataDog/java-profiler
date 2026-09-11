@@ -49,8 +49,10 @@ private:
     // on its two post-processing steps: resolving frame types for the top
     // Java frame via fillFrameTypes(), and appending a synthetic "JVM
     // Continuation" frame when the sampled thread is carrying a virtual
-    // thread. Shared by both of walkJavaStack()'s dispatch arms that reach
-    // getJavaTraceAsync() -- previously duplicated verbatim in each.
+    // thread. Called from walkJavaStack()'s single dispatch branch that
+    // reaches getJavaTraceAsync() (the hook-prefixed/BCI_CPU/BCI_WALL arm
+    // with cstack < CSTACK_VM) -- previously duplicated verbatim in each
+    // of the two dispatch arms.
     static int asyncJavaTraceWithPostProcessing(void* ucontext, ASGCT_CallFrame* frames,
                                                 int max_depth, StackContext* java_ctx,
                                                 bool* truncated, ProfiledThread* prof_thread);
@@ -120,8 +122,12 @@ public:
             // segvHandler's SignalHandlerScope destructor. Compensate.
             SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
             jmp_scope.restore();
-            // A recovered siglongjmp bypasses AsyncSampleMutex destructors, so
-            // restore the per-thread guard to its pre-walk value.
+            // Backstop for template callers whose work() acquires the
+            // AsyncSampleMutex itself (a recovered siglongjmp bypasses its
+            // destructor). The production caller constructs the mutex above
+            // this scope (see asyncJavaTraceWithPostProcessing), where this
+            // restore is a no-op and the mutex destructor clears the flag
+            // on return.
             prof_thread->set_unwinding_Java(prev_unwinding_java);
             ctx_snapshot.restore();
             if (truncated) {

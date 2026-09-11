@@ -1110,7 +1110,6 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
     return 0;
   }
 
-  JitWriteProtection jit(false);
   // AsyncGetCallTrace writes to ASGCT_CallFrame array
   ASGCT_CallTrace trace = {jni, 0, frames};
   JVMSupport::jvmAsyncGetCallTrace(&trace, max_depth, ucontext);
@@ -1259,16 +1258,23 @@ int HotspotSupport::asyncJavaTraceWithPostProcessing(void* ucontext, ASGCT_CallF
   // inside HotSpot's own AsyncGetCallTrace call) is caught by
   // Profiler::checkFault() and recovered instead of crashing the process --
   // see its own comment for why it also restores the ucontext.
+  // Both guards deliberately outlive withUcontextFaultRecovery(): a recovered
+  // siglongjmp bypasses destructors for objects in its callback.  Keeping the
+  // JIT protection guard here ensures macOS arm64 restores the sampled
+  // thread's W^X state when this function returns from the recovery branch.
+  // WxRestoreOnRecoveryTest pins this guard layout on macOS arm64.
+  AsyncSampleMutex mutex(prof_thread);
+  if (!mutex.acquired()) {
+    return 0;
+  }
+  JitWriteProtection jit(false);
   volatile int partial = 0;
   return withUcontextFaultRecovery(ucontext, prof_thread, truncated, partial, [&](HotspotStackFrame::RegisterSnapshot& ctx_snapshot) {
-      AsyncSampleMutex mutex(prof_thread);
-      if (mutex.acquired()) {
-          partial = getJavaTraceAsync(ucontext, frames, max_depth, java_ctx, truncated, ctx_snapshot);
-          if (partial > 0 && java_ctx->pc != NULL && VMStructs::hasMethodStructs()) {
-              VMNMethod* nmethod = CodeHeap::findNMethod(java_ctx->pc);
-              if (nmethod != NULL) {
-                  fillFrameTypes(frames, partial, nmethod);
-              }
+      partial = getJavaTraceAsync(ucontext, frames, max_depth, java_ctx, truncated, ctx_snapshot);
+      if (partial > 0 && java_ctx->pc != NULL && VMStructs::hasMethodStructs()) {
+          VMNMethod* nmethod = CodeHeap::findNMethod(java_ctx->pc);
+          if (nmethod != NULL) {
+              fillFrameTypes(frames, partial, nmethod);
           }
       }
       if (partial > 0 && VM::hotspot_version() >= 21 && partial < max_depth) {
