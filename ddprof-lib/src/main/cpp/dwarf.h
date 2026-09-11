@@ -121,10 +121,33 @@ class DwarfParser {
     FrameDesc* _table;
     FrameDesc* _prev;
 
-    u32 _code_align;
-    int _data_align;
     int _linked_frame_size;  // detected from FP-based DWARF entries; -1 = undetected
-    bool _has_z_augmentation;
+
+    // The per-record slice of a CIE that the FDE path needs. With a CIE
+    // resolved per FDE these values are per-record context, not parser-wide
+    // state, so they travel by value; `valid` lets parseFde() skip a record
+    // whose CIE is malformed instead of parsing its instructions with
+    // defaults that would silently produce wrong unwind rows.
+    struct CieInfo {
+        u32 code_align;
+        int data_align;
+        bool has_z_augmentation;
+        bool valid;
+    };
+
+    static CieInfo defaultCieInfo() {
+        return CieInfo{(u32)sizeof(instruction_t), -(int)sizeof(void*), false, false};
+    }
+
+    // parseCie() is now called once per FDE, and real toolchains emit long
+    // runs of FDEs sharing one CIE, so the last resolved CIE is memoized by
+    // its start address: re-resolving is required for correctness, re-parsing
+    // is not.
+    const char* _last_cie_ptr;
+    CieInfo _last_cie;
+    // A malformed CIE degrades every FDE referencing it; warn once per
+    // section rather than once per FDE.
+    bool _cie_warning_emitted;
 
     // True if `size` bytes can be read at _ptr without leaving the section.
     // Guards against both over-reads (past _section_end) and under-reads
@@ -246,9 +269,10 @@ class DwarfParser {
     void init(const char* name, const char* image_base, const char* image_end);
     void parse(const char* eh_frame_hdr, size_t size, const char* image_end);
     void parseEhFrame(const char* eh_frame, size_t size);
-    void parseCie();
+    CieInfo parseCie();
+    CieInfo resolveCie(const char* cie_ptr);
     void parseFde();
-    void parseInstructions(u32 loc, const char* end);
+    void parseInstructions(u32 loc, const char* end, const CieInfo& cie);
     int parseExpression();
 
     void addRecord(u32 loc, u32 cfa_reg, int cfa_off, int fp_off, int pc_off);

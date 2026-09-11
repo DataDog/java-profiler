@@ -868,11 +868,14 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         }
 
         dwarf_unwind:
-        // Deliberately not attribution-adjusted: unlike StackWalker::walkDwarf,
-        // this lookup and the frames[] entries below still use the raw pc.
-        // walkVM has its own, different relationship between pc and frame
-        // depth (Java frames interleave with native ones above), so the -1
-        // attribution adjustment does not apply here.
+        // Known defect, deliberately not fixed here: past the leaf, `pc` is a
+        // return address for exactly the same reason it is in
+        // StackWalker::walkDwarf, so selecting a row or a symbol with it
+        // unadjusted misattributes a call that is the last instruction of its
+        // caller -- wrong CFA row, wrong sender sp, and a MARK_THREAD_ENTRY
+        // check that can miss its mark. The same -1 adjustment applies; it is
+        // deferred because walkVM interleaves Java and native frames and needs
+        // its own per-frame return-address tracking and its own tests.
         uintptr_t prev_sp = sp;
         CodeCache* cc = profiler->findLibraryByAddress(pc);
         FrameDesc f = cc != NULL ? cc->findFrameDesc(pc) : FrameDesc::fallback_default_frame();

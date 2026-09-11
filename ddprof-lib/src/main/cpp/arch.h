@@ -134,12 +134,10 @@ const int PERF_REG_PC = 15;  // PERF_REG_ARM_PC
 #define callerFP()        __builtin_frame_address(1)
 #define callerSP()        __builtin_frame_address(1)
 
-// On Thumb interworking, a return address taken from the stack/LR carries
-// the interworking bit (addr | 1) marking the target as Thumb code; this bit
-// is not stripped anywhere in the walkers before attributionPC() subtracts
-// 1. That subtraction happens to clear the bit back to the original,
-// unadjusted return address rather than landing one byte inside the call
-// instruction as intended. Unverified on real __arm__/__thumb__ hardware.
+// Return addresses here carry the Thumb interworking bit; stripPointer()
+// below clears it so attributionPC()'s -1 lands inside the call instruction.
+// Untested on real __arm__/__thumb__ hardware -- this repo builds and tests
+// x86_64 and aarch64 only.
 const bool CALLER_PC_IS_RETURN_ADDRESS = true;
 
 #elif defined(__aarch64__)
@@ -261,6 +259,16 @@ const unsigned long PAC_MASK = WX_MEMORY ? 0x7fffffffffffUL : 0xffffffffffffUL;
 
 static inline const void* stripPointer(const void* p) {
     return (const void*) ((unsigned long)p & PAC_MASK);
+}
+#elif defined(__arm__) || defined(__thumb__)
+// ARM/Thumb interworking: a return address taken from a stack slot or from LR
+// has bit 0 set when the target is Thumb code. Clear it so the value is the
+// instruction address itself -- what symbolication, FDE lookup and
+// attributionPC()'s -1 adjustment all assume. Without this the -1 would
+// merely clear the interworking bit and hand back the unadjusted return
+// address.
+static inline const void* stripPointer(const void* p) {
+    return (const void*) ((unsigned long)p & ~1UL);
 }
 #else
 #  define stripPointer(p)  (p)

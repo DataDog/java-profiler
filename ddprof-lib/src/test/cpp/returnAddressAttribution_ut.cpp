@@ -3,9 +3,6 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// Acceptance tests for the spec:
-//   docs/sphinx/specs/2026-09-09-native-stack-walkers-raw-return-address.md
-//
 // These tests gate the "attribution pc" fix in StackWalker::walkFP /
 // StackWalker::walkDwarf: a pc loaded from a return-address slot, a link
 // register, or __builtin_return_address() must be adjusted (pc - 1) before it
@@ -54,16 +51,22 @@
 #include "dwarf.h"
 #include "stackWalker.inline.h"
 
-// 2c. Non-tautological: observes callerPC()'s actual runtime behavior
-// against __builtin_return_address(0) (always a genuine return address),
-// both captured in the same callee frame, rather than restating arch.h's
-// own #if ladder for CALLER_PC_IS_RETURN_ADDRESS.
+// 2c. Documentation test, not a gate: on every arch where the constant is
+// true, arch.h defines callerPC() as literally __builtin_return_address(0),
+// so the EXPECT_EQ below compares an expression with itself; on aarch64
+// (the only false arch) callerPC() is "adr %0, ." -- an address inside
+// prof_ra_capture_pc_pair, which can never equal the caller's return
+// address -- so the EXPECT_NE is equally self-fulfilling. It is kept because
+// it fails loudly if arch.h's two definitions are ever edited apart. The
+// behavioral gates for the seed flag are
+// Test2c_CallerPcClassificationMatchesSymbol (below, Linux-only) and
+// Test2b_SeedFlagConsumedByWalkFP/WalkDwarf.
 extern "C" __attribute__((noinline)) void prof_ra_capture_pc_pair(const void** via_macro, const void** via_builtin) {
     *via_macro = callerPC();
     *via_builtin = __builtin_return_address(0);
 }
 
-TEST(ReturnAddressAttributionCharacterizationTest, CallerPcIsReturnAddressConstant) {
+TEST(ReturnAddressAttributionCharacterizationTest, CallerPcMacroMatchesItsArchDefinition) {
     const void* via_macro = nullptr;
     const void* via_builtin = nullptr;
     prof_ra_capture_pc_pair(&via_macro, &via_builtin);
@@ -733,6 +736,42 @@ TEST_F(ReturnAddressAttributionTest, Test2b_SeedFlagConsumedByWalkDwarf) {
 // AttributionPcArithmetic) moved above the __linux__ gate -- portable,
 // not Linux/ELF-specific. See ReturnAddressAttributionCharacterizationTest.
 
+// Gates what the portable CallerPcMacroMatchesItsArchDefinition cannot: that
+// CALLER_PC_IS_RETURN_ADDRESS classifies callerPC()'s value correctly, using
+// a property independent of arch.h's macro text. A genuine return address
+// belongs to the *caller* of prof_ra_capture_pc_pair, so it resolves to a
+// different symbol; aarch64's "adr %0, ." leaf seed resolves to
+// prof_ra_capture_pc_pair itself.
+TEST_F(ReturnAddressAttributionTest, Test2c_CallerPcClassificationMatchesSymbol) {
+    const void* via_macro = nullptr;
+    const void* via_builtin = nullptr;
+    prof_ra_capture_pc_pair(&via_macro, &via_builtin);
+
+    const char* macro_sym = symbolFor(via_macro);
+    if (macro_sym == nullptr) {
+        GTEST_SKIP() << "callerPC() value not visible to findLibraryByAddress/binarySearch "
+                      << "in this build";
+    }
+    const char* capture_sym = symbolFor((const void*)&prof_ra_capture_pc_pair);
+    if (capture_sym == nullptr || strstr(capture_sym, "prof_ra_capture_pc_pair") == nullptr) {
+        GTEST_SKIP() << "prof_ra_capture_pc_pair does not resolve to its own symbol in this "
+                      << "build, so the comparison below cannot distinguish the two cases";
+    }
+
+    bool inside_capture = strstr(macro_sym, "prof_ra_capture_pc_pair") != nullptr;
+    if (CALLER_PC_IS_RETURN_ADDRESS) {
+        EXPECT_FALSE(inside_capture)
+            << "CALLER_PC_IS_RETURN_ADDRESS=true claims callerPC() is the caller's return "
+            << "address, but it resolved inside prof_ra_capture_pc_pair itself (" << macro_sym << ")";
+    } else {
+        EXPECT_TRUE(inside_capture)
+            << "CALLER_PC_IS_RETURN_ADDRESS=false claims callerPC() is a leaf seed inside the "
+            << "capturing function, but it resolved to " << macro_sym;
+    }
+
+    ++g_gating_assertions_reached;
+}
+
 // ===========================================================================
 // Test 3 -- Unwind-row selection at a return address, through the walker
 // (coverage row 3, highest-severity primary item).
@@ -1099,9 +1138,36 @@ asm(
 );
 #endif
 
+#if defined(__x86_64__)
+asm(
+    ".text\n"
+    ".globl prof_ra_pcoff_seed\n"
+    ".type prof_ra_pcoff_seed,@function\n"
+"prof_ra_pcoff_seed:\n"
+    ".cfi_startproc\n"
+    ".cfi_def_cfa %rsp, 16\n"
+    "nop\nnop\nnop\nnop\n"
+    ".cfi_endproc\n"
+    ".size prof_ra_pcoff_seed, .-prof_ra_pcoff_seed\n"
+);
+#elif defined(__aarch64__)
+asm(
+    ".text\n"
+    ".globl prof_ra_pcoff_seed\n"
+    ".type prof_ra_pcoff_seed,%function\n"
+"prof_ra_pcoff_seed:\n"
+    ".cfi_startproc\n"
+    ".cfi_def_cfa sp, 16\n"
+    "nop\nnop\n"
+    ".cfi_endproc\n"
+    ".size prof_ra_pcoff_seed, .-prof_ra_pcoff_seed\n"
+);
+#endif
+
 #if defined(__x86_64__) || defined(__aarch64__)
 extern "C" void prof_ra_pcoff_fn(void);
 extern "C" void prof_ra_pcoff_next(void);
+extern "C" void prof_ra_pcoff_seed(void);
 #endif
 
 TEST_F(ReturnAddressAttributionTest, Test5_DwPcOffsetSetsFlag) {
@@ -1152,11 +1218,105 @@ TEST_F(ReturnAddressAttributionTest, Test5_DwPcOffsetSetsFlag) {
 #endif  // __x86_64__ || __aarch64__
 }
 
+// Test 5b -- the DW_PC_OFFSET row's offset is applied to the *raw* walking
+// pc, not to the attribution address.
+//
+// Test5 above drives the DW_PC_OFFSET row from a ucontext leaf, where
+// attribution_pc == pc, so it cannot tell the two bases apart: reverting the
+// base leaves it green. This fixture reaches the same row one level up, from
+// a frame whose pc was itself loaded from a return-address slot, so the two
+// candidate bases differ by exactly one byte in chain[2].
+//
+// The base must be the raw pc: DW_CFA_val_expression on the return-address
+// column encodes DW_OP_breg<PC> + K, and DW_OP_breg names the value of the
+// PC *register* -- the exact interrupted address -- not the address the row
+// was looked up with (see the comment on DwarfParser::parseExpression).
+TEST_F(ReturnAddressAttributionTest, Test5b_DwPcOffsetAppliesOffsetToRawPc) {
+#if !defined(__x86_64__) && !defined(__aarch64__)
+    GTEST_SKIP() << "DW_PC_OFFSET fixture only implemented for x86_64/aarch64";
+#else
+    CodeCache* lib = Libraries::instance()->findLibraryByAddress((const void*)&prof_ra_pcoff_fn);
+    if (lib == nullptr) {
+        GTEST_SKIP() << "prof_ra_pcoff_fn not visible to findLibraryByAddress in this build";
+    }
+
+    // The offset into prof_ra_pcoff_fn that the synthetic return address
+    // points at. Any value in (0, kPcOffsetK) keeps it inside the function,
+    // so both the raw address and the attribution address (one byte lower)
+    // still select the DW_PC_OFFSET row that starts at the function's first
+    // byte. 4 keeps it instruction-aligned on aarch64 as well.
+    const int kInnerOff = 4;
+    const void* synthetic_ra = (const void*)((const char*)&prof_ra_pcoff_fn + kInnerOff);
+
+    FrameDesc pcoff_row = lib->findFrameDesc(
+        (const void*)((const char*)synthetic_ra - 1));
+    if (!(pcoff_row.fp_off & DW_PC_OFFSET) || (pcoff_row.fp_off >> 1) != kPcOffsetK) {
+        GTEST_SKIP() << "the .cfi_escape DW_CFA_val_expression row did not round-trip as "
+                      << "DW_PC_OFFSET with offset " << kPcOffsetK << " at the attribution "
+                      << "address (observed fp_off=" << pcoff_row.fp_off << ")";
+    }
+    FrameDesc seed_row = lib->findFrameDesc((const void*)&prof_ra_pcoff_seed);
+    if ((seed_row.cfa & 0xffu) != (u32)DW_REG_SP || (seed_row.cfa >> 8) != 16 ||
+        (seed_row.fp_off & DW_PC_OFFSET)) {
+        GTEST_SKIP() << "prof_ra_pcoff_seed's row did not round-trip as a plain "
+                      << "DW_REG_SP/offset-16 frame (observed cfa=" << seed_row.cfa
+                      << ", fp_off=" << seed_row.fp_off << ")";
+    }
+
+    // Every word of the upper half of the scratch stack holds the synthetic
+    // return address, so whichever slot the seed frame's row reads it from
+    // (the exact slot differs between x86_64 and aarch64) yields the same
+    // value, without this test having to reimplement the CFA arithmetic.
+    static uintptr_t scratch[64];
+    ucontext_t uc = makeFabricatedContext((const void*)&prof_ra_pcoff_seed, scratch, 64);
+    for (size_t i = 32; i < 64; i++) {
+        scratch[i] = (uintptr_t)synthetic_ra;
+    }
+
+    StackContext ctx{};
+    bool truncated = false;
+    const void* chain[8];
+    int depth = StackWalker::walkDwarf(&uc, chain, 8, &ctx, &truncated);
+
+    ASSERT_GE(depth, 3);
+    ASSERT_EQ((const void*)&prof_ra_pcoff_seed, chain[0]);
+    ASSERT_EQ((const void*)((const char*)synthetic_ra - 1), chain[1])
+        << "frame 1's pc came from a return-address slot, so it must be adjusted";
+
+    // chain[2] = attributionPC(base + K) = base + K - 1.
+    const void* expected_raw_base =
+        (const void*)((const char*)synthetic_ra + kPcOffsetK - 1);
+    const void* if_attribution_base =
+        (const void*)((const char*)synthetic_ra - 1 + kPcOffsetK - 1);
+    EXPECT_EQ(expected_raw_base, chain[2])
+        << "DW_PC_OFFSET's offset must be applied to the raw pc; chain[2] == "
+        << if_attribution_base << " would mean it was applied to the attribution address";
+
+    ++g_gating_assertions_reached;
+#endif  // __x86_64__ || __aarch64__
+}
+
 // ===========================================================================
-// Test 6 -- Link-register recovery sets the flag (coverage row 7),
-// aarch64 only; structurally unreachable on x86_64 (EMPTY_FRAME_SIZE > 0
-// there makes the guard "EMPTY_FRAME_SIZE > 0 || pc_off != DW_LINK_REGISTER"
-// always true, so the link-register arm never executes).
+// Test 6 -- Link-register recovery sets the flag (coverage row 7).
+//
+// Reachability, so nobody reads a green run here as coverage:
+//  - x86_64/i386: structurally unreachable. EMPTY_FRAME_SIZE > 0 makes the
+//    guard "EMPTY_FRAME_SIZE > 0 || pc_off != DW_LINK_REGISTER" always true,
+//    so the arm never executes.
+//  - aarch64: reachable only with a frame table that actually carries
+//    pc_off == DW_LINK_REGISTER. DwarfParser never emits it -- it starts
+//    pc_off at -EMPTY_FRAME_SIZE and no DW_CFA_ handler assigns that value --
+//    so no .eh_frame fixture, including the one below, can reach the arm.
+//    The only producer in the tree is SFrameParser (sframe.cpp, gated by
+//    SFrameParser.PerFRE_RA_Untracked in sframe_ut.cpp), which needs a
+//    .sframe section in the scanned ELF image; the gtest binary is not built
+//    with one, and CodeCache::setDwarfTable() cannot be used to inject one
+//    because it asserts the cache is unpublished.
+//
+// The fixture is kept so that it starts gating on its own if a .sframe-
+// enabled build ever appears, and so the precondition check documents which
+// row shape the arm needs. It deliberately does not increment
+// g_gating_assertions_reached on the skip path.
 // ===========================================================================
 
 #if defined(__aarch64__)
@@ -1189,15 +1349,15 @@ TEST_F(ReturnAddressAttributionTest, Test6_LinkRegisterRecoverySetsFlag) {
 #else
     CodeCache* lib = Libraries::instance()->findLibraryByAddress((const void*)&prof_ra_lr_fn);
     if (lib == nullptr) {
-        GTEST_SKIP() << "prof_ra_lr_fn not visible to findLibraryByAddress; degrading -- "
-                      << "stackWalker.cpp:216 ships with inspection-only coverage on aarch64 in "
-                      << "this build. Record this gap in the PR description.";
+        GTEST_SKIP() << "prof_ra_lr_fn not visible to findLibraryByAddress in this build";
     }
     FrameDesc row = lib->findFrameDesc((const void*)&prof_ra_lr_fn);
     if (row.pc_off != DW_LINK_REGISTER || (row.fp_off & DW_PC_OFFSET)) {
-        GTEST_SKIP() << "the fixture's row did not parse as a plain link-register recovery row "
-                      << "(pc_off=" << row.pc_off << ", fp_off=" << row.fp_off << "); degrading, "
-                      << "record the gap in the PR description";
+        GTEST_SKIP() << "expected: .eh_frame cannot express pc_off == DW_LINK_REGISTER, so this "
+                      << "fixture's row parsed as (pc_off=" << row.pc_off << ", fp_off="
+                      << row.fp_off << ") and the link-register arm is not reached. The arm is "
+                      << "covered by inspection only; its producer is gated by "
+                      << "SFrameParser.PerFRE_RA_Untracked. See this test's banner comment.";
     }
     if ((const void*)&prof_ra_lr_next != (const void*)((const char*)&prof_ra_lr_fn + 4)) {
         // Not a hard requirement for this fixture (unlike Tests 1/3/4/5, the
@@ -1240,12 +1400,13 @@ TEST_F(ReturnAddressAttributionTest, Test6_LinkRegisterRecoverySetsFlag) {
 // counts as a passing run, so a CI toolchain on which all of them skip would
 // otherwise report this whole file as green with zero effective regression
 // coverage for the attribution fix. This test cannot skip -- it fails if
-// none of Test1/3/4/5/6 reached its gating assertions, surfacing that
+// none of the gating tests reached its assertions, surfacing that
 // degradation instead of letting it pass silently. Declared last so it runs
 // after all of them under gtest's default (registration-order) test order.
+// Test6 is excluded by construction -- see its banner comment.
 TEST(ReturnAddressAttributionGatingCoverageTest, AtLeastOneGatingAssertionRan) {
     EXPECT_GT(g_gating_assertions_reached, 0)
-        << "every gating test in this file (Test1/3/4/5/6) skipped its precondition "
+        << "every gating test in this file (Test1/2c/3/4/5/5b) skipped its precondition "
         << "check on this toolchain -- the attribution fix has zero effective "
         << "regression coverage in this build; see each test's GTEST_SKIP reason "
         << "in the test log above for which precondition failed";

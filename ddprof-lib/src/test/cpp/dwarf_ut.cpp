@@ -173,7 +173,7 @@ TEST(DwarfEhFrame, FdeAugDataOverrun) {
     // a value (100) larger than remaining bytes in the record (0).
     // The FDE should be skipped without a crash.
     std::vector<uint8_t> buf;
-    appendCie(buf);  // 15 bytes; _has_z_augmentation = true
+    appendCie(buf);  // 15 bytes; CIE advertises a "z" augmentation
 
     // FDE body: cie_offset(4) + range_start(4) + range_len(4) + aug_data_len(1) = 13
     // aug_data_len = 100 but no aug data bytes follow → _ptr += 100 > record_end → break
@@ -356,6 +356,324 @@ TEST(DwarfEhFrameHdr, PerFdeCieAlignmentDoesNotLeak) {
     EXPECT_TRUE(hasLoc(table, dwarf.count(), range_start2 + 40));
     EXPECT_FALSE(hasLoc(table, dwarf.count(), range_start2 + 10));
 
+    free(dwarf.table());
+}
+
+// ---------------------------------------------------------------------------
+// CIE validation / augmentation-gate coverage for the per-FDE CIE path
+// (parseFde -> resolveCie -> parseCie). Every test below drives the
+// .eh_frame_hdr constructor, which is the only path that reaches parseFde().
+// ---------------------------------------------------------------------------
+
+// A CIE with full control over the fields parseCie() validates.
+struct CieSpec {
+    uint32_t cie_id = 0;
+    uint8_t version = 1;
+    bool z_augmentation = false;
+    uint8_t code_align = 1;
+    // Cut the declared length short so the record ends right after the
+    // augmentation string, leaving no room for code_alignment_factor.
+    bool truncate_before_code_align = false;
+    // Cut it short one field later: code_alignment_factor is present,
+    // data_alignment_factor is not.
+    bool truncate_before_data_align = false;
+};
+
+// Returns the offset of the appended CIE within buf.
+static uint32_t appendCie(std::vector<uint8_t>& buf, const CieSpec& spec) {
+    uint32_t cie_offset = static_cast<uint32_t>(buf.size());
+
+    std::vector<uint8_t> body;
+    put32(body, spec.cie_id);
+    put8(body, spec.version);
+    if (spec.z_augmentation) {
+        put8(body, 'z');
+    }
+    put8(body, 0);  // augmentation string terminator
+    uint32_t len_through_aug_string = static_cast<uint32_t>(body.size());
+    if (spec.version >= 4) {
+        // DWARF4 inserts these two between the augmentation string and
+        // code_alignment_factor.
+        put8(body, sizeof(void*));  // address_size
+        put8(body, 0);              // segment_selector_size
+    }
+    put8(body, spec.code_align);  // code_align (LEB128, one byte for the values used here)
+    uint32_t len_through_code_align = static_cast<uint32_t>(body.size());
+    put8(body, 0x78);             // data_align = -8 (SLEB128)
+    put8(body, 30);               // return address column
+    if (spec.z_augmentation) {
+        put8(body, 0);  // augmentation data length
+    }
+
+    uint32_t declared_len = static_cast<uint32_t>(body.size());
+    if (spec.truncate_before_code_align) {
+        declared_len = len_through_aug_string;
+    } else if (spec.truncate_before_data_align) {
+        declared_len = len_through_code_align;
+    }
+    put32(buf, declared_len);
+    buf.insert(buf.end(), body.begin(), body.end());
+    return cie_offset;
+}
+
+// An FDE carrying an explicit augmentation-data blob, as every "z" CIE's FDEs
+// do. Instructions: advance_loc1(delta), then def_cfa_offset(16) so the
+// advanced loc produces an observable record (addRecord coalesces records
+// with identical cfa/fp/pc).
+static void appendFdeWithAugData(std::vector<uint8_t>& buf, uint32_t cie_start_offset,
+                                  uint32_t range_len, uint8_t delta,
+                                  const std::vector<uint8_t>& aug_data) {
+    uint32_t cie_id_field_offset = static_cast<uint32_t>(buf.size()) + 4;
+    uint32_t cie_offset = cie_id_field_offset - cie_start_offset;
+
+    std::vector<uint8_t> body;
+    put32(body, cie_offset);
+    put32(body, 0);          // range_start pcrel = 0
+    put32(body, range_len);
+    put8(body, static_cast<uint8_t>(aug_data.size()));  // aug data length (LEB128)
+    body.insert(body.end(), aug_data.begin(), aug_data.end());
+    put8(body, 0x02);        // DW_CFA_advance_loc1
+    put8(body, delta);
+    put8(body, 0x0e);        // DW_CFA_def_cfa_offset
+    put8(body, 16);
+
+    put32(buf, static_cast<uint32_t>(body.size()));
+    buf.insert(buf.end(), body.begin(), body.end());
+}
+
+static uint32_t hdrSizeFor(size_t fde_count) {
+    return 12 + static_cast<uint32_t>(fde_count) * 8;  // fixed header + 8-byte table entries
+}
+
+// Wraps `body` in a .eh_frame_hdr whose binary-search table points at each
+// offset in `fde_offsets` (offsets relative to the start of body).
+static std::vector<uint8_t> buildEhFrameHdrImage(const std::vector<uint8_t>& body,
+                                                  const std::vector<uint32_t>& fde_offsets) {
+    const uint32_t HDR_SIZE = hdrSizeFor(fde_offsets.size());
+    std::vector<uint8_t> buf(HDR_SIZE, 0);
+    buf[0] = 1;     // version
+    buf[1] = 0x03;  // eh_frame_ptr_enc = DW_EH_PE_udata4
+    buf[2] = 0x03;  // fde_count_enc    = DW_EH_PE_udata4
+    buf[3] = 0x33;  // table_enc        = DW_EH_PE_datarel | DW_EH_PE_udata4
+    buf[8] = static_cast<uint8_t>(fde_offsets.size());
+
+    for (size_t i = 0; i < fde_offsets.size(); i++) {
+        uint32_t fde_len_field_offset = HDR_SIZE + fde_offsets[i];
+        size_t off = 12 + i * 8 + 4;  // skip this entry's initial_loc field
+        buf[off]     = static_cast<uint8_t>(fde_len_field_offset);
+        buf[off + 1] = static_cast<uint8_t>(fde_len_field_offset >> 8);
+        buf[off + 2] = static_cast<uint8_t>(fde_len_field_offset >> 16);
+        buf[off + 3] = static_cast<uint8_t>(fde_len_field_offset >> 24);
+    }
+    buf.insert(buf.end(), body.begin(), body.end());
+    return buf;
+}
+
+// Builds a single-FDE image from `spec` and reports how many records the
+// parser produced plus whether the FDE's first advance landed where
+// `spec.code_align` says it should.
+struct SingleFdeResult {
+    int count;
+    bool has_range_start;
+    bool has_advanced_loc;
+};
+
+static SingleFdeResult parseSingleFde(const CieSpec& spec, uint8_t delta,
+                                       uint32_t expected_advance) {
+    std::vector<uint8_t> body;
+    uint32_t cie_offset = appendCie(body, spec);
+    uint32_t fde_offset = static_cast<uint32_t>(body.size());
+    if (spec.z_augmentation) {
+        appendFdeWithAugData(body, cie_offset, 100, delta, {});
+    } else {
+        appendFdeWithAdvances(body, cie_offset, 100, delta, 1);
+    }
+
+    std::vector<uint8_t> buf = buildEhFrameHdrImage(body, {fde_offset});
+    uint32_t range_start = hdrSizeFor(1) + fde_offset + 8;
+
+    const char* base = reinterpret_cast<const char*>(buf.data());
+    DwarfParser dwarf("test", base, base, buf.size(), DwarfParser::EhFrameHdrTag{},
+                      base + buf.size());
+    const FrameDesc* table = dwarf.table();
+    SingleFdeResult r{dwarf.count(), false, false};
+    if (table != nullptr) {
+        r.has_range_start = hasLoc(table, dwarf.count(), range_start);
+        r.has_advanced_loc = hasLoc(table, dwarf.count(), range_start + expected_advance);
+    }
+    free(dwarf.table());
+    return r;
+}
+
+// A well-formed version-1 CIE is the control for every rejection test below:
+// it must produce records, otherwise those tests would pass for the wrong
+// reason.
+TEST(DwarfEhFrameHdr, ValidCieProducesRecords) {
+    CieSpec spec;
+    spec.code_align = 4;
+    SingleFdeResult r = parseSingleFde(spec, 10, 40);
+    EXPECT_EQ(3, r.count);  // initial state + post-advance state + sentinel
+    EXPECT_TRUE(r.has_range_start);
+    EXPECT_TRUE(r.has_advanced_loc);
+}
+
+// An FDE whose cie_offset resolves to a record with a non-zero CIE id is not
+// pointing at a CIE at all; the alignment factors read out of it would be
+// arbitrary, so the FDE must contribute no rows.
+TEST(DwarfEhFrameHdr, NonZeroCieIdRejectsFde) {
+    CieSpec spec;
+    spec.cie_id = 1;  // an FDE's cie_offset, not a CIE marker
+    spec.code_align = 4;
+    SingleFdeResult r = parseSingleFde(spec, 10, 40);
+    EXPECT_EQ(0, r.count);
+}
+
+// Version 3 shares version 1's field layout.
+TEST(DwarfEhFrameHdr, CieVersion3Accepted) {
+    CieSpec spec;
+    spec.version = 3;
+    spec.code_align = 4;
+    SingleFdeResult r = parseSingleFde(spec, 10, 40);
+    EXPECT_EQ(3, r.count);
+    EXPECT_TRUE(r.has_advanced_loc)
+        << "a version-3 CIE must be read with the same layout as version 1";
+}
+
+// Version 4 inserts address_size and segment_selector_size before
+// code_alignment_factor. Reading straight through them would take
+// address_size (8) as the code alignment factor, scaling this FDE's
+// advance_loc1(10) to 80 instead of 40.
+TEST(DwarfEhFrameHdr, CieVersion4SkipsAddressSizeFields) {
+    CieSpec spec;
+    spec.version = 4;
+    spec.code_align = 4;
+    SingleFdeResult r = parseSingleFde(spec, 10, 40);
+    EXPECT_EQ(3, r.count);
+    EXPECT_TRUE(r.has_advanced_loc)
+        << "version-4 address_size/segment_selector_size must be skipped before "
+        << "code_alignment_factor is read";
+}
+
+// Anything outside the handled set is a layout this parser cannot read.
+TEST(DwarfEhFrameHdr, UnsupportedCieVersionRejectsFde) {
+    CieSpec spec;
+    spec.version = 5;
+    spec.code_align = 4;
+    SingleFdeResult r = parseSingleFde(spec, 10, 40);
+    EXPECT_EQ(0, r.count);
+}
+
+// The declared CIE length can stop before code_alignment_factor. Reading it
+// anyway yields code_align = 0, which collapses every advance_loc delta onto
+// range_start and zeroes every register offset -- and, since the CIE is
+// resolved per FDE, would do so for every FDE referencing it.
+TEST(DwarfEhFrameHdr, TruncatedCieRejectsFde) {
+    CieSpec spec;
+    spec.truncate_before_code_align = true;
+    spec.code_align = 4;
+    SingleFdeResult r = parseSingleFde(spec, 10, 40);
+    EXPECT_EQ(0, r.count);
+}
+
+// Same for a length that stops one field later: code_alignment_factor reads
+// fine, data_alignment_factor comes back as 0 and would zero every register
+// offset, making walkDwarf read the caller pc from sp+0.
+TEST(DwarfEhFrameHdr, CieTruncatedBeforeDataAlignRejectsFde) {
+    CieSpec spec;
+    spec.truncate_before_data_align = true;
+    spec.code_align = 4;
+    SingleFdeResult r = parseSingleFde(spec, 10, 40);
+    EXPECT_EQ(0, r.count);
+}
+
+// A zero code alignment factor is malformed for the same reason.
+TEST(DwarfEhFrameHdr, ZeroCodeAlignRejectsFde) {
+    CieSpec spec;
+    spec.code_align = 0;
+    SingleFdeResult r = parseSingleFde(spec, 10, 0);
+    EXPECT_EQ(0, r.count);
+}
+
+// The branch that runs for every GCC/clang-emitted "zR" CIE: parseFde() must
+// skip the FDE's augmentation-data-length field and the blob itself before
+// decoding CFI. Left unskipped, the 0x41 bytes below decode as
+// DW_CFA_advance_loc(1) and shift every subsequent row.
+TEST(DwarfEhFrameHdr, ZAugmentedFdeSkipsAugmentationData) {
+    CieSpec spec;
+    spec.z_augmentation = true;
+    spec.code_align = 4;
+
+    std::vector<uint8_t> body;
+    uint32_t cie_offset = appendCie(body, spec);
+    uint32_t fde_offset = static_cast<uint32_t>(body.size());
+    appendFdeWithAugData(body, cie_offset, 100, 10, {0x41, 0x41, 0x41, 0x41});
+
+    std::vector<uint8_t> buf = buildEhFrameHdrImage(body, {fde_offset});
+    uint32_t range_start = hdrSizeFor(1) + fde_offset + 8;
+
+    const char* base = reinterpret_cast<const char*>(buf.data());
+    DwarfParser dwarf("test", base, base, buf.size(), DwarfParser::EhFrameHdrTag{},
+                      base + buf.size());
+    const FrameDesc* table = dwarf.table();
+    ASSERT_NE(table, nullptr);
+
+    EXPECT_TRUE(hasLoc(table, dwarf.count(), range_start));
+    EXPECT_TRUE(hasLoc(table, dwarf.count(), range_start + 40))
+        << "advance_loc1(10) with code_align 4 must land at range_start + 40; a "
+        << "different loc means the augmentation data was decoded as CFI";
+    free(dwarf.table());
+}
+
+// A z-augmented FDE whose CIE is rejected must be skipped outright. Falling
+// back to defaults would also clear has_z_augmentation, feeding the
+// augmentation-length ULEB and the blob to the CFI decoder.
+TEST(DwarfEhFrameHdr, ZAugmentedFdeWithRejectedCieProducesNoRows) {
+    CieSpec spec;
+    spec.z_augmentation = true;
+    spec.version = 5;  // rejected
+    spec.code_align = 4;
+
+    std::vector<uint8_t> body;
+    uint32_t cie_offset = appendCie(body, spec);
+    uint32_t fde_offset = static_cast<uint32_t>(body.size());
+    appendFdeWithAugData(body, cie_offset, 100, 10, {0x41, 0x41, 0x41, 0x41});
+
+    std::vector<uint8_t> buf = buildEhFrameHdrImage(body, {fde_offset});
+    const char* base = reinterpret_cast<const char*>(buf.data());
+    DwarfParser dwarf("test", base, base, buf.size(), DwarfParser::EhFrameHdrTag{},
+                      base + buf.size());
+    EXPECT_EQ(0, dwarf.count());
+    free(dwarf.table());
+}
+
+// Real toolchains emit long runs of FDEs sharing one CIE, which parseFde()
+// resolves through a memoized last-CIE slot. Every FDE in such a run must see
+// that CIE's alignment factors, not a stale or default set.
+TEST(DwarfEhFrameHdr, FdesSharingOneCieAllUseItsAlignment) {
+    CieSpec spec;
+    spec.code_align = 4;
+
+    std::vector<uint8_t> body;
+    uint32_t cie_offset = appendCie(body, spec);
+    uint32_t fde1_offset = static_cast<uint32_t>(body.size());
+    appendFdeWithAdvances(body, cie_offset, 100, 10, 1);
+    uint32_t fde2_offset = static_cast<uint32_t>(body.size());
+    appendFdeWithAdvances(body, cie_offset, 100, 10, 1);
+
+    std::vector<uint8_t> buf = buildEhFrameHdrImage(body, {fde1_offset, fde2_offset});
+    uint32_t range_start1 = hdrSizeFor(2) + fde1_offset + 8;
+    uint32_t range_start2 = hdrSizeFor(2) + fde2_offset + 8;
+
+    const char* base = reinterpret_cast<const char*>(buf.data());
+    DwarfParser dwarf("test", base, base, buf.size(), DwarfParser::EhFrameHdrTag{},
+                      base + buf.size());
+    const FrameDesc* table = dwarf.table();
+    ASSERT_NE(table, nullptr);
+
+    EXPECT_TRUE(hasLoc(table, dwarf.count(), range_start1 + 40));
+    EXPECT_TRUE(hasLoc(table, dwarf.count(), range_start2 + 40))
+        << "the second FDE sharing this CIE must still see code_align 4";
+    EXPECT_FALSE(hasLoc(table, dwarf.count(), range_start2 + 10));
     free(dwarf.table());
 }
 
