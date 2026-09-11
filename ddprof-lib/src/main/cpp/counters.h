@@ -133,6 +133,7 @@
   X(SAMPLES_DROPPED_THREAD_LOCAL, "samples_dropped_thread_local")             \
   X(SAFECOPY_FAILED, "safecopy_failed")                                       \
   X(SAFEFETCH_FAILED, "safefetch_failed")                                     \
+  X(SAFESTORE_FAILED, "safestore_failed")                                     \
   /* Every siglongjmp recovery, from any protected window, counted centrally  \
    * in Profiler::checkFault(). */                                            \
   X(STACKWALK_LONGJMP_RECOVERED, "stackwalk_longjmp_recovered")               \
@@ -196,7 +197,8 @@
 #ifdef DEBUG
 #define DD_COUNTER_TABLE_DEBUG(X)                                             \
   X(SAFEFETCH_WHILE_PROTECTED, "safefetch_while_protected")                   \
-  X(SAFECOPY_WHILE_PROTECTED, "safecopy_while_protected")
+  X(SAFECOPY_WHILE_PROTECTED, "safecopy_while_protected")                     \
+  X(SAFESTORE_WHILE_PROTECTED, "safestore_while_protected")
 #else
 #define DD_COUNTER_TABLE_DEBUG(X)
 #endif
