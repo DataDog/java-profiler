@@ -868,6 +868,11 @@ __attribute__((no_sanitize("address"))) int HotspotSupport::walkVM(void* ucontex
         }
 
         dwarf_unwind:
+        // Deliberately not attribution-adjusted: unlike StackWalker::walkDwarf,
+        // this lookup and the frames[] entries below still use the raw pc.
+        // walkVM has its own, different relationship between pc and frame
+        // depth (Java frames interleave with native ones above), so the -1
+        // attribution adjustment does not apply here.
         uintptr_t prev_sp = sp;
         CodeCache* cc = profiler->findLibraryByAddress(pc);
         FrameDesc f = cc != NULL ? cc->findFrameDesc(pc) : FrameDesc::fallback_default_frame();

@@ -278,6 +278,13 @@ void DwarfParser::parseEhFrame(const char *eh_frame, size_t size) {
 }
 
 void DwarfParser::parseCie() {
+  // Reset to the platform defaults up front so every early-return path below
+  // (malformed length, out-of-range end, bad id/version) leaves the parser
+  // with known-good alignment factors instead of the previous FDE's values.
+  _code_align = sizeof(instruction_t);
+  _data_align = -(int)sizeof(void *);
+  _has_z_augmentation = false;
+
   if (_ptr + 4 > _image_end) return;
   u32 cie_len = get32();
   if (cie_len == 0 || cie_len == 0xffffffff) {
@@ -289,9 +296,15 @@ void DwarfParser::parseCie() {
   if (cie_end > _section_end) return;
 
   if (!canRead(5)) { _ptr = _section_end; return; }
-  _ptr += 5;
-  while (_ptr < cie_end && *_ptr++) {
+  u32 cie_id = get32();
+  if (cie_id != 0) return;
+  u8 version = get8();
+  if (version != 1 && version != 3 && version != 4) return;
+  if (_ptr < cie_end) {
+    _has_z_augmentation = (*_ptr == 'z');
   }
+  while (_ptr < cie_end && *_ptr++) {
+  }  // skip null-terminated augmentation string
   _code_align = getLeb(cie_end);
   _data_align = getSLeb(cie_end);
   _ptr = cie_end;
@@ -320,8 +333,10 @@ void DwarfParser::parseFde() {
   if (_ptr + 8 > fde_end) return;
   u32 range_start = getPtr() - _image_base;
   u32 range_len = get32();
-  _ptr += getLeb(fde_end);
-  if (_ptr > fde_end) return;
+  if (_has_z_augmentation) {
+    _ptr += getLeb(fde_end);  // getLeb reads the length; advance past the augmentation data bytes
+    if (_ptr > fde_end) return;
+  }
   parseInstructions(range_start, fde_end);
   addRecord(range_start + range_len, DW_REG_FP, LINKED_FRAME_SIZE,
             -LINKED_FRAME_SIZE, -LINKED_FRAME_SIZE + DW_STACK_SLOT);

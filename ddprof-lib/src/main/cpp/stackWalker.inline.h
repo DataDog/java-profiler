@@ -54,6 +54,9 @@ inline void fillFrame(ASGCT_CallFrame& frame, FrameTypeId type, int bci, jmethod
 // that consume `pc` for symbolication or FDE lookup must use this adjusted
 // value; callers that need the exact resume/executed address (JIT handoff,
 // no-progress guards, pc arithmetic) must keep using the raw walking pc.
+// This only covers producers that call attributionPC() (walkFP, walkDwarf);
+// walkVM/walkKernel still hand out raw addresses, so consumers still need
+// CodeCache::binarySearch's own boundary-address fallback for those.
 inline const void* attributionPC(const void* pc, bool pc_is_return_address) {
     return pc_is_return_address ? (const void*)((const char*)pc - 1) : pc;
 }

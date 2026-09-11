@@ -87,6 +87,12 @@ typedef struct {
 
 class StackWalker {
   public:
+    // callchain[] entries from walkFP/walkDwarf are attribution addresses:
+    // pc - 1 for any frame whose pc was loaded from a return-address slot
+    // (see StackWalker::attributionPC), the exact pc otherwise. Frames
+    // produced by walkVM/walkKernel are not adjusted this way and still
+    // carry raw addresses; callers merging chains from different walkers
+    // must not assume a single addressing convention across all entries.
     static int walkFP(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated = nullptr);
     static int walkDwarf(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated = nullptr);
 };

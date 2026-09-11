@@ -36,6 +36,156 @@
 #include "stackWalker.h"
 #include "gtest_crash_handler.h"
 
+// ===========================================================================
+// Portable characterization tests (coverage rows 2c/3/4/7). Unlike the
+// fixtures below, these need no GNU-as/ELF-CFI asm and no reliance on
+// Libraries::updateSymbols() parsing the test binary's own symbol table, so
+// they are not gated to __linux__ and provide this file's only coverage of
+// attributionPC()/CALLER_PC_IS_RETURN_ADDRESS/findFrameDesc/binarySearch on
+// other platforms (e.g. this repo's macOS dev builds).
+// ===========================================================================
+
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
+
+#include "arch.h"
+#include "codeCache.h"
+#include "dwarf.h"
+#include "stackWalker.inline.h"
+
+// 2c. Non-tautological: observes callerPC()'s actual runtime behavior
+// against __builtin_return_address(0) (always a genuine return address),
+// both captured in the same callee frame, rather than restating arch.h's
+// own #if ladder for CALLER_PC_IS_RETURN_ADDRESS.
+extern "C" __attribute__((noinline)) void prof_ra_capture_pc_pair(const void** via_macro, const void** via_builtin) {
+    *via_macro = callerPC();
+    *via_builtin = __builtin_return_address(0);
+}
+
+TEST(ReturnAddressAttributionCharacterizationTest, CallerPcIsReturnAddressConstant) {
+    const void* via_macro = nullptr;
+    const void* via_builtin = nullptr;
+    prof_ra_capture_pc_pair(&via_macro, &via_builtin);
+
+    if (CALLER_PC_IS_RETURN_ADDRESS) {
+        EXPECT_EQ(via_builtin, via_macro)
+            << "CALLER_PC_IS_RETURN_ADDRESS=true claims callerPC() behaves like "
+            << "__builtin_return_address(0), but they diverge on this build";
+    } else {
+        EXPECT_NE(via_builtin, via_macro)
+            << "CALLER_PC_IS_RETURN_ADDRESS=false claims callerPC() is a leaf-seed "
+            << "address distinct from __builtin_return_address(0), but they matched "
+            << "on this build";
+    }
+}
+
+TEST(ReturnAddressAttributionCharacterizationTest, AttributionPcArithmetic) {
+    int dummy;
+    const void* p = (const void*)&dummy;
+    EXPECT_EQ(p, attributionPC(p, false));
+    EXPECT_EQ((const void*)((const char*)p - 1), attributionPC(p, true));
+}
+
+// Supporting characterization (not gating): pins findFrameDesc's and
+// binarySearch's row-selection semantics directly, independent of the live
+// walker. These do NOT change with the fix -- they document why Test 3's
+// live-walk assertion (Linux-only, below) is the right one.
+TEST(ReturnAddressAttributionCharacterizationTest, FindFrameDescSelectsRowByRawAddress) {
+    CodeCache cc("ra_char_test");
+    const char* text_base = (const char*)0x100000;
+    cc.setTextBase(text_base);
+
+    const uint32_t CALL_SITE_OFF = 0x40;
+    const uint32_t RETURN_OFF = 0x48;
+
+    FrameDesc rows[2];
+    rows[0] = { CALL_SITE_OFF, /*cfa*/ 0x10, /*fp_off*/ 0, /*pc_off*/ 0 };
+    rows[1] = { RETURN_OFF, /*cfa*/ 0x20, /*fp_off*/ 0, /*pc_off*/ 0 };
+    FrameDesc* table = (FrameDesc*)malloc(2 * sizeof(FrameDesc));
+    memcpy(table, rows, sizeof(rows));
+    cc.setDwarfTable(table, 2);
+
+    FrameDesc at_return = cc.findFrameDesc((const void*)(text_base + RETURN_OFF));
+    FrameDesc at_call_site = cc.findFrameDesc((const void*)(text_base + RETURN_OFF - 1));
+
+    EXPECT_EQ(rows[1].cfa, at_return.cfa)
+        << "a raw return address that exactly matches a row's loc selects that row";
+    EXPECT_EQ(rows[0].cfa, at_call_site.cfa)
+        << "pc - 1 selects the row covering the call site instead";
+}
+
+TEST(ReturnAddressAttributionCharacterizationTest, BinarySearchPicksNextSymbolAtZeroGapBoundary) {
+    CodeCache cc("ra_char_test2");
+    const void* f1 = (const void*)0x200000;
+    const int len1 = 0x10;
+    const int len2 = 0x10;
+    cc.add(f1, len1, "first");
+    cc.add((const void*)((const char*)f1 + len1), len2, "second");
+    cc.sort();
+
+    const char* name = nullptr;
+    cc.binarySearch((const void*)((const char*)f1 + len1), &name);
+    ASSERT_NE(nullptr, name);
+    EXPECT_STREQ("second", name)
+        << "a return address landing exactly on the next symbol's first byte resolves to "
+        << "that (wrong, for attribution purposes) symbol -- codeCache.cpp:288-299's fallback "
+        << "does not rescue this zero-gap case, per the spec";
+
+    cc.binarySearch((const void*)((const char*)f1 + len1 - 1), &name);
+    ASSERT_NE(nullptr, name);
+    EXPECT_STREQ("first", name);
+}
+
+// Arithmetic-level fallback coverage for row 4 (kept regardless of whether
+// the live fixture below manages to gate it in this build/toolchain): pins
+// that the two branches genuinely differ only at raw & 15 == 11.
+TEST(ReturnAddressAttributionCharacterizationTest, DwRegPltThresholdArithmetic) {
+    uintptr_t raw = 0x1000 + 11;
+    EXPECT_GE(raw & 15u, 11u);
+    EXPECT_LT((raw - 1) & 15u, 11u);
+}
+
+// Mark-based walk termination still works after the attribution change
+// (constraint: NativeFunc::read_mark keyed off binarySearch's result must
+// keep seeing the correct mark at a return-address boundary).
+TEST(ReturnAddressAttributionCharacterizationTest, MarkVisibleAtAdjustedBoundaryAddress) {
+    CodeCache cc("ra_mark_test");
+    const void* f1 = (const void*)0x300000;
+    const int len1 = 0x10;
+    const int len2 = 0x10;
+    cc.add(f1, len1, "marked_first", /*update_bounds=*/false);
+    cc.add((const void*)((const char*)f1 + len1), len2, "unmarked_second", /*update_bounds=*/false);
+    cc.sort();
+
+    CodeBlob* first = cc.findBlobByAddress(f1);
+    ASSERT_NE(nullptr, first);
+    NativeFunc::set_mark(first->_name, MARK_JAVA_PROFILER);
+
+    const char* name_at_boundary = nullptr;
+    cc.binarySearch((const void*)((const char*)f1 + len1), &name_at_boundary);
+    ASSERT_NE(nullptr, name_at_boundary);
+    EXPECT_STREQ("unmarked_second", name_at_boundary);
+    EXPECT_FALSE(NativeFunc::is_marked(name_at_boundary))
+        << "raw return address (unadjusted) sees no mark at the boundary";
+
+    const char* name_adjusted = nullptr;
+    cc.binarySearch((const void*)((const char*)f1 + len1 - 1), &name_adjusted);
+    ASSERT_NE(nullptr, name_adjusted);
+    EXPECT_STREQ("marked_first", name_adjusted);
+    EXPECT_TRUE(NativeFunc::is_marked(name_adjusted))
+        << "the attribution address (pc - 1) restores mark visibility at the boundary -- "
+        << "MARK_JAVA_PROFILER / MARK_THREAD_ENTRY / MARK_INTERPRETER termination can only "
+        << "improve, never regress, from this change";
+    EXPECT_EQ(MARK_JAVA_PROFILER, NativeFunc::read_mark(name_adjusted));
+}
+
+// ===========================================================================
+// Everything below is Linux/ELF-CFI specific: GNU-as asm() fixtures and
+// reliance on Libraries::updateSymbols() parsing the test binary's own
+// symbol table, neither established to work on macOS.
+// ===========================================================================
+
 #ifdef __linux__
 
 #include <csetjmp>
@@ -55,6 +205,17 @@
 #include "threadLocalData.inline.h"
 
 [[maybe_unused]] static long long* _return_addr_attr_ut_counters_init = Counters::getCounters();
+
+// Each gating test below (Test1/3/4/5/6) has toolchain-dependent preconditions
+// (adjacency, symbol visibility, CFI-row round-tripping) that GTEST_SKIP when
+// unmet; gtest counts SKIPPED as a green run, so if every precondition failed
+// on some CI toolchain this suite would still pass with zero effective
+// regression coverage and nobody would notice. This counter is incremented
+// once by each gating test that reaches its final assertions without hitting
+// any of its own precondition skips; AtLeastOneGatingAssertionRan (declared
+// after all of them, so it runs last under gtest's default registration
+// order) fails the build if it is still zero.
+static int g_gating_assertions_reached = 0;
 
 // ---------------------------------------------------------------------------
 // Frame index map (tester plan "Frame index map" section).
@@ -401,6 +562,8 @@ TEST_F(ReturnAddressAttributionTest, Test1_BoundaryRegression_WalkFPAndWalkDwarf
             << label << ": walk did not continue past the ucontext leaf frame -- "
             << "fp/sp taken from the ucontext were not usable to keep walking";
     }
+
+    ++g_gating_assertions_reached;
 #endif  // __x86_64__ || __aarch64__
 }
 
@@ -566,25 +729,9 @@ TEST_F(ReturnAddressAttributionTest, Test2b_SeedFlagConsumedByWalkDwarf) {
 #endif
 }
 
-// 2c. Supporting characterization -- NOT the acceptance test for row 5.
-// These pin the arithmetic/constant that the seed logic is built from; they
-// stay green even if the seed is never actually consumed (see 2b for that).
-TEST_F(ReturnAddressAttributionTest, Test2c_CallerPcIsReturnAddressConstant) {
-#if defined(__aarch64__)
-    EXPECT_FALSE(CALLER_PC_IS_RETURN_ADDRESS)
-        << "aarch64 callerPC() (adr) is a real instruction address";
-#else
-    EXPECT_TRUE(CALLER_PC_IS_RETURN_ADDRESS)
-        << "on this arch callerPC() is __builtin_return_address(0)";
-#endif
-}
-
-TEST_F(ReturnAddressAttributionTest, Test2c_AttributionPcArithmetic) {
-    int dummy;
-    const void* p = (const void*)&dummy;
-    EXPECT_EQ(p, attributionPC(p, false));
-    EXPECT_EQ((const void*)((const char*)p - 1), attributionPC(p, true));
-}
+// 2c. Supporting characterization (CallerPcIsReturnAddressConstant,
+// AttributionPcArithmetic) moved above the __linux__ gate -- portable,
+// not Linux/ELF-specific. See ReturnAddressAttributionCharacterizationTest.
 
 // ===========================================================================
 // Test 3 -- Unwind-row selection at a return address, through the walker
@@ -742,58 +889,16 @@ TEST_F(ReturnAddressAttributionTest, Test3_UnwindRowSelectedAtReturnAddress) {
                 ? symbolFor(g_ra3_dw_chain[kBoundaryIndex + 1])
                 : "<null>")
         << " -- this is the other pre-fix failure mode (wrong row -> wrong symbol)";
+
+    ++g_gating_assertions_reached;
 #endif  // __x86_64__ || __aarch64__
 }
 
-// Supporting characterization (not gating): pins findFrameDesc's and
-// binarySearch's row-selection semantics directly, independent of the live
-// walker. These do NOT change with the fix -- they document why Test 3's
-// live-walk assertion is the right one.
-TEST(ReturnAddressAttributionCharacterizationTest, FindFrameDescSelectsRowByRawAddress) {
-    CodeCache cc("ra_char_test");
-    const char* text_base = (const char*)0x100000;
-    cc.setTextBase(text_base);
-
-    const uint32_t CALL_SITE_OFF = 0x40;
-    const uint32_t RETURN_OFF = 0x48;
-
-    FrameDesc rows[2];
-    rows[0] = { CALL_SITE_OFF, /*cfa*/ 0x10, /*fp_off*/ 0, /*pc_off*/ 0 };
-    rows[1] = { RETURN_OFF, /*cfa*/ 0x20, /*fp_off*/ 0, /*pc_off*/ 0 };
-    FrameDesc* table = (FrameDesc*)malloc(2 * sizeof(FrameDesc));
-    memcpy(table, rows, sizeof(rows));
-    cc.setDwarfTable(table, 2);
-
-    FrameDesc at_return = cc.findFrameDesc((const void*)(text_base + RETURN_OFF));
-    FrameDesc at_call_site = cc.findFrameDesc((const void*)(text_base + RETURN_OFF - 1));
-
-    EXPECT_EQ(rows[1].cfa, at_return.cfa)
-        << "a raw return address that exactly matches a row's loc selects that row";
-    EXPECT_EQ(rows[0].cfa, at_call_site.cfa)
-        << "pc - 1 selects the row covering the call site instead";
-}
-
-TEST(ReturnAddressAttributionCharacterizationTest, BinarySearchPicksNextSymbolAtZeroGapBoundary) {
-    CodeCache cc("ra_char_test2");
-    const void* f1 = (const void*)0x200000;
-    const int len1 = 0x10;
-    const int len2 = 0x10;
-    cc.add(f1, len1, "first");
-    cc.add((const void*)((const char*)f1 + len1), len2, "second");
-    cc.sort();
-
-    const char* name = nullptr;
-    cc.binarySearch((const void*)((const char*)f1 + len1), &name);
-    ASSERT_NE(nullptr, name);
-    EXPECT_STREQ("second", name)
-        << "a return address landing exactly on the next symbol's first byte resolves to "
-        << "that (wrong, for attribution purposes) symbol -- codeCache.cpp:288-299's fallback "
-        << "does not rescue this zero-gap case, per the spec";
-
-    cc.binarySearch((const void*)((const char*)f1 + len1 - 1), &name);
-    ASSERT_NE(nullptr, name);
-    EXPECT_STREQ("first", name);
-}
+// Supporting characterization (FindFrameDescSelectsRowByRawAddress,
+// BinarySearchPicksNextSymbolAtZeroGapBoundary) moved above the __linux__
+// gate -- portable, not Linux/ELF-specific. See
+// ReturnAddressAttributionCharacterizationTest. They document why Test 3's
+// live-walk assertion below is the right one.
 
 // ===========================================================================
 // Test 4 -- The DW_REG_PLT arm uses the same address as the FDE lookup
@@ -934,17 +1039,15 @@ TEST_F(ReturnAddressAttributionTest, Test4_DwRegPltArmUsesAttributionAddress) {
         << "got " << (symbolFor(g_ra4_dw_chain[kBoundaryIndex + 1])
                           ? symbolFor(g_ra4_dw_chain[kBoundaryIndex + 1])
                           : "<null>");
+
+    ++g_gating_assertions_reached;
 #endif  // __x86_64__ || __aarch64__
 }
 
-// Arithmetic-level fallback coverage for row 4 (kept regardless of whether
-// the live fixture above manages to gate it in this build/toolchain): pins
-// that the two branches genuinely differ only at raw & 15 == 11.
-TEST(ReturnAddressAttributionCharacterizationTest, Test4_DwRegPltThresholdArithmetic) {
-    uintptr_t raw = 0x1000 + 11;
-    EXPECT_GE(raw & 15u, 11u);
-    EXPECT_LT((raw - 1) & 15u, 11u);
-}
+// Arithmetic-level fallback coverage for row 4 (DwRegPltThresholdArithmetic,
+// kept regardless of whether the live fixture above manages to gate it in
+// this build/toolchain) moved above the __linux__ gate -- portable. See
+// ReturnAddressAttributionCharacterizationTest.
 
 // ===========================================================================
 // Test 5 -- DW_PC_OFFSET sets pc_is_ra = true (coverage row 6).
@@ -1044,6 +1147,8 @@ TEST_F(ReturnAddressAttributionTest, Test5_DwPcOffsetSetsFlag) {
         << "got chain[1] == prof_ra_pcoff_next exactly, meaning pc_is_ra stayed false";
     EXPECT_TRUE(symbolContains(chain[1], "prof_ra_pcoff_fn"));
     EXPECT_FALSE(symbolContains(chain[1], "prof_ra_pcoff_next"));
+
+    ++g_gating_assertions_reached;
 #endif  // __x86_64__ || __aarch64__
 }
 
@@ -1121,44 +1226,29 @@ TEST_F(ReturnAddressAttributionTest, Test6_LinkRegisterRecoverySetsFlag) {
         << "link-register-recovered pc must be adjusted; pre-fix chain[1] is "
         << "prof_ra_lr_next exactly";
     EXPECT_TRUE(symbolContains(chain[1], "prof_ra_lr_fn"));
+
+    ++g_gating_assertions_reached;
 #endif  // __aarch64__
 }
 
-// ===========================================================================
-// Test 7 -- Mark-based walk termination still works after the attribution
-// change (constraint: NativeFunc::read_mark keyed off binarySearch's
-// result must keep seeing the correct mark at a return-address boundary).
-// ===========================================================================
+// Test 7 -- Mark-based walk termination (MarkVisibleAtAdjustedBoundaryAddress)
+// moved above the __linux__ gate -- portable. See
+// ReturnAddressAttributionCharacterizationTest.
 
-TEST(ReturnAddressAttributionCharacterizationTest, MarkVisibleAtAdjustedBoundaryAddress) {
-    CodeCache cc("ra_mark_test");
-    const void* f1 = (const void*)0x300000;
-    const int len1 = 0x10;
-    const int len2 = 0x10;
-    cc.add(f1, len1, "marked_first", /*update_bounds=*/false);
-    cc.add((const void*)((const char*)f1 + len1), len2, "unmarked_second", /*update_bounds=*/false);
-    cc.sort();
-
-    CodeBlob* first = cc.findBlobByAddress(f1);
-    ASSERT_NE(nullptr, first);
-    NativeFunc::set_mark(first->_name, MARK_JAVA_PROFILER);
-
-    const char* name_at_boundary = nullptr;
-    cc.binarySearch((const void*)((const char*)f1 + len1), &name_at_boundary);
-    ASSERT_NE(nullptr, name_at_boundary);
-    EXPECT_STREQ("unmarked_second", name_at_boundary);
-    EXPECT_FALSE(NativeFunc::is_marked(name_at_boundary))
-        << "raw return address (unadjusted) sees no mark at the boundary";
-
-    const char* name_adjusted = nullptr;
-    cc.binarySearch((const void*)((const char*)f1 + len1 - 1), &name_adjusted);
-    ASSERT_NE(nullptr, name_adjusted);
-    EXPECT_STREQ("marked_first", name_adjusted);
-    EXPECT_TRUE(NativeFunc::is_marked(name_adjusted))
-        << "the attribution address (pc - 1) restores mark visibility at the boundary -- "
-        << "MARK_JAVA_PROFILER / MARK_THREAD_ENTRY / MARK_INTERPRETER termination can only "
-        << "improve, never regress, from this change";
-    EXPECT_EQ(MARK_JAVA_PROFILER, NativeFunc::read_mark(name_adjusted));
+// Non-skippable canary (b-3): every gating test above can independently
+// GTEST_SKIP if its toolchain-dependent precondition fails, and GTEST_SKIP
+// counts as a passing run, so a CI toolchain on which all of them skip would
+// otherwise report this whole file as green with zero effective regression
+// coverage for the attribution fix. This test cannot skip -- it fails if
+// none of Test1/3/4/5/6 reached its gating assertions, surfacing that
+// degradation instead of letting it pass silently. Declared last so it runs
+// after all of them under gtest's default (registration-order) test order.
+TEST(ReturnAddressAttributionGatingCoverageTest, AtLeastOneGatingAssertionRan) {
+    EXPECT_GT(g_gating_assertions_reached, 0)
+        << "every gating test in this file (Test1/3/4/5/6) skipped its precondition "
+        << "check on this toolchain -- the attribution fix has zero effective "
+        << "regression coverage in this build; see each test's GTEST_SKIP reason "
+        << "in the test log above for which precondition failed";
 }
 
 #endif  // __linux__

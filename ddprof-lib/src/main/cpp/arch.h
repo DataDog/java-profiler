@@ -84,6 +84,11 @@ static inline void storeRelease(volatile T& var, T value) {
     return __atomic_store_n(&var, value, __ATOMIC_RELEASE);
 }
 
+// CALLER_PC_IS_RETURN_ADDRESS must match what callerPC() actually produces
+// for each arch below: true when it is __builtin_return_address(0) (a real
+// return address), false when it is a leaf-seed instruction address instead
+// (aarch64's "adr %0, .").
+
 #if defined(__x86_64__) || defined(__i386__)
 
 typedef unsigned char instruction_t;
@@ -129,6 +134,12 @@ const int PERF_REG_PC = 15;  // PERF_REG_ARM_PC
 #define callerFP()        __builtin_frame_address(1)
 #define callerSP()        __builtin_frame_address(1)
 
+// On Thumb interworking, a return address taken from the stack/LR carries
+// the interworking bit (addr | 1) marking the target as Thumb code; this bit
+// is not stripped anywhere in the walkers before attributionPC() subtracts
+// 1. That subtraction happens to clear the bit back to the original,
+// unadjusted return address rather than landing one byte inside the call
+// instruction as intended. Unverified on real __arm__/__thumb__ hardware.
 const bool CALLER_PC_IS_RETURN_ADDRESS = true;
 
 #elif defined(__aarch64__)

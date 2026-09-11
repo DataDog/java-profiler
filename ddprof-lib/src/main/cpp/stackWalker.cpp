@@ -188,7 +188,10 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
         } else if (cfa_reg == DW_REG_FP) {
             sp = fp + cfa_off;
         } else if (cfa_reg == DW_REG_PLT) {
-            sp += ((uintptr_t)attribution_pc & 15) >= 11 ? cfa_off * 2 : cfa_off;
+            // This tests where the CPU is within the PLT stub's own instruction
+            // sequence (whether its push has already executed), which is a property
+            // of the raw walking pc -- not of the attribution address.
+            sp += ((uintptr_t)pc & 15) >= 11 ? cfa_off * 2 : cfa_off;
         } else {
             break;
         }
@@ -205,10 +208,12 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
 
         const void* prev_pc = pc;
         if (f.fp_off & DW_PC_OFFSET) {
-            // The DW_CFA_val_expression on the RA column always yields the
-            // caller's return address, regardless of whether the current pc
-            // was one.
-            pc = (const char*)pc + (f.fp_off >> 1);
+            // f.fp_off carries the offset produced by a DW_CFA_val_expression on the
+            // CIE's return_address_register column (DwarfParser::parseExpression),
+            // which by the DWARF return-address-register convention is assumed to
+            // hold the caller's return address. That offset is relative to the pc
+            // this row was resolved for -- attribution_pc, not the raw walking pc.
+            pc = (const char*)attribution_pc + (f.fp_off >> 1);
             pc_is_ra = true;
         } else {
             if (f.fp_off != DW_SAME_FP && f.fp_off < MAX_FRAME_SIZE && f.fp_off > -MAX_FRAME_SIZE) {

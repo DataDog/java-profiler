@@ -253,4 +253,110 @@ TEST(DwarfEhFrameHdr, FdeCountOverrun) {
     free(dwarf.table());
 }
 
+// Append a CIE with a caller-chosen code_align and no augmentation string
+// (so the referencing FDE needs no aug-data-length byte).
+// Layout: [4-len=9][4-cie_id=0][1-ver=1][1-aug="\0"][1-code_align][1-data_align=-8][1-ra=30]
+static void appendCieWithCodeAlign(std::vector<uint8_t>& buf, uint8_t code_align) {
+    put32(buf, 9);           // length
+    put32(buf, 0);           // cie_id = 0
+    put8(buf, 1);            // version
+    put8(buf, 0);            // empty augmentation string
+    put8(buf, code_align);   // code_align (LEB128, fits in one byte for the values used here)
+    put8(buf, 0x78);         // data_align = -8 (SLEB128)
+    put8(buf, 30);           // return address column
+}
+
+// Append an FDE (no augmentation, so no aug-data-length byte) referencing the CIE at
+// cie_start_offset. Instructions: advance_loc1(delta1), then def_cfa_offset(16) to force
+// a genuine state change (addRecord coalesces consecutive records with identical
+// cfa/fp/pc, so a second advance alone would not produce an observable record), then
+// advance_loc1(delta2).
+static void appendFdeWithAdvances(std::vector<uint8_t>& buf, uint32_t cie_start_offset,
+                                   uint32_t range_len, uint8_t delta1, uint8_t delta2) {
+    uint32_t cie_id_field_offset = static_cast<uint32_t>(buf.size()) + 4;
+    uint32_t cie_offset = cie_id_field_offset - cie_start_offset;
+
+    // body = cie_offset(4) + range_start(4) + range_len(4) + advance_loc1(2) +
+    //        def_cfa_offset(2) + advance_loc1(2) = 18
+    put32(buf, 18);
+    put32(buf, cie_offset);
+    put32(buf, 0);    // range_start pcrel = 0
+    put32(buf, range_len);
+    put8(buf, 0x02);  // DW_CFA_advance_loc1
+    put8(buf, delta1);
+    put8(buf, 0x0e);  // DW_CFA_def_cfa_offset
+    put8(buf, 16);    // new cfa_off (LEB128, fits in one byte)
+    put8(buf, 0x02);  // DW_CFA_advance_loc1
+    put8(buf, delta2);
+}
+
+static bool hasLoc(const FrameDesc* table, int count, uint32_t loc) {
+    for (int i = 0; i < count; i++) {
+        if (table[i].loc == loc) return true;
+    }
+    return false;
+}
+
+// Regression test for per-FDE CIE resolution (parseFde() resolves and parses each
+// FDE's own CIE rather than caching the first one seen): a code_align factor from
+// one CIE must not leak into a neighboring FDE that resolves a different CIE.
+TEST(DwarfEhFrameHdr, PerFdeCieAlignmentDoesNotLeak) {
+    std::vector<uint8_t> body;
+    uint32_t cie1_offset = static_cast<uint32_t>(body.size());
+    appendCieWithCodeAlign(body, 1);  // CIE1: code_align = 1
+    uint32_t fde1_offset = static_cast<uint32_t>(body.size());
+    appendFdeWithAdvances(body, cie1_offset, 100, 10, 5);
+
+    uint32_t cie2_offset = static_cast<uint32_t>(body.size());
+    appendCieWithCodeAlign(body, 4);  // CIE2: code_align = 4
+    uint32_t fde2_offset = static_cast<uint32_t>(body.size());
+    appendFdeWithAdvances(body, cie2_offset, 100, 10, 5);
+
+    // .eh_frame_hdr: 12-byte fixed header + 2 table entries (8 bytes each) = 28 bytes,
+    // followed directly by the CIE/FDE body built above.
+    const uint32_t HDR_SIZE = 28;
+    std::vector<uint8_t> buf(HDR_SIZE, 0);
+    buf[0] = 1;     // version
+    buf[1] = 0x03;  // eh_frame_ptr_enc = DW_EH_PE_udata4
+    buf[2] = 0x03;  // fde_count_enc    = DW_EH_PE_udata4
+    buf[3] = 0x33;  // table_enc        = DW_EH_PE_datarel | DW_EH_PE_udata4
+    buf[8] = 2;     // fde_count = 2
+
+    auto putFdePtr = [&](size_t idx, uint32_t fde_len_field_offset) {
+        size_t off = 12 + idx * 8 + 4;  // skip this entry's initial_loc field
+        buf[off]     = static_cast<uint8_t>(fde_len_field_offset);
+        buf[off + 1] = static_cast<uint8_t>(fde_len_field_offset >> 8);
+        buf[off + 2] = static_cast<uint8_t>(fde_len_field_offset >> 16);
+        buf[off + 3] = static_cast<uint8_t>(fde_len_field_offset >> 24);
+    };
+    putFdePtr(0, HDR_SIZE + fde1_offset);
+    putFdePtr(1, HDR_SIZE + fde2_offset);
+
+    buf.insert(buf.end(), body.begin(), body.end());
+
+    // range_start of each FDE = the absolute offset of its pcrel field (pcrel value is 0
+    // and image_base == buf.data()), i.e. HDR_SIZE + fde_offset + 8 (past length+cie_offset).
+    uint32_t range_start1 = HDR_SIZE + fde1_offset + 8;
+    uint32_t range_start2 = HDR_SIZE + fde2_offset + 8;
+
+    const char* base = reinterpret_cast<const char*>(buf.data());
+    DwarfParser dwarf("test", base, base, buf.size(), DwarfParser::EhFrameHdrTag{}, base + buf.size());
+
+    const FrameDesc* table = dwarf.table();
+    ASSERT_NE(table, nullptr);
+    ASSERT_EQ(dwarf.count(), 6);  // 2 FDEs x (initial state + post-advance state + sentinel)
+
+    EXPECT_TRUE(hasLoc(table, dwarf.count(), range_start1));
+    // CIE1's code_align = 1: first advance_loc1(10) moves loc by 10*1 = 10.
+    EXPECT_TRUE(hasLoc(table, dwarf.count(), range_start1 + 10));
+
+    EXPECT_TRUE(hasLoc(table, dwarf.count(), range_start2));
+    // CIE2's code_align = 4: first advance_loc1(10) moves loc by 10*4 = 40. If CIE2's
+    // resolution leaked CIE1's code_align instead, this would land at range_start2 + 10.
+    EXPECT_TRUE(hasLoc(table, dwarf.count(), range_start2 + 40));
+    EXPECT_FALSE(hasLoc(table, dwarf.count(), range_start2 + 10));
+
+    free(dwarf.table());
+}
+
 #endif  // DWARF_SUPPORTED
