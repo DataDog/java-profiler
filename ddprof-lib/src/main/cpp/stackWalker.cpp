@@ -23,18 +23,18 @@ using StackWalkValidation::MAX_FRAME_SIZE;
 
 
 int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated) {
-    const void* pc;
     uintptr_t fp;
     uintptr_t sp;
     uintptr_t bottom = (uintptr_t)&sp + MAX_WALK_SIZE;
 
     StackFrame frame(ucontext);
+    WalkPc walk_pc;
     if (ucontext == NULL) {
-        pc = callerPC();
+        walk_pc.setSeed(callerPC(), CALLER_PC_IS_RETURN_ADDRESS);
         fp = (uintptr_t)callerFP();
         sp = (uintptr_t)callerSP();
     } else {
-        pc = (const void*)frame.pc();
+        walk_pc.setExactAddress((const void*)frame.pc());
         fp = frame.fp();
         sp = frame.sp();
     }
@@ -72,13 +72,19 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
 
     // Walk until the bottom of the stack or until the first Java frame
     while (depth < actual_max_depth) {
-        if (JVMSupport::isJitCode(pc) && !(depth == 0 && JVMSupport::canUnwind(frame, pc)) &&
-            JVMThread::current() != nullptr) {  // If it is not a JVM thread, it cannot have Java frame
-            java_ctx->set(pc, sp, fp);
-            break;
+        if (JVMSupport::isJitCode(walk_pc.raw())) {
+            const void* unwound_pc = walk_pc.raw();
+            if (depth == 0 && JVMSupport::canUnwind(frame, unwound_pc)) {
+                // unwindAtomicStub rewrites the pc to the link register, i.e.
+                // to a genuine return address, so the flag travels with it.
+                walk_pc.setReturnAddress(unwound_pc);
+            } else if (JVMThread::current() != nullptr) {  // If it is not a JVM thread, it cannot have Java frame
+                java_ctx->set(walk_pc.raw(), sp, fp);
+                break;
+            }
         }
 
-        callchain[depth++] = pc;
+        callchain[depth++] = walk_pc.attribution();
 
         // Check if the next frame is below on the current stack
         if (fp < sp || fp >= sp + MAX_FRAME_SIZE || fp >= bottom) {
@@ -90,8 +96,11 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
             break;
         }
 
-        pc = stripPointer(SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)fp + FRAME_PC_SLOT)));
-        if (inDeadZone(pc)) {
+        // Unconditionally a return address here: the frame-pointer walk has no
+        // DWARF row, so it cannot see a signal-frame CIE the way walkDwarf can.
+        walk_pc.setReturnAddress(
+            stripPointer(SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)fp + FRAME_PC_SLOT))));
+        if (inDeadZone(walk_pc.raw())) {
             break;
         }
 
@@ -108,18 +117,18 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
 }
 
 int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth, StackContext* java_ctx, bool* truncated) {
-    const void* pc;
     uintptr_t fp;
     uintptr_t sp;
     uintptr_t bottom = (uintptr_t)&sp + MAX_WALK_SIZE;
 
     StackFrame frame(ucontext);
+    WalkPc walk_pc;
     if (ucontext == NULL) {
-        pc = callerPC();
+        walk_pc.setSeed(callerPC(), CALLER_PC_IS_RETURN_ADDRESS);
         fp = (uintptr_t)callerFP();
         sp = (uintptr_t)callerSP();
     } else {
-        pc = (const void*)frame.pc();
+        walk_pc.setExactAddress((const void*)frame.pc());
         fp = frame.fp();
         sp = frame.sp();
     }
@@ -158,19 +167,26 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
 
     // Walk until the bottom of the stack or until the first Java frame
     while (depth < actual_max_depth) {
-        if (JVMSupport::isJitCode(pc) && !(depth == 0 && JVMSupport::canUnwind(frame, pc)) &&
-            JVMThread::current() != nullptr) {  // If it is not a JVM thread, it cannot have Java frame
-            // Don't dereference pc as it may point to unreadable memory
-            // frame.adjustSP(page_start, pc, sp);
-            java_ctx->set(pc, sp, fp);
-            break;
+        if (JVMSupport::isJitCode(walk_pc.raw())) {
+            const void* unwound_pc = walk_pc.raw();
+            if (depth == 0 && JVMSupport::canUnwind(frame, unwound_pc)) {
+                // unwindAtomicStub rewrites the pc to the link register, i.e.
+                // to a genuine return address, so the flag travels with it.
+                walk_pc.setReturnAddress(unwound_pc);
+            } else if (JVMThread::current() != nullptr) {  // If it is not a JVM thread, it cannot have Java frame
+                // Don't dereference pc as it may point to unreadable memory
+                // frame.adjustSP(page_start, pc, sp);
+                java_ctx->set(walk_pc.raw(), sp, fp);
+                break;
+            }
         }
 
-        callchain[depth++] = pc;
+        const void* attribution_pc = walk_pc.attribution();
+        callchain[depth++] = attribution_pc;
 
         uintptr_t prev_sp = sp;
-        CodeCache* cc = profiler->findLibraryByAddress(pc);
-        FrameDesc f = cc != NULL ? cc->findFrameDesc(pc) : FrameDesc::fallback_default_frame();
+        CodeCache* cc = profiler->findLibraryByAddress(attribution_pc);
+        FrameDesc f = cc != NULL ? cc->findFrameDesc(attribution_pc) : FrameDesc::fallback_default_frame();
 
         u8 cfa_reg = (u8)f.cfa;
         int cfa_off = f.cfa >> 8;
@@ -179,7 +195,12 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
         } else if (cfa_reg == DW_REG_FP) {
             sp = fp + cfa_off;
         } else if (cfa_reg == DW_REG_PLT) {
-            sp += ((uintptr_t)pc & 15) >= 11 ? cfa_off * 2 : cfa_off;
+            // Which of the stub's two CFA rules applies depends on the position
+            // within the 16-byte PLT stub, so it must be evaluated at the same
+            // address the row above was selected at (attribution_pc). Mixing the
+            // two would pair the row chosen for one stub offset with the CFA
+            // doubling decided for another.
+            sp += ((uintptr_t)attribution_pc & 15) >= 11 ? cfa_off * 2 : cfa_off;
         } else {
             break;
         }
@@ -194,9 +215,15 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
             break;
         }
 
-        const void* prev_pc = pc;
+        const void* prev_pc = walk_pc.raw();
         if (f.fp_off & DW_PC_OFFSET) {
-            pc = (const char*)pc + (f.fp_off >> 1);
+            // f.fp_off carries the offset of a DW_CFA_val_expression of the form
+            // DW_OP_breg<PC> + K on the return-address register column
+            // (DwarfParser::parseExpression). DW_OP_breg names the *register
+            // value*, which is the raw walking pc, so the offset is applied to
+            // that and not to the row-lookup address.
+            walk_pc.setRecoveredPc((const char*)walk_pc.raw() + (f.fp_off >> 1),
+                                   f.isSignalFrame());
         } else {
             if (f.fp_off != DW_SAME_FP && f.fp_off < MAX_FRAME_SIZE && f.fp_off > -MAX_FRAME_SIZE) {
                 uintptr_t fp_addr = sp + f.fp_off;
@@ -211,9 +238,15 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
                 if (!aligned(pc_addr)) {
                     break;
                 }
-                pc = stripPointer(SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)pc_addr)));
+                walk_pc.setRecoveredPc(
+                    stripPointer(SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)pc_addr))),
+                    f.isSignalFrame());
             } else if (depth == 1) {
-                pc = (const void*)frame.link();
+                // Matches the memory-slot path above: StackFrame::link() returns
+                // the raw link register, which carries PAC bits on aarch64 and
+                // would otherwise be fed to findFrameDesc as a nonsense address.
+                walk_pc.setRecoveredPc(stripPointer((const void*)frame.link()),
+                                       f.isSignalFrame());
             } else {
                 break;
             }
@@ -227,7 +260,7 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
             }
         }
 
-        if (inDeadZone(pc) || (pc == prev_pc && sp == prev_sp)) {
+        if (inDeadZone(walk_pc.raw()) || (walk_pc.raw() == prev_pc && sp == prev_sp)) {
             break;
         }
     }

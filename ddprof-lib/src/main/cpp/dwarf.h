@@ -78,6 +78,21 @@ struct FrameDesc {
     u32 cfa;
     int fp_off;
     int pc_off;
+    // Per-row flags. A separate word rather than spare bits in the fields
+    // above: `cfa` packs (cfa_off << 8 | cfa_reg) with cfa_off occupying the
+    // full signed 24-bit range, and fp_off/pc_off already carry the
+    // DW_PC_OFFSET and DW_LINK_REGISTER sentinels, so there is no bit left
+    // that cannot collide. Costs 4 bytes per row, which
+    // CodeCache::memoryUsage() accounts for automatically (it is sizeof-based).
+    u32 flags;
+
+    // The frame's CIE declared a signal-frame augmentation ('S'), so its
+    // return-address column holds the exact interrupted PC rather than an
+    // address after a call. Consumers must not apply the return-address
+    // attribution adjustment to a pc recovered from such a row.
+    static constexpr u32 FLAG_SIGNAL_FRAME = 1;
+
+    bool isSignalFrame() const { return (flags & FLAG_SIGNAL_FRAME) != 0; }
 
     static FrameDesc empty_frame;
     static FrameDesc default_frame;
@@ -121,10 +136,42 @@ class DwarfParser {
     FrameDesc* _table;
     FrameDesc* _prev;
 
-    u32 _code_align;
-    int _data_align;
     int _linked_frame_size;  // detected from FP-based DWARF entries; -1 = undetected
-    bool _has_z_augmentation;
+
+    // The per-record slice of a CIE that the FDE path needs. With a CIE
+    // resolved per FDE these values are per-record context, not parser-wide
+    // state, so they travel by value; `valid` lets parseFde() skip a record
+    // whose CIE is malformed instead of parsing its instructions with
+    // defaults that would silently produce wrong unwind rows.
+    struct CieInfo {
+        u32 code_align;
+        int data_align;
+        bool has_z_augmentation;
+        // The augmentation string contains 'S': the FDEs referencing this CIE
+        // describe signal frames, whose return-address column is the exact
+        // interrupted PC. Becomes FrameDesc::FLAG_SIGNAL_FRAME on every row.
+        bool is_signal_frame;
+        bool valid;
+    };
+
+    static CieInfo defaultCieInfo() {
+        return CieInfo{(u32)sizeof(instruction_t), -(int)sizeof(void*), false, false, false};
+    }
+
+    // FrameDesc::flags value implied by `cie`.
+    static u32 recordFlags(const CieInfo& cie) {
+        return cie.is_signal_frame ? FrameDesc::FLAG_SIGNAL_FRAME : 0;
+    }
+
+    // parseCie() is now called once per FDE, and real toolchains emit long
+    // runs of FDEs sharing one CIE, so the last resolved CIE is memoized by
+    // its start address: re-resolving is required for correctness, re-parsing
+    // is not.
+    const char* _last_cie_ptr;
+    CieInfo _last_cie;
+    // A malformed CIE degrades every FDE referencing it; warn once per
+    // section rather than once per FDE.
+    bool _cie_warning_emitted;
 
     // True if `size` bytes can be read at _ptr without leaving the section.
     // Guards against both over-reads (past _section_end) and under-reads
@@ -246,13 +293,14 @@ class DwarfParser {
     void init(const char* name, const char* image_base, const char* image_end);
     void parse(const char* eh_frame_hdr, size_t size, const char* image_end);
     void parseEhFrame(const char* eh_frame, size_t size);
-    void parseCie();
+    CieInfo parseCie();
+    CieInfo resolveCie(const char* cie_ptr);
     void parseFde();
-    void parseInstructions(u32 loc, const char* end);
+    void parseInstructions(u32 loc, const char* end, const CieInfo& cie);
     int parseExpression();
 
-    void addRecord(u32 loc, u32 cfa_reg, int cfa_off, int fp_off, int pc_off);
-    FrameDesc* addRecordRaw(u32 loc, int cfa, int fp_off, int pc_off);
+    void addRecord(u32 loc, u32 cfa_reg, int cfa_off, int fp_off, int pc_off, u32 flags);
+    FrameDesc* addRecordRaw(u32 loc, int cfa, int fp_off, int pc_off, u32 flags);
 
   public:
     // Tag to disambiguate the .eh_frame_hdr (binary-search index) constructor

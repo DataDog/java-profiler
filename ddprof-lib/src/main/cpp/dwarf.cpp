@@ -105,10 +105,10 @@ void DwarfParser::init(const char *name, const char *image_base, const char *ima
   _table = (FrameDesc *)malloc(_capacity * sizeof(FrameDesc));
   _prev = NULL;
 
-  _code_align = sizeof(instruction_t);
-  _data_align = -(int)sizeof(void *);
   _linked_frame_size = -1;
-  _has_z_augmentation = false;
+  _last_cie_ptr = NULL;
+  _last_cie = defaultCieInfo();
+  _cie_warning_emitted = false;
 }
 
 DwarfParser::DwarfParser(const char *name, const char *image_base,
@@ -199,6 +199,8 @@ void DwarfParser::parseEhFrame(const char *eh_frame, size_t size) {
   _section_end = eh_frame + size;
   _ptr = eh_frame;
 
+  CieInfo cie = defaultCieInfo();
+
   while (_ptr + 4 <= _section_end) {
     const char *record_start = _ptr;
     u32 length = get32();
@@ -223,12 +225,13 @@ void DwarfParser::parseEhFrame(const char *eh_frame, size_t size) {
       // return_address_register and everything after data_align are not consumed; _ptr = record_end
       // at the bottom of the loop skips them.
       //
-      // _has_z_augmentation is overwritten by every CIE encountered.  The DWARF spec allows
+      // `cie` below is overwritten by every CIE encountered.  The DWARF spec allows
       // multiple CIEs with different augmentation strings in a single .eh_frame section, so
       // strictly speaking each FDE should resolve its own CIE via the backward cie_id offset.
       // We intentionally skip that: macOS binaries compiled by clang typically emit a single CIE
       // per module, and this parser is only called for macOS __eh_frame sections.  Multi-CIE
-      // binaries are not produced by the toolchains we target here.
+      // binaries are not produced by the toolchains we target here.  The state is local to this
+      // function so that this single-CIE policy stays independent of parseFde()'s per-FDE one.
       if (_ptr >= record_end) {
         _ptr = record_end;
         continue;
@@ -238,15 +241,19 @@ void DwarfParser::parseEhFrame(const char *eh_frame, size_t size) {
         _ptr = record_end;
         continue;
       }
-      _has_z_augmentation = (*_ptr == 'z');
-      while (_ptr < record_end && *_ptr++) {
-      }  // skip null-terminated augmentation string
+      cie.has_z_augmentation = (*_ptr == 'z');
+      cie.is_signal_frame = false;  // assigned fresh per CIE, never latched
+      while (_ptr < record_end) {
+        char c = *_ptr++;
+        if (c == 0) break;
+        if (c == 'S') cie.is_signal_frame = true;
+      }
       if (_ptr >= record_end) {
         _ptr = record_end;
         continue;
       }
-      _code_align = getLeb(record_end);
-      _data_align = getSLeb(record_end);
+      cie.code_align = getLeb(record_end);
+      cie.data_align = getSLeb(record_end);
     } else {
       // FDE: parse frame description for the covered PC range.
       // After cie_id: [pcrel-range-start 4 bytes][range-len 4 bytes][aug-data-len LEB][aug-data][instructions]
@@ -258,15 +265,16 @@ void DwarfParser::parseEhFrame(const char *eh_frame, size_t size) {
       }
       u32 range_start = (u32)(getPtr() - _image_base);
       u32 range_len = get32();
-      if (_has_z_augmentation) {
+      if (cie.has_z_augmentation) {
         _ptr += getLeb(record_end);  // getLeb reads the length; advance past the augmentation data bytes
         if (_ptr > record_end) {
           break;
         }
       }
-      parseInstructions(range_start, record_end);
+      parseInstructions(range_start, record_end, cie);
       addRecord(range_start + range_len, DW_REG_FP, LINKED_FRAME_CLANG_SIZE,
-                -LINKED_FRAME_CLANG_SIZE, -LINKED_FRAME_CLANG_SIZE + DW_STACK_SLOT);
+                -LINKED_FRAME_CLANG_SIZE, -LINKED_FRAME_CLANG_SIZE + DW_STACK_SLOT,
+                recordFlags(cie));
     }
 
     _ptr = record_end;
@@ -277,24 +285,88 @@ void DwarfParser::parseEhFrame(const char *eh_frame, size_t size) {
   }
 }
 
-void DwarfParser::parseCie() {
-  if (_ptr + 4 > _image_end) return;
+// Parses the CIE starting at _ptr. The returned CieInfo carries the platform
+// defaults with valid=false on every rejection path, so a caller that ignores
+// `valid` still sees sane alignment factors rather than a previous record's.
+DwarfParser::CieInfo DwarfParser::parseCie() {
+  CieInfo cie = defaultCieInfo();
+
+  if (_ptr + 4 > _image_end) return cie;
   u32 cie_len = get32();
   if (cie_len == 0 || cie_len == 0xffffffff) {
-    return;
+    return cie;
   }
 
   const char *cie_start = _ptr;
   const char *cie_end = cie_start + cie_len;
-  if (cie_end > _section_end) return;
+  if (cie_end > _section_end) return cie;
 
-  if (!canRead(5)) { _ptr = _section_end; return; }
-  _ptr += 5;
-  while (_ptr < cie_end && *_ptr++) {
+  if (!canRead(5)) { _ptr = _section_end; return cie; }
+  u32 cie_id = get32();
+  if (cie_id != 0) return cie;
+  u8 version = get8();
+  // Versions handled below: 1 (.eh_frame, and DWARF2/3 .debug_frame) and 3
+  // share one layout; 4 inserts address_size and segment_selector_size
+  // between the augmentation string and code_alignment_factor. Anything else
+  // is a layout this parser cannot read, so the fields it wants are not where
+  // it would look for them.
+  if (version != 1 && version != 3 && version != 4) return cie;
+
+  // The augmentation string is null-terminated. 'z' is only meaningful as the
+  // first character (it declares the augmentation-data block); 'S' may appear
+  // anywhere in the string and marks a signal frame.
+  if (_ptr < cie_end) {
+    cie.has_z_augmentation = (*_ptr == 'z');
   }
-  _code_align = getLeb(cie_end);
-  _data_align = getSLeb(cie_end);
+  while (_ptr < cie_end) {
+    char c = *_ptr++;
+    if (c == 0) break;
+    if (c == 'S') cie.is_signal_frame = true;
+  }
+
+  if (version >= 4) {
+    if (cie_end - _ptr < 2) return cie;
+    _ptr += 2;  // address_size, segment_selector_size
+  }
+
+  cie.code_align = getLeb(cie_end);
+  cie.data_align = getSLeb(cie_end);
+  // Neither factor is ever legitimately zero: code_align multiplies every
+  // DW_CFA_advance_loc delta (zero collapses all rows onto range_start) and
+  // data_align multiplies every register offset (zero makes walkDwarf read
+  // the caller pc from sp+0). Zero is also what getLeb()/getSLeb() return
+  // when the CIE's declared length stops before the field, so this one check
+  // covers both the malformed-value and the truncated-record cases.
+  if (cie.code_align == 0 || cie.data_align == 0) {
+    cie.code_align = sizeof(instruction_t);
+    cie.data_align = -(int)sizeof(void *);
+    return cie;
+  }
+
   _ptr = cie_end;
+  cie.valid = true;
+  return cie;
+}
+
+// Resolves (and memoizes) the CIE at `cie_ptr`. Leaves _ptr untouched.
+DwarfParser::CieInfo DwarfParser::resolveCie(const char *cie_ptr) {
+  if (cie_ptr == _last_cie_ptr) {
+    return _last_cie;
+  }
+
+  const char *saved_ptr = _ptr;
+  _ptr = cie_ptr;
+  CieInfo cie = parseCie();
+  _ptr = saved_ptr;
+
+  _last_cie_ptr = cie_ptr;
+  _last_cie = cie;
+
+  if (!cie.valid && !_cie_warning_emitted) {
+    _cie_warning_emitted = true;
+    Log::warn("Malformed CIE in %s; FDEs referencing it are skipped", _name);
+  }
+  return cie;
 }
 
 void DwarfParser::parseFde() {
@@ -310,34 +382,40 @@ void DwarfParser::parseFde() {
 
   if (_ptr + 4 > fde_end) return;
   u32 cie_offset = get32();
-  if (_count == 0) {
-    if (cie_offset > (size_t)(fde_start - _section_start)) {
-      return;
-    }
-    _ptr = fde_start - cie_offset;
-    parseCie();
-    _ptr = fde_start + 4;
+  if (cie_offset > (size_t)(fde_start - _section_start)) {
+    return;
   }
+  CieInfo cie = resolveCie(fde_start - cie_offset);
+  // Without a readable CIE, neither the alignment factors nor the presence of
+  // the augmentation-data-length field is known. Parsing this FDE anyway
+  // would feed misaligned bytes to parseInstructions and emit arbitrary
+  // unwind rows; emitting no rows for it is strictly safer.
+  if (!cie.valid) return;
+  _ptr = fde_start + 4;
 
   if (_ptr + 8 > fde_end) return;
   u32 range_start = getPtr() - _image_base;
   u32 range_len = get32();
-  _ptr += getLeb(fde_end);
-  if (_ptr > fde_end) return;
-  parseInstructions(range_start, fde_end);
+  if (cie.has_z_augmentation) {
+    _ptr += getLeb(fde_end);  // getLeb reads the length; advance past the augmentation data bytes
+    if (_ptr > fde_end) return;
+  }
+  parseInstructions(range_start, fde_end, cie);
   addRecord(range_start + range_len, DW_REG_FP, LINKED_FRAME_SIZE,
-            -LINKED_FRAME_SIZE, -LINKED_FRAME_SIZE + DW_STACK_SLOT);
+            -LINKED_FRAME_SIZE, -LINKED_FRAME_SIZE + DW_STACK_SLOT,
+            recordFlags(cie));
 }
 
-void DwarfParser::parseInstructions(u32 loc, const char *end) {
+void DwarfParser::parseInstructions(u32 loc, const char *end, const CieInfo &cie) {
   // `end` is derived from an untrusted record length; never let it run past
   // the section. Reads inside the loop are clamped by the get*/skip* helpers,
   // but clamping here keeps the loop bound honest and _ptr in range.
   if (end > _section_end) {
     end = _section_end;
   }
-  const u32 code_align = _code_align;
-  const int data_align = _data_align;
+  const u32 code_align = cie.code_align;
+  const int data_align = cie.data_align;
+  const u32 record_flags = recordFlags(cie);
 
   u32 cfa_reg = DW_REG_SP;
   int cfa_off = EMPTY_FRAME_SIZE;
@@ -359,15 +437,15 @@ void DwarfParser::parseInstructions(u32 loc, const char *end) {
         _ptr = end;
         break;
       case DW_CFA_advance_loc1:
-        addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off);
+        addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off, record_flags);
         loc += get8() * code_align;
         break;
       case DW_CFA_advance_loc2:
-        addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off);
+        addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off, record_flags);
         loc += get16() * code_align;
         break;
       case DW_CFA_advance_loc4:
-        addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off);
+        addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off, record_flags);
         loc += get32() * code_align;
         break;
       case DW_CFA_offset_extended:
@@ -476,7 +554,7 @@ void DwarfParser::parseInstructions(u32 loc, const char *end) {
       }
       break;
     case DW_CFA_advance_loc:
-      addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off);
+      addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off, record_flags);
       loc += (op & 0x3f) * code_align;
       break;
     case DW_CFA_offset:
@@ -499,7 +577,7 @@ void DwarfParser::parseInstructions(u32 loc, const char *end) {
     }
   }
 
-  addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off);
+  addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off, record_flags);
 }
 
 // Parse a limited subset of DWARF expressions, which is used in
@@ -560,7 +638,7 @@ int DwarfParser::parseExpression() {
 }
 
 void DwarfParser::addRecord(u32 loc, u32 cfa_reg, int cfa_off, int fp_off,
-                            int pc_off) {
+                            int pc_off, u32 flags) {
   // cfa_reg and cfa_off are packed into a single u32 (cfa_off << 8 | cfa_reg),
   // so cfa_reg must fit in 8 bits (0..255) and cfa_off in a signed 24-bit range
   // (-2^23 .. 2^23-1). Well-formed compiler-generated DWARF always satisfies
@@ -583,12 +661,14 @@ void DwarfParser::addRecord(u32 loc, u32 cfa_reg, int cfa_off, int fp_off,
   }
 
   if (_prev == NULL || (_prev->loc == loc && --_count >= 0) ||
-      _prev->cfa != cfa || _prev->fp_off != fp_off || _prev->pc_off != pc_off) {
-    _prev = addRecordRaw(loc, cfa, fp_off, pc_off);
+      _prev->cfa != cfa || _prev->fp_off != fp_off || _prev->pc_off != pc_off ||
+      _prev->flags != flags) {
+    _prev = addRecordRaw(loc, cfa, fp_off, pc_off, flags);
   }
 }
 
-FrameDesc *DwarfParser::addRecordRaw(u32 loc, int cfa, int fp_off, int pc_off) {
+FrameDesc *DwarfParser::addRecordRaw(u32 loc, int cfa, int fp_off, int pc_off,
+                                     u32 flags) {
   if (_count >= _capacity) {
     FrameDesc *frameDesc =
         (FrameDesc *)realloc(_table, _capacity * 2 * sizeof(FrameDesc));
@@ -605,5 +685,6 @@ FrameDesc *DwarfParser::addRecordRaw(u32 loc, int cfa, int fp_off, int pc_off) {
   f->cfa = cfa;
   f->fp_off = fp_off;
   f->pc_off = pc_off;
+  f->flags = flags;
   return f;
 }

@@ -344,6 +344,13 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
  * symbol lookups to post-processing while still capturing marks needed for
  * correct stack walk termination.
  *
+ * The emitted pc_offset inherits whatever addressing convention the
+ * producing walker used for this frame (see StackWalker in stackWalker.h):
+ * walkFP/walkDwarf frames arrive already pointing inside the call
+ * instruction, walkVM/walkKernel frames arrive as raw return addresses.
+ * An off-process symbolizer that applies its own return-address adjustment
+ * therefore double-adjusts the former.
+ *
  * @param frame The ASGCT_CallFrame to populate
  * @param pc The program counter address
  * @param lib The CodeCache library containing build-ID information

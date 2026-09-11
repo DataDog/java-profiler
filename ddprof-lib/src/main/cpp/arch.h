@@ -1,5 +1,6 @@
 /*
  * Copyright The async-profiler authors
+ * Copyright 2026 Datadog, Inc
  * SPDX-License-Identifier: Apache-2.0
  */
 
@@ -83,6 +84,11 @@ static inline void storeRelease(volatile T& var, T value) {
     return __atomic_store_n(&var, value, __ATOMIC_RELEASE);
 }
 
+// CALLER_PC_IS_RETURN_ADDRESS must match what callerPC() actually produces
+// for each arch below: true when it is __builtin_return_address(0) (a real
+// return address), false when it is a leaf-seed instruction address instead
+// (aarch64's "adr %0, .").
+
 #if defined(__x86_64__) || defined(__i386__)
 
 typedef unsigned char instruction_t;
@@ -103,6 +109,8 @@ const int PERF_REG_PC = 8;  // PERF_REG_X86_IP
 #define callerPC()        __builtin_return_address(0)
 #define callerFP()        __builtin_frame_address(1)
 #define callerSP()        ((void**)__builtin_frame_address(0) + 2)
+
+const bool CALLER_PC_IS_RETURN_ADDRESS = true;
 
 #elif defined(__arm__) || defined(__thumb__)
 
@@ -126,6 +134,12 @@ const int PERF_REG_PC = 15;  // PERF_REG_ARM_PC
 #define callerFP()        __builtin_frame_address(1)
 #define callerSP()        __builtin_frame_address(1)
 
+// Return addresses here carry the Thumb interworking bit; stripPointer()
+// below clears it so attributionPC()'s -1 lands inside the call instruction.
+// Untested on real __arm__/__thumb__ hardware -- this repo builds and tests
+// x86_64 and aarch64 only.
+const bool CALLER_PC_IS_RETURN_ADDRESS = true;
+
 #elif defined(__aarch64__)
 
 typedef unsigned int instruction_t;
@@ -146,6 +160,8 @@ const int PERF_REG_PC = 32;  // PERF_REG_ARM64_PC
 #define callerPC()        ({ void* pc; asm volatile("adr %0, ."  : "=r"(pc)); pc; })
 #define callerFP()        ({ void* fp; asm volatile("mov %0, fp" : "=r"(fp)); fp; })
 #define callerSP()        ({ void* sp; asm volatile("mov %0, sp" : "=r"(sp)); sp; })
+
+const bool CALLER_PC_IS_RETURN_ADDRESS = false;
 
 #elif defined(__PPC64__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
 
@@ -169,6 +185,8 @@ const int PERF_REG_PC = 32;  // PERF_REG_POWERPC_NIP
 #define callerPC()        __builtin_return_address(0)
 #define callerFP()        __builtin_frame_address(1)
 #define callerSP()        __builtin_frame_address(0)
+
+const bool CALLER_PC_IS_RETURN_ADDRESS = true;
 
 #elif defined(__riscv) && (__riscv_xlen == 64)
 
@@ -195,6 +213,8 @@ const int PERF_REG_PC = 0;      // PERF_REG_RISCV_PC
 #define callerFP()        __builtin_frame_address(1)
 #define callerSP()        __builtin_frame_address(0)
 
+const bool CALLER_PC_IS_RETURN_ADDRESS = true;
+
 #elif defined(__loongarch_lp64)
 
 typedef unsigned int instruction_t;
@@ -215,6 +235,8 @@ const int PERF_REG_PC = 0;      // PERF_REG_LOONGARCH_PC
 #define callerPC()        __builtin_return_address(0)
 #define callerFP()        __builtin_frame_address(1)
 #define callerSP()        __builtin_frame_address(0)
+
+const bool CALLER_PC_IS_RETURN_ADDRESS = true;
 
 #else
 
@@ -237,6 +259,16 @@ const unsigned long PAC_MASK = WX_MEMORY ? 0x7fffffffffffUL : 0xffffffffffffUL;
 
 static inline const void* stripPointer(const void* p) {
     return (const void*) ((unsigned long)p & PAC_MASK);
+}
+#elif defined(__arm__) || defined(__thumb__)
+// ARM/Thumb interworking: a return address taken from a stack slot or from LR
+// has bit 0 set when the target is Thumb code. Clear it so the value is the
+// instruction address itself -- what symbolication, FDE lookup and
+// attributionPC()'s -1 adjustment all assume. Without this the -1 would
+// merely clear the interworking bit and hand back the unadjusted return
+// address.
+static inline const void* stripPointer(const void* p) {
+    return (const void*) ((unsigned long)p & ~1UL);
 }
 #else
 #  define stripPointer(p)  (p)
