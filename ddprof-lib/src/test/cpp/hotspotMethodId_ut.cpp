@@ -33,6 +33,8 @@ public:
     static void setHotspot(bool value) { VM::_hotspot = value; }
     static JavaVM* getVm() { return VM::_vm; }
     static void setVm(JavaVM* vm) { VM::_vm = vm; }
+    static jvmtiEnv* getJvmti() { return VM::_jvmti; }
+    static void setJvmti(jvmtiEnv* jvmti) { VM::_jvmti = jvmti; }
 };
 
 // Test-only friend accessor for VMStructs protected static offsets.
@@ -515,6 +517,50 @@ private:
 };
 ScopedFakeJni* ScopedFakeJni::s_instance = nullptr;
 
+class ScopedMethodInvalidatingJvmti {
+public:
+    ScopedMethodInvalidatingJvmti(void* method_page, size_t page_size)
+        : _saved_jvmti(VMTestAccessor::getJvmti()),
+          _method_page(method_page),
+          _page_size(page_size) {
+        _jvmti_tbl = jvmtiInterface_1_{};
+        _jvmti_tbl.GetClassMethods = &getClassMethods;
+        _jvmti_tbl.Deallocate = &deallocate;
+        _jvmti_env.functions = &_jvmti_tbl;
+
+        s_instance = this;
+        VMTestAccessor::setJvmti(reinterpret_cast<jvmtiEnv*>(&_jvmti_env));
+    }
+
+    ~ScopedMethodInvalidatingJvmti() {
+        VMTestAccessor::setJvmti(_saved_jvmti);
+        s_instance = nullptr;
+    }
+
+private:
+    static jvmtiError JNICALL getClassMethods(jvmtiEnv*, jclass, jint* method_count, jmethodID** methods) {
+        *method_count = 0;
+        *methods = nullptr;
+        if (mprotect(s_instance->_method_page, s_instance->_page_size, PROT_NONE) != 0) {
+            _exit(111);
+        }
+        return JVMTI_ERROR_NONE;
+    }
+
+    static jvmtiError JNICALL deallocate(jvmtiEnv*, unsigned char*) {
+        return JVMTI_ERROR_NONE;
+    }
+
+    static ScopedMethodInvalidatingJvmti* s_instance;
+
+    jvmtiEnv* _saved_jvmti;
+    void* _method_page;
+    size_t _page_size;
+    jvmtiInterface_1_ _jvmti_tbl{};
+    _jvmtiEnv _jvmti_env{};
+};
+ScopedMethodInvalidatingJvmti* ScopedMethodInvalidatingJvmti::s_instance = nullptr;
+
 } // namespace
 
 class HotspotResolveCrashProtectionTest : public ::testing::Test {
@@ -764,6 +810,28 @@ TEST_F(HotspotResolveCrashProtectionTest, ResolveShortCircuitsSentinelWithoutPro
 
     EXPECT_EQ(before, Counters::getCounter(METHOD_RESOLVE_FAULT_RECOVERED));
     EXPECT_FALSE(_pt->isProtected());
+}
+
+// GetClassMethods invalidates the Method page after resolve() leaves its
+// crash-protected metadata walk. The subsequent raw Method* read must not abort.
+TEST_F(HotspotResolveCrashProtectionTest, DISABLED_ResolveDoesNotAbortWhenMethodIsInvalidatedDuringJniLookup) {
+    EXPECT_EXIT({
+        HotspotMethodIdVMHotspotGuard hotspot;
+        VMStructsTestAccessor offsets(RESOLVE_OFFSETS);
+        VMStructsTestAccessor::SymbolLayout layout(RESOLVE_SYMBOL_OFFSETS, RESOLVE_TYPE_SIZES);
+
+        ResolveFakes* f = new (_region) ResolveFakes{};
+        f->link();
+        ResolveFakes::setSymbol(f->name_sym, "<clinit>");
+        ResolveFakes::setSymbol(f->sig_sym, "()V");
+        ResolveFakes::setSymbol(f->klass_sym, "java/lang/Object");
+
+        ScopedFakeJni fake_jni;
+        ScopedMethodInvalidatingJvmti fake_jvmti(_region, kPageSize());
+
+        EXPECT_EQ(nullptr, HotspotSupport::resolve(&f->method));
+        _exit(0);
+    }, ::testing::ExitedWithCode(0), "");
 }
 
 #endif // __linux__
