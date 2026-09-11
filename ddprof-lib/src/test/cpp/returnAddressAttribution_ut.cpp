@@ -1040,26 +1040,42 @@ TEST_F(ReturnAddressAttributionTest, Test4_DwRegPltArmUsesAttributionAddress) {
         FAIL() << "prof_ra_plt_caller must not return normally";
     }
 
-    // Precondition: the return address actually landed at raw & 15 == 11 --
-    // the only offset at which the ">= 11" branch and the adjusted-address
-    // branch disagree. If the assembler/linker moved it, the two branches
-    // are not distinguishable at this address and the fixture cannot gate
-    // the item; degrade per the tester plan rather than pass silently.
+    // Precondition: the return address landed at raw & 15 == 11, the offset
+    // this fixture's synthetic CFI is built around -- there, the attribution
+    // address takes the plain branch ((raw-1) & 15 == 10) and the raw address
+    // takes the "*2" branch, and only the plain one yields the sp the asm
+    // below actually set up.
+    //
+    // This is reachable on x86_64 only. aarch64 instructions are 4-byte
+    // aligned, so a return address there is always at raw & 15 in {0,4,8,12}
+    // and 11 cannot occur: Test4 is structurally x86_64-only, not merely
+    // unlucky on this toolchain. (raw & 15 == 0 is the other offset where the
+    // two branches disagree, but there the attribution address selects the
+    // "*2" branch, which does not match this fixture's frame layout, so it
+    // cannot be substituted without rebuilding the asm around it.)
     if (((uintptr_t)g_ra4_captured_retaddr & 15u) != 11u) {
         GTEST_SKIP() << "return address alignment (raw & 15 == "
-                      << ((uintptr_t)g_ra4_captured_retaddr & 15u) << ") is not 11 in this build; "
-                      << "stackWalker.cpp's DW_REG_PLT arm ships with arithmetic-level coverage "
-                      << "only for this build (see Test4_DwRegPltThresholdArithmetic) and was "
-                      << "verified by inspection -- record this gap in the PR description";
+                      << ((uintptr_t)g_ra4_captured_retaddr & 15u) << ") is not 11; the "
+                      << "DW_REG_PLT arm keeps only arithmetic-level coverage here (see "
+                      << "DwRegPltThresholdArithmetic). Expected on aarch64, where 11 is "
+                      << "unreachable by instruction alignment.";
     }
 
     CodeCache* lib = Libraries::instance()->findLibraryByAddress((const void*)&prof_ra_plt_caller);
     if (lib == nullptr) {
         GTEST_SKIP() << "prof_ra_plt_caller not visible to findLibraryByAddress";
     }
-    FrameDesc row = lib->findFrameDesc((const void*)&prof_ra_plt_caller);
+    // Query the row at the address the walker actually uses -- the attribution
+    // address derived from the captured return address. The function's first
+    // byte still carries the CIE initial state (DW_REG_SP), because the
+    // .cfi_escape that synthesizes DW_REG_PLT is emitted after the prologue,
+    // so a lookup there would never observe DW_REG_PLT and this precondition
+    // would skip unconditionally.
+    const void* plt_attribution_pc =
+        (const void*)((const char*)g_ra4_captured_retaddr - 1);
+    FrameDesc row = lib->findFrameDesc(plt_attribution_pc);
     // cfa_reg and cfa_off are packed into FrameDesc::cfa as (cfa_off << 8 |
-    // cfa_reg) (dwarf.cpp:574-575) -- the low byte is the register.
+    // cfa_reg) -- the low byte is the register (see DwarfParser::addRecord).
     if ((row.cfa & 0xffu) != (u32)DW_REG_PLT) {
         GTEST_SKIP() << "the .cfi_escape DW_CFA_def_cfa_expression row did not round-trip as "
                       << "DW_REG_PLT through ElfParser in this build (observed cfa reg="
@@ -1391,6 +1407,93 @@ TEST_F(ReturnAddressAttributionTest, Test6_LinkRegisterRecoverySetsFlag) {
 #endif  // __aarch64__
 }
 
+// ===========================================================================
+// Test 8 -- A signal-frame row suppresses the attribution adjustment
+// (DWARF CIE augmentation 'S', emitted by .cfi_signal_frame).
+//
+// For an ordinary frame the return-address column holds an address after a
+// call, so the walker attributes at pc - 1. A signal-frame CIE declares that
+// the column holds the *exact* interrupted PC, so subtracting one would land
+// before the instruction that was executing -- the same boundary
+// misattribution this PR fixes, in the opposite direction.
+// ===========================================================================
+
+#if defined(__x86_64__)
+asm(
+    ".text\n"
+    ".globl prof_ra_sig_seed\n"
+    ".type prof_ra_sig_seed,@function\n"
+"prof_ra_sig_seed:\n"
+    ".cfi_startproc\n"
+    ".cfi_signal_frame\n"
+    ".cfi_def_cfa %rsp, 16\n"
+    "nop\nnop\nnop\nnop\n"
+    ".cfi_endproc\n"
+    ".size prof_ra_sig_seed, .-prof_ra_sig_seed\n"
+);
+#elif defined(__aarch64__)
+asm(
+    ".text\n"
+    ".globl prof_ra_sig_seed\n"
+    ".type prof_ra_sig_seed,%function\n"
+"prof_ra_sig_seed:\n"
+    ".cfi_startproc\n"
+    ".cfi_signal_frame\n"
+    ".cfi_def_cfa sp, 16\n"
+    "nop\nnop\n"
+    ".cfi_endproc\n"
+    ".size prof_ra_sig_seed, .-prof_ra_sig_seed\n"
+);
+#endif
+
+#if defined(__x86_64__) || defined(__aarch64__)
+extern "C" void prof_ra_sig_seed(void);
+#endif
+
+TEST_F(ReturnAddressAttributionTest, Test8_SignalFrameRowKeepsExactAddress) {
+#if !defined(__x86_64__) && !defined(__aarch64__)
+    GTEST_SKIP() << "signal-frame fixture only implemented for x86_64/aarch64";
+#else
+    CodeCache* lib = Libraries::instance()->findLibraryByAddress((const void*)&prof_ra_sig_seed);
+    if (lib == nullptr) {
+        GTEST_SKIP() << "prof_ra_sig_seed not visible to findLibraryByAddress in this build";
+    }
+    FrameDesc row = lib->findFrameDesc((const void*)&prof_ra_sig_seed);
+    if (!row.isSignalFrame()) {
+        GTEST_SKIP() << "the .cfi_signal_frame directive did not round-trip as an 'S' CIE "
+                      << "augmentation through ElfParser in this build (flags=" << row.flags
+                      << "); the suppression is covered at parser level by "
+                      << "DwarfEhFrameHdr.SignalFrameCieSetsRowFlag";
+    }
+
+    // The pc the signal frame reports for the interrupted thread. Pointing it
+    // at another function's first byte is what makes an off-by-one visible:
+    // exact resolves inside prof_ra_pcoff_next, pc - 1 resolves to whatever
+    // precedes it.
+    const void* interrupted_pc = (const void*)&prof_ra_pcoff_next;
+
+    static uintptr_t scratch[64];
+    ucontext_t uc = makeFabricatedContext((const void*)&prof_ra_sig_seed, scratch, 64);
+    for (size_t i = 32; i < 64; i++) {
+        scratch[i] = (uintptr_t)interrupted_pc;
+    }
+
+    StackContext ctx{};
+    bool truncated = false;
+    const void* chain[8];
+    int depth = StackWalker::walkDwarf(&uc, chain, 8, &ctx, &truncated);
+
+    ASSERT_GE(depth, 2);
+    ASSERT_EQ((const void*)&prof_ra_sig_seed, chain[0]);
+    EXPECT_EQ(interrupted_pc, chain[1])
+        << "a pc recovered from a signal-frame row is the exact interrupted address and "
+        << "must not be decremented; got " << chain[1] << " (expected " << interrupted_pc
+        << ", i.e. the attribution adjustment was applied anyway)";
+
+    ++g_gating_assertions_reached;
+#endif  // __x86_64__ || __aarch64__
+}
+
 // Test 7 -- Mark-based walk termination (MarkVisibleAtAdjustedBoundaryAddress)
 // moved above the __linux__ gate -- portable. See
 // ReturnAddressAttributionCharacterizationTest.
@@ -1406,7 +1509,7 @@ TEST_F(ReturnAddressAttributionTest, Test6_LinkRegisterRecoverySetsFlag) {
 // Test6 is excluded by construction -- see its banner comment.
 TEST(ReturnAddressAttributionGatingCoverageTest, AtLeastOneGatingAssertionRan) {
     EXPECT_GT(g_gating_assertions_reached, 0)
-        << "every gating test in this file (Test1/2c/3/4/5/5b) skipped its precondition "
+        << "every gating test in this file (Test1/2c/3/4/5/5b/8) skipped its precondition "
         << "check on this toolchain -- the attribution fix has zero effective "
         << "regression coverage in this build; see each test's GTEST_SKIP reason "
         << "in the test log above for which precondition failed";

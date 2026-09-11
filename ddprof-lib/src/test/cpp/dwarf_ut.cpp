@@ -370,6 +370,10 @@ struct CieSpec {
     uint32_t cie_id = 0;
     uint8_t version = 1;
     bool z_augmentation = false;
+    // Extra augmentation characters emitted after the leading 'z' (if any),
+    // e.g. "S" for a signal frame or "RS" for a signal frame with a pointer
+    // encoding. Not interpreted by the builder.
+    const char* extra_augmentation = "";
     uint8_t code_align = 1;
     // Cut the declared length short so the record ends right after the
     // augmentation string, leaving no room for code_alignment_factor.
@@ -388,6 +392,9 @@ static uint32_t appendCie(std::vector<uint8_t>& buf, const CieSpec& spec) {
     put8(body, spec.version);
     if (spec.z_augmentation) {
         put8(body, 'z');
+    }
+    for (const char* c = spec.extra_augmentation; *c != 0; c++) {
+        put8(body, static_cast<uint8_t>(*c));
     }
     put8(body, 0);  // augmentation string terminator
     uint32_t len_through_aug_string = static_cast<uint32_t>(body.size());
@@ -675,6 +682,83 @@ TEST(DwarfEhFrameHdr, FdesSharingOneCieAllUseItsAlignment) {
         << "the second FDE sharing this CIE must still see code_align 4";
     EXPECT_FALSE(hasLoc(table, dwarf.count(), range_start2 + 10));
     free(dwarf.table());
+}
+
+// Returns the flags of the row covering `loc`, or 0xffffffff if no row does.
+static uint32_t flagsAtLoc(const FrameDesc* table, int count, uint32_t loc) {
+    for (int i = 0; i < count; i++) {
+        if (table[i].loc == loc) return table[i].flags;
+    }
+    return 0xffffffffu;
+}
+
+// Builds a single-FDE image from `spec` and returns the flags on the row at
+// the FDE's range_start.
+static uint32_t parseSingleFdeFlags(const CieSpec& spec) {
+    std::vector<uint8_t> body;
+    uint32_t cie_offset = appendCie(body, spec);
+    uint32_t fde_offset = static_cast<uint32_t>(body.size());
+    if (spec.z_augmentation) {
+        appendFdeWithAugData(body, cie_offset, 100, 10, {});
+    } else {
+        appendFdeWithAdvances(body, cie_offset, 100, 10, 1);
+    }
+
+    std::vector<uint8_t> buf = buildEhFrameHdrImage(body, {fde_offset});
+    uint32_t range_start = hdrSizeFor(1) + fde_offset + 8;
+
+    const char* base = reinterpret_cast<const char*>(buf.data());
+    DwarfParser dwarf("test", base, base, buf.size(), DwarfParser::EhFrameHdrTag{},
+                      base + buf.size());
+    const FrameDesc* table = dwarf.table();
+    uint32_t flags = table != nullptr ? flagsAtLoc(table, dwarf.count(), range_start)
+                                      : 0xffffffffu;
+    free(dwarf.table());
+    return flags;
+}
+
+// A signal-frame CIE ('S' in the augmentation string) declares that its FDEs'
+// return-address column holds the exact interrupted PC, not an address after a
+// call. Every row it produces must carry FLAG_SIGNAL_FRAME so walkDwarf can
+// suppress the return-address attribution adjustment for it.
+TEST(DwarfEhFrameHdr, SignalFrameCieSetsRowFlag) {
+    CieSpec spec;
+    spec.extra_augmentation = "S";
+    spec.code_align = 4;
+    EXPECT_EQ(FrameDesc::FLAG_SIGNAL_FRAME, parseSingleFdeFlags(spec));
+}
+
+// 'S' is not required to be the first character: with a 'z' augmentation it
+// necessarily follows it, so the whole string has to be scanned.
+TEST(DwarfEhFrameHdr, SignalFrameFlagFoundAfterZAugmentation) {
+    CieSpec spec;
+    spec.z_augmentation = true;
+    spec.extra_augmentation = "S";
+    spec.code_align = 4;
+    EXPECT_EQ(FrameDesc::FLAG_SIGNAL_FRAME, parseSingleFdeFlags(spec));
+}
+
+// An ordinary CIE must not set it, or every frame would skip the adjustment.
+TEST(DwarfEhFrameHdr, OrdinaryCieLeavesSignalFrameFlagClear) {
+    CieSpec spec;
+    spec.code_align = 4;
+    EXPECT_EQ(0u, parseSingleFdeFlags(spec));
+
+    CieSpec z_spec;
+    z_spec.z_augmentation = true;
+    z_spec.code_align = 4;
+    EXPECT_EQ(0u, parseSingleFdeFlags(z_spec));
+}
+
+// A character that merely contains an 'S' elsewhere in the alphabet must not
+// trip the scan, and an augmentation this parser does not interpret ('R') must
+// not either.
+TEST(DwarfEhFrameHdr, UninterpretedAugmentationLeavesFlagClear) {
+    CieSpec spec;
+    spec.z_augmentation = true;
+    spec.extra_augmentation = "R";
+    spec.code_align = 4;
+    EXPECT_EQ(0u, parseSingleFdeFlags(spec));
 }
 
 #endif  // DWARF_SUPPORTED

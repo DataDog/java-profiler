@@ -82,13 +82,21 @@ class WalkPc {
     // The address to symbolize with or to select an unwind row with.
     const void* attribution() const { return attributionPC(_pc, _is_return_address); }
 
-    bool isReturnAddress() const { return _is_return_address; }
-
     // A pc read out of a return-address slot, a link register, or a
     // DW_CFA_val_expression on the return-address register column.
     void setReturnAddress(const void* pc) {
         _pc = pc;
         _is_return_address = true;
+    }
+
+    // A pc recovered through a DWARF frame row. Ordinarily a return address,
+    // but a signal-frame CIE (augmentation 'S') declares that its
+    // return-address column holds the exact interrupted PC instead, so the
+    // attribution adjustment must not be applied to it -- the same rule
+    // standard unwinders express as _Unwind_GetIPInfo's ip_before_insn.
+    void setRecoveredPc(const void* pc, bool from_signal_frame) {
+        _pc = pc;
+        _is_return_address = !from_signal_frame;
     }
 
     // A pc that is itself the interrupted/executing address, e.g. a

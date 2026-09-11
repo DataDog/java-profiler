@@ -78,6 +78,21 @@ struct FrameDesc {
     u32 cfa;
     int fp_off;
     int pc_off;
+    // Per-row flags. A separate word rather than spare bits in the fields
+    // above: `cfa` packs (cfa_off << 8 | cfa_reg) with cfa_off occupying the
+    // full signed 24-bit range, and fp_off/pc_off already carry the
+    // DW_PC_OFFSET and DW_LINK_REGISTER sentinels, so there is no bit left
+    // that cannot collide. Costs 4 bytes per row, which
+    // CodeCache::memoryUsage() accounts for automatically (it is sizeof-based).
+    u32 flags;
+
+    // The frame's CIE declared a signal-frame augmentation ('S'), so its
+    // return-address column holds the exact interrupted PC rather than an
+    // address after a call. Consumers must not apply the return-address
+    // attribution adjustment to a pc recovered from such a row.
+    static constexpr u32 FLAG_SIGNAL_FRAME = 1;
+
+    bool isSignalFrame() const { return (flags & FLAG_SIGNAL_FRAME) != 0; }
 
     static FrameDesc empty_frame;
     static FrameDesc default_frame;
@@ -132,11 +147,20 @@ class DwarfParser {
         u32 code_align;
         int data_align;
         bool has_z_augmentation;
+        // The augmentation string contains 'S': the FDEs referencing this CIE
+        // describe signal frames, whose return-address column is the exact
+        // interrupted PC. Becomes FrameDesc::FLAG_SIGNAL_FRAME on every row.
+        bool is_signal_frame;
         bool valid;
     };
 
     static CieInfo defaultCieInfo() {
-        return CieInfo{(u32)sizeof(instruction_t), -(int)sizeof(void*), false, false};
+        return CieInfo{(u32)sizeof(instruction_t), -(int)sizeof(void*), false, false, false};
+    }
+
+    // FrameDesc::flags value implied by `cie`.
+    static u32 recordFlags(const CieInfo& cie) {
+        return cie.is_signal_frame ? FrameDesc::FLAG_SIGNAL_FRAME : 0;
     }
 
     // parseCie() is now called once per FDE, and real toolchains emit long
@@ -275,8 +299,8 @@ class DwarfParser {
     void parseInstructions(u32 loc, const char* end, const CieInfo& cie);
     int parseExpression();
 
-    void addRecord(u32 loc, u32 cfa_reg, int cfa_off, int fp_off, int pc_off);
-    FrameDesc* addRecordRaw(u32 loc, int cfa, int fp_off, int pc_off);
+    void addRecord(u32 loc, u32 cfa_reg, int cfa_off, int fp_off, int pc_off, u32 flags);
+    FrameDesc* addRecordRaw(u32 loc, int cfa, int fp_off, int pc_off, u32 flags);
 
   public:
     // Tag to disambiguate the .eh_frame_hdr (binary-search index) constructor

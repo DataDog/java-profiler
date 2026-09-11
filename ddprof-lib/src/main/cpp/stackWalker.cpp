@@ -96,6 +96,8 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
             break;
         }
 
+        // Unconditionally a return address here: the frame-pointer walk has no
+        // DWARF row, so it cannot see a signal-frame CIE the way walkDwarf can.
         walk_pc.setReturnAddress(
             stripPointer(SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)fp + FRAME_PC_SLOT))));
         if (inDeadZone(walk_pc.raw())) {
@@ -219,9 +221,9 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
             // DW_OP_breg<PC> + K on the return-address register column
             // (DwarfParser::parseExpression). DW_OP_breg names the *register
             // value*, which is the raw walking pc, so the offset is applied to
-            // that and not to the row-lookup address. The result is the caller's
-            // return address, hence setReturnAddress().
-            walk_pc.setReturnAddress((const char*)walk_pc.raw() + (f.fp_off >> 1));
+            // that and not to the row-lookup address.
+            walk_pc.setRecoveredPc((const char*)walk_pc.raw() + (f.fp_off >> 1),
+                                   f.isSignalFrame());
         } else {
             if (f.fp_off != DW_SAME_FP && f.fp_off < MAX_FRAME_SIZE && f.fp_off > -MAX_FRAME_SIZE) {
                 uintptr_t fp_addr = sp + f.fp_off;
@@ -236,13 +238,15 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
                 if (!aligned(pc_addr)) {
                     break;
                 }
-                walk_pc.setReturnAddress(
-                    stripPointer(SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)pc_addr))));
+                walk_pc.setRecoveredPc(
+                    stripPointer(SafeAccess::load(INJECT_FAULT_ADDRESS_LIKELY((void**)pc_addr))),
+                    f.isSignalFrame());
             } else if (depth == 1) {
                 // Matches the memory-slot path above: StackFrame::link() returns
                 // the raw link register, which carries PAC bits on aarch64 and
                 // would otherwise be fed to findFrameDesc as a nonsense address.
-                walk_pc.setReturnAddress(stripPointer((const void*)frame.link()));
+                walk_pc.setRecoveredPc(stripPointer((const void*)frame.link()),
+                                       f.isSignalFrame());
             } else {
                 break;
             }

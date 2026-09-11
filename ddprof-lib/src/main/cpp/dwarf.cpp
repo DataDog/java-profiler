@@ -242,8 +242,12 @@ void DwarfParser::parseEhFrame(const char *eh_frame, size_t size) {
         continue;
       }
       cie.has_z_augmentation = (*_ptr == 'z');
-      while (_ptr < record_end && *_ptr++) {
-      }  // skip null-terminated augmentation string
+      cie.is_signal_frame = false;  // assigned fresh per CIE, never latched
+      while (_ptr < record_end) {
+        char c = *_ptr++;
+        if (c == 0) break;
+        if (c == 'S') cie.is_signal_frame = true;
+      }
       if (_ptr >= record_end) {
         _ptr = record_end;
         continue;
@@ -269,7 +273,8 @@ void DwarfParser::parseEhFrame(const char *eh_frame, size_t size) {
       }
       parseInstructions(range_start, record_end, cie);
       addRecord(range_start + range_len, DW_REG_FP, LINKED_FRAME_CLANG_SIZE,
-                -LINKED_FRAME_CLANG_SIZE, -LINKED_FRAME_CLANG_SIZE + DW_STACK_SLOT);
+                -LINKED_FRAME_CLANG_SIZE, -LINKED_FRAME_CLANG_SIZE + DW_STACK_SLOT,
+                recordFlags(cie));
     }
 
     _ptr = record_end;
@@ -307,11 +312,17 @@ DwarfParser::CieInfo DwarfParser::parseCie() {
   // it would look for them.
   if (version != 1 && version != 3 && version != 4) return cie;
 
+  // The augmentation string is null-terminated. 'z' is only meaningful as the
+  // first character (it declares the augmentation-data block); 'S' may appear
+  // anywhere in the string and marks a signal frame.
   if (_ptr < cie_end) {
     cie.has_z_augmentation = (*_ptr == 'z');
   }
-  while (_ptr < cie_end && *_ptr++) {
-  }  // skip null-terminated augmentation string
+  while (_ptr < cie_end) {
+    char c = *_ptr++;
+    if (c == 0) break;
+    if (c == 'S') cie.is_signal_frame = true;
+  }
 
   if (version >= 4) {
     if (cie_end - _ptr < 2) return cie;
@@ -391,7 +402,8 @@ void DwarfParser::parseFde() {
   }
   parseInstructions(range_start, fde_end, cie);
   addRecord(range_start + range_len, DW_REG_FP, LINKED_FRAME_SIZE,
-            -LINKED_FRAME_SIZE, -LINKED_FRAME_SIZE + DW_STACK_SLOT);
+            -LINKED_FRAME_SIZE, -LINKED_FRAME_SIZE + DW_STACK_SLOT,
+            recordFlags(cie));
 }
 
 void DwarfParser::parseInstructions(u32 loc, const char *end, const CieInfo &cie) {
@@ -403,6 +415,7 @@ void DwarfParser::parseInstructions(u32 loc, const char *end, const CieInfo &cie
   }
   const u32 code_align = cie.code_align;
   const int data_align = cie.data_align;
+  const u32 record_flags = recordFlags(cie);
 
   u32 cfa_reg = DW_REG_SP;
   int cfa_off = EMPTY_FRAME_SIZE;
@@ -424,15 +437,15 @@ void DwarfParser::parseInstructions(u32 loc, const char *end, const CieInfo &cie
         _ptr = end;
         break;
       case DW_CFA_advance_loc1:
-        addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off);
+        addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off, record_flags);
         loc += get8() * code_align;
         break;
       case DW_CFA_advance_loc2:
-        addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off);
+        addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off, record_flags);
         loc += get16() * code_align;
         break;
       case DW_CFA_advance_loc4:
-        addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off);
+        addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off, record_flags);
         loc += get32() * code_align;
         break;
       case DW_CFA_offset_extended:
@@ -541,7 +554,7 @@ void DwarfParser::parseInstructions(u32 loc, const char *end, const CieInfo &cie
       }
       break;
     case DW_CFA_advance_loc:
-      addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off);
+      addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off, record_flags);
       loc += (op & 0x3f) * code_align;
       break;
     case DW_CFA_offset:
@@ -564,7 +577,7 @@ void DwarfParser::parseInstructions(u32 loc, const char *end, const CieInfo &cie
     }
   }
 
-  addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off);
+  addRecord(loc, cfa_reg, cfa_off, fp_off, pc_off, record_flags);
 }
 
 // Parse a limited subset of DWARF expressions, which is used in
@@ -625,7 +638,7 @@ int DwarfParser::parseExpression() {
 }
 
 void DwarfParser::addRecord(u32 loc, u32 cfa_reg, int cfa_off, int fp_off,
-                            int pc_off) {
+                            int pc_off, u32 flags) {
   // cfa_reg and cfa_off are packed into a single u32 (cfa_off << 8 | cfa_reg),
   // so cfa_reg must fit in 8 bits (0..255) and cfa_off in a signed 24-bit range
   // (-2^23 .. 2^23-1). Well-formed compiler-generated DWARF always satisfies
@@ -648,12 +661,14 @@ void DwarfParser::addRecord(u32 loc, u32 cfa_reg, int cfa_off, int fp_off,
   }
 
   if (_prev == NULL || (_prev->loc == loc && --_count >= 0) ||
-      _prev->cfa != cfa || _prev->fp_off != fp_off || _prev->pc_off != pc_off) {
-    _prev = addRecordRaw(loc, cfa, fp_off, pc_off);
+      _prev->cfa != cfa || _prev->fp_off != fp_off || _prev->pc_off != pc_off ||
+      _prev->flags != flags) {
+    _prev = addRecordRaw(loc, cfa, fp_off, pc_off, flags);
   }
 }
 
-FrameDesc *DwarfParser::addRecordRaw(u32 loc, int cfa, int fp_off, int pc_off) {
+FrameDesc *DwarfParser::addRecordRaw(u32 loc, int cfa, int fp_off, int pc_off,
+                                     u32 flags) {
   if (_count >= _capacity) {
     FrameDesc *frameDesc =
         (FrameDesc *)realloc(_table, _capacity * 2 * sizeof(FrameDesc));
@@ -670,5 +685,6 @@ FrameDesc *DwarfParser::addRecordRaw(u32 loc, int cfa, int fp_off, int pc_off) {
   f->cfa = cfa;
   f->fp_off = fp_off;
   f->pc_off = pc_off;
+  f->flags = flags;
   return f;
 }
