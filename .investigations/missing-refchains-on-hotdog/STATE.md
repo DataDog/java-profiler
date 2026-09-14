@@ -16,7 +16,7 @@ representatives are re-tagged and all discovered instances auto-marked,
 chains are cached per-instance (not per-class). JFR analysis confirmed 2
 ReferenceChain events emitted — but one was for a noise [B instance.
 
-## Current focus: B' IMPLEMENTED (uncommitted) + a second PRODUCTION BUG found & fixed along the way; awaiting user review → commit → deploy → round 10
+## Current focus: round 12 prepared — wrapper-walk diagnostic committed (8ca24a524), awaiting tomorrow's deploy; the 21:10 wrapper-walk-without-intercept refutation narrowed the question to 3 branches
 
 Design/review/implement/review loop run for B' (user-picked). Two
 load-bearing discoveries during the loop (both in
@@ -115,7 +115,36 @@ walked=1 edges=18); spotlessApply clean.
    ordering — the collector's root-attached cohort no longer starved by
    the cap-pinned at-risk flood; truncated passes fall on the FIFO suffix
    which the requeue path protects).
-   NEXT: user deploys 04539b821 → round 11: watch for (a) restarts spacing
+5. DONE this session: round 11 verified (ev-leaktag-onpod-round11): A
+   WORKED (search lifetimes up; cycle_complete=1 REPEATEDLY — sweep laps
+   complete for the first time ever on this pod), B is a production no-op
+   (real GetObjectsWithTags returns unspecified order — the starvation
+   model was mock-order-based; requeue still works, order-independent).
+   The candidate flapped out once (slope=-47.3 while the heap marches to
+   OOM — suspected self-reinforcing dropout via boost-clearing) then
+   RE-QUALIFIED on its own (~20:45 UTC). DECISIVE: at 21:10 UTC the
+   wrapper WAS walked with ZERO interception → "not admitted/not
+   eligible" REFUTED. Round-12 diagnostic prepared+committed+pushed
+   (8ca24a524: holder_class naming via GOTW on referrer_class_tag +
+   admission-sequence trace (klass_id x fresh/leak/already, 48 entries) +
+   per-anchor walk outcome line).
+   NEXT: user deploys 8ca24a524 → round 12. READ THE DIAGNOSTIC — the
+   three outcomes and their fixes:
+   (a) holder_class != ProfileAnalyzer → every walked wrapper is a decoy;
+       the leak wrapper is never selected → collector-lottery problem →
+       fix = raise STATIC_ANCHOR_ROTATION_BUDGET (4→16, nearly free under
+       the GOTW floor) or prioritize by holder size.
+   (b) holder_class = ProfileAnalyzer + walk outcome edges=0 truncated=1
+       → budget starved before the descend → fix = per-anchor budget
+       reservation or anchor-count reduction.
+   (c) holder_class = ProfileAnalyzer + edges>0 + [B entries seen_as=0
+       (fresh) → chunks enumerated but UNTAGGED at walk time → tag-lifetime
+       problem (tagLeakInstances vs walk timing) → a wholly different fix.
+   Fallback still queued: option C (sweep-cursor persistence across
+   restarts) — only if restarts remain the blocker after A.
+   ALSO: investigate the pre-existing AggressiveLeak urgent-OOM-gate
+   failure (3/3 on clean HEAD).
+   SUPERSEDED: user deploys 04539b821 → round 11: watch for (a) restarts spacing
    to ~30+ min (limit 30) and the sweep reaching cycle_complete=1 with
    cursor past ProfileAnalyzer's class, (b) the LEAK_BUFFER
    UnmodifiableRandomAccessList wrapper admitted root-attached STATIC

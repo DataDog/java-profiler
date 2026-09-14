@@ -67,3 +67,21 @@ when it crosses the urgency threshold, the urgent search opens without a
 candidate and urgency tracking tags everything: the interception
 machinery gets a fresh window with laps completing. Watch for the
 wrapper walk + `leak-tag intercepted` during the urgency phase.
+
+## Watch continuation (20:45-21:18 UTC) — DECISIVE NEW FACT
+
+- ~20:45: the candidate RE-QUALIFIED on its own (fresh chunk wave: ages
+  1-97, tagged=13, klass_id=4 tid=70542) — the flap was not terminal;
+  chase resumed with laps wrapping.
+- **~21:10-21:12: the wrapper WAS walked (2 walk lines) with ZERO
+  interception.** This REFUTES the "wrapper not admitted / not in the
+  eligible set" hypothesis — the wrapper is admitted, selected by the
+  collector, and walked; its walk just never intercepts. The open
+  question narrowed to exactly three branches (captured in STATE.md
+  next-steps): (a) the walked instance is a decoy wrapper (holder class
+  ≠ ProfileAnalyzer); (b) the walk is budget-starved before descending
+  (edges=0 truncated=1); (c) the walk enumerates [B chunks but they were
+  UNTAGGED at that moment (tag-lifetime problem). The round-12
+  diagnostic (8ca24a524) discriminates all three.
+- No urgency phase observed yet at 21:18 (secondsToOOM still large);
+  monitoring continues at the next session.
