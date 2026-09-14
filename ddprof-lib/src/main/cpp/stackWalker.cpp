@@ -30,7 +30,11 @@ int StackWalker::walkFP(void* ucontext, const void** callchain, int max_depth, S
     StackFrame frame(ucontext);
     WalkPc walk_pc;
     if (ucontext == NULL) {
-        walk_pc.setSeed(callerPC(), CALLER_PC_IS_RETURN_ADDRESS);
+        // stripPointer() for the same reason the recovery paths below need it:
+        // where callerPC() is a real return address it carries the platform's
+        // pointer tagging (PAC bits on aarch64, the Thumb interworking bit on
+        // arm).
+        walk_pc.setSeed(stripPointer(callerPC()), CALLER_PC_IS_RETURN_ADDRESS);
         fp = (uintptr_t)callerFP();
         sp = (uintptr_t)callerSP();
     } else {
@@ -124,7 +128,11 @@ int StackWalker::walkDwarf(void* ucontext, const void** callchain, int max_depth
     StackFrame frame(ucontext);
     WalkPc walk_pc;
     if (ucontext == NULL) {
-        walk_pc.setSeed(callerPC(), CALLER_PC_IS_RETURN_ADDRESS);
+        // stripPointer() for the same reason the recovery paths below need it:
+        // where callerPC() is a real return address it carries the platform's
+        // pointer tagging (PAC bits on aarch64, the Thumb interworking bit on
+        // arm).
+        walk_pc.setSeed(stripPointer(callerPC()), CALLER_PC_IS_RETURN_ADDRESS);
         fp = (uintptr_t)callerFP();
         sp = (uintptr_t)callerSP();
     } else {

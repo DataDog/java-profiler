@@ -163,10 +163,9 @@ class DwarfParser {
         return cie.is_signal_frame ? FrameDesc::FLAG_SIGNAL_FRAME : 0;
     }
 
-    // parseCie() is now called once per FDE, and real toolchains emit long
-    // runs of FDEs sharing one CIE, so the last resolved CIE is memoized by
-    // its start address: re-resolving is required for correctness, re-parsing
-    // is not.
+    // Real toolchains emit long runs of FDEs sharing one CIE, so the last
+    // resolved CIE is memoized by its start address: every FDE must resolve
+    // its own CIE, but need not re-parse one already seen.
     const char* _last_cie_ptr;
     CieInfo _last_cie;
     // A malformed CIE degrades every FDE referencing it; warn once per

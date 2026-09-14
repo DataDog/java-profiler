@@ -912,14 +912,16 @@ TEST_F(ReturnAddressAttributionTest, Test3_UnwindRowSelectedAtReturnAddress) {
     }
 
     // Gating assertion: the walk used the call-site row (cfa correct), so it
-    // recovers the trampoline as the boundary frame's caller. Pre-fix the
+    // recovers the trampoline as the boundary frame's caller. With a raw
+    // return address the
     // raw return address selects prof_ra_cfi_next's row, producing an 8-byte
     // wrong sp and either the wrong symbol at kBoundaryIndex+1 or a
     // truncated walk (both are asserted for, per the tester plan).
     EXPECT_TRUE(symbolContains(g_ra3_dw_chain[kBoundaryIndex], "prof_ra_cfi_caller"))
         << "boundary frame should symbolize to prof_ra_cfi_caller";
     ASSERT_GE(g_ra3_dw_depth, kBoundaryIndex + 2)
-        << "walk truncated at the boundary frame -- one of the two pre-fix failure modes "
+        << "walk truncated at the boundary frame -- one of the two failure modes a raw "
+        << "return address produces here "
         << "(wrong cfa read a bogus next-pc that failed validation)";
     EXPECT_TRUE(symbolContains(g_ra3_dw_chain[kBoundaryIndex + 1], "prof_ra_cfi_trampoline"))
         << "chain[" << (kBoundaryIndex + 1) << "] should symbolize to prof_ra_cfi_trampoline "
@@ -927,7 +929,8 @@ TEST_F(ReturnAddressAttributionTest, Test3_UnwindRowSelectedAtReturnAddress) {
         << (symbolFor(g_ra3_dw_chain[kBoundaryIndex + 1])
                 ? symbolFor(g_ra3_dw_chain[kBoundaryIndex + 1])
                 : "<null>")
-        << " -- this is the other pre-fix failure mode (wrong row -> wrong symbol)";
+        << " -- the other failure mode a raw return address produces here (wrong row -> "
+        << "wrong symbol)";
 
     ++g_gating_assertions_reached;
 #endif  // __x86_64__ || __aarch64__
@@ -1085,9 +1088,10 @@ TEST_F(ReturnAddressAttributionTest, Test4_DwRegPltArmUsesAttributionAddress) {
     ASSERT_GT(g_ra4_dw_depth, kBoundaryIndex)
         << "walk produced no frames past the boundary -- check ProfiledThread setup";
 
-    // Gating: pre-fix the raw pc (raw & 15 == 11) takes the "*2" branch and
-    // mis-reads the next pc; post-fix the adjusted pc ((raw-1) & 15 == 10)
-    // takes the plain branch and the walk resolves the real caller.
+    // Gating: the raw pc (raw & 15 == 11) selects the "*2" branch and
+    // mis-reads the next pc; the attribution address ((raw-1) & 15 == 10)
+    // selects the plain branch, and only then does the walk resolve the real
+    // caller.
     EXPECT_TRUE(symbolContains(g_ra4_dw_chain[kBoundaryIndex], "prof_ra_plt_caller"));
     ASSERT_GE(g_ra4_dw_depth, kBoundaryIndex + 2);
     EXPECT_TRUE(symbolContains(g_ra4_dw_chain[kBoundaryIndex + 1], "prof_ra_plt_trampoline"))
@@ -1221,7 +1225,7 @@ TEST_F(ReturnAddressAttributionTest, Test5_DwPcOffsetSetsFlag) {
     // The ucontext leaf is byte-exact and NOT adjusted.
     ASSERT_EQ((const void*)&prof_ra_pcoff_fn, chain[0]);
 
-    // Gating assertion. Pre-fix (or with the flag merely carried through)
+    // Gating assertion: without the return-address flag set on this path,
     // chain[1] is prof_ra_pcoff_next exactly.
     const void* expected = (const void*)((const char*)&prof_ra_pcoff_next - 1);
     EXPECT_EQ(expected, chain[1])
@@ -1238,10 +1242,11 @@ TEST_F(ReturnAddressAttributionTest, Test5_DwPcOffsetSetsFlag) {
 // pc, not to the attribution address.
 //
 // Test5 above drives the DW_PC_OFFSET row from a ucontext leaf, where
-// attribution_pc == pc, so it cannot tell the two bases apart: reverting the
-// base leaves it green. This fixture reaches the same row one level up, from
-// a frame whose pc was itself loaded from a return-address slot, so the two
-// candidate bases differ by exactly one byte in chain[2].
+// attribution_pc == pc, so it cannot tell the two candidate bases apart --
+// either choice produces the same chain there. This fixture reaches the same
+// row one level up, from a frame whose pc was itself loaded from a
+// return-address slot, so the two bases differ by exactly one byte in
+// chain[2].
 //
 // The base must be the raw pc: DW_CFA_val_expression on the return-address
 // column encodes DW_OP_breg<PC> + K, and DW_OP_breg names the value of the
@@ -1399,7 +1404,7 @@ TEST_F(ReturnAddressAttributionTest, Test6_LinkRegisterRecoverySetsFlag) {
 
     const void* expected = (const void*)((const char*)&prof_ra_lr_next - 1);
     EXPECT_EQ(expected, chain[1])
-        << "link-register-recovered pc must be adjusted; pre-fix chain[1] is "
+        << "link-register-recovered pc must be adjusted; unadjusted, chain[1] is "
         << "prof_ra_lr_next exactly";
     EXPECT_TRUE(symbolContains(chain[1], "prof_ra_lr_fn"));
 
@@ -1414,8 +1419,9 @@ TEST_F(ReturnAddressAttributionTest, Test6_LinkRegisterRecoverySetsFlag) {
 // For an ordinary frame the return-address column holds an address after a
 // call, so the walker attributes at pc - 1. A signal-frame CIE declares that
 // the column holds the *exact* interrupted PC, so subtracting one would land
-// before the instruction that was executing -- the same boundary
-// misattribution this PR fixes, in the opposite direction.
+// before the instruction that was executing -- the same class of boundary
+// misattribution the adjustment exists to prevent, in the opposite
+// direction.
 // ===========================================================================
 
 #if defined(__x86_64__)

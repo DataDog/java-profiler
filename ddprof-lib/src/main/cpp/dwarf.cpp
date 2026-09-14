@@ -232,6 +232,7 @@ void DwarfParser::parseEhFrame(const char *eh_frame, size_t size) {
       // per module, and this parser is only called for macOS __eh_frame sections.  Multi-CIE
       // binaries are not produced by the toolchains we target here.  The state is local to this
       // function so that this single-CIE policy stays independent of parseFde()'s per-FDE one.
+      cie = defaultCieInfo();  // every field assigned fresh per CIE, never latched
       if (_ptr >= record_end) {
         _ptr = record_end;
         continue;
@@ -242,7 +243,6 @@ void DwarfParser::parseEhFrame(const char *eh_frame, size_t size) {
         continue;
       }
       cie.has_z_augmentation = (*_ptr == 'z');
-      cie.is_signal_frame = false;  // assigned fresh per CIE, never latched
       while (_ptr < record_end) {
         char c = *_ptr++;
         if (c == 0) break;
@@ -254,8 +254,23 @@ void DwarfParser::parseEhFrame(const char *eh_frame, size_t size) {
       }
       cie.code_align = getLeb(record_end);
       cie.data_align = getSLeb(record_end);
+      // Same terms as parseCie(): a zero factor is either a malformed value or
+      // a record that ended before the field.
+      cie.valid = cie.code_align != 0 && cie.data_align != 0;
+      if (!cie.valid) {
+        cie.code_align = sizeof(instruction_t);
+        cie.data_align = -(int)sizeof(void *);
+      }
     } else {
-      // FDE: parse frame description for the covered PC range.
+      // FDE: parse frame description for the covered PC range. Without a
+      // readable CIE ahead of it -- none seen yet, or the last one rejected --
+      // neither the alignment factors nor the presence of the
+      // augmentation-data-length field is known, so the record is skipped
+      // rather than decoded against platform defaults.
+      if (!cie.valid) {
+        _ptr = record_end;
+        continue;
+      }
       // After cie_id: [pcrel-range-start 4 bytes][range-len 4 bytes][aug-data-len LEB][aug-data][instructions]
       // Assumes DW_EH_PE_pcrel | DW_EH_PE_sdata4 encoding for range-start (clang macOS default).
       // The augmentation data length field (and the data itself) is only present when the CIE

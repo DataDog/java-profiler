@@ -761,4 +761,48 @@ TEST(DwarfEhFrameHdr, UninterpretedAugmentationLeavesFlagClear) {
     EXPECT_EQ(0u, parseSingleFdeFlags(spec));
 }
 
+// ---------------------------------------------------------------------------
+// The linear __eh_frame path (parseEhFrame) applies the same "no readable CIE,
+// no rows" rule as the .eh_frame_hdr path above.
+// ---------------------------------------------------------------------------
+
+// An FDE that appears before any CIE has no alignment factors to be decoded
+// against.
+TEST(DwarfEhFrame, FdeBeforeAnyCieProducesNoRows) {
+    std::vector<uint8_t> buf;
+    appendFdeWithAdvances(buf, /*cie_start_offset=*/0, 100, 10, 5);
+    appendTerminator(buf);
+    DwarfParser* dwarf = parseBuf(buf);
+    EXPECT_EQ(dwarf->count(), 0);
+    free(dwarf->table());
+    delete dwarf;
+}
+
+// Nor does one following a CIE that was rejected.
+TEST(DwarfEhFrame, FdeAfterRejectedCieProducesNoRows) {
+    std::vector<uint8_t> buf;
+    uint32_t cie_offset = static_cast<uint32_t>(buf.size());
+    appendCieWithCodeAlign(buf, 0);  // zero code alignment factor: malformed
+    appendFdeWithAdvances(buf, cie_offset, 100, 10, 5);
+    appendTerminator(buf);
+    DwarfParser* dwarf = parseBuf(buf);
+    EXPECT_EQ(dwarf->count(), 0);
+    free(dwarf->table());
+    delete dwarf;
+}
+
+// Control: the same shape with a well-formed CIE does produce rows, so the two
+// tests above cannot pass for the wrong reason.
+TEST(DwarfEhFrame, FdeAfterValidCieProducesRows) {
+    std::vector<uint8_t> buf;
+    uint32_t cie_offset = static_cast<uint32_t>(buf.size());
+    appendCieWithCodeAlign(buf, 4);
+    appendFdeWithAdvances(buf, cie_offset, 100, 10, 5);
+    appendTerminator(buf);
+    DwarfParser* dwarf = parseBuf(buf);
+    EXPECT_GT(dwarf->count(), 0);
+    free(dwarf->table());
+    delete dwarf;
+}
+
 #endif  // DWARF_SUPPORTED

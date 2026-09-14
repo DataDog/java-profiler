@@ -347,7 +347,8 @@ int Profiler::getNativeTrace(void *ucontext, ASGCT_CallFrame *frames,
  * The emitted pc_offset inherits whatever addressing convention the
  * producing walker used for this frame (see StackWalker in stackWalker.h):
  * walkFP/walkDwarf frames arrive already pointing inside the call
- * instruction, walkVM/walkKernel frames arrive as raw return addresses.
+ * instruction, while walkVM/walkKernel frames arrive unadjusted (their leaf
+ * is the exact interrupted pc, the frames above it raw return addresses).
  * An off-process symbolizer that applies its own return-address adjustment
  * therefore double-adjusts the former.
  *
