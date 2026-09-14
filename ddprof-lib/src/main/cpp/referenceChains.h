@@ -1475,7 +1475,9 @@ private:
   // such an entry (heapReferenceCallback's root-like-onto-already-admitted
   // block, on the failed maybeUpgradeRootAttachedRootKind()) pushes the
   // tag here, and runPassManualWalk() drains it into the same
-  // walkStaticFieldAnchors() batch ahead of the collector's selection -
+  // walkStaticFieldAnchors() batch BEHIND the collector's small
+  // root-attached cohort (pod round 10: a cap-pinned at-risk flood starving
+  // that cohort in ~60% of passes is what the reverse order caused) -
   // anchor selection no longer depends on the entry's attribution shape
   // for this population, so the eviction is structurally impossible.
   // Feed semantics: pushes happen every sweep lap (the sweep re-proves
@@ -2772,7 +2774,7 @@ public:
   // "genuinely unreachable within any reasonable budget" from "reachable,
   // but deeper than one restart cycle can cover" - a large/deep heap
   // legitimately needs more passes, not a smaller one.
-  static constexpr int CANARY_NO_PROGRESS_PASS_LIMIT = 3; // TEMP: was 30, lowered for testing
+  static constexpr int CANARY_NO_PROGRESS_PASS_LIMIT = 30;
 
   // Upper bound on how many times canaryStuckPassLimit() doubles the base
   // limit (2^8 = 256x -> 7680 passes at the default base of 30) - bounds
