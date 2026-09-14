@@ -1,47 +1,34 @@
 ---
 id: q-heapliveobject-absent-on-pod-chunks
 type: question
-status: open
-depends_on: [ev-leaktag-onpod-round8]
+status: confirmed
+depends_on: [ev-leaktag-onpod-round8, ev-leaktag-onpod-round9]
 related: [find-leak-tag-pool-implementation]
-tags: [heapliveobject, liveness, jfr, emission, open, NEW-THIS-SESSION]
+tags: [heapliveobject, liveness, jfr, evidence-source, RESOLVED, NEW-THIS-SESSION]
 created: 20260902
-updated: 20260902
+updated: 20260903
 ---
 
-# Why do pod JFR chunks contain zero datadog.HeapLiveObject events?
+# RESOLVED: HeapLiveObject events are absent from LOCAL pod chunks but present in UPLOADED recordings
 
-Round-8 JFR chunks (pod pid_4445) declare no HeapLiveObject event type
-at all and contain zero events, while LivenessTracker is clearly
-tracking (tagLeakInstances summaries live, tagged=8). Earlier rounds
-(ev-jfr-analysis-real-recording) DID see 13 [B HeapLiveObject events,
-so emission worked at some point on the older pod/build.
+Round 9 settled it: the uploaded .jfr (toolkit download) contains
+`datadog.HeapLiveObject` events — including the 78MB leak chunks
+(`eventThread=simulated-memory-leak`, leakTags 1073741987/1073741990,
+ages 99-108) — while the local chunks under
+`/tmp/ddprof_root/pid_XXX/jfr/` contain neither HeapLiveObject nor
+ReferenceChain (same artifact as round 2's "need merged upload" lesson).
 
-## What is known
+## Resolution
 
-- The emission path exists: BCI_LIVENESS →
-  `Recording::recordHeapLiveObject` (flightRecorder.cpp:2077, call at
-  :2471).
-- Round 8 chunks DO contain other datadog events (ExceptionSample,
-  ProfilerSetting, ExceptionCount), so chunks are not the wrong source
-  (kubectl cp from /tmp/ddprof_root, per the recorded methodology).
+Not an emission bug: liveness flows and leak tags reach the recording.
+The round-8 "zero HeapLiveObject in any chunk" observation was an
+evidence-source artifact.
 
-## Why it matters
+## Standing evidence rule
 
-HeapLiveObject.leakTag is one half of the correlation pair
-(ReferenceChain.targetTag ↔ HeapLiveObject.leakTag,
-find-leak-tag-pool-implementation). Even when interception fires, a
-missing HeapLiveObject event breaks the backend join.
-
-## Candidate causes to check (NOT yet investigated)
-
-- The new pod's agent config differs on liveness settings (memory=...
-  ratio / liveheap flags in ProfilerSetting — the round-8 chunk dump
-  was only partially inspected).
-- The liveness sampler thread not running on this JVM / not emitting
-  BCI_LIVENESS events (check counters).
-- Emission gated behind something that changed between the round-2
-  pod (where HeapLiveObject events appeared) and round 8.
-
-Priority: secondary — resolve after interception fires; but verify the
-ProfilerSetting memory= line on the next chunk pull (free, one grep).
+Dump-time / liveness events must be verified from UPLOADED recordings
+(profiling-toolkit download.py, us1.staging.dog), never from local pod
+chunk files. Also: `jfr print` crashes on datadog.ReferenceChain
+(PrettyWriter ClassCastException on the chain F_CPOOL|F_ARRAY field) —
+use the JMC API (RcDump pattern / ReferenceChainAssertions
+findAccessor).

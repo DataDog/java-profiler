@@ -16,7 +16,30 @@ representatives are re-tagged and all discovered instances auto-marked,
 chains are cached per-instance (not per-class). JFR analysis confirmed 2
 ReferenceChain events emitted — but one was for a noise [B instance.
 
-## Current focus: round 8 VERIFIED zero-interception over textbook prong-2 shape — per-anchor diagnostic committed (c9a57f681), round 9 = deploy it
+## Current focus: B' IMPLEMENTED (uncommitted) + a second PRODUCTION BUG found & fixed along the way; awaiting user review → commit → deploy → round 10
+
+Design/review/implement/review loop run for B' (user-picked). Two
+load-bearing discoveries during the loop (both in
+find-already-admitted-blocks-unreachable + find-anchor-live-feed-design):
+1. The "sweep re-laps every pass" feed assumption was FALSE — the sweep
+   gate re-laps only while the class count is in flux → B' needed TWO
+   push sites (demotion time + sweep time), not one.
+2. BOTH push sites sat in a pre-existing DEAD NEST: 57aec4895 misplaced
+   improveChain inside heapReferenceCallback's first-admission block,
+   where improveChain/reparentToDurableRoot/maybeUpgradeRootAttachedRootKind
+   were all guaranteed no-ops for already-admitted entries (since
+   2026-08-28). This rewrites the eviction mechanism: improveChain
+   demotion never fired on any pod round; the holder was born
+   chain-attached and the upgrade path was dead. Fixed with a real
+   `else if (*tag_ptr > 0)` arm — the enabling fix for B'.
+
+Verification: 112 gtests green (4 new deterministic B' tests + no
+regressions from the now-live re-attribution), full gtestDebug green,
+ddprof-test *ReferenceChain* family green. ONE pre-existing failure on
+clean HEAD (proven via git stash, 3/3 runs):
+AggressiveLeakReferenceChainTest.shouldOpenSearchGateOnAggressiveHeapWideGrowth-
+WithNoLeakCandidate — urgent-OOM-gate test unrelated to B'; needs its own
+investigation (user flagged). spotlessApply clean. NOT COMMITTED.
 
 Round-6 verdict made Option C a correctness requirement (breadth-
 first FIFO over a rising heap can never drain; pendingExpand net-growing).
@@ -71,15 +94,45 @@ walked=1 edges=18); spotlessApply clean.
    anchors enter the anchor tier (wrapper never admitted root-attached /
    root_kind misclassified / root-attached entry replaced by a
    chain-attached one via improveChain).
-3. Round 9: user deploys c9a57f681 (per-anchor TEMP diagnostic,
-   gtest-verified); watch the new `walkStaticFieldAnchors anchor
-   tag=... class=... parent= root_kind= state= field_index=` lines —
-   they name the LEAK_BUFFER wrapper's tier membership directly.
-   Evidence windows via `kubectl logs -f` streaming (retention ~30s).
-   DO NOT jcmd GC.heap_dump in-pod (evicted the last pod). When pulling
-   JFR chunks, also grep the ProfilerSetting memory= line for the
-   HeapLiveObject question (q-heapliveobject-absent-on-pod-chunks).
-4. TEMP reverts before finalizing (list below).
+3. DONE this session: round 9 verified (ev-leaktag-onpod-round9).
+   Anchor diagnostic answered: tier = 76 machinery statics, NO holder,
+   zero app classes. UPLOADED recordings contain 12 ReferenceChain
+   events with working edge names + HeapLiveObject events with leakTags
+   on the 78MB leak chunks — the ORIGINAL zero-events question is
+   RESOLVED; the machinery cohort's retention is fully explained
+   (Mac/HmacCore ThreadLocals, charset constants). Local pod chunks are
+   a bad source for dump-time events (q-heapliveobject resolved: use
+   uploads only; jfr print crashes on ReferenceChain — use JMC API).
+   ROOT CAUSE of the remaining gap isolated in code:
+   find-anchor-holder-eviction (parent_tag==0 is unidirectional;
+   improveChain evicts root-attached holders; re-root refused at
+   referenceChains.cpp:2376).
+4. DONE this session: B' implemented (see find-anchor-live-feed-design's
+   Status section for the full implementation + verification record),
+   including the two discovered-and-fixed prerequisites.
+   NEXT: user reviews the diff → commit (message from the actual diff) →
+   deploy → round 10: watch `static_anchor_fifo_pushed_total` (sizes the
+   at-risk population — the push-rate caveat was inferred, now
+   measurable), `leak-tag intercepted`, and the first LEAK chunk's chain
+   (static_field → ... → byte[]). ALSO: investigate the pre-existing
+   AggressiveLeak urgent-OOM-gate failure (3/3 on clean HEAD).
+4b. SUPERSEDED: user picks the anchor-eviction fix. Original options A/B were
+   re-evaluated after a standards survey (this session, see
+   find-attribution-standards-survey + find-anchor-live-feed-design):
+   **A refuted** (freezes one attribution where every standard system
+   re-derives or queries — JFR enumerates its root set fresh at every emit,
+   source-verified; MAT computes paths on demand; dominator-tree
+   attribution is offline-only per LeakCanary docs; dynamic-SSSP theory
+   says exact incremental path labels are hopeless), **B minimal-diff
+   fallback**, **B' (live feed) recommended**: the sweep's static-edge
+   callback pushes frontier-present-but-chain-attached holder tags into a
+   bounded FIFO; walkStaticFieldAnchors drains it; anchor selection stops
+   reading parent_tag/root_kind → eviction structurally impossible.
+   Verify the at-risk filter shrinks the population (TEMP counter) before
+   sizing the FIFO. Then implement + gtest + deploy → round 10: watch
+   `leak-tag intercepted` and the first LEAK chunk's chain
+   (static_field → ... → byte[]).
+5. TEMP reverts before finalizing (list below).
 
 ## TEMP — MUST REVERT before finalizing
 
@@ -102,7 +155,11 @@ walked=1 edges=18); spotlessApply clean.
   and remove.
 - TEMP per-anchor diagnostic in walkStaticFieldAnchors (c9a57f681):
   class signature + chain shape per walked anchor — remove once round 9
-  names the tier-membership answer.
+  names the tier-membership answer. KEEP for round 10 (it names the
+  at-risk anchors B' now feeds into the walk).
+- TEMP (B', this session): static_anchor_fifo_size/drained/pushed_total
+  fields in runPassManualWalk's rotation_candidates TEST_LOG — remove
+  after round 10 sizes the at-risk population.
 
 ## Confirmed findings (do NOT re-derive)
 
@@ -146,10 +203,9 @@ walked=1 edges=18); spotlessApply clean.
 
 ## Reproduction handle
 
-Pod `prof-analyzer-hotdog-jb1-668df5bcff-f75l8` in `profiling-stg`,
-container `prof-analyzer`, JVM 4445 (round 8 verified, see
-`ev-leaktag-onpod-round8`; needs redeploy with c9a57f681 for round 9).
-Pod clock is UTC (2h behind local).
+Pod `prof-analyzer-hotdog-jb1-668df5bcff-7h5n9` in `profiling-stg`,
+container `prof-analyzer`, JVM 77972 (round 9 verified on c9a57f681, see
+`ev-leaktag-onpod-round9`). Pod clock is UTC (2h behind local).
 Verify the deployed build via a per-iteration log field (e.g.
 `ema_call_ms=` in every gotw line) BEFORE interpreting event-driven
 logs — round 3 saw one stale-build deploy (JVM 44624 ran the old
