@@ -107,14 +107,22 @@ walked=1 edges=18); spotlessApply clean.
    find-anchor-holder-eviction (parent_tag==0 is unidirectional;
    improveChain evicts root-attached holders; re-root refused at
    referenceChains.cpp:2376).
-4. DONE this session: B' implemented (see find-anchor-live-feed-design's
-   Status section for the full implementation + verification record),
-   including the two discovered-and-fixed prerequisites.
-   NEXT: user reviews the diff → commit (message from the actual diff) →
-   deploy → round 10: watch `static_anchor_fifo_pushed_total` (sizes the
-   at-risk population — the push-rate caveat was inferred, now
-   measurable), `leak-tag intercepted`, and the first LEAK chunk's chain
-   (static_field → ... → byte[]). ALSO: investigate the pre-existing
+4. DONE this session: B' implemented, committed (6f3c6cc2e), deployed,
+   and round-10 VERIFIED live (see ev-leaktag-onpod-round10 + the round-10
+   blocker chain). Round-10 response (user-picked A+B) committed and
+   pushed: 8888e6d42 (TEMP CANARY_NO_PROGRESS_PASS_LIMIT 3→30 revert —
+   the suspected restart driver) + 04539b821 (collector-first anchor
+   ordering — the collector's root-attached cohort no longer starved by
+   the cap-pinned at-risk flood; truncated passes fall on the FIFO suffix
+   which the requeue path protects).
+   NEXT: user deploys 04539b821 → round 11: watch for (a) restarts spacing
+   to ~30+ min (limit 30) and the sweep reaching cycle_complete=1 with
+   cursor past ProfileAnalyzer's class, (b) the LEAK_BUFFER
+   UnmodifiableRandomAccessList wrapper admitted root-attached STATIC
+   and walked by the collector picks, (c) `leak-tag intercepted` → the
+   first LEAK chunk's chain (static_field → ... → byte[]). Fallback if
+   restarts persist: option C (sweep-cursor persistence across
+   restarts) — NOT yet designed. ALSO: investigate the pre-existing
    AggressiveLeak urgent-OOM-gate failure (3/3 on clean HEAD).
 4b. SUPERSEDED: user picks the anchor-eviction fix. Original options A/B were
    re-evaluated after a standards survey (this session, see
@@ -136,8 +144,10 @@ walked=1 edges=18); spotlessApply clean.
 
 ## TEMP — MUST REVERT before finalizing
 
-- `CANARY_NO_PROGRESS_PASS_LIMIT` 30 → 3 (commit `0b05d5f85`) for faster
-  testing.
+- ~~`CANARY_NO_PROGRESS_PASS_LIMIT` 30 → 3~~ REVERTED this session (commit
+  `8888e6d42`) — round 10 showed the TEMP value 3 abandons an unfound
+  canary every ~3 min at 1 pass/min, and each restart resets the sweep
+  cursor so the lap never reached the leak holder's class.
 - Temp diagnostics still in code (kind_counts, gotw logs, blocking logs,
   discovered-loop logs) — remove before production.
 - TEST_LOG in `maybeUpgradeRootAttachedRootKind` (upgrade attempts) —
