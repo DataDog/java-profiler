@@ -1632,6 +1632,11 @@ Error Profiler::start(Arguments &args, bool reset) {
   // Always enable library trap to catch wasmtime loading and patch its broken sigaction
   switchLibraryTrap(true);
 
+  if (args._context_attributes.size() > DD_TAGS_CAPACITY) {
+    Log::warn("attributes: %zu attributes requested but capacity is %u; extra attributes will be ignored",
+               args._context_attributes.size(), DD_TAGS_CAPACITY);
+    args._context_attributes.resize(DD_TAGS_CAPACITY);
+  }
   JfrMetadata::reset();
   JfrMetadata::initialize(args._context_attributes);
   _num_context_attributes = args._context_attributes.size();
