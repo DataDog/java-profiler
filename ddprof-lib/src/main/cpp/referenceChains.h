@@ -2590,7 +2590,8 @@ private:
                          jlong anchor_tag, u32 anchor_depth,
                          jlong anchor_descend_class_tag, int budget,
                          int *edges_admitted, bool *truncated,
-                         bool *frontier_cap_hit, u64 *safepoint_ticks);
+                         bool *frontier_cap_hit, u64 *safepoint_ticks,
+                         bool diag_trace = false);
 
   // Prong 1 of the candidate-scoped reach design (thread-retained taxonomy:
   // ThreadLocal-held caches and thread-owned collections): per pass, walk
