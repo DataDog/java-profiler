@@ -1380,12 +1380,10 @@ TEST_F(ReturnAddressAttributionTest, Test6_LinkRegisterRecoverySetsFlag) {
                       << "covered by inspection only; its producer is gated by "
                       << "SFrameParser.PerFRE_RA_Untracked. See this test's banner comment.";
     }
-    if ((const void*)&prof_ra_lr_next != (const void*)((const char*)&prof_ra_lr_fn + 4)) {
-        // Not a hard requirement for this fixture (unlike Tests 1/3/4/5, the
-        // link register is set directly below, not derived from an actual
-        // call-site return address), but a large gap would mean the two
-        // symbols aren't where expected -- keep this as a sanity note only.
-    }
+    // Adjacency is not a precondition here: unlike Tests 1/3/4/5, the link
+    // register below is set directly rather than derived from a real
+    // call-site return address, so the fixture works wherever the assembler
+    // places prof_ra_lr_next.
 
     static uintptr_t scratch[64];
     ucontext_t uc = makeFabricatedContext((const void*)&prof_ra_lr_fn, scratch, 64);
