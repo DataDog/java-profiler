@@ -20,9 +20,9 @@
       when: never
     - when: on_success
   interruptible: true
-  before_script:
-    - apt-get update -qq
-    - apt-get install -y -qq cmake libgtest-dev libgmock-dev binutils libc6-dbg llvm
+  # No before_script override: the toolchain lives in the build image, so the
+  # pipeline default (CANCELLED guard, maven proxy) applies here like anywhere
+  # else.
   script:
     - ./gradlew :ddprof-lib:buildGtest${SANITIZER_CONFIG} --no-daemon --parallel --build-cache
     - |
