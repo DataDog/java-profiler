@@ -1373,8 +1373,9 @@ static void patchClassLoaderData(JNIEnv* jni, jclass klass) {
       sigjmp_buf crash_protection_ctx;
       LockState state;
       if (sigsetjmp(crash_protection_ctx, 1) != 0) {
+        SIGNAL_HANDLER_UNWIND_AFTER_LONGJMP();
         jmp_scope.restore();
-        state.reset();        
+        state.reset();
         return;
       }
       jmp_scope.install(&crash_protection_ctx);
