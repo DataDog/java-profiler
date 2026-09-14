@@ -3919,16 +3919,19 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   // descend-walked directly (see collectStaticFieldAnchorsForRotation()/
   // walkStaticFieldAnchors()'s own comments) - not pushed onto the priority
   // lane, so they are independent of the queue tiers above. The at-risk
-  // FIFO (B', _static_anchor_fifo's declaration comment) is drained FIRST
-  // so its chain-attached holders - the population the collector's
-  // parent_tag == 0 filter structurally cannot select - get the walk budget
-  // before it can be exhausted; the collector's own selection follows, and
-  // its truncation retention is the wrapping cursor, not this requeue path.
+  // FIFO (B', _static_anchor_fifo's declaration comment) is drained BEHIND
+  // the collector's selection: the collector's small root-attached cohort
+  // walks first (a single-referrer static holder like the LEAK_BUFFER
+  // wrapper lives there - it never demotes, so it can never be at-risk),
+  // and a truncated pass falls on the FIFO's at-risk suffix, which the
+  // requeue path below protects - observed on the pod (round 10) that the
+  // reverse order starved the collector's picks in ~60% of passes
+  // (walked=6-16 of selected=20) against a cap-pinned at-risk flood.
+  std::vector<jlong> static_anchor_tags =
+      collectStaticFieldAnchorsForRotation(STATIC_ANCHOR_ROTATION_BUDGET);
   std::vector<jlong> static_anchor_fifo_tags;
   int static_anchor_fifo_drained =
       drainStaticAnchorFifo(STATIC_ANCHOR_FIFO_DRAIN, static_anchor_fifo_tags);
-  std::vector<jlong> static_anchor_tags =
-      collectStaticFieldAnchorsForRotation(STATIC_ANCHOR_ROTATION_BUDGET);
   static_anchor_tags.insert(static_anchor_tags.end(),
                             static_anchor_fifo_tags.begin(),
                             static_anchor_fifo_tags.end());
