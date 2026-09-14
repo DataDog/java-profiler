@@ -1464,6 +1464,47 @@ private:
     }
   } _priority_expand_set;
 
+  // B' (find-anchor-holder-eviction / find-anchor-live-feed-design): a
+  // static holder richly referenced from the running graph is EXCLUDED
+  // from the static-anchor tier forever once its frontier entry is
+  // chain-attached (first admitted via a non-root path, or demoted by
+  // improveChain) - maybeUpgradeRootAttachedRootKind() refuses entries
+  // with parent_tag != 0 by design, so collectStaticFieldAnchorsForRotation()
+  // (parent_tag == 0 filter) can never select it. This FIFO is the live
+  // feed that repairs the hole: the static sweep's class->field edge onto
+  // such an entry (heapReferenceCallback's root-like-onto-already-admitted
+  // block, on the failed maybeUpgradeRootAttachedRootKind()) pushes the
+  // tag here, and runPassManualWalk() drains it into the same
+  // walkStaticFieldAnchors() batch ahead of the collector's selection -
+  // anchor selection no longer depends on the entry's attribution shape
+  // for this population, so the eviction is structurally impossible.
+  // Feed semantics: pushes happen every sweep lap (the sweep re-proves
+  // the static edge each lap), drained entries are NOT re-pushed by the
+  // walk - an un-intercepted holder comes back via the next lap's push,
+  // which bounds steady-state occupancy to one lap's worth of at-risk
+  // holders instead of a permanent rotation cohort. Same engine-thread
+  // under-_engine_lock discipline as _priority_expand above (the push
+  // site runs inside the sweep's FollowReferences in runPassSerialized(),
+  // the drain in the same pass's rotation phase), so no locking. Deque
+  // node allocations are bounded by the cap; pushes inside the JVMTI
+  // callback allocate only when a new deque node is needed - bounded,
+  // amortized, and on the engine thread, never a signal context.
+  std::deque<jlong> _static_anchor_fifo;
+
+  // Membership index over _static_anchor_fifo (push-side dedupe, so one
+  // lap's repeated static edges onto the same chain-attached holder push
+  // it once) - a second instance of PriorityExpandSet, whose fixed 2048
+  // slot table keeps the cap at PRIORITY_EXPAND_CAP (1024). Full-FIFO
+  // pushes are dropped (the natural throttle: at-risk holders far beyond
+  // one lap's drain rate wait for the next lap's re-push, never lost).
+  PriorityExpandSet _static_anchor_fifo_set;
+  static constexpr size_t STATIC_ANCHOR_FIFO_CAP = PRIORITY_EXPAND_CAP;
+
+  // Cumulative at-risk pushes, for the per-pass TEST_LOG line (round-10
+  // verification: sizes the at-risk population the design's drain-rate
+  // argument was inferred, not measured, from).
+  u64 _static_anchor_fifo_pushed = 0;
+
   // java/lang/Object jclass cache for expandFrontier()'s and
   // admitStaticFieldRoots()'s holder-array element type (referenceChains.cpp)
   // - resolved once via FindClass()+NewGlobalRef() and reused for the
@@ -1563,6 +1604,18 @@ private:
   // collectStaticFieldAnchorsForRotation() guarantees full coverage of the
   // root-attached population within ceil(matches / this) passes.
   static constexpr int STATIC_ANCHOR_ROTATION_BUDGET = 4;
+
+  // Per-pass cap on how many AT-RISK static holders (frontier entries
+  // with parent_tag != 0 - the find-anchor-holder-eviction population)
+  // drainStaticAnchorFifo() pops for the same walkStaticFieldAnchors()
+  // batch. Deliberately larger than STATIC_ANCHOR_ROTATION_BUDGET: the
+  // whole batch resolves in ONE GetObjectsWithTags call whose cost is
+  // dominated by the O(tag_map) scan floor, so a larger batch is nearly
+  // free per anchor; each anchor's own walk still draws down the same
+  // rotation budget, and truncation re-queues un-walked entries
+  // (requeueStaticAnchorFifoFront()), so a big batch costs only the
+  // per-entry GOTW bookkeeping, not extra STW.
+  static constexpr int STATIC_ANCHOR_FIFO_DRAIN = 16;
 
   // Rotation cursor for collectStaticFieldAnchorsForRotation(): same
   // wrapping-cursor role as _stale_expanded_rotation_cursor above - an
@@ -2567,10 +2620,33 @@ private:
   // the same walk covers it - covering it in the SAME rebuild avoids a
   // second deploy cycle if the pod's holder turns out to be one.
   std::vector<jlong> collectStaticFieldAnchorsForRotation(int max_count);
+  // Pops up to max_count tags off _static_anchor_fifo's front into `out`
+  // (appending) and re-derives the set from the deque's remaining contents
+  // (PriorityExpandSet's tombstone-free rebuildFrom contract). Returns the
+  // drained count. Engine thread only.
+  // The B' at-risk push itself (both call sites below): dedupe via the
+  // set, cap-drop when the FIFO is full, count the push. No return value -
+  // a dropped push is silently retried by the feed's next event (the next
+  // static edge onto the entry, or the next demotion). Engine thread only.
+  void pushAtRiskStaticAnchor(jlong tag);
+  int drainStaticAnchorFifo(int max_count, std::vector<jlong> &out);
+  // Pushes `tags` back to _static_anchor_fifo's FRONT in reverse order
+  // (preserving FIFO order) and rebuilds the set - the truncated-walk
+  // requeue path. Caller passes ONLY tags it drained from the FIFO this
+  // pass (never collector-sourced ones: those keep their own cursor
+  // retention). Engine thread only.
+  void requeueStaticAnchorFifoFront(const std::vector<jlong> &tags);
+  // When non-null, receives the tags of RESOLVED-but-unwalked anchors at
+  // the truncation break point - GetObjectsWithTags may return fewer
+  // anchors than requested (dead tags drop out) in its own order, so the
+  // caller cannot recover the un-walked set from a consumed index; the
+  // walk hands the exact tags back instead. Dead (unresolved) anchors are
+  // omitted: they must not be requeued anywhere.
   void walkStaticFieldAnchors(jvmtiEnv *jvmti, JNIEnv *jni,
                               const std::vector<jlong> &anchor_tags,
                               int budget, int *edges_admitted, bool *truncated,
-                              bool *frontier_cap_hit, u64 *safepoint_ticks);
+                              bool *frontier_cap_hit, u64 *safepoint_ticks,
+                              std::vector<jlong> *unwalked = nullptr);
 
   // jvmtiHeapRootCallback/jvmtiStackReferenceCallback for runPassManualWalk()'s
   // IterateOverReachableObjects call (referenceChains.cpp). `user_data` is a

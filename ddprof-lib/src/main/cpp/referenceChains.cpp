@@ -1203,6 +1203,8 @@ void ReferenceChainTracker::restartSearch() {
   _pending_expand.clear();
   _priority_expand.clear();
   _priority_expand_set.clear();
+  _static_anchor_fifo.clear();
+  _static_anchor_fifo_set.clear();
   // Both keyed by frontier tags this restart is about to invalidate (fresh
   // tags start again from 1) - a stale entry surviving past a restart would
   // be compared against whatever unrelated object the new search has since
@@ -1289,6 +1291,9 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   _pending_expand.clear();
   _priority_expand.clear();
   _priority_expand_set.clear();
+  _static_anchor_fifo.clear();
+  _static_anchor_fifo_set.clear();
+  _static_anchor_fifo_pushed = 0;
   // Same reset rationale as restartSearch()'s own comment.
   _leak_signature_totals.clear();
   _leak_signature_prev_totals.clear();
@@ -2064,52 +2069,6 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
       // *tag_ptr == 0 rules out ALREADY_ADMITTED) - nothing further to do.
       break;
     }
-    // Already-tagged object reached via a new edge. If this new path
-    // is deeper (non-zero parent_tag), improve the chain — replace the
-    // shallow root-attached entry with the deeper chain-attached entry.
-    // This fixes the "depth=1 chain with no holder" problem: an object
-    // first admitted as a JNI-local root (parent_tag == 0) gets its
-    // frontier entry improved when the static-field → ... → object path
-    // reaches it. Only runs when *tag_ptr != 0 (already admitted);
-    // the *tag_ptr == 0 path above handles first admission.
-    if (*tag_ptr != 0 && parent_tag != 0 && *tag_ptr > 0) {
-      u32 referrer_klass = ctx->tracker->classTags()->resolve(class_tag);
-      if (ctx->frontier->improveChain(*tag_ptr, parent_tag, referrer_klass,
-                                       depth, 0, edge_field_index,
-                                       (u8)reference_kind)) {
-        // Chain was improved — invalidate any cached chain for this tag
-        // so pollWatchedTargets rebuilds it with the deeper path.
-        ctx->tracker->invalidateResolvedChain(*tag_ptr);
-      } else if (ctx->frontier->reparentToDurableRoot(
-                     *tag_ptr, parent_tag, referrer_klass, edge_field_index,
-                     (u8)reference_kind)) {
-        // Equal-depth re-parent from a transient root to a durable one
-        // (improveChain() cannot express it - see its declaration) - same
-        // cache invalidation so the rebuilt chain uses the durable root.
-        ctx->tracker->invalidateResolvedChain(*tag_ptr);
-      }
-    }
-    if (*tag_ptr != 0 && parent_tag == 0 && *tag_ptr > 0) {
-      // Already-admitted entry reached via a NEW root-like edge
-      // (parent_tag == 0): the static-field sweep's class -> field edge
-      // reports the class as the referrer with a negative tag, which the
-      // rtag < 0 branch above treats as root-like (class objects are never
-      // frontier entries), and heap-root references arrive here with
-      // referrer_tag_ptr == nullptr. Without this, an entry first admitted
-      // through a stack local keeps its transient classification forever
-      // even after a later static-field sweep proves the same object is
-      // the direct value of a static field - exactly the durable-root
-      // discovery maybeUpgradeRootAttachedRootKind() exists for (same
-      // tie-break heapRootCallback() applies on its own ALREADY_ADMITTED
-      // case), so reuse it: upgrade only when this edge's kind is strictly
-      // more durable, and drop any cached chain so it is rebuilt with the
-      // upgraded root kind.
-      if (ctx->tracker->maybeUpgradeRootAttachedRootKind(ctx->frontier,
-                                                          *tag_ptr,
-                                                          (u8)reference_kind)) {
-        ctx->tracker->invalidateResolvedChain(*tag_ptr);
-      }
-    }
     // Auto-mark: if this object's class matches a watched leak class,
     // record its frontier tag so pollWatchedTargets() can build a chain
     // event for it. A leaking class typically has many live instances,
@@ -2152,6 +2111,104 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
                    ctx->tracker->_candidate_count > 2 ? ctx->tracker->_candidate_klass_ids[2] : 0,
                    ctx->tracker->_candidate_count > 3 ? ctx->tracker->_candidate_klass_ids[3] : 0,
                    ctx->tracker->_candidate_count > 4 ? ctx->tracker->_candidate_klass_ids[4] : 0);
+        }
+      }
+    }
+  } else if (*tag_ptr > 0) {
+    // Already-tagged object reached via a new edge. This arm - NOT the
+    // first-admission block above - is where an already-admitted entry's
+    // shape can be corrected: improveChain/reparentToDurableRoot for a
+    // deeper/equal-durable path, maybeUpgradeRootAttachedRootKind for a
+    // new root-like edge. These branches were originally nested INSIDE
+    // the *tag_ptr == 0 block (misplaced by 57aec4895, whose own message
+    // says "improveChain needs to run when *tag_ptr != 0"), where they
+    // were dead code for their stated purpose: a freshly-admitted entry
+    // carries exactly this edge's (parent_tag, depth), so both improve-
+    // Chain's depth> check and the durability upgrade's strict-> check
+    // are guaranteed no-ops there. On the pod this silently disabled
+    // every already-admitted re-attribution: the static sweep's edge onto
+    // a holder born chain-attached could never re-root it
+    // (find-anchor-holder-eviction).
+    if (parent_tag != 0) {
+      // This new path is deeper - replace the shallow root-attached entry
+      // with the deeper chain-attached entry. This fixes the "depth=1 chain
+      // with no holder" problem: an object first admitted as a JNI-local
+      // root (parent_tag == 0) gets its frontier entry improved when the
+      // static-field → ... → object path reaches it.
+      u32 referrer_klass = ctx->tracker->classTags()->resolve(class_tag);
+      // Pre-read the CURRENT shape: if improveChain() below succeeds, this
+      // root-attached durable entry is about to be replaced with a deeper
+      // chain-attached one - i.e. it is leaving the population
+      // collectStaticFieldAnchorsForRotation() can select, at exactly this
+      // moment. That eviction (find-anchor-holder-eviction) needs a B'
+      // at-risk push fired HERE, not only from the sweep's static-edge
+      // site: the sweep gate re-laps only while the class count is in flux
+      // (see admitStaticFieldRoots' gate in runPassManualWalk), so a
+      // post-lap demotion in a stable-class JVM would otherwise never see
+      // another static edge onto this entry.
+      FrontierEntry pre_improve_entry{};
+      bool was_root_attached_durable =
+          ctx->frontier->lookup(*tag_ptr, &pre_improve_entry) &&
+          pre_improve_entry.parent_tag == 0 &&
+          rootKindDurability(pre_improve_entry.root_kind) >= 2;
+      if (ctx->frontier->improveChain(*tag_ptr, parent_tag, referrer_klass,
+                                       depth, 0, edge_field_index,
+                                       (u8)reference_kind)) {
+        // Chain was improved — invalidate any cached chain for this tag
+        // so pollWatchedTargets rebuilds it with the deeper path.
+        ctx->tracker->invalidateResolvedChain(*tag_ptr);
+        if (was_root_attached_durable) {
+          // Demotion push (B'): the replaced entry's static/JNI-global
+          // attribution was its only anchor-tier eligibility, and it is
+          // gone now. rootKindDurability() >= 2 is exactly the durable set
+          // the collector selects (STATIC_FIELD, JNI_GLOBAL); SYSTEM_CLASS
+          // scores 3 too but a class object is never admitted as a frontier
+          // entry, so it cannot appear here.
+          ctx->tracker->pushAtRiskStaticAnchor(*tag_ptr);
+        }
+      } else if (ctx->frontier->reparentToDurableRoot(
+                     *tag_ptr, parent_tag, referrer_klass, edge_field_index,
+                     (u8)reference_kind)) {
+        // Equal-depth re-parent from a transient root to a durable one
+        // (improveChain() cannot express it - see its declaration) - same
+        // cache invalidation so the rebuilt chain uses the durable root.
+        ctx->tracker->invalidateResolvedChain(*tag_ptr);
+      }
+    } else {
+      // Already-admitted entry reached via a NEW root-like edge
+      // (parent_tag == 0): the static-field sweep's class -> field edge
+      // reports the class as the referrer with a negative tag, which the
+      // rtag < 0 branch above treats as root-like (class objects are never
+      // frontier entries), and heap-root references arrive here with
+      // referrer_tag_ptr == nullptr. Without this, an entry first admitted
+      // through a stack local keeps its transient classification forever
+      // even after a later static-field sweep proves the same object is
+      // the direct value of a static field - exactly the durable-root
+      // discovery maybeUpgradeRootAttachedRootKind() exists for (same
+      // tie-break heapRootCallback() applies on its own ALREADY_ADMITTED
+      // case), so reuse it: upgrade only when this edge's kind is strictly
+      // more durable, and drop any cached chain so it is rebuilt with the
+      // upgraded root kind.
+      if (ctx->tracker->maybeUpgradeRootAttachedRootKind(ctx->frontier,
+                                                          *tag_ptr,
+                                                          (u8)reference_kind)) {
+        ctx->tracker->invalidateResolvedChain(*tag_ptr);
+      } else if (reference_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD) {
+        // The upgrade refused (maybeUpgradeRootAttachedRootKind returns
+        // false for parent_tag != 0 by design), so this STATIC_FIELD edge
+        // just proved an at-risk static attachment the anchor tier's
+        // parent_tag == 0 filter can never see: a holder already admitted
+        // as a non-root child (find-anchor-holder-eviction). Feed it to
+        // _static_anchor_fifo (B', see its declaration comment) so the
+        // static-anchor walk drains it ahead of the root-attached cohort.
+        // Only the sweep emits STATIC_FIELD edges onto already-tagged
+        // entries: the edge's referrer is the class object, and the BFS/
+        // descend walks never expand classes (the tag < 0 and CLASS-kind
+        // early returns above), so no other walk can flood the FIFO.
+        FrontierEntry entry{};
+        if (ctx->frontier->lookup(*tag_ptr, &entry) &&
+            entry.parent_tag != 0) {
+          ctx->tracker->pushAtRiskStaticAnchor(*tag_ptr);
         }
       }
     }
@@ -3188,10 +3245,51 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
   return selected;
 }
 
+void ReferenceChainTracker::pushAtRiskStaticAnchor(jlong tag) {
+  if (_static_anchor_fifo.size() >= STATIC_ANCHOR_FIFO_CAP ||
+      _static_anchor_fifo_set.contains(tag)) {
+    return;
+  }
+  _static_anchor_fifo.push_back(tag);
+  _static_anchor_fifo_set.insert(tag);
+  _static_anchor_fifo_pushed++;
+}
+
+int ReferenceChainTracker::drainStaticAnchorFifo(int max_count,
+                                                 std::vector<jlong> &out) {
+  if (max_count <= 0 || _static_anchor_fifo.empty()) {
+    return 0;
+  }
+  int drained = 0;
+  while (drained < max_count && !_static_anchor_fifo.empty()) {
+    out.push_back(_static_anchor_fifo.front());
+    _static_anchor_fifo.pop_front();
+    drained++;
+  }
+  _static_anchor_fifo_set.rebuildFrom(_static_anchor_fifo);
+  return drained;
+}
+
+void ReferenceChainTracker::requeueStaticAnchorFifoFront(
+    const std::vector<jlong> &tags) {
+  if (tags.empty()) {
+    return;
+  }
+  // Reverse order onto the front preserves the tags' relative FIFO order.
+  // The tags were popped by this pass's drainStaticAnchorFifo() and nothing
+  // runs a sweep between that drain and here, so no tag can already be in
+  // the deque - rebuildFrom() would silently keep the FIRST slot for a
+  // duplicate, but there are none by construction.
+  for (size_t i = tags.size(); i-- > 0;) {
+    _static_anchor_fifo.push_front(tags[i]);
+  }
+  _static_anchor_fifo_set.rebuildFrom(_static_anchor_fifo);
+}
+
 void ReferenceChainTracker::walkStaticFieldAnchors(
     jvmtiEnv *jvmti, JNIEnv *jni, const std::vector<jlong> &anchor_tags,
     int budget, int *edges_admitted, bool *truncated, bool *frontier_cap_hit,
-    u64 *safepoint_ticks) {
+    u64 *safepoint_ticks, std::vector<jlong> *unwalked) {
   if (anchor_tags.empty()) {
     return;
   }
@@ -3207,6 +3305,13 @@ void ReferenceChainTracker::walkStaticFieldAnchors(
     return;
   }
   int walked = 0;
+  // First index the walk did NOT consume (breaks before an anchor's walk
+  // report i, breaks after report i+1; a completed loop keeps the
+  // resolved_count sentinel). The un-walked set is only meaningful at a
+  // break - the caller requeues FIFO-sourced anchors, collector-sourced
+  // ones keep their own cursor retention, and dead tags never resolved
+  // are intentionally absent (they must not be requeued anywhere).
+  jint first_unwalked = resolved_count;
   for (jint i = 0; i < resolved_count; i++) {
     FrontierEntry entry{};
     if (!_frontier->lookup(resolved_tags[i], &entry)) {
@@ -3240,6 +3345,7 @@ void ReferenceChainTracker::walkStaticFieldAnchors(
     int remaining = budget - *edges_admitted;
     if (remaining <= 0) {
       jni->DeleteLocalRef(objects[i]);
+      first_unwalked = i;
       break;
     }
     descendFromAnchor(jvmti, jni, objects[i], resolved_tags[i], entry.depth,
@@ -3251,11 +3357,17 @@ void ReferenceChainTracker::walkStaticFieldAnchors(
       // Budget/deadline exhausted mid-set - remaining anchors keep their
       // rotation turn via the cursor next pass (the wrapping cursor already
       // tolerates a short selection).
+      first_unwalked = i + 1;
       break;
     }
     if (*frontier_cap_hit) {
+      first_unwalked = i + 1;
       break;
     }
+  }
+  if (unwalked != nullptr && first_unwalked < resolved_count) {
+    unwalked->insert(unwalked->end(), resolved_tags + first_unwalked,
+                     resolved_tags + resolved_count);
   }
   jvmti->Deallocate((unsigned char *)objects);
   jvmti->Deallocate((unsigned char *)resolved_tags);
@@ -3806,16 +3918,34 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   // Candidate-scoped reach, prong 2: root-attached static holders are
   // descend-walked directly (see collectStaticFieldAnchorsForRotation()/
   // walkStaticFieldAnchors()'s own comments) - not pushed onto the priority
-  // lane, so they are independent of the queue tiers above.
+  // lane, so they are independent of the queue tiers above. The at-risk
+  // FIFO (B', _static_anchor_fifo's declaration comment) is drained FIRST
+  // so its chain-attached holders - the population the collector's
+  // parent_tag == 0 filter structurally cannot select - get the walk budget
+  // before it can be exhausted; the collector's own selection follows, and
+  // its truncation retention is the wrapping cursor, not this requeue path.
+  std::vector<jlong> static_anchor_fifo_tags;
+  int static_anchor_fifo_drained =
+      drainStaticAnchorFifo(STATIC_ANCHOR_FIFO_DRAIN, static_anchor_fifo_tags);
   std::vector<jlong> static_anchor_tags =
       collectStaticFieldAnchorsForRotation(STATIC_ANCHOR_ROTATION_BUDGET);
-  // TEMP DIAGNOSTIC (see static_field_phase log above).
+  static_anchor_tags.insert(static_anchor_tags.end(),
+                            static_anchor_fifo_tags.begin(),
+                            static_anchor_fifo_tags.end());
+  // TEMP DIAGNOSTIC (see static_field_phase log above). The fifo fields are
+  // the round-10 verification channel for B': fifo_pushed_total sizes the
+  // at-risk population (the design's drain-rate argument was inferred, not
+  // measured).
   TEST_LOG("ReferenceChainTracker::runPassManualWalk rotation_candidates "
            "root_kind_tags=%zu leak_accumulation_tags=%zu stale_expanded_tags=%zu "
-           "static_anchor_tags=%zu watched_leak_klass_count=%d "
+           "static_anchor_tags=%zu static_anchor_fifo_size=%zu "
+           "static_anchor_fifo_drained=%d static_anchor_fifo_pushed_total=%llu "
+           "watched_leak_klass_count=%d "
            "leak_signatures=%zu leak_parents=%zu",
            rotation_tags.size(), leak_accumulation_tags.size(),
            stale_expanded_tags.size(), static_anchor_tags.size(),
+           _static_anchor_fifo.size(), static_anchor_fifo_drained,
+           (unsigned long long)_static_anchor_fifo_pushed,
            _watched_leak_klass_count,
            _leak_signature_totals.size(), _leak_parent_fanout.size());
   if (rotation_tags.empty() && leak_accumulation_tags.empty() &&
@@ -3851,13 +3981,42 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
     int static_anchor_edges_admitted = 0;
     bool static_anchor_truncated = false;
     bool static_anchor_frontier_cap_hit = false;
+    std::vector<jlong> static_anchor_unwalked;
     walkStaticFieldAnchors(jvmti, jni, static_anchor_tags, rotation_budget,
                            &static_anchor_edges_admitted,
                            &static_anchor_truncated,
-                           &static_anchor_frontier_cap_hit, safepoint_ticks);
+                           &static_anchor_frontier_cap_hit, safepoint_ticks,
+                           &static_anchor_unwalked);
     rotation_edges_admitted += static_anchor_edges_admitted;
     rotation_budget -= static_anchor_edges_admitted;
     *truncated = *truncated || static_anchor_truncated;
+    // B' requeue: resolved-but-unwalked anchors that came from this pass's
+    // FIFO drain go back to the FIFO front, order-preserving, so a pass
+    // whose budget died mid-batch walks them first next pass instead of
+    // waiting for the next sweep lap's re-push. Collector-sourced un-walked
+    // anchors are deliberately dropped from this - their retention is the
+    // collector cursor's own. Frontier lookups filter entries that died
+    // between selection and the walk (requeueing a dead tag would only
+    // re-drop it). The scan is drained x unwalked (<= 16 x <= 20), well
+    // under the small-set linear-scan cutoff.
+    if (!static_anchor_unwalked.empty() && !static_anchor_fifo_tags.empty()) {
+      std::vector<jlong> static_anchor_requeue;
+      for (jlong tag : static_anchor_unwalked) {
+        FrontierEntry entry{};
+        if (!_frontier->lookup(tag, &entry)) {
+          continue;
+        }
+        for (jlong fifo_tag : static_anchor_fifo_tags) {
+          if (tag == fifo_tag) {
+            static_anchor_requeue.push_back(tag);
+            break;
+          }
+        }
+      }
+      if (!static_anchor_requeue.empty()) {
+        requeueStaticAnchorFifoFront(static_anchor_requeue);
+      }
+    }
     if (static_anchor_frontier_cap_hit) {
       *frontier_cap_hit = true;
       return;

@@ -440,18 +440,65 @@ public:
                                                const std::vector<jlong> &tags,
                                                int budget,
                                                int *edges_admitted) {
-        ReferenceChainTracker *t = ReferenceChainTracker::instance();
-        bool truncated = false;
-        bool cap_hit = false;
-        u64 safepoint_ticks = 0;
-        t->walkStaticFieldAnchors(jvmti, jni, tags, budget, edges_admitted,
-                                  &truncated, &cap_hit, &safepoint_ticks);
+        walkStaticAnchorFifoForTest(jvmti, jni, tags, budget, edges_admitted,
+                                    nullptr);
     }
 
     static std::vector<jlong>
     collectStaticFieldAnchorsForRotationForTest(int max_count) {
         return ReferenceChainTracker::instance()
             ->collectStaticFieldAnchorsForRotation(max_count);
+    }
+
+    // B' at-risk static-anchor FIFO (see _static_anchor_fifo's declaration
+    // comment in referenceChains.h). pushStaticAnchorFifoForTest bypasses
+    // heapReferenceCallback's push predicate (kind == STATIC_FIELD onto a
+    // chain-attached entry) - the end-to-end push path is covered by
+    // AtRiskStaticHolderFeedsAnchorFifo below; the drive below exists so the
+    // drain/walk/requeue mechanics can be exercised deterministically on
+    // seeded entries.
+    static void pushStaticAnchorFifoForTest(jlong tag) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        t->_static_anchor_fifo.push_back(tag);
+        t->_static_anchor_fifo_set.insert(tag);
+        t->_static_anchor_fifo_pushed++;
+    }
+
+    static int drainStaticAnchorFifoForTest(int max_count,
+                                            std::vector<jlong> &out) {
+        return ReferenceChainTracker::instance()->drainStaticAnchorFifo(
+            max_count, out);
+    }
+
+    static void requeueStaticAnchorFifoFrontForTest(
+        const std::vector<jlong> &tags) {
+        ReferenceChainTracker::instance()->requeueStaticAnchorFifoFront(tags);
+    }
+
+    static size_t staticAnchorFifoSizeForTest() {
+        return ReferenceChainTracker::instance()->_static_anchor_fifo.size();
+    }
+
+    static bool staticAnchorFifoContainsForTest(jlong tag) {
+        return ReferenceChainTracker::instance()
+            ->_static_anchor_fifo_set.contains(tag);
+    }
+
+    static u64 staticAnchorFifoPushedForTest() {
+        return ReferenceChainTracker::instance()->_static_anchor_fifo_pushed;
+    }
+
+    static void walkStaticAnchorFifoForTest(jvmtiEnv *jvmti, JNIEnv *jni,
+                                             const std::vector<jlong> &tags,
+                                             int budget, int *edges_admitted,
+                                             std::vector<jlong> *unwalked) {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        bool truncated = false;
+        bool cap_hit = false;
+        u64 safepoint_ticks = 0;
+        t->walkStaticFieldAnchors(jvmti, jni, tags, budget, edges_admitted,
+                                  &truncated, &cap_hit, &safepoint_ticks,
+                                  unwalked);
     }
 
     // Direct candidate-slot seeding (the production path fills these via
@@ -5124,6 +5171,287 @@ TEST_F(ReferenceChainsBfsTest, StaticAnchorRotationWalksRootAttachedStaticHolder
     ASSERT_TRUE(frontier->lookup(chunk_ftag, &chunk_entry));
     EXPECT_EQ(entry_ftag, chunk_entry.parent_tag);
     EXPECT_EQ(3u, chunk_entry.depth);
+
+    tracker->stop();
+}
+
+// B' push site 1 - DEMOTION TIME (find-anchor-holder-eviction / _static_anchor_fifo):
+// when improveChain() replaces a root-attached durable (STATIC_FIELD/
+// JNI_GLOBAL) entry with a deeper chain-attached path, the entry is leaving
+// the anchor tier's eligible population at exactly that moment - the push
+// must fire right there. This matters because the sweep gate only re-laps
+// while the class count is in flux, so a post-lap demotion would otherwise
+// never see another static edge onto the entry. Driven through the REAL
+// expandFrontier batch walk (mock FollowReferences + real heapReferenceCallback).
+TEST_F(ReferenceChainsBfsTest, DemotionPushFiresWhenImproveChainEvictsRootAttachedStatic) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    int parentNode = addNode();
+    int holderNode = addNode();
+
+    // The chain edge whose delivery demotes the holder.
+    script = {
+        {JVMTI_HEAP_REFERENCE_FIELD, parentNode, holderNode, -1},
+    };
+
+    // Seed exactly the pre-demotion shape: holder root-attached STATIC
+    // (anchor-eligible), parent a root-attached frontier object whose
+    // expansion delivers the deeper chain edge. node_tags make both
+    // resolvable by mock_GetObjectsWithTags for the batch walk.
+    FrontierTable *frontier = tracker->frontierTable();
+    node_tags[holderNode] = 105;
+    node_tags[parentNode] = 104;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 105, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 104, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+    ReferenceChainsTestAccessor::pushPendingExpandForTest(104);
+
+    int edges = 0;
+    ReferenceChainsTestAccessor::expandFrontierForTest(&mock_jvmti, &mock_jni,
+                                                        &edges);
+    // The chain edge was delivered: the holder's entry is now chain-attached
+    // (improveChain replaced the depth-0 root-attached admission), and the
+    // demotion pushed its tag into the at-risk FIFO.
+    FrontierEntry entry{};
+    ASSERT_TRUE(frontier->lookup(105, &entry));
+    EXPECT_EQ(104, entry.parent_tag);
+    EXPECT_EQ(1u, entry.depth);
+    ASSERT_EQ(1u, ReferenceChainsTestAccessor::staticAnchorFifoSizeForTest());
+    EXPECT_TRUE(ReferenceChainsTestAccessor::staticAnchorFifoContainsForTest(105));
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::staticAnchorFifoPushedForTest());
+
+    // Re-walking the same edge must NOT push twice: improveChain refuses
+    // (new depth 1 is not > current 1), and the set dedupes regardless.
+    int edges2 = 0;
+    ReferenceChainsTestAccessor::pushPendingExpandForTest(104);
+    ReferenceChainsTestAccessor::expandFrontierForTest(&mock_jvmti, &mock_jni,
+                                                        &edges2);
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::staticAnchorFifoSizeForTest());
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::staticAnchorFifoPushedForTest());
+
+    tracker->stop();
+}
+
+// B' push site 2 - SWEEP TIME: the static sweep's class->field edge onto an
+// already-admitted CHAIN-ATTACHED entry (the admission-order eviction shape:
+// born as a non-root child, never root-attached at all) must feed the FIFO.
+// Driven through a full runPass so the real admitStaticFieldRoots sweep (and
+// its FollowReferences) delivers the edge, and the rotation phase of the
+// SAME pass drains the FIFO - the push counter survives the drain.
+TEST_F(ReferenceChainsBfsTest, SweepPushFiresOnStaticEdgeOntoChainAttachedHolder) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=100"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    int classNode = addNode();
+    int holderNode = addNode();
+    addClass((void *)&node_tags[classNode], "Lcom/rc/statics/ChainBornHolder;");
+
+    script = {
+        // Only the sweep's static edge: nothing else reaches holderNode, so
+        // the only possible push is the static-edge-onto-chain-attached site.
+        {JVMTI_HEAP_REFERENCE_STATIC_FIELD, classNode, holderNode, -1},
+    };
+
+    // Seed the born-chain-attached shape the eviction leaves: holder already
+    // a non-root child (parent 104, depth 1). The sweep's static edge below
+    // hits maybeUpgradeRootAttachedRootKind's documented parent_tag != 0
+    // refusal and must fall into the B' push instead.
+    FrontierTable *frontier = tracker->frontierTable();
+    node_tags[holderNode] = 105;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 105, 104, 1, FrontierEntryState::FRONTIER, 0));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 104, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+
+    bool truncated = true;
+    ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
+
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::staticAnchorFifoPushedForTest())
+        << "static sweep edge onto the chain-attached holder never fed "
+           "the at-risk anchor FIFO";
+    // The rotation phase of the same pass drained the pushed tag into the
+    // anchor walk (the holder has no scripted subtree - the walk is a no-op,
+    // which is what makes the drained-empty assertion attributable to the
+    // drain rather than to a walk).
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::staticAnchorFifoSizeForTest());
+    // The holder's entry is untouched by the push - the B' feed records the
+    // at-risk shape, it never re-attributes the entry (re-rooting is the
+    // documented refusal that motivated the FIFO in the first place).
+    FrontierEntry entry{};
+    ASSERT_TRUE(frontier->lookup(105, &entry));
+    EXPECT_EQ(104, entry.parent_tag);
+    EXPECT_EQ(1u, entry.depth);
+
+    tracker->stop();
+}
+
+// B' mechanics: a chain-attached holder drained from the at-risk FIFO is
+// descend-walked and intercepts a leak chunk 3 hops below it - the repair
+// for the population the root-attached collector demonstrably cannot
+// select (the negative control below). Mirrors
+// StaticAnchorRotationWalksRootAttachedStaticHolders's walk-phase shape,
+// but with the holder chain-attached and FIFO-sourced.
+TEST_F(ReferenceChainsBfsTest, AtRiskAnchorFifoDrainAndWalkIntercept) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    void *holderCls = (void *)0x6001, *chunkCls = (void *)0x6002;
+    addClass(holderCls, "Lcom/rc/descendwalk/ChainAttachedHolder;");
+    int chunk = addClass(chunkCls, "Lcom/rc/descendwalk/ChainChunk;");
+
+    int parentNode = addNode();
+    int holderNode = addNode();
+    int tableNode = addNode();
+    int entryNode = addNode();
+    int leakChunk = addNode();
+    const jlong leak_tag = ReferenceChainsTestAccessor::leakTagBase();
+    node_tags[leakChunk] = leak_tag;
+
+    // Chain: parent -> holder -> table -> entry -> leak chunk. Only the
+    // holder's own subtree is scripted for the walk below (the direct
+    // walkStaticAnchors drive never runs the roots/expand phases).
+    script = {
+        {JVMTI_HEAP_REFERENCE_FIELD, holderNode, tableNode, -1},
+        {JVMTI_HEAP_REFERENCE_ARRAY_ELEMENT, tableNode, entryNode, -1},
+        {JVMTI_HEAP_REFERENCE_FIELD, entryNode, leakChunk, chunk},
+    };
+
+    // Seed the holder exactly as the eviction leaves it: chain-attached
+    // (parent_tag = 104, depth 1, no root_kind). node_tags[holderNode] = 105
+    // makes the tag resolvable by mock_GetObjectsWithTags, exactly like the
+    // root-attached test's own 101 mapping.
+    FrontierTable *frontier = tracker->frontierTable();
+    node_tags[holderNode] = 105;
+    // root_kind = 0: the entry is chain-attached, and a non-root entry's
+    // edge kind is not recorded (FrontierEntry::root_kind's own comment).
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 105, 104, 1, FrontierEntryState::FRONTIER, 0));
+    // The chain's root: TRANSIENT (stack local), so the collector's durable
+    // root-kind filter skips it too - the whole table is un-selectable.
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 104, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+
+    // Negative control: the root-attached collector selects NOTHING from a
+    // table holding only a chain-attached holder and a transient root -
+    // the pre-B' behavior that stranded the dual-reachable population.
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(4);
+    ASSERT_TRUE(selected.empty());
+
+    // B': push + drain + walk reaches what the collector cannot.
+    ReferenceChainsTestAccessor::pushStaticAnchorFifoForTest(105);
+    std::vector<jlong> drained;
+    // 16 = ReferenceChainTracker::STATIC_ANCHOR_FIFO_DRAIN (private), the
+    // same per-pass drain cap runPassManualWalk() uses.
+    ASSERT_EQ(1, ReferenceChainsTestAccessor::drainStaticAnchorFifoForTest(
+                       16, drained));
+    ASSERT_EQ(1u, drained.size());
+    EXPECT_EQ(105, drained[0]);
+    EXPECT_EQ(0u, ReferenceChainsTestAccessor::staticAnchorFifoSizeForTest());
+
+    int edges = 0;
+    ReferenceChainsTestAccessor::walkStaticAnchorFifoForTest(
+        &mock_jvmti, &mock_jni, drained, 1000, &edges, nullptr);
+    jlong table_ftag = tags_ever_assigned[tableNode];
+    jlong entry_ftag = tags_ever_assigned[entryNode];
+    jlong chunk_ftag = tags_ever_assigned[leakChunk];
+    ASSERT_GT(table_ftag, 0) << "table array was not reached by the anchor walk";
+    ASSERT_GT(entry_ftag, 0) << "Entry was not reached one hop below table";
+    ASSERT_NE(chunk_ftag, leak_tag)
+        << "leak-tagged chunk inside the chain-attached holder was never "
+           "intercepted";
+    EXPECT_EQ(leak_tag,
+              ReferenceChainsTestAccessor::frontierLeakTag(chunk_ftag));
+    FrontierEntry chunk_entry{};
+    ASSERT_TRUE(frontier->lookup(chunk_ftag, &chunk_entry));
+    EXPECT_EQ(entry_ftag, chunk_entry.parent_tag);
+    EXPECT_EQ(4u, chunk_entry.depth);
+
+    tracker->stop();
+}
+
+// B' requeue mechanics: a truncated anchor walk reports exactly the
+// RESOLVED-but-unwalked tags, and requeueStaticAnchorFifoFront() restores
+// them to the FIFO front in order with a consistent membership set - so
+// an at-risk holder that lost its budget turn keeps it for the next pass
+// instead of waiting for the next sweep lap.
+TEST_F(ReferenceChainsBfsTest, TruncatedAnchorWalkRequeuesUnwalkedFifoTags) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    void *holderCls = (void *)0x7001;
+    addClass(holderCls, "Lcom/rc/descendwalk/RequeueHolder;");
+
+    int holderANode = addNode();
+    int holderBNode = addNode();
+    int tableNode = addNode();
+    int entryNode = addNode();
+
+    // Holder A's subtree is deep enough that a budget of 2 truncates the
+    // walk after A (two edges admitted, budget exhausted on the descend);
+    // holder B then must come back unwalked. B has no scripted subtree -
+    // its walk would be a no-op anyway, which is exactly what makes the
+    // unwalked report attributable to the truncation, not to content.
+    script = {
+        {JVMTI_HEAP_REFERENCE_FIELD, holderANode, tableNode, -1},
+        {JVMTI_HEAP_REFERENCE_ARRAY_ELEMENT, tableNode, entryNode, -1},
+    };
+
+    FrontierTable *frontier = tracker->frontierTable();
+    node_tags[holderANode] = 105;
+    node_tags[holderBNode] = 106;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 105, 104, 1, FrontierEntryState::FRONTIER, 0));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 106, 104, 1, FrontierEntryState::FRONTIER, 0));
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, 104, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STACK_LOCAL));
+
+    ReferenceChainsTestAccessor::pushStaticAnchorFifoForTest(105);
+    ReferenceChainsTestAccessor::pushStaticAnchorFifoForTest(106);
+    std::vector<jlong> drained;
+    // 16 = STATIC_ANCHOR_FIFO_DRAIN (private), the per-pass drain cap.
+    ASSERT_EQ(2, ReferenceChainsTestAccessor::drainStaticAnchorFifoForTest(
+                       16, drained));
+    ASSERT_EQ(2u, drained.size());
+    EXPECT_EQ(105, drained[0]);
+    EXPECT_EQ(106, drained[1]);
+
+    int edges = 0;
+    std::vector<jlong> unwalked;
+    ReferenceChainsTestAccessor::walkStaticAnchorFifoForTest(
+        &mock_jvmti, &mock_jni, drained, 2, &edges, &unwalked);
+    ASSERT_EQ(1u, unwalked.size());
+    EXPECT_EQ(106, unwalked[0]);
+    EXPECT_NE(0, tags_ever_assigned[tableNode])
+        << "holder A's walk never ran - the truncation happened too early";
+
+    // Requeue exactly what the caller-side filter in runPassManualWalk()
+    // would requeue (here: everything unwalked, both FIFO-sourced).
+    ReferenceChainsTestAccessor::requeueStaticAnchorFifoFrontForTest(unwalked);
+    EXPECT_EQ(1u, ReferenceChainsTestAccessor::staticAnchorFifoSizeForTest());
+    EXPECT_TRUE(ReferenceChainsTestAccessor::staticAnchorFifoContainsForTest(106));
+    EXPECT_FALSE(ReferenceChainsTestAccessor::staticAnchorFifoContainsForTest(105));
+    std::vector<jlong> redrained;
+    ASSERT_EQ(1, ReferenceChainsTestAccessor::drainStaticAnchorFifoForTest(
+                       16, redrained));
+    ASSERT_EQ(1u, redrained.size());
+    EXPECT_EQ(106, redrained[0]);
 
     tracker->stop();
 }
