@@ -167,6 +167,15 @@ walked=1 edges=18); spotlessApply clean.
   class signature + chain shape per walked anchor — remove once round 9
   names the tier-membership answer. KEEP for round 10 (it names the
   at-risk anchors B' now feeds into the walk).
+- TEMP (round 12, commit 8ca24a524, deployed tomorrow): wrapper-class
+  anchor trace - holder_class via GOTW on referrer_class_tag + the descend
+  walk's admission sequence (klass_id x seen_as, 48 entries) + per-anchor
+  walk outcome (edges/truncated). Round-11 watch data that shaped it: at
+  21:10-21:12 UTC the wrapper WAS walked (2 lines) with ZERO interception -
+  so "not in the eligible set" is REFUTED; the diagnostic must answer
+  whether the wrapper walk enumerates list -> elementData -> chunks at
+  all, and whether enumerated chunks carry leak tags at that moment.
+  Remove once the pod answers the wrapper question.
 - TEMP (B', this session): static_anchor_fifo_size/drained/pushed_total
   fields in runPassManualWalk's rotation_candidates TEST_LOG — remove
   after round 10 sizes the at-risk population.
