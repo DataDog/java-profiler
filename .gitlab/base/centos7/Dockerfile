@@ -1,4 +1,13 @@
-ARG BASE_IMAGE=openjdk:11-slim-buster
+# CentOS 7 (glibc 2.17) on purpose: this image builds the shipped linux-x64
+# libjavaProfiler.so, and its glibc is the runtime floor for x64 customers. It
+# stays on an EOL distro for that reason, which is why the repository URLs
+# below point at the vault/archive mirrors rather than mirror.centos.org.
+#
+# The default has to match what CI passes (BASE_IMAGE_LIBC_2_17 in
+# .gitlab/build-deploy/images.yml), because rebuild-images.sh builds without
+# --build-arg BASE_IMAGE whenever that variable is unset, and everything below
+# is yum-based.
+ARG BASE_IMAGE=centos:7
 FROM ${BASE_IMAGE} as base
 ARG CI_JOB_TOKEN
 WORKDIR /root
