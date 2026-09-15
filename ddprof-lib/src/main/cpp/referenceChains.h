@@ -1517,10 +1517,60 @@ private:
   // thread's own pass.
   std::vector<jlong> _static_anchor_index;
 
-  // Cursor into _static_anchor_index (not the frontier table) for
-  // collectStaticFieldAnchorsForRotation()'s wrapping selection. With the
-  // index, the scan is O(selected) per pass, not O(frontier_size).
-  size_t _static_anchor_index_cursor = 0;
+  // Parallel to _static_anchor_index: the OWN class tag of each anchor
+  // object (the class of the static field's VALUE, not the holder class).
+  // The selection tiers anchors by that class's shape (container vs other,
+  // see AnchorClassShape below) via a lookup into _class_shape_cache, so a
+  // later classification automatically upgrades an entry's tier without
+  // any index mutation. Cleared with the index on restartSearch().
+  std::vector<jlong> _static_anchor_own_class_tags;
+
+  // Dedup companion for _static_anchor_index (O(1) membership; the
+  // population is ~28k on a real JVM - see addToStaticAnchorIndex()'s own
+  // comment). Cleared with the index.
+  std::unordered_set<jlong> _static_anchor_index_tags;
+
+  // Shape of a class as an anchor candidate: does the class implement
+  // java/util/Collection or java/util/Map (directly or via superclasses/
+  // interfaces)? A leak holder is typically a container (the hotdog leak:
+  // Collections$SynchronizedRandomAccessList, a List) while the anchor
+  // population is dominated by non-containers (String/Class/boxed/
+  // primitive-array/enum statics - round 13 measured ~28k anchors on the
+  // hotdog JVM vs ~4k walkable per search). Selection walks leak-tagged
+  // anchors first, then containers, then everything else cursor-fairly —
+  // a container anchor is thus covered within ceil(container_cohort /
+  // budget) passes of admission instead of within ceil(28k / budget)
+  // passes (= never, at ~190-pass search lifetimes).
+  enum class AnchorClassShape : u8 { UNKNOWN = 0, CONTAINER = 1, NON_CONTAINER = 2 };
+
+  // class tag -> AnchorClassShape, process-lifetime (class tags are never
+  // reused - the shared class-tag allocator is deliberately not reset by
+  // restartSearch()). Filled lazily by reconcileAnchorClassShapes(): an
+  // anchor's own class is classified on first need, never re-classified.
+  // Engine thread only. Entries are never evicted: bounded by loaded-class
+  // count (~34k on hotdog), u8 values.
+  std::unordered_map<jlong, u8> _class_shape_cache;
+
+  // java/util/Collection and java/util/Map class tags, resolved once
+  // lazily by resolveContainerInterfaceTags() (0 = not yet resolved; a
+  // resolved value is NEGATIVE - class tags are a negative namespace,
+  // see nextClassTag()'s own comment). Class tags are stable for the
+  // JVM's lifetime, so these are safe to cache across searches. Engine
+  // thread only.
+  jlong _collection_iface_class_tag = 0;
+  jlong _map_iface_class_tag = 0;
+
+  // Fair-rotation cursors (index POSITIONS, not tags) for the two
+  // cursor-fair tiers of collectStaticFieldAnchorsForRotation():
+  // _anchor_container_cursor for container-shaped anchors,
+  // _anchor_other_cursor for everything else (including not-yet-classified
+  // UNKNOWN-shape anchors). Leak-tagged anchors are always selected (they
+  // are rare) and need no cursor. Wrapping semantics:
+  // the next selection for a tier scans for entries at positions >= the
+  // cursor, wraps to 0 once, and leaves the cursor just past the last
+  // consumed position.
+  size_t _anchor_container_cursor = 0;
+  size_t _anchor_other_cursor = 0;
 
   // java/lang/Object jclass cache for expandFrontier()'s and
   // admitStaticFieldRoots()'s holder-array element type (referenceChains.cpp)
@@ -1617,10 +1667,23 @@ private:
   // Per-pass cap on how many root-attached static holders
   // walkStaticFieldAnchors() resolve + descend-walk. Same "the cap IS the
   // cost control" reasoning as THREAD_WALK_MAX_ANCHORS (each anchor is a
-  // bounded FollowReferences call); the wrapping cursor in
-  // collectStaticFieldAnchorsForRotation() guarantees full coverage of the
-  // root-attached population within ceil(matches / this) passes.
+  // bounded FollowReferences call); the tiered cursors in
+  // collectStaticFieldAnchorsForRotation() guarantee coverage of each
+  // tier within ceil(tier / this) passes - in particular the container
+  // tier (the likely leak-holder cohort) within ceil(container_cohort /
+  // this) passes of admission, regardless of how large the full anchor
+  // population is.
   static constexpr int STATIC_ANCHOR_ROTATION_BUDGET = 16;
+
+  // Per-pass cap on how many DISTINCT anchor classes
+  // reconcileAnchorClassShapes() classifies (one GetObjectsWithTags call
+  // for the batch + a depth-bounded interface walk per class). Bounds the
+  // first-lap classification of a ~34k-class JVM to ~270 passes worst case
+  // (in practice far fewer: only classes that actually own admitted
+  // anchors need classifying), after which the cache is warm for the JVM's
+  // lifetime. Same "the cap IS the cost control" reasoning as the budgets
+  // above.
+  static constexpr int ANCHOR_SHAPE_RECONCILE_BUDGET = 128;
 
   // Per-pass cap on how many AT-RISK static holders (frontier entries
   // with parent_tag != 0 - the find-anchor-holder-eviction population)
@@ -1634,9 +1697,10 @@ private:
   // per-entry GOTW bookkeeping, not extra STW.
   static constexpr int STATIC_ANCHOR_FIFO_DRAIN = 16;
 
-  // (Removed: _static_anchor_rotation_cursor replaced by
-  // _static_anchor_index_cursor over _static_anchor_index — see
-  // collectStaticFieldAnchorsForRotation()'s own comment.)
+  // (Removed: the old single wrapping-index-cursor selection was replaced
+  // by tiered selection with per-tier cursors — see
+  // collectStaticFieldAnchorsForRotation()'s own comment and
+  // _anchor_container_cursor/_anchor_other_cursor.)
 
   // Cursor over the flattened (slot, tid) enumeration of
   // _candidate_qualifying_tids above, so walkCandidateThreadLocals()'s
@@ -2625,7 +2689,9 @@ private:
   // Prong 2 (durable-root-retained taxonomy): select up to `max_count` root-
   // attached entries held by a DURABLE root kind (parent_tag == 0,
   // root_kind STATIC_FIELD or JNI_GLOBAL, FRONTIER or EXPANDED) with a
-  // wrapping cursor - collectStaticFieldAnchorsForRotation() - and
+  // TIERED cursor (leak-tagged first, then container-shaped anchors, then
+  // everything else cursor-fairly — see collectStaticFieldAnchorsForRotation()'s
+  // own comment) - and
   // descend-walk each via walkStaticFieldAnchors(). A static Map/List's
   // leaked chunks sit 3-4 hops below its root-attached holder, deeper
   // than the one-hop Tier-2 rotation can reach from an un-expanded
@@ -2647,10 +2713,41 @@ private:
   void pushAtRiskStaticAnchor(jlong tag, u32 klass_id);
   // Add `tag` to _static_anchor_index if its root_kind is a durable
   // anchor-tier kind (STATIC_FIELD or JNI_GLOBAL). Called at first
-  // admission and at root-kind upgrade. Idempotent (dedup via a linear
+  // admission and at root-kind upgrade. `own_class_tag` is the class tag
+  // of the anchor OBJECT itself (heapReferenceCallback's class_tag param /
+  // FrontierEntry::class_tag) - kept in the parallel array so selection can
+  // tier by class shape without JNI. Idempotent (dedup via a linear
   // scan of the small vector — the anchor population is O(hundreds),
   // well under the 256-element linear-scan cutoff). Engine thread only.
-  void addToStaticAnchorIndex(jlong tag, u8 root_kind);
+  void addToStaticAnchorIndex(jlong tag, jlong own_class_tag, u8 root_kind);
+
+  // True iff `klass` implements java/util/Collection or java/util/Map,
+  // directly or transitively (superclass chain + interfaces of every
+  // visited class, depth-bounded, visited set to survive interface
+  // diamonds). The two interface class tags are resolved once and cached
+  // (_collection_iface_class_tag/_map_iface_class_tag). Caller owns local-
+  // ref hygiene for the jclasses this walks. Engine thread only.
+  bool classImplementsContainerOrMap(jvmtiEnv *jvmti, JNIEnv *jni,
+                                     jclass klass);
+
+  // Resolve _collection_iface_class_tag/_map_iface_class_tag once; returns
+  // false if the interfaces cannot be resolved yet (leaves them at -1 so
+  // the next call retries). Engine thread only.
+  bool resolveContainerInterfaceTags(jvmtiEnv *jvmti, JNIEnv *jni);
+
+  // Lazy shape reconciliation for the anchor index: scans
+  // _static_anchor_own_class_tags for class tags not yet in
+  // _class_shape_cache, resolves up to ANCHOR_SHAPE_RECONCILE_BUDGET of
+  // them per pass via one GetObjectsWithTags call (class objects are
+  // tagged with their class tags) and classifies each. Selection treats
+  // unclassified anchors as the lowest tier, so classification lag only
+  // delays a container's promotion - it never drops coverage. Runs on the
+  // engine thread with JNI available, outside any frontier lock and
+  // outside heap callbacks. TEMP: also emits the per-pass cohort
+  // histogram (round-14 measurement: container cohort size vs the ~4k
+  // per-search walk coverage) - remove once the arithmetic is verified
+  // on-pod.
+  void reconcileAnchorClassShapes(jvmtiEnv *jvmti, JNIEnv *jni);
   int drainStaticAnchorFifo(int max_count, std::vector<jlong> &out);
   // Pushes `tags` back to _static_anchor_fifo's FRONT in reverse order
   // (preserving FIFO order) and rebuilds the set - the truncated-walk

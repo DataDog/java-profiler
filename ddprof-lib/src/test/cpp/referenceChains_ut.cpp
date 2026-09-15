@@ -110,7 +110,11 @@ public:
         t->_root_kind_rotation_cursor = 1;
         t->_stale_expanded_rotation_cursor = 1;
         t->_static_anchor_index.clear();
-        t->_static_anchor_index_cursor = 0;
+        t->_static_anchor_own_class_tags.clear();
+        t->_static_anchor_index_tags.clear();
+        t->_anchor_container_cursor = 0;
+        t->_anchor_other_cursor = 0;
+        t->_class_shape_cache.clear();
         t->_thread_walk_anchor_cursor = 0;
         memset(t->_candidate_qualifying_tid_count, 0,
                sizeof(t->_candidate_qualifying_tid_count));
@@ -252,6 +256,31 @@ public:
                                                  bool leak_correlated) {
         ReferenceChainTracker::instance()->recordDiscoveredInstance(klass_id, tag,
                                                                    leak_correlated);
+    }
+
+    // Drive restartSearch() directly (the accessor base already set
+    // _tags_released, so its assert is satisfied).
+    static void restartSearchForTest() {
+        ReferenceChainTracker::instance()->restartSearch();
+    }
+
+    static bool anchorIndexIsEmptyForTest() {
+        ReferenceChainTracker *t = ReferenceChainTracker::instance();
+        return t->_static_anchor_index.empty() &&
+               t->_static_anchor_own_class_tags.empty() &&
+               t->_static_anchor_index_tags.empty();
+    }
+
+    // Read back discovered-instance slots (frontier tags recorded by
+    // recordDiscoveredInstance).
+    static jlong discoveredTagForTest(int slot, int idx) {
+        return ReferenceChainTracker::instance()
+            ->_candidate_discovered_tags[slot][idx];
+    }
+
+    static int discoveredCountForTest(int slot) {
+        return ReferenceChainTracker::instance()
+            ->_candidate_discovered_count[slot];
     }
 
     static size_t priorityExpandCap() {
@@ -451,9 +480,20 @@ public:
             ->collectStaticFieldAnchorsForRotation(max_count);
     }
 
-    static void addToStaticAnchorIndexForTest(jlong tag, u8 root_kind) {
+    static void addToStaticAnchorIndexForTest(jlong tag, jlong own_class_tag,
+                                               u8 root_kind) {
         ReferenceChainTracker::instance()
-            ->addToStaticAnchorIndex(tag, root_kind);
+            ->addToStaticAnchorIndex(tag, own_class_tag, root_kind);
+    }
+
+    // Prime the class-shape cache as if reconcileAnchorClassShapes() had
+    // classified `class_tag` (tests script shapes instead of driving the
+    // JNI interface walk, which needs real classes).
+    static void primeClassShapeForTest(jlong class_tag, bool container) {
+        ReferenceChainTracker::instance()->_class_shape_cache[class_tag] =
+            container
+                ? (u8)ReferenceChainTracker::AnchorClassShape::CONTAINER
+                : (u8)ReferenceChainTracker::AnchorClassShape::NON_CONTAINER;
     }
 
     // B' at-risk static-anchor FIFO (see _static_anchor_fifo's declaration
@@ -5141,7 +5181,7 @@ TEST_F(ReferenceChainsBfsTest, StaticAnchorRotationWalksRootAttachedStaticHolder
         frontier, 101, 0, 0, FrontierEntryState::FRONTIER,
         JVMTI_HEAP_REFERENCE_STATIC_FIELD));
     ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
-        101, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+        101, 9001, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, 102, 0, 0, FrontierEntryState::FRONTIER,
         JVMTI_HEAP_REFERENCE_STACK_LOCAL));
@@ -5151,7 +5191,7 @@ TEST_F(ReferenceChainsBfsTest, StaticAnchorRotationWalksRootAttachedStaticHolder
         frontier, 104, 0, 0, FrontierEntryState::FRONTIER,
         JVMTI_HEAP_REFERENCE_JNI_GLOBAL));
     ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
-        104, JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
+        104, 9004, JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
 
     std::vector<jlong> selected =
         ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
@@ -5181,6 +5221,155 @@ TEST_F(ReferenceChainsBfsTest, StaticAnchorRotationWalksRootAttachedStaticHolder
     ASSERT_TRUE(frontier->lookup(chunk_ftag, &chunk_entry));
     EXPECT_EQ(entry_ftag, chunk_entry.parent_tag);
     EXPECT_EQ(3u, chunk_entry.depth);
+
+    tracker->stop();
+}
+
+// Round-14 tiered selection: a container-shaped anchor (its own class
+// implements Collection/Map - the LEAK_BUFFER wrapper shape) admitted at a
+// LATE index position must leap the queue of ~28k other-tier anchors (the
+// round-13 hotdog measurement: admission-order selection put the leak
+// holder at position ~12-21k against ~4k walk coverage per search -
+// deterministically unreachable). Also the tier-0 guarantee: a leak-tagged
+// anchor leads the walk order unconditionally.
+TEST_F(ReferenceChainsBfsTest, ContainerAnchorLeapsQueueAcrossLargeIndex) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    constexpr int kAnchorCount = 28000;
+    for (int i = 0; i < kAnchorCount; i++) {
+        jlong tag = 100 + i;
+        jlong class_tag = 500000 + i;
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, tag, 0, 0, FrontierEntryState::FRONTIER,
+            JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            tag, class_tag, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+        // Containers only at late positions 24000..24003 - buried behind
+        // 24k other-tier anchors under any admission-order cursor.
+        bool container = (i >= 24000 && i <= 24003);
+        ReferenceChainsTestAccessor::primeClassShapeForTest(class_tag,
+                                                             container);
+    }
+    // One leak-tagged anchor at the very tail - tier 0, must lead.
+    jlong leak_anchor = 100 + kAnchorCount;
+    ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+        frontier, leak_anchor, 0, 0, FrontierEntryState::FRONTIER,
+        JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    frontier->setLeakTag(leak_anchor, 777);
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        leak_anchor, 599999, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    ReferenceChainsTestAccessor::primeClassShapeForTest(
+        599999, false /* its tier comes from leak_tag, not shape */);
+
+    std::vector<jlong> selected =
+        ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
+            16);
+    ASSERT_EQ(16u, selected.size())
+        << "28k+5 eligible anchors at a 16 budget must fill the selection";
+    EXPECT_EQ(leak_anchor, selected[0])
+        << "the leak-tagged anchor (tier 0) must lead the walk order";
+    // The four container anchors are selected in this FIRST call despite
+    // positions 24000+ (tags 24100-24103).
+    for (jlong t : {24100, 24101, 24102, 24103}) {
+        EXPECT_NE(std::find(selected.begin(), selected.end(), t), selected.end())
+            << "container anchor " << t
+            << " did not leap the other-tier queue";
+    }
+    // Sanity: an early other-tier anchor also made the cut (cursor-fair
+    // fill from position 0).
+    EXPECT_NE(std::find(selected.begin(), selected.end(), (jlong)100),
+              selected.end());
+
+    tracker->stop();
+}
+
+// Round-14 tier fairness: the other tier (everything not leak-tagged, not
+// container-shaped) still reaches full coverage across wraps - a 40-anchor
+// tier at a 16 budget covers all 40 in exactly 3 calls with no duplicates
+// within a call. Containers must not permanently starve the rest of the
+// index.
+TEST_F(ReferenceChainsBfsTest, AnchorOtherTierFairCoverageAcrossWraps) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    constexpr int kOtherCount = 40;
+    for (int i = 0; i < kOtherCount; i++) {
+        jlong tag = 200 + i;
+        ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
+            frontier, tag, 0, 0, FrontierEntryState::FRONTIER,
+            JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+        ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+            tag, 300000 + i, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+        ReferenceChainsTestAccessor::primeClassShapeForTest(300000 + i, false);
+    }
+
+    std::vector<jlong> all_selected;
+    for (int call = 0; call < 3; call++) {
+        std::vector<jlong> selected =
+            ReferenceChainsTestAccessor::
+                collectStaticFieldAnchorsForRotationForTest(16);
+        int expected = (call == 2) ? 8 : 16;
+        ASSERT_EQ(expected, (int)selected.size())
+            << "call " << call << " should select " << expected;
+        std::set<jlong> dedup(selected.begin(), selected.end());
+        ASSERT_EQ(selected.size(), dedup.size())
+            << "no anchor may be selected twice within a call";
+        all_selected.insert(all_selected.end(), selected.begin(),
+                            selected.end());
+    }
+    std::set<jlong> covered(all_selected.begin(), all_selected.end());
+    ASSERT_EQ(40u, covered.size()) << "full other-tier coverage expected";
+    for (int i = 0; i < kOtherCount; i++) {
+        EXPECT_NE(covered.find(200 + i), covered.end())
+            << "other-tier anchor " << 200 + i << " never selected";
+    }
+
+    tracker->stop();
+}
+
+// Round-13/14 restart hygiene: discovered-instance tags are FRONTIER tags;
+// restartSearch() resets the frontier table and _next_tag=1, so any
+// surviving discovered slot either fails reconstructChain (observed on-pod:
+// 'buildChainEvent failed ... reconstructChain failed for target_tag=8851')
+// or, worse, resolves into a live new-search entry and emits a chain event
+// for the WRONG OBJECT (the likely origin of the earlier noise-[B event).
+// restartSearch() must clear them, along with the anchor index and its
+// parallel arrays/cursors.
+TEST_F(ReferenceChainsBfsTest, RestartSearchClearsDiscoveredInstanceTags) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1000"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+    FrontierTable *frontier = tracker->frontierTable();
+
+    // A watched candidate with one discovered instance recorded.
+    ReferenceChainsTestAccessor::setCandidateCountForTest(1);
+    ReferenceChainsTestAccessor::setCandidateKlassIdForTest(0, 7);
+    ReferenceChainsTestAccessor::recordDiscoveredInstanceForTest(7, 4242,
+                                                                 false);
+    ASSERT_EQ(4242, ReferenceChainsTestAccessor::discoveredTagForTest(0, 0));
+    ASSERT_EQ(1, ReferenceChainsTestAccessor::discoveredCountForTest(0));
+
+    // An anchor index entry (tag + parallel class tag) to confirm the
+    // index reset covers the parallel structures too.
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        4242, 555, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
+    (void)frontier;
+
+    ReferenceChainsTestAccessor::restartSearchForTest();
+
+    EXPECT_EQ(0, ReferenceChainsTestAccessor::discoveredTagForTest(0, 0))
+        << "stale discovered frontier tag survived restartSearch()";
+    EXPECT_EQ(0, ReferenceChainsTestAccessor::discoveredCountForTest(0));
+    EXPECT_TRUE(ReferenceChainsTestAccessor::anchorIndexIsEmptyForTest())
+        << "anchor index (or its parallel arrays) survived restartSearch()";
 
     tracker->stop();
 }

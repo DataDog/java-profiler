@@ -16,33 +16,31 @@ representatives are re-tagged and all discovered instances auto-marked,
 chains are cached per-instance (not per-class). JFR analysis confirmed 2
 ReferenceChain events emitted — but one was for a noise [B instance.
 
-## Current focus: ROOT CAUSE FOUND (round 13 probe) — deterministic anchor-selection tail starvation; fix decision pending
+## Current focus: round 14 IMPLEMENTED (tiered anchor selection + restart hygiene), all gtests green, awaiting user deploy
 
-Round-13 probe (b5dd09675) on pod rz992 proved the LEAK_BUFFER wrapper IS
-admitted root-attached STATIC_FIELD (wrapper_tag=198536 parent=0 root_kind=8
-state=0 leak_tag=0) — admission works. The real bug: the anchor index
-holds ~28k anchors (4735 admits per 5.7k-class window, 0.83/class); the
-collector walks ~21/pass (avg 81 edges/anchor vs 3741-edge pass budget —
-saturated); each search covers ~4k of 28k before frontier-cap abandon
-(~190 passes); the wrapper's index position (admitted at sweep cursor
-25301/34310 ≈ 12-21k) is deterministically beyond reach, every search.
-Downstream corollaries all explained: zero interceptions, fanout=1 noise
-in leak_parents (seeded from ordinary root-reachable [B entries, not the
-unreachable leak chunks), and stale _candidate_discovered_tags surviving
-restartSearch (reconstructChain failures; likely the origin of the earlier
-noise [B chain event — wrong-object emission). Fix options A (class-shape
-priority), B (cross-restart rotation + budget tuning), C (one-shot
-whole-heap pass per search), D (A+B) — see
-find-anchor-tail-starvation.md + ev-leaktag-onpod-round13-results.md.
-User decision pending → RESOLVED: C REJECTED (hard STW constraint: per-call ~50ms,
-cumulative 500ms/sec — "no whole-heap pass, god knows how many seconds").
-Standing direction: D gated on measurement + scale test. Levers within
-bounded STW: cohort filtering (measure collection-shaped cohort first),
-selection order (deterministic coverage — the wrapper's index position is
-currently a ~14% lottery per search via the sweep cursor at search start),
-frontier cap (config, ×4 cap ≈ 16k coverage/search), and the scale gtest
-asserting coverage=rate×lifetime≥population BEFORE any next deploy.
-Hygiene fixes regardless: clear discovered tags on restartSearch.
+Direction D implemented gated on measurement (user rejected whole-heap C on
+hard STW: per-call ~50ms / 500ms-per-sec). Shipped in one build: (1) tiered
+anchor selection — leak_tag → container-shaped (implements Collection/Map)
+→ other, per-tier cursors, no within-call wrap; container anchors get
+ceil(cohort/budget) deterministic coverage from ANY index position (kills
+the admission-order lottery); (2) class shape classification via
+process-lifetime cache + per-pass GOTW-based reconcile (128 classes/pass,
+JNI outside callbacks/locks; class tags are NEGATIVE — != 0 tests); (3)
+O(1) index dedupe (28k population made the old linear scan O(n²)); (4)
+leak-tagged root-attached admits indexed (tier 0); (5) restartSearch clears
+stale _candidate_discovered_tags (was emitting WRONG-OBJECT chain events);
+(6) TEMP anchorTierHistogram per pass — THE arithmetic gate: if
+container_tier ≫ 4k on hotdog the shape tier fails like its reverted
+prior art (see STALE_EXPANDED_ROTATION_BUDGET comment) and the frontier-cap
+lever is next. 347 gtests OK (3 new: leap-queue scale test at 28k anchors,
+other-tier fair coverage, restart hygiene). See
+find-anchor-tail-starvation.md, meta-circle-review.md,
+ev-leaktag-onpod-round14.md (pod verification plan: histogram → container
+classification of the wrapper → wrapper walk → interception → events →
+reconstructChain failures gone).
+
+Prior focus (round 13, resolved): ROOT CAUSE FOUND — deterministic anchor-selection tail starvation; wrapper admitted root-attached (probe-proven) at index position ~12-21k vs ~4k coverage per search; wrapper's own
+class holds leak_tag=0 so B+C's leak-priority could not promote it.
 
 Prior focus (round 13 prepared): fix B+C verified working mechanically on
 the pod (ccdb03b89), but the LEAK_BUFFER wrapper is STILL never walked;
