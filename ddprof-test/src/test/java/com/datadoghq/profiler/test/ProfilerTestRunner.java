@@ -20,7 +20,9 @@ import org.junit.platform.launcher.core.LauncherFactory;
 import org.junit.platform.launcher.listeners.SummaryGeneratingListener;
 import org.junit.platform.reporting.legacy.xml.LegacyXmlReportGeneratingListener;
 
+import java.io.IOException;
 import java.io.PrintWriter;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Optional;
@@ -146,7 +148,21 @@ public class ProfilerTestRunner {
         String reportsDir = System.getProperty("test.reportsDir");
         if (reportsDir != null && !reportsDir.isEmpty()) {
             Path reportsPath = Paths.get(reportsDir);
-            reportsPath.toFile().mkdirs();
+            try {
+                Files.createDirectories(reportsPath);
+            } catch (IOException e) {
+                // Silently producing no XML is the one outcome that must not
+                // happen: flake_report.py would read zero observed tests for
+                // this cell, which is indistinguishable from a cell that was
+                // never retried, so a failure here would disable flake
+                // classification and quarantine for musl without a trace.
+                System.err.println("::error::cannot write JUnit reports to " + reportsPath + ": " + e);
+                System.exit(1);
+            }
+            if (!Files.isDirectory(reportsPath)) {
+                System.err.println("::error::JUnit report directory is not a directory: " + reportsPath);
+                System.exit(1);
+            }
             launcher.registerTestExecutionListeners(new LegacyXmlReportGeneratingListener(reportsPath, new PrintWriter(System.err)));
         }
 

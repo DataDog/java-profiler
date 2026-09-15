@@ -67,6 +67,7 @@ jobs:
           python3 .github/scripts/quarantine.py validate
           .github/scripts/tests/test_quarantine.sh
           .github/scripts/tests/test_generate_test_summary.sh
+          .github/scripts/tests/test_prepare_reports.sh
 
   check-for-pr:
     runs-on: ubuntu-latest

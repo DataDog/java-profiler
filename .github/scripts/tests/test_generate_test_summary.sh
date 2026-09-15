@@ -146,5 +146,26 @@ echo "$summary" | grep -q "All 1 test jobs passed" \
   || fail "expected the all-passed banner, got: $summary"
 pass "an all-passing run prints no Failed Jobs section"
 
+# The job-name regex and test_workflow.yml's `name:` expressions are a contract
+# with no enforcement: a non-matching job is skipped silently, so a rename
+# renders a summary reporting zero test jobs while the run stays green. Read
+# the real workflow rather than a fabricated name, so drift fails here.
+pattern=$(sed -n "s/.*test_job_pattern='\(.*\)'.*/\1/p" "$SCRIPT")
+[ -n "$pattern" ] || fail "could not read test_job_pattern out of generate-test-summary.sh"
+names=$(grep -hE "^ *name: test-linux" "$ROOT/.github/workflows/test_workflow.yml")
+[ -n "$names" ] || fail "no test-linux job names found in test_workflow.yml"
+count=0
+while IFS= read -r line; do
+  rendered=${line#*name: }
+  rendered=${rendered//'${{ matrix.java_version }}'/17}
+  rendered=${rendered//'${{ matrix.config }}'/debug}
+  rendered=${rendered//"\${{ inputs.slow_tests && 'slow' || 'regular' }}"/regular}
+  [[ "$rendered" =~ $pattern ]] \
+    || fail "job name '$rendered' does not match generate-test-summary.sh's test_job_pattern"
+  count=$((count + 1))
+done <<< "$names"
+[ "$count" -eq 4 ] || fail "expected 4 test-linux jobs in test_workflow.yml, matched $count"
+pass "every test-linux job name in test_workflow.yml matches the summary's regex"
+
 echo
 echo "All $TESTS generate-test-summary tests passed."

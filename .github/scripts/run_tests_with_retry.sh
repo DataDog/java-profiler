@@ -38,6 +38,13 @@ fi
 CELL="${1:?usage: run_tests_with_retry.sh [--list <file>] <cell> -- <command...>}"
 shift
 [ "${1:-}" = "--" ] && shift
+# Without a command the pipeline below degrades to a bare redirection, exits 0,
+# records no attempt, and the cell goes green having run no test at all. Every
+# other unexamined-pass path in this script fails loudly; so does this one.
+if [ "$#" -eq 0 ]; then
+  echo "::error::no command given: run_tests_with_retry.sh [--list <file>] <cell> -- <command...>"
+  exit 1
+fi
 
 MAX_ATTEMPTS="${MAX_ATTEMPTS:-2}"
 MAX_FAILURES_TO_RETRY="${MAX_FAILURES_TO_RETRY:-3}"
@@ -109,7 +116,15 @@ snapshot() {
   # so read access has to be taken again here or the cp below fails and the
   # cell silently loses its flake evidence.
   make_results_readable || EVIDENCE_SUSPECT=1
-  rm -rf "$dest" || echo "::warning::Could not clear ${dest}; attempt ${attempt} evidence may be stale"
+  if ! rm -rf "$dest"; then
+    # cp -r below merges into whatever survives, so this attempt's evidence
+    # becomes a union with an earlier one's. attempt_results() then reports
+    # tests as observed-and-passed that this attempt never ran, which is how a
+    # persistent failure acquires a "flaky" label and a paste-ready quarantine
+    # entry that buries a real defect.
+    echo "::warning::Could not clear ${dest}; attempt ${attempt} evidence may be merged with an earlier attempt's"
+    EVIDENCE_SUSPECT=1
+  fi
   mkdir -p "$dest"
   if [ -d "$RESULTS_DIR" ]; then
     cp -r "$RESULTS_DIR"/. "$dest"/ \
@@ -123,8 +138,13 @@ TEST_TASK_PATTERN="${TEST_TASK_PATTERN:-:ddprof-test:test}"
 
 # Self-contained state: a leftover attempt-2 from an earlier run on a reused
 # workspace would be read back as this run's evidence, inflating the attempt
-# count and importing failures that never happened here.
-rm -rf "$EVIDENCE_DIR" "$(dirname "$OUTCOME_FILE")"
+# count and importing failures that never happened here. Root-owned leftovers
+# from a Docker-run cell are exactly how that happens, so a failure to clear
+# is recorded rather than discarded.
+if ! rm -rf "$EVIDENCE_DIR" "$(dirname "$OUTCOME_FILE")"; then
+  echo "::warning::Could not clear ${EVIDENCE_DIR}; this run may inherit an earlier run's attempts as its own evidence"
+  EVIDENCE_SUSPECT=1
+fi
 
 EXIT_CODE=1
 # A single, per-attempt-truncated log: only the final attempt's is ever read

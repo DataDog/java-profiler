@@ -20,7 +20,11 @@ cp -r ddprof-test/build/reports/tests test-reports/tests || true
 # on its first attempt (skipped as a needless copy with no other attempt to
 # compare against) -- copy build/test-results directly only then, so a green
 # run still ships its JUnit XML.
-if [ -z "$(find flake-evidence -mindepth 1 -maxdepth 1 -name 'attempt-*' 2>/dev/null)" ]; then
+# Keyed on real evidence rather than on the attempt-* directory: snapshot()
+# creates that with mkdir -p *before* the copy that may fail, so an empty or
+# partial snapshot would otherwise skip this fallback and ship an artifact with
+# no JUnit XML in it at all.
+if [ -z "$(find flake-evidence -name 'TEST-*.xml' 2>/dev/null | head -1)" ]; then
   cp -r ddprof-test/build/test-results test-reports/test-results || true
 fi
 cp -r flake-evidence test-reports/flake-evidence || true
