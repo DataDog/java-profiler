@@ -678,7 +678,10 @@ void ElfParser::parseDynamicSection() {
             return;
         }
         const char* dyn_end = dyn_start + dynamic->p_memsz;
-        for (ElfDyn* dyn = (ElfDyn*)dyn_start; dyn < (ElfDyn*)dyn_end; dyn++) {
+        // p_memsz need not be a multiple of sizeof(ElfDyn); stop once a full
+        // entry would no longer fit, rather than reading a partial one past
+        // the range inLiveImage() just validated.
+        for (ElfDyn* dyn = (ElfDyn*)dyn_start; dyn + 1 <= (ElfDyn*)dyn_end; dyn++) {
             switch (dyn->d_tag) {
                 case DT_SYMTAB:
                     symtab = dyn_ptr(dyn);
@@ -733,7 +736,7 @@ void ElfParser::parseDynamicSection() {
             }
         }
 
-        if (symtab == NULL || strtab == NULL || syment == 0 || relent == 0) {
+        if (symtab == NULL || strtab == NULL || syment == 0 || relent < sizeof(ElfRelocation)) {
             return;
         }
 
@@ -749,20 +752,27 @@ void ElfParser::parseDynamicSection() {
         }
 
         // symtab/strtab/jmprel/rel all resolve through dyn_ptr(), which -- like
-        // DT_HASH above -- is not routed through inLiveImage(). Only the base
-        // pointers are validated here, not the full [ptr, ptr+size) ranges:
-        // strtab's declared size can be the 1 MB DT_STRSZ-absent fallback
-        // above, which relies on strAt()'s own memchr scan finding a NUL long
-        // before that cap is reached -- requiring the whole megabyte to lie
-        // in the live image would reject small (but otherwise valid)
-        // libraries. symtab is only ever accessed below at
-        // symtab + ELF_R_SYM(r->r_info) * syment, an index taken from the
-        // relocation entry itself -- not bounded by nsyms -- so each access
-        // is validated individually at its use site instead; nsyms only
-        // matters for loadSymbolTable()'s sequential full-table walk,
-        // checked separately just below.
+        // DT_HASH above -- is not routed through inLiveImage(). symtab is only
+        // ever accessed below at symtab + ELF_R_SYM(r->r_info) * syment, an
+        // index taken from the relocation entry itself -- not bounded by
+        // nsyms -- so each access is validated individually at its use site
+        // instead (resolveSymbol()); nsyms only matters for
+        // loadSymbolTable()'s sequential full-table walk, checked separately
+        // just below.
         if (!inLiveImage(strtab, 0) || !inLiveImage(symtab, 0)) {
             return;
+        }
+        // strsz can be a corrupted DT_STRSZ value, or the 1 MB fallback above,
+        // neither of which is validated against the live image -- clamp it to
+        // what's actually left after strtab so strAt()'s memchr scan (used by
+        // every symbol-name lookup below) can never run past the live image
+        // into unmapped memory, regardless of what strsz claims. This also
+        // fixes the previous over-strict version of this check, which
+        // required the whole (possibly 1 MB fallback) range to already lie in
+        // the live image and so rejected small, otherwise-valid libraries.
+        size_t strtab_room = (size_t)(liveImageEnd() - strtab);
+        if (strsz > strtab_room) {
+            strsz = strtab_room;
         }
         if (!inLiveImage(jmprel, pltrelsz)) {
             jmprel = NULL;
@@ -779,8 +789,11 @@ void ElfParser::parseDynamicSection() {
 
         const char* base = this->base();
         if (jmprel != NULL && pltrelsz != 0) {
-            // Parse .rela.plt table
-            for (size_t offs = 0; offs < pltrelsz; offs += relent) {
+            // Parse .rela.plt table. relent (>= sizeof(ElfRelocation), checked
+            // above) is the untrusted per-entry stride; the loop condition
+            // ensures a full entry remains before reading it, rather than
+            // trusting pltrelsz to be an exact multiple of relent.
+            for (size_t offs = 0; offs <= pltrelsz && sizeof(ElfRelocation) <= pltrelsz - offs; offs += relent) {
                 ElfRelocation* r = (ElfRelocation*)(jmprel + offs);
                 ElfSymbol* sym = resolveSymbol(symtab, r->r_info, syment);
                 if (sym == NULL) {
@@ -795,11 +808,14 @@ void ElfParser::parseDynamicSection() {
             }
         }
 
-        if (rel != NULL && relsz != 0) {
+        // relcount * relent is attacker-controlled on both sides and can
+        // overflow; skip the loop rather than start from a wrapped offset.
+        if (rel != NULL && relsz != 0 && relcount <= SIZE_MAX / relent) {
             // Relocation entries for imports can be found in .rela.dyn, for example
             // if a shared library is built without PLT (-fno-plt). However, if both
-            // entries exist, addImport saves them both.
-            for (size_t offs = relcount * relent; offs < relsz; offs += relent) {
+            // entries exist, addImport saves them both. As above, the loop
+            // condition ensures a full entry remains before reading it.
+            for (size_t offs = relcount * relent; offs <= relsz && sizeof(ElfRelocation) <= relsz - offs; offs += relent) {
                 ElfRelocation* r = (ElfRelocation*)(rel + offs);
                 if (ELF_R_TYPE(r->r_info) == R_GLOB_DAT || ELF_R_TYPE(r->r_info) == R_ABS64) {
                     ElfSymbol* sym = resolveSymbol(symtab, r->r_info, syment);
