@@ -110,6 +110,16 @@ def cmd_count(args):
 
 _NON_TEST_TASK_FAILURE_RE = re.compile(r"Execution failed for task '([^']+)'")
 
+# Gradle reporting that a forked test JVM died, and the JVM's own crash banner.
+# An ordinary test failure makes Gradle exit non-zero too, so the exit code by
+# itself cannot separate "the quarantined test failed" from "the JVM died with
+# tests still unrun" -- but Gradle names the latter explicitly.
+_CUT_SHORT_RE = re.compile(
+    r"finished with non-zero exit value"
+    r"|A fatal error has been detected by the Java Runtime Environment"
+    r"|hs_err_pid"
+)
+
 
 def non_test_task_failures(log_path, test_task_pattern):
     """Gradle task names blamed for a failure, other than the test task itself.
@@ -127,6 +137,24 @@ def non_test_task_failures(log_path, test_task_pattern):
             if m and test_task_pattern not in m.group(1):
                 found.add(m.group(1))
     return sorted(found)
+
+
+def cut_short_marker(log_path):
+    """The log line fragment showing this invocation was cut short, or None.
+
+    A missing or unreadable log yields None, matching non_test_task_failures()
+    above: with no log there is no evidence either way, and the alternative
+    would be to gate every quarantined failure on the strength of a file the
+    caller happened not to pass.
+    """
+    if not log_path or not os.path.isfile(log_path):
+        return None
+    with open(log_path, errors="replace") as handle:
+        for line in handle:
+            m = _CUT_SHORT_RE.search(line)
+            if m:
+                return m.group(0)
+    return None
 
 
 def cmd_report(args):
@@ -175,6 +203,19 @@ def cmd_report(args):
 
     other_task_failures = non_test_task_failures(args.attempt_log, args.test_task_pattern)
 
+    # Two independent signs that the final attempt stopped early rather than
+    # running to completion and failing tests: Gradle saying so in the log, and
+    # the attempt having reached fewer tests than another attempt managed. The
+    # latter needs more than one attempt to compare against, which slow suites
+    # (MAX_ATTEMPTS=1) do not have, so the log is the primary signal.
+    final_attempt_cut_short = cut_short_marker(args.attempt_log)
+    observed_shortfall = None
+    if final_attempt_ran and ran > 1:
+        best_observed = max(len(seen) for _, seen, _ in attempts)
+        final_observed = len(final[1])
+        if final_observed < best_observed:
+            observed_shortfall = (final_observed, best_observed)
+
     # The gating verdict, owned here rather than re-derived by the caller from
     # raw counts: three independent readers of this file re-deciding the same
     # thing is how a schema change turns into shotgun surgery.
@@ -196,17 +237,17 @@ def cmd_report(args):
     #                                  outright (zero failures of its own) is
     #                                  the ordinary flaky-then-fixed case and
     #                                  must not gate.
-    #   final attempt exited        -> gate, regardless of how many of its own
-    #   non-zero                       failures were named and quarantined.
-    #                                  The JVM can abort part-way through
-    #                                  after naming one real (quarantined)
-    #                                  failure, so the tests it never reached
-    #                                  are absent from the XML rather than
-    #                                  passing; a quarantined name or two must
-    #                                  not paper over that. Gradle blames the
-    #                                  crash on the test task itself, so the
-    #                                  non-test task check above cannot see
-    #                                  it.
+    #   final attempt exited        -> gate only with evidence that it was cut
+    #   non-zero and was cut short     short: Gradle reporting a dead test JVM,
+    #                                  or the attempt having reached fewer
+    #                                  tests than another attempt managed. A
+    #                                  quarantined test that fails makes Gradle
+    #                                  exit non-zero all by itself, so treating
+    #                                  every non-zero exit as a crash would
+    #                                  gate the ordinary case the list exists
+    #                                  to excuse. Gradle blames a crash on the
+    #                                  test task itself, so the non-test task
+    #                                  check above cannot see it.
     #   no failure named            -> no opinion; the caller keeps its own
     #                                  exit code (a compile error or a dead
     #                                  runner is nothing to do with
@@ -234,14 +275,20 @@ def cmd_report(args):
             gates = True
             gate_reason = "all failing tests are quarantined, but the build also failed in {}".format(
                 ", ".join(other_task_failures))
-        elif args.final_attempt_exit_code not in (None, 0):
+        elif args.final_attempt_exit_code not in (None, 0) and final_attempt_cut_short:
             gates = True
             gate_reason = (
-                "the final attempt named {} failure(s) of its own (all "
-                "quarantined) yet exited {}; the run was cut short rather than "
-                "cleanly passing, so the tests missing from its results cannot "
-                "be read as quarantined"
-            ).format(final_attempt_failure_count, args.final_attempt_exit_code)
+                "the final attempt exited {} and its log shows the run was cut "
+                "short ({!r}), so the tests missing from its results cannot be "
+                "read as quarantined"
+            ).format(args.final_attempt_exit_code, final_attempt_cut_short)
+        elif args.final_attempt_exit_code not in (None, 0) and observed_shortfall:
+            gates = True
+            gate_reason = (
+                "the final attempt exited {} having reached only {} of the {} "
+                "tests another attempt ran, so it stopped early and the tests "
+                "missing from its results cannot be read as quarantined"
+            ).format(args.final_attempt_exit_code, *observed_shortfall)
         else:
             gates = False
             gate_reason = "all {} failing test(s) are quarantined".format(len(results))
@@ -262,6 +309,8 @@ def cmd_report(args):
         "final_attempt_gating_count": final_attempt_gating_count,
         "final_attempt_failure_count": final_attempt_failure_count,
         "other_task_failures": other_task_failures,
+        "final_attempt_cut_short": final_attempt_cut_short,
+        "final_attempt_observed_shortfall": observed_shortfall,
         "final_attempt_exit_code": args.final_attempt_exit_code,
         "gates": gates,
         "gate_reason": gate_reason,
