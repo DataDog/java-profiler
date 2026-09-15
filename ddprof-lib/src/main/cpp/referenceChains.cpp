@@ -2101,6 +2101,20 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
       ctx->_diag_leak_flags[ctx->_diag_count] = 0;
       ctx->_diag_count++;
     }
+    // TEMP DIAGNOSTIC (pod round 12): log every root-attached
+    // STATIC_FIELD admission so we can see which classes are admitted
+    // as static-field holders by the sweep. The LEAK_BUFFER wrapper
+    // (SynchronizedRandomAccessList) must appear here if the sweep
+    // processes ProfileAnalyzer's class. Remove once the wrapper
+    // question is answered.
+    if (result == ReferenceChainTracker::AdmitResult::ADMITTED &&
+        parent_tag == 0 &&
+        root_kind == (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD) {
+      TEST_LOG("ReferenceChainTracker::heapReferenceCallback "
+               "root-attached STATIC_FIELD admit klass_id=%u "
+               "frontier_tag=%lld depth=%u",
+               referrer_klass, (long long)*tag_ptr, depth);
+    }
     // Auto-mark: if this object's class matches a watched leak class,
     // record its frontier tag so pollWatchedTargets() can build a chain
     // event for it. A leaking class typically has many live instances,
@@ -2203,7 +2217,8 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
           // the collector selects (STATIC_FIELD, JNI_GLOBAL); SYSTEM_CLASS
           // scores 3 too but a class object is never admitted as a frontier
           // entry, so it cannot appear here.
-          ctx->tracker->pushAtRiskStaticAnchor(*tag_ptr);
+          ctx->tracker->pushAtRiskStaticAnchor(
+              *tag_ptr, ctx->tracker->classTags()->resolve(class_tag));
         }
       } else if (ctx->frontier->reparentToDurableRoot(
                      *tag_ptr, parent_tag, referrer_klass, edge_field_index,
@@ -2247,7 +2262,8 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
         FrontierEntry entry{};
         if (ctx->frontier->lookup(*tag_ptr, &entry) &&
             entry.parent_tag != 0) {
-          ctx->tracker->pushAtRiskStaticAnchor(*tag_ptr);
+          ctx->tracker->pushAtRiskStaticAnchor(
+              *tag_ptr, ctx->tracker->classTags()->resolve(class_tag));
         }
       }
     }
@@ -2480,9 +2496,13 @@ bool ReferenceChainTracker::maybeUpgradeRootAttachedRootKind(
     return false;
   }
   frontier->updateRootKind(tag, new_root_kind);
+  // TEMP DIAGNOSTIC (pod round 12): include klass_id so the LEAK_BUFFER
+  // wrapper (SynchronizedRandomAccessList) can be identified among the
+  // upgraded entries. Remove once the wrapper question is answered.
   TEST_LOG("ReferenceChainTracker::maybeUpgradeRootAttachedRootKind tag=%lld "
-           "old_root_kind=%d -> new_root_kind=%d",
-           (long long)tag, (int)entry.root_kind, (int)new_root_kind);
+           "old_root_kind=%d -> new_root_kind=%d klass_id=%u",
+           (long long)tag, (int)entry.root_kind, (int)new_root_kind,
+           entry.referrer_klass);
   return true;
 }
 
@@ -3301,7 +3321,7 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
   return selected;
 }
 
-void ReferenceChainTracker::pushAtRiskStaticAnchor(jlong tag) {
+void ReferenceChainTracker::pushAtRiskStaticAnchor(jlong tag, u32 klass_id) {
   if (_static_anchor_fifo.size() >= STATIC_ANCHOR_FIFO_CAP ||
       _static_anchor_fifo_set.contains(tag)) {
     return;
@@ -3309,6 +3329,14 @@ void ReferenceChainTracker::pushAtRiskStaticAnchor(jlong tag) {
   _static_anchor_fifo.push_back(tag);
   _static_anchor_fifo_set.insert(tag);
   _static_anchor_fifo_pushed++;
+  // TEMP DIAGNOSTIC (pod round 12): track which classes enter the
+  // at-risk FIFO. The LEAK_BUFFER wrapper (SynchronizedRandomAccessList)
+  // must appear here if it is demoted or admitted chain-attached then
+  // re-discovered as a static-field holder. Remove once the wrapper
+  // question is answered.
+  TEST_LOG("ReferenceChainTracker::pushAtRiskStaticAnchor tag=%lld "
+           "klass_id=%u fifo_size=%zu",
+           (long long)tag, klass_id, _static_anchor_fifo.size());
 }
 
 int ReferenceChainTracker::drainStaticAnchorFifo(int max_count,
@@ -3396,15 +3424,18 @@ void ReferenceChainTracker::walkStaticFieldAnchors(
                (long long)entry.parent_tag, (unsigned)entry.root_kind,
                (unsigned)entry.state, (int)entry.referrer_field_index);
       // TEMP DIAGNOSTIC (pod round 12): the LEAK_BUFFER wrapper shape is a
-      // Collections.unmodifiableList value held by a static field. The
+      // Collections.synchronizedList value held by a static field. The
       // wrapper gets walked (observed rounds 10-11) yet never intercepts,
       // so for wrapper-class anchors additionally name the HOLDER class
       // (the class owning the admitting static field - resolves the
-      // "which unmodifiable list is this" question) and trace the walk's
+      // "which synchronized list is this" question) and trace the walk's
       // admission sequence (descendFromAnchor's diag_trace). TEMP: remove
       // once the pod answers the wrapper question.
       wrapper_trace =
-          sig != nullptr && strstr(sig, "UnmodifiableRandomAccessList") != nullptr;
+          sig != nullptr &&
+          (strstr(sig, "UnmodifiableRandomAccessList") != nullptr ||
+           strstr(sig, "SynchronizedRandomAccessList") != nullptr ||
+           strstr(sig, "SynchronizedList") != nullptr);
       if (wrapper_trace && entry.referrer_class_tag < 0) {
         jlong holder_tag = entry.referrer_class_tag;
         jint holder_count = 0;

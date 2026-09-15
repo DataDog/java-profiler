@@ -2631,7 +2631,7 @@ private:
   // set, cap-drop when the FIFO is full, count the push. No return value -
   // a dropped push is silently retried by the feed's next event (the next
   // static edge onto the entry, or the next demotion). Engine thread only.
-  void pushAtRiskStaticAnchor(jlong tag);
+  void pushAtRiskStaticAnchor(jlong tag, u32 klass_id);
   int drainStaticAnchorFifo(int max_count, std::vector<jlong> &out);
   // Pushes `tags` back to _static_anchor_fifo's FRONT in reverse order
   // (preserving FIFO order) and rebuilds the set - the truncated-walk
