@@ -5,8 +5,16 @@
 #
 #   test | ticket | added | review_by | cells | reason
 #
-#   test       Fully qualified <class>.<method>. A trailing ".*" covers every
+#   test       Fully qualified <class>.<method>, written without the
+#              parentheses JUnit puts in its own XML report -- CI normalises
+#              the report's id to this shape. A trailing ".*" covers every
 #              method in the class.
+#
+#              @ParameterizedTest and @RetryingTest invocations cannot be
+#              named individually: the XML records them as "[1]", "[2]" with
+#              no method name at all, so the index identifies neither the
+#              method nor a stable case. Quarantine those class-wide with
+#              "<class>.*"; CI's suggested line already does.
 #   ticket     PROF-<number>. Required — a quarantine without a ticket is just
 #              a test nobody runs.
 #   added      YYYY-MM-DD, the day it went in.

@@ -142,8 +142,25 @@ def applies_to(entry, cell):
     return any(fnmatch.fnmatch(cell, g) for g in globs)
 
 
+_INVOCATION_INDEX_RE = re.compile(r"^\[\d+\]$")
+
+
+def normalise_test_id(test_id):
+    """A JUnit XML test id reduced to the shape entries are written in.
+
+    Gradle writes a JUnit 5 @Test method as `name="method()"`, so the id built
+    from the report is `Class.method()`, while quarantine.txt documents -- and
+    a human writes -- `Class.method`. Stripping the parentheses here, in the
+    one function every caller's match goes through, keeps the documented shape
+    matching the id JUnit actually produces while reports and annotations go
+    on showing the real name.
+    """
+    return test_id[:-2] if test_id.endswith("()") else test_id
+
+
 def covers(entry, test_id):
     pattern = entry["test"]
+    test_id = normalise_test_id(test_id)
     if pattern.endswith(".*"):
         return test_id.startswith(pattern[:-1])
     return test_id == pattern
@@ -243,6 +260,22 @@ def cmd_validate(args):
                 "test pattern '{}' has a wildcard outside a single trailing "
                 "'.*'; covers() only understands an exact id or a class-wide "
                 "'.*', so this would silently quarantine nothing"
+            ).format(entry["test"]))
+
+        if entry["test"].endswith("()"):
+            complain(line, (
+                "test '{}' carries the parentheses JUnit puts in its XML; "
+                "entries are written as <class>.<method>, and covers() "
+                "normalises the report's id to that shape -- drop the '()'"
+            ).format(entry["test"]))
+
+        if _INVOCATION_INDEX_RE.match(entry["test"].rsplit(".", 1)[-1]):
+            complain(line, (
+                "test '{}' names an invocation index. @ParameterizedTest and "
+                "@RetryingTest invocations appear in the XML as '[1]', '[2]' "
+                "with no method name at all, so the index identifies neither "
+                "the method nor a stable case -- quarantine the class with "
+                "'<class>.*' instead"
             ).format(entry["test"]))
 
         if entry["added"] and DATE_RE.match(entry["added"]):
