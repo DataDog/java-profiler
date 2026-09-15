@@ -125,7 +125,7 @@ VMConstMethod* VMMethod::constMethod_or_null() const {
 
 jmethodID VMMethod::id() {
     // We may find a bogus NMethod during stack walking, it does not always point to a valid VMMethod
-    const char* const_method = (const char*) SafeAccess::load((void**) at(_method_constmethod_offset));
+    const char* const_method = load_at_offset<const char*, true /* safe load */>(_method_constmethod_offset);
     if (!goodPtr(const_method)) {
         return JMETHODID_NOT_WALKABLE;
     }
