@@ -69,6 +69,13 @@ per ~70 passes (~30 s) since.
 
 ## Next
 
-- User builds Linux .so + redeploys (user does deploys themselves).
-- Grep pod: `LEAK_BUFFER probe` (every ~30 s while the holder class is in the
-  current chunk), then interpret per the outcome table above.
+- NOTE 16:50Z: the old pod (plwpx) was deleted; the replacement
+  `prof-analyzer-hotdog-jb-d9d8cf-rz992` (up 16:45Z) is STOCK - no
+  `-Ddd.profiling.experimental.ddprof.referencechains.enabled=true` flag,
+  stock image `prof-analyzer-hotdog:v137233187-2ad7b593`, zero engine logs.
+  The in-pod modifications died with the pod; the deployment spec was never
+  patched. User must re-apply their deploy procedure on rz992 (flag + .so
+  from b5dd09675 + restart).
+- Grep after redeploy: `LEAK_BUFFER probe` (every ~30 s while the holder
+  class is in the current chunk), then interpret per the outcome table
+  above.
