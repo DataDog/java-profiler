@@ -598,6 +598,13 @@ void ElfParser::parseDynamicSection() {
         uint32_t nsyms = 0;
 
         const char* dyn_start = at(dynamic);
+        // PT_DYNAMIC's p_vaddr/p_memsz are as untrusted as any other program-header
+        // field; unlike the file-offset accessors above, at() does not itself
+        // validate the result, so bound the iteration against the mapped image
+        // before touching any ElfDyn entry.
+        if (!inImage(dyn_start, dynamic->p_memsz)) {
+            return;
+        }
         const char* dyn_end = dyn_start + dynamic->p_memsz;
         for (ElfDyn* dyn = (ElfDyn*)dyn_start; dyn < (ElfDyn*)dyn_end; dyn++) {
             switch (dyn->d_tag) {
@@ -613,9 +620,17 @@ void ElfParser::parseDynamicSection() {
                 case DT_STRSZ:
                     strsz = dyn->d_un.d_val;
                     break;
-                case DT_HASH:
-                    nsyms = ((uint32_t*)dyn_ptr(dyn))[1];
+                case DT_HASH: {
+                    // DT_HASH resolves through dyn_ptr(), whose relocation decision
+                    // is a heuristic (see dyn_ptr()'s comment) and can point outside
+                    // the mapped image on a corrupted or misjudged entry; validate
+                    // before reading the symbol count out of it.
+                    uint32_t* hash = (uint32_t*)dyn_ptr(dyn);
+                    if (inImage(hash, 2 * sizeof(uint32_t))) {
+                        nsyms = hash[1];
+                    }
                     break;
+                }
                 case DT_GNU_HASH:
                     if (nsyms == 0) {
                         nsyms = getSymbolCount((uint32_t*)dyn_ptr(dyn));
@@ -661,16 +676,44 @@ void ElfParser::parseDynamicSection() {
             strsz = 1u << 20;
         }
 
-        if (!_cc->hasDebugSymbols() && nsyms > 0) {
+        // symtab/strtab/jmprel/rel all resolve through dyn_ptr(), which -- like
+        // DT_HASH above -- is not routed through inImage(). Validate each range
+        // against the mapped image before any of it is dereferenced below,
+        // dropping (rather than trusting) a range that doesn't fit.
+        if (!inImage(strtab, strsz)) {
+            strtab = NULL;
+        }
+        // nsyms * syment is attacker-controlled on both sides and can overflow.
+        bool symtab_ok = symtab != NULL && nsyms > 0 && syment != 0
+            && nsyms <= SIZE_MAX / syment
+            && inImage(symtab, (size_t)nsyms * syment);
+        if (!symtab_ok) {
+            symtab = NULL;
+        }
+        if (!inImage(jmprel, pltrelsz)) {
+            jmprel = NULL;
+        }
+        if (!inImage(rel, relsz)) {
+            rel = NULL;
+        }
+
+        if (symtab != NULL && strtab != NULL && !_cc->hasDebugSymbols()) {
             loadSymbolTable(symtab, syment * nsyms, syment, strtab, strsz);
         }
 
         const char* base = this->base();
-        if (jmprel != NULL && pltrelsz != 0) {
+        if (symtab != NULL && strtab != NULL && jmprel != NULL && pltrelsz != 0) {
             // Parse .rela.plt table
             for (size_t offs = 0; offs < pltrelsz; offs += relent) {
                 ElfRelocation* r = (ElfRelocation*)(jmprel + offs);
-                ElfSymbol* sym = (ElfSymbol*)(symtab + ELF_R_SYM(r->r_info) * syment);
+                // ELF_R_SYM(r->r_info) is an untrusted index from the relocation
+                // entry itself -- not bounded by nsyms -- so the resulting symtab
+                // offset must still be checked against the mapped image.
+                const char* sym_addr = symtab + ELF_R_SYM(r->r_info) * syment;
+                if (!inImage(sym_addr, sizeof(ElfSymbol))) {
+                    continue;
+                }
+                ElfSymbol* sym = (ElfSymbol*)sym_addr;
                 if (sym->st_name != 0) {
                     const char* sym_name = strAt(strtab, strsz, sym->st_name);
                     if (sym_name != NULL) {
@@ -680,14 +723,18 @@ void ElfParser::parseDynamicSection() {
             }
         }
 
-        if (rel != NULL && relsz != 0) {
+        if (symtab != NULL && strtab != NULL && rel != NULL && relsz != 0) {
             // Relocation entries for imports can be found in .rela.dyn, for example
             // if a shared library is built without PLT (-fno-plt). However, if both
             // entries exist, addImport saves them both.
             for (size_t offs = relcount * relent; offs < relsz; offs += relent) {
                 ElfRelocation* r = (ElfRelocation*)(rel + offs);
                 if (ELF_R_TYPE(r->r_info) == R_GLOB_DAT || ELF_R_TYPE(r->r_info) == R_ABS64) {
-                    ElfSymbol* sym = (ElfSymbol*)(symtab + ELF_R_SYM(r->r_info) * syment);
+                    const char* sym_addr = symtab + ELF_R_SYM(r->r_info) * syment;
+                    if (!inImage(sym_addr, sizeof(ElfSymbol))) {
+                        continue;
+                    }
+                    ElfSymbol* sym = (ElfSymbol*)sym_addr;
                     if (sym->st_name != 0) {
                         const char* sym_name = strAt(strtab, strsz, sym->st_name);
                         if (sym_name != NULL) {
@@ -752,8 +799,20 @@ void ElfParser::parseDwarfInfo() {
 }
 
 uint32_t ElfParser::getSymbolCount(uint32_t* gnu_hash) {
+    // gnu_hash resolves through dyn_ptr() in the DT_GNU_HASH case above and is
+    // just as untrusted as DT_HASH: validate every offset into it against the
+    // mapped image before dereferencing, instead of trusting nbuckets/bloom
+    // size/the chain terminator to be well-formed.
+    if (!inImage(gnu_hash, 4 * sizeof(uint32_t))) {
+        return 0;
+    }
     uint32_t nbuckets = gnu_hash[0];
-    uint32_t* buckets = &gnu_hash[4] + gnu_hash[2] * (sizeof(size_t) / 4);
+    uint32_t symoffset = gnu_hash[1];
+    uint32_t bloom_size = gnu_hash[2];
+    uint32_t* buckets = &gnu_hash[4] + bloom_size * (sizeof(size_t) / 4);
+    if (!inImage(buckets, (size_t)nbuckets * sizeof(uint32_t))) {
+        return 0;
+    }
 
     uint32_t nsyms = 0;
     for (uint32_t i = 0; i < nbuckets; i++) {
@@ -761,8 +820,21 @@ uint32_t ElfParser::getSymbolCount(uint32_t* gnu_hash) {
     }
 
     if (nsyms > 0) {
-        uint32_t* chain = &buckets[nbuckets] - gnu_hash[1];
-        while (!(chain[nsyms++] & 1));
+        uint32_t* chain = &buckets[nbuckets] - symoffset;
+        // The chain is normally self-terminating (bit 0 set on the last hash of
+        // the last bucket), but a corrupted/misrelocated table may never set
+        // it; check each entry against the mapped image instead of trusting
+        // the scan to stop on its own.
+        for (;;) {
+            if (!inImage(&chain[nsyms], sizeof(uint32_t))) {
+                return 0;
+            }
+            bool is_last = (chain[nsyms] & 1) != 0;
+            nsyms++;
+            if (is_last) {
+                break;
+            }
+        }
     }
     return nsyms;
 }

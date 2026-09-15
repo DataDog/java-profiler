@@ -33,6 +33,7 @@
 class ElfParser {
 public:
     static bool parseFile(CodeCache* cc, const char* base, const char* file_name, bool use_debug);
+    static void parseProgramHeaders(CodeCache* cc, const char* base, const char* end, bool relocate_dyn);
 };
 
 // Test name for crash handler
@@ -571,6 +572,80 @@ TEST_F(ElfTest, symbolNameOffsetOutOfBounds) {
     app(strtab, sizeof(strtab));
     // strtab ends at image_size: also exercises inImage() equality case.
     parseElfBytes(b);  // must not crash: strAt() rejects st_name == strtab_size
+}
+
+// Regression test for the production crash:
+//   ElfParser::parseDynamicSection()+0x158
+//   ElfParser::parseProgramHeaders(CodeCache*, char const*, char const*, bool)+0xf8
+//   Symbols::parseLibraries(CodeCacheArray*, bool)+0x4c0
+//   Libraries::updateSymbols(bool)+0xc
+//   Profiler::start(Arguments&, bool)+0x84c
+//
+// Before the fix, parseDynamicSection() was the one path in this file NOT
+// bounds-checked: dyn_ptr() computes a live-memory pointer from an untrusted
+// DT_HASH d_ptr value, and the DT_HASH case dereferenced it immediately with
+// no inImage()-style validation. A single malformed DT_HASH entry was enough
+// to crash the whole process (this test reliably reproduced it: SIGSEGV,
+// exit code 139). parseDynamicSection(), dyn_ptr()'s callers, and
+// getSymbolCount() (the DT_GNU_HASH path) now validate every dyn_ptr()-derived
+// range against inImage() before it is dereferenced, so this must return
+// cleanly instead of crashing.
+//
+// This exercises parseProgramHeaders() rather than parseFile(): only that
+// path passes a non-NULL live-memory `base`, which is what makes dyn_ptr()'s
+// relocation arithmetic (and therefore this bug) reachable at all. It
+// mirrors exactly how Symbols::parseLibraries() scans a live-mapped shared
+// library.
+TEST_F(ElfTest, dynamicSectionHashPointerOutOfBounds) {
+    Elf64_Ehdr e = validEhdr();  // e_type == ET_DYN
+    e.e_phoff = sizeof(Elf64_Ehdr);
+    e.e_phentsize = sizeof(Elf64_Phdr);
+    e.e_phnum = 2;
+
+    const uint64_t dyn_off = sizeof(Elf64_Ehdr) + 2 * sizeof(Elf64_Phdr);
+    const uint64_t image_size = dyn_off + 2 * sizeof(Elf64_Dyn);
+
+    Elf64_Phdr ph[2];
+    memset(ph, 0, sizeof(ph));
+    // p_vaddr == 0 makes calcVirtualLoadAddress() set _vaddr_diff == _base,
+    // so at(dynamic) == _base + p_vaddr resolves into our own buffer below.
+    ph[0].p_type = PT_LOAD;
+    ph[0].p_vaddr = 0;
+    ph[0].p_offset = 0;
+    ph[0].p_filesz = ph[0].p_memsz = image_size;
+    // p_vaddr points at the Dyn array appended right after the two phdrs.
+    ph[1].p_type = PT_DYNAMIC;
+    ph[1].p_vaddr = dyn_off;
+    ph[1].p_offset = dyn_off;
+    ph[1].p_filesz = ph[1].p_memsz = 2 * sizeof(Elf64_Dyn);
+
+    Elf64_Dyn dyn[2];
+    memset(dyn, 0, sizeof(dyn));
+    dyn[0].d_tag = DT_HASH;
+    // With relocate_dyn=true, dyn_ptr() returns _vaddr_diff + d_ptr, i.e.
+    // _base + d_ptr. 16 TB (the same "reliably unmapped" magnitude used by
+    // the OOB tests above) lands the pointer far outside any real mapping
+    // regardless of where our tiny buffer happens to sit under ASLR.
+    dyn[0].d_un.d_ptr = 0x100000000000ULL;
+    dyn[1].d_tag = DT_NULL;
+
+    std::vector<char> b;
+    auto app = [&](const void* p, size_t n) {
+        const char* c = static_cast<const char*>(p);
+        b.insert(b.end(), c, c + n);
+    };
+    app(&e, sizeof(e));
+    app(ph, sizeof(ph));
+    app(dyn, sizeof(dyn));
+    ASSERT_EQ(b.size(), image_size);
+
+    CodeCache cc("regress-dynsec");
+    const char* base = b.data();
+    // Mirrors Symbols::parseLibraries()'s call for a live-mapped shared
+    // library: base/end delimit the mapping, relocate_dyn matches a
+    // GNU-linker-style DSO. This is the exact call that segfaults today
+    // inside the DT_HASH case of parseDynamicSection().
+    ElfParser::parseProgramHeaders(&cc, base, base + b.size(), /*relocate_dyn=*/true);
 }
 
 #endif //__linux__
