@@ -3469,9 +3469,10 @@ void ReferenceChainTracker::walkStaticFieldAnchors(
                                  nullptr);
       }
       TEST_LOG("ReferenceChainTracker::walkStaticFieldAnchors anchor "
-               "tag=%lld class=%s parent=%lld root_kind=%u state=%u "
+               "tag=%lld class=%s klass_id=%u parent=%lld root_kind=%u state=%u "
                "field_index=%d",
                (long long)resolved_tags[i], sig != nullptr ? sig : "<unresolved>",
+               entry.referrer_klass,
                (long long)entry.parent_tag, (unsigned)entry.root_kind,
                (unsigned)entry.state, (int)entry.referrer_field_index);
       // TEMP DIAGNOSTIC (pod round 12): the LEAK_BUFFER wrapper shape is a
@@ -4735,6 +4736,70 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
         break;
       }
     }
+  }
+
+  // TEMP DIAGNOSTIC (pod round 13): ground-truth probe for the
+  // LEAK_BUFFER wrapper. Every deduction path (root-attached admit ->
+  // index -> collector walk; chain-attached -> at-risk FIFO walk;
+  // already-admitted re-hit -> upgrade or push) should end in a walk
+  // log with class=...SynchronizedRandomAccessList, yet none is ever
+  // observed. This probe bypasses the sweep callback entirely: it reads
+  // ProfileAnalyzer.LEAK_BUFFER directly via JNI and reports the
+  // wrapper's CURRENT tag and frontier entry shape each time the class
+  // passes through a chunk. Runs BEFORE the sweep's FollowReferences for
+  // this chunk, so the first lap shows tag=0 (pre-admission) and later
+  // laps show the steady-state entry. Remove once the wrapper question
+  // is answered.
+  for (jint i = chunk_start; i < chunk_end; i++) {
+    char *probe_sig = nullptr;
+    if (jvmti->GetClassSignature(classes[i], &probe_sig, nullptr) !=
+        JVMTI_ERROR_NONE) {
+      continue;
+    }
+    if (probe_sig == nullptr ||
+        strstr(probe_sig, "ProfileAnalyzer") == nullptr) {
+      if (probe_sig != nullptr) {
+        jvmti->Deallocate((unsigned char *)probe_sig);
+      }
+      continue;
+    }
+    TEST_LOG("ReferenceChainTracker::admitStaticFieldRoots LEAK_BUFFER "
+             "probe: sweeping holder class %s at index %d",
+             probe_sig, (int)i);
+    jvmti->Deallocate((unsigned char *)probe_sig);
+    jfieldID leak_fid =
+        jni->GetStaticFieldID(classes[i], "LEAK_BUFFER", "Ljava/util/List;");
+    if (jniExceptionCheck(jni) || leak_fid == nullptr) {
+      jni->ExceptionClear();
+      TEST_LOG("ReferenceChainTracker::admitStaticFieldRoots LEAK_BUFFER "
+               "probe: GetStaticFieldID failed");
+      continue;
+    }
+    jobject probe_wrapper = jni->GetStaticObjectField(classes[i], leak_fid);
+    if (jniExceptionCheck(jni) || probe_wrapper == nullptr) {
+      jni->ExceptionClear();
+      TEST_LOG("ReferenceChainTracker::admitStaticFieldRoots LEAK_BUFFER "
+               "probe: static value null/exception");
+      continue;
+    }
+    jlong probe_tag = 0;
+    jvmti->GetTag(probe_wrapper, &probe_tag);
+    FrontierEntry probe_entry{};
+    bool probe_found =
+        probe_tag > 0 ? _frontier->lookup(probe_tag, &probe_entry) : false;
+    TEST_LOG("ReferenceChainTracker::admitStaticFieldRoots LEAK_BUFFER "
+             "probe wrapper_tag=%lld frontier_found=%d parent=%lld "
+             "root_kind=%u state=%u leak_tag=%lld depth=%u "
+             "referrer_klass=%u",
+             (long long)probe_tag, (int)probe_found,
+             (long long)(probe_found ? probe_entry.parent_tag : 0),
+             (unsigned)(probe_found ? probe_entry.root_kind : 0),
+             (unsigned)(probe_found ? probe_entry.state : 0),
+             (long long)(probe_found ? probe_entry.leak_tag : 0),
+             (unsigned)(probe_found ? probe_entry.depth : 0),
+             probe_found ? probe_entry.referrer_klass : 0);
+    jni->DeleteLocalRef(probe_wrapper);
+    break; // one holder class per chunk is enough
   }
 
   // GetLoadedClasses() returned a local ref for every class regardless of

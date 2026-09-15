@@ -16,7 +16,28 @@ representatives are re-tagged and all discovered instances auto-marked,
 chains are cached per-instance (not per-class). JFR analysis confirmed 2
 ReferenceChain events emitted — but one was for a noise [B instance.
 
-## Current focus: round 12 prepared — wrapper-walk diagnostic committed (8ca24a524), awaiting tomorrow's deploy; the 21:10 wrapper-walk-without-intercept refutation narrowed the question to 3 branches
+## Current focus: round 13 deployed-diagnostic prepared — fix B+C verified working mechanically on the pod (ccdb03b89), but the LEAK_BUFFER wrapper is STILL never walked; ground-truth probe committed, awaiting user redeploy
+
+Round 12 pod results (fix B+C live, JVM restarted 16:14:50Z): anchor walks
+now 32/pass (635 walks/15 min), 41–100+ distinct anchor classes cycled,
+5843 root-attached STATIC_FIELD first-admissions, upgrades firing, leak
+rebuilding (13 chunks, 75 MB). BUT: no SynchronizedRandomAccessList walk,
+no interception, no ReferenceChain events, and ZERO com/dd/profiling app
+classes among walked anchors. Deduction exhausted: every admission shape
+(root-attached→index→walk; chain-attached→FIFO walk; re-hit→upgrade/push)
+must end in a walk log — none observed. Key ID-space fact: `klass_id` in
+admit/sweep-hit/push/upgrade logs is the object's OWN class id (the
+`referrer_klass` variable is misnamed; `class_tag` = referee's class).
+
+Round 13 instrumentation (see ev-leaktag-onpod-round13.md): (1) JNI probe
+in admitStaticFieldRoots reading ProfileAnalyzer.LEAK_BUFFER directly each
+sweep chunk pass (descriptor Ljava/util/List; confirmed from pod jar) and
+logging the wrapper's CURRENT tag + frontier entry shape; (2) klass_id
+added to the walk anchor log for cross-referencing the id space. All
+gtests pass (only the pre-existing UrgentOOMProjectionBypassesCandidateGate
+SIGSEGV remains, known on clean HEAD). Release build clean.
+
+Old focus (round 12 prepared): wrapper-walk diagnostic committed (8ca24a524)
 
 Design/review/implement/review loop run for B' (user-picked). Two
 load-bearing discoveries during the loop (both in
