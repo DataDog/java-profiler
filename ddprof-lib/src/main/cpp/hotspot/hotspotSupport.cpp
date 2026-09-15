@@ -1339,6 +1339,10 @@ class LockState {
 private:
     VMClassLoaderData* volatile _cld;
 public:
+    // Non-copyable
+    LockState(const LockState&) = delete;
+    LockState& operator=(const LockState&) = delete;
+
     LockState() : _cld(nullptr) {}
     ~LockState() { reset(); }
     void lock(VMClassLoaderData* cld);
