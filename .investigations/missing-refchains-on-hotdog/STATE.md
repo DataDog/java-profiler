@@ -34,8 +34,15 @@ noise [B chain event — wrong-object emission). Fix options A (class-shape
 priority), B (cross-restart rotation + budget tuning), C (one-shot
 whole-heap pass per search), D (A+B) — see
 find-anchor-tail-starvation.md + ev-leaktag-onpod-round13-results.md.
-User decision pending. Hygiene fixes regardless: clear discovered tags on
-restartSearch.
+User decision pending → RESOLVED: C REJECTED (hard STW constraint: per-call ~50ms,
+cumulative 500ms/sec — "no whole-heap pass, god knows how many seconds").
+Standing direction: D gated on measurement + scale test. Levers within
+bounded STW: cohort filtering (measure collection-shaped cohort first),
+selection order (deterministic coverage — the wrapper's index position is
+currently a ~14% lottery per search via the sweep cursor at search start),
+frontier cap (config, ×4 cap ≈ 16k coverage/search), and the scale gtest
+asserting coverage=rate×lifetime≥population BEFORE any next deploy.
+Hygiene fixes regardless: clear discovered tags on restartSearch.
 
 Prior focus (round 13 prepared): fix B+C verified working mechanically on
 the pod (ccdb03b89), but the LEAK_BUFFER wrapper is STILL never walked;

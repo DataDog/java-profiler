@@ -82,3 +82,25 @@ the failure class entirely. Recommend: design C now (with the minimal
 admission policy to respect the frontier cap), keep D's cheap parts
 (leaf-filter index exclusion) only if they fall out of C's design; add the
 scale gtest before any next deploy.
+
+## DECISION (user, 2026-09-15): C is REJECTED — hard constraint
+
+"I can not do whole heap pass as that will do STW for god knows how many
+seconds!!!" — the per-call ~50ms / cumulative 500ms-per-sec pause budget is
+non-negotiable; no whole-heap walk in any form. The remaining bounded-STW
+levers, all inside the existing funnel:
+1. Cohort filtering (MEASURE first — the collection-shaped cohort is
+   unmeasured; leaf classes ≈17% of admits, measured).
+2. Selection order (rotation/recency — note: the wrapper's index position
+   is ALREADY a slow lottery: it is admitted at sweep cursor 25301, so its
+   position depends on the cursor value when each search starts; only ~14%
+   of search-start cursor positions put it inside the ~4k coverage window.
+   That explains weeks of zero events and gives a cheap deterministic fix:
+   make coverage/order deterministic instead of cursor-lottery.)
+3. Frontier cap / search lifetime (config: _reference_chains_frontier_cap;
+   ×4 cap ≈ ×4 coverage per search ≈ 16k of 28k, at 48-64MB native table
+   cost and larger GOTW maps — tunable with tradeoffs).
+4. Scale gtest asserting the coverage invariant — BEFORE the next deploy.
+
+Standing direction: D gated on measurement + scale test (per user's earlier
+pick; C withdrawn).
