@@ -1507,6 +1507,21 @@ private:
   // argument was inferred, not measured, from).
   u64 _static_anchor_fifo_pushed = 0;
 
+  // Index of root-attached STATIC_FIELD/JNI_GLOBAL frontier entries,
+  // so collectStaticFieldAnchorsForRotation() iterates O(anchors) instead
+  // of scanning the full frontier table O(frontier_size). An entry is
+  // added when it is first admitted root-attached with a durable root_kind
+  // (STATIC_FIELD or JNI_GLOBAL), or when maybeUpgradeRootAttachedRootKind()
+  // upgrades it to one of those. Cleared on restartSearch(). Engine thread
+  // only — all mutation sites run under _engine_lock or inside the BFS
+  // thread's own pass.
+  std::vector<jlong> _static_anchor_index;
+
+  // Cursor into _static_anchor_index (not the frontier table) for
+  // collectStaticFieldAnchorsForRotation()'s wrapping selection. With the
+  // index, the scan is O(selected) per pass, not O(frontier_size).
+  size_t _static_anchor_index_cursor = 0;
+
   // java/lang/Object jclass cache for expandFrontier()'s and
   // admitStaticFieldRoots()'s holder-array element type (referenceChains.cpp)
   // - resolved once via FindClass()+NewGlobalRef() and reused for the
@@ -1605,7 +1620,7 @@ private:
   // bounded FollowReferences call); the wrapping cursor in
   // collectStaticFieldAnchorsForRotation() guarantees full coverage of the
   // root-attached population within ceil(matches / this) passes.
-  static constexpr int STATIC_ANCHOR_ROTATION_BUDGET = 4;
+  static constexpr int STATIC_ANCHOR_ROTATION_BUDGET = 16;
 
   // Per-pass cap on how many AT-RISK static holders (frontier entries
   // with parent_tag != 0 - the find-anchor-holder-eviction population)
@@ -1619,11 +1634,9 @@ private:
   // per-entry GOTW bookkeeping, not extra STW.
   static constexpr int STATIC_ANCHOR_FIFO_DRAIN = 16;
 
-  // Rotation cursor for collectStaticFieldAnchorsForRotation(): same
-  // wrapping-cursor role as _stale_expanded_rotation_cursor above - an
-  // always-from-1 scan would permanently favor low-tag static holders
-  // (admitted by early sweep laps) over ones admitted later.
-  jlong _static_anchor_rotation_cursor;
+  // (Removed: _static_anchor_rotation_cursor replaced by
+  // _static_anchor_index_cursor over _static_anchor_index — see
+  // collectStaticFieldAnchorsForRotation()'s own comment.)
 
   // Cursor over the flattened (slot, tid) enumeration of
   // _candidate_qualifying_tids above, so walkCandidateThreadLocals()'s
@@ -2042,7 +2055,7 @@ private:
         _passes_run(0),
         _root_kind_rotation_cursor(1),
         _stale_expanded_rotation_cursor(1),
-        _static_anchor_rotation_cursor(1), _thread_walk_anchor_cursor(0),
+        _thread_walk_anchor_cursor(0),
         _safepoint_pain_budget(0.0), _search_pain_ms(0), _cpu_pain_budget(0.0),
         _thread(), _running(false), _abort_pass_requested(false) {}
 
@@ -2632,6 +2645,12 @@ private:
   // a dropped push is silently retried by the feed's next event (the next
   // static edge onto the entry, or the next demotion). Engine thread only.
   void pushAtRiskStaticAnchor(jlong tag, u32 klass_id);
+  // Add `tag` to _static_anchor_index if its root_kind is a durable
+  // anchor-tier kind (STATIC_FIELD or JNI_GLOBAL). Called at first
+  // admission and at root-kind upgrade. Idempotent (dedup via a linear
+  // scan of the small vector — the anchor population is O(hundreds),
+  // well under the 256-element linear-scan cutoff). Engine thread only.
+  void addToStaticAnchorIndex(jlong tag, u8 root_kind);
   int drainStaticAnchorFifo(int max_count, std::vector<jlong> &out);
   // Pushes `tags` back to _static_anchor_fifo's FRONT in reverse order
   // (preserving FIFO order) and rebuilds the set - the truncated-walk

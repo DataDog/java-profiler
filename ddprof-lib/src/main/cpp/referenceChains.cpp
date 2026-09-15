@@ -1205,6 +1205,8 @@ void ReferenceChainTracker::restartSearch() {
   _priority_expand_set.clear();
   _static_anchor_fifo.clear();
   _static_anchor_fifo_set.clear();
+  _static_anchor_index.clear();
+  _static_anchor_index_cursor = 0;
   // Both keyed by frontier tags this restart is about to invalidate (fresh
   // tags start again from 1) - a stale entry surviving past a restart would
   // be compared against whatever unrelated object the new search has since
@@ -1294,6 +1296,8 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   _static_anchor_fifo.clear();
   _static_anchor_fifo_set.clear();
   _static_anchor_fifo_pushed = 0;
+  _static_anchor_index.clear();
+  _static_anchor_index_cursor = 0;
   // Same reset rationale as restartSearch()'s own comment.
   _leak_signature_totals.clear();
   _leak_signature_prev_totals.clear();
@@ -2115,6 +2119,12 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
                "frontier_tag=%lld depth=%u",
                referrer_klass, (long long)*tag_ptr, depth);
     }
+    // Index maintenance: track root-attached durable anchors for O(anchors)
+    // collector iteration instead of O(frontier_size) table scan.
+    if (result == ReferenceChainTracker::AdmitResult::ADMITTED &&
+        parent_tag == 0) {
+      ctx->tracker->addToStaticAnchorIndex(*tag_ptr, root_kind);
+    }
     // Auto-mark: if this object's class matches a watched leak class,
     // record its frontier tag so pollWatchedTargets() can build a chain
     // event for it. A leaking class typically has many live instances,
@@ -2521,6 +2531,7 @@ bool ReferenceChainTracker::maybeUpgradeRootAttachedRootKind(
            "old_root_kind=%d -> new_root_kind=%d klass_id=%u",
            (long long)tag, (int)entry.root_kind, (int)new_root_kind,
            entry.referrer_klass);
+  addToStaticAnchorIndex(tag, new_root_kind);
   return true;
 }
 
@@ -3290,37 +3301,28 @@ void ReferenceChainTracker::descendFromAnchor(
 std::vector<jlong>
 ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
   std::vector<jlong> selected;
-  if (max_count <= 0) {
+  if (max_count <= 0 || _static_anchor_index.empty()) {
     return selected;
   }
-  jlong table_size = _frontier->size();
-  if (table_size <= 0) {
-    return selected;
+  // Iterate _static_anchor_index (O(anchors)) instead of scanning the
+  // full frontier table (O(frontier_size)). The index contains every
+  // tag that was ever admitted or upgraded to root-attached STATIC_FIELD
+  // or JNI_GLOBAL. Filter for liveness (the entry may have been cleared
+  // or ABANDONED since indexing) and for !isQueuedForRotation (same
+  // filter the old scan applied). The wrapping cursor over the index
+  // guarantees fair coverage across passes.
+  size_t idx_size = _static_anchor_index.size();
+  if (_static_anchor_index_cursor >= idx_size) {
+    _static_anchor_index_cursor = 0;
   }
-  if (_static_anchor_rotation_cursor <= 0 ||
-      _static_anchor_rotation_cursor > table_size) {
-    _static_anchor_rotation_cursor = 1;
-  }
-  // Same wrapping-cursor + amortized deadline-check pattern as
-  // collectStaleExpandedEntriesForRotation() above (its own comment explains
-  // both) - without the cursor, an always-from-1 scan would let the
-  // low-tag root-attached population (holders admitted by the earliest
-  // sweep laps) monopolize every pass's cap. No _priority_expand
-  // bookkeeping here: unlike the queue-push rotation tiers, the selected
-  // anchors are walked DIRECTLY by walkStaticFieldAnchors() in the same
-  // pass (a multi-hop descend walk, not a one-hop re-queue).
-  int deadline_check_counter = 0;
-  jlong start_tag = _static_anchor_rotation_cursor;
-  jlong tag = start_tag;
+  size_t start = _static_anchor_index_cursor;
+  size_t i = start;
   _frontier->withSharedLock([&](const FrontierTable *frontier) {
     do {
-      if (_pass_deadline_ns != 0 &&
-          (++deadline_check_counter & 0xFFF) == 0 &&
-          OS::nanotime() >= _pass_deadline_ns) {
-        break;
-      }
+      jlong tag = _static_anchor_index[i];
       FrontierEntry entry{};
-      if (frontier->lookupLocked(tag, &entry) && entry.parent_tag == 0 &&
+      if (frontier->lookupLocked(tag, &entry) &&
+          entry.parent_tag == 0 &&
           (entry.root_kind == (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD ||
            entry.root_kind == (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL) &&
           (entry.state == FrontierEntryState::FRONTIER ||
@@ -3328,14 +3330,29 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
           !isQueuedForRotation(tag)) {
         selected.push_back(tag);
         if ((int)selected.size() >= max_count) {
-          tag = tag % table_size + 1;
+          i = (i + 1) % idx_size;
           break;
         }
       }
-      tag = tag % table_size + 1;
-    } while (tag != start_tag);
+      i = (i + 1) % idx_size;
+    } while (i != start);
+    // Prioritize: move anchors whose entry has a leak_tag to the front,
+    // so walkStaticFieldAnchors descends them first. The sort is
+    // O(selected) per pass. Runs inside the shared lock so the lookups
+    // are safe.
+    if (selected.size() > 1) {
+      std::stable_sort(selected.begin(), selected.end(),
+                       [&](jlong a, jlong b) {
+                         FrontierEntry ea{}, eb{};
+                         bool fa = frontier->lookupLocked(a, &ea);
+                         bool fb = frontier->lookupLocked(b, &eb);
+                         bool a_pri = fa && ea.leak_tag != 0;
+                         bool b_pri = fb && eb.leak_tag != 0;
+                         return a_pri && !b_pri;
+                       });
+    }
   });
-  _static_anchor_rotation_cursor = tag;
+  _static_anchor_index_cursor = i;
   return selected;
 }
 
@@ -3355,6 +3372,22 @@ void ReferenceChainTracker::pushAtRiskStaticAnchor(jlong tag, u32 klass_id) {
   TEST_LOG("ReferenceChainTracker::pushAtRiskStaticAnchor tag=%lld "
            "klass_id=%u fifo_size=%zu",
            (long long)tag, klass_id, _static_anchor_fifo.size());
+}
+
+void ReferenceChainTracker::addToStaticAnchorIndex(jlong tag, u8 root_kind) {
+  if (root_kind != (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD &&
+      root_kind != (u8)JVMTI_HEAP_REFERENCE_JNI_GLOBAL) {
+    return;
+  }
+  // Dedup: the anchor population is O(hundreds), well under the 256-element
+  // linear-scan cutoff. A push at first admission and another at upgrade
+  // would double-add without this check.
+  for (jlong t : _static_anchor_index) {
+    if (t == tag) {
+      return;
+    }
+  }
+  _static_anchor_index.push_back(tag);
 }
 
 int ReferenceChainTracker::drainStaticAnchorFifo(int max_count,

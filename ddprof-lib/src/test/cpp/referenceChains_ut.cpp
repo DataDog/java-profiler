@@ -109,7 +109,8 @@ public:
         t->_search_pain_ms = 0;
         t->_root_kind_rotation_cursor = 1;
         t->_stale_expanded_rotation_cursor = 1;
-        t->_static_anchor_rotation_cursor = 1;
+        t->_static_anchor_index.clear();
+        t->_static_anchor_index_cursor = 0;
         t->_thread_walk_anchor_cursor = 0;
         memset(t->_candidate_qualifying_tid_count, 0,
                sizeof(t->_candidate_qualifying_tid_count));
@@ -448,6 +449,11 @@ public:
     collectStaticFieldAnchorsForRotationForTest(int max_count) {
         return ReferenceChainTracker::instance()
             ->collectStaticFieldAnchorsForRotation(max_count);
+    }
+
+    static void addToStaticAnchorIndexForTest(jlong tag, u8 root_kind) {
+        ReferenceChainTracker::instance()
+            ->addToStaticAnchorIndex(tag, root_kind);
     }
 
     // B' at-risk static-anchor FIFO (see _static_anchor_fifo's declaration
@@ -5134,6 +5140,8 @@ TEST_F(ReferenceChainsBfsTest, StaticAnchorRotationWalksRootAttachedStaticHolder
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, 101, 0, 0, FrontierEntryState::FRONTIER,
         JVMTI_HEAP_REFERENCE_STATIC_FIELD));
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        101, JVMTI_HEAP_REFERENCE_STATIC_FIELD);
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, 102, 0, 0, FrontierEntryState::FRONTIER,
         JVMTI_HEAP_REFERENCE_STACK_LOCAL));
@@ -5142,6 +5150,8 @@ TEST_F(ReferenceChainsBfsTest, StaticAnchorRotationWalksRootAttachedStaticHolder
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, 104, 0, 0, FrontierEntryState::FRONTIER,
         JVMTI_HEAP_REFERENCE_JNI_GLOBAL));
+    ReferenceChainsTestAccessor::addToStaticAnchorIndexForTest(
+        104, JVMTI_HEAP_REFERENCE_JNI_GLOBAL);
 
     std::vector<jlong> selected =
         ReferenceChainsTestAccessor::collectStaticFieldAnchorsForRotationForTest(
