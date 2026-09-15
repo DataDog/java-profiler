@@ -167,8 +167,13 @@ def cells_glob(cells):
     Every shared axis narrows the glob further: a test failing only on
     musl+aarch64 gets `*musl*aarch64*` rather than the wider `*aarch64*`
     (which would also cover glibc aarch64).
+
+    Cell names are `<libc>-<jdk>-<config>-<arch>[-slow]`. `*`-joining is
+    order-sensitive, so the axes here must be listed in that same left-to-right
+    order (libc, config, arch, suite suffix) -- axes out of order yields a glob
+    fnmatch can never match against the very cells it was derived from.
     """
-    axes = ["aarch64", "amd64", "musl", "glibc", "asan", "tsan", "slow"]
+    axes = ["glibc", "musl", "debug", "release", "asan", "tsan", "amd64", "aarch64", "slow"]
     shared = [axis for axis in axes if all(axis in c for c in cells)]
     if not shared:
         return None

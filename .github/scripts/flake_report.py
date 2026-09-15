@@ -196,14 +196,17 @@ def cmd_report(args):
     #                                  outright (zero failures of its own) is
     #                                  the ordinary flaky-then-fixed case and
     #                                  must not gate.
-    #   final attempt exited        -> gate. It ran, recorded results, and
-    #   non-zero having named          named no failure of its own, yet the
-    #   no failure of its own          command still failed: the JVM aborted
-    #                                  part-way through, so the tests it never
-    #                                  reached are absent from the XML rather
-    #                                  than passing. Gradle blames the crash on
-    #                                  the test task itself, so the non-test
-    #                                  task check above cannot see it.
+    #   final attempt exited        -> gate, regardless of how many of its own
+    #   non-zero                       failures were named and quarantined.
+    #                                  The JVM can abort part-way through
+    #                                  after naming one real (quarantined)
+    #                                  failure, so the tests it never reached
+    #                                  are absent from the XML rather than
+    #                                  passing; a quarantined name or two must
+    #                                  not paper over that. Gradle blames the
+    #                                  crash on the test task itself, so the
+    #                                  non-test task check above cannot see
+    #                                  it.
     #   no failure named            -> no opinion; the caller keeps its own
     #                                  exit code (a compile error or a dead
     #                                  runner is nothing to do with
@@ -231,13 +234,14 @@ def cmd_report(args):
             gates = True
             gate_reason = "all failing tests are quarantined, but the build also failed in {}".format(
                 ", ".join(other_task_failures))
-        elif args.final_attempt_exit_code not in (None, 0) and not final_attempt_failure_count:
+        elif args.final_attempt_exit_code not in (None, 0):
             gates = True
             gate_reason = (
-                "the final attempt named no failure of its own yet exited {}; "
-                "the run was cut short rather than passing, so the tests missing "
-                "from its results cannot be read as quarantined"
-            ).format(args.final_attempt_exit_code)
+                "the final attempt named {} failure(s) of its own (all "
+                "quarantined) yet exited {}; the run was cut short rather than "
+                "cleanly passing, so the tests missing from its results cannot "
+                "be read as quarantined"
+            ).format(final_attempt_failure_count, args.final_attempt_exit_code)
         else:
             gates = False
             gate_reason = "all {} failing test(s) are quarantined".format(len(results))
