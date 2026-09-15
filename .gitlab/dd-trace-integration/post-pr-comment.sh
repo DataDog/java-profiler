@@ -34,6 +34,15 @@ RESULTS_DIR="${1:-integration-test-results}"
 # Dashboard URL (GitHub Pages)
 DASHBOARD_URL="https://datadog.github.io/java-profiler/integration/"
 
+# The matrix this run is expected to cover. Declared once: it drives both the
+# completeness check and the table rendering below, so the two cannot drift.
+PLATFORMS=(
+  glibc-x64-hotspot glibc-x64-openj9 glibc-arm64-hotspot glibc-arm64-openj9
+  musl-x64-hotspot musl-x64-openj9 musl-arm64-hotspot musl-arm64-openj9
+)
+JDKS=(8 11 17 21 25)
+EXPECTED=$(( ${#PLATFORMS[@]} * ${#JDKS[@]} ))
+
 log_info "Collecting results for branch: ${DDPROF_COMMIT_BRANCH:-<unset>}"
 
 # Collect test results
@@ -95,8 +104,29 @@ done
 
 TOTAL=$((TOTAL_PASS + TOTAL_FAIL))
 
+# A configuration that produced no readable validation log is not a pass. Its
+# job may have timed out, lost its runner, or failed in setup before writing
+# one, which leaves its artifact directory empty -- or absent entirely, in
+# which case the collection loop above never sees it. Walk the expected matrix
+# so both shapes are caught, and gate on them: without this, 39 passes and one
+# timed-out cell reports success.
+TOTAL_INCOMPLETE=0
+INCOMPLETE_CONFIGS=""
+for platform in "${PLATFORMS[@]}"; do
+  for jdk in "${JDKS[@]}"; do
+    config="${platform}-jdk${jdk}"
+    case "${RESULTS[${config}]:-missing}" in
+      pass|fail) ;;
+      *)
+        TOTAL_INCOMPLETE=$((TOTAL_INCOMPLETE + 1))
+        INCOMPLETE_CONFIGS="${INCOMPLETE_CONFIGS} ${config}"
+        ;;
+    esac
+  done
+done
+
 # Determine overall status
-if [ "${TOTAL_FAIL}" -gt 0 ]; then
+if [ "${TOTAL_FAIL}" -gt 0 ] || [ "${TOTAL_INCOMPLETE}" -gt 0 ]; then
   OVERALL_STATUS="failure"
   STATUS_EMOJI=":x:"
   STATUS_TEXT="FAILED"
@@ -113,14 +143,17 @@ else
   STATUS_TEXT="COULD NOT RUN"
 fi
 
-log_info "Results: ${TOTAL_PASS} passed, ${TOTAL_FAIL} failed out of ${TOTAL} configurations"
+log_info "Results: ${TOTAL_PASS} passed, ${TOTAL_FAIL} failed, ${TOTAL_INCOMPLETE} without a result, out of ${EXPECTED} expected configurations"
+if [ -n "${INCOMPLETE_CONFIGS}" ]; then
+  log_warn "No validation log for:${INCOMPLETE_CONFIGS}"
+fi
 
 # Build the comment body
 DDPROF_SHA="${DDPROF_COMMIT_SHA:-$(cat ddprof-commit-sha.txt 2>/dev/null || echo unknown)}"
 
 if [ "${OVERALL_STATUS}" = "success" ]; then
-  # All tests passed - keep it short
-  COMMENT_BODY=":white_check_mark: **All ${TOTAL} integration tests passed**
+  # Every expected configuration passed - keep it short
+  COMMENT_BODY=":white_check_mark: **All ${TOTAL_PASS} integration tests passed**
 
 :bar_chart: [Dashboard](${DASHBOARD_URL}) · :construction_worker: [Pipeline](${CI_PIPELINE_URL:-}) · :package: \`${DDPROF_SHA:0:8}\`"
 elif [ "${TOTAL}" -eq 0 ]; then
@@ -142,10 +175,9 @@ else
 |----------|-------|--------|--------|--------|--------|"
 
   # Build matrix rows
-  for platform in "glibc-x64-hotspot" "glibc-x64-openj9" "glibc-arm64-hotspot" "glibc-arm64-openj9" \
-                  "musl-x64-hotspot" "musl-x64-openj9" "musl-arm64-hotspot" "musl-arm64-openj9"; do
+  for platform in "${PLATFORMS[@]}"; do
     row="| ${platform} |"
-    for jdk in 8 11 17 21 25; do
+    for jdk in "${JDKS[@]}"; do
       config="${platform}-jdk${jdk}"
       status="${RESULTS[${config}]:-unknown}"
       case "${status}" in
@@ -157,6 +189,22 @@ else
     COMMENT_BODY="${COMMENT_BODY}
 ${row}"
   done
+
+  # Call out configurations that produced no result at all: a grey cell is not
+  # a pass, and the reason is not in any validation log.
+  if [ -n "${INCOMPLETE_CONFIGS}" ]; then
+    COMMENT_BODY="${COMMENT_BODY}
+
+### No result produced
+These configurations wrote no validation log, so their outcome is unknown and
+they are counted as failures. The job usually timed out or failed during setup;
+see its log in the pipeline.
+"
+    for config in ${INCOMPLETE_CONFIGS}; do
+      COMMENT_BODY="${COMMENT_BODY}
+- \`${config}\`"
+    done
+  fi
 
   # Add failure details if any
   if [ -n "${FAILURES}" ]; then
@@ -188,7 +236,12 @@ fi
 
 # Exit with failure if tests failed (makes pipeline fail)
 if [ "${OVERALL_STATUS}" = "failure" ]; then
-  log_error "Integration tests failed - marking pipeline as failed"
+  if [ "${TOTAL_FAIL}" -gt 0 ]; then
+    log_error "${TOTAL_FAIL} integration test(s) failed - marking pipeline as failed"
+  fi
+  if [ "${TOTAL_INCOMPLETE}" -gt 0 ]; then
+    log_error "${TOTAL_INCOMPLETE} configuration(s) produced no result - marking pipeline as failed"
+  fi
   exit 1
 fi
 
