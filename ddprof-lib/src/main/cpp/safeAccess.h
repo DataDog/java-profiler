@@ -26,6 +26,8 @@
 
 extern "C" int safefetch32_impl(int* adr, int errValue);
 extern "C" int64_t safefetch64_impl(int64_t* adr, int64_t errValue);
+extern "C" int safestore32_impl(int* adr, int value);
+extern "C" int64_t safestore64_impl(int64_t* adr, int64_t value);
 
 #ifdef __clang__
 #define NOINLINE __attribute__((noinline))
@@ -53,7 +55,7 @@ public:
   NOINLINE
   static int safeFetch32(int* ptr, int errorValue) {
 #ifdef DEBUG
-    countIfLongjmpProtected(false);
+    countIfLongjmpProtected(SafeAccessKind::Fetch);
 #endif
     return safefetch32_impl(ptr, errorValue);
   }
@@ -66,7 +68,7 @@ public:
   NOINLINE
   static int64_t safeFetch64(int64_t* ptr, int64_t errorValue) {
 #ifdef DEBUG
-    countIfLongjmpProtected(false);
+    countIfLongjmpProtected(SafeAccessKind::Fetch);
 #endif
     return safefetch64_impl(ptr, errorValue);
   }
@@ -91,6 +93,32 @@ public:
 
   NOINLINE __attribute__((aligned(16)))
   static void *loadPtr(void** ptr, void* default_value);
+
+  /**
+   * Safely writes a 32-bit value to the given address.
+   *
+   * <p>CRITICAL: This function MUST NOT be inlined. See safeFetch32 for why --
+   * the same handle_safefetch fault-redirect relies on the store happening at
+   * this function's own stable address.
+   *
+   * @param ptr Address to write to (may be invalid)
+   * @param value Value to store at ptr
+   * @return true if the store succeeded, false if the write faulted
+   */
+  NOINLINE __attribute__((aligned(16)))
+  static bool store32(int32_t* ptr, int32_t value);
+
+  /**
+   * Safely writes a pointer-sized value to the given address. See store32 for
+   * details.
+   */
+  NOINLINE __attribute__((aligned(16)))
+  static bool storePtr(void** ptr, void* value);
+
+  // NOINLINE function with a stable address for JVM patching (vmStructs.cpp),
+  // mirroring load(): a void*-typed convenience wrapper around storePtr().
+  NOINLINE __attribute__((aligned(16)))
+  static bool store(void** ptr, void* value);
 
   static inline bool isReadable(const void* ptr) {
     return load32((int32_t*)ptr, 1) != 1 ||
@@ -118,13 +146,15 @@ public:
 
 #ifdef DEBUG
 private:
-  // Debug diagnostic: bump a counter when a SafeAccess read/copy is issued while
-  // the current thread is already inside a walkVM siglongjmp-protected region, where
-  // the safefetch/safecopy overhead is redundant (a fault there is caught by the
-  // siglongjmp anyway). Defined out-of-line in safeAccess.cpp so this widely-included
-  // header need not pull in threadLocalData.h / counters.h. isCopy selects the
-  // SAFECOPY_WHILE_PROTECTED vs SAFEFETCH_WHILE_PROTECTED counter.
-  static void countIfLongjmpProtected(bool isCopy);
+  // Debug diagnostic: bump a counter when a SafeAccess read/write/copy is issued
+  // while the current thread is already inside a walkVM siglongjmp-protected
+  // region, where the safefetch/safestore/safecopy overhead is redundant (a
+  // fault there is caught by the siglongjmp anyway). Defined out-of-line in
+  // safeAccess.cpp so this widely-included header need not pull in
+  // threadLocalData.h / counters.h -- kind is a self-contained enum rather
+  // than a CounterId for the same reason.
+  enum class SafeAccessKind { Fetch, Store, Copy };
+  static void countIfLongjmpProtected(SafeAccessKind kind);
 #endif
 };
 
