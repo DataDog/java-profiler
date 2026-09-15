@@ -814,7 +814,7 @@ TEST_F(HotspotResolveCrashProtectionTest, ResolveShortCircuitsSentinelWithoutPro
 
 // GetClassMethods invalidates the Method page after resolve() leaves its
 // crash-protected metadata walk. The subsequent raw Method* read must not abort.
-TEST_F(HotspotResolveCrashProtectionTest, DISABLED_ResolveDoesNotAbortWhenMethodIsInvalidatedDuringJniLookup) {
+TEST_F(HotspotResolveCrashProtectionTest, ResolveDoesNotAbortWhenMethodIsInvalidatedDuringJniLookup) {
     EXPECT_EXIT({
         HotspotMethodIdVMHotspotGuard hotspot;
         VMStructsTestAccessor offsets(RESOLVE_OFFSETS);
