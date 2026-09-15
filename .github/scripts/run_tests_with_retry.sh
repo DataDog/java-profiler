@@ -113,7 +113,7 @@ snapshot() {
   mkdir -p "$dest"
   if [ -d "$RESULTS_DIR" ]; then
     cp -r "$RESULTS_DIR"/. "$dest"/ \
-      || echo "::warning::Could not snapshot ${RESULTS_DIR} for attempt ${attempt}; flake classification for this cell will be incomplete"
+      || { EVIDENCE_SUSPECT=1; echo "::warning::Could not snapshot ${RESULTS_DIR} for attempt ${attempt}; flake classification for this cell will be incomplete"; }
   fi
 }
 

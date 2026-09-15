@@ -151,6 +151,21 @@ print(','.join(gating))
 [ "$result" = "a.C.e" ] || fail "expected only a.C.e to gate under a class wildcard, got: $result"
 pass "a class wildcard covers that class only"
 
+# validate-quarantine only runs from ci.yml, but find_entry() is the function
+# every workflow's flake_report.py invocation actually calls -- nightly.yml
+# and release-validated.yml reuse the retry/quarantine machinery without ever
+# running validate-quarantine, so an expired entry must stop matching here
+# too, not just be caught by the separate CLI check above.
+write_list "$LIST" "$(entry a.B.c PROF-1 "$(day_offset -1)")"
+result=$(python3 -c "
+import sys; sys.path.insert(0, '$SCRIPTS')
+import quarantine
+entries = quarantine.load('$LIST')
+print('hit' if quarantine.find_entry(entries, 'a.B.c', 'any') else 'miss')
+")
+[ "$result" = "miss" ] || fail "expected an expired entry to gate rather than match, got: $result"
+pass "find_entry() treats an expired entry as absent, not as a hit"
+
 echo "== gating: run_tests_with_retry.sh =="
 
 # A suite that fails one test on the first attempt and passes on the second.
@@ -403,6 +418,36 @@ set -e
 [ "$rc" -eq 0 ] || fail "a quarantined flake that passed on retry must stay green (got exit $rc): $output"
 pass "a quarantined flake that recovers on a clean retry is still excused"
 
+# A final attempt can name only quarantined failures and still exit non-zero
+# -- a JVM abort partway through, after writing XML for the one test it
+# reached. The tests it never got to are missing from the XML, not passing;
+# a quarantined name or two must not paper over that crash.
+CASE="$TEMP_DIR/case-final-attempt-quarantined-failure-plus-crash"
+mkdir -p "$CASE"
+cat > "$CASE/suite.sh" <<EOS
+#!/usr/bin/env bash
+n=\$(( \$(cat .n 2>/dev/null || echo 0) + 1 )); echo \$n > .n
+OUT=ddprof-test/build/test-results/testDebug
+mkdir -p "\$OUT"
+$(declare -f write_failure_xml)
+write_failure_xml "\$OUT" "com.dd.WobblyTest" "sometimesFails" "got 2 samples, wanted 50"
+if [ "\$n" -gt 1 ]; then
+  echo "# A fatal error has been detected by the Java Runtime Environment: SIGSEGV"
+  echo "Execution failed for task ':ddprof-test:test'."
+  echo "> Process 'Gradle Test Executor 3' finished with non-zero exit value 134"
+  exit 134
+fi
+exit 1
+EOS
+chmod +x "$CASE/suite.sh"
+write_list "$CASE/list.txt" "$(entry com.dd.WobblyTest.sometimesFails PROF-1 "$(day_offset 30)")"
+set +e
+output=$(cd "$CASE" && "$SCRIPTS/run_tests_with_retry.sh" --list list.txt "glibc-17-debug-amd64" -- ./suite.sh 2>&1)
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "a final attempt that crashed after naming only a quarantined failure must not be excused (got exit $rc)"
+pass "a final attempt naming a quarantined failure is still gated if it also crashed"
+
 # ...but only when the evidence it rests on is complete. Docker writes the
 # JUnit XML as root; if this user cannot take ownership of it, the snapshot is
 # partial, and a partial snapshot is indistinguishable from an attempt whose
@@ -446,6 +491,39 @@ set -e
 echo "$output" | grep -q "suspect" \
   || fail "expected the suspect evidence to be named as the reason, got: $output"
 pass "evidence that could not be made readable is never excused by the quarantine list"
+
+# A `cp -r` that fails partway through RESULTS_DIR must poison the evidence
+# the same way an unreadable results directory does above -- even when the
+# one failure it *did* manage to copy is quarantined, the files it could not
+# copy are missing from this attempt's snapshot, not passing. Stubbed like
+# the find/sudo cases above rather than chmod'd, since a root-run CI job
+# would not actually be denied read access by chmod.
+CASE="$TEMP_DIR/case-partial-snapshot-copy"
+mkdir -p "$CASE/stub-bin"
+cat > "$CASE/stub-bin/cp" <<'EOS'
+#!/usr/bin/env bash
+exit 1
+EOS
+chmod +x "$CASE/stub-bin/cp"
+cat > "$CASE/suite.sh" <<EOS
+#!/usr/bin/env bash
+n=\$(( \$(cat .n 2>/dev/null || echo 0) + 1 )); echo \$n > .n
+OUT=ddprof-test/build/test-results/testDebug
+mkdir -p "\$OUT"
+$(declare -f write_failure_xml)
+write_failure_xml "\$OUT" "com.dd.WobblyTest" "sometimesFails" "got 2 samples, wanted 50"
+exit 1
+EOS
+chmod +x "$CASE/suite.sh"
+write_list "$CASE/list.txt" "$(entry com.dd.WobblyTest.sometimesFails PROF-1 "$(day_offset 30)")"
+set +e
+output=$(cd "$CASE" && PATH="$CASE/stub-bin:$PATH" "$SCRIPTS/run_tests_with_retry.sh" --list list.txt "glibc-17-debug-amd64" -- ./suite.sh 2>&1)
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "a failed snapshot copy must not be excused even though the named failure is quarantined (got exit $rc)"
+echo "$output" | grep -q "suspect" \
+  || fail "expected the suspect evidence to be named as the reason, got: $output"
+pass "a failed/partial snapshot copy sets EVIDENCE_SUSPECT and forces gating"
 
 # A test missing from the retry never re-ran, so it is not evidence of a flake.
 CASE="$TEMP_DIR/case-absent-is-not-passed"
@@ -561,6 +639,32 @@ echo "$summary" | grep -q "PROF-XXXXX" \
 echo "$summary" | grep -q 'got 2 \\| wanted 50' \
   || fail "expected the pipe in the message to be escaped, got: $summary"
 pass "the PR summary renders the flaky table and a proposal"
+
+echo "== flake_summary.cells_glob =="
+
+# Every glob cells_glob() proposes must actually fnmatch the cells it was
+# derived from -- a glob built with axes in the wrong order (or missing an
+# axis real cells vary on, like config) looks plausible but can never match,
+# silently proposing a quarantine entry that quarantines nothing.
+python3 -c "
+import fnmatch, sys
+sys.path.insert(0, '$SCRIPTS')
+import flake_summary as fs
+
+cases = [
+    ['glibc-17-debug-amd64', 'glibc-21-debug-amd64'],
+    ['musl-17-release-aarch64', 'musl-11-release-aarch64'],
+    ['glibc-17-debug-amd64-slow'],
+    ['glibc-17-asan-amd64', 'musl-17-asan-amd64'],
+]
+for cells in cases:
+    globs = fs.cells_glob(cells) or []
+    for cell in cells:
+        assert any(fnmatch.fnmatch(cell, g) for g in globs), (
+            'cells_glob(%r) = %r does not match %r' % (cells, globs, cell))
+print('ok')
+" | grep -q '^ok$' || fail "a cells_glob() proposal did not fnmatch the cells it was derived from"
+pass "every cells_glob() proposal fnmatches the cells it was derived from"
 
 echo
 echo "All $TESTS quarantine tests passed."

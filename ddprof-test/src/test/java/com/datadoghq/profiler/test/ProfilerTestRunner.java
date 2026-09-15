@@ -18,8 +18,11 @@ import org.junit.platform.launcher.TestIdentifier;
 import org.junit.platform.launcher.core.LauncherDiscoveryRequestBuilder;
 import org.junit.platform.launcher.core.LauncherFactory;
 import org.junit.platform.launcher.listeners.SummaryGeneratingListener;
+import org.junit.platform.reporting.legacy.xml.LegacyXmlReportGeneratingListener;
 
 import java.io.PrintWriter;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -41,6 +44,10 @@ import java.util.concurrent.ConcurrentHashMap;
  * - -Dtest.filter=*.Pattern*        - Pattern matching on class names
  * - -Dtest.tags.include=tag1,tag2  - Only run tests tagged with one of these tags
  * - -Dtest.tags.exclude=tag1,tag2  - Skip tests tagged with any of these tags
+ * - -Dtest.reportsDir=path         - Write JUnit XML reports here (same TEST-*.xml format
+ *                                    Gradle's Test task produces), so flake_report.py can
+ *                                    classify musl failures the same way it classifies every
+ *                                    other cell
  */
 public class ProfilerTestRunner {
     public static void main(String[] args) {
@@ -131,6 +138,17 @@ public class ProfilerTestRunner {
         Launcher launcher = LauncherFactory.create();
         SummaryGeneratingListener listener = new SummaryGeneratingListener();
         launcher.registerTestExecutionListeners(new GradleStyleTestListener(), listener);
+
+        // Without this, musl runs produce no TEST-*.xml at all: flake_report.py has
+        // nothing to read, so every failure on musl is invisible to flake
+        // classification and quarantine, and a passing musl attempt looks
+        // indistinguishable from one that never ran.
+        String reportsDir = System.getProperty("test.reportsDir");
+        if (reportsDir != null && !reportsDir.isEmpty()) {
+            Path reportsPath = Paths.get(reportsDir);
+            reportsPath.toFile().mkdirs();
+            launcher.registerTestExecutionListeners(new LegacyXmlReportGeneratingListener(reportsPath, new PrintWriter(System.err)));
+        }
 
         // Execute tests
         launcher.execute(request);

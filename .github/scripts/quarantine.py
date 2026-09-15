@@ -149,14 +149,36 @@ def covers(entry, test_id):
     return test_id == pattern
 
 
+def is_expired(entry, today=None):
+    """True once this entry's review_by date has passed.
+
+    validate-quarantine (quarantine.py's own CLI) only runs from ci.yml, but
+    find_entry() is called from every workflow that reuses run_tests_with_retry.sh
+    (nightly.yml, release-validated.yml included). Enforcing expiry here, at
+    match time, means a stale mute cannot keep quarantining a failure just
+    because the workflow that hit it never runs the separate validator.
+    """
+    review_by = entry.get("review_by", "")
+    if not DATE_RE.match(review_by):
+        return False
+    try:
+        due = datetime.date.fromisoformat(review_by)
+    except ValueError:
+        return False
+    return due < (today or datetime.date.today())
+
+
 def find_entry(entries, test_id, cell):
     """The first entry quarantining this test on this cell, or None.
 
     Every caller that decides whether a failure gates goes through here, so the
-    matching rule cannot drift between the subcommand and flake_report.py.
+    matching rule cannot drift between the subcommand and flake_report.py. An
+    expired entry is treated as absent rather than as a hit, so it can never
+    excuse a failure outside the PR CI that happens to run validate-quarantine.
     """
     return next(
-        (e for e in entries if covers(e, test_id) and applies_to(e, cell)),
+        (e for e in entries
+         if covers(e, test_id) and applies_to(e, cell) and not is_expired(e)),
         None,
     )
 
