@@ -6,6 +6,7 @@
 #define _NATIVEMEM_H
 
 #include "arch.h"
+#include "mallocFootprint.h"
 #include <cassert>
 
 // Physical native-memory categories used by the profiler's own allocations.
@@ -67,6 +68,13 @@ private:
   // Precise per-category high-water mark, maintained at allocation time by
   // record() so peaks that rise and fall between sample() ticks are still seen.
   static volatile long long _max[NM_NUM_CATEGORIES];
+  // Allocator overhead on the live allocations: rounding to the size quantum
+  // plus the per-chunk header. Kept SEPARATE from _live rather than folded in,
+  // so _live stays directly comparable to sizeof() arithmetic while the amount
+  // RSS additionally pays stays visible. Maintained only by recordAlloc/
+  // recordFreeBefore/recordOverhead; call sites using plain record()
+  // contribute nothing here.
+  static volatile long long _overhead[NM_NUM_CATEGORIES];
 
   // sample()-owned state; touched only from the single-threaded sampling path.
   static long long _window[NM_NUM_CATEGORIES][WINDOW];
@@ -100,6 +108,50 @@ public:
       }
     }
   }
+
+  // Record an allocation together with its measured allocator overhead.
+  //
+  // Prefer this over record() wherever the pointer is in hand: it keeps the
+  // logical byte count in _live (comparable to sizeof()) while accumulating the
+  // rounding-plus-header cost that RSS actually pays. Overhead is a function of
+  // per-allocation size, so it cannot be recovered later from a byte total --
+  // a 512 KB chunk pays ~0.003 %, a 96-byte node 16.7 %.
+  //
+  // Not async-signal-safe on first call (the header probe allocates); every
+  // current call site runs on a normal thread.
+  static void recordAlloc(NativeMemCategory category, void *ptr,
+                          size_t requested) {
+    record(category, (long long)requested);
+    if (ptr != NULL) {
+      atomicIncRelaxed(_overhead[category],
+                       (long long)MallocFootprint::overheadOf(ptr, requested));
+    }
+  }
+
+  // Counterpart to recordAlloc. MUST be called before the pointer is freed --
+  // the overhead is read back off the live chunk, which is unreadable afterwards.
+  static void recordFreeBefore(NativeMemCategory category, void *ptr,
+                               size_t requested) {
+    if (ptr != NULL) {
+      atomicIncRelaxed(_overhead[category],
+                       -(long long)MallocFootprint::overheadOf(ptr, requested));
+    }
+    record(category, -(long long)requested);
+  }
+
+  // Account for already-measured overhead, for call sites that hold the figure
+  // but no longer the pointer -- CodeCacheArray::add() sums a library's name
+  // allocations as they are created and records the total once at publication.
+  // Same relaxed atomic add as record(), so concurrent publishers cannot clobber
+  // each other's contribution.
+  static void recordOverhead(NativeMemCategory category, long long delta) {
+    atomicIncRelaxed(_overhead[category], delta);
+  }
+
+  static long long overhead(NativeMemCategory category) {
+    return load(_overhead[category]);
+  }
+  static long long overheadTotal();
 
   // Set a category's live value directly, for gauge-style subsystems whose size
   // is recomputed as an absolute (rather than tracked via alloc/free deltas).
