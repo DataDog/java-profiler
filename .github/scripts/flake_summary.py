@@ -31,11 +31,9 @@ DEFAULT_REVIEW_DAYS = quarantine.DEFAULT_REVIEW_DAYS
 # a fence-breaking ``` sequence into that render.
 _SAFE_TEST_ID_RE = re.compile(r"[^A-Za-z0-9_.$-]")
 
-# The one place a failure message is truncated for display. flake_report.py
-# stores messages at a wider cap (200 chars) for anyone reading the raw JSON;
-# every renderer of this data (this module's tables, generate-test-summary.sh's
-# per-job table) uses this same, narrower display width so the same failure
-# does not render at two different lengths in one PR comment.
+# The display width for a failure message in this module's tables.
+# flake_report.py stores messages at a wider cap (200 chars) for anyone reading
+# the raw JSON.
 MESSAGE_DISPLAY_WIDTH = 120
 
 
@@ -174,16 +172,53 @@ def cells_glob(cells):
     musl+aarch64 gets `*musl*aarch64*` rather than the wider `*aarch64*`
     (which would also cover glibc aarch64).
 
-    Cell names are `<libc>-<jdk>-<config>-<arch>[-slow]`. `*`-joining is
-    order-sensitive, so the axes here must be listed in that same left-to-right
-    order (libc, config, arch, suite suffix) -- axes out of order yields a glob
-    fnmatch can never match against the very cells it was derived from.
+    Cell names are `<libc>-<jdk>-<config>-<arch>[-slow]`, so the axes are read
+    positionally out of that grammar rather than matched against a hardcoded
+    token list. A list would silently omit whichever axis nobody thought of --
+    the JDK (which the matrix varies along most) and the regular/slow suffix
+    were both missing, so a flake seen only on `glibc-8-j9-debug-amd64`
+    proposed `*glibc*debug*amd64*` and quarantined it on all 13 JDKs and on the
+    slow suite too.
+
+    A field the cells disagree on becomes `*`; one they share is kept
+    literally. The suffix is an axis in its own right: a proposal derived from
+    regular cells ends in the arch so it cannot also match that cell's `-slow`
+    twin.
     """
-    axes = ["glibc", "musl", "debug", "release", "asan", "tsan", "amd64", "aarch64", "slow"]
-    shared = [axis for axis in axes if all(axis in c for c in cells)]
-    if not shared:
+    fields = [c.split("-") for c in cells]
+    # A cell that does not parse as <libc>-<jdk>-<config>-<arch>[-slow] (a jdk
+    # like "8-j9" makes that five or six fields) is not something to guess at.
+    widths = {len(f) for f in fields}
+    if len(widths) != 1:
         return None
-    return ["*" + "*".join(shared) + "*"]
+    width = widths.pop()
+    if width < 4:
+        return None
+    shared = [
+        fields[0][i] if all(f[i] == fields[0][i] for f in fields) else "*"
+        for i in range(width)
+    ]
+    if all(part == "*" for part in shared):
+        return None
+    glob = "-".join(shared)
+    # Anchored at the end so a regular-suite proposal cannot match `-slow`;
+    # leading `*` only if the first field itself is unconstrained.
+    return [glob if shared[0] != "*" else "*" + glob.lstrip("*")]
+
+
+def widened_note(test_id, pattern):
+    """A warning line when the proposed pattern covers more than was observed.
+
+    covers() understands an exact id or a class-wide `.*` and nothing else, so
+    an id it cannot express exactly (a parameterized invocation index) can only
+    be proposed class-wide. That mutes every test in the class, which is a
+    different decision from the one the evidence supports -- so it is stated
+    rather than left for the reviewer to notice.
+    """
+    if pattern.endswith(".*") and not test_id.endswith(".*"):
+        return ("# WIDENED: observed `{}`, which covers() cannot match exactly; "
+                "this entry mutes the whole class".format(test_id))
+    return None
 
 
 def render_proposals(flaky, proposal_limit=25):
@@ -214,8 +249,12 @@ def render_proposals(flaky, proposal_limit=25):
             info["message"] or "intermittent failure",
             ", ".join(sorted(set(info["cells"]))[:4]),
         )).replace("|", "/")
+        pattern = sanitize_quarantine_test_pattern(test_id)
+        note = widened_note(test_id, pattern)
+        if note:
+            out.append(note)
         out.append(quarantine.format_entry(
-            sanitize_quarantine_test_pattern(test_id),
+            pattern,
             "PROF-XXXXX",
             today.isoformat(),
             review_by,
@@ -252,6 +291,7 @@ def main():
 
     flaky = group_by_test(reports, "flaky")
     persistent = group_by_test(reports, "persistent")
+    unclassified = group_by_test(reports, "unclassified")
     quarantined = group_by_test(reports, "quarantined")
 
     out = []
@@ -276,6 +316,19 @@ def main():
         out.append("")
         out.extend(render_table(persistent))
         out.append("")
+    if unclassified:
+        out.append("### :grey_question: Failing tests — flakiness not measured")
+        out.append("")
+        out.extend(render_table(unclassified))
+        out.append("")
+        out.append(
+            "**These fail the build.** The suite was not retried (slow suites run "
+            "once), so whether they are flaky or broken was never measured — the "
+            "entry below is offered on the same terms as a flake's, and the "
+            "judgement is still yours."
+        )
+        out.append("")
+        out.extend(render_proposals(unclassified))
     if quarantined:
         out.append("### :mute: Quarantined failures — not gating")
         out.append("")

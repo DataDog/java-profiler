@@ -252,18 +252,23 @@ def cmd_report(args):
     #                                  exit code (a compile error or a dead
     #                                  runner is nothing to do with
     #                                  quarantine).
-    if args.evidence_suspect:
-        gates = True
-        gate_reason = (
-            "flake evidence for this cell is suspect (the results directory "
-            "could not be reliably cleared between attempts), so a prior "
-            "attempt's results may be mistaken for the final attempt's own"
-        )
-    elif gating:
+    if gating:
         gates = True
         gate_reason = "{} un-quarantined failure(s)".format(len(gating))
     elif results:
-        if not final_attempt_ran or final_attempt_gating_count != 0:
+        # Suspect evidence belongs here, inside the branch that has something
+        # to excuse: it is a reason to distrust the quarantine excuse, not a
+        # test failure of its own. A run where everything passed but the
+        # results tree could not be cleared has nothing to excuse, so its own
+        # exit code stands.
+        if args.evidence_suspect:
+            gates = True
+            gate_reason = (
+                "flake evidence for this cell is suspect (the results directory "
+                "could not be reliably cleared between attempts), so a prior "
+                "attempt's results may be mistaken for the final attempt's own"
+            )
+        elif not final_attempt_ran or final_attempt_gating_count != 0:
             gates = True
             gate_reason = (
                 "the final attempt did not itself pass with only quarantined "
@@ -300,8 +305,19 @@ def cmd_report(args):
         "cell": args.cell,
         "attempts": ran,
         "attempts_run": args.final_attempt,
+        # A single attempt cannot distinguish flaky from broken: passed_in is
+        # empty for every failure because nothing re-ran. Calling those
+        # "persistent" would assert something the run never measured, so they
+        # get their own bucket and their own proposals.
         "flaky": [r for r in results if r["flaky"] and not r["quarantined"]],
-        "persistent": [r for r in results if not r["flaky"] and not r["quarantined"]],
+        "persistent": [
+            r for r in results
+            if not r["flaky"] and not r["quarantined"] and ran > 1
+        ],
+        "unclassified": [
+            r for r in results
+            if not r["flaky"] and not r["quarantined"] and ran <= 1
+        ],
         "quarantined": [r for r in results if r["quarantined"]],
         "gating_count": len(gating),
         "failure_count": len(results),

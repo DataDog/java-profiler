@@ -214,7 +214,7 @@ python3 -c "
 import json,sys
 d = json.load(open(sys.argv[1]))
 assert d['gating_count'] == 0 and d['failure_count'] == 0, d
-assert not d['flaky'] and not d['persistent'], d
+assert not d['flaky'] and not d['persistent'] and not d['unclassified'], d
 " "$CASE/ci-outcome/glibc-17-debug-amd64.json" || fail "a clean run was not reported as clean"
 pass "a suite that passes on the first attempt is green and reports no failures"
 
@@ -521,9 +521,43 @@ output=$(cd "$CASE" && PATH="$CASE/stub-bin:$PATH" "$SCRIPTS/run_tests_with_retr
 rc=$?
 set -e
 [ "$rc" -ne 0 ] || fail "a failed snapshot copy must not be excused even though the named failure is quarantined (got exit $rc)"
-echo "$output" | grep -q "suspect" \
-  || fail "expected the suspect evidence to be named as the reason, got: $output"
-pass "a failed/partial snapshot copy sets EVIDENCE_SUSPECT and forces gating"
+echo "$output" | grep -q "Could not snapshot" \
+  || fail "expected the lost evidence to be reported, got: $output"
+pass "a failed snapshot copy leaves nothing to excuse, so the command's own failure stands"
+
+# Suspect evidence is a reason to distrust a quarantine excuse, not a failure
+# of its own. A suite that passed has nothing to excuse, so an unreadable
+# results tree must not turn its exit 0 into a red job.
+CASE="$TEMP_DIR/case-suspect-evidence-all-passed"
+mkdir -p "$CASE/stub-bin"
+cat > "$CASE/stub-bin/find" <<'EOS'
+#!/usr/bin/env bash
+for a in "$@"; do
+  if [ "$a" = "-user" ]; then echo "/root-owned/TEST-Foo.xml"; exit 0; fi
+done
+exec /usr/bin/find "$@"
+EOS
+cat > "$CASE/stub-bin/sudo" <<'EOS'
+#!/usr/bin/env bash
+exit 1
+EOS
+chmod +x "$CASE/stub-bin/find" "$CASE/stub-bin/sudo"
+cat > "$CASE/suite.sh" <<EOS
+#!/usr/bin/env bash
+OUT=ddprof-test/build/test-results/testDebug
+mkdir -p "\$OUT"
+$(declare -f write_pass_xml)
+write_pass_xml "\$OUT" "com.dd.SteadyTest" "alwaysPasses"
+exit 0
+EOS
+chmod +x "$CASE/suite.sh"
+write_list "$CASE/list.txt"
+set +e
+output=$(cd "$CASE" && PATH="$CASE/stub-bin:$PATH" "$SCRIPTS/run_tests_with_retry.sh" --list list.txt "glibc-17-debug-amd64" -- ./suite.sh 2>&1)
+rc=$?
+set -e
+[ "$rc" -eq 0 ] || fail "suspect evidence must not fail a run in which every test passed (got exit $rc): $output"
+pass "suspect evidence does not redden a run with nothing to excuse"
 
 # A test missing from the retry never re-ran, so it is not evidence of a flake.
 CASE="$TEMP_DIR/case-absent-is-not-passed"
@@ -567,7 +601,7 @@ python3 -c "
 import json,sys
 d = json.load(open(sys.argv[1]))
 assert d['failure_count'] == 1, d
-assert d['persistent'] and d['persistent'][0]['test'] == 'com.dd.Weird.realFailure', d
+assert d['unclassified'] and d['unclassified'][0]['test'] == 'com.dd.Weird.realFailure', d
 " "$CASE/out.json" || fail "the unnamed testcase was not ignored, or the real failure was missed"
 pass "a testcase with no name attribute is ignored, not mistaken for a failure"
 
@@ -586,7 +620,7 @@ python3 -c "
 import json,sys
 d = json.load(open(sys.argv[1]))
 assert d['attempts'] == 1, d
-assert d['persistent'] and d['persistent'][0]['test'] == 'com.dd.WobblyTest.sometimesFails', d
+assert d['unclassified'] and d['unclassified'][0]['test'] == 'com.dd.WobblyTest.sometimesFails', d
 " "$CASE/out.json" || fail "attempt-1 was not read back despite the stray attempt-tmp"
 pass "attempt-1 is still read as evidence while the stray directory is skipped"
 
@@ -707,6 +741,215 @@ idx = flake_summary.sanitize_quarantine_test_pattern('com.dd.WobblyTest.[1]')
 assert idx == 'com.dd.WobblyTest.*', idx
 " || fail "the proposal for a method() id was not the documented form, or an indexed invocation was not widened class-wide"
 pass "a method() id proposes the documented form; an indexed invocation proposes the class"
+
+# The other-task guard, asserted on the verdict rather than on stdout: the
+# previous check grepped for a task name the fixture echoes itself, which
+# filter_gradle_log.py passes through verbatim, so deleting the guard left the
+# test green. Exit 0 from the fixture isolates this from the exit-code branch.
+CASE="$TEMP_DIR/case-other-task-guard"
+mkdir -p "$CASE/flake-evidence/attempt-1"
+write_failure_xml "$CASE/flake-evidence/attempt-1" "com.dd.WobblyTest" "sometimesFails" "boom"
+cat > "$CASE/attempt.log" <<'EOS'
+> Task :ddprof-lib:verifyNative FAILED
+Execution failed for task ':ddprof-lib:verifyNative'.
+EOS
+write_list "$CASE/list.txt" "$(entry com.dd.WobblyTest.sometimesFails PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/flake_report.py" --list "$CASE/list.txt" report \
+  --cell "glibc-17-debug-amd64" --evidence-dir "$CASE/flake-evidence" \
+  --final-attempt 1 --attempt-log "$CASE/attempt.log" \
+  --final-attempt-exit-code 0 --test-task-pattern ":ddprof-test:test" \
+  --out "$CASE/out.json" >/dev/null 2>&1
+python3 -c "
+import json,sys
+d = json.load(open(sys.argv[1]))
+assert d['gates'] is True, 'a non-test task failure must gate even with every test quarantined: %r' % d['gate_reason']
+assert 'the build also failed in' in (d['gate_reason'] or ''), d['gate_reason']
+assert d['other_task_failures'] == [':ddprof-lib:verifyNative'], d['other_task_failures']
+" "$CASE/out.json" || fail "the non-test-task guard did not gate, or did not name the task"
+pass "a build failure outside the test task is never excused by the list"
+
+# b-12, hermetically: suspect evidence with no failure recorded has nothing to
+# excuse, so the classifier must hold no opinion and let the command's own exit
+# code stand.
+CASE="$TEMP_DIR/case-suspect-no-failures"
+mkdir -p "$CASE/flake-evidence/attempt-1"
+write_pass_xml "$CASE/flake-evidence/attempt-1" "com.dd.SteadyTest" "alwaysPasses"
+write_list "$CASE/list.txt"
+python3 "$SCRIPTS/flake_report.py" --list "$CASE/list.txt" report \
+  --cell "glibc-17-debug-amd64" --evidence-dir "$CASE/flake-evidence" \
+  --final-attempt 1 --evidence-suspect --out "$CASE/out.json" >/dev/null 2>&1
+python3 -c "
+import json,sys
+d = json.load(open(sys.argv[1]))
+assert d['gates'] is None, 'suspect evidence with no failure must not gate: %r' % d['gate_reason']
+" "$CASE/out.json" || fail "suspect evidence gated a run in which nothing failed"
+pass "suspect evidence holds no opinion when there is no failure to excuse"
+
+# s-22: a single attempt cannot tell flaky from broken, so the failure must not
+# also appear as persistent -- that label asserts a measurement never made.
+CASE="$TEMP_DIR/case-single-attempt-not-persistent"
+mkdir -p "$CASE/flake-evidence/attempt-1"
+write_failure_xml "$CASE/flake-evidence/attempt-1" "com.dd.SlowTest" "onlyRunOnce" "boom"
+write_list "$CASE/list.txt"
+python3 "$SCRIPTS/flake_report.py" --list "$CASE/list.txt" report \
+  --cell "glibc-17-debug-amd64-slow" --evidence-dir "$CASE/flake-evidence" \
+  --final-attempt 1 --out "$CASE/out.json" >/dev/null 2>&1
+python3 -c "
+import json,sys
+d = json.load(open(sys.argv[1]))
+assert not d['persistent'], 'a single-attempt failure must not be labelled persistent: %r' % d['persistent']
+assert len(d['unclassified']) == 1, d
+" "$CASE/out.json" || fail "a single-attempt failure was labelled broken rather than unclassified"
+pass "a single-attempt failure is unclassified, not persistent"
+
+# s-19, through the renderer: the WIDENED marker has to reach the rendered
+# proposal, not merely exist as a helper.
+python3 -c "
+import sys
+sys.path.insert(0, '$SCRIPTS')
+from flake_summary import render_proposals
+out = '\n'.join(render_proposals({'com.dd.WobblyTest.[1]': {'message': 'boom', 'cells': ['glibc-17-debug-amd64']}}))
+assert 'WIDENED' in out, 'the rendered proposal does not mark the widening:\n' + out
+assert 'com.dd.WobblyTest.*' in out, out
+" || fail "a class-wide proposal was rendered without its WIDENED marker"
+pass "the rendered proposal carries the WIDENED marker"
+
+# g-14: no command at all must fail loudly rather than record a green cell that
+# ran nothing.
+CASE="$TEMP_DIR/case-no-command"
+mkdir -p "$CASE"
+write_list "$CASE/list.txt"
+set +e
+output=$(cd "$CASE" && "$SCRIPTS/run_tests_with_retry.sh" --list list.txt "glibc-17-debug-amd64" -- 2>&1)
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "an empty command list must not exit 0 (got $rc): $output"
+echo "$output" | grep -q "no command given" \
+  || fail "expected an explicit error about the missing command, got: $output"
+pass "an empty command list fails loudly instead of passing without running a test"
+
+# s-9: a destination that cannot be cleared makes cp merge stale evidence into
+# this attempt's, which is how a persistent failure acquires a flaky label.
+CASE="$TEMP_DIR/case-dest-clear-fails"
+mkdir -p "$CASE/stub-bin"
+cat > "$CASE/stub-bin/rm" <<'EOS'
+#!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in *flake-evidence/attempt-*) exit 1 ;; esac
+done
+exec /bin/rm "$@"
+EOS
+chmod +x "$CASE/stub-bin/rm"
+cat > "$CASE/suite.sh" <<EOS
+#!/usr/bin/env bash
+OUT=ddprof-test/build/test-results/testDebug
+mkdir -p "\$OUT"
+$(declare -f write_failure_xml)
+write_failure_xml "\$OUT" "com.dd.WobblyTest" "sometimesFails" "boom"
+exit 1
+EOS
+chmod +x "$CASE/suite.sh"
+write_list "$CASE/list.txt" "$(entry com.dd.WobblyTest.sometimesFails PROF-1 "$(day_offset 30)")"
+set +e
+output=$(cd "$CASE" && PATH="$CASE/stub-bin:$PATH" "$SCRIPTS/run_tests_with_retry.sh" --list list.txt "glibc-17-debug-amd64" -- ./suite.sh 2>&1)
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "evidence that may be merged with an earlier attempt's must not be excused (got exit $rc): $output"
+echo "$output" | grep -q "merged with an earlier attempt" \
+  || fail "expected the merged-evidence warning, got: $output"
+pass "a destination that cannot be cleared poisons the evidence rather than being excused"
+
+echo "== quarantine.py fails closed =="
+
+# An unreadable review_by must stop excusing rather than excuse forever:
+# parse() accepts a blank or non-date value, and validate() only runs in PR CI.
+for bad in "" "not-a-date" "2026-13-45"; do
+  python3 -c "
+import sys
+sys.path.insert(0, '$SCRIPTS')
+import quarantine
+entry = {'test': 'a.B.c', 'ticket': 'PROF-1', 'added': '2026-01-01',
+         'review_by': '$bad', 'cells': [], '_line': 1}
+assert quarantine.is_expired(entry), 'review_by %r must count as expired' % '$bad'
+assert quarantine.find_entry([entry], 'a.B.c', 'glibc-17-debug-amd64') is None, \
+    'an entry with an unreadable review_by must not excuse anything'
+" || fail "an unreadable review_by (${bad:-<blank>}) was treated as never expiring"
+done
+pass "an unreadable review_by counts as expired, not as eternal"
+
+# A trailing '.*' covers one class's methods, as documented -- not a package.
+python3 -c "
+import sys
+sys.path.insert(0, '$SCRIPTS')
+import quarantine
+pkg = {'test': 'com.datadoghq.profiler.*'}
+assert not quarantine.covers(pkg, 'com.datadoghq.profiler.cpu.CpuTest.sampling'), \
+    'a package-level pattern must not quarantine a whole subtree'
+cls = {'test': 'com.datadoghq.profiler.cpu.CpuTest.*'}
+assert quarantine.covers(cls, 'com.datadoghq.profiler.cpu.CpuTest.sampling')
+assert quarantine.covers(cls, 'com.datadoghq.profiler.cpu.CpuTest.sampling()')
+assert not quarantine.covers(cls, 'com.datadoghq.profiler.cpu.CpuTest.Inner.sampling')
+" || fail "a trailing '.*' is not scoped to one class's methods"
+pass "a trailing '.*' covers one class's methods, not a package"
+
+write_list "$LIST" "$(entry 'com.datadoghq.profiler.*' PROF-1 "$(day_offset 30)")"
+if python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate >/dev/null 2>&1; then
+  fail "a package-level '.*' pattern should be rejected"
+fi
+pass "a package-level '.*' pattern is rejected"
+
+write_list "$LIST" "$(entry '.*' PROF-1 "$(day_offset 30)")"
+if python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate >/dev/null 2>&1; then
+  fail "a bare '.*' pattern should be rejected"
+fi
+pass "a bare '.*' pattern is rejected"
+
+# cells_overlap() fails closed for a glob matching nothing synthetic, so a JDK
+# variant missing from the synthetic universe makes disjoint entries look like
+# duplicates.
+write_list "$LIST" \
+  "$(entry a.B.c PROF-1 "$(day_offset 30)" '*17-j9*')" \
+  "$(entry a.B.c PROF-2 "$(day_offset 30)" '*21-graal*')"
+python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate >/dev/null 2>&1 \
+  || fail "two entries on genuinely disjoint JDK variants must validate"
+pass "disjoint JDK-variant cells are not mistaken for duplicates"
+
+echo "== cells_glob narrows on every axis =="
+
+python3 -c "
+import sys
+sys.path.insert(0, '$SCRIPTS')
+import fnmatch
+from flake_summary import cells_glob
+# One cell: every axis is shared, so nothing else may match.
+g = cells_glob(['glibc-8-j9-debug-amd64'])[0]
+assert fnmatch.fnmatch('glibc-8-j9-debug-amd64', g), g
+assert not fnmatch.fnmatch('glibc-17-debug-amd64', g), 'JDK axis not narrowed: %s' % g
+# Differing only in JDK: that field opens up, the rest stays put.
+g = cells_glob(['glibc-8-debug-amd64', 'glibc-17-debug-amd64'])[0]
+assert fnmatch.fnmatch('glibc-8-debug-amd64', g) and fnmatch.fnmatch('glibc-17-debug-amd64', g), g
+assert not fnmatch.fnmatch('musl-8-debug-amd64', g), 'libc axis not narrowed: %s' % g
+assert not fnmatch.fnmatch('glibc-8-release-amd64', g), 'config axis not narrowed: %s' % g
+assert not fnmatch.fnmatch('glibc-8-debug-aarch64', g), 'arch axis not narrowed: %s' % g
+assert not fnmatch.fnmatch('glibc-8-debug-amd64-slow', g), 'suite suffix not narrowed: %s' % g
+" || fail "cells_glob does not narrow on the JDK or the slow/regular axis"
+pass "a proposal excludes cells differing only in JDK or in the slow suffix"
+
+echo "== a widened proposal says so =="
+
+python3 -c "
+import sys
+sys.path.insert(0, '$SCRIPTS')
+from flake_summary import widened_note, sanitize_quarantine_test_pattern
+idx = 'com.dd.WobblyTest.[1]'
+pat = sanitize_quarantine_test_pattern(idx)
+assert pat == 'com.dd.WobblyTest.*', pat
+note = widened_note(idx, pat)
+assert note and 'WIDENED' in note and idx in note, note
+exact = 'com.dd.WobblyTest.sometimesFails()'
+assert widened_note(exact, sanitize_quarantine_test_pattern(exact)) is None
+" || fail "a class-wide proposal for an inexpressible id carries no warning"
+pass "a proposal widened to the class is marked as widened"
 
 echo "== validate rejects unmatchable test patterns =="
 

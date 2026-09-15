@@ -55,10 +55,18 @@ ARCH_LIKE_RE = re.compile(r"(?:x86|x64|amd|arm|aarch|i386|ppc|s390)[\w_]*")
 # cell globs could both match the same real cell. Wide enough to catch a glob
 # written against any axis (jdk, config, the libc/arch pair, or the slow/regular
 # suite suffix) without having to enumerate the workflow's actual, ever-growing
-# matrix. Deliberately over-inclusive (e.g. jdk variants like "8-j9" beyond the
-# base list below): a synthetic cell that never occurs for real only makes
-# overlap detection more conservative, never less.
-_SYNTHETIC_JDKS = ("8", "8-graal", "11", "17", "17-graal", "21", "25")
+# matrix. Over-inclusive on purpose: a synthetic cell that never occurs for
+# real only makes overlap detection more conservative, never less. Under-
+# inclusive is the dangerous direction -- cells_overlap() fails closed for a
+# glob matching nothing synthetic, so a JDK variant missing from here makes two
+# genuinely disjoint entries look like duplicates and fail validation.
+_SYNTHETIC_JDK_BASES = ("8", "11", "17", "21", "25")
+_SYNTHETIC_JDK_SUFFIXES = ("", "-orcl", "-j9", "-ibm", "-graal")
+_SYNTHETIC_JDKS = tuple(
+    base + suffix
+    for base in _SYNTHETIC_JDK_BASES
+    for suffix in _SYNTHETIC_JDK_SUFFIXES
+)
 _SYNTHETIC_CONFIGS = ("debug", "release", "asan", "tsan")
 _SYNTHETIC_SUITE_SUFFIXES = ("", "-slow")
 SYNTHETIC_CELLS = tuple(
@@ -162,7 +170,15 @@ def covers(entry, test_id):
     pattern = entry["test"]
     test_id = normalise_test_id(test_id)
     if pattern.endswith(".*"):
-        return test_id.startswith(pattern[:-1])
+        # "covers every method in the class", per quarantine.txt -- so the
+        # remainder after the class name must be a single method segment. An
+        # unbounded prefix match would make "com.datadoghq.profiler.*" suspend
+        # the merge gate for the entire repository from one validate-clean
+        # line.
+        prefix = pattern[:-1]
+        if not test_id.startswith(prefix):
+            return False
+        return "." not in test_id[len(prefix):]
     return test_id == pattern
 
 
@@ -177,11 +193,15 @@ def is_expired(entry, today=None):
     """
     review_by = entry.get("review_by", "")
     if not DATE_RE.match(review_by):
-        return False
+        # Blank or not a date at all. parse() accepts both, and validate()
+        # only runs in PR CI, so treating an unreadable expiry as "never
+        # expires" would let the one entry nobody can review outlive every
+        # entry that can be. An expiry that cannot be read has passed.
+        return True
     try:
         due = datetime.date.fromisoformat(review_by)
     except ValueError:
-        return False
+        return True
     return due < (today or datetime.date.today())
 
 
@@ -253,14 +273,25 @@ def cmd_validate(args):
             if entry[field] and not DATE_RE.match(entry[field]):
                 complain(line, "{} '{}' is not YYYY-MM-DD".format(field, entry[field]))
 
-        if entry["test"] and BAD_TEST_WILDCARD_RE.search(
-            entry["test"][:-2] if entry["test"].endswith(".*") else entry["test"]
-        ):
+        stem = entry["test"][:-2] if entry["test"].endswith(".*") else entry["test"]
+        if entry["test"] and (not stem or BAD_TEST_WILDCARD_RE.search(stem)):
             complain(line, (
-                "test pattern '{}' has a wildcard outside a single trailing "
-                "'.*'; covers() only understands an exact id or a class-wide "
-                "'.*', so this would silently quarantine nothing"
+                "test pattern '{}' is not an exact id or a class-wide '<class>.*'; "
+                "covers() understands nothing else, so this would silently "
+                "quarantine nothing"
             ).format(entry["test"]))
+
+        # "<package>.*" is not a class. covers() scopes a trailing '.*' to one
+        # class's methods, so a package-level pattern quarantines nothing --
+        # while looking like it quarantines a great deal.
+        if entry["test"].endswith(".*") and stem:
+            last = stem.rsplit(".", 1)[-1]
+            if last and not last[:1].isupper():
+                complain(line, (
+                    "test pattern '{}' reads as a package, not a class: a "
+                    "trailing '.*' covers the methods of one class, so this "
+                    "matches nothing. Name the class, or list its tests"
+                ).format(entry["test"]))
 
         if entry["test"].endswith("()"):
             complain(line, (
