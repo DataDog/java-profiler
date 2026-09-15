@@ -2168,6 +2168,24 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
       ctx->_diag_leak_flags[ctx->_diag_count] = 2;
       ctx->_diag_count++;
     }
+    // TEMP DIAGNOSTIC (pod round 12): log every STATIC_FIELD edge
+    // from the sweep that hits an already-admitted entry, with the
+    // entry's current shape (parent_tag, root_kind, state). This shows
+    // whether the LEAK_BUFFER wrapper (SynchronizedRandomAccessList)
+    // is ever reached by the sweep and what its frontier entry looks
+    // like. Remove once the wrapper question is answered.
+    if (ctx->static_field_seed &&
+        reference_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD) {
+      FrontierEntry e{};
+      bool found = ctx->frontier->lookup(*tag_ptr, &e);
+      TEST_LOG("ReferenceChainTracker::sweep STATIC_FIELD "
+               "already-admitted klass_id=%u tag=%lld "
+               "parent=%lld root_kind=%u state=%u found=%d",
+               ctx->tracker->classTags()->resolve(class_tag),
+               (long long)*tag_ptr, (long long)(found ? e.parent_tag : 0),
+               (unsigned)(found ? e.root_kind : 0),
+               (unsigned)(found ? e.state : 0), (int)found);
+    }
     // Already-tagged object reached via a new edge. This arm - NOT the
     // first-admission block above - is where an already-admitted entry's
     // shape can be corrected: improveChain/reparentToDurableRoot for a
