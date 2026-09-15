@@ -16,28 +16,27 @@ representatives are re-tagged and all discovered instances auto-marked,
 chains are cached per-instance (not per-class). JFR analysis confirmed 2
 ReferenceChain events emitted — but one was for a noise [B instance.
 
-## Current focus: round 14 IMPLEMENTED (tiered anchor selection + restart hygiene), all gtests green, awaiting user deploy
+## Current focus: round 15 — fresh-admission priority (diagnosis complete, implementation pending user go)
 
-Direction D implemented gated on measurement (user rejected whole-heap C on
-hard STW: per-call ~50ms / 500ms-per-sec). Shipped in one build: (1) tiered
-anchor selection — leak_tag → container-shaped (implements Collection/Map)
-→ other, per-tier cursors, no within-call wrap; container anchors get
-ceil(cohort/budget) deterministic coverage from ANY index position (kills
-the admission-order lottery); (2) class shape classification via
-process-lifetime cache + per-pass GOTW-based reconcile (128 classes/pass,
-JNI outside callbacks/locks; class tags are NEGATIVE — != 0 tests); (3)
-O(1) index dedupe (28k population made the old linear scan O(n²)); (4)
-leak-tagged root-attached admits indexed (tier 0); (5) restartSearch clears
-stale _candidate_discovered_tags (was emitting WRONG-OBJECT chain events);
-(6) TEMP anchorTierHistogram per pass — THE arithmetic gate: if
-container_tier ≫ 4k on hotdog the shape tier fails like its reverted
-prior art (see STALE_EXPANDED_ROTATION_BUDGET comment) and the frontier-cap
-lever is next. 347 gtests OK (3 new: leap-queue scale test at 28k anchors,
-other-tier fair coverage, restart hygiene). See
-find-anchor-tail-starvation.md, meta-circle-review.md,
-ev-leaktag-onpod-round14.md (pod verification plan: histogram → container
-classification of the wrapper → wrapper walk → interception → events →
-reconstructChain failures gone).
+Round-14 build VERIFIED on pod (rz992, JVM 20:05:48Z): tiering works,
+container cohort 1633-1680 (arithmetic gate passed), containers walked
+first-class, restart hygiene clean. BUT end-to-end still fails with a NEW
+measured shape: search lifetimes collapsed to 44-75 passes (frontier fill
+2.5-7.5k/pass; noise seeding ~650/min) while the wrapper — admitted when
+the sweep crosses its holder class (index 24627/33270) mid/late in a search
+— lands at the anchor-index TAIL = container-ordinal ~1634 of 1633 = LAST,
+walk owed at pass ~102+ ⇒ deterministic miss by 30-50 passes. Every search
+today is a CANARY chase (candidate=[B leak class, 0/1 found) that can
+never find its candidate without the wrapper walk while its backoff
+(16×ema) slows the passes — self-sustaining deadlock.
+
+Fix (STW-free, surgical): walk anchors admitted since the last collector
+pass FIRST (fresh+container-shaped) — admission at pass N ⇒ walk at N+1 ⇒
+subtree expansion admits leak-tagged chunks ⇒ chain resolves ⇒ canary
+exits ⇒ event. See find-tier1-tail-starvation.md,
+ev-leaktag-onpod-round14-results.md (also: log-buffer rotation eats
+~4-min windows — use kubectl logs -f streams for verification; per-class
+shape classification logs once per JVM, early windows lost).
 
 Prior focus (round 13, resolved): ROOT CAUSE FOUND — deterministic anchor-selection tail starvation; wrapper admitted root-attached (probe-proven) at index position ~12-21k vs ~4k coverage per search; wrapper's own
 class holds leak_tag=0 so B+C's leak-priority could not promote it.
