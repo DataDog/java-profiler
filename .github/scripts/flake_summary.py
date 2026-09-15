@@ -54,6 +54,12 @@ def sanitize_quarantine_test_pattern(test_id):
     instead, which is still an exact, matchable pattern and rendering-safe as
     is (it contains no character _SAFE_TEST_ID_RE would touch).
     """
+    # A plain JUnit 5 method arrives as `Class.method()`. Those parentheses are
+    # the only unsafe characters in it, and quarantine.covers() normalises them
+    # away, so proposing the documented `Class.method` keeps the entry precise
+    # rather than muting the whole class.
+    if test_id.endswith("()") and not _SAFE_TEST_ID_RE.search(test_id[:-2]):
+        return test_id[:-2]
     if not _SAFE_TEST_ID_RE.search(test_id):
         return test_id
     classname = test_id.rsplit(".", 1)[0]

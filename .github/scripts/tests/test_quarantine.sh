@@ -666,6 +666,62 @@ assert d['final_attempt_observed_shortfall'], d
 " "$CASE/out.json" || fail "a final attempt that stopped early was excused by the quarantine list"
 pass "a final attempt reaching fewer tests than an earlier one gates"
 
+# Gradle writes a JUnit 5 @Test method as name="method()", so the id built from
+# the report is Class.method() while an entry is written Class.method. Without
+# normalisation covers() (exact equality) matches nothing and the quarantine
+# silently excuses nothing, with validate still reporting the list as valid.
+CASE="$TEMP_DIR/case-method-parens"
+mkdir -p "$CASE/flake-evidence/attempt-1"
+cat > "$CASE/flake-evidence/attempt-1/TEST-com.dd.WobblyTest.xml" <<'EOS'
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.dd.WobblyTest" tests="1" failures="1">
+  <testcase name="sometimesFails()" classname="com.dd.WobblyTest" time="0.1">
+    <failure message="boom" type="AssertionError"/>
+  </testcase>
+</testsuite>
+EOS
+write_list "$CASE/list.txt" "$(entry com.dd.WobblyTest.sometimesFails PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/flake_report.py" --list "$CASE/list.txt" report \
+  --cell "glibc-17-debug-amd64" --evidence-dir "$CASE/flake-evidence" \
+  --final-attempt 1 --out "$CASE/out.json" >/dev/null 2>&1
+python3 -c "
+import json,sys
+d = json.load(open(sys.argv[1]))
+assert len(d['quarantined']) == 1, 'an entry written as documented must match the id JUnit produces: %r' % d
+assert d['quarantined'][0]['test'] == 'com.dd.WobblyTest.sometimesFails()', d
+assert d['gates'] is False, d['gate_reason']
+" "$CASE/out.json" || fail "the documented <class>.<method> form did not match Gradle's method() id"
+pass "an entry written without parentheses matches JUnit's method() id"
+
+# The paste-ready proposal must be precise for such a method, not widened to
+# the whole class: the parens are the only unsafe characters and covers()
+# normalises them away.
+CASE="$TEMP_DIR/case-proposal-parens"
+python3 -c "
+import sys
+sys.path.insert(0, '$SCRIPTS')
+import flake_summary
+got = flake_summary.sanitize_quarantine_test_pattern('com.dd.WobblyTest.sometimesFails()')
+assert got == 'com.dd.WobblyTest.sometimesFails', got
+idx = flake_summary.sanitize_quarantine_test_pattern('com.dd.WobblyTest.[1]')
+assert idx == 'com.dd.WobblyTest.*', idx
+" || fail "the proposal for a method() id was not the documented form, or an indexed invocation was not widened class-wide"
+pass "a method() id proposes the documented form; an indexed invocation proposes the class"
+
+echo "== validate rejects unmatchable test patterns =="
+
+write_list "$LIST" "$(entry 'com.dd.WobblyTest.sometimesFails()' PROF-1 "$(day_offset 30)")"
+if python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate >/dev/null 2>&1; then
+  fail "a test field carrying JUnit's parentheses should be rejected"
+fi
+pass "a test pattern written with parentheses is rejected"
+
+write_list "$LIST" "$(entry 'com.dd.WobblyTest.[1]' PROF-1 "$(day_offset 30)")"
+if python3 "$SCRIPTS/quarantine.py" --list "$LIST" validate >/dev/null 2>&1; then
+  fail "a test field naming an invocation index should be rejected"
+fi
+pass "a test pattern naming an invocation index is rejected"
+
 echo "== validate rejects unmatchable cell globs =="
 
 write_list "$LIST" "$(entry a.B.c PROF-1 "$(day_offset 30)" '*arm64*')"
