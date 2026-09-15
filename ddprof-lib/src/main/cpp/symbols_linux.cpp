@@ -385,8 +385,9 @@ class ElfParser {
     // These guard parsing of section headers, symbol tables and string tables,
     // all of which use file-offset-relative pointers that must lie inside the
     // mapped image [_header, _image_end). The dynamic-section path uses
-    // virtual-address-relative pointers into live memory and is intentionally
-    // NOT routed through inImage().
+    // virtual-address-relative pointers into live memory instead, so it is
+    // NOT routed through inImage() -- it is bounds-checked against a
+    // different extent, via inLiveImage()/liveImageEnd() below.
 
     // True when [ptr, ptr+len) lies entirely within the mapped image.
     bool inImage(const void* ptr, size_t len) const {
@@ -405,14 +406,24 @@ class ElfParser {
     // library (no matching inode), making map_end fall well short of a
     // segment -- such as .dynamic -- that is nonetheless mapped and valid to
     // read. Cached: callers processing a relocation table may ask many times.
+    // Precondition: calcVirtualLoadAddress() must already have run, since
+    // at(ph) depends on _vaddr_diff; both current callers (parseProgramHeaders)
+    // satisfy this.
     const char* liveImageEnd() {
         if (_live_image_end == NULL && _base != NULL) {
             const char* end = _base;
             for (int i = 0; i < _header->e_phnum; i++) {
                 ElfProgramHeader* ph = phdrAt(i);
                 if (ph != NULL && ph->p_type == PT_LOAD) {
-                    const char* seg_end = at(ph) + ph->p_memsz;
-                    if (seg_end > end) end = seg_end;
+                    const char* seg_start = at(ph);
+                    // p_memsz is untrusted; validate the addition in integer
+                    // space first so a huge value can't wrap the pointer to an
+                    // attacker-chosen "end" -- this value is the trust anchor
+                    // every inLiveImage() check downstream relies on.
+                    if ((uintptr_t)ph->p_memsz <= (uintptr_t)(UINTPTR_MAX - (uintptr_t)seg_start)) {
+                        const char* seg_end = seg_start + ph->p_memsz;
+                        if (seg_end > end) end = seg_end;
+                    }
                 }
             }
             _live_image_end = end;
@@ -515,6 +526,7 @@ class ElfParser {
     void parseDynamicSection();
     void parseDwarfInfo();
     uint32_t getSymbolCount(uint32_t* gnu_hash);
+    ElfSymbol* resolveSymbol(const char* symtab, uint64_t r_info, size_t syment);
     void loadSymbols(bool use_debug);
     bool loadSymbolsFromDebug(const char* build_id, const int build_id_len);
     bool loadSymbolsFromDebuginfodCache(const char* build_id, const int build_id_len);
@@ -619,6 +631,28 @@ void ElfParser::calcVirtualLoadAddress() {
     _vaddr_diff = _base;
 }
 
+// Resolves symtab[ELF_R_SYM(r_info)] for the two relocation loops below.
+// The symbol index comes straight from the relocation entry -- it is not
+// bounded by nsyms -- so both index*syment and the resulting pointer are
+// validated in integer space before symtab+offset is even formed, matching
+// the pattern contentAt()/phdrAt() use above; returns NULL instead of
+// dereferencing anything out of range.
+ElfSymbol* ElfParser::resolveSymbol(const char* symtab, uint64_t r_info, size_t syment) {
+    uint64_t index = ELF_R_SYM(r_info);
+    if (syment == 0 || index > SIZE_MAX / syment) {
+        return NULL;
+    }
+    size_t offset = (size_t)index * syment;
+    if (offset > (size_t)(UINTPTR_MAX - (uintptr_t)symtab)) {
+        return NULL;
+    }
+    const char* sym_addr = symtab + offset;
+    if (!inLiveImage(sym_addr, sizeof(ElfSymbol))) {
+        return NULL;
+    }
+    return (ElfSymbol*)sym_addr;
+}
+
 void ElfParser::parseDynamicSection() {
     ElfProgramHeader* dynamic = findProgramHeader(PT_DYNAMIC);
     if (dynamic != NULL) {
@@ -715,15 +749,19 @@ void ElfParser::parseDynamicSection() {
         }
 
         // symtab/strtab/jmprel/rel all resolve through dyn_ptr(), which -- like
-        // DT_HASH above -- is not routed through inLiveImage(). strtab is
-        // validated as a whole range here since every strAt() lookup below
-        // trusts [strtab, strtab+strsz) in one piece. symtab, by contrast, is
-        // only ever accessed below at symtab + ELF_R_SYM(r->r_info) * syment,
-        // an index taken from the relocation entry itself -- not bounded by
-        // nsyms -- so each access is validated individually at its use site
-        // instead; nsyms only matters for loadSymbolTable()'s sequential
-        // full-table walk, checked separately just below.
-        if (!inLiveImage(strtab, strsz) || !inLiveImage(symtab, 0)) {
+        // DT_HASH above -- is not routed through inLiveImage(). Only the base
+        // pointers are validated here, not the full [ptr, ptr+size) ranges:
+        // strtab's declared size can be the 1 MB DT_STRSZ-absent fallback
+        // above, which relies on strAt()'s own memchr scan finding a NUL long
+        // before that cap is reached -- requiring the whole megabyte to lie
+        // in the live image would reject small (but otherwise valid)
+        // libraries. symtab is only ever accessed below at
+        // symtab + ELF_R_SYM(r->r_info) * syment, an index taken from the
+        // relocation entry itself -- not bounded by nsyms -- so each access
+        // is validated individually at its use site instead; nsyms only
+        // matters for loadSymbolTable()'s sequential full-table walk,
+        // checked separately just below.
+        if (!inLiveImage(strtab, 0) || !inLiveImage(symtab, 0)) {
             return;
         }
         if (!inLiveImage(jmprel, pltrelsz)) {
@@ -744,14 +782,10 @@ void ElfParser::parseDynamicSection() {
             // Parse .rela.plt table
             for (size_t offs = 0; offs < pltrelsz; offs += relent) {
                 ElfRelocation* r = (ElfRelocation*)(jmprel + offs);
-                // ELF_R_SYM(r->r_info) is an untrusted index from the relocation
-                // entry itself -- not bounded by nsyms -- so the resulting symtab
-                // offset must still be checked against the mapped image.
-                const char* sym_addr = symtab + ELF_R_SYM(r->r_info) * syment;
-                if (!inLiveImage(sym_addr, sizeof(ElfSymbol))) {
+                ElfSymbol* sym = resolveSymbol(symtab, r->r_info, syment);
+                if (sym == NULL) {
                     continue;
                 }
-                ElfSymbol* sym = (ElfSymbol*)sym_addr;
                 if (sym->st_name != 0) {
                     const char* sym_name = strAt(strtab, strsz, sym->st_name);
                     if (sym_name != NULL) {
@@ -768,11 +802,10 @@ void ElfParser::parseDynamicSection() {
             for (size_t offs = relcount * relent; offs < relsz; offs += relent) {
                 ElfRelocation* r = (ElfRelocation*)(rel + offs);
                 if (ELF_R_TYPE(r->r_info) == R_GLOB_DAT || ELF_R_TYPE(r->r_info) == R_ABS64) {
-                    const char* sym_addr = symtab + ELF_R_SYM(r->r_info) * syment;
-                    if (!inLiveImage(sym_addr, sizeof(ElfSymbol))) {
+                    ElfSymbol* sym = resolveSymbol(symtab, r->r_info, syment);
+                    if (sym == NULL) {
                         continue;
                     }
-                    ElfSymbol* sym = (ElfSymbol*)sym_addr;
                     if (sym->st_name != 0) {
                         const char* sym_name = strAt(strtab, strsz, sym->st_name);
                         if (sym_name != NULL) {
@@ -792,19 +825,27 @@ void ElfParser::parseDwarfInfo() {
     ElfProgramHeader* sframe_phdr = findProgramHeader(PT_GNU_SFRAME);
     if (sframe_phdr != NULL && sframe_phdr->p_vaddr != 0) {
         const char* section_base = at(sframe_phdr);
-        uintptr_t section_offset_full = static_cast<uintptr_t>(section_base - _base);
-        if (section_offset_full <= static_cast<uintptr_t>(UINT32_MAX)) {
-            u32 section_offset = static_cast<u32>(section_offset_full);
-            SFrameParser sframe(_cc->name(), section_base,
-                                static_cast<size_t>(sframe_phdr->p_filesz), section_offset);
-            if (sframe.parse()) {
-                _cc->setDwarfTable(sframe.table(), sframe.count(),
-                                   sframe.detectedDefaultFrame());
-                return;
-            }
-            // SFrame parse failed; fall through to DWARF.
+        // at() resolves a virtual address, not a file offset, so -- like every
+        // other at()/dyn_ptr() result in this file -- it must be validated
+        // against the live image before use; at() itself performs no such
+        // check. (Mirrors the eh_frame_hdr validation via liveImageEnd() below.)
+        if (!inLiveImage(section_base, sframe_phdr->p_filesz)) {
+            Log::warn("SFrame section out of bounds in %s; falling back to DWARF", _cc->name());
         } else {
-            Log::warn("SFrame section offset too large for u32 in %s; falling back to DWARF", _cc->name());
+            uintptr_t section_offset_full = static_cast<uintptr_t>(section_base - _base);
+            if (section_offset_full <= static_cast<uintptr_t>(UINT32_MAX)) {
+                u32 section_offset = static_cast<u32>(section_offset_full);
+                SFrameParser sframe(_cc->name(), section_base,
+                                    static_cast<size_t>(sframe_phdr->p_filesz), section_offset);
+                if (sframe.parse()) {
+                    _cc->setDwarfTable(sframe.table(), sframe.count(),
+                                       sframe.detectedDefaultFrame());
+                    return;
+                }
+                // SFrame parse failed; fall through to DWARF.
+            } else {
+                Log::warn("SFrame section offset too large for u32 in %s; falling back to DWARF", _cc->name());
+            }
         }
     }
 
@@ -840,7 +881,16 @@ uint32_t ElfParser::getSymbolCount(uint32_t* gnu_hash) {
     uint32_t nbuckets = gnu_hash[0];
     uint32_t symoffset = gnu_hash[1];
     uint32_t bloom_size = gnu_hash[2];
-    uint32_t* buckets = &gnu_hash[4] + bloom_size * (sizeof(size_t) / 4);
+    // bloom_size is attacker-controlled; compute the byte offset in a wide
+    // (uint64_t) type and validate it before forming the buckets pointer, so
+    // neither the multiplication nor the pointer addition itself can
+    // overflow/wrap -- matching the pattern contentAt()/phdrAt() use above.
+    uint32_t* bloom_end = &gnu_hash[4];
+    uint64_t bloom_bytes = (uint64_t)bloom_size * (sizeof(size_t) / 4) * sizeof(uint32_t);
+    if (bloom_bytes > (uint64_t)(UINTPTR_MAX - (uintptr_t)bloom_end)) {
+        return 0;
+    }
+    uint32_t* buckets = (uint32_t*)((char*)bloom_end + bloom_bytes);
     if (!inLiveImage(buckets, (size_t)nbuckets * sizeof(uint32_t))) {
         return 0;
     }
@@ -851,7 +901,14 @@ uint32_t ElfParser::getSymbolCount(uint32_t* gnu_hash) {
     }
 
     if (nsyms > 0) {
-        uint32_t* chain = &buckets[nbuckets] - symoffset;
+        // symoffset is attacker-controlled; validate the subtraction before
+        // forming the chain pointer so it can't underflow below address 0.
+        uint32_t* chain_end = &buckets[nbuckets];
+        uint64_t chain_offset_bytes = (uint64_t)symoffset * sizeof(uint32_t);
+        if (chain_offset_bytes > (uintptr_t)chain_end) {
+            return 0;
+        }
+        uint32_t* chain = (uint32_t*)((char*)chain_end - chain_offset_bytes);
         // The chain is normally self-terminating (bit 0 set on the last hash of
         // the last bucket), but a corrupted/misrelocated table may never set
         // it; check each entry against the mapped image instead of trusting
