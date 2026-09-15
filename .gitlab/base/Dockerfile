@@ -1,8 +1,10 @@
 # CI always passes BASE_IMAGE explicitly (OPENJDK_BASE_IMAGE /
-# OPENJDK_BASE_IMAGE_ARM64), and the two arches deliberately differ -- see the
-# comments on those variables. This default is the more conservative of the
-# two so a hand-built image matches the arm64 glibc floor.
-ARG BASE_IMAGE=debian:bullseye-slim@sha256:0083feb8da4f624e3a0245e7752af2517d4b81d8b8db50c725644672a132a31b
+# OPENJDK_BASE_IMAGE_ARM64), both of which are this same digest: the shipped
+# binaries are built elsewhere (.gitlab/base/el8/Dockerfile), so neither arch
+# of this image sets a customer-facing glibc floor. The default matches them,
+# so a hand-built image -- or rebuild-images.sh reaching its unset-variable
+# fallback -- gets a release whose packages still resolve.
+ARG BASE_IMAGE=debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
 FROM ${BASE_IMAGE} as base
 ARG CI_JOB_TOKEN
 WORKDIR /root
