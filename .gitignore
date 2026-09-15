@@ -45,6 +45,9 @@ doc/temp/
 /flake-evidence/
 /ci-outcome/
 
+# Bytecode from the CI scripts, left by running them or their tests locally
+__pycache__/
+
 # CLAUDE.md is auto-generated from AGENTS.md bootstrap instructions
 CLAUDE.md
 
