@@ -350,6 +350,7 @@ class ElfParser {
     const char* _sections;
     const char* _vaddr_diff;
     const char* _image_end;  // one-past-the-end of the mapped ELF image; bounds file-relative reads
+    const char* _live_image_end;  // lazily computed; see liveImageEnd()
 
     ElfParser(CodeCache* cc, const char* base, const void* addr, size_t image_size, const char* file_name, bool relocate_dyn) {
         _cc = cc;
@@ -358,6 +359,7 @@ class ElfParser {
         _relocate_dyn = relocate_dyn;
         _header = (ElfHeader*)addr;
         _image_end = (const char*)addr + image_size;
+        _live_image_end = NULL;
         // e_shoff sits at a fixed offset inside the header; only compute the pointer
         // when the image is at least header-sized AND e_shoff is within the image,
         // so the addition cannot overflow and sectionAt()/inImage() can reject it
@@ -392,6 +394,41 @@ class ElfParser {
         return p >= (const char*)_header
             && p <= _image_end
             && len <= (size_t)(_image_end - p);
+    }
+
+    // Highest end address among this ELF's PT_LOAD segments in live memory.
+    // Unlike _image_end (derived from the caller-supplied /proc/self/maps
+    // span), this reflects the ELF's own notion of its total virtual
+    // footprint, which is what every at()/dyn_ptr()-derived pointer actually
+    // lives in. A large shared object can have permission-gap regions
+    // between segments that /proc/self/maps does not attribute to the
+    // library (no matching inode), making map_end fall well short of a
+    // segment -- such as .dynamic -- that is nonetheless mapped and valid to
+    // read. Cached: callers processing a relocation table may ask many times.
+    const char* liveImageEnd() {
+        if (_live_image_end == NULL && _base != NULL) {
+            const char* end = _base;
+            for (int i = 0; i < _header->e_phnum; i++) {
+                ElfProgramHeader* ph = phdrAt(i);
+                if (ph != NULL && ph->p_type == PT_LOAD) {
+                    const char* seg_end = at(ph) + ph->p_memsz;
+                    if (seg_end > end) end = seg_end;
+                }
+            }
+            _live_image_end = end;
+        }
+        return _live_image_end;
+    }
+
+    // True when [ptr, ptr+len) lies entirely within [_base, liveImageEnd()).
+    // Use this -- not inImage() -- for any pointer computed via at() or
+    // dyn_ptr(): those resolve virtual addresses in live process memory,
+    // not file offsets, so they must be bounds-checked against the ELF's
+    // live virtual footprint instead of the file/mapped-region extent.
+    bool inLiveImage(const void* ptr, size_t len) {
+        const char* p = (const char*)ptr;
+        const char* end = liveImageEnd();
+        return _base != NULL && p >= _base && p <= end && len <= (size_t)(end - p);
     }
 
     // Section header at `index`, or NULL when the index or entry is out of bounds.
@@ -600,9 +637,10 @@ void ElfParser::parseDynamicSection() {
         const char* dyn_start = at(dynamic);
         // PT_DYNAMIC's p_vaddr/p_memsz are as untrusted as any other program-header
         // field; unlike the file-offset accessors above, at() does not itself
-        // validate the result, so bound the iteration against the mapped image
-        // before touching any ElfDyn entry.
-        if (!inImage(dyn_start, dynamic->p_memsz)) {
+        // validate the result, so bound the iteration against the ELF's live
+        // virtual footprint (inLiveImage(), not inImage() -- at() resolves a
+        // virtual address, not a file offset) before touching any ElfDyn entry.
+        if (!inLiveImage(dyn_start, dynamic->p_memsz)) {
             return;
         }
         const char* dyn_end = dyn_start + dynamic->p_memsz;
@@ -626,7 +664,7 @@ void ElfParser::parseDynamicSection() {
                     // the mapped image on a corrupted or misjudged entry; validate
                     // before reading the symbol count out of it.
                     uint32_t* hash = (uint32_t*)dyn_ptr(dyn);
-                    if (inImage(hash, 2 * sizeof(uint32_t))) {
+                    if (inLiveImage(hash, 2 * sizeof(uint32_t))) {
                         nsyms = hash[1];
                     }
                     break;
@@ -677,32 +715,32 @@ void ElfParser::parseDynamicSection() {
         }
 
         // symtab/strtab/jmprel/rel all resolve through dyn_ptr(), which -- like
-        // DT_HASH above -- is not routed through inImage(). Validate each range
-        // against the mapped image before any of it is dereferenced below,
-        // dropping (rather than trusting) a range that doesn't fit.
-        if (!inImage(strtab, strsz)) {
-            strtab = NULL;
+        // DT_HASH above -- is not routed through inLiveImage(). strtab is
+        // validated as a whole range here since every strAt() lookup below
+        // trusts [strtab, strtab+strsz) in one piece. symtab, by contrast, is
+        // only ever accessed below at symtab + ELF_R_SYM(r->r_info) * syment,
+        // an index taken from the relocation entry itself -- not bounded by
+        // nsyms -- so each access is validated individually at its use site
+        // instead; nsyms only matters for loadSymbolTable()'s sequential
+        // full-table walk, checked separately just below.
+        if (!inLiveImage(strtab, strsz) || !inLiveImage(symtab, 0)) {
+            return;
         }
-        // nsyms * syment is attacker-controlled on both sides and can overflow.
-        bool symtab_ok = symtab != NULL && nsyms > 0 && syment != 0
-            && nsyms <= SIZE_MAX / syment
-            && inImage(symtab, (size_t)nsyms * syment);
-        if (!symtab_ok) {
-            symtab = NULL;
-        }
-        if (!inImage(jmprel, pltrelsz)) {
+        if (!inLiveImage(jmprel, pltrelsz)) {
             jmprel = NULL;
         }
-        if (!inImage(rel, relsz)) {
+        if (!inLiveImage(rel, relsz)) {
             rel = NULL;
         }
 
-        if (symtab != NULL && strtab != NULL && !_cc->hasDebugSymbols()) {
+        // nsyms * syment is attacker-controlled on both sides and can overflow.
+        if (!_cc->hasDebugSymbols() && nsyms > 0 && nsyms <= SIZE_MAX / syment
+                && inLiveImage(symtab, (size_t)nsyms * syment)) {
             loadSymbolTable(symtab, syment * nsyms, syment, strtab, strsz);
         }
 
         const char* base = this->base();
-        if (symtab != NULL && strtab != NULL && jmprel != NULL && pltrelsz != 0) {
+        if (jmprel != NULL && pltrelsz != 0) {
             // Parse .rela.plt table
             for (size_t offs = 0; offs < pltrelsz; offs += relent) {
                 ElfRelocation* r = (ElfRelocation*)(jmprel + offs);
@@ -710,7 +748,7 @@ void ElfParser::parseDynamicSection() {
                 // entry itself -- not bounded by nsyms -- so the resulting symtab
                 // offset must still be checked against the mapped image.
                 const char* sym_addr = symtab + ELF_R_SYM(r->r_info) * syment;
-                if (!inImage(sym_addr, sizeof(ElfSymbol))) {
+                if (!inLiveImage(sym_addr, sizeof(ElfSymbol))) {
                     continue;
                 }
                 ElfSymbol* sym = (ElfSymbol*)sym_addr;
@@ -723,7 +761,7 @@ void ElfParser::parseDynamicSection() {
             }
         }
 
-        if (symtab != NULL && strtab != NULL && rel != NULL && relsz != 0) {
+        if (rel != NULL && relsz != 0) {
             // Relocation entries for imports can be found in .rela.dyn, for example
             // if a shared library is built without PLT (-fno-plt). However, if both
             // entries exist, addImport saves them both.
@@ -731,7 +769,7 @@ void ElfParser::parseDynamicSection() {
                 ElfRelocation* r = (ElfRelocation*)(rel + offs);
                 if (ELF_R_TYPE(r->r_info) == R_GLOB_DAT || ELF_R_TYPE(r->r_info) == R_ABS64) {
                     const char* sym_addr = symtab + ELF_R_SYM(r->r_info) * syment;
-                    if (!inImage(sym_addr, sizeof(ElfSymbol))) {
+                    if (!inLiveImage(sym_addr, sizeof(ElfSymbol))) {
                         continue;
                     }
                     ElfSymbol* sym = (ElfSymbol*)sym_addr;
@@ -777,18 +815,10 @@ void ElfParser::parseDwarfInfo() {
             // Parse per-PC frame descriptions and detect per-library default frame layout.
             // On aarch64 this distinguishes GCC (LINKED_FRAME_SIZE=0) from clang
             // (LINKED_FRAME_CLANG_SIZE=16) conventions for each shared library.
-            // Compute image_end from the highest end address of all LOAD segments so
+            // liveImageEnd() is the highest end address of all LOAD segments, so
             // the DWARF parser can validate FDE pointers against mapped memory.
-            const char* image_end = _base;
-            for (int i = 0; i < _header->e_phnum; i++) {
-                ElfProgramHeader* ph = phdrAt(i);
-                if (ph != NULL && ph->p_type == PT_LOAD) {
-                    const char* seg_end = at(ph) + ph->p_memsz;
-                    if (seg_end > image_end) image_end = seg_end;
-                }
-            }
             DwarfParser dwarf(_cc->name(), _base, at(eh_frame_hdr), eh_frame_hdr->p_memsz,
-                              DwarfParser::EhFrameHdrTag{}, image_end);
+                              DwarfParser::EhFrameHdrTag{}, liveImageEnd());
             _cc->setDwarfTable(dwarf.table(), dwarf.count(), dwarf.detectedDefaultFrame());
         } else if (strcmp(_cc->name(), "[vdso]") == 0) {
             FrameDesc* table = (FrameDesc*)malloc(sizeof(FrameDesc));
@@ -801,16 +831,17 @@ void ElfParser::parseDwarfInfo() {
 uint32_t ElfParser::getSymbolCount(uint32_t* gnu_hash) {
     // gnu_hash resolves through dyn_ptr() in the DT_GNU_HASH case above and is
     // just as untrusted as DT_HASH: validate every offset into it against the
-    // mapped image before dereferencing, instead of trusting nbuckets/bloom
-    // size/the chain terminator to be well-formed.
-    if (!inImage(gnu_hash, 4 * sizeof(uint32_t))) {
+    // ELF's live virtual footprint (inLiveImage(), not inImage() -- this is a
+    // virtual address, not a file offset) before dereferencing, instead of
+    // trusting nbuckets/bloom size/the chain terminator to be well-formed.
+    if (!inLiveImage(gnu_hash, 4 * sizeof(uint32_t))) {
         return 0;
     }
     uint32_t nbuckets = gnu_hash[0];
     uint32_t symoffset = gnu_hash[1];
     uint32_t bloom_size = gnu_hash[2];
     uint32_t* buckets = &gnu_hash[4] + bloom_size * (sizeof(size_t) / 4);
-    if (!inImage(buckets, (size_t)nbuckets * sizeof(uint32_t))) {
+    if (!inLiveImage(buckets, (size_t)nbuckets * sizeof(uint32_t))) {
         return 0;
     }
 
@@ -826,7 +857,7 @@ uint32_t ElfParser::getSymbolCount(uint32_t* gnu_hash) {
         // it; check each entry against the mapped image instead of trusting
         // the scan to stop on its own.
         for (;;) {
-            if (!inImage(&chain[nsyms], sizeof(uint32_t))) {
+            if (!inLiveImage(&chain[nsyms], sizeof(uint32_t))) {
                 return 0;
             }
             bool is_last = (chain[nsyms] & 1) != 0;
