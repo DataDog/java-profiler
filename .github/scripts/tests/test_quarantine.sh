@@ -590,6 +590,82 @@ assert d['persistent'] and d['persistent'][0]['test'] == 'com.dd.WobblyTest.some
 " "$CASE/out.json" || fail "attempt-1 was not read back despite the stray attempt-tmp"
 pass "attempt-1 is still read as evidence while the stray directory is skipped"
 
+# The ordinary quarantine case, and the one the exit-code guard must not eat:
+# a quarantined test fails on the final attempt, so Gradle exits non-zero
+# *because of that very test*. No test passed --final-attempt-exit-code before,
+# so it defaulted to None and this shape went untested while the guard gated
+# every one of them.
+CASE="$TEMP_DIR/case-quarantined-failure-exit-nonzero"
+mkdir -p "$CASE/flake-evidence/attempt-1"
+write_failure_xml "$CASE/flake-evidence/attempt-1" "com.dd.WobblyTest" "sometimesFails" "boom"
+cat > "$CASE/attempt.log" <<'EOS'
+> Task :ddprof-test:testDebug FAILED
+Execution failed for task ':ddprof-test:testDebug'.
+> There were failing tests.
+EOS
+write_list "$CASE/list.txt" "$(entry com.dd.WobblyTest.sometimesFails PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/flake_report.py" --list "$CASE/list.txt" report \
+  --cell "glibc-17-debug-amd64" --evidence-dir "$CASE/flake-evidence" \
+  --final-attempt 1 --attempt-log "$CASE/attempt.log" \
+  --final-attempt-exit-code 1 --test-task-pattern test \
+  --out "$CASE/out.json" >/dev/null 2>&1
+python3 -c "
+import json,sys
+d = json.load(open(sys.argv[1]))
+assert d['gates'] is False, 'a quarantined test failing on the final attempt must not gate: %r' % d['gate_reason']
+assert len(d['quarantined']) == 1, d
+" "$CASE/out.json" || fail "the non-zero exit caused by the quarantined test's own failure was read as a crash"
+pass "a quarantined failure still excuses the non-zero exit it caused"
+
+# The shape the guard exists for: the same all-quarantined failure list, but
+# Gradle reports the test JVM died, so tests it never reached are absent from
+# the XML rather than passing.
+CASE="$TEMP_DIR/case-quarantined-but-cut-short"
+mkdir -p "$CASE/flake-evidence/attempt-1"
+write_failure_xml "$CASE/flake-evidence/attempt-1" "com.dd.WobblyTest" "sometimesFails" "boom"
+cat > "$CASE/attempt.log" <<'EOS'
+> Task :ddprof-test:testDebug FAILED
+Process 'Gradle Test Executor 1' finished with non-zero exit value 134
+EOS
+write_list "$CASE/list.txt" "$(entry com.dd.WobblyTest.sometimesFails PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/flake_report.py" --list "$CASE/list.txt" report \
+  --cell "glibc-17-debug-amd64" --evidence-dir "$CASE/flake-evidence" \
+  --final-attempt 1 --attempt-log "$CASE/attempt.log" \
+  --final-attempt-exit-code 1 --test-task-pattern test \
+  --out "$CASE/out.json" >/dev/null 2>&1
+python3 -c "
+import json,sys
+d = json.load(open(sys.argv[1]))
+assert d['gates'] is True, 'a cut-short final attempt must gate even with every named failure quarantined: %r' % d['gate_reason']
+assert d['final_attempt_cut_short'], d
+" "$CASE/out.json" || fail "a dead test JVM was excused by the quarantine list"
+pass "a cut-short final attempt gates despite its failures being quarantined"
+
+# Same intent, without the log saying so: the final attempt reached fewer tests
+# than an earlier one managed, so it stopped early.
+CASE="$TEMP_DIR/case-quarantined-but-short-run"
+mkdir -p "$CASE/flake-evidence/attempt-1" "$CASE/flake-evidence/attempt-2"
+write_failure_xml "$CASE/flake-evidence/attempt-1" "com.dd.WobblyTest" "sometimesFails" "boom"
+write_pass_xml "$CASE/flake-evidence/attempt-1" "com.dd.OtherTest" "stable"
+write_failure_xml "$CASE/flake-evidence/attempt-2" "com.dd.WobblyTest" "sometimesFails" "boom"
+cat > "$CASE/attempt.log" <<'EOS'
+> Task :ddprof-test:testDebug FAILED
+Execution failed for task ':ddprof-test:testDebug'.
+EOS
+write_list "$CASE/list.txt" "$(entry com.dd.WobblyTest.sometimesFails PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/flake_report.py" --list "$CASE/list.txt" report \
+  --cell "glibc-17-debug-amd64" --evidence-dir "$CASE/flake-evidence" \
+  --final-attempt 2 --attempt-log "$CASE/attempt.log" \
+  --final-attempt-exit-code 1 --test-task-pattern test \
+  --out "$CASE/out.json" >/dev/null 2>&1
+python3 -c "
+import json,sys
+d = json.load(open(sys.argv[1]))
+assert d['gates'] is True, 'a final attempt that reached fewer tests must gate: %r' % d['gate_reason']
+assert d['final_attempt_observed_shortfall'], d
+" "$CASE/out.json" || fail "a final attempt that stopped early was excused by the quarantine list"
+pass "a final attempt reaching fewer tests than an earlier one gates"
+
 echo "== validate rejects unmatchable cell globs =="
 
 write_list "$LIST" "$(entry a.B.c PROF-1 "$(day_offset 30)" '*arm64*')"
