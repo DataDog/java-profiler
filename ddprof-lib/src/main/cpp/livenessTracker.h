@@ -31,6 +31,23 @@ typedef struct TrackingEntry {
   Context ctx;
 } TrackingEntry;
 
+// The liveness subsampling rate, held as the ratio and the xorshift draw
+// threshold derived from it.
+//
+// The two have to move together: the threshold decides which allocations are
+// kept, while the ratio is what Recording reports into the JFR chunk, so a
+// threshold left behind by a ratio change samples at one rate and claims
+// another -- silently, and in a direction no assertion would notice. The only
+// constructor derives the threshold from the ratio, so a caller cannot set one
+// without the other; assigning a new SubsampleRate replaces both.
+struct SubsampleRate {
+  double ratio;
+  u64 threshold;
+
+  explicit SubsampleRate(double subsample_ratio)
+      : ratio(subsample_ratio), threshold(xorshift::threshold(subsample_ratio)) {}
+};
+
 // Aligned to satisfy SpinLock member alignment requirement (64 bytes)
 // Required because this class contains SpinLock _table_lock member
 class alignas(alignof(SpinLock)) LivenessTracker {
@@ -51,9 +68,7 @@ private:
   int _table_max_cap;
   TrackingEntry *_table;
 
-  double _subsample_ratio;
-  // _subsample_ratio as an xorshift64 draw threshold; see xorshift::threshold.
-  u64 _subsample_threshold;
+  SubsampleRate _subsample;
 
   bool _record_heap_usage;
 
@@ -89,8 +104,7 @@ public:
   LivenessTracker()
       : _initialized(false), _enabled(false), _stored_error(Error::OK),
         _table_size(0), _table_cap(0), _table_max_cap(0), _table(NULL),
-        _subsample_ratio(0.1), _subsample_threshold(xorshift::threshold(0.1)),
-        _record_heap_usage(false), _Class(NULL),
+        _subsample(0.1), _record_heap_usage(false), _Class(NULL),
         _Class_getName(0), _gc_epoch(0), _last_gc_epoch(0),
         _used_after_last_gc(0) {}
 

@@ -271,10 +271,9 @@ Error LivenessTracker::initialize(Arguments &args) {
     return _stored_error = Error::OK;
   }
 
-  _subsample_ratio = args._live_samples_ratio;
-  // Precomputed here so the per-allocation decision in track() is an integer
-  // compare rather than a double multiply.
-  _subsample_threshold = xorshift::threshold(_subsample_ratio);
+  // Both halves replaced together; the threshold exists so the per-allocation
+  // decision in track() is an integer compare rather than a double multiply.
+  _subsample = SubsampleRate(args._live_samples_ratio);
 
   _table_size = 0;
   _table_cap =
@@ -322,7 +321,7 @@ void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
     return;
   }
 
-  if (_subsample_ratio < 1.0) {
+  if (_subsample.ratio < 1.0) {
     u64 state = rng.get();
     if (state == 0) {
       // Seeded on a thread's first tracked allocation and kept until its TLS is
@@ -335,7 +334,7 @@ void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
     }
     u64 draw = xorshift::next(state);
     rng.set(state);
-    if (draw >= _subsample_threshold) {
+    if (draw >= _subsample.threshold) {
       skipped.set(skipped.get() + static_cast<double>(event._weight) * event._size);
       return;
     }

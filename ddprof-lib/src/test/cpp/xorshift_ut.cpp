@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 
 #include "xorshift.h"
+#include "livenessTracker.h"
 #include "reservoirSampler.h"
 
 #include <cmath>
@@ -257,6 +258,53 @@ TEST(Xorshift, NextNormalWithZeroStddevReturnsTheMean) {
     for (int i = 0; i < 100; i++) {
         EXPECT_DOUBLE_EQ(50.0, xorshift::nextNormal(state, 50.0, 0.0));
     }
+}
+
+// ---------------------------------------------------------------------------
+// SubsampleRate, the ratio/threshold pair used by LivenessTracker
+// ---------------------------------------------------------------------------
+
+// The pair's whole purpose is that the threshold cannot lag the ratio. Asserted
+// against observed behaviour rather than against xorshift::threshold itself, so
+// the test still fails if the derivation is changed to something that no longer
+// keeps the advertised rate.
+TEST(SubsampleRateTest, ThresholdKeepsTheRateTheRatioAdvertises) {
+    const double ratios[] = {0.01, 0.1, 0.5, 0.9};
+    for (double ratio : ratios) {
+        SubsampleRate rate(ratio);
+        EXPECT_DOUBLE_EQ(ratio, rate.ratio);
+
+        u64 state = xorshift::seed(0x5ab5a3e, (u64)(ratio * 1000));
+        const int draws = 200000;
+        int kept = 0;
+        for (int i = 0; i < draws; i++) {
+            if (xorshift::next(state) < rate.threshold) {
+                kept++;
+            }
+        }
+        EXPECT_NEAR((double)kept / draws, ratio, 0.01) << "ratio " << ratio;
+    }
+}
+
+// Reassignment is the only way to change the rate, so it must carry both
+// halves; a partial update is what the type exists to prevent.
+TEST(SubsampleRateTest, ReassignmentReplacesBothHalves) {
+    SubsampleRate rate(0.1);
+    u64 first_threshold = rate.threshold;
+
+    rate = SubsampleRate(0.9);
+    EXPECT_DOUBLE_EQ(0.9, rate.ratio);
+    EXPECT_NE(first_threshold, rate.threshold);
+    EXPECT_EQ(xorshift::threshold(0.9), rate.threshold);
+}
+
+// A ratio of 1 means "keep everything"; LivenessTracker::track() skips the draw
+// entirely in that case, and a NaN ratio (reachable from the agent argument)
+// must not leave a threshold that keeps a fraction of allocations by accident.
+TEST(SubsampleRateTest, DegenerateRatiosAreDefined) {
+    EXPECT_EQ(UINT64_MAX, SubsampleRate(1.0).threshold);
+    EXPECT_EQ(0u, SubsampleRate(0.0).threshold);
+    EXPECT_EQ(0u, SubsampleRate(std::nan("")).threshold);
 }
 
 // ---------------------------------------------------------------------------
