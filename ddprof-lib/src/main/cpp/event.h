@@ -24,6 +24,8 @@
 #include <cstring>
 #include <memory>
 #include <stdint.h>
+#include <string>
+#include <vector>
 using namespace std;
 
 #define MAX_STRING_LEN 8191
@@ -87,7 +89,70 @@ public:
   u64 _skipped;
   u64 _start_time;
   u64 _age;
+  int64_t leak_tag;  // 0 = untagged; leak tag from LivenessTracker pool
   Context _ctx;
+};
+
+// Reporting surface for ReferenceChainTracker's bounded
+// BFS (referenceChains.h/.cpp). `_target_tag` is the FrontierTable tag the
+// chain was reconstructed for (FrontierTable::reconstructChain()); `_chain`
+// holds the referrer-klass StringDictionary ids it returns, in the same
+// leaf(target)-to-root order. `_depth` is the target entry's own
+// FrontierEntry::depth (hop count from the search's root-side seed).
+// `_root_kind` is the jvmtiHeapReferenceKind of whichever edge first
+// admitted this chain into the frontier (FrontierEntry::root_kind, via
+// FrontierTable::reconstructChain()'s out_root_kind) - labels *why* the
+// chain is reachable at all (JNI global, thread stack, static field, ...),
+// written out as a string (Recording::recordReferenceChain(),
+// flightRecorder.cpp) rather than a synthetic node in `_chain` itself,
+// since that array is a T_CLASS cpool array with no room for a
+// non-class placeholder.
+// Byte cap for one hop's retention-edge label in ReferenceChainEvent::_edges
+// (fillHopEdgeLabels truncates to this; recordReferenceChain() reserves
+// against it) - a shared constant so the collector and the writer cannot
+// drift apart on the worst-case event size.
+static constexpr size_t MAX_REFERENCE_CHAIN_EDGE_LABEL = 96;
+
+class ReferenceChainEvent : public Event {
+public:
+  u64 _start_time;
+  u64 _target_tag;
+  u32 _depth;
+  u8 _root_kind;
+  std::vector<u32> _chain;
+  // Retention-edge label per hop, ALIGNED with _chain's leaf-to-root order
+  // (_edges[i] = the edge by which _chain[i] is retained - the field name of
+  // its parent hop for FIELD/STATIC_FIELD edges, the edge-kind label
+  // otherwise; ReferenceChainTracker::fillHopEdgeLabels). Empty for events
+  // built before the edge-label change or when label resolution is
+  // unavailable (partial mock environments).
+  std::vector<std::string> _edges;
+
+  ReferenceChainEvent()
+      : Event(), _start_time(0), _target_tag(0), _depth(0), _root_kind(0) {}
+};
+
+// Search-level abandonment signal (design doc's Termination section:
+// "explicit reporting of abandoned searches ... no silent truncation").
+// Unlike ReferenceChainEvent this does not report any one object's chain -
+// it reports why ReferenceChainTracker's current search stopped before
+// every frontier entry could be resolved, using the same counters
+// runPass()/expandFrontier() already maintain (referenceChains.h/.cpp).
+class ReferenceChainAbandonedEvent : public Event {
+public:
+  u64 _start_time;
+  u8 _reason; // SearchAbandonReason (referenceChains.h)
+  u32 _passes_run;
+  u32 _frontier_size;
+  int _hop_cap;
+  int _budget;
+  long _ttl_ms;
+  u64 _elapsed_ns;
+
+  ReferenceChainAbandonedEvent()
+      : Event(), _start_time(0), _reason(0), _passes_run(0),
+        _frontier_size(0), _hop_cap(0), _budget(0), _ttl_ms(0),
+        _elapsed_ns(0) {}
 };
 
 class MallocEvent : public Event {
