@@ -56,6 +56,20 @@
   X(NATIVE_MEM_LIVE_BYTES, "native_mem_live_bytes")                            \
   X(NATIVE_MEM_MAX_BYTES, "native_mem_max_bytes")                              \
   X(NATIVE_MEM_AVG_BYTES, "native_mem_avg_bytes")                              \
+  /* Process-wide malloc arena state, from glibc's own accounting. These are   \
+   * NOT profiler memory and deliberately are not NM_* categories: those must  \
+   * partition the profiler's own allocations (see nativeMem.h), and arena     \
+   * slack is mostly other subsystems' chunks stranded by interleaving, so it  \
+   * is not attributable to any profiler allocation. Reported so that the      \
+   * allocator's own overhead is visible rather than folded into a "profiler   \
+   * cost" figure -- it differs substantially between glibc, tcmalloc and      \
+   * jemalloc. Sampled on the JFR flush path only: mallinfo2() walks every     \
+   * arena taking locks, so it is neither cheap nor async-signal-safe. */      \
+  X(MALLOC_ARENA_BYTES, "malloc_arena_bytes")                                  \
+  X(MALLOC_IN_USE_BYTES, "malloc_in_use_bytes")                                \
+  X(MALLOC_FREE_HELD_BYTES, "malloc_free_held_bytes")                          \
+  X(MALLOC_TRIMMABLE_BYTES, "malloc_trimmable_bytes")                          \
+  X(MALLOC_MMAP_BYTES, "malloc_mmap_bytes")                                    \
   X(THREAD_IDS_COUNT, "thread_ids_count")                                      \
   X(THREAD_NAMES_COUNT, "thread_names_count")                                  \
   X(THREAD_FILTER_PAGES, "thread_filter_pages")                                \
