@@ -37,10 +37,6 @@ void crashNow() {
 
 namespace faultinj {
 
-// Knuth multiplicative constant (== common.h KNUTH_MULTIPLICATIVE_CONSTANT),
-// used to hash the function name and to advance the global fallback PRNG.
-static constexpr u64 KNUTH = 0x9e3779b97f4a7c15ULL;
-
 // Word-alignment mask for produced addresses.
 static constexpr uintptr_t ALIGN_MASK = ~(uintptr_t)(sizeof(void*) - 1);
 
@@ -52,7 +48,7 @@ static std::atomic<bool>      g_guard_ok{false};
 
 // Fallback PRNG for threads with no ProfiledThread context.  Relaxed atomics
 // keep it lock-free and async-signal-safe; a lost update on a race is harmless.
-static std::atomic<u64> g_fallback_rng{KNUTH};
+static std::atomic<u64> g_fallback_rng{xorshift::KNUTH};
 
 void init() {
   // Avoid repeated mmaps (tests call init() in each fixture SetUp()).
@@ -79,8 +75,7 @@ u64 nextRandom() {
   }
   // Fallback: relaxed atomic xorshift64.  Not perfectly serialised, but the
   // stream only needs to be roughly uniform for injection decisions.
-  u64 x = g_fallback_rng.load(std::memory_order_relaxed);
-  if (x == 0) x = 1;
+  u64 x = xorshift::nonZero(g_fallback_rng.load(std::memory_order_relaxed));
   xorshift::next(x);
   g_fallback_rng.store(x, std::memory_order_relaxed);
   return x;
@@ -90,7 +85,7 @@ bool shouldFire(u64 threshold, const char* fn) {
   // XOR with a per-function hash is a bijection on 64 bits, so it perturbs the
   // stream per call site while keeping the fire probability exactly
   // threshold/2^64.
-  u64 r = nextRandom() ^ ((u64)(uintptr_t)fn * KNUTH);
+  u64 r = nextRandom() ^ ((u64)(uintptr_t)fn * xorshift::KNUTH);
   if (__builtin_expect(r < threshold, 0)) {
     // Every address/int/long injection routes through here, so this is the one
     // place that counts an actually-injected fault.

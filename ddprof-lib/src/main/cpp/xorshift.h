@@ -8,6 +8,7 @@
 
 #include "arch.h"
 #include "common.h"
+#include <cassert>
 #include <cmath>
 #include <cstdint>
 
@@ -69,24 +70,36 @@ static constexpr double UNIT_MAX = 0x1.fffffffffffffp-1;
 static constexpr double TWO_PI = 6.283185307179586476925286766559;
 
 /**
- * Derive a stream seed from an identity and a sequence number.
+ * Force a state away from the recurrence's fixed point.
  *
- * 0 is a fixed point of the recurrence, so the result is forced away from it;
- * that costs one value out of 2^64 and keeps next() from degenerating.
+ * 0 maps to itself under the recurrence, so a stream seeded there yields
+ * nothing but zeroes. seed() applies this; callers that come by a state another
+ * way -- a test hook, a value carried in from elsewhere -- route through it too,
+ * so the invariant has a single implementation. It costs one value out of 2^64.
+ */
+inline u64 nonZero(u64 state) { return state != 0 ? state : 1; }
+
+/**
+ * Derive a stream seed from an identity and a sequence number.
  */
 inline u64 seed(u64 identity, u64 sequence) {
-  u64 state = identity ^ (sequence * KNUTH);
-  return state != 0 ? state : 1;
+  return nonZero(identity ^ (sequence * KNUTH));
 }
 
 /**
  * One xorshift64 step, in place. Async-signal-safe: no allocation, no locks,
- * no libc calls. @p state must be non-zero, which seed() guarantees.
+ * no libc calls.
+ *
+ * @p state must be non-zero; obtain it from seed() or nonZero(). The recurrence
+ * is a bijection on the non-zero states, so a valid state never steps to 0 --
+ * both assertions compile out under NDEBUG in release builds.
  */
 inline u64 next(u64 &state) {
+  assert(state != 0 && "xorshift64 state is the recurrence's fixed point");
   state ^= state << 13;
   state ^= state >> 7;
   state ^= state << 17;
+  assert(state != 0 && "xorshift64 stepped to its fixed point");
   return state;
 }
 
