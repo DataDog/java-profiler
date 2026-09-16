@@ -7,6 +7,7 @@
 #define _POISSONSAMPLER_H
 
 #include "arch.h"
+#include "xorshift.h"
 #include <cmath>
 
 /**
@@ -163,10 +164,7 @@ private:
      * sampler, session) triple receives an independent random stream.
      */
     void reset(u64 interval, u64 epoch_now) {
-        // Fibonacci hashing of epoch_now spreads low-entropy epoch values
-        // across the full 64-bit range before XOR-ing with the address.
-        _rng = (u64)(uintptr_t)this ^ (epoch_now * 0x9e3779b97f4a7c15ULL);
-        if (_rng == 0) _rng = 1; // xorshift64 must not start at 0
+        _rng       = xorshift::seed((u64)(uintptr_t)this, epoch_now);
         _used      = 0;
         _threshold = nextExp(interval);
         _epoch     = epoch_now;
@@ -178,60 +176,15 @@ private:
      * Uses xorshift64 to produce a uniform pseudo-random value, then applies
      * the inverse CDF of the exponential distribution:
      *
-     *   X = -interval * ln(U),   U ~ Uniform(0, 1]
+     *   X = -interval * ln(U),   U ~ Uniform(0, 1)
      *
-     * U > 0 because the +0.5 offset in `((double)_rng + 0.5) * 2^-64` ensures the
-     * product is strictly positive even if _rng were 0. The xorshift64 invariant
-     * (_rng != 0) is independently required by the recurrence (0 is a fixed point).
-     * The magic constant 5.421010862427522e-20 ≈ 1/2^64 converts a u64 to [0, 1].
-     *
-     * Use `double` (53 mantissa bits) rather than `float` (24): with the xorshift64
-     * invariant (_rng != 0), the minimum _rng is 1, giving U_min = 1.5 × 2^-64 ≈
-     * 8.13e-20 for both precisions.  The real advantage of double is quantisation
-     * density: float maps 2^64 rng values to only 2^24 distinct U values near the
-     * high end, clustering inter-arrival draws; double maps them to 2^53 distinct
-     * values, producing a far smoother distribution.  The maximum Exp draw is
-     * -ln(U_min) * interval ≈ 44 * interval for both precisions.
-     *
-     * ### Why xorshift64 instead of a C++ standard generator?
-     *
-     * The C++ <random> facility (std::mt19937, std::minstd_rand, …) is
-     * unsuitable here for several reasons:
-     *
-     *   1. **Hot-path overhead.**  nextExp() is called only once per fired
-     *      event (~83 times/second at the default rate), so raw throughput
-     *      is not the primary concern.  The concern is code-size and
-     *      instruction-cache pressure: std::mt19937 carries ~2.5 KB of
-     *      state and its generate step touches all of it.  xorshift64 fits
-     *      in a single 8-byte field already present in the struct.
-     *
-     *   2. **Seeding.**  std::random_device — the canonical seed source —
-     *      may block, throw, or return low-entropy values on some Linux
-     *      configurations (e.g., early boot, containers without /dev/urandom
-     *      entropy).  Our seed (instance address XOR epoch hash) is always
-     *      available, zero-cost, and produces independent streams per thread
-     *      and per profiling session without any OS interaction.
-     *
-     *   3. **No allocation, no exceptions.**  std::random_device and the
-     *      distribution wrappers (std::uniform_real_distribution, etc.) may
-     *      allocate and may throw.  This code runs inside PLT hooks that
-     *      intercept arbitrary application threads; allocation and exception
-     *      handling in that context would be unsafe.
-     *
-     *   4. **Statistical sufficiency.**  xorshift64 (Marsaglia 2003) passes the
-     *      Diehard battery; it fails some BigCrush tests for linear-algebra-based
-     *      statistics (MatrixRank, LinearComp), but those failure modes are
-     *      irrelevant to inverse-CDF Exp sampling for aggregate weight estimates.
-     *      The inverse-CDF transform amplifies non-uniformity only near U ≈ 0
-     *      (i.e., extremely large Exp draws), which correspond to very long
-     *      inter-sample gaps — a rare tail that has negligible effect on aggregate
-     *      estimates.
+     * xorshift::toUnitDouble() keeps U strictly inside (0, 1), so ln(U) is
+     * always finite and negative; see xorshift.h for why the generator and the
+     * double-precision unit mapping are what they are. The maximum Exp draw is
+     * -ln(U_min) * interval, about 44 * interval.
      */
     u64 nextExp(u64 interval) {
-        _rng ^= _rng << 13;
-        _rng ^= _rng >> 7;
-        _rng ^= _rng << 17;
-        double u = ((double)_rng + 0.5) * 5.421010862427522e-20;
+        double u = xorshift::toUnitDouble(xorshift::next(_rng));
         double raw = -(double)interval * log(u);
         // Cap before narrowing cast: raw can exceed UINT64_MAX when interval is
         // near LONG_MAX (the LONG_MAX sentinel used by start() for huge inputs).

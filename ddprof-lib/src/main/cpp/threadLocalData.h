@@ -14,6 +14,7 @@
 #include "threadLocal.h"
 #include "threadState.h"
 #include "unwindStats.h"
+#include "xorshift.h"
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -322,14 +323,8 @@ public:
   }
 
 #ifdef __FAULT_INJECTION__
-  // One xorshift64 step (Marsaglia 2003), matching PoissonSampler::nextExp.
   // Plain member r/w is AS-safe: signals are delivered to the owning thread.
-  inline u64 nextFiRandom() {
-    _fi_rng ^= _fi_rng << 13;
-    _fi_rng ^= _fi_rng >> 7;
-    _fi_rng ^= _fi_rng << 17;
-    return _fi_rng;
-  }
+  inline u64 nextFiRandom() { return xorshift::next(_fi_rng); }
   // Test hook: force a deterministic PRNG stream for rate/recovery assertions.
   inline void setFiRng(u64 seed) { _fi_rng = seed ? seed : 1; }
 #endif

@@ -12,6 +12,7 @@
 #include "engine.h"
 #include "event.h"
 #include "spinLock.h"
+#include "xorshift.h"
 #include <jvmti.h>
 #include <pthread.h>
 #include <set>
@@ -51,6 +52,8 @@ private:
   TrackingEntry *_table;
 
   double _subsample_ratio;
+  // _subsample_ratio as an xorshift64 draw threshold; see xorshift::threshold.
+  u64 _subsample_threshold;
 
   bool _record_heap_usage;
 
@@ -86,7 +89,8 @@ public:
   LivenessTracker()
       : _initialized(false), _enabled(false), _stored_error(Error::OK),
         _table_size(0), _table_cap(0), _table_max_cap(0), _table(NULL),
-        _subsample_ratio(0.1), _record_heap_usage(false), _Class(NULL),
+        _subsample_ratio(0.1), _subsample_threshold(xorshift::threshold(0.1)),
+        _record_heap_usage(false), _Class(NULL),
         _Class_getName(0), _gc_epoch(0), _last_gc_epoch(0),
         _used_after_last_gc(0) {}
 

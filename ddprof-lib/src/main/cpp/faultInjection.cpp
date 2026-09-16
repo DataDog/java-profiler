@@ -31,6 +31,7 @@ void crashNow() {
 #include "counters.h"          // Counters::increment (FAULTS_INJECTED)
 #include "os.h"                // OS::page_size
 #include "threadLocalData.inline.h"   // ProfiledThread::current / nextFiRandom
+#include "xorshift.h"         // xorshift::next
 #include <atomic>
 #include <sys/mman.h>
 
@@ -80,9 +81,7 @@ u64 nextRandom() {
   // stream only needs to be roughly uniform for injection decisions.
   u64 x = g_fallback_rng.load(std::memory_order_relaxed);
   if (x == 0) x = 1;
-  x ^= x << 13;
-  x ^= x >> 7;
-  x ^= x << 17;
+  xorshift::next(x);
   g_fallback_rng.store(x, std::memory_order_relaxed);
   return x;
 }
