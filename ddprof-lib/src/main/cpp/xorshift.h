@@ -111,12 +111,16 @@ inline double toUnitDouble(u64 x) {
  * Express a probability as a threshold for `next(state) < threshold`, so a
  * sampling decision costs one integer compare and no floating point.
  *
- * p <= 0 yields 0, which never fires. p >= 1 yields UINT64_MAX, which fires for
- * every draw but the single largest -- callers wanting exactly "always" should
- * skip the draw instead.
+ * p <= 0, and any value that is not a number, yield 0, which never fires.
+ * p >= 1 yields UINT64_MAX, which fires for every draw but the single largest
+ * -- callers wanting exactly "always" should skip the draw instead.
  */
 inline u64 threshold(double p) {
-  if (p <= 0.0) {
+  // Inverted so NaN -- which compares false against everything, and reaches
+  // here from a "nan" in the sampling-ratio argument -- takes this branch
+  // rather than falling through to the cast below, where an unordered value is
+  // undefined behaviour (and traps under -fsanitize=undefined).
+  if (!(p > 0.0)) {
     return 0;
   }
   // 2^64 is not representable as u64, and casting a double at or above it is

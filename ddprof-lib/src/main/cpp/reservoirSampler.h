@@ -18,6 +18,7 @@
 #define RESERVOIR_SAMPLER_H
 
 #include "xorshift.h"
+#include <cassert>
 #include <math.h>
 #include <vector>
 
@@ -25,12 +26,18 @@
 template <class T>
 class ReservoirSampler {
 private:
-    // Algorithm L needs log() of the draw and log(1 - weight) to stay finite,
-    // which xorshift::toUnitDouble already ensures by excluding both 0 and 1.
-    // This floor is not about finiteness: it reproduces the lower bound the
-    // sampler has always drawn from, so the jump distribution is unchanged.
-    // Without it draws reach ~2.7e-20 instead of 1e-16, lengthening the tail of
-    // skipped elements.
+    // Keep the draw far enough above 0 that `1 - weight` stays distinguishable
+    // from 1.0. This matters at _size == 1 (reachable via
+    // wall_threads_per_tick=1), where weight == the draw: a draw of ~2.7e-20 --
+    // toUnitDouble's smallest -- makes `1 - weight` round to exactly 1.0,
+    // log(1 - weight) exactly 0.0, and the division below -inf, whose cast to
+    // int is undefined. 1e-16 is above 2^-53, so `1 - weight` stays below 1.0.
+    //
+    // A draw that low has probability ~1e-16, so this never fires in practice
+    // and cannot reasonably be tested -- but it is the difference between a
+    // defined result and undefined behaviour, so it is not dead code. It also
+    // reproduces the lower bound of the uniform_real_distribution(1e-16, 1.0)
+    // the sampler drew from previously.
     static constexpr double MIN_UNIFORM = 1e-16;
 
     const int _size;

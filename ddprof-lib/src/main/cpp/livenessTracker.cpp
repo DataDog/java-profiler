@@ -295,10 +295,14 @@ Error LivenessTracker::initialize(Arguments &args) {
 // yet": it is not a legal xorshift64 state, so it cannot collide with a live
 // stream, and the first draw on a thread seeds itself.
 //
-// File-scope (not track()-local) so releaseThreadLocalState() below can reach
-// them from Profiler::onThreadEnd(). Relying on the pthread-key destructors
-// alone is not sufficient: those fire only when the underlying OS thread
-// exits, not when a JNI-attached thread detaches via DetachCurrentThread.
+// Both hold a plain value with no pthread-key destructor, so nothing is freed
+// on thread exit and clearing is about meaning rather than memory: it returns
+// the slot to the unseeded sentinel, so the next JNI attachment on a reused OS
+// thread draws from a fresh stream instead of continuing the previous logical
+// thread's, and it drops that thread's skipped-bytes accumulator instead of
+// attributing it to whoever attaches next. Both are file-scope so
+// releaseThreadLocalState() can reach them from Profiler::onThreadEnd(), which
+// fires on DetachCurrentThread as well as on OS thread exit.
 static ThreadLocal<u64> rng;
 static ThreadLocal<double> skipped;
 
@@ -321,9 +325,12 @@ void LivenessTracker::track(JNIEnv *env, AllocEvent &event, jint tid,
   if (_subsample_ratio < 1.0) {
     u64 state = rng.get();
     if (state == 0) {
-      // The thread id separates concurrent threads; the tick separates
-      // recordings, so a thread does not replay one session's subsampling
-      // decisions in the next.
+      // Seeded on a thread's first tracked allocation and kept until its TLS is
+      // released at thread end or JNI detach: the tick keeps two threads that
+      // share a tid across that boundary on different streams, and the tid
+      // separates threads alive at the same time. A thread that outlives a
+      // recording keeps its stream rather than restarting it -- there is no
+      // per-recording reseed, because stop/start does not clear the slot.
       state = xorshift::seed(TSC::ticks(), (u64)tid);
     }
     u64 draw = xorshift::next(state);

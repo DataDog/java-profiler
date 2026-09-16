@@ -143,6 +143,15 @@ TEST(Xorshift, ThresholdSaturatesAtTheEnds) {
     EXPECT_GT(xorshift::threshold(0.9999999999999999), (u64)0);
 }
 
+// A non-number reaches threshold() from a "nan" sampling-ratio argument, which
+// survives the min/max clamp in arguments.cpp. It must take the reject branch:
+// casting an unordered double to u64 is undefined, and traps under
+// -fsanitize=undefined in the sanitizer builds.
+TEST(Xorshift, ThresholdRejectsNaN) {
+    EXPECT_EQ(0u, xorshift::threshold(std::nan("")));
+    EXPECT_EQ(0u, xorshift::threshold(-std::nan("")));
+}
+
 TEST(Xorshift, ThresholdIsMonotonic) {
     u64 previous = 0;
     for (int i = 1; i <= 100; i++) {
