@@ -340,6 +340,15 @@ typedef Elf32_Dyn  ElfDyn;
 
 static char _debuginfod_cache_buf[PATH_MAX] = {0};
 
+// Upper bound on a single PT_LOAD segment's p_memsz used to sanity-check
+// liveImageEnd() below. p_memsz is untrusted after load; real executables
+// and shared libraries never approach this size, so rejecting anything
+// larger stops a corrupted value from inflating the "live" range -- the
+// trust anchor every inLiveImage() check relies on -- far past any
+// plausible footprint, while still comfortably covering legitimate
+// permission-gap slop between segments.
+static const uint64_t MAX_PLAUSIBLE_SEGMENT_SIZE = 1ULL << 32; // 4 GiB
+
 class ElfParser {
   private:
     CodeCache* _cc;
@@ -416,11 +425,13 @@ class ElfParser {
                 ElfProgramHeader* ph = phdrAt(i);
                 if (ph != NULL && ph->p_type == PT_LOAD) {
                     const char* seg_start = at(ph);
-                    // p_memsz is untrusted; validate the addition in integer
-                    // space first so a huge value can't wrap the pointer to an
+                    // p_memsz is untrusted; reject implausible magnitudes
+                    // outright, then validate the addition in integer space
+                    // so a huge value can't wrap the pointer to an
                     // attacker-chosen "end" -- this value is the trust anchor
                     // every inLiveImage() check downstream relies on.
-                    if ((uintptr_t)ph->p_memsz <= (uintptr_t)(UINTPTR_MAX - (uintptr_t)seg_start)) {
+                    if ((uint64_t)ph->p_memsz <= MAX_PLAUSIBLE_SEGMENT_SIZE
+                            && (uintptr_t)ph->p_memsz <= (uintptr_t)(UINTPTR_MAX - (uintptr_t)seg_start)) {
                         const char* seg_end = seg_start + ph->p_memsz;
                         if (seg_end > end) end = seg_end;
                     }
@@ -512,11 +523,20 @@ class ElfParser {
     char* dyn_ptr(ElfDyn* dyn) {
         // GNU dynamic linker relocates pointers in the dynamic section, while musl doesn't.
         // Also, [vdso] is not relocated, and its vaddr may differ from the load address.
+        char* ptr;
         if (_relocate_dyn || (_base != NULL && (char*)dyn->d_un.d_ptr < _base)) {
-            return _vaddr_diff == NULL ? (char*)dyn->d_un.d_ptr : (char*)_vaddr_diff + dyn->d_un.d_ptr;
+            ptr = _vaddr_diff == nullptr ? (char*)dyn->d_un.d_ptr : (char*)_vaddr_diff + dyn->d_un.d_ptr;
         } else {
-            return (char*)dyn->d_un.d_ptr;
+            ptr = (char*)dyn->d_un.d_ptr;
         }
+        // Every dyn_ptr() result is a virtual address in live memory, just
+        // like at()'s. Enforce the base invariant here -- rather than
+        // relying on every call site to remember it -- so a future
+        // dynamic-section tag added to parseDynamicSection() (or any other
+        // caller) can't dereference a wild pointer just because it forgot
+        // its own inLiveImage() check. Callers that need more than a single
+        // byte still validate the specific length they intend to read.
+        return inLiveImage(ptr, 0) ? ptr : nullptr;
     }
 
     ElfSection* findSection(uint32_t type, const char* name);
@@ -527,6 +547,7 @@ class ElfParser {
     void parseDwarfInfo();
     uint32_t getSymbolCount(uint32_t* gnu_hash);
     ElfSymbol* resolveSymbol(const char* symtab, uint64_t r_info, size_t syment);
+    void** resolveImportAddr(const char* base, uint64_t r_offset);
     void loadSymbols(bool use_debug);
     bool loadSymbolsFromDebug(const char* build_id, const int build_id_len);
     bool loadSymbolsFromDebuginfodCache(const char* build_id, const int build_id_len);
@@ -651,6 +672,20 @@ ElfSymbol* ElfParser::resolveSymbol(const char* symtab, uint64_t r_info, size_t 
         return NULL;
     }
     return (ElfSymbol*)sym_addr;
+}
+
+// Resolves the GOT/import-patch address (base + r_offset) for the two
+// relocation loops in parseDynamicSection(). r_offset comes straight from
+// the relocation entry -- as untrusted as r_info's symbol index above -- so
+// the addition is validated in integer space before the pointer is formed,
+// and the result is checked against the live image before
+// CodeCache::patchImport() is ever allowed to write through it.
+void** ElfParser::resolveImportAddr(const char* base, uint64_t r_offset) {
+    if (r_offset > (uint64_t)(UINTPTR_MAX - (uintptr_t)base)) {
+        return nullptr;
+    }
+    void** addr = (void**)(base + r_offset);
+    return inLiveImage(addr, sizeof(void*)) ? addr : nullptr;
 }
 
 void ElfParser::parseDynamicSection() {
@@ -801,8 +836,9 @@ void ElfParser::parseDynamicSection() {
                 }
                 if (sym->st_name != 0) {
                     const char* sym_name = strAt(strtab, strsz, sym->st_name);
-                    if (sym_name != NULL) {
-                        _cc->addImport((void**)(base + r->r_offset), sym_name);
+                    void** import_addr = resolveImportAddr(base, r->r_offset);
+                    if (sym_name != nullptr && import_addr != nullptr) {
+                        _cc->addImport(import_addr, sym_name);
                     }
                 }
             }
@@ -824,8 +860,9 @@ void ElfParser::parseDynamicSection() {
                     }
                     if (sym->st_name != 0) {
                         const char* sym_name = strAt(strtab, strsz, sym->st_name);
-                        if (sym_name != NULL) {
-                            _cc->addImport((void**)(base + r->r_offset), sym_name);
+                        void** import_addr = resolveImportAddr(base, r->r_offset);
+                        if (sym_name != nullptr && import_addr != nullptr) {
+                            _cc->addImport(import_addr, sym_name);
                         }
                     }
                 }
@@ -907,7 +944,14 @@ uint32_t ElfParser::getSymbolCount(uint32_t* gnu_hash) {
         return 0;
     }
     uint32_t* buckets = (uint32_t*)((char*)bloom_end + bloom_bytes);
-    if (!inLiveImage(buckets, (size_t)nbuckets * sizeof(uint32_t))) {
+    // nbuckets is attacker-controlled; compute the byte size in a wide
+    // (uint64_t) type first, matching bloom_bytes above -- on a 32-bit
+    // build, (size_t)nbuckets * sizeof(uint32_t) could otherwise wrap to a
+    // tiny value and make inLiveImage() spuriously accept a bucket array
+    // that actually extends far past the mapped image.
+    uint64_t bucket_bytes = (uint64_t)nbuckets * sizeof(uint32_t);
+    if (bucket_bytes > (uint64_t)(UINTPTR_MAX - (uintptr_t)buckets)
+            || !inLiveImage(buckets, (size_t)bucket_bytes)) {
         return 0;
     }
 
