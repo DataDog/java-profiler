@@ -20,8 +20,15 @@
 //
 // expf is the only one needed today: glibc 2.27 added a faster implementation
 // under GLIBC_2.27 and made it the default, so building on 2.28 requires
-// expf@GLIBC_2.27 from source that has not changed. The GLIBC_2.17 interface is
+// expf@GLIBC_2.27 from source that has not changed. The older interface is
 // still exported and still maintained.
+//
+// The version to pin to is per-architecture, because a symbol's oldest version
+// is the baseline of the glibc release that introduced that port: x86_64 has
+// expf@GLIBC_2.2.5, while the aarch64 port starts at 2.17 and so has
+// expf@GLIBC_2.17. Naming the wrong one is an undefined reference at link time,
+// not a silent fallback. An architecture that is not listed gets no pin, and
+// the ABI floor check then reports whatever it does require.
 //
 // Guarded to glibc: musl has no symbol versioning at all, and a .symver naming
 // a GLIBC_* version fails to link there. The directive is a no-op when building
@@ -41,7 +48,11 @@
 #endif
 
 #if defined(__linux__) && defined(__GLIBC__)
+#if defined(__x86_64__)
+__asm__(".symver expf,expf@GLIBC_2.2.5");
+#elif defined(__aarch64__)
 __asm__(".symver expf,expf@GLIBC_2.17");
+#endif
 #endif
 
 #endif // _GLIBCCOMPAT_H

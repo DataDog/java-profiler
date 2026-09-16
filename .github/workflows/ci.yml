@@ -65,8 +65,8 @@ jobs:
           shellcheck \
             .gitlab/scripts/check-abi-floor.sh \
             .gitlab/scripts/tests/check_abi_floor_test.sh
-          .gitlab/scripts/tests/check_abi_floor_test.sh
-          .gitlab/scripts/tests/includes_test.sh
+          bash .gitlab/scripts/tests/check_abi_floor_test.sh
+          bash .gitlab/scripts/tests/includes_test.sh
 
   check-for-pr:
     runs-on: ubuntu-latest
