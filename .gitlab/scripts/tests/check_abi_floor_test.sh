@@ -79,6 +79,22 @@ cat > "${WORK}/dynsym-225-227" <<'EOF'
 0000000000000000      DF *UND*	0000000000000000  GLIBC_2.27 expf
 EOF
 
+# What a .symver-pinned artifact looks like: objdump parenthesises a binding to
+# a non-default version, so both the pinned symbol and anything else bound
+# off-default appear in brackets. Reading only the bare form reports this file
+# as having no versioned references at all.
+cat > "${WORK}/dynsym-pinned" <<'EOF'
+0000000000000000      DF *UND*	0000000000000000  GLIBC_2.2.5 memcpy
+0000000000000000      DF *UND*	0000000000000000 (GLIBC_2.17) expf
+0000000000000000  w   DF *UND*	0000000000000000 (GLIBC_2.25) getentropy
+EOF
+
+# The same artifact once the above-floor symbol is gone.
+cat > "${WORK}/dynsym-pinned-clean" <<'EOF'
+0000000000000000      DF *UND*	0000000000000000  GLIBC_2.2.5 memcpy
+0000000000000000      DF *UND*	0000000000000000 (GLIBC_2.17) expf
+EOF
+
 # A musl artifact, or an objdump that could not read the file: no versioned
 # glibc references at all.
 : > "${WORK}/dynsym-empty"
@@ -196,6 +212,17 @@ assert_pass "2.2.5 does not read as higher than a 2.17 floor" \
 assert_fail "2.17 reads as higher than a 2.2.5 floor" \
   run_checker dynsym-217 headers-good 2.2.5
 assert_output_contains "the 2.17 symbol is named, not the 2.2.5 one" "clock_gettime@GLIBC_2.17"
+
+# Parenthesised versions are what the shipped artifact actually contains once
+# expf is pinned, so they must parse like bare ones. Checked in both
+# directions: that the pinned symbol is not mistaken for unversioned, and that
+# a parenthesised symbol above the floor is still caught.
+assert_pass "a pinned artifact at the floor is accepted" \
+  run_checker dynsym-pinned-clean headers-good 2.17
+assert_fail "a parenthesised version above the floor is rejected" \
+  run_checker dynsym-pinned headers-good 2.17
+assert_output_contains "the parenthesised offender is named" "getentropy@GLIBC_2.25"
+assert_output_contains "the parenthesised max is reported" "GLIBC_2.25"
 
 # An empty symbol list means the file could not be read or is not a glibc
 # build. Reporting a pass there would make the guard silently inoperative,

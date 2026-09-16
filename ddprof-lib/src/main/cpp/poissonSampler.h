@@ -7,6 +7,8 @@
 #define _POISSONSAMPLER_H
 
 #include "arch.h"
+// Pins the expf call below to its oldest glibc interface; see glibcCompat.h.
+#include "glibcCompat.h"
 #include "xorshift.h"
 #include <cmath>
 

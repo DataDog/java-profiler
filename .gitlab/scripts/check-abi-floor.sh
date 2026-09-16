@@ -79,12 +79,18 @@ DYNSYM=$("${OBJDUMP}" -T "${SO}") || die "${OBJDUMP} -T failed on ${SO}"
 
 # "<version> <symbol>" for every undefined versioned reference. Matched on the
 # trailing fields rather than by column number: objdump adds a weak-binding
-# column for some symbols, which shifts every field to its right. `|| true`
-# keeps a no-match grep from ending the script before the check below reports
-# it properly.
+# column for some symbols, which shifts every field to its right.
+#
+# The version is parenthesised when the reference is not to the default version
+# -- which is exactly what a .symver pin produces (see glibcCompat.h) -- and
+# bare otherwise, so both forms have to parse. Reading only the bare form makes
+# a pinned artifact look like it references no versioned symbols at all.
+#
+# `|| true` keeps a no-match grep from ending the script before the check below
+# reports it properly.
 REFS=$(printf '%s\n' "${DYNSYM}" \
        | grep -F '*UND*' \
-       | sed -nE 's/.*[[:space:]](GLIBC_[0-9][0-9.]*)[[:space:]]+([^[:space:]]+)[[:space:]]*$/\1 \2/p' \
+       | sed -nE 's/.*[[:space:]]\(?(GLIBC_[0-9][0-9.]*)\)?[[:space:]]+([^[:space:]]+)[[:space:]]*$/\1 \2/p' \
        || true)
 
 if [ -z "${REFS}" ]; then
