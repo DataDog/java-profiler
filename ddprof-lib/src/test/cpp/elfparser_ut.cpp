@@ -17,6 +17,8 @@
 #include <sys/mman.h>
 #include <cstring>
 #include <cstdlib>
+#include <cstdint>
+#include <algorithm>
 #include <vector>
 #include <elf.h>
 #include <chrono>
@@ -584,12 +586,13 @@ TEST_F(ElfTest, symbolNameOffsetOutOfBounds) {
 // Before the fix, parseDynamicSection() was the one path in this file NOT
 // bounds-checked: dyn_ptr() computes a live-memory pointer from an untrusted
 // DT_HASH d_ptr value, and the DT_HASH case dereferenced it immediately with
-// no inImage()-style validation. A single malformed DT_HASH entry was enough
-// to crash the whole process (this test reliably reproduced it: SIGSEGV,
-// exit code 139). parseDynamicSection(), dyn_ptr()'s callers, and
+// no inLiveImage()-style validation. A single malformed DT_HASH entry was
+// enough to crash the whole process (this test reliably reproduced it:
+// SIGSEGV, exit code 139). parseDynamicSection(), dyn_ptr()'s callers, and
 // getSymbolCount() (the DT_GNU_HASH path) now validate every dyn_ptr()-derived
-// range against inImage() before it is dereferenced, so this must return
-// cleanly instead of crashing.
+// range against inLiveImage() -- not inImage(), which bounds a different,
+// file-offset extent (see symbols_linux.cpp) -- before it is dereferenced,
+// so this must return cleanly instead of crashing.
 //
 // This exercises parseProgramHeaders() rather than parseFile(): only that
 // path passes a non-NULL live-memory `base`, which is what makes dyn_ptr()'s
@@ -646,6 +649,423 @@ TEST_F(ElfTest, dynamicSectionHashPointerOutOfBounds) {
     // GNU-linker-style DSO. This is the exact call that segfaults today
     // inside the DT_HASH case of parseDynamicSection().
     ElfParser::parseProgramHeaders(&cc, base, base + b.size(), /*relocate_dyn=*/true);
+    // Beyond "must not crash": there is no DT_SYMTAB/DT_STRTAB here, so
+    // parseDynamicSection() must bail out at its "symtab == NULL" check
+    // without loading anything -- the malformed DT_HASH entry must not leave
+    // behind a symbol table populated from garbage.
+    EXPECT_EQ(cc.count(), 0);
+}
+
+// =====================================================================
+// Coverage for resolveSymbol()/resolveImportAddr(): the relocation-loop
+// guards added by the ELF parser hardening above. The DT_HASH regression
+// test just above never reaches either helper -- it has no DT_SYMTAB, so
+// parseDynamicSection() returns before the relocation loops. These tests
+// populate a real .dynsym/.dynstr/.rela.plt so a single malformed field
+// (syment, the symbol index, or r_offset) is the only thing standing
+// between "resolves cleanly" and "reads out of bounds", isolating each
+// guard in turn.
+// =====================================================================
+
+namespace {
+
+// Fixed byte layout shared by every variant below: only syment, sym_index,
+// and r_offset change between tests. All are compile-time constants, since
+// none of the sizes involved depend on the malformed values under test.
+constexpr uint64_t kRelocDynOff = sizeof(Elf64_Ehdr) + 2 * sizeof(Elf64_Phdr);
+constexpr int kRelocDynCount = 8;
+constexpr uint64_t kRelocSymtabOff = kRelocDynOff + kRelocDynCount * sizeof(Elf64_Dyn);
+constexpr uint64_t kRelocStrtabOff = kRelocSymtabOff + 2 * sizeof(Elf64_Sym);
+constexpr char kRelocStrtab[] = "\0malloc";  // index 1 = "malloc" (recognized by CodeCache::addImport)
+constexpr uint64_t kRelocJmprelOff = kRelocStrtabOff + sizeof(kRelocStrtab);
+constexpr uint64_t kRelocGotOff = kRelocJmprelOff + sizeof(Elf64_Rel);
+constexpr uint64_t kRelocImageSize = kRelocGotOff + sizeof(void*);
+
+// Builds a minimal ELF64 DSO with one PT_LOAD (covering the whole image) and
+// a PT_DYNAMIC pointing at a single DT_JMPREL/.rela.plt entry that resolves
+// symbol index `sym_index` through a DT_SYMENT of `syment`, patching the GOT
+// slot at `r_offset`. Passing the "correct" values (sizeof(Elf64_Sym), 1,
+// kRelocGotOff) resolves cleanly end to end; each test below instead
+// corrupts exactly one of the three to isolate one guard.
+std::vector<char> buildRelocationTestElf(uint64_t syment, uint32_t sym_index, uint64_t r_offset) {
+    Elf64_Ehdr e = validEhdr();
+    e.e_phoff = sizeof(Elf64_Ehdr);
+    e.e_phentsize = sizeof(Elf64_Phdr);
+    e.e_phnum = 2;
+
+    Elf64_Phdr ph[2];
+    memset(ph, 0, sizeof(ph));
+    ph[0].p_type = PT_LOAD;  // p_vaddr == p_offset == 0: covers the whole image
+    ph[0].p_filesz = ph[0].p_memsz = kRelocImageSize;
+    ph[1].p_type = PT_DYNAMIC;
+    ph[1].p_vaddr = ph[1].p_offset = kRelocDynOff;
+    ph[1].p_filesz = ph[1].p_memsz = kRelocDynCount * sizeof(Elf64_Dyn);
+
+    Elf64_Dyn dyn[kRelocDynCount];
+    memset(dyn, 0, sizeof(dyn));
+    dyn[0].d_tag = DT_SYMTAB;   dyn[0].d_un.d_ptr = kRelocSymtabOff;
+    dyn[1].d_tag = DT_STRTAB;   dyn[1].d_un.d_ptr = kRelocStrtabOff;
+    dyn[2].d_tag = DT_STRSZ;    dyn[2].d_un.d_val = sizeof(kRelocStrtab);
+    dyn[3].d_tag = DT_SYMENT;   dyn[3].d_un.d_val = syment;
+    dyn[4].d_tag = DT_JMPREL;   dyn[4].d_un.d_ptr = kRelocJmprelOff;
+    dyn[5].d_tag = DT_PLTRELSZ; dyn[5].d_un.d_val = sizeof(Elf64_Rel);
+    dyn[6].d_tag = DT_RELENT;   dyn[6].d_un.d_val = sizeof(Elf64_Rel);
+    dyn[7].d_tag = DT_NULL;
+
+    Elf64_Sym sym[2];
+    memset(sym, 0, sizeof(sym));  // sym[0] is the mandatory null symbol
+    sym[1].st_name = 1;   // "malloc" at strtab offset 1
+    sym[1].st_value = 0x1000;
+
+    Elf64_Rel rel;
+    memset(&rel, 0, sizeof(rel));
+    rel.r_info = (uint64_t)sym_index << 32;  // r_type is unchecked by the .rela.plt loop
+    rel.r_offset = r_offset;
+
+    std::vector<char> b(kRelocImageSize, 0);
+    memcpy(b.data(), &e, sizeof(e));
+    memcpy(b.data() + sizeof(e), ph, sizeof(ph));
+    memcpy(b.data() + kRelocDynOff, dyn, sizeof(dyn));
+    memcpy(b.data() + kRelocSymtabOff, sym, sizeof(sym));
+    memcpy(b.data() + kRelocStrtabOff, kRelocStrtab, sizeof(kRelocStrtab));
+    memcpy(b.data() + kRelocJmprelOff, &rel, sizeof(rel));
+    return b;
+}
+
+}  // namespace
+
+TEST_F(ElfTest, relocationResolvesValidSymbol) {
+    std::vector<char> b = buildRelocationTestElf(sizeof(Elf64_Sym), /*sym_index=*/1, kRelocGotOff);
+    CodeCache cc("regress-reloc-valid");
+    const char* base = b.data();
+    ElfParser::parseProgramHeaders(&cc, base, base + b.size(), /*relocate_dyn=*/true);
+    // A guard mutated to reject everything would fail this: the "malloc"
+    // relocation must resolve and patch the GOT slot at kRelocGotOff.
+    EXPECT_EQ(cc.findImport(im_malloc), (void**)(base + kRelocGotOff));
+}
+
+TEST_F(ElfTest, resolveSymbolRejectsSymentIndexOverflow) {
+    // syment == 2^63+12, sym_index == 2: chosen so index*syment overflows
+    // size_t and wraps to exactly sizeof(Elf64_Sym) (24) -- landing squarely
+    // on the "malloc" symbol at symtab+24, well within the live image. If
+    // resolveSymbol()'s first guard ("index > SIZE_MAX / syment", the only
+    // thing that catches this input -- the wrapped offset is small, so
+    // neither the pointer-overflow check nor inLiveImage() would reject it)
+    // were weakened or deleted, this would silently resolve to the wrong
+    // symbol and patch the GOT instead of being rejected.
+    const uint64_t syment = (1ULL << 63) + 12;
+    std::vector<char> b = buildRelocationTestElf(syment, /*sym_index=*/2, kRelocGotOff);
+    CodeCache cc("regress-reloc-symentoverflow");
+    const char* base = b.data();
+    ElfParser::parseProgramHeaders(&cc, base, base + b.size(), /*relocate_dyn=*/true);
+    EXPECT_EQ(cc.findImport(im_malloc), nullptr);
+}
+
+TEST_F(ElfTest, resolveSymbolRejectsPointerOverflow) {
+    // syment == SIZE_MAX, sym_index == 1: index*syment == SIZE_MAX (no
+    // multiplication overflow, so the first guard passes), but
+    // symtab + SIZE_MAX cannot be formed without wrapping the pointer --
+    // resolveSymbol()'s second (offset > UINTPTR_MAX - symtab) guard must
+    // catch this instead.
+    std::vector<char> b = buildRelocationTestElf(/*syment=*/UINT64_MAX, /*sym_index=*/1, kRelocGotOff);
+    CodeCache cc("regress-reloc-ptroverflow");
+    const char* base = b.data();
+    ElfParser::parseProgramHeaders(&cc, base, base + b.size(), /*relocate_dyn=*/true);
+    EXPECT_EQ(cc.findImport(im_malloc), nullptr);
+}
+
+TEST_F(ElfTest, resolveSymbolRejectsOutOfImageIndex) {
+    // A well-formed syment but a symbol index far past the tiny two-entry
+    // symtab: no integer overflow anywhere, but symtab + index*syment lands
+    // ~24 MB past the image. resolveSymbol()'s inLiveImage() check must
+    // reject it instead of dereferencing an ElfSymbol out there.
+    std::vector<char> b = buildRelocationTestElf(sizeof(Elf64_Sym), /*sym_index=*/1000000, kRelocGotOff);
+    CodeCache cc("regress-reloc-symoob");
+    const char* base = b.data();
+    ElfParser::parseProgramHeaders(&cc, base, base + b.size(), /*relocate_dyn=*/true);
+    EXPECT_EQ(cc.findImport(im_malloc), nullptr);
+}
+
+TEST_F(ElfTest, resolveImportAddrRejectsPointerOverflow) {
+    // Symbol resolution succeeds ("malloc" at index 1), but r_offset is
+    // UINT64_MAX: resolveImportAddr()'s "r_offset > UINTPTR_MAX - base"
+    // guard must reject the GOT address before base + r_offset is formed.
+    std::vector<char> b = buildRelocationTestElf(sizeof(Elf64_Sym), /*sym_index=*/1, /*r_offset=*/UINT64_MAX);
+    CodeCache cc("regress-reloc-importptroverflow");
+    const char* base = b.data();
+    ElfParser::parseProgramHeaders(&cc, base, base + b.size(), /*relocate_dyn=*/true);
+    EXPECT_EQ(cc.findImport(im_malloc), nullptr);
+}
+
+TEST_F(ElfTest, resolveImportAddrRejectsOutOfImageOffset) {
+    // Symbol resolution succeeds, but r_offset (~50 MB) does not overflow
+    // the pointer addition -- it just lands well past the image.
+    // resolveImportAddr()'s inLiveImage() check must reject it.
+    std::vector<char> b = buildRelocationTestElf(sizeof(Elf64_Sym), /*sym_index=*/1, /*r_offset=*/50000000ULL);
+    CodeCache cc("regress-reloc-importoob");
+    const char* base = b.data();
+    ElfParser::parseProgramHeaders(&cc, base, base + b.size(), /*relocate_dyn=*/true);
+    EXPECT_EQ(cc.findImport(im_malloc), nullptr);
+}
+
+// =====================================================================
+// Coverage for getSymbolCount() (the DT_GNU_HASH path). Layout mirrors
+// buildRelocationTestElf() (same symtab/strtab/.rela.plt) but adds a real
+// DT_GNU_HASH table after the GOT slot, with a one-bucket/one-chain-entry
+// hash covering exactly our two dynsyms (the mandatory null symbol at index
+// 0, "malloc" at index 1). `bucket_value` is the one knob under test: the
+// GNU hash spec requires it to be the *global* dynsym index of the first
+// symbol hashed into that bucket, which for a well-formed table is 1.
+// =====================================================================
+
+namespace {
+
+constexpr uint64_t kGHDynOff = sizeof(Elf64_Ehdr) + 2 * sizeof(Elf64_Phdr);
+constexpr int kGHDynCount = 9;  // one more than kRelocDynCount: adds DT_GNU_HASH
+constexpr uint64_t kGHSymtabOff = kGHDynOff + kGHDynCount * sizeof(Elf64_Dyn);
+constexpr uint64_t kGHStrtabOff = kGHSymtabOff + 2 * sizeof(Elf64_Sym);
+constexpr char kGHStrtab[] = "\0malloc";
+constexpr uint64_t kGHJmprelOff = kGHStrtabOff + sizeof(kGHStrtab);
+constexpr uint64_t kGHGotOff = kGHJmprelOff + sizeof(Elf64_Rel);
+constexpr uint64_t kGHGnuHashOff = kGHGotOff + sizeof(void*);
+constexpr uint64_t kGHBloomOff = kGHGnuHashOff + 4 * sizeof(uint32_t);  // header: nbuckets,symoffset,bloom_size,bloom_shift
+constexpr uint64_t kGHBucketsOff = kGHBloomOff + 2 * sizeof(uint32_t);  // bloom_size(1) * (sizeof(size_t)/4)(2) words
+constexpr uint64_t kGHChainOff = kGHBucketsOff + 1 * sizeof(uint32_t);  // one physical bucket slot
+constexpr size_t kGHFullGnuHashBytes = (kGHChainOff + 1 * sizeof(uint32_t)) - kGHGnuHashOff;  // header+bloom+bucket+chain
+
+// `nbuckets`/`bucket_value` feed gnu_hash's header and its one physical
+// bucket slot -- the malformed cases below set `nbuckets` far larger than
+// what's physically present (to overrun the bucket-array bounds check) or
+// `bucket_value` to an out-of-image dynsym index (to overrun the chain
+// walk). `gnu_hash_bytes` truncates how much of the GNU_HASH region
+// actually exists after its header offset, to exercise getSymbolCount()'s
+// own leading inLiveImage() check on the header itself; below
+// sizeof(gnu_header) it also truncates the header struct that gets written.
+// The chain entry, when present, always has its terminator bit set,
+// matching a real single-entry chain.
+std::vector<char> buildGnuHashTestElf(uint32_t nbuckets, uint32_t bucket_value,
+                                      size_t gnu_hash_bytes = kGHFullGnuHashBytes) {
+    Elf64_Ehdr e = validEhdr();
+    e.e_phoff = sizeof(Elf64_Ehdr);
+    e.e_phentsize = sizeof(Elf64_Phdr);
+    e.e_phnum = 2;
+
+    const uint64_t image_size = kGHGnuHashOff + gnu_hash_bytes;
+
+    Elf64_Phdr ph[2];
+    memset(ph, 0, sizeof(ph));
+    ph[0].p_type = PT_LOAD;
+    ph[0].p_filesz = ph[0].p_memsz = image_size;
+    ph[1].p_type = PT_DYNAMIC;
+    ph[1].p_vaddr = ph[1].p_offset = kGHDynOff;
+    ph[1].p_filesz = ph[1].p_memsz = kGHDynCount * sizeof(Elf64_Dyn);
+
+    Elf64_Dyn dyn[kGHDynCount];
+    memset(dyn, 0, sizeof(dyn));
+    dyn[0].d_tag = DT_SYMTAB;   dyn[0].d_un.d_ptr = kGHSymtabOff;
+    dyn[1].d_tag = DT_STRTAB;   dyn[1].d_un.d_ptr = kGHStrtabOff;
+    dyn[2].d_tag = DT_STRSZ;    dyn[2].d_un.d_val = sizeof(kGHStrtab);
+    dyn[3].d_tag = DT_SYMENT;   dyn[3].d_un.d_val = sizeof(Elf64_Sym);
+    dyn[4].d_tag = DT_JMPREL;   dyn[4].d_un.d_ptr = kGHJmprelOff;
+    dyn[5].d_tag = DT_PLTRELSZ; dyn[5].d_un.d_val = sizeof(Elf64_Rel);
+    dyn[6].d_tag = DT_RELENT;   dyn[6].d_un.d_val = sizeof(Elf64_Rel);
+    dyn[7].d_tag = DT_GNU_HASH; dyn[7].d_un.d_ptr = kGHGnuHashOff;
+    dyn[8].d_tag = DT_NULL;
+
+    Elf64_Sym sym[2];
+    memset(sym, 0, sizeof(sym));  // sym[0] is the mandatory null symbol
+    sym[1].st_name = 1;
+    sym[1].st_value = 0x1000;
+
+    Elf64_Rel rel;
+    memset(&rel, 0, sizeof(rel));
+    rel.r_info = (uint64_t)1 << 32;  // symbol index 1 ("malloc"); type unchecked by .rela.plt
+    rel.r_offset = kGHGotOff;
+
+    uint32_t gnu_header[4] = {nbuckets, /*symoffset=*/1, /*bloom_size=*/1, /*bloom_shift=*/0};
+    uint32_t bloom[2] = {0, 0};
+    uint32_t chain = 0x1;  // terminator bit set: last (and only) entry in the chain
+
+    std::vector<char> b(image_size, 0);
+    memcpy(b.data(), &e, sizeof(e));
+    memcpy(b.data() + sizeof(e), ph, sizeof(ph));
+    memcpy(b.data() + kGHDynOff, dyn, sizeof(dyn));
+    memcpy(b.data() + kGHSymtabOff, sym, sizeof(sym));
+    memcpy(b.data() + kGHStrtabOff, kGHStrtab, sizeof(kGHStrtab));
+    memcpy(b.data() + kGHJmprelOff, &rel, sizeof(rel));
+    // Write only as much of the GNU_HASH region as gnu_hash_bytes allows --
+    // that's the whole point of the truncated-header test case.
+    memcpy(b.data() + kGHGnuHashOff, gnu_header, std::min(gnu_hash_bytes, sizeof(gnu_header)));
+    if (gnu_hash_bytes >= kGHBloomOff + sizeof(bloom) - kGHGnuHashOff) {
+        memcpy(b.data() + kGHBloomOff, bloom, sizeof(bloom));
+    }
+    if (gnu_hash_bytes >= kGHBucketsOff + sizeof(bucket_value) - kGHGnuHashOff) {
+        memcpy(b.data() + kGHBucketsOff, &bucket_value, sizeof(bucket_value));
+    }
+    if (gnu_hash_bytes >= kGHChainOff + sizeof(chain) - kGHGnuHashOff) {
+        memcpy(b.data() + kGHChainOff, &chain, sizeof(chain));
+    }
+    return b;
+}
+
+}  // namespace
+
+TEST_F(ElfTest, gnuHashComputesSymbolCount) {
+    // nbuckets == 1, bucket_value == 1: the real global dynsym index of
+    // "malloc", the only hashed symbol. getSymbolCount() must walk
+    // buckets+chain and return 2 (index 0's null symbol is implicit; index 1
+    // is where the chain's terminator bit lands), which unblocks
+    // loadSymbolTable()'s sequential walk over the *whole* symtab -- not
+    // just what the (independent) .rela.plt import loop resolves. A stub
+    // that skips real parsing, or a getSymbolCount() that miscounts, shows
+    // up here as a missing debug symbol even though the relocation-based
+    // import still succeeds.
+    std::vector<char> b = buildGnuHashTestElf(/*nbuckets=*/1, /*bucket_value=*/1);
+    CodeCache cc("regress-gnuhash-valid");
+    const char* base = b.data();
+    ElfParser::parseProgramHeaders(&cc, base, base + b.size(), /*relocate_dyn=*/true);
+    EXPECT_EQ(cc.count(), 1);
+    EXPECT_EQ(cc.findImport(im_malloc), (void**)(base + kGHGotOff));
+}
+
+TEST_F(ElfTest, gnuHashRejectsOutOfImageChainIndex) {
+    // bucket_value is a huge, clearly-bogus dynsym index. getSymbolCount()'s
+    // chain walk must reject &chain[bucket_value] via inLiveImage() (it is
+    // ~16 GB past this tiny image) and return 0 instead of reading out of
+    // bounds. The independent .rela.plt import must still resolve normally
+    // -- a malformed DT_GNU_HASH must not take down the rest of dynamic
+    // section parsing -- so this isolates getSymbolCount()'s own guard
+    // rather than merely checking "did not crash".
+    std::vector<char> b = buildGnuHashTestElf(/*nbuckets=*/1, /*bucket_value=*/0xFFFFFFF0u);
+    CodeCache cc("regress-gnuhash-oob-chain");
+    const char* base = b.data();
+    ElfParser::parseProgramHeaders(&cc, base, base + b.size(), /*relocate_dyn=*/true);
+    EXPECT_EQ(cc.count(), 0);
+    EXPECT_EQ(cc.findImport(im_malloc), (void**)(base + kGHGotOff));
+}
+
+TEST_F(ElfTest, gnuHashRejectsOutOfImageBucketArray) {
+    // nbuckets claims a million buckets, but the image physically has room
+    // for exactly one bucket slot. bucket_bytes (~4 MB) does not overflow
+    // the multiplication -- this isolates the separate
+    // "!inLiveImage(buckets, bucket_bytes)" bucket-array bounds check from
+    // the chain-walk check above, which only runs once that check has
+    // already passed. The independent .rela.plt import must still resolve.
+    std::vector<char> b = buildGnuHashTestElf(/*nbuckets=*/1000000, /*bucket_value=*/1);
+    CodeCache cc("regress-gnuhash-oob-buckets");
+    const char* base = b.data();
+    ElfParser::parseProgramHeaders(&cc, base, base + b.size(), /*relocate_dyn=*/true);
+    EXPECT_EQ(cc.count(), 0);
+    EXPECT_EQ(cc.findImport(im_malloc), (void**)(base + kGHGotOff));
+}
+
+TEST_F(ElfTest, gnuHashRejectsTruncatedHeader) {
+    // Only 8 of the mandatory 16 header bytes (nbuckets, symoffset,
+    // bloom_size, bloom_shift) are actually present in the image --
+    // dyn_ptr() only validates that gnu_hash's *start* is in bounds, so this
+    // isolates getSymbolCount()'s own leading inLiveImage(gnu_hash, 16)
+    // check from every guard downstream of it. The independent .rela.plt
+    // import must still resolve.
+    std::vector<char> b = buildGnuHashTestElf(/*nbuckets=*/1, /*bucket_value=*/1, /*gnu_hash_bytes=*/8);
+    CodeCache cc("regress-gnuhash-truncated-header");
+    const char* base = b.data();
+    ElfParser::parseProgramHeaders(&cc, base, base + b.size(), /*relocate_dyn=*/true);
+    EXPECT_EQ(cc.count(), 0);
+    EXPECT_EQ(cc.findImport(im_malloc), (void**)(base + kGHGotOff));
+}
+
+// =====================================================================
+// Coverage for the second relocation loop in parseDynamicSection() (.rela.dyn
+// via DT_RELA/DT_RELASZ, used for e.g. R_*_GLOB_DAT relocations in libraries
+// built without PLT). Every prior relocation test above drives the
+// .rela.plt/DT_JMPREL loop; this is a structurally separate loop with its
+// own bounds check ("relcount <= SIZE_MAX / relent") and its own call into
+// resolveSymbol(), so it needs its own coverage.
+// =====================================================================
+
+namespace {
+
+// Same fixed layout as buildRelocationTestElf(), except the single
+// relocation is delivered via DT_RELA/DT_RELASZ (with DT_RELACOUNT == 0, so
+// the loop's "start at relcount*relent" begins at offset 0) instead of
+// DT_JMPREL/DT_PLTRELSZ, and carries an R_*_GLOB_DAT type so the .rela.dyn
+// loop's type filter accepts it.
+std::vector<char> buildRelaDynTestElf(uint32_t sym_index) {
+    Elf64_Ehdr e = validEhdr();
+    e.e_phoff = sizeof(Elf64_Ehdr);
+    e.e_phentsize = sizeof(Elf64_Phdr);
+    e.e_phnum = 2;
+
+    Elf64_Phdr ph[2];
+    memset(ph, 0, sizeof(ph));
+    ph[0].p_type = PT_LOAD;
+    ph[0].p_filesz = ph[0].p_memsz = kRelocImageSize;
+    ph[1].p_type = PT_DYNAMIC;
+    ph[1].p_vaddr = ph[1].p_offset = kRelocDynOff;
+    ph[1].p_filesz = ph[1].p_memsz = kRelocDynCount * sizeof(Elf64_Dyn);
+
+    Elf64_Dyn dyn[kRelocDynCount];
+    memset(dyn, 0, sizeof(dyn));
+    dyn[0].d_tag = DT_SYMTAB;   dyn[0].d_un.d_ptr = kRelocSymtabOff;
+    dyn[1].d_tag = DT_STRTAB;   dyn[1].d_un.d_ptr = kRelocStrtabOff;
+    dyn[2].d_tag = DT_STRSZ;    dyn[2].d_un.d_val = sizeof(kRelocStrtab);
+    dyn[3].d_tag = DT_SYMENT;   dyn[3].d_un.d_val = sizeof(Elf64_Sym);
+    dyn[4].d_tag = DT_RELA;     dyn[4].d_un.d_ptr = kRelocJmprelOff;  // reuse the same slot as jmprel
+    dyn[5].d_tag = DT_RELASZ;   dyn[5].d_un.d_val = sizeof(Elf64_Rel);
+    dyn[6].d_tag = DT_RELAENT;  dyn[6].d_un.d_val = sizeof(Elf64_Rel);
+    dyn[7].d_tag = DT_RELACOUNT; dyn[7].d_un.d_val = 0;
+    // kRelocDynCount == 8: no room for (and no need for) a trailing DT_NULL --
+    // the dynamic-section loop bounds on p_memsz, not on a terminator tag.
+
+    Elf64_Sym sym[2];
+    memset(sym, 0, sizeof(sym));
+    sym[1].st_name = 1;
+    sym[1].st_value = 0x1000;
+
+    Elf64_Rel rel;
+    memset(&rel, 0, sizeof(rel));
+#if defined(__x86_64__)
+    const uint32_t glob_dat = R_X86_64_GLOB_DAT;
+#elif defined(__aarch64__)
+    const uint32_t glob_dat = R_AARCH64_GLOB_DAT;
+#elif defined(__i386__)
+    const uint32_t glob_dat = R_386_GLOB_DAT;
+#elif defined(__arm__)
+    const uint32_t glob_dat = R_ARM_GLOB_DAT;
+#else
+    const uint32_t glob_dat = 0;  // no GLOB_DAT relocation on this arch; loop below will just skip the entry
+#endif
+    rel.r_info = ((uint64_t)sym_index << 32) | glob_dat;
+    rel.r_offset = kRelocGotOff;
+
+    std::vector<char> b(kRelocImageSize, 0);
+    memcpy(b.data(), &e, sizeof(e));
+    memcpy(b.data() + sizeof(e), ph, sizeof(ph));
+    memcpy(b.data() + kRelocDynOff, dyn, sizeof(dyn));
+    memcpy(b.data() + kRelocSymtabOff, sym, sizeof(sym));
+    memcpy(b.data() + kRelocStrtabOff, kRelocStrtab, sizeof(kRelocStrtab));
+    memcpy(b.data() + kRelocJmprelOff, &rel, sizeof(rel));
+    return b;
+}
+
+}  // namespace
+
+TEST_F(ElfTest, relaDynLoopResolvesValidSymbol) {
+    std::vector<char> b = buildRelaDynTestElf(/*sym_index=*/1);
+    CodeCache cc("regress-reladyn-valid");
+    const char* base = b.data();
+    ElfParser::parseProgramHeaders(&cc, base, base + b.size(), /*relocate_dyn=*/true);
+    EXPECT_EQ(cc.findImport(im_malloc), (void**)(base + kRelocGotOff));
+}
+
+TEST_F(ElfTest, relaDynLoopRejectsOutOfImageIndex) {
+    // Mirrors resolveSymbolRejectsOutOfImageIndex, but through the .rela.dyn
+    // loop's own resolveSymbol() call site rather than .rela.plt's.
+    std::vector<char> b = buildRelaDynTestElf(/*sym_index=*/1000000);
+    CodeCache cc("regress-reladyn-oob");
+    const char* base = b.data();
+    ElfParser::parseProgramHeaders(&cc, base, base + b.size(), /*relocate_dyn=*/true);
+    EXPECT_EQ(cc.findImport(im_malloc), nullptr);
 }
 
 #endif //__linux__

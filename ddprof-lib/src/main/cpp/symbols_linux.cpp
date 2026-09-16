@@ -406,6 +406,20 @@ class ElfParser {
             && len <= (size_t)(_image_end - p);
     }
 
+    // True when p_memsz is small enough to trust: rejects implausible
+    // magnitudes outright, then validates seg_start + p_memsz in integer
+    // space so a huge value can't wrap the pointer to an attacker-chosen
+    // "end". Shared by liveImageEnd() and liveSegmentEnd() below, both of
+    // which treat their result as a trust anchor for inLiveImage() checks.
+    static bool plausibleSegmentEnd(const char* seg_start, uint64_t p_memsz, const char** seg_end) {
+        if (p_memsz > MAX_PLAUSIBLE_SEGMENT_SIZE
+                || p_memsz > (uint64_t)(UINTPTR_MAX - (uintptr_t)seg_start)) {
+            return false;
+        }
+        *seg_end = seg_start + p_memsz;
+        return true;
+    }
+
     // Highest end address among this ELF's PT_LOAD segments in live memory.
     // Unlike _image_end (derived from the caller-supplied /proc/self/maps
     // span), this reflects the ELF's own notion of its total virtual
@@ -414,26 +428,29 @@ class ElfParser {
     // between segments that /proc/self/maps does not attribute to the
     // library (no matching inode), making map_end fall well short of a
     // segment -- such as .dynamic -- that is nonetheless mapped and valid to
-    // read. Cached: callers processing a relocation table may ask many times.
+    // read. Cached, since callers processing a relocation table may ask many
+    // times. NOTE: this is a coarse [_base, max-end) span -- it does not
+    // exclude the PROT_NONE/unmapped gaps that can legitimately fall between
+    // two LOAD segments, so it is only used where an upper bound (not
+    // pointer-arithmetic validation) is what's needed; inLiveImage() below
+    // uses the per-segment liveSegmentEnd() instead precisely to exclude
+    // those gaps.
     // Precondition: calcVirtualLoadAddress() must already have run, since
-    // at(ph) depends on _vaddr_diff; both current callers (parseProgramHeaders)
-    // satisfy this.
+    // at(ph) depends on _vaddr_diff. Not enumerated by caller here because
+    // that list drifts -- it holds structurally instead: the only way to
+    // reach any liveImageEnd()/inLiveImage()/liveSegmentEnd() use is through
+    // parseProgramHeaders(), which itself calls calcVirtualLoadAddress()
+    // before parseDynamicSection()/parseDwarfInfo(), so every caller of
+    // parseProgramHeaders() satisfies this regardless of how many there are.
     const char* liveImageEnd() {
         if (_live_image_end == NULL && _base != NULL) {
             const char* end = _base;
             for (int i = 0; i < _header->e_phnum; i++) {
                 ElfProgramHeader* ph = phdrAt(i);
                 if (ph != NULL && ph->p_type == PT_LOAD) {
-                    const char* seg_start = at(ph);
-                    // p_memsz is untrusted; reject implausible magnitudes
-                    // outright, then validate the addition in integer space
-                    // so a huge value can't wrap the pointer to an
-                    // attacker-chosen "end" -- this value is the trust anchor
-                    // every inLiveImage() check downstream relies on.
-                    if ((uint64_t)ph->p_memsz <= MAX_PLAUSIBLE_SEGMENT_SIZE
-                            && (uintptr_t)ph->p_memsz <= (uintptr_t)(UINTPTR_MAX - (uintptr_t)seg_start)) {
-                        const char* seg_end = seg_start + ph->p_memsz;
-                        if (seg_end > end) end = seg_end;
+                    const char* seg_end;
+                    if (plausibleSegmentEnd(at(ph), ph->p_memsz, &seg_end) && seg_end > end) {
+                        end = seg_end;
                     }
                 }
             }
@@ -442,15 +459,46 @@ class ElfParser {
         return _live_image_end;
     }
 
-    // True when [ptr, ptr+len) lies entirely within [_base, liveImageEnd()).
-    // Use this -- not inImage() -- for any pointer computed via at() or
-    // dyn_ptr(): those resolve virtual addresses in live process memory,
-    // not file offsets, so they must be bounds-checked against the ELF's
-    // live virtual footprint instead of the file/mapped-region extent.
+    // End of the single PT_LOAD segment containing `ptr`, or NULL if `ptr`
+    // does not fall within any segment's virtual footprint. Deliberately
+    // stricter than a single [_base, liveImageEnd()) test: that coarse range
+    // spans every LOAD segment's min-to-max extent and so accepts the
+    // PROT_NONE/unmapped gaps between them as if they were in-bounds, even
+    // though nothing guarantees those gap bytes are actually mapped and
+    // readable. Not cached (unlike liveImageEnd()): e_phnum is always small,
+    // so the linear scan is cheap even when called once per relocation entry.
+    const char* liveSegmentEnd(const char* ptr) {
+        if (_base == NULL) {
+            return NULL;
+        }
+        for (int i = 0; i < _header->e_phnum; i++) {
+            ElfProgramHeader* ph = phdrAt(i);
+            if (ph == NULL || ph->p_type != PT_LOAD) {
+                continue;
+            }
+            const char* seg_start = at(ph);
+            const char* seg_end;
+            if (plausibleSegmentEnd(seg_start, ph->p_memsz, &seg_end)
+                    && ptr >= seg_start && ptr <= seg_end) {
+                return seg_end;
+            }
+        }
+        return NULL;
+    }
+
+    // True when [ptr, ptr+len) lies entirely within a single PT_LOAD
+    // segment's virtual footprint. Use this -- not inImage() -- for any
+    // pointer computed via at() or dyn_ptr(): those resolve virtual
+    // addresses in live process memory, not file offsets, so they must be
+    // bounds-checked against the ELF's live virtual footprint instead of
+    // the file/mapped-region extent. Per-segment (via liveSegmentEnd()),
+    // not against the coarser [_base, liveImageEnd()) span, so a read that
+    // starts in one segment can't be "validated" by straddling into the gap
+    // before the next one.
     bool inLiveImage(const void* ptr, size_t len) {
         const char* p = (const char*)ptr;
-        const char* end = liveImageEnd();
-        return _base != NULL && p >= _base && p <= end && len <= (size_t)(end - p);
+        const char* end = liveSegmentEnd(p);
+        return end != NULL && len <= (size_t)(end - p);
     }
 
     // Section header at `index`, or NULL when the index or entry is out of bounds.
@@ -786,26 +834,48 @@ void ElfParser::parseDynamicSection() {
             strsz = 1u << 20;
         }
 
-        // symtab/strtab/jmprel/rel all resolve through dyn_ptr(), which -- like
-        // DT_HASH above -- is not routed through inLiveImage(). symtab is only
-        // ever accessed below at symtab + ELF_R_SYM(r->r_info) * syment, an
-        // index taken from the relocation entry itself -- not bounded by
-        // nsyms -- so each access is validated individually at its use site
-        // instead (resolveSymbol()); nsyms only matters for
-        // loadSymbolTable()'s sequential full-table walk, checked separately
-        // just below.
-        if (!inLiveImage(strtab, 0) || !inLiveImage(symtab, 0)) {
-            return;
-        }
+        // symtab/strtab/jmprel/rel all resolve through dyn_ptr(), which
+        // already validated each pointer's start against inLiveImage()
+        // before returning it (or nullptr, ruled out by the NULL check
+        // above) -- no separate re-check of that is needed here. What
+        // dyn_ptr() cannot know is how far past that start each pointer is
+        // safe to read: symtab is only ever accessed below at
+        // symtab + ELF_R_SYM(r->r_info) * syment, an index taken from the
+        // relocation entry itself -- not bounded by nsyms -- so each access
+        // is validated individually at its use site instead
+        // (resolveSymbol()); nsyms only matters for loadSymbolTable()'s
+        // sequential full-table walk, checked separately just below.
+        // strtab's usable length (as opposed to its already-validated start)
+        // is clamped next, via strtab_seg_end.
         // strsz can be a corrupted DT_STRSZ value, or the 1 MB fallback above,
         // neither of which is validated against the live image -- clamp it to
         // what's actually left after strtab so strAt()'s memchr scan (used by
-        // every symbol-name lookup below) can never run past the live image
-        // into unmapped memory, regardless of what strsz claims. This also
-        // fixes the previous over-strict version of this check, which
+        // every symbol-name lookup below) can never run past strtab's own
+        // segment into unmapped memory, regardless of what strsz claims. This
+        // also fixes the previous over-strict version of this check, which
         // required the whole (possibly 1 MB fallback) range to already lie in
         // the live image and so rejected small, otherwise-valid libraries.
-        size_t strtab_room = (size_t)(liveImageEnd() - strtab);
+        // Room is bounded by strtab's own segment (liveSegmentEnd()), not the
+        // coarser liveImageEnd(): the latter spans every LOAD segment and
+        // would let the memchr scan wander into an unmapped gap past
+        // strtab's segment while still reporting "in bounds". dyn_ptr()
+        // already established strtab lies in some segment before returning
+        // it non-NULL (checked above), so this cannot return NULL here.
+        const char* strtab_seg_end = liveSegmentEnd(strtab);
+        size_t strtab_room = strtab_seg_end != NULL ? (size_t)(strtab_seg_end - strtab) : 0;
+        if (strtab_room == 0) {
+            // strtab resolved at (or past) the very end of its own live
+            // segment: strAt() rejects every offset once size == 0, so every
+            // symbol-name lookup below (loadSymbolTable() and both
+            // relocation loops) would silently return NULL, dropping the
+            // whole dynamic symbol/import set with no diagnostic. Unlike the
+            // DT_STRSZ-absent case above, there is no size to guess here --
+            // bail out loudly instead of continuing to do work that can only
+            // ever fail.
+            Log::warn("DT_STRTAB leaves no room for a string table in %s; skipping dynamic symbols/imports",
+                      _file_name != NULL ? _file_name : "unknown");
+            return;
+        }
         if (strsz > strtab_room) {
             strsz = strtab_room;
         }
@@ -881,7 +951,7 @@ void ElfParser::parseDwarfInfo() {
         // at() resolves a virtual address, not a file offset, so -- like every
         // other at()/dyn_ptr() result in this file -- it must be validated
         // against the live image before use; at() itself performs no such
-        // check. (Mirrors the eh_frame_hdr validation via liveImageEnd() below.)
+        // check. (Mirrors the eh_frame_hdr validation via inLiveImage() below.)
         if (!inLiveImage(section_base, sframe_phdr->p_filesz)) {
             Log::warn("SFrame section out of bounds in %s; falling back to DWARF", _cc->name());
         } else {
@@ -906,14 +976,24 @@ void ElfParser::parseDwarfInfo() {
     ElfProgramHeader* eh_frame_hdr = findProgramHeader(PT_GNU_EH_FRAME);
     if (eh_frame_hdr != NULL) {
         if (eh_frame_hdr->p_vaddr != 0) {
-            // Parse per-PC frame descriptions and detect per-library default frame layout.
-            // On aarch64 this distinguishes GCC (LINKED_FRAME_SIZE=0) from clang
-            // (LINKED_FRAME_CLANG_SIZE=16) conventions for each shared library.
-            // liveImageEnd() is the highest end address of all LOAD segments, so
-            // the DWARF parser can validate FDE pointers against mapped memory.
-            DwarfParser dwarf(_cc->name(), _base, at(eh_frame_hdr), eh_frame_hdr->p_memsz,
-                              DwarfParser::EhFrameHdrTag{}, liveImageEnd());
-            _cc->setDwarfTable(dwarf.table(), dwarf.count(), dwarf.detectedDefaultFrame());
+            const char* section_base = at(eh_frame_hdr);
+            // at() resolves a virtual address, not a file offset, so -- like the
+            // SFrame section base above -- it must be validated against the live
+            // image before use. liveImageEnd() below only bounds the FDE pointers
+            // the parser walks into .eh_frame once it starts reading; it is not a
+            // substitute for checking section_base itself, which -- unlike
+            // sframe_phdr->p_filesz above -- has no matching lower-bound check
+            // inside DwarfParser::parse() (it only compares against image_end).
+            if (!inLiveImage(section_base, eh_frame_hdr->p_memsz)) {
+                Log::warn("eh_frame_hdr out of bounds in %s; no unwind info available", _cc->name());
+            } else {
+                // Parse per-PC frame descriptions and detect per-library default frame layout.
+                // On aarch64 this distinguishes GCC (LINKED_FRAME_SIZE=0) from clang
+                // (LINKED_FRAME_CLANG_SIZE=16) conventions for each shared library.
+                DwarfParser dwarf(_cc->name(), _base, section_base, eh_frame_hdr->p_memsz,
+                                  DwarfParser::EhFrameHdrTag{}, liveImageEnd());
+                _cc->setDwarfTable(dwarf.table(), dwarf.count(), dwarf.detectedDefaultFrame());
+            }
         } else if (strcmp(_cc->name(), "[vdso]") == 0) {
             FrameDesc* table = (FrameDesc*)malloc(sizeof(FrameDesc));
             *table = FrameDesc::empty_frame;
