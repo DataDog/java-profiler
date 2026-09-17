@@ -185,8 +185,6 @@ public:
         t->_static_anchor_fifo.clear();
         t->_static_anchor_fifo_set.clear();
         t->_static_anchor_fifo_klass_counts.clear();
-        t->_static_anchor_fifo_pushed = 0;
-        t->_static_anchor_fifo_quota_drops = 0;
         t->_static_anchor_fresh_queue.clear();
         t->_last_pass_gc_finish_epoch = 0;
         t->_last_pass_ns = 0;
@@ -696,21 +694,6 @@ public:
     static bool staticAnchorFifoContainsForTest(jlong tag) {
         return ReferenceChainTracker::instance()
             ->_static_anchor_fifo_set.contains(tag);
-    }
-
-    static u64 staticAnchorFifoPushedForTest() {
-        return ReferenceChainTracker::instance()->_static_anchor_fifo_pushed;
-    }
-
-    static u64 staticAnchorFifoQuotaDropsForTest() {
-        return ReferenceChainTracker::instance()
-            ->_static_anchor_fifo_quota_drops;
-    }
-
-    static u64 selfEdgeGuardSkipsForTest() {
-        return ReferenceChainTracker::instance()
-            ->frontierTable()
-            ->selfEdgeGuardSkips();
     }
 
     static void walkStaticAnchorFifoForTest(jvmtiEnv *jvmti, JNIEnv *jni,
@@ -6305,7 +6288,6 @@ TEST_F(ReferenceChainsBfsTest, DemotionPushFiresWhenImproveChainEvictsRootAttach
     EXPECT_EQ(1u, entry.depth);
     ASSERT_EQ(1u, ReferenceChainsTestAccessor::staticAnchorFifoSizeForTest());
     EXPECT_TRUE(ReferenceChainsTestAccessor::staticAnchorFifoContainsForTest(105));
-    EXPECT_EQ(1u, ReferenceChainsTestAccessor::staticAnchorFifoPushedForTest());
 
     // Re-walking the same edge must NOT push twice: improveChain refuses
     // (new depth 1 is not > current 1), and the set dedupes regardless.
@@ -6314,7 +6296,6 @@ TEST_F(ReferenceChainsBfsTest, DemotionPushFiresWhenImproveChainEvictsRootAttach
     ReferenceChainsTestAccessor::expandFrontierForTest(&mock_jvmti, &mock_jni,
                                                         &edges2);
     EXPECT_EQ(1u, ReferenceChainsTestAccessor::staticAnchorFifoSizeForTest());
-    EXPECT_EQ(1u, ReferenceChainsTestAccessor::staticAnchorFifoPushedForTest());
 
     tracker->stop();
 }
@@ -6333,12 +6314,21 @@ TEST_F(ReferenceChainsBfsTest, SweepPushFiresOnStaticEdgeOntoChainAttachedHolder
 
     int classNode = addNode();
     int holderNode = addNode();
+    // A child reachable ONLY from the holder: nothing in the scripted
+    // graph walks holderNode except the FIFO-drained anchor walk, so the
+    // child's admission after runPass is the end-to-end evidence that the
+    // sweep pushed the holder, the rotation phase drained it, and
+    // walkStaticFieldAnchors walked it.
+    int holderChildNode = addNode();
     addClass((void *)&node_tags[classNode], "Lcom/rc/statics/ChainBornHolder;");
 
     script = {
-        // Only the sweep's static edge: nothing else reaches holderNode, so
-        // the only possible push is the static-edge-onto-chain-attached site.
+        // Only the sweep's static edge onto the holder, plus the holder's
+        // own child edge for the anchor walk to admit: nothing else reaches
+        // holderNode or holderChildNode, so the only possible push is the
+        // static-edge-onto-chain-attached site.
         {JVMTI_HEAP_REFERENCE_STATIC_FIELD, classNode, holderNode, -1},
+        {JVMTI_HEAP_REFERENCE_FIELD, holderNode, holderChildNode, -1},
     };
 
     // Seed the born-chain-attached shape the eviction leaves: holder already
@@ -6347,6 +6337,9 @@ TEST_F(ReferenceChainsBfsTest, SweepPushFiresOnStaticEdgeOntoChainAttachedHolder
     // refusal and must fall into the B' push instead.
     FrontierTable *frontier = tracker->frontierTable();
     node_tags[holderNode] = 105;
+    // The child is untagged (0): the anchor walk's admission assigns it a
+    // fresh frontier tag, observable via node_tags after the pass.
+    ASSERT_EQ(0, node_tags[holderChildNode]);
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, 105, 104, 1, FrontierEntryState::FRONTIER, 0));
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
@@ -6356,17 +6349,27 @@ TEST_F(ReferenceChainsBfsTest, SweepPushFiresOnStaticEdgeOntoChainAttachedHolder
     bool truncated = true;
     ASSERT_TRUE(tracker->runPass(&mock_jvmti, &mock_jni, &truncated));
 
-    EXPECT_EQ(1u, ReferenceChainsTestAccessor::staticAnchorFifoPushedForTest())
-        << "static sweep edge onto the chain-attached holder never fed "
-           "the at-risk anchor FIFO";
     // The rotation phase of the same pass drained the pushed tag into the
-    // anchor walk (the holder has no scripted subtree - the walk is a no-op,
-    // which is what makes the drained-empty assertion attributable to the
-    // drain rather than to a walk).
+    // anchor walk, and the walk admitted the holder's child - the push
+    // itself left no residue in the FIFO (drained empty) and never
+    // re-attributed the holder's entry (re-rooting is the documented
+    // refusal that motivated the FIFO in the first place). The child's
+    // admission is observed via tags_ever_assigned rather than node_tags:
+    // the frontier drained empty and the search COMPLETED in this same
+    // pass, so releaseSearchTags() has already cleared every live JVMTI
+    // tag (including the child's and the holder's) by the time runPass
+    // returns - the frontier table's own records survive that, the tag
+    // map does not.
     EXPECT_EQ(0u, ReferenceChainsTestAccessor::staticAnchorFifoSizeForTest());
+    jlong childTag = tags_ever_assigned[holderChildNode];
+    ASSERT_GT(childTag, 0) << "the FIFO-drained anchor walk never admitted "
+                             "the holder's child";
+    FrontierEntry childEntry{};
+    ASSERT_TRUE(frontier->lookup(childTag, &childEntry));
+    EXPECT_EQ(105, childEntry.parent_tag);
+    EXPECT_EQ(2u, childEntry.depth);
     // The holder's entry is untouched by the push - the B' feed records the
-    // at-risk shape, it never re-attributes the entry (re-rooting is the
-    // documented refusal that motivated the FIFO in the first place).
+    // at-risk shape, it never re-attributes the entry.
     FrontierEntry entry{};
     ASSERT_TRUE(frontier->lookup(105, &entry));
     EXPECT_EQ(104, entry.parent_tag);
@@ -6602,37 +6605,25 @@ TEST_F(ReferenceChainsBfsTest,
 
     // A delivered self-edge trips BOTH sibling guards: improveChain refuses,
     // and the already-admitted block's else-if then offers the same
-    // self-parent to reparentToDurableRoot, which refuses and counts too.
-    // Two refusals per delivered edge is the designed accounting (the pod
-    // counter will climb 2 per wrapper walk).
-    u64 skips_before =
-        ReferenceChainsTestAccessor::selfEdgeGuardSkipsForTest();
+    // self-parent to reparentToDurableRoot, which refuses too.
     int edges = 0;
     ReferenceChainsTestAccessor::expandFrontierForTest(&mock_jvmti, &mock_jni,
                                                         &edges);
 
     // The self-edge was delivered and refused: the entry keeps its
-    // root-attached shape (the collector's parent_tag == 0 eligibility),
-    // no demotion push fired, and the guard counted the refusal.
+    // root-attached shape (the collector's parent_tag == 0 eligibility)
+    // and no demotion push fired.
     FrontierEntry entry{};
     ASSERT_TRUE(frontier->lookup(105, &entry));
     EXPECT_EQ(0, entry.parent_tag);
     EXPECT_EQ((u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD, entry.root_kind);
     EXPECT_EQ(0u, entry.depth);
     EXPECT_EQ(0u, ReferenceChainsTestAccessor::staticAnchorFifoSizeForTest());
-    EXPECT_EQ(2u,
-              ReferenceChainsTestAccessor::selfEdgeGuardSkipsForTest() -
-                  skips_before);
 
     // The sibling guards and the direct table calls agree: a self-parent is
-    // refused by both improvement paths, unconditionally, and every
-    // refusal is counted (the callback's two refusals above are the first
-    // and second).
+    // refused by both improvement paths, unconditionally.
     EXPECT_FALSE(frontier->improveChain(105, 105, 0, 5, 0, -1, 0, 0));
     EXPECT_FALSE(frontier->reparentToDurableRoot(105, 105, 0, -1, 0));
-    EXPECT_EQ(4u,
-              ReferenceChainsTestAccessor::selfEdgeGuardSkipsForTest() -
-                  skips_before);
 
     tracker->stop();
 }
@@ -6657,15 +6648,6 @@ TEST_F(ReferenceChainsBfsTest, AtRiskFifoPerClassQuotaKeepsFloodOut) {
     const u32 quota =
         ReferenceChainsTestAccessor::kAtRiskPerKlassCap;
     ASSERT_EQ(64u, quota);
-    // The push/quota-drop counters are CUMULATIVE across the tracker's
-    // lifetime (start() does not reset them - only the full
-    // search-restart reset does), so every assertion below is a DELTA
-    // from this baseline: order-immune to whatever the tests that ran
-    // before this one left behind (the round-15 singleton-state lesson).
-    const u64 pushed0 =
-        ReferenceChainsTestAccessor::staticAnchorFifoPushedForTest();
-    const u64 drops0 =
-        ReferenceChainsTestAccessor::staticAnchorFifoQuotaDropsForTest();
 
     // The flood: only the first `quota` pushes of one class land.
     for (int i = 0; i < 70; i++) {
@@ -6673,11 +6655,12 @@ TEST_F(ReferenceChainsBfsTest, AtRiskFifoPerClassQuotaKeepsFloodOut) {
                                                                  1733);
     }
     EXPECT_EQ(quota, ReferenceChainsTestAccessor::staticAnchorFifoSizeForTest());
-    EXPECT_EQ(quota, ReferenceChainsTestAccessor::staticAnchorFifoPushedForTest() -
-                         pushed0);
-    EXPECT_EQ(70u - quota,
-              ReferenceChainsTestAccessor::staticAnchorFifoQuotaDropsForTest() -
-                  drops0);
+    // The flood's first `quota` tags hold their slots and the excess is
+    // dropped at the quota check - absent from the FIFO, not queued.
+    EXPECT_TRUE(ReferenceChainsTestAccessor::staticAnchorFifoContainsForTest(
+        1000 + (int)quota - 1));
+    EXPECT_FALSE(ReferenceChainsTestAccessor::staticAnchorFifoContainsForTest(
+        1000 + (int)quota));
 
     // The wrapper's push (a different class) lands despite the flood -
     // exactly the push the pod dropped.
@@ -6687,14 +6670,10 @@ TEST_F(ReferenceChainsBfsTest, AtRiskFifoPerClassQuotaKeepsFloodOut) {
     EXPECT_TRUE(
         ReferenceChainsTestAccessor::staticAnchorFifoContainsForTest(2000));
 
-    // Tag dedupe is unchanged: the same tag never enters twice (and the
-    // duplicate is not counted as a quota drop, nor as a push).
+    // Tag dedupe is unchanged: the same tag never enters twice.
     ReferenceChainsTestAccessor::pushStaticAnchorFifoForTest(2000, 28366);
     EXPECT_EQ(quota + 1,
               ReferenceChainsTestAccessor::staticAnchorFifoSizeForTest());
-    EXPECT_EQ(quota + 1,
-              ReferenceChainsTestAccessor::staticAnchorFifoPushedForTest() -
-                  pushed0);
 
     // Full drain: order preserved (flood first, newcomer last), occupancy
     // erased with the entries - the next flood can land again (it never
@@ -6714,9 +6693,6 @@ TEST_F(ReferenceChainsBfsTest, AtRiskFifoPerClassQuotaKeepsFloodOut) {
                                                                  1733);
     }
     EXPECT_EQ(quota, ReferenceChainsTestAccessor::staticAnchorFifoSizeForTest());
-    EXPECT_EQ(2u * quota + 1,
-              ReferenceChainsTestAccessor::staticAnchorFifoPushedForTest() -
-                  pushed0);
 
     // Partial drain at the real per-pass rate (16/pass): the flood's
     // occupancy is 64 - 16 = 48 after the drain, so its next push lands
@@ -6764,9 +6740,9 @@ TEST_F(ReferenceChainsBfsTest, AtRiskFifoPerClassQuotaKeepsFloodOut) {
     }
     EXPECT_EQ(1024u,
               ReferenceChainsTestAccessor::staticAnchorFifoSizeForTest());
-    EXPECT_EQ(0u,
-              ReferenceChainsTestAccessor::staticAnchorFifoQuotaDropsForTest() -
-                  drops0 - (70u - quota) * 2);
+    // The 16 saturated classes sit exactly at their per-class quota (no
+    // quota drop is even possible at exactly `quota` pushes), so the
+    // newcomer's absence below is the CAP's doing, not the quota's.
     ReferenceChainsTestAccessor::pushStaticAnchorFifoForTest(20000, 28366);
     EXPECT_EQ(1024u,
               ReferenceChainsTestAccessor::staticAnchorFifoSizeForTest());

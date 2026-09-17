@@ -391,19 +391,6 @@ private:
   int _table_max_cap;
   FrontierEntry *_table;
 
-  // Cumulative improveChain()/reparentToDurableRoot() refusals of a
-  // parent==tag SELF-EDGE (see improveChain's own guard). A single
-  // callback-delivered self-edge trips BOTH sibling guards (improveChain
-  // refuses, then the already-admitted block's else-if offers the same
-  // self-parent to reparentToDurableRoot), so the count climbs 2 per
-  // delivered edge - on the hotdog pod, the LEAK_BUFFER wrapper's own
-  // rotation walk delivers its mutex == this edge every pass, so the
-  // counter climbing is the verification that the guard fires on the real
-  // wrapper. Relaxed-atomic: the heap-callback writers and the engine
-  // thread's per-pass log reader only need a monotonic tally, not
-  // synchronization.
-  std::atomic<u64> _self_edge_guard_skips{0};
-
   // Grows _table (doubling) until it holds at least `required_cap` slots or
   // _table_max_cap is reached. Must be called with _table_lock held
   // exclusively. Returns false (capacity exhausted) without partially
@@ -420,11 +407,6 @@ public:
 
   FrontierTable(const FrontierTable &) = delete;
   FrontierTable &operator=(const FrontierTable &) = delete;
-
-  // Cumulative self-edge guard refusals (see _self_edge_guard_skips).
-  u64 selfEdgeGuardSkips() const {
-    return _self_edge_guard_skips.load(std::memory_order_relaxed);
-  }
 
   // Writes (parent_tag, referrer_klass, depth, state) into the slot for
   // `tag` (index = tag - 1), growing the table if needed. Returns false
@@ -1532,11 +1514,6 @@ private:
   PriorityExpandSet _static_anchor_fifo_set;
   static constexpr size_t STATIC_ANCHOR_FIFO_CAP = PRIORITY_EXPAND_CAP;
 
-  // Cumulative at-risk pushes, for the per-pass TEST_LOG line (round-10
-  // verification: sizes the at-risk population the design's drain-rate
-  // argument was inferred, not measured, from).
-  u64 _static_anchor_fifo_pushed = 0;
-
   // Round 16 (pod round-15 measurement, ev-leaktag-onpod-round15-results):
   // the B' repair was DEAD on the pod - the FIFO sat cap-pinned at 1024
   // because three classes flooded it (klass 1: 1396 pushes, klass 215:
@@ -1555,11 +1532,6 @@ private:
   // contents (<= 1024 distinct classes), not by the search lifetime.
   std::unordered_map<u32, u32> _static_anchor_fifo_klass_counts;
   static constexpr u32 STATIC_ANCHOR_ATRISK_PER_KLASS_CAP = 64;
-  // Cumulative quota drops (class at cap), for the per-pass TEST_LOG
-  // line: on the pod this should climb steadily with the flood classes'
-  // pushes while the wrapper's pushes stop dropping (the round-16
-  // verification channel, alongside fifo_size dropping below 1024).
-  u64 _static_anchor_fifo_quota_drops = 0;
 
   // Index of root-attached STATIC_FIELD/JNI_GLOBAL frontier entries,
   // so collectStaticFieldAnchorsForRotation() iterates O(anchors) instead
@@ -2765,8 +2737,7 @@ private:
                          jlong anchor_tag, u32 anchor_depth,
                          jlong anchor_descend_class_tag, int budget,
                          int *edges_admitted, bool *truncated,
-                         bool *frontier_cap_hit, u64 *safepoint_ticks,
-                         bool diag_trace = false);
+                         bool *frontier_cap_hit, u64 *safepoint_ticks);
 
   // Prong 1 of the candidate-scoped reach design (thread-retained taxonomy:
   // ThreadLocal-held caches and thread-owned collections): per pass, walk

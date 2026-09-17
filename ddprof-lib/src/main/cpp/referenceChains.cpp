@@ -347,11 +347,8 @@ bool FrontierTable::improveChain(jlong tag, jlong parent_tag,
   // root_kind=0 referrer_klass=<its own class> - collector-invisible
   // (the parent_tag==0 eligibility filter) and never re-walked, because
   // improveChain(depth=holder.depth+1) "improved" the entry with itself.
-  // A self-parent would also dead-loop reconstructChain(). Refuse, and
-  // count the refusal (selfEdgeGuardSkips()): the counter climbing on the
-  // pod is the verification that the guard fires on the real wrapper.
+  // A self-parent would also dead-loop reconstructChain(). Refuse.
   if (parent_tag == tag) {
-    _self_edge_guard_skips.fetch_add(1, std::memory_order_relaxed);
     return false;
   }
   int idx = (int)(tag - 1);
@@ -388,9 +385,6 @@ bool FrontierTable::reparentToDurableRoot(jlong tag, jlong new_parent_tag,
   // self-parent a this-field (mutex == this) would deliver.
   if (tag <= 0 || tag - 1 > (jlong)INT_MAX || new_parent_tag <= 0 ||
       new_parent_tag - 1 > (jlong)INT_MAX || new_parent_tag == tag) {
-    if (new_parent_tag == tag) {
-      _self_edge_guard_skips.fetch_add(1, std::memory_order_relaxed);
-    }
     return false;
   }
   int idx = (int)(tag - 1);
@@ -1438,8 +1432,6 @@ void ReferenceChainTracker::resetSearchStateForTest(jvmtiEnv *jvmti,
   _static_anchor_fifo.clear();
   _static_anchor_fifo_set.clear();
   _static_anchor_fifo_klass_counts.clear();
-  _static_anchor_fifo_quota_drops = 0;
-  _static_anchor_fifo_pushed = 0;
   _static_anchor_index.clear();
   _static_anchor_own_class_tags.clear();
   _static_anchor_index_tags.clear();
@@ -1840,14 +1832,6 @@ struct PassContext {
   // re-discovered subtree, not just the immediate child, skips the backlog.
   bool admit_priority = false;
 
-  // TEMP DIAGNOSTIC (see doc/temp/ investigation notes): per-jvmtiHeapReference
-  // Kind callback tally for admitStaticFieldRoots()'s current chunk, to find
-  // which reference kind actually drives per-chunk callback volume (e.g.
-  // static fields vs. constant-pool entries vs. interfaces). Null everywhere
-  // else - only admitStaticFieldRoots() sets this to a non-null, zeroed,
-  // stack-local array sized for the full jvmtiHeapReferenceKind range.
-  int *kind_counts = nullptr;
-
   // DESCEND-WALK controls (descendFromAnchor()'s calls only; null/0
   // everywhere else, so every gate below is a no-op for the ordinary
   // walk phases):
@@ -1877,24 +1861,6 @@ struct PassContext {
   int _no_descend_class_tag_count = 0;
   jlong _descent_anchor_tag = 0;
   jlong _anchor_descend_class_tag = 0;
-
-  // TEMP DIAGNOSTIC (pod round 12 - wrapper walked but never intercepted):
-  // when _diag_trace is set (only descendFromAnchor() sets it, and only for
-  // an anchor whose class is Collections$UnmodifiableRandomAccessList -
-  // the LEAK_BUFFER wrapper shape), heapReferenceCallback()'s admission and
-  // already-tagged-encounter sites record (klass_id, how-seen) pairs for the
-  // first DIAG_MAX_ENTRIES entries, so one walk's actual traversal is
-  // observable: does the wrapper -> list -> elementData -> [B chunk chain
-  // get enumerated AT ALL, and did the enumerated chunks carry leak tags at
-  // that moment. _diag_leak_flags: 0 = fresh admission, 1 = admission via
-  // leak-tag conversion (an interception - never observed for the wrapper
-  // so far), 2 = already-frontier-tagged re-encounter. TEMP: overfit to the
-  // round-12 wrapper question - remove once the pod answers it.
-  static constexpr int DIAG_MAX_ENTRIES = 48;
-  bool _diag_trace = false;
-  int _diag_count = 0;
-  u32 _diag_klass_ids[DIAG_MAX_ENTRIES];
-  u8 _diag_leak_flags[DIAG_MAX_ENTRIES];
 };
 } // namespace
 
@@ -1904,15 +1870,6 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
     jlong referrer_class_tag, jlong size, jlong *tag_ptr,
     jlong *referrer_tag_ptr, jint length, void *user_data) {
   PassContext *ctx = (PassContext *)user_data;
-
-  // TEMP DIAGNOSTIC (see doc/temp/ investigation notes): tally every callback
-  // by kind before any early-return below, so an aborted/truncated chunk
-  // still reports what it actually saw. kind_counts is only non-null for
-  // admitStaticFieldRoots()'s call - zero overhead elsewhere.
-  if (ctx->kind_counts != nullptr && (int)reference_kind >= 0 &&
-      (int)reference_kind < 32) {
-    ctx->kind_counts[(int)reference_kind]++;
-  }
 
   if (ctx->tracker->_abort_pass_requested.load(std::memory_order_relaxed)) {
     // stopThread() has set this right before pthread_kill()/pthread_join() -
@@ -2170,13 +2127,6 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
                "parent_tag=%lld",
                (long long)leak_tag, (long long)frontier_tag, depth,
                (long long)parent_tag);
-      if (ctx->_diag_trace &&
-          ctx->_diag_count < PassContext::DIAG_MAX_ENTRIES) {
-        ctx->_diag_klass_ids[ctx->_diag_count] =
-            ctx->tracker->classTags()->resolve(class_tag);
-        ctx->_diag_leak_flags[ctx->_diag_count] = 1;
-        ctx->_diag_count++;
-      }
       ctx->tracker->trackLeakAccumulation(ctx->frontier, class_tag,
                                              parent_tag, frontier_tag);
       // Index maintenance: a leak-tagged object admitted root-attached by
@@ -2265,27 +2215,6 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
       // *tag_ptr == 0 rules out ALREADY_ADMITTED) - nothing further to do.
       break;
     }
-    if (ctx->_diag_trace &&
-        ctx->_diag_count < PassContext::DIAG_MAX_ENTRIES &&
-        result == ReferenceChainTracker::AdmitResult::ADMITTED) {
-      ctx->_diag_klass_ids[ctx->_diag_count] = referrer_klass;
-      ctx->_diag_leak_flags[ctx->_diag_count] = 0;
-      ctx->_diag_count++;
-    }
-    // TEMP DIAGNOSTIC (pod round 12): log every root-attached
-    // STATIC_FIELD admission so we can see which classes are admitted
-    // as static-field holders by the sweep. The LEAK_BUFFER wrapper
-    // (SynchronizedRandomAccessList) must appear here if the sweep
-    // processes ProfileAnalyzer's class. Remove once the wrapper
-    // question is answered.
-    if (result == ReferenceChainTracker::AdmitResult::ADMITTED &&
-        parent_tag == 0 &&
-        root_kind == (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD) {
-      TEST_LOG("ReferenceChainTracker::heapReferenceCallback "
-               "root-attached STATIC_FIELD admit klass_id=%u "
-               "frontier_tag=%lld depth=%u",
-               referrer_klass, (long long)*tag_ptr, depth);
-    }
     // Index maintenance: track root-attached durable anchors for O(anchors)
     // collector iteration instead of O(frontier_size) table scan. class_tag
     // is the anchor object's OWN class tag (the callback's class_tag param
@@ -2341,31 +2270,6 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
       }
     }
   } else if (*tag_ptr > 0) {
-    if (ctx->_diag_trace &&
-        ctx->_diag_count < PassContext::DIAG_MAX_ENTRIES) {
-      ctx->_diag_klass_ids[ctx->_diag_count] =
-          ctx->tracker->classTags()->resolve(class_tag);
-      ctx->_diag_leak_flags[ctx->_diag_count] = 2;
-      ctx->_diag_count++;
-    }
-    // TEMP DIAGNOSTIC (pod round 12): log every STATIC_FIELD edge
-    // from the sweep that hits an already-admitted entry, with the
-    // entry's current shape (parent_tag, root_kind, state). This shows
-    // whether the LEAK_BUFFER wrapper (SynchronizedRandomAccessList)
-    // is ever reached by the sweep and what its frontier entry looks
-    // like. Remove once the wrapper question is answered.
-    if (ctx->static_field_seed &&
-        reference_kind == JVMTI_HEAP_REFERENCE_STATIC_FIELD) {
-      FrontierEntry e{};
-      bool found = ctx->frontier->lookup(*tag_ptr, &e);
-      TEST_LOG("ReferenceChainTracker::sweep STATIC_FIELD "
-               "already-admitted klass_id=%u tag=%lld "
-               "parent=%lld root_kind=%u state=%u found=%d",
-               ctx->tracker->classTags()->resolve(class_tag),
-               (long long)*tag_ptr, (long long)(found ? e.parent_tag : 0),
-               (unsigned)(found ? e.root_kind : 0),
-               (unsigned)(found ? e.state : 0), (int)found);
-    }
     // Already-tagged object reached via a new edge. This arm - NOT the
     // first-admission block above - is where an already-admitted entry's
     // shape can be corrected: improveChain/reparentToDurableRoot for a
@@ -2694,13 +2598,6 @@ bool ReferenceChainTracker::maybeUpgradeRootAttachedRootKind(
     return false;
   }
   frontier->updateRootKind(tag, new_root_kind);
-  // TEMP DIAGNOSTIC (pod round 12): include klass_id so the LEAK_BUFFER
-  // wrapper (SynchronizedRandomAccessList) can be identified among the
-  // upgraded entries. Remove once the wrapper question is answered.
-  TEST_LOG("ReferenceChainTracker::maybeUpgradeRootAttachedRootKind tag=%lld "
-           "old_root_kind=%d -> new_root_kind=%d klass_id=%u",
-           (long long)tag, (int)entry.root_kind, (int)new_root_kind,
-           entry.referrer_klass);
   addToStaticAnchorIndex(tag, entry.class_tag, new_root_kind);
   return true;
 }
@@ -3414,11 +3311,10 @@ void ReferenceChainTracker::descendFromAnchor(
     jvmtiEnv *jvmti, JNIEnv *jni, jobject anchor, jlong anchor_tag,
     u32 anchor_depth, jlong anchor_descend_class_tag, int budget,
     int *edges_admitted, bool *truncated, bool *frontier_cap_hit,
-    u64 *safepoint_ticks, bool diag_trace) {
+    u64 *safepoint_ticks) {
   PassContext ctx;
   ctx.tracker = this;
   ctx.frontier = _frontier;
-  ctx._diag_trace = diag_trace;
   // Bound admission to DESCENT_HOPS below the anchor, still subject to the
   // global hop cap. Caveat (accepted, bounded): a pre-existing frontier
   // entry reachable inside the subgraph carries its GLOBAL depth (from
@@ -3447,22 +3343,6 @@ void ReferenceChainTracker::descendFromAnchor(
   u64 follow_start_ticks = TSC::ticks();
   jvmti->FollowReferences(0, nullptr, anchor, &callbacks, &ctx);
   *safepoint_ticks += TSC::ticks() - follow_start_ticks;
-  if (diag_trace) {
-    // TEMP DIAGNOSTIC (pod round 12, PassContext::_diag_trace's own
-    // comment): dump this walk's admission/re-encounter sequence - the
-    // wrapper-walk question is exactly "was list/elementData enumerated,
-    // and did any leak-class ([B) entry carry a leak tag".
-    for (int i = 0; i < ctx._diag_count; i++) {
-      TEST_LOG("ReferenceChainTracker::descendFromAnchor diag anchor=%lld "
-               "entry=%d klass_id=%u seen_as=%u",
-               (long long)anchor_tag, i, ctx._diag_klass_ids[i],
-               (unsigned)ctx._diag_leak_flags[i]);
-    }
-    TEST_LOG("ReferenceChainTracker::descendFromAnchor diag anchor=%lld "
-             "recorded=%d edges=%d truncated=%d",
-             (long long)anchor_tag, ctx._diag_count, ctx.edges_admitted,
-             (int)ctx.truncated);
-  }
   *edges_admitted += ctx.edges_admitted;
   *truncated = *truncated || ctx.truncated;
   *frontier_cap_hit = *frontier_cap_hit || ctx.frontier_cap_hit;
@@ -3635,24 +3515,6 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
       fresh_room--;
     }
   });
-  // TEMP DIAGNOSTIC (pod round 14/15): the cohort histogram - the
-  // measured sizes of the tiers against the per-pass budget. This is
-  // the arithmetic gate for the container tier (a container cohort much
-  // larger than ~4k cannot be covered within a ~44-75-pass search
-  // lifetime and the frontier-cap conversation becomes the next lever)
-  // and for the fresh lane (fresh > budget means the lane runs as a
-  // backlog - the leak holder then waits fresh/budget passes, still
-  // bounded, but the number belongs in the next analysis). Remove once
-  // the pod verifies the arithmetic.
-  if (!leak_picks.empty() || !fresh_picks.empty() ||
-      !container_picks.empty() || !other_picks.empty()) {
-    TEST_LOG_SUMMARY("ReferenceChainTracker::anchorTierHistogram "
-             "index=%zu leak_tier=%zu fresh_tier=%zu fresh_queue=%zu "
-             "container_tier=%zu other_tier=%zu budget=%d",
-             idx_size, leak_picks.size(), fresh_picks.size(),
-             fresh_queue_len, container_picks.size(), other_picks.size(),
-             max_count);
-  }
   // Cursor-fair consumption of one tier: scan picks (sorted by pos by
   // construction) starting at entries with pos >= cursor, stop at `want`
   // OR at the lap end (NO within-call wrap: re-walking anchors this same
@@ -3733,7 +3595,6 @@ void ReferenceChainTracker::pushAtRiskStaticAnchor(jlong tag, u32 klass_id) {
     // the feed's next event (the next static edge / next demotion), so
     // nothing is lost - the entry just cannot crowd out every other
     // class's repair.
-    _static_anchor_fifo_quota_drops++;
     return;
   }
   if (count_it == _static_anchor_fifo_klass_counts.end()) {
@@ -3742,16 +3603,6 @@ void ReferenceChainTracker::pushAtRiskStaticAnchor(jlong tag, u32 klass_id) {
   count_it->second++;
   _static_anchor_fifo.push_back(AtRiskAnchor{tag, klass_id});
   _static_anchor_fifo_set.insert(tag);
-  _static_anchor_fifo_pushed++;
-  // TEMP DIAGNOSTIC (pod round 12/16): track which classes enter the
-  // at-risk FIFO and the cumulative quota drops (round 16: the drops
-  // should be the flood classes' pushes, while fifo_size stays well
-  // under the 1024 cap so the LEAK_BUFFER wrapper's pushes land). Remove
-  // once the wrapper question is answered.
-  TEST_LOG("ReferenceChainTracker::pushAtRiskStaticAnchor tag=%lld "
-           "klass_id=%u fifo_size=%zu quota_drops=%llu",
-           (long long)tag, klass_id, _static_anchor_fifo.size(),
-           (unsigned long long)_static_anchor_fifo_quota_drops);
 }
 
 void ReferenceChainTracker::addToStaticAnchorIndex(jlong tag,
@@ -3963,20 +3814,6 @@ void ReferenceChainTracker::reconcileAnchorClassShapes(jvmtiEnv *jvmti,
                                  ? AnchorClassShape::CONTAINER
                                  : AnchorClassShape::NON_CONTAINER;
     _class_shape_cache[class_tag] = (u8)shape;
-    // TEMP DIAGNOSTIC (pod round 14): name newly classified container
-    // classes so the cohort is identifiable in logs. Remove once the
-    // pod verifies the arithmetic.
-    if (shape == AnchorClassShape::CONTAINER) {
-      char *sig = nullptr;
-      if (jvmti->GetClassSignature(klass, &sig, nullptr) ==
-              JVMTI_ERROR_NONE &&
-          sig != nullptr) {
-        TEST_LOG("ReferenceChainTracker::reconcileAnchorClassShapes "
-                 "container class %s (class_tag=%lld)",
-                 sig, (long long)class_tag);
-        jvmti->Deallocate((unsigned char *)sig);
-      }
-    }
   }
   jvmti->Deallocate((unsigned char *)objs);
   jvmti->Deallocate((unsigned char *)obj_tags);
@@ -4060,71 +3897,6 @@ void ReferenceChainTracker::walkStaticFieldAnchors(
       jni->DeleteLocalRef(objects[i]);
       continue;
     }
-    // TEMP DIAGNOSTIC (pod round 8: interception still zero over 16-hop
-    // walks of every selected anchor): name WHICH
-    // anchor objects are actually being walked, with their recorded chain
-    // shape, so a holder that never makes it into this tier (wrong
-    // root_kind / chain-attached / never-admitted) is distinguishable from
-    // one that gets walked without reaching the tagged chunks.
-    bool wrapper_trace = false;
-    {
-      char *sig = nullptr;
-      if (jni->GetObjectClass(objects[i]) != nullptr) {
-        jvmti->GetClassSignature(jni->GetObjectClass(objects[i]), &sig,
-                                 nullptr);
-      }
-      TEST_LOG("ReferenceChainTracker::walkStaticFieldAnchors anchor "
-               "tag=%lld class=%s klass_id=%u parent=%lld root_kind=%u state=%u "
-               "field_index=%d",
-               (long long)resolved_tags[i], sig != nullptr ? sig : "<unresolved>",
-               entry.referrer_klass,
-               (long long)entry.parent_tag, (unsigned)entry.root_kind,
-               (unsigned)entry.state, (int)entry.referrer_field_index);
-      // TEMP DIAGNOSTIC (pod round 12): the LEAK_BUFFER wrapper shape is a
-      // Collections.synchronizedList value held by a static field. The
-      // wrapper gets walked (observed rounds 10-11) yet never intercepts,
-      // so for wrapper-class anchors additionally name the HOLDER class
-      // (the class owning the admitting static field - resolves the
-      // "which synchronized list is this" question) and trace the walk's
-      // admission sequence (descendFromAnchor's diag_trace). TEMP: remove
-      // once the pod answers the wrapper question.
-      wrapper_trace =
-          sig != nullptr &&
-          (strstr(sig, "UnmodifiableRandomAccessList") != nullptr ||
-           strstr(sig, "SynchronizedRandomAccessList") != nullptr ||
-           strstr(sig, "SynchronizedList") != nullptr);
-      if (wrapper_trace && entry.referrer_class_tag < 0) {
-        jlong holder_tag = entry.referrer_class_tag;
-        jint holder_count = 0;
-        jobject *holder_objs = nullptr;
-        jlong *holder_tags = nullptr;
-        if (jvmti->GetObjectsWithTags(1, &holder_tag, &holder_count,
-                                      &holder_objs, &holder_tags) ==
-                JVMTI_ERROR_NONE &&
-            holder_count > 0) {
-          char *holder_sig = nullptr;
-          jvmti->GetClassSignature((jclass)holder_objs[0], &holder_sig,
-                                   nullptr);
-          TEST_LOG("ReferenceChainTracker::walkStaticFieldAnchors wrapper "
-                   "anchor tag=%lld holder_class=%s field_index=%d",
-                   (long long)resolved_tags[i],
-                   holder_sig != nullptr ? holder_sig : "<unresolved>",
-                   (int)entry.referrer_field_index);
-          if (holder_sig != nullptr) {
-            jvmti->Deallocate((unsigned char *)holder_sig);
-          }
-        }
-        if (holder_objs != nullptr) {
-          jvmti->Deallocate((unsigned char *)holder_objs);
-        }
-        if (holder_tags != nullptr) {
-          jvmti->Deallocate((unsigned char *)holder_tags);
-        }
-      }
-      if (sig != nullptr) {
-        jvmti->Deallocate((unsigned char *)sig);
-      }
-    }
     int remaining = budget - *edges_admitted;
     if (remaining <= 0) {
       jni->DeleteLocalRef(objects[i]);
@@ -4134,8 +3906,7 @@ void ReferenceChainTracker::walkStaticFieldAnchors(
     int edges_before = *edges_admitted;
     descendFromAnchor(jvmti, jni, objects[i], resolved_tags[i], entry.depth,
                       /*anchor_descend_class_tag=*/0, remaining, edges_admitted,
-                      truncated, frontier_cap_hit, safepoint_ticks,
-                      wrapper_trace);
+                      truncated, frontier_cap_hit, safepoint_ticks);
     TEST_LOG("ReferenceChainTracker::walkStaticFieldAnchors anchor walk "
              "outcome tag=%lld edges=%d truncated=%d cap_hit=%d",
              (long long)resolved_tags[i], *edges_admitted - edges_before,
@@ -4604,20 +4375,6 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
                           &static_field_cycle_complete, safepoint_ticks);
     expand_phase_edges_admitted += static_field_edges_admitted;
     *edges_admitted += static_field_edges_admitted;
-    // TEMP DIAGNOSTIC (see doc/temp/ investigation notes): split out how much
-    // of this pass's budget/deadline the static-field sweep's current chunk
-    // alone consumed, and whether that chunk completed / the lap wrapped -
-    // to distinguish "a chunk never finishes within the per-pass deadline"
-    // from "chunks finish but rotation/expansion still can't find the
-    // target".
-    TEST_LOG_SUMMARY("ReferenceChainTracker::runPassManualWalk static_field_phase "
-             "edges_admitted=%d truncated=%d frontier_cap_hit=%d "
-             "cycle_complete=%d sweep_cursor=%d "
-             "last_resolved_class_count=%d last_static_field_class_count=%d",
-             static_field_edges_admitted, (int)static_field_truncated,
-             (int)static_field_frontier_cap_hit, (int)static_field_cycle_complete,
-             _static_field_sweep_cursor, _last_resolved_class_count,
-             _last_static_field_class_count);
     if (static_field_truncated) {
       *truncated = true;
       *frontier_cap_hit = static_field_frontier_cap_hit;
@@ -4725,35 +4482,10 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   std::vector<jlong> static_anchor_tags =
       collectStaticFieldAnchorsForRotation(STATIC_ANCHOR_ROTATION_BUDGET);
   std::vector<AtRiskAnchor> static_anchor_fifo_drained;
-  int static_anchor_fifo_drained_count =
-      drainStaticAnchorFifo(STATIC_ANCHOR_FIFO_DRAIN, static_anchor_fifo_drained);
+  drainStaticAnchorFifo(STATIC_ANCHOR_FIFO_DRAIN, static_anchor_fifo_drained);
   for (const AtRiskAnchor &at_risk : static_anchor_fifo_drained) {
     static_anchor_tags.push_back(at_risk.tag);
   }
-  // TEMP DIAGNOSTIC (see static_field_phase log above). The fifo fields are
-  // the round-10 verification channel for B': fifo_pushed_total sizes the
-  // at-risk population (the design's drain-rate argument was inferred, not
-  // measured). Round 16: fifo_quota_drops_total is the flood-classes' dropped
-  // pushes (should climb steadily on the pod while fifo_size stays far
-  // below the 1024 cap, so the wrapper's pushes land), and self_edge_skips
-  // is FrontierTable's self-edge guard count (should climb every pass that
-  // walks a Synchronized* holder - the LEAK_BUFFER wrapper's mutex==this
-  // edge proving the guard fires on the real object).
-  TEST_LOG_SUMMARY("ReferenceChainTracker::runPassManualWalk rotation_candidates "
-           "root_kind_tags=%zu leak_accumulation_tags=%zu stale_expanded_tags=%zu "
-           "static_anchor_tags=%zu static_anchor_fifo_size=%zu "
-           "static_anchor_fifo_drained=%d static_anchor_fifo_pushed_total=%llu "
-           "static_anchor_fifo_quota_drops_total=%llu "
-           "self_edge_skips=%llu watched_leak_klass_count=%d "
-           "leak_signatures=%zu leak_parents=%zu",
-           rotation_tags.size(), leak_accumulation_tags.size(),
-           stale_expanded_tags.size(), static_anchor_tags.size(),
-           _static_anchor_fifo.size(), static_anchor_fifo_drained_count,
-           (unsigned long long)_static_anchor_fifo_pushed,
-           (unsigned long long)_static_anchor_fifo_quota_drops,
-           (unsigned long long)_frontier->selfEdgeGuardSkips(),
-           _watched_leak_klass_count,
-           _leak_signature_totals.size(), _leak_parent_fanout.size());
   if (rotation_tags.empty() && leak_accumulation_tags.empty() &&
       stale_expanded_tags.empty() && static_anchor_tags.empty()) {
     return;
@@ -4839,12 +4571,6 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
                  &rotation_frontier_cap_hit, safepoint_ticks);
   rotation_edges_admitted += queue_tier_edges_admitted;
   *edges_admitted += rotation_edges_admitted;
-  // TEMP DIAGNOSTIC (see static_field_phase log above).
-  TEST_LOG_SUMMARY("ReferenceChainTracker::runPassManualWalk rotation_phase "
-           "edges_admitted=%d truncated=%d frontier_cap_hit=%d "
-           "rotation_budget=%d",
-           rotation_edges_admitted, (int)rotation_truncated,
-           (int)rotation_frontier_cap_hit, rotation_budget);
   // OR, not overwrite: the ordinary expand phase above may have already set
   // these to true (real truncation/cap-hit left in _pending_expand), and a
   // rotation batch that happens to finish cleanly must not erase that -
@@ -5054,16 +4780,6 @@ void ReferenceChainTracker::expandFrontier(jvmtiEnv *jvmti, JNIEnv *jni,
       ctx.truncated = true;
       break;
     }
-
-    // TEMP DIAGNOSTIC: verify adaptive batch_size is working
-    TEST_LOG("ReferenceChainTracker::expandFrontier gotw "
-             "batch_size=%zu resolved=%d edges=%d gotw_ms=%llu ema_call_ms=%llu "
-             "next_batch=%llu",
-             batch_size, resolved_count, ctx.edges_admitted,
-             (unsigned long long)(gotw_elapsed_ns / 1000000ULL),
-             (unsigned long long)(_gotw_ema_call_ns / 1000000ULL),
-             (unsigned long long)(_gotw_batch_size != 0 ? _gotw_batch_size
-                                                       : GOTW_INITIAL_BATCH_SIZE));
 
     std::unordered_map<jlong, jobject> live;
     for (jint i = 0; i < resolved_count; i++) {
@@ -5359,70 +5075,6 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
     }
   }
 
-  // TEMP DIAGNOSTIC (pod round 13): ground-truth probe for the
-  // LEAK_BUFFER wrapper. Every deduction path (root-attached admit ->
-  // index -> collector walk; chain-attached -> at-risk FIFO walk;
-  // already-admitted re-hit -> upgrade or push) should end in a walk
-  // log with class=...SynchronizedRandomAccessList, yet none is ever
-  // observed. This probe bypasses the sweep callback entirely: it reads
-  // ProfileAnalyzer.LEAK_BUFFER directly via JNI and reports the
-  // wrapper's CURRENT tag and frontier entry shape each time the class
-  // passes through a chunk. Runs BEFORE the sweep's FollowReferences for
-  // this chunk, so the first lap shows tag=0 (pre-admission) and later
-  // laps show the steady-state entry. Remove once the wrapper question
-  // is answered.
-  for (jint i = chunk_start; i < chunk_end; i++) {
-    char *probe_sig = nullptr;
-    if (jvmti->GetClassSignature(classes[i], &probe_sig, nullptr) !=
-        JVMTI_ERROR_NONE) {
-      continue;
-    }
-    if (probe_sig == nullptr ||
-        strstr(probe_sig, "ProfileAnalyzer") == nullptr) {
-      if (probe_sig != nullptr) {
-        jvmti->Deallocate((unsigned char *)probe_sig);
-      }
-      continue;
-    }
-    TEST_LOG("ReferenceChainTracker::admitStaticFieldRoots LEAK_BUFFER "
-             "probe: sweeping holder class %s at index %d",
-             probe_sig, (int)i);
-    jvmti->Deallocate((unsigned char *)probe_sig);
-    jfieldID leak_fid =
-        jni->GetStaticFieldID(classes[i], "LEAK_BUFFER", "Ljava/util/List;");
-    if (jniExceptionCheck(jni) || leak_fid == nullptr) {
-      jni->ExceptionClear();
-      TEST_LOG("ReferenceChainTracker::admitStaticFieldRoots LEAK_BUFFER "
-               "probe: GetStaticFieldID failed");
-      continue;
-    }
-    jobject probe_wrapper = jni->GetStaticObjectField(classes[i], leak_fid);
-    if (jniExceptionCheck(jni) || probe_wrapper == nullptr) {
-      jni->ExceptionClear();
-      TEST_LOG("ReferenceChainTracker::admitStaticFieldRoots LEAK_BUFFER "
-               "probe: static value null/exception");
-      continue;
-    }
-    jlong probe_tag = 0;
-    jvmti->GetTag(probe_wrapper, &probe_tag);
-    FrontierEntry probe_entry{};
-    bool probe_found =
-        probe_tag > 0 ? _frontier->lookup(probe_tag, &probe_entry) : false;
-    TEST_LOG("ReferenceChainTracker::admitStaticFieldRoots LEAK_BUFFER "
-             "probe wrapper_tag=%lld frontier_found=%d parent=%lld "
-             "root_kind=%u state=%u leak_tag=%lld depth=%u "
-             "referrer_klass=%u",
-             (long long)probe_tag, (int)probe_found,
-             (long long)(probe_found ? probe_entry.parent_tag : 0),
-             (unsigned)(probe_found ? probe_entry.root_kind : 0),
-             (unsigned)(probe_found ? probe_entry.state : 0),
-             (long long)(probe_found ? probe_entry.leak_tag : 0),
-             (unsigned)(probe_found ? probe_entry.depth : 0),
-             probe_found ? probe_entry.referrer_klass : 0);
-    jni->DeleteLocalRef(probe_wrapper);
-    break; // one holder class per chunk is enough
-  }
-
   // GetLoadedClasses() returned a local ref for every class regardless of
   // chunk selection - free all of them here, not just the chunk.
   for (jint i = 0; i < class_count; i++) {
@@ -5463,11 +5115,6 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
   // class. 32 covers a typical class's full constant-pool/interface set;
   // outlier classes are bounded so they cannot blow the chunk's deadline.
   ctx._class_other_cap = STATIC_FIELD_SWEEP_NON_STATIC_CAP_PER_CLASS;
-  // TEMP DIAGNOSTIC (see doc/temp/ investigation notes): see PassContext::
-  // kind_counts's own comment.
-  int kind_counts[32];
-  memset(kind_counts, 0, sizeof(kind_counts));
-  ctx.kind_counts = kind_counts;
 
   jvmtiHeapCallbacks callbacks;
   memset(&callbacks, 0, sizeof(callbacks));
@@ -5477,15 +5124,6 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
       jvmti->FollowReferences(0, nullptr, holder, &callbacks, &ctx);
   *safepoint_ticks += TSC::ticks() - follow_start_ticks;
   jni->DeleteLocalRef(holder);
-  // TEMP DIAGNOSTIC (see doc/temp/ investigation notes): kind indices per
-  // jvmti.h's jvmtiHeapReferenceKind - 1=CLASS 2=FIELD 3=ARRAY_ELEMENT
-  // 4=CLASS_LOADER 5=SIGNERS 6=PROTECTION_DOMAIN 7=INTERFACE 8=STATIC_FIELD
-  // 9=CONSTANT_POOL 10=SUPERCLASS (21-27 are root kinds, not expected here).
-  TEST_LOG("ReferenceChainTracker::admitStaticFieldRoots kind_counts "
-           "k1=%d k2=%d k3=%d k4=%d k5=%d k6=%d k7=%d k8=%d k9=%d k10=%d",
-           kind_counts[1], kind_counts[2], kind_counts[3], kind_counts[4],
-           kind_counts[5], kind_counts[6], kind_counts[7], kind_counts[8],
-           kind_counts[9], kind_counts[10]);
   if (follow_err != JVMTI_ERROR_NONE) {
     return;
   }
