@@ -395,6 +395,15 @@ bool VM::initLibrary(JavaVM *vm) {
   return true;
 }
 
+// jvmtiEventCallbacks has a single function-pointer slot per event; both
+// LivenessTracker and ReferenceChainTracker need GarbageCollectionFinish
+// (PROF-15341), so this trampoline dispatches to both instead of one
+// subsystem's registration clobbering the other's.
+static void JNICALL onGarbageCollectionFinish(jvmtiEnv *jvmti_env) {
+  LivenessTracker::GarbageCollectionFinish(jvmti_env);
+  ReferenceChainTracker::GarbageCollectionFinish(jvmti_env);
+}
+
 void VM::probeJFRRequestStackTrace() {
   jint ext_count = 0;
   jvmtiExtensionFunctionInfo *ext_functions = nullptr;
@@ -443,17 +452,6 @@ bool VM::initializeRequestStackTrace() {
   __atomic_store_n(&_request_stack_trace, (jvmtiExtensionFunction)nullptr, __ATOMIC_RELEASE);
   Counters::increment(JVMTI_STACKS_INIT_FAILED);
   return false;
-}
-
-// JVMTI delivers ONE callback per event slot; both trackers need the
-// GarbageCollectionFinish signal (liveness GC epochs + reference-chain pass
-// scheduling), so this vmEntry-level forwarder fans the single slot out to
-// both static callbacks. Order is irrelevant (each only does lock-free
-// bookkeeping); LivenessTracker's callback keeps its own
-// initCurrentThreadSignalSafe() behavior.
-void JNICALL ForwardedGarbageCollectionFinish(jvmtiEnv *jvmti_env) {
-  LivenessTracker::GarbageCollectionFinish(jvmti_env);
-  ReferenceChainTracker::GarbageCollectionFinish(jvmti_env);
 }
 
 bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
@@ -531,7 +529,7 @@ bool VM::initProfilerBridge(JavaVM *vm, bool attach) {
   callbacks.ThreadEnd = Profiler::ThreadEnd;
   callbacks.SampledObjectAlloc = ObjectSampler::SampledObjectAlloc;
   callbacks.GarbageCollectionStart = ReferenceChainTracker::GarbageCollectionStart;
-  callbacks.GarbageCollectionFinish = ForwardedGarbageCollectionFinish;
+  callbacks.GarbageCollectionFinish = onGarbageCollectionFinish;
   callbacks.NativeMethodBind = VMStructs::NativeMethodBind;
   _jvmti->SetEventCallbacks(&callbacks, sizeof(callbacks));
 
