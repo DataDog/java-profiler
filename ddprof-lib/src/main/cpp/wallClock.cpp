@@ -24,7 +24,6 @@
 #include <cerrno>
 #include <string.h>
 #include <math.h>
-#include <random>
 #include <algorithm> // For std::sort and std::binary_search
 
 std::atomic<bool> BaseWallClock::_enabled{false};
