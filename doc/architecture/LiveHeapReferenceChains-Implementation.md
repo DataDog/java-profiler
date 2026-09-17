@@ -47,9 +47,10 @@ flowchart TD
 ```
 
 Every pass is driven by the manual walk (`runPassManualWalk()`): pure JVMTI
-heap calls, which run inside the `VM_HeapWalkOperation` safepoint and honor
-ZGC's load barriers — the walk reads no raw oop, so concurrent relocation
-cannot corrupt it. The phases below run in this order, each with its own
+heap calls, which run inside the `VM_HeapWalkOperation` safepoint. The walk
+reads no raw oop — JVMTI's iterators apply the active collector's own
+barriers, so the walk is correct on every collector, including ZGC, where
+concurrent relocation would corrupt a raw-oop reader. The phases below run in this order, each with its own
 deadline slice (the per-sub-operation deadline is reset, so an earlier phase
 cannot eat a later phase's slice):
 

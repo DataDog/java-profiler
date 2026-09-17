@@ -5661,10 +5661,12 @@ bool ReferenceChainTracker::runPass(jvmtiEnv *jvmti, JNIEnv *jni,
 
   // Every pass is driven by the manual walk (runPassManualWalk() -
   // IterateOverReachableObjects for roots, then a batched array-holder
-  // FollowReferences per BFS level in expandFrontier()), on every collector
-  // including ZGC. The walk issues only JVMTI heap calls, which run inside
-  // the VM_HeapWalkOperation safepoint and honor ZGC's load barriers, so
-  // concurrent relocation cannot corrupt it - it reads no raw oop. Batching
+  // FollowReferences per BFS level in expandFrontier()), on every
+  // collector. The walk issues only JVMTI heap calls, which run inside the
+  // VM_HeapWalkOperation safepoint; JVMTI's iterators apply the active
+  // collector's own barriers, so the walk is correct on every collector -
+  // including ZGC, where concurrent relocation would corrupt a raw-oop
+  // reader. It reads no raw oop. Batching
   // one hop per level keeps each FollowReferences bounded, avoiding the
   // multi-hundred-ms-to-second STW pauses a whole-graph FollowReferences
   // would impose.
