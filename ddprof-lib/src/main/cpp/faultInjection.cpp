@@ -20,9 +20,17 @@
 
 #include <stdint.h>
 void crashNow() {
+#if defined(__clang_analyzer__)
+  // The null-pointer store below is the deliberate, never-returning crash,
+  // but clang scan-build flags writing through a null pointer. Model the
+  // stop with a trap instead - the analyzer treats __builtin_trap() as a
+  // halt, so no false path past the crash is explored.
+  __builtin_trap();
+#else
   volatile uintptr_t* p = (volatile uintptr_t*)nullptr;
   *p = 0xBAD;
   __builtin_unreachable();  // the store above never returns.
+#endif
 }
 #endif
 
