@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk11
 
 ## musl-x64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-09-17 16:51:57 EDT
+**Date:** 2026-09-17 16:53:47 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 494 |
-| Sample Rate | 8.23/sec |
-| Health Score | 514% |
+| CPU Samples | 519 |
+| Sample Rate | 8.65/sec |
+| Health Score | 541% |
 | Threads | 8 |
-| Allocations | 390 |
+| Allocations | 369 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 699 |
-| Sample Rate | 11.65/sec |
-| Health Score | 728% |
-| Threads | 10 |
-| Allocations | 525 |
+| CPU Samples | 740 |
+| Sample Rate | 12.33/sec |
+| Health Score | 771% |
+| Threads | 9 |
+| Allocations | 489 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 28-64 cores)</summary>
+<summary>CPU Timeline (1 unique values: 28-28 cores)</summary>
 
 ```
-1789677960 28
-1789677965 28
-1789677970 64
-1789677975 64
-1789677980 64
-1789677985 64
-1789677990 64
-1789677995 64
-1789678000 28
-1789678005 28
-1789678010 28
-1789678015 28
-1789678020 28
-1789678025 28
-1789678030 28
-1789678035 28
-1789678040 28
-1789678045 28
-1789678050 28
-1789678055 28
+1789677805 28
+1789677810 28
+1789677815 28
+1789677820 28
+1789677825 28
+1789677830 28
+1789677835 28
+1789677840 28
+1789677845 28
+1789677850 28
+1789677855 28
+1789677860 28
+1789677865 28
+1789677870 28
+1789677875 28
+1789677880 28
+1789677885 28
+1789677890 28
+1789677895 28
+1789677901 28
 ```
 </details>
 
