@@ -167,7 +167,18 @@ The test matrix in \`${RESULTS_DIR}\` is empty. This usually means a setup step
 :construction_worker: [Pipeline](${CI_PIPELINE_URL:-}) · :package: \`${DDPROF_SHA:0:8}\`"
 else
   # Some failures or unknowns - show full matrix
-  COMMENT_BODY="${STATUS_EMOJI} **${TOTAL_PASS}** passed, **${TOTAL_FAIL}** failed out of **${TOTAL}** configurations
+  # Count against the expected matrix, not against the results that turned up:
+  # TOTAL is pass+fail, so a 40-cell matrix with one timed-out job would read
+  # "39 passed, 0 failed out of 39" while the pipeline failed and the section
+  # below explained the missing cell. The incomplete clause is omitted when
+  # there is nothing to report so the ordinary failure case stays terse.
+  HEADLINE="${STATUS_EMOJI} **${TOTAL_PASS}** passed, **${TOTAL_FAIL}** failed"
+  if [ "${TOTAL_INCOMPLETE}" -gt 0 ]; then
+    HEADLINE="${HEADLINE}, **${TOTAL_INCOMPLETE}** without a result"
+  fi
+  HEADLINE="${HEADLINE} out of **${EXPECTED}** expected configurations"
+
+  COMMENT_BODY="${HEADLINE}
 
 ### Test Matrix
 
@@ -226,8 +237,14 @@ fi
 # Post comment via dd-octo-sts (upsert-github-pr-comment.sh handles missing
 # branch/PR/token gracefully, so a comment-posting problem never masks the
 # actual test outcome below).
-BODY_FILE=$(mktemp)
-trap 'rm -f "${BODY_FILE}"' EXIT
+# COMMENT_BODY_FILE lets a caller keep the rendered body instead of a temp file
+# it never sees; the unit tests assert on it.
+if [ -n "${COMMENT_BODY_FILE:-}" ]; then
+  BODY_FILE="${COMMENT_BODY_FILE}"
+else
+  BODY_FILE=$(mktemp)
+  trap 'rm -f "${BODY_FILE}"' EXIT
+fi
 echo "${COMMENT_BODY}" > "${BODY_FILE}"
 if ! "${HERE}/../scripts/upsert-github-pr-comment.sh" \
     "dd-trace-integration-results" "${DDPROF_COMMIT_BRANCH:-}" "${BODY_FILE}"; then
