@@ -1374,10 +1374,18 @@ double LivenessTracker::secondsToOOM() const {
     return -1;
   }
   RingThirdsStats time_stats;
-  ringThirdsStats(
-      head, fill, KLASS_POPULATION_RING_SIZE, KLASS_POPULATION_MIN_FILL_FOR_TREND,
-      [this](int i) { return (double)load(_heap_floor_time_ring[i]); },
-      &time_stats);
+  // Same head/fill/min-fill gate as the byte call above, so this cannot
+  // actually fail once have_byte_stats passed - but the analyzer cannot
+  // prove that equivalence across the two readers, and reading time_stats
+  // uninitialized on the (impossible) failure path is exactly the
+  // "garbage or undefined" finding. Check the result.
+  if (!ringThirdsStats(
+          head, fill, KLASS_POPULATION_RING_SIZE,
+          KLASS_POPULATION_MIN_FILL_FOR_TREND,
+          [this](int i) { return (double)load(_heap_floor_time_ring[i]); },
+          &time_stats)) {
+    return -1;
+  }
 
   double bytes_delta = byte_stats.recent_mean - byte_stats.earliest_mean;
   double time_delta_ns = time_stats.recent_mean - time_stats.earliest_mean;
