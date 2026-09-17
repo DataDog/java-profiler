@@ -48,14 +48,18 @@
 static const char *const SETTING_RING[] = {NULL, "kernel", "user", "any"};
 static const char *const SETTING_CSTACK[] = {NULL, "no", "fp", "dwarf", "lbr"};
 
-// JVM spec SS4.7.3 caps a method's bytecode (code_length) at 65535 bytes (u2),
-// so a well-formed LineNumberTable can never have more entries than that.
-// Used to sanity-bound line_number_table_size before it drives the byte-count
-// passed to SafeAccess::safeCopy(): if GetLineNumberTable()
-// returns a corrupted pointer for a stale jmethodID (see the TOCTOU race
-// documented in fillJavaMethodInfo below), the paired out-param size is just
-// as likely to be corrupted, and an implausible size should be rejected
-// before it is trusted to compute a byte range.
+// JVM spec SS4.7.3 caps a method's bytecode (code_length) at 65535 bytes (u2).
+// A LineNumberTable entry maps a bytecode offset to a source line, so a
+// well-formed table can have at most one entry per bytecode offset -- the
+// 65535 bound here is inherited indirectly through that one-entry-per-offset
+// invariant, not a direct spec cap on entry count (the numeric equivalence
+// with code_length's own u2 cap is coincidental). Used to sanity-bound
+// line_number_table_size before it drives the byte-count passed to
+// SafeAccess::safeCopy(): if GetLineNumberTable() returns a corrupted
+// pointer for a stale jmethodID (see the TOCTOU race documented in
+// fillJavaMethodInfo below), the paired out-param size is just as likely to
+// be corrupted, and an implausible size should be rejected before it is
+// trusted to compute a byte range.
 static const jint MAX_LINE_NUMBER_TABLE_ENTRIES = 65535;
 
 // Compute a non-negative event duration from TSC timestamps.  Unsigned u64
