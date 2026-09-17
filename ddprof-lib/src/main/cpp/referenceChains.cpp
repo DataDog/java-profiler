@@ -3674,8 +3674,10 @@ ReferenceChainTracker::collectStaticFieldAnchorsForRotation(int max_count) {
   }
   budget_left -= consume_tier_fair(container_picks, _anchor_container_cursor,
                                     budget_left);
-  budget_left -= consume_tier_fair(other_picks, _anchor_other_cursor,
-                                    budget_left);
+  // The other tier is the last consumer of the budget - its leftover has no
+  // further reader, so don't accumulate it back into budget_left (a dead
+  // store clang scan-build flags).
+  consume_tier_fair(other_picks, _anchor_other_cursor, budget_left);
   return selected;
 }
 
@@ -6079,10 +6081,11 @@ bool ReferenceChainTracker::buildCanaryChainEvent(int candidate_idx,
   out->_target_tag = (u64)frontier_tag;
   out->_depth = _candidate_depths[candidate_idx];
   out->_root_kind = root_kind;
+  const size_t chain_size = chain.size();
   out->_chain = std::move(chain);
   TEST_LOG_SUMMARY("ReferenceChainTracker::buildCanaryChainEvent candidate=%d "
                    "parent_tag=%lld chain_size=%zu",
-                   candidate_idx, (long long)parent_tag, chain.size());
+                   candidate_idx, (long long)parent_tag, chain_size);
   return true;
 }
 
