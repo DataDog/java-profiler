@@ -5,7 +5,7 @@ title: glibc-x64-openj9-jdk25
 
 ## glibc-x64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-09-17 17:31:57 EDT
+**Date:** 2026-09-17 17:33:13 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 372 |
-| Sample Rate | 6.20/sec |
-| Health Score | 388% |
+| CPU Samples | 485 |
+| Sample Rate | 8.08/sec |
+| Health Score | 505% |
 | Threads | 8 |
-| Allocations | 389 |
+| Allocations | 346 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 573 |
-| Sample Rate | 9.55/sec |
-| Health Score | 597% |
+| CPU Samples | 656 |
+| Sample Rate | 10.93/sec |
+| Health Score | 683% |
 | Threads | 9 |
-| Allocations | 478 |
+| Allocations | 455 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 32-32 cores)</summary>
 
 ```
-1789680314 32
-1789680319 32
-1789680324 32
-1789680329 32
-1789680334 32
-1789680339 32
-1789680344 32
-1789680349 32
-1789680354 32
-1789680359 32
-1789680364 32
-1789680369 32
-1789680374 32
-1789680379 32
-1789680384 32
-1789680389 32
-1789680394 32
-1789680399 32
-1789680404 32
-1789680409 32
+1789680203 32
+1789680208 32
+1789680213 32
+1789680218 32
+1789680223 32
+1789680228 32
+1789680233 32
+1789680238 32
+1789680243 32
+1789680248 32
+1789680253 32
+1789680258 32
+1789680263 32
+1789680268 32
+1789680273 32
+1789680278 32
+1789680283 32
+1789680288 32
+1789680293 32
+1789680298 32
 ```
 </details>
 
