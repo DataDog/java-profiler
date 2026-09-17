@@ -41,10 +41,10 @@ class StackFrame {
     // are not null-safe); restore() delegates to StackFrame::restore() above,
     // which already is.
     //
-    // Must be restored via an explicit restore() call, never a destructor:
+    // Must be restored via an explicit restore() call on recovery path.
     // Profiler::checkFault()'s siglongjmp bypasses destructors, so RAII alone
     // can't reach code here -- the same reason JmpCtxScope::restore() must be
-    // called explicitly (see guards.h).
+    // called explicitly on recovery path (see guards.h).
     class RegisterSnapshot {
       public:
         explicit RegisterSnapshot(void* ucontext) : _ucontext(ucontext) {

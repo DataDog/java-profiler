@@ -1182,7 +1182,7 @@ int HotspotSupport::getJavaTraceAsync(void *ucontext, ASGCT_CallFrame *frames,
       // Make it walkable here.
       // sp comes straight from the anchor with no validation; fault-inject it
       // so the unguarded dereference below exercises the sigsetjmp/siglongjmp
-      // recovery path installed by the caller (walkJavaStack) instead of only
+      // recovery path installed by the caller (withUcontextFaultRecovery) instead of only
       // ever running against a known-good sp.
       pc = *(const void**)INJECT_FAULT_ADDRESS_UNLIKELY((const void**)sp - 1);
       ctx_snapshot.saveJavaAnchor(anchor, NULL);

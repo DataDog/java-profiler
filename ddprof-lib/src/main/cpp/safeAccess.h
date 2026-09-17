@@ -97,13 +97,13 @@ public:
   /**
    * Safely writes a 32-bit value to the given address.
    *
-   * <p>CRITICAL: This function MUST NOT be inlined. See safeFetch32 for why --
+   * CRITICAL: This function MUST NOT be inlined. See safeFetch32 for why --
    * the same handle_safefetch fault-redirect relies on the store happening at
    * this function's own stable address.
    *
-   * @param ptr Address to write to (may be invalid)
-   * @param value Value to store at ptr
-   * @return true if the store succeeded, false if the write faulted
+   * ptr: Address to write to (may be invalid)
+   * value: Value to store at ptr
+   * return true if the store succeeded, false if the write faulted
    */
   NOINLINE __attribute__((aligned(16)))
   static bool store32(int32_t* ptr, int32_t value);
