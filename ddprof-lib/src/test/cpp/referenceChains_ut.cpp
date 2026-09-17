@@ -2275,6 +2275,26 @@ TEST_F(ReferenceChainsBfsTest, DiscoversObjectRetainedOnlyByStaticField) {
     EXPECT_EQ(0, entry.parent_tag); // root-attached, not a child hop
     EXPECT_EQ((u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD, entry.root_kind);
 
+    // buildChainEvent() appends the root TYPE (the declaring class) as the
+    // chain's root-side end: the frontier path's terminal element is the
+    // static field's holder instance, one hop below the root type. The
+    // declaring class is resolved from the root-attached entry's
+    // referrer_class_tag (captured from the sweep's referrer_tag_ptr, a
+    // negative class tag).
+    ReferenceChainEvent event;
+    ASSERT_TRUE(tracker->buildChainEvent(&mock_jvmti, &mock_jni, target_tag,
+                                          &event));
+    int expectedHolder = Profiler::instance()->lookupClass(
+        "com/rc/statics/Holder", strlen("com/rc/statics/Holder"));
+    ASSERT_NE(-1, expectedHolder);
+    ASSERT_EQ(2u, event._chain.size());
+    EXPECT_EQ(chain[0], event._chain[0]); // the target's own class, unchanged
+    EXPECT_EQ((u32)expectedHolder, event._chain[1]);
+    // One edge per chain element (recordReferenceChain() drops ALL labels
+    // when the arrays' sizes diverge); the root-type hop's own edge is the
+    // unlabeled root edge (field_index -1).
+    ASSERT_EQ(event._chain.size(), event._edges.size());
+
     tracker->stop();
 }
 
@@ -6858,7 +6878,9 @@ TEST_F(ReferenceChainsBfsTest, HopEdgeLabelsDecodeSpecFieldOrdinals) {
     // Chain: [chunk(3)] <- Base.base_f(ordinal 0 over Base's space) <-
     // [value2(2), class Base] <- Holder.leakList(ordinal 4, the static root
     // edge with the declaring class as referrer) <- [static value(1), class
-    // Holder]. Interior hops decode against the PARENT entry's class_tag.
+    // Holder] <- [class Holder (the ROOT TYPE - buildChainEvent() appends
+    // the root-attached entry's referrer_class_tag for static-field roots)].
+    // Interior hops decode against the PARENT entry's class_tag.
     ASSERT_TRUE(ReferenceChainsTestAccessor::insertFrontierEntry(
         frontier, 1, 0, 0, FrontierEntryState::EDGE,
         JVMTI_HEAP_REFERENCE_STATIC_FIELD,
@@ -6877,16 +6899,22 @@ TEST_F(ReferenceChainsBfsTest, HopEdgeLabelsDecodeSpecFieldOrdinals) {
     ReferenceChainEvent event;
     ASSERT_TRUE(ReferenceChainsTestAccessor::buildChainEventForTest(
         &mock_jvmti, &mock_jni, /*target_tag=*/3, &event));
-    ASSERT_EQ(3u, event._chain.size());
-    ASSERT_EQ(3u, event._edges.size())
+    ASSERT_EQ(4u, event._chain.size());
+    ASSERT_EQ(4u, event._edges.size())
         << "edge labels must align with the chain, one per hop";
     // Leaf first: chunk is retained via Base.base_f (parent entry's class is
     // Base, ordinal 0 in Base's own space), then value2 via Holder's
     // holder_a (ordinal 3 = interface offset 2 + Base's 1 + own position 0),
-    // then the static root edge's field name leakList (ordinal 4).
+    // then the static root edge's field name leakList (ordinal 4), then the
+    // root-type hop (class Holder) - the root edge itself, kind label only.
     EXPECT_EQ("base_f", event._edges[0]);
     EXPECT_EQ("holder_a", event._edges[1]);
     EXPECT_EQ("leakList", event._edges[2]);
+    EXPECT_EQ("static_field", event._edges[3]);
+    int expectedRootType = Profiler::instance()->lookupClass(
+        "com/rc/labels/Holder", strlen("com/rc/labels/Holder"));
+    ASSERT_NE(-1, expectedRootType);
+    EXPECT_EQ((u32)expectedRootType, event._chain[3]);
 
     // Interface-referrer branch: ISink's own-field ordinals have NO
     // superclass-chain component (base = superinterfaces' fields only).
@@ -6899,8 +6927,15 @@ TEST_F(ReferenceChainsBfsTest, HopEdgeLabelsDecodeSpecFieldOrdinals) {
     ReferenceChainEvent iface_event;
     ASSERT_TRUE(ReferenceChainsTestAccessor::buildChainEventForTest(
         &mock_jvmti, &mock_jni, /*target_tag=*/4, &iface_event));
-    ASSERT_EQ(1u, iface_event._edges.size());
+    // Same root-type append as above: the root-side end gains ISink (the
+    // declaring class of the static field) plus its kind-only root edge.
+    ASSERT_EQ(2u, iface_event._edges.size());
     EXPECT_EQ("CONST_B", iface_event._edges[0]);
+    EXPECT_EQ("static_field", iface_event._edges[1]);
+    int expectedSinkRoot = Profiler::instance()->lookupClass(
+        "com/rc/labels/ISink", strlen("com/rc/labels/ISink"));
+    ASSERT_NE(-1, expectedSinkRoot);
+    EXPECT_EQ((u32)expectedSinkRoot, iface_event._chain[1]);
 
     // Fail-safe: a referrer class that cannot be resolved degrades to the
     // edge KIND label, never a fabricated name.
@@ -6913,8 +6948,16 @@ TEST_F(ReferenceChainsBfsTest, HopEdgeLabelsDecodeSpecFieldOrdinals) {
     ReferenceChainEvent degraded_event;
     ASSERT_TRUE(ReferenceChainsTestAccessor::buildChainEventForTest(
         &mock_jvmti, &mock_jni, /*target_tag=*/5, &degraded_event));
-    ASSERT_EQ(1u, degraded_event._edges.size());
+    // Both hops degrade to kind labels: the holder hop's referrer class
+    // (IBase) is deliberately unregistered from the decoder, and the
+    // appended root-type hop (IBase itself) carries no field identity.
+    ASSERT_EQ(2u, degraded_event._edges.size());
     EXPECT_EQ("static_field", degraded_event._edges[0]);
+    EXPECT_EQ("static_field", degraded_event._edges[1]);
+    int expectedIbaseRoot = Profiler::instance()->lookupClass(
+        "com/rc/labels/IBase", strlen("com/rc/labels/IBase"));
+    ASSERT_NE(-1, expectedIbaseRoot);
+    EXPECT_EQ((u32)expectedIbaseRoot, degraded_event._chain[1]);
 
     tracker->stop();
 }

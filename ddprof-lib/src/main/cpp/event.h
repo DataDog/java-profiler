@@ -97,7 +97,12 @@ public:
 // BFS (referenceChains.h/.cpp). `_target_tag` is the FrontierTable tag the
 // chain was reconstructed for (FrontierTable::reconstructChain()); `_chain`
 // holds the referrer-klass StringDictionary ids it returns, in the same
-// leaf(target)-to-root order. `_depth` is the target entry's own
+// leaf(target)-to-root order. For a static-field-rooted chain the root-side
+// end is the static field's holder instance followed by the declaring class
+// (the ROOT TYPE, appended by buildChainEvent() from the root-attached
+// entry's referrer_class_tag) - the chain then reads, root-first, as the
+// root type retaining the holder through its static field, on down to the
+// target. `_depth` is the target entry's own
 // FrontierEntry::depth (hop count from the search's root-side seed).
 // `_root_kind` is the jvmtiHeapReferenceKind of whichever edge first
 // admitted this chain into the frontier (FrontierEntry::root_kind, via

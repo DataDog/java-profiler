@@ -551,9 +551,17 @@ public:
   // first admitted this chain into the frontier, letting a caller label the
   // chain with why it is reachable at all (JNI global, thread stack, static
   // field, ...) instead of just how (the referrer_klass hops in *out_chain).
+  //
+  // `out_terminal` (if non-null) receives the root-attached entry itself -
+  // the chain's root-side end. Callers that need the ROOT TYPE as a chain
+  // element (buildChainEvent() appends the declaring class of a
+  // static-field-rooted chain) read FrontierEntry::referrer_class_tag from
+  // it - this table stores class tags, not StringDictionary ids, so the
+  // resolution stays with the tracker.
   bool reconstructChain(jlong target_tag, std::vector<u32> *out_chain,
                         u8 *out_root_kind = nullptr,
-                        std::vector<ChainHopEdge> *out_edges = nullptr);
+                        std::vector<ChainHopEdge> *out_edges = nullptr,
+                        FrontierEntry *out_terminal = nullptr);
 
   // Search restart (ReferenceChainTracker::restartSearch(), this class's own
   // header comment): marks every slot unoccupied again without releasing
@@ -3302,6 +3310,14 @@ public:
 
   bool buildChainEvent(jvmtiEnv *jvmti, JNIEnv *jni, jlong target_tag,
                        ReferenceChainEvent *out);
+
+  // Appends the root TYPE element (the declaring class, resolved from
+  // FrontierEntry::referrer_class_tag) to a static-field-rooted chain - see
+  // the definition's comment in referenceChains.cpp for the full rationale
+  // and the skip conditions.
+  void appendStaticFieldRootType(const FrontierEntry &terminal,
+                                 std::vector<u32> *chain,
+                                 std::vector<ChainHopEdge> *edges);
 
   // Canary-search chain reconstruction: builds the chain for a canary
   // candidate from the per-candidate chain link recorded at

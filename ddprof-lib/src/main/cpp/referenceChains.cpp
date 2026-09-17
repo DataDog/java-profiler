@@ -453,7 +453,8 @@ bool FrontierTable::reparentToDurableRoot(jlong tag, jlong new_parent_tag,
 bool FrontierTable::reconstructChain(jlong target_tag,
                                       std::vector<u32> *out_chain,
                                       u8 *out_root_kind,
-                                      std::vector<ChainHopEdge> *out_edges) {
+                                      std::vector<ChainHopEdge> *out_edges,
+                                      FrontierEntry *out_terminal) {
   FrontierEntry entry{};
   if (!lookup(target_tag, &entry)) {
     return false;
@@ -541,6 +542,11 @@ bool FrontierTable::reconstructChain(jlong target_tag,
     // whose parent_tag == 0 that just ended the loop), so root_kind here is
     // that entry's own FrontierEntry::root_kind.
     *out_root_kind = root_kind;
+  }
+  if (out_terminal != nullptr) {
+    // `entry` still holds the loop's last successful lookup - the
+    // root-attached entry that ended the walk.
+    *out_terminal = entry;
   }
   return true;
 }
@@ -5919,12 +5925,15 @@ bool ReferenceChainTracker::buildChainEvent(jvmtiEnv *jvmti, JNIEnv *jni,
   std::vector<u32> chain;
   std::vector<ChainHopEdge> edges;
   u8 root_kind = 0;
-  if (!_frontier->reconstructChain(target_tag, &chain, &root_kind, &edges)) {
+  FrontierEntry terminal{};
+  if (!_frontier->reconstructChain(target_tag, &chain, &root_kind, &edges,
+                                   &terminal)) {
     TEST_LOG("ReferenceChainTracker::buildChainEvent false: "
              "reconstructChain failed for target_tag=%lld",
              (long long)target_tag);
     return false;
   }
+  appendStaticFieldRootType(terminal, &chain, &edges);
   TEST_LOG("ReferenceChainTracker::buildChainEvent target_tag=%lld chain_size=%zu "
            "chain[0]=%u depth=%u root_kind=%u leak_tag=%lld",
            (long long)target_tag, chain.size(), chain.empty() ? 0u : chain[0],
@@ -5936,6 +5945,48 @@ bool ReferenceChainTracker::buildChainEvent(jvmtiEnv *jvmti, JNIEnv *jni,
   // Retention-edge labels, aligned with _chain (see fillHopEdgeLabels()).
   fillHopEdgeLabels(jvmti, jni, edges, &out->_edges);
   return true;
+}
+
+// Appends the root TYPE as a chain element for a static-field-rooted chain:
+// the frontier path's root-side end is the static field's HOLDER instance
+// (the object stored in the field), but the chain's root is the DECLARING
+// CLASS - the holder is "the field instance referenced by the root type",
+// one hop below it. Without this element a root-first reading of the chain
+// starts at the holder and the root type is only present as the rootKind
+// event field and the holder hop's edge label. The declaring class's raw
+// class tag is recorded on the root-attached entry at admission time
+// (FrontierEntry::referrer_class_tag, captured from referrer_tag_ptr for
+// root-attached static edges); it is resolved to a StringDictionary id here
+// - this is why the append lives on the tracker, not in FrontierTable.
+// Skipped when the root kind is not STATIC_FIELD (thread/JNI roots have no
+// further expressible root object - the root-attached entry IS the root
+// instance or its nearest class), when no declaring-class tag was captured
+// (e.g. heapRootCallback-admitted static roots - the root callback carries
+// no referrer_tag_ptr), or when the class tag no longer resolves (class
+// unloaded). edges gains one matching entry (the root edge - kind label
+// only, the field identity belongs to the holder hop) so the
+// _edges.size() == _chain.size() invariant recordReferenceChain() relies on
+// to emit labels at all is preserved.
+void ReferenceChainTracker::appendStaticFieldRootType(
+    const FrontierEntry &terminal, std::vector<u32> *chain,
+    std::vector<ChainHopEdge> *edges) {
+  if (chain == nullptr ||
+      terminal.root_kind != (u8)JVMTI_HEAP_REFERENCE_STATIC_FIELD ||
+      terminal.referrer_class_tag == 0) {
+    return;
+  }
+  u32 root_klass = classTags()->resolve(terminal.referrer_class_tag);
+  if (root_klass == 0) {
+    return;
+  }
+  chain->push_back(root_klass);
+  if (edges != nullptr) {
+    ChainHopEdge root_edge{};
+    root_edge.field_index = -1;
+    root_edge.edge_kind = terminal.root_kind;
+    root_edge.referrer_class_tag = 0;
+    edges->push_back(root_edge);
+  }
 }
 
 // Canary chain reconstruction (out of line for the same reason). The
@@ -5956,6 +6007,10 @@ bool ReferenceChainTracker::buildCanaryChainEvent(int candidate_idx,
   jlong frontier_tag = _candidate_frontier_tags[candidate_idx];
   std::vector<u32> chain;
   u8 root_kind = 0;
+  // The root-attached entry the walk ends at - both branches below leave
+  // `entry` holding it (the walk's last lookup, or the candidate's own
+  // entry for a root-referenced candidate).
+  FrontierEntry terminal{};
   if (parent_tag > 0) {
     // Walk parent_tag back to root through the frontier table.
     FrontierEntry entry{};
@@ -5976,6 +6031,7 @@ bool ReferenceChainTracker::buildCanaryChainEvent(int candidate_idx,
       chain.push_back(entry.referrer_klass);
       tag = entry.parent_tag;
     }
+    terminal = entry;
   } else if (parent_tag == 0 && frontier_tag > 0) {
     // Root-referenced candidate: chain is just [candidate_klass].
     // root_kind was stored in the frontier entry at pruning time;
@@ -5988,6 +6044,7 @@ bool ReferenceChainTracker::buildCanaryChainEvent(int candidate_idx,
       return false;
     }
     root_kind = entry.root_kind;
+    terminal = entry;
   } else {
     TEST_LOG_SUMMARY("ReferenceChainTracker::buildCanaryChainEvent false: "
                      "never pruned (candidate=%d parent_tag=%lld frontier_tag=%lld)",
@@ -5999,6 +6056,11 @@ bool ReferenceChainTracker::buildCanaryChainEvent(int candidate_idx,
   chain.push_back(candidate_klass);
   // The chain was built root-to-parent; reverse to get candidate-to-root.
   std::reverse(chain.begin(), chain.end());
+  // Same root-type element buildChainEvent() appends: the canary walk's
+  // terminal entry is the root-attached entry, and for a static-field root
+  // the declaring class belongs at the chain's root-side end (after the
+  // reverse). No-op for other root kinds.
+  appendStaticFieldRootType(terminal, &chain, nullptr);
   out->_target_tag = (u64)frontier_tag;
   out->_depth = _candidate_depths[candidate_idx];
   out->_root_kind = root_kind;
