@@ -112,8 +112,11 @@ const int DEFAULT_REFERENCE_CHAINS_PAIN_BUDGET_PERCENT = 1;
 // DEFAULT_REFERENCE_CHAINS_BUDGET, which bounds every pass including the many
 // cheap, per-node expansion passes that follow, this only ever spends once
 // per search, so a much larger one-time ceiling is affordable. 0 (the
-// default) means "no override - use the same budget as every other pass",
-// preserving prior behavior for anyone not setting this explicitly.
+// default) means "no override - auto-scale from the per-pass budget instead
+// of falling back to it plainly": ReferenceChainTracker::start()'s tuning
+// pass scales it from _budget (AUTO_FIRST_PASS_BUDGET_MULTIPLIER, capped at
+// MAX_REFERENCE_CHAINS_FIRST_PASS_BUDGET) unless this knob was set
+// explicitly.
 const int DEFAULT_REFERENCE_CHAINS_FIRST_PASS_BUDGET = 0;
 // Upper clamp for an explicit firstpassbudget override: like painbudget just
 // above, firstpassbudget was previously only floored at 0 with no ceiling.

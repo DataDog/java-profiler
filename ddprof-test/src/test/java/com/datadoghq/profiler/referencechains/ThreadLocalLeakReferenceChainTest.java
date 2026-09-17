@@ -112,6 +112,72 @@ public class ThreadLocalLeakReferenceChainTest extends AbstractProcessProfilerTe
   }
 
   /**
+   * Same contract as {@link #shouldCorrelateThreadLocalHeldLeakChain()}, but
+   * the leak thread is started only AFTER the recording began. Regression
+   * test for the {@code Profiler::onThreadStart} →
+   * {@code registerThreadObject()} wiring: a mid-recording thread is
+   * invisible to {@code registerExistingThreads()}'s one-time snapshot, so
+   * only the onThreadStart registration lets
+   * {@code walkCandidateThreadLocals()} reach its ThreadLocalMap-held leak.
+   * With the wiring broken this child reports
+   * {@code ThreadLocalLeakScenario.NOT_FOUND_MARKER} and this test fails.
+   */
+  @Test
+  void shouldCorrelateLeakOnThreadCreatedAfterRecordingStart() throws Exception {
+    assumeFalse(Platform.isJavaVersion(8));
+    assumeFalse(Platform.isJ9());
+    assumeFalse(Platform.isZing());
+
+    Path scratchDumpPath = Files.createTempFile("referencechains-tl-late-", ".jfr");
+    Files.deleteIfExists(scratchDumpPath);
+    Path continuousJfrPath = Files.createTempFile("referencechains-tl-late-continuous-", ".jfr");
+    Deque<String> testLogTail = new ArrayDeque<>();
+    try {
+      String startCommand = "start,memory=64:l:1.0,generations=true,"
+          + "referencechains=true:hops=64:budget=200000:ttl=120000:framecap=2000000:"
+          + "pausetarget=60000"
+          + ",jfr,file=" + continuousJfrPath.toAbsolutePath();
+      String packedCommand = startCommand + "|||" + scratchDumpPath.toAbsolutePath();
+
+      List<String> jvmArgs = Collections.singletonList(
+          "-Dddprof_test.config=" + System.getProperty("ddprof_test.config"));
+
+      AtomicReference<String> resultLine = new AtomicReference<>();
+      LaunchResult result = launch("threadlocal-leak-late", jvmArgs, packedCommand,
+          Collections.emptyMap(),
+          150,
+          line -> {
+            if (line.startsWith(ThreadLocalLeakScenario.FOUND_MARKER)
+                || line.equals(ThreadLocalLeakScenario.NOT_FOUND_MARKER)
+                || line.startsWith(ThreadLocalLeakScenario.TAG_OUT_OF_POOL_MARKER)
+                || line.startsWith(ThreadLocalLeakScenario.NO_LIVE_OBJECT_MARKER)) {
+              resultLine.set(line);
+            }
+            if (line.startsWith("[TEST::INFO]")) {
+              testLogTail.addLast(line);
+              while (testLogTail.size() > 2000) {
+                testLogTail.removeFirst();
+              }
+            }
+            return LineConsumerResult.CONTINUE;
+          },
+          null);
+
+      assertTrue(result.inTime, "Child process did not exit within the wait timeout");
+      assertEquals(0, result.exitCode, "Child process exited with a non-zero code");
+      assertNotNull(resultLine.get(), "Child process never printed a recognizable result "
+          + "marker on stdout" + diagnostics(testLogTail));
+      String line = resultLine.get();
+      assertTrue(line.startsWith(ThreadLocalLeakScenario.FOUND_MARKER),
+          "Thread-local leak held by a thread created after recording start was not "
+              + "correlated: " + line + diagnostics(testLogTail));
+    } finally {
+      Files.deleteIfExists(scratchDumpPath);
+      Files.deleteIfExists(continuousJfrPath);
+    }
+  }
+
+  /**
    * A filtered summary of the child's TEST_LOG stream for failure messages -
    * same first-things-to-check selection as
    * LeakTagCorrelationReferenceChainTest.diagnostics(): the thread-walk and

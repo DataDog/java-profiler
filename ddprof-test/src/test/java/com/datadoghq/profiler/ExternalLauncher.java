@@ -293,6 +293,23 @@ public class ExternalLauncher {
                 ThreadLocalLeakScenario.run(instance, commands, Paths.get(scratchPath));
                 System.out.flush();
                 System.exit(0);
+            } else if (args[0].equals("threadlocal-leak-late")) {
+                // Same packing as threadlocal-leak, but the leak thread is
+                // started only AFTER the recording began - the regression
+                // shape for Profiler::onThreadStart's registerThreadObject()
+                // wiring (ThreadLocalLeakScenario.run()'s lateThread comment).
+                String packed = args.length == 2 ? args[1] : "";
+                int sep = packed.indexOf("|||");
+                if (sep < 0) {
+                    throw new IllegalArgumentException(
+                        "threadlocal-leak-late requires \"<start command>|||<scratch dump path>\", got: " + packed);
+                }
+                String commands = packed.substring(0, sep);
+                String scratchPath = packed.substring(sep + "|||".length());
+                JavaProfiler instance = JavaProfiler.getInstance();
+                ThreadLocalLeakScenario.run(instance, commands, Paths.get(scratchPath), true);
+                System.out.flush();
+                System.exit(0);
             }
         } finally {
             System.out.println("[ready]");

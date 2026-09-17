@@ -568,13 +568,13 @@ public:
 
   // Mirrors recordReferenceChainAbandoned() above exactly, for
   // ReferenceChainEvent instead. Called from Profiler::writeReferenceChain()
-  // (profiler.cpp), itself called from
-  // ReferenceChainTracker::pollWatchedTargets() (referenceChains.cpp) for
-  // each chain event discovered this poll cycle - unlike
-  // recordReferenceChainAbandoned() (only reached from dump()), chain events
-  // are produced continuously as candidates are discovered, not only at
-  // dump time, so this needs its own call site rather than piggybacking on
-  // dump()'s flush-on-dump pattern.
+  // (profiler.cpp), itself called from Profiler::dump()'s drain loop over
+  // the ReferenceChainTracker::drainPendingChainEvents() snapshot: the BFS
+  // scheduling thread only caches resolved chains in _resolved_chains
+  // (referenceChains.h) and each dump re-emits the cache, so chain events
+  // are written on dump()'s own thread, not from the tracker thread, and
+  // unlike recordReferenceChainAbandoned() (unbounded retry budget per
+  // event) the batch shares one deadline (writeReferenceChain()'s comment).
   void recordReferenceChain(int lock_index, ReferenceChainEvent *event);
 };
 

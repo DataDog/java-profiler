@@ -106,6 +106,22 @@ public final class ThreadLocalLeakScenario {
       seedChunk = null;
       return chunk;
     }
+
+    /**
+     * Bounded wait for the leak thread's first publish. Only the
+     * late-thread mode needs it: there the thread is started after the
+     * profiler (and thus after {@code profiler.execute()} returned), so the
+     * main thread cannot rely on the start-command's JNI work having
+     * scheduled the leak thread far enough to publish.
+     */
+    boolean awaitPublication(long timeoutMs) throws InterruptedException {
+      long deadline = System.nanoTime()
+          + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+      while (seedChunk == null && System.nanoTime() < deadline) {
+        Thread.sleep(10);
+      }
+      return seedChunk != null;
+    }
   }
 
   /** Printed to stdout, followed by the correlated targetTag, on full success. */
@@ -126,8 +142,24 @@ public final class ThreadLocalLeakScenario {
     int liveObjectMatchesForChainTag;
   }
 
-  public static void run(JavaProfiler profiler, String startCommand, Path scratchDumpPath)
-      throws Exception {
+  public static void run(JavaProfiler profiler, String startCommand,
+                         Path scratchDumpPath) throws Exception {
+    run(profiler, startCommand, scratchDumpPath, false);
+  }
+
+  /**
+   * @param lateThread when true, the leak thread is started only AFTER the
+   *     recording began. This is the regression shape for
+   *     {@code Profiler::onThreadStart}'s {@code registerThreadObject()}
+   *     wiring (referenceChains.h): a thread born mid-recording is invisible
+   *     to {@code registerExistingThreads()}'s one-time snapshot, so with
+   *     the wiring broken the (klass, tid) qualification is seeded but
+   *     {@code walkCandidateThreadLocals()} finds no Thread object for the
+   *     tid and the ThreadLocalMap-held chain is never reached (the child
+   *     prints {@link #NOT_FOUND_MARKER}).
+   */
+  public static void run(JavaProfiler profiler, String startCommand,
+                         Path scratchDumpPath, boolean lateThread) throws Exception {
     // Build the whole fixture before the profiler starts - see the class
     // comment and LeakingCacheScenario's seed-before-start rationale.
     for (int row = 0; row < FILLER.length; row++) {
@@ -162,10 +194,22 @@ public final class ThreadLocalLeakScenario {
       }
     }, "threadlocal-leak");
     leakThread.setDaemon(true);
-    leakThread.start();
+    if (!lateThread) {
+      leakThread.start();
+    }
 
     if (startCommand != null && !startCommand.isEmpty()) {
       profiler.execute(startCommand);
+    }
+
+    if (lateThread) {
+      leakThread.start();
+      // The debug seeding below consumes the handoff immediately; the
+      // thread is only just started, so wait for its first publish.
+      if (!handoff.awaitPublication(30000)) {
+        System.out.println(NOT_FOUND_MARKER);
+        return;
+      }
     }
 
     boolean debugBuild = "debug".equals(System.getProperty("ddprof_test.config"));
