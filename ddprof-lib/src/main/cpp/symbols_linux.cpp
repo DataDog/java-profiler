@@ -359,7 +359,6 @@ class ElfParser {
     const char* _sections;
     const char* _vaddr_diff;
     const char* _image_end;  // one-past-the-end of the mapped ELF image; bounds file-relative reads
-    const char* _live_image_end;  // lazily computed; see liveImageEnd()
 
     ElfParser(CodeCache* cc, const char* base, const void* addr, size_t image_size, const char* file_name, bool relocate_dyn) {
         _cc = cc;
@@ -368,7 +367,6 @@ class ElfParser {
         _relocate_dyn = relocate_dyn;
         _header = (ElfHeader*)addr;
         _image_end = (const char*)addr + image_size;
-        _live_image_end = NULL;
         // e_shoff sits at a fixed offset inside the header; only compute the pointer
         // when the image is at least header-sized AND e_shoff is within the image,
         // so the addition cannot overflow and sectionAt()/inImage() can reject it
@@ -428,13 +426,14 @@ class ElfParser {
     // between segments that /proc/self/maps does not attribute to the
     // library (no matching inode), making map_end fall well short of a
     // segment -- such as .dynamic -- that is nonetheless mapped and valid to
-    // read. Cached, since callers processing a relocation table may ask many
-    // times. NOTE: this is a coarse [_base, max-end) span -- it does not
+    // read. NOTE: this is a coarse [_base, max-end) span -- it does not
     // exclude the PROT_NONE/unmapped gaps that can legitimately fall between
     // two LOAD segments, so it is only used where an upper bound (not
     // pointer-arithmetic validation) is what's needed; inLiveImage() below
     // uses the per-segment liveSegmentEnd() instead precisely to exclude
     // those gaps.
+    // Not cached: called at most once per parse (from parseDwarfInfo()'s
+    // eh_frame_hdr path), so there's nothing to amortize.
     // Precondition: calcVirtualLoadAddress() must already have run, since
     // at(ph) depends on _vaddr_diff. Not enumerated by caller here because
     // that list drifts -- it holds structurally instead: the only way to
@@ -443,8 +442,8 @@ class ElfParser {
     // before parseDynamicSection()/parseDwarfInfo(), so every caller of
     // parseProgramHeaders() satisfies this regardless of how many there are.
     const char* liveImageEnd() {
-        if (_live_image_end == NULL && _base != NULL) {
-            const char* end = _base;
+        const char* end = _base;
+        if (_base != nullptr) {
             for (int i = 0; i < _header->e_phnum; i++) {
                 ElfProgramHeader* ph = phdrAt(i);
                 if (ph != NULL && ph->p_type == PT_LOAD) {
@@ -454,20 +453,36 @@ class ElfParser {
                     }
                 }
             }
-            _live_image_end = end;
         }
-        return _live_image_end;
+        return end;
     }
 
-    // End of the single PT_LOAD segment containing `ptr`, or NULL if `ptr`
-    // does not fall within any segment's virtual footprint. Deliberately
-    // stricter than a single [_base, liveImageEnd()) test: that coarse range
-    // spans every LOAD segment's min-to-max extent and so accepts the
-    // PROT_NONE/unmapped gaps between them as if they were in-bounds, even
-    // though nothing guarantees those gap bytes are actually mapped and
-    // readable. Not cached (unlike liveImageEnd()): e_phnum is always small,
-    // so the linear scan is cheap even when called once per relocation entry.
-    const char* liveSegmentEnd(const char* ptr) {
+    // End of the PT_LOAD segment that fully contains [ptr, ptr+len), or NULL
+    // if no such segment exists. Deliberately stricter than a single
+    // [_base, liveImageEnd()) test: that coarse range spans every LOAD
+    // segment's min-to-max extent and so accepts the PROT_NONE/unmapped gaps
+    // between them as if they were in-bounds, even though nothing guarantees
+    // those gap bytes are actually mapped and readable.
+    //
+    // Segments are treated as half-open [seg_start, seg_end) ranges, not
+    // [seg_start, seg_end] -- two PT_LOAD segments are commonly byte-adjacent
+    // (a real, spec-legal layout, not just a corrupted one), and under an
+    // inclusive upper bound a pointer sitting exactly on that shared
+    // boundary would match the *earlier* (ending) segment first and report
+    // zero room, even though it is actually the valid start of the *next*
+    // segment. Requiring `len` to fit before accepting a match (rather than
+    // returning the first segment merely containing `ptr`) means a segment
+    // that contains ptr but doesn't have room for the requested length is
+    // skipped in favor of a later one that does -- which is what also makes
+    // a degenerate p_memsz == 0 PT_LOAD (seg_start == seg_end) harmless: it
+    // can never satisfy ptr < seg_end for its own address, so it can't mask
+    // a real segment that legitimately starts there.
+    //
+    // Not cached: e_phnum is always small, so the linear scan is cheap even
+    // when called once per relocation entry (unlike liveImageEnd(), this is
+    // called from every inLiveImage() check, so it can run many times per
+    // parse).
+    const char* liveSegmentEnd(const char* ptr, size_t len) {
         if (_base == NULL) {
             return NULL;
         }
@@ -479,7 +494,8 @@ class ElfParser {
             const char* seg_start = at(ph);
             const char* seg_end;
             if (plausibleSegmentEnd(seg_start, ph->p_memsz, &seg_end)
-                    && ptr >= seg_start && ptr <= seg_end) {
+                    && ptr >= seg_start && ptr < seg_end
+                    && len <= (size_t)(seg_end - ptr)) {
                 return seg_end;
             }
         }
@@ -496,9 +512,7 @@ class ElfParser {
     // starts in one segment can't be "validated" by straddling into the gap
     // before the next one.
     bool inLiveImage(const void* ptr, size_t len) {
-        const char* p = (const char*)ptr;
-        const char* end = liveSegmentEnd(p);
-        return end != NULL && len <= (size_t)(end - p);
+        return liveSegmentEnd((const char*)ptr, len) != nullptr;
     }
 
     // Section header at `index`, or NULL when the index or entry is out of bounds.
@@ -829,8 +843,14 @@ void ElfParser::parseDynamicSection() {
         // string tables are well under that, and live linker memory guarantees
         // NUL termination, so memchr will always find a terminator before the cap.
         if (strsz == 0) {
+            // parseDynamicSection() only runs via parseProgramHeaders(),
+            // which always constructs this ElfParser with _file_name ==
+            // NULL (only parseFile()'s file-offset path ever sets it) --
+            // _cc->name() is what actually identifies the library here, and
+            // is what the SFrame/eh_frame_hdr warnings below use for the
+            // same reason.
             Log::warn("DT_STRSZ absent from dynamic section in %s; capping string-table scan to 1 MB",
-                      _file_name != NULL ? _file_name : "unknown");
+                      _cc->name());
             strsz = 1u << 20;
         }
 
@@ -861,7 +881,7 @@ void ElfParser::parseDynamicSection() {
         // strtab's segment while still reporting "in bounds". dyn_ptr()
         // already established strtab lies in some segment before returning
         // it non-NULL (checked above), so this cannot return NULL here.
-        const char* strtab_seg_end = liveSegmentEnd(strtab);
+        const char* strtab_seg_end = liveSegmentEnd(strtab, 0);
         size_t strtab_room = strtab_seg_end != NULL ? (size_t)(strtab_seg_end - strtab) : 0;
         if (strtab_room == 0) {
             // strtab resolved at (or past) the very end of its own live
@@ -873,7 +893,7 @@ void ElfParser::parseDynamicSection() {
             // bail out loudly instead of continuing to do work that can only
             // ever fail.
             Log::warn("DT_STRTAB leaves no room for a string table in %s; skipping dynamic symbols/imports",
-                      _file_name != NULL ? _file_name : "unknown");
+                      _cc->name());
             return;
         }
         if (strsz > strtab_room) {
@@ -1052,12 +1072,23 @@ uint32_t ElfParser::getSymbolCount(uint32_t* gnu_hash) {
         // The chain is normally self-terminating (bit 0 set on the last hash of
         // the last bucket), but a corrupted/misrelocated table may never set
         // it; check each entry against the mapped image instead of trusting
-        // the scan to stop on its own.
+        // the scan to stop on its own. nsyms is attacker-controlled (it comes
+        // from a bucket value, up to 2^32-1) and grows every iteration, so --
+        // like bloom_bytes/bucket_bytes above -- its byte offset is validated
+        // in a wide (uint64_t) type before &chain[nsyms] is formed: on a
+        // 32-bit build, the raw pointer addition could otherwise wrap and
+        // alias back into a valid segment, making inLiveImage() spuriously
+        // accept an entry that's actually nowhere near the chain array.
         for (;;) {
-            if (!inLiveImage(&chain[nsyms], sizeof(uint32_t))) {
+            uint64_t chain_entry_bytes = (uint64_t)nsyms * sizeof(uint32_t);
+            if (chain_entry_bytes > (uint64_t)(UINTPTR_MAX - (uintptr_t)chain)) {
                 return 0;
             }
-            bool is_last = (chain[nsyms] & 1) != 0;
+            uint32_t* chain_entry = (uint32_t*)((char*)chain + chain_entry_bytes);
+            if (!inLiveImage(chain_entry, sizeof(uint32_t))) {
+                return 0;
+            }
+            bool is_last = (*chain_entry & 1) != 0;
             nsyms++;
             if (is_last) {
                 break;

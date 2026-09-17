@@ -744,6 +744,86 @@ TEST_F(ElfTest, relocationResolvesValidSymbol) {
     EXPECT_EQ(cc.findImport(im_malloc), (void**)(base + kRelocGotOff));
 }
 
+// Regression test for liveSegmentEnd()'s boundary-ambiguity bug: two
+// byte-adjacent PT_LOAD segments (a real, spec-legal layout -- linkers
+// routinely emit segments with no vaddr gap between them, not just
+// corrupted ones) split exactly at kRelocStrtabOff, with DT_STRTAB
+// resolving to precisely that shared boundary address. Everything else is
+// identical to buildRelocationTestElf()'s single-PT_LOAD layout (same
+// symtab/strtab/jmprel/got constants and contents), so this isolates the
+// segment-boundary handling specifically. An inclusive-upper-bound,
+// first-match liveSegmentEnd() matches the *ending* segment and reports
+// zero room, making parseDynamicSection() wrongly bail out (dropping the
+// whole dynamic symbol/import set for a perfectly valid library) even
+// though strtab is actually the valid start of the second segment, which
+// has plenty of room.
+TEST_F(ElfTest, strtabAtAdjacentSegmentBoundaryStillResolves) {
+    // This layout needs 3 program headers (2x PT_LOAD + PT_DYNAMIC), unlike
+    // buildRelocationTestElf()'s single PT_LOAD, so it cannot reuse the
+    // kReloc* offset constants (they assume exactly 2 phdrs precede the
+    // dyn array) -- everything is laid out fresh, with the DT_STRTAB/split
+    // point deliberately coinciding.
+    const uint64_t dyn_off = sizeof(Elf64_Ehdr) + 3 * sizeof(Elf64_Phdr);
+    const int dyn_count = 8;
+    const uint64_t symtab_off = dyn_off + dyn_count * sizeof(Elf64_Dyn);
+    const uint64_t strtab_off = symtab_off + 2 * sizeof(Elf64_Sym);  // == the segment split point
+    const char strtab[] = "\0malloc";
+    const uint64_t jmprel_off = strtab_off + sizeof(strtab);
+    const uint64_t got_off = jmprel_off + sizeof(Elf64_Rel);
+    const uint64_t image_size = got_off + sizeof(void*);
+
+    Elf64_Ehdr e = validEhdr();
+    e.e_phoff = sizeof(Elf64_Ehdr);
+    e.e_phentsize = sizeof(Elf64_Phdr);
+    e.e_phnum = 3;
+
+    Elf64_Phdr ph[3];
+    memset(ph, 0, sizeof(ph));
+    ph[0].p_type = PT_LOAD;
+    ph[0].p_vaddr = ph[0].p_offset = 0;
+    ph[0].p_filesz = ph[0].p_memsz = strtab_off;  // ends exactly where segment 2 begins
+    ph[1].p_type = PT_LOAD;
+    ph[1].p_vaddr = ph[1].p_offset = strtab_off;  // zero-gap adjacency with ph[0]
+    ph[1].p_filesz = ph[1].p_memsz = image_size - strtab_off;
+    ph[2].p_type = PT_DYNAMIC;
+    ph[2].p_vaddr = ph[2].p_offset = dyn_off;
+    ph[2].p_filesz = ph[2].p_memsz = dyn_count * sizeof(Elf64_Dyn);
+
+    Elf64_Dyn dyn[dyn_count];
+    memset(dyn, 0, sizeof(dyn));
+    dyn[0].d_tag = DT_SYMTAB;   dyn[0].d_un.d_ptr = symtab_off;
+    dyn[1].d_tag = DT_STRTAB;   dyn[1].d_un.d_ptr = strtab_off;  // exactly at the segment boundary
+    dyn[2].d_tag = DT_STRSZ;    dyn[2].d_un.d_val = sizeof(strtab);
+    dyn[3].d_tag = DT_SYMENT;   dyn[3].d_un.d_val = sizeof(Elf64_Sym);
+    dyn[4].d_tag = DT_JMPREL;   dyn[4].d_un.d_ptr = jmprel_off;
+    dyn[5].d_tag = DT_PLTRELSZ; dyn[5].d_un.d_val = sizeof(Elf64_Rel);
+    dyn[6].d_tag = DT_RELENT;   dyn[6].d_un.d_val = sizeof(Elf64_Rel);
+    dyn[7].d_tag = DT_NULL;
+
+    Elf64_Sym sym[2];
+    memset(sym, 0, sizeof(sym));
+    sym[1].st_name = 1;
+    sym[1].st_value = 0x1000;
+
+    Elf64_Rel rel;
+    memset(&rel, 0, sizeof(rel));
+    rel.r_info = (uint64_t)1 << 32;  // symbol index 1 ("malloc")
+    rel.r_offset = got_off;
+
+    std::vector<char> b(image_size, 0);
+    memcpy(b.data(), &e, sizeof(e));
+    memcpy(b.data() + sizeof(e), ph, sizeof(ph));
+    memcpy(b.data() + dyn_off, dyn, sizeof(dyn));
+    memcpy(b.data() + symtab_off, sym, sizeof(sym));
+    memcpy(b.data() + strtab_off, strtab, sizeof(strtab));
+    memcpy(b.data() + jmprel_off, &rel, sizeof(rel));
+
+    CodeCache cc("regress-strtab-adjacent-boundary");
+    const char* base = b.data();
+    ElfParser::parseProgramHeaders(&cc, base, base + b.size(), /*relocate_dyn=*/true);
+    EXPECT_EQ(cc.findImport(im_malloc), (void**)(base + got_off));
+}
+
 TEST_F(ElfTest, resolveSymbolRejectsSymentIndexOverflow) {
     // syment == 2^63+12, sym_index == 2: chosen so index*syment overflows
     // size_t and wraps to exactly sizeof(Elf64_Sym) (24) -- landing squarely
