@@ -349,6 +349,17 @@ static char _debuginfod_cache_buf[PATH_MAX] = {0};
 // permission-gap slop between segments.
 static const uint64_t MAX_PLAUSIBLE_SEGMENT_SIZE = 1ULL << 32; // 4 GiB
 
+// Upper bound on the number of steps the DT_GNU_HASH chain-terminator scan
+// in getSymbolCount() below will take. The chain is normally self-terminating,
+// but a corrupted/malicious table can leave the terminator bit unset
+// indefinitely; without a cap, a small starting symbol count landing inside a
+// large all-zero region of a live segment (now permitted up to
+// MAX_PLAUSIBLE_SEGMENT_SIZE) would make the scan walk that entire region one
+// word at a time -- each step re-validated via an O(e_phnum) inLiveImage()
+// call -- while Symbols::_parse_lock is held. Real dynamic symbol tables are
+// nowhere near this size, so exceeding it means the table is corrupted.
+static const uint32_t MAX_GNU_HASH_CHAIN_SCAN = 1u << 20; // 1M entries
+
 class ElfParser {
   private:
     CodeCache* _cc;
@@ -879,23 +890,14 @@ void ElfParser::parseDynamicSection() {
         // coarser liveImageEnd(): the latter spans every LOAD segment and
         // would let the memchr scan wander into an unmapped gap past
         // strtab's segment while still reporting "in bounds". dyn_ptr()
-        // already established strtab lies in some segment before returning
-        // it non-NULL (checked above), so this cannot return NULL here.
+        // already established strtab lies strictly inside some live segment
+        // before returning it non-NULL (checked above) -- i.e. strtab <
+        // seg_end for that same segment -- so liveSegmentEnd(strtab, 0) below
+        // is guaranteed to find that segment again (nothing in between
+        // changes the answer) and strtab_room is always >= 1; there is no
+        // reachable "no room left" case to report here.
         const char* strtab_seg_end = liveSegmentEnd(strtab, 0);
-        size_t strtab_room = strtab_seg_end != NULL ? (size_t)(strtab_seg_end - strtab) : 0;
-        if (strtab_room == 0) {
-            // strtab resolved at (or past) the very end of its own live
-            // segment: strAt() rejects every offset once size == 0, so every
-            // symbol-name lookup below (loadSymbolTable() and both
-            // relocation loops) would silently return NULL, dropping the
-            // whole dynamic symbol/import set with no diagnostic. Unlike the
-            // DT_STRSZ-absent case above, there is no size to guess here --
-            // bail out loudly instead of continuing to do work that can only
-            // ever fail.
-            Log::warn("DT_STRTAB leaves no room for a string table in %s; skipping dynamic symbols/imports",
-                      _cc->name());
-            return;
-        }
+        size_t strtab_room = (size_t)(strtab_seg_end - strtab);
         if (strsz > strtab_room) {
             strsz = strtab_room;
         }
@@ -1079,7 +1081,14 @@ uint32_t ElfParser::getSymbolCount(uint32_t* gnu_hash) {
         // 32-bit build, the raw pointer addition could otherwise wrap and
         // alias back into a valid segment, making inLiveImage() spuriously
         // accept an entry that's actually nowhere near the chain array.
-        for (;;) {
+        // Also cap the number of steps (MAX_GNU_HASH_CHAIN_SCAN): inLiveImage()
+        // only guards against reading outside the live image, not against a
+        // corrupted table whose terminator bit is never set within it -- on a
+        // large live segment that could otherwise mean walking millions of
+        // entries, one inLiveImage() (O(e_phnum)) call at a time, while
+        // Symbols::_parse_lock is held.
+        bool terminated = false;
+        for (uint32_t scanned = 0; scanned < MAX_GNU_HASH_CHAIN_SCAN; scanned++) {
             uint64_t chain_entry_bytes = (uint64_t)nsyms * sizeof(uint32_t);
             if (chain_entry_bytes > (uint64_t)(UINTPTR_MAX - (uintptr_t)chain)) {
                 return 0;
@@ -1091,8 +1100,15 @@ uint32_t ElfParser::getSymbolCount(uint32_t* gnu_hash) {
             bool is_last = (*chain_entry & 1) != 0;
             nsyms++;
             if (is_last) {
+                terminated = true;
                 break;
             }
+        }
+        // The scan was capped without ever finding a terminator: treat the
+        // table as corrupted rather than returning a symbol count that isn't
+        // actually backed by a self-terminating chain.
+        if (!terminated) {
+            return 0;
         }
     }
     return nsyms;
