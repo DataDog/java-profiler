@@ -458,8 +458,9 @@ class ElfParser {
             for (int i = 0; i < _header->e_phnum; i++) {
                 ElfProgramHeader* ph = phdrAt(i);
                 if (ph != NULL && ph->p_type == PT_LOAD) {
+                    const char* seg_start;
                     const char* seg_end;
-                    if (plausibleSegmentEnd(at(ph), ph->p_memsz, &seg_end) && seg_end > end) {
+                    if (at(ph, &seg_start) && plausibleSegmentEnd(seg_start, ph->p_memsz, &seg_end) && seg_end > end) {
                         end = seg_end;
                     }
                 }
@@ -502,7 +503,10 @@ class ElfParser {
             if (ph == NULL || ph->p_type != PT_LOAD) {
                 continue;
             }
-            const char* seg_start = at(ph);
+            const char* seg_start;
+            if (!at(ph, &seg_start)) {
+                continue;
+            }
             const char* seg_end;
             if (plausibleSegmentEnd(seg_start, ph->p_memsz, &seg_end)
                     && ptr >= seg_start && ptr < seg_end
@@ -582,11 +586,29 @@ class ElfParser {
         return inImage(ph, sizeof(ElfProgramHeader)) ? ph : NULL;
     }
 
-    const char* at(ElfProgramHeader* pheader) {
+    // Resolves a program header's p_vaddr to a pointer in live memory via
+    // _vaddr_diff, or returns false if p_vaddr is large enough that the
+    // addition would overflow pointer arithmetic. p_vaddr is untrusted --
+    // exactly like p_memsz is elsewhere in this file -- so the addition is
+    // validated in integer space before the pointer is formed (this file
+    // builds with -fsanitize=pointer-overflow -fno-sanitize-recover, and
+    // release builds would otherwise wrap into an attacker-influenced
+    // pointer as plain undefined behavior). Every caller must check the
+    // return value before using *out.
+    bool at(ElfProgramHeader* pheader, const char** out) {
         if (_header->e_type == ET_EXEC) {
-            return (const char*)pheader->p_vaddr;
+            *out = (const char*)pheader->p_vaddr;
+            return true;
         }
-        return _vaddr_diff == NULL ? (const char*)pheader->p_vaddr : _vaddr_diff + pheader->p_vaddr;
+        if (_vaddr_diff == NULL) {
+            *out = (const char*)pheader->p_vaddr;
+            return true;
+        }
+        if (pheader->p_vaddr > (uint64_t)(UINTPTR_MAX - (uintptr_t)_vaddr_diff)) {
+            return false;
+        }
+        *out = _vaddr_diff + pheader->p_vaddr;
+        return true;
     }
 
     const char* base() {
@@ -598,7 +620,16 @@ class ElfParser {
         // Also, [vdso] is not relocated, and its vaddr may differ from the load address.
         char* ptr;
         if (_relocate_dyn || (_base != NULL && (char*)dyn->d_un.d_ptr < _base)) {
-            ptr = _vaddr_diff == nullptr ? (char*)dyn->d_un.d_ptr : (char*)_vaddr_diff + dyn->d_un.d_ptr;
+            // d_ptr is untrusted like p_vaddr in at() above; validate the
+            // addition in integer space before forming the pointer for the
+            // same reason.
+            if (_vaddr_diff == nullptr) {
+                ptr = (char*)dyn->d_un.d_ptr;
+            } else if ((uint64_t)dyn->d_un.d_ptr > (uint64_t)(UINTPTR_MAX - (uintptr_t)_vaddr_diff)) {
+                return nullptr;
+            } else {
+                ptr = (char*)_vaddr_diff + dyn->d_un.d_ptr;
+            }
         } else {
             ptr = (char*)dyn->d_un.d_ptr;
         }
@@ -776,13 +807,15 @@ void ElfParser::parseDynamicSection() {
         size_t strsz = 0;
         uint32_t nsyms = 0;
 
-        const char* dyn_start = at(dynamic);
         // PT_DYNAMIC's p_vaddr/p_memsz are as untrusted as any other program-header
-        // field; unlike the file-offset accessors above, at() does not itself
-        // validate the result, so bound the iteration against the ELF's live
-        // virtual footprint (inLiveImage(), not inImage() -- at() resolves a
-        // virtual address, not a file offset) before touching any ElfDyn entry.
-        if (!inLiveImage(dyn_start, dynamic->p_memsz)) {
+        // field; at() itself now rejects a p_vaddr that would overflow forming
+        // the pointer, and -- unlike the file-offset accessors above -- it still
+        // performs no bounds check beyond that, so bound the iteration against
+        // the ELF's live virtual footprint (inLiveImage(), not inImage() -- at()
+        // resolves a virtual address, not a file offset) before touching any
+        // ElfDyn entry.
+        const char* dyn_start;
+        if (!at(dynamic, &dyn_start) || !inLiveImage(dyn_start, dynamic->p_memsz)) {
             return;
         }
         const char* dyn_end = dyn_start + dynamic->p_memsz;
@@ -969,12 +1002,13 @@ void ElfParser::parseDwarfInfo() {
     // Try SFrame first (simpler format, faster parsing, no opcode interpretation).
     ElfProgramHeader* sframe_phdr = findProgramHeader(PT_GNU_SFRAME);
     if (sframe_phdr != NULL && sframe_phdr->p_vaddr != 0) {
-        const char* section_base = at(sframe_phdr);
         // at() resolves a virtual address, not a file offset, so -- like every
         // other at()/dyn_ptr() result in this file -- it must be validated
-        // against the live image before use; at() itself performs no such
-        // check. (Mirrors the eh_frame_hdr validation via inLiveImage() below.)
-        if (!inLiveImage(section_base, sframe_phdr->p_filesz)) {
+        // against the live image before use; beyond rejecting an overflowing
+        // p_vaddr, at() itself performs no such check. (Mirrors the
+        // eh_frame_hdr validation via inLiveImage() below.)
+        const char* section_base;
+        if (!at(sframe_phdr, &section_base) || !inLiveImage(section_base, sframe_phdr->p_filesz)) {
             Log::warn("SFrame section out of bounds in %s; falling back to DWARF", _cc->name());
         } else {
             uintptr_t section_offset_full = static_cast<uintptr_t>(section_base - _base);
@@ -998,7 +1032,6 @@ void ElfParser::parseDwarfInfo() {
     ElfProgramHeader* eh_frame_hdr = findProgramHeader(PT_GNU_EH_FRAME);
     if (eh_frame_hdr != NULL) {
         if (eh_frame_hdr->p_vaddr != 0) {
-            const char* section_base = at(eh_frame_hdr);
             // at() resolves a virtual address, not a file offset, so -- like the
             // SFrame section base above -- it must be validated against the live
             // image before use. liveImageEnd() below only bounds the FDE pointers
@@ -1006,7 +1039,8 @@ void ElfParser::parseDwarfInfo() {
             // substitute for checking section_base itself, which -- unlike
             // sframe_phdr->p_filesz above -- has no matching lower-bound check
             // inside DwarfParser::parse() (it only compares against image_end).
-            if (!inLiveImage(section_base, eh_frame_hdr->p_memsz)) {
+            const char* section_base;
+            if (!at(eh_frame_hdr, &section_base) || !inLiveImage(section_base, eh_frame_hdr->p_memsz)) {
                 Log::warn("eh_frame_hdr out of bounds in %s; no unwind info available", _cc->name());
             } else {
                 // Parse per-PC frame descriptions and detect per-library default frame layout.

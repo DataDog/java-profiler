@@ -656,6 +656,105 @@ TEST_F(ElfTest, dynamicSectionHashPointerOutOfBounds) {
     EXPECT_EQ(cc.count(), 0);
 }
 
+// Regression test for ElfParser::at(ElfProgramHeader*, const char**): PT_DYNAMIC's
+// own p_vaddr is as untrusted as any other program-header field. Before the
+// overflow guard, at() computed `_vaddr_diff + pheader->p_vaddr` unconditionally;
+// with p_vaddr == UINT64_MAX that addition is undefined-behavior pointer overflow
+// (and, wrapping, could alias back into a plausible-looking live address).
+// at() must now reject it and return false instead of forming the pointer.
+TEST_F(ElfTest, atProgramHeaderVaddrOverflow) {
+    Elf64_Ehdr e = validEhdr();  // e_type == ET_DYN
+    e.e_phoff = sizeof(Elf64_Ehdr);
+    e.e_phentsize = sizeof(Elf64_Phdr);
+    e.e_phnum = 2;
+
+    const uint64_t image_size = sizeof(Elf64_Ehdr) + 2 * sizeof(Elf64_Phdr);
+
+    Elf64_Phdr ph[2];
+    memset(ph, 0, sizeof(ph));
+    // p_vaddr == 0 makes calcVirtualLoadAddress() set _vaddr_diff == _base.
+    ph[0].p_type = PT_LOAD;
+    ph[0].p_vaddr = 0;
+    ph[0].p_offset = 0;
+    ph[0].p_filesz = ph[0].p_memsz = image_size;
+    // PT_DYNAMIC's own p_vaddr overflows _vaddr_diff + p_vaddr for any real
+    // _vaddr_diff (== _base here, a small non-NULL heap pointer): UINT64_MAX
+    // guarantees pheader->p_vaddr > UINTPTR_MAX - _vaddr_diff regardless of
+    // where our tiny buffer happens to sit under ASLR.
+    ph[1].p_type = PT_DYNAMIC;
+    ph[1].p_vaddr = UINT64_MAX;
+    ph[1].p_offset = 0;
+    ph[1].p_filesz = ph[1].p_memsz = sizeof(Elf64_Dyn);
+
+    std::vector<char> b;
+    auto app = [&](const void* p, size_t n) {
+        const char* c = static_cast<const char*>(p);
+        b.insert(b.end(), c, c + n);
+    };
+    app(&e, sizeof(e));
+    app(ph, sizeof(ph));
+    ASSERT_EQ(b.size(), image_size);
+
+    CodeCache cc("regress-vaddr-overflow");
+    const char* base = b.data();
+    // Must not crash (UBSan pointer-overflow build would abort here without
+    // the guard) and, with at() rejecting the overflowing PT_DYNAMIC, must
+    // not populate any symbols.
+    ElfParser::parseProgramHeaders(&cc, base, base + b.size(), /*relocate_dyn=*/true);
+    EXPECT_EQ(cc.count(), 0);
+}
+
+// Regression test for ElfParser::dyn_ptr(): mirrors atProgramHeaderVaddrOverflow
+// above but for the DT_HASH d_un.d_ptr overflow guard rather than PT_DYNAMIC's
+// own p_vaddr. Before the guard, dyn_ptr() computed `_vaddr_diff + d_ptr`
+// unconditionally under relocate_dyn; with d_ptr == UINT64_MAX that addition
+// is undefined-behavior pointer overflow. dyn_ptr() must now reject it and
+// return nullptr instead of forming the pointer.
+TEST_F(ElfTest, dynPtrOverflow) {
+    Elf64_Ehdr e = validEhdr();  // e_type == ET_DYN
+    e.e_phoff = sizeof(Elf64_Ehdr);
+    e.e_phentsize = sizeof(Elf64_Phdr);
+    e.e_phnum = 2;
+
+    const uint64_t dyn_off = sizeof(Elf64_Ehdr) + 2 * sizeof(Elf64_Phdr);
+    const uint64_t image_size = dyn_off + 2 * sizeof(Elf64_Dyn);
+
+    Elf64_Phdr ph[2];
+    memset(ph, 0, sizeof(ph));
+    ph[0].p_type = PT_LOAD;
+    ph[0].p_vaddr = 0;
+    ph[0].p_offset = 0;
+    ph[0].p_filesz = ph[0].p_memsz = image_size;
+    ph[1].p_type = PT_DYNAMIC;
+    ph[1].p_vaddr = dyn_off;
+    ph[1].p_offset = dyn_off;
+    ph[1].p_filesz = ph[1].p_memsz = 2 * sizeof(Elf64_Dyn);
+
+    Elf64_Dyn dyn[2];
+    memset(dyn, 0, sizeof(dyn));
+    dyn[0].d_tag = DT_HASH;
+    // With relocate_dyn=true, dyn_ptr() would compute _vaddr_diff + d_ptr,
+    // i.e. _base + d_ptr. UINT64_MAX guarantees that addition overflows
+    // regardless of where our tiny buffer happens to sit under ASLR.
+    dyn[0].d_un.d_ptr = UINT64_MAX;
+    dyn[1].d_tag = DT_NULL;
+
+    std::vector<char> b;
+    auto app = [&](const void* p, size_t n) {
+        const char* c = static_cast<const char*>(p);
+        b.insert(b.end(), c, c + n);
+    };
+    app(&e, sizeof(e));
+    app(ph, sizeof(ph));
+    app(dyn, sizeof(dyn));
+    ASSERT_EQ(b.size(), image_size);
+
+    CodeCache cc("regress-dynptr-overflow");
+    const char* base = b.data();
+    ElfParser::parseProgramHeaders(&cc, base, base + b.size(), /*relocate_dyn=*/true);
+    EXPECT_EQ(cc.count(), 0);
+}
+
 // =====================================================================
 // Coverage for resolveSymbol()/resolveImportAddr(): the relocation-loop
 // guards added by the ELF parser hardening above. The DT_HASH regression
