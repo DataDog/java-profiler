@@ -15,6 +15,7 @@
  */
 
 #include <gtest/gtest.h>
+#include "livenessTracker.h"
 #include "../../main/cpp/gtest_crash_handler.h"
 #include <cstdlib>
 #include <cstring>
@@ -288,4 +289,996 @@ TEST_F(LivenessTrackerTest, CapacityDoesNotExceedMaxCap) {
     EXPECT_EQ(newcap, 50);  // Already at max, newcap == table_cap
     // In the actual code, this would trigger: if (_table_cap != newcap) { ... }
     // which would be false, so no resize would be attempted
+}
+
+// ---------------------------------------------------------------------------
+// Per-klass population tracking (LiveHeapReferenceChains-RemainingWorkPlan.md).
+// These exercise LivenessTracker::instance() directly rather than
+// a mock: recordKlassPopulationSampleLocked() deliberately makes no JNI call
+// (see its header comment), so it is safe to call on the real singleton
+// without a live JVM attached, unlike start()/track()/flush() elsewhere in
+// this class. Fake jweak values below are opaque pointers the method under
+// test never dereferences - only stored and handed back to the caller.
+class KlassPopulationTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        installGtestCrashHandler<LIVENESS_TRACKER_TEST_NAME>();
+        // The table persists across recordings by design (see
+        // LivenessTracker::initialize()'s own comment on why _initialized
+        // survives multiple start() calls) - reset it explicitly here so
+        // tests don't observe leftover state from a previous test case
+        // sharing the same process-wide singleton.
+        LivenessTracker::instance()->klassPopulationResetForTest();
+    }
+
+    void TearDown() override {
+        LivenessTracker::instance()->klassPopulationResetForTest();
+        restoreDefaultSignalHandlers();
+    }
+
+    static jweak fakeRef(uintptr_t tag) {
+        return reinterpret_cast<jweak>(tag);
+    }
+};
+
+// A brand new klass_id creates a new entry: out_created is true, the table
+// grows by one, and the single pushed sample is the ring's only member.
+TEST_F(KlassPopulationTest, InsertCreatesNewEntry) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    int slot = -1;
+    bool created = false;
+    jweak evicted = tracker->klassPopulationRecordForTest(/*klass_id=*/1,
+                                                            /*count=*/5,
+                                                            /*epoch=*/1,
+                                                            &slot, &created);
+
+    EXPECT_TRUE(created);
+    EXPECT_EQ(evicted, nullptr);
+    EXPECT_EQ(tracker->klassPopulationSizeForTest(), 1);
+
+    KlassPopulationEntry entry;
+    ASSERT_TRUE(tracker->klassPopulationLookupForTest(1, &entry));
+    EXPECT_EQ(entry.klass_id, 1u);
+    EXPECT_EQ(entry.ring_fill, 1);
+    EXPECT_EQ(entry.ring_head, 1);
+    EXPECT_EQ(entry.count_ring[0], 5);
+    EXPECT_EQ(entry.last_updated_epoch, 1u);
+    EXPECT_EQ(entry.representative_count, 0);
+}
+
+// A second sample for an already-known klass_id updates the same slot in
+// place (out_created is false, table size unchanged) rather than creating a
+// second entry.
+TEST_F(KlassPopulationTest, InsertExistingUpdatesSameSlotInPlace) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    int slot1 = -1, slot2 = -1;
+    bool created1 = false, created2 = false;
+    tracker->klassPopulationRecordForTest(7, 3, 1, &slot1, &created1);
+    jweak evicted = tracker->klassPopulationRecordForTest(7, 4, 2, &slot2,
+                                                            &created2);
+
+    EXPECT_TRUE(created1);
+    EXPECT_FALSE(created2);
+    EXPECT_EQ(slot1, slot2);
+    EXPECT_EQ(evicted, nullptr);
+    EXPECT_EQ(tracker->klassPopulationSizeForTest(), 1);
+
+    KlassPopulationEntry entry;
+    ASSERT_TRUE(tracker->klassPopulationLookupForTest(7, &entry));
+    EXPECT_EQ(entry.ring_fill, 2);
+    EXPECT_EQ(entry.count_ring[0], 3);
+    EXPECT_EQ(entry.count_ring[1], 4);
+    EXPECT_EQ(entry.last_updated_epoch, 2u);
+}
+
+// Ring buffer wraparound: pushing more than KLASS_POPULATION_RING_SIZE (30)
+// samples must not grow ring_fill past 30, and the ring must overwrite the
+// oldest slots in order rather than corrupting adjacent entries.
+TEST_F(KlassPopulationTest, RingBufferWrapsAroundAtThirtySamples) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    const int RING_SIZE = 30;
+    for (int i = 0; i < RING_SIZE + 5; i++) {
+        int slot;
+        bool created;
+        tracker->klassPopulationRecordForTest(42, (u16)(i + 1), i + 1, &slot,
+                                               &created);
+        EXPECT_EQ(created, i == 0);
+    }
+
+    KlassPopulationEntry entry;
+    ASSERT_TRUE(tracker->klassPopulationLookupForTest(42, &entry));
+    // Still capped at 30 even though 35 samples were pushed.
+    EXPECT_EQ(entry.ring_fill, RING_SIZE);
+    // ring_head wrapped: 35 writes into a 30-slot ring lands back at index 5.
+    EXPECT_EQ(entry.ring_head, 5);
+    // 35 pushes write ring indices 0..29 with values 1..30, then wrap and
+    // overwrite indices 0..4 with values 31..35 - leaving indices 5..29
+    // still holding values 6..30 (never overwritten) and indices 0..4
+    // holding the wrapped-around values 31..35.
+    EXPECT_EQ(entry.count_ring[5], 6);
+    EXPECT_EQ(entry.count_ring[29], 30);
+    EXPECT_EQ(entry.count_ring[0], 31);
+    EXPECT_EQ(entry.count_ring[4], 35);
+    EXPECT_EQ(entry.last_updated_epoch, RING_SIZE + 5u);
+}
+
+// Filling the table to MAX_KLASS_POPULATION_ENTRIES and then inserting one
+// more distinct klass_id must evict the least-recently-updated entry (the
+// smallest last_updated_epoch) and return its representative jweak so the
+// caller can release it.
+TEST_F(KlassPopulationTest, EvictsLeastRecentlyUpdatedEntryWhenFull) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    const int CAP = 256; // MAX_KLASS_POPULATION_ENTRIES
+    for (u32 klass_id = 1; klass_id <= (u32)CAP; klass_id++) {
+        int slot;
+        bool created;
+        // epoch == klass_id, so klass_id 1 is the least-recently-updated
+        // entry once the table is full.
+        tracker->klassPopulationRecordForTest(klass_id, 1, klass_id, &slot,
+                                               &created);
+        ASSERT_TRUE(created);
+    }
+    EXPECT_EQ(tracker->klassPopulationSizeForTest(), CAP);
+
+    jweak victim_ref = fakeRef(0xdead);
+    tracker->klassPopulationSetRepresentativeForTest(nullptr, 1, victim_ref);
+
+    int slot;
+    bool created;
+    // Eviction now returns evicted refs via output array, not return value.
+    jweak evicted[KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS];
+    int evicted_count = 0;
+    tracker->klassPopulationRecordForTest(
+        /*klass_id=*/CAP + 1, /*count=*/1, /*epoch=*/CAP + 1, &slot, &created,
+        evicted, &evicted_count, KlassPopulationEntry::MAX_REPRESENTATIVES_PER_KLASS);
+
+    EXPECT_TRUE(created);
+    ASSERT_EQ(evicted_count, 1);
+    EXPECT_EQ(evicted[0], victim_ref);
+    // Table stays at capacity - the evicted slot was reused, not appended.
+    EXPECT_EQ(tracker->klassPopulationSizeForTest(), CAP);
+
+    KlassPopulationEntry evicted_klass_entry;
+    EXPECT_FALSE(tracker->klassPopulationLookupForTest(1, &evicted_klass_entry))
+        << "klass_id 1 should have been fully replaced by the eviction";
+
+    KlassPopulationEntry new_entry;
+    ASSERT_TRUE(tracker->klassPopulationLookupForTest(CAP + 1, &new_entry));
+    EXPECT_EQ(new_entry.representative_count, 0);
+    EXPECT_EQ(new_entry.ring_fill, 1);
+}
+
+// ---------------------------------------------------------------------------
+// Slope computation and candidate ranking (LiveHeapReferenceChains-
+// RemainingWorkPlan.md). Same rationale as KlassPopulationTest above
+// for exercising LivenessTracker::instance() directly: selectLeakCandidates()
+// makes no JNI call (it only copies the opaque jweak field, never
+// dereferences it), so it is safe to call on the real singleton without a
+// live JVM, and the *ForTest seams already in place are enough to seed
+// arbitrary ring-buffer states without going through cleanup_table().
+class SelectLeakCandidatesTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        installGtestCrashHandler<LIVENESS_TRACKER_TEST_NAME>();
+        LivenessTracker::instance()->klassPopulationResetForTest();
+    }
+
+    void TearDown() override {
+        LivenessTracker::instance()->klassPopulationResetForTest();
+        restoreDefaultSignalHandlers();
+    }
+
+    static jweak fakeRef(uintptr_t tag) {
+        return reinterpret_cast<jweak>(tag);
+    }
+
+    // Pushes `n` samples (count values `counts[0..n)`, one per epoch starting
+    // at `start_epoch`) into klass_id's ring buffer via the same
+    // recordKlassPopulationSampleLocked() path production code drives from
+    // cleanup_table()'s epoch-advance pass (klassPopulationRecordForTest() is
+    // a direct pass-through to it, see its header comment). ALSO seeds a
+    // qualifying per-tid trend for the same epochs (a linear 1..n ramp on a
+    // fixed synthetic tid) - selectLeakCandidates() now requires a qualifying
+    // allocating thread on top of the klass-level ramp, so a series seeded
+    // through this helper represents a genuinely thread-concentrated leak.
+    // Tests that specifically exercise the per-tid gate itself seed the
+    // tid trends (or their absence) directly via tidTrendRecordForTest().
+    static void seedSeries(LivenessTracker *tracker, u32 klass_id,
+                            const u16 *counts, int n, u64 start_epoch) {
+        for (int i = 0; i < n; i++) {
+            int slot;
+            bool created;
+            tracker->klassPopulationRecordForTest(klass_id, counts[i],
+                                                   start_epoch + i, &slot,
+                                                   &created);
+            tracker->tidTrendRecordForTest(klass_id, /*tid=*/42,
+                                            (u32)(i + 1), start_epoch + i);
+        }
+    }
+};
+
+// A klass whose population is monotonically increasing for long enough has a
+// positive slope, clears the growth/floor magnitude bars
+// (hasQualifyingGrowth()) for enough consecutive epochs to satisfy the
+// sustained-trend hysteresis requirement, and is returned, carrying its
+// representative jweak through unchanged. 20 samples (not just the 10-sample
+// minimum fill) - see MinimumFillAloneDoesNotClearHysteresis/
+// SustainedGrowthClearsHysteresis below for the boundary this margin avoids.
+TEST_F(SelectLeakCandidatesTest, GrowingPopulationIsSelected) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    u16 growing[20];
+    for (int i = 0; i < 20; i++) {
+        growing[i] = (u16)(i + 1);
+    }
+    seedSeries(tracker, /*klass_id=*/1, growing, 20, /*start_epoch=*/1);
+    jweak rep = fakeRef(0x1);
+    tracker->klassPopulationSetRepresentativeForTest(nullptr, 1, rep);
+
+    KlassCandidate out[5];
+    int count = tracker->selectLeakCandidates(out, 5);
+
+    ASSERT_EQ(count, 1);
+    EXPECT_EQ(out[0].klass_id, 1u);
+    EXPECT_EQ(out[0].representative, rep);
+}
+
+// A klass with a flat population (zero slope) is not a growth candidate -
+// the design doc requires strictly positive slope, not "non-negative".
+TEST_F(SelectLeakCandidatesTest, FlatPopulationIsNotSelected) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    const u16 flat[10] = {5, 5, 5, 5, 5, 5, 5, 5, 5, 5};
+    seedSeries(tracker, /*klass_id=*/1, flat, 10, /*start_epoch=*/1);
+
+    KlassCandidate out[5];
+    int count = tracker->selectLeakCandidates(out, 5);
+
+    EXPECT_EQ(count, 0);
+}
+
+// A klass whose population is shrinking has a negative slope and must not be
+// reported as a leak candidate.
+TEST_F(SelectLeakCandidatesTest, ShrinkingPopulationIsNotSelected) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    const u16 shrinking[10] = {10, 9, 8, 7, 6, 5, 4, 3, 2, 1};
+    seedSeries(tracker, /*klass_id=*/1, shrinking, 10, /*start_epoch=*/1);
+
+    KlassCandidate out[5];
+    int count = tracker->selectLeakCandidates(out, 5);
+
+    EXPECT_EQ(count, 0);
+}
+
+// A klass with fewer than KLASS_POPULATION_MIN_FILL_FOR_TREND (10) samples
+// is skipped regardless of how strong its apparent trend looks - not enough
+// history yet to trust it (design doc's explicit minimum-fill requirement).
+TEST_F(SelectLeakCandidatesTest, JustBelowMinimumFillIsNotSelected) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    const u16 growing_but_short[9] = {1, 2, 3, 4, 5, 6, 7, 8, 9};
+    seedSeries(tracker, /*klass_id=*/1, growing_but_short, 9,
+               /*start_epoch=*/1);
+
+    KlassCandidate out[5];
+    int count = tracker->selectLeakCandidates(out, 5);
+
+    EXPECT_EQ(count, 0);
+}
+
+// Exactly KLASS_POPULATION_MIN_FILL_FOR_TREND (10) samples clears
+// hasQualifyingGrowth() on only its very last push - every earlier push saw
+// ring_fill below the minimum and was rejected outright, so
+// consecutive_positive is only 1 by the time fill reaches 10. One qualifying
+// epoch does not clear the sustained-trend hysteresis requirement
+// (LEAK_TREND_HYSTERESIS_BASE, 5 consecutive qualifying epochs) on its own -
+// this used to be enough before that gate existed (hence this test's name),
+// but is not anymore; see SustainedGrowthClearsHysteresis below for the new
+// equivalent boundary test.
+TEST_F(SelectLeakCandidatesTest, MinimumFillAloneDoesNotClearHysteresis) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    const u16 growing[10] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+    seedSeries(tracker, /*klass_id=*/1, growing, 10, /*start_epoch=*/1);
+
+    KlassCandidate out[5];
+    int count = tracker->selectLeakCandidates(out, 5);
+
+    EXPECT_EQ(count, 0);
+}
+
+// Once growth/floor keeps qualifying for enough additional epochs past
+// min-fill to reach LEAK_TREND_HYSTERESIS_BASE (5 consecutive qualifying
+// epochs: fill 10 through 14), the klass is trusted.
+TEST_F(SelectLeakCandidatesTest, SustainedGrowthClearsHysteresis) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    u16 growing[14];
+    for (int i = 0; i < 14; i++) {
+        growing[i] = (u16)(i + 1);
+    }
+    seedSeries(tracker, /*klass_id=*/1, growing, 14, /*start_epoch=*/1);
+
+    KlassCandidate out[5];
+    int count = tracker->selectLeakCandidates(out, 5);
+
+    EXPECT_EQ(count, 1);
+}
+
+// The aggregate post-GC heap floor (heapFloorRising()) lowers the number of
+// consecutive qualifying epochs required from LEAK_TREND_HYSTERESIS_BASE (5)
+// to LEAK_TREND_HYSTERESIS_CORROBORATED (3) for every candidate in the same
+// scan - it cannot single out which klass is responsible for its own rise,
+// so it can only raise or lower this bar uniformly, never reorder candidates
+// against each other (see that pair's own comment, livenessTracker.h).
+TEST_F(SelectLeakCandidatesTest, HeapFloorCorroborationLowersRequiredHysteresis) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    // 12 samples: 3 consecutive qualifying epochs past min-fill (fill = 10,
+    // 11, 12) - enough for LEAK_TREND_HYSTERESIS_CORROBORATED (3) but not
+    // LEAK_TREND_HYSTERESIS_BASE (5).
+    u16 growing[12];
+    for (int i = 0; i < 12; i++) {
+        growing[i] = (u16)(i + 1);
+    }
+    seedSeries(tracker, /*klass_id=*/1, growing, 12, /*start_epoch=*/1);
+
+    KlassCandidate out[5];
+    EXPECT_EQ(tracker->selectLeakCandidates(out, 5), 0)
+        << "3 qualifying epochs clear the corroborated (3) but not the base "
+           "(5) hysteresis bar - without heap-floor corroboration this klass "
+           "must not be selected yet";
+
+    // A rising aggregate heap floor (10 samples, clearly growing) makes
+    // heapFloorRising() report true, lowering the bar for this same scan.
+    constexpr u64 GiB = 1ULL << 30;
+    constexpr u64 MiB = 1ULL << 20;
+    for (int i = 0; i < 10; i++) {
+        tracker->heapFloorRecordForTest(2 * GiB + (u64)i * 50 * MiB);
+    }
+    ASSERT_TRUE(tracker->heapFloorRisingForTest());
+
+    EXPECT_EQ(tracker->selectLeakCandidates(out, 5), 1);
+}
+
+// --- Per-(klass, tid) qualification gate (TidTrend, livenessTracker.h) ---
+// The disjoint-tagged-vs-frontier pod finding: a whole-klass rising
+// generation count can come from churn spread across MANY allocating
+// threads, each retaining a STABLE handful of instances. A klass with a
+// qualifying klass-level trend but NO thread whose own trend qualifies is
+// NOT a leak candidate.
+TEST_F(SelectLeakCandidatesTest, KlassTrendWithoutQualifyingTidIsNotSelected) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    // Klass-level ramp only - no per-tid trend seeded at all (the raw seam
+    // loop, not seedSeries(), which would seed a qualifying tid too).
+    u16 growing[20];
+    for (int i = 0; i < 20; i++) {
+        growing[i] = (u16)(i + 1);
+        int slot;
+        bool created;
+        tracker->klassPopulationRecordForTest(/*klass_id=*/1, growing[i],
+                                                /*epoch=*/i + 1, &slot, &created);
+    }
+
+    KlassCandidate out[5];
+    EXPECT_EQ(tracker->selectLeakCandidates(out, 5), 0)
+        << "a klass-level rise with no qualifying allocating thread is the "
+           "machinery-churn shape observed on the hotdog pod - it must not "
+           "become a candidate";
+}
+
+// A klass trend plus a tid trend that is FLAT (machinery: stable small
+// retained set, no rising age span, below the retained-count bar) does
+// not qualify either - each discriminator is necessary, not just one of
+// them being absent.
+TEST_F(SelectLeakCandidatesTest, FlatTidTrendDoesNotQualify) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    u16 growing[20];
+    for (int i = 0; i < 20; i++) {
+        growing[i] = (u16)(i + 1);
+        int slot;
+        bool created;
+        tracker->klassPopulationRecordForTest(/*klass_id=*/1, growing[i],
+                                                /*epoch=*/i + 1, &slot, &created);
+        // Constant 2 surviving tracked instances, every epoch: below the
+        // retained-count bar and no rising age-cardinality trend.
+        tracker->tidTrendRecordForTest(/*klass_id=*/1, /*tid=*/7, /*count=*/2,
+                                        /*epoch=*/i + 1);
+    }
+
+    KlassCandidate out[5];
+    EXPECT_EQ(tracker->selectLeakCandidates(out, 5), 0);
+}
+
+// The retained-count bar (TID_RETAINED_COUNT_BAR) qualifies a tid whose
+// instances all share one age (one-cohort-per-thread accumulation - each
+// one-shot worker thread's distinct-age count stays 1 forever) as long as
+// it retains enough tracked instances - the discriminator that covers
+// LeakingCacheScenario's allocator-thread shape.
+TEST_F(SelectLeakCandidatesTest, RetainedCountBarQualifiesOneCohortShape) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    u16 growing[20];
+    for (int i = 0; i < 20; i++) {
+        growing[i] = (u16)(i + 1);
+        int slot;
+        bool created;
+        tracker->klassPopulationRecordForTest(/*klass_id=*/1, growing[i],
+                                                /*epoch=*/i + 1, &slot, &created);
+        // 12 > TID_RETAINED_COUNT_BAR (8), flat every epoch: the age trend
+        // alone would never qualify (no rise), the bar does.
+        tracker->tidTrendRecordForTest(/*klass_id=*/1, /*tid=*/7, /*count=*/12,
+                                        /*epoch=*/i + 1);
+    }
+
+    KlassCandidate out[5];
+    ASSERT_EQ(tracker->selectLeakCandidates(out, 5), 1);
+    ASSERT_GE(out[0].qualifying_tid_count, 1);
+    EXPECT_EQ(out[0].qualifying_tids[0], 7);
+}
+
+// A rising per-tid trend alone (below the retained-count bar) qualifies:
+// small leaks grow their age span long before their count clears the bar -
+// the hotdog pod's simulated-memory-leak thread (12 tracked [B instances,
+// age_count rising 2->3) is exactly this shape.
+TEST_F(SelectLeakCandidatesTest, RisingTidTrendQualifiesBelowCountBar) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    u16 growing[20];
+    for (int i = 0; i < 20; i++) {
+        growing[i] = (u16)(i + 1);
+        int slot;
+        bool created;
+        tracker->klassPopulationRecordForTest(/*klass_id=*/1, growing[i],
+                                                /*epoch=*/i + 1, &slot, &created);
+        // Rising, but capped at 6 tracked instances (below the bar of 8).
+        u32 tid_count = (u32)((i / 3) + 1) > 6 ? 6 : (u32)((i / 3) + 1);
+        tracker->tidTrendRecordForTest(/*klass_id=*/1, /*tid=*/9, tid_count,
+                                        /*epoch=*/i + 1);
+    }
+
+    KlassCandidate out[5];
+    ASSERT_EQ(tracker->selectLeakCandidates(out, 5), 1);
+    ASSERT_GE(out[0].qualifying_tid_count, 1);
+    EXPECT_EQ(out[0].qualifying_tids[0], 9);
+}
+
+// Multiple positive-slope klasses must come back sorted by slope magnitude
+// descending, not insertion order. 20-sample linear series (not the original
+// 10 - see GrowingPopulationIsSelected's own note) at three distinct growth
+// rates so every klass clears the growth/floor magnitude bars and the
+// sustained-trend hysteresis requirement, while still ranking distinctly.
+TEST_F(SelectLeakCandidatesTest, OrdersByMagnitudeDescending) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    u16 strong[20], weak[20], medium[20];
+    for (int i = 0; i < 20; i++) {
+        strong[i] = (u16)(1 + i * 3); // steepest -> strongest
+        weak[i] = (u16)(1 + i * 1);   // shallowest -> weakest
+        medium[i] = (u16)(1 + i * 2);
+    }
+
+    seedSeries(tracker, /*klass_id=*/1, strong, 20, /*start_epoch=*/1);
+    seedSeries(tracker, /*klass_id=*/2, weak, 20, /*start_epoch=*/1);
+    seedSeries(tracker, /*klass_id=*/3, medium, 20, /*start_epoch=*/1);
+
+    KlassCandidate out[5];
+    int count = tracker->selectLeakCandidates(out, 5);
+
+    ASSERT_EQ(count, 3);
+    EXPECT_EQ(out[0].klass_id, 1u); // strongest
+    EXPECT_EQ(out[1].klass_id, 3u); // middle
+    EXPECT_EQ(out[2].klass_id, 2u); // weakest
+}
+
+// More than MAX_LEAK_CANDIDATES (5) positive-slope klasses exist: only the
+// top 5 by magnitude are returned, even though the caller asked for more -
+// design doc's "top 3-5" cutoff is an upper bound the method itself enforces,
+// not just a suggestion to the caller.
+TEST_F(SelectLeakCandidatesTest, CapsAtMaxLeakCandidatesRegardlessOfRequestedMax) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    // 7 klasses, each growing by a distinct amount per sample so every one
+    // has a distinct, positive slope: klass_id N grows by N per sample. 20
+    // samples (not 10 - see GrowingPopulationIsSelected's own note) so every
+    // klass also clears the sustained-trend hysteresis requirement.
+    for (u32 klass_id = 1; klass_id <= 7; klass_id++) {
+        u16 series[20];
+        for (int i = 0; i < 20; i++) {
+            series[i] = (u16)(1 + i * klass_id);
+        }
+        seedSeries(tracker, klass_id, series, 20, /*start_epoch=*/1);
+    }
+
+    KlassCandidate out[10];
+    int count = tracker->selectLeakCandidates(out, 10);
+
+    ASSERT_EQ(count, 5); // MAX_LEAK_CANDIDATES, not the requested 10
+    // Steeper growth (larger klass_id) means larger slope - the 5 returned
+    // must be the 5 largest klass_ids, strongest first.
+    EXPECT_EQ(out[0].klass_id, 7u);
+    EXPECT_EQ(out[1].klass_id, 6u);
+    EXPECT_EQ(out[2].klass_id, 5u);
+    EXPECT_EQ(out[3].klass_id, 4u);
+    EXPECT_EQ(out[4].klass_id, 3u);
+}
+
+// The caller's own buffer capacity (`max`) is honored when it is smaller
+// than MAX_LEAK_CANDIDATES - the method must never write past `max` slots.
+TEST_F(SelectLeakCandidatesTest, HonorsCallerSuppliedMaxBelowCap) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    for (u32 klass_id = 1; klass_id <= 3; klass_id++) {
+        u16 series[20];
+        for (int i = 0; i < 20; i++) {
+            series[i] = (u16)(1 + i * klass_id);
+        }
+        seedSeries(tracker, klass_id, series, 20, /*start_epoch=*/1);
+    }
+
+    KlassCandidate out[2];
+    int count = tracker->selectLeakCandidates(out, 2);
+
+    ASSERT_EQ(count, 2);
+    EXPECT_EQ(out[0].klass_id, 3u); // strongest
+    EXPECT_EQ(out[1].klass_id, 2u); // second-strongest; klass 1 dropped
+}
+
+// An empty population table (nothing tracked yet, or _gc_generations was
+// never enabled so population tracking's own gate left the table empty) yields no
+// candidates regardless of `max` - no separate guard is needed inside
+// selectLeakCandidates() beyond the table being empty.
+TEST_F(SelectLeakCandidatesTest, EmptyTableReturnsZero) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    KlassCandidate out[5];
+    int count = tracker->selectLeakCandidates(out, 5);
+
+    EXPECT_EQ(count, 0);
+}
+
+// ---------------------------------------------------------------------------
+// topKlassesByGenerationCount() - ranks by most-recent count_ring sample,
+// with NO trend/hysteresis gate at all (unlike selectLeakCandidates() above)
+// - see its own header comment (livenessTracker.h) for why: it exists to run
+// AFTER hasLeakSignal() has already fired via the slower, hysteresis-gated
+// path, as a faster follow-up ranking for ReferenceChainTracker's rotation
+// priority. Reuses SelectLeakCandidatesTest's fixture/seedSeries() seam -
+// same table, same seeding mechanism, different read method under test.
+//
+// Returns stable_class_tag, NOT klass_id (the classMap dictionary id) - see
+// that field's own comment (livenessTracker.h) for why the two are
+// deliberately different values. klassPopulationRecordForTest() (seedSeries()'s
+// own underlying seam) bypasses foldKlassCountsLocked() entirely, so it never
+// mints a stable_class_tag - tests seed it explicitly via
+// klassPopulationSetStableClassTagForTest(), using a value distinct from
+// klass_id in each test below specifically so a test that accidentally
+// asserted against klass_id instead would fail loudly, not silently pass by
+// coincidence.
+// ---------------------------------------------------------------------------
+
+// A single sample (ring_fill == 1, far below selectLeakCandidates()'s
+// KLASS_POPULATION_MIN_FILL_FOR_TREND) is enough to rank - the whole point
+// of skipping the hysteresis gate.
+TEST_F(SelectLeakCandidatesTest, TopKlassesByGenerationCountNeedsOnlyOneSample) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    const u16 single[1] = {42};
+    seedSeries(tracker, /*klass_id=*/7, single, 1, /*start_epoch=*/1);
+    tracker->klassPopulationSetStableClassTagForTest(7, -700);
+
+    u32 out[5];
+    int count = tracker->topKlassesByGenerationCount(out, 5);
+
+    ASSERT_EQ(count, 1);
+    EXPECT_EQ(out[0], (u32)-700);
+}
+
+// A klass with samples but no minted stable_class_tag yet (no live instance
+// resolved so far - foldKlassCountsLocked()'s own comment) has nothing
+// usable to return and must be skipped, not reported with a bogus 0 tag.
+TEST_F(SelectLeakCandidatesTest, TopKlassesByGenerationCountSkipsUnmintedStableClassTag) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    const u16 single[1] = {42};
+    seedSeries(tracker, /*klass_id=*/7, single, 1, /*start_epoch=*/1);
+    // Deliberately no klassPopulationSetStableClassTagForTest() call.
+
+    u32 out[5];
+    int count = tracker->topKlassesByGenerationCount(out, 5);
+
+    EXPECT_EQ(count, 0);
+}
+
+// Ranking is by the MOST RECENT sample, not the peak or the mean - a klass
+// whose count has since fallen still ranks by where it is NOW.
+TEST_F(SelectLeakCandidatesTest, TopKlassesByGenerationCountUsesMostRecentSampleNotPeak) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    const u16 peakedThenFell[4] = {100, 5, 5, 5}; // peak 100, now 5
+    const u16 steady[4] = {10, 10, 10, 10};       // never peaked, now 10
+    seedSeries(tracker, /*klass_id=*/1, peakedThenFell, 4, /*start_epoch=*/1);
+    seedSeries(tracker, /*klass_id=*/2, steady, 4, /*start_epoch=*/1);
+    tracker->klassPopulationSetStableClassTagForTest(1, -100);
+    tracker->klassPopulationSetStableClassTagForTest(2, -200);
+
+    u32 out[5];
+    int count = tracker->topKlassesByGenerationCount(out, 5);
+
+    ASSERT_EQ(count, 2);
+    EXPECT_EQ(out[0], (u32)-200) << "klass 2 (currently 10) should outrank "
+                                    "klass 1 (currently 5, despite an "
+                                    "earlier peak of 100)";
+    EXPECT_EQ(out[1], (u32)-100);
+}
+
+// A flat or shrinking population - which selectLeakCandidates() would
+// exclude entirely (zero/negative slope) - still ranks here: this method
+// applies no growth-direction requirement, only magnitude.
+TEST_F(SelectLeakCandidatesTest, TopKlassesByGenerationCountIncludesFlatAndShrinkingPopulations) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    const u16 flat[3] = {50, 50, 50};
+    const u16 shrinking[3] = {30, 20, 10};
+    seedSeries(tracker, /*klass_id=*/1, flat, 3, /*start_epoch=*/1);
+    seedSeries(tracker, /*klass_id=*/2, shrinking, 3, /*start_epoch=*/1);
+    tracker->klassPopulationSetStableClassTagForTest(1, -100);
+    tracker->klassPopulationSetStableClassTagForTest(2, -200);
+
+    u32 out[5];
+    int count = tracker->topKlassesByGenerationCount(out, 5);
+
+    ASSERT_EQ(count, 2);
+    EXPECT_EQ(out[0], (u32)-100) << "flat-at-50 outranks shrinking-to-10";
+    EXPECT_EQ(out[1], (u32)-200);
+}
+
+TEST_F(SelectLeakCandidatesTest, TopKlassesByGenerationCountCapsAtMaxLeakCandidates) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    for (u32 klass_id = 1; klass_id <= 8; klass_id++) {
+        const u16 sample[1] = {(u16)(klass_id * 10)};
+        seedSeries(tracker, klass_id, sample, 1, /*start_epoch=*/1);
+        tracker->klassPopulationSetStableClassTagForTest(klass_id, -(jlong)(klass_id * 100));
+    }
+
+    u32 out[10];
+    int count = tracker->topKlassesByGenerationCount(out, 10);
+
+    EXPECT_EQ(count, 5) << "capped at MAX_LEAK_CANDIDATES regardless of the "
+                           "caller-supplied max";
+    // Descending by most-recent count: klass 8 (count 80, tag -800) first.
+    EXPECT_EQ(out[0], (u32)-800);
+    EXPECT_EQ(out[4], (u32)-400);
+}
+
+TEST_F(SelectLeakCandidatesTest, TopKlassesByGenerationCountEmptyTableReturnsZero) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+
+    u32 out[5];
+    int count = tracker->topKlassesByGenerationCount(out, 5);
+
+    EXPECT_EQ(count, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Heap-wide time-to-OOM projection (secondsToOOM()) - the aggressive-leak gap
+// selectLeakCandidates()'s per-klass ring-fill/hysteresis gate leaves open:
+// that gate can take longer to trust a candidate than a fast, heap-wide leak
+// has left before OOM (see ReferenceChainTracker::hasLeakSignal()'s
+// OOM_URGENT_THRESHOLD_S fast path, referenceChains.h/.cpp). Exercises the
+// heap-floor ring/time-ring pair directly via the same heapFloorRecordForTest()
+// seam SelectLeakCandidatesTest's HeapFloorCorroboration test above already
+// uses for heapFloorRising(), plus setMaxHeapBytesForTest() to avoid the
+// JNI-dependent HeapUsage::getMaxHeap() call this suite has no live JVM for.
+// ---------------------------------------------------------------------------
+class SecondsToOOMTest : public ::testing::Test {
+protected:
+    static constexpr u64 SEC_NS = 1000000000ULL;
+    static constexpr u64 MiB = 1ULL << 20;
+
+    void SetUp() override {
+        installGtestCrashHandler<LIVENESS_TRACKER_TEST_NAME>();
+        LivenessTracker::instance()->klassPopulationResetForTest();
+        LivenessTracker::instance()->setGcGenerationsForTest(true);
+    }
+
+    void TearDown() override {
+        LivenessTracker::instance()->klassPopulationResetForTest();
+        LivenessTracker::instance()->setGcGenerationsForTest(false);
+        LivenessTracker::instance()->setMaxHeapBytesForTest(-1);
+        restoreDefaultSignalHandlers();
+    }
+
+    // Ten samples, one second apart, growing by 100MiB each: earliest third
+    // (indices 0-2) means to 1100MiB at t=1s, recent third (indices 7-9)
+    // means to 1800MiB at t=8s - a 700MiB rise over 7s, i.e. exactly
+    // 100MiB/s, chosen so the projected time-to-exhaustion below comes out
+    // to a clean value rather than a value only checked against itself.
+    static void seedRisingFloor(LivenessTracker *tracker) {
+        for (int i = 0; i < 10; i++) {
+            tracker->heapFloorRecordForTest(1000 * MiB + (u64)i * 100 * MiB,
+                                             (u64)i * SEC_NS);
+        }
+    }
+};
+
+// Fewer than KLASS_POPULATION_MIN_FILL_FOR_TREND (10) heap-floor samples -
+// same "not enough history yet" gate ringThirdsStats() applies to every
+// other trend check in this class.
+TEST_F(SecondsToOOMTest, NotEnoughSamplesReturnsNegative) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setMaxHeapBytesForTest((jlong)(2800 * MiB));
+    for (int i = 0; i < 9; i++) {
+        tracker->heapFloorRecordForTest(1000 * MiB + (u64)i * 100 * MiB,
+                                         (u64)i * SEC_NS);
+    }
+    EXPECT_LT(tracker->secondsToOOM(), 0.0);
+}
+
+// A flat floor (zero byte delta between the earliest and recent thirds) is
+// not rising - no projection is offered, mirroring hasQualifyingGrowth()'s
+// own "strictly positive slope" requirement.
+TEST_F(SecondsToOOMTest, FlatFloorReturnsNegative) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setMaxHeapBytesForTest((jlong)(2800 * MiB));
+    for (int i = 0; i < 10; i++) {
+        tracker->heapFloorRecordForTest(1000 * MiB, (u64)i * SEC_NS);
+    }
+    EXPECT_LT(tracker->secondsToOOM(), 0.0);
+}
+
+// No heap-floor history is ever recorded outside _gc_generations (onGC()'s
+// own gate) - secondsToOOM() must not fabricate a projection from whatever
+// ring contents happen to be left over from a previous _gc_generations
+// session.
+TEST_F(SecondsToOOMTest, GcGenerationsDisabledReturnsNegative) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setMaxHeapBytesForTest((jlong)(2800 * MiB));
+    seedRisingFloor(tracker);
+    tracker->setGcGenerationsForTest(false);
+
+    EXPECT_LT(tracker->secondsToOOM(), 0.0);
+}
+
+// A rising floor is meaningless without a resolved max heap size to project
+// against - initialize_table()'s own Error path (livenessTracker.cpp) never
+// lets liveness tracking start without one, but secondsToOOM() must still
+// guard the case explicitly rather than dividing/comparing against -1.
+TEST_F(SecondsToOOMTest, UnresolvedMaxHeapReturnsNegative) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setMaxHeapBytesForTest(-1);
+    seedRisingFloor(tracker);
+
+    EXPECT_LT(tracker->secondsToOOM(), 0.0);
+}
+
+// The worked example seedRisingFloor() documents: 700MiB rise over 7s
+// (100MiB/s) with 1000MiB of headroom (2800MiB max heap - 1800MiB recent
+// floor mean) projects to exactly 10 seconds.
+TEST_F(SecondsToOOMTest, RisingFloorProjectsExpectedSeconds) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setMaxHeapBytesForTest((jlong)(2800 * MiB));
+    seedRisingFloor(tracker);
+
+    EXPECT_NEAR(tracker->secondsToOOM(), 9.0, 1e-6);
+}
+
+// The floor's own recent-third mean has already reached the max heap size -
+// exhaustion is "now", not some positive number of seconds out.
+TEST_F(SecondsToOOMTest, FloorAtMaxHeapReturnsZero) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setMaxHeapBytesForTest((jlong)(1800 * MiB)); // == recent third's mean
+    seedRisingFloor(tracker);
+
+    EXPECT_EQ(tracker->secondsToOOM(), 0.0);
+}
+
+// ---------------------------------------------------------------------------
+// Leak tag pool (design A: direct tagging of leaking objects)
+// ---------------------------------------------------------------------------
+// The pool hands out JVMTI tags in [LEAK_TAG_BASE, LEAK_TAG_BASE + 256) and
+// recycles them when the tracked object dies. These tests exercise the pure
+// pool mechanics (acquire/release/info); tagLeakInstances() itself needs a
+// live JVM (SetTag) and is verified on-pod.
+
+class LeakTagPoolTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        LivenessTracker::instance()->leakTagPoolResetForTest();
+    }
+};
+
+TEST_F(LeakTagPoolTest, AcquireReturnsTagsInLeakRange) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    jlong base = tracker->leakTagBaseForTest();
+    for (int i = 0; i < tracker->leakTagPoolSizeForTest(); i++) {
+        jlong tag = tracker->acquireLeakTagForTest(/*call_trace_id=*/100 + i,
+                                                  /*tid=*/7 + i);
+        EXPECT_GE(tag, base) << "tag below pool range at acquire " << i;
+        EXPECT_LT(tag, base + tracker->leakTagPoolSizeForTest())
+            << "tag above pool range at acquire " << i;
+    }
+    // Pool exhausted: further acquires fail with 0.
+    EXPECT_EQ(0, tracker->acquireLeakTagForTest(1, 1));
+    EXPECT_EQ(0, tracker->leakTagFreeCountForTest());
+}
+
+TEST_F(LeakTagPoolTest, ReleaseReturnsTagToPoolAndInfoIsInvalidated) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    int pool_size = tracker->leakTagPoolSizeForTest();
+
+    jlong tag = tracker->acquireLeakTagForTest(42, 99);
+    ASSERT_GE(tag, tracker->leakTagBaseForTest());
+
+    u64 call_trace_id = 0;
+    jint tid = 0;
+    EXPECT_TRUE(tracker->getLeakTagInfo(tag, &call_trace_id, &tid));
+    EXPECT_EQ(42u, call_trace_id);
+    EXPECT_EQ(99, tid);
+
+    tracker->releaseLeakTagForTest(tag);
+    // Released tags must not report stale info.
+    u64 stale_ctid = 12345;
+    jint stale_tid = 12345;
+    EXPECT_FALSE(tracker->getLeakTagInfo(tag, &stale_ctid, &stale_tid))
+        << "released tag still reports info";
+
+    // The released tag can be acquired again (reusable pool), and the free
+    // count was restored: pool_size-1 after the acquire, back to pool_size
+    // after the release, pool_size-1 again after the re-acquire.
+    EXPECT_EQ(pool_size, tracker->leakTagFreeCountForTest());
+    jlong re_tag = tracker->acquireLeakTagForTest(43, 100);
+    EXPECT_EQ(tag, re_tag) << "released tag should be recycled first (LIFO)";
+    EXPECT_EQ(pool_size - 1, tracker->leakTagFreeCountForTest());
+}
+
+TEST_F(LeakTagPoolTest, ReleaseOutsidePoolRangeIsIgnored) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    jlong base = tracker->leakTagBaseForTest();
+    int free_before = tracker->leakTagFreeCountForTest();
+
+    // Tags outside [base, base+pool): frontier tags (small positive), class
+    // tags (negative), and one-past-the-end must all be rejected.
+    tracker->releaseLeakTagForTest(1);
+    tracker->releaseLeakTagForTest(-1);
+    tracker->releaseLeakTagForTest(0);
+    tracker->releaseLeakTagForTest(base + tracker->leakTagPoolSizeForTest());
+    tracker->releaseLeakTagForTest(base - 1);
+
+    EXPECT_EQ(free_before, tracker->leakTagFreeCountForTest())
+        << "out-of-range releases must not corrupt the free list";
+}
+
+// ---------------------------------------------------------------------------
+// Chase-phase admission boost (admitForTracking()/noteSelectedCandidates()/
+// setUrgentTracking() - see livenessTracker.h). Same "exercise the singleton
+// directly" rationale as KlassPopulationTest above: the admission gate is
+// JNI-free pure logic (atomic reads + the per-thread RNG draw), so it is
+// testable without a live JVM; only track() beyond the gate needs a JNIEnv.
+//
+// Determinism: admissionResetForTest() forces _subsample_ratio to 0 and resets
+// this thread's RNG ThreadLocal, so an unboosted tid's draw always comes from
+// a freshly default-seeded mt19937 whose first draw is strictly in (0,1) -
+// ratio 0 can never admit. That pins the fall-through case without asserting
+// on RNG internals.
+class AdmissionBoostTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        installGtestCrashHandler<LIVENESS_TRACKER_TEST_NAME>();
+        LivenessTracker::instance()->admissionResetForTest();
+    }
+
+    void TearDown() override {
+        // Leave the singleton clean for any test that follows in the same
+        // process (watched tids / urgency would 100%-admit unrelated tids).
+        LivenessTracker::instance()->admissionResetForTest();
+        LivenessTracker::instance()->setSubsampleRatioForTest(0.1);
+        restoreDefaultSignalHandlers();
+    }
+
+    static void fillCandidate(KlassCandidate *kc, jint tid) {
+        kc->klass_id = 1;
+        kc->representative = reinterpret_cast<jweak>(0x1);
+        kc->qualifying_tids[0] = tid;
+        kc->qualifying_tid_count = 1;
+    }
+};
+
+// A watched tid is admitted even though the configured ratio (0) would
+// deterministically reject it - the boost precedes the ratio draw.
+TEST_F(AdmissionBoostTest, WatchedTidAdmittedDespiteRejectingRatio) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    KlassCandidate kc;
+    fillCandidate(&kc, /*tid=*/42);
+    tracker->noteSelectedCandidates(&kc, 1);
+
+    EXPECT_TRUE(tracker->admitForTrackingForTest(42));
+    // An unwatched tid on the same thread falls through to the ratio draw and
+    // is rejected (ratio 0).
+    EXPECT_FALSE(tracker->admitForTrackingForTest(43));
+}
+
+// Urgency admits everything - any tid, watched or not.
+TEST_F(AdmissionBoostTest, UrgencyAdmitsAllTids) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    tracker->setUrgentTracking(true);
+    EXPECT_TRUE(tracker->admitForTrackingForTest(1234));
+    EXPECT_TRUE(tracker->admitForTrackingForTest(5678));
+
+    // Releasing urgency restores the ratio gate: unwatched tids reject again,
+    // watched tids stay boosted.
+    tracker->setUrgentTracking(false);
+    EXPECT_FALSE(tracker->admitForTrackingForTest(1234));
+    KlassCandidate kc;
+    fillCandidate(&kc, 1234);
+    tracker->noteSelectedCandidates(&kc, 1);
+    EXPECT_TRUE(tracker->admitForTrackingForTest(1234));
+}
+
+// noteSelectedCandidates() dedupes tids shared across candidates and caps
+// the watched set at MAX_QUALIFYING_TIDS.
+TEST_F(AdmissionBoostTest, WatchedTidsAreDedupedAndCapped) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    constexpr int kMax = KlassCandidate::MAX_QUALIFYING_TIDS;  // 8
+
+    // Two candidates: 5 tids each, tids 3 and 4 shared -> union is 1..7, in
+    // candidate order (candidates are rank-ordered, so a later candidate's
+    // tids only append what the earlier ones did not cover).
+    KlassCandidate kc[2];
+    for (int t = 0; t < 5; t++) {
+        kc[0].qualifying_tids[t] = 1 + t;  // 1..5
+        kc[1].qualifying_tids[t] = 3 + t;  // 3..7 -> adds 6,7
+    }
+    for (int c = 0; c < 2; c++) {
+        kc[c].klass_id = 1 + c;
+        kc[c].representative = reinterpret_cast<jweak>(0x1 + c);
+        kc[c].qualifying_tid_count = 5;
+    }
+    tracker->noteSelectedCandidates(kc, 2);
+    ASSERT_EQ(7, tracker->watchedTidCountForTest());
+    for (int i = 0; i < 7; i++) {
+        EXPECT_EQ(i + 1, tracker->watchedTidForTest(i))
+            << "shared tids must not duplicate; union stays in order";
+    }
+
+    // A poll whose union exceeds the cap (1..8 from candidate 1, 9 from
+    // candidate 2) keeps the earlier candidates' tids and drops the overflow
+    // tid - and that overflow tid is not admitted.
+    KlassCandidate over[2];
+    for (int t = 0; t < kMax; t++) {
+        over[0].qualifying_tids[t] = 1 + t;  // 1..8
+    }
+    over[0].qualifying_tid_count = kMax;
+    over[0].klass_id = 1;
+    over[0].representative = reinterpret_cast<jweak>(0x1);
+    fillCandidate(&over[1], /*tid=*/9);
+    tracker->noteSelectedCandidates(over, 2);
+    ASSERT_EQ(kMax, tracker->watchedTidCountForTest());
+    for (int i = 0; i < kMax; i++) {
+        EXPECT_EQ(i + 1, tracker->watchedTidForTest(i));
+    }
+    EXPECT_FALSE(tracker->admitForTrackingForTest(9));
+    EXPECT_TRUE(tracker->admitForTrackingForTest(8));
+}
+
+// A zero-candidate poll clears the watched set - a tid left watched after the
+// chase ends would keep admitting that thread at 100% across OS tid reuse.
+TEST_F(AdmissionBoostTest, ZeroCandidatePollClearsWatchedSet) {
+    LivenessTracker *tracker = LivenessTracker::instance();
+    KlassCandidate kc;
+    fillCandidate(&kc, 77);
+    tracker->noteSelectedCandidates(&kc, 1);
+    EXPECT_TRUE(tracker->admitForTrackingForTest(77));
+
+    tracker->noteSelectedCandidates(nullptr, 0);
+    EXPECT_EQ(tracker->watchedTidCountForTest(), 0);
+    EXPECT_FALSE(tracker->admitForTrackingForTest(77));
 }
