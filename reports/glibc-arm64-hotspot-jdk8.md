@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk8
 
 ## glibc-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-09-17 17:27:26 EDT
+**Date:** 2026-09-17 17:28:29 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 97 |
-| Sample Rate | 1.62/sec |
-| Health Score | 101% |
-| Threads | 11 |
+| CPU Samples | 99 |
+| Sample Rate | 1.65/sec |
+| Health Score | 103% |
+| Threads | 9 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 97 |
-| Sample Rate | 1.62/sec |
-| Health Score | 101% |
-| Threads | 11 |
+| CPU Samples | 126 |
+| Sample Rate | 2.10/sec |
+| Health Score | 131% |
+| Threads | 7 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 33-33 cores)</summary>
 
 ```
-1789680073 33
-1789680078 33
-1789680083 33
-1789680088 33
-1789680093 33
-1789680098 33
-1789680103 33
-1789680108 33
-1789680113 33
-1789680118 33
-1789680123 33
-1789680128 33
-1789680133 33
-1789680138 33
-1789680143 33
-1789680148 33
-1789680153 33
-1789680158 33
-1789680163 33
-1789680168 33
+1789680210 33
+1789680215 33
+1789680220 33
+1789680225 33
+1789680230 33
+1789680235 33
+1789680240 33
+1789680245 33
+1789680250 33
+1789680255 33
+1789680260 33
+1789680265 33
+1789680270 33
+1789680275 33
+1789680280 33
+1789680285 33
+1789680290 33
+1789680295 33
+1789680300 33
+1789680305 33
 ```
 </details>
 

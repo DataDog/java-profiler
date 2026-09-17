@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk17
 
 ## musl-x64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-09-17 17:27:28 EDT
+**Date:** 2026-09-17 17:28:32 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 527 |
-| Sample Rate | 8.78/sec |
-| Health Score | 549% |
+| CPU Samples | 596 |
+| Sample Rate | 9.93/sec |
+| Health Score | 621% |
 | Threads | 9 |
-| Allocations | 334 |
+| Allocations | 368 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 1047 |
-| Sample Rate | 17.45/sec |
-| Health Score | 1091% |
-| Threads | 11 |
-| Allocations | 459 |
+| CPU Samples | 596 |
+| Sample Rate | 9.93/sec |
+| Health Score | 621% |
+| Threads | 9 |
+| Allocations | 534 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 60-60 cores)</summary>
 
 ```
-1789680172 60
-1789680177 60
-1789680182 60
-1789680187 60
-1789680192 60
-1789680197 60
-1789680202 60
-1789680207 60
-1789680212 60
-1789680218 60
-1789680223 60
-1789680228 60
-1789680233 60
-1789680238 60
-1789680243 60
-1789680248 60
-1789680254 60
-1789680259 60
-1789680264 60
-1789680269 60
+1789680165 60
+1789680170 60
+1789680175 60
+1789680180 60
+1789680185 60
+1789680190 60
+1789680195 60
+1789680200 60
+1789680205 60
+1789680210 60
+1789680215 60
+1789680220 60
+1789680225 60
+1789680230 60
+1789680235 60
+1789680240 60
+1789680245 60
+1789680250 60
+1789680255 60
+1789680260 60
 ```
 </details>
 
