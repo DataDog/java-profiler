@@ -89,7 +89,11 @@ public:
   u64 _skipped;
   u64 _start_time;
   u64 _age;
-  int64_t leak_tag;  // 0 = untagged; leak tag from LivenessTracker pool
+  // 0 = untagged; leak tag from LivenessTracker pool. Default-initialized so
+  // every construction path (current and future) serializes a defined value -
+  // flush_table() overwrites it from the entry's own tag (track() zeroes it
+  // at insert).
+  int64_t leak_tag = 0;
   Context _ctx;
 };
 

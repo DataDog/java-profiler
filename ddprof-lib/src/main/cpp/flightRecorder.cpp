@@ -2412,11 +2412,16 @@ void Recording::recordReferenceChain(Buffer *buf, ReferenceChainEvent *event) {
   // 32 bytes for its putUtf8() length prefix + payload rather than computing
   // strlen() up front.
   const char *root_kind_name = rootKindName(event->_root_kind);
-  // Per-hop edge labels: same emitted_size as the chain, each bounded by
-  // MAX_REFERENCE_CHAIN_EDGE_LABEL (event.h) + putUtf8's 1-byte encoding
-  // tag and up to 5-byte varint length prefix.
-  const u32 edge_count =
-      event->_edges.size() == emitted_size ? emitted_size : 0;
+  // Per-hop edge labels: aligned with the chain's leaf-first element order
+  // (edges[i] describes the hop into chain[i]), so truncation that keeps the
+  // FIRST emitted_size chain entries keeps their labels aligned too - emit
+  // as many labels as we have for the emitted range. A chain longer than
+  // MAX_REFERENCE_CHAIN_EVENT_HOPS loses only its root-side hops and their
+  // labels; an event whose label collection was skipped entirely (empty
+  // _edges) degrades to a count of 0.
+  const u32 edge_count = event->_edges.size() < emitted_size
+                             ? (u32)event->_edges.size()
+                             : emitted_size;
   const char *edge_labels[MAX_REFERENCE_CHAIN_EVENT_HOPS];
   for (u32 i = 0; i < edge_count; i++) {
     edge_labels[i] = event->_edges[i].c_str();
@@ -2456,9 +2461,10 @@ void Recording::recordReferenceChain(Buffer *buf, ReferenceChainEvent *event) {
   }
   // Edges array, LAST so its metadata position (after "chain", jfrMetadata.cpp)
   // matches the write order - the leakTag field-order invariant
-  // (find-leaktag-jfr-field-misalignment) generalized. Empty count when the
-  // chain was truncated deeper than the collected edges (or the event predates
-  // label collection) rather than emitting a misaligned array.
+  // (find-leaktag-jfr-field-misalignment) generalized. The labels align with
+  // the chain's element order (see edge_count above), so the emitted range
+  // carries its labels even when the chain was truncated at its root side;
+  // a count of 0 means label collection never ran for this event.
   buf->putVar32(edge_count);
   for (u32 i = 0; i < edge_count; i++) {
     buf->putUtf8(edge_labels[i]);
