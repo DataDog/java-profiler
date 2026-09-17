@@ -693,6 +693,13 @@ private:
   // start() in this JVM happened to use (see _frontier's own comment).
   int _configured_frontier_cap;
 
+  // The args-configured per-pass budget (Arguments::_reference_chains_budget),
+  // recorded at start(). The urgency ramp in threadLoop() multiplies the live
+  // _budget while a near-OOM projection holds and restores THIS value when
+  // urgency clears - the live _budget cannot serve as the restore source
+  // because it may already carry the boost.
+  int _configured_budget;
+
   // Class-tag -> StringDictionary id table. Populated by
   // resolveLoadedClasses(), read by heapReferenceCallback(). Survives
   // stop()/start() cycles for the same reason _frontier does - a class,
@@ -1301,6 +1308,11 @@ private:
   // from the single BFS thread (runPass()/shouldRunPass()), like
   // _search_started above, so no volatile/load()/store() is needed.
   bool _tags_released;
+
+  // Whether threadLoop()'s urgency ramp currently holds the multiplied
+  // _budget (see the urgency block there and _configured_budget's own
+  // comment). Single-threaded (BFS thread), like _tags_released above.
+  bool _urgency_budget_boosted;
 
   // Hysteresis state behind isUrgent(), which used to be a bare
   // `secondsToOOM() < OOM_URGENT_THRESHOLD_S` comparison. That estimate is
@@ -2201,6 +2213,7 @@ private:
         _pause_pid(1, 1.0, 1.0, 1.0, 1, 1.0), _search_started(false),
         _tags_released(true), _urgent_latched(false),
         _urgent_release_ticks(0), _urgent_search_spent(false),
+        _urgency_budget_boosted(false), _configured_budget(0),
         _search_state(SearchState::RUNNING),
         _abandon_reason(SearchAbandonReason::NONE), _search_start_ns(0),
         _last_pass_gc_finish_epoch(0), _last_pass_ns(0),
@@ -2905,7 +2918,9 @@ private:
   // REFERENCE_CHAIN_EVENTS_DROPPED) rather than evicting when a brand-new
   // klass_id arrives with the cache already at MAX_RESOLVED_CHAINS - see that
   // constant's own comment and this method's definition (referenceChains.cpp).
-  void cacheResolvedChain(jlong source_tag, ReferenceChainEvent &&event,
+  // Returns false when the chain was dropped (cache full) so the caller can
+  // skip coverage accounting for a chain that will never be emitted.
+  bool cacheResolvedChain(jlong source_tag, ReferenceChainEvent &&event,
                           jlong source_tag_val, u64 source_search_ns);
 
   // Remove a cached chain so pollWatchedTargets rebuilds it on the next
@@ -2945,6 +2960,16 @@ public:
   // pass, and Profiler::stop() after stopThread() has joined the BFS
   // thread. A jni of null (current thread not attached) is a no-op.
   void releaseEndedThreadRefs(JNIEnv *jni);
+
+  // Recording-stop cleanup: delete EVERY remaining registered Thread global
+  // ref (dead threads' queued refs first, then the live registry) and empty
+  // the registry. Only Profiler::stop() calls this, after stopThread() has
+  // joined the BFS thread (no walk phase can hold a copied ref) and with
+  // thread-event notifications about to be disabled - without it, refs of
+  // threads still alive at stop would never be released (nothing walks the
+  // registry again until a future recording re-registers a tid). A jni of
+  // null (current thread not attached) is a no-op.
+  void releaseAllThreadObjects(JNIEnv *jni);
 
   // One-time sweep over the JVM's CURRENTLY LIVE threads at recording start,
   // registering each into the same tid -> Thread-object registry via
