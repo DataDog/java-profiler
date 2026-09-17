@@ -3229,9 +3229,24 @@ ReferenceChainTracker::hopLabelClassFor(jvmtiEnv *jvmti, JNIEnv *jni,
     if (jvmti->GetObjectsWithTags(1, &class_tag, &count, &objects, &tags) !=
             JVMTI_ERROR_NONE ||
         count != 1 || objects == nullptr || objects[0] == nullptr) {
+      // Both result arrays are JVMTI-allocated on success and must be
+      // Deallocate()d by the caller - same contract as every other
+      // GetObjectsWithTags() call site in this file. On the error path they
+      // may or may not have been allocated, hence the null guards.
+      if (objects != nullptr) {
+        jvmti->Deallocate((unsigned char *)objects);
+      }
+      if (tags != nullptr) {
+        jvmti->Deallocate((unsigned char *)tags);
+      }
       break;
     }
     jclass cls = (jclass)objects[0];
+    // The arrays were only needed to obtain the class object - the jobject
+    // handle stays valid on its own - so release them before the (multiple,
+    // break-exited) decode branches below, which otherwise all leak them.
+    jvmti->Deallocate((unsigned char *)objects);
+    jvmti->Deallocate((unsigned char *)tags);
     jboolean is_interface = JNI_FALSE;
     std::vector<std::string> names;
     bool ok = false;
