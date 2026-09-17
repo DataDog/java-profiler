@@ -10,6 +10,7 @@
 #include "common.h"
 #include "counters.h"
 #include "dwarf.h"
+#include "nativeMem.h"
 #include "utils.h"
 
 #include <atomic>
@@ -163,6 +164,14 @@ private:
   int _capacity;
   int _count;
   CodeBlob *_blobs;
+
+  // Running total of memoryUsage()'s formula, updated incrementally by the
+  // same pre-publication mutators (constructor, add(), expand(),
+  // setDwarfTable()) instead of recomputed by iterating _blobs. Safe because
+  // every contributing field is fixed before publication (see _published
+  // below) -- there is no point after construction-and-population where this
+  // total could be stale relative to a fresh recompute.
+  long long _memory_usage;
 
   // Set once the cache is registered into a CodeCacheArray (see markPublished()).
   // After that, memoryUsage() may be read lock-free from another thread (dump),
@@ -328,6 +337,17 @@ public:
     } while (!__atomic_compare_exchange_n(&_reserved, &slot, slot + 1,
                                           true, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
     assert(__atomic_load_n(&_libs[slot], __ATOMIC_RELAXED) == nullptr);
+    // Record this library's contribution to NM_NATIVE_SYMBOLS exactly once,
+    // right here at publication -- not via a periodic recompute-and-overwrite
+    // elsewhere. A cache that fails to publish (the overflow branch above) is
+    // simply never recorded, so there is no corresponding decrement to get
+    // right on the parse-failure/duplicate discard path in
+    // Symbols::parseLibraries (which deletes an unpublished cache directly).
+    // Because record() is a relaxed atomic add, concurrent publishers from
+    // different threads (or a publish racing Profiler::dump()'s read of the
+    // aggregate) can never clobber each other's contribution -- unlike the
+    // read-modify-write a periodic setLive(sum-of-everything) would need.
+    NativeMem::record(NM_NATIVE_SYMBOLS, lib->memoryUsage());
     // Mark published before the RELEASE store makes the pointer visible, so any
     // later add()/expand()/setDwarfTable() on this cache trips the assert (its
     // _blobs would then be read lock-free by memoryUsage() at dump time).
@@ -351,11 +371,11 @@ public:
     return __atomic_load_n(&_libs[index], __ATOMIC_ACQUIRE);
   }
 
-  // Sum the live memory of all registered libraries. Recomputed on demand
-  // (called only at dump time) so it reflects each library's fully-populated
-  // state at that point — the accurate per-library formula rather than a value
-  // cached at add() time. (Libraries are populated before being registered and
-  // not grown afterwards.) The array is append-only, so iterating the published
+  // Sum the live memory of all registered libraries. Each lib->memoryUsage()
+  // is now an O(1) read of a running total (see CodeCache::_memory_usage),
+  // not a rescan of its symbol table, so this whole sum is O(libraries) --
+  // still only called at dump time, but no longer the reason to avoid calling
+  // it more often. The array is append-only, so iterating the published
   // prefix is safe alongside concurrent add()s.
   size_t memoryUsage() const {
     size_t total = 0;
