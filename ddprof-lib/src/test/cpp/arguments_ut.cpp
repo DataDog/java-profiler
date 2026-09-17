@@ -31,7 +31,7 @@ protected:
 // hops/budget/framecap are ceiling-clamped (MAX_REFERENCE_CHAINS_HOP_CAP/
 // _BUDGET/_FRONTIER_CAP, arguments.h) as well as floored at 1 - an operator
 // typo (an extra digit) must not flow straight into a loop bound or
-// the frontier table's allocation unchecked.
+// FrontierTable's allocation unchecked.
 TEST_F(ArgumentsTest, HopsBudgetFrameCapAreCeilingClamped) {
     Arguments args;
     Error error = args.parse("referencechains=true:hops=2000000000:budget=2000000000:framecap=2000000000");

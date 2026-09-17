@@ -4,7 +4,7 @@
  */
 
 // ---------------------------------------------------------------------------
-// Open question this test answers: does JMC's parser actually resolve
+// PROF-15341 design doc, Open Question: does JMC's parser actually resolve
 // the datadog.ReferenceChain event's `chain` field - declared in
 // jfrMetadata.cpp as field("chain", T_CLASS, ..., F_CPOOL | F_ARRAY), i.e. an
 // *array of scalar constant-pool-index* T_CLASS values - the same way it
@@ -17,7 +17,7 @@
 // byte layout) to produce one complete, standalone, chunk-finalized .jfr
 // file containing a real datadog.ReferenceChain event plus its class
 // checkpoint, and leaves the actual JMC read-back to the companion Java test
-// (a companion Java parser test in ddprof-test), which loads this file with
+// (ddprof-test's ReferenceChainJfrParserTest), which loads this file with
 // org.openjdk.jmc.flightrecorder.JfrLoaderToolkit and asserts the resolved
 // class names.
 //
@@ -233,8 +233,8 @@ protected:
     }
 };
 
-// Path agreed with the companion Java parser test in ddprof-test, which
-// reads the same file back via JMC's
+// Path agreed with the companion Java test (ddprof-test's
+// ReferenceChainJfrParserTest), which reads the same file back via JMC's
 // JfrLoaderToolkit. Both sides resolve it via the OS temp dir so the
 // producer (this gtest) and the consumer (the Java test, run afterwards by
 // the same operator/CI job on the same machine) agree without either side
@@ -288,7 +288,7 @@ TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent)
     // Recording::writeMetadata() (flightRecorder.cpp) serializes JfrMetadata::root()
     // as-is - it does not build it. That tree is normally populated exactly once by
     // JfrMetadata::initialize() (jfrMetadata.cpp), called from Profiler::start()
-    // - which this test does not call (per this file's header
+    // (profiler.cpp:1433) - which this test does not call (per this file's header
     // comment). initialize() is itself public, JVM-independent (pure fluent-builder
     // data construction, no JVMTI/JNI calls) and idempotent (_initialized guard,
     // jfrMetadata.cpp) - calling it directly here is completing the same
@@ -339,7 +339,7 @@ TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent)
     Profiler::instance()->classMap()->rotate();
 
     // A deterministic leaf <- middle <- root chain, in the same leaf-first
-    // element order the production collector produces (the
+    // element order ReferenceChainTracker::buildChainEvent() produces (the
     // tracker-driven path to the identical event is covered by
     // referenceChains_ut.cpp's ReconstructsChainForSyntheticGraph; this file
     // pins the JFR encoding, so the event is built directly).
@@ -347,18 +347,17 @@ TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent)
     event._target_tag = 3;
     event._depth = 2;
     event._root_kind = 21; // JVMTI_HEAP_REFERENCE_JNI_GLOBAL - exercises the
-                           // rootKind field end to end (the engine's admission
-                           // callback only ever sets it on a parent_tag==0
-                           // entry).
+                           // rootKind field end to end, mirroring how
+                           // heapReferenceCallback() only ever sets it on a
+                           // parent_tag==0 entry.
+    event._chain = {(u32)leafKlass, (u32)middleKlass, (u32)rootKlass};
     // With the null JNIEnv a live field-name decode would crash on this
     // binary's unstubbed JVMTI table, so the labels are the degraded
-    // edge-KIND strings the production label resolution produces in exactly that
+    // edge-KIND strings fillHopEdgeLabels() produces in exactly that
     // situation - which is what the Java-side parser test
-    // Java parser test asserts this recording's "edges" field
+    // (ReferenceChainJfrParserTest) asserts this recording's "edges" field
     // contains.
-    event._hops = {{(u32)leafKlass, "field"},
-                   {(u32)middleKlass, "element"},
-                   {(u32)rootKlass, "jni_global"}};
+    event._edges = {"field", "element", "jni_global"};
     event._start_time = TSC::ticks();
 
     const std::string path = chainRoundtripJfrPath();
@@ -428,12 +427,14 @@ TEST_F(ReferenceChainJfrRoundtripTest, TruncatesOversizeChainAndKeepsEmittedLabe
     event._depth = (u32)total_hops;
     event._root_kind = 21;
     event._start_time = TSC::ticks();
-    event._hops.reserve(total_hops);
+    event._chain.reserve(total_hops);
+    event._edges.reserve(total_hops);
     for (u32 i = 0; i < total_hops; i++) {
         // Small class ids (single-byte var32) and a small target tag keep
         // the byte walk below deterministic without constraining the
         // encoder.
-        event._hops.push_back({100 + i, longest_label});
+        event._chain.push_back(100 + i);
+        event._edges.push_back(longest_label);
     }
 
     Recording rec(fd, args);
