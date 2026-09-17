@@ -351,6 +351,40 @@ bool FrontierTable::improveChain(jlong tag, jlong parent_tag,
   if (parent_tag == tag) {
     return false;
   }
+  // Ancestor-walk bound for the cycle guard below - see its comment. 16x
+  // the largest hop cap: a legitimate parent chain never comes close.
+  static constexpr int IMPROVE_CHAIN_GUARD_MAX_HOPS = 4096;
+  {
+    int guard_hops = 0;
+    jlong cur = parent_tag;
+    while (cur > 0 && guard_hops <= IMPROVE_CHAIN_GUARD_MAX_HOPS) {
+      if (cur == tag) {
+        TEST_LOG_SUMMARY("FrontierTable::improveChain refused: new parent "
+                 "chain routes through the entry (cycle) tag=%lld "
+                 "parent_tag=%lld depth=%u",
+                 (long long)tag, (long long)parent_tag, depth);
+        return false;
+      }
+      FrontierEntry guard_entry{};
+      if (!lookup(cur, &guard_entry)) {
+        break;
+      }
+      cur = guard_entry.parent_tag;
+      guard_hops++;
+    }
+    if (cur != 0) {
+      // The parent chain neither reached a root nor was fully verified
+      // within the guard bound - applying this improve could embed an
+      // unresolvable (cyclic or dangling) chain. Keep the existing entry.
+      TEST_LOG_SUMMARY("FrontierTable::improveChain refused: unverifiable "
+               "parent chain tag=%lld parent_tag=%lld depth=%u "
+               "walk_stopped_at=%lld",
+               (long long)tag, (long long)parent_tag, depth,
+               (long long)cur);
+      return false;
+    }
+  }
+
   int idx = (int)(tag - 1);
 
   _table_lock.lock();
@@ -429,15 +463,20 @@ bool FrontierTable::reconstructChain(jlong target_tag,
   std::vector<ChainHopEdge> edges;
   jlong tag = target_tag;
   u8 root_kind = 0;
+  int hops = 0;
   // Bounded by maxCapacity(): every tag maps to a distinct slot (this table's
   // "tags/slots are never reused" invariant, see the class comment above),
   // so a well-formed parent_tag chain can visit at most maxCapacity() slots
   // before either reaching parent_tag == 0 or repeating a slot.
-  for (int hops = 0; hops <= maxCapacity() && tag != 0; hops++) {
+  for (; hops <= maxCapacity() && tag != 0; hops++) {
     if (!lookup(tag, &entry)) {
       // parent_tag pointed at a tag that was never inserted - should not
       // happen for a chain built entirely within one BFS pass, but do not
       // fabricate a partial chain silently.
+      TEST_LOG_SUMMARY("FrontierTable::reconstructChain broken chain: "
+               "target=%lld failed at hop=%d tag=%lld (parent tag never "
+               "inserted)",
+               (long long)target_tag, hops, (long long)tag);
       return false;
     }
     chain.push_back(entry.referrer_klass);
@@ -467,7 +506,29 @@ bool FrontierTable::reconstructChain(jlong target_tag,
   if (tag != 0) {
     // Ran past the defensive hop bound without reaching a root-attached
     // entry (parent_tag == 0) - a corrupted/cyclic chain. Report failure
-    // rather than returning a truncated, possibly-misleading chain.
+    // rather than returning a truncated, possibly-misleading chain. The
+    // tag->parent dump names the cycle members (improveChain()'s cycle
+    // guard keeps new ones from forming, but a cycle written before that
+    // guard existed - or a dangling parent from a concurrent restart -
+    // still lands here).
+    {
+      jlong dbg = target_tag;
+      FrontierEntry dbg_e{};
+      char pairs[256];
+      size_t off = 0;
+      for (int d = 0; d < 12 && dbg != 0 && off < sizeof(pairs) - 24; d++) {
+        if (!lookup(dbg, &dbg_e)) {
+          break;
+        }
+        off += (size_t)snprintf(pairs + off, sizeof(pairs) - off, "%lld->%lld ",
+                                (long long)dbg, (long long)dbg_e.parent_tag);
+        dbg = dbg_e.parent_tag;
+      }
+      TEST_LOG_SUMMARY("FrontierTable::reconstructChain hop bound: "
+               "target=%lld stuck at tag=%lld after %d hops - cyclic or "
+               "corrupt parent chain; hops: %.*s",
+               (long long)target_tag, (long long)tag, hops, (int)off, pairs);
+    }
     return false;
   }
 
