@@ -1011,6 +1011,71 @@ long OS::getContainerMemoryLimit() {
     return -1;
 }
 
+// Reads the current usage from this process's own cgroup leaf only - unlike
+// getContainerMemoryLimit()'s ancestor walk (the most restrictive limit can
+// live at any level), a leaf's memory.current/memory.usage_in_bytes already
+// counts everything charged to it (including descendants), so there is
+// nothing further to gain by also reading ancestors' usage here.
+long OS::getContainerMemoryUsage() {
+    char subpath[PATH_MAX];
+    char path[PATH_MAX];
+
+    // Try cgroup v2 first, resolved from this process's own cgroup path.
+    if (getOwnCgroupPath("", subpath, sizeof(subpath))) {
+        size_t base_len = strlen("/sys/fs/cgroup");
+        size_t sub_len = strlen(subpath);
+        if (base_len + sub_len < sizeof(path)) {
+            memcpy(path, "/sys/fs/cgroup", base_len);
+            memcpy(path + base_len, subpath, sub_len + 1);
+
+            char leaf[PATH_MAX];
+            if ((size_t)snprintf(leaf, sizeof(leaf), "%s/memory.current", path) < sizeof(leaf)) {
+                int fd = open(leaf, O_RDONLY);
+                if (fd != -1) {
+                    char buf[32] = {0};
+                    ssize_t r = read(fd, buf, sizeof(buf) - 1);
+                    close(fd);
+                    if (r > 0) {
+                        long usage = atol(buf);
+                        if (usage >= 0) {
+                            return usage;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Fall back to cgroup v1, likewise resolved from the process's own path.
+    if (getOwnCgroupPath("memory", subpath, sizeof(subpath))) {
+        const char* base = "/sys/fs/cgroup/memory";
+        size_t base_len = strlen(base);
+        size_t sub_len = strlen(subpath);
+        if (base_len + sub_len < sizeof(path)) {
+            memcpy(path, base, base_len);
+            memcpy(path + base_len, subpath, sub_len + 1);
+
+            char leaf[PATH_MAX];
+            if ((size_t)snprintf(leaf, sizeof(leaf), "%s/memory.usage_in_bytes", path) < sizeof(leaf)) {
+                int fd = open(leaf, O_RDONLY);
+                if (fd != -1) {
+                    char buf[32] = {0};
+                    ssize_t r = read(fd, buf, sizeof(buf) - 1);
+                    close(fd);
+                    if (r > 0) {
+                        long usage = atol(buf);
+                        if (usage >= 0) {
+                            return usage;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return -1;
+}
+
 u64 OS::getProcessCpuTime(u64* utime, u64* stime) {
     struct tms buf;
     clock_t real = times(&buf);
@@ -1046,9 +1111,12 @@ int OS::createMemoryFile(const char* name) {
 
 void OS::copyFile(int src_fd, int dst_fd, off_t offset, size_t size) {
     // copy_file_range() is probably better, but not supported on all kernels
+    size_t requested = size;
     while (size > 0) {
         ssize_t bytes = sendfile(dst_fd, src_fd, &offset, size);
         if (bytes <= 0) {
+            TEST_LOG("OS::copyFile sendfile returned %zd, errno=%d, remaining=%zu of requested=%zu",
+                     bytes, errno, size, requested);
             break;
         }
         size -= (size_t)bytes;
