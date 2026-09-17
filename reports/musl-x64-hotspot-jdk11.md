@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk11
 
 ## musl-x64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-09-17 17:59:40 EDT
+**Date:** 2026-09-17 18:00:50 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,39 +28,39 @@ title: musl-x64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 503 |
-| Sample Rate | 8.38/sec |
-| Health Score | 524% |
+| CPU Samples | 560 |
+| Sample Rate | 9.33/sec |
+| Health Score | 583% |
 | Threads | 8 |
-| Allocations | 380 |
+| Allocations | 405 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 769 |
-| Sample Rate | 12.82/sec |
-| Health Score | 801% |
+| CPU Samples | 742 |
+| Sample Rate | 12.37/sec |
+| Health Score | 773% |
 | Threads | 10 |
-| Allocations | 479 |
+| Allocations | 532 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 61-61 cores)</summary>
 
 ```
-1789682136 61
-1789682141 61
-1789682146 61
-1789682151 61
-1789682156 61
-1789682161 61
-1789682166 61
-1789682171 61
-1789682176 61
-1789682181 61
-1789682186 61
-1789682191 61
-1789682196 61
+1789682135 61
+1789682140 61
+1789682145 61
+1789682150 61
+1789682155 61
+1789682160 61
+1789682165 61
+1789682170 61
+1789682175 61
+1789682180 61
+1789682185 61
+1789682190 61
+1789682195 61
 1789682201 61
 1789682206 61
 1789682211 61
