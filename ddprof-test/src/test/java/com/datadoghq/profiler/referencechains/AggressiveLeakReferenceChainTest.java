@@ -65,11 +65,22 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
    * Seeds ten heap-floor-ring samples rising fast enough that {@code secondsToOOM()}'s projection
    * lands well under {@code OOM_URGENT_THRESHOLD_S} (300s), with LivenessTracker's per-klass
    * population table left empty throughout - {@code selectLeakCandidateKlassIds0()} returns
-   * nothing at any point in this test. Asserts the search-restart gate still opens, proving the
-   * urgent-OOM projection alone - not a per-klass candidate - is what let it through.
+   * nothing at any point in this test. Then waits for the BFS thread to actually run passes,
+   * proving the search-restart gate opened from the urgent-OOM projection alone.
+   *
+   * <p>The gate is asserted through the live BFS thread rather than by calling
+   * {@code shouldRunPassForTest0()} directly: opening the gate spends the episode's one-shot
+   * urgency entitlement ({@code _urgent_search_spent}) on the FIRST evaluation, and the BFS
+   * thread - whose cadence ramps down to ~10ms once urgency latches - races the test's own
+   * call for that first evaluation. A direct call therefore only returns true when it wins
+   * that race, which made this test flaky by construction. A pass only ever runs after
+   * {@code shouldRunPass()} returned true, and with {@code generations=true} plus a provably
+   * empty per-klass population table the urgent-OOM projection is the only possible trigger -
+   * so "passes ran while zero candidates existed" is the same assertion, without the race.
    */
   @Test
-  public void shouldOpenSearchGateOnAggressiveHeapWideGrowthWithNoLeakCandidate() {
+  public void shouldOpenSearchGateOnAggressiveHeapWideGrowthWithNoLeakCandidate()
+      throws InterruptedException {
     assumeDebugBuild();
     JavaProfiler.setHeapFloorRecordingForTest0(false);
     JavaProfiler.resetKlassPopulationForTest0();
@@ -87,12 +98,25 @@ public class AggressiveLeakReferenceChainTest extends AbstractProfilerTest {
 
       int[] candidates = JavaProfiler.selectLeakCandidateKlassIds0();
       assertTrue(candidates == null || candidates.length == 0,
-          "This test's own precondition: no per-klass candidate should exist, so a true result "
+          "This test's own precondition: no per-klass candidate should exist, so passes running "
               + "below can only come from the aggregate urgent-OOM bypass");
 
-      assertTrue(JavaProfiler.shouldRunPassForTest0(),
-          "Expected the search-restart gate to open from the urgent heap-wide OOM projection "
-              + "alone, with zero per-klass leak candidate");
+      int passesBefore = JavaProfiler.referenceChainPassesRunForTest0();
+      // Idle BFS cadence is ~1s/pass; urgency ramps it to ~10ms after the latch. 20s covers the
+      // first evaluation landing up to one idle cadence after the seeding loop.
+      long deadline = System.currentTimeMillis() + 20_000;
+      while (JavaProfiler.referenceChainPassesRunForTest0() == passesBefore
+          && System.currentTimeMillis() < deadline) {
+        Thread.sleep(50);
+      }
+      assertTrue(JavaProfiler.referenceChainPassesRunForTest0() > passesBefore,
+          "Expected the BFS thread to run passes from the urgent heap-wide OOM projection alone, "
+              + "with zero per-klass leak candidate");
+
+      candidates = JavaProfiler.selectLeakCandidateKlassIds0();
+      assertTrue(candidates == null || candidates.length == 0,
+          "The passes that just ran must still have had zero per-klass candidates - the "
+              + "aggregate urgent-OOM projection was the only possible trigger");
     } finally {
       JavaProfiler.setMaxHeapBytesForTest0(-1);
       JavaProfiler.setHeapFloorRecordingForTest0(true);
