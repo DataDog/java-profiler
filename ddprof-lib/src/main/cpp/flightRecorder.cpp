@@ -972,7 +972,7 @@ off_t Recording::finishChunk(bool end_recording, bool do_cleanup) {
       oSampler->_record_allocations ? oSampler->_interval : 0L,
       oSampler->_record_liveness ? oSampler->_interval : 0L,
       oSampler->_record_liveness ? LivenessTracker::instance()->_table_cap : 0L,
-      oSampler->_record_liveness ? LivenessTracker::instance()->_subsample_ratio
+      oSampler->_record_liveness ? LivenessTracker::instance()->_subsample.ratio
                                  : 0.0,
       oSampler->_gc_generations, Profiler::instance()->eventMask(),
       Profiler::instance()->cpuEngine()->name());
@@ -2161,7 +2161,7 @@ void Recording::writeContextSnapshot(Buffer *buf, Context &context) {
   buf->putVar64(context.rootSpanId);
 
   for (size_t i = 0; i < Profiler::instance()->numContextAttributes(); i++) {
-    buf->putVar32(context.get_tag(i).value);
+    buf->putVar32(context.getTag(i));
   }
 }
 
