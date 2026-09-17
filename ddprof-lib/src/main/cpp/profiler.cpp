@@ -98,6 +98,14 @@ void Profiler::onThreadStart(jvmtiEnv *jvmti, JNIEnv *jni, jthread thread) {
     updateThreadName(jvmti, jni, thread, true);
   }
 
+  // Registers the tid -> Thread-object global ref that the reference-chain
+  // engine's walkCandidateThreadLocals() descends from for
+  // candidate-scoped ThreadLocalMap reach. No-op while reference chains are
+  // disabled (checked inside the tracker); jni/thread may be null on the
+  // internal pre-existing-threads call from start(), which the tracker
+  // also refuses.
+  ReferenceChainTracker::instance()->registerThreadObject(jni, tid, thread);
+
   _cpu_engine->registerThread(tid);
   _wall_engine->registerThread(tid);
 }
@@ -1907,6 +1915,11 @@ Error Profiler::stop() {
   if (ReferenceChainTracker::instance()->enabled()) {
     ReferenceChainTracker::instance()->stopThread();
     ReferenceChainTracker::instance()->stop();
+    // Drains the global refs of threads that ended during this recording
+    // (referenceChains.h, _thread_refs_pending_delete). Safe here: the BFS
+    // thread was joined by stopThread() above, so no walk phase can still
+    // hold a copied Thread-object ref.
+    ReferenceChainTracker::instance()->releaseEndedThreadRefs(VM::jni());
   }
   // Stop the refresher BEFORE socket unpatch: the refresher calls
   // install_socket_hooks() which re-reads _socket_active before acquiring the

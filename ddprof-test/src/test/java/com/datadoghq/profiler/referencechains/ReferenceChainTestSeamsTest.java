@@ -156,9 +156,6 @@ public class ReferenceChainTestSeamsTest extends AbstractProfilerTest {
     // calls, so no stack root is ever enumerated.
     chainTargetHolder = new ChainTarget();
 
-    long tag = JavaProfiler.tagAsReferenceChainRoot0(chainTargetHolder);
-    assertTrue(tag > 0, "Expected tagAsReferenceChainRoot0 to assign a valid frontier tag");
-
     // Representative BEFORE seeding: with the aliasing seam, setting the representative is
     // what registers the synthetic->real id alias, so the seeding below lands re-keyed under
     // the target's real class id (seeding first still works - the synthetic entry gets
@@ -178,6 +175,26 @@ public class ReferenceChainTestSeamsTest extends AbstractProfilerTest {
       JavaProfiler.seedTidTrendSample0(
           CHAIN_TEST_KLASS_ID, JavaProfiler.getTid(), epoch * 3, epoch);
     }
+
+    // One poll BEFORE the direct tag: the first pollReferenceChainTargets0()
+    // admits the seeded klass as a watched candidate (canary slot), and the
+    // seam's discovery recording (tagAsRootForTest's recordDiscoveredInstance)
+    // only lands when a candidate slot already watches the klass - the
+    // leak-tag redesign removed the marker-tag path the original pre-poll tag
+    // used to ride.
+    JavaProfiler.pollReferenceChainTargets0();
+
+    // The target is referenced ONLY through the static holder - never bound to a
+    // live local of this frame. A local `target` variable would make the object a
+    // STACK_LOCAL GC root for the whole test body, and the noise gate (rightly)
+    // suppresses depth-0 chains rooted in a transient stack slot: the durable
+    // roots this fixture wants (the static holder, plus the JNI-global-weak-ref
+    // root LivenessTracker's representative itself creates) then lose the
+    // durability race only if a stack-local root exists at all. Accessing the
+    // object only via the static field leaves its frame slots empty between
+    // calls, so no stack root is ever enumerated.
+    long tag = JavaProfiler.tagAsReferenceChainRoot0(chainTargetHolder);
+    assertTrue(tag > 0, "Expected tagAsReferenceChainRoot0 to assign a valid frontier tag");
 
     // Drive pass+poll cycles until the chain event lands. One pass is NOT enough:
     // admitStaticFieldRoots() sweeps loaded classes in chunks (a few hundred per pass,

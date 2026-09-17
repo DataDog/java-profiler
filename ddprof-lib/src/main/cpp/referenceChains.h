@@ -1006,6 +1006,16 @@ private:
   // outside the engine serialization the walk phases run under.
   Mutex _thread_objects_lock;
   std::unordered_map<jint, jobject> _thread_objects;
+  // Global refs of ended threads awaiting deletion. unregisterThreadObject()
+  // must NOT DeleteGlobalRef() directly: walkCandidateThreadLocals() copies
+  // the jobject out of _thread_objects under _thread_objects_lock, releases
+  // the lock, and can still be using it as a FollowReferences anchor when a
+  // concurrent ThreadEnd erases the entry - deleting there would be JNI
+  // use-after-free (once deleted, a global ref is invalid for every other
+  // JNI call). The erasing thread only enqueues; releaseEndedThreadRefs()
+  // drains the list on the BFS thread, at points where no walk phase holds
+  // a copied ref.
+  std::vector<jobject> _thread_refs_pending_delete;
 
   // Auto-marked instances: when the BFS walk discovers ANY object whose
   // class matches a watched leak class (not just the pre-tagged
@@ -2919,6 +2929,14 @@ public:
   // leaks for the JVM's lifetime.
   void registerThreadObject(JNIEnv *jni, int tid, jthread thread);
   void unregisterThreadObject(JNIEnv *jni, int tid);
+
+  // Delete the global refs unregisterThreadObject() queued in
+  // _thread_refs_pending_delete (see that member's comment for why the
+  // deletion is deferred). Called only from points where no walk phase
+  // holds a copied Thread-object ref: the BFS thread at the start of each
+  // pass, and Profiler::stop() after stopThread() has joined the BFS
+  // thread. A jni of null (current thread not attached) is a no-op.
+  void releaseEndedThreadRefs(JNIEnv *jni);
 
   // One-time sweep over the JVM's CURRENTLY LIVE threads at recording start,
   // registering each into the same tid -> Thread-object registry via

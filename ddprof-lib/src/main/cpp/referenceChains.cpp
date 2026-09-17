@@ -1559,6 +1559,9 @@ jlong ReferenceChainTracker::tagAsRootForTest(jvmtiEnv *jvmti, JNIEnv *jni,
                                                jobject obj) {
   if (_frontier == nullptr || jvmti == nullptr || jni == nullptr ||
       obj == nullptr) {
+    TEST_LOG_SUMMARY("ReferenceChainTracker::tagAsRootForTest refused: "
+             "frontier=%p jvmti=%p jni=%p obj=%p",
+             (void *)_frontier, (void *)jvmti, (void *)jni, (void *)obj);
     return 0;
   }
   // Resolves the klass_id via the same GetClassSignature +
@@ -1599,11 +1602,32 @@ jlong ReferenceChainTracker::tagAsRootForTest(jvmtiEnv *jvmti, JNIEnv *jni,
   // to reach/select it on its own.
   jlong tag = tagObject(jvmti, obj);
   if (tag == 0) {
+    TEST_LOG_SUMMARY("ReferenceChainTracker::tagAsRootForTest refused: "
+             "tagObject (SetTag) failed");
     return 0;
   }
   if (!_frontier->insert(tag, 0, klass_id, 0)) {
+    TEST_LOG_SUMMARY("ReferenceChainTracker::tagAsRootForTest refused: "
+             "frontier insert failed tag=%lld klass_id=%u",
+             (long long)tag, klass_id);
     clearTag(jvmti, obj);
     return 0;
+  }
+  // Discovery recording for this seam's decoupling contract. The leak-tag
+  // redesign ("no marker tags - using leak tags now", pollWatchedTargets())
+  // left a representative without an ObjectSampler-tracked instance with no
+  // discovery channel at all: recordDiscoveredInstance() only fires from the
+  // leak-tag interception branch of heapReferenceCallback(), and
+  // tagLeakInstances() can only tag instances the sampler tracked. This
+  // seam's purpose is precisely to be decoupled from the sampler, so it
+  // records the directly-tagged root itself; pollWatchedTargets() then
+  // reconstructs the chain from the real frontier via
+  // buildDiscoveredInstanceChains()/buildChainEvent(). No-op while no
+  // candidate slot watches this klass yet (the caller must have driven at
+  // least one pollReferenceChainTargets0() first - see
+  // ReferenceChainTestSeamsTest's ordering comment).
+  if (_candidate_count > 0) {
+    recordDiscoveredInstance(klass_id, tag, false);
   }
   return tag;
 }
@@ -4094,7 +4118,9 @@ void ReferenceChainTracker::registerThreadObject(JNIEnv *jni, int tid,
   MutexLocker ml(_thread_objects_lock);
   auto it = _thread_objects.find(tid);
   if (it != _thread_objects.end()) {
-    jni->DeleteGlobalRef(it->second);
+    // Same deferred-deletion rule as unregisterThreadObject(): a walk may
+    // still hold a copy of the replaced ref.
+    _thread_refs_pending_delete.push_back(it->second);
   }
   _thread_objects[tid] = ref;
 }
@@ -4106,8 +4132,28 @@ void ReferenceChainTracker::unregisterThreadObject(JNIEnv *jni, int tid) {
   MutexLocker ml(_thread_objects_lock);
   auto it = _thread_objects.find(tid);
   if (it != _thread_objects.end()) {
-    jni->DeleteGlobalRef(it->second);
+    // NOT DeleteGlobalRef() here: walkCandidateThreadLocals() may have
+    // already copied this jobject out of the map (lock released) and still
+    // be using it as a FollowReferences anchor - deleting a global ref
+    // invalidates it for every other JNI call (JNI spec), so deletion is
+    // deferred to releaseEndedThreadRefs() on the BFS thread (see
+    // _thread_refs_pending_delete's comment).
+    _thread_refs_pending_delete.push_back(it->second);
     _thread_objects.erase(it);
+  }
+}
+
+void ReferenceChainTracker::releaseEndedThreadRefs(JNIEnv *jni) {
+  if (jni == nullptr) {
+    return;
+  }
+  std::vector<jobject> pending;
+  {
+    MutexLocker ml(_thread_objects_lock);
+    pending.swap(_thread_refs_pending_delete);
+  }
+  for (size_t i = 0; i < pending.size(); i++) {
+    jni->DeleteGlobalRef(pending[i]);
   }
 }
 
@@ -4218,6 +4264,12 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
          "IterateOverReachableObjects/FollowReferences are JVMTI "
          "Heap-category calls and must not be made from "
          "GarbageCollectionStart/Finish");
+
+  // Safe point to delete the global refs of threads that ended since the
+  // last drain: this runs on the BFS thread before any walk phase, and refs
+  // erased from _thread_objects (unregisterThreadObject()) can no longer be
+  // copied out by walkCandidateThreadLocals(), so no walk holds them.
+  releaseEndedThreadRefs(jni);
 
   *safepoint_ticks = 0;
 

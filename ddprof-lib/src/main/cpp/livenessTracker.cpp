@@ -360,12 +360,10 @@ bool LivenessTracker::getLeakTagInfo(jlong tag, u64 *out_call_trace_id,
     return false;
   }
   int idx = (int)(tag - LEAK_TAG_BASE);
-  if (idx >= _leak_tag_free_count &&
-      _leak_tag_info[idx].call_trace_id == 0) {
-    return false; // tag is in free list
-  }
-  // Check if tag is still in use (not in free list)
-  // Simple check: if call_trace_id is 0 and tid is 0, it's been released
+  // releaseLeakTag() zeroes both fields, so a zero/zero slot means the tag
+  // was released (or never acquired) - any other state is in use. (A slot
+  // index comparison against _leak_tag_free_count proves nothing here: the
+  // free list is a LIFO stack of indices, not an index-bounded region.)
   if (_leak_tag_info[idx].call_trace_id == 0 && _leak_tag_info[idx].tid == 0) {
     return false;
   }

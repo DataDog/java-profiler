@@ -1493,6 +1493,9 @@ protected:
     // (walkCandidateThreadLocals()'s fresh-anchor admission path).
     void *thread_class = nullptr;
 
+    // DeleteGlobalRef call count (see mock_DeleteGlobalRef).
+    int global_refs_deleted_ = 0;
+
     jvmtiEnv *orig_jvmti = nullptr;
 
     static ReferenceChainsBfsTest *active_fixture;
@@ -1534,6 +1537,7 @@ protected:
         jni_tbl.GetObjectClass = &mock_GetObjectClass;
         jni_tbl.GetSuperclass = &mock_JniGetSuperclass;
         jni_tbl.NewGlobalRef = &mock_NewGlobalRef;
+        jni_tbl.DeleteGlobalRef = &mock_DeleteGlobalRef;
         jni_tbl.EnsureLocalCapacity = &mock_EnsureLocalCapacity;
         jni_tbl.NewObjectArray = &mock_NewObjectArray;
         jni_tbl.SetObjectArrayElement = &mock_SetObjectArrayElement;
@@ -1783,6 +1787,12 @@ protected:
     // fake pointers with no JNI lifetime, so identity is the correct mock.
     static jobject JNICALL mock_NewGlobalRef(JNIEnv *, jobject obj) {
         return obj;
+    }
+
+    // Counts DeleteGlobalRef calls - the deferred thread-ref teardown test
+    // (ThreadRefUnregisterDefersGlobalRefDeletion) asserts on the count.
+    static void JNICALL mock_DeleteGlobalRef(JNIEnv *, jobject) {
+        active_fixture->global_refs_deleted_++;
     }
 
     static jint JNICALL mock_EnsureLocalCapacity(JNIEnv *, jint) {
@@ -5841,6 +5851,35 @@ TEST_F(ReferenceChainsBfsTest, ThreadWalkDescendsOnlyThreadLocalMapAndIntercepts
     ASSERT_TRUE(frontier->lookup(thread2_ftag, &thread2_entry));
     EXPECT_EQ(0, thread2_entry.parent_tag);
     EXPECT_EQ((u8)JVMTI_HEAP_REFERENCE_THREAD, thread2_entry.root_kind);
+
+    tracker->stop();
+}
+
+// unregisterThreadObject() must defer the global-ref deletion to
+// releaseEndedThreadRefs(): walkCandidateThreadLocals() copies the jobject
+// out of _thread_objects under _thread_objects_lock, releases the lock, and
+// can still be using it as a FollowReferences anchor when a concurrent
+// ThreadEnd erases the entry - deleting there would be JNI use-after-free
+// (see _thread_refs_pending_delete's comment).
+TEST_F(ReferenceChainsBfsTest, ThreadRefUnregisterDefersGlobalRefDeletion) {
+    Arguments args;
+    ASSERT_FALSE(args.parse("referencechains=true"));
+    ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
+    ASSERT_FALSE(tracker->start(args));
+
+    int threadNode = addNode();
+    tracker->registerThreadObject(
+            &mock_jni, 555, reinterpret_cast<jthread>(&node_tags[threadNode]));
+    tracker->unregisterThreadObject(&mock_jni, 555);
+    // The erasing side only enqueues - no DeleteGlobalRef yet.
+    EXPECT_EQ(0, global_refs_deleted_);
+
+    // The drain deletes exactly the queued ref, and draining an empty list
+    // is a no-op.
+    tracker->releaseEndedThreadRefs(&mock_jni);
+    EXPECT_EQ(1, global_refs_deleted_);
+    tracker->releaseEndedThreadRefs(&mock_jni);
+    EXPECT_EQ(1, global_refs_deleted_);
 
     tracker->stop();
 }
