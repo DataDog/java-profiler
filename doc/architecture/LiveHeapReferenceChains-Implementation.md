@@ -378,12 +378,33 @@ blocks on JFR I/O, and JFR writes never trigger a walk.
 - `ttl <= 0` disables the wall-clock TTL cutoff.
 - Unset values are auto-tuned (see §7).
 
-## 11. Temporary diagnostics
+## 11. Why the tuning pass is not a JMH benchmark
 
-Some `TEST_LOG_SUMMARY` output and tallies in the static-field sweep and the
-anchor walk (chunk-consumption splits, per-`reference_kind` callback tallies,
-walked-anchor naming) are *temporary diagnostic* instrumentation from the
-live pod debugging rounds (`.investigations/missing-refchains-on-hotdog/`,
-16 rounds) that shaped this design. They are pending removal once the
-on-pod investigation notes are fully distilled. Production behavior does not
-depend on them.
+The defaults above are placeholders pending a measurement pass. That pass
+cannot be a JMH benchmark, for three reasons:
+
+1. **The cost is not per-Java-operation.** JMH measures the throughput and
+   latency of a benchmark method. This subsystem's cost is (a) STW
+   safepoint pauses from `VM_HeapWalkOperation` — global stalls
+   attributable to no benchmark method — and (b) CPU on a dedicated native
+   background thread. Both reach a Java workload only as indirect
+   throughput degradation mixed with GC noise; JMH can neither observe
+   nor attribute them directly.
+2. **Activation is leak-signal-gated.** No pass runs until the population
+   rings fill (~10 GC epochs), trend hysteresis clears (5 consecutive
+   qualifying epochs), and the search gate opens. A seconds-scale JMH
+   iteration measures the feature idle. Exercising the chase needs minutes
+   of continuous leaking allocation; run-to-run variance is then dominated
+   by GC cadence and by *when* hysteresis cleared — exactly the steady-state
+   assumption JMH's fork/iteration statistics make.
+3. **The knobs control quantities JMH cannot see.** `pausetarget`,
+   `budget`, cadence, backoff, and the pain budgets regulate per-pass
+   safepoint duration, pass-cost EMA, and refill rates — all directly
+   observable as `jdk.ExecuteVMOperation[HeapWalkOperation]` JFR durations
+   and the tracker's own pass telemetry, which is what the shipped `utils/`
+   repro/sweep/report tooling consumes.
+
+A coarse JMH A/B (leaking workload, `referencechains` off vs on) remains
+possible with the repo's existing `ddprof-stresstest` JMH setup, and would
+serve as an end-to-end throughput regression guard. It cannot tune these
+defaults. Tuning them requires the JFR-based measurement pass above.
