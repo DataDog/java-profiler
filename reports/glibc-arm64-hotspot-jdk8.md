@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk8
 
 ## glibc-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-09-17 16:56:28 EDT
+**Date:** 2026-09-17 16:57:36 EDT
 
 ### Configuration
 | Setting | Value |
@@ -19,7 +19,7 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | CPU Cores (start) | 17 |
-| CPU Cores (end) | 17 |
+| CPU Cores (end) | 48 |
 | Throttling | 0% |
 
 ### Test Results
@@ -28,9 +28,9 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 98 |
-| Sample Rate | 1.63/sec |
-| Health Score | 102% |
+| CPU Samples | 106 |
+| Sample Rate | 1.77/sec |
+| Health Score | 111% |
 | Threads | 10 |
 | Allocations | 0 |
 
@@ -38,36 +38,36 @@ title: glibc-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 121 |
-| Sample Rate | 2.02/sec |
-| Health Score | 126% |
-| Threads | 7 |
+| CPU Samples | 94 |
+| Sample Rate | 1.57/sec |
+| Health Score | 98% |
+| Threads | 12 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (1 unique values: 17-17 cores)</summary>
+<summary>CPU Timeline (2 unique values: 17-48 cores)</summary>
 
 ```
-1789677981 17
-1789677986 17
-1789677991 17
-1789677996 17
-1789678001 17
-1789678006 17
-1789678011 17
-1789678016 17
-1789678021 17
-1789678026 17
-1789678031 17
-1789678036 17
-1789678041 17
-1789678046 17
-1789678051 17
-1789678056 17
-1789678061 17
-1789678066 17
-1789678071 17
-1789678076 17
+1789677736 17
+1789677741 17
+1789677746 17
+1789677751 17
+1789677756 17
+1789677761 17
+1789677766 17
+1789677771 17
+1789677776 17
+1789677781 17
+1789677786 17
+1789677791 17
+1789677796 17
+1789677801 17
+1789677806 17
+1789677811 17
+1789677816 17
+1789677821 17
+1789677826 17
+1789677831 48
 ```
 </details>
 
