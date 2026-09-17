@@ -684,6 +684,22 @@ Error ReferenceChainTracker::start(Arguments &args) {
     return Error::OK;
   }
 
+  // Recording-boundary hygiene: Profiler::start() clears the class dictionary
+  // (restart its id namespace) right before this runs, so cached chain events
+  // and queued abandonment events from a prior recording carry StringDictionary
+  // ids from a wiped generation - re-emitting them into the new recording would
+  // write missing or newly-reassigned class ids for chains that describe the
+  // previous recording's objects. The frontier table and class-tag cache are
+  // deliberately KEPT across recordings (their own comments); the chain-event
+  // caches are not - they are pure recording output.
+  _resolved_chains_lock.lock();
+  _resolved_chains.clear();
+  _resolved_chains_lock.unlock();
+  _pending_abandoned_events_lock.lock();
+  _pending_abandoned_events.clear();
+  _pending_abandoned_events_lock.unlock();
+  _urgency_budget_boosted = false;
+
   // Auto-tune defaults that the operator did not set explicitly,
   // based on max heap size and available processors. Must run before
   // _configured_frontier_cap is read below.
@@ -709,6 +725,10 @@ Error ReferenceChainTracker::start(Arguments &args) {
   if (_frontier == nullptr) {
     _frontier = new FrontierTable(_configured_frontier_cap);
   }
+  // The configured budget is what the urgency ramp restores when urgency
+  // clears (see the urgency block in threadLoop()) - the live _budget must
+  // not be snapshotted for that, it may already be boosted.
+  _configured_budget = args._reference_chains_budget;
 
   _hop_cap = args._reference_chains_hop_cap;
   _budget = args._reference_chains_budget;
@@ -981,17 +1001,27 @@ void ReferenceChainTracker::threadLoop() {
       _effective_pause_target_ms = target_ms;
       _pause_pid = PidController((u64)std::max(_effective_pause_target_ms, 0L),
                                   10, 1, 2, 1, 5.0);
-      // Once in the ramp window, hold the budget ceiling raised for its
-      // entire duration rather than only right before OOM: the process is
-      // likely to die anyway, so it's worth spending whatever budget it
-      // takes to collect good diagnostic data for as long as we have.
-      if (urgent) {
-        _budget = std::min(_budget * 4, MAX_REFERENCE_CHAINS_BUDGET);
-      }
-      TEST_LOG_SUMMARY("ReferenceChainTracker::threadLoop urgency=%d pauseTarget=%ldms "
-               "cadence=%lluns budget=%d",
-               (int)urgent, _effective_pause_target_ms,
-               (unsigned long long)cadence_ns, _budget);
+    }
+    // Once in the ramp window, hold the budget ceiling raised for the
+    // urgency episode's entire duration rather than only right before OOM:
+    // the process is likely to die anyway, so it's worth spending whatever
+    // budget it takes to collect good diagnostic data for as long as we
+    // have. The boost is applied ONCE when urgency begins - the ramp's
+    // rounded pause target drifts every tick, and multiplying per change
+    // would reach the cap in two ticks and mask the configured budget - and
+    // the configured budget is restored the moment urgency clears, so a
+    // post-episode search cannot keep running with the inflated ceiling.
+    if (urgent && !_urgency_budget_boosted) {
+      _urgency_budget_boosted = true;
+      _budget = std::min(_budget * 4, MAX_REFERENCE_CHAINS_BUDGET);
+      TEST_LOG_SUMMARY("ReferenceChainTracker::threadLoop urgency budget boost "
+               "budget=%d configured=%d",
+               _budget, _configured_budget);
+    } else if (!urgent && _urgency_budget_boosted) {
+      _urgency_budget_boosted = false;
+      _budget = _configured_budget;
+      TEST_LOG_SUMMARY("ReferenceChainTracker::threadLoop urgency budget restore "
+               "budget=%d", _budget);
     }
     // Third trigger for LivenessTracker::cleanup_table() (see
     // LivenessTracker::maybeForceCleanup()'s own comment): track()'s
@@ -1139,6 +1169,13 @@ bool ReferenceChainTracker::shouldRunPass(u64 now_ns) {
                "release before restart is allowed)");
       return true;
     }
+    // Charge the finished search's accumulated safepoint cost BEFORE the
+    // restart gate - canAffordNewSearch() must see the cost of the search
+    // that just ended, otherwise an expensive search earns one free
+    // immediate successor (the accumulator is spent here, once per search;
+    // repeated terminal visits spend a zeroed accumulator).
+    _safepoint_pain_budget.spend(_search_pain_ms);
+    _search_pain_ms = 0;
     // Restart (this class's own header comment) if the pain budget has
     // drained and there is still (or again) a leak indication to chase -
     // canAffordNewSearch() is always true when LivenessTracker's population
@@ -1359,11 +1396,10 @@ void ReferenceChainTracker::restartSearch() {
          "restartSearch() must not run before releaseSearchTags() has "
          "confirmed every live tag was cleared");
 
-  // Spend the finishing search's own cost before clearing the accumulator -
-  // canAffordNewSearch()'s *next* call must see this search's cost, not a
-  // reset-to-zero balance.
-  _safepoint_pain_budget.spend(_search_pain_ms);
-  _search_pain_ms = 0;
+  // The finishing search's accumulated safepoint cost is spent by the
+  // terminal restart gate in shouldRunPass() BEFORE it calls this (see the
+  // gate's comment: the gate must see the finished search's cost), so no
+  // spend happens here.
 
   if (_frontier != nullptr) {
     _frontier->resetForRestart();
@@ -1902,10 +1938,10 @@ struct PassContext {
   int _class_other_cap = 0;      // per-class cap; 0 disables the quota
                                 // (admit all) when not in seed sweep
   // Number of distinct classes entered so far in this chunk's descent
-  // (incremented on each class-boundary tag change). Used by
-  // admitStaticFieldRoots() to compute the resumable cursor on truncation:
-  // resume at chunk_start + count - 1 (redo the partial class) rather
-  // than skipping to chunk_end and losing the rest of the chunk.
+  // (incremented on each class-boundary tag change). Diagnostic only -
+  // the truncation cursor no longer derives from it (a non-HotSpot
+  // FollowReferences visit order would map the count to the wrong
+  // original indices; the cursor now redoes the whole chunk).
   int _classes_in_chunk_visited = 0;
 
   // Amortizes tracker->_pass_deadline_ns's OS::nanotime() check (heapReference
@@ -3291,10 +3327,16 @@ ReferenceChainTracker::hopLabelClassFor(jvmtiEnv *jvmti, JNIEnv *jni,
           for (int i = 0; i < depth; i++) {
             jni->DeleteLocalRef(supers[i]);
           }
+          // supers[0] IS cls - the loop above already deleted it. Null it so
+          // the shared cleanup below does not delete the same local ref a
+          // second time (checked JNI reports an invalid local ref and aborts).
+          cls = nullptr;
         }
       }
     }
-    jni->DeleteLocalRef(cls);
+    if (cls != nullptr) {
+      jni->DeleteLocalRef(cls);
+    }
     if (!ok) {
       break;
     }
@@ -3916,12 +3958,19 @@ void ReferenceChainTracker::reconcileAnchorClassShapes(jvmtiEnv *jvmti,
     // class tags are NEGATIVE (a namespace disjoint from positive
     // frontier tags); 0 means the object was never tagged - skip only that.
     if (class_tag == 0 || klass == nullptr) {
+      if (klass != nullptr) {
+        jni->DeleteLocalRef(klass);
+      }
       continue;
     }
     AnchorClassShape shape = classImplementsContainerOrMap(jvmti, jni, klass)
                                  ? AnchorClassShape::CONTAINER
                                  : AnchorClassShape::NON_CONTAINER;
     _class_shape_cache[class_tag] = (u8)shape;
+    // GetObjectsWithTags() returned a local ref for every resolved class -
+    // this runs on the long-lived BFS thread, where undeleted locals
+    // accumulate until detach and pin their classes against unload.
+    jni->DeleteLocalRef(klass);
   }
   jvmti->Deallocate((unsigned char *)objs);
   jvmti->Deallocate((unsigned char *)obj_tags);
@@ -3997,6 +4046,12 @@ void ReferenceChainTracker::walkStaticFieldAnchors(
   // ones keep their own cursor retention, and dead tags never resolved
   // are intentionally absent (they must not be requeued anywhere).
   jint first_unwalked = resolved_count;
+  // First index whose local ref has not been deleted yet. Every break path
+  // deletes objects[i] before breaking, so anything at or after i+1 still
+  // holds a live local ref and must be cleaned up below - this runs on the
+  // long-lived BFS thread, where undeleted locals accumulate until detach
+  // and pin their objects against collection.
+  jint first_undeleted = resolved_count;
   for (jint i = 0; i < resolved_count; i++) {
     FrontierEntry entry{};
     if (!_frontier->lookup(resolved_tags[i], &entry)) {
@@ -4009,6 +4064,7 @@ void ReferenceChainTracker::walkStaticFieldAnchors(
     if (remaining <= 0) {
       jni->DeleteLocalRef(objects[i]);
       first_unwalked = i;
+      first_undeleted = i + 1;
       break;
     }
     int edges_before = *edges_admitted;
@@ -4026,12 +4082,19 @@ void ReferenceChainTracker::walkStaticFieldAnchors(
       // rotation turn via the cursor next pass (the wrapping cursor already
       // tolerates a short selection).
       first_unwalked = i + 1;
+      first_undeleted = i + 1;
       break;
     }
     if (*frontier_cap_hit) {
       first_unwalked = i + 1;
+      first_undeleted = i + 1;
       break;
     }
+  }
+  // Release the local refs of anchors the early exits above skipped - each
+  // break only deleted its own objects[i].
+  for (jint i = first_undeleted; i < resolved_count; i++) {
+    jni->DeleteLocalRef(objects[i]);
   }
   if (unwalked != nullptr && first_unwalked < resolved_count) {
     unwalked->insert(unwalked->end(), resolved_tags + first_unwalked,
@@ -4235,6 +4298,29 @@ void ReferenceChainTracker::releaseEndedThreadRefs(JNIEnv *jni) {
   {
     MutexLocker ml(_thread_objects_lock);
     pending.swap(_thread_refs_pending_delete);
+  }
+  for (size_t i = 0; i < pending.size(); i++) {
+    jni->DeleteGlobalRef(pending[i]);
+  }
+}
+
+void ReferenceChainTracker::releaseAllThreadObjects(JNIEnv *jni) {
+  if (jni == nullptr) {
+    return;
+  }
+  // Recording stop: the BFS thread is joined (Profiler::stop() order), so no
+  // walk phase can hold a copied ref - the deferred-deletion indirection of
+  // unregisterThreadObject() is unnecessary here and every ref can go now.
+  std::vector<jobject> pending;
+  {
+    MutexLocker ml(_thread_objects_lock);
+    for (auto &kv : _thread_objects) {
+      pending.push_back(kv.second);
+    }
+    _thread_objects.clear();
+    pending.insert(pending.end(), _thread_refs_pending_delete.begin(),
+                   _thread_refs_pending_delete.end());
+    _thread_refs_pending_delete.clear();
   }
   for (size_t i = 0; i < pending.size(); i++) {
     jni->DeleteGlobalRef(pending[i]);
@@ -5197,11 +5283,11 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
     // iterate_over_array pushes elements 0..n-1 in order, the while-loop
     // pops LIFO), so classes are descended in REVERSE holder order.
     // Reversing the fill makes the descent visit classes in ASCENDING
-    // original index order (chunk_start first), which is what
-    // admitStaticFieldRoots()'s resumable cursor below assumes: an abort
-    // at class p means classes chunk_start..p-1 are done and p+1..chunk_end-1
-    // are pending, so the cursor resumes at p (redoing the partial class)
-    // without re-walking completed classes.
+    // original index order (chunk_start first) on HotSpot, which spreads
+    // the chunk's admit budget in the app-classes-first priority order.
+    // The truncation cursor below no longer depends on this ordering (it
+    // redoes the whole chunk), so a JVM whose visit order differs only
+    // gets a different in-chunk priority, never a wrong resume.
     for (jint i = 0; i < chunk_count; i++) {
       jni->SetObjectArrayElement(holder, i, classes[chunk_end - 1 - i]);
       if (jniExceptionCheck(jni)) {
@@ -5271,23 +5357,17 @@ void ReferenceChainTracker::admitStaticFieldRoots(jvmtiEnv *jvmti, JNIEnv *jni,
   if (ctx.truncated) {
     _static_field_sweep_cycle_truncated = true;
     // Resumable cursor: instead of skipping to chunk_end (losing every
-    // class after the interruption point for the rest of this lap), resume
-    // at the class we were inside when the walk aborted. The holder was
-    // filled in reversed order so descent visits classes in ascending
-    // original index order; _classes_in_chunk_visited counts how many
-    // classes were entered before the abort. Resume at chunk_start + count
-    // - 1 to redo the partial class (its already-admitted edges hit
-    // ALREADY_ADMITTED cheaply; with the per-class quota its non-static
-    // edges complete within the cap). Classes before it are done; classes
-    // after it are pending and will be reached on the next pass.
-    if (ctx._classes_in_chunk_visited > 0) {
-      _static_field_sweep_cursor =
-          chunk_start + ctx._classes_in_chunk_visited - 1;
-    } else {
-      // Aborted before any class's own edges were seen (e.g. during the
-      // holder->class seed edges) - redo the whole chunk.
-      _static_field_sweep_cursor = chunk_start;
-    }
+    // class after the interruption point for the rest of this lap), redo
+    // the chunk on the next pass. An earlier refinement resumed at
+    // chunk_start + classes-visited - 1, which assumes the abort position
+    // maps back to ascending original index order - a property of
+    // HotSpot's current LIFO FollowReferences visit order that no JVMTI
+    // implementation guarantees (and this is shared code, per the
+    // project's JVM-support rules). Redoing the chunk is order-
+    // independent: re-walked classes hit ALREADY_ADMITTED cheaply (the
+    // per-class quota bounds their non-static edges), and the chunk is
+    // bounded by STATIC_FIELD_SWEEP_CHUNK_CLASSES.
+    _static_field_sweep_cursor = chunk_start;
   } else {
     // Full advance: every class in the chunk was processed.
     _static_field_sweep_cursor = chunk_end;
@@ -6564,7 +6644,10 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
 // still-live sample's chain. Split out of pollWatchedTargets() so
 // ResolvedChainCacheTest (referenceChains_ut.cpp) can drive the overflow path
 // directly, without standing up hundreds of real LivenessTracker candidates.
-void ReferenceChainTracker::cacheResolvedChain(jlong source_tag,
+// Returns false when the chain was dropped (cache full for a new source
+// tag) so the caller can skip coverage accounting for a chain that will
+// never be emitted.
+bool ReferenceChainTracker::cacheResolvedChain(jlong source_tag,
                                                ReferenceChainEvent &&event,
                                                jlong source_tag_val,
                                                u64 source_search_ns) {
@@ -6577,7 +6660,7 @@ void ReferenceChainTracker::cacheResolvedChain(jlong source_tag,
     TEST_LOG("ReferenceChainTracker::cacheResolvedChain dropped new source_tag=%lld, "
              "cache full (at MAX_RESOLVED_CHAINS=%d)",
              (long long)source_tag, MAX_RESOLVED_CHAINS);
-    return;
+    return false;
   }
   CachedChain &slot = _resolved_chains[source_tag];
   slot.event = std::move(event);
@@ -6586,6 +6669,7 @@ void ReferenceChainTracker::cacheResolvedChain(jlong source_tag,
   TEST_LOG("ReferenceChainTracker::cacheResolvedChain source_tag=%lld cache_size=%d",
            (long long)source_tag, (int)_resolved_chains.size());
   _resolved_chains_lock.unlock();
+  return true;
 }
 
 void ReferenceChainTracker::invalidateResolvedChain(jlong source_tag) {
@@ -6640,9 +6724,17 @@ for (int s = 0; s < _candidate_count; s++) {
                d, klass_id, s);
       continue;
     }
-    // Skip if already cached for this instance
+    // Skip if already cached for this instance - but only for the CURRENT
+    // search generation: restartSearch() resets the frontier tag namespace,
+    // so a cached entry under the same numeric tag from an earlier search
+    // describes a different object and must not suppress the rebuild (the
+    // generation check mirrors the rep-refresh paths in pollWatchedTargets()).
+    const u64 current_search_ns = load(_search_start_ns);
     _resolved_chains_lock.lock();
-    bool already_cached = (_resolved_chains.find(disc_tag) != _resolved_chains.end());
+    auto cached_it = _resolved_chains.find(disc_tag);
+    bool already_cached = (cached_it != _resolved_chains.end() &&
+                           cached_it->second.source_search_ns ==
+                               current_search_ns);
     _resolved_chains_lock.unlock();
     if (already_cached) {
       TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
@@ -6684,8 +6776,11 @@ for (int s = 0; s < _candidate_count; s++) {
     }
     if (built) {
       event._start_time = TSC::ticks();
-      cacheResolvedChain(disc_tag, std::move(event), disc_tag,
-                          current_search_ns);
+      // Coverage accounting below must only advance for a chain that was
+      // actually stored - a cache-full drop would let the search report
+      // the candidate as found without ever emitting its chain.
+      if (cacheResolvedChain(disc_tag, std::move(event), disc_tag,
+                             current_search_ns)) {
       // Track coverage for adaptive CPU budget
       if (event._target_tag >= (u64)LEAK_TAG_BASE) {
         _leak_tags_resolved++;
@@ -6720,6 +6815,7 @@ for (int s = 0; s < _candidate_count; s++) {
                "auto-marked chain for klass_id=%u tag=%lld target_tag=%llu",
                klass_id, (long long)disc_tag,
                (unsigned long long)event._target_tag);
+      }
     } else {
       TEST_LOG("ReferenceChainTracker::pollWatchedTargets "
                "buildChainEvent failed for discovered tag=%lld "
@@ -6840,6 +6936,10 @@ void ReferenceChainTracker::enqueuePendingAbandonedEvent() {
   if (!buildAbandonedEvent(&event)) {
     return;
   }
+  // Stamp when the search actually stopped, not when a later dump writes the
+  // queued event - an abandon is a point-in-time occurrence and dump() can
+  // lag it by a whole chunk rotation.
+  event._start_time = TSC::ticks();
   _pending_abandoned_events_lock.lock();
   if ((int)_pending_abandoned_events.size() >= MAX_PENDING_ABANDONED_EVENTS) {
     _pending_abandoned_events_lock.unlock();

@@ -41,6 +41,16 @@ typedef struct TrackingEntry {
   // stays valid for flush_table()'s later read of the same entry. track()
   // resets this to 0 for every newly tracked entry.
   u32 cached_klass_id;
+  // Publication flag for the slot payload. track() holds only the shared
+  // table lock while it reserves a slot via a _table_size CAS and then fills
+  // it in, so a shared-mode scanner (tagLeakInstances(), getLiveTraceIds())
+  // can observe the reserved index before the payload is written - the
+  // table's malloc/realloc storage is uninitialized. track() stores 0 here
+  // (release) before re-filling and 1 (release) after the payload is
+  // complete; scanners load-acquire it and skip anything != 1. Freshly
+  // malloc'd/realloc'd regions are zeroed at allocation time so a garbage
+  // non-zero flag can never publish an uninitialized payload.
+  volatile int ready;
 } TrackingEntry;
 
 struct SubsampleRate {
