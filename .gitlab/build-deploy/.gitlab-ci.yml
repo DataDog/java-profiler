@@ -180,9 +180,10 @@ stresstest:arm64-musl:
 
 # Runs the functional (ddprof-test) suite on Oracle Linux 7 against the
 # shipped x64 artifact, so the libc-sensitive suites get real coverage at the
-# glibc 2.17 floor (see PR #790's follow-up) without multiplying the regular
-# per-PR test matrix. Schedule-only (nightly): a 2-3 JDK subset is enough to
-# catch a libc regression, and Temurin 8/17/21 all start on glibc 2.17.
+# glibc 2.17 floor (see PR #790's follow-up). Schedule-only by default: a
+# 2-3 JDK subset is enough to catch a libc regression, and Temurin 8/17/21
+# all start on glibc 2.17. jdk8 additionally runs on every PR (below), so
+# EL7 functional coverage isn't gated on the nightly schedule entirely.
 .functional_job:
   extends:
     - .retry-config
@@ -210,8 +211,13 @@ stresstest:arm64-musl:
       - functional/$TARGET/jdk$TEST_JDK/logs
     expire_in: 2 weeks
 
+# Runs on every pipeline (not just nightly): JDK 8 is the oldest/most
+# different from the JDK 21 that runs Gradle, giving the most distinct
+# per-PR signal for a libc regression at low added cost.
 functional:x64-el7-jdk8:
   extends: .functional_job
+  rules:
+    - when: on_success
   variables:
     TEST_JDK: "8"
 
