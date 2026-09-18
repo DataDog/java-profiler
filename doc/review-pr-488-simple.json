@@ -1,0 +1,118 @@
+{
+  "summary": "Adds a Linux glibc-only PLT hook based 'natsock' (native socket I/O) sampling engine, plus a thread-local Poisson sampler, PID-based rate limiter, JFR metadata, integration tests and a JMH overhead benchmark. Also touches LivenessTracker init order, hotspotSupport stack-walk dispatch, and import enumeration. The new feature is conceptually sound but has several robustness and correctness issues centred on fd reuse, memory ordering during hook (un)patching, and weak/redundant tests. The hotspotSupport split is pure code duplication.",
+  "branch": "muse/impl-20260416-133933",
+  "files_reviewed": 34,
+  "findings": [
+    {
+      "severity": "HIGH",
+      "file": "ddprof-lib/src/main/cpp/nativeSocketSampler.cpp",
+      "line": 578,
+      "concern": "correctness",
+      "issue": "_fd_type_cache entries are written-once per fd value and never invalidated on close()/dup()/dup2(). When a TCP socket is closed and the same fd number is reopened as a regular file (or vice-versa), the cached classification is wrong: write/read on a former socket fd that is now a file goes through the sampling path (recordEvent + getpeername — which fails — yielding events with empty remoteAddress); a former regular fd reused as a socket bypasses sampling entirely.",
+      "evidence": "isSocket() caches FD_TYPE_SOCKET / FD_TYPE_NON_SOCKET at first observation and never resets it except in start(); there is no close()/dup() hook or invalidation path.",
+      "suggestion": "Either probe getsockopt(SO_TYPE) on every call (acceptable cost) or hook close()/dup() to invalidate the slot, or limit the cache to a small bounded LRU keyed by (fd, generation_counter).",
+      "confidence": "high"
+    },
+    {
+      "severity": "HIGH",
+      "file": "ddprof-lib/src/main/cpp/libraryPatcher_linux.cpp",
+      "line": 367,
+      "concern": "concurrency",
+      "issue": "Memory-ordering hole between _orig_send/_recv/_write/_read assignment (plain pointer store, non-atomic) and the __atomic_store_n RELAXED publish of the hook into the GOT slot. A second core that loads the hook pointer from the GOT before its own cache view of _orig_send is updated will execute send_hook with the prior (or, on first start, NULL) function pointer.",
+      "evidence": "NativeSocketSampler::_orig_send = pre_send;  // plain store\n__atomic_store_n(send_location, (void*)NativeSocketSampler::send_hook, __ATOMIC_RELAXED);",
+      "suggestion": "Make _orig_* std::atomic<...> with release stores in patch_socket_functions and acquire loads in *_hook, and switch the GOT __atomic_store_n to __ATOMIC_RELEASE.",
+      "confidence": "high"
+    },
+    {
+      "severity": "MEDIUM",
+      "file": "ddprof-lib/src/main/cpp/hotspot/hotspotSupport.cpp",
+      "line": 1109,
+      "concern": "necessity",
+      "issue": "The walkJavaStack dispatch was split into two separate else-if branches (BCI_NATIVE_MALLOC || BCI_NATIVE_SOCKET) and (BCI_CPU || BCI_WALL) with byte-for-byte identical bodies. This is pure duplication — the next maintainer will fix one branch and forget the other.",
+      "evidence": "Lines 1109-1132 and 1133-1159 are the same code modulo the comment on line 1137.",
+      "suggestion": "Restore the single original branch: 'else if (event_type == BCI_CPU || event_type == BCI_WALL || event_type == BCI_NATIVE_MALLOC || event_type == BCI_NATIVE_SOCKET)'.",
+      "confidence": "high"
+    },
+    {
+      "severity": "MEDIUM",
+      "file": "ddprof-lib/src/main/cpp/hotspot/hotspotSupport.cpp",
+      "line": 70,
+      "concern": "completeness",
+      "issue": "BCI_NATIVE_SOCKET was added but eventTypeFromBCI() was not updated — it falls into the 'default' branch returning EXECUTION_SAMPLE. walkVM is therefore invoked with the wrong EventType for socket events when cstack=vm.",
+      "evidence": "Switch in hotspotSupport.cpp:54 has cases for BCI_NATIVE_MALLOC but not BCI_NATIVE_SOCKET.",
+      "suggestion": "Add a case for BCI_NATIVE_SOCKET returning the appropriate EventType and document the choice.",
+      "confidence": "high"
+    },
+    {
+      "severity": "MEDIUM",
+      "file": "ddprof-lib/src/main/cpp/nativeSocketSampler.cpp",
+      "line": 631,
+      "concern": "correctness",
+      "issue": "recordEvent holds std::mutex _fd_cache_mutex while a SIGPROF handler can fire on the same thread. std::mutex is not async-signal-safe. If the SIGPROF path enters any code that tries to acquire the same mutex (directly or via Profiler::recordSample → call-trace-storage flush), the thread deadlocks.",
+      "evidence": "recordEvent acquires _fd_cache_mutex twice; SIGPROF can fire while the lock is held; std::mutex is not reentrant and not signal-safe.",
+      "suggestion": "Either replace _fd_cache_mutex with try_lock + best-effort skip, block SIGPROF around the critical section, or move address resolution outside the hook path (resolve eagerly on connect/accept).",
+      "confidence": "medium"
+    },
+    {
+      "severity": "MEDIUM",
+      "file": "ddprof-lib/src/main/cpp/nativeSocketSampler.cpp",
+      "line": 565,
+      "concern": "correctness",
+      "issue": "inet_ntop() return value is ignored in resolveAddr. On NULL return (unsupported AF, insufficient buffer), host[] may be uninitialised and snprintf reads garbage.",
+      "evidence": "inet_ntop(AF_INET, &s->sin_addr, host, sizeof(host));  // return value ignored",
+      "suggestion": "Check inet_ntop return value and return empty string on failure.",
+      "confidence": "medium"
+    },
+    {
+      "severity": "MEDIUM",
+      "file": "ddprof-test/src/test/java/com/datadoghq/profiler/nativesocket/NativeSocketBytesAccuracyTest.java",
+      "line": 36,
+      "concern": "consistency",
+      "issue": "Test would pass against a stub emitting a single event with weight=1 and any positive duration. The sole assertion is 'sum(weight*duration) > 0 AND <= 100x wall time'. A 100x ceiling provides essentially no signal.",
+      "evidence": "assertTrue(scaledDurationNs <= wallNs * 100.0, ...) — no lower bound, no order-of-magnitude check.",
+      "suggestion": "Add a lower bound (e.g. > wallNs / 100) and tighten the upper bound, or run with a known-deterministic interval and assert the scaled estimate is within ~3 sigma of the analytical expectation.",
+      "confidence": "high"
+    },
+    {
+      "severity": "MEDIUM",
+      "file": "ddprof-test/src/test/java/com/datadoghq/profiler/nativesocket/NativeSocketRateLimitTest.java",
+      "line": 46,
+      "concern": "completeness",
+      "issue": "Test would pass if the sampler were stubbed to emit a single event with weight=1.5. Both assertions ('eventCount < operations' and 'foundWeightAboveOne') are trivially satisfied by any non-degenerate sampler. The test never validates that the rate is anywhere near the documented ~83/sec target.",
+      "evidence": "assertions only check eventCount < 20000 and at-least-one weight > 1.0",
+      "suggestion": "Assert eventCount is within an envelope of expected_rate × wall_time; otherwise rename to 'sampler emits something' since rate-limiting correctness is not validated.",
+      "confidence": "high"
+    },
+    {
+      "severity": "MEDIUM",
+      "file": "ddprof-test/src/test/java/com/datadoghq/profiler/nativesocket/NativeSocketEnabledTest.java",
+      "line": 18,
+      "concern": "necessity",
+      "issue": "Redundant test. NativeSocketEventFieldsTest performs the same workload with strictly stronger assertions (verifies operation, remoteAddress, bytesTransferred, weight, duration, eventThread, stackTrace, foundSend && foundRecv). NativeSocketEnabledTest only checks events.hasItems().",
+      "evidence": "Both tests share parent class and same workload; EventFieldsTest assertions imply EnabledTest's assertion.",
+      "suggestion": "Remove NativeSocketEnabledTest.",
+      "confidence": "high"
+    },
+    {
+      "severity": "LOW",
+      "file": "ddprof-lib/src/main/cpp/livenessTracker.cpp",
+      "line": 214,
+      "concern": "completeness",
+      "issue": "Only _record_heap_usage was moved above the _initialized fast-path return. Other per-call toggles (subsample_ratio, table_cap, JNI references) remain pinned to the first-ever args. Behaviour is now asymmetric across args fields with no documentation explaining why.",
+      "evidence": "Only _record_heap_usage moved above the _initialized guard; all other args fields remain inside 'if (!_initialized)'.",
+      "suggestion": "Document why only _record_heap_usage is re-read on repeat calls, or move all per-call toggles together.",
+      "confidence": "medium"
+    },
+    {
+      "severity": "LOW",
+      "file": "ddprof-lib/src/main/cpp/libraryPatcher_linux.cpp",
+      "line": 459,
+      "concern": "robustness",
+      "issue": "unpatch_socket_functions leaves _orig_* set so in-flight hooks can dereference them — documented. But on the next patch_socket_functions call, those slots are unconditionally overwritten with plain stores while hooks from a prior session may still be in flight, creating a window where a hook reads a partially-updated pointer.",
+      "evidence": "Unconditional reassignment in patch_socket_functions with no release fence.",
+      "suggestion": "Use atomic release stores for _orig_* assignments and document the start/stop ordering invariant.",
+      "confidence": "medium"
+    }
+  ],
+  "clean": false
+}

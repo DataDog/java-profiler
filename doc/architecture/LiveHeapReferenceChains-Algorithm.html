@@ -1,0 +1,1450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reference Chains — Leak Triggers &amp; Resumable Heap Walk</title>
+<style>
+  :root {
+    --bg: #10131a;
+    --panel: #171b24;
+    --panel-2: #1d2230;
+    --line: #2b3242;
+    --fg: #dfe4ee;
+    --dim: #97a0b3;
+    --accent: #61b0ff;
+    --accent-2: #7ee0a8;
+    --warn: #ffcc66;
+    --bad: #ff8080;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    /* dataviz dark categorical slots 1/2 (validated adjacent pair, CVD ΔE 8.4) */
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --chart-grid: #2c2c2a;
+    --chart-axis: #383835;
+    --chart-muted: #898781;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    padding: 22px 28px 14px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+  }
+  header h1 { margin: 0 0 4px; font-size: 21px; font-weight: 600; }
+  header p { margin: 0; color: var(--dim); font-size: 13px; }
+  header code { font-family: var(--mono); color: var(--accent); }
+
+  nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 10px 22px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+  nav button {
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--dim);
+    padding: 6px 12px;
+    border-radius: 6px;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+  }
+  nav button:hover { color: var(--fg); background: var(--panel-2); }
+  nav button.active {
+    color: var(--bg);
+    background: var(--accent);
+    font-weight: 600;
+  }
+
+  main { padding: 26px 28px 80px; max-width: 1280px; }
+  section { display: none; }
+  section.active { display: block; }
+  section > h2 { margin: 0 0 6px; font-size: 19px; }
+  section > .lede { margin: 0 0 20px; color: var(--dim); font-size: 14px; max-width: 90ch; }
+
+  .diagram {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px;
+    margin: 0 0 20px;
+    overflow-x: auto;
+  }
+  .diagram > .mermaid { display: flex; justify-content: center; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; margin-bottom: 20px; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .card h4 { margin: 0 0 6px; font-size: 14px; }
+  .card p { margin: 0; font-size: 13px; color: var(--dim); }
+
+  table { border-collapse: collapse; width: 100%; margin-bottom: 20px; font-size: 13.5px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--accent); font-weight: 600; background: var(--panel); }
+  tbody tr:hover { background: var(--panel-2); }
+
+  code, .src { font-family: var(--mono); font-size: 12.5px; }
+  code { color: var(--accent-2); }
+  .src { color: var(--dim); white-space: nowrap; }
+
+  .note, .warn {
+    border-radius: 8px;
+    padding: 11px 14px;
+    margin: 0 0 18px;
+    font-size: 13.5px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+  }
+  .warn { border-left: 3px solid var(--warn); }
+  .note { border-left: 3px solid var(--accent-2); }
+  .warn strong { color: var(--warn); }
+  .note strong { color: var(--accent-2); }
+
+  ol.steps { padding-left: 20px; margin: 0 0 20px; }
+  ol.steps li { margin-bottom: 7px; font-size: 14px; }
+  footer { color: var(--dim); font-size: 12px; padding: 0 28px 40px; }
+
+  .chart-block {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px 16px 6px;
+    margin: 0 0 20px;
+  }
+  .chart-block h4 { margin: 0 0 2px; font-size: 13.5px; color: var(--fg); }
+  .chart-block .chart-caption { margin: 0 0 10px; font-size: 12.5px; color: var(--dim); max-width: 80ch; }
+  .chart-svg { width: 100%; height: auto; display: block; overflow: visible; }
+  .chart-grid { stroke: var(--chart-grid); stroke-width: 1; }
+  .chart-axis { stroke: var(--chart-axis); stroke-width: 1; }
+  .chart-axis-label { font: 10.5px var(--mono); fill: var(--chart-muted); }
+  .chart-direct-label { font: 11px var(--mono); fill: var(--fg); }
+  .chart-annotation { stroke: var(--warn); stroke-width: 1; stroke-dasharray: 4 3; }
+  .chart-annotation-label { font: 10.5px var(--mono); fill: var(--warn); }
+  .chart-line { fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .chart-area { stroke: none; fill-opacity: 0.16; }
+  .chart-bar { transition: opacity .1s; }
+  .chart-bar:hover { opacity: 0.8; }
+  .chart-crosshair { stroke: var(--chart-muted); stroke-width: 1; stroke-dasharray: 3 3; }
+  .chart-legend { display: flex; gap: 16px; flex-wrap: wrap; margin: 6px 0 4px; font-size: 12px; color: var(--dim); }
+  .chart-legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .chart-legend i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; }
+  .chart-tooltip {
+    position: fixed; display: none; z-index: 100;
+    background: #0b0d12; border: 1px solid var(--line); border-radius: 6px;
+    padding: 6px 9px; font: 12px var(--mono); color: var(--fg);
+    pointer-events: none; line-height: 1.5; white-space: nowrap;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.4);
+  }
+  .chart-table-toggle { margin: 6px 0 4px; }
+  .chart-table-toggle summary { cursor: pointer; font-size: 12px; color: var(--accent); }
+  .chart-table-toggle table { margin: 8px 0 4px; font-size: 12px; }
+  .chart-table-toggle th, .chart-table-toggle td { padding: 4px 8px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Reference Chains: leak-detection triggers &amp; the resumable heap walk</h1>
+  <p>Extracted from <code>ddprof-lib/src/main/cpp/referenceChains.{h,cpp}</code>,
+     <code>livenessTracker.{h,cpp}</code>, <code>painBudget.h</code> — branch <code>jb/reference-chains-pi</code>.
+     Every claim carries a <span class="src">file:line</span> anchor.</p>
+</header>
+
+<nav id="tabs"></nav>
+
+<main>
+
+<!-- ───────────────────────────── 1. OVERVIEW ───────────────────────────── -->
+<section id="overview">
+  <h2>1 · End-to-end pipeline</h2>
+  <p class="lede">Two independent subsystems cooperate. <strong>LivenessTracker</strong> decides <em>that</em>
+  something is leaking and <em>which class</em>. <strong>ReferenceChainTracker</strong> then answers <em>why it is
+  retained</em>, by running a budgeted, resumable, tag-based breadth-first walk of the reachable object graph on
+  its own JVMTI-attached thread.</p>
+
+  <div class="diagram"><div class="mermaid">
+flowchart LR
+  subgraph LT["LivenessTracker (leak detection)"]
+    direction TB
+    GC["GC epoch advance"] --> POP["cleanup_table(): fold survivors<br/>into per-klass population rings"]
+    POP --> TREND["hasQualifyingGrowth():<br/>least-squares slope + hysteresis"]
+    POP --> FLOOR["heapFloorRising() /<br/>secondsToOOM() projection"]
+    TREND --> CAND["selectLeakCandidates()<br/>top-5 by slope"]
+    FLOOR --> CAND
+  end
+
+  subgraph RC["ReferenceChainTracker (retention explanation)"]
+    direction TB
+    SIG["hasLeakSignal()"] --> AFF["canAffordNewSearch()<br/>pain budget + signal"]
+    AFF --> SCHED["shouldRunPass()"]
+    SCHED --> PASS["runPass() — one budgeted pass"]
+    PASS --> FRONT[("FrontierTable<br/>tag -> parent_tag")]
+    FRONT --> PASS
+    PASS --> TERM["Termination check"]
+    TERM -->|"terminal"| REL["releaseSearchTags() -> restartSearch()"]
+    REL --> SCHED
+  end
+
+  CAND --> SIG
+  CAND --> POLL["pollWatchedTargets():<br/>tag candidate instances"]
+  POLL --> PASS
+  FRONT --> RECON["reconstructChain()<br/>leaf -> root"]
+  RECON --> JFR["JFR: ReferenceChain /<br/>ReferenceChainAbandoned"]
+  </div></div>
+
+  <div class="cards">
+    <div class="card">
+      <h4>One thread, one lock</h4>
+      <p>A single agent-owned pthread (<code>threadLoop()</code>, <span class="src">referenceChains.cpp:690</span>)
+      wakes on an adaptive cadence, runs at most one pass, then polls targets. GC callbacks only bump an atomic epoch.</p>
+    </div>
+    <div class="card">
+      <h4>Tags, not handles</h4>
+      <p>Frontier identity is a JVMTI object tag — non-retaining, so the walk never keeps a dying object alive.
+      Dead objects vanish for free at the next <code>GetObjectsWithTags</code>.</p>
+    </div>
+    <div class="card">
+      <h4>Resumable by construction</h4>
+      <p>Every pass is bounded by an edge budget <em>and</em> a wall-clock deadline. Unfinished work stays in a FIFO
+      (<code>_pending_expand</code>) and is picked up by the next pass — including a partially-visited batch.</p>
+    </div>
+    <div class="card">
+      <h4>Cost is paid for, not assumed</h4>
+      <p>Two leaky buckets (<code>PainBudget</code>): one gates starting a search on accumulated safepoint cost,
+      one gates every pass on non-safepoint CPU cost.</p>
+    </div>
+  </div>
+
+  <div class="warn">
+    <strong>Three places where the in-source narrative has drifted from the code</strong> — verified, worth knowing before reading the headers:
+    <ol style="margin:8px 0 0 0; padding-left:20px">
+      <li>There is <em>no</em> root-seeded <code>FollowReferences</code> first pass any more. <code>runPass()</code> always
+      drives <code>runPassManualWalk()</code>; the only first-pass difference is that root enumeration is forced
+      (<span class="src">referenceChains.cpp:3665-3699</span>). The header comment at
+      <span class="src">referenceChains.h:47-53</span> still describes the old shape.</li>
+      <li><code>SearchAbandonReason::TTL</code> is <em>not</em> driven by <code>_ttl_ms</code>. That field is assigned in
+      <code>start()</code> and only reported in the abandoned event; the branch that stores <code>TTL</code> is the
+      no-progress detector (<span class="src">referenceChains.cpp:3807-3818</span>).</li>
+      <li><code>CANARY_NO_PROGRESS_PASS_LIMIT = 3</code> carries an in-source <code>// TEMP: was 30, lowered for testing</code>
+      marker (<span class="src">referenceChains.h:2376</span>), while the comment below it still reasons about a base of 30.</li>
+    </ol>
+  </div>
+</section>
+
+<!-- ───────────────────────────── 2. LEAK SIGNAL ───────────────────────────── -->
+<section id="signal">
+  <h2>2 · Leak signal: how a class becomes a candidate</h2>
+  <p class="lede">A klass is only trusted as leaking after it clears a fill gate, a slope gate, a class-level hysteresis
+  gate <em>and</em> a per-thread hysteresis gate. The bar itself moves depending on whether the aggregate heap floor
+  corroborates the story.</p>
+
+  <div class="diagram"><div class="mermaid">
+flowchart TB
+  A["GC epoch: cleanup_table() folds surviving<br/>tracked objects per klass"] --> B["count_ring[30] push<br/>(sample = distinct GC ages, not raw count)"]
+  B --> C{"ring_fill >= 10<br/>KLASS_POPULATION_MIN_FILL_FOR_TREND"}
+  C -->|"no"| X1["no trend yet"]
+  C -->|"yes"| D["least-squares regression over the ring<br/>cached_slope = recent_mean - earliest_mean"]
+  D --> E{"cached_slope >= max(0.15 * earliest_mean, 1)<br/>LEAK_GROWTH_REL_MIN / ABS_MIN"}
+  E -->|"no"| F["consecutive_positive = 0 (hard reset)"]
+  E -->|"yes"| G["consecutive_positive++ (saturating)"]
+
+  G --> H{"heapFloorRising()?"}
+  H -->|"yes, corroborated"| I["required_hysteresis = 3"]
+  H -->|"no"| J["required_hysteresis = 5"]
+  I --> K
+  J --> K{"consecutive_positive >= required_hysteresis<br/>AND cached_slope > 0"}
+  K -->|"no"| X2["skip klass"]
+  K --> L{"any tid_trend with<br/>consecutive_positive >= required_hysteresis"}
+  L -->|"no"| X3["skip klass — no single thread<br/>owns the growth"]
+  L -->|"yes"| M["insert into top-5 by slope descending"]
+  M --> N["selectLeakCandidates() returns candidates"]
+  </div></div>
+
+  <div class="note">
+    <strong>Latency to first candidate</strong> ≈ 10 ring pushes to fill the trend window, plus 3–5 further qualifying
+    epochs of hysteresis — roughly 13–15 GC epochs. This is exactly why the search must be restartable: a search that
+    completes the whole reachable graph before the trend detector has spoken would otherwise never look again.
+  </div>
+
+  <h3 style="font-size:15px">Heap-floor corroboration</h3>
+  <p class="lede"><code>heapFloorRising()</code> (<span class="src">livenessTracker.cpp:1220-1259</span>) demands
+  <em>both</em> a rising mean and a rising minimum, so a sawtooth workload whose troughs stay flat does not lower the bar.</p>
+  <table>
+    <thead><tr><th>Gate</th><th>Constant</th><th>Value</th></tr></thead>
+    <tbody>
+      <tr><td>Mean rise, relative</td><td><code>HEAP_FLOOR_GROWTH_REL_MIN</code></td><td>0.02</td></tr>
+      <tr><td>Mean rise, absolute</td><td><code>HEAP_FLOOR_GROWTH_ABS_MIN</code></td><td>1 MiB</td></tr>
+      <tr><td>Floor rise, relative</td><td><code>HEAP_FLOOR_FLOOR_REL_MIN</code></td><td>0.01</td></tr>
+      <tr><td>Floor rise, absolute</td><td><code>HEAP_FLOOR_FLOOR_ABS_MIN</code></td><td>512 KiB</td></tr>
+    </tbody>
+  </table>
+
+  <div class="note">
+    <strong>Two rankings, deliberately different.</strong> <code>selectLeakCandidates()</code> is slow and gated
+    (<span class="src">livenessTracker.cpp:1370</span>). <code>topKlassesByGenerationCount()</code> is fast and
+    <em>ungated</em> — ranked on the single latest sample with no hysteresis at all
+    (<span class="src">livenessTracker.cpp:1480</span>). The fast one is only ever consulted <em>after</em> the slow one
+    has already fired, so it never needs to wait out the same hysteresis twice
+    (<span class="src">referenceChains.cpp:4175-4201</span>).
+  </div>
+
+  <div class="chart-block">
+    <h4>Qualifying growth bar: <code>max(0.15 · earliest_mean, 1)</code></h4>
+    <p class="chart-caption">Below an earliest-window mean of ~6.7 tracked instances, the absolute floor
+      (<code>LEAK_GROWTH_ABS_MIN</code> = 1) sets the bar, not the 15% relative term
+      (<code>LEAK_GROWTH_REL_MIN</code>) — a klass with only a handful of instances still needs to grow by a whole
+      instance to qualify, it cannot coast in on a tiny relative slope.</p>
+    <div id="chart-growth-bar"></div>
+  </div>
+</section>
+
+<!-- ───────────────────────────── 3. URGENCY ───────────────────────────── -->
+<section id="urgency">
+  <h2>3 · Urgency: the OOM projection and its latch</h2>
+  <p class="lede"><code>secondsToOOM()</code> projects when the live-heap floor will hit the tighter of the JVM max heap
+  and the container limit. The raw value swings by orders of magnitude between observations, so it is never compared
+  bare — it is read through a latch with separate arm and release bars.</p>
+
+  <div class="diagram"><div class="mermaid">
+flowchart TB
+  A["_heap_floor_ring / _time_ring<br/>30 post-GC samples"] --> B{"_gc_generations on<br/>AND max_heap > 0"}
+  B -->|"no"| N1["return -1 (no projection)"]
+  B -->|"yes"| C["limit = min(JVM max heap, container limit)"]
+  C --> D{"ring_fill >= 10"}
+  D -->|"no"| N2["return -1 (INSUFFICIENT_FILL)"]
+  D -->|"yes"| E["regress bytes and time"]
+  E --> F{"bytes_delta > 0 AND time_delta > 0"}
+  F -->|"no"| N3["return -1 (NOT_RISING)"]
+  F -->|"yes"| G["re-regress the most recent half<br/>(min fill 5)"]
+  G --> H{"recent half also rising?"}
+  H -->|"no"| N4["return -1 (RECENT_HALF_FLAT)<br/>rejects a plateaued step change"]
+  H -->|"yes"| I["seconds = (limit - recent_mean) / rate"]
+  </div></div>
+
+  <div class="diagram"><div class="mermaid">
+stateDiagram-v2
+  direction LR
+  [*] --> Calm
+  Calm --> Latched: "secondsToOOM() in [0, 300) — OOM_URGENT_THRESHOLD_S<br/>also clears _urgent_search_spent, so a new episode earns a fresh entitlement"
+  note right of Latched: "a reading between 300 and 600 stays Latched<br/>and resets _urgent_release_ticks to 0"
+  Latched --> Releasing: "reading at or over 600 (OOM_URGENT_RELEASE_S), or negative — ++_urgent_release_ticks"
+  Releasing --> Latched: "any reading back under the release bar"
+  Releasing --> Calm: "URGENT_RELEASE_CONSECUTIVE = 5 clear readings in a row"
+  </div></div>
+
+  <div class="warn">
+    <strong>Two distinct notions of "urgent" coexist.</strong>
+    <code>isUrgent()</code> uses the latch above with a 300 s arm bar and is what suppresses the no-progress abandon and
+    authorises one out-of-band search per episode.
+    <code>threadLoop()</code>'s ramp uses a raw, unlatched, much wider window —
+    <code>seconds_to_oom &lt; OOM_RAMP_START_S = 1800 s</code> — recomputed on every wake
+    (<span class="src">referenceChains.cpp:735-736</span>). They arm at different distances and flap differently.
+  </div>
+
+  <h3 style="font-size:15px">The OOM ramp (<span class="src">referenceChains.cpp:739-772</span>)</h3>
+  <p class="lede">Inside the 30-minute window, with <code>x = 1 - secondsToOOM()/1800</code> (0 at the far edge, 1 at OOM),
+  both the pause target and the cadence ramp exponentially toward their urgent ceilings:</p>
+  <table>
+    <thead><tr><th>Quantity</th><th>Baseline</th><th>Urgent ceiling</th><th>Ramp</th></tr></thead>
+    <tbody>
+      <tr><td>Per-pass pause target</td><td><code>_pause_target_ms</code></td><td><code>URGENT_PAUSE_TARGET_MS</code> = 100 ms</td><td><code>base * (100/base)^x</code></td></tr>
+      <tr><td>Pass cadence</td><td><code>PASS_CADENCE_NS</code> = 1 s</td><td><code>URGENT_CADENCE_NS</code> = 10 ms</td><td><code>1s * (10ms/1s)^x</code></td></tr>
+      <tr><td>Edge budget ceiling</td><td><code>_budget</code></td><td><code>min(_budget * 4, MAX_REFERENCE_CHAINS_BUDGET)</code></td><td>step, on target change</td></tr>
+    </tbody>
+  </table>
+  <p class="lede">The cadence ramps from the <em>fixed</em> baseline, not from the live <code>_effective_cadence_ns</code> —
+  anchoring on the moving value would compound the exponent across iterations. While urgent, the ramp owns
+  <code>_effective_cadence_ns</code> outright; <code>updatePacing()</code> silently resumes ownership the moment urgency clears.</p>
+
+  <div class="chart-block">
+    <h4>Cadence ramp: <code>1000ms · (10ms/1000ms)^x</code></h4>
+    <p class="chart-caption">Fully determined by <code>PASS_CADENCE_NS</code> and <code>URGENT_CADENCE_NS</code> — no
+      assumed baseline. The dashed marker is where <code>isUrgent()</code>'s own, separately-latched threshold
+      (<code>OOM_URGENT_THRESHOLD_S</code> = 300 s) falls on this same x-axis, for scale.</p>
+    <div id="chart-cadence-ramp"></div>
+  </div>
+</section>
+
+<!-- ───────────────────────────── 4. SCHEDULING ───────────────────────────── -->
+<section id="scheduling">
+  <h2>4 · Pass scheduling: <code>shouldRunPass()</code></h2>
+  <p class="lede">Called once per BFS-thread wake. Three regimes — no search yet, search terminal, search running —
+  evaluated strictly in this order (<span class="src">referenceChains.cpp:870-1006</span>).</p>
+
+  <div class="diagram"><div class="mermaid">
+flowchart TB
+  S(["shouldRunPass(now_ns)"]) --> B1{"_search_started?"}
+
+  B1 -->|"no"| A1{"canAffordNewSearch(now)<br/>= safepoint pain budget drained<br/>AND hasLeakSignal()"}
+  A1 -->|"no"| F1["FALSE"]
+  A1 -->|"yes"| T1["_urgent_search_spent = _urgent_latched<br/>TRUE — take the very first pass"]
+
+  B1 -->|"yes"| B2{"_search_state == RUNNING?"}
+
+  B2 -->|"no (terminal)"| C1{"_tags_released?"}
+  C1 -->|"no"| T2["TRUE — force runPass() to retry<br/>releaseSearchTags(); restart is forbidden<br/>until every tag is confirmed cleared"]
+  C1 -->|"yes"| C2{"canAffordNewSearch(now)"}
+  C2 -->|"no"| F2["FALSE — terminal, waiting"]
+  C2 -->|"yes"| T3["restartSearch()<br/>TRUE"]
+
+  B2 -->|"yes"| D0["canary_active = candidates outstanding<br/>all_covered = leak tags all resolved<br/>emergency = canary_active AND no candidate<br/>progress for 3 passes"]
+  D0 --> D1["CPU pain refill multiplier:<br/>all_covered -> 1x<br/>emergency -> 100x<br/>canary_active -> 15x<br/>else -> 1x"]
+  D1 --> D2{"_cpu_pain_budget.canStartNow()"}
+  D2 -->|"no"| F3["FALSE — throttled"]
+  D2 -->|"yes"| D3{"gcFinishEpoch() changed<br/>since last pass?"}
+  D3 -->|"yes"| T4["TRUE — GC trigger"]
+  D3 -->|"no"| D4{"canary_active?"}
+  D4 -->|"yes"| T5["TRUE — run back-to-back,<br/>cadence bypassed"]
+  D4 -->|"no"| D5{"now - _last_pass_ns >=<br/>_effective_cadence_ns"}
+  D5 -->|"yes"| T6["TRUE — cadence trigger"]
+  D5 -->|"no"| F4["FALSE — idle"]
+  </div></div>
+
+  <div class="cards">
+    <div class="card">
+      <h4>Order matters in the multiplier</h4>
+      <p><code>all_covered</code> is tested before <code>emergency</code>, so a search whose leak tags are all resolved
+      drops back to 1× even if the canary is nominally stuck.</p>
+    </div>
+    <div class="card">
+      <h4>Two budgets, two scopes</h4>
+      <p><code>_safepoint_pain_budget</code> is never consulted for a RUNNING search — only through
+      <code>canAffordNewSearch()</code> when starting or restarting one. <code>_cpu_pain_budget</code> gates each pass.</p>
+    </div>
+    <div class="card">
+      <h4>No early wake on GC</h4>
+      <p><code>onGCFinish()</code> bumps an atomic epoch and nothing else. Waking the thread per GC would buy ≤1 s of
+      latency while collapsing the loop cadence to GC frequency (<span class="src">referenceChains.cpp:858-866</span>).</p>
+    </div>
+    <div class="card">
+      <h4>Sleep only when idle</h4>
+      <p><code>threadLoop()</code> skips its sleep entirely when a pass is about to run, so canary passes execute
+      back-to-back and the PID controller alone regulates cost (<span class="src">referenceChains.cpp:805-811</span>).</p>
+    </div>
+  </div>
+
+  <div class="note">
+    <strong>Why a RUNNING search is not gated on <code>hasLeakSignal()</code></strong>
+    (<span class="src">referenceChains.cpp:785-798</span>): that signal answers "is there a leak candidate right now",
+    which is unrelated to whether an in-flight search still has pending frontier work. Gating every pass on it would
+    stall a search's own convergence whenever no candidate happens to be visible.
+  </div>
+</section>
+
+<!-- ───────────────────────────── 5. SEARCH LIFECYCLE ───────────────────────────── -->
+<section id="lifecycle">
+  <h2>5 · One search, pass by pass</h2>
+  <p class="lede">A search is a sequence of passes over a persistent frontier. Each pass performs up to four sub-phases,
+  each of which can truncate independently and hand its remainder to the next pass.</p>
+
+  <div class="diagram"><div class="mermaid">
+flowchart TB
+  P(["runPass(jvmti, jni)"]) --> G0{"enabled AND frontier exists?"}
+  G0 -->|"no"| Z0["bail"]
+  G0 -->|"yes"| G1{"_search_state == RUNNING?"}
+  G1 -->|"no"| Z1["retry releaseSearchTags() if needed;<br/>return as a no-op"]
+  G1 -->|"yes"| R0["resolveLoadedClasses()<br/>class_tag -> class-name dictionary id<br/>(per-class scan skipped when the count is unchanged)"]
+
+  R0 --> R1{"first pass?<br/>(_search_started == false)"}
+  R1 -->|"yes"| R2["_search_started = true<br/>_search_start_ns = now<br/>force root enumeration"]
+  R1 -->|"no"| R3{"last root enum truncated<br/>OR >= 2s since last<br/>(ROOT_ENUM_MIN_INTERVAL_NS)"}
+  R3 -->|"yes"| R2
+  R3 -->|"no"| R4["skip root enumeration this pass"]
+
+  R2 --> W["runPassManualWalk()"]
+  R4 --> W
+
+  subgraph WALK["runPassManualWalk — four sub-phases under one deadline"]
+    direction TB
+    W1["A · Root enumeration<br/>IterateOverReachableObjects<br/>budget = _first_pass_budget · no deadline"]
+    W2["B · Static-field sweep<br/>admitStaticFieldRoots(), 512-class chunk<br/>only when the loaded-class count changed"]
+    W3["C · Ordinary expansion<br/>expandFrontier(_pending_expand / _priority_expand)"]
+    W4["D · Rotation<br/>collect stale roots / leak accumulators / stale expanded<br/>then a second expandFrontier() on the reserved budget"]
+    W1 --> W2 --> W3 --> W4
+  end
+
+  W --> WALK
+  WALK --> M0["_passes_run++ · _last_pass_gc_finish_epoch · _last_pass_ns"]
+  M0 --> M1{"root-enum pass?"}
+  M1 -->|"no"| M2["updatePacing(safepoint_ticks)"]
+  M1 -->|"yes"| M3["maybeRevokeBorrowForRootEnumPass()<br/>(excluded from the PID signal)"]
+  M2 --> M4
+  M3 --> M4["_search_pain_ms += safepoint ms<br/>_cpu_pain_budget.spend(non-safepoint ms)"]
+  M4 --> M5["Termination decision chain — see tab 8"]
+  </div></div>
+
+  <table>
+    <thead><tr><th>Sub-phase</th><th>Budget</th><th>Deadline</th><th>Why it exists</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>A · Root enumeration</td>
+        <td><code>_first_pass_budget</code> (auto = <code>min(_budget*50, 200000)</code>)</td>
+        <td>none, by design</td>
+        <td>Enumerates heap roots and stack refs. Re-run at most every 2 s; already-admitted roots short-circuit
+        cheaply, so a root missed this pass is picked up later, never lost.</td>
+      </tr>
+      <tr>
+        <td>B · Static-field sweep</td>
+        <td>chunk of 512 classes</td>
+        <td><code>_pass_deadline_ns</code></td>
+        <td>JVMTI has no <code>jvmtiHeapRootKind</code> for static fields, and expansion never descends from class
+        objects — without this, <code>SomeClass.staticField → obj</code> is structurally undiscoverable.</td>
+      </tr>
+      <tr>
+        <td>C · Ordinary expansion</td>
+        <td><code>_effective_budget − rotation reserve</code></td>
+        <td><code>_pass_deadline_ns</code></td>
+        <td>The actual BFS: resolve a batch of frontier tags, walk exactly one hop from each.</td>
+      </tr>
+      <tr>
+        <td>D · Rotation</td>
+        <td><code>min(expand_budget/2, 288)</code> reserved up front</td>
+        <td><code>_pass_deadline_ns</code></td>
+        <td>Re-observes entries whose recorded story may have gone stale: transient root kinds, leak-accumulating
+        signatures, long-expanded entries whose fields have since been mutated.</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ───────────────────────────── 6. EXPAND ───────────────────────────── -->
+<section id="expand">
+  <h2>6 · <code>expandFrontier()</code>: the resumable batch loop</h2>
+  <p class="lede">The heart of the resumability. Each iteration resolves a batch of frontier tags back to live objects,
+  runs <em>one</em> stop-the-world <code>FollowReferences</code> for the whole batch, and descends exactly one hop —
+  enforced by a membership gate on the batch's own tag set (<span class="src">referenceChains.cpp:2943-3303</span>).</p>
+
+  <div class="diagram"><div class="mermaid">
+flowchart TB
+  E(["expandFrontier(hop_cap, budget)"]) --> L0{"deadline reached?<br/>OS::nanotime() >= _pass_deadline_ns"}
+  L0 -->|"yes"| TR["truncated = true — break"]
+  L0 -->|"no"| L1["pick a lane:<br/>_priority_expand vs _pending_expand,<br/>alternating via _expand_lane_prefer_priority"]
+  L1 --> L2{"both lanes empty?"}
+  L2 -->|"yes"| DONE["no pending work — break"]
+  L2 -->|"no"| L3["batch_size = min(queue, budget, _gotw_batch_size)"]
+  L3 --> L4["GetObjectsWithTags(batch)<br/>dead tags simply do not come back = free pruning"]
+  L4 --> L5["self-calibrate _gotw_batch_size:<br/>per-call EMA scaled by the remaining<br/>deadline window, clamped to [8, 512]"]
+  L5 --> L6["build jobjectArray holder<br/>+ fill batch_tags membership set"]
+  L6 --> L7["FollowReferences(holder) — one STW HeapWalkOperation<br/>heapReferenceCallback descends only into tags in batch_tags"]
+  L7 --> L8{"truncated?"}
+
+  L8 -->|"no"| S1["for each tag in batch:<br/>resolved -> markExpanded()<br/>unresolved -> clear() = ABANDONED<br/>pop_front() · progress = true"]
+  L8 -->|"yes, some batch entry visited"| S2["rolling resume:<br/>settle only entries BEFORE<br/>_last_visited_batch_tag;<br/>leave it and the rest at the queue front"]
+  L8 -->|"yes, nothing visited"| S3["leave the whole batch queued"]
+
+  S1 --> L0
+  S2 --> TR
+  S3 --> TR
+  </div></div>
+
+  <div class="cards">
+    <div class="card">
+      <h4>One hop, guaranteed</h4>
+      <p><code>heapReferenceCallback</code> returns <code>JVMTI_VISIT_OBJECTS</code> only when the visited object's tag is
+      in <code>batch_tags</code>. Everything else is admitted but not descended into
+      (<span class="src">referenceChains.cpp:2001-2017</span>).</p>
+    </div>
+    <div class="card">
+      <h4>Rolling resume</h4>
+      <p><code>_last_visited_batch_tag</code> is the cursor inside a truncated batch. Entries before it are settled;
+      the partially-visited one stays at the queue head and is re-walked next pass.</p>
+    </div>
+    <div class="card">
+      <h4>Deadline sampled cheaply</h4>
+      <p>Inside the callback the wall clock is only read every 4096th invocation
+      (<code>(++counter &amp; 0xFFF) == 0</code>) — the loop top checks it per batch
+      (<span class="src">referenceChains.cpp:1647-1656</span>).</p>
+    </div>
+    <div class="card">
+      <h4>Adaptive batch size</h4>
+      <p><code>_gotw_batch_size</code> is tuned per call from measured <code>GetObjectsWithTags</code> cost against the
+      remaining deadline window, so a slow JVM naturally shrinks its batches rather than blowing the pause target.</p>
+    </div>
+  </div>
+
+  <h3 style="font-size:15px">Admission, in callback order</h3>
+  <div class="diagram"><div class="mermaid">
+flowchart TB
+  C(["heapReferenceCallback(kind, tag_ptr, referrer_tag_ptr)"]) --> A0{"_abort_pass_requested"}
+  A0 -->|"yes"| Z1["truncated · VISIT_ABORT"]
+  A0 -->|"no"| A1{"every 4096th call:<br/>past _pass_deadline_ns?"}
+  A1 -->|"yes"| Z1
+  A1 -->|"no"| A2{"tag at or below MARKER_TAG_BASE<br/>(canary marker)"}
+  A2 -->|"yes"| Z2["record chain link, set found bit,<br/>do NOT descend"]
+  A2 -->|"no"| A3{"tag is negative (class object)"}
+  A3 -->|"yes"| Z3["descend only for the static-field<br/>seed holder -> class edge"]
+  A3 -->|"no"| A4["compute parent_tag and depth<br/>from the referrer's tag"]
+  A4 --> A5{"depth >= hop_cap"}
+  A5 -->|"yes"| Z4["drop — no admission, no descent"]
+  A5 -->|"no"| A6{"isLeakTag(tag)?"}
+  A6 -->|"yes"| Z5["allocate frontier tag, insert,<br/>setLeakTag(), record instance, descend"]
+  A6 -->|"no"| A7{"tag == 0 (unseen)"}
+  A7 -->|"yes"| A8["admitObject()"]
+  A7 -->|"no"| A9["already admitted -><br/>improveChain() / reparentToDurableRoot()<br/>/ maybeUpgradeRootAttachedRootKind()"]
+  A8 --> A10{"result"}
+  A10 -->|"BUDGET_EXHAUSTED"| Z6["truncated · abort"]
+  A10 -->|"FRONTIER_CAP_HIT"| Z7["frontier_cap_hit · abort<br/>-> whole search abandoned"]
+  A10 -->|"ADMITTED"| A11["push onto priority or pending queue"]
+  A9 --> A12
+  A11 --> A12{"tag in batch_tags?"}
+  A12 -->|"yes"| Z8["JVMTI_VISIT_OBJECTS — descend one hop"]
+  A12 -->|"no"| Z9["return 0 — do not descend"]
+  </div></div>
+
+  <div class="note">
+    <strong><code>ALREADY_ADMITTED</code> is the idempotency that makes re-enumeration cheap.</strong>
+    <code>admitObject()</code> short-circuits on any non-zero tag
+    (<span class="src">referenceChains.cpp:2022-2057</span>), which is precisely why root enumeration can be re-run on
+    every pass without re-paying for the graph it already discovered.
+  </div>
+</section>
+
+<!-- ───────────────────────────── 7. ROOTS ───────────────────────────── -->
+<section id="roots">
+  <h2>7 · Root discovery and the chunked static-field sweep</h2>
+  <p class="lede">Two disjoint sources of root-attached entries. <code>IterateOverReachableObjects</code> reports stack
+  locals, JNI handles, monitors and thread roots — but never static fields, which need their own sweep.</p>
+
+  <div class="diagram"><div class="mermaid">
+flowchart TB
+  subgraph RE["A · IterateOverReachableObjects"]
+    direction TB
+    R1["heapRootCallback / stackRefCallback"] --> R2["translateHeapRootKind():<br/>jvmtiHeapRootKind -> jvmtiHeapReferenceKind"]
+    R2 --> R3["admitObject(parent_tag = 0, depth = 0, root_kind)"]
+    R3 --> R4{"ALREADY_ADMITTED?"}
+    R4 -->|"yes"| R5["maybeUpgradeRootAttachedRootKind()<br/>durability tie-break"]
+    R4 -->|"no"| R6["new root-attached frontier entry"]
+  end
+
+  subgraph SF["B · admitStaticFieldRoots — chunked, cursor-resumed"]
+    direction TB
+    S1["GetLoadedClasses()"] --> S2["partition app classes<br/>(non-null loader) to the front"]
+    S2 --> S3["chunk = [cursor, cursor + 512)"]
+    S3 --> S4["holder array filled in REVERSE chunk order<br/>so HotSpot's LIFO descent visits ascending"]
+    S4 --> S5["one FollowReferences with static_field_seed = true<br/>empty batch_tags -> exactly one hop past each class"]
+    S5 --> S6{"truncated?"}
+    S6 -->|"yes"| S7["mark lap truncated;<br/>cursor = chunk_start + classes_visited - 1<br/>(redo the partial class)"]
+    S6 -->|"no"| S8["cursor = chunk_end"]
+    S7 --> S9
+    S8 --> S9{"cursor reached class_count?"}
+    S9 -->|"yes"| S10["lap wrap: cursor = 0;<br/>cycle_complete only if no chunk truncated"]
+    S9 -->|"no"| S11["resume here next pass"]
+  end
+  </div></div>
+
+  <div class="warn">
+    <strong>Why chunking is not an optimisation but a correctness fix.</strong> On a JVM with ~34k loaded classes a single
+    <code>FollowReferences</code> over every class cannot finish inside a 5–50 ms deadline — the observed behaviour was
+    <code>truncated = 1</code> on 275 of 275 passes with 0–1 edges admitted. Because a single-call sweep restarts at
+    class 0 every time, every class past the deadline point was <em>permanently</em> unreachable
+    (<span class="src">referenceChains.h:1936-1960</span>).
+  </div>
+
+  <h3 style="font-size:15px">Root-kind durability</h3>
+  <p class="lede">A root-attached entry records <em>why</em> it is reachable. When a more durable root is later observed
+  admitting the same object, the recorded kind is upgraded rather than keeping whichever root happened to be enumerated
+  first (<span class="src">referenceChains.h:249-278</span>).</p>
+  <table>
+    <thead><tr><th>Tier</th><th>Kinds</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td>3 — most durable</td><td><code>STATIC_FIELD</code>, <code>SYSTEM_CLASS</code></td><td>Genuine retention evidence.</td></tr>
+      <tr><td>2</td><td><code>JNI_GLOBAL</code></td><td>Durable, but owned outside the JVM heap.</td></tr>
+      <tr><td>1 — transient</td><td><code>MONITOR</code>, <code>STACK_LOCAL</code>, <code>JNI_LOCAL</code>, <code>THREAD</code>, <code>OTHER</code></td><td>"First observed via", not "rooted by". <code>THREAD</code> and <code>OTHER</code> have no documented tier and are conservatively bucketed here.</td></tr>
+    </tbody>
+  </table>
+  <p class="lede">Two repair operations exist because a depth comparison alone cannot express both cases:
+  <code>improveChain()</code> replaces a shallow root-attached entry when a strictly deeper path reaches it, and
+  <code>reparentToDurableRoot()</code> handles the equal-depth case — a depth-1 entry parented to a transient root is
+  re-parented to a durable one. Without the latter, the real hotdog shape (a static singleton collection at depth 0, its
+  elements at depth 1) would keep a stack-local parent forever, because the depths tie.</p>
+</section>
+
+<!-- ───────────────────────────── 8. STATE MACHINES ───────────────────────────── -->
+<section id="states">
+  <h2>8 · State machines</h2>
+  <p class="lede">Two independent state machines: one per frontier entry, one per search.</p>
+
+  <h3 style="font-size:15px">Per-entry: <code>FrontierEntryState</code></h3>
+  <div class="diagram"><div class="mermaid">
+stateDiagram-v2
+  direction LR
+  [*] --> FRONTIER: "insert() from admitObject(), leak-tag interception or canary pruning"
+  FRONTIER --> EXPANDED: "markExpanded() — its batch's FollowReferences completed"
+  FRONTIER --> ABANDONED: "clear() — GetObjectsWithTags did not resolve the tag (object died)"
+  note right of EXPANDED: "rotation re-queues the tag, and<br/>the re-walk marks it EXPANDED again"
+  FRONTIER --> EDGE: "markEdge() — reconstructChain() walked through this hop"
+  EXPANDED --> EDGE: "markEdge()"
+  EDGE --> EXPANDED: "rotation re-expansion overwrites the state"
+  EXPANDED --> ABANDONED: "releaseSearchTags() at search end"
+  EDGE --> ABANDONED: "releaseSearchTags() at search end"
+  ABANDONED --> [*]: "resetForRestart() zeroes _table_size — every slot becomes un-inserted"
+  </div></div>
+  <div class="note">
+    <strong>ABANDONED means "the JVMTI tag was released", not "the record was discarded".</strong>
+    <code>releaseSearchTags()</code> leaves <code>parent_tag</code>, <code>referrer_klass</code>, <code>depth</code> and
+    <code>root_kind</code> intact, so <code>reconstructChain()</code> keeps working from memory after the search ends
+    (<span class="src">referenceChains.h:1966-1975</span>).
+  </div>
+
+  <h3 style="font-size:15px">Per-search: <code>SearchState</code></h3>
+  <div class="diagram"><div class="mermaid">
+stateDiagram-v2
+  direction TB
+  [*] --> RUNNING: "first shouldRunPass() that clears canAffordNewSearch()"
+
+  RUNNING --> ABANDONED_FC: "frontier_cap_hit — checked first, wins over everything"
+  RUNNING --> COMPLETED_G: "not truncated AND no watched leak klass"
+  note right of RUNNING: "not truncated BUT a watch is active —<br/>stays RUNNING, rotation keeps re-observing"
+  RUNNING --> ABANDONED_TTL: "30 passes with no frontier growth AND not isUrgent()"
+  RUNNING --> COMPLETED_C: "all canary candidates found"
+  RUNNING --> ABANDONED_CS: "candidates outstanding AND 30 passes without frontier growth AND canary stall past canaryStuckPassLimit()"
+
+  ABANDONED_FC --> RELEASE
+  ABANDONED_TTL --> RELEASE
+  ABANDONED_CS --> RELEASE
+  COMPLETED_G --> RELEASE
+  COMPLETED_C --> RELEASE
+
+  note right of RELEASE: "releaseSearchTags() failed — shouldRunPass()<br/>returns true to retry; restart stays blocked"
+  RELEASE --> RUNNING: "_tags_released AND canAffordNewSearch() -> restartSearch()"
+
+  state "ABANDONED / FRONTIER_CAP" as ABANDONED_FC
+  state "ABANDONED / TTL (no-progress)" as ABANDONED_TTL
+  state "ABANDONED / CANARY_STUCK" as ABANDONED_CS
+  state "COMPLETED (graph exhausted)" as COMPLETED_G
+  state "COMPLETED (candidates found)" as COMPLETED_C
+  state "tag release + canary reset" as RELEASE
+  </div></div>
+
+  <table>
+    <thead><tr><th>Reason</th><th>Value</th><th>Suppressed by <code>isUrgent()</code>?</th><th>Rationale</th></tr></thead>
+    <tbody>
+      <tr><td><code>NONE</code></td><td>0</td><td>—</td><td>Not abandoned.</td></tr>
+      <tr><td><code>FRONTIER_CAP</code></td><td>1</td><td>No</td><td>The metadata table is full; nothing further can be admitted at all.</td></tr>
+      <tr><td><code>TTL</code></td><td>2</td><td><strong>Yes</strong></td><td>A search still making real progress must not be killed just because the process is close to OOM.</td></tr>
+      <tr><td><code>CANARY_STUCK</code></td><td>3</td><td><strong>No</strong></td><td>A candidate chase with zero discovery progress is provably not converging; continuing at urgency-boosted budget only burns pause budget the dying process needs.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ───────────────────────────── 9. TERMINATION ───────────────────────────── -->
+<section id="termination">
+  <h2>9 · Termination, tag release and restart</h2>
+  <p class="lede">Six checks, evaluated in a fixed priority order at the end of every pass
+  (<span class="src">referenceChains.cpp:3765-3856</span>). Only the first match applies.</p>
+
+  <div class="diagram"><div class="mermaid">
+flowchart TB
+  T(["end of runPass()"]) --> C1{"frontier_cap_hit"}
+  C1 -->|"yes"| A1["ABANDONED / FRONTIER_CAP<br/>enqueue abandoned event"]
+  C1 -->|"no"| C2{"no pending frontier<br/>AND _watched_leak_klass_count == 0"}
+  C2 -->|"yes"| A2["COMPLETED — graph exhausted<br/>within the caps"]
+  C2 -->|"no"| C3{"no pending frontier<br/>but a watch is active"}
+  C3 -->|"yes"| A3["stay RUNNING — rotation keeps<br/>re-observing mutated fields"]
+  C3 -->|"no"| C4{"_passes_since_last_progress >= 30<br/>AND NOT isUrgent()"}
+  C4 -->|"yes"| A4["ABANDONED / TTL"]
+  C4 -->|"no"| C5{"all candidates found"}
+  C5 -->|"yes"| A5["COMPLETED + counter<br/>REFERENCE_CHAIN_CANDIDATES_FOUND"]
+  C5 -->|"no"| C6{"candidates outstanding<br/>AND 30 passes no frontier growth<br/>AND canary stall >= canaryStuckPassLimit()"}
+  C6 -->|"yes"| A6["ABANDONED / CANARY_STUCK<br/>_canary_stuck_restart_count++"]
+  C6 -->|"no"| A7["stay RUNNING"]
+
+  A1 --> R
+  A2 --> R
+  A4 --> R
+  A5 --> R
+  A6 --> R
+  R["releaseSearchTags():<br/>GetObjectsWithTags over every non-ABANDONED tag,<br/>SetTag(obj, 0), then mark all ABANDONED"] --> R2{"batch call succeeded?"}
+  R2 -->|"no"| R3["_tags_released = false — mark NOTHING;<br/>a failed batch says nothing about liveness,<br/>and rewinding _next_tag while a live object<br/>still carries a tag would break tag uniqueness"]
+  R2 -->|"yes"| R4["_tags_released = true<br/>clear canary marker tags · zero candidate state<br/>reset _canary_stuck_restart_count unless CANARY_STUCK"]
+  </div></div>
+
+  <h3 style="font-size:15px">Escalating patience</h3>
+  <p class="lede"><code>canaryStuckPassLimit() = CANARY_NO_PROGRESS_PASS_LIMIT &lt;&lt; min(_canary_stuck_restart_count, 8)</code>
+  (<span class="src">referenceChains.h:2389-2393</span>). Repeated <code>CANARY_STUCK</code> abandons double the stall
+  tolerance, up to 256×. <code>_canary_stuck_restart_count</code> is deliberately <em>not</em> reset by
+  <code>restartSearch()</code> — it must survive restarts or the escalation could never widen.</p>
+
+  <div class="chart-block">
+    <h4>Escalation: <code>canaryStuckPassLimit(n) = 3 &lt;&lt; min(n, 8)</code></h4>
+    <p class="chart-caption">Each consecutive <code>CANARY_STUCK</code> abandon doubles the stall tolerance for the
+      next attempt at the same candidate chase, up to the <code>MAX_CANARY_STUCK_BACKOFF_SHIFT</code> = 8 cap
+      (restart count 8 and 9 tolerate the same 768 passes — the shift has saturated).</p>
+    <div id="chart-canary-escalation"></div>
+  </div>
+
+  <h3 style="font-size:15px">What a restart resets, and what it does not</h3>
+  <div class="cards">
+    <div class="card" style="border-left-color: var(--bad)">
+      <h4>Reset (<code>restartSearch()</code>)</h4>
+      <p><code>_frontier->resetForRestart()</code> (slot occupancy only, the allocation survives) · <code>_next_tag = 1</code> ·
+      <code>_search_started = false</code> · state back to RUNNING · both expand queues and the membership index ·
+      leak-signature maps · <code>_leak_tags_assigned/_resolved</code> · <code>_last_pass_*</code> · <code>_passes_run</code> ·
+      the resolved/static-field class counts.</p>
+    </div>
+    <div class="card" style="border-left-color: var(--accent-2)">
+      <h4>Persists across a restart</h4>
+      <p>The class-tag table and its allocator · <code>_resolved_chains</code> · <code>_watched_leak_klass_ids</code> ·
+      <code>_canary_stuck_restart_count</code> · the rotation cursors and the static-field sweep cursor ·
+      <code>_pause_pid</code>, <code>_effective_budget</code>, <code>_effective_cadence_ns</code> · the cached
+      <code>java/lang/Object</code> global ref · the <code>FrontierTable</code> allocation and capacity.</p>
+    </div>
+  </div>
+  <p class="lede"><code>restartSearch()</code> also <em>spends</em> the finished search's accumulated
+  <code>_search_pain_ms</code> into <code>_safepoint_pain_budget</code> before zeroing it
+  (<span class="src">referenceChains.cpp:1123</span>) — a cheap search may restart again soon, an expensive one must wait
+  proportionally longer. It asserts on <code>_tags_released</code>.</p>
+</section>
+
+<!-- ───────────────────────────── 10. PACING ───────────────────────────── -->
+<section id="pacing">
+  <h2>10 · Pacing: PID controller, budget borrowing, pain budgets</h2>
+  <p class="lede">The configured constants are ceilings and baselines, not literal per-pass values. What each pass
+  actually spends is decided by a feedback loop over the previous pass's measured <em>in-safepoint</em> time.</p>
+
+  <div class="diagram"><div class="mermaid">
+flowchart LR
+  M["measure the pass:<br/>pass_wall_ticks total,<br/>safepoint_ticks inside<br/>IterateOverReachableObjects / FollowReferences"] --> SPLIT{"split"}
+  SPLIT -->|"safepoint ms"| PID["_pause_pid.compute(pass_ms)<br/>target = _effective_pause_target_ms<br/>positive signal = came in UNDER target"]
+  SPLIT -->|"safepoint ms"| PAIN1["_search_pain_ms +=<br/>-> gates the NEXT search"]
+  SPLIT -->|"non-safepoint ms"| PAIN2["_cpu_pain_budget.spend()<br/>-> gates the NEXT pass"]
+
+  PID --> BORROW{"pass_ms at or under 50% of target<br/>for 5 consecutive passes?"}
+  BORROW -->|"yes"| B1["_borrowed_budget += _budget * 0.25<br/>capped at 3 * _budget"]
+  BORROW -->|"no"| B2["_borrowed_budget = 0 immediately"]
+  B1 --> CL
+  B2 --> CL["ceiling = _budget + _borrowed_budget<br/>floor = min(2000, ceiling)<br/>_effective_budget = clamp(prev + signal)"]
+  CL --> OV{"overflow = desired - clamped"}
+  OV -->|"negative — still over target at the floor"| W["widen _effective_cadence_ns<br/>by 1ms per overflow edge, up to 4s"]
+  OV -->|"positive"| S["shorten _effective_cadence_ns,<br/>down to 10ms"]
+  OV -->|"== 0"| K["leave the cadence alone"]
+  W --> NEXT
+  S --> NEXT
+  K --> NEXT["next pass: expand_budget = _effective_budget,<br/>deadline = _effective_pause_target_ms,<br/>sleep/gate = _effective_cadence_ns"]
+  </div></div>
+
+  <div class="chart-block">
+    <h4>Clamp function: <code>effective_budget = clamp(desired, floor, ceiling)</code></h4>
+    <p class="chart-caption">Illustrative baseline <code>_budget</code> = 800 edges/pass (below
+      <code>MIN_EFFECTIVE_BUDGET</code> = 2000). With no borrowed headroom, <code>floor = min(2000, ceiling) = ceiling</code>
+      — the clamp range collapses to a single point and <code>_effective_budget</code> is pinned regardless of the PID
+      signal. Once <code>_borrowed_budget</code> pushes the ceiling past 2000 (shown at 3× budget, the borrowing
+      ceiling), a real band opens up and the floor becomes <code>MIN_EFFECTIVE_BUDGET</code> itself.</p>
+    <div id="chart-budget-clamp"></div>
+  </div>
+
+  <div class="cards">
+    <div class="card">
+      <h4>Inverted sign convention</h4>
+      <p>Unlike ObjectSampler / MallocTracer / RateLimiter, which <em>subtract</em> the PID signal from an interval, this
+      controller <em>adds</em> it to a budget: a positive signal means the pass came in under target, so the next one may
+      do more work (<span class="src">referenceChains.h:2002-2012</span>).</p>
+    </div>
+    <div class="card">
+      <h4>One <code>compute()</code> is one pass</h4>
+      <p><code>sampling_window = 1</code> and <code>time_delta_coefficient = 1.0</code>, because a pass is not a fixed
+      real-time window like the other three usages assume. Gains are 10/1/2 — deliberately not copied from the shared triple.</p>
+    </div>
+    <div class="card">
+      <h4>Root-enum passes are excluded</h4>
+      <p>They spend the deliberately oversized <code>_first_pass_budget</code>; feeding that into the PID would throttle
+      every cheap expansion pass that follows (<span class="src">referenceChains.cpp:3713-3728</span>).</p>
+    </div>
+    <div class="card">
+      <h4>Borrowing is lost instantly</h4>
+      <p>A single pass that is not comfortably under target zeroes both the warm-up streak and the whole accumulated
+      borrow. Earning headroom takes 5 passes; losing it takes one.</p>
+    </div>
+  </div>
+
+  <h3 style="font-size:15px">The two leaky buckets</h3>
+  <table>
+    <thead><tr><th></th><th><code>_safepoint_pain_budget</code></th><th><code>_cpu_pain_budget</code></th></tr></thead>
+    <tbody>
+      <tr><td>Gates</td><td>Starting or restarting a <em>search</em></td><td>Running an individual <em>pass</em></td></tr>
+      <tr><td>Charged</td><td>Once per finished search, in <code>restartSearch()</code>, with <code>_search_pain_ms</code></td><td>Every pass, with the non-safepoint remainder</td></tr>
+      <tr><td>Refill rate</td><td><code>pain_budget_percent / 100</code></td><td>Same base, times 1× / 15× (covering) / 100× (emergency)</td></tr>
+      <tr><td>Read at</td><td><code>canAffordNewSearch()</code></td><td><code>shouldRunPass()</code>, RUNNING branch</td></tr>
+    </tbody>
+  </table>
+  <div class="warn">
+    <strong>Degenerate configuration:</strong> a refill rate of exactly <code>0.0</code> never drains
+    (<span class="src">painBudget.h:46-49</span>), so once anything has been spent the bucket blocks permanently.
+  </div>
+
+  <div class="chart-block">
+    <h4>Leaky bucket: <code>_safepoint_pain_budget</code> over time</h4>
+    <p class="chart-caption">Illustrative simulation, not a captured log — refill rate 2% (an example
+      <code>pain_budget_percent</code>), two searches finishing at t=0 and t=1600ms and spending their accumulated
+      <code>_search_pain_ms</code> (60ms, then 45ms) into the bucket. <code>canAffordNewSearch()</code> only returns
+      true where the curve touches the zero baseline — everywhere the shaded area is above zero, a new search or
+      restart is blocked.</p>
+    <div id="chart-pain-budget"></div>
+  </div>
+
+  <h3 style="font-size:15px">Auto-tuning at <code>start()</code></h3>
+  <p class="lede"><code>autoTuneDefaults()</code> (<span class="src">referenceChains.cpp:360-462</span>) fills in only the
+  knobs the operator did not set explicitly, from max heap size and processor count:</p>
+  <table>
+    <thead><tr><th>Knob</th><th>Formula</th></tr></thead>
+    <tbody>
+      <tr><td>Edge budget</td><td><code>DEFAULT * sqrt(heap_mib / 512)</code>, clamped to [default, max] — keeps the pause proportional to <code>sqrt(heap)</code></td></tr>
+      <tr><td>First-pass budget</td><td><code>budget * 10</code>, capped</td></tr>
+      <tr><td>TTL</td><td><code>DEFAULT * (heap_mib / 512)</code>, clamped to [default, 30 min]</td></tr>
+      <tr><td>Frontier cap</td><td>scaled by the budget ratio in floating point (integer division here would undershoot by ~20%)</td></tr>
+      <tr><td>Pause target</td><td><code>DEFAULT * (1 + (nprocs-1)/3)</code>, capped at 50 ms</td></tr>
+      <tr><td>Pain budget %</td><td><code>DEFAULT * (1 + (nprocs-1)/4)</code>, capped at 5%</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ───────────────────────────── 11. CHAINS ───────────────────────────── -->
+<section id="chains">
+  <h2>11 · From frontier to emitted chain</h2>
+  <p class="lede">The frontier table doubles as a degenerate edge store: a chain is just the transitive closure of
+  <code>parent_tag</code> links from a target back to a root-attached entry.</p>
+
+  <div class="diagram"><div class="mermaid">
+flowchart TB
+  T["target tag"] --> L{"lookup(tag) succeeds?"}
+  L -->|"no"| F1["return false — never fabricate a partial chain"]
+  L -->|"yes"| P["push entry.referrer_klass onto the chain<br/>markEdge(tag)<br/>root_kind = entry.root_kind<br/>tag = entry.parent_tag"]
+  P --> C{"tag == 0?"}
+  C -->|"no, and hops <= maxCapacity()"| L
+  C -->|"no, bound exceeded"| F2["corrupt or cyclic -> return false"]
+  C -->|"yes"| OUT["chain in leaf -> root order<br/>out_root_kind = the root-attached entry's kind"]
+  OUT --> EV["buildChainEvent():<br/>targetTag = leak_tag if set, else the frontier tag<br/>depth · root_kind · chain"]
+  EV --> JFR["JFR ReferenceChain event"]
+  JFR --> JOIN["backend joins ReferenceChain.targetTag<br/>to HeapLiveObject.leakTag"]
+  </div></div>
+
+  <h3 style="font-size:15px"><code>FrontierEntry</code> fields</h3>
+  <table>
+    <thead><tr><th>Field</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>parent_tag</code></td><td>Tag of the entry that discovered this one; <code>0</code> means root-attached. The only link the reconstruction walks.</td></tr>
+      <tr><td><code>referrer_klass</code></td><td>StringDictionary id of this object's class name, resolved ahead of time — <code>GetClassSignature</code> is illegal inside a heap callback.</td></tr>
+      <tr><td><code>depth</code></td><td>Hop count from the root. Drives the hop cap and <code>improveChain()</code>'s "deeper wins" comparison.</td></tr>
+      <tr><td><code>state</code></td><td>FRONTIER / EXPANDED / EDGE / ABANDONED.</td></tr>
+      <tr><td><code>leak_tag</code></td><td>LivenessTracker's per-instance tag, copied in at admission. Becomes <code>ReferenceChain.targetTag</code>, the backend's join key. <code>0</code> = ordinary BFS admission.</td></tr>
+      <tr><td><code>root_kind</code></td><td><code>jvmtiHeapReferenceKind</code> of the admitting edge, meaningful only when <code>parent_tag == 0</code>.</td></tr>
+      <tr><td><code>class_tag</code></td><td>Raw negative JVMTI class tag — stable across StringDictionary regeneration, unlike <code>referrer_klass</code>. Needed by the retroactive leak-accumulation seed scan, which runs long after the live callback is gone.</td></tr>
+    </tbody>
+  </table>
+  <div class="note">
+    <strong>No <code>jobject</code> is ever retained.</strong> Holding a live handle would defeat the entire point of using
+    non-retaining JVMTI tags for frontier identity — the walk would keep the leak alive.
+  </div>
+
+  <h3 style="font-size:15px">The canary path</h3>
+  <p class="lede">Candidate instances are pre-tagged with distinct negative marker tags
+  (<code>MARKER_TAG_BASE = -(1&lt;&lt;62)</code>) applied to a specific representative object — matching by class alone
+  would record a chain for an unrelated, possibly short-lived instance of the same class. When the walk hits a marker it
+  records the chain link and the found bit, but does <em>not</em> descend.
+  <code>buildCanaryChainEvent()</code> therefore starts from the recorded parent tag (the negative marker itself is
+  rejected by <code>lookup()</code>), then prepends the candidate's own class and reverses to leaf→root
+  (<span class="src">referenceChains.h:2647-2712</span>).</p>
+  <p class="lede">Beyond the representative, any object of a watched class discovered by the walk is auto-recorded, up to
+  <code>MAX_DISCOVERED_INSTANCES_PER_CLASS = 8</code> per slot — each instance's chain is independently useful, since
+  different instances may be retained by different paths.</p>
+</section>
+
+<!-- ───────────────────────────── 12. CONSTANTS ───────────────────────────── -->
+<section id="constants">
+  <h2>12 · Constants reference</h2>
+  <p class="lede">Values as they stand on this branch. Several are explicitly marked provisional / unbenchmarked in source.</p>
+
+  <h3 style="font-size:15px">Leak detection — <code>livenessTracker.h</code></h3>
+  <table>
+    <thead><tr><th>Constant</th><th>Value</th><th>Role</th></tr></thead>
+    <tbody>
+      <tr><td><code>MAX_KLASS_POPULATION_ENTRIES</code></td><td>256</td><td>Tracked klasses.</td></tr>
+      <tr><td><code>KLASS_POPULATION_RING_SIZE</code></td><td>30</td><td>Trend window, in GC epochs.</td></tr>
+      <tr><td><code>KLASS_POPULATION_MIN_FILL_FOR_TREND</code></td><td>10</td><td>Minimum fill before any slope is trusted.</td></tr>
+      <tr><td><code>LEAK_GROWTH_REL_MIN</code> / <code>_ABS_MIN</code></td><td>0.15 / 1</td><td>Qualifying growth bar.</td></tr>
+      <tr><td><code>LEAK_TREND_HYSTERESIS_BASE</code></td><td>5</td><td>Consecutive qualifying epochs required.</td></tr>
+      <tr><td><code>LEAK_TREND_HYSTERESIS_CORROBORATED</code></td><td>3</td><td>Lowered bar when the heap floor is rising.</td></tr>
+      <tr><td><code>TID_TREND_RING_SIZE</code> / <code>MIN_FILL</code></td><td>16 / 6</td><td>Per-thread trend window.</td></tr>
+      <tr><td><code>MAX_TID_TRENDS</code></td><td>8</td><td>Threads tracked per klass.</td></tr>
+      <tr><td><code>MAX_LEAK_CANDIDATES</code></td><td>5</td><td>Top-k candidate slots.</td></tr>
+      <tr><td><code>HEAP_FLOOR_RECENT_HALF_MIN_FILL</code></td><td>5</td><td>Corroboration window for the OOM projection.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 style="font-size:15px">Scheduling and urgency — <code>referenceChains.h</code></h3>
+  <table>
+    <thead><tr><th>Constant</th><th>Value</th><th>Role</th></tr></thead>
+    <tbody>
+      <tr><td><code>PASS_CADENCE_NS</code></td><td>1 s</td><td>Baseline cadence and ramp anchor.</td></tr>
+      <tr><td><code>OOM_URGENT_THRESHOLD_S</code></td><td>300 s</td><td>Latch arm bar for <code>isUrgent()</code>.</td></tr>
+      <tr><td><code>OOM_URGENT_RELEASE_S</code></td><td>600 s (2×)</td><td>Latch release bar.</td></tr>
+      <tr><td><code>URGENT_RELEASE_CONSECUTIVE</code></td><td>5</td><td>Clear readings needed to unlatch.</td></tr>
+      <tr><td><code>OOM_RAMP_START_S</code></td><td>1800 s</td><td>Start of the unlatched exponential ramp in <code>threadLoop()</code>.</td></tr>
+      <tr><td><code>URGENT_PAUSE_TARGET_MS</code></td><td>100 ms</td><td>Ramp ceiling for the pause target.</td></tr>
+      <tr><td><code>URGENT_CADENCE_NS</code></td><td>10 ms</td><td>Ramp floor for the cadence.</td></tr>
+      <tr><td><code>CANARY_PAIN_BUDGET_COVERING_MULTIPLIER</code></td><td>15×</td><td>CPU refill while chasing candidates.</td></tr>
+      <tr><td><code>CANARY_PAIN_BUDGET_REFILL_MULTIPLIER</code></td><td>100×</td><td>CPU refill in the emergency case.</td></tr>
+    </tbody>
+  </table>
+
+  <h3 style="font-size:15px">Walk, budgets and termination — <code>referenceChains.h</code></h3>
+  <table>
+    <thead><tr><th>Constant</th><th>Value</th><th>Role</th></tr></thead>
+    <tbody>
+      <tr><td><code>AUTO_FIRST_PASS_BUDGET_MULTIPLIER</code> / <code>_CAP</code></td><td>50 / 200000</td><td>Auto-scaled first-pass edge budget.</td></tr>
+      <tr><td><code>ROOT_ENUM_MIN_INTERVAL_NS</code></td><td>2 s</td><td>Minimum spacing between root enumerations.</td></tr>
+      <tr><td><code>STATIC_FIELD_SWEEP_CHUNK_CLASSES</code></td><td>512</td><td>Classes per static-field chunk.</td></tr>
+      <tr><td><code>STATIC_FIELD_SWEEP_NON_STATIC_CAP_PER_CLASS</code></td><td>32</td><td>Non-static edges admitted per class per lap.</td></tr>
+      <tr><td><code>MIN_EFFECTIVE_BUDGET</code></td><td>2000</td><td>Budget floor under PID control.</td></tr>
+      <tr><td><code>MIN</code>/<code>MAX_EFFECTIVE_CADENCE_NS</code></td><td>10 ms / 4 s</td><td>Cadence clamp.</td></tr>
+      <tr><td><code>CADENCE_NS_PER_EDGE_OVERFLOW</code></td><td>1 ms / edge</td><td>How budget overflow converts into cadence widening.</td></tr>
+      <tr><td><code>BORROW_WARMUP_PASSES</code> / ceiling</td><td>5 / 3× <code>_budget</code></td><td>Budget borrowing.</td></tr>
+      <tr><td><code>PRIORITY_EXPAND_CAP</code></td><td>1024</td><td>Fast-lane queue cap (2048-slot membership index).</td></tr>
+      <tr><td><code>NO_PROGRESS_PASS_LIMIT</code></td><td>30</td><td>Passes without frontier growth before the <code>TTL</code> abandon.</td></tr>
+      <tr><td><code>CANARY_NO_PROGRESS_PASS_LIMIT</code></td><td><strong>3</strong> — marked <code>TEMP: was 30</code></td><td>Base of the canary stall limit, and the <code>emergency</code> threshold.</td></tr>
+      <tr><td><code>MAX_CANARY_STUCK_BACKOFF_SHIFT</code></td><td>8</td><td>Escalation cap — up to 256× the base.</td></tr>
+      <tr><td><code>MARKER_TAG_BASE</code></td><td><code>-(1&lt;&lt;62)</code></td><td>Canary marker tag namespace.</td></tr>
+      <tr><td><code>LEAK_TAG_BASE</code> / <code>POOL_SIZE</code></td><td>0x40000000 / 256</td><td>LivenessTracker leak-tag pool.</td></tr>
+      <tr><td><code>MAX_DISCOVERED_INSTANCES_PER_CLASS</code></td><td>8</td><td>Auto-recorded instances per watched class.</td></tr>
+      <tr><td><code>INITIAL_TABLE_CAPACITY</code></td><td>1024</td><td>Frontier table start size; doubles to the configured cap.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+</main>
+
+<footer>
+  Generated from source on branch <code>jb/reference-chains-pi</code>. Line references were accurate at extraction time;
+  re-verify against the working tree before quoting them.
+</footer>
+
+<script type="module">
+import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";
+
+mermaid.initialize({
+  startOnLoad: false,
+  theme: "dark",
+  securityLevel: "loose",
+  flowchart: { htmlLabels: true, curve: "basis", nodeSpacing: 45, rankSpacing: 55 },
+  themeVariables: {
+    background: "#171b24",
+    primaryColor: "#1d2230",
+    primaryTextColor: "#dfe4ee",
+    primaryBorderColor: "#3a4256",
+    lineColor: "#61b0ff",
+    fontSize: "14px"
+  }
+});
+
+const TABS = [
+  ["overview",    "1 · Overview"],
+  ["signal",      "2 · Leak signal"],
+  ["urgency",     "3 · Urgency & OOM"],
+  ["scheduling",  "4 · Pass scheduling"],
+  ["lifecycle",   "5 · Search lifecycle"],
+  ["expand",      "6 · Frontier expansion"],
+  ["roots",       "7 · Roots & static fields"],
+  ["states",      "8 · State machines"],
+  ["termination", "9 · Termination & restart"],
+  ["pacing",      "10 · Pacing & budgets"],
+  ["chains",      "11 · Chain reconstruction"],
+  ["constants",   "12 · Constants"]
+];
+
+const nav = document.getElementById("tabs");
+const rendered = new Set();
+
+async function renderTab(id) {
+  if (rendered.has(id)) return;
+  rendered.add(id);
+  const nodes = document.querySelectorAll(`#${id} .mermaid`);
+  if (nodes.length) {
+    try {
+      await mermaid.run({ nodes });
+    } catch (e) {
+      console.error("mermaid render failed for tab", id, e);
+    }
+  }
+}
+
+function show(id) {
+  document.querySelectorAll("main > section").forEach(s => s.classList.toggle("active", s.id === id));
+  nav.querySelectorAll("button").forEach(b => b.classList.toggle("active", b.dataset.id === id));
+  history.replaceState(null, "", "#" + id);
+  renderTab(id);
+}
+
+for (const [id, label] of TABS) {
+  const b = document.createElement("button");
+  b.textContent = label;
+  b.dataset.id = id;
+  b.addEventListener("click", () => show(id));
+  nav.appendChild(b);
+}
+
+const initial = TABS.some(([id]) => "#" + id === location.hash)
+  ? location.hash.slice(1)
+  : TABS[0][0];
+show(initial);
+
+// ─────────────────────────────────────────────────────────────────────────
+// Illustrative charts for the calculation triggers (dataviz method: SVG,
+// hover crosshair + tooltip, a data-table fallback per chart, single
+// categorical hue unless a chart genuinely compares two series).
+// ─────────────────────────────────────────────────────────────────────────
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+function svgEl(tag, attrs = {}) {
+  const el = document.createElementNS(SVG_NS, tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  return el;
+}
+
+let _tooltipEl = null;
+function tooltip() {
+  if (!_tooltipEl) {
+    _tooltipEl = document.createElement("div");
+    _tooltipEl.className = "chart-tooltip";
+    document.body.appendChild(_tooltipEl);
+  }
+  return _tooltipEl;
+}
+function positionTooltip(ev) {
+  const tip = tooltip();
+  tip.style.left = (ev.clientX + 14) + "px";
+  tip.style.top = (ev.clientY + 10) + "px";
+}
+function hideTooltip() { tooltip().style.display = "none"; }
+
+function niceLinearTicks(min, max, count) {
+  const span = max - min;
+  const rawStep = span / count;
+  const mag = Math.pow(10, Math.floor(Math.log10(rawStep || 1)));
+  const norm = rawStep / mag;
+  const step = (norm < 1.5 ? 1 : norm < 3 ? 2 : norm < 7 ? 5 : 10) * mag;
+  const ticks = [];
+  for (let t = Math.ceil(min / step) * step; t <= max + 1e-9; t += step) {
+    ticks.push(Math.round(t * 1000) / 1000);
+  }
+  return ticks;
+}
+
+// Line/area chart. opts: { series:[{label,color,points:[{x,y}],area?}],
+// width,height, yScale:'linear'|'log', xDomain,yDomain, yTicks,xTicks,
+// xFormat,yFormat, annotations:[{x,label}], table (bool, default true) }
+function mountLineChart(containerId, opts) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  const W = opts.width || 640, H = opts.height || 230;
+  const M = { l: 56, r: 18, t: 16, b: 30 };
+  const log = opts.yScale === "log";
+  const allX = opts.series.flatMap(s => s.points.map(p => p.x));
+  const allY = opts.series.flatMap(s => s.points.map(p => p.y));
+  const [xMin, xMax] = opts.xDomain || [Math.min(...allX), Math.max(...allX)];
+  const [yMin, yMax] = opts.yDomain || [Math.min(...allY), Math.max(...allY)];
+
+  const xToPix = x => M.l + (x - xMin) / (xMax - xMin) * (W - M.l - M.r);
+  const yToPix = y => {
+    const t = log
+      ? (Math.log(Math.max(y, 1e-9)) - Math.log(yMin)) / (Math.log(yMax) - Math.log(yMin))
+      : (y - yMin) / (yMax - yMin);
+    return H - M.b - t * (H - M.t - M.b);
+  };
+
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, class: "chart-svg" });
+
+  const yTicks = opts.yTicks || niceLinearTicks(yMin, yMax, 5);
+  for (const t of yTicks) {
+    const gy = yToPix(t);
+    svg.appendChild(svgEl("line", { x1: M.l, x2: W - M.r, y1: gy, y2: gy, class: "chart-grid" }));
+    const lab = svgEl("text", { x: M.l - 8, y: gy + 4, class: "chart-axis-label", "text-anchor": "end" });
+    lab.textContent = opts.yFormat ? opts.yFormat(t) : t;
+    svg.appendChild(lab);
+  }
+  const xTicks = opts.xTicks || niceLinearTicks(xMin, xMax, 6);
+  for (const t of xTicks) {
+    const gx = xToPix(t);
+    const lab = svgEl("text", { x: gx, y: H - M.b + 16, class: "chart-axis-label", "text-anchor": "middle" });
+    lab.textContent = opts.xFormat ? opts.xFormat(t) : t;
+    svg.appendChild(lab);
+  }
+  svg.appendChild(svgEl("line", { x1: M.l, x2: W - M.r, y1: H - M.b, y2: H - M.b, class: "chart-axis" }));
+
+  for (const a of (opts.annotations || [])) {
+    const ax = xToPix(a.x);
+    svg.appendChild(svgEl("line", { x1: ax, x2: ax, y1: M.t, y2: H - M.b, class: "chart-annotation" }));
+    const lab = svgEl("text", { x: ax + 4, y: M.t + 11, class: "chart-annotation-label" });
+    lab.textContent = a.label;
+    svg.appendChild(lab);
+  }
+
+  for (const s of opts.series) {
+    if (s.area) {
+      const baseline = yToPix(log ? yMin : Math.max(0, yMin));
+      let d = `M ${xToPix(s.points[0].x).toFixed(1)} ${baseline.toFixed(1)}`;
+      for (const p of s.points) d += ` L ${xToPix(p.x).toFixed(1)} ${yToPix(p.y).toFixed(1)}`;
+      d += ` L ${xToPix(s.points[s.points.length - 1].x).toFixed(1)} ${baseline.toFixed(1)} Z`;
+      const area = svgEl("path", { d, class: "chart-area" });
+      area.style.fill = s.color;
+      svg.appendChild(area);
+    }
+    let d = "";
+    s.points.forEach((p, i) => {
+      d += `${i === 0 ? "M" : "L"} ${xToPix(p.x).toFixed(1)} ${yToPix(p.y).toFixed(1)} `;
+    });
+    const path = svgEl("path", { d: d.trim(), class: "chart-line" });
+    path.style.stroke = s.color;
+    svg.appendChild(path);
+  }
+
+  const crosshair = svgEl("line", { class: "chart-crosshair", y1: M.t, y2: H - M.b });
+  crosshair.style.display = "none";
+  svg.appendChild(crosshair);
+  const overlay = svgEl("rect", {
+    x: M.l, y: M.t, width: W - M.l - M.r, height: H - M.t - M.b, fill: "transparent"
+  });
+  // "transparent" is not "visiblePainted" — SVG's default pointer-events value —
+  // so an unpainted rect otherwise never receives hover events at all.
+  overlay.style.pointerEvents = "all";
+  overlay.style.cursor = "crosshair";
+  svg.appendChild(overlay);
+
+  overlay.addEventListener("mousemove", ev => {
+    const rect = svg.getBoundingClientRect();
+    const px = (ev.clientX - rect.left) / rect.width * W;
+    const x = xMin + (px - M.l) / (W - M.l - M.r) * (xMax - xMin);
+    const ref = opts.series[0].points;
+    let nearest = ref[0], nd = Infinity;
+    for (const p of ref) { const dd = Math.abs(p.x - x); if (dd < nd) { nd = dd; nearest = p; } }
+    crosshair.style.display = "block";
+    crosshair.setAttribute("x1", xToPix(nearest.x));
+    crosshair.setAttribute("x2", xToPix(nearest.x));
+    const lines = opts.series.map(s => {
+      let best = s.points[0], bd = Infinity;
+      for (const p of s.points) { const dd = Math.abs(p.x - nearest.x); if (dd < bd) { bd = dd; best = p; } }
+      return `${s.label}: ${opts.yFormat ? opts.yFormat(best.y) : best.y}`;
+    });
+    const tip = tooltip();
+    tip.innerHTML = `<strong>${opts.xFormat ? opts.xFormat(nearest.x) : nearest.x}</strong><br>${lines.join("<br>")}`;
+    tip.style.display = "block";
+    positionTooltip(ev);
+  });
+  overlay.addEventListener("mouseleave", () => { crosshair.style.display = "none"; hideTooltip(); });
+
+  el.innerHTML = "";
+  el.appendChild(svg);
+
+  if (opts.series.length > 1) {
+    const legend = document.createElement("div");
+    legend.className = "chart-legend";
+    for (const s of opts.series) {
+      const item = document.createElement("span");
+      const sw = document.createElement("i");
+      sw.style.background = s.color.startsWith("var(") ? getComputedStyle(document.documentElement).getPropertyValue(s.color.slice(4, -1)) : s.color;
+      item.appendChild(sw);
+      item.appendChild(document.createTextNode(s.label));
+      legend.appendChild(item);
+    }
+    el.appendChild(legend);
+  }
+
+  if (opts.table !== false) el.appendChild(buildLineDataTable(opts));
+}
+
+function buildLineDataTable(opts) {
+  const wrap = document.createElement("details");
+  wrap.className = "chart-table-toggle";
+  const summary = document.createElement("summary");
+  summary.textContent = "Show data table";
+  wrap.appendChild(summary);
+  const table = document.createElement("table");
+  const ref = opts.series[0].points;
+  const stride = Math.max(1, Math.floor(ref.length / 14));
+  const thead = document.createElement("tr");
+  thead.innerHTML = `<th>${opts.xLabel || "x"}</th>` + opts.series.map(s => `<th>${s.label}</th>`).join("");
+  table.appendChild(thead);
+  for (let i = 0; i < ref.length; i += stride) {
+    const x = ref[i].x;
+    const tr = document.createElement("tr");
+    let row = `<td>${opts.xFormat ? opts.xFormat(x) : x}</td>`;
+    for (const s of opts.series) {
+      let best = s.points[0], bd = Infinity;
+      for (const p of s.points) { const dd = Math.abs(p.x - x); if (dd < bd) { bd = dd; best = p; } }
+      row += `<td>${opts.yFormat ? opts.yFormat(best.y) : best.y}</td>`;
+    }
+    tr.innerHTML = row;
+    table.appendChild(tr);
+  }
+  wrap.appendChild(table);
+  return wrap;
+}
+
+// Bar chart. opts: { bars:[{x,y,label}], width,height, yMax, yFormat,
+// yLabel, color, directLabel (bool), table (bool) }
+function mountBarChart(containerId, opts) {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  const W = opts.width || 640, H = opts.height || 230;
+  const M = { l: 56, r: 18, t: 16, b: 30 };
+  const bars = opts.bars;
+  const yMax = opts.yMax || Math.max(...bars.map(b => b.y));
+  const yToPix = y => H - M.b - (y / yMax) * (H - M.t - M.b);
+  const bw = (W - M.l - M.r) / bars.length;
+
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, class: "chart-svg" });
+
+  for (const t of niceLinearTicks(0, yMax, 5)) {
+    const gy = yToPix(t);
+    svg.appendChild(svgEl("line", { x1: M.l, x2: W - M.r, y1: gy, y2: gy, class: "chart-grid" }));
+    const lab = svgEl("text", { x: M.l - 8, y: gy + 4, class: "chart-axis-label", "text-anchor": "end" });
+    lab.textContent = opts.yFormat ? opts.yFormat(t) : t;
+    svg.appendChild(lab);
+  }
+
+  bars.forEach((b, i) => {
+    const x = M.l + i * bw + bw * 0.18;
+    const bwid = bw * 0.64;
+    const y0 = yToPix(0), y1 = yToPix(b.y);
+    const rect = svgEl("rect", {
+      x, y: y1, width: bwid, height: Math.max(0, y0 - y1), rx: 4, class: "chart-bar"
+    });
+    rect.style.fill = "var(--series-1)";
+    rect.addEventListener("mousemove", ev => {
+      const tip = tooltip();
+      tip.innerHTML = `<strong>${b.label}</strong><br>${opts.yLabel || "value"}: ${opts.yFormat ? opts.yFormat(b.y) : b.y}`;
+      tip.style.display = "block";
+      positionTooltip(ev);
+    });
+    rect.addEventListener("mouseleave", hideTooltip);
+    svg.appendChild(rect);
+
+    const lab = svgEl("text", { x: x + bwid / 2, y: H - M.b + 16, class: "chart-axis-label", "text-anchor": "middle" });
+    lab.textContent = b.label;
+    svg.appendChild(lab);
+
+    if (opts.directLabel) {
+      const dl = svgEl("text", { x: x + bwid / 2, y: y1 - 6, class: "chart-direct-label", "text-anchor": "middle" });
+      dl.textContent = opts.yFormat ? opts.yFormat(b.y) : b.y;
+      svg.appendChild(dl);
+    }
+  });
+
+  svg.appendChild(svgEl("line", { x1: M.l, x2: W - M.r, y1: H - M.b, y2: H - M.b, class: "chart-axis" }));
+
+  el.innerHTML = "";
+  el.appendChild(svg);
+
+  if (opts.table !== false) {
+    const wrap = document.createElement("details");
+    wrap.className = "chart-table-toggle";
+    const summary = document.createElement("summary");
+    summary.textContent = "Show data table";
+    wrap.appendChild(summary);
+    const table = document.createElement("table");
+    table.innerHTML = "<tr><th>" + (opts.xLabel || "n") + "</th><th>" + (opts.yLabel || "value") + "</th></tr>" +
+      bars.map(b => `<tr><td>${b.label}</td><td>${opts.yFormat ? opts.yFormat(b.y) : b.y}</td></tr>`).join("");
+    wrap.appendChild(table);
+    el.appendChild(wrap);
+  }
+}
+
+// ── A · Urgency ramp: cadence_ns(x) = 1000ms * (10ms/1000ms)^x ──
+{
+  const points = [];
+  for (let x = 0; x <= 1.0001; x += 0.02) points.push({ x: Math.min(x, 1), y: 1000 * Math.pow(0.01, Math.min(x, 1)) });
+  mountLineChart("chart-cadence-ramp", {
+    series: [{ label: "cadence_ns", color: "var(--series-1)", points }],
+    xDomain: [0, 1], yDomain: [10, 1000], yScale: "log",
+    yTicks: [10, 30, 100, 300, 1000], xTicks: [0, 0.2, 0.4, 0.6, 0.8, 1],
+    yFormat: v => v >= 1000 ? "1s" : Math.round(v) + "ms",
+    xFormat: v => v.toFixed(1),
+    xLabel: "x = 1 − secondsToOOM/1800",
+    annotations: [{ x: 1 - 300 / 1800, label: "isUrgent() latch (300s to OOM)" }]
+  });
+}
+
+// ── B · Leak growth bar: max(0.15 * earliest_mean, 1) ──
+{
+  const points = [];
+  for (let x = 0; x <= 50; x += 1) points.push({ x, y: Math.max(0.15 * x, 1) });
+  mountLineChart("chart-growth-bar", {
+    series: [{ label: "growth_bar", color: "var(--series-1)", points }],
+    xDomain: [0, 50], yDomain: [0, 8], yTicks: [0, 2, 4, 6, 8],
+    yFormat: v => v.toFixed(1), xFormat: v => Math.round(v),
+    xLabel: "earliest_mean",
+    annotations: [{ x: 1 / 0.15, label: "abs/rel crossover (~6.7)" }]
+  });
+}
+
+// ── C · Canary stuck escalation: 3 << min(n, 8) ──
+{
+  const bars = [];
+  for (let n = 0; n <= 9; n++) bars.push({ x: n, y: 3 * Math.pow(2, Math.min(n, 8)), label: String(n) });
+  mountBarChart("chart-canary-escalation", {
+    bars, yMax: 800, directLabel: true,
+    yFormat: v => Math.round(v), xLabel: "_canary_stuck_restart_count", yLabel: "passes tolerated"
+  });
+}
+
+// ── D · PainBudget leaky bucket (illustrative simulation) ──
+{
+  const rate = 0.02; // illustrative pain_budget_percent = 2%
+  const spends = [{ t: 0, ms: 60 }, { t: 1600, ms: 45 }];
+  const dt = 20, tMax = 4000;
+  const points = [];
+  let balance = 0, si = 0;
+  for (let t = 0; t <= tMax; t += dt) {
+    while (si < spends.length && spends[si].t <= t) { balance += spends[si].ms; si++; }
+    points.push({ x: t, y: Math.max(0, balance) });
+    balance = Math.max(0, balance - rate * dt);
+  }
+  mountLineChart("chart-pain-budget", {
+    series: [{ label: "balance (ms)", color: "var(--series-1)", points, area: true }],
+    xDomain: [0, tMax], yDomain: [0, 100],
+    yFormat: v => Math.round(v) + "ms", xFormat: v => Math.round(v) + "ms",
+    xLabel: "elapsed wall time"
+  });
+}
+
+// ── E · Budget clamp: clamp(desired, floor, ceiling) ──
+{
+  const budget = 800; // illustrative baseline _budget, below MIN_EFFECTIVE_BUDGET
+  const MIN_EFFECTIVE_BUDGET = 2000;
+  function clampSeries(borrowed) {
+    const ceiling = budget + borrowed;
+    const floor = Math.min(MIN_EFFECTIVE_BUDGET, ceiling);
+    const points = [];
+    for (let x = -1000; x <= 5000; x += 100) points.push({ x, y: Math.min(Math.max(x, floor), ceiling) });
+    return points;
+  }
+  mountLineChart("chart-budget-clamp", {
+    series: [
+      { label: "borrowed = 0", color: "var(--series-1)", points: clampSeries(0) },
+      { label: "borrowed = 3× budget", color: "var(--series-2)", points: clampSeries(3 * budget) }
+    ],
+    xDomain: [-1000, 5000], yDomain: [0, 3400],
+    yFormat: v => Math.round(v), xFormat: v => Math.round(v),
+    xLabel: "desired"
+  });
+}
+</script>
+
+</body>
+</html>
