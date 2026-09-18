@@ -712,7 +712,7 @@ Error ReferenceChainTracker::start(Arguments &args) {
             args._reference_chains_pause_target_ms,
             args._reference_chains_pain_budget_percent);
 
-  // Like LivenessTracker's table (livenessTracker.cpp:225-232), construct the
+  // Like LivenessTracker's own table, construct the
   // frontier table once and keep it across repeated start()/stop() cycles -
   // do not reallocate on a second start() with a possibly different cap, for
   // the same reason LivenessTracker keeps its first-initialize() result.
@@ -821,7 +821,7 @@ Error ReferenceChainTracker::start(Arguments &args) {
   // leaky buckets (see _cpu_pain_budget's own comment, referenceChains.h).
   _cpu_pain_budget = PainBudget(_pain_budget_refill_rate);
 
-  // Lazy-enable, matching LivenessTracker::start() (livenessTracker.cpp:194-196):
+  // Lazy-enable, matching LivenessTracker::start():
   // the GC callbacks are wired unconditionally in vmEntry.cpp, but the events
   // themselves are only turned on for this JVMTI env when the flag is on.
   jvmtiEnv *jvmti = VM::jvmti();
@@ -852,7 +852,7 @@ void ReferenceChainTracker::stop() {
   Log::info("Reference chain tracking stopped");
 
   // Do not disable GC notifications here - LivenessTracker follows the same
-  // rule (livenessTracker.cpp:209-210) since the JVMTI env and its tracker
+  // rule since the JVMTI env and its tracker
   // singletons are expected to survive across multiple start/stop recording
   // cycles. The BFS thread itself is stopped separately, by
   // Profiler::stop() calling stopThread() (profiler.cpp) - mirroring
@@ -921,7 +921,8 @@ void ReferenceChainTracker::stopThread() {
 
 // Not yet started by anything (see start()'s comment above for why) - but
 // now implements the real scheduling loop the design doc asks for, matching
-// J9WallClock's attach/park/detach lifecycle (j9WallClock.cpp:28-57): each
+// J9WallClock's attach/park/detach lifecycle (J9WallClock::start(),
+  // j9/j9WallClock.cpp): each
 // wake (adaptive cadence, or earlier via onGCFinish()'s pthread_kill below)
 // checks shouldRunPass() and calls runPass() if it says so. The pause-time
 // pacing controller sleeps for _effective_cadence_ns rather than the fixed
@@ -2188,7 +2189,7 @@ jint JNICALL ReferenceChainTracker::heapReferenceCallback(
   if (depth >= (u32)ctx->hop_cap) {
     // Hop cap: do not admit this object into the frontier, and do not
     // expand further from it - enforced here rather than
-    // discovering-then-discarding, per the plan.
+    // discovering-then-discarding.
     return 0;
   }
 
@@ -4395,8 +4396,8 @@ jvmtiIterationControl JNICALL ReferenceChainTracker::heapRootCallback(
   case AdmitResult::ALREADY_ADMITTED:
     // Rediscovery via a second heap root - either later in this same pass's
     // root enumeration, or in a later pass re-enumerating roots entirely
-    // (design doc's durability tie-break / "opportunistic upgrade", "Fix for
-    // root-attribution staleness" point 1 and Phase 5 item 1): apply the
+    // (design doc's durability tie-break / "opportunistic upgrade" / "Fix for
+    // root-attribution staleness" point 1): apply the
     // same durability ranking admitObject() would have used on first
     // discovery, upgrading root_kind if this root is more durable than
     // whatever is currently recorded. Restricted to root-attached entries
@@ -4658,7 +4659,7 @@ void ReferenceChainTracker::runPassManualWalk(jvmtiEnv *jvmti, JNIEnv *jni,
   // exists to correct.
 
   // Three-tier bounded rotating re-expansion (design doc's closing section,
-  // Phase 5 item 3, extended - see each collector's own comment for why it
+  // extended - see each collector's own comment for why it
   // exists as its own tier): re-walk a bounded, rotating subset of
   // already-EXPANDED entries so mutations to an already-expanded object's
   // fields - a durable root discovered elsewhere for a stale attribution, or
@@ -5935,8 +5936,8 @@ void ReferenceChainTracker::maybeRevokeBorrowForRootEnumPass(
 // ---------------------------------------------------------------------------
 // Target-selection bridging step - LivenessTracker's leak-candidate ranking feeds
 // this tracker's already-running BFS search (design doc's Open Question 3,
-// corrected mechanism - see this method's own comment below and the plan
-// doc's "Correction to the design doc's Open Question 3 mechanism").
+// corrected mechanism - see this method's own comment below for why the
+// correction replaces the design doc's original seeding proposal).
 // ---------------------------------------------------------------------------
 
 void ReferenceChainTracker::requeueChainRootForRotation(jlong tag) {
@@ -6432,7 +6433,7 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
       }
     }
 
-    // Corrected mechanism (the plan doc's own correction to the design doc's
+    // Corrected mechanism (a correction to the design doc's
     // original proposal): a READ, never a SetTag
     // seed. runPass()'s whole-graph walk is the only thing that ever
     // assigns a tag; if it already has (tag > 0), heapReferenceCallback()
@@ -6453,7 +6454,7 @@ void ReferenceChainTracker::pollWatchedTargets(jvmtiEnv *jvmti, JNIEnv *jni) {
     if (tag <= MARKER_TAG_BASE) {
       // The marker tag encodes the slot this object was pre-tagged at
       // (MARKER_TAG_BASE - slot, mirroring heapReferenceCallback()'s own
-      // decode at referenceChains.cpp:1510). Decode it from the tag itself
+      // decode at its MARKER_TAG_BASE check). Decode it from the tag itself
       // rather than reusing the loop index `i`: selectLeakCandidates() is
       // not guaranteed to return candidates in the same order across polls,
       // so `i` can drift from the slot this object was actually tagged at.

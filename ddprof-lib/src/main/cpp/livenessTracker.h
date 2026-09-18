@@ -439,7 +439,7 @@ private:
   // Question 3 by itself, but the plan built on top of this table requires
   // liveness tracking *and* _gc_generations, matching the doc's stated
   // fallback of "no target-seeding" when generations tracking isn't on
-  // (arguments.cpp:223-227,244). std::atomic (relaxed) since initialize()
+  // (Arguments::_gc_generations). std::atomic (relaxed) since initialize()
   // writes it from the control thread while the BFS thread
   // (maybeForceCleanup()) and the GC-callback thread (cleanup_table()) can
   // still be reading it from a session that persists across a restart.
@@ -633,7 +633,7 @@ private:
   // the least-recently-updated entry first if the table is already at
   // MAX_KLASS_POPULATION_ENTRIES capacity - the same evict-LRU-on-insert-
   // when-full shape NativeSocketSampler's fd cache already solves,
-  // nativeSocketSampler.h:141-142/184's insertFdAddrLocked(), and the same
+  // NativeSocketSampler's insertFdAddrLocked(), and the same
   // "single agent-owned pass, lock already held by caller" shape
   // cleanup_table() itself already uses) if klass_id has never been seen.
   // A newly-created entry's `representative` is left null - it is the
