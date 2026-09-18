@@ -939,8 +939,7 @@ void Profiler::writeReferenceChainAbandoned(ReferenceChainAbandonedEvent *event)
 // MAX_RESOLVED_CHAINS per dump) - never from pollWatchedTargets() or any other call on
 // ReferenceChainTracker's own BFS agent thread, and never from a signal handler. A single
 // bare 3-slot tryLock() sweep with no wait - correct for a signal handler, which must never
-// block - was found, by running PROF-15341's end-to-end integration test
-// (ddprof-test's ReferenceChainTrackingTest.shouldReconstructReferrerChainToGcRoot) for real,
+// block - was found, by running the end-to-end integration test for real,
 // to drop this event under perfectly ordinary contention: the same _locks[] pool is shared
 // with every other sample type (recordJVMTISample() et al.), and any nontrivial allocation
 // throughput keeps enough of CONCURRENCY_LEVEL's slots busy that 3 immediate, back-to-back
