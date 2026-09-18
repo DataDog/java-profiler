@@ -47,9 +47,8 @@ const int MAX_VAR32_LENGTH = 5;
 
 // Chain length Recording::recordReferenceChain() (flightRecorder.cpp) will
 // actually serialize per datadog.ReferenceChain event, independent of
-// ReferenceChainTracker's own _hop_cap/frontier-table cap - the frontier
-// table's own defensive walk bound (FrontierTable::reconstructChain(),
-// referenceChains.h) is maxCapacity(), which can run into the tens of
+// the engine's own _hop_cap/frontier-table cap - the frontier table's
+// defensive walk bound is its maxCapacity(), which can run into the tens of
 // thousands of entries, and neither that cap nor _hop_cap is itself
 // range-validated against a buffer-safe maximum (see arguments.cpp's own
 // sub-option parsing). recordReferenceChain() truncates event->_hops to
@@ -590,9 +589,9 @@ public:
   // Mirrors recordReferenceChainAbandoned() above exactly, for
   // ReferenceChainEvent instead. Called from Profiler::writeReferenceChain()
   // (profiler.cpp), itself called from Profiler::dump()'s drain loop over
-  // the ReferenceChainTracker::drainPendingChainEvents() snapshot: the BFS
-  // scheduling thread only caches resolved chains in _resolved_chains
-  // (referenceChains.h) and each dump re-emits the cache, so chain events
+  // the engine's resolved-chain cache snapshot: the BFS
+  // scheduling thread only caches resolved chains and each dump re-emits
+  // the cache, so chain events
   // are written on dump()'s own thread, not from the tracker thread, and
   // unlike recordReferenceChainAbandoned() (unbounded retry budget per
   // event) the batch shares one deadline (writeReferenceChain()'s comment).

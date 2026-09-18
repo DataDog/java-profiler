@@ -86,22 +86,20 @@ static const Multiplier UNIVERSAL[] = {
 //                        - (off by default) tag/BFS-walk live-heap
 //                          samples' referrer chains back toward a GC root.
 //                          pausetarget=N (ms) is the pause-time-SLO ceiling
-//                          ReferenceChainTracker::updatePacing() adapts the
-//                          effective budget/cadence toward (pause-time pacing
-//                          controller). painbudget=N (percent) bounds how much
+//                          the engine's pacing controller adapts the effective
+//                          budget/cadence toward. painbudget=N (percent)
+//                          bounds how much
 //                          wall-clock time a *restarted* search (one begun
 //                          after a prior search already completed/abandoned)
-//                          may spend on average - see PainBudget (painBudget.h).
+//                          may spend on average (the restarted-search pain budget).
 //                          firstpassbudget=N overrides just the search's
 //                          one-shot, root-seeded first pass's edge budget
-//                          (default 0 - auto-scales from budget=N instead,
-//                          see ReferenceChainTracker::AUTO_FIRST_PASS_BUDGET_*
-//                          in referenceChains.h) since that pass alone
+//                          (default 0 - the engine auto-scales it from
+//                          budget=N instead) since that pass alone
 //                          decides which GC roots ever enter the frontier at
 //                          all, unlike every later pass's cheap, incremental
 //                          per-node expansion.
-//                          Sub-options are placeholders pending future tuning;
-//                          see doc/architecture/LiveHeapReferenceChains*.md
+//                          Sub-options are placeholders pending future tuning
 //     lightweight[=BOOL] - enable lightweight profiling - events without
 //     stacktraces (default: true)
 //     remotesym[=BOOL]   - enable remote symbolication for native frames
@@ -502,7 +500,7 @@ Error Arguments::parse(const char *args) {
             // here: a negative hops value would wrap to ~4e9 as u32 and
             // silently disable the hop cap, a negative budget truncates every
             // pass to nothing, and unbounded values flow straight into loop
-            // bounds or FrontierTable's allocation. One validation boundary
+            // bounds or the frontier table's allocation. One validation boundary
             // for all sub-options instead of scattered downstream clamps.
             if (strcasecmp(cursor, "hops") == 0) {
               _reference_chains_hop_cap =

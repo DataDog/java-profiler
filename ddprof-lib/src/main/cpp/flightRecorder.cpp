@@ -2346,13 +2346,12 @@ void Recording::recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
   flushIfNeeded(buf);
 }
 
-// Maps a FrontierEntry::root_kind byte (a jvmtiHeapReferenceKind value,
-// referenceChains.h/.cpp's heapReferenceCallback()) to a human-readable
+// Maps a chain root-kind byte (a jvmtiHeapReferenceKind value recorded when
+// the chain's first hop was admitted) to a human-readable
 // label for datadog.ReferenceChain's rootKind field - only the values
-// heapReferenceCallback() can actually produce (a root reference's own
-// jvmtiHeapReferenceKind, or JVMTI_HEAP_REFERENCE_STATIC_FIELD for the
-// "referrer is a pre-tagged class" root-like case, see that method's own
-// comment) have entries; anything else (including 0, root_kind's
+// the engine's admission callback can actually produce (a root reference's
+// own jvmtiHeapReferenceKind, or JVMTI_HEAP_REFERENCE_STATIC_FIELD for the
+// "referrer is a pre-tagged class" root-like case) have entries; anything else (including 0, root_kind's
 // "not set" default) reports "unknown" rather than crashing on an
 // out-of-range index.
 //
@@ -2387,8 +2386,8 @@ static const char *rootKindName(u8 root_kind) {
 }
 
 void Recording::recordReferenceChain(Buffer *buf, ReferenceChainEvent *event) {
-  // event->_hops' length is bounded only by FrontierTable::maxCapacity()
-  // (tens of thousands of entries, referenceChains.h) - NOT by
+  // event->_hops' length is bounded only by the frontier table's capacity
+  // (tens of thousands of entries) - NOT by
   // MAX_JFR_EVENT_SIZE, so this event cannot use writeEventSizePrefix()'s
   // single-byte size field (its assert(size < MAX_JFR_EVENT_SIZE) is
   // compiled out in release builds, making an oversize chain a silent
@@ -2470,7 +2469,7 @@ void Recording::recordReferenceChainAbandoned(
   int start = buf->skip(1);
   buf->putVar64(T_REFERENCE_CHAIN_ABANDONED);
   buf->putVar64(event->_start_time);
-  // SearchAbandonReason (referenceChains.h) - kept as a small fixed table
+  // SearchAbandonReason (the engine's reason enum) - kept as a small fixed table
   // here rather than a T_XXX enum type, mirroring NativeSocketEvent's
   // _operation -> kOpNames string mapping above.
   static const char *const kReasons[] = {"none", "frontier_cap", "ttl", "canary_stuck"};
