@@ -81,7 +81,7 @@ enum JfrType {
   T_UNWIND_FAILURE = 126,
   T_MALLOC = 127,
   T_NATIVE_SOCKET = 128,
-  // PROF-15341 Phase 6: reporting surface for ReferenceChainTracker
+  // PROF-15341: reporting surface for ReferenceChainTracker
   // (referenceChains.h/.cpp) - a reconstructed referrer-type chain, and a
   // distinct event for a search abandoned before reaching a target (design
   // doc's "no silent truncation" requirement), see jfrMetadata.cpp.

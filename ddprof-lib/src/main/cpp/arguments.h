@@ -32,13 +32,11 @@ const int DEFAULT_WALL_THREADS_PER_TICK = 16;
 const int DEFAULT_JSTACKDEPTH = 2048;
 
 // Every constant below is a provisional default pending empirical
-// tuning (see doc/architecture/LiveHeapReferenceChains-ImplementationPlan.md)
-// - none of these values are backed by a benchmark run against this
+// tuning - none of these values are backed by a benchmark run against this
 // codebase. Each is chosen conservatively from cited precedent or from the
 // shape of an existing, already-tuned subsystem, per the rationale below;
-// a future JMH/async-profiler benchmark matrix (see
-// doc/architecture/LiveHeapReferenceChains-BenchmarkPlan.md) is the intended
-// path to replacing them with measured values.
+// replacing them with measured values is the outstanding JMH/
+// async-profiler benchmark work tracked under PROF-15341.
 //
 // Hop cap: mirrors HotSpot's own JFR leak-profiler chain cap (~200 hops,
 // split 100/100 from leaf and from root), cited in
@@ -81,9 +79,8 @@ const long DEFAULT_REFERENCE_CHAINS_TTL_MS = 60000;    // per-search wall-clock 
 // still be large. Not a scaled/derived value - just a conservative guess
 // pending a future frontier-table peak-occupancy measurement.
 const int DEFAULT_REFERENCE_CHAINS_FRONTIER_CAP = 65536; // max live frontier entries per search
-// Pause-time-SLO ceiling (pause-time pacing controller, doc/architecture/
-// LiveHeapReferenceChains-RemainingWorkPlan.md): target ceiling, per pass, on
-// wall-clock time spent inside the safepoint-triggering
+// Pause-time-SLO ceiling (pause-time pacing controller): target ceiling,
+// per pass, on wall-clock time spent inside the safepoint-triggering
 // FollowReferences/GetObjectsWithTags call
 // (ReferenceChainTracker::updatePacing(), referenceChains.cpp). Like every
 // other constant in this block this is a round, provisional default with no
@@ -292,9 +289,7 @@ public:
   double _live_samples_ratio;
   bool _record_heap_usage;
   bool _gc_generations;
-  // Reference-chain tracking (PROF-15341 - see
-  // doc/architecture/LiveHeapReferenceChains-ImplementationPlan.md and
-  // -RemainingWorkPlan.md). Read by ReferenceChainTracker::start()
+  // Reference-chain tracking (PROF-15341). Read by ReferenceChainTracker::start()
   // (referenceChains.cpp) to size the frontier table and seed the per-search
   // hop/budget/TTL tunables and the pause-time-SLO ceiling that
   // updatePacing() adapts the effective budget/cadence toward.
