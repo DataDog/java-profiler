@@ -3378,13 +3378,11 @@ void ReferenceChainTracker::resolveHopEdgeLabel(jvmtiEnv *jvmti, JNIEnv *jni,
 
 void ReferenceChainTracker::fillHopEdgeLabels(
     jvmtiEnv *jvmti, JNIEnv *jni, const std::vector<ChainHopEdge> &edges,
-    std::vector<std::string> *out) {
-  out->clear();
-  out->reserve(edges.size());
+    std::vector<ReferenceChainHop> *out) {
   char label[MAX_HOP_EDGE_LABEL + 1];
-  for (ChainHopEdge edge : edges) {
-    resolveHopEdgeLabel(jvmti, jni, edge, label, sizeof(label));
-    out->emplace_back(label);
+  for (size_t i = 0; i < edges.size() && i < out->size(); i++) {
+    resolveHopEdgeLabel(jvmti, jni, edges[i], label, sizeof(label));
+    (*out)[i].edge_label = label;
   }
 }
 
@@ -6039,9 +6037,12 @@ bool ReferenceChainTracker::buildChainEvent(jvmtiEnv *jvmti, JNIEnv *jni,
   out->_target_tag = entry.leak_tag != 0 ? (u64)entry.leak_tag : (u64)target_tag;
   out->_depth = entry.depth;
   out->_root_kind = root_kind;
-  out->_chain = std::move(chain);
-  // Retention-edge labels, aligned with _chain (see fillHopEdgeLabels()).
-  fillHopEdgeLabels(jvmti, jni, edges, &out->_edges);
+  out->_hops.resize(chain.size());
+  for (size_t i = 0; i < chain.size(); i++) {
+    out->_hops[i].klass_id = chain[i];
+  }
+  // Retention-edge labels, aligned with the hops (see fillHopEdgeLabels()).
+  fillHopEdgeLabels(jvmti, jni, edges, &out->_hops);
   return true;
 }
 
@@ -6063,7 +6064,7 @@ bool ReferenceChainTracker::buildChainEvent(jvmtiEnv *jvmti, JNIEnv *jni,
 // no referrer_tag_ptr), or when the class tag no longer resolves (class
 // unloaded). edges gains one matching entry (the root edge - kind label
 // only, the field identity belongs to the holder hop) so the
-// _edges.size() == _chain.size() invariant recordReferenceChain() relies on
+// _hops[i].edge_label non-empty invariant recordReferenceChain() relies on
 // to emit labels at all is preserved.
 void ReferenceChainTracker::appendStaticFieldRootType(
     const FrontierEntry &terminal, std::vector<u32> *chain,
@@ -6163,7 +6164,10 @@ bool ReferenceChainTracker::buildCanaryChainEvent(int candidate_idx,
   out->_depth = _candidate_depths[candidate_idx];
   out->_root_kind = root_kind;
   const size_t chain_size = chain.size();
-  out->_chain = std::move(chain);
+  out->_hops.resize(chain_size);
+  for (size_t i = 0; i < chain.size(); i++) {
+    out->_hops[i].klass_id = chain[i];
+  }
   TEST_LOG_SUMMARY("ReferenceChainTracker::buildCanaryChainEvent candidate=%d "
                    "parent_tag=%lld chain_size=%zu",
                    candidate_idx, (long long)parent_tag, chain_size);
