@@ -1104,7 +1104,7 @@ Java_com_datadoghq_profiler_JavaProfiler_dumpContext(JNIEnv* env, jclass unused)
   TEST_LOG("===> Context: tid:%lu, spanId=%lu, rootSpanId=%lu", OS::threadId(), spanId, rootSpanId);
 }
 
-// PROF-15341: LivenessTracker/ReferenceChainTracker test seams. Unlike
+// LivenessTracker/ReferenceChainTracker test seams. Unlike
 // testlog()/dumpContext() above (harmless no-ops in release, via TEST_LOG's
 // own release-mode expansion to nothing), these mutate real tracker state
 // (tagging objects, seeding population history) - shipping them into a
