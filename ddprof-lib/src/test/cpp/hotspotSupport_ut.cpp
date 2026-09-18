@@ -213,6 +213,16 @@ jvmtiError JNICALL mock_SetTag(jvmtiEnv*, jobject, jlong tag) {
     return JVMTI_ERROR_NONE;
 }
 
+// Simulates a JVMTI implementation that fails GetTag but still writes through
+// *tag_ptr (undefined by the spec, but not something callers may rely on
+// being left untouched). The garbage value looks like "already fully
+// patched" if a caller trusted it instead of falling back to 0 on error.
+jvmtiError JNICALL mock_GetTag_garbage_on_error(jvmtiEnv*, jobject, jlong* tag_ptr) {
+    g_get_tag_calls++;
+    *tag_ptr = 999999;
+    return JVMTI_ERROR_INVALID_OBJECT;
+}
+
 FakePatchKlass* g_fake_klass_for_jni = nullptr;
 
 jlong JNICALL mock_GetLongField(JNIEnv*, jobject, jfieldID) {
@@ -363,4 +373,60 @@ TEST_F(PatchClassLoaderDataTest, SecondCallPatchesOnlyNewMethodRange) {
     EXPECT_EQ(2 * MethodList::SIZE + MethodList::SIZE, g_last_set_tag_value);  // 24: next block boundary past 20
     EXPECT_EQ(3, methodListChainLength(fake_cld.method_list_head))
         << "second call must add exactly ceil((20-8)/8) = 2 new nodes on top of the first call's 1";
+}
+
+// Degraded case: VMKlass::classLoaderData() returns null (e.g. a klass whose
+// CLD pointer field hasn't settled yet). patchClassLoaderData() must bail out
+// before taking the CLD lock or touching the tag -- there is nothing to patch
+// and nothing to record. A mutant that removed the cld==nullptr guard would
+// dereference a null FakePatchCLD* here and crash under the gtest crash
+// handler installed at file scope.
+TEST_F(PatchClassLoaderDataTest, NullClassLoaderDataSkipsPatchAndSetTag) {
+    fake_klass.cld = nullptr;
+    setMethodCount(MethodList::SIZE);
+
+    callPatch();
+
+    EXPECT_EQ(0, g_lock_calls) << "no ClassLoaderData to lock when cld is null";
+    EXPECT_EQ(0, g_unlock_calls);
+    EXPECT_EQ(0, g_set_tag_calls) << "nothing was patched, so no tag should be persisted";
+}
+
+// Degraded case: GetTag fails but still writes a garbage value through
+// *tag_ptr. patchClassLoaderData() must not trust that value -- it has to
+// fall back to already_patched=0 and patch the class from scratch, the same
+// as if it had never been tagged. A mutant that used the garbage tag_ptr
+// value regardless of the return code would treat 999999 as "already fully
+// patched" and skip patching (and prepend 0 nodes) instead of 1.
+TEST_F(PatchClassLoaderDataTest, GetTagFailureIgnoresGarbageAndRestartsFromZero) {
+    tbl.GetTag = &mock_GetTag_garbage_on_error;
+    setMethodCount(MethodList::SIZE);
+
+    callPatch();
+
+    EXPECT_EQ(1, g_get_tag_calls);
+    EXPECT_EQ(1, g_lock_calls)
+        << "a failed GetTag must not be mistaken for method_count <= already_patched";
+    EXPECT_EQ(1, methodListChainLength(fake_cld.method_list_head))
+        << "patching must restart from 0, not from the garbage *tag_ptr value";
+    EXPECT_EQ(MethodList::SIZE, g_last_set_tag_value);
+}
+
+// Degraded case: VM::jvmti() is null (e.g. torn down mid-shutdown).
+// patchClassLoaderData() still preallocates capacity defensively -- the CLD
+// lock and MethodList prepend do not depend on JVMTI at all -- but it must
+// skip GetTag/SetTag entirely rather than dereferencing a null jvmtiEnv*. A
+// mutant that dropped the jvmti==nullptr checks would crash calling
+// GetTag/SetTag through a null functions table.
+TEST_F(PatchClassLoaderDataTest, NullVMJvmtiStillPatchesButSkipsSetTag) {
+    VMTestAccessor::setJvmti(nullptr);
+    setMethodCount(MethodList::SIZE);
+
+    callPatch();
+
+    EXPECT_EQ(0, g_get_tag_calls) << "GetTag must not be attempted when VM::jvmti() is null";
+    EXPECT_EQ(1, g_lock_calls)
+        << "the patch itself must still run even when the tag can't be read or written";
+    EXPECT_EQ(1, methodListChainLength(fake_cld.method_list_head));
+    EXPECT_EQ(0, g_set_tag_calls) << "SetTag must be skipped when VM::jvmti() is null";
 }
