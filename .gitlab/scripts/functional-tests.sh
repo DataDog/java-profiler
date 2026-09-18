@@ -68,6 +68,11 @@ function onexit {
 
 trap onexit EXIT
 
+GRADLE_EXTRA_ARGS=()
+if [ -n "${TESTS_FILTER:-}" ]; then
+  GRADLE_EXTRA_ARGS+=("-Ptests=${TESTS_FILTER}")
+fi
+
 ./gradlew -Pddprof_version="$(get_version)" -Pskip-native=ddprof-lib,malloc-shim -Pwith-libs="$(pwd)/libs" -PCI \
-  -PtestMaxHeap=1536m \
+  -PtestMaxHeap=1536m "${GRADLE_EXTRA_ARGS[@]}" \
   ":ddprof-test:test${TEST_CONFIG}" --max-workers=1 --build-cache --stacktrace --info --no-watch-fs --no-daemon
