@@ -606,6 +606,8 @@ class MethodList {
             _method[i] = 0x37;
         }
     }
+
+    friend class MethodListTestAccessor;
 };
 
 
