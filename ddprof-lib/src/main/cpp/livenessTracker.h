@@ -1401,9 +1401,24 @@ public:
   // cleanup_table()'s epoch-advance pass, which holds _table_lock while
   // mutating _klass_population_size/_klass_population - so this seam must
   // take the same lock rather than writing the field unguarded.
+  // Also clears _klass_count_scratch_size: a stale scratch holding a full
+  // epoch's worth of real klass entries survives this reset otherwise, and
+  // the first real GC after it folds all of them into the just-cleared
+  // table, filling it to MAX_KLASS_POPULATION_ENTRIES in one fold. Every
+  // seeded test entry then carries a synthetic last_updated_epoch (1..20)
+  // far below the real GC epochs of the folded entries, so it is the
+  // permanent LRU-eviction victim: a fold landing mid-seeding (real GCs
+  // fire every few ms on slow runners) evicts the entry and each later
+  // seed push re-creates it with a reset ring, leaving ring_fill below
+  // KLASS_POPULATION_MIN_FILL_FOR_TREND at select time - the observed
+  // shouldSelectSeededKlassAsLeakCandidateOnPositiveSlope flake on
+  // musl-aarch64. With the scratch cleared at reset, the table can only
+  // fill from allocations made during the test's own microsecond-scale
+  // body, which never reaches the eviction threshold.
   void klassPopulationResetForTest() {
     _table_lock.lock();
     _klass_population_size = 0;
+    _klass_count_scratch_size = 0;
     _test_klass_alias_count = 0;
     _table_lock.unlock();
     // Also reset the heap-floor ring: it is a sibling piece of the same
