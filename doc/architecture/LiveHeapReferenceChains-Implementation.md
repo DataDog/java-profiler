@@ -1,6 +1,6 @@
 # Live Heap Reference Chains — As-Built Implementation Reference
 
-**Status:** matches `jb/reference-chains` as of 2026-09
+**Status:** Implemented as of 2026-09
 **Jira:** [PROF-15341](https://datadoghq.atlassian.net/browse/PROF-15341)
 
 This document is the detailed, as-built reference for the reference-chain walk
