@@ -288,7 +288,7 @@ TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent)
     // Recording::writeMetadata() (flightRecorder.cpp) serializes JfrMetadata::root()
     // as-is - it does not build it. That tree is normally populated exactly once by
     // JfrMetadata::initialize() (jfrMetadata.cpp), called from Profiler::start()
-    // (profiler.cpp:1433) - which this test does not call (per this file's header
+    // - which this test does not call (per this file's header
     // comment). initialize() is itself public, JVM-independent (pure fluent-builder
     // data construction, no JVMTI/JNI calls) and idempotent (_initialized guard,
     // jfrMetadata.cpp) - calling it directly here is completing the same
