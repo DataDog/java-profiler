@@ -6,9 +6,8 @@
 
 ## Implementation status
 
-The "Chosen design" section below has been implemented following
-`LiveHeapReferenceChains-ImplementationPlan.md` (kept locally, not committed)
-(Phases 0-7). It is off by default; the shipping switch is the `referencechains` argument
+The "Chosen design" section below has been implemented. It is off by default; the
+shipping switch is the `referencechains` argument
 parsed by `Arguments` (`arguments.cpp`'s `CASE("referencechains")`), e.g.
 `referencechains=true:hops=64:budget=2000:ttl=60000:framecap=65536`.
 
@@ -60,10 +59,10 @@ Read this status note alongside the actual code before relying on it, not instea
   trend, then asserts on the `datadog.ReferenceChain` event `pollWatchedTargets()` produces -
   a real end-to-end exercise of this whole mechanism against a live JVM, not a synthetic
   frontier fixture.
-- **Phase 5's tuning defaults are provisional, not empirically finalized.** The hop cap,
+- **The tuning defaults are provisional, not empirically finalized.** The hop cap,
   per-pass budget, TTL, and frontier-size cap (`arguments.h`'s `DEFAULT_REFERENCE_CHAINS_*`
   constants) are explicitly-labeled placeholders; no benchmark against this codebase has
-  run yet (see Open Question 2 below and the implementation plan's Phase 5).
+  run yet (see Open Question 2 below).
 
 ## Goal
 
@@ -390,8 +389,8 @@ retaining path, not a claim about the object's current exact retention state.
    representative heap shapes and per-hop fan-out, not a guess; `LivenessTracker`'s
    flat-sample-rate sizing formula does not transfer to a graph-search frontier.
    **Not resolved — provisional defaults only, no measurement has occurred.** The
-   implementation currently ships explicitly-labeled "provisional default pending Phase 5
-   empirical tuning" constants (`arguments.h`: `DEFAULT_REFERENCE_CHAINS_HOP_CAP = 200`,
+   implementation currently ships explicitly-labeled "provisional default pending empirical
+   tuning" constants (`arguments.h`: `DEFAULT_REFERENCE_CHAINS_HOP_CAP = 200`,
    citing this doc's own JFR ~200-hop/100-100 precedent; `DEFAULT_REFERENCE_CHAINS_BUDGET
    = 1000`; `DEFAULT_REFERENCE_CHAINS_TTL_MS = 60000`; `DEFAULT_REFERENCE_CHAINS_FRONTIER_CAP
    = 65536`, sized as a fraction of `LivenessTracker::MAX_TRACKING_TABLE_SIZE` rather than
@@ -399,15 +398,12 @@ retaining path, not a claim about the object's current exact retention state.
    `FrontierTable::INITIAL_TABLE_CAPACITY = 1024` and
    `ReferenceChainTracker::PASS_CADENCE_NS` = 1 s). These let the subsystem run and be
    tested end-to-end, but none are backed by a benchmark against this codebase — do not
-   describe them as measured. The real resolution path is
-   `LiveHeapReferenceChains-BenchmarkPlan.md` (kept locally, not committed),
-   which specifies the JMH/async-profiler matrix and decision rule Phase 5 still needs to
-   execute; this question stays open until that plan is actually run.
+   describe them as measured. The real resolution path is a JMH/async-profiler benchmark
+   matrix with an explicit decision rule, still to be executed; this question stays open
+   until that benchmark work is actually run.
 
    **Pause-time-SLO feedback loop — SHIPPED, reusing the existing `PidController`.**
-   Implemented in
-   `LiveHeapReferenceChains-RemainingWorkPlan.md` (kept locally, not committed)'s
-   Phase D (`ReferenceChainTracker::updatePacing()`, `referenceChains.cpp`). This does not
+   Implemented as `ReferenceChainTracker::updatePacing()` (`referenceChains.cpp`). This does not
    replace the hop/TTL/frontier-cap constants raised in the first half of this question — only
    the per-pass edge-count budget and the pass cadence, per the shipped mechanism below.
    - New config sub-option `referencechains=...:pausetarget=<ms>` (`arguments.cpp`'s
@@ -427,9 +423,8 @@ retaining path, not a claim about the object's current exact retention state.
      single/low-double-digit in magnitude, unlike the shared triple's event-count scale
      (`referenceChains.cpp`'s `start()`, inline comment on each gain). Gain *convergence* is
      verified by gtest (three `ReferenceChainsTest` cases: steady-state at the ceiling, over-
-     ceiling, under-ceiling — see Phase D's exit criteria below), not by a live benchmark
-     against representative heap shapes; that remains a
-     `LiveHeapReferenceChains-BenchmarkPlan.md` (kept locally, not committed) item,
+     ceiling, under-ceiling), not by a live benchmark
+     against representative heap shapes; that benchmark work remains open,
      not fully closed by this mechanism landing.
    - Measurement point: `runPass()` (`referenceChains.cpp`) times its own root
      `IterateOverReachableObjects` call (first pass) or `expandFrontier()`'s
@@ -454,10 +449,10 @@ retaining path, not a claim about the object's current exact retention state.
    - The hop cap and the frontier-size hard cap (Termination section) are untouched by this
      mechanism — they stay fixed correctness/memory-safety bounds, not controller-tuned, exactly
      as this question originally specified.
-   - One known, deliberate scope limit carried over from the plan: `buildAbandonedEvent()`'s
+   - One known, deliberate scope limit: `buildAbandonedEvent()`'s
      `datadog.ReferenceChainAbandoned` event still reports the static config ceiling `_budget`,
-     not the adaptive `_effective_budget` — changing that event's semantics was out of Phase D's
-     stated scope.
+     not the adaptive `_effective_budget` — making that event track the adaptive value was
+     deliberately left out of scope.
 3. Decide the sample-batching policy: one incremental search per live-heap sample, or
    batched multi-target BFS sharing a single frontier walk (batching amortizes better but
    couples unrelated samples' termination conditions together).
@@ -468,15 +463,13 @@ retaining path, not a claim about the object's current exact retention state.
    chain for a specific tag is a separate, read-only step (`buildChainEvent(target_tag, ...)`)
    applied after (or during) that one shared search - closer in spirit to "batched" (one
    frontier walk can answer for many targets) than "one search per sample", but arrived at
-   by omission (the target-sample feed did not exist at that time, see the implementation
-   plan's Phase 7 report) rather than a deliberate batching design.
+   by omission (no target-sample feed existed) rather than a deliberate batching design.
    Whether this generalizes to true multi-target batching (explicit seeding from multiple
    samples, coordinated termination) is still open and deferred, consistent with this
    question's original framing.
 
-   **Target-selection policy — SHIPPED (positive population-slope ranking).** Implemented in
-   `LiveHeapReferenceChains-RemainingWorkPlan.md` (kept locally, not committed)'s
-   Phases A-C. The missing piece above was *which* tag(s) `buildChainEvent()` should
+   **Target-selection policy — SHIPPED (positive population-slope ranking).**
+   The missing piece above was *which* tag(s) `buildChainEvent()` should
    reconstruct for. As shipped: per klass, `LivenessTracker` tracks a rolling window of its
    live tracked-instance population count, sampled once per `LivenessTracker::cleanup_table()`
    epoch advance (the same GC-epoch cadence that already recomputes survivor status,
@@ -539,9 +532,8 @@ retaining path, not a claim about the object's current exact retention state.
      trend) but the *reconstruction target* does not need to be the exact instance that built
      up the trend — any currently-live tracked instance of the flagged klass is evidence of
      the same leak. **The bridging step is a READ, not a `SetTag` write** (a correction to
-     this doc's original proposal, found while grounding
-     `LiveHeapReferenceChains-RemainingWorkPlan.md` (kept locally, not committed);
-     see its "Correction to the design doc's Open Question 3 mechanism"). Pre-`SetTag`ing a
+     this doc's original proposal, found while grounding the implementation):
+     Pre-`SetTag`ing a
      candidate before the forward walk reached it would make `heapReferenceCallback()`'s
      `*tag_ptr == 0` branch — the *only* branch that records `parent_tag`/`depth` — skip it,
      yielding an empty/root chain. Instead `ReferenceChainTracker::pollWatchedTargets()`
@@ -583,13 +575,12 @@ retaining path, not a claim about the object's current exact retention state.
    labeled provisional in `referenceChains.h`) has elapsed, whichever comes first. No
    safepoints-per-second/per-pause-duration measurement backs the 1-second cadence value -
    it was chosen only so an idle search still makes progress without polling tightly. The
-   cost model this question actually asks for is still open, deferred to Phase 5's
-   benchmark plan (`LiveHeapReferenceChains-BenchmarkPlan.md` (kept locally, not committed)),
-   which has not been run.
+   cost model this question actually asks for is still open, deferred to a benchmark
+   run that has not happened yet.
 
    **SHIPPED — folded into Open Question 2's pause-time-SLO feedback loop, not solved
    separately.** Implemented in the same `ReferenceChainTracker::updatePacing()`
-   (`referenceChains.cpp`, Phase D) described under Open Question 2: one `PidController`
+   (`referenceChains.cpp`) described under Open Question 2: one `PidController`
    `compute()` call per pass drives both that question's budget adjustment and this question's
    cadence adjustment from the single measured per-pass safepoint duration, rather than two
    independently-tuned mechanisms. `shouldRunPass()` and `threadLoop()` now compare against
@@ -606,5 +597,4 @@ retaining path, not a claim about the object's current exact retention state.
    since it is the same controller instance. The cost-modeled "how many safepoints/sec is
    acceptable" question this Open Question originally asked for is answered structurally (the
    controller widens cadence exactly when passes are running long relative to the configured
-   ceiling) rather than by a specific measured number — that number is still a
-   `LiveHeapReferenceChains-BenchmarkPlan.md` (kept locally, not committed) item.
+   ceiling) rather than by a specific measured number — that benchmark work is still open.
