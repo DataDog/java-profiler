@@ -231,8 +231,8 @@ private:
   // latency. Covers the shape the age-trend gate structurally cannot see -
   // one-cohort-per-thread accumulation (each one-shot worker thread's
   // instances all share one age, so its distinct-age count stays 1 forever,
-  // but it retains hundreds of instances - LeakingCacheScenario's exact
-  // shape), and shortens qualification for any big per-thread retained set.
+  // but it retains hundreds of instances), and shortens qualification for
+  // any big per-thread retained set.
   // 8 tracked survivors of a single class from one thread is roughly an
   // order of magnitude above the machinery shapes this gate exists to
   // exclude (buffer/thread pools retain 1-5 tracked per class/thread,
@@ -387,9 +387,9 @@ private:
   // so a test can seed the ring exclusively via heapFloorRecordForTest()
   // without a real GC interleaving a sample with a real OS::nanotime()
   // timestamp and real heap usage, corrupting secondsToOOM()'s projection.
-  // See AggressiveLeakReferenceChainTest's own comment for the race this
-  // closes (a real GC firing between resetKlassPopulationForTest0() and
-  // shouldRunPassForTest0()).
+  // This closes the race where a real GC fires between
+  // resetKlassPopulationForTest0() and shouldRunPassForTest0() and a
+  // concurrent recordHeapFloorSample() corrupts the projection.
 #ifdef DEBUG
   // Atomic (not plain bool) so the GC thread sees the test thread's store
   // on arm64's weak memory model. Checked inside recordHeapFloorSample()
