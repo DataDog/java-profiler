@@ -292,8 +292,8 @@ TEST_F(LivenessTrackerTest, CapacityDoesNotExceedMaxCap) {
 }
 
 // ---------------------------------------------------------------------------
-// Per-klass population tracking (LiveHeapReferenceChains-RemainingWorkPlan.md).
-// These exercise LivenessTracker::instance() directly rather than
+// Per-klass population tracking. These exercise LivenessTracker::instance()
+// directly rather than
 // a mock: recordKlassPopulationSampleLocked() deliberately makes no JNI call
 // (see its header comment), so it is safe to call on the real singleton
 // without a live JVM attached, unlike start()/track()/flush() elsewhere in
@@ -453,8 +453,7 @@ TEST_F(KlassPopulationTest, EvictsLeastRecentlyUpdatedEntryWhenFull) {
 }
 
 // ---------------------------------------------------------------------------
-// Slope computation and candidate ranking (LiveHeapReferenceChains-
-// RemainingWorkPlan.md). Same rationale as KlassPopulationTest above
+// Slope computation and candidate ranking. Same rationale as KlassPopulationTest above
 // for exercising LivenessTracker::instance() directly: selectLeakCandidates()
 // makes no JNI call (it only copies the opaque jweak field, never
 // dereferences it), so it is safe to call on the real singleton without a
@@ -701,7 +700,7 @@ TEST_F(SelectLeakCandidatesTest, FlatTidTrendDoesNotQualify) {
 // instances all share one age (one-cohort-per-thread accumulation - each
 // one-shot worker thread's distinct-age count stays 1 forever) as long as
 // it retains enough tracked instances - the discriminator that covers
-// LeakingCacheScenario's allocator-thread shape.
+// one-cohort-per-thread allocator shapes.
 TEST_F(SelectLeakCandidatesTest, RetainedCountBarQualifiesOneCohortShape) {
     LivenessTracker *tracker = LivenessTracker::instance();
 
