@@ -33,7 +33,7 @@
 // proof-of-concept that established two things end-to-end:
 //   1. A cheap "a GC just happened" signal reaches this subsystem via the
 //      GarbageCollectionStart/Finish JVMTI callbacks (vmEntry.cpp), mirroring
-//      LivenessTracker::onGC() (livenessTracker.cpp:415-426) - just bumping an
+//      LivenessTracker::onGC() - just bumping an
 //      atomic epoch counter, nothing else.
 //   2. JVMTI object tags round-trip a live object across a GC (SetTag/GetTag),
 //      via the minimal tagObject()/getTag()/clearTag() helpers below.
@@ -68,23 +68,22 @@
 //     elapsed) - see threadLoop()'s own comment for why the thread this runs
 //     on is still not spawned by start().
 //
-// PROF-15341 (doc/architecture/LiveHeapReferenceChains-RemainingWorkPlan.md):
-// pollWatchedTargets() below is the LivenessTracker-to-ReferenceChainTracker
-// target-selection bridge, closing the gap left by buildChainEvent() having
-// no caller. It polls LivenessTracker::selectLeakCandidates()
-// (livenessTracker.h's Open Question 3 population-slope ranking) and, for
-// each candidate already tagged by an ordinary runPass() walk, reconstructs
-// and emits its chain via Profiler::writeReferenceChain(). This is a READ of
-// getTag(), never a SetTag seed - see pollWatchedTargets()'s own comment for
-// the plan doc's "Correction to the design doc's Open Question 3 mechanism"
-// this implements instead of the design doc's original seeding proposal.
+// PROF-15341: pollWatchedTargets() below is the LivenessTracker-to-
+// ReferenceChainTracker target-selection bridge, closing the gap left by
+// buildChainEvent() having no caller. It polls
+// LivenessTracker::selectLeakCandidates() (livenessTracker.h's Open Question
+// 3 population-slope ranking) and, for each candidate already tagged by an
+// ordinary runPass() walk, reconstructs and emits its chain via
+// Profiler::writeReferenceChain(). This is a READ of getTag(), never a
+// SetTag seed - see pollWatchedTargets()'s own comment for why seeding a
+// candidate before the forward walk reached it would break the walk (the
+// design doc's original proposal, corrected here).
 //
 // `can_tag_objects` and `can_generate_garbage_collection_events` are already
 // requested unconditionally in vmEntry.cpp, so this bridging step only adds
 // callback wiring and lazy event enablement, not capability requests.
 //
-// PROF-15341 (doc/architecture/LiveHeapReferenceChains-RemainingWorkPlan.md):
-// the pause-time pacing controller replaces the fixed _budget/PASS_CADENCE_NS
+// PROF-15341: the pause-time pacing controller replaces the fixed _budget/PASS_CADENCE_NS
 // constants' role as the literal per-pass values with a measured
 // pause-time-SLO feedback loop (design doc's Open Questions 2/5, "Proposed
 // mechanism" paragraphs). runPass() now times its own FollowReferences/
@@ -99,10 +98,9 @@
 // gains are not copied from ObjectSampler/MallocTracer/NativeSocketSampler's
 // shared triple.
 //
-// PROF-15341 (doc/architecture/LiveHeapReferenceChains-RemainingWorkPlan.md):
-// search restart. Earlier revisions of this class only ever ran a single
-// search for the tracker's entire lifetime (runPass()'s own comment used to
-// read "starting a *new* search once one ends is not implemented"). That is
+// PROF-15341: search restart. Earlier revisions of this class only ever ran a
+// single search for the tracker's entire lifetime (runPass()'s own comment
+// used to read "starting a *new* search once one ends is not implemented"). That is
 // a real gap: LivenessTracker::selectLeakCandidates() only trusts a klass's
 // population trend once it has accumulated
 // LivenessTracker::KLASS_POPULATION_MIN_FILL_FOR_TREND GC epochs of history
@@ -194,9 +192,9 @@ constexpr u8 CANARY_STUCK = 3;
 // "Frontier metadata storage"). Deliberately does not hold a live
 // jclass/jobject: retaining either would defeat the point of using
 // non-retaining JVMTI tags for frontier identity. `referrer_klass` is a
-// StringDictionary id (Profiler::classMap(), profiler.h:260 - the same
-// interning table LivenessTracker uses via Profiler::lookupClass(),
-// livenessTracker.cpp:120-122) resolved from a class name string; the
+// StringDictionary id (Profiler::classMap(), profiler.h - the same
+// interning table LivenessTracker uses via Profiler::lookupClass())
+// resolved from a class name string; the
 // heap-walk engine populates it from GetClassSignature, and FrontierEntry
 // only needs the field.
 typedef struct FrontierEntry {
@@ -288,7 +286,7 @@ typedef struct ChainHopEdge {
 } ChainHopEdge;
 
 // Durability ranking for FrontierEntry::root_kind (design doc's "Fix for
-// root-attribution staleness" point 1 / this plan's Phase 5 item 1): higher
+// root-attribution staleness" point 1): higher
 // is more durable. Used to decide whether a newly-observed root reference to
 // an already-admitted, root-attached entry should replace its recorded
 // root_kind rather than keeping whichever root happened to be enumerated
@@ -321,7 +319,7 @@ inline int rootKindDurability(u8 root_kind) {
 // scope is on some thread's stack, so an entry admitted through one is
 // always a candidate both for a durability upgrade (rootKindDurability()
 // above) and for the softer output label (flightRecorder.cpp's
-// rootKindName()) and for Phase 5's bounded rotating re-expansion
+// rootKindName()) and for the bounded rotating re-expansion
 // (ReferenceChainTracker::collectStaleRootKindEntriesForRotation()).
 inline bool isTransientRootKind(u8 root_kind) {
   return root_kind == JVMTI_HEAP_REFERENCE_STACK_LOCAL ||
@@ -361,9 +359,8 @@ inline bool isTransientRootKind(u8 root_kind) {
 // lock.
 class alignas(alignof(SpinLock)) FrontierTable {
 private:
-  // Provisional default pending empirical tuning (see
-  // doc/architecture/LiveHeapReferenceChains-ImplementationPlan.md) - not
-  // benchmark-derived. Reuses LivenessTracker's doubling-resize *mechanics*
+  // Provisional default pending empirical tuning - not benchmark-derived.
+  // Reuses LivenessTracker's doubling-resize *mechanics*
   // (growLocked() below), but this starting size is a conservative guess,
   // not scaled from LivenessTracker's own initial size (which that class
   // derives from max_heap/sampling_interval, a formula the design doc
@@ -474,7 +471,7 @@ public:
   // Overwrites the slot for `tag`'s root_kind in place, touching no other
   // field - the durability-upgrade counterpart to insert()'s one-time
   // root_kind write (design doc's "opportunistic upgrade during root
-  // re-enumeration", Phase 5 item 1). No-op if `tag` was never inserted.
+  // re-enumeration"). No-op if `tag` was never inserted.
   //
   // Callers MUST only invoke this when the update itself originates from a
   // root discovery (a root callback rediscovering an already-tagged object
@@ -625,8 +622,7 @@ public:
 // value alone always tells the heap-walk callback which table it belongs
 // to) to the StringDictionary id of that class's resolved name
 // (Profiler::classMap(), the same interning table LivenessTracker uses via
-// Profiler::lookupClass(), livenessTracker.cpp:120-122 - see Open Item 2 in
-// the implementation plan).
+// Profiler::lookupClass(), livenessTracker.cpp).
 //
 // Populated once per loaded class by
 // ReferenceChainTracker::resolveLoadedClasses() - a GetLoadedClasses() +
@@ -682,7 +678,7 @@ private:
   // Frontier metadata table. Constructed lazily on the first
   // start() with the flag enabled, sized from
   // args._reference_chains_frontier_cap; like LivenessTracker's table
-  // (livenessTracker.cpp:209-210) it survives stop() so it persists across
+  // (LivenessTracker's own table does the same) it survives stop() so it persists across
   // multiple start/stop recording cycles.
   FrontierTable *_frontier;
 
@@ -853,7 +849,7 @@ private:
 
   // Pause-time pacing controller: pause-time-SLO ceiling copied from
   // Arguments in start() (Arguments::_reference_chains_pause_target_ms) -
-  // the "single target ceiling" the plan asks for in place of guessing
+  // the single pause-time-SLO target, in place of guessing
   // _budget/PASS_CADENCE_NS directly. Used only to (re)construct _pause_pid
   // in start(); updatePacing() itself never reads it again, since it lives
   // inside _pause_pid's own _target once constructed.
@@ -959,7 +955,7 @@ private:
   // Reset by resetSearchStateForTest().
   //
   // MAX_LEAK_CANDIDATES_FROM_LT must match
-  // LivenessTracker::MAX_LEAK_CANDIDATES (livenessTracker.h:133).
+  // LivenessTracker::MAX_LEAK_CANDIDATES.
   // Duplicated here to avoid a heavy include chain.
   static constexpr int MAX_LEAK_CANDIDATES_FROM_LT = 5;
 
@@ -1675,8 +1671,8 @@ private:
   // singleton, so the single ref is reclaimed with the JVM.
   jclass _cached_object_class = nullptr;
 
-  // Rotation cursor for collectStaleRootKindEntriesForRotation() (Phase 5
-  // item 3): 1-based tag to resume scanning from on the next call, so
+  // Rotation cursor for collectStaleRootKindEntriesForRotation(): 1-based
+  // tag to resume scanning from on the next call, so
   // consecutive calls sweep forward through the table instead of always
   // re-examining the same low-tag entries first. Wraps back to 1 once it
   // reaches _frontier->size(). Persisted across passes (not per-search-reset
@@ -1938,9 +1934,8 @@ private:
 
   // Fallback cadence for shouldRunPass()'s cadence trigger (design doc's
   // Triggering section / Open Question 5). Provisional default pending
-  // empirical tuning (see
-  // doc/architecture/LiveHeapReferenceChains-ImplementationPlan.md) - not
-  // benchmark-derived: a round one-second value chosen only so an idle
+  // empirical tuning - not benchmark-derived: a round one-second value chosen
+  // only so an idle
   // search still makes some progress between GC-triggered wakeups without
   // polling so tightly that an idle tracker burns CPU. The pause-time pacing
   // controller folds Open Question 5's cadence decision into updatePacing()
@@ -1997,12 +1992,6 @@ private:
   // whenever isUrgent() (see OOM_URGENT_THRESHOLD_S).
   static constexpr long URGENT_PAUSE_TARGET_MS = 100; // ceiling STW ms per pass
   static constexpr u64 URGENT_CADENCE_NS = 10000000ULL;  // 10ms floor between passes
-
-  // Abandon the search after this many consecutive passes with
-  // zero new frontier entries admitted (genuinely stuck, not just slow).
-  // A large heap takes more passes simply because there are more
-  // objects to explore — that is not "stuck". Only abandon when the
-  // frontier stops growing entirely.
 
   // True when LivenessTracker::secondsToOOM() projects exhaustion sooner
 
@@ -2109,7 +2098,7 @@ private:
   // already-attached thread ... calling FollowReferences/IterateThroughHeap
   // directly; the safepoint is a side effect of that call, not something the
   // profiler builds or schedules"). threadLoop() mirrors J9WallClock's
-  // pthread lifecycle (j9WallClock.cpp:28-57) rather than BaseWallClock's,
+  // pthread lifecycle (J9WallClock, j9/j9WallClock.cpp) rather than BaseWallClock's,
   // since J9WallClock's is the simpler of the two shapes actually used for a
   // single dedicated thread in this codebase. threadLoop() implements the
   // actual scheduling loop (shouldRunPass() below).
@@ -2275,20 +2264,6 @@ private:
   // must be called on every scheduling tick to advance the release counter.
   bool isUrgent() const;
 
-  // Abandon the search after this many consecutive passes with
-  // zero new frontier entries admitted (genuinely stuck, not just slow).
-  // A large heap takes more passes simply because there are more
-  // objects to explore — that is not "stuck". Only abandon when the
-  // frontier stops growing entirely.
-  // (Moved to public section for test access.)
-
-  // Abandon the search after this many consecutive passes with
-  // zero new frontier entries admitted (genuinely stuck, not just slow).
-  // A large heap takes more passes simply because there are more
-  // objects to explore — that is not "stuck". Only abandon when the
-  // frontier stops growing entirely.
-  // (Public for test access.)
-
   // Search restart gate (this class's own header comment): true once
   // _safepoint_pain_budget has drained back to zero (canStartNow()) *and*
   // hasLeakSignal() above reports at least one leak candidate. Also reused by
@@ -2444,14 +2419,13 @@ private:
   // call.
   bool releaseSearchTags(jvmtiEnv *jvmti, JNIEnv *jni);
 
-  // Pause-time pacing controller (doc/architecture/LiveHeapReferenceChains-
-  // RemainingWorkPlan.md): feeds `pass_wall_ns` - the wall-clock duration of the FollowReferences/
+  // Pause-time pacing controller: feeds `pass_wall_ns` - the wall-clock duration of the FollowReferences/
   // GetObjectsWithTags call runPass() just made (the safepoint-triggering
   // call itself, per the design doc's Triggering section; no new
   // instrumentation needed, since this class is already the thread blocked
   // inside it) - into `_pause_pid`, and scales `_effective_budget`/
   // `_effective_cadence_ns` from its output. Folds Open Questions 2 and 5
-  // into the one controller call the plan asks for, rather than two
+  // into the one controller call rather than two
   // separately tuned mechanisms.
   //
   // `_pause_pid.compute()`'s sign convention (pidController.cpp): a positive
@@ -2459,8 +2433,8 @@ private:
   // target - here, the last pass finished comfortably inside
   // `_pause_target_ms`, so there is headroom to admit a larger budget next
   // time. This is the opposite of ObjectSampler/MallocTracer/
-  // NativeSocketSampler's own usage (objectSampler.cpp:220-224,
-  // mallocTracer.cpp:317-318, rateLimiter.h), which *subtract* the signal
+  // NativeSocketSampler's own usage (ObjectSampler::updateConfiguration(),
+  // MallocTracer::_pid, rateLimiter.h), which *subtract* the signal
   // from their interval because their controlled variable (a sampling
   // interval) is inversely related to their target rate; `_effective_budget`
   // is directly related to pass duration (more budget -> longer pass), so
@@ -2468,16 +2442,16 @@ private:
   //
   // The result is clamped to [floor, _budget] - `_budget` (the config value,
   // Arguments::_reference_chains_budget) becomes this controller's ceiling
-  // rather than a fixed per-pass value, per the plan's "clamped, never above
-  // the frontier/hop caps": the hop cap and frontier cap stay untouched,
+  // rather than a fixed per-pass value, clamped to never above the
+  // frontier/hop caps: the hop cap and frontier cap stay untouched,
   // fixed correctness bounds exactly as before (design doc: "not
   // controller-tuned"). Whatever part of the signal the clamp could not
   // absorb (`overflow` below) drives `_effective_cadence_ns` instead - the
-  // plan's "fold the cadence decision into the same controller output rather
-  // than a second mechanism": a search still running long even at the
+  // cadence decision folded into the same controller output rather than a
+  // second mechanism: a search still running long even at the
   // minimum budget backs off the fallback cadence instead of trying to
   // shrink the budget further (avoiding a degenerate near-zero budget just
-  // to hit an aggressive cadence, per the plan's own wording); a search with
+  // to hit an aggressive cadence); a search with
   // spare headroom even at the maximum (config) budget relaxes the cadence
   // toward MIN_EFFECTIVE_CADENCE_NS instead, letting the GC-finish-epoch
   // trigger (shouldRunPass(), already unconditional on cadence) make
@@ -2536,7 +2510,7 @@ private:
     ADMITTED,
   };
 
-  // First-discovery admission core (implementation plan's Phase 4 item 2):
+  // First-discovery admission core:
   // factored out of heapReferenceCallback()'s inline admission branch so the
   // manual-walk driver's root/stack-ref callbacks stay in sync with
   // FollowReferences' own admission by construction, not by copy-paste.
@@ -2644,15 +2618,15 @@ private:
   void seedLeakAccumulationForNewlyWatchedKlass(u32 klass_id);
 
   // Durability tie-break (design doc's "Fix for root-attribution staleness"
-  // point 1 / Phase 5 item 1) for an object rediscovered as a heap root by
+  // point 1) for an object rediscovered as a heap root by
   // heapRootCallback()/stackRefCallback() while already admitted (same pass
   // or a previous one) - factored out of those callbacks, rather than
   // inlined, so it is unit-testable without a PassContext/JVMTI mock (both
   // callbacks' user_data type is private to referenceChains.cpp). Only ever
   // overwrites root_kind - never parent_tag - and only for an entry that is
   // already root-attached (entry.parent_tag == 0); this is the option (a)
-  // resolution of the parent_tag==0/root_kind invariant conflict (Phase 5's
-  // own callout): a re-expansion-driven, non-root rediscovery of an edge to
+  // resolution of the parent_tag==0/root_kind invariant conflict: a
+  // re-expansion-driven, non-root rediscovery of an edge to
   // some already-tracked, non-root-attached object must never reach this
   // method at all (re-expansion child admission always passes
   // root_kind=0, which loses every tie-break, so it structurally cannot
@@ -2680,8 +2654,8 @@ private:
     return _priority_expand_set.contains(tag);
   }
 
-  // Bounded rotating re-expansion (design doc's closing section / Phase 5
-  // item 3): each manual-walk pass, feed up to `max_count` already-EXPANDED,
+  // Bounded rotating re-expansion (design doc's closing section):
+  // each manual-walk pass, feed up to `max_count` already-EXPANDED,
   // root-attached entries whose root_kind is still transient
   // (isTransientRootKind()) back into _priority_expand so
   // expandFrontier() re-walks their fields - giving a stale root_kind
@@ -2890,7 +2864,7 @@ private:
       jlong *tag_ptr, jlong thread_tag, jint depth, jmethodID method,
       jint slot, void *user_data);
 
-  // Manual-walk pass driver (implementation plan Phase 4): when
+  // Manual-walk pass driver: when
   // `run_root_enum` is true, seeds/refreshes root-attached frontier entries
   // via IterateOverReachableObjects (heapRootCallback()/stackRefCallback()
   // above) using `root_enum_budget`; then, regardless of `run_root_enum`,
@@ -3067,8 +3041,8 @@ public:
   // gets MARKER_TAG_BASE - i (distinct negative values) so
   // heapReferenceCallback() can tell which candidate was found.
   // Negative to avoid collision with frontier tags (positive
-  // jlong from _next_tag, referenceChains.h:623). Class tags are
-  // always negative (nextClassTag() at referenceChains.h:1671),
+  // jlong from _next_tag (_next_tag's own declaration). Class tags are
+  // always negative (nextClassTag()),
   // so a negative marker is disjoint from the frontier
   // tag space.
   static constexpr jlong MARKER_TAG_BASE = -(1LL << 62);
@@ -3089,7 +3063,7 @@ public:
   }
 
   // Max candidates LivenessTracker::selectLeakCandidates() can return. Must match
-  // LivenessTracker::MAX_LEAK_CANDIDATES (livenessTracker.h:133). Duplicated here
+  // LivenessTracker::MAX_LEAK_CANDIDATES. Duplicated here
   // to avoid a heavy include chain (livenessTracker.h pulls jvmti.h).
   // (Also declared in the private section above for field sizing.)
 
@@ -3380,9 +3354,8 @@ public:
   }
 
   // Target-selection bridging step (design doc's Open Question 3, corrected
-  // mechanism - see this class's own header comment's bridging-step note and
-  // doc/architecture/LiveHeapReferenceChains-RemainingWorkPlan.md's
-  // "Correction to the design doc's Open Question 3 mechanism"): polls
+  // mechanism - see this class's own header comment's bridging-step note):
+  // polls
   // LivenessTracker::selectLeakCandidates() and, for each candidate whose
   // representative instance has already been discovered by an ordinary
   // runPass() walk (getTag() > 0 - a read, never a SetTag seed), reconstructs
