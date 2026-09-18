@@ -29,8 +29,8 @@ import java.util.Map;
  *
  * <p>{@link #findMatchForClass(JfrEvents, Class)} is a separate, jafar-backed counterpart to
  * {@link #findMatchForClass(IItemCollection, Class)} for {@code ReferenceChainTrackingTest}, which
- * loads recordings via {@code AbstractProfilerTest}'s {@code JfrEvents}-returning helpers
- * (jb/jfr-lightweight-query-api). {@link LeakingCacheScenario} and {@code ReferenceChainJfrParserTest}
+ * loads recordings via {@code AbstractProfilerTest}'s {@code JfrEvents}-returning helpers.
+ * {@link LeakingCacheScenario} and {@code ReferenceChainJfrParserTest}
  * load recordings directly via JMC's {@code JfrLoaderToolkit} and keep using the
  * {@code IItemCollection} overload unchanged.
  */
