@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk17
 
 ## glibc-arm64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-09-18 07:49:00 EDT
+**Date:** 2026-09-18 07:49:57 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,29 +28,26 @@ title: glibc-arm64-hotspot-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 90 |
-| Sample Rate | 1.50/sec |
-| Health Score | 94% |
+| CPU Samples | 278 |
+| Sample Rate | 4.63/sec |
+| Health Score | 289% |
 | Threads | 9 |
-| Allocations | 64 |
+| Allocations | 146 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 87 |
-| Sample Rate | 1.45/sec |
-| Health Score | 91% |
-| Threads | 12 |
-| Allocations | 42 |
+| CPU Samples | 12 |
+| Sample Rate | 0.20/sec |
+| Health Score | 12% |
+| Threads | 7 |
+| Allocations | 13 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
-1789731826 48
-1789731831 48
-1789731836 48
 1789731841 48
 1789731846 48
 1789731851 48
@@ -68,6 +65,9 @@ title: glibc-arm64-hotspot-jdk17
 1789731911 48
 1789731916 48
 1789731921 48
+1789731926 48
+1789731931 48
+1789731936 48
 ```
 </details>
 
