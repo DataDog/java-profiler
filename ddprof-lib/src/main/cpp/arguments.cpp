@@ -83,7 +83,7 @@ static const Multiplier UNIVERSAL[] = {
 //                          samples
 //     generations        - track surviving generations
 //     referencechains[=BOOL[:hops=N][:budget=N][:ttl=N][:framecap=N][:pausetarget=N][:painbudget=N][:firstpassbudget=N]]
-//                        - (PROF-15341, off by default) tag/BFS-walk live-heap
+//                        - (off by default) tag/BFS-walk live-heap
 //                          samples' referrer chains back toward a GC root.
 //                          pausetarget=N (ms) is the pause-time-SLO ceiling
 //                          ReferenceChainTracker::updatePacing() adapts the
@@ -498,33 +498,12 @@ Error Arguments::parse(const char *args) {
           char *eq = strchr(cursor, '=');
           if (eq) {
             *(eq++) = 0;
-            // Floor every sub-option at the parse boundary rather than
-            // trusting a downstream cast/clamp to make an operator-supplied
-            // negative value safe: a negative hops value in particular gets
-            // compared as `depth >= (u32)ctx->hop_cap` (referenceChains.cpp),
-            // so an unclamped negative wraps to ~4e9 and silently disables
-            // the hop cap entirely - the opposite of the flag's intent, and
-            // it removes the one guard that otherwise bounds how long a
-            // single reference chain (and therefore its
-            // datadog.ReferenceChain JFR event) can grow. A negative budget
-            // similarly collapses ReferenceChainTracker::_effective_budget
-            // to 0 (updatePacing()'s own PID-clamp logic), which truncates
-            // every pass immediately and leaves the search RUNNING
-            // (re-walking the whole graph each cadence) until TTL instead of
-            // making progress. A negative framecap is handed straight to
-            // FrontierTable's constructor, which floors it to a
-            // zero-capacity table (that class's own std::max(max_cap, 0)),
-            // silently disabling tracking rather than erroring. ttl/
-            // pausetarget/painbudget already have incidental downstream
-            // clamps (runPass()'s `_ttl_ms > 0` gate, this class's own
-            // PidController/PainBudget std::max(..., 0) calls) but are
-            // floored here too so every sub-option's validation lives at one
-            // boundary instead of being split between here and several
-            // unrelated call sites. hops/budget/framecap are also ceiling-
-            // clamped (MAX_REFERENCE_CHAINS_HOP_CAP/_BUDGET/_FRONTIER_CAP,
-            // arguments.h) for the same reason painbudget/firstpassbudget
-            // are below: an unbounded operator-supplied value would otherwise
-            // flow straight into a loop bound or FrontierTable's allocation.
+            // Floor every sub-option (and ceiling-clamp hops/budget/framecap)
+            // here: a negative hops value would wrap to ~4e9 as u32 and
+            // silently disable the hop cap, a negative budget truncates every
+            // pass to nothing, and unbounded values flow straight into loop
+            // bounds or FrontierTable's allocation. One validation boundary
+            // for all sub-options instead of scattered downstream clamps.
             if (strcasecmp(cursor, "hops") == 0) {
               _reference_chains_hop_cap =
                   std::min(std::max(atoi(eq), 1), MAX_REFERENCE_CHAINS_HOP_CAP);

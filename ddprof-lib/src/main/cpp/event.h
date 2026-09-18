@@ -99,28 +99,40 @@ public:
 
 // Reporting surface for ReferenceChainTracker's bounded
 // BFS (referenceChains.h/.cpp). `_target_tag` is the FrontierTable tag the
-// chain was reconstructed for (FrontierTable::reconstructChain()); `_chain`
-// holds the referrer-klass StringDictionary ids it returns, in the same
-// leaf(target)-to-root order. For a static-field-rooted chain the root-side
-// end is the static field's holder instance followed by the declaring class
-// (the ROOT TYPE, appended by buildChainEvent() from the root-attached
-// entry's referrer_class_tag) - the chain then reads, root-first, as the
-// root type retaining the holder through its static field, on down to the
-// target. `_depth` is the target entry's own
-// FrontierEntry::depth (hop count from the search's root-side seed).
-// `_root_kind` is the jvmtiHeapReferenceKind of whichever edge first
+// chain was reconstructed for (FrontierTable::reconstructChain()); `_hops`
+// holds the reconstructed chain in the same leaf(target)-to-root order:
+// hop[i].klass_id is the referrer-klass StringDictionary id and
+// hop[i].edge_label is the edge by which hop[i] is retained by its parent
+// (the field name of its parent hop for FIELD/STATIC_FIELD edges, the
+// edge-kind label otherwise; ReferenceChainTracker::fillHopEdgeLabels).
+// For a static-field-rooted chain the root-side end is the static field's
+// holder instance followed by the declaring class (the ROOT TYPE, appended
+// by buildChainEvent() from the root-attached entry's referrer_class_tag) -
+// the chain then reads, root-first, as the root type retaining the holder
+// through its static field, on down to the target. `_depth` is the target
+// entry's own FrontierEntry::depth (hop count from the search's root-side
+// seed). `_root_kind` is the jvmtiHeapReferenceKind of whichever edge first
 // admitted this chain into the frontier (FrontierEntry::root_kind, via
 // FrontierTable::reconstructChain()'s out_root_kind) - labels *why* the
 // chain is reachable at all (JNI global, thread stack, static field, ...),
 // written out as a string (Recording::recordReferenceChain(),
-// flightRecorder.cpp) rather than a synthetic node in `_chain` itself,
-// since that array is a T_CLASS cpool array with no room for a
-// non-class placeholder.
-// Byte cap for one hop's retention-edge label in ReferenceChainEvent::_edges
+// flightRecorder.cpp) rather than a synthetic node in `_hops` itself, since
+// that array is a T_CLASS cpool array with no room for a non-class
+// placeholder.
+// Byte cap for one hop's retention-edge label in ReferenceChainHop
 // (fillHopEdgeLabels truncates to this; recordReferenceChain() reserves
 // against it) - a shared constant so the collector and the writer cannot
 // drift apart on the worst-case event size.
 static constexpr size_t MAX_REFERENCE_CHAIN_EDGE_LABEL = 96;
+
+// One retained hop of a reconstructed chain. edge_label is empty when label
+// resolution is unavailable (partial mock environments); production events
+// carry either all labels or none (canary events), so the writer treats a
+// single empty label as "no labels at all".
+struct ReferenceChainHop {
+  u32 klass_id;
+  std::string edge_label;
+};
 
 class ReferenceChainEvent : public Event {
 public:
@@ -128,23 +140,14 @@ public:
   u64 _target_tag;
   u32 _depth;
   u8 _root_kind;
-  std::vector<u32> _chain;
-  // Retention-edge label per hop, ALIGNED with _chain's leaf-to-root order
-  // (_edges[i] = the edge by which _chain[i] is retained - the field name of
-  // its parent hop for FIELD/STATIC_FIELD edges, the edge-kind label
-  // otherwise; ReferenceChainTracker::fillHopEdgeLabels). Empty for events
-  // built before the edge-label change or when label resolution is
-  // unavailable (partial mock environments).
-  std::vector<std::string> _edges;
+  std::vector<ReferenceChainHop> _hops;
 
   ReferenceChainEvent()
       : Event(), _start_time(0), _target_tag(0), _depth(0), _root_kind(0) {}
 };
 
-// Search-level abandonment signal (design doc's Termination section:
-// "explicit reporting of abandoned searches ... no silent truncation").
-// Unlike ReferenceChainEvent this does not report any one object's chain -
-// it reports why ReferenceChainTracker's current search stopped before
+// Search-level abandonment signal: reports why ReferenceChainTracker's
+// current search stopped before
 // every frontier entry could be resolved, using the same counters
 // runPass()/expandFrontier() already maintain (referenceChains.h/.cpp).
 class ReferenceChainAbandonedEvent : public Event {
