@@ -258,8 +258,8 @@ TEST_F(LineNumberTableCopyTest, RejectsOversizedTable) {
 
 // fillJavaMethodInfo() (flightRecorder.cpp) gates the copy above on
 // `line_number_table_size > 0 && line_number_table_size <=
-// MAX_LINE_NUMBER_TABLE_ENTRIES` (flightRecorder.cpp:374), where
-// MAX_LINE_NUMBER_TABLE_ENTRIES is 65535 (flightRecorder.cpp:58, the u2
+// MAX_LINE_NUMBER_TABLE_ENTRIES` (flightRecorder.cpp), where
+// MAX_LINE_NUMBER_TABLE_ENTRIES is 65535 (the u2
 // code_length cap). MAX_LINE_NUMBER_TABLE_ENTRIES is file-static, so these
 // tests mirror the boundary condition with the literal value rather than
 // calling fillJavaMethodInfo() directly (which requires a live JVMTI/JNI

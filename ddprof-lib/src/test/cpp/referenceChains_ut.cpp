@@ -569,7 +569,7 @@ public:
         return ReferenceChainTracker::instance()->_last_resolved_class_count;
     }
 
-    // Phase 5 (durability re-verification) test seams: direct pass-throughs
+    // Durability re-verification test seams: direct pass-throughs
     // to the private tie-break/rotation methods, plus FrontierTable::insert()
     // itself (also private-by-convention here in the sense that production
     // code only ever calls it via admitObject()) so tests can set up a
@@ -1093,7 +1093,7 @@ TEST_F(ReferenceChainsTest, GCCallbacksAreNoOpWhenDisabled) {
 // ---------------------------------------------------------------------------
 // Tag round-trip (SetTag/GetTag/clear).
 //
-// The implementation plan's suggested test ("allocate an object, tag it,
+// The natural smoke test ("allocate an object, tag it,
 // force a GC, confirm the tag is still readable via GetObjectsWithTags")
 // assumes a live embedded JVM. This gtest binary has no live JVM attached
 // (see jvmSupport_ut.cpp's fixture comment for the same constraint on a
@@ -1383,7 +1383,7 @@ TEST(FrontierTableTest, ReconstructChainOfNeverInsertedTagFails) {
 // Heap-walk engine (ReferenceChainTracker::runPass()/
 // heapReferenceCallback()/resolveLoadedClasses()).
 //
-// The implementation plan suggests testing this against "a small live-object
+// The design doc's suggestion is to test this against "a small live-object
 // graph in a test JVM (via JNI from the test)". This native-only gtest
 // binary has no live JVM at all (see this file's GC-signal/tag-round-trip
 // comment above, and jvmSupport_ut.cpp's fixture comment, for the same
@@ -2827,8 +2827,7 @@ TEST_F(ReferenceChainsBfsTest, ResolveOrDropPrunesDeadFrontierEntries) {
 // pollWatchedTargets() (design doc's Open Question 3 bridging
 // step, corrected read-only mechanism - see referenceChains.h's own
 // target-selection bridging step header comment and pollWatchedTargets()'s
-// comment for the plan doc's "Correction to the design doc's Open Question 3
-// mechanism").
+// own comment for why the step must be a read, not a SetTag seed).
 //
 // Mirrors referenceChainJfrRoundtrip_ut.cpp's FrontierTable::insert()
 // seeding style rather than driving a full scripted runPass() (this test
@@ -4289,7 +4288,7 @@ TEST_F(SearchRestartTest, UrgentOOMProjectionBypassesCandidateGate) {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 5 - correctness hardening: durability re-verification.
+// Durability re-verification (correctness hardening).
 //
 // These tests drive maybeUpgradeRootAttachedRootKind()/
 // collectStaleRootKindEntriesForRotation() directly via
@@ -4343,7 +4342,8 @@ TEST_F(ReferenceChainsBfsTest, StaleRootAttributionUpgradesOnRediscovery) {
     tracker->stop();
 }
 
-// Exercises the invariant conflict Phase 5 itself calls out: a non-root
+// Exercises the invariant conflict that durability re-verification exists to
+// catch: a non-root
 // entry (parent_tag != 0) rediscovered as if via a root context must never
 // have its root_kind overwritten - doing so would leave a non-zero root_kind
 // on an entry nothing else treats as root-attached (referenceChains.h's
