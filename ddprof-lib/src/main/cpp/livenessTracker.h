@@ -955,9 +955,9 @@ public:
 
   // Exposes the _gc_generations gate (see that member's own comment) so a
   // caller outside this class - ReferenceChainTracker::pollWatchedTargets()
-  // (referenceChains.cpp), PROF-15341's LivenessTracker-to-ReferenceChainTracker
-  // bridging step - can skip
-  // calling selectLeakCandidates() entirely when the feature isn't in use,
+  // (referenceChains.cpp), the LivenessTracker-to-ReferenceChainTracker
+  // bridging step - can skip calling selectLeakCandidates() entirely when
+  // the feature isn't in use,
   // rather than relying on that method's own "returns 0" fallback to make
   // the no-op cheap. Read-only; this accessor never toggles the flag.
   bool gcGenerationsEnabled() const {
