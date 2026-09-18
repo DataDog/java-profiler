@@ -350,14 +350,15 @@ TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent)
                            // rootKind field end to end, mirroring how
                            // heapReferenceCallback() only ever sets it on a
                            // parent_tag==0 entry.
-    event._chain = {(u32)leafKlass, (u32)middleKlass, (u32)rootKlass};
     // With the null JNIEnv a live field-name decode would crash on this
     // binary's unstubbed JVMTI table, so the labels are the degraded
     // edge-KIND strings fillHopEdgeLabels() produces in exactly that
     // situation - which is what the Java-side parser test
     // (ReferenceChainJfrParserTest) asserts this recording's "edges" field
     // contains.
-    event._edges = {"field", "element", "jni_global"};
+    event._hops = {{(u32)leafKlass, "field"},
+                   {(u32)middleKlass, "element"},
+                   {(u32)rootKlass, "jni_global"}};
     event._start_time = TSC::ticks();
 
     const std::string path = chainRoundtripJfrPath();
@@ -427,14 +428,12 @@ TEST_F(ReferenceChainJfrRoundtripTest, TruncatesOversizeChainAndKeepsEmittedLabe
     event._depth = (u32)total_hops;
     event._root_kind = 21;
     event._start_time = TSC::ticks();
-    event._chain.reserve(total_hops);
-    event._edges.reserve(total_hops);
+    event._hops.reserve(total_hops);
     for (u32 i = 0; i < total_hops; i++) {
         // Small class ids (single-byte var32) and a small target tag keep
         // the byte walk below deterministic without constraining the
         // encoder.
-        event._chain.push_back(100 + i);
-        event._edges.push_back(longest_label);
+        event._hops.push_back({100 + i, longest_label});
     }
 
     Recording rec(fd, args);
