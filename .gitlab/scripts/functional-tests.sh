@@ -61,6 +61,6 @@ function onexit {
 
 trap onexit EXIT
 
-./gradlew -Pddprof_version="$(get_version)" -Pskip-native -Pwith-libs="$(pwd)/libs" -PCI \
+./gradlew -Pddprof_version="$(get_version)" -Pskip-native=ddprof-lib,malloc-shim -Pwith-libs="$(pwd)/libs" -PCI \
   -PtestMaxHeap=1536m \
   ":ddprof-test:test${TEST_CONFIG}" --max-workers=1 --build-cache --stacktrace --info --no-watch-fs --no-daemon

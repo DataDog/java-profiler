@@ -375,6 +375,31 @@ object PlatformUtils {
     }
 
     /**
+     * Whether native compilation should be skipped for [project].
+     *
+     * `-Pskip-native` (bare, no value) skips it everywhere — the long-standing
+     * behavior, used when consuming a prebuilt shipped library via -Pwith-libs
+     * and never touching a compiler.
+     *
+     * `-Pskip-native=<comma-separated project names>` skips it only for those
+     * projects. This lets a caller substitute the prebuilt *shipped* library
+     * (ddprof-lib) while still compiling something unrelated to its ABI, like
+     * ddprof-test-native's small JNI test helper, which several ddprof-test
+     * suites need on java.library.path regardless of which profiler binary
+     * is under test.
+     */
+    fun isNativeSkipped(project: Project): Boolean {
+        if (!project.hasProperty("skip-native")) {
+            return false
+        }
+        val value = project.property("skip-native") as? String
+        if (value.isNullOrEmpty()) {
+            return true
+        }
+        return value.split(",").map { it.trim() }.contains(project.name)
+    }
+
+    /**
      * Find a C++ compiler, respecting -Pnative.forceCompiler property.
      * Auto-detects clang++ or g++ if not specified.
      */
