@@ -17,7 +17,14 @@ if [ -z "$TEST_JDK" ]; then
   exit 1
 fi
 
-TEST_CONFIG="${TEST_CONFIG:-Debug}"
+# Release, not Debug: build:x64 (.gitlab/scripts/build.sh) only ever produces
+# and ships the release-config libjavaProfiler.so -- that's the actual
+# shipped artifact this job exists to exercise. testDebug would set
+# ddprof_test.config=debug while the loaded library was in fact built
+# release, so debug-only assertions (e.g. JVMAccessTest's [TEST::INFO] log
+# lines, only compiled into debug builds) would fail outright instead of
+# correctly assumeTrue-skipping.
+TEST_CONFIG="${TEST_CONFIG:-Release}"
 
 HERE=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 REPO_ROOT=$( cd "${HERE}/../.." && pwd )
