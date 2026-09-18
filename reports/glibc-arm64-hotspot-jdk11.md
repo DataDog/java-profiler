@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk11
 
 ## glibc-arm64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-09-18 02:30:40 EDT
+**Date:** 2026-09-18 02:31:37 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,26 +28,30 @@ title: glibc-arm64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 108 |
-| Sample Rate | 1.80/sec |
-| Health Score | 112% |
-| Threads | 10 |
-| Allocations | 67 |
+| CPU Samples | 72 |
+| Sample Rate | 1.20/sec |
+| Health Score | 75% |
+| Threads | 7 |
+| Allocations | 68 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 110 |
-| Sample Rate | 1.83/sec |
-| Health Score | 114% |
-| Threads | 11 |
-| Allocations | 55 |
+| CPU Samples | 59 |
+| Sample Rate | 0.98/sec |
+| Health Score | 61% |
+| Threads | 10 |
+| Allocations | 43 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
+1789712741 48
+1789712746 48
+1789712752 48
+1789712757 48
 1789712762 48
 1789712767 48
 1789712772 48
@@ -64,10 +68,6 @@ title: glibc-arm64-hotspot-jdk11
 1789712827 48
 1789712832 48
 1789712837 48
-1789712842 48
-1789712847 48
-1789712852 48
-1789712857 48
 ```
 </details>
 
