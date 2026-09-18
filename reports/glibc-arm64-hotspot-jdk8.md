@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk8
 
 ## glibc-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-09-18 11:10:34 EDT
+**Date:** 2026-09-18 11:11:55 EDT
 
 ### Configuration
 | Setting | Value |
@@ -31,29 +31,23 @@ title: glibc-arm64-hotspot-jdk8
 | CPU Samples | 98 |
 | Sample Rate | 1.63/sec |
 | Health Score | 102% |
-| Threads | 10 |
+| Threads | 9 |
 | Allocations | 0 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 35 |
-| Sample Rate | 0.58/sec |
-| Health Score | 36% |
-| Threads | 7 |
+| CPU Samples | 93 |
+| Sample Rate | 1.55/sec |
+| Health Score | 97% |
+| Threads | 11 |
 | Allocations | 0 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
-1789743475 48
-1789743480 48
-1789743485 48
-1789743490 48
-1789743495 48
-1789743500 48
 1789743505 48
 1789743510 48
 1789743515 48
@@ -68,6 +62,12 @@ title: glibc-arm64-hotspot-jdk8
 1789743560 48
 1789743565 48
 1789743570 48
+1789743575 48
+1789743580 48
+1789743585 48
+1789743590 48
+1789743595 48
+1789743600 48
 ```
 </details>
 
