@@ -569,7 +569,7 @@ public:
         return ReferenceChainTracker::instance()->_last_resolved_class_count;
     }
 
-    // Phase 5 (durability re-verification) test seams: direct pass-throughs
+    // Durability re-verification test seams: direct pass-throughs
     // to the private tie-break/rotation methods, plus FrontierTable::insert()
     // itself (also private-by-convention here in the sense that production
     // code only ever calls it via admitObject()) so tests can set up a
@@ -1093,7 +1093,7 @@ TEST_F(ReferenceChainsTest, GCCallbacksAreNoOpWhenDisabled) {
 // ---------------------------------------------------------------------------
 // Tag round-trip (SetTag/GetTag/clear).
 //
-// The implementation plan's suggested test ("allocate an object, tag it,
+// The natural smoke test ("allocate an object, tag it,
 // force a GC, confirm the tag is still readable via GetObjectsWithTags")
 // assumes a live embedded JVM. This gtest binary has no live JVM attached
 // (see jvmSupport_ut.cpp's fixture comment for the same constraint on a
@@ -1383,7 +1383,7 @@ TEST(FrontierTableTest, ReconstructChainOfNeverInsertedTagFails) {
 // Heap-walk engine (ReferenceChainTracker::runPass()/
 // heapReferenceCallback()/resolveLoadedClasses()).
 //
-// The implementation plan suggests testing this against "a small live-object
+// The design doc's suggestion is to test this against "a small live-object
 // graph in a test JVM (via JNI from the test)". This native-only gtest
 // binary has no live JVM at all (see this file's GC-signal/tag-round-trip
 // comment above, and jvmSupport_ut.cpp's fixture comment, for the same
@@ -1394,9 +1394,8 @@ TEST(FrontierTableTest, ReconstructChainOfNeverInsertedTagFails) {
 // DeleteLocalRef) to play back a scripted synthetic object graph, and run
 // the *real* production heapReferenceCallback()/resolveLoadedClasses()/
 // reconstructChain() code against it - only the JVMTI/JNI calls are faked,
-// not the logic under test. A live-JVM end-to-end test belongs to a
-// Java-side integration test (see ReferenceChainTrackingTest.java), not this
-// native gtest binary.
+// not the logic under test. A live-JVM end-to-end test belongs to the
+// Java-side integration suite, not this native gtest binary.
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -2089,10 +2088,7 @@ TEST_F(ReferenceChainsBfsTest, ReconstructsChainForSyntheticGraph) {
                                           &event));
     EXPECT_EQ((u64)targetTag, event._target_tag);
     EXPECT_EQ(2u, event._depth); // root(A, depth0) -> B(depth1) -> Target(depth2)
-    ASSERT_EQ(chain.size(), event._hops.size());
-    for (size_t i = 0; i < chain.size(); i++) {
-      EXPECT_EQ(chain[i], event._hops[i].klass_id);
-    }
+    ASSERT_EQ(chain, event._chain);
 
     tracker->stop();
 }
@@ -2290,15 +2286,13 @@ TEST_F(ReferenceChainsBfsTest, DiscoversObjectRetainedOnlyByStaticField) {
     int expectedHolder = Profiler::instance()->lookupClass(
         "com/rc/statics/Holder", strlen("com/rc/statics/Holder"));
     ASSERT_NE(-1, expectedHolder);
-    ASSERT_EQ(2u, event._hops.size());
-    EXPECT_EQ(chain[0], event._hops[0].klass_id); // the target's own class, unchanged
-    EXPECT_EQ((u32)expectedHolder, event._hops[1].klass_id);
-    // One label per hop (recordReferenceChain() drops ALL labels when any is
-    // empty); the root-type hop's own edge is the unlabeled root edge
-    // (field_index -1).
-    ASSERT_EQ(2u, event._hops.size());
-    EXPECT_FALSE(event._hops[0].edge_label.empty());
-    EXPECT_FALSE(event._hops[1].edge_label.empty());
+    ASSERT_EQ(2u, event._chain.size());
+    EXPECT_EQ(chain[0], event._chain[0]); // the target's own class, unchanged
+    EXPECT_EQ((u32)expectedHolder, event._chain[1]);
+    // One edge per chain element (recordReferenceChain() drops ALL labels
+    // when the arrays' sizes diverge); the root-type hop's own edge is the
+    // unlabeled root edge (field_index -1).
+    ASSERT_EQ(event._chain.size(), event._edges.size());
 
     tracker->stop();
 }
@@ -2608,7 +2602,7 @@ TEST_F(ReferenceChainsBfsTest, CanaryStuckRequiresWholeGraphFrontierAlsoStalled)
 // pass will run. Work-scaled rather than a fixed cap: hotdog's own passes
 // ran 0.7-4s, so any fixed cap below that would have changed nothing at all
 // - the loop is work-bound when the pass exceeds the cap - while a fixed 1s
-// cap starved ReferenceChainTrackingTest's deep ~200-pass chase outright.
+// cap starved a real deep ~200-pass chase outright (measured live).
 TEST_F(ReferenceChainsBfsTest, CanaryLaneBacksOffWithoutProgressAndResetsOnProgress) {
     Arguments args;
     // Same shape as CanaryStuckRequiresWholeGraphFrontierAlsoStalled above:
@@ -2758,8 +2752,8 @@ TEST_F(ReferenceChainsBfsTest, NoProgressAbandonsSearchAndReleasesTags) {
     // The mock runPass() re-enumerates roots on every search_started=0
     // pass, causing the frontier to oscillate rather than stabilize,
     // so a full end-to-end no-progress abandonment can't be tested
-    // with the mock. The real JVM path is validated by the
-    // AggressiveLeakReferenceChainTest Java integration test.
+    // with the mock; the real JVM path is validated by a Java-side
+    // integration test.
     Arguments args;
     ASSERT_FALSE(args.parse("referencechains=true:hops=64:budget=1:ttl=0:firstpassbudget=1"));
     ReferenceChainTracker *tracker = ReferenceChainTracker::instance();
@@ -2827,8 +2821,7 @@ TEST_F(ReferenceChainsBfsTest, ResolveOrDropPrunesDeadFrontierEntries) {
 // pollWatchedTargets() (design doc's Open Question 3 bridging
 // step, corrected read-only mechanism - see referenceChains.h's own
 // target-selection bridging step header comment and pollWatchedTargets()'s
-// comment for the plan doc's "Correction to the design doc's Open Question 3
-// mechanism").
+// own comment for why the step must be a read, not a SetTag seed).
 //
 // Mirrors referenceChainJfrRoundtrip_ut.cpp's FrontierTable::insert()
 // seeding style rather than driving a full scripted runPass() (this test
@@ -4289,7 +4282,7 @@ TEST_F(SearchRestartTest, UrgentOOMProjectionBypassesCandidateGate) {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 5 - correctness hardening: durability re-verification.
+// Durability re-verification (correctness hardening).
 //
 // These tests drive maybeUpgradeRootAttachedRootKind()/
 // collectStaleRootKindEntriesForRotation() directly via
@@ -4343,7 +4336,8 @@ TEST_F(ReferenceChainsBfsTest, StaleRootAttributionUpgradesOnRediscovery) {
     tracker->stop();
 }
 
-// Exercises the invariant conflict Phase 5 itself calls out: a non-root
+// Exercises the invariant conflict that durability re-verification exists to
+// catch: a non-root
 // entry (parent_tag != 0) rediscovered as if via a root context must never
 // have its root_kind overwritten - doing so would leave a non-zero root_kind
 // on an entry nothing else treats as root-attached (referenceChains.h's
@@ -6901,20 +6895,22 @@ TEST_F(ReferenceChainsBfsTest, HopEdgeLabelsDecodeSpecFieldOrdinals) {
     ReferenceChainEvent event;
     ASSERT_TRUE(ReferenceChainsTestAccessor::buildChainEventForTest(
         &mock_jvmti, &mock_jni, /*target_tag=*/3, &event));
-    ASSERT_EQ(4u, event._hops.size());
+    ASSERT_EQ(4u, event._chain.size());
+    ASSERT_EQ(4u, event._edges.size())
+        << "edge labels must align with the chain, one per hop";
     // Leaf first: chunk is retained via Base.base_f (parent entry's class is
     // Base, ordinal 0 in Base's own space), then value2 via Holder's
     // holder_a (ordinal 3 = interface offset 2 + Base's 1 + own position 0),
     // then the static root edge's field name leakList (ordinal 4), then the
     // root-type hop (class Holder) - the root edge itself, kind label only.
-    EXPECT_EQ("base_f", event._hops[0].edge_label);
-    EXPECT_EQ("holder_a", event._hops[1].edge_label);
-    EXPECT_EQ("leakList", event._hops[2].edge_label);
-    EXPECT_EQ("static_field", event._hops[3].edge_label);
+    EXPECT_EQ("base_f", event._edges[0]);
+    EXPECT_EQ("holder_a", event._edges[1]);
+    EXPECT_EQ("leakList", event._edges[2]);
+    EXPECT_EQ("static_field", event._edges[3]);
     int expectedRootType = Profiler::instance()->lookupClass(
         "com/rc/labels/Holder", strlen("com/rc/labels/Holder"));
     ASSERT_NE(-1, expectedRootType);
-    EXPECT_EQ((u32)expectedRootType, event._hops[3].klass_id);
+    EXPECT_EQ((u32)expectedRootType, event._chain[3]);
 
     // Interface-referrer branch: ISink's own-field ordinals have NO
     // superclass-chain component (base = superinterfaces' fields only).
@@ -6929,13 +6925,13 @@ TEST_F(ReferenceChainsBfsTest, HopEdgeLabelsDecodeSpecFieldOrdinals) {
         &mock_jvmti, &mock_jni, /*target_tag=*/4, &iface_event));
     // Same root-type append as above: the root-side end gains ISink (the
     // declaring class of the static field) plus its kind-only root edge.
-    ASSERT_EQ(2u, iface_event._hops.size());
-    EXPECT_EQ("CONST_B", iface_event._hops[0].edge_label);
-    EXPECT_EQ("static_field", iface_event._hops[1].edge_label);
+    ASSERT_EQ(2u, iface_event._edges.size());
+    EXPECT_EQ("CONST_B", iface_event._edges[0]);
+    EXPECT_EQ("static_field", iface_event._edges[1]);
     int expectedSinkRoot = Profiler::instance()->lookupClass(
         "com/rc/labels/ISink", strlen("com/rc/labels/ISink"));
     ASSERT_NE(-1, expectedSinkRoot);
-    EXPECT_EQ((u32)expectedSinkRoot, iface_event._hops[1].klass_id);
+    EXPECT_EQ((u32)expectedSinkRoot, iface_event._chain[1]);
 
     // Fail-safe: a referrer class that cannot be resolved degrades to the
     // edge KIND label, never a fabricated name.
@@ -6951,13 +6947,13 @@ TEST_F(ReferenceChainsBfsTest, HopEdgeLabelsDecodeSpecFieldOrdinals) {
     // Both hops degrade to kind labels: the holder hop's referrer class
     // (IBase) is deliberately unregistered from the decoder, and the
     // appended root-type hop (IBase itself) carries no field identity.
-    ASSERT_EQ(2u, degraded_event._hops.size());
-    EXPECT_EQ("static_field", degraded_event._hops[0].edge_label);
-    EXPECT_EQ("static_field", degraded_event._hops[1].edge_label);
+    ASSERT_EQ(2u, degraded_event._edges.size());
+    EXPECT_EQ("static_field", degraded_event._edges[0]);
+    EXPECT_EQ("static_field", degraded_event._edges[1]);
     int expectedIbaseRoot = Profiler::instance()->lookupClass(
         "com/rc/labels/IBase", strlen("com/rc/labels/IBase"));
     ASSERT_NE(-1, expectedIbaseRoot);
-    EXPECT_EQ((u32)expectedIbaseRoot, degraded_event._hops[1].klass_id);
+    EXPECT_EQ((u32)expectedIbaseRoot, degraded_event._chain[1]);
 
     tracker->stop();
 }
