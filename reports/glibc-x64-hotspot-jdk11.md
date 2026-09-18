@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk11
 
 ## glibc-x64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-09-18 09:27:48 EDT
+**Date:** 2026-09-18 09:29:04 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 504 |
-| Sample Rate | 8.40/sec |
-| Health Score | 525% |
+| CPU Samples | 507 |
+| Sample Rate | 8.45/sec |
+| Health Score | 528% |
 | Threads | 8 |
-| Allocations | 347 |
+| Allocations | 376 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 798 |
-| Sample Rate | 13.30/sec |
-| Health Score | 831% |
-| Threads | 9 |
-| Allocations | 470 |
+| CPU Samples | 719 |
+| Sample Rate | 11.98/sec |
+| Health Score | 749% |
+| Threads | 10 |
+| Allocations | 516 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 66-66 cores)</summary>
 
 ```
-1789737705 66
-1789737710 66
-1789737715 66
-1789737720 66
-1789737725 66
-1789737730 66
-1789737735 66
-1789737740 66
-1789737745 66
-1789737750 66
-1789737755 66
-1789737760 66
-1789737765 66
-1789737770 66
-1789737775 66
-1789737780 66
-1789737785 66
-1789737790 66
-1789737795 66
-1789737800 66
+1789737723 66
+1789737728 66
+1789737733 66
+1789737738 66
+1789737743 66
+1789737748 66
+1789737753 66
+1789737758 66
+1789737763 66
+1789737768 66
+1789737773 66
+1789737778 66
+1789737783 66
+1789737788 66
+1789737793 66
+1789737798 66
+1789737803 66
+1789737808 66
+1789737813 66
+1789737818 66
 ```
 </details>
 
