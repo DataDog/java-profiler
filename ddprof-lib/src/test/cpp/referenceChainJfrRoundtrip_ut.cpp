@@ -17,7 +17,7 @@
 // byte layout) to produce one complete, standalone, chunk-finalized .jfr
 // file containing a real datadog.ReferenceChain event plus its class
 // checkpoint, and leaves the actual JMC read-back to the companion Java test
-// (ddprof-test's ReferenceChainJfrParserTest), which loads this file with
+// (a companion Java parser test in ddprof-test), which loads this file with
 // org.openjdk.jmc.flightrecorder.JfrLoaderToolkit and asserts the resolved
 // class names.
 //
@@ -233,8 +233,8 @@ protected:
     }
 };
 
-// Path agreed with the companion Java test (ddprof-test's
-// ReferenceChainJfrParserTest), which reads the same file back via JMC's
+// Path agreed with the companion Java parser test in ddprof-test, which
+// reads the same file back via JMC's
 // JfrLoaderToolkit. Both sides resolve it via the OS temp dir so the
 // producer (this gtest) and the consumer (the Java test, run afterwards by
 // the same operator/CI job on the same machine) agree without either side
@@ -339,7 +339,7 @@ TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent)
     Profiler::instance()->classMap()->rotate();
 
     // A deterministic leaf <- middle <- root chain, in the same leaf-first
-    // element order ReferenceChainTracker::buildChainEvent() produces (the
+    // element order the production collector produces (the
     // tracker-driven path to the identical event is covered by
     // referenceChains_ut.cpp's ReconstructsChainForSyntheticGraph; this file
     // pins the JFR encoding, so the event is built directly).
@@ -347,14 +347,14 @@ TEST_F(ReferenceChainJfrRoundtripTest, ProducesValidStandaloneJfrWithChainEvent)
     event._target_tag = 3;
     event._depth = 2;
     event._root_kind = 21; // JVMTI_HEAP_REFERENCE_JNI_GLOBAL - exercises the
-                           // rootKind field end to end, mirroring how
-                           // heapReferenceCallback() only ever sets it on a
-                           // parent_tag==0 entry.
+                           // rootKind field end to end (the engine's admission
+                           // callback only ever sets it on a parent_tag==0
+                           // entry).
     // With the null JNIEnv a live field-name decode would crash on this
     // binary's unstubbed JVMTI table, so the labels are the degraded
-    // edge-KIND strings fillHopEdgeLabels() produces in exactly that
+    // edge-KIND strings the production label resolution produces in exactly that
     // situation - which is what the Java-side parser test
-    // (ReferenceChainJfrParserTest) asserts this recording's "edges" field
+    // Java parser test asserts this recording's "edges" field
     // contains.
     event._hops = {{(u32)leafKlass, "field"},
                    {(u32)middleKlass, "element"},
