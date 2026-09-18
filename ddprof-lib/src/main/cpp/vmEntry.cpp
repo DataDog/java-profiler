@@ -396,8 +396,8 @@ bool VM::initLibrary(JavaVM *vm) {
 }
 
 // jvmtiEventCallbacks has a single function-pointer slot per event; both
-// LivenessTracker and ReferenceChainTracker need GarbageCollectionFinish
-// (PROF-15341), so this trampoline dispatches to both instead of one
+// LivenessTracker and ReferenceChainTracker need GarbageCollectionFinish,
+// so this trampoline dispatches to both instead of one
 // subsystem's registration clobbering the other's.
 static void JNICALL onGarbageCollectionFinish(jvmtiEnv *jvmti_env) {
   LivenessTracker::GarbageCollectionFinish(jvmti_env);
