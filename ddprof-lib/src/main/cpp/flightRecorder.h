@@ -52,7 +52,7 @@ const int MAX_VAR32_LENGTH = 5;
 // referenceChains.h) is maxCapacity(), which can run into the tens of
 // thousands of entries, and neither that cap nor _hop_cap is itself
 // range-validated against a buffer-safe maximum (see arguments.cpp's own
-// sub-option parsing). recordReferenceChain() truncates event->_chain to
+// sub-option parsing). recordReferenceChain() truncates event->_hops to
 // this many entries before writing, so its own worst-case size never
 // depends on trusting either of those upstream caps to stay small - a chain
 // longer than this is still truncated defense-in-depth even if a caller

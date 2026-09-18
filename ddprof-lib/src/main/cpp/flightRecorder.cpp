@@ -48,18 +48,14 @@
 static const char *const SETTING_RING[] = {NULL, "kernel", "user", "any"};
 static const char *const SETTING_CSTACK[] = {NULL, "no", "fp", "dwarf", "lbr"};
 
-// JVM spec SS4.7.3 caps a method's bytecode (code_length) at 65535 bytes (u2).
-// A LineNumberTable entry maps a bytecode offset to a source line, so a
-// well-formed table can have at most one entry per bytecode offset -- the
-// 65535 bound here is inherited indirectly through that one-entry-per-offset
-// invariant, not a direct spec cap on entry count (the numeric equivalence
-// with code_length's own u2 cap is coincidental). Used to sanity-bound
-// line_number_table_size before it drives the byte-count passed to
-// SafeAccess::safeCopy(): if GetLineNumberTable() returns a corrupted
-// pointer for a stale jmethodID (see the TOCTOU race documented in
-// fillJavaMethodInfo below), the paired out-param size is just as likely to
-// be corrupted, and an implausible size should be rejected before it is
-// trusted to compute a byte range.
+// JVM spec SS4.7.3 caps a method's bytecode (code_length) at 65535 bytes (u2),
+// so a well-formed LineNumberTable can never have more entries than that.
+// Used to sanity-bound line_number_table_size before it drives the byte-count
+// passed to SafeAccess::safeCopy(): if GetLineNumberTable()
+// returns a corrupted pointer for a stale jmethodID (see the TOCTOU race
+// documented in fillJavaMethodInfo below), the paired out-param size is just
+// as likely to be corrupted, and an implausible size should be rejected
+// before it is trusted to compute a byte range.
 static const jint MAX_LINE_NUMBER_TABLE_ENTRIES = 65535;
 
 // Compute a non-negative event duration from TSC timestamps.  Unsigned u64
@@ -2361,8 +2357,7 @@ void Recording::recordHeapLiveObject(Buffer *buf, int tid, u64 call_trace_id,
 // out-of-range index.
 //
 // STACK_LOCAL (24) and JNI_LOCAL (25) are labeled "first_observed_via:..."
-// rather than plain "stack_local"/"jni_local" (design doc's "Honest labeling
-// in output", point 2): both are evidence this object was reachable from a
+// rather than plain "stack_local"/"jni_local": both are evidence this object was reachable from a
 // live frame/local handle at the moment a pass observed it, not a durable
 // retention reason - the frame can pop or the handle can be freed the
 // instant the pass ends, so "rooted by" would overstate what is actually
@@ -2392,7 +2387,7 @@ static const char *rootKindName(u8 root_kind) {
 }
 
 void Recording::recordReferenceChain(Buffer *buf, ReferenceChainEvent *event) {
-  // event->_chain's length is bounded only by FrontierTable::maxCapacity()
+  // event->_hops' length is bounded only by FrontierTable::maxCapacity()
   // (tens of thousands of entries, referenceChains.h) - NOT by
   // MAX_JFR_EVENT_SIZE, so this event cannot use writeEventSizePrefix()'s
   // single-byte size field (its assert(size < MAX_JFR_EVENT_SIZE) is
@@ -2402,7 +2397,7 @@ void Recording::recordReferenceChain(Buffer *buf, ReferenceChainEvent *event) {
   // *after* already writing past the buffer). Truncate to
   // MAX_REFERENCE_CHAIN_EVENT_HOPS (that constant's own comment) and
   // reserve room for the truncated worst case up front instead.
-  u32 chain_size = (u32)event->_chain.size();
+  u32 chain_size = (u32)event->_hops.size();
   u32 emitted_size = chain_size < (u32)MAX_REFERENCE_CHAIN_EVENT_HOPS
                           ? chain_size
                           : (u32)MAX_REFERENCE_CHAIN_EVENT_HOPS;
@@ -2412,19 +2407,18 @@ void Recording::recordReferenceChain(Buffer *buf, ReferenceChainEvent *event) {
   // 32 bytes for its putUtf8() length prefix + payload rather than computing
   // strlen() up front.
   const char *root_kind_name = rootKindName(event->_root_kind);
-  // Per-hop edge labels: aligned with the chain's leaf-first element order
-  // (edges[i] describes the hop into chain[i]), so truncation that keeps the
-  // FIRST emitted_size chain entries keeps their labels aligned too - emit
-  // as many labels as we have for the emitted range. A chain longer than
-  // MAX_REFERENCE_CHAIN_EVENT_HOPS loses only its root-side hops and their
-  // labels; an event whose label collection was skipped entirely (empty
-  // _edges) degrades to a count of 0.
-  const u32 edge_count = event->_edges.size() < emitted_size
-                             ? (u32)event->_edges.size()
-                             : emitted_size;
+  // Per-hop edge labels: hop[i].edge_label describes the hop into hop[i],
+  // so truncation that keeps the FIRST emitted_size hops keeps their labels
+  // aligned too. Labels are all-or-none (see ReferenceChainHop), so a single
+  // empty label in the emitted range degrades the count to 0.
+  u32 labeled = 0;
+  for (u32 i = 0; i < emitted_size; i++) {
+    labeled += event->_hops[i].edge_label.empty() ? 0u : 1u;
+  }
+  const u32 edge_count = labeled == emitted_size ? emitted_size : 0u;
   const char *edge_labels[MAX_REFERENCE_CHAIN_EVENT_HOPS];
   for (u32 i = 0; i < edge_count; i++) {
-    edge_labels[i] = event->_edges[i].c_str();
+    edge_labels[i] = event->_hops[i].edge_label.c_str();
   }
   flushIfNeeded(
       buf, RECORDING_BUFFER_LIMIT -
@@ -2457,14 +2451,12 @@ void Recording::recordReferenceChain(Buffer *buf, ReferenceChainEvent *event) {
   // (e.g. recordAllocation() above), just repeated `count` times.
   buf->putVar32(emitted_size);
   for (u32 i = 0; i < emitted_size; i++) {
-    buf->putVar32(event->_chain[i]);
+    buf->putVar32(event->_hops[i].klass_id);
   }
   // Edges array, LAST so its metadata position (after "chain", jfrMetadata.cpp)
-  // matches the write order - the leakTag field-order invariant
-  // (find-leaktag-jfr-field-misalignment) generalized. The labels align with
-  // the chain's element order (see edge_count above), so the emitted range
-  // carries its labels even when the chain was truncated at its root side;
-  // a count of 0 means label collection never ran for this event.
+  // matches the write order. The labels pair with the chain's element order
+  // (see edge_count above); a count of 0 means label collection never ran
+  // for this event.
   buf->putVar32(edge_count);
   for (u32 i = 0; i < edge_count; i++) {
     buf->putUtf8(edge_labels[i]);
