@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk11
 
 ## glibc-x64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-09-18 03:31:08 EDT
+**Date:** 2026-09-18 03:32:05 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-x64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 514 |
-| Sample Rate | 8.57/sec |
-| Health Score | 536% |
+| CPU Samples | 513 |
+| Sample Rate | 8.55/sec |
+| Health Score | 534% |
 | Threads | 8 |
-| Allocations | 378 |
+| Allocations | 375 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 738 |
-| Sample Rate | 12.30/sec |
-| Health Score | 769% |
-| Threads | 10 |
-| Allocations | 497 |
+| CPU Samples | 802 |
+| Sample Rate | 13.37/sec |
+| Health Score | 836% |
+| Threads | 9 |
+| Allocations | 482 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 58-58 cores)</summary>
 
 ```
-1789716355 58
-1789716360 58
-1789716365 58
-1789716370 58
-1789716375 58
-1789716380 58
-1789716385 58
-1789716390 58
-1789716395 58
-1789716400 58
-1789716405 58
-1789716410 58
-1789716415 58
-1789716420 58
-1789716425 58
-1789716430 58
-1789716435 58
-1789716440 58
-1789716445 58
-1789716450 58
+1789716417 58
+1789716422 58
+1789716427 58
+1789716432 58
+1789716437 58
+1789716442 58
+1789716447 58
+1789716452 58
+1789716457 58
+1789716462 58
+1789716467 58
+1789716472 58
+1789716477 58
+1789716482 58
+1789716487 58
+1789716492 58
+1789716497 58
+1789716502 58
+1789716507 58
+1789716512 58
 ```
 </details>
 
