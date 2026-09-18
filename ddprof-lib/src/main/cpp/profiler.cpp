@@ -1106,8 +1106,8 @@ void Profiler::setupSignalHandlers() {
       // Eagerly initialize the Counters singleton off the signal path, before any
       // handler that increments counters is installed. The crash handler
       // (crashHandlerInternal -> SafeAccess::handle_safefetch) bumps
-      // SAFEFETCH_FAILED / SAFECOPY_FAILED, and other async handlers bump the
-      // STACKWALK* counters. The first touch of the singleton lazily runs
+      // SAFEFETCH_FAILED / SAFESTORE_FAILED / SAFECOPY_FAILED, and other async
+      // handlers bump the STACKWALK* counters. The first touch of the singleton lazily runs
       // aligned_alloc + memset and takes the C++ static-init guard lock — none of
       // which are async-signal-safe. Forcing that construction here guarantees the
       // signal path only ever performs lock-free atomic increments on the
