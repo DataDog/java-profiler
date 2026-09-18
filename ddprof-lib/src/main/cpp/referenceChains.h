@@ -28,8 +28,8 @@
 #include <unordered_set>
 #include <vector>
 
-// PROF-15341: incremental resumption across passes (see
-// ReferenceChainTracker::runPass() below), building on an earlier
+// Incremental resumption across passes (see ReferenceChainTracker::runPass()
+// below), building on an earlier
 // proof-of-concept that established two things end-to-end:
 //   1. A cheap "a GC just happened" signal reaches this subsystem via the
 //      GarbageCollectionStart/Finish JVMTI callbacks (vmEntry.cpp), mirroring
@@ -68,7 +68,7 @@
 //     elapsed) - see threadLoop()'s own comment for why the thread this runs
 //     on is still not spawned by start().
 //
-// PROF-15341: pollWatchedTargets() below is the LivenessTracker-to-
+// pollWatchedTargets() below is the LivenessTracker-to-
 // ReferenceChainTracker target-selection bridge, closing the gap left by
 // buildChainEvent() having no caller. It polls
 // LivenessTracker::selectLeakCandidates() (livenessTracker.h's Open Question
@@ -83,7 +83,7 @@
 // requested unconditionally in vmEntry.cpp, so this bridging step only adds
 // callback wiring and lazy event enablement, not capability requests.
 //
-// PROF-15341: the pause-time pacing controller replaces the fixed _budget/PASS_CADENCE_NS
+// The pause-time pacing controller replaces the fixed _budget/PASS_CADENCE_NS
 // constants' role as the literal per-pass values with a measured
 // pause-time-SLO feedback loop (design doc's Open Questions 2/5, "Proposed
 // mechanism" paragraphs). runPass() now times its own FollowReferences/
@@ -98,7 +98,7 @@
 // gains are not copied from ObjectSampler/MallocTracer/NativeSocketSampler's
 // shared triple.
 //
-// PROF-15341: search restart. Earlier revisions of this class only ever ran a
+// Search restart. Earlier revisions of this class only ever ran a
 // single search for the tracker's entire lifetime (runPass()'s own comment
 // used to read "starting a *new* search once one ends is not implemented"). That is
 // a real gap: LivenessTracker::selectLeakCandidates() only trusts a klass's
@@ -3305,7 +3305,7 @@ public:
 
   void fillHopEdgeLabels(jvmtiEnv *jvmti, JNIEnv *jni,
                          const std::vector<ChainHopEdge> &edges,
-                         std::vector<std::string> *out);
+                         std::vector<ReferenceChainHop> *out);
 
   bool buildChainEvent(jvmtiEnv *jvmti, JNIEnv *jni, jlong target_tag,
                        ReferenceChainEvent *out);
