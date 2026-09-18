@@ -208,7 +208,7 @@ void LivenessTracker::cleanup_table(bool forced, bool allow_resolve) {
           // Per-klass population tracking (design doc's Open Question 3) -
           // gated on _gc_generations so this new cost is paid only when the
           // caller actually asked for generation/survival-shaped data
-          // (arguments.cpp:223-227,244), not for every liveness-tracking
+          // (Arguments::_gc_generations), not for every liveness-tracking
           // session. Gated on is_epoch_owner (not !forced) so a forced
           // (table-overflow) sweep still contributes one population sample
           // per genuinely new GC epoch instead of silently dropping it.
@@ -798,7 +798,7 @@ jweak LivenessTracker::recordKlassPopulationSampleLocked(
     jweak *out_evicted, int *out_evicted_count, int max_evicted) {
   // Linear scan is fine: MAX_KLASS_POPULATION_ENTRIES is small enough that a
   // full scan is cheap, the same shape NativeSocketSampler's fd LRU
-  // (nativeSocketSampler.h:141-142) and this class's own cleanup_table()
+  // (NativeSocketSampler's fd cache) and this class's own cleanup_table()
   // pass already accept for bounded tables.
   int slot = -1;
   int evict_slot = -1;
