@@ -4216,8 +4216,8 @@ void ReferenceChainTracker::registerExistingThreads(jvmtiEnv *jvmti,
   // (see _thread_objects' own comment): Profiler::onThreadStart() only sees
   // threads started after the recording began, and a leaking thread is
   // typically alive since well before the profiler attached (observed live:
-  // ThreadLocalLeakScenario's leak thread - started before the profiler to
-  // seed the fixture - stayed unregistered, walkCandidateThreadLocals()
+  // a leaking thread that started before the profiler to seed its fixture
+  // stayed unregistered, walkCandidateThreadLocals()
   // reporting walked=0 while the only thing standing between the walk and
   // the tagged chunks was the registry lookup). Same native-tid mapping the
   // profiler's own thread-name refresh uses for these same pre-existing

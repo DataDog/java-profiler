@@ -820,9 +820,9 @@ private:
   // AUTO_FIRST_PASS_BUDGET_CAP) when unset (0), rather than falling back to
   // plain _budget: a steady-state per-pass budget sized for cheap incremental
   // expansion truncates a cold root-seeded walk of a real JVM's object graph
-  // long before it reaches anything interesting (see
-  // ddprof-stresstest's ReferenceChainLeakDemo, whose whole class comment is
-  // about exactly this trap). Only the first pass's own edge budget is this
+  // long before it reaches anything interesting - the exact trap a
+  // steady-state budget causes on a cold, large object graph. Only the
+  // first pass's own edge budget is this
   // large - runPassManualWalk()'s IterateOverReachableObjects root/stack-ref
   // enumeration itself reruns on every pass, first or resumed (see its own
   // comment); already-admitted roots short-circuit cheaply via
@@ -3015,9 +3015,9 @@ public:
   // _canary_backoff_mult's own comment). 16 bounds a stuck chase's steady
   // burn to ~1/16 of a core on pass work while keeping a deep-but-cheap
   // (ms-scale passes) chase dense enough to resolve within a scenario's
-  // round window - measured against ReferenceChainTrackingTest's ~200-pass
-  // deep chase, which a fixed 1s cap starved outright (held-off wakes
-  // outpaced the test window). Abandonment is not this knob's job
+  // round window - sized against a real ~200-pass deep chase, which a
+  // fixed 1s cap starved outright (held-off wakes outpaced the run's
+  // window). Abandonment is not this knob's job
   // (CANARY_STUCK's frontier-aware detector owns that); this only paces.
   static constexpr int CANARY_BACKOFF_MULT_MAX = 16;
 
