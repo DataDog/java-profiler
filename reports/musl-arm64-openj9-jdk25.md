@@ -5,7 +5,7 @@ title: musl-arm64-openj9-jdk25
 
 ## musl-arm64-openj9-jdk25 - ✅ PASS
 
-**Date:** 2026-09-18 07:48:05 EDT
+**Date:** 2026-09-18 07:49:03 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,11 +28,11 @@ title: musl-arm64-openj9-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 248 |
-| Sample Rate | 4.13/sec |
-| Health Score | 258% |
+| CPU Samples | 510 |
+| Sample Rate | 8.50/sec |
+| Health Score | 531% |
 | Threads | 9 |
-| Allocations | 126 |
+| Allocations | 354 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
@@ -42,32 +42,32 @@ title: musl-arm64-openj9-jdk25
 | Sample Rate | 1.33/sec |
 | Health Score | 83% |
 | Threads | 12 |
-| Allocations | 39 |
+| Allocations | 67 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 48-48 cores)</summary>
 
 ```
-1789731839 48
-1789731844 48
-1789731849 48
-1789731854 48
-1789731859 48
-1789731864 48
-1789731869 48
-1789731874 48
-1789731879 48
-1789731884 48
-1789731889 48
-1789731894 48
-1789731899 48
-1789731904 48
-1789731909 48
-1789731914 48
-1789731919 48
-1789731924 48
-1789731929 48
-1789731934 48
+1789731820 48
+1789731825 48
+1789731830 48
+1789731835 48
+1789731840 48
+1789731845 48
+1789731850 48
+1789731855 48
+1789731860 48
+1789731865 48
+1789731870 48
+1789731875 48
+1789731880 48
+1789731885 48
+1789731890 48
+1789731895 48
+1789731900 48
+1789731905 48
+1789731910 48
+1789731915 48
 ```
 </details>
 
