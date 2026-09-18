@@ -16,8 +16,8 @@
 # Base image variables come from .gitlab/build-deploy/images.yml which is
 # included in the root pipeline and available as CI variables:
 #   OPENJDK_BASE_IMAGE, OPENJDK_BASE_IMAGE_ARM64, OPENJDK_BASE_IMAGE_MUSL,
-#   OPENJDK_BASE_IMAGE_ARM64_MUSL, BASE_IMAGE_GLIBC, BASE_BENCHMARK_IMAGE_NAME,
-#   DOCKER_IMAGE
+#   OPENJDK_BASE_IMAGE_ARM64_MUSL, BASE_IMAGE_GLIBC, BASE_IMAGE_EL7,
+#   BASE_BENCHMARK_IMAGE_NAME, DOCKER_IMAGE
 
 set -euo pipefail
 
@@ -43,6 +43,7 @@ usage() {
     echo "  x64            glibc x86_64 build image" >&2
     echo "  x64-glibc      shipped-binary x86_64 build image (AlmaLinux 8)" >&2
     echo "  arm64-glibc    shipped-binary aarch64 build image (AlmaLinux 8)" >&2
+    echo "  x64-el7        runtime-only x86_64 stresstest/functional image (Oracle Linux 7)" >&2
     echo "  x64-musl       musl x86_64 build image" >&2
     echo "  arm64          glibc arm64 build image" >&2
     echo "  arm64-musl     musl arm64 build image" >&2
@@ -61,6 +62,7 @@ IMAGE_DEFS=(
     "x64|BUILD_IMAGE_X64|.gitlab/build-deploy/.gitlab-ci.yml|x64-base|.gitlab/base/Dockerfile|linux/amd64|async-profiler-build|OPENJDK_BASE_IMAGE"
     "x64-glibc|BUILD_IMAGE_X64_GLIBC|.gitlab/build-deploy/.gitlab-ci.yml|x64-glibc-base|.gitlab/base/el8/Dockerfile|linux/amd64|async-profiler-build|BASE_IMAGE_GLIBC"
     "arm64-glibc|BUILD_IMAGE_ARM64_GLIBC|.gitlab/build-deploy/.gitlab-ci.yml|arm64-glibc-base|.gitlab/base/el8/Dockerfile|linux/arm64|async-profiler-build|BASE_IMAGE_GLIBC"
+    "x64-el7|BUILD_IMAGE_X64_EL7|.gitlab/build-deploy/.gitlab-ci.yml|x64-el7-base|.gitlab/base/el7/Dockerfile|linux/amd64|async-profiler-build|BASE_IMAGE_EL7"
     "x64-musl|BUILD_IMAGE_X64_MUSL|.gitlab/build-deploy/.gitlab-ci.yml|x64-musl-base|.gitlab/base/Dockerfile.musl|linux/amd64|async-profiler-build|OPENJDK_BASE_IMAGE_MUSL"
     "arm64|BUILD_IMAGE_ARM64|.gitlab/build-deploy/.gitlab-ci.yml|arm64-base|.gitlab/base/Dockerfile|linux/arm64|async-profiler-build|OPENJDK_BASE_IMAGE_ARM64"
     "arm64-musl|BUILD_IMAGE_ARM64_MUSL|.gitlab/build-deploy/.gitlab-ci.yml|arm64-musl-base|.gitlab/base/Dockerfile.musl|linux/arm64|async-profiler-build|OPENJDK_BASE_IMAGE_ARM64_MUSL"
