@@ -5,7 +5,7 @@ title: musl-x64-openj9-jdk17
 
 ## musl-x64-openj9-jdk17 - ✅ PASS
 
-**Date:** 2026-09-18 03:41:25 EDT
+**Date:** 2026-09-18 04:28:57 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-openj9-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 515 |
-| Sample Rate | 8.58/sec |
-| Health Score | 536% |
+| CPU Samples | 607 |
+| Sample Rate | 10.12/sec |
+| Health Score | 632% |
 | Threads | 9 |
-| Allocations | 397 |
+| Allocations | 379 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 863 |
-| Sample Rate | 14.38/sec |
-| Health Score | 899% |
-| Threads | 11 |
-| Allocations | 462 |
+| CPU Samples | 810 |
+| Sample Rate | 13.50/sec |
+| Health Score | 844% |
+| Threads | 10 |
+| Allocations | 466 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 94-96 cores)</summary>
+<summary>CPU Timeline (1 unique values: 96-96 cores)</summary>
 
 ```
-1789716635 96
-1789716640 94
-1789716645 94
-1789716650 94
-1789716655 94
-1789716660 94
-1789716665 94
-1789716670 94
-1789716675 94
-1789716680 94
-1789716685 94
-1789716690 94
-1789716695 94
-1789716700 96
-1789716705 96
-1789716710 96
-1789716715 96
-1789716720 96
-1789716725 96
-1789716730 96
+1789719897 96
+1789719902 96
+1789719907 96
+1789719912 96
+1789719917 96
+1789719922 96
+1789719927 96
+1789719932 96
+1789719937 96
+1789719943 96
+1789719948 96
+1789719953 96
+1789719958 96
+1789719963 96
+1789719968 96
+1789719973 96
+1789719978 96
+1789719983 96
+1789719988 96
+1789719993 96
 ```
 </details>
 
