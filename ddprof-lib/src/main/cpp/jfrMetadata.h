@@ -81,8 +81,8 @@ enum JfrType {
   T_UNWIND_FAILURE = 126,
   T_MALLOC = 127,
   T_NATIVE_SOCKET = 128,
-  // Reporting surface for ReferenceChainTracker
-  // (referenceChains.h/.cpp) - a reconstructed referrer-type chain, and a
+  // Reporting surface for the reference-chain engine - a reconstructed
+  // referrer-type chain, and a
   // distinct event for a search abandoned before reaching a target (design
   // doc's "no silent truncation" requirement), see jfrMetadata.cpp.
   T_REFERENCE_CHAIN = 129,

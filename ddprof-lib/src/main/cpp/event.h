@@ -97,30 +97,29 @@ public:
   Context _ctx;
 };
 
-// Reporting surface for ReferenceChainTracker's bounded
-// BFS (referenceChains.h/.cpp). `_target_tag` is the FrontierTable tag the
-// chain was reconstructed for (FrontierTable::reconstructChain()); `_hops`
+// Reporting surface for the reference-chain engine's bounded BFS.
+// `_target_tag` is the frontier tag the chain was reconstructed for;
+// `_hops`
 // holds the reconstructed chain in the same leaf(target)-to-root order:
 // hop[i].klass_id is the referrer-klass StringDictionary id and
 // hop[i].edge_label is the edge by which hop[i] is retained by its parent
 // (the field name of its parent hop for FIELD/STATIC_FIELD edges, the
-// edge-kind label otherwise; ReferenceChainTracker::fillHopEdgeLabels).
+// edge-kind label otherwise, resolved by the collector filling this event).
 // For a static-field-rooted chain the root-side end is the static field's
 // holder instance followed by the declaring class (the ROOT TYPE, appended
-// by buildChainEvent() from the root-attached entry's referrer_class_tag) -
+// by the collector from the root-attached entry's declaring-class tag) -
 // the chain then reads, root-first, as the root type retaining the holder
 // through its static field, on down to the target. `_depth` is the target
-// entry's own FrontierEntry::depth (hop count from the search's root-side
+// entry's own frontier depth (hop count from the search's root-side
 // seed). `_root_kind` is the jvmtiHeapReferenceKind of whichever edge first
-// admitted this chain into the frontier (FrontierEntry::root_kind, via
-// FrontierTable::reconstructChain()'s out_root_kind) - labels *why* the
+// admitted this chain into the frontier - labels *why* the
 // chain is reachable at all (JNI global, thread stack, static field, ...),
 // written out as a string (Recording::recordReferenceChain(),
 // flightRecorder.cpp) rather than a synthetic node in `_hops` itself, since
 // that array is a T_CLASS cpool array with no room for a non-class
 // placeholder.
 // Byte cap for one hop's retention-edge label in ReferenceChainHop
-// (fillHopEdgeLabels truncates to this; recordReferenceChain() reserves
+// (label resolution truncates to this; recordReferenceChain() reserves
 // against it) - a shared constant so the collector and the writer cannot
 // drift apart on the worst-case event size.
 static constexpr size_t MAX_REFERENCE_CHAIN_EDGE_LABEL = 96;
@@ -146,14 +145,13 @@ public:
       : Event(), _start_time(0), _target_tag(0), _depth(0), _root_kind(0) {}
 };
 
-// Search-level abandonment signal: reports why ReferenceChainTracker's
-// current search stopped before
-// every frontier entry could be resolved, using the same counters
-// runPass()/expandFrontier() already maintain (referenceChains.h/.cpp).
+// Search-level abandonment signal: reports why the reference-chain search
+// stopped before every frontier entry could be resolved, using the same
+// counters the search itself already maintains.
 class ReferenceChainAbandonedEvent : public Event {
 public:
   u64 _start_time;
-  u8 _reason; // SearchAbandonReason (referenceChains.h)
+  u8 _reason; // SearchAbandonReason (the engine's reason enum)
   u32 _passes_run;
   u32 _frontier_size;
   int _hop_cap;

@@ -60,15 +60,15 @@ const int DEFAULT_REFERENCE_CHAINS_BUDGET = 1000;      // edges expanded per BFS
 const long DEFAULT_REFERENCE_CHAINS_TTL_MS = 60000;    // per-search wall-clock TTL
 // Frontier-size cap: same order of magnitude as LivenessTracker's tuned
 // ceiling (MAX_TRACKING_TABLE_SIZE = 262144, livenessTracker.h), quartered -
-// FrontierEntry is smaller but per-hop fan-out can be large. Conservative
+// a frontier entry is smaller but per-hop fan-out can be large. Conservative
 // guess, pending a frontier peak-occupancy measurement.
 const int DEFAULT_REFERENCE_CHAINS_FRONTIER_CAP = 65536; // max live frontier entries per search
 // Pause-time-SLO ceiling (pause-time pacing controller): target ceiling,
 // per pass, on wall-clock time spent inside the safepoint-triggering
 // FollowReferences/GetObjectsWithTags call
-// (ReferenceChainTracker::updatePacing(), referenceChains.cpp).
+// the pause-time pacing controller adapts the effective budget/cadence toward.
 const long DEFAULT_REFERENCE_CHAINS_PAUSE_TARGET_MS = 50; // ms per pass
-// Pain budget refill rate (ReferenceChainTracker::PainBudget, painBudget.h):
+// Pain budget refill rate (the restarted-search pain budget):
 // percent (1 = 1%) of wall-clock time a *restarted* search may spend inside
 // safepointing calls, on average, before a later restart waits for the
 // previous search's debt to drain.
@@ -76,7 +76,7 @@ const int DEFAULT_REFERENCE_CHAINS_PAIN_BUDGET_PERCENT = 1;
 // First-pass edge budget override for the search's one-and-only root-seeded
 // FollowReferences call: unlike the per-pass budget, this spends once per
 // search, so a much larger one-time ceiling is affordable. 0 means no
-// override - ReferenceChainTracker::start() auto-scales it from _budget.
+// override - the engine auto-scales it from the per-pass budget at startup.
 const int DEFAULT_REFERENCE_CHAINS_FIRST_PASS_BUDGET = 0;
 const int MAX_REFERENCE_CHAINS_FIRST_PASS_BUDGET =
     DEFAULT_REFERENCE_CHAINS_BUDGET * 1000;
@@ -236,10 +236,10 @@ public:
   double _live_samples_ratio;
   bool _record_heap_usage;
   bool _gc_generations;
-  // Reference-chain tracking. Read by ReferenceChainTracker::start()
-  // (referenceChains.cpp) to size the frontier table and seed the per-search
-  // hop/budget/TTL tunables and the pause-time-SLO ceiling that
-  // updatePacing() adapts the effective budget/cadence toward.
+  // Reference-chain tracking. Read by the reference-chain engine at startup
+  // to size the frontier table and seed the per-search hop/budget/TTL
+  // tunables and the pause-time-SLO ceiling its pacing controller adapts
+  // the effective budget/cadence toward.
   bool _reference_chains;
   int _reference_chains_hop_cap;
   int _reference_chains_budget;
