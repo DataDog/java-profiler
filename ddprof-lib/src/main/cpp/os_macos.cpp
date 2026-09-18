@@ -384,6 +384,10 @@ long OS::getContainerMemoryLimit() {
     return -1; // macOS has no cgroup support.
 }
 
+long OS::getContainerMemoryUsage() {
+    return -1; // macOS has no cgroup support.
+}
+
 u64 OS::getProcessCpuTime(u64* utime, u64* stime) {
     struct tms buf;
     clock_t real = times(&buf);
