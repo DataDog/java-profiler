@@ -23,7 +23,11 @@ ARG BASE_IMAGE=oraclelinux:7
 FROM ${BASE_IMAGE} as base
 WORKDIR /root
 
-RUN yum -y install git make zip unzip which wget curl jq gcc-c++ \
+# python3 (3.6.8 on this base repo -- no newer python3/SCL repo exists for
+# Oracle Linux 7) runs the quarantine classifier (.github/scripts/
+# run_tests_with_retry.sh, quarantine.py, flake_report.py) that
+# functional-tests.sh wraps its test run in.
+RUN yum -y install git make zip unzip which wget curl jq gcc-c++ python3 \
  && yum -y clean all
 
 RUN curl -s "https://get.sdkman.io" | bash && \
