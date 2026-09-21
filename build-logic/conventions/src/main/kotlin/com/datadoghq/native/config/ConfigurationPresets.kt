@@ -167,7 +167,32 @@ object ConfigurationPresets {
                 // LibraryPatcher) is still executing wrapper code inside it, causing a
                 // SIGSEGV with no hs_err. nodelete pins the mapping for the process's
                 // lifetime no matter how many times the host dlcloses it.
-                config.linkerArgs.set(commonLinuxLinkerArgs() + listOf("-Wl,-z,nodelete"))
+                //
+                // TEMPORARY DIAGNOSTIC: -Dddprof.debugStaticLibstdcxx=true statically
+                // links libstdc++/libgcc the same way configureRelease always does, so
+                // a debug build can run on a host whose system libstdc++ doesn't carry
+                // a new enough GLIBCXX (debug builds normally link dynamically and
+                // don't need this). --gc-sections/--exclude-libs,ALL come along too:
+                // -static-libstdc++ transitively pulls in libstdc++.a's cow-string-inst.o
+                // (legacy ABI string instantiations), which references
+                // std::random_device::_M_init -> getentropy@GLIBC_2.25 -- unreachable
+                // dead code that configureRelease's --gc-sections already strips, but
+                // debug's linkerArgs never had that flag at all. Remove all of this
+                // once the EL7-functional-job NativeSocket* investigation (PR #805)
+                // concludes.
+                val debugStaticLibstdcxx =
+                    System.getProperty("ddprof.debugStaticLibstdcxx") == "true"
+                config.linkerArgs.set(
+                    commonLinuxLinkerArgs() + listOf("-Wl,-z,nodelete") +
+                        if (debugStaticLibstdcxx) {
+                            listOf(
+                                "-static-libstdc++", "-static-libgcc",
+                                "-Wl,--exclude-libs,ALL", "-Wl,--gc-sections"
+                            )
+                        } else {
+                            emptyList()
+                        }
+                )
             }
             Platform.MACOS -> {
                 config.compilerArgs.set(
