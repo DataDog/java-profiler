@@ -23,8 +23,7 @@ simpleNativeLib {
   // Note: No optimization (-O0) to prevent inlining of static functions like do_primes()
   // which need to be visible in stack traces for profiler testing
   //
-  // -std=gnu99: nativealloc.c uses a C99 for-loop-scoped declaration
-  // (`for (jint i = ...)`). Most Linux gcc/clang builds default to a C99+
+  // This code requires C99. Most Linux gcc/clang builds default to a C99+
   // dialect already, but EL7's stock gcc 4.8.5 still defaults to gnu89.
   compilerArgs.set(
     when (PlatformUtils.currentPlatform) {
