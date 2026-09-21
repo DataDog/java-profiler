@@ -45,8 +45,7 @@ inline bool ProfiledThread::claimAcquire(int tid) {
     if((flags & FLAG_CLAIMED) == 0) {
       _tid = tid;
 #ifdef __FAULT_INJECTION__
-    _fi_rng = ((u64)(uintptr_t)this) ^ (0x9e3779b97f4a7c15ULL * (u64)tid);
-    if (_fi_rng == 0) _fi_rng = 1;
+    _fi_rng = xorshift::seed((u64)(uintptr_t)this, (u64)tid);
 #endif
       return true;
     }

@@ -749,7 +749,15 @@ void ElfParser::calcVirtualLoadAddress() {
     for (int i = 0; i < _header->e_phnum; i++) {
         ElfProgramHeader* pheader = phdrAt(i);
         if (pheader != NULL && pheader->p_type == PT_LOAD) {
-            _vaddr_diff = _base - pheader->p_vaddr;
+            // p_vaddr is an unrelated virtual address, not an offset within the
+            // _base allocation - subtracting it via pointer arithmetic can wrap
+            // to (or through) a null representation, which UBSan flags even
+            // though the resulting bit pattern is only ever used as an offset
+            // to add back later (at()/base()/dyn_ptr() above). Do the
+            // subtraction in integer space and reinterpret, matching this
+            // file's existing "validate in integer space before forming a
+            // pointer" pattern (see phdrAt() above).
+            _vaddr_diff = (const char*)((uintptr_t)_base - (uintptr_t)pheader->p_vaddr);
             return;
         }
     }
@@ -947,7 +955,11 @@ void ElfParser::parseDynamicSection() {
             loadSymbolTable(symtab, syment * nsyms, syment, strtab, strsz);
         }
 
-        const char* base = this->base();
+        // base() is NULL for ET_EXEC (non-PIE) images - adding r->r_offset to it
+        // via pointer arithmetic is UB (base + r->r_offset on a null base), even
+        // though the intent is just "sym addresses are already absolute". Do the
+        // addition in integer space, same fix as the .plt case above.
+        uintptr_t base_addr = (uintptr_t)this->base();
         if (jmprel != NULL && pltrelsz != 0) {
             // Parse .rela.plt table. relent (>= sizeof(ElfRelocation), checked
             // above) is the untrusted per-entry stride; the loop condition
@@ -1173,7 +1185,12 @@ void ElfParser::loadSymbols(bool use_debug) {
             _cc->setPlt(plt->sh_addr, plt->sh_size);
             ElfSection* reltab = findSection(SHT_RELA, ".rela.plt");
             if (reltab != NULL || (reltab = findSection(SHT_REL, ".rel.plt")) != NULL) {
-                addRelocationSymbols(reltab, base() + plt->sh_addr + PLT_HEADER_SIZE);
+                // base() is NULL for ET_EXEC (non-PIE) images - adding a non-zero
+                // offset to it via pointer arithmetic is UB even though the intent
+                // is just "no adjustment needed, sh_addr is already absolute".
+                // Compute in integer space and cast once, same fix as
+                // calcVirtualLoadAddress()'s _vaddr_diff computation above.
+                addRelocationSymbols(reltab, (const char*)((uintptr_t)base() + (uintptr_t)plt->sh_addr + PLT_HEADER_SIZE));
             }
         }
     }
