@@ -4,7 +4,7 @@
  */
 
 // ---------------------------------------------------------------------------
-// PROF-15341 design doc, Open Question: does JMC's parser actually resolve
+// Open question this test answers: does JMC's parser actually resolve
 // the datadog.ReferenceChain event's `chain` field - declared in
 // jfrMetadata.cpp as field("chain", T_CLASS, ..., F_CPOOL | F_ARRAY), i.e. an
 // *array of scalar constant-pool-index* T_CLASS values - the same way it
