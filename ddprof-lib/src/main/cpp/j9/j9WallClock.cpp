@@ -18,6 +18,7 @@
 #include "j9WallClock.h"
 #include "j9/j9Support.h"
 #include "profiler.h"
+#include "samplerPerf.h"
 #include "threadState.h"
 #include <stdlib.h>
 
@@ -110,6 +111,13 @@ void J9WallClock::timerLoop() {
           // in execution profiler mode the non-running threads are skipped
           continue;
         }
+        // Scoped to the rest of this thread's iteration, so it measures the
+        // per-thread recording work (frame copy, tid lookup, recordExternalSample)
+        // rather than the timerLoop, which sleeps between ticks. Declared past
+        // the two filters above so threads with no frames, and idle threads in
+        // execution-profiler mode, are not counted as samples.
+        SAMPLER_PERF_PROBE(SP_WALL);
+
         for (int j = 0; j < si->frame_count; j++) {
           jvmtiFrameInfoExtended *fi = &si->frame_buffer[j];
           frames[j].method_id = fi->method;

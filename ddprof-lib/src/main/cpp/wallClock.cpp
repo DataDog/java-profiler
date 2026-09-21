@@ -20,6 +20,7 @@
 #include "threadState.inline.h"
 #include "guards.h"
 #include "wallClockCounters.h"
+#include "samplerPerf.h"
 #include <cassert>
 #include <cerrno>
 #include <string.h>
@@ -213,6 +214,13 @@ void WallClockASGCT::sharedSignalHandler(int signo, siginfo_t *siginfo,
     return;
   }
   Counters::increment(WALLCLOCK_SIGNAL_OWN);
+
+  // One signal delivery is one sample attempt for this thread; the reservoir
+  // that decides which threads to signal runs in the timer thread
+  // (BaseWallClock::timerLoopCommon), not here. So this handler -- not the
+  // inner signalHandler() it calls -- is the per-sample unit, mirroring CPU.
+  // Declared past the origin check so stray SIGVTALRM is not timed as our work.
+  SAMPLER_PERF_PROBE(SP_WALL);
 
   SIGNAL_HANDLER_GUARD_OR_DROP();
 
@@ -419,6 +427,8 @@ void WallClockJvmti::sharedSignalHandler(int signo, siginfo_t *siginfo,
     return;
   }
   Counters::increment(WALLCLOCK_SIGNAL_OWN);
+  // Per-sample unit for this engine; see WallClockASGCT::sharedSignalHandler.
+  SAMPLER_PERF_PROBE(SP_WALL);
   SIGNAL_HANDLER_GUARD_OR_DROP();
 
   WallClockJvmti *engine =

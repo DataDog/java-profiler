@@ -25,6 +25,7 @@
 #include "libraries.h"
 #include "log.h"
 #include "profiler.h"
+#include "samplerPerf.h"
 #include "signalCookie.h"
 #include "threadLocalData.inline.h"
 #include "threadState.inline.h"
@@ -213,6 +214,9 @@ void CTimerJvmti::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   }
   Counters::increment(CTIMER_SIGNAL_OWN);
 
+  // See the note on probe placement in CTimer::signalHandler below.
+  SAMPLER_PERF_PROBE(SP_CPU);
+
   SIGNAL_HANDLER_GUARD_OR_DROP();
   InflightGuard inflight;
   ProfiledThread *current = SIGNAL_HANDLER_CURRENT_THREAD();
@@ -260,6 +264,11 @@ void CTimer::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
     return;
   }
   Counters::increment(CTIMER_SIGNAL_OWN);
+
+  // Declared past the origin check so a foreign SIGPROF -- and the foreign
+  // handler OS::forwardForeignSignal() runs for it above -- is never timed as
+  // our work. Everything of ours below, including the bail-outs, is measured.
+  SAMPLER_PERF_PROBE(SP_CPU);
 
   SIGNAL_HANDLER_GUARD_OR_DROP();
   InflightGuard inflight;

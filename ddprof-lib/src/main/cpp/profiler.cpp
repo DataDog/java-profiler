@@ -32,6 +32,7 @@
 #include "os.h"
 #include "perfEvents.h"
 #include "safeAccess.h"
+#include "samplerPerf.h"
 #include "stackFrame.h"
 #include "stackWalker.h"
 #include "symbols.h"
@@ -1835,6 +1836,11 @@ Error Profiler::stop() {
               dropped_lock, requested);
     }
   }
+
+  // Per-sampler timing report. A no-op unless built with -PenableSamplerPerf.
+  // Emitted before _jfr.stop() so the same counters are also correct in the
+  // final JFR chunk.
+  SamplerPerf::report();
 
   // writing these out before stopping the JFR recording allows to report the
   // correct counts in the recording

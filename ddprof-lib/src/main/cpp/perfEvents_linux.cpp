@@ -31,6 +31,7 @@
 #include "os.h"
 #include "perfEvents.h"
 #include "profiler.h"
+#include "samplerPerf.h"
 #include "signalInflight.h"
 #include "spinLock.h"
 #include "stackFrame.h"
@@ -789,6 +790,13 @@ void PerfEvents::signalHandler(int signo, siginfo_t *siginfo, void *ucontext) {
   // Must precede PerfFdRearmGuard so it destructs after it and restores the
   // errno that the guard's ioctl()/resetBuffer() calls clobber.
   ErrnoPreserver errno_preserver;
+  // Declared between the two guards on purpose. Locals destruct in reverse
+  // order, so this sits after ErrnoPreserver (which must still destruct last)
+  // but before PerfFdRearmGuard, meaning the guard's resetBuffer()/ioctl()
+  // rearm cost is inside the measured window -- it is part of what a perf
+  // sample costs. The si_code check above already returned for external
+  // signals, so those are never timed as our work.
+  SAMPLER_PERF_PROBE(SP_CPU);
   PerfFdRearmGuard rearm(siginfo->si_fd, OS::threadId());
   SIGNAL_HANDLER_GUARD_OR_DROP();
   InflightGuard inflight;
