@@ -381,7 +381,9 @@ def cmd_report(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--list", default=quarantine.DEFAULT_LIST)
-    sub = parser.add_subparsers(dest="command", required=True)
+    # required=True on add_subparsers() needs Python 3.7+; this also has to
+    # run under Python 3.6 (EL7's base-repo python3), so the check is manual.
+    sub = parser.add_subparsers(dest="command")
 
     count = sub.add_parser("count", help="print the number of distinct failed tests")
     count.add_argument("--dir", required=True)
@@ -408,6 +410,8 @@ def main():
     report.set_defaults(func=cmd_report)
 
     args = parser.parse_args()
+    if args.command is None:
+        parser.error("a command is required")
     return args.func(args)
 
 

@@ -27,6 +27,15 @@ DEFAULT_LIST = os.path.join("ddprof-test", "quarantine.txt")
 TICKET_RE = re.compile(r"^PROF-\d+$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 FIELDS = ("test", "ticket", "added", "review_by", "cells", "reason")
+
+
+def _parse_date(s):
+    """A YYYY-MM-DD string as a date, or raises ValueError.
+
+    date.fromisoformat() needs Python 3.7+; this also has to run under
+    Python 3.6 (EL7's base-repo python3).
+    """
+    return datetime.datetime.strptime(s, "%Y-%m-%d").date()
 # Long enough not to be busywork, short enough that a quarantine outlives
 # neither the release it was added in nor the memory of why.
 DEFAULT_REVIEW_DAYS = 90
@@ -44,8 +53,15 @@ BAD_TEST_WILDCARD_RE = re.compile(r"[*?]")
 # Cell names are <libc>-<jdk>-<config>-<arch>. Only libc and arch are a closed
 # set -- jdk and config come from the workflow inputs and grow without warning
 # -- so those two are the only axes worth checking a glob against.
+#
+# "el7" names the GitLab functional job's Oracle Linux 7 runtime, which is
+# technically glibc but must not share the "glibc" token: that job runs a
+# different environment (container, kernel, network stack) than the GitHub
+# Actions "glibc" matrix (Ubuntu), and the two can fail the same test for
+# unrelated reasons. Sharing a cell string would let an entry meant to excuse
+# one silently excuse the other.
 KNOWN_ARCHES = ("amd64", "aarch64")
-KNOWN_LIBCS = ("glibc", "musl")
+KNOWN_LIBCS = ("glibc", "musl", "el7")
 # Anything that reads like an architecture. A glob naming one that CI never
 # builds silently quarantines nothing, which is how "*arm64*" shipped in this
 # file's own example: the arch is spelled aarch64.
@@ -199,7 +215,7 @@ def is_expired(entry, today=None):
         # entry that can be. An expiry that cannot be read has passed.
         return True
     try:
-        due = datetime.date.fromisoformat(review_by)
+        due = _parse_date(review_by)
     except ValueError:
         return True
     return due < (today or datetime.date.today())
@@ -311,7 +327,7 @@ def cmd_validate(args):
 
         if entry["added"] and DATE_RE.match(entry["added"]):
             try:
-                datetime.date.fromisoformat(entry["added"])
+                _parse_date(entry["added"])
             except ValueError:
                 complain(line, "added '{}' is not a real calendar date".format(entry["added"]))
 
@@ -338,7 +354,7 @@ def cmd_validate(args):
 
         if DATE_RE.match(entry["review_by"]):
             try:
-                due = datetime.date.fromisoformat(entry["review_by"])
+                due = _parse_date(entry["review_by"])
             except ValueError:
                 complain(line, "review_by '{}' is not a real calendar date".format(
                     entry["review_by"]))
@@ -370,12 +386,16 @@ def cmd_validate(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--list", default=DEFAULT_LIST)
-    sub = parser.add_subparsers(dest="command", required=True)
+    # required=True on add_subparsers() needs Python 3.7+; this also has to run
+    # under Python 3.6 (EL7's base-repo python3), so the check is manual.
+    sub = parser.add_subparsers(dest="command")
 
     validate = sub.add_parser("validate", help="check the list's format and review dates")
     validate.set_defaults(func=cmd_validate)
 
     args = parser.parse_args()
+    if args.command is None:
+        parser.error("a command is required")
     return args.func(args)
 
 
