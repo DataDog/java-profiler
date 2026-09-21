@@ -675,6 +675,56 @@ assert d['final_attempt_cut_short'], d
 " "$CASE/out.json" || fail "a dead test JVM was excused by the quarantine list"
 pass "a cut-short final attempt gates despite its failures being quarantined"
 
+# musl runs ProfilerTestRunner through a plain Exec task, not Gradle's native
+# Test task: Gradle prints the exact same "finished with non-zero exit value"
+# line whenever that process exits non-zero for *any* reason, including an
+# ordinary single-test failure -- not just a genuine crash. That line must not
+# gate a quarantined musl failure the way it correctly does for glibc above.
+CASE="$TEMP_DIR/case-quarantined-musl-exec-task-nonzero-exit"
+mkdir -p "$CASE/flake-evidence/attempt-1"
+write_failure_xml "$CASE/flake-evidence/attempt-1" "com.dd.WobblyTest" "sometimesFails" "boom"
+cat > "$CASE/attempt.log" <<'EOS'
+> Task :ddprof-test:testDebug FAILED
+Process 'command '/usr/bin/java'' finished with non-zero exit value 1
+EOS
+write_list "$CASE/list.txt" "$(entry com.dd.WobblyTest.sometimesFails PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/flake_report.py" --list "$CASE/list.txt" report \
+  --cell "musl-17-debug-amd64" --evidence-dir "$CASE/flake-evidence" \
+  --final-attempt 1 --attempt-log "$CASE/attempt.log" \
+  --final-attempt-exit-code 1 --test-task-pattern test \
+  --out "$CASE/out.json" >/dev/null 2>&1
+python3 -c "
+import json,sys
+d = json.load(open(sys.argv[1]))
+assert d['gates'] is False, 'a musl Exec task exit-value line must not read as cut-short: %r' % d['gate_reason']
+assert not d['final_attempt_cut_short'], d
+" "$CASE/out.json" || fail "an ordinary musl test failure's Exec-task exit line was read as a crash"
+pass "musl's Exec-task exit-value line does not gate a quarantined failure"
+
+# The one musl signal that must still gate: a genuine crash banner, present
+# regardless of libc.
+CASE="$TEMP_DIR/case-quarantined-musl-real-crash"
+mkdir -p "$CASE/flake-evidence/attempt-1"
+write_failure_xml "$CASE/flake-evidence/attempt-1" "com.dd.WobblyTest" "sometimesFails" "boom"
+cat > "$CASE/attempt.log" <<'EOS'
+> Task :ddprof-test:testDebug FAILED
+# A fatal error has been detected by the Java Runtime Environment:
+# hs_err_pid12345.log
+EOS
+write_list "$CASE/list.txt" "$(entry com.dd.WobblyTest.sometimesFails PROF-1 "$(day_offset 30)")"
+python3 "$SCRIPTS/flake_report.py" --list "$CASE/list.txt" report \
+  --cell "musl-17-debug-amd64" --evidence-dir "$CASE/flake-evidence" \
+  --final-attempt 1 --attempt-log "$CASE/attempt.log" \
+  --final-attempt-exit-code 1 --test-task-pattern test \
+  --out "$CASE/out.json" >/dev/null 2>&1
+python3 -c "
+import json,sys
+d = json.load(open(sys.argv[1]))
+assert d['gates'] is True, 'a real crash banner must still gate on musl: %r' % d['gate_reason']
+assert d['final_attempt_cut_short'], d
+" "$CASE/out.json" || fail "a genuine musl crash was excused by the quarantine list"
+pass "a genuine crash banner still gates a quarantined musl failure"
+
 # Same intent, without the log saying so: the final attempt reached fewer tests
 # than an earlier one managed, so it stopped early.
 CASE="$TEMP_DIR/case-quarantined-but-short-run"

@@ -110,15 +110,27 @@ def cmd_count(args):
 
 _NON_TEST_TASK_FAILURE_RE = re.compile(r"Execution failed for task '([^']+)'")
 
-# Gradle reporting that a forked test JVM died, and the JVM's own crash banner.
-# An ordinary test failure makes Gradle exit non-zero too, so the exit code by
-# itself cannot separate "the quarantined test failed" from "the JVM died with
-# tests still unrun" -- but Gradle names the latter explicitly.
-_CUT_SHORT_RE = re.compile(
-    r"finished with non-zero exit value"
-    r"|A fatal error has been detected by the Java Runtime Environment"
+# The JVM's own crash banner -- reliable on every platform, including musl:
+# nothing but a real crash prints this.
+_CRASH_RE = re.compile(
+    r"A fatal error has been detected by the Java Runtime Environment"
     r"|hs_err_pid"
 )
+
+# Gradle reporting that a forked test JVM died. Reliable for the glibc/macOS
+# path, where tests run through Gradle's native Test task: an ordinary test
+# failure is caught and reported by the worker, which then exits 0, so this
+# line only appears when the worker itself died.
+#
+# NOT reliable on musl: ProfilerTestRunner there runs as a plain Exec task
+# (see ProfilerTestPlugin's musl branch), and Gradle's Exec task prints this
+# exact line whenever the launched process exits non-zero for *any* reason --
+# including an ordinary single assertion failure, since ProfilerTestRunner
+# reports failure through its own exit code, not by staying alive. Matching
+# it there would mark every musl test failure "cut short" and never excused
+# by quarantine, silently defeating quarantine for that platform (flagged by
+# review on this PR against commit 5f01c39c, before the fix here).
+_WORKER_DIED_RE = re.compile(r"finished with non-zero exit value")
 
 
 def non_test_task_failures(log_path, test_task_pattern):
@@ -139,19 +151,26 @@ def non_test_task_failures(log_path, test_task_pattern):
     return sorted(found)
 
 
-def cut_short_marker(log_path):
+def cut_short_marker(log_path, musl=False):
     """The log line fragment showing this invocation was cut short, or None.
 
     A missing or unreadable log yields None, matching non_test_task_failures()
     above: with no log there is no evidence either way, and the alternative
     would be to gate every quarantined failure on the strength of a file the
     caller happened not to pass.
+
+    `musl=True` drops _WORKER_DIED_RE from consideration: see its docstring
+    for why that line is ambiguous there. The crash banner alone still
+    catches a genuine musl crash.
     """
     if not log_path or not os.path.isfile(log_path):
         return None
+    pattern = _CRASH_RE if musl else re.compile(
+        "{}|{}".format(_CRASH_RE.pattern, _WORKER_DIED_RE.pattern)
+    )
     with open(log_path, errors="replace") as handle:
         for line in handle:
-            m = _CUT_SHORT_RE.search(line)
+            m = pattern.search(line)
             if m:
                 return m.group(0)
     return None
@@ -208,7 +227,11 @@ def cmd_report(args):
     # the attempt having reached fewer tests than another attempt managed. The
     # latter needs more than one attempt to compare against, which slow suites
     # (MAX_ATTEMPTS=1) do not have, so the log is the primary signal.
-    final_attempt_cut_short = cut_short_marker(args.attempt_log)
+    # Cell names are <libc>-<jdk>-<config>-<arch>[-slow] (quarantine.KNOWN_LIBCS);
+    # the leading token is the only part cut_short_marker needs.
+    final_attempt_cut_short = cut_short_marker(
+        args.attempt_log, musl=args.cell.split("-", 1)[0] == "musl"
+    )
     observed_shortfall = None
     if final_attempt_ran and ran > 1:
         best_observed = max(len(seen) for _, seen, _ in attempts)
