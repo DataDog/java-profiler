@@ -64,8 +64,8 @@ struct SubsampleRate {
 // Fixed-capacity, LRU-evicted per-klass population history, keyed by klass
 // StringDictionary id (Profiler::classMap(), the same id TrackingEntry/
 // AllocEvent resolves lazily today only at flush time, flush_table() below).
-// This is the data doc/architecture/LiveHeapReferenceChains.md's Open
-// Question 3 "positive population-slope ranking" proposal needs: a rolling
+// This is the data the design doc's Open Question 3 "positive
+// population-slope ranking" proposal needs: a rolling
 // window of how many tracked instances of a klass are alive at each GC
 // epoch, plus one representative instance to chase a chain for if the trend
 // looks leak-shaped (see selectLeakCandidates() below for the ranking, and
