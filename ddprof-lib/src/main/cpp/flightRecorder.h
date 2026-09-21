@@ -581,20 +581,21 @@ public:
 
   // Mirrors recordHeapUsage()'s shape exactly - ReferenceChainAbandonedEvent
   // is not stack-sample-shaped (no tid/call_trace_id), same as HeapUsage.
-  // Called from Profiler::writeReferenceChainAbandoned() (profiler.cpp),
+  // Called from the profiler's dump-time abandoned-event drain,
   // wired from Profiler::dump() the same way LivenessTracker::flush() is.
   void recordReferenceChainAbandoned(int lock_index,
                                      ReferenceChainAbandonedEvent *event);
 
   // Mirrors recordReferenceChainAbandoned() above exactly, for
-  // ReferenceChainEvent instead. Called from Profiler::writeReferenceChain()
-  // (profiler.cpp), itself called from Profiler::dump()'s drain loop over
+  // ReferenceChainEvent instead. Called from the profiler's dump()-time
+  // writer, itself called from Profiler::dump()'s drain loop over
   // the engine's resolved-chain cache snapshot: the BFS
   // scheduling thread only caches resolved chains and each dump re-emits
   // the cache, so chain events
   // are written on dump()'s own thread, not from the tracker thread, and
   // unlike recordReferenceChainAbandoned() (unbounded retry budget per
-  // event) the batch shares one deadline (writeReferenceChain()'s comment).
+  // event) the batch shares one deadline (see the writer's contract in
+  // Profiler - the drain batch, not each event, owns the retry budget).
   void recordReferenceChain(int lock_index, ReferenceChainEvent *event);
 };
 
