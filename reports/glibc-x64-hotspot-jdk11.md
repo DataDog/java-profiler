@@ -5,7 +5,7 @@ title: glibc-x64-hotspot-jdk11
 
 ## glibc-x64-hotspot-jdk11 - ✅ PASS
 
-**Date:** 2026-09-20 21:20:05 EDT
+**Date:** 2026-09-20 21:23:20 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,9 +28,9 @@ title: glibc-x64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 495 |
-| Sample Rate | 8.25/sec |
-| Health Score | 516% |
+| CPU Samples | 601 |
+| Sample Rate | 10.02/sec |
+| Health Score | 626% |
 | Threads | 8 |
 | Allocations | 364 |
 
@@ -38,36 +38,36 @@ title: glibc-x64-hotspot-jdk11
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 762 |
-| Sample Rate | 12.70/sec |
-| Health Score | 794% |
-| Threads | 10 |
-| Allocations | 475 |
+| CPU Samples | 964 |
+| Sample Rate | 16.07/sec |
+| Health Score | 1004% |
+| Threads | 9 |
+| Allocations | 472 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 17-17 cores)</summary>
 
 ```
-1789953245 17
-1789953250 17
-1789953255 17
-1789953260 17
-1789953265 17
-1789953270 17
-1789953275 17
-1789953280 17
-1789953285 17
-1789953290 17
-1789953295 17
-1789953300 17
-1789953305 17
-1789953310 17
-1789953315 17
-1789953320 17
-1789953325 17
-1789953330 17
-1789953335 17
-1789953340 17
+1789953467 17
+1789953472 17
+1789953477 17
+1789953482 17
+1789953487 17
+1789953492 17
+1789953497 17
+1789953502 17
+1789953507 17
+1789953512 17
+1789953517 17
+1789953522 17
+1789953528 17
+1789953533 17
+1789953538 17
+1789953543 17
+1789953548 17
+1789953553 17
+1789953558 17
+1789953563 17
 ```
 </details>
 

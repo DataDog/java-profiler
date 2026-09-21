@@ -5,7 +5,7 @@ title: glibc-arm64-hotspot-jdk25
 
 ## glibc-arm64-hotspot-jdk25 - ✅ PASS
 
-**Date:** 2026-09-20 21:20:05 EDT
+**Date:** 2026-09-20 21:23:20 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: glibc-arm64-hotspot-jdk25
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 94 |
-| Sample Rate | 1.57/sec |
-| Health Score | 98% |
-| Threads | 10 |
-| Allocations | 60 |
+| CPU Samples | 79 |
+| Sample Rate | 1.32/sec |
+| Health Score | 82% |
+| Threads | 9 |
+| Allocations | 63 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 640 |
-| Sample Rate | 10.67/sec |
-| Health Score | 667% |
+| CPU Samples | 626 |
+| Sample Rate | 10.43/sec |
+| Health Score | 652% |
 | Threads | 9 |
-| Allocations | 469 |
+| Allocations | 521 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 18-18 cores)</summary>
 
 ```
-1789953280 18
-1789953285 18
-1789953290 18
-1789953295 18
-1789953300 18
-1789953305 18
-1789953310 18
-1789953315 18
-1789953320 18
-1789953325 18
-1789953330 18
-1789953335 18
-1789953340 18
-1789953345 18
-1789953350 18
-1789953355 18
-1789953360 18
-1789953365 18
-1789953370 18
-1789953375 18
+1789953497 18
+1789953502 18
+1789953507 18
+1789953512 18
+1789953517 18
+1789953522 18
+1789953527 18
+1789953532 18
+1789953537 18
+1789953542 18
+1789953547 18
+1789953552 18
+1789953557 18
+1789953562 18
+1789953567 18
+1789953572 18
+1789953577 18
+1789953582 18
+1789953587 18
+1789953592 18
 ```
 </details>
 
