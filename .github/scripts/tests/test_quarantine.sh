@@ -985,6 +985,25 @@ assert not fnmatch.fnmatch('glibc-8-debug-amd64-slow', g), 'suite suffix not nar
 " || fail "cells_glob does not narrow on the JDK or the slow/regular axis"
 pass "a proposal excludes cells differing only in JDK or in the slow suffix"
 
+# A JDK variant like "17-j9" gives its cell one more "-"-separated field than
+# a plain "17" cell, so cells_glob() can't merge the two into one glob and
+# returns None. render_proposals() must not turn that into the empty `cells`
+# column applies_to() reads as "no globs means everywhere" -- it must fall
+# back to listing the exact cells observed.
+python3 -c "
+import sys
+sys.path.insert(0, '$SCRIPTS')
+from flake_summary import render_proposals, cells_glob
+cells = ['glibc-17-debug-amd64', 'glibc-17-j9-debug-amd64']
+assert cells_glob(cells) is None, 'fixture no longer exercises the None case'
+out = '\n'.join(render_proposals({'com.dd.WobblyTest.sometimesFails': {'message': 'boom', 'cells': cells}}))
+line = [l for l in out.splitlines() if l.startswith('com.dd.WobblyTest.sometimesFails')][0]
+cells_field = line.split('|')[4].strip()
+assert cells_field != '-', 'unglobbable cells rendered as the global-quarantine sentinel: ' + line
+assert set(cells_field.split(',')) == set(cells), line
+" || fail "a proposal for mixed-width cells silently quarantined the test everywhere"
+pass "a proposal for cells with no computable glob lists them literally instead of everywhere"
+
 echo "== a widened proposal says so =="
 
 python3 -c "

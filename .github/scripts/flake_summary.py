@@ -253,12 +253,22 @@ def render_proposals(flaky, proposal_limit=25):
         note = widened_note(test_id, pattern)
         if note:
             out.append(note)
+        # cells_glob() returns None when the cells don't share a computable
+        # glob -- e.g. a JDK variant like "17-j9" gives its cell one more
+        # "-"-separated field than a plain "17" cell, so the two can't be
+        # merged into one glob. Falling back to `[]` here would render as the
+        # empty `cells` column applies_to() documents as "no globs means
+        # everywhere" -- turning an ordinary two-cell flake into a proposal
+        # that silently quarantines the test on every libc, config, arch and
+        # the slow suite too. The observed cells themselves are always a safe,
+        # if unglobbed, fallback: they can only narrow, never widen, what the
+        # entry matches.
         out.append(quarantine.format_entry(
             pattern,
             "PROF-XXXXX",
             today.isoformat(),
             review_by,
-            cells_glob(info["cells"]) or [],
+            cells_glob(info["cells"]) or sorted(set(info["cells"])),
             reason,
         ))
     if len(items) > proposal_limit:
