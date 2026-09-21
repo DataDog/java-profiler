@@ -5,7 +5,7 @@ title: musl-x64-hotspot-jdk17
 
 ## musl-x64-hotspot-jdk17 - ✅ PASS
 
-**Date:** 2026-09-21 16:58:34 EDT
+**Date:** 2026-09-21 17:43:43 EDT
 
 ### Configuration
 | Setting | Value |
@@ -28,46 +28,46 @@ title: musl-x64-hotspot-jdk17
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 528 |
-| Sample Rate | 8.80/sec |
-| Health Score | 550% |
+| CPU Samples | 483 |
+| Sample Rate | 8.05/sec |
+| Health Score | 503% |
 | Threads | 8 |
-| Allocations | 372 |
+| Allocations | 357 |
 
 #### Scenario 2: Tracer+Profiler ✅
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 670 |
-| Sample Rate | 11.17/sec |
-| Health Score | 698% |
-| Threads | 9 |
-| Allocations | 443 |
+| CPU Samples | 881 |
+| Sample Rate | 14.68/sec |
+| Health Score | 917% |
+| Threads | 10 |
+| Allocations | 472 |
 
 <details>
 <summary>CPU Timeline (1 unique values: 22-22 cores)</summary>
 
 ```
-1790024019 22
-1790024024 22
-1790024029 22
-1790024034 22
-1790024039 22
-1790024044 22
-1790024049 22
-1790024054 22
-1790024059 22
-1790024064 22
-1790024069 22
-1790024074 22
-1790024079 22
-1790024084 22
-1790024089 22
-1790024094 22
-1790024099 22
-1790024104 22
-1790024109 22
-1790024114 22
+1790026682 22
+1790026687 22
+1790026692 22
+1790026697 22
+1790026702 22
+1790026707 22
+1790026712 22
+1790026717 22
+1790026722 22
+1790026727 22
+1790026732 22
+1790026737 22
+1790026742 22
+1790026747 22
+1790026752 22
+1790026757 22
+1790026762 22
+1790026767 22
+1790026772 22
+1790026777 22
 ```
 </details>
 
