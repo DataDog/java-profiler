@@ -68,6 +68,19 @@ function onexit {
 
 trap onexit EXIT
 
-./gradlew -Pddprof_version="$(get_version)" -Pskip-native=ddprof-lib,malloc-shim -Pwith-libs="$(pwd)/libs" -PCI \
+# "el7", not "glibc": this runtime (container, kernel, network stack) is a
+# different environment than the GitHub Actions glibc/Ubuntu matrix and can
+# fail the same test for unrelated reasons, so it needs its own cell token
+# (quarantine.py's KNOWN_LIBCS) -- sharing "glibc" would let an entry meant to
+# excuse one silently excuse the other.
+CELL="el7-${TEST_JDK}-$(printf '%s' "${TEST_CONFIG}" | tr '[:upper:]' '[:lower:]')-amd64"
+
+# Default to no retry: a flaky-vs-broken retry means a full second suite run,
+# and this runner has already OOMKilled the container outright at the default
+# 2 attempts (see PR #805). Overridable via the job's own variables.
+export MAX_ATTEMPTS="${MAX_ATTEMPTS:-1}"
+
+.github/scripts/run_tests_with_retry.sh "${CELL}" -- \
+  ./gradlew -Pddprof_version="$(get_version)" -Pskip-native=ddprof-lib,malloc-shim -Pwith-libs="$(pwd)/libs" -PCI \
   -PtestMaxHeap=1536m \
   ":ddprof-test:test${TEST_CONFIG}" --max-workers=1 --build-cache --stacktrace --info --no-watch-fs --no-daemon

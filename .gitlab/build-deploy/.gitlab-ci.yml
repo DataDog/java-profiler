@@ -228,6 +228,13 @@ stresstest:arm64-musl:
     paths:
       - functional/$TARGET/jdk$TEST_JDK/reports
       - functional/$TARGET/jdk$TEST_JDK/logs
+      # run_tests_with_retry.sh's own evidence: each attempt's JUnit XML
+      # snapshot, the classifier's gating decision, and the final attempt's
+      # raw log -- without these, a quarantine decision on this job has
+      # nothing to show for it besides the console log.
+      - flake-evidence
+      - ci-outcome
+      - build/logs/attempt.log
     expire_in: 2 weeks
 
 # Runs on every pipeline (not just nightly): JDK 8 is the oldest/most
