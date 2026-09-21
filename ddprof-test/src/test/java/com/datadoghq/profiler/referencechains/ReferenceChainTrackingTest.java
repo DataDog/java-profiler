@@ -780,7 +780,7 @@ public class ReferenceChainTrackingTest extends AbstractProfilerTest {
    * comment for why {@code budget} must stay larger than {@code framecap}) makes the very first
    * BFS pass hit the frontier cap once a second root-referenced object is discovered, so
    * {@code runPass()} (referenceChains.cpp) abandons the search rather than silently truncating it
-   * (Termination section, doc/architecture/LiveHeapReferenceChains.md) - or, if this method's own
+   * - or, if this method's own
    * {@code framecap=1} lost the race to size the shared {@code FrontierTable} (see
    * {@code getProfilerCommand()}'s own comment on this method), its {@code ttl=100} fallback
    * abandons the search instead once enough wall-clock time has passed, which by the time this
