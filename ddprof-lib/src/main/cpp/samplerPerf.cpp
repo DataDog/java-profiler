@@ -49,25 +49,27 @@ void SamplerPerf::report() {
     return;
   }
 
-  fprintf(stderr, "[java-profiler] sampler performance (elapsed wall time, "
+  fprintf(stdout, "[java-profiler] sampler performance (elapsed wall time, "
                   "not CPU time):\n");
-  fprintf(stderr, "[java-profiler]   %-14s %14s %12s %12s\n", "sampler",
+  fprintf(stdout, "[java-profiler]   %-14s %14s %12s %12s\n", "sampler",
           "total (ms)", "count", "avg (ns)");
+
   for (int i = 0; i < SP_NUM_SAMPLERS; i++) {
     if (count[i] <= 0) {
       // Engine never ran this recording.
       continue;
     }
     u64 total_ns = ticksToNanos((u64)ticks[i]);
-    fprintf(stderr, "[java-profiler]   %-14s %14.3f %12lld %12llu\n",
+    fprintf(stdout, "[java-profiler]   %-14s %14.3f %12lld %12llu\n",
             name((SamplerId)i), (double)total_ns / 1000000.0, count[i],
             (unsigned long long)(total_ns / (u64)count[i]));
   }
   // Points at the two subset relationships that make these rows easy to
   // misread; the full set of caveats is in samplerPerf.h.
-  fprintf(stderr,
+  fprintf(stdout,
           "[java-profiler]   note: cpu includes unwinding_ticks_async, and "
           "alloc includes liveness; do not sum them.\n");
+  fflush(stdout);
 }
 
 #else // __SAMPLER_PERF__
