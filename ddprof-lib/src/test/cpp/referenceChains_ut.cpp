@@ -3670,7 +3670,7 @@ TEST_F(PollWatchedTargetsTest, NoOpWhenGcGenerationsDisabled) {
 // Resolved-chain cache (ReferenceChainTracker::cacheResolvedChain()/
 // drainPendingChainEvents(), referenceChains.cpp) - the mechanism that keeps a
 // resolved chain alive across dumps so it re-emits into every JFR chunk the
-// sample survives into, and keeps Profiler::writeReferenceChain()'s blocking
+// sample survives into, and keeps the dump-time writer's blocking
 // lock-acquisition retry loop off the BFS scheduling thread (see
 // _resolved_chains' own comment, referenceChains.h). These tests drive
 // cacheResolvedChain()/drainPendingChainEvents() directly via
