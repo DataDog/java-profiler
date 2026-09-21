@@ -2415,6 +2415,11 @@ void Recording::recordReferenceChain(Buffer *buf, ReferenceChainEvent *event) {
     labeled += event->_hops[i].edge_label.empty() ? 0u : 1u;
   }
   const u32 edge_count = labeled == emitted_size ? emitted_size : 0u;
+  // Clamped to MAX_REFERENCE_CHAIN_EDGE_LABEL at the write site below (via
+  // strnlen) rather than trusted from the producer - the same "do not trust
+  // an upstream cap" defense this function applies to the chain length, so
+  // the reservation above stays an upper bound regardless of what the
+  // producer hands it.
   const char *edge_labels[MAX_REFERENCE_CHAIN_EVENT_HOPS];
   for (u32 i = 0; i < edge_count; i++) {
     edge_labels[i] = event->_hops[i].edge_label.c_str();
@@ -2458,7 +2463,8 @@ void Recording::recordReferenceChain(Buffer *buf, ReferenceChainEvent *event) {
   // for this event.
   buf->putVar32(edge_count);
   for (u32 i = 0; i < edge_count; i++) {
-    buf->putUtf8(edge_labels[i]);
+    buf->putUtf8(edge_labels[i],
+                 (u32)strnlen(edge_labels[i], MAX_REFERENCE_CHAIN_EDGE_LABEL));
   }
   buf->putVar32(start, (u32)(buf->offset() - start));
   flushIfNeeded(buf);
