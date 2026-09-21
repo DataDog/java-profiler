@@ -28,7 +28,7 @@ empty function, and the counters occupy **no enum slot and no storage** in
 ## Output
 
 `SamplerPerf::report()` runs from `Profiler::stop()`, before the JFR recording is
-stopped, and prints to stderr. Samplers with a zero sample count are omitted, so
+stopped, and prints to stdout. Samplers with a zero sample count are omitted, so
 only engines that actually ran are listed:
 
 ```
@@ -98,6 +98,16 @@ Five things are easy to get wrong:
    `ITimer` is the exception, having no origin check to sit behind (see its own
    NOTE in `itimer.cpp`). Use the `SAMPLES_DROPPED_*` / `WC_SIGNAL_*` counters to
    quantify the bail-outs.
+
+6. **`report()` can undercount the very last sample of a run.** The probe is
+   declared before `InflightGuard` (see caveat 5), so at handler exit
+   `InflightGuard`'s destructor — which `Profiler::stop()`'s drain waits on —
+   runs before the probe's destructor, which is the one that updates the
+   counters. A handler still unwinding when the drain observes zero can have
+   its counters land after `report()` already read them. The teardown work
+   between the drain and `report()` dwarfs the few instructions between those
+   two destructors, so this is a real but vanishingly unlikely race, and its
+   only effect is under-reporting by at most one sample.
 
 ## Implementation notes
 

@@ -73,6 +73,18 @@
 //     OS::forwardForeignSignal() runs -- is never timed as our work.  Use the
 //     SAMPLES_DROPPED_* / WC_SIGNAL_* counters to quantify the bail-outs.
 //
+//  6. report() can undercount the very last sample of a run.  The probe is
+//     declared before InflightGuard (see caveat 5), so at handler exit
+//     InflightGuard's destructor -- which Profiler::stop()'s
+//     SignalInflight::drain() waits on -- runs before the probe's, which is
+//     the one that bumps sampler_ticks.*/sampler_count.*.  A handler that is
+//     still unwinding when drain() observes zero can have its counters land
+//     after report() already read them.  In practice the teardown work
+//     between drain() and report() (profiler.cpp) dwarfs the few
+//     instructions between those two destructors, so this is a real but
+//     vanishingly unlikely race, and its only effect is a diagnostic
+//     printout under-reporting by at most one sample.
+//
 // See doc/reference/SamplerPerfCounters.md.
 
 #ifndef _SAMPLER_PERF_H
@@ -108,7 +120,7 @@ typedef enum SamplerId : int {
 
 class SamplerPerf {
 public:
-  // Prints the per-sampler table to stderr. Samplers with a zero sample count
+  // Prints the per-sampler table to stdout. Samplers with a zero sample count
   // are skipped so only engines that actually ran are listed. A no-op when
   // __SAMPLER_PERF__ is not defined, so the call site needs no #ifdef.
   static void report();
