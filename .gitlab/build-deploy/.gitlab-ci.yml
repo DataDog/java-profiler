@@ -229,57 +229,6 @@ functional:x64-el7-jdk21:
   variables:
     TEST_JDK: "21"
 
-# --- TEMPORARY diagnostic jobs -------------------------------------------
-# Investigating why NativeSocket* tests produce zero events on the EL7
-# runtime (functional:x64-el7-jdk8 keeps failing there). Builds a real DEBUG
-# config (which compiles in NativeSocketSampler's _send_hook_calls/
-# _recv_hook_calls atomics and TEST_LOG calls, gated #ifdef DEBUG) on the
-# AlmaLinux 8 toolchain build:x64 already uses, then runs just the
-# NativeSocket* suite against it on the EL7 runtime, so the --info log
-# shows whether the hooks ever fire at all. Remove both jobs once this is
-# root-caused.
-build:x64-debug-diag:
-  extends: .build_job
-  variables:
-    BUILD_IMAGE: ${BUILD_IMAGE_X64_GLIBC}
-    # Matches NativeBuildExtension.platformIdentifier(), which is the actual
-    # subdirectory name under build/native/debug/META-INF/native-libs/ --
-    # NOT a free-form label. build.sh's TARGET for build:x64 relies on the
-    # same match; a different TARGET here would nest the .so one directory
-    # too deep for the artifacts:paths pattern below to find it.
-    TARGET: linux-x64
-  script:
-    - |
-      if [ -z "${JAVA_HOME}" ] || [ ! -x "${JAVA_HOME}/bin/java" ]; then
-        export JAVA_HOME=~/.sdkman/candidates/java/current
-      fi
-      source .gitlab/scripts/includes.sh
-      # -Dddprof.debugStaticLibstdcxx=true: diagnostic-only (ConfigurationPresets.kt),
-      # statically links libstdc++/libgcc into the debug .so the same way release
-      # already does. Without it, the debug .so needs a GLIBCXX newer than EL7's
-      # stock gcc 4.8.5 provides -- confirmed by the UnsatisfiedLinkError this
-      # diagnostic build previously hit ("GLIBCXX_3.4.20 not found").
-      ./gradlew -Pddprof_version="$(get_version)" -Pskip-cpp-tests -Dddprof.debugStaticLibstdcxx=true \
-        :ddprof-lib:assembleDebugJar --no-build-cache --stacktrace --info --no-watch-fs --no-daemon
-      mkdir -p libs
-      cp -r ddprof-lib/build/native/debug/META-INF/native-libs/* libs/
-
-functional:x64-el7-debug-diag:
-  extends: .functional_job
-  needs:
-    - job: prepare:start
-      artifacts: true
-    - job: build:x64-debug-diag
-      artifacts: true
-  rules:
-    - when: on_success
-  variables:
-    TARGET: linux-x64
-    TEST_JDK: "8"
-    TEST_CONFIG: "Debug"
-    TESTS_FILTER: "*NativeSocket*"
-# --- end TEMPORARY diagnostic jobs ---------------------------------------
-
 # Builds the chaos reliability harness once per pipeline so the per-cell
 # reliability jobs can pull it as an artifact instead of compiling inline.
 # Schedule-only because reliability cells are schedule-only.
