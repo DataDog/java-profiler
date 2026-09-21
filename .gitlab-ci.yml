@@ -141,6 +141,7 @@ shell-unit-tests:
   image: ${PREPARE_IMAGE}
   script:
     - bash .gitlab/scripts/tests/includes_test.sh
+    - bash .gitlab/dd-trace-integration/tests/post_pr_comment_test.sh
 
 # Shared version detection used by benchmarks and reliability pipelines
 get-versions:
