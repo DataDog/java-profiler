@@ -651,7 +651,7 @@ class ElfParser {
     void parseDwarfInfo();
     uint32_t getSymbolCount(uint32_t* gnu_hash);
     ElfSymbol* resolveSymbol(const char* symtab, uint64_t r_info, size_t syment);
-    void** resolveImportAddr(const char* base, uint64_t r_offset);
+    void** resolveImportAddr(uintptr_t base_addr, uint64_t r_offset);
     void loadSymbols(bool use_debug);
     bool loadSymbolsFromDebug(const char* build_id, const int build_id_len);
     bool loadSymbolsFromDebuginfodCache(const char* build_id, const int build_id_len);
@@ -791,12 +791,15 @@ ElfSymbol* ElfParser::resolveSymbol(const char* symtab, uint64_t r_info, size_t 
 // the relocation entry -- as untrusted as r_info's symbol index above -- so
 // the addition is validated in integer space before the pointer is formed,
 // and the result is checked against the live image before
-// CodeCache::patchImport() is ever allowed to write through it.
-void** ElfParser::resolveImportAddr(const char* base, uint64_t r_offset) {
-    if (r_offset > (uint64_t)(UINTPTR_MAX - (uintptr_t)base)) {
+// CodeCache::patchImport() is ever allowed to write through it. base_addr is
+// taken as an integer (rather than a `const char*`) because base() is NULL
+// for ET_EXEC (non-PIE) images, and forming a pointer via null + r_offset
+// would itself be UB.
+void** ElfParser::resolveImportAddr(uintptr_t base_addr, uint64_t r_offset) {
+    if (r_offset > (uint64_t)(UINTPTR_MAX - base_addr)) {
         return nullptr;
     }
-    void** addr = (void**)(base + r_offset);
+    void** addr = (void**)(base_addr + r_offset);
     return inLiveImage(addr, sizeof(void*)) ? addr : nullptr;
 }
 
@@ -973,7 +976,7 @@ void ElfParser::parseDynamicSection() {
                 }
                 if (sym->st_name != 0) {
                     const char* sym_name = strAt(strtab, strsz, sym->st_name);
-                    void** import_addr = resolveImportAddr(base, r->r_offset);
+                    void** import_addr = resolveImportAddr(base_addr, r->r_offset);
                     if (sym_name != nullptr && import_addr != nullptr) {
                         _cc->addImport(import_addr, sym_name);
                     }
@@ -997,7 +1000,7 @@ void ElfParser::parseDynamicSection() {
                     }
                     if (sym->st_name != 0) {
                         const char* sym_name = strAt(strtab, strsz, sym->st_name);
-                        void** import_addr = resolveImportAddr(base, r->r_offset);
+                        void** import_addr = resolveImportAddr(base_addr, r->r_offset);
                         if (sym_name != nullptr && import_addr != nullptr) {
                             _cc->addImport(import_addr, sym_name);
                         }
