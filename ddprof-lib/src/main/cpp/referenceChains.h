@@ -73,8 +73,8 @@
 // buildChainEvent() having no caller. It polls
 // LivenessTracker::selectLeakCandidates() (livenessTracker.h's Open Question
 // 3 population-slope ranking) and, for each candidate already tagged by an
-// ordinary runPass() walk, reconstructs and emits its chain via
-// Profiler::writeReferenceChain(). This is a READ of getTag(), never a
+// ordinary runPass() walk, reconstructs and emits its chain through the
+// profiler's dump-time write path. This is a READ of getTag(), never a
 // SetTag seed - see pollWatchedTargets()'s own comment for why seeding a
 // candidate before the forward walk reached it would break the walk (the
 // design doc's original proposal, corrected here).
@@ -1926,8 +1926,8 @@ private:
   // (pollWatchedTargets()) and read on whatever thread calls Profiler::dump()
   // (drainPendingChainEvents()); _resolved_chains_lock (declared with the
   // cache) is the only synchronization between them. The write itself is
-  // still deferred to the dump() thread - Profiler::writeReferenceChain()
-  // (profiler.cpp) can block up to ~50ms per event under _locks[] contention,
+  // still deferred to the dump() thread - the profiler-side writer can
+  // block up to ~50ms per event under _locks[] contention,
   // which must never delay the next scheduled BFS pass - exactly mirroring
   // how buildAbandonedEvent()'s output is deferred to that same call site
   // rather than written eagerly.
@@ -3363,7 +3363,7 @@ public:
   // klass_id - see that field's own comment for why a resolved chain is
   // cached (and re-emitted on every dump) rather than emitted once. The write
   // itself is still deferred to drainPendingChainEvents() on the dump()
-  // thread, since Profiler::writeReferenceChain() can block this method's
+  // thread, since the profiler-side writer can block this method's
   // caller (the BFS scheduling thread) for up to ~50ms per event. A candidate
   // still at tag 0 (not yet discovered) is left for a later poll to retry,
   // since runPass()'s whole-graph walk eventually visits every root-reachable
@@ -3402,8 +3402,8 @@ public:
   // time window, WITHOUT clearing the cache - a repeatable snapshot, not a
   // drain, so the same live sample's chain is re-emitted into every JFR chunk
   // it survives into (see _resolved_chains' own comment). Called from
-  // Profiler::dump() (profiler.cpp), which then calls
-  // Profiler::writeReferenceChain() for each event on its own thread - never
+  // Profiler::dump() (profiler.cpp), which then hands
+  // each event to the profiler-side writer on its own thread - never
   // the BFS scheduling thread. A no-op (leaves *out untouched) if the cache
   // is currently empty. The name is retained from the drain-once era for its
   // stable call site; the semantics are now snapshot-and-keep.
