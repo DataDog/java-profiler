@@ -135,6 +135,17 @@ public:
   // __SAMPLER_PERF__ is not defined, so the call site needs no #ifdef.
   static void report();
 
+  // Forces OS::nanotime()'s platform-specific first-call setup to happen here,
+  // synchronously on the calling thread, before any profiler signal is armed.
+  // On macOS, OS::nanotime() lazily fills a non-atomic static
+  // mach_timebase_info_data_t on its first call (os_macos.cpp); without this,
+  // SamplerPerfProbe's constructor could be that first call, running inside a
+  // just-armed signal handler and racing the lazy init against every other
+  // sampled thread. Call before enabling any signal-based sampler (CPU,
+  // wallclock, ...). A no-op when __SAMPLER_PERF__ is not defined, so the
+  // call site needs no #ifdef.
+  static void primeClock();
+
   // The probe times with OS::nanotime() (CLOCK_MONOTONIC), so the "ticks"
   // accumulated in sampler_ticks.* are already nanoseconds. Kept as a
   // named passthrough, rather than inlining it at the one call site in

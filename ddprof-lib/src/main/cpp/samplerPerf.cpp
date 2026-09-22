@@ -30,6 +30,8 @@ const char *SamplerPerf::name(SamplerId id) {
 
 #ifdef __SAMPLER_PERF__
 
+void SamplerPerf::primeClock() { OS::nanotime(); }
+
 void SamplerPerf::report() {
   // Read the ticks/count pair for each sampler up front so the "did anything
   // run" decision and the printed rows agree, even though a late signal can
@@ -73,6 +75,11 @@ void SamplerPerf::report() {
 }
 
 #else // __SAMPLER_PERF__
+
+void SamplerPerf::primeClock() {
+  // Built without -PenableSamplerPerf: no probe ever calls OS::nanotime()
+  // from a signal handler, so there is nothing to prime.
+}
 
 void SamplerPerf::report() {
   // Built without -PenableSamplerPerf: the counter slots do not exist.

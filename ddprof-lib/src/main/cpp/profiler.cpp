@@ -1648,6 +1648,14 @@ Error Profiler::start(Arguments &args, bool reset) {
     return error;
   }
 
+  // Must precede every signal-based engine's start() below: SamplerPerfProbe
+  // (samplerPerf.h) calls OS::nanotime() from inside the signal handler, and
+  // on macOS that can be the lazy, non-atomic first-call init of
+  // mach_timebase_info (os_macos.cpp). Priming it here, synchronously on this
+  // thread, means it is already initialized by the time any SIGPROF/SIGALRM
+  // can fire.
+  SamplerPerf::primeClock();
+
   int activated = 0;
   if ((_event_mask & EM_CPU) && _cpu_engine != &noop_engine) {
     error = _cpu_engine->start(args);
