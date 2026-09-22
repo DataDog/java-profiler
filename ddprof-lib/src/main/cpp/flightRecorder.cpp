@@ -2418,24 +2418,16 @@ void Recording::recordReferenceChain(Buffer *buf, ReferenceChainEvent *event) {
   // Clamped to MAX_REFERENCE_CHAIN_EDGE_LABEL at the write site below (via
   // strnlen) rather than trusted from the producer - the same "do not trust
   // an upstream cap" defense this function applies to the chain length, so
-  // the reservation above stays an upper bound regardless of what the
-  // producer hands it.
-  const char *edge_labels[MAX_REFERENCE_CHAIN_EVENT_HOPS];
-  for (u32 i = 0; i < edge_count; i++) {
-    edge_labels[i] = event->_hops[i].edge_label.c_str();
-  }
+  // the reservation below stays an upper bound regardless of what the
+  // producer hands it. Reserving through the same constants
+  // MAX_REFERENCE_CHAIN_EVENT_HOPS is derived from keeps the reservation and
+  // the truncation cap from drifting apart; reserving the full per-hop label
+  // bytes even when labels are absent (edge_count == 0) can only flush the
+  // buffer earlier, never underflow it.
   flushIfNeeded(
       buf, RECORDING_BUFFER_LIMIT -
-               (MAX_VAR32_LENGTH /* multi-byte size prefix, below */ +
-                3 * MAX_VAR64_LENGTH /* type id, start_time, target_tag */ +
-                3 * MAX_VAR32_LENGTH /* depth, totalHops, chain count */ +
-                32 /* rootKind string */ +
-                (int)emitted_size * MAX_VAR32_LENGTH +
-                (edge_count > 0
-                     ? MAX_VAR32_LENGTH /* edges count */ +
-                           (int)edge_count *
-                               (MAX_REFERENCE_CHAIN_EDGE_LABEL + 6)
-                     : MAX_VAR32_LENGTH /* edges count, empty array */)));
+               (REFERENCE_CHAIN_EVENT_FIXED_BYTES +
+                (int)emitted_size * REFERENCE_CHAIN_EVENT_PER_HOP_BYTES));
 
   // Multi-byte size prefix (like writeDatadogSetting() above), not
   // writeEventSizePrefix()'s single byte - this event's size can exceed
@@ -2463,8 +2455,9 @@ void Recording::recordReferenceChain(Buffer *buf, ReferenceChainEvent *event) {
   // for this event.
   buf->putVar32(edge_count);
   for (u32 i = 0; i < edge_count; i++) {
-    buf->putUtf8(edge_labels[i],
-                 (u32)strnlen(edge_labels[i], MAX_REFERENCE_CHAIN_EDGE_LABEL));
+    const std::string &label = event->_hops[i].edge_label;
+    buf->putUtf8(label.c_str(),
+                 (u32)strnlen(label.c_str(), MAX_REFERENCE_CHAIN_EDGE_LABEL));
   }
   buf->putVar32(start, (u32)(buf->offset() - start));
   flushIfNeeded(buf);
