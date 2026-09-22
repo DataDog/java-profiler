@@ -731,7 +731,7 @@ extern "C" DLLEXPORT void JNICALL JNI_OnUnload(JavaVM *vm, void *reserved) {
   }
 }
 
-JNIEXPORT void JNICALL Agent_OnUnload(JavaVM *vm) {
+extern "C" JNIEXPORT void JNICALL Agent_OnUnload(JavaVM *vm) {
   Profiler *profiler = Profiler::instance();
   if (profiler != NULL) {
     profiler->stop();

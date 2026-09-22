@@ -116,7 +116,7 @@ void J9WallClock::timerLoop() {
         // rather than the timerLoop, which sleeps between ticks. Declared past
         // the two filters above so threads with no frames, and idle threads in
         // execution-profiler mode, are not counted as samples.
-        SAMPLER_PERF_PROBE(SP_WALL);
+        SAMPLER_PERF_PROBE(_sample_idle_threads ? SP_WALL : SP_CPU);
 
         for (int j = 0; j < si->frame_count; j++) {
           jvmtiFrameInfoExtended *fi = &si->frame_buffer[j];
