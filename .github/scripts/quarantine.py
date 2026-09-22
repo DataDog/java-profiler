@@ -28,14 +28,6 @@ TICKET_RE = re.compile(r"^PROF-\d+$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 FIELDS = ("test", "ticket", "added", "review_by", "cells", "reason")
 
-
-def _parse_date(s):
-    """A YYYY-MM-DD string as a date, or raises ValueError.
-
-    date.fromisoformat() needs Python 3.7+; this also has to run under
-    Python 3.6 (EL7's base-repo python3).
-    """
-    return datetime.datetime.strptime(s, "%Y-%m-%d").date()
 # Long enough not to be busywork, short enough that a quarantine outlives
 # neither the release it was added in nor the memory of why.
 DEFAULT_REVIEW_DAYS = 90
@@ -196,6 +188,15 @@ def covers(entry, test_id):
             return False
         return "." not in test_id[len(prefix):]
     return test_id == pattern
+
+
+def _parse_date(s):
+    """A YYYY-MM-DD string as a date, or raises ValueError.
+
+    date.fromisoformat() needs Python 3.7+; this also has to run under
+    Python 3.6 (EL7's base-repo python3).
+    """
+    return datetime.datetime.strptime(s, "%Y-%m-%d").date()
 
 
 def is_expired(entry, today=None):
