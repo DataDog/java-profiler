@@ -64,7 +64,7 @@ variables:
   # artifact was built in (BUILD_IMAGE): stresstest:x64 runs on Oracle Linux 7
   # to exercise the shipped binary's actual glibc floor, while consuming the
   # same artifact build:x64 produced in the AlmaLinux 8 image. Other stresstest
-  # jobs set RUNTIME_IMAGE to their own BUILD_IMAGE, unchanged from before.
+  # jobs set RUNTIME_IMAGE to their own BUILD_IMAGE.
   image: ${RUNTIME_IMAGE}
   script:
     - .gitlab/scripts/stresstests.sh
