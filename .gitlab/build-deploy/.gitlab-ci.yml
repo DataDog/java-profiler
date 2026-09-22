@@ -184,7 +184,6 @@ stresstest:arm64-musl:
 .functional_job:
   extends:
     - .retry-config
-    - .cache-config-pull
   stage: stresstest
   needs:
     - job: prepare:start
@@ -199,6 +198,29 @@ stresstest:arm64-musl:
   image: ${BUILD_IMAGE_X64_EL7}
   variables:
     TARGET: linux-x64
+  # Two independent cache entries rather than extending .cache-config-pull:
+  # the JDK-under-test tarball (functional-tests.sh's JDK_CACHE_DIR) has
+  # nothing to do with the Gradle/Maven cache's key or lifetime. It doesn't
+  # vary by branch or commit -- Adoptium's "latest" build for a given major
+  # version is the same tarball everywhere -- and without its own entry here
+  # it was never cached at all, so every run re-downloaded it from Adoptium.
+  cache:
+    - key:
+        files:
+          - gradle/wrapper/gradle-wrapper.properties
+        prefix: build-v2-${CI_COMMIT_REF_SLUG}
+      fallback_keys:
+        - build-v2-${CI_DEFAULT_BRANCH}
+        - build-v2-main
+      paths:
+        - .gradle/caches/
+        - .gradle/wrapper/
+        - .m2/repository/
+      policy: pull
+    - key: jdk-cache-v1-${TEST_JDK}
+      paths:
+        - .jdk-cache/
+      policy: pull-push
   script:
     - .gitlab/scripts/functional-tests.sh
   artifacts:
