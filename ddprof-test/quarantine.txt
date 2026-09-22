@@ -42,6 +42,9 @@
 # When CI sees a flake it prints a ready-made line in the PR comment. The
 # ticket and the judgement are still yours.
 #
+# Example:
+# com.datadoghq.profiler.cpu.CpuSamplingTest.testSampling | PROF-12345 | 2026-09-02 | 2026-12-02 | *aarch64* | Under-samples on emulated aarch64; 2 of 40 runs
+#
 # NativeSocketSampler's hooks install and fire correctly on this cell
 # (confirmed via a debug-config diagnostic build -- send/recv/write/read all
 # called, PLT patching succeeds); the rate limiter then rejects nearly every
