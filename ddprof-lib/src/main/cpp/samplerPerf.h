@@ -17,10 +17,20 @@
 // Compile-time per-sampler performance measurement.
 //
 // SAMPLER_PERF_PROBE(SP_CPU) declares an RAII object at a sampler's entry
-// point.  Its constructor takes a TSC timestamp; its destructor adds the
-// elapsed ticks to sampler_ticks.<name> and bumps sampler_count.<name>.  At
-// Profiler::stop(), SamplerPerf::report() prints total elapsed time, sample
-// count and average per sampler.
+// point.  Its constructor takes a CLOCK_MONOTONIC timestamp; its destructor
+// adds the elapsed nanoseconds to sampler_ticks.<name> and bumps
+// sampler_count.<name>.  At Profiler::stop(), SamplerPerf::report() prints
+// total elapsed time, sample count and average per sampler.
+//
+// CLOCK_MONOTONIC, not the TSC: the raw TSC is not guaranteed to be
+// synchronized across cores (or even monotonic on a single core, on hardware
+// without an invariant TSC, or across a VM migration/hibernation). A signal
+// handler that starts on one core and finishes on another after a backward
+// step would compute _start - now as a huge unsigned value, corrupting
+// sampler_ticks.* with a multi-year spike. OS::nanotime() (clock_gettime
+// with CLOCK_MONOTONIC) is guaranteed by POSIX to never go backward, at the
+// cost of being a real syscall/vDSO call instead of a single instruction --
+// acceptable here since this probe only exists in __SAMPLER_PERF__ builds.
 //
 //   void CTimer::signalHandler(int signo, siginfo_t* si, void* uc) {
 //     ErrnoPreserver errno_preserver;
@@ -92,7 +102,7 @@
 
 #include "arch.h"
 #include "counters.h"
-#include "tsc.h"
+#include "os.h"
 
 // The samplers measured by the probe, one logical slot per sampler family.
 //
@@ -125,26 +135,12 @@ public:
   // __SAMPLER_PERF__ is not defined, so the call site needs no #ifdef.
   static void report();
 
-  // Converts TSC ticks to nanoseconds without overflowing.
-  //
-  // The naive ticks * NANOTIME_FREQ / frequency() overflows u64 well inside a
-  // normal recording: at 3 GHz, one hour is ~1.08e13 ticks and ticks * 1e9 is
-  // ~1.08e22, far past 1.8e19 -- it silently reports 2.88 seconds instead of
-  // 3600. Splitting into whole seconds plus remainder keeps every intermediate
-  // in range, since (ticks % freq) * 1e9 < freq * 1e9 and freq is at most a few
-  // GHz.
-  //
-  // TSC::frequency() returns NANOTIME_FREQ when the TSC is unavailable and
-  // TSC::ticks() is already handing back OS::nanotime() nanoseconds, so this one
-  // expression is correct in both modes.
-  static u64 ticksToNanos(u64 ticks) {
-    u64 freq = TSC::frequency();
-    if (freq == 0) {
-      return 0;
-    }
-    return (ticks / freq) * NANOTIME_FREQ +
-           ((ticks % freq) * NANOTIME_FREQ) / freq;
-  }
+  // The probe times with OS::nanotime() (CLOCK_MONOTONIC), so the "ticks"
+  // accumulated in sampler_ticks.* are already nanoseconds. Kept as a
+  // named passthrough, rather than inlining it at the one call site in
+  // samplerPerf.cpp, so that call site reads the same regardless of the
+  // underlying clock.
+  static u64 ticksToNanos(u64 ticks) { return ticks; }
 
   // Display name for a sampler, e.g. "cpu". Defined in both modes.
   static const char *name(SamplerId id);
@@ -172,24 +168,24 @@ DD_SAMPLER_LIST(X_SAMPLER_ASSERT)
 // Async-signal-safe: all state is on the stack (no thread_local -- a
 // thread_local here would risk the lazy DTV-slot malloc that deadlocked against
 // the JVMCI compiler on Graal aarch64, see guards.h), and the destructor does
-// nothing but read the TSC and issue two relaxed atomic adds, which land on
-// separate cache lines because Counters pads every slot to 128 bytes.
+// nothing but read CLOCK_MONOTONIC (clock_gettime is async-signal-safe) and
+// issue two relaxed atomic adds, which land on separate cache lines because
+// Counters pads every slot to 128 bytes.
 //
 // Declare it AFTER any ErrnoPreserver in the enclosing handler: ErrnoPreserver
-// must stay the first-declared local so it destructs last, and TSC::ticks() can
-// reach clock_gettime() on the OS::nanotime() fallback path, which may set
-// errno.
+// must stay the first-declared local so it destructs last, and
+// OS::nanotime() calls clock_gettime(), which may set errno.
 class SamplerPerfProbe {
 private:
   u64 _start;
   SamplerId _id;
 
 public:
-  explicit SamplerPerfProbe(SamplerId id) : _start(TSC::ticks()), _id(id) {}
+  explicit SamplerPerfProbe(SamplerId id) : _start(OS::nanotime()), _id(id) {}
 
   ~SamplerPerfProbe() {
-    Counters::increment(SAMPLER_TICKS_CPU, (long long)(TSC::ticks() - _start),
-                        2 * (int)_id);
+    Counters::increment(SAMPLER_TICKS_CPU,
+                        (long long)(OS::nanotime() - _start), 2 * (int)_id);
     Counters::increment(SAMPLER_TICKS_CPU, 1, 2 * (int)_id + 1);
   }
 
