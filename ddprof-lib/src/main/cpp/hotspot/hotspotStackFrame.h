@@ -7,6 +7,7 @@
 #ifndef _HOTSPOT_HOTSPOTSTACKFRAME_H
 #define _HOTSPOT_HOTSPOTSTACKFRAME_H
 
+#include "counters.h"
 #include "stackFrame.h"
 #include "hotspot/vmStructs.h"
 
@@ -51,6 +52,9 @@ public:
                     // Safe store, cannot fault
                     bool ret = _anchor->setLastJavaPC<true /*safe store*/>(_anchor_pc);
                     assert(ret && "Failed to restore lastJavaPC");
+                    if (!ret) {
+                        Counters::increment(ANCHOR_RESTORE_FAILED);
+                    }
                     _anchor = nullptr;
                 }
         }

@@ -134,6 +134,7 @@
   X(SAFECOPY_FAILED, "safecopy_failed")                                       \
   X(SAFEFETCH_FAILED, "safefetch_failed")                                     \
   X(SAFESTORE_FAILED, "safestore_failed")                                     \
+  X(ANCHOR_RESTORE_FAILED, "anchor_restore_failed")                           \
   /* Every siglongjmp recovery, from any protected window, counted centrally  \
    * in Profiler::checkFault(). */                                            \
   X(STACKWALK_LONGJMP_RECOVERED, "stackwalk_longjmp_recovered")               \
