@@ -5,7 +5,7 @@ title: musl-arm64-hotspot-jdk8
 
 ## musl-arm64-hotspot-jdk8 - ✅ PASS
 
-**Date:** 2026-09-22 11:47:43 EDT
+**Date:** 2026-09-22 11:52:09 EDT
 
 ### Configuration
 | Setting | Value |
@@ -18,8 +18,8 @@ title: musl-arm64-hotspot-jdk8
 ### System Diagnostics
 | Metric | Value |
 |--------|-------|
-| CPU Cores (start) | 38 |
-| CPU Cores (end) | 43 |
+| CPU Cores (start) | 19 |
+| CPU Cores (end) | 19 |
 | Throttling | 0% |
 
 ### Test Results
@@ -38,36 +38,36 @@ title: musl-arm64-hotspot-jdk8
 | Metric | Value |
 |--------|-------|
 | Status | PASS |
-| CPU Samples | 115 |
-| Sample Rate | 1.92/sec |
-| Health Score | 120% |
-| Threads | 12 |
+| CPU Samples | 338 |
+| Sample Rate | 5.63/sec |
+| Health Score | 352% |
+| Threads | 11 |
 | Allocations | 0 |
 
 <details>
-<summary>CPU Timeline (2 unique values: 38-43 cores)</summary>
+<summary>CPU Timeline (1 unique values: 19-19 cores)</summary>
 
 ```
-1790091811 38
-1790091816 38
-1790091821 38
-1790091826 38
-1790091831 38
-1790091836 38
-1790091841 38
-1790091846 43
-1790091851 43
-1790091856 43
-1790091861 43
-1790091866 43
-1790091871 43
-1790091876 43
-1790091881 43
-1790091886 43
-1790091891 43
-1790091896 43
-1790091901 43
-1790091906 43
+1790091801 19
+1790091806 19
+1790091811 19
+1790091816 19
+1790091821 19
+1790091826 19
+1790091831 19
+1790091836 19
+1790091841 19
+1790091846 19
+1790091851 19
+1790091856 19
+1790091861 19
+1790091866 19
+1790091871 19
+1790091876 19
+1790091881 19
+1790091886 19
+1790091892 19
+1790091897 19
 ```
 </details>
 
