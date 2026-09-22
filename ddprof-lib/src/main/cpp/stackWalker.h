@@ -87,6 +87,13 @@ typedef struct {
 
 class StackWalker {
   public:
+    // callchain[] must have room for max_depth + 1 entries whenever
+    // `truncated` is non-null. Both walkers deliberately walk one frame past
+    // max_depth to learn whether the stack really continued, write that frame,
+    // and only then clamp the returned depth back to max_depth -- a buffer of
+    // exactly max_depth is overflowed by one entry on any stack deep enough to
+    // reach the limit. Without a truncation flag, max_depth entries suffice.
+    //
     // callchain[] entries from walkFP/walkDwarf are attribution addresses:
     // pc - 1 for any frame whose pc was loaded from a return-address slot
     // (see attributionPC in stackWalker.inline.h), the exact pc otherwise.

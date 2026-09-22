@@ -376,11 +376,14 @@ namespace {
 sigjmp_buf g_ra1_jmpbuf;
 const void* g_ra1_captured_retaddr = nullptr;
 
-const void* g_ra1_fp_chain[16];
+// Every chain buffer in this file is sized max_depth + 1: each walk below
+// passes a truncation flag, and the walkers write one frame past max_depth to
+// decide whether to set it (see StackWalker in stackWalker.h).
+const void* g_ra1_fp_chain[16 + 1];
 int g_ra1_fp_depth = -1;
 bool g_ra1_fp_truncated = false;
 
-const void* g_ra1_dw_chain[16];
+const void* g_ra1_dw_chain[16 + 1];
 int g_ra1_dw_depth = -1;
 bool g_ra1_dw_truncated = false;
 
@@ -389,11 +392,11 @@ bool g_ra1_dw_truncated = false;
 // gap on stackWalker.cpp:42/132 (the `ucontext != NULL` branch that sets
 // pc_is_ra = false for the leaf frame), which Test2a only exercised against
 // a single fabricated, zeroed-out frame.
-const void* g_ra1_fp_uc_chain[16];
+const void* g_ra1_fp_uc_chain[16 + 1];
 int g_ra1_fp_uc_depth = -1;
 bool g_ra1_fp_uc_truncated = false;
 
-const void* g_ra1_dw_uc_chain[16];
+const void* g_ra1_dw_uc_chain[16 + 1];
 int g_ra1_dw_uc_depth = -1;
 bool g_ra1_dw_uc_truncated = false;
 }  // namespace
@@ -586,7 +589,7 @@ TEST_F(ReturnAddressAttributionTest, Test2a_UcontextLeafKeepsExactAddress) {
 
     StackContext fp_ctx{};
     bool fp_truncated = false;
-    const void* fp_chain[8];
+    const void* fp_chain[8 + 1];
     int fp_depth = StackWalker::walkFP(&uc, fp_chain, 8, &fp_ctx, &fp_truncated);
     ASSERT_GE(fp_depth, 1);
     EXPECT_EQ(fabricated_pc, fp_chain[0])
@@ -595,7 +598,7 @@ TEST_F(ReturnAddressAttributionTest, Test2a_UcontextLeafKeepsExactAddress) {
     ucontext_t uc2 = makeFabricatedContext(fabricated_pc, scratch, 64);
     StackContext dw_ctx{};
     bool dw_truncated = false;
-    const void* dw_chain[8];
+    const void* dw_chain[8 + 1];
     int dw_depth = StackWalker::walkDwarf(&uc2, dw_chain, 8, &dw_ctx, &dw_truncated);
     ASSERT_GE(dw_depth, 1);
     EXPECT_EQ(fabricated_pc, dw_chain[0])
@@ -839,7 +842,7 @@ extern "C" void prof_ra_cfi_collect(void);
 
 namespace {
 sigjmp_buf g_ra3_jmpbuf;
-const void* g_ra3_dw_chain[16];
+const void* g_ra3_dw_chain[16 + 1];
 int g_ra3_dw_depth = -1;
 }  // namespace
 
@@ -1011,7 +1014,7 @@ extern "C" void prof_ra_plt_collect(void);
 namespace {
 sigjmp_buf g_ra4_jmpbuf;
 const void* g_ra4_captured_retaddr = nullptr;
-const void* g_ra4_dw_chain[16];
+const void* g_ra4_dw_chain[16 + 1];
 int g_ra4_dw_depth = -1;
 }  // namespace
 
@@ -1218,7 +1221,7 @@ TEST_F(ReturnAddressAttributionTest, Test5_DwPcOffsetSetsFlag) {
     ucontext_t uc = makeFabricatedContext((const void*)&prof_ra_pcoff_fn, scratch, 64);
     StackContext ctx{};
     bool truncated = false;
-    const void* chain[8];
+    const void* chain[8 + 1];
     int depth = StackWalker::walkDwarf(&uc, chain, 8, &ctx, &truncated);
 
     ASSERT_GE(depth, 2);
@@ -1296,7 +1299,7 @@ TEST_F(ReturnAddressAttributionTest, Test5b_DwPcOffsetAppliesOffsetToRawPc) {
 
     StackContext ctx{};
     bool truncated = false;
-    const void* chain[8];
+    const void* chain[8 + 1];
     int depth = StackWalker::walkDwarf(&uc, chain, 8, &ctx, &truncated);
 
     ASSERT_GE(depth, 3);
@@ -1394,7 +1397,7 @@ TEST_F(ReturnAddressAttributionTest, Test6_LinkRegisterRecoverySetsFlag) {
 
     StackContext ctx{};
     bool truncated = false;
-    const void* chain[8];
+    const void* chain[8 + 1];
     int depth = StackWalker::walkDwarf(&uc, chain, 8, &ctx, &truncated);
 
     ASSERT_GE(depth, 2);
@@ -1484,7 +1487,7 @@ TEST_F(ReturnAddressAttributionTest, Test8_SignalFrameRowKeepsExactAddress) {
 
     StackContext ctx{};
     bool truncated = false;
-    const void* chain[8];
+    const void* chain[8 + 1];
     int depth = StackWalker::walkDwarf(&uc, chain, 8, &ctx, &truncated);
 
     ASSERT_GE(depth, 2);
