@@ -111,12 +111,15 @@ void J9WallClock::timerLoop() {
           // in execution profiler mode the non-running threads are skipped
           continue;
         }
-        // Scoped to the rest of this thread's iteration, so it measures the
-        // per-thread recording work (frame copy, tid lookup, recordExternalSample)
-        // rather than the timerLoop, which sleeps between ticks. Declared past
-        // the two filters above so threads with no frames, and idle threads in
-        // execution-profiler mode, are not counted as samples.
-        SAMPLER_PERF_PROBE(_sample_idle_threads ? SP_WALL : SP_CPU);
+        // Declared past the two filters above so threads with no frames, and
+        // idle threads in execution-profiler mode, are not counted as samples.
+        // In wall-clock mode a single RUNNABLE thread below emits BOTH a
+        // BCI_CPU and a BCI_WALL recording, so each gets its own probe scoped
+        // to just its recordExternalSample call -- one shared probe here would
+        // either miscategorize one of the two recordings' cost as the other's,
+        // or (as SP_WALL previously did) fold both costs into one SP_WALL
+        // sample, inflating the reported wallclock average. The shared
+        // frame-copy/tid-lookup preamble below is not attributed to either.
 
         for (int j = 0; j < si->frame_count; j++) {
           jvmtiFrameInfoExtended *fi = &si->frame_buffer[j];
@@ -132,11 +135,13 @@ void J9WallClock::timerLoop() {
         ExecutionEvent event;
         event._thread_state = ts;
         if (ts == OSThreadState::RUNNABLE) {
+          SAMPLER_PERF_PROBE(SP_CPU);
           Profiler::instance()->recordExternalSample(
               _interval, tid, si->frame_count, frames, /*truncated=*/false,
               BCI_CPU, &event);
         }
         if (_sample_idle_threads) {
+          SAMPLER_PERF_PROBE(SP_WALL);
           Profiler::instance()->recordExternalSample(
               _interval, tid, si->frame_count, frames, /*truncated=*/false,
               BCI_WALL, &event);
