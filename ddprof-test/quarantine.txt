@@ -53,13 +53,21 @@
 # calls never get slow enough for the time-weighted sampler to keep them.
 # Scoped to el7-8-release-amd64 (the only cell this has been observed on) --
 # widen only with fresh evidence from the nightly el7-17/-21 cells.
-com.datadoghq.profiler.nativesocket.NativeSocketBytesAccuracyTest.timeWeightedEstimateIsWithinReasonableBounds | PROF-16014 | 2026-09-21 | 2026-12-20 | el7-8-release-amd64 | NativeSocketEvent count 0: doTcpTransfer() never blocks long enough to be sampled on this runner
-com.datadoghq.profiler.nativesocket.NativeSocketEnabledTest.socketEventsProducedWhenFeatureEnabled | PROF-16014 | 2026-09-21 | 2026-12-20 | el7-8-release-amd64 | NativeSocketEvent count 0: doTcpTransfer() never blocks long enough to be sampled on this runner
-com.datadoghq.profiler.nativesocket.NativeSocketEventFieldsTest.allRequiredFieldsPresentAndValid | PROF-16014 | 2026-09-21 | 2026-12-20 | el7-8-release-amd64 | NativeSocketEvent count 0: doTcpTransfer() never blocks long enough to be sampled on this runner
-com.datadoghq.profiler.nativesocket.NativeSocketEventThreadTest.eventThreadIsPopulated | PROF-16014 | 2026-09-21 | 2026-12-20 | el7-8-release-amd64 | NativeSocketEvent count 0: doTcpTransfer() never blocks long enough to be sampled on this runner
-com.datadoghq.profiler.nativesocket.NativeSocketRateLimitTest.eventCountIsSubstantiallyLessThanOperationCount | PROF-16014 | 2026-09-21 | 2026-12-20 | el7-8-release-amd64 | NativeSocketEvent count 0: doTcpTransfer() never blocks long enough to be sampled on this runner
-com.datadoghq.profiler.nativesocket.NativeSocketRemoteAddressTest.remoteAddressIsIpColonPort | PROF-16014 | 2026-09-21 | 2026-12-20 | el7-8-release-amd64 | NativeSocketEvent count 0: doTcpTransfer() never blocks long enough to be sampled on this runner
-com.datadoghq.profiler.nativesocket.NativeSocketRestartTest.testNativeSocketProfilerRestart | PROF-16014 | 2026-09-21 | 2026-12-20 | el7-8-release-amd64 | NativeSocketEvent count 0: doTcpTransfer() never blocks long enough to be sampled on this runner
-com.datadoghq.profiler.nativesocket.NativeSocketSendRecvSeparateTest.sendAndRecvTrackedWithSeparateCounts | PROF-16014 | 2026-09-21 | 2026-12-20 | el7-8-release-amd64 | NativeSocketEvent count 0: doTcpTransfer() never blocks long enough to be sampled on this runner
-com.datadoghq.profiler.nativesocket.NativeSocketUdpExcludedTest.udpTransfersProduceNoSocketEvents | PROF-16014 | 2026-09-21 | 2026-12-20 | el7-8-release-amd64 | NativeSocketEvent count 0: doTcpTransfer() never blocks long enough to be sampled on this runner
+#
+# Every one of these classes' single test method is @RetryingTest, which (like
+# @ParameterizedTest/@TestTemplate) reports as "Class.[1]", "[2]", ... in the
+# XML -- no method name at all -- so the entry has to be class-wide; an exact
+# method name here would never match anything. NativeSocketUdpExcludedTest is
+# deliberately not listed: it asserts *zero* events, which the bug's symptom
+# (near-zero events everywhere) would make pass, not fail, so a failure there
+# has a different, unconfirmed cause and quarantining it on this evidence
+# risks hiding an unrelated regression later.
+com.datadoghq.profiler.nativesocket.NativeSocketBytesAccuracyTest.* | PROF-16014 | 2026-09-21 | 2026-12-20 | el7-8-release-amd64 | NativeSocketEvent count 0: doTcpTransfer() never blocks long enough to be sampled on this runner
+com.datadoghq.profiler.nativesocket.NativeSocketEnabledTest.* | PROF-16014 | 2026-09-21 | 2026-12-20 | el7-8-release-amd64 | NativeSocketEvent count 0: doTcpTransfer() never blocks long enough to be sampled on this runner
+com.datadoghq.profiler.nativesocket.NativeSocketEventFieldsTest.* | PROF-16014 | 2026-09-21 | 2026-12-20 | el7-8-release-amd64 | NativeSocketEvent count 0: doTcpTransfer() never blocks long enough to be sampled on this runner
+com.datadoghq.profiler.nativesocket.NativeSocketEventThreadTest.* | PROF-16014 | 2026-09-21 | 2026-12-20 | el7-8-release-amd64 | NativeSocketEvent count 0: doTcpTransfer() never blocks long enough to be sampled on this runner
+com.datadoghq.profiler.nativesocket.NativeSocketRateLimitTest.* | PROF-16014 | 2026-09-21 | 2026-12-20 | el7-8-release-amd64 | NativeSocketEvent count 0: doTcpTransfer() never blocks long enough to be sampled on this runner
+com.datadoghq.profiler.nativesocket.NativeSocketRemoteAddressTest.* | PROF-16014 | 2026-09-21 | 2026-12-20 | el7-8-release-amd64 | NativeSocketEvent count 0: doTcpTransfer() never blocks long enough to be sampled on this runner
+com.datadoghq.profiler.nativesocket.NativeSocketRestartTest.* | PROF-16014 | 2026-09-21 | 2026-12-20 | el7-8-release-amd64 | NativeSocketEvent count 0: doTcpTransfer() never blocks long enough to be sampled on this runner
+com.datadoghq.profiler.nativesocket.NativeSocketSendRecvSeparateTest.* | PROF-16014 | 2026-09-21 | 2026-12-20 | el7-8-release-amd64 | NativeSocketEvent count 0: doTcpTransfer() never blocks long enough to be sampled on this runner
 com.datadoghq.profiler.nativesocket.NativeSocketStackTraceTest.* | PROF-16014 | 2026-09-21 | 2026-12-20 | el7-8-release-amd64 | @TestTemplate invocations (cstack=vm/vmx/dwarf/fp) have no method name in the XML; same root cause as the rest of the package
