@@ -23,11 +23,70 @@
 #include <string>
 #include <vector>
 
+#include "arch.h"
+
 const long DEFAULT_CPU_INTERVAL = 10 * 1000 * 1000;  // 10 ms
 const long DEFAULT_WALL_INTERVAL = 50 * 1000 * 1000; // 50 ms
 const long DEFAULT_ALLOC_INTERVAL = 524287;          // 512 KiB
 const int DEFAULT_WALL_THREADS_PER_TICK = 16;
 const int DEFAULT_JSTACKDEPTH = 2048;
+
+// Every constant below is a provisional default pending empirical tuning -
+// none are backed by a benchmark run against this codebase; replacing them
+// with measured values is outstanding JMH/async-profiler benchmark work.
+// Per-constant notes only carry what a name does not already say.
+//
+// Hop cap: mirrors HotSpot's own JFR leak-profiler chain cap (~200 hops,
+// split 100/100 from leaf and from root) - the closest real-world precedent
+// for a referrer-type chain length.
+// Sub-option bitmask for the auto-tuner: tracks which referencechains
+// sub-options were explicitly set by the operator, so the auto-tuner
+// only overrides defaults that weren't.
+constexpr u8 REF_CHAINS_TUNED_HOP_CAP = 1 << 0;
+constexpr u8 REF_CHAINS_TUNED_BUDGET = 1 << 1;
+constexpr u8 REF_CHAINS_TUNED_TTL = 1 << 2;
+constexpr u8 REF_CHAINS_TUNED_FRONTIER_CAP = 1 << 3;
+constexpr u8 REF_CHAINS_TUNED_PAUSE_TARGET = 1 << 4;
+constexpr u8 REF_CHAINS_TUNED_PAIN_BUDGET = 1 << 5;
+constexpr u8 REF_CHAINS_TUNED_FIRST_PASS_BUDGET = 1 << 6;
+
+const int DEFAULT_REFERENCE_CHAINS_HOP_CAP = 200;
+// Per-pass edge budget: a round middle value keeping a single
+// FollowReferences-triggered safepoint short without forcing an impractical
+// number of passes.
+const int DEFAULT_REFERENCE_CHAINS_BUDGET = 1000;      // edges expanded per BFS pass
+// Per-search TTL: bounds a slow or stalled search to a human-noticeable
+// lifetime.
+const long DEFAULT_REFERENCE_CHAINS_TTL_MS = 60000;    // per-search wall-clock TTL
+// Frontier-size cap: same order of magnitude as LivenessTracker's tuned
+// ceiling (MAX_TRACKING_TABLE_SIZE = 262144, livenessTracker.h), quartered -
+// a frontier entry is smaller but per-hop fan-out can be large. Conservative
+// guess, pending a frontier peak-occupancy measurement.
+const int DEFAULT_REFERENCE_CHAINS_FRONTIER_CAP = 65536; // max live frontier entries per search
+// Pause-time-SLO ceiling (pause-time pacing controller): target ceiling,
+// per pass, on wall-clock time spent inside the safepoint-triggering
+// FollowReferences/GetObjectsWithTags call
+// the pause-time pacing controller adapts the effective budget/cadence toward.
+const long DEFAULT_REFERENCE_CHAINS_PAUSE_TARGET_MS = 50; // ms per pass
+// Pain budget refill rate (the restarted-search pain budget):
+// percent (1 = 1%) of wall-clock time a *restarted* search may spend inside
+// safepointing calls, on average, before a later restart waits for the
+// previous search's debt to drain.
+const int DEFAULT_REFERENCE_CHAINS_PAIN_BUDGET_PERCENT = 1;
+// First-pass edge budget override for the search's one-and-only root-seeded
+// FollowReferences call: unlike the per-pass budget, this spends once per
+// search, so a much larger one-time ceiling is affordable. 0 means no
+// override - the engine auto-scales it from the per-pass budget at startup.
+const int DEFAULT_REFERENCE_CHAINS_FIRST_PASS_BUDGET = 0;
+const int MAX_REFERENCE_CHAINS_FIRST_PASS_BUDGET =
+    DEFAULT_REFERENCE_CHAINS_BUDGET * 1000;
+// Upper clamps: large enough that no legitimate configuration hits them,
+// small enough to fail a mistyped value safely instead of feeding it into a
+// loop bound or an allocation.
+const int MAX_REFERENCE_CHAINS_HOP_CAP = DEFAULT_REFERENCE_CHAINS_HOP_CAP * 1000;
+const int MAX_REFERENCE_CHAINS_BUDGET = DEFAULT_REFERENCE_CHAINS_BUDGET * 1000;
+const int MAX_REFERENCE_CHAINS_FRONTIER_CAP =
+    DEFAULT_REFERENCE_CHAINS_FRONTIER_CAP * 1000;
 
 const char *const EVENT_NOOP = "noop";
 const char *const EVENT_CPU = "cpu";
@@ -177,6 +236,23 @@ public:
   double _live_samples_ratio;
   bool _record_heap_usage;
   bool _gc_generations;
+  // Reference-chain tracking. Read by the reference-chain engine at startup
+  // to size the frontier table and seed the per-search hop/budget/TTL
+  // tunables and the pause-time-SLO ceiling its pacing controller adapts
+  // the effective budget/cadence toward.
+  bool _reference_chains;
+  int _reference_chains_hop_cap;
+  int _reference_chains_budget;
+  long _reference_chains_ttl_ms;
+  int _reference_chains_frontier_cap;
+  long _reference_chains_pause_target_ms;
+  int _reference_chains_pain_budget_percent;
+  int _reference_chains_first_pass_budget;
+  // Bitmask of REF_CHAINS_TUNED_*: which sub-options were explicitly
+  // set by the operator, so the auto-tuner knows which defaults it may
+  // override. 0 = all defaults, none explicitly set.
+  u8 _reference_chains_tuned_mask;
+  // Explicit opt-in for the legacy whole-graph JVMTI FollowReferences walk.
   long _nativemem;
   int  _jstackdepth;
   int _safe_mode;
@@ -219,6 +295,15 @@ public:
         _live_samples_ratio(0.1), // default to liveness-tracking 10% of the allocation samples
         _record_heap_usage(false),
         _gc_generations(false),
+        _reference_chains(false),
+        _reference_chains_hop_cap(DEFAULT_REFERENCE_CHAINS_HOP_CAP),
+        _reference_chains_budget(DEFAULT_REFERENCE_CHAINS_BUDGET),
+        _reference_chains_ttl_ms(DEFAULT_REFERENCE_CHAINS_TTL_MS),
+        _reference_chains_frontier_cap(DEFAULT_REFERENCE_CHAINS_FRONTIER_CAP),
+        _reference_chains_pause_target_ms(DEFAULT_REFERENCE_CHAINS_PAUSE_TARGET_MS),
+        _reference_chains_pain_budget_percent(DEFAULT_REFERENCE_CHAINS_PAIN_BUDGET_PERCENT),
+        _reference_chains_first_pass_budget(DEFAULT_REFERENCE_CHAINS_FIRST_PASS_BUDGET),
+        _reference_chains_tuned_mask(0),
         _nativemem(-1),
         _jstackdepth(DEFAULT_JSTACKDEPTH),
         _safe_mode(0),
