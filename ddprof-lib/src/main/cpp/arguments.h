@@ -201,9 +201,9 @@ public:
 
   explicit Error(const char *message) : _message(message) {}
 
-  const char *message() { return _message; }
+  const char *message() const { return _message; }
 
-  operator bool() { return _message != NULL; }
+  operator bool() const { return _message != NULL; }
 };
 
 class Arguments {
