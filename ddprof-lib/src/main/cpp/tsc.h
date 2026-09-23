@@ -14,22 +14,16 @@
 const u64 NANOTIME_FREQ = 1000000000;
 
 
-#if defined(__x86_64__) || defined(__i386__)
+#if defined(__x86_64__)
 
 #include <cpuid.h>
 
 #define TSC_SUPPORTED true
 
 static inline u64 rdtsc() {
-#if defined(__x86_64__)
     u32 lo, hi;
     asm volatile("rdtsc" : "=a" (lo), "=d" (hi));
     return ((u64)hi << 32) | lo;
-#else
-    u64 result;
-    asm volatile("rdtsc" : "=A" (result));
-    return result;
-#endif
 }
 
 // Returns true if this CPU has a good ("invariant") timestamp counter

@@ -284,7 +284,6 @@ struct SharedLibrary {
 };
 
 
-#ifdef __LP64__
 const unsigned char ELFCLASS_SUPPORTED = ELFCLASS64;
 typedef Elf64_Ehdr ElfHeader;
 typedef Elf64_Shdr ElfSection;
@@ -295,28 +294,10 @@ typedef Elf64_Rel  ElfRelocation;
 typedef Elf64_Dyn  ElfDyn;
 #define ELF_R_TYPE ELF64_R_TYPE
 #define ELF_R_SYM  ELF64_R_SYM
-#else
-const unsigned char ELFCLASS_SUPPORTED = ELFCLASS32;
-typedef Elf32_Ehdr ElfHeader;
-typedef Elf32_Shdr ElfSection;
-typedef Elf32_Phdr ElfProgramHeader;
-typedef Elf32_Nhdr ElfNote;
-typedef Elf32_Sym  ElfSymbol;
-typedef Elf32_Rel  ElfRelocation;
-typedef Elf32_Dyn  ElfDyn;
-#define ELF_R_TYPE ELF32_R_TYPE
-#define ELF_R_SYM  ELF32_R_SYM
-#endif // __LP64__
 
 #if defined(__x86_64__)
 #  define R_GLOB_DAT R_X86_64_GLOB_DAT
 #  define R_ABS64 R_X86_64_64
-#elif defined(__i386__)
-#  define R_GLOB_DAT R_386_GLOB_DAT
-#  define R_ABS64 -1
-#elif defined(__arm__) || defined(__thumb__)
-#  define R_GLOB_DAT R_ARM_GLOB_DAT
-#  define R_ABS64 -1
 #elif defined(__aarch64__)
 #  define R_GLOB_DAT R_AARCH64_GLOB_DAT
 #  define R_ABS64 R_AARCH64_ABS64
